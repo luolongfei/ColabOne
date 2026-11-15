@@ -29,7 +29,9 @@ def png():
 
 def creative_model(runtime, kind="image"):
     catalog = json.loads(
-        (Path(__file__).parents[1] / "catalog/creative.json").read_text()
+        (Path(__file__).parents[1] / "catalog/creative.json").read_text(
+            encoding="utf-8"
+        )
     )
     m = ModelSpec.model_validate(next(m for m in catalog if m["kind"] == kind))
     runtime.models[m.id] = m
@@ -53,7 +55,9 @@ def response(body):
 
 def test_catalog_has_complete_verified_component_sets():
     models = json.loads(
-        (Path(__file__).parents[1] / "catalog/creative.json").read_text()
+        (Path(__file__).parents[1] / "catalog/creative.json").read_text(
+            encoding="utf-8"
+        )
     )
     for value in models:
         model = ModelSpec.model_validate(value)
@@ -102,6 +106,10 @@ def test_store_chunks_cloud_restore_and_trash(runtime, tmp_path):
     second = store.asset(item["id"], 15)
     raw = base64.b64decode(first["data"]) + base64.b64decode(second["data"])
     assert hashlib.sha256(raw).hexdigest() == item["sha256"]
+    assert (
+        CreativeStore(runtime.root, drive).listing()[0]["params"]["prompt"]
+        == "蓝色的海边"
+    )
     store.sync()
     assert store.listing()[0]["synced"] and drive.pending_flush
     new_root = tmp_path / "new-vm"

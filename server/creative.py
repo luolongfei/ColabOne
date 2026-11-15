@@ -76,7 +76,9 @@ class CreativeStore:
             try:
                 if path.is_symlink():
                     continue
-                item = CreationRecord.model_validate_json(path.read_text()).model_dump()
+                item = CreationRecord.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                ).model_dump()
                 if item["id"] == path.stem:
                     self.items[item["id"]] = item
             except (OSError, ValueError, KeyError):
@@ -220,13 +222,16 @@ def run_command(args, task, log, timeout=1200, cwd=None):
                 raise RuntimeError("远端引擎准备超时，请查看运行日志")
             if time.monotonic() - noted > 5:
                 noted = time.monotonic()
-                tail = log.read_text(errors="replace")[-1000:].splitlines()
+                tail = log.read_text(encoding="utf-8", errors="replace")[
+                    -1000:
+                ].splitlines()
                 if tail:
                     task.note(tail[-1][:250])
             time.sleep(0.25)
         if proc.returncode:
             raise RuntimeError(
-                "远端引擎准备失败：" + log.read_text(errors="replace")[-600:]
+                "远端引擎准备失败："
+                + log.read_text(encoding="utf-8", errors="replace")[-600:]
             )
     finally:
         if proc.poll() is None:
@@ -349,7 +354,8 @@ def load(runtime, task, model):
             task.check()
             if runtime.proc.poll() is not None:
                 raise RuntimeError(
-                    "创作模型加载失败：" + log.read_text(errors="replace")[-700:]
+                    "创作模型加载失败："
+                    + log.read_text(encoding="utf-8", errors="replace")[-700:]
                 )
             try:
                 status = runtime.http.get(ENGINE_URL + "models/status", timeout=2)
