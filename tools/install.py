@@ -7,14 +7,47 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-import runtime_bundle as bundle
+
+if __package__:
+    from . import runtime_bundle as bundle
+else:
+    import runtime_bundle as bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(args, cwd=ROOT, **kwargs):
     subprocess.run(args, cwd=cwd, check=True, **kwargs)
+
+
+def replace_tree(source, target, **kwargs):
+    """Stage a complete owned code tree, replacing deleted resources as well.
+
+    Merging app bundles leaves obsolete signed files and Python modules behind.
+    Keep the previous tree until the staged replacement has been moved in place.
+    User settings and credentials live outside these code trees.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".colabone-update-", dir=target.parent))
+    staged, previous = tmp / "new", tmp / "previous"
+    installed = False
+    try:
+        shutil.copytree(source, staged, symlinks=True, **kwargs)
+        if target.exists():
+            target.rename(previous)
+        try:
+            staged.rename(target)
+            installed = True
+        except BaseException:
+            if previous.exists():
+                previous.rename(target)
+            raise
+    finally:
+        # If rollback itself fails, retain the previous tree for recovery.
+        if installed or not previous.exists():
+            shutil.rmtree(tmp)
 
 
 def check():
@@ -67,14 +100,13 @@ def install(root, check_only=False):
     target = paths.target_install
     app = apps[0]
     if app.is_dir():
-        shutil.copytree(app, target / app.name, dirs_exist_ok=True, symlinks=True)
+        replace_tree(app, target / app.name)
     else:
         shutil.copy2(app, target / app.name)
     for name in ("bridge", "server", "common", "catalog", "third_party"):
-        shutil.copytree(
+        replace_tree(
             ROOT / name,
             target / name,
-            dirs_exist_ok=True,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "test_*", "*.in"),
         )
     for name in ("README.md", "LICENSE", "NOTICE"):

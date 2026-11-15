@@ -1,4 +1,4 @@
-/* Neutral surfaces, with red reserved for costs, destructive actions and errors. */
+/* Blue interaction accents on quiet surfaces; red marks billing and danger. */
 :root {
   color-scheme: light;
   --canvas: #ffffff;
@@ -6,17 +6,17 @@
   --sidebar: #f7f7f7;
   --subtle: #f7f7f7;
   --hover: #eeeeee;
-  --selected: #e9e9e9;
+  --selected: #eaf1ff;
   --text: #202020;
   --secondary-text: #4f4f4f;
   --muted: #6b6b6b;
   --border: #e3e3e3;
   --input-border: #cccccc;
-  --accent: #202020;
-  --accent-hover: #3b3b3b;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
   --on-accent: #ffffff;
-  --focus: #777777;
-  --focus-ring: #20202018;
+  --focus: #2563eb;
+  --focus-ring: #2563eb24;
   --danger: #d52c42;
   --danger-hover: #b51e33;
   --danger-text: #bc2339;
@@ -34,17 +34,17 @@
   --sidebar: #181818;
   --subtle: #2c2c2c;
   --hover: #343434;
-  --selected: #363636;
+  --selected: #203350;
   --text: #ededed;
   --secondary-text: #c3c3c3;
   --muted: #a2a2a2;
   --border: #3d3d3d;
   --input-border: #555555;
-  --accent: #ededed;
-  --accent-hover: #d6d6d6;
-  --on-accent: #202020;
-  --focus: #b4b4b4;
-  --focus-ring: #ffffff20;
+  --accent: #8ab4ff;
+  --accent-hover: #a7c7ff;
+  --on-accent: #111827;
+  --focus: #8ab4ff;
+  --focus-ring: #8ab4ff28;
   --danger: #c92b40;
   --danger-hover: #b91f35;
   --danger-text: #ff8a99;

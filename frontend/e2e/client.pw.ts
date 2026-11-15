@@ -404,7 +404,7 @@ test("activity sidebar follows progress across pages and can filter clear and co
   await expect(panel).toBeVisible();
 });
 
-test("monochrome desktop layout shows billing and activity without horizontal overflow", async ({
+test("desktop layout shows billing and activity without horizontal overflow", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -441,7 +441,7 @@ test("monochrome desktop layout shows billing and activity without horizontal ov
   ).toBe(true);
   await page.screenshot({
     path: fileURLToPath(
-      new URL("../../work/monochrome-activity-ui.png", import.meta.url),
+      new URL("../../work/blue-activity-ui.png", import.meta.url),
     ),
     fullPage: true,
   });
@@ -945,12 +945,19 @@ test("appearance follows system, persists explicit choices and updates native ch
 });
 
 for (const appearance of ["light", "dark"] as const) {
-  test(`${appearance} surfaces keep contrast, red billing and readable workspace controls`, async ({
+  test(`${appearance} blue accents keep contrast, red billing and readable workspace controls`, async ({
     page,
   }) => {
     await page.emulateMedia({ colorScheme: appearance });
     await mock(page, true);
     const bg = appearance === "dark" ? "rgb(38, 38, 38)" : "rgb(255, 255, 255)";
+    const accent =
+      appearance === "dark" ? "rgb(138, 180, 255)" : "rgb(37, 99, 235)";
+    await expect(page.locator(".brand")).toHaveCSS("color", accent);
+    await expect(page.locator(".sidebar nav button.active")).toHaveCSS(
+      "color",
+      accent,
+    );
     await expect(page.locator(".device-panel")).toHaveCSS(
       "background-color",
       bg,
@@ -979,7 +986,7 @@ for (const appearance of ["light", "dark"] as const) {
       "设置",
     ]) {
       await page.getByRole("button", { name: label, exact: true }).click();
-      // All actual form controls and cards must inherit the selected neutral palette.
+      // Tinted selected controls must stay readable in either appearance.
       const problems = await page.evaluate(() => {
         const failures: string[] = [];
         const rgb = (value: string) => value.match(/[\d.]+/g)!.map(Number);
@@ -1001,8 +1008,6 @@ for (const appearance of ["light", "dark"] as const) {
           const css = getComputedStyle(el),
             bg = rgb(css.backgroundColor);
           if (bg[3] === 0) continue;
-          if (bg[0] !== bg[1] || bg[1] !== bg[2])
-            failures.push(`tinted ${el.className}`);
           const a = luminance(rgb(css.color)),
             b = luminance(bg);
           if ((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) < 4.5)
