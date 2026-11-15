@@ -42,7 +42,7 @@ func (d *Desktop) OpenURL(value string) error {
 	if err != nil || u.Scheme != "https" {
 		return errors.New("只允许 HTTPS 链接")
 	}
-	allowed := []string{"accounts.google.com", "colab.research.google.com", "developers.google.com", "github.com"}
+	allowed := []string{"accounts.google.com", "colab.research.google.com", "developers.google.com", "github.com", "huggingface.co"}
 	for _, host := range allowed {
 		if u.Hostname() == host {
 			return mygo.Shell.OpenExternal(value)

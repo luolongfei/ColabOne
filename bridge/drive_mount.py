@@ -28,11 +28,14 @@ class DriveMount:
                 f"Google 云盘连接返回 HTTP {response.status_code}，请重试"
             )
         try:
-            return json.loads(
+            data = json.loads(
                 response.text.split("\n", 1)[-1]
                 if response.text.startswith(")]}'")
                 else response.text
             )
+            if not isinstance(data, dict):
+                raise ValueError()
+            return data
         except ValueError:
             raise RuntimeError("Google 云盘连接返回无效结果，请重试") from None
 
@@ -51,46 +54,74 @@ class DriveMount:
         if not token:
             raise RuntimeError("未取得 Colab 云盘连接许可，请重新登录")
         headers = {"x-goog-colab-token": token}
+        self.progress("检查并复用此 GPU 的云盘授权")
+        # A dry run can request consent even when a previous browser grant is usable.
+        # Obtain a challenge, then try real propagation BEFORE opening any browser.
+        if self.cancel.is_set():
+            raise RuntimeError("已跳过云盘连接，可在设置中重新连接")
+        if time.monotonic() >= self.deadline:
+            raise RuntimeError("等待云盘确认超时，请重试")
+        challenge = self.data(
+            http.post(
+                url,
+                params=params.copy(),
+                headers=headers,
+                files={"file_id": (None, "empty.ipynb")},
+                timeout=20,
+            )
+        )
+        uri = challenge.get("unauthorized_redirect_uri", "")
+        params["dryrun"] = "false"
         consent_opened = False
-        self.progress("检查远端云盘授权")
+        pending_400 = False
         while True:
             if self.cancel.is_set():
                 raise RuntimeError("已跳过云盘连接，可在设置中重新连接")
             if time.monotonic() >= self.deadline:
-                raise RuntimeError("等待云盘授权超时，可在设置中重新连接")
-            data = self.data(
-                http.post(
-                    url,
-                    params=params.copy(),
-                    headers=headers,
-                    files={"file_id": (None, "empty.ipynb")},
-                    timeout=20,
+                suffix = (
+                    "；请确认授权页选择的账户与 ColabOne 一致" if pending_400 else ""
                 )
+                raise RuntimeError(
+                    "等待本台 GPU 的云盘确认超时"
+                    + suffix
+                    + "。Google 登录仍保存在本机，无需重新登录"
+                )
+            response = http.post(
+                url,
+                params=params.copy(),
+                headers=headers,
+                files={"file_id": (None, "empty.ipynb")},
+                timeout=20,
             )
+            # Before the user finishes consent the propagation endpoint can return
+            # 400 HTML. This is not evidence that the saved OAuth login expired.
+            # Keep the same challenge alive, bounded by cancellation and budget.
+            if response.status_code == 400 and uri:
+                pending_400 = True
+                data = {}
+            else:
+                data = self.data(response)
             if data.get("success") is True:
-                if params["dryrun"] == "false":
-                    self.progress("已收到云盘授权，正在挂载到远端 GPU")
-                    return
-                params["dryrun"] = "false"
-                continue
-            uri = data.get("unauthorized_redirect_uri", "")
+                self.progress("已收到云盘授权，正在挂载到远端 GPU")
+                return
+            uri = uri or data.get("unauthorized_redirect_uri", "")
             parsed = urlparse(uri)
             if parsed.scheme != "https" or parsed.hostname not in (
                 "accounts.google.com",
                 "colab.research.google.com",
             ):
-                raise RuntimeError("Google 没有返回有效的云盘授权页，请重试")
-            query = parse_qs(parsed.query)
-            if query.get("login_hint"):
-                query["authuser"] = query["login_hint"]
-                uri = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+                raise RuntimeError(
+                    "Google 未接受云盘连接，请在设置中重试连接；无需重新登录 Google"
+                )
             if not consent_opened:
+                query = parse_qs(parsed.query)
+                if query.get("login_hint"):
+                    query["authuser"] = query["login_hint"]
+                    uri = urlunparse(
+                        parsed._replace(query=urlencode(query, doseq=True))
+                    )
                 self.notify(uri)
                 consent_opened = True
-            # dryrun checks eligibility and can remain false AFTER browser consent.
-            # Only the real propagation consumes the grant and delivers credentials.
-            # Retry that step until success; never reopen a rotating consent URL.
-            params["dryrun"] = "false"
             self.cancel.wait(3)
 
     def hook(self, message, wsclient):

@@ -98,7 +98,12 @@ class Provider:
         client = self.client()
         endpoints = {a.endpoint for a in client.list_assignments()}
         if session.endpoint in endpoints:
-            client.unassign(session.endpoint)
+            try:
+                client.unassign(session.endpoint)
+            except Exception:
+                # The independent remote guard may already have released it.
+                # An HTTP error is not evidence either way: confirm disappearance.
+                pass
         for _ in range(15):
             if session.endpoint not in {a.endpoint for a in client.list_assignments()}:
                 self.clear()
@@ -330,6 +335,38 @@ class Provider:
                         "启动失败且释放未确认。实例记录已保留，请在设备页立即重试释放"
                     ) from exc
             raise
+
+    def upgrade_service(self):
+        with self.kernel_lock:
+            session = self.session(refresh=True)
+            if not session:
+                raise RuntimeError("请先启动远端 GPU")
+            with tempfile.TemporaryDirectory(prefix="colabone-update-") as tmp:
+                package = Path(tmp) / "update.zip"
+                with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for folder in ("server", "common", "catalog"):
+                        for path in (self.root / folder).glob("*"):
+                            if path.is_file() and path.suffix in (
+                                ".py",
+                                ".json",
+                                ".txt",
+                            ):
+                                archive.write(path, f"colabone/{folder}/{path.name}")
+                ContentsClient(session).upload(
+                    str(package), "content/colabone-update.zip"
+                )
+                outputs = self.execute(
+                    session,
+                    (self.root / "server/vm_update.py").read_text(encoding="utf-8"),
+                    timeout=120,
+                )
+                if not any(
+                    "COLABONE_UPDATED=1" in str(o.get("text", ""))
+                    for o in outputs or []
+                ):
+                    raise RuntimeError(
+                        "远端服务更新未完成，缓存文件仍保留，请重试或下次启动时更新"
+                    )
 
     def mount_drive(self, notify, cancel, progress=None):
         with self.kernel_lock:

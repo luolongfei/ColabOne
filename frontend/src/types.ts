@@ -16,6 +16,20 @@ export interface TaskStatus {
   progress: number;
   message: string;
   error: string;
+  download?: {
+    downloaded_bytes: number;
+    total_bytes: number;
+    speed_bps: number;
+    eta_seconds: number | null;
+    elapsed_seconds: number;
+    resumed_bytes: number;
+    threads: number;
+    connections: number;
+    phase: string;
+    filename: string;
+    file_index: number;
+    file_count: number;
+  };
 }
 export interface Message {
   role: "user" | "assistant";
@@ -36,6 +50,14 @@ export interface RuntimeStatus {
   gpu?: { name: string; total_mib: number; used_mib: number };
   disk_free?: number;
   idle_remaining?: number;
+  protocol?: number;
+  idle?: {
+    phase: string;
+    remaining_seconds: number;
+    countdown_seconds: number;
+    idle_seconds: number;
+    server_time: number;
+  };
   deadline?: number;
   tasks?: TaskStatus[];
   sync?: { pending: number; error: string; connected?: boolean };
@@ -75,6 +97,8 @@ export interface Snapshot {
     gpu: string;
     max_cu: number;
     idle_minutes: number;
+    idle_countdown_seconds: number;
+    download_threads: number;
     auto_drive: boolean;
   };
   stream?: {
@@ -94,7 +118,14 @@ export const initialSnapshot = (): Snapshot => ({
   error: "",
   auth_url: "",
   setup: { colab: false, drive: false, hf: false },
-  settings: { gpu: "T4", max_cu: 5, idle_minutes: 30, auto_drive: true },
+  settings: {
+    gpu: "T4",
+    max_cu: 5,
+    idle_minutes: 3,
+    idle_countdown_seconds: 60,
+    download_threads: 8,
+    auto_drive: true,
+  },
 });
 export const labels: Record<string, string> = {
   stopped: "未启动",

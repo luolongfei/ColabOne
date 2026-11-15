@@ -15,6 +15,7 @@ from bridge.activity import Activity, safe_message
 from bridge.provider import Provider
 from common.files import atomic_json
 from common.models import resolve_import
+from common.hub import search_models, model_files
 
 
 def config_directory():
@@ -38,14 +39,21 @@ class Controller:
         self.settings = {
             "gpu": "T4",
             "max_cu": 5,
-            "idle_minutes": 30,
+            "idle_minutes": 3,
+            "idle_countdown_seconds": 60,
             "auto_drive": True,
+            "download_threads": 8,
         }
         if (self.directory / "settings.json").exists():
             self.settings.update(
                 json.loads(
                     (self.directory / "settings.json").read_text(encoding="utf-8")
                 )
+            )
+        # Migrate the original 30-minute policy to the agreed 3 + 1 minute policy.
+        if self.settings.get("idle_policy") != 2:
+            self.settings.update(
+                idle_minutes=3, idle_countdown_seconds=60, idle_policy=2
             )
         self.lock = threading.RLock()
         self.operation_lock = threading.Lock()
@@ -63,6 +71,11 @@ class Controller:
         self.mount_cancel = threading.Event()
         self.activity = Activity()
         self.task_activity = {}
+        self.task_log_cursor = {}
+        self.pending_touch = False
+        self.last_touch = 0
+        self.touch_lock = threading.Lock()
+        self.upgrade_attempted = set()
         self.release_plan = None
         self.activity.add("客户端已启动")
         if self.vault.get("colab"):
@@ -121,6 +134,14 @@ class Controller:
                 ):
                     self.activity.add(labels[runtime["state"]], "GPU")
                 for task in runtime.get("tasks", []):
+                    cursor = self.task_log_cursor.get(task["id"], 0)
+                    for entry in task.get("logs", []):
+                        if entry["seq"] > cursor:
+                            self.activity.add(
+                                entry["message"], "远端", entry.get("level", "info")
+                            )
+                            cursor = entry["seq"]
+                    self.task_log_cursor[task["id"]] = cursor
                     bucket = int(task.get("progress", 0) * 10)
                     signature = (task["state"], bucket, task.get("message", ""))
                     if self.task_activity.get(task["id"]) == signature:
@@ -150,6 +171,20 @@ class Controller:
                         "远端",
                         "error" if task["state"] == "failed" else "info",
                     )
+                idle = runtime.get("idle", {})
+                if (
+                    idle.get("phase") == "countdown"
+                    and previous.get("idle", {}).get("phase") != "countdown"
+                ):
+                    self.activity.add(
+                        "已闲置 3 分钟，60 秒后自动释放当前实例；继续操作可重置倒计时",
+                        "GPU",
+                        "warning",
+                    )
+                self.task_log_cursor = {
+                    t["id"]: self.task_log_cursor.get(t["id"], 0)
+                    for t in runtime.get("tasks", [])
+                }
                 # Bound task deduplication state to the current snapshot.
                 self.task_activity = {
                     t["id"]: self.task_activity[t["id"]]
@@ -200,7 +235,10 @@ class Controller:
             if message.startswith("已收到"):
                 self.update(auth_url="", drive_waiting=False)
 
+        lease = self.data["runtime"].get("protocol", 0) >= 2
         try:
+            if lease:
+                self.remote("POST", "activity", {"hold_seconds": 330})
             self.provider.mount_drive(consent, self.mount_cancel, progress)
             progress("云盘已挂载，正在恢复并同步会话")
             self.remote("POST", "restore")
@@ -211,6 +249,11 @@ class Controller:
             self.activity.add("Google 云盘已连接，会话与模型清单已写入", "云盘")
         finally:
             self.update(auth_url="", drive_waiting=False)
+            if lease:
+                try:
+                    self.remote("POST", "activity", {})
+                except Exception:
+                    pass
 
     def configure_remote(self):
         remote = self.vault.get("remote") or {}
@@ -218,11 +261,21 @@ class Controller:
             "POST",
             "configure",
             {
-                "idle_minutes": self.settings["idle_minutes"],
+                "idle_minutes": self.settings["idle_minutes"]
+                if self.data["runtime"].get("protocol", 0) >= 2
+                else 4,
+                "idle_countdown_seconds": self.settings["idle_countdown_seconds"],
                 "deadline": remote.get("deadline", 0),
             },
         )
         self.last_config = time.time()
+
+    def upgrade_service(self):
+        self.activity.add("更新远端管理服务，保留模型缓存、会话和原预算截止时间", "GPU")
+        self.provider.upgrade_service()
+        self.refresh_remote()
+        self.configure_remote()
+        self.activity.add("远端已支持并发下载、实时速率与闲置倒计时", "GPU")
 
     def refresh_remote(self):
         state = self.remote("GET", "snapshot")
@@ -244,8 +297,8 @@ class Controller:
         existing = self.vault.get("runtime_session")
         try:
             self.provider.start(self.settings["gpu"], self.settings["max_cu"], notify)
-            self.configure_remote()
             self.refresh_remote()
+            self.configure_remote()
         except Exception:
             if not existing and self.vault.get("runtime_session"):
                 try:
@@ -331,11 +384,12 @@ class Controller:
         self.remote("POST", "models", spec.model_dump())
         self.remote("POST", "sync")
         self.refresh_remote()
+        return spec
 
     def save_settings(self, payload):
         public = {
             k: payload[k]
-            for k in ("gpu", "idle_minutes", "max_cu", "auto_drive")
+            for k in ("gpu", "idle_minutes", "max_cu", "auto_drive", "download_threads")
             if k in payload
         }
         if public.get("gpu", self.settings["gpu"]) not in (
@@ -354,6 +408,11 @@ class Controller:
             raise ValueError("空闲时间必须在 1 至 120 分钟之间")
         if not 0 < float(public.get("max_cu", self.settings["max_cu"])) <= 100:
             raise ValueError("CU 预算必须大于 0 且不超过 100")
+        if public.get("download_threads", self.settings["download_threads"]) not in (
+            8,
+            32,
+        ):
+            raise ValueError("下载线程数请选择 8 或 32")
         if payload.get("hf_token"):
             self.vault.set("hf", payload["hf_token"])
         if "auto_drive" in public and not isinstance(public["auto_drive"], bool):
@@ -363,7 +422,61 @@ class Controller:
         self.last_config = 0
         return {"ok": True}
 
+    def send_activity(self):
+        if not self.touch_lock.acquire(blocking=False):
+            return
+        try:
+            if (
+                self.operation_lock.locked()
+                or not self.pending_touch
+                or time.time() - self.last_touch < 5
+                or self.data["runtime"].get("protocol", 0) < 2
+            ):
+                return
+            self.pending_touch = False
+            self.remote("POST", "activity", {})
+            self.last_touch = time.time()
+        except Exception:
+            # A failed activity signal must not masquerade as a reset countdown.
+            self.pending_touch = True
+        finally:
+            self.touch_lock.release()
+
     def command(self, action, payload):
+        if action == "runtime.upgrade":
+            return self.async_operation("更新远端管理服务", self.upgrade_service)
+        if action == "runtime.activity":
+            # Queue rather than blocking the UI behind a kernel RPC or cloud consent.
+            if self.data["runtime"].get("state") == "ready":
+                self.pending_touch = True
+                threading.Thread(target=self.send_activity, daemon=True).start()
+            return {"ok": True}
+
+        if action == "hub.search":
+            return search_models(
+                payload.get("query", ""),
+                payload.get("sort", "downloads"),
+                payload.get("cursor", ""),
+                self.vault.get("hf", ""),
+            )
+        if action == "hub.files":
+            return model_files(payload.get("repo", ""), self.vault.get("hf", ""))
+        if action == "hub.install":
+
+            def install():
+                spec = self.import_model(payload)
+                if payload.get("download", True):
+                    self.remote(
+                        "POST",
+                        "models/" + spec.id + "/download",
+                        {
+                            "hf_token": self.vault.get("hf", ""),
+                            "threads": self.settings["download_threads"],
+                        },
+                    )
+
+            return self.async_operation("添加社区模型并下载到远端", install)
+
         if action == "logs.clear":
             self.activity.clear()
             return {"ok": True}
@@ -436,7 +549,10 @@ class Controller:
             return self.remote(
                 "POST",
                 "models/" + self.model_id(payload) + "/download",
-                {"hf_token": self.vault.get("hf", "")},
+                {
+                    "hf_token": self.vault.get("hf", ""),
+                    "threads": self.settings["download_threads"],
+                },
             )
         if action == "model.load":
             return self.remote("POST", "models/" + self.model_id(payload) + "/load")
@@ -545,7 +661,23 @@ class Controller:
                     if now - self.last_config > 600:
                         self.configure_remote()
                     try:
+                        self.send_activity()
                         self.refresh_remote()
+                        runtime = self.data["runtime"]
+                        if (
+                            runtime.get("protocol", 0) < 2
+                            and remote["endpoint"] not in self.upgrade_attempted
+                            and remote["deadline"] - now > 120
+                            and not runtime.get("loaded_model")
+                            and not any(
+                                t["state"] == "running"
+                                for t in runtime.get("tasks", [])
+                            )
+                        ):
+                            self.upgrade_attempted.add(remote["endpoint"])
+                            self.async_operation(
+                                "更新远端管理服务", self.upgrade_service
+                            )
                     except Exception:
                         self.update(
                             runtime={"state": "disconnected", "id": remote["endpoint"]}
@@ -563,6 +695,6 @@ class Controller:
                 self.update(
                     error="连接检查失败："
                     + type(exc).__name__
-                    + "。请检查网络或重新登录。"
+                    + "。客户端会自动重试，请检查网络连接。"
                 )
             self.stop.wait(2)
