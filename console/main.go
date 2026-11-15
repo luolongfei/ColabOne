@@ -30,6 +30,13 @@ func (d *Desktop) Snapshot(ctx context.Context) (string, error) {
 func (d *Desktop) Command(ctx context.Context, request CommandRequest) (string, error) {
 	return d.bridge.call(ctx, request.Action, request.Payload)
 }
+func (d *Desktop) SetAppearance(value string) error {
+	if value != "system" && value != "light" && value != "dark" {
+		return errors.New("不支持的外观模式")
+	}
+	mygo.Theme.SetSource(mygo.ThemeSource(value))
+	return nil
+}
 func (d *Desktop) ReadClipboard() (string, error) {
 	data, err := mygo.Clipboard.ReadFormat(transfer.Text)
 	if err != nil {
@@ -38,7 +45,9 @@ func (d *Desktop) ReadClipboard() (string, error) {
 	return string(data), nil
 }
 func (d *Desktop) WriteClipboard(value string) error {
-	if len(value) > 1024 * 1024 { return errors.New("复制内容超过 1 MB") }
+	if len(value) > 1024*1024 {
+		return errors.New("复制内容超过 1 MB")
+	}
 	return mygo.Clipboard.Write(transfer.TextData(value))
 }
 func (d *Desktop) OpenURL(value string) error {
@@ -88,13 +97,24 @@ func main() {
 		return
 	}
 	var win *mygo.Window
+	background := func() string {
+		if mygo.Theme.IsDark() {
+			return "#212121"
+		}
+		return "#ffffff"
+	}
+	mygo.Theme.OnUpdated(func() {
+		if win != nil {
+			_ = win.SetBackgroundColor(background())
+		}
+	})
 	show := func() {
 		if win != nil {
 			win.Show()
 			win.Focus()
 			return
 		}
-		win = mygo.NewWindow(mygo.WindowOptions{Title: "ColabOne", URL: "/", Width: 1200, Height: 820, MinWidth: 900, MinHeight: 620, StateKey: "main", BackgroundColor: "#f7f8fa"})
+		win = mygo.NewWindow(mygo.WindowOptions{Title: "ColabOne", URL: "/", Width: 1200, Height: 820, MinWidth: 900, MinHeight: 620, StateKey: "main", BackgroundColor: background()})
 		win.OnClosed(func() { win = nil })
 	}
 	mygo.App.OnWindowAllClosed(func() {})
