@@ -119,6 +119,13 @@ small {
   font-weight: 700;
   letter-spacing: -0.6px;
 }
+.brand-icon {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: block;
+  object-fit: contain;
+}
 .sidebar-label {
   font-size: 11px;
   color: #7e8891;

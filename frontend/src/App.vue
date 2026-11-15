@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
-  PhCirclesThree,
   PhHardDrives,
   PhCube,
   PhChatCircle,
@@ -28,6 +27,7 @@ import {
   PhGlobe,
 } from "@phosphor-icons/vue";
 import RunPanel from "./RunPanel.vue";
+import appIcon from "../../console/resources/icon.png";
 import ApiPanel from "./ApiPanel.vue";
 import StudioPanel from "./StudioPanel.vue";
 import HubBrowser from "./HubBrowser.vue";
@@ -446,7 +446,13 @@ onUnmounted(() => {
   <div class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="sidebar">
       <div class="brand">
-        <PhCirclesThree :size="28" weight="duotone" /><span>ColabOne</span>
+        <img
+          class="brand-icon"
+          :src="appIcon"
+          alt=""
+          width="32"
+          height="32"
+        /><span>ColabOne</span>
       </div>
       <button
         class="sidebar-toggle icon-button"
