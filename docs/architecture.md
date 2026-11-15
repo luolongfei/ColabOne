@@ -17,7 +17,7 @@ The OS credential store holds Colab credentials, optional HF token, the exact ow
 
 The exact endpoint is recorded immediately after allocation. A new allocation is released if rate detection, readiness or bootstrap fails. Unrelated assignments are never adopted or released. Failure to verify release retains ownership so the user can retry.
 
-The bootstrap installs the server independently of any model. A separate budget deadline process starts before pip installation. The service binds only to loopback 7860; llama-server binds to loopback 8081. Authenticated Colab kernel executions proxy control requests to the service; POST bodies are uploaded as short-lived files so credentials and prompts are not embedded in notebook source. One lock serializes kernel requests. No public inference port or VPN configuration is needed.
+The bootstrap installs the server independently of any model. A separate budget deadline process starts before pip installation. The service binds only to loopback 7860; llama-server binds to loopback 8081. Authenticated Colab kernel executions proxy control requests to the service; POST bodies are uploaded as short-lived files so credentials and prompts are not embedded in notebook source. One lock serializes kernel requests over a reused websocket; proxy-token changes reconnect without replaying mutations. No public inference port or VPN configuration is needed.
 
 ## Models and tasks
 

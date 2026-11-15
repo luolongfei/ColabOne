@@ -129,3 +129,25 @@ def test_release_blocks_on_unsynced_data(tmp_path):
     c.provider.release.assert_not_called()
     c.release(force=True)
     c.provider.release.assert_called_once()
+
+
+def test_kernel_connection_reused_and_rotated_without_replaying(monkeypatch):
+    p, vault = make_provider()
+    store_session(vault)
+    s = p.session()
+    first, second = Mock(), Mock()
+    first.execute_code.return_value = [{"text": "first"}]
+    factory = Mock(side_effect=[first, second])
+    monkeypatch.setattr("bridge.provider.ColabRuntime", factory)
+    p.execute(s, "pass")
+    p.execute(s, "pass")
+    assert factory.call_count == 1
+    assert first.execute_code.call_count == 2
+    s.token = "rotated"
+    second.execute_code.side_effect = TimeoutError("uncertain mutation outcome")
+    with pytest.raises(TimeoutError):
+        p.execute(s, "mutate()")
+    first.stop.assert_called_once_with(shutdown_kernel=False)
+    second.execute_code.assert_called_once()
+    second.stop.assert_called_once_with(shutdown_kernel=False)
+    assert p.kernel_runtime is None

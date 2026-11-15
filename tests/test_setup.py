@@ -203,3 +203,17 @@ def test_google_loopback_checks_state_and_stores_login(monkeypatch):
     flow.fetch_token.assert_called_once_with(code=CODE)
     assert vault.get("colab")["token"] == "test-token"
     assert auth.flow is None
+
+
+def test_drive_disconnect_cannot_falsely_confirm_pending_uploads(tmp_path):
+    (tmp_path / "MyDrive").mkdir()
+    mounted = [True]
+    store = DriveStore(tmp_path, mounted=lambda: mounted[0], flush=lambda: None)
+    store.put("models.json", [])
+    mounted[0] = False
+    with pytest.raises(RuntimeError, match="无法确认"):
+        store.flush()
+    assert store.pending_flush
+    mounted[0] = True
+    store.flush()
+    assert not store.pending_flush

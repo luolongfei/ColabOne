@@ -33,6 +33,8 @@ class Provider:
     def __init__(self, auth, vault, root):
         self.auth, self.vault, self.root = auth, vault, root
         self.kernel_lock = threading.RLock()
+        self.kernel_runtime = None
+        self.kernel_key = None
         self.client_factory = lambda: Client(
             Prod(), AuthorizedSession(auth.credentials("colab"))
         )
@@ -157,20 +159,34 @@ class Provider:
             session.session_id = value
             self.save_session(session)
 
-        rt = ColabRuntime(
-            session.url,
-            session.token,
-            session_name="colabone",
-            kernel_id=session.kernel_id,
-            session_id=session.session_id,
-            on_kernel_started=kid,
-            on_session_started=sid,
-        )
+        key = (session.endpoint, session.url, session.token)
+        if self.kernel_key != key:
+            self.close_kernel_channel()
+        if self.kernel_runtime is None:
+            self.kernel_runtime = ColabRuntime(
+                session.url,
+                session.token,
+                session_name="colabone",
+                kernel_id=session.kernel_id,
+                session_id=session.session_id,
+                on_kernel_started=kid,
+                on_session_started=sid,
+            )
+            self.kernel_key = key
+        rt = self.kernel_runtime
         rt.colab_request_hook = hook
         try:
             return rt.execute_code(code, allow_stdin=False, timeout=timeout)
-        finally:
-            rt.stop(shutdown_kernel=False)
+        except Exception:
+            # Reconnect on the next request; never replay a mutation whose outcome
+            # is unknown. Closing the websocket must not shut down the kernel.
+            self.close_kernel_channel()
+            raise
+
+    def close_kernel_channel(self):
+        if self.kernel_runtime:
+            self.kernel_runtime.stop(shutdown_kernel=False)
+        self.kernel_runtime, self.kernel_key = None, None
 
     @staticmethod
     def ready(session):

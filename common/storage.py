@@ -15,6 +15,7 @@ class DriveStore:
         self.mounted = mounted or (lambda: os.path.ismount(self.mount_root))
         self.flush_hook = flush
         self.lock = threading.RLock()
+        self.pending_flush = False
 
     def available(self):
         return self.mounted() and (self.mount_root / "MyDrive").is_dir()
@@ -48,6 +49,7 @@ class DriveStore:
     def put(self, name, data):
         with self.lock:
             atomic_json(self.file(name), data)
+            self.pending_flush = True
 
     def conversations(self):
         with self.lock:
@@ -56,11 +58,17 @@ class DriveStore:
             return sorted(result, key=lambda c: c.get("updated_at", 0), reverse=True)
 
     def flush(self):
-        if not self.available():
-            return
-        if self.flush_hook:
-            self.flush_hook()
-        else:
-            from google.colab import drive
+        with self.lock:
+            if not self.available():
+                if self.pending_flush:
+                    raise RuntimeError(
+                        "云盘已断开，无法确认待上传文件；请重新连接后重试"
+                    )
+                return
+            if self.flush_hook:
+                self.flush_hook()
+            else:
+                from google.colab import drive
 
-            drive.flush_and_unmount(timeout_ms=30000)
+                drive.flush_and_unmount(timeout_ms=30000)
+            self.pending_flush = False

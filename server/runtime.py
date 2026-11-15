@@ -134,6 +134,7 @@ class Runtime:
             for value in json.loads((root / "models.json").read_text(encoding="utf-8")):
                 model = ModelSpec.model_validate(value)
                 self.models[model.id] = model
+            self.dirty.add("models")
 
     def busy(self):
         return any(t.state == "running" for t in self.tasks.values())
@@ -250,7 +251,7 @@ class Runtime:
             except Cancelled:
                 t.state = "cancelled"
             except Exception as exc:
-                t.state, t.error = "failed", str(exc)[:500]
+                t.state, t.error = "failed", (str(exc) or type(exc).__name__)[:500]
             finally:
                 self.last_active = time.time()
                 t.emit("done", t.snapshot())
