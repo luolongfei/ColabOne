@@ -26,7 +26,6 @@ class Turn(BaseModel):
 
 
 class Configure(BaseModel):
-    drive_token: str = ""
     idle_minutes: int = Field(default=30, ge=1, le=120)
     deadline: float = Field(default=0, ge=0)
 
@@ -77,9 +76,16 @@ def create_app(runtime, token, background=False):
     def status():
         return runtime.status()
 
+    @app.get("/api/v1/snapshot", dependencies=auth)
+    def snapshot():
+        return {
+            "runtime": runtime.status(),
+            "models": runtime.list_models(),
+            "conversations": runtime.list_conversations(),
+        }
+
     @app.post("/api/v1/configure", dependencies=auth)
     def configure(body: Configure):
-        runtime.drive.token = body.drive_token
         runtime.idle_minutes = body.idle_minutes
         runtime.deadline = body.deadline
         return {"ok": True}
@@ -124,13 +130,17 @@ def create_app(runtime, token, background=False):
 
     @app.get("/api/v1/conversations", dependencies=auth)
     def conversations():
-        return sorted(
-            runtime.conversations.values(), key=lambda c: c["updated_at"], reverse=True
-        )
+        return runtime.list_conversations()
 
     @app.post("/api/v1/turns", dependencies=auth)
     def turn(body: Turn):
         return runtime.chat(body.conversation_id, body.text)
+
+    @app.get("/api/v1/tasks/{task_id}/poll", dependencies=auth)
+    def poll(task_id: str, after: int = 0):
+        task = runtime.tasks[task_id]
+        with task.lock:
+            return {"events": task.events[max(0, after) :], "state": task.state}
 
     @app.get("/api/v1/tasks/{task_id}/events", dependencies=auth)
     def events(task_id: str, after: int = 0):
@@ -168,13 +178,22 @@ def create_app(runtime, token, background=False):
             "error": runtime.sync_error,
         }
 
+    @app.post("/api/v1/prepare-release", dependencies=auth)
+    def prepare_release():
+        try:
+            return runtime.prepare_release()
+        except Exception as exc:
+            raise HTTPException(409, str(exc)[:300]) from None
+
     return app
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    config = json.loads(Path(os.environ["COLABONE_REMOTE_CONFIG"]).read_text())
+    config = json.loads(
+        Path(os.environ["COLABONE_REMOTE_CONFIG"]).read_text(encoding="utf-8")
+    )
     runtime = Runtime(
         Path(config["root"]), Path(__file__).resolve().parents[1] / "catalog"
     )

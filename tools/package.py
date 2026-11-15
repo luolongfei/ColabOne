@@ -37,7 +37,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     target = install.install(str(install.ROOT / "work/package-stage"))
     audit(target)
-    version = json.loads((install.ROOT / "console/mygo.json").read_text())["version"]
+    version = json.loads((install.ROOT / "console/mygo.json").read_text(encoding="utf-8"))["version"]
     platform = "macos-arm64" if sys.platform == "darwin" else "windows-x64"
     file = shutil.make_archive(
         str(out / f"ColabOne-{version}-{platform}"), "zip", target.parent, target.name

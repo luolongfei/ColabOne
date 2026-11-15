@@ -1,96 +1,66 @@
-"""Small JSON snapshots in Drive appDataFolder; no weights or refresh tokens."""
+"""JSON snapshots on the remote Colab DriveFS mount; no separate Drive API client."""
 
 from __future__ import annotations
-
 import json
+import os
+import re
 import threading
-import requests
+from pathlib import Path
+from common.files import atomic_json
 
 
 class DriveStore:
-    def __init__(self, token="", session=None):
-        self.token = token
-        self.http = session or requests.Session()
+    def __init__(self, mount_root=Path("/content/drive"), mounted=None, flush=None):
+        self.mount_root = Path(mount_root)
+        self.mounted = mounted or (lambda: os.path.ismount(self.mount_root))
+        self.flush_hook = flush
         self.lock = threading.RLock()
 
-    def request(self, method, path, **kwargs):
-        if not self.token:
-            raise RuntimeError("请先授权 Google Drive")
-        headers = kwargs.pop("headers", {}) | {"Authorization": f"Bearer {self.token}"}
-        r = self.http.request(
-            method,
-            "https://www.googleapis.com/" + path,
-            headers=headers,
-            timeout=25,
-            **kwargs,
-        )
-        r.raise_for_status()
-        return r
+    def available(self):
+        return self.mounted() and (self.mount_root / "MyDrive").is_dir()
 
-    def listing(self, name=None):
-        query = "trashed = false"
-        if name:
-            if not name.replace("-", "").replace(".", "").isalnum():
-                raise ValueError("Invalid storage key")
-            query += f" and name = '{name}'"
-        files, page = [], None
-        while True:
-            params = {
-                "spaces": "appDataFolder",
-                "q": query,
-                "fields": "nextPageToken,files(id,name,modifiedTime)",
-                "pageSize": 1000,
-            }
-            if page:
-                params["pageToken"] = page
-            data = self.request("GET", "drive/v3/files", params=params).json()
-            files.extend(data.get("files", []))
-            page = data.get("nextPageToken")
-            if not page:
-                return files
+    def folder(self):
+        # Never silently write to a plain local directory after a failed mount.
+        if not self.available():
+            raise RuntimeError("请先在设置中连接 Google 云盘")
+        folder = self.mount_root / "MyDrive" / "ColabOne"
+        if folder.is_symlink():
+            raise ValueError("ColabOne 云盘目录不能是符号链接")
+        return folder
+
+    def file(self, name):
+        if not re.fullmatch(r"(?:models|conversation-[a-zA-Z0-9_-]{1,80})\.json", name):
+            raise ValueError("Invalid storage key")
+        path = self.folder() / name
+        if path.is_symlink():
+            raise ValueError("Cloud file must not be a symbolic link")
+        return path
 
     def get(self, name, default=None):
         with self.lock:
-            items = sorted(
-                self.listing(name),
-                key=lambda x: x.get("modifiedTime", ""),
-                reverse=True,
+            path = self.file(name)
+            return (
+                json.loads(path.read_text(encoding="utf-8"))
+                if path.exists()
+                else default
             )
-            if not items:
-                return default
-            return self.request(
-                "GET", f"drive/v3/files/{items[0]['id']}", params={"alt": "media"}
-            ).json()
 
     def put(self, name, data):
         with self.lock:
-            items = self.listing(name)
-            if items:
-                file_id = items[0]["id"]
-            else:
-                file_id = self.request(
-                    "POST",
-                    "drive/v3/files",
-                    json={
-                        "name": name,
-                        "parents": ["appDataFolder"],
-                        "mimeType": "application/json",
-                    },
-                ).json()["id"]
-            self.request(
-                "PATCH",
-                f"upload/drive/v3/files/{file_id}",
-                params={"uploadType": "media"},
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(data, ensure_ascii=False).encode(),
-            )
+            atomic_json(self.file(name), data)
 
     def conversations(self):
-        result = []
-        for item in self.listing():
-            if item["name"].startswith("conversation-"):
-                data = self.request(
-                    "GET", f"drive/v3/files/{item['id']}", params={"alt": "media"}
-                ).json()
-                result.append(data)
-        return sorted(result, key=lambda x: x.get("updated_at", 0), reverse=True)
+        with self.lock:
+            folder = self.folder()
+            result = [self.get(p.name) for p in folder.glob("conversation-*.json")]
+            return sorted(result, key=lambda c: c.get("updated_at", 0), reverse=True)
+
+    def flush(self):
+        if not self.available():
+            return
+        if self.flush_hook:
+            self.flush_hook()
+        else:
+            from google.colab import drive
+
+            drive.flush_and_unmount(timeout_ms=30000)

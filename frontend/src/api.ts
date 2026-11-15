@@ -10,5 +10,6 @@ export async function command(
   return JSON.parse(await Desktop.command({ action, payload }));
 }
 export const openURL = (url: string) => Desktop.openURL(url);
+export const readClipboard = () => Desktop.readClipboard();
 export const exportConversation = (value: string) =>
   Desktop.exportConversation(value);

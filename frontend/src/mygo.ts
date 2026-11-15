@@ -21,6 +21,9 @@ export const Desktop = {
   openURL(value: string): Promise<void> {
     return call("Desktop.OpenURL", value);
   },
+  readClipboard(): Promise<string> {
+    return call("Desktop.ReadClipboard");
+  },
   snapshot(): Promise<string> {
     return call("Desktop.Snapshot");
   },

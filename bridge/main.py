@@ -17,7 +17,9 @@ def main():
         import keyring, fastapi, colab_cli  # noqa: F401
 
         presets = json.loads(
-            (Path(__file__).resolve().parents[1] / "catalog/presets.json").read_text()
+            (Path(__file__).resolve().parents[1] / "catalog/presets.json").read_text(
+                encoding="utf-8"
+            )
         )
         for spec in presets:
             ModelSpec.model_validate(spec)

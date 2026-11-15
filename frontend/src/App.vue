@@ -23,7 +23,13 @@ import {
 } from "@phosphor-icons/vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { snapshot, command, openURL, exportConversation } from "./api";
+import {
+  snapshot,
+  command,
+  openURL,
+  exportConversation,
+  readClipboard,
+} from "./api";
 import { initialSnapshot, labels, canLoad, type ModelSpec } from "./types";
 const state = ref(initialSnapshot()),
   page = ref("device"),
@@ -90,13 +96,11 @@ const form = ref({
   gpu: "T4",
   max_cu: 5,
   idle_minutes: 30,
-  ts_client_id: "",
-  ts_client_secret: "",
-  ts_tag: "tag:colabone",
+  auto_drive: true,
   hf_token: "",
 });
 const code = ref(""),
-  driveConfig = ref(""),
+  showAuthPaste = ref(false),
   importForm = ref({ repo: "", filename: "", revision: "main" });
 let timer: ReturnType<typeof setTimeout>,
   toastTimer: ReturnType<typeof setTimeout>,
@@ -148,18 +152,31 @@ async function act(action: string, payload: Record<string, unknown> = {}) {
   }
 }
 async function beginLogin() {
+  await act("auth.colab.auto");
+}
+async function manualLogin() {
   const result = await act("auth.colab.begin");
   if (result) {
+    showAuthPaste.value = true;
     openedAuth = result.url;
     await openURL(result.url);
   }
 }
 async function finishLogin() {
-  if (await act("auth.colab.finish", { code: code.value })) code.value = "";
+  const reply = code.value.trim();
+  if (!reply) return;
+  if (await act("auth.colab.finish", { code: reply })) {
+    code.value = "";
+    notify("正在验证授权，请稍候");
+  }
 }
-async function driveLogin() {
-  await act("auth.drive", { config: driveConfig.value });
-  driveConfig.value = "";
+async function pasteLogin() {
+  try {
+    code.value = await readClipboard();
+    await finishLogin();
+  } catch {
+    error.value = "未能读取剪贴板，请直接粘贴到下方输入框";
+  }
 }
 watch(
   () => state.value.auth_url,
@@ -176,7 +193,6 @@ watch(
 );
 async function save() {
   if (await act("settings.save", form.value)) {
-    form.value.ts_client_secret = "";
     form.value.hf_token = "";
     notify("设置已保存");
   }
@@ -187,6 +203,7 @@ async function start() {
       gpu: form.value.gpu,
       max_cu: form.value.max_cu,
       idle_minutes: form.value.idle_minutes,
+      auto_drive: form.value.auto_drive,
     })
   )
     await act("runtime.start");
@@ -236,10 +253,6 @@ function inputKey(e: KeyboardEvent) {
     e.preventDefault();
     send();
   }
-}
-async function onDriveFile(e: Event) {
-  const f = (e.target as HTMLInputElement).files?.[0];
-  if (f) driveConfig.value = await f.text();
 }
 watch(
   () => messages.value.map((m) => m.content).join(""),
@@ -318,6 +331,13 @@ onUnmounted(() => {
       </div>
       <div v-if="state.operation" class="banner operation" role="status">
         <span class="spinner"></span>{{ state.operation.title }}
+        <template v-if="state.setup.drive_waiting"
+          ><button class="text-button" @click="openURL(state.auth_url)">
+            打开授权页</button
+          ><button class="text-button" @click="act('drive.skip')">
+            稍后连接
+          </button></template
+        >
       </div>
       <main v-if="page === 'device'" class="page device-page">
         <div class="page-heading">
@@ -327,19 +347,11 @@ onUnmounted(() => {
           </div>
           <span class="tag">Google Colab</span>
         </div>
-        <section
-          v-if="
-            !state.setup.colab ||
-            !state.setup.drive ||
-            !state.setup.tailscale ||
-            !state.network.running
-          "
-          class="setup-callout"
-        >
+        <section v-if="!state.setup.colab" class="setup-callout">
           <PhGearSix :size="25" />
           <div>
             <h3>连接你的工作空间</h3>
-            <p>完成 Google 授权与私有网络配置，即可启动 GPU。</p>
+            <p>用 Google 账户登录一次，即可启动 GPU。</p>
           </div>
           <button class="secondary" @click="page = 'settings'">
             前往设置<PhCaretRight :size="16" />
@@ -408,14 +420,7 @@ onUnmounted(() => {
             <button
               v-if="state.runtime.state === 'stopped'"
               class="primary"
-              :disabled="
-                busy ||
-                !!state.operation ||
-                !state.setup.colab ||
-                !state.setup.drive ||
-                !state.setup.tailscale ||
-                !state.network.running
-              "
+              :disabled="busy || !!state.operation || !state.setup.colab"
               @click="start"
             >
               <PhPlay :size="17" weight="fill" />启动 GPU</button
@@ -450,17 +455,23 @@ onUnmounted(() => {
             {{ loaded ? "开始聊天" : "打开模型库" }}<PhCaretRight :size="17" />
           </button>
         </section>
-        <section v-if="state.runtime.sync" class="sync-note">
+        <section
+          v-if="state.runtime.sync && state.setup.drive"
+          class="sync-note"
+        >
           <PhCloud :size="18" /><span>{{
             state.runtime.sync.error ||
             (state.runtime.sync.pending
               ? `${state.runtime.sync.pending} 项等待保存到 Google Drive`
-              : "会话与模型配置已同步 Google Drive")
+              : "会话与模型配置已写入云盘，释放前将确认上传完成")
           }}</span>
         </section>
         <p class="footnote">
-          释放 GPU 会清空这台实例的模型文件。会话和模型配置保存在 Google
-          Drive，下次启动后可以重新下载模型。
+          释放 GPU 会清空这台实例的模型文件。{{
+            state.setup.drive
+              ? "会话和模型配置已连接云盘保存。"
+              : "会话暂存在远端，连接云盘或导出后可保留。"
+          }}下次启动后可以重新下载模型。
         </p>
       </main>
       <main v-else-if="page === 'models'" class="page models-page">
@@ -579,8 +590,9 @@ onUnmounted(() => {
         <section class="chat-main">
           <div class="chat-heading">
             <div>
-              <strong>{{ loaded?.name || "尚未加载模型" }}</strong
-              ><span>{{ ready ? "远端推理" : "设备未连接" }}</span>
+              <strong>{{ loaded?.name || "尚未加载模型" }}</strong><span>{{
+                ready ? "远端推理" : "设备未连接"
+              }}</span>
             </div>
             <button
               v-if="conversation"
@@ -664,8 +676,7 @@ onUnmounted(() => {
                   loaded
                     ? "Enter 发送 · Shift + Enter 换行"
                     : "请先加载远端模型"
-                }}</span
-                ><button
+                }}</span><button
                   v-if="task?.kind === 'chat'"
                   class="send-button stop"
                   aria-label="停止生成"
@@ -688,7 +699,9 @@ onUnmounted(() => {
             <p class="composer-note">
               {{
                 state.runtime.sync?.error ||
-                "会话保存到 Google Drive · 模型运行在远端"
+                (state.setup.drive
+                  ? "会话保存到 Google Drive · 模型运行在远端"
+                  : "会话暂存在远端 · 释放 GPU 前请导出，或连接云备份")
               }}
             </p>
           </div>
@@ -698,156 +711,193 @@ onUnmounted(() => {
         <div class="page-heading">
           <div>
             <h1>设置</h1>
-            <p>连接账户与私有网络，设置远端设备的使用方式。</p>
+            <p>登录一次，就能开始使用远端 GPU。</p>
           </div>
         </div>
         <section class="settings-section">
           <div class="section-heading">
-            <span class="step-number">1</span>
-            <h2>Colab 账户</h2>
-            <span v-if="state.setup.colab" class="tag green"
-              ><PhCheck :size="13" />已授权</span
+            <span class="step-number"
+              ><PhCheck v-if="state.setup.colab" :size="16" /><span v-else
+                >1</span
+              ></span
             >
+            <h2>Google 账户</h2>
+            <span v-if="state.setup.colab" class="tag green">已连接</span>
           </div>
-          <p>使用你的 Google 账户分配和释放 Colab GPU。</p>
+          <p>
+            {{
+              state.account.email ||
+              "在浏览器选择 Google 账户并授权，完成后会自动返回这里。"
+            }}
+          </p>
           <div class="form-row">
             <button
-              class="secondary"
-              :disabled="!!state.operation || state.runtime.state !== 'stopped'"
+              :class="state.setup.colab ? 'secondary' : 'primary'"
+              :disabled="
+                busy || !!state.operation || state.runtime.state !== 'stopped'
+              "
               @click="beginLogin"
             >
               {{ state.setup.colab ? "重新登录" : "登录 Google"
-              }}<PhArrowSquareOut :size="16" /></button
-            ><input
-              v-model="code"
-              type="password"
-              autocomplete="off"
-              placeholder="粘贴授权页显示的验证码"
-              aria-label="Colab 授权码"
-            /><button
-              class="secondary"
-              :disabled="!code.trim() || !!state.operation"
-              @click="finishLogin"
+              }}<PhArrowSquareOut :size="16" />
+            </button>
+            <button
+              v-if="state.setup.colab"
+              class="primary"
+              @click="page = 'device'"
             >
-              完成登录
+              去启动 GPU<PhCaretRight :size="16" />
+            </button>
+            <button
+              v-if="state.auth_url && state.operation"
+              class="text-button"
+              @click="openURL(state.auth_url)"
+            >
+              重新打开登录页
             </button>
           </div>
-        </section>
-        <section class="settings-section">
-          <div class="section-heading">
-            <span class="step-number">2</span>
-            <h2>私有网络</h2>
-            <span v-if="state.network.running" class="tag green"
-              >Tailscale 已连接</span
-            >
-          </div>
-          <p>
-            本机与远端设备通过同一个 Tailscale 网络连接。OAuth
-            客户端需有创建设备密钥权限，并允许 <code>tag:colabone</code>。
-          </p>
-          <button
-            class="text-button"
-            @click="openURL('https://tailscale.com/download')"
-          >
-            {{
-              state.network.installed
-                ? "打开 Tailscale 下载与设置说明"
-                : "安装 Tailscale"
-            }}<PhArrowSquareOut :size="15" />
-          </button>
-          <div class="form-grid">
-            <label
-              >OAuth Client ID<input
-                v-model="form.ts_client_id"
+          <details class="setup-details" :open="showAuthPaste">
+            <summary @click.prevent="showAuthPaste = !showAuthPaste">
+              浏览器有一段回显？粘贴到这里
+            </summary>
+            <div class="details-content">
+              <p>
+                整段页面文字、完整链接或授权码都可以，客户端会自动提取。请使用本次登录页面的回显。
+              </p>
+              <div class="form-row">
+                <button
+                  class="secondary"
+                  :disabled="busy || state.runtime.state !== 'stopped'"
+                  @click="pasteLogin"
+                >
+                  <PhCopy :size="16" />粘贴并完成登录
+                </button>
+                <button
+                  class="text-button"
+                  :disabled="
+                    busy ||
+                    !!state.operation ||
+                    state.runtime.state !== 'stopped'
+                  "
+                  @click="manualLogin"
+                >
+                  改用复制粘贴登录<PhArrowSquareOut :size="15" />
+                </button>
+              </div>
+              <textarea
+                v-model="code"
+                class="config-input"
+                rows="3"
                 autocomplete="off"
-                placeholder="Tailscale OAuth 客户端 ID" /></label
-            ><label
-              >OAuth Client Secret<input
-                v-model="form.ts_client_secret"
-                type="password"
-                autocomplete="new-password"
-                :placeholder="
-                  state.setup.tailscale ? '已保存，留空保留' : '输入客户端密钥'
-                " /></label
-            ><label>设备标签<input v-model="form.ts_tag" /></label>
-          </div>
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="也可以在这里粘贴浏览器回显的全部内容…"
+                aria-label="Google 授权回显"
+              ></textarea>
+              <button
+                class="secondary"
+                :disabled="
+                  !code.trim() || busy || state.runtime.state !== 'stopped'
+                "
+                @click="finishLogin"
+              >
+                自动识别并登录
+              </button>
+            </div>
+          </details>
         </section>
         <section class="settings-section">
           <div class="section-heading">
-            <span class="step-number">3</span>
-            <h2>Google Drive</h2>
-            <span v-if="state.setup.drive" class="tag green"
-              ><PhCheck :size="13" />已授权</span
-            >
+            <PhCloud :size="22" />
+            <h2>云备份</h2>
+            <span :class="['tag', state.setup.drive ? 'green' : '']">{{
+              state.setup.drive ? "已连接" : "未连接"
+            }}</span>
           </div>
           <p>
-            保存会话和模型配置。使用启用了 Drive API 的 Desktop app OAuth
-            客户端，同一客户端配置可在两台电脑上恢复数据。
+            将会话和模型清单保存到你的 Google
+            Drive，换电脑也能继续。模型文件仍保存在远端 GPU。
           </p>
           <div class="form-row">
-            <label class="file-button secondary"
-              >选择 OAuth 客户端 JSON<input
-                type="file"
-                accept=".json,application/json"
-                @change="onDriveFile" /></label
-            ><button
-              class="text-button"
-              @click="
-                openURL('https://console.cloud.google.com/apis/credentials')
-              "
+            <button
+              class="secondary"
+              :disabled="busy || !ready || !!state.operation"
+              @click="act(state.setup.drive ? 'sync' : 'drive.connect')"
             >
-              打开 Google Cloud<PhArrowSquareOut :size="15" />
+              <PhCloud :size="17" />{{
+                state.setup.drive ? "立即同步" : "连接 Google 云盘"
+              }}
+            </button>
+            <button
+              v-if="!ready && state.setup.colab"
+              class="text-button"
+              @click="page = 'device'"
+            >
+              先启动 GPU<PhCaretRight :size="16" />
             </button>
           </div>
-          <textarea
-            v-model="driveConfig"
-            class="config-input"
-            rows="3"
-            placeholder="也可以在此粘贴 Desktop app OAuth 客户端 JSON"
-            aria-label="Drive OAuth 配置"
-          ></textarea
-          ><button
-            class="secondary"
-            :disabled="!driveConfig.trim() || !!state.operation"
-            @click="driveLogin"
+          <p class="footnote">
+            {{
+              state.setup.drive
+                ? "已连接：我的云端硬盘 / ColabOne。释放 GPU 前会等待文件上传完成。"
+                : "启动 GPU 后即可连接，浏览器确认授权后会自动完成。新建实例时可能需要再次确认。"
+            }}
+          </p>
+          <label class="checkbox"
+            ><input
+              type="checkbox"
+              v-model="form.auto_drive"
+              @change="save"
+            />启动 GPU 时自动连接云盘</label
           >
-            授权 Google Drive<PhArrowSquareOut :size="16" />
-          </button>
+          <p v-if="!state.setup.drive" class="footnote">
+            未连接时，会话暂存在远端；释放前可在聊天页导出。
+          </p>
         </section>
         <section class="settings-section">
-          <h2>设备与模型</h2>
+          <h2>使用偏好</h2>
+          <p>默认设置即可开始使用。</p>
           <div class="form-grid">
             <label
-              >单次预算上限（CU）<input
+              >单次 GPU 预算（CU）<input
                 v-model.number="form.max_cu"
                 type="number"
                 min="0.1"
                 max="100"
-                step="0.1" /></label
-            ><label
-              >空闲释放（分钟）<input
+                step="0.1"
+            /></label>
+            <label
+              >空闲自动释放（分钟）<input
                 v-model.number="form.idle_minutes"
                 type="number"
                 min="1"
-                max="120" /></label
-            ><label
-              >Hugging Face Token（可选）<input
-                v-model="form.hf_token"
-                type="password"
-                autocomplete="new-password"
-                :placeholder="
-                  state.setup.hf ? '已保存，留空保留' : '用于需要授权的模型仓库'
-                "
+                max="120"
             /></label>
           </div>
           <p class="footnote">
-            预算保护会预留释放时间并提前停止。新的预算上限从下一次启动设备生效。
+            预算保护会提前预留释放时间。新的预算从下次启动 GPU 生效。
           </p>
+          <details class="setup-details">
+            <summary>高级设置</summary>
+            <div class="details-content">
+              <label
+                >Hugging Face Token（可选）<input
+                  v-model="form.hf_token"
+                  type="password"
+                  autocomplete="new-password"
+                  :placeholder="
+                    state.setup.hf
+                      ? '已保存，留空保留'
+                      : '只有需要授权的模型才需填写'
+                  "
+              /></label>
+            </div>
+          </details>
         </section>
         <div class="settings-footer">
-          <span>敏感凭据保存在系统凭据库</span
+          <span>登录信息保存在系统凭据库</span
           ><button class="primary" :disabled="busy" @click="save">
-            保存设置
+            保存偏好
           </button>
         </div>
       </main>
@@ -856,8 +906,7 @@ onUnmounted(() => {
         <div>
           <strong>{{
             task.kind === "download" ? "正在下载到远端" : "正在加载模型"
-          }}</strong
-          ><small>{{ task.message }}</small
+          }}</strong><small>{{ task.message }}</small
           ><progress
             v-if="task.kind === 'download'"
             :value="task.progress"
@@ -938,13 +987,18 @@ onUnmounted(() => {
       >
         <h2 id="release-title">释放远端 GPU？</h2>
         <p>
-          会先同步会话，再释放当前实例。远端模型文件会被清空，下次启动需要重新下载。
+          {{
+            state.setup.drive
+              ? "会先停止任务，等待云盘文件上传完成，再释放当前实例。"
+              : "会停止任务并释放当前实例。未连接云备份，请先在聊天页导出需要保留的会话。"
+          }}远端模型文件会被清空，下次启动需要重新下载。
         </p>
         <label class="checkbox"
-          ><input
-            type="checkbox"
-            v-model="force"
-          />连接或同步失败时仍然释放，放弃未同步内容</label
+          ><input type="checkbox" v-model="force" />{{
+            state.setup.drive
+              ? "连接或同步失败时仍然释放，放弃未同步内容"
+              : "我已导出或不需要保留远端会话"
+          }}</label
         >
         <div class="modal-actions">
           <button class="secondary" @click="showRelease = false">取消</button

@@ -38,19 +38,33 @@ export interface RuntimeStatus {
   idle_remaining?: number;
   deadline?: number;
   tasks?: TaskStatus[];
-  sync?: { pending: number; error: string };
+  sync?: { pending: number; error: string; connected?: boolean };
 }
 export interface Snapshot {
   runtime: RuntimeStatus;
   models: ModelSpec[];
   conversations: Conversation[];
-  account: { logged_in: boolean; balance?: number; rate?: number };
+  account: {
+    logged_in: boolean;
+    balance?: number;
+    rate?: number;
+    email?: string;
+  };
   operation: null | { title: string; running: boolean };
   error: string;
   auth_url: string;
-  network: { installed: boolean; running: boolean };
-  setup: { colab: boolean; drive: boolean; tailscale: boolean; hf: boolean };
-  settings: { gpu: string; max_cu: number; idle_minutes: number };
+  setup: {
+    colab: boolean;
+    drive: boolean;
+    hf: boolean;
+    drive_waiting?: boolean;
+  };
+  settings: {
+    gpu: string;
+    max_cu: number;
+    idle_minutes: number;
+    auto_drive: boolean;
+  };
   stream?: {
     conversation_id: string;
     text: string;
@@ -66,9 +80,8 @@ export const initialSnapshot = (): Snapshot => ({
   operation: null,
   error: "",
   auth_url: "",
-  network: { installed: false, running: false },
-  setup: { colab: false, drive: false, tailscale: false, hf: false },
-  settings: { gpu: "T4", max_cu: 5, idle_minutes: 30 },
+  setup: { colab: false, drive: false, hf: false },
+  settings: { gpu: "T4", max_cu: 5, idle_minutes: 30, auto_drive: true },
 });
 export const labels: Record<string, string> = {
   stopped: "未启动",

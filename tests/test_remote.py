@@ -325,3 +325,59 @@ def test_cancel_interrupts_waiting_for_first_token(runtime):
         runtime.conversations[result["conversation_id"]]["messages"][-1]["status"]
         == "cancelled"
     )
+
+
+def test_sync_does_not_clear_edits_made_during_upload(runtime):
+    convo = {"id": "sync-race", "messages": [{"content": "before"}]}
+    runtime.save_conversation(convo)
+    entered = threading.Event()
+    resume = threading.Event()
+    original = runtime.drive.put
+
+    def blocked(name, data):
+        entered.set()
+        assert resume.wait(2)
+        original(name, data)
+
+    runtime.drive.put = blocked
+    worker = threading.Thread(target=runtime.sync)
+    worker.start()
+    assert entered.wait(2)
+    convo["messages"][0]["content"] = "after"
+    runtime.save_conversation(convo)
+    resume.set()
+    worker.join(2)
+    assert "sync-race" in runtime.dirty
+    runtime.drive.put = original
+    assert runtime.sync()
+    assert (
+        runtime.drive.data["conversation-sync-race.json"]["messages"][0]["content"]
+        == "after"
+    )
+
+
+def test_release_waits_for_upload_flush_and_blocks_new_work(runtime, spec):
+    runtime.save_conversation({"id": "flush-test", "messages": []})
+    runtime.drive.flush = Mock(side_effect=OSError("upload pending"))
+    with pytest.raises(OSError):
+        runtime.prepare_release()
+    assert not runtime.quiescing
+    runtime.drive.flush = Mock()
+    assert runtime.prepare_release()["ok"]
+    runtime.drive.flush.assert_called_once()
+    with pytest.raises(Conflict, match="释放"):
+        runtime.download(spec.id)
+
+
+def test_poll_cursor_replays_only_unseen_events(runtime):
+    task = Task("chat")
+    runtime.tasks[task.id] = task
+    task.emit("delta", {"content": "a"})
+    task.emit("delta", {"content": "b"})
+    task.state = "completed"
+    with TestClient(create_app(runtime, TOKEN)) as client:
+        result = client.get(
+            f"/api/v1/tasks/{task.id}/poll?after=1", headers=AUTH
+        ).json()
+    assert result["state"] == "completed"
+    assert [e["data"]["content"] for e in result["events"]] == ["b"]

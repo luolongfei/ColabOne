@@ -17,6 +17,11 @@ from bridge.controller import Controller
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-cu", type=float, required=True)
+    parser.add_argument(
+        "--without-drive",
+        action="store_true",
+        help="GPU-only check; skip cloud persistence",
+    )
     args = parser.parse_args()
     if not 0 < args.max_cu <= 5:
         raise SystemExit("Acceptance budget must be within 5 CU")
@@ -26,7 +31,22 @@ def main():
         raise SystemExit(
             "An owned runtime already exists. Release it in the app before acceptance."
         )
-    control.settings.update(gpu="T4", max_cu=args.max_cu)
+    control.settings.update(
+        gpu="T4", max_cu=args.max_cu, auto_drive=not args.without_drive
+    )
+    # A normal desktop run opens this URL automatically. CLI acceptance prints
+    # the consent link for the operator, once, and never prints credentials.
+    original_update = control.update
+    opened = set()
+
+    def progress(**values):
+        url = values.get("auth_url")
+        if url and url not in opened:
+            opened.add(url)
+            print("Open this Google consent page in your browser:", url, flush=True)
+        original_update(**values)
+
+    control.update = progress
     events = []
 
     def wait_task(task):
@@ -60,11 +80,15 @@ def main():
         if not convo["messages"][-1]["content"].strip():
             raise RuntimeError("Model returned no text")
         events.append("chat returned text")
-        if not control.remote("POST", "sync")["ok"]:
-            raise RuntimeError("Drive sync failed")
-        events.append("Drive synchronized")
+        if not args.without_drive:
+            if not control.remote("POST", "sync")["ok"]:
+                raise RuntimeError("Drive sync failed")
+            events.append("Drive snapshots written")
         control.remote("POST", "unload")
         events.append("model unloaded")
+        if not args.without_drive:
+            control.remote("POST", "prepare-release")
+            events.append("Drive upload flush verified")
     finally:
         if control.vault.get("runtime_session"):
             control.provider.release()

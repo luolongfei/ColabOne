@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"log"
 	"net/url"
 	"os"
@@ -29,12 +30,19 @@ func (d *Desktop) Snapshot(ctx context.Context) (string, error) {
 func (d *Desktop) Command(ctx context.Context, request CommandRequest) (string, error) {
 	return d.bridge.call(ctx, request.Action, request.Payload)
 }
+func (d *Desktop) ReadClipboard() (string, error) {
+	data, err := mygo.Clipboard.ReadFormat(transfer.Text)
+	if err != nil {
+		return "", errors.New("未能读取剪贴板，请直接粘贴到输入框")
+	}
+	return string(data), nil
+}
 func (d *Desktop) OpenURL(value string) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme != "https" {
 		return errors.New("只允许 HTTPS 链接")
 	}
-	allowed := []string{"accounts.google.com", "tailscale.com", "login.tailscale.com", "console.cloud.google.com", "developers.google.com", "github.com"}
+	allowed := []string{"accounts.google.com", "colab.research.google.com", "developers.google.com", "github.com"}
 	for _, host := range allowed {
 		if u.Hostname() == host {
 			return mygo.Shell.OpenExternal(value)

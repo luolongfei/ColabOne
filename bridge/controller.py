@@ -2,14 +2,10 @@ from __future__ import annotations
 import copy
 import json
 import os
-import shutil
-import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
-import ipaddress
 
 import requests
 
@@ -17,7 +13,6 @@ from bridge.auth import Auth, Vault
 from bridge.provider import Provider
 from common.files import atomic_json
 from common.models import resolve_import
-from common.storage import DriveStore
 
 
 def config_directory():
@@ -31,29 +26,6 @@ def config_directory():
     )
 
 
-def tailscale_status():
-    candidates = [
-        shutil.which("tailscale"),
-        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-        os.path.join(
-            os.environ.get("ProgramFiles", "C:\\Program Files"),
-            "Tailscale",
-            "tailscale.exe",
-        ),
-    ]
-    executable = next((p for p in candidates if p and Path(p).is_file()), None)
-    if not executable:
-        return {"installed": False, "running": False}
-    try:
-        result = subprocess.run(
-            [executable, "status", "--json"], capture_output=True, text=True, timeout=5
-        )
-        status = json.loads(result.stdout)
-        return {"installed": True, "running": status.get("BackendState") == "Running"}
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return {"installed": True, "running": False}
-
-
 class Controller:
     def __init__(self, root, vault=None, config_dir=None, background=True):
         self.root = root
@@ -61,16 +33,21 @@ class Controller:
         self.auth = Auth(self.vault)
         self.provider = Provider(self.auth, self.vault, root)
         self.directory = config_dir or config_directory()
-        self.settings = {"gpu": "T4", "max_cu": 5, "idle_minutes": 30}
+        self.settings = {
+            "gpu": "T4",
+            "max_cu": 5,
+            "idle_minutes": 30,
+            "auto_drive": True,
+        }
         if (self.directory / "settings.json").exists():
             self.settings.update(
-                json.loads((self.directory / "settings.json").read_text())
+                json.loads(
+                    (self.directory / "settings.json").read_text(encoding="utf-8")
+                )
             )
         self.lock = threading.RLock()
         self.operation_lock = threading.Lock()
         self.stop = threading.Event()
-        self.http = requests.Session()
-        self.http.trust_env = False
         self.data = {
             "runtime": {"state": "stopped"},
             "account": {"logged_in": False},
@@ -79,9 +56,9 @@ class Controller:
             "operation": None,
             "error": "",
             "auth_url": "",
-            "network": {"installed": False, "running": False},
         }
         self.last_auth = self.last_config = self.last_heartbeat = 0
+        self.mount_cancel = threading.Event()
         if background:
             threading.Thread(target=self.monitor, daemon=True).start()
 
@@ -93,7 +70,9 @@ class Controller:
                 "loaded": False,
                 "size": sum(f["size"] for f in m["files"]),
             }
-            for m in json.loads((self.root / "catalog/presets.json").read_text())
+            for m in json.loads(
+                (self.root / "catalog/presets.json").read_text(encoding="utf-8")
+            )
         ]
 
     def snapshot(self):
@@ -102,9 +81,9 @@ class Controller:
         value["settings"] = self.settings.copy()
         value["setup"] = {
             "colab": bool(self.vault.get("colab")),
-            "drive": bool(self.vault.get("drive")),
-            "tailscale": bool(self.vault.get("tailscale")),
+            "drive": bool(value["runtime"].get("sync", {}).get("connected")),
             "hf": bool(self.vault.get("hf")),
+            "drive_waiting": bool(value.get("drive_waiting")),
         }
         return value
 
@@ -137,40 +116,32 @@ class Controller:
         return {"ok": True}
 
     def remote(self, method, path, body=None):
-        config = self.vault.get("remote")
-        if not config or not config.get("url"):
-            raise RuntimeError("请先启动远端 GPU")
-        parsed = urlparse(config["url"])
-        if (
-            parsed.scheme != "http"
-            or parsed.port != 7860
-            or ipaddress.ip_address(parsed.hostname)
-            not in ipaddress.ip_network("100.64.0.0/10")
-        ):
-            raise RuntimeError("远端地址不是受支持的 Tailscale 地址")
-        response = self.http.request(
-            method,
-            config["url"] + "/api/v1/" + path,
-            headers={"Authorization": "Bearer " + config["token"]},
-            json=body,
-            timeout=(5, 45),
-        )
-        if response.status_code >= 400:
-            try:
-                detail = response.json().get("detail", "远端请求失败")
-            except ValueError:
-                detail = "远端请求失败"
-            raise RuntimeError(str(detail)[:500])
-        return response.json()
+        return self.provider.rpc(method, path, body)
+
+    def connect_drive(self):
+        self.mount_cancel.clear()
+
+        def consent(url):
+            self.update(
+                auth_url=url,
+                drive_waiting=True,
+                operation={"title": "请在浏览器确认连接 Google 云盘", "running": True},
+            )
+
+        try:
+            self.provider.mount_drive(consent, self.mount_cancel)
+            self.remote("POST", "restore")
+            self.remote("POST", "sync")
+            self.refresh_remote()
+        finally:
+            self.update(auth_url="", drive_waiting=False)
 
     def configure_remote(self):
         remote = self.vault.get("remote") or {}
-        token = self.auth.credentials("drive").token if self.vault.get("drive") else ""
         self.remote(
             "POST",
             "configure",
             {
-                "drive_token": token,
                 "idle_minutes": self.settings["idle_minutes"],
                 "deadline": remote.get("deadline", 0),
             },
@@ -178,21 +149,15 @@ class Controller:
         self.last_config = time.time()
 
     def refresh_remote(self):
-        status = self.remote("GET", "status")
+        state = self.remote("GET", "snapshot")
         self.update(
-            runtime=status,
-            models=self.remote("GET", "models"),
-            conversations=self.remote("GET", "conversations"),
+            runtime=state["runtime"],
+            models=state["models"],
+            conversations=state["conversations"],
         )
 
     def start(self):
-        network = tailscale_status()
-        self.update(network=network)
-        if not network["running"]:
-            raise RuntimeError("请先安装并登录 Tailscale，再启动 GPU")
-        if not self.vault.get("drive"):
-            raise RuntimeError("请先授权 Google Drive，以便保存会话和模型配置")
-        self.auth.credentials("drive")
+        self.auth.credentials("colab")
 
         def notify(message):
             self.update(
@@ -204,7 +169,6 @@ class Controller:
         try:
             self.provider.start(self.settings["gpu"], self.settings["max_cu"], notify)
             self.configure_remote()
-            self.remote("POST", "restore")
             self.refresh_remote()
         except Exception:
             if not existing and self.vault.get("runtime_session"):
@@ -216,29 +180,21 @@ class Controller:
             self.update(runtime={"state": "disconnected" if remaining else "stopped"})
             raise
 
+        if self.settings.get("auto_drive", True):
+            try:
+                self.connect_drive()
+            except Exception as exc:
+                self.update(error=str(exc)[:300])
+
     def release(self, force=False):
         if not force:
-            # If synchronization cannot be verified, the caller must deliberately force release.
-            result = self.remote("POST", "sync")
-            if not result["ok"] or result["pending"]:
-                raise RuntimeError("会话尚未同步。请重试同步，或选择“仍然释放”")
+            self.remote("POST", "prepare-release")
         self.update(runtime={"state": "releasing"})
         self.provider.release()
         with self.lock:
             for m in self.data["models"]:
                 m["downloaded"] = m["loaded"] = False
         self.update(runtime={"state": "stopped"})
-
-    def cloud_history(self):
-        drive = DriveStore(self.auth.credentials("drive").token)
-        models = {m["id"]: m for m in self.presets()}
-        for m in drive.get("models.json", []):
-            models[m["id"]] = m | {
-                "downloaded": False,
-                "loaded": False,
-                "size": sum(f["size"] for f in m["files"]),
-            }
-        self.update(models=list(models.values()), conversations=drive.conversations())
 
     def import_model(self, payload):
         spec = resolve_import(
@@ -253,7 +209,9 @@ class Controller:
 
     def save_settings(self, payload):
         public = {
-            k: payload[k] for k in ("gpu", "idle_minutes", "max_cu") if k in payload
+            k: payload[k]
+            for k in ("gpu", "idle_minutes", "max_cu", "auto_drive")
+            if k in payload
         }
         if public.get("gpu", self.settings["gpu"]) not in (
             "T4",
@@ -271,20 +229,10 @@ class Controller:
             raise ValueError("空闲时间必须在 1 至 120 分钟之间")
         if not 0 < float(public.get("max_cu", self.settings["max_cu"])) <= 100:
             raise ValueError("CU 预算必须大于 0 且不超过 100")
-        if payload.get("ts_client_id") and payload.get("ts_client_secret"):
-            tag = payload.get("ts_tag") or "tag:colabone"
-            if not tag.startswith("tag:"):
-                raise ValueError("Tailscale 标签需以 tag: 开头")
-            self.vault.set(
-                "tailscale",
-                {
-                    "client_id": payload["ts_client_id"],
-                    "client_secret": payload["ts_client_secret"],
-                    "tag": tag,
-                },
-            )
         if payload.get("hf_token"):
             self.vault.set("hf", payload["hf_token"])
+        if "auto_drive" in public and not isinstance(public["auto_drive"], bool):
+            raise ValueError("自动连接云盘设置不合法")
         self.settings.update(public)
         atomic_json(self.directory / "settings.json", self.settings)
         self.last_config = 0
@@ -297,23 +245,33 @@ class Controller:
             result = self.auth.colab_begin()
             self.update(auth_url=result["url"])
             return result
+        if action == "auth.colab.auto":
+
+            def login():
+                self.auth.colab_login(lambda url: self.update(auth_url=url))
+                self.last_auth = 0
+                self.update(conversations=[], models=self.presets(), auth_url="")
+
+            return self.async_operation("等待 Google 登录", login)
         if action == "auth.colab.finish":
 
             def finish():
                 self.auth.colab_finish(payload["code"])
                 self.last_auth = 0
+                self.update(conversations=[], models=self.presets(), auth_url="")
 
-            return self.async_operation("验证 Colab 登录", finish)
-        if action == "auth.drive":
-
-            def drive():
-                self.auth.drive_login(
-                    payload["config"], lambda url: self.update(auth_url=url)
-                )
-                self.cloud_history()
-                self.last_config = 0
-
-            return self.async_operation("等待 Google Drive 授权", drive)
+            if self.operation_lock.locked():
+                # A paste can finish a pending loopback login; its operation then
+                # completes the login once the callback wait exits.
+                self.auth.colab_finish(payload["code"])
+                self.last_auth = 0
+                return {"ok": True}
+            return self.async_operation("完成 Google 登录", finish)
+        if action == "drive.connect":
+            return self.async_operation("连接 Google 云盘", self.connect_drive)
+        if action == "drive.skip":
+            self.mount_cancel.set()
+            return {"ok": True}
         if action == "runtime.start":
             return self.async_operation("启动远端 GPU", self.start)
         if action == "runtime.release":
@@ -356,7 +314,7 @@ class Controller:
                         raise RuntimeError(result["error"])
                     self.refresh_remote()
                 else:
-                    self.cloud_history()
+                    raise RuntimeError("请先启动 GPU 并连接云盘，才能恢复或同步会话")
 
             return self.async_operation("同步 Google Drive", sync)
         if action == "error.clear":
@@ -374,46 +332,33 @@ class Controller:
         self.update(stream=stream)
 
         def pump():
-            remote = self.vault.get("remote")
             cursor = 0
-            for attempt in range(4):
+            failures = 0
+            while not self.stop.is_set():
                 try:
-                    with self.http.get(
-                        remote["url"] + "/api/v1/tasks/" + result["id"] + "/events",
-                        params={"after": cursor},
-                        headers={"Authorization": "Bearer " + remote["token"]},
-                        stream=True,
-                        timeout=(5, 30),
-                    ) as response:
-                        response.raise_for_status()
-                        event, seq = "", cursor
-                        for line in response.iter_lines(
-                            chunk_size=1, decode_unicode=True
-                        ):
-                            if self.stop.is_set():
-                                return
-                            if line.startswith("id:"):
-                                seq = int(line[3:].strip())
-                            elif line.startswith("event:"):
-                                event = line[6:].strip()
-                            elif line.startswith("data:"):
-                                value = json.loads(line[5:].strip())
-                                if seq <= cursor:
-                                    continue
-                                cursor = seq
-                                if event == "delta":
-                                    stream["content"] += value.get("content", "")
-                                elif event == "done":
-                                    stream["state"] = value["state"]
-                                self.update(stream=stream.copy())
-                    self.refresh_remote()
-                    return
-                except requests.RequestException:
-                    if attempt < 3:
-                        self.stop.wait(2)
-            # A reconnect never resubmits the user turn. Refresh retrieves the saved answer.
-            stream["state"] = "disconnected"
-            self.update(stream=stream.copy())
+                    batch = self.remote(
+                        "GET", f"tasks/{result['id']}/poll?after={cursor}"
+                    )
+                    failures = 0
+                    for item in batch["events"]:
+                        if item["seq"] <= cursor:
+                            continue
+                        cursor = item["seq"]
+                        if item["event"] == "delta":
+                            stream["content"] += item["data"].get("content", "")
+                    stream["state"] = batch["state"]
+                    self.update(stream=stream.copy())
+                    if batch["state"] != "running":
+                        self.refresh_remote()
+                        return
+                    self.stop.wait(0.2)
+                except Exception:
+                    failures += 1
+                    if failures >= 4:
+                        stream["state"] = "disconnected"
+                        self.update(stream=stream.copy())
+                        return
+                    self.stop.wait(1)
 
         threading.Thread(target=pump, daemon=True).start()
 
@@ -431,9 +376,7 @@ class Controller:
             try:
                 now = time.time()
                 if now - self.last_auth > 30:
-                    self.update(
-                        account=self.provider.account(), network=tailscale_status()
-                    )
+                    self.update(account=self.provider.account())
                     self.last_auth = now
                 remote = self.vault.get("remote")
                 if remote and not self.operation_lock.locked():
@@ -449,17 +392,11 @@ class Controller:
                             "已到预算保护阈值，正在释放", lambda: self.release(True)
                         )
                         continue
-                    if not remote.get("url"):
-                        self.update(
-                            runtime={"state": "disconnected", "id": remote["endpoint"]}
-                        )
-                        self.stop.wait(2)
-                        continue
                     if now - self.last_config > 600:
                         self.configure_remote()
                     try:
                         self.refresh_remote()
-                    except requests.RequestException:
+                    except Exception:
                         self.update(
                             runtime={"state": "disconnected", "id": remote["endpoint"]}
                         )

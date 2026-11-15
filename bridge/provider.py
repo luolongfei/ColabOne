@@ -8,6 +8,7 @@ import secrets
 import tempfile
 import time
 import uuid
+import threading
 import zipfile
 from pathlib import Path
 
@@ -25,11 +26,13 @@ from colab_cli.client import (
 from colab_cli.state import SessionState
 from colab_cli.contents import ContentsClient
 from colab_cli.runtime import ColabRuntime
+from bridge.drive_mount import DriveMount
 
 
 class Provider:
     def __init__(self, auth, vault, root):
         self.auth, self.vault, self.root = auth, vault, root
+        self.kernel_lock = threading.RLock()
         self.client_factory = lambda: Client(
             Prod(), AuthorizedSession(auth.credentials("colab"))
         )
@@ -44,6 +47,7 @@ class Provider:
         info = client.get_consumption_user_info()
         return {
             "logged_in": True,
+            "email": self.auth.profile().get("email", ""),
             "balance": float(info.paid_compute_units_balance),
             "rate": float(info.consumption_rate_hourly),
             "assignments": int(info.assignments_count),
@@ -140,7 +144,11 @@ class Provider:
         self.save_session(session)
         return session
 
-    def execute(self, session, code, timeout=300):
+    def execute(self, session, code, timeout=300, hook=None):
+        with self.kernel_lock:
+            return self._execute(session, code, timeout, hook)
+
+    def _execute(self, session, code, timeout=300, hook=None):
         def kid(value):
             session.kernel_id = value
             self.save_session(session)
@@ -158,6 +166,7 @@ class Provider:
             on_kernel_started=kid,
             on_session_started=sid,
         )
+        rt.colab_request_hook = hook
         try:
             return rt.execute_code(code, allow_stdin=False, timeout=timeout)
         finally:
@@ -184,44 +193,8 @@ class Provider:
             time.sleep(2)
         raise RuntimeError("远端内核未能在 90 秒内就绪")
 
-    def tailscale_key(self):
-        config = self.vault.get("tailscale") or {}
-        if not config.get("client_id") or not config.get("client_secret"):
-            raise RuntimeError("请先配置 Tailscale OAuth 客户端")
-        r = requests.post(
-            "https://api.tailscale.com/api/v2/oauth/token",
-            data={
-                "client_id": config["client_id"],
-                "client_secret": config["client_secret"],
-            },
-            timeout=20,
-        )
-        r.raise_for_status()
-        r = requests.post(
-            "https://api.tailscale.com/api/v2/tailnet/-/keys",
-            headers={"Authorization": "Bearer " + r.json()["access_token"]},
-            json={
-                "capabilities": {
-                    "devices": {
-                        "create": {
-                            "reusable": False,
-                            "ephemeral": True,
-                            "preauthorized": True,
-                            "tags": [config.get("tag", "tag:colabone")],
-                        }
-                    }
-                },
-                "expirySeconds": 600,
-            },
-            timeout=20,
-        )
-        r.raise_for_status()
-        return r.json()["key"]
-
     def start(self, gpu, max_cu, notify):
         fresh = False
-        # Obtain an ephemeral key before starting the meter, so missing network setup is free.
-        ts_key = self.tailscale_key()
         session = self.session(refresh=True)
         if session:
             remote = self.vault.get("remote")
@@ -244,7 +217,7 @@ class Provider:
             remote = {
                 "endpoint": session.endpoint,
                 "token": secrets.token_urlsafe(32),
-                "url": "",
+                "transport": "colab",
                 "started_at": started,
                 "deadline": deadline,
                 "start_balance": before["balance"],
@@ -254,7 +227,7 @@ class Provider:
             self.vault.set("remote", remote)
             notify("等待远端内核")
             self.ready(session)
-            notify("部署管理服务与私有网络")
+            notify("部署远端管理服务")
             with tempfile.TemporaryDirectory(prefix="colabone-upload-") as tmp:
                 package = Path(tmp) / "colabone.zip"
                 with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -271,7 +244,6 @@ class Provider:
                     json.dumps(
                         {
                             "token": remote["token"],
-                            "ts_key": ts_key,
                             "runtime_id": session.endpoint,
                             "root": "/content/colabone-data",
                             "deadline": deadline,
@@ -283,16 +255,17 @@ class Provider:
                 contents.upload(str(package), "content/colabone.zip")
                 contents.upload(str(config), "content/colabone-boot.json")
                 outputs = self.execute(
-                    session, (self.root / "server/vm_boot.py").read_text(), timeout=300
+                    session,
+                    (self.root / "server/vm_boot.py").read_text(encoding="utf-8"),
+                    timeout=300,
                 )
-            url = None
+            ready = False
             for output in outputs or []:
                 for line in str(output.get("text", "")).splitlines():
-                    if line.startswith("COLABONE_URL="):
-                        url = line.partition("=")[2].strip()
-            if not url:
-                raise RuntimeError("远端初始化未返回服务地址；可查看 Colab 内核日志")
-            remote["url"] = url
+                    if line.strip() == "COLABONE_READY=1":
+                        ready = True
+            if not ready:
+                raise RuntimeError("远端初始化未完成；可查看 Colab 内核日志")
             self.vault.set("remote", remote)
             return remote
         except Exception as exc:
@@ -304,6 +277,91 @@ class Provider:
                         "启动失败且释放未确认。实例记录已保留，请在设备页立即重试释放"
                     ) from exc
             raise
+
+    def mount_drive(self, notify, cancel):
+        with self.kernel_lock:
+            session = self.session(refresh=True)
+            if not session:
+                raise RuntimeError("请先启动远端 GPU")
+            remote = self.vault.get("remote") or {}
+            timeout = min(
+                300, int(remote.get("deadline", time.time()) - time.time() - 45)
+            )
+            if timeout < 30:
+                raise RuntimeError("本次 GPU 预算即将用完，请先释放后重新启动")
+            mount = DriveMount(self.client(), session.endpoint, notify, cancel, timeout)
+            code = """
+import os as _co_os
+if not _co_os.path.ismount('/content/drive'):
+    from google.colab import drive as _co_drive
+    _co_drive.mount('/content/drive', timeout_ms=%d)
+if _co_os.path.ismount('/content/drive') and _co_os.path.isdir('/content/drive/MyDrive'):
+    print('COLABONE_DRIVE_READY=1')
+""" % ((timeout + 20) * 1000)
+            try:
+                outputs = self.execute(
+                    session, code, timeout=timeout + 30, hook=mount.hook
+                )
+                if mount.error:
+                    raise RuntimeError(mount.error)
+                if not any(
+                    "COLABONE_DRIVE_READY=1" in str(o.get("text", ""))
+                    for o in outputs or []
+                ):
+                    raise RuntimeError(
+                        "云盘尚未连接成功，请在设置中重试；GPU 可以继续使用"
+                    )
+            finally:
+                cancel.set()
+
+    def rpc(self, method, path, body=None):
+        """Use Colab's authenticated kernel channel; no public port or VPN account.
+
+        Sensitive POST data is uploaded as an ephemeral file, never embedded in
+        notebook source/history. GET paths contain only non-secret resource IDs.
+        """
+        with self.kernel_lock:
+            session = self.session()
+            if not session:
+                raise RuntimeError("请先启动远端 GPU")
+            request_path = ""
+            if body is not None:
+                remote_name = "colabone-rpc-" + uuid.uuid4().hex + ".json"
+                with tempfile.TemporaryDirectory(prefix="colabone-rpc-") as tmp:
+                    local = Path(tmp) / "request.json"
+                    local.write_text(
+                        json.dumps(body, ensure_ascii=False), encoding="utf-8"
+                    )
+                    local.chmod(0o600)
+                    ContentsClient(session).upload(str(local), "content/" + remote_name)
+                request_path = "/content/" + remote_name
+            code = """
+import json as _co_json, urllib.request as _co_http
+from pathlib import Path as _co_Path
+_co_file = %r
+try:
+    _co_cfg = _co_json.loads(_co_Path('/content/colabone-boot.json').read_text(encoding="utf-8"))
+    _co_body = _co_Path(_co_file).read_bytes() if _co_file else None
+    _co_req = _co_http.Request('http://127.0.0.1:7860/api/v1/' + %r, data=_co_body, method=%r,
+        headers={'Authorization': 'Bearer ' + _co_cfg['token'], 'Content-Type': 'application/json'})
+    try:
+        with _co_http.build_opener(_co_http.ProxyHandler({})).open(_co_req, timeout=65) as _co_response:
+            _co_result = {'ok':True, 'value':_co_json.loads(_co_response.read())}
+    except _co_http.HTTPError as _co_error:
+        _co_result = {'ok':False, 'error':_co_json.loads(_co_error.read()).get('detail','远端请求失败')}
+    print('COLABONE_RPC=' + _co_json.dumps(_co_result, ensure_ascii=False))
+finally:
+    if _co_file: _co_Path(_co_file).unlink(missing_ok=True)
+""" % (request_path, path, method)
+            outputs = self.execute(session, code, timeout=75)
+            for output in outputs or []:
+                for line in str(output.get("text", "")).splitlines():
+                    if line.startswith("COLABONE_RPC="):
+                        result = json.loads(line.partition("=")[2])
+                        if not result["ok"]:
+                            raise RuntimeError(str(result["error"])[:500])
+                        return result["value"]
+            raise RuntimeError("Colab 控制连接没有返回结果，请检查网络后重试")
 
     def heartbeat(self):
         session = self.session(refresh=True)

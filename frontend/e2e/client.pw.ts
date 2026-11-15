@@ -12,7 +12,7 @@ async function mock(page: any, ready = false) {
           id: ready ? "test-runtime" : undefined,
           disk_free: 90 * 1024 ** 3,
           tasks: [],
-          sync: { pending: 0, error: "" },
+          sync: { pending: 0, error: "", connected: ready },
         },
         models: [
           {
@@ -31,9 +31,8 @@ async function mock(page: any, ready = false) {
         operation: null,
         error: "",
         auth_url: "",
-        network: { installed: ready, running: ready },
-        setup: { colab: ready, drive: ready, tailscale: ready, hf: false },
-        settings: { gpu: "T4", max_cu: 5, idle_minutes: 30 },
+        setup: { colab: ready, drive: ready, hf: false },
+        settings: { gpu: "T4", max_cu: 5, idle_minutes: 30, auto_drive: true },
       };
       const calls: any[] = [];
       (window as any).__state = state;
@@ -98,7 +97,7 @@ test("disconnected client requires setup and does not allocate on navigation", a
   ).toBeDisabled();
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Google Drive", exact: true }),
+    page.getByRole("heading", { name: "云备份", exact: true }),
   ).toBeVisible();
   expect(await page.evaluate(() => (window as any).__calls)).toEqual([]);
 });
@@ -170,4 +169,54 @@ test("compact desktop layout stays within viewport", async ({ page }) => {
     path: new URL("../../work/device-ui.png", import.meta.url).pathname,
     fullPage: true,
   });
+});
+
+test("setup offers Google login and whole-page paste without API credentials", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(page.getByText("OAuth Client ID")).toHaveCount(0);
+  await expect(page.getByText("私有网络", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "登录 Google", exact: true }).click();
+  expect((await page.evaluate(() => (window as any).__calls))[0].action).toBe(
+    "auth.colab.auto",
+  );
+  await page.getByText("浏览器有一段回显？粘贴到这里", { exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Google 授权回显" })
+    .fill(
+      "Authorization complete\n4/test-code-long-enough-for-a-valid-parser-input",
+    );
+  await page
+    .getByRole("button", { name: "自动识别并登录", exact: true })
+    .click();
+  expect(
+    (await page.evaluate(() => (window as any).__calls))[1].payload.code,
+  ).toContain("Authorization complete");
+  await expect(
+    page.getByRole("textbox", { name: "Google 授权回显" }),
+  ).toHaveValue("");
+  await page.screenshot({
+    path: new URL("../../work/setup-ui.png", import.meta.url).pathname,
+    fullPage: true,
+  });
+});
+
+test("Google login alone enables GPU startup and Drive can be connected later", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.evaluate(() => {
+    (window as any).__state.setup.colab = true;
+  });
+  await expect(
+    page.getByRole("button", { name: "启动 GPU", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "启动 GPU", exact: true }).click();
+  expect(
+    (await page.evaluate(() => (window as any).__calls)).map(
+      (c: any) => c.action,
+    ),
+  ).toEqual(["settings.save", "runtime.start"]);
 });

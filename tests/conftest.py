@@ -37,6 +37,13 @@ class MemoryDrive:
     def conversations(self):
         return [v for k, v in self.data.items() if k.startswith("conversation-")]
 
+    def available(self):
+        return True
+
+    def flush(self):
+        if self.fail:
+            raise OSError("flush failed")
+
 
 @pytest.fixture
 def spec():

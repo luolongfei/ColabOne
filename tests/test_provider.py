@@ -66,7 +66,6 @@ def test_release_failure_retains_ownership():
 
 def test_unknown_rate_rolls_back_new_allocation(monkeypatch):
     p, vault = make_provider()
-    monkeypatch.setattr(p, "tailscale_key", lambda: "test-key")
     monkeypatch.setattr(p, "account", lambda: {"rate": 0, "balance": 100})
     monkeypatch.setattr(p, "allocate", lambda _gpu: SimpleNamespace(endpoint="new"))
     release = Mock()
@@ -78,7 +77,6 @@ def test_unknown_rate_rolls_back_new_allocation(monkeypatch):
 
 def test_new_allocation_deploy_failure_rolls_back(monkeypatch):
     p, vault = make_provider()
-    monkeypatch.setattr(p, "tailscale_key", lambda: "test-key")
     monkeypatch.setattr(p, "account", lambda: {"rate": 1, "balance": 100})
     monkeypatch.setattr(p, "allocate", lambda _gpu: SimpleNamespace(endpoint="new"))
     monkeypatch.setattr(p, "ready", Mock(side_effect=RuntimeError("boot failed")))
@@ -107,15 +105,13 @@ def test_settings_never_write_secret_to_plaintext(tmp_path):
     )
     c.save_settings(
         {
-            "ts_client_id": "id",
-            "ts_client_secret": "secret-value",
             "hf_token": "hf-test",
             "max_cu": 5,
         }
     )
-    text = (tmp_path / "settings.json").read_text()
+    text = (tmp_path / "settings.json").read_text(encoding="utf-8")
     assert "secret-value" not in text and "hf-test" not in text
-    assert c.vault.get("tailscale")["client_secret"] == "secret-value"
+    assert c.vault.get("hf") == "hf-test"
     assert "secret-value" not in str(c.snapshot())
 
 
@@ -126,7 +122,7 @@ def test_release_blocks_on_unsynced_data(tmp_path):
         config_dir=tmp_path,
         background=False,
     )
-    c.remote = Mock(return_value={"ok": False, "pending": 1})
+    c.remote = Mock(side_effect=RuntimeError("会话尚未同步"))
     c.provider = Mock()
     with pytest.raises(RuntimeError, match="尚未同步"):
         c.release()

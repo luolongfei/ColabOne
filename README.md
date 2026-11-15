@@ -7,14 +7,13 @@
 ## 首次使用
 
 1. 解压完整安装包，打开 `ColabOne.app` 或 `ColabOne.exe`。应用和旁边的 `runtime`、`site-packages`、`bridge` 等目录需要一起保留。
-2. 在「设置」登录 Google Colab，在浏览器完成授权，将显示的验证码粘贴回客户端。需要有可用于所选 GPU 的 Colab 额度。
-3. 在本机安装并登录 [Tailscale](https://tailscale.com/download)。在同一 tailnet 创建 OAuth 客户端，允许创建设备 auth keys，授权 `tag:colabone`，并通过访问控制允许本机访问该标签的 TCP 7860。将 OAuth Client ID、Secret 和标签填入设置，保存。
-4. 在 Google Cloud 启用 Drive API，创建 **Desktop app** OAuth 客户端，配置 OAuth 同意屏幕并将自己的账户加入测试用户。下载 JSON，在设置中选择它并授权 Drive。Mac 与 Windows 使用同一个 OAuth 客户端配置。
-5. 在「远端设备」选择 GPU，点击启动。只有主动启动才会分配 GPU；默认单次预算 5 CU，空闲 30 分钟释放。
-6. 在「模型库」下载一个预置模型，或导入 Hugging Face 的仓库和 GGUF 路径。建议先用 Qwen2.5 0.5B 验证链路。下载完成后点击加载，再进入「聊天」。
-7. 使用完毕点击释放 GPU。客户端先同步会话，再确认该实例已不在 Colab 分配列表中。连接中断不等于停止计费。
+2. 在「设置」点击「登录 Google」，在浏览器选择账户并授权，完成后自动返回。若浏览器只显示回执，可展开「浏览器有一段回显？粘贴到这里」，整段粘贴或点击「粘贴并完成登录」。
+3. 在「远端设备」选择 GPU，点击启动。默认 T4，单次预算 5 CU，空闲 30 分钟释放。只有主动启动才会分配 GPU。
+4. 默认会接着连接 Google 云盘：浏览器确认 Colab 的云盘授权后自动继续。无需安装 Tailscale、创建 Google Cloud 项目、申请 API Key 或下载 OAuth JSON。新建实例时 Google 可能要求重新确认授权。也可点击「稍后连接」，之后在设置中继续。
+5. 在「模型库」点击下载到远端，完成后点击加载，再进入聊天。建议先用 Qwen2.5 0.5B 验证链路。导入其他 GGUF 时填写 Hugging Face 仓库和文件路径。
+6. 使用完毕点击释放 GPU。客户端先停止任务、写入云盘并等待上传完成，再确认该实例已不在 Colab 分配列表中。连接中断不等于停止计费。
 
-会话和模型配置保存在 Drive 的应用数据区，不出现在普通 Drive 文件列表中；可从聊天界面导出 Markdown。权重存放在 Colab 临时磁盘，释放或平台回收后需要重新下载。切换模型、卸载模型不会删除已下载的其他模型。
+云盘通过 Colab 自带的 Drive 挂载连接；会话和模型配置在「我的云端硬盘 / ColabOne」中。只有运行实例并连接云盘后才能从云端恢复历史；同一 Google 账户在 Mac 和 Windows 上可恢复同一份文件。未连接时会话暂存在远端，可在聊天页导出 Markdown。权重存放在 Colab 临时磁盘，释放或平台回收后需要重新下载。切换模型、卸载模型不会删除已下载的其他模型。
 
 关闭窗口后客户端留在托盘。退出客户端后，本机心跳停止，远端空闲与预算释放程序仍运行；Colab 自身的资源限制仍然适用。预算以账户费率、余额变化和预留时间提前保护，账单存在延迟，不能作为精确计费结算依据。
 
@@ -41,7 +40,7 @@ Windows 的 Python 路径为 `.venv\Scripts\python.exe`。以下命令用对应 
 
 开发安装包保存在 `dist/`，已解压安装目录在 `work/package-stage/Programs/ColabOne`。打包会下载并校验独立 CPython 与依赖，用户无需另装 Python、Go 或 Node。
 
-所有单元测试均不连接 Google、Tailscale 或 Hugging Face，不分配 GPU。真实 GPU 验收需要首次授权完成，默认预算上限 5 CU，使用轻量模型，结束必须核实实例已释放。双平台 CI 构建并运行离线测试及打包运行时自检；未经过 Windows 人工交互验证时不可将其标记为已完成。
+所有单元测试均不连接 Google 或 Hugging Face，不分配 GPU。真实 GPU 验收需要首次授权完成，默认预算上限 5 CU，使用轻量模型，结束必须核实实例已释放。双平台 CI 构建并运行离线测试及打包运行时自检；未经过 Windows 人工交互验证时不可将其标记为已完成。
 
 ## 边界
 

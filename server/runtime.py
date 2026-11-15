@@ -15,6 +15,8 @@ import tarfile
 import threading
 import time
 import uuid
+import re
+import copy
 from functools import wraps
 from pathlib import Path
 from urllib.parse import quote
@@ -96,6 +98,8 @@ class Runtime:
         self.models_dir = root / "models"
         self.models_dir.mkdir(exist_ok=True)
         self.lock = threading.RLock()
+        self.sync_lock = threading.Lock()
+        self.quiescing = False
         self.http = http or requests.Session()
         self.http.trust_env = False
         self.drive = drive or DriveStore()
@@ -104,7 +108,7 @@ class Runtime:
             m.id: m
             for m in map(
                 ModelSpec.model_validate,
-                json.loads((catalog / "presets.json").read_text()),
+                json.loads((catalog / "presets.json").read_text(encoding="utf-8")),
             )
         }
         self.tasks: dict[str, Task] = {}
@@ -119,7 +123,7 @@ class Runtime:
         self.deadline = 0.0
         self.stopping = threading.Event()
         for path in root.glob("conversation-*.json"):
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             # A restart cannot continue a lost generation; preserve its partial answer.
             for message in data.get("messages", []):
                 if message.get("status") == "streaming":
@@ -127,13 +131,14 @@ class Runtime:
             self.conversations[data["id"]] = data
             self.dirty.add(data["id"])
         if (root / "models.json").exists():
-            for value in json.loads((root / "models.json").read_text()):
+            for value in json.loads((root / "models.json").read_text(encoding="utf-8")):
                 model = ModelSpec.model_validate(value)
                 self.models[model.id] = model
 
     def busy(self):
         return any(t.state == "running" for t in self.tasks.values())
 
+    @synchronized
     def status(self):
         if self.proc and self.proc.poll() is not None:
             self.proc, self.loaded = None, None
@@ -149,7 +154,11 @@ class Runtime:
             else max(0, self.idle_minutes * 60 - (time.time() - self.last_active)),
             "idle_minutes": self.idle_minutes,
             "tasks": [t.snapshot() for t in self.tasks.values()],
-            "sync": {"pending": len(self.dirty), "error": self.sync_error},
+            "sync": {
+                "pending": len(self.dirty),
+                "error": self.sync_error,
+                "connected": self.drive.available(),
+            },
             "deadline": self.deadline,
         }
 
@@ -179,7 +188,9 @@ class Runtime:
     def installed(self, model):
         directory = self.models_dir / model.id
         try:
-            receipt = json.loads((directory / "verified.json").read_text())
+            receipt = json.loads(
+                (directory / "verified.json").read_text(encoding="utf-8")
+            )
             return all(
                 receipt.get(f.path) == f.sha256
                 and (directory / f.path).stat().st_size == f.size
@@ -188,6 +199,7 @@ class Runtime:
         except (OSError, ValueError):
             return False
 
+    @synchronized
     def list_models(self):
         return [
             m.model_dump()
@@ -212,8 +224,18 @@ class Runtime:
             self.dirty.add("models")
         return m.model_dump()
 
+    @synchronized
+    def list_conversations(self):
+        return copy.deepcopy(
+            sorted(
+                self.conversations.values(), key=lambda c: c["updated_at"], reverse=True
+            )
+        )
+
     def submit(self, kind, model_id, fn):
         with self.lock:
+            if self.quiescing:
+                raise Conflict("实例正在准备释放")
             if self.busy():
                 raise Conflict("请等待当前任务完成，或先停止它")
             t = Task(kind, model_id)
@@ -324,7 +346,7 @@ class Runtime:
         return h.hexdigest()
 
     def prepare_engine(self, task):
-        config = json.loads((self.catalog / "engine.json").read_text())
+        config = json.loads((self.catalog / "engine.json").read_text(encoding="utf-8"))
         root = self.root / "engine" / config["tag"]
         binaries = (
             list(root.rglob("llama-server")) if (root / ".complete").exists() else []
@@ -454,9 +476,12 @@ class Runtime:
             m = self.models[model_id]
             shutil.rmtree(self.models_dir / m.id, ignore_errors=True)
 
+    @synchronized
     def save_conversation(self, convo):
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", convo["id"]):
+            raise ValueError("会话 ID 不合法")
         convo["updated_at"] = time.time()
-        self.conversations[convo["id"]] = convo
+        self.conversations[convo["id"]] = copy.deepcopy(convo)
         atomic_json(self.root / f"conversation-{convo['id']}.json", convo)
         self.dirty.add(convo["id"])
 
@@ -569,26 +594,34 @@ class Runtime:
         return task | {"conversation_id": convo["id"]}
 
     def sync(self):
+        with self.sync_lock:
+            return self._sync()
+
+    def _sync(self):
         # Do not hold the runtime lock during network IO. Serialize snapshots before sending.
-        for key in list(self.dirty):
+        with self.lock:
+            keys = list(self.dirty)
+        for key in keys:
             try:
-                data = (
-                    [m.model_dump() for m in self.models.values()]
-                    if key == "models"
-                    else self.conversations[key]
-                )
-                encoded = json.dumps(data, ensure_ascii=False)
+                with self.lock:
+                    data = (
+                        [m.model_dump() for m in self.models.values()]
+                        if key == "models"
+                        else self.conversations[key]
+                    )
+                    encoded = json.dumps(data, ensure_ascii=False)
                 self.drive.put(
                     "models.json" if key == "models" else f"conversation-{key}.json",
                     json.loads(encoded),
                 )
-                current = (
-                    [m.model_dump() for m in self.models.values()]
-                    if key == "models"
-                    else self.conversations[key]
-                )
-                if json.dumps(current, ensure_ascii=False) == encoded:
-                    self.dirty.discard(key)
+                with self.lock:
+                    current = (
+                        [m.model_dump() for m in self.models.values()]
+                        if key == "models"
+                        else self.conversations[key]
+                    )
+                    if json.dumps(current, ensure_ascii=False) == encoded:
+                        self.dirty.discard(key)
                 self.sync_error = ""
             except Exception:
                 self.sync_error = (
@@ -597,18 +630,42 @@ class Runtime:
                 return False
         return True
 
+    def prepare_release(self):
+        with self.lock:
+            self.quiescing = True
+            tasks = list(self.tasks.values())
+        try:
+            for task in tasks:
+                if task.state == "running":
+                    task.request_cancel()
+            deadline = time.monotonic() + 15
+            while any(t.state == "running" for t in tasks):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("任务仍在停止，请稍后重试释放")
+                time.sleep(0.1)
+            with self.sync_lock:
+                if not self._sync() or self.dirty:
+                    raise RuntimeError("会话尚未同步，请连接云盘，或导出后选择仍然释放")
+                self.drive.flush()
+            return {"ok": True}
+        except Exception:
+            self.quiescing = False
+            raise
+
     def start_background(self):
         def loop():
             while not self.stopping.wait(5):
-                self.sync()
+                if not self.quiescing and self.drive.available():
+                    self.sync()
                 if self.busy():
                     self.last_active = time.time()
                 budget_due = self.deadline and time.time() >= self.deadline
                 idle_due = time.time() - self.last_active >= self.idle_minutes * 60
                 if budget_due or idle_due:
-                    for t in self.tasks.values():
-                        t.request_cancel()
-                    self.sync()
+                    try:
+                        self.prepare_release()
+                    except Exception:
+                        pass  # Budget/idle release must still proceed when Drive is offline.
                     addr = os.environ.get("TBE_RUNTIME_ADDR", "")
                     if addr:
                         try:

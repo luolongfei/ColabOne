@@ -1059,3 +1059,30 @@ label {
 .copy-code:hover {
   background: #e3e9e5;
 }
+
+.setup-details {
+  margin-top: 22px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.setup-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+.details-content {
+  margin-top: 16px;
+}
+.setup-help {
+  background: #f1f5f2;
+  border: 1px solid #d9e5dd;
+  border-radius: 10px;
+  padding: 18px;
+  margin: 16px 0;
+}
+.setup-help strong {
+  font-size: 13px;
+}
+.setup-help p {
+  margin: 8px 0 16px;
+}
