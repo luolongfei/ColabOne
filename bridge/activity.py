@@ -11,7 +11,11 @@ def safe_message(message):
     text = str(message)
     text = re.sub(r"https?://[^\s<>\"']+", "[链接已隐藏]", text)
     text = re.sub(r"(?i)Bearer\s+\S+", "Bearer [已隐藏]", text)
-    text = re.sub(r"(?:ya29\.[\w.-]+|hf_[\w-]+|4/[\w./+%-]{12,})", "[凭据已隐藏]", text)
+    text = re.sub(
+        r"(?:ya29\.[\w.-]+|hf_[\w-]+|co_[\w-]{40,}|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,})",
+        "[凭据已隐藏]",
+        text,
+    )
     text = re.sub(
         r"(?i)((?:access_token|refresh_token|client_secret|code|token)\s*[=:]\s*)[^\s,;]+",
         r"\1[已隐藏]",

@@ -34,4 +34,7 @@ export const Desktop = {
   snapshot(): Promise<string> {
     return call("Desktop.Snapshot");
   },
+  writeClipboard(value: string): Promise<void> {
+    return call("Desktop.WriteClipboard", value);
+  },
 } as const;

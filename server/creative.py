@@ -460,7 +460,7 @@ def generate(runtime, task, request: CreativeRequest):
                         if request.kind == "video"
                         else data["images"][0]["b64_json"]
                     )
-                    runtime.creative.save(
+                    output = runtime.creative.save(
                         encoded,
                         request,
                         model.name,
@@ -468,6 +468,7 @@ def generate(runtime, task, request: CreativeRequest):
                         time.monotonic() - started,
                         data.get("frame_count"),
                     )
+                    task.outputs.append(output)
                     task.note("作品已保存到远端；连接云盘时会自动备份")
                     break
                 if job["status"] in ("failed", "cancelled"):
