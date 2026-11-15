@@ -5,11 +5,13 @@ import os
 import sys
 import threading
 import time
+import secrets
 from pathlib import Path
 
 import requests
 
 from bridge.auth import Auth, Vault
+from bridge.activity import Activity, safe_message
 from bridge.provider import Provider
 from common.files import atomic_json
 from common.models import resolve_import
@@ -59,6 +61,12 @@ class Controller:
         }
         self.last_auth = self.last_config = self.last_heartbeat = 0
         self.mount_cancel = threading.Event()
+        self.activity = Activity()
+        self.task_activity = {}
+        self.release_plan = None
+        self.activity.add("客户端已启动")
+        if self.vault.get("colab"):
+            self.activity.add("已恢复本机保存的 Google 登录；到期自动续期", "登录")
         if background:
             threading.Thread(target=self.monitor, daemon=True).start()
 
@@ -79,8 +87,12 @@ class Controller:
         with self.lock:
             value = copy.deepcopy(self.data)
         value["settings"] = self.settings.copy()
+        value["logs"] = self.activity.snapshot()
         value["setup"] = {
             "colab": bool(self.vault.get("colab")),
+            "persistent_login": bool(
+                (self.vault.get("colab") or {}).get("refresh_token")
+            ),
             "drive": bool(value["runtime"].get("sync", {}).get("connected")),
             "hf": bool(self.vault.get("hf")),
             "drive_waiting": bool(value.get("drive_waiting")),
@@ -89,6 +101,60 @@ class Controller:
 
     def update(self, **values):
         with self.lock:
+            operation = values.get("operation")
+            if operation and operation != self.data.get("operation"):
+                self.activity.add(operation["title"])
+            if values.get("error") and values["error"] != self.data.get("error"):
+                self.activity.add(values["error"], level="error")
+            runtime = values.get("runtime")
+            if runtime:
+                previous = self.data["runtime"]
+                labels = {
+                    "ready": "远端 GPU 已连接",
+                    "disconnected": "远端控制连接中断，实例可能仍在计费",
+                    "stopped": "当前客户端管理的 GPU 已停止",
+                    "releasing": "正在释放远端 GPU",
+                }
+                if (
+                    runtime.get("state") != previous.get("state")
+                    and runtime.get("state") in labels
+                ):
+                    self.activity.add(labels[runtime["state"]], "GPU")
+                for task in runtime.get("tasks", []):
+                    bucket = int(task.get("progress", 0) * 10)
+                    signature = (task["state"], bucket, task.get("message", ""))
+                    if self.task_activity.get(task["id"]) == signature:
+                        continue
+                    self.task_activity[task["id"]] = signature
+                    kind = {
+                        "download": "模型下载",
+                        "load": "模型加载",
+                        "chat": "对话生成",
+                    }.get(task["kind"], "远端任务")
+                    status = {
+                        "running": "进行中",
+                        "completed": "已完成",
+                        "failed": "失败",
+                        "cancelled": "已取消",
+                    }.get(task["state"], task["state"])
+                    detail = f" · {bucket * 10}%" if task["kind"] == "download" else ""
+                    detail += (
+                        (" · " + task.get("message", ""))
+                        if task["kind"] != "chat" and task.get("message")
+                        else ""
+                    )
+                    if task.get("error"):
+                        detail += " · " + task["error"]
+                    self.activity.add(
+                        kind + "：" + status + detail,
+                        "远端",
+                        "error" if task["state"] == "failed" else "info",
+                    )
+                # Bound task deduplication state to the current snapshot.
+                self.task_activity = {
+                    t["id"]: self.task_activity[t["id"]]
+                    for t in runtime.get("tasks", [])
+                }
             self.data.update(values)
 
     def async_operation(self, title, fn):
@@ -99,6 +165,7 @@ class Controller:
         def run():
             try:
                 fn()
+                self.activity.add(title + "：完成")
             except Exception as exc:
                 # HTTP exception URLs may contain OAuth codes: surface only a safe reason.
                 if isinstance(exc, requests.HTTPError):
@@ -107,7 +174,7 @@ class Controller:
                     )
                 else:
                     message = str(exc)[:500]
-                self.update(error=message)
+                self.update(error=safe_message(message))
             finally:
                 self.update(operation=None)
                 self.operation_lock.release()
@@ -128,11 +195,20 @@ class Controller:
                 operation={"title": "请在浏览器确认连接 Google 云盘", "running": True},
             )
 
+        def progress(message):
+            self.update(operation={"title": message, "running": True})
+            if message.startswith("已收到"):
+                self.update(auth_url="", drive_waiting=False)
+
         try:
-            self.provider.mount_drive(consent, self.mount_cancel)
+            self.provider.mount_drive(consent, self.mount_cancel, progress)
+            progress("云盘已挂载，正在恢复并同步会话")
             self.remote("POST", "restore")
-            self.remote("POST", "sync")
+            result = self.remote("POST", "sync")
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "云盘同步失败，请重试")
             self.refresh_remote()
+            self.activity.add("Google 云盘已连接，会话与模型清单已写入", "云盘")
         finally:
             self.update(auth_url="", drive_waiting=False)
 
@@ -184,7 +260,7 @@ class Controller:
             try:
                 self.connect_drive()
             except Exception as exc:
-                self.update(error=str(exc)[:300])
+                self.update(error=safe_message(exc))
 
     def release(self, force=False):
         if not force:
@@ -195,6 +271,55 @@ class Controller:
             for m in self.data["models"]:
                 m["downloaded"] = m["loaded"] = False
         self.update(runtime={"state": "stopped"})
+
+    def preview_release_all(self):
+        account = self.provider.account()
+        self.update(account=account)
+        plan = {
+            "id": secrets.token_hex(16),
+            "instances": account["instances"],
+            "account_sub": self.auth.profile()["sub"],
+        }
+        self.release_plan = plan
+        return {"id": plan["id"], "instances": plan["instances"]}
+
+    def release_all(self, plan_id, force=False):
+        plan = self.release_plan
+        if (
+            not plan
+            or plan["id"] != plan_id
+            or plan["account_sub"] != self.auth.profile()["sub"]
+        ):
+            raise RuntimeError("实例清单已变化，请重新点击停止全部")
+        targets = [item["id"] for item in plan["instances"]]
+        owned = self.vault.get("runtime_session") or {}
+        if owned.get("endpoint") in targets and not force:
+            self.activity.add("停止任务并等待云盘上传完成", "云盘")
+            self.remote("POST", "prepare-release")
+        try:
+            self.provider.release_all(
+                targets, lambda message: self.activity.add(message, "GPU")
+            )
+        finally:
+            self.last_auth = 0
+            if not self.vault.get("runtime_session"):
+                self.update(runtime={"state": "stopped"}, models=self.presets())
+            self.update(account=self.provider.account())
+        self.release_plan = None
+        account = self.data["account"]
+        if account["assignments"]:
+            raise RuntimeError(
+                f"已处理确认的实例；当前账号仍有 {account['assignments']} 个实例，请再次停止全部"
+            )
+        self.activity.add(
+            "已确认 0 个运行实例"
+            + (
+                "，费率为 0 CU/小时"
+                if account["rate"] == 0
+                else "，等待 Google 更新计费费率"
+            ),
+            "计费",
+        )
 
     def import_model(self, payload):
         spec = resolve_import(
@@ -239,6 +364,29 @@ class Controller:
         return {"ok": True}
 
     def command(self, action, payload):
+        if action == "logs.clear":
+            self.activity.clear()
+            return {"ok": True}
+        if action == "runtime.release.preview":
+            return self.preview_release_all()
+        if action == "runtime.release.all":
+            return self.async_operation(
+                "停止账号下全部已确认实例",
+                lambda: self.release_all(
+                    payload.get("plan_id"), bool(payload.get("force"))
+                ),
+            )
+        actions = {
+            "model.download": "请求将模型下载到远端 GPU",
+            "model.load": "请求加载模型到远端显存",
+            "model.unload": "卸载远端模型",
+            "model.delete": "删除远端模型文件",
+            "chat.send": "开始远端对话生成",
+            "task.cancel": "请求取消远端任务",
+            "drive.skip": "取消等待云盘授权",
+        }
+        if action in actions:
+            self.activity.add(actions[action])
         if action == "settings.save":
             return self.save_settings(payload)
         if action == "auth.colab.begin":
@@ -251,6 +399,7 @@ class Controller:
                 self.auth.colab_login(lambda url: self.update(auth_url=url))
                 self.last_auth = 0
                 self.update(conversations=[], models=self.presets(), auth_url="")
+                self.activity.add("Google 登录已保存到本机，后续自动续期", "登录")
 
             return self.async_operation("等待 Google 登录", login)
         if action == "auth.colab.finish":
@@ -259,6 +408,7 @@ class Controller:
                 self.auth.colab_finish(payload["code"])
                 self.last_auth = 0
                 self.update(conversations=[], models=self.presets(), auth_url="")
+                self.activity.add("Google 登录已保存到本机，后续自动续期", "登录")
 
             if self.operation_lock.locked():
                 # A paste can finish a pending loopback login; its operation then

@@ -14,6 +14,7 @@ from importlib import resources
 import keyring
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from colab_cli.auth import PUBLIC_SCOPES, REMOTE_REDIRECT_URI
 
@@ -81,18 +82,28 @@ class Auth:
         return {"email": data.get("email", ""), "sub": data["sub"]}
 
     def credentials(self, name):
-        raw = self.vault.get(name)
-        if not raw:
-            raise RuntimeError(
-                "请先完成 " + ("Colab" if name == "colab" else "Google Drive") + " 登录"
-            )
-        creds = Credentials.from_authorized_user_info(raw)
-        if not creds.valid:
-            if not creds.refresh_token:
-                raise RuntimeError("授权已失效，请重新登录")
-            creds.refresh(Request())
-            self.vault.set(name, json.loads(creds.to_json()))
-        return creds
+        # Serialize refresh and account switching so a stale request cannot overwrite
+        # credentials belonging to a newer login. Never erase tokens on network errors.
+        with self.lock:
+            raw = self.vault.get(name)
+            if not raw:
+                raise RuntimeError("请先完成 Google 登录")
+            creds = Credentials.from_authorized_user_info(raw)
+            if not creds.valid:
+                if not creds.refresh_token:
+                    raise RuntimeError("Google 授权无法自动续期，请在设置中重新登录")
+                try:
+                    creds.refresh(Request())
+                except RefreshError as exc:
+                    if getattr(exc, "retryable", False):
+                        raise RuntimeError(
+                            "Google 暂时无法续期，已保留本机登录，请稍后重试"
+                        ) from None
+                    raise RuntimeError(
+                        "Google 授权已失效，请在设置中重新登录"
+                    ) from None
+                self.vault.set(name, json.loads(creds.to_json()))
+            return creds
 
     def colab_begin(self):
         with self.lock:
@@ -109,7 +120,9 @@ class Auth:
             )
             self.flow.redirect_uri = REMOTE_REDIRECT_URI
             url, _ = self.flow.authorization_url(
-                prompt="select_account consent", token_usage="remote"
+                prompt="select_account consent",
+                token_usage="remote",
+                access_type="offline",
             )
             return {"url": url}
 

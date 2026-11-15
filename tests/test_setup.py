@@ -51,7 +51,6 @@ def test_drive_consent_is_async_and_automatically_resumes():
             {"unauthorized_redirect_uri": "https://accounts.google.com/changed-state"}
         ),
         response({"success": True}),
-        response({"success": True}),
     ]
     cancel = threading.Event()
     cancel.wait = Mock(return_value=False)
@@ -71,7 +70,9 @@ def test_drive_consent_is_async_and_automatically_resumes():
     assert "authuser=user%40example.com" in notify.call_args.args[0]
     reply = ws.stdin_channel.send.call_args.args[0]
     assert reply["content"]["value"] == {"type": "colab_reply", "colab_msg_id": 12}
-    assert client.session.post.call_args.kwargs["params"]["dryrun"] == "false"
+    assert [
+        call.kwargs["params"]["dryrun"] for call in client.session.post.call_args_list
+    ] == ["true", "false", "false"]
 
 
 def test_drive_cancel_replies_to_kernel_without_hanging():
@@ -242,3 +243,59 @@ runpy.run_path(%r,run_name='__main__')
         check=True,
     )
     assert json.loads(result.stdout.decode("utf-8"))["result"] == body["payload"]
+
+
+def test_drive_success_requires_real_propagation_and_explicit_success():
+    client = Mock(colab_domain="https://colab.research.google.com")
+    client.session.get.return_value = response({"token": "test"})
+    client.session.post.side_effect = [response({"success": True}), response({})]
+    with pytest.raises(RuntimeError):
+        DriveMount(client, "owned", Mock()).propagate()
+    assert [
+        call.kwargs["params"]["dryrun"] for call in client.session.post.call_args_list
+    ] == ["true", "false"]
+
+
+def test_saved_credentials_refresh_once_across_concurrent_requests(monkeypatch):
+    from bridge.auth import Auth
+    from concurrent.futures import ThreadPoolExecutor
+
+    vault = MemoryVault()
+    vault.set("colab", {"token": "expired", "refresh_token": "saved-refresh"})
+    refreshed = []
+
+    class Credential:
+        def __init__(self, raw):
+            self.valid = raw["token"] == "new"
+            self.refresh_token = raw["refresh_token"]
+
+        def refresh(self, _):
+            refreshed.append(True)
+
+        def to_json(self):
+            return json.dumps({"token": "new", "refresh_token": self.refresh_token})
+
+    monkeypatch.setattr("bridge.auth.Credentials.from_authorized_user_info", Credential)
+    auth = Auth(vault)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: auth.credentials("colab"), range(4)))
+    assert refreshed == [True]
+    assert vault.get("colab")["refresh_token"] == "saved-refresh"
+    # A new client process restores the same persistent authorization.
+    assert Auth(vault).credentials("colab").valid
+
+
+def test_refresh_network_error_preserves_saved_login(monkeypatch):
+    from bridge.auth import Auth
+
+    vault = MemoryVault()
+    raw = {"token": "expired", "refresh_token": "saved"}
+    vault.set("colab", raw)
+    credential = Mock(valid=False, refresh_token="saved")
+    credential.refresh.side_effect = OSError("network unavailable")
+    monkeypatch.setattr(
+        "bridge.auth.Credentials.from_authorized_user_info", lambda _: credential
+    )
+    with pytest.raises(OSError):
+        Auth(vault).credentials("colab")
+    assert vault.get("colab") == raw

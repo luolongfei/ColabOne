@@ -47,12 +47,19 @@ class Provider:
             return {"logged_in": False}
         client = self.client()
         info = client.get_consumption_user_info()
+        owned = (self.vault.get("runtime_session") or {}).get("endpoint")
+        instances = [
+            {"id": a.endpoint, "managed": a.endpoint == owned}
+            for a in client.list_assignments()
+        ]
         return {
             "logged_in": True,
             "email": self.auth.profile().get("email", ""),
             "balance": float(info.paid_compute_units_balance),
             "rate": float(info.consumption_rate_hourly),
-            "assignments": int(info.assignments_count),
+            "assignments": len(instances),
+            "instances": instances,
+            "checked_at": time.time(),
         }
 
     def session(self, refresh=False):
@@ -98,6 +105,36 @@ class Provider:
                 return {"ok": True}
             time.sleep(2)
         raise RuntimeError("释放请求已发送，但尚未确认停止计费；请刷新后重试")
+
+    def release_all(self, targets, notify):
+        """Explicit user action only. Guards and startup rollback still release owned only.
+
+        Stop the reviewed set; do not chase new instances created after confirmation.
+        Confirm disappearance even if an unassign response is lost.
+        """
+        client = self.client()
+        targets = set(targets)
+        current = {a.endpoint for a in client.list_assignments()}
+        for endpoint in sorted(targets & current):
+            notify("正在停止实例：" + endpoint)
+            try:
+                client.unassign(endpoint)
+            except Exception:
+                notify("停止请求未获确认，正在重新查询：" + endpoint)
+        for attempt in range(15):
+            current = {a.endpoint for a in client.list_assignments()}
+            owned = (self.vault.get("runtime_session") or {}).get("endpoint")
+            if owned in targets and owned not in current:
+                self.clear()
+                self.close_kernel_channel()
+            remaining = targets & current
+            if not remaining:
+                return {"ok": True, "remaining": len(current)}
+            if attempt < 14:
+                time.sleep(2)
+        raise RuntimeError(
+            f"仍有 {len(remaining)} 个实例未确认停止，可能仍在计费，请重试"
+        )
 
     def allocate(self, gpu):
         choices = {
@@ -294,7 +331,7 @@ class Provider:
                     ) from exc
             raise
 
-    def mount_drive(self, notify, cancel):
+    def mount_drive(self, notify, cancel, progress=None):
         with self.kernel_lock:
             session = self.session(refresh=True)
             if not session:
@@ -305,7 +342,9 @@ class Provider:
             )
             if timeout < 30:
                 raise RuntimeError("本次 GPU 预算即将用完，请先释放后重新启动")
-            mount = DriveMount(self.client(), session.endpoint, notify, cancel, timeout)
+            mount = DriveMount(
+                self.client(), session.endpoint, notify, cancel, timeout, progress
+            )
             code = """
 import os as _co_os
 if not _co_os.path.ismount('/content/drive'):
