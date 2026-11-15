@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Literal
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, Header, HTTPException
@@ -18,6 +19,7 @@ from server.runtime import Runtime, Conflict
 
 class Download(BaseModel):
     hf_token: str = ""
+    threads: Literal[8, 32] = 8
 
 
 class Turn(BaseModel):
@@ -26,8 +28,13 @@ class Turn(BaseModel):
 
 
 class Configure(BaseModel):
-    idle_minutes: int = Field(default=30, ge=1, le=120)
+    idle_minutes: int = Field(default=3, ge=1, le=120)
+    idle_countdown_seconds: int = Field(default=60, ge=10, le=300)
     deadline: float = Field(default=0, ge=0)
+
+
+class Activity(BaseModel):
+    hold_seconds: int = Field(default=0, ge=0, le=330)
 
 
 def create_app(runtime, token, background=False):
@@ -87,8 +94,13 @@ def create_app(runtime, token, background=False):
     @app.post("/api/v1/configure", dependencies=auth)
     def configure(body: Configure):
         runtime.idle_minutes = body.idle_minutes
+        runtime.idle_countdown_seconds = body.idle_countdown_seconds
         runtime.deadline = body.deadline
         return {"ok": True}
+
+    @app.post("/api/v1/activity", dependencies=auth)
+    def activity(body: Activity):
+        return runtime.touch(body.hold_seconds)
 
     @app.post("/api/v1/restore", dependencies=auth)
     def restore():
@@ -112,7 +124,7 @@ def create_app(runtime, token, background=False):
 
     @app.post("/api/v1/models/{model_id}/download", dependencies=auth)
     def download(model_id: str, body: Download):
-        return runtime.download(model_id, body.hf_token)
+        return runtime.download(model_id, body.hf_token, body.threads)
 
     @app.post("/api/v1/models/{model_id}/load", dependencies=auth)
     def load(model_id: str):

@@ -23,6 +23,7 @@ import {
   PhTerminalWindow,
   PhLightning,
 } from "@phosphor-icons/vue";
+import HubBrowser from "./HubBrowser.vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import {
@@ -44,7 +45,7 @@ const nav = [
   { id: "chat", label: "聊天", icon: PhChatCircle },
   { id: "settings", label: "设置", icon: PhGearSix },
 ];
-const logsOpen = ref(localStorage.getItem("colabone.logs.open") !== "false");
+const logsOpen = ref(localStorage.getItem("colabone.logs.open") === "true");
 const logFollow = ref(true),
   logLevel = ref("all"),
   logBody = ref<HTMLElement | null>(null);
@@ -119,6 +120,7 @@ const task = computed(() =>
 const selected = ref(""),
   draft = ref(""),
   search = ref(""),
+  modelTab = ref("mine"),
   showImport = ref(false),
   showRelease = ref(false),
   force = ref(false),
@@ -165,7 +167,9 @@ const loaded = computed(() =>
 const form = ref({
   gpu: "T4",
   max_cu: 5,
-  idle_minutes: 30,
+  idle_minutes: 3,
+  idle_countdown_seconds: 60,
+  download_threads: 8,
   auto_drive: true,
   hf_token: "",
 });
@@ -175,6 +179,39 @@ const code = ref(""),
 let timer: ReturnType<typeof setTimeout>,
   toastTimer: ReturnType<typeof setTimeout>,
   stopped = false;
+const clockNow = ref(Date.now());
+let clockTimer: ReturnType<typeof setInterval>;
+let lastInteraction = 0;
+const idle = computed(() => state.value.runtime.idle);
+const snapshotAt = ref(Date.now());
+const idleRemaining = computed(() =>
+  Math.max(
+    0,
+    Math.ceil(
+      (idle.value?.remaining_seconds ?? 0) -
+        (clockNow.value - snapshotAt.value) / 1000,
+    ),
+  ),
+);
+const countdown = computed(
+  () =>
+    idle.value &&
+    idle.value.phase !== "active" &&
+    idleRemaining.value <= idle.value.countdown_seconds,
+);
+const duration = (seconds: number | null) =>
+  seconds === null
+    ? "计算中"
+    : `${Math.floor(Math.max(0, seconds) / 60)}:${String(Math.ceil(Math.max(0, seconds)) % 60).padStart(2, "0")}`;
+function interaction(event?: Event) {
+  if (event && !event.isTrusted) return;
+  if (!ready.value || Date.now() - lastInteraction < 5000) return;
+  lastInteraction = Date.now();
+  command("runtime.activity").catch(() => {});
+}
+function escapeLogs(e: KeyboardEvent) {
+  if (e.key === "Escape") logsOpen.value = false;
+}
 let initialized = false,
   openedAuth = "";
 const bytes = (n = 0) =>
@@ -199,7 +236,12 @@ function notify(text: string) {
 }
 async function refresh() {
   try {
-    state.value = await snapshot();
+    const value = await snapshot();
+    if (
+      value.runtime.idle?.server_time !== state.value.runtime.idle?.server_time
+    )
+      snapshotAt.value = Date.now();
+    state.value = value;
     if (!initialized) {
       Object.assign(form.value, state.value.settings);
       initialized = true;
@@ -343,16 +385,26 @@ watch(
       if (pane) pane.scrollTop = pane.scrollHeight;
     }),
 );
-onMounted(refresh);
+onMounted(() => {
+  refresh();
+  clockTimer = setInterval(() => (clockNow.value = Date.now()), 1000);
+  for (const name of ["pointerdown", "keydown", "wheel"])
+    window.addEventListener(name, interaction, { passive: true });
+  window.addEventListener("keydown", escapeLogs);
+});
 onUnmounted(() => {
   stopped = true;
+  clearInterval(clockTimer);
+  for (const name of ["pointerdown", "keydown", "wheel"])
+    window.removeEventListener(name, interaction);
+  window.removeEventListener("keydown", escapeLogs);
   clearTimeout(timer);
   clearTimeout(toastTimer);
 });
 </script>
 
 <template>
-  <div :class="['app-shell', { 'logs-open': logsOpen }]">
+  <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <PhCirclesThree :size="28" weight="duotone" /><span>ColabOne</span>
@@ -386,6 +438,19 @@ onUnmounted(() => {
           ><span>{{ state.runtime.gpu?.name || "Colab GPU" }}</span>
         </div>
         <div class="header-right">
+          <button
+            v-if="ready && idle"
+            class="idle-timer"
+            :class="{ counting: countdown }"
+            @click="interaction()"
+            :title="'闲置 3 分钟后倒计时 60 秒；继续操作可重置，下载、加载和生成期间暂停'"
+          >
+            <span v-if="idle.phase === 'active'">任务进行中 · 暂停释放</span>
+            <span v-else-if="countdown"
+              >自动释放 {{ duration(idleRemaining) }} · 继续使用</span
+            >
+            <span v-else>空闲保护已开启</span>
+          </button>
           <span
             v-if="state.account.logged_in"
             :class="['billing-pill', { active: billing }]"
@@ -428,6 +493,18 @@ onUnmounted(() => {
           </button>
         </div>
       </header>
+      <div v-if="ready && !state.runtime.protocol" class="banner">
+        <span
+          >当前实例需要更新远端服务，以启用并发下载和闲置倒计时；模型缓存会保留。</span
+        >
+        <button
+          class="text-button"
+          :disabled="!!task || !!loaded || !!state.operation"
+          @click="act('runtime.upgrade')"
+        >
+          更新远端服务
+        </button>
+      </div>
       <div v-if="error || state.error" class="banner error" role="alert">
         <PhWarningCircle :size="19" /><span>{{ error || state.error }}</span
         ><button
@@ -537,7 +614,7 @@ onUnmounted(() => {
             >
             <div class="device-policy">
               <span>单次预算 {{ form.max_cu }} CU</span
-              ><small>空闲 {{ form.idle_minutes }} 分钟自动释放</small>
+              ><small>闲置 3 分钟后倒计时 60 秒释放</small>
             </div>
             <button
               v-if="state.runtime.state === 'stopped'"
@@ -558,9 +635,7 @@ onUnmounted(() => {
               "
               @click="openRelease"
             >
-              <PhStop :size="17" weight="fill" />停止全部（{{
-                instanceCount
-              }}
+              <PhStop :size="17" weight="fill" />停止全部（{{ instanceCount }}
               个实例）
             </button>
           </div>
@@ -609,88 +684,146 @@ onUnmounted(() => {
             <p>下载到当前远端设备，按需加载到显存。</p>
           </div>
           <button
-            class="primary"
+            class="secondary"
             :disabled="!ready || !!state.operation"
             @click="showImport = true"
           >
             <PhPlus :size="18" />导入 GGUF
           </button>
         </div>
-        <div class="list-toolbar">
-          <input
-            v-model="search"
-            type="search"
-            placeholder="查找模型"
-            aria-label="查找模型"
-          /><span
-            >{{ filtered.length }} 个模型 ·
-            {{ state.models.filter((m) => m.downloaded).length }} 个已下载</span
+        <div class="model-tabs">
+          <div role="tablist" aria-label="模型来源">
+            <button
+              role="tab"
+              :aria-selected="modelTab === 'mine'"
+              :class="{ active: modelTab === 'mine' }"
+              @click="modelTab = 'mine'"
+            >
+              我的模型</button
+            ><button
+              role="tab"
+              :aria-selected="modelTab === 'hub'"
+              :class="{ active: modelTab === 'hub' }"
+              @click="modelTab = 'hub'"
+            >
+              在线搜索
+            </button>
+          </div>
+          <label
+            >下载并发
+            <select
+              v-model.number="form.download_threads"
+              aria-label="下载并发线程"
+              @change="save"
+            >
+              <option :value="8">8 线程</option>
+              <option :value="32">32 线程</option>
+            </select></label
           >
         </div>
-        <div v-if="!ready" class="inline-note">
-          <PhHardDrives :size="18" />先启动远端 GPU，即可下载和加载模型。<button
-            class="text-button"
-            @click="page = 'device'"
-          >
-            前往设备
-          </button>
-        </div>
-        <div class="model-list">
-          <article v-for="model in filtered" :key="model.id" class="model-row">
-            <div class="model-avatar">
-              <PhCube :size="24" weight="duotone" />
-            </div>
-            <div class="model-info">
-              <div class="model-title">
-                <h3>{{ model.name }}</h3>
-                <span v-if="model.loaded" class="tag green">已加载</span
-                ><span v-else-if="model.downloaded" class="tag">已下载</span>
+        <HubBrowser
+          v-if="modelTab === 'hub'"
+          :ready="ready"
+          :disabled="
+            !!task || busy || !!state.operation || !state.runtime.protocol
+          "
+          @device="page = 'device'"
+          @installed="
+            modelTab = 'mine';
+            notify('已提交到远端，运行日志会显示下载进度');
+          "
+        />
+        <template v-else>
+          <div class="list-toolbar">
+            <input
+              v-model="search"
+              type="search"
+              placeholder="查找模型"
+              aria-label="查找模型"
+            /><span
+              >{{ filtered.length }} 个模型 ·
+              {{ state.models.filter((m) => m.downloaded).length }}
+              个已下载</span
+            >
+          </div>
+          <div v-if="!ready" class="inline-note">
+            <PhHardDrives :size="18" />先启动远端
+            GPU，即可下载和加载模型。<button
+              class="text-button"
+              @click="page = 'device'"
+            >
+              前往设备
+            </button>
+          </div>
+          <div class="model-list">
+            <article
+              v-for="model in filtered"
+              :key="model.id"
+              class="model-row"
+            >
+              <div class="model-avatar">
+                <PhCube :size="24" weight="duotone" />
               </div>
-              <p>{{ model.description }}</p>
-              <small
-                >{{ bytes(model.size) }} <span>·</span>
-                {{
-                  model.min_vram_mib
-                    ? `建议显存 ${(model.min_vram_mib / 1024).toFixed(0)} GB 起`
-                    : "根据模型大小选择 GPU"
-                }}</small
-              >
+              <div class="model-info">
+                <div class="model-title">
+                  <h3>{{ model.name }}</h3>
+                  <span v-if="model.loaded" class="tag green">已加载</span
+                  ><span v-else-if="model.downloaded" class="tag">已下载</span>
+                </div>
+                <p>{{ model.description }}</p>
+                <small
+                  >{{ bytes(model.size) }} <span>·</span>
+                  {{
+                    model.min_vram_mib
+                      ? `建议显存 ${(model.min_vram_mib / 1024).toFixed(0)} GB 起`
+                      : "根据模型大小选择 GPU"
+                  }}</small
+                >
+              </div>
+              <div class="model-actions">
+                <button
+                  v-if="!model.downloaded"
+                  class="secondary"
+                  :disabled="
+                    !ready ||
+                    !!task ||
+                    busy ||
+                    !!state.operation ||
+                    !state.runtime.protocol
+                  "
+                  @click="act('model.download', { id: model.id })"
+                >
+                  <PhDownloadSimple :size="17" />下载到远端</button
+                ><button
+                  v-else-if="!model.loaded"
+                  class="secondary"
+                  :disabled="!canLoad(model, state) || busy"
+                  @click="act('model.load', { id: model.id })"
+                >
+                  <PhPlay :size="17" />加载</button
+                ><button
+                  v-else
+                  class="secondary"
+                  :disabled="!!task || busy"
+                  @click="act('model.unload')"
+                >
+                  卸载</button
+                ><button
+                  v-if="model.downloaded && !model.loaded"
+                  class="icon-button"
+                  aria-label="删除远端模型文件"
+                  :disabled="!!task || busy"
+                  @click="deleteTarget = model"
+                >
+                  <PhTrash :size="19" />
+                </button>
+              </div>
+            </article>
+            <div v-if="!filtered.length" class="empty-small">
+              没有匹配的模型
             </div>
-            <div class="model-actions">
-              <button
-                v-if="!model.downloaded"
-                class="secondary"
-                :disabled="!ready || !!task || busy"
-                @click="act('model.download', { id: model.id })"
-              >
-                <PhDownloadSimple :size="17" />下载到远端</button
-              ><button
-                v-else-if="!model.loaded"
-                class="secondary"
-                :disabled="!canLoad(model, state) || busy"
-                @click="act('model.load', { id: model.id })"
-              >
-                <PhPlay :size="17" />加载</button
-              ><button
-                v-else
-                class="secondary"
-                :disabled="!!task || busy"
-                @click="act('model.unload')"
-              >
-                卸载</button
-              ><button
-                v-if="model.downloaded && !model.loaded"
-                class="icon-button"
-                aria-label="删除远端模型文件"
-                :disabled="!!task || busy"
-                @click="deleteTarget = model"
-              >
-                <PhTrash :size="19" />
-              </button>
-            </div>
-          </article>
-          <div v-if="!filtered.length" class="empty-small">没有匹配的模型</div>
-        </div>
+          </div>
+        </template>
       </main>
       <main v-else-if="page === 'chat'" class="chat-layout">
         <aside class="conversation-sidebar">
@@ -874,7 +1007,15 @@ onUnmounted(() => {
               class="primary"
               @click="page = 'device'"
             >
-              去启动 GPU<PhCaretRight :size="16" />
+              {{
+                ready
+                  ? "查看 GPU"
+                  : state.runtime.state === "starting"
+                    ? "查看启动进度"
+                    : state.runtime.state === "disconnected"
+                      ? "查看连接状态"
+                      : "去启动 GPU"
+              }}<PhCaretRight :size="16" />
             </button>
             <button
               v-if="state.auth_url && state.operation"
@@ -1001,13 +1142,13 @@ onUnmounted(() => {
                 max="100"
                 step="0.1"
             /></label>
-            <label
-              >空闲自动释放（分钟）<input
-                v-model.number="form.idle_minutes"
-                type="number"
-                min="1"
-                max="120"
-            /></label>
+            <div class="idle-policy">
+              <strong>空闲自动释放</strong>
+              <p>
+                闲置 3 分钟后，倒计时 60
+                秒释放当前实例。继续操作会重置；下载、加载和生成回复期间暂停。
+              </p>
+            </div>
           </div>
           <p class="footnote">
             预算保护会提前预留释放时间。新的预算从下次启动 GPU 生效。
@@ -1041,8 +1182,28 @@ onUnmounted(() => {
         <div>
           <strong>{{
             task.kind === "download" ? "正在下载到远端" : "正在加载模型"
-          }}</strong><small>{{ task.message }}</small
-          ><progress
+          }}</strong><small>{{ task.message }}</small>
+          <div v-if="task.download" class="download-stats">
+            <b>{{ (task.download.speed_bps / 1024 ** 2).toFixed(1) }} MiB/s</b>
+            <span
+              >{{ bytes(task.download.downloaded_bytes) }} /
+              {{ bytes(task.download.total_bytes) }}</span
+            >
+            <span>{{
+              task.download.phase === "verifying"
+                ? "正在校验 SHA-256"
+                : `预计剩余 ${duration(task.download.eta_seconds)}`
+            }}</span>
+            <span
+              >{{ task.download.connections }}/{{
+                task.download.threads
+              }}
+              个连接 · 文件 {{ task.download.file_index }}/{{
+                task.download.file_count
+              }}</span
+            >
+          </div>
+          <progress
             v-if="task.kind === 'download'"
             :value="task.progress"
             max="1"
@@ -1065,90 +1226,93 @@ onUnmounted(() => {
         <PhWarningCircle :size="17" />{{ failed.error }}
       </div>
     </div>
-    <aside
-      v-if="logsOpen"
-      id="activity-panel"
-      class="activity-panel"
-      aria-label="运行日志"
-    >
-      <div class="activity-heading">
-        <PhTerminalWindow :size="19" />
-        <h2>运行日志</h2>
-        <button
-          class="icon-button"
-          aria-label="关闭日志侧栏"
-          @click="logsOpen = false"
-        >
-          <PhX :size="18" />
-        </button>
-      </div>
-      <div class="activity-current">
-        <span class="eyebrow">当前状态</span>
-        <p>
-          <span v-if="state.operation || task" class="spinner"></span
-          >{{ currentActivity }}
-        </p>
-      </div>
-      <div class="activity-toolbar">
-        <select v-model="logLevel" aria-label="日志级别">
-          <option value="all">全部日志</option>
-          <option value="error">仅错误</option></select
-        ><button
-          class="icon-button"
-          aria-label="复制日志"
-          :disabled="!logEntries.length"
-          @click="copyLogs"
-        >
-          <PhCopy :size="16" /></button
-        ><button
-          class="icon-button"
-          aria-label="清空日志"
-          :disabled="!state.logs?.length"
-          @click="act('logs.clear')"
-        >
-          <PhTrash :size="16" />
-        </button>
-      </div>
-      <div
-        ref="logBody"
-        class="activity-feed"
-        role="log"
-        aria-label="实时运行记录"
-        aria-live="off"
-        tabindex="0"
-        @scroll="logScroll"
+    <Transition name="log-drawer">
+      <aside
+        v-if="logsOpen"
+        id="activity-panel"
+        class="activity-panel"
+        aria-label="运行日志"
       >
-        <p v-if="!logEntries.length" class="activity-empty">
-          {{
-            logLevel === "error"
-              ? "暂无错误"
-              : "操作开始后，这里会显示运行进度。"
-          }}
-        </p>
-        <div
-          v-for="entry in logEntries"
-          :key="entry.id"
-          :class="['activity-entry', entry.level]"
-        >
-          <div class="activity-meta">
-            <time>{{ logTime(entry.time) }}</time
-            ><span>{{ entry.source }}</span
-            ><b v-if="entry.level === 'error'">错误</b>
-          </div>
-          <p>{{ entry.message }}</p>
+        <div class="activity-heading">
+          <PhTerminalWindow :size="19" />
+          <h2>运行日志</h2>
+          <button
+            class="icon-button"
+            aria-label="关闭日志侧栏"
+            @click="logsOpen = false"
+          >
+            <PhX :size="18" />
+          </button>
         </div>
-      </div>
-      <div class="activity-bottom">
-        <span>最近 300 条 · 本次运行</span
-        ><button
-          class="text-button"
-          :class="{ following: logFollow }"
-          @click="followLogs"
+        <div class="activity-current">
+          <span class="eyebrow">当前状态</span>
+          <p>
+            <span v-if="state.operation || task" class="spinner"></span
+            >{{ currentActivity }}
+          </p>
+        </div>
+        <div class="activity-toolbar">
+          <select v-model="logLevel" aria-label="日志级别">
+            <option value="all">全部日志</option>
+            <option value="error">仅错误</option></select
+          ><button
+            class="icon-button"
+            aria-label="复制日志"
+            :disabled="!logEntries.length"
+            @click="copyLogs"
+          >
+            <PhCopy :size="16" /></button
+          ><button
+            class="icon-button"
+            aria-label="清空日志"
+            :disabled="!state.logs?.length"
+            @click="act('logs.clear')"
+          >
+            <PhTrash :size="16" />
+          </button>
+        </div>
+        <div
+          ref="logBody"
+          class="activity-feed"
+          role="log"
+          aria-label="实时运行记录"
+          aria-live="off"
+          tabindex="0"
+          @scroll="logScroll"
         >
-          {{ logFollow ? "跟随最新" : "回到最新" }}
-        </button>
-      </div>
-    </aside>
+          <p v-if="!logEntries.length" class="activity-empty">
+            {{
+              logLevel === "error"
+                ? "暂无错误"
+                : "操作开始后，这里会显示运行进度。"
+            }}
+          </p>
+          <div
+            v-for="entry in logEntries"
+            :key="entry.id"
+            :class="['activity-entry', entry.level]"
+          >
+            <div class="activity-meta">
+              <time>{{ logTime(entry.time) }}</time><span>{{
+                entry.source
+              }}</span
+              ><b v-if="entry.level === 'error'">错误</b>
+            </div>
+            <p>{{ entry.message }}</p>
+          </div>
+        </div>
+        <div class="activity-bottom">
+          <span>最近 300 条 · 本次运行</span
+          ><button
+            class="text-button"
+            :class="{ following: logFollow }"
+            @click="followLogs"
+          >
+            {{ logFollow ? "跟随最新" : "回到最新" }}
+          </button>
+        </div>
+      </aside>
+    </Transition>
     <div v-if="toast" class="toast" role="status">
       <PhCheck :size="18" />{{ toast }}
     </div>
@@ -1214,8 +1378,7 @@ onUnmounted(() => {
         </p>
         <ul v-else class="release-instances">
           <li v-for="instance in releasePlan.instances" :key="instance.id">
-            <code>{{ instance.id }}</code
-            ><span>{{
+            <code>{{ instance.id }}</code><span>{{
               instance.managed
                 ? "ColabOne 当前实例 · 停止前同步会话"
                 : "其他 Colab 实例 · 请确认已保存工作"

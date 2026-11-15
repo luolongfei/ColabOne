@@ -102,7 +102,7 @@ def test_drive_mount_never_opens_untrusted_redirect():
         {"unauthorized_redirect_uri": "https://attacker.invalid/"}
     )
     notify = Mock()
-    with pytest.raises(RuntimeError, match="有效"):
+    with pytest.raises(RuntimeError, match="未接受"):
         DriveMount(client, "owned", notify).propagate()
     notify.assert_not_called()
 
@@ -299,3 +299,48 @@ def test_refresh_network_error_preserves_saved_login(monkeypatch):
     with pytest.raises(OSError):
         Auth(vault).credentials("colab")
     assert vault.get("colab") == raw
+
+
+def test_drive_reuses_existing_grant_before_opening_browser():
+    client = Mock(colab_domain="https://colab.research.google.com")
+    client.session.get.return_value = response({"token": "test-token"})
+    client.session.post.side_effect = [
+        response({"unauthorized_redirect_uri": "https://accounts.google.com/consent"}),
+        response({"success": True}),
+    ]
+    notify = Mock()
+    DriveMount(client, "owned", notify).propagate()
+    notify.assert_not_called()
+
+
+def test_drive_400_while_user_is_confirming_does_not_abort_or_reopen():
+    client = Mock(colab_domain="https://colab.research.google.com")
+    client.session.get.return_value = response({"token": "test-token"})
+    client.session.post.side_effect = [
+        response({"unauthorized_redirect_uri": "https://accounts.google.com/consent"}),
+        SimpleNamespace(status_code=400, text="pending"),
+        SimpleNamespace(status_code=400, text="pending"),
+        response({"success": True}),
+    ]
+    event = threading.Event()
+    event.wait = Mock(return_value=False)
+    notify = Mock()
+    DriveMount(client, "owned", notify, event).propagate()
+    notify.assert_called_once()
+    assert event.wait.call_count == 2
+
+
+def test_drive_400_wait_is_bounded_and_does_not_clear_saved_login(monkeypatch):
+    client = Mock(colab_domain="https://colab.research.google.com")
+    client.session.get.return_value = response({"token": "test-token"})
+    client.session.post.side_effect = [
+        response({"unauthorized_redirect_uri": "https://accounts.google.com/consent"}),
+        SimpleNamespace(status_code=400, text="pending"),
+    ]
+    event = threading.Event()
+    clock = [100]
+    monkeypatch.setattr("bridge.drive_mount.time.monotonic", lambda: clock[0])
+    event.wait = lambda _: clock.__setitem__(0, clock[0] + 4)
+    mount = DriveMount(client, "owned", Mock(), event, timeout=3)
+    with pytest.raises(RuntimeError, match="无需重新登录"):
+        mount.propagate()

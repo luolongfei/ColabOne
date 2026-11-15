@@ -6,6 +6,7 @@ async function mock(page: any, ready = false) {
       const state: any = {
         runtime: {
           state: ready ? "ready" : "stopped",
+          protocol: 2,
           gpu: ready
             ? { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 }
             : undefined,
@@ -47,7 +48,14 @@ async function mock(page: any, ready = false) {
         error: "",
         auth_url: "",
         setup: { colab: ready, drive: ready, hf: false },
-        settings: { gpu: "T4", max_cu: 5, idle_minutes: 30, auto_drive: true },
+        settings: {
+          gpu: "T4",
+          max_cu: 5,
+          idle_minutes: 3,
+          idle_countdown_seconds: 60,
+          download_threads: 8,
+          auto_drive: true,
+        },
       };
       const calls: any[] = [];
       (window as any).__state = state;
@@ -56,6 +64,11 @@ async function mock(page: any, ready = false) {
         call: async (method: string, request: any) => {
           if (method === "Desktop.Snapshot") return JSON.stringify(state);
           if (method === "Desktop.Command") {
+            if (request.action === "runtime.activity") {
+              (window as any).__activity =
+                ((window as any).__activity || 0) + 1;
+              return JSON.stringify({ ok: true });
+            }
             calls.push(request);
             const { action, payload } = request;
             if (action === "runtime.release.preview")
@@ -71,6 +84,32 @@ async function mock(page: any, ready = false) {
               state.account.assignments = 0;
               state.account.rate = 0;
             }
+            if (action === "hub.search")
+              return JSON.stringify({
+                models: [
+                  {
+                    repo: "org/Qwen-GGUF",
+                    downloads: 2000,
+                    likes: 120,
+                    gated: false,
+                  },
+                ],
+                next_cursor: "",
+              });
+            if (action === "hub.files")
+              return JSON.stringify({
+                revision: "a".repeat(40),
+                files: [
+                  {
+                    filename: "Qwen-Q4_K_M-00001-of-00002.gguf",
+                    size: 4096000000,
+                    shards: 2,
+                    quantization: "Q4_K_M",
+                    supported: true,
+                    reason: "",
+                  },
+                ],
+              });
             if (action === "logs.clear") state.logs = [];
             if (action === "model.download") state.models[0].downloaded = true;
             if (action === "model.load") {
@@ -288,6 +327,7 @@ test("activity sidebar follows progress across pages and can filter clear and co
   page,
 }) => {
   await mock(page, true);
+  await page.getByRole("button", { name: "展开运行日志" }).click();
   const panel = page.getByRole("complementary", { name: "运行日志" });
   await expect(panel).toContainText("已恢复本机保存的 Google 登录");
   await page.evaluate(() => {
@@ -348,6 +388,7 @@ test("blue desktop layout shows billing and activity without horizontal overflow
   await expect(
     page.getByRole("button", { name: "停止全部（1 个实例）", exact: true }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "展开运行日志" }).click();
   await expect(page.getByRole("log")).toContainText("Google 云盘已连接");
   expect(
     await page.evaluate(
@@ -358,4 +399,131 @@ test("blue desktop layout shows billing and activity without horizontal overflow
     path: new URL("../../work/blue-activity-ui.png", import.meta.url).pathname,
     fullPage: true,
   });
+});
+
+test("log drawer overlays without changing content width and closes with Escape", async ({
+  page,
+}) => {
+  await mock(page, true);
+  const content = page.locator(".workspace");
+  const before = await content.boundingBox();
+  await expect(page.locator("#activity-panel")).toHaveCount(0);
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(page.locator("#activity-panel")).toBeVisible();
+  expect(await content.boundingBox()).toEqual(before);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#activity-panel")).toHaveCount(0);
+});
+
+test("connected settings reflects GPU state and has the agreed idle policy", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "查看 GPU", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "去启动 GPU", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".idle-policy")).toContainText(
+    "闲置 3 分钟后，倒计时 60 秒",
+  );
+});
+
+test("community search selects all shards and submits remote install with fixed revision", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.getByRole("button", { name: "模型库", exact: true }).click();
+  await page.getByLabel("下载并发线程").selectOption("32");
+  await page.getByRole("tab", { name: "在线搜索", exact: true }).click();
+  await page
+    .getByRole("searchbox", { name: "搜索 Hugging Face 模型" })
+    .fill("Qwen");
+  await expect(
+    page.getByRole("heading", { name: "org/Qwen-GGUF" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "选择版本" }).click();
+  await expect(page.getByLabel("选择量化版本")).toContainText("2 个文件");
+  await page.getByRole("button", { name: "添加并下载到远端" }).click();
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(
+    calls.find((c: any) => c.action === "settings.save").payload
+      .download_threads,
+  ).toBe(32);
+  expect(calls.find((c: any) => c.action === "hub.install").payload).toEqual({
+    repo: "org/Qwen-GGUF",
+    filename: "Qwen-Q4_K_M-00001-of-00002.gguf",
+    revision: "a".repeat(40),
+    download: true,
+  });
+  await expect(
+    page.getByRole("tab", { name: "我的模型", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+});
+
+test("download telemetry shows actual rate bytes ETA and connections", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.tasks = [
+      {
+        id: "test",
+        kind: "download",
+        state: "running",
+        progress: 0.25,
+        message: "model.gguf",
+        download: {
+          downloaded_bytes: 1024 ** 3,
+          total_bytes: 4 * 1024 ** 3,
+          speed_bps: 128 * 1024 ** 2,
+          eta_seconds: 24,
+          threads: 32,
+          connections: 24,
+          phase: "downloading",
+          file_index: 1,
+          file_count: 2,
+        },
+      },
+    ];
+  });
+  await expect(page.locator(".task-bar")).toContainText("128.0 MiB/s");
+  await expect(page.locator(".task-bar")).toContainText("24/32 个连接");
+  await expect(page.locator(".task-bar")).toContainText("预计剩余 0:24");
+});
+
+test("idle countdown decrements locally and only real interaction resets remote activity", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.idle = {
+      phase: "countdown",
+      remaining_seconds: 60,
+      countdown_seconds: 60,
+      idle_seconds: 180,
+      server_time: Date.now() / 1000,
+    };
+  });
+  await expect(page.locator(".idle-timer")).toContainText("自动释放 1:00");
+  await expect(page.locator(".idle-timer")).toContainText("0:59", {
+    timeout: 4000,
+  });
+  expect(await page.evaluate(() => (window as any).__activity || 0)).toBe(0);
+  await page.locator(".idle-timer").click();
+  expect(await page.evaluate(() => (window as any).__activity)).toBe(1);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.idle = {
+      phase: "active",
+      remaining_seconds: 240,
+      countdown_seconds: 60,
+      idle_seconds: 0,
+      server_time: Date.now() / 1000,
+    };
+  });
+  await expect(page.locator(".idle-timer")).toContainText(
+    "任务进行中 · 暂停释放",
+  );
 });

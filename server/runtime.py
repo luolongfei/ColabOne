@@ -26,6 +26,14 @@ import requests
 from common.files import atomic_json
 from common.models import ModelSpec
 from common.storage import DriveStore
+from server.download import (
+    Transfer,
+    parallel_file,
+    cached_bytes,
+    metadata_path,
+    RangeUnsupported,
+    CHUNK,
+)
 
 
 def synchronized(fn):
@@ -56,6 +64,22 @@ class Task:
         self.events = []
         self.lock = threading.Lock()
         self.created_at = time.time()
+        self.transfer = None
+        self.logs = []
+        self.log_seq = 0
+
+    def note(self, message, level="info"):
+        with self.lock:
+            self.log_seq += 1
+            self.logs.append(
+                {
+                    "seq": self.log_seq,
+                    "time": time.time(),
+                    "message": message,
+                    "level": level,
+                }
+            )
+            self.logs = self.logs[-100:]
 
     def emit(self, event, data):
         with self.lock:
@@ -76,7 +100,7 @@ class Task:
             raise Cancelled("操作已取消")
 
     def snapshot(self):
-        return {
+        value = {
             k: getattr(self, k)
             for k in (
                 "id",
@@ -89,6 +113,11 @@ class Task:
                 "created_at",
             )
         }
+        with self.lock:
+            value["logs"] = list(self.logs)
+        if self.transfer:
+            value["download"] = self.transfer.snapshot()
+        return value
 
 
 class Runtime:
@@ -100,6 +129,7 @@ class Runtime:
         self.lock = threading.RLock()
         self.sync_lock = threading.Lock()
         self.quiescing = False
+        self.auto_releasing = False
         self.http = http or requests.Session()
         self.http.trust_env = False
         self.drive = drive or DriveStore()
@@ -119,7 +149,9 @@ class Runtime:
         self.proc = None
         self.chat_transport = None
         self.last_active = time.time()
-        self.idle_minutes = 30
+        self.idle_minutes = 3
+        self.idle_countdown_seconds = 60
+        self.activity_until = 0.0
         self.deadline = 0.0
         self.stopping = threading.Event()
         for path in root.glob("conversation-*.json"):
@@ -140,19 +172,63 @@ class Runtime:
         return any(t.state == "running" for t in self.tasks.values())
 
     @synchronized
+    def touch(self, hold_seconds=0):
+        if self.quiescing:
+            raise Conflict("实例正在释放，无法延长闲置时间")
+        self.last_active = time.time()
+        self.activity_until = self.last_active + hold_seconds
+        return self.idle_status()
+
+    def idle_status(self, now=None):
+        now = time.time() if now is None else now
+        active = self.busy() or now < self.activity_until
+        elapsed = (
+            0 if active else max(0, now - max(self.last_active, self.activity_until))
+        )
+        grace = self.idle_minutes * 60
+        return {
+            "phase": "active"
+            if active
+            else "countdown"
+            if elapsed >= grace
+            else "watching",
+            "remaining_seconds": max(0, grace + self.idle_countdown_seconds - elapsed),
+            "countdown_seconds": self.idle_countdown_seconds,
+            "idle_seconds": elapsed,
+            "server_time": now,
+        }
+
+    @synchronized
+    def claim_auto_release(self, now=None):
+        now = time.time() if now is None else now
+        if self.auto_releasing:
+            return True
+        if self.quiescing:
+            return False
+        budget_due = bool(self.deadline and now >= self.deadline)
+        idle = self.idle_status(now)
+        if budget_due or (
+            idle["phase"] == "countdown" and idle["remaining_seconds"] <= 0
+        ):
+            self.quiescing = True
+            self.auto_releasing = True
+            return True
+        return False
+
+    @synchronized
     def status(self):
         if self.proc and self.proc.poll() is not None:
             self.proc, self.loaded = None, None
-        active = self.busy()
+        idle = self.idle_status()
         return {
+            "protocol": 2,
+            "idle": idle,
             "id": self.runtime_id,
-            "state": "ready",
+            "state": "releasing" if self.quiescing else "ready",
             "gpu": self.gpu_info(),
             "loaded_model": self.loaded,
             "disk_free": shutil.disk_usage(self.root).free,
-            "idle_remaining": self.idle_minutes * 60
-            if active
-            else max(0, self.idle_minutes * 60 - (time.time() - self.last_active)),
+            "idle_remaining": idle["remaining_seconds"],
             "idle_minutes": self.idle_minutes,
             "tasks": [t.snapshot() for t in self.tasks.values()],
             "sync": {
@@ -254,40 +330,60 @@ class Runtime:
                 t.state, t.error = "failed", (str(exc) or type(exc).__name__)[:500]
             finally:
                 self.last_active = time.time()
+                if t.transfer:
+                    t.transfer.phase = t.state
+                    t.note(
+                        {
+                            "completed": "下载完成，全部文件 SHA-256 校验通过",
+                            "cancelled": "下载已取消，保留完成的分块以便续传",
+                            "failed": "下载失败：" + t.error,
+                        }.get(t.state, t.state)
+                    )
                 t.emit("done", t.snapshot())
 
         threading.Thread(target=run, daemon=True).start()
         return t.snapshot()
 
     @synchronized
-    def download(self, model_id, token=""):
-        m = self.models[model_id]
-        return self.submit("download", model_id, lambda t: self._download(t, m, token))
+    def download(self, model_id, token="", threads=8):
+        if threads not in (8, 32):
+            raise ValueError("下载线程数请选择 8 或 32")
+        model = self.models[model_id]
+        return self.submit(
+            "download", model_id, lambda t: self._download(t, model, token, threads)
+        )
 
-    def _download(self, task, model, token):
+    def _download(self, task, model, token, threads=8):
         directory = self.models_dir / model.id
         directory.mkdir(exist_ok=True)
+        total = sum(f.size for f in model.files)
+        task.transfer = Transfer(total, threads)
+        task.transfer.count = len(model.files)
+        task.note(
+            f"准备下载 {model.name}：{len(model.files)} 个文件，共 {total / 1024**3:.2f} GiB，{threads} 线程，目标为远端 GPU 磁盘"
+        )
         remaining = sum(
             max(
                 0,
-                f.size
-                - (
-                    (directory / (f.path + ".part")).stat().st_size
-                    if (directory / (f.path + ".part")).exists()
-                    else 0
-                ),
+                f.size - cached_bytes(directory / (f.path + ".part"), f.size, f.sha256),
             )
             for f in model.files
+            if not (directory / f.path).exists()
         )
-        if shutil.disk_usage(directory).free < remaining + 512 * 1024**2:
+        free = shutil.disk_usage(directory).free
+        task.note(
+            f"远端可用磁盘 {free / 1024**3:.1f} GiB，本次预计新增 {remaining / 1024**3:.1f} GiB"
+        )
+        if free < remaining + 512 * 1024**2:
             raise RuntimeError("远端磁盘空间不足，请删除其他已下载模型")
         receipt, done = {}, 0
-        total = sum(f.size for f in model.files)
-        for file in model.files:
+        for index, file in enumerate(model.files, 1):
             task.check()
             target = directory / file.path
             target.parent.mkdir(parents=True, exist_ok=True)
             partial = target.with_name(target.name + ".part")
+            stats = task.transfer
+            stats.file, stats.index = file.path, index
             if (
                 target.exists()
                 and target.stat().st_size == file.size
@@ -295,46 +391,106 @@ class Runtime:
             ):
                 receipt[file.path] = file.sha256
                 done += file.size
+                stats.downloaded = done
+                stats.resumed += file.size
+                task.note(
+                    f"文件 {index}/{len(model.files)} 已存在且校验通过，跳过：{file.path}"
+                )
                 continue
-            offset = partial.stat().st_size if partial.exists() else 0
-            if offset > file.size:
-                partial.unlink()
-                offset = 0
+            # An invalid existing final file must not exempt this transfer from disk checks.
+            if target.exists():
+                target.unlink()
+                task.note("发现未通过校验的文件，重新下载", "warning")
+            required = max(0, file.size - cached_bytes(partial, file.size, file.sha256))
+            if shutil.disk_usage(directory).free < required + 512 * 1024**2:
+                raise RuntimeError("远端磁盘空间不足，请删除其他已下载模型")
             task.message = file.path
-            if offset < file.size:
-                headers = {"Authorization": f"Bearer {token}"} if token else {}
-                if offset:
-                    headers["Range"] = f"bytes={offset}-"
-                url = f"https://huggingface.co/{file.repo}/resolve/{file.revision}/{quote(file.path)}"
-                with self.http.get(
-                    url, headers=headers, stream=True, timeout=(15, 60)
-                ) as r:
-                    r.raise_for_status()
-                    if offset and r.status_code != 206:
-                        offset = 0
-                    if r.status_code == 206 and not r.headers.get(
-                        "Content-Range", ""
-                    ).startswith(f"bytes {offset}-"):
-                        raise RuntimeError("下载范围响应不匹配，请重试")
-                    with partial.open("ab" if offset else "wb") as stream:
-                        for chunk in r.iter_content(1024 * 1024):
-                            task.check()
-                            stream.write(chunk)
-                            offset += len(chunk)
-                            if offset > file.size:
-                                raise RuntimeError("远端文件大于清单声明的大小")
-                            task.progress = (done + offset) / total
+            task.note(
+                f"文件 {index}/{len(model.files)} · {file.path} · {file.size / 1024**3:.2f} GiB"
+            )
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            url = f"https://huggingface.co/{file.repo}/resolve/{file.revision}/{quote(file.path)}"
+            if file.size > CHUNK:
+                resumed_before = stats.resumed
+                try:
+                    parallel_file(
+                        url,
+                        headers,
+                        partial,
+                        file.size,
+                        file.sha256,
+                        task,
+                        done,
+                        threads,
+                        get=None
+                        if isinstance(self.http, requests.Session)
+                        else self.http.get,
+                    )
+                except RangeUnsupported:
+                    task.note("下载源忽略范围请求，自动切换为单连接下载", "warning")
+                    partial.unlink(missing_ok=True)
+                    metadata_path(partial).unlink(missing_ok=True)
+                    stats.resumed = resumed_before
+                    self._download_single(url, headers, partial, file, task, done)
+            else:
+                self._download_single(url, headers, partial, file, task, done)
+            stats.phase = "verifying"
             task.message = "校验 SHA-256 · " + file.path
+            task.note(f"文件 {index}/{len(model.files)} 传输完成，正在校验 SHA-256")
             if (
                 partial.stat().st_size != file.size
                 or self.sha256(partial, task) != file.sha256
             ):
                 partial.unlink(missing_ok=True)
+                metadata_path(partial).unlink(missing_ok=True)
                 raise RuntimeError("文件校验失败，请重新下载")
             os.replace(partial, target)
+            metadata_path(partial).unlink(missing_ok=True)
             receipt[file.path] = file.sha256
             done += file.size
+            stats.downloaded = done
+            task.note(f"文件 {index}/{len(model.files)} 校验通过，已保存到远端")
         atomic_json(directory / "verified.json", receipt)
+
+    def _download_single(self, url, headers, partial, file, task, done):
+        offset = partial.stat().st_size if partial.exists() else 0
+        if offset > file.size:
+            partial.unlink()
+            offset = 0
+        stats = task.transfer
+        stats.downloaded = done + offset
+        stats.resumed += offset
+        stats.phase = "downloading"
+        if offset == file.size:
+            return
+        headers = dict(headers)
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        stats.active = 1
+        try:
+            with self.http.get(
+                url, headers=headers, stream=True, timeout=(10, 10)
+            ) as response:
+                response.raise_for_status()
+                if offset and response.status_code != 206:
+                    stats.resumed -= offset
+                    offset = 0
+                if response.status_code == 206 and not response.headers.get(
+                    "Content-Range", ""
+                ).startswith(f"bytes {offset}-"):
+                    raise RuntimeError("下载范围响应不匹配，请重试")
+                with partial.open("ab" if offset else "wb") as stream:
+                    for block in response.iter_content(1024**2):
+                        task.check()
+                        if offset + len(block) > file.size:
+                            raise RuntimeError("远端文件大于清单声明的大小")
+                        stream.write(block)
+                        offset += len(block)
+                        stats.wire(len(block))
+                        stats.downloaded = done + offset
+                        task.progress = (done + offset) / stats.total
+        finally:
+            stats.active = 0
 
     @staticmethod
     def sha256(path, task=None):
@@ -353,9 +509,12 @@ class Runtime:
             list(root.rglob("llama-server")) if (root / ".complete").exists() else []
         )
         if binaries:
+            task.note("复用远端已安装的 CUDA 推理引擎")
             return binaries[0]
         root.mkdir(parents=True, exist_ok=True)
+        task.note("首次加载，准备远端 CUDA 推理引擎 " + config["tag"])
         for i, asset in enumerate(config["assets"]):
+            task.note(f"下载引擎组件 {i + 1}/{len(config['assets'])}")
             task.message = "安装远端 CUDA 推理引擎"
             target = root / f"asset-{i}.tar.gz"
             with self.http.get(asset["url"], stream=True, timeout=(15, 60)) as r:
@@ -366,6 +525,7 @@ class Runtime:
                         out.write(chunk)
             if not asset["sha256"] or self.sha256(target, task) != asset["sha256"]:
                 raise RuntimeError("推理引擎 SHA-256 校验失败")
+            task.note(f"引擎组件 {i + 1} 校验通过，正在解压")
             with tarfile.open(target) as archive:
                 archive.extractall(root, filter="data")
             target.unlink()
@@ -383,11 +543,15 @@ class Runtime:
         return self.submit("load", model_id, lambda t: self._load(t, m))
 
     def _load(self, task, m):
+        task.note(f"准备加载 {m.name}，上下文 {m.context_length} tokens")
         gpu = self.gpu_info()
         if not gpu["total_mib"]:
             raise RuntimeError("未检测到可用远端 GPU")
         if gpu["total_mib"] < m.min_vram_mib:
             raise RuntimeError(f"模型需要至少 {m.min_vram_mib} MiB 显存")
+        task.note(
+            f"远端设备 {gpu.get('name', 'GPU')}，显存 {gpu['total_mib'] / 1024:.1f} GiB"
+        )
         engine = self.prepare_engine(task)
         task.check()
         self._stop_engine()
@@ -418,6 +582,7 @@ class Runtime:
         if m.cpu_moe_layers:
             args.extend(["--n-cpu-moe", str(m.cpu_moe_layers)])
         log = self.root / "engine.log"
+        task.note("启动 llama.cpp，将模型加载到远端显存")
         with log.open("wb") as stream:
             self.proc = subprocess.Popen(
                 args,
@@ -442,6 +607,7 @@ class Runtime:
                         == 200
                     ):
                         self.loaded = m.id
+                        task.note("模型加载成功，远端推理服务已就绪")
                         return
                 except requests.RequestException:
                     pass
@@ -660,13 +826,12 @@ class Runtime:
                     self.sync()
                 if self.busy():
                     self.last_active = time.time()
-                budget_due = self.deadline and time.time() >= self.deadline
-                idle_due = time.time() - self.last_active >= self.idle_minutes * 60
-                if budget_due or idle_due:
+                if self.claim_auto_release():
                     try:
                         self.prepare_release()
                     except Exception:
                         pass  # Budget/idle release must still proceed when Drive is offline.
+                    self.quiescing = True
                     addr = os.environ.get("TBE_RUNTIME_ADDR", "")
                     if addr:
                         try:

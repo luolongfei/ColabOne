@@ -213,3 +213,14 @@ def test_stop_all_requires_current_account_preview_and_sync(tmp_path):
     with pytest.raises(RuntimeError, match="清单"):
         c.release_all(plan["id"], force=True)
     c.provider.release_all.assert_not_called()
+
+
+def test_release_confirms_disappearance_when_remote_guard_wins_race():
+    p, vault = make_provider()
+    store_session(vault)
+    client = Mock()
+    client.list_assignments.side_effect = [[assignment("owned")], []]
+    client.unassign.side_effect = RuntimeError("already removed")
+    p.client_factory = lambda: client
+    assert p.release()["ok"]
+    assert not vault.get("runtime_session")

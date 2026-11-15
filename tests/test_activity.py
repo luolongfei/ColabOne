@@ -57,3 +57,29 @@ def test_activity_records_progress_and_errors_without_duplicate_polls(tmp_path):
     )
     assert items[-1]["level"] == "error"
     assert "校验失败" in items[-1]["message"]
+
+
+def test_transfer_logs_arrive_without_progress_bucket_change_and_are_deduplicated(
+    tmp_path,
+):
+    c = Controller(
+        Path(__file__).resolve().parents[1],
+        vault=MemoryVault(),
+        config_dir=tmp_path,
+        background=False,
+    )
+    task = {
+        "id": "task",
+        "kind": "download",
+        "state": "running",
+        "progress": 0.21,
+        "message": "model.gguf",
+        "logs": [{"seq": 1, "message": "8 个连接 · 120 MiB/s", "level": "info"}],
+    }
+    c.update(runtime={"state": "ready", "tasks": [task]})
+    task["logs"].append({"seq": 2, "message": "校验 SHA-256", "level": "info"})
+    c.update(runtime={"state": "ready", "tasks": [task]})
+    c.update(runtime={"state": "ready", "tasks": [task]})
+    messages = [x["message"] for x in c.snapshot()["logs"]]
+    assert messages.count("8 个连接 · 120 MiB/s") == 1
+    assert messages.count("校验 SHA-256") == 1
