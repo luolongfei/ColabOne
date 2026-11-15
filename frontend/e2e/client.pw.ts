@@ -27,7 +27,22 @@ async function mock(page: any, ready = false) {
           },
         ],
         conversations: [],
-        account: { logged_in: ready, balance: 100, rate: ready ? 1.5 : 0 },
+        logs: [
+          {
+            id: 1,
+            time: Date.now() / 1000,
+            source: "客户端",
+            level: "info",
+            message: "已恢复本机保存的 Google 登录；到期自动续期",
+          },
+        ],
+        account: {
+          logged_in: ready,
+          balance: 100,
+          rate: ready ? 1.5 : 0,
+          assignments: ready ? 1 : 0,
+          checked_at: Date.now() / 1000,
+        },
         operation: null,
         error: "",
         auth_url: "",
@@ -43,6 +58,20 @@ async function mock(page: any, ready = false) {
           if (method === "Desktop.Command") {
             calls.push(request);
             const { action, payload } = request;
+            if (action === "runtime.release.preview")
+              return JSON.stringify({
+                id: "reviewed-plan",
+                instances: [
+                  { id: "test-runtime", managed: true },
+                  { id: "other-runtime", managed: false },
+                ],
+              });
+            if (action === "runtime.release.all") {
+              state.runtime.state = "stopped";
+              state.account.assignments = 0;
+              state.account.rate = 0;
+            }
+            if (action === "logs.clear") state.logs = [];
             if (action === "model.download") state.models[0].downloaded = true;
             if (action === "model.load") {
               state.models[0].loaded = true;
@@ -219,4 +248,114 @@ test("Google login alone enables GPU startup and Drive can be connected later", 
       (c: any) => c.action,
     ),
   ).toEqual(["settings.save", "runtime.start"]);
+});
+
+test("billing is prominent and stop all reviews every instance before submission", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.account.assignments = 2;
+  });
+  await expect(page.locator(".billing-active")).toContainText("正在计费");
+  await expect(page.locator(".billing-active strong")).toHaveCSS(
+    "color",
+    "rgb(211, 47, 67)",
+  );
+  await page
+    .getByRole("button", { name: "停止全部（2 个实例）", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("other-runtime");
+  await expect(dialog).toContainText("其他 Colab 实例");
+  expect(
+    (await page.evaluate(() => (window as any).__calls)).map(
+      (x: any) => x.action,
+    ),
+  ).toEqual(["runtime.release.preview"]);
+  await dialog.getByRole("button", { name: "确认停止全部（2）" }).click();
+  await expect(page.locator(".billing-pill")).toContainText(
+    "0 个实例 · 未计费",
+  );
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(calls[1]).toEqual({
+    action: "runtime.release.all",
+    payload: { force: false, plan_id: "reviewed-plan" },
+  });
+});
+
+test("activity sidebar follows progress across pages and can filter clear and collapse", async ({
+  page,
+}) => {
+  await mock(page, true);
+  const panel = page.getByRole("complementary", { name: "运行日志" });
+  await expect(panel).toContainText("已恢复本机保存的 Google 登录");
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.operation = {
+      title: "已收到云盘授权，正在挂载到远端 GPU",
+      running: true,
+    };
+    state.logs.push({
+      id: 2,
+      time: Date.now() / 1000,
+      source: "云盘",
+      level: "error",
+      message: "连接中断，请重试",
+    });
+  });
+  await expect(panel).toContainText("正在挂载到远端 GPU");
+  await page.getByRole("button", { name: "模型库", exact: true }).click();
+  await expect(panel).toBeVisible();
+  await panel.getByLabel("日志级别").selectOption("error");
+  await expect(panel).toContainText("连接中断，请重试");
+  await expect(panel).not.toContainText("已恢复本机保存");
+  await panel.getByRole("button", { name: "清空日志", exact: true }).click();
+  await expect(panel).toContainText("暂无错误");
+  await panel.getByRole("button", { name: "关闭日志侧栏" }).click();
+  await expect(panel).toHaveCount(0);
+  await page.reload();
+  await expect(panel).toHaveCount(0);
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(panel).toBeVisible();
+});
+
+test("blue desktop layout shows billing and activity without horizontal overflow", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mock(page, true);
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.runtime.gpu.name = "NVIDIA RTX PRO 6000 Blackwell Server Edition";
+    state.account.rate = 10.05;
+    state.logs.push(
+      ...[
+        "正在分配 G4",
+        "等待远端内核",
+        "部署远端管理服务",
+        "已收到云盘授权，正在挂载到远端 GPU",
+        "Google 云盘已连接，会话与模型清单已写入",
+      ].map((message, index) => ({
+        id: index + 2,
+        time: Date.now() / 1000,
+        level: "info",
+        source: "GPU",
+        message,
+      })),
+    );
+  });
+  await expect(
+    page.getByRole("button", { name: "停止全部（1 个实例）", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("log")).toContainText("Google 云盘已连接");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: new URL("../../work/blue-activity-ui.png", import.meta.url).pathname,
+    fullPage: true,
+  });
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   PhCirclesThree,
   PhHardDrives,
@@ -20,6 +20,8 @@ import {
   PhCopy,
   PhCloud,
   PhCaretRight,
+  PhTerminalWindow,
+  PhLightning,
 } from "@phosphor-icons/vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -42,6 +44,74 @@ const nav = [
   { id: "chat", label: "聊天", icon: PhChatCircle },
   { id: "settings", label: "设置", icon: PhGearSix },
 ];
+const logsOpen = ref(localStorage.getItem("colabone.logs.open") !== "false");
+const logFollow = ref(true),
+  logLevel = ref("all"),
+  logBody = ref<HTMLElement | null>(null);
+const logEntries = computed(() =>
+  (state.value.logs || []).filter(
+    (entry) => logLevel.value === "all" || entry.level === "error",
+  ),
+);
+const logTime = (time: number) =>
+  new Date(time * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+const instanceCount = computed(
+  () => state.value.account.assignments ?? (state.value.runtime.id ? 1 : 0),
+);
+const billing = computed(() => (state.value.account.rate ?? 0) > 0);
+const accountStale = computed(
+  () =>
+    !state.value.account.checked_at ||
+    Date.now() / 1000 - state.value.account.checked_at > 60,
+);
+const releasePlan = ref<{
+  id: string;
+  instances: { id: string; managed: boolean }[];
+} | null>(null);
+const currentActivity = computed(
+  () =>
+    state.value.operation?.title ||
+    (task.value
+      ? {
+          download: "正在下载模型到远端",
+          load: "正在加载模型到显存",
+          chat: "正在生成回复",
+        }[task.value.kind] || "远端任务进行中"
+      : ready.value
+        ? "GPU 已就绪，等待操作"
+        : "等待启动远端 GPU"),
+);
+watch(logsOpen, (open) =>
+  localStorage.setItem("colabone.logs.open", String(open)),
+);
+watch(
+  () => [state.value.logs?.at(-1)?.id, logLevel.value, logsOpen.value],
+  async () => {
+    if (!logFollow.value) return;
+    await nextTick();
+    logBody.value?.scrollTo({ top: logBody.value.scrollHeight });
+  },
+);
+function logScroll() {
+  const el = logBody.value;
+  if (el)
+    logFollow.value = el.scrollHeight - el.scrollTop - el.clientHeight < 45;
+}
+async function followLogs() {
+  logFollow.value = true;
+  await nextTick();
+  logBody.value?.scrollTo({ top: logBody.value.scrollHeight });
+}
+async function copyLogs() {
+  await copy(
+    logEntries.value
+      .map(
+        (entry) =>
+          `[${logTime(entry.time)}] [${entry.source}] ${entry.message}`,
+      )
+      .join("\n"),
+  );
+}
 const ready = computed(() => state.value.runtime.state === "ready");
 const task = computed(() =>
   state.value.runtime.tasks?.find((t) => t.state === "running"),
@@ -208,8 +278,19 @@ async function start() {
   )
     await act("runtime.start");
 }
+async function openRelease() {
+  showRelease.value = true;
+  force.value = false;
+  releasePlan.value = null;
+  if (state.value.setup.drive_waiting) await act("drive.skip");
+  releasePlan.value = await act("runtime.release.preview");
+}
 async function release() {
-  const result = await act("runtime.release", { force: force.value });
+  if (!releasePlan.value) return;
+  const result = await act("runtime.release.all", {
+    force: force.value,
+    plan_id: releasePlan.value.id,
+  });
   if (result) showRelease.value = false;
 }
 async function send() {
@@ -271,7 +352,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div :class="['app-shell', { 'logs-open': logsOpen }]">
     <aside class="sidebar">
       <div class="brand">
         <PhCirclesThree :size="28" weight="duotone" /><span>ColabOne</span>
@@ -290,7 +371,7 @@ onUnmounted(() => {
       <div class="sidebar-bottom">
         <PhCloud :size="20" />
         <div>
-          <strong>远端运行</strong><small>模型与推理留在 GPU 设备</small>
+          <strong>远端运行</strong><small>模型与推理均在远端运行</small>
         </div>
       </div>
     </aside>
@@ -305,6 +386,27 @@ onUnmounted(() => {
           ><span>{{ state.runtime.gpu?.name || "Colab GPU" }}</span>
         </div>
         <div class="header-right">
+          <span
+            v-if="state.account.logged_in"
+            :class="['billing-pill', { active: billing }]"
+          >
+            <PhLightning
+              v-if="billing"
+              class="billing-pulse"
+              :size="14"
+              weight="fill"
+            />
+            {{ instanceCount }} 个实例 ·
+            {{
+              billing
+                ? "正在计费"
+                : accountStale
+                  ? "查询中"
+                  : instanceCount
+                    ? "费率更新中"
+                    : "未计费"
+            }}
+          </span>
           <span v-if="state.account.logged_in"
             >余额 <b>{{ money(state.account.balance) }}</b> CU</span
           ><button
@@ -314,6 +416,15 @@ onUnmounted(() => {
             @click="act('sync')"
           >
             <PhArrowsClockwise :size="19" />
+          </button>
+          <button
+            class="icon-button"
+            :aria-label="logsOpen ? '收起运行日志' : '展开运行日志'"
+            :aria-expanded="logsOpen"
+            aria-controls="activity-panel"
+            @click="logsOpen = !logsOpen"
+          >
+            <PhTerminalWindow :size="20" />
           </button>
         </div>
       </header>
@@ -389,14 +500,25 @@ onUnmounted(() => {
                   : "未分配"
               }}</strong>
             </div>
-            <div>
-              <span>账户当前费率</span
+            <div :class="{ 'billing-active': billing }">
+              <span class="billing-label"
+                ><PhLightning
+                  v-if="billing"
+                  class="billing-pulse"
+                  :size="15"
+                  weight="fill"
+                />{{ billing ? "正在计费" : "账户当前费率" }}</span
               ><strong
                 >{{ money(state.account.rate)
                 }}<small v-if="state.account.rate !== undefined"
                   >CU / 小时</small
                 ></strong
               >
+              <small class="billing-freshness">{{
+                accountStale
+                  ? "计费状态待更新"
+                  : `已查询 · ${instanceCount} 个运行实例`
+              }}</small>
             </div>
           </div>
           <div class="device-controls">
@@ -425,15 +547,21 @@ onUnmounted(() => {
             >
               <PhPlay :size="17" weight="fill" />启动 GPU</button
             ><button
-              v-else
-              class="danger-outline"
-              :disabled="!!state.operation"
-              @click="
-                showRelease = true;
-                force = false;
+              v-if="
+                instanceCount > 0 ||
+                state.runtime.state !== 'stopped' ||
+                billing
               "
+              class="danger stop-all"
+              :disabled="
+                busy || (!!state.operation && !state.setup.drive_waiting)
+              "
+              @click="openRelease"
             >
-              <PhStop :size="17" />释放 GPU
+              <PhStop :size="17" weight="fill" />停止全部（{{
+                instanceCount
+              }}
+              个实例）
             </button>
           </div>
         </section>
@@ -756,6 +884,13 @@ onUnmounted(() => {
               重新打开登录页
             </button>
           </div>
+          <p v-if="state.setup.colab" class="footnote saved-login">
+            <PhCheck :size="15" />{{
+              state.setup.persistent_login
+                ? "登录已安全保存在本机，重启自动恢复、到期自动续期。"
+                : "登录已保存到本机。若 Google 要求重新授权，会在这里提示。"
+            }}
+          </p>
           <details class="setup-details" :open="showAuthPaste">
             <summary @click.prevent="showAuthPaste = !showAuthPaste">
               浏览器有一段回显？粘贴到这里
@@ -930,6 +1065,90 @@ onUnmounted(() => {
         <PhWarningCircle :size="17" />{{ failed.error }}
       </div>
     </div>
+    <aside
+      v-if="logsOpen"
+      id="activity-panel"
+      class="activity-panel"
+      aria-label="运行日志"
+    >
+      <div class="activity-heading">
+        <PhTerminalWindow :size="19" />
+        <h2>运行日志</h2>
+        <button
+          class="icon-button"
+          aria-label="关闭日志侧栏"
+          @click="logsOpen = false"
+        >
+          <PhX :size="18" />
+        </button>
+      </div>
+      <div class="activity-current">
+        <span class="eyebrow">当前状态</span>
+        <p>
+          <span v-if="state.operation || task" class="spinner"></span
+          >{{ currentActivity }}
+        </p>
+      </div>
+      <div class="activity-toolbar">
+        <select v-model="logLevel" aria-label="日志级别">
+          <option value="all">全部日志</option>
+          <option value="error">仅错误</option></select
+        ><button
+          class="icon-button"
+          aria-label="复制日志"
+          :disabled="!logEntries.length"
+          @click="copyLogs"
+        >
+          <PhCopy :size="16" /></button
+        ><button
+          class="icon-button"
+          aria-label="清空日志"
+          :disabled="!state.logs?.length"
+          @click="act('logs.clear')"
+        >
+          <PhTrash :size="16" />
+        </button>
+      </div>
+      <div
+        ref="logBody"
+        class="activity-feed"
+        role="log"
+        aria-label="实时运行记录"
+        aria-live="off"
+        tabindex="0"
+        @scroll="logScroll"
+      >
+        <p v-if="!logEntries.length" class="activity-empty">
+          {{
+            logLevel === "error"
+              ? "暂无错误"
+              : "操作开始后，这里会显示运行进度。"
+          }}
+        </p>
+        <div
+          v-for="entry in logEntries"
+          :key="entry.id"
+          :class="['activity-entry', entry.level]"
+        >
+          <div class="activity-meta">
+            <time>{{ logTime(entry.time) }}</time
+            ><span>{{ entry.source }}</span
+            ><b v-if="entry.level === 'error'">错误</b>
+          </div>
+          <p>{{ entry.message }}</p>
+        </div>
+      </div>
+      <div class="activity-bottom">
+        <span>最近 300 条 · 本次运行</span
+        ><button
+          class="text-button"
+          :class="{ following: logFollow }"
+          @click="followLogs"
+        >
+          {{ logFollow ? "跟随最新" : "回到最新" }}
+        </button>
+      </div>
+    </aside>
     <div v-if="toast" class="toast" role="status">
       <PhCheck :size="18" />{{ toast }}
     </div>
@@ -985,14 +1204,28 @@ onUnmounted(() => {
         aria-modal="true"
         aria-labelledby="release-title"
       >
-        <h2 id="release-title">释放远端 GPU？</h2>
+        <h2 id="release-title">停止账号下全部实例？</h2>
         <p>
-          {{
-            state.setup.drive
-              ? "会先停止任务，等待云盘文件上传完成，再释放当前实例。"
-              : "会停止任务并释放当前实例。未连接云备份，请先在聊天页导出需要保留的会话。"
-          }}远端模型文件会被清空，下次启动需要重新下载。
+          会停止当前 Google 账号中下列全部 Colab
+          实例，包括在其他页面启动的实例。远端模型文件和未保存的任务数据会被清空。
         </p>
+        <p v-if="!releasePlan">
+          {{ busy ? "正在查询运行实例…" : "清单读取失败，请取消后重试。" }}
+        </p>
+        <ul v-else class="release-instances">
+          <li v-for="instance in releasePlan.instances" :key="instance.id">
+            <code>{{ instance.id }}</code
+            ><span>{{
+              instance.managed
+                ? "ColabOne 当前实例 · 停止前同步会话"
+                : "其他 Colab 实例 · 请确认已保存工作"
+            }}</span>
+          </li>
+          <li v-if="!releasePlan.instances.length">
+            未发现运行实例，Google 费率可能仍在更新。
+          </li>
+        </ul>
+        <p v-if="state.operation">正在结束当前操作，完成后即可停止。</p>
         <label class="checkbox"
           ><input type="checkbox" v-model="force" />{{
             state.setup.drive
@@ -1002,8 +1235,14 @@ onUnmounted(() => {
         >
         <div class="modal-actions">
           <button class="secondary" @click="showRelease = false">取消</button
-          ><button class="danger" :disabled="busy" @click="release">
-            释放 GPU
+          ><button
+            class="danger"
+            :disabled="
+              busy || !!state.operation || !releasePlan?.instances.length
+            "
+            @click="release"
+          >
+            确认停止全部（{{ releasePlan?.instances.length || 0 }}）
           </button>
         </div>
       </section>

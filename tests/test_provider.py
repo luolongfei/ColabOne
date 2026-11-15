@@ -151,3 +151,65 @@ def test_kernel_connection_reused_and_rotated_without_replaying(monkeypatch):
     second.execute_code.assert_called_once()
     second.stop.assert_called_once_with(shutdown_kernel=False)
     assert p.kernel_runtime is None
+
+
+def test_explicit_stop_all_tries_every_reviewed_instance_and_leaves_new_ones(
+    monkeypatch,
+):
+    p, vault = make_provider()
+    store_session(vault)
+    client = Mock()
+    client.list_assignments.side_effect = [
+        [assignment("owned"), assignment("other"), assignment("new-after-preview")],
+        [assignment("new-after-preview")],
+    ]
+    client.unassign.side_effect = [OSError("lost response"), None]
+    p.client_factory = lambda: client
+    result = p.release_all(["owned", "other"], Mock())
+    assert {call.args[0] for call in client.unassign.call_args_list} == {
+        "owned",
+        "other",
+    }
+    assert result["remaining"] == 1
+    assert vault.get("runtime_session") is None
+
+
+def test_stop_all_partial_failure_does_not_claim_success(monkeypatch):
+    p, vault = make_provider()
+    store_session(vault)
+    client = Mock()
+    client.list_assignments.return_value = [assignment("owned")]
+    p.client_factory = lambda: client
+    monkeypatch.setattr("bridge.provider.time.sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="仍有 1"):
+        p.release_all(["owned"], Mock())
+    assert vault.get("runtime_session")
+
+
+def test_stop_all_requires_current_account_preview_and_sync(tmp_path):
+    c = Controller(
+        Path(__file__).resolve().parents[1],
+        vault=MemoryVault(),
+        config_dir=tmp_path,
+        background=False,
+    )
+    c.auth = Mock()
+    c.auth.profile.return_value = {"sub": "same-account"}
+    c.provider = Mock()
+    c.provider.account.return_value = {
+        "instances": [{"id": "owned", "managed": True}],
+        "assignments": 1,
+        "rate": 2,
+    }
+    c.remote = Mock(side_effect=RuntimeError("sync pending"))
+    store_session(c.vault)
+    with pytest.raises(RuntimeError, match="清单"):
+        c.release_all("not-previewed")
+    plan = c.preview_release_all()
+    with pytest.raises(RuntimeError, match="sync pending"):
+        c.release_all(plan["id"])
+    c.provider.release_all.assert_not_called()
+    c.auth.profile.return_value = {"sub": "changed-account"}
+    with pytest.raises(RuntimeError, match="清单"):
+        c.release_all(plan["id"], force=True)
+    c.provider.release_all.assert_not_called()

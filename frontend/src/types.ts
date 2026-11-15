@@ -40,7 +40,15 @@ export interface RuntimeStatus {
   tasks?: TaskStatus[];
   sync?: { pending: number; error: string; connected?: boolean };
 }
+export interface ActivityEntry {
+  id: number;
+  time: number;
+  source: string;
+  level: "info" | "warning" | "error";
+  message: string;
+}
 export interface Snapshot {
+  logs: ActivityEntry[];
   runtime: RuntimeStatus;
   models: ModelSpec[];
   conversations: Conversation[];
@@ -49,6 +57,9 @@ export interface Snapshot {
     balance?: number;
     rate?: number;
     email?: string;
+    assignments?: number;
+    instances?: { id: string; managed: boolean }[];
+    checked_at?: number;
   };
   operation: null | { title: string; running: boolean };
   error: string;
@@ -58,6 +69,7 @@ export interface Snapshot {
     drive: boolean;
     hf: boolean;
     drive_waiting?: boolean;
+    persistent_login?: boolean;
   };
   settings: {
     gpu: string;
@@ -73,6 +85,7 @@ export interface Snapshot {
   };
 }
 export const initialSnapshot = (): Snapshot => ({
+  logs: [],
   runtime: { state: "stopped" },
   models: [],
   conversations: [],

@@ -11,12 +11,15 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 
 class DriveMount:
-    def __init__(self, client, endpoint, notify, cancel=None, timeout=300):
+    def __init__(
+        self, client, endpoint, notify, cancel=None, timeout=300, progress=None
+    ):
         self.client, self.endpoint, self.notify = client, endpoint, notify
         self.cancel = cancel or threading.Event()
         self.deadline = time.monotonic() + timeout
         self.error = ""
         self.worker = None
+        self.progress = progress or (lambda message: None)
 
     @staticmethod
     def data(response):
@@ -49,6 +52,7 @@ class DriveMount:
             raise RuntimeError("未取得 Colab 云盘连接许可，请重新登录")
         headers = {"x-goog-colab-token": token}
         consent_opened = False
+        self.progress("检查远端云盘授权")
         while True:
             if self.cancel.is_set():
                 raise RuntimeError("已跳过云盘连接，可在设置中重新连接")
@@ -57,14 +61,18 @@ class DriveMount:
             data = self.data(
                 http.post(
                     url,
-                    params=params,
+                    params=params.copy(),
                     headers=headers,
                     files={"file_id": (None, "empty.ipynb")},
                     timeout=20,
                 )
             )
-            if data.get("success"):
-                break
+            if data.get("success") is True:
+                if params["dryrun"] == "false":
+                    self.progress("已收到云盘授权，正在挂载到远端 GPU")
+                    return
+                params["dryrun"] = "false"
+                continue
             uri = data.get("unauthorized_redirect_uri", "")
             parsed = urlparse(uri)
             if parsed.scheme != "https" or parsed.hostname not in (
@@ -72,8 +80,6 @@ class DriveMount:
                 "colab.research.google.com",
             ):
                 raise RuntimeError("Google 没有返回有效的云盘授权页，请重试")
-            # Google's returned login_hint identifies the same account as Colab.
-            # Also pass it as authuser to avoid the browser's default-account mismatch.
             query = parse_qs(parsed.query)
             if query.get("login_hint"):
                 query["authuser"] = query["login_hint"]
@@ -81,21 +87,11 @@ class DriveMount:
             if not consent_opened:
                 self.notify(uri)
                 consent_opened = True
+            # dryrun checks eligibility and can remain false AFTER browser consent.
+            # Only the real propagation consumes the grant and delivers credentials.
+            # Retry that step until success; never reopen a rotating consent URL.
+            params["dryrun"] = "false"
             self.cancel.wait(3)
-        params["dryrun"] = "false"
-        result = self.data(
-            http.post(
-                url,
-                params=params,
-                headers=headers,
-                files={"file_id": (None, "empty.ipynb")},
-                timeout=20,
-            )
-        )
-        if result.get("success") is False:
-            raise RuntimeError(
-                "云盘授权尚未生效，请确认浏览器中选择了同一个 Google 账户"
-            )
 
     def hook(self, message, wsclient):
         if (
