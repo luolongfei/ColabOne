@@ -407,6 +407,8 @@ class Controller:
                             self.update(
                                 runtime={"state": "stopped"}, models=self.presets()
                             )
+                if self.data.get("error", "").startswith("连接检查失败："):
+                    self.update(error="")
             except Exception as exc:
                 self.update(
                     error="连接检查失败："

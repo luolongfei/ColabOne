@@ -217,3 +217,28 @@ def test_drive_disconnect_cannot_falsely_confirm_pending_uploads(tmp_path):
     mounted[0] = True
     store.flush()
     assert not store.pending_flush
+
+
+def test_private_bridge_uses_utf8_even_with_ascii_pipe_locale(tmp_path):
+    import os, subprocess, sys
+
+    root = Path(__file__).resolve().parents[1]
+    script = """
+import runpy,sys,types,threading
+class Controller:
+    def __init__(self,root): self.stop=threading.Event()
+    def command(self,method,payload): return payload
+sys.modules['bridge.controller']=types.SimpleNamespace(Controller=Controller)
+runpy.run_path(%r,run_name='__main__')
+""" % str(root / "bridge/main.py")
+    body = {"id": 1, "method": "echo", "payload": {"text": "你好，远端 GPU"}}
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        input=(json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8"),
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        cwd=tmp_path,
+        timeout=10,
+        check=True,
+    )
+    assert json.loads(result.stdout.decode("utf-8"))["result"] == body["payload"]

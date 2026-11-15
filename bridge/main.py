@@ -12,6 +12,11 @@ from bridge.controller import Controller
 
 
 def main():
+    # The Go bridge always sends UTF-8, including on Windows with a non-UTF-8
+    # system locale. Pipes do not inherit the console's Unicode handling.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     if "--self-test" in sys.argv:
         from common.models import ModelSpec
         import keyring, fastapi, colab_cli  # noqa: F401
