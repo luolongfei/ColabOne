@@ -58,9 +58,8 @@ const base = computed(() =>
   api.value?.url ? `${api.value.url}/v1` : "https://YOUR-API-HOST/v1",
 );
 const selectedModel = computed(() =>
-  model.value?.kind === example.value ||
-  (!model.value?.kind && example.value === "chat")
-    ? model.value?.id
+  model.value && (model.value.kind || "chat") === example.value
+    ? model.value.id
     : example.value === "chat"
       ? "YOUR-CHAT-MODEL"
       : `YOUR-${example.value.toUpperCase()}-MODEL`,

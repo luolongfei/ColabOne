@@ -772,6 +772,9 @@ test("API setup remains local until explicitly enabled and examples match tunnel
   await expect(page.locator(".api-examples pre")).toContainText(
     '"stream": false',
   );
+  await expect(page.locator(".api-examples pre")).toContainText(
+    '"model": "YOUR-CHAT-MODEL"',
+  );
   await page.getByRole("button", { name: "固定域名", exact: true }).click();
   await expect(page.getByLabel("API 域名", { exact: true })).toBeVisible();
   await expect(page.locator(".api-examples pre")).toContainText(
