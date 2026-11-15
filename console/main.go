@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-//go:embed resources/tray.png
+//go:embed resources/icon.png
 var trayIcon []byte
 
 type CommandRequest struct {
