@@ -1,0 +1,13 @@
+{
+  "tag": "b12032",
+  "assets": [
+    {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12032/cudart-llama-b12032-bin-ubuntu-cuda-12.8-x64.tar.gz",
+      "sha256": "098668ca024aaa39b397b368f9daed7eb1cda74b7750a7a08776ecb59765b4e1"
+    },
+    {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12032/llama-b12032-bin-ubuntu-cuda-12.8-x64.tar.gz",
+      "sha256": "3a30a35b6425289224efa2be2674dd73eabaed89f609b4d2497e2a564f4e82d9"
+    }
+  ]
+}

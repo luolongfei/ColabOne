@@ -3,3 +3,7 @@ Colab-yoga
 bridge/colab_yoga_bridge.py and server/colab_yoga_server.py are derived from
 EasyColab (https://github.com/wy51ai/easycolab) by wy51ai, licensed under the
 Apache License, Version 2.0. They have been substantially modified.
+
+ColabOne modifications, 2026. Model manifests and CUDA deployment adapted from colab-gpu-llm-service (MIT). See third_party/colab-gpu-llm-service.LICENSE and third_party/SOURCES.md.
+
+ColabOne Drive credential propagation is adapted from Google Colab CLI 0.7.5, Copyright 2026 Google LLC, Apache License 2.0. See bridge/drive_mount.py and third_party/SOURCES.md.

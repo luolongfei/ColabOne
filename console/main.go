@@ -1,136 +1,116 @@
-// Command console is Colab-yoga, a management console for a Colab GPU that serves the
-// owner's LLMs to the web UI, Magpie and MCP: what it costs, which model runs, and
-// whether each way in works. It lives in the tray; the window is opened on demand.
 package main
 
 import (
+	"context"
 	_ "embed"
-	"log"
-	"os"
-	"runtime/debug"
-	"time"
-
+	"errors"
+	"fmt"
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/transfer"
+	"log"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 //go:embed resources/tray.png
 var trayIcon []byte
 
-func userHome() (string, error) { return os.UserHomeDir() }
+type CommandRequest struct {
+	Action  string         `json:"action"`
+	Payload map[string]any `json:"payload"`
+}
+type Desktop struct{ bridge *bridge }
 
+func (d *Desktop) Snapshot(ctx context.Context) (string, error) {
+	return d.bridge.call(ctx, "snapshot", nil)
+}
+func (d *Desktop) Command(ctx context.Context, request CommandRequest) (string, error) {
+	return d.bridge.call(ctx, request.Action, request.Payload)
+}
+func (d *Desktop) ReadClipboard() (string, error) {
+	data, err := mygo.Clipboard.ReadFormat(transfer.Text)
+	if err != nil {
+		return "", errors.New("未能读取剪贴板，请直接粘贴到输入框")
+	}
+	return string(data), nil
+}
+func (d *Desktop) OpenURL(value string) error {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" {
+		return errors.New("只允许 HTTPS 链接")
+	}
+	allowed := []string{"accounts.google.com", "colab.research.google.com", "developers.google.com", "github.com"}
+	for _, host := range allowed {
+		if u.Hostname() == host {
+			return mygo.Shell.OpenExternal(value)
+		}
+	}
+	return errors.New("不支持的外部链接")
+}
+func (d *Desktop) ExportConversation(ctx context.Context, content string) (string, error) {
+	path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: mygo.CallerWindow(ctx), DefaultPath: "ColabOne-conversation.md"})
+	if err != nil || path == "" {
+		return "", err
+	}
+	return path, os.WriteFile(path, []byte(content), 0600)
+}
 func main() {
-	// A second launch (desktop shortcut, Start menu) shows the running window instead.
-	if !mygo.App.RequestSingleInstanceLock() {
+	if len(os.Args) > 1 && os.Args[1] == "--self-test" {
+		exe, _ := os.Executable()
+		cwd, _ := os.Getwd()
+		root, err := rootAt(exe, cwd)
+		if err != nil {
+			log.Fatal(err)
+		}
+		py, err := pythonAt(root)
+		if err != nil {
+			log.Fatal(err)
+		}
+		cmd := exec.Command(py, filepath.Join(root, "bridge", "main.py"), "--self-test")
+		cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(root, "site-packages")+string(os.PathListSeparator)+root)
+		out, err := cmd.CombinedOutput()
+		fmt.Print(string(out))
+		if err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
-	app := newApp(findPaths())
-	app.live = true
-	app.setVersion(mygo.App.Version())
-	writeInstallAnchor(app.paths) // only the real start: tests build Paths of their own
-	mygo.App.OnSecondInstance(func([]string, string) { app.showWindow() })
-	mygo.App.OnActivate(func(bool) { app.showWindow() })
-	// Registering a listener keeps the app running in the tray when the window closes.
+	d := &Desktop{bridge: &bridge{}}
+	mygo.Bind(d)
+	if os.Getenv("MYGO_GENERATE") == "" && !mygo.App.RequestSingleInstanceLock() {
+		return
+	}
+	var win *mygo.Window
+	show := func() {
+		if win != nil {
+			win.Show()
+			win.Focus()
+			return
+		}
+		win = mygo.NewWindow(mygo.WindowOptions{Title: "ColabOne", URL: "/", Width: 1200, Height: 820, MinWidth: 900, MinHeight: 620, StateKey: "main", BackgroundColor: "#f7f8fa"})
+		win.OnClosed(func() { win = nil })
+	}
 	mygo.App.OnWindowAllClosed(func() {})
+	mygo.App.OnActivate(func(bool) { show() })
+	mygo.App.OnSecondInstance(func([]string, string) { show() })
 	mygo.App.WhenReady(func() {
-		app.makeTray()
-		app.showWindow()
-		go app.run()
+		menu := mygo.NewMenu([]*mygo.MenuItem{
+			{Label: "打开 ColabOne", Click: func(*mygo.MenuItem, *mygo.Window) { show() }},
+			mygo.Separator(),
+			{Label: "退出客户端（远端空闲与预算保护继续）", Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
+		})
+		tray, err := mygo.NewTray(mygo.TrayOptions{ID: "colabone", Icon: trayIcon, ToolTip: "ColabOne", Menu: menu})
+		if err == nil {
+			tray.OnClick(show)
+			mygo.App.OnWillQuit(func(*mygo.QuitEvent) { tray.Destroy() })
+		}
+		show()
 	})
-	if err := mygo.App.Run(); err != nil {
+	mygo.App.OnWillQuit(func(*mygo.QuitEvent) { d.bridge.close() })
+	if err := mygo.App.Run(); err != nil && !strings.Contains(err.Error(), "generate") {
 		log.Fatal(err)
 	}
-}
-
-func (a *App) makeTray() {
-	item := func(label string, fn func()) *mygo.MenuItem {
-		return &mygo.MenuItem{Label: label, Click: func(*mygo.MenuItem, *mygo.Window) { fn() }}
-	}
-	menu := mygo.NewMenu([]*mygo.MenuItem{
-		item("打开 Colab-yoga", a.showWindow),
-		item("打开网页对话", a.openWeb),
-		item("续时", a.touch),
-		item("释放全部实例…", func() {
-			// Never release from the tray directly: show the window and its confirmation.
-			a.showWindow()
-			a.page, a.askRelease = "dashboard", true
-		}),
-		mygo.Separator(),
-		item("退出（GPU 由后台保活照常管理）", func() { mygo.App.Quit() }),
-	})
-	t, err := mygo.NewTray(mygo.TrayOptions{ID: "colab-yoga", Icon: trayIcon, ToolTip: "Colab-yoga", Menu: menu})
-	if err != nil {
-		log.Printf("tray: %v", err)
-		return
-	}
-	a.tray = t
-	// Windows keeps an icon after its owner exits unless it is removed while
-	// the native event loop is still running.
-	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
-		t.Destroy()
-		a.tray = nil
-	})
-	t.OnClick(a.showWindow)
-	a.updateTray()
-}
-
-// showWindow focuses the window, creating it if the tray was all that showed.
-func (a *App) showWindow() {
-	if a.win != nil {
-		a.win.Show()
-		a.win.Focus()
-		return
-	}
-	bg := "#1F1E1D"
-	if a.themeName == "light" {
-		bg = "#FAF9F5"
-	}
-	// A fixed 1440x900 overflowed a 1440x900 laptop screen (the taskbar takes part of
-	// it): fit the restored size to the work area, open maximized the first time, and
-	// let StateKey bring back whatever the user left it at on later launches.
-	w, h := 1440, 900
-	if wa := mygo.Screen.PrimaryDisplay().WorkArea; wa.Width > 0 && wa.Height > 0 {
-		w, h = min(w, wa.Width-64), min(h, wa.Height-48)
-	}
-	win := mygo.NewWindow(mygo.WindowOptions{
-		Title:           "Colab-yoga",
-		Width:           w,
-		Height:          h,
-		MinWidth:        min(1000, w),
-		MinHeight:       min(640, h),
-		Maximized:       true,
-		StateKey:        "main",
-		BackgroundColor: bg,
-		Content:         ui.View(a.view),
-	})
-	a.win = win
-	// Closing destroys the window, which gives its renderer's memory back; App and the
-	// background loop stay, slowed down, and the tray brings the window back.
-	win.OnClosed(func() {
-		if a.win == win {
-			a.win = nil
-		}
-		a.trayHintOnce()
-		// Once the renderer's buffers are gone, hand the freed heap back and let Windows
-		// trim the working set, so the tray-only process stays small.
-		go func() {
-			time.Sleep(3 * time.Second)
-			debug.FreeOSMemory()
-			trimWorkingSet()
-		}()
-	})
-}
-
-func (a *App) trayHintOnce() {
-	if num(a.set.Load(), "consoleTrayHintShown", 0) > 0 {
-		return
-	}
-	_ = a.set.Set(map[string]any{"consoleTrayHintShown": 1})
-	go func() {
-		n := mygo.NewNotification(mygo.NotificationOptions{
-			Title: "Colab-yoga 还在托盘里",
-			Body:  "关窗口不影响 GPU：后台保活照常运行，快自动释放时会提醒你。点托盘图标重新打开，右键可退出。",
-		})
-		_ = n.Show()
-	}()
 }

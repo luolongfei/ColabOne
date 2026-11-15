@@ -1,103 +1,85 @@
-"""What the bridge's wake runs in the Colab VM's Jupyter kernel.
-
-The bridge uploads /content/colab_yoga_server.py and /content/colab_kernel_runners.json,
-then sends this file as code. It is plain standalone Python: install what is missing, stop
-an older server, start the new one detached, and print WAKE_URL:<url> or WAKE_ERROR:<why>.
-"""
-import importlib.util
+# Executed inside the Colab kernel. It contains no secrets: those arrive via ContentsClient.
+# The control service is loopback-only; the authenticated Colab kernel carries RPC.
+import json
 import os
-import re
 import subprocess
 import sys
 import time
-
-SERVER = "/content/colab_yoga_server.py"
-LOG = "/content/colab_yoga_server.log"
-WAIT_SECONDS = 180
-
-# module -> pip package. Colab preinstalls most of these; only the missing ones are installed.
-# gradio is here for its share tunnel (frpc), not for any UI.
-DEPENDENCIES = {
-    "fastapi": "fastapi",
-    "uvicorn": "uvicorn",
-    "pydantic": "pydantic",
-    "requests": "requests",
-    "gradio": "gradio",
-}
+import urllib.request
+import zipfile
+from pathlib import Path
 
 
-def log_tail(chars=600):
-    try:
-        with open(LOG, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()[-chars:]
-    except OSError:
-        return "no log"
-
-
-def wait_for_url(proc, wait_seconds=WAIT_SECONDS, poll_s=0.5):
-    """Print WAKE_URL:<url> once the server logs it, or WAKE_ERROR: if it exits or times out.
-
-    Follows the log from where the last look ended (it is rewritten from empty at launch)
-    instead of re-reading it whole, and looks every poll_s so the URL is reported as soon
-    as the line lands. Requiring whitespace after the URL keeps a half-written one from matching."""
-    url_re = re.compile(r"COLAB_YOGA_URL=(https://\S+)\s")
-    deadline = time.time() + wait_seconds
-    pos, seen = 0, ""
-    while time.time() < deadline:
-        time.sleep(poll_s)
-        try:
-            with open(LOG, "rb") as f:
-                f.seek(pos)
-                chunk = f.read()
-        except OSError:
-            chunk = b""
-        if chunk:
-            pos += len(chunk)
-            seen = seen[-300:] + chunk.decode("utf-8", errors="replace")
-            m = url_re.search(seen)
-            if m:
-                print("WAKE_URL:" + m.group(1), flush=True)
-                return
+def colabone_boot():
+    config_path = Path("/content/colabone-boot.json")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    # An independent deadline guard starts before dependency installation or networking.
+    addr = os.environ.get("TBE_RUNTIME_ADDR", "")
+    if not addr:
+        raise RuntimeError(
+            "Colab runtime release endpoint unavailable; refusing unprotected startup"
+        )
+    guard = (
+        "import time,urllib.request\n"
+        "time.sleep(max(0,%r-time.time()))\n"
+        "while True:\n"
+        " try:\n"
+        "  urllib.request.build_opener(urllib.request.ProxyHandler({})).open(urllib.request.Request(%r,data=b'',method='POST'),timeout=15)\n"
+        "  break\n"
+        " except Exception: time.sleep(5)\n"
+    ) % (config["deadline"] + 40, "http://" + addr + "/unassign")
+    subprocess.Popen(
+        [sys.executable, "-c", guard],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    with zipfile.ZipFile("/content/colabone.zip") as archive:
+        archive.extractall("/content")
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "-r",
+            "/content/colabone/server/requirements.txt",
+        ],
+        check=True,
+        timeout=180,
+    )
+    config_path.write_text(json.dumps(config))
+    config_path.chmod(0o600)
+    env = dict(
+        os.environ,
+        PYTHONPATH="/content/colabone",
+        COLABONE_REMOTE_CONFIG=str(config_path),
+        COLABONE_RUNTIME_ID=config["runtime_id"],
+        PYTHONUNBUFFERED="1",
+    )
+    log = open("/content/colabone-server.log", "w")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "server.app"],
+        cwd="/content/colabone",
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
+        start_new_session=True,
+    )
+    for _ in range(60):
         if proc.poll() is not None:
-            print("WAKE_ERROR: 服务进程已退出 (exit=%s)，日志尾部: %s" % (proc.returncode, log_tail()), flush=True)
-            return
-    print("WAKE_ERROR: 启动超时，日志尾部: " + log_tail(), flush=True)
-
-
-def main():
-    missing = [pkg for mod, pkg in DEPENDENCIES.items() if importlib.util.find_spec(mod) is None]
-    if missing:
-        print("正在安装缺失依赖: " + " ".join(missing), flush=True)
-        done = subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + missing,
-                              capture_output=True, text=True)
-        if done.returncode != 0:
-            print("WAKE_ERROR: 依赖安装失败: " + (done.stdout + done.stderr)[-600:], flush=True)
-            return
-
-    if not os.path.exists(SERVER):
-        print("WAKE_ERROR: 缺少 " + SERVER + "，bridge 没有上传服务脚本", flush=True)
-        return
-
-    # Only one server may run (one idle watchdog). Never touch llama-server or the MCP
-    # forwarder: they must outlive a redeploy. frpc is the old server's gradio tunnel,
-    # orphaned when its python is killed.
-    # A pre-rename EasyColab app.py (same :7860, its own watchdog) counts as an older server.
-    subprocess.run(["pkill", "-f", "python.*/content/colab_yoga_server.py"], check=False)
-    subprocess.run(["pkill", "-f", "python.*/content/app.py"], check=False)
-    for _ in range(20):
-        if subprocess.run(["pgrep", "-f", "python.*/content/(colab_yoga_server|app).py"],
-                          capture_output=True).returncode != 0:
+            raise RuntimeError("ColabOne service failed to start")
+        try:
+            urllib.request.urlopen("http://127.0.0.1:7860/health", timeout=1)
             break
-        time.sleep(0.5)
-    subprocess.run(["pkill", "-f", "frpc_linux"], check=False)
-    time.sleep(1)
-
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
-    with open(LOG, "w", encoding="utf-8", newline="\n") as out:
-        proc = subprocess.Popen([sys.executable, "-u", SERVER], cwd="/content", env=env,
-                                stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                start_new_session=True)
-    wait_for_url(proc)
+        except Exception:
+            time.sleep(0.5)
+    else:
+        raise RuntimeError("ColabOne service readiness timeout")
+    print("COLABONE_READY=1", flush=True)
 
 
-main()
+colabone_boot()

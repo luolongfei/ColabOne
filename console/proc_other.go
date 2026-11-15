@@ -2,33 +2,6 @@
 
 package main
 
-import (
-	"errors"
-	"os"
-	"os/exec"
-	"syscall"
-)
+import "os/exec"
 
-func hideWindow(cmd *exec.Cmd) {}
-
-func startDetached(cmd *exec.Cmd) error {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	return cmd.Process.Release()
-}
-
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	sigErr := p.Signal(syscall.Signal(0))
-	return sigErr == nil || errors.Is(sigErr, syscall.EPERM)
-}
-
-func trimWorkingSet() {}
+func hideProcess(cmd *exec.Cmd) {}
