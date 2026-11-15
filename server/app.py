@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, Header, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from common.models import ModelSpec
+from common.creative import CreativeRequest
 from server.runtime import Runtime, Conflict
 
 
@@ -35,6 +36,15 @@ class Configure(BaseModel):
 
 class Activity(BaseModel):
     hold_seconds: int = Field(default=0, ge=0, le=330)
+
+
+class Reference(BaseModel):
+    data: str = Field(max_length=12 * 1024**2)
+
+
+class LoadOptions(BaseModel):
+    context_length: int | None = Field(default=None, ge=512, le=65536)
+    temperature: float | None = Field(default=None, ge=0, le=2)
 
 
 def create_app(runtime, token, background=False):
@@ -89,6 +99,7 @@ def create_app(runtime, token, background=False):
             "runtime": runtime.status(),
             "models": runtime.list_models(),
             "conversations": runtime.list_conversations(),
+            "creations": runtime.creative.listing(),
         }
 
     @app.post("/api/v1/configure", dependencies=auth)
@@ -112,6 +123,8 @@ def create_app(runtime, token, background=False):
             existing = runtime.conversations.get(convo["id"])
             if not existing or existing["updated_at"] < convo["updated_at"]:
                 runtime.save_conversation(convo)
+        if hasattr(runtime.drive, "media_list"):
+            runtime.creative.restore()
         return {"ok": True}
 
     @app.get("/api/v1/models", dependencies=auth)
@@ -127,8 +140,32 @@ def create_app(runtime, token, background=False):
         return runtime.download(model_id, body.hf_token, body.threads)
 
     @app.post("/api/v1/models/{model_id}/load", dependencies=auth)
-    def load(model_id: str):
-        return runtime.load(model_id)
+    def load(model_id: str, body: LoadOptions = LoadOptions()):
+        return runtime.load(model_id, body.model_dump(exclude_none=True))
+
+    @app.post("/api/v1/creative/references", dependencies=auth)
+    def reference(body: Reference):
+        runtime.touch()
+        return runtime.creative.reference(body.data)
+
+    @app.post("/api/v1/creative/generate", dependencies=auth)
+    def generate(body: CreativeRequest):
+        return runtime.generate(body.model_dump())
+
+    @app.get("/api/v1/creations/{identity}/asset", dependencies=auth)
+    def asset(
+        identity: str,
+        offset: int = Query(default=0, ge=0),
+        length: int = Query(default=512 * 1024, ge=1, le=512 * 1024),
+    ):
+        runtime.touch()
+        return runtime.creative.asset(identity, offset, length)
+
+    @app.delete("/api/v1/creations/{identity}", dependencies=auth)
+    def remove_creation(identity: str):
+        runtime.touch()
+        runtime.creative.delete(identity)
+        return {"ok": True}
 
     @app.post("/api/v1/unload", dependencies=auth)
     def unload():

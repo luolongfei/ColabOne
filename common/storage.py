@@ -5,8 +5,10 @@ import json
 import os
 import re
 import threading
+import shutil
 from pathlib import Path
 from common.files import atomic_json
+from common.creative import CreationRecord
 
 
 class DriveStore:
@@ -56,6 +58,67 @@ class DriveStore:
             folder = self.folder()
             result = [self.get(p.name) for p in folder.glob("conversation-*.json")]
             return sorted(result, key=lambda c: c.get("updated_at", 0), reverse=True)
+
+    def media_file(self, name):
+        if not re.fullmatch(r"[a-f0-9]{32}\.(?:png|webm|json)", name):
+            raise ValueError("Invalid media key")
+        folder = self.folder() / "creations"
+        if folder.is_symlink():
+            raise ValueError("作品目录不能是符号链接")
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        if path.is_symlink():
+            raise ValueError("作品不能是符号链接")
+        return path
+
+    def put_media(self, source, item):
+        with self.lock:
+            target = self.media_file(item["id"] + "." + item["extension"])
+            temporary = target.with_name(target.name + ".uploading")
+            if temporary.is_symlink():
+                raise ValueError("上传临时文件不能是符号链接")
+            shutil.copyfile(source, temporary)
+            temporary.replace(target)
+            atomic_json(self.media_file(item["id"] + ".json"), item)
+            self.pending_flush = True
+
+    def media_list(self):
+        with self.lock:
+            folder = self.folder() / "creations"
+            if folder.is_symlink():
+                raise ValueError("作品目录不能是符号链接")
+            items = []
+            for path in folder.glob("*.json"):
+                try:
+                    item = CreationRecord.model_validate_json(
+                        self.media_file(path.name).read_text(encoding="utf-8")
+                    ).model_dump()
+                    if item["id"] != path.stem or item["extension"] not in (
+                        "png",
+                        "webm",
+                    ):
+                        continue
+                    if not 0 < item["size"] <= 64 * 1024**2 or not re.fullmatch(
+                        r"[a-f0-9]{64}", item["sha256"]
+                    ):
+                        continue
+                    item["synced"] = True
+                    items.append(item)
+                except (ValueError, KeyError, TypeError, OSError):
+                    continue
+            return items
+
+    def trash_media(self, identity, extension):
+        with self.lock:
+            target = self.media_file(identity + "." + extension)
+            trash = target.parent / ".trash"
+            if trash.is_symlink():
+                raise ValueError("回收目录不能是符号链接")
+            trash.mkdir(exist_ok=True)
+            for path in (target, self.media_file(identity + ".json")):
+                if path.exists():
+                    path.replace(trash / path.name)
+            self.pending_flush = True
 
     def flush(self):
         with self.lock:

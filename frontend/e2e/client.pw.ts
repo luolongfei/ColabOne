@@ -6,7 +6,7 @@ async function mock(page: any, ready = false) {
       const state: any = {
         runtime: {
           state: ready ? "ready" : "stopped",
-          protocol: 2,
+          protocol: 3,
           gpu: ready
             ? { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 }
             : undefined,
@@ -174,7 +174,8 @@ test("remote download load chat and explicit deletion", async ({ page }) => {
   await mock(page, true);
   await page.getByRole("button", { name: "模型库", exact: true }).click();
   await page.getByRole("button", { name: "下载到远端" }).click();
-  await page.getByRole("button", { name: "加载", exact: true }).click();
+  await page.getByRole("button", { name: "配置并加载", exact: true }).click();
+  await page.getByRole("button", { name: "加载模型", exact: true }).click();
   await page.getByRole("button", { name: "聊天", exact: true }).click();
   await page.getByRole("textbox", { name: "消息", exact: true }).fill("你好");
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
@@ -629,4 +630,130 @@ test("idle countdown decrements locally and only real interaction resets remote 
   await expect(page.locator(".idle-timer")).toContainText(
     "任务进行中 · 暂停释放",
   );
+});
+
+test("creative workspace submits remote image options and keeps main width when logs open", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.models.push({
+      id: "z-image",
+      kind: "image",
+      name: "Z Image Turbo",
+      description: "远端图像模型",
+      size: 6 * 1024 ** 3,
+      min_vram_mib: 8192,
+      downloaded: true,
+      loaded: true,
+      files: [],
+    });
+    s.runtime.loaded_model = "z-image";
+    s.creations = [];
+  });
+  await page.getByRole("button", { name: "画图", exact: true }).click();
+  await page.getByRole("textbox", { name: "创作提示词" }).fill("蓝色海边小屋");
+  await page.getByRole("button", { name: "3:4", exact: true }).click();
+  await page.getByRole("combobox", { name: "生成张数" }).selectOption("2");
+  await page.getByRole("spinbutton", { name: "生成种子" }).fill("123");
+  await page.getByRole("button", { name: "生成图片", exact: true }).click();
+  const call = await page.evaluate(() =>
+    (window as any).__calls.find((c: any) => c.action === "creative.generate"),
+  );
+  expect(call.payload).toMatchObject({
+    model_id: "z-image",
+    kind: "image",
+    prompt: "蓝色海边小屋",
+    width: 768,
+    height: 1024,
+    count: 2,
+    seed: 123,
+  });
+  await page.getByRole("button", { name: "聊天", exact: true }).click();
+  await expect(
+    page.getByRole("textbox", { name: "消息", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "画图", exact: true }).click();
+  await expect(page.locator(".studio-workspace")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "创作提示词" })).toHaveValue(
+    "蓝色海边小屋",
+  );
+  await page.screenshot({
+    path: new URL("../../work/studio-image-ui.png", import.meta.url).pathname,
+    fullPage: true,
+  });
+});
+
+test("video form submits frame count and portrait resolution", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.models.push({
+      id: "wan",
+      kind: "video",
+      name: "Wan 2.2",
+      description: "远端视频模型",
+      size: 8 * 1024 ** 3,
+      min_vram_mib: 12288,
+      downloaded: true,
+      loaded: true,
+      files: [],
+    });
+    s.runtime.loaded_model = "wan";
+    s.creations = [];
+  });
+  await page.getByRole("button", { name: "视频", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "创作提示词" })
+    .fill("镜头缓缓靠近海边小屋");
+  await page.getByRole("button", { name: "9:16", exact: true }).click();
+  await page.getByRole("combobox", { name: "视频时长" }).selectOption("3");
+  await page.getByRole("button", { name: "生成视频", exact: true }).click();
+  const call = await page.evaluate(() =>
+    (window as any).__calls.find((c: any) => c.action === "creative.generate"),
+  );
+  expect(call.payload).toMatchObject({
+    kind: "video",
+    model_id: "wan",
+    width: 480,
+    height: 832,
+    frames: 49,
+    steps: 20,
+    fps: 16,
+    count: 1,
+  });
+  await page.screenshot({
+    path: new URL("../../work/studio-video-ui.png", import.meta.url).pathname,
+    fullPage: true,
+  });
+});
+
+test("run page passes real context options and collapsible navigation preserves labels", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.models[0].downloaded = true;
+  });
+  await page.getByRole("button", { name: "运行", exact: true }).click();
+  await page.getByRole("button", { name: "16K", exact: true }).click();
+  await page.getByRole("slider", { name: "回答随机性" }).fill("0.3");
+  await page.getByRole("button", { name: "加载模型", exact: true }).click();
+  const call = await page.evaluate(() =>
+    (window as any).__calls.find((c: any) => c.action === "model.load"),
+  );
+  expect(call.payload).toEqual({
+    id: "qwen",
+    context_length: 16384,
+    temperature: 0.3,
+  });
+  await page.getByRole("button", { name: "收起导航" }).click();
+  await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+  await page.getByRole("button", { name: "模型库", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "模型库" })).toBeVisible();
+  await page.getByRole("button", { name: "展开导航" }).click();
+  await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
 });

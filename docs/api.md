@@ -32,3 +32,16 @@ Go services exposed to the frontend are generated in `frontend/src/mygo.ts`: Sna
 Protocol 2 runtime status includes `idle` (phase, remaining_seconds, countdown_seconds, idle_seconds, server_time). Task `download` includes downloaded_bytes, total_bytes, speed_bps, eta_seconds, elapsed_seconds, resumed_bytes, threads, connections, phase, filename and file counts. Bounded task `logs` carry monotonic sequence IDs; the desktop deduplicates them independently of progress.
 
 Desktop commands `hub.search`, `hub.files` and `hub.install` cover metadata search, pinned version selection and remote installation. `runtime.upgrade` updates an idle older control service without changing its storage or budget. `runtime.activity` queues explicit interaction and does not run a blocking kernel call on the UI thread.
+
+## Creative protocol 3
+
+Runtime status advertises `capabilities: [chat, image, video]` and the actual `active_options` for a loaded chat model. Snapshot also includes creation metadata. Loading chat accepts optional `context_length` and `temperature`; the base manifest is unchanged.
+
+| Method | Route | Behavior |
+|---|---|---|
+| POST | `/api/v1/creative/references` | Validated PNG/JPEG/WebP base64, max 8 MiB / 16M pixels; returns remote reference ID |
+| POST | `/api/v1/creative/generate` | Validated CreativeRequest → cancellable image/video task; requires matching loaded model |
+| GET | `/api/v1/creations/{id}/asset` | Bounded binary chunk as base64; offset, total, SHA-256, MIME; max 512 KiB per call |
+| DELETE | `/api/v1/creations/{id}` | Move artifact and metadata to remote/cloud trash |
+
+Creative recipes allow GGUF and safetensors components with model/llm/t5xxl/vae roles. Each supported recipe validates its complete role set. Only fixed catalog recipes are enabled; arbitrary repository Python is never executed. Generation progress reports conditioning, sampling, decoding and encoding; a sampling pass reaching 100% is not completion. Native `ExportCreation(id)` uses a save dialog, verifies the complete SHA-256 and atomically publishes the chosen file. It accepts no remote-supplied destination path.

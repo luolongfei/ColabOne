@@ -1,5 +1,10 @@
+import type { Creation } from "./creative";
 export interface ModelSpec {
   id: string;
+  kind?: "chat" | "image" | "video";
+  recipe?: string;
+  context_length?: number;
+  temperature?: number;
   name: string;
   description: string;
   downloaded: boolean;
@@ -51,6 +56,8 @@ export interface RuntimeStatus {
   disk_free?: number;
   idle_remaining?: number;
   protocol?: number;
+  active_options?: { context_length?: number; temperature?: number };
+  capabilities?: string[];
   idle?: {
     phase: string;
     remaining_seconds: number;
@@ -74,6 +81,7 @@ export interface Snapshot {
   runtime: RuntimeStatus;
   models: ModelSpec[];
   conversations: Conversation[];
+  creations: Creation[];
   account: {
     logged_in: boolean;
     balance?: number;
@@ -113,6 +121,7 @@ export const initialSnapshot = (): Snapshot => ({
   runtime: { state: "stopped" },
   models: [],
   conversations: [],
+  creations: [],
   account: { logged_in: false },
   operation: null,
   error: "",

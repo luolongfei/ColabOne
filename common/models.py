@@ -17,7 +17,7 @@ class ModelFile(BaseModel):
     path: str
     size: int = Field(gt=0)
     sha256: str
-    role: Literal["model", "shard"] = "model"
+    role: Literal["model", "shard", "vae", "llm", "t5xxl"] = "model"
 
     @field_validator("repo")
     @classmethod
@@ -41,9 +41,9 @@ class ModelFile(BaseModel):
             p.is_absolute()
             or ".." in p.parts
             or "\\" in value
-            or not value.lower().endswith(".gguf")
+            or not value.lower().endswith((".gguf", ".safetensors"))
         ):
-            raise ValueError("GGUF 文件路径不合法")
+            raise ValueError("模型文件路径不合法")
         return value
 
     @field_validator("sha256")
@@ -64,14 +64,34 @@ class ModelSpec(BaseModel):
     temperature: float = Field(default=0.7, ge=0, le=2)
     cpu_moe_layers: int = Field(default=0, ge=0, le=256)
     source: str = "Hugging Face"
+    kind: Literal["chat", "image", "video"] = "chat"
+    recipe: Literal["", "z-image-turbo", "wan22-ti2v-5b"] = ""
     files: list[ModelFile] = Field(min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def file_set(self):
         if sum(f.role == "model" for f in self.files) != 1:
-            raise ValueError("需要且只能有一个入口 GGUF 文件")
+            raise ValueError("需要且只能有一个入口模型文件")
         if len({f.path for f in self.files}) != len(self.files):
             raise ValueError("文件路径重复")
+        if self.kind == "chat":
+            if self.recipe or any(
+                f.role not in ("model", "shard") or not f.path.endswith(".gguf")
+                for f in self.files
+            ):
+                raise ValueError("聊天模型只能包含 GGUF 模型和分片")
+        else:
+            expected = {
+                "image": ("z-image-turbo", {"model", "llm", "vae"}),
+                "video": ("wan22-ti2v-5b", {"model", "t5xxl", "vae"}),
+            }
+            recipe, roles = expected[self.kind]
+            if (
+                self.recipe != recipe
+                or {f.role for f in self.files} != roles
+                or len(self.files) != len(roles)
+            ):
+                raise ValueError("创作模型组件不完整或与类型不匹配")
         return self
 
 

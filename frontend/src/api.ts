@@ -13,3 +13,5 @@ export const openURL = (url: string) => Desktop.openURL(url);
 export const readClipboard = () => Desktop.readClipboard();
 export const exportConversation = (value: string) =>
   Desktop.exportConversation(value);
+
+export const exportCreation = (id: string) => Desktop.exportCreation(id);

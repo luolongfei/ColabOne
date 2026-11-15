@@ -44,6 +44,23 @@ def colabone_update():
     stage.mkdir()
     with zipfile.ZipFile("/content/colabone-update.zip") as archive:
         archive.extractall(stage)
+    # Install locked server dependencies before stopping the working service.
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--require-hashes",
+            "-r",
+            str(stage / "colabone/server/requirements.txt"),
+        ],
+        check=True,
+        timeout=120,
+    )
+    if cfg["deadline"] - time.time() < 60:
+        raise RuntimeError("预算保护即将释放实例，未替换运行中的服务")
     backup = Path("/content/colabone-previous")
     shutil.rmtree(backup, ignore_errors=True)
     pid = processes[0]
@@ -88,7 +105,7 @@ def colabone_update():
             break
         try:
             with opener.open(req, timeout=1) as response:
-                if json.load(response).get("protocol") == 2:
+                if json.load(response).get("protocol", 0) >= 3:
                     print("COLABONE_UPDATED=1", flush=True)
                     return
         except Exception:

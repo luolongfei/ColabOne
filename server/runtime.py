@@ -25,6 +25,8 @@ import requests
 
 from common.files import atomic_json
 from common.models import ModelSpec
+from common.creative import CreativeRequest
+from server import creative
 from common.storage import DriveStore
 from server.download import (
     Transfer,
@@ -133,6 +135,7 @@ class Runtime:
         self.http = http or requests.Session()
         self.http.trust_env = False
         self.drive = drive or DriveStore()
+        self.creative = creative.CreativeStore(root, self.drive)
         self.runtime_id = os.environ.get("COLABONE_RUNTIME_ID", uuid.uuid4().hex)
         self.models = {
             m.id: m
@@ -142,10 +145,17 @@ class Runtime:
             )
         }
         self.tasks: dict[str, Task] = {}
+        if (catalog / "creative.json").exists():
+            for value in json.loads(
+                (catalog / "creative.json").read_text(encoding="utf-8")
+            ):
+                model = ModelSpec.model_validate(value)
+                self.models[model.id] = model
         self.conversations = {}
         self.dirty = set()
         self.sync_error = ""
         self.loaded = None
+        self.active_options = {}
         self.proc = None
         self.chat_transport = None
         self.last_active = time.time()
@@ -219,20 +229,24 @@ class Runtime:
     def status(self):
         if self.proc and self.proc.poll() is not None:
             self.proc, self.loaded = None, None
+            self.active_options = {}
         idle = self.idle_status()
         return {
-            "protocol": 2,
+            "protocol": 3,
+            "capabilities": ["chat", "image", "video"],
             "idle": idle,
             "id": self.runtime_id,
             "state": "releasing" if self.quiescing else "ready",
             "gpu": self.gpu_info(),
             "loaded_model": self.loaded,
+            "active_options": self.active_options.copy(),
             "disk_free": shutil.disk_usage(self.root).free,
             "idle_remaining": idle["remaining_seconds"],
             "idle_minutes": self.idle_minutes,
             "tasks": [t.snapshot() for t in self.tasks.values()],
             "sync": {
-                "pending": len(self.dirty),
+                "pending": len(self.dirty)
+                + sum(not item.get("synced") for item in self.creative.listing()),
                 "error": self.sync_error,
                 "connected": self.drive.available(),
             },
@@ -540,14 +554,21 @@ class Runtime:
         return binaries[0]
 
     @synchronized
-    def load(self, model_id):
+    def load(self, model_id, options=None):
         m = self.models[model_id]
+        if options:
+            if m.kind != "chat":
+                raise ValueError("上下文参数仅用于聊天模型")
+            m = ModelSpec.model_validate(m.model_dump() | options)
         if not self.installed(m):
             raise Conflict("请先下载模型到当前远端实例")
         return self.submit("load", model_id, lambda t: self._load(t, m))
 
     def _load(self, task, m):
-        task.note(f"准备加载 {m.name}，上下文 {m.context_length} tokens")
+        task.note(
+            f"准备加载 {m.name}"
+            + (f"，上下文 {m.context_length} tokens" if m.kind == "chat" else "")
+        )
         gpu = self.gpu_info()
         if not gpu["total_mib"]:
             raise RuntimeError("未检测到可用远端 GPU")
@@ -556,6 +577,8 @@ class Runtime:
         task.note(
             f"远端设备 {gpu.get('name', 'GPU')}，显存 {gpu['total_mib'] / 1024:.1f} GiB"
         )
+        if m.kind != "chat":
+            return creative.load(self, task, m)
         engine = self.prepare_engine(task)
         task.check()
         self._stop_engine()
@@ -611,6 +634,10 @@ class Runtime:
                         == 200
                     ):
                         self.loaded = m.id
+                        self.active_options = {
+                            "context_length": m.context_length,
+                            "temperature": m.temperature,
+                        }
                         task.note("模型加载成功，远端推理服务已就绪")
                         return
                 except requests.RequestException:
@@ -631,6 +658,7 @@ class Runtime:
                 self.proc.kill()
                 self.proc.wait(timeout=5)
         self.proc, self.loaded = None, None
+        self.active_options = {}
 
     def unload(self):
         with self.lock:
@@ -638,6 +666,18 @@ class Runtime:
                 raise Conflict("请先停止当前任务")
             self._stop_engine()
             self.last_active = time.time()
+
+    @synchronized
+    def generate(self, request):
+        request = CreativeRequest.model_validate(request)
+        model = self.models[request.model_id]
+        if self.loaded != model.id or model.kind != request.kind:
+            raise Conflict("请先加载相应的远端画图或视频模型")
+        if request.reference_id:
+            self.creative.reference_data(request.reference_id)
+        return self.submit(
+            request.kind, model.id, lambda t: creative.generate(self, t, request)
+        )
 
     def delete(self, model_id):
         with self.lock:
@@ -658,8 +698,8 @@ class Runtime:
 
     @synchronized
     def chat(self, conversation_id, text):
-        if not self.loaded:
-            raise Conflict("请先加载模型")
+        if not self.loaded or self.models[self.loaded].kind != "chat":
+            raise Conflict("请先加载聊天模型")
         if not text.strip() or len(text) > 100000:
             raise ValueError("消息为空或过长")
         if conversation_id and conversation_id not in self.conversations:
@@ -688,7 +728,9 @@ class Runtime:
                     for x in convo["messages"]
                 ],
                 "stream": True,
-                "temperature": self.models[model_id].temperature,
+                "temperature": self.active_options.get(
+                    "temperature", self.models[model_id].temperature
+                ),
             }
             convo["messages"].append(answer)
             self.save_conversation(convo)
@@ -799,6 +841,14 @@ class Runtime:
                     "Google Drive 同步失败；远端暂存仍在，请检查授权或网络"
                 )
                 return False
+        try:
+            self.creative.sync()
+        except Exception:
+            self.sync_error = (
+                "作品尚未写入 Google Drive；请连接云盘，或导出后再释放 GPU"
+            )
+            return False
+        self.sync_error = ""
         return True
 
     def prepare_release(self):
