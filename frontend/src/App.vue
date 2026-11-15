@@ -199,10 +199,11 @@ const countdown = computed(
     idle.value.phase !== "active" &&
     idleRemaining.value <= idle.value.countdown_seconds,
 );
-const duration = (seconds: number | null) =>
-  seconds === null
-    ? "计算中"
-    : `${Math.floor(Math.max(0, seconds) / 60)}:${String(Math.ceil(Math.max(0, seconds)) % 60).padStart(2, "0")}`;
+const duration = (seconds: number | null) => {
+  if (seconds === null) return "计算中";
+  const whole = Math.ceil(Math.max(0, seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+};
 function interaction(event?: Event) {
   if (event && !event.isTrusted) return;
   if (!ready.value || Date.now() - lastInteraction < 5000) return;

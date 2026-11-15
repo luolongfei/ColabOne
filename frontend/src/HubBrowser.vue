@@ -93,7 +93,11 @@ async function choose(repo: string) {
   } catch (e) {
     if (id === fileGeneration) fileError.value = String(e);
   } finally {
-    if (id === fileGeneration) filesLoading.value = false;
+    if (id === fileGeneration) {
+      filesLoading.value = false;
+      await nextTick();
+      selection.value?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }
 }
 async function install() {

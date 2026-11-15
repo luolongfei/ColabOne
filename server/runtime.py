@@ -450,6 +450,10 @@ class Runtime:
             done += file.size
             stats.downloaded = done
             task.note(f"文件 {index}/{len(model.files)} 校验通过，已保存到远端")
+        elapsed = max(time.monotonic() - task.transfer.started, 0.1)
+        task.note(
+            f"全部文件已验证：{total / 1024**3:.2f} GiB，用时 {elapsed:.1f} 秒，平均传输 {task.transfer.received / elapsed / 1024**2:.1f} MiB/s；复用 {task.transfer.resumed / 1024**2:.1f} MiB"
+        )
         atomic_json(directory / "verified.json", receipt)
 
     def _download_single(self, url, headers, partial, file, task, done):
