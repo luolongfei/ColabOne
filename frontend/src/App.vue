@@ -1019,7 +1019,9 @@ onUnmounted(() => {
               }}<PhCaretRight :size="16" />
             </button>
             <button
-              v-if="state.auth_url && state.operation"
+              v-if="
+                state.auth_url && state.operation && !state.setup.drive_waiting
+              "
               class="text-button"
               @click="openURL(state.auth_url)"
             >

@@ -1,9 +1,19 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted, nextTick } from "vue";
+import { ref, watch, onUnmounted, nextTick, computed } from "vue";
 import { command, openURL } from "./api";
 const props = defineProps<{ ready: boolean; disabled: boolean }>();
 const emit = defineEmits<{ installed: []; device: [] }>();
-type Repo = { repo: string; downloads: number; likes: number; gated: boolean };
+type Repo = {
+  repo: string;
+  downloads: number;
+  likes: number;
+  gated: boolean;
+  minSize?: number;
+  maxSize?: number;
+  versions?: number;
+  sizeState?: "loading" | "ready" | "unavailable";
+};
+type Detail = { revision: string; files: File[] };
 type File = {
   filename: string;
   size: number;
@@ -26,10 +36,71 @@ const chosen = ref(""),
   filesLoading = ref(false),
   fileError = ref(""),
   installing = ref(false);
+const selectedFile = computed(() =>
+  files.value.find((file) => file.filename === filename.value),
+);
 let generation = 0,
   fileGeneration = 0,
   timer: ReturnType<typeof setTimeout>;
-const size = (n: number) => (n / 1024 ** 3).toFixed(2) + " GiB";
+const size = (n: number) =>
+  n < 1024 ** 3
+    ? (n / 1024 ** 2).toFixed(0) + " MiB"
+    : (n / 1024 ** 3).toFixed(2) + " GiB";
+const details = new Map<string, Detail>();
+const pendingDetails = new Map<string, Promise<Detail>>();
+async function detail(repo: string): Promise<Detail> {
+  const cached = details.get(repo);
+  if (cached) return cached;
+  const pending = pendingDetails.get(repo);
+  if (pending) return pending;
+  const request: Promise<Detail> = command("hub.files", { repo })
+    .then((result) => {
+      if (details.size >= 80) details.delete(details.keys().next().value!);
+      details.set(repo, result);
+      return result;
+    })
+    .finally(() => pendingDetails.delete(repo));
+  pendingDetails.set(repo, request);
+  return request;
+}
+async function previewSize(repo: string, id: number) {
+  try {
+    const result = await detail(repo);
+    if (id !== generation) return;
+    const row = repos.value.find((item) => item.repo === repo);
+    if (!row) return;
+    const sizes = result.files
+      .filter((f) => f.supported && f.size > 0)
+      .map((f) => f.size);
+    Object.assign(
+      row,
+      sizes.length
+        ? {
+            minSize: Math.min(...sizes),
+            maxSize: Math.max(...sizes),
+            versions: sizes.length,
+            sizeState: "ready",
+          }
+        : { sizeState: "unavailable" },
+    );
+  } catch {
+    if (id === generation) {
+      const row = repos.value.find((item) => item.repo === repo);
+      if (row) row.sizeState = "unavailable";
+    }
+  }
+}
+async function previewSizes(batch: Repo[], id: number) {
+  // Keep results immediately usable; three metadata readers update sizes progressively.
+  let index = 0;
+  async function worker() {
+    while (id === generation && index < batch.length) {
+      const repo = batch[index++]!.repo;
+      await previewSize(repo, id);
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+}
 async function search(more = false) {
   const id = ++generation;
   loading.value = true;
@@ -45,11 +116,19 @@ async function search(more = false) {
       cursor: more ? cursor.value : "",
     });
     if (id !== generation) return;
+    result.models = result.models.map((r: Repo) => ({
+      ...r,
+      sizeState: "loading",
+    }));
     const all = more ? [...repos.value, ...result.models] : result.models;
     repos.value = [
       ...new Map<string, Repo>(all.map((r: Repo) => [r.repo, r])).values(),
     ];
     cursor.value = result.next_cursor;
+    void previewSizes(
+      repos.value.filter((repo) => repo.sizeState === "loading"),
+      id,
+    );
   } catch (e) {
     if (id === generation) error.value = String(e);
   } finally {
@@ -64,6 +143,11 @@ watch(
     error.value = "";
     cursor.value = "";
     repos.value = [];
+    ++fileGeneration;
+    chosen.value = "";
+    files.value = [];
+    filename.value = "";
+    filesLoading.value = false;
     clearTimeout(timer);
     timer = setTimeout(() => search(), 350);
   },
@@ -80,7 +164,7 @@ async function choose(repo: string) {
   await nextTick();
   selection.value?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   try {
-    const result = await command("hub.files", { repo });
+    const result = await detail(repo);
     if (id !== fileGeneration) return;
     revision.value = result.revision;
     files.value = result.files;
@@ -134,14 +218,21 @@ onUnmounted(() => {
         aria-label="搜索 Hugging Face 模型"
         placeholder="搜索 Hugging Face，例如 Qwen、Llama…"
       />
-      <select v-model="sort" aria-label="社区模型排序">
-        <option value="downloads">下载最多</option>
-        <option value="updated">最近更新</option>
-        <option value="likes">收藏最多</option>
-      </select>
+    </div>
+    <div class="hub-summary">
+      <span>Hugging Face · {{ repos.length }} 个搜索结果</span
+      ><label
+        >排序
+        <select v-model="sort" aria-label="社区模型排序">
+          <option value="downloads">下载最多</option>
+          <option value="updated">最近更新</option>
+          <option value="likes">点赞最多</option>
+        </select></label
+      >
     </div>
     <p class="footnote">
-      实时检索 Hugging Face 的 GGUF 模型。选定版本后，文件直接下载到远端
+      实时检索 Hugging Face 的 GGUF
+      模型。模型大小随量化版本变化。选定版本后，文件直接下载到远端
       GPU；分片会自动一起下载。
     </p>
     <div v-if="error" class="inline-note" role="alert">
@@ -162,11 +253,33 @@ onUnmounted(() => {
       >
         <div>
           <h3>{{ repo.repo }}</h3>
-          <small
-            >下载 {{ repo.downloads.toLocaleString() }} · 收藏
-            {{ repo.likes.toLocaleString()
-            }}<span v-if="repo.gated"> · 需要仓库授权</span></small
-          >
+          <div class="hub-facts">
+            <span class="hub-size"
+              ><small>模型大小</small
+              ><strong v-if="repo.sizeState === 'ready'"
+                >{{ size(repo.minSize!)
+                }}<template v-if="repo.maxSize !== repo.minSize">
+                  – {{ size(repo.maxSize!) }}</template
+                ></strong
+              ><strong v-else>{{
+                repo.sizeState === "unavailable" ? "暂未提供" : "读取中…"
+              }}</strong></span
+            >
+            <span
+              ><small>下载量</small
+              ><strong>{{ repo.downloads.toLocaleString() }}</strong></span
+            >
+            <span
+              ><small>点赞</small
+              ><strong>{{ repo.likes.toLocaleString() }}</strong></span
+            >
+          </div>
+          <p class="hub-variant-note">
+            <template v-if="repo.versions"
+              >{{ repo.versions }} 个可选量化版本 · 大小随版本变化</template
+            ><template v-else>选择版本后查看文件详情</template
+            ><span v-if="repo.gated"> · 需要仓库授权</span>
+          </p>
         </div>
         <button class="secondary" @click="choose(repo.repo)">选择版本</button>
       </article>
@@ -216,6 +329,10 @@ onUnmounted(() => {
           </select></label
         >
         <p v-else>此仓库没有可下载的 GGUF 文件。</p>
+        <p v-if="selectedFile" class="hub-download-summary">
+          下载大小 <strong>{{ size(selectedFile.size) }}</strong>
+          <span>共 {{ selectedFile.shards }} 个文件 · 全部保存到远端 GPU</span>
+        </p>
         <p class="footnote">
           请按显存和磁盘容量选择。带视觉组件的模型目前仅支持文本聊天；访问受限的仓库需先在社区获得权限，并在设置中保存
           Token。

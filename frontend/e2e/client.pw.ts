@@ -494,6 +494,109 @@ test("download telemetry shows actual rate bytes ETA and connections", async ({
   await expect(page.locator(".task-bar")).toContainText("预计剩余 0:24");
 });
 
+test("model search spans the row and results expose size range downloads and likes", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.evaluate(() => {
+    const original = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, request: any) => {
+      const result = await original(method, request);
+      if (request?.action !== "hub.files") return result;
+      const detail = JSON.parse(result);
+      detail.files.push({
+        filename: "Qwen-Q8_0.gguf",
+        size: 8 * 1024 ** 3,
+        shards: 1,
+        quantization: "Q8_0",
+        supported: true,
+        reason: "",
+      });
+      return JSON.stringify(detail);
+    };
+  });
+  await page.getByRole("button", { name: "模型库", exact: true }).click();
+  const localToolbar = page.locator(".list-toolbar");
+  const localInput = localToolbar.locator("input");
+  expect((await localInput.boundingBox())!.width).toBeCloseTo(
+    (await localToolbar.boundingBox())!.width,
+    0,
+  );
+  await page.getByRole("tab", { name: "在线搜索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索 Hugging Face 模型" });
+  expect((await input.boundingBox())!.width).toBeCloseTo(
+    (await page.locator(".hub-browser").boundingBox())!.width,
+    0,
+  );
+  const facts = page.locator(".hub-facts");
+  await expect(facts).toContainText("模型大小3.81 GiB – 8.00 GiB");
+  await expect(facts).toContainText("下载量2,000");
+  await expect(facts).toContainText("点赞120");
+  await page.getByRole("button", { name: "选择版本" }).click();
+  await expect(page.locator(".hub-download-summary")).toContainText("3.81 GiB");
+  await expect(page.locator(".hub-download-summary")).toContainText(
+    "共 2 个文件",
+  );
+  await page.getByLabel("选择量化版本").selectOption("Qwen-Q8_0.gguf");
+  await expect(page.locator(".hub-download-summary")).toContainText("8.00 GiB");
+  await expect(page.locator(".hub-download-summary")).toContainText(
+    "共 1 个文件",
+  );
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(calls.filter((c: any) => c.action === "hub.files")).toHaveLength(1);
+  expect(
+    calls.every((c: any) => ["hub.search", "hub.files"].includes(c.action)),
+  ).toBe(true);
+});
+
+test("loading more preserves pending size lookups and changed search clears selection", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.evaluate(() => {
+    const original = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, request: any) => {
+      if (request?.action === "hub.search")
+        return JSON.stringify({
+          models: [
+            {
+              repo: request.payload.cursor ? "org/second" : "org/first",
+              downloads: 10,
+              likes: 2,
+              gated: false,
+            },
+          ],
+          next_cursor: request.payload.cursor ? "" : "page-2",
+        });
+      if (
+        request?.action === "hub.files" &&
+        request.payload.repo === "org/first"
+      ) {
+        await new Promise<void>((resolve) => {
+          (window as any).__finishDetails = resolve;
+        });
+      }
+      return original(method, request);
+    };
+  });
+  await page.getByRole("button", { name: "模型库", exact: true }).click();
+  await page.getByRole("tab", { name: "在线搜索", exact: true }).click();
+  await expect(page.locator(".hub-size")).toContainText("读取中");
+  await page.getByRole("button", { name: "加载更多" }).click();
+  await expect(page.locator(".hub-repo")).toHaveCount(2);
+  await page.evaluate(() => (window as any).__finishDetails());
+  await expect(page.locator(".hub-size strong")).toHaveText([
+    "3.81 GiB",
+    "3.81 GiB",
+  ]);
+  await page.getByRole("button", { name: "选择版本" }).first().click();
+  await expect(page.getByLabel("选择量化版本")).toBeVisible();
+  await page
+    .getByRole("searchbox", { name: "搜索 Hugging Face 模型" })
+    .fill("another");
+  await expect(page.locator(".hub-selection")).toHaveCount(0);
+});
+
 test("idle countdown decrements locally and only real interaction resets remote activity", async ({
   page,
 }) => {

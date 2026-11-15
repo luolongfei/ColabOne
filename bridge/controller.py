@@ -695,6 +695,6 @@ class Controller:
                 self.update(
                     error="连接检查失败："
                     + type(exc).__name__
-                    + "。请检查网络或重新登录。"
+                    + "。客户端会自动重试，请检查网络连接。"
                 )
             self.stop.wait(2)
