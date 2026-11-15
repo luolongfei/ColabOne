@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import secrets
+import re
 from pathlib import Path
 
 import requests
@@ -63,6 +64,7 @@ class Controller:
             "account": {"logged_in": False},
             "models": self.presets(),
             "conversations": [],
+            "creations": [],
             "operation": None,
             "error": "",
             "auth_url": "",
@@ -84,6 +86,10 @@ class Controller:
             threading.Thread(target=self.monitor, daemon=True).start()
 
     def presets(self):
+        paths = [
+            self.root / "catalog/presets.json",
+            self.root / "catalog/creative.json",
+        ]
         return [
             m
             | {
@@ -91,9 +97,9 @@ class Controller:
                 "loaded": False,
                 "size": sum(f["size"] for f in m["files"]),
             }
-            for m in json.loads(
-                (self.root / "catalog/presets.json").read_text(encoding="utf-8")
-            )
+            for path in paths
+            if path.exists()
+            for m in json.loads(path.read_text(encoding="utf-8"))
         ]
 
     def snapshot(self):
@@ -151,6 +157,8 @@ class Controller:
                         "download": "模型下载",
                         "load": "模型加载",
                         "chat": "对话生成",
+                        "image": "远端画图",
+                        "video": "远端视频生成",
                     }.get(task["kind"], "远端任务")
                     status = {
                         "running": "进行中",
@@ -275,7 +283,7 @@ class Controller:
         self.provider.upgrade_service()
         self.refresh_remote()
         self.configure_remote()
-        self.activity.add("远端已支持并发下载、实时速率与闲置倒计时", "GPU")
+        self.activity.add("远端管理服务已更新，支持聊天、画图、视频与闲置保护", "GPU")
 
     def refresh_remote(self):
         state = self.remote("GET", "snapshot")
@@ -283,6 +291,7 @@ class Controller:
             runtime=state["runtime"],
             models=state["models"],
             conversations=state["conversations"],
+            creations=state.get("creations", []),
         )
 
     def start(self):
@@ -443,6 +452,36 @@ class Controller:
             self.touch_lock.release()
 
     def command(self, action, payload):
+        if action == "creative.reference":
+            return self.remote(
+                "POST", "creative/references", {"data": payload.get("data", "")}
+            )
+        if action == "creative.generate":
+            from common.creative import CreativeRequest
+
+            request = CreativeRequest.model_validate(payload)
+            self.activity.add(
+                "请求在远端生成" + ("图片" if request.kind == "image" else "视频")
+            )
+            result = self.remote("POST", "creative/generate", request.model_dump())
+            self.refresh_remote()
+            return result
+        if action in ("creative.asset", "creative.delete", "creative.info"):
+            identity = payload.get("id", "")
+            if not re.fullmatch(r"[a-f0-9]{32}", identity):
+                raise ValueError("作品编号不合法")
+            if action == "creative.info":
+                return next(
+                    item for item in self.data["creations"] if item["id"] == identity
+                )
+            if action == "creative.delete":
+                result = self.remote("DELETE", "creations/" + identity)
+                self.refresh_remote()
+                return result
+            offset = int(payload.get("offset", 0))
+            if not 0 <= offset <= 64 * 1024**2:
+                raise ValueError("读取范围不合法")
+            return self.remote("GET", f"creations/{identity}/asset?offset={offset}")
         if action == "runtime.upgrade":
             return self.async_operation("更新远端管理服务", self.upgrade_service)
         if action == "runtime.activity":
@@ -511,7 +550,9 @@ class Controller:
             def login():
                 self.auth.colab_login(lambda url: self.update(auth_url=url))
                 self.last_auth = 0
-                self.update(conversations=[], models=self.presets(), auth_url="")
+                self.update(
+                    conversations=[], creations=[], models=self.presets(), auth_url=""
+                )
                 self.activity.add("Google 登录已保存到本机，后续自动续期", "登录")
 
             return self.async_operation("等待 Google 登录", login)
@@ -520,7 +561,9 @@ class Controller:
             def finish():
                 self.auth.colab_finish(payload["code"])
                 self.last_auth = 0
-                self.update(conversations=[], models=self.presets(), auth_url="")
+                self.update(
+                    conversations=[], creations=[], models=self.presets(), auth_url=""
+                )
                 self.activity.add("Google 登录已保存到本机，后续自动续期", "登录")
 
             if self.operation_lock.locked():
@@ -555,7 +598,14 @@ class Controller:
                 },
             )
         if action == "model.load":
-            return self.remote("POST", "models/" + self.model_id(payload) + "/load")
+            options = {
+                key: payload[key]
+                for key in ("context_length", "temperature")
+                if key in payload
+            }
+            return self.remote(
+                "POST", "models/" + self.model_id(payload) + "/load", options
+            )
         if action == "model.unload":
             return self.remote("POST", "unload")
         if action == "model.delete":
@@ -565,8 +615,6 @@ class Controller:
             self.follow_chat(result, payload["text"])
             return result
         if action == "task.cancel":
-            import re
-
             if not re.fullmatch(r"[a-f0-9]{32}", payload["id"]):
                 raise ValueError("任务 ID 不合法")
             return self.remote("DELETE", "tasks/" + payload["id"])
@@ -665,7 +713,7 @@ class Controller:
                         self.refresh_remote()
                         runtime = self.data["runtime"]
                         if (
-                            runtime.get("protocol", 0) < 2
+                            runtime.get("protocol", 0) < 3
                             and remote["endpoint"] not in self.upgrade_attempted
                             and remote["deadline"] - now > 120
                             and not runtime.get("loaded_model")

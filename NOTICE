@@ -7,3 +7,5 @@ Apache License, Version 2.0. They have been substantially modified.
 ColabOne modifications, 2026. Model manifests, CUDA deployment and parallel range download strategy adapted from colab-gpu-llm-service (MIT). See third_party/colab-gpu-llm-service.LICENSE and third_party/SOURCES.md.
 
 ColabOne Drive credential propagation is adapted from Google Colab CLI 0.7.5, Copyright 2026 Google LLC, Apache License 2.0. See bridge/drive_mount.py and third_party/SOURCES.md.
+
+Remote creative inference integrates stable-diffusion.cpp by leejet (MIT), pinned to 5dcfa79801213f23e27b3e83617350ebb8ea93aa. Source and submodule licenses remain in the remote build; see third_party/stable-diffusion.cpp.LICENSE.

@@ -22,7 +22,12 @@ import {
   PhCaretRight,
   PhTerminalWindow,
   PhLightning,
+  PhImage,
+  PhVideoCamera,
+  PhSidebarSimple,
 } from "@phosphor-icons/vue";
+import RunPanel from "./RunPanel.vue";
+import StudioPanel from "./StudioPanel.vue";
 import HubBrowser from "./HubBrowser.vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -42,9 +47,26 @@ const state = ref(initialSnapshot()),
 const nav = [
   { id: "device", label: "远端设备", icon: PhHardDrives },
   { id: "models", label: "模型库", icon: PhCube },
+  { id: "run", label: "运行", icon: PhPlay },
   { id: "chat", label: "聊天", icon: PhChatCircle },
+  { id: "image", label: "画图", icon: PhImage },
+  { id: "video", label: "视频", icon: PhVideoCamera },
   { id: "settings", label: "设置", icon: PhGearSix },
 ];
+const sidebarCollapsed = ref(
+  localStorage.getItem("colabone.sidebar.collapsed") === "true",
+);
+watch(sidebarCollapsed, (value) =>
+  localStorage.setItem("colabone.sidebar.collapsed", String(value)),
+);
+const runSelection = ref("");
+function openModel(model: ModelSpec) {
+  if (model.kind === "image" || model.kind === "video") page.value = model.kind;
+  else {
+    runSelection.value = model.id;
+    page.value = "run";
+  }
+}
 const logsOpen = ref(localStorage.getItem("colabone.logs.open") === "true");
 const logFollow = ref(true),
   logLevel = ref("all"),
@@ -77,6 +99,8 @@ const currentActivity = computed(
           download: "正在下载模型到远端",
           load: "正在加载模型到显存",
           chat: "正在生成回复",
+          image: "正在远端画图",
+          video: "正在远端生成视频",
         }[task.value.kind] || "远端任务进行中"
       : ready.value
         ? "GPU 已就绪，等待操作"
@@ -155,14 +179,24 @@ const messages = computed(() => {
   return list;
 });
 const filtered = computed(() =>
-  state.value.models.filter((m) =>
-    (m.name + " " + m.description)
-      .toLowerCase()
-      .includes(search.value.toLowerCase()),
+  state.value.models.filter(
+    (m) =>
+      (modelTab.value === "installed"
+        ? m.downloaded
+        : modelTab.value === "creative"
+          ? m.kind === "image" || m.kind === "video"
+          : (m.kind || "chat") === "chat") &&
+      (m.name + " " + m.description)
+        .toLowerCase()
+        .includes(search.value.toLowerCase()),
   ),
 );
 const loaded = computed(() =>
-  state.value.models.find((m) => m.id === state.value.runtime.loaded_model),
+  state.value.models.find(
+    (m) =>
+      m.id === state.value.runtime.loaded_model &&
+      (m.kind || "chat") === "chat",
+  ),
 );
 const form = ref({
   gpu: "T4",
@@ -405,16 +439,25 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="sidebar">
       <div class="brand">
         <PhCirclesThree :size="28" weight="duotone" /><span>ColabOne</span>
       </div>
+      <button
+        class="sidebar-toggle icon-button"
+        :aria-label="sidebarCollapsed ? '展开导航' : '收起导航'"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      >
+        <PhSidebarSimple :size="20" />
+      </button>
       <p class="sidebar-label">工作空间</p>
       <nav aria-label="主导航">
         <button
           v-for="item in nav"
           :key="item.id"
+          :title="item.label"
+          :aria-label="item.label"
           :class="{ active: page === item.id }"
           @click="page = item.id"
         >
@@ -494,7 +537,7 @@ onUnmounted(() => {
           </button>
         </div>
       </header>
-      <div v-if="ready && !state.runtime.protocol" class="banner">
+      <div v-if="ready && (state.runtime.protocol || 0) < 3" class="banner">
         <span
           >当前实例需要更新远端服务，以启用并发下载和闲置倒计时；模型缓存会保留。</span
         >
@@ -700,7 +743,23 @@ onUnmounted(() => {
               :class="{ active: modelTab === 'mine' }"
               @click="modelTab = 'mine'"
             >
-              我的模型</button
+              我的模型
+            </button>
+            <button
+              role="tab"
+              :aria-selected="modelTab === 'installed'"
+              :class="{ active: modelTab === 'installed' }"
+              @click="modelTab = 'installed'"
+            >
+              已下载
+            </button>
+            <button
+              role="tab"
+              :aria-selected="modelTab === 'creative'"
+              :class="{ active: modelTab === 'creative' }"
+              @click="modelTab = 'creative'"
+            >
+              画图 / 视频</button
             ><button
               role="tab"
               :aria-selected="modelTab === 'hub'"
@@ -763,7 +822,17 @@ onUnmounted(() => {
               class="model-row"
             >
               <div class="model-avatar">
-                <PhCube :size="24" weight="duotone" />
+                <component
+                  :is="
+                    model.kind === 'image'
+                      ? PhImage
+                      : model.kind === 'video'
+                        ? PhVideoCamera
+                        : PhCube
+                  "
+                  :size="24"
+                  weight="duotone"
+                />
               </div>
               <div class="model-info">
                 <div class="model-title">
@@ -773,7 +842,7 @@ onUnmounted(() => {
                 </div>
                 <p>{{ model.description }}</p>
                 <small
-                  >{{ bytes(model.size) }} <span>·</span>
+                  >下载大小 {{ bytes(model.size) }} <span>·</span>
                   {{
                     model.min_vram_mib
                       ? `建议显存 ${(model.min_vram_mib / 1024).toFixed(0)} GB 起`
@@ -799,9 +868,15 @@ onUnmounted(() => {
                   v-else-if="!model.loaded"
                   class="secondary"
                   :disabled="!canLoad(model, state) || busy"
-                  @click="act('model.load', { id: model.id })"
+                  @click="openModel(model)"
                 >
-                  <PhPlay :size="17" />加载</button
+                  <PhPlay :size="17" />{{
+                    model.kind === "image"
+                      ? "去画图"
+                      : model.kind === "video"
+                        ? "去生成视频"
+                        : "配置并加载"
+                  }}</button
                 ><button
                   v-else
                   class="secondary"
@@ -826,6 +901,27 @@ onUnmounted(() => {
           </div>
         </template>
       </main>
+      <RunPanel
+        v-else-if="page === 'run'"
+        :state="state"
+        :selected="runSelection"
+        @models="page = 'models'"
+        @chat="page = 'chat'"
+        @device="page = 'device'"
+        @error="error = $event"
+      />
+      <StudioPanel
+        v-else-if="page === 'image' || page === 'video'"
+        :key="page"
+        :state="state"
+        :kind="page"
+        @models="
+          page = 'models';
+          modelTab = 'creative';
+        "
+        @device="page = 'device'"
+        @error="error = $event"
+      />
       <main v-else-if="page === 'chat'" class="chat-layout">
         <aside class="conversation-sidebar">
           <button

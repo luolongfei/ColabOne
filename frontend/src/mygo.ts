@@ -18,6 +18,13 @@ export const Desktop = {
   exportConversation(content: string): Promise<string> {
     return call("Desktop.ExportConversation", content);
   },
+  /**
+   * ExportCreation accepts only a remote artifact ID. The save destination comes
+   * from the native dialog, never a path supplied by remote model output.
+   */
+  exportCreation(id: string): Promise<string> {
+    return call("Desktop.ExportCreation", id);
+  },
   openURL(value: string): Promise<void> {
     return call("Desktop.OpenURL", value);
   },

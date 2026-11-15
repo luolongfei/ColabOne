@@ -1,0 +1,78 @@
+[
+  {
+    "id": "z-image-turbo-q4",
+    "name": "Z-Image Turbo",
+    "description": "文生图 / 参考图重绘 · Q4_K · 中文提示词",
+    "min_vram_mib": 8192,
+    "context_length": 8192,
+    "temperature": 0.7,
+    "cpu_moe_layers": 0,
+    "source": "Hugging Face",
+    "kind": "image",
+    "recipe": "z-image-turbo",
+    "files": [
+      {
+        "repo": "leejet/Z-Image-Turbo-GGUF",
+        "revision": "c61c0e422dc8b541b7548cf33a4ef8302b0f8085",
+        "path": "z_image_turbo-Q4_K.gguf",
+        "size": 3864250304,
+        "sha256": "14b375ab4f226bc5378f68f37e899ef3c2242b8541e61e2bc1aff40976086fbd",
+        "role": "model"
+      },
+      {
+        "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        "revision": "a06e946bb6b655725eafa393f4a9745d460374c9",
+        "path": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "size": 2497281120,
+        "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+        "role": "llm"
+      },
+      {
+        "repo": "Comfy-Org/z_image_turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/vae/ae.safetensors",
+        "size": 335304388,
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+        "role": "vae"
+      }
+    ]
+  },
+  {
+    "id": "wan22-ti2v-5b-q4",
+    "name": "Wan2.2 · 5B",
+    "description": "文生视频 / 首帧生成视频 · Q4_K_M",
+    "min_vram_mib": 12288,
+    "context_length": 8192,
+    "temperature": 0.7,
+    "cpu_moe_layers": 0,
+    "source": "Hugging Face",
+    "kind": "video",
+    "recipe": "wan22-ti2v-5b",
+    "files": [
+      {
+        "repo": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        "revision": "57437632ddd08bdcbd1508c866aa22e126ed51d2",
+        "path": "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+        "size": 3433116000,
+        "sha256": "95b19697b7f98e65b0a543640e9ca7b4dfec32e2a6e3731e8e10708be52655e2",
+        "role": "model"
+      },
+      {
+        "repo": "city96/umt5-xxl-encoder-gguf",
+        "revision": "b535255bee98c2b0a59ea7c0ae2dcd0c6657b3b7",
+        "path": "umt5-xxl-encoder-Q4_K_M.gguf",
+        "size": 3655145312,
+        "sha256": "17cf97a5bbbc60a646d6105b832b6f657ce904a8a1ad970e4b59df0c67584a40",
+        "role": "t5xxl"
+      },
+      {
+        "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+        "revision": "ee6f4a40737a995bf5818954cfce6d59443b0f04",
+        "path": "split_files/vae/wan2.2_vae.safetensors",
+        "size": 1409400960,
+        "sha256": "e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156",
+        "role": "vae"
+      }
+    ]
+  }
+]
