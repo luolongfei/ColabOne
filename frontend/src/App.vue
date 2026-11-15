@@ -25,9 +25,17 @@ import {
   PhVideoCamera,
   PhSidebarSimple,
   PhGlobe,
+  PhSun,
+  PhMoon,
+  PhDesktop,
 } from "@phosphor-icons/vue";
 import RunPanel from "./RunPanel.vue";
-import appIcon from "../../console/resources/icon.png";
+import appIcon from "../../console/resources/icon.svg?raw";
+import {
+  appearance,
+  effectiveAppearance,
+  appearanceOptions,
+} from "./appearance";
 import ApiPanel from "./ApiPanel.vue";
 import StudioPanel from "./StudioPanel.vue";
 import HubBrowser from "./HubBrowser.vue";
@@ -446,13 +454,8 @@ onUnmounted(() => {
   <div class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="sidebar">
       <div class="brand">
-        <img
-          class="brand-icon"
-          :src="appIcon"
-          alt=""
-          width="32"
-          height="32"
-        /><span>ColabOne</span>
+        <span class="brand-icon" aria-hidden="true" v-html="appIcon"></span
+        ><span>ColabOne</span>
       </div>
       <button
         class="sidebar-toggle icon-button"
@@ -535,6 +538,25 @@ onUnmounted(() => {
             @click="act('sync')"
           >
             <PhArrowsClockwise :size="19" />
+          </button>
+          <button
+            class="icon-button"
+            :aria-label="
+              effectiveAppearance === 'dark'
+                ? '切换到浅色模式'
+                : '切换到深色模式'
+            "
+            :title="
+              effectiveAppearance === 'dark'
+                ? '切换到浅色模式'
+                : '切换到深色模式'
+            "
+            @click="
+              appearance = effectiveAppearance === 'dark' ? 'light' : 'dark'
+            "
+          >
+            <PhSun v-if="effectiveAppearance === 'dark'" :size="19" />
+            <PhMoon v-else :size="19" />
           </button>
           <button
             class="icon-button"
@@ -1093,6 +1115,32 @@ onUnmounted(() => {
             <p>登录一次，就能开始使用远端 GPU。</p>
           </div>
         </div>
+        <section
+          class="settings-section appearance-section"
+          aria-labelledby="appearance-heading"
+        >
+          <div class="section-heading">
+            <PhSun :size="21" />
+            <h2 id="appearance-heading">外观</h2>
+          </div>
+          <p>
+            选择喜欢的外观，自动保存在这台电脑上。跟随系统会随系统的明暗设置切换。
+          </p>
+          <div class="appearance-options" role="group" aria-label="外观模式">
+            <button
+              v-for="option in appearanceOptions"
+              :key="option.value"
+              :aria-pressed="appearance === option.value"
+              @click="appearance = option.value"
+            >
+              <PhDesktop v-if="option.value === 'system'" :size="19" />
+              <PhSun v-else-if="option.value === 'light'" :size="19" />
+              <PhMoon v-else :size="19" />
+              {{ option.label
+              }}<PhCheck v-if="appearance === option.value" :size="15" />
+            </button>
+          </div>
+        </section>
         <section class="settings-section">
           <div class="section-heading">
             <span class="step-number"

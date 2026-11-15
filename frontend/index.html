@@ -3,8 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <link rel="icon" type="image/png" href="../console/resources/icon.png" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Apply before styles and Vue to avoid a bright flash on dark launches.
+      (() => {
+        let choice = "system";
+        try {
+          choice = localStorage.getItem("colabone.appearance");
+        } catch {}
+        const dark =
+          choice === "dark" ||
+          (choice !== "light" &&
+            matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      })();
+    </script>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="../console/resources/icon.svg"
+    />
     <title>ColabOne</title>
   </head>
   <body>

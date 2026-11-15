@@ -31,6 +31,9 @@ export const Desktop = {
   readClipboard(): Promise<string> {
     return call("Desktop.ReadClipboard");
   },
+  setAppearance(value: string): Promise<void> {
+    return call("Desktop.SetAppearance", value);
+  },
   snapshot(): Promise<string> {
     return call("Desktop.Snapshot");
   },

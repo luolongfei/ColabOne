@@ -1,0 +1,56 @@
+/* Neutral surfaces, with red reserved for costs, destructive actions and errors. */
+:root {
+  color-scheme: light;
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --sidebar: #f7f7f7;
+  --subtle: #f7f7f7;
+  --hover: #eeeeee;
+  --selected: #e9e9e9;
+  --text: #202020;
+  --secondary-text: #4f4f4f;
+  --muted: #6b6b6b;
+  --border: #e3e3e3;
+  --input-border: #cccccc;
+  --accent: #202020;
+  --accent-hover: #3b3b3b;
+  --on-accent: #ffffff;
+  --focus: #777777;
+  --focus-ring: #20202018;
+  --danger: #d52c42;
+  --danger-hover: #b51e33;
+  --danger-text: #bc2339;
+  --on-danger: #ffffff;
+  --danger-bg: #fff0f1;
+  --danger-border: #e6b9c0;
+  --shadow: #00000018;
+  --soft-shadow: #00000008;
+  --overlay: #00000048;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #212121;
+  --surface: #262626;
+  --sidebar: #181818;
+  --subtle: #2c2c2c;
+  --hover: #343434;
+  --selected: #363636;
+  --text: #ededed;
+  --secondary-text: #c3c3c3;
+  --muted: #a2a2a2;
+  --border: #3d3d3d;
+  --input-border: #555555;
+  --accent: #ededed;
+  --accent-hover: #d6d6d6;
+  --on-accent: #202020;
+  --focus: #b4b4b4;
+  --focus-ring: #ffffff20;
+  --danger: #c92b40;
+  --danger-hover: #b91f35;
+  --danger-text: #ff8a99;
+  --danger-bg: #3e2429;
+  --danger-border: #78424b;
+  --shadow: #00000055;
+  --soft-shadow: #00000022;
+  --overlay: #00000080;
+}

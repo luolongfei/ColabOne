@@ -62,6 +62,10 @@ async function mock(page: any, ready = false) {
       (window as any).__calls = calls;
       (window as any).mygo = {
         call: async (method: string, request: any) => {
+          if (method === "Desktop.SetAppearance") {
+            (window as any).__nativeAppearance = request;
+            return;
+          }
           if (method === "Desktop.Snapshot") return JSON.stringify(state);
           if (method === "Desktop.Command") {
             if (request.action === "runtime.activity") {
@@ -300,7 +304,7 @@ test("billing is prominent and stop all reviews every instance before submission
   await expect(page.locator(".billing-active")).toContainText("正在计费");
   await expect(page.locator(".billing-active strong")).toHaveCSS(
     "color",
-    "rgb(211, 47, 67)",
+    "rgb(188, 35, 57)",
   );
   await page
     .getByRole("button", { name: "停止全部（2 个实例）", exact: true })
@@ -361,7 +365,7 @@ test("activity sidebar follows progress across pages and can filter clear and co
   await expect(panel).toBeVisible();
 });
 
-test("blue desktop layout shows billing and activity without horizontal overflow", async ({
+test("monochrome desktop layout shows billing and activity without horizontal overflow", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -397,7 +401,8 @@ test("blue desktop layout shows billing and activity without horizontal overflow
     ),
   ).toBe(true);
   await page.screenshot({
-    path: new URL("../../work/blue-activity-ui.png", import.meta.url).pathname,
+    path: new URL("../../work/monochrome-activity-ui.png", import.meta.url)
+      .pathname,
     fullPage: true,
   });
 });
@@ -751,6 +756,7 @@ test("run page passes real context options and collapsible navigation preserves 
     temperature: 0.3,
   });
   await page.getByRole("button", { name: "收起导航" }).click();
+  await expect(page.locator(".brand-icon svg")).toBeVisible();
   await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
   await page.getByRole("button", { name: "模型库", exact: true }).click();
   await expect(page.getByRole("heading", { name: "模型库" })).toBeVisible();
@@ -859,3 +865,123 @@ test("API page starts and stops only the public service and preserves page width
     ),
   ).toBeTruthy();
 });
+
+test("appearance follows system, persists explicit choices and updates native chrome", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await mock(page);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const choices = page.getByRole("group", { name: "外观模式" });
+  await expect(
+    choices.getByRole("button", { name: "跟随系统" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await choices.getByRole("button", { name: "浅色", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__nativeAppearance))
+    .toBe("light");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(
+    choices.getByRole("button", { name: "浅色", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await choices.getByRole("button", { name: "跟随系统" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "切换到深色模式" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(
+    choices.getByRole("button", { name: "深色", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => (window as any).__calls)).toEqual([]);
+});
+
+for (const appearance of ["light", "dark"] as const) {
+  test(`${appearance} surfaces keep contrast, red billing and readable workspace controls`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: appearance });
+    await mock(page, true);
+    const bg = appearance === "dark" ? "rgb(38, 38, 38)" : "rgb(255, 255, 255)";
+    await expect(page.locator(".device-panel")).toHaveCSS(
+      "background-color",
+      bg,
+    );
+    await expect(page.locator(".billing-pill")).toHaveCSS(
+      "color",
+      appearance === "dark" ? "rgb(255, 138, 153)" : "rgb(188, 35, 57)",
+    );
+    await expect(page.locator(".danger.stop-all")).toHaveCSS(
+      "color",
+      "rgb(255, 255, 255)",
+    );
+    await page.getByRole("button", { name: "展开运行日志" }).click();
+    await expect(page.locator(".activity-panel")).toHaveCSS(
+      "background-color",
+      bg,
+    );
+    await page.getByRole("button", { name: "关闭日志侧栏" }).click();
+    for (const label of [
+      "模型库",
+      "运行",
+      "聊天",
+      "画图",
+      "视频",
+      "API 服务",
+      "设置",
+    ]) {
+      await page.getByRole("button", { name: label, exact: true }).click();
+      // All actual form controls and cards must inherit the selected neutral palette.
+      const problems = await page.evaluate(() => {
+        const failures: string[] = [];
+        const rgb = (value: string) => value.match(/[\d.]+/g)!.map(Number);
+        const luminance = (c: number[]) =>
+          c
+            .slice(0, 3)
+            .map((v) => {
+              v /= 255;
+              return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+            })
+            .reduce(
+              (sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i],
+              0,
+            );
+        for (const el of document.querySelectorAll<HTMLElement>(
+          "input:not([type=range]), select, textarea, .run-card, .studio-form, .studio-empty, .model-list, .chat-main, .appearance-options button",
+        )) {
+          if (!el.offsetWidth || (el as HTMLInputElement).disabled) continue;
+          const css = getComputedStyle(el),
+            bg = rgb(css.backgroundColor);
+          if (bg[3] === 0) continue;
+          if (bg[0] !== bg[1] || bg[1] !== bg[2])
+            failures.push(`tinted ${el.className}`);
+          const a = luminance(rgb(css.color)),
+            b = luminance(bg);
+          if ((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) < 4.5)
+            failures.push(`contrast ${el.className}`);
+        }
+        if (document.documentElement.scrollWidth > innerWidth)
+          failures.push("horizontal overflow");
+        return failures;
+      });
+      expect(problems, label).toEqual([]);
+    }
+    await page.screenshot({
+      path: `../work/appearance-${appearance}.png`,
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "远端设备", exact: true }).click();
+    await page
+      .getByRole("button", { name: "停止全部（1 个实例）", exact: true })
+      .click();
+    await expect(page.locator(".modal")).toHaveCSS("background-color", bg);
+    // Opening the review dialog must not stop the mocked instances.
+    expect(
+      await page.evaluate(() => (window as any).__state.account.assignments),
+    ).toBe(1);
+  });
+}
