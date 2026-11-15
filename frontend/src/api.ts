@@ -11,6 +11,7 @@ export async function command(
 }
 export const openURL = (url: string) => Desktop.openURL(url);
 export const readClipboard = () => Desktop.readClipboard();
+export const writeClipboard = (value: string) => Desktop.writeClipboard(value);
 export const exportConversation = (value: string) =>
   Desktop.exportConversation(value);
 

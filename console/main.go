@@ -37,12 +37,16 @@ func (d *Desktop) ReadClipboard() (string, error) {
 	}
 	return string(data), nil
 }
+func (d *Desktop) WriteClipboard(value string) error {
+	if len(value) > 1024 * 1024 { return errors.New("复制内容超过 1 MB") }
+	return mygo.Clipboard.Write(transfer.TextData(value))
+}
 func (d *Desktop) OpenURL(value string) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme != "https" {
 		return errors.New("只允许 HTTPS 链接")
 	}
-	allowed := []string{"accounts.google.com", "colab.research.google.com", "developers.google.com", "github.com", "huggingface.co"}
+	allowed := []string{"accounts.google.com", "colab.research.google.com", "developers.google.com", "github.com", "huggingface.co", "one.dash.cloudflare.com", "dash.cloudflare.com", "developers.cloudflare.com"}
 	for _, host := range allowed {
 		if u.Hostname() == host {
 			return mygo.Shell.OpenExternal(value)

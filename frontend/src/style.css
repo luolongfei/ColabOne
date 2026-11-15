@@ -2073,3 +2073,145 @@ label {
     bottom: -17px;
   }
 }
+
+/* Public inference uses the same blue, task-oriented controls as Run and Studio. */
+.api-page {
+  max-width: 1320px;
+  width: 100%;
+  margin: 0 auto;
+}
+.api-overview {
+  margin-bottom: 24px;
+}
+.api-overview-title {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.api-overview-title h2,
+.api-overview-title p {
+  margin: 0 0 6px;
+}
+.api-overview-title > .text-button {
+  margin-left: auto;
+}
+.api-symbol {
+  background: #edf3ff;
+  color: #2563eb;
+  border-radius: 14px;
+  padding: 15px;
+  display: flex;
+}
+.api-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+.api-grid > section {
+  min-width: 0;
+}
+.api-page input,
+.api-page textarea {
+  width: 100%;
+}
+.api-page .option-pills {
+  flex-wrap: wrap;
+}
+.api-copy-row {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  border: 1px solid #dce4ef;
+  border-radius: 8px;
+  padding: 5px 10px;
+  background: #f7f9fd;
+  gap: 6px;
+}
+.api-copy-row code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.api-copy-row .icon-button {
+  flex-shrink: 0;
+}
+.api-guide {
+  margin-top: 18px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.api-guide summary {
+  cursor: pointer;
+  color: #3562a4;
+}
+.api-guide ol,
+.api-guide ul {
+  padding-left: 22px;
+}
+.api-guide li {
+  margin: 10px 0;
+}
+.api-guide code {
+  overflow-wrap: anywhere;
+}
+.api-rotate {
+  margin-top: 18px;
+  font-size: 13px;
+}
+.api-error {
+  color: #c62840;
+}
+.api-example-heading,
+.api-example-tabs {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.api-example-heading h2 {
+  margin: 0;
+}
+.api-examples pre {
+  color: #263854;
+  background: #f4f7fc;
+  border: 1px solid #e0e7f1;
+  border-radius: 10px;
+  padding: 22px;
+  overflow: auto;
+  line-height: 1.65;
+  font-size: 13px;
+  max-height: 520px;
+}
+.api-page .run-stats {
+  margin-top: 26px;
+}
+.api-page .badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.api-page .field-help svg {
+  vertical-align: -3px;
+}
+@media (max-width: 980px) {
+  .api-grid {
+    grid-template-columns: 1fr;
+  }
+  .api-overview-title {
+    flex-wrap: wrap;
+  }
+  .api-overview-title > .text-button {
+    margin-left: 0;
+  }
+}
+
+.api-overview .run-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.api-access > label {
+  margin-top: 20px;
+  margin-bottom: 8px;
+}

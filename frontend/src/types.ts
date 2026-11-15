@@ -48,7 +48,22 @@ export interface Conversation {
   updated_at: number;
   messages: Message[];
 }
+export interface PublicAPIStatus {
+  state: string;
+  enabled: boolean;
+  mode: "quick" | "named";
+  url: string;
+  error: string;
+  streaming: boolean;
+  checked_at: number;
+  requests: number;
+  active: number;
+  completed: number;
+  failed: number;
+  last_request: number;
+}
 export interface RuntimeStatus {
+  public_api?: PublicAPIStatus;
   id?: string;
   state: string;
   loaded_model?: string;
@@ -77,6 +92,12 @@ export interface ActivityEntry {
   message: string;
 }
 export interface Snapshot {
+  api_settings?: {
+    mode: "quick" | "named";
+    domain: string;
+    has_token: boolean;
+    has_key: boolean;
+  };
   logs: ActivityEntry[];
   runtime: RuntimeStatus;
   models: ModelSpec[];

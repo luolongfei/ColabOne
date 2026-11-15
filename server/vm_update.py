@@ -105,7 +105,7 @@ def colabone_update():
             break
         try:
             with opener.open(req, timeout=1) as response:
-                if json.load(response).get("protocol", 0) >= 3:
+                if json.load(response).get("protocol", 0) >= 4:
                     print("COLABONE_UPDATED=1", flush=True)
                     return
         except Exception:

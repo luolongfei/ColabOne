@@ -45,3 +45,64 @@ Runtime status advertises `capabilities: [chat, image, video]` and the actual `a
 | DELETE | `/api/v1/creations/{id}` | Move artifact and metadata to remote/cloud trash |
 
 Creative recipes allow GGUF and safetensors components with model/llm/t5xxl/vae roles. Each supported recipe validates its complete role set. Only fixed catalog recipes are enabled; arbitrary repository Python is never executed. Generation progress reports conditioning, sampling, decoding and encoding; a sampling pass reaching 100% is not completion. Native `ExportCreation(id)` uses a save dialog, verifies the complete SHA-256 and atomically publishes the chosen file. It accepts no remote-supplied destination path.
+
+## Public inference API (protocol 4)
+
+This is a **separate** ASGI application on remote `127.0.0.1:7861`. Cloudflared routes to this port. Management remains on private `127.0.0.1:7860`; none of `/api/v1/*`, the login flow, file manager or conversation history exists on the public app. `/health` reveals only a random gateway instance identifier for tunnel verification. Every inference route requires `Authorization: Bearer <API Key>`; there is no loopback bypass, query-string key or anonymous mode. CORS allows Bearer-based clients without cookies.
+
+Use the desktop **API 服务** page to enable either a Quick Tunnel (temporary `trycloudflare.com` hostname, no account required) or a remotely managed named Tunnel (your domain + Cloudflare installation command/token). For named tunnels, configure the public hostname's HTTP service as `127.0.0.1:7861`. Interactive Cloudflare Access login prevents programmatic API clients from connecting. The page reports ready only after the public `/health` identity matches, anonymous `/v1/models` is rejected and the authenticated model list succeeds. Verification is repeated every 20 seconds; transient failure reports reconnecting. The API Key is distinct from the internal control token, kept in the OS credential vault, and sent only to the GPU. Explicit copy/reveal returns it to the desktop UI; snapshots and logs omit both API Key and Tunnel Token. Rotation first disables the remote gateway, so failed revocation cannot be mistaken for success.
+
+| Method | Public route | Contract |
+|---|---|---|
+| GET | `/v1/models` | OpenAI list, **currently loaded model only**, with `kind` extension |
+| POST | `/v1/chat/completions` | Text-only OpenAI Chat Completions subset: model, system/user/assistant string messages, stream, temperature, top_p, max_tokens, seed, stop; preserves engine choices and usage |
+| POST | `/v1/images/generations` | `model`, `prompt`, `size` (e.g. `512x512`), `n` (1–4), `response_format=b64_json`; returns `created` and `data[].b64_json` |
+| POST | `/v1/jobs` | ColabOne **asynchronous** image/video API: CreativeRequest without reference images; returns 202 and job |
+| GET | `/v1/jobs/{id}` | `status`, progress, error, output IDs, MIME, size, and authenticated `content_path` |
+| DELETE | `/v1/jobs/{id}` | Cancel an API-created job |
+| GET | `/v1/jobs/{id}/outputs/{output_id}` | PNG / WebM bytes; only artifacts created by that API job |
+
+No Responses API, tools/function calling, vision messages, arbitrary URLs, model download/switch or private desktop references are exposed. Unknown fields are rejected without echoing the request body. HTTP 401 = invalid key, 400 = unsupported parameters, 409 = wrong/unloaded model or busy, 413 = body exceeds 1 MiB, 503 = disabled gateway. Errors use an `error.message` envelope. One GPU task runs at a time across desktop and external requests; clients should retry 409 after existing work completes.
+
+[Cloudflare Quick Tunnels do not support SSE](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/). Quick-mode `stream=true` therefore returns 400; use `stream=false` or a named tunnel. Nonstream chat has an 85-second engine deadline, synchronous image waiting is limited to 90 seconds, and disconnect/timeout cancels unfinished work. Named streaming has a 10-minute maximum and cancels on disconnect. Prefer `/v1/jobs` for slow image/video generation: it returns immediately, survives caller disconnection and is explicitly cancellable. Async jobs use the existing creative maximum of 60 minutes, always bounded by the instance's independent CU deadline. Completed job metadata is retained for the latest 100 public jobs in this gateway process; artifacts also appear in the desktop gallery and follow normal Drive backup rules. Public chat does not enter desktop conversation history.
+
+Example (replace model ID with the loaded model):
+
+```python
+import os
+from openai import OpenAI
+client = OpenAI(base_url="https://YOUR-HOST/v1", api_key=os.environ["COLABONE_API_KEY"])
+print(client.chat.completions.create(
+    model="YOUR-CHAT-MODEL",
+    messages=[{"role": "user", "content": "Hello"}],
+    max_tokens=512, stream=False,
+).choices[0].message.content)
+```
+
+Async image/video example:
+
+```python
+import os, time, requests
+base = "https://YOUR-HOST"
+headers = {"Authorization": "Bearer " + os.environ["COLABONE_API_KEY"]}
+r = requests.post(base + "/v1/jobs", headers=headers, json={
+    "model_id": "YOUR-VIDEO-MODEL", "kind": "video", "prompt": "Clouds crossing a valley",
+    "width": 832, "height": 480, "frames": 33, "fps": 16,
+}, timeout=30)
+r.raise_for_status()
+job = r.json()
+while job["status"] == "running":
+    time.sleep(2)
+    r = requests.get(base + "/v1/jobs/" + job["id"], headers=headers, timeout=30)
+    r.raise_for_status()
+    job = r.json()
+if job["status"] != "completed":
+    raise RuntimeError(job.get("error") or job["status"])
+for index, output in enumerate(job["outputs"]):
+    r = requests.get(base + output["content_path"], headers=headers, timeout=60)
+    r.raise_for_status()
+    with open(f"result-{index}.webm", "wb") as file:
+        file.write(r.content)
+```
+
+Control-only additions: `POST /api/v1/public-api/start` accepts mode/domain/tunnel_token/api_key, `POST /api/v1/public-api/stop` revokes access and cancels public jobs. Neither endpoint starts a GPU. Runtime snapshot `public_api` carries state, mode, URL, last public probe, request counts and bounded redacted lifecycle logs. Desktop commands are `api.save`, `api.start`, `api.stop`, `api.key` (explicit reveal/copy only), `api.rotate`.

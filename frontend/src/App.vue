@@ -25,8 +25,10 @@ import {
   PhImage,
   PhVideoCamera,
   PhSidebarSimple,
+  PhGlobe,
 } from "@phosphor-icons/vue";
 import RunPanel from "./RunPanel.vue";
+import ApiPanel from "./ApiPanel.vue";
 import StudioPanel from "./StudioPanel.vue";
 import HubBrowser from "./HubBrowser.vue";
 import { marked } from "marked";
@@ -51,6 +53,7 @@ const nav = [
   { id: "chat", label: "聊天", icon: PhChatCircle },
   { id: "image", label: "画图", icon: PhImage },
   { id: "video", label: "视频", icon: PhVideoCamera },
+  { id: "api", label: "API 服务", icon: PhGlobe },
   { id: "settings", label: "设置", icon: PhGearSix },
 ];
 const sidebarCollapsed = ref(
@@ -99,6 +102,7 @@ const currentActivity = computed(
           download: "正在下载模型到远端",
           load: "正在加载模型到显存",
           chat: "正在生成回复",
+          public_chat: "正在处理外部 API 请求",
           image: "正在远端画图",
           video: "正在远端生成视频",
         }[task.value.kind] || "远端任务进行中"
@@ -537,9 +541,10 @@ onUnmounted(() => {
           </button>
         </div>
       </header>
-      <div v-if="ready && (state.runtime.protocol || 0) < 3" class="banner">
+      <div v-if="ready && (state.runtime.protocol || 0) < 4" class="banner">
         <span
-          >当前实例需要更新远端服务，以启用并发下载和闲置倒计时；模型缓存会保留。</span
+          >当前实例需要更新远端服务，以启用对外
+          API；请先结束任务并卸载模型，模型缓存会保留。</span
         >
         <button
           class="text-button"
@@ -901,10 +906,20 @@ onUnmounted(() => {
           </div>
         </template>
       </main>
+      <ApiPanel
+        v-else-if="page === 'api'"
+        :state="state"
+        @device="page = 'device'"
+        @run="page = 'run'"
+        @image="page = 'image'"
+        @video="page = 'video'"
+        @error="error = $event"
+      />
       <RunPanel
         v-else-if="page === 'run'"
         :state="state"
         :selected="runSelection"
+        @api="page = 'api'"
         @models="page = 'models'"
         @chat="page = 'chat'"
         @device="page = 'device'"

@@ -69,6 +69,7 @@ class Task:
         self.transfer = None
         self.logs = []
         self.log_seq = 0
+        self.outputs = []
 
     def note(self, message, level="info"):
         with self.lock:
@@ -164,6 +165,9 @@ class Runtime:
         self.activity_until = 0.0
         self.deadline = 0.0
         self.stopping = threading.Event()
+        from server.public_api import Gateway
+
+        self.public_api = Gateway(self)
         for path in root.glob("conversation-*.json"):
             data = json.loads(path.read_text(encoding="utf-8"))
             # A restart cannot continue a lost generation; preserve its partial answer.
@@ -232,8 +236,9 @@ class Runtime:
             self.active_options = {}
         idle = self.idle_status()
         return {
-            "protocol": 3,
-            "capabilities": ["chat", "image", "video"],
+            "protocol": 4,
+            "public_api": self.public_api.snapshot(),
+            "capabilities": ["chat", "image", "video", "public_api"],
             "idle": idle,
             "id": self.runtime_id,
             "state": "releasing" if self.quiescing else "ready",
@@ -856,6 +861,7 @@ class Runtime:
             self.quiescing = True
             tasks = list(self.tasks.values())
         try:
+            self.public_api.stop()
             for task in tasks:
                 if task.state == "running":
                     task.request_cancel()

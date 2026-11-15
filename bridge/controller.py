@@ -17,6 +17,7 @@ from bridge.provider import Provider
 from common.files import atomic_json
 from common.models import resolve_import
 from common.hub import search_models, model_files
+from common.public_api import PublicConfig
 
 
 def config_directory():
@@ -106,6 +107,13 @@ class Controller:
         with self.lock:
             value = copy.deepcopy(self.data)
         value["settings"] = self.settings.copy()
+        api = self.vault.get("public_api", {})
+        value["api_settings"] = {
+            "mode": api.get("mode", "quick"),
+            "domain": api.get("domain", ""),
+            "has_token": bool(api.get("tunnel_token")),
+            "has_key": bool(api.get("api_key")),
+        }
         value["logs"] = self.activity.snapshot()
         value["setup"] = {
             "colab": bool(self.vault.get("colab")),
@@ -128,6 +136,18 @@ class Controller:
             runtime = values.get("runtime")
             if runtime:
                 previous = self.data["runtime"]
+                api = runtime.get("public_api", {})
+                old_api = previous.get("public_api", {})
+                cursor = (
+                    old_api.get("logs", [{}])[-1].get("seq", 0)
+                    if old_api.get("logs")
+                    else 0
+                )
+                for entry in api.get("logs", []):
+                    if entry["seq"] > cursor:
+                        self.activity.add(
+                            entry["message"], "API", entry.get("level", "info")
+                        )
                 labels = {
                     "ready": "远端 GPU 已连接",
                     "disconnected": "远端控制连接中断，实例可能仍在计费",
@@ -157,6 +177,7 @@ class Controller:
                         "download": "模型下载",
                         "load": "模型加载",
                         "chat": "对话生成",
+                        "public_chat": "外部 API 对话",
                         "image": "远端画图",
                         "video": "远端视频生成",
                     }.get(task["kind"], "远端任务")
@@ -452,6 +473,59 @@ class Controller:
             self.touch_lock.release()
 
     def command(self, action, payload):
+        if action == "api.key":
+            api = self.vault.get("public_api", {})
+            if not api.get("api_key"):
+                api["api_key"] = "co_" + secrets.token_urlsafe(36)
+                self.vault.set("public_api", api)
+            return {"key": api["api_key"]}
+        if action == "api.rotate":
+            # Revoke the running gateway first. Never report a local-only rotation as successful.
+            if self.vault.get("runtime_session"):
+                self.remote("POST", "public-api/stop")
+                self.refresh_remote()
+            api = self.vault.get("public_api", {})
+            api["api_key"] = "co_" + secrets.token_urlsafe(36)
+            self.vault.set("public_api", api)
+            self.activity.add("API Key 已更换；重新开启服务后使用新密钥", "API")
+            return {"ok": True}
+        if action in ("api.start", "api.save"):
+            saved = self.vault.get("public_api", {})
+            try:
+                config = PublicConfig.model_validate(
+                    {
+                        "mode": payload.get("mode", "quick"),
+                        "domain": payload.get("domain", ""),
+                        "tunnel_token": payload.get("tunnel_token")
+                        or saved.get("tunnel_token", ""),
+                        "api_key": saved.get("api_key")
+                        or "co_" + secrets.token_urlsafe(36),
+                    }
+                )
+            except ValueError:
+                raise ValueError(
+                    "API 配置无效：固定域名需使用公网 HTTPS 域名，并粘贴有效的 Cloudflare Tunnel 安装命令"
+                ) from None
+            # Credential storage is acknowledged before enabling the gateway.
+            stored = saved | {"mode": config.mode, "api_key": config.api_key}
+            if config.mode == "named":
+                stored.update(domain=config.domain, tunnel_token=config.tunnel_token)
+            self.vault.set("public_api", stored)
+            if action == "api.save":
+                return {"ok": True}
+
+            def start_api():
+                self.remote("POST", "public-api/start", config.model_dump())
+                self.refresh_remote()
+
+            return self.async_operation("开启远端对外 API", start_api)
+        if action == "api.stop":
+
+            def stop_api():
+                self.remote("POST", "public-api/stop")
+                self.refresh_remote()
+
+            return self.async_operation("关闭对外 API", stop_api)
         if action == "creative.reference":
             return self.remote(
                 "POST", "creative/references", {"data": payload.get("data", "")}
@@ -713,7 +787,7 @@ class Controller:
                         self.refresh_remote()
                         runtime = self.data["runtime"]
                         if (
-                            runtime.get("protocol", 0) < 3
+                            runtime.get("protocol", 0) < 4
                             and remote["endpoint"] not in self.upgrade_attempted
                             and remote["deadline"] - now > 120
                             and not runtime.get("loaded_model")

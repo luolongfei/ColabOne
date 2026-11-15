@@ -6,7 +6,7 @@ async function mock(page: any, ready = false) {
       const state: any = {
         runtime: {
           state: ready ? "ready" : "stopped",
-          protocol: 3,
+          protocol: 4,
           gpu: ready
             ? { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 }
             : undefined,
@@ -756,4 +756,106 @@ test("run page passes real context options and collapsible navigation preserves 
   await expect(page.getByRole("heading", { name: "模型库" })).toBeVisible();
   await page.getByRole("button", { name: "展开导航" }).click();
   await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
+});
+
+test("API setup remains local until explicitly enabled and examples match tunnel mode", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.getByRole("button", { name: "API 服务", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "API 服务", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "复制 API 地址", exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator(".api-examples pre")).toContainText(
+    '"stream": false',
+  );
+  await expect(page.locator(".api-examples pre")).toContainText(
+    '"model": "YOUR-CHAT-MODEL"',
+  );
+  await page.getByRole("button", { name: "固定域名", exact: true }).click();
+  await expect(page.getByLabel("API 域名", { exact: true })).toBeVisible();
+  await expect(page.locator(".api-examples pre")).toContainText(
+    '"stream": true',
+  );
+  await page.getByLabel("API 域名", { exact: true }).fill("api.example.com");
+  await page
+    .getByLabel("Cloudflare 安装命令或 Tunnel Token", { exact: true })
+    .fill("offline-placeholder");
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  expect(
+    (await page.evaluate(() => (window as any).__calls)).map(
+      (x: any) => x[0] || x.action,
+    ),
+  ).toContain("api.save");
+  await page
+    .locator(".api-example-tabs")
+    .getByRole("button", { name: "视频", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Python", exact: true }).click();
+  await expect(page.locator(".api-examples pre")).toContainText('"/jobs"');
+  await expect(page.locator(".api-examples pre")).toContainText(".webm");
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(JSON.stringify(calls)).not.toContain("runtime.start");
+  expect(JSON.stringify(calls)).not.toContain("api.start");
+});
+
+test("API page starts and stops only the public service and preserves page width", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.public_api = {
+      state: "stopped",
+      enabled: false,
+      mode: "quick",
+      url: "",
+      requests: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+    };
+  });
+  await page.getByRole("button", { name: "API 服务", exact: true }).click();
+  await page
+    .getByRole("button", { name: "开启 API 服务", exact: true })
+    .click();
+  await page.evaluate(() => {
+    (window as any).__state.runtime.public_api = {
+      state: "ready",
+      enabled: true,
+      mode: "quick",
+      url: "https://test-only.trycloudflare.com",
+      requests: 2,
+      active: 1,
+      completed: 1,
+      failed: 0,
+    };
+  });
+  await expect(
+    page.getByRole("button", { name: "关闭对外 API", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".api-access")).toContainText(
+    "https://test-only.trycloudflare.com/v1",
+  );
+  await expect(
+    page.getByRole("button", { name: "固定域名", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "关闭对外 API", exact: true }).click();
+  const calls = JSON.stringify(
+    await page.evaluate(() => (window as any).__calls),
+  );
+  expect(calls).toContain("api.start");
+  expect(calls).toContain("api.stop");
+  expect(calls).not.toContain("runtime.release");
+  await page.screenshot({ path: "../work/api-preview.png", fullPage: true });
+  await page.setViewportSize({ width: 900, height: 800 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
 });

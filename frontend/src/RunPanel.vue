@@ -11,6 +11,7 @@ import type { Snapshot } from "./types";
 const props = defineProps<{ state: Snapshot; selected?: string }>();
 const emit = defineEmits<{
   models: [];
+  api: [];
   chat: [];
   device: [];
   error: [string];
@@ -87,6 +88,29 @@ async function unload() {
         <p>选择模型，调整参数，然后加载到远端 GPU。</p>
       </div>
       <button class="secondary" @click="emit('models')">管理模型</button>
+    </div>
+    <div
+      class="inline-note"
+      style="
+        margin-bottom: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      "
+    >
+      <span
+        >对外 API ·
+        {{
+          state.runtime.public_api?.state === "ready"
+            ? "已开启，其他应用可调用当前模型"
+            : "可通过 Cloudflare 将远端模型接入其他应用"
+        }}</span
+      >
+      <button class="text-button" @click="emit('api')">
+        管理 API 服务 <PhArrowRight />
+      </button>
     </div>
     <div class="run-layout">
       <section class="run-card">

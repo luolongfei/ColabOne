@@ -11,13 +11,13 @@ import install
 
 def audit(root):
     sensitive = re.compile(
-        rb"(?:ya29\.[\w-]{20,}|1//[\w-]{40,}|tskey-[a-z]+-[A-Za-z0-9]{10,}|hf_[A-Za-z0-9]{30,})"
+        rb"(?:ya29\.[\w-]{20,}|1//[\w-]{40,}|tskey-[a-z]+-[A-Za-z0-9]{10,}|hf_[A-Za-z0-9]{30,}|co_[A-Za-z0-9_-]{40,}|eyJ[A-Za-z0-9_+/=-]{30,})"
     )
     for path in root.rglob("*"):
         if not path.is_file():
             continue
         if (
-            path.name in {"settings.json", "token.json", "credentials.json", ".env"}
+            path.name in {"settings.json", "token.json", "credentials.json", ".cloudflared-token", ".env"}
             or path.suffix == ".gguf"
         ):
             raise RuntimeError("Private state found in package: " + path.name)

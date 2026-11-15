@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from common.models import ModelSpec
 from common.creative import CreativeRequest
+from common.public_api import PublicConfig
 from server.runtime import Runtime, Conflict
 
 
@@ -57,7 +58,10 @@ def create_app(runtime, token, background=False):
             runtime.start_background()
         yield
         runtime.stopping.set()
-        runtime._stop_engine()
+        try:
+            runtime.public_api.shutdown()
+        finally:
+            runtime._stop_engine()
 
     app = FastAPI(
         title="ColabOne",
@@ -101,6 +105,14 @@ def create_app(runtime, token, background=False):
             "conversations": runtime.list_conversations(),
             "creations": runtime.creative.listing(),
         }
+
+    @app.post("/api/v1/public-api/start", dependencies=auth)
+    def public_start(body: PublicConfig):
+        return runtime.public_api.start(body.model_dump())
+
+    @app.post("/api/v1/public-api/stop", dependencies=auth)
+    def public_stop():
+        return runtime.public_api.stop()
 
     @app.post("/api/v1/configure", dependencies=auth)
     def configure(body: Configure):
