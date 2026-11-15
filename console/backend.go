@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +27,20 @@ type bridge struct {
 	stdin   io.WriteCloser
 	pending map[uint64]chan rpcReply
 	next    atomic.Uint64
+}
+
+// The child is a private, trusted JSON stream. Scanner's token cap used to
+// deadlock both sides once a conversation snapshot exceeded 16 MiB: Go stopped
+// reading but waited for Python, while Python was still writing the same reply.
+func readReplies(reader io.Reader, accept func(rpcReply)) error {
+	decoder := json.NewDecoder(reader)
+	for {
+		var reply rpcReply
+		if err := decoder.Decode(&reply); err != nil {
+			return err
+		}
+		accept(reply)
+	}
 }
 
 func rootAt(executable, cwd string) (string, error) {
@@ -90,13 +103,7 @@ func (b *bridge) start() error {
 	}
 	b.cmd, b.stdin, b.pending = cmd, stdin, map[uint64]chan rpcReply{}
 	go func() {
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 65536), 16<<20)
-		for scanner.Scan() {
-			var reply rpcReply
-			if json.Unmarshal(scanner.Bytes(), &reply) != nil {
-				continue
-			}
+		readErr := readReplies(stdout, func(reply rpcReply) {
 			b.mu.Lock()
 			ch := b.pending[reply.ID]
 			delete(b.pending, reply.ID)
@@ -104,6 +111,11 @@ func (b *bridge) start() error {
 			if ch != nil {
 				ch <- reply
 			}
+		})
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			// A broken protocol must fail pending requests, never wait indefinitely
+			// for a child whose output we can no longer consume.
+			_ = cmd.Process.Kill()
 		}
 		_ = cmd.Wait()
 		b.mu.Lock()

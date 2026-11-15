@@ -685,7 +685,18 @@ class Controller:
         if action == "model.delete":
             return self.remote("DELETE", "models/" + self.model_id(payload))
         if action == "chat.send":
+            with self.lock:
+                previous = next(
+                    (
+                        c
+                        for c in self.data["conversations"]
+                        if c["id"] == payload.get("conversation_id")
+                    ),
+                    {},
+                )
+                message_index = len(previous.get("messages", []))
             result = self.remote("POST", "turns", payload)
+            result.setdefault("message_index", message_index)  # Older remote services.
             self.follow_chat(result, payload["text"])
             return result
         if action == "task.cancel":
@@ -713,6 +724,7 @@ class Controller:
     def follow_chat(self, result, text):
         stream = {
             "conversation_id": result["conversation_id"],
+            "message_index": result["message_index"],
             "text": text,
             "content": "",
             "state": "running",
@@ -780,6 +792,16 @@ class Controller:
                             "已到预算保护阈值，正在释放", lambda: self.release(True)
                         )
                         continue
+                    # Renew the proxy before any RPC. A failed configuration
+                    # request must not starve the very heartbeat that repairs it.
+                    if now - self.last_heartbeat > 30:
+                        self.provider.heartbeat()
+                        self.last_heartbeat = now
+                        if not self.vault.get("runtime_session"):
+                            self.update(
+                                runtime={"state": "stopped"}, models=self.presets()
+                            )
+                            continue
                     if now - self.last_config > 600:
                         self.configure_remote()
                     try:
@@ -787,7 +809,7 @@ class Controller:
                         self.refresh_remote()
                         runtime = self.data["runtime"]
                         if (
-                            runtime.get("protocol", 0) < 4
+                            runtime.get("protocol", 0) < 5
                             and remote["endpoint"] not in self.upgrade_attempted
                             and remote["deadline"] - now > 120
                             and not runtime.get("loaded_model")
@@ -804,13 +826,6 @@ class Controller:
                         self.update(
                             runtime={"state": "disconnected", "id": remote["endpoint"]}
                         )
-                    if now - self.last_heartbeat > 30:
-                        self.provider.heartbeat()
-                        self.last_heartbeat = now
-                        if not self.vault.get("runtime_session"):
-                            self.update(
-                                runtime={"state": "stopped"}, models=self.presets()
-                            )
                 if self.data.get("error", "").startswith("连接检查失败："):
                     self.update(error="")
             except Exception as exc:

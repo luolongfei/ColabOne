@@ -49,6 +49,7 @@ import {
   readClipboard,
 } from "./api";
 import { initialSnapshot, labels, canLoad, type ModelSpec } from "./types";
+import { chatMessages } from "./chat";
 const state = ref(initialSnapshot()),
   page = ref("device"),
   error = ref(""),
@@ -164,32 +165,9 @@ const selected = ref(""),
 const conversation = computed(() =>
   state.value.conversations.find((c) => c.id === selected.value),
 );
-const messages = computed(() => {
-  const list = conversation.value?.messages.map((m) => ({ ...m })) || [];
-  const stream = state.value.stream;
-  if (
-    stream &&
-    stream.conversation_id === selected.value &&
-    stream.state === "running"
-  ) {
-    if (!list.length || list[list.length - 1]?.role === "user") {
-      if (!list.length)
-        list.push({ role: "user", content: stream.text, status: "complete" });
-      list.push({
-        role: "assistant",
-        content: stream.content,
-        status: "streaming",
-      });
-    } else {
-      list[list.length - 1] = {
-        role: "assistant",
-        content: stream.content,
-        status: "streaming",
-      };
-    }
-  }
-  return list;
-});
+const messages = computed(() =>
+  chatMessages(conversation.value, state.value.stream, selected.value),
+);
 const filtered = computed(() =>
   state.value.models.filter(
     (m) =>
@@ -569,14 +547,16 @@ onUnmounted(() => {
           </button>
         </div>
       </header>
-      <div v-if="ready && (state.runtime.protocol || 0) < 4" class="banner">
+      <div v-if="ready && (state.runtime.protocol || 0) < 5" class="banner">
         <span
           >当前实例需要更新远端服务，以启用对外
           API；请先结束任务并卸载模型，模型缓存会保留。</span
         >
         <button
           class="text-button"
-          :disabled="!!task || !!loaded || !!state.operation"
+          :disabled="
+            !!task || !!state.runtime.loaded_model || !!state.operation
+          "
           @click="act('runtime.upgrade')"
         >
           更新远端服务

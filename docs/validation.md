@@ -1,5 +1,22 @@
 # Validation record
 
+## Full change review — 2026-11-15
+
+Reviewed the ColabOne changes from the initial unified-client implementation through the white-background vector icon, focusing on remote lifecycle, credentials, Drive synchronization, download/load/chat/creative paths, public API, desktop transport, appearance and packaging. This review did not allocate a GPU or change the user's account credentials.
+
+Reproduced and fixed:
+
+- Expired proxy tokens were used for RPC, and failed periodic configuration could prevent the heartbeat that renews them. Late kernel callbacks could overwrite renewed tokens or recreate a released session.
+- Concurrent status checks could clear the engine handle during stop/load, causing an exception or reporting an exited engine as loaded. Shutdown during engine preparation could also launch an orphan process.
+- Initial background upload after mounting Drive could overwrite the previous instance's model catalog before restore. Restore and upload now share a lock, with merge required before the first write.
+- A second streamed chat turn could temporarily replace the first answer while snapshots lagged. The stream now addresses its own turn and preserves completed output until persistence catches up.
+- Public creative downloads lacked the size/hash validation already used by desktop exports.
+- A private bridge reply larger than 16 MiB stopped the Go scanner while Python was still writing, leaving both processes waiting. JSON stream decoding removes this failure mode.
+
+Local validation: required installer check passed, including 131 offline Python tests, 9 frontend state tests, Go vet/tests, TypeScript production build and bundled import self-test. All 25 browser interaction tests passed, including the delayed-snapshot regression and existing theme, billing, drawer, model search, creative and API controls. Browser tests now also run in macOS and Windows CI using Playwright's pinned Chromium; screenshot paths use platform-aware file URL conversion.
+
+These checks use mock engines/transports and temporary storage. They do not replace a new real-GPU acceptance run; real image/video generation and external Cloudflare routing remain unverified in this review because the user declined another paid allocation. Earlier real T4 results below are historical and are not presented as validation of this patch.
+
 ## Verified locally
 
 - macOS Apple Silicon: Go vet/tests, Vue TypeScript production build, Python compile/import self-test.

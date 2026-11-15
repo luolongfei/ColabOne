@@ -36,6 +36,12 @@ jobs:
       - run: npm --prefix frontend ci
       - name: Offline checks
         run: python tools/install.py --root "${{ runner.temp }}/colabone-check" --check
+      - name: Install test browser
+        working-directory: frontend
+        run: npx playwright install chromium
+      - name: Offline UI regression tests
+        working-directory: frontend
+        run: npx playwright test
       - name: Portable package and runtime self-test
         run: python tools/package.py --out dist
       - uses: actions/upload-artifact@v6

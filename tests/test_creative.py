@@ -261,6 +261,7 @@ def test_lost_submission_reply_stops_possible_orphan_job(runtime):
     runtime.http = Mock()
     runtime.http.post.side_effect = requests.Timeout("reply lost")
     runtime.proc = Mock()
+    runtime.proc.poll.return_value = None
     process = runtime.proc
     task = wait_task(runtime, runtime.generate(body.model_dump()))
     assert task.state == "failed"

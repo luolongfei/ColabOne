@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 
 async function mock(page: any, ready = false) {
   await page.addInitScript(
@@ -6,7 +7,7 @@ async function mock(page: any, ready = false) {
       const state: any = {
         runtime: {
           state: ready ? "ready" : "stopped",
-          protocol: 4,
+          protocol: 5,
           gpu: ready
             ? { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 }
             : undefined,
@@ -191,9 +192,47 @@ test("remote download load chat and explicit deletion", async ({ page }) => {
     ),
   ).toEqual(["model.download", "model.load", "chat.send"]);
   await page.screenshot({
-    path: new URL("../../work/chat-ui.png", import.meta.url).pathname,
+    path: fileURLToPath(new URL("../../work/chat-ui.png", import.meta.url)),
     fullPage: true,
   });
+});
+
+test("a delayed snapshot does not overwrite the preceding chat answer", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.conversations = [
+      {
+        id: "thread",
+        title: "Two turns",
+        updated_at: 1,
+        messages: [
+          { role: "user", content: "First question", status: "complete" },
+          { role: "assistant", content: "First answer", status: "complete" },
+        ],
+      },
+    ];
+  });
+  await page.getByRole("button", { name: "聊天", exact: true }).click();
+  await page.getByRole("button", { name: "Two turns" }).click();
+  await page.evaluate(() => {
+    (window as any).__state.stream = {
+      conversation_id: "thread",
+      message_index: 2,
+      text: "Second question",
+      content: "Second answer",
+      state: "running",
+    };
+  });
+  await expect(page.locator(".messages")).toContainText("Second answer");
+  await expect(page.locator(".messages")).toContainText("First answer");
+  await expect(page.locator(".messages")).toContainText("Second question");
+  await page.evaluate(() => {
+    (window as any).__state.stream.state = "completed";
+  });
+  await expect(page.locator(".messages .spinner")).toHaveCount(0);
+  await expect(page.locator(".messages")).toContainText("Second answer");
 });
 
 test("model deletion needs confirmation and markdown is sanitized", async ({
@@ -239,7 +278,7 @@ test("compact desktop layout stays within viewport", async ({ page }) => {
     ),
   ).toBe(true);
   await page.screenshot({
-    path: new URL("../../work/device-ui.png", import.meta.url).pathname,
+    path: fileURLToPath(new URL("../../work/device-ui.png", import.meta.url)),
     fullPage: true,
   });
 });
@@ -271,7 +310,7 @@ test("setup offers Google login and whole-page paste without API credentials", a
     page.getByRole("textbox", { name: "Google 授权回显" }),
   ).toHaveValue("");
   await page.screenshot({
-    path: new URL("../../work/setup-ui.png", import.meta.url).pathname,
+    path: fileURLToPath(new URL("../../work/setup-ui.png", import.meta.url)),
     fullPage: true,
   });
 });
@@ -401,8 +440,9 @@ test("monochrome desktop layout shows billing and activity without horizontal ov
     ),
   ).toBe(true);
   await page.screenshot({
-    path: new URL("../../work/monochrome-activity-ui.png", import.meta.url)
-      .pathname,
+    path: fileURLToPath(
+      new URL("../../work/monochrome-activity-ui.png", import.meta.url),
+    ),
     fullPage: true,
   });
 });
@@ -685,7 +725,9 @@ test("creative workspace submits remote image options and keeps main width when 
     "蓝色海边小屋",
   );
   await page.screenshot({
-    path: new URL("../../work/studio-image-ui.png", import.meta.url).pathname,
+    path: fileURLToPath(
+      new URL("../../work/studio-image-ui.png", import.meta.url),
+    ),
     fullPage: true,
   });
 });
@@ -731,7 +773,9 @@ test("video form submits frame count and portrait resolution", async ({
     count: 1,
   });
   await page.screenshot({
-    path: new URL("../../work/studio-video-ui.png", import.meta.url).pathname,
+    path: fileURLToPath(
+      new URL("../../work/studio-video-ui.png", import.meta.url),
+    ),
     fullPage: true,
   });
 });

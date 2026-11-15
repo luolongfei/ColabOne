@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +24,26 @@ func TestFindRootFromPortableMacBundle(t *testing.T) {
 	got, err := rootAt(exe, t.TempDir())
 	if err != nil || got != root {
 		t.Fatalf("root=%q err=%v", got, err)
+	}
+}
+
+func TestLargeConversationReplyDoesNotHitScannerLimit(t *testing.T) {
+	body := `{"id":1,"result":"` + strings.Repeat("x", 17<<20) + `"}` + "\n" + `{"id":2,"result":{"ok":true}}` + "\n"
+	var ids []uint64
+	err := readReplies(strings.NewReader(body), func(reply rpcReply) {
+		if !json.Valid(reply.Result) {
+			t.Fatal("invalid reply")
+		}
+		ids = append(ids, reply.ID)
+	})
+	if !errors.Is(err, io.EOF) || len(ids) != 2 || ids[1] != 2 {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+}
+
+func TestInvalidBridgeProtocolReturnsError(t *testing.T) {
+	if readReplies(strings.NewReader("broken protocol\n"), func(rpcReply) { t.Fatal("unexpected reply") }) == nil {
+		t.Fatal("invalid protocol accepted")
 	}
 }
 func TestExternalURLsAreRestricted(t *testing.T) {

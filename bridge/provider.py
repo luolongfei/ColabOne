@@ -33,6 +33,7 @@ class Provider:
     def __init__(self, auth, vault, root):
         self.auth, self.vault, self.root = auth, vault, root
         self.kernel_lock = threading.RLock()
+        self.state_lock = threading.RLock()
         self.kernel_runtime = None
         self.kernel_key = None
         self.client_factory = lambda: Client(
@@ -63,7 +64,8 @@ class Provider:
         }
 
     def session(self, refresh=False):
-        data = self.vault.get("runtime_session")
+        with self.state_lock:
+            data = self.vault.get("runtime_session")
         if not data:
             return None
         session = SessionState.model_validate(data)
@@ -73,23 +75,33 @@ class Provider:
                 (a for a in assignments if a.endpoint == session.endpoint), None
             )
             if assignment is None:
-                self.clear()
+                self.clear(session.endpoint)
                 return None
             info = assignment.runtime_proxy_info
-            session.url, session.token, session.token_expires_at = (
-                info.url,
-                info.token,
-                info.expires_at(),
-            )
-            self.save_session(session)
+            with self.state_lock:
+                current = self.vault.get("runtime_session")
+                if not current or current["endpoint"] != session.endpoint:
+                    return None  # A concurrent release must not be undone by this read.
+                session = SessionState.model_validate(current)
+                session.url, session.token, session.token_expires_at = (
+                    info.url,
+                    info.token,
+                    info.expires_at(),
+                )
+                self.save_session(session)
         return session
 
     def save_session(self, session):
-        self.vault.set("runtime_session", session.model_dump(mode="json"))
+        with self.state_lock:
+            self.vault.set("runtime_session", session.model_dump(mode="json"))
 
-    def clear(self):
-        self.vault.delete("runtime_session")
-        self.vault.delete("remote")
+    def clear(self, endpoint=None):
+        with self.state_lock:
+            current = self.vault.get("runtime_session")
+            if endpoint and current and current["endpoint"] != endpoint:
+                return
+            self.vault.delete("runtime_session")
+            self.vault.delete("remote")
 
     def release(self):
         session = self.session()
@@ -106,7 +118,8 @@ class Provider:
                 pass
         for _ in range(15):
             if session.endpoint not in {a.endpoint for a in client.list_assignments()}:
-                self.clear()
+                self.clear(session.endpoint)
+                self.close_kernel_channel()
                 return {"ok": True}
             time.sleep(2)
         raise RuntimeError("释放请求已发送，但尚未确认停止计费；请刷新后重试")
@@ -130,7 +143,7 @@ class Provider:
             current = {a.endpoint for a in client.list_assignments()}
             owned = (self.vault.get("runtime_session") or {}).get("endpoint")
             if owned in targets and owned not in current:
-                self.clear()
+                self.clear(owned)
                 self.close_kernel_channel()
             remaining = targets & current
             if not remaining:
@@ -193,13 +206,21 @@ class Provider:
             return self._execute(session, code, timeout, hook)
 
     def _execute(self, session, code, timeout=300, hook=None):
+        def save_identity(field, value):
+            # Callbacks can outlive a proxy refresh or release. Merge only the
+            # kernel identity into the still-owned session, never old credentials.
+            with self.state_lock:
+                current = self.vault.get("runtime_session")
+                if current and current["endpoint"] == session.endpoint:
+                    self.vault.set("runtime_session", current | {field: value})
+
         def kid(value):
             session.kernel_id = value
-            self.save_session(session)
+            save_identity("kernel_id", value)
 
         def sid(value):
             session.session_id = value
-            self.save_session(session)
+            save_identity("session_id", value)
 
         key = (session.endpoint, session.url, session.token)
         if self.kernel_key != key:
@@ -226,9 +247,10 @@ class Provider:
             raise
 
     def close_kernel_channel(self):
-        if self.kernel_runtime:
-            self.kernel_runtime.stop(shutdown_kernel=False)
-        self.kernel_runtime, self.kernel_key = None, None
+        with self.kernel_lock:
+            if self.kernel_runtime:
+                self.kernel_runtime.stop(shutdown_kernel=False)
+            self.kernel_runtime, self.kernel_key = None, None
 
     @staticmethod
     def ready(session):
@@ -414,6 +436,13 @@ if _co_os.path.ismount('/content/drive') and _co_os.path.isdir('/content/drive/M
         """
         with self.kernel_lock:
             session = self.session()
+            if session and (
+                session.token_expires_at is None
+                or session.token_expires_at.timestamp() <= time.time() + 60
+            ):
+                # Refresh before uploading or executing. Retrying a failed POST
+                # could duplicate a model download, generation or release.
+                session = self.session(refresh=True)
             if not session:
                 raise RuntimeError("请先启动远端 GPU")
             request_path = ""
@@ -456,6 +485,10 @@ finally:
             raise RuntimeError("Colab 控制连接没有返回结果，请检查网络后重试")
 
     def heartbeat(self):
+        with self.kernel_lock:
+            self._heartbeat()
+
+    def _heartbeat(self):
         session = self.session(refresh=True)
         if session:
             # Cheap TFE ping plus the kernel heartbeat reused from Yoga. No local tool bridge.

@@ -132,6 +132,7 @@ export interface Snapshot {
   };
   stream?: {
     conversation_id: string;
+    message_index?: number;
     text: string;
     content: string;
     state: string;

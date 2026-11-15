@@ -155,6 +155,7 @@ class Runtime:
         self.conversations = {}
         self.dirty = set()
         self.sync_error = ""
+        self.drive_restored = False
         self.loaded = None
         self.active_options = {}
         self.proc = None
@@ -236,7 +237,7 @@ class Runtime:
             self.active_options = {}
         idle = self.idle_status()
         return {
-            "protocol": 4,
+            "protocol": 5,
             "public_api": self.public_api.snapshot(),
             "capabilities": ["chat", "image", "video", "public_api"],
             "idle": idle,
@@ -586,7 +587,6 @@ class Runtime:
             return creative.load(self, task, m)
         engine = self.prepare_engine(task)
         task.check()
-        self._stop_engine()
         file = next(f for f in m.files if f.role == "model")
         env = dict(os.environ)
         lib_dirs = {str(p.parent) for p in engine.parent.parent.rglob("*.so*")}
@@ -616,7 +616,8 @@ class Runtime:
         log = self.root / "engine.log"
         task.note("启动 llama.cpp，将模型加载到远端显存")
         with log.open("wb") as stream:
-            self.proc = subprocess.Popen(
+            proc = self._start_engine(
+                task,
                 args,
                 env=env,
                 stdout=stream,
@@ -627,7 +628,7 @@ class Runtime:
             deadline = time.monotonic() + 600
             while time.monotonic() < deadline:
                 task.check()
-                if self.proc.poll() is not None:
+                if proc.poll() is not None:
                     raise RuntimeError(
                         "模型加载失败：" + log.read_text(errors="replace")[-1200:]
                     )
@@ -638,11 +639,15 @@ class Runtime:
                         ).status_code
                         == 200
                     ):
-                        self.loaded = m.id
-                        self.active_options = {
-                            "context_length": m.context_length,
-                            "temperature": m.temperature,
-                        }
+                        self._engine_ready(
+                            task,
+                            proc,
+                            m.id,
+                            {
+                                "context_length": m.context_length,
+                                "temperature": m.temperature,
+                            },
+                        )
                         task.note("模型加载成功，远端推理服务已就绪")
                         return
                 except requests.RequestException:
@@ -654,14 +659,35 @@ class Runtime:
             self._stop_engine()
             raise
 
+    @synchronized
+    def _start_engine(self, task, args, **kwargs):
+        task.check()
+        if self.quiescing or self.stopping.is_set():
+            raise Cancelled("实例正在停止，已取消模型加载")
+        self._stop_engine()
+        self.proc = subprocess.Popen(args, **kwargs)
+        return self.proc
+
+    @synchronized
+    def _engine_ready(self, task, proc, model_id, options=None):
+        task.check()
+        if self.quiescing or self.stopping.is_set():
+            raise Cancelled("实例正在停止，已取消模型加载")
+        if self.proc is not proc or proc.poll() is not None:
+            raise RuntimeError("推理进程已退出，模型未加载成功，请查看运行日志")
+        self.loaded, self.active_options = model_id, options or {}
+
+    @synchronized
     def _stop_engine(self):
-        if self.proc:
-            self.proc.terminate()
+        proc = self.proc
+        if proc:
+            if proc.poll() is None:
+                proc.terminate()
             try:
-                self.proc.wait(timeout=15)
+                proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=5)
+                proc.kill()
+                proc.wait(timeout=5)
         self.proc, self.loaded = None, None
         self.active_options = {}
 
@@ -709,12 +735,13 @@ class Runtime:
             raise ValueError("消息为空或过长")
         if conversation_id and conversation_id not in self.conversations:
             raise KeyError("会话不存在")
-        convo = self.conversations.get(conversation_id) or {
+        convo = copy.deepcopy(self.conversations.get(conversation_id)) or {
             "id": uuid.uuid4().hex,
             "title": text[:40],
             "messages": [],
         }
         model_id = self.loaded
+        message_index = len(convo["messages"])
 
         def generate(task):
             convo["messages"].append(
@@ -809,13 +836,52 @@ class Runtime:
                 self.save_conversation(convo)
 
         task = self.submit("chat", model_id, generate)
-        return task | {"conversation_id": convo["id"]}
+        return task | {"conversation_id": convo["id"], "message_index": message_index}
+
+    def restore(self):
+        with self.sync_lock:
+            self._restore()
+        return {"ok": True}
+
+    def _restore(self):
+        # Read first, then merge atomically against current local work. All restore
+        # and upload paths share sync_lock; mounting must never let a background
+        # upload replace the previous instance's catalog before we have read it.
+        if not self.drive.available():
+            raise RuntimeError("请先连接 Google Drive")
+        models = [
+            ModelSpec.model_validate(x) for x in self.drive.get("models.json", [])
+        ]
+        conversations = self.drive.conversations()
+        with self.lock:
+            if self.busy():
+                raise Conflict("请等待当前任务结束后恢复云盘")
+            for model in models:
+                if model.id in self.models and self.models[model.id] != model:
+                    raise Conflict("云盘中存在不同的同名模型配置，请检查模型清单")
+            for model in models:
+                self.add_model(model.model_dump())
+            for convo in conversations:
+                existing = self.conversations.get(convo["id"])
+                if not existing or existing["updated_at"] < convo["updated_at"]:
+                    self.save_conversation(convo)
+            if hasattr(self.drive, "media_list"):
+                self.creative.restore()
+            self.drive_restored = True
 
     def sync(self):
         with self.sync_lock:
             return self._sync()
 
     def _sync(self):
+        if self.drive.available() and not self.drive_restored:
+            try:
+                self._restore()
+            except Exception:
+                self.sync_error = (
+                    "云盘尚未恢复完成；保留远端与云盘原文件，任务结束后重试同步"
+                )
+                return False
         # Do not hold the runtime lock during network IO. Serialize snapshots before sending.
         with self.lock:
             keys = list(self.dirty)

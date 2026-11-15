@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import queue
@@ -326,17 +327,31 @@ class Gateway:
                 x["id"] == output for x in self.jobs[identity]["task"].outputs
             ):
                 raise HTTPException(404, "结果不存在")
-        # CreativeStore already validates identity, metadata, symlinks and content hashes.
+        # Validate the complete transfer as desktop exports do. Drive files may
+        # have changed since their metadata was saved, including at the same size.
         data, offset, mime = bytearray(), 0, ""
+        expected = None
         while True:
             chunk = self.runtime.creative.asset(output, offset, 512 * 1024)
-            data.extend(base64.b64decode(chunk["data"]))
+            identity = (chunk["size"], chunk["sha256"], chunk["mime"])
+            if expected is None:
+                expected = identity
+            block = base64.b64decode(chunk["data"], validate=True)
+            if (
+                identity != expected
+                or not 0 < chunk["size"] <= 64 * 1024**2
+                or chunk["offset"] != offset
+                or not 0 < len(block) <= 512 * 1024
+                or offset + len(block) > chunk["size"]
+            ):
+                raise HTTPException(502, "作品文件不完整或传输状态发生变化")
+            data.extend(block)
             mime = chunk["mime"]
-            if not chunk["data"] and offset < chunk["size"]:
-                raise HTTPException(502, "作品文件不完整")
             offset = len(data)
             if offset >= chunk["size"]:
                 break
+        if hashlib.sha256(data).hexdigest() != expected[1]:
+            raise HTTPException(502, "作品校验失败，请重新生成或恢复完整备份")
         return bytes(data), mime
 
 

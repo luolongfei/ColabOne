@@ -322,7 +322,6 @@ def prepare_engine(runtime, task):
 def load(runtime, task, model):
     engine = prepare_engine(runtime, task)
     task.check()
-    runtime._stop_engine()
     args = [
         str(engine),
         "--listen-ip",
@@ -345,14 +344,14 @@ def load(runtime, task, model):
     task.message = "加载创作模型到远端 GPU"
     task.note(task.message + "：" + model.name)
     with log.open("wb") as out:
-        runtime.proc = subprocess.Popen(
-            args, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL
+        proc = runtime._start_engine(
+            task, args, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL
         )
     try:
         end = time.monotonic() + 600
         while time.monotonic() < end:
             task.check()
-            if runtime.proc.poll() is not None:
+            if proc.poll() is not None:
                 raise RuntimeError(
                     "创作模型加载失败："
                     + log.read_text(encoding="utf-8", errors="replace")[-700:]
@@ -365,7 +364,7 @@ def load(runtime, task, model):
                         + str(status.json().get("error") or "未知引擎错误")[:500]
                     )
                 if status.ok and status.json().get("state") == "ready":
-                    runtime.loaded = model.id
+                    runtime._engine_ready(task, proc, model.id)
                     task.note("远端创作模型已加载，可以开始生成")
                     return
             except requests.RequestException:

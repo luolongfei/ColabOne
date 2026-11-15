@@ -127,17 +127,7 @@ def create_app(runtime, token, background=False):
 
     @app.post("/api/v1/restore", dependencies=auth)
     def restore():
-        if runtime.busy():
-            raise Conflict("请等待当前任务结束")
-        for spec in runtime.drive.get("models.json", []):
-            runtime.add_model(spec)
-        for convo in runtime.drive.conversations():
-            existing = runtime.conversations.get(convo["id"])
-            if not existing or existing["updated_at"] < convo["updated_at"]:
-                runtime.save_conversation(convo)
-        if hasattr(runtime.drive, "media_list"):
-            runtime.creative.restore()
-        return {"ok": True}
+        return runtime.restore()
 
     @app.get("/api/v1/models", dependencies=auth)
     def models():
