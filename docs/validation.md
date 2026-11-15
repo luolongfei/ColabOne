@@ -20,7 +20,7 @@
 
 ## Platform CI and remaining checks
 
-- Both macOS and Windows checks/packages passed in Actions run 43684822722 (commit c7bc9c7). Later changes must pass the same CI before merge; the PR check links are authoritative for the final head.
+- Both macOS and Windows checks/packages passed in Actions run 43685341941 (feature head 333ea55, merged as 8bef127). Later changes must pass the same CI before merge; the PR check links are authoritative for each head.
 - Windows interactive UI still requires a Windows desktop; CI build/runtime self-test is a separate level of evidence.
 - Large upstream presets have not been GPU-benchmarked in ColabOne. The acceptance model was the lightweight Qwen2.5 preset.
 - No separate Google Cloud project, API key, OAuth JSON, or Tailscale setup is part of the final flow. The earlier API-project experiment stopped at Google's Terms-of-Service prerequisite and was removed.

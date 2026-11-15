@@ -5,8 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Remove API keys, tokens and Tailscale secrets from anything you paste.
-        粘贴内容前请去掉 API 密钥、令牌和 Tailscale 密钥。
+        Remove API keys, tokens and authorization codes from anything you paste.
+        粘贴内容前请去掉 API 密钥、令牌和授权码。
   - type: textarea
     id: what
     attributes:
@@ -18,7 +18,7 @@ body:
     id: version
     attributes:
       label: ColabOne version / 版本
-      placeholder: "0.6.0, portable zip or installed from source"
+      placeholder: "0.1.0, portable zip or installed from source"
     validations:
       required: true
   - type: dropdown
@@ -34,5 +34,5 @@ body:
     id: logs
     attributes:
       label: Output or screenshots / 输出或截图
-      description: Bridge command output (`auth_status`, `status`), or a screenshot of the console. bridge 命令输出或管理台截图。
+      description: The error message or a screenshot of ColabOne. 客户端错误提示或界面截图。
       render: text

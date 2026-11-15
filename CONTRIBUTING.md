@@ -1,6 +1,6 @@
 # Contributing
 
-Run `python tools/install.py --root work/check --check` with the development Python environment before committing. Tests use fixtures and mocks; no real Google, Tailscale, Hugging Face or GPU calls.
+Run `python tools/install.py --root work/check --check` with the development Python environment before committing. Tests use fixtures and mocks; no real Google, Hugging Face or GPU calls.
 
 Keep model manifests data-only. Keep all inference and weight operations on the remote runtime. Credentials, downloaded weights, local state and build artifacts must not be committed. Preserve the licenses in LICENSE, NOTICE and third_party.
 
