@@ -1,0 +1,135 @@
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+import pytest
+from bridge.auth import Auth
+from bridge.provider import Provider
+from bridge.controller import Controller
+from conftest import MemoryVault
+
+
+def make_provider():
+    vault = MemoryVault()
+    provider = Provider(Auth(vault), vault, Path("."))
+    return provider, vault
+
+
+def assignment(endpoint):
+    return SimpleNamespace(endpoint=endpoint)
+
+
+def store_session(vault):
+    vault.set(
+        "runtime_session",
+        {
+            "name": "colabone",
+            "endpoint": "owned",
+            "token": "not-real",
+            "url": "https://runtime.invalid",
+        },
+    )
+
+
+def test_release_only_owned_endpoint():
+    p, vault = make_provider()
+    store_session(vault)
+    client = Mock()
+    client.list_assignments.side_effect = [
+        [assignment("owned"), assignment("unrelated")],
+        [assignment("unrelated")],
+    ]
+    p.client_factory = lambda: client
+    p.release()
+    client.unassign.assert_called_once_with("owned")
+    assert not vault.get("runtime_session")
+
+
+def test_no_adoption_of_unrelated_runtime():
+    p, vault = make_provider()
+    client = Mock()
+    p.client_factory = lambda: client
+    assert p.session(refresh=True) is None
+    p.release()
+    client.unassign.assert_not_called()
+
+
+def test_release_failure_retains_ownership():
+    p, vault = make_provider()
+    store_session(vault)
+    client = Mock()
+    client.list_assignments.side_effect = OSError("offline")
+    p.client_factory = lambda: client
+    with pytest.raises(OSError):
+        p.release()
+    assert vault.get("runtime_session")["endpoint"] == "owned"
+
+
+def test_unknown_rate_rolls_back_new_allocation(monkeypatch):
+    p, vault = make_provider()
+    monkeypatch.setattr(p, "tailscale_key", lambda: "test-key")
+    monkeypatch.setattr(p, "account", lambda: {"rate": 0, "balance": 100})
+    monkeypatch.setattr(p, "allocate", lambda _gpu: SimpleNamespace(endpoint="new"))
+    release = Mock()
+    monkeypatch.setattr(p, "release", release)
+    with pytest.raises(RuntimeError, match="费率"):
+        p.start("T4", 5, lambda _: None)
+    release.assert_called_once()
+
+
+def test_new_allocation_deploy_failure_rolls_back(monkeypatch):
+    p, vault = make_provider()
+    monkeypatch.setattr(p, "tailscale_key", lambda: "test-key")
+    monkeypatch.setattr(p, "account", lambda: {"rate": 1, "balance": 100})
+    monkeypatch.setattr(p, "allocate", lambda _gpu: SimpleNamespace(endpoint="new"))
+    monkeypatch.setattr(p, "ready", Mock(side_effect=RuntimeError("boot failed")))
+    release = Mock()
+    monkeypatch.setattr(p, "release", release)
+    with pytest.raises(RuntimeError, match="boot failed"):
+        p.start("T4", 5, lambda _: None)
+    release.assert_called_once()
+
+
+def test_snapshot_and_catalog_do_not_allocate(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    c = Controller(root, vault=MemoryVault(), config_dir=tmp_path, background=False)
+    c.provider = Mock()
+    assert c.snapshot()["runtime"]["state"] == "stopped"
+    assert c.snapshot()["models"]
+    c.provider.allocate.assert_not_called()
+
+
+def test_settings_never_write_secret_to_plaintext(tmp_path):
+    c = Controller(
+        Path(__file__).resolve().parents[1],
+        vault=MemoryVault(),
+        config_dir=tmp_path,
+        background=False,
+    )
+    c.save_settings(
+        {
+            "ts_client_id": "id",
+            "ts_client_secret": "secret-value",
+            "hf_token": "hf-test",
+            "max_cu": 5,
+        }
+    )
+    text = (tmp_path / "settings.json").read_text()
+    assert "secret-value" not in text and "hf-test" not in text
+    assert c.vault.get("tailscale")["client_secret"] == "secret-value"
+    assert "secret-value" not in str(c.snapshot())
+
+
+def test_release_blocks_on_unsynced_data(tmp_path):
+    c = Controller(
+        Path(__file__).resolve().parents[1],
+        vault=MemoryVault(),
+        config_dir=tmp_path,
+        background=False,
+    )
+    c.remote = Mock(return_value={"ok": False, "pending": 1})
+    c.provider = Mock()
+    with pytest.raises(RuntimeError, match="尚未同步"):
+        c.release()
+    c.provider.release.assert_not_called()
+    c.release(force=True)
+    c.provider.release.assert_called_once()

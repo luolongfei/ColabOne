@@ -1,4 +1,4 @@
-module github.com/incredible404-rgb/colab-yoga/console
+module github.com/luolongfei/ColabOne/console
 
 go 1.27.3
 

@@ -1,7 +1,11 @@
 {
-  "name": "Colab-yoga",
-  "slug": "colab-yoga",
-  "identifier": "app.colab-yoga",
-  "version": "0.6.0",
-  "copyright": "Colab-yoga (Apache-2.0; portions derived from wy51ai/easycolab)"
+  "name": "ColabOne",
+  "slug": "colabone",
+  "identifier": "app.colabone.desktop",
+  "version": "0.1.0",
+  "description": "Remote GPU workspace",
+  "icon": "resources/icon.png",
+  "frontendDist": "../frontend/dist",
+  "bindings": "../frontend/src/mygo.ts",
+  "buildCommand": "npm --prefix ../frontend run build"
 }
