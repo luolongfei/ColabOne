@@ -268,6 +268,38 @@ export interface AccountInstance {
   loaded_model?: string;
   active_task?: string;
   drive_connected?: boolean;
+  resources?: SystemResources;
+}
+export type MonitorSource =
+  | "none"
+  | "local"
+  | "remote_colabone"
+  | "remote_readonly";
+export interface MonitorOption {
+  id: string;
+  managed: boolean;
+  active: boolean;
+  accelerator: string;
+  variant: string;
+  shape: string;
+  location?: InstanceLocation | null;
+  gpu_name?: string;
+  loaded_model?: string;
+  source: Exclude<MonitorSource, "none">;
+  state: string;
+}
+export interface MonitorSnapshot {
+  mode: "auto" | "manual";
+  endpoint: string;
+  managed: boolean;
+  source: MonitorSource;
+  paused: boolean;
+  error: string;
+  runtime: RuntimeStatus;
+  loaded_model_name: string;
+  drive_connected: boolean;
+  drive_free_bytes?: number | null;
+  options: MonitorOption[];
 }
 export interface ActivityEntry {
   id: number;
@@ -278,6 +310,7 @@ export interface ActivityEntry {
 }
 export interface ColabOneSnapshot {
   active_endpoint?: string;
+  monitor?: MonitorSnapshot;
   api_settings?: {
     mode: "named";
     domain: string;

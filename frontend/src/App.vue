@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  computed,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+  type ComponentPublicInstance,
+} from "vue";
 import {
   Alert as AAlert,
   Badge as ABadge,
@@ -68,6 +75,7 @@ import LogDrawer from "./LogDrawer.vue";
 import ResourceMonitor from "./ResourceMonitor.vue";
 import FlagIcon from "./FlagIcon.vue";
 import { locationFull, locationShort, locationTooltip } from "./location";
+import { resolveColabOneMonitorFallback } from "./telemetry";
 import { formatTokenCount, formatTokenSpeed } from "./apiSpeed";
 import {
   COLABONE_IDLE_RELEASE_OPTIONS,
@@ -87,6 +95,7 @@ import {
   colabOneWriteClipboard,
 } from "./api";
 import { createColabOneSnapshot, COLABONE_STATUS_LABELS, type AccountInstance } from "./types";
+import { createColabOneScrollController } from "./scrollTransition";
 
 // Trim the outer desktop-icon gutter so the white rounded tile fills inline UI icon slots edge-to-edge.
 const appIcon = rawAppIcon.replace(
@@ -172,9 +181,42 @@ const nav = [
 ];
 
 const modelsDrawerOpen = ref(false);
+const contentRef = ref<ComponentPublicInstance | HTMLElement | null>(null);
+const scrollController = createColabOneScrollController();
+
+function resolveContentElement(): HTMLElement | null {
+  const target = contentRef.value;
+  if (!target) return null;
+  if (target instanceof HTMLElement) return target;
+  if ("$el" in target && target.$el instanceof HTMLElement) return target.$el;
+  return null;
+}
+
+function scrollWorkspaceToTop() {
+  const el = resolveContentElement();
+  if (el) {
+    scrollController.scrollToTop(el);
+  }
+}
+
+function selectPage(nextPage: string) {
+  if (page.value === nextPage) {
+    scrollWorkspaceToTop();
+    return;
+  }
+  page.value = nextPage;
+}
+
 watch(page, (next) => {
   if (next !== "api") modelsDrawerOpen.value = false;
 });
+watch(
+  page,
+  () => {
+    scrollWorkspaceToTop();
+  },
+  { flush: "post" },
+);
 
 function toggleAppearance(event?: MouseEvent) {
   const next: ColabOneAppearance =
@@ -515,7 +557,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     const targetPage = map[e.key];
     if (targetPage) {
       e.preventDefault();
-      page.value = targetPage;
+      selectPage(targetPage);
       return;
     }
   }
@@ -811,6 +853,51 @@ async function startNew() {
     await act("runtime.start", { new: true, gpu: form.value.gpu });
 }
 
+const monitorBusy = ref(false);
+const effectiveMonitor = computed(() =>
+  resolveColabOneMonitorFallback(state.value, activeVramModel.value?.name || ""),
+);
+
+async function selectMonitorInstance(endpoint: string) {
+  if (!endpoint || endpoint === effectiveMonitor.value.endpoint) return;
+  monitorBusy.value = true;
+  actionError.value = "";
+  try {
+    await colabOneCommand("monitor.select", { endpoint });
+    await syncSnapshot().catch(() => {});
+  } catch (e) {
+    actionError.value = formatError(e, "action");
+  } finally {
+    monitorBusy.value = false;
+  }
+}
+
+async function toggleMonitorPause(paused: boolean) {
+  monitorBusy.value = true;
+  actionError.value = "";
+  try {
+    await colabOneCommand("monitor.pause", { paused });
+    await syncSnapshot().catch(() => {});
+  } catch (e) {
+    actionError.value = formatError(e, "action");
+  } finally {
+    monitorBusy.value = false;
+  }
+}
+
+async function retryMonitor() {
+  monitorBusy.value = true;
+  actionError.value = "";
+  try {
+    await colabOneCommand("monitor.retry");
+    await syncSnapshot().catch(() => {});
+  } catch (e) {
+    actionError.value = formatError(e, "action");
+  } finally {
+    monitorBusy.value = false;
+  }
+}
+
 async function switchInstance(endpoint: string) {
   if (!endpoint || endpoint === state.value.runtime.id) return;
   await act("runtime.select", { endpoint });
@@ -881,13 +968,13 @@ async function release() {
 }
 
 function openModels() {
-  page.value = "api";
+  selectPage("api");
   modelsDrawerOpen.value = true;
 }
 
 function openDevice() {
   modelsDrawerOpen.value = false;
-  page.value = "device";
+  selectPage("device");
 }
 
 async function updateShortcut(
@@ -936,6 +1023,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   stopped = true;
+  scrollController.cancel();
   clearInterval(clockTimer);
   for (const name of ["pointerdown", "keydown", "wheel"])
     window.removeEventListener(name, interaction);
@@ -962,7 +1050,7 @@ onUnmounted(() => {
                 type="button"
                 class="co-brand"
                 aria-label="返回远端设备首页"
-                @click="page = 'device'"
+                @click="selectPage('device')"
               >
                 <span
                   class="co-brand-icon"
@@ -989,7 +1077,7 @@ onUnmounted(() => {
                   :aria-current="page === item.id ? 'page' : undefined"
                   :aria-label="item.label"
                   :title="`${item.label} (Alt+${idx + 1})`"
-                  @click="page = item.id"
+                  @click="selectPage(item.id)"
                 >
                   <component
                     :is="item.icon"
@@ -1111,7 +1199,7 @@ onUnmounted(() => {
                 <AButton
                   size="small"
                   class="co-model-chip co-topbar-model-chip"
-                  @click="page = 'api'"
+                  @click="selectPage('api')"
                 >
                   <ABadge status="success" />
                   <span class="co-model-chip-text">{{
@@ -1228,7 +1316,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Scrollable Workspace Content -->
-        <ALayoutContent class="co-content">
+        <ALayoutContent ref="contentRef" class="co-content">
           <!-- STAGE 1: 远端设备 -->
           <main
             v-if="page === 'device'"
@@ -1272,7 +1360,7 @@ onUnmounted(() => {
                       </template>
                       登录 Google
                     </AButton>
-                    <AButton @click="page = 'settings'">
+                    <AButton @click="selectPage('settings')">
                       <span>更多设置</span>
                       <PhCaretRight :size="14" />
                     </AButton>
@@ -1300,7 +1388,7 @@ onUnmounted(() => {
                           type="link"
                           size="small"
                           class="co-inline-link"
-                          @click="page = 'api'"
+                          @click="selectPage('api')"
                         >
                           前往对外 API →
                         </AButton>
@@ -1314,7 +1402,7 @@ onUnmounted(() => {
                           type="link"
                           size="small"
                           class="co-inline-link"
-                          @click="page = 'comfyui'"
+                          @click="selectPage('comfyui')"
                         >
                           前往 ComfyUI →
                         </AButton>
@@ -1594,7 +1682,7 @@ onUnmounted(() => {
                   @open-settings="
                     !busy && !state.operation
                       ? beginLogin()
-                      : (page = 'settings')
+                      : selectPage('settings')
                   "
                 />
               </section>
@@ -1607,13 +1695,22 @@ onUnmounted(() => {
               >
                 <ResourceMonitor
                   class="co-monitor"
-                  :runtime="state.runtime"
-                  :drive-connected="state.setup.drive"
-                  :drive-free-bytes="state.runtime.drive?.free_bytes"
-                  :loaded-model-name="activeVramModel?.name"
+                  :runtime="effectiveMonitor.runtime"
+                  :drive-connected="effectiveMonitor.drive_connected"
+                  :drive-free-bytes="effectiveMonitor.drive_free_bytes"
+                  :loaded-model-name="effectiveMonitor.loaded_model_name"
                   :selected-gpu="form.gpu"
                   :operation-title="state.operation?.title"
                   :ipc-disconnected="ipcDisconnected"
+                  :monitor-options="effectiveMonitor.options"
+                  :monitor-endpoint="effectiveMonitor.endpoint"
+                  :monitor-source="effectiveMonitor.source"
+                  :monitor-paused="effectiveMonitor.paused"
+                  :monitor-error="effectiveMonitor.error"
+                  :monitor-busy="monitorBusy"
+                  @select-instance="selectMonitorInstance"
+                  @toggle-pause="toggleMonitorPause"
+                  @retry-monitor="retryMonitor"
                 />
               </section>
 
@@ -1692,6 +1789,20 @@ onUnmounted(() => {
                           >
                             云盘已挂载
                           </ATag>
+                          <ATag
+                            v-if="
+                              !inst.managed &&
+                              effectiveMonitor.endpoint === inst.id
+                            "
+                            :color="
+                              effectiveMonitor.paused ? 'default' : 'processing'
+                            "
+                            :bordered="false"
+                          >
+                            {{
+                              effectiveMonitor.paused ? "监控已暂停" : "监控中"
+                            }}
+                          </ATag>
                         </div>
 
                         <code class="co-instance-endpoint">{{ inst.id }}</code>
@@ -1729,6 +1840,14 @@ onUnmounted(() => {
                       </div>
 
                       <div class="co-instance-actions">
+                        <AButton
+                          v-if="effectiveMonitor.endpoint !== inst.id"
+                          size="small"
+                          :disabled="monitorBusy || ipcDisconnected"
+                          @click="selectMonitorInstance(inst.id)"
+                        >
+                          查看监控
+                        </AButton>
                         <AButton
                           v-if="inst.managed && !inst.active"
                           size="small"

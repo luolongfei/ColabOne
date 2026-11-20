@@ -2943,3 +2943,445 @@ test("GPU-dependent pages show quick jump to 远端设备 only when GPU is not s
     page.getByRole("button", { name: /去启动 GPU|前往启动 GPU|查看 GPU 启动进度/ }),
   ).toHaveCount(0);
 });
+
+test("switching or re-clicking top navbar tabs smoothly scrolls workspace content back to the top", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 640 });
+  await mock(page, true);
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+
+  const scrollDown = async (target: number) =>
+    page.evaluate((top) => {
+      const el = document.querySelector(".co-content") as HTMLElement;
+      el.scrollTop = top;
+      return {
+        scrollTop: el.scrollTop,
+        maxScroll: el.scrollHeight - el.clientHeight,
+      };
+    }, target);
+
+  const readScrollTop = () =>
+    page.evaluate(() => {
+      const el = document.querySelector(".co-content") as HTMLElement;
+      return el.scrollTop;
+    });
+
+  // 1) Scroll down on 远端设备, then switch to 对外 API and verify smooth multi-step glide to 0.
+  const deviceScroll = await scrollDown(500);
+  expect(deviceScroll.scrollTop).toBeGreaterThan(200);
+
+  await page.evaluate(() => {
+    const el = document.querySelector(".co-content") as HTMLElement;
+    const history: number[] = [];
+    (window as any).__scrollHistory = history;
+    el.addEventListener("scroll", () => {
+      history.push(Math.round(el.scrollTop));
+    });
+  });
+
+  await navItem(page, "对外 API").click();
+  await expect(
+    page.getByRole("heading", { name: "对外 API", exact: true }),
+  ).toBeVisible();
+  await expect.poll(readScrollTop).toBe(0);
+
+  const apiHistory: number[] = await page.evaluate(
+    () => (window as any).__scrollHistory,
+  );
+  // Smooth scroll emits intermediate scroll positions between the starting offset and 0.
+  expect(apiHistory.some((y) => y > 0 && y < deviceScroll.scrollTop)).toBe(true);
+  expect(apiHistory[apiHistory.length - 1]).toBe(0);
+
+  // 2) Scroll down on 对外 API, then switch to ComfyUI and 设置; each returns to top.
+  expect((await scrollDown(500)).scrollTop).toBeGreaterThan(150);
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+  await expect.poll(readScrollTop).toBe(0);
+
+  expect((await scrollDown(500)).scrollTop).toBeGreaterThan(150);
+  await navItem(page, "设置").click();
+  await expect(
+    page.getByRole("heading", { name: "设置", exact: true }),
+  ).toBeVisible();
+  await expect.poll(readScrollTop).toBe(0);
+
+  // 3) Re-clicking the already-active tab scrolls smoothly back to the top.
+  expect((await scrollDown(500)).scrollTop).toBeGreaterThan(200);
+  await navItem(page, "设置").click();
+  await expect.poll(readScrollTop).toBe(0);
+
+  // 4) Keyboard tab shortcut (Alt+1) while scrolled down also returns to the top.
+  expect((await scrollDown(500)).scrollTop).toBeGreaterThan(200);
+  await page.keyboard.press("Alt+1");
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+  await expect.poll(readScrollTop).toBe(0);
+
+  // 5) With prefers-reduced-motion: reduce, tab switch resets immediately to top.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect((await scrollDown(500)).scrollTop).toBeGreaterThan(200);
+  await navItem(page, "对外 API").click();
+  await expect(
+    page.getByRole("heading", { name: "对外 API", exact: true }),
+  ).toBeVisible();
+  expect(await readScrollTop()).toBe(0);
+});
+
+test("resource monitor selector supports remote read-only GPU observation, switching, and pause/resume", async ({
+  page,
+}) => {
+  await mock(page, false);
+
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    const remoteG4Runtime = {
+      id: "gpu-g4-s-asso1c1-38s27c46byhtt",
+      state: "ready",
+      location: { country: "IN", country_name: "印度", region: "孟买" },
+      gpu: {
+        name: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        total_mib: 98304,
+        used_mib: 24576,
+        util_percent: 62,
+        temp_c: 59,
+        power_w: 185,
+        power_limit_w: 300,
+      },
+      resources: {
+        gpu: {
+          name: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+          total_mib: 98304,
+          used_mib: 24576,
+          util_percent: 62,
+          temp_c: 59,
+          power_w: 185,
+          power_limit_w: 300,
+        },
+        memory: {
+          total_bytes: 64 * 1024 ** 3,
+          used_bytes: 20 * 1024 ** 3,
+          available_bytes: 44 * 1024 ** 3,
+          percent: 31.2,
+        },
+        disk: {
+          total_bytes: 200 * 1024 ** 3,
+          used_bytes: 48 * 1024 ** 3,
+          free_bytes: 152 * 1024 ** 3,
+          percent: 24.0,
+          read_bps: 18 * 1024 ** 2,
+          write_bps: 6 * 1024 ** 2,
+        },
+        cpu: { cores: 12, percent: 28.5 },
+        history: [
+          {
+            t: now - 2,
+            vram_pct: 24.5,
+            gpu_util: 55,
+            ram_pct: 30.0,
+            cpu_pct: 25.0,
+            disk_pct: 24.0,
+          },
+          {
+            t: now - 1,
+            vram_pct: 25.0,
+            gpu_util: 62,
+            ram_pct: 31.2,
+            cpu_pct: 28.5,
+            disk_pct: 24.0,
+          },
+        ],
+      },
+    };
+    const localT4Runtime = {
+      id: "gpu-t4-s-usw1b1-local001",
+      state: "ready",
+      location: { country: "US", country_name: "美国", region: "俄勒冈" },
+      gpu: {
+        name: "Tesla T4",
+        total_mib: 15360,
+        used_mib: 3840,
+        util_percent: 18,
+        temp_c: 46,
+      },
+      resources: {
+        gpu: {
+          name: "Tesla T4",
+          total_mib: 15360,
+          used_mib: 3840,
+          util_percent: 18,
+          temp_c: 46,
+        },
+        memory: {
+          total_bytes: 16 * 1024 ** 3,
+          used_bytes: 4 * 1024 ** 3,
+          available_bytes: 12 * 1024 ** 3,
+          percent: 25.0,
+        },
+        disk: {
+          total_bytes: 112 * 1024 ** 3,
+          used_bytes: 20 * 1024 ** 3,
+          free_bytes: 92 * 1024 ** 3,
+          percent: 17.9,
+        },
+        cpu: { cores: 4, percent: 12.0 },
+        history: [
+          {
+            t: now - 1,
+            vram_pct: 25.0,
+            gpu_util: 18,
+            ram_pct: 25.0,
+            cpu_pct: 12.0,
+            disk_pct: 17.9,
+          },
+        ],
+      },
+    };
+    (window as any).__remoteG4Runtime = remoteG4Runtime;
+    (window as any).__localT4Runtime = localT4Runtime;
+
+    // 1) Local stopped, remote G4 running -> monitor defaults to remote G4
+    s.setup.colab = true;
+    s.runtime = { state: "stopped" };
+    s.account = {
+      logged_in: true,
+      balance: 2116.33,
+      rate: 10.05,
+      assignments: 1,
+      checked_at: now,
+      instances: [
+        {
+          id: remoteG4Runtime.id,
+          managed: false,
+          active: false,
+          accelerator: "G4",
+          variant: "GPU",
+          shape: "STANDARD",
+          location: remoteG4Runtime.location,
+        },
+      ],
+    };
+    s.monitor = {
+      mode: "auto",
+      endpoint: remoteG4Runtime.id,
+      managed: false,
+      source: "remote_readonly",
+      paused: false,
+      error: "",
+      runtime: remoteG4Runtime,
+      loaded_model_name: "",
+      drive_connected: false,
+      drive_free_bytes: null,
+      options: [
+        {
+          id: remoteG4Runtime.id,
+          managed: false,
+          active: false,
+          accelerator: "G4",
+          variant: "GPU",
+          shape: "STANDARD",
+          location: remoteG4Runtime.location,
+          gpu_name: "NVIDIA RTX PRO 6000",
+          loaded_model: "",
+          source: "remote_readonly",
+          state: "ready",
+        },
+      ],
+    };
+
+    const origCall = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, ...args: any[]) => {
+      if (method === "ColabOneDesktop.Command") {
+        const req = args[0] || {};
+        if (req.action === "monitor.pause") {
+          (window as any).__calls.push(req);
+          s.monitor = { ...s.monitor, paused: Boolean(req.payload?.paused) };
+          return JSON.stringify({ ok: true, paused: s.monitor.paused });
+        }
+        if (req.action === "monitor.select") {
+          (window as any).__calls.push(req);
+          const ep = String(req.payload?.endpoint || "");
+          const isLocal = ep === localT4Runtime.id;
+          s.monitor = {
+            ...s.monitor,
+            mode: isLocal ? "auto" : "manual",
+            endpoint: ep,
+            managed: isLocal,
+            source: isLocal ? "local" : "remote_readonly",
+            paused: false,
+            runtime: isLocal ? localT4Runtime : remoteG4Runtime,
+          };
+          return JSON.stringify({ ok: true, endpoint: ep });
+        }
+      }
+      return origCall(method, ...args);
+    };
+  });
+
+  const monitor = page.locator(".co-monitor");
+  await expect(monitor).toContainText("远端只读 · 实时采样");
+  await expect(monitor).toContainText("NVIDIA RTX PRO 6000");
+  await expect(monitor).not.toContainText("待机预览");
+  await expect(monitor.locator(".co-rm-instance-select")).toBeVisible();
+
+  // Pause & resume external observation
+  const pauseBtn = monitor.locator(".co-rm-pause-btn");
+  await expect(pauseBtn).toContainText("暂停观测");
+  await pauseBtn.click();
+  await expect(monitor).toContainText("远端只读 · 已暂停");
+  await expect(pauseBtn).toContainText("恢复观测");
+  await pauseBtn.click();
+  await expect(monitor).toContainText("远端只读 · 实时采样");
+
+  // Switch to 4-row stacked layout and confirm compact vertical height, balanced header spacing, and live right-side percentages
+  await monitor.locator(".co-rm-layout-segmented .ant-segmented-item").nth(1).click();
+  await expect(monitor.locator(".co-rm-rows")).toBeVisible();
+  const scaleCaps = await monitor.locator(".co-rm-row .co-rm-scale-cap").allTextContents();
+  expect(scaleCaps.map((t) => t.trim())).toEqual([
+    "25.0%",
+    "31.2%",
+    "24.0%",
+    "28.5%",
+  ]);
+  const measureHeader = async () =>
+    monitor.evaluate((el) => {
+      const head = el.querySelector(".ant-card-head")!.getBoundingClientRect();
+      const primary = el
+        .querySelector(".co-rm-heading-primary")!
+        .getBoundingClientRect();
+      const pills = el.querySelector(".co-rm-hw-pills")!.getBoundingClientRect();
+      const extra = el.querySelector(".ant-card-extra")!.getBoundingClientRect();
+      const contentTop = Math.min(primary.top, pills.top);
+      const contentBottom = Math.max(primary.bottom, pills.bottom);
+      return {
+        height: Math.round(el.getBoundingClientRect().height),
+        topGap: Math.round(contentTop - head.top),
+        bottomGap: Math.round(head.bottom - contentBottom),
+        extraHeight: Math.round(extra.height),
+        wrapped: pills.top >= primary.bottom,
+        betweenGap: Math.round(pills.top - primary.bottom),
+      };
+    });
+
+  const wideMetrics = await measureHeader();
+  expect(wideMetrics.height).toBeLessThanOrEqual(480);
+  expect(wideMetrics.topGap).toBeGreaterThanOrEqual(8);
+  expect(wideMetrics.bottomGap).toBeGreaterThanOrEqual(8);
+  expect(Math.abs(wideMetrics.topGap - wideMetrics.bottomGap)).toBeLessThanOrEqual(3);
+
+  // Also verify balanced vertical spacing when long GPU pills wrap onto a second header line (~1024px)
+  await page.setViewportSize({ width: 1024, height: 850 });
+  const wrappedMetrics = await measureHeader();
+  expect(wrappedMetrics.wrapped).toBe(true);
+  expect(wrappedMetrics.height).toBeLessThanOrEqual(480);
+  expect(wrappedMetrics.topGap).toBeGreaterThanOrEqual(8);
+  expect(wrappedMetrics.bottomGap).toBeGreaterThanOrEqual(8);
+  expect(wrappedMetrics.betweenGap).toBeGreaterThanOrEqual(6);
+  expect(
+    Math.abs(wrappedMetrics.topGap - wrappedMetrics.bottomGap),
+  ).toBeLessThanOrEqual(3);
+  await page.setViewportSize({ width: 1280, height: 850 });
+
+  // 2) Both local T4 and remote G4 running -> monitor defaults to local T4; dropdown switches to G4
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const localRt = (window as any).__localT4Runtime;
+    const remoteRt = (window as any).__remoteG4Runtime;
+    s.runtime = localRt;
+    s.active_endpoint = localRt.id;
+    s.account.assignments = 2;
+    s.account.instances = [
+      {
+        id: localRt.id,
+        managed: true,
+        active: true,
+        accelerator: "T4",
+        variant: "GPU",
+        shape: "HIGH_RAM",
+        location: localRt.location,
+        state: "ready",
+        gpu_name: "Tesla T4",
+      },
+      {
+        id: remoteRt.id,
+        managed: false,
+        active: false,
+        accelerator: "G4",
+        variant: "GPU",
+        shape: "STANDARD",
+        location: remoteRt.location,
+      },
+    ];
+    s.monitor = {
+      mode: "auto",
+      endpoint: localRt.id,
+      managed: true,
+      source: "local",
+      paused: false,
+      error: "",
+      runtime: localRt,
+      loaded_model_name: "",
+      drive_connected: false,
+      drive_free_bytes: null,
+      options: [
+        {
+          id: localRt.id,
+          managed: true,
+          active: true,
+          accelerator: "T4",
+          variant: "GPU",
+          shape: "HIGH_RAM",
+          location: localRt.location,
+          gpu_name: "Tesla T4",
+          loaded_model: "",
+          source: "local",
+          state: "ready",
+        },
+        {
+          id: remoteRt.id,
+          managed: false,
+          active: false,
+          accelerator: "G4",
+          variant: "GPU",
+          shape: "STANDARD",
+          location: remoteRt.location,
+          gpu_name: "NVIDIA RTX PRO 6000",
+          loaded_model: "",
+          source: "remote_readonly",
+          state: "ready",
+        },
+      ],
+    };
+  });
+
+  await expect(monitor).toContainText("实时 60s 采样");
+  await expect(monitor).toContainText("Tesla T4");
+  await expect(pauseBtn).toBeHidden();
+
+  // Switch via monitor dropdown to remote G4 without altering local active runtime
+  await monitor.locator(".co-rm-instance-select").click();
+  await page
+    .locator(".ant-select-dropdown .ant-select-item-option")
+    .filter({ hasText: "gpu-g4-s-asso1c1-38s27c46byhtt" })
+    .click();
+
+  await expect(monitor).toContainText("远端只读 · 实时采样");
+  await expect(monitor).toContainText("NVIDIA RTX PRO 6000");
+  await expect(page.locator(".co-device-card")).toContainText("Tesla T4");
+
+  const calls: any[] = await page.evaluate(() => (window as any).__calls);
+  expect(
+    calls.some(
+      (c) =>
+        c.action === "monitor.select" &&
+        c.payload?.endpoint === "gpu-g4-s-asso1c1-38s27c46byhtt",
+    ),
+  ).toBe(true);
+  expect(calls.some((c) => c.action === "monitor.pause")).toBe(true);
+});

@@ -4,9 +4,13 @@ import {
   ColabOneTelemetryTracker,
   buildColabOneChartGeometry,
   clampPercent,
+  colabOneMonitorSourceLabel,
+  colabOneShortEndpoint,
   formatMetricBytes,
   formatRateBps,
+  resolveColabOneMonitorFallback,
 } from "./telemetry";
+import { createColabOneSnapshot } from "./types";
 import type { RuntimeStatus } from "./types";
 
 const KB = 1024;
@@ -478,5 +482,93 @@ describe("ColabOneTelemetryTracker state normalization & history tracking", () =
       13,
     );
     expect(emptyStarting.online).toBe(false);
+  });
+});
+
+describe("multi-instance monitor fallback & labels", () => {
+  it("prefers local active instance, falls back to first remote GPU when local is stopped", () => {
+    const idle = createColabOneSnapshot();
+    const idleMon = resolveColabOneMonitorFallback(idle);
+    expect(idleMon.source).toBe("none");
+    expect(idleMon.endpoint).toBe("");
+    expect(idleMon.options).toEqual([]);
+
+    const remoteOnly = createColabOneSnapshot();
+    remoteOnly.account = {
+      logged_in: true,
+      assignments: 2,
+      instances: [
+        {
+          id: "cpu-remote-1",
+          managed: false,
+          accelerator: "CPU",
+          variant: "CPU",
+          shape: "STANDARD",
+        },
+        {
+          id: "gpu-g4-s-asso1c1-38s27c46byhtt",
+          managed: false,
+          accelerator: "G4",
+          variant: "GPU",
+          shape: "STANDARD",
+          location: { country: "IN", country_name: "印度", region: "孟买" },
+        },
+      ],
+    };
+    const remoteMon = resolveColabOneMonitorFallback(remoteOnly);
+    expect(remoteMon.managed).toBe(false);
+    expect(remoteMon.source).toBe("remote_readonly");
+    expect(remoteMon.endpoint).toBe("gpu-g4-s-asso1c1-38s27c46byhtt");
+    expect(remoteMon.runtime.state).toBe("connecting");
+    expect(remoteMon.options.map((o) => o.id)).toEqual([
+      "gpu-g4-s-asso1c1-38s27c46byhtt",
+      "cpu-remote-1",
+    ]);
+
+    const mixed = createColabOneSnapshot();
+    mixed.runtime = {
+      id: "gpu-t4-local",
+      state: "ready",
+      gpu: { name: "Tesla T4", total_mib: 15360, used_mib: 1024 },
+    };
+    mixed.account = {
+      logged_in: true,
+      assignments: 2,
+      instances: [
+        {
+          id: "gpu-g4-remote",
+          managed: false,
+          accelerator: "G4",
+          variant: "GPU",
+        },
+        {
+          id: "gpu-t4-local",
+          managed: true,
+          active: true,
+          accelerator: "T4",
+          variant: "GPU",
+        },
+      ],
+    };
+    const mixedMon = resolveColabOneMonitorFallback(mixed, "Qwen2.5");
+    expect(mixedMon.managed).toBe(true);
+    expect(mixedMon.source).toBe("local");
+    expect(mixedMon.endpoint).toBe("gpu-t4-local");
+    expect(mixedMon.loaded_model_name).toBe("Qwen2.5");
+    expect(mixedMon.options.map((o) => o.id)).toEqual([
+      "gpu-t4-local",
+      "gpu-g4-remote",
+    ]);
+  });
+
+  it("formats monitor source labels and compact endpoint identifiers", () => {
+    expect(colabOneMonitorSourceLabel("local")).toBe("本机");
+    expect(colabOneMonitorSourceLabel("remote_colabone")).toBe("远端 ColabOne");
+    expect(colabOneMonitorSourceLabel("remote_readonly")).toBe("远端只读");
+    expect(colabOneMonitorSourceLabel("none")).toBe("");
+    expect(colabOneShortEndpoint("short-id")).toBe("short-id");
+    expect(colabOneShortEndpoint("gpu-g4-s-asso1c1-38s27c46byhtt", 14)).toBe(
+      "gpu-g4-…6byhtt",
+    );
   });
 });

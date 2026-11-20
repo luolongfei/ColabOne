@@ -57,13 +57,19 @@ def main():
             protocol.flush()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        for line in sys.stdin:
-            try:
-                request = json.loads(line)
-                pool.submit(handle, request)
-            except ValueError:
-                continue
-        controller.stop.set()
+        try:
+            for line in sys.stdin:
+                try:
+                    request = json.loads(line)
+                    pool.submit(handle, request)
+                except ValueError:
+                    continue
+        finally:
+            close_fn = getattr(controller, "close", None)
+            if callable(close_fn):
+                close_fn()
+            else:
+                controller.stop.set()
 
 
 if __name__ == "__main__":

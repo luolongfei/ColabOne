@@ -2,29 +2,37 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   Badge as ABadge,
+  Button as AButton,
   Card as ACard,
   Progress as AProgress,
   Segmented as ASegmented,
-  Space as ASpace,
+  Select as ASelect,
+  SelectOption as ASelectOption,
   Tag as ATag,
   Tooltip as ATooltip,
 } from "ant-design-vue";
 import {
   ColabOneTelemetryTracker,
   buildColabOneChartGeometry,
+  colabOneShortEndpoint,
   formatMetricBytes,
   formatRateBps,
   type ColabOneChartGeometry,
   type ColabOneTelemetry,
 } from "./telemetry";
 import { COLABONE_STORAGE_KEYS } from "./storage";
-import type { RuntimeStatus } from "./types";
+import { locationShort } from "./location";
+import FlagIcon from "./FlagIcon.vue";
+import type { MonitorOption, MonitorSource, RuntimeStatus } from "./types";
 import {
+  PhArrowsClockwise,
   PhCpu,
   PhGraphicsCard,
   PhHardDrives,
   PhLightning,
   PhMemory,
+  PhPause,
+  PhPlay,
   PhRows,
   PhSquaresFour,
   PhThermometer,
@@ -38,6 +46,18 @@ const props = defineProps<{
   selectedGpu?: string;
   operationTitle?: string;
   ipcDisconnected?: boolean;
+  monitorOptions?: MonitorOption[];
+  monitorEndpoint?: string;
+  monitorSource?: MonitorSource;
+  monitorPaused?: boolean;
+  monitorError?: string;
+  monitorBusy?: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: "select-instance", endpoint: string): void;
+  (e: "toggle-pause", paused: boolean): void;
+  (e: "retry-monitor"): void;
 }>();
 
 type LayoutMode = "grid" | "rows";
@@ -117,6 +137,9 @@ watch(
   (nextRuntime) => {
     const nowMs = Date.now();
     nowTick.value = nowMs;
+    if (isPaused.value && nextRuntime.id && nextRuntime.id === tracker.activeId) {
+      return;
+    }
     telemetry.value = tracker.pushSnapshot(nextRuntime, nowMs / 1000);
   },
   { deep: true },
@@ -124,7 +147,7 @@ watch(
 
 onMounted(() => {
   tickTimer = setInterval(() => {
-    if (props.ipcDisconnected) return;
+    if (props.ipcDisconnected || isPaused.value) return;
     const nowMs = Date.now();
     nowTick.value = nowMs;
     if (props.runtime.state === "ready" || telemetry.value.online) {
@@ -180,16 +203,82 @@ const effectiveDriveFreeBytes = computed<number | null>(() => {
     : null;
 });
 
+const monitorOptionList = computed<MonitorOption[]>(
+  () => props.monitorOptions || [],
+);
+
+const selectedMonitorOption = computed<MonitorOption | null>(
+  () =>
+    monitorOptionList.value.find((opt) => opt.id === props.monitorEndpoint) ||
+    null,
+);
+
+const effectiveSource = computed<MonitorSource>(() => {
+  if (props.monitorSource) return props.monitorSource;
+  return props.runtime.state !== "stopped" ? "local" : "none";
+});
+
+const isRemoteReadonly = computed<boolean>(
+  () =>
+    effectiveSource.value === "remote_readonly" ||
+    effectiveSource.value === "remote_colabone",
+);
+const isRemoteColabOne = computed<boolean>(
+  () => effectiveSource.value === "remote_colabone",
+);
+const isPaused = computed<boolean>(
+  () => Boolean(props.monitorPaused && isRemoteReadonly.value),
+);
 const isStarting = computed<boolean>(() => props.runtime.state === "starting");
 const isIpcPaused = computed<boolean>(() => Boolean(props.ipcDisconnected));
-const isConnecting = computed<boolean>(
-  () => isStarting.value && !telemetry.value.online,
+const isRemoteError = computed<boolean>(
+  () => isRemoteReadonly.value && !isPaused.value && Boolean(props.monitorError),
 );
+const isRemoteConnecting = computed<boolean>(
+  () =>
+    isRemoteReadonly.value &&
+    !isPaused.value &&
+    !isRemoteError.value &&
+    !telemetry.value.online &&
+    props.runtime.state === "connecting",
+);
+const isConnecting = computed<boolean>(
+  () => (isStarting.value || isRemoteConnecting.value) && !telemetry.value.online,
+);
+const isCpuOnlyOnline = computed<boolean>(
+  () =>
+    telemetry.value.online &&
+    telemetry.value.vramTotalBytes === 0 &&
+    !telemetry.value.gpuName &&
+    (selectedMonitorOption.value?.variant === "CPU" ||
+      selectedMonitorOption.value?.accelerator === "CPU" ||
+      isRemoteReadonly.value),
+);
+
+function formatMonitorTriggerLabel(opt: MonitorOption): string {
+  const prefix = opt.managed
+    ? "本机"
+    : opt.source === "remote_colabone"
+      ? "远端 ColabOne"
+      : "远端只读";
+  const accel = opt.accelerator || opt.variant || "GPU";
+  const loc = opt.location?.country ? locationShort(opt.location) : "";
+  const shortId = colabOneShortEndpoint(opt.id, 14);
+  return loc ? `${prefix} · ${accel} · ${loc}` : `${prefix} · ${accel} · ${shortId}`;
+}
+
+function onMonitorSelect(raw: unknown): void {
+  const endpoint = String(raw ?? "").trim();
+  if (!endpoint || endpoint === props.monitorEndpoint) return;
+  emit("select-instance", endpoint);
+}
 
 const headerBadgeStatus = computed<
   "processing" | "warning" | "error" | "default"
 >(() => {
   if (isIpcPaused.value || isConnecting.value) return "warning";
+  if (isPaused.value) return "default";
+  if (isRemoteError.value && !telemetry.value.online) return "error";
   if (telemetry.value.online) return "processing";
   if (props.runtime.state === "disconnected") return "error";
   return "default";
@@ -197,25 +286,48 @@ const headerBadgeStatus = computed<
 
 const headerBadgeText = computed<string>(() => {
   if (isIpcPaused.value) return "本地服务重连中";
+  if (isPaused.value) return "远端只读 · 已暂停";
+  if (isRemoteError.value && !telemetry.value.online) return "远端采样失败";
   if (telemetry.value.online) {
-    return isStarting.value ? "部署中 · 实时采样" : "实时 60s 采样";
+    if (isStarting.value) return "部署中 · 实时采样";
+    if (isRemoteColabOne.value) return "远端 ColabOne · 只读";
+    if (isRemoteReadonly.value) return "远端只读 · 实时采样";
+    return "实时 60s 采样";
   }
+  if (isRemoteConnecting.value) return "远端只读 · 连接中";
   if (isConnecting.value) return "正在连接";
   if (props.runtime.state === "disconnected") return "连接中断";
   return "待机预览";
 });
 
-const onlineSubtitle = computed<string>(() =>
-  isIpcPaused.value
-    ? "与本地后台服务的连接暂时中断，恢复连接后继续同步实时硬件曲线"
-    : isStarting.value
-      ? "已采集远端硬件实时曲线，正在完成管理服务部署，就绪后即可下载与装载模型"
-      : "实时采集远端实例显存、内存、磁盘吞吐与处理器负载（每秒刷新）",
-);
+const onlineSubtitle = computed<string>(() => {
+  if (isIpcPaused.value) {
+    return "与本地后台服务的连接暂时中断，恢复连接后继续同步实时硬件曲线";
+  }
+  if (isPaused.value) {
+    return "已暂停对该远端实例的只读采样（不影响其空闲状态），点击恢复观测继续采集";
+  }
+  if (isRemoteError.value) {
+    return props.monitorError || "远端只读采样暂时受阻，客户端将自动重试";
+  }
+  if (isStarting.value) {
+    return "已采集远端硬件实时曲线，正在完成管理服务部署，就绪后即可下载与装载模型";
+  }
+  return "实时采集远端实例显存、内存、磁盘吞吐与处理器负载（每秒刷新）";
+});
 
 const offlineSubtitle = computed<string>(() => {
   if (isIpcPaused.value) {
     return "与本地后台服务的连接暂时中断，恢复连接后继续同步实时硬件曲线";
+  }
+  if (isPaused.value) {
+    return "已暂停对该远端实例的只读采样（不影响其空闲状态），点击恢复观测继续采集";
+  }
+  if (isRemoteError.value) {
+    return props.monitorError || "暂无法读取该远端实例的硬件负载，将自动重试";
+  }
+  if (isRemoteConnecting.value) {
+    return "正在连接远端实例，准备只读采集显存、内存、磁盘与 CPU 负载（不受本客户端空闲自动释放管理）";
   }
   if (props.runtime.state === "starting") {
     return props.operationTitle
@@ -388,7 +500,12 @@ const activeGpuDisplayName = computed<string>(
 const gpuSubtitle = computed<string>(() => {
   if (telemetry.value.gpuName) return telemetry.value.gpuName;
   if (props.runtime.gpu?.name) return props.runtime.gpu.name;
+  if (isCpuOnlyOnline.value) return "无 GPU 加速器";
   if (telemetry.value.online) return "Colab GPU";
+  if (isRemoteConnecting.value) {
+    const accel = selectedMonitorOption.value?.accelerator;
+    return accel ? `正在连接远端 ${accel} 实例…` : "正在连接远端实例…";
+  }
   if (isConnecting.value) {
     return props.selectedGpu
       ? `正在初始化 ${props.selectedGpu} 加速器…`
@@ -455,6 +572,48 @@ interface StackedRowItem {
   driveBadge?: string;
 }
 
+const gpuLivePercentLabel = computed<string>(() =>
+  telemetry.value.online
+    ? isCpuOnlyOnline.value
+      ? "--"
+      : `${telemetry.value.vramPercent.toFixed(1)}%`
+    : isConnecting.value
+      ? "--"
+      : "0.0%",
+);
+
+const ramLivePercentLabel = computed<string>(() =>
+  !telemetry.value.online
+    ? isConnecting.value
+      ? "--"
+      : "0.0%"
+    : telemetry.value.hasRamTelemetry
+      ? `${telemetry.value.ramPercent.toFixed(1)}%`
+      : "--",
+);
+
+const diskLivePercentLabel = computed<string>(() =>
+  !telemetry.value.online
+    ? isConnecting.value
+      ? "--"
+      : "0.0%"
+    : telemetry.value.hasDiskTotal
+      ? `${telemetry.value.diskPercent.toFixed(1)}%`
+      : formatRateBps(
+          telemetry.value.diskReadBps + telemetry.value.diskWriteBps,
+        ),
+);
+
+const cpuLivePercentLabel = computed<string>(() =>
+  !telemetry.value.online
+    ? isConnecting.value
+      ? "--"
+      : "0.0%"
+    : telemetry.value.cpuPercent !== null
+      ? `${telemetry.value.cpuPercent.toFixed(1)}%`
+      : "--",
+);
+
 const stackedRows = computed<StackedRowItem[]>(() => {
   const t = telemetry.value;
 
@@ -488,13 +647,20 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           : `${Math.round(t.gpuPowerW)} W`,
     });
   }
-  gpuStats.push({
-    label: "装载模型",
-    value:
-      props.loadedModelName ||
-      props.runtime.loaded_model ||
-      (t.online ? "未装载模型" : "--"),
-  });
+  if (!isRemoteReadonly.value || isRemoteColabOne.value || props.loadedModelName || props.runtime.loaded_model) {
+    gpuStats.push({
+      label: "装载模型",
+      value:
+        props.loadedModelName ||
+        props.runtime.loaded_model ||
+        (t.online ? "未装载模型" : "--"),
+    });
+  } else {
+    gpuStats.push({
+      label: "来源",
+      value: "远端只读",
+    });
+  }
 
   const ramStats: StackedRowStat[] = !t.online
     ? [
@@ -562,7 +728,9 @@ const stackedRows = computed<StackedRowItem[]>(() => {
       subtitle: gpuSubtitle.value,
       icon: PhGraphicsCard,
       heroValue: t.online
-        ? `${t.vramPercent.toFixed(1)}%`
+        ? isCpuOnlyOnline.value
+          ? "--"
+          : `${t.vramPercent.toFixed(1)}%`
         : isConnecting.value
           ? "--"
           : "0.0%",
@@ -575,7 +743,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
       seriesLabel: "显存占用 (%)",
       secondaryLabel:
         t.online && t.gpuUtilPercent !== null ? "核心负载 (%)" : "",
-      scaleTop: "100%",
+      scaleTop: gpuLivePercentLabel.value,
       showArea: t.online,
       primaryChart: gpuRowChart.value,
       secondaryChart: gpuUtilRowChart.value,
@@ -605,7 +773,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
       progressColor: "var(--co-rm-ram)",
       seriesLabel: "内存使用 (%)",
       secondaryLabel: "",
-      scaleTop: "100%",
+      scaleTop: ramLivePercentLabel.value,
       showArea: t.online && t.hasRamTelemetry,
       primaryChart: ramRowChart.value,
       secondaryChart: null,
@@ -642,10 +810,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           ? "磁盘占用 (%)"
           : "读写吞吐 (MB/s)",
       secondaryLabel: hasDiskIoActivity.value ? "I/O 吞吐" : "",
-      scaleTop:
-        !t.online || t.hasDiskTotal
-          ? "100%"
-          : `${Math.round(diskRowChart.value.maxScale)} MB/s`,
+      scaleTop: diskLivePercentLabel.value,
       showArea: t.online,
       primaryChart: diskRowChart.value,
       secondaryChart: diskIoRowChart.value,
@@ -678,7 +843,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
       progressColor: "var(--co-rm-cpu)",
       seriesLabel: "处理器负载 (%)",
       secondaryLabel: "",
-      scaleTop: "100%",
+      scaleTop: cpuLivePercentLabel.value,
       showArea: t.online && t.cpuPercent !== null,
       primaryChart: cpuRowChart.value,
       secondaryChart: null,
@@ -700,17 +865,22 @@ const stackedRows = computed<StackedRowItem[]>(() => {
     <template #title>
       <div class="co-rm-header-title">
         <div class="co-rm-heading-row">
-          <h3>实时硬件监控</h3>
-          <ABadge
-            :status="headerBadgeStatus"
-            :text="headerBadgeText"
-            class="co-rm-live-badge"
-            :class="{
-              live: telemetry.online && !isIpcPaused,
-              connecting: isConnecting || isIpcPaused,
-            }"
-          />
-          <ASpace v-if="telemetry.online" :size="6" wrap class="co-rm-hw-pills">
+          <div class="co-rm-heading-primary">
+            <h3>实时硬件监控</h3>
+            <ABadge
+              :status="headerBadgeStatus"
+              :text="headerBadgeText"
+              class="co-rm-live-badge"
+              :class="{
+                live: telemetry.online && !isIpcPaused && !isPaused,
+                remote: isRemoteReadonly && telemetry.online && !isPaused && !isIpcPaused,
+                paused: isPaused,
+                error: isRemoteError && !telemetry.online,
+                connecting: isConnecting || isIpcPaused,
+              }"
+            />
+          </div>
+          <div v-if="telemetry.online" class="co-rm-hw-pills">
             <ATag
               v-if="activeGpuDisplayName"
               :bordered="false"
@@ -754,43 +924,136 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                 }}</span>
               </ATag>
             </ATooltip>
-          </ASpace>
+          </div>
           <span v-if="!telemetry.online" class="co-rm-header-sub">
             {{ offlineSubtitle }}
           </span>
           <span
-            v-else-if="isIpcPaused || isStarting"
+            v-else-if="isIpcPaused || isStarting || isPaused || isRemoteError"
             class="co-rm-header-sub"
           >
             {{ onlineSubtitle }}
           </span>
+          <AButton
+            v-if="isRemoteError"
+            type="link"
+            size="small"
+            class="co-rm-retry-btn"
+            :disabled="Boolean(monitorBusy || isIpcPaused)"
+            @click="emit('retry-monitor')"
+          >
+            <template #icon>
+              <PhArrowsClockwise :size="13" />
+            </template>
+            重试
+          </AButton>
         </div>
       </div>
     </template>
 
     <template #extra>
-      <ASegmented
-        :value="layout"
-        :options="layoutOptions"
-        size="small"
-        class="co-rm-layout-segmented"
-        aria-label="监控图表布局切换"
-        @change="onLayoutChange"
-      >
-        <template #label="{ value, payload }">
-          <ATooltip :title="payload.label" placement="top">
-            <span class="co-rm-seg-label">
-              <PhSquaresFour
-                v-if="value === 'grid'"
-                :size="15"
-                aria-hidden="true"
-              />
-              <PhRows v-else :size="15" aria-hidden="true" />
-              <span class="co-rm-sr-only">{{ payload.label }}</span>
-            </span>
-          </ATooltip>
-        </template>
-      </ASegmented>
+      <div class="co-rm-header-controls">
+        <ASelect
+          v-if="monitorOptionList.length > 0"
+          size="small"
+          class="co-rm-instance-select"
+          aria-label="选择要监控的 GPU 实例"
+          :value="monitorEndpoint || undefined"
+          :disabled="Boolean(monitorBusy || isIpcPaused)"
+          :dropdown-match-select-width="false"
+          option-label-prop="label"
+          @change="onMonitorSelect"
+        >
+          <ASelectOption
+            v-for="opt in monitorOptionList"
+            :key="opt.id"
+            :value="opt.id"
+            :label="formatMonitorTriggerLabel(opt)"
+          >
+            <div class="co-rm-opt-row">
+              <span
+                class="co-rm-opt-tag"
+                :class="
+                  opt.managed
+                    ? 'is-local'
+                    : opt.source === 'remote_colabone'
+                      ? 'is-remote-co'
+                      : 'is-remote'
+                "
+              >
+                {{
+                  opt.managed
+                    ? opt.active
+                      ? "本机当前"
+                      : "本机"
+                    : opt.source === "remote_colabone"
+                      ? "远端 ColabOne"
+                      : "远端只读"
+                }}
+              </span>
+              <span class="co-rm-opt-accel">{{
+                opt.accelerator || opt.variant || "GPU"
+              }}</span>
+              <span v-if="opt.location?.country" class="co-rm-opt-loc">
+                <FlagIcon :code="opt.location.country" :size="12" />
+                <span>{{ locationShort(opt.location) }}</span>
+              </span>
+              <code class="co-rm-opt-id">{{ opt.id }}</code>
+              <span v-if="opt.loaded_model" class="co-rm-opt-model">{{
+                opt.loaded_model
+              }}</span>
+            </div>
+          </ASelectOption>
+        </ASelect>
+
+        <ATooltip
+          v-if="isRemoteReadonly && monitorOptionList.length > 0"
+          :title="
+            isPaused
+              ? '恢复对该远端实例的只读硬件采样'
+              : '暂停对该远端外部实例的只读采样，避免影响其空闲状态'
+          "
+          placement="top"
+        >
+          <AButton
+            size="small"
+            class="co-rm-pause-btn"
+            :class="{ 'is-paused': isPaused }"
+            :disabled="Boolean(monitorBusy || isIpcPaused)"
+            :aria-label="isPaused ? '恢复远端观测' : '暂停远端观测'"
+            @click="emit('toggle-pause', !isPaused)"
+          >
+            <template #icon>
+              <PhPlay v-if="isPaused" :size="12" weight="fill" />
+              <PhPause v-else :size="12" weight="fill" />
+            </template>
+            <span>{{ isPaused ? "恢复观测" : "暂停观测" }}</span>
+          </AButton>
+        </ATooltip>
+
+        <ASegmented
+          :value="layout"
+          :options="layoutOptions"
+          size="small"
+          class="co-rm-layout-segmented"
+          aria-label="监控图表布局切换"
+          @change="onLayoutChange"
+        >
+          <template #label="{ value, payload }">
+            <ATooltip :title="payload.label" placement="top">
+              <span class="co-rm-seg-label">
+                <PhSquaresFour
+                  v-if="value === 'grid'"
+                  :size="15"
+                  aria-hidden="true"
+                />
+                <PhRows v-else :size="15" aria-hidden="true" />
+                <span class="co-rm-sr-only">{{ payload.label }}</span>
+              </span>
+            </ATooltip>
+          </template>
+        </ASegmented>
+      </div>
     </template>
 
     <!-- MODE 1: 2x2 ColabOne Resource Monitor Grid -->
@@ -821,7 +1084,9 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           <strong class="co-rm-live-val co-rm-mono">
             {{
               telemetry.online
-                ? `${Math.round(telemetry.vramPercent)}%`
+                ? isCpuOnlyOnline
+                  ? "--"
+                  : `${Math.round(telemetry.vramPercent)}%`
                 : isConnecting
                   ? "--"
                   : "0%"
@@ -895,7 +1160,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             />
             <path :d="gpuGridChart.linePath" class="co-rm-primary-stroke" />
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">100%</span>
+          <span class="co-rm-scale-cap co-rm-mono">{{ gpuLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
@@ -1029,7 +1294,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             />
             <path :d="ramGridChart.linePath" class="co-rm-primary-stroke" />
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">100%</span>
+          <span class="co-rm-scale-cap co-rm-mono">{{ ramLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
@@ -1179,11 +1444,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             />
             <path :d="diskGridChart.linePath" class="co-rm-primary-stroke" />
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">{{
-            !telemetry.online || telemetry.hasDiskTotal
-              ? "100%"
-              : `${Math.round(diskGridChart.maxScale)} MB/s`
-          }}</span>
+          <span class="co-rm-scale-cap co-rm-mono">{{ diskLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
@@ -1329,7 +1590,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             />
             <path :d="cpuGridChart.linePath" class="co-rm-primary-stroke" />
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">100%</span>
+          <span class="co-rm-scale-cap co-rm-mono">{{ cpuLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
@@ -1563,23 +1824,30 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 }
 
 .co-monitor :deep(.ant-card-head) {
-  min-height: 44px;
-  padding: 8px 16px;
+  min-height: 48px;
+  padding: 10px 16px;
+  margin-bottom: 0;
   border-bottom: 1px solid var(--co-border-secondary);
   background: transparent;
 }
 
 .co-monitor :deep(.ant-card-head-wrapper) {
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
 }
 
 .co-monitor :deep(.ant-card-head-title) {
+  display: flex;
+  align-items: center;
   padding: 0;
   white-space: normal;
+  line-height: 1.25;
 }
 
 .co-monitor :deep(.ant-card-extra) {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
   padding: 0;
   margin-inline-start: auto;
 }
@@ -1625,18 +1893,28 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 /* Header */
 .co-rm-header-title {
   min-width: 0;
+  width: 100%;
 }
 
 .co-rm-heading-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 10px;
+  row-gap: 8px;
+  column-gap: 10px;
+}
+
+.co-rm-heading-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
 }
 
 .co-rm-heading-row h3 {
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.25;
   color: var(--co-text);
   margin: 0;
   white-space: nowrap;
@@ -1645,11 +1923,12 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 .co-rm-live-badge {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
+  height: 24px;
+  padding: 0 10px;
   border-radius: 9999px;
   background: var(--co-track);
   border: 1px solid var(--co-border);
-  line-height: 1.3;
+  line-height: 1;
 }
 
 .co-rm-live-badge :deep(.ant-badge-status-text) {
@@ -1677,9 +1956,83 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   color: var(--co-warning-text);
 }
 
+.co-rm-live-badge.remote {
+  background: rgba(14, 165, 233, 0.1);
+  border-color: rgba(14, 165, 233, 0.3);
+}
+
+.co-rm-live-badge.remote :deep(.ant-badge-status-text) {
+  color: #0284c7;
+}
+
+.co-rm-live-badge.paused {
+  background: var(--co-track);
+  border-color: var(--co-border);
+}
+
+.co-rm-live-badge.error {
+  background: var(--co-danger-bg);
+  border-color: var(--co-danger-border);
+}
+
+.co-rm-live-badge.error :deep(.ant-badge-status-text) {
+  color: var(--co-danger-text);
+}
+
+.co-rm-retry-btn {
+  padding: 0 6px;
+  height: 22px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.co-rm-header-controls {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.co-rm-instance-select {
+  min-width: 196px;
+  max-width: 260px;
+}
+
+.co-rm-instance-select :deep(.ant-select-selector) {
+  border-radius: 8px !important;
+  font-size: 12px;
+  height: 28px !important;
+  align-items: center;
+}
+
+.co-rm-instance-select :deep(.ant-select-selection-item) {
+  line-height: 26px !important;
+}
+
+.co-rm-pause-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+.co-rm-pause-btn.is-paused {
+  border-color: var(--co-accent);
+  color: var(--co-accent-strong);
+}
+
 .co-rm-hw-pills {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
 }
 
 .co-rm-hw-tag {
@@ -1738,6 +2091,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 
 .co-rm-layout-segmented :deep(.ant-segmented-item-label) {
   padding: 0;
+  min-height: 20px;
 }
 
 .co-rm-seg-label {
@@ -1745,8 +2099,8 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 26px;
+  width: 30px;
+  height: 20px;
 }
 
 .co-rm-seg-label svg {
@@ -1970,12 +2324,21 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 .co-rm-scale-cap {
   position: absolute;
   top: 3px;
-  right: 6px;
+  right: 5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(250, 251, 252, 0.88);
   font-size: 10.5px;
-  line-height: 1;
-  color: var(--co-muted);
-  opacity: 0.82;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--co-metric-accent);
   pointer-events: none;
+}
+
+.is-offline .co-rm-scale-cap {
+  color: var(--co-muted);
+  font-weight: 500;
+  opacity: 0.82;
 }
 
 .co-rm-axis-row {
@@ -2410,5 +2773,95 @@ const stackedRows = computed<StackedRowItem[]>(() => {
     rgba(60, 137, 232, 0.14) 50%,
     transparent 100%
   );
+}
+
+:root[data-theme="dark"] .co-monitor .co-rm-live-badge.remote {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.34);
+}
+
+:root[data-theme="dark"] .co-monitor .co-rm-live-badge.remote .ant-badge-status-text {
+  color: #38bdf8;
+}
+
+:root[data-theme="dark"] .co-monitor .co-rm-scale-cap {
+  background: rgba(15, 17, 23, 0.84);
+}
+
+.co-rm-opt-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 1px 0;
+}
+
+.co-rm-opt-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 560;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.co-rm-opt-tag.is-local {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+}
+
+.co-rm-opt-tag.is-remote-co {
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+}
+
+.co-rm-opt-tag.is-remote {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+}
+
+.co-rm-opt-accel {
+  font-weight: 600;
+  color: var(--co-text);
+  white-space: nowrap;
+}
+
+.co-rm-opt-loc {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--co-secondary-text);
+  white-space: nowrap;
+}
+
+.co-rm-opt-id {
+  font-family: var(--co-font-mono);
+  font-size: 11px;
+  color: var(--co-muted);
+  white-space: nowrap;
+}
+
+.co-rm-opt-model {
+  font-size: 11px;
+  color: var(--co-accent-strong);
+  white-space: nowrap;
+}
+
+:root[data-theme="dark"] .co-rm-opt-tag.is-local {
+  background: rgba(52, 211, 153, 0.16);
+  color: #34d399;
+}
+
+:root[data-theme="dark"] .co-rm-opt-tag.is-remote-co {
+  background: rgba(96, 165, 250, 0.18);
+  color: #60a5fa;
+}
+
+:root[data-theme="dark"] .co-rm-opt-tag.is-remote {
+  background: rgba(56, 189, 248, 0.16);
+  color: #38bdf8;
 }
 </style>

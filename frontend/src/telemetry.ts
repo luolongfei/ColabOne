@@ -1,4 +1,12 @@
-import type { ResourceHistoryPoint, RuntimeStatus } from "./types";
+import type {
+  AccountInstance,
+  ColabOneSnapshot,
+  MonitorOption,
+  MonitorSnapshot,
+  MonitorSource,
+  ResourceHistoryPoint,
+  RuntimeStatus,
+} from "./types";
 
 export const COLABONE_TELEMETRY_HISTORY_LENGTH = 60;
 
@@ -490,4 +498,150 @@ export class ColabOneTelemetryTracker {
       sampleTick: this.sampleTick,
     };
   }
+}
+
+export function colabOneShortEndpoint(endpoint: string, maxLen = 18): string {
+  const cleaned = (endpoint || "").trim();
+  if (!cleaned || cleaned.length <= maxLen) return cleaned;
+  const parts = cleaned.split("-");
+  const tail = parts[parts.length - 1] || "";
+  if (tail.length >= 6 && tail.length <= maxLen - 3) {
+    return `…${tail.slice(-Math.min(tail.length, 10))}`;
+  }
+  return `${cleaned.slice(0, Math.max(4, maxLen - 7))}…${cleaned.slice(-6)}`;
+}
+
+export function colabOneMonitorSourceLabel(source: MonitorSource): string {
+  if (source === "local") return "本机";
+  if (source === "remote_colabone") return "远端 ColabOne";
+  if (source === "remote_readonly") return "远端只读";
+  return "";
+}
+
+function isGpuAccountInstance(inst: AccountInstance): boolean {
+  const variant = String(inst.variant || "").toUpperCase();
+  const accel = String(inst.accelerator || "").toUpperCase();
+  if (variant === "GPU") return true;
+  return accel !== "" && accel !== "CPU" && accel !== "NONE" && accel !== "TPU";
+}
+
+export function resolveColabOneMonitorFallback(
+  snapshot: ColabOneSnapshot,
+  loadedModelName = "",
+): MonitorSnapshot {
+  if (snapshot.monitor) {
+    return snapshot.monitor;
+  }
+
+  const rawInstances = snapshot.account?.instances || [];
+  const activeId = snapshot.runtime?.id || snapshot.active_endpoint || "";
+  const managed: AccountInstance[] = [];
+  const extGpu: AccountInstance[] = [];
+  const extOther: AccountInstance[] = [];
+  const seen = new Set<string>();
+
+  for (const item of rawInstances) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    if (item.managed) managed.push(item);
+    else if (isGpuAccountInstance(item)) extGpu.push(item);
+    else extOther.push(item);
+  }
+  managed.sort((a, b) => {
+    const aActive = a.active || a.id === activeId ? 0 : 1;
+    const bActive = b.active || b.id === activeId ? 0 : 1;
+    return aActive - bActive;
+  });
+
+  if (
+    !seen.has(snapshot.runtime?.id || "") &&
+    snapshot.runtime?.id &&
+    snapshot.runtime.state !== "stopped"
+  ) {
+    managed.unshift({
+      id: snapshot.runtime.id,
+      managed: true,
+      active: true,
+      accelerator: snapshot.settings?.gpu || "GPU",
+      variant: "GPU",
+      shape: "",
+      state: snapshot.runtime.state,
+      gpu_name: snapshot.runtime.gpu?.name,
+      loaded_model: loadedModelName,
+      location: snapshot.runtime.location,
+    });
+  }
+
+  const ordered = [...managed, ...extGpu, ...extOther];
+  const options: MonitorOption[] = ordered.map((item) => ({
+    id: item.id,
+    managed: Boolean(item.managed),
+    active: Boolean(item.managed && (item.active || item.id === activeId)),
+    accelerator: item.accelerator || (item.variant === "CPU" ? "CPU" : "GPU"),
+    variant: item.variant || "GPU",
+    shape: item.shape || "",
+    location: item.location ?? null,
+    gpu_name: item.gpu_name || "",
+    loaded_model: item.loaded_model || "",
+    source: item.managed ? "local" : "remote_readonly",
+    state: item.managed ? item.state || "ready" : "connecting",
+  }));
+
+  if (managed.length > 0 || snapshot.runtime?.state !== "stopped") {
+    const targetId =
+      (activeId && managed.some((m) => m.id === activeId) ? activeId : "") ||
+      managed[0]?.id ||
+      snapshot.runtime?.id ||
+      "";
+    return {
+      mode: "auto",
+      endpoint: targetId,
+      managed: true,
+      source: "local",
+      paused: false,
+      error: "",
+      runtime: snapshot.runtime,
+      loaded_model_name: loadedModelName,
+      drive_connected: Boolean(
+        snapshot.setup?.drive || snapshot.runtime?.drive?.connected,
+      ),
+      drive_free_bytes: snapshot.runtime?.drive?.free_bytes ?? null,
+      options,
+    };
+  }
+
+  const firstRemote = extGpu[0] || extOther[0];
+  if (firstRemote) {
+    return {
+      mode: "auto",
+      endpoint: firstRemote.id,
+      managed: false,
+      source: "remote_readonly",
+      paused: false,
+      error: "",
+      runtime: {
+        id: firstRemote.id,
+        state: "connecting",
+        location: firstRemote.location ?? null,
+      },
+      loaded_model_name: "",
+      drive_connected: false,
+      drive_free_bytes: null,
+      options,
+    };
+  }
+
+  return {
+    mode: "auto",
+    endpoint: "",
+    managed: false,
+    source: "none",
+    paused: false,
+    error: "",
+    runtime: { state: "stopped" },
+    loaded_model_name: "",
+    drive_connected: false,
+    drive_free_bytes: null,
+    options,
+  };
 }

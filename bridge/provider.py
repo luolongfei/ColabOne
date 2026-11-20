@@ -105,12 +105,320 @@ def _format_location_short(loc: dict | None) -> str:
     return country or region
 
 
+_EXTERNAL_OBSERVER_CODE = r"""
+import collections as _co_col
+import json as _co_json
+import math as _co_math
+import os as _co_os
+import re as _co_re
+import shutil as _co_shutil
+import subprocess as _co_sp
+import time as _co_time
+import urllib.request as _co_http
+from pathlib import Path as _co_Path
+
+
+def _co_observe_once():
+    _st = globals().setdefault("_co_obs_state", {})
+    _opener = _co_http.build_opener(_co_http.ProxyHandler({}))
+
+    # 1) Prefer read-only status from an existing remote ColabOne control service if present.
+    _boot = _co_Path("/content/colabone-boot.json")
+    if _boot.is_file():
+        try:
+            _cfg = _co_json.loads(_boot.read_text(encoding="utf-8"))
+            _tok = str(_cfg.get("token") or "")
+            if _tok:
+                _req = _co_http.Request(
+                    "http://127.0.0.1:7860/api/v1/status",
+                    headers={"Authorization": "Bearer " + _tok},
+                    method="GET",
+                )
+                with _opener.open(_req, timeout=4) as _resp:
+                    _status = _co_json.loads(_resp.read())
+                if isinstance(_status, dict) and (
+                    "resources" in _status or "gpu" in _status or "state" in _status
+                ):
+                    _loaded_id = str(_status.get("loaded_model") or "")
+                    _model_name = ""
+                    if _loaded_id:
+                        _names = _st.setdefault("model_names", {})
+                        if _loaded_id not in _names:
+                            try:
+                                _mreq = _co_http.Request(
+                                    "http://127.0.0.1:7860/api/v1/models",
+                                    headers={"Authorization": "Bearer " + _tok},
+                                    method="GET",
+                                )
+                                with _opener.open(_mreq, timeout=3) as _mresp:
+                                    _mlist = _co_json.loads(_mresp.read())
+                                if isinstance(_mlist, list):
+                                    for _m in _mlist:
+                                        if isinstance(_m, dict) and _m.get("id"):
+                                            _names[str(_m["id"])] = str(
+                                                _m.get("name") or _m["id"]
+                                            )
+                            except Exception:
+                                pass
+                        _model_name = str(_names.get(_loaded_id) or _loaded_id)
+                    return {
+                        "source": "remote_colabone",
+                        "status": _status,
+                        "loaded_model_name": _model_name,
+                    }
+        except Exception:
+            pass
+
+    # 2) Generic read-only hardware sampling for Colab Web / VS Code / external runtimes.
+    def _opt_float(raw):
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s or s.startswith("[") or s.lower() in {"n/a", "not supported", "none", "-"}:
+            return None
+        try:
+            v = float(s)
+        except ValueError:
+            return None
+        return v if _co_math.isfinite(v) else None
+
+    def _req_int(raw):
+        s = str(raw).strip()
+        if not s or s.startswith("["):
+            raise ValueError(s)
+        v = float(s)
+        if not _co_math.isfinite(v) or v < 0:
+            raise ValueError(s)
+        return int(v)
+
+    def _gpu_info():
+        for fields in (
+            "name,memory.total,memory.used,utilization.gpu,temperature.gpu,power.draw,power.limit",
+            "name,memory.total,memory.used",
+        ):
+            try:
+                res = _co_sp.run(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=" + fields,
+                        "--format=csv,noheader,nounits",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=6,
+                    check=True,
+                )
+                lines = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+                if not lines:
+                    continue
+                parts = [p.strip() for p in lines[0].split(",")]
+                if len(parts) < 3:
+                    continue
+                if len(parts) > 7:
+                    parts = [", ".join(parts[:-6]).strip(), *parts[-6:]]
+                name = parts[0]
+                if not name:
+                    continue
+                return {
+                    "name": name,
+                    "total_mib": _req_int(parts[1]),
+                    "used_mib": _req_int(parts[2]),
+                    "util_percent": _opt_float(parts[3]) if len(parts) > 3 else None,
+                    "temp_c": _opt_float(parts[4]) if len(parts) > 4 else None,
+                    "power_w": _opt_float(parts[5]) if len(parts) > 5 else None,
+                    "power_limit_w": _opt_float(parts[6]) if len(parts) > 6 else None,
+                }
+            except Exception:
+                continue
+        return None
+
+    def _mem_info():
+        try:
+            raw = _co_Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {"total_bytes": 0, "used_bytes": 0, "available_bytes": 0, "percent": 0.0}
+        fields = {}
+        for line in raw.splitlines():
+            if ":" not in line:
+                continue
+            k, rest = line.split(":", 1)
+            k = k.strip()
+            if k not in {"MemTotal", "MemAvailable", "MemFree", "Buffers", "Cached"}:
+                continue
+            toks = rest.strip().split()
+            if toks:
+                try:
+                    fields[k] = max(0, int(toks[0]))
+                except ValueError:
+                    pass
+        total = fields.get("MemTotal", 0) * 1024
+        if "MemAvailable" in fields:
+            avail = fields["MemAvailable"] * 1024
+        else:
+            avail = (
+                fields.get("MemFree", 0)
+                + fields.get("Buffers", 0)
+                + fields.get("Cached", 0)
+            ) * 1024
+        used = max(0, total - avail)
+        pct = round((used / total) * 100.0, 1) if total > 0 else 0.0
+        return {
+            "total_bytes": int(total),
+            "used_bytes": int(used),
+            "available_bytes": int(avail),
+            "percent": float(pct),
+        }
+
+    def _read_cpu():
+        try:
+            raw = _co_Path("/proc/stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        for line in raw.splitlines():
+            parts = line.split()
+            if parts and parts[0] == "cpu" and len(parts) >= 5:
+                try:
+                    vals = [int(t) for t in parts[1:]]
+                except ValueError:
+                    return None
+                return (sum(vals[:8]), vals[3] + (vals[4] if len(vals) > 4 else 0))
+        return None
+
+    def _cpu_info():
+        cores = int(_co_os.cpu_count() or 1)
+        cur = _read_cpu()
+        if cur is None:
+            return {"cores": cores, "percent": 0.0}
+        prev = _st.get("prev_cpu")
+        if prev is None:
+            _co_time.sleep(0.15)
+            nxt = _read_cpu()
+            if nxt is not None:
+                prev, cur = cur, nxt
+        _st["prev_cpu"] = cur
+        if prev is None:
+            return {"cores": cores, "percent": 0.0}
+        dt = cur[0] - prev[0]
+        di = cur[1] - prev[1]
+        pct = 0.0 if dt <= 0 else min(100.0, max(0.0, (max(0, dt - max(0, di)) / dt) * 100.0))
+        return {"cores": cores, "percent": float(round(pct, 1))}
+
+    _disk_re = _co_re.compile(r"^(nvme\d+n\d+|sd[a-z]+|vd[a-z]+|xvd[a-z]+|mmcblk\d+)$")
+
+    def _disk_info(ts):
+        total = used = free = 0
+        for p in ("/content", "/"):
+            try:
+                u = _co_shutil.disk_usage(p)
+                total, used, free = int(u.total), int(u.used), int(u.free)
+                break
+            except OSError:
+                continue
+        pct = round((used / total) * 100.0, 1) if total > 0 else 0.0
+        read_bps = write_bps = 0.0
+        try:
+            raw = _co_Path("/proc/diskstats").read_text(encoding="utf-8", errors="replace")
+            rs = ws = 0
+            for line in raw.splitlines():
+                parts = line.split()
+                if len(parts) >= 10 and _disk_re.match(parts[2]):
+                    try:
+                        rs += max(0, int(parts[5]))
+                        ws += max(0, int(parts[9]))
+                    except ValueError:
+                        pass
+            rb, wb = rs * 512, ws * 512
+            prev = _st.get("prev_disk")
+            _st["prev_disk"] = (ts, rb, wb)
+            if prev is not None and ts > prev[0]:
+                dt = ts - prev[0]
+                read_bps = max(0, rb - prev[1]) / dt
+                write_bps = max(0, wb - prev[2]) / dt
+        except OSError:
+            pass
+        return {
+            "total_bytes": total,
+            "used_bytes": used,
+            "free_bytes": free,
+            "percent": float(pct),
+            "read_bps": float(round(read_bps, 1)),
+            "write_bps": float(round(write_bps, 1)),
+        }
+
+    ts = _co_time.time()
+    gpu = _gpu_info()
+    mem = _mem_info()
+    cpu = _cpu_info()
+    disk = _disk_info(ts)
+    if "zone" not in _st:
+        _zone = ""
+        try:
+            _zreq = _co_http.Request(
+                "http://metadata.google.internal/computeMetadata/v1/instance/zone",
+                headers={"Metadata-Flavor": "Google"},
+            )
+            with _opener.open(_zreq, timeout=0.8) as _zr:
+                if _zr.status == 200:
+                    _zone = _zr.read().decode("utf-8", "replace").strip()
+        except Exception:
+            pass
+        _st["zone"] = _zone
+
+    hist = _st.get("history")
+    if hist is None:
+        hist = _co_col.deque(maxlen=60)
+        _st["history"] = hist
+    vram_pct = (
+        float(round((max(0, gpu["used_mib"]) / gpu["total_mib"]) * 100.0, 1))
+        if isinstance(gpu, dict) and (gpu.get("total_mib") or 0) > 0
+        else 0.0
+    )
+    last_t = float(_st.get("last_t") or 0.0)
+    if not hist or (ts - last_t) >= 0.9:
+        hist.append(
+            {
+                "t": float(round(ts, 1)),
+                "vram_pct": vram_pct,
+                "gpu_util": float(gpu.get("util_percent") or 0.0) if isinstance(gpu, dict) else 0.0,
+                "ram_pct": float(mem["percent"]),
+                "cpu_pct": float(cpu["percent"]),
+                "disk_pct": float(disk["percent"]),
+                "disk_read_bps": float(disk["read_bps"]),
+                "disk_write_bps": float(disk["write_bps"]),
+            }
+        )
+        _st["last_t"] = ts
+
+    resources = {
+        "cpu": cpu,
+        "memory": mem,
+        "disk": disk,
+        "history": [dict(pt) for pt in hist],
+    }
+    if isinstance(gpu, dict):
+        resources["gpu"] = gpu
+    return {
+        "source": "remote_readonly",
+        "resources": resources,
+        "gpu": gpu,
+        "disk_free": disk["free_bytes"],
+        "zone": _st.get("zone", ""),
+    }
+
+
+print("\nCOLABONE_OBS=" + _co_json.dumps(_co_observe_once(), ensure_ascii=False), flush=True)
+"""
+
+
 class ColabOneProvider:
     def __init__(self, auth, vault, root):
         self.auth, self.vault, self.root = auth, vault, root
         self.kernel_lock = threading.RLock()
         self.state_lock = threading.RLock()
         self._kernels: dict[str, dict] = {}
+        self._observer_lock = threading.RLock()
+        self._observer: dict | None = None
+        self._external_proxies: dict[str, dict] = {}
         self._loc_probed: set[str] = set()
         self.client_factory = lambda: Client(
             Prod(), AuthorizedSession(auth.credentials("colab"))
@@ -229,6 +537,244 @@ class ColabOneProvider:
     def client(self):
         return self.client_factory()
 
+    def _cache_assignment_proxies(self, assignments) -> None:
+        fresh: dict[str, dict] = {}
+        now = time.time()
+        for a in assignments or []:
+            ep = str(getattr(a, "endpoint", "") or "")
+            info = getattr(a, "runtime_proxy_info", None)
+            url = str(getattr(info, "url", "") or "")
+            token = str(getattr(info, "token", "") or "")
+            if not ep or not url or not token:
+                continue
+            expires_at = None
+            exp_fn = getattr(info, "expires_at", None)
+            if callable(exp_fn):
+                try:
+                    exp_val = exp_fn()
+                    expires_at = (
+                        exp_val.timestamp()
+                        if hasattr(exp_val, "timestamp")
+                        else float(exp_val)
+                    )
+                except Exception:
+                    expires_at = None
+            if expires_at is None:
+                ttl = getattr(info, "token_expires_in_seconds", None)
+                if isinstance(ttl, (int, float)) and ttl > 0:
+                    expires_at = now + float(ttl)
+            fresh[ep] = {
+                "url": url,
+                "token": token,
+                "expires_at": float(expires_at)
+                if expires_at is not None
+                else (now + 1800.0),
+            }
+        with self._observer_lock:
+            self._external_proxies = fresh
+
+    def _external_proxy_info(
+        self, endpoint: str, refresh: bool = False
+    ) -> dict | None:
+        if not endpoint:
+            return None
+        now = time.time()
+        if not refresh:
+            with self._observer_lock:
+                cached = self._external_proxies.get(endpoint)
+                if cached and cached.get("expires_at", 0) > now + 60:
+                    return dict(cached)
+        assignments = self.client().list_assignments()
+        self._cache_assignment_proxies(assignments)
+        if not any(getattr(a, "endpoint", "") == endpoint for a in assignments):
+            return None
+        with self._observer_lock:
+            cached = self._external_proxies.get(endpoint)
+            return dict(cached) if cached else None
+
+    def close_observer(
+        self, endpoint: str | None = None, shutdown_kernel: bool = True
+    ) -> None:
+        with self._observer_lock:
+            obs = self._observer
+            if not obs:
+                return
+            if endpoint is not None and obs.get("endpoint") != endpoint:
+                return
+            self._observer = None
+            rt = obs.get("runtime")
+        if rt is not None:
+            try:
+                rt.stop(shutdown_kernel=bool(shutdown_kernel))
+            except Exception:
+                pass
+
+    def observe_external_telemetry(self, endpoint: str) -> dict:
+        """Read-only hardware observation for an external (non-managed) Colab runtime.
+
+        Uses a dedicated isolated observer kernel that never touches user notebooks,
+        never writes files, never sends keep-alive pings, and never adopts the session.
+        """
+        if not endpoint:
+            raise ValueError("缺少远端实例标识")
+        proxy = self._external_proxy_info(endpoint)
+        if not proxy:
+            self.close_observer(endpoint, shutdown_kernel=False)
+            raise LookupError("远端实例已不在运行列表中")
+
+        with self._observer_lock:
+            obs = self._observer
+            if obs and obs.get("endpoint") != endpoint:
+                old_rt = obs.get("runtime")
+                self._observer = None
+                if old_rt is not None:
+                    try:
+                        old_rt.stop(shutdown_kernel=True)
+                    except Exception:
+                        pass
+                obs = None
+
+            key = (endpoint, proxy["url"], proxy["token"])
+            prev_kid = None
+            prev_sid = None
+            if obs and obs.get("key") != key:
+                # Proxy token rotated for the same observed endpoint: keep our own
+                # observer kernel_id so we reconnect instead of spawning duplicates.
+                prev_kid = obs.get("kernel_id")
+                prev_sid = obs.get("session_id")
+                old_rt = obs.get("runtime")
+                if old_rt is not None:
+                    try:
+                        old_rt.stop(shutdown_kernel=False)
+                    except Exception:
+                        pass
+                obs = None
+
+            if obs is None:
+                obs = {
+                    "endpoint": endpoint,
+                    "key": key,
+                    "kernel_id": prev_kid,
+                    "session_id": prev_sid,
+                    "runtime": None,
+                }
+
+                def _on_kid(value, slot=obs):
+                    slot["kernel_id"] = value
+
+                def _on_sid(value, slot=obs):
+                    slot["session_id"] = value
+
+                obs["runtime"] = ColabRuntime(
+                    proxy["url"],
+                    proxy["token"],
+                    session_name="colabone-observer",
+                    kernel_id=prev_kid,
+                    session_id=prev_sid,
+                    on_kernel_started=_on_kid,
+                    on_session_started=_on_sid,
+                )
+                self._observer = obs
+
+            rt = obs["runtime"]
+            try:
+                outputs = rt.execute_code(
+                    _EXTERNAL_OBSERVER_CODE, allow_stdin=False, timeout=15
+                )
+            except Exception:
+                self._observer = None
+                try:
+                    rt.stop(shutdown_kernel=True)
+                except Exception:
+                    pass
+                raise
+
+        payload = None
+        for output in outputs or []:
+            if (
+                isinstance(output, dict)
+                and output.get("output_type") == "stream"
+                and output.get("name") == "stderr"
+            ):
+                continue
+            for line in str((output or {}).get("text", "")).splitlines():
+                stripped = line.strip()
+                if stripped.startswith("COLABONE_OBS="):
+                    payload = json.loads(stripped.partition("=")[2])
+        if not isinstance(payload, dict):
+            raise RuntimeError("远端实例未返回硬件监控采样数据")
+
+        source = str(payload.get("source") or "remote_readonly")
+        if source == "remote_colabone" and isinstance(payload.get("status"), dict):
+            status = payload["status"]
+            drive = status.get("drive") if isinstance(status.get("drive"), dict) else {}
+            loc = status.get("location") or infer_location_from_endpoint(
+                endpoint, proxy["url"]
+            )
+            rt_data: dict = {
+                "id": endpoint,
+                "state": "ready",
+            }
+            gpu = status.get("gpu") or (
+                status.get("resources", {}).get("gpu")
+                if isinstance(status.get("resources"), dict)
+                else None
+            )
+            if isinstance(gpu, dict):
+                rt_data["gpu"] = gpu
+            if isinstance(status.get("resources"), dict):
+                rt_data["resources"] = status["resources"]
+            if status.get("disk_free") is not None:
+                rt_data["disk_free"] = status["disk_free"]
+            if status.get("loaded_model"):
+                rt_data["loaded_model"] = str(status["loaded_model"])
+            if drive:
+                rt_data["drive"] = drive
+            if loc:
+                rt_data["location"] = loc
+            if status.get("active_engine"):
+                rt_data["active_engine"] = status["active_engine"]
+            return {
+                "endpoint": endpoint,
+                "source": "remote_colabone",
+                "runtime": rt_data,
+                "loaded_model_name": str(
+                    payload.get("loaded_model_name") or status.get("loaded_model") or ""
+                ),
+                "drive_connected": bool(drive.get("connected")),
+                "drive_free_bytes": drive.get("free_bytes"),
+            }
+
+        resources = (
+            payload.get("resources")
+            if isinstance(payload.get("resources"), dict)
+            else {}
+        )
+        gpu = payload.get("gpu") if isinstance(payload.get("gpu"), dict) else None
+        zone = str(payload.get("zone") or "")
+        loc = location_from_zone(zone) or infer_location_from_endpoint(
+            endpoint, proxy["url"]
+        )
+        rt_data = {
+            "id": endpoint,
+            "state": "ready",
+            "resources": resources,
+        }
+        if gpu:
+            rt_data["gpu"] = gpu
+        if payload.get("disk_free") is not None:
+            rt_data["disk_free"] = payload["disk_free"]
+        if loc:
+            rt_data["location"] = loc
+        return {
+            "endpoint": endpoint,
+            "source": "remote_readonly",
+            "runtime": rt_data,
+            "loaded_model_name": "",
+            "drive_connected": False,
+            "drive_free_bytes": None,
+        }
+
     def account(self):
         if not self.vault.get("colab"):
             return {"logged_in": False}
@@ -236,9 +782,10 @@ class ColabOneProvider:
         info = client.get_consumption_user_info()
         managed_set = set(self.managed_endpoints())
         active_ep = self.active_endpoint()
+        assignments = client.list_assignments()
+        self._cache_assignment_proxies(assignments)
         instances = [
-            describe_assignment(a, managed_set, active_ep)
-            for a in client.list_assignments()
+            describe_assignment(a, managed_set, active_ep) for a in assignments
         ]
         return {
             "logged_in": True,
@@ -372,6 +919,7 @@ class ColabOneProvider:
         if not to_stop:
             notify("目标实例均已不在运行列表中")
         for endpoint in to_stop:
+            self.close_observer(endpoint, shutdown_kernel=False)
             notify("正在停止实例：" + endpoint)
             try:
                 client.unassign(endpoint)

@@ -141,11 +141,33 @@ class ColabOneController:
         self.touch_lock = threading.Lock()
         self.upgrade_attempted = set()
         self.release_plan = None
+        self.monitor_lock = threading.RLock()
+        self.monitor_mode: str = "auto"
+        self.monitor_endpoint: str = ""
+        self.monitor_paused: bool = False
+        self.external_observations: dict[str, dict] = {}
+        self._observer_wake = threading.Event()
+        self._observer_poll_lock = threading.Lock()
+        self._observer_thread: threading.Thread | None = None
         self.activity.add("客户端已启动")
         if self.vault.get("colab"):
             self.activity.add("已恢复本机保存的 Google 登录；到期自动续期", "登录")
         if background:
             threading.Thread(target=self.monitor, daemon=True).start()
+            self._observer_thread = threading.Thread(
+                target=self._external_monitor_loop, daemon=True
+            )
+            self._observer_thread.start()
+
+    def close(self):
+        self.stop.set()
+        self._observer_wake.set()
+        close_obs = getattr(self.provider, "close_observer", None)
+        if callable(close_obs):
+            try:
+                close_obs(shutdown_kernel=True)
+            except Exception:
+                pass
 
     def _vault_sessions(self) -> dict[str, dict]:
         raw_map = self.vault.get("runtime_sessions")
@@ -625,6 +647,500 @@ class ColabOneController:
             for m in json.loads(path.read_text(encoding="utf-8"))
         ]
 
+    @staticmethod
+    def _is_gpu_instance(inst: dict) -> bool:
+        variant = str(inst.get("variant") or "").upper()
+        accel = str(inst.get("accelerator") or "").upper()
+        if variant == "GPU":
+            return True
+        return accel not in ("", "CPU", "NONE", "TPU")
+
+    def _close_external_observer(
+        self, endpoint: str | None = None, shutdown_kernel: bool = True
+    ) -> None:
+        close_obs = getattr(self.provider, "close_observer", None)
+        if callable(close_obs):
+            try:
+                close_obs(endpoint=endpoint, shutdown_kernel=shutdown_kernel)
+            except TypeError:
+                try:
+                    close_obs()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def _reset_monitor_to_auto(
+        self, close_observer: bool = False, clear_observations: bool = False
+    ) -> None:
+        with self.monitor_lock:
+            self.monitor_mode = "auto"
+            self.monitor_endpoint = ""
+            self.monitor_paused = False
+            if clear_observations:
+                self.external_observations.clear()
+        if close_observer:
+            self._close_external_observer(shutdown_kernel=True)
+        self._observer_wake.set()
+
+    def _resolve_monitor_instances(
+        self,
+        enriched: list[dict],
+        active_runtime: dict,
+        active_ep: str | None,
+    ) -> tuple[list[dict], str, bool]:
+        """Order selectable instances and resolve the effective monitor target."""
+        by_id: dict[str, dict] = {}
+        managed_items: list[dict] = []
+        ext_gpu_items: list[dict] = []
+        ext_other_items: list[dict] = []
+        for item in enriched:
+            ep = str(item.get("id") or "")
+            if not ep or ep in by_id:
+                continue
+            by_id[ep] = item
+            if item.get("managed"):
+                managed_items.append(item)
+            elif self._is_gpu_instance(item):
+                ext_gpu_items.append(item)
+            else:
+                ext_other_items.append(item)
+        managed_items.sort(
+            key=lambda x: (0 if (x.get("active") or x.get("id") == active_ep) else 1)
+        )
+        ordered = managed_items + ext_gpu_items + ext_other_items
+
+        rt_state = str(active_runtime.get("state") or "stopped")
+        with self.monitor_lock:
+            mode = self.monitor_mode
+            selected = self.monitor_endpoint
+            if mode == "manual" and selected in by_id:
+                return ordered, selected, False
+            if mode == "manual" and selected and selected not in by_id:
+                # Selected instance stopped or disappeared -> fall back cleanly to auto.
+                self.monitor_mode = "auto"
+                self.monitor_endpoint = ""
+                self.monitor_paused = False
+
+        # Auto selection priority:
+        # 1. Current machine's active managed instance
+        # 2. Any other managed instance on this machine
+        # 3. Local starting/releasing/disconnected runtime before allocation lands
+        # 4. First running remote GPU instance
+        # 5. First running remote non-GPU instance
+        if active_ep and active_ep in by_id:
+            return ordered, active_ep, True
+        if managed_items:
+            return ordered, str(managed_items[0]["id"]), True
+        if rt_state in ("starting", "releasing", "disconnected"):
+            return ordered, str(active_runtime.get("id") or ""), True
+        if ext_gpu_items:
+            return ordered, str(ext_gpu_items[0]["id"]), True
+        if ext_other_items:
+            return ordered, str(ext_other_items[0]["id"]), True
+        if rt_state != "stopped":
+            return ordered, str(active_runtime.get("id") or ""), True
+        return ordered, "", True
+
+    def _build_monitor_snapshot(
+        self,
+        enriched: list[dict],
+        active_runtime: dict,
+        decorated_models: list[dict],
+        active_ep: str | None,
+    ) -> dict:
+        ordered, target_ep, is_auto = self._resolve_monitor_instances(
+            enriched, active_runtime, active_ep
+        )
+        with self.monitor_lock:
+            paused = self.monitor_paused
+            obs_map = copy.deepcopy(self.external_observations)
+
+        by_id = {str(item["id"]): item for item in ordered if item.get("id")}
+        options: list[dict] = []
+        for item in ordered:
+            ep = str(item["id"])
+            is_managed = bool(item.get("managed"))
+            if is_managed:
+                opt_source = "local"
+                opt_state = str(item.get("state") or "ready")
+                gpu_name = str(item.get("gpu_name") or "")
+                loaded_model = str(item.get("loaded_model") or "")
+                loc = item.get("location")
+            else:
+                obs = obs_map.get(ep) or {}
+                opt_source = (
+                    "remote_colabone"
+                    if obs.get("source") == "remote_colabone"
+                    else "remote_readonly"
+                )
+                if paused and ep == target_ep:
+                    opt_state = "paused"
+                elif obs.get("runtime"):
+                    opt_state = str(obs.get("state") or "ready")
+                elif obs.get("error"):
+                    opt_state = "error"
+                elif ep == target_ep:
+                    opt_state = "connecting"
+                else:
+                    opt_state = "idle"
+                obs_rt = obs.get("runtime") if isinstance(obs.get("runtime"), dict) else {}
+                obs_gpu = obs_rt.get("gpu") if isinstance(obs_rt.get("gpu"), dict) else {}
+                gpu_name = str(obs_gpu.get("name") or item.get("gpu_name") or "")
+                loaded_model = str(
+                    obs.get("loaded_model_name") or item.get("loaded_model") or ""
+                )
+                loc = obs_rt.get("location") or item.get("location")
+            opt = {
+                "id": ep,
+                "managed": is_managed,
+                "active": bool(item.get("active") and is_managed),
+                "accelerator": str(item.get("accelerator") or ""),
+                "variant": str(item.get("variant") or ""),
+                "shape": str(item.get("shape") or ""),
+                "gpu_name": gpu_name,
+                "loaded_model": loaded_model,
+                "source": opt_source,
+                "state": opt_state,
+            }
+            if loc:
+                opt["location"] = loc
+            options.append(opt)
+
+        mode = "auto" if is_auto else "manual"
+        active_loaded_id = str(active_runtime.get("loaded_model") or "")
+        active_loaded_name = next(
+            (
+                str(m.get("name") or active_loaded_id)
+                for m in decorated_models
+                if m.get("id") == active_loaded_id
+            ),
+            active_loaded_id,
+        )
+
+        # Case 1: Active local runtime (or local starting/ready without vault entry)
+        target_item = by_id.get(target_ep)
+        if not target_ep:
+            rt_state = str(active_runtime.get("state") or "stopped")
+            if rt_state != "stopped":
+                drive = active_runtime.get("drive") or {}
+                return {
+                    "mode": mode,
+                    "endpoint": "",
+                    "managed": True,
+                    "source": "local",
+                    "paused": False,
+                    "error": "",
+                    "runtime": copy.deepcopy(active_runtime),
+                    "loaded_model_name": active_loaded_name,
+                    "drive_connected": bool(drive.get("connected")),
+                    "drive_free_bytes": drive.get("free_bytes"),
+                    "options": options,
+                }
+            return {
+                "mode": mode,
+                "endpoint": "",
+                "managed": False,
+                "source": "none",
+                "paused": False,
+                "error": "",
+                "runtime": {"state": "stopped"},
+                "loaded_model_name": "",
+                "drive_connected": False,
+                "drive_free_bytes": None,
+                "options": options,
+            }
+
+        if target_item is None or target_item.get("managed"):
+            if target_ep == active_ep or target_item is None:
+                rt = copy.deepcopy(active_runtime)
+                if target_ep and not rt.get("id"):
+                    rt["id"] = target_ep
+                drive = rt.get("drive") or {}
+                return {
+                    "mode": mode,
+                    "endpoint": target_ep,
+                    "managed": True,
+                    "source": "local",
+                    "paused": False,
+                    "error": "",
+                    "runtime": rt,
+                    "loaded_model_name": active_loaded_name,
+                    "drive_connected": bool(drive.get("connected")),
+                    "drive_free_bytes": drive.get("free_bytes"),
+                    "options": options,
+                }
+            # Secondary managed instance on this client
+            with self.lock:
+                cached = copy.deepcopy(self.instance_states.get(target_ep) or {})
+            rt = copy.deepcopy(cached.get("runtime") or {"state": "ready", "id": target_ep})
+            if not rt.get("id"):
+                rt["id"] = target_ep
+            if target_item.get("location") and not rt.get("location"):
+                rt["location"] = copy.deepcopy(target_item["location"])
+            sec_models = cached.get("models") or []
+            sec_loaded_id = str(rt.get("loaded_model") or "")
+            sec_loaded_name = next(
+                (
+                    str(m.get("name") or sec_loaded_id)
+                    for m in sec_models
+                    if m.get("id") == sec_loaded_id
+                ),
+                sec_loaded_id,
+            )
+            drive = rt.get("drive") or {}
+            return {
+                "mode": mode,
+                "endpoint": target_ep,
+                "managed": True,
+                "source": "local",
+                "paused": False,
+                "error": "",
+                "runtime": rt,
+                "loaded_model_name": sec_loaded_name,
+                "drive_connected": bool(drive.get("connected")),
+                "drive_free_bytes": drive.get("free_bytes"),
+                "options": options,
+            }
+
+        # Case 2: External (non-managed) remote instance (read-only observer)
+        obs = obs_map.get(target_ep) or {}
+        source = (
+            "remote_colabone"
+            if obs.get("source") == "remote_colabone"
+            else "remote_readonly"
+        )
+        obs_rt = (
+            copy.deepcopy(obs["runtime"])
+            if isinstance(obs.get("runtime"), dict)
+            else None
+        )
+        error_msg = "" if paused else str(obs.get("error") or "")
+        if obs_rt is not None:
+            if not obs_rt.get("id"):
+                obs_rt["id"] = target_ep
+            if target_item.get("location") and not obs_rt.get("location"):
+                obs_rt["location"] = copy.deepcopy(target_item["location"])
+            if not paused and error_msg and obs.get("consecutive_failures", 0) >= 3:
+                obs_rt["state"] = "disconnected"
+            else:
+                obs_rt["state"] = "ready"
+            rt = obs_rt
+        else:
+            rt = {
+                "id": target_ep,
+                "state": "stopped"
+                if paused
+                else ("disconnected" if error_msg else "connecting"),
+            }
+            if target_item.get("location"):
+                rt["location"] = copy.deepcopy(target_item["location"])
+        return {
+            "mode": mode,
+            "endpoint": target_ep,
+            "managed": False,
+            "source": source,
+            "paused": paused,
+            "error": error_msg,
+            "runtime": rt,
+            "loaded_model_name": str(obs.get("loaded_model_name") or ""),
+            "drive_connected": bool(obs.get("drive_connected")),
+            "drive_free_bytes": obs.get("drive_free_bytes"),
+            "options": options,
+        }
+
+    def select_monitor(self, endpoint: str = ""):
+        ep = str(endpoint or "").strip()
+        active_ep = self._active_endpoint() or ""
+        if not ep:
+            self._reset_monitor_to_auto(close_observer=True)
+            return {"ok": True, "mode": "auto", "endpoint": ""}
+        with self.lock:
+            account = copy.deepcopy(self.data.get("account") or {})
+        enriched = self._enrich_instances(account)
+        target_item = next((item for item in enriched if item.get("id") == ep), None)
+        if target_item is None:
+            raise ValueError("所选实例不存在或已停止")
+        is_managed = bool(target_item.get("managed"))
+        with self.monitor_lock:
+            if is_managed and ep == active_ep:
+                self.monitor_mode = "auto"
+                self.monitor_endpoint = ""
+            else:
+                self.monitor_mode = "manual"
+                self.monitor_endpoint = ep
+            self.monitor_paused = False
+            if not is_managed:
+                obs = self.external_observations.get(ep)
+                if isinstance(obs, dict):
+                    obs["consecutive_failures"] = 0
+                    obs["last_attempt"] = 0.0
+                    obs["error"] = ""
+            mode = self.monitor_mode
+        if is_managed:
+            self._close_external_observer(shutdown_kernel=True)
+        else:
+            self._observer_wake.set()
+        return {"ok": True, "mode": mode, "endpoint": ep}
+
+    def set_monitor_paused(self, paused: bool | None = None):
+        with self.monitor_lock:
+            next_paused = (not self.monitor_paused) if paused is None else bool(paused)
+            self.monitor_paused = next_paused
+            if not next_paused:
+                for obs in self.external_observations.values():
+                    if isinstance(obs, dict):
+                        obs["consecutive_failures"] = 0
+                        obs["last_attempt"] = 0.0
+                        obs["error"] = ""
+        if next_paused:
+            self._close_external_observer(shutdown_kernel=True)
+        else:
+            self._observer_wake.set()
+        return {"ok": True, "paused": next_paused}
+
+    def retry_monitor(self):
+        with self.monitor_lock:
+            self.monitor_paused = False
+            for obs in self.external_observations.values():
+                if isinstance(obs, dict):
+                    obs["consecutive_failures"] = 0
+                    obs["last_attempt"] = 0.0
+                    obs["error"] = ""
+        self._observer_wake.set()
+        return {"ok": True}
+
+    def poll_external_monitor_once(self, force: bool = False) -> bool:
+        """Sample hardware telemetry for the currently targeted external instance if active."""
+        if not self._observer_poll_lock.acquire(blocking=False):
+            return False
+        try:
+            with self.lock:
+                account = copy.deepcopy(self.data.get("account") or {})
+                active_runtime = copy.deepcopy(self.data.get("runtime") or {})
+            if not account.get("logged_in") and not account.get("instances"):
+                self._close_external_observer(shutdown_kernel=True)
+                return False
+            active_ep = self._active_endpoint()
+            enriched = self._enrich_instances(account)
+            known_ids = {str(item["id"]) for item in enriched if item.get("id")}
+
+            # Evict stale observations for instances that no longer exist.
+            with self.monitor_lock:
+                stale = [
+                    ep for ep in list(self.external_observations.keys()) if ep not in known_ids
+                ]
+                for ep in stale:
+                    self.external_observations.pop(ep, None)
+            for ep in stale:
+                self._close_external_observer(endpoint=ep, shutdown_kernel=False)
+
+            ordered, target_ep, _ = self._resolve_monitor_instances(
+                enriched, active_runtime, active_ep
+            )
+            by_id = {str(item["id"]): item for item in ordered if item.get("id")}
+            target_item = by_id.get(target_ep)
+
+            with self.monitor_lock:
+                paused = self.monitor_paused
+
+            if (
+                not target_ep
+                or target_item is None
+                or target_item.get("managed")
+                or paused
+                or self.operation_lock.locked()
+            ):
+                if paused or not target_ep or (target_item and target_item.get("managed")):
+                    self._close_external_observer(shutdown_kernel=True)
+                return False
+
+            now = time.time()
+            with self.monitor_lock:
+                prev = self.external_observations.get(target_ep) or {}
+                failures = int(prev.get("consecutive_failures") or 0)
+                last_attempt = float(prev.get("last_attempt") or 0.0)
+            min_gap = (
+                2.5
+                if failures <= 0
+                else min(15.0, 3.0 * (2 ** min(failures - 1, 3)))
+            )
+            if not force and last_attempt > 0 and (now - last_attempt) < min_gap:
+                return False
+
+            observe_fn = getattr(self.provider, "observe_external_telemetry", None)
+            if not callable(observe_fn):
+                return False
+
+            with self.monitor_lock:
+                slot = self.external_observations.setdefault(target_ep, {})
+                slot["last_attempt"] = now
+
+            try:
+                sample = observe_fn(target_ep)
+            except LookupError:
+                with self.monitor_lock:
+                    self.external_observations.pop(target_ep, None)
+                self._close_external_observer(endpoint=target_ep, shutdown_kernel=False)
+                self.last_auth = 0
+                return False
+            except Exception as exc:
+                with self.monitor_lock:
+                    slot = self.external_observations.setdefault(target_ep, {})
+                    slot["consecutive_failures"] = int(slot.get("consecutive_failures") or 0) + 1
+                    slot["last_attempt"] = time.time()
+                    msg = safe_message(str(exc)[:180])
+                    slot["error"] = msg or "暂无法读取该远端实例的硬件负载，将自动重试"
+                return False
+
+            # Re-verify that the user did not pause or switch away while RPC was in flight.
+            with self.lock:
+                cur_account = copy.deepcopy(self.data.get("account") or {})
+                cur_runtime = copy.deepcopy(self.data.get("runtime") or {})
+            cur_enriched = self._enrich_instances(cur_account)
+            _, cur_target, _ = self._resolve_monitor_instances(
+                cur_enriched, cur_runtime, self._active_endpoint()
+            )
+            with self.monitor_lock:
+                still_active = (not self.monitor_paused) and (cur_target == target_ep)
+                if not still_active:
+                    pass
+                else:
+                    rt_data = (
+                        copy.deepcopy(sample["runtime"])
+                        if isinstance(sample.get("runtime"), dict)
+                        else {"id": target_ep, "state": "ready"}
+                    )
+                    if target_item.get("location") and not rt_data.get("location"):
+                        rt_data["location"] = copy.deepcopy(target_item["location"])
+                    self.external_observations[target_ep] = {
+                        "state": "ready",
+                        "source": str(sample.get("source") or "remote_readonly"),
+                        "runtime": rt_data,
+                        "loaded_model_name": str(sample.get("loaded_model_name") or ""),
+                        "drive_connected": bool(sample.get("drive_connected")),
+                        "drive_free_bytes": sample.get("drive_free_bytes"),
+                        "error": "",
+                        "updated_at": time.time(),
+                        "last_attempt": time.time(),
+                        "consecutive_failures": 0,
+                    }
+            if not still_active:
+                self._close_external_observer(endpoint=target_ep, shutdown_kernel=True)
+                return False
+            return True
+        finally:
+            self._observer_poll_lock.release()
+
+    def _external_monitor_loop(self):
+        while not self.stop.is_set():
+            try:
+                self.poll_external_monitor_once(force=False)
+            except Exception:
+                pass
+            self._observer_wake.wait(1.0)
+            self._observer_wake.clear()
+
     def snapshot(self):
         with self.lock:
             value = copy.deepcopy(self.data)
@@ -634,12 +1150,17 @@ class ColabOneController:
         value["comfy_outputs"] = value.get("comfy_outputs", [])
         value["common_repos"] = common_repos
         account = value.get("account") or {}
+        enriched: list[dict] = []
         if account.get("instances") is not None or self._vault_sessions():
             enriched = self._enrich_instances(account)
             value["account"] = dict(account, instances=enriched)
             if "assignments" not in value["account"] and enriched:
                 value["account"]["assignments"] = len(enriched)
-        value["active_endpoint"] = self._active_endpoint() or ""
+        active_ep = self._active_endpoint()
+        value["active_endpoint"] = active_ep or ""
+        value["monitor"] = self._build_monitor_snapshot(
+            enriched, value["runtime"], value["models"], active_ep
+        )
         value["settings"] = {
             k: v
             for k, v in self.settings.items()
@@ -948,6 +1469,7 @@ class ColabOneController:
         self._save_active_to_cache()
         self.provider.set_active(endpoint)
         self._activate_cached(endpoint)
+        self._reset_monitor_to_auto(close_observer=True)
         self.last_config = 0
         self.activity.add(f"已切换当前工作实例：{endpoint}", "GPU")
         if not self.operation_lock.locked():
@@ -1035,6 +1557,7 @@ class ColabOneController:
         else:
             self.activity.add("未开启自动挂载 Google 云盘，跳过云盘配置", "云盘")
 
+        self._reset_monitor_to_auto(close_observer=True)
         self.update(runtime={"state": "starting"})
 
         def notify(message):
@@ -1225,6 +1748,7 @@ class ColabOneController:
             if isinstance(account, dict) and "logged_in" in account:
                 self.update(account=account)
                 self.last_auth = time.time()
+                self._observer_wake.set()
                 self.activity.add(
                     f"已刷新账号状态 · 活跃实例 {int(account.get('assignments') or 0)} 台 · 费率 {float(account.get('rate') or 0):.2f} CU/小时",
                     "计费",
@@ -1290,6 +1814,15 @@ class ColabOneController:
                 for ep in targets:
                     if ep not in remaining_sessions:
                         self.instance_states.pop(ep, None)
+            with self.monitor_lock:
+                for ep in targets:
+                    self.external_observations.pop(ep, None)
+                if self.monitor_endpoint in targets:
+                    self.monitor_mode = "auto"
+                    self.monitor_endpoint = ""
+                    self.monitor_paused = False
+            for ep in targets:
+                self._close_external_observer(endpoint=ep, shutdown_kernel=False)
             next_active = self._active_endpoint()
             if not remaining_sessions or not next_active:
                 with self.lock:
@@ -1303,6 +1836,7 @@ class ColabOneController:
             else:
                 self._activate_cached(next_active)
             self.update(account=self.provider.account())
+            self._observer_wake.set()
         self.release_plan = None
         account = self.data["account"]
         if not partial_selection and account["assignments"]:
@@ -1589,6 +2123,7 @@ class ColabOneController:
             account = self.provider.account()
             self.update(account=account)
             self.last_auth = time.time()
+            self._observer_wake.set()
             if isinstance(account, dict) and account.get("logged_in"):
                 self.activity.add(
                     f"账号状态已刷新 · 余额 {float(account.get('balance') or 0):.2f} CU · 费率 {float(account.get('rate') or 0):.2f} CU/小时 · 活跃 {int(account.get('assignments') or 0)} 台",
@@ -1599,6 +2134,13 @@ class ColabOneController:
             return {"ok": True, "assignments": account.get("assignments", 0)}
         if action == "runtime.select":
             return self.select_instance(str(payload.get("endpoint") or ""))
+        if action == "monitor.select":
+            return self.select_monitor(str(payload.get("endpoint") or ""))
+        if action == "monitor.pause":
+            paused = payload.get("paused") if "paused" in payload else None
+            return self.set_monitor_paused(paused)
+        if action == "monitor.retry":
+            return self.retry_monitor()
         if action == "api.key":
             api = self.vault.get("public_api", {})
             if not api.get("api_key"):
@@ -1973,6 +2515,7 @@ class ColabOneController:
                 self.activity.add("已启动本地回调服务，等待浏览器完成 Google 授权", "登录")
                 self.auth.colab_login(lambda url: self.update(auth_url=url))
                 self.last_auth = 0
+                self._reset_monitor_to_auto(close_observer=True, clear_observations=True)
                 with self.lock:
                     self.remote_workflow_versions = {}
                 self.update(
@@ -1990,6 +2533,7 @@ class ColabOneController:
                 self.activity.add("正在校验 Google 授权码并换取访问凭据", "登录")
                 self.auth.colab_finish(payload["code"])
                 self.last_auth = 0
+                self._reset_monitor_to_auto(close_observer=True, clear_observations=True)
                 with self.lock:
                     self.remote_workflow_versions = {}
                 self.update(
@@ -2006,6 +2550,7 @@ class ColabOneController:
                 self.activity.add("收到手动粘贴的 Google 授权内容，正在校验", "登录")
                 self.auth.colab_finish(payload["code"])
                 self.last_auth = 0
+                self._reset_monitor_to_auto(close_observer=True, clear_observations=True)
                 return {"ok": True}
             return self.async_operation("完成 Google 登录", finish)
         if action == "drive.connect":
@@ -2103,6 +2648,7 @@ class ColabOneController:
                 if now - self.last_auth > 30:
                     self.update(account=self.provider.account())
                     self.last_auth = now
+                    self._observer_wake.set()
                 remotes = self._vault_remotes()
                 active_ep = self._active_endpoint()
                 remote = remotes.get(active_ep or "") or self.vault.get("remote")
