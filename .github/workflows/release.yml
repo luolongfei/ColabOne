@@ -1,0 +1,8 @@
+name: Development packages
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml

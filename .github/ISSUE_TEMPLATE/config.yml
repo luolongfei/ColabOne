@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue / 安全问题
+    url: https://github.com/luolongfei/ColabOne/security/advisories/new
+    about: Report a vulnerability privately. 请私下报告漏洞，不要开公开 issue。
+  - name: ColabOne setup / ColabOne 使用说明
+    url: https://github.com/luolongfei/ColabOne#readme
+    about: Google login, GPU startup and native Drive connection. Google 登录、GPU 启动与云盘连接说明。

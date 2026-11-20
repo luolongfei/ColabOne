@@ -1,0 +1,1109 @@
+"""Remote-only model cache, task supervisor and llama.cpp engine.
+CUDA deployment adapted from colab-gpu-llm-service (MIT; see third_party).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import tarfile
+import threading
+import time
+import uuid
+import copy
+from functools import wraps
+from pathlib import Path
+from urllib.parse import quote
+
+import requests
+
+from common.comfyui import (
+    WorkflowOutputRecord,
+    WorkflowRunRequest,
+    WorkflowTemplate,
+)
+from common.files import atomic_json
+from common.location import infer_location_from_endpoint, probe_vm_location
+from common.models import ModelSpec
+from server.drive import ColabOneDrive
+from server.telemetry import ColabOneResourceSampler
+from server.download import (
+    ColabOneTransfer,
+    parallel_file,
+    cached_bytes,
+    metadata_path,
+    ColabOneRangeUnsupportedError,
+    CHUNK,
+)
+
+
+def synchronized(fn):
+    @wraps(fn)
+    def wrapped(self, *args, **kwargs):
+        with self.lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapped
+
+
+class ColabOneConflictError(RuntimeError):
+    pass
+
+
+class ColabOneCancelledError(RuntimeError):
+    pass
+
+
+class ColabOneTask:
+    def __init__(self, kind, model_id=""):
+        self.id = uuid.uuid4().hex
+        self.kind, self.model_id = kind, model_id
+        self.state, self.progress, self.error = "running", 0, ""
+        self.message = ""
+        self.cancel = threading.Event()
+        self.cancel_hook = None
+        self.events = []
+        self.lock = threading.Lock()
+        self.created_at = time.time()
+        self.transfer = None
+        self.logs = []
+        self.log_seq = 0
+        self.outputs = []
+
+    def note(self, message, level="info"):
+        with self.lock:
+            self.log_seq += 1
+            self.logs.append(
+                {
+                    "seq": self.log_seq,
+                    "time": time.time(),
+                    "message": message,
+                    "level": level,
+                }
+            )
+            self.logs = self.logs[-100:]
+
+    def emit(self, event, data):
+        with self.lock:
+            self.events.append(
+                {"seq": len(self.events) + 1, "event": event, "data": data}
+            )
+
+    def request_cancel(self):
+        self.cancel.set()
+        if self.cancel_hook:
+            try:
+                self.cancel_hook()
+            except RuntimeError:
+                pass  # The generation loop may have just finished.
+
+    def check(self):
+        if self.cancel.is_set():
+            raise ColabOneCancelledError("操作已取消")
+
+    def snapshot(self):
+        value = {
+            k: getattr(self, k)
+            for k in (
+                "id",
+                "kind",
+                "model_id",
+                "state",
+                "progress",
+                "error",
+                "message",
+                "created_at",
+            )
+        }
+        with self.lock:
+            value["logs"] = list(self.logs)
+        if self.transfer:
+            value["download"] = self.transfer.snapshot()
+        return value
+
+
+class ColabOneRuntime:
+    def __init__(self, root: Path, catalog: Path, http=None, drive=None):
+        self.root, self.catalog = root, catalog
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.models_dir = root / "models"
+        self.models_dir.mkdir(exist_ok=True)
+        self.lock = threading.RLock()
+        self.sync_lock = threading.Lock()
+        self.quiescing = False
+        self.auto_releasing = False
+        self.http = http or requests.Session()
+        self.http.trust_env = False
+        self.drive = drive or ColabOneDrive(root, catalog, http=self.http)
+        self._dirty_seq: dict[str, int] = {}
+        self._seq_counter = 0
+        self.drive_restored = False
+        self.runtime_id = os.environ.get("COLABONE_RUNTIME_ID", uuid.uuid4().hex)
+        self.location = infer_location_from_endpoint(self.runtime_id)
+        if (root / "location.json").is_file():
+            try:
+                cached_loc = json.loads(
+                    (root / "location.json").read_text(encoding="utf-8")
+                )
+                if isinstance(cached_loc, dict) and cached_loc.get("country"):
+                    self.location = cached_loc
+            except (OSError, ValueError):
+                pass
+        self.models = {
+            m.id: m
+            for m in map(
+                ModelSpec.model_validate,
+                json.loads((catalog / "presets.json").read_text(encoding="utf-8")),
+            )
+        }
+        self.tasks: dict[str, ColabOneTask] = {}
+        self.loaded = None
+        self.active_options = {}
+        self.proc = None
+        self.chat_transport = None
+        self.telemetry = ColabOneResourceSampler()
+        self._telemetry_thread: threading.Thread | None = None
+        self.last_active = time.time()
+        self.idle_minutes = 30
+        self.idle_countdown_seconds = 60
+        self.activity_until = 0.0
+        self.deadline = 0.0
+        self.stopping = threading.Event()
+        from server.public_api import ColabOnePublicGateway
+        from server.comfyui import ColabOneComfyManager
+
+        self.public_api = ColabOnePublicGateway(self)
+        self.comfy = ColabOneComfyManager(self)
+        if (root / "models.json").exists():
+            for value in json.loads((root / "models.json").read_text(encoding="utf-8")):
+                try:
+                    model = ModelSpec.model_validate(value)
+                except ValueError:
+                    continue
+                self.models[model.id] = model
+            self._mark_dirty("models")
+
+    def _mark_dirty(self, key: str):
+        with self.lock:
+            self._seq_counter += 1
+            self._dirty_seq[key] = self._seq_counter
+
+    def busy(self):
+        with self.lock:
+            tasks = list(self.tasks.values())
+        if any(t.state == "running" for t in tasks):
+            return True
+        if self.comfy.is_running():
+            try:
+                if sum(self.comfy.queue_counts()) > 0:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    @synchronized
+    def touch(self, hold_seconds=0):
+        if self.quiescing:
+            raise ColabOneConflictError("实例正在释放，无法延长闲置时间")
+        self.last_active = time.time()
+        self.activity_until = self.last_active + hold_seconds
+        return self.idle_status()
+
+    def idle_status(self, now=None):
+        now = time.time() if now is None else now
+        active = self.busy() or now < self.activity_until
+        elapsed = (
+            0 if active else max(0, now - max(self.last_active, self.activity_until))
+        )
+        total = self.idle_minutes * 60
+        warn_window = min(self.idle_countdown_seconds, total)
+        remaining = max(0, total - elapsed)
+        return {
+            "phase": "active"
+            if active
+            else "countdown"
+            if remaining <= warn_window
+            else "watching",
+            "remaining_seconds": remaining,
+            "countdown_seconds": warn_window,
+            "idle_seconds": elapsed,
+            "server_time": now,
+        }
+
+    @synchronized
+    def claim_auto_release(self, now=None):
+        now = time.time() if now is None else now
+        if self.auto_releasing:
+            return True
+        if self.quiescing:
+            return False
+        budget_due = bool(self.deadline > 0 and now >= self.deadline)
+        idle = self.idle_status(now)
+        if budget_due or (
+            idle["phase"] == "countdown" and idle["remaining_seconds"] <= 0
+        ):
+            self.quiescing = True
+            self.auto_releasing = True
+            return True
+        return False
+
+    @synchronized
+    def status(self):
+        if self.proc and self.proc.poll() is not None:
+            self.proc, self.loaded = None, None
+            self.active_options = {}
+        idle = self.idle_status()
+        cached = (
+            self.telemetry.latest(max_age=2.5)
+            if self._telemetry_thread is not None and self._telemetry_thread.is_alive()
+            else None
+        )
+        if cached is not None:
+            resources = cached
+            gpu = cached["gpu"]
+        else:
+            gpu = self.gpu_info()
+            resources = self.telemetry.sample(self.root, gpu_override=gpu)
+        return {
+            "protocol": 7,
+            "public_api": self.public_api.snapshot(),
+            "capabilities": ["public_api", "comfyui"],
+            "comfyui": self.comfy.status(),
+            "active_engine": "llama"
+            if self.loaded
+            else ("comfyui" if self.comfy.is_running() else None),
+            "idle": idle,
+            "id": self.runtime_id,
+            "state": "releasing" if self.quiescing else "ready",
+            "gpu": gpu,
+            "resources": resources,
+            "location": copy.deepcopy(self.location),
+            "loaded_model": self.loaded,
+            "active_options": self.active_options.copy(),
+            "disk_free": resources["disk"]["free_bytes"],
+            "idle_remaining": idle["remaining_seconds"],
+            "idle_minutes": self.idle_minutes,
+            "tasks": [t.snapshot() for t in self.tasks.values()],
+            "drive": self.drive.status(len(self._dirty_seq)),
+            "deadline": self.deadline,
+        }
+
+    def detect_location(self) -> dict | None:
+        detected = probe_vm_location(self.http)
+        if not detected:
+            return self.location
+        with self.lock:
+            existing_zone = (self.location or {}).get("zone") or ""
+            existing_country = (self.location or {}).get("country") or ""
+            if (
+                existing_zone
+                and not detected.get("zone")
+                and existing_country == detected.get("country")
+            ):
+                detected["zone"] = existing_zone
+            self.location = detected
+            try:
+                atomic_json(self.root / "location.json", detected)
+            except OSError:
+                pass
+            return copy.deepcopy(self.location)
+
+    @staticmethod
+    def gpu_info():
+        return ColabOneResourceSampler.gpu_info()
+
+    def installed(self, model):
+        directory = self.models_dir / model.id
+        try:
+            receipt = json.loads(
+                (directory / "verified.json").read_text(encoding="utf-8")
+            )
+            return all(
+                receipt.get(f.path) == f.sha256
+                and (directory / f.path).stat().st_size == f.size
+                for f in model.files
+            )
+        except (OSError, ValueError):
+            return False
+
+    @synchronized
+    def list_models(self):
+        return [
+            m.model_dump()
+            | {
+                "downloaded": self.installed(m),
+                "loaded": self.loaded == m.id,
+                "size": sum(f.size for f in m.files),
+            }
+            for m in self.models.values()
+        ]
+
+    def add_model(self, spec):
+        m = ModelSpec.model_validate(spec)
+        with self.lock:
+            existing = self.models.get(m.id)
+            if existing and existing != m:
+                if (
+                    existing.files != m.files
+                    or getattr(existing, "kind", "chat") != getattr(m, "kind", "chat")
+                ):
+                    raise ColabOneConflictError("同名模型配置不同，请使用新模型 ID")
+            self.models[m.id] = m
+            atomic_json(
+                self.root / "models.json",
+                [x.model_dump() for x in self.models.values()],
+            )
+            self._mark_dirty("models")
+        return m.model_dump()
+
+    def submit(self, kind, model_id, fn):
+        with self.lock:
+            if self.quiescing:
+                raise ColabOneConflictError("实例正在准备释放")
+            if self.busy():
+                raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+            t = ColabOneTask(kind, model_id)
+            self.tasks[t.id] = t
+            self.last_active = time.time()
+
+        def run():
+            try:
+                fn(t)
+                t.check()
+                t.state, t.progress = "completed", 1
+            except ColabOneCancelledError:
+                t.state = "cancelled"
+            except Exception as exc:
+                t.state, t.error = "failed", (str(exc) or type(exc).__name__)[:500]
+            finally:
+                self.last_active = time.time()
+                if t.transfer:
+                    t.transfer.phase = t.state
+                    t.note(
+                        {
+                            "completed": "下载完成，全部文件 SHA-256 校验通过",
+                            "cancelled": "下载已取消，保留完成的分块以便续传",
+                            "failed": "下载失败：" + t.error,
+                        }.get(t.state, t.state)
+                    )
+                t.emit("done", t.snapshot())
+
+        threading.Thread(target=run, daemon=True).start()
+        return t.snapshot()
+
+    @synchronized
+    def download(self, model_id, token="", threads=16, load=False, options=None):
+        if threads not in (16, 32):
+            raise ValueError("下载线程数请选择 16 或 32")
+        model = self.models[model_id]
+        load_spec = model
+        if load and options:
+            if model.kind != "chat":
+                raise ValueError("上下文参数仅用于聊天模型")
+            load_spec = ModelSpec.model_validate(model.model_dump() | options)
+        already = self.installed(model)
+        initial_kind = "load" if (load and already) else "download"
+
+        def pipeline(t):
+            if not self.installed(model):
+                self._download(t, model, token, threads)
+                if load and t.transfer:
+                    t.transfer.phase = "completed"
+                    t.note("下载完成，全部文件 SHA-256 校验通过")
+                    t.transfer = None
+            if load:
+                t.check()
+                t.kind = "load"
+                t.progress = 0.95
+                t.message = "正在将模型装载到远端 GPU 显存"
+                self._load(t, load_spec)
+
+        return self.submit(initial_kind, model_id, pipeline)
+
+    def _download(self, task, model, token, threads=16):
+        directory = self.models_dir / model.id
+        directory.mkdir(exist_ok=True)
+        total = sum(f.size for f in model.files)
+        task.transfer = ColabOneTransfer(total, threads)
+        task.transfer.count = len(model.files)
+        task.note(
+            f"准备下载 {model.name}：{len(model.files)} 个文件，共 {total / 1024**3:.2f} GiB，{threads} 线程，目标为远端 GPU 磁盘"
+        )
+        remaining = sum(
+            max(
+                0,
+                f.size - cached_bytes(directory / (f.path + ".part"), f.size, f.sha256),
+            )
+            for f in model.files
+            if not (directory / f.path).exists()
+        )
+        free = shutil.disk_usage(directory).free
+        task.note(
+            f"远端可用磁盘 {free / 1024**3:.1f} GiB，本次预计新增 {remaining / 1024**3:.1f} GiB"
+        )
+        if free < remaining + 512 * 1024**2:
+            raise RuntimeError("远端磁盘空间不足，请删除其他已下载模型")
+        receipt, done = {}, 0
+        for index, file in enumerate(model.files, 1):
+            task.check()
+            target = directory / file.path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(target.name + ".part")
+            stats = task.transfer
+            stats.file, stats.index = file.path, index
+            if (
+                target.exists()
+                and target.stat().st_size == file.size
+                and self.sha256(target, task) == file.sha256
+            ):
+                receipt[file.path] = file.sha256
+                done += file.size
+                stats.downloaded = done
+                stats.resumed += file.size
+                task.note(
+                    f"文件 {index}/{len(model.files)} 已存在且校验通过，跳过：{file.path}"
+                )
+                continue
+            # An invalid existing final file must not exempt this transfer from disk checks.
+            if target.exists():
+                target.unlink()
+                task.note("发现未通过校验的文件，重新下载", "warning")
+            required = max(0, file.size - cached_bytes(partial, file.size, file.sha256))
+            if shutil.disk_usage(directory).free < required + 512 * 1024**2:
+                raise RuntimeError("远端磁盘空间不足，请删除其他已下载模型")
+            task.message = file.path
+            task.note(
+                f"文件 {index}/{len(model.files)} · {file.path} · {file.size / 1024**3:.2f} GiB"
+            )
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            url = f"https://huggingface.co/{file.repo}/resolve/{file.revision}/{quote(file.path)}"
+            if file.size > CHUNK:
+                resumed_before = stats.resumed
+                try:
+                    parallel_file(
+                        url,
+                        headers,
+                        partial,
+                        file.size,
+                        file.sha256,
+                        task,
+                        done,
+                        threads,
+                        get=None
+                        if isinstance(self.http, requests.Session)
+                        else self.http.get,
+                    )
+                except ColabOneRangeUnsupportedError:
+                    task.note("下载源忽略范围请求，自动切换为单连接下载", "warning")
+                    partial.unlink(missing_ok=True)
+                    metadata_path(partial).unlink(missing_ok=True)
+                    stats.resumed = resumed_before
+                    self._download_single(url, headers, partial, file, task, done)
+            else:
+                self._download_single(url, headers, partial, file, task, done)
+            stats.phase = "verifying"
+            task.message = "校验 SHA-256 · " + file.path
+            task.note(f"文件 {index}/{len(model.files)} 传输完成，正在校验 SHA-256")
+            if (
+                partial.stat().st_size != file.size
+                or self.sha256(partial, task) != file.sha256
+            ):
+                partial.unlink(missing_ok=True)
+                metadata_path(partial).unlink(missing_ok=True)
+                raise RuntimeError("文件校验失败，请重新下载")
+            os.replace(partial, target)
+            metadata_path(partial).unlink(missing_ok=True)
+            receipt[file.path] = file.sha256
+            done += file.size
+            stats.downloaded = done
+            task.note(f"文件 {index}/{len(model.files)} 校验通过，已保存到远端")
+        elapsed = max(time.monotonic() - task.transfer.started, 0.1)
+        task.note(
+            f"全部文件已验证：{total / 1024**3:.2f} GiB，用时 {elapsed:.1f} 秒，平均传输 {task.transfer.received / elapsed / 1024**2:.1f} MiB/s；复用 {task.transfer.resumed / 1024**2:.1f} MiB"
+        )
+        atomic_json(directory / "verified.json", receipt)
+
+    def _download_single(self, url, headers, partial, file, task, done):
+        offset = partial.stat().st_size if partial.exists() else 0
+        if offset > file.size:
+            partial.unlink()
+            offset = 0
+        stats = task.transfer
+        stats.downloaded = done + offset
+        stats.resumed += offset
+        stats.phase = "downloading"
+        if offset == file.size:
+            return
+        headers = dict(headers)
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        stats.active = 1
+        try:
+            with self.http.get(
+                url, headers=headers, stream=True, timeout=(10, 10)
+            ) as response:
+                response.raise_for_status()
+                if offset and response.status_code != 206:
+                    stats.resumed -= offset
+                    offset = 0
+                if response.status_code == 206 and not response.headers.get(
+                    "Content-Range", ""
+                ).startswith(f"bytes {offset}-"):
+                    raise RuntimeError("下载范围响应不匹配，请重试")
+                with partial.open("ab" if offset else "wb") as stream:
+                    for block in response.iter_content(1024**2):
+                        task.check()
+                        if offset + len(block) > file.size:
+                            raise RuntimeError("远端文件大于清单声明的大小")
+                        stream.write(block)
+                        offset += len(block)
+                        stats.wire(len(block))
+                        stats.downloaded = done + offset
+                        task.progress = (done + offset) / stats.total
+                        now = time.monotonic()
+                        if now - stats.last_report >= 5:
+                            stats.last_report = now
+                            view = stats.snapshot()
+                            task.note(
+                                f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
+                            )
+        finally:
+            stats.active = 0
+
+    @staticmethod
+    def sha256(path, task=None):
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            while chunk := f.read(8 * 1024**2):
+                if task:
+                    task.check()
+                h.update(chunk)
+        return h.hexdigest()
+
+    def prepare_engine(self, task):
+        config = json.loads((self.catalog / "engine.json").read_text(encoding="utf-8"))
+        root = self.root / "engine" / config["tag"]
+        binaries = (
+            list(root.rglob("llama-server")) if (root / ".complete").exists() else []
+        )
+        if binaries:
+            task.note("复用远端已安装的 CUDA 推理引擎")
+            return binaries[0]
+        root.mkdir(parents=True, exist_ok=True)
+        task.note("首次加载，准备远端 CUDA 推理引擎 " + config["tag"])
+        for i, asset in enumerate(config["assets"]):
+            task.note(f"下载引擎组件 {i + 1}/{len(config['assets'])}")
+            task.message = "安装远端 CUDA 推理引擎"
+            target = root / f"asset-{i}.tar.gz"
+            with self.http.get(asset["url"], stream=True, timeout=(15, 60)) as r:
+                r.raise_for_status()
+                with target.open("wb") as out:
+                    for chunk in r.iter_content(1024**2):
+                        task.check()
+                        out.write(chunk)
+            if not asset["sha256"] or self.sha256(target, task) != asset["sha256"]:
+                raise RuntimeError("推理引擎 SHA-256 校验失败")
+            task.note(f"引擎组件 {i + 1} 校验通过，正在解压")
+            with tarfile.open(target) as archive:
+                archive.extractall(root, filter="data")
+            target.unlink()
+        binaries = list(root.rglob("llama-server"))
+        if not binaries:
+            raise RuntimeError("推理引擎包中没有 llama-server")
+        (root / ".complete").touch()
+        task.note("远端 CUDA 推理引擎安装完成")
+        return binaries[0]
+
+    @synchronized
+    def load(self, model_id, options=None):
+        m = self.models[model_id]
+        if options:
+            if m.kind != "chat":
+                raise ValueError("上下文参数仅用于聊天模型")
+            m = ModelSpec.model_validate(m.model_dump() | options)
+        if not self.installed(m):
+            raise ColabOneConflictError("请先下载模型到当前远端实例")
+        return self.submit("load", model_id, lambda t: self._load(t, m))
+
+    def _load(self, task, m):
+        if self.comfy.is_running():
+            task.note("正在停止 ComfyUI 服务以释放显存")
+        self.comfy.stop_server()
+        if self.loaded and self.loaded != m.id:
+            prev_model = self.models.get(self.loaded)
+            prev_label = prev_model.name if prev_model else self.loaded
+            task.note(f"正在卸载当前模型 {prev_label} 以释放显存")
+            self._stop_engine()
+        task.note(f"准备加载 {m.name}，上下文 {m.context_length} tokens")
+        gpu = self.gpu_info()
+        if not gpu["total_mib"]:
+            raise RuntimeError("未检测到可用远端 GPU")
+        if gpu["total_mib"] < m.min_vram_mib:
+            raise RuntimeError(f"模型需要至少 {m.min_vram_mib} MiB 显存")
+        task.note(
+            f"远端设备 {gpu.get('name', 'GPU')}，显存 {gpu['total_mib'] / 1024:.1f} GiB"
+        )
+        engine = self.prepare_engine(task)
+        task.check()
+        file = next(f for f in m.files if f.role == "model")
+        env = dict(os.environ)
+        lib_dirs = {str(p.parent) for p in engine.parent.parent.rglob("*.so*")}
+        env["LD_LIBRARY_PATH"] = (
+            ":".join(sorted(lib_dirs)) + ":" + env.get("LD_LIBRARY_PATH", "")
+        )
+        args = [
+            str(engine),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8081",
+            "--model",
+            str(self.models_dir / m.id / file.path),
+            "--alias",
+            m.id,
+            "--ctx-size",
+            str(m.context_length),
+            "--n-gpu-layers",
+            "99",
+            "--parallel",
+            "1",
+            "--jinja",
+        ]
+        if m.cpu_moe_layers:
+            args.extend(["--n-cpu-moe", str(m.cpu_moe_layers)])
+        log = self.root / "engine.log"
+        task.note("启动 llama.cpp，将模型加载到远端显存")
+        with log.open("wb") as stream:
+            proc = self._start_engine(
+                task,
+                args,
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+            )
+        try:
+            load_started = time.monotonic()
+            load_last_note = load_started
+            deadline = load_started + 600
+            while time.monotonic() < deadline:
+                task.check()
+                if proc.poll() is not None:
+                    raise RuntimeError(
+                        "模型加载失败：" + log.read_text(errors="replace")[-1200:]
+                    )
+                try:
+                    if (
+                        self.http.get(
+                            "http://127.0.0.1:8081/health", timeout=2
+                        ).status_code
+                        == 200
+                    ):
+                        task.note(
+                            f"模型权重已载入显存（耗时 {time.monotonic() - load_started:.1f} 秒）"
+                        )
+                        self._warmup_llama(task, proc, m.id)
+                        self._engine_ready(
+                            task,
+                            proc,
+                            m.id,
+                            {
+                                "context_length": m.context_length,
+                                "temperature": m.temperature,
+                            },
+                        )
+                        task.note("模型加载成功，远端推理服务已就绪")
+                        return
+                except requests.RequestException:
+                    pass
+                now = time.monotonic()
+                if now - load_last_note >= 10:
+                    load_last_note = now
+                    task.note(
+                        f"正在将模型权重载入远端显存（已耗时 {int(now - load_started)} 秒）"
+                    )
+                task.message = "加载到远端显存"
+                time.sleep(1)
+            raise RuntimeError("模型加载超过 10 分钟")
+        except BaseException:
+            self._stop_engine()
+            raise
+
+    def _warmup_llama(self, task, proc, model_id: str):
+        """Run a 1-token warmup so first-call CUDA PTX JIT finishes during load instead of timing out the first API request."""
+        post = getattr(self.http, "post", None)
+        if not callable(post):
+            return
+        warmup_started = time.monotonic()
+        task.message = "正在预热 GPU 推理内核"
+        task.note("正在预热远端 CUDA 推理内核，避免首次 API 调用超时")
+        done = threading.Event()
+
+        def _fire():
+            try:
+                post(
+                    "http://127.0.0.1:8081/v1/chat/completions",
+                    json={
+                        "model": model_id,
+                        "messages": [{"role": "user", "content": "."}],
+                        "max_tokens": 1,
+                        "stream": False,
+                    },
+                    timeout=(5, 180),
+                )
+            except Exception:
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=_fire, daemon=True).start()
+        end = time.monotonic() + 185
+        while not done.is_set() and time.monotonic() < end:
+            task.check()
+            if proc.poll() is not None:
+                return
+            done.wait(0.25)
+        if done.is_set() and proc.poll() is None:
+            task.note(
+                f"CUDA 推理内核预热完成（耗时 {time.monotonic() - warmup_started:.1f} 秒）"
+            )
+
+    @synchronized
+    def _start_engine(self, task, args, **kwargs):
+        task.check()
+        if self.quiescing or self.stopping.is_set():
+            raise ColabOneCancelledError("实例正在停止，已取消模型加载")
+        self._stop_engine()
+        self.proc = subprocess.Popen(args, **kwargs)
+        return self.proc
+
+    @synchronized
+    def _engine_ready(self, task, proc, model_id, options=None):
+        task.check()
+        if self.quiescing or self.stopping.is_set():
+            raise ColabOneCancelledError("实例正在停止，已取消模型加载")
+        if self.proc is not proc or proc.poll() is not None:
+            raise RuntimeError("推理进程已退出，模型未加载成功，请查看运行日志")
+        self.loaded, self.active_options = model_id, options or {}
+
+    @synchronized
+    def _stop_engine(self):
+        proc = self.proc
+        try:
+            if proc:
+                if proc.poll() is None:
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+        finally:
+            self.proc, self.loaded = None, None
+            self.active_options = {}
+
+    def unload(self):
+        with self.lock:
+            if self.busy():
+                raise ColabOneConflictError("请先停止当前任务")
+            self._stop_engine()
+            if self.comfy.is_running():
+                self.comfy.free_memory(unload_models=True)
+            self.last_active = time.time()
+
+    @synchronized
+    def start_comfyui(self):
+        return self.submit("comfyui_start", "", lambda t: self.comfy.start_server(t))
+
+    def stop_comfyui(self):
+        with self.lock:
+            comfy_tasks = [
+                t
+                for t in self.tasks.values()
+                if t.state == "running" and t.kind in ("comfyui_start", "comfyui_run")
+            ]
+            for t in comfy_tasks:
+                t.request_cancel()
+        self.comfy.stop_server()
+        deadline = time.monotonic() + 10
+        while any(t.state == "running" for t in comfy_tasks):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        if comfy_tasks and self.comfy.is_running():
+            self.comfy.stop_server()
+        with self.lock:
+            self.last_active = time.time()
+
+    def free_comfyui(self):
+        with self.lock:
+            if self.quiescing:
+                raise ColabOneConflictError("实例正在准备释放")
+            if self.busy():
+                raise ColabOneConflictError("请先等待当前任务完成，或先停止它")
+        result = self.comfy.free_memory(unload_models=True)
+        with self.lock:
+            self.last_active = time.time()
+        return result if result is not None else {"ok": True}
+
+    @synchronized
+    def run_comfyui_workflow(self, request_data: dict):
+        req = WorkflowRunRequest.model_validate(request_data)
+        if hasattr(self.comfy.store, "get_workflow"):
+            if self.comfy.store.get_workflow(req.workflow_id) is None:
+                raise KeyError("工作流不存在")
+        else:
+            if not any(
+                w.get("id") == req.workflow_id
+                for w in self.comfy.store.list_workflows()
+            ):
+                raise KeyError("工作流不存在")
+        return self.submit(
+            "comfyui_run",
+            req.workflow_id,
+            lambda t: self.comfy.run_workflow(t, req),
+        )
+
+    def delete(self, model_id):
+        with self.lock:
+            if self.busy() or self.loaded == model_id:
+                raise ColabOneConflictError("请先停止任务并卸载此模型")
+            # model_id comes from the validated catalog; callers cannot choose a path.
+            m = self.models[model_id]
+            shutil.rmtree(self.models_dir / m.id, ignore_errors=True)
+
+    def connect_drive(self) -> dict:
+        with self.sync_lock:
+            if self.drive.available() and self.drive_restored:
+                if self._dirty_seq:
+                    self._sync_to_drive()
+                return self.drive.status(len(self._dirty_seq))
+            self.drive.connect()
+            self._restore_from_drive()
+            if self._dirty_seq:
+                self._sync_to_drive()
+            return self.drive.status(len(self._dirty_seq))
+
+    def sync_drive(self) -> dict:
+        with self.sync_lock:
+            if not self.drive.available():
+                if self.drive.configured():
+                    self.drive.connect()
+                else:
+                    raise RuntimeError("当前实例尚未配置 Google 云盘凭据")
+            if not self.drive_restored:
+                if not self._restore_from_drive():
+                    return {"ok": False, **self.drive.status(len(self._dirty_seq))}
+            ok = self._sync_to_drive()
+            return {"ok": ok, **self.drive.status(len(self._dirty_seq))}
+
+    def _restore_from_drive(self) -> bool:
+        stage_dir = self.root / ".drive-pull"
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        try:
+            if not self.drive.pull_workspace(stage_dir):
+                return False
+            pulled_models = []
+            if (stage_dir / "models.json").is_file():
+                for raw_model in json.loads(
+                    (stage_dir / "models.json").read_text(encoding="utf-8")
+                ):
+                    try:
+                        pulled_models.append(ModelSpec.model_validate(raw_model))
+                    except ValueError:
+                        continue
+            with self.lock:
+                local_changed = False
+                for m in pulled_models:
+                    if m.id not in self.models:
+                        self.models[m.id] = m
+                        local_changed = True
+                if local_changed:
+                    atomic_json(
+                        self.root / "models.json",
+                        [x.model_dump() for x in self.models.values()],
+                    )
+            workflows_stage = stage_dir / "workflows"
+            if workflows_stage.is_dir():
+                dst_workflows = self.root / "workflows"
+                if not dst_workflows.is_symlink():
+                    dst_workflows.mkdir(parents=True, exist_ok=True)
+                    for wf_path in workflows_stage.glob("*.json"):
+                        try:
+                            if wf_path.is_symlink() or not wf_path.is_file():
+                                continue
+                            raw_wf = json.loads(wf_path.read_text(encoding="utf-8"))
+                            if not isinstance(raw_wf, dict):
+                                continue
+                            raw_wf["source"] = "custom"
+                            remote_data = WorkflowTemplate.model_validate(
+                                raw_wf
+                            ).model_dump()
+                            if (
+                                remote_data["id"] != wf_path.stem
+                                or remote_data["id"] in self.comfy.store.builtins
+                            ):
+                                continue
+                            dst_wf = dst_workflows / wf_path.name
+                            if dst_wf.is_symlink():
+                                continue
+                            if dst_wf.is_file():
+                                local_data = json.loads(
+                                    dst_wf.read_text(encoding="utf-8")
+                                )
+                                if local_data.get(
+                                    "updated_at", 0
+                                ) >= remote_data.get("updated_at", 0):
+                                    continue
+                            atomic_json(dst_wf, remote_data)
+                        except (OSError, ValueError, KeyError):
+                            continue
+            outputs_stage = stage_dir / "comfyui-outputs"
+            if outputs_stage.is_dir():
+                dst_outputs = self.root / "comfyui-outputs"
+                if not dst_outputs.is_symlink():
+                    dst_outputs.mkdir(parents=True, exist_ok=True)
+                    for meta_path in outputs_stage.glob("*.json"):
+                        try:
+                            if meta_path.is_symlink() or not meta_path.is_file():
+                                continue
+                            rec = WorkflowOutputRecord.model_validate_json(
+                                meta_path.read_text(encoding="utf-8")
+                            ).model_dump()
+                            ident = rec["id"]
+                            ext = rec["extension"]
+                            asset_src = outputs_stage / f"{ident}.{ext}"
+                            if (
+                                ident != meta_path.stem
+                                or not asset_src.is_file()
+                                or asset_src.is_symlink()
+                                or asset_src.stat().st_size != rec["size"]
+                            ):
+                                continue
+                            dst_asset = dst_outputs / asset_src.name
+                            dst_meta = dst_outputs / meta_path.name
+                            if not dst_asset.exists() and not dst_asset.is_symlink():
+                                shutil.copy2(asset_src, dst_asset)
+                            if not dst_meta.exists() and not dst_meta.is_symlink():
+                                atomic_json(dst_meta, rec)
+                        except (OSError, ValueError, KeyError):
+                            continue
+            self.comfy.store.reload_from_disk()
+            self.drive_restored = True
+            return True
+        finally:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+
+    def _sync_to_drive(self) -> bool:
+        if not self.drive.available():
+            return False
+        with self.lock:
+            snapshot = dict(self._dirty_seq)
+        if not snapshot:
+            return True
+        if not self.drive.push_workspace():
+            return False
+        with self.lock:
+            for k, seq in snapshot.items():
+                if self._dirty_seq.get(k) == seq:
+                    self._dirty_seq.pop(k, None)
+        return True
+
+    def prepare_release(self):
+        with self.lock:
+            self.quiescing = True
+            tasks = list(self.tasks.values())
+        try:
+            self.public_api.stop()
+            for task in tasks:
+                if task.state == "running":
+                    task.request_cancel()
+            self.comfy.stop_server()
+            deadline = time.monotonic() + 15
+            while any(t.state == "running" for t in tasks):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("任务仍在停止，请稍后重试释放")
+                time.sleep(0.1)
+            self._stop_engine()
+            with self.sync_lock:
+                if self.drive.available():
+                    if not self.drive_restored:
+                        self._restore_from_drive()
+                    if self._dirty_seq and not self._sync_to_drive():
+                        raise RuntimeError(
+                            "云盘同步尚未完成，请重试或勾选强制释放"
+                        )
+                    self.drive.unmount()
+            return {"ok": True}
+        except Exception:
+            self.quiescing = False
+            raise
+
+    def start_background(self):
+        # Prime baseline CPU and disk I/O counters immediately so the first
+        # status snapshot reports live rates instead of 0%.
+        try:
+            self.telemetry.sample(self.root, gpu_override=self.gpu_info())
+        except Exception:
+            pass
+
+        if isinstance(self.stopping, threading.Event) and (
+            self._telemetry_thread is None or not self._telemetry_thread.is_alive()
+        ):
+            def telemetry_loop():
+                while not self.stopping.wait(1.0):
+                    try:
+                        self.telemetry.sample(self.root, gpu_override=self.gpu_info())
+                    except Exception:
+                        pass
+
+            t = threading.Thread(target=telemetry_loop, daemon=True)
+            t.start()
+            self._telemetry_thread = t
+
+        def loop():
+            if self.drive.configured() and not self.drive.available():
+                try:
+                    self.connect_drive()
+                except Exception:
+                    pass
+            while not self.stopping.wait(5):
+                if not isinstance(self.stopping, threading.Event):
+                    try:
+                        self.telemetry.sample(self.root, gpu_override=self.gpu_info())
+                    except Exception:
+                        pass
+                try:
+                    if not self.quiescing and self.drive.available() and self._dirty_seq:
+                        with self.sync_lock:
+                            if not self.drive_restored:
+                                self._restore_from_drive()
+                            if self.drive_restored:
+                                self._sync_to_drive()
+                except Exception:
+                    pass
+                if self.busy():
+                    self.last_active = time.time()
+                if self.claim_auto_release():
+                    try:
+                        self.prepare_release()
+                    except Exception:
+                        self.drive.unmount()
+                    self.quiescing = True
+                    addr = os.environ.get("TBE_RUNTIME_ADDR", "")
+                    if addr:
+                        try:
+                            self.http.post(
+                                f"http://{addr}/unassign", data=b"", timeout=10
+                            ).raise_for_status()
+                            return
+                        except requests.RequestException:
+                            pass
+
+        threading.Thread(target=loop, daemon=True).start()

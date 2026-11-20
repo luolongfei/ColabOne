@@ -1,0 +1,38 @@
+name: Bug report / 问题反馈
+description: Something does not work as documented / 行为和文档不一致
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove API keys, tokens and authorization codes from anything you paste.
+        粘贴内容前请去掉 API 密钥、令牌和授权码。
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / 发生了什么
+      description: What you did, what you expected, what you saw. 做了什么、期望什么、实际看到什么。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ColabOne version / 版本
+      placeholder: "0.1.0, portable zip or installed from source"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS / 系统
+      options:
+        - Windows 10/11 x64
+        - macOS (Apple Silicon)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or screenshots / 输出或截图
+      description: The error message or a screenshot of ColabOne. 客户端错误提示或界面截图。
+      render: text

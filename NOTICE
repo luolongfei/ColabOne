@@ -1,0 +1,20 @@
+ColabOne
+Licensed under the GNU General Public License, Version 3 (GPL-3.0). See LICENSE.
+
+Colab-yoga
+
+bridge/colab_yoga_bridge.py and server/colab_yoga_server.py are derived from
+EasyColab (https://github.com/wy51ai/easycolab) by wy51ai, licensed under the
+Apache License, Version 2.0. They have been substantially modified.
+Colab-yoga (https://github.com/incredible404-rgb/Colab-yoga) is licensed under
+the Apache License, Version 2.0; upstream attribution notices are preserved here.
+
+ColabOne modifications, 2026. Model manifests, CUDA deployment and parallel range download strategy adapted from colab-gpu-llm-service (MIT). See third_party/colab-gpu-llm-service.LICENSE and third_party/SOURCES.md.
+
+ColabOne Drive persistence reuses Google Colab CLI OAuth refresh credentials (`drive.file` scope, Copyright 2026 Google LLC, Apache License 2.0) and mounts/synchronizes `ColabOne_Drive` on the remote runtime via rclone by Nick Craig-Wood (MIT), pinned to v1.76.0. See server/drive.py, third_party/rclone.LICENSE and third_party/SOURCES.md.
+
+Remote public API and authenticated ComfyUI canvas tunneling uses cloudflared by Cloudflare, Inc. (Apache License 2.0), pinned to release 2026.11.0, downloaded with verified SHA-256 only on the remote Colab runtime. See catalog/cloudflared.json and third_party/SOURCES.md.
+
+Remote workflow and visual generation integrates ComfyUI by Comfy-Org (https://github.com/Comfy-Org/ComfyUI), licensed under the GNU General Public License, Version 3 (GPL-3.0), pinned to tag v0.46.0 (commit a277b5bf213e8a44fa34817b7770b54f86ef4cea). ComfyUI is fetched only on the remote Colab runtime and is not bundled in the desktop client distribution. See third_party/SOURCES.md.
+
+Desktop UI typography bundles Simplified Chinese WOFF2 subsets of Sarasa UI SC (Sarasa Gothic v1.0.43, https://github.com/be5invis/Sarasa-Gothic), Copyright (c) 2015-2025 Renzhi Li (Belleve Invis), with portions Copyright (c) 2016 The Inter Project Authors, Copyright (c) 2014-2021 Adobe Systems Incorporated (with Reserved Font Name 'Source'), and Copyright (c) 2012 Google Inc. The bundled font files under frontend/src/assets/fonts/ are distributed solely under the SIL Open Font License, Version 1.1 (SIL OFL 1.1), separate from the GPL-3.0 application code. See third_party/sarasa-gothic.LICENSE and third_party/SOURCES.md.

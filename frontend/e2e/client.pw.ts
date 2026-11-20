@@ -1,0 +1,2945 @@
+import { test, expect } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+
+async function mock(page: any, ready = false, path = "/") {
+  await page.addInitScript(
+    ({ ready }: any) => {
+      const state: any = {
+        runtime: {
+          state: ready ? "ready" : "stopped",
+          protocol: 7,
+          capabilities: ["public_api", "comfyui"],
+          active_engine: null,
+          gpu: ready
+            ? { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 }
+            : undefined,
+          location: ready
+            ? {
+                country: "US",
+                country_name: "美国",
+                region: "俄勒冈",
+                zone: "us-west1-b",
+              }
+            : undefined,
+          id: ready ? "test-runtime" : undefined,
+          disk_free: 90 * 1024 ** 3,
+          resources: ready
+            ? {
+                gpu: {
+                  name: "NVIDIA T4",
+                  total_mib: 15360,
+                  used_mib: 700,
+                  util_percent: 34,
+                  temp_c: 56,
+                  power_w: 42,
+                  power_limit_w: 70,
+                },
+                memory: {
+                  total_bytes: 12.7 * 1024 ** 3,
+                  used_bytes: 4.2 * 1024 ** 3,
+                  available_bytes: 8.5 * 1024 ** 3,
+                  percent: 33.1,
+                },
+                disk: {
+                  total_bytes: 112 * 1024 ** 3,
+                  used_bytes: 22 * 1024 ** 3,
+                  free_bytes: 90 * 1024 ** 3,
+                  percent: 19.6,
+                  read_bps: 12 * 1024 ** 2,
+                  write_bps: 4 * 1024 ** 2,
+                },
+                cpu: {
+                  cores: 2,
+                  percent: 24.5,
+                },
+                history: [
+                  {
+                    t: Date.now() / 1000 - 2,
+                    vram_pct: 4.6,
+                    gpu_util: 20,
+                    ram_pct: 31.5,
+                    cpu_pct: 19,
+                    disk_pct: 19.6,
+                    disk_read_bps: 8 * 1024 ** 2,
+                    disk_write_bps: 2 * 1024 ** 2,
+                  },
+                  {
+                    t: Date.now() / 1000 - 1,
+                    vram_pct: 4.6,
+                    gpu_util: 34,
+                    ram_pct: 33.1,
+                    cpu_pct: 24.5,
+                    disk_pct: 19.6,
+                    disk_read_bps: 12 * 1024 ** 2,
+                    disk_write_bps: 4 * 1024 ** 2,
+                  },
+                ],
+              }
+            : undefined,
+          tasks: [],
+          drive: {
+            connected: ready,
+            mode: ready ? "mount" : "disabled",
+            remote_folder: "ColabOne_Drive",
+            pending: 0,
+            error: "",
+          },
+          comfyui: {
+            installed: ready,
+            running: false,
+            state: "stopped",
+            port: 8188,
+            tag: "v0.46.0",
+            queue_running: 0,
+            queue_pending: 0,
+            error: "",
+            canvas: {
+              state: "stopped",
+              enabled: false,
+              mode: "named",
+              url: "",
+              error: "",
+              checked_at: 0,
+              active_connections: 0,
+            },
+          },
+        },
+        models: [
+          {
+            id: "qwen",
+            name: "Qwen2.5 · 0.5B",
+            description: "轻量验收模型 · Q4_K_M",
+            repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+            common: true,
+            custom: false,
+            size: 491000000,
+            min_vram_mib: 2048,
+            downloaded: false,
+            loaded: false,
+            files: [],
+          },
+        ],
+        common_repos: [],
+        workflows: [],
+        comfy_outputs: [],
+        comfy_canvas_settings: {
+          mode: "named",
+          domain: "",
+          has_token: false,
+        },
+        logs: [
+          {
+            id: 1,
+            time: Date.now() / 1000,
+            source: "客户端",
+            level: "info",
+            message: "已恢复本机保存的 Google 登录；到期自动续期",
+          },
+        ],
+        account: {
+          logged_in: ready,
+          balance: 100,
+          rate: ready ? 1.5 : 0,
+          assignments: ready ? 1 : 0,
+          checked_at: Date.now() / 1000,
+        },
+        operation: null,
+        error: "",
+        auth_url: "",
+        setup: {
+          colab: ready,
+          drive: ready,
+          drive_authorized: ready,
+          hf: false,
+        },
+        settings: {
+          gpu: "T4",
+          idle_minutes: 30,
+          idle_countdown_seconds: 60,
+          auto_drive: true,
+          download_threads: 16,
+        },
+      };
+      const calls: any[] = [];
+      const canvasOpenCalls: any[] = [];
+      const exportCalls: any[] = [];
+      const logDrawerCalls: any[] = [];
+      (window as any).__state = state;
+      (window as any).__calls = calls;
+      (window as any).__canvasOpenCalls = canvasOpenCalls;
+      (window as any).__exportCalls = exportCalls;
+      (window as any).__logDrawerCalls = logDrawerCalls;
+      (window as any).mygo = {
+        call: async (method: string, ...args: any[]) => {
+          const request = args[0];
+          if (method === "ColabOneDesktop.SetAppearance") {
+            (window as any).__nativeAppearance = request;
+            return;
+          }
+          if (method === "ColabOneDesktop.GetLogDrawerState") {
+            if (typeof (window as any).__onGetLogDrawerState === "function") {
+              return await (window as any).__onGetLogDrawerState();
+            }
+            return { open: false, standalone: false, expanded: false, delta: 0 };
+          }
+          if (method === "ColabOneDesktop.SetLogDrawer") {
+            const [open, width] = args;
+            logDrawerCalls.push({ open, width });
+            if (typeof (window as any).__onSetLogDrawer === "function") {
+              return await (window as any).__onSetLogDrawer(!!open, width);
+            }
+            return { open: !!open, standalone: false, expanded: false, delta: 0 };
+          }
+          if (method === "ColabOneDesktop.OpenComfyCanvas") {
+            canvasOpenCalls.push(request);
+            return;
+          }
+          if (method === "ColabOneDesktop.ExportWorkflowOutput") {
+            exportCalls.push(request);
+            return "/tmp/exported-output.png";
+          }
+          if (method === "ColabOneDesktop.WriteClipboard") {
+            (window as any).__clipboard = request;
+            return;
+          }
+          if (method === "ColabOneDesktop.Snapshot") return JSON.stringify(state);
+          if (method === "ColabOneDesktop.Command") {
+            if (request.action === "runtime.activity") {
+              (window as any).__activity =
+                ((window as any).__activity || 0) + 1;
+              return JSON.stringify({ ok: true });
+            }
+            calls.push(request);
+            const { action, payload } = request;
+            if (action === "settings.save") {
+              for (const k of [
+                "gpu",
+                "idle_minutes",
+                "auto_drive",
+                "download_threads",
+              ]) {
+                if (payload && k in payload) state.settings[k] = payload[k];
+              }
+            }
+            if (action === "runtime.release.preview")
+              return JSON.stringify({
+                id: "reviewed-plan",
+                instances: state.account.instances || [
+                  {
+                    id: "test-runtime",
+                    managed: true,
+                    active: true,
+                    accelerator: "T4",
+                    shape: "HIGH_RAM",
+                  },
+                  {
+                    id: "other-runtime",
+                    managed: false,
+                    active: false,
+                    accelerator: "A100",
+                    shape: "STANDARD",
+                  },
+                ],
+              });
+            if (action === "runtime.release.all") {
+              if (payload.endpoints?.length) {
+                const removed = new Set(payload.endpoints);
+                state.account.instances = (
+                  state.account.instances || []
+                ).filter((i: any) => !removed.has(i.id));
+                state.account.assignments = state.account.instances.length;
+              } else {
+                state.runtime.state = "stopped";
+                state.account.assignments = 0;
+                state.account.rate = 0;
+                state.account.instances = [];
+              }
+            }
+            if (action === "runtime.select") {
+              state.runtime.id = payload.endpoint;
+              state.active_endpoint = payload.endpoint;
+              for (const inst of state.account.instances || []) {
+                inst.active = inst.id === payload.endpoint;
+                if (inst.active) state.runtime.location = inst.location;
+              }
+            }
+            if (action === "hub.search")
+              return JSON.stringify({
+                models: [
+                  {
+                    repo: "org/Qwen-GGUF",
+                    downloads: 2000,
+                    likes: 120,
+                    gated: false,
+                  },
+                ],
+                next_cursor: "",
+              });
+            if (action === "hub.files")
+              return JSON.stringify({
+                revision: "a".repeat(40),
+                files: [
+                  {
+                    filename: "Qwen-Q4_K_M-00001-of-00002.gguf",
+                    size: 4096000000,
+                    shards: 2,
+                    quantization: "Q4_K_M",
+                    supported: true,
+                    reason: "",
+                  },
+                ],
+              });
+            if (action === "logs.clear") state.logs = [];
+            if (action === "model.download") {
+              const target =
+                state.models.find(
+                  (m: any) => m.id === (payload?.id || state.models[0]?.id),
+                ) || state.models[0];
+              if (target) {
+                target.downloaded = true;
+                if (payload?.load) {
+                  for (const m of state.models) m.loaded = false;
+                  target.loaded = true;
+                  state.runtime.loaded_model = target.id;
+                  state.runtime.active_engine = "llama";
+                  state.runtime.active_options = {
+                    context_length:
+                      payload.context_length || target.context_length || 8192,
+                    temperature:
+                      payload.temperature ?? target.temperature ?? 0.7,
+                  };
+                }
+              }
+            }
+            if (action === "model.load") {
+              const target =
+                state.models.find(
+                  (m: any) => m.id === (payload?.id || state.models[0]?.id),
+                ) || state.models[0];
+              if (target) {
+                for (const m of state.models) m.loaded = false;
+                target.loaded = true;
+                state.runtime.loaded_model = target.id;
+                state.runtime.active_engine = "llama";
+                if (state.runtime.comfyui) {
+                  state.runtime.comfyui.running = false;
+                  state.runtime.comfyui.state = "stopped";
+                }
+                state.runtime.active_options = {
+                  context_length:
+                    payload?.context_length || target.context_length || 8192,
+                  temperature:
+                    payload?.temperature ?? target.temperature ?? 0.7,
+                };
+              }
+            }
+            if (action === "model.unload") {
+              for (const m of state.models) m.loaded = false;
+              state.runtime.loaded_model = undefined;
+              state.runtime.active_engine = null;
+            }
+            if (action === "model.delete") {
+              const target =
+                state.models.find(
+                  (m: any) => m.id === (payload?.id || state.models[0]?.id),
+                ) || state.models[0];
+              if (target) target.downloaded = false;
+            }
+            if (action === "model.common") {
+              const target = state.models.find(
+                (m: any) => m.id === (payload?.id || state.models[0]?.id),
+              );
+              if (target) {
+                target.common = payload?.common ?? !target.common;
+                return JSON.stringify({ ok: true, common: target.common });
+              }
+            }
+            if (action === "model.remove_local") {
+              state.models = state.models.filter(
+                (m: any) => m.id !== payload?.id,
+              );
+            }
+            if (action === "common_repo.save") {
+              const idx = state.common_repos.findIndex(
+                (b: any) =>
+                  b.repo.toLowerCase() === String(payload.repo).toLowerCase(),
+              );
+              const exists = idx >= 0;
+              if (exists && payload.toggle !== false) {
+                state.common_repos.splice(idx, 1);
+              } else {
+                const entry = {
+                  repo: payload.repo,
+                  name: payload.name || payload.repo.split("/").pop(),
+                  downloads: payload.downloads || 0,
+                  likes: payload.likes || 0,
+                };
+                if (exists) state.common_repos[idx] = entry;
+                else state.common_repos.unshift(entry);
+              }
+              return JSON.stringify({
+                ok: true,
+                common: exists && payload.toggle !== false ? false : true,
+                repo: payload.repo,
+              });
+            }
+            if (action === "common_repo.remove") {
+              state.common_repos = state.common_repos.filter(
+                (b: any) =>
+                  b.repo.toLowerCase() !==
+                  String(payload?.repo || "").toLowerCase(),
+              );
+            }
+            if (action === "desktop.shortcuts") {
+              const remove = !!payload?.remove;
+              if (
+                payload?.target === "start_menu" ||
+                payload?.target === "both"
+              )
+                state.setup.start_menu_shortcut = !remove;
+              if (payload?.target === "desktop" || payload?.target === "both")
+                state.setup.desktop_shortcut = !remove;
+              return JSON.stringify({
+                ok: true,
+                start_menu: !!state.setup.start_menu_shortcut,
+                desktop: !!state.setup.desktop_shortcut,
+              });
+            }
+            if (action === "hub.install") {
+              if (payload?.load) {
+                for (const m of state.models) m.loaded = false;
+                state.runtime.loaded_model = "hf-installed";
+              }
+              state.models = state.models.filter(
+                (m: any) => m.id !== "hf-installed",
+              );
+              state.models.push({
+                id: "hf-installed",
+                name: payload.name || payload.repo.split("/").pop(),
+                description: payload.filename,
+                repo: payload.repo,
+                common: true,
+                custom: true,
+                downloaded: !!payload.download,
+                loaded: !!payload.load,
+                size: 4096000000,
+                min_vram_mib: 4096,
+                files: [{ repo: payload.repo, path: payload.filename }],
+              });
+            }
+            if (action === "comfyui.start") {
+              for (const m of state.models) m.loaded = false;
+              state.runtime.loaded_model = undefined;
+              state.runtime.active_engine = "comfyui";
+              state.runtime.comfyui = {
+                ...state.runtime.comfyui,
+                installed: true,
+                running: true,
+                state: "ready",
+                error: "",
+              };
+              return JSON.stringify({ id: "task-comfy-start", state: "completed" });
+            }
+            if (action === "comfyui.stop") {
+              state.runtime.active_engine = null;
+              state.runtime.comfyui = {
+                ...state.runtime.comfyui,
+                running: false,
+                state: "stopped",
+                queue_running: 0,
+                queue_pending: 0,
+                canvas: {
+                  state: "stopped",
+                  enabled: false,
+                  mode: "named",
+                  url: "",
+                  error: "",
+                  checked_at: 0,
+                  active_connections: 0,
+                },
+              };
+              return JSON.stringify({ ok: true });
+            }
+            if (action === "comfyui.free") {
+              return JSON.stringify({ ok: true, running: true });
+            }
+            if (action === "comfyui.canvas.save") {
+              const rawDomain = (payload?.domain || "").trim();
+              const normalized = rawDomain
+                ? rawDomain.startsWith("https://")
+                  ? rawDomain
+                  : `https://${rawDomain}`
+                : "";
+              state.comfy_canvas_settings = {
+                mode: "named",
+                domain: normalized,
+                has_token: !!payload?.tunnel_token || !!state.comfy_canvas_settings?.has_token,
+              };
+              return JSON.stringify({ ok: true });
+            }
+            if (action === "comfyui.canvas.start") {
+              const rawDomain = (
+                payload?.domain ||
+                state.comfy_canvas_settings?.domain ||
+                "comfy.example.com"
+              ).trim();
+              const url = rawDomain.startsWith("https://")
+                ? rawDomain
+                : `https://${rawDomain}`;
+              state.runtime.comfyui.canvas = {
+                state: "ready",
+                enabled: true,
+                mode: "named",
+                url,
+                error: "",
+                checked_at: Date.now() / 1000,
+                active_connections: 1,
+              };
+              return JSON.stringify(state.runtime.comfyui.canvas);
+            }
+            if (action === "comfyui.canvas.stop") {
+              state.runtime.comfyui.canvas = {
+                state: "stopped",
+                enabled: false,
+                mode: "named",
+                url: "",
+                error: "",
+                checked_at: 0,
+                active_connections: 0,
+              };
+              return JSON.stringify(state.runtime.comfyui.canvas);
+            }
+            if (action === "comfyui.canvas.url") {
+              const base =
+                state.runtime.comfyui?.canvas?.url ||
+                "https://comfy.example.com";
+              return JSON.stringify({
+                url: `${base}/_colabone_auth?token=mock-secret-canvas-token`,
+                base_url: base,
+              });
+            }
+            if (action === "comfyui.workflow.import") {
+              const wfObj = payload?.workflow || {};
+              const fields: any[] = [];
+              for (const [nid, node] of Object.entries<any>(wfObj)) {
+                const inputs = node?.inputs || {};
+                for (const [iname, val] of Object.entries<any>(inputs)) {
+                  if (Array.isArray(val)) continue;
+                  if (typeof val === "string" && iname === "text") {
+                    fields.push({
+                      key: `${nid}.${iname}`,
+                      label: `${node?._meta?.title || node?.class_type} · 正向提示词`,
+                      node_id: nid,
+                      input_name: iname,
+                      field_type: "textarea",
+                      default: val,
+                    });
+                  } else if (typeof val === "number" && (iname === "seed" || iname === "steps")) {
+                    fields.push({
+                      key: `${nid}.${iname}`,
+                      label: `${node?._meta?.title || node?.class_type} · ${iname === "seed" ? "随机种子" : "采样步数"}`,
+                      node_id: nid,
+                      input_name: iname,
+                      field_type: "integer",
+                      default: val,
+                    });
+                  }
+                }
+              }
+              const item = {
+                id: payload?.id || `wf-mock-${state.workflows.length + 1}`,
+                name: payload?.name || "未命名工作流",
+                description: payload?.description || "",
+                source: "custom",
+                min_vram_mib: 0,
+                node_count: Object.keys(wfObj).length,
+                fields,
+                workflow: wfObj,
+              };
+              state.workflows = [item, ...state.workflows];
+              return JSON.stringify(item);
+            }
+            if (action === "comfyui.workflow.delete") {
+              state.workflows = state.workflows.filter(
+                (w: any) => w.id !== payload?.id,
+              );
+              return JSON.stringify({ ok: true });
+            }
+            if (action === "comfyui.run") {
+              return JSON.stringify({ id: "task-comfy-run", state: "running" });
+            }
+            if (action === "comfyui.output.delete") {
+              state.comfy_outputs = state.comfy_outputs.filter(
+                (o: any) => o.id !== payload?.id,
+              );
+              return JSON.stringify({ ok: true });
+            }
+            return JSON.stringify({ ok: true });
+          }
+          return "";
+        },
+      };
+    },
+    { ready },
+  );
+  await page.goto(path);
+}
+
+function navItem(page: any, name: string) {
+  return page
+    .locator(".co-navbar nav")
+    .getByRole("menuitem", { name, exact: true });
+}
+
+function antSelect(scope: any, label: string) {
+  return scope
+    .locator(
+      `.ant-select[aria-label="${label}"], .ant-select:has([aria-label="${label}"])`,
+    )
+    .first();
+}
+
+async function chooseAntOption(
+  page: any,
+  select: any,
+  option: string | RegExp,
+) {
+  await select.click();
+  const dropdown = page
+    .locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)")
+    .last();
+  await expect(dropdown).toBeVisible();
+  await dropdown
+    .locator(".ant-select-item-option", { hasText: option })
+    .first()
+    .click();
+}
+
+function segmentedItem(scope: any, text: string | RegExp) {
+  return scope.locator(".ant-segmented-item", { hasText: text });
+}
+
+async function openApiModelDrawer(page: any) {
+  await navItem(page, "对外 API").click();
+  await expect(
+    page.getByRole("heading", { name: "对外 API", exact: true }),
+  ).toBeVisible();
+  await page
+    .locator(".co-api-model-slot")
+    .getByRole("button", { name: /选择模型|切换模型|查看模型/ })
+    .click();
+  const drawer = page.locator(".co-models-drawer");
+  await expect(drawer).toBeVisible();
+  return drawer;
+}
+
+test("disconnected client exposes 4-item navigation, opens model drawer from API page, and does not allocate on navigation", async ({
+  page,
+}) => {
+  await mock(page);
+  const nav = page.locator(".co-navbar nav");
+  await expect(nav.getByRole("menuitem")).toHaveText([
+    "远端设备",
+    "对外 API",
+    "ComfyUI",
+    "设置",
+  ]);
+  await expect(
+    nav.getByRole("menuitem", { name: "模型", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    nav.getByRole("menuitem", { name: "使用", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "启动 GPU", exact: true }),
+  ).toBeDisabled();
+  const drawer = await openApiModelDrawer(page);
+  await expect(
+    drawer.getByRole("button", { name: "下载并装载" }),
+  ).toBeDisabled();
+  await expect(
+    drawer.getByRole("button", { name: "去启动 GPU" }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "开启 API 服务", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "去启动 GPU" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "复制 API 地址", exact: true }),
+  ).toBeDisabled();
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "启动 ComfyUI", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "去启动 GPU" }),
+  ).toBeVisible();
+  await expect(page.getByText("还没有可用的工作流")).toBeVisible();
+  await navItem(page, "设置").click();
+  await expect(
+    page.getByRole("heading", { name: "Google 云盘", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /查看 GPU|去启动 GPU|前往远端设备/ }),
+  ).toHaveCount(0);
+  await expect(page.getByText("ColabOne_Drive").first()).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__calls)).toEqual([]);
+});
+
+test("model deletion requires explicit confirmation", async ({ page }) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.models[0].downloaded = true;
+  });
+  const drawer = await openApiModelDrawer(page);
+  await drawer.getByRole("button", { name: "删除远端模型文件" }).click();
+  expect(await page.evaluate(() => (window as any).__calls)).toEqual([]);
+  await page
+    .locator(".ant-modal")
+    .getByRole("button", { name: /^取\s*消$/ })
+    .click();
+  await expect(drawer).toBeVisible();
+});
+
+test("compact desktop layout stays within viewport across all 4 sections", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 950, height: 700 });
+  await mock(page, true);
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        document.documentElement.scrollHeight <= window.innerHeight,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: fileURLToPath(new URL("../../work/device-ui.png", import.meta.url)),
+    fullPage: true,
+  });
+  for (const vp of [
+    { width: 1024, height: 640 },
+    { width: 900, height: 580 },
+  ]) {
+    await page.setViewportSize(vp);
+    await navItem(page, "ComfyUI").click();
+    await page.mouse.move(700, 400);
+    await page.mouse.wheel(0, 600);
+    const metrics = await page.evaluate(() => {
+      const shell = document
+        .querySelector(".co-app-shell")!
+        .getBoundingClientRect();
+      return {
+        scrollY: window.scrollY,
+        docH: document.documentElement.scrollHeight,
+        innerH: window.innerHeight,
+        shellTop: Math.round(shell.top),
+        shellBottom: Math.round(shell.bottom),
+      };
+    });
+    expect(metrics).toEqual({
+      scrollY: 0,
+      docH: vp.height,
+      innerH: vp.height,
+      shellTop: 0,
+      shellBottom: vp.height,
+    });
+  }
+});
+
+test("setup offers Google login and whole-page paste without API credentials", async ({
+  page,
+}) => {
+  await mock(page);
+  await navItem(page, "设置").click();
+  await expect(page.getByText("OAuth Client ID")).toHaveCount(0);
+  await expect(page.getByText("私有网络", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "登录 Google", exact: true }).click();
+  expect((await page.evaluate(() => (window as any).__calls))[0].action).toBe(
+    "auth.colab.auto",
+  );
+  await page
+    .getByText("授权页返回了一段内容？点此手动粘贴", { exact: true })
+    .click();
+  await page
+    .getByRole("textbox", { name: "Google 授权内容" })
+    .fill(
+      "Authorization complete\n4/test-code-long-enough-for-a-valid-parser-input",
+    );
+  await page
+    .getByRole("button", { name: "自动识别并登录", exact: true })
+    .click();
+  expect(
+    (await page.evaluate(() => (window as any).__calls))[1].payload.code,
+  ).toContain("Authorization complete");
+  await expect(
+    page.getByRole("textbox", { name: "Google 授权内容" }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("button", { name: "保存设置", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "保存偏好", exact: true }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: fileURLToPath(new URL("../../work/setup-ui.png", import.meta.url)),
+    fullPage: true,
+  });
+});
+
+test("Google login alone enables GPU startup without any Drive authorization", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.evaluate(() => {
+    (window as any).__state.setup.colab = true;
+  });
+  await expect(
+    page.getByRole("button", { name: "启动 GPU", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "启动 GPU", exact: true }).click();
+  expect(
+    (await page.evaluate(() => (window as any).__calls)).map(
+      (c: any) => c.action,
+    ),
+  ).toEqual(["settings.save", "runtime.start"]);
+});
+
+test("ColabOne_Drive status bar syncs immediately and settings handles hot mount and scope hint", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await expect(page.locator(".co-sync-note")).toContainText(
+    "My Drive / ColabOne_Drive",
+  );
+  await page.getByRole("button", { name: "立即同步", exact: true }).click();
+  await navItem(page, "设置").click();
+  await expect(page.getByText("已挂载 · ColabOne_Drive")).toBeVisible();
+  await page.getByRole("button", { name: "立即同步云盘", exact: true }).click();
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.drive = false;
+    s.runtime.drive.connected = false;
+  });
+  await page.getByRole("button", { name: "立即挂载云盘", exact: true }).click();
+  await page.evaluate(() => {
+    (window as any).__state.setup.drive_authorized = false;
+  });
+  await expect(page.getByText("需重新登录一次授权")).toBeVisible();
+  const actions = (await page.evaluate(() => (window as any).__calls)).map(
+    (c: any) => c.action,
+  );
+  expect(actions).toEqual(["drive.sync", "drive.sync", "drive.connect"]);
+});
+
+test("multi-instance cards display separate specs, switch workspace, start new GPU and stop selected instance", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.account.assignments = 3;
+    state.account.instances = [
+      {
+        id: "m-s-t4",
+        managed: true,
+        active: true,
+        accelerator: "T4",
+        shape: "HIGH_RAM",
+        state: "ready",
+        gpu_name: "NVIDIA T4",
+        vram_used_mib: 1200,
+        vram_total_mib: 15360,
+        loaded_model: "Qwen2.5 · 0.5B",
+        location: {
+          country: "US",
+          country_name: "美国",
+          region: "俄勒冈",
+          zone: "us-west1-b",
+        },
+      },
+      {
+        id: "m-s-a100",
+        managed: true,
+        active: false,
+        accelerator: "A100",
+        shape: "HIGH_RAM",
+        state: "ready",
+        gpu_name: "NVIDIA A100",
+        vram_used_mib: 6400,
+        vram_total_mib: 40960,
+        loaded_model: "Gemma-4-31B",
+        location: {
+          country: "SG",
+          country_name: "新加坡",
+          region: "",
+          zone: "asia-southeast1-a",
+        },
+      },
+      {
+        id: "m-s-external",
+        managed: false,
+        active: false,
+        accelerator: "G4",
+        shape: "STANDARD",
+        location: {
+          country: "TW",
+          country_name: "中国台湾",
+          region: "彰化",
+          zone: "asia-east1-c",
+        },
+      },
+    ];
+    state.runtime.id = "m-s-t4";
+  });
+  await expect(page.locator(".co-status-bar .co-location-chip")).toContainText("美国");
+  await expect(
+    page.locator(".co-status-bar .co-location-chip svg.co-flag-icon"),
+  ).toBeVisible();
+  await expect(page.locator(".co-device-badges .co-location-tag")).toContainText(
+    "美国 · 俄勒冈",
+  );
+  const list = page.getByRole("region", { name: "账户运行实例" });
+  await expect(list).toContainText("本客户端管理 2 台 · 其他来源 1 台");
+  await expect(list).toContainText("已装载 Gemma-4-31B");
+  await expect(list).toContainText("其他来源");
+  await expect(list).toContainText("新加坡");
+  await expect(list).toContainText("中国台湾 · 彰化");
+  await expect(list.locator("svg.co-flag-icon")).toHaveCount(3);
+  await expect(antSelect(page, "当前工作实例")).toBeVisible();
+
+  const a100Card = list.locator(".co-instance-card", { hasText: "m-s-a100" });
+  await a100Card.getByRole("button", { name: "切换使用", exact: true }).click();
+  await expect(page.locator(".co-device-title")).toContainText("m-s-a100");
+  await expect(page.locator(".co-status-bar .co-location-chip")).toContainText("新加坡");
+
+  await chooseAntOption(page, antSelect(page, "GPU 型号"), /^L4\b/);
+  await page.getByRole("button", { name: "新增实例", exact: true }).click();
+
+  const extCard = list.locator(".co-instance-card", { hasText: "m-s-external" });
+  await extCard.getByRole("button", { name: "单独停止", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("中国台湾");
+  await expect(dialog.locator("svg.co-flag-icon")).toHaveCount(3);
+  await expect(
+    dialog.getByRole("button", { name: "确认停止所选（1）" }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "确认停止所选（1）" }).click();
+  await expect(list).not.toContainText("m-s-external");
+  await expect(list).toContainText("m-s-t4");
+
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(
+    calls.find((c: any) => c.action === "runtime.select")?.payload,
+  ).toEqual({ endpoint: "m-s-a100" });
+  expect(calls.find((c: any) => c.action === "runtime.start")?.payload).toEqual(
+    {
+      new: true,
+      gpu: "L4",
+    },
+  );
+  expect(
+    calls.find((c: any) => c.action === "runtime.release.all")?.payload
+      .endpoints,
+  ).toEqual(["m-s-external"]);
+});
+
+test("billing is prominent and stop all reviews every instance before submission", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.account.assignments = 2;
+  });
+  await expect(page.locator(".co-billing-pill")).toContainText("正在扣费");
+  await expect(page.locator(".co-billing-pill")).toHaveCSS(
+    "color",
+    "rgb(220, 38, 38)",
+  );
+  await expect(page.locator(".co-device-page")).toContainText("正在扣费");
+  await page
+    .getByRole("button", { name: "停止全部（2 个实例）", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("other-runtime");
+  await expect(dialog).toContainText("其他来源的 Colab 实例");
+  expect(
+    (await page.evaluate(() => (window as any).__calls)).map(
+      (x: any) => x.action,
+    ),
+  ).toEqual(["runtime.release.preview"]);
+  await dialog.getByRole("button", { name: "确认停止全部（2）" }).click();
+  await expect(page.locator(".co-billing-pill")).toContainText(/未扣费/);
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(calls[1]).toEqual({
+    action: "runtime.release.all",
+    payload: { force: false, plan_id: "reviewed-plan" },
+  });
+});
+
+test("activity sidebar follows progress across pages and can filter clear and collapse", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await expect(page.locator(".co-logs-trigger")).toHaveText("运行日志");
+  await expect(page.locator(".co-logs-count")).toHaveCount(0);
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  const panel = page.getByRole("complementary", { name: "运行日志" });
+  await expect(panel).toContainText("已恢复本机保存的 Google 登录");
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.operation = {
+      title: "部署远端管理服务",
+      running: true,
+    };
+    state.logs.push({
+      id: 2,
+      time: Date.now() / 1000,
+      source: "GPU",
+      level: "error",
+      message: "连接中断，请重试",
+    });
+  });
+  await expect(panel).toContainText("部署远端管理服务");
+  const opBanner = page.locator(".co-op-banner");
+  await expect(opBanner).toContainText("部署远端管理服务");
+  await expect(opBanner.locator(".ant-spin")).toBeVisible();
+  await expect(opBanner.locator(".ant-alert-icon")).toHaveCount(0);
+  const bannerBox = await page.evaluate(() => {
+    const banner = document
+      .querySelector(".co-op-banner")
+      ?.getBoundingClientRect();
+    const content = document
+      .querySelector(".co-page-inner")
+      ?.getBoundingClientRect();
+    const shell = document
+      .querySelector(".co-banners")
+      ?.getBoundingClientRect();
+    return banner && content && shell
+      ? {
+          leftGap: Math.round(banner.left - shell.left),
+          rightGap: Math.round(shell.right - banner.right),
+          leftAlignDiff: Math.abs(Math.round(banner.left - content.left)),
+          rightAlignDiff: Math.abs(Math.round(banner.right - content.right)),
+        }
+      : null;
+  });
+  expect(bannerBox).not.toBeNull();
+  expect(bannerBox!.leftGap).toBeGreaterThanOrEqual(12);
+  expect(bannerBox!.rightGap).toBeGreaterThanOrEqual(12);
+  expect(bannerBox!.leftAlignDiff).toBeLessThanOrEqual(2);
+  expect(bannerBox!.rightAlignDiff).toBeLessThanOrEqual(2);
+  await navItem(page, "对外 API").click();
+  await expect(panel).toBeVisible();
+  await segmentedItem(
+    panel.locator('.ant-segmented[aria-label="日志级别"]'),
+    "仅错误",
+  ).click();
+  await expect(panel).toContainText("连接中断，请重试");
+  await expect(panel).not.toContainText("已恢复本机保存");
+  await panel.getByRole("button", { name: "清空日志", exact: true }).click();
+  await expect(panel).toContainText("暂无错误");
+  await expect(panel.locator(".co-log-drawer-header")).toHaveCount(0);
+  await page.getByRole("button", { name: "收起运行日志", exact: true }).click();
+  await expect(panel).toBeHidden();
+  await page.reload();
+  await expect(panel).toHaveCount(0);
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(panel).toBeVisible();
+});
+
+test("desktop layout shows billing and activity without horizontal overflow", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mock(page, true);
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.runtime.gpu.name = "NVIDIA RTX PRO 6000 Blackwell Server Edition";
+    state.account.rate = 10.05;
+    state.logs.push(
+      ...[
+        "正在分配 G4",
+        "等待远端内核",
+        "部署远端管理服务",
+        "远端 GPU 已连接",
+      ].map((message, index) => ({
+        id: index + 2,
+        time: Date.now() / 1000,
+        level: "info",
+        source: "GPU",
+        message,
+      })),
+    );
+  });
+  await expect(
+    page.getByRole("button", { name: "停止实例", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "仅停止当前实例", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(page.getByRole("log")).toContainText("远端 GPU 已连接");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: fileURLToPath(
+      new URL("../../work/blue-activity-ui.png", import.meta.url),
+    ),
+    fullPage: true,
+  });
+});
+
+test("log drawer expands independently to the right without covering workspace and closes with Escape", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mock(page, true);
+  const workspace = page.locator(".co-workspace");
+  const panel = page.locator("#activity-panel");
+  await expect(panel).toHaveCount(0);
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(panel).toBeVisible();
+
+  // Wait for transition to settle before measuring non-overlapping geometry.
+  await page.waitForTimeout(250);
+  const wsBox = (await workspace.boundingBox())!;
+  const drawerBox = (await panel.boundingBox())!;
+  const topbarBox = (await page.locator(".co-status-bar").boundingBox())!;
+  const toggleBtnBox = (await page
+    .getByRole("button", { name: "收起运行日志", exact: true })
+    .boundingBox())!;
+
+  // Drawer sits strictly to the right of the main workspace (zero overlap!).
+  expect(drawerBox.x).toBeGreaterThanOrEqual(wsBox.x + wsBox.width - 1);
+  expect(drawerBox.width).toBeGreaterThanOrEqual(300);
+  expect(topbarBox.x + topbarBox.width).toBeLessThanOrEqual(drawerBox.x + 1);
+  expect(toggleBtnBox.x + toggleBtnBox.width).toBeLessThanOrEqual(
+    drawerBox.x + 1,
+  );
+
+  // Native window rightward expansion API was notified.
+  expect(await page.evaluate(() => (window as any).__logDrawerCalls)).toEqual([
+    { open: true, width: 420 },
+  ]);
+
+  // Escape closes inline fallback drawer and notifies native host.
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__logDrawerCalls)).toEqual([
+    { open: true, width: 420 },
+    { open: false, width: 420 },
+  ]);
+
+  // Top navbar pill toggles drawer cleanly without an inner redundant header row.
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(panel).toBeVisible();
+  await expect(panel.locator(".co-log-drawer-header")).toHaveCount(0);
+  await page.getByRole("button", { name: "收起运行日志", exact: true }).click();
+  await expect(panel).toHaveCount(0);
+});
+
+test("standalone native log window opens independently without resizing main window and syncs close state", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1200, height: 820 });
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__onSetLogDrawer = (open: boolean) => ({
+      open,
+      standalone: true,
+      expanded: false,
+      delta: 0,
+    });
+  });
+
+  const beforeBox = (await page.locator(".co-workspace").boundingBox())!;
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(
+    page.getByRole("button", { name: "收起运行日志", exact: true }),
+  ).toHaveClass(/is-active/);
+  // Standalone OS window handles logs; main window keeps zero inline drawer and zero width change.
+  await expect(page.locator("#activity-panel")).toHaveCount(0);
+  const openBox = (await page.locator(".co-workspace").boundingBox())!;
+  expect(Math.round(openBox.width)).toBe(Math.round(beforeBox.width));
+
+  // Closing the standalone OS log window via its native close button syncs main window toggle.
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new CustomEvent("colabone:log-window-state", { detail: { open: false } }),
+    );
+  });
+  await expect(
+    page.getByRole("button", { name: "展开运行日志", exact: true }),
+  ).not.toHaveClass(/is-active/);
+});
+
+test("standalone log window route (?view=logs) renders full-bleed log viewer without redundant header bar", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 440, height: 820 });
+  await mock(page, true, "/?view=logs");
+  await expect(page).toHaveTitle("运行日志 · ColabOne");
+  const panel = page.locator("#activity-panel.is-standalone");
+  await expect(panel).toBeVisible();
+  await expect(panel.locator(".co-log-drawer-header")).toHaveCount(0);
+  await expect(panel.locator(".co-log-resizer")).toHaveCount(0);
+  await expect(panel).toContainText("GPU 已就绪，等待操作");
+  await expect(panel).toContainText("已恢复本机保存的 Google 登录");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+
+  await panel.getByRole("button", { name: "复制日志", exact: true }).click();
+  await expect(page.locator(".co-toast")).toContainText("已复制");
+  await panel.getByRole("button", { name: "清空日志", exact: true }).click();
+  await expect(panel).toContainText("暂无运行日志，开始操作后将在此实时显示");
+  await page.screenshot({
+    path: fileURLToPath(
+      new URL("../../work/standalone-log-window.png", import.meta.url),
+    ),
+    fullPage: true,
+  });
+});
+
+test("public API panel displays per-request token speed and live generation rate alongside right log drawer", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1480, height: 900 });
+  await mock(page, true);
+  const now = Math.floor(Date.now() / 1000);
+  await page.evaluate((nowSec) => {
+    const s = (window as any).__state;
+    s.models[0].downloaded = true;
+    s.models[0].loaded = true;
+    s.runtime.loaded_model = "qwen";
+    s.runtime.tasks = [
+      {
+        id: "req-3",
+        kind: "public_responses",
+        model_id: "qwen",
+        state: "running",
+        progress: 0,
+        message: "",
+        error: "",
+      },
+    ];
+    s.runtime.public_api = {
+      state: "ready",
+      enabled: true,
+      mode: "named",
+      url: "https://api.example.com",
+      error: "",
+      streaming: true,
+      checked_at: nowSec,
+      requests: 3,
+      active: 1,
+      completed: 2,
+      failed: 0,
+      last_request: nowSec,
+      last_tokens_per_second: 62.4,
+      avg_tokens_per_second: 49.5,
+      recent_requests: [
+        {
+          seq: 3,
+          id: "req-3",
+          kind: "responses",
+          endpoint: "/v1/responses",
+          model: "qwen",
+          stream: true,
+          state: "running",
+          started_at: nowSec,
+          duration_ms: 1450,
+          ttft_ms: 210,
+          prompt_tokens: 420,
+          completion_tokens: 78,
+          tokens_per_second: 62.4,
+          estimated: true,
+        },
+        {
+          seq: 2,
+          id: "req-2",
+          kind: "chat",
+          endpoint: "/v1/chat/completions",
+          model: "qwen",
+          stream: true,
+          state: "completed",
+          started_at: nowSec - 20,
+          finished_at: nowSec - 16,
+          duration_ms: 3650,
+          ttft_ms: 340,
+          prompt_tokens: 1024,
+          completion_tokens: 180,
+          tokens_per_second: 54.2,
+          prompt_tokens_per_second: 1420.0,
+          estimated: false,
+        },
+        {
+          seq: 1,
+          id: "req-1",
+          kind: "chat",
+          endpoint: "/v1/chat/completions",
+          model: "qwen",
+          stream: false,
+          state: "completed",
+          started_at: nowSec - 60,
+          finished_at: nowSec - 57,
+          duration_ms: 2850,
+          prompt_tokens: 128,
+          completion_tokens: 128,
+          tokens_per_second: 44.8,
+          estimated: false,
+        },
+      ],
+    };
+    s.logs.push(
+      {
+        id: 2,
+        time: nowSec - 57,
+        source: "API",
+        level: "info",
+        message: "API 请求 #1 完成 · 44.8 tokens/s · 输出 128 tokens · 耗时 2.85s",
+      },
+      {
+        id: 3,
+        time: nowSec - 16,
+        source: "API",
+        level: "info",
+        message:
+          "API 请求 #2 完成 · 54.2 tokens/s · 输出 180 tokens · 首字 340ms · 耗时 3.65s",
+      },
+    );
+  }, now);
+
+  await navItem(page, "对外 API").click();
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await page.waitForTimeout(250);
+
+  const speedSection = page.getByRole("region", {
+    name: "每次外部调用 Token 速度",
+  });
+  await expect(speedSection).toContainText("实时生成速度");
+  await expect(speedSection).toContainText("≈62.4 tokens/s");
+  await expect(speedSection).toContainText("均值 49.5 tokens/s");
+  await expect(speedSection).toContainText("#3");
+  await expect(speedSection).toContainText("Responses");
+  await expect(speedSection).toContainText("#2");
+  await expect(speedSection).toContainText("54.2 tokens/s");
+  await expect(speedSection).toContainText("首字 340ms");
+  await expect(speedSection).toContainText("预填充 1420 tokens/s");
+  await expect(speedSection).toContainText("#1");
+  await expect(speedSection).toContainText("44.8 tokens/s");
+
+  // Right-side log drawer shows live speed & historical speed entries simultaneously without covering the API page.
+  const panel = page.locator("#activity-panel");
+  await expect(panel).toContainText("≈62.4 tokens/s");
+  await expect(panel).toContainText("54.2 tokens/s");
+  await expect(page.locator(".co-task-bar")).toContainText("≈62.4 tokens/s");
+
+  await page.screenshot({
+    path: fileURLToPath(
+      new URL("../../work/api-speed-and-log-drawer.png", import.meta.url),
+    ),
+    fullPage: true,
+  });
+});
+
+test("connected settings omits device jump buttons, keeps non-clickable billing strip, and preserves idle policy", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await navItem(page, "设置").click();
+  await expect(
+    page.getByRole("button", { name: /查看 GPU|去启动 GPU|前往远端设备/ }),
+  ).toHaveCount(0);
+  // Clicking the topbar billing strip must NOT jump back to the device page.
+  await page.locator(".co-billing-strip").click();
+  await expect(
+    page.getByRole("heading", { name: "设置", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(/单次预算|单次 GPU 预算/)).toHaveCount(0);
+  await expect(page.locator(".co-settings-page")).toContainText(
+    /半小时|30\s*分钟/,
+  );
+  await expect(page.locator(".co-settings-page")).not.toContainText("闲置 3 分钟");
+});
+
+test("community search selects all shards and submits remote install with fixed revision", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await navItem(page, "设置").click();
+  const concurrencySeg = page.locator(
+    '.ant-segmented[aria-label="下载并发线程"]',
+  );
+  await expect(segmentedItem(concurrencySeg, "16 线程")).toBeVisible();
+  await expect(segmentedItem(concurrencySeg, "8 线程")).toHaveCount(0);
+  await segmentedItem(concurrencySeg, "32 线程").click();
+  const drawer = await openApiModelDrawer(page);
+  await expect(
+    drawer.locator('.ant-segmented[aria-label="下载并发线程"]'),
+  ).toHaveCount(0);
+  await drawer.getByRole("tab", { name: /^社\s*区$/ }).click();
+  await drawer
+    .getByRole("searchbox", { name: "搜索 Hugging Face 模型" })
+    .fill("Qwen");
+  await expect(
+    drawer.getByRole("heading", { name: "org/Qwen-GGUF" }),
+  ).toBeVisible();
+  await drawer.getByRole("button", { name: "选择版本" }).click();
+  await expect(antSelect(drawer, "选择量化版本")).toContainText(/2 个.*文件/);
+  await drawer
+    .locator(".co-hub-selection")
+    .getByRole("button", { name: "仅下载" })
+    .click();
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(
+    calls.find((c: any) => c.action === "settings.save").payload
+      .download_threads,
+  ).toBe(32);
+  expect(calls.find((c: any) => c.action === "hub.install").payload).toEqual({
+    repo: "org/Qwen-GGUF",
+    filename: "Qwen-Q4_K_M-00001-of-00002.gguf",
+    revision: "a".repeat(40),
+    download: true,
+  });
+  await expect(drawer.getByRole("tab", { name: /^我\s*的/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
+test("download telemetry shows actual rate bytes ETA and connections", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.tasks = [
+      {
+        id: "test",
+        kind: "download",
+        state: "running",
+        progress: 0.25,
+        message: "model.gguf",
+        download: {
+          downloaded_bytes: 1024 ** 3,
+          total_bytes: 4 * 1024 ** 3,
+          speed_bps: 128 * 1024 ** 2,
+          eta_seconds: 24,
+          threads: 32,
+          connections: 24,
+          phase: "downloading",
+          file_index: 1,
+          file_count: 2,
+        },
+      },
+    ];
+  });
+  await expect(page.locator(".co-task-bar")).toContainText("128.0 MiB/s");
+  await expect(page.locator(".co-task-bar")).toContainText("24/32 个连接");
+  await expect(page.locator(".co-task-bar")).toContainText("预计剩余 0:24");
+});
+
+test("model search spans the row and results expose size range downloads and likes", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.evaluate(() => {
+    const original = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, request: any) => {
+      const result = await original(method, request);
+      if (request?.action !== "hub.files") return result;
+      const detail = JSON.parse(result);
+      detail.files.push({
+        filename: "Qwen-Q8_0.gguf",
+        size: 8 * 1024 ** 3,
+        shards: 1,
+        quantization: "Q8_0",
+        supported: true,
+        reason: "",
+      });
+      return JSON.stringify(detail);
+    };
+  });
+  const drawer = await openApiModelDrawer(page);
+  const localToolbar = drawer.locator(".co-list-toolbar");
+  const localSearch = localToolbar.locator(".co-model-search");
+  expect((await localSearch.boundingBox())!.width).toBeCloseTo(
+    (await localToolbar.boundingBox())!.width,
+    0,
+  );
+  await drawer.getByRole("tab", { name: /^社\s*区$/ }).click();
+  const hubSearchBar = drawer.locator(".co-hub-search-bar");
+  const hubBrowser = drawer.locator(".co-hub-browser");
+  const hubSearchInput = drawer.locator(".co-hub-search-input");
+  const barBox = (await hubSearchBar.boundingBox())!;
+  const bodyBox = (await hubBrowser.boundingBox())!;
+  const inputBox = (await hubSearchInput.boundingBox())!;
+  expect(barBox.width).toBeGreaterThan(bodyBox.width - 20);
+  expect(inputBox.width).toBeGreaterThan(barBox.width * 0.55);
+  const facts = drawer.locator(".co-hub-facts");
+  await expect(facts).toContainText(/3\.81 GiB – 8\.00 GiB/);
+  await expect(facts).toContainText(/2,000/);
+  await expect(facts).toContainText(/120/);
+  await drawer.getByRole("button", { name: "选择版本" }).click();
+  await expect(drawer.locator(".co-hub-download-summary")).toContainText("3.81 GiB");
+  await expect(drawer.locator(".co-hub-download-summary")).toContainText(
+    "共 2 个文件",
+  );
+  await chooseAntOption(
+    page,
+    antSelect(drawer, "选择量化版本"),
+    "Qwen-Q8_0.gguf",
+  );
+  await expect(drawer.locator(".co-hub-download-summary")).toContainText("8.00 GiB");
+  await expect(drawer.locator(".co-hub-download-summary")).toContainText(
+    "共 1 个文件",
+  );
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(calls.filter((c: any) => c.action === "hub.files")).toHaveLength(1);
+  expect(
+    calls.every((c: any) => ["hub.search", "hub.files"].includes(c.action)),
+  ).toBe(true);
+});
+
+test("loading more preserves pending size lookups and changed search clears selection", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.evaluate(() => {
+    const original = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, request: any) => {
+      if (request?.action === "hub.search")
+        return JSON.stringify({
+          models: [
+            {
+              repo: request.payload.cursor ? "org/second" : "org/first",
+              downloads: 10,
+              likes: 2,
+              gated: false,
+            },
+          ],
+          next_cursor: request.payload.cursor ? "" : "page-2",
+        });
+      if (
+        request?.action === "hub.files" &&
+        request.payload.repo === "org/first"
+      ) {
+        await new Promise<void>((resolve) => {
+          (window as any).__finishDetails = resolve;
+        });
+      }
+      return original(method, request);
+    };
+  });
+  const drawer = await openApiModelDrawer(page);
+  await drawer.getByRole("tab", { name: /^社\s*区$/ }).click();
+  await expect(drawer.locator(".co-hub-size")).toContainText("读取中");
+  await drawer.getByRole("button", { name: "加载更多" }).click();
+  await expect(drawer.locator(".co-hub-repo")).toHaveCount(2);
+  await page.evaluate(() => (window as any).__finishDetails());
+  await expect(drawer.locator(".co-hub-size strong")).toHaveText([
+    "3.81 GiB",
+    "3.81 GiB",
+  ]);
+  await drawer.getByRole("button", { name: "选择版本" }).first().click();
+  await expect(antSelect(drawer, "选择量化版本")).toBeVisible();
+  await drawer
+    .getByRole("searchbox", { name: "搜索 Hugging Face 模型" })
+    .fill("another");
+  await expect(drawer.locator(".co-hub-selection")).toHaveCount(0);
+});
+
+test("idle countdown decrements locally and only real interaction resets remote activity", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.idle = {
+      phase: "countdown",
+      remaining_seconds: 60,
+      countdown_seconds: 60,
+      idle_seconds: 180,
+      server_time: Date.now() / 1000,
+    };
+  });
+  await expect(page.locator(".co-idle-timer")).toContainText(
+    /(自动|即将)释放 1:00/,
+  );
+  await expect(page.locator(".co-idle-timer")).toContainText("0:59", {
+    timeout: 4000,
+  });
+  expect(await page.evaluate(() => (window as any).__activity || 0)).toBe(0);
+  await page.locator(".co-idle-timer").click();
+  expect(await page.evaluate(() => (window as any).__activity)).toBe(1);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.idle = {
+      phase: "active",
+      remaining_seconds: 240,
+      countdown_seconds: 60,
+      idle_seconds: 0,
+      server_time: Date.now() / 1000,
+    };
+  });
+  await expect(page.locator(".co-idle-timer")).toContainText(/暂停(自动)?释放/);
+});
+
+test("model load options pass real context settings from API drawer and top capsule navbar adapts across viewports", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    (window as any).__state.models[0].downloaded = true;
+  });
+  const modelDrawer = await openApiModelDrawer(page);
+  const qwenRow = modelDrawer.locator(".co-model-card, .co-model-row", {
+    hasText: "Qwen2.5 · 0.5B",
+  });
+  await qwenRow.getByRole("button", { name: /^参\s*数$/ }).click();
+  const configDrawer = modelDrawer.locator(".co-model-config-drawer");
+  await expect(configDrawer).toBeVisible();
+  await configDrawer.getByRole("button", { name: "16K", exact: true }).click();
+  const tempSlider = configDrawer.getByRole("slider");
+  await tempSlider.focus();
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.press("ArrowLeft");
+  }
+  await expect(configDrawer).toContainText("0.3");
+  await configDrawer.getByRole("button", { name: "装载显存" }).click();
+  const call = await page.evaluate(() =>
+    (window as any).__calls.find((c: any) => c.action === "model.load"),
+  );
+  expect(call.payload).toEqual({
+    id: "qwen",
+    context_length: 16384,
+    temperature: 0.3,
+  });
+  await modelDrawer
+    .locator(".co-vram-console")
+    .getByRole("button", { name: "使用此模型" })
+    .click();
+  await expect(modelDrawer).toBeHidden();
+  await expect(page.locator(".co-api-model-slot")).toContainText("Qwen2.5 · 0.5B");
+  await expect(page.locator(".co-api-model-slot")).toContainText("16K · 温度 0.3");
+  await expect(page.locator(".co-api-examples pre")).toContainText('"model": "qwen"');
+
+  await expect(page.locator(".co-brand-icon svg")).toBeVisible();
+  await expect(page.locator(".co-nav-pill-track")).toHaveCSS(
+    "border-radius",
+    "9999px",
+  );
+  await expect(
+    page.locator(".co-navbar nav .co-nav-pill-item.is-active"),
+  ).toHaveCSS("border-radius", "9999px");
+
+  // Compact viewport collapses pill labels cleanly to icon pills without losing accessible names.
+  await page.setViewportSize({ width: 720, height: 800 });
+  await navItem(page, "远端设备").click();
+  await expect(page.getByRole("heading", { name: "远端设备" })).toBeVisible();
+  await navItem(page, "对外 API").click();
+  await expect(
+    page.getByRole("heading", { name: "对外 API", exact: true }),
+  ).toBeVisible();
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 820 });
+});
+
+test("model drawer in API page supports 我的 & 社区, inline repo version picking, removal, one-click download-and-load and quick unload", async ({
+  page,
+}) => {
+  await mock(page, false);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.models[0].common = false;
+    s.common_repos = [
+      {
+        repo: "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+        name: "Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+        note: "默认模型",
+      },
+      {
+        repo: "huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF",
+        name: "Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF",
+        note: "默认模型",
+      },
+      {
+        repo: "JonathanColetti/Qwen3.8-27B-Uncensored",
+        name: "Qwen3.8-27B-Uncensored",
+        note: "默认模型",
+      },
+    ];
+  });
+  const drawer = await openApiModelDrawer(page);
+  const sourceTabs = drawer.locator(".co-model-tabs").getByRole("tablist");
+  await expect(sourceTabs.getByRole("tab")).toHaveCount(2);
+  await expect(sourceTabs.getByRole("tab", { name: /^我\s*的/ })).toBeVisible();
+  await expect(sourceTabs.getByRole("tab", { name: /^社\s*区$/ })).toBeVisible();
+  // Default "我的" view shows only the 3 default repositories (no extra built-in presets shelf).
+  await expect(drawer.locator(".co-common-repo-row")).toHaveCount(3);
+  await expect(drawer.locator(".preset-shelf")).toHaveCount(0);
+  await expect(drawer.getByRole("button", { name: /手动导入/ })).toHaveCount(0);
+
+  // Clicking "选择版本" expands inline version picker right inside "我的".
+  const firstDefaultRow = drawer.locator(".co-common-repo-row").first();
+  await firstDefaultRow.getByRole("button", { name: "选择版本" }).click();
+  await expect(firstDefaultRow.locator(".co-repo-picker")).toBeVisible();
+  await expect(
+    firstDefaultRow.getByRole("button", { name: "下载并装载" }),
+  ).toBeDisabled();
+  await firstDefaultRow.getByRole("button", { name: "收起" }).click();
+  await expect(firstDefaultRow.locator(".co-repo-picker")).toHaveCount(0);
+
+  // Switch to "社区", pin a repo to "我的", then remove it from "我的".
+  await sourceTabs.getByRole("tab", { name: /^社\s*区$/ }).click();
+  await expect(drawer.locator(".curated-card")).toHaveCount(0);
+  const hubCard = drawer.locator(".co-hub-repo", { hasText: "org/Qwen-GGUF" });
+  await expect(hubCard).toBeVisible();
+  await hubCard.getByRole("button", { name: /加入我的/ }).click();
+  await expect(hubCard.getByRole("button", { name: /移出我的/ })).toBeVisible();
+  await sourceTabs.getByRole("tab", { name: /^我\s*的/ }).click();
+  const addedRepoRow = drawer.locator(".co-common-repo-row", {
+    hasText: "org/Qwen-GGUF",
+  });
+  await expect(addedRepoRow).toBeVisible();
+  await addedRepoRow.getByRole("button", { name: /移出我的/ }).click();
+  await expect(
+    drawer.locator(".co-common-repo-row", { hasText: "org/Qwen-GGUF" }),
+  ).toHaveCount(0);
+
+  // Bring GPU online and verify one-click download-and-load + quick unload.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.models[0].common = true;
+    s.runtime.state = "ready";
+    s.runtime.protocol = 7;
+    s.runtime.gpu = { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 };
+  });
+  const qwenCard = drawer.locator(".co-model-card", { hasText: "Qwen2.5 · 0.5B" });
+  await qwenCard.getByRole("button", { name: "下载并装载" }).click();
+  const dlCall = await page.evaluate(() =>
+    (window as any).__calls.find((c: any) => c.action === "model.download"),
+  );
+  expect(dlCall?.payload).toMatchObject({ id: "qwen", load: true });
+  await expect(qwenCard).toContainText("使用中");
+
+  const vramConsole = drawer.locator(".co-vram-console");
+  await expect(vramConsole).toContainText("当前使用：Qwen2.5 · 0.5B");
+  await expect(
+    vramConsole.getByRole("button", { name: "使用此模型" }),
+  ).toBeVisible();
+  await vramConsole.getByRole("button", { name: /^卸\s*载$/ }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__calls.some((c: any) => c.action === "model.unload"),
+      ),
+    )
+    .toBe(true);
+  await expect(vramConsole).toHaveCount(0);
+  await expect(qwenCard).toContainText("已下载");
+});
+
+test("API setup uses fixed domain only, remains local until enabled, and includes Codex config", async ({
+  page,
+}) => {
+  await mock(page);
+  await navItem(page, "对外 API").click();
+  await expect(
+    page.getByRole("heading", { name: "对外 API", exact: true }),
+  ).toBeVisible();
+  // Service model bar is a flat top-level card (not nested inside another hero card).
+  await expect(page.locator(".co-api-page .ant-card .ant-card")).toHaveCount(0);
+  await expect(page.locator(".co-api-hero-card")).toHaveCount(0);
+  await expect(page.locator(".co-api-model-slot")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "复制 API 地址", exact: true }),
+  ).toBeDisabled();
+  // Temporary/quick domain option is completely removed; fixed-domain inputs are immediately visible.
+  await expect(page.locator(".co-api-connection")).not.toContainText("临时地址");
+  await expect(page.getByLabel("API 域名", { exact: true })).toBeVisible();
+  await expect(page.locator(".co-api-examples pre")).toContainText(
+    '"stream": true',
+  );
+  await expect(page.locator(".co-api-examples pre")).toContainText(
+    '"model": "YOUR-MODEL-ID"',
+  );
+  await page.getByLabel("API 域名", { exact: true }).fill("api.example.com");
+  await page
+    .getByLabel("Cloudflare 安装命令或 Tunnel Token", { exact: true })
+    .fill("offline-placeholder");
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  expect(
+    (await page.evaluate(() => (window as any).__calls)).map(
+      (x: any) => x[0] || x.action,
+    ),
+  ).toContain("api.save");
+  await segmentedItem(
+    page.locator('.ant-segmented[aria-label="调用示例语言"]'),
+    "Python",
+  ).click();
+  await expect(page.locator(".co-api-examples pre")).toContainText(
+    "from openai import OpenAI",
+  );
+  await expect(page.locator(".co-api-examples pre")).toContainText(
+    "client.chat.completions.create",
+  );
+  await segmentedItem(
+    page.locator('.ant-segmented[aria-label="调用示例语言"]'),
+    "Codex",
+  ).click();
+  await expect(page.locator(".co-api-examples pre")).toContainText(
+    'wire_api = "responses"',
+  );
+  await expect(page.locator(".co-api-examples pre")).toContainText(
+    "model_auto_compact_token_limit",
+  );
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(JSON.stringify(calls)).not.toContain("runtime.start");
+  expect(JSON.stringify(calls)).not.toContain("api.start");
+});
+
+test("API page starts and stops only the public service and preserves page width", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.api_settings = {
+      mode: "named",
+      domain: "https://api.example.com",
+      has_token: true,
+      has_key: true,
+    };
+    s.runtime.public_api = {
+      state: "stopped",
+      enabled: false,
+      mode: "named",
+      url: "",
+      requests: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+    };
+  });
+  await navItem(page, "对外 API").click();
+  await page
+    .getByRole("button", { name: "开启 API 服务", exact: true })
+    .click();
+  await page.evaluate(() => {
+    (window as any).__state.runtime.public_api = {
+      state: "ready",
+      enabled: true,
+      mode: "named",
+      url: "https://api.example.com",
+      requests: 2,
+      active: 1,
+      completed: 1,
+      failed: 0,
+    };
+  });
+  await expect(
+    page.getByRole("button", { name: "关闭服务", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".co-api-access")).toContainText(
+    "https://api.example.com/v1",
+  );
+  await expect(page.getByLabel("API 域名", { exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "关闭服务", exact: true }).click();
+  const calls = JSON.stringify(
+    await page.evaluate(() => (window as any).__calls),
+  );
+  expect(calls).toContain("api.start");
+  expect(calls).toContain("api.stop");
+  expect(calls).not.toContain("runtime.release");
+  await page.setViewportSize({ width: 900, height: 800 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+});
+
+test("ComfyUI Studio validates and imports API workflow offline, rejects canvas format, and runs with dynamic overrides", async ({
+  page,
+}) => {
+  await mock(page, false);
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+  const tablist = page.getByRole("tablist", { name: "ComfyUI 模式" });
+  await expect(tablist.getByRole("tab")).toHaveCount(2);
+  await expect(
+    tablist.getByRole("tab", { name: /^工作流工坊/ }),
+  ).toHaveAttribute("aria-selected", "true");
+
+  // Open import modal while GPU is stopped (offline import).
+  await page
+    .getByRole("button", { name: "导入 API 工作流 (JSON)" })
+    .click();
+  const modal = page.getByRole("dialog", {
+    name: "导入 ComfyUI 工作流 (API JSON)",
+  });
+  await expect(modal).toBeVisible();
+
+  // Reject ComfyUI Canvas format JSON with actionable Save (API Format) hint.
+  await modal.getByLabel("工作流名称").fill("画布误导出测试");
+  await modal
+    .getByLabel("API 工作流 JSON")
+    .fill(JSON.stringify({ nodes: [{ id: 1, type: "KSampler" }], links: [] }));
+  await expect(modal.getByRole("alert")).toContainText("Save (API Format)");
+  await expect(
+    modal.getByRole("button", { name: "导入工作流", exact: true }),
+  ).toBeDisabled();
+
+  // Valid API format JSON passes validation and imports offline.
+  const apiWorkflow = {
+    "3": {
+      class_type: "CLIPTextEncode",
+      _meta: { title: "Prompt" },
+      inputs: { text: "ocean sunrise", clip: ["1", 0] },
+    },
+    "6": {
+      class_type: "KSampler",
+      _meta: { title: "Sampler" },
+      inputs: { seed: 42, steps: 20, positive: ["3", 0] },
+    },
+  };
+  await modal.getByLabel("工作流名称").fill("测试文生图工作流");
+  await modal.getByLabel("API 工作流 JSON").fill(JSON.stringify(apiWorkflow));
+  await expect(modal).toContainText("格式校验通过，检测到 2 个节点");
+  await modal.getByRole("button", { name: "导入工作流", exact: true }).click();
+  await expect(modal).toBeHidden();
+
+  // Imported workflow renders dynamic form fields.
+  await expect(page.locator(".co-comfy-workflow-list")).toContainText(
+    "测试文生图工作流",
+  );
+  const promptArea = page.locator(".co-comfy-param-form textarea").first();
+  await expect(promptArea).toHaveValue("ocean sunrise");
+
+  // Bring GPU online, start ComfyUI engine, edit prompt, and submit run.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.state = "ready";
+    s.runtime.gpu = { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 };
+  });
+  await page
+    .getByRole("button", { name: "启动 ComfyUI", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "停止 ComfyUI" }),
+  ).toBeVisible();
+
+  await promptArea.fill("neon harbor rain");
+  await page.getByRole("button", { name: "运行工作流" }).click();
+  const calls = await page.evaluate(() => (window as any).__calls);
+  expect(
+    calls.some((c: any) => c.action === "comfyui.workflow.import"),
+  ).toBe(true);
+  expect(calls.some((c: any) => c.action === "comfyui.start")).toBe(true);
+  const runCall = calls.find((c: any) => c.action === "comfyui.run");
+  expect(runCall?.payload?.overrides).toMatchObject({
+    "3.text": "neon harbor rain",
+    "6.seed": 42,
+    "6.steps": 20,
+  });
+});
+
+test("ComfyUI Native Canvas manages authenticated tunnel and opens window or browser without exposing token", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.active_engine = "comfyui";
+    s.runtime.comfyui.running = true;
+    s.runtime.comfyui.state = "ready";
+  });
+  await navItem(page, "ComfyUI").click();
+  await page
+    .getByRole("tablist", { name: "ComfyUI 模式" })
+    .getByRole("tab", { name: /^原生画布/ })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "原生节点画布安全访问" }),
+  ).toBeVisible();
+
+  // Fixed-domain mode only: temporary option is removed and domain + token inputs are visible directly.
+  const canvasSection = page.locator(".co-comfy-canvas-section");
+  await expect(canvasSection).not.toContainText("临时安全地址");
+  await expect(page.getByLabel("画布域名")).toBeVisible();
+  await page.getByLabel("画布域名").fill("comfy.example.com");
+  await page
+    .getByLabel("Cloudflare 安装命令或 Tunnel Token")
+    .fill("offline-placeholder");
+
+  // Start authenticated canvas tunnel.
+  await page.getByRole("button", { name: "开启原生画布" }).click();
+  await expect(page.locator(".co-comfy-canvas-access")).toContainText(
+    "comfy.example.com",
+  );
+  // Auth token must never be rendered in visible DOM.
+  await expect(page.locator("body")).not.toContainText(
+    "mock-secret-canvas-token",
+  );
+
+  // Launch in dedicated native window and system browser via Go bridge bindings.
+  await page.getByRole("button", { name: "在独立窗口打开" }).click();
+  await page.getByRole("button", { name: "在系统浏览器打开" }).click();
+  expect(await page.evaluate(() => (window as any).__canvasOpenCalls)).toEqual([
+    "window",
+    "browser",
+  ]);
+
+  // Stop canvas tunnel.
+  await page.getByRole("button", { name: "关闭画布隧道" }).first().click();
+  const actions = (await page.evaluate(() => (window as any).__calls)).map(
+    (c: any) => c.action,
+  );
+  expect(actions).toContain("comfyui.canvas.start");
+  expect(actions).toContain("comfyui.canvas.stop");
+});
+
+test("appearance follows system, persists explicit choices and updates native chrome", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await mock(page);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await navItem(page, "设置").click();
+  const choices = page.locator('.ant-segmented[aria-label="外观模式"]');
+  await expect(segmentedItem(choices, "跟随系统")).toHaveClass(
+    /ant-segmented-item-selected/,
+  );
+  await expect(
+    segmentedItem(choices, "跟随系统").locator('input[type="radio"]'),
+  ).toBeChecked();
+  await segmentedItem(choices, "浅色").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__nativeAppearance))
+    .toBe("light");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await navItem(page, "设置").click();
+  await expect(segmentedItem(choices, "浅色")).toHaveClass(
+    /ant-segmented-item-selected/,
+  );
+  await expect(
+    segmentedItem(choices, "浅色").locator('input[type="radio"]'),
+  ).toBeChecked();
+  await segmentedItem(choices, "跟随系统").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "切换到深色模式" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(segmentedItem(choices, "深色")).toHaveClass(
+    /ant-segmented-item-selected/,
+  );
+  await expect(
+    segmentedItem(choices, "深色").locator('input[type="radio"]'),
+  ).toBeChecked();
+  expect(await page.evaluate(() => (window as any).__calls)).toEqual([]);
+  await page
+    .getByRole("button", { name: "添加到开始菜单", exact: true })
+    .click();
+  await expect(page.getByText("已加入开始菜单")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "更新开始菜单快捷方式", exact: true }),
+  ).toBeVisible();
+});
+
+for (const appearance of ["light", "dark"] as const) {
+  test(`${appearance} ColabOne capsule theme keeps high contrast, red billing and readable workspace controls`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: appearance });
+    await mock(page, true);
+    const bg = appearance === "dark" ? "rgb(21, 22, 27)" : "rgb(255, 255, 255)";
+    const elevatedBg =
+      appearance === "dark" ? "rgb(28, 30, 38)" : "rgb(255, 255, 255)";
+    const brandColor =
+      appearance === "dark" ? "rgb(244, 244, 245)" : "rgb(17, 24, 39)";
+    const activePillBg =
+      appearance === "dark" ? "rgb(255, 255, 255)" : "rgb(17, 24, 39)";
+    const activePillText =
+      appearance === "dark" ? "rgb(17, 24, 39)" : "rgb(255, 255, 255)";
+    await expect(page.locator(".co-brand")).toHaveCSS("color", brandColor);
+    const activeNav = page.locator(".co-navbar nav .co-nav-pill-item.is-active");
+    await expect(activeNav).toHaveCSS("background-color", activePillBg);
+    await expect(activeNav).toHaveCSS("color", activePillText);
+    await expect(activeNav).toHaveCSS("border-radius", "9999px");
+    await expect(page.locator(".co-device-panel")).toHaveCSS(
+      "background-color",
+      bg,
+    );
+    await expect(page.locator(".co-billing-pill")).toHaveCSS(
+      "color",
+      appearance === "dark" ? "rgb(248, 113, 113)" : "rgb(220, 38, 38)",
+    );
+    await expect(page.locator(".co-stop-all")).toHaveCSS(
+      "color",
+      "rgb(255, 255, 255)",
+    );
+    await page.getByRole("button", { name: "展开运行日志" }).click();
+    await expect(page.locator(".co-log-drawer")).toHaveCSS(
+      "background-color",
+      elevatedBg,
+    );
+    await page.getByRole("button", { name: "收起运行日志", exact: true }).click();
+    await page.evaluate(() => {
+      (window as any).__state.models[0].downloaded = true;
+    });
+    const checkWorkspace = async (label: string) => {
+      const problems = await page.evaluate(() => {
+        const failures: string[] = [];
+        const rgba = (value: string) => {
+          const m = value.match(/[\d.]+/g)!.map(Number);
+          return [m[0], m[1], m[2], m.length >= 4 ? m[3] : 1];
+        };
+        const blend = (fg: number[], bg: number[]) => {
+          const a = fg[3];
+          return [
+            fg[0] * a + bg[0] * (1 - a),
+            fg[1] * a + bg[1] * (1 - a),
+            fg[2] * a + bg[2] * (1 - a),
+            1,
+          ];
+        };
+        const effectiveBg = (node: HTMLElement) => {
+          const layers: number[][] = [];
+          let cur: HTMLElement | null = node;
+          while (cur) {
+            const bg = rgba(getComputedStyle(cur).backgroundColor);
+            if (bg[3] > 0) layers.push(bg);
+            if (bg[3] >= 1) break;
+            cur = cur.parentElement;
+          }
+          let acc = [255, 255, 255, 1];
+          for (let i = layers.length - 1; i >= 0; i--) {
+            acc = blend(layers[i], acc);
+          }
+          return acc;
+        };
+        const luminance = (c: number[]) =>
+          c
+            .slice(0, 3)
+            .map((v) => {
+              v /= 255;
+              return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+            })
+            .reduce(
+              (sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i],
+              0,
+            );
+        for (const el of document.querySelectorAll<HTMLElement>(
+          "input:not([type=range]):not([type=radio]):not([type=checkbox]), select, textarea, .ant-select-selector, .ant-card, .co-vram-console, .co-model-card, .co-model-config-drawer, .co-common-repo-row, .co-comfy-card, .ant-segmented-item-selected",
+        )) {
+          if (!el.offsetWidth || (el as HTMLInputElement).disabled) continue;
+          const css = getComputedStyle(el),
+            rawBg = rgba(css.backgroundColor);
+          if (rawBg[3] === 0) continue;
+          const bg = effectiveBg(el),
+            fg = blend(rgba(css.color), bg);
+          const a = luminance(fg),
+            b = luminance(bg);
+          if ((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) < 4.5)
+            failures.push(`contrast ${el.className}`);
+        }
+        if (document.documentElement.scrollWidth > innerWidth)
+          failures.push("horizontal overflow");
+        if (document.documentElement.scrollHeight > innerHeight)
+          failures.push("vertical document overflow");
+        return failures;
+      });
+      expect(problems, label).toEqual([]);
+    };
+    for (const label of ["对外 API", "ComfyUI", "设置"] as const) {
+      await navItem(page, label).click();
+      await checkWorkspace(label);
+      if (label === "对外 API") {
+        await page
+          .locator(".co-api-model-slot")
+          .getByRole("button", { name: /选择模型|切换模型/ })
+          .click();
+        await expect(page.locator(".co-models-drawer")).toBeVisible();
+        await checkWorkspace("对外 API - 模型抽屉");
+        await page.keyboard.press("Escape");
+        await expect(page.locator(".co-models-drawer")).toBeHidden();
+      }
+    }
+    await page.screenshot({
+      path: `../work/appearance-${appearance}.png`,
+      fullPage: true,
+    });
+    await navItem(page, "远端设备").click();
+    await page
+      .getByRole("button", { name: "停止实例", exact: true })
+      .click();
+    await expect(page.locator(".ant-modal-content")).toHaveCSS(
+      "background-color",
+      elevatedBg,
+    );
+    expect(
+      await page.evaluate(() => (window as any).__state.account.assignments),
+    ).toBe(1);
+  });
+}
+
+test("topbar and homepage display active billing, burn rate, balance, days-hours endurance, idle dropdown, and omit CU budget", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.account = {
+      logged_in: true,
+      balance: 2207.42,
+      rate: 1.96,
+      assignments: 1,
+      checked_at: Date.now() / 1000,
+    };
+  });
+
+  const topbar = page.locator(".co-status-bar");
+  await expect(topbar).toContainText("正在扣费");
+  await expect(topbar).toContainText("1.96");
+  await expect(topbar).toContainText("2207.42");
+  await expect(topbar).toContainText("46 天 22 小时");
+
+  const devicePage = page.locator(".co-device-page");
+  await expect(devicePage).toContainText("正在扣费");
+  await expect(devicePage).toContainText("1.96");
+  await expect(devicePage).toContainText("2207.42");
+  await expect(devicePage).toContainText("46 天 22 小时");
+  await expect(page.getByText(/单次预算|单次 GPU 预算/)).toHaveCount(0);
+
+  const idleSelect = antSelect(devicePage, "空闲自动释放时长");
+  await expect(idleSelect).toBeVisible();
+  await expect(idleSelect).toContainText("30 分钟（默认）");
+
+  await idleSelect.click();
+  const dropdown = page
+    .locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)")
+    .last();
+  await expect(dropdown).toBeVisible();
+  await expect(dropdown).toContainText("30 分钟（默认）");
+  await expect(dropdown).toContainText("45 分钟");
+  await expect(dropdown).toContainText("1 小时");
+  await dropdown
+    .locator(".ant-select-item-option", { hasText: "45 分钟" })
+    .first()
+    .click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__calls
+            .filter((c: any) => c.action === "settings.save")
+            .at(-1)?.payload,
+      ),
+    )
+    .toMatchObject({ idle_minutes: 45 });
+  await expect(idleSelect).toContainText("45 分钟");
+
+  await chooseAntOption(page, idleSelect, "1 小时");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__calls
+            .filter((c: any) => c.action === "settings.save")
+            .at(-1)?.payload,
+      ),
+    )
+    .toMatchObject({ idle_minutes: 60 });
+  await expect(idleSelect).toContainText("1 小时");
+
+  await navItem(page, "设置").click();
+  await expect(page.getByText(/单次预算|单次 GPU 预算/)).toHaveCount(0);
+});
+
+test("homepage renders ColabOne real-time resource monitor charts for GPU VRAM, RAM, Disk, and CPU", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    s.runtime.resources = {
+      gpu: {
+        name: "NVIDIA A100-SXM4-40GB",
+        total_mib: 40960,
+        used_mib: 16384,
+        util_percent: 68,
+        temp_c: 64,
+        power_w: 185,
+        power_limit_w: 400,
+      },
+      memory: {
+        total_bytes: 83.5 * 1024 ** 3,
+        used_bytes: 29.2 * 1024 ** 3,
+        available_bytes: 54.3 * 1024 ** 3,
+        percent: 35.0,
+      },
+      disk: {
+        total_bytes: 200 * 1024 ** 3,
+        used_bytes: 56 * 1024 ** 3,
+        free_bytes: 144 * 1024 ** 3,
+        percent: 28.0,
+        read_bps: 36 * 1024 ** 2,
+        write_bps: 14 * 1024 ** 2,
+      },
+      cpu: {
+        cores: 12,
+        percent: 42.0,
+      },
+      history: [
+        {
+          t: now - 2,
+          vram_pct: 38,
+          gpu_util: 55,
+          ram_pct: 34,
+          cpu_pct: 36,
+          disk_pct: 28,
+          disk_read_bps: 20 * 1024 ** 2,
+          disk_write_bps: 10 * 1024 ** 2,
+        },
+        {
+          t: now - 1,
+          vram_pct: 40,
+          gpu_util: 68,
+          ram_pct: 35,
+          cpu_pct: 42,
+          disk_pct: 28,
+          disk_read_bps: 36 * 1024 ** 2,
+          disk_write_bps: 14 * 1024 ** 2,
+        },
+      ],
+    };
+  });
+
+  const monitor = page.locator(".co-monitor");
+  await expect(monitor).toBeVisible();
+  await expect(monitor).toContainText("GPU 显存");
+  await expect(monitor).toContainText("系统内存");
+  await expect(monitor).toContainText("远端磁盘");
+  await expect(monitor).toContainText("处理器");
+  await expect(monitor).toContainText("NVIDIA A100-SXM4-40GB");
+  await expect(monitor).toContainText("35%");
+  await expect(monitor).toContainText("36.0 MB/s");
+  await expect(monitor).toContainText("12 vCPU");
+  await expect(monitor.locator("svg.co-rm-svg")).toHaveCount(4);
+
+  // Layout switcher is icon-only and toggling to rows renders all 4 charts stacked simultaneously
+  const layoutSwitch = monitor.locator(".co-rm-layout-segmented");
+  await expect(layoutSwitch).toBeVisible();
+  const visibleToggleText = await layoutSwitch.evaluate((el) =>
+    Array.from(el.querySelectorAll(".co-rm-seg-label"))
+      .map((node) => {
+        const clone = node.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll(".co-rm-sr-only").forEach((n) => n.remove());
+        return (clone.textContent || "").trim();
+      })
+      .join(""),
+  );
+  expect(visibleToggleText).toBe("");
+
+  await layoutSwitch.locator(".ant-segmented-item").nth(1).click();
+  await expect(monitor.locator(".co-rm-rows")).toBeVisible();
+  await expect(monitor.locator(".co-rm-row")).toHaveCount(4);
+  await expect(monitor.locator(".co-rm-row svg.co-rm-svg")).toHaveCount(4);
+  await expect(monitor.locator(".co-rm-rows-axis-ticks")).toContainText("60 秒前");
+  await expect(monitor.locator(".co-rm-rows-axis-ticks")).toContainText("现在");
+
+  const rowGeometry = await monitor.evaluate((el) => {
+    const rows = Array.from(el.querySelectorAll(".co-rm-row")).map((r) =>
+      r.getBoundingClientRect(),
+    );
+    const plots = Array.from(el.querySelectorAll(".co-rm-row .co-rm-row-plot")).map(
+      (p) => p.getBoundingClientRect(),
+    );
+    const axis = el
+      .querySelector(".co-rm-rows-axis-ticks")
+      ?.getBoundingClientRect();
+    return {
+      monitorHeight: Math.round(el.getBoundingClientRect().height),
+      rows: rows.map((r) => ({ top: r.top, bottom: r.bottom, width: r.width })),
+      plots: plots.map((p) => ({
+        left: p.left,
+        right: p.right,
+        width: p.width,
+        height: p.height,
+      })),
+      axis: axis ? { left: axis.left, right: axis.right } : null,
+    };
+  });
+
+  // Compact vertical footprint: all 4 stacked rows stay crisp without dominating the viewport
+  expect(rowGeometry.monitorHeight).toBeLessThanOrEqual(480);
+  for (const row of rowGeometry.rows) {
+    expect(row.bottom - row.top).toBeLessThanOrEqual(100);
+  }
+  // All 4 rows stacked vertically, non-overlapping
+  for (let i = 1; i < rowGeometry.rows.length; i++) {
+    expect(rowGeometry.rows[i].top).toBeGreaterThanOrEqual(
+      rowGeometry.rows[i - 1].bottom,
+    );
+  }
+  // All 4 charts share exact left/right X alignment with the synchronized timeline axis
+  const basePlot = rowGeometry.plots[0];
+  expect(basePlot.width).toBeGreaterThan(400);
+  for (const plot of rowGeometry.plots) {
+    expect(Math.abs(plot.left - basePlot.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(plot.right - basePlot.right)).toBeLessThanOrEqual(1);
+  }
+  expect(rowGeometry.axis).not.toBeNull();
+  expect(Math.abs(rowGeometry.axis!.left - basePlot.left)).toBeLessThanOrEqual(
+    2,
+  );
+  expect(
+    Math.abs(rowGeometry.axis!.right - basePlot.right),
+  ).toBeLessThanOrEqual(2);
+});
+
+test("resource monitor shows connecting state before kernel telemetry and live curves during deployment", async ({
+  page,
+}) => {
+  await mock(page, false);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.colab = true;
+    s.runtime = { state: "starting" };
+    s.operation = { title: "部署远端管理服务", running: true };
+  });
+
+  const monitor = page.locator(".co-monitor");
+  await expect(monitor).toHaveClass(/is-connecting/);
+  await expect(monitor).toContainText("正在连接");
+  await expect(monitor).not.toContainText("待机预览");
+  await expect(monitor).not.toContainText("20 MB/s");
+  await expect(monitor).toContainText("正在初始化 T4 加速器");
+
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    s.runtime = {
+      id: "gpu-t4-boot",
+      state: "starting",
+      gpu: {
+        name: "Tesla T4",
+        total_mib: 15360,
+        used_mib: 512,
+        util_percent: 12,
+        temp_c: 40,
+      },
+      resources: {
+        gpu: {
+          name: "Tesla T4",
+          total_mib: 15360,
+          used_mib: 512,
+          util_percent: 12,
+          temp_c: 40,
+        },
+        memory: {
+          total_bytes: 16 * 1024 ** 3,
+          used_bytes: 4 * 1024 ** 3,
+          available_bytes: 12 * 1024 ** 3,
+          percent: 25,
+        },
+        disk: {
+          total_bytes: 100 * 1024 ** 3,
+          used_bytes: 30 * 1024 ** 3,
+          free_bytes: 70 * 1024 ** 3,
+          percent: 30,
+          read_bps: 4 * 1024 ** 2,
+          write_bps: 2 * 1024 ** 2,
+        },
+        cpu: { cores: 4, percent: 48 },
+        history: [
+          {
+            t: now - 1.5,
+            vram_pct: 3.3,
+            gpu_util: 12,
+            ram_pct: 25,
+            cpu_pct: 48,
+            disk_pct: 30,
+            disk_read_bps: 4 * 1024 ** 2,
+            disk_write_bps: 2 * 1024 ** 2,
+          },
+        ],
+      },
+    };
+  });
+
+  await expect(monitor).not.toHaveClass(/is-connecting/);
+  await expect(monitor).not.toHaveClass(/is-offline/);
+  await expect(monitor).toContainText("部署中 · 实时采样");
+  await expect(monitor).toContainText("Tesla T4");
+  await expect(monitor).toContainText("4 vCPU");
+  await expect(monitor).toContainText("48%");
+});
+
+test("simplified 2-tab model library exposes only 我的 and 社区 and displays concise status badges", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.loaded_model = "model-vram";
+    s.models = [
+      {
+        id: "model-vram",
+        name: "Qwen2.5 · 7B Instruct",
+        description: "主力对话模型 · Q4_K_M",
+        repo: "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        common: true,
+        custom: false,
+        size: 4_700_000_000,
+        min_vram_mib: 6144,
+        downloaded: true,
+        loaded: true,
+        files: [],
+      },
+      {
+        id: "model-disk",
+        name: "DeepSeek-R1 · 8B",
+        description: "推理模型 · 已缓存远端磁盘",
+        repo: "unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF",
+        common: true,
+        custom: true,
+        size: 5_200_000_000,
+        min_vram_mib: 6144,
+        downloaded: true,
+        loaded: false,
+        files: [],
+      },
+      {
+        id: "model-cloud",
+        name: "Gemma 3 · 4B",
+        description: "轻量多用途模型",
+        repo: "bartowski/gemma-3-4b-it-GGUF",
+        common: true,
+        custom: true,
+        size: 2_600_000_000,
+        min_vram_mib: 4096,
+        downloaded: false,
+        loaded: false,
+        files: [],
+      },
+    ];
+  });
+
+  const drawer = await openApiModelDrawer(page);
+  const tablist = drawer.locator(".co-model-tabs").getByRole("tablist");
+  await expect(tablist.getByRole("tab")).toHaveCount(2);
+  await expect(tablist.getByRole("tab", { name: /^我\s*的/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(
+    tablist.getByRole("tab", { name: /^社\s*区$/ }),
+  ).toBeVisible();
+  for (const legacyTab of [
+    "常用模型",
+    "常用",
+    "在线开源社区",
+    "当前收藏",
+    "我的模型",
+    "我的收藏",
+    "已下载",
+    "画图 / 视频",
+    "在线搜索",
+  ]) {
+    await expect(tablist.getByRole("tab", { name: legacyTab, exact: true })).toHaveCount(0);
+  }
+
+  await expect(
+    drawer.locator(".co-model-card", { hasText: "Qwen2.5 · 7B Instruct" }),
+  ).toContainText("使用中");
+  await expect(
+    drawer.locator(".co-model-card", { hasText: "DeepSeek-R1 · 8B" }),
+  ).toContainText("已下载");
+  await expect(
+    drawer.locator(".co-model-card", { hasText: "Gemma 3 · 4B" }),
+  ).toContainText("下载并装载");
+  await page.waitForTimeout(350);
+  await page.screenshot({
+    path: fileURLToPath(
+      new URL("../../work/model-drawer-mine.png", import.meta.url),
+    ),
+    fullPage: true,
+  });
+
+  await tablist.getByRole("tab", { name: /^社\s*区$/ }).click();
+  await expect(
+    tablist.getByRole("tab", { name: /^社\s*区$/ }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(drawer.locator(".co-hub-browser")).toBeVisible();
+  await expect(drawer.locator(".co-hub-repo").first()).toBeVisible();
+  await page.screenshot({
+    path: fileURLToPath(
+      new URL("../../work/model-drawer-community.png", import.meta.url),
+    ),
+    fullPage: true,
+  });
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
+
+  // Also verify "去选择模型 →" shortcut from 远端设备 jumps to 对外 API with the drawer open.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.loaded_model = undefined;
+    for (const m of s.models) m.loaded = false;
+  });
+  await navItem(page, "远端设备").click();
+  await page.getByRole("button", { name: /去选择模型/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "对外 API", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".co-models-drawer")).toBeVisible();
+});
+
+test("fullscreen widescreen layout aligns navbar, status bar and cards across all 4 sections", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await mock(page, true);
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+
+  const checkRails = async (selector: string) => {
+    const rails = await page.evaluate((sel) => {
+      const brand = document.querySelector(".co-brand")?.getBoundingClientRect();
+      const logs = document
+        .querySelector(".co-logs-trigger")
+        ?.getBoundingClientRect();
+      const statusLeft = document
+        .querySelector(".co-topbar-left")
+        ?.getBoundingClientRect();
+      const statusRight = document
+        .querySelector(".co-topbar-right")
+        ?.getBoundingClientRect();
+      const main = document.querySelector(sel)?.getBoundingClientRect();
+      return {
+        navLeft: brand ? Math.round(brand.left) : -1,
+        navRight: logs ? Math.round(logs.right) : -1,
+        statusLeft: statusLeft ? Math.round(statusLeft.left) : -1,
+        statusRight: statusRight ? Math.round(statusRight.right) : -1,
+        mainLeft: main ? Math.round(main.left) : -1,
+        mainRight: main ? Math.round(main.right) : -1,
+        mainWidth: main ? Math.round(main.width) : 0,
+        overflowX: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    }, selector);
+    expect(rails.overflowX).toBe(0);
+    expect(rails.mainWidth).toBeGreaterThanOrEqual(1600);
+    expect(Math.abs(rails.navLeft - rails.statusLeft)).toBeLessThanOrEqual(2);
+    expect(Math.abs(rails.navLeft - rails.mainLeft)).toBeLessThanOrEqual(2);
+    expect(Math.abs(rails.navRight - rails.statusRight)).toBeLessThanOrEqual(2);
+    expect(Math.abs(rails.navRight - rails.mainRight)).toBeLessThanOrEqual(2);
+  };
+
+  // Device: wide hero row (GPU Control + Billing side by side) + 4-column ResourceMonitor
+  await checkRails(".co-device-hero-grid");
+  const deviceLayout = await page.evaluate(() => {
+    const deviceCard = document
+      .querySelector(".co-device-card")!
+      .getBoundingClientRect();
+    const billingCard = document
+      .querySelector(".co-billing-card")!
+      .getBoundingClientRect();
+    const rmCards = Array.from(document.querySelectorAll(".co-rm-card")).map((el) =>
+      Math.round(el.getBoundingClientRect().top),
+    );
+    return {
+      heroSideBySide:
+        Math.abs(deviceCard.top - billingCard.top) <= 2 &&
+        billingCard.left > deviceCard.right,
+      rmRowCount: new Set(rmCards).size,
+      rmCardCount: rmCards.length,
+    };
+  });
+  expect(deviceLayout).toEqual({
+    heroSideBySide: true,
+    rmRowCount: 1,
+    rmCardCount: 4,
+  });
+
+  // API page: wide aligned rails + 2-column form inputs + equal-height cards
+  await navItem(page, "对外 API").click();
+  await expect(
+    page.getByRole("heading", { name: "对外 API", exact: true }),
+  ).toBeVisible();
+  await checkRails(".co-api-model-slot");
+  const apiLayout = await page.evaluate(() => {
+    const left = document
+      .querySelector(".co-api-connection")!
+      .getBoundingClientRect();
+    const right = document
+      .querySelector(".co-api-examples")!
+      .getBoundingClientRect();
+    const domain = document.querySelector("#api-domain")!.getBoundingClientRect();
+    const tunnel = document.querySelector("#api-tunnel")!.getBoundingClientRect();
+    return {
+      equalHeight: Math.abs(left.height - right.height) <= 2,
+      formSideBySide:
+        Math.abs(domain.top - tunnel.top) <= 6 && tunnel.left > domain.right,
+    };
+  });
+  expect(apiLayout).toEqual({ equalHeight: true, formSideBySide: true });
+
+  // ComfyUI page: wide aligned rails + vertically centered pill tabs
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+  await checkRails(".co-comfy-engine-card");
+  const comfyTabAlign = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll(".co-comfy-tabs .ant-tabs-tab")).map(
+      (tab) => {
+        const t = tab.getBoundingClientRect();
+        const label = tab
+          .querySelector(".co-comfy-tab-label")!
+          .getBoundingClientRect();
+        const icon = tab
+          .querySelector(".co-comfy-tab-label svg")!
+          .getBoundingClientRect();
+        const mid = (t.top + t.bottom) / 2;
+        return {
+          labelDelta: Math.abs((label.top + label.bottom) / 2 - mid),
+          iconDelta: Math.abs((icon.top + icon.bottom) / 2 - mid),
+        };
+      },
+    );
+  });
+  expect(comfyTabAlign.length).toBe(2);
+  for (const item of comfyTabAlign) {
+    expect(item.labelDelta).toBeLessThanOrEqual(1);
+    expect(item.iconDelta).toBeLessThanOrEqual(1);
+  }
+
+  // Settings page: wide aligned rails + Bento 2-col primary & 3-col secondary rows
+  await navItem(page, "设置").click();
+  await expect(
+    page.getByRole("heading", { name: "设置", exact: true }),
+  ).toBeVisible();
+  await checkRails(".co-about-card");
+  const settingsLayout = await page.evaluate(() => {
+    const primaryTops = Array.from(
+      document.querySelectorAll(".co-settings-row-primary > .co-settings-card"),
+    ).map((el) => Math.round(el.getBoundingClientRect().top));
+    const secondaryTops = Array.from(
+      document.querySelectorAll(".co-settings-row-secondary > .co-settings-card"),
+    ).map((el) => Math.round(el.getBoundingClientRect().top));
+    return {
+      primaryCols: primaryTops.length,
+      primaryRows: new Set(primaryTops).size,
+      secondaryCols: secondaryTops.length,
+      secondaryRows: new Set(secondaryTops).size,
+    };
+  });
+  expect(settingsLayout).toEqual({
+    primaryCols: 2,
+    primaryRows: 1,
+    secondaryCols: 3,
+    secondaryRows: 1,
+  });
+
+  // Verify segmented control icons & labels stay vertically centered inside their pills
+  const segAlign = await page.evaluate(() => {
+    return Array.from(
+      document.querySelectorAll(".co-appearance-section .ant-segmented-item"),
+    ).map((item) => {
+      const r = item.getBoundingClientRect();
+      const inner = item.querySelector(".co-seg-item")!.getBoundingClientRect();
+      const icon = item.querySelector(".co-seg-item svg")!.getBoundingClientRect();
+      const mid = (r.top + r.bottom) / 2;
+      return {
+        innerDelta: Math.abs((inner.top + inner.bottom) / 2 - mid),
+        iconDelta: Math.abs((icon.top + icon.bottom) / 2 - mid),
+      };
+    });
+  });
+  expect(segAlign.length).toBe(3);
+  for (const item of segAlign) {
+    expect(item.innerDelta).toBeLessThanOrEqual(1);
+    expect(item.iconDelta).toBeLessThanOrEqual(1);
+  }
+});
+
+test("theme toggle expands a ~1s circular arc reveal from the click point in both directions", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+  await mock(page);
+  await navItem(page, "设置").click();
+
+  await page.evaluate(() => {
+    const calls: Array<{
+      clipPath: string[];
+      duration: number;
+      pseudoElement?: string;
+      fill?: string;
+    }> = [];
+    (window as any).__themeAnimCalls = calls;
+    const orig = document.documentElement.animate.bind(document.documentElement);
+    document.documentElement.animate = ((
+      keyframes: any,
+      options?: any,
+    ) => {
+      const clipPath = Array.isArray(keyframes)
+        ? keyframes
+            .map((frame: any) => frame?.clipPath)
+            .filter((v: unknown): v is string => typeof v === "string")
+        : Array.isArray(keyframes?.clipPath)
+          ? keyframes.clipPath
+          : [];
+      if (clipPath.length >= 2) {
+        calls.push({
+          clipPath,
+          duration: Number(options?.duration ?? 0),
+          pseudoElement: options?.pseudoElement,
+          fill: options?.fill,
+        });
+      }
+      return orig(keyframes, options);
+    }) as typeof document.documentElement.animate;
+  });
+
+  // Light -> Dark from top-right toggle button
+  const toDarkBtn = page.getByRole("button", { name: "切换到深色模式" });
+  const darkBox = (await toDarkBtn.boundingBox())!;
+  const clickX = Math.round(darkBox.x + darkBox.width / 2);
+  const clickY = Math.round(darkBox.y + darkBox.height / 2);
+  await page.mouse.click(clickX, clickY);
+
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__themeAnimCalls.length))
+    .toBe(1);
+
+  const darkAnim = await page.evaluate(() => (window as any).__themeAnimCalls[0]);
+  expect(darkAnim.pseudoElement).toBe("::view-transition-new(root)");
+  expect(darkAnim.duration).toBe(1000);
+  expect(darkAnim.fill).toBe("both");
+  expect(darkAnim.clipPath[0]).toMatch(
+    new RegExp(`^circle\\(0px at ${clickX}(?:\\.\\d+)?px ${clickY}(?:\\.\\d+)?px\\)$`),
+  );
+  const darkEnd = darkAnim.clipPath[darkAnim.clipPath.length - 1];
+  const darkEndMatch = darkEnd.match(/^circle\((\d+)px at 1280px 0px\)$/);
+  expect(Number(darkEndMatch?.[1] ?? 0)).toBeGreaterThan(1000);
+
+  // Dark -> Light immediately (proves clicks are not blocked mid-transition and
+  // both directions expand outward into a clean top-right corner arc).
+  const toLightBtn = page.getByRole("button", { name: "切换到浅色模式" });
+  await toLightBtn.click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__themeAnimCalls.length))
+    .toBe(2);
+
+  const lightAnim = await page.evaluate(() => (window as any).__themeAnimCalls[1]);
+  expect(lightAnim.pseudoElement).toBe("::view-transition-new(root)");
+  expect(lightAnim.duration).toBe(1000);
+  expect(lightAnim.fill).toBe("both");
+  expect(lightAnim.clipPath[0]).toMatch(/^circle\(0px at /);
+  expect(lightAnim.clipPath[lightAnim.clipPath.length - 1]).toMatch(
+    /^circle\(\d+px at 1280px 0px\)$/,
+  );
+});
+
+test("GPU-dependent pages show quick jump to 远端设备 only when GPU is not started", async ({
+  page,
+}) => {
+  // 1) When GPU is stopped, 对外 API / 模型抽屉 / ComfyUI expose a quick jump to 远端设备.
+  await mock(page, false);
+
+  await navItem(page, "对外 API").click();
+  const apiJump = page.getByRole("button", { name: "去启动 GPU" });
+  await expect(apiJump).toBeVisible();
+  await apiJump.click();
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+
+  // From 模型抽屉 inside 对外 API: closes drawer and jumps to 远端设备.
+  const drawer = await openApiModelDrawer(page);
+  const drawerJump = drawer.getByRole("button", { name: "去启动 GPU" });
+  await expect(drawerJump).toBeVisible();
+  await drawerJump.click();
+  await expect(drawer).toBeHidden();
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+
+  // From ComfyUI engine header & 原生画布 tab.
+  await navItem(page, "ComfyUI").click();
+  const comfyJump = page.getByRole("button", { name: "去启动 GPU" });
+  await expect(comfyJump).toBeVisible();
+  await comfyJump.click();
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+
+  await navItem(page, "ComfyUI").click();
+  await page.getByRole("tab", { name: "原生画布" }).click();
+  const canvasJump = page.getByRole("button", { name: "前往启动 GPU" });
+  await expect(canvasJump).toBeVisible();
+  await canvasJump.click();
+  await expect(
+    page.getByRole("heading", { name: "远端设备", exact: true }),
+  ).toBeVisible();
+
+  // Clicking quick jumps must never allocate a GPU automatically.
+  expect(await page.evaluate(() => (window as any).__calls)).toEqual([]);
+
+  // 2) Once GPU is ready, none of those GPU-dependent pages show the jump entry.
+  await mock(page, true);
+
+  await navItem(page, "对外 API").click();
+  await expect(
+    page.getByRole("button", { name: /去启动 GPU|前往启动 GPU|查看 GPU 启动进度/ }),
+  ).toHaveCount(0);
+
+  const readyDrawer = await openApiModelDrawer(page);
+  await expect(
+    readyDrawer.getByRole("button", {
+      name: /去启动 GPU|前往启动 GPU|查看 GPU 启动进度/,
+    }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(readyDrawer).toBeHidden();
+
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("button", { name: /去启动 GPU|前往启动 GPU|查看 GPU 启动进度/ }),
+  ).toHaveCount(0);
+  await page.getByRole("tab", { name: "原生画布" }).click();
+  await expect(
+    page.getByRole("button", { name: /去启动 GPU|前往启动 GPU|查看 GPU 启动进度/ }),
+  ).toHaveCount(0);
+});

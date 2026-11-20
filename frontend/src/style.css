@@ -1,0 +1,855 @@
+@import "./palette.css";
+@import "./fonts.css";
+
+/* ColabOne desktop shell & typography */
+:root {
+  --co-font-sans:
+    "Sarasa UI SC", -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", sans-serif;
+  --co-font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Sarasa UI SC", monospace;
+  font-family: var(--co-font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--co-text);
+  background: var(--co-canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --co-radius-sm: 8px;
+  --co-radius: 10px;
+  --co-radius-md: 12px;
+  --co-radius-lg: 16px;
+  --co-radius-pill: 9999px;
+  /* Unified fluid desktop shell width & responsive edge gutters */
+  --co-container-max: 1840px;
+  --co-container-pad: clamp(20px, 2.2vw, 36px);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--co-canvas);
+  color: var(--co-text);
+  font-family: var(--co-font-sans);
+  font-size: 14px;
+}
+
+pre,
+code,
+kbd,
+samp {
+  font-family: var(--co-font-mono);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ColabOne ultra-minimal 4px auto-hiding capsule scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*[data-scrolling="true"] {
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+:root[data-theme="dark"] *[data-scrolling="true"] {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+  background: transparent;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+  transition: background-color 0.28s ease;
+}
+
+*[data-scrolling="true"]::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+:root[data-theme="dark"] *[data-scrolling="true"]::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: rgba(100, 116, 139, 0.8) !important;
+}
+
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover,
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.5) !important;
+}
+
+/* ColabOne smooth page entrance motion */
+@keyframes co-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.co-page-motion {
+  animation: co-page-enter 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-page-motion {
+    animation: none;
+  }
+}
+
+/* View Transitions API smooth expanding circular theme transition */
+::view-transition,
+::view-transition-group(root),
+::view-transition-image-pair(root),
+::view-transition-old(root),
+::view-transition-new(root) {
+  pointer-events: none;
+}
+
+::view-transition-group(root),
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 9999;
+}
+
+/* ColabOne rounded-xl button controls */
+.ant-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: var(--co-radius);
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.12s ease;
+}
+
+.ant-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.ant-btn:not(.ant-btn-icon-only):not(.ant-btn-link):not(.ant-btn-text) {
+  padding-inline: 15px;
+}
+
+.ant-btn-sm {
+  gap: 5px;
+  font-size: 13px;
+  border-radius: var(--co-radius-sm);
+}
+
+.ant-btn-sm:not(.ant-btn-icon-only):not(.ant-btn-link):not(.ant-btn-text) {
+  padding-inline: 11px;
+}
+
+.ant-btn-icon-only {
+  gap: 0;
+  padding-inline: 0 !important;
+}
+
+.ant-btn .ant-btn-icon,
+.ant-btn .ant-btn-loading-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-inline-end: 0 !important;
+  line-height: 1;
+}
+
+.ant-btn .ant-btn-loading-icon > .anticon {
+  margin-inline-end: 0 !important;
+}
+
+.ant-btn > svg,
+.ant-btn > .anticon {
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.ant-btn > .anticon + span,
+.ant-btn > span + .anticon {
+  margin-inline-start: 0 !important;
+}
+
+.ant-btn-link {
+  gap: 4px;
+  padding-inline: 4px;
+}
+
+.ant-btn-link.co-inline-link {
+  display: inline-flex;
+  align-items: center;
+  height: auto !important;
+  padding: 0 2px !important;
+  border: 0 !important;
+  line-height: inherit !important;
+  font-size: inherit !important;
+  vertical-align: middle;
+}
+
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-background-ghost) {
+  background: var(--co-accent);
+  border-color: var(--co-accent);
+  color: var(--co-on-accent);
+  box-shadow: 0 1px 2px rgba(59, 130, 246, 0.24);
+}
+
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-background-ghost):hover:not(:disabled) {
+  background: var(--co-accent-hover);
+  border-color: var(--co-accent-hover);
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3);
+}
+
+.ant-btn-primary.ant-btn-background-ghost:not(.ant-btn-dangerous) {
+  background: var(--co-selected);
+  border-color: rgba(59, 130, 246, 0.42);
+  color: var(--co-accent-strong);
+  box-shadow: none;
+}
+
+.ant-btn-primary.ant-btn-background-ghost:not(.ant-btn-dangerous):hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: var(--co-accent);
+  color: var(--co-accent-strong);
+}
+
+:root[data-theme="dark"] .ant-btn-primary.ant-btn-background-ghost:not(.ant-btn-dangerous):hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.26);
+  border-color: var(--co-accent-hover);
+  color: #dbeafe;
+}
+
+.ant-btn-primary.ant-btn-dangerous {
+  background: var(--co-danger);
+  border-color: var(--co-danger);
+  color: var(--co-on-danger);
+  box-shadow: 0 1px 2px rgba(239, 68, 68, 0.24);
+}
+
+.ant-btn-primary.ant-btn-dangerous:hover:not(:disabled) {
+  background: var(--co-danger-hover);
+  border-color: var(--co-danger-hover);
+}
+
+.ant-btn-default:not(.ant-btn-dangerous) {
+  background: var(--co-surface);
+  border-color: var(--co-border);
+  color: var(--co-text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.ant-btn-default:not(.ant-btn-dangerous):hover:not(:disabled) {
+  background: var(--co-soft-hover);
+  border-color: var(--co-input-border);
+  color: var(--co-text);
+}
+
+:root[data-theme="dark"] .ant-btn-default:not(.ant-btn-dangerous) {
+  background: #1d1f27;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: var(--co-text);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .ant-btn-default:not(.ant-btn-dangerous):hover:not(:disabled) {
+  background: #262934;
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.ant-btn-primary[disabled],
+.ant-btn-primary[disabled]:hover {
+  background: var(--co-subtle) !important;
+  border-color: var(--co-border) !important;
+  color: var(--co-muted) !important;
+  opacity: 0.78;
+  box-shadow: none !important;
+}
+
+.ant-btn-default[disabled],
+.ant-btn-default[disabled]:hover {
+  background: var(--co-subtle) !important;
+  border-color: var(--co-border-secondary) !important;
+  color: var(--co-muted) !important;
+  opacity: 0.72;
+  box-shadow: none !important;
+}
+
+.ant-btn-text:hover:not(:disabled) {
+  background: var(--co-soft-hover) !important;
+}
+
+/* Layered Ant Design Surfaces */
+.ant-layout,
+.ant-layout-content {
+  background: var(--co-canvas);
+}
+
+.ant-card {
+  border-radius: var(--co-radius-lg);
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+  box-shadow: var(--co-card-shadow);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.16s ease;
+}
+
+.ant-card:not(.ant-card-small) > .ant-card-head {
+  min-height: 50px;
+  padding: 0 22px;
+  font-size: 15px;
+  background: transparent;
+  border-bottom-color: var(--co-border-secondary);
+}
+
+.ant-card:not(.ant-card-small) > .ant-card-body {
+  padding: 20px 22px;
+}
+
+.ant-card-small {
+  border-radius: 14px;
+}
+
+.ant-card-small > .ant-card-head {
+  min-height: 44px;
+  padding: 0 18px;
+  font-size: 14px;
+  background: transparent;
+  border-bottom-color: var(--co-border-secondary);
+}
+
+.ant-card-small > .ant-card-body {
+  padding: 16px 18px;
+}
+
+/* ColabOne frosted glass modal & drawer masks */
+.ant-modal-mask,
+.ant-drawer-mask {
+  background: var(--co-overlay) !important;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.ant-modal-content,
+.ant-drawer-content {
+  background: var(--co-elevated) !important;
+}
+
+.ant-modal-content {
+  border-radius: var(--co-radius-lg) !important;
+  border: 1px solid var(--co-border-secondary);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.22) !important;
+}
+
+.ant-modal-header,
+.ant-drawer-header {
+  background: transparent !important;
+  border-bottom-color: var(--co-border-secondary) !important;
+}
+
+:root[data-theme="dark"] .ant-modal-content,
+:root[data-theme="dark"] .ant-drawer-content,
+:root[data-theme="dark"] .ant-popover-inner,
+:root[data-theme="dark"] .ant-select-dropdown,
+:root[data-theme="dark"] .ant-dropdown-menu {
+  background: var(--co-elevated) !important;
+  border: 1px solid var(--co-border);
+}
+
+/* ColabOne inputs & selects — soft recessed resting surface + crisp focus ring */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-number,
+.ant-select:not(.ant-select-customize-input) .ant-select-selector {
+  border-radius: var(--co-radius) !important;
+  border-color: var(--co-border);
+  background: var(--co-input-bg) !important;
+  color: var(--co-text);
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.ant-input:focus,
+.ant-input-affix-wrapper-focused,
+.ant-input-number-focused,
+.ant-select-focused:not(.ant-select-customize-input) .ant-select-selector {
+  background: var(--co-surface) !important;
+  border-color: var(--co-focus) !important;
+  box-shadow: 0 0 0 3px var(--co-focus-ring) !important;
+}
+
+:root[data-theme="dark"] .ant-input:focus,
+:root[data-theme="dark"] .ant-input-affix-wrapper-focused,
+:root[data-theme="dark"] .ant-input-number-focused,
+:root[data-theme="dark"] .ant-select-focused:not(.ant-select-customize-input) .ant-select-selector {
+  background: #181b22 !important;
+}
+
+.ant-input-affix-wrapper > input.ant-input {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.ant-input[disabled],
+.ant-input-affix-wrapper-disabled,
+.ant-input-affix-wrapper-disabled input,
+.ant-select-disabled .ant-select-selector {
+  background: var(--co-subtle) !important;
+  border-color: var(--co-border-secondary) !important;
+  color: var(--co-muted) !important;
+}
+
+/* Alerts */
+.ant-alert {
+  border-radius: var(--co-radius-md);
+}
+
+.ant-alert-info {
+  background: var(--co-selected);
+  border-color: rgba(59, 130, 246, 0.24);
+}
+
+.ant-alert-warning {
+  background: var(--co-warning-bg);
+  border-color: var(--co-warning-border);
+}
+
+.ant-alert-success {
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+}
+
+.ant-alert-error {
+  background: var(--co-danger-bg);
+  border-color: var(--co-danger-border);
+}
+
+/* Soft Elevated Capsule Segmented Controls (clear visual hierarchy below top navbar) */
+.ant-segmented {
+  background: var(--co-subpill-track) !important;
+  border: 1px solid var(--co-border-secondary);
+  border-radius: var(--co-radius-pill) !important;
+  padding: 3px !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="dark"] .ant-segmented {
+  border-color: var(--co-border-secondary);
+}
+
+.ant-segmented .ant-segmented-group {
+  gap: 2px;
+}
+
+.ant-segmented .ant-segmented-item {
+  border-radius: var(--co-radius-pill) !important;
+  color: var(--co-secondary-text);
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.ant-segmented .ant-segmented-item-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
+}
+
+.ant-segmented .ant-segmented-item:hover:not(.ant-segmented-item-selected):not(.ant-segmented-item-disabled) {
+  background: transparent;
+  color: var(--co-text);
+}
+
+.ant-segmented .ant-segmented-item-selected {
+  background: var(--co-subpill-active-bg) !important;
+  color: var(--co-subpill-active-text) !important;
+  font-weight: 600;
+  box-shadow:
+    0 0 0 1px var(--co-subpill-active-border),
+    var(--co-subpill-active-shadow) !important;
+}
+
+.ant-segmented .ant-segmented-item-selected .ant-segmented-item-label {
+  color: var(--co-subpill-active-text) !important;
+}
+
+.ant-segmented .ant-segmented-thumb {
+  background: var(--co-subpill-active-bg) !important;
+  border-radius: var(--co-radius-pill) !important;
+  box-shadow:
+    0 0 0 1px var(--co-subpill-active-border),
+    var(--co-subpill-active-shadow) !important;
+}
+
+/* ColabOne soft elevated capsule tabs */
+.ant-tabs-top > .ant-tabs-nav::before {
+  display: none !important;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap {
+  overflow: visible;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-list {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--co-radius-pill);
+  background: var(--co-subpill-track);
+  border: 1px solid var(--co-border-secondary);
+}
+
+:root[data-theme="dark"] .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-list {
+  border-color: var(--co-border-secondary);
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-ink-bar {
+  display: none !important;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  box-sizing: border-box;
+  margin: 0 !important;
+  padding: 6px 18px !important;
+  border-radius: var(--co-radius-pill) !important;
+  color: var(--co-secondary-text);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  transition: none !important;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab .ant-tabs-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
+  transition: none !important;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab:hover:not(.ant-tabs-tab-active) {
+  background: var(--co-hover);
+  color: var(--co-text);
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab:hover:not(.ant-tabs-tab-active) .ant-tabs-tab-btn {
+  color: var(--co-text);
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab.ant-tabs-tab-active {
+  background: var(--co-subpill-active-bg) !important;
+  box-shadow:
+    0 0 0 1px var(--co-subpill-active-border),
+    var(--co-subpill-active-shadow);
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--co-subpill-active-text) !important;
+  text-shadow: none !important;
+  font-weight: 600;
+}
+
+/* ColabOne pill tags — rounded-full status badges */
+.ant-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 22px;
+  margin-inline-end: 0;
+  padding: 0 10px;
+  border-radius: var(--co-radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.ant-tag > .ant-badge {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
+.ant-tag-default,
+.ant-tag:not([class*="ant-tag-"]) {
+  background: var(--co-track);
+  border-color: var(--co-border);
+  color: var(--co-secondary-text);
+}
+
+.ant-tag-success {
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+  color: var(--co-success-text);
+}
+
+.ant-tag-processing,
+.ant-tag-blue {
+  background: var(--co-selected);
+  border-color: rgba(59, 130, 246, 0.28);
+  color: var(--co-accent-strong);
+}
+
+.ant-tag-warning {
+  background: var(--co-warning-bg);
+  border-color: var(--co-warning-border);
+  color: var(--co-warning-text);
+}
+
+.ant-tag-error,
+.ant-tag-red {
+  background: var(--co-danger-bg);
+  border-color: var(--co-danger-border);
+  color: var(--co-danger-text);
+}
+
+.ant-tag .ant-badge-status-dot {
+  top: 0;
+}
+
+/* Switches */
+.ant-switch.ant-switch-checked {
+  background: var(--co-accent) !important;
+}
+
+.ant-switch.ant-switch-checked:hover:not(.ant-switch-disabled) {
+  background: var(--co-accent-hover) !important;
+}
+
+/* Progress bars — rounded-full pill track */
+.ant-progress-inner,
+.ant-progress-bg {
+  border-radius: var(--co-radius-pill) !important;
+}
+
+.ant-statistic-content {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shared layout & visual utility classes (.co-*) */
+.co-panel-host {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.co-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 28px 36px;
+  background: var(--co-canvas);
+}
+
+.co-page-narrow {
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+}
+
+.co-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 2px;
+  flex-wrap: wrap;
+}
+
+.co-page-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.28;
+  letter-spacing: -0.025em;
+  color: var(--co-text);
+}
+
+.co-page-subtitle {
+  margin: 4px 0 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--co-muted);
+}
+
+.co-section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.co-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.co-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.co-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.co-mono {
+  font-family: var(--co-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.co-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.co-code-block {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--co-radius-md);
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-subtle);
+  color: var(--co-text);
+  font-family: var(--co-font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.co-card-hover {
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.co-card-hover:hover {
+  border-color: var(--co-border);
+  box-shadow: var(--co-card-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.co-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  display: inline-block;
+  flex-shrink: 0;
+  background: var(--co-muted);
+}
+
+.co-status-dot--online,
+.co-status-dot--success {
+  background: var(--co-success);
+  box-shadow: 0 0 0 3px var(--co-success-bg);
+}
+
+.co-status-dot--accent,
+.co-status-dot--active {
+  background: var(--co-accent);
+  box-shadow: 0 0 0 3px var(--co-focus-ring);
+}
+
+.co-status-dot--warning {
+  background: var(--co-warning);
+  box-shadow: 0 0 0 3px var(--co-warning-bg);
+}
+
+.co-status-dot--danger,
+.co-status-dot--error {
+  background: var(--co-danger);
+  box-shadow: 0 0 0 3px var(--co-danger-bg);
+}
+
+.co-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+  padding: 36px 24px;
+  border: 1px dashed var(--co-border);
+  border-radius: var(--co-radius-lg);
+  background: var(--co-subtle);
+  color: var(--co-muted);
+  font-size: 14px;
+}
+
+.co-muted {
+  color: var(--co-muted);
+}
+
+.co-secondary {
+  color: var(--co-secondary-text);
+}
+
+.co-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Freeze element-level CSS transitions during circular View Transition capture
+ * so Ant Design inputs/selects/buttons snap immediately to target theme colors. */
+:root.co-theme-transitioning *,
+:root.co-theme-transitioning *::before,
+:root.co-theme-transitioning *::after,
+:root.co-theme-transitioning #app *,
+:root.co-theme-transitioning #app *::before,
+:root.co-theme-transitioning #app *::after {
+  transition: none !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}

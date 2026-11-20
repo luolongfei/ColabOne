@@ -1,0 +1,33 @@
+/* Bundled Sarasa UI SC (SIL OFL 1.1) — Chinese-optimized desktop UI typeface. */
+@font-face {
+  font-family: "Sarasa UI SC";
+  src: url("./assets/fonts/sarasa-ui-sc-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Sarasa UI SC ships 400/600/700; map 500 to SemiBold so medium UI controls retain clear hierarchy. */
+@font-face {
+  font-family: "Sarasa UI SC";
+  src: url("./assets/fonts/sarasa-ui-sc-semibold.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Sarasa UI SC";
+  src: url("./assets/fonts/sarasa-ui-sc-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Sarasa UI SC";
+  src: url("./assets/fonts/sarasa-ui-sc-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
