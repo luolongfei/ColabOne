@@ -4,30 +4,28 @@ import {
   Alert as AAlert,
   Badge as ABadge,
   Button as AButton,
+  Checkbox as ACheckbox,
   Drawer as ADrawer,
   Empty as AEmpty,
   Input as AInput,
-  InputNumber as AInputNumber,
   Modal as AModal,
   Progress as AProgress,
   Select as ASelect,
   SelectOption as ASelectOption,
-  Slider as ASlider,
   Space as ASpace,
-  Spin as ASpin,
   TabPane as ATabPane,
   Tabs as ATabs,
   Tag as ATag,
-  Tooltip as ATooltip,
 } from "ant-design-vue";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   PhArrowRight,
-  PhArrowSquareOut,
   PhCaretDown,
   PhCaretRight,
   PhCheck,
+  PhCpu,
   PhCube,
-  PhDownloadSimple,
   PhGlobe,
   PhMagnifyingGlass,
   PhPlay,
@@ -38,41 +36,56 @@ import {
   PhTrash,
 } from "@phosphor-icons/vue";
 import HubBrowser from "./HubBrowser.vue";
-import { colabOneCommand, colabOneOpenURL } from "./api";
+import ModelVersionPicker from "./ModelVersionPicker.vue";
+import RuntimeParamPresets from "./RuntimeParamPresets.vue";
+import { colabOneCommand } from "./api";
 import {
   describeModelRemoteStatus,
   filterCommonModels,
+  repoRemoteSummary,
   type ModelLibraryTab,
 } from "./modelLibrary";
+import {
+  buildColabOneGpuTargetOptions,
+  estimateColabOneModelVramMib,
+  evaluateColabOneVramFit,
+  formatColabOneGb,
+  hasLiveRuntimeGpu,
+  resolveColabOneDefaultGpuTarget,
+  resolveColabOneGpuTarget,
+  type ColabOneGpuTargetId,
+  type ColabOneHubFile,
+  type ColabOneVramFit,
+} from "./modelCompatibility";
 import {
   canColabOneLoadModel,
   type CommonRepo,
   type ModelSpec,
   type ColabOneSnapshot,
 } from "./types";
+import { t, tb } from "./i18n";
 
 const props = defineProps<{
   open: boolean;
   state: ColabOneSnapshot;
   busy?: boolean;
+  loading?: boolean;
 }>();
+
+const DRAWER_SKELETON_ROWS = [
+  { titleW: "46%", tagW: 56, subW: "68%" },
+  { titleW: "54%", tagW: 64, subW: "60%" },
+  { titleW: "40%", tagW: 52, subW: "52%" },
+] as const;
 
 const emit = defineEmits<{
   "update:open": [boolean];
   device: [];
+  comfyui: [];
   sync: [];
   notify: [string];
   error: [string];
 }>();
-
-type RepoFile = {
-  filename: string;
-  size: number;
-  shards: number;
-  quantization: string;
-  supported: boolean;
-  reason: string;
-};
 
 const localBusy = ref(false);
 const isBusy = computed(() => localBusy.value || !!props.busy);
@@ -81,7 +94,7 @@ const viewportWidth = ref(
   typeof window !== "undefined" ? window.innerWidth : 1280,
 );
 const drawerWidth = computed(() =>
-  Math.min(680, Math.max(360, viewportWidth.value - 48)),
+  Math.min(720, Math.max(380, viewportWidth.value - 48)),
 );
 
 function onWindowResize() {
@@ -103,15 +116,65 @@ const modelOptions = ref<
 const configModelId = ref("");
 const hubTargetQuery = ref("");
 
+// Shared GPU VRAM compatibility filter (syncs across "我的" and "社区")
+const manualGpuTarget = ref<ColabOneGpuTargetId | null>(null);
+const onlyRunnable = ref(false);
+
+const gpuTargetOptions = computed(() =>
+  buildColabOneGpuTargetOptions(props.state.runtime),
+);
+
+const selectedGpuId = computed<ColabOneGpuTargetId>(() => {
+  if (manualGpuTarget.value) {
+    if (
+      manualGpuTarget.value === "CURRENT" &&
+      !hasLiveRuntimeGpu(props.state.runtime)
+    ) {
+      return resolveColabOneDefaultGpuTarget(
+        props.state.runtime,
+        props.state.settings.gpu,
+      );
+    }
+    return manualGpuTarget.value;
+  }
+  return resolveColabOneDefaultGpuTarget(
+    props.state.runtime,
+    props.state.settings.gpu,
+  );
+});
+
+const targetGpu = computed(() =>
+  resolveColabOneGpuTarget(
+    selectedGpuId.value,
+    props.state.runtime,
+    props.state.settings.gpu,
+  ),
+);
+
+const liveGpuTarget = computed(() =>
+  hasLiveRuntimeGpu(props.state.runtime)
+    ? resolveColabOneGpuTarget("CURRENT", props.state.runtime)
+    : null,
+);
+
+function onGpuTargetChange(val: unknown) {
+  const next = String(val || "") as ColabOneGpuTargetId;
+  if (next) {
+    manualGpuTarget.value = next;
+    if (next === "ALL") onlyRunnable.value = false;
+  }
+}
+
 // Inline version picker for saved repositories in "我的"
 const expandedRepo = ref("");
-const repoFiles = ref<RepoFile[]>([]);
+const repoFiles = ref<ColabOneHubFile[]>([]);
 const repoRevision = ref("");
+const repoModality = ref<"text" | "image" | "video">("text");
+const repoComfyOnly = ref(false);
 const repoSelectedFile = ref("");
 const repoFilesLoading = ref(false);
 const repoFilesError = ref("");
 const repoInstalling = ref(false);
-const repoAdvancedOpen = ref(false);
 const repoContextLength = ref(8192);
 const repoTemperature = ref(0.7);
 let repoFileGen = 0;
@@ -123,6 +186,8 @@ watch(
       configModelId.value = "";
       hubTargetQuery.value = "";
       deleteTarget.value = null;
+      manualGpuTarget.value = null;
+      onlyRunnable.value = false;
       resetRepoPicker();
     }
   },
@@ -133,10 +198,13 @@ function resetRepoPicker() {
   expandedRepo.value = "";
   repoFiles.value = [];
   repoRevision.value = "";
+  repoModality.value = "text";
+  repoComfyOnly.value = false;
   repoSelectedFile.value = "";
   repoFilesLoading.value = false;
   repoFilesError.value = "";
-  repoAdvancedOpen.value = false;
+  repoContextLength.value = 8192;
+  repoTemperature.value = 0.7;
 }
 
 const isModelLoaded = (model: ModelSpec) =>
@@ -192,29 +260,13 @@ const filteredMyRepos = computed<CommonRepo[]>(() => {
   );
 });
 
-const selectedRepoFileObj = computed(() =>
-  repoFiles.value.find((f) => f.filename === repoSelectedFile.value),
-);
-
-const contextLengthOptions = [
-  { label: "8K", value: 8192 },
-  { label: "16K", value: 16384 },
-  { label: "32K", value: 32768 },
-  { label: "64K", value: 65536 },
-];
-
 const bytes = (n = 0) =>
   n >= 1024 ** 3
     ? (n / 1024 ** 3).toFixed(1) + " GB"
     : (n / 1024 ** 2).toFixed(0) + " MB";
 
-const fileSize = (n: number) =>
-  n < 1024 ** 3
-    ? (n / 1024 ** 2).toFixed(0) + " MiB"
-    : (n / 1024 ** 3).toFixed(2) + " GiB";
-
 const duration = (seconds: number | null) => {
-  if (seconds === null) return "计算中";
+  if (seconds === null) return t("common.calculating");
   const whole = Math.ceil(Math.max(0, seconds));
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 };
@@ -224,7 +276,7 @@ function customRepoNote(note?: string): string {
   if (!trimmed || trimmed === "默认常用模型" || trimmed === "默认模型") {
     return "";
   }
-  return trimmed;
+  return tb(trimmed);
 }
 
 function conciseStatusBadge(model: ModelSpec): {
@@ -234,36 +286,68 @@ function conciseStatusBadge(model: ModelSpec): {
 } | null {
   const status = describeModelRemoteStatus(model, props.state.runtime);
   if (status.state === "loaded") {
-    return { label: "使用中", color: "success", dot: true };
+    return { label: t("models.badgeInUse"), color: "success", dot: true };
   }
   if (status.state === "loading") {
-    return { label: "装载中…", color: "warning" };
+    return { label: t("models.badgeLoading"), color: "warning" };
   }
   if (status.state === "downloading") {
     const pct = Math.round((status.progress || 0) * 100);
-    return { label: `下载中 ${pct}%`, color: "processing" };
+    return { label: t("models.badgeDownloadingPct", { pct }), color: "processing" };
   }
   if (status.state === "downloaded") {
-    return { label: "已下载", color: "blue" };
+    return { label: t("models.badgeDownloaded"), color: "blue" };
   }
   return null;
 }
 
-function vramWarning(model: ModelSpec): string {
+function modelFitForTarget(model: ModelSpec): ColabOneVramFit | null {
+  const ctx =
+    modelOptions.value[model.id]?.context_length || model.context_length || 8192;
+  const estMib = estimateColabOneModelVramMib(model, ctx);
+  if (estMib <= 0) return null;
+  return evaluateColabOneVramFit(estMib, targetGpu.value);
+}
+
+function modelFitTagColor(fit: ColabOneVramFit): string {
+  if (fit.status === "comfortable") return "success";
+  if (fit.status === "tight") return "warning";
+  if (fit.status === "hybrid" || fit.status === "heavy_hybrid") {
+    return "default";
+  }
+  return "blue";
+}
+
+function vramNotice(
+  model: ModelSpec,
+): { type: "info" | "warning"; message: string } | null {
   const gpu = props.state.runtime.gpu;
   if (
     props.state.runtime.state === "stopped" ||
     !gpu?.total_mib ||
-    !model.min_vram_mib
+    isModelLoaded(model)
   ) {
-    return "";
+    return null;
   }
-  if (gpu.total_mib < model.min_vram_mib) {
-    const haveGb = (gpu.total_mib / 1024).toFixed(1).replace(/\.0$/, "");
-    const needGb = (model.min_vram_mib / 1024).toFixed(1).replace(/\.0$/, "");
-    return `当前显存 ${haveGb} GB 低于建议值 ${needGb} GB，装载可能失败或较慢`;
+  const ctx =
+    modelOptions.value[model.id]?.context_length || model.context_length || 8192;
+  const needMib = estimateColabOneModelVramMib(model, ctx);
+  if (!needMib || gpu.total_mib >= needMib) return null;
+  const haveGb = (gpu.total_mib / 1024).toFixed(1).replace(/\.0$/, "");
+  const needGb = (needMib / 1024).toFixed(1).replace(/\.0$/, "");
+  if (liveGpuTarget.value) {
+    const fit = evaluateColabOneVramFit(needMib, liveGpuTarget.value);
+    if (fit.status === "hybrid") {
+      return {
+        type: "info",
+        message: t("models.warnVramHybrid", { have: haveGb, need: needGb }),
+      };
+    }
   }
-  return "";
+  return {
+    type: "warning",
+    message: t("models.warnVramLow", { have: haveGb, need: needGb }),
+  };
 }
 
 function diskWarning(model: ModelSpec): string {
@@ -277,25 +361,63 @@ function diskWarning(model: ModelSpec): string {
     return "";
   }
   if (free < model.size) {
-    return `远端可用磁盘 ${bytes(free)} 小于模型体积 ${bytes(model.size)}`;
+    return t("models.warnDiskLow", {
+      free: bytes(free),
+      size: bytes(model.size),
+    });
   }
   return "";
 }
 
+function loadedModelForRepo(repo: string): ModelSpec | undefined {
+  if (props.state.runtime.state === "stopped") return undefined;
+  const summary = repoRemoteSummary(repo, props.state.models, props.state.runtime);
+  return summary.savedModels.find(
+    (m) => m.loaded || (!!m.id && props.state.runtime.loaded_model === m.id),
+  );
+}
+
+function repoFileSavedTag(repo: string, fileName: string): string {
+  const summary = repoRemoteSummary(repo, props.state.models, props.state.runtime);
+  const matches = summary.savedModels.filter((m) =>
+    m.files?.some((f) => f.path === fileName),
+  );
+  if (!matches.length) return "";
+  const matched =
+    matches.find(
+      (m) => m.loaded || props.state.runtime.loaded_model === m.id,
+    ) ||
+    matches.find((m) => m.downloaded) ||
+    matches[0];
+  if (!matched) return "";
+  if (
+    matched.downloaded ||
+    (props.state.runtime.state !== "stopped" &&
+      (matched.loaded || props.state.runtime.loaded_model === matched.id))
+  ) {
+    return t("models.badgeDownloaded");
+  }
+  return matched.common ? t("models.badgeInMine") : "";
+}
+
 const downloadDisabledReason = computed(() => {
-  if (!ready.value) return "请先启动远端 GPU";
-  if (props.state.operation) return props.state.operation.title;
-  if (task.value) return "请等待当前任务完成";
-  if (!props.state.runtime.protocol) return "正在同步远端状态…";
+  if (!ready.value) return t("models.disabledStartGpu");
+  if (props.state.operation) return tb(props.state.operation.title);
+  if (task.value) return t("models.disabledWaitTask");
+  if (!props.state.runtime.protocol) return t("models.disabledSyncingRemote");
   return "";
 });
 
 const loadDisabledReason = computed(() => {
-  if (!ready.value) return "请先启动远端 GPU";
-  if (props.state.operation) return props.state.operation.title;
-  if (task.value) return "请等待当前任务完成";
+  if (!ready.value) return t("models.disabledStartGpu");
+  if (props.state.operation) return tb(props.state.operation.title);
+  if (task.value) return t("models.disabledWaitTask");
   return "";
 });
+
+function modelActionDisabledReason(_model: ModelSpec, isDownload: boolean): string {
+  return isDownload ? downloadDisabledReason.value : loadDisabledReason.value;
+}
 
 async function act(action: string, payload: Record<string, unknown> = {}) {
   localBusy.value = true;
@@ -338,21 +460,21 @@ async function toggleRepoVersions(repo: string, forceOpen = false) {
   expandedRepo.value = repo;
   repoFiles.value = [];
   repoRevision.value = "";
+  repoModality.value = "text";
+  repoComfyOnly.value = false;
   repoSelectedFile.value = "";
   repoFilesError.value = "";
-  repoAdvancedOpen.value = false;
   repoFilesLoading.value = true;
   try {
     const result = await colabOneCommand("hub.files", { repo });
     if (gen !== repoFileGen) return;
     repoRevision.value = result.revision || "";
+    repoModality.value = result.modality || "text";
+    repoComfyOnly.value =
+      typeof result.comfy_only === "boolean"
+        ? result.comfy_only
+        : repoModality.value === "image" || repoModality.value === "video";
     repoFiles.value = result.files || [];
-    repoSelectedFile.value =
-      repoFiles.value.find(
-        (f) => f.supported && /Q4_K_M/i.test(f.quantization),
-      )?.filename ||
-      repoFiles.value.find((f) => f.supported)?.filename ||
-      "";
   } catch (e) {
     if (gen === repoFileGen) repoFilesError.value = String(e);
   } finally {
@@ -360,25 +482,13 @@ async function toggleRepoVersions(repo: string, forceOpen = false) {
   }
 }
 
-function onRepoFileChange(raw: unknown) {
-  repoSelectedFile.value = String(raw || "");
-}
-
-function onRepoContextChange(raw: unknown) {
-  const num = Number(raw);
-  if (Number.isFinite(num) && num > 0) repoContextLength.value = num;
-}
-
-function onRepoTempChange(raw: string | number | null) {
-  if (raw === null || raw === "") return;
-  const num = Number(raw);
-  if (Number.isFinite(num)) {
-    repoTemperature.value = Math.min(2, Math.max(0, Math.round(num * 10) / 10));
-  }
-}
-
 async function installFromMyRepo(mode: "load" | "download" | "save") {
-  if (!expandedRepo.value || !repoSelectedFile.value || repoInstalling.value) {
+  if (
+    !expandedRepo.value ||
+    !repoSelectedFile.value ||
+    repoInstalling.value ||
+    repoComfyOnly.value
+  ) {
     return;
   }
   if (mode !== "save" && (!ready.value || !!task.value || isBusy.value)) {
@@ -404,10 +514,10 @@ async function installFromMyRepo(mode: "load" | "download" | "save") {
     emit(
       "notify",
       mode === "load"
-        ? "正在下载并装载模型，可在底部查看进度"
+        ? t("models.toastDownloadAndLoad")
         : mode === "download"
-          ? "正在下载到远端，可在底部查看进度"
-          : "已保存此版本到「我的」",
+          ? t("models.toastDownloadingRemote")
+          : t("models.toastSavedVersionMine"),
     );
   } catch (e) {
     repoFilesError.value = String(e);
@@ -470,8 +580,8 @@ async function toggleModelMine(model: ModelSpec) {
     emit(
       "notify",
       res.common
-        ? `已将 ${model.name} 加入「我的」`
-        : `已将 ${model.name} 移出「我的」`,
+        ? t("models.toastAddedToMine", { name: model.name })
+        : t("models.toastRemovedFromMine", { name: model.name }),
     );
   }
 }
@@ -480,7 +590,7 @@ async function removeMyRepo(repo: CommonRepo) {
   if (expandedRepo.value === repo.repo) resetRepoPicker();
   const res = await act("common_repo.remove", { repo: repo.repo });
   if (res) {
-    emit("notify", `已将 ${repo.repo} 移出「我的」`);
+    emit("notify", t("models.toastRemovedFromMine", { name: repo.repo }));
   }
 }
 
@@ -498,8 +608,8 @@ async function downloadModel(model: ModelSpec, loadAfter: boolean) {
     emit(
       "notify",
       loadAfter
-        ? "正在下载并装载模型，可在底部查看进度"
-        : "正在下载模型，可在底部查看进度",
+        ? t("models.toastDownloadAndLoad")
+        : t("models.toastDownloadingModel"),
     );
   }
 }
@@ -514,7 +624,7 @@ async function loadModel(model: ModelSpec) {
   const res = await act("model.load", payload);
   if (res) {
     configModelId.value = "";
-    emit("notify", "正在装载模型到显存");
+    emit("notify", t("models.toastLoadingVram"));
   }
 }
 
@@ -522,12 +632,13 @@ async function unloadModel() {
   await act("model.unload");
 }
 
-function confirmDeleteModel() {
+async function confirmDeleteModel() {
   if (!deleteTarget.value) return;
   const targetId = deleteTarget.value.id;
   deleteTarget.value = null;
-  void act("model.delete", { id: targetId });
-  emit("notify", "正在删除远端模型文件");
+  if (await act("model.delete", { id: targetId })) {
+    emit("notify", t("models.toastDeletingRemote"));
+  }
 }
 
 function onHubRepoUpdated(message: string) {
@@ -542,10 +653,10 @@ function onHubInstalled(mode: "save" | "download" | "load") {
   emit(
     "notify",
     mode === "save"
-      ? "已加入我的模型"
+      ? t("models.toastAddedMineShort")
       : mode === "load"
-        ? "正在下载并装载模型，可在底部查看进度"
-        : "正在下载到远端，可在底部查看进度",
+        ? t("models.toastDownloadAndLoad")
+        : t("models.toastDownloadingRemote"),
   );
 }
 
@@ -575,6 +686,11 @@ function goDevice() {
   emit("device");
 }
 
+function goComfyui() {
+  closeDrawer();
+  emit("comfyui");
+}
+
 onUnmounted(() => {
   window.removeEventListener("resize", onWindowResize);
   window.removeEventListener("keydown", handleDrawerKeydown);
@@ -601,37 +717,52 @@ onUnmounted(() => {
     <template #title>
       <div class="co-model-drawer-title">
         <PhCube :size="18" weight="duotone" class="co-model-drawer-icon" />
-        <span>选择模型</span>
+        <span>{{ t("models.drawerTitle") }}</span>
       </div>
     </template>
 
     <div
       class="co-model-drawer-body co-models-drawer"
       role="region"
-      aria-label="选择 API 模型"
+      :aria-label="t('models.drawerAria')"
     >
-      <!-- Slim Active Status Strip (only when loaded or subtle hint when offline) -->
-      <div v-if="activeVramModel" class="co-active-bar co-vram-console">
+      <!-- Slim Active Status Strip -->
+      <div
+        v-if="loading && !activeVramModel"
+        class="co-subtle-hint co-gpu-hint-bar co-model-strip-skeleton"
+        aria-hidden="true"
+      >
+        <ColabOneSkeleton width="54%" :height="14" variant="text" />
+        <ColabOneSkeleton
+          :width="82"
+          :height="14"
+          variant="text"
+          tone="accent"
+          :delay="80"
+        />
+      </div>
+
+      <div v-else-if="activeVramModel" class="co-active-bar co-vram-console">
         <div class="co-active-bar-info">
           <ABadge status="processing" color="#52c41a" />
           <strong class="co-active-bar-name">
-            当前使用：{{ activeVramModel.name }}
+            {{ t("models.activeModelBanner", { name: activeVramModel.name }) }}
           </strong>
           <span class="co-active-bar-spec co-tabular">
-            {{ activeContextK }}K · 温度 {{ activeTemp }}
+            {{ t("api.contextAndTemp", { ctx: activeContextK, temp: activeTemp }) }}
           </span>
         </div>
         <ASpace :size="6">
           <AButton type="primary" size="small" @click="closeDrawer">
             <template #icon><PhCheck :size="13" /></template>
-            使用此模型
+            {{ t("models.useThisModel") }}
           </AButton>
           <AButton
             size="small"
             :disabled="!!task || isBusy"
             @click="unloadModel"
           >
-            卸载
+            {{ t("models.unload") }}
           </AButton>
         </ASpace>
       </div>
@@ -640,8 +771,8 @@ onUnmounted(() => {
         <span>
           {{
             gpuStarting
-              ? "远端 GPU 正在启动中，就绪后即可下载并装载模型。"
-              : "远端 GPU 未启动，可先浏览或将模型加入「我的」。"
+              ? t("models.offlineStartingNotice")
+              : t("models.offlineStoppedNotice")
           }}
         </span>
         <AButton
@@ -650,7 +781,7 @@ onUnmounted(() => {
           class="co-inline-link co-gpu-hint-link"
           @click="goDevice"
         >
-          {{ gpuStarting ? "查看 GPU 启动进度" : "去启动 GPU" }}
+          {{ gpuStarting ? t("api.viewGpuProgress") : t("api.goStartGpu") }}
           <PhArrowRight :size="13" />
         </AButton>
       </div>
@@ -659,10 +790,10 @@ onUnmounted(() => {
         v-else-if="state.runtime.comfyui?.running"
         class="co-subtle-hint"
       >
-        装载模型时将自动停止 ComfyUI 以释放显存。
+        {{ t("models.comfyMutexNotice") }}
       </div>
 
-      <!-- Two Primary Entries: 我的 & 社区 -->
+      <!-- Two Primary Entries (Mine & Community) + Shared GPU VRAM Target Selector -->
       <div class="co-model-tabs-bar co-model-tabs">
         <ATabs
           :active-key="modelTab"
@@ -672,47 +803,92 @@ onUnmounted(() => {
           <ATabPane key="common">
             <template #tab>
               <span class="co-tab-label">
-                <span>我的</span>
+                <span>{{ t("models.tabMine") }}</span>
                 <span v-if="myTotal" class="co-tab-count co-tabular">
                   {{ myTotal }}
                 </span>
               </span>
             </template>
           </ATabPane>
-          <ATabPane key="hub" tab="社区" />
+          <ATabPane key="hub" :tab="t('models.tabHub')" />
         </ATabs>
+
+        <div class="co-gpu-adapter-controls">
+          <span class="co-gpu-adapter-label">
+            <PhCpu :size="14" class="co-gpu-adapter-icon" />
+            <span>{{ t("models.vramFilterLabel") }}</span>
+          </span>
+          <ASelect
+            :value="selectedGpuId"
+            size="small"
+            :aria-label="t('models.vramFilterAria')"
+            option-label-prop="label"
+            class="co-gpu-target-select"
+            :dropdown-match-select-width="260"
+            @change="onGpuTargetChange"
+          >
+            <ASelectOption
+              v-for="opt in gpuTargetOptions"
+              :key="opt.id"
+              :value="opt.id"
+              :label="opt.label"
+            >
+              <div class="co-gpu-opt-row">
+                <span class="co-gpu-opt-main">
+                  <ABadge v-if="opt.isLive" status="success" />
+                  <span>{{ opt.label }}</span>
+                </span>
+                <span class="co-gpu-opt-sub">{{ opt.subtitle }}</span>
+              </div>
+            </ASelectOption>
+          </ASelect>
+
+          <ACheckbox
+            v-if="modelTab === 'hub' && targetGpu.vramMib > 0"
+            v-model:checked="onlyRunnable"
+            class="co-only-runnable-check"
+          >
+            {{ t("models.onlyRunnable") }}
+          </ACheckbox>
+        </div>
       </div>
 
-      <!-- Entry 2: 社区 -->
+      <!-- Entry 2: Community -->
       <HubBrowser
         v-if="modelTab === 'hub'"
         :ready="ready"
         :disabled="
           !!task || isBusy || !!state.operation || !state.runtime.protocol
         "
+        :download-disabled-reason="downloadDisabledReason"
         :common-repos="state.common_repos"
         :initial-query="hubTargetQuery"
         :models="state.models"
         :runtime="state.runtime"
+        :target-gpu="targetGpu"
+        :only-runnable="onlyRunnable"
         @common-repo-updated="onHubRepoUpdated"
         @installed="onHubInstalled"
         @toggle-common="toggleModelMine"
         @use-loaded="closeDrawer"
+        @switch-gpu="onGpuTargetChange"
+        @clear-only-runnable="onlyRunnable = false"
+        @go-comfyui="goComfyui"
       />
 
-      <!-- Entry 1: 我的 -->
+      <!-- Entry 1: Mine -->
       <template v-else>
         <div
           v-if="myTotal > 0"
-          class="co-list-toolbar co-list-toolbar"
+          class="co-list-toolbar"
         >
           <AInput
             v-model:value="search"
             type="search"
             allow-clear
             class="co-model-search"
-            placeholder="搜索我的模型…"
-            aria-label="查找模型"
+            :placeholder="t('models.searchMinePlaceholder')"
+            :aria-label="t('models.searchMineAria')"
           >
             <template #prefix>
               <PhMagnifyingGlass :size="15" class="co-input-prefix" />
@@ -720,10 +896,78 @@ onUnmounted(() => {
           </AInput>
         </div>
 
+        <!-- Initial Snapshot Skeleton for My Models -->
+        <div
+          v-if="loading && !filtered.length && !filteredMyRepos.length"
+          class="co-model-list co-model-skeleton-list"
+          role="status"
+          aria-busy="true"
+        >
+          <span class="co-sr-only">{{ t("common.loading") }}</span>
+          <div
+            v-for="(row, idx) in DRAWER_SKELETON_ROWS"
+            :key="idx"
+            class="co-model-row co-model-row-skeleton"
+          >
+            <div class="co-model-row-main">
+              <div class="co-model-info">
+                <div class="co-model-title-row">
+                  <ColabOneSkeleton
+                    :width="row.titleW"
+                    :height="16"
+                    variant="text"
+                    :delay="idx * 70"
+                  />
+                  <ColabOneSkeleton
+                    :width="row.tagW"
+                    :height="18"
+                    variant="tag"
+                    tone="subtle"
+                    :delay="idx * 70 + 45"
+                  />
+                </div>
+                <div class="co-model-sub">
+                  <ColabOneSkeleton
+                    :width="row.subW"
+                    :height="13"
+                    variant="text"
+                    tone="subtle"
+                    :delay="idx * 70 + 85"
+                  />
+                </div>
+              </div>
+              <div class="co-model-actions co-model-sk-actions">
+                <ColabOneSkeleton
+                  :width="86"
+                  :height="24"
+                  variant="button"
+                  :radius="6"
+                  tone="accent"
+                  :delay="idx * 70 + 95"
+                />
+                <ColabOneSkeleton
+                  :width="24"
+                  :height="24"
+                  variant="circle"
+                  tone="subtle"
+                  :delay="idx * 70 + 130"
+                />
+                <ColabOneSkeleton
+                  :width="24"
+                  :height="24"
+                  variant="circle"
+                  tone="subtle"
+                  :delay="idx * 70 + 160"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- My Models + My Saved Repos Unified Clean List -->
         <div
-          v-if="filtered.length || filteredMyRepos.length"
-          class="co-model-list co-model-list"
+          v-else-if="filtered.length || filteredMyRepos.length"
+          class="co-model-list co-sk-reveal"
         >
           <div
             v-for="model in filtered"
@@ -733,6 +977,9 @@ onUnmounted(() => {
               loaded: isModelLoaded(model),
               downloading: modelRunningTask(model)?.kind === 'download',
               loading: modelRunningTask(model)?.kind === 'load',
+              'is-overflow':
+                !isModelLoaded(model) &&
+                modelFitForTarget(model)?.status === 'heavy_hybrid',
             }"
           >
             <div class="co-model-row-main">
@@ -752,17 +999,33 @@ onUnmounted(() => {
                     />
                     <span>{{ conciseStatusBadge(model)!.label }}</span>
                   </ATag>
+                  <ATag
+                    v-if="modelFitForTarget(model)"
+                    :color="modelFitTagColor(modelFitForTarget(model)!)"
+                    :bordered="false"
+                    class="co-model-fit-pill"
+                  >
+                    {{ modelFitForTarget(model)!.label }}
+                  </ATag>
                 </div>
 
                 <div class="co-model-sub co-tabular">
                   <span>{{ bytes(model.size) }}</span>
-                  <template v-if="model.min_vram_mib">
+                  <template v-if="modelFitForTarget(model)">
                     <span>·</span>
-                    <span>建议 {{ Math.ceil(model.min_vram_mib / 1024) }} GB 显存</span>
+                    <span>
+                      {{
+                        t("models.estimatedVram", {
+                          gb: formatColabOneGb(
+                            modelFitForTarget(model)!.estimatedVramGb,
+                          ),
+                        })
+                      }}
+                    </span>
                   </template>
                   <template v-if="model.description">
                     <span>·</span>
-                    <span class="co-model-desc">{{ model.description }}</span>
+                    <span class="co-model-desc">{{ tb(model.description) }}</span>
                   </template>
                 </div>
               </div>
@@ -776,14 +1039,14 @@ onUnmounted(() => {
                     @click="closeDrawer"
                   >
                     <template #icon><PhCheck :size="13" /></template>
-                    使用中
+                    {{ t("models.badgeInUse") }}
                   </AButton>
                   <AButton
                     size="small"
                     :disabled="!!task || isBusy"
                     @click="unloadModel"
                   >
-                    卸载
+                    {{ t("models.unload") }}
                   </AButton>
                 </template>
 
@@ -801,26 +1064,28 @@ onUnmounted(() => {
                     "
                   >
                     <template #icon><PhStop :size="13" weight="fill" /></template>
-                    取消下载
+                    {{ t("models.cancelDownload") }}
                   </AButton>
                 </template>
 
                 <template v-else-if="model.downloaded">
-                  <ATooltip :title="loadDisabledReason">
+                  <ColabOneTooltip :title="modelActionDisabledReason(model, false)">
                     <AButton
                       type="primary"
                       size="small"
-                      :disabled="!canColabOneLoadModel(model, state) || isBusy"
+                      :disabled="
+                        !canColabOneLoadModel(model, state) || isBusy
+                      "
                       @click="loadModel(model)"
                     >
                       <template #icon><PhPlay :size="13" weight="fill" /></template>
-                      装载
+                      {{ t("models.load") }}
                     </AButton>
-                  </ATooltip>
+                  </ColabOneTooltip>
                 </template>
 
                 <template v-else>
-                  <ATooltip :title="downloadDisabledReason">
+                  <ColabOneTooltip :title="modelActionDisabledReason(model, true)">
                     <AButton
                       type="primary"
                       size="small"
@@ -834,22 +1099,22 @@ onUnmounted(() => {
                       @click="downloadModel(model, true)"
                     >
                       <template #icon><PhPlay :size="13" weight="fill" /></template>
-                      下载并装载
+                      {{ t("models.downloadAndLoad") }}
                     </AButton>
-                  </ATooltip>
+                  </ColabOneTooltip>
                 </template>
 
                 <!-- Quiet Secondary Icon Controls -->
-                <ATooltip
+                <ColabOneTooltip
                   v-if="modelRunningTask(model)?.kind !== 'download'"
-                  title="上下文与温度设置"
+                  :title="t('models.paramsTooltip')"
                 >
                   <AButton
                     type="text"
                     size="small"
                     class="co-icon-btn"
                     :class="{ active: configModelId === model.id }"
-                    aria-label="参数"
+                    :aria-label="t('models.paramsAria')"
                     :aria-expanded="configModelId === model.id"
                     @click="toggleConfig(model)"
                   >
@@ -857,17 +1122,23 @@ onUnmounted(() => {
                       <PhSlidersHorizontal :size="15" />
                     </template>
                   </AButton>
-                </ATooltip>
+                </ColabOneTooltip>
 
-                <ATooltip :title="model.common ? '移出我的' : '加入我的'">
+                <ColabOneTooltip
+                  :title="
+                    model.common
+                      ? t('models.removeFromMine')
+                      : t('models.addToMine')
+                  "
+                >
                   <AButton
                     type="text"
                     size="small"
                     class="co-icon-btn"
                     :aria-label="
                       model.common
-                        ? `移出我的 ${model.name}`
-                        : `加入我的 ${model.name}`
+                        ? t('models.removeFromMineTarget', { name: model.name })
+                        : t('models.addToMineTarget', { name: model.name })
                     "
                     :disabled="isBusy"
                     @click="toggleModelMine(model)"
@@ -877,18 +1148,18 @@ onUnmounted(() => {
                       <PhPushPin v-else :size="15" />
                     </template>
                   </AButton>
-                </ATooltip>
+                </ColabOneTooltip>
 
-                <ATooltip
+                <ColabOneTooltip
                   v-if="model.downloaded && !isModelLoaded(model)"
-                  title="删除远端模型文件"
+                  :title="t('models.deleteRemoteTooltip')"
                 >
                   <AButton
                     type="text"
                     danger
                     size="small"
                     class="co-icon-btn"
-                    aria-label="删除远端模型文件"
+                    :aria-label="t('models.deleteRemoteTooltip')"
                     :disabled="!!task || isBusy"
                     @click="deleteTarget = model"
                   >
@@ -896,18 +1167,18 @@ onUnmounted(() => {
                       <PhTrash :size="15" />
                     </template>
                   </AButton>
-                </ATooltip>
+                </ColabOneTooltip>
 
-                <ATooltip
+                <ColabOneTooltip
                   v-else-if="model.custom && !model.downloaded"
-                  title="移除本地记录"
+                  :title="t('models.removeLocalTooltip')"
                 >
                   <AButton
                     type="text"
                     danger
                     size="small"
                     class="co-icon-btn"
-                    aria-label="移除本地模型记录"
+                    :aria-label="t('models.removeLocalAria')"
                     :disabled="isBusy"
                     @click="act('model.remove_local', { id: model.id })"
                   >
@@ -915,16 +1186,23 @@ onUnmounted(() => {
                       <PhTrash :size="15" />
                     </template>
                   </AButton>
-                </ATooltip>
+                </ColabOneTooltip>
               </div>
             </div>
 
             <AAlert
-              v-if="vramWarning(model) || diskWarning(model)"
+              v-if="vramNotice(model)"
+              :type="vramNotice(model)!.type"
+              show-icon
+              :message="vramNotice(model)!.message"
+              class="co-model-warning co-model-vram-warning"
+            />
+            <AAlert
+              v-if="diskWarning(model)"
               type="warning"
               show-icon
-              :message="vramWarning(model) || diskWarning(model)"
-              class="co-model-warning co-model-vram-warning"
+              :message="diskWarning(model)"
+              class="co-model-warning"
             />
 
             <!-- Inline Download Progress -->
@@ -937,8 +1215,12 @@ onUnmounted(() => {
                 <span>
                   {{
                     modelRunningTask(model)!.download?.phase === "verifying"
-                      ? "正在校验完整性…"
-                      : `正在下载 · ${Math.round((modelRunningTask(model)!.progress || 0) * 100)}%`
+                      ? t("models.verifyingIntegrity")
+                      : t("models.downloadingPct", {
+                          pct: Math.round(
+                            (modelRunningTask(model)!.progress || 0) * 100,
+                          ),
+                        })
                   }}
                 </span>
                 <span
@@ -962,9 +1244,12 @@ onUnmounted(() => {
                       modelRunningTask(model)!.download!.eta_seconds !== null
                     "
                   >
-                    · 剩余
                     {{
-                      duration(modelRunningTask(model)!.download!.eta_seconds)
+                      t("models.etaRemaining", {
+                        eta: duration(
+                          modelRunningTask(model)!.download!.eta_seconds,
+                        ),
+                      })
                     }}
                   </template>
                 </span>
@@ -978,46 +1263,19 @@ onUnmounted(() => {
               />
             </div>
 
-            <!-- Optional Expandable Parameters (collapsed by default) -->
+            <!-- Final-Stage Runtime Parameter Presets & Effect Preview -->
             <div
               v-if="configModelId === model.id"
               class="co-config-drawer co-model-config-drawer"
             >
-              <div class="co-config-row">
-                <span class="co-field-label">上下文长度</span>
-                <ASpace :size="6" wrap>
-                  <AButton
-                    v-for="opt in contextLengthOptions"
-                    :key="opt.value"
-                    size="small"
-                    :type="
-                      optsFor(model).context_length === opt.value
-                        ? 'primary'
-                        : 'default'
-                    "
-                    :aria-pressed="optsFor(model).context_length === opt.value"
-                    @click="setModelContextLength(model, opt.value)"
-                  >
-                    {{ opt.label }}
-                  </AButton>
-                </ASpace>
-              </div>
-
-              <div class="co-config-slider">
-                <div class="co-slider-header">
-                  <span class="co-field-label">温度（Temperature）</span>
-                  <strong class="co-tabular">{{
-                    optsFor(model).temperature.toFixed(1)
-                  }}</strong>
-                </div>
-                <ASlider
-                  :value="optsFor(model).temperature"
-                  :min="0"
-                  :max="2"
-                  :step="0.1"
-                  @update:value="(v) => setModelTemperature(model, v)"
-                />
-              </div>
+              <RuntimeParamPresets
+                :context-length="optsFor(model).context_length"
+                :temperature="optsFor(model).temperature"
+                :model-bytes="model.size"
+                :target-gpu="liveGpuTarget || targetGpu"
+                @update:context-length="(v) => setModelContextLength(model, v)"
+                @update:temperature="(v) => setModelTemperature(model, v)"
+              />
 
               <div class="co-config-actions">
                 <AButton
@@ -1027,7 +1285,7 @@ onUnmounted(() => {
                   :disabled="!!task || isBusy || !!state.operation"
                   @click="loadModel(model)"
                 >
-                  应用并重新装载
+                  {{ t("models.applyAndReload") }}
                 </AButton>
                 <AButton
                   v-else-if="model.downloaded"
@@ -1037,7 +1295,7 @@ onUnmounted(() => {
                   @click="loadModel(model)"
                 >
                   <template #icon><PhPlay :size="13" weight="fill" /></template>
-                  装载显存
+                  {{ t("models.loadVram") }}
                 </AButton>
                 <AButton
                   v-else
@@ -1052,13 +1310,13 @@ onUnmounted(() => {
                   "
                   @click="downloadModel(model, true)"
                 >
-                  按此参数下载并装载
+                  {{ t("models.downloadAndLoadWithParams") }}
                 </AButton>
               </div>
             </div>
           </div>
 
-          <!-- My Saved Community Repositories (inline 1-click version selection) -->
+          <!-- My Saved Community Repositories (unified beginner-friendly version picker) -->
           <div
             v-for="bm in filteredMyRepos"
             :key="bm.repo"
@@ -1068,7 +1326,9 @@ onUnmounted(() => {
             <div class="co-model-row-main">
               <div class="co-model-info">
                 <div class="co-model-title-row">
-                  <h3 class="co-model-name">{{ bm.name }}</h3>
+                  <h3 class="co-model-name">
+                    {{ bm.name || bm.repo.split("/").pop() || bm.repo }}
+                  </h3>
                 </div>
                 <div class="co-model-sub">
                   <span>{{ bm.repo }}</span>
@@ -1086,16 +1346,22 @@ onUnmounted(() => {
                   :aria-expanded="expandedRepo === bm.repo"
                   @click="toggleRepoVersions(bm.repo)"
                 >
-                  {{ expandedRepo === bm.repo ? "收起" : "选择版本" }}
+                  {{
+                    expandedRepo === bm.repo
+                      ? t("common.collapse")
+                      : t("models.chooseVersion")
+                  }}
                   <PhCaretDown v-if="expandedRepo === bm.repo" :size="12" />
                   <PhCaretRight v-else :size="12" />
                 </AButton>
-                <ATooltip title="移出我的">
+                <ColabOneTooltip :title="t('models.removeFromMine')">
                   <AButton
                     type="text"
                     size="small"
                     class="co-icon-btn"
-                    :aria-label="`移出我的 ${bm.repo}`"
+                    :aria-label="
+                      t('models.removeFromMineTarget', { name: bm.repo })
+                    "
                     :disabled="isBusy"
                     @click="removeMyRepo(bm)"
                   >
@@ -1103,182 +1369,45 @@ onUnmounted(() => {
                       <PhPushPinSlash :size="15" />
                     </template>
                   </AButton>
-                </ATooltip>
+                </ColabOneTooltip>
               </div>
             </div>
 
-            <!-- Inline Foolproof Version Picker right inside "我的" -->
+            <!-- Unified Beginner-Friendly Version Picker right inside "Mine" -->
             <div
               v-if="expandedRepo === bm.repo"
               class="co-repo-picker"
-              aria-label="选择模型版本"
+              :aria-label="t('models.selectVersionAria')"
             >
-              <div v-if="repoFilesLoading" class="co-picker-loading" role="status">
-                <ASpin size="small" tip="正在读取可选版本…" />
-              </div>
-
-              <AAlert
-                v-else-if="repoFilesError"
-                type="error"
-                show-icon
-                :message="repoFilesError"
-                role="alert"
-              >
-                <template #action>
-                  <AButton
-                    size="small"
-                    @click="toggleRepoVersions(bm.repo, true)"
-                  >
-                    重试
-                  </AButton>
-                </template>
-              </AAlert>
-
-              <template v-else-if="repoFiles.length">
-                <ASelect
-                  :value="repoSelectedFile || undefined"
-                  aria-label="选择量化版本"
-                  placeholder="选择量化版本"
-                  class="co-full-select"
-                  @change="onRepoFileChange"
-                >
-                  <ASelectOption
-                    v-for="file in repoFiles"
-                    :key="file.filename"
-                    :value="file.filename"
-                    :disabled="!file.supported"
-                  >
-                    {{ file.filename }} · {{ fileSize(file.size) }} ·
-                    {{
-                      file.shards > 1 ? `${file.shards} 个分片文件` : "1 个文件"
-                    }}{{ file.reason ? " · " + file.reason : "" }}
-                  </ASelectOption>
-                </ASelect>
-
-                <div
-                  v-if="selectedRepoFileObj"
-                  class="co-repo-picker-meta"
-                >
-                  <div class="co-repo-meta-left">
-                    <ATag
-                      v-if="selectedRepoFileObj.quantization"
-                      color="blue"
-                      :bordered="false"
-                    >
-                      {{ selectedRepoFileObj.quantization }}
-                    </ATag>
-                    <strong class="co-tabular">{{
-                      fileSize(selectedRepoFileObj.size)
-                    }}</strong>
-                    <span>·</span>
-                    <span>
-                      {{
-                        selectedRepoFileObj.shards > 1
-                          ? `共 ${selectedRepoFileObj.shards} 个文件`
-                          : "共 1 个文件"
-                      }}
-                    </span>
-                    <AButton
-                      type="link"
-                      size="small"
-                      class="co-inline-link"
-                      @click="colabOneOpenURL('https://huggingface.co/' + bm.repo)"
-                    >
-                      仓库主页
-                      <PhArrowSquareOut :size="12" />
-                    </AButton>
-                  </div>
-                  <AButton
-                    type="link"
-                    size="small"
-                    class="co-inline-link co-adv-toggle"
-                    @click="repoAdvancedOpen = !repoAdvancedOpen"
-                  >
-                    <PhSlidersHorizontal :size="13" />
-                    <span>{{ repoAdvancedOpen ? "收起参数" : "参数" }}</span>
-                  </AButton>
-                </div>
-
-                <div v-if="repoAdvancedOpen" class="co-repo-adv-row">
-                  <div class="co-adv-field">
-                    <span class="co-field-label">上下文</span>
-                    <ASelect
-                      :value="repoContextLength"
-                      size="small"
-                      aria-label="上下文长度"
-                      class="co-adv-ctx"
-                      @change="onRepoContextChange"
-                    >
-                      <ASelectOption
-                        v-for="opt in contextLengthOptions"
-                        :key="opt.value"
-                        :value="opt.value"
-                      >
-                        {{ opt.label }}
-                      </ASelectOption>
-                    </ASelect>
-                  </div>
-                  <div class="co-adv-field">
-                    <span class="co-field-label">温度</span>
-                    <AInputNumber
-                      :value="repoTemperature"
-                      :min="0"
-                      :max="2"
-                      :step="0.1"
-                      size="small"
-                      aria-label="温度参数"
-                      class="co-adv-temp"
-                      @update:value="onRepoTempChange"
-                    />
-                  </div>
-                </div>
-
-                <ASpace wrap :size="8">
-                  <ATooltip :title="downloadDisabledReason">
-                    <AButton
-                      type="primary"
-                      size="small"
-                      :loading="repoInstalling"
-                      :disabled="
-                        !ready ||
-                        !!task ||
-                        isBusy ||
-                        repoInstalling ||
-                        !!state.operation ||
-                        !state.runtime.protocol ||
-                        !repoSelectedFile
-                      "
-                      @click="installFromMyRepo('load')"
-                    >
-                      <template #icon><PhPlay :size="13" weight="fill" /></template>
-                      {{ repoInstalling ? "正在提交…" : "下载并装载" }}
-                    </AButton>
-                  </ATooltip>
-                  <ATooltip :title="downloadDisabledReason">
-                    <AButton
-                      v-if="ready"
-                      size="small"
-                      :disabled="
-                        !!task ||
-                        isBusy ||
-                        repoInstalling ||
-                        !!state.operation ||
-                        !state.runtime.protocol ||
-                        !repoSelectedFile
-                      "
-                      @click="installFromMyRepo('download')"
-                    >
-                      <template #icon><PhDownloadSimple :size="14" /></template>
-                      仅下载
-                    </AButton>
-                  </ATooltip>
-                </ASpace>
-              </template>
-
-              <AEmpty
-                v-else
-                description="该仓库暂无可用的 GGUF 模型文件"
-                class="co-picker-empty"
+              <ModelVersionPicker
+                :repo="bm.repo"
+                :files="repoFiles"
+                :loading="repoFilesLoading"
+                :error="repoFilesError"
+                :modality="repoModality"
+                :comfy-only="repoComfyOnly"
+                :target-gpu="targetGpu"
+                :runtime="state.runtime"
+                :ready="ready"
+                :disabled="
+                  !!task || isBusy || !!state.operation || !state.runtime.protocol
+                "
+                :installing="repoInstalling"
+                :selected-filename="repoSelectedFile"
+                :context-length="repoContextLength"
+                :temperature="repoTemperature"
+                :show-save-button="false"
+                :show-use-loaded="!!loadedModelForRepo(bm.repo)"
+                :saved-tag-for-file="(fn) => repoFileSavedTag(bm.repo, fn)"
+                :download-disabled-reason="downloadDisabledReason"
+                @update:selected-filename="(v) => (repoSelectedFile = v)"
+                @update:context-length="(v) => (repoContextLength = v)"
+                @update:temperature="(v) => (repoTemperature = v)"
+                @retry="toggleRepoVersions(bm.repo, true)"
+                @install="installFromMyRepo"
+                @use-loaded="closeDrawer"
+                @switch-gpu="onGpuTargetChange"
+                @go-comfyui="goComfyui"
               />
             </div>
           </div>
@@ -1290,28 +1419,32 @@ onUnmounted(() => {
           class="co-empty-panel co-starter-empty"
         >
           <template v-if="search.trim()">
-            <AEmpty :description="`没有找到与「${search.trim()}」匹配的模型`">
+            <AEmpty
+              :description="t('models.emptySearch', { query: search.trim() })"
+            >
               <ASpace :size="8" wrap>
-                <AButton size="small" @click="search = ''">清空搜索</AButton>
+                <AButton size="small" @click="search = ''">
+                  {{ t("models.clearSearch") }}
+                </AButton>
                 <AButton
                   type="primary"
                   size="small"
                   @click="searchInCommunity(search.trim())"
                 >
-                  去社区搜索「{{ search.trim() }}」
+                  {{ t("models.searchInCommunity", { query: search.trim() }) }}
                 </AButton>
               </ASpace>
             </AEmpty>
           </template>
           <template v-else>
-            <AEmpty description="「我的」中还没有模型">
+            <AEmpty :description="t('models.emptyMine')">
               <AButton
                 type="primary"
                 size="small"
                 @click="onModelTabChange('hub')"
               >
                 <template #icon><PhGlobe :size="14" /></template>
-                去社区发现模型
+                {{ t("models.discoverInCommunity") }}
               </AButton>
             </AEmpty>
           </template>
@@ -1322,7 +1455,7 @@ onUnmounted(() => {
     <!-- Delete Remote Model File Confirmation -->
     <AModal
       :open="!!deleteTarget"
-      title="删除远端模型文件？"
+      :title="t('models.deleteModalTitle')"
       :width="420"
       :z-index="1050"
       :footer="null"
@@ -1331,12 +1464,12 @@ onUnmounted(() => {
     >
       <div class="co-modal-stack">
         <p v-if="deleteTarget" class="co-muted co-modal-lead">
-          仅删除远端磁盘上的 {{ deleteTarget.name }} 模型文件，「我的」列表记录会保留。
+          {{ t("models.deleteModalDesc", { name: deleteTarget.name }) }}
         </p>
         <div class="co-modal-footer">
-          <AButton @click="deleteTarget = null">取消</AButton>
+          <AButton @click="deleteTarget = null">{{ t("common.cancel") }}</AButton>
           <AButton type="primary" danger @click="confirmDeleteModel">
-            删除文件
+            {{ t("models.deleteFilesBtn") }}
           </AButton>
         </div>
       </div>
@@ -1420,7 +1553,15 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-/* 2-Entry Tabs */
+/* 2-Entry Tabs + GPU Target Bar */
+.co-model-tabs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .co-model-tabs-bar :deep(.ant-tabs-nav) {
   margin-bottom: 0;
 }
@@ -1458,6 +1599,55 @@ onUnmounted(() => {
   color: var(--co-accent-strong);
 }
 
+.co-gpu-adapter-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.co-gpu-adapter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--co-muted);
+  white-space: nowrap;
+}
+
+.co-gpu-adapter-icon {
+  color: var(--co-accent);
+}
+
+.co-gpu-target-select {
+  min-width: 158px;
+}
+
+.co-gpu-opt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.co-gpu-opt-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+}
+
+.co-gpu-opt-sub {
+  font-size: 11px;
+  color: var(--co-muted);
+}
+
+.co-only-runnable-check {
+  font-size: 12px;
+  color: var(--co-secondary-text);
+  white-space: nowrap;
+}
+
 .co-list-toolbar {
   width: 100%;
 }
@@ -1486,7 +1676,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease;
 }
 
 .co-model-row:hover {
@@ -1502,6 +1695,28 @@ onUnmounted(() => {
 .co-model-row.loading,
 .co-model-row.selected {
   border-color: var(--co-accent);
+}
+
+.co-model-row.is-overflow {
+  opacity: 0.72;
+}
+
+.co-model-row-skeleton {
+  background: var(--co-skeleton-card-bg);
+  pointer-events: none;
+}
+
+.co-model-row-skeleton:hover {
+  border-color: var(--co-border-secondary);
+  box-shadow: none;
+}
+
+.co-model-sk-actions {
+  gap: 6px;
+}
+
+.co-model-strip-skeleton {
+  background: var(--co-skeleton-card-bg);
 }
 
 .co-model-row-main {
@@ -1534,6 +1749,13 @@ onUnmounted(() => {
   line-height: 1.4;
   color: var(--co-text);
   overflow-wrap: anywhere;
+}
+
+.co-model-fit-pill {
+  margin-inline-end: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 6px;
 }
 
 .co-model-sub {
@@ -1594,115 +1816,18 @@ onUnmounted(() => {
 .co-repo-picker {
   padding-top: 10px;
   border-top: 1px solid var(--co-border-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.co-picker-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px 8px;
-}
-
-.co-full-select {
-  width: 100%;
-}
-
-.co-repo-picker-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--co-secondary-text);
-}
-
-.co-repo-meta-left {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.co-repo-meta-left strong {
-  color: var(--co-text);
-  font-weight: 600;
-}
-
-.co-adv-toggle {
-  font-size: 12px !important;
-  color: var(--co-muted);
-}
-
-.co-repo-adv-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--co-border-secondary);
-  background: var(--co-subtle);
-}
-
-.co-adv-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.co-adv-ctx {
-  width: 96px;
-}
-
-.co-adv-temp {
-  width: 78px;
-}
-
-.co-picker-empty {
-  margin: 6px 0;
 }
 
 /* Optional Expandable Parameters */
 .co-config-drawer {
-  padding: 10px 12px;
-  border-radius: 6px;
+  padding: 12px;
+  border-radius: 10px;
   background: var(--co-subtle);
   border: 1px solid var(--co-border-secondary);
   color: var(--co-text);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.co-config-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.co-field-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--co-secondary-text);
-}
-
-.co-config-slider {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.co-slider-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
+  gap: 12px;
 }
 
 .co-config-actions {

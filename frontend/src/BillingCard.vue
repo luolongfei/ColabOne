@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { t } from "./i18n";
 import {
   Badge as ABadge,
   Button as AButton,
@@ -7,14 +8,16 @@ import {
   Progress as AProgress,
   Statistic as AStatistic,
   Tag as ATag,
-  Tooltip as ATooltip,
 } from "ant-design-vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   COLABONE_IDLE_RELEASE_OPTIONS,
   describeColabOneBilling,
   formatCountdownClock,
   formatIdlePolicyLabel,
 } from "./billing";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import { colabOneBillingSkeletonState } from "./skeletonState";
 import type { RuntimeStatus, ColabOneSnapshot } from "./types";
 import {
   PhArrowsClockwise,
@@ -36,6 +39,9 @@ const props = defineProps<{
   busy?: boolean;
   nowMs?: number;
   showIdleFooter?: boolean;
+  loading?: boolean;
+  refreshing?: boolean;
+  hasError?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -47,6 +53,17 @@ const emit = defineEmits<{
 
 const overview = computed(() =>
   describeColabOneBilling(props.account, props.runtimeId, props.nowMs),
+);
+
+const skeleton = computed(() =>
+  colabOneBillingSkeletonState({
+    account: props.account,
+    setupColab: props.setupColab,
+    runtimeId: props.runtimeId,
+    loading: props.loading,
+    refreshing: props.refreshing,
+    hasError: props.hasError,
+  }),
 );
 
 const hasFiniteRate = computed(
@@ -67,27 +84,29 @@ const isSyncing = computed(
 );
 
 const statusPillText = computed(() => {
-  if (!props.setupColab) return "当前未扣费";
-  if (overview.value.active) return "正在扣费";
+  if (!props.setupColab) return t("billing.statusIdle");
+  if (overview.value.active) return t("billing.statusActive");
   if (overview.value.loggedIn && overview.value.instanceCount > 0) {
-    return "实例运行 · 费率同步中";
+    return t("billing.statusSyncingRate");
   }
-  if (!overview.value.loggedIn) return "同步账户中";
+  if (!overview.value.loggedIn) return t("billing.statusSyncingAccount");
   return overview.value.statusText;
 });
 
 const statusSubtitle = computed(() => {
   if (!props.setupColab) {
-    return "未连接账户 · 0 个运行实例";
+    return t("billing.cardDisconnectedInstances");
   }
-  const syncWord = overview.value.stale ? "待同步" : "已同步";
+  const syncWord = overview.value.stale
+    ? t("billing.cardSyncStatePending")
+    : t("billing.cardSyncStateSynced");
   const count = overview.value.instanceCount;
   if (overview.value.active) {
     return count > 0
-      ? `${syncWord} · ${count} 个计费实例`
-      : `${syncWord} · 费率结算中`;
+      ? t("billing.cardSubBillingInstances", { sync: syncWord, count })
+      : t("billing.cardSubRateSettling", { sync: syncWord });
   }
-  return `${syncWord} · ${count} 个运行实例`;
+  return t("billing.cardSubRunningInstances", { sync: syncWord, count });
 });
 
 const rateValueText = computed(() => {
@@ -98,11 +117,11 @@ const rateValueText = computed(() => {
 });
 
 const rateSubtitle = computed(() => {
-  if (overview.value.active) return "按运行中实例实时消耗";
+  if (overview.value.active) return t("billing.cardRateSubActive");
   if (props.setupColab && overview.value.instanceCount > 0) {
-    return "等待 Google 回传实时费率";
+    return t("billing.cardRateSubWaiting");
   }
-  return "当前无实例消耗";
+  return t("billing.cardRateSubIdle");
 });
 
 const balanceValueText = computed(() =>
@@ -110,16 +129,17 @@ const balanceValueText = computed(() =>
 );
 
 const balanceSubtitle = computed(() => {
-  if (!props.setupColab) return "连接账户后同步实时 CU 余额";
-  if (!hasFiniteBalance.value) return "点击右上角刷新同步账户余额";
+  if (!props.setupColab) return t("billing.cardBalanceSubLoggedOut");
+  if (!hasFiniteBalance.value) return t("billing.cardBalanceSubUnread");
+  const label = props.account.email || t("billing.cardBalanceSubDefaultLabel");
   if (overview.value.stale) {
-    return `${props.account.email || "Google Colab 计算单元"} · 超过 60 秒未同步`;
+    return t("billing.cardBalanceSubStale", { label });
   }
-  return props.account.email || "Google Colab 计算单元";
+  return label;
 });
 
 const endurancePrimaryText = computed(() => {
-  if (!props.setupColab) return "当前未扣费 · 余额不消耗";
+  if (!props.setupColab) return t("billing.enduranceIdle");
   return overview.value.endurance.text;
 });
 
@@ -130,30 +150,34 @@ const enduranceTone = computed(() => {
 
 const enduranceSubtitle = computed(() => {
   if (!props.setupColab) {
-    return "登录后按实时费率折算可用天数与小时";
+    return t("billing.cardEnduranceSubLoggedOut");
   }
   const { level, hours } = overview.value.endurance;
   if (level === "unknown") {
-    return "同步余额与费率后自动折算";
+    return t("billing.cardEnduranceSubPending");
   }
   if (level === "idle") {
     if ((props.account.balance ?? 0) > 0) {
-      return "启动实例后按实时费率折算可用天数与小时";
+      return t("billing.cardEnduranceSubIdle");
     }
-    return "当前账户余额已用尽";
+    return t("billing.cardEnduranceSubExhausted");
   }
   if (level === "critical") {
     return (props.account.balance ?? 0) > 0
-      ? "可用时长不足 2 小时，请及时留意任务保存"
-      : "余额已耗尽，实例可能随时被回收";
+      ? t("billing.cardEnduranceSubCritical")
+      : t("billing.cardEnduranceSubDepleted");
   }
   if (level === "low") {
-    return `可用不足 12 小时 · 按 ${overview.value.rate.toFixed(2)} CU/小时测算`;
+    return t("billing.cardEnduranceSubWarning", {
+      rate: overview.value.rate.toFixed(2),
+    });
   }
   if (hours !== null && hours >= 24) {
-    return `共约 ${Math.floor(hours)} 小时 · 按当前费率连续运行`;
+    return t("billing.cardEnduranceSubHours", { hours: Math.floor(hours) });
   }
-  return `按当前 ${overview.value.rate.toFixed(2)} CU/小时连续运行测算`;
+  return t("billing.cardEnduranceSubRate", {
+    rate: overview.value.rate.toFixed(2),
+  });
 });
 
 const showEnduranceBar = computed(
@@ -185,13 +209,15 @@ const activeInstanceCount = computed(() =>
 );
 
 const instanceSubtitle = computed(() => {
-  if (!props.setupColab) return "未登录 Google 账户";
+  if (!props.setupColab) return t("billing.cardInstSubLoggedOut");
   if (overview.value.active && overview.value.instanceCount > 0) {
-    return "正在按实时费率扣费";
+    return t("billing.cardInstSubActive");
   }
-  if (overview.value.active) return "实例费率结算中";
-  if (overview.value.instanceCount > 0) return "实例在线 · 等待费率回传";
-  return "无运行实例 · 零消耗";
+  if (overview.value.active) return t("billing.cardInstSubSettling");
+  if (overview.value.instanceCount > 0) {
+    return t("billing.cardInstSubWaitingRate");
+  }
+  return t("billing.cardInstSubIdle");
 });
 
 const selectedIdleMinutes = computed(() =>
@@ -250,7 +276,7 @@ function onIdleMinutesChange(event: Event) {
     class="co-billing-card"
     :bordered="true"
     size="small"
-    aria-label="账户计费、余额与自动释放概览"
+    :aria-label="t('billing.cardAria')"
   >
     <template #title>
       <div class="co-bc-head-left">
@@ -261,11 +287,18 @@ function onIdleMinutesChange(event: Event) {
         >
           <PhCoins :size="15" weight="duotone" />
         </span>
-        <span class="co-bc-title">算力计费与余额</span>
+        <span class="co-bc-title">{{ t("billing.cardTitle") }}</span>
+        <ColabOneSkeleton
+          v-if="skeleton.status"
+          variant="pill"
+          :width="78"
+          :height="24"
+        />
         <ATag
+          v-else
           :bordered="true"
           :class="[
-            'co-bc-status-tag',
+            'co-bc-status-tag co-sk-reveal',
             {
               billing: overview.active,
               syncing: isSyncing,
@@ -302,41 +335,54 @@ function onIdleMinutesChange(event: Event) {
           <span>{{ statusPillText }}</span>
         </ATag>
         <ATag
-          v-if="setupColab && overview.stale"
+          v-if="!skeleton.caption && setupColab && overview.stale"
           :bordered="false"
           class="co-bc-stale-tag"
         >
-          待同步
+          {{ t("billing.cardStaleTag") }}
         </ATag>
       </div>
     </template>
 
     <template #extra>
       <div class="co-bc-head-right">
-        <span class="co-bc-sync-caption">{{ statusSubtitle }}</span>
-        <ATooltip title="刷新账户余额与计费状态" placement="top">
+        <span v-if="skeleton.caption" class="co-bc-sync-caption-sk" role="status">
+          <ColabOneSkeleton variant="text" :width="112" :height="13" :delay="40" />
+          <span class="co-sr-only">{{ statusSubtitle }}</span>
+        </span>
+        <span v-else class="co-bc-sync-caption co-sk-reveal">{{ statusSubtitle }}</span>
+        <ColabOneTooltip :title="t('billing.cardRefreshTooltip')" placement="top">
           <AButton
             size="small"
             type="text"
             class="co-bc-refresh-btn"
-            aria-label="刷新账户余额与计费状态"
-            :disabled="!setupColab || busy"
+            :aria-label="t('billing.cardRefreshTooltip')"
+            :disabled="!setupColab || busy || loading || refreshing"
             @click="emit('refreshAccount')"
           >
             <template #icon>
-              <PhArrowsClockwise :size="14" :class="{ spinning: busy }" />
+              <PhArrowsClockwise :size="14" :class="{ spinning: busy || refreshing }" />
             </template>
           </AButton>
-        </ATooltip>
+        </ColabOneTooltip>
       </div>
     </template>
 
-    <div class="co-billing-grid">
-      <!-- 1. 剩余 CU 余额 -->
+    <div class="co-billing-grid" :aria-busy="skeleton.any || undefined">
       <div class="co-metric-cell">
-        <template v-if="!setupColab">
-          <span class="co-metric-label">剩余 CU 余额</span>
-          <div class="co-metric-login-wrap">
+        <template v-if="skeleton.balance">
+          <span class="co-metric-label">{{ t("billing.cardRemainingCu") }}</span>
+          <div class="co-bc-sk-val" role="status">
+            <ColabOneSkeleton variant="metric" width="76%" :height="26" :delay="0" />
+            <span class="co-sr-only">{{ t("billing.enduranceReading") }}</span>
+          </div>
+          <div class="co-bc-sk-sub">
+            <ColabOneSkeleton variant="text" width="68%" :height="12" :delay="40" />
+          </div>
+        </template>
+        <template v-else-if="!setupColab">
+          <span class="co-metric-label">{{ t("billing.cardRemainingCu") }}</span>
+          <div class="co-metric-login-wrap co-sk-reveal">
             <AButton
               type="primary"
               size="small"
@@ -344,89 +390,135 @@ function onIdleMinutesChange(event: Event) {
               :disabled="busy"
               @click="emit('openSettings')"
             >
-              立即登录 Google 账户
+              {{ t("billing.cardSignInGoogle") }}
             </AButton>
           </div>
+          <small class="co-metric-sub co-sk-reveal" :title="balanceSubtitle">{{
+            balanceSubtitle
+          }}</small>
         </template>
-        <AStatistic
-          v-else
-          title="剩余 CU 余额"
-          :value="balanceValueText"
-          group-separator=""
-          :class="['co-bc-stat', { 'is-muted': !hasFiniteBalance }]"
-        >
-          <template v-if="hasFiniteBalance" #suffix>
-            <span class="co-bc-stat-unit">CU</span>
-          </template>
-        </AStatistic>
-        <small class="co-metric-sub" :title="account.email || undefined">{{
-          balanceSubtitle
-        }}</small>
+        <template v-else>
+          <AStatistic
+            :title="t('billing.cardRemainingCu')"
+            :value="balanceValueText"
+            group-separator=""
+            :class="['co-bc-stat co-sk-reveal', { 'is-muted': !hasFiniteBalance }]"
+          >
+            <template v-if="hasFiniteBalance" #suffix>
+              <span class="co-bc-stat-unit">CU</span>
+            </template>
+          </AStatistic>
+          <small class="co-metric-sub co-sk-reveal" :title="balanceSubtitle">{{
+            balanceSubtitle
+          }}</small>
+        </template>
       </div>
 
-      <!-- 2. 当前消耗速率 -->
       <div class="co-metric-cell">
-        <AStatistic
-          title="当前消耗速率"
-          :value="rateValueText"
-          group-separator=""
-          :class="['co-bc-stat', { 'is-billing': overview.active }]"
-        >
-          <template #suffix>
-            <span class="co-bc-stat-unit">CU/小时</span>
-          </template>
-        </AStatistic>
-        <small class="co-metric-sub">{{ rateSubtitle }}</small>
+        <template v-if="skeleton.rate">
+          <span class="co-metric-label">{{ t("billing.cardBurnRateTitle") }}</span>
+          <div class="co-bc-sk-val" role="status">
+            <ColabOneSkeleton variant="metric" width="68%" :height="26" :delay="80" />
+            <span class="co-sr-only">{{ overview.rateText }}</span>
+          </div>
+          <div class="co-bc-sk-sub">
+            <ColabOneSkeleton variant="text" width="74%" :height="12" :delay="120" />
+          </div>
+        </template>
+        <template v-else>
+          <AStatistic
+            :title="t('billing.cardBurnRateTitle')"
+            :value="rateValueText"
+            group-separator=""
+            :class="['co-bc-stat co-sk-reveal', { 'is-billing': overview.active }]"
+          >
+            <template #suffix>
+              <span class="co-bc-stat-unit">{{ t("billing.cuPerHour") }}</span>
+            </template>
+          </AStatistic>
+          <small class="co-metric-sub co-sk-reveal" :title="rateSubtitle">{{
+            rateSubtitle
+          }}</small>
+        </template>
       </div>
 
-      <!-- 3. 预计可用时长 -->
       <div class="co-metric-cell">
-        <AStatistic
-          :value="endurancePrimaryText"
-          group-separator=""
-          :class="['co-bc-stat', 'co-bc-stat-endurance', `co-tone-${enduranceTone}`]"
-        >
-          <template #title>
+        <template v-if="skeleton.endurance">
+          <span class="co-metric-label">
             <span class="co-metric-label-with-icon">
               <PhClock :size="13" aria-hidden="true" />
-              <span>预计可用时长</span>
+              <span>{{ t("billing.cardEstimatedDuration") }}</span>
             </span>
-          </template>
-        </AStatistic>
-        <AProgress
-          v-if="showEnduranceBar"
-          :percent="enduranceProgressPercent"
-          :show-info="false"
-          size="small"
-          :stroke-color="enduranceStrokeColor"
-          trail-color="var(--co-subtle)"
-          class="co-bc-endurance-progress"
-        />
-        <small :class="['co-metric-sub', `co-sub-${enduranceTone}`]">{{
-          enduranceSubtitle
-        }}</small>
+          </span>
+          <div class="co-bc-sk-val" role="status">
+            <ColabOneSkeleton variant="metric" width="84%" :height="24" :delay="160" />
+            <span class="co-sr-only">{{ endurancePrimaryText }}</span>
+          </div>
+          <div class="co-bc-sk-sub">
+            <ColabOneSkeleton variant="text" width="78%" :height="12" :delay="200" />
+          </div>
+        </template>
+        <template v-else>
+          <AStatistic
+            :value="endurancePrimaryText"
+            group-separator=""
+            :class="['co-bc-stat co-bc-stat-endurance co-sk-reveal', `co-tone-${enduranceTone}`]"
+          >
+            <template #title>
+              <span class="co-metric-label-with-icon">
+                <PhClock :size="13" aria-hidden="true" />
+                <span>{{ t("billing.cardEstimatedDuration") }}</span>
+              </span>
+            </template>
+          </AStatistic>
+          <AProgress
+            v-if="showEnduranceBar"
+            :percent="enduranceProgressPercent"
+            :show-info="false"
+            size="small"
+            :stroke-color="enduranceStrokeColor"
+            trail-color="var(--co-subtle)"
+            class="co-bc-endurance-progress"
+          />
+          <small
+            :class="['co-metric-sub co-sk-reveal', `co-sub-${enduranceTone}`]"
+            :title="enduranceSubtitle"
+          >{{ enduranceSubtitle }}</small>
+        </template>
       </div>
 
-      <!-- 4. 活跃实例数 -->
       <div class="co-metric-cell">
-        <AStatistic
-          title="活跃实例"
-          :value="activeInstanceCount"
-          group-separator=""
-          :class="[
-            'co-bc-stat',
-            { 'is-billing': overview.active && activeInstanceCount > 0 },
-          ]"
-        >
-          <template #suffix>
-            <span class="co-bc-stat-unit">台</span>
-          </template>
-        </AStatistic>
-        <small class="co-metric-sub">{{ instanceSubtitle }}</small>
+        <template v-if="skeleton.instances">
+          <span class="co-metric-label">{{ t("billing.cardActiveInstances") }}</span>
+          <div class="co-bc-sk-val" role="status">
+            <ColabOneSkeleton variant="metric" width="46%" :height="26" :delay="240" />
+            <span class="co-sr-only">{{ activeInstanceCount }}</span>
+          </div>
+          <div class="co-bc-sk-sub">
+            <ColabOneSkeleton variant="text" width="66%" :height="12" :delay="280" />
+          </div>
+        </template>
+        <template v-else>
+          <AStatistic
+            :title="t('billing.cardActiveInstances')"
+            :value="activeInstanceCount"
+            group-separator=""
+            :class="[
+              'co-bc-stat co-sk-reveal',
+              { 'is-billing': overview.active && activeInstanceCount > 0 },
+            ]"
+          >
+            <template v-if="t('common.unitInstances')" #suffix>
+              <span class="co-bc-stat-unit">{{ t("common.unitInstances") }}</span>
+            </template>
+          </AStatistic>
+          <small class="co-metric-sub co-sk-reveal" :title="instanceSubtitle">{{
+            instanceSubtitle
+          }}</small>
+        </template>
       </div>
     </div>
 
-    <!-- 空闲自动释放策略与实时倒计时（仅在显式开启时渲染，避免与设备控制栏重复下拉框） -->
     <div
       v-if="showIdleFooter"
       class="co-idle-footer"
@@ -452,32 +544,32 @@ function onIdleMinutesChange(event: Event) {
         <div class="co-idle-copy">
           <template v-if="runtimeState === 'ready' && idle">
             <div v-if="idle.phase === 'active'" class="co-idle-line">
-              <strong>任务执行中 · 自动释放已暂停</strong>
-              <span class="co-idle-note"
-                >远端任务运行期间暂停倒计时，完成后自动恢复</span
-              >
+              <strong>{{ t("billing.cardIdlePausedTitle") }}</strong>
+              <span class="co-idle-note">{{
+                t("billing.cardIdlePausedNote")
+              }}</span>
             </div>
             <div v-else class="co-idle-countdown-wrap">
               <div class="co-idle-line">
                 <strong :class="{ 'co-urgent-text': isUrgentCountdown }">
-                  剩余
+                  {{ t("billing.cardIdleCountdownPrefix") }}
                   <span class="co-countdown-digits">{{
                     formatCountdownClock(idleRemaining)
                   }}</span>
-                  自动释放
+                  {{ t("billing.cardIdleCountdownSuffix") }}
                 </strong>
                 <ATag
                   v-if="isUrgentCountdown"
                   :bordered="true"
                   class="co-urgent-tag"
                 >
-                  即将自动释放
+                  {{ t("billing.cardIdleImminentTag") }}
                 </ATag>
               </div>
               <div
                 class="co-idle-progress-wrap"
                 role="progressbar"
-                aria-label="空闲自动释放剩余时间"
+                :aria-label="t('billing.cardIdleRemainingAria')"
                 :aria-valuenow="Math.max(0, Math.ceil(idleRemaining))"
                 :aria-valuemin="0"
                 :aria-valuemax="totalIdleWindowSeconds"
@@ -498,25 +590,25 @@ function onIdleMinutesChange(event: Event) {
 
           <div v-else-if="runtimeState === 'starting'" class="co-idle-line">
             <strong
-              >实例启动中 · 就绪后空闲满
+              >{{ t("billing.cardIdleStartingPrefix") }}
               {{ formatIdlePolicyLabel(selectedIdleMinutes) }}
-              自动释放资源</strong
+              {{ t("billing.cardIdleAutoReleaseSuffix") }}</strong
             >
           </div>
 
           <div v-else-if="runtimeState === 'releasing'" class="co-idle-line">
-            <strong>正在释放远端实例资源…</strong>
+            <strong>{{ t("billing.cardIdleReleasing") }}</strong>
           </div>
 
           <div v-else class="co-idle-line">
             <strong
-              >空闲无操作满
+              >{{ t("billing.cardIdleStandbyPrefix") }}
               {{ formatIdlePolicyLabel(selectedIdleMinutes) }}
-              自动释放资源</strong
+              {{ t("billing.cardIdleAutoReleaseSuffix") }}</strong
             >
-            <span class="co-idle-note"
-              >下载、装载与推理期间自动暂停，避免白白消耗计算单元</span
-            >
+            <span class="co-idle-note">{{
+              t("billing.cardIdleStandbyNote")
+            }}</span>
           </div>
         </div>
       </div>
@@ -534,20 +626,26 @@ function onIdleMinutesChange(event: Event) {
           <template #icon>
             <PhArrowsClockwise :size="13" />
           </template>
-          重置倒计时
+          {{ t("billing.cardResetCountdown") }}
         </AButton>
 
         <label class="co-idle-select-group">
-          <span class="co-idle-select-label">空闲自动释放</span>
+          <span class="co-idle-select-label">{{
+            t("billing.cardIdleSelectLabel")
+          }}</span>
           <select
             class="co-idle-select"
             :value="selectedIdleMinutes"
-            aria-label="空闲自动释放时长"
+            :aria-label="t('billing.cardIdleSelectAria')"
             :disabled="busy"
             @change="onIdleMinutesChange"
           >
             <option v-if="hasCustomIdleOption" :value="selectedIdleMinutes">
-              {{ formatIdlePolicyLabel(selectedIdleMinutes) }}（当前）
+              {{
+                t("billing.cardIdleCurrentOption", {
+                  policy: formatIdlePolicyLabel(selectedIdleMinutes),
+                })
+              }}
             </option>
             <option
               v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
@@ -704,6 +802,24 @@ function onIdleMinutesChange(event: Event) {
   font-variant-numeric: tabular-nums;
 }
 
+.co-bc-sync-caption-sk {
+  display: inline-flex;
+  align-items: center;
+}
+
+.co-bc-sk-val {
+  min-height: 31px;
+  display: flex;
+  align-items: center;
+}
+
+.co-bc-sk-sub {
+  margin-top: 6px;
+  min-height: 17px;
+  display: flex;
+  align-items: center;
+}
+
 .co-bc-refresh-btn {
   width: 30px;
   height: 30px;
@@ -753,7 +869,7 @@ function onIdleMinutesChange(event: Event) {
   border-left: 1px solid var(--co-border-secondary);
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 
 .co-metric-cell:first-child {
@@ -861,14 +977,17 @@ function onIdleMinutesChange(event: Event) {
 }
 
 .co-metric-sub {
-  display: block;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.45;
   color: var(--co-muted);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .co-metric-sub.co-sub-critical {
@@ -1081,7 +1200,8 @@ function onIdleMinutesChange(event: Event) {
     padding: 14px 16px;
   }
 
-  .co-bc-sync-caption {
+  .co-bc-sync-caption,
+  .co-bc-sync-caption-sk {
     display: none;
   }
 

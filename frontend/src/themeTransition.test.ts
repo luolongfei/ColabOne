@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  COLABONE_THEME_HIDE_TOOLTIPS_CLASS,
   COLABONE_THEME_TRANSITION_CLASS,
   COLABONE_THEME_TRANSITION_MS,
   COLABONE_THEME_TRANSITION_EASING,
@@ -139,6 +140,8 @@ describe("themeTransition circular reveal helpers", () => {
       resolveFinished = r;
     });
     let committed = false;
+    let tooltipsHiddenBeforeCapture = false;
+    const onReady = vi.fn();
 
     const doc: TransitionDocumentLike = {
       visibilityState: "visible",
@@ -151,6 +154,9 @@ describe("themeTransition circular reveal helpers", () => {
         animate,
       },
       startViewTransition: (cb) => {
+        tooltipsHiddenBeforeCapture = classes.has(
+          COLABONE_THEME_HIDE_TOOLTIPS_CLASS,
+        );
         void cb();
         return { ready, finished };
       },
@@ -163,16 +169,20 @@ describe("themeTransition circular reveal helpers", () => {
       commit: async () => {
         committed = true;
       },
+      onReady,
     });
 
+    expect(tooltipsHiddenBeforeCapture).toBe(true);
     expect(committed).toBe(true);
     expect(classes.has(COLABONE_THEME_TRANSITION_CLASS)).toBe(true);
+    expect(onReady).toHaveBeenCalledTimes(0);
 
     resolveReady();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(animate).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledTimes(1);
     const [keyframes, animOpts] = animate.mock.calls[0];
     expect(Array.isArray(keyframes)).toBe(true);
     expect(keyframes[0].clipPath).toBe("circle(0px at 1420px 30px)");
@@ -191,6 +201,7 @@ describe("themeTransition circular reveal helpers", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(classes.has(COLABONE_THEME_TRANSITION_CLASS)).toBe(false);
+    expect(classes.has(COLABONE_THEME_HIDE_TOOLTIPS_CLASS)).toBe(false);
   });
 
   it("handles rapid overlapping toggles without clearing active transitioning class prematurely", async () => {

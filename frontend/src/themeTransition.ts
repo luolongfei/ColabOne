@@ -1,6 +1,7 @@
 export const COLABONE_THEME_TRANSITION_MS = 1000;
 export const COLABONE_THEME_TRANSITION_EASING = "cubic-bezier(0.3, 0.08, 0.5, 1)";
 export const COLABONE_THEME_TRANSITION_CLASS = "co-theme-transitioning";
+export const COLABONE_THEME_HIDE_TOOLTIPS_CLASS = "co-vt-hide-tooltips";
 
 // Analytical cubic-bezier(0.3, 0.08, 0.5, 1) evaluator used when sampling
 // multi-keyframe circular reveals so center migration and radius expansion
@@ -73,6 +74,10 @@ export interface TransitionDocumentLike {
     classList: {
       add: (cls: string) => void;
       remove: (cls: string) => void;
+    };
+    style?: {
+      setProperty: (name: string, value: string) => void;
+      removeProperty: (name: string) => void;
     };
     offsetHeight?: number;
     animate?: (
@@ -230,6 +235,7 @@ let activeTransitionSeq = 0;
 
 export function runColabOneThemeTransition(options: {
   commit: () => void | Promise<void>;
+  onReady?: () => void;
   origin?: PointerLikeEvent | ThemeTransitionPoint | null;
   doc?: TransitionDocumentLike;
   viewport?: ViewportSize;
@@ -254,7 +260,9 @@ export function runColabOneThemeTransition(options: {
     typeof doc.startViewTransition !== "function" ||
     typeof doc.documentElement?.animate !== "function"
   ) {
-    void options.commit();
+    void Promise.resolve(options.commit()).finally(() => {
+      options.onReady?.();
+    });
     return;
   }
 
@@ -264,6 +272,17 @@ export function runColabOneThemeTransition(options: {
   activeTransitionSeq += 1;
   const seq = activeTransitionSeq;
   const root = doc.documentElement;
+  let notifiedReady = false;
+  const notifyReady = () => {
+    if (notifiedReady) return;
+    notifiedReady = true;
+    options.onReady?.();
+  };
+
+  // Hide any closing tooltips synchronously BEFORE View Transition snapshots
+  // ::view-transition-old(root), preventing ghost tooltip boxes during the arc.
+  root.classList.add(COLABONE_THEME_HIDE_TOOLTIPS_CLASS);
+  void root.offsetHeight;
 
   let transition: ViewTransitionLike;
   try {
@@ -276,29 +295,69 @@ export function runColabOneThemeTransition(options: {
     });
   } catch {
     root.classList.remove(COLABONE_THEME_TRANSITION_CLASS);
-    void options.commit();
+    root.classList.remove(COLABONE_THEME_HIDE_TOOLTIPS_CLASS);
+    void Promise.resolve(options.commit()).finally(notifyReady);
     return;
   }
 
+  let rafId = 0;
+  let frameTick = 0;
+  const stopCompositorPump = () => {
+    if (rafId && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(rafId);
+    }
+    rafId = 0;
+    if (seq === activeTransitionSeq) {
+      root.style?.removeProperty("--co-vt-opacity");
+    }
+  };
+  // WebView2/Chromium on Windows can stall compositor ticks for a standalone
+  // ::view-transition-new(root) clip-path WAAPI animation when the pointer is
+  // motionless and all other CSS transitions are frozen. Pumping an imperceptible
+  // opacity toggle via rAF guarantees a live BeginMainFrame every vsync.
+  const startCompositorPump = () => {
+    if (typeof requestAnimationFrame !== "function" || !root.style) return;
+    const step = () => {
+      if (seq !== activeTransitionSeq) return;
+      frameTick += 1;
+      root.style?.setProperty(
+        "--co-vt-opacity",
+        frameTick % 2 === 0 ? "1" : "0.999",
+      );
+      rafId = requestAnimationFrame(step);
+    };
+    rafId = requestAnimationFrame(step);
+  };
+
   transition.ready
     .then(() => {
-      if (seq !== activeTransitionSeq) return;
+      if (seq !== activeTransitionSeq) {
+        notifyReady();
+        return;
+      }
       root.animate?.(plan.keyframes, {
         duration: durationMs,
         easing: plan.easing,
         fill: "both",
         pseudoElement: "::view-transition-new(root)",
       });
+      startCompositorPump();
+      notifyReady();
     })
     .catch(() => {
       /* Transition was skipped or aborted; theme commit already ran. */
+      stopCompositorPump();
+      notifyReady();
     });
 
   transition.finished
     .catch(() => {})
     .finally(() => {
+      stopCompositorPump();
+      notifyReady();
       if (seq === activeTransitionSeq) {
         root.classList.remove(COLABONE_THEME_TRANSITION_CLASS);
+        root.classList.remove(COLABONE_THEME_HIDE_TOOLTIPS_CLASS);
       }
     });
 }

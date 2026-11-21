@@ -1,3 +1,4 @@
+import { t, tb } from "./i18n";
 import type { ModelSpec, RuntimeStatus } from "./types";
 
 export type ModelLibraryTab = "common" | "hub";
@@ -31,7 +32,7 @@ export function isModelActiveInVram(
 }
 
 export function modelKindLabel(_kind?: ModelSpec["kind"]): string {
-  return "文本对话";
+  return t("models.kindTextChat");
 }
 
 function modelRepo(model: ModelSpec): string {
@@ -116,50 +117,52 @@ export function describeModelRemoteStatus(
   if (isModelActiveInVram(model, runtime)) {
     return {
       state: "loaded",
-      label: "已装载显存",
+      label: t("models.badgeLoadedVram"),
       tone: "green",
-      detail: "当前已在远端 GPU 显存就绪，可通过对外 API 调用",
+      detail: t("models.badgeLoadedVramDetail"),
     };
   }
   if (running?.kind === "load") {
     return {
       state: "loading",
-      label: "正在装载显存…",
+      label: t("models.badgeLoadingVram"),
       tone: "amber",
-      detail: running.message || "正在装载到远端 GPU 显存",
+      detail: tb(running.message) || t("models.badgeLoadingVramDetail"),
     };
   }
   if (running?.kind === "download") {
     const pct = Math.round((running.progress || 0) * 100);
     return {
       state: "downloading",
-      label: "远端下载中 " + pct + "%",
+      label: t("models.badgeRemoteDownloading", { pct }),
       tone: "amber",
-      detail: running.message || "正在高速下载到远端磁盘",
+      detail: tb(running.message) || t("models.badgeRemoteDownloadingDetail"),
       progress: running.progress || 0,
     };
   }
   if (runtime.state !== "stopped" && model.downloaded) {
     return {
       state: "downloaded",
-      label: "已下载到远端",
+      label: t("models.badgeRemoteDownloaded"),
       tone: "blue",
-      detail: "权重已缓存在当前远端磁盘，可一键装载到显存",
+      detail: t("models.badgeRemoteDownloadedDetail"),
     };
   }
   if (runtime.state === "ready") {
     return {
       state: "remote_unfetched",
-      label: "未下载到远端",
+      label: t("models.badgeNotDownloaded"),
       tone: "muted",
-      detail: "远端磁盘尚未缓存此模型，可一键下载并装载",
+      detail: t("models.badgeNotDownloadedDetail"),
     };
   }
   return {
     state: "offline",
-    label: model.downloaded ? "已下载到远端" : "待启动远端 GPU",
+    label: model.downloaded
+      ? t("models.badgeRemoteDownloaded")
+      : t("models.badgeWaitGpu"),
     tone: model.downloaded ? "blue" : "muted",
-    detail: "启动远端 GPU 后可查看远端缓存或一键下载装载",
+    detail: t("models.badgeWaitGpuDetail"),
   };
 }
 

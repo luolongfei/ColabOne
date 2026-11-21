@@ -628,40 +628,119 @@ class ColabOneRuntime:
             raise ColabOneConflictError("请先下载模型到当前远端实例")
         return self.submit("load", model_id, lambda t: self._load(t, m))
 
-    def _load(self, task, m):
-        if self.comfy.is_running():
-            task.note("正在停止 ComfyUI 服务以释放显存")
-        self.comfy.stop_server()
-        if self.loaded and self.loaded != m.id:
-            prev_model = self.models.get(self.loaded)
-            prev_label = prev_model.name if prev_model else self.loaded
-            task.note(f"正在卸载当前模型 {prev_label} 以释放显存")
-            self._stop_engine()
-        task.note(f"准备加载 {m.name}，上下文 {m.context_length} tokens")
-        gpu = self.gpu_info()
-        if not gpu["total_mib"]:
-            raise RuntimeError("未检测到可用远端 GPU")
-        if gpu["total_mib"] < m.min_vram_mib:
-            raise RuntimeError(f"模型需要至少 {m.min_vram_mib} MiB 显存")
-        task.note(
-            f"远端设备 {gpu.get('name', 'GPU')}，显存 {gpu['total_mib'] / 1024:.1f} GiB"
+    def _build_llama_load_plans(
+        self, engine: Path, m: ModelSpec, model_path: Path, gpu: dict
+    ) -> tuple[bool, list[tuple[str, list[str]]]]:
+        """Build ordered llama-server launch plans supporting automatic GPU + RAM hybrid offloading (--fit on)."""
+        model_bytes = sum(f.size for f in m.files)
+        model_mib = model_bytes / (1024 * 1024)
+        gpu_total_mib = int(gpu.get("total_mib") or 0)
+        gpu_free_mib = max(0, gpu_total_mib - int(gpu.get("used_mib") or 0))
+        needs_hybrid = bool(m.cpu_moe_layers) or (
+            model_mib > 0 and (model_mib * 1.08 + 1024) > gpu_free_mib
         )
-        engine = self.prepare_engine(task)
-        task.check()
-        file = next(f for f in m.files if f.role == "model")
-        env = dict(os.environ)
-        lib_dirs = {str(p.parent) for p in engine.parent.parent.rglob("*.so*")}
-        env["LD_LIBRARY_PATH"] = (
-            ":".join(sorted(lib_dirs)) + ":" + env.get("LD_LIBRARY_PATH", "")
+        identity_text = " ".join(
+            [m.id, m.name, m.description, *(f.repo for f in m.files), *(f.path for f in m.files)]
+        ).lower()
+        is_ple_hybrid = needs_hybrid and (
+            "flash-next" in identity_text or "flash_next" in identity_text
         )
-        args = [
+
+        def make_fit_cmd(
+            kv_k: str,
+            kv_v: str,
+            *,
+            use_cpu_moe: bool = False,
+            use_ple_cpu: bool = False,
+        ) -> list[str]:
+            cmd = [
+                str(engine),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8081",
+                "--model",
+                str(model_path),
+                "--alias",
+                m.id,
+                "--ctx-size",
+                str(m.context_length),
+                "--n-gpu-layers",
+                "999",
+                "--fit",
+                "on",
+                "--flash-attn",
+                "on",
+                "--cache-type-k",
+                kv_k,
+                "--cache-type-v",
+                kv_v,
+                "--kv-unified",
+                "--parallel",
+                "1",
+                "--jinja",
+            ]
+            if use_ple_cpu:
+                cmd.extend(["-ot", "per_layer_token_embd=CPU"])
+            if use_cpu_moe and m.cpu_moe_layers:
+                cmd.extend(["--n-cpu-moe", str(m.cpu_moe_layers)])
+            return cmd
+
+        plans: list[tuple[str, list[str]]] = []
+        if is_ple_hybrid:
+            plans.append(
+                (
+                    "GPU 显存 + 内存 PLE 协同装配（--fit on · KV q8_0）",
+                    make_fit_cmd("q8_0", "q8_0", use_ple_cpu=True),
+                )
+            )
+            plans.append(
+                (
+                    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）",
+                    make_fit_cmd("q4_0", "q8_0", use_ple_cpu=True),
+                )
+            )
+        elif m.cpu_moe_layers:
+            plans.append(
+                (
+                    f"GPU + 内存 MoE 混合装配（--fit on · {m.cpu_moe_layers} 层专家内存卸载 · KV q8_0）",
+                    make_fit_cmd("q8_0", "q8_0", use_cpu_moe=True),
+                )
+            )
+            plans.append(
+                (
+                    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）",
+                    make_fit_cmd("q4_0", "q8_0"),
+                )
+            )
+        else:
+            primary_label = (
+                "GPU 显存 + 系统内存智能混合装配（--fit on · KV q8_0）"
+                if needs_hybrid
+                else "全量 GPU 驻留（FlashAttn · --fit on · KV q8_0）"
+            )
+            plans.append((primary_label, make_fit_cmd("q8_0", "q8_0")))
+            plans.append(
+                (
+                    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）",
+                    make_fit_cmd("q4_0", "q8_0"),
+                )
+            )
+
+        plans.append(
+            (
+                "GPU + 内存智能混合装配（--fit on · 紧凑 KV q4_0）",
+                make_fit_cmd("q4_0", "q4_0"),
+            )
+        )
+        legacy_cmd = [
             str(engine),
             "--host",
             "127.0.0.1",
             "--port",
             "8081",
             "--model",
-            str(self.models_dir / m.id / file.path),
+            str(model_path),
             "--alias",
             m.id,
             "--ctx-size",
@@ -673,64 +752,120 @@ class ColabOneRuntime:
             "--jinja",
         ]
         if m.cpu_moe_layers:
-            args.extend(["--n-cpu-moe", str(m.cpu_moe_layers)])
-        log = self.root / "engine.log"
-        task.note("启动 llama.cpp，将模型加载到远端显存")
-        with log.open("wb") as stream:
-            proc = self._start_engine(
-                task,
-                args,
-                env=env,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-            )
-        try:
-            load_started = time.monotonic()
-            load_last_note = load_started
-            deadline = load_started + 600
-            while time.monotonic() < deadline:
-                task.check()
-                if proc.poll() is not None:
-                    raise RuntimeError(
-                        "模型加载失败：" + log.read_text(errors="replace")[-1200:]
-                    )
-                try:
-                    if (
-                        self.http.get(
-                            "http://127.0.0.1:8081/health", timeout=2
-                        ).status_code
-                        == 200
-                    ):
-                        task.note(
-                            f"模型权重已载入显存（耗时 {time.monotonic() - load_started:.1f} 秒）"
-                        )
-                        self._warmup_llama(task, proc, m.id)
-                        self._engine_ready(
-                            task,
-                            proc,
-                            m.id,
-                            {
-                                "context_length": m.context_length,
-                                "temperature": m.temperature,
-                            },
-                        )
-                        task.note("模型加载成功，远端推理服务已就绪")
-                        return
-                except requests.RequestException:
-                    pass
-                now = time.monotonic()
-                if now - load_last_note >= 10:
-                    load_last_note = now
-                    task.note(
-                        f"正在将模型权重载入远端显存（已耗时 {int(now - load_started)} 秒）"
-                    )
-                task.message = "加载到远端显存"
-                time.sleep(1)
-            raise RuntimeError("模型加载超过 10 分钟")
-        except BaseException:
+            legacy_cmd.extend(["--n-cpu-moe", str(m.cpu_moe_layers)])
+        plans.append(("兼容模式装载", legacy_cmd))
+        return needs_hybrid, plans
+
+    def _load(self, task, m):
+        if self.comfy.is_running():
+            task.note("正在停止 ComfyUI 服务以释放显存")
+        self.comfy.stop_server()
+        if self.loaded or self.proc:
+            prev_id = self.loaded
+            if prev_id == m.id:
+                task.note(f"正在重新装载 {m.name}，先卸载当前实例以释放显存")
+            elif prev_id:
+                prev_model = self.models.get(prev_id)
+                prev_label = prev_model.name if prev_model else prev_id
+                task.note(f"正在卸载当前模型 {prev_label} 以释放显存")
             self._stop_engine()
-            raise
+        task.note(f"准备加载 {m.name}，上下文 {m.context_length} tokens")
+        gpu = self.gpu_info()
+        if not gpu["total_mib"]:
+            raise RuntimeError("未检测到可用远端 GPU")
+        if gpu["total_mib"] < m.min_vram_mib:
+            raise RuntimeError(f"模型需要至少 {m.min_vram_mib} MiB 显存")
+        model_gib = sum(f.size for f in m.files) / (1024**3)
+        task.note(
+            f"远端设备 {gpu.get('name', 'GPU')}，显存 {gpu['total_mib'] / 1024:.1f} GiB"
+            + (f"，模型权重 {model_gib:.1f} GiB" if model_gib >= 0.5 else "")
+        )
+        engine = self.prepare_engine(task)
+        task.check()
+        file = next(f for f in m.files if f.role == "model")
+        model_path = self.models_dir / m.id / file.path
+        env = dict(os.environ)
+        lib_dirs = {str(p.parent) for p in engine.parent.parent.rglob("*.so*")}
+        env["LD_LIBRARY_PATH"] = (
+            ":".join(sorted(lib_dirs)) + ":" + env.get("LD_LIBRARY_PATH", "")
+        )
+        needs_hybrid, plans = self._build_llama_load_plans(engine, m, model_path, gpu)
+        if needs_hybrid:
+            task.note(
+                "模型体积大于当前显存，已自动启用 GPU 显存 + 系统内存混合装载（--fit on），溢出权重将自动分配至内存"
+            )
+        log = self.root / "engine.log"
+        last_error = "模型加载失败"
+        for attempt_idx, (plan_label, args) in enumerate(plans):
+            task.check()
+            task.note(f"启动 llama.cpp：{plan_label}")
+            with log.open("wb") as stream:
+                proc = self._start_engine(
+                    task,
+                    args,
+                    env=env,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                )
+            try:
+                load_started = time.monotonic()
+                load_last_note = load_started
+                deadline = load_started + 600
+                exited_early = False
+                while time.monotonic() < deadline:
+                    task.check()
+                    if proc.poll() is not None:
+                        exited_early = True
+                        tail = log.read_text(errors="replace")[-1200:]
+                        last_error = "模型加载失败：" + tail
+                        break
+                    try:
+                        if (
+                            self.http.get(
+                                "http://127.0.0.1:8081/health", timeout=2
+                            ).status_code
+                            == 200
+                        ):
+                            task.note(
+                                f"模型权重已就绪（{plan_label}，耗时 {time.monotonic() - load_started:.1f} 秒）"
+                            )
+                            self._warmup_llama(task, proc, m.id)
+                            self._engine_ready(
+                                task,
+                                proc,
+                                m.id,
+                                {
+                                    "context_length": m.context_length,
+                                    "temperature": m.temperature,
+                                },
+                            )
+                            task.note("模型加载成功，远端推理服务已就绪")
+                            return
+                    except requests.RequestException:
+                        pass
+                    now = time.monotonic()
+                    if now - load_last_note >= 10:
+                        load_last_note = now
+                        task.note(
+                            f"正在载入模型权重（已耗时 {int(now - load_started)} 秒）"
+                        )
+                    task.message = (
+                        "混合装载到显存与内存" if needs_hybrid else "加载到远端显存"
+                    )
+                    time.sleep(1)
+                if not exited_early:
+                    raise RuntimeError("模型加载超过 10 分钟")
+            except BaseException:
+                self._stop_engine()
+                raise
+            self._stop_engine()
+            if attempt_idx + 1 < len(plans):
+                task.note(
+                    f"方案「{plan_label}」未启动成功，自动尝试下一降级装载方案…",
+                    "warning",
+                )
+        raise RuntimeError(last_error)
 
     def _warmup_llama(self, task, proc, model_id: str):
         """Run a 1-token warmup so first-call CUDA PTX JIT finishes during load instead of timing out the first API request."""

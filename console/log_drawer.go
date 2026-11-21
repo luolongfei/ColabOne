@@ -202,7 +202,7 @@ func (d *ColabOneDesktop) applyLogWindowOnMain(mainWin *mygo.Window, open bool, 
 	rect := planColabOneLogWindowBounds(mainBounds, workArea, width)
 
 	logWin := mygo.NewWindow(mygo.WindowOptions{
-		Title:           "运行日志 · ColabOne",
+		Title:           colabOneT("window.logs"),
 		URL:             "/?view=logs",
 		X:               rect.X,
 		Y:               rect.Y,

@@ -16,14 +16,14 @@ import {
   Select as ASelect,
   SelectOption as ASelectOption,
   Space as ASpace,
-  Spin as ASpin,
   Switch as ASwitch,
   TabPane as ATabPane,
   Tabs as ATabs,
   Tag as ATag,
   Textarea as ATextarea,
-  Tooltip as ATooltip,
 } from "ant-design-vue";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   PhAppWindow,
   PhArrowRight,
@@ -59,6 +59,7 @@ import {
   colabOneWriteClipboard,
 } from "./api";
 import { formatIdlePolicyLabel } from "./billing";
+import { colabOneLocaleCode, t, tb } from "./i18n";
 import {
   defaultFieldValues,
   extractPublicHost,
@@ -73,16 +74,46 @@ import type {
   WorkflowTemplate,
 } from "./types";
 
-const props = defineProps<{ state: ColabOneSnapshot }>();
+const props = defineProps<{
+  state: ColabOneSnapshot;
+  loading?: boolean;
+}>();
 const emit = defineEmits<{
   device: [];
   error: [string];
 }>();
 
 const activeTab = ref<"studio" | "canvas">("studio");
+const deleteConfirmWorkflowId = ref("");
 const tabsWrapRef = ref<HTMLElement | null>(null);
 const busy = ref(false);
-const notice = ref("");
+type ComfyNotice =
+  | {
+      kind: "i18n";
+      key: Parameters<typeof t>[0];
+      params?: Record<string, string | number>;
+    }
+  | { kind: "raw"; text: string };
+const noticeState = ref<ComfyNotice | null>(null);
+const notice = computed(() => {
+  const n = noticeState.value;
+  if (!n) return "";
+  return n.kind === "i18n" ? t(n.key, n.params) : tb(n.text);
+});
+function setNoticeKey(
+  key: Parameters<typeof t>[0],
+  params?: Record<string, string | number>,
+) {
+  noticeState.value = { kind: "i18n", key, params };
+}
+function clearNotice() {
+  noticeState.value = null;
+}
+function reportError(err: unknown) {
+  const raw = String(err);
+  noticeState.value = { kind: "raw", text: raw };
+  emit("error", raw);
+}
 
 // Engine & runtime status
 const gpuReady = computed(() => props.state.runtime.state === "ready");
@@ -134,41 +165,41 @@ const queueBusy = computed(
 const engineStatus = computed(() => {
   if (!gpuReady.value) {
     return {
-      label: "未启动",
+      label: t("comfy.tagStopped"),
       color: "default" as const,
       badge: "default" as const,
     };
   }
   if (comfyStarting.value) {
     return {
-      label: "正在准备",
+      label: t("comfy.tagPreparing"),
       color: "warning" as const,
       badge: "warning" as const,
     };
   }
   if (queueBusy.value) {
     return {
-      label: "队列运行中",
+      label: t("comfy.tagQueueRunning"),
       color: "processing" as const,
       badge: "processing" as const,
     };
   }
   if (comfyRunning.value) {
     return {
-      label: "运行中",
+      label: t("comfy.tagRunning"),
       color: "success" as const,
       badge: "success" as const,
     };
   }
   if (comfy.value?.state === "error") {
     return {
-      label: "启动失败",
+      label: t("comfy.tagFailed"),
       color: "error" as const,
       badge: "error" as const,
     };
   }
   return {
-    label: "未启动",
+    label: t("comfy.tagStopped"),
     color: "default" as const,
     badge: "default" as const,
   };
@@ -190,8 +221,8 @@ const hasLoadedLLM = computed(
 );
 const llmUnloadNotice = computed(() =>
   loadedModel.value
-    ? `当前显存已装载「${loadedModel.value.name}」，启动 ComfyUI 将自动卸载该模型以释放显存，已下载的模型文件保留。`
-    : "当前显存已装载语言模型，启动 ComfyUI 将自动卸载该模型以释放显存，已下载的文件保留。",
+    ? t("comfy.llmMutexWithName", { name: loadedModel.value.name })
+    : t("comfy.llmMutexGeneric"),
 );
 const engineActionBlocked = computed(
   () => busy.value || !!props.state.operation || !!activeTask.value,
@@ -309,7 +340,7 @@ function resetFields() {
   uploadedInputIds.value = {};
   uploadedNames.value = {};
   revokeAllLocalPreviews();
-  notice.value = "已恢复该工作流的默认参数。";
+  setNoticeKey("comfy.noticeResetDefaults");
 }
 
 const MAX_IMAGE_INPUT_BYTES = 16 * 1024 ** 2;
@@ -323,7 +354,7 @@ function readFileAsBase64(file: File): Promise<string> {
       const idx = result.indexOf(",");
       resolve(idx >= 0 ? result.slice(idx + 1) : result);
     };
-    reader.onerror = () => reject(new Error("读取本地文件失败"));
+    reader.onerror = () => reject(new Error(t("comfy.errReadLocalFile")));
     reader.readAsDataURL(file);
   });
 }
@@ -334,15 +365,14 @@ async function handleMediaFile(field: WorkflowField, file: File) {
   const maxBytes =
     kind === "audio" ? MAX_AUDIO_INPUT_BYTES : MAX_IMAGE_INPUT_BYTES;
   if (file.size > maxBytes) {
-    notice.value =
-      kind === "audio"
-        ? "请选择不超过 64 MB 的音频素材文件。"
-        : "请选择不超过 16 MB 的图片素材文件。";
+    setNoticeKey(
+      kind === "audio" ? "comfy.errAudioTooLarge" : "comfy.errImageTooLarge",
+    );
     return;
   }
 
   uploadingField.value = field.key;
-  notice.value = "";
+  clearNotice();
   try {
     const data = await readFileAsBase64(file);
     revokeLocalPreview(field.key);
@@ -357,13 +387,13 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       });
       const assetId = typeof res?.id === "string" ? res.id : "";
       if (!assetId) {
-        throw new Error("远端未返回有效素材编号，请重试");
+        throw new Error(t("comfy.errUploadNoId"));
       }
       uploadedInputIds.value[field.key] = assetId;
       fieldValues.value[field.key] = res?.filename || file.name;
       uploadedNames.value[field.key] = file.name;
       delete pendingUploads.value[field.key];
-      notice.value = `素材「${file.name}」已上传到远端 GPU。`;
+      setNoticeKey("comfy.noticeUploadedRemote", { name: file.name });
     } else {
       pendingUploads.value[field.key] = {
         filename: file.name,
@@ -373,13 +403,11 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       delete uploadedInputIds.value[field.key];
       fieldValues.value[field.key] = file.name;
       uploadedNames.value[field.key] = file.name;
-      notice.value = `已暂存素材「${file.name}」，启动并运行工作流时将自动上传。`;
+      setNoticeKey("comfy.noticeStagedUpload", { name: file.name });
     }
   } catch (e) {
     revokeLocalPreview(field.key);
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   } finally {
     uploadingField.value = "";
   }
@@ -477,7 +505,7 @@ async function onImportFileDrop(event: DragEvent) {
 async function submitImport() {
   if (!canSubmitImport.value || !importValidation.value?.ok) return;
   importing.value = true;
-  notice.value = "";
+  clearNotice();
   try {
     const res = await colabOneCommand("comfyui.workflow.import", {
       name: importName.value.trim(),
@@ -492,11 +520,9 @@ async function submitImport() {
     importName.value = "";
     importDescription.value = "";
     importRaw.value = "";
-    notice.value = "工作流已导入，已自动提取可调参数表单。";
+    setNoticeKey("comfy.noticeImported");
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   } finally {
     importing.value = false;
   }
@@ -504,14 +530,12 @@ async function submitImport() {
 
 async function deleteWorkflow(target: WorkflowTemplate) {
   busy.value = true;
-  notice.value = "";
+  clearNotice();
   try {
     await colabOneCommand("comfyui.workflow.delete", { id: target.id });
-    notice.value = `已删除工作流「${target.name}」。`;
+    setNoticeKey("comfy.noticeDeletedWorkflow", { name: target.name });
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   } finally {
     busy.value = false;
   }
@@ -521,18 +545,16 @@ async function deleteWorkflow(target: WorkflowTemplate) {
 async function actEngine(
   action: string,
   payload: Record<string, unknown> = {},
-  successNotice = "",
+  successNoticeKey?: Parameters<typeof t>[0],
 ) {
   busy.value = true;
-  notice.value = "";
+  clearNotice();
   try {
     await colabOneCommand(action, payload);
-    if (successNotice) notice.value = successNotice;
+    if (successNoticeKey) setNoticeKey(successNoticeKey);
     return true;
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
     return false;
   } finally {
     busy.value = false;
@@ -541,30 +563,24 @@ async function actEngine(
 
 async function startComfy() {
   if (!gpuReady.value) return;
-  await actEngine(
-    "comfyui.start",
-    {},
-    "正在远端准备并启动 ComfyUI 引擎，首次启动需要拉取并初始化环境，请稍候。",
-  );
+  await actEngine("comfyui.start", {}, "comfy.noticeStartingEngine");
 }
 
 async function freeComfyVram() {
-  await actEngine("comfyui.free", {}, "已请求 ComfyUI 释放显存与缓存模型。");
+  await actEngine("comfyui.free", {}, "comfy.noticeFreeVram");
 }
 
 async function stopComfy() {
-  await actEngine("comfyui.stop", {}, "正在停止远端 ComfyUI 引擎。");
+  await actEngine("comfyui.stop", {}, "comfy.noticeStoppingEngine");
 }
 
 async function cancelActiveTask() {
   if (!comfyTask.value) return;
   try {
     await colabOneCommand("task.cancel", { id: comfyTask.value.id });
-    notice.value = "已请求取消当前任务。";
+    setNoticeKey("comfy.noticeCancelRequested");
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   }
 }
 
@@ -583,7 +599,7 @@ async function runWorkflow() {
   }
 
   submittingRun.value = true;
-  notice.value = "";
+  clearNotice();
   try {
     const wf = selectedWorkflow.value;
     // Upload any queued media files before submitting workflow
@@ -594,7 +610,7 @@ async function runWorkflow() {
       });
       const assetId = typeof res?.id === "string" ? res.id : "";
       if (!assetId) {
-        throw new Error(`素材「${item.filename}」上传失败，未返回有效编号`);
+        throw new Error(t("comfy.errUploadNamedFailed", { name: item.filename }));
       }
       uploadedInputIds.value[key] = assetId;
       fieldValues.value[key] = res?.filename || item.filename;
@@ -641,11 +657,9 @@ async function runWorkflow() {
       overrides,
       inputs,
     });
-    notice.value = `工作流「${wf.name}」已提交至远端队列；运行期间暂停空闲释放计时。`;
+    setNoticeKey("comfy.noticeRunSubmitted", { name: wf.name });
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   } finally {
     submittingRun.value = false;
   }
@@ -712,12 +726,10 @@ async function exportOutput(item: WorkflowOutput) {
   try {
     const path = await colabOneExportWorkflowOutput(item.id);
     if (path) {
-      notice.value = "作品已导出到本地。";
+      setNoticeKey("comfy.noticeExported");
     }
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   }
 }
 
@@ -728,18 +740,16 @@ async function deleteOutput(target: WorkflowOutput) {
       URL.revokeObjectURL(blobUrls.value[target.id]);
       delete blobUrls.value[target.id];
     }
-    notice.value = "已删除该输出作品。";
+    setNoticeKey("comfy.noticeDeletedOutput");
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   }
 }
 
 function outputKindLabel(kind: WorkflowOutput["kind"]) {
-  if (kind === "video") return "视频";
-  if (kind === "audio") return "音频";
-  return "图片";
+  if (kind === "video") return t("comfy.kindVideo");
+  if (kind === "audio") return t("comfy.kindAudio");
+  return t("comfy.kindImage");
 }
 
 function outputKindColor(kind: WorkflowOutput["kind"]) {
@@ -782,13 +792,13 @@ const canvasReady = computed(
 const canvasStatusLabel = computed(
   () =>
     ({
-      stopped: "未开启",
-      starting: "正在连接",
-      ready: "已开启",
-      reconnecting: "连接待恢复",
-      stopping: "正在关闭",
-      failed: "连接失败",
-    })[canvasState.value] || "未开启",
+      stopped: t("api.statusStopped"),
+      starting: t("api.statusStarting"),
+      ready: t("api.statusReady"),
+      reconnecting: t("api.statusReconnecting"),
+      stopping: t("api.statusStopping"),
+      failed: t("api.statusFailed"),
+    })[canvasState.value] || t("api.statusStopped"),
 );
 const canvasTagColor = computed(() => {
   if (canvasState.value === "ready") return "success";
@@ -827,7 +837,7 @@ async function startCanvas() {
       domain: canvasDomain.value.trim(),
       tunnel_token: canvasTunnelToken.value.trim(),
     },
-    "正在开启原生画布固定域名隧道，验证通过后即可打开。",
+    "comfy.noticeStartingCanvas",
   );
   if (ok) {
     canvasTunnelToken.value = "";
@@ -843,7 +853,7 @@ async function saveCanvasSettings() {
       domain: canvasDomain.value.trim(),
       tunnel_token: canvasTunnelToken.value.trim(),
     },
-    "原生画布固定域名配置已保存到本机凭据库。",
+    "comfy.noticeSavedCanvasConfig",
   );
   if (ok) {
     canvasTunnelToken.value = "";
@@ -852,22 +862,20 @@ async function saveCanvasSettings() {
 }
 
 async function stopCanvas() {
-  await actEngine("comfyui.canvas.stop", {}, "已关闭原生画布安全隧道。");
+  await actEngine("comfyui.canvas.stop", {}, "comfy.noticeStoppedCanvas");
 }
 
 async function launchCanvas(target: "window" | "browser") {
-  notice.value = "";
+  clearNotice();
   try {
     await colabOneOpenComfyCanvas(target);
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   }
 }
 
 async function copyCanvasAuthUrl() {
-  notice.value = "";
+  clearNotice();
   try {
     const res = await colabOneCommand("comfyui.canvas.url");
     const url =
@@ -875,7 +883,7 @@ async function copyCanvasAuthUrl() {
         ? res
         : res?.url || res?.auth_url || canvas.value?.url || "";
     if (!url) {
-      throw new Error("暂未获取到鉴权链接，请确认画布隧道已就绪");
+      throw new Error(t("comfy.errNoAuthUrl"));
     }
     try {
       await colabOneWriteClipboard(url);
@@ -888,18 +896,24 @@ async function copyCanvasAuthUrl() {
     copyTimer = setTimeout(() => {
       copiedCanvasUrl.value = false;
     }, 2000);
-    notice.value = "鉴权链接已复制（含访问令牌，请勿分享给他人）。";
+    setNoticeKey("comfy.noticeCopiedAuthLink");
   } catch (e) {
-    const msg = String(e);
-    notice.value = msg;
-    emit("error", msg);
+    reportError(e);
   }
 }
 
-onMounted(() => {
+function syncTabsAriaLabel() {
   tabsWrapRef.value
     ?.querySelector('.ant-tabs-nav[role="tablist"]')
-    ?.setAttribute("aria-label", "ComfyUI 模式");
+    ?.setAttribute("aria-label", t("comfy.modeAria"));
+}
+
+watch(colabOneLocaleCode, () => {
+  syncTabsAriaLabel();
+});
+
+onMounted(() => {
+  syncTabsAriaLabel();
 });
 
 onUnmounted(() => {
@@ -916,7 +930,7 @@ onUnmounted(() => {
       <div>
         <h1 class="co-page-title">ComfyUI</h1>
         <p class="co-page-subtitle">
-          在远端 GPU 一键运行工作流表单，或通过安全隧道访问完整原生节点画布。
+          {{ t("comfy.subtitle") }}
         </p>
       </div>
     </div>
@@ -925,7 +939,7 @@ onUnmounted(() => {
     <ACard
       class="co-comfy-engine-card"
       :bordered="true"
-      aria-label="ComfyUI 引擎状态"
+      :aria-label="t('comfy.engineStatusAria')"
     >
       <div class="co-comfy-engine-head">
         <div class="co-comfy-engine-icon" aria-hidden="true">
@@ -934,52 +948,83 @@ onUnmounted(() => {
 
         <div class="co-comfy-engine-meta">
           <div class="co-comfy-engine-title-row">
-            <h2>ComfyUI 工作流引擎</h2>
-            <ATag :color="engineStatus.color" class="co-comfy-status-tag">
-              <ABadge :status="engineStatus.badge" />
-              <span>{{ engineStatus.label }}</span>
-            </ATag>
-            <ATag class="co-comfy-mono">{{ comfyTag }}</ATag>
-            <ATag
-              v-if="comfyRunning"
-              :color="queueBusy ? 'processing' : 'default'"
-              class="co-comfy-queue-tag"
-            >
-              运行中 {{ queueRunning }} · 排队 {{ queuePending }}
-            </ATag>
+            <h2>{{ t("comfy.engineTitle") }}</h2>
+            <template v-if="props.loading">
+              <ColabOneSkeleton :width="72" :height="22" variant="pill" inline />
+              <ColabOneSkeleton
+                :width="64"
+                :height="22"
+                variant="tag"
+                tone="subtle"
+                :delay="60"
+                inline
+              />
+            </template>
+            <template v-else>
+              <ATag :color="engineStatus.color" class="co-comfy-status-tag co-sk-reveal">
+                <ABadge :status="engineStatus.badge" />
+                <span>{{ engineStatus.label }}</span>
+              </ATag>
+              <ATag class="co-comfy-mono co-sk-reveal">{{ comfyTag }}</ATag>
+              <ATag
+                v-if="comfyRunning"
+                :color="queueBusy ? 'processing' : 'default'"
+                class="co-comfy-queue-tag co-sk-reveal"
+              >
+                {{ t("comfy.queueCounts", { running: queueRunning, pending: queuePending }) }}
+              </ATag>
+            </template>
           </div>
 
           <p class="co-comfy-engine-sub">
-            <template v-if="!gpuReady">
+            <ColabOneSkeleton
+              v-if="props.loading"
+              width="66%"
+              :height="14"
+              variant="text"
+              tone="subtle"
+              :delay="85"
+            />
+            <template v-else-if="!gpuReady">
               {{
                 gpuStarting
-                  ? "远端 GPU 正在启动中；就绪后即可运行 ComfyUI 工作流或打开原生节点画布。"
-                  : "远端 GPU 未启动；启动后即可运行 ComfyUI 工作流或打开原生节点画布。"
+                  ? t("comfy.gpuStartingDesc")
+                  : t("comfy.gpuStoppedDesc")
               }}
             </template>
             <template v-else-if="comfyRunning">
-              任务与画布操作期间自动暂停空闲释放（空闲策略：{{
-                formatIdlePolicyLabel(props.state.settings.idle_minutes)
-              }}）
+              {{
+                t("comfy.runningIdleHint", {
+                  policy: formatIdlePolicyLabel(props.state.settings.idle_minutes),
+                })
+              }}
             </template>
             <template v-else-if="comfyStarting">
-              正在远端 GPU 准备 ComfyUI 运行环境，完成后即可直接运行工作流。
+              {{ t("comfy.preparingDesc") }}
             </template>
             <template v-else>
-              远端 GPU 已就绪，启动 ComfyUI 引擎后即可运行工作流或打开原生画布。
+              {{ t("comfy.readyToStartDesc") }}
             </template>
           </p>
         </div>
 
         <div class="co-comfy-engine-actions">
-          <ASpace wrap :size="8">
+          <ColabOneSkeleton
+            v-if="props.loading"
+            :width="116"
+            :height="32"
+            variant="button"
+            tone="accent"
+            :delay="105"
+          />
+          <ASpace v-else wrap :size="8">
             <template v-if="comfyRunning">
               <AButton
                 :disabled="engineActionBlocked"
                 @click="freeComfyVram"
               >
                 <template #icon><PhBroom :size="15" /></template>
-                释放显存
+                {{ t("comfy.freeVram") }}
               </AButton>
               <AButton
                 danger
@@ -987,16 +1032,16 @@ onUnmounted(() => {
                 @click="stopComfy"
               >
                 <template #icon><PhStop :size="14" weight="fill" /></template>
-                停止 ComfyUI
+                {{ t("comfy.stopComfy") }}
               </AButton>
             </template>
             <template v-else>
-              <ATooltip
+              <ColabOneTooltip
                 :title="
                   !gpuReady
                     ? gpuStarting
-                      ? '远端 GPU 正在启动中'
-                      : '请先启动远端 GPU'
+                      ? t('api.gpuStartingTooltip')
+                      : t('api.startGpuFirstTooltip')
                     : ''
                 "
               >
@@ -1007,16 +1052,16 @@ onUnmounted(() => {
                   @click="startComfy"
                 >
                   <template #icon><PhPlay :size="14" weight="fill" /></template>
-                  {{ comfyStarting ? "正在准备 ComfyUI…" : "启动 ComfyUI" }}
+                  {{ comfyStarting ? t("comfy.preparingBtn") : t("comfy.startComfy") }}
                 </AButton>
-              </ATooltip>
+              </ColabOneTooltip>
               <AButton
                 v-if="!gpuReady"
                 :type="gpuStarting ? 'default' : 'primary'"
                 @click="emit('device')"
               >
                 <template #icon><PhHardDrives :size="15" /></template>
-                {{ gpuStarting ? "查看 GPU 启动进度" : "去启动 GPU" }}
+                {{ gpuStarting ? t("api.viewGpuProgress") : t("api.goStartGpu") }}
                 <PhArrowRight :size="14" />
               </AButton>
             </template>
@@ -1039,7 +1084,7 @@ onUnmounted(() => {
         type="error"
         show-icon
         class="co-comfy-card-alert"
-        :message="comfy.error"
+        :message="tb(comfy.error)"
       />
 
       <!-- Active ComfyUI task progress bar -->
@@ -1047,7 +1092,9 @@ onUnmounted(() => {
         <div class="co-comfy-task-info">
           <div class="co-comfy-task-head">
             <strong>{{
-              comfyTask.message || "远端 ComfyUI 任务进行中…"
+              comfyTask.message
+                ? tb(comfyTask.message)
+                : t("comfy.taskRunningFallback")
             }}</strong>
             <span class="co-comfy-mono">{{ comfyTaskPercent }}%</span>
           </div>
@@ -1063,7 +1110,7 @@ onUnmounted(() => {
           danger
           @click="cancelActiveTask"
         >
-          取消任务
+          {{ t("comfy.cancelTask") }}
         </AButton>
       </div>
     </ACard>
@@ -1078,7 +1125,7 @@ onUnmounted(() => {
       role="status"
       class="co-comfy-notice"
       :message="notice"
-      @close="notice = ''"
+      @close="clearNotice"
     />
 
     <!-- Dual-layer Workspace Tabs -->
@@ -1088,12 +1135,12 @@ onUnmounted(() => {
         class="co-comfy-tabs"
         @update:active-key="onTabChange"
       >
-        <!-- TAB 1: 工作流工坊 -->
+        <!-- TAB 1: Workflow Studio -->
         <ATabPane key="studio">
           <template #tab>
             <span class="co-comfy-tab-label">
               <PhSlidersHorizontal :size="16" />
-              <span>工作流工坊</span>
+              <span>{{ t("comfy.tabStudio") }}</span>
               <ABadge
                 v-if="workflows.length"
                 :count="workflows.length"
@@ -1102,47 +1149,150 @@ onUnmounted(() => {
             </span>
           </template>
 
-          <section class="co-comfy-studio-section" aria-label="工作流工坊">
+          <section class="co-comfy-studio-section" :aria-label="t('comfy.tabStudio')">
             <!-- Studio Action Bar -->
             <div class="co-comfy-studio-toolbar">
               <div class="co-comfy-studio-toolbar-copy">
                 <div class="co-comfy-toolbar-title-row">
-                  <h2>工作流工坊</h2>
-                  <ATag class="co-comfy-count-tag">
-                    {{ workflows.length }} 个工作流
+                  <h2>{{ t("comfy.tabStudio") }}</h2>
+                  <ColabOneSkeleton
+                    v-if="props.loading"
+                    :width="62"
+                    :height="22"
+                    variant="tag"
+                    tone="subtle"
+                    inline
+                  />
+                  <ATag v-else class="co-comfy-count-tag co-sk-reveal">
+                    {{ t("comfy.studioWorkflowCount", { count: workflows.length }) }}
                   </ATag>
                 </div>
-                <p>
-                  自动解析 ComfyUI API JSON 为简洁表单，在远端 GPU
-                  一键运行并归档图片、视频与音频输出。
-                </p>
+                <p>{{ t("comfy.studioDesc") }}</p>
               </div>
               <AButton
                 type="primary"
                 @click="openImportModal"
               >
                 <template #icon><PhPlus :size="15" /></template>
-                导入 API 工作流 (JSON)
+                {{ t("comfy.importBtn") }}
               </AButton>
             </div>
 
             <div class="co-comfy-studio-grid">
               <!-- Left Column: Workflow Library + Dynamic Parameter Runner -->
               <div class="co-comfy-left-col">
+                <!-- Initial Cold-Start Skeleton -->
+                <template v-if="props.loading && !workflows.length">
+                  <ACard
+                    size="small"
+                    class="co-comfy-card"
+                    :title="t('comfy.importedListTitle')"
+                  >
+                    <div
+                      class="co-comfy-workflow-list"
+                      role="status"
+                      aria-busy="true"
+                    >
+                      <span class="co-sr-only">{{ t("common.loading") }}</span>
+                      <div
+                        v-for="idx in 2"
+                        :key="idx"
+                        class="co-comfy-workflow-item co-comfy-wf-skeleton"
+                      >
+                        <div class="co-comfy-workflow-item-main">
+                          <div class="co-comfy-workflow-item-title">
+                            <ColabOneSkeleton
+                              :width="idx === 1 ? '56%' : '48%'"
+                              :height="15"
+                              variant="text"
+                              :delay="(idx - 1) * 75"
+                            />
+                            <ColabOneSkeleton
+                              :width="44"
+                              :height="19"
+                              variant="tag"
+                              tone="subtle"
+                              :delay="(idx - 1) * 75 + 45"
+                            />
+                          </div>
+                          <div class="co-comfy-wf-sk-desc">
+                            <ColabOneSkeleton
+                              :width="idx === 1 ? '82%' : '70%'"
+                              :height="12"
+                              variant="text"
+                              tone="subtle"
+                              :delay="(idx - 1) * 75 + 80"
+                            />
+                          </div>
+                          <div class="co-comfy-workflow-badges">
+                            <ColabOneSkeleton
+                              :width="56"
+                              :height="18"
+                              variant="tag"
+                              tone="subtle"
+                              :delay="(idx - 1) * 75 + 105"
+                            />
+                            <ColabOneSkeleton
+                              :width="62"
+                              :height="18"
+                              variant="tag"
+                              tone="subtle"
+                              :delay="(idx - 1) * 75 + 135"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </ACard>
+
+                  <ACard size="small" class="co-comfy-card co-comfy-param-card">
+                    <div class="co-comfy-fields-stack" aria-hidden="true">
+                      <div class="co-comfy-field-control">
+                        <ColabOneSkeleton :width="92" :height="13" variant="text" />
+                        <ColabOneSkeleton
+                          width="100%"
+                          :height="68"
+                          :radius="8"
+                          variant="rect"
+                          tone="subtle"
+                          :delay="60"
+                        />
+                      </div>
+                      <div class="co-comfy-field-control">
+                        <ColabOneSkeleton :width="76" :height="13" variant="text" :delay="110" />
+                        <ColabOneSkeleton
+                          width="100%"
+                          :height="32"
+                          :radius="8"
+                          variant="rect"
+                          tone="subtle"
+                          :delay="150"
+                        />
+                      </div>
+                      <ColabOneSkeleton
+                        width="100%"
+                        :height="34"
+                        variant="button"
+                        tone="accent"
+                        :delay="190"
+                      />
+                    </div>
+                  </ACard>
+                </template>
+
                 <!-- Empty state when no workflows exist -->
                 <ACard
-                  v-if="!workflows.length"
+                  v-else-if="!workflows.length"
                   class="co-comfy-card co-comfy-empty-card"
                 >
-                  <AEmpty description="还没有可用的工作流">
+                  <AEmpty :description="t('comfy.emptyWorkflows')">
                     <template #image>
                       <div class="co-comfy-empty-emblem">
                         <PhFlowArrow :size="30" />
                       </div>
                     </template>
                     <p class="co-comfy-empty-copy">
-                      支持导入任意 ComfyUI「Save (API Format)」JSON
-                      工作流并自动生成一键参数表单，未启动 GPU 时也可提前导入管理。
+                      {{ t("comfy.emptyWorkflowsDesc") }}
                     </p>
                     <ASpace wrap :size="10" class="co-comfy-empty-actions">
                       <AButton
@@ -1150,13 +1300,13 @@ onUnmounted(() => {
                         @click="openImportModal"
                       >
                         <template #icon><PhUploadSimple :size="15" /></template>
-                        导入工作流 JSON
+                        {{ t("comfy.importBtnShort") }}
                       </AButton>
                       <AButton
                         @click="activeTab = 'canvas'"
                       >
                         <template #icon><PhGraph :size="15" /></template>
-                        前往「原生画布」搭建流程
+                        {{ t("comfy.goCanvasBuild") }}
                       </AButton>
                     </ASpace>
                   </AEmpty>
@@ -1167,19 +1317,19 @@ onUnmounted(() => {
                   <ACard
                     size="small"
                     class="co-comfy-card"
-                    title="已导入工作流"
-                    aria-label="工作流列表"
+                    :title="t('comfy.importedListTitle')"
+                    :aria-label="t('comfy.workflowListAria')"
                   >
                     <template #extra>
                       <ATag class="co-comfy-count-tag">
-                        {{ workflows.length }} 个
+                        {{ t("comfy.studioCountShort", { count: workflows.length }) }}
                       </ATag>
                     </template>
 
                     <div
                       class="co-comfy-workflow-list"
                       role="listbox"
-                      aria-label="选择工作流"
+                      :aria-label="t('comfy.selectWorkflowAria')"
                     >
                       <div
                         v-for="wf in workflows"
@@ -1201,7 +1351,11 @@ onUnmounted(() => {
                                 wf.source === 'builtin' ? 'blue' : 'default'
                               "
                             >
-                              {{ wf.source === "builtin" ? "内置" : "自定义" }}
+                              {{
+                                wf.source === "builtin"
+                                  ? t("comfy.sourceBuiltin")
+                                  : t("comfy.sourceCustom")
+                              }}
                             </ATag>
                           </div>
                           <p
@@ -1212,21 +1366,21 @@ onUnmounted(() => {
                           </p>
                           <div class="co-comfy-workflow-badges">
                             <ATag class="co-comfy-meta-tag">
-                              {{ wf.node_count }} 个节点
+                              {{ t("comfy.nodeCount", { count: wf.node_count }) }}
                             </ATag>
                             <ATag class="co-comfy-meta-tag">
-                              {{ wf.fields.length }} 个参数
+                              {{ t("comfy.fieldCount", { count: wf.fields.length }) }}
                             </ATag>
                             <ATag
                               v-if="wf.min_vram_mib > 0"
                               color="gold"
                               class="co-comfy-meta-tag"
                             >
-                              建议显存
                               {{
-                                Math.max(1, Math.round(wf.min_vram_mib / 1024))
+                                t("comfy.recommendedVram", {
+                                  vram: `${Math.max(1, Math.round(wf.min_vram_mib / 1024))} GB+`,
+                                })
                               }}
-                              GB+
                             </ATag>
                           </div>
                         </div>
@@ -1237,27 +1391,37 @@ onUnmounted(() => {
                           @click.stop
                         >
                           <APopconfirm
-                            :title="`删除工作流「${wf.name}」？`"
-                            description="删除后无法从本地工作流库恢复，已生成的输出作品保留。"
-                            ok-text="确认删除"
-                            cancel-text="取消"
+                            :title="t('comfy.deleteWorkflowTitle', { name: wf.name })"
+                            :description="t('comfy.deleteWorkflowDesc')"
+                            :ok-text="t('common.confirmDelete')"
+                            :cancel-text="t('common.cancel')"
                             :ok-button-props="{ danger: true }"
                             placement="topRight"
+                            @open-change="
+                              (open) => {
+                                deleteConfirmWorkflowId = open ? wf.id : '';
+                              }
+                            "
                             @confirm="deleteWorkflow(wf)"
                           >
-                            <ATooltip title="删除自定义工作流">
-                              <AButton
-                                type="text"
-                                size="small"
-                                danger
-                                aria-label="删除自定义工作流"
-                                :disabled="busy"
+                            <span class="co-popconfirm-anchor">
+                              <ColabOneTooltip
+                                :title="t('comfy.deleteWorkflowTooltip')"
+                                :disabled="deleteConfirmWorkflowId === wf.id"
                               >
-                                <template #icon>
-                                  <PhTrash :size="15" />
-                                </template>
-                              </AButton>
-                            </ATooltip>
+                                <AButton
+                                  type="text"
+                                  size="small"
+                                  danger
+                                  :aria-label="t('comfy.deleteWorkflowTooltip')"
+                                  :disabled="busy"
+                                >
+                                  <template #icon>
+                                    <PhTrash :size="15" />
+                                  </template>
+                                </AButton>
+                              </ColabOneTooltip>
+                            </span>
                           </APopconfirm>
                         </div>
                       </div>
@@ -1291,7 +1455,7 @@ onUnmounted(() => {
                         <template #icon>
                           <PhArrowsClockwise :size="14" />
                         </template>
-                        恢复默认
+                        {{ t("comfy.resetDefaults") }}
                       </AButton>
                     </template>
 
@@ -1303,7 +1467,7 @@ onUnmounted(() => {
                         v-if="!selectedWorkflow.fields.length"
                         type="info"
                         show-icon
-                        message="该工作流未检测到可调输入参数，将按 JSON 原始参数直接运行。"
+                        :message="t('comfy.noEditableFields')"
                       />
 
                       <div v-else class="co-comfy-fields-stack">
@@ -1320,7 +1484,7 @@ onUnmounted(() => {
                             <div class="co-comfy-switch-copy">
                               <strong>{{ field.label }}</strong>
                               <small class="co-comfy-field-node">
-                                节点 #{{ field.node_id }} ·
+                                {{ t("comfy.nodePrefix", { id: field.node_id }) }}
                                 {{ field.input_name }}
                               </small>
                             </div>
@@ -1343,7 +1507,7 @@ onUnmounted(() => {
                             <div class="co-comfy-field-label-row">
                               <span>{{ field.label }}</span>
                               <small class="co-comfy-field-node">
-                                节点 #{{ field.node_id }} ·
+                                {{ t("comfy.nodePrefix", { id: field.node_id }) }}
                                 {{ field.input_name }}
                               </small>
                             </div>
@@ -1372,9 +1536,13 @@ onUnmounted(() => {
                                 :disabled="uploadingField === field.key"
                                 @change="onMediaSelected(field, $event)"
                               />
-                              <ASpin
+                              <ColabOneSkeleton
                                 v-if="uploadingField === field.key"
-                                size="small"
+                                :width="42"
+                                :height="42"
+                                :radius="8"
+                                variant="rect"
+                                tone="accent"
                               />
                               <img
                                 v-else-if="
@@ -1397,32 +1565,36 @@ onUnmounted(() => {
                               </span>
                               <div class="co-comfy-media-dropzone-copy">
                                 <template v-if="uploadingField === field.key">
-                                  <strong>正在上传至远端 ComfyUI…</strong>
-                                  <small>请稍候，上传完成后即可运行</small>
+                                  <strong>{{ t("comfy.uploadingTitle") }}</strong>
+                                  <small>{{ t("comfy.uploadingHint") }}</small>
                                 </template>
                                 <template v-else-if="uploadedNames[field.key]">
                                   <strong>{{ uploadedNames[field.key] }}</strong>
-                                  <small>点击或拖拽新文件以替换</small>
+                                  <small>{{ t("comfy.replaceFileHint") }}</small>
                                 </template>
                                 <template v-else-if="fieldValues[field.key]">
                                   <strong>
-                                    当前文件：{{ fieldValues[field.key] }}
+                                    {{
+                                      t("comfy.currentFile", {
+                                        name: String(fieldValues[field.key]),
+                                      })
+                                    }}
                                   </strong>
-                                  <small>点击或拖拽新文件以替换</small>
+                                  <small>{{ t("comfy.replaceFileHint") }}</small>
                                 </template>
                                 <template v-else>
                                   <strong>
                                     {{
                                       field.field_type === "audio"
-                                        ? "拖拽或点击选择音频文件"
-                                        : "拖拽或点击选择图片文件"
+                                        ? t("comfy.dropAudio")
+                                        : t("comfy.dropImage")
                                     }}
                                   </strong>
                                   <small>
                                     {{
                                       field.field_type === "audio"
-                                        ? "支持 WAV / MP3 / FLAC / OGG / M4A（≤ 64 MB）"
-                                        : "支持 PNG / JPEG / WebP（≤ 16 MB）"
+                                        ? t("comfy.audioFormats")
+                                        : t("comfy.imageFormats")
                                     }}
                                   </small>
                                 </template>
@@ -1446,8 +1618,8 @@ onUnmounted(() => {
                                 >
                                   {{
                                     pendingUploads[field.key]
-                                      ? "待提交时上传"
-                                      : "已上传至远端"
+                                      ? t("comfy.pendingUpload")
+                                      : t("comfy.uploadedRemote")
                                   }}
                                 </ATag>
                                 <ATag
@@ -1463,7 +1635,7 @@ onUnmounted(() => {
                                 danger
                                 @click="clearMediaField(field)"
                               >
-                                清除
+                                {{ t("common.clear") }}
                               </AButton>
                             </div>
                           </div>
@@ -1476,7 +1648,7 @@ onUnmounted(() => {
                             >
                               <span>{{ field.label }}</span>
                               <small class="co-comfy-field-node">
-                                节点 #{{ field.node_id }} ·
+                                {{ t("comfy.nodePrefix", { id: field.node_id }) }}
                                 {{ field.input_name }}
                               </small>
                             </label>
@@ -1564,7 +1736,7 @@ onUnmounted(() => {
 
                       <!-- Submit Bar -->
                       <div class="co-comfy-form-actions">
-                        <ATooltip :title="!gpuReady ? '请先启动远端 GPU' : ''">
+                        <ColabOneTooltip :title="!gpuReady ? t('api.startGpuFirstTooltip') : ''">
                           <AButton
                             type="primary"
                             html-type="submit"
@@ -1583,21 +1755,21 @@ onUnmounted(() => {
                             </template>
                             {{
                               !gpuReady
-                                ? "运行工作流"
+                                ? t("comfy.runWorkflow")
                                 : !comfyRunning
-                                  ? "先启动 ComfyUI 引擎"
+                                  ? t("comfy.startComfyFirst")
                                   : submittingRun
-                                    ? "正在提交…"
-                                    : "运行工作流"
+                                    ? t("common.submitting")
+                                    : t("comfy.runWorkflow")
                             }}
                           </AButton>
-                        </ATooltip>
+                        </ColabOneTooltip>
                         <AButton
                           v-if="comfyRunTask || comfyTask"
                           danger
                           @click="cancelActiveTask"
                         >
-                          取消任务
+                          {{ t("comfy.cancelTask") }}
                         </AButton>
                       </div>
                     </form>
@@ -1606,40 +1778,200 @@ onUnmounted(() => {
               </div>
 
               <!-- Right Column: Output Gallery Card -->
-              <section class="co-comfy-gallery-col" aria-label="作品输出区">
+              <section class="co-comfy-gallery-col" :aria-label="t('comfy.galleryTitle')">
                 <ACard
                   size="small"
                   class="co-comfy-card co-comfy-gallery-card"
-                  title="作品输出区"
+                  :title="t('comfy.galleryTitle')"
                 >
                   <template #extra>
-                    <ATag class="co-comfy-count-tag">{{ outputs.length }} 件</ATag>
+                    <ColabOneSkeleton
+                      v-if="props.loading"
+                      :width="42"
+                      :height="22"
+                      variant="tag"
+                      tone="subtle"
+                      inline
+                    />
+                    <ATag v-else class="co-comfy-count-tag co-sk-reveal">
+                      {{ t("comfy.outputCount", { count: outputs.length }) }}
+                    </ATag>
                   </template>
 
                   <div
-                    v-if="!outputs.length"
+                    v-if="props.loading && !outputs.length"
+                    class="co-comfy-output-grid"
+                    role="status"
+                    aria-busy="true"
+                  >
+                    <span class="co-sr-only">{{ t("common.loading") }}</span>
+                    <article
+                      v-for="idx in 2"
+                      :key="idx"
+                      class="co-comfy-output-item co-comfy-output-skeleton"
+                    >
+                      <div class="co-comfy-output-frame co-comfy-output-frame-sk">
+                        <ColabOneSkeleton
+                          width="100%"
+                          height="100%"
+                          :radius="0"
+                          variant="rect"
+                          :tone="idx === 1 ? 'accent' : 'default'"
+                          :delay="(idx - 1) * 90"
+                        />
+                      </div>
+                      <div class="co-comfy-output-body">
+                        <div class="co-comfy-output-title-row">
+                          <ColabOneSkeleton
+                            :width="idx === 1 ? '62%' : '54%'"
+                            :height="15"
+                            variant="text"
+                            :delay="(idx - 1) * 90 + 40"
+                          />
+                          <ColabOneSkeleton
+                            :width="42"
+                            :height="20"
+                            variant="tag"
+                            tone="subtle"
+                            :delay="(idx - 1) * 90 + 70"
+                          />
+                        </div>
+                        <ColabOneSkeleton
+                          width="76%"
+                          :height="12"
+                          variant="text"
+                          tone="subtle"
+                          :delay="(idx - 1) * 90 + 100"
+                        />
+                        <div class="co-comfy-output-meta-tags">
+                          <ColabOneSkeleton
+                            :width="54"
+                            :height="20"
+                            variant="tag"
+                            tone="subtle"
+                            :delay="(idx - 1) * 90 + 130"
+                          />
+                          <ColabOneSkeleton
+                            :width="48"
+                            :height="20"
+                            variant="tag"
+                            tone="subtle"
+                            :delay="(idx - 1) * 90 + 160"
+                          />
+                        </div>
+                        <div class="co-comfy-output-actions">
+                          <ColabOneSkeleton
+                            :width="82"
+                            :height="24"
+                            variant="button"
+                            :radius="6"
+                            tone="subtle"
+                            :delay="(idx - 1) * 90 + 185"
+                          />
+                          <ColabOneSkeleton
+                            :width="62"
+                            :height="24"
+                            variant="button"
+                            :radius="6"
+                            tone="subtle"
+                            :delay="(idx - 1) * 90 + 210"
+                          />
+                        </div>
+                      </div>
+                    </article>
+                  </div>
+
+                  <div
+                    v-else-if="!outputs.length && !comfyRunTask && !submittingRun"
                     class="co-comfy-gallery-empty-wrap"
                   >
-                    <AEmpty description="暂无输出作品">
+                    <AEmpty :description="t('comfy.emptyOutputs')">
                       <template #image>
                         <div class="co-comfy-empty-emblem">
                           <PhImage :size="30" />
                         </div>
                       </template>
                       <p class="co-comfy-empty-copy">
-                        运行任意工作流后，生成的图片、视频与音频会自动展示在这里，支持在线预览与一键导出到本地。
+                        {{ t("comfy.emptyOutputsDesc") }}
                       </p>
                       <small class="co-comfy-empty-hint">
                         {{
                           state.setup.drive
-                            ? "已挂载 Google 云盘，输出产物将自动持久化。"
-                            : "输出暂存在当前远端 GPU，建议在释放实例前导出到本地。"
+                            ? t("comfy.drivePersistHint")
+                            : t("comfy.localExportHint")
                         }}
                       </small>
                     </AEmpty>
                   </div>
 
-                  <div v-else class="co-comfy-output-grid">
+                  <div v-else class="co-comfy-output-grid co-sk-reveal">
+                    <!-- Active Workflow Generating Artwork Skeleton -->
+                    <article
+                      v-if="comfyRunTask || submittingRun"
+                      class="co-comfy-output-item co-comfy-output-generating"
+                      role="status"
+                      aria-busy="true"
+                    >
+                      <div class="co-comfy-output-frame co-comfy-gen-frame">
+                        <ColabOneSkeleton
+                          width="100%"
+                          height="100%"
+                          :radius="0"
+                          variant="rect"
+                          tone="accent"
+                        />
+                        <div class="co-comfy-preview-pill">
+                          <PhSparkle :size="14" weight="duotone" class="co-comfy-gen-sparkle" />
+                          <span>
+                            {{
+                              comfyRunTask
+                                ? `${t("comfy.tagQueueRunning")} · ${comfyTaskPercent}%`
+                                : t("common.submitting")
+                            }}
+                          </span>
+                        </div>
+                        <span
+                          class="co-comfy-gen-bar"
+                          :style="{ width: `${Math.max(8, comfyTaskPercent)}%` }"
+                          aria-hidden="true"
+                        />
+                      </div>
+                      <div class="co-comfy-output-body">
+                        <div class="co-comfy-output-title-row">
+                          <strong>{{
+                            selectedWorkflow?.name || t("comfy.defaultWorkflowName")
+                          }}</strong>
+                          <ATag color="processing" class="co-comfy-status-tag">
+                            <ABadge status="processing" />
+                            <span>{{ t("comfy.tagQueueRunning") }}</span>
+                          </ATag>
+                        </div>
+                        <ColabOneSkeleton
+                          width="74%"
+                          :height="12"
+                          variant="text"
+                          tone="subtle"
+                          :delay="60"
+                        />
+                        <div class="co-comfy-output-meta-tags">
+                          <ColabOneSkeleton
+                            :width="58"
+                            :height="18"
+                            variant="tag"
+                            tone="subtle"
+                            :delay="100"
+                          />
+                          <ColabOneSkeleton
+                            :width="48"
+                            :height="18"
+                            variant="tag"
+                            tone="subtle"
+                            :delay="140"
+                          />
+                        </div>
+                      </div>
+                    </article>
+
                     <article
                       v-for="item in outputs"
                       :key="item.id"
@@ -1650,16 +1982,18 @@ onUnmounted(() => {
                           v-if="item.kind === 'image' && blobUrls[item.id]"
                           :src="blobUrls[item.id]"
                           :alt="item.filename"
+                          class="co-sk-reveal"
                         />
                         <video
                           v-else-if="item.kind === 'video' && blobUrls[item.id]"
                           :src="blobUrls[item.id]"
                           controls
                           preload="metadata"
+                          class="co-sk-reveal"
                         />
                         <div
                           v-else-if="item.kind === 'audio' && blobUrls[item.id]"
-                          class="co-comfy-audio-box"
+                          class="co-comfy-audio-box co-sk-reveal"
                         >
                           <PhWaveform :size="28" class="co-comfy-audio-icon" />
                           <audio
@@ -1670,10 +2004,30 @@ onUnmounted(() => {
                         </div>
                         <div
                           v-else-if="fetchingOutputs[item.id]"
-                          class="co-comfy-preview-loading"
+                          class="co-comfy-preview-loading co-comfy-preview-skeleton"
+                          role="status"
+                          aria-busy="true"
                         >
-                          <ASpin />
-                          <span>正在读取远端作品…</span>
+                          <ColabOneSkeleton
+                            width="100%"
+                            height="100%"
+                            :radius="0"
+                            variant="rect"
+                            tone="subtle"
+                          />
+                          <div class="co-comfy-preview-pill">
+                            <component
+                              :is="
+                                item.kind === 'video'
+                                  ? PhVideoCamera
+                                  : item.kind === 'audio'
+                                    ? PhWaveform
+                                    : PhImage
+                              "
+                              :size="15"
+                            />
+                            <span>{{ t("comfy.loadingOutput") }}</span>
+                          </div>
                         </div>
                         <button
                           v-else
@@ -1695,12 +2049,12 @@ onUnmounted(() => {
                           <span>
                             {{
                               failedOutputs[item.id]
-                                ? "重试预览"
+                                ? t("comfy.retryPreview")
                                 : item.kind === "video"
-                                  ? "加载视频预览"
+                                  ? t("comfy.loadVideoPreview")
                                   : item.kind === "audio"
-                                    ? "加载音频预览"
-                                    : "加载图片预览"
+                                    ? t("comfy.loadAudioPreview")
+                                    : t("comfy.loadImagePreview")
                             }}
                           </span>
                         </button>
@@ -1708,28 +2062,28 @@ onUnmounted(() => {
 
                       <div class="co-comfy-output-body">
                         <div class="co-comfy-output-title-row">
-                          <ATooltip :title="item.workflow_name || 'ComfyUI 工作流'">
+                          <ColabOneTooltip :title="item.workflow_name || t('comfy.defaultWorkflowName')">
                             <strong>{{
-                              item.workflow_name || "ComfyUI 工作流"
+                              item.workflow_name || t("comfy.defaultWorkflowName")
                             }}</strong>
-                          </ATooltip>
+                          </ColabOneTooltip>
                           <ATag :color="outputKindColor(item.kind)">
                             {{ outputKindLabel(item.kind) }}
                           </ATag>
                         </div>
 
-                        <ATooltip :title="item.filename">
+                        <ColabOneTooltip :title="item.filename">
                           <small class="co-comfy-mono co-comfy-output-filename">
                             {{ item.filename }}
                           </small>
-                        </ATooltip>
+                        </ColabOneTooltip>
 
                         <div class="co-comfy-output-meta-tags">
                           <ATag class="co-comfy-meta-tag">
                             {{ formatOutputSize(item.size) }}
                           </ATag>
                           <ATag class="co-comfy-meta-tag">
-                            {{ item.elapsed.toFixed(1) }} 秒
+                            {{ t("common.secondsShort", { value: item.elapsed.toFixed(1) }) }}
                           </ATag>
                         </div>
 
@@ -1737,7 +2091,7 @@ onUnmounted(() => {
                           v-if="failedOutputs[item.id]"
                           type="error"
                           class="co-comfy-output-error"
-                          :message="failedOutputs[item.id]"
+                          :message="tb(failedOutputs[item.id])"
                         />
 
                         <div class="co-comfy-output-actions">
@@ -1749,14 +2103,14 @@ onUnmounted(() => {
                             <template #icon>
                               <PhDownloadSimple :size="14" />
                             </template>
-                            导出到本地
+                            {{ t("comfy.exportLocal") }}
                           </AButton>
 
                           <APopconfirm
-                            title="删除这件输出作品？"
-                            :description="`文件「${item.filename}」将从远端输出目录移除；已导出到本地的文件不受影响。`"
-                            ok-text="确认删除"
-                            cancel-text="取消"
+                            :title="t('comfy.deleteOutputTitle')"
+                            :description="t('comfy.deleteOutputDesc', { name: item.filename })"
+                            :ok-text="t('common.confirmDelete')"
+                            :cancel-text="t('common.cancel')"
                             :disabled="!gpuReady"
                             :ok-button-props="{ danger: true }"
                             placement="topRight"
@@ -1766,12 +2120,12 @@ onUnmounted(() => {
                               size="small"
                               danger
                               :disabled="!gpuReady"
-                              aria-label="删除作品"
+                              :aria-label="t('comfy.deleteOutputAria')"
                             >
                               <template #icon>
                                 <PhTrash :size="14" />
                               </template>
-                              删除
+                              {{ t("common.delete") }}
                             </AButton>
                           </APopconfirm>
                         </div>
@@ -1784,21 +2138,21 @@ onUnmounted(() => {
           </section>
         </ATabPane>
 
-        <!-- TAB 2: 原生画布 -->
+        <!-- TAB 2: Native Canvas -->
         <ATabPane key="canvas">
           <template #tab>
             <span class="co-comfy-tab-label">
               <PhGraph :size="16" />
-              <span>原生画布</span>
+              <span>{{ t("comfy.tabCanvas") }}</span>
               <ABadge
                 v-if="canvasReady"
                 status="success"
-                aria-label="画布已开启"
+                :aria-label="t('comfy.canvasActiveAria')"
               />
             </span>
           </template>
 
-          <section class="co-comfy-canvas-section" aria-label="ComfyUI 原生画布">
+          <section class="co-comfy-canvas-section" :aria-label="t('comfy.canvasSectionAria')">
             <!-- Security & Idle-Protection Banner -->
             <AAlert type="info" show-icon class="co-comfy-canvas-security-alert">
               <template #icon>
@@ -1806,7 +2160,7 @@ onUnmounted(() => {
               </template>
               <template #message>
                 <div class="co-comfy-canvas-banner-head">
-                  <h2>原生节点画布安全访问</h2>
+                  <h2>{{ t("comfy.canvasHeading") }}</h2>
                   <ATag :color="canvasTagColor" class="co-comfy-status-tag">
                     <ABadge :status="canvasBadgeStatus" />
                     <span>{{ canvasStatusLabel }}</span>
@@ -1814,8 +2168,7 @@ onUnmounted(() => {
                 </div>
               </template>
               <template #description>
-                完整 ComfyUI 节点编辑器运行在远端 GPU，通过独立令牌鉴权与 Cloudflare
-                安全隧道访问；操作与队列运行期间自动暂停空闲释放倒计时。
+                {{ t("comfy.canvasDesc") }}
               </template>
             </AAlert>
 
@@ -1823,17 +2176,15 @@ onUnmounted(() => {
               v-if="canvas?.error"
               type="error"
               show-icon
-              :message="canvas.error"
+              :message="tb(canvas.error)"
             />
 
             <div class="co-comfy-canvas-grid">
               <!-- Fixed-Domain Tunnel & Lifecycle Card -->
-              <ACard class="co-comfy-card" title="固定域名与隧道配置">
+              <ACard class="co-comfy-card" :title="t('comfy.canvasConfigTitle')">
                 <div class="co-comfy-named-fields">
                   <p class="co-comfy-canvas-help">
-                    通过 Cloudflare Named Tunnel 绑定固定公网 HTTPS
-                    域名访问原生画布，首次打开自动完成安全鉴权。域名与隧道凭证保存在你的
-                    Cloudflare 账户与本机凭据库中。
+                    {{ t("comfy.canvasConfigDesc") }}
                   </p>
 
                   <div class="co-comfy-field-control">
@@ -1841,7 +2192,7 @@ onUnmounted(() => {
                       for="comfy-canvas-domain"
                       class="co-comfy-field-label-row"
                     >
-                      <span>画布域名</span>
+                      <span>{{ t("comfy.canvasDomainLabel") }}</span>
                     </label>
                     <AInput
                       id="comfy-canvas-domain"
@@ -1860,7 +2211,7 @@ onUnmounted(() => {
                       for="comfy-canvas-token"
                       class="co-comfy-field-label-row"
                     >
-                      <span>Cloudflare 安装命令或 Tunnel Token</span>
+                      <span>{{ t("api.tunnelTokenLabel") }}</span>
                     </label>
                     <AInputPassword
                       id="comfy-canvas-token"
@@ -1868,8 +2219,8 @@ onUnmounted(() => {
                       :disabled="canvasEnabled || busy"
                       :placeholder="
                         state.comfy_canvas_settings?.has_token
-                          ? '已安全保存；留空继续使用'
-                          : '直接粘贴 Cloudflare 安装命令或 Tunnel Token'
+                          ? t('api.tunnelTokenSavedPlaceholder')
+                          : t('comfy.canvasTokenEmptyPlaceholder')
                       "
                       autocomplete="off"
                       spellcheck="false"
@@ -1877,28 +2228,26 @@ onUnmounted(() => {
                   </div>
 
                   <details class="co-comfy-canvas-guide">
-                    <summary>首次配置？查看 3 步指引</summary>
+                    <summary>{{ t("api.guideSummary") }}</summary>
                     <ol>
                       <li>
-                        在 Cloudflare Zero Trust 创建一个 Cloudflared 隧道。
+                        {{ t("comfy.canvasGuideStep1") }}
                         <AButton
                           type="link"
                           size="small"
                           class="co-inline-link co-comfy-inline-link"
                           @click="colabOneOpenURL('https://one.dash.cloudflare.com/')"
                         >
-                          打开控制台
+                          {{ t("api.openDashboard") }}
                           <PhArrowSquareOut :size="14" />
                         </AButton>
                       </li>
                       <li>
-                        添加一个公开域名，服务类型选 HTTP，地址填
-                        <code>http://127.0.0.1:8189</code>（无需在 Cloudflare
-                        重复开启交互式登录）。
+                        {{ t("api.guideStep2Prefix") }}
+                        <code>http://127.0.0.1:8189</code>{{ t("comfy.canvasGuideStep2Suffix") }}
                       </li>
                       <li>
-                        将 Cloudflare 安装命令或 Tunnel Token
-                        粘贴到上方，保存并点击「开启原生画布」。
+                        {{ t("comfy.canvasGuideStep3") }}
                       </li>
                     </ol>
                   </details>
@@ -1907,14 +2256,14 @@ onUnmounted(() => {
                 <ADivider class="co-comfy-form-divider" />
 
                 <ASpace wrap :size="10">
-                  <ATooltip v-if="!gpuReady" title="请先启动远端 GPU">
+                  <ColabOneTooltip v-if="!gpuReady" :title="t('api.startGpuFirstTooltip')">
                     <AButton type="primary" disabled>
                       <template #icon>
                         <PhPlay :size="14" weight="fill" />
                       </template>
-                      开启原生画布
+                      {{ t("comfy.startCanvas") }}
                     </AButton>
-                  </ATooltip>
+                  </ColabOneTooltip>
                   <AButton
                     v-else-if="!comfyRunning"
                     type="primary"
@@ -1926,7 +2275,7 @@ onUnmounted(() => {
                       <PhPlay :size="14" weight="fill" />
                     </template>
                     {{
-                      comfyStarting ? "正在准备 ComfyUI…" : "先启动 ComfyUI 引擎"
+                      comfyStarting ? t("comfy.preparingBtn") : t("comfy.startComfyFirst")
                     }}
                   </AButton>
                   <AButton
@@ -1939,7 +2288,7 @@ onUnmounted(() => {
                     <template #icon>
                       <PhStop :size="14" weight="fill" />
                     </template>
-                    关闭画布隧道
+                    {{ t("comfy.stopCanvas") }}
                   </AButton>
                   <AButton
                     v-else
@@ -1950,7 +2299,7 @@ onUnmounted(() => {
                     <template #icon>
                       <PhPlay :size="14" weight="fill" />
                     </template>
-                    开启原生画布
+                    {{ t("comfy.startCanvas") }}
                   </AButton>
 
                   <AButton
@@ -1958,7 +2307,7 @@ onUnmounted(() => {
                     :disabled="busy"
                     @click="saveCanvasSettings"
                   >
-                    保存配置
+                    {{ t("api.saveConfig") }}
                   </AButton>
                 </ASpace>
               </ACard>
@@ -1966,7 +2315,7 @@ onUnmounted(() => {
               <!-- Canvas Status & Launch Card -->
               <ACard
                 class="co-comfy-card co-comfy-canvas-access"
-                title="画布访问入口"
+                :title="t('comfy.canvasAccessTitle')"
               >
                 <template #extra>
                   <ABadge
@@ -1978,39 +2327,60 @@ onUnmounted(() => {
                 <!-- Live Status Indicators -->
                 <div class="co-comfy-canvas-metrics">
                   <div class="co-comfy-metric-tile">
-                    <span>活跃连接</span>
+                    <span>{{ t("comfy.canvasActiveConns") }}</span>
                     <strong class="co-comfy-mono">
                       {{ canvas?.active_connections ?? 0 }}
                     </strong>
                   </div>
                   <div class="co-comfy-metric-tile">
-                    <span>执行队列</span>
+                    <span>{{ t("comfy.canvasQueue") }}</span>
                     <strong class="co-comfy-mono">
-                      运行 {{ queueRunning }} · 排队 {{ queuePending }}
+                      {{ t("comfy.queueCountsShort", { running: queueRunning, pending: queuePending }) }}
                     </strong>
                   </div>
                 </div>
 
                 <!-- Public Host Display (never renders secret auth token) -->
                 <div class="co-comfy-host-field">
-                  <span class="co-comfy-host-label">公网安全地址</span>
+                  <span class="co-comfy-host-label">{{ t("comfy.canvasPublicHostLabel") }}</span>
                   <div class="co-comfy-host-box">
-                    <code class="co-comfy-mono">{{
-                      canvasPublicHost || "开启画布隧道后显示"
+                    <span
+                      v-if="
+                        props.loading ||
+                        ((canvasState === 'starting' ||
+                          canvasState === 'reconnecting') &&
+                          !canvasPublicHost)
+                      "
+                      class="co-comfy-host-sk"
+                      role="status"
+                      aria-busy="true"
+                    >
+                      <ColabOneSkeleton
+                        width="62%"
+                        :height="14"
+                        variant="text"
+                        :tone="props.loading ? 'default' : 'accent'"
+                      />
+                      <span class="co-sr-only">{{
+                        props.loading ? t("common.loading") : canvasStatusLabel
+                      }}</span>
+                    </span>
+                    <code v-else class="co-comfy-mono co-sk-reveal">{{
+                      canvasPublicHost || t("comfy.canvasPublicHostEmpty")
                     }}</code>
                     <ATag v-if="canvasReady" color="success">HTTPS</ATag>
                   </div>
                 </div>
 
                 <!-- Launch Controls -->
-                <div v-if="canvasReady" class="co-comfy-canvas-launch-actions">
+                <div v-if="canvasReady" class="co-comfy-canvas-launch-actions co-sk-reveal">
                   <AButton
                     type="primary"
                     block
                     @click="launchCanvas('window')"
                   >
                     <template #icon><PhAppWindow :size="15" /></template>
-                    在独立窗口打开
+                    {{ t("comfy.openInWindow") }}
                   </AButton>
 
                   <div class="co-comfy-canvas-secondary-row">
@@ -2019,7 +2389,7 @@ onUnmounted(() => {
                       @click="launchCanvas('browser')"
                     >
                       <template #icon><PhBrowsers :size="15" /></template>
-                      在系统浏览器打开
+                      {{ t("comfy.openInBrowser") }}
                     </AButton>
                     <AButton
                       block
@@ -2029,19 +2399,59 @@ onUnmounted(() => {
                         <PhCheck v-if="copiedCanvasUrl" :size="15" />
                         <PhLink v-else :size="15" />
                       </template>
-                      {{ copiedCanvasUrl ? "已复制链接" : "复制鉴权链接" }}
+                      {{ copiedCanvasUrl ? t("comfy.copiedAuthLink") : t("comfy.copyAuthLink") }}
                     </AButton>
                   </div>
                 </div>
 
+                <div
+                  v-else-if="
+                    canvasState === 'starting' || canvasState === 'reconnecting'
+                  "
+                  class="co-comfy-canvas-connecting"
+                  role="status"
+                  aria-busy="true"
+                >
+                  <div class="co-comfy-canvas-connecting-note">
+                    <ABadge status="processing" />
+                    <span>{{ t("comfy.canvasConnectingHint") }}</span>
+                  </div>
+                  <div
+                    class="co-comfy-canvas-launch-actions co-comfy-canvas-launch-skeleton"
+                    aria-hidden="true"
+                  >
+                    <ColabOneSkeleton
+                      width="100%"
+                      :height="32"
+                      variant="button"
+                      tone="accent"
+                    />
+                    <div class="co-comfy-canvas-secondary-row">
+                      <ColabOneSkeleton
+                        width="100%"
+                        :height="32"
+                        variant="button"
+                        tone="subtle"
+                        :delay="80"
+                      />
+                      <ColabOneSkeleton
+                        width="100%"
+                        :height="32"
+                        variant="button"
+                        tone="subtle"
+                        :delay="140"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 <div v-else class="co-comfy-canvas-waiting">
-                  <ASpin v-if="canvasState === 'starting'" size="small" />
                   <p>
                     <template v-if="!gpuReady">
                       {{
                         gpuStarting
-                          ? "远端 GPU 正在启动中，就绪后即可启动 ComfyUI 引擎并开启原生画布。"
-                          : "请先在「远端设备」页启动远端 GPU，再启动 ComfyUI 引擎并开启原生画布。"
+                          ? t("comfy.canvasGpuStartingHint")
+                          : t("comfy.canvasGpuStoppedHint")
                       }}
                       <AButton
                         type="link"
@@ -2049,20 +2459,15 @@ onUnmounted(() => {
                         class="co-inline-link co-comfy-inline-link"
                         @click="emit('device')"
                       >
-                        {{ gpuStarting ? "查看 GPU 启动进度" : "前往启动 GPU" }}
+                        {{ gpuStarting ? t("api.viewGpuProgress") : t("comfy.goStartGpuAlt") }}
                         <PhArrowRight :size="13" />
                       </AButton>
                     </template>
                     <template v-else-if="!comfyRunning">
-                      请先点击左侧「先启动 ComfyUI
-                      引擎」，引擎就绪后即可开启安全画布隧道。
-                    </template>
-                    <template v-else-if="canvasState === 'starting'">
-                      正在建立远端安全代理与 Cloudflared 隧道，请稍候…
+                      {{ t("comfy.canvasNeedEngineHint") }}
                     </template>
                     <template v-else>
-                      点击左侧「开启原生画布」后，即可在独立桌面窗口或系统浏览器中免密打开完整
-                      ComfyUI 节点编辑器。
+                      {{ t("comfy.canvasReadyToEnableHint") }}
                     </template>
                   </p>
                 </div>
@@ -2072,15 +2477,14 @@ onUnmounted(() => {
                   type="info"
                   show-icon
                   class="co-comfy-canvas-dev-tip"
-                  message="将原生画布导出为一键表单"
+                  :message="t('comfy.canvasExportTipTitle')"
                 >
                   <template #icon>
                     <PhFileCode :size="18" />
                   </template>
                   <template #description>
                     <p class="co-comfy-dev-tip-copy">
-                      在画布中调试完成后，打开 Settings → Enable Dev Mode
-                      Options → Save (API Format) 导出 JSON，即可导入「工作流工坊」生成参数表单。
+                      {{ t("comfy.canvasExportTipDesc") }}
                     </p>
                     <AButton
                       type="link"
@@ -2091,7 +2495,7 @@ onUnmounted(() => {
                         openImportModal();
                       "
                     >
-                      立即导入 API JSON
+                      {{ t("comfy.importApiJsonNow") }}
                       <PhArrowRight :size="14" />
                     </AButton>
                   </template>
@@ -2106,7 +2510,7 @@ onUnmounted(() => {
     <!-- Import Workflow Modal -->
     <AModal
       v-model:open="importOpen"
-      title="导入 ComfyUI 工作流 (API JSON)"
+      :title="t('comfy.importModalTitle')"
       :width="640"
       :centered="true"
       :destroy-on-close="true"
@@ -2117,8 +2521,7 @@ onUnmounted(() => {
     >
       <div class="co-comfy-import-body">
         <p class="co-comfy-import-intro">
-          上传或粘贴从 ComfyUI「Save (API Format)」导出的 JSON
-          文件，客户端会自动识别可调参数节点。未启动远端 GPU 也可离线导入管理。
+          {{ t("comfy.importModalDesc") }}
         </p>
 
         <!-- Drag/Drop or Choose .json File Box -->
@@ -2139,26 +2542,26 @@ onUnmounted(() => {
           />
           <PhUploadSimple :size="22" class="co-comfy-import-drop-icon" />
           <div class="co-comfy-import-drop-copy">
-            <strong>拖拽 .json 工作流文件到此处，或点击选择</strong>
-            <small>仅支持 ComfyUI「Save (API Format)」导出的 API JSON</small>
+            <strong>{{ t("comfy.importDropTitle") }}</strong>
+            <small>{{ t("comfy.importDropHint") }}</small>
           </div>
           <AButton
             size="small"
             :disabled="importing"
             @click.stop="importFileInput?.click()"
           >
-            选择 .json 文件
+            {{ t("comfy.importPickFile") }}
           </AButton>
         </div>
 
         <div class="co-comfy-field-control">
           <label for="comfy-import-name" class="co-comfy-field-label-row">
-            <span>工作流名称</span>
+            <span>{{ t("comfy.importNameLabel") }}</span>
           </label>
           <AInput
             id="comfy-import-name"
             v-model:value="importName"
-            placeholder="例如：Flux 文生图 / 数字人驱动"
+            :placeholder="t('comfy.importNamePlaceholder')"
             :disabled="importing"
             allow-clear
           />
@@ -2166,12 +2569,12 @@ onUnmounted(() => {
 
         <div class="co-comfy-field-control">
           <label for="comfy-import-desc" class="co-comfy-field-label-row">
-            <span>简介（可选）</span>
+            <span>{{ t("comfy.importDescLabel") }}</span>
           </label>
           <AInput
             id="comfy-import-desc"
             v-model:value="importDescription"
-            placeholder="简要说明用途或所需模型权重…"
+            :placeholder="t('comfy.importDescPlaceholder')"
             :disabled="importing"
             allow-clear
           />
@@ -2179,7 +2582,7 @@ onUnmounted(() => {
 
         <div class="co-comfy-field-control">
           <label for="comfy-import-json" class="co-comfy-field-label-row">
-            <span>API 工作流 JSON</span>
+            <span>{{ t("comfy.importJsonLabel") }}</span>
           </label>
           <ATextarea
             id="comfy-import-json"
@@ -2199,7 +2602,7 @@ onUnmounted(() => {
           show-icon
           :message="
             importValidation.ok
-              ? `格式校验通过，检测到 ${importNodeCount} 个节点。`
+              ? t('comfy.importValidSummary', { count: importNodeCount })
               : importValidation.error
           "
         />
@@ -2211,7 +2614,7 @@ onUnmounted(() => {
             :disabled="importing"
             @click="closeImportModal"
           >
-            取消
+            {{ t("common.cancel") }}
           </AButton>
           <AButton
             type="primary"
@@ -2219,7 +2622,7 @@ onUnmounted(() => {
             :disabled="!canSubmitImport"
             @click="submitImport"
           >
-            {{ importing ? "正在导入…" : "导入工作流" }}
+            {{ importing ? t("comfy.importingBtn") : t("comfy.importSubmitBtn") }}
           </AButton>
         </ASpace>
       </template>
@@ -2258,6 +2661,11 @@ onUnmounted(() => {
 
 .co-comfy-full-width {
   width: 100%;
+}
+
+.co-popconfirm-anchor {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Engine Status Header Card */
@@ -2857,13 +3265,110 @@ onUnmounted(() => {
 }
 
 .co-comfy-preview-loading {
-  padding: 24px 16px;
+  position: relative;
+  width: 100%;
+  min-height: 164px;
+  aspect-ratio: 16 / 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-output-skeleton {
+  background: var(--co-skeleton-card-bg);
+  pointer-events: none;
+}
+
+.co-comfy-output-skeleton:hover {
+  border-color: var(--co-border-secondary);
+  box-shadow: none;
+}
+
+.co-comfy-output-frame-sk,
+.co-comfy-gen-frame {
+  position: relative;
+  aspect-ratio: 16 / 10;
+}
+
+.co-comfy-output-generating {
+  border-color: var(--co-accent);
+  background: var(--co-skeleton-card-bg);
+}
+
+.co-comfy-preview-pill {
+  position: absolute;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 9999px;
+  border: 1px solid var(--co-border-secondary);
+  background: color-mix(in srgb, var(--co-surface) 84%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--co-text);
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+}
+
+.co-comfy-gen-sparkle {
+  color: var(--co-accent);
+}
+
+.co-comfy-gen-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--co-accent), #60a5fa);
+  transition: width 0.3s ease;
+  z-index: 2;
+}
+
+.co-comfy-wf-skeleton {
+  background: var(--co-skeleton-card-bg);
+  cursor: default;
+  pointer-events: none;
+}
+
+.co-comfy-wf-sk-desc {
+  margin-top: 6px;
+}
+
+.co-comfy-host-sk {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+}
+
+.co-comfy-canvas-connecting {
+  margin-top: 14px;
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+.co-comfy-canvas-connecting-note {
+  display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  color: var(--co-muted);
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--co-border);
+  background: var(--co-subtle);
+  font-size: 12.5px;
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-canvas-launch-skeleton {
+  margin-top: 0;
 }
 
 .co-comfy-preview-trigger {

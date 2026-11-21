@@ -1,0 +1,36 @@
+//go:build windows
+
+package main
+
+import (
+	"os"
+	"syscall"
+	"unsafe"
+)
+
+var (
+	i18nKernel32               = syscall.NewLazyDLL("kernel32.dll")
+	procGetUserDefaultLocale   = i18nKernel32.NewProc("GetUserDefaultLocaleName")
+)
+
+// colabOneDetectOSLocale returns the raw Windows user default locale tag
+// (e.g. "zh-CN", "en-US", "ja-JP") via kernel32.GetUserDefaultLocaleName.
+func colabOneDetectOSLocale() string {
+	for _, envKey := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		if raw := os.Getenv(envKey); raw != "" {
+			return raw
+		}
+	}
+	if procGetUserDefaultLocale.Find() != nil {
+		return ""
+	}
+	buf := make([]uint16, 85) // LOCALE_NAME_MAX_LENGTH
+	n, _, _ := procGetUserDefaultLocale.Call(
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+	)
+	if n <= 1 {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:n])
+}

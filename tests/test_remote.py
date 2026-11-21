@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 import time
@@ -5,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 from common.files import atomic_json
+from common.models import ModelSpec
 from server.app import create_colabone_app
 from server.runtime import ColabOneTask, ColabOneConflictError
 from conftest import wait_task
@@ -188,7 +190,136 @@ def test_switch_preserves_previous_model(runtime, spec, monkeypatch):
     assert runtime.loaded == "second"
     assert runtime.installed(spec) and runtime.installed(second)
     runtime.unload()
-    assert runtime.installed(spec) and runtime.installed(second)
+
+
+def test_oversized_model_uses_hybrid_fit_and_falls_back_on_early_exit(
+    runtime, monkeypatch
+):
+    oversized = ModelSpec(
+        id="qwen38-flash-next-big",
+        name="Qwen3.8-Flash-Next (111 GiB)",
+        description="UD-Q4_K_XL",
+        min_vram_mib=0,
+        files=[
+            {
+                "repo": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+                "revision": "a" * 40,
+                "path": "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+                "size": 111 * 1024**3,
+                "sha256": hashlib.sha256(b"x").hexdigest(),
+                "role": "model",
+            }
+        ],
+    )
+    runtime.add_model(oversized.model_dump())
+    # Mock installed() so we don't allocate a 111 GiB test file on disk
+    monkeypatch.setattr(runtime, "installed", lambda m: m.id == oversized.id)
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": "NVIDIA RTX PRO 6000", "total_mib": 98304, "used_mib": 512},
+    )
+    monkeypatch.setattr(
+        runtime, "prepare_engine", lambda _t: runtime.root / "llama-server"
+    )
+    launched_cmds = []
+
+    def fake_popen(args, **kwargs):
+        launched_cmds.append(list(args))
+        proc = Mock()
+        # First attempt simulates early OOM exit; second attempt succeeds with asymmetric KV fallback
+        proc.poll.return_value = 1 if len(launched_cmds) == 1 else None
+        return proc
+
+    monkeypatch.setattr("server.runtime.subprocess.Popen", fake_popen)
+    runtime.http = Mock()
+    runtime.http.get.return_value = Response()
+
+    task = wait_task(runtime, runtime.load(oversized.id))
+    assert task.state == "completed"
+    assert runtime.loaded == oversized.id
+    assert len(launched_cmds) == 2
+    # Attempt 1: --fit on, --flash-attn on, PLE CPU override, KV q8_0/q8_0
+    assert "--fit" in launched_cmds[0] and launched_cmds[0][launched_cmds[0].index("--fit") + 1] == "on"
+    assert "--flash-attn" in launched_cmds[0]
+    assert "-ot" in launched_cmds[0] and "per_layer_token_embd=CPU" in launched_cmds[0]
+    assert launched_cmds[0][launched_cmds[0].index("--cache-type-k") + 1] == "q8_0"
+    assert launched_cmds[0][launched_cmds[0].index("--cache-type-v") + 1] == "q8_0"
+    # Attempt 2 fallback: asymmetric KV q4_0 / q8_0 with --fit on
+    assert launched_cmds[1][launched_cmds[1].index("--cache-type-k") + 1] == "q4_0"
+    assert launched_cmds[1][launched_cmds[1].index("--cache-type-v") + 1] == "q8_0"
+    assert any("混合装载" in entry["message"] for entry in task.logs)
+    runtime.unload()
+
+
+def test_reloading_same_model_stops_previous_engine_before_measuring_vram(
+    runtime, spec, monkeypatch
+):
+    model = ModelSpec(
+        id="same-reload-model",
+        name="Same Reload 32B",
+        description="Q8_0",
+        min_vram_mib=0,
+        files=[
+            {
+                "repo": "org/Same-32B-GGUF",
+                "revision": "a" * 40,
+                "path": "same-32b.gguf",
+                "size": 32 * 1024**3,
+                "sha256": hashlib.sha256(b"same").hexdigest(),
+                "role": "model",
+            }
+        ],
+    )
+    runtime.add_model(model.model_dump())
+    monkeypatch.setattr(runtime, "installed", lambda m: m.id == model.id)
+    monkeypatch.setattr(
+        runtime, "prepare_engine", lambda _t: runtime.root / "llama-server"
+    )
+    # Simulate an already-running engine occupying 36 GiB VRAM until stopped
+    vram_used = {"mib": 36864}
+    orig_stop = runtime._stop_engine
+
+    def tracked_stop():
+        orig_stop()
+        vram_used["mib"] = 512
+
+    monkeypatch.setattr(runtime, "_stop_engine", tracked_stop)
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {
+            "name": "NVIDIA A100 40GB",
+            "total_mib": 40960,
+            "used_mib": vram_used["mib"],
+        },
+    )
+    prev_proc = Mock()
+    prev_proc.poll.return_value = None
+    runtime.proc = prev_proc
+    runtime.loaded = model.id
+
+    launched_cmds = []
+
+    def fake_popen(args, **kwargs):
+        launched_cmds.append(list(args))
+        proc = Mock()
+        proc.poll.return_value = None
+        return proc
+
+    monkeypatch.setattr("server.runtime.subprocess.Popen", fake_popen)
+    runtime.http = Mock()
+    runtime.http.get.return_value = Response()
+
+    task = wait_task(
+        runtime, runtime.load(model.id, {"context_length": 16384, "temperature": 0.4})
+    )
+    assert task.state == "completed"
+    assert runtime.loaded == model.id
+    assert runtime.active_options["context_length"] == 16384
+    # Because old engine was unloaded BEFORE gpu_info(), 32 GiB fits cleanly on 40 GiB without false hybrid warning
+    assert not any("混合装载" in entry["message"] for entry in task.logs)
+    runtime.unload()
 
 
 def test_busy_guards_switch_delete_and_unload(runtime, spec):

@@ -1,28 +1,35 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { t } from "./i18n";
 import {
   Badge as ABadge,
   Button as AButton,
   Divider as ADivider,
   Tag as ATag,
-  Tooltip as ATooltip,
 } from "ant-design-vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   describeColabOneBilling,
   formatCountdownClock,
   formatIdlePolicyLabel,
 } from "./billing";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import { colabOneBillingSkeletonState } from "./skeletonState";
 import type { RuntimeStatus, ColabOneSnapshot } from "./types";
 import { PhLightning, PhClock, PhCoins } from "@phosphor-icons/vue";
 
 const props = defineProps<{
   account: ColabOneSnapshot["account"];
+  setupColab?: boolean;
   runtimeState: string;
   runtimeId?: string;
   idle?: RuntimeStatus["idle"];
   idleRemaining: number;
   idleMinutes: number;
   nowMs?: number;
+  loading?: boolean;
+  refreshing?: boolean;
+  hasError?: boolean;
 }>();
 const emit = defineEmits<{
   touch: [];
@@ -32,16 +39,34 @@ const effectiveRuntimeId = computed(() =>
   props.runtimeState === "stopped" ? undefined : props.runtimeId,
 );
 
+const effectiveSetupColab = computed(() =>
+  props.setupColab !== undefined
+    ? props.setupColab
+    : Boolean(props.account.logged_in),
+);
+
+const skeleton = computed(() =>
+  colabOneBillingSkeletonState({
+    account: props.account,
+    setupColab: effectiveSetupColab.value,
+    runtimeId: effectiveRuntimeId.value,
+    loading: props.loading,
+    refreshing: props.refreshing,
+    hasError: props.hasError,
+  }),
+);
+
 const overview = computed(() =>
   describeColabOneBilling(props.account, effectiveRuntimeId.value, props.nowMs),
 );
 
 const showIdle = computed(
-  () => props.runtimeState === "ready" && Boolean(props.idle),
+  () => !props.loading && props.runtimeState === "ready" && Boolean(props.idle),
 );
 
 const showBilling = computed(
   () =>
+    skeleton.value.capsule ||
     overview.value.loggedIn ||
     overview.value.active ||
     props.runtimeState !== "stopped",
@@ -68,22 +93,27 @@ const idlePolicyLabel = computed(() =>
 
 const idleTooltip = computed(() => {
   if (isIdleActive.value) {
-    return `远端任务运行中，已暂停空闲自动释放（空闲策略：${idlePolicyLabel.value}）`;
+    return t("billing.barIdlePausedTooltip", { policy: idlePolicyLabel.value });
   }
   if (isImminentRelease.value) {
-    return `即将自动释放远端资源（剩余 ${countdownClock.value}）；点击立即续期并重置 ${idlePolicyLabel.value} 倒计时`;
+    return t("billing.barIdleImminentTooltip", {
+      clock: countdownClock.value,
+      policy: idlePolicyLabel.value,
+    });
   }
-  return `超过 ${idlePolicyLabel.value} 无操作或任务将自动释放远端资源；点击可重置倒计时`;
+  return t("billing.barIdleCountdownTooltip", {
+    policy: idlePolicyLabel.value,
+  });
 });
 
 const idleAriaLabel = computed(() => {
   if (isIdleActive.value) {
-    return "任务运行中 · 暂停自动释放";
+    return t("billing.barIdlePaused");
   }
   if (isImminentRelease.value) {
-    return `即将释放 ${countdownClock.value} · 点击续期`;
+    return t("billing.barIdleImminent", { clock: countdownClock.value });
   }
-  return `空闲释放 ${countdownClock.value}，点击重置倒计时`;
+  return t("billing.barIdleCountdownAria", { clock: countdownClock.value });
 });
 
 const isSyncing = computed(
@@ -104,17 +134,23 @@ const enduranceLabel = computed(() => {
     return endurance.shortText;
   }
   if (endurance.hours === 0) {
-    return "余额已耗尽";
+    return t("billing.enduranceExhaustedBar");
   }
-  if (endurance.text.startsWith("约")) {
-    return `可用${endurance.text}`;
+  if (endurance.hours !== null && endurance.hours > 0) {
+    return t("billing.enduranceAvailableApprox", { text: endurance.text });
   }
   return endurance.text;
 });
 
 const billingAriaLabel = computed(() => {
   const o = overview.value;
-  return `${o.statusText} · ${o.rateText} · 余额 ${o.balanceText} · ${enduranceLabel.value}（${o.instanceCount} 个实例）`;
+  return t("billing.barSummaryAria", {
+    status: o.statusText,
+    rate: o.rateText,
+    balance: o.balanceText,
+    endurance: enduranceLabel.value,
+    count: o.instanceCount,
+  });
 });
 </script>
 
@@ -123,9 +159,9 @@ const billingAriaLabel = computed(() => {
     v-if="showIdle || showBilling"
     class="co-billing-bar"
     role="group"
-    aria-label="计费与自动释放状态"
+    :aria-label="t('billing.barAria')"
   >
-    <ATooltip v-if="showIdle" :title="idleTooltip" placement="bottom">
+    <ColabOneTooltip v-if="showIdle" :title="idleTooltip" placement="bottom">
       <AButton
         size="small"
         :danger="isImminentRelease"
@@ -143,42 +179,66 @@ const billingAriaLabel = computed(() => {
             :class="['co-idle-icon', { 'co-clock-pulse': isImminentRelease }]"
             aria-hidden="true"
           />
-          <span v-if="isIdleActive">任务运行中 · 暂停自动释放</span>
-          <span v-else-if="isImminentRelease"
-            >即将释放 {{ countdownClock }} · 点击续期</span
-          >
-          <span v-else>空闲释放 {{ countdownClock }}</span>
+          <span v-if="isIdleActive">{{ t("billing.barIdlePaused") }}</span>
+          <span v-else-if="isImminentRelease">{{
+            t("billing.barIdleImminent", { clock: countdownClock })
+          }}</span>
+          <span v-else>{{
+            t("billing.barIdleCountdown", { clock: countdownClock })
+          }}</span>
         </span>
       </AButton>
-    </ATooltip>
+    </ColabOneTooltip>
 
-    <ATooltip v-if="showBilling" placement="bottom">
+    <div
+      v-if="showBilling && skeleton.capsule"
+      class="co-billing-strip is-loading"
+      role="status"
+      aria-busy="true"
+      :aria-label="t('billing.statusSyncingAccount')"
+    >
+      <span class="co-billing-strip-inner co-billing-strip-sk">
+        <ColabOneSkeleton variant="pill" :width="64" :height="20" :delay="0" />
+        <ColabOneSkeleton variant="text" :width="56" :height="12" :delay="70" />
+        <ADivider type="vertical" class="co-strip-divider" aria-hidden="true" />
+        <ColabOneSkeleton variant="text" :width="72" :height="12" :delay="140" />
+        <ColabOneSkeleton variant="pill" :width="54" :height="20" :delay="210" />
+        <span class="co-sr-only">{{ t("billing.statusSyncingAccount") }}</span>
+      </span>
+    </div>
+
+    <ColabOneTooltip v-else-if="showBilling" placement="bottom">
       <template #title>
         <div class="co-billing-tip">
           <div class="co-billing-tip-title">
-            {{ overview.statusText }}（运行实例：{{ overview.instanceCount }} 台）
+            {{
+              t("billing.barStatusInstances", {
+                status: overview.statusText,
+                count: overview.instanceCount,
+              })
+            }}
           </div>
           <div class="co-billing-tip-row">
-            <span>消耗速率</span>
+            <span>{{ t("billing.barBurnRate") }}</span>
             <b>{{ overview.rateText }}</b>
           </div>
           <div class="co-billing-tip-row">
-            <span>剩余余额</span>
+            <span>{{ t("billing.barRemainingBalance") }}</span>
             <b>{{ overview.balanceText }}</b>
           </div>
           <div class="co-billing-tip-row">
-            <span>预计可用</span>
+            <span>{{ t("billing.barEstimatedAvailable") }}</span>
             <b>{{ overview.endurance.text }}</b>
           </div>
           <div v-if="isStaleData" class="co-billing-tip-stale">
-            计费状态超过 60 秒未同步，点击刷新获取最新余额
+            {{ t("billing.barStaleHint") }}
           </div>
         </div>
       </template>
 
       <div
         :class="[
-          'co-billing-strip',
+          'co-billing-strip co-sk-reveal',
           {
             'is-active': overview.active,
             'is-idle': !overview.active,
@@ -218,9 +278,13 @@ const billingAriaLabel = computed(() => {
             <span>{{ overview.statusText }}</span>
           </ATag>
 
-          <span class="co-billing-metric co-billing-rate">{{
-            overview.rateText
-          }}</span>
+          <span class="co-billing-metric co-billing-rate">
+            <template v-if="skeleton.rate">
+              <ColabOneSkeleton variant="text" :width="56" :height="12" inline />
+              <span class="co-sr-only">{{ overview.rateText }}</span>
+            </template>
+            <template v-else>{{ overview.rateText }}</template>
+          </span>
 
           <ADivider type="vertical" class="co-strip-divider" aria-hidden="true" />
 
@@ -231,12 +295,23 @@ const billingAriaLabel = computed(() => {
               weight="duotone"
               aria-hidden="true"
             />
-            <span
-              >余额 <b>{{ overview.balanceText }}</b></span
+            <template v-if="skeleton.balance">
+              <span>{{ t("billing.barBalancePrefix") }}</span>
+              <ColabOneSkeleton variant="text" :width="52" :height="12" :delay="90" inline />
+              <span class="co-sr-only">{{ overview.balanceText }}</span>
+            </template>
+            <span v-else
+              >{{ t("billing.barBalancePrefix") }}
+              <b>{{ overview.balanceText }}</b></span
             >
           </span>
 
+          <span v-if="skeleton.endurance" class="co-endurance-sk">
+            <ColabOneSkeleton variant="pill" :width="52" :height="20" :delay="160" />
+            <span class="co-sr-only">{{ enduranceLabel }}</span>
+          </span>
           <ATag
+            v-else
             :bordered="false"
             :class="['co-endurance-tag', `co-level-${overview.endurance.level}`]"
           >
@@ -247,11 +322,11 @@ const billingAriaLabel = computed(() => {
             v-if="isStaleData"
             status="warning"
             class="co-stale-dot-badge"
-            aria-label="计费数据待同步"
+            :aria-label="t('billing.barStaleAria')"
           />
         </span>
       </div>
-    </ATooltip>
+    </ColabOneTooltip>
   </div>
 </template>
 
@@ -350,6 +425,20 @@ const billingAriaLabel = computed(() => {
 .co-billing-bar .co-billing-strip.is-active {
   background: var(--co-surface);
   border-color: var(--co-danger-border);
+}
+
+.co-billing-bar .co-billing-strip.is-loading {
+  border-color: var(--co-border-secondary);
+}
+
+.co-billing-strip-sk {
+  gap: 8px;
+}
+
+.co-endurance-sk {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 .co-billing-strip-inner {

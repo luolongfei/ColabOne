@@ -52,6 +52,13 @@ export const ColabOneDesktop = {
     return call("ColabOneDesktop.SetAppearance", value);
   },
   /**
+   * SetLocale updates the active UI language for native tray menus, window
+   * titles, and Go-side error messages.
+   */
+  setLocale(value: string): Promise<void> {
+    return call("ColabOneDesktop.SetLocale", value);
+  },
+  /**
    * SetLogDrawer opens or closes the standalone native runtime log window
    * positioned adjacent to the main window. The log window can be closed,
    * resized, moved, and maximized independently of the main window.
@@ -61,6 +68,9 @@ export const ColabOneDesktop = {
   },
   snapshot(): Promise<string> {
     return call("ColabOneDesktop.Snapshot");
+  },
+  systemAppearance(): Promise<string> {
+    return call("ColabOneDesktop.SystemAppearance");
   },
   writeClipboard(value: string): Promise<void> {
     return call("ColabOneDesktop.WriteClipboard", value);

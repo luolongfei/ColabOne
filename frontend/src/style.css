@@ -5,7 +5,8 @@
 :root {
   --co-font-sans:
     "Sarasa UI SC", -apple-system, BlinkMacSystemFont, "PingFang SC",
-    "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", sans-serif;
+    "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", "Microsoft JhengHei UI",
+    "Yu Gothic UI", "Malgun Gothic", sans-serif;
   --co-font-mono:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Sarasa UI SC", monospace;
@@ -26,6 +27,37 @@
   /* Unified fluid desktop shell width & responsive edge gutters */
   --co-container-max: 1840px;
   --co-container-pad: clamp(20px, 2.2vw, 36px);
+}
+
+:root[lang="en-US"] {
+  --co-font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue",
+    Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+:root[lang="zh-TW"] {
+  --co-font-sans:
+    -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei UI",
+    "Microsoft JhengHei", "Noto Sans TC", "Segoe UI", "Sarasa UI SC", sans-serif;
+}
+
+:root[lang="zh-HK"] {
+  --co-font-sans:
+    -apple-system, BlinkMacSystemFont, "PingFang HK", "PingFang TC",
+    "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans HK", "Segoe UI",
+    "Sarasa UI SC", sans-serif;
+}
+
+:root[lang="ja-JP"] {
+  --co-font-sans:
+    -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Yu Gothic UI", "Meiryo", "Noto Sans JP", "Segoe UI", sans-serif;
+}
+
+:root[lang="ko-KR"] {
+  --co-font-sans:
+    -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic",
+    "Noto Sans KR", "Segoe UI", sans-serif;
 }
 
 html,
@@ -50,6 +82,16 @@ samp {
 
 * {
   -webkit-tap-highlight-color: transparent;
+}
+
+.co-tooltip-overlay {
+  pointer-events: none;
+}
+
+/* Hide lingering tooltip fade-outs before View Transition captures the old frame */
+:root.co-vt-hide-tooltips .co-tooltip-overlay,
+:root.co-vt-hide-tooltips .ant-tooltip {
+  display: none !important;
 }
 
 /* ColabOne ultra-minimal 4px auto-hiding capsule scrollbars */
@@ -145,6 +187,8 @@ samp {
 
 ::view-transition-new(root) {
   z-index: 9999;
+  opacity: var(--co-vt-opacity, 1);
+  will-change: clip-path;
 }
 
 /* ColabOne rounded-xl button controls */
@@ -839,6 +883,47 @@ samp {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ColabOne unified satin shimmer skeleton engine */
+@keyframes co-skeleton-sweep {
+  0% {
+    transform: translate3d(-130%, 0, 0);
+  }
+  100% {
+    transform: translate3d(130%, 0, 0);
+  }
+}
+
+@keyframes co-sk-reveal-in {
+  from {
+    opacity: 0.42;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.co-sk-reveal {
+  animation: co-sk-reveal-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.co-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-sk-reveal {
+    animation: none;
+  }
 }
 
 /* Freeze element-level CSS transitions during circular View Transition capture

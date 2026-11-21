@@ -1,34 +1,50 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { colabOneLocaleCode, t, tb } from "./i18n";
 import {
   Alert as AAlert,
   Button as AButton,
   Empty as AEmpty,
   Input as AInput,
-  InputNumber as AInputNumber,
   Select as ASelect,
   SelectOption as ASelectOption,
   Space as ASpace,
-  Spin as ASpin,
   Tag as ATag,
 } from "ant-design-vue";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import {
+  PhArrowRight,
   PhArrowSquareOut,
   PhCaretDown,
   PhCaretRight,
-  PhCheck,
+  PhChatText,
   PhDownloadSimple,
+  PhFlowArrow,
   PhHeart,
+  PhImage,
   PhLock,
   PhMagnifyingGlass,
-  PhPlay,
   PhPushPin,
   PhPushPinSlash,
-  PhSlidersHorizontal,
+  PhSquaresFour,
+  PhVideoCamera,
 } from "@phosphor-icons/vue";
+import ModelVersionPicker from "./ModelVersionPicker.vue";
 import { colabOneCommand, colabOneOpenURL } from "./api";
 import type { CommonRepo, ModelSpec, RuntimeStatus } from "./types";
 import { repoRemoteSummary } from "./modelLibrary";
+import {
+  COLABONE_HUB_FAMILIES_BY_MODALITY,
+  COLABONE_HUB_MODALITIES,
+  formatColabOneFileSize,
+  modalityBadgeMeta,
+  summarizeColabOneRepoFit,
+  type ColabOneGpuTarget,
+  type ColabOneGpuTargetId,
+  type ColabOneHubFile,
+  type ColabOneHubModality,
+  type ColabOneRepoFitSummary,
+} from "./modelCompatibility";
 
 const props = defineProps<{
   ready: boolean;
@@ -38,6 +54,9 @@ const props = defineProps<{
   initialRepo?: string;
   models?: ModelSpec[];
   runtime?: RuntimeStatus;
+  targetGpu: ColabOneGpuTarget;
+  onlyRunnable?: boolean;
+  downloadDisabledReason?: string;
 }>();
 
 const emit = defineEmits<{
@@ -45,6 +64,9 @@ const emit = defineEmits<{
   commonRepoUpdated: [message: string];
   toggleCommon: [model: ModelSpec];
   useLoaded: [];
+  switchGpu: [ColabOneGpuTargetId];
+  clearOnlyRunnable: [];
+  goComfyui: [];
 }>();
 
 type Repo = {
@@ -52,55 +74,72 @@ type Repo = {
   downloads: number;
   likes: number;
   gated: boolean;
+  pipeline?: string;
+  modality?: "text" | "image" | "video";
+  comfy_only?: boolean;
+  family?: string;
+  params?: string;
   minSize?: number;
   maxSize?: number;
   versions?: number;
+  files?: ColabOneHubFile[];
   sizeState?: "loading" | "ready" | "unavailable";
 };
-type Detail = { revision: string; files: HubFile[] };
-type HubFile = {
-  filename: string;
-  size: number;
-  shards: number;
-  quantization: string;
-  supported: boolean;
-  reason: string;
-};
 
-const CONTEXT_OPTIONS = [
-  { value: 4096, label: "4K" },
-  { value: 8192, label: "8K（默认）" },
-  { value: 16384, label: "16K" },
-  { value: 32768, label: "32K" },
-  { value: 65536, label: "64K" },
-];
+type Detail = {
+  revision: string;
+  pipeline?: string;
+  modality?: "text" | "image" | "video";
+  comfy_only?: boolean;
+  family?: string;
+  params?: string;
+  files: ColabOneHubFile[];
+};
 
 const REPO_PATTERN = /^[\w.-]+\/[\w.-]+$/;
 const HF_URL_PATTERN =
   /^https?:\/\/(?:www\.)?huggingface\.co\/([\w.-]+\/[\w.-]+)(?:\/(?:blob|resolve|tree)\/([^/?#]+)(?:\/([^?#]+))?)?\/?(?:\?[^#]*)?(?:#.*)?$/i;
 
+const HUB_SKELETON_ROWS = [
+  { titleW: "56%", paramW: 34, sizeW: 92, fitW: 66, statW: 54 },
+  { titleW: "48%", paramW: 40, sizeW: 84, fitW: 72, statW: 48 },
+  { titleW: "62%", paramW: 32, sizeW: 96, fitW: 64, statW: 58 },
+  { titleW: "52%", paramW: 38, sizeW: 88, fitW: 68, statW: 50 },
+  { titleW: "44%", paramW: 36, sizeW: 80, fitW: 62, statW: 52 },
+] as const;
+
 const selection = ref<HTMLElement | HTMLElement[] | null>(null);
-const query = ref("");
+const query = ref(props.initialRepo || props.initialQuery || "");
 const sort = ref("downloads");
+const modality = ref<ColabOneHubModality>("text");
+const family = ref("");
 const repos = ref<Repo[]>([]);
 const cursor = ref("");
 const loading = ref(false);
 const error = ref("");
 const chosen = ref("");
+const chosenModality = ref<"text" | "image" | "video">("text");
+const chosenComfyOnly = ref(false);
 const customName = ref("");
 const revision = ref("");
-const files = ref<HubFile[]>([]);
+const files = ref<ColabOneHubFile[]>([]);
 const filename = ref("");
+const preferredFilename = ref("");
 const filesLoading = ref(false);
 const fileError = ref("");
 const installing = ref(false);
 const togglingRepo = ref("");
-const showAdvanced = ref(false);
 const contextLength = ref<number>(8192);
 const temperature = ref<number>(0.7);
 
 const effectiveRuntime = computed<RuntimeStatus>(
   () => props.runtime || { state: props.ready ? "ready" : "stopped" },
+);
+
+const familyOptions = computed(
+  () =>
+    COLABONE_HUB_FAMILIES_BY_MODALITY[modality.value] ||
+    COLABONE_HUB_FAMILIES_BY_MODALITY.text,
 );
 
 function repoAuthor(repo: string): string {
@@ -178,28 +217,46 @@ function fileSavedTag(fileName: string): string {
     (effectiveRuntime.value.state !== "stopped" &&
       (saved.loaded || effectiveRuntime.value.loaded_model === saved.id))
   ) {
-    return "已下载";
+    return t("models.badgeDownloaded");
   }
   if (saved.common) {
-    return "已在我的";
+    return t("models.badgeInMine");
   }
   return "";
 }
 
-const selectedFile = computed(() =>
-  files.value.find((file) => file.filename === filename.value),
-);
-const selectedSavedTag = computed(() =>
-  selectedFile.value ? fileSavedTag(selectedFile.value.filename) : "",
+const fitByRepo = computed(() => {
+  const map = new Map<string, ColabOneRepoFitSummary>();
+  for (const r of repos.value) {
+    if (r.sizeState === "ready" && r.files?.length) {
+      map.set(r.repo, summarizeColabOneRepoFit(r.files, props.targetGpu, 8192));
+    }
+  }
+  return map;
+});
+
+function repoFitFor(repoName: string): ColabOneRepoFitSummary | null {
+  return fitByRepo.value.get(repoName) || null;
+}
+
+const visibleRepos = computed(() => {
+  if (!props.onlyRunnable || props.targetGpu.vramMib <= 0) {
+    return repos.value;
+  }
+  return repos.value.filter((r) => {
+    if (r.sizeState !== "ready") return true;
+    const fit = fitByRepo.value.get(r.repo);
+    return !fit || fit.runnable;
+  });
+});
+
+const hiddenByVramCount = computed(() =>
+  Math.max(0, repos.value.length - visibleRepos.value.length),
 );
 
 let generation = 0;
 let fileGeneration = 0;
 let timer: ReturnType<typeof setTimeout>;
-const size = (n: number) =>
-  n < 1024 ** 3
-    ? (n / 1024 ** 2).toFixed(0) + " MiB"
-    : (n / 1024 ** 3).toFixed(2) + " GiB";
 const details = new Map<string, Detail>();
 const pendingDetails = new Map<string, Promise<Detail>>();
 
@@ -225,11 +282,20 @@ async function previewSize(repo: string, id: number) {
     if (id !== generation) return;
     const row = repos.value.find((item) => item.repo === repo);
     if (!row) return;
-    const sizes = result.files
+    const sizes = (result.files || [])
       .filter((f) => f.supported && f.size > 0)
       .map((f) => f.size);
+    const patch: Partial<Repo> = {
+      files: result.files || [],
+      ...(result.modality && !row.modality ? { modality: result.modality } : {}),
+      ...(typeof result.comfy_only === "boolean" && row.comfy_only === undefined
+        ? { comfy_only: result.comfy_only }
+        : {}),
+      ...(result.params && !row.params ? { params: result.params } : {}),
+    };
     Object.assign(
       row,
+      patch,
       sizes.length
         ? {
             minSize: Math.min(...sizes),
@@ -258,7 +324,7 @@ async function previewSizes(batch: Repo[], id: number) {
   await Promise.all([worker(), worker(), worker()]);
 }
 
-async function search(more = false) {
+async function search(more = false): Promise<boolean> {
   const id = ++generation;
   loading.value = true;
   error.value = "";
@@ -271,23 +337,32 @@ async function search(more = false) {
       query: query.value,
       sort: sort.value,
       cursor: more ? cursor.value : "",
+      modality: modality.value,
+      family: family.value,
     });
-    if (id !== generation) return;
-    result.models = result.models.map((r: Repo) => ({
+    if (id !== generation) return false;
+    const incoming: Repo[] = (result.models || []).map((r: Repo) => ({
       ...r,
-      sizeState: "loading",
+      modality: r.modality || "text",
+      comfy_only:
+        typeof r.comfy_only === "boolean"
+          ? r.comfy_only
+          : r.modality === "image" || r.modality === "video",
+      sizeState: "loading" as const,
     }));
-    const all = more ? [...repos.value, ...result.models] : result.models;
+    const all = more ? [...repos.value, ...incoming] : incoming;
     repos.value = [
       ...new Map<string, Repo>(all.map((r: Repo) => [r.repo, r])).values(),
     ];
-    cursor.value = result.next_cursor;
+    cursor.value = result.next_cursor || "";
     void previewSizes(
       repos.value.filter((repo) => repo.sizeState === "loading"),
       id,
     );
+    return true;
   } catch (e) {
     if (id === generation) error.value = String(e);
+    return false;
   } finally {
     if (id === generation) loading.value = false;
   }
@@ -305,11 +380,15 @@ function submitSearch() {
         : "";
     suppressQueryWatch = true;
     query.value = targetRepo;
-    void search(false).then(() => choose(targetRepo, true, targetFile));
+    void search(false).then((ok) => {
+      if (ok) void choose(targetRepo, true, targetFile);
+    });
     return;
   }
   if (REPO_PATTERN.test(trimmed)) {
-    void search(false).then(() => choose(trimmed, true));
+    void search(false).then((ok) => {
+      if (ok) void choose(trimmed, true);
+    });
     return;
   }
   void search(false);
@@ -319,31 +398,22 @@ function onSortChange(val: unknown) {
   sort.value = String(val || "downloads");
 }
 
-function onFilenameChange(val: unknown) {
-  filename.value = String(val || "");
+function selectModality(next: ColabOneHubModality) {
+  if (modality.value === next) return;
+  modality.value = next;
+  family.value = "";
 }
 
-function onContextLengthChange(val: unknown) {
-  const next = Number(val);
-  if (Number.isFinite(next) && next > 0) {
-    contextLength.value = next;
-  }
-}
-
-function onTemperatureUpdate(val: string | number | null) {
-  if (val === null || val === "") return;
-  const num = Number(val);
-  if (Number.isFinite(num)) {
-    temperature.value = Math.min(2, Math.max(0, Math.round(num * 10) / 10));
-  }
+function selectFamily(nextId: string) {
+  family.value = family.value === nextId ? "" : nextId;
 }
 
 let suppressQueryWatch = false;
 let initialSearchDone = false;
 
 watch(
-  [query, sort],
-  ([nextQuery]) => {
+  [query, sort, modality, family],
+  ([nextQuery], prev) => {
     if (suppressQueryWatch) {
       suppressQueryWatch = false;
       initialSearchDone = true;
@@ -361,7 +431,9 @@ watch(
           : "";
       suppressQueryWatch = true;
       query.value = targetRepo;
-      void search(false).then(() => choose(targetRepo, true, targetFile));
+      void search(false).then((ok) => {
+        if (ok) void choose(targetRepo, true, targetFile);
+      });
       return;
     }
     ++generation;
@@ -373,15 +445,27 @@ watch(
     chosen.value = "";
     files.value = [];
     filename.value = "";
+    preferredFilename.value = "";
     filesLoading.value = false;
-    showAdvanced.value = false;
     clearTimeout(timer);
     if (!initialSearchDone) {
       initialSearchDone = true;
+      const bootRepo = props.initialRepo;
+      if (bootRepo) {
+        void search(false).then((ok) => {
+          if (ok) void choose(bootRepo, true);
+        });
+      } else {
+        void search();
+      }
+      return;
+    }
+    const queryChanged = !prev || nextQuery !== prev[0];
+    if (!queryChanged) {
       void search();
       return;
     }
-    timer = setTimeout(() => search(), 350);
+    timer = setTimeout(() => search(), 300);
   },
   { immediate: true },
 );
@@ -395,7 +479,9 @@ watch(
         suppressQueryWatch = true;
         query.value = repo;
       }
-      void search().then(() => choose(repo, true));
+      void search(false).then((ok) => {
+        if (ok) void choose(repo, true);
+      });
       return;
     }
     if (q) {
@@ -407,7 +493,6 @@ watch(
       void search(false);
     }
   },
-  { immediate: true },
 );
 
 async function choose(repo: string, forceOpen = false, preferredFile = "") {
@@ -416,35 +501,39 @@ async function choose(repo: string, forceOpen = false, preferredFile = "") {
     chosen.value = "";
     files.value = [];
     filename.value = "";
+    preferredFilename.value = "";
     filesLoading.value = false;
     fileError.value = "";
-    showAdvanced.value = false;
     return;
   }
   const id = ++fileGeneration;
+  const row = repos.value.find((r) => r.repo === repo);
   chosen.value = repo;
+  chosenModality.value = row?.modality || "text";
+  chosenComfyOnly.value = !!row?.comfy_only;
   customName.value = "";
   files.value = [];
-  filename.value = "";
+  filename.value = preferredFile || "";
+  preferredFilename.value = preferredFile || "";
   revision.value = "";
   fileError.value = "";
-  showAdvanced.value = false;
   filesLoading.value = true;
   try {
     const result = await detail(repo);
     if (id !== fileGeneration) return;
     revision.value = result.revision;
-    files.value = result.files;
-    filename.value =
-      (preferredFile &&
-        result.files.find(
-          (f: HubFile) => f.supported && f.filename === preferredFile,
-        )?.filename) ||
-      result.files.find(
-        (f: HubFile) => f.supported && /Q4_K_M/i.test(f.quantization),
-      )?.filename ||
-      result.files.find((f: HubFile) => f.supported)?.filename ||
-      "";
+    files.value = result.files || [];
+    chosenModality.value = result.modality || row?.modality || "text";
+    chosenComfyOnly.value =
+      typeof result.comfy_only === "boolean"
+        ? result.comfy_only
+        : chosenModality.value === "image" || chosenModality.value === "video";
+    if (
+      preferredFile &&
+      files.value.some((f) => f.supported && f.filename === preferredFile)
+    ) {
+      filename.value = preferredFile;
+    }
   } catch (e) {
     if (id === fileGeneration) fileError.value = String(e);
   } finally {
@@ -460,7 +549,7 @@ async function choose(repo: string, forceOpen = false, preferredFile = "") {
 }
 
 async function toggleCommonRepo(repo: Repo) {
-  if (togglingRepo.value) return;
+  if (togglingRepo.value || repo.comfy_only) return;
   const summary = summaryFor(repo.repo);
   const inCommonRepos = isCommonRepo(repo.repo);
   if (!inCommonRepos && summary.common) {
@@ -486,8 +575,8 @@ async function toggleCommonRepo(repo: Repo) {
     emit(
       "commonRepoUpdated",
       res?.common
-        ? `已将 ${repo.repo} 加入「我的」`
-        : `已将 ${repo.repo} 移出「我的」`,
+        ? t("models.toastAddedToMine", { name: repo.repo })
+        : t("models.toastRemovedFromMine", { name: repo.repo }),
     );
   } catch (e) {
     error.value = String(e);
@@ -497,7 +586,7 @@ async function toggleCommonRepo(repo: Repo) {
 }
 
 async function install(mode: "save" | "download" | "load" = "load") {
-  if (!filename.value || installing.value) return;
+  if (!filename.value || installing.value || chosenComfyOnly.value) return;
   if (mode !== "save" && (!props.ready || props.disabled)) return;
   installing.value = true;
   fileError.value = "";
@@ -523,6 +612,15 @@ async function install(mode: "save" | "download" | "load" = "load") {
   }
 }
 
+function fitBadgeColor(fit: ColabOneRepoFitSummary): string {
+  if (fit.status === "compatible") return "success";
+  if (fit.status === "tight") return "warning";
+  if (fit.status === "hybrid" || fit.status === "heavy_hybrid") {
+    return "default";
+  }
+  return "blue";
+}
+
 onUnmounted(() => {
   ++generation;
   ++fileGeneration;
@@ -537,8 +635,8 @@ onUnmounted(() => {
         v-model:value="query"
         type="search"
         allow-clear
-        aria-label="搜索 Hugging Face 模型"
-        placeholder="搜索社区模型，或直接粘贴 Hugging Face 链接 / owner/repo"
+        :aria-label="t('models.hubSearchAria')"
+        :placeholder="t('models.hubSearchPlaceholder')"
         class="co-hub-search-input"
         @press-enter="submitSearch"
       >
@@ -549,39 +647,120 @@ onUnmounted(() => {
 
       <ASelect
         :value="sort"
-        aria-label="社区模型排序"
+        :aria-label="t('models.hubSortAria')"
         class="co-hub-sort-select"
+        :dropdown-match-select-width="false"
         @change="onSortChange"
       >
-        <ASelectOption value="downloads">最多下载</ASelectOption>
-        <ASelectOption value="likes">最多点赞</ASelectOption>
-        <ASelectOption value="updated">最近更新</ASelectOption>
+        <ASelectOption value="downloads">{{ t("models.hubSortDownloads") }}</ASelectOption>
+        <ASelectOption value="likes">{{ t("models.hubSortLikes") }}</ASelectOption>
+        <ASelectOption value="updated">{{ t("models.hubSortUpdated") }}</ASelectOption>
       </ASelect>
+    </div>
+
+    <div class="co-hub-filter-panel">
+      <div class="co-filter-row" role="group" :aria-label="t('models.hubModalityAria')">
+        <span class="co-filter-label">{{ t("models.hubModalityLabel") }}</span>
+        <div class="co-chip-list">
+          <button
+            v-for="opt in COLABONE_HUB_MODALITIES"
+            :key="opt.id"
+            type="button"
+            class="co-filter-chip"
+            :class="{ active: modality === opt.id }"
+            :aria-pressed="modality === opt.id"
+            @click="selectModality(opt.id)"
+          >
+            <PhChatText v-if="opt.id === 'text'" :size="13" />
+            <PhImage v-else-if="opt.id === 'image'" :size="13" />
+            <PhVideoCamera v-else-if="opt.id === 'video'" :size="13" />
+            <PhSquaresFour v-else :size="13" />
+            <span>{{ opt.label }}</span>
+            <span v-if="opt.comfyOnly" class="co-chip-sub">ComfyUI</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="co-filter-row" role="group" :aria-label="t('models.hubFamilyAria')">
+        <span class="co-filter-label">{{ t("models.hubFamilyLabel") }}</span>
+        <div class="co-chip-list">
+          <button
+            v-for="fam in familyOptions"
+            :key="fam.id || '__all'"
+            type="button"
+            class="co-filter-chip co-family-chip"
+            :class="{ active: family === fam.id }"
+            :aria-pressed="family === fam.id"
+            @click="selectFamily(fam.id)"
+          >
+            {{ fam.label }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="modality === 'image' || modality === 'video'"
+      class="co-comfy-modality-banner"
+      role="note"
+    >
+      <div class="co-comfy-banner-text">
+        <PhFlowArrow :size="15" class="co-comfy-banner-icon" />
+        <span>
+          {{
+            t("models.hubComfyOnlyBanner", {
+              modality:
+                modality === "video"
+                  ? t("models.compatModalityVideo")
+                  : t("models.compatModalityImage"),
+            })
+          }}
+        </span>
+      </div>
+      <AButton
+        type="link"
+        size="small"
+        class="co-inline-link co-comfy-banner-link"
+        @click="emit('goComfyui')"
+      >
+        {{ t("models.hubGoComfy") }}
+        <PhArrowRight :size="13" />
+      </AButton>
     </div>
 
     <AAlert
       v-if="error"
       type="error"
       show-icon
-      :message="error"
+      :message="tb(error)"
       role="alert"
     >
       <template #action>
-        <AButton size="small" @click="search()">重试</AButton>
+        <AButton size="small" @click="search()">{{ t("common.retry") }}</AButton>
       </template>
     </AAlert>
 
-    <!-- Standalone selection when pasted/targeted repo is not in search list -->
     <div
-      v-if="chosen && !repos.some((r) => r.repo === chosen)"
+      v-if="chosen && !visibleRepos.some((r) => r.repo === chosen)"
       ref="selection"
       class="co-hub-repo selected co-standalone-selection co-hub-selection"
-      aria-label="社区模型版本"
+      :aria-label="t('models.hubVersionsAria')"
     >
       <div class="co-hub-repo-main">
         <div class="co-hub-repo-body">
           <div class="co-hub-repo-title">
             <h3>{{ chosen }}</h3>
+            <ATag
+              v-if="chosenComfyOnly"
+              :color="modalityBadgeMeta(chosenModality).color"
+              :bordered="false"
+            >
+              {{
+                t("models.hubComfyOnlyTag", {
+                  modality: modalityBadgeMeta(chosenModality).label,
+                })
+              }}
+            </ATag>
           </div>
         </div>
         <AButton
@@ -590,219 +769,170 @@ onUnmounted(() => {
           class="co-inline-link"
           @click="colabOneOpenURL('https://huggingface.co/' + chosen)"
         >
-          查看仓库
+          {{ t("models.hubViewRepo") }}
           <PhArrowSquareOut :size="12" />
         </AButton>
       </div>
 
-      <div v-if="filesLoading" class="co-picker-loading" role="status">
-        <ASpin size="small" tip="正在读取版本清单…" />
-      </div>
-
-      <AAlert
-        v-else-if="fileError"
-        type="error"
-        show-icon
-        :message="fileError"
-        role="alert"
-      >
-        <template #action>
-          <AButton size="small" @click="choose(chosen, true)">重试</AButton>
-        </template>
-      </AAlert>
-
-      <template v-else>
-        <template v-if="files.length">
-          <div class="co-picker-row">
-            <ASelect
-              :value="filename || undefined"
-              aria-label="选择量化版本"
-              placeholder="选择量化版本"
-              class="co-picker-select"
-              @change="onFilenameChange"
-            >
-              <ASelectOption
-                v-for="file in files"
-                :key="file.filename"
-                :value="file.filename"
-                :disabled="!file.supported"
-              >
-                {{ file.filename }} · {{ size(file.size) }} ·
-                {{
-                  file.shards > 1 ? `${file.shards} 个分片文件` : "1 个文件"
-                }}{{
-                  fileSavedTag(file.filename)
-                    ? ` (${fileSavedTag(file.filename)})`
-                    : ""
-                }}{{ file.reason ? " · " + file.reason : "" }}
-              </ASelectOption>
-            </ASelect>
-          </div>
-
-          <div v-if="selectedFile" class="co-hub-download-summary">
-            <div class="co-summary-meta">
-              <ATag
-                v-if="selectedFile.quantization"
-                color="blue"
-                :bordered="false"
-              >
-                {{ selectedFile.quantization }}
-              </ATag>
-              <span class="co-tabular">
-                <strong>{{ size(selectedFile.size) }}</strong>
-              </span>
-              <span>·</span>
-              <span>
-                {{
-                  selectedFile.shards > 1
-                    ? `共 ${selectedFile.shards} 个文件`
-                    : "共 1 个文件"
-                }}
-              </span>
-              <ATag v-if="selectedSavedTag" color="blue" :bordered="false">
-                {{ selectedSavedTag }}
-              </ATag>
-            </div>
-            <AButton
-              type="link"
-              size="small"
-              class="co-inline-link co-advanced-toggle"
-              @click="showAdvanced = !showAdvanced"
-            >
-              <PhSlidersHorizontal :size="13" />
-              <span>{{ showAdvanced ? "收起设置" : "名称与参数" }}</span>
-            </AButton>
-          </div>
-
-          <div v-if="showAdvanced" class="co-hub-advanced-panel">
-            <div class="co-advanced-field">
-              <label class="co-picker-label">显示名称（可选）</label>
-              <AInput
-                v-model:value="customName"
-                size="small"
-                :placeholder="chosen.split('/').pop()"
-                aria-label="本地显示名称"
-                allow-clear
-              />
-            </div>
-            <div class="co-advanced-inline">
-              <div class="co-advanced-field">
-                <span class="co-picker-label">上下文</span>
-                <ASelect
-                  :value="contextLength"
-                  aria-label="上下文长度"
-                  size="small"
-                  class="co-param-context-select"
-                  @change="onContextLengthChange"
-                >
-                  <ASelectOption
-                    v-for="opt in CONTEXT_OPTIONS"
-                    :key="opt.value"
-                    :value="opt.value"
-                  >
-                    {{ opt.label }}
-                  </ASelectOption>
-                </ASelect>
-              </div>
-              <div class="co-advanced-field">
-                <span class="co-picker-label">温度</span>
-                <AInputNumber
-                  :value="temperature"
-                  :min="0"
-                  :max="2"
-                  :step="0.1"
-                  size="small"
-                  aria-label="温度参数"
-                  class="co-param-temp-input"
-                  @update:value="onTemperatureUpdate"
-                />
-              </div>
-            </div>
-          </div>
-
-          <ASpace wrap :size="8" class="co-hub-install-actions">
-            <template v-if="ready">
-              <AButton
-                type="primary"
-                size="small"
-                :loading="installing"
-                :disabled="disabled || installing || !filename"
-                @click="install('load')"
-              >
-                <template #icon><PhPlay :size="13" weight="fill" /></template>
-                {{ installing ? "正在提交…" : "下载并装载" }}
-              </AButton>
-              <AButton
-                size="small"
-                :disabled="disabled || installing || !filename"
-                @click="install('download')"
-              >
-                <template #icon><PhDownloadSimple :size="14" /></template>
-                仅下载
-              </AButton>
-              <AButton
-                size="small"
-                :disabled="installing || !filename"
-                @click="install('save')"
-              >
-                <template #icon><PhPushPin :size="14" /></template>
-                加入我的
-              </AButton>
-              <AButton
-                v-if="loadedModelFor(chosen)"
-                type="primary"
-                ghost
-                size="small"
-                @click="emit('useLoaded')"
-              >
-                <template #icon><PhCheck :size="13" /></template>
-                使用中
-              </AButton>
-            </template>
-            <template v-else>
-              <AButton
-                type="primary"
-                size="small"
-                :loading="installing"
-                :disabled="installing || !filename"
-                @click="install('save')"
-              >
-                <template #icon><PhPushPin :size="14" /></template>
-                加入我的
-              </AButton>
-            </template>
-          </ASpace>
-        </template>
-
-        <AEmpty
-          v-else
-          description="该仓库暂无可用的 GGUF 模型文件"
-          class="co-picker-empty"
-        />
-      </template>
+      <ModelVersionPicker
+        :repo="chosen"
+        :files="files"
+        :loading="filesLoading"
+        :error="fileError"
+        :modality="chosenModality"
+        :comfy-only="chosenComfyOnly"
+        :target-gpu="targetGpu"
+        :runtime="effectiveRuntime"
+        :ready="ready"
+        :disabled="disabled"
+        :installing="installing"
+        :selected-filename="filename"
+        :preferred-filename="preferredFilename"
+        :context-length="contextLength"
+        :temperature="temperature"
+        :custom-name="customName"
+        :allow-custom-name="true"
+        :show-save-button="true"
+        :show-use-loaded="!!loadedModelFor(chosen)"
+        :saved-tag-for-file="fileSavedTag"
+        :download-disabled-reason="downloadDisabledReason"
+        @update:selected-filename="(v) => (filename = v)"
+        @update:context-length="(v) => (contextLength = v)"
+        @update:temperature="(v) => (temperature = v)"
+        @update:custom-name="(v) => (customName = v)"
+        @retry="choose(chosen, true)"
+        @install="install"
+        @use-loaded="emit('useLoaded')"
+        @switch-gpu="(id) => emit('switchGpu', id)"
+        @go-comfyui="emit('goComfyui')"
+      />
     </div>
 
     <div
       v-if="loading && !repos.length"
-      class="co-hub-loading-state"
+      class="co-hub-results co-hub-skeleton-list"
       role="status"
+      aria-busy="true"
     >
-      <ASpin tip="正在搜索社区模型…" />
+      <span class="co-sr-only">{{ t("models.hubSearching") }}</span>
+      <div
+        v-for="(row, idx) in HUB_SKELETON_ROWS"
+        :key="idx"
+        class="co-hub-repo co-hub-repo-skeleton"
+      >
+        <div class="co-hub-repo-main">
+          <div class="co-hub-repo-body">
+            <div class="co-hub-repo-title">
+              <ColabOneSkeleton
+                :width="row.titleW"
+                :height="16"
+                variant="text"
+                :delay="idx * 65"
+              />
+              <ColabOneSkeleton
+                :width="row.paramW"
+                :height="18"
+                variant="tag"
+                tone="subtle"
+                :delay="idx * 65 + 45"
+              />
+            </div>
+            <div class="co-hub-facts">
+              <ColabOneSkeleton
+                :width="row.sizeW"
+                :height="13"
+                variant="text"
+                :delay="idx * 65 + 70"
+              />
+              <ColabOneSkeleton
+                :width="row.fitW"
+                :height="18"
+                variant="tag"
+                tone="accent"
+                :delay="idx * 65 + 100"
+              />
+              <ColabOneSkeleton
+                :width="row.statW"
+                :height="12"
+                variant="text"
+                tone="subtle"
+                :delay="idx * 65 + 130"
+              />
+              <ColabOneSkeleton
+                :width="40"
+                :height="12"
+                variant="text"
+                tone="subtle"
+                :delay="idx * 65 + 150"
+              />
+            </div>
+          </div>
+          <div class="co-hub-repo-actions co-hub-sk-actions">
+            <ColabOneSkeleton
+              :width="68"
+              :height="24"
+              variant="button"
+              :radius="6"
+              tone="subtle"
+              :delay="idx * 65 + 80"
+            />
+            <ColabOneSkeleton
+              :width="82"
+              :height="24"
+              variant="button"
+              :radius="6"
+              :delay="idx * 65 + 120"
+            />
+          </div>
+        </div>
+      </div>
     </div>
 
     <div
       v-else-if="!loading && !error && !repos.length && !chosen"
       class="co-hub-empty-state"
     >
-      <AEmpty description="没有找到匹配的社区 GGUF 模型，换个关键词试试" />
+      <AEmpty :description="t('models.hubEmpty')" />
     </div>
 
-    <div v-if="repos.length" class="co-hub-results">
+    <div
+      v-else-if="
+        !loading && !error && repos.length > 0 && !visibleRepos.length && !chosen
+      "
+      class="co-hub-empty-state"
+    >
+      <AEmpty
+        :description="
+          t('models.hubAllOverflow', { count: repos.length, gpu: targetGpu.label })
+        "
+      >
+        <ASpace :size="8" wrap>
+          <AButton
+            v-if="targetGpu.id !== 'G4'"
+            type="primary"
+            size="small"
+            @click="emit('switchGpu', 'G4')"
+          >
+            {{ t("models.hubSwitchG4") }}
+          </AButton>
+          <AButton size="small" @click="emit('clearOnlyRunnable')">
+            {{ t("models.hubShowAllModels") }}
+          </AButton>
+        </ASpace>
+      </AEmpty>
+    </div>
+
+    <div v-if="visibleRepos.length" class="co-hub-results">
       <div
-        v-for="repo in repos"
+        v-for="repo in visibleRepos"
         :key="repo.repo"
         class="co-hub-repo"
-        :class="{ selected: chosen === repo.repo }"
+        :class="{
+          selected: chosen === repo.repo,
+          'is-overflow':
+            repoFitFor(repo.repo)?.status === 'heavy_hybrid' && !repo.comfy_only,
+          'is-comfy-only': !!repo.comfy_only,
+        }"
       >
         <div class="co-hub-repo-main">
           <div class="co-hub-repo-body">
@@ -813,63 +943,114 @@ onUnmounted(() => {
                 >{{ repoShortName(repo.repo) }}
               </h3>
               <ATag
+                v-if="repo.params"
+                :bordered="false"
+                class="co-repo-param-tag"
+              >
+                {{ repo.params }}
+              </ATag>
+              <ATag
+                v-if="repo.comfy_only"
+                :color="modalityBadgeMeta(repo.modality).color"
+                :bordered="false"
+              >
+                {{
+                  t("models.hubComfyOnlyTag", {
+                    modality: modalityBadgeMeta(repo.modality).label,
+                  })
+                }}
+              </ATag>
+              <ATag
                 v-if="summaryFor(repo.repo).loadedName"
                 color="success"
                 :bordered="false"
               >
-                使用中
+                {{ t("models.badgeInUse") }}
               </ATag>
               <ATag
                 v-else-if="summaryFor(repo.repo).downloadedCount > 0"
                 color="blue"
                 :bordered="false"
               >
-                已下载
+                {{ t("models.badgeDownloaded") }}
               </ATag>
               <ATag v-if="repo.gated" color="orange" :bordered="false">
                 <PhLock :size="11" />
-                <span>需授权</span>
+                <span>{{ t("models.hubGatedTag") }}</span>
               </ATag>
             </div>
 
             <div class="co-hub-facts co-tabular">
               <span class="co-hub-size">
-                <strong v-if="repo.sizeState === 'ready'">
-                  {{ size(repo.minSize!)
+                <strong v-if="repo.sizeState === 'ready'" class="co-sk-reveal">
+                  {{ formatColabOneFileSize(repo.minSize!)
                   }}<template v-if="repo.maxSize !== repo.minSize">
-                    – {{ size(repo.maxSize!) }}</template
+                    – {{ formatColabOneFileSize(repo.maxSize!) }}</template
                   >
                 </strong>
-                <strong v-else>
-                  {{ repo.sizeState === "unavailable" ? "大小未知" : "读取中…" }}
+                <strong v-else-if="repo.sizeState === 'unavailable'">
+                  {{ t("common.unknownSize") }}
                 </strong>
+                <span v-else class="co-hub-size-skeleton">
+                  <ColabOneSkeleton
+                    :width="82"
+                    :height="13"
+                    variant="text"
+                    inline
+                  />
+                  <span class="co-sr-only">{{ t("common.reading") }}</span>
+                </span>
               </span>
+
+              <ATag
+                v-if="repoFitFor(repo.repo)?.badgeLabel"
+                :color="fitBadgeColor(repoFitFor(repo.repo)!)"
+                :bordered="false"
+                class="co-hub-fit-pill co-sk-reveal"
+              >
+                {{ repoFitFor(repo.repo)!.badgeLabel }}
+              </ATag>
+              <ColabOneSkeleton
+                v-else-if="repo.sizeState === 'loading' && !repo.comfy_only"
+                :width="64"
+                :height="18"
+                variant="tag"
+                tone="subtle"
+                :delay="90"
+                inline
+              />
+
               <span>·</span>
               <span class="co-hub-stat">
                 <PhDownloadSimple :size="12" />
-                {{ repo.downloads.toLocaleString() }}
+                {{ repo.downloads.toLocaleString(colabOneLocaleCode) }}
               </span>
               <span>·</span>
               <span class="co-hub-stat">
                 <PhHeart :size="12" />
-                {{ repo.likes.toLocaleString() }}
+                {{ repo.likes.toLocaleString(colabOneLocaleCode) }}
               </span>
               <template v-if="repo.versions">
                 <span>·</span>
-                <span>{{ repo.versions }} 个版本</span>
+                <span>{{
+                  repo.versions === 1
+                    ? t("models.hubVersionCountSingle", { count: repo.versions })
+                    : t("models.hubVersionCount", { count: repo.versions })
+                }}</span>
               </template>
             </div>
           </div>
 
           <ASpace :size="6" class="co-hub-repo-actions">
             <AButton
+              v-if="!repo.comfy_only"
               size="small"
               :class="{ 'co-common-active': isRepoMarked(repo.repo) }"
               :aria-pressed="isRepoMarked(repo.repo)"
               :aria-label="
                 isRepoMarked(repo.repo)
-                  ? `移出我的 ${repo.repo}`
-                  : `加入我的 ${repo.repo}`
+                  ? t('models.removeFromMineTarget', { name: repo.repo })
+                  : t('models.addToMineTarget', { name: repo.repo })
               "
               :loading="togglingRepo === repo.repo"
               @click="toggleCommonRepo(repo)"
@@ -878,7 +1059,7 @@ onUnmounted(() => {
                 <PhPushPinSlash v-if="isRepoMarked(repo.repo)" :size="13" />
                 <PhPushPin v-else :size="13" />
               </template>
-              {{ isRepoMarked(repo.repo) ? "已在我的" : "加入我的" }}
+              {{ isRepoMarked(repo.repo) ? t("models.badgeInMine") : t("models.addToMine") }}
             </AButton>
 
             <AButton
@@ -888,7 +1069,13 @@ onUnmounted(() => {
               :aria-expanded="chosen === repo.repo"
               @click="choose(repo.repo)"
             >
-              {{ chosen === repo.repo ? "收起" : "选择版本" }}
+              {{
+                chosen === repo.repo
+                  ? t("common.collapse")
+                  : repo.comfy_only
+                    ? t("models.viewVram")
+                    : t("models.chooseVersion")
+              }}
               <PhCaretDown v-if="chosen === repo.repo" :size="12" />
               <PhCaretRight v-else :size="12" />
             </AButton>
@@ -899,207 +1086,128 @@ onUnmounted(() => {
           v-if="chosen === repo.repo"
           ref="selection"
           class="co-hub-selection co-inline-selection"
-          aria-label="社区模型版本"
+          :aria-label="t('models.hubVersionsAria')"
         >
-          <div v-if="filesLoading" class="co-picker-loading" role="status">
-            <ASpin size="small" tip="正在读取版本清单…" />
-          </div>
-
-          <AAlert
-            v-else-if="fileError"
-            type="error"
-            show-icon
-            :message="fileError"
-            role="alert"
-          >
-            <template #action>
-              <AButton size="small" @click="choose(chosen, true)">重试</AButton>
-            </template>
-          </AAlert>
-
-          <template v-else>
-            <template v-if="files.length">
-              <div class="co-picker-row">
-                <ASelect
-                  :value="filename || undefined"
-                  aria-label="选择量化版本"
-                  placeholder="选择量化版本"
-                  class="co-picker-select"
-                  @change="onFilenameChange"
-                >
-                  <ASelectOption
-                    v-for="file in files"
-                    :key="file.filename"
-                    :value="file.filename"
-                    :disabled="!file.supported"
-                  >
-                    {{ file.filename }} · {{ size(file.size) }} ·
-                    {{
-                      file.shards > 1 ? `${file.shards} 个分片文件` : "1 个文件"
-                    }}{{
-                      fileSavedTag(file.filename)
-                        ? ` (${fileSavedTag(file.filename)})`
-                        : ""
-                    }}{{ file.reason ? " · " + file.reason : "" }}
-                  </ASelectOption>
-                </ASelect>
-              </div>
-
-              <div v-if="selectedFile" class="co-hub-download-summary">
-                <div class="co-summary-meta">
-                  <ATag
-                    v-if="selectedFile.quantization"
-                    color="blue"
-                    :bordered="false"
-                  >
-                    {{ selectedFile.quantization }}
-                  </ATag>
-                  <span class="co-tabular">
-                    <strong>{{ size(selectedFile.size) }}</strong>
-                  </span>
-                  <span>·</span>
-                  <span>
-                    {{
-                      selectedFile.shards > 1
-                        ? `共 ${selectedFile.shards} 个文件`
-                        : "共 1 个文件"
-                    }}
-                  </span>
-                  <ATag v-if="selectedSavedTag" color="blue" :bordered="false">
-                    {{ selectedSavedTag }}
-                  </ATag>
-                  <AButton
-                    type="link"
-                    size="small"
-                    class="co-inline-link"
-                    :aria-label="`打开 ${repo.repo} 仓库页面`"
-                    @click="colabOneOpenURL('https://huggingface.co/' + repo.repo)"
-                  >
-                    仓库主页
-                    <PhArrowSquareOut :size="12" />
-                  </AButton>
-                </div>
-
-                <AButton
-                  type="link"
-                  size="small"
-                  class="co-inline-link co-advanced-toggle"
-                  @click="showAdvanced = !showAdvanced"
-                >
-                  <PhSlidersHorizontal :size="13" />
-                  <span>{{ showAdvanced ? "收起设置" : "名称与参数" }}</span>
-                </AButton>
-              </div>
-
-              <div v-if="showAdvanced" class="co-hub-advanced-panel">
-                <div class="co-advanced-field">
-                  <label class="co-picker-label">显示名称（可选）</label>
-                  <AInput
-                    v-model:value="customName"
-                    size="small"
-                    :placeholder="chosen.split('/').pop()"
-                    aria-label="本地显示名称"
-                    allow-clear
-                  />
-                </div>
-                <div class="co-advanced-inline">
-                  <div class="co-advanced-field">
-                    <span class="co-picker-label">上下文</span>
-                    <ASelect
-                      :value="contextLength"
-                      aria-label="上下文长度"
-                      size="small"
-                      class="co-param-context-select"
-                      @change="onContextLengthChange"
-                    >
-                      <ASelectOption
-                        v-for="opt in CONTEXT_OPTIONS"
-                        :key="opt.value"
-                        :value="opt.value"
-                      >
-                        {{ opt.label }}
-                      </ASelectOption>
-                    </ASelect>
-                  </div>
-                  <div class="co-advanced-field">
-                    <span class="co-picker-label">温度</span>
-                    <AInputNumber
-                      :value="temperature"
-                      :min="0"
-                      :max="2"
-                      :step="0.1"
-                      size="small"
-                      aria-label="温度参数"
-                      class="co-param-temp-input"
-                      @update:value="onTemperatureUpdate"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <ASpace wrap :size="8" class="co-hub-install-actions">
-                <template v-if="ready">
-                  <AButton
-                    type="primary"
-                    size="small"
-                    :loading="installing"
-                    :disabled="disabled || installing || !filename"
-                    @click="install('load')"
-                  >
-                    <template #icon
-                      ><PhPlay :size="13" weight="fill"
-                    /></template>
-                    {{ installing ? "正在提交…" : "下载并装载" }}
-                  </AButton>
-                  <AButton
-                    size="small"
-                    :disabled="disabled || installing || !filename"
-                    @click="install('download')"
-                  >
-                    <template #icon><PhDownloadSimple :size="14" /></template>
-                    仅下载
-                  </AButton>
-                  <AButton
-                    size="small"
-                    :disabled="installing || !filename"
-                    @click="install('save')"
-                  >
-                    <template #icon><PhPushPin :size="14" /></template>
-                    加入我的
-                  </AButton>
-                  <AButton
-                    v-if="loadedModelFor(repo.repo)"
-                    type="primary"
-                    ghost
-                    size="small"
-                    @click="emit('useLoaded')"
-                  >
-                    <template #icon><PhCheck :size="13" /></template>
-                    使用中
-                  </AButton>
-                </template>
-                <template v-else>
-                  <AButton
-                    type="primary"
-                    size="small"
-                    :loading="installing"
-                    :disabled="installing || !filename"
-                    @click="install('save')"
-                  >
-                    <template #icon><PhPushPin :size="14" /></template>
-                    加入我的
-                  </AButton>
-                </template>
-              </ASpace>
-            </template>
-
-            <AEmpty
-              v-else
-              description="该仓库暂无可用的 GGUF 模型文件"
-              class="co-picker-empty"
-            />
-          </template>
+          <ModelVersionPicker
+            :repo="repo.repo"
+            :files="files"
+            :loading="filesLoading"
+            :error="fileError"
+            :modality="chosenModality"
+            :comfy-only="chosenComfyOnly"
+            :target-gpu="targetGpu"
+            :runtime="effectiveRuntime"
+            :ready="ready"
+            :disabled="disabled"
+            :installing="installing"
+            :selected-filename="filename"
+            :preferred-filename="preferredFilename"
+            :context-length="contextLength"
+            :temperature="temperature"
+            :custom-name="customName"
+            :allow-custom-name="true"
+            :show-save-button="true"
+            :show-use-loaded="!!loadedModelFor(repo.repo)"
+            :saved-tag-for-file="fileSavedTag"
+            :download-disabled-reason="downloadDisabledReason"
+            @update:selected-filename="(v) => (filename = v)"
+            @update:context-length="(v) => (contextLength = v)"
+            @update:temperature="(v) => (temperature = v)"
+            @update:custom-name="(v) => (customName = v)"
+            @retry="choose(repo.repo, true)"
+            @install="install"
+            @use-loaded="emit('useLoaded')"
+            @switch-gpu="(id) => emit('switchGpu', id)"
+            @go-comfyui="emit('goComfyui')"
+          />
         </div>
+      </div>
+
+      <template v-if="loading && repos.length > 0">
+        <div
+          v-for="(row, idx) in HUB_SKELETON_ROWS.slice(0, 2)"
+          :key="`more-${idx}`"
+          class="co-hub-repo co-hub-repo-skeleton"
+          aria-hidden="true"
+        >
+          <div class="co-hub-repo-main">
+            <div class="co-hub-repo-body">
+              <div class="co-hub-repo-title">
+                <ColabOneSkeleton
+                  :width="row.titleW"
+                  :height="16"
+                  variant="text"
+                  :delay="idx * 70"
+                />
+                <ColabOneSkeleton
+                  :width="row.paramW"
+                  :height="18"
+                  variant="tag"
+                  tone="subtle"
+                  :delay="idx * 70 + 45"
+                />
+              </div>
+              <div class="co-hub-facts">
+                <ColabOneSkeleton
+                  :width="row.sizeW"
+                  :height="13"
+                  variant="text"
+                  :delay="idx * 70 + 70"
+                />
+                <ColabOneSkeleton
+                  :width="row.fitW"
+                  :height="18"
+                  variant="tag"
+                  tone="accent"
+                  :delay="idx * 70 + 105"
+                />
+                <ColabOneSkeleton
+                  :width="row.statW"
+                  :height="12"
+                  variant="text"
+                  tone="subtle"
+                  :delay="idx * 70 + 135"
+                />
+              </div>
+            </div>
+            <div class="co-hub-repo-actions co-hub-sk-actions">
+              <ColabOneSkeleton
+                :width="68"
+                :height="24"
+                variant="button"
+                :radius="6"
+                tone="subtle"
+                :delay="idx * 70 + 80"
+              />
+              <ColabOneSkeleton
+                :width="82"
+                :height="24"
+                variant="button"
+                :radius="6"
+                :delay="idx * 70 + 115"
+              />
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="hiddenByVramCount > 0" class="co-hub-hidden-note">
+        <span>
+          {{
+            t("models.hubHiddenOverflow", {
+              count: hiddenByVramCount,
+              gpu: targetGpu.shortLabel,
+            })
+          }}
+        </span>
+        <AButton
+          type="link"
+          size="small"
+          class="co-inline-link"
+          @click="emit('clearOnlyRunnable')"
+        >
+          {{ t("common.showAll") }}
+        </AButton>
       </div>
     </div>
 
@@ -1111,7 +1219,7 @@ onUnmounted(() => {
         class="co-hub-more"
         @click="search(true)"
       >
-        {{ loading ? "加载中…" : "加载更多" }}
+        {{ loading ? t("common.loading") : t("common.loadMore") }}
       </AButton>
     </div>
   </div>
@@ -1124,7 +1232,7 @@ onUnmounted(() => {
   --co-common-border: #bfdbfe;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
 }
 
@@ -1144,11 +1252,117 @@ onUnmounted(() => {
 }
 
 .co-hub-sort-select {
-  width: 112px;
+  min-width: 148px;
+  width: auto;
   flex-shrink: 0;
 }
 
-.co-hub-loading-state,
+.co-hub-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-subtle);
+}
+
+.co-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.co-filter-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--co-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 48px;
+}
+
+.co-chip-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.co-filter-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+  color: var(--co-secondary-text);
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.co-filter-chip:hover {
+  border-color: var(--co-border);
+  color: var(--co-text);
+  background: var(--co-soft-hover);
+}
+
+.co-filter-chip.active {
+  border-color: var(--co-accent);
+  background: var(--co-selected);
+  color: var(--co-accent-strong);
+  font-weight: 600;
+}
+
+.co-chip-sub {
+  font-size: 10px;
+  opacity: 0.72;
+  padding-left: 2px;
+}
+
+.co-comfy-modality-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--co-warning-border);
+  background: var(--co-warning-bg);
+  font-size: 12px;
+  color: var(--co-text);
+}
+
+.co-comfy-banner-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1;
+  min-width: 200px;
+  line-height: 1.45;
+}
+
+.co-comfy-banner-icon {
+  color: var(--co-warning-text);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.co-comfy-banner-link {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
 .co-hub-empty-state {
   display: flex;
   align-items: center;
@@ -1157,6 +1371,28 @@ onUnmounted(() => {
   border: 1px solid var(--co-border-secondary);
   border-radius: 8px;
   background: var(--co-surface);
+}
+
+.co-hub-repo-skeleton {
+  background: var(--co-skeleton-card-bg);
+  pointer-events: none;
+}
+
+.co-hub-repo-skeleton:hover {
+  border-color: var(--co-border-secondary);
+  box-shadow: none;
+}
+
+.co-hub-sk-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-hub-size-skeleton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
 }
 
 .co-hub-results {
@@ -1171,7 +1407,10 @@ onUnmounted(() => {
   border: 1px solid var(--co-border-secondary);
   background: var(--co-surface);
   color: var(--co-text);
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease;
 }
 
 .co-hub-repo:hover {
@@ -1181,6 +1420,10 @@ onUnmounted(() => {
 
 .co-hub-repo.selected {
   border-color: var(--co-focus);
+}
+
+.co-hub-repo.is-overflow:not(.selected) {
+  opacity: 0.72;
 }
 
 .co-hub-repo-main {
@@ -1220,6 +1463,14 @@ onUnmounted(() => {
   color: var(--co-muted);
 }
 
+.co-repo-param-tag,
+.co-hub-fit-pill {
+  margin-inline-end: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 6px;
+}
+
 .co-hub-facts {
   display: flex;
   align-items: center;
@@ -1254,9 +1505,6 @@ onUnmounted(() => {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--co-border-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .co-standalone-selection {
@@ -1265,96 +1513,14 @@ onUnmounted(() => {
   gap: 10px;
 }
 
-.co-picker-loading {
+.co-hub-hidden-note {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 14px 8px;
-}
-
-.co-picker-row {
-  width: 100%;
-}
-
-.co-picker-select {
-  width: 100%;
-}
-
-.co-picker-empty {
-  margin: 8px 0;
-}
-
-.co-hub-download-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--co-secondary-text);
-}
-
-.co-summary-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
   gap: 6px;
-}
-
-.co-summary-meta strong {
-  color: var(--co-text);
-  font-weight: 600;
-}
-
-.co-advanced-toggle {
-  font-size: 12px !important;
-  color: var(--co-muted);
-}
-
-.co-hub-advanced-panel {
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--co-border-secondary);
-  background: var(--co-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.co-advanced-inline {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.co-advanced-field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.co-advanced-field:first-child {
-  flex: 1;
-}
-
-.co-picker-label {
+  padding: 6px 10px;
   font-size: 12px;
-  color: var(--co-secondary-text);
-  white-space: nowrap;
-}
-
-.co-param-context-select {
-  width: 112px;
-}
-
-.co-param-temp-input {
-  width: 80px;
-}
-
-.co-hub-install-actions {
-  padding-top: 2px;
+  color: var(--co-muted);
 }
 
 .co-hub-more-wrap {

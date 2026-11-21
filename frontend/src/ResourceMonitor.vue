@@ -9,8 +9,10 @@ import {
   Select as ASelect,
   SelectOption as ASelectOption,
   Tag as ATag,
-  Tooltip as ATooltip,
 } from "ant-design-vue";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
+import { colabOneMonitorSkeletonState } from "./skeletonState";
 import {
   ColabOneTelemetryTracker,
   buildColabOneChartGeometry,
@@ -22,6 +24,7 @@ import {
 } from "./telemetry";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import { locationShort } from "./location";
+import { t, tb } from "./i18n";
 import FlagIcon from "./FlagIcon.vue";
 import type { MonitorOption, MonitorSource, RuntimeStatus } from "./types";
 import {
@@ -52,6 +55,8 @@ const props = defineProps<{
   monitorPaused?: boolean;
   monitorError?: string;
   monitorBusy?: boolean;
+  loading?: boolean;
+  switching?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -65,10 +70,10 @@ type MetricKey = "gpu" | "ram" | "disk" | "cpu";
 
 const uid = `co-rm-${Math.random().toString(36).slice(2, 8)}`;
 
-const layoutOptions = [
-  { value: "grid", payload: { label: "四图网格" } },
-  { value: "rows", payload: { label: "四行宽幅" } },
-];
+const layoutOptions = computed(() => [
+  { value: "grid", payload: { label: t("monitor.layoutGrid") } },
+  { value: "rows", payload: { label: t("monitor.layoutRows") } },
+]);
 
 function readStoredLayout(): LayoutMode {
   try {
@@ -245,6 +250,30 @@ const isRemoteConnecting = computed<boolean>(
 const isConnecting = computed<boolean>(
   () => (isStarting.value || isRemoteConnecting.value) && !telemetry.value.online,
 );
+const monitorSk = computed(() =>
+  colabOneMonitorSkeletonState({
+    loading: props.loading,
+    switching: props.switching,
+    isConnecting: isConnecting.value,
+    isPaused: isPaused.value,
+    isRemoteError: isRemoteError.value,
+    online: telemetry.value.online,
+    hasRamTelemetry: telemetry.value.hasRamTelemetry,
+    hasCpuTelemetry: telemetry.value.cpuPercent !== null,
+  }),
+);
+const SK_GRID_WAVE_PATHS: Record<MetricKey, string> = {
+  gpu: "M 0 54 C 42 52 72 34 114 38 C 156 42 184 22 228 28 C 266 33 292 20 320 24",
+  ram: "M 0 46 C 48 44 82 40 128 36 C 176 32 214 34 260 28 C 288 25 304 27 320 26",
+  disk: "M 0 56 C 54 55 96 48 142 46 C 188 44 234 40 278 38 C 296 37 310 38 320 37",
+  cpu: "M 0 52 C 36 46 68 24 108 32 C 148 40 182 18 222 30 C 260 41 290 22 320 28",
+};
+const SK_ROW_WAVE_PATHS: Record<MetricKey, string> = {
+  gpu: "M 0 36 C 95 34 165 22 260 26 C 355 30 435 14 530 19 C 615 23 670 15 720 17",
+  ram: "M 0 32 C 110 30 195 27 305 24 C 415 21 510 23 615 19 C 668 17 698 19 720 18",
+  disk: "M 0 38 C 120 37 220 32 330 31 C 440 30 555 27 650 25 C 685 24 705 25 720 24",
+  cpu: "M 0 35 C 85 30 160 15 250 22 C 340 29 425 12 520 20 C 605 27 665 14 720 19",
+};
 const isCpuOnlyOnline = computed<boolean>(
   () =>
     telemetry.value.online &&
@@ -257,10 +286,10 @@ const isCpuOnlyOnline = computed<boolean>(
 
 function formatMonitorTriggerLabel(opt: MonitorOption): string {
   const prefix = opt.managed
-    ? "本机"
+    ? t("monitor.sourceLocal")
     : opt.source === "remote_colabone"
-      ? "远端 ColabOne"
-      : "远端只读";
+      ? t("monitor.sourceRemoteColabOne")
+      : t("monitor.sourceRemoteReadonly");
   const accel = opt.accelerator || opt.variant || "GPU";
   const loc = opt.location?.country ? locationShort(opt.location) : "";
   const shortId = colabOneShortEndpoint(opt.id, 14);
@@ -285,59 +314,63 @@ const headerBadgeStatus = computed<
 });
 
 const headerBadgeText = computed<string>(() => {
-  if (isIpcPaused.value) return "本地服务重连中";
-  if (isPaused.value) return "远端只读 · 已暂停";
-  if (isRemoteError.value && !telemetry.value.online) return "远端采样失败";
+  if (isIpcPaused.value) return t("monitor.badgeIpcPaused");
+  if (isPaused.value) return t("monitor.badgePaused");
+  if (isRemoteError.value && !telemetry.value.online) return t("monitor.badgeError");
   if (telemetry.value.online) {
-    if (isStarting.value) return "部署中 · 实时采样";
-    if (isRemoteColabOne.value) return "远端 ColabOne · 只读";
-    if (isRemoteReadonly.value) return "远端只读 · 实时采样";
-    return "实时 60s 采样";
+    if (isStarting.value) return t("monitor.badgeStarting");
+    if (isRemoteColabOne.value) return t("monitor.badgeRemoteColabOne");
+    if (isRemoteReadonly.value) return t("monitor.badgeRemoteReadonly");
+    return t("monitor.badgeLive");
   }
-  if (isRemoteConnecting.value) return "远端只读 · 连接中";
-  if (isConnecting.value) return "正在连接";
-  if (props.runtime.state === "disconnected") return "连接中断";
-  return "待机预览";
+  if (isRemoteConnecting.value) return t("monitor.badgeRemoteConnecting");
+  if (isConnecting.value) return t("monitor.badgeConnecting");
+  if (props.runtime.state === "disconnected") return t("monitor.badgeDisconnected");
+  return t("monitor.badgeStandby");
 });
 
 const onlineSubtitle = computed<string>(() => {
   if (isIpcPaused.value) {
-    return "与本地后台服务的连接暂时中断，恢复连接后继续同步实时硬件曲线";
+    return t("monitor.subIpcPaused");
   }
   if (isPaused.value) {
-    return "已暂停对该远端实例的只读采样（不影响其空闲状态），点击恢复观测继续采集";
+    return t("monitor.subPaused");
   }
   if (isRemoteError.value) {
-    return props.monitorError || "远端只读采样暂时受阻，客户端将自动重试";
+    return props.monitorError
+      ? tb(props.monitorError)
+      : t("monitor.subRemoteError");
   }
   if (isStarting.value) {
-    return "已采集远端硬件实时曲线，正在完成管理服务部署，就绪后即可下载与装载模型";
+    return t("monitor.subStarting");
   }
-  return "实时采集远端实例显存、内存、磁盘吞吐与处理器负载（每秒刷新）";
+  return t("monitor.subLive");
 });
 
 const offlineSubtitle = computed<string>(() => {
   if (isIpcPaused.value) {
-    return "与本地后台服务的连接暂时中断，恢复连接后继续同步实时硬件曲线";
+    return t("monitor.subIpcPaused");
   }
   if (isPaused.value) {
-    return "已暂停对该远端实例的只读采样（不影响其空闲状态），点击恢复观测继续采集";
+    return t("monitor.subPaused");
   }
   if (isRemoteError.value) {
-    return props.monitorError || "暂无法读取该远端实例的硬件负载，将自动重试";
+    return props.monitorError
+      ? tb(props.monitorError)
+      : t("monitor.subRemoteOfflineError");
   }
   if (isRemoteConnecting.value) {
-    return "正在连接远端实例，准备只读采集显存、内存、磁盘与 CPU 负载（不受本客户端空闲自动释放管理）";
+    return t("monitor.subRemoteConnecting");
   }
   if (props.runtime.state === "starting") {
     return props.operationTitle
-      ? `${props.operationTitle} · 正在采集显存、内存、磁盘与 CPU 实时状态…`
-      : "正在连接远端 GPU，即将开始采集实时硬件曲线";
+      ? t("monitor.subConnectingWithOp", { op: tb(props.operationTitle) })
+      : t("monitor.subConnecting");
   }
   if (props.runtime.state === "disconnected") {
-    return "远端连接暂时中断，恢复连接后继续同步实时硬件曲线";
+    return t("monitor.subDisconnected");
   }
-  return "远端 GPU 未启动，启动后将实时展示显存、内存、磁盘与 CPU 负载";
+  return t("monitor.subStandby");
 });
 
 // Compact grid (320x72) geometries
@@ -500,28 +533,30 @@ const activeGpuDisplayName = computed<string>(
 const gpuSubtitle = computed<string>(() => {
   if (telemetry.value.gpuName) return telemetry.value.gpuName;
   if (props.runtime.gpu?.name) return props.runtime.gpu.name;
-  if (isCpuOnlyOnline.value) return "无 GPU 加速器";
+  if (isCpuOnlyOnline.value) return t("monitor.gpuNoAccelerator");
   if (telemetry.value.online) return "Colab GPU";
   if (isRemoteConnecting.value) {
     const accel = selectedMonitorOption.value?.accelerator;
-    return accel ? `正在连接远端 ${accel} 实例…` : "正在连接远端实例…";
+    return accel
+      ? t("monitor.gpuConnectingAccel", { accel })
+      : t("monitor.gpuConnectingGeneric");
   }
   if (isConnecting.value) {
     return props.selectedGpu
-      ? `正在初始化 ${props.selectedGpu} 加速器…`
-      : "正在初始化远端加速器…";
+      ? t("monitor.gpuInitAccel", { gpu: props.selectedGpu })
+      : t("monitor.gpuInitGeneric");
   }
-  return "待分配加速器";
+  return t("monitor.gpuStandby");
 });
 
 const cpuSubtitle = computed<string>(() =>
   telemetry.value.cpuCores
-    ? `${telemetry.value.cpuCores} 逻辑核心`
+    ? t("monitor.cpuCores", { count: telemetry.value.cpuCores })
     : telemetry.value.online
-      ? "远端计算核心"
+      ? t("monitor.cpuRemoteCore")
       : isConnecting.value
-        ? "正在初始化计算核心…"
-        : "待分配计算核心",
+        ? t("monitor.cpuInit")
+        : t("monitor.cpuStandby"),
 );
 
 const gpuProgressPercent = computed<number>(() =>
@@ -615,236 +650,239 @@ const cpuLivePercentLabel = computed<string>(() =>
 );
 
 const stackedRows = computed<StackedRowItem[]>(() => {
-  const t = telemetry.value;
+  const tel = telemetry.value;
 
   const gpuStats: StackedRowStat[] = [];
-  if (t.online && t.vramTotalBytes > 0) {
-    const freeVram = Math.max(0, t.vramTotalBytes - t.vramUsedBytes);
+  if (tel.online && tel.vramTotalBytes > 0) {
+    const freeVram = Math.max(0, tel.vramTotalBytes - tel.vramUsedBytes);
     gpuStats.push({
-      label: "剩余可用",
+      label: t("monitor.statFree"),
       value: formatMetricBytes(freeVram),
     });
   }
   gpuStats.push({
-    label: "核心负载",
+    label: t("monitor.statCoreLoad"),
     value:
-      t.online && t.gpuUtilPercent !== null
-        ? `${Math.round(t.gpuUtilPercent)}% · 峰值 ${Math.round(seriesPeak(t.gpuUtilSeries))}%`
-        : t.online
-          ? "暂未上报"
+      tel.online && tel.gpuUtilPercent !== null
+        ? t("monitor.statPeakValue", {
+            cur: Math.round(tel.gpuUtilPercent),
+            peak: Math.round(seriesPeak(tel.gpuUtilSeries)),
+          })
+        : tel.online
+          ? t("monitor.statUnreported")
           : "--",
   });
   gpuStats.push({
-    label: "温度",
-    value: t.online && t.gpuTempC !== null ? `${Math.round(t.gpuTempC)}°C` : "--",
+    label: t("monitor.statTemp"),
+    value: tel.online && tel.gpuTempC !== null ? `${Math.round(tel.gpuTempC)}°C` : "--",
   });
-  if (t.online && t.gpuPowerW !== null) {
+  if (tel.online && tel.gpuPowerW !== null) {
     gpuStats.push({
-      label: "功耗",
+      label: t("monitor.statPower"),
       value:
-        t.gpuPowerLimitW !== null && t.gpuPowerLimitW > 0
-          ? `${Math.round(t.gpuPowerW)} / ${Math.round(t.gpuPowerLimitW)} W`
-          : `${Math.round(t.gpuPowerW)} W`,
+        tel.gpuPowerLimitW !== null && tel.gpuPowerLimitW > 0
+          ? `${Math.round(tel.gpuPowerW)} / ${Math.round(tel.gpuPowerLimitW)} W`
+          : `${Math.round(tel.gpuPowerW)} W`,
     });
   }
   if (!isRemoteReadonly.value || isRemoteColabOne.value || props.loadedModelName || props.runtime.loaded_model) {
     gpuStats.push({
-      label: "装载模型",
+      label: t("monitor.statLoadedModel"),
       value:
         props.loadedModelName ||
         props.runtime.loaded_model ||
-        (t.online ? "未装载模型" : "--"),
+        (tel.online ? t("monitor.statNoModel") : "--"),
     });
   } else {
     gpuStats.push({
-      label: "来源",
-      value: "远端只读",
+      label: t("monitor.statSource"),
+      value: t("monitor.sourceRemoteReadonly"),
     });
   }
 
-  const ramStats: StackedRowStat[] = !t.online
+  const ramStats: StackedRowStat[] = !tel.online
     ? [
-        { label: "可用内存", value: "--" },
-        { label: "60 秒峰值", value: isConnecting.value ? "--" : "0%" },
+        { label: t("monitor.statAvailableRam"), value: "--" },
+        { label: t("monitor.statPeak60s"), value: isConnecting.value ? "--" : "0%" },
       ]
-    : !t.hasRamTelemetry
-      ? [{ label: "上报状态", value: "等待远端服务上报…", muted: true }]
+    : !tel.hasRamTelemetry
+      ? [{ label: t("monitor.statReportStatus"), value: t("monitor.statWaitingReport"), muted: true }]
       : [
           {
-            label: "可用内存",
-            value: formatMetricBytes(t.ramAvailableBytes),
+            label: t("monitor.statAvailableRam"),
+            value: formatMetricBytes(tel.ramAvailableBytes),
           },
           {
-            label: "60 秒平均",
-            value: `${seriesAverage(t.ramSeries).toFixed(1)}%`,
+            label: t("monitor.statAvg60s"),
+            value: `${seriesAverage(tel.ramSeries).toFixed(1)}%`,
           },
           {
-            label: "60 秒峰值",
-            value: `${Math.round(seriesPeak(t.ramSeries))}%`,
+            label: t("monitor.statPeak60s"),
+            value: `${Math.round(seriesPeak(tel.ramSeries))}%`,
           },
         ];
 
   const diskStats: StackedRowStat[] = [
     {
-      label: !t.online || t.hasDiskTotal ? "已用 / 总容量" : "可用空间",
-      value: !t.online
+      label: !tel.online || tel.hasDiskTotal ? t("monitor.statUsedTotal") : t("monitor.statFreeSpace"),
+      value: !tel.online
         ? "-- / --"
-        : t.hasDiskTotal
-          ? formatBytePair(t.diskUsedBytes, t.diskTotalBytes)
-          : formatMetricBytes(t.diskFreeBytes),
+        : tel.hasDiskTotal
+          ? formatBytePair(tel.diskUsedBytes, tel.diskTotalBytes)
+          : formatMetricBytes(tel.diskFreeBytes),
     },
     {
-      label: "读取",
-      value: t.online ? formatRateBps(t.diskReadBps) : "0 KB/s",
+      label: t("monitor.statRead"),
+      value: tel.online ? formatRateBps(tel.diskReadBps) : "0 KB/s",
     },
     {
-      label: "写入",
-      value: t.online ? formatRateBps(t.diskWriteBps) : "0 KB/s",
+      label: t("monitor.statWrite"),
+      value: tel.online ? formatRateBps(tel.diskWriteBps) : "0 KB/s",
     },
   ];
 
-  const cpuStats: StackedRowStat[] = !t.online
+  const cpuStats: StackedRowStat[] = !tel.online
     ? [
-        { label: "60 秒平均", value: isConnecting.value ? "--" : "0.0%" },
-        { label: "60 秒峰值", value: isConnecting.value ? "--" : "0%" },
+        { label: t("monitor.statAvg60s"), value: isConnecting.value ? "--" : "0.0%" },
+        { label: t("monitor.statPeak60s"), value: isConnecting.value ? "--" : "0%" },
       ]
-    : t.cpuPercent === null
-      ? [{ label: "上报状态", value: "等待远端服务上报…", muted: true }]
+    : tel.cpuPercent === null
+      ? [{ label: t("monitor.statReportStatus"), value: t("monitor.statWaitingReport"), muted: true }]
       : [
           {
-            label: "60 秒平均",
-            value: `${seriesAverage(t.cpuSeries).toFixed(1)}%`,
+            label: t("monitor.statAvg60s"),
+            value: `${seriesAverage(tel.cpuSeries).toFixed(1)}%`,
           },
           {
-            label: "60 秒峰值",
-            value: `${Math.round(seriesPeak(t.cpuSeries))}%`,
+            label: t("monitor.statPeak60s"),
+            value: `${Math.round(seriesPeak(tel.cpuSeries))}%`,
           },
         ];
 
   return [
     {
       key: "gpu",
-      title: "GPU 显存",
+      title: t("monitor.gpuTitle"),
       subtitle: gpuSubtitle.value,
       icon: PhGraphicsCard,
-      heroValue: t.online
+      heroValue: tel.online
         ? isCpuOnlyOnline.value
           ? "--"
-          : `${t.vramPercent.toFixed(1)}%`
+          : `${tel.vramPercent.toFixed(1)}%`
         : isConnecting.value
           ? "--"
           : "0.0%",
       heroSub:
-        t.online && t.vramTotalBytes > 0
-          ? formatBytePair(t.vramUsedBytes, t.vramTotalBytes)
+        tel.online && tel.vramTotalBytes > 0
+          ? formatBytePair(tel.vramUsedBytes, tel.vramTotalBytes)
           : "-- / --",
       progressPercent: gpuProgressPercent.value,
       progressColor: "var(--co-rm-gpu)",
-      seriesLabel: "显存占用 (%)",
+      seriesLabel: t("monitor.gpuSeriesVram"),
       secondaryLabel:
-        t.online && t.gpuUtilPercent !== null ? "核心负载 (%)" : "",
+        tel.online && tel.gpuUtilPercent !== null ? t("monitor.gpuSeriesUtil") : "",
       scaleTop: gpuLivePercentLabel.value,
-      showArea: t.online,
+      showArea: tel.online,
       primaryChart: gpuRowChart.value,
       secondaryChart: gpuUtilRowChart.value,
       stats: gpuStats,
     },
     {
       key: "ram",
-      title: "系统内存 (RAM)",
-      subtitle: t.hasRamTelemetry
-        ? `总计 ${formatMetricBytes(t.ramTotalBytes)}`
+      title: t("monitor.ramTitle"),
+      subtitle: tel.hasRamTelemetry
+        ? t("monitor.ramTotal", { size: formatMetricBytes(tel.ramTotalBytes) })
         : isConnecting.value
-          ? "等待远端主机上报…"
-          : "主机物理内存",
+          ? t("monitor.ramWaiting")
+          : t("monitor.ramStandby"),
       icon: PhMemory,
-      heroValue: !t.online
+      heroValue: !tel.online
         ? isConnecting.value
           ? "--"
           : "0.0%"
-        : t.hasRamTelemetry
-          ? `${t.ramPercent.toFixed(1)}%`
+        : tel.hasRamTelemetry
+          ? `${tel.ramPercent.toFixed(1)}%`
           : "--",
       heroSub:
-        t.online && t.hasRamTelemetry
-          ? formatBytePair(t.ramUsedBytes, t.ramTotalBytes)
+        tel.online && tel.hasRamTelemetry
+          ? formatBytePair(tel.ramUsedBytes, tel.ramTotalBytes)
           : "-- / --",
       progressPercent: ramProgressPercent.value,
       progressColor: "var(--co-rm-ram)",
-      seriesLabel: "内存使用 (%)",
+      seriesLabel: t("monitor.ramSeries"),
       secondaryLabel: "",
       scaleTop: ramLivePercentLabel.value,
-      showArea: t.online && t.hasRamTelemetry,
+      showArea: tel.online && tel.hasRamTelemetry,
       primaryChart: ramRowChart.value,
       secondaryChart: null,
       stats: ramStats,
     },
     {
       key: "disk",
-      title: "远端磁盘",
-      subtitle: t.hasDiskTotal
-        ? `实例卷 ${formatMetricBytes(t.diskTotalBytes)}`
+      title: t("monitor.diskTitle"),
+      subtitle: tel.hasDiskTotal
+        ? t("monitor.diskVolume", { size: formatMetricBytes(tel.diskTotalBytes) })
         : isConnecting.value
-          ? "等待远端工作盘上报…"
-          : "工作盘容量与吞吐",
+          ? t("monitor.diskWaiting")
+          : t("monitor.diskStandby"),
       icon: PhHardDrives,
-      heroValue: !t.online
+      heroValue: !tel.online
         ? isConnecting.value
           ? "--"
           : "0.0%"
-        : t.hasDiskTotal
-          ? `${t.diskPercent.toFixed(1)}%`
-          : t.diskFreeBytes > 0
-            ? formatMetricBytes(t.diskFreeBytes)
+        : tel.hasDiskTotal
+          ? `${tel.diskPercent.toFixed(1)}%`
+          : tel.diskFreeBytes > 0
+            ? formatMetricBytes(tel.diskFreeBytes)
             : "--",
-      compactHero: t.online && !t.hasDiskTotal && t.diskFreeBytes > 0,
-      heroSub: !t.online
+      compactHero: tel.online && !tel.hasDiskTotal && tel.diskFreeBytes > 0,
+      heroSub: !tel.online
         ? "-- / --"
-        : t.hasDiskTotal
-          ? `剩余 ${formatMetricBytes(t.diskFreeBytes)}`
-          : "可用空间",
+        : tel.hasDiskTotal
+          ? t("monitor.diskFree", { size: formatMetricBytes(tel.diskFreeBytes) })
+          : t("monitor.statFreeSpace"),
       progressPercent: diskProgressPercent.value,
       progressColor: "var(--co-rm-disk)",
       seriesLabel:
-        !t.online || t.hasDiskTotal
-          ? "磁盘占用 (%)"
-          : "读写吞吐 (MB/s)",
-      secondaryLabel: hasDiskIoActivity.value ? "I/O 吞吐" : "",
+        !tel.online || tel.hasDiskTotal
+          ? t("monitor.diskSeriesUsage")
+          : t("monitor.diskSeriesIo"),
+      secondaryLabel: hasDiskIoActivity.value ? t("monitor.diskIoLegend") : "",
       scaleTop: diskLivePercentLabel.value,
-      showArea: t.online,
+      showArea: tel.online,
       primaryChart: diskRowChart.value,
       secondaryChart: diskIoRowChart.value,
       stats: diskStats,
       driveBadge: effectiveDriveConnected.value
         ? effectiveDriveFreeBytes.value !== null &&
           effectiveDriveFreeBytes.value > 0
-          ? `云盘可用 ${formatMetricBytes(effectiveDriveFreeBytes.value)}`
-          : "云盘已挂载"
+          ? t("monitor.driveFree", { size: formatMetricBytes(effectiveDriveFreeBytes.value) })
+          : t("monitor.driveMounted")
         : "",
     },
     {
       key: "cpu",
-      title: "处理器 (CPU)",
+      title: t("monitor.cpuTitle"),
       subtitle: cpuSubtitle.value,
       icon: PhCpu,
-      heroValue: !t.online
+      heroValue: !tel.online
         ? isConnecting.value
           ? "--"
           : "0.0%"
-        : t.cpuPercent !== null
-          ? `${t.cpuPercent.toFixed(1)}%`
+        : tel.cpuPercent !== null
+          ? `${tel.cpuPercent.toFixed(1)}%`
           : "--",
-      heroSub: t.online
-        ? t.cpuCores
-          ? `${t.cpuCores} vCPU`
+      heroSub: tel.online
+        ? tel.cpuCores
+          ? `${tel.cpuCores} vCPU`
           : "Colab vCPU"
         : "-- vCPU",
       progressPercent: cpuProgressPercent.value,
       progressColor: "var(--co-rm-cpu)",
-      seriesLabel: "处理器负载 (%)",
+      seriesLabel: t("monitor.cpuSeries"),
       secondaryLabel: "",
       scaleTop: cpuLivePercentLabel.value,
-      showArea: t.online && t.cpuPercent !== null,
+      showArea: tel.online && tel.cpuPercent !== null,
       primaryChart: cpuRowChart.value,
       secondaryChart: null,
       stats: cpuStats,
@@ -856,18 +894,30 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 <template>
   <ACard
     class="co-monitor"
-    :class="{ 'is-offline': !telemetry.online, 'is-connecting': isConnecting }"
+    :class="{
+      'is-offline': !telemetry.online,
+      'is-connecting': isConnecting || monitorSk.connecting,
+      'is-skeleton': monitorSk.panels,
+    }"
     :bordered="true"
     size="small"
-    aria-label="远端设备资源监视器"
+    :aria-label="t('monitor.sectionAria')"
+    :aria-busy="monitorSk.panels || undefined"
   >
     <!-- Monitor Top Header -->
     <template #title>
       <div class="co-rm-header-title">
         <div class="co-rm-heading-row">
           <div class="co-rm-heading-primary">
-            <h3>实时硬件监控</h3>
+            <h3>{{ t("monitor.title") }}</h3>
+            <ColabOneSkeleton
+              v-if="monitorSk.initial"
+              variant="pill"
+              :width="88"
+              :height="24"
+            />
             <ABadge
+              v-else
               :status="headerBadgeStatus"
               :text="headerBadgeText"
               class="co-rm-live-badge"
@@ -880,7 +930,17 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               }"
             />
           </div>
-          <div v-if="telemetry.online" class="co-rm-hw-pills">
+          <div
+            v-if="monitorSk.headerPills"
+            class="co-rm-hw-pills co-rm-hw-pills-sk"
+            role="status"
+          >
+            <ColabOneSkeleton variant="pill" :width="118" :height="24" tone="accent" :delay="0" />
+            <ColabOneSkeleton variant="pill" :width="56" :height="24" :delay="80" />
+            <ColabOneSkeleton variant="pill" :width="74" :height="24" :delay="160" />
+            <span class="co-sr-only">{{ offlineSubtitle }}</span>
+          </div>
+          <div v-else-if="telemetry.online" class="co-rm-hw-pills co-sk-reveal">
             <ATag
               v-if="activeGpuDisplayName"
               :bordered="false"
@@ -889,9 +949,9 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               <PhGraphicsCard :size="12" aria-hidden="true" />
               <span>{{ activeGpuDisplayName }}</span>
             </ATag>
-            <ATooltip
+            <ColabOneTooltip
               v-if="telemetry.gpuTempC !== null"
-              title="GPU 核心温度"
+              :title="t('monitor.gpuTempTooltip')"
               placement="top"
             >
               <ATag
@@ -908,10 +968,10 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                 <PhThermometer :size="12" aria-hidden="true" />
                 <span class="co-rm-mono">{{ Math.round(telemetry.gpuTempC) }}°C</span>
               </ATag>
-            </ATooltip>
-            <ATooltip
+            </ColabOneTooltip>
+            <ColabOneTooltip
               v-if="telemetry.gpuPowerW !== null"
-              title="GPU 实时功耗"
+              :title="t('monitor.gpuPowerTooltip')"
               placement="top"
             >
               <ATag :bordered="false" class="co-rm-hw-tag co-rm-hw-power">
@@ -923,9 +983,16 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                     : `${Math.round(telemetry.gpuPowerW)} W`
                 }}</span>
               </ATag>
-            </ATooltip>
+            </ColabOneTooltip>
           </div>
-          <span v-if="!telemetry.online" class="co-rm-header-sub">
+          <ColabOneSkeleton
+            v-if="monitorSk.initial"
+            variant="text"
+            :width="180"
+            :height="13"
+            :delay="120"
+          />
+          <span v-else-if="!telemetry.online" class="co-rm-header-sub">
             {{ offlineSubtitle }}
           </span>
           <span
@@ -945,7 +1012,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             <template #icon>
               <PhArrowsClockwise :size="13" />
             </template>
-            重试
+            {{ t("common.retry") }}
           </AButton>
         </div>
       </div>
@@ -957,7 +1024,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           v-if="monitorOptionList.length > 0"
           size="small"
           class="co-rm-instance-select"
-          aria-label="选择要监控的 GPU 实例"
+          :aria-label="t('monitor.selectTargetAria')"
           :value="monitorEndpoint || undefined"
           :disabled="Boolean(monitorBusy || isIpcPaused)"
           :dropdown-match-select-width="false"
@@ -984,11 +1051,11 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                 {{
                   opt.managed
                     ? opt.active
-                      ? "本机当前"
-                      : "本机"
+                      ? t("monitor.sourceLocalCurrent")
+                      : t("monitor.sourceLocal")
                     : opt.source === "remote_colabone"
-                      ? "远端 ColabOne"
-                      : "远端只读"
+                      ? t("monitor.sourceRemoteColabOne")
+                      : t("monitor.sourceRemoteReadonly")
                 }}
               </span>
               <span class="co-rm-opt-accel">{{
@@ -1006,12 +1073,12 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           </ASelectOption>
         </ASelect>
 
-        <ATooltip
+        <ColabOneTooltip
           v-if="isRemoteReadonly && monitorOptionList.length > 0"
           :title="
             isPaused
-              ? '恢复对该远端实例的只读硬件采样'
-              : '暂停对该远端外部实例的只读采样，避免影响其空闲状态'
+              ? t('monitor.resumeTooltip')
+              : t('monitor.pauseTooltip')
           "
           placement="top"
         >
@@ -1020,27 +1087,27 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             class="co-rm-pause-btn"
             :class="{ 'is-paused': isPaused }"
             :disabled="Boolean(monitorBusy || isIpcPaused)"
-            :aria-label="isPaused ? '恢复远端观测' : '暂停远端观测'"
+            :aria-label="isPaused ? t('monitor.resumeAria') : t('monitor.pauseAria')"
             @click="emit('toggle-pause', !isPaused)"
           >
             <template #icon>
               <PhPlay v-if="isPaused" :size="12" weight="fill" />
               <PhPause v-else :size="12" weight="fill" />
             </template>
-            <span>{{ isPaused ? "恢复观测" : "暂停观测" }}</span>
+            <span>{{ isPaused ? t("monitor.resumeBtn") : t("monitor.pauseBtn") }}</span>
           </AButton>
-        </ATooltip>
+        </ColabOneTooltip>
 
         <ASegmented
           :value="layout"
           :options="layoutOptions"
           size="small"
           class="co-rm-layout-segmented"
-          aria-label="监控图表布局切换"
+          :aria-label="t('monitor.layoutSwitchAria')"
           @change="onLayoutChange"
         >
           <template #label="{ value, payload }">
-            <ATooltip :title="payload.label" placement="top">
+            <ColabOneTooltip :title="payload.label" placement="top">
               <span class="co-rm-seg-label">
                 <PhSquaresFour
                   v-if="value === 'grid'"
@@ -1050,7 +1117,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                 <PhRows v-else :size="15" aria-hidden="true" />
                 <span class="co-rm-sr-only">{{ payload.label }}</span>
               </span>
-            </ATooltip>
+            </ColabOneTooltip>
           </template>
         </ASegmented>
       </div>
@@ -1066,7 +1133,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
         class="co-rm-card co-metric-gpu"
         role="button"
         tabindex="0"
-        aria-label="查看 GPU 显存详情图表"
+        :aria-label="t('monitor.gpuDetailAria')"
         @click="openMetricDetail('gpu')"
         @keydown.enter.prevent="openMetricDetail('gpu')"
         @keydown.space.prevent="openMetricDetail('gpu')"
@@ -1077,11 +1144,26 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               <PhGraphicsCard :size="16" />
             </span>
             <div class="co-rm-card-titles">
-              <h4>GPU 显存</h4>
-              <small>{{ gpuSubtitle }}</small>
+              <h4>{{ t("monitor.gpuTitle") }}</h4>
+              <ColabOneSkeleton
+                v-if="monitorSk.initial"
+                variant="text"
+                :width="92"
+                :height="12"
+                class="co-rm-sub-sk"
+              />
+              <small v-else>{{ gpuSubtitle }}</small>
             </div>
           </div>
-          <strong class="co-rm-live-val co-rm-mono">
+          <ColabOneSkeleton
+            v-if="monitorSk.panels"
+            variant="metric"
+            :width="44"
+            :height="19"
+            tone="accent"
+            :delay="0"
+          />
+          <strong v-else class="co-rm-live-val co-rm-mono co-sk-reveal">
             {{
               telemetry.online
                 ? isCpuOnlyOnline
@@ -1094,7 +1176,16 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           </strong>
         </div>
 
+        <ColabOneSkeleton
+          v-if="monitorSk.panels"
+          variant="bar"
+          width="100%"
+          :height="6"
+          :delay="0"
+          class="co-rm-sk-progress"
+        />
         <AProgress
+          v-else
           :percent="gpuProgressPercent"
           :show-info="false"
           size="small"
@@ -1148,46 +1239,71 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               :y2="GRID_H"
               class="co-rm-grid-line"
             />
-            <path
-              v-if="telemetry.online"
-              :d="gpuGridChart.areaPath"
-              :fill="`url(#${uid}-grid-gpu)`"
-            />
-            <path
-              v-if="telemetry.online && telemetry.gpuUtilPercent !== null"
-              :d="gpuUtilGridChart.linePath"
-              class="co-rm-secondary-stroke"
-            />
-            <path :d="gpuGridChart.linePath" class="co-rm-primary-stroke" />
+            <template v-if="monitorSk.panels">
+              <path
+                :d="`${SK_GRID_WAVE_PATHS.gpu} L ${GRID_W} ${GRID_H} L 0 ${GRID_H} Z`"
+                :fill="`url(#${uid}-grid-gpu)`"
+                class="co-rm-sk-area"
+              />
+              <path :d="SK_GRID_WAVE_PATHS.gpu" class="co-rm-sk-wave" />
+            </template>
+            <template v-else>
+              <path
+                v-if="telemetry.online"
+                :d="gpuGridChart.areaPath"
+                :fill="`url(#${uid}-grid-gpu)`"
+              />
+              <path
+                v-if="telemetry.online && telemetry.gpuUtilPercent !== null"
+                :d="gpuUtilGridChart.linePath"
+                class="co-rm-secondary-stroke"
+              />
+              <path :d="gpuGridChart.linePath" class="co-rm-primary-stroke" />
+            </template>
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">{{ gpuLivePercentLabel }}</span>
+          <span v-if="monitorSk.panels" class="co-rm-scale-cap co-rm-scale-cap-sk">
+            <ColabOneSkeleton variant="text" :width="30" :height="11" :delay="40" />
+          </span>
+          <span v-else class="co-rm-scale-cap co-rm-mono">{{ gpuLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
-          <span>60 秒前</span>
-          <span>现在</span>
+          <span>{{ t("monitor.axis60sAgo") }}</span>
+          <span>{{ t("monitor.axisNow") }}</span>
         </div>
 
         <div class="co-rm-card-footer">
-          <span class="co-rm-kv">
-            <em>已用 / 总量</em>
-            <b class="co-rm-mono">{{
-              telemetry.online && telemetry.vramTotalBytes > 0
-                ? formatBytePair(
-                    telemetry.vramUsedBytes,
-                    telemetry.vramTotalBytes,
-                  )
-                : "-- / --"
-            }}</b>
-          </span>
-          <span v-if="telemetry.gpuUtilPercent !== null" class="co-rm-kv">
-            <em>核心负载</em>
-            <b class="co-rm-mono">{{ Math.round(telemetry.gpuUtilPercent) }}%</b>
-          </span>
-          <span v-if="telemetry.gpuTempC !== null" class="co-rm-kv">
-            <em>温度</em>
-            <b class="co-rm-mono">{{ Math.round(telemetry.gpuTempC) }}°C</b>
-          </span>
+          <template v-if="monitorSk.panels">
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statUsedTotalShort") }}</em>
+              <ColabOneSkeleton variant="text" :width="68" :height="12" :delay="40" inline />
+            </span>
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statCoreLoad") }}</em>
+              <ColabOneSkeleton variant="text" :width="28" :height="12" :delay="100" inline />
+            </span>
+          </template>
+          <template v-else>
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statUsedTotalShort") }}</em>
+              <b class="co-rm-mono">{{
+                telemetry.online && telemetry.vramTotalBytes > 0
+                  ? formatBytePair(
+                      telemetry.vramUsedBytes,
+                      telemetry.vramTotalBytes,
+                    )
+                  : "-- / --"
+              }}</b>
+            </span>
+            <span v-if="telemetry.gpuUtilPercent !== null" class="co-rm-kv">
+              <em>{{ t("monitor.statCoreLoad") }}</em>
+              <b class="co-rm-mono">{{ Math.round(telemetry.gpuUtilPercent) }}%</b>
+            </span>
+            <span v-if="telemetry.gpuTempC !== null" class="co-rm-kv">
+              <em>{{ t("monitor.statTemp") }}</em>
+              <b class="co-rm-mono">{{ Math.round(telemetry.gpuTempC) }}°C</b>
+            </span>
+          </template>
         </div>
       </ACard>
 
@@ -1199,7 +1315,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
         class="co-rm-card co-metric-ram"
         role="button"
         tabindex="0"
-        aria-label="查看系统内存详情图表"
+        :aria-label="t('monitor.ramDetailAria')"
         @click="openMetricDetail('ram')"
         @keydown.enter.prevent="openMetricDetail('ram')"
         @keydown.space.prevent="openMetricDetail('ram')"
@@ -1210,17 +1326,32 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               <PhMemory :size="16" />
             </span>
             <div class="co-rm-card-titles">
-              <h4>系统内存 (RAM)</h4>
-              <small>{{
+              <h4>{{ t("monitor.ramTitle") }}</h4>
+              <ColabOneSkeleton
+                v-if="monitorSk.initial"
+                variant="text"
+                :width="84"
+                :height="12"
+                :delay="80"
+                class="co-rm-sub-sk"
+              />
+              <small v-else>{{
                 telemetry.hasRamTelemetry
-                  ? `总计 ${formatMetricBytes(telemetry.ramTotalBytes)}`
+                  ? t("monitor.ramTotal", { size: formatMetricBytes(telemetry.ramTotalBytes) })
                   : isConnecting
-                    ? "等待远端主机上报…"
-                    : "主机物理内存"
+                    ? t("monitor.ramWaiting")
+                    : t("monitor.ramStandby")
               }}</small>
             </div>
           </div>
-          <strong class="co-rm-live-val co-rm-mono">
+          <ColabOneSkeleton
+            v-if="monitorSk.panels || monitorSk.ramPending"
+            variant="metric"
+            :width="44"
+            :height="19"
+            :delay="80"
+          />
+          <strong v-else class="co-rm-live-val co-rm-mono co-sk-reveal">
             {{
               !telemetry.online
                 ? isConnecting
@@ -1233,7 +1364,16 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           </strong>
         </div>
 
+        <ColabOneSkeleton
+          v-if="monitorSk.panels"
+          variant="bar"
+          width="100%"
+          :height="6"
+          :delay="80"
+          class="co-rm-sk-progress"
+        />
         <AProgress
+          v-else
           :percent="ramProgressPercent"
           :show-info="false"
           size="small"
@@ -1287,31 +1427,57 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               :y2="GRID_H"
               class="co-rm-grid-line"
             />
-            <path
-              v-if="telemetry.online && telemetry.hasRamTelemetry"
-              :d="ramGridChart.areaPath"
-              :fill="`url(#${uid}-grid-ram)`"
-            />
-            <path :d="ramGridChart.linePath" class="co-rm-primary-stroke" />
+            <template v-if="monitorSk.panels">
+              <path
+                :d="`${SK_GRID_WAVE_PATHS.ram} L ${GRID_W} ${GRID_H} L 0 ${GRID_H} Z`"
+                :fill="`url(#${uid}-grid-ram)`"
+                class="co-rm-sk-area"
+              />
+              <path :d="SK_GRID_WAVE_PATHS.ram" class="co-rm-sk-wave" />
+            </template>
+            <template v-else>
+              <path
+                v-if="telemetry.online && telemetry.hasRamTelemetry"
+                :d="ramGridChart.areaPath"
+                :fill="`url(#${uid}-grid-ram)`"
+              />
+              <path :d="ramGridChart.linePath" class="co-rm-primary-stroke" />
+            </template>
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">{{ ramLivePercentLabel }}</span>
+          <span
+            v-if="monitorSk.panels || monitorSk.ramPending"
+            class="co-rm-scale-cap co-rm-scale-cap-sk"
+          >
+            <ColabOneSkeleton variant="text" :width="30" :height="11" :delay="120" />
+          </span>
+          <span v-else class="co-rm-scale-cap co-rm-mono">{{ ramLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
-          <span>60 秒前</span>
-          <span>现在</span>
+          <span>{{ t("monitor.axis60sAgo") }}</span>
+          <span>{{ t("monitor.axisNow") }}</span>
         </div>
 
         <div class="co-rm-card-footer">
-          <template v-if="telemetry.online && telemetry.hasRamTelemetry">
+          <template v-if="monitorSk.panels">
             <span class="co-rm-kv">
-              <em>使用中</em>
+              <em>{{ t("monitor.statInUse") }}</em>
+              <ColabOneSkeleton variant="text" :width="68" :height="12" :delay="120" inline />
+            </span>
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statAvailableRam") }}</em>
+              <ColabOneSkeleton variant="text" :width="42" :height="12" :delay="180" inline />
+            </span>
+          </template>
+          <template v-else-if="telemetry.online && telemetry.hasRamTelemetry">
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statInUse") }}</em>
               <b class="co-rm-mono">{{
                 formatBytePair(telemetry.ramUsedBytes, telemetry.ramTotalBytes)
               }}</b>
             </span>
             <span class="co-rm-kv">
-              <em>可用内存</em>
+              <em>{{ t("monitor.statAvailableRam") }}</em>
               <b class="co-rm-mono">{{
                 formatMetricBytes(telemetry.ramAvailableBytes)
               }}</b>
@@ -1319,17 +1485,24 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           </template>
           <span
             v-else-if="telemetry.online && !telemetry.hasRamTelemetry"
-            class="co-rm-waiting-note"
+            class="co-rm-kv"
           >
-            等待远端服务上报…
+            <template v-if="monitorSk.ramPending">
+              <em>{{ t("monitor.statInUse") }}</em>
+              <ColabOneSkeleton variant="text" :width="68" :height="12" :delay="80" inline />
+              <span class="co-sr-only">{{ t("monitor.statWaitingReport") }}</span>
+            </template>
+            <span v-else class="co-rm-waiting-note">
+              {{ t("monitor.statWaitingReport") }}
+            </span>
           </span>
           <template v-else>
             <span class="co-rm-kv">
-              <em>使用中</em>
+              <em>{{ t("monitor.statInUse") }}</em>
               <b class="co-rm-mono">-- / --</b>
             </span>
             <span class="co-rm-kv">
-              <em>可用内存</em>
+              <em>{{ t("monitor.statAvailableRam") }}</em>
               <b class="co-rm-mono">--</b>
             </span>
           </template>
@@ -1344,7 +1517,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
         class="co-rm-card co-metric-disk"
         role="button"
         tabindex="0"
-        aria-label="查看远端磁盘详情图表"
+        :aria-label="t('monitor.diskDetailAria')"
         @click="openMetricDetail('disk')"
         @keydown.enter.prevent="openMetricDetail('disk')"
         @keydown.space.prevent="openMetricDetail('disk')"
@@ -1355,20 +1528,35 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               <PhHardDrives :size="16" />
             </span>
             <div class="co-rm-card-titles">
-              <h4>远端磁盘</h4>
-              <small>{{
+              <h4>{{ t("monitor.diskTitle") }}</h4>
+              <ColabOneSkeleton
+                v-if="monitorSk.initial"
+                variant="text"
+                :width="88"
+                :height="12"
+                :delay="160"
+                class="co-rm-sub-sk"
+              />
+              <small v-else>{{
                 telemetry.online && telemetry.hasDiskTotal
-                  ? `已用 ${Math.round(telemetry.diskPercent)}%`
+                  ? t("monitor.diskUsedPct", { pct: Math.round(telemetry.diskPercent) })
                   : isConnecting
-                    ? "等待远端工作盘上报…"
-                    : "工作盘容量与吞吐"
+                    ? t("monitor.diskWaiting")
+                    : t("monitor.diskStandby")
               }}</small>
             </div>
           </div>
-          <strong class="co-rm-live-val co-rm-disk-val co-rm-mono">
+          <ColabOneSkeleton
+            v-if="monitorSk.panels"
+            variant="metric"
+            :width="56"
+            :height="19"
+            :delay="160"
+          />
+          <strong v-else class="co-rm-live-val co-rm-disk-val co-rm-mono co-sk-reveal">
             {{
               telemetry.online && telemetry.diskFreeBytes > 0
-                ? `剩余 ${formatMetricBytes(telemetry.diskFreeBytes)}`
+                ? t("monitor.diskFree", { size: formatMetricBytes(telemetry.diskFreeBytes) })
                 : telemetry.online && telemetry.hasDiskTotal
                   ? `${Math.round(telemetry.diskPercent)}%`
                   : isConnecting
@@ -1378,7 +1566,16 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           </strong>
         </div>
 
+        <ColabOneSkeleton
+          v-if="monitorSk.panels"
+          variant="bar"
+          width="100%"
+          :height="6"
+          :delay="160"
+          class="co-rm-sk-progress"
+        />
         <AProgress
+          v-else
           :percent="diskProgressPercent"
           :show-info="false"
           size="small"
@@ -1432,64 +1629,89 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               :y2="GRID_H"
               class="co-rm-grid-line"
             />
-            <path
-              v-if="telemetry.online"
-              :d="diskGridChart.areaPath"
-              :fill="`url(#${uid}-grid-disk)`"
-            />
-            <path
-              v-if="hasDiskIoActivity"
-              :d="diskIoGridChart.linePath"
-              class="co-rm-secondary-stroke"
-            />
-            <path :d="diskGridChart.linePath" class="co-rm-primary-stroke" />
+            <template v-if="monitorSk.panels">
+              <path
+                :d="`${SK_GRID_WAVE_PATHS.disk} L ${GRID_W} ${GRID_H} L 0 ${GRID_H} Z`"
+                :fill="`url(#${uid}-grid-disk)`"
+                class="co-rm-sk-area"
+              />
+              <path :d="SK_GRID_WAVE_PATHS.disk" class="co-rm-sk-wave" />
+            </template>
+            <template v-else>
+              <path
+                v-if="telemetry.online"
+                :d="diskGridChart.areaPath"
+                :fill="`url(#${uid}-grid-disk)`"
+              />
+              <path
+                v-if="hasDiskIoActivity"
+                :d="diskIoGridChart.linePath"
+                class="co-rm-secondary-stroke"
+              />
+              <path :d="diskGridChart.linePath" class="co-rm-primary-stroke" />
+            </template>
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">{{ diskLivePercentLabel }}</span>
+          <span v-if="monitorSk.panels" class="co-rm-scale-cap co-rm-scale-cap-sk">
+            <ColabOneSkeleton variant="text" :width="30" :height="11" :delay="200" />
+          </span>
+          <span v-else class="co-rm-scale-cap co-rm-mono">{{ diskLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
-          <span>60 秒前</span>
-          <span>现在</span>
+          <span>{{ t("monitor.axis60sAgo") }}</span>
+          <span>{{ t("monitor.axisNow") }}</span>
         </div>
 
         <div class="co-rm-card-footer">
-          <span v-if="telemetry.online && telemetry.hasDiskTotal" class="co-rm-kv">
-            <em>已用 / 总容量</em>
-            <b class="co-rm-mono">{{
-              formatBytePair(telemetry.diskUsedBytes, telemetry.diskTotalBytes)
-            }}</b>
-          </span>
-          <span
-            v-else-if="telemetry.online && telemetry.diskFreeBytes > 0"
-            class="co-rm-kv"
-          >
-            <em>可用空间</em>
-            <b class="co-rm-mono">{{ formatMetricBytes(telemetry.diskFreeBytes) }}</b>
-          </span>
-          <span v-else class="co-rm-kv">
-            <em>已用 / 总容量</em>
-            <b class="co-rm-mono">-- / --</b>
-          </span>
-
-          <span class="co-rm-kv">
-            <em class="co-rm-mono"
-              >读取 {{ formatRateBps(telemetry.diskReadBps) }} · 写入
-              {{ formatRateBps(telemetry.diskWriteBps) }}</em
+          <template v-if="monitorSk.panels">
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statUsedTotal") }}</em>
+              <ColabOneSkeleton variant="text" :width="72" :height="12" :delay="200" inline />
+            </span>
+            <ColabOneSkeleton variant="text" :width="84" :height="12" :delay="240" inline />
+          </template>
+          <template v-else>
+            <span v-if="telemetry.online && telemetry.hasDiskTotal" class="co-rm-kv">
+              <em>{{ t("monitor.statUsedTotal") }}</em>
+              <b class="co-rm-mono">{{
+                formatBytePair(telemetry.diskUsedBytes, telemetry.diskTotalBytes)
+              }}</b>
+            </span>
+            <span
+              v-else-if="telemetry.online && telemetry.diskFreeBytes > 0"
+              class="co-rm-kv"
             >
-          </span>
+              <em>{{ t("monitor.statFreeSpace") }}</em>
+              <b class="co-rm-mono">{{ formatMetricBytes(telemetry.diskFreeBytes) }}</b>
+            </span>
+            <span v-else class="co-rm-kv">
+              <em>{{ t("monitor.statUsedTotal") }}</em>
+              <b class="co-rm-mono">-- / --</b>
+            </span>
 
-          <ATag
-            v-if="effectiveDriveConnected"
-            :bordered="false"
-            class="co-rm-drive-badge co-rm-mono"
-          >
-            云盘可用
-            {{
-              effectiveDriveFreeBytes !== null && effectiveDriveFreeBytes > 0
-                ? formatMetricBytes(effectiveDriveFreeBytes)
-                : "已挂载"
-            }}
-          </ATag>
+            <span class="co-rm-kv">
+              <em class="co-rm-mono">{{
+                t("monitor.statReadWriteSummary", {
+                  read: formatRateBps(telemetry.diskReadBps),
+                  write: formatRateBps(telemetry.diskWriteBps),
+                })
+              }}</em>
+            </span>
+
+            <ATag
+              v-if="effectiveDriveConnected"
+              :bordered="false"
+              class="co-rm-drive-badge co-rm-mono"
+            >
+              {{
+                effectiveDriveFreeBytes !== null && effectiveDriveFreeBytes > 0
+                  ? t("monitor.driveFree", {
+                      size: formatMetricBytes(effectiveDriveFreeBytes),
+                    })
+                  : `${t("monitor.driveFreeLabel")} ${t("monitor.driveMountedShort")}`
+              }}
+            </ATag>
+          </template>
         </div>
       </ACard>
 
@@ -1501,7 +1723,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
         class="co-rm-card co-metric-cpu"
         role="button"
         tabindex="0"
-        aria-label="查看处理器详情图表"
+        :aria-label="t('monitor.cpuDetailAria')"
         @click="openMetricDetail('cpu')"
         @keydown.enter.prevent="openMetricDetail('cpu')"
         @keydown.space.prevent="openMetricDetail('cpu')"
@@ -1512,11 +1734,26 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               <PhCpu :size="16" />
             </span>
             <div class="co-rm-card-titles">
-              <h4>处理器 (CPU)</h4>
-              <small>{{ cpuSubtitle }}</small>
+              <h4>{{ t("monitor.cpuTitle") }}</h4>
+              <ColabOneSkeleton
+                v-if="monitorSk.initial"
+                variant="text"
+                :width="82"
+                :height="12"
+                :delay="240"
+                class="co-rm-sub-sk"
+              />
+              <small v-else>{{ cpuSubtitle }}</small>
             </div>
           </div>
-          <strong class="co-rm-live-val co-rm-mono">
+          <ColabOneSkeleton
+            v-if="monitorSk.panels || monitorSk.cpuPending"
+            variant="metric"
+            :width="44"
+            :height="19"
+            :delay="240"
+          />
+          <strong v-else class="co-rm-live-val co-rm-mono co-sk-reveal">
             {{
               !telemetry.online
                 ? isConnecting
@@ -1529,7 +1766,16 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           </strong>
         </div>
 
+        <ColabOneSkeleton
+          v-if="monitorSk.panels"
+          variant="bar"
+          width="100%"
+          :height="6"
+          :delay="240"
+          class="co-rm-sk-progress"
+        />
         <AProgress
+          v-else
           :percent="cpuProgressPercent"
           :show-info="false"
           size="small"
@@ -1583,29 +1829,55 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               :y2="GRID_H"
               class="co-rm-grid-line"
             />
-            <path
-              v-if="telemetry.online && telemetry.cpuPercent !== null"
-              :d="cpuGridChart.areaPath"
-              :fill="`url(#${uid}-grid-cpu)`"
-            />
-            <path :d="cpuGridChart.linePath" class="co-rm-primary-stroke" />
+            <template v-if="monitorSk.panels">
+              <path
+                :d="`${SK_GRID_WAVE_PATHS.cpu} L ${GRID_W} ${GRID_H} L 0 ${GRID_H} Z`"
+                :fill="`url(#${uid}-grid-cpu)`"
+                class="co-rm-sk-area"
+              />
+              <path :d="SK_GRID_WAVE_PATHS.cpu" class="co-rm-sk-wave" />
+            </template>
+            <template v-else>
+              <path
+                v-if="telemetry.online && telemetry.cpuPercent !== null"
+                :d="cpuGridChart.areaPath"
+                :fill="`url(#${uid}-grid-cpu)`"
+              />
+              <path :d="cpuGridChart.linePath" class="co-rm-primary-stroke" />
+            </template>
           </svg>
-          <span class="co-rm-scale-cap co-rm-mono">{{ cpuLivePercentLabel }}</span>
+          <span
+            v-if="monitorSk.panels || monitorSk.cpuPending"
+            class="co-rm-scale-cap co-rm-scale-cap-sk"
+          >
+            <ColabOneSkeleton variant="text" :width="30" :height="11" :delay="280" />
+          </span>
+          <span v-else class="co-rm-scale-cap co-rm-mono">{{ cpuLivePercentLabel }}</span>
         </div>
 
         <div class="co-rm-axis-row co-rm-mono" aria-hidden="true">
-          <span>60 秒前</span>
-          <span>现在</span>
+          <span>{{ t("monitor.axis60sAgo") }}</span>
+          <span>{{ t("monitor.axisNow") }}</span>
         </div>
 
         <div class="co-rm-card-footer">
-          <template v-if="telemetry.online && telemetry.cpuPercent !== null">
+          <template v-if="monitorSk.panels">
             <span class="co-rm-kv">
-              <em>实时利用率</em>
+              <em>{{ t("monitor.statLiveUtil") }}</em>
+              <ColabOneSkeleton variant="text" :width="32" :height="12" :delay="260" inline />
+            </span>
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statSpec") }}</em>
+              <ColabOneSkeleton variant="text" :width="52" :height="12" :delay="310" inline />
+            </span>
+          </template>
+          <template v-else-if="telemetry.online && telemetry.cpuPercent !== null">
+            <span class="co-rm-kv">
+              <em>{{ t("monitor.statLiveUtil") }}</em>
               <b class="co-rm-mono">{{ Math.round(telemetry.cpuPercent) }}%</b>
             </span>
             <span class="co-rm-kv">
-              <em>规格</em>
+              <em>{{ t("monitor.statSpec") }}</em>
               <b class="co-rm-mono">{{
                 telemetry.cpuCores ? `${telemetry.cpuCores} vCPU` : "Colab vCPU"
               }}</b>
@@ -1613,17 +1885,24 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           </template>
           <span
             v-else-if="telemetry.online && telemetry.cpuPercent === null"
-            class="co-rm-waiting-note"
+            class="co-rm-kv"
           >
-            等待远端服务上报…
+            <template v-if="monitorSk.cpuPending">
+              <em>{{ t("monitor.statLiveUtil") }}</em>
+              <ColabOneSkeleton variant="text" :width="34" :height="12" :delay="120" inline />
+              <span class="co-sr-only">{{ t("monitor.statWaitingReport") }}</span>
+            </template>
+            <span v-else class="co-rm-waiting-note">
+              {{ t("monitor.statWaitingReport") }}
+            </span>
           </span>
           <template v-else>
             <span class="co-rm-kv">
-              <em>实时利用率</em>
+              <em>{{ t("monitor.statLiveUtil") }}</em>
               <b class="co-rm-mono">{{ isConnecting ? "--" : "0%" }}</b>
             </span>
             <span class="co-rm-kv">
-              <em>规格</em>
+              <em>{{ t("monitor.statSpec") }}</em>
               <b class="co-rm-mono">-- vCPU</b>
             </span>
           </template>
@@ -1632,9 +1911,9 @@ const stackedRows = computed<StackedRowItem[]>(() => {
     </div>
 
     <!-- MODE 2: 4-Row Stacked Simultaneous Wide Charts -->
-    <div v-else class="co-rm-rows" aria-label="四项资源实时宽幅曲线">
+    <div v-else class="co-rm-rows" :aria-label="t('monitor.rowsAria')">
       <section
-        v-for="row in stackedRows"
+        v-for="(row, rowIdx) in stackedRows"
         :id="`${uid}-row-${row.key}`"
         :key="row.key"
         class="co-rm-row"
@@ -1642,7 +1921,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
           `co-metric-${row.key}`,
           { 'is-focused': highlightedMetric === row.key },
         ]"
-        :aria-label="`${row.title}实时监控`"
+        :aria-label="t('monitor.rowMonitorAria', { title: row.title })"
       >
         <!-- Left Compact Summary Rail -->
         <div class="co-rm-row-rail">
@@ -1653,24 +1932,60 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             <div class="co-rm-row-rail-info">
               <div class="co-rm-row-rail-line">
                 <h4 class="co-rm-row-title">{{ row.title }}</h4>
+                <ColabOneSkeleton
+                  v-if="
+                    monitorSk.panels ||
+                    (row.key === 'ram' && monitorSk.ramPending) ||
+                    (row.key === 'cpu' && monitorSk.cpuPending)
+                  "
+                  variant="metric"
+                  :width="46"
+                  :height="17"
+                  :tone="row.key === 'gpu' ? 'accent' : 'default'"
+                  :delay="rowIdx * 80"
+                />
                 <strong
-                  class="co-rm-row-hero co-rm-mono"
+                  v-else
+                  class="co-rm-row-hero co-rm-mono co-sk-reveal"
                   :class="{ 'is-compact': row.compactHero }"
                 >
                   {{ row.heroValue }}
                 </strong>
               </div>
               <div class="co-rm-row-rail-subline">
-                <small class="co-rm-row-subtitle" :title="row.subtitle">{{
+                <ColabOneSkeleton
+                  v-if="monitorSk.initial"
+                  variant="text"
+                  :width="76"
+                  :height="11"
+                  :delay="rowIdx * 80"
+                />
+                <small v-else class="co-rm-row-subtitle" :title="row.subtitle">{{
                   row.subtitle
                 }}</small>
-                <span class="co-rm-row-hero-sub co-rm-mono" :title="row.heroSub">
+                <ColabOneSkeleton
+                  v-if="monitorSk.panels"
+                  variant="text"
+                  :width="62"
+                  :height="11"
+                  :delay="rowIdx * 80 + 40"
+                />
+                <span v-else class="co-rm-row-hero-sub co-rm-mono" :title="row.heroSub">
                   {{ row.heroSub }}
                 </span>
               </div>
             </div>
           </div>
+          <ColabOneSkeleton
+            v-if="monitorSk.panels"
+            variant="bar"
+            width="100%"
+            :height="6"
+            :delay="rowIdx * 80"
+            class="co-rm-sk-progress co-rm-row-progress"
+          />
           <AProgress
+            v-else
             :percent="row.progressPercent"
             :show-info="false"
             size="small"
@@ -1689,19 +2004,27 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                 {{ row.secondaryLabel }}
               </span>
             </div>
-            <div class="co-rm-row-stats" aria-label="硬件实时读数">
+            <div class="co-rm-row-stats" :aria-label="t('monitor.rowStatsAria')">
               <span
-                v-for="stat in row.stats"
+                v-for="(stat, sIdx) in row.stats"
                 :key="`${row.key}-${stat.label}`"
                 class="co-rm-kv co-rm-row-stat"
               >
                 <em>{{ stat.label }}</em>
-                <b :class="stat.muted ? 'co-rm-waiting-note' : 'co-rm-mono'">{{
+                <ColabOneSkeleton
+                  v-if="monitorSk.panels"
+                  variant="text"
+                  :width="sIdx === 0 ? 58 : 42"
+                  :height="12"
+                  :delay="rowIdx * 80 + sIdx * 50"
+                  inline
+                />
+                <b v-else :class="stat.muted ? 'co-rm-waiting-note' : 'co-rm-mono'">{{
                   stat.value
                 }}</b>
               </span>
               <ATag
-                v-if="row.driveBadge"
+                v-if="!monitorSk.panels && row.driveBadge"
                 :bordered="false"
                 class="co-rm-drive-badge co-rm-mono"
               >
@@ -1716,7 +2039,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               :viewBox="`0 0 ${ROW_W} ${ROW_H}`"
               preserveAspectRatio="none"
               role="img"
-              :aria-label="`${row.title} 60 秒实时曲线`"
+              :aria-label="t('monitor.rowChartAria', { title: row.title })"
             >
               <defs>
                 <linearGradient
@@ -1756,31 +2079,51 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                 :y2="ROW_H"
                 class="co-rm-grid-line"
               />
-              <path
-                v-if="row.showArea"
-                :d="row.primaryChart.areaPath"
-                :fill="`url(#${uid}-row-${row.key})`"
-              />
-              <path
-                v-if="row.secondaryChart"
-                :d="row.secondaryChart.linePath"
-                class="co-rm-secondary-stroke"
-              />
-              <path :d="row.primaryChart.linePath" class="co-rm-primary-stroke" />
+              <template v-if="monitorSk.panels">
+                <path
+                  :d="`${SK_ROW_WAVE_PATHS[row.key]} L ${ROW_W} ${ROW_H} L 0 ${ROW_H} Z`"
+                  :fill="`url(#${uid}-row-${row.key})`"
+                  class="co-rm-sk-area"
+                />
+                <path :d="SK_ROW_WAVE_PATHS[row.key]" class="co-rm-sk-wave" />
+              </template>
+              <template v-else>
+                <path
+                  v-if="row.showArea"
+                  :d="row.primaryChart.areaPath"
+                  :fill="`url(#${uid}-row-${row.key})`"
+                />
+                <path
+                  v-if="row.secondaryChart"
+                  :d="row.secondaryChart.linePath"
+                  class="co-rm-secondary-stroke"
+                />
+                <path :d="row.primaryChart.linePath" class="co-rm-primary-stroke" />
+              </template>
             </svg>
-            <span class="co-rm-scale-cap co-rm-mono">{{ row.scaleTop }}</span>
+            <span
+              v-if="
+                monitorSk.panels ||
+                (row.key === 'ram' && monitorSk.ramPending) ||
+                (row.key === 'cpu' && monitorSk.cpuPending)
+              "
+              class="co-rm-scale-cap co-rm-scale-cap-sk"
+            >
+              <ColabOneSkeleton variant="text" :width="30" :height="11" :delay="rowIdx * 80 + 40" />
+            </span>
+            <span v-else class="co-rm-scale-cap co-rm-mono">{{ row.scaleTop }}</span>
           </div>
         </div>
       </section>
 
       <!-- Shared Synchronized 60s Time Axis -->
       <div class="co-rm-rows-axis-bar" aria-hidden="true">
-        <span class="co-rm-rows-axis-caption">60 秒同步采样时间轴</span>
+        <span class="co-rm-rows-axis-caption">{{ t("monitor.axisCaption") }}</span>
         <div class="co-rm-rows-axis-ticks co-rm-mono">
-          <span>60 秒前</span>
-          <span>40 秒前</span>
-          <span>20 秒前</span>
-          <span>现在</span>
+          <span>{{ t("monitor.axis60sAgo") }}</span>
+          <span>{{ t("monitor.axis40sAgo") }}</span>
+          <span>{{ t("monitor.axis20sAgo") }}</span>
+          <span>{{ t("monitor.axisNow") }}</span>
         </div>
       </div>
     </div>
@@ -2253,30 +2596,62 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   border-color: var(--co-border);
 }
 
-.is-connecting .co-rm-plot-frame::after {
+.is-connecting .co-rm-plot-frame::after,
+.is-skeleton .co-rm-plot-frame::after {
   content: "";
   position: absolute;
   inset: 0;
   background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(22, 119, 255, 0.1) 50%,
-    transparent 100%
+    105deg,
+    transparent 16%,
+    var(--co-skeleton-sheen) 46%,
+    var(--co-metric-tint) 56%,
+    transparent 86%
   );
-  transform: translateX(-100%);
-  animation: rm-shimmer 1.8s ease-in-out infinite;
+  transform: translate3d(-130%, 0, 0);
+  animation: co-skeleton-sweep 1.85s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   pointer-events: none;
+  will-change: transform;
 }
 
-@keyframes rm-shimmer {
-  100% {
-    transform: translateX(100%);
-  }
+.co-rm-sub-sk {
+  margin-top: 3px;
+}
+
+.co-rm-sk-progress {
+  margin: 0 0 6px;
+}
+
+.co-rm-sk-wave {
+  fill: none;
+  stroke: var(--co-metric-accent);
+  stroke-width: 1.5;
+  stroke-opacity: 0.26;
+  stroke-dasharray: 4 3;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.co-rm-sk-area {
+  opacity: 0.36;
+}
+
+.co-rm-scale-cap-sk {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 4px;
+}
+
+.is-skeleton .co-rm-plot-frame {
+  border-color: var(--co-metric-border);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .is-connecting .co-rm-plot-frame::after {
+  .is-connecting .co-rm-plot-frame::after,
+  .is-skeleton .co-rm-plot-frame::after {
     animation: none;
+    transform: none;
+    opacity: 0;
   }
 }
 
@@ -2766,12 +3141,14 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   --co-rm-offline-stroke: rgba(160, 160, 170, 0.32);
 }
 
-:root[data-theme="dark"] .co-monitor.is-connecting .co-rm-plot-frame::after {
+:root[data-theme="dark"] .co-monitor.is-connecting .co-rm-plot-frame::after,
+:root[data-theme="dark"] .co-monitor.is-skeleton .co-rm-plot-frame::after {
   background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(60, 137, 232, 0.14) 50%,
-    transparent 100%
+    105deg,
+    transparent 16%,
+    rgba(255, 255, 255, 0.11) 46%,
+    var(--co-metric-tint) 56%,
+    transparent 86%
   );
 }
 

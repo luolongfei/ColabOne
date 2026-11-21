@@ -51,10 +51,10 @@ type colabOneMediaChunk struct {
 // comes from the native dialog, never a path supplied by remote workflow output.
 func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (string, error) {
 	if !workflowOutputIDPattern.MatchString(id) {
-		return "", errors.New("输出文件编号不合法")
+		return "", errors.New(colabOneT("err.invalidOutputID"))
 	}
 	if d.bridge == nil {
-		return "", errors.New("控制进程未初始化")
+		return "", errors.New(colabOneT("err.bridgeNotInitialized"))
 	}
 	value, err := d.bridge.call(ctx, "comfyui.output.asset", map[string]any{"id": id, "offset": 0})
 	if err != nil {
@@ -66,7 +66,7 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 	}
 	ext := strings.ToLower(chunk.Extension)
 	if chunk.Size <= 0 || chunk.Size > maxWorkflowOutputSize || !allowedOutputExtensions[ext] {
-		return "", errors.New("输出文件格式或大小不合法")
+		return "", errors.New(colabOneT("err.invalidOutputMetadata"))
 	}
 	size, digest := chunk.Size, chunk.SHA256
 	path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
@@ -92,11 +92,11 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 	offset := int64(0)
 	for {
 		if chunk.Offset != offset || chunk.Size != size || chunk.SHA256 != digest {
-			return "", errors.New("输出文件传输状态发生变化")
+			return "", errors.New(colabOneT("err.outputTransferChanged"))
 		}
 		data, err := base64.StdEncoding.DecodeString(chunk.Data)
 		if err != nil || len(data) == 0 || len(data) > maxOutputChunkBytes || offset+int64(len(data)) > size {
-			return "", errors.New("输出文件传输不完整")
+			return "", errors.New(colabOneT("err.outputTransferPartial"))
 		}
 		if _, err = out.Write(data); err != nil {
 			return "", err
@@ -115,13 +115,13 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 		}
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != digest {
-		return "", errors.New("输出文件校验失败，请重试导出")
+		return "", errors.New(colabOneT("err.outputHashMismatch"))
 	}
 	if err = out.Close(); err != nil {
 		return "", err
 	}
 	if err = os.Rename(tmpPath, path); err != nil {
-		return "", fmt.Errorf("无法保存输出文件：%w", err)
+		return "", fmt.Errorf("%s%w", colabOneT("err.outputSaveFailedPrefix"), err)
 	}
 	keepTmp = true
 	return path, nil
@@ -129,36 +129,36 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 
 func validateColabOneCanvasURL(raw string) (*url.URL, error) {
 	if raw == "" || strings.TrimSpace(raw) != raw {
-		return nil, errors.New("画布地址不能为空")
+		return nil, errors.New(colabOneT("err.canvasURLEmpty"))
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, errors.New("画布地址格式无效")
+		return nil, errors.New(colabOneT("err.canvasURLInvalid"))
 	}
 	if u.Scheme != "https" || u.Opaque != "" {
-		return nil, errors.New("画布地址仅支持 HTTPS")
+		return nil, errors.New(colabOneT("err.canvasURLHTTPS"))
 	}
 	if u.User != nil {
-		return nil, errors.New("画布地址不允许包含认证用户信息")
+		return nil, errors.New(colabOneT("err.canvasURLUserInfo"))
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if host == "" {
-		return nil, errors.New("画布地址缺少有效主机名")
+		return nil, errors.New(colabOneT("err.canvasURLHost"))
 	}
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return nil, errors.New("画布地址不允许指向本机回环地址")
+		return nil, errors.New(colabOneT("err.canvasURLLoopback"))
 	}
 	if host == "trycloudflare.com" || strings.HasSuffix(host, ".trycloudflare.com") {
-		return nil, errors.New("画布地址不支持临时域名，请使用固定域名")
+		return nil, errors.New(colabOneT("err.canvasURLTemporary"))
 	}
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
-		return nil, errors.New("画布地址不允许指向本机回环地址")
+		return nil, errors.New(colabOneT("err.canvasURLLoopback"))
 	}
 	if u.Path != "/_colabone_auth" {
-		return nil, errors.New("画布认证路径不合法")
+		return nil, errors.New(colabOneT("err.canvasURLPath"))
 	}
 	if strings.TrimSpace(u.Query().Get("token")) == "" {
-		return nil, errors.New("画布认证地址缺少访问令牌")
+		return nil, errors.New(colabOneT("err.canvasURLToken"))
 	}
 	return u, nil
 }
@@ -168,10 +168,10 @@ func validateColabOneCanvasURL(raw string) (*url.URL, error) {
 // the trusted Python bridge, never accepted from the frontend.
 func (d *ColabOneDesktop) OpenComfyCanvas(ctx context.Context, target string) error {
 	if target != "window" && target != "browser" {
-		return errors.New("不支持的画布打开方式")
+		return errors.New(colabOneT("err.canvasTarget"))
 	}
 	if d.bridge == nil {
-		return errors.New("控制进程未初始化")
+		return errors.New(colabOneT("err.bridgeNotInitialized"))
 	}
 	raw, err := d.bridge.call(ctx, "comfyui.canvas.url", nil)
 	if err != nil {
@@ -181,7 +181,7 @@ func (d *ColabOneDesktop) OpenComfyCanvas(ctx context.Context, target string) er
 		URL string `json:"url"`
 	}
 	if err = json.Unmarshal([]byte(raw), &resp); err != nil {
-		return errors.New("画布地址响应无效")
+		return errors.New(colabOneT("err.canvasResponse"))
 	}
 	u, err := validateColabOneCanvasURL(resp.URL)
 	if err != nil {
@@ -206,7 +206,7 @@ func (d *ColabOneDesktop) OpenComfyCanvas(ctx context.Context, target string) er
 	}
 	bg := colabOneWindowBackground()
 	win := mygo.NewWindow(mygo.WindowOptions{
-		Title:           "ComfyUI 原生画布 · ColabOne",
+		Title:           colabOneT("window.comfyCanvas"),
 		URL:             canvasURL,
 		Width:           1440,
 		Height:          900,

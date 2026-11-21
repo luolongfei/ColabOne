@@ -3,7 +3,7 @@
     "id": "qwen38-huihui-v2",
     "name": "Qwen3.8-Flash-Next (Huihui v2)",
     "description": "125B-A6B MoE / UD-Q4_K_XL",
-    "min_vram_mib": 85000,
+    "min_vram_mib": 0,
     "context_length": 8192,
     "files": [
       {
@@ -46,7 +46,7 @@
     "id": "gemma4-31b",
     "name": "Gemma-4-31B (ARA Heretic Q8_0)",
     "description": "31B 稠密 / Q8_0",
-    "min_vram_mib": 35000,
+    "min_vram_mib": 0,
     "context_length": 8192,
     "files": [
       {
@@ -65,7 +65,7 @@
     "id": "qwen38-27b-rvn",
     "name": "Qwen3.8-27B (RVN Heretic BF16)",
     "description": "27B 稠密 / BF16",
-    "min_vram_mib": 60000,
+    "min_vram_mib": 0,
     "context_length": 8192,
     "files": [
       {
@@ -84,7 +84,7 @@
     "id": "glm53-flash",
     "name": "GLM-5.3-Flash (320B-A18B)",
     "description": "320B-A18B MoE / GSQ-RCO-Q4 / 部分专家放内存",
-    "min_vram_mib": 85000,
+    "min_vram_mib": 0,
     "context_length": 8192,
     "files": [
       {

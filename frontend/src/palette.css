@@ -60,6 +60,14 @@
   --co-shadow: rgba(15, 23, 42, 0.08);
   --co-soft-shadow: rgba(15, 23, 42, 0.04);
   --co-overlay: rgba(15, 23, 42, 0.38);
+  /* ColabOne refined satin skeleton tokens (Light) */
+  --co-skeleton-base: rgba(15, 23, 42, 0.062);
+  --co-skeleton-base-subtle: rgba(15, 23, 42, 0.038);
+  --co-skeleton-accent-base: rgba(59, 130, 246, 0.11);
+  --co-skeleton-sheen: rgba(255, 255, 255, 0.84);
+  --co-skeleton-tint: rgba(59, 130, 246, 0.075);
+  --co-skeleton-border: rgba(15, 23, 42, 0.042);
+  --co-skeleton-card-bg: rgba(248, 250, 252, 0.85);
 }
 
 :root[data-theme="dark"] {
@@ -115,4 +123,12 @@
   --co-shadow: rgba(0, 0, 0, 0.48);
   --co-soft-shadow: rgba(0, 0, 0, 0.28);
   --co-overlay: rgba(0, 0, 0, 0.56);
+  /* ColabOne refined obsidian satin skeleton tokens (Dark) */
+  --co-skeleton-base: rgba(255, 255, 255, 0.068);
+  --co-skeleton-base-subtle: rgba(255, 255, 255, 0.038);
+  --co-skeleton-accent-base: rgba(96, 165, 250, 0.15);
+  --co-skeleton-sheen: rgba(255, 255, 255, 0.135);
+  --co-skeleton-tint: rgba(96, 165, 250, 0.12);
+  --co-skeleton-border: rgba(255, 255, 255, 0.055);
+  --co-skeleton-card-bg: rgba(255, 255, 255, 0.025);
 }

@@ -14,8 +14,9 @@ import {
   Spin as ASpin,
   Statistic as AStatistic,
   Tag as ATag,
-  Tooltip as ATooltip,
 } from "ant-design-vue";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   PhArrowRight,
   PhArrowsClockwise,
@@ -44,16 +45,19 @@ import {
   resolveSpeedSummary,
 } from "./apiSpeed";
 import { formatIdlePolicyLabel } from "./billing";
+import { t, tb } from "./i18n";
 import type { PublicAPIRequestMetric, ColabOneSnapshot } from "./types";
 
 const props = defineProps<{
   state: ColabOneSnapshot;
   modelsOpen?: boolean;
   busy?: boolean;
+  loading?: boolean;
 }>();
 const emit = defineEmits<{
   "update:modelsOpen": [boolean];
   device: [];
+  comfyui: [];
   sync: [];
   notify: [string];
   error: [string];
@@ -77,11 +81,29 @@ const domain = ref(props.state.api_settings?.domain || "");
 const settingsDirty = ref(false);
 const tunnelToken = ref("");
 const key = ref("");
+const revealingKey = ref(false);
 const keyTimer = ref<ReturnType<typeof setTimeout>>();
 const copyTimer = ref<ReturnType<typeof setTimeout>>();
 const copiedField = ref<"" | "url" | "key" | "model" | "code">("");
 const busy = ref(false);
-const notice = ref("");
+type ApiNoticeKey = "" | "starting" | "ready" | "saved" | "copied" | "rotated";
+const noticeKey = ref<ApiNoticeKey>("");
+const notice = computed(() => {
+  switch (noticeKey.value) {
+    case "starting":
+      return t("api.startingNotice");
+    case "ready":
+      return t("api.readyNotice");
+    case "saved":
+      return t("api.savedConfigNotice");
+    case "copied":
+      return t("common.copied");
+    case "rotated":
+      return t("api.rotatedKeyNotice");
+    default:
+      return "";
+  }
+});
 const language = ref<"curl" | "python" | "codex">("curl");
 
 const languageOptions = [
@@ -149,17 +171,17 @@ const activeTemp = computed(() =>
 const status = computed(
   () =>
     ({
-      stopping: "正在关闭",
+      stopping: t("api.statusStopping"),
       stopped: ready.value
-        ? "未开启"
+        ? t("api.statusStopped")
         : props.state.runtime.state === "disconnected"
-          ? "状态待确认"
-          : "未开启",
-      starting: "正在连接",
-      ready: "已开启",
-      reconnecting: "连接待恢复",
-      failed: "连接失败",
-    })[api.value?.state || "stopped"] || "未开启",
+          ? t("api.statusUnconfirmed")
+          : t("api.statusStopped"),
+      starting: t("api.statusStarting"),
+      ready: t("api.statusReady"),
+      reconnecting: t("api.statusReconnecting"),
+      failed: t("api.statusFailed"),
+    })[api.value?.state || "stopped"] || t("api.statusStopped"),
 );
 const statusTagColor = computed(() => {
   switch (api.value?.state) {
@@ -194,9 +216,9 @@ const statusBadgeStatus = computed<
   }
 });
 const noticeType = computed<"success" | "info">(() =>
-  notice.value === READY_NOTICE ||
-  notice.value === "已复制" ||
-  notice.value.includes("已保存")
+  noticeKey.value === "ready" ||
+  noticeKey.value === "copied" ||
+  noticeKey.value === "saved"
     ? "success"
     : "info",
 );
@@ -210,15 +232,16 @@ const base = computed(() =>
 const selectedModel = computed(() => model.value?.id || "YOUR-MODEL-ID");
 const code = computed(() => {
   const id = selectedModel.value;
+  const prompt = t("api.samplePrompt");
   if (language.value === "codex") {
     const ctx = activeContextTokens.value;
     const compactLimit = Math.max(2048, Math.round(ctx * 0.8));
     return `# ~/.codex/config.toml\nmodel = "${id}"\nmodel_provider = "colabone"\nmodel_context_window = ${ctx}\nmodel_auto_compact_token_limit = ${compactLimit}\n\n[model_providers.colabone]\nname = "ColabOne"\nbase_url = "${base.value}"\nenv_key = "COLABONE_API_KEY"\nwire_api = "responses"\nsupports_websockets = false`;
   }
   if (language.value === "python") {
-    return `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    base_url="${base.value}",\n    api_key=os.environ["COLABONE_API_KEY"],\n)\nreply = client.chat.completions.create(\n    model="${id}",\n    messages=[{"role": "user", "content": "你好"}],\n    max_tokens=512,\n    stream=True,\n)\nfor chunk in reply:\n    if chunk.choices:\n        print(chunk.choices[0].delta.content or "", end="", flush=True)`;
+    return `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    base_url="${base.value}",\n    api_key=os.environ["COLABONE_API_KEY"],\n)\nreply = client.chat.completions.create(\n    model="${id}",\n    messages=[{"role": "user", "content": ${JSON.stringify(prompt)}}],\n    max_tokens=512,\n    stream=True,\n)\nfor chunk in reply:\n    if chunk.choices:\n        print(chunk.choices[0].delta.content or "", end="", flush=True)`;
   }
-  return `curl -N "${base.value}/chat/completions" \\\n  -H "Authorization: Bearer $COLABONE_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ model: id, messages: [{ role: "user", content: "你好" }], max_tokens: 512, stream: true }, null, 2)}'`;
+  return `curl -N "${base.value}/chat/completions" \\\n  -H "Authorization: Bearer $COLABONE_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ model: id, messages: [{ role: "user", content: prompt }], max_tokens: 512, stream: true }, null, 2)}'`;
 });
 
 function onLanguageChange(val: string | number) {
@@ -228,7 +251,7 @@ function onLanguageChange(val: string | number) {
 
 async function act(action: string, payload = {}) {
   busy.value = true;
-  notice.value = "";
+  noticeKey.value = "";
   try {
     await colabOneCommand(action, payload);
     emit("sync");
@@ -243,29 +266,25 @@ async function act(action: string, payload = {}) {
 
 async function unloadModel() {
   if (await act("model.unload")) {
-    emit("notify", "已卸载当前显存模型");
+    emit("notify", t("api.unloadedToast"));
   }
 }
-
-const STARTING_NOTICE =
-  "正在远端启动 API 服务，公网验证通过后将显示调用地址。";
-const READY_NOTICE = "对外 API 服务已开启。";
 
 watch(
   () => api.value?.state,
   (next) => {
-    if (notice.value === STARTING_NOTICE && next && next !== "starting") {
-      notice.value = next === "ready" ? READY_NOTICE : "";
-    } else if (notice.value === READY_NOTICE && next !== "ready") {
-      notice.value = "";
+    if (noticeKey.value === "starting" && next && next !== "starting") {
+      noticeKey.value = next === "ready" ? "ready" : "";
+    } else if (noticeKey.value === "ready" && next !== "ready") {
+      noticeKey.value = "";
     }
   },
 );
 watch(
   () => props.state.runtime.id,
   () => {
-    if (notice.value === STARTING_NOTICE || notice.value === READY_NOTICE) {
-      notice.value = "";
+    if (noticeKey.value === "starting" || noticeKey.value === "ready") {
+      noticeKey.value = "";
     }
   },
 );
@@ -285,8 +304,7 @@ async function start() {
   ) {
     tunnelToken.value = "";
     settingsDirty.value = false;
-    notice.value =
-      api.value?.state === "ready" ? READY_NOTICE : STARTING_NOTICE;
+    noticeKey.value = api.value?.state === "ready" ? "ready" : "starting";
   }
 }
 
@@ -300,7 +318,7 @@ async function save() {
   ) {
     tunnelToken.value = "";
     settingsDirty.value = false;
-    notice.value = "固定域名隧道配置已保存到本机凭据库。";
+    noticeKey.value = "saved";
   }
 }
 
@@ -309,7 +327,7 @@ async function copy(
   field: "" | "url" | "key" | "model" | "code" = "",
 ) {
   const markCopied = () => {
-    notice.value = "已复制";
+    noticeKey.value = "copied";
     if (field) {
       copiedField.value = field;
       clearTimeout(copyTimer.value);
@@ -327,7 +345,7 @@ async function copy(
       await navigator.clipboard.writeText(value);
       markCopied();
     } catch {
-      emit("error", "复制失败，请手动选择并复制");
+      emit("error", t("common.copyFailed"));
     }
   }
 }
@@ -342,23 +360,27 @@ async function copyKey() {
 }
 
 async function reveal() {
+  if (revealingKey.value) return;
   if (key.value) {
     key.value = "";
     return;
   }
+  revealingKey.value = true;
   try {
     key.value = (await colabOneCommand("api.key")).key;
     clearTimeout(keyTimer.value);
     keyTimer.value = setTimeout(() => (key.value = ""), 30000);
   } catch (e) {
     emit("error", String(e));
+  } finally {
+    revealingKey.value = false;
   }
 }
 
 async function rotate() {
   if (await act("api.rotate")) {
     key.value = "";
-    notice.value = "API Key 已更换，请重新开启服务并在调用方同步更新密钥。";
+    noticeKey.value = "rotated";
   }
 }
 
@@ -374,21 +396,48 @@ onUnmounted(() => {
     <header class="co-api-page-header">
       <div class="co-api-header-main">
         <div class="co-api-header-title">
-          <h1>对外 API</h1>
-          <ATag :color="statusTagColor" class="co-api-status-tag">
+          <h1>{{ t("api.title") }}</h1>
+          <ColabOneSkeleton
+            v-if="props.loading"
+            :width="78"
+            :height="22"
+            variant="pill"
+            inline
+          />
+          <ATag v-else :color="statusTagColor" class="co-api-status-tag co-sk-reveal">
             <ABadge :status="statusBadgeStatus" />
             <span>{{ status }}</span>
           </ATag>
         </div>
         <p class="co-api-header-sub">
-          通过远端 GPU 提供 OpenAI Responses / Chat Completions 兼容接口与 Codex 上下文压缩；连续
-          {{ formatIdlePolicyLabel(props.state.settings.idle_minutes) }}
-          无请求或操作后自动释放远端资源。
+          <ColabOneSkeleton
+            v-if="props.loading"
+            width="62%"
+            :height="14"
+            variant="text"
+            tone="subtle"
+            :delay="60"
+          />
+          <template v-else>
+            {{
+              t("api.subtitle", {
+                policy: formatIdlePolicyLabel(props.state.settings.idle_minutes),
+              })
+            }}
+          </template>
         </p>
       </div>
 
       <div class="co-api-header-action">
-        <ASpace :size="8" wrap>
+        <ColabOneSkeleton
+          v-if="props.loading"
+          :width="112"
+          :height="32"
+          variant="button"
+          tone="accent"
+          :delay="80"
+        />
+        <ASpace v-else :size="8" wrap>
           <AButton
             v-if="enabled"
             type="primary"
@@ -398,15 +447,15 @@ onUnmounted(() => {
             @click="act('api.stop')"
           >
             <template #icon><PhStop :size="14" weight="fill" /></template>
-            关闭服务
+            {{ t("api.stopService") }}
           </AButton>
           <template v-else>
-            <ATooltip
+            <ColabOneTooltip
               :title="
                 !ready
                   ? gpuStarting
-                    ? '远端 GPU 正在启动中'
-                    : '请先启动远端 GPU'
+                    ? t('api.gpuStartingTooltip')
+                    : t('api.startGpuFirstTooltip')
                   : ''
               "
             >
@@ -419,18 +468,18 @@ onUnmounted(() => {
                 <template #icon><PhPlay :size="14" weight="fill" /></template>
                 {{
                   ready && (state.runtime.protocol || 0) < 4
-                    ? "更新远端服务"
-                    : "开启 API 服务"
+                    ? t("api.updateRemoteService")
+                    : t("api.startService")
                 }}
               </AButton>
-            </ATooltip>
+            </ColabOneTooltip>
             <AButton
               v-if="!ready"
               :type="gpuStarting ? 'default' : 'primary'"
               @click="emit('device')"
             >
               <template #icon><PhHardDrives :size="15" /></template>
-              {{ gpuStarting ? "查看 GPU 启动进度" : "去启动 GPU" }}
+              {{ gpuStarting ? t("api.viewGpuProgress") : t("api.goStartGpu") }}
               <PhArrowRight :size="14" />
             </AButton>
           </template>
@@ -441,13 +490,49 @@ onUnmounted(() => {
     <ACard
       class="co-api-model-slot"
       :class="{
-        loaded: !!model,
-        busy: !!activeModelTask && !model,
-        warning: ready && !model && !activeModelTask,
+        loaded: !props.loading && !!model,
+        busy: !props.loading && !!activeModelTask && !model,
+        warning: !props.loading && ready && !model && !activeModelTask,
       }"
-      aria-label="当前服务模型"
+      :aria-label="t('api.currentModelAria')"
     >
-      <div class="co-api-model-row">
+      <div
+        v-if="props.loading"
+        class="co-api-model-row"
+        role="status"
+        aria-busy="true"
+      >
+        <span class="co-sr-only">{{ t("common.loading") }}</span>
+        <div class="co-api-model-main">
+          <div class="co-api-model-head">
+            <ColabOneSkeleton
+              :width="18"
+              :height="18"
+              :radius="5"
+              variant="rect"
+              tone="accent"
+            />
+            <ColabOneSkeleton :width="72" :height="13" variant="text" tone="subtle" :delay="40" />
+            <ColabOneSkeleton :width="154" :height="17" variant="text" :delay="75" />
+            <ColabOneSkeleton :width="68" :height="22" variant="pill" tone="subtle" :delay="110" />
+          </div>
+          <div class="co-api-model-sub">
+            <ColabOneSkeleton width="58%" :height="13" variant="text" tone="subtle" :delay="130" />
+          </div>
+        </div>
+        <div class="co-api-model-actions">
+          <ColabOneSkeleton
+            :width="88"
+            :height="24"
+            variant="button"
+            :radius="6"
+            tone="subtle"
+            :delay="150"
+          />
+        </div>
+      </div>
+
+      <div v-else class="co-api-model-row co-sk-reveal">
         <div class="co-api-model-main">
           <div class="co-api-model-head">
             <ASpin v-if="activeModelTask && !model" size="small" />
@@ -458,76 +543,80 @@ onUnmounted(() => {
               class="co-api-model-icon"
               aria-hidden="true"
             />
-            <span class="co-api-model-eyebrow">服务模型</span>
+            <span class="co-api-model-eyebrow">{{ t("api.servingModelEyebrow") }}</span>
             <template v-if="model">
               <strong class="co-api-model-name">{{ model.name }}</strong>
               <ATag color="success" class="co-api-model-tag">
                 <ABadge status="processing" color="#52c41a" />
-                <span>已装载显存</span>
+                <span>{{ t("api.loadedInVram") }}</span>
               </ATag>
               <ATag :bordered="false" class="co-api-model-spec-tag">
-                {{ activeContextK }}K · 温度 {{ activeTemp }}
+                {{ t("api.contextAndTemp", { ctx: activeContextK, temp: activeTemp }) }}
               </ATag>
             </template>
             <template v-else-if="activeModelTask">
               <strong class="co-api-model-name">
                 {{
                   activeModelTask.kind === "download"
-                    ? `正在下载${activeModelTaskSpec ? ` ${activeModelTaskSpec.name}` : "模型"}`
-                    : `正在装载${activeModelTaskSpec ? ` ${activeModelTaskSpec.name}` : "模型"}到显存`
+                    ? activeModelTaskSpec
+                      ? t("api.downloadingModel", { name: activeModelTaskSpec.name })
+                      : t("api.downloadingModelGeneric")
+                    : activeModelTaskSpec
+                      ? t("api.loadingModel", { name: activeModelTaskSpec.name })
+                      : t("api.loadingModelGeneric")
                 }}
               </strong>
               <ATag color="processing" class="co-api-model-tag">
                 {{
                   activeModelTask.kind === "download"
                     ? `${Math.round((activeModelTask.progress || 0) * 100)}%`
-                    : "装载中"
+                    : t("api.loadingTag")
                 }}
               </ATag>
             </template>
             <template v-else-if="ready">
-              <strong class="co-api-model-name">尚未选择模型</strong>
-              <ATag color="warning" class="co-api-model-tag">未装载显存</ATag>
+              <strong class="co-api-model-name">{{ t("api.noModelSelected") }}</strong>
+              <ATag color="warning" class="co-api-model-tag">{{ t("api.notLoadedTag") }}</ATag>
             </template>
             <template v-else>
-              <strong class="co-api-model-name">尚未装载模型</strong>
+              <strong class="co-api-model-name">{{ t("api.noModelLoaded") }}</strong>
               <ATag
                 :color="gpuStarting ? 'processing' : 'default'"
                 class="co-api-model-tag"
               >
-                {{ gpuStarting ? "远端 GPU 启动中" : "远端 GPU 未启动" }}
+                {{ gpuStarting ? t("api.gpuStartingTag") : t("api.gpuStoppedTag") }}
               </ATag>
             </template>
           </div>
 
           <div class="co-api-model-sub">
             <template v-if="model">
-              <span>模型 ID：<code>{{ model.id }}</code></span>
+              <span>{{ t("api.modelIdLabel") }}<code>{{ model.id }}</code></span>
               <template v-if="state.runtime.gpu">
                 <span>·</span>
                 <span class="co-tabular">
-                  显存
-                  {{ (state.runtime.gpu.used_mib / 1024).toFixed(1) }} /
-                  {{ (state.runtime.gpu.total_mib / 1024).toFixed(0) }} GB
+                  {{
+                    t("api.vramUsage", {
+                      vram: `${(state.runtime.gpu.used_mib / 1024).toFixed(1)} / ${(state.runtime.gpu.total_mib / 1024).toFixed(0)} GB`,
+                    })
+                  }}
                 </span>
               </template>
             </template>
             <template v-else-if="activeModelTask">
               <span>
                 {{
-                  activeModelTask.message || "可在模型抽屉查看详细进度"
+                  activeModelTask.message
+                    ? tb(activeModelTask.message)
+                    : t("api.taskProgressFallback")
                 }}
               </span>
             </template>
             <template v-else-if="ready">
-              <span>
-                从「我的」或「社区」选择并装载 GGUF 模型后，即可对外提供推理服务。
-              </span>
+              <span>{{ t("api.pickModelHintReady") }}</span>
             </template>
             <template v-else>
-              <span>
-                可先在「我的」或「社区」浏览并管理模型；启动远端 GPU 后一键下载并装载到显存。
-              </span>
+              <span>{{ t("api.pickModelHintOffline") }}</span>
             </template>
           </div>
         </div>
@@ -539,7 +628,7 @@ onUnmounted(() => {
             :disabled="!!activeTask || busy || !!props.busy"
             @click="unloadModel"
           >
-            卸载
+            {{ t("api.unload") }}
           </AButton>
           <AButton
             :type="ready && !model && !activeModelTask ? 'primary' : 'default'"
@@ -550,10 +639,10 @@ onUnmounted(() => {
             <template #icon><PhCube :size="14" weight="duotone" /></template>
             {{
               model
-                ? "切换模型"
+                ? t("api.switchModel")
                 : activeModelTask
-                  ? "查看模型"
-                  : "选择模型"
+                  ? t("api.browseModels")
+                  : t("api.chooseModel")
             }}
             <PhArrowRight :size="13" />
           </AButton>
@@ -565,7 +654,7 @@ onUnmounted(() => {
       v-if="api?.error"
       type="error"
       show-icon
-      :message="api.error"
+      :message="tb(api.error)"
       role="alert"
     />
 
@@ -576,19 +665,19 @@ onUnmounted(() => {
       closable
       :message="notice"
       role="status"
-      @close="notice = ''"
+      @close="noticeKey = ''"
     />
 
     <div class="co-api-grid">
-      <ACard title="固定域名与隧道配置" class="co-api-connection">
+      <ACard :title="t('api.connectionCardTitle')" class="co-api-connection">
         <div class="co-mode-panel">
           <p class="co-field-help">
-            通过固定公网 HTTPS 域名接入外部客户端与 SDK，支持 SSE 流式输出（<code>stream=true</code>）。域名与隧道保存在你的 Cloudflare 账户中。
+            {{ t("api.connectionCardDesc", { stream: "stream=true" }) }}
           </p>
 
           <div class="co-api-form-grid">
             <div class="co-field-group">
-              <label class="co-field-label" for="api-domain">API 域名</label>
+              <label class="co-field-label" for="api-domain">{{ t("api.domainLabel") }}</label>
               <AInput
                 id="api-domain"
                 v-model:value="domain"
@@ -603,7 +692,7 @@ onUnmounted(() => {
 
             <div class="co-field-group">
               <label class="co-field-label" for="api-tunnel">
-                Cloudflare 安装命令或 Tunnel Token
+                {{ t("api.tunnelTokenLabel") }}
               </label>
               <AInputPassword
                 id="api-tunnel"
@@ -611,8 +700,8 @@ onUnmounted(() => {
                 :disabled="enabled || busy"
                 :placeholder="
                   state.api_settings?.has_token
-                    ? '已安全保存；留空继续使用'
-                    : '直接粘贴整段安装命令，自动提取 Token'
+                    ? t('api.tunnelTokenSavedPlaceholder')
+                    : t('api.tunnelTokenEmptyPlaceholder')
                 "
                 autocomplete="off"
                 spellcheck="false"
@@ -627,35 +716,35 @@ onUnmounted(() => {
               @click="save"
             >
               <template #icon><PhFloppyDisk :size="15" /></template>
-              保存配置
+              {{ t("api.saveConfig") }}
             </AButton>
           </div>
 
           <details class="co-api-guide">
-            <summary>首次配置？查看 3 步指引</summary>
+            <summary>{{ t("api.guideSummary") }}</summary>
             <ol>
               <li>
-                在 Cloudflare 创建一个 Tunnel，选择 Cloudflared。
+                {{ t("api.guideStep1") }}
                 <AButton
                   type="link"
                   size="small"
                   class="co-inline-link co-inline-link-btn"
                   @click="colabOneOpenURL('https://one.dash.cloudflare.com/')"
                 >
-                  打开控制台
+                  {{ t("api.openDashboard") }}
                   <PhArrowSquareOut :size="13" />
                 </AButton>
               </li>
               <li>
-                添加一个公开域名，服务类型选 HTTP，地址填
-                <code>http://127.0.0.1:7861</code>。
+                {{ t("api.guideStep2Prefix") }}
+                <code>http://127.0.0.1:7861</code>
               </li>
               <li>
-                将 Cloudflare 给出的安装命令粘贴到上方，保存并开启服务。客户端会在远端安装并验证连接。
+                {{ t("api.guideStep3") }}
               </li>
             </ol>
             <p class="co-field-help">
-              请勿为 API 域名开启 Cloudflare 交互式登录验证，以免拦截客户端请求。
+              {{ t("api.guideNote") }}
             </p>
           </details>
         </div>
@@ -664,20 +753,49 @@ onUnmounted(() => {
 
         <div class="co-api-access">
           <div class="co-section-subhead">
-            <h3>实时接入凭据</h3>
-            <ATag v-if="api?.state === 'ready'" color="success">公网就绪</ATag>
-            <ATag v-else-if="key" color="blue">密钥可见</ATag>
-            <ATag v-else color="default">未开启</ATag>
+            <h3>{{ t("api.credentialsHeading") }}</h3>
+            <ColabOneSkeleton
+              v-if="props.loading"
+              :width="66"
+              :height="20"
+              variant="tag"
+            />
+            <ATag v-else-if="api?.state === 'ready'" color="success">{{ t("api.credPublicReady") }}</ATag>
+            <ATag
+              v-else-if="api?.state === 'starting' || api?.state === 'reconnecting'"
+              color="processing"
+            >
+              {{ status }}
+            </ATag>
+            <ATag v-else-if="key" color="blue">{{ t("api.credKeyVisible") }}</ATag>
+            <ATag v-else color="default">{{ t("api.credOff") }}</ATag>
           </div>
 
           <div class="co-cred-field">
             <span class="co-field-label">Base URL</span>
             <div class="co-api-copy-row">
-              <code>{{ api?.url ? base : "开启服务后显示" }}</code>
-              <ATooltip :title="copiedField === 'url' ? '已复制' : '复制 API 地址'">
+              <span
+                v-if="props.loading || ((api?.state === 'starting' || api?.state === 'reconnecting') && !api?.url)"
+                class="co-api-code-sk"
+                role="status"
+                aria-busy="true"
+              >
+                <ColabOneSkeleton
+                  :width="props.loading ? '70%' : '64%'"
+                  :height="14"
+                  variant="text"
+                  :tone="props.loading ? 'default' : 'accent'"
+                />
+                <span class="co-sr-only">{{ props.loading ? t("common.loading") : status }}</span>
+              </span>
+              <code v-else class="co-sk-reveal">{{ api?.url ? base : t("api.urlPlaceholder") }}</code>
+              <ColabOneTooltip
+                :title="copiedField === 'url' ? t('common.copied') : t('api.copyUrlTooltip')"
+                :disabled="!api?.url || api.state !== 'ready'"
+              >
                 <AButton
                   size="small"
-                  aria-label="复制 API 地址"
+                  :aria-label="t('api.copyUrlTooltip')"
                   :disabled="!api?.url || api.state !== 'ready'"
                   @click="copy(base, 'url')"
                 >
@@ -685,25 +803,42 @@ onUnmounted(() => {
                     <PhCheck v-if="copiedField === 'url'" :size="14" />
                     <PhCopy v-else :size="14" />
                   </template>
-                  {{ copiedField === "url" ? "已复制" : "复制" }}
+                  {{ copiedField === "url" ? t("common.copied") : t("common.copy") }}
                 </AButton>
-              </ATooltip>
+              </ColabOneTooltip>
             </div>
           </div>
 
           <div class="co-cred-field">
             <span class="co-field-label">API Key</span>
             <div class="co-api-copy-row">
-              <code>{{ key || "••••••••••••••••••••••••" }}</code>
+              <span
+                v-if="props.loading || revealingKey"
+                class="co-api-code-sk"
+                role="status"
+                aria-busy="true"
+              >
+                <ColabOneSkeleton
+                  :width="revealingKey ? 220 : 176"
+                  :height="14"
+                  variant="text"
+                  :tone="revealingKey ? 'accent' : 'default'"
+                  :delay="props.loading ? 50 : 0"
+                />
+                <span class="co-sr-only">{{ t("common.loading") }}</span>
+              </span>
+              <code v-else :class="{ 'co-sk-reveal': !!key }">{{ key || "••••••••••••••••••••••••" }}</code>
               <ASpace :size="6" class="co-cred-actions">
-                <ATooltip
+                <ColabOneTooltip
                   :title="
-                    key ? '隐藏 API 密钥' : '显示 API 密钥（30 秒后自动隐藏）'
+                    key ? t('api.hideKeyTooltip') : t('api.showKeyTooltip')
                   "
+                  :disabled="props.loading || revealingKey"
                 >
                   <AButton
                     size="small"
-                    :aria-label="key ? '隐藏 API 密钥' : '显示 API 密钥'"
+                    :disabled="props.loading || revealingKey"
+                    :aria-label="key ? t('api.hideKeyAria') : t('api.showKeyAria')"
                     @click="reveal"
                   >
                     <template #icon>
@@ -711,31 +846,32 @@ onUnmounted(() => {
                       <PhEye v-else :size="14" />
                     </template>
                   </AButton>
-                </ATooltip>
+                </ColabOneTooltip>
 
                 <AButton
                   size="small"
-                  aria-label="复制 API 密钥"
+                  :disabled="props.loading"
+                  :aria-label="t('api.copyKeyAria')"
                   @click="copyKey"
                 >
                   <template #icon>
                     <PhCheck v-if="copiedField === 'key'" :size="14" />
                     <PhCopy v-else :size="14" />
                   </template>
-                  {{ copiedField === "key" ? "已复制" : "复制" }}
+                  {{ copiedField === "key" ? t("common.copied") : t("common.copy") }}
                 </AButton>
 
                 <APopconfirm
-                  title="确认更换 API Key？"
-                  description="将关闭对外 API 并使旧密钥失效，调用方需要同步更新密钥。"
-                  ok-text="确认更换"
-                  cancel-text="取消"
+                  :title="t('api.rotateConfirmTitle')"
+                  :description="t('api.rotateConfirmDesc')"
+                  :ok-text="t('api.rotateConfirmOk')"
+                  :cancel-text="t('common.cancel')"
                   :ok-button-props="{ danger: true }"
                   @confirm="rotate"
                 >
-                  <AButton danger size="small" :disabled="busy">
+                  <AButton danger size="small" :disabled="busy || props.loading">
                     <template #icon><PhArrowsClockwise :size="14" /></template>
-                    更换
+                    {{ t("api.rotateBtn") }}
                   </AButton>
                 </APopconfirm>
               </ASpace>
@@ -743,12 +879,25 @@ onUnmounted(() => {
           </div>
 
           <div class="co-cred-field">
-            <span class="co-field-label">当前模型 ID</span>
+            <span class="co-field-label">{{ t("api.currentModelIdLabel") }}</span>
             <div class="co-api-copy-row">
-              <code>{{ model?.id || "请先点击上方「选择模型」装载 GGUF 模型" }}</code>
+              <span
+                v-if="props.loading"
+                class="co-api-code-sk"
+                aria-hidden="true"
+              >
+                <ColabOneSkeleton
+                  width="54%"
+                  :height="14"
+                  variant="text"
+                  tone="subtle"
+                  :delay="100"
+                />
+              </span>
+              <code v-else>{{ model?.id || t("api.modelIdEmpty") }}</code>
               <AButton
                 size="small"
-                aria-label="复制模型 ID"
+                :aria-label="t('api.copyModelIdAria')"
                 :disabled="!model"
                 @click="copy(model!.id, 'model')"
               >
@@ -756,7 +905,7 @@ onUnmounted(() => {
                   <PhCheck v-if="copiedField === 'model'" :size="14" />
                   <PhCopy v-else :size="14" />
                 </template>
-                {{ copiedField === "model" ? "已复制" : "复制" }}
+                {{ copiedField === "model" ? t("common.copied") : t("common.copy") }}
               </AButton>
             </div>
           </div>
@@ -764,25 +913,43 @@ onUnmounted(() => {
           <p class="co-field-help co-key-help">
             <PhKey :size="14" />
             <span>
-              密钥保存在本机系统凭据库。调用时使用
-              <code>Authorization: Bearer</code>，仅分享给受信任的应用或成员。
+              {{ t("api.credentialsFootPrefix") }}
+              <code>Authorization: Bearer</code>{{ t("api.credentialsFootSuffix") }}
             </span>
           </p>
         </div>
       </ACard>
 
-      <ACard title="调用示例与统计" class="co-api-examples">
+      <ACard :title="t('api.examplesCardTitle')" class="co-api-examples">
         <template #extra>
-          <ATag color="green" class="co-stream-tag">SSE 流式</ATag>
+          <ATag color="green" class="co-stream-tag">{{ t("api.sseStreamTag") }}</ATag>
         </template>
 
-        <div class="co-api-stats-grid">
+        <div v-if="props.loading" class="co-api-stats-grid" aria-hidden="true">
+          <div v-for="idx in 4" :key="idx" class="co-stat-tile co-stat-tile-sk">
+            <ColabOneSkeleton
+              :width="48"
+              :height="12"
+              variant="text"
+              tone="subtle"
+              :delay="(idx - 1) * 55"
+            />
+            <ColabOneSkeleton
+              :width="44"
+              :height="26"
+              variant="metric"
+              :tone="idx === 2 ? 'accent' : 'default'"
+              :delay="(idx - 1) * 55 + 45"
+            />
+          </div>
+        </div>
+        <div v-else class="co-api-stats-grid co-sk-reveal">
           <div class="co-stat-tile">
-            <AStatistic title="总请求" :value="api?.requests || 0" />
+            <AStatistic :title="t('api.statTotalRequests')" :value="api?.requests || 0" />
           </div>
           <div class="co-stat-tile">
             <AStatistic
-              title="进行中"
+              :title="t('api.statActive')"
               :value="api?.active || 0"
               :value-style="
                 (api?.active || 0) > 0 ? { color: 'var(--co-accent)' } : undefined
@@ -790,11 +957,11 @@ onUnmounted(() => {
             />
           </div>
           <div class="co-stat-tile">
-            <AStatistic title="已完成" :value="api?.completed || 0" />
+            <AStatistic :title="t('api.statCompleted')" :value="api?.completed || 0" />
           </div>
           <div class="co-stat-tile">
             <AStatistic
-              title="失败"
+              :title="t('api.statFailed')"
               :value="api?.failed || 0"
               :value-style="
                 (api?.failed || 0) > 0
@@ -808,10 +975,24 @@ onUnmounted(() => {
         <!-- Per-Request External API Token Speed Telemetry -->
         <section
           class="co-api-speed-section"
-          aria-label="每次外部调用 Token 速度"
+          :aria-label="t('api.speedSectionAria')"
         >
           <div class="co-api-speed-summary">
-            <div class="co-api-speed-summary-top">
+            <div v-if="props.loading" class="co-api-speed-summary-top" aria-hidden="true">
+              <div class="co-api-speed-summary-left">
+                <PhSpeedometer
+                  :size="16"
+                  weight="duotone"
+                  class="co-api-speed-icon"
+                />
+                <ColabOneSkeleton :width="56" :height="13" variant="text" tone="subtle" />
+                <ColabOneSkeleton :width="96" :height="16" variant="text" tone="accent" :delay="65" />
+              </div>
+              <div class="co-api-speed-summary-right">
+                <ColabOneSkeleton :width="72" :height="13" variant="text" tone="subtle" :delay="110" />
+              </div>
+            </div>
+            <div v-else class="co-api-speed-summary-top co-sk-reveal">
               <div class="co-api-speed-summary-left">
                 <PhSpeedometer
                   :size="16"
@@ -819,7 +1000,7 @@ onUnmounted(() => {
                   class="co-api-speed-icon"
                 />
                 <span class="co-api-speed-label">
-                  {{ speedSummary.live ? "实时生成速度" : "最近生成速度" }}
+                  {{ speedSummary.live ? t("api.speedLive") : t("api.speedRecent") }}
                 </span>
                 <strong
                   class="co-api-speed-value co-mono"
@@ -843,15 +1024,15 @@ onUnmounted(() => {
                   "
                   class="co-api-speed-avg co-mono"
                 >
-                  均值 {{ formatTokenSpeed(speedSummary.avgTps) }}
+                  {{ t("api.speedAvg", { speed: formatTokenSpeed(speedSummary.avgTps) }) }}
                 </span>
                 <span class="co-api-speed-count co-tabular">
                   {{
                     recentRequests.length
-                      ? `最近 ${recentRequests.length} 次`
+                      ? t("api.speedRecentCount", { count: recentRequests.length })
                       : enabled
-                        ? "等待调用"
-                        : "暂无调用"
+                        ? t("api.speedWaiting")
+                        : t("api.speedEmpty")
                   }}
                 </span>
               </div>
@@ -902,20 +1083,22 @@ onUnmounted(() => {
                     :bordered="false"
                     class="co-api-request-tag"
                   >
-                    流式
+                    {{ t("api.reqStreamingTag") }}
                   </ATag>
                   <time class="co-api-request-time co-mono">
                     {{ formatRequestClock(req.started_at) }}
                   </time>
                 </div>
 
-                <ATooltip
+                <ColabOneTooltip
                   :title="
                     req.estimated
-                      ? '上游未返回精确 timings，按输出内容与耗时估算'
+                      ? t('api.reqEstimatedTooltip')
                       : req.prompt_tokens_per_second
-                        ? `提示词预填充速度 ${formatTokenSpeed(req.prompt_tokens_per_second)}`
-                        : '本次请求生成速度'
+                        ? t('api.reqPrefillTooltip', {
+                            speed: formatTokenSpeed(req.prompt_tokens_per_second),
+                          })
+                        : t('api.reqSpeedTooltip')
                   "
                 >
                   <span
@@ -926,50 +1109,86 @@ onUnmounted(() => {
                         !req.tokens_per_second || req.tokens_per_second <= 0,
                     }"
                   >
-                    {{
-                      req.tokens_per_second && req.tokens_per_second > 0
-                        ? formatTokenSpeed(
-                            req.tokens_per_second,
-                            !!req.estimated,
-                          )
-                        : req.state === "running"
-                          ? "等待首字…"
-                          : "—"
-                    }}
+                    <template
+                      v-if="req.tokens_per_second && req.tokens_per_second > 0"
+                    >
+                      {{
+                        formatTokenSpeed(
+                          req.tokens_per_second,
+                          !!req.estimated,
+                        )
+                      }}
+                    </template>
+                    <span
+                      v-else-if="req.state === 'running'"
+                      class="co-api-tps-pending"
+                    >
+                      <ColabOneSkeleton
+                        :width="76"
+                        :height="14"
+                        variant="pill"
+                        tone="accent"
+                        inline
+                      />
+                      <span class="co-sr-only">{{
+                        t("api.reqWaitingFirstToken")
+                      }}</span>
+                    </span>
+                    <template v-else>—</template>
                   </span>
-                </ATooltip>
+                </ColabOneTooltip>
               </div>
 
               <div class="co-api-request-meta co-tabular">
                 <span v-if="req.completion_tokens != null">
-                  输出 {{ formatTokenCount(req.completion_tokens) }} tokens
+                  {{
+                    t("api.reqOutputTokens", {
+                      count: formatTokenCount(req.completion_tokens),
+                    })
+                  }}
                 </span>
                 <span v-if="req.prompt_tokens != null && req.prompt_tokens > 0">
-                  输入 {{ formatTokenCount(req.prompt_tokens) }} tokens
+                  {{
+                    t("api.reqInputTokens", {
+                      count: formatTokenCount(req.prompt_tokens),
+                    })
+                  }}
                 </span>
                 <span v-if="req.ttft_ms != null">
-                  首字 {{ formatDurationMs(req.ttft_ms) }}
+                  {{
+                    t("api.reqTtft", {
+                      duration: formatDurationMs(req.ttft_ms),
+                    })
+                  }}
                 </span>
-                <span>耗时 {{ formatDurationMs(req.duration_ms) }}</span>
+                <span>{{
+                  t("api.reqDuration", {
+                    duration: formatDurationMs(req.duration_ms),
+                  })
+                }}</span>
                 <span
                   v-if="
                     req.prompt_tokens_per_second &&
                     req.prompt_tokens_per_second > 0
                   "
                 >
-                  预填充 {{ formatTokenSpeed(req.prompt_tokens_per_second) }}
+                  {{
+                    t("api.reqPrefill", {
+                      speed: formatTokenSpeed(req.prompt_tokens_per_second),
+                    })
+                  }}
                 </span>
                 <span
                   v-if="req.state === 'failed' && req.error"
                   class="co-api-request-error"
                 >
-                  {{ req.error }}
+                  {{ tb(req.error) }}
                 </span>
               </div>
             </article>
           </div>
           <p v-else-if="enabled" class="co-api-request-empty-hint">
-            服务已开启，收到外部客户端请求后将在此实时显示每次调用的 Token 速度与耗时。
+            {{ t("api.reqReadyEmpty") }}
           </p>
         </section>
 
@@ -980,7 +1199,7 @@ onUnmounted(() => {
             size="small"
             :value="language"
             :options="languageOptions"
-            aria-label="调用示例语言"
+            :aria-label="t('api.codeLanguageAria')"
             @change="onLanguageChange"
           />
           <AButton size="small" @click="copy(code, 'code')">
@@ -988,43 +1207,54 @@ onUnmounted(() => {
               <PhCheck v-if="copiedField === 'code'" :size="14" />
               <PhCopy v-else :size="14" />
             </template>
-            {{ copiedField === "code" ? "已复制" : "复制代码" }}
+            {{ copiedField === "code" ? t("common.copied") : t("api.copyCode") }}
           </AButton>
         </div>
 
         <p v-if="language === 'codex'" class="co-field-help co-example-help">
-          先将密钥设置为环境变量 <code>COLABONE_API_KEY</code>，再将下方配置写入
-          <code>~/.codex/config.toml</code>，即可在 Codex 中无缝使用远端模型并支持
-          <code>/compact</code> 与自动上下文压缩。
+          {{ t("api.codexHintPrefix") }} <code>COLABONE_API_KEY</code>{{ t("api.codexHintMid") }}
+          <code>~/.codex/config.toml</code>{{ t("api.codexHintMid2") }}
+          <code>/compact</code>{{ t("api.codexHintSuffix") }}
         </p>
         <p v-else class="co-field-help co-example-help">
-          先将密钥设置为环境变量 <code>COLABONE_API_KEY</code>，即可用 cURL、OpenAI Python SDK、Codex 或任意兼容客户端接入。
+          {{ t("api.sdkHintPrefix") }} <code>COLABONE_API_KEY</code>{{ t("api.sdkHintSuffix") }}
         </p>
 
-        <pre class="co-api-code-block" tabindex="0"><code>{{ code }}</code></pre>
+        <div
+          v-if="props.loading"
+          class="co-api-code-block co-api-code-skeleton"
+          aria-hidden="true"
+        >
+          <ColabOneSkeleton width="58%" :height="13" variant="text" />
+          <ColabOneSkeleton width="84%" :height="13" variant="text" tone="subtle" :delay="55" />
+          <ColabOneSkeleton width="72%" :height="13" variant="text" tone="subtle" :delay="110" />
+          <ColabOneSkeleton width="90%" :height="13" variant="text" :delay="165" />
+          <ColabOneSkeleton width="46%" :height="13" variant="text" tone="subtle" :delay="220" />
+        </div>
+        <pre v-else class="co-api-code-block co-sk-reveal" tabindex="0"><code>{{ code }}</code></pre>
 
         <p class="co-field-help">
-          兼容 OpenAI Responses API、Chat Completions、工具调用（<code>function</code> / <code>custom</code>）与 Codex 上下文压缩（<code>/v1/responses/compact</code>）；暂不支持图像或音频输入。单实例串行处理请求，并发繁忙时返回 409。
+          {{ t("api.compatSummary") }}
         </p>
 
         <details class="co-api-guide">
-          <summary>接口列表与限制</summary>
+          <summary>{{ t("api.endpointsSummary") }}</summary>
           <ul>
             <li>
-              <code>GET /v1/models</code>、<code>GET /v1/models/{id}</code>：返回当前已装载到显存的 GGUF 模型。
+              <code>GET /v1/models</code> / <code>GET /v1/models/{id}</code>{{ t("api.endpointModelsDesc") }}
             </li>
             <li>
-              <code>POST /v1/responses</code>（及 <code>GET</code> / <code>DELETE /v1/responses/{id}</code>）：OpenAI Responses API，支持 SSE 流式、工具调用、推理摘要与 <code>compaction</code> 续写，适配 Codex <code>wire_api = "responses"</code>。
+              <code>POST /v1/responses</code>{{ t("api.endpointResponsesDesc") }}
             </li>
             <li>
-              <code>POST /v1/responses/compact</code>：Codex / OpenAI 上下文压缩接口，按当前模型上下文长度自动汇总长对话并返回标准 <code>response.compaction</code> 结构。
+              <code>POST /v1/responses/compact</code>{{ t("api.endpointCompactDesc") }}
             </li>
             <li>
-              <code>POST /v1/chat/completions</code>：OpenAI Chat Completions 对话补全接口，支持 <code>stream=true/false</code>、<code>tools</code> 与 <code>developer</code> 角色。
+              <code>POST /v1/chat/completions</code>{{ t("api.endpointChatDesc") }}
             </li>
           </ul>
           <p class="co-field-help">
-            关闭对外 API 不会释放远端 GPU；停止实例或启动 ComfyUI 引擎时会自动卸载当前 GGUF 模型并回收显存。
+            {{ t("api.endpointFootNote") }}
           </p>
         </details>
       </ACard>
@@ -1034,7 +1264,9 @@ onUnmounted(() => {
       v-model:open="drawerOpen"
       :state="props.state"
       :busy="props.busy"
+      :loading="props.loading"
       @device="emit('device')"
+      @comfyui="emit('comfyui')"
       @sync="emit('sync')"
       @notify="(msg) => emit('notify', msg)"
       @error="(msg) => emit('error', msg)"
@@ -1088,6 +1320,9 @@ onUnmounted(() => {
 
 .co-api-header-sub {
   margin: 0;
+  min-height: 21px;
+  display: flex;
+  align-items: center;
   font-size: 13.5px;
   line-height: 1.55;
   color: var(--co-muted);
@@ -1325,6 +1560,35 @@ onUnmounted(() => {
   font-size: 13px;
   color: var(--co-text);
   overflow-wrap: anywhere;
+}
+
+.co-api-code-sk {
+  flex: 1;
+  min-width: 140px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+}
+
+.co-stat-tile-sk {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.co-api-tps-pending {
+  display: inline-flex;
+  align-items: center;
+}
+
+.co-api-code-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 122px;
+  background: var(--co-skeleton-card-bg);
 }
 
 .co-cred-actions {

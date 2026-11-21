@@ -20,6 +20,8 @@ export const colabOneExportWorkflowOutput = (id: string) =>
   ColabOneDesktop.exportWorkflowOutput(id);
 export const colabOneOpenComfyCanvas = (target: "window" | "browser") =>
   ColabOneDesktop.openComfyCanvas(target);
+export const colabOneSetLocale = (value: string) =>
+  ColabOneDesktop.setLocale(value);
 
 export async function colabOneGetLogDrawerState(): Promise<ColabOneLogDrawerState> {
   try {

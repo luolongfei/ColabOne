@@ -31,10 +31,11 @@ import {
   Switch as ASwitch,
   Tag as ATag,
   Textarea as ATextarea,
-  Tooltip as ATooltip,
   TypographyText as ATypographyText,
   TypographyTitle as ATypographyTitle,
 } from "ant-design-vue";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   PhArrowSquareOut,
   PhArrowsClockwise,
@@ -58,7 +59,7 @@ import {
   PhUserCircle,
 } from "@phosphor-icons/vue";
 import rawAppIcon from "../../console/resources/icon.svg?raw";
-import { colabOneLocale, buildColabOneTheme } from "./colabOneTheme";
+import { buildColabOneTheme } from "./colabOneTheme";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import {
   colabOneAppearance,
@@ -67,10 +68,19 @@ import {
   setColabOneAppearance,
   type ColabOneAppearance,
 } from "./appearance";
+import {
+  colabOneAntdLocale,
+  colabOneLocaleCode,
+  hydrateColabOneLocaleFromSettings,
+  t,
+  tb,
+  type ColabOneLocaleMeta,
+} from "./i18n";
 import ApiPanel from "./ApiPanel.vue";
 import ComfyPanel from "./ComfyPanel.vue";
 import BillingBar from "./BillingBar.vue";
 import BillingCard from "./BillingCard.vue";
+import LanguageSwitcher from "./LanguageSwitcher.vue";
 import LogDrawer from "./LogDrawer.vue";
 import ResourceMonitor from "./ResourceMonitor.vue";
 import FlagIcon from "./FlagIcon.vue";
@@ -103,9 +113,13 @@ const appIcon = rawAppIcon.replace(
   'viewBox="120 120 1014 1014"',
 );
 
-const colabOneTheme = computed(() => buildColabOneTheme(colabOneEffectiveAppearance.value));
+const colabOneTheme = computed(() =>
+  buildColabOneTheme(colabOneEffectiveAppearance.value, colabOneLocaleCode.value),
+);
 
 const state = ref(createColabOneSnapshot()),
+  snapshotLoaded = ref(false),
+  refreshingAccount = ref(false),
   page = ref("device"),
   ipcError = ref(""),
   ipcDisconnected = ref(false),
@@ -131,27 +145,29 @@ function formatError(
       /failed to fetch|networkerror|ipc.*closed/i.test(cleaned);
     return isLocalTransport
       ? friendlyErrorMessage(cleaned)
-      : "与远端实例的控制连接短暂中断，请稍候重试或刷新状态";
+      : t("status.remoteControlBriefDisconnect");
   }
   if (/mygo:\s*runtime not found/i.test(cleaned)) {
-    return "桌面运行环境正在初始化，请稍候…";
+    return t("status.desktopInitializing");
   }
   if (/timed?\s*out/i.test(cleaned)) {
-    return "请求响应超时，请检查网络或远端实例状态后重试";
+    return t("status.requestTimeout");
   }
   return friendlyErrorMessage(cleaned);
 }
 
 const bannerError = computed(() => {
-  if (ipcDisconnected.value && ipcError.value) return ipcError.value;
+  if (ipcDisconnected.value && ipcError.value) {
+    return formatError(ipcError.value, "ipc");
+  }
   if (actionError.value) return formatError(actionError.value, "action");
   if (state.value.error) return formatError(state.value.error, "state");
-  if (ipcError.value) return ipcError.value;
+  if (ipcError.value) return formatError(ipcError.value, "ipc");
   return "";
 });
 
 function showError(message: string) {
-  actionError.value = formatError(message, "action");
+  actionError.value = String(message ?? "");
 }
 
 function dismissError() {
@@ -173,12 +189,12 @@ const visibleFailedTasks = computed(() =>
     .slice(-1),
 );
 
-const nav = [
-  { id: "device", label: "远端设备", icon: PhHardDrives },
-  { id: "api", label: "对外 API", icon: PhGlobe },
-  { id: "comfyui", label: "ComfyUI", icon: PhFlowArrow },
-  { id: "settings", label: "设置", icon: PhGearSix },
-];
+const nav = computed(() => [
+  { id: "device", label: t("nav.device"), icon: PhHardDrives },
+  { id: "api", label: t("nav.api"), icon: PhGlobe },
+  { id: "comfyui", label: t("nav.comfy"), icon: PhFlowArrow },
+  { id: "settings", label: t("nav.settings"), icon: PhGearSix },
+]);
 
 const modelsDrawerOpen = ref(false);
 const contentRef = ref<ComponentPublicInstance | HTMLElement | null>(null);
@@ -340,22 +356,22 @@ const runtimeTagColor = computed<"success" | "processing" | "default">(() => {
   return ready.value ? "success" : "default";
 });
 
-const currentActivity = computed(
-  () =>
-    state.value.operation?.title ||
-    (task.value
+const currentActivity = computed(() =>
+  state.value.operation?.title
+    ? tb(state.value.operation.title)
+    : task.value
       ? {
-          download: "正在下载模型到远端",
-          load: "正在装载模型到显存",
-          public_chat: "正在处理对外 API 对话请求",
-          public_responses: "正在处理对外 API Responses 请求",
-          public_compact: "正在压缩对外 API 上下文",
-          comfyui_start: "正在准备并启动远端 ComfyUI",
-          comfyui_run: "正在远端运行 ComfyUI 工作流",
-        }[task.value.kind] || "远端任务进行中"
+          download: t("task.download"),
+          load: t("task.load"),
+          public_chat: t("task.publicChat"),
+          public_responses: t("task.publicResponses"),
+          public_compact: t("task.publicCompact"),
+          comfyui_start: t("task.comfyStart"),
+          comfyui_run: t("task.comfyRun"),
+        }[task.value.kind] || t("task.runningGeneric")
       : ready.value
-        ? "GPU 已就绪，等待操作"
-        : "等待启动远端 GPU"),
+        ? t("task.gpuReadyIdle")
+        : t("task.gpuWaitingStart"),
 );
 
 const showRelease = ref(false),
@@ -380,15 +396,17 @@ function navDotColor(id: string): string {
   return "#10b981";
 }
 
-const downloadThreadOptions = [
-  { label: "16 线程", value: 16 },
-  { label: "32 线程", value: 32 },
-];
-const appearanceSegmentedOptions = COLABONE_APPEARANCE_OPTIONS.map((option) => ({
-  value: option.value,
-  title: option.label,
-  payload: { label: option.label },
-}));
+const downloadThreadOptions = computed(() => [
+  { label: t("settings.threadsOption", { count: 16 }), value: 16 },
+  { label: t("settings.threadsOption", { count: 32 }), value: 32 },
+]);
+const appearanceSegmentedOptions = computed(() =>
+  COLABONE_APPEARANCE_OPTIONS.map((option) => ({
+    value: option.value,
+    title: option.label,
+    payload: { label: option.label },
+  })),
+);
 
 const accountInstances = computed<AccountInstance[]>(() => {
   const raw = state.value.account.instances || [];
@@ -428,38 +446,72 @@ const managedInstances = computed(() =>
 const externalInstances = computed(() =>
   accountInstances.value.filter((i) => !i.managed),
 );
+const showInstancesSkeleton = computed(
+  () =>
+    (accountInstances.value.length > 0 && refreshingAccount.value) ||
+    (snapshotLoaded.value &&
+      state.value.setup.colab &&
+      !bannerError.value &&
+      (!state.value.account.checked_at || refreshingAccount.value) &&
+      (state.value.account.assignments ?? 0) > 0 &&
+      !accountInstances.value.length),
+);
+const instanceSkeletonCount = computed(() =>
+  Math.min(
+    3,
+    Math.max(
+      1,
+      accountInstances.value.length || state.value.account.assignments || 1,
+    ),
+  ),
+);
+const settingsEmailLoading = computed(
+  () =>
+    !snapshotLoaded.value ||
+    (state.value.setup.colab &&
+      !state.value.account.email &&
+      (refreshingAccount.value ||
+        (!state.value.account.checked_at && !bannerError.value))),
+);
 const shapeLabel = (shape?: string) =>
-  shape === "HIGH_RAM" ? "高内存" : shape === "STANDARD" ? "标准内存" : "";
+  shape === "HIGH_RAM"
+    ? t("device.shapeHighRam")
+    : shape === "STANDARD"
+      ? t("device.shapeStandard")
+      : "";
 const taskKindLabel = (kind?: string) =>
   (kind &&
     {
-      download: "模型下载中",
-      load: "模型装载中",
-      public_chat: "对外 API 推理中",
-      public_responses: "对外 API Responses 推理中",
-      public_compact: "对外 API 上下文压缩中",
-      comfyui_start: "准备 ComfyUI 中",
-      comfyui_run: "运行 ComfyUI 工作流中",
+      download: t("task.kindDownload"),
+      load: t("task.kindLoad"),
+      public_chat: t("task.kindPublicChat"),
+      public_responses: t("task.kindPublicResponses"),
+      public_compact: t("task.kindPublicCompact"),
+      comfyui_start: t("task.kindComfyStart"),
+      comfyui_run: t("task.kindComfyRun"),
     }[kind]) ||
   "";
 const taskBarTitle = (kind: string) =>
   ({
-    download: "正在下载模型到远端",
-    load: "正在装载模型到远端显存",
-    public_chat: "正在处理对外 API 请求",
-    public_responses: "正在处理对外 API Responses 请求",
-    public_compact: "正在压缩对外 API 上下文",
-    comfyui_start: "正在准备并启动远端 ComfyUI",
-    comfyui_run: "正在远端运行 ComfyUI 工作流",
-  })[kind] || "正在执行远端任务";
+    download: t("task.download"),
+    load: t("task.loadRemote"),
+    public_chat: t("task.publicChatShort"),
+    public_responses: t("task.publicResponses"),
+    public_compact: t("task.publicCompact"),
+    comfyui_start: t("task.comfyStart"),
+    comfyui_run: t("task.comfyRun"),
+  })[kind] || t("task.executingGeneric");
 
-const GPU_SPECS = [
-  { id: "T4", label: "T4 · 16 GB 显存（高性价比）" },
-  { id: "L4", label: "L4 · 24 GB 显存（均衡进阶）" },
-  { id: "A100", label: "A100 · 40/80 GB 显存（大模型 / ComfyUI）" },
-  { id: "H100", label: "H100 · 80 GB 显存（旗舰算力）" },
-  { id: "G4", label: "G4 · 96 GB 显存（RTX PRO 6000）" },
-] as const;
+const GPU_SPECS = computed(
+  () =>
+    [
+      { id: "T4", label: t("device.gpuSpecT4") },
+      { id: "L4", label: t("device.gpuSpecL4") },
+      { id: "A100", label: t("device.gpuSpecA100") },
+      { id: "H100", label: t("device.gpuSpecH100") },
+      { id: "G4", label: t("device.gpuSpecG4") },
+    ] as const,
+);
 
 const form = ref({
   gpu: "T4",
@@ -510,7 +562,7 @@ const countdown = computed(
     idleRemaining.value <= idle.value.countdown_seconds,
 );
 const duration = (seconds: number | null) => {
-  if (seconds === null) return "计算中";
+  if (seconds === null) return t("common.calculating");
   const whole = Math.ceil(Math.max(0, seconds));
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 };
@@ -604,6 +656,10 @@ function notify(text: string) {
   toastTimer = setTimeout(() => (toast.value = ""), 3500);
 }
 
+function onLocaleChanged(meta: ColabOneLocaleMeta) {
+  notify(t("nav.languageSwitched", { label: meta.nativeLabel }));
+}
+
 async function syncSnapshot() {
   const value = await colabOneSnapshot();
   const wasDisconnected = ipcDisconnected.value;
@@ -613,7 +669,8 @@ async function syncSnapshot() {
   if (
     actionError.value &&
     (isTransientIpcError(actionError.value) ||
-      actionError.value === "与本地后台服务的连接短暂中断，正在自动重连…")
+      formatError(actionError.value, "action") ===
+        t("status.ipcReconnectingDetail"))
   ) {
     actionError.value = "";
   }
@@ -632,7 +689,9 @@ async function syncSnapshot() {
   if (value.runtime.idle?.server_time !== state.value.runtime.idle?.server_time)
     snapshotAt.value = Date.now();
   state.value = value;
+  snapshotLoaded.value = true;
   syncFormFromSettings(value.settings);
+  hydrateColabOneLocaleFromSettings(value.settings?.locale);
 }
 
 async function refresh() {
@@ -642,7 +701,7 @@ async function refresh() {
     ipcFailures += 1;
     if (ipcFailures >= 2) {
       ipcDisconnected.value = true;
-      ipcError.value = formatError(e, "ipc");
+      ipcError.value = String(e ?? "");
     }
   }
   if (!stopped) timer = setTimeout(refresh, 600);
@@ -656,7 +715,7 @@ async function act(action: string, payload: Record<string, unknown> = {}) {
     await syncSnapshot().catch(() => {});
     return res;
   } catch (e) {
-    actionError.value = formatError(e, "action");
+    actionError.value = String(e ?? "");
     return null;
   } finally {
     busy.value = false;
@@ -664,8 +723,13 @@ async function act(action: string, payload: Record<string, unknown> = {}) {
 }
 
 async function refreshAccount() {
-  if (await act("account.refresh")) {
-    notify("账户计费与实例状态已刷新");
+  refreshingAccount.value = true;
+  try {
+    if (await act("account.refresh")) {
+      notify(t("device.toastRefreshed"));
+    }
+  } finally {
+    refreshingAccount.value = false;
   }
 }
 
@@ -680,11 +744,13 @@ async function changeIdleMinutes(rawMinutes: unknown) {
   try {
     await colabOneCommand("settings.save", { idle_minutes: minutes });
     await syncSnapshot().catch(() => {});
-    notify(`已将空闲自动释放设为 ${formatIdlePolicyLabel(minutes)}`);
+    notify(
+      t("device.toastIdleSet", { policy: formatIdlePolicyLabel(minutes) }),
+    );
   } catch (e) {
     form.value.idle_minutes = previous;
     lastSyncedSettings.idle_minutes = previous;
-    actionError.value = formatError(e, "action");
+    actionError.value = String(e ?? "");
   } finally {
     savingIdle.value = false;
   }
@@ -700,11 +766,11 @@ async function changeDownloadThreads(rawThreads: unknown) {
   try {
     await colabOneCommand("settings.save", { download_threads: threads });
     await syncSnapshot().catch(() => {});
-    notify(`已将远端下载并发设为 ${threads} 线程`);
+    notify(t("device.toastThreadsSet", { threads }));
   } catch (e) {
     form.value.download_threads = previous;
     lastSyncedSettings.download_threads = previous;
-    actionError.value = formatError(e, "action");
+    actionError.value = String(e ?? "");
   }
 }
 
@@ -724,11 +790,11 @@ async function changeDefaultGpu(raw: unknown) {
   try {
     await colabOneCommand("settings.save", { gpu });
     await syncSnapshot().catch(() => {});
-    notify(`已将默认 GPU 设为 ${gpu}`);
+    notify(t("device.toastDefaultGpuSet", { gpu }));
   } catch (e) {
     form.value.gpu = previous;
     lastSyncedSettings.gpu = previous;
-    actionError.value = formatError(e, "action");
+    actionError.value = String(e ?? "");
   }
 }
 
@@ -783,7 +849,7 @@ async function finishLogin() {
   if (!reply) return;
   if (await act("auth.colab.finish", { code: reply })) {
     code.value = "";
-    notify("正在验证授权，请稍候");
+    notify(t("settings.verifyingAuthToast"));
   }
 }
 async function pasteLogin() {
@@ -791,7 +857,7 @@ async function pasteLogin() {
     code.value = await colabOneReadClipboard();
     await finishLogin();
   } catch {
-    actionError.value = "未能读取剪贴板，请直接粘贴到下方输入框";
+    actionError.value = t("settings.clipboardReadFailed");
   }
 }
 watch(
@@ -802,7 +868,7 @@ watch(
       try {
         await colabOneOpenURL(url);
       } catch (e) {
-        actionError.value = formatError(e, "action");
+        actionError.value = String(e ?? "");
       }
     }
   },
@@ -827,7 +893,7 @@ async function save() {
       download_threads: form.value.download_threads,
     };
     form.value.hf_token = "";
-    notify("设置已保存");
+    notify(t("device.toastSettingsSaved"));
   }
 }
 
@@ -854,6 +920,7 @@ async function startNew() {
 }
 
 const monitorBusy = ref(false);
+const monitorSwitching = ref(false);
 const effectiveMonitor = computed(() =>
   resolveColabOneMonitorFallback(state.value, activeVramModel.value?.name || ""),
 );
@@ -861,14 +928,16 @@ const effectiveMonitor = computed(() =>
 async function selectMonitorInstance(endpoint: string) {
   if (!endpoint || endpoint === effectiveMonitor.value.endpoint) return;
   monitorBusy.value = true;
+  monitorSwitching.value = true;
   actionError.value = "";
   try {
     await colabOneCommand("monitor.select", { endpoint });
     await syncSnapshot().catch(() => {});
   } catch (e) {
-    actionError.value = formatError(e, "action");
+    actionError.value = String(e ?? "");
   } finally {
     monitorBusy.value = false;
+    monitorSwitching.value = false;
   }
 }
 
@@ -879,7 +948,7 @@ async function toggleMonitorPause(paused: boolean) {
     await colabOneCommand("monitor.pause", { paused });
     await syncSnapshot().catch(() => {});
   } catch (e) {
-    actionError.value = formatError(e, "action");
+    actionError.value = String(e ?? "");
   } finally {
     monitorBusy.value = false;
   }
@@ -887,14 +956,16 @@ async function toggleMonitorPause(paused: boolean) {
 
 async function retryMonitor() {
   monitorBusy.value = true;
+  monitorSwitching.value = true;
   actionError.value = "";
   try {
     await colabOneCommand("monitor.retry");
     await syncSnapshot().catch(() => {});
   } catch (e) {
-    actionError.value = formatError(e, "action");
+    actionError.value = String(e ?? "");
   } finally {
     monitorBusy.value = false;
+    monitorSwitching.value = false;
   }
 }
 
@@ -985,12 +1056,12 @@ async function updateShortcut(
   if (res) {
     notify(
       remove
-        ? "已移除快捷方式"
+        ? t("settings.toastShortcutRemoved")
         : target === "desktop"
-          ? "已创建桌面快捷方式"
+          ? t("settings.toastShortcutDesktop")
           : target === "both"
-            ? "已添加到开始菜单与桌面"
-            : "已添加到开始菜单，打开后可在底部任务栏右键固定",
+            ? t("settings.toastShortcutBoth")
+            : t("settings.toastShortcutStartMenu"),
     );
   }
 }
@@ -999,13 +1070,13 @@ async function copy(text: string) {
   try {
     await colabOneWriteClipboard(text);
     await navigator.clipboard?.writeText(text).catch(() => {});
-    notify("已复制");
+    notify(t("common.copied"));
   } catch {
     try {
       await navigator.clipboard.writeText(text);
-      notify("已复制");
+      notify(t("common.copied"));
     } catch {
-      actionError.value = "复制失败，请手动选择并复制";
+      actionError.value = t("common.copyFailed");
     }
   }
 }
@@ -1035,7 +1106,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <AConfigProvider :theme="colabOneTheme" :locale="colabOneLocale">
+  <AConfigProvider :theme="colabOneTheme" :locale="colabOneAntdLocale">
     <ALayout
       class="co-shell co-app-shell"
       :class="{ 'co-logs-open': logsOpen }"
@@ -1049,7 +1120,7 @@ onUnmounted(() => {
               <button
                 type="button"
                 class="co-brand"
-                aria-label="返回远端设备首页"
+                :aria-label="t('nav.brandAria')"
                 @click="selectPage('device')"
               >
                 <span
@@ -1064,7 +1135,7 @@ onUnmounted(() => {
             <div class="co-nav-center">
               <nav
                 class="co-nav-pill-track"
-                aria-label="主导航"
+                :aria-label="t('nav.mainAria')"
                 role="menubar"
               >
                 <button
@@ -1097,64 +1168,73 @@ onUnmounted(() => {
             </div>
 
             <div class="co-nav-right">
-              <ATooltip
+              <ColabOneTooltip
                 :title="
                   accountStale
-                    ? '状态超过 60 秒未同步，点击刷新账户实例与计费'
-                    : '刷新账户实例与计费状态'
+                    ? t('nav.refreshStaleTooltip')
+                    : t('nav.refreshTooltip')
                 "
+                :disabled="!state.setup.colab || busy || !!state.operation"
+                placement="bottom"
               >
                 <button
                   type="button"
                   class="co-nav-circle-btn"
-                  aria-label="刷新账户实例"
+                  :class="{ 'is-spinning': refreshingAccount }"
+                  :aria-label="t('nav.refreshAria')"
                   :disabled="!state.setup.colab || busy || !!state.operation"
                   @click="refreshAccount"
                 >
                   <PhArrowsClockwise :size="17" />
                 </button>
-              </ATooltip>
+              </ColabOneTooltip>
 
-              <ATooltip
+              <ColabOneTooltip
                 :title="
                   colabOneEffectiveAppearance === 'dark'
-                    ? '切换到浅色模式'
-                    : '切换到深色模式'
+                    ? t('nav.switchLight')
+                    : t('nav.switchDark')
                 "
+                placement="bottom"
               >
                 <button
                   type="button"
                   class="co-nav-circle-btn"
                   :aria-label="
                     colabOneEffectiveAppearance === 'dark'
-                      ? '切换到浅色模式'
-                      : '切换到深色模式'
+                      ? t('nav.switchLight')
+                      : t('nav.switchDark')
                   "
                   @click="toggleAppearance($event)"
                 >
                   <PhSun v-if="colabOneEffectiveAppearance === 'dark'" :size="17" />
                   <PhMoon v-else :size="17" />
                 </button>
-              </ATooltip>
+              </ColabOneTooltip>
 
-              <ATooltip
+              <LanguageSwitcher mode="topbar" @changed="onLocaleChanged" />
+
+              <ColabOneTooltip
                 :title="
-                  logsOpen ? '关闭运行日志 (Ctrl+J)' : '打开运行日志 (Ctrl+J)'
+                  logsOpen ? t('nav.logsOpenTooltip') : t('nav.logsClosedTooltip')
                 "
+                placement="bottom"
               >
                 <button
                   type="button"
                   class="co-logs-trigger"
                   :class="{ 'is-active': logsOpen }"
-                  :aria-label="logsOpen ? '收起运行日志' : '展开运行日志'"
+                  :aria-label="
+                    logsOpen ? t('nav.logsCollapseAria') : t('nav.logsExpandAria')
+                  "
                   :aria-expanded="logsOpen"
                   aria-controls="activity-panel"
                   @click="setLogsOpen(!logsOpen)"
                 >
                   <PhTerminalWindow :size="16" aria-hidden="true" />
-                  <span class="co-logs-trigger-label">运行日志</span>
+                  <span class="co-logs-trigger-label">{{ t("nav.logs") }}</span>
                 </button>
-              </ATooltip>
+              </ColabOneTooltip>
             </div>
           </div>
         </header>
@@ -1163,38 +1243,60 @@ onUnmounted(() => {
         <div class="co-status-bar">
           <div class="co-status-bar-inner">
             <div class="co-topbar-left">
-              <ATag :color="runtimeTagColor" class="co-runtime-tag">
-                <ABadge :status="runtimeBadgeStatus" />
-                <span>{{
-                  ipcDisconnected
-                    ? "本地服务重连中"
-                    : COLABONE_STATUS_LABELS[state.runtime.state] || state.runtime.state
-                }}</span>
-              </ATag>
+              <div
+                v-if="!snapshotLoaded"
+                class="co-topbar-sk"
+                role="status"
+                aria-busy="true"
+              >
+                <span class="co-sr-only">{{ t("common.loading") }}</span>
+                <ColabOneSkeleton :width="68" :height="22" variant="pill" inline />
+                <ColabOneSkeleton
+                  :width="92"
+                  :height="14"
+                  variant="text"
+                  tone="subtle"
+                  :delay="70"
+                  inline
+                />
+              </div>
 
-              <span class="co-gpu-name co-connection-gpu">
-                {{
-                  state.runtime.state === "stopped"
-                    ? `预选 ${form.gpu}`
-                    : state.runtime.gpu?.name || form.gpu
-                }}
-              </span>
+              <template v-else>
+                <ATag :color="runtimeTagColor" class="co-runtime-tag co-sk-reveal">
+                  <ABadge :status="runtimeBadgeStatus" />
+                  <span>{{
+                    ipcDisconnected
+                      ? t("status.ipcReconnecting")
+                      : COLABONE_STATUS_LABELS[state.runtime.state] || state.runtime.state
+                  }}</span>
+                </ATag>
 
-              <ATooltip
+                <span class="co-gpu-name co-connection-gpu co-sk-reveal">
+                  {{
+                    state.runtime.state === "stopped"
+                      ? t("status.preselectedGpu", { gpu: form.gpu })
+                      : state.runtime.gpu?.name || form.gpu
+                  }}
+                </span>
+              </template>
+
+              <ColabOneTooltip
                 v-if="
                   activeLocation?.country && state.runtime.state !== 'stopped'
                 "
                 :title="locationTooltip(activeLocation)"
+                placement="bottom"
               >
                 <ATag class="co-location-tag co-location-chip">
                   <FlagIcon :code="activeLocation.country" :size="14" />
                   <span>{{ locationShort(activeLocation) }}</span>
                 </ATag>
-              </ATooltip>
+              </ColabOneTooltip>
 
-              <ATooltip
+              <ColabOneTooltip
                 v-if="activeVramModel && page !== 'api'"
-                :title="`已装载 ${activeVramModel.name}，点击前往对外 API`"
+                :title="t('status.loadedModelChipTitle', { name: activeVramModel.name })"
+                placement="bottom"
               >
                 <AButton
                   size="small"
@@ -1206,13 +1308,13 @@ onUnmounted(() => {
                     activeVramModel.name
                   }}</span>
                 </AButton>
-              </ATooltip>
+              </ColabOneTooltip>
 
               <ASelect
                 v-if="managedInstances.length > 1"
                 size="small"
                 class="co-instance-select co-topbar-instance-select"
-                aria-label="当前工作实例"
+                :aria-label="t('status.activeInstanceAria')"
                 :value="state.runtime.id || state.active_endpoint"
                 :disabled="busy || !!state.operation"
                 :dropdown-match-select-width="false"
@@ -1237,12 +1339,16 @@ onUnmounted(() => {
             <div class="co-topbar-right co-header-right">
               <BillingBar
                 :account="state.account"
+                :setup-colab="state.setup.colab"
                 :runtime-state="state.runtime.state"
                 :runtime-id="state.runtime.id"
                 :idle="idle"
                 :idle-remaining="idleRemaining"
                 :idle-minutes="form.idle_minutes"
                 :now-ms="clockNow"
+                :loading="!snapshotLoaded"
+                :refreshing="refreshingAccount"
+                :has-error="Boolean(bannerError)"
                 @touch="interaction()"
               />
             </div>
@@ -1264,7 +1370,7 @@ onUnmounted(() => {
               v-if="ready && (state.runtime.protocol || 0) < 7"
               type="info"
               show-icon
-              message="当前实例需要更新远端服务，以启用实时硬件监控、对外 API 与 ComfyUI 工作流引擎；请先结束任务并卸载模型，模型缓存会保留。"
+              :message="t('status.upgradeBanner')"
             >
               <template #action>
                 <AButton
@@ -1275,7 +1381,7 @@ onUnmounted(() => {
                   "
                   @click="act('runtime.upgrade')"
                 >
-                  更新远端服务
+                  {{ t("status.upgradeAction") }}
                 </AButton>
               </template>
             </AAlert>
@@ -1298,7 +1404,7 @@ onUnmounted(() => {
               <template #message>
                 <span class="co-op-message" role="status">
                   <ASpin size="small" />
-                  <span>{{ state.operation.title }}</span>
+                  <span>{{ tb(state.operation.title) }}</span>
                 </span>
               </template>
             </AAlert>
@@ -1317,7 +1423,7 @@ onUnmounted(() => {
 
         <!-- Scrollable Workspace Content -->
         <ALayoutContent ref="contentRef" class="co-content">
-          <!-- STAGE 1: 远端设备 -->
+          <!-- STAGE 1: Remote Device -->
           <main
             v-if="page === 'device'"
             key="device"
@@ -1326,9 +1432,9 @@ onUnmounted(() => {
             <div class="co-page-inner">
               <div class="co-page-header">
                 <div>
-                  <h1 class="co-page-title">远端设备</h1>
+                  <h1 class="co-page-title">{{ t("device.title") }}</h1>
                   <p class="co-page-subtitle">
-                    按需启动远端 GPU 实例，实时掌握余额消耗与硬件负载。
+                    {{ t("device.subtitle") }}
                   </p>
                 </div>
                 <ATag color="blue" :bordered="false">Google Colab</ATag>
@@ -1336,18 +1442,16 @@ onUnmounted(() => {
 
               <!-- Unauthenticated Google Callout -->
               <ACard
-                v-if="!state.setup.colab"
-                class="co-setup-callout co-setup-callout"
+                v-if="snapshotLoaded && !state.setup.colab"
+                class="co-setup-callout co-sk-reveal"
               >
                 <div class="co-callout-row">
                   <div class="co-callout-icon" aria-hidden="true">
                     <PhUserCircle :size="26" weight="duotone" />
                   </div>
                   <div class="co-callout-copy">
-                    <h3>连接你的 Google 账户</h3>
-                    <p>
-                      登录授权一次即可按需启动远端 GPU，凭据安全保存在本机系统凭据库。
-                    </p>
+                    <h3>{{ t("device.connectTitle") }}</h3>
+                    <p>{{ t("device.connectDesc") }}</p>
                   </div>
                   <ASpace :size="8" wrap>
                     <AButton
@@ -1358,10 +1462,10 @@ onUnmounted(() => {
                       <template #icon>
                         <PhArrowSquareOut :size="15" />
                       </template>
-                      登录 Google
+                      {{ t("device.signInGoogle") }}
                     </AButton>
                     <AButton @click="selectPage('settings')">
-                      <span>更多设置</span>
+                      <span>{{ t("device.moreSettings") }}</span>
                       <PhCaretRight :size="14" />
                     </AButton>
                   </ASpace>
@@ -1372,57 +1476,146 @@ onUnmounted(() => {
               <div class="co-device-hero-grid">
                 <!-- Primary GPU Control Card -->
                 <ACard class="co-device-card co-device-panel">
-                <div class="co-device-head co-device-title">
+                <template v-if="!snapshotLoaded">
+                  <div
+                    class="co-device-head co-device-title"
+                    role="status"
+                    aria-busy="true"
+                  >
+                    <span class="co-sr-only">{{ t("common.loading") }}</span>
+                    <div class="co-device-icon" aria-hidden="true">
+                      <PhHardDrives :size="26" weight="duotone" />
+                    </div>
+                    <div class="co-device-title-main co-device-sk-title">
+                      <ColabOneSkeleton :width="176" :height="24" variant="text" />
+                      <ColabOneSkeleton
+                        width="72%"
+                        :height="16"
+                        variant="text"
+                        tone="subtle"
+                        :delay="60"
+                      />
+                    </div>
+                    <div class="co-device-badges">
+                      <ColabOneSkeleton
+                        :width="64"
+                        :height="22"
+                        variant="pill"
+                        tone="subtle"
+                        :delay="95"
+                      />
+                    </div>
+                  </div>
+
+                  <ADivider class="co-card-divider" />
+
+                  <div class="co-device-controls" aria-hidden="true">
+                    <div class="co-device-fields">
+                      <div class="co-control-field">
+                        <span class="co-field-label">{{ t("device.gpuModelLabel") }}</span>
+                        <ColabOneSkeleton
+                          :width="300"
+                          :height="32"
+                          :radius="8"
+                          variant="rect"
+                          :delay="75"
+                        />
+                      </div>
+                      <div class="co-control-field">
+                        <span class="co-field-label">{{ t("device.idleReleaseLabel") }}</span>
+                        <ColabOneSkeleton
+                          :width="172"
+                          :height="32"
+                          :radius="8"
+                          variant="rect"
+                          tone="subtle"
+                          :delay="120"
+                        />
+                      </div>
+                    </div>
+                    <div class="co-device-actions">
+                      <ColabOneSkeleton
+                        :width="112"
+                        :height="32"
+                        variant="button"
+                        tone="accent"
+                        :delay="150"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="co-device-meta-strips" aria-hidden="true">
+                    <div class="co-device-policy co-device-sk-policy">
+                      <ColabOneSkeleton
+                        :width="210"
+                        :height="14"
+                        variant="text"
+                        tone="subtle"
+                        :delay="175"
+                      />
+                      <ColabOneSkeleton
+                        :width="280"
+                        :height="12"
+                        variant="text"
+                        tone="subtle"
+                        :delay="215"
+                      />
+                    </div>
+                  </div>
+                </template>
+
+                <template v-else>
+                <div class="co-device-head co-device-title co-sk-reveal">
                   <div class="co-device-icon" aria-hidden="true">
                     <PhHardDrives :size="26" weight="duotone" />
                   </div>
                   <div class="co-device-title-main">
-                    <h2>{{ state.runtime.gpu?.name || "Colab 远端 GPU" }}</h2>
+                    <h2>{{ state.runtime.gpu?.name || t("device.fallbackGpuName") }}</h2>
                     <div class="co-device-subtitle">
                       <template v-if="ready && activeVramModel">
                         <code v-if="state.runtime.id" class="co-runtime-id">{{
                           state.runtime.id
                         }}</code>
-                        <span>已装载 {{ activeVramModel.name }}</span>
+                        <span>{{ t("device.loadedModel", { name: activeVramModel.name }) }}</span>
                         <AButton
                           type="link"
                           size="small"
                           class="co-inline-link"
                           @click="selectPage('api')"
                         >
-                          前往对外 API →
+                          {{ t("device.goToApi") }}
                         </AButton>
                       </template>
                       <template v-else-if="ready && state.runtime.comfyui?.running">
                         <code v-if="state.runtime.id" class="co-runtime-id">{{
                           state.runtime.id
                         }}</code>
-                        <span>ComfyUI 工作流引擎运行中</span>
+                        <span>{{ t("device.comfyRunning") }}</span>
                         <AButton
                           type="link"
                           size="small"
                           class="co-inline-link"
                           @click="selectPage('comfyui')"
                         >
-                          前往 ComfyUI →
+                          {{ t("device.goToComfy") }}
                         </AButton>
                       </template>
                       <template v-else-if="ready">
                         <code v-if="state.runtime.id" class="co-runtime-id">{{
                           state.runtime.id
                         }}</code>
-                        <span>GPU 已就绪，尚未装载模型</span>
+                        <span>{{ t("device.readyNoModel") }}</span>
                         <AButton
                           type="link"
                           size="small"
                           class="co-inline-link"
                           @click="openModels"
                         >
-                          去选择模型 →
+                          {{ t("device.chooseModel") }}
                         </AButton>
                       </template>
                       <template v-else-if="state.runtime.state === 'starting'">
-                        <span>正在分配并初始化 {{ form.gpu }} 远端运行环境…</span>
+                        <span>{{ t("device.startingEnv", { gpu: form.gpu }) }}</span>
                       </template>
                       <template v-else-if="state.runtime.id">
                         <code class="co-runtime-id">{{
@@ -1430,12 +1623,12 @@ onUnmounted(() => {
                         }}</code>
                       </template>
                       <template v-else>
-                        <span>尚未分配运行实例 · 启动后开始计费，停止后立即释放</span>
+                        <span>{{ t("device.standbyHint") }}</span>
                       </template>
                     </div>
                   </div>
                   <div class="co-device-badges co-device-badges">
-                    <ATooltip
+                    <ColabOneTooltip
                       v-if="
                         activeLocation?.country &&
                         state.runtime.state !== 'stopped'
@@ -1446,14 +1639,14 @@ onUnmounted(() => {
                         <FlagIcon :code="activeLocation.country" :size="14" />
                         <span>{{ locationFull(activeLocation) }}</span>
                       </ATag>
-                    </ATooltip>
+                    </ColabOneTooltip>
                     <ATag
                       v-if="ready && state.setup.drive"
                       color="success"
                       :bordered="false"
                     >
                       <PhCloud :size="13" />
-                      <span>云盘已挂载</span>
+                      <span>{{ t("device.driveMounted") }}</span>
                     </ATag>
                     <ATag :color="ready ? 'success' : 'default'">
                       {{ COLABONE_STATUS_LABELS[state.runtime.state] || state.runtime.state }}
@@ -1466,11 +1659,12 @@ onUnmounted(() => {
                 <div class="co-device-controls co-device-controls">
                   <div class="co-device-fields">
                     <div class="co-control-field">
-                      <span class="co-field-label">GPU 型号</span>
+                      <span class="co-field-label">{{ t("device.gpuModelLabel") }}</span>
                       <ASelect
                         :value="form.gpu"
-                        aria-label="GPU 型号"
+                        :aria-label="t('device.gpuModelAria')"
                         class="co-select-gpu"
+                        :dropdown-match-select-width="false"
                         :disabled="busy || !!state.operation"
                         @change="onGpuSelect"
                       >
@@ -1485,11 +1679,12 @@ onUnmounted(() => {
                     </div>
 
                     <div class="co-control-field">
-                      <span class="co-field-label">空闲自动释放</span>
+                      <span class="co-field-label">{{ t("device.idleReleaseLabel") }}</span>
                       <ASelect
                         :value="form.idle_minutes"
-                        aria-label="空闲自动释放时长"
+                        :aria-label="t('device.idleReleaseAria')"
                         class="co-select-idle"
+                        :dropdown-match-select-width="false"
                         :disabled="savingIdle"
                         @change="changeIdleMinutes"
                       >
@@ -1511,12 +1706,14 @@ onUnmounted(() => {
                   </div>
 
                   <div class="co-device-actions co-device-action-group">
-                    <ATooltip
+                    <ColabOneTooltip
                       v-if="state.runtime.state === 'stopped'"
                       :title="
                         !state.setup.colab
-                          ? '请先登录 Google 账户'
-                          : state.operation?.title || ''
+                          ? t('device.signInFirstTooltip')
+                          : state.operation?.title
+                            ? tb(state.operation.title)
+                            : ''
                       "
                     >
                       <AButton
@@ -1529,9 +1726,9 @@ onUnmounted(() => {
                         <template #icon>
                           <PhPlay :size="14" weight="fill" />
                         </template>
-                        启动 GPU
+                        {{ t("device.startGpu") }}
                       </AButton>
-                    </ATooltip>
+                    </ColabOneTooltip>
                     <AButton
                       v-else
                       type="primary"
@@ -1543,7 +1740,7 @@ onUnmounted(() => {
                       <template #icon>
                         <PhPlus :size="14" weight="bold" />
                       </template>
-                      新增实例
+                      {{ t("device.addInstance") }}
                     </AButton>
 
                     <AButton
@@ -1559,7 +1756,7 @@ onUnmounted(() => {
                       <template #icon>
                         <PhStop :size="14" weight="fill" />
                       </template>
-                      仅停止当前实例
+                      {{ t("device.stopCurrentOnly") }}
                     </AButton>
 
                     <AButton
@@ -1579,10 +1776,10 @@ onUnmounted(() => {
                       </template>
                       {{
                         instanceCount > 1
-                          ? `停止全部（${instanceCount} 个实例）`
+                          ? t("device.stopAllCount", { count: instanceCount })
                           : instanceCount === 1
-                            ? "停止实例"
-                            : "停止远端实例"
+                            ? t("device.stopInstance")
+                            : t("device.stopRemoteInstance")
                       }}
                     </AButton>
                   </div>
@@ -1597,7 +1794,7 @@ onUnmounted(() => {
                         class="co-policy-live is-active"
                       >
                         <ABadge status="processing" />
-                        <span>任务运行中 · 自动释放已暂停</span>
+                        <span>{{ t("device.idlePaused") }}</span>
                       </div>
                       <div
                         v-else
@@ -1605,11 +1802,11 @@ onUnmounted(() => {
                         :class="{ 'is-urgent': countdown }"
                       >
                         <span>
-                          剩余
+                          {{ t("device.idleCountdownRemaining") }}
                           <b class="co-tabular">{{
                             formatCountdownClock(idleRemaining)
                           }}</b>
-                          自动释放
+                          {{ t("device.idleCountdownSuffix") }}
                         </span>
                         <AButton
                           type="link"
@@ -1617,20 +1814,23 @@ onUnmounted(() => {
                           class="co-inline-link"
                           @click="interaction()"
                         >
-                          重置
+                          {{ t("device.idleReset") }}
                         </AButton>
                       </div>
                       <span class="co-policy-hint">
-                        下载、装载与推理期间自动暂停倒计时
+                        {{ t("device.idlePauseHint") }}
                       </span>
                     </template>
                     <template v-else>
                       <div class="co-policy-live">
-                        空闲满
-                        {{ formatIdlePolicyLabel(form.idle_minutes) }} 自动释放
+                        {{
+                          t("device.idlePolicySummary", {
+                            policy: formatIdlePolicyLabel(form.idle_minutes),
+                          })
+                        }}
                       </div>
                       <span class="co-policy-hint">
-                        无操作和任务时倒计时释放，运行任务期间自动暂停
+                        {{ t("device.idlePolicyHint") }}
                       </span>
                     </template>
                   </div>
@@ -1644,12 +1844,27 @@ onUnmounted(() => {
                     <span class="co-drive-text">
                       <template v-if="state.setup.drive">
                         {{
-                          state.runtime.drive?.error ||
-                          `已自动挂载 Google 云盘（My Drive / ${state.runtime.drive?.remote_folder || "ColabOne_Drive"}${state.runtime.drive?.free_bytes ? ` · 可用 ${bytes(state.runtime.drive.free_bytes)}` : ""}）· ${state.runtime.drive?.pending ? `${state.runtime.drive.pending} 项待同步` : "模型清单、ComfyUI 工作流与输出作品自动持久化"}`
+                          state.runtime.drive?.error
+                            ? tb(state.runtime.drive.error)
+                            : t("device.driveMountedFull", {
+                                folder:
+                                  state.runtime.drive?.remote_folder ||
+                                  "ColabOne_Drive",
+                                free: state.runtime.drive?.free_bytes
+                                  ? t("device.driveFreeSegment", {
+                                      size: bytes(state.runtime.drive.free_bytes),
+                                    })
+                                  : "",
+                                tail: state.runtime.drive?.pending
+                                  ? t("device.drivePendingSync", {
+                                      count: state.runtime.drive.pending,
+                                    })
+                                  : t("device.driveAutoPersist"),
+                              })
                         }}
                       </template>
                       <template v-else>
-                        已授权 Google 云盘（My Drive / ColabOne_Drive），可随时挂载以自动同步模型清单与 ComfyUI 作品。
+                        {{ t("device.driveAuthorizedHint") }}
                       </template>
                     </span>
                     <AButton
@@ -1657,14 +1872,22 @@ onUnmounted(() => {
                       :disabled="busy || !!state.operation"
                       @click="act(state.setup.drive ? 'drive.sync' : 'drive.connect')"
                     >
-                      {{ state.setup.drive ? "立即同步" : "立即挂载云盘" }}
+                      {{
+                        state.setup.drive
+                          ? t("device.syncNow")
+                          : t("device.mountDriveNow")
+                      }}
                     </AButton>
                   </div>
                 </div>
+                </template>
               </ACard>
 
               <!-- Billing Card -->
-              <section class="co-billing-card-wrap" aria-label="扣费与余额概览">
+              <section
+                class="co-billing-card-wrap"
+                :aria-label="t('device.billingOverviewAria')"
+              >
                 <BillingCard
                   :account="state.account"
                   :setup-colab="state.setup.colab"
@@ -1674,6 +1897,9 @@ onUnmounted(() => {
                   :idle-remaining="idleRemaining"
                   :idle-minutes="form.idle_minutes"
                   :busy="busy || !!state.operation || savingIdle"
+                  :loading="!snapshotLoaded"
+                  :refreshing="refreshingAccount"
+                  :has-error="Boolean(bannerError)"
                   :now-ms="clockNow"
                   :show-idle-footer="false"
                   @refresh-account="refreshAccount"
@@ -1691,7 +1917,7 @@ onUnmounted(() => {
               <!-- Real-time Hardware Resource Monitor -->
               <section
                 class="co-resource-monitor-wrap"
-                aria-label="远端设备资源监控"
+                :aria-label="t('device.resourceMonitorAria')"
               >
                 <ResourceMonitor
                   class="co-monitor"
@@ -1702,6 +1928,8 @@ onUnmounted(() => {
                   :selected-gpu="form.gpu"
                   :operation-title="state.operation?.title"
                   :ipc-disconnected="ipcDisconnected"
+                  :loading="!snapshotLoaded"
+                  :switching="monitorSwitching"
                   :monitor-options="effectiveMonitor.options"
                   :monitor-endpoint="effectiveMonitor.endpoint"
                   :monitor-source="effectiveMonitor.source"
@@ -1716,23 +1944,42 @@ onUnmounted(() => {
 
               <!-- Multi-instance Management Card -->
               <section
-                v-if="accountInstances.length"
+                v-if="accountInstances.length || showInstancesSkeleton"
                 class="co-instances-section"
-                aria-label="账户运行实例"
+                :aria-label="t('device.instancesAria')"
               >
                 <ACard class="co-instances-card">
                   <template #title>
                     <div class="co-card-title-block">
-                      <span>账户运行实例（{{ accountInstances.length }}）</span>
-                      <span class="co-card-title-sub">
-                        本客户端管理 {{ managedInstances.length }} 台 · 其他来源
-                        {{ externalInstances.length }} 台
+                      <span>{{
+                        t("device.instancesHeading", {
+                          count:
+                            accountInstances.length ||
+                            state.account.assignments ||
+                            0,
+                        })
+                      }}</span>
+                      <ColabOneSkeleton
+                        v-if="showInstancesSkeleton"
+                        :width="148"
+                        :height="13"
+                        variant="text"
+                        tone="subtle"
+                      />
+                      <span v-else class="co-card-title-sub">
+                        {{
+                          t("device.instancesBreakdown", {
+                            managed: managedInstances.length,
+                            external: externalInstances.length,
+                          })
+                        }}
                       </span>
                     </div>
                   </template>
                   <template #extra>
                     <AButton
                       size="small"
+                      :loading="refreshingAccount"
                       :disabled="
                         busy || !!state.operation || !state.setup.colab
                       "
@@ -1741,11 +1988,82 @@ onUnmounted(() => {
                       <template #icon>
                         <PhArrowsClockwise :size="14" />
                       </template>
-                      刷新列表
+                      {{ t("device.refreshList") }}
                     </AButton>
                   </template>
 
-                  <div class="co-instance-list">
+                  <div
+                    v-if="showInstancesSkeleton"
+                    class="co-instance-list"
+                    role="status"
+                    aria-busy="true"
+                  >
+                    <span class="co-sr-only">{{ t("common.loading") }}</span>
+                    <article
+                      v-for="idx in instanceSkeletonCount"
+                      :key="idx"
+                      class="co-instance-row co-instance-card co-instance-skeleton"
+                    >
+                      <div class="co-instance-main">
+                        <div class="co-instance-tags">
+                          <ColabOneSkeleton
+                            :width="62"
+                            :height="22"
+                            variant="tag"
+                            tone="accent"
+                            :delay="(idx - 1) * 70"
+                          />
+                          <ColabOneSkeleton
+                            :width="44"
+                            :height="22"
+                            variant="tag"
+                            tone="subtle"
+                            :delay="(idx - 1) * 70 + 35"
+                          />
+                          <ColabOneSkeleton
+                            :width="84"
+                            :height="22"
+                            variant="tag"
+                            tone="subtle"
+                            :delay="(idx - 1) * 70 + 70"
+                          />
+                        </div>
+                        <ColabOneSkeleton
+                          :width="178"
+                          :height="15"
+                          variant="text"
+                          :delay="(idx - 1) * 70 + 90"
+                        />
+                        <ColabOneSkeleton
+                          width="76%"
+                          :height="13"
+                          variant="text"
+                          tone="subtle"
+                          :delay="(idx - 1) * 70 + 125"
+                        />
+                      </div>
+                      <div class="co-instance-actions">
+                        <ColabOneSkeleton
+                          :width="72"
+                          :height="24"
+                          variant="button"
+                          :radius="6"
+                          tone="subtle"
+                          :delay="(idx - 1) * 70 + 105"
+                        />
+                        <ColabOneSkeleton
+                          :width="64"
+                          :height="24"
+                          variant="button"
+                          :radius="6"
+                          tone="subtle"
+                          :delay="(idx - 1) * 70 + 140"
+                        />
+                      </div>
+                    </article>
+                  </div>
+
+                  <div v-else class="co-instance-list co-sk-reveal">
                     <article
                       v-for="inst in accountInstances"
                       :key="inst.id"
@@ -1758,19 +2076,19 @@ onUnmounted(() => {
                             v-if="inst.active && inst.managed"
                             color="success"
                           >
-                            当前使用
+                            {{ t("device.tagCurrent") }}
                           </ATag>
                           <ATag v-else-if="inst.managed" color="blue">
-                            本客户端管理
+                            {{ t("device.tagManaged") }}
                           </ATag>
-                          <ATag v-else>其他来源</ATag>
+                          <ATag v-else>{{ t("device.tagExternal") }}</ATag>
                           <ATag v-if="inst.accelerator">{{
                             inst.accelerator
                           }}</ATag>
                           <ATag v-if="shapeLabel(inst.shape)">{{
                             shapeLabel(inst.shape)
                           }}</ATag>
-                          <ATooltip
+                          <ColabOneTooltip
                             v-if="inst.location?.country"
                             :title="locationTooltip(inst.location)"
                           >
@@ -1781,13 +2099,13 @@ onUnmounted(() => {
                               />
                               <span>{{ locationFull(inst.location) }}</span>
                             </ATag>
-                          </ATooltip>
+                          </ColabOneTooltip>
                           <ATag
                             v-if="inst.drive_connected"
                             color="success"
                             :bordered="false"
                           >
-                            云盘已挂载
+                            {{ t("device.driveMounted") }}
                           </ATag>
                           <ATag
                             v-if="
@@ -1800,7 +2118,9 @@ onUnmounted(() => {
                             :bordered="false"
                           >
                             {{
-                              effectiveMonitor.paused ? "监控已暂停" : "监控中"
+                              effectiveMonitor.paused
+                                ? t("device.tagMonitoringPaused")
+                                : t("device.tagMonitoring")
                             }}
                           </ATag>
                         </div>
@@ -1815,19 +2135,36 @@ onUnmounted(() => {
                             </template>
                           </span>
                           <span v-if="inst.vram_total_mib">
-                            · 显存
-                            {{ ((inst.vram_used_mib || 0) / 1024).toFixed(1) }}
-                            / {{ (inst.vram_total_mib / 1024).toFixed(0) }} GB
+                            {{
+                              t("device.vramSegment", {
+                                used: ((inst.vram_used_mib || 0) / 1024).toFixed(1),
+                                total: `${(inst.vram_total_mib / 1024).toFixed(0)} GB`,
+                              })
+                            }}
                           </span>
+                          <ColabOneSkeleton
+                            v-else-if="inst.state === 'starting'"
+                            :width="72"
+                            :height="12"
+                            variant="text"
+                            tone="subtle"
+                            inline
+                          />
                           <span v-if="inst.disk_free">
-                            · 可用磁盘 {{ bytes(inst.disk_free) }}
+                            {{
+                              t("device.diskFreeSegment", {
+                                size: bytes(inst.disk_free),
+                              })
+                            }}
                           </span>
                           <span>
                             ·
                             {{
                               inst.loaded_model
-                                ? `已装载 ${inst.loaded_model}`
-                                : "未装载模型"
+                                ? t("device.instLoadedModel", {
+                                    model: inst.loaded_model,
+                                  })
+                                : t("device.instNoModel")
                             }}
                           </span>
                           <span v-if="taskKindLabel(inst.active_task)">
@@ -1835,7 +2172,7 @@ onUnmounted(() => {
                           </span>
                         </p>
                         <p v-else class="co-instance-detail">
-                          由其他客户端或 Colab 网页启动，不受本客户端空闲自动释放管理
+                          {{ t("device.instExternalHint") }}
                         </p>
                       </div>
 
@@ -1846,7 +2183,7 @@ onUnmounted(() => {
                           :disabled="monitorBusy || ipcDisconnected"
                           @click="selectMonitorInstance(inst.id)"
                         >
-                          查看监控
+                          {{ t("device.viewMonitor") }}
                         </AButton>
                         <AButton
                           v-if="inst.managed && !inst.active"
@@ -1854,7 +2191,7 @@ onUnmounted(() => {
                           :disabled="busy || !!state.operation"
                           @click="switchInstance(inst.id)"
                         >
-                          切换使用
+                          {{ t("device.switchUse") }}
                         </AButton>
                         <AButton
                           danger
@@ -1862,7 +2199,7 @@ onUnmounted(() => {
                           :disabled="busy || !!state.operation"
                           @click="openRelease(inst.id)"
                         >
-                          单独停止
+                          {{ t("device.stopSingle") }}
                         </AButton>
                       </div>
                     </article>
@@ -1871,12 +2208,13 @@ onUnmounted(() => {
               </section>
 
               <p class="co-footnote">
-                模型权重、对外 API 推理与 ComfyUI 工作流均在远端 GPU 执行。{{
+                {{ t("device.footerBase") }}
+                {{
                   state.setup.drive
-                    ? "模型清单、ComfyUI 工作流与输出作品已自动持久化到 Google 云盘 (ColabOne_Drive)，释放实例前会自动同步。"
+                    ? t("device.footerDriveMounted")
                     : form.auto_drive && state.setup.drive_authorized
-                      ? "已开启 Google 云盘自动挂载：启动 GPU 后将自动连接 ColabOne_Drive，持久保存模型清单、ComfyUI 工作流与输出作品。"
-                      : "未挂载云盘时，释放实例将清空未导出的文件；如需保留，请先导出或在「设置」中开启云盘自动挂载。"
+                      ? t("device.footerDriveAuto")
+                      : t("device.footerDriveOff")
                 }}
               </p>
             </div>
@@ -1892,7 +2230,9 @@ onUnmounted(() => {
               v-model:models-open="modelsDrawerOpen"
               :state="state"
               :busy="busy"
+              :loading="!snapshotLoaded"
               @device="openDevice"
+              @comfyui="selectPage('comfyui')"
               @sync="syncSnapshot"
               @notify="notify"
               @error="showError"
@@ -1907,12 +2247,13 @@ onUnmounted(() => {
           >
             <ComfyPanel
               :state="state"
+              :loading="!snapshotLoaded"
               @device="openDevice"
               @error="showError"
             />
           </main>
 
-          <!-- STAGE 4: 设置 -->
+          <!-- STAGE 4: Settings -->
           <main
             v-else
             key="settings"
@@ -1921,9 +2262,9 @@ onUnmounted(() => {
             <div class="co-page-inner co-settings-inner">
               <div class="co-page-header">
                 <div>
-                  <h1 class="co-page-title">设置</h1>
+                  <h1 class="co-page-title">{{ t("settings.title") }}</h1>
                   <p class="co-page-subtitle">
-                    管理 Google 账户、外观主题、默认算力与空闲释放策略。
+                    {{ t("settings.subtitle") }}
                   </p>
                 </div>
                 <AButton
@@ -1931,35 +2272,58 @@ onUnmounted(() => {
                   :disabled="busy"
                   @click="save"
                 >
-                  保存设置
+                  {{ t("settings.saveSettings") }}
                 </AButton>
               </div>
 
               <!-- Settings Bento Row 1: Account/Drive + Compute/Idle Defaults -->
               <div class="co-settings-row-primary">
-                <!-- Settings Card 1: Google 账号与云盘授权 -->
+                <!-- Settings Card 1: Google Account & Drive Authorization -->
                 <ACard class="co-settings-card co-settings-section">
                   <template #title>
                     <div class="co-card-head-title">
                       <span class="co-head-icon-badge is-blue" aria-hidden="true">
                         <PhUserCircle :size="16" weight="duotone" />
                       </span>
-                      <h2>Google 账户与云盘授权</h2>
+                      <h2>{{ t("settings.googleCardTitle") }}</h2>
                     </div>
                   </template>
                   <template #extra>
-                    <ATag v-if="state.setup.colab" color="success">已连接</ATag>
-                    <ATag v-else>未连接</ATag>
+                    <ColabOneSkeleton
+                      v-if="!snapshotLoaded"
+                      :width="56"
+                      :height="22"
+                      variant="tag"
+                    />
+                    <ATag v-else-if="state.setup.colab" color="success">
+                      {{ t("settings.connected") }}
+                    </ATag>
+                    <ATag v-else>{{ t("settings.disconnected") }}</ATag>
                   </template>
 
                   <p class="co-settings-desc">
-                    {{
-                      state.account.email ||
-                      "在浏览器选择 Google 账户并授权，完成后会自动返回这里。"
-                    }}
+                    <span
+                      v-if="settingsEmailLoading"
+                      class="co-settings-email-sk"
+                      role="status"
+                      aria-busy="true"
+                    >
+                      <ColabOneSkeleton :width="196" :height="14" variant="text" inline />
+                      <span class="co-sr-only">{{
+                        snapshotLoaded
+                          ? t("billing.statusSyncingAccount")
+                          : t("common.loading")
+                      }}</span>
+                    </span>
+                    <span v-else class="co-sk-reveal">
+                      {{ state.account.email || t("settings.oauthBrowserHint") }}
+                    </span>
                   </p>
 
-                  <ASpace :size="8" wrap>
+                  <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
+                    <ColabOneSkeleton :width="112" :height="32" variant="button" tone="accent" :delay="40" />
+                  </div>
+                  <ASpace v-else :size="8" wrap>
                     <AButton
                       :type="state.setup.colab ? 'default' : 'primary'"
                       :disabled="
@@ -1972,7 +2336,11 @@ onUnmounted(() => {
                       <template #icon>
                         <PhArrowSquareOut :size="15" />
                       </template>
-                      {{ state.setup.colab ? "重新登录" : "登录 Google" }}
+                      {{
+                        state.setup.colab
+                          ? t("settings.relogin")
+                          : t("device.signInGoogle")
+                      }}
                     </AButton>
 
                     <AButton
@@ -1980,7 +2348,7 @@ onUnmounted(() => {
                       type="link"
                       @click="colabOneOpenURL(state.auth_url)"
                     >
-                      重新打开登录页
+                      {{ t("settings.reopenLoginPage") }}
                     </AButton>
                   </ASpace>
 
@@ -1988,8 +2356,8 @@ onUnmounted(() => {
                     <PhCheck :size="15" />
                     <span>{{
                       state.setup.persistent_login
-                        ? "登录已安全保存在本机，重启自动恢复、到期自动续期。"
-                        : "登录已保存到本机。若 Google 要求重新授权，会在这里提示。"
+                        ? t("settings.loginSavedAutoRenew")
+                        : t("settings.loginSavedHint")
                     }}</span>
                   </p>
 
@@ -2001,11 +2369,11 @@ onUnmounted(() => {
                   >
                     <ACollapsePanel
                       key="paste"
-                      header="授权页返回了一段内容？点此手动粘贴"
+                      :header="t('settings.manualAuthHeader')"
                     >
                       <div class="co-collapse-body">
                         <p class="co-muted">
-                          整段页面文字、完整链接或授权码均可，客户端会自动提取。请使用本次登录页面返回的内容。
+                          {{ t("settings.manualAuthDesc") }}
                         </p>
                         <ASpace :size="8" wrap>
                           <AButton
@@ -2015,7 +2383,7 @@ onUnmounted(() => {
                             <template #icon>
                               <PhCopy :size="15" />
                             </template>
-                            粘贴并完成登录
+                            {{ t("settings.pasteAndLogin") }}
                           </AButton>
                           <AButton
                             type="link"
@@ -2029,7 +2397,7 @@ onUnmounted(() => {
                             <template #icon>
                               <PhArrowSquareOut :size="14" />
                             </template>
-                            改用手动授权登录
+                            {{ t("settings.switchManualAuth") }}
                           </AButton>
                         </ASpace>
                         <ATextarea
@@ -2038,8 +2406,8 @@ onUnmounted(() => {
                           autocomplete="off"
                           autocapitalize="off"
                           spellcheck="false"
-                          placeholder="粘贴浏览器授权页显示的全部内容或授权码…"
-                          aria-label="Google 授权内容"
+                          :placeholder="t('settings.authInputPlaceholder')"
+                          :aria-label="t('settings.authInputAria')"
                         />
                         <div>
                           <AButton
@@ -2051,7 +2419,7 @@ onUnmounted(() => {
                             "
                             @click="finishLogin"
                           >
-                            自动识别并登录
+                            {{ t("settings.autoParseAndLogin") }}
                           </AButton>
                         </div>
                       </div>
@@ -2065,9 +2433,18 @@ onUnmounted(() => {
                       <span class="co-head-icon-badge is-emerald" aria-hidden="true">
                         <PhCloud :size="16" weight="duotone" />
                       </span>
-                      <h3>Google 云盘</h3>
+                      <h3>{{ t("settings.driveHeading") }}</h3>
                     </div>
+                    <ColabOneSkeleton
+                      v-if="!snapshotLoaded"
+                      :width="56"
+                      :height="22"
+                      variant="tag"
+                      tone="subtle"
+                      :delay="60"
+                    />
                     <ATag
+                      v-else
                       :color="
                         state.setup.drive || state.setup.drive_authorized
                           ? 'success'
@@ -2076,32 +2453,33 @@ onUnmounted(() => {
                     >
                       {{
                         state.setup.drive
-                          ? "已挂载 · ColabOne_Drive"
+                          ? t("settings.driveTagMounted")
                           : state.setup.drive_authorized
-                            ? "已授权 · 启动自动挂载"
+                            ? t("settings.driveTagAuthorized")
                             : state.setup.colab
-                              ? "需重新登录一次授权"
-                              : "未连接"
+                              ? t("settings.driveTagReauth")
+                              : t("settings.disconnected")
                       }}
                     </ATag>
                   </div>
 
                   <p class="co-settings-desc">
-                    复用本机 Google OAuth 凭据自动挂载专属目录
-                    <code>My Drive / ColabOne_Drive</code>
-                    ，一次登录长期自动续期，新建或切换多台 GPU
-                    实例均无需浏览器二次确认。
+                    {{ t("settings.driveDescPrefix") }}
+                    <code>My Drive / ColabOne_Drive</code>{{ t("settings.driveDescSuffix") }}
                   </p>
 
                   <AAlert
                     v-if="state.setup.colab && !state.setup.drive_authorized"
                     type="warning"
                     show-icon
-                    message="当前授权尚未包含云盘权限；点击上方「重新登录」补充授权后，后续实例将自动挂载云盘。"
+                    :message="t('settings.driveNeedScopeAlert')"
                     class="co-sub-alert"
                   />
 
-                  <ASpace :size="8" wrap>
+                  <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
+                    <ColabOneSkeleton :width="118" :height="32" variant="button" tone="subtle" :delay="90" />
+                  </div>
+                  <ASpace v-else :size="8" wrap>
                     <AButton
                       :disabled="
                         busy ||
@@ -2116,32 +2494,78 @@ onUnmounted(() => {
                       <template #icon>
                         <PhCloud :size="15" />
                       </template>
-                      {{ state.setup.drive ? "立即同步云盘" : "立即挂载云盘" }}
+                      {{
+                        state.setup.drive
+                          ? t("settings.driveSyncNow")
+                          : t("settings.driveMountNow")
+                      }}
                     </AButton>
                   </ASpace>
                 </ACard>
 
-                <!-- Settings Card 3: 默认算力与空闲释放 -->
+                <!-- Settings Card 3: Default Compute & Idle Release -->
                 <ACard class="co-settings-card">
                   <template #title>
                     <div class="co-card-head-title">
                       <span class="co-head-icon-badge is-blue" aria-hidden="true">
                         <PhSlidersHorizontal :size="16" weight="duotone" />
                       </span>
-                      <h2>默认算力与空闲释放</h2>
+                      <h2>{{ t("settings.computeCardTitle") }}</h2>
                     </div>
                   </template>
                   <p class="co-settings-desc">
-                    配置新建实例的默认 GPU、空闲自动释放时长与远端下载并发。
+                    {{ t("settings.computeCardDesc") }}
                   </p>
 
-                  <div class="co-settings-grid">
+                  <div v-if="!snapshotLoaded" class="co-settings-grid" aria-hidden="true">
                     <div class="co-setting-field">
-                      <span class="co-field-label">默认 GPU 型号</span>
+                      <span class="co-field-label">{{ t("settings.defaultGpuLabel") }}</span>
+                      <ColabOneSkeleton width="100%" :height="32" :radius="8" variant="rect" />
+                    </div>
+                    <div class="co-setting-field">
+                      <span class="co-field-label">{{ t("settings.idleDurationLabel") }}</span>
+                      <ColabOneSkeleton
+                        width="100%"
+                        :height="32"
+                        :radius="8"
+                        variant="rect"
+                        tone="subtle"
+                        :delay="60"
+                      />
+                    </div>
+                    <div class="co-setting-field">
+                      <span class="co-field-label">{{ t("settings.downloadThreadsLabel") }}</span>
+                      <ColabOneSkeleton
+                        :width="168"
+                        :height="32"
+                        :radius="8"
+                        variant="rect"
+                        tone="subtle"
+                        :delay="110"
+                      />
+                    </div>
+                    <div class="co-setting-field">
+                      <span class="co-field-label">{{ t("settings.autoDriveLabel") }}</span>
+                      <div class="co-switch-row">
+                        <ColabOneSkeleton :width="44" :height="22" variant="pill" :delay="150" />
+                        <ColabOneSkeleton
+                          width="72%"
+                          :height="14"
+                          variant="text"
+                          tone="subtle"
+                          :delay="180"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="co-settings-grid co-sk-reveal">
+                    <div class="co-setting-field">
+                      <span class="co-field-label">{{ t("settings.defaultGpuLabel") }}</span>
                       <ASelect
                         :value="form.gpu"
-                        aria-label="默认 GPU 型号"
+                        :aria-label="t('settings.defaultGpuAria')"
                         class="co-full-width"
+                        :dropdown-match-select-width="false"
                         :disabled="busy || !!state.operation"
                         @change="changeDefaultGpu"
                       >
@@ -2156,10 +2580,10 @@ onUnmounted(() => {
                     </div>
 
                     <div class="co-setting-field">
-                      <span class="co-field-label">空闲自动释放时长</span>
+                      <span class="co-field-label">{{ t("settings.idleDurationLabel") }}</span>
                       <ASelect
                         :value="form.idle_minutes"
-                        aria-label="空闲自动释放时长"
+                        :aria-label="t('device.idleReleaseAria')"
                         class="co-full-width"
                         :disabled="savingIdle"
                         @change="changeIdleMinutes"
@@ -2181,50 +2605,55 @@ onUnmounted(() => {
                     </div>
 
                     <div class="co-setting-field">
-                      <span class="co-field-label">远端下载并发线程</span>
+                      <span class="co-field-label">{{ t("settings.downloadThreadsLabel") }}</span>
                       <div>
                         <ASegmented
                           :value="form.download_threads"
                           :options="downloadThreadOptions"
-                          aria-label="下载并发线程"
+                          :aria-label="t('settings.downloadThreadsAria')"
                           @change="changeDownloadThreads"
                         />
                       </div>
                     </div>
 
                     <div class="co-setting-field">
-                      <span class="co-field-label">云盘自动挂载</span>
+                      <span class="co-field-label">{{ t("settings.autoDriveLabel") }}</span>
                       <div class="co-switch-row">
                         <ASwitch
                           :checked="form.auto_drive"
                           @update:checked="onAutoDriveChange"
                         />
                         <span class="co-switch-label">
-                          启动 GPU 时自动挂载并同步 Google 云盘 (ColabOne_Drive)
+                          {{ t("settings.autoDriveDesc") }}
                         </span>
                       </div>
                     </div>
                   </div>
 
                   <div class="co-idle-policy-box">
-                    <strong>空闲自动释放保护</strong>
-                    <p>
-                      超过
-                      {{ formatIdlePolicyLabel(form.idle_minutes) }}
-                      无操作或任务时自动释放远端资源；继续操作会重置倒计时，模型下载与装载、对外
-                      API 推理及 ComfyUI 运行期间自动暂停倒计时。
+                    <strong>{{ t("settings.idleProtectionTitle") }}</strong>
+                    <div v-if="!snapshotLoaded" class="co-idle-policy-sk" aria-hidden="true">
+                      <ColabOneSkeleton width="92%" :height="13" variant="text" tone="subtle" :delay="120" />
+                      <ColabOneSkeleton width="68%" :height="13" variant="text" tone="subtle" :delay="170" />
+                    </div>
+                    <p v-else class="co-sk-reveal">
+                      {{
+                        t("settings.idleProtectionDesc", {
+                          policy: formatIdlePolicyLabel(form.idle_minutes),
+                        })
+                      }}
                     </p>
                   </div>
 
                   <p class="co-footnote">
-                    默认 GPU 与空闲释放时长与「远端设备」实时同步，修改后立即生效。
+                    {{ t("settings.computeSyncNote") }}
                   </p>
                 </ACard>
               </div>
 
-              <!-- Settings Bento Row 2: Appearance + HF Token + Desktop Shortcuts -->
+              <!-- Settings Bento Row 2: Appearance & Language + HF Token + Desktop Shortcuts -->
               <div class="co-settings-row-secondary">
-                <!-- Settings Card 2: 外观主题 -->
+                <!-- Settings Card 2: Appearance & Interface Language -->
                 <ACard
                   class="co-settings-card co-appearance-section"
                   aria-labelledby="appearance-heading"
@@ -2234,17 +2663,17 @@ onUnmounted(() => {
                       <span class="co-head-icon-badge is-amber" aria-hidden="true">
                         <PhSun :size="16" weight="duotone" />
                       </span>
-                      <h2 id="appearance-heading">外观主题</h2>
+                      <h2 id="appearance-heading">{{ t("settings.appearanceCardTitle") }}</h2>
                     </div>
                   </template>
                   <p class="co-settings-desc">
-                    仅对当前设备生效；选择「跟随系统」时将自动同步系统明暗外观。
+                    {{ t("settings.appearanceDesc") }}
                   </p>
                   <div @pointerdown.capture="rememberAppearancePointer">
                     <ASegmented
                       :value="colabOneAppearance"
                       :options="appearanceSegmentedOptions"
-                      aria-label="外观模式"
+                      :aria-label="t('settings.appearanceAria')"
                       @change="onAppearanceChange"
                     >
                       <template #label="{ value, title, payload }">
@@ -2257,6 +2686,16 @@ onUnmounted(() => {
                       </template>
                     </ASegmented>
                   </div>
+
+                  <ADivider class="co-section-divider" />
+
+                  <div class="co-language-section">
+                    <span class="co-field-label">{{ t("settings.languageLabel") }}</span>
+                    <p class="co-settings-desc co-language-desc">
+                      {{ t("settings.languageDesc") }}
+                    </p>
+                    <LanguageSwitcher mode="settings" @changed="onLocaleChanged" />
+                  </div>
                 </ACard>
 
                 <!-- Settings Card 4: Hugging Face Token -->
@@ -2266,15 +2705,25 @@ onUnmounted(() => {
                       <span class="co-head-icon-badge is-violet" aria-hidden="true">
                         <PhKey :size="16" weight="duotone" />
                       </span>
-                      <h2>Hugging Face Token</h2>
+                      <h2>{{ t("settings.hfCardTitle") }}</h2>
                     </div>
                   </template>
                   <template #extra>
-                    <ATag v-if="state.setup.hf" color="success">已保存 Token</ATag>
-                    <ATag v-else>可选</ATag>
+                    <ColabOneSkeleton
+                      v-if="!snapshotLoaded"
+                      :width="48"
+                      :height="22"
+                      variant="tag"
+                      tone="subtle"
+                      :delay="80"
+                    />
+                    <ATag v-else-if="state.setup.hf" color="success">
+                      {{ t("settings.hfSavedTag") }}
+                    </ATag>
+                    <ATag v-else>{{ t("common.optional") }}</ATag>
                   </template>
                   <p class="co-settings-desc">
-                    下载公开 GGUF 模型无需填写；访问受限或需协议授权的社区仓库时才需配置 Token。
+                    {{ t("settings.hfDesc") }}
                   </p>
                   <div class="co-hf-row">
                     <AInputPassword
@@ -2282,8 +2731,8 @@ onUnmounted(() => {
                       autocomplete="new-password"
                       :placeholder="
                         state.setup.hf
-                          ? '已保存，输入新值可覆盖更新'
-                          : 'hf_...（访问受限模型仓库时填写）'
+                          ? t('settings.hfSavedPlaceholder')
+                          : t('settings.hfEmptyPlaceholder')
                       "
                     />
                     <AButton
@@ -2291,12 +2740,12 @@ onUnmounted(() => {
                       :disabled="!form.hf_token.trim() || busy"
                       @click="save"
                     >
-                      保存 Token
+                      {{ t("settings.hfSaveBtn") }}
                     </AButton>
                   </div>
                 </ACard>
 
-                <!-- Settings Card 5: 桌面快捷方式 -->
+                <!-- Settings Card 5: Desktop Shortcuts -->
                 <ACard
                   class="co-settings-card"
                   aria-labelledby="shortcuts-heading"
@@ -2306,18 +2755,30 @@ onUnmounted(() => {
                       <span class="co-head-icon-badge is-slate" aria-hidden="true">
                         <PhDesktop :size="16" weight="duotone" />
                       </span>
-                      <h2 id="shortcuts-heading">桌面与开始菜单快捷方式</h2>
+                      <h2 id="shortcuts-heading">{{ t("settings.shortcutsTitle") }}</h2>
                     </div>
                   </template>
                   <template #extra>
-                    <ATag v-if="state.setup.start_menu_shortcut" color="success">
-                      已加入开始菜单
+                    <ColabOneSkeleton
+                      v-if="!snapshotLoaded"
+                      :width="64"
+                      :height="22"
+                      variant="tag"
+                      tone="subtle"
+                      :delay="100"
+                    />
+                    <ATag v-else-if="state.setup.start_menu_shortcut" color="success">
+                      {{ t("settings.shortcutsInStartMenu") }}
                     </ATag>
                   </template>
                   <p class="co-settings-desc">
-                    当前为便携版，无需管理员权限即可创建开始菜单或桌面快捷方式；如需常驻任务栏，右键底部运行图标选择「固定到任务栏」。
+                    {{ t("settings.shortcutsDesc") }}
                   </p>
-                  <ASpace :size="8" wrap>
+                  <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
+                    <ColabOneSkeleton :width="118" :height="32" variant="button" tone="accent" :delay="120" />
+                    <ColabOneSkeleton :width="124" :height="32" variant="button" tone="subtle" :delay="160" />
+                  </div>
+                  <ASpace v-else :size="8" wrap>
                     <AButton
                       :type="
                         state.setup.start_menu_shortcut ? 'default' : 'primary'
@@ -2327,8 +2788,8 @@ onUnmounted(() => {
                     >
                       {{
                         state.setup.start_menu_shortcut
-                          ? "更新开始菜单快捷方式"
-                          : "添加到开始菜单"
+                          ? t("settings.shortcutsUpdateStartMenu")
+                          : t("settings.shortcutsAddStartMenu")
                       }}
                     </AButton>
                     <AButton
@@ -2337,8 +2798,8 @@ onUnmounted(() => {
                     >
                       {{
                         state.setup.desktop_shortcut
-                          ? "更新桌面快捷方式"
-                          : "创建桌面快捷方式"
+                          ? t("settings.shortcutsUpdateDesktop")
+                          : t("settings.shortcutsAddDesktop")
                       }}
                     </AButton>
                     <AButton
@@ -2351,13 +2812,13 @@ onUnmounted(() => {
                       :disabled="busy"
                       @click="updateShortcut('both', true)"
                     >
-                      移除快捷方式
+                      {{ t("settings.shortcutsRemove") }}
                     </AButton>
                   </ASpace>
                 </ACard>
               </div>
 
-              <!-- Settings Card 6: 关于与开源许可 -->
+              <!-- Settings Card 6: About & Open-Source Licenses -->
               <ACard class="co-settings-card co-about-card">
                 <div class="co-about-row">
                   <div class="co-about-copy">
@@ -2368,11 +2829,11 @@ onUnmounted(() => {
                         v-html="appIcon"
                       ></span>
                       <ATypographyTitle :level="5" class="co-about-title">
-                        关于与开源许可
+                        {{ t("settings.aboutTitle") }}
                       </ATypographyTitle>
                     </div>
                     <ATypographyText type="secondary">
-                      ColabOne · 远端 GGUF 对外 API 与 ComfyUI 工作流 · 凭据安全保存在本机系统凭据库
+                      {{ t("settings.aboutDesc") }}
                     </ATypographyText>
                   </div>
                   <div class="co-about-pills">
@@ -2394,7 +2855,7 @@ onUnmounted(() => {
               <div class="co-task-main">
                 <div class="co-task-head">
                   <strong>{{ taskBarTitle(task.kind) }}</strong>
-                  <span class="co-muted">{{ task.message }}</span>
+                  <span class="co-muted">{{ tb(task.message) }}</span>
                   <ATag
                     v-if="
                       (task.kind === 'public_chat' ||
@@ -2428,14 +2889,19 @@ onUnmounted(() => {
                   <span>
                     {{
                       task.download.phase === "verifying"
-                        ? "正在校验 SHA-256"
-                        : `预计剩余 ${duration(task.download.eta_seconds)}`
+                        ? t("device.downloadVerifying")
+                        : t("device.downloadEta", {
+                            eta: duration(task.download.eta_seconds),
+                          })
                     }}
                   </span>
                   <span class="co-tabular">
-                    {{ task.download.connections }}/{{ task.download.threads }}
-                    个连接 · 文件 {{ task.download.file_index }}/{{
-                      task.download.file_count
+                    {{
+                      t("device.downloadMeta", {
+                        conns: `${task.download.connections}/${task.download.threads}`,
+                        idx: task.download.file_index,
+                        total: task.download.file_count,
+                      })
                     }}
                   </span>
                 </div>
@@ -2455,7 +2921,7 @@ onUnmounted(() => {
                 size="small"
                 @click="act('task.cancel', { id: task.id })"
               >
-                取消
+                {{ t("common.cancel") }}
               </AButton>
             </div>
           </ACard>
@@ -2467,6 +2933,7 @@ onUnmounted(() => {
         v-if="!logWindowStandalone"
         :open="logsOpen"
         :width="logDrawerWidth"
+        :loading="!snapshotLoaded"
         :logs="state.logs || []"
         :current-activity="currentActivity"
         :running="!!(state.operation || task)"
@@ -2487,7 +2954,7 @@ onUnmounted(() => {
       <!-- Modal: Selective Instance Release Review -->
       <AModal
         v-model:open="showRelease"
-        title="选择要停止的远端实例"
+        :title="t('device.releaseModalTitle')"
         :width="580"
         :mask-closable="!busy"
         :closable="!busy"
@@ -2496,14 +2963,69 @@ onUnmounted(() => {
       >
         <div class="co-modal-stack">
           <p class="co-muted co-modal-lead">
-            可勾选需要停止的实例，保留其他客户端或页面正在运行的实例。已选实例上的模型文件和未导出的内容会被清空。
+            {{ t("device.releaseModalDesc") }}
           </p>
 
-          <div v-if="!releasePlan" class="co-modal-loading">
-            <ASpin v-if="busy" size="small" />
-            <span>{{
-              busy ? "正在查询运行实例…" : "清单读取失败，请取消后重试。"
-            }}</span>
+          <div
+            v-if="!releasePlan && busy"
+            class="co-release-skeleton"
+            role="status"
+            aria-busy="true"
+          >
+            <div class="co-release-list">
+              <div
+                v-for="idx in 2"
+                :key="idx"
+                class="co-release-item co-release-item-skeleton"
+              >
+                <div class="co-release-sk-row">
+                  <ColabOneSkeleton
+                    :width="16"
+                    :height="16"
+                    :radius="4"
+                    variant="rect"
+                    tone="subtle"
+                    :delay="(idx - 1) * 75"
+                  />
+                  <div class="co-release-item-info co-release-sk-info">
+                    <div class="co-release-item-top">
+                      <ColabOneSkeleton
+                        :width="idx === 1 ? 156 : 132"
+                        :height="14"
+                        variant="text"
+                        :delay="(idx - 1) * 75 + 35"
+                      />
+                      <ColabOneSkeleton
+                        :width="42"
+                        :height="20"
+                        variant="tag"
+                        tone="subtle"
+                        :delay="(idx - 1) * 75 + 70"
+                      />
+                      <ColabOneSkeleton
+                        :width="66"
+                        :height="20"
+                        variant="tag"
+                        tone="subtle"
+                        :delay="(idx - 1) * 75 + 105"
+                      />
+                    </div>
+                    <ColabOneSkeleton
+                      :width="idx === 1 ? '74%' : '62%'"
+                      :height="13"
+                      variant="text"
+                      tone="subtle"
+                      :delay="(idx - 1) * 75 + 130"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <span class="co-release-sk-caption">{{ t("device.releaseLoading") }}</span>
+          </div>
+
+          <div v-else-if="!releasePlan" class="co-modal-loading">
+            <span>{{ t("device.releaseLoadFailed") }}</span>
           </div>
 
           <template v-else>
@@ -2516,7 +3038,11 @@ onUnmounted(() => {
                 size="small"
                 @click="selectAllRelease"
               >
-                全选（{{ releasePlan.instances.length }}）
+                {{
+                  t("device.releaseSelectAll", {
+                    count: releasePlan.instances.length,
+                  })
+                }}
               </AButton>
               <AButton
                 v-if="
@@ -2527,9 +3053,11 @@ onUnmounted(() => {
                 size="small"
                 @click="selectManagedReleaseOnly"
               >
-                仅选本客户端（{{
-                  releasePlan.instances.filter((i) => i.managed).length
-                }}）
+                {{
+                  t("device.releaseSelectManaged", {
+                    count: releasePlan.instances.filter((i) => i.managed).length,
+                  })
+                }}
               </AButton>
             </div>
 
@@ -2558,7 +3086,7 @@ onUnmounted(() => {
                       <ATag v-if="shapeLabel(instance.shape)">{{
                         shapeLabel(instance.shape)
                       }}</ATag>
-                      <ATooltip
+                      <ColabOneTooltip
                         v-if="instance.location?.country"
                         :title="locationTooltip(instance.location)"
                       >
@@ -2569,14 +3097,26 @@ onUnmounted(() => {
                           />
                           <span>{{ locationShort(instance.location) }}</span>
                         </ATag>
-                      </ATooltip>
+                      </ColabOneTooltip>
                     </div>
                     <span class="co-release-item-desc">{{
                       instance.managed
                         ? instance.active
-                          ? `本客户端当前使用实例${instance.loaded_model ? ` · 已装载 ${instance.loaded_model}` : ""}`
-                          : `本客户端管理的后台实例${instance.loaded_model ? ` · 已装载 ${instance.loaded_model}` : ""}`
-                        : "其他来源的 Colab 实例，停止前请确认已保存数据"
+                          ? t("device.releaseInstCurrent", {
+                              model: instance.loaded_model
+                                ? t("device.releaseInstModelSuffix", {
+                                    model: instance.loaded_model,
+                                  })
+                                : "",
+                            })
+                          : t("device.releaseInstManaged", {
+                              model: instance.loaded_model
+                                ? t("device.releaseInstModelSuffix", {
+                                    model: instance.loaded_model,
+                                  })
+                                : "",
+                            })
+                        : t("device.releaseInstExternal")
                     }}</span>
                   </div>
                 </ACheckbox>
@@ -2584,7 +3124,7 @@ onUnmounted(() => {
 
               <AEmpty
                 v-if="!releasePlan.instances.length"
-                description="未发现运行实例，Google 费率可能仍在更新。"
+                :description="t('device.releaseEmpty')"
               />
             </div>
           </template>
@@ -2593,11 +3133,11 @@ onUnmounted(() => {
             v-if="state.operation"
             type="info"
             show-icon
-            message="正在结束当前操作，完成后即可停止。"
+            :message="t('device.releaseBusyNotice')"
           />
 
           <ACheckbox v-model:checked="force">
-            我已导出或不需要保留所选实例上的远端模型与未导出作品（强制释放）
+            {{ t("device.releaseForceCheck") }}
           </ACheckbox>
 
           <div class="co-modal-footer">
@@ -2605,7 +3145,7 @@ onUnmounted(() => {
               :disabled="busy"
               @click="showRelease = false"
             >
-              取消
+              {{ t("common.cancel") }}
             </AButton>
             <AButton
               type="primary"
@@ -2621,8 +3161,12 @@ onUnmounted(() => {
             >
               {{
                 isAllReleaseSelected
-                  ? `确认停止全部（${releasePlan?.instances.length || 0}）`
-                  : `确认停止所选（${selectedReleaseIds.length}）`
+                  ? t("device.releaseConfirmAll", {
+                      count: releasePlan?.instances.length || 0,
+                    })
+                  : t("device.releaseConfirmSelected", {
+                      count: selectedReleaseIds.length,
+                    })
               }}
             </AButton>
           </div>
@@ -2657,6 +3201,8 @@ onUnmounted(() => {
 
 /* ColabOne Top Floating Capsule Navbar */
 .co-navbar {
+  container-type: inline-size;
+  container-name: co-navbar;
   flex-shrink: 0;
   background: var(--co-canvas);
   user-select: none;
@@ -2908,6 +3454,8 @@ onUnmounted(() => {
 
 /* ColabOne Breathable Seamless Status & Billing Strip */
 .co-status-bar {
+  container-type: inline-size;
+  container-name: co-status-bar;
   flex-shrink: 0;
   background: var(--co-canvas);
 }
@@ -2922,7 +3470,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px 12px;
 }
 
 .co-topbar-left {
@@ -2930,7 +3478,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 auto;
   overflow: hidden;
 }
 
@@ -2948,6 +3496,7 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .co-location-tag {
@@ -2958,14 +3507,36 @@ onUnmounted(() => {
 .co-model-chip {
   height: 28px;
   max-width: 220px;
+  min-width: 0;
   border-radius: 9999px !important;
   flex-shrink: 1;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
 }
 
 .co-model-chip-text {
+  display: inline-block;
+  min-width: 0;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@container co-status-bar (max-width: 1120px) {
+  .co-status-bar-inner {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .co-topbar-left {
+    flex: 1 1 260px;
+  }
+
+  .co-topbar-right {
+    margin-left: auto;
+  }
 }
 
 .co-instance-select {
@@ -3045,7 +3616,31 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-@media (max-width: 980px) {
+@container co-navbar (max-width: 1120px) {
+  .co-navbar-inner {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .co-nav-left {
+    flex: 0 1 auto;
+  }
+
+  .co-nav-center {
+    flex: 0 1 auto;
+  }
+
+  .co-nav-right {
+    flex: 0 0 auto;
+  }
+
+  .co-nav-pill-item {
+    padding: 0 16px;
+  }
+}
+
+@container co-navbar (max-width: 1020px) {
   .co-navbar-inner {
     height: 64px;
   }
@@ -3071,7 +3666,7 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 780px) {
+@container co-navbar (max-width: 820px) {
   .co-nav-pill-item {
     width: 38px;
     padding: 0;
@@ -3092,7 +3687,7 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 600px) {
+@container co-navbar (max-width: 600px) {
   .co-brand-text {
     display: none;
   }
@@ -3276,11 +3871,13 @@ onUnmounted(() => {
 }
 
 .co-select-gpu {
-  width: 272px;
+  width: 316px;
+  max-width: 100%;
 }
 
 .co-select-idle {
-  width: 152px;
+  min-width: 172px;
+  width: auto;
 }
 
 .co-device-actions {
@@ -3611,6 +4208,16 @@ onUnmounted(() => {
   align-self: flex-start;
 }
 
+.co-language-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.co-language-desc {
+  margin-bottom: 4px;
+}
+
 .co-seg-item {
   display: inline-flex;
   align-items: center;
@@ -3624,7 +4231,7 @@ onUnmounted(() => {
 
 .co-settings-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.38fr) minmax(0, 1fr);
   gap: 16px;
   margin-bottom: 14px;
 }
@@ -3894,5 +4501,96 @@ onUnmounted(() => {
   justify-content: flex-end;
   gap: 8px;
   padding-top: 6px;
+}
+
+/* Skeleton Layout Alignment Helpers */
+.co-topbar-sk {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.co-device-sk-title {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.co-device-sk-policy {
+  min-height: 24px;
+}
+
+.co-settings-btn-sk {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.co-idle-policy-sk {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.co-instance-skeleton {
+  background: var(--co-skeleton-card-bg);
+  pointer-events: none;
+}
+
+.co-settings-email-sk {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+}
+
+.co-release-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.co-release-item-skeleton {
+  background: var(--co-skeleton-card-bg);
+  pointer-events: none;
+}
+
+.co-release-sk-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.co-release-sk-info {
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+}
+
+.co-release-sk-caption {
+  font-size: 12px;
+  color: var(--co-muted);
+}
+
+.co-nav-circle-btn.is-spinning svg {
+  animation: co-nav-spin 0.85s linear infinite;
+}
+
+@keyframes co-nav-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-nav-circle-btn.is-spinning svg {
+    animation: none;
+  }
 }
 </style>

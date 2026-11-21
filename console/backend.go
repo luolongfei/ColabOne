@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -54,7 +53,7 @@ func colabOneRootAt(executable, cwd string) (string, error) {
 			return path, nil
 		}
 	}
-	return "", errors.New("找不到 ColabOne 运行文件，请保留完整安装目录")
+	return "", errors.New(colabOneT("err.missingRuntimeFiles"))
 }
 func colabOnePythonAt(root string) (string, error) {
 	candidates := []string{filepath.Join(root, "runtime", "bin", "python3"), filepath.Join(root, ".venv", "bin", "python")}
@@ -66,7 +65,7 @@ func colabOnePythonAt(root string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", errors.New("缺少 Python 运行时，请运行安装脚本或重新解压完整安装包")
+	return "", errors.New(colabOneT("err.missingPython"))
 }
 func (b *colabOneBridge) start() error {
 	b.mu.Lock()
@@ -121,7 +120,7 @@ func (b *colabOneBridge) start() error {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		for id, ch := range b.pending {
-			ch <- colabOneRPCReply{Error: "控制进程已退出，请重试"}
+			ch <- colabOneRPCReply{Error: colabOneT("err.bridgeExited")}
 			delete(b.pending, id)
 		}
 		b.cmd = nil
@@ -158,7 +157,7 @@ func (b *colabOneBridge) call(ctx context.Context, method string, payload map[st
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case <-time.After(90 * time.Second):
-		return "", fmt.Errorf("操作等待超时，请检查远端状态后重试")
+		return "", errors.New(colabOneT("err.bridgeTimeout"))
 	}
 }
 func (b *colabOneBridge) close() {

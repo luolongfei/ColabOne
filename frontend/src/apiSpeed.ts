@@ -1,3 +1,4 @@
+import { colabOneLocaleCode, t } from "./i18n";
 import type { PublicAPIRequestMetric, PublicAPIStatus } from "./types";
 
 export function formatTokenSpeed(
@@ -36,9 +37,12 @@ export function formatRequestClock(epochSeconds?: number | null): string {
   ) {
     return "--:--:--";
   }
-  return new Date(epochSeconds * 1000).toLocaleTimeString("zh-CN", {
-    hour12: false,
-  });
+  return new Date(epochSeconds * 1000).toLocaleTimeString(
+    colabOneLocaleCode.value,
+    {
+      hour12: false,
+    },
+  );
 }
 
 export function requestKindLabel(kind: PublicAPIRequestMetric["kind"]): string {
@@ -57,13 +61,13 @@ export function requestStateLabel(
 ): string {
   switch (state) {
     case "running":
-      return "生成中";
+      return t("api.stateRunning");
     case "completed":
-      return "完成";
+      return t("api.stateCompleted");
     case "cancelled":
-      return "已取消";
+      return t("api.stateCancelled");
     case "failed":
-      return "失败";
+      return t("api.stateFailed");
     default:
       return state;
   }

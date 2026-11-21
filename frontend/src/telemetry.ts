@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type {
   AccountInstance,
   ColabOneSnapshot,
@@ -512,9 +513,9 @@ export function colabOneShortEndpoint(endpoint: string, maxLen = 18): string {
 }
 
 export function colabOneMonitorSourceLabel(source: MonitorSource): string {
-  if (source === "local") return "本机";
-  if (source === "remote_colabone") return "远端 ColabOne";
-  if (source === "remote_readonly") return "远端只读";
+  if (source === "local") return t("monitor.sourceLocal");
+  if (source === "remote_colabone") return t("monitor.sourceRemoteColabOne");
+  if (source === "remote_readonly") return t("monitor.sourceRemoteReadonly");
   return "";
 }
 

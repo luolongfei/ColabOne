@@ -1,6 +1,7 @@
 import { theme } from "ant-design-vue";
 import type { ThemeConfig } from "ant-design-vue/es/config-provider/context";
 import zhCN from "ant-design-vue/es/locale/zh_CN";
+import type { ColabOneLocale } from "./i18n/flags";
 
 export type ColabOneThemeMode = "light" | "dark";
 
@@ -11,8 +12,30 @@ export const COLABONE_CARD_RADIUS = 16;
 export const COLABONE_UI_FONT_FAMILY =
   '"Sarasa UI SC", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", sans-serif';
 
-export function buildColabOneTheme(mode: ColabOneThemeMode): ThemeConfig {
+export const COLABONE_LOCALE_FONT_FAMILIES: Record<ColabOneLocale, string> = {
+  "zh-CN": COLABONE_UI_FONT_FAMILY,
+  "en-US":
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif',
+  "zh-TW":
+    '-apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans TC", "Segoe UI", "Sarasa UI SC", sans-serif',
+  "zh-HK":
+    '-apple-system, BlinkMacSystemFont, "PingFang HK", "PingFang TC", "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans HK", "Segoe UI", "Sarasa UI SC", sans-serif',
+  "ja-JP":
+    '-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", "Noto Sans JP", "Segoe UI", sans-serif',
+  "ko-KR":
+    '-apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Segoe UI", sans-serif',
+};
+
+export function getColabOneFontFamily(locale?: ColabOneLocale): string {
+  return (locale && COLABONE_LOCALE_FONT_FAMILIES[locale]) || COLABONE_UI_FONT_FAMILY;
+}
+
+export function buildColabOneTheme(
+  mode: ColabOneThemeMode,
+  locale?: ColabOneLocale,
+): ThemeConfig {
   const isDark = mode === "dark";
+  const fontFamily = getColabOneFontFamily(locale);
 
   return {
     algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
@@ -48,7 +71,7 @@ export function buildColabOneTheme(mode: ColabOneThemeMode): ThemeConfig {
       controlHeight: 36,
       controlHeightSM: 30,
       controlHeightLG: 40,
-      fontFamily: COLABONE_UI_FONT_FAMILY,
+      fontFamily,
       wireframe: false,
     },
     components: {

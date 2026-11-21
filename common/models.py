@@ -136,6 +136,19 @@ def resolve_import(
     )
     r.raise_for_status()
     info = r.json()
+    from common.hub import classify_modality, extract_quantization, is_auxiliary_gguf
+
+    if is_auxiliary_gguf(filename):
+        raise ValueError("该文件是量化校准或辅助文件，不是可直接装载的模型权重")
+    modality = classify_modality(
+        str(info.get("pipeline_tag") or ""),
+        info.get("tags") if isinstance(info.get("tags"), list) else [],
+        repo,
+    )
+    if modality in ("image", "video"):
+        raise ValueError(
+            "该模型属于图片/视频生成类（ComfyUI 专用），无法在对外文本 API 中装载，请前往 ComfyUI 工作区使用"
+        )
     siblings = {f["rfilename"]: f for f in info["siblings"]}
     selected = [filename]
     match = re.fullmatch(r"(.+)-\d{5}-of-(\d{5})\.gguf", filename)
@@ -164,9 +177,14 @@ def resolve_import(
         f"{repo}@{info['sha']}:{selected[0]}".encode()
     ).hexdigest()[:16]
     display_name = (custom_name or "").strip()[:200] or repo.split("/")[-1]
+    quant = extract_quantization(selected[0])
+    description = (
+        f"{quant} · {selected[0]}" if quant and quant != "GGUF" else selected[0]
+    )
     return ModelSpec(
         id=f"hf-{identity}",
         name=display_name,
-        description=selected[0],
+        description=description,
+        min_vram_mib=0,
         files=files,
     )

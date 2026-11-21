@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ConfigProvider as AConfigProvider } from "ant-design-vue";
 import { PhCheck } from "@phosphor-icons/vue";
-import { colabOneLocale, buildColabOneTheme } from "./colabOneTheme";
+import { buildColabOneTheme } from "./colabOneTheme";
 import { colabOneEffectiveAppearance } from "./appearance";
+import {
+  colabOneAntdLocale,
+  colabOneLocaleCode,
+  hydrateColabOneLocaleFromSettings,
+  t,
+  tb,
+} from "./i18n";
 import LogDrawer from "./LogDrawer.vue";
 import { colabOneCommand, colabOneSetLogDrawer, colabOneSnapshot, colabOneWriteClipboard } from "./api";
 import { createColabOneSnapshot } from "./types";
 
-const colabOneTheme = computed(() => buildColabOneTheme(colabOneEffectiveAppearance.value));
+const colabOneTheme = computed(() =>
+  buildColabOneTheme(colabOneEffectiveAppearance.value, colabOneLocaleCode.value),
+);
 const state = ref(createColabOneSnapshot());
+const snapshotLoaded = ref(false);
 const toast = ref("");
 
 let stopped = false;
@@ -35,23 +45,22 @@ const activeApiSpeed = computed(() =>
       }
     : null,
 );
-const currentActivity = computed(
-  () =>
-    state.value.operation?.title ||
-    (task.value
-      ? {
-          download: "正在下载模型到远端",
-          load: "正在装载模型到显存",
-          public_chat: "正在处理对外 API 对话请求",
-          public_responses: "正在处理对外 API Responses 请求",
-          public_compact: "正在压缩对外 API 上下文",
-          comfyui_start: "正在准备并启动远端 ComfyUI",
-          comfyui_run: "正在远端运行 ComfyUI 工作流",
-        }[task.value.kind] || "远端任务进行中"
-      : ready.value
-        ? "GPU 已就绪，等待操作"
-        : "等待启动远端 GPU"),
-);
+const currentActivity = computed(() => {
+  if (state.value.operation?.title) return tb(state.value.operation.title);
+  if (task.value) {
+    const taskLabels: Record<string, string> = {
+      download: t("task.download"),
+      load: t("task.load"),
+      public_chat: t("task.publicChat"),
+      public_responses: t("task.publicResponses"),
+      public_compact: t("task.publicCompact"),
+      comfyui_start: t("task.comfyStart"),
+      comfyui_run: t("task.comfyRun"),
+    };
+    return taskLabels[task.value.kind] || t("task.runningGeneric");
+  }
+  return ready.value ? t("task.gpuReadyIdle") : t("task.gpuWaitingStart");
+});
 
 function notify(message: string) {
   toast.value = message;
@@ -64,6 +73,8 @@ function notify(message: string) {
 async function syncSnapshot() {
   try {
     state.value = await colabOneSnapshot();
+    snapshotLoaded.value = true;
+    hydrateColabOneLocaleFromSettings(state.value.settings?.locale);
   } catch {
     // Keep last known snapshot on transient poll error.
   }
@@ -81,13 +92,13 @@ async function copy(text: string) {
   try {
     await colabOneWriteClipboard(text);
     await navigator.clipboard?.writeText(text).catch(() => {});
-    notify("已复制");
+    notify(t("common.copied"));
   } catch {
     try {
       await navigator.clipboard.writeText(text);
-      notify("已复制");
+      notify(t("common.copied"));
     } catch {
-      notify("复制失败，请手动复制");
+      notify(t("common.copyFailedShort"));
     }
   }
 }
@@ -108,8 +119,16 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+watch(
+  colabOneLocaleCode,
+  () => {
+    document.title = t("logs.windowTitle");
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
-  document.title = "运行日志 · ColabOne";
+  document.title = t("logs.windowTitle");
   void pollLoop();
   window.addEventListener("keydown", handleKeydown);
 });
@@ -123,11 +142,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <AConfigProvider :theme="colabOneTheme" :locale="colabOneLocale">
+  <AConfigProvider :theme="colabOneTheme" :locale="colabOneAntdLocale">
     <main class="co-log-window-root">
       <LogDrawer
         :open="true"
         :standalone="true"
+        :loading="!snapshotLoaded"
         :logs="state.logs || []"
         :current-activity="currentActivity"
         :running="!!(state.operation || task)"

@@ -220,7 +220,7 @@ func trackColabOneWindowState(store *colabOneWindowStateStore, key string, win *
 	}
 
 	captureOnMain := func() {
-		if win.IsDestroyed() || win.IsMinimized() {
+		if win.IsDestroyed() || win.IsMinimized() || !win.IsVisible() {
 			return
 		}
 		maximized := win.IsMaximized()

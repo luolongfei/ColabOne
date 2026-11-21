@@ -37,6 +37,33 @@ def parse_authorization_reply(text):
 
 COLABONE_KEYRING_SERVICE = "ColabOne"
 
+_OAUTH_CALLBACK_TEXT = {
+    "zh-CN": (
+        "ColabOne 登录成功。你可以关闭此页面，返回客户端。",
+        "登录未完成，请返回 ColabOne 重试",
+    ),
+    "en-US": (
+        "Signed in to ColabOne. You can close this tab and return to the app.",
+        "Sign-in was not completed. Please return to ColabOne and try again.",
+    ),
+    "zh-TW": (
+        "已成功登入 ColabOne。你可以關閉此分頁並返回應用程式。",
+        "登入尚未完成，請返回 ColabOne 重試。",
+    ),
+    "zh-HK": (
+        "已成功登入 ColabOne。你可以關閉此分頁並返回用戶端。",
+        "登入尚未完成，請返回 ColabOne 再試。",
+    ),
+    "ja-JP": (
+        "ColabOne へのログインが完了しました。このタブを閉じてアプリに戻ってください。",
+        "ログインが完了しませんでした。ColabOne に戻って再試行してください。",
+    ),
+    "ko-KR": (
+        "ColabOne 로그인을 완료했습니다. 이 탭을 닫고 앱으로 돌아가 주세요.",
+        "로그인이 완료되지 않았습니다. ColabOne으로 돌아가 다시 시도해 주세요.",
+    ),
+}
+
 
 class ColabOneVault:
     def __init__(self):
@@ -65,6 +92,7 @@ class ColabOneAuth:
         self.flow = None
         self.lock = threading.RLock()
         self.login_event = threading.Event()
+        self.locale = "zh-CN"
 
     def profile(self):
         profile = self.vault.get("google_profile")
@@ -218,19 +246,23 @@ class ColabOneAuth:
                 if not hmac.compare_digest(params.get("state", [""])[0], state):
                     self.send_error(400, "Invalid OAuth state")
                     return
+                ok_msg, err_msg = _OAUTH_CALLBACK_TEXT.get(
+                    auth.locale, _OAUTH_CALLBACK_TEXT["zh-CN"]
+                )
                 try:
                     if params.get("error"):
                         raise RuntimeError("Google 授权已取消，请重新登录")
                     auth.colab_finish(params.get("code", [""])[0])
-                    message = "ColabOne 登录成功。你可以关闭此页面，返回客户端。"
+                    message = ok_msg
                 except Exception:
-                    errors.append("登录未完成，请返回 ColabOne 重试")
+                    errors.append(err_msg)
                     auth.login_event.set()
                     message = errors[-1]
+                lang_attr = auth.locale if auth.locale in _OAUTH_CALLBACK_TEXT else "zh-CN"
                 content = (
-                    '<!doctype html><meta charset="utf-8"><title>ColabOne</title><body style="font:18px system-ui;padding:64px;color:#22634b"><h1>ColabOne</h1><p>'
+                    f'<!doctype html><html lang="{lang_attr}"><meta charset="utf-8"><title>ColabOne</title><body style="font:18px system-ui;padding:64px;color:#22634b"><h1>ColabOne</h1><p>'
                     + message
-                    + "</p></body>"
+                    + "</p></body></html>"
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")

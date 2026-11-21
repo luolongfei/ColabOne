@@ -164,16 +164,27 @@ async function mock(page: any, ready = false, path = "/") {
       const canvasOpenCalls: any[] = [];
       const exportCalls: any[] = [];
       const logDrawerCalls: any[] = [];
+      const nativeLocales: string[] = [];
+      const localeCommands: any[] = [];
       (window as any).__state = state;
       (window as any).__calls = calls;
       (window as any).__canvasOpenCalls = canvasOpenCalls;
       (window as any).__exportCalls = exportCalls;
       (window as any).__logDrawerCalls = logDrawerCalls;
+      (window as any).__nativeLocales = nativeLocales;
+      (window as any).__localeCommands = localeCommands;
       (window as any).mygo = {
         call: async (method: string, ...args: any[]) => {
           const request = args[0];
           if (method === "ColabOneDesktop.SetAppearance") {
             (window as any).__nativeAppearance = request;
+            return;
+          }
+          if (method === "ColabOneDesktop.SystemAppearance") {
+            return (window as any).__mockSystemAppearance ?? "";
+          }
+          if (method === "ColabOneDesktop.SetLocale") {
+            nativeLocales.push(String(request ?? ""));
             return;
           }
           if (method === "ColabOneDesktop.GetLogDrawerState") {
@@ -208,6 +219,16 @@ async function mock(page: any, ready = false, path = "/") {
               (window as any).__activity =
                 ((window as any).__activity || 0) + 1;
               return JSON.stringify({ ok: true });
+            }
+            if (request.action === "locale.set") {
+              localeCommands.push(request.payload);
+              if (request.payload?.persist && request.payload?.locale) {
+                state.settings.locale = request.payload.locale;
+              }
+              return JSON.stringify({
+                locale: request.payload?.locale || "zh-CN",
+                persisted: !!request.payload?.persist,
+              });
             }
             calls.push(request);
             const { action, payload } = request;
@@ -1403,7 +1424,9 @@ test("community search selects all shards and submits remote install with fixed 
     drawer.getByRole("heading", { name: "org/Qwen-GGUF" }),
   ).toBeVisible();
   await drawer.getByRole("button", { name: "选择版本" }).click();
-  await expect(antSelect(drawer, "选择量化版本")).toContainText(/2 个.*文件/);
+  await expect(
+    drawer.getByRole("radiogroup", { name: "选择量化版本" }),
+  ).toContainText(/2 个.*文件/);
   await drawer
     .locator(".co-hub-selection")
     .getByRole("button", { name: "仅下载" })
@@ -1502,11 +1525,10 @@ test("model search spans the row and results expose size range downloads and lik
   await expect(drawer.locator(".co-hub-download-summary")).toContainText(
     "共 2 个文件",
   );
-  await chooseAntOption(
-    page,
-    antSelect(drawer, "选择量化版本"),
-    "Qwen-Q8_0.gguf",
-  );
+  await drawer
+    .getByRole("radiogroup", { name: "选择量化版本" })
+    .getByRole("radio", { name: /Qwen-Q8_0\.gguf/ })
+    .click();
   await expect(drawer.locator(".co-hub-download-summary")).toContainText("8.00 GiB");
   await expect(drawer.locator(".co-hub-download-summary")).toContainText(
     "共 1 个文件",
@@ -1559,7 +1581,9 @@ test("loading more preserves pending size lookups and changed search clears sele
     "3.81 GiB",
   ]);
   await drawer.getByRole("button", { name: "选择版本" }).first().click();
-  await expect(antSelect(drawer, "选择量化版本")).toBeVisible();
+  await expect(
+    drawer.getByRole("radiogroup", { name: "选择量化版本" }),
+  ).toBeVisible();
   await drawer
     .getByRole("searchbox", { name: "搜索 Hugging Face 模型" })
     .fill("another");
@@ -2870,6 +2894,28 @@ test("theme toggle expands a ~1s circular arc reveal from the click point in bot
   expect(lightAnim.clipPath[lightAnim.clipPath.length - 1]).toMatch(
     /^circle\(\d+px at 1280px 0px\)$/,
   );
+
+  // Dark -> System (when WebView2 PreferredColorScheme echoes dark into prefers-color-scheme
+  // while the real OS theme reported by SystemAppearance is light) must STILL run the circular arc.
+  await page.getByRole("button", { name: "切换到深色模式" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__themeAnimCalls.length))
+    .toBe(3);
+
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await page.evaluate(() => {
+    (window as any).__mockSystemAppearance = "light";
+  });
+  const choices = page.locator('.ant-segmented[aria-label="外观模式"]');
+  await segmentedItem(choices, "跟随系统").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__themeAnimCalls.length))
+    .toBe(4);
+  const sysAnim = await page.evaluate(() => (window as any).__themeAnimCalls[3]);
+  expect(sysAnim.pseudoElement).toBe("::view-transition-new(root)");
+  expect(sysAnim.duration).toBe(1000);
 });
 
 test("GPU-dependent pages show quick jump to 远端设备 only when GPU is not started", async ({
@@ -3384,4 +3430,745 @@ test("resource monitor selector supports remote read-only GPU observation, switc
     ),
   ).toBe(true);
   expect(calls.some((c) => c.action === "monitor.pause")).toBe(true);
+});
+
+test("model drawer supports GPU VRAM filtering, curated version cards, modality/family chips, ComfyUI-only guard, and parameter presets", async ({
+  page,
+}) => {
+  await mock(page, false);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.settings.gpu = "T4";
+    s.models[0].common = false;
+    s.common_repos = [
+      {
+        repo: "huihui-ai/Huihui-Qwen3.8-27B-GGUF",
+        name: "Huihui-Qwen3.8-27B-GGUF",
+        note: "默认模型",
+      },
+    ];
+    const original = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, request: any) => {
+      if (request?.action === "hub.search") {
+        (window as any).__calls.push(request);
+        const mod = request.payload?.modality || "text";
+        if (mod === "video") {
+          return JSON.stringify({
+            models: [
+              {
+                repo: "city96/Wan2.1-T2V-14B-gguf",
+                downloads: 42000,
+                likes: 980,
+                gated: false,
+                modality: "video",
+                comfy_only: true,
+                family: "Wan",
+                params: "14B",
+              },
+            ],
+            next_cursor: "",
+          });
+        }
+        return JSON.stringify({
+          models: [
+            {
+              repo: "unsloth/Qwen3-32B-GGUF",
+              downloads: 88000,
+              likes: 1500,
+              gated: false,
+              modality: "text",
+              comfy_only: false,
+              family: "Qwen",
+              params: "32B",
+            },
+          ],
+          next_cursor: "",
+        });
+      }
+      if (request?.action === "hub.files") {
+        (window as any).__calls.push(request);
+        if (request.payload?.repo === "city96/Wan2.1-T2V-14B-gguf") {
+          return JSON.stringify({
+            revision: "c".repeat(40),
+            modality: "video",
+            comfy_only: true,
+            files: [
+              {
+                filename: "wan2.1-t2v-14b-Q4_K_M.gguf",
+                size: 11 * 1024 ** 3,
+                shards: 1,
+                quantization: "Q4_K_M",
+                supported: true,
+                reason: "",
+              },
+            ],
+          });
+        }
+        return JSON.stringify({
+          revision: "b".repeat(40),
+          modality: "text",
+          comfy_only: false,
+          files: [
+            {
+              filename: "Model-IQ2_XXS.gguf",
+              size: 10 * 1024 ** 3,
+              shards: 1,
+              quantization: "IQ2_XXS",
+              supported: true,
+              reason: "",
+            },
+            {
+              filename: "Model-Q3_K_M.gguf",
+              size: 15 * 1024 ** 3,
+              shards: 1,
+              quantization: "Q3_K_M",
+              supported: true,
+              reason: "",
+            },
+            {
+              filename: "Model-UD-Q4_K_XL-00001-of-00002.gguf",
+              size: 20 * 1024 ** 3,
+              shards: 2,
+              quantization: "UD-Q4_K_XL",
+              supported: true,
+              reason: "",
+            },
+            {
+              filename: "Model-Q5_K_M.gguf",
+              size: 24 * 1024 ** 3,
+              shards: 1,
+              quantization: "Q5_K_M",
+              supported: true,
+              reason: "",
+            },
+            {
+              filename: "Model-Q8_0.gguf",
+              size: 34 * 1024 ** 3,
+              shards: 1,
+              quantization: "Q8_0",
+              supported: true,
+              reason: "",
+            },
+            {
+              filename: "Model-BF16.gguf",
+              size: 62 * 1024 ** 3,
+              shards: 2,
+              quantization: "BF16",
+              supported: true,
+              reason: "",
+            },
+            {
+              filename: "Model-F32-Huge.gguf",
+              size: 108 * 1024 ** 3,
+              shards: 4,
+              quantization: "F32",
+              supported: true,
+              reason: "",
+            },
+          ],
+        });
+      }
+      return original(method, request);
+    };
+  });
+
+  const drawer = await openApiModelDrawer(page);
+  const firstRepo = drawer.locator(".co-common-repo-row").first();
+  await firstRepo.getByRole("button", { name: "选择版本" }).click();
+
+  // On default T4 (16 GB): IQ2_XXS fits comfortably while Q4_K_XL / Q8_0 / BF16 overflow & disabled
+  const radioGroup = firstRepo.getByRole("radiogroup", { name: "选择量化版本" });
+  await expect(radioGroup).toBeVisible();
+  // Curated view initially shows <= 4 cards and offers expand all
+  expect(await radioGroup.getByRole("radio").count()).toBeLessThanOrEqual(4);
+  await expect(
+    firstRepo.getByRole("button", { name: /展开全部 7 个版本/ }),
+  ).toBeVisible();
+  // Offline browsing hides load-time runtime parameters
+  await expect(firstRepo.getByText(/装载档位/)).toHaveCount(0);
+
+  // Switch GPU target dropdown to G4 · 96 GB -> UD-Q4_K_XL becomes recommended & Q8_0 / BF16 unlock while 108 GiB F32 stays disabled
+  await chooseAntOption(page, antSelect(drawer, "按 GPU 显存筛选"), "G4 · 96 GB");
+  await expect(
+    radioGroup.getByRole("radio", { name: /UD-Q4_K_XL/ }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(
+    radioGroup.getByRole("radio", { name: /UD-Q4_K_XL/ }),
+  ).toContainText("推荐");
+  await expect(
+    radioGroup.getByRole("radio", { name: /UD-Q4_K_XL/ }),
+  ).toContainText("适配 G4 96G");
+
+  // Expand all 7 versions and verify 108 GiB F32 shows gray hybrid badge yet remains selectable
+  await firstRepo.getByRole("button", { name: /展开全部 7 个版本/ }).click();
+  await expect(radioGroup.getByRole("radio")).toHaveCount(7);
+  const hugeRadio = radioGroup.getByRole("radio", {
+    name: /Model-F32-Huge\.gguf/,
+  });
+  await expect(hugeRadio).toBeEnabled();
+  await expect(hugeRadio).toContainText("混合装载 · 显存+内存");
+  await hugeRadio.click();
+  await expect(hugeRadio).toHaveAttribute("aria-checked", "true");
+  await expect(firstRepo.locator(".co-vp-live-warn")).toContainText(
+    "--fit on",
+  );
+
+  // Capture visual screenshot of redesigned beginner-friendly version picker in "我的"
+  await page.screenshot({
+    path: fileURLToPath(
+      new URL("../../work/model-drawer-versions-g4.png", import.meta.url),
+    ),
+    fullPage: true,
+  });
+
+  // Switch to "社区" and verify family + modality chips and ComfyUI-only guard
+  await drawer.getByRole("tab", { name: /^社\s*区$/ }).click();
+  const familyGroup = drawer.getByRole("group", { name: "热门模型系列" });
+  await familyGroup.getByRole("button", { name: "千问 Qwen" }).click();
+  await expect(drawer.locator(".co-hub-repo").first()).toContainText(
+    "适配 G4 96G",
+  );
+  await expect(drawer.locator(".co-hub-repo").first()).toContainText("32B");
+
+  const modalityGroup = drawer.getByRole("group", { name: "模型类型筛选" });
+  await modalityGroup.getByRole("button", { name: /视频生成/ }).click();
+  await expect(drawer.locator(".co-comfy-modality-banner")).toContainText(
+    "ComfyUI 专用",
+  );
+  const videoCard = drawer.locator(".co-hub-repo", {
+    hasText: "Wan2.1-T2V-14B-gguf",
+  });
+  await expect(videoCard).toBeVisible();
+  await expect(videoCard).toContainText("ComfyUI 专用");
+  await expect(videoCard.getByRole("button", { name: /加入我的/ })).toHaveCount(
+    0,
+  );
+  await videoCard.getByRole("button", { name: "查看显存" }).click();
+  await expect(
+    videoCard.getByRole("button", { name: /下载并装载|加入我的/ }),
+  ).toHaveCount(0);
+  await videoCard.getByRole("button", { name: /前往 ComfyUI 工作区/ }).click();
+  await expect(drawer).toBeHidden();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+
+  // Verify final-stage runtime parameter presets & oversized hybrid model loadability when GPU is ready
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.state = "ready";
+    s.runtime.protocol = 7;
+    s.runtime.gpu = {
+      name: "NVIDIA RTX PRO 6000",
+      total_mib: 98304,
+      used_mib: 1024,
+    };
+    s.runtime.resources = {
+      memory: {
+        total_bytes: 170 * 1024 ** 3,
+        used_bytes: 16 * 1024 ** 3,
+      },
+    };
+    s.models[0].common = true;
+    s.models[0].downloaded = true;
+    s.models.push({
+      id: "moe-111g",
+      name: "Qwen3.8-Flash-Next · Q4",
+      description: "111 GiB MoE hybrid model",
+      size: 111 * 1024 ** 3,
+      min_vram_mib: 0,
+      context_length: 8192,
+      temperature: 0.7,
+      common: true,
+      downloaded: true,
+      loaded: false,
+      custom: true,
+    });
+  });
+  const readyDrawer = await openApiModelDrawer(page);
+  const hybridCard = readyDrawer.locator(".co-model-card", {
+    hasText: "Qwen3.8-Flash-Next · Q4",
+  });
+  await expect(hybridCard).toContainText("混合装载 · 显存+内存");
+  await expect(hybridCard.locator(".co-model-vram-warning")).toContainText(
+    "--fit on",
+  );
+  await expect(hybridCard.getByRole("button", { name: "装载" })).toBeEnabled();
+
+  const savedCard = readyDrawer.locator(".co-model-card", {
+    hasText: "Qwen2.5 · 0.5B",
+  });
+  await savedCard.getByRole("button", { name: /^参\s*数$/ }).click();
+  const presetGroup = savedCard.getByRole("group", { name: "快捷参数档位" });
+  await expect(presetGroup).toBeVisible();
+  await presetGroup.getByRole("button", { name: /精准编程/ }).click();
+  await expect(savedCard.locator(".co-param-effect-box")).toContainText(
+    "16K 上下文",
+  );
+  await expect(savedCard.locator(".co-param-effect-box")).toContainText("严谨");
+  await savedCard.getByRole("button", { name: "装载显存" }).click();
+  const loadCall = await page.evaluate(() =>
+    (window as any).__calls.find((c: any) => c.action === "model.load"),
+  );
+  expect(loadCall?.payload).toEqual({
+    id: "qwen",
+    context_length: 16384,
+    temperature: 0.2,
+  });
+});
+
+test("multi-language switcher renders ready-made SVG flags and translates all 6 locales cleanly", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  await mock(page, true);
+
+  // Verify topbar flag button renders a real loaded SVG image
+  const trigger = page.getByTestId("topbar-locale-trigger");
+  await expect(trigger).toBeVisible();
+  const triggerImg = trigger.locator("img.co-locale-flag");
+  await expect(triggerImg).toBeVisible();
+  const triggerLoaded = await triggerImg.evaluate(
+    (img: HTMLImageElement) => img.complete && img.naturalWidth > 0,
+  );
+  expect(triggerLoaded).toBe(true);
+
+  const expectations = [
+    {
+      code: "en-US",
+      deviceNav: "Devices",
+      monitorTitle: "Live Hardware Monitor",
+      apiHeading: "Public API",
+      comfyHeading: "ComfyUI Workflow Engine",
+      settingsTitle: "Settings",
+      logsTitle: "Logs",
+    },
+    {
+      code: "zh-TW",
+      deviceNav: "遠端裝置",
+      monitorTitle: "即時硬體監控",
+      apiHeading: "對外 API",
+      comfyHeading: "ComfyUI 工作流程引擎",
+      settingsTitle: "設定",
+      logsTitle: "執行日誌",
+    },
+    {
+      code: "zh-HK",
+      deviceNav: "遠端裝置",
+      monitorTitle: "即時硬件監控",
+      apiHeading: "對外 API",
+      comfyHeading: "ComfyUI 工作流引擎",
+      settingsTitle: "設定",
+      logsTitle: "執行日誌",
+    },
+    {
+      code: "ja-JP",
+      deviceNav: "リモートデバイス",
+      monitorTitle: "リアルタイムハードウェア監視",
+      apiHeading: "外部 API",
+      comfyHeading: "ComfyUI ワークフローエンジン",
+      settingsTitle: "設定",
+      logsTitle: "実行ログ",
+    },
+    {
+      code: "ko-KR",
+      deviceNav: "원격 기기",
+      monitorTitle: "실시간 하드웨어 모니터",
+      apiHeading: "외부 API",
+      comfyHeading: "ComfyUI 워크플로 엔진",
+      settingsTitle: "설정",
+      logsTitle: "실행 로그",
+    },
+    {
+      code: "zh-CN",
+      deviceNav: "远端设备",
+      monitorTitle: "实时硬件监控",
+      apiHeading: "对外 API",
+      comfyHeading: "ComfyUI 工作流引擎",
+      settingsTitle: "设置",
+      logsTitle: "运行日志",
+    },
+  ] as const;
+
+  for (const spec of expectations) {
+    await trigger.click();
+    const menuItems = page.locator(".co-locale-menu-item");
+    await expect(menuItems).toHaveCount(6);
+    const targetItem = page.locator(
+      `.co-locale-menu-item[data-locale="${spec.code}"]`,
+    );
+    const flagOk = await targetItem
+      .locator("img.co-locale-flag")
+      .evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0);
+    expect(flagOk).toBe(true);
+    await targetItem.click();
+
+    await expect(page.locator("html")).toHaveAttribute("lang", spec.code);
+    await expect(
+      page.locator(".co-nav-pill-item").first(),
+    ).toContainText(spec.deviceNav);
+    await expect(page.locator(".co-monitor")).toContainText(spec.monitorTitle);
+
+    // Check zero horizontal overflow on Device page
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(2);
+
+    // Check API page & Model Drawer
+    await page.locator(".co-nav-pill-item").nth(1).click();
+    await expect(page.locator(".co-api-header-title h1")).toHaveText(
+      spec.apiHeading,
+    );
+
+    // Check ComfyUI page
+    await page.locator(".co-nav-pill-item").nth(2).click();
+    await expect(page.locator(".co-comfy-engine-title-row h2")).toHaveText(
+      spec.comfyHeading,
+    );
+
+    // Check Settings page & 6-flag radio grid
+    await page.locator(".co-nav-pill-item").nth(3).click();
+    await expect(page.locator(".co-page-title")).toHaveText(spec.settingsTitle);
+    const settingsGrid = page.getByTestId("settings-locale-grid");
+    await expect(settingsGrid.locator("button.co-locale-card-btn")).toHaveCount(
+      6,
+    );
+    await expect(
+      settingsGrid.locator(`button[data-locale="${spec.code}"]`),
+    ).toHaveAttribute("aria-checked", "true");
+
+    // Return to Device page for next locale
+    await page.locator(".co-nav-pill-item").nth(0).click();
+  }
+
+  // Open inline logs drawer and confirm localized panel + native sync calls
+  await page.locator(".co-logs-trigger").click();
+  await expect(page.locator("#activity-panel")).toHaveAttribute(
+    "aria-label",
+    "运行日志",
+  );
+  await expect(page.locator("#activity-panel .co-eyebrow")).toHaveText(
+    "当前状态",
+  );
+
+  const nativeLocales: string[] = await page.evaluate(
+    () => (window as any).__nativeLocales,
+  );
+  expect(nativeLocales).toContain("en-US");
+  expect(nativeLocales).toContain("zh-TW");
+  expect(nativeLocales).toContain("zh-HK");
+  expect(nativeLocales).toContain("ja-JP");
+  expect(nativeLocales).toContain("ko-KR");
+  expect(pageErrors).toEqual([]);
+});
+
+test("auto-detects system language by default and prioritizes manual override across reloads", async ({
+  browser,
+}) => {
+  const cases = [
+    { browserLocale: "en-US", expected: "en-US", navText: "Devices" },
+    { browserLocale: "zh-TW", expected: "zh-TW", navText: "遠端裝置" },
+    { browserLocale: "zh-HK", expected: "zh-HK", navText: "遠端裝置" },
+    { browserLocale: "ja-JP", expected: "ja-JP", navText: "リモートデバイス" },
+    { browserLocale: "ko-KR", expected: "ko-KR", navText: "원격 기기" },
+    { browserLocale: "de-DE", expected: "en-US", navText: "Devices" },
+  ] as const;
+
+  for (const item of cases) {
+    const ctx = await browser.newContext({ locale: item.browserLocale });
+    const p = await ctx.newPage();
+    await mock(p, false);
+    await expect(p.locator("html")).toHaveAttribute("lang", item.expected);
+    await expect(p.locator(".co-nav-pill-item").first()).toContainText(
+      item.navText,
+    );
+    // Auto-detection must NOT persist a manual override to localStorage
+    const stored = await p.evaluate(() =>
+      window.localStorage.getItem("colabone.locale"),
+    );
+    expect(stored).toBeNull();
+    await ctx.close();
+  }
+
+  // Now verify manual override takes strict priority over system locale across reloads
+  const overrideCtx = await browser.newContext({ locale: "en-US" });
+  const overridePage = await overrideCtx.newPage();
+  await mock(overridePage, true);
+  await expect(overridePage.locator("html")).toHaveAttribute("lang", "en-US");
+
+  // User manually switches to Japanese via Settings language card
+  await overridePage.locator(".co-nav-pill-item").nth(3).click();
+  await overridePage
+    .getByTestId("settings-locale-grid")
+    .locator('button[data-locale="ja-JP"]')
+    .click();
+  await expect(overridePage.locator("html")).toHaveAttribute("lang", "ja-JP");
+  expect(
+    await overridePage.evaluate(() =>
+      window.localStorage.getItem("colabone.locale"),
+    ),
+  ).toBe("ja-JP");
+
+  const persistCall = await overridePage.evaluate(() =>
+    (window as any).__localeCommands.find(
+      (c: any) => c.locale === "ja-JP" && c.persist === true,
+    ),
+  );
+  expect(persistCall).toBeTruthy();
+
+  // Reload under the SAME en-US browser locale: manual ja-JP must win!
+  await overridePage.reload();
+  await expect(overridePage.locator("html")).toHaveAttribute("lang", "ja-JP");
+  await expect(overridePage.locator(".co-nav-pill-item").first()).toContainText(
+    "リモートデバイス",
+  );
+
+  // Standalone LogWindow in the same context inherits manual ja-JP immediately
+  const logPage = await overrideCtx.newPage();
+  await mock(logPage, true, "/?view=logs");
+  await expect(logPage.locator("html")).toHaveAttribute("lang", "ja-JP");
+  await expect(logPage).toHaveTitle("実行ログ · ColabOne");
+  await expect(logPage.locator("#activity-panel")).toHaveAttribute(
+    "aria-label",
+    "実行ログ",
+  );
+  await expect(logPage.locator("#activity-panel .co-eyebrow")).toHaveText(
+    "現在の状態",
+  );
+
+  await overrideCtx.close();
+});
+
+test("tooltips dismiss immediately on click, dropdown switch, blank click, and dynamic title changes", async ({
+  page,
+}) => {
+  await mock(page, true);
+
+  // 1. Language switcher: hover -> tooltip opens -> click -> dropdown opens & tooltip closes ->
+  //    pick English -> move to blank space -> tooltip MUST NOT re-appear or stay stuck!
+  const trigger = page.getByTestId("topbar-locale-trigger");
+  await trigger.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(
+    "当前语言：简体中文",
+  );
+
+  await trigger.click();
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+  const enOption = page.locator('.co-locale-menu-item[data-locale="en-US"]');
+  await expect(enOption).toBeVisible();
+  await enOption.click();
+
+  // Move to blank area and click blank area; verify zero stuck tooltips after settle
+  await page.mouse.move(16, 16);
+  await page.mouse.click(16, 16);
+  await page.waitForTimeout(350);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // Fresh hover shows updated English tooltip; moving away dismisses it cleanly
+  await trigger.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(
+    "Language: English",
+  );
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // 2. Topbar theme toggle & logs buttons dismiss tooltip immediately on click
+  const themeBtn = page.locator(".co-nav-circle-btn").nth(1);
+  await themeBtn.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+  await themeBtn.click();
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // 3. BillingBar #title-slot tooltip opens on hover and dismisses cleanly on leave / blank click
+  const billingStrip = page.locator(".co-billing-strip");
+  await billingStrip.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("Burn Rate");
+  await page.mouse.click(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // 4. Dynamic empty-title transition (disabled button -> enabled -> disabled) never latches tooltip
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.state = "stopped";
+    s.runtime.gpu = undefined;
+  });
+  await page.locator(".co-nav-pill-item").nth(1).click();
+  const disabledStartBtn = page
+    .locator(".co-api-header-action .ant-tooltip-disabled-compatible-wrapper")
+    .first();
+  await disabledStartBtn.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(
+    "Start a remote GPU first",
+  );
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+  // Simulate GPU becoming ready (:title -> "") and stopping again (:title -> non-empty) while hovered
+  await disabledStartBtn.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.state = "ready";
+  });
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+  await page.mouse.move(16, 16);
+  await page.evaluate(() => {
+    (window as any).__state.runtime.state = "stopped";
+  });
+  await page.waitForTimeout(300);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // 5. ComfyUI APopconfirm + ColabOneTooltip on custom workflow delete icon never collide
+  await page.evaluate(() => {
+    (window as any).__state.workflows = [
+      {
+        id: "wf-custom-1",
+        name: "Custom Flow",
+        description: "Test",
+        source: "custom",
+        node_count: 2,
+        min_vram_mib: 0,
+        fields: [],
+      },
+    ];
+  });
+  await page.locator(".co-nav-pill-item").nth(2).click();
+  const deleteBtn = page.getByRole("button", { name: "Delete custom workflow" });
+  await deleteBtn.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(
+    "Delete custom workflow",
+  );
+  await deleteBtn.click();
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+  await expect(page.locator(".ant-popconfirm:visible")).toBeVisible();
+  await page.mouse.click(16, 16);
+  await page.waitForTimeout(250);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+});
+
+test("QA regressions: inline log drawer navbar layout, hub filter spacing, disabled tooltips, saved-repo loaded action, and live error banner translation", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await mock(page, false);
+
+  // Switch to English
+  await page.getByTestId("topbar-locale-trigger").click();
+  await page.locator('.co-locale-menu-item[data-locale="en-US"]').click();
+  await expect(page.locator(".co-nav-pill-item").nth(3)).toContainText(
+    "Settings",
+  );
+
+  // 1. Live error banner translates when switching languages
+  await page.evaluate(() => {
+    (window as any).__state.error = "Error: 请先完成 Google 登录";
+  });
+  await expect(page.locator(".co-banners .ant-alert-error")).toContainText(
+    "Please sign in with Google first",
+  );
+  await page.getByTestId("topbar-locale-trigger").click();
+  await page.locator('.co-locale-menu-item[data-locale="ja-JP"]').click();
+  await expect(page.locator(".co-banners .ant-alert-error")).toContainText(
+    "先に Google ログインを完了してください",
+  );
+  await page.getByTestId("topbar-locale-trigger").click();
+  await page.locator('.co-locale-menu-item[data-locale="en-US"]').click();
+  await expect(page.locator(".co-banners .ant-alert-error")).toContainText(
+    "Please sign in with Google first",
+  );
+
+  // 2. Opening inline LogDrawer in English at 1200px causes zero navbar collisions or horizontal overflow
+  await page.locator(".co-logs-trigger").click();
+  await expect(page.locator(".co-log-drawer")).toBeVisible();
+  const navBoxes = await page.evaluate(() => {
+    const rect = (sel: string) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+    };
+    return {
+      left: rect(".co-nav-left"),
+      center: rect(".co-nav-center"),
+      right: rect(".co-nav-right"),
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+  expect(navBoxes.overflow).toBe(0);
+  expect(navBoxes.left && navBoxes.center && navBoxes.right).toBeTruthy();
+  expect(navBoxes.left!.right).toBeLessThanOrEqual(navBoxes.center!.left + 1);
+  expect(navBoxes.center!.right).toBeLessThanOrEqual(navBoxes.right!.left + 1);
+  await page.locator(".co-logs-trigger").click();
+
+  // 3. ModelDrawer: saved repo with loaded model offers "In Use" action, and HubBrowser shows no label overlap + disabled tooltip while busy
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.state = "ready";
+    s.runtime.gpu = { name: "NVIDIA T4", total_mib: 15360, used_mib: 700 };
+    s.models[0].downloaded = true;
+    s.models[0].loaded = true;
+    s.runtime.loaded_model = s.models[0].id;
+    s.common_repos = [
+      {
+        repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        name: "Qwen2.5-0.5B-Instruct-GGUF",
+        saved_at: Date.now() / 1000,
+      },
+    ];
+  });
+  await page.locator(".co-nav-pill-item").nth(1).click();
+  await page.getByRole("button", { name: /Select Model|Switch Model/i }).first().click();
+  await expect(page.locator(".ant-drawer-content")).toBeVisible();
+
+  // Expand saved repo in Mine tab -> should render "Active" action button
+  await page.locator(".co-common-repo-row").getByRole("button", { name: "Versions" }).click();
+  await expect(
+    page.locator(".co-repo-picker").getByRole("button", { name: "Active" }),
+  ).toBeVisible();
+
+  // Switch to Community Hub -> verify Family label does not overlap first chip, and disabled Download button has tooltip when another task is running
+  await page.getByRole("tab", { name: /Community/i }).click();
+  await expect(page.locator(".co-hub-filter-panel")).toBeVisible();
+  const familyCollision = await page.evaluate(() => {
+    const labels = Array.from(document.querySelectorAll(".co-filter-label"));
+    for (const lbl of labels) {
+      const next = lbl.nextElementSibling;
+      if (!next) continue;
+      if (lbl.getBoundingClientRect().right > next.getBoundingClientRect().left + 1) {
+        return true;
+      }
+    }
+    return false;
+  });
+  expect(familyCollision).toBe(false);
+
+  // Set an active running task so Download & Load inside HubBrowser is disabled with reason tooltip
+  await page.evaluate(() => {
+    (window as any).__state.runtime.tasks = [
+      {
+        id: "t-busy",
+        kind: "download",
+        state: "running",
+        progress: 0.5,
+        message: "正在下载",
+      },
+    ];
+  });
+  await page
+    .locator(".co-hub-repo")
+    .first()
+    .getByRole("button", { name: "Versions" })
+    .click();
+  const hubDisabledWrap = page
+    .locator(
+      ".co-hub-selection .co-hub-install-actions .ant-tooltip-disabled-compatible-wrapper",
+    )
+    .first();
+  await expect(hubDisabledWrap).toBeVisible();
+  await hubDisabledWrap.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(
+    "Wait for the current task to finish",
+  );
 });

@@ -1,3 +1,4 @@
+import { t, tb } from "./i18n";
 import type { ColabOneSnapshot } from "./types";
 
 export const COLABONE_DEFAULT_IDLE_MINUTES = 30;
@@ -9,11 +10,51 @@ export interface IdleReleaseOption {
 }
 
 export const COLABONE_IDLE_RELEASE_OPTIONS: readonly IdleReleaseOption[] = [
-  { value: 15, label: "15 分钟", shortLabel: "15 分钟" },
-  { value: 30, label: "30 分钟（默认）", shortLabel: "30 分钟" },
-  { value: 45, label: "45 分钟", shortLabel: "45 分钟" },
-  { value: 60, label: "1 小时", shortLabel: "1 小时" },
-  { value: 120, label: "2 小时", shortLabel: "2 小时" },
+  {
+    value: 15,
+    get label() {
+      return t("billing.idleOption15");
+    },
+    get shortLabel() {
+      return t("billing.idleOption15");
+    },
+  },
+  {
+    value: 30,
+    get label() {
+      return t("billing.idleOption30Default");
+    },
+    get shortLabel() {
+      return t("billing.idleOption30Short");
+    },
+  },
+  {
+    value: 45,
+    get label() {
+      return t("billing.idleOption45");
+    },
+    get shortLabel() {
+      return t("billing.idleOption45");
+    },
+  },
+  {
+    value: 60,
+    get label() {
+      return t("billing.idleOption60");
+    },
+    get shortLabel() {
+      return t("billing.idleOption60");
+    },
+  },
+  {
+    value: 120,
+    get label() {
+      return t("billing.idleOption120");
+    },
+    get shortLabel() {
+      return t("billing.idleOption120");
+    },
+  },
 ];
 
 export type EnduranceLevel =
@@ -39,8 +80,8 @@ export function formatRemainingBalanceTime(
     !Number.isFinite(rate)
   ) {
     return {
-      text: "正在读取余额…",
-      shortText: "读取中",
+      text: t("billing.enduranceReading"),
+      shortText: t("billing.enduranceReadingShort"),
       hours: null,
       daysPart: 0,
       hoursPart: 0,
@@ -50,8 +91,8 @@ export function formatRemainingBalanceTime(
 
   if (rate <= 0) {
     return {
-      text: "当前未扣费 · 余额不消耗",
-      shortText: "未消耗",
+      text: t("billing.enduranceIdle"),
+      shortText: t("billing.enduranceIdleShort"),
       hours: null,
       daysPart: 0,
       hoursPart: 0,
@@ -61,8 +102,8 @@ export function formatRemainingBalanceTime(
 
   if (balance <= 0) {
     return {
-      text: "0 天 0 小时（余额已耗尽）",
-      shortText: "已耗尽",
+      text: t("billing.enduranceExhausted"),
+      shortText: t("billing.enduranceExhaustedShort"),
       hours: 0,
       daysPart: 0,
       hoursPart: 0,
@@ -80,17 +121,22 @@ export function formatRemainingBalanceTime(
   let shortText: string;
 
   if (totalHours >= 24) {
-    text = `约 ${daysPart} 天 ${hoursPart} 小时`;
-    shortText = `${daysPart} 天 ${hoursPart} 小时`;
+    text = t("common.approxDaysHours", { days: daysPart, hours: hoursPart });
+    shortText = t("common.daysHours", { days: daysPart, hours: hoursPart });
   } else if (totalHours >= 1) {
     const mins = Math.floor((totalHours - hoursPart) * 60);
     text =
-      mins > 0 ? `约 ${hoursPart} 小时 ${mins} 分钟` : `约 ${hoursPart} 小时`;
-    shortText = mins > 0 ? `${hoursPart} 小时 ${mins} 分` : `${hoursPart} 小时`;
+      mins > 0
+        ? t("common.approxHoursMinutes", { hours: hoursPart, minutes: mins })
+        : t("common.approxHours", { hours: hoursPart });
+    shortText =
+      mins > 0
+        ? t("common.hoursMinutesShort", { hours: hoursPart, minutes: mins })
+        : t("common.hours", { value: hoursPart });
   } else {
     const mins = Math.max(1, Math.floor(totalHours * 60));
-    text = `约 ${mins} 分钟`;
-    shortText = `约 ${mins} 分钟`;
+    text = t("common.approxMinutes", { minutes: mins });
+    shortText = t("common.approxMinutes", { minutes: mins });
   }
 
   return {
@@ -134,23 +180,23 @@ export function describeColabOneBilling(
 
   let statusText: string;
   if (!loggedIn) {
-    statusText = "未登录";
+    statusText = t("billing.statusLoggedOut");
   } else if (active) {
-    statusText = "正在扣费";
+    statusText = t("billing.statusActive");
   } else if (stale && !hasFiniteRate) {
-    statusText = "计费查询中";
+    statusText = t("billing.statusQuerying");
   } else if (instanceCount > 0) {
-    statusText = "实例运行 · 费率同步中";
+    statusText = t("billing.statusSyncingRate");
   } else {
-    statusText = "当前未扣费";
+    statusText = t("billing.statusIdle");
   }
 
   const rateText = hasFiniteRate
-    ? `${(account.rate as number).toFixed(2)} CU/小时`
-    : "-- CU/小时";
+    ? t("billing.rateValue", { rate: (account.rate as number).toFixed(2) })
+    : t("billing.ratePlaceholder");
   const balanceText = hasFiniteBalance
     ? `${(account.balance as number).toFixed(2)} CU`
-    : "未读取";
+    : t("billing.balanceUnread");
   const endurance = formatRemainingBalanceTime(account.balance, account.rate);
 
   return {
@@ -176,22 +222,25 @@ export function formatIdlePolicyLabel(minutes?: number): string {
   }
   if (minutes !== undefined && Number.isFinite(minutes) && minutes > 60) {
     if (minutes % 60 === 0) {
-      return `${minutes / 60} 小时`;
+      return t("common.hours", { value: minutes / 60 });
     }
-    return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`;
+    return t("common.hoursMinutes", {
+      hours: Math.floor(minutes / 60),
+      minutes: minutes % 60,
+    });
   }
   const safeMinutes =
     minutes !== undefined && Number.isFinite(minutes) && minutes > 0
       ? minutes
       : COLABONE_DEFAULT_IDLE_MINUTES;
-  return `${safeMinutes} 分钟`;
+  return t("common.minutes", { value: safeMinutes });
 }
 
 export function formatCountdownClock(
   seconds: number | null | undefined,
 ): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) {
-    return "计算中";
+    return t("common.calculating");
   }
   const whole = Math.ceil(Math.max(0, seconds));
   if (whole >= 3600) {
@@ -227,7 +276,7 @@ export function friendlyErrorMessage(raw: string): string {
     return "";
   }
   if (isTransientIpcError(raw) || isTransientIpcError(cleaned)) {
-    return "与本地后台服务的连接短暂中断，正在自动重连…";
+    return t("status.ipcReconnectingDetail");
   }
-  return cleaned;
+  return tb(cleaned);
 }

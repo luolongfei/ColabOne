@@ -190,3 +190,48 @@ def test_refresh_network_error_preserves_saved_login(monkeypatch):
     with pytest.raises(OSError):
         ColabOneAuth(vault).credentials("colab")
     assert vault.get("colab") == raw
+
+
+def test_locale_command_persists_manual_choice_and_localizes_oauth_html(tmp_path):
+    from bridge.auth import _OAUTH_CALLBACK_TEXT
+    from bridge.controller import ColabOneController
+
+    ctl = ColabOneController(
+        tmp_path, vault=MemoryVault(), config_dir=tmp_path, background=False
+    )
+    # Non-persisted OS auto-detected sync updates runtime auth locale without writing settings.json
+    res = ctl.command("locale.set", {"locale": "ja-JP", "persist": False})
+    assert res == {"ok": True, "locale": "ja-JP", "persisted": False}
+    assert ctl.auth.locale == "ja-JP"
+    assert ctl.settings.get("locale", "") == ""
+
+    # Manual switch persists to settings.json and survives controller restart
+    res = ctl.command("locale.set", {"locale": "zh-HK", "persist": True})
+    assert res == {"ok": True, "locale": "zh-HK", "persisted": True}
+    assert ctl.settings["locale"] == "zh-HK"
+    assert ctl.auth.locale == "zh-HK"
+
+    reloaded = ColabOneController(
+        tmp_path, vault=MemoryVault(), config_dir=tmp_path, background=False
+    )
+    assert reloaded.settings["locale"] == "zh-HK"
+    assert reloaded.auth.locale == "zh-HK"
+
+    with pytest.raises(ValueError):
+        ctl.command("locale.set", {"locale": "xx-XX", "persist": True})
+
+    # Verify localized OAuth callback texts exist for all 6 supported locales
+    expected_snippets = {
+        "zh-CN": ("登录成功", "重试"),
+        "en-US": ("Signed in to ColabOne", "try again"),
+        "zh-TW": ("已成功登入 ColabOne", "重試"),
+        "zh-HK": ("已成功登入 ColabOne", "再試"),
+        "ja-JP": ("ログインが完了しました", "再試行"),
+        "ko-KR": ("로그인을 완료했습니다", "다시 시도"),
+    }
+    assert set(_OAUTH_CALLBACK_TEXT.keys()) == set(expected_snippets.keys())
+    for loc, (ok_snippet, err_snippet) in expected_snippets.items():
+        ok_msg, err_msg = _OAUTH_CALLBACK_TEXT[loc]
+        assert ok_snippet in ok_msg
+        assert err_snippet in err_msg
+

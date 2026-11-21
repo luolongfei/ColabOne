@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { colabOneLocaleCode, t, tb, tsrc } from "./i18n";
 import {
   Button as AButton,
   Empty as AEmpty,
@@ -9,6 +10,7 @@ import {
   Tag as ATag,
 } from "ant-design-vue";
 import { PhCopy, PhSpeedometer, PhTrash } from "@phosphor-icons/vue";
+import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import { formatTokenSpeed } from "./apiSpeed";
 import type { ActivityEntry } from "./types";
 
@@ -20,6 +22,7 @@ const props = defineProps<{
   open: boolean;
   width?: number;
   standalone?: boolean;
+  loading?: boolean;
   logs: ActivityEntry[];
   currentActivity: string;
   running: boolean;
@@ -29,6 +32,14 @@ const props = defineProps<{
     estimated?: boolean;
   } | null;
 }>();
+
+const LOG_SKELETON_ROWS = [
+  { srcW: 52, msgW: "86%" },
+  { srcW: 44, msgW: "72%" },
+  { srcW: 58, msgW: "92%" },
+  { srcW: 48, msgW: "64%" },
+  { srcW: 54, msgW: "78%" },
+] as const;
 
 const emit = defineEmits<{
   "update:width": [number];
@@ -41,10 +52,10 @@ const logLevel = ref<"all" | "error">("all");
 const logBody = ref<HTMLElement | null>(null);
 const resizing = ref(false);
 
-const logLevelOptions = [
-  { label: "全部", value: "all" },
-  { label: "仅错误", value: "error" },
-];
+const logLevelOptions = computed(() => [
+  { label: t("logs.levelAll"), value: "all" },
+  { label: t("logs.levelErrorOnly"), value: "error" },
+]);
 
 const logEntries = computed(() =>
   (props.logs || []).filter(
@@ -59,7 +70,9 @@ const liveSpeedLabel = computed(() => {
 });
 
 const logTime = (time: number) =>
-  new Date(time * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+  new Date(time * 1000).toLocaleTimeString(colabOneLocaleCode.value, {
+    hour12: false,
+  });
 
 function onLogLevelChange(raw: unknown) {
   logLevel.value = raw === "error" ? "error" : "all";
@@ -92,7 +105,8 @@ function copyLogs() {
     "copy",
     logEntries.value
       .map(
-        (entry) => `[${logTime(entry.time)}] [${entry.source}] ${entry.message}`,
+        (entry) =>
+          `[${logTime(entry.time)}] [${tsrc(entry.source)}] ${tb(entry.message)}`,
       )
       .join("\n"),
   );
@@ -155,7 +169,7 @@ onUnmounted(() => {
     class="co-log-drawer co-activity-panel"
     :class="{ 'is-resizing': resizing, 'is-standalone': !!standalone }"
     role="complementary"
-    aria-label="运行日志"
+    :aria-label="t('logs.panelAria')"
     :style="
       standalone ? undefined : { '--co-log-drawer-width': `${width || DEFAULT_WIDTH}px` }
     "
@@ -165,8 +179,8 @@ onUnmounted(() => {
       class="co-log-resizer"
       role="separator"
       aria-orientation="vertical"
-      aria-label="调整运行日志宽度"
-      title="拖动调整宽度，双击恢复默认"
+      :aria-label="t('logs.resizeAria')"
+      :title="t('logs.resizeTooltip')"
       @pointerdown="startResize"
       @dblclick="resetWidth"
     ></div>
@@ -175,7 +189,7 @@ onUnmounted(() => {
     <div class="co-log-drawer-body">
       <div class="co-log-status">
         <div class="co-log-status-head">
-          <span class="co-eyebrow">当前状态</span>
+          <span class="co-eyebrow">{{ t("logs.currentStatus") }}</span>
           <ATag
             v-if="liveSpeedLabel"
             color="blue"
@@ -187,8 +201,14 @@ onUnmounted(() => {
           </ATag>
         </div>
         <p class="co-log-status-text">
-          <ASpin v-if="running" size="small" />
-          <span>{{ currentActivity }}</span>
+          <template v-if="loading && !logs.length">
+            <ColabOneSkeleton width="66%" :height="16" variant="text" />
+            <span class="co-sr-only">{{ t("common.loading") }}</span>
+          </template>
+          <template v-else>
+            <ASpin v-if="running" size="small" />
+            <span>{{ tb(currentActivity) }}</span>
+          </template>
         </p>
       </div>
 
@@ -197,32 +217,32 @@ onUnmounted(() => {
           size="small"
           :value="logLevel"
           :options="logLevelOptions"
-          aria-label="日志级别"
+          :aria-label="t('logs.levelAria')"
           @change="onLogLevelChange"
         />
         <ASpace :size="6">
           <AButton
             size="small"
-            aria-label="复制日志"
+            :aria-label="t('logs.copyAria')"
             :disabled="!logEntries.length"
             @click="copyLogs"
           >
             <template #icon>
               <PhCopy :size="14" />
             </template>
-            复制
+            {{ t("common.copy") }}
           </AButton>
           <AButton
             size="small"
             danger
-            aria-label="清空日志"
+            :aria-label="t('logs.clearAria')"
             :disabled="!logs.length"
             @click="emit('clear')"
           >
             <template #icon>
               <PhTrash :size="14" />
             </template>
-            清空
+            {{ t("common.clear") }}
           </AButton>
         </ASpace>
       </div>
@@ -231,24 +251,59 @@ onUnmounted(() => {
         ref="logBody"
         class="co-log-feed"
         role="log"
-        aria-label="实时运行记录"
+        :aria-label="t('logs.feedAria')"
         aria-live="off"
         tabindex="0"
         @scroll="logScroll"
       >
+        <div
+          v-if="loading && !logEntries.length"
+          class="co-log-skeleton-list"
+          role="status"
+          aria-busy="true"
+        >
+          <span class="co-sr-only">{{ t("common.loading") }}</span>
+          <div
+            v-for="(row, idx) in LOG_SKELETON_ROWS"
+            :key="idx"
+            class="co-log-entry co-log-entry-skeleton"
+          >
+            <div class="co-log-entry-meta">
+              <ColabOneSkeleton
+                :width="56"
+                :height="12"
+                variant="text"
+                tone="subtle"
+                :delay="idx * 60"
+              />
+              <ColabOneSkeleton
+                :width="row.srcW"
+                :height="18"
+                variant="tag"
+                tone="subtle"
+                :delay="idx * 60 + 35"
+              />
+            </div>
+            <ColabOneSkeleton
+              :width="row.msgW"
+              :height="14"
+              variant="text"
+              :delay="idx * 60 + 70"
+            />
+          </div>
+        </div>
         <AEmpty
-          v-if="!logEntries.length"
+          v-else-if="!logEntries.length"
           :description="
-            logLevel === 'error'
-              ? '暂无错误日志'
-              : '暂无运行日志，开始操作后将在此实时显示。'
+            logLevel === 'error' ? t('logs.emptyError') : t('logs.emptyAll')
           "
           class="co-log-empty"
         />
         <div
           v-for="entry in logEntries"
+          v-else
           :key="entry.id"
-          class="co-log-entry"
+          class="co-log-entry co-sk-reveal"
           :class="entry.level"
         >
           <div class="co-log-entry-meta">
@@ -258,7 +313,7 @@ onUnmounted(() => {
               :bordered="false"
               class="co-log-src"
             >
-              {{ entry.source }}
+              {{ tsrc(entry.source) }}
             </ATag>
             <ATag
               v-if="entry.level === 'error'"
@@ -266,7 +321,7 @@ onUnmounted(() => {
               :bordered="false"
               class="co-log-src"
             >
-              错误
+              {{ t("logs.tagError") }}
             </ATag>
             <ATag
               v-else-if="entry.level === 'warning'"
@@ -274,24 +329,24 @@ onUnmounted(() => {
               :bordered="false"
               class="co-log-src"
             >
-              提醒
+              {{ t("logs.tagWarn") }}
             </ATag>
           </div>
-          <p class="co-log-entry-msg co-mono">{{ entry.message }}</p>
+          <p class="co-log-entry-msg co-mono">{{ tb(entry.message) }}</p>
         </div>
       </div>
     </div>
 
     <!-- Pinned Footer Bar -->
     <footer class="co-log-drawer-footer">
-      <span class="co-muted">最近 300 条 · 本次运行</span>
+      <span class="co-muted">{{ t("logs.footerLimit") }}</span>
       <AButton
         size="small"
         :type="logFollow ? 'primary' : 'default'"
         :ghost="logFollow"
         @click="followLogs"
       >
-        {{ logFollow ? "跟随最新" : "回到最新" }}
+        {{ logFollow ? t("logs.following") : t("logs.jumpLatest") }}
       </AButton>
     </footer>
   </aside>
@@ -450,6 +505,17 @@ onUnmounted(() => {
   border-radius: 10px;
   background: var(--co-subtle);
   border: 1px solid var(--co-border-secondary);
+}
+
+.co-log-skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.co-log-entry-skeleton {
+  background: var(--co-skeleton-card-bg);
+  pointer-events: none;
 }
 
 .co-log-entry.error {

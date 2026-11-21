@@ -1,4 +1,5 @@
 import { colabOneCommand } from "./api";
+import { t } from "./i18n";
 import type { WorkflowField } from "./types";
 
 export type WorkflowImportResult =
@@ -15,8 +16,7 @@ const UNSAFE_PREVIEW_MIMES = new Set([
   "application/javascript",
 ]);
 
-export const CANVAS_FORMAT_ERROR =
-  "检测到这是画布格式 JSON，请在 ComfyUI 中开启 Dev Mode 并选择「Save (API Format)」导出后再导入";
+export const CANVAS_FORMAT_ERROR = t("comfy.errCanvasFormat", undefined, "zh-CN");
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -25,34 +25,34 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
   const trimmed = (raw || "").trim();
   if (!trimmed) {
-    return { ok: false, error: "请粘贴或选择工作流 JSON 文件" };
+    return { ok: false, error: t("comfy.errEmptyJson") };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    return { ok: false, error: "JSON 格式无效，请检查内容是否完整" };
+    return { ok: false, error: t("comfy.errInvalidJson") };
   }
 
   if (!isPlainRecord(parsed)) {
-    return { ok: false, error: "工作流 JSON 顶层必须是对象（以节点 ID 为键）" };
+    return { ok: false, error: t("comfy.errTopLevelObject") };
   }
 
   if (Array.isArray(parsed.nodes)) {
-    return { ok: false, error: CANVAS_FORMAT_ERROR };
+    return { ok: false, error: t("comfy.errCanvasFormat") };
   }
 
   const entries = Object.entries(parsed);
   if (entries.length === 0) {
-    return { ok: false, error: "工作流 JSON 为空，未包含任何节点" };
+    return { ok: false, error: t("comfy.errNoNodes") };
   }
 
   for (const [nodeId, nodeValue] of entries) {
     if (!isPlainRecord(nodeValue)) {
       return {
         ok: false,
-        error: `节点「${nodeId}」格式无效，每个节点必须是包含 class_type 和 inputs 的对象`,
+        error: t("comfy.errInvalidNode", { id: nodeId }),
       };
     }
     if (
@@ -61,13 +61,13 @@ export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
     ) {
       return {
         ok: false,
-        error: `节点「${nodeId}」缺少有效的 class_type 字段`,
+        error: t("comfy.errMissingClassType", { id: nodeId }),
       };
     }
     if (!isPlainRecord(nodeValue.inputs)) {
       return {
         ok: false,
-        error: `节点「${nodeId}」缺少有效的 inputs 对象`,
+        error: t("comfy.errMissingInputs", { id: nodeId }),
       };
     }
   }
@@ -142,7 +142,7 @@ function decodeBase64(data: string): Uint8Array {
 
 export async function outputBlobURL(id: string): Promise<string> {
   if (!id || !id.trim()) {
-    throw new Error("作品编号不合法");
+    throw new Error(t("comfy.errInvalidOutputId"));
   }
   const chunks: Uint8Array[] = [];
   let offset = 0;
@@ -153,14 +153,14 @@ export async function outputBlobURL(id: string): Promise<string> {
   while (totalSize < 0 || offset < totalSize) {
     const part = await colabOneCommand("comfyui.output.asset", { id, offset });
     if (!part || typeof part.data !== "string") {
-      throw new Error("作品传输数据无效，请重试");
+      throw new Error(t("comfy.errInvalidOutputTransfer"));
     }
     const decoded = decodeBase64(part.data);
 
     if (totalSize < 0) {
       const size = Number(part.size);
       if (!Number.isFinite(size) || size <= 0 || size > MAX_OUTPUT_BYTES) {
-        throw new Error("作品大小不合法");
+        throw new Error(t("comfy.errInvalidOutputSize"));
       }
       totalSize = size;
       if (typeof part.sha256 === "string" && part.sha256) {
@@ -169,7 +169,7 @@ export async function outputBlobURL(id: string): Promise<string> {
       if (typeof part.mime === "string" && part.mime.trim()) {
         const candidate = part.mime.trim().toLowerCase().split(";")[0];
         if (UNSAFE_PREVIEW_MIMES.has(candidate)) {
-          throw new Error("不支持预览该文件格式");
+          throw new Error(t("comfy.errUnsupportedPreview"));
         }
         mime = candidate;
       }
@@ -186,7 +186,7 @@ export async function outputBlobURL(id: string): Promise<string> {
       decoded.length > CHUNK_SIZE ||
       offset + decoded.length > totalSize
     ) {
-      throw new Error("作品传输不完整，请重试");
+      throw new Error(t("comfy.errIncompleteTransfer"));
     }
 
     chunks.push(decoded);
@@ -203,7 +203,7 @@ export async function outputBlobURL(id: string): Promise<string> {
       n.toString(16).padStart(2, "0"),
     ).join("");
     if (actual !== expectedSha256) {
-      throw new Error("作品校验失败，请重试");
+      throw new Error(t("comfy.errOutputChecksum"));
     }
   }
   return URL.createObjectURL(blob);

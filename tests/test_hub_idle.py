@@ -53,6 +53,97 @@ def test_hub_groups_complete_shards_and_disables_missing_hashes():
     assert not next(f for f in result["files"] if f["shards"] == 1)["supported"]
 
 
+def test_hub_filters_imatrix_and_extracts_modern_quantizations():
+    http = Mock()
+    http.get.return_value = reply(
+        {
+            "sha": "b" * 40,
+            "pipeline_tag": "text-generation",
+            "siblings": [
+                {
+                    "rfilename": "unsloth-UD-Q4_K_XL-V2/imatrix_micro3.gguf",
+                    "lfs": {"size": 1_160_000_000, "sha256": "1" * 64},
+                },
+                {
+                    "rfilename": "unsloth-UD-Q4_K_XL-V2/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00002.gguf",
+                    "lfs": {"size": 40_000_000_000, "sha256": "2" * 64},
+                },
+                {
+                    "rfilename": "unsloth-UD-Q4_K_XL-V2/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00002.gguf",
+                    "lfs": {"size": 30_000_000_000, "sha256": "3" * 64},
+                },
+                {
+                    "rfilename": "Llama-3-8B-imatrix-Q4_K_M.gguf",
+                    "lfs": {"size": 4_900_000_000, "sha256": "4" * 64},
+                },
+                {
+                    "rfilename": "mmproj-model-f16.gguf",
+                    "lfs": {"size": 800_000_000, "sha256": "5" * 64},
+                },
+                {
+                    "rfilename": "adapter-lora.gguf",
+                    "lfs": {"size": 200_000_000, "sha256": "6" * 64},
+                },
+                {
+                    "rfilename": "Q4/model.gguf",
+                    "lfs": {"size": 5_000_000_000, "sha256": "7" * 64},
+                },
+            ],
+        }
+    )
+    result = model_files("huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF", session=http)
+    names = [f["filename"] for f in result["files"]]
+    assert "unsloth-UD-Q4_K_XL-V2/imatrix_micro3.gguf" not in names
+    assert "mmproj-model-f16.gguf" not in names
+    assert "adapter-lora.gguf" not in names
+    assert "Llama-3-8B-imatrix-Q4_K_M.gguf" in names
+    quants = {f["filename"]: f["quantization"] for f in result["files"]}
+    assert quants["unsloth-UD-Q4_K_XL-V2/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00002.gguf"] == "UD-Q4_K_XL"
+    assert quants["Llama-3-8B-imatrix-Q4_K_M.gguf"] == "Q4_K_M"
+    assert quants["Q4/model.gguf"] == "Q4"
+    assert result["modality"] == "text"
+    assert result["comfy_only"] is False
+    assert result["family"] == "Qwen"
+
+
+def test_hub_search_modality_and_family_filtering():
+    http = Mock()
+    http.get.return_value = reply(
+        [
+            {"id": "unsloth/Qwen3-32B-GGUF", "downloads": 5000, "pipeline_tag": "text-generation"},
+            {"id": "city96/FLUX.1-dev-gguf", "downloads": 9000, "pipeline_tag": "text-to-image"},
+            {"id": "city96/Wan2.1-T2V-14B-gguf", "downloads": 7000, "pipeline_tag": "text-to-video"},
+            {"id": "org/bge-m3-gguf", "downloads": 3000, "pipeline_tag": "feature-extraction"},
+        ]
+    )
+    text_res = search_models(query="32B", modality="text", family="Qwen", session=http)
+    assert http.get.call_args.kwargs["params"]["search"] == "Qwen 32B"
+    assert [m["repo"] for m in text_res["models"]] == ["unsloth/Qwen3-32B-GGUF"]
+    assert text_res["models"][0]["family"] == "Qwen"
+    assert text_res["models"][0]["params"] == "32B"
+    assert text_res["models"][0]["comfy_only"] is False
+
+    img_res = search_models(modality="image", family="FLUX", session=http)
+    assert http.get.call_args.kwargs["params"]["pipeline_tag"] == "text-to-image"
+    assert http.get.call_args.kwargs["params"]["search"] == "FLUX"
+    assert all(m["modality"] == "image" and m["comfy_only"] for m in img_res["models"])
+
+    vid_res = search_models(modality="video", session=http)
+    assert http.get.call_args.kwargs["params"]["pipeline_tag"] == "text-to-video"
+    assert all(m["modality"] == "video" and m["comfy_only"] for m in vid_res["models"])
+
+    all_res = search_models(modality="all", session=http)
+    by_repo = {m["repo"]: m for m in all_res["models"]}
+    assert by_repo["unsloth/Qwen3-32B-GGUF"]["modality"] == "text"
+    assert by_repo["city96/FLUX.1-dev-gguf"]["modality"] == "image"
+    assert by_repo["city96/FLUX.1-dev-gguf"]["comfy_only"] is True
+    assert by_repo["city96/Wan2.1-T2V-14B-gguf"]["modality"] == "video"
+    assert by_repo["city96/Wan2.1-T2V-14B-gguf"]["comfy_only"] is True
+
+    with pytest.raises(ValueError):
+        search_models(modality="audio", session=http)
+
+
 def test_hub_gated_error_is_actionable_without_leaking_token():
     http = Mock()
     http.get.return_value = reply({}, code=403)

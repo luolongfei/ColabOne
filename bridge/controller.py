@@ -83,6 +83,7 @@ class ColabOneController:
             "idle_countdown_seconds": 60,
             "auto_drive": True,
             "download_threads": 16,
+            "locale": "",
         }
         if (self.directory / "settings.json").exists():
             saved = json.loads(
@@ -96,9 +97,22 @@ class ColabOneController:
                 "download_threads",
                 "idle_policy",
                 "rclone_drive_policy",
+                "locale",
             ):
                 if k in saved:
                     self.settings[k] = saved[k]
+        if self.settings.get("locale") not in (
+            "",
+            "zh-CN",
+            "en-US",
+            "zh-TW",
+            "zh-HK",
+            "ja-JP",
+            "ko-KR",
+        ):
+            self.settings["locale"] = ""
+        if self.settings.get("locale"):
+            self.auth.locale = self.settings["locale"]
         # Migrate legacy 8-thread setting to the 16 / 32 concurrency options.
         if self.settings.get("download_threads") not in (16, 32):
             self.settings["download_threads"] = 16
@@ -392,6 +406,8 @@ class ColabOneController:
             for item in raw.get("custom_models") or []:
                 try:
                     spec = ModelSpec.model_validate(item).model_dump()
+                    if spec["id"].startswith("hf-"):
+                        spec["min_vram_mib"] = 0
                     self.custom_models[spec["id"]] = spec
                 except Exception:
                     continue
@@ -2118,6 +2134,17 @@ class ColabOneController:
             self.touch_lock.release()
 
     def command(self, action, payload):
+        if action == "locale.set":
+            raw_locale = str(payload.get("locale") or "").strip()
+            persist = bool(payload.get("persist", False))
+            valid_locales = ("zh-CN", "en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR")
+            if raw_locale not in valid_locales:
+                raise ValueError("不支持的语言选项")
+            self.auth.locale = raw_locale
+            if persist:
+                self.settings["locale"] = raw_locale
+                atomic_json(self.directory / "settings.json", self.settings)
+            return {"ok": True, "locale": raw_locale, "persisted": persist}
         if action == "account.refresh":
             self.activity.add("正在刷新 Google 账号余额与运行实例状态", "计费")
             account = self.provider.account()
@@ -2412,6 +2439,8 @@ class ColabOneController:
                 payload.get("sort", "downloads"),
                 payload.get("cursor", ""),
                 self.vault.get("hf", ""),
+                modality=payload.get("modality", "all"),
+                family=payload.get("family", ""),
             )
         if action == "hub.files":
             repo, _, _ = parse_hf_input(str(payload.get("repo") or ""))

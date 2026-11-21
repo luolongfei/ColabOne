@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export interface ModelSpec {
   id: string;
   kind?: "chat";
@@ -356,6 +358,7 @@ export interface ColabOneSnapshot {
     idle_countdown_seconds: number;
     auto_drive: boolean;
     download_threads: number;
+    locale?: string;
   };
 }
 export const createColabOneSnapshot = (): ColabOneSnapshot => ({
@@ -380,12 +383,24 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
   },
 });
 export const COLABONE_STATUS_LABELS: Record<string, string> = {
-  stopped: "未启动",
-  starting: "正在启动",
-  ready: "已连接",
-  disconnected: "连接中断",
-  releasing: "正在释放",
-  failed: "操作失败",
+  get stopped() {
+    return t("status.stopped");
+  },
+  get starting() {
+    return t("status.starting");
+  },
+  get ready() {
+    return t("status.ready");
+  },
+  get disconnected() {
+    return t("status.disconnected");
+  },
+  get releasing() {
+    return t("status.releasing");
+  },
+  get failed() {
+    return t("status.failed");
+  },
 };
 export function canColabOneLoadModel(
   model: ModelSpec,
