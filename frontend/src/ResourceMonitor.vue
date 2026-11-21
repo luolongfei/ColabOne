@@ -527,12 +527,12 @@ const cpuRowChart = computed(() =>
 );
 
 const activeGpuDisplayName = computed<string>(
-  () => telemetry.value.gpuName || props.runtime.gpu?.name || "",
+  () => tb(telemetry.value.gpuName || props.runtime.gpu?.name || ""),
 );
 
 const gpuSubtitle = computed<string>(() => {
-  if (telemetry.value.gpuName) return telemetry.value.gpuName;
-  if (props.runtime.gpu?.name) return props.runtime.gpu.name;
+  if (telemetry.value.gpuName) return tb(telemetry.value.gpuName);
+  if (props.runtime.gpu?.name) return tb(props.runtime.gpu.name);
   if (isCpuOnlyOnline.value) return t("monitor.gpuNoAccelerator");
   if (telemetry.value.online) return "Colab GPU";
   if (isRemoteConnecting.value) {

@@ -1,4 +1,4 @@
-import { t } from "./i18n";
+import { t, tb } from "./i18n";
 import type { ModelSpec, RuntimeStatus } from "./types";
 
 export type ColabOneGpuTargetId =
@@ -510,7 +510,8 @@ export function buildColabOneGpuTargetOptions(
   if (hasLiveRuntimeGpu(runtime) && runtime?.gpu) {
     const vramMib = runtime.gpu.total_mib;
     const vramGb = Math.max(1, Math.round(vramMib / 1024));
-    const shortName = liveGpuDisplayName(runtime.gpu.name || "", vramGb);
+    const localizedGpuName = tb(runtime.gpu.name || "");
+    const shortName = liveGpuDisplayName(localizedGpuName, vramGb);
     const liveRamBytes = runtime.resources?.memory?.total_bytes || 0;
     const hostRamGb =
       liveRamBytes > 0
@@ -520,7 +521,7 @@ export function buildColabOneGpuTargetOptions(
       id: "CURRENT",
       shortLabel: shortName,
       label: t("models.compatLiveGpuLabel", { name: shortName }),
-      subtitle: runtime.gpu.name || t("models.compatLiveGpuSub"),
+      subtitle: localizedGpuName || t("models.compatLiveGpuSub"),
       vramGb,
       vramMib,
       hostRamGb,
@@ -874,7 +875,7 @@ export function planColabOneVersionOptions(
     // Only broken/incomplete GGUF files are hard-disabled; oversized valid files remain selectable for GPU+RAM hybrid loading
     const disabled = !file.supported;
     const disabledReason = !file.supported
-      ? file.reason || t("models.compatMissingShards")
+      ? tb(file.reason) || t("models.compatMissingShards")
       : "";
     return {
       file,

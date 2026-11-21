@@ -9,8 +9,20 @@ from pathlib import Path
 
 COLABONE_APP_NAME = "ColabOne"
 COLABONE_APP_DESCRIPTION = "ColabOne — 远端 GPU 工作空间"
+COLABONE_APP_DESCRIPTIONS = {
+    "zh-CN": COLABONE_APP_DESCRIPTION,
+    "en-US": "ColabOne — Remote GPU Workspace",
+    "zh-TW": "ColabOne — 遠端 GPU 工作區",
+    "zh-HK": "ColabOne — 遠端 GPU 工作空間",
+    "ja-JP": "ColabOne — リモート GPU ワークスペース",
+    "ko-KR": "ColabOne — 원격 GPU 워크스페이스",
+}
 _CREATE_NO_WINDOW = 0x08000000
 _cached_win_desktop: Path | None = None
+
+
+def colabone_app_description(locale: str = "zh-CN") -> str:
+    return COLABONE_APP_DESCRIPTIONS.get(locale, COLABONE_APP_DESCRIPTION)
 
 
 def _win_desktop_dir(query_shell: bool = False) -> Path:
@@ -125,14 +137,14 @@ def _resolve_target_binary(root: Path, plat: str) -> Path:
     return root / COLABONE_APP_NAME
 
 
-def _write_windows_lnk(lnk_path: Path, exe_path: Path):
+def _write_windows_lnk(lnk_path: Path, exe_path: Path, locale: str = "zh-CN"):
     lnk_path.parent.mkdir(parents=True, exist_ok=True)
     env = dict(
         os.environ,
         _CO_LNK=str(lnk_path),
         _CO_EXE=str(exe_path),
         _CO_WORKDIR=str(exe_path.parent),
-        _CO_DESC=COLABONE_APP_DESCRIPTION,
+        _CO_DESC=colabone_app_description(locale),
     )
     ps_script = (
         "$ws = New-Object -ComObject WScript.Shell; "
@@ -162,6 +174,7 @@ def manage_shortcuts(
     remove: bool = False,
     sandbox_dir: Path | None = None,
     platform_name: str | None = None,
+    locale: str = "zh-CN",
 ) -> dict:
     if target not in ("start_menu", "desktop", "both"):
         raise ValueError("快捷方式目标不合法")
@@ -197,7 +210,7 @@ def manage_shortcuts(
         if not binary.is_file():
             raise RuntimeError("未在当前目录找到 ColabOne.exe，请在完整便携包目录中操作")
         for p in selected:
-            _write_windows_lnk(p, binary)
+            _write_windows_lnk(p, binary, locale=locale)
     elif plat == "darwin":
         if not binary.is_dir():
             raise RuntimeError("未找到 ColabOne.app 应用包")
@@ -216,7 +229,7 @@ def manage_shortcuts(
             "[Desktop Entry]\n"
             "Type=Application\n"
             f"Name={COLABONE_APP_NAME}\n"
-            f"Comment={COLABONE_APP_DESCRIPTION}\n"
+            f"Comment={colabone_app_description(locale)}\n"
             f'Exec="{binary}"\n'
             f'Path="{binary.parent}"\n'
             f"Icon={icon_path}\n"

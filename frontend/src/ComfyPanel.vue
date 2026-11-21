@@ -1468,7 +1468,7 @@ onUnmounted(() => {
                             class="co-comfy-switch-row"
                           >
                             <div class="co-comfy-switch-copy">
-                              <strong>{{ field.label }}</strong>
+                              <strong>{{ tb(field.label) }}</strong>
                               <small class="co-comfy-field-node">
                                 {{ t("comfy.nodePrefix", { id: field.node_id }) }}
                                 {{ field.input_name }}
@@ -1491,7 +1491,7 @@ onUnmounted(() => {
                             class="co-comfy-media-field"
                           >
                             <div class="co-comfy-field-label-row">
-                              <span>{{ field.label }}</span>
+                              <span>{{ tb(field.label) }}</span>
                               <small class="co-comfy-field-node">
                                 {{ t("comfy.nodePrefix", { id: field.node_id }) }}
                                 {{ field.input_name }}
@@ -1536,7 +1536,7 @@ onUnmounted(() => {
                                   localPreviews[field.key]
                                 "
                                 :src="localPreviews[field.key]"
-                                :alt="uploadedNames[field.key] || field.label"
+                                :alt="uploadedNames[field.key] || tb(field.label)"
                                 class="co-comfy-media-thumb"
                               />
                               <span v-else class="co-comfy-media-icon-wrap">
@@ -1632,7 +1632,7 @@ onUnmounted(() => {
                               :for="fieldInputId(field)"
                               class="co-comfy-field-label-row"
                             >
-                              <span>{{ field.label }}</span>
+                              <span>{{ tb(field.label) }}</span>
                               <small class="co-comfy-field-node">
                                 {{ t("comfy.nodePrefix", { id: field.node_id }) }}
                                 {{ field.input_name }}

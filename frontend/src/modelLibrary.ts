@@ -53,6 +53,7 @@ function matchesModelQuery(model: ModelSpec, normalizedQuery: string): boolean {
   const haystack = [
     model.name || "",
     model.description || "",
+    tb(model.description || ""),
     modelRepo(model),
     modelKindLabel(model.kind),
   ]

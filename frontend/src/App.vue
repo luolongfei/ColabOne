@@ -1445,7 +1445,7 @@ onUnmounted(() => {
                   {{
                     state.runtime.state === "stopped"
                       ? t("status.preselectedGpu", { gpu: form.gpu })
-                      : state.runtime.gpu?.name || form.gpu
+                      : tb(state.runtime.gpu?.name) || form.gpu
                   }}
                 </span>
               </template>
@@ -1729,7 +1729,7 @@ onUnmounted(() => {
                     <PhHardDrives :size="26" weight="duotone" />
                   </div>
                   <div class="co-device-title-main">
-                    <h2>{{ state.runtime.gpu?.name || t("device.fallbackGpuName") }}</h2>
+                    <h2>{{ tb(state.runtime.gpu?.name) || t("device.fallbackGpuName") }}</h2>
                     <div class="co-device-subtitle">
                       <template v-if="ready && activeVramModel">
                         <code v-if="state.runtime.id" class="co-runtime-id">{{
@@ -2290,7 +2290,7 @@ onUnmounted(() => {
                           <span>
                             {{ COLABONE_STATUS_LABELS[inst.state || "ready"] || inst.state }}
                             <template v-if="inst.gpu_name">
-                              · {{ inst.gpu_name }}
+                              · {{ tb(inst.gpu_name) }}
                             </template>
                           </span>
                           <span v-if="inst.vram_total_mib">

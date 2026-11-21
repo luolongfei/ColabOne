@@ -31,6 +31,66 @@ ACTIVITY_THROTTLE_SECONDS = 3.0
 _TOKEN_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _HTTP_VERSION_RE = re.compile(r"^HTTP/1\.[01]$")
 
+_UNAUTHORIZED_HTML_TEXT: dict[str, tuple[str, str]] = {
+    "zh-CN": (
+        "401 未经授权",
+        "未经授权：请通过 ColabOne 客户端打开 ComfyUI 原生画布。",
+    ),
+    "en-US": (
+        "401 Unauthorized",
+        "Unauthorized: please open ComfyUI Native Canvas from the ColabOne app.",
+    ),
+    "zh-TW": (
+        "401 未經授權",
+        "未經授權：請透過 ColabOne 用戶端開啟 ComfyUI 原生畫布。",
+    ),
+    "zh-HK": (
+        "401 未經授權",
+        "未經授權：請透過 ColabOne 程式開啟 ComfyUI 原生畫布。",
+    ),
+    "ja-JP": (
+        "401 認証エラー",
+        "認証されていません。ColabOne アプリから ComfyUI ネイティブキャンバスを開いてください。",
+    ),
+    "ko-KR": (
+        "401 인증 필요",
+        "인증되지 않았습니다. ColabOne 앱에서 ComfyUI 네이티브 캔버스를 열어 주세요.",
+    ),
+}
+
+
+def _resolve_accept_language(header: str) -> str:
+    candidates: list[tuple[float, int, str]] = []
+    for idx, item in enumerate((header or "").split(",")):
+        parts = [p.strip() for p in item.split(";") if p.strip()]
+        if not parts:
+            continue
+        tag = parts[0].lower().replace("_", "-")
+        q = 1.0
+        for param in parts[1:]:
+            if param.lower().startswith("q="):
+                try:
+                    q = float(param[2:])
+                except ValueError:
+                    q = 0.0
+        if q > 0:
+            candidates.append((q, -idx, tag))
+    candidates.sort(reverse=True)
+    for _, _, tag in candidates:
+        if tag.startswith("zh-hk") or tag.startswith("zh-mo") or tag.startswith("zh-hant-hk") or tag.startswith("yue"):
+            return "zh-HK"
+        if tag.startswith("zh-tw") or tag.startswith("zh-hant"):
+            return "zh-TW"
+        if tag.startswith("zh"):
+            return "zh-CN"
+        if tag.startswith("ja"):
+            return "ja-JP"
+        if tag.startswith("ko"):
+            return "ko-KR"
+        if tag.startswith("en"):
+            return "en-US"
+    return "en-US"
+
 _ORIG_ENSURE_BINARY = ensure_binary
 _ORIG_PUBLIC_ADDRESSES = public_addresses
 
@@ -519,10 +579,12 @@ class ColabOneCanvasProxyServer:
         if not authorized:
             accept = header_map.get("accept", "").lower()
             if "text/html" in accept:
+                lang = _resolve_accept_language(header_map.get("accept-language", ""))
+                title_text, body_text = _UNAUTHORIZED_HTML_TEXT[lang]
                 html = (
-                    "<!doctype html><meta charset='utf-8'>"
-                    "<title>401 Unauthorized</title>"
-                    "<p>未经授权：请通过 ColabOne 客户端打开 ComfyUI 原生画布。</p>"
+                    f"<!doctype html><html lang='{lang}'><meta charset='utf-8'>"
+                    f"<title>{title_text}</title>"
+                    f"<p>{body_text}</p></html>"
                 ).encode("utf-8")
                 await self._send_response(
                     writer,

@@ -224,8 +224,8 @@ def test_locale_command_persists_manual_choice_and_localizes_oauth_html(tmp_path
     expected_snippets = {
         "zh-CN": ("登录成功", "重试"),
         "en-US": ("Signed in to ColabOne", "try again"),
-        "zh-TW": ("已成功登入 ColabOne", "重試"),
-        "zh-HK": ("已成功登入 ColabOne", "再試"),
+        "zh-TW": ("返回用戶端", "重試"),
+        "zh-HK": ("返回應用程式", "再試"),
         "ja-JP": ("ログインが完了しました", "再試行"),
         "ko-KR": ("로그인을 완료했습니다", "다시 시도"),
     }
@@ -234,4 +234,141 @@ def test_locale_command_persists_manual_choice_and_localizes_oauth_html(tmp_path
         ok_msg, err_msg = _OAUTH_CALLBACK_TEXT[loc]
         assert ok_snippet in ok_msg
         assert err_snippet in err_msg
+
+
+def test_shortcuts_description_localized_across_locales(tmp_path, monkeypatch):
+    from bridge.shortcuts import (
+        COLABONE_APP_DESCRIPTIONS,
+        colabone_app_description,
+        manage_shortcuts,
+    )
+
+    assert set(COLABONE_APP_DESCRIPTIONS.keys()) == {
+        "zh-CN",
+        "en-US",
+        "zh-TW",
+        "zh-HK",
+        "ja-JP",
+        "ko-KR",
+    }
+    assert colabone_app_description("en-US") == "ColabOne — Remote GPU Workspace"
+    assert colabone_app_description("ja-JP") == "ColabOne — リモート GPU ワークスペース"
+    assert colabone_app_description("ko-KR") == "ColabOne — 원격 GPU 워크스페이스"
+
+    # Verify Linux .desktop entry uses the requested locale description
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "ColabOne").write_text("#!/bin/sh\n", encoding="utf-8")
+    manage_shortcuts(
+        root, target="desktop", platform_name="linux", locale="en-US"
+    )
+    desktop_file = tmp_path / "Desktop" / "ColabOne.desktop"
+    content = desktop_file.read_text(encoding="utf-8")
+    assert "Comment=ColabOne — Remote GPU Workspace" in content
+
+
+def test_comfy_proxy_401_html_respects_accept_language():
+    import socket
+    from server.comfy_proxy import (
+        ColabOneCanvasProxyServer,
+        _UNAUTHORIZED_HTML_TEXT,
+        _resolve_accept_language,
+    )
+
+    assert _resolve_accept_language("") == "en-US"
+    assert _resolve_accept_language("fr-FR,fr;q=0.9") == "en-US"
+    assert _resolve_accept_language("en-US,en;q=0.9,zh-CN;q=0.8") == "en-US"
+    assert _resolve_accept_language("zh-TW,zh;q=0.9,en;q=0.8") == "zh-TW"
+    assert _resolve_accept_language("zh-HK,zh-Hant;q=0.9") == "zh-HK"
+    assert _resolve_accept_language("zh-CN,zh;q=0.9") == "zh-CN"
+    assert _resolve_accept_language("ja-JP,ja;q=0.9") == "ja-JP"
+    assert _resolve_accept_language("ko-KR,ko;q=0.9") == "ko-KR"
+    assert set(_UNAUTHORIZED_HTML_TEXT.keys()) == {
+        "zh-CN",
+        "en-US",
+        "zh-TW",
+        "zh-HK",
+        "ja-JP",
+        "ko-KR",
+    }
+
+    # Verify live proxy 401 HTML output follows Accept-Language
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    proxy = ColabOneCanvasProxyServer(
+        listen_port=port,
+        upstream_port=1,
+        canvas_token="tok-test",
+    )
+    proxy.start()
+    try:
+        for header, expected_lang, expected_text in [
+            ("en-US,en;q=0.9", "en-US", "Unauthorized: please open ComfyUI Native Canvas"),
+            ("ja-JP,ja;q=0.9", "ja-JP", "ColabOne アプリから"),
+            ("zh-TW,zh;q=0.9", "zh-TW", "ColabOne 用戶端"),
+            ("", "en-US", "Unauthorized: please open ComfyUI Native Canvas"),
+        ]:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+                req = (
+                    "GET / HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{port}\r\n"
+                    "Accept: text/html\r\n"
+                    + (f"Accept-Language: {header}\r\n" if header else "")
+                    + "Connection: close\r\n\r\n"
+                )
+                conn.sendall(req.encode("utf-8"))
+                chunks = []
+                while True:
+                    buf = conn.recv(4096)
+                    if not buf:
+                        break
+                    chunks.append(buf)
+            resp = b"".join(chunks).decode("utf-8", errors="replace")
+            assert "401 Unauthorized" in resp
+            assert f"lang='{expected_lang}'" in resp
+            assert expected_text in resp
+    finally:
+        proxy.stop()
+
+
+def test_frontend_locations_cover_all_python_countries_and_subregions():
+    import re
+    from pathlib import Path
+    from common.location import COUNTRY_NAMES_ZH, GCP_REGIONS, REGION_NAMES_ZH
+
+    root = Path(__file__).resolve().parents[1]
+    loc_ts = (root / "frontend" / "src" / "i18n" / "locations.ts").read_text(
+        encoding="utf-8"
+    )
+
+    all_countries = set(COUNTRY_NAMES_ZH.keys()) | {
+        code for code, _, _ in GCP_REGIONS.values()
+    }
+    for locale in ("zh-CN", "en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR"):
+        m = re.search(rf'"{locale}":\s*\{{([^}}]+)\}}', loc_ts)
+        assert m, f"Missing COUNTRY_OVERRIDES block for {locale}"
+        present = set(re.findall(r"\b([A-Z]{2}):", m.group(1)))
+        missing = sorted(all_countries - present)
+        assert not missing, f"Missing country translations in {locale}: {missing}"
+
+    all_subregions = {
+        sub for _, _, sub in GCP_REGIONS.values() if sub
+    } | set(REGION_NAMES_ZH.values())
+    sub_block = loc_ts.split("SUBREGION_TRANSLATIONS")[1].split(
+        "const ZH_COUNTRY_TO_CODE"
+    )[0]
+    missing_subs = [
+        sub
+        for sub in sorted(all_subregions)
+        if not re.search(
+            rf'(?:^|\s)"?{re.escape(sub)}"?\s*:', sub_block, re.MULTILINE
+        )
+    ]
+    assert not missing_subs, (
+        f"Missing subregion translations in locations.ts: {missing_subs}"
+    )
+
 

@@ -389,8 +389,14 @@ export const COLABONE_STATUS_LABELS: Record<string, string> = {
   get starting() {
     return t("status.starting");
   },
+  get connecting() {
+    return t("monitor.badgeConnecting");
+  },
   get ready() {
     return t("status.ready");
+  },
+  get running() {
+    return t("comfy.tagRunning");
   },
   get disconnected() {
     return t("status.disconnected");

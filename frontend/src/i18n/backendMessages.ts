@@ -1,554 +1,1019 @@
 import type { ColabOneLocale } from "./flags";
-
-type LocaleTable = Record<ColabOneLocale, string>;
-
-const SOURCE_LABELS: Record<string, LocaleTable> = {
-  客户端: {
-    "zh-CN": "客户端",
-    "en-US": "Client",
-    "zh-TW": "用戶端",
-    "zh-HK": "程式",
-    "ja-JP": "クライアント",
-    "ko-KR": "클라이언트",
-  },
-  远端: {
-    "zh-CN": "远端",
-    "en-US": "Remote",
-    "zh-TW": "遠端",
-    "zh-HK": "遠端",
-    "ja-JP": "リモート",
-    "ko-KR": "원격",
-  },
-  "远端 GPU": {
-    "zh-CN": "远端 GPU",
-    "en-US": "Remote GPU",
-    "zh-TW": "遠端 GPU",
-    "zh-HK": "遠端 GPU",
-    "ja-JP": "リモート GPU",
-    "ko-KR": "원격 GPU",
-  },
-  "对外 API": {
-    "zh-CN": "对外 API",
-    "en-US": "Public API",
-    "zh-TW": "對外 API",
-    "zh-HK": "對外 API",
-    "ja-JP": "外部 API",
-    "ko-KR": "외부 API",
-  },
-  登录: {
-    "zh-CN": "登录",
-    "en-US": "Auth",
-    "zh-TW": "登入",
-    "zh-HK": "登入",
-    "ja-JP": "ログイン",
-    "ko-KR": "로그인",
-  },
-  计费: {
-    "zh-CN": "计费",
-    "en-US": "Billing",
-    "zh-TW": "計費",
-    "zh-HK": "計費",
-    "ja-JP": "課金",
-    "ko-KR": "과금",
-  },
-  模型: {
-    "zh-CN": "模型",
-    "en-US": "Model",
-    "zh-TW": "模型",
-    "zh-HK": "模型",
-    "ja-JP": "モデル",
-    "ko-KR": "모델",
-  },
-  设置: {
-    "zh-CN": "设置",
-    "en-US": "Settings",
-    "zh-TW": "設定",
-    "zh-HK": "設定",
-    "ja-JP": "設定",
-    "ko-KR": "설정",
-  },
-  云盘: {
-    "zh-CN": "云盘",
-    "en-US": "Drive",
-    "zh-TW": "雲端硬碟",
-    "zh-HK": "雲端硬碟",
-    "ja-JP": "ドライブ",
-    "ko-KR": "드라이브",
-  },
-  工作流: {
-    "zh-CN": "工作流",
-    "en-US": "Workflow",
-    "zh-TW": "工作流程",
-    "zh-HK": "工作流",
-    "ja-JP": "ワークフロー",
-    "ko-KR": "워크플로",
-  },
-  监控: {
-    "zh-CN": "监控",
-    "en-US": "Monitor",
-    "zh-TW": "監控",
-    "zh-HK": "監控",
-    "ja-JP": "監視",
-    "ko-KR": "모니터",
-  },
-};
-
-const EXACT_MESSAGES: Record<string, LocaleTable> = {
-  客户端已启动: {
-    "zh-CN": "客户端已启动",
-    "en-US": "ColabOne client started",
-    "zh-TW": "用戶端已啟動",
-    "zh-HK": "程式已啟動",
-    "ja-JP": "クライアントを起動しました",
-    "ko-KR": "클라이언트가 시작되었습니다",
-  },
-  "已恢复本机保存的 Google 登录；到期自动续期": {
-    "zh-CN": "已恢复本机保存的 Google 登录；到期自动续期",
-    "en-US": "Restored saved Google login; tokens renew automatically",
-    "zh-TW": "已復原本機儲存的 Google 登入；到期將自動續期",
-    "zh-HK": "已恢復本地儲存的 Google 登入；到期自動續期",
-    "ja-JP": "保存済みの Google ログインを復元しました（期限時に自動更新）",
-    "ko-KR": "저장된 Google 로그인을 복원했습니다 (만료 시 자동 갱신)",
-  },
-  "正在刷新 Google 账号余额与运行实例状态": {
-    "zh-CN": "正在刷新 Google 账号余额与运行实例状态",
-    "en-US": "Refreshing Google account balance and running instances",
-    "zh-TW": "正在重新整理 Google 帳戶餘額與執行中個體狀態",
-    "zh-HK": "正在重新整理 Google 帳戶餘額與運行實例狀態",
-    "ja-JP": "Google アカウントの残高と稼働中インスタンスを更新しています",
-    "ko-KR": "Google 계정 잔액 및 실행 중인 인스턴스 상태를 새로고침하는 중",
-  },
-  "账号状态已刷新（当前未登录）": {
-    "zh-CN": "账号状态已刷新（当前未登录）",
-    "en-US": "Account status refreshed (signed out)",
-    "zh-TW": "帳戶狀態已重新整理（尚未登入）",
-    "zh-HK": "帳戶狀態已重新整理（目前未登入）",
-    "ja-JP": "アカウント状態を更新しました（未ログイン）",
-    "ko-KR": "계정 상태를 새로고침했습니다 (로그아웃 상태)",
-  },
-  "远端 GPU 已连接": {
-    "zh-CN": "远端 GPU 已连接",
-    "en-US": "Remote GPU connected",
-    "zh-TW": "遠端 GPU 已連線",
-    "zh-HK": "遠端 GPU 已連線",
-    "ja-JP": "リモート GPU に接続しました",
-    "ko-KR": "원격 GPU가 연결되었습니다",
-  },
-  "远端控制连接中断，实例可能仍在计费": {
-    "zh-CN": "远端控制连接中断，实例可能仍在计费",
-    "en-US": "Remote control connection lost; the instance may still be billing",
-    "zh-TW": "遠端控制連線中斷，執行個體可能仍在計費",
-    "zh-HK": "遠端控制連線中斷，實例可能仍在扣費",
-    "ja-JP": "リモート制御接続が中断しました。インスタンスが課金継続中の可能性があります",
-    "ko-KR": "원격 제어 연결이 끊겼습니다. 인스턴스가 계속 과금 중일 수 있습니다",
-  },
-  "当前客户端管理的 GPU 已停止": {
-    "zh-CN": "当前客户端管理的 GPU 已停止",
-    "en-US": "Managed remote GPU stopped",
-    "zh-TW": "本程式管理的遠端 GPU 已停止",
-    "zh-HK": "本程式管理的遠端 GPU 已停止",
-    "ja-JP": "管理中のリモート GPU が停止しました",
-    "ko-KR": "관리 중인 원격 GPU가 중지되었습니다",
-  },
-  "正在释放远端 GPU": {
-    "zh-CN": "正在释放远端 GPU",
-    "en-US": "Releasing remote GPU",
-    "zh-TW": "正在釋放遠端 GPU",
-    "zh-HK": "正在釋放遠端 GPU",
-    "ja-JP": "リモート GPU を解放しています",
-    "ko-KR": "원격 GPU를 해제하고 있습니다",
-  },
-  "请先完成 Google 登录": {
-    "zh-CN": "请先完成 Google 登录",
-    "en-US": "Please sign in with Google first",
-    "zh-TW": "請先完成 Google 登入",
-    "zh-HK": "請先完成 Google 登入",
-    "ja-JP": "先に Google ログインを完了してください",
-    "ko-KR": "먼저 Google 로그인을 완료해 주세요",
-  },
-  "Google 授权已失效，请在设置中重新登录": {
-    "zh-CN": "Google 授权已失效，请在设置中重新登录",
-    "en-US": "Google authorization expired; please sign in again in Settings",
-    "zh-TW": "Google 授權已失效，請前往設定重新登入",
-    "zh-HK": "Google 授權已失效，請在設定中重新登入",
-    "ja-JP": "Google 認可の期限が切れました。設定から再ログインしてください",
-    "ko-KR": "Google 인증이 만료되었습니다. 설정에서 다시 로그인해 주세요",
-  },
-  "Google 授权已取消，请重新登录": {
-    "zh-CN": "Google 授权已取消，请重新登录",
-    "en-US": "Google authorization was cancelled; please sign in again",
-    "zh-TW": "Google 授權已取消，請重新登入",
-    "zh-HK": "Google 授權已取消，請重新登入",
-    "ja-JP": "Google 認可がキャンセルされました。再度ログインしてください",
-    "ko-KR": "Google 인증이 취소되었습니다. 다시 로그인해 주세요",
-  },
-  "切换账号前请先释放当前实例": {
-    "zh-CN": "切换账号前请先释放当前实例",
-    "en-US": "Release the active instance before switching Google accounts",
-    "zh-TW": "切換帳戶前請先釋放目前的執行個體",
-    "zh-HK": "切換帳戶前請先釋放目前實例",
-    "ja-JP": "アカウントを切り替える前に現在のインスタンスを解放してください",
-    "ko-KR": "계정을 전환하기 전에 현재 인스턴스를 먼저 해제해 주세요",
-  },
-  "正在停止运行中的对外 API 以吊销旧密钥": {
-    "zh-CN": "正在停止运行中的对外 API 以吊销旧密钥",
-    "en-US": "Stopping active Public API to revoke the old key",
-    "zh-TW": "正在停止運作中的對外 API 以撤銷舊金鑰",
-    "zh-HK": "正在停止運行中的對外 API 以吊銷舊金鑰",
-    "ja-JP": "旧キーを無効化するため稼働中の外部 API を停止しています",
-    "ko-KR": "기존 키를 폐기하기 위해 실행 중인 외부 API를 중지하는 중",
-  },
-  "API Key 已更换；重新开启服务后使用新密钥": {
-    "zh-CN": "API Key 已更换；重新开启服务后使用新密钥",
-    "en-US": "API key rotated; restart the Public API to activate the new key",
-    "zh-TW": "API 金鑰已更換；重新開啟服務後將使用新金鑰",
-    "zh-HK": "API Key 已更換；重新開啟服務後會使用新金鑰",
-    "ja-JP": "API キーを再生成しました。サービス再開後から新しいキーが有効になります",
-    "ko-KR": "API 키가 재발급되었습니다. 서비스를 다시 시작하면 새 키가 적용됩니다",
-  },
-  "31B 稠密 / Q8_0": {
-    "zh-CN": "31B 稠密 / Q8_0",
-    "en-US": "31B Dense / Q8_0",
-    "zh-TW": "31B 稠密 / Q8_0",
-    "zh-HK": "31B 稠密 / Q8_0",
-    "ja-JP": "31B Dense / Q8_0",
-    "ko-KR": "31B 밀집형 / Q8_0",
-  },
-  "27B 稠密 / BF16": {
-    "zh-CN": "27B 稠密 / BF16",
-    "en-US": "27B Dense / BF16",
-    "zh-TW": "27B 稠密 / BF16",
-    "zh-HK": "27B 稠密 / BF16",
-    "ja-JP": "27B Dense / BF16",
-    "ko-KR": "27B 밀집형 / BF16",
-  },
-  "320B-A18B MoE / GSQ-RCO-Q4 / 部分专家放内存": {
-    "zh-CN": "320B-A18B MoE / GSQ-RCO-Q4 / 部分专家放内存",
-    "en-US": "320B-A18B MoE / GSQ-RCO-Q4 / Expert Offload to RAM",
-    "zh-TW": "320B-A18B MoE / GSQ-RCO-Q4 / 部分專家卸載至記憶體",
-    "zh-HK": "320B-A18B MoE / GSQ-RCO-Q4 / 部分專家放記憶體",
-    "ja-JP": "320B-A18B MoE / GSQ-RCO-Q4 / 一部エキスパート RAM オフロード",
-    "ko-KR": "320B-A18B MoE / GSQ-RCO-Q4 / 일부 전문가 RAM 오프로드",
-  },
-  "远端引导脚本已启动，正在读取启动配置": {
-    "zh-CN": "远端引导脚本已启动，正在读取启动配置",
-    "en-US": "Remote bootstrap started; reading launch configuration",
-    "zh-TW": "遠端啟動腳本已啟動，正在讀取啟動設定",
-    "zh-HK": "遠端引導腳本已啟動，正在讀取啟動設定",
-    "ja-JP": "リモート起動スクリプトを開始しました。設定を読み込んでいます",
-    "ko-KR": "원격 부트스트랩 스크립트가 시작되어 설정을 읽고 있습니다",
-  },
-  "Google 授权无法自动续期，请在设置中重新登录": {
-    "zh-CN": "Google 授权无法自动续期，请在设置中重新登录",
-    "en-US": "Google authorization could not be renewed automatically; please sign in again in Settings",
-    "zh-TW": "Google 授權無法自動續期，請前往設定重新登入",
-    "zh-HK": "Google 授權無法自動續期，請在設定中重新登入",
-    "ja-JP": "Google 認可を自動更新できませんでした。設定から再ログインしてください",
-    "ko-KR": "Google 인증을 자동으로 갱신할 수 없습니다. 설정에서 다시 로그인해 주세요",
-  },
-  "Google 登录已保存到本机，后续自动续期": {
-    "zh-CN": "Google 登录已保存到本机，后续自动续期",
-    "en-US": "Google sign-in saved locally; tokens will renew automatically",
-    "zh-TW": "Google 登入已儲存於本機，後續自動續期",
-    "zh-HK": "Google 登入已儲存至本地，後續自動續期",
-    "ja-JP": "Google ログインを保存しました（以降は自動更新されます）",
-    "ko-KR": "Google 로그인이 로컬에 저장되었으며 이후 자동으로 갱신됩니다",
-  },
-  "已启动本地回调服务，等待浏览器完成 Google 授权": {
-    "zh-CN": "已启动本地回调服务，等待浏览器完成 Google 授权",
-    "en-US": "Local callback listener started; waiting for Google authorization in browser",
-    "zh-TW": "已啟動本機回呼服務，等待瀏覽器完成 Google 授權",
-    "zh-HK": "已啟動本地回調服務，等待瀏覽器完成 Google 授權",
-    "ja-JP": "ローカルコールバック待機を開始しました。ブラウザで Google 認可を完了してください",
-    "ko-KR": "로컬 콜백 서버가 시작되었습니다. 브라우저에서 Google 인증을 완료해 주세요",
-  },
-  "完成 Google 登录": {
-    "zh-CN": "完成 Google 登录",
-    "en-US": "Completing Google sign-in",
-    "zh-TW": "完成 Google 登入",
-    "zh-HK": "完成 Google 登入",
-    "ja-JP": "Google ログインを完了しています",
-    "ko-KR": "Google 로그인을 완료하는 중",
-  },
-  "请先启动远端 GPU": {
-    "zh-CN": "请先启动远端 GPU",
-    "en-US": "Please start a remote GPU first",
-    "zh-TW": "請先啟動遠端 GPU",
-    "zh-HK": "請先啟動遠端 GPU",
-    "ja-JP": "先にリモート GPU を起動してください",
-    "ko-KR": "먼저 원격 GPU를 시작해 주세요",
-  },
-  "请先下载模型到当前远端实例": {
-    "zh-CN": "请先下载模型到当前远端实例",
-    "en-US": "Please download the model to the active remote instance first",
-    "zh-TW": "請先將模型下載至目前的遠端執行個體",
-    "zh-HK": "請先下載模型到目前遠端實例",
-    "ja-JP": "先に現在のリモートインスタンスへモデルをダウンロードしてください",
-    "ko-KR": "먼저 현재 원격 인스턴스에 모델을 다운로드해 주세요",
-  },
-  "请先停止当前任务": {
-    "zh-CN": "请先停止当前任务",
-    "en-US": "Please stop the current running task first",
-    "zh-TW": "請先停止目前任務",
-    "zh-HK": "請先停止目前任務",
-    "ja-JP": "先に実行中のタスクを停止してください",
-    "ko-KR": "먼저 현재 실행 중인 작업을 중지해 주세요",
-  },
-  "未检测到可用远端 GPU": {
-    "zh-CN": "未检测到可用远端 GPU",
-    "en-US": "No available remote GPU detected",
-    "zh-TW": "未偵測到可用的遠端 GPU",
-    "zh-HK": "未檢測到可用遠端 GPU",
-    "ja-JP": "利用可能なリモート GPU が検出されませんでした",
-    "ko-KR": "사용 가능한 원격 GPU를 감지할 수 없습니다",
-  },
-  "正在停止 ComfyUI 服务以释放显存": {
-    "zh-CN": "正在停止 ComfyUI 服务以释放显存",
-    "en-US": "Stopping ComfyUI service to free VRAM",
-    "zh-TW": "正在停止 ComfyUI 服務以釋放 VRAM",
-    "zh-HK": "正在停止 ComfyUI 服務以釋放顯存",
-    "ja-JP": "VRAM を解放するため ComfyUI サービスを停止しています",
-    "ko-KR": "VRAM을 확보하기 위해 ComfyUI 서비스를 중지하는 중",
-  },
-  "混合装载到显存与内存": {
-    "zh-CN": "混合装载到显存与内存",
-    "en-US": "Hybrid loading across GPU VRAM and system RAM",
-    "zh-TW": "混合載入至 VRAM 與系統記憶體",
-    "zh-HK": "混合載入至顯存與系統記憶體",
-    "ja-JP": "VRAM とシステム RAM へハイブリッドロード中",
-    "ko-KR": "GPU VRAM 및 시스템 RAM 하이브리드 로드 중",
-  },
-  "加载到远端显存": {
-    "zh-CN": "加载到远端显存",
-    "en-US": "Loading weights into remote VRAM",
-    "zh-TW": "正在載入至遠端 VRAM",
-    "zh-HK": "正在載入至遠端顯存",
-    "ja-JP": "リモート VRAM へモデルを読み込んでいます",
-    "ko-KR": "원격 VRAM에 모델을 로드하는 중",
-  },
-  "模型体积大于当前显存，已自动启用 GPU 显存 + 系统内存混合装载（--fit on），溢出权重将自动分配至内存": {
-    "zh-CN": "模型体积大于当前显存，已自动启用 GPU 显存 + 系统内存混合装载（--fit on），溢出权重将自动分配至内存",
-    "en-US": "Model exceeds available VRAM; automatically enabled GPU VRAM + system RAM hybrid loading (--fit on)",
-    "zh-TW": "模型體積大於目前 VRAM，已自動啟用 GPU VRAM + 系統記憶體混合載入（--fit on），超出權重將自動分配至記憶體",
-    "zh-HK": "模型體積大於目前顯存，已自動啟用 GPU 顯存 + 系統記憶體混合載入（--fit on），溢出權重會自動分配至記憶體",
-    "ja-JP": "モデルサイズが現在の VRAM を超えるため、GPU VRAM + システム RAM のハイブリッドロード（--fit on）を自動有効化しました",
-    "ko-KR": "모델 크기가 현재 VRAM을 초과하여 GPU VRAM + 시스템 RAM 하이브리드 로드(--fit on)를 자동으로 활성화했습니다",
-  },
-  "模型加载成功，远端推理服务已就绪": {
-    "zh-CN": "模型加载成功，远端推理服务已就绪",
-    "en-US": "Model loaded successfully; remote inference service is ready",
-    "zh-TW": "模型載入成功，遠端推論服務已就緒",
-    "zh-HK": "模型載入成功，遠端推理服務已就緒",
-    "ja-JP": "モデルのロードが完了し、リモート推論サービスの準備が整いました",
-    "ko-KR": "모델 로드 완료, 원격 추론 서비스가 준비되었습니다",
-  },
-  "模型加载失败": {
-    "zh-CN": "模型加载失败",
-    "en-US": "Model load failed",
-    "zh-TW": "模型載入失敗",
-    "zh-HK": "模型載入失敗",
-    "ja-JP": "モデルのロードに失敗しました",
-    "ko-KR": "모델 로드에 실패했습니다",
-  },
-  "模型加载超过 10 分钟": {
-    "zh-CN": "模型加载超过 10 分钟",
-    "en-US": "Model load timed out after 10 minutes",
-    "zh-TW": "模型載入超過 10 分鐘",
-    "zh-HK": "模型載入超過 10 分鐘",
-    "ja-JP": "モデルのロードが 10 分を超過しました",
-    "ko-KR": "모델 로드가 10분을 초과했습니다",
-  },
-  "实例正在停止，已取消模型加载": {
-    "zh-CN": "实例正在停止，已取消模型加载",
-    "en-US": "Instance is stopping; model load cancelled",
-    "zh-TW": "執行個體正在停止，已取消模型載入",
-    "zh-HK": "實例正在停止，已取消模型載入",
-    "ja-JP": "インスタンス停止中のためモデルのロードをキャンセルしました",
-    "ko-KR": "인스턴스가 중지 중이어서 모델 로드를 취소했습니다",
-  },
-  "正在预热 GPU 推理内核": {
-    "zh-CN": "正在预热 GPU 推理内核",
-    "en-US": "Warming up GPU inference kernels",
-    "zh-TW": "正在預熱 GPU 推論核心",
-    "zh-HK": "正在預熱 GPU 推理核心",
-    "ja-JP": "GPU 推論カーネルをウォームアップ中",
-    "ko-KR": "GPU 추론 커널을 예열하는 중",
-  },
-  "正在预热远端 CUDA 推理内核，避免首次 API 调用超时": {
-    "zh-CN": "正在预热远端 CUDA 推理内核，避免首次 API 调用超时",
-    "en-US": "Warming up remote CUDA kernels to prevent first-request API timeout",
-    "zh-TW": "正在預熱遠端 CUDA 推論核心，避免首次 API 呼叫逾時",
-    "zh-HK": "正在預熱遠端 CUDA 推理核心，避免首次 API 調用逾時",
-    "ja-JP": "初回 API リクエストのタイムアウトを防ぐためリモート CUDA カーネルをウォームアップしています",
-    "ko-KR": "첫 API 요청 시간 초과를 방지하기 위해 원격 CUDA 커널을 예열하고 있습니다",
-  },
-  "已卸载远端模型并释放显存": {
-    "zh-CN": "已卸载远端模型并释放显存",
-    "en-US": "Unloaded remote model and freed VRAM",
-    "zh-TW": "已卸載遠端模型並釋放 VRAM",
-    "zh-HK": "已卸載遠端模型並釋放顯存",
-    "ja-JP": "リモートモデルをアンロードして VRAM を解放しました",
-    "ko-KR": "원격 모델을 언로드하고 VRAM을 해제했습니다",
-  },
-  "已向远端发送任务取消指令": {
-    "zh-CN": "已向远端发送任务取消指令",
-    "en-US": "Sent task cancellation request to remote runtime",
-    "zh-TW": "已向遠端送出任務取消指令",
-    "zh-HK": "已向遠端發送任務取消指令",
-    "ja-JP": "リモートへタスクキャンセル指示を送信しました",
-    "ko-KR": "원격 런타임에 작업 취소 요청을 전송했습니다",
-  },
-  "已保存对外 API 固定域名与隧道配置": {
-    "zh-CN": "已保存对外 API 固定域名与隧道配置",
-    "en-US": "Saved Public API custom domain and tunnel configuration",
-    "zh-TW": "已儲存對外 API 固定網域與通道設定",
-    "zh-HK": "已儲存對外 API 固定域名與隧道配置",
-    "ja-JP": "外部 API の固定ドメインとトンネル設定を保存しました",
-    "ko-KR": "외부 API 고정 도메인 및 터널 설정을 저장했습니다",
-  },
-  "已保存 ComfyUI 原生画布固定域名与隧道配置": {
-    "zh-CN": "已保存 ComfyUI 原生画布固定域名与隧道配置",
-    "en-US": "Saved ComfyUI Native Canvas domain and tunnel configuration",
-    "zh-TW": "已儲存 ComfyUI 原生畫布固定網域與通道設定",
-    "zh-HK": "已儲存 ComfyUI 原生畫布固定域名與隧道配置",
-    "ja-JP": "ComfyUI ネイティブキャンバスの固定ドメインとトンネル設定を保存しました",
-    "ko-KR": "ComfyUI 네이티브 캔버스 고정 도메인 및 터널 설정을 저장했습니다",
-  },
-  "已刷新云盘工作区与远端状态": {
-    "zh-CN": "已刷新云盘工作区与远端状态",
-    "en-US": "Refreshed Google Drive workspace and remote status",
-    "zh-TW": "已重新整理雲端硬碟工作區與遠端狀態",
-    "zh-HK": "已重新整理雲端硬碟工作區與遠端狀態",
-    "ja-JP": "Google ドライブのワークスペースとリモート状態を更新しました",
-    "ko-KR": "Google Drive 워크스페이스 및 원격 상태를 새로고침했습니다",
-  },
-  "Google 云盘同步已完成 (ColabOne_Drive)": {
-    "zh-CN": "Google 云盘同步已完成 (ColabOne_Drive)",
-    "en-US": "Google Drive sync completed (ColabOne_Drive)",
-    "zh-TW": "Google 雲端硬碟同步完成 (ColabOne_Drive)",
-    "zh-HK": "Google 雲端硬碟同步完成 (ColabOne_Drive)",
-    "ja-JP": "Google ドライブの同期が完了しました (ColabOne_Drive)",
-    "ko-KR": "Google Drive 동기화가 완료되었습니다 (ColabOne_Drive)",
-  },
-  "这个仓库需要访问权限，请在设置中保存有权限的 Hugging Face Token": {
-    "zh-CN": "这个仓库需要访问权限，请在设置中保存有权限的 Hugging Face Token",
-    "en-US": "This repository requires access; please save an authorized Hugging Face token in Settings",
-    "zh-TW": "此儲存庫需要存取權限，請在設定中儲存具權限的 Hugging Face Token",
-    "zh-HK": "此倉庫需要存取權限，請在設定中儲存有權限的 Hugging Face Token",
-    "ja-JP": "このリポジトリにはアクセス権が必要です。設定で権限のある Hugging Face Token を保存してください",
-    "ko-KR": "이 저장소는 접근 권한이 필요합니다. 설정에서 권한이 있는 Hugging Face 토큰을 저장해 주세요",
-  },
-  "Hugging Face 请求较多，请稍后重试": {
-    "zh-CN": "Hugging Face 请求较多，请稍后重试",
-    "en-US": "Hugging Face rate limit reached; please try again shortly",
-    "zh-TW": "Hugging Face 請求次數過多，請稍後再試",
-    "zh-HK": "Hugging Face 請求過多，請稍後重試",
-    "ja-JP": "Hugging Face へのリクエストが集中しています。しばらくしてから再試行してください",
-    "ko-KR": "Hugging Face 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요",
-  },
-  "无法连接 Hugging Face，请检查网络后重试": {
-    "zh-CN": "无法连接 Hugging Face，请检查网络后重试",
-    "en-US": "Cannot reach Hugging Face; please check your network and retry",
-    "zh-TW": "無法連線至 Hugging Face，請檢查網路後重試",
-    "zh-HK": "無法連接 Hugging Face，請檢查網絡後重試",
-    "ja-JP": "Hugging Face に接続できません。ネットワークを確認して再試行してください",
-    "ko-KR": "Hugging Face에 연결할 수 없습니다. 네트워크를 확인한 뒤 다시 시도해 주세요",
-  },
-  "缺少完整分片或 SHA-256 元数据": {
-    "zh-CN": "缺少完整分片或 SHA-256 元数据",
-    "en-US": "Missing complete shards or SHA-256 metadata",
-    "zh-TW": "缺少完整分片或 SHA-256 中繼資料",
-    "zh-HK": "缺少完整分片或 SHA-256 元數據",
-    "ja-JP": "分割ファイルまたは SHA-256 メタデータが不完全です",
-    "ko-KR": "분할 파일 또는 SHA-256 메타데이터가 누락되었습니다",
-  },
-  "该文件是量化校准或辅助文件，不是可直接装载的模型权重": {
-    "zh-CN": "该文件是量化校准或辅助文件，不是可直接装载的模型权重",
-    "en-US": "This file is a calibration or auxiliary artifact, not runnable model weights",
-    "zh-TW": "此檔案為量化校準或輔助檔案，非可直接載入的模型權重",
-    "zh-HK": "該檔案是量化校準或輔助檔案，並非可直接載入的模型權重",
-    "ja-JP": "このファイルはキャリブレーションまたは補助ファイルであり、実行可能なモデル本体ではありません",
-    "ko-KR": "이 파일은 양자화 보정 또는 보조 파일로, 직접 로드할 수 있는 모델 가중치가 아닙니다",
-  },
-  "该模型属于图片/视频生成类（ComfyUI 专用），无法在对外文本 API 中装载，请前往 ComfyUI 工作区使用": {
-    "zh-CN": "该模型属于图片/视频生成类（ComfyUI 专用），无法在对外文本 API 中装载，请前往 ComfyUI 工作区使用",
-    "en-US": "This is an image/video generation model (ComfyUI only) and cannot be loaded in the Public Text API; use the ComfyUI workspace",
-    "zh-TW": "此模型屬於圖片/影片生成類（ComfyUI 專用），無法在對外文字 API 中載入，請前往 ComfyUI 工作區使用",
-    "zh-HK": "該模型屬於圖片/影片生成類（ComfyUI 專用），無法在對外文字 API 中載入，請前往 ComfyUI 工作區使用",
-    "ja-JP": "このモデルは画像・動画生成用（ComfyUI 専用）のため外部テキスト API ではロードできません。ComfyUI ワークスペースをご利用ください",
-    "ko-KR": "이 모델은 이미지/비디오 생성 전용(ComfyUI 전용)으로 외부 텍스트 API에서 로드할 수 없습니다. ComfyUI 워크스페이스에서 사용해 주세요",
-  },
-  "实例清单已变化，请重新点击停止": {
-    "zh-CN": "实例清单已变化，请重新点击停止",
-    "en-US": "Instance list changed; please click Stop again to review",
-    "zh-TW": "執行個體清單已變更，請重新點擊停止",
-    "zh-HK": "實例清單已變動，請重新點擊停止",
-    "ja-JP": "インスタンス一覧が変更されました。もう一度停止をクリックして確認してください",
-    "ko-KR": "인스턴스 목록이 변경되었습니다. 중지 버튼을 다시 눌러 확인해 주세요",
-  },
-  "不支持的语言选项": {
-    "zh-CN": "不支持的语言选项",
-    "en-US": "Unsupported language selection",
-    "zh-TW": "不支援的語言選項",
-    "zh-HK": "不支援的語言選項",
-    "ja-JP": "サポートされていない言語設定です",
-    "ko-KR": "지원하지 않는 언어 설정입니다",
-  },
-  "关闭对外 API": {
-    "zh-CN": "关闭对外 API",
-    "en-US": "Stopping Public API",
-    "zh-TW": "關閉對外 API",
-    "zh-HK": "關閉對外 API",
-    "ja-JP": "外部 API を停止中",
-    "ko-KR": "외부 API 중지 중",
-  },
-  "停止远端 ComfyUI": {
-    "zh-CN": "停止远端 ComfyUI",
-    "en-US": "Stopping remote ComfyUI",
-    "zh-TW": "停止遠端 ComfyUI",
-    "zh-HK": "停止遠端 ComfyUI",
-    "ja-JP": "リモート ComfyUI を停止中",
-    "ko-KR": "원격 ComfyUI 중지 중",
-  },
-  "关闭 ComfyUI 原生画布": {
-    "zh-CN": "关闭 ComfyUI 原生画布",
-    "en-US": "Stopping ComfyUI Native Canvas",
-    "zh-TW": "關閉 ComfyUI 原生畫布",
-    "zh-HK": "關閉 ComfyUI 原生畫布",
-    "ja-JP": "ComfyUI ネイティブキャンバスを停止中",
-    "ko-KR": "ComfyUI 네이티브 캔버스 중지 중",
-  },
-  "ComfyUI 原生画布已关闭": {
-    "zh-CN": "ComfyUI 原生画布已关闭",
-    "en-US": "ComfyUI Native Canvas stopped",
-    "zh-TW": "ComfyUI 原生畫布已關閉",
-    "zh-HK": "ComfyUI 原生畫布已關閉",
-    "ja-JP": "ComfyUI ネイティブキャンバスを停止しました",
-    "ko-KR": "ComfyUI 네이티브 캔버스가 중지되었습니다",
-  },
-};
+import {
+  EXACT_MESSAGES,
+  REDACTION_TOKENS,
+  SOURCE_LABELS,
+  type ColabOneLocaleTable,
+} from "./backendExactMessages";
+import { translateColabOnePlaceName } from "./locations";
 
 interface PatternRule {
   re: RegExp;
   format: (m: RegExpMatchArray, locale: ColabOneLocale) => string;
 }
 
+const TASK_KIND_LABELS: Record<string, ColabOneLocaleTable> = {
+  模型下载: {
+    "zh-CN": "模型下载",
+    "en-US": "Model download",
+    "zh-TW": "模型下載",
+    "zh-HK": "模型下載",
+    "ja-JP": "モデルダウンロード",
+    "ko-KR": "모델 다운로드",
+  },
+  模型加载: {
+    "zh-CN": "模型加载",
+    "en-US": "Model load",
+    "zh-TW": "模型載入",
+    "zh-HK": "模型載入",
+    "ja-JP": "モデルロード",
+    "ko-KR": "모델 로드",
+  },
+  "外部 API 对话": {
+    "zh-CN": "外部 API 对话",
+    "en-US": "Public API chat",
+    "zh-TW": "外部 API 對話",
+    "zh-HK": "外部 API 聊天",
+    "ja-JP": "外部 API チャット",
+    "ko-KR": "외부 API 채팅",
+  },
+  "外部 API Responses": {
+    "zh-CN": "外部 API Responses",
+    "en-US": "Public API Responses",
+    "zh-TW": "外部 API Responses",
+    "zh-HK": "外部 API Responses",
+    "ja-JP": "外部 API Responses",
+    "ko-KR": "외부 API Responses",
+  },
+  "外部 API 上下文压缩": {
+    "zh-CN": "外部 API 上下文压缩",
+    "en-US": "Public API context compaction",
+    "zh-TW": "外部 API 上下文壓縮",
+    "zh-HK": "外部 API 上下文壓縮",
+    "ja-JP": "外部 API コンテキスト圧縮",
+    "ko-KR": "외부 API 컨텍스트 압축",
+  },
+  "ComfyUI 启动": {
+    "zh-CN": "ComfyUI 启动",
+    "en-US": "ComfyUI startup",
+    "zh-TW": "ComfyUI 啟動",
+    "zh-HK": "ComfyUI 啟動",
+    "ja-JP": "ComfyUI 起動",
+    "ko-KR": "ComfyUI 시작",
+  },
+  "ComfyUI 工作流": {
+    "zh-CN": "ComfyUI 工作流",
+    "en-US": "ComfyUI workflow",
+    "zh-TW": "ComfyUI 工作流程",
+    "zh-HK": "ComfyUI 工作流",
+    "ja-JP": "ComfyUI ワークフロー",
+    "ko-KR": "ComfyUI 워크플로",
+  },
+  "ComfyUI 任务": {
+    "zh-CN": "ComfyUI 任务",
+    "en-US": "ComfyUI task",
+    "zh-TW": "ComfyUI 任務",
+    "zh-HK": "ComfyUI 任務",
+    "ja-JP": "ComfyUI タスク",
+    "ko-KR": "ComfyUI 작업",
+  },
+  远端任务: {
+    "zh-CN": "远端任务",
+    "en-US": "Remote task",
+    "zh-TW": "遠端任務",
+    "zh-HK": "遠端任務",
+    "ja-JP": "リモートタスク",
+    "ko-KR": "원격 작업",
+  },
+};
+
+const TASK_STATE_LABELS: Record<string, ColabOneLocaleTable> = {
+  进行中: {
+    "zh-CN": "进行中",
+    "en-US": "Running",
+    "zh-TW": "進行中",
+    "zh-HK": "進行中",
+    "ja-JP": "実行中",
+    "ko-KR": "진행 중",
+  },
+  已完成: {
+    "zh-CN": "已完成",
+    "en-US": "Completed",
+    "zh-TW": "已完成",
+    "zh-HK": "已完成",
+    "ja-JP": "完了",
+    "ko-KR": "완료됨",
+  },
+  失败: {
+    "zh-CN": "失败",
+    "en-US": "Failed",
+    "zh-TW": "失敗",
+    "zh-HK": "失敗",
+    "ja-JP": "失敗",
+    "ko-KR": "실패",
+  },
+  已取消: {
+    "zh-CN": "已取消",
+    "en-US": "Cancelled",
+    "zh-TW": "已取消",
+    "zh-HK": "已取消",
+    "ja-JP": "キャンセル済み",
+    "ko-KR": "취소됨",
+  },
+};
+
+const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
+  工作流目录: {
+    "zh-CN": "工作流目录",
+    "en-US": "Workflow directory",
+    "zh-TW": "工作流程目錄",
+    "zh-HK": "工作流目錄",
+    "ja-JP": "ワークフローディレクトリ",
+    "ko-KR": "워크플로 디렉터리",
+  },
+  作品目录: {
+    "zh-CN": "作品目录",
+    "en-US": "Output directory",
+    "zh-TW": "作品目錄",
+    "zh-HK": "作品目錄",
+    "ja-JP": "出力ディレクトリ",
+    "ko-KR": "결과물 디렉터리",
+  },
+  输入文件目录: {
+    "zh-CN": "输入文件目录",
+    "en-US": "Input file directory",
+    "zh-TW": "輸入檔案目錄",
+    "zh-HK": "輸入檔案目錄",
+    "ja-JP": "入力ファイルディレクトリ",
+    "ko-KR": "입력 파일 디렉터리",
+  },
+  回收目录: {
+    "zh-CN": "回收目录",
+    "en-US": "Trash directory",
+    "zh-TW": "回收目錄",
+    "zh-HK": "回收目錄",
+    "ja-JP": "ゴミ箱ディレクトリ",
+    "ko-KR": "휴지통 디렉터리",
+  },
+  "ComfyUI 模型目录": {
+    "zh-CN": "ComfyUI 模型目录",
+    "en-US": "ComfyUI models directory",
+    "zh-TW": "ComfyUI 模型目錄",
+    "zh-HK": "ComfyUI 模型目錄",
+    "ja-JP": "ComfyUI モデルディレクトリ",
+    "ko-KR": "ComfyUI 모델 디렉터리",
+  },
+  共享模型目录: {
+    "zh-CN": "共享模型目录",
+    "en-US": "Shared models directory",
+    "zh-TW": "共用模型目錄",
+    "zh-HK": "共享模型目錄",
+    "ja-JP": "共有モデルディレクトリ",
+    "ko-KR": "공유 모델 디렉터리",
+  },
+  "ComfyUI 输入目录": {
+    "zh-CN": "ComfyUI 输入目录",
+    "en-US": "ComfyUI input directory",
+    "zh-TW": "ComfyUI 輸入目錄",
+    "zh-HK": "ComfyUI 輸入目錄",
+    "ja-JP": "ComfyUI 入力ディレクトリ",
+    "ko-KR": "ComfyUI 입력 디렉터리",
+  },
+  "ComfyUI 输出目录": {
+    "zh-CN": "ComfyUI 输出目录",
+    "en-US": "ComfyUI output directory",
+    "zh-TW": "ComfyUI 輸出目錄",
+    "zh-HK": "ComfyUI 輸出目錄",
+    "ja-JP": "ComfyUI 出力ディレクトリ",
+    "ko-KR": "ComfyUI 출력 디렉터리",
+  },
+};
+
+const COMFY_FIELD_SUFFIX_LABELS: Record<string, ColabOneLocaleTable> = {
+  反向提示词: {
+    "zh-CN": "反向提示词",
+    "en-US": "Negative Prompt",
+    "zh-TW": "反向提示詞",
+    "zh-HK": "反向提示詞",
+    "ja-JP": "ネガティブプロンプト",
+    "ko-KR": "부정 프롬프트",
+  },
+  正向提示词: {
+    "zh-CN": "正向提示词",
+    "en-US": "Positive Prompt",
+    "zh-TW": "正向提示詞",
+    "zh-HK": "正向提示詞",
+    "ja-JP": "ポジティブプロンプト",
+    "ko-KR": "긍정 프롬프트",
+  },
+  文本输入: {
+    "zh-CN": "文本输入",
+    "en-US": "Text Input",
+    "zh-TW": "文字輸入",
+    "zh-HK": "文字輸入",
+    "ja-JP": "テキスト入力",
+    "ko-KR": "텍스트 입력",
+  },
+  参考图片: {
+    "zh-CN": "参考图片",
+    "en-US": "Reference Image",
+    "zh-TW": "參考圖片",
+    "zh-HK": "參考圖片",
+    "ja-JP": "参照画像",
+    "ko-KR": "참조 이미지",
+  },
+  输入音频: {
+    "zh-CN": "输入音频",
+    "en-US": "Input Audio",
+    "zh-TW": "輸入音訊",
+    "zh-HK": "輸入音訊",
+    "ja-JP": "入力音声",
+    "ko-KR": "입력 오디오",
+  },
+};
+
+function translateSymlinkDirLabel(raw: string, loc: ColabOneLocale): string {
+  const s = raw.trim();
+  if (SYMLINK_DIR_LABELS[s]) return SYMLINK_DIR_LABELS[s][loc];
+  const sub = s.match(/^ComfyUI 模型子目录 (.+)$/);
+  if (sub) {
+    const dir = sub[1];
+    switch (loc) {
+      case "en-US":
+        return `ComfyUI model subdirectory ${dir}`;
+      case "zh-TW":
+        return `ComfyUI 模型子目錄 ${dir}`;
+      case "zh-HK":
+        return `ComfyUI 模型子目錄 ${dir}`;
+      case "ja-JP":
+        return `ComfyUI モデルサブディレクトリ ${dir}`;
+      case "ko-KR":
+        return `ComfyUI 모델 하위 디렉터리 ${dir}`;
+      default:
+        return s;
+    }
+  }
+  return s;
+}
+
+function translateLoadPlanLabel(raw: string, loc: ColabOneLocale): string {
+  const s = raw.trim();
+  if (loc === "zh-CN") return s;
+  if (s === "兼容模式装载") {
+    return {
+      "zh-CN": s,
+      "en-US": "Compatibility mode",
+      "zh-TW": "相容模式載入",
+      "zh-HK": "兼容模式載入",
+      "ja-JP": "互換モードロード",
+      "ko-KR": "호환 모드 로드",
+    }[loc];
+  }
+  const moeMatch = s.match(
+    /^GPU \+ 内存 MoE 混合装配（--fit on · (\d+) 层专家内存卸载 · KV q8_0）$/,
+  );
+  if (moeMatch) {
+    const layers = moeMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `GPU + RAM MoE hybrid (--fit on · ${layers} expert layers to RAM · KV q8_0)`,
+      "zh-TW": `GPU + 記憶體 MoE 混合裝配（--fit on · ${layers} 層專家記憶體卸載 · KV q8_0）`,
+      "zh-HK": `GPU + 記憶體 MoE 混合裝配（--fit on · ${layers} 層專家記憶體卸載 · KV q8_0）`,
+      "ja-JP": `GPU + RAM MoE ハイブリッド（--fit on · ${layers} 層エキスパート RAM オフロード · KV q8_0）`,
+      "ko-KR": `GPU + RAM MoE 하이브리드 (--fit on · ${layers}개 전문가 계층 RAM 오프로드 · KV q8_0)`,
+    }[loc];
+  }
+  const exactPlan: Record<string, ColabOneLocaleTable> = {
+    "GPU 显存 + 内存 PLE 协同装配（--fit on · KV q8_0）": {
+      "zh-CN": s,
+      "en-US": "GPU VRAM + RAM PLE hybrid (--fit on · KV q8_0)",
+      "zh-TW": "GPU VRAM + 記憶體 PLE 協同裝配（--fit on · KV q8_0）",
+      "zh-HK": "GPU 顯存 + 記憶體 PLE 協同裝配（--fit on · KV q8_0）",
+      "ja-JP": "GPU VRAM + RAM PLE ハイブリッド（--fit on · KV q8_0）",
+      "ko-KR": "GPU VRAM + RAM PLE 하이브리드 (--fit on · KV q8_0)",
+    },
+    "GPU 显存 + 系统内存智能混合装配（--fit on · KV q8_0）": {
+      "zh-CN": s,
+      "en-US": "GPU VRAM + system RAM hybrid (--fit on · KV q8_0)",
+      "zh-TW": "GPU VRAM + 系統記憶體智慧混合裝配（--fit on · KV q8_0）",
+      "zh-HK": "GPU 顯存 + 系統記憶體智能混合裝配（--fit on · KV q8_0）",
+      "ja-JP": "GPU VRAM + システム RAM スマートハイブリッド（--fit on · KV q8_0）",
+      "ko-KR": "GPU VRAM + 시스템 RAM 스마트 하이브리드 (--fit on · KV q8_0)",
+    },
+    "全量 GPU 驻留（FlashAttn · --fit on · KV q8_0）": {
+      "zh-CN": s,
+      "en-US": "Full GPU residency (FlashAttn · --fit on · KV q8_0)",
+      "zh-TW": "全量 GPU 駐留（FlashAttn · --fit on · KV q8_0）",
+      "zh-HK": "全量 GPU 駐留（FlashAttn · --fit on · KV q8_0）",
+      "ja-JP": "フル GPU ロード（FlashAttn · --fit on · KV q8_0）",
+      "ko-KR": "전체 GPU 로드 (FlashAttn · --fit on · KV q8_0)",
+    },
+    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）": {
+      "zh-CN": s,
+      "en-US": "GPU + RAM hybrid (--fit on · asymmetric KV q4_0/q8_0)",
+      "zh-TW": "GPU + 記憶體智慧混合裝配（--fit on · 非對稱 KV q4_0/q8_0）",
+      "zh-HK": "GPU + 記憶體智能混合裝配（--fit on · 非對稱 KV q4_0/q8_0）",
+      "ja-JP": "GPU + RAM ハイブリッド（--fit on · 非対称 KV q4_0/q8_0）",
+      "ko-KR": "GPU + RAM 하이브리드 (--fit on · 비대칭 KV q4_0/q8_0)",
+    },
+    "GPU + 内存智能混合装配（--fit on · 紧凑 KV q4_0）": {
+      "zh-CN": s,
+      "en-US": "GPU + RAM hybrid (--fit on · compact KV q4_0)",
+      "zh-TW": "GPU + 記憶體智慧混合裝配（--fit on · 精簡 KV q4_0）",
+      "zh-HK": "GPU + 記憶體智能混合裝配（--fit on · 緊湊 KV q4_0）",
+      "ja-JP": "GPU + RAM ハイブリッド（--fit on · コンパクト KV q4_0）",
+      "ko-KR": "GPU + RAM 하이브리드 (--fit on · 컴팩트 KV q4_0)",
+    },
+  };
+  return exactPlan[s]?.[loc] ?? s;
+}
+
+function translateFallbackFileWord(raw: string, loc: ColabOneLocale): string {
+  if (raw !== "文件") return raw;
+  return {
+    "zh-CN": "文件",
+    "en-US": "file",
+    "zh-TW": "檔案",
+    "zh-HK": "檔案",
+    "ja-JP": "ファイル",
+    "ko-KR": "파일",
+  }[loc];
+}
+
+function translateFallbackUnknownWord(raw: string, loc: ColabOneLocale): string {
+  if (raw !== "未知") return raw;
+  return {
+    "zh-CN": "未知",
+    "en-US": "unknown",
+    "zh-TW": "未知",
+    "zh-HK": "未知",
+    "ja-JP": "不明",
+    "ko-KR": "알 수 없음",
+  }[loc];
+}
+
+function translateAllocationMetaPart(part: string, loc: ColabOneLocale): string {
+  const s = part.trim();
+  if (!s) return "";
+  if (s === "高内存") {
+    return {
+      "zh-CN": "高内存",
+      "en-US": "High-RAM",
+      "zh-TW": "高記憶體",
+      "zh-HK": "高記憶體",
+      "ja-JP": "ハイメモリ",
+      "ko-KR": "고메모리",
+    }[loc];
+  }
+  const rateMatch = s.match(/^([\d.]+) CU\/小时$/);
+  if (rateMatch) {
+    const rate = rateMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `${rate} CU/hr`,
+      "zh-TW": `${rate} CU/小時`,
+      "zh-HK": `${rate} CU/小時`,
+      "ja-JP": `${rate} CU/時`,
+      "ko-KR": `${rate} CU/시간`,
+    }[loc];
+  }
+  return translateColabOnePlaceName(s, loc);
+}
+
+function translateSettingsSummaryPart(part: string, loc: ColabOneLocale): string {
+  const s = part.trim();
+  const gpuMatch = s.match(/^默认 GPU:\s*(.+)$/);
+  if (gpuMatch) {
+    const gpu = gpuMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Default GPU: ${gpu}`,
+      "zh-TW": `預設 GPU: ${gpu}`,
+      "zh-HK": `預設 GPU: ${gpu}`,
+      "ja-JP": `デフォルト GPU: ${gpu}`,
+      "ko-KR": `기본 GPU: ${gpu}`,
+    }[loc];
+  }
+  const idleMatch = s.match(/^空闲释放:\s*(\d+) 分钟$/);
+  if (idleMatch) {
+    const mins = idleMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Idle release: ${mins} min`,
+      "zh-TW": `閒置釋放: ${mins} 分鐘`,
+      "zh-HK": `閒置釋放: ${mins} 分鐘`,
+      "ja-JP": `アイドル解放: ${mins} 分`,
+      "ko-KR": `유휴 해제: ${mins}분`,
+    }[loc];
+  }
+  const thrMatch = s.match(/^下载并发:\s*(\d+) 线程$/);
+  if (thrMatch) {
+    const thr = thrMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Download concurrency: ${thr} threads`,
+      "zh-TW": `下載並行: ${thr} 執行緒`,
+      "zh-HK": `下載並發: ${thr} 線程`,
+      "ja-JP": `ダウンロード並列数: ${thr} スレッド`,
+      "ko-KR": `다운로드 동시성: ${thr}스레드`,
+    }[loc];
+  }
+  if (s === "已更新 Hugging Face Token") {
+    return {
+      "zh-CN": s,
+      "en-US": "Updated Hugging Face Token",
+      "zh-TW": "已更新 Hugging Face Token",
+      "zh-HK": "已更新 Hugging Face Token",
+      "ja-JP": "Hugging Face Token を更新",
+      "ko-KR": "Hugging Face 토큰 업데이트됨",
+    }[loc];
+  }
+  return s;
+}
+
+function translateApiFinishPart(part: string, loc: ColabOneLocale): string {
+  const s = part.trim();
+  const outMatch = s.match(/^输出 (\d+) tokens$/);
+  if (outMatch) {
+    const n = outMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `${n} output tokens`,
+      "zh-TW": `輸出 ${n} tokens`,
+      "zh-HK": `輸出 ${n} tokens`,
+      "ja-JP": `出力 ${n} tokens`,
+      "ko-KR": `출력 ${n} tokens`,
+    }[loc];
+  }
+  const ttftMatch = s.match(/^首字 (.+)$/);
+  if (ttftMatch) {
+    const val = ttftMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `TTFT ${val}`,
+      "zh-TW": `首字 ${val}`,
+      "zh-HK": `首字 ${val}`,
+      "ja-JP": `初回トークン ${val}`,
+      "ko-KR": `첫 토큰 ${val}`,
+    }[loc];
+  }
+  const durMatch = s.match(/^耗时 (.+)$/);
+  if (durMatch) {
+    const val = durMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `elapsed ${val}`,
+      "zh-TW": `耗時 ${val}`,
+      "zh-HK": `耗時 ${val}`,
+      "ja-JP": `所要 ${val}`,
+      "ko-KR": `소요 ${val}`,
+    }[loc];
+  }
+  return s;
+}
+
+function translateComfyErrorDetail(detail: string, loc: ColabOneLocale): string {
+  const sep = loc === "en-US" || loc === "ko-KR" ? "; " : "；";
+  const segments = detail.split("；");
+  return segments
+    .map((seg) => {
+      const trimmed = seg.trim();
+      const nodeMatch = trimmed.match(/^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/);
+      if (nodeMatch) {
+        const [, id, cls, msg] = nodeMatch;
+        const inner = translateInner(msg!, loc);
+        const nodePrefix = cls ? `${id} (${cls})` : id;
+        switch (loc) {
+          case "en-US":
+            return `Node ${nodePrefix}: ${inner}`;
+          case "zh-TW":
+            return `節點 ${cls ? `${id}(${cls})` : id}: ${inner}`;
+          case "zh-HK":
+            return `節點 ${cls ? `${id}(${cls})` : id}: ${inner}`;
+          case "ja-JP":
+            return `ノード ${cls ? `${id}(${cls})` : id}: ${inner}`;
+          case "ko-KR":
+            return `노드 ${nodePrefix}: ${inner}`;
+          default:
+            return trimmed;
+        }
+      }
+      return translateInner(trimmed, loc);
+    })
+    .join(sep);
+}
+
+function translateTaskTail(tail: string, loc: ColabOneLocale): string {
+  const trimmed = tail.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split(" · ");
+  if (parts.length >= 2) {
+    // Prefer splitting message + error when both sides match independent rules
+    // (prevents greedy trailing (.+) rules on message from swallowing an appended error).
+    for (let i = parts.length - 1; i >= 1; i--) {
+      const left = parts.slice(0, i).join(" · ");
+      const right = parts.slice(i).join(" · ");
+      const leftT = translateInner(left, loc);
+      const rightT = translateInner(right, loc);
+      if (leftT !== left && rightT !== right) {
+        return `${leftT} · ${rightT}`;
+      }
+    }
+  }
+  const whole = translateInner(trimmed, loc);
+  if (whole !== trimmed) return whole;
+  if (parts.length >= 2) {
+    for (let i = parts.length - 1; i >= 1; i--) {
+      const left = parts.slice(0, i).join(" · ");
+      const right = parts.slice(i).join(" · ");
+      const leftT = translateInner(left, loc);
+      const rightT = translateInner(right, loc);
+      if (leftT !== left || rightT !== right) {
+        return `${leftT} · ${rightT}`;
+      }
+    }
+  }
+  return whole;
+}
+
 const PATTERN_RULES: PatternRule[] = [
+  // === Compound operation & remote task logs (recursive) ===
   {
-    re: /^账号状态已刷新 · 余额 ([\d.]+) CU · 费率 ([\d.]+) CU\/小时 · 活跃 (\d+) 台$/,
+    re: /^(.+)：完成$/,
+    format: (m, loc) => {
+      const title = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${title}: Completed`;
+        case "zh-TW":
+          return `${title}：完成`;
+        case "zh-HK":
+          return `${title}：完成`;
+        case "ja-JP":
+          return `${title}: 完了`;
+        case "ko-KR":
+          return `${title}: 완료`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模型下载|模型加载|外部 API 对话|外部 API Responses|外部 API 上下文压缩|ComfyUI 启动|ComfyUI 工作流|ComfyUI 任务|远端任务)：(进行中|已完成|失败|已取消)(.*)$/,
+    format: (m, loc) => {
+      const kind = TASK_KIND_LABELS[m[1]!]?.[loc] ?? m[1]!;
+      const status = TASK_STATE_LABELS[m[2]!]?.[loc] ?? m[2]!;
+      let rest = (m[3] || "").trim();
+      let pctPrefix = "";
+      const pctMatch = rest.match(/^·\s*(\d+%)(?:\s*·\s*(.*))?$/);
+      if (pctMatch) {
+        pctPrefix = ` · ${pctMatch[1]}`;
+        rest = (pctMatch[2] || "").trim();
+      } else if (rest.startsWith("·")) {
+        rest = rest.slice(1).trim();
+      }
+      const tailText = rest ? ` · ${translateTaskTail(rest, loc)}` : "";
+      const colon = loc === "zh-TW" || loc === "zh-HK" ? "：" : ": ";
+      return `${kind}${colon}${status}${pctPrefix}${tailText}`;
+    },
+  },
+
+  // === bridge/controller.py ===
+  {
+    re: /^连接检查失败：(.+?)。客户端会自动重试，请检查网络连接。$/,
+    format: (m, loc) => {
+      const exc = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Connection check failed: ${exc}. The client will retry automatically; please check your network.`;
+        case "zh-TW":
+          return `連線檢查失敗：${exc}。用戶端將自動重試，請檢查網路連線。`;
+        case "zh-HK":
+          return `連線檢查失敗：${exc}。程式會自動重試，請檢查網絡連線。`;
+        case "ja-JP":
+          return `接続チェックに失敗しました: ${exc}。自動的に再試行します。ネットワーク接続を確認してください。`;
+        case "ko-KR":
+          return `연결 확인 실패: ${exc}. 클라이언트가 자동으로 재시도합니다. 네트워크 연결을 확인해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^空闲自动释放倒计时剩余 (\d+) 秒；继续操作可重置倒计时$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Idle auto-release in ${sec}s; any activity resets the timer`;
+        case "zh-TW":
+          return `閒置自動釋放倒數剩餘 ${sec} 秒；繼續操作可重設倒數`;
+        case "zh-HK":
+          return `閒置自動釋放倒數剩餘 ${sec} 秒；繼續操作可重設倒數`;
+        case "ja-JP":
+          return `アイドル自動解放まで残り ${sec} 秒です。操作するとタイマーがリセットされます`;
+        case "ko-KR":
+          return `유휴 자동 해제까지 ${sec}초 남았습니다. 작업을 계속하면 타이머가 초기화됩니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^服务返回 HTTP (\d+)，请检查授权和配置$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Service returned HTTP ${code}; please check authorization and configuration`;
+        case "zh-TW":
+          return `服務回傳 HTTP ${code}，請檢查授權與設定`;
+        case "zh-HK":
+          return `服務返回 HTTP ${code}，請檢查授權和配置`;
+        case "ja-JP":
+          return `サービスが HTTP ${code} を返しました。認可と設定を確認してください`;
+        case "ko-KR":
+          return `서비스가 HTTP ${code}을(를) 반환했습니다. 인증 및 설정을 확인해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已切换当前工作实例：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Switched active workspace instance: ${ep}`;
+        case "zh-TW":
+          return `已切換目前工作執行個體：${ep}`;
+        case "zh-HK":
+          return `已切換目前工作實例：${ep}`;
+        case "ja-JP":
+          return `アクティブインスタンスを切り替えました: ${ep}`;
+        case "ko-KR":
+          return `현재 작업 인스턴스를 전환했습니다: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^准备新增远端 (\S+) 实例（保留现有运行实例）$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Preparing to launch additional remote ${gpu} instance (keeping active instances)`;
+        case "zh-TW":
+          return `準備新增遠端 ${gpu} 執行個體（保留現有執行中個體）`;
+        case "zh-HK":
+          return `準備新增遠端 ${gpu} 實例（保留現有運行實例）`;
+        case "ja-JP":
+          return `追加のリモート ${gpu} インスタンス起動を準備中（既存インスタンスは維持）`;
+        case "ko-KR":
+          return `추가 원격 ${gpu} 인스턴스 시작 준비 중 (기존 실행 인스턴스 유지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在同步空闲自动释放策略（(\d+) 分钟）$/,
+    format: (m, loc) => {
+      const mins = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Syncing idle auto-release policy (${mins} min)`;
+        case "zh-TW":
+          return `正在同步閒置自動釋放原則（${mins} 分鐘）`;
+        case "zh-HK":
+          return `正在同步閒置自動釋放策略（${mins} 分鐘）`;
+        case "ja-JP":
+          return `アイドル自動解放ポリシーを同期中（${mins} 分）`;
+        case "ko-KR":
+          return `유휴 자동 해제 정책 동기화 중 (${mins}분)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^云盘自动挂载未就绪，实例仍可正常使用：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Google Drive auto-mount not ready; instance remains usable: ${detail}`;
+        case "zh-TW":
+          return `雲端硬碟自動掛載未就緒，執行個體仍可正常使用：${detail}`;
+        case "zh-HK":
+          return `雲端硬碟自動掛載未就緒，實例仍可正常使用：${detail}`;
+        case "ja-JP":
+          return `Google ドライブの自動マウントは未完了ですがインスタンスは利用可能です: ${detail}`;
+        case "ko-KR":
+          return `Google Drive 자동 마운트가 준비되지 않았으나 인스턴스는 정상 사용 가능합니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^计费同步完成 · 余额 ([\d.]+) CU · 费率 ([\d.]+) CU\/小时 · 活跃 (\d+) 台$/,
     format: (m, loc) => {
       const [, bal, rate, cnt] = m;
       switch (loc) {
         case "en-US":
-          return `Account refreshed · Balance ${bal} CU · Rate ${rate} CU/hr · ${cnt} active`;
+          return `Billing synced · Balance ${bal} CU · Rate ${rate} CU/hr · ${cnt} active`;
         case "zh-TW":
-          return `帳戶狀態已重新整理 · 餘額 ${bal} CU · 費率 ${rate} CU/小時 · 執行中 ${cnt} 台`;
+          return `計費同步完成 · 餘額 ${bal} CU · 費率 ${rate} CU/小時 · 執行中 ${cnt} 台`;
         case "zh-HK":
-          return `帳戶狀態已重新整理 · 餘額 ${bal} CU · 費率 ${rate} CU/小時 · 活躍 ${cnt} 部`;
+          return `計費同步完成 · 餘額 ${bal} CU · 費率 ${rate} CU/小時 · 活躍 ${cnt} 部`;
         case "ja-JP":
-          return `アカウント更新完了 · 残高 ${bal} CU · レート ${rate} CU/時 · 稼働 ${cnt} 台`;
+          return `課金同期完了 · 残高 ${bal} CU · レート ${rate} CU/時 · 稼働 ${cnt} 台`;
         case "ko-KR":
-          return `계정 상태 새로고침 완료 · 잔액 ${bal} CU · 요율 ${rate} CU/시간 · 활성 ${cnt}대`;
+          return `과금 동기화 완료 · 잔액 ${bal} CU · 요율 ${rate} CU/시간 · 활성 ${cnt}대`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在清理残留实例：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Cleaning up leftover instance: ${ep}`;
+        case "zh-TW":
+          return `正在清理殘留執行個體：${ep}`;
+        case "zh-HK":
+          return `正在清理殘留實例：${ep}`;
+        case "ja-JP":
+          return `残留インスタンスをクリーンアップしています: ${ep}`;
+        case "ko-KR":
+          return `잔여 인스턴스를 정리하는 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已释放 (\S+)，当前切换至 (\S+)$/,
+    format: (m, loc) => {
+      const [, target, next] = m;
+      switch (loc) {
+        case "en-US":
+          return `Released ${target}; switched active instance to ${next}`;
+        case "zh-TW":
+          return `已釋放 ${target}，目前已切換至 ${next}`;
+        case "zh-HK":
+          return `已釋放 ${target}，目前切換至 ${next}`;
+        case "ja-JP":
+          return `${target} を解放し、${next} に切り替えました`;
+        case "ko-KR":
+          return `${target} 해제 완료, 현재 인스턴스를 ${next}(으)로 전환했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已刷新账号状态 · 活跃实例 (\d+) 台 · 费率 ([\d.]+) CU\/小时$/,
+    format: (m, loc) => {
+      const [, cnt, rate] = m;
+      switch (loc) {
+        case "en-US":
+          return `Account refreshed · ${cnt} active instances · Rate ${rate} CU/hr`;
+        case "zh-TW":
+          return `已重新整理帳戶狀態 · 執行中個體 ${cnt} 台 · 費率 ${rate} CU/小時`;
+        case "zh-HK":
+          return `已重新整理帳戶狀態 · 活躍實例 ${cnt} 部 · 費率 ${rate} CU/小時`;
+        case "ja-JP":
+          return `アカウント状態を更新 · 稼働インスタンス ${cnt} 台 · レート ${rate} CU/時`;
+        case "ko-KR":
+          return `계정 상태 새로고침 완료 · 활성 인스턴스 ${cnt}대 · 요율 ${rate} CU/시간`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^开始按确认清单停止 (\d+) 个远端实例$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Stopping ${n} confirmed remote instance(s)`;
+        case "zh-TW":
+          return `開始依確認清單停止 ${n} 個遠端執行個體`;
+        case "zh-HK":
+          return `開始按確認清單停止 ${n} 個遠端實例`;
+        case "ja-JP":
+          return `確認済み一覧に従い ${n} 台のリモートインスタンスを停止しています`;
+        case "ko-KR":
+          return `확인된 목록에 따라 원격 인스턴스 ${n}대 중지 시작`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在停止远端任务并同步云盘（(.+)）$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Stopping remote tasks and syncing Google Drive (${ep})`;
+        case "zh-TW":
+          return `正在停止遠端任務並同步雲端硬碟（${ep}）`;
+        case "zh-HK":
+          return `正在停止遠端任務並同步雲端硬碟（${ep}）`;
+        case "ja-JP":
+          return `リモートタスクを停止しドライブを同期しています（${ep}）`;
+        case "ko-KR":
+          return `원격 작업 중지 및 Google Drive 동기화 중 (${ep})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端收尾完成（(.+)）$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote cleanup completed (${ep})`;
+        case "zh-TW":
+          return `遠端收尾完成（${ep}）`;
+        case "zh-HK":
+          return `遠端收尾完成（${ep}）`;
+        case "ja-JP":
+          return `リモート終了処理が完了しました（${ep}）`;
+        case "ko-KR":
+          return `원격 정리 완료 (${ep})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已处理确认的实例；当前账号仍有 (\d+) 个实例，请再次停止全部$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Processed confirmed instances; ${n} instance(s) still remain on this account, please run Stop All again`;
+        case "zh-TW":
+          return `已處理確認的執行個體；目前帳戶仍有 ${n} 個執行個體，請再次全部停止`;
+        case "zh-HK":
+          return `已處理確認的實例；目前帳戶仍有 ${n} 個實例，請再次停止全部`;
+        case "ja-JP":
+          return `確認済みインスタンスを処理しましたが、アカウントに ${n} 台残っています。再度すべて停止を実行してください`;
+        case "ko-KR":
+          return `확인된 인스턴스를 처리했으나 계정에 ${n}대가 남아 있습니다. 모두 중지를 다시 실행해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已停止所选的 (\d+) 个实例；当前账号剩余 (\d+) 个运行实例$/,
+    format: (m, loc) => {
+      const [, stopped, left] = m;
+      switch (loc) {
+        case "en-US":
+          return `Stopped ${stopped} selected instance(s); ${left} running instance(s) remain on this account`;
+        case "zh-TW":
+          return `已停止所選的 ${stopped} 個執行個體；目前帳戶剩餘 ${left} 個執行中個體`;
+        case "zh-HK":
+          return `已停止所選的 ${stopped} 個實例；目前帳戶剩餘 ${left} 個運行實例`;
+        case "ja-JP":
+          return `選択した ${stopped} 台を停止しました（残りの稼働インスタンス: ${left} 台）`;
+        case "ko-KR":
+          return `선택한 ${stopped}대 중지 완료 (남은 실행 인스턴스 ${left}대)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在读取 Hugging Face 模型清单：(.+)$/,
+    format: (m, loc) => {
+      const repo = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Fetching Hugging Face model manifest: ${repo}`;
+        case "zh-TW":
+          return `正在讀取 Hugging Face 模型清單：${repo}`;
+        case "zh-HK":
+          return `正在讀取 Hugging Face 模型清單：${repo}`;
+        case "ja-JP":
+          return `Hugging Face モデル一覧を読み込んでいます: ${repo}`;
+        case "ko-KR":
+          return `Hugging Face 모델 목록을 불러오는 중: ${repo}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已解析模型清单：(.+?)（(\d+) 个文件，([\d.]+) GiB）$/,
+    format: (m, loc) => {
+      const [, name, count, gib] = m;
+      switch (loc) {
+        case "en-US":
+          return `Parsed model manifest: ${name} (${count} files, ${gib} GiB)`;
+        case "zh-TW":
+          return `已解析模型清單：${name}（${count} 個檔案，${gib} GiB）`;
+        case "zh-HK":
+          return `已解析模型清單：${name}（${count} 個檔案，${gib} GiB）`;
+        case "ja-JP":
+          return `モデル一覧を解析しました: ${name}（${count} ファイル、${gib} GiB）`;
+        case "ko-KR":
+          return `모델 매니페스트 분석 완료: ${name} (${count}개 파일, ${gib} GiB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已保存到本地模型库：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Saved to local model library: ${name}`;
+        case "zh-TW":
+          return `已儲存至本機模型庫：${name}`;
+        case "zh-HK":
+          return `已儲存至本地模型庫：${name}`;
+        case "ja-JP":
+          return `ローカルモデル一覧に保存しました: ${name}`;
+        case "ko-KR":
+          return `로컬 모델 라이브러리에 저장했습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已同步模型配置到远端实例：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Synced model config to remote instance: ${name}`;
+        case "zh-TW":
+          return `已同步模型設定至遠端執行個體：${name}`;
+        case "zh-HK":
+          return `已同步模型配置至遠端實例：${name}`;
+        case "ja-JP":
+          return `モデル設定をリモートインスタンスへ同期しました: ${name}`;
+        case "ko-KR":
+          return `원격 인스턴스에 모델 설정을 동기화했습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已将社区仓库加入我的模型：(.+)$/,
+    format: (m, loc) => {
+      const repo = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Saved community repo to My Models: ${repo}`;
+        case "zh-TW":
+          return `已將社群儲存庫加入我的模型：${repo}`;
+        case "zh-HK":
+          return `已將社群倉庫加入我的模型：${repo}`;
+        case "ja-JP":
+          return `コミュニティリポジトリをマイモデルに追加しました: ${repo}`;
+        case "ko-KR":
+          return `커뮤니티 저장소를 내 모델에 추가했습니다: ${repo}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已从我的模型移除仓库：(.+)$/,
+    format: (m, loc) => {
+      const repo = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Removed repo from My Models: ${repo}`;
+        case "zh-TW":
+          return `已從我的模型移除儲存庫：${repo}`;
+        case "zh-HK":
+          return `已從我的模型移除倉庫：${repo}`;
+        case "ja-JP":
+          return `マイモデルからリポジトリを削除しました: ${repo}`;
+        case "ko-KR":
+          return `내 모델에서 저장소를 제거했습니다: ${repo}`;
         default:
           return m[0];
       }
@@ -575,6 +1040,29 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^已保存设置（(.+)）$/,
+    format: (m, loc) => {
+      const parts = m[1]!
+        .split(" · ")
+        .map((p) => translateSettingsSummaryPart(p, loc))
+        .join(" · ");
+      switch (loc) {
+        case "en-US":
+          return `Saved settings (${parts})`;
+        case "zh-TW":
+          return `已儲存設定（${parts}）`;
+        case "zh-HK":
+          return `已儲存設定（${parts}）`;
+        case "ja-JP":
+          return `設定を保存しました（${parts}）`;
+        case "ko-KR":
+          return `설정을 저장했습니다 (${parts})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^已向实例 (\S+) 同步空闲释放时长（(\d+) 分钟）$/,
     format: (m, loc) => {
       const [, ep, mins] = m;
@@ -589,6 +1077,867 @@ const PATTERN_RULES: PatternRule[] = [
           return `インスタンス ${ep} へアイドル自動解放（${mins} 分）を同期しました`;
         case "ko-KR":
           return `인스턴스 ${ep}에 유휴 자동 해제(${mins}분)를 동기화했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^账号状态已刷新 · 余额 ([\d.]+) CU · 费率 ([\d.]+) CU\/小时 · 活跃 (\d+) 台$/,
+    format: (m, loc) => {
+      const [, bal, rate, cnt] = m;
+      switch (loc) {
+        case "en-US":
+          return `Account refreshed · Balance ${bal} CU · Rate ${rate} CU/hr · ${cnt} active`;
+        case "zh-TW":
+          return `帳戶狀態已重新整理 · 餘額 ${bal} CU · 費率 ${rate} CU/小時 · 執行中 ${cnt} 台`;
+        case "zh-HK":
+          return `帳戶狀態已重新整理 · 餘額 ${bal} CU · 費率 ${rate} CU/小時 · 活躍 ${cnt} 部`;
+        case "ja-JP":
+          return `アカウント更新完了 · 残高 ${bal} CU · レート ${rate} CU/時 · 稼働 ${cnt} 台`;
+        case "ko-KR":
+          return `계정 상태 새로고침 완료 · 잔액 ${bal} CU · 요율 ${rate} CU/시간 · 활성 ${cnt}대`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已导入 ComfyUI 工作流：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Imported ComfyUI workflow: ${name}`;
+        case "zh-TW":
+          return `已匯入 ComfyUI 工作流程：${name}`;
+        case "zh-HK":
+          return `已匯入 ComfyUI 工作流：${name}`;
+        case "ja-JP":
+          return `ComfyUI ワークフローをインポートしました: ${name}`;
+        case "ko-KR":
+          return `ComfyUI 워크플로를 가져왔습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已离线保存 ComfyUI 工作流：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Saved ComfyUI workflow offline: ${name}`;
+        case "zh-TW":
+          return `已離線儲存 ComfyUI 工作流程：${name}`;
+        case "zh-HK":
+          return `已離線儲存 ComfyUI 工作流：${name}`;
+        case "ja-JP":
+          return `ComfyUI ワークフローをオフライン保存しました: ${name}`;
+        case "ko-KR":
+          return `ComfyUI 워크플로를 오프라인으로 저장했습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已删除 ComfyUI 工作流：(.+)$/,
+    format: (m, loc) => {
+      const wid = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Deleted ComfyUI workflow: ${wid}`;
+        case "zh-TW":
+          return `已刪除 ComfyUI 工作流程：${wid}`;
+        case "zh-HK":
+          return `已刪除 ComfyUI 工作流：${wid}`;
+        case "ja-JP":
+          return `ComfyUI ワークフローを削除しました: ${wid}`;
+        case "ko-KR":
+          return `ComfyUI 워크플로를 삭제했습니다: ${wid}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在上传 ComfyUI 输入素材：(.+)$/,
+    format: (m, loc) => {
+      const name = translateFallbackFileWord(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Uploading ComfyUI input asset: ${name}`;
+        case "zh-TW":
+          return `正在上傳 ComfyUI 輸入素材：${name}`;
+        case "zh-HK":
+          return `正在上傳 ComfyUI 輸入素材：${name}`;
+        case "ja-JP":
+          return `ComfyUI 入力素材をアップロードしています: ${name}`;
+        case "ko-KR":
+          return `ComfyUI 입력 자산 업로드 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^ComfyUI 输入素材上传完成：(.+)$/,
+    format: (m, loc) => {
+      const name = translateFallbackFileWord(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Uploaded ComfyUI input asset: ${name}`;
+        case "zh-TW":
+          return `ComfyUI 輸入素材上傳完成：${name}`;
+        case "zh-HK":
+          return `ComfyUI 輸入素材上傳完成：${name}`;
+        case "ja-JP":
+          return `ComfyUI 入力素材のアップロードが完了しました: ${name}`;
+        case "ko-KR":
+          return `ComfyUI 입력 자산 업로드 완료: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^请求运行 ComfyUI 工作流：(.+)$/,
+    format: (m, loc) => {
+      const wid = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Requesting ComfyUI workflow run: ${wid}`;
+        case "zh-TW":
+          return `請求執行 ComfyUI 工作流程：${wid}`;
+        case "zh-HK":
+          return `請求運行 ComfyUI 工作流：${wid}`;
+        case "ja-JP":
+          return `ComfyUI ワークフローの実行を要求しました: ${wid}`;
+        case "ko-KR":
+          return `ComfyUI 워크플로 실행 요청: ${wid}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在提交远端下载任务：(.+?)（(\d+) 线程(，完成后自动装载)?）$/,
+    format: (m, loc) => {
+      const [, name, threads, autoLoad] = m;
+      switch (loc) {
+        case "en-US":
+          return `Submitting remote download: ${name} (${threads} threads${autoLoad ? ", auto-load after finish" : ""})`;
+        case "zh-TW":
+          return `正在提交遠端下載任務：${name}（${threads} 執行緒${autoLoad ? "，完成後自動載入" : ""}）`;
+        case "zh-HK":
+          return `正在提交遠端下載任務：${name}（${threads} 線程${autoLoad ? "，完成後自動載入" : ""}）`;
+        case "ja-JP":
+          return `リモートダウンロードを送信中: ${name}（${threads} スレッド${autoLoad ? "、完了後に自動ロード" : ""}）`;
+        case "ko-KR":
+          return `원격 다운로드 작업 제출 중: ${name} (${threads}스레드${autoLoad ? ", 완료 후 자동 로드" : ""})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端已启动模型下载：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote model download started: ${name}`;
+        case "zh-TW":
+          return `遠端已啟動模型下載：${name}`;
+        case "zh-HK":
+          return `遠端已啟動模型下載：${name}`;
+        case "ja-JP":
+          return `リモートでモデルダウンロードを開始しました: ${name}`;
+        case "ko-KR":
+          return `원격 모델 다운로드가 시작되었습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^释放远端实例 (.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Releasing remote instance ${ep}`;
+        case "zh-TW":
+          return `釋放遠端執行個體 ${ep}`;
+        case "zh-HK":
+          return `釋放遠端實例 ${ep}`;
+        case "ja-JP":
+          return `リモートインスタンス ${ep} を解放中`;
+        case "ko-KR":
+          return `원격 인스턴스 ${ep} 해제 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^请求下载模型 (.+?) 到远端 GPU（(\d+) 线程(，完成后自动装载)?）$/,
+    format: (m, loc) => {
+      const [, name, threads, autoLoad] = m;
+      switch (loc) {
+        case "en-US":
+          return `Requesting download of ${name} to remote GPU (${threads} threads${autoLoad ? ", auto-load after finish" : ""})`;
+        case "zh-TW":
+          return `請求下載模型 ${name} 至遠端 GPU（${threads} 執行緒${autoLoad ? "，完成後自動載入" : ""}）`;
+        case "zh-HK":
+          return `請求下載模型 ${name} 到遠端 GPU（${threads} 線程${autoLoad ? "，完成後自動載入" : ""}）`;
+        case "ja-JP":
+          return `モデル ${name} のリモート GPU ダウンロードを要求（${threads} スレッド${autoLoad ? "、完了後に自動ロード" : ""}）`;
+        case "ko-KR":
+          return `원격 GPU에 모델 ${name} 다운로드 요청 (${threads}스레드${autoLoad ? ", 완료 후 자동 로드" : ""})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端下载任务已启动：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote download task started: ${name}`;
+        case "zh-TW":
+          return `遠端下載任務已啟動：${name}`;
+        case "zh-HK":
+          return `遠端下載任務已啟動：${name}`;
+        case "ja-JP":
+          return `リモートダウンロードタスクを開始しました: ${name}`;
+        case "ko-KR":
+          return `원격 다운로드 작업이 시작되었습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^请求装载模型 (.+?) 到远端显存$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Requesting load of ${name} into remote VRAM`;
+        case "zh-TW":
+          return `請求載入模型 ${name} 至遠端 VRAM`;
+        case "zh-HK":
+          return `請求載入模型 ${name} 到遠端顯存`;
+        case "ja-JP":
+          return `モデル ${name} のリモート VRAM ロードを要求しました`;
+        case "ko-KR":
+          return `원격 VRAM에 모델 ${name} 로드 요청`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端模型装载任务已启动：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote model load task started: ${name}`;
+        case "zh-TW":
+          return `遠端模型載入任務已啟動：${name}`;
+        case "zh-HK":
+          return `遠端模型載入任務已啟動：${name}`;
+        case "ja-JP":
+          return `リモートモデルロードタスクを開始しました: ${name}`;
+        case "ko-KR":
+          return `원격 모델 로드 작업이 시작되었습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^请求删除远端模型文件：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Requesting deletion of remote model files: ${name}`;
+        case "zh-TW":
+          return `請求刪除遠端模型檔案：${name}`;
+        case "zh-HK":
+          return `請求刪除遠端模型檔案：${name}`;
+        case "ja-JP":
+          return `リモートモデルファイルの削除を要求しました: ${name}`;
+        case "ko-KR":
+          return `원격 모델 파일 삭제 요청: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已删除远端模型文件：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Deleted remote model files: ${name}`;
+        case "zh-TW":
+          return `已刪除遠端模型檔案：${name}`;
+        case "zh-HK":
+          return `已刪除遠端模型檔案：${name}`;
+        case "ja-JP":
+          return `リモートモデルファイルを削除しました: ${name}`;
+        case "ko-KR":
+          return `원격 모델 파일을 삭제했습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === bridge/provider.py ===
+  {
+    re: /^查询 Google Colab 实例状态：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Checking Google Colab instance status: ${ep}`;
+        case "zh-TW":
+          return `正在查詢 Google Colab 執行個體狀態：${ep}`;
+        case "zh-HK":
+          return `正在查詢 Google Colab 實例狀態：${ep}`;
+        case "ja-JP":
+          return `Google Colab インスタンス状態を確認しています: ${ep}`;
+        case "ko-KR":
+          return `Google Colab 인스턴스 상태 조회 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^向 Google Colab 发送释放请求：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Sending release request to Google Colab: ${ep}`;
+        case "zh-TW":
+          return `正在向 Google Colab 送出釋放請求：${ep}`;
+        case "zh-HK":
+          return `正在向 Google Colab 發送釋放請求：${ep}`;
+        case "ja-JP":
+          return `Google Colab へ解放リクエストを送信しています: ${ep}`;
+        case "ko-KR":
+          return `Google Colab에 해제 요청 전송 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^释放请求未获直接确认，改为轮询核实停止状态：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Release not immediately confirmed; polling to verify stop state: ${ep}`;
+        case "zh-TW":
+          return `釋放請求未獲直接確認，改為輪詢核實停止狀態：${ep}`;
+        case "zh-HK":
+          return `釋放請求未獲直接確認，改為輪詢核實停止狀態：${ep}`;
+        case "ja-JP":
+          return `解放応答を直接確認できなかったため停止状態をポーリング確認しています: ${ep}`;
+        case "ko-KR":
+          return `해제 요청이 즉시 확인되지 않아 중지 상태를 폴링하여 확인하는 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^实例已不在 Colab 活跃列表中：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Instance is no longer in Colab's active list: ${ep}`;
+        case "zh-TW":
+          return `執行個體已不在 Colab 執行中清單：${ep}`;
+        case "zh-HK":
+          return `實例已不在 Colab 活躍清單中：${ep}`;
+        case "ja-JP":
+          return `インスタンスは Colab の稼働一覧から消えました: ${ep}`;
+        case "ko-KR":
+          return `인스턴스가 더 이상 Colab 활성 목록에 없습니다: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已确认实例停止并清理本机会话：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Confirmed instance stopped and cleared local session: ${ep}`;
+        case "zh-TW":
+          return `已確認執行個體停止並清理本機工作階段：${ep}`;
+        case "zh-HK":
+          return `已確認實例停止並清理本地會話：${ep}`;
+        case "ja-JP":
+          return `インスタンス停止を確認しローカルセッションを消去しました: ${ep}`;
+        case "ko-KR":
+          return `인스턴스 중지를 확인하고 로컬 세션을 정리했습니다: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^等待 Google Colab 确认停止计费：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Waiting for Google Colab to confirm billing stopped: ${ep}`;
+        case "zh-TW":
+          return `等待 Google Colab 確認停止計費：${ep}`;
+        case "zh-HK":
+          return `等待 Google Colab 確認停止扣費：${ep}`;
+        case "ja-JP":
+          return `Google Colab の課金停止確認を待機しています: ${ep}`;
+        case "ko-KR":
+          return `Google Colab의 과금 중지 확인 대기 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^仍在等待释放确认（第 (\d+)\/(\d+) 次查询）：(.+)$/,
+    format: (m, loc) => {
+      const [, cur, total, ep] = m;
+      switch (loc) {
+        case "en-US":
+          return `Still waiting for release confirmation (check ${cur}/${total}): ${ep}`;
+        case "zh-TW":
+          return `仍在等待釋放確認（第 ${cur}/${total} 次查詢）：${ep}`;
+        case "zh-HK":
+          return `仍在等待釋放確認（第 ${cur}/${total} 次查詢）：${ep}`;
+        case "ja-JP":
+          return `解放確認を引き続き待機中（${cur}/${total} 回目）: ${ep}`;
+        case "ko-KR":
+          return `해제 확인 대기 중 (${cur}/${total}회 확인): ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在查询账号运行实例（待停止 (\d+) 个）$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Querying running instances on account (${n} to stop)`;
+        case "zh-TW":
+          return `正在查詢帳戶執行中個體（待停止 ${n} 個）`;
+        case "zh-HK":
+          return `正在查詢帳戶運行實例（待停止 ${n} 個）`;
+        case "ja-JP":
+          return `アカウントの稼働インスタンスを照会中（停止対象 ${n} 台）`;
+        case "ko-KR":
+          return `계정의 실행 중인 인스턴스 조회 중 (중지 대상 ${n}대)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在停止实例：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Stopping instance: ${ep}`;
+        case "zh-TW":
+          return `正在停止執行個體：${ep}`;
+        case "zh-HK":
+          return `正在停止實例：${ep}`;
+        case "ja-JP":
+          return `インスタンスを停止中: ${ep}`;
+        case "ko-KR":
+          return `인스턴스 중지 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^停止请求未获确认，正在重新查询：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Stop request not confirmed; re-checking: ${ep}`;
+        case "zh-TW":
+          return `停止請求未獲確認，正在重新查詢：${ep}`;
+        case "zh-HK":
+          return `停止請求未獲確認，正在重新查詢：${ep}`;
+        case "ja-JP":
+          return `停止リクエスト未確認のため再照会しています: ${ep}`;
+        case "ko-KR":
+          return `중지 요청이 확인되지 않아 다시 조회 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已确认停止实例：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Confirmed instance stopped: ${ep}`;
+        case "zh-TW":
+          return `已確認停止執行個體：${ep}`;
+        case "zh-HK":
+          return `已確認停止實例：${ep}`;
+        case "ja-JP":
+          return `インスタンスの停止を確認しました: ${ep}`;
+        case "ko-KR":
+          return `인스턴스 중지 확인됨: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^等待 Google Colab 确认停止计费（剩余 (\d+) 个）$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Waiting for Google Colab to confirm billing stopped (${n} remaining)`;
+        case "zh-TW":
+          return `等待 Google Colab 確認停止計費（剩餘 ${n} 個）`;
+        case "zh-HK":
+          return `等待 Google Colab 確認停止扣費（剩餘 ${n} 個）`;
+        case "ja-JP":
+          return `Google Colab の課金停止確認を待機中（残り ${n} 台）`;
+        case "ko-KR":
+          return `Google Colab 과금 중지 확인 대기 중 (${n}대 남음)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^仍有 (\d+) 个实例未确认停止，可能仍在计费，请重试$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `${n} instance(s) not yet confirmed stopped and may still be billing; please retry`;
+        case "zh-TW":
+          return `仍有 ${n} 個執行個體未確認停止，可能仍在計費，請重試`;
+        case "zh-HK":
+          return `仍有 ${n} 個實例未確認停止，可能仍在扣費，請重試`;
+        case "ja-JP":
+          return `${n} 台の停止が未確認で課金継続中の可能性があります。再試行してください`;
+        case "ko-KR":
+          return `${n}대의 인스턴스 중지가 확인되지 않아 계속 과금 중일 수 있습니다. 다시 시도해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^向 Google Colab 请求分配 (\S+) GPU（(高内存规格|默认规格)）$/,
+    format: (m, loc) => {
+      const [, gpu, shapeRaw] = m;
+      const isHighRam = shapeRaw === "高内存规格";
+      switch (loc) {
+        case "en-US":
+          return `Requesting ${gpu} GPU from Google Colab (${isHighRam ? "High-RAM shape" : "Standard shape"})`;
+        case "zh-TW":
+          return `正在向 Google Colab 請求分配 ${gpu} GPU（${isHighRam ? "高記憶體規格" : "預設規格"}）`;
+        case "zh-HK":
+          return `正在向 Google Colab 請求分配 ${gpu} GPU（${isHighRam ? "高記憶體規格" : "預設規格"}）`;
+        case "ja-JP":
+          return `Google Colab に ${gpu} GPU の割り当てを要求しています（${isHighRam ? "ハイメモリ構成" : "標準構成"}）`;
+        case "ko-KR":
+          return `Google Colab에 ${gpu} GPU 할당 요청 중 (${isHighRam ? "고메모리 구성" : "기본 구성"})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已保存实例会话与控制令牌：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Saved instance session and control token: ${ep}`;
+        case "zh-TW":
+          return `已儲存執行個體工作階段與控制權杖：${ep}`;
+        case "zh-HK":
+          return `已儲存實例會話與控制令牌：${ep}`;
+        case "ja-JP":
+          return `インスタンスセッションと制御トークンを保存しました: ${ep}`;
+        case "ko-KR":
+          return `인스턴스 세션 및 제어 토큰을 저장했습니다: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 Jupyter 内核已响应（耗时 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote Jupyter kernel responded (${sec}s)`;
+        case "zh-TW":
+          return `遠端 Jupyter 核心已回應（耗時 ${sec} 秒）`;
+        case "zh-HK":
+          return `遠端 Jupyter 核心已回應（耗時 ${sec} 秒）`;
+        case "ja-JP":
+          return `リモート Jupyter カーネルが応答しました（${sec} 秒）`;
+        case "ko-KR":
+          return `원격 Jupyter 커널 응답 확인 (${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^仍在等待远端 Jupyter 内核响应（已等待 (\d+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Still waiting for remote Jupyter kernel (${sec}s elapsed)`;
+        case "zh-TW":
+          return `仍在等待遠端 Jupyter 核心回應（已等待 ${sec} 秒）`;
+        case "zh-HK":
+          return `仍在等待遠端 Jupyter 核心回應（已等待 ${sec} 秒）`;
+        case "ja-JP":
+          return `リモート Jupyter カーネルの応答を待機中（${sec} 秒経過）`;
+        case "ko-KR":
+          return `원격 Jupyter 커널 응답 대기 중 (${sec}초 경과)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^检测到已连接实例，直接复用：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Detected connected instance; reusing: ${ep}`;
+        case "zh-TW":
+          return `偵測到已連線執行個體，直接重複使用：${ep}`;
+        case "zh-HK":
+          return `檢測到已連線實例，直接複用：${ep}`;
+        case "ja-JP":
+          return `接続済みインスタンスを検出したため再利用します: ${ep}`;
+        case "ko-KR":
+          return `이미 연결된 인스턴스를 감지하여 재사용합니다: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前余额 ([\d.]+) CU · 活跃实例 (\d+) 台$/,
+    format: (m, loc) => {
+      const [, bal, cnt] = m;
+      switch (loc) {
+        case "en-US":
+          return `Balance ${bal} CU · ${cnt} active instance(s)`;
+        case "zh-TW":
+          return `目前餘額 ${bal} CU · 執行中個體 ${cnt} 台`;
+        case "zh-HK":
+          return `目前餘額 ${bal} CU · 活躍實例 ${cnt} 部`;
+        case "ja-JP":
+          return `現在の残高 ${bal} CU · 稼働インスタンス ${cnt} 台`;
+        case "ko-KR":
+          return `현재 잔액 ${bal} CU · 활성 인스턴스 ${cnt}대`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在分配 (.+)$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Allocating ${gpu}`;
+        case "zh-TW":
+          return `正在分配 ${gpu}`;
+        case "zh-HK":
+          return `正在分配 ${gpu}`;
+        case "ja-JP":
+          return `${gpu} を割り当て中`;
+        case "ko-KR":
+          return `${gpu} 할당 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已分配实例 (\S+?)(?:（(.+)）)?$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      const rawMeta = m[2];
+      const translatedMeta = rawMeta
+        ? rawMeta
+            .split(" · ")
+            .map((part) => translateAllocationMetaPart(part, loc))
+            .filter(Boolean)
+            .join(" · ")
+        : "";
+      switch (loc) {
+        case "en-US":
+          return translatedMeta
+            ? `Allocated instance ${ep} (${translatedMeta})`
+            : `Allocated instance ${ep}`;
+        case "zh-TW":
+          return translatedMeta
+            ? `已分配執行個體 ${ep}（${translatedMeta}）`
+            : `已分配執行個體 ${ep}`;
+        case "zh-HK":
+          return translatedMeta
+            ? `已分配實例 ${ep}（${translatedMeta}）`
+            : `已分配實例 ${ep}`;
+        case "ja-JP":
+          return translatedMeta
+            ? `インスタンス ${ep} を割り当てました（${translatedMeta}）`
+            : `インスタンス ${ep} を割り当てました`;
+        case "ko-KR":
+          return translatedMeta
+            ? `인스턴스 ${ep} 할당 완료 (${translatedMeta})`
+            : `인스턴스 ${ep} 할당 완료`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 Jupyter 内核已就绪（耗时 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote Jupyter kernel ready (${sec}s)`;
+        case "zh-TW":
+          return `遠端 Jupyter 核心已就緒（耗時 ${sec} 秒）`;
+        case "zh-HK":
+          return `遠端 Jupyter 核心已就緒（耗時 ${sec} 秒）`;
+        case "ja-JP":
+          return `リモート Jupyter カーネルの準備が完了しました（${sec} 秒）`;
+        case "ko-KR":
+          return `원격 Jupyter 커널 준비 완료 (${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已打包远端管理服务（(\d+) 个文件，(\d+) KB）$/,
+    format: (m, loc) => {
+      const [, files, kb] = m;
+      switch (loc) {
+        case "en-US":
+          return `Packaged remote control service (${files} files, ${kb} KB)`;
+        case "zh-TW":
+          return `已封裝遠端管理服務（${files} 個檔案，${kb} KB）`;
+        case "zh-HK":
+          return `已打包遠端管理服務（${files} 個檔案，${kb} KB）`;
+        case "ja-JP":
+          return `リモート管理サービスをパッケージ化しました（${files} ファイル、${kb} KB）`;
+        case "ko-KR":
+          return `원격 관리 서비스 패키징 완료 (${files}개 파일, ${kb} KB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^启动过程出错，正在自动回滚释放刚分配的实例：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Launch error; automatically rolling back and releasing newly allocated instance: ${ep}`;
+        case "zh-TW":
+          return `啟動過程出錯，正在自動回復並釋放剛分配的執行個體：${ep}`;
+        case "zh-HK":
+          return `啟動過程出錯，正在自動回滾釋放剛分配的實例：${ep}`;
+        case "ja-JP":
+          return `起動中にエラーが発生したため、割り当てたインスタンスを自動解放しています: ${ep}`;
+        case "ko-KR":
+          return `시작 중 오류가 발생하여 방금 할당된 인스턴스를 자동으로 롤백 해제하는 중: ${ep}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已打包新版远端服务（(\d+) 个文件），正在上传$/,
+    format: (m, loc) => {
+      const files = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Packaged updated remote service (${files} files); uploading`;
+        case "zh-TW":
+          return `已封裝新版遠端服務（${files} 個檔案），正在上傳`;
+        case "zh-HK":
+          return `已打包新版遠端服務（${files} 個檔案），正在上傳`;
+        case "ja-JP":
+          return `新しいリモートサービスをパッケージ化しました（${files} ファイル）。アップロードしています`;
+        case "ko-KR":
+          return `새 원격 서비스 패키징 완료 (${files}개 파일), 업로드 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端服务返回 HTTP (\d+)$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote service returned HTTP ${code}`;
+        case "zh-TW":
+          return `遠端服務回傳 HTTP ${code}`;
+        case "zh-HK":
+          return `遠端服務返回 HTTP ${code}`;
+        case "ja-JP":
+          return `リモートサービスが HTTP ${code} を返しました`;
+        case "ko-KR":
+          return `원격 서비스가 HTTP ${code}을(를) 반환했습니다`;
         default:
           return m[0];
       }
@@ -614,10 +1963,1158 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+
+  // === bridge/shortcuts.py ===
+  {
+    re: /^移除快捷方式失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to remove shortcut: ${detail}`;
+        case "zh-TW":
+          return `移除捷徑失敗：${detail}`;
+        case "zh-HK":
+          return `移除捷徑失敗：${detail}`;
+        case "ja-JP":
+          return `ショートカットの削除に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `바로가기 제거 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/comfy_proxy.py ===
+  {
+    re: /^画布公网地址验证超时；固定域名请映射到 http:\/\/127\.0\.0\.1:(\d+)，并检查 Cloudflare 路由与访问策略$/,
+    format: (m, loc) => {
+      const port = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Canvas public URL check timed out; map your custom domain to http://127.0.0.1:${port} and check Cloudflare routing and access policies`;
+        case "zh-TW":
+          return `畫布公開位址驗證逾時；請將固定網域對應至 http://127.0.0.1:${port}，並檢查 Cloudflare 路由與存取原則`;
+        case "zh-HK":
+          return `畫布公網位址驗證逾時；固定域名請映射到 http://127.0.0.1:${port}，並檢查 Cloudflare 路由與存取策略`;
+        case "ja-JP":
+          return `キャンバスの公開 URL 検証がタイムアウトしました。固定ドメインを http://127.0.0.1:${port} に向け、Cloudflare のルートとアクセスポリシーを確認してください`;
+        case "ko-KR":
+          return `캔버스 공용 주소 확인 시간이 초과되었습니다. 고정 도메인을 http://127.0.0.1:${port}에 매핑하고 Cloudflare 라우팅 및 액세스 정책을 확인해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/comfyui.py ===
+  {
+    re: /^(.+?)不能是符号链接$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} cannot be a symbolic link`;
+        case "zh-TW":
+          return `${label}不可為符號連結`;
+        case "zh-HK":
+          return `${label}不能是符號連結`;
+        case "ja-JP":
+          return `${label} にシンボリックリンクは使用できません`;
+        case "ko-KR":
+          return `${label}은(는) 심볼릭 링크일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^输入文件超过大小限制（最大 (\d+) MB）$/,
+    format: (m, loc) => {
+      const mb = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Input file exceeds size limit (max ${mb} MB)`;
+        case "zh-TW":
+          return `輸入檔案超過大小限制（最大 ${mb} MB）`;
+        case "zh-HK":
+          return `輸入檔案超過大小限制（最大 ${mb} MB）`;
+        case "ja-JP":
+          return `入力ファイルがサイズ上限を超えています（最大 ${mb} MB）`;
+        case "ko-KR":
+          return `입력 파일이 크기 제한을 초과했습니다 (최대 ${mb} MB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的输入文件格式：(.+)$/,
+    format: (m, loc) => {
+      const ext = translateFallbackUnknownWord(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Unsupported input file format: ${ext}`;
+        case "zh-TW":
+          return `不支援的輸入檔案格式：${ext}`;
+        case "zh-HK":
+          return `不支援的輸入檔案格式：${ext}`;
+        case "ja-JP":
+          return `サポートされていない入力ファイル形式です: ${ext}`;
+        case "ko-KR":
+          return `지원하지 않는 입력 파일 형식입니다: ${ext}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的输出文件格式：(.+)$/,
+    format: (m, loc) => {
+      const ext = translateFallbackUnknownWord(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Unsupported output file format: ${ext}`;
+        case "zh-TW":
+          return `不支援的輸出檔案格式：${ext}`;
+        case "zh-HK":
+          return `不支援的輸出檔案格式：${ext}`;
+        case "ja-JP":
+          return `サポートされていない出力ファイル形式です: ${ext}`;
+        case "ko-KR":
+          return `지원하지 않는 출력 파일 형식입니다: ${ext}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 ComfyUI 准备失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote ComfyUI preparation failed: ${detail}`;
+        case "zh-TW":
+          return `遠端 ComfyUI 準備失敗：${detail}`;
+        case "zh-HK":
+          return `遠端 ComfyUI 準備失敗：${detail}`;
+        case "ja-JP":
+          return `リモート ComfyUI の準備に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `원격 ComfyUI 준비 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^ComfyUI 进程异常退出（退出码 (-?\d+)）$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `ComfyUI process exited unexpectedly (exit code ${code})`;
+        case "zh-TW":
+          return `ComfyUI 處理程序異常結束（結束代碼 ${code}）`;
+        case "zh-HK":
+          return `ComfyUI 進程異常退出（退出碼 ${code}）`;
+        case "ja-JP":
+          return `ComfyUI プロセスが異常終了しました（終了コード ${code}）`;
+        case "ko-KR":
+          return `ComfyUI 프로세스가 비정상 종료되었습니다 (종료 코드 ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用远端已安装的 ComfyUI (.+)$/,
+    format: (m, loc) => {
+      const tag = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Reusing installed remote ComfyUI ${tag}`;
+        case "zh-TW":
+          return `重複使用遠端已安裝的 ComfyUI ${tag}`;
+        case "zh-HK":
+          return `複用遠端已安裝的 ComfyUI ${tag}`;
+        case "ja-JP":
+          return `インストール済みのリモート ComfyUI ${tag} を再利用します`;
+        case "ko-KR":
+          return `원격에 설치된 ComfyUI ${tag} 재사용 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^首次安装远端 ComfyUI (.+)$/,
+    format: (m, loc) => {
+      const tag = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Installing remote ComfyUI ${tag} for the first time`;
+        case "zh-TW":
+          return `首次安裝遠端 ComfyUI ${tag}`;
+        case "zh-HK":
+          return `首次安裝遠端 ComfyUI ${tag}`;
+        case "ja-JP":
+          return `リモート ComfyUI ${tag} を初回インストール中`;
+        case "ko-KR":
+          return `원격 ComfyUI ${tag} 최초 설치 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 ComfyUI (.+?) 安装完成$/,
+    format: (m, loc) => {
+      const tag = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote ComfyUI ${tag} installation completed`;
+        case "zh-TW":
+          return `遠端 ComfyUI ${tag} 安裝完成`;
+        case "zh-HK":
+          return `遠端 ComfyUI ${tag} 安裝完成`;
+        case "ja-JP":
+          return `リモート ComfyUI ${tag} のインストールが完了しました`;
+        case "ko-KR":
+          return `원격 ComfyUI ${tag} 설치가 완료되었습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已生成模型路径配置，正在启动远端 ComfyUI（端口 (\d+)）$/,
+    format: (m, loc) => {
+      const port = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Generated model path config; starting remote ComfyUI (port ${port})`;
+        case "zh-TW":
+          return `已產生模型路徑設定，正在啟動遠端 ComfyUI（連接埠 ${port}）`;
+        case "zh-HK":
+          return `已生成模型路徑配置，正在啟動遠端 ComfyUI（連接埠 ${port}）`;
+        case "ja-JP":
+          return `モデルパス設定を生成しました。リモート ComfyUI を起動しています（ポート ${port}）`;
+        case "ko-KR":
+          return `모델 경로 설정 생성 완료, 원격 ComfyUI 시작 중 (포트 ${port})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^退出码 (-?\d+)$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `exit code ${code}`;
+        case "zh-TW":
+          return `結束代碼 ${code}`;
+        case "zh-HK":
+          return `退出碼 ${code}`;
+        case "ja-JP":
+          return `終了コード ${code}`;
+        case "ko-KR":
+          return `종료 코드 ${code}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^ComfyUI 启动失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `ComfyUI startup failed: ${detail}`;
+        case "zh-TW":
+          return `ComfyUI 啟動失敗：${detail}`;
+        case "zh-HK":
+          return `ComfyUI 啟動失敗：${detail}`;
+        case "ja-JP":
+          return `ComfyUI の起動に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI 시작 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 ComfyUI 引擎已就绪（耗时 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote ComfyUI engine ready (${sec}s)`;
+        case "zh-TW":
+          return `遠端 ComfyUI 引擎已就緒（耗時 ${sec} 秒）`;
+        case "zh-HK":
+          return `遠端 ComfyUI 引擎已就緒（耗時 ${sec} 秒）`;
+        case "ja-JP":
+          return `リモート ComfyUI エンジンの準備が完了しました（${sec} 秒）`;
+        case "ko-KR":
+          return `원격 ComfyUI 엔진 준비 완료 (${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在等待 ComfyUI 完成节点初始化（已耗时 (\d+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Waiting for ComfyUI node initialization (${sec}s elapsed)`;
+        case "zh-TW":
+          return `正在等待 ComfyUI 完成節點初始化（已耗時 ${sec} 秒）`;
+        case "zh-HK":
+          return `正在等待 ComfyUI 完成節點初始化（已耗時 ${sec} 秒）`;
+        case "ja-JP":
+          return `ComfyUI のノード初期化完了を待機しています（${sec} 秒経過）`;
+        case "ko-KR":
+          return `ComfyUI 노드 초기화 완료 대기 중 (${sec}초 경과)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在向 ComfyUI 上传 (\d+) 个输入素材$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Uploading ${n} input asset(s) to ComfyUI`;
+        case "zh-TW":
+          return `正在向 ComfyUI 上傳 ${n} 個輸入素材`;
+        case "zh-HK":
+          return `正在向 ComfyUI 上傳 ${n} 個輸入素材`;
+        case "ja-JP":
+          return `ComfyUI へ ${n} 件の入力素材をアップロードしています`;
+        case "ko-KR":
+          return `ComfyUI에 입력 자산 ${n}개 업로드 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^提交工作流：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Submitting workflow: ${name}`;
+        case "zh-TW":
+          return `提交工作流程：${name}`;
+        case "zh-HK":
+          return `提交工作流：${name}`;
+        case "ja-JP":
+          return `ワークフローを送信中: ${name}`;
+        case "ko-KR":
+          return `워크플로 제출 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^ComfyUI 拒绝了工作流：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateComfyErrorDetail(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `ComfyUI rejected workflow: ${detail}`;
+        case "zh-TW":
+          return `ComfyUI 拒絕了工作流程：${detail}`;
+        case "zh-HK":
+          return `ComfyUI 拒絕了工作流：${detail}`;
+        case "ja-JP":
+          return `ComfyUI がワークフローを拒否しました: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI가 워크플로를 거부했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流节点校验失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateComfyErrorDetail(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Workflow node validation failed: ${detail}`;
+        case "zh-TW":
+          return `工作流程節點驗證失敗：${detail}`;
+        case "zh-HK":
+          return `工作流節點校驗失敗：${detail}`;
+        case "ja-JP":
+          return `ワークフローノードの検証に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `워크플로 노드 검증 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^ComfyUI 未返回有效任务编号：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateComfyErrorDetail(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `ComfyUI did not return a valid prompt ID: ${detail}`;
+        case "zh-TW":
+          return `ComfyUI 未回傳有效任務編號：${detail}`;
+        case "zh-HK":
+          return `ComfyUI 未返回有效任務編號：${detail}`;
+        case "ja-JP":
+          return `ComfyUI から有効なジョブ ID が返されませんでした: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI가 유효한 작업 ID를 반환하지 않았습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流已入队：(.+?)（任务 (\S+)）$/,
+    format: (m, loc) => {
+      const [, name, pid] = m;
+      switch (loc) {
+        case "en-US":
+          return `Workflow queued: ${name} (task ${pid})`;
+        case "zh-TW":
+          return `工作流程已進入佇列：${name}（任務 ${pid}）`;
+        case "zh-HK":
+          return `工作流已入隊：${name}（任務 ${pid}）`;
+        case "ja-JP":
+          return `ワークフローをキューに追加しました: ${name}（タスク ${pid}）`;
+        case "ko-KR":
+          return `워크플로 대기열 등록됨: ${name} (작업 ${pid})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^ComfyUI 执行失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateComfyErrorDetail(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `ComfyUI execution failed: ${detail}`;
+        case "zh-TW":
+          return `ComfyUI 執行失敗：${detail}`;
+        case "zh-HK":
+          return `ComfyUI 執行失敗：${detail}`;
+        case "ja-JP":
+          return `ComfyUI の実行に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI 실행 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/,
+    format: (m, loc) => translateComfyErrorDetail(m[0], loc),
+  },
+  {
+    re: /^工作流推理完成，正在保存 (\d+) 个输出作品$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Workflow inference completed; saving ${n} output file(s)`;
+        case "zh-TW":
+          return `工作流程推論完成，正在儲存 ${n} 個輸出作品`;
+        case "zh-HK":
+          return `工作流推理完成，正在儲存 ${n} 個輸出作品`;
+        case "ja-JP":
+          return `ワークフロー推論が完了しました。${n} 件の出力を保存しています`;
+        case "ko-KR":
+          return `워크플로 추론 완료, 출력 결과물 ${n}개 저장 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^保存作品 (\d+)\/(\d+) · (.+)$/,
+    format: (m, loc) => {
+      const [, idx, total, name] = m;
+      switch (loc) {
+        case "en-US":
+          return `Saving output ${idx}/${total} · ${name}`;
+        case "zh-TW":
+          return `儲存作品 ${idx}/${total} · ${name}`;
+        case "zh-HK":
+          return `儲存作品 ${idx}/${total} · ${name}`;
+        case "ja-JP":
+          return `出力を保存中 ${idx}/${total} · ${name}`;
+        case "ko-KR":
+          return `결과물 저장 중 ${idx}/${total} · ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流执行完成，已保存 (\d+) 个作品到远端 GPU$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Workflow completed; saved ${n} output(s) to remote GPU`;
+        case "zh-TW":
+          return `工作流程執行完成，已儲存 ${n} 個作品至遠端 GPU`;
+        case "zh-HK":
+          return `工作流執行完成，已儲存 ${n} 個作品到遠端 GPU`;
+        case "ja-JP":
+          return `ワークフロー完了。${n} 件の出力をリモート GPU に保存しました`;
+        case "ko-KR":
+          return `워크플로 실행 완료, 원격 GPU에 결과물 ${n}개 저장됨`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 排队中（第 (\d+) 位）· 已用 (\d+) 秒$/,
+    format: (m, loc) => {
+      const [, name, pos, sec] = m;
+      switch (loc) {
+        case "en-US":
+          return `${name} · Queued (#${pos}) · ${sec}s elapsed`;
+        case "zh-TW":
+          return `${name} · 排隊中（第 ${pos} 位）· 已用 ${sec} 秒`;
+        case "zh-HK":
+          return `${name} · 排隊中（第 ${pos} 位）· 已用 ${sec} 秒`;
+        case "ja-JP":
+          return `${name} · キュー待機中（${pos} 番目）· ${sec} 秒経過`;
+        case "ko-KR":
+          return `${name} · 대기 중 (${pos}번째) · ${sec}초 경과`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 远端 GPU 执行中 · 已用 (\d+) 秒$/,
+    format: (m, loc) => {
+      const [, name, sec] = m;
+      switch (loc) {
+        case "en-US":
+          return `${name} · Running on remote GPU · ${sec}s elapsed`;
+        case "zh-TW":
+          return `${name} · 遠端 GPU 執行中 · 已用 ${sec} 秒`;
+        case "zh-HK":
+          return `${name} · 遠端 GPU 執行中 · 已用 ${sec} 秒`;
+        case "ja-JP":
+          return `${name} · リモート GPU で実行中 · ${sec} 秒経過`;
+        case "ko-KR":
+          return `${name} · 원격 GPU에서 실행 중 · ${sec}초 경과`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/download.py & server/runtime.py transfer progress ===
+  {
+    re: /^分块下载：(\d+) 块，每块最多 (\d+) MiB，并发上限 (\d+)；复用 ([\d.]+) MiB$/,
+    format: (m, loc) => {
+      const [, chunks, chunkMib, threads, reused] = m;
+      switch (loc) {
+        case "en-US":
+          return `Chunked download: ${chunks} chunks (up to ${chunkMib} MiB each), max ${threads} concurrent; resumed ${reused} MiB`;
+        case "zh-TW":
+          return `分塊下載：${chunks} 塊，每塊最多 ${chunkMib} MiB，並行上限 ${threads}；重複使用 ${reused} MiB`;
+        case "zh-HK":
+          return `分塊下載：${chunks} 塊，每塊最多 ${chunkMib} MiB，並發上限 ${threads}；複用 ${reused} MiB`;
+        case "ja-JP":
+          return `分割ダウンロード: ${chunks} チャンク（各最大 ${chunkMib} MiB）、最大並列 ${threads}、再利用 ${reused} MiB`;
+        case "ko-KR":
+          return `분할 다운로드: ${chunks}개 청크 (각 최대 ${chunkMib} MiB), 최대 동시 ${threads}개, 재사용 ${reused} MiB`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^进度 ([\d.]+)% · ([\d.]+)\/([\d.]+) GiB · ([\d.]+) MiB\/s · (\d+) 个连接$/,
+    format: (m, loc) => {
+      const [, pct, cur, tot, spd, conns] = m;
+      switch (loc) {
+        case "en-US":
+          return `${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · ${conns} connections`;
+        case "zh-TW":
+          return `進度 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · ${conns} 個連線`;
+        case "zh-HK":
+          return `進度 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · ${conns} 個連線`;
+        case "ja-JP":
+          return `進捗 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · ${conns} 接続`;
+        case "ko-KR":
+          return `진행률 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · ${conns}개 연결`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^进度 ([\d.]+)% · ([\d.]+)\/([\d.]+) GiB · ([\d.]+) MiB\/s · 单连接$/,
+    format: (m, loc) => {
+      const [, pct, cur, tot, spd] = m;
+      switch (loc) {
+        case "en-US":
+          return `${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · single connection`;
+        case "zh-TW":
+          return `進度 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · 單連線`;
+        case "zh-HK":
+          return `進度 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · 單連線`;
+        case "ja-JP":
+          return `進捗 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · 単一接続`;
+        case "ko-KR":
+          return `진행률 ${pct}% · ${cur}/${tot} GiB · ${spd} MiB/s · 단일 연결`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^分块 (\d+)\/(\d+) 下载失败（(.+?)），已保留完成的分块，可重试续传$/,
+    format: (m, loc) => {
+      const [, idx, tot, err] = m;
+      switch (loc) {
+        case "en-US":
+          return `Chunk ${idx}/${tot} failed (${err}); completed chunks were preserved for resume`;
+        case "zh-TW":
+          return `分塊 ${idx}/${tot} 下載失敗（${err}），已保留完成的分塊，可重試續傳`;
+        case "zh-HK":
+          return `分塊 ${idx}/${tot} 下載失敗（${err}），已保留完成的分塊，可重試續傳`;
+        case "ja-JP":
+          return `チャンク ${idx}/${tot} のダウンロードに失敗しました（${err}）。完了済みチャンクを保持しているため再開可能です`;
+        case "ko-KR":
+          return `청크 ${idx}/${tot} 다운로드 실패 (${err}). 완료된 청크가 유지되어 이어받기가 가능합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^分块 (\d+)\/(\d+) 重试 (\d+)\/(\d+)（(.+?)）$/,
+    format: (m, loc) => {
+      const [, idx, tot, cur, max, err] = m;
+      switch (loc) {
+        case "en-US":
+          return `Retrying chunk ${idx}/${tot} (${cur}/${max}, ${err})`;
+        case "zh-TW":
+          return `分塊 ${idx}/${tot} 重試 ${cur}/${max}（${err}）`;
+        case "zh-HK":
+          return `分塊 ${idx}/${tot} 重試 ${cur}/${max}（${err}）`;
+        case "ja-JP":
+          return `チャンク ${idx}/${tot} を再試行中 ${cur}/${max}（${err}）`;
+        case "ko-KR":
+          return `청크 ${idx}/${tot} 재시도 ${cur}/${max} (${err})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/drive.py ===
+  {
+    re: /^Google 云盘连接失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Google Drive connection failed: ${detail}`;
+        case "zh-TW":
+          return `Google 雲端硬碟連線失敗：${detail}`;
+        case "zh-HK":
+          return `Google 雲端硬碟連接失敗：${detail}`;
+        case "ja-JP":
+          return `Google ドライブ接続に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Google Drive 연결 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/openai_compat.py ===
+  {
+    re: /^(\S+) 必须为数字$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `${name} must be a number`;
+        case "zh-TW":
+          return `${name} 必須為數字`;
+        case "zh-HK":
+          return `${name} 必須為數字`;
+        case "ja-JP":
+          return `${name} は数値である必要があります`;
+        case "ko-KR":
+          return `${name}은(는) 숫자여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(\S+) 不能为 NaN 或无穷大$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `${name} cannot be NaN or infinity`;
+        case "zh-TW":
+          return `${name} 不可為 NaN 或無窮大`;
+        case "zh-HK":
+          return `${name} 不能為 NaN 或無窮大`;
+        case "ja-JP":
+          return `${name} に NaN や無限大は指定できません`;
+        case "ko-KR":
+          return `${name}은(는) NaN 또는 무한대일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(\S+) 超出允许范围$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `${name} is out of allowed range`;
+        case "zh-TW":
+          return `${name} 超出允許範圍`;
+        case "zh-HK":
+          return `${name} 超出允許範圍`;
+        case "ja-JP":
+          return `${name} が許容範囲を超えています`;
+        case "ko-KR":
+          return `${name}이(가) 허용 범위를 벗어났습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(\S+) 必须为整数$/,
+    format: (m, loc) => {
+      const name = m[1];
+      switch (loc) {
+        case "en-US":
+          return `${name} must be an integer`;
+        case "zh-TW":
+          return `${name} 必須為整數`;
+        case "zh-HK":
+          return `${name} 必須為整數`;
+        case "ja-JP":
+          return `${name} は整数である必要があります`;
+        case "ko-KR":
+          return `${name}은(는) 정수여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/public_api.py ===
+  {
+    re: /^API 请求 #(\d+) 完成((?: · .+)+)$/,
+    format: (m, loc) => {
+      const seq = m[1];
+      const parts = m[2]!
+        .split(" · ")
+        .filter(Boolean)
+        .map((p) => translateApiFinishPart(p, loc))
+        .join(" · ");
+      switch (loc) {
+        case "en-US":
+          return `API request #${seq} completed · ${parts}`;
+        case "zh-TW":
+          return `API 請求 #${seq} 完成 · ${parts}`;
+        case "zh-HK":
+          return `API 請求 #${seq} 完成 · ${parts}`;
+        case "ja-JP":
+          return `API リクエスト #${seq} 完了 · ${parts}`;
+        case "ko-KR":
+          return `API 요청 #${seq} 완료 · ${parts}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^API 请求 #(\d+) 已取消 · 耗时 (.+)$/,
+    format: (m, loc) => {
+      const [, seq, dur] = m;
+      switch (loc) {
+        case "en-US":
+          return `API request #${seq} cancelled · elapsed ${dur}`;
+        case "zh-TW":
+          return `API 請求 #${seq} 已取消 · 耗時 ${dur}`;
+        case "zh-HK":
+          return `API 請求 #${seq} 已取消 · 耗時 ${dur}`;
+        case "ja-JP":
+          return `API リクエスト #${seq} キャンセル済み · 所要 ${dur}`;
+        case "ko-KR":
+          return `API 요청 #${seq} 취소됨 · 소요 ${dur}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^API 请求 #(\d+) 失败 · 耗时 ([^\s·]+)(?: · (.+))?$/,
+    format: (m, loc) => {
+      const [, seq, dur, errRaw] = m;
+      const errPart = errRaw ? ` · ${translateInner(errRaw, loc)}` : "";
+      switch (loc) {
+        case "en-US":
+          return `API request #${seq} failed · elapsed ${dur}${errPart}`;
+        case "zh-TW":
+          return `API 請求 #${seq} 失敗 · 耗時 ${dur}${errPart}`;
+        case "zh-HK":
+          return `API 請求 #${seq} 失敗 · 耗時 ${dur}${errPart}`;
+        case "ja-JP":
+          return `API リクエスト #${seq} 失敗 · 所要 ${dur}${errPart}`;
+        case "ko-KR":
+          return `API 요청 #${seq} 실패 · 소요 ${dur}${errPart}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^API 请求 #(\d+) · (\S+) · 模型 (.+)$/,
+    format: (m, loc) => {
+      const [, seq, kind, modelId] = m;
+      switch (loc) {
+        case "en-US":
+          return `API request #${seq} · ${kind} · model ${modelId}`;
+        case "zh-TW":
+          return `API 請求 #${seq} · ${kind} · 模型 ${modelId}`;
+        case "zh-HK":
+          return `API 請求 #${seq} · ${kind} · 模型 ${modelId}`;
+        case "ja-JP":
+          return `API リクエスト #${seq} · ${kind} · モデル ${modelId}`;
+        case "ko-KR":
+          return `API 요청 #${seq} · ${kind} · 모델 ${modelId}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^推理引擎返回 HTTP (\d+)$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Inference engine returned HTTP ${code}`;
+        case "zh-TW":
+          return `推論引擎回傳 HTTP ${code}`;
+        case "zh-HK":
+          return `推理引擎返回 HTTP ${code}`;
+        case "ja-JP":
+          return `推論エンジンが HTTP ${code} を返しました`;
+        case "ko-KR":
+          return `추론 엔진이 HTTP ${code}을(를) 반환했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^请求体最大 (\d+) MB$/,
+    format: (m, loc) => {
+      const mb = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Maximum request body size is ${mb} MB`;
+        case "zh-TW":
+          return `請求內容最大 ${mb} MB`;
+        case "zh-HK":
+          return `請求主體最大 ${mb} MB`;
+        case "ja-JP":
+          return `リクエストボディの上限は ${mb} MB です`;
+        case "ko-KR":
+          return `요청 본문 크기는 최대 ${mb} MB입니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/runtime.py ===
+  {
+    re: /^下载失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Download failed: ${detail}`;
+        case "zh-TW":
+          return `下載失敗：${detail}`;
+        case "zh-HK":
+          return `下載失敗：${detail}`;
+        case "ja-JP":
+          return `ダウンロードに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `다운로드 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^准备下载 (.+?)：(\d+) 个文件，共 ([\d.]+) GiB，(\d+) 线程，目标为远端 GPU 磁盘$/,
+    format: (m, loc) => {
+      const [, name, count, gib, threads] = m;
+      switch (loc) {
+        case "en-US":
+          return `Preparing to download ${name}: ${count} file(s), ${gib} GiB total, ${threads} threads -> remote GPU disk`;
+        case "zh-TW":
+          return `準備下載 ${name}：${count} 個檔案，共 ${gib} GiB，${threads} 執行緒，目標為遠端 GPU 磁碟`;
+        case "zh-HK":
+          return `準備下載 ${name}：${count} 個檔案，共 ${gib} GiB，${threads} 線程，目標為遠端 GPU 磁碟`;
+        case "ja-JP":
+          return `${name} のダウンロードを準備中: ${count} ファイル、合計 ${gib} GiB、${threads} スレッド（保存先: リモート GPU ディスク）`;
+        case "ko-KR":
+          return `${name} 다운로드 준비 중: ${count}개 파일, 총 ${gib} GiB, ${threads}스레드 (대상: 원격 GPU 디스크)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端可用磁盘 ([\d.]+) GiB，本次预计新增 ([\d.]+) GiB$/,
+    format: (m, loc) => {
+      const [, free, add] = m;
+      switch (loc) {
+        case "en-US":
+          return `Remote free disk: ${free} GiB; estimated new space needed: ${add} GiB`;
+        case "zh-TW":
+          return `遠端可用磁碟 ${free} GiB，本次預計新增 ${add} GiB`;
+        case "zh-HK":
+          return `遠端可用磁碟 ${free} GiB，本次預計新增 ${add} GiB`;
+        case "ja-JP":
+          return `リモート空き容量 ${free} GiB、今回の追加予定 ${add} GiB`;
+        case "ko-KR":
+          return `원격 사용 가능 디스크 ${free} GiB, 이번 예상 추가 용량 ${add} GiB`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^文件 (\d+)\/(\d+) 已存在且校验通过，跳过：(.+)$/,
+    format: (m, loc) => {
+      const [, idx, tot, path] = m;
+      switch (loc) {
+        case "en-US":
+          return `File ${idx}/${tot} already exists and verified; skipping: ${path}`;
+        case "zh-TW":
+          return `檔案 ${idx}/${tot} 已存在且驗證通過，略過：${path}`;
+        case "zh-HK":
+          return `檔案 ${idx}/${tot} 已存在且校驗通過，跳過：${path}`;
+        case "ja-JP":
+          return `ファイル ${idx}/${tot} は検証済みのためスキップします: ${path}`;
+        case "ko-KR":
+          return `파일 ${idx}/${tot} 이미 존재하며 검증 완료되어 건너뜀: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^文件 (\d+)\/(\d+) · (.+?) · ([\d.]+) GiB$/,
+    format: (m, loc) => {
+      const [, idx, tot, path, gib] = m;
+      switch (loc) {
+        case "en-US":
+          return `File ${idx}/${tot} · ${path} · ${gib} GiB`;
+        case "zh-TW":
+          return `檔案 ${idx}/${tot} · ${path} · ${gib} GiB`;
+        case "zh-HK":
+          return `檔案 ${idx}/${tot} · ${path} · ${gib} GiB`;
+        case "ja-JP":
+          return `ファイル ${idx}/${tot} · ${path} · ${gib} GiB`;
+        case "ko-KR":
+          return `파일 ${idx}/${tot} · ${path} · ${gib} GiB`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^校验 SHA-256 · (.+)$/,
+    format: (m, loc) => {
+      const path = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Verifying SHA-256 · ${path}`;
+        case "zh-TW":
+          return `驗證 SHA-256 · ${path}`;
+        case "zh-HK":
+          return `校驗 SHA-256 · ${path}`;
+        case "ja-JP":
+          return `SHA-256 を検証中 · ${path}`;
+        case "ko-KR":
+          return `SHA-256 검증 중 · ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^文件 (\d+)\/(\d+) 传输完成，正在校验 SHA-256$/,
+    format: (m, loc) => {
+      const [, idx, tot] = m;
+      switch (loc) {
+        case "en-US":
+          return `File ${idx}/${tot} downloaded; verifying SHA-256`;
+        case "zh-TW":
+          return `檔案 ${idx}/${tot} 傳輸完成，正在驗證 SHA-256`;
+        case "zh-HK":
+          return `檔案 ${idx}/${tot} 傳輸完成，正在校驗 SHA-256`;
+        case "ja-JP":
+          return `ファイル ${idx}/${tot} の転送完了。SHA-256 を検証しています`;
+        case "ko-KR":
+          return `파일 ${idx}/${tot} 전송 완료, SHA-256 검증 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^文件 (\d+)\/(\d+) 校验通过，已保存到远端$/,
+    format: (m, loc) => {
+      const [, idx, tot] = m;
+      switch (loc) {
+        case "en-US":
+          return `File ${idx}/${tot} verified and saved remotely`;
+        case "zh-TW":
+          return `檔案 ${idx}/${tot} 驗證通過，已儲存至遠端`;
+        case "zh-HK":
+          return `檔案 ${idx}/${tot} 校驗通過，已儲存至遠端`;
+        case "ja-JP":
+          return `ファイル ${idx}/${tot} の検証に合格しリモートに保存しました`;
+        case "ko-KR":
+          return `파일 ${idx}/${tot} 검증 통과 및 원격 저장 완료`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^全部文件已验证：([\d.]+) GiB，用时 ([\d.]+) 秒，平均传输 ([\d.]+) MiB\/s；复用 ([\d.]+) MiB$/,
+    format: (m, loc) => {
+      const [, gib, sec, spd, reused] = m;
+      switch (loc) {
+        case "en-US":
+          return `All files verified: ${gib} GiB in ${sec}s (avg ${spd} MiB/s; resumed ${reused} MiB)`;
+        case "zh-TW":
+          return `所有檔案已驗證：${gib} GiB，耗時 ${sec} 秒，平均傳輸 ${spd} MiB/s；重複使用 ${reused} MiB`;
+        case "zh-HK":
+          return `全部檔案已驗證：${gib} GiB，用時 ${sec} 秒，平均傳輸 ${spd} MiB/s；複用 ${reused} MiB`;
+        case "ja-JP":
+          return `全ファイル検証完了: ${gib} GiB、所要 ${sec} 秒、平均 ${spd} MiB/s（再利用 ${reused} MiB）`;
+        case "ko-KR":
+          return `모든 파일 검증 완료: ${gib} GiB, ${sec}초 소요, 평균 ${spd} MiB/s (재사용 ${reused} MiB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^首次加载，准备远端 CUDA 推理引擎 (.+)$/,
+    format: (m, loc) => {
+      const tag = m[1];
+      switch (loc) {
+        case "en-US":
+          return `First load: preparing remote CUDA inference engine ${tag}`;
+        case "zh-TW":
+          return `首次載入，準備遠端 CUDA 推論引擎 ${tag}`;
+        case "zh-HK":
+          return `首次載入，準備遠端 CUDA 推理引擎 ${tag}`;
+        case "ja-JP":
+          return `初回ロードのためリモート CUDA 推論エンジン ${tag} を準備しています`;
+        case "ko-KR":
+          return `최초 로드: 원격 CUDA 추론 엔진 ${tag} 준비 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^下载引擎组件 (\d+)\/(\d+)$/,
+    format: (m, loc) => {
+      const [, idx, tot] = m;
+      switch (loc) {
+        case "en-US":
+          return `Downloading engine asset ${idx}/${tot}`;
+        case "zh-TW":
+          return `下載引擎元件 ${idx}/${tot}`;
+        case "zh-HK":
+          return `下載引擎組件 ${idx}/${tot}`;
+        case "ja-JP":
+          return `エンジンコンポーネントをダウンロード中 ${idx}/${tot}`;
+        case "ko-KR":
+          return `엔진 구성 요소 다운로드 중 ${idx}/${tot}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^引擎组件 (\d+) 校验通过，正在解压$/,
+    format: (m, loc) => {
+      const idx = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Engine asset ${idx} verified; extracting`;
+        case "zh-TW":
+          return `引擎元件 ${idx} 驗證通過，正在解壓縮`;
+        case "zh-HK":
+          return `引擎組件 ${idx} 校驗通過，正在解壓`;
+        case "ja-JP":
+          return `エンジンコンポーネント ${idx} の検証完了。展開しています`;
+        case "ko-KR":
+          return `엔진 구성 요소 ${idx} 검증 완료, 압축 해제 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
   {
     re: /^远端设备 (.+?)，显存 ([\d.]+) GiB(?:，模型权重 ([\d.]+) GiB)?$/,
     format: (m, loc) => {
-      const [, gpuName, vram, weight] = m;
+      const gpuName = translateInner(m[1]!, loc);
+      const vram = m[2];
+      const weight = m[3];
       switch (loc) {
         case "en-US":
           return weight
@@ -667,7 +3164,7 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^模型加载失败：(.+)$/,
     format: (m, loc) => {
-      const detail = m[1];
+      const detail = translateInner(m[1]!, loc);
       switch (loc) {
         case "en-US":
           return `Model load failed: ${detail}`;
@@ -826,100 +3323,414 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^已将社区仓库加入我的模型：(.+)$/,
+    re: /^CUDA 推理内核预热完成（耗时 ([\d.]+) 秒）$/,
     format: (m, loc) => {
-      const repo = m[1];
+      const sec = m[1];
       switch (loc) {
         case "en-US":
-          return `Saved community repo to My Models: ${repo}`;
+          return `CUDA inference kernel warm-up finished (${sec}s)`;
         case "zh-TW":
-          return `已將社群儲存庫加入我的模型：${repo}`;
+          return `CUDA 推論核心預熱完成（耗時 ${sec} 秒）`;
         case "zh-HK":
-          return `已將社群倉庫加入我的模型：${repo}`;
+          return `CUDA 推理核心預熱完成（耗時 ${sec} 秒）`;
         case "ja-JP":
-          return `コミュニティリポジトリをマイモデルに追加しました: ${repo}`;
+          return `CUDA 推論カーネルのウォームアップが完了しました（${sec} 秒）`;
         case "ko-KR":
-          return `커뮤니티 저장소를 내 모델에 추가했습니다: ${repo}`;
+          return `CUDA 추론 커널 예열 완료 (${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/tunnel.py ===
+  {
+    re: /^复用远端已校验的 Cloudflared (.+)$/,
+    format: (m, loc) => {
+      const tag = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Reusing verified remote Cloudflared ${tag}`;
+        case "zh-TW":
+          return `重複使用遠端已驗證的 Cloudflared ${tag}`;
+        case "zh-HK":
+          return `複用遠端已校驗的 Cloudflared ${tag}`;
+        case "ja-JP":
+          return `検証済みのリモート Cloudflared ${tag} を再利用します`;
+        case "ko-KR":
+          return `검증된 원격 Cloudflared ${tag} 재사용 중`;
         default:
           return m[0];
       }
     },
   },
   {
-    re: /^已从我的模型移除仓库：(.+)$/,
+    re: /^正在远端下载 Cloudflared (.+)$/,
     format: (m, loc) => {
-      const repo = m[1];
+      const tag = m[1];
       switch (loc) {
         case "en-US":
-          return `Removed repo from My Models: ${repo}`;
+          return `Downloading Cloudflared ${tag} on remote instance`;
         case "zh-TW":
-          return `已從我的模型移除儲存庫：${repo}`;
+          return `正在遠端下載 Cloudflared ${tag}`;
         case "zh-HK":
-          return `已從我的模型移除倉庫：${repo}`;
+          return `正在遠端下載 Cloudflared ${tag}`;
         case "ja-JP":
-          return `マイモデルからリポジトリを削除しました: ${repo}`;
+          return `リモートで Cloudflared ${tag} をダウンロードしています`;
         case "ko-KR":
-          return `내 모델에서 저장소를 제거했습니다: ${repo}`;
+          return `원격에서 Cloudflared ${tag} 다운로드 중`;
         default:
           return m[0];
       }
     },
   },
   {
-    re: /^已保存到本地模型库：(.+)$/,
+    re: /^正在等待公网域名路由生效并完成鉴权探测（已耗时 (\d+) 秒）$/,
     format: (m, loc) => {
-      const name = m[1];
+      const sec = m[1];
       switch (loc) {
         case "en-US":
-          return `Saved to local model library: ${name}`;
+          return `Waiting for public domain routing and auth probe (${sec}s elapsed)`;
         case "zh-TW":
-          return `已儲存至本機模型庫：${name}`;
+          return `正在等待公開網域路由生效並完成驗證探測（已耗時 ${sec} 秒）`;
         case "zh-HK":
-          return `已儲存至本地模型庫：${name}`;
+          return `正在等待公網域名路由生效並完成鑑權探測（已耗時 ${sec} 秒）`;
         case "ja-JP":
-          return `ローカルモデル一覧に保存しました: ${name}`;
+          return `公開ドメインのルーティング反映と認証チェックを待機中（${sec} 秒経過）`;
         case "ko-KR":
-          return `로컬 모델 라이브러리에 저장했습니다: ${name}`;
+          return `공용 도메인 라우팅 적용 및 인증 확인 대기 중 (${sec}초 경과)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/vm_boot.py ===
+  {
+    re: /^仍在安装远端服务依赖（已耗时 (\d+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Still installing remote service dependencies (${sec}s elapsed)`;
+        case "zh-TW":
+          return `仍在安裝遠端服務相依套件（已耗時 ${sec} 秒）`;
+        case "zh-HK":
+          return `仍在安裝遠端服務依賴（已耗時 ${sec} 秒）`;
+        case "ja-JP":
+          return `リモートサービス依存関係を引き続きインストール中（${sec} 秒経過）`;
+        case "ko-KR":
+          return `원격 서비스 종속성 설치 중 (${sec}초 경과)`;
         default:
           return m[0];
       }
     },
   },
   {
-    re: /^已删除远端模型文件：(.+)$/,
+    re: /^远端服务依赖安装失败：(.+)$/,
     format: (m, loc) => {
-      const name = m[1];
+      const detail = translateInner(m[1]!, loc);
       switch (loc) {
         case "en-US":
-          return `Deleted remote model files: ${name}`;
+          return `Remote service dependency installation failed: ${detail}`;
         case "zh-TW":
-          return `已刪除遠端模型檔案：${name}`;
+          return `遠端服務相依套件安裝失敗：${detail}`;
         case "zh-HK":
-          return `已刪除遠端模型檔案：${name}`;
+          return `遠端服務依賴安裝失敗：${detail}`;
         case "ja-JP":
-          return `リモートモデルファイルを削除しました: ${name}`;
+          return `リモートサービス依存関係のインストールに失敗しました: ${detail}`;
         case "ko-KR":
-          return `원격 모델 파일을 삭제했습니다: ${name}`;
+          return `원격 서비스 종속성 설치 실패: ${detail}`;
         default:
           return m[0];
       }
     },
   },
   {
-    re: /^已切换当前工作实例：(.+)$/,
+    re: /^远端服务依赖已就绪（耗时 ([\d.]+) 秒）$/,
     format: (m, loc) => {
-      const ep = m[1];
+      const sec = m[1];
       switch (loc) {
         case "en-US":
-          return `Switched active workspace instance: ${ep}`;
+          return `Remote service dependencies ready (${sec}s)`;
         case "zh-TW":
-          return `已切換目前工作執行個體：${ep}`;
+          return `遠端服務相依套件已就緒（耗時 ${sec} 秒）`;
         case "zh-HK":
-          return `已切換目前工作實例：${ep}`;
+          return `遠端服務依賴已就緒（耗時 ${sec} 秒）`;
         case "ja-JP":
-          return `アクティブインスタンスを切り替えました: ${ep}`;
+          return `リモートサービス依存関係の準備が完了しました（${sec} 秒）`;
         case "ko-KR":
-          return `현재 작업 인스턴스를 전환했습니다: ${ep}`;
+          return `원격 서비스 종속성 준비 완료 (${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端管理服务健康检查通过（耗时 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Remote control service passed health check (${sec}s)`;
+        case "zh-TW":
+          return `遠端管理服務健康檢查通過（耗時 ${sec} 秒）`;
+        case "zh-HK":
+          return `遠端管理服務健康檢查通過（耗時 ${sec} 秒）`;
+        case "ja-JP":
+          return `リモート管理サービスのヘルスチェックに合格しました（${sec} 秒）`;
+        case "ko-KR":
+          return `원격 관리 서비스 상태 확인 통과 (${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在等待远端管理服务就绪（已耗时 (\d+) 秒）$/,
+    format: (m, loc) => {
+      const sec = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Waiting for remote control service to become ready (${sec}s elapsed)`;
+        case "zh-TW":
+          return `正在等待遠端管理服務就緒（已耗時 ${sec} 秒）`;
+        case "zh-HK":
+          return `正在等待遠端管理服務就緒（已耗時 ${sec} 秒）`;
+        case "ja-JP":
+          return `リモート管理サービスの準備完了を待機中（${sec} 秒経過）`;
+        case "ko-KR":
+          return `원격 관리 서비스 준비 대기 중 (${sec}초 경과)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === common/comfyui.py ===
+  {
+    re: /^(.+?) · (反向提示词|正向提示词|文本输入|参考图片|输入音频)$/,
+    format: (m, loc) => {
+      const [, title, suffix] = m;
+      const mapped = COMFY_FIELD_SUFFIX_LABELS[suffix!]?.[loc] ?? suffix;
+      return `${title} · ${mapped}`;
+    },
+  },
+  {
+    re: /^非法字段键:\s*(.+)$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Invalid field key: ${key}`;
+        case "zh-TW":
+          return `無效的欄位鍵：${key}`;
+        case "zh-HK":
+          return `無效的欄位鍵：${key}`;
+        case "ja-JP":
+          return `無効なフィールドキー: ${key}`;
+        case "ko-KR":
+          return `유효하지 않은 필드 키: ${key}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流节点数量不能超过 (\d+) 个$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Workflow cannot contain more than ${n} nodes`;
+        case "zh-TW":
+          return `工作流程節點數量不可超過 ${n} 個`;
+        case "zh-HK":
+          return `工作流節點數量不能超過 ${n} 個`;
+        case "ja-JP":
+          return `ワークフローのノード数は ${n} 個を超えられません`;
+        case "ko-KR":
+          return `워크플로 노드 수는 ${n}개를 초과할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流体积超过限制（最大 (\d+) MiB）$/,
+    format: (m, loc) => {
+      const n = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Workflow exceeds size limit (max ${n} MiB)`;
+        case "zh-TW":
+          return `工作流程大小超過限制（最大 ${n} MiB）`;
+        case "zh-HK":
+          return `工作流體積超過限制（最大 ${n} MiB）`;
+        case "ja-JP":
+          return `ワークフローがサイズ上限を超えています（最大 ${n} MiB）`;
+        case "ko-KR":
+          return `워크플로 크기가 제한을 초과했습니다 (최대 ${n} MiB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法节点 ID:\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Invalid node ID: ${id}`;
+        case "zh-TW":
+          return `無效的節點 ID：${id}`;
+        case "zh-HK":
+          return `無效的節點 ID：${id}`;
+        case "ja-JP":
+          return `無効なノード ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 노드 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点 (\S+) 必须为对象$/,
+    format: (m, loc) => {
+      const id = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Node ${id} must be an object`;
+        case "zh-TW":
+          return `節點 ${id} 必須為物件`;
+        case "zh-HK":
+          return `節點 ${id} 必須為物件`;
+        case "ja-JP":
+          return `ノード ${id} はオブジェクトである必要があります`;
+        case "ko-KR":
+          return `노드 ${id}은(는) 객체여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点 (\S+) 缺少有效的 class_type$/,
+    format: (m, loc) => {
+      const id = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Node ${id} is missing a valid class_type`;
+        case "zh-TW":
+          return `節點 ${id} 缺少有效的 class_type`;
+        case "zh-HK":
+          return `節點 ${id} 缺少有效的 class_type`;
+        case "ja-JP":
+          return `ノード ${id} に有効な class_type がありません`;
+        case "ko-KR":
+          return `노드 ${id}에 유효한 class_type이 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点 (\S+) 缺少有效的 inputs 对象$/,
+    format: (m, loc) => {
+      const id = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Node ${id} is missing a valid inputs object`;
+        case "zh-TW":
+          return `節點 ${id} 缺少有效的 inputs 物件`;
+        case "zh-HK":
+          return `節點 ${id} 缺少有效的 inputs 物件`;
+        case "ja-JP":
+          return `ノード ${id} に有効な inputs オブジェクトがありません`;
+        case "ko-KR":
+          return `노드 ${id}에 유효한 inputs 객체가 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点 (\S+) 包含非法输入名称$/,
+    format: (m, loc) => {
+      const id = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Node ${id} contains an invalid input name`;
+        case "zh-TW":
+          return `節點 ${id} 包含無效的輸入名稱`;
+        case "zh-HK":
+          return `節點 ${id} 包含無效的輸入名稱`;
+        case "ja-JP":
+          return `ノード ${id} に無効な入力名が含まれています`;
+        case "ko-KR":
+          return `노드 ${id}에 유효하지 않은 입력 이름이 포함되어 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^字段 (\S+) 包含非法浮点值$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Field ${key} contains an invalid floating-point value`;
+        case "zh-TW":
+          return `欄位 ${key} 包含無效的浮點數值`;
+        case "zh-HK":
+          return `欄位 ${key} 包含無效的浮點數值`;
+        case "ja-JP":
+          return `フィールド ${key} に無効な浮動小数点値が含まれています`;
+        case "ko-KR":
+          return `필드 ${key}에 유효하지 않은 부동소수점 값이 포함되어 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法的 pip 依赖声明:\s*(.+)$/,
+    format: (m, loc) => {
+      const item = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Invalid pip dependency specifier: ${item}`;
+        case "zh-TW":
+          return `無效的 pip 相依套件宣告：${item}`;
+        case "zh-HK":
+          return `無效的 pip 依賴聲明：${item}`;
+        case "ja-JP":
+          return `無効な pip 依存指定: ${item}`;
+        case "ko-KR":
+          return `유효하지 않은 pip 종속성 선언: ${item}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法素材 ID:\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Invalid asset ID: ${id}`;
+        case "zh-TW":
+          return `無效的素材 ID：${id}`;
+        case "zh-HK":
+          return `無效的素材 ID：${id}`;
+        case "ja-JP":
+          return `無効な素材 ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 자산 ID: ${id}`;
         default:
           return m[0];
       }
@@ -927,76 +3738,27 @@ const PATTERN_RULES: PatternRule[] = [
   },
 ];
 
-function translateLoadPlanLabel(raw: string, loc: ColabOneLocale): string {
-  const s = raw.trim();
-  if (loc === "zh-CN") return s;
-  if (s === "兼容模式装载") {
-    return {
-      "zh-CN": s,
-      "en-US": "Compatibility mode",
-      "zh-TW": "相容模式載入",
-      "zh-HK": "兼容模式載入",
-      "ja-JP": "互換モードロード",
-      "ko-KR": "호환 모드 로드",
-    }[loc];
+function applyRedactionTokens(text: string, locale: ColabOneLocale): string {
+  if (locale === "zh-CN" || !text.includes("[")) return text;
+  let out = text;
+  for (const [token, table] of Object.entries(REDACTION_TOKENS)) {
+    if (out.includes(token)) {
+      out = out.split(token).join(table[locale]);
+    }
   }
-  const moeMatch = s.match(
-    /^GPU \+ 内存 MoE 混合装配（--fit on · (\d+) 层专家内存卸载 · KV q8_0）$/,
-  );
-  if (moeMatch) {
-    const layers = moeMatch[1];
-    return {
-      "zh-CN": s,
-      "en-US": `GPU + RAM MoE hybrid (--fit on · ${layers} expert layers to RAM · KV q8_0)`,
-      "zh-TW": `GPU + 記憶體 MoE 混合裝配（--fit on · ${layers} 層專家記憶體卸載 · KV q8_0）`,
-      "zh-HK": `GPU + 記憶體 MoE 混合裝配（--fit on · ${layers} 層專家記憶體卸載 · KV q8_0）`,
-      "ja-JP": `GPU + RAM MoE ハイブリッド（--fit on · ${layers} 層エキスパート RAM オフロード · KV q8_0）`,
-      "ko-KR": `GPU + RAM MoE 하이브리드 (--fit on · ${layers}개 전문가 계층 RAM 오프로드 · KV q8_0)`,
-    }[loc];
+  return out;
+}
+
+function translateInner(trimmed: string, locale: ColabOneLocale): string {
+  if (!trimmed) return trimmed;
+  const exact = EXACT_MESSAGES[trimmed];
+  if (exact) return exact[locale];
+  if (locale === "zh-CN") return trimmed;
+  for (const rule of PATTERN_RULES) {
+    const m = trimmed.match(rule.re);
+    if (m) return rule.format(m, locale);
   }
-  const exactPlan: Record<string, LocaleTable> = {
-    "GPU 显存 + 内存 PLE 协同装配（--fit on · KV q8_0）": {
-      "zh-CN": s,
-      "en-US": "GPU VRAM + RAM PLE hybrid (--fit on · KV q8_0)",
-      "zh-TW": "GPU VRAM + 記憶體 PLE 協同裝配（--fit on · KV q8_0）",
-      "zh-HK": "GPU 顯存 + 記憶體 PLE 協同裝配（--fit on · KV q8_0）",
-      "ja-JP": "GPU VRAM + RAM PLE ハイブリッド（--fit on · KV q8_0）",
-      "ko-KR": "GPU VRAM + RAM PLE 하이브리드 (--fit on · KV q8_0)",
-    },
-    "GPU 显存 + 系统内存智能混合装配（--fit on · KV q8_0）": {
-      "zh-CN": s,
-      "en-US": "GPU VRAM + system RAM hybrid (--fit on · KV q8_0)",
-      "zh-TW": "GPU VRAM + 系統記憶體智慧混合裝配（--fit on · KV q8_0）",
-      "zh-HK": "GPU 顯存 + 系統記憶體智能混合裝配（--fit on · KV q8_0）",
-      "ja-JP": "GPU VRAM + システム RAM スマートハイブリッド（--fit on · KV q8_0）",
-      "ko-KR": "GPU VRAM + 시스템 RAM 스마트 하이브리드 (--fit on · KV q8_0)",
-    },
-    "全量 GPU 驻留（FlashAttn · --fit on · KV q8_0）": {
-      "zh-CN": s,
-      "en-US": "Full GPU residency (FlashAttn · --fit on · KV q8_0)",
-      "zh-TW": "全量 GPU 駐留（FlashAttn · --fit on · KV q8_0）",
-      "zh-HK": "全量 GPU 駐留（FlashAttn · --fit on · KV q8_0）",
-      "ja-JP": "フル GPU ロード（FlashAttn · --fit on · KV q8_0）",
-      "ko-KR": "전체 GPU 로드 (FlashAttn · --fit on · KV q8_0)",
-    },
-    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）": {
-      "zh-CN": s,
-      "en-US": "GPU + RAM hybrid (--fit on · asymmetric KV q4_0/q8_0)",
-      "zh-TW": "GPU + 記憶體智慧混合裝配（--fit on · 非對稱 KV q4_0/q8_0）",
-      "zh-HK": "GPU + 記憶體智能混合裝配（--fit on · 非對稱 KV q4_0/q8_0）",
-      "ja-JP": "GPU + RAM ハイブリッド（--fit on · 非対称 KV q4_0/q8_0）",
-      "ko-KR": "GPU + RAM 하이브리드 (--fit on · 비대칭 KV q4_0/q8_0)",
-    },
-    "GPU + 内存智能混合装配（--fit on · 紧凑 KV q4_0）": {
-      "zh-CN": s,
-      "en-US": "GPU + RAM hybrid (--fit on · compact KV q4_0)",
-      "zh-TW": "GPU + 記憶體智慧混合裝配（--fit on · 精簡 KV q4_0）",
-      "zh-HK": "GPU + 記憶體智能混合裝配（--fit on · 緊湊 KV q4_0）",
-      "ja-JP": "GPU + RAM ハイブリッド（--fit on · コンパクト KV q4_0）",
-      "ko-KR": "GPU + RAM 하이브리드 (--fit on · 컴팩트 KV q4_0)",
-    },
-  };
-  return exactPlan[s]?.[loc] ?? s;
+  return trimmed;
 }
 
 export function translateColabOneActivitySource(
@@ -1017,14 +3779,12 @@ export function translateColabOneBackendText(
   if (!raw) return raw;
   const trimmed = raw
     .trim()
-    .replace(/^(?:(?:Error|CallError|RuntimeError|TypeError|ValueError):\s*)+/i, "")
+    .replace(
+      /^(?:(?:Error|CallError|RuntimeError|TypeError|ValueError|LookupError|KeyError):\s*)+/i,
+      "",
+    )
     .trim();
-  if (!trimmed || locale === "zh-CN") return trimmed || raw;
-  const exact = EXACT_MESSAGES[trimmed];
-  if (exact) return exact[locale];
-  for (const rule of PATTERN_RULES) {
-    const m = trimmed.match(rule.re);
-    if (m) return rule.format(m, locale);
-  }
-  return trimmed;
+  if (!trimmed) return raw;
+  const translated = translateInner(trimmed, locale);
+  return applyRedactionTokens(translated, locale);
 }

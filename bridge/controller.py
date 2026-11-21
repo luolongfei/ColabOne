@@ -2500,6 +2500,7 @@ class ColabOneController:
                 target=target,
                 remove=remove,
                 sandbox_dir=self.shortcut_sandbox,
+                locale=self.auth.locale,
             )
             label = (
                 "开始菜单与桌面"

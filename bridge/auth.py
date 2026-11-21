@@ -47,11 +47,11 @@ _OAUTH_CALLBACK_TEXT = {
         "Sign-in was not completed. Please return to ColabOne and try again.",
     ),
     "zh-TW": (
-        "已成功登入 ColabOne。你可以關閉此分頁並返回應用程式。",
+        "已成功登入 ColabOne。你可以關閉此分頁並返回用戶端。",
         "登入尚未完成，請返回 ColabOne 重試。",
     ),
     "zh-HK": (
-        "已成功登入 ColabOne。你可以關閉此分頁並返回用戶端。",
+        "已成功登入 ColabOne。你可以關閉此分頁並返回應用程式。",
         "登入尚未完成，請返回 ColabOne 再試。",
     ),
     "ja-JP": (
