@@ -12,6 +12,10 @@
   },
   "dependencies": {
     "@phosphor-icons/vue": "^2.2.1",
+    "@shikijs/core": "^4.6.0",
+    "@shikijs/engine-javascript": "^4.6.0",
+    "@shikijs/langs": "^4.6.0",
+    "@shikijs/themes": "^4.6.0",
     "ant-design-vue": "^4.2.6",
     "dompurify": "^3.4.18",
     "flag-icons": "^7.6.0",

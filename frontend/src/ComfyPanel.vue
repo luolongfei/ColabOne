@@ -34,7 +34,6 @@ import {
   PhCheck,
   PhDownloadSimple,
   PhFileCode,
-  PhFlowArrow,
   PhGraph,
   PhHardDrives,
   PhImage,
@@ -67,6 +66,7 @@ import {
   outputBlobURL,
   parseWorkflowImportJSON,
 } from "./comfyui";
+import type { ColabOneToastKind } from "./colabOneToast";
 import type {
   ColabOneSnapshot,
   WorkflowField,
@@ -80,6 +80,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   device: [];
+  notify: [string, ColabOneToastKind?];
+  clearError: [];
   error: [string];
 }>();
 
@@ -87,32 +89,29 @@ const activeTab = ref<"studio" | "canvas">("studio");
 const deleteConfirmWorkflowId = ref("");
 const tabsWrapRef = ref<HTMLElement | null>(null);
 const busy = ref(false);
-type ComfyNotice =
-  | {
-      kind: "i18n";
-      key: Parameters<typeof t>[0];
-      params?: Record<string, string | number>;
-    }
-  | { kind: "raw"; text: string };
-const noticeState = ref<ComfyNotice | null>(null);
-const notice = computed(() => {
-  const n = noticeState.value;
-  if (!n) return "";
-  return n.kind === "i18n" ? t(n.key, n.params) : tb(n.text);
-});
+const INFO_NOTICE_KEYS = new Set<Parameters<typeof t>[0]>([
+  "comfy.noticeStartingEngine",
+  "comfy.noticeStoppingEngine",
+  "comfy.noticeStartingCanvas",
+  "comfy.noticeCancelRequested",
+  "comfy.noticeRunSubmitted",
+  "comfy.noticeFreeVram",
+  "comfy.noticeStagedUpload",
+]);
 function setNoticeKey(
   key: Parameters<typeof t>[0],
   params?: Record<string, string | number>,
 ) {
-  noticeState.value = { kind: "i18n", key, params };
+  if (key !== "comfy.noticeCopiedAuthLink") {
+    emit("clearError");
+  }
+  emit("notify", t(key, params), INFO_NOTICE_KEYS.has(key) ? "info" : "success");
 }
 function clearNotice() {
-  noticeState.value = null;
+  // Transient notices auto-dismiss in ColabOneToastHost.
 }
 function reportError(err: unknown) {
-  const raw = String(err);
-  noticeState.value = { kind: "raw", text: raw };
-  emit("error", raw);
+  emit("error", String(err));
 }
 
 // Engine & runtime status
@@ -1115,19 +1114,6 @@ onUnmounted(() => {
       </div>
     </ACard>
 
-    <!-- Status Notice -->
-    <AAlert
-      v-if="notice"
-      :key="notice"
-      type="info"
-      show-icon
-      closable
-      role="status"
-      class="co-comfy-notice"
-      :message="notice"
-      @close="clearNotice"
-    />
-
     <!-- Dual-layer Workspace Tabs -->
     <div ref="tabsWrapRef" class="co-comfy-tabs-wrap">
       <ATabs
@@ -1288,7 +1274,7 @@ onUnmounted(() => {
                   <AEmpty :description="t('comfy.emptyWorkflows')">
                     <template #image>
                       <div class="co-comfy-empty-emblem">
-                        <PhFlowArrow :size="30" />
+                        <PhTreeStructure :size="30" weight="duotone" />
                       </div>
                     </template>
                     <p class="co-comfy-empty-copy">
@@ -2771,11 +2757,6 @@ onUnmounted(() => {
   color: var(--co-text);
   font-weight: 550;
   overflow-wrap: anywhere;
-}
-
-.co-comfy-notice {
-  border-radius: 8px;
-  flex-shrink: 0;
 }
 
 /* Dual-layer Workspace Tabs */

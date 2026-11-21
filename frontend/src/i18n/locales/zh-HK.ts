@@ -7,6 +7,8 @@ export const zhHKMessages: ColabOneMessages = {
   "common.copyFailed": "複製失敗，請手動選取並複製",
   "common.copyFailedShort": "複製失敗，請手動複製",
   "common.cancel": "取消",
+  "common.close": "關閉",
+  "common.notificationsAria": "通知提示",
   "common.confirm": "確認",
   "common.confirmDelete": "確認刪除",
   "common.delete": "刪除",

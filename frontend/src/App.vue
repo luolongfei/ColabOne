@@ -35,6 +35,7 @@ import {
   TypographyTitle as ATypographyTitle,
 } from "ant-design-vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import ColabOneToastHost from "./ColabOneToastHost.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   PhArrowSquareOut,
@@ -106,6 +107,11 @@ import {
 } from "./api";
 import { createColabOneSnapshot, COLABONE_STATUS_LABELS, type AccountInstance } from "./types";
 import { createColabOneScrollController } from "./scrollTransition";
+import {
+  createColabOneToastManager,
+  isPersistentColabOneError,
+  type ColabOneToastKind,
+} from "./colabOneToast";
 
 // Trim the outer desktop-icon gutter so the white rounded tile fills inline UI icon slots edge-to-edge.
 const appIcon = rawAppIcon.replace(
@@ -123,20 +129,34 @@ const state = ref(createColabOneSnapshot()),
   page = ref("device"),
   ipcError = ref(""),
   ipcDisconnected = ref(false),
-  actionError = ref(""),
-  dismissedTaskIds = ref<Record<string, boolean>>({}),
-  toast = ref(""),
   busy = ref(false),
   savingIdle = ref(false);
 let ipcFailures = 0;
+
+const toastManager = createColabOneToastManager({ maxVisible: 3 });
+const toastTopOffsetPx = ref(112);
+let toastLayoutObserver: ResizeObserver | null = null;
+let handledStateError = "";
+let snapshotSeq = 0;
+let clearingStateError: {
+  text: string;
+  startedAtSeq: number;
+  completedAtSeq: number | null;
+} | null = null;
+const shownFailedTaskIds = new Set<string>();
+
+function normalizeErrorKey(raw: unknown): string {
+  return String(raw ?? "")
+    .trim()
+    .replace(/^(?:Error|CallError|RuntimeError|TypeError|ValueError):\s*/i, "")
+    .trim();
+}
 
 function formatError(
   raw: unknown,
   source: "ipc" | "action" | "state" = "action",
 ): string {
-  const cleaned = String(raw ?? "")
-    .trim()
-    .replace(/^(?:Error|CallError|RuntimeError|TypeError|ValueError):\s*/i, "");
+  const cleaned = normalizeErrorKey(raw);
   if (!cleaned) return "";
   if (isTransientIpcError(cleaned)) {
     const isLocalTransport =
@@ -156,37 +176,127 @@ function formatError(
   return friendlyErrorMessage(cleaned);
 }
 
-const bannerError = computed(() => {
+const persistentBannerError = computed(() => {
   if (ipcDisconnected.value && ipcError.value) {
     return formatError(ipcError.value, "ipc");
   }
-  if (actionError.value) return formatError(actionError.value, "action");
-  if (state.value.error) return formatError(state.value.error, "state");
-  if (ipcError.value) return formatError(ipcError.value, "ipc");
+  if (state.value.error && isPersistentColabOneError(state.value.error)) {
+    return formatError(state.value.error, "state");
+  }
+  if (ipcError.value) {
+    return formatError(ipcError.value, "ipc");
+  }
   return "";
 });
 
-function showError(message: string) {
-  actionError.value = String(message ?? "");
+const hasSyncError = computed(() =>
+  Boolean(persistentBannerError.value || state.value.error || ipcError.value),
+);
+
+function clearActionErrors() {
+  toastManager.dismissGroup("action-error");
 }
 
-function dismissError() {
-  ipcError.value = "";
-  actionError.value = "";
-  if (state.value.error) {
+function clearBackendStateError(text: string) {
+  const entry = {
+    text,
+    startedAtSeq: snapshotSeq,
+    completedAtSeq: null as number | null,
+  };
+  clearingStateError = entry;
+  if (String(state.value.error ?? "").trim() === text) {
     state.value.error = "";
-    colabOneCommand("error.clear").catch(() => {});
+  }
+  colabOneCommand("error.clear")
+    .catch(() => {})
+    .finally(() => {
+      if (clearingStateError === entry) {
+        entry.completedAtSeq = snapshotSeq;
+      }
+    });
+}
+
+async function onPanelSync() {
+  clearActionErrors();
+  await syncSnapshot().catch(() => {});
+}
+
+function showError(raw: unknown, source: "action" | "state" = "action") {
+  const cleaned = normalizeErrorKey(raw);
+  if (!cleaned) return;
+  const isTransient = isTransientIpcError(cleaned);
+  toastManager.push({
+    kind: "error",
+    group: isTransient ? "ipc-transient" : "action-error",
+    dedupeKey: `error:${source}:${cleaned}`,
+    resolveText: () => formatError(cleaned, source),
+  });
+}
+
+function dismissPersistentError() {
+  ipcError.value = "";
+  if (state.value.error && isPersistentColabOneError(state.value.error)) {
+    clearBackendStateError(String(state.value.error).trim());
   }
 }
 
-function dismissTaskError(taskId: string) {
-  dismissedTaskIds.value = { ...dismissedTaskIds.value, [taskId]: true };
-}
+watch(
+  () => state.value.error,
+  (raw) => {
+    const text = String(raw ?? "").trim();
+    if (!text) {
+      if (!clearingStateError) {
+        handledStateError = "";
+      }
+      toastManager.dismissGroup("state-error");
+      return;
+    }
+    if (isPersistentColabOneError(text)) {
+      return;
+    }
+    if (text === handledStateError) {
+      return;
+    }
+    handledStateError = text;
+    toastManager.push({
+      kind: "error",
+      group: "state-error",
+      dedupeKey: `state-error:${normalizeErrorKey(text)}`,
+      resolveText: () => formatError(text, "state"),
+      onDismiss: () => {
+        if (String(state.value.error ?? "").trim() === text) {
+          clearBackendStateError(text);
+        }
+      },
+    });
+  },
+  { immediate: true },
+);
 
-const visibleFailedTasks = computed(() =>
-  (state.value.runtime.tasks || [])
-    .filter((t) => t.state === "failed" && !dismissedTaskIds.value[t.id])
-    .slice(-1),
+watch(
+  () => state.value.runtime.tasks,
+  (tasks) => {
+    if (!tasks?.length) return;
+    const unseenFailed = tasks.filter(
+      (item) =>
+        item.state === "failed" &&
+        !shownFailedTaskIds.has(item.id) &&
+        String(item.error ?? "").trim().length > 0,
+    );
+    if (!unseenFailed.length) return;
+    for (const item of unseenFailed) {
+      shownFailedTaskIds.add(item.id);
+    }
+    const latest = unseenFailed[unseenFailed.length - 1];
+    const rawErr = String(latest.error ?? "").trim();
+    toastManager.push({
+      kind: "error",
+      group: "task-error",
+      dedupeKey: `task-error:${latest.id}`,
+      resolveText: () => formatError(rawErr, "state"),
+    });
+  },
+  { deep: true, immediate: true },
 );
 
 const nav = computed(() => [
@@ -451,7 +561,7 @@ const showInstancesSkeleton = computed(
     (accountInstances.value.length > 0 && refreshingAccount.value) ||
     (snapshotLoaded.value &&
       state.value.setup.colab &&
-      !bannerError.value &&
+      !hasSyncError.value &&
       (!state.value.account.checked_at || refreshingAccount.value) &&
       (state.value.account.assignments ?? 0) > 0 &&
       !accountInstances.value.length),
@@ -471,7 +581,7 @@ const settingsEmailLoading = computed(
     (state.value.setup.colab &&
       !state.value.account.email &&
       (refreshingAccount.value ||
-        (!state.value.account.checked_at && !bannerError.value))),
+        (!state.value.account.checked_at && !hasSyncError.value))),
 );
 const shapeLabel = (shape?: string) =>
   shape === "HIGH_RAM"
@@ -539,7 +649,6 @@ const code = ref(""),
   showAuthPaste = ref(false);
 
 let timer: ReturnType<typeof setTimeout>,
-  toastTimer: ReturnType<typeof setTimeout>,
   stopped = false;
 let clockTimer: ReturnType<typeof setInterval>;
 let lastInteraction = 0;
@@ -650,31 +759,47 @@ const bytes = (n = 0) =>
     ? (n / 1024 ** 3).toFixed(1) + " GB"
     : (n / 1024 ** 2).toFixed(0) + " MB";
 
-function notify(text: string) {
-  toast.value = text;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (toast.value = ""), 3500);
+function notify(
+  text: string,
+  kind: ColabOneToastKind = "success",
+  dedupeKey?: string,
+) {
+  toastManager.push({ kind, message: text, dedupeKey });
 }
 
 function onLocaleChanged(meta: ColabOneLocaleMeta) {
-  notify(t("nav.languageSwitched", { label: meta.nativeLabel }));
+  notify(
+    t("nav.languageSwitched", { label: meta.nativeLabel }),
+    "success",
+    "locale-switched",
+  );
 }
 
 async function syncSnapshot() {
+  const snapId = ++snapshotSeq;
   const value = await colabOneSnapshot();
   const wasDisconnected = ipcDisconnected.value;
   ipcFailures = 0;
   ipcDisconnected.value = false;
   if (ipcError.value) ipcError.value = "";
-  if (
-    actionError.value &&
-    (isTransientIpcError(actionError.value) ||
-      formatError(actionError.value, "action") ===
-        t("status.ipcReconnectingDetail"))
-  ) {
-    actionError.value = "";
-  }
+  toastManager.dismissGroup("ipc-transient");
   if (wasDisconnected) clockNow.value = Date.now();
+  const rawError = String(value.error ?? "").trim();
+  if (clearingStateError) {
+    if (rawError === clearingStateError.text) {
+      if (
+        clearingStateError.completedAtSeq === null ||
+        snapId <= clearingStateError.completedAtSeq
+      ) {
+        value.error = "";
+      }
+    } else {
+      clearingStateError = null;
+      if (!rawError) {
+        handledStateError = "";
+      }
+    }
+  }
   if (
     value.error &&
     isTransientIpcError(value.error) &&
@@ -709,13 +834,13 @@ async function refresh() {
 
 async function act(action: string, payload: Record<string, unknown> = {}) {
   busy.value = true;
-  actionError.value = "";
   try {
     const res = await colabOneCommand(action, payload);
+    clearActionErrors();
     await syncSnapshot().catch(() => {});
     return res;
   } catch (e) {
-    actionError.value = String(e ?? "");
+    showError(e);
     return null;
   } finally {
     busy.value = false;
@@ -739,18 +864,20 @@ async function changeIdleMinutes(rawMinutes: unknown) {
   const previous = form.value.idle_minutes;
   form.value.idle_minutes = minutes;
   lastSyncedSettings.idle_minutes = minutes;
-  actionError.value = "";
   savingIdle.value = true;
   try {
     await colabOneCommand("settings.save", { idle_minutes: minutes });
+    clearActionErrors();
     await syncSnapshot().catch(() => {});
     notify(
       t("device.toastIdleSet", { policy: formatIdlePolicyLabel(minutes) }),
+      "success",
+      "setting-idle-policy",
     );
   } catch (e) {
     form.value.idle_minutes = previous;
     lastSyncedSettings.idle_minutes = previous;
-    actionError.value = String(e ?? "");
+    showError(e);
   } finally {
     savingIdle.value = false;
   }
@@ -762,15 +889,19 @@ async function changeDownloadThreads(rawThreads: unknown) {
   const previous = form.value.download_threads;
   form.value.download_threads = threads;
   lastSyncedSettings.download_threads = threads;
-  actionError.value = "";
   try {
     await colabOneCommand("settings.save", { download_threads: threads });
+    clearActionErrors();
     await syncSnapshot().catch(() => {});
-    notify(t("device.toastThreadsSet", { threads }));
+    notify(
+      t("device.toastThreadsSet", { threads }),
+      "success",
+      "setting-download-threads",
+    );
   } catch (e) {
     form.value.download_threads = previous;
     lastSyncedSettings.download_threads = previous;
-    actionError.value = String(e ?? "");
+    showError(e);
   }
 }
 
@@ -786,15 +917,19 @@ async function changeDefaultGpu(raw: unknown) {
   const previous = form.value.gpu;
   form.value.gpu = gpu;
   lastSyncedSettings.gpu = gpu;
-  actionError.value = "";
   try {
     await colabOneCommand("settings.save", { gpu });
+    clearActionErrors();
     await syncSnapshot().catch(() => {});
-    notify(t("device.toastDefaultGpuSet", { gpu }));
+    notify(
+      t("device.toastDefaultGpuSet", { gpu }),
+      "success",
+      "setting-default-gpu",
+    );
   } catch (e) {
     form.value.gpu = previous;
     lastSyncedSettings.gpu = previous;
-    actionError.value = String(e ?? "");
+    showError(e);
   }
 }
 
@@ -857,7 +992,7 @@ async function pasteLogin() {
     code.value = await colabOneReadClipboard();
     await finishLogin();
   } catch {
-    actionError.value = t("settings.clipboardReadFailed");
+    showError(t("settings.clipboardReadFailed"));
   }
 }
 watch(
@@ -868,7 +1003,7 @@ watch(
       try {
         await colabOneOpenURL(url);
       } catch (e) {
-        actionError.value = String(e ?? "");
+        showError(e);
       }
     }
   },
@@ -929,12 +1064,12 @@ async function selectMonitorInstance(endpoint: string) {
   if (!endpoint || endpoint === effectiveMonitor.value.endpoint) return;
   monitorBusy.value = true;
   monitorSwitching.value = true;
-  actionError.value = "";
   try {
     await colabOneCommand("monitor.select", { endpoint });
+    clearActionErrors();
     await syncSnapshot().catch(() => {});
   } catch (e) {
-    actionError.value = String(e ?? "");
+    showError(e);
   } finally {
     monitorBusy.value = false;
     monitorSwitching.value = false;
@@ -943,12 +1078,12 @@ async function selectMonitorInstance(endpoint: string) {
 
 async function toggleMonitorPause(paused: boolean) {
   monitorBusy.value = true;
-  actionError.value = "";
   try {
     await colabOneCommand("monitor.pause", { paused });
+    clearActionErrors();
     await syncSnapshot().catch(() => {});
   } catch (e) {
-    actionError.value = String(e ?? "");
+    showError(e);
   } finally {
     monitorBusy.value = false;
   }
@@ -957,12 +1092,12 @@ async function toggleMonitorPause(paused: boolean) {
 async function retryMonitor() {
   monitorBusy.value = true;
   monitorSwitching.value = true;
-  actionError.value = "";
   try {
     await colabOneCommand("monitor.retry");
+    clearActionErrors();
     await syncSnapshot().catch(() => {});
   } catch (e) {
-    actionError.value = String(e ?? "");
+    showError(e);
   } finally {
     monitorBusy.value = false;
     monitorSwitching.value = false;
@@ -1076,14 +1211,46 @@ async function copy(text: string) {
       await navigator.clipboard.writeText(text);
       notify(t("common.copied"));
     } catch {
-      actionError.value = t("common.copyFailed");
+      showError(t("common.copyFailed"));
     }
   }
 }
 
+function updateToastTopOffset() {
+  const el = resolveContentElement();
+  if (!el) return;
+  const top = Math.round(el.getBoundingClientRect().top);
+  if (top > 0) {
+    toastTopOffsetPx.value = Math.min(260, Math.max(72, top + 6));
+  }
+}
+
+watch(
+  [
+    persistentBannerError,
+    () => state.value.operation,
+    () => ready.value && (state.value.runtime.protocol || 0) < 7,
+    logsOpen,
+    logDrawerWidth,
+  ],
+  () => {
+    updateToastTopOffset();
+  },
+  { flush: "post" },
+);
+
 onMounted(() => {
   refresh();
   void syncLogWindowState();
+  updateToastTopOffset();
+  const contentEl = resolveContentElement();
+  if (contentEl && typeof ResizeObserver !== "undefined") {
+    toastLayoutObserver = new ResizeObserver(() => {
+      updateToastTopOffset();
+    });
+    toastLayoutObserver.observe(contentEl);
+  }
+  window.addEventListener("resize", updateToastTopOffset, { passive: true });
   clockTimer = setInterval(() => {
     if (!ipcDisconnected.value) clockNow.value = Date.now();
   }, 1000);
@@ -1095,13 +1262,16 @@ onMounted(() => {
 onUnmounted(() => {
   stopped = true;
   scrollController.cancel();
+  toastLayoutObserver?.disconnect();
+  toastLayoutObserver = null;
+  window.removeEventListener("resize", updateToastTopOffset);
   clearInterval(clockTimer);
   for (const name of ["pointerdown", "keydown", "wheel"])
     window.removeEventListener(name, interaction);
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("colabone:log-window-state", handleLogWindowEvent);
   clearTimeout(timer);
-  clearTimeout(toastTimer);
+  toastManager.clear();
 });
 </script>
 
@@ -1348,20 +1518,19 @@ onUnmounted(() => {
                 :now-ms="clockNow"
                 :loading="!snapshotLoaded"
                 :refreshing="refreshingAccount"
-                :has-error="Boolean(bannerError)"
+                :has-error="hasSyncError"
                 @touch="interaction()"
               />
             </div>
           </div>
         </div>
 
-        <!-- Global Status & Error Banners -->
+        <!-- Global Persistent System & Operation Banners -->
         <div
           v-if="
             (ready && (state.runtime.protocol || 0) < 7) ||
-            bannerError ||
-            state.operation ||
-            visibleFailedTasks.length
+            persistentBannerError ||
+            state.operation
           "
           class="co-banners"
         >
@@ -1387,12 +1556,12 @@ onUnmounted(() => {
             </AAlert>
 
             <AAlert
-              v-if="bannerError"
+              v-if="persistentBannerError"
               type="error"
               show-icon
               closable
-              :message="bannerError"
-              @close="dismissError"
+              :message="persistentBannerError"
+              @close="dismissPersistentError"
             />
 
             <AAlert
@@ -1408,16 +1577,6 @@ onUnmounted(() => {
                 </span>
               </template>
             </AAlert>
-
-            <AAlert
-              v-for="failed in visibleFailedTasks"
-              :key="failed.id"
-              type="error"
-              show-icon
-              closable
-              :message="formatError(failed.error, 'state')"
-              @close="dismissTaskError(failed.id)"
-            />
           </div>
         </div>
 
@@ -1899,7 +2058,7 @@ onUnmounted(() => {
                   :busy="busy || !!state.operation || savingIdle"
                   :loading="!snapshotLoaded"
                   :refreshing="refreshingAccount"
-                  :has-error="Boolean(bannerError)"
+                  :has-error="hasSyncError"
                   :now-ms="clockNow"
                   :show-idle-footer="false"
                   @refresh-account="refreshAccount"
@@ -2233,7 +2392,7 @@ onUnmounted(() => {
               :loading="!snapshotLoaded"
               @device="openDevice"
               @comfyui="selectPage('comfyui')"
-              @sync="syncSnapshot"
+              @sync="onPanelSync"
               @notify="notify"
               @error="showError"
             />
@@ -2249,6 +2408,8 @@ onUnmounted(() => {
               :state="state"
               :loading="!snapshotLoaded"
               @device="openDevice"
+              @notify="notify"
+              @clear-error="clearActionErrors"
               @error="showError"
             />
           </main>
@@ -2943,13 +3104,16 @@ onUnmounted(() => {
         @clear="act('logs.clear')"
       />
 
-      <!-- Floating Pill Toast -->
-      <Transition name="co-toast">
-        <div v-if="toast" class="co-toast" role="status">
-          <PhCheck :size="16" weight="bold" />
-          <span>{{ toast }}</span>
-        </div>
-      </Transition>
+      <!-- Unified Floating Countdown Toast Stack -->
+      <ColabOneToastHost
+        :items="toastManager.items.value"
+        placement="top"
+        :top-offset-px="toastTopOffsetPx"
+        :right-offset-px="!logWindowStandalone && logsOpen ? logDrawerWidth : 0"
+        @pause="toastManager.pause"
+        @resume="toastManager.resume"
+        @dismiss="toastManager.dismiss"
+      />
 
       <!-- Modal: Selective Instance Release Review -->
       <AModal
@@ -4389,43 +4553,6 @@ onUnmounted(() => {
   flex-wrap: wrap;
   font-size: 12px;
   color: var(--co-secondary-text);
-}
-
-/* ColabOne Elevated Toast Card */
-.co-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 24px;
-  transform: translateX(-50%);
-  z-index: 1200;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 18px;
-  border-radius: 12px;
-  background: var(--co-elevated);
-  color: var(--co-text);
-  border: 1px solid var(--co-success-border);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
-  font-size: 13.5px;
-  font-weight: 550;
-}
-
-.co-toast svg {
-  color: var(--co-success);
-}
-
-.co-toast-enter-active,
-.co-toast-leave-active {
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s ease;
-}
-
-.co-toast-enter-from,
-.co-toast-leave-to {
-  opacity: 0;
-  transform: translate(-50%, 8px);
 }
 
 /* Modals */

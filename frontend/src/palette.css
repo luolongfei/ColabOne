@@ -68,6 +68,12 @@
   --co-skeleton-tint: rgba(59, 130, 246, 0.075);
   --co-skeleton-border: rgba(15, 23, 42, 0.042);
   --co-skeleton-card-bg: rgba(248, 250, 252, 0.85);
+  /* ColabOne floating toast & highlighted code surface tokens (Light) */
+  --co-toast-bg: rgba(255, 255, 255, 0.96);
+  --co-toast-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.13),
+    0 2px 6px rgba(15, 23, 42, 0.06);
+  --co-code-selection: rgba(59, 130, 246, 0.2);
 }
 
 :root[data-theme="dark"] {
@@ -131,4 +137,10 @@
   --co-skeleton-tint: rgba(96, 165, 250, 0.12);
   --co-skeleton-border: rgba(255, 255, 255, 0.055);
   --co-skeleton-card-bg: rgba(255, 255, 255, 0.025);
+  /* ColabOne floating toast & highlighted code surface tokens (Dark) */
+  --co-toast-bg: rgba(28, 30, 38, 0.95);
+  --co-toast-shadow:
+    0 16px 38px rgba(0, 0, 0, 0.52),
+    0 2px 8px rgba(0, 0, 0, 0.34);
+  --co-code-selection: rgba(96, 165, 250, 0.28);
 }

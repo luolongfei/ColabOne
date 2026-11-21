@@ -7,6 +7,8 @@ export const enUSMessages: ColabOneMessages = {
   "common.copyFailed": "Copy failed; please select and copy manually",
   "common.copyFailedShort": "Copy failed; please copy manually",
   "common.cancel": "Cancel",
+  "common.close": "Close",
+  "common.notificationsAria": "Notifications",
   "common.confirm": "Confirm",
   "common.confirmDelete": "Delete",
   "common.delete": "Delete",

@@ -8,8 +8,8 @@
     "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", "Microsoft JhengHei UI",
     "Yu Gothic UI", "Malgun Gothic", sans-serif;
   --co-font-mono:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Sarasa UI SC", monospace;
+    ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", Consolas,
+    "Liberation Mono", "DejaVu Sans Mono", monospace, "Sarasa UI SC";
   font-family: var(--co-font-sans);
   font-size: 14px;
   line-height: 1.5;

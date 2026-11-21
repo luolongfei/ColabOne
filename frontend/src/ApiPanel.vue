@@ -15,8 +15,10 @@ import {
   Statistic as AStatistic,
   Tag as ATag,
 } from "ant-design-vue";
+import ColabOneCodeBlock from "./ColabOneCodeBlock.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import type { ColabOneToastKind } from "./colabOneToast";
 import {
   PhArrowRight,
   PhArrowsClockwise,
@@ -59,7 +61,7 @@ const emit = defineEmits<{
   device: [];
   comfyui: [];
   sync: [];
-  notify: [string];
+  notify: [string, ColabOneToastKind?];
   error: [string];
 }>();
 
@@ -86,24 +88,7 @@ const keyTimer = ref<ReturnType<typeof setTimeout>>();
 const copyTimer = ref<ReturnType<typeof setTimeout>>();
 const copiedField = ref<"" | "url" | "key" | "model" | "code">("");
 const busy = ref(false);
-type ApiNoticeKey = "" | "starting" | "ready" | "saved" | "copied" | "rotated";
-const noticeKey = ref<ApiNoticeKey>("");
-const notice = computed(() => {
-  switch (noticeKey.value) {
-    case "starting":
-      return t("api.startingNotice");
-    case "ready":
-      return t("api.readyNotice");
-    case "saved":
-      return t("api.savedConfigNotice");
-    case "copied":
-      return t("common.copied");
-    case "rotated":
-      return t("api.rotatedKeyNotice");
-    default:
-      return "";
-  }
-});
+const awaitingApiReady = ref(false);
 const language = ref<"curl" | "python" | "codex">("curl");
 
 const languageOptions = [
@@ -215,13 +200,6 @@ const statusBadgeStatus = computed<
       return "default";
   }
 });
-const noticeType = computed<"success" | "info">(() =>
-  noticeKey.value === "ready" ||
-  noticeKey.value === "copied" ||
-  noticeKey.value === "saved"
-    ? "success"
-    : "info",
-);
 const base = computed(() =>
   api.value?.url
     ? `${api.value.url}/v1`
@@ -251,7 +229,6 @@ function onLanguageChange(val: string | number) {
 
 async function act(action: string, payload = {}) {
   busy.value = true;
-  noticeKey.value = "";
   try {
     await colabOneCommand(action, payload);
     emit("sync");
@@ -266,26 +243,25 @@ async function act(action: string, payload = {}) {
 
 async function unloadModel() {
   if (await act("model.unload")) {
-    emit("notify", t("api.unloadedToast"));
+    emit("notify", t("api.unloadedToast"), "success");
   }
 }
 
 watch(
   () => api.value?.state,
   (next) => {
-    if (noticeKey.value === "starting" && next && next !== "starting") {
-      noticeKey.value = next === "ready" ? "ready" : "";
-    } else if (noticeKey.value === "ready" && next !== "ready") {
-      noticeKey.value = "";
+    if (awaitingApiReady.value && next && next !== "starting") {
+      awaitingApiReady.value = false;
+      if (next === "ready") {
+        emit("notify", t("api.readyNotice"), "success");
+      }
     }
   },
 );
 watch(
   () => props.state.runtime.id,
   () => {
-    if (noticeKey.value === "starting" || noticeKey.value === "ready") {
-      noticeKey.value = "";
-    }
+    awaitingApiReady.value = false;
   },
 );
 
@@ -304,7 +280,13 @@ async function start() {
   ) {
     tunnelToken.value = "";
     settingsDirty.value = false;
-    noticeKey.value = api.value?.state === "ready" ? "ready" : "starting";
+    if (api.value?.state === "ready") {
+      awaitingApiReady.value = false;
+      emit("notify", t("api.readyNotice"), "success");
+    } else {
+      awaitingApiReady.value = true;
+      emit("notify", t("api.startingNotice"), "info");
+    }
   }
 }
 
@@ -318,7 +300,7 @@ async function save() {
   ) {
     tunnelToken.value = "";
     settingsDirty.value = false;
-    noticeKey.value = "saved";
+    emit("notify", t("api.savedConfigNotice"), "success");
   }
 }
 
@@ -327,7 +309,7 @@ async function copy(
   field: "" | "url" | "key" | "model" | "code" = "",
 ) {
   const markCopied = () => {
-    noticeKey.value = "copied";
+    emit("notify", t("common.copied"), "success");
     if (field) {
       copiedField.value = field;
       clearTimeout(copyTimer.value);
@@ -380,7 +362,7 @@ async function reveal() {
 async function rotate() {
   if (await act("api.rotate")) {
     key.value = "";
-    noticeKey.value = "rotated";
+    emit("notify", t("api.rotatedKeyNotice"), "info");
   }
 }
 
@@ -656,16 +638,6 @@ onUnmounted(() => {
       show-icon
       :message="tb(api.error)"
       role="alert"
-    />
-
-    <AAlert
-      v-if="notice"
-      :type="noticeType"
-      show-icon
-      closable
-      :message="notice"
-      role="status"
-      @close="noticeKey = ''"
     />
 
     <div class="co-api-grid">
@@ -1231,7 +1203,13 @@ onUnmounted(() => {
           <ColabOneSkeleton width="90%" :height="13" variant="text" :delay="165" />
           <ColabOneSkeleton width="46%" :height="13" variant="text" tone="subtle" :delay="220" />
         </div>
-        <pre v-else class="co-api-code-block co-sk-reveal" tabindex="0"><code>{{ code }}</code></pre>
+        <ColabOneCodeBlock
+          v-else
+          :code="code"
+          :language="language"
+          max-height="330px"
+          class="co-api-code-block co-sk-reveal"
+        />
 
         <p class="co-field-help">
           {{ t("api.compatSummary") }}
@@ -1588,6 +1566,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 9px;
   min-height: 122px;
+  padding: 14px 16px;
+  border: 1px solid var(--co-border-secondary);
+  border-radius: 12px;
   background: var(--co-skeleton-card-bg);
 }
 
@@ -1839,16 +1820,6 @@ onUnmounted(() => {
 
 .co-api-code-block {
   margin: 0 0 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--co-border-secondary);
-  border-radius: 12px;
-  background: var(--co-subtle);
-  color: var(--co-text);
-  font-family: var(--co-font-mono);
-  font-size: 13px;
-  line-height: 1.5;
-  overflow: auto;
-  max-height: 330px;
 }
 
 .co-api-guide {

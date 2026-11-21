@@ -4061,23 +4061,25 @@ test("QA regressions: inline log drawer navbar layout, hub filter spacing, disab
     "Settings",
   );
 
-  // 1. Live error banner translates when switching languages
+  // 1. Live error toast translates when switching languages
   await page.evaluate(() => {
     (window as any).__state.error = "Error: 请先完成 Google 登录";
   });
-  await expect(page.locator(".co-banners .ant-alert-error")).toContainText(
+  await expect(page.locator(".co-toast.is-error")).toContainText(
     "Please sign in with Google first",
   );
   await page.getByTestId("topbar-locale-trigger").click();
   await page.locator('.co-locale-menu-item[data-locale="ja-JP"]').click();
-  await expect(page.locator(".co-banners .ant-alert-error")).toContainText(
+  await expect(page.locator(".co-toast.is-error")).toContainText(
     "先に Google ログインを完了してください",
   );
   await page.getByTestId("topbar-locale-trigger").click();
   await page.locator('.co-locale-menu-item[data-locale="en-US"]').click();
-  await expect(page.locator(".co-banners .ant-alert-error")).toContainText(
+  await expect(page.locator(".co-toast.is-error")).toContainText(
     "Please sign in with Google first",
   );
+  await page.locator(".co-toast.is-error .co-toast-close").click();
+  await expect(page.locator(".co-toast.is-error")).toHaveCount(0);
 
   // 2. Opening inline LogDrawer in English at 1200px causes zero navbar collisions or horizontal overflow
   await page.locator(".co-logs-trigger").click();
@@ -4171,4 +4173,203 @@ test("QA regressions: inline log drawer navbar layout, hub filter spacing, disab
   await expect(page.locator(".ant-tooltip:visible")).toContainText(
     "Wait for the current task to finish",
   );
+});
+
+test("Countdown error toast (zero layout shift + hover pause + persistent connectivity banner) and unified code syntax highlighting", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 840 });
+  await mock(page, true);
+
+  await navItem(page, "对外 API").click();
+  await expect(page.locator(".co-api-page-header")).toBeVisible();
+  // Let the 160ms page entrance transform settle before measuring baseline top
+  await page.waitForTimeout(240);
+
+  // 1. Action validation error opens floating countdown toast with zero layout shift
+  const headerTopBefore = await page
+    .locator(".co-api-page-header")
+    .evaluate((el) => Math.round(el.getBoundingClientRect().top));
+
+  await page.evaluate(() => {
+    const orig = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, ...args: any[]) => {
+      if (
+        method === "ColabOneDesktop.Command" &&
+        args[0]?.action === "api.start"
+      ) {
+        throw new Error(
+          "API 配置无效：请填写公网 HTTPS 固定域名，并粘贴有效的 Cloudflare Tunnel 安装命令或 Token",
+        );
+      }
+      return orig(method, ...args);
+    };
+  });
+
+  await page.getByRole("button", { name: "开启 API 服务", exact: true }).click();
+
+  const errorToast = page.locator(".co-toast.is-error");
+  await expect(errorToast).toBeVisible();
+  await expect(errorToast).toContainText("API 配置无效");
+  await expect(page.locator(".co-banners .ant-alert-error")).toHaveCount(0);
+
+  const headerTopAfter = await page
+    .locator(".co-api-page-header")
+    .evaluate((el) => Math.round(el.getBoundingClientRect().top));
+  expect(headerTopAfter).toBe(headerTopBefore);
+
+  // Countdown progress bar is rendered & running, pauses cleanly on hover, resumes on mouse leave
+  const progressBar = errorToast.locator(".co-toast-progress-bar");
+  await expect(progressBar).toBeVisible();
+  expect(
+    await progressBar.evaluate(
+      (el) => window.getComputedStyle(el).animationPlayState,
+    ),
+  ).toBe("running");
+
+  await errorToast.hover();
+  await expect(errorToast).toHaveAttribute("data-paused", "true");
+  expect(
+    await progressBar.evaluate(
+      (el) => window.getComputedStyle(el).animationPlayState,
+    ),
+  ).toBe("paused");
+
+  await page.mouse.move(12, 12);
+  await expect(errorToast).toHaveAttribute("data-paused", "false");
+  expect(
+    await progressBar.evaluate(
+      (el) => window.getComputedStyle(el).animationPlayState,
+    ),
+  ).toBe("running");
+
+  await errorToast.locator(".co-toast-close").click();
+  await expect(errorToast).toHaveCount(0);
+
+  // Persistent connectivity monitor failure stays as top inline banner until resolved
+  await page.evaluate(() => {
+    (window as any).__state.error =
+      "连接检查失败：ConnectionError。客户端会自动重试，请检查网络连接。";
+  });
+  await expect(page.locator(".co-banners .ant-alert-error")).toContainText(
+    "连接检查失败",
+  );
+  await page.evaluate(() => {
+    (window as any).__state.error = "";
+  });
+  await expect(page.locator(".co-banners .ant-alert-error")).toHaveCount(0);
+
+  // 2. Unified syntax highlighting across cURL (with embedded JSON), Python, Codex TOML, and Dark theme
+  const codeBlock = page.locator(".co-api-examples pre.co-code-highlighted");
+  await expect(codeBlock).toBeVisible();
+  await expect(codeBlock).toHaveAttribute("data-language", "shellscript");
+
+  const lightCurlColors = await codeBlock.evaluate((pre) => {
+    const tokens = Array.from(pre.querySelectorAll(".co-code-tok"));
+    const byText = (needle: string) => {
+      const hit = tokens.find((el) => el.textContent?.trim() === needle);
+      return hit ? window.getComputedStyle(hit).color : null;
+    };
+    return {
+      totalTokens: tokens.length,
+      curl: byText("curl"),
+      flag: byText("-H"),
+      envVar: byText("$COLABONE_API_KEY"),
+      jsonKey: byText('"model"'),
+      jsonNumber: byText("512"),
+      distinctCount: new Set(
+        tokens
+          .filter((el) => (el.textContent || "").trim().length > 0)
+          .map((el) => window.getComputedStyle(el).color),
+      ).size,
+    };
+  });
+  expect(lightCurlColors.totalTokens).toBeGreaterThan(15);
+  expect(lightCurlColors.distinctCount).toBeGreaterThanOrEqual(4);
+  expect(lightCurlColors.curl).not.toBe(lightCurlColors.flag);
+  expect(lightCurlColors.curl).not.toBe(lightCurlColors.envVar);
+  expect(lightCurlColors.jsonKey).not.toBe(lightCurlColors.jsonNumber);
+
+  // Switch to Python & Codex TOML
+  await segmentedItem(
+    page.locator('.ant-segmented[aria-label="调用示例语言"]'),
+    "Python",
+  ).click();
+  await expect(codeBlock).toHaveAttribute("data-language", "python");
+  const pyDistinct = await codeBlock.evaluate((pre) => {
+    const tokens = Array.from(pre.querySelectorAll(".co-code-tok"));
+    return new Set(
+      tokens
+        .filter((el) => (el.textContent || "").trim().length > 0)
+        .map((el) => window.getComputedStyle(el).color),
+    ).size;
+  });
+  expect(pyDistinct).toBeGreaterThanOrEqual(4);
+
+  await segmentedItem(
+    page.locator('.ant-segmented[aria-label="调用示例语言"]'),
+    "Codex",
+  ).click();
+  await expect(codeBlock).toHaveAttribute("data-language", "toml");
+
+  // Switch back to cURL and toggle Dark mode — verify syntax palette switches immediately
+  await segmentedItem(
+    page.locator('.ant-segmented[aria-label="调用示例语言"]'),
+    "cURL",
+  ).click();
+  await page.locator('button[aria-label="切换到深色模式"]').click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+  const darkCurlColor = await codeBlock.evaluate((pre) => {
+    const hit = Array.from(pre.querySelectorAll(".co-code-tok")).find(
+      (el) => el.textContent?.trim() === "curl",
+    );
+    return hit ? window.getComputedStyle(hit).color : null;
+  });
+  expect(darkCurlColor).toBeTruthy();
+  expect(darkCurlColor).not.toBe(lightCurlColors.curl);
+
+  // 3. Narrow viewport (wrapped status bar) + active operation banner: toast dynamically clears top chrome
+  await page.setViewportSize({ width: 960, height: 800 });
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = {
+      title: "部署远端管理服务",
+      running: true,
+    };
+    s.error =
+      "API 配置无效：请填写公网 HTTPS 固定域名，并粘贴有效的 Cloudflare Tunnel 安装命令或 Token";
+  });
+  await expect(page.locator(".co-op-banner")).toBeVisible();
+  const narrowToast = page.locator(".co-toast.is-error");
+  await expect(narrowToast).toBeVisible();
+  const clearance = await page.evaluate(() => {
+    const banner = document
+      .querySelector(".co-op-banner")
+      ?.getBoundingClientRect();
+    const toast = document
+      .querySelector(".co-toast.is-error")
+      ?.getBoundingClientRect();
+    return banner && toast
+      ? {
+          bannerBottom: Math.round(banner.bottom),
+          toastTop: Math.round(toast.top),
+        }
+      : null;
+  });
+  expect(clearance).not.toBeNull();
+  expect(clearance!.toastTop).toBeGreaterThanOrEqual(clearance!.bannerBottom);
+
+  // Closing the state.error toast must not zombie-repop on subsequent 600ms polls
+  await narrowToast.locator(".co-toast-close").click();
+  await expect(narrowToast).toHaveCount(0);
+  await page.waitForTimeout(800);
+  await expect(narrowToast).toHaveCount(0);
+
+  // Rapid locale switching deduplicates into a single language toast instead of stacking duplicates
+  await page.getByTestId("topbar-locale-trigger").click();
+  await page.locator('.co-locale-menu-item[data-locale="en-US"]').click();
+  await page.getByTestId("topbar-locale-trigger").click();
+  await page.locator('.co-locale-menu-item[data-locale="ja-JP"]').click();
+  await expect(page.locator(".co-toast.is-success")).toHaveCount(1);
 });

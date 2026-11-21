@@ -5,6 +5,8 @@ export const zhCNMessages = {
   "common.copyFailed": "复制失败，请手动选择并复制",
   "common.copyFailedShort": "复制失败，请手动复制",
   "common.cancel": "取消",
+  "common.close": "关闭",
+  "common.notificationsAria": "通知提示",
   "common.confirm": "确认",
   "common.confirmDelete": "确认删除",
   "common.delete": "删除",

@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ConfigProvider as AConfigProvider } from "ant-design-vue";
-import { PhCheck } from "@phosphor-icons/vue";
+import ColabOneToastHost from "./ColabOneToastHost.vue";
 import { buildColabOneTheme } from "./colabOneTheme";
 import { colabOneEffectiveAppearance } from "./appearance";
+import {
+  createColabOneToastManager,
+  type ColabOneToastKind,
+} from "./colabOneToast";
 import {
   colabOneAntdLocale,
   colabOneLocaleCode,
@@ -20,11 +24,10 @@ const colabOneTheme = computed(() =>
 );
 const state = ref(createColabOneSnapshot());
 const snapshotLoaded = ref(false);
-const toast = ref("");
+const toastManager = createColabOneToastManager({ maxVisible: 2 });
 
 let stopped = false;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
-let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 const ready = computed(() => state.value.runtime.state === "ready");
 const task = computed(() =>
@@ -62,12 +65,12 @@ const currentActivity = computed(() => {
   return ready.value ? t("task.gpuReadyIdle") : t("task.gpuWaitingStart");
 });
 
-function notify(message: string) {
-  toast.value = message;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.value = "";
-  }, 2400);
+function notify(message: string, kind: ColabOneToastKind = "success") {
+  toastManager.push({
+    kind,
+    message,
+    durationMs: kind === "error" ? undefined : 2400,
+  });
 }
 
 async function syncSnapshot() {
@@ -98,7 +101,7 @@ async function copy(text: string) {
       await navigator.clipboard.writeText(text);
       notify(t("common.copied"));
     } catch {
-      notify(t("common.copyFailedShort"));
+      notify(t("common.copyFailedShort"), "error");
     }
   }
 }
@@ -136,7 +139,7 @@ onMounted(() => {
 onUnmounted(() => {
   stopped = true;
   clearTimeout(pollTimer);
-  clearTimeout(toastTimer);
+  toastManager.clear();
   window.removeEventListener("keydown", handleKeydown);
 });
 </script>
@@ -156,12 +159,13 @@ onUnmounted(() => {
         @clear="clearLogs"
       />
 
-      <Transition name="co-toast">
-        <div v-if="toast" class="co-toast" role="status">
-          <PhCheck :size="16" weight="bold" />
-          <span>{{ toast }}</span>
-        </div>
-      </Transition>
+      <ColabOneToastHost
+        :items="toastManager.items.value"
+        placement="bottom"
+        @pause="toastManager.pause"
+        @resume="toastManager.resume"
+        @dismiss="toastManager.dismiss"
+      />
     </main>
   </AConfigProvider>
 </template>
@@ -174,41 +178,5 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--co-canvas);
-}
-
-.co-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 62px;
-  transform: translateX(-50%);
-  z-index: 1200;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 16px;
-  border-radius: 12px;
-  background: var(--co-elevated);
-  color: var(--co-text);
-  border: 1px solid var(--co-success-border);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
-  font-size: 13px;
-  font-weight: 550;
-}
-
-.co-toast svg {
-  color: var(--co-success);
-}
-
-.co-toast-enter-active,
-.co-toast-leave-active {
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s ease;
-}
-
-.co-toast-enter-from,
-.co-toast-leave-to {
-  opacity: 0;
-  transform: translate(-50%, 8px);
 }
 </style>

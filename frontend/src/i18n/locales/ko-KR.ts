@@ -7,6 +7,8 @@ export const koKRMessages: ColabOneMessages = {
   "common.copyFailed": "복사에 실패했습니다. 직접 선택해 복사해 주세요",
   "common.copyFailedShort": "복사 실패 — 직접 복사해 주세요",
   "common.cancel": "취소",
+  "common.close": "닫기",
+  "common.notificationsAria": "알림",
   "common.confirm": "확인",
   "common.confirmDelete": "삭제",
   "common.delete": "삭제",

@@ -7,6 +7,8 @@ export const jaJPMessages: ColabOneMessages = {
   "common.copyFailed": "コピーに失敗しました。手動で選択してコピーしてください",
   "common.copyFailedShort": "コピーに失敗しました。手動でコピーしてください",
   "common.cancel": "キャンセル",
+  "common.close": "閉じる",
+  "common.notificationsAria": "通知",
   "common.confirm": "確定",
   "common.confirmDelete": "削除する",
   "common.delete": "削除",
