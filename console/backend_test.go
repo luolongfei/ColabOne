@@ -55,6 +55,11 @@ func TestExternalURLsAreRestricted(t *testing.T) {
 			t.Fatalf("accepted %s", url)
 		}
 	}
+	for _, url := range []string{"https://accounts.google.com/", "https://console.cloud.google.com/"} {
+		if err := validateColabOneExternalURL(url); err != nil {
+			t.Fatalf("rejected allowed URL %s: %v", url, err)
+		}
+	}
 }
 
 func TestValidateCanvasURL(t *testing.T) {

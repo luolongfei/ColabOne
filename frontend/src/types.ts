@@ -346,6 +346,8 @@ export interface ColabOneSnapshot {
     colab: boolean;
     drive: boolean;
     drive_authorized?: boolean;
+    drive_headless?: boolean;
+    drive_quota_reason?: string;
     drive_mode?: string;
     hf: boolean;
     persistent_login?: boolean;

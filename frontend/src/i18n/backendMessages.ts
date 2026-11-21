@@ -2636,7 +2636,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
 
-  // === server/drive.py ===
+  // === server/drive.py & bridge/drive_mount.py ===
   {
     re: /^Google 云盘连接失败：(.+)$/,
     format: (m, loc) => {
@@ -2652,6 +2652,226 @@ const PATTERN_RULES: PatternRule[] = [
           return `Google ドライブ接続に失敗しました: ${detail}`;
         case "ko-KR":
           return `Google Drive 연결 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google 云盘目录不可读写：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Google Drive folder is not readable/writable: ${detail}`;
+        case "zh-TW":
+          return `Google 雲端硬碟目錄無法讀寫：${detail}`;
+        case "zh-HK":
+          return `Google 雲端硬碟目錄無法讀寫：${detail}`;
+        case "ja-JP":
+          return `Google ドライブフォルダの読み書きができません: ${detail}`;
+        case "ko-KR":
+          return `Google Drive 폴더를 읽고 쓸 수 없습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已自动初始化免费 Drive 配额项目 \(([^)]+)\)，后续所有实例免弹窗自动挂载$/,
+    format: (m, loc) => {
+      const pid = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Initialized free Drive quota project (${pid}); future instances will mount automatically without prompts`;
+        case "zh-TW":
+          return `已自動初始化免費 Drive 配額專案 (${pid})，後續所有執行個體免彈窗自動掛載`;
+        case "zh-HK":
+          return `已自動初始化免費 Drive 配額項目 (${pid})，後續所有實例免彈窗自動掛載`;
+        case "ja-JP":
+          return `無料の Drive クォータプロジェクト (${pid}) を初期化しました。以降のインスタンスは確認なしで自動マウントされます`;
+        case "ko-KR":
+          return `무료 Drive 할당량 프로젝트(${pid})를 초기화했습니다. 이후 모든 인스턴스에서 팝업 없이 자동 마운트됩니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已确认免弹窗云盘配额项目 \(([^)]+)\)，后续所有实例免弹窗自动挂载$/,
+    format: (m, loc) => {
+      const pid = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Verified zero-prompt Drive quota project (${pid}); future instances will mount automatically without prompts`;
+        case "zh-TW":
+          return `已確認免彈窗雲端硬碟配額專案 (${pid})，後續所有執行個體免彈窗自動掛載`;
+        case "zh-HK":
+          return `已確認免彈窗雲端硬碟配額項目 (${pid})，後續所有實例免彈窗自動掛載`;
+        case "ja-JP":
+          return `確認不要ドライブ用クォータプロジェクト (${pid}) を確認しました。以降のインスタンスは確認なしで自動マウントされます`;
+        case "ko-KR":
+          return `무팝업 드라이브 할당량 프로젝트(${pid})를 확인했습니다. 이후 모든 인스턴스에서 팝업 없이 자동 마운트됩니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 原生云盘挂载连接中断，请重试：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Colab native Drive mount connection interrupted; please retry: ${detail}`;
+        case "zh-TW":
+          return `Google Colab 原生雲端硬碟掛載連線中斷，請重試：${detail}`;
+        case "zh-HK":
+          return `Google Colab 原生雲端硬碟掛載連接中斷，請重試：${detail}`;
+        case "ja-JP":
+          return `Google Colab ネイティブドライブのマウント接続が中断されました。再試行してください: ${detail}`;
+        case "ko-KR":
+          return `Google Colab 네이티브 드라이브 마운트 연결이 중단되었습니다. 다시 시도하세요: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 原生云盘挂载失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Colab native Drive mount failed: ${detail}`;
+        case "zh-TW":
+          return `Google Colab 原生雲端硬碟掛載失敗：${detail}`;
+        case "zh-HK":
+          return `Google Colab 原生雲端硬碟掛載失敗：${detail}`;
+        case "ja-JP":
+          return `Google Colab ネイティブドライブのマウントに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Google Colab 네이티브 드라이브 마운트 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 云盘授权接口返回异常状态（HTTP (\d+)），请重试$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Colab Drive authorization endpoint returned unexpected status (HTTP ${code}); please retry`;
+        case "zh-TW":
+          return `Google Colab 雲端硬碟授權介面回傳異常狀態（HTTP ${code}），請重試`;
+        case "zh-HK":
+          return `Google Colab 雲端硬碟授權介面返回異常狀態（HTTP ${code}），請重試`;
+        case "ja-JP":
+          return `Google Colab ドライブ認可エンドポイントが異常なステータス（HTTP ${code}）を返しました。再試行してください`;
+        case "ko-KR":
+          return `Google Colab 드라이브 인증 엔드포인트가 비정상 상태(HTTP ${code})를 반환했습니다. 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未取得 Google Colab 云盘连接许可（HTTP (\d+)），请重试$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Did not receive Google Colab Drive connection permission (HTTP ${code}); please retry`;
+        case "zh-TW":
+          return `未取得 Google Colab 雲端硬碟連線許可（HTTP ${code}），請重試`;
+        case "zh-HK":
+          return `未取得 Google Colab 雲端硬碟連接許可（HTTP ${code}），請重試`;
+        case "ja-JP":
+          return `Google Colab ドライブ接続許可を取得できませんでした（HTTP ${code}）。再試行してください`;
+        case "ko-KR":
+          return `Google Colab 드라이브 연결 권한을 받지 못했습니다 (HTTP ${code}). 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^检查 Google 云盘授权状态失败（HTTP (\d+)），请重试$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Failed to check Google Drive authorization status (HTTP ${code}); please retry`;
+        case "zh-TW":
+          return `檢查 Google 雲端硬碟授權狀態失敗（HTTP ${code}），請重試`;
+        case "zh-HK":
+          return `檢查 Google 雲端硬碟授權狀態失敗（HTTP ${code}），請重試`;
+        case "ja-JP":
+          return `Google ドライブの認可状態確認に失敗しました（HTTP ${code}）。再試行してください`;
+        case "ko-KR":
+          return `Google 드라이브 인증 상태 확인에 실패했습니다 (HTTP ${code}). 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google 云盘授权确认失败（HTTP (\d+)），请重试$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Drive authorization confirmation failed (HTTP ${code}); please retry`;
+        case "zh-TW":
+          return `Google 雲端硬碟授權確認失敗（HTTP ${code}），請重試`;
+        case "zh-HK":
+          return `Google 雲端硬碟授權確認失敗（HTTP ${code}），請重試`;
+        case "ja-JP":
+          return `Google ドライブの認可確認に失敗しました（HTTP ${code}）。再試行してください`;
+        case "ko-KR":
+          return `Google 드라이브 인증 확인에 실패했습니다 (HTTP ${code}). 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google 云盘连接返回 HTTP (\d+)，请重试$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Drive connection returned HTTP ${code}; please retry`;
+        case "zh-TW":
+          return `Google 雲端硬碟連線回傳 HTTP ${code}，請重試`;
+        case "zh-HK":
+          return `Google 雲端硬碟連接返回 HTTP ${code}，請重試`;
+        case "ja-JP":
+          return `Google ドライブ接続が HTTP ${code} を返しました。再試行してください`;
+        case "ko-KR":
+          return `Google 드라이브 연결이 HTTP ${code}을(를) 반환했습니다. 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^向远端实例同步云盘凭据失败（HTTP (\d+)），请重试$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Failed to propagate Drive credentials to the remote instance (HTTP ${code}); please retry`;
+        case "zh-TW":
+          return `向遠端執行個體同步雲端硬碟憑證失敗（HTTP ${code}），請重試`;
+        case "zh-HK":
+          return `向遠端實例同步雲端硬碟憑證失敗（HTTP ${code}），請重試`;
+        case "ja-JP":
+          return `リモートインスタンスへのドライブ認証情報同期に失敗しました（HTTP ${code}）。再試行してください`;
+        case "ko-KR":
+          return `원격 인스턴스로 드라이브 자격 증명 동기화에 실패했습니다 (HTTP ${code}). 다시 시도하세요`;
         default:
           return m[0];
       }

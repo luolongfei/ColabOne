@@ -1015,7 +1015,12 @@ class ColabOneRuntime:
 
     def connect_drive(self) -> dict:
         with self.sync_lock:
-            if self.drive.available() and self.drive_restored:
+            is_drivefs = getattr(self.drive, "is_colab_drivefs_mounted", lambda: False)()
+            if (
+                self.drive.available()
+                and self.drive_restored
+                and (not is_drivefs or self.drive.mode == "colab_drivefs")
+            ):
                 if self._dirty_seq:
                     self._sync_to_drive()
                 return self.drive.status(len(self._dirty_seq))
@@ -1203,7 +1208,13 @@ class ColabOneRuntime:
             self._telemetry_thread = t
 
         def loop():
-            if self.drive.configured() and not self.drive.available():
+            # Attach immediately only if Colab DriveFS is already mounted on disk
+            # (instant local check). Avoid racing with the desktop's explicit
+            # POST /api/v1/drive/connect on sync_lock during initial boot.
+            if (
+                getattr(self.drive, "is_colab_drivefs_mounted", lambda: False)()
+                and not self.drive.available()
+            ):
                 try:
                     self.connect_drive()
                 except Exception:

@@ -1,6 +1,7 @@
 """Credentials stay in the operating system credential store, never in repo files."""
 
 from __future__ import annotations
+import hashlib
 import json
 import threading
 import hmac
@@ -13,7 +14,7 @@ from importlib import resources
 
 import keyring
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import AuthorizedSession, Request
 from google.auth.exceptions import RefreshError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from colab_cli.auth import PUBLIC_SCOPES, REMOTE_REDIRECT_URI
@@ -36,6 +37,19 @@ def parse_authorization_reply(text):
 
 
 COLABONE_KEYRING_SERVICE = "ColabOne"
+COLABONE_GCP_ADC_CLIENT_PREFIX = "764086051850-"
+COLABONE_QUOTA_PROJECT_PREFIX = "colabone-drive-"
+_GCP_PROJECT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+_QUOTA_NEGATIVE_CACHE_TTL = 600.0
+
+
+def _emit_auth_log(on_log, message: str, source: str = "云盘", level: str = "info") -> None:
+    if not callable(on_log) or not message:
+        return
+    try:
+        on_log(message, source, level)
+    except TypeError:
+        on_log(message)
 
 _OAUTH_CALLBACK_TEXT = {
     "zh-CN": (
@@ -93,6 +107,7 @@ class ColabOneAuth:
         self.lock = threading.RLock()
         self.login_event = threading.Event()
         self.locale = "zh-CN"
+        self._quota_probe_cache: tuple[float, str, str] | None = None
 
     def profile(self):
         profile = self.vault.get("google_profile")
@@ -143,7 +158,282 @@ class ColabOneAuth:
         scopes = raw.get("scopes") or []
         return any("drive" in str(s).lower() for s in scopes)
 
-    def build_rclone_conf(self) -> str:
+    def requires_drive_quota_project(self) -> bool:
+        """Return True when the saved OAuth token uses Google's public ADC client.
+
+        Google disables `drive.googleapis.com` on project `764086051850` unless
+        requests carry an `X-Goog-User-Project` header naming an active GCP
+        project with Drive API enabled.
+        """
+        raw = self.vault.get("colab")
+        if not isinstance(raw, dict):
+            return False
+        client_id = str(raw.get("client_id") or "")
+        return client_id.startswith(COLABONE_GCP_ADC_CLIENT_PREFIX)
+
+    def invalidate_drive_quota_project(self) -> None:
+        with self.lock:
+            self.vault.delete("cloud_project")
+            self._quota_probe_cache = None
+
+    @staticmethod
+    def _is_valid_project_id(project_id: str) -> bool:
+        return bool(isinstance(project_id, str) and _GCP_PROJECT_ID_RE.match(project_id))
+
+    @staticmethod
+    def _drive_api_enabled(session: AuthorizedSession, project_id: str) -> bool:
+        resp = session.get(
+            f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/drive.googleapis.com",
+            headers={"X-Goog-User-Project": project_id},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return False
+        return str((resp.json() or {}).get("state") or "").upper() == "ENABLED"
+
+    @staticmethod
+    def _enable_drive_api(session: AuthorizedSession, project_id: str) -> bool:
+        resp = None
+        for attempt in range(3):
+            resp = session.post(
+                f"https://serviceusage.googleapis.com/v1/projects/{project_id}/services/drive.googleapis.com:enable",
+                headers={"X-Goog-User-Project": project_id},
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                break
+            # Freshly created GCP projects can take a couple seconds to propagate to Service Usage.
+            if resp.status_code in (403, 404, 500, 503) and attempt < 2:
+                time.sleep(2.0)
+                continue
+            return False
+        if resp is None or resp.status_code != 200:
+            return False
+        op = resp.json() or {}
+        op_name = str(op.get("name") or "")
+        deadline = time.monotonic() + 30.0
+        while not op.get("done") and op_name and time.monotonic() < deadline:
+            time.sleep(1.2)
+            poll = session.get(
+                f"https://serviceusage.googleapis.com/v1/{op_name}",
+                headers={"X-Goog-User-Project": project_id},
+                timeout=12,
+            )
+            if poll.status_code != 200:
+                break
+            op = poll.json() or {}
+        if op.get("error"):
+            return False
+        return bool(op.get("done")) or ColabOneAuth._drive_api_enabled(session, project_id)
+
+    def drive_quota_status(self) -> dict:
+        """Return offline readiness status for headless Drive quota-project mode."""
+        needs_quota = self.requires_drive_quota_project()
+        project_id = str(self.vault.get("cloud_project") or "")
+        has_project = self._is_valid_project_id(project_id)
+        with self.lock:
+            reason = self._quota_probe_cache[2] if self._quota_probe_cache else ""
+        if not needs_quota:
+            return {
+                "needs_quota": False,
+                "ready": self.has_drive_scope(),
+                "project_id": "",
+                "reason": "not_required",
+            }
+        if has_project:
+            return {
+                "needs_quota": True,
+                "ready": True,
+                "project_id": project_id,
+                "reason": "ready",
+            }
+        return {
+            "needs_quota": True,
+            "ready": False,
+            "project_id": "",
+            "reason": reason,
+        }
+
+    def ensure_drive_quota_project(
+        self, on_log=None, force_refresh: bool = False
+    ) -> tuple[str, str]:
+        """Find or provision a free Drive-enabled GCP quota project for headless rclone.
+
+        Returns `(project_id, reason)`. Never raises on missing GCP ToS or org
+        restrictions; callers cleanly fall back to Colab native DriveFS instead.
+        """
+        if not self.requires_drive_quota_project():
+            return "", "not_required"
+
+        with self.lock:
+            if not force_refresh:
+                cached = self.vault.get("cloud_project")
+                if self._is_valid_project_id(cached):
+                    return cached, "cached"
+                if self._quota_probe_cache is not None:
+                    ts, pid, reason = self._quota_probe_cache
+                    if pid and self._is_valid_project_id(pid):
+                        return pid, reason
+                    if (time.monotonic() - ts) < _QUOTA_NEGATIVE_CACHE_TTL:
+                        return "", reason
+
+        saved = self.vault.get("colab") or {}
+        scopes = saved.get("scopes") or []
+        if not any("cloud-platform" in str(s).lower() for s in scopes):
+            with self.lock:
+                self._quota_probe_cache = (time.monotonic(), "", "no_cloud_scope")
+            return "", "no_cloud_scope"
+
+        try:
+            creds = self.credentials("colab")
+            session = AuthorizedSession(creds)
+            resp = session.get(
+                "https://cloudresourcemanager.googleapis.com/v1/projects",
+                params={"filter": "lifecycleState:ACTIVE", "pageSize": 50},
+                timeout=12,
+            )
+            if resp.status_code != 200:
+                text_lower = (resp.text or "").lower()
+                reason = (
+                    "gcp_tos_required"
+                    if ("terms of service" in text_lower or '"tos"' in text_lower)
+                    else "gcp_project_unavailable"
+                )
+                with self.lock:
+                    self._quota_probe_cache = (time.monotonic(), "", reason)
+                return "", reason
+
+            projects = [
+                p
+                for p in ((resp.json() or {}).get("projects") or [])
+                if isinstance(p, dict)
+                and self._is_valid_project_id(str(p.get("projectId") or ""))
+                and str(p.get("lifecycleState") or "").upper() == "ACTIVE"
+            ]
+
+            # 1) Reuse an existing ColabOne-owned free quota project first.
+            for proj in projects:
+                pid = str(proj["projectId"])
+                if not pid.startswith(COLABONE_QUOTA_PROJECT_PREFIX):
+                    continue
+                if self._drive_api_enabled(session, pid) or self._enable_drive_api(
+                    session, pid
+                ):
+                    self.vault.set("cloud_project", pid)
+                    with self.lock:
+                        self._quota_probe_cache = (
+                            time.monotonic(),
+                            pid,
+                            "reused_colabone_project",
+                        )
+                    return pid, "reused_colabone_project"
+
+            # 2) Read-only check: reuse an existing active project that already
+            #    has drive.googleapis.com enabled (never mutate unrelated projects).
+            for proj in projects[:10]:
+                pid = str(proj["projectId"])
+                if pid.startswith(COLABONE_QUOTA_PROJECT_PREFIX):
+                    continue
+                if self._drive_api_enabled(session, pid):
+                    self.vault.set("cloud_project", pid)
+                    with self.lock:
+                        self._quota_probe_cache = (
+                            time.monotonic(),
+                            pid,
+                            "reused_existing_project",
+                        )
+                    return pid, "reused_existing_project"
+
+            # 3) Attempt once to create a single free dedicated quota project.
+            profile = self.profile()
+            sub = str((profile or {}).get("sub") or "")
+            if not sub:
+                return "", "gcp_project_unavailable"
+            candidates = [
+                COLABONE_QUOTA_PROJECT_PREFIX
+                + hashlib.sha256(f"colabone-drive:{sub}".encode("utf-8")).hexdigest()[:10],
+                COLABONE_QUOTA_PROJECT_PREFIX
+                + hashlib.sha256(f"colabone-drive:v2:{sub}".encode("utf-8")).hexdigest()[:10],
+            ]
+            _emit_auth_log(
+                on_log,
+                "正在检测或初始化免费 Google Drive API 配额项目（仅首次检测）",
+                "云盘",
+            )
+            pid = candidates[0]
+            create_resp = None
+            for idx, cand in enumerate(candidates):
+                pid = cand
+                create_resp = session.post(
+                    "https://cloudresourcemanager.googleapis.com/v1/projects",
+                    json={"projectId": pid, "name": "ColabOne Drive"},
+                    timeout=15,
+                )
+                if create_resp.status_code == 409 and idx + 1 < len(candidates):
+                    continue
+                break
+            if create_resp is None or create_resp.status_code != 200:
+                text_lower = (getattr(create_resp, "text", "") or "").lower()
+                reason = (
+                    "gcp_tos_required"
+                    if ("terms of service" in text_lower or '"tos"' in text_lower)
+                    else "gcp_project_unavailable"
+                )
+                with self.lock:
+                    self._quota_probe_cache = (time.monotonic(), "", reason)
+                return "", reason
+
+            op = create_resp.json() or {}
+            op_name = str(op.get("name") or "")
+            deadline = time.monotonic() + 25.0
+            while not op.get("done") and op_name and time.monotonic() < deadline:
+                time.sleep(1.5)
+                poll = session.get(
+                    f"https://cloudresourcemanager.googleapis.com/v1/{op_name}",
+                    timeout=12,
+                )
+                if poll.status_code != 200:
+                    break
+                op = poll.json() or {}
+
+            op_err = op.get("error")
+            if op_err or not op.get("done"):
+                err_str = json.dumps(op_err or {}, ensure_ascii=False).lower()
+                reason = (
+                    "gcp_tos_required"
+                    if ("terms of service" in err_str or '"tos"' in err_str)
+                    else "gcp_project_unavailable"
+                )
+                with self.lock:
+                    self._quota_probe_cache = (time.monotonic(), "", reason)
+                return "", reason
+
+            if self._enable_drive_api(session, pid):
+                self.vault.set("cloud_project", pid)
+                with self.lock:
+                    self._quota_probe_cache = (
+                        time.monotonic(),
+                        pid,
+                        "created_colabone_project",
+                    )
+                _emit_auth_log(
+                    on_log,
+                    f"已自动初始化免费 Drive 配额项目 ({pid})，后续所有实例免弹窗自动挂载",
+                    "云盘",
+                )
+                return pid, "created_colabone_project"
+
+            with self.lock:
+                self._quota_probe_cache = (
+                    time.monotonic(),
+                    "",
+                    "gcp_project_unavailable",
+                )
+            return "", "gcp_project_unavailable"
+        except Exception:
+            return "", "network_error"
+
+    def build_rclone_conf(self, quota_project: str | None = None) -> str:
         """Build [colabone_gdrive] rclone config from the saved Google OAuth token."""
         if not self.has_drive_scope():
             return ""
@@ -169,7 +459,15 @@ class ColabOneAuth:
         }
         if raw.get("expiry"):
             token_obj["expiry"] = raw["expiry"]
-        return "\n".join(
+        qp = (
+            quota_project
+            if quota_project is not None
+            else str(self.vault.get("cloud_project") or "")
+        )
+        lines = []
+        if self._is_valid_project_id(qp):
+            lines.append(f"# colabone_quota_project = {qp}")
+        lines.extend(
             [
                 "[colabone_gdrive]",
                 "type = drive",
@@ -180,6 +478,7 @@ class ColabOneAuth:
                 "",
             ]
         )
+        return "\n".join(lines)
 
     def _has_active_sessions(self):
         return bool(
@@ -224,6 +523,7 @@ class ColabOneAuth:
             previous = self.vault.get("google_profile") or {}
             if profile.get("sub") != previous.get("sub"):
                 self.vault.delete("cloud_project")
+            self._quota_probe_cache = None
             self.vault.set("google_profile", profile)
             self.vault.set("colab", json.loads(self.flow.credentials.to_json()))
             self.flow = None

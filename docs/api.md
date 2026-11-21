@@ -8,7 +8,7 @@
 | GET | `/api/v1/status` | Runtime identity, `protocol: 7`, `capabilities: ["public_api", "comfyui"]`, `active_engine`, live `resources` telemetry (`gpu`, `memory`, `disk`, `cpu`, `history`), `idle` countdown, `loaded_model`, `public_api`, `comfyui` and task state; does not reset idle |
 | POST | `/api/v1/configure` | Unified configurable idle auto-release timeout (default 30 min; presets `15m`, `30m`, `45m`, `1h`, `2h`); single-launch `max_cu` budget deadline removed |
 | POST | `/api/v1/activity` | Explicit trusted user interaction that resets the idle auto-release countdown; never called by polling |
-| POST | `/api/v1/drive/connect` | Headless mount & restore of `colabone_gdrive:ColabOne_Drive` via pinned `rclone` |
+| POST | `/api/v1/drive/connect` | Attach & restore `ColabOne_Drive/workspace` via mounted official Colab DriveFS (`colab_drivefs`) or headless quota-project `rclone` |
 | POST | `/api/v1/drive/sync` | Synchronize dirty `models.json`, `/workflows/**` and `/comfyui-outputs/**` to `ColabOne_Drive/workspace` |
 | GET / POST | `/api/v1/models` | List actual remote GGUF installation state / add validated `ModelSpec` |
 | POST | `/api/v1/models/{id}/download` | Start remote verified GGUF download; 16/32 threads (default 16), optional transient HF token, and optional `load=true` with `context_length` / `temperature` |
@@ -36,7 +36,7 @@ Runtime `/api/v1/status` (and `/api/v1/snapshot` `runtime`) returns:
 Desktop snapshots also report live account billing state—active vs. idle billing status, hourly CU burn rate (`CU/h`), remaining CU balance, and human-friendly estimated remaining runtime (`X 天 Y 小时` / days & hours)—surfaced in both the persistent top bar and the homepage overview card. Task `download` includes `downloaded_bytes`, `total_bytes`, `speed_bps`, `eta_seconds`, `elapsed_seconds`, `resumed_bytes`, `threads`, `connections`, `phase`, `filename` and file counts. Bounded task `logs` carry monotonic sequence IDs; the desktop deduplicates them independently of progress.
 
 Core desktop commands (`ColabOneDesktop.Command`) include:
-- Runtime & account: `account.refresh`, `runtime.start`, `runtime.select`, `runtime.release`, `runtime.release.preview`, `runtime.release.all`, `runtime.upgrade` (in-place control-service upgrade to protocol `>= 7` when idle with no running task, loaded model or active engine), `runtime.activity`, `settings.save`, `drive.connect`, `drive.sync`, `task.cancel`, `logs.clear`.
+- Runtime & account: `account.refresh`, `runtime.start`, `runtime.select`, `runtime.release`, `runtime.release.preview`, `runtime.release.all`, `runtime.upgrade` (in-place control-service upgrade to protocol `>= 7` when idle with no running task, loaded model or active engine), `runtime.activity`, `settings.save`, `drive.connect`, `drive.setup_headless`, `drive.cancel`, `drive.sync`, `task.cancel`, `logs.clear`.
 - Model Picker (`选择 API 模型`): `hub.search`, `hub.files`, `hub.install`, `model.import`, `model.download`, `model.load`, `model.unload`, `model.delete`, `model.common`, `model.remove_local`, `common_repo.save`, `common_repo.remove`.
 
 ## Public inference API (LLM OpenAI gateway)

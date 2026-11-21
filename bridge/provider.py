@@ -13,6 +13,7 @@ import threading
 import zipfile
 from pathlib import Path
 
+import jupyter_kernel_client
 import requests
 from google.auth.transport.requests import AuthorizedSession
 from colab_cli.client import (
@@ -27,11 +28,132 @@ from colab_cli.client import (
 from colab_cli.state import SessionState
 from colab_cli.contents import ContentsClient
 from colab_cli.runtime import ColabRuntime
+from bridge.drive_mount import ColabOneDriveMount
 from common.location import (
     infer_location_from_endpoint,
     location_from_zone,
     normalize_geo_payload,
 )
+
+_REAL_COLAB_RUNTIME = ColabRuntime
+_COLABONE_WS_PING_INTERVAL = 15
+_COLABONE_WS_CONNECT_TIMEOUT = 25
+
+
+def _is_transient_ws_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(
+        needle in msg
+        for needle in (
+            "connection was lost",
+            "websocket",
+            "connection closed",
+            "broken pipe",
+            "connection reset",
+            "remote end closed",
+            "unexpected eof",
+            "handshake",
+            "timed out",
+        )
+    )
+
+
+class ColabOneKernelRuntime(ColabRuntime):
+    """ColabRuntime with responsive WebSocket keepalive and connection verification."""
+
+    @property
+    def kernel_client(self):
+        if not self._kernel_client:
+            retries = 3
+            backoff = 2
+            last_err = None
+
+            for i in range(retries):
+                try:
+                    client_kwargs = {
+                        "subprotocol": jupyter_kernel_client.JupyterSubprotocol.DEFAULT,
+                        "extra_params": {"colab-runtime-proxy-token": self.token},
+                        "ping_interval": _COLABONE_WS_PING_INTERVAL,
+                        "timeout": _COLABONE_WS_CONNECT_TIMEOUT,
+                    }
+                    if self.session_id:
+                        client_kwargs["session"] = self.session_id
+
+                    if hasattr(jupyter_kernel_client, "ColabKernelClient"):
+                        _ClientCls = jupyter_kernel_client.ColabKernelClient
+                        _token_kw = "proxy_token"
+                    elif hasattr(jupyter_kernel_client, "KernelClient"):
+                        _ClientCls = jupyter_kernel_client.KernelClient
+                        _token_kw = "token"
+                    else:
+                        _ClientCls = jupyter_kernel_client.JupyterKernelClient
+                        _token_kw = "token"
+
+                    client = _ClientCls(
+                        server_url=self.url,
+                        **{_token_kw: self.token},
+                        kernel_id=self.kernel_id,
+                        client_kwargs=client_kwargs,
+                        headers={
+                            "X-Colab-Client-Agent": "colab-cli",
+                            "X-Colab-Runtime-Proxy-Token": self.token,
+                        },
+                    )
+                    client._own_kernel = False
+                    client.start()
+
+                    # Guard against jupyter_kernel_client.wsclient.start_channels()
+                    # returning silently when connection_ready.wait() times out.
+                    ws_client = getattr(getattr(client, "_manager", None), "client", None)
+                    ready_evt = getattr(ws_client, "connection_ready", None)
+                    if ready_evt is not None and not ready_evt.is_set():
+                        try:
+                            ws_client.stop_channels()
+                        except Exception:
+                            pass
+                        raise ConnectionError("Colab WebSocket connection timed out")
+
+                    self._kernel_client = client
+                    self._apply_ws_hook()
+
+                    if not self.kernel_id and self._kernel_client.id:
+                        self.kernel_id = self._kernel_client.id
+                        if self.on_kernel_started:
+                            self.on_kernel_started(self.kernel_id)
+
+                    if (
+                        not self.session_id
+                        and self._kernel_client._manager.client.session.session
+                    ):
+                        self.session_id = (
+                            self._kernel_client._manager.client.session.session
+                        )
+                        if self.on_session_started:
+                            self.on_session_started(self.session_id)
+                    break
+                except (
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectTimeout,
+                    ConnectionError,
+                    OSError,
+                ) as e:
+                    last_err = e
+                    self._kernel_client = None
+                    if i < retries - 1:
+                        time.sleep(backoff ** (i + 1))
+                    else:
+                        raise last_err
+                except Exception:
+                    self._kernel_client = None
+                    raise
+
+        return self._kernel_client
+
+
+def _create_kernel_runtime(*args, **kwargs):
+    if ColabRuntime is _REAL_COLAB_RUNTIME:
+        return ColabOneKernelRuntime(*args, **kwargs)
+    return ColabRuntime(*args, **kwargs)
 
 
 def describe_assignment(assignment, managed_set: set[str], active_ep: str | None) -> dict:
@@ -665,7 +787,7 @@ class ColabOneProvider:
                 def _on_sid(value, slot=obs):
                     slot["session_id"] = value
 
-                obs["runtime"] = ColabRuntime(
+                obs["runtime"] = _create_kernel_runtime(
                     proxy["url"],
                     proxy["token"],
                     session_name="colabone-observer",
@@ -797,7 +919,7 @@ class ColabOneProvider:
             "checked_at": time.time(),
         }
 
-    def session(self, refresh=False, endpoint: str | None = None):
+    def session(self, refresh=False, endpoint: str | None = None, force_rotate=False):
         with self.state_lock:
             target = endpoint or self.active_endpoint()
             data = self._sessions_map().get(target) if target else None
@@ -818,12 +940,20 @@ class ColabOneProvider:
                 if not current or current["endpoint"] != session.endpoint:
                     return None  # A concurrent release must not be undone by this read.
                 session = SessionState.model_validate(current)
-                session.url, session.token, session.token_expires_at = (
-                    info.url,
-                    info.token,
-                    info.expires_at(),
+                needs_rotate = (
+                    force_rotate
+                    or not session.token
+                    or session.url != info.url
+                    or session.token_expires_at is None
+                    or session.token_expires_at.timestamp() <= time.time() + 600
                 )
-                self.save_session(session)
+                if needs_rotate:
+                    session.url, session.token, session.token_expires_at = (
+                        info.url,
+                        info.token,
+                        info.expires_at(),
+                    )
+                    self.save_session(session)
         return session
 
     def save_session(self, session, activate: bool = False):
@@ -1035,7 +1165,7 @@ class ColabOneProvider:
         if slot["key"] != key:
             self.close_kernel_channel(session.endpoint)
         if slot["runtime"] is None:
-            slot["runtime"] = ColabRuntime(
+            slot["runtime"] = _create_kernel_runtime(
                 session.url,
                 session.token,
                 session_name="colabone",
@@ -1456,19 +1586,146 @@ class ColabOneProvider:
                         "远端服务更新未完成，缓存文件仍保留，请重试或下次启动时更新"
                     )
 
+    def _ensure_valid_session(self, endpoint: str | None = None):
+        session = self.session(endpoint=endpoint)
+        if not session:
+            return None
+        if (
+            session.token_expires_at is None
+            or session.token_expires_at.timestamp() <= time.time() + 60
+        ):
+            session = self.session(
+                refresh=True, endpoint=session.endpoint, force_rotate=True
+            )
+        return session
+
     def upload_drive_config(self, rclone_conf: str, endpoint: str | None = None):
-        session = self.session(refresh=True, endpoint=endpoint)
+        session = self._ensure_valid_session(endpoint=endpoint)
         if not session:
             raise RuntimeError("请先启动远端 GPU")
         with tempfile.TemporaryDirectory(prefix="colabone-drive-") as tmp:
             rc_local = Path(tmp) / "colabone-rclone.conf"
             rc_local.write_text(rclone_conf, encoding="utf-8")
             rc_local.chmod(0o600)
-            ContentsClient(session).upload(
-                str(rc_local), "content/.colabone_rclone.conf"
-            )
+            try:
+                ContentsClient(session).upload(
+                    str(rc_local), "content/.colabone_rclone.conf"
+                )
+            except Exception as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", 0)
+                if status in (401, 403):
+                    session = self.session(
+                        refresh=True, endpoint=session.endpoint, force_rotate=True
+                    )
+                    if not session:
+                        raise RuntimeError("请先启动远端 GPU") from None
+                    ContentsClient(session).upload(
+                        str(rc_local), "content/.colabone_rclone.conf"
+                    )
+                else:
+                    raise
 
-    def rpc(self, method, path, body=None, endpoint: str | None = None):
+    def check_colab_drivefs_auth(self, endpoint: str | None = None) -> tuple[bool, str]:
+        """Fast dry-run check of whether Colab DriveFS is already authorized on this VM."""
+        session = self._ensure_valid_session(endpoint=endpoint)
+        if not session:
+            return False, ""
+        mount = ColabOneDriveMount(self.client(), session.endpoint)
+        return mount.dryrun_check()
+
+    def mount_colab_drivefs(
+        self,
+        endpoint: str | None = None,
+        on_auth_url=None,
+        on_log=None,
+        cancel_event: threading.Event | None = None,
+        timeout: float = 210.0,
+    ) -> dict:
+        """Mount Google Drive via official `google.colab.drive.mount` (`dfs_ephemeral`).
+
+        Uses a dedicated short-lived mount kernel so the primary RPC/telemetry
+        kernel channel never blocks while waiting for browser confirmation.
+        Once mounted, Colab's DriveFS daemon stays alive after kernel shutdown.
+        """
+        session = self._ensure_valid_session(endpoint=endpoint)
+        if not session:
+            raise RuntimeError("请先启动远端 GPU")
+        mount_helper = ColabOneDriveMount(
+            self.client(),
+            session.endpoint,
+            on_auth_url=on_auth_url,
+            on_log=on_log,
+            cancel_event=cancel_event,
+            timeout=min(180.0, float(timeout)),
+        )
+        rt = _create_kernel_runtime(
+            session.url,
+            session.token,
+            session_name="colabone-drivefs",
+        )
+        rt.colab_request_hook = mount_helper.hook
+        mount_code = (
+            "import os\n"
+            "from google.colab import drive\n"
+            "drive.mount('/content/drive', timeout_ms=210000)\n"
+            "ok = os.path.isdir('/content/drive/MyDrive') or os.path.isdir('/content/drive/My Drive')\n"
+            "print('COLABONE_DRIVEFS_OK=' + ('1' if ok else '0'), flush=True)\n"
+        )
+
+        def _noop_stdin_hook(_prompt):
+            # Never read desktop JSON-RPC sys.stdin if a fallback prompt appears.
+            return ""
+
+        try:
+            outputs = rt.execute_code(
+                mount_code,
+                allow_stdin=True,
+                stdin_hook=_noop_stdin_hook,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            if mount_helper.error:
+                raise RuntimeError(mount_helper.error) from None
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("已取消 Google 云盘挂载") from None
+            raise RuntimeError(
+                "Google Colab 原生云盘挂载连接中断，请重试：" + str(exc)[:200]
+            ) from None
+        finally:
+            try:
+                rt.stop(shutdown_kernel=True)
+            except Exception:
+                pass
+
+        if mount_helper.error:
+            raise RuntimeError(mount_helper.error)
+
+        mounted = False
+        err_text = ""
+        for out in outputs or []:
+            if not isinstance(out, dict):
+                continue
+            for line in str(out.get("text", "")).splitlines():
+                if line.strip() == "COLABONE_DRIVEFS_OK=1":
+                    mounted = True
+            if out.get("output_type") == "error":
+                evalue = str(out.get("evalue") or "").strip()
+                ename = str(out.get("ename") or "").strip()
+                err_text = evalue or ename
+        if not mounted:
+            if err_text:
+                raise RuntimeError("Google Colab 原生云盘挂载失败：" + err_text[:220])
+            raise RuntimeError("Google Colab 原生云盘未能完成挂载，请重试")
+        return {"ok": True, "mount_path": "/content/drive/MyDrive", "mode": "colab_drivefs"}
+
+    def rpc(
+        self,
+        method,
+        path,
+        body=None,
+        endpoint: str | None = None,
+        timeout: int = 75,
+    ):
         """Use Colab's authenticated kernel channel; no public port or VPN account.
 
         Sensitive POST data is uploaded as an ephemeral file, never embedded in
@@ -1477,61 +1734,93 @@ class ColabOneProvider:
         session = self.session(endpoint=endpoint)
         if not session:
             raise RuntimeError("请先启动远端 GPU")
+        idempotent = method.upper() == "GET" or path in (
+            "drive/connect",
+            "drive/sync",
+            "configure",
+        )
+        exec_timeout = max(30, int(timeout))
+        http_timeout = max(20, exec_timeout - 10)
         slot = self._kernel_slot(session.endpoint)
         with slot["lock"]:
-            session = self.session(endpoint=session.endpoint)
-            if session and (
-                session.token_expires_at is None
-                or session.token_expires_at.timestamp() <= time.time() + 60
-            ):
-                # Refresh before uploading or executing. Retrying a failed POST
-                # could duplicate a model download, generation or release.
-                session = self.session(refresh=True, endpoint=session.endpoint)
-            if not session:
-                raise RuntimeError("请先启动远端 GPU")
-            request_path = ""
-            if body is not None:
-                remote_name = "colabone-rpc-" + uuid.uuid4().hex + ".json"
-                with tempfile.TemporaryDirectory(prefix="colabone-rpc-") as tmp:
-                    local = Path(tmp) / "request.json"
-                    local.write_text(
-                        json.dumps(body, ensure_ascii=False), encoding="utf-8"
+            for attempt in range(2 if idempotent else 1):
+                session = self.session(endpoint=session.endpoint)
+                if session and (
+                    session.token_expires_at is None
+                    or session.token_expires_at.timestamp() <= time.time() + 60
+                ):
+                    # Refresh before uploading or executing. Retrying a failed POST
+                    # could duplicate a model download, generation or release.
+                    session = self.session(
+                        refresh=True, endpoint=session.endpoint, force_rotate=True
                     )
-                    local.chmod(0o600)
-                    ContentsClient(session).upload(str(local), "content/" + remote_name)
-                request_path = "/content/" + remote_name
-            code = """
-import json as _co_json, urllib.request as _co_http
+                if not session:
+                    raise RuntimeError("请先启动远端 GPU")
+                request_path = ""
+                if body is not None:
+                    remote_name = "colabone-rpc-" + uuid.uuid4().hex + ".json"
+                    with tempfile.TemporaryDirectory(prefix="colabone-rpc-") as tmp:
+                        local = Path(tmp) / "request.json"
+                        local.write_text(
+                            json.dumps(body, ensure_ascii=False), encoding="utf-8"
+                        )
+                        local.chmod(0o600)
+                        ContentsClient(session).upload(
+                            str(local), "content/" + remote_name
+                        )
+                    request_path = "/content/" + remote_name
+                code = """
+import json as _co_json, threading as _co_thr, urllib.request as _co_http
 from pathlib import Path as _co_Path
 _co_file = %r
+_co_box = {}
 try:
     _co_cfg = _co_json.loads(_co_Path('/content/colabone-boot.json').read_text(encoding="utf-8"))
     _co_body = _co_Path(_co_file).read_bytes() if _co_file else None
     _co_req = _co_http.Request('http://127.0.0.1:7860/api/v1/' + %r, data=_co_body, method=%r,
         headers={'Authorization': 'Bearer ' + _co_cfg['token'], 'Content-Type': 'application/json'})
-    try:
-        with _co_http.build_opener(_co_http.ProxyHandler({})).open(_co_req, timeout=65) as _co_response:
-            _co_result = {'ok':True, 'value':_co_json.loads(_co_response.read())}
-    except _co_http.HTTPError as _co_error:
-        _co_raw = _co_error.read()
+    def _co_do():
         try:
-            _co_detail = _co_json.loads(_co_raw).get('detail', '远端请求失败')
-        except Exception:
-            _co_detail = f'远端服务返回 HTTP {_co_error.code}'
-        _co_result = {'ok':False, 'error':_co_detail}
-    print('COLABONE_RPC=' + _co_json.dumps(_co_result, ensure_ascii=False))
+            with _co_http.build_opener(_co_http.ProxyHandler({})).open(_co_req, timeout=%d) as _co_response:
+                _co_box['res'] = {'ok':True, 'value':_co_json.loads(_co_response.read())}
+        except _co_http.HTTPError as _co_error:
+            _co_raw = _co_error.read()
+            try:
+                _co_detail = _co_json.loads(_co_raw).get('detail', '远端请求失败')
+            except Exception:
+                _co_detail = f'远端服务返回 HTTP {_co_error.code}'
+            _co_box['res'] = {'ok':False, 'error':_co_detail}
+        except Exception as _co_exc:
+            _co_box['res'] = {'ok':False, 'error':str(_co_exc)[:300]}
+    _co_t = _co_thr.Thread(target=_co_do, daemon=True)
+    _co_t.start()
+    while _co_t.is_alive():
+        _co_t.join(5.0)
+        if _co_t.is_alive():
+            print('COLABONE_RPC_PING=1', flush=True)
+    _co_result = _co_box.get('res') or {'ok':False, 'error':'远端服务未返回响应'}
+    print('COLABONE_RPC=' + _co_json.dumps(_co_result, ensure_ascii=False), flush=True)
 finally:
     if _co_file: _co_Path(_co_file).unlink(missing_ok=True)
-""" % (request_path, path, method)
-            outputs = self.execute(session, code, timeout=75)
-            for output in outputs or []:
-                for line in str(output.get("text", "")).splitlines():
-                    if line.startswith("COLABONE_RPC="):
-                        result = json.loads(line.partition("=")[2])
-                        if not result["ok"]:
-                            raise RuntimeError(str(result["error"])[:500])
-                        return result["value"]
-            raise RuntimeError("Colab 控制连接没有返回结果，请检查网络后重试")
+""" % (request_path, path, method, http_timeout)
+                try:
+                    outputs = self.execute(session, code, timeout=exec_timeout)
+                except Exception as exc:
+                    if idempotent and attempt == 0 and _is_transient_ws_error(exc):
+                        self.close_kernel_channel(session.endpoint)
+                        continue
+                    raise
+                for output in outputs or []:
+                    for line in str(output.get("text", "")).splitlines():
+                        if line.startswith("COLABONE_RPC="):
+                            result = json.loads(line.partition("=")[2])
+                            if not result["ok"]:
+                                raise RuntimeError(str(result["error"])[:500])
+                            return result["value"]
+                if idempotent and attempt == 0:
+                    self.close_kernel_channel(session.endpoint)
+                    continue
+                raise RuntimeError("Colab 控制连接没有返回结果，请检查网络后重试")
 
     def heartbeat(self, endpoint: str | None = None):
         session = self.session(refresh=True, endpoint=endpoint)

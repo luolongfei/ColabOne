@@ -858,6 +858,37 @@ async function refreshAccount() {
   }
 }
 
+const checkingDriveHeadless = ref(false);
+
+function finishHeadlessDriveCheck() {
+  if (!checkingDriveHeadless.value) return;
+  checkingDriveHeadless.value = false;
+  if (state.value.setup.drive_headless && !state.value.error) {
+    notify(t("settings.driveHeadlessEnabledToast"));
+  }
+}
+
+async function setupHeadlessDrive() {
+  checkingDriveHeadless.value = true;
+  const res = await act("drive.setup_headless");
+  if (!res) {
+    checkingDriveHeadless.value = false;
+    return;
+  }
+  if (!state.value.operation) {
+    finishHeadlessDriveCheck();
+  }
+}
+
+watch(
+  () => state.value.operation,
+  (op) => {
+    if (!op && checkingDriveHeadless.value) {
+      finishHeadlessDriveCheck();
+    }
+  },
+);
+
 async function changeIdleMinutes(rawMinutes: unknown) {
   const minutes = Number(rawMinutes);
   if (!Number.isFinite(minutes) || minutes < 1) return;
@@ -998,7 +1029,11 @@ async function pasteLogin() {
 watch(
   () => state.value.auth_url,
   async (url) => {
-    if (url && url !== openedAuth) {
+    if (!url) {
+      openedAuth = "";
+      return;
+    }
+    if (url !== openedAuth) {
       openedAuth = url;
       try {
         await colabOneOpenURL(url);
@@ -1996,12 +2031,15 @@ onUnmounted(() => {
 
                   <!-- Drive Sync Bar inside Device Card when Ready -->
                   <div
-                    v-if="ready && (state.setup.drive || state.setup.drive_authorized)"
+                    v-if="ready && (state.setup.drive || state.setup.drive_authorized || state.setup.colab)"
                     class="co-drive-strip co-sync-note"
                   >
                     <PhCloud :size="16" class="co-drive-icon" />
                     <span class="co-drive-text">
-                      <template v-if="state.setup.drive">
+                      <template v-if="state.auth_url && state.operation && !state.setup.drive">
+                        {{ t("device.driveWaitingBrowserConfirm") }}
+                      </template>
+                      <template v-else-if="state.setup.drive">
                         {{
                           state.runtime.drive?.error
                             ? tb(state.runtime.drive.error)
@@ -2022,21 +2060,52 @@ onUnmounted(() => {
                               })
                         }}
                       </template>
+                      <template v-else-if="state.runtime.drive?.error">
+                        {{ tb(state.runtime.drive.error) }}
+                      </template>
                       <template v-else>
                         {{ t("device.driveAuthorizedHint") }}
                       </template>
                     </span>
-                    <AButton
-                      size="small"
-                      :disabled="busy || !!state.operation"
-                      @click="act(state.setup.drive ? 'drive.sync' : 'drive.connect')"
-                    >
-                      {{
-                        state.setup.drive
-                          ? t("device.syncNow")
-                          : t("device.mountDriveNow")
-                      }}
-                    </AButton>
+                    <template v-if="state.auth_url && state.operation && !state.setup.drive">
+                      <ASpace :size="6">
+                        <AButton
+                          size="small"
+                          type="primary"
+                          @click="colabOneOpenURL(state.auth_url)"
+                        >
+                          {{ t("device.driveReopenAuth") }}
+                        </AButton>
+                        <AButton
+                          size="small"
+                          @click="act('drive.cancel')"
+                        >
+                          {{ t("device.driveCancelMount") }}
+                        </AButton>
+                      </ASpace>
+                    </template>
+                    <ASpace v-else :size="6" wrap>
+                      <AButton
+                        v-if="state.setup.drive_authorized && !state.setup.drive_headless"
+                        size="small"
+                        type="link"
+                        class="co-drive-headless-link"
+                        @click="selectPage('settings')"
+                      >
+                        {{ t("device.driveEnableHeadlessLink") }}
+                      </AButton>
+                      <AButton
+                        size="small"
+                        :disabled="busy || !!state.operation"
+                        @click="act(state.setup.drive ? 'drive.sync' : 'drive.connect')"
+                      >
+                        {{
+                          state.setup.drive
+                            ? t("device.syncNow")
+                            : t("device.mountDriveNow")
+                        }}
+                      </AButton>
+                    </ASpace>
                   </div>
                 </div>
                 </template>
@@ -2607,7 +2676,9 @@ onUnmounted(() => {
                     <ATag
                       v-else
                       :color="
-                        state.setup.drive || state.setup.drive_authorized
+                        state.setup.drive ||
+                        state.setup.drive_headless ||
+                        state.setup.drive_authorized
                           ? 'success'
                           : 'default'
                       "
@@ -2615,11 +2686,13 @@ onUnmounted(() => {
                       {{
                         state.setup.drive
                           ? t("settings.driveTagMounted")
-                          : state.setup.drive_authorized
-                            ? t("settings.driveTagAuthorized")
-                            : state.setup.colab
-                              ? t("settings.driveTagReauth")
-                              : t("settings.disconnected")
+                          : state.setup.drive_headless
+                            ? t("settings.driveTagHeadlessReady")
+                            : state.setup.drive_authorized
+                              ? t("settings.driveTagAuthorized")
+                              : state.setup.colab
+                                ? t("settings.driveTagReauth")
+                                : t("settings.disconnected")
                       }}
                     </ATag>
                   </div>
@@ -2637,6 +2710,43 @@ onUnmounted(() => {
                     class="co-sub-alert"
                   />
 
+                  <AAlert
+                    v-else-if="
+                      snapshotLoaded &&
+                      state.setup.colab &&
+                      state.setup.drive_authorized &&
+                      !state.setup.drive_headless
+                    "
+                    type="info"
+                    show-icon
+                    :message="t('settings.driveHeadlessTipTitle')"
+                    class="co-sub-alert"
+                  >
+                    <template #description>
+                      <p class="co-drive-headless-desc">
+                        {{ t("settings.driveHeadlessTipDesc") }}
+                      </p>
+                      <ASpace :size="8" wrap class="co-drive-headless-actions">
+                        <AButton
+                          size="small"
+                          @click="colabOneOpenURL('https://console.cloud.google.com/')"
+                        >
+                          {{ t("settings.driveOpenGcpConsole") }}
+                        </AButton>
+                        <AButton
+                          size="small"
+                          type="primary"
+                          ghost
+                          :loading="checkingDriveHeadless"
+                          :disabled="busy || !!state.operation"
+                          @click="setupHeadlessDrive"
+                        >
+                          {{ t("settings.driveCheckHeadless") }}
+                        </AButton>
+                      </ASpace>
+                    </template>
+                  </AAlert>
+
                   <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
                     <ColabOneSkeleton :width="118" :height="32" variant="button" tone="subtle" :delay="90" />
                   </div>
@@ -2646,7 +2756,7 @@ onUnmounted(() => {
                         busy ||
                         !ready ||
                         !!state.operation ||
-                        !state.setup.drive_authorized
+                        !state.setup.colab
                       "
                       @click="
                         act(state.setup.drive ? 'drive.sync' : 'drive.connect')
@@ -2660,6 +2770,19 @@ onUnmounted(() => {
                           ? t("settings.driveSyncNow")
                           : t("settings.driveMountNow")
                       }}
+                    </AButton>
+                    <AButton
+                      v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                      type="primary"
+                      @click="colabOneOpenURL(state.auth_url)"
+                    >
+                      {{ t("device.driveReopenAuth") }}
+                    </AButton>
+                    <AButton
+                      v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                      @click="act('drive.cancel')"
+                    >
+                      {{ t("device.driveCancelMount") }}
                     </AButton>
                   </ASpace>
                 </ACard>
@@ -4366,6 +4489,23 @@ onUnmounted(() => {
 
 .co-sub-alert {
   margin-bottom: 12px;
+}
+
+.co-drive-headless-desc {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--co-secondary-text);
+}
+
+.co-drive-headless-actions {
+  display: flex;
+  align-items: center;
+}
+
+.co-drive-headless-link {
+  padding-inline: 4px !important;
+  font-size: 12px !important;
 }
 
 .co-appearance-section :deep(.ant-segmented) {

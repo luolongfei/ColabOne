@@ -61,6 +61,10 @@ def colabone_config_dir():
     )
 
 
+class ColabOneOperationCancelled(RuntimeError):
+    """Raised when a user voluntarily cancels a long-running desktop operation."""
+
+
 class ColabOneController:
     def __init__(self, root, vault=None, config_dir=None, background=True):
         self.root = root
@@ -127,6 +131,7 @@ class ColabOneController:
         self.lock = threading.RLock()
         self.operation_lock = threading.Lock()
         self.stop = threading.Event()
+        self.drive_cancel = threading.Event()
         self.instance_states: dict[str, dict] = {}
         self.common_ids: set[str] = set()
         self.custom_models: dict[str, dict] = {}
@@ -175,6 +180,7 @@ class ColabOneController:
 
     def close(self):
         self.stop.set()
+        self.drive_cancel.set()
         self._observer_wake.set()
         close_obs = getattr(self.provider, "close_observer", None)
         if callable(close_obs):
@@ -1205,6 +1211,18 @@ class ColabOneController:
         drive_authorized = bool(drive_auth_fn()) if callable(drive_auth_fn) else False
         if not isinstance(drive_authorized, bool):
             drive_authorized = False
+        req_quota_fn = getattr(self.auth, "requires_drive_quota_project", None)
+        needs_quota = bool(req_quota_fn()) if callable(req_quota_fn) else False
+        quota_status_fn = getattr(self.auth, "drive_quota_status", None)
+        quota_status = quota_status_fn() if callable(quota_status_fn) else None
+        drive_quota_reason = (
+            str(quota_status.get("reason") or "")
+            if isinstance(quota_status, dict)
+            else ""
+        )
+        drive_headless = drive_authorized and (
+            (not needs_quota) or bool(self.vault.get("cloud_project"))
+        )
         shortcuts = shortcut_status(sandbox_dir=self.shortcut_sandbox)
         value["setup"] = {
             "colab": bool(self.vault.get("colab")),
@@ -1212,6 +1230,8 @@ class ColabOneController:
                 (self.vault.get("colab") or {}).get("refresh_token")
             ),
             "drive_authorized": drive_authorized,
+            "drive_headless": drive_headless,
+            "drive_quota_reason": drive_quota_reason,
             "drive": bool(drive_info.get("connected")),
             "drive_mode": str(drive_info.get("mode") or "disabled"),
             "hf": bool(self.vault.get("hf")),
@@ -1348,6 +1368,8 @@ class ColabOneController:
             try:
                 fn()
                 self.activity.add(title + "：完成")
+            except ColabOneOperationCancelled as exc:
+                self.activity.add(safe_message(str(exc)[:300]), "云盘", "info")
             except Exception as exc:
                 # HTTP exception URLs may contain OAuth codes: surface only a safe reason.
                 if isinstance(exc, requests.HTTPError):
@@ -1364,10 +1386,29 @@ class ColabOneController:
         threading.Thread(target=run, daemon=True).start()
         return {"ok": True}
 
-    def remote(self, method, path, body=None, endpoint: str | None = None):
-        if endpoint is None:
-            return self.provider.rpc(method, path, body)
-        return self.provider.rpc(method, path, body, endpoint=endpoint)
+    def remote(
+        self,
+        method,
+        path,
+        body=None,
+        endpoint: str | None = None,
+        timeout: int | None = None,
+    ):
+        kwargs = {}
+        if endpoint is not None:
+            kwargs["endpoint"] = endpoint
+        if timeout is not None and ColabOneController._accepts_kwarg(
+            self.provider.rpc, "timeout"
+        ):
+            kwargs["timeout"] = timeout
+        return self.provider.rpc(method, path, body, **kwargs)
+
+    def _remote_long(self, method, path, body=None, timeout: int = 180):
+        if getattr(self.remote, "__func__", None) is ColabOneController.remote:
+            return self.remote(method, path, body, timeout=timeout)
+        if body is None:
+            return self.remote(method, path)
+        return self.remote(method, path, body)
 
     def configure_remote(self, endpoint: str | None = None):
         rt = (
@@ -1498,38 +1539,213 @@ class ColabOneController:
             threading.Thread(target=_bg_refresh, daemon=True).start()
         return {"ok": True, "endpoint": endpoint}
 
-    def connect_drive(self):
-        self.activity.add("正在准备 Google OAuth 云盘凭据配置", "云盘")
+    def _resolve_headless_rclone_conf(
+        self, force_refresh: bool = False
+    ) -> tuple[str, str]:
+        """Return `(rclone_conf, reason)` for headless rclone mode when supported.
+
+        For Google's public ADC OAuth client (`764086051850-*`), Google blocks
+        `drive.googleapis.com` unless an active Drive-enabled GCP quota project
+        is provided via `X-Goog-User-Project`. When no quota project can be
+        discovered or provisioned (e.g. GCP ToS not accepted), returns `("", reason)`
+        so callers automatically fall back to official Colab native DriveFS.
+        """
         build_fn = getattr(self.auth, "build_rclone_conf", None)
-        rclone_conf = build_fn() if callable(build_fn) else ""
-        if not isinstance(rclone_conf, str) or not rclone_conf:
+        if not callable(build_fn):
+            return "", "no_drive_scope"
+        req_quota_fn = getattr(self.auth, "requires_drive_quota_project", None)
+        needs_quota = bool(req_quota_fn()) if callable(req_quota_fn) else False
+        if not isinstance(needs_quota, bool):
+            needs_quota = False
+        if needs_quota:
+            ensure_fn = getattr(self.auth, "ensure_drive_quota_project", None)
+            if not callable(ensure_fn):
+                return "", "gcp_project_unavailable"
+            ensure_kwargs = {"on_log": self.activity.add}
+            if force_refresh and ColabOneController._accepts_kwarg(
+                ensure_fn, "force_refresh"
+            ):
+                ensure_kwargs["force_refresh"] = True
+            project_id, reason = ensure_fn(**ensure_kwargs)
+            if not project_id:
+                return "", reason or "gcp_project_unavailable"
+            conf = (
+                build_fn(quota_project=project_id)
+                if ColabOneController._accepts_kwarg(build_fn, "quota_project")
+                else build_fn()
+            )
+            if isinstance(conf, str) and "[colabone_gdrive]" in conf:
+                return conf, "rclone"
+            return "", "no_drive_scope"
+        conf = build_fn()
+        if isinstance(conf, str) and "[colabone_gdrive]" in conf:
+            return conf, "rclone"
+        return "", "no_drive_scope"
+
+    @staticmethod
+    def _is_quota_project_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(
+            needle in msg
+            for needle in (
+                "accessnotconfigured",
+                "service_disabled",
+                "quota project",
+                "配额项目",
+            )
+        )
+
+    def _connect_colab_drivefs(self, silent_only: bool = False) -> dict | None:
+        mount_fn = getattr(self.provider, "mount_colab_drivefs", None)
+        if not callable(mount_fn):
+            return None
+        if silent_only:
+            check_fn = getattr(self.provider, "check_colab_drivefs_auth", None)
+            if not callable(check_fn):
+                return None
+            authorized, _ = check_fn()
+            if not authorized:
+                return None
+        self.drive_cancel.clear()
+        self.update(
+            operation={
+                "title": "正在通过 Colab 原生驱动挂载 Google 云盘 (ColabOne_Drive)",
+                "running": True,
+            },
+            auth_url="",
+        )
+        try:
+            mount_fn(
+                on_auth_url=lambda u: self.update(auth_url=u),
+                on_log=self.activity.add,
+                cancel_event=self.drive_cancel,
+            )
+        except Exception:
+            if self.drive_cancel.is_set():
+                raise ColabOneOperationCancelled("已取消 Google 云盘挂载") from None
+            raise
+        finally:
+            self.update(auth_url="")
+        self.activity.add("正在初始化 ColabOne_Drive 工作区并恢复持久化数据", "云盘")
+        return self._remote_long("POST", "drive/connect", timeout=180)
+
+    def connect_drive(self):
+        self.activity.add("正在检查 Google 云盘挂载方式与授权状态", "云盘")
+        # Bypass the negative probe cache on explicit user clicks when no quota
+        # project is cached yet, so accepting GCP ToS takes effect immediately.
+        rclone_conf, reason = self._resolve_headless_rclone_conf(
+            force_refresh=not bool(self.vault.get("cloud_project"))
+        )
+        if rclone_conf:
+            try:
+                self.activity.add("正在上传无感云盘凭据到远端实例", "云盘")
+                self.provider.upload_drive_config(rclone_conf)
+                self.activity.add("正在远端初始化 rclone 并挂载 ColabOne_Drive", "云盘")
+                info = self._remote_long("POST", "drive/connect", timeout=180)
+                self.activity.add("正在刷新云盘与远端工作区状态", "云盘")
+                self.refresh_remote()
+                mode = info.get("mode")
+                if mode == "mount":
+                    self.activity.add(
+                        "已通过 Google OAuth 自动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
+                        "云盘",
+                    )
+                else:
+                    self.activity.add(
+                        "已通过 Google OAuth 连接云盘持久化目录 (ColabOne_Drive)",
+                        "云盘",
+                    )
+                return info
+            except Exception as exc:
+                if not self._is_quota_project_error(exc):
+                    raise
+                inv_fn = getattr(self.auth, "invalidate_drive_quota_project", None)
+                if callable(inv_fn):
+                    inv_fn()
+                self.activity.add(
+                    "无感配额项目暂不可用，自动切换为 Google Colab 官方原生驱动挂载",
+                    "云盘",
+                    "warning",
+                )
+
+        if reason == "gcp_tos_required":
+            self.activity.add(
+                "当前账号尚未开通免费 GCP 配额项目，自动切换为 Google Colab 官方原生驱动挂载",
+                "云盘",
+            )
+        elif not rclone_conf:
+            self.activity.add(
+                "正在通过 Google Colab 官方原生驱动挂载云盘 (ColabOne_Drive)",
+                "云盘",
+            )
+
+        info = self._connect_colab_drivefs(silent_only=False)
+        if info is None:
             raise RuntimeError(
                 "当前保存的登录缺少云盘权限，请在设置中点击一次「重新登录」完成授权，后续所有实例永久自动生效"
             )
-        self.activity.add("正在上传云盘凭据到远端实例", "云盘")
-        self.provider.upload_drive_config(rclone_conf)
-        self.activity.add("正在远端初始化 rclone 并挂载 ColabOne_Drive", "云盘")
-        info = self.remote("POST", "drive/connect")
         self.activity.add("正在刷新云盘与远端工作区状态", "云盘")
         self.refresh_remote()
-        mode = info.get("mode")
-        if mode == "mount":
-            self.activity.add(
-                "已通过 Google OAuth 自动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
-                "云盘",
-            )
-        else:
-            self.activity.add(
-                "已通过 Google OAuth 连接云盘持久化目录 (ColabOne_Drive)",
-                "云盘",
-            )
+        self.activity.add(
+            "已通过 Google Colab 原生驱动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
+            "云盘",
+        )
         return info
+
+    def setup_headless_drive(self):
+        if not self.vault.get("colab"):
+            raise RuntimeError("请先登录 Google 账号")
+        has_scope_fn = getattr(self.auth, "has_drive_scope", None)
+        if callable(has_scope_fn) and not bool(has_scope_fn()):
+            raise RuntimeError(
+                "当前登录凭据缺少云盘免弹窗所需权限，请在设置中点击「重新登录」后再试。"
+            )
+        ensure_fn = getattr(self.auth, "ensure_drive_quota_project", None)
+        if not callable(ensure_fn):
+            raise RuntimeError(
+                "暂未能自动创建免费 GCP 配额项目（可能受账号或组织策略限制），仍可正常使用 Colab 原生云盘挂载。"
+            )
+        self.activity.add("正在检测并开启 Google 云盘永久免弹窗挂载模式", "云盘")
+        ensure_kwargs = {"on_log": self.activity.add}
+        if ColabOneController._accepts_kwarg(ensure_fn, "force_refresh"):
+            ensure_kwargs["force_refresh"] = True
+        project_id, reason = ensure_fn(**ensure_kwargs)
+        if reason == "not_required":
+            self.activity.add("当前 Google 凭据已支持云盘永久免弹窗自动挂载", "云盘")
+            return {"ok": True, "headless": True, "project_id": "", "reason": reason}
+        if project_id:
+            if reason != "created_colabone_project":
+                self.activity.add(
+                    f"已确认免弹窗云盘配额项目 ({project_id})，后续所有实例免弹窗自动挂载",
+                    "云盘",
+                )
+            return {
+                "ok": True,
+                "headless": True,
+                "project_id": project_id,
+                "reason": reason,
+            }
+        if reason == "gcp_tos_required":
+            raise RuntimeError(
+                "尚未检测到 Google Cloud 服务条款同意记录。请先打开 Google Cloud 同意一次服务条款（免费、无需绑卡），再重试检测。"
+            )
+        if reason == "no_cloud_scope":
+            raise RuntimeError(
+                "当前登录凭据缺少云盘免弹窗所需权限，请在设置中点击「重新登录」后再试。"
+            )
+        if reason == "gcp_project_unavailable":
+            raise RuntimeError(
+                "暂未能自动创建免费 GCP 配额项目（可能受账号或组织策略限制），仍可正常使用 Colab 原生云盘挂载。"
+            )
+        raise RuntimeError(
+            "检测 Google Cloud 配额项目时网络异常，请检查网络或代理后重试。"
+        )
 
     def sync_drive(self):
         if not self._vault_sessions():
             raise RuntimeError("请先启动远端 GPU 实例")
         self.activity.add("正在将远端配置、工作流与作品同步至 Google 云盘", "云盘")
-        result = self.remote("POST", "drive/sync")
+        result = self._remote_long("POST", "drive/sync", timeout=180)
         self.refresh_remote()
         if not result.get("ok"):
             raise RuntimeError(result.get("error") or "Google 云盘同步未完成，请重试")
@@ -1558,18 +1774,21 @@ class ColabOneController:
         previous_active = self._active_endpoint()
         existing_sessions = set(self._vault_sessions().keys())
         rclone_conf = ""
+        drive_reason = ""
         if self.settings.get("auto_drive", True):
             try:
-                build_fn = getattr(self.auth, "build_rclone_conf", None)
-                candidate = build_fn() if callable(build_fn) else ""
-                if isinstance(candidate, str) and "[colabone_gdrive]" in candidate:
-                    rclone_conf = candidate
+                rclone_conf, drive_reason = self._resolve_headless_rclone_conf()
             except Exception:
-                rclone_conf = ""
+                rclone_conf, drive_reason = "", "error"
             if rclone_conf:
                 self.activity.add("已准备 Google 云盘自动挂载凭据", "云盘")
+            elif drive_reason in ("gcp_tos_required", "gcp_project_unavailable"):
+                self.activity.add(
+                    "当前账号未配置免费 GCP 配额项目，GPU 就绪后将使用 Colab 官方原生云盘模式",
+                    "云盘",
+                )
             else:
-                self.activity.add("未检测到云盘授权凭据，本次启动跳过自动挂载", "云盘")
+                self.activity.add("未检测到云盘无感凭据，本次启动跳过无感挂载", "云盘")
         else:
             self.activity.add("未开启自动挂载 Google 云盘，跳过云盘配置", "云盘")
 
@@ -1657,7 +1876,7 @@ class ColabOneController:
                     }
                 )
                 try:
-                    info = self.remote("POST", "drive/connect")
+                    info = self._remote_long("POST", "drive/connect", timeout=180)
                     if info.get("mode") == "mount":
                         self.activity.add(
                             "已自动挂载 Google 云盘 (/content/drive/MyDrive → ColabOne_Drive)",
@@ -1669,6 +1888,12 @@ class ColabOneController:
                             "云盘",
                         )
                 except Exception as drive_exc:
+                    if self._is_quota_project_error(drive_exc):
+                        inv_fn = getattr(
+                            self.auth, "invalidate_drive_quota_project", None
+                        )
+                        if callable(inv_fn):
+                            inv_fn()
                     self.activity.add(
                         "云盘自动挂载未就绪，实例仍可正常使用：" + safe_message(drive_exc),
                         "云盘",
@@ -1679,6 +1904,29 @@ class ColabOneController:
                     self.activity.add("已刷新云盘工作区与远端状态", "云盘")
                 except Exception:
                     pass
+            elif self.settings.get("auto_drive", True) and drive_reason in (
+                "gcp_tos_required",
+                "gcp_project_unavailable",
+            ):
+                try:
+                    info = self._connect_colab_drivefs(silent_only=True)
+                    if info and info.get("connected"):
+                        self.refresh_remote()
+                        self.activity.add(
+                            "已通过 Google Colab 原生驱动自动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
+                            "云盘",
+                        )
+                    else:
+                        self.activity.add(
+                            "点击「立即挂载云盘」即可在浏览器一键确认 Colab 原生云盘挂载 (ColabOne_Drive)",
+                            "云盘",
+                        )
+                except Exception as drive_exc:
+                    self.activity.add(
+                        "云盘自动挂载未就绪，实例仍可正常使用：" + safe_message(drive_exc),
+                        "云盘",
+                        "warning",
+                    )
             try:
                 self.activity.add("正在刷新账号计费与活跃实例列表", "计费")
                 acct = self.provider.account()
@@ -2585,6 +2833,15 @@ class ColabOneController:
             return self.async_operation("完成 Google 登录", finish)
         if action == "drive.connect":
             return self.async_operation("挂载 Google 云盘 (ColabOne_Drive)", self.connect_drive)
+        if action == "drive.setup_headless":
+            return self.async_operation(
+                "检测并开启云盘免弹窗模式", self.setup_headless_drive
+            )
+        if action == "drive.cancel":
+            self.drive_cancel.set()
+            self.update(auth_url="")
+            self.activity.add("已请求取消 Google 云盘挂载", "云盘")
+            return {"ok": True}
         if action in ("drive.sync", "sync"):
             return self.async_operation("同步 Google 云盘 (ColabOne_Drive)", self.sync_drive)
         if action == "runtime.start":

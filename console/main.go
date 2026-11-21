@@ -215,18 +215,35 @@ func (d *ColabOneDesktop) WriteClipboard(value string) error {
 	}
 	return mygo.Clipboard.Write(transfer.TextData(value))
 }
-func (d *ColabOneDesktop) OpenURL(value string) error {
+func validateColabOneExternalURL(value string) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme != "https" {
 		return errors.New(colabOneT("err.httpsOnly"))
 	}
-	allowed := []string{"accounts.google.com", "colab.research.google.com", "developers.google.com", "github.com", "huggingface.co", "one.dash.cloudflare.com", "dash.cloudflare.com", "developers.cloudflare.com"}
+	allowed := []string{
+		"accounts.google.com",
+		"colab.research.google.com",
+		"console.cloud.google.com",
+		"developers.google.com",
+		"github.com",
+		"huggingface.co",
+		"one.dash.cloudflare.com",
+		"dash.cloudflare.com",
+		"developers.cloudflare.com",
+	}
 	for _, host := range allowed {
 		if u.Hostname() == host {
-			return mygo.Shell.OpenExternal(value)
+			return nil
 		}
 	}
 	return errors.New(colabOneT("err.unsupportedURL"))
+}
+
+func (d *ColabOneDesktop) OpenURL(value string) error {
+	if err := validateColabOneExternalURL(value); err != nil {
+		return err
+	}
+	return mygo.Shell.OpenExternal(value)
 }
 
 func colabOneWindowBackground() string {
