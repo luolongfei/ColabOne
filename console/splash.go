@@ -9,7 +9,6 @@ import (
 	"image/draw"
 	_ "image/png"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,21 +23,26 @@ import (
 var colabOneManifestJSON []byte
 
 const (
-	colabOneSplashCardWidth    = 364
-	colabOneSplashCardHeight   = 388
+	colabOneSplashCardWidth    = 384
+	colabOneSplashCardHeight   = 460
 	colabOneSplashShadowMargin = 40
 	colabOneSplashWindowWidth  = colabOneSplashCardWidth + colabOneSplashShadowMargin*2
 	colabOneSplashWindowHeight = colabOneSplashCardHeight + colabOneSplashShadowMargin*2
 
-	colabOneSplashMinDisplay     = 1200 * time.Millisecond
-	colabOneSplashPaintGrace     = 180 * time.Millisecond
-	colabOneSplashPageFailSafe   = 4500 * time.Millisecond
-	colabOneSplashHardFailSafe   = 7500 * time.Millisecond
-	colabOneSplashEnterDuration  = 280 * time.Millisecond
-	colabOneSplashExitDuration   = 200 * time.Millisecond
-	colabOneSplashDestroyDelay   = 230 * time.Millisecond
-	colabOneAppearanceFileName   = "appearance.json"
-	colabOneDefaultVersionString = "v0.1.0"
+	colabOneSplashMinDisplay      = 1200 * time.Millisecond
+	colabOneSplashPaintGrace      = 180 * time.Millisecond
+	colabOneSplashPageFailSafe    = 4500 * time.Millisecond
+	colabOneSplashHardFailSafe    = 7500 * time.Millisecond
+	colabOneSplashEnterDuration   = 280 * time.Millisecond
+	colabOneSplashExitDuration    = 200 * time.Millisecond
+	colabOneSplashDestroyDelay    = 230 * time.Millisecond
+	colabOneSplashSpinnerDuration = 3000 * time.Millisecond
+	colabOneSplashSpinnerArcSpan  = float32(0.75) // 3/4 circle (270° arc, 90° open gap)
+	colabOneSplashSpinnerSize     = float32(164)
+	colabOneSplashSpinnerRadius   = float32(68)
+	colabOneSplashSpinnerStroke   = float32(11)
+	colabOneAppearanceFileName    = "appearance.json"
+	colabOneDefaultVersionString  = "v0.1.0"
 )
 
 var (
@@ -290,36 +294,27 @@ func colabOneSplashCopy(locale string) colabOneSplashStrings {
 }
 
 type colabOneSplashPalette struct {
-	cardTop         ui.Color
-	cardBottom      ui.Color
-	borderTop       ui.Color
-	borderBottom    ui.Color
-	shadowAmbient   ui.Color
-	shadowKey       ui.Color
-	auraPrimary     ui.Color
-	auraSecondary   ui.Color
-	ringStroke      ui.Color
-	ringSweep       ui.Color
-	topSheen        ui.Color
-	haloFill        ui.Color
-	haloGlow        ui.Color
-	haloTrack       ui.Color
-	haloAccentA     ui.Color
-	haloAccentB     ui.Color
-	logoShadow      ui.Color
-	logoRing        ui.Color
-	titleText       ui.Color
-	taglineText     ui.Color
-	pillBg          ui.Color
-	pillBorder      ui.Color
-	pillText        ui.Color
-	spinnerTrack    ui.Color
-	spinnerArc      ui.Color
-	divider         ui.Color
-	footerText      ui.Color
-	versionBg       ui.Color
-	versionBorder   ui.Color
-	versionText     ui.Color
+	cardTop       ui.Color
+	cardBottom    ui.Color
+	borderTop     ui.Color
+	borderBottom  ui.Color
+	shadowAmbient ui.Color
+	shadowKey     ui.Color
+	auraPrimary   ui.Color
+	auraSecondary ui.Color
+	ringStroke    ui.Color
+	topSheen      ui.Color
+	logoShadow    ui.Color
+	logoRing      ui.Color
+	titleText     ui.Color
+	taglineText   ui.Color
+	statusText    ui.Color
+	spinnerArc    ui.Color
+	divider       ui.Color
+	footerText    ui.Color
+	versionBg     ui.Color
+	versionBorder ui.Color
+	versionText   ui.Color
 }
 
 func resolveColabOneSplashPalette(dark bool) colabOneSplashPalette {
@@ -331,24 +326,15 @@ func resolveColabOneSplashPalette(dark bool) colabOneSplashPalette {
 			borderBottom:  ui.RGBA(255, 255, 255, 0.05),
 			shadowAmbient: ui.RGBA(0, 0, 0, 0.56),
 			shadowKey:     ui.RGBA(0, 0, 0, 0.36),
-			auraPrimary:   ui.RGBA(59, 130, 246, 0.24),
+			auraPrimary:   ui.RGBA(59, 130, 246, 0.22),
 			auraSecondary: ui.RGBA(99, 102, 241, 0.08),
-			ringStroke:    ui.RGBA(255, 255, 255, 0.065),
-			ringSweep:     ui.RGBA(96, 165, 250, 0.34),
+			ringStroke:    ui.RGBA(255, 255, 255, 0.055),
 			topSheen:      ui.RGBA(96, 165, 250, 0.48),
-			haloFill:      ui.RGBA(255, 255, 255, 0.035),
-			haloGlow:      ui.RGBA(59, 130, 246, 0.22),
-			haloTrack:     ui.RGBA(255, 255, 255, 0.09),
-			haloAccentA:   ui.Hex("#3b82f6"),
-			haloAccentB:   ui.Hex("#38bdf8"),
-			logoShadow:    ui.RGBA(0, 0, 0, 0.52),
+			logoShadow:    ui.RGBA(0, 0, 0, 0.44),
 			logoRing:      ui.RGBA(255, 255, 255, 0.14),
 			titleText:     ui.Hex("#f4f4f5"),
 			taglineText:   ui.Hex("#9499a6"),
-			pillBg:        ui.RGBA(255, 255, 255, 0.045),
-			pillBorder:    ui.RGBA(255, 255, 255, 0.095),
-			pillText:      ui.Hex("#d4d4d8"),
-			spinnerTrack:  ui.RGBA(96, 165, 250, 0.22),
+			statusText:    ui.Hex("#d4d4d8"),
 			spinnerArc:    ui.Hex("#60a5fa"),
 			divider:       ui.RGBA(255, 255, 255, 0.07),
 			footerText:    ui.Hex("#787e8f"),
@@ -366,22 +352,13 @@ func resolveColabOneSplashPalette(dark bool) colabOneSplashPalette {
 		shadowKey:     ui.RGBA(15, 23, 42, 0.07),
 		auraPrimary:   ui.RGBA(59, 130, 246, 0.12),
 		auraSecondary: ui.RGBA(99, 102, 241, 0.045),
-		ringStroke:    ui.RGBA(15, 23, 42, 0.05),
-		ringSweep:     ui.RGBA(59, 130, 246, 0.26),
+		ringStroke:    ui.RGBA(15, 23, 42, 0.045),
 		topSheen:      ui.RGBA(59, 130, 246, 0.38),
-		haloFill:      ui.RGBA(59, 130, 246, 0.03),
-		haloGlow:      ui.RGBA(59, 130, 246, 0.14),
-		haloTrack:     ui.RGBA(15, 23, 42, 0.07),
-		haloAccentA:   ui.Hex("#2563eb"),
-		haloAccentB:   ui.Hex("#38bdf8"),
-		logoShadow:    ui.RGBA(15, 23, 42, 0.14),
+		logoShadow:    ui.RGBA(15, 23, 42, 0.12),
 		logoRing:      ui.RGBA(15, 23, 42, 0.08),
 		titleText:     ui.Hex("#111827"),
 		taglineText:   ui.Hex("#6b7280"),
-		pillBg:        ui.RGBA(15, 23, 42, 0.035),
-		pillBorder:    ui.RGBA(15, 23, 42, 0.08),
-		pillText:      ui.Hex("#4b5563"),
-		spinnerTrack:  ui.RGBA(59, 130, 246, 0.18),
+		statusText:    ui.Hex("#4b5563"),
 		spinnerArc:    ui.Hex("#3b82f6"),
 		divider:       ui.RGBA(15, 23, 42, 0.065),
 		footerText:    ui.Hex("#8891a2"),
@@ -444,10 +421,8 @@ func (s *colabOneSplashViewState) render(c *ui.Context) {
 		cardOpacity float32 = 1
 		cardScale   float32 = 1
 		cardOffsetY float32 = 0
-		haloAngle   float32 = 32
-		orbitPhase  float32 = 0.14
 		auraPulse   float32 = 0.55
-		spinPhase   float32 = 0.12
+		spinPhase   float32 = 0.0 // top-right 90° open gap for static / reduced-motion frames
 		animating   bool
 	)
 
@@ -485,10 +460,8 @@ func (s *colabOneSplashViewState) render(c *ui.Context) {
 			}
 		}
 		if !reduceMotion {
-			haloAngle = root.Loop("splash-halo", 2800*time.Millisecond, ui.Linear) * 360
-			orbitPhase = root.Loop("splash-orbit", 9000*time.Millisecond, ui.Linear)
 			auraPulse = root.Loop("splash-aura", 3400*time.Millisecond, ui.Bounce(ui.EaseInOut))
-			spinPhase = root.Loop("splash-spin", 1150*time.Millisecond, ui.Linear)
+			spinPhase = root.Loop("splash-spin", colabOneSplashSpinnerDuration, ui.Linear)
 		}
 	}
 
@@ -520,14 +493,14 @@ func (s *colabOneSplashViewState) render(c *ui.Context) {
 			if !staticFrame && animating {
 				p.AnimationFrame()
 			}
-			// 1. Soft breathing Cobalt/Indigo studio aura centered behind the hero logo.
+			// 1. Soft breathing Cobalt/Indigo studio aura centered behind the oversized loading arc.
 			auraBoost := float32(0.86 + 0.28*auraPulse)
 			p.FillRadialGradient(r, ui.RadialGradient{
-				Center: ui.Point{X: 0.5, Y: 0.27},
-				Radius: 210,
+				Center: ui.Point{X: 0.5, Y: 0.48},
+				Radius: 215,
 				Stops: []ui.GradientStop{
 					{Color: pal.auraPrimary.Alpha(float32(pal.auraPrimary.A) / 255 * auraBoost), At: 0},
-					{Color: pal.auraSecondary.Alpha(float32(pal.auraSecondary.A) / 255 * auraBoost), At: 0.48},
+					{Color: pal.auraSecondary.Alpha(float32(pal.auraSecondary.A) / 255 * auraBoost), At: 0.52},
 					{Color: ui.Transparent, At: 1},
 				},
 			}, 24)
@@ -549,123 +522,91 @@ func (s *colabOneSplashViewState) render(c *ui.Context) {
 				},
 			}, 1)
 
-			// 3. Precision concentric orbital hairlines centered behind the logo tile.
+			// 3. Subtle concentric studio hairlines centered behind the hero loading arc.
 			cx := r.X + r.W/2
-			cy := r.Y + 98
-			radii := []float32{80, 118, 158}
+			cy := r.Y + 216
+			radii := []float32{96, 134, 174}
 			for i, rad := range radii {
-				fade := float32(1.0 - float64(i)*0.24)
+				fade := float32(1.0 - float64(i)*0.26)
 				var ring ui.Path
 				ring.Circle(cx, cy, rad)
 				p.StrokePath(&ring, 1, pal.ringStroke.Alpha(float32(pal.ringStroke.A)/255*fade))
 			}
-
-			// 4. Whisper-soft counter-rotating specular highlight riding the inner precision ring.
-			sweepStart := float32(math.Mod(float64(1-orbitPhase+0.62), 1))
-			drawWrappedArc(p, cx, cy, 80, sweepStart, sweepStart+0.14, 1.35, pal.ringSweep)
 		}).Children(func() {
-			// Main vertical brand & loading body.
+			// Main vertical brand & prominent loading stage.
 			ui.Column(c).
 				Grow(1).
 				FillWidth().
-				Padding(42, 28, 18, 28).
+				Padding(32, 28, 22, 28).
 				AlignItems(ui.Center).
 				Children(func() {
-					// Hero logo pedestal with smoothly tapered animated conic luminous border.
-					ui.Box(c).
-						Size(112, 112).
-						Radius(28).
-						Center().
-						Background(pal.haloFill).
-						Shadow(0, 8, 28, -6, pal.haloGlow).
-						Border(2, ui.Color{}).
-						BorderConicGradient(ui.ConicGradient{
-							Angle: haloAngle,
-							Stops: []ui.GradientStop{
-								{Color: pal.haloTrack, At: 0.00},
-								{Color: pal.haloTrack, At: 0.50},
-								{Color: pal.haloAccentA, At: 0.68},
-								{Color: pal.haloAccentB, At: 0.80},
-								{Color: pal.haloAccentA, At: 0.90},
-								{Color: pal.haloTrack, At: 1.00},
-							},
-						}).
+					// Compact brand header so the oversized 3/4 loading arc is the focal centerpiece.
+					ui.Row(c).
+						AlignItems(ui.Center).
+						Gap(12).
 						Children(func() {
-							// Elevated crisp ColabOne rounded white portrait tile.
 							tile := ui.Box(c).
-								Size(94, 94).
-								Radius(20).
+								Size(48, 48).
+								Radius(13).
 								Center().
 								Background(ui.Hex("#ffffff")).
 								Border(1, pal.logoRing).
-								Shadow(0, 8, 22, -2, pal.logoShadow)
+								Shadow(0, 6, 16, -2, pal.logoShadow)
 							if logo != nil {
 								tile.Children(func() {
 									ui.Image(c, logo).
-										Size(92, 92).
+										Size(46, 46).
 										Fit(ui.Contain).
-										Radius(19).
+										Radius(12).
 										Clip()
 								})
 							}
-						})
 
-					// Designed brand wordmark directly beneath the logo.
-					ui.Text(c, copyText.Brand).
-						Margin(22, 0, 0, 0).
-						FontSize(26).
-						FontWeight(700).
-						LetterSpacing(-0.55).
-						TextColor(pal.titleText).
-						SingleLine()
+							ui.Column(c).
+								Gap(2).
+								Children(func() {
+									ui.Text(c, copyText.Brand).
+										FontSize(22).
+										FontWeight(700).
+										LetterSpacing(-0.45).
+										TextColor(pal.titleText).
+										SingleLine()
 
-					// Clean workspace subtitle beneath the brand name.
-					ui.Text(c, copyText.Tagline).
-						Margin(6, 0, 0, 0).
-						FontSize(13).
-						FontWeight(500).
-						LetterSpacing(0.25).
-						TextColor(pal.taglineText).
-						SingleLine()
-
-					// Subtle indeterminate loading capsule (no progress bar or percentage).
-					ui.Row(c).
-						Margin(26, 0, 0, 0).
-						Height(32).
-						Padding(0, 15).
-						Gap(9).
-						Radius(999).
-						AlignItems(ui.Center).
-						Background(pal.pillBg).
-						Border(1, pal.pillBorder).
-						Children(func() {
-							// Bespoke dual-arc orbital loading emblem.
-							ui.Box(c).
-								Size(15, 15).
-								Draw(func(p *ui.Painter, r ui.Rect) {
-									cx := r.X + r.W/2
-									cy := r.Y + r.H/2
-									rad := float32(6)
-
-									var track ui.Path
-									track.Circle(cx, cy, rad)
-									p.StrokePath(&track, 1.8, pal.spinnerTrack)
-
-									start := spinPhase
-									span := float32(0.32)
-									if !staticFrame && !reduceMotion {
-										// Subtle organic breathing arc length between 24% and 42%.
-										span = 0.28 + 0.12*float32(0.5+0.5*math.Sin(float64(spinPhase)*2*math.Pi))
-									}
-									drawWrappedArc(p, cx, cy, rad, start, start+span, 1.9, pal.spinnerArc)
+									ui.Text(c, copyText.Tagline).
+										FontSize(12).
+										FontWeight(500).
+										LetterSpacing(0.2).
+										TextColor(pal.taglineText).
+										SingleLine()
 								})
-
-							ui.Text(c, copyText.Status).
-								FontSize(12.5).
-								FontWeight(500).
-								TextColor(pal.pillText).
-								SingleLine()
 						})
+
+					ui.Spacer(c)
+
+					// Oversized 3/4 open-gap circular arc loading indicator (270° arc, 90° gap, 3s/rev).
+					ui.Box(c).
+						Size(colabOneSplashSpinnerSize, colabOneSplashSpinnerSize).
+						Draw(func(p *ui.Painter, r ui.Rect) {
+							cx := r.X + r.W/2
+							cy := r.Y + r.H/2
+							p.Transform(ui.Rotation(spinPhase*360), cx, cy, func() {
+								var arc ui.Path
+								arc.Circle(cx, cy, colabOneSplashSpinnerRadius).
+									Cap(ui.RoundCap).
+									Trim(0, colabOneSplashSpinnerArcSpan)
+								p.StrokePath(&arc, colabOneSplashSpinnerStroke, pal.spinnerArc)
+							})
+						})
+
+					ui.Text(c, copyText.Status).
+						Margin(22, 0, 0, 0).
+						FontSize(14).
+						FontWeight(500).
+						LetterSpacing(0.2).
+						TextColor(pal.statusText).
+						SingleLine()
+
+					ui.Spacer(c)
 				})
 
 			// Hairline divider separating main stage and studio footer signature.
@@ -709,33 +650,6 @@ func (s *colabOneSplashViewState) render(c *ui.Context) {
 				})
 		})
 	})
-}
-
-func drawWrappedArc(p *ui.Painter, cx, cy, rad, from, to, width float32, c ui.Color) {
-	span := to - from
-	for span < 0 {
-		span += 1
-	}
-	if span > 1 {
-		span = 1
-	}
-	from = float32(math.Mod(float64(from), 1))
-	if from < 0 {
-		from += 1
-	}
-	end := from + span
-	if end <= 1 {
-		var arc ui.Path
-		arc.Circle(cx, cy, rad).Cap(ui.RoundCap).Trim(from, end)
-		p.StrokePath(&arc, width, c)
-		return
-	}
-	// Wrap cleanly across the 1.0 -> 0.0 seam without breaking the round stroke.
-	var first, second ui.Path
-	first.Circle(cx, cy, rad).Cap(ui.RoundCap).Trim(from, 1)
-	second.Circle(cx, cy, rad).Cap(ui.RoundCap).Trim(0, end-1)
-	p.StrokePath(&first, width, c)
-	p.StrokePath(&second, width, c)
 }
 
 // colabOneStartupCoordinator orchestrates the cold-start handoff between the

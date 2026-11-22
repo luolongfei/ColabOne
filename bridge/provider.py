@@ -52,8 +52,21 @@ _COLABONE_WS_CONNECT_TIMEOUT = 25
 # Google Colab's /tun/m/assign gateway enforces a ~30s RPC deadline and returns
 # HTTP 503 when provisioning high-tier GPUs (such as G4) takes longer or fails
 # over across regions. Retry up to 10 total attempts (1 initial + 9 retries)
-# using capped exponential backoff: 2s -> 4s -> 8s -> 16s -> 30s (capped).
-_COLABONE_ASSIGN_RETRY_DELAYS = (2, 4, 8, 16, 30, 30, 30, 30, 30)
+# using gentler capped backoff: 6s -> 12s -> 20s -> 30s (capped), avoiding
+# back-to-back 503 storms while preserving a ~9 min total retry budget.
+_COLABONE_ASSIGN_RETRY_DELAYS = (6, 12, 20, 30, 30, 30, 30, 30, 30)
+
+_COLABONE_ALT_GPU_HINTS = {
+    "G4": "L4 / A100 / H100",
+    "H100": "L4 / A100 / G4",
+    "A100": "L4 / G4 / H100",
+    "L4": "T4 / A100 / G4",
+    "T4": "L4 / A100",
+}
+
+
+def _alternative_gpu_hint(gpu_label: str) -> str:
+    return _COLABONE_ALT_GPU_HINTS.get(str(gpu_label or "").upper(), "L4 / A100")
 
 
 def _format_assign_error(
@@ -1381,9 +1394,21 @@ class ColabOneProvider:
         delays = tuple(self._assign_retry_delays)
         total_attempts = 1 + len(delays)
         assignment = None
+        consecutive_pool_busy = 0
+        pool_busy_hint_emitted = False
         for attempt in range(total_attempts):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("已取消 GPU 分配")
+            if attempt > 0 and callable(on_stage):
+                if consecutive_pool_busy >= 2:
+                    on_stage(
+                        f"正在排队分配 {accel.value}（算力池较紧张 · 第 {attempt + 1}/{total_attempts} 次）"
+                    )
+                else:
+                    on_stage(
+                        f"正在分配 {accel.value}（第 {attempt + 1}/{total_attempts} 次）"
+                    )
+            attempt_started = time.monotonic()
             try:
                 if assignment is None:
                     assignment = client._get_assignment(
@@ -1401,6 +1426,7 @@ class ColabOneProvider:
                     nbh, assignment.token, Variant.GPU, accel, shape
                 )
             except (ColabRequestError, requests.RequestException, TransportError) as e:
+                elapsed = max(0.0, time.monotonic() - attempt_started)
                 status = (
                     int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
                     if isinstance(e, ColabRequestError)
@@ -1438,6 +1464,10 @@ class ColabOneProvider:
                     except Exception:
                         pass
                     raise
+                if status in (502, 503, 504):
+                    consecutive_pool_busy += 1
+                else:
+                    consecutive_pool_busy = 0
                 delay = delays[attempt]
                 next_attempt = attempt + 2
                 if retries_counter is not None:
@@ -1453,13 +1483,18 @@ class ColabOneProvider:
                 )
                 _emit_log(
                     on_log,
-                    f"Google Colab 分配 {accel.value} GPU 暂时繁忙或超时（{reason_tag}），{delay} 秒后自动重试（第 {next_attempt}/{total_attempts} 次）",
+                    f"Google Colab 分配 {accel.value} GPU 暂时繁忙或超时（耗时 {elapsed:.1f} 秒 · {reason_tag}），{delay} 秒后自动重试（第 {next_attempt}/{total_attempts} 次）",
                     "GPU",
                     "warning",
                 )
-                if callable(on_stage):
-                    on_stage(
-                        f"正在分配 {accel.value}（第 {next_attempt}/{total_attempts} 次）"
+                if consecutive_pool_busy == 2 and not pool_busy_hint_emitted:
+                    pool_busy_hint_emitted = True
+                    alt_gpus = _alternative_gpu_hint(accel.value)
+                    _emit_log(
+                        on_log,
+                        f"当前 Google Colab 的 {accel.value} 算力池较紧张，正在排队调度；可继续等待，或稍后改选 {alt_gpus}",
+                        "GPU",
+                        "warning",
                     )
                 # Force _get_assignment reconciliation before submitting another
                 # POST so an uncertain 503/504/timeout never double-allocates.

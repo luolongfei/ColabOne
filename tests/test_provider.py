@@ -656,9 +656,15 @@ def test_allocate_retries_503_with_reconciliation_and_logs_progress():
     assert post_calls[0] == 3
     # Every retry reuses the exact same notebook hash for safe reconciliation.
     assert len(seen_nbhs) == 3 and len(set(seen_nbhs)) == 1
-    assert any("HTTP 503" in msg and "第 2/4 次" in msg for _, _, msg in logs)
-    assert any("HTTP 503" in msg and "第 3/4 次" in msg for _, _, msg in logs)
-    assert stages == ["正在分配 G4（第 2/4 次）", "正在分配 G4（第 3/4 次）"]
+    assert any("耗时" in msg and "HTTP 503" in msg and "第 2/4 次" in msg for _, _, msg in logs)
+    assert any("耗时" in msg and "HTTP 503" in msg and "第 3/4 次" in msg for _, _, msg in logs)
+    congestion_hints = [msg for _, _, msg in logs if "算力池较紧张" in msg]
+    assert len(congestion_hints) == 1
+    assert "L4 / A100 / H100" in congestion_hints[0]
+    assert stages == [
+        "正在分配 G4（第 2/4 次）",
+        "正在排队分配 G4（算力池较紧张 · 第 3/4 次）",
+    ]
     assert p.active_endpoint() == "gpu-g4-s-usw4a1-retryok"
 
 
@@ -846,10 +852,11 @@ def test_allocate_exponential_backoff_10_attempts_and_cancel_interrupt(monkeypat
     from colab_cli.client import GetAssignmentResponse
     from bridge.provider import _COLABONE_ASSIGN_RETRY_DELAYS
 
-    assert _COLABONE_ASSIGN_RETRY_DELAYS == (2, 4, 8, 16, 30, 30, 30, 30, 30)
+    assert _COLABONE_ASSIGN_RETRY_DELAYS == (6, 12, 20, 30, 30, 30, 30, 30, 30)
     assert len(_COLABONE_ASSIGN_RETRY_DELAYS) == 9  # 1 initial + 9 retries = 10 attempts
 
     p, _ = make_provider()
+    timeline = []
     waited_delays = []
     cancel_ev = threading.Event()
 
@@ -870,15 +877,101 @@ def test_allocate_exponential_backoff_10_attempts_and_cancel_interrupt(monkeypat
 
     def fake_wait(timeout=None):
         waited_delays.append(timeout)
+        timeline.append(("wait", timeout))
         return cancel_ev.is_set()
 
     monkeypatch.setattr(cancel_ev, "wait", fake_wait)
     p.client_factory = lambda: NetworkDropClient()
     logs = []
+    stages = []
     with pytest.raises(RuntimeError, match="已取消 GPU 分配"):
-        p.allocate("G4", on_log=lambda msg, _lv="info": logs.append(msg), cancel_event=cancel_ev)
-    assert waited_delays == [2, 4, 8]
-    assert any("网络异常" in m and "第 2/10 次" in m for m in logs)
+        p.allocate(
+            "G4",
+            on_log=lambda msg, _lv="info": logs.append(msg),
+            on_stage=lambda st: (stages.append(st), timeline.append(("stage", st))),
+            cancel_event=cancel_ev,
+        )
+    assert waited_delays == [6, 12, 20]
+    assert any("耗时" in m and "网络异常" in m and "第 2/10 次" in m for m in logs)
+    # Stage notification must happen AFTER each backoff wait, never before,
+    # and never for an attempt cancelled during the backoff wait.
+    assert stages == ["正在分配 G4（第 2/10 次）", "正在分配 G4（第 3/10 次）"]
+    assert timeline == [
+        ("wait", 6),
+        ("stage", "正在分配 G4（第 2/10 次）"),
+        ("wait", 12),
+        ("stage", "正在分配 G4（第 3/10 次）"),
+        ("wait", 20),
+    ]
+
+
+def test_allocate_emits_congestion_hint_once_across_repeated_503s(monkeypatch):
+    from colab_cli.client import GetAssignmentResponse, Accelerator, AssignmentVariant
+
+    p, _ = make_provider()
+    p._assign_retry_delays = (6, 12, 20, 30)
+    post_calls = [0]
+    timeline = []
+    clock = [100.0]
+
+    def fake_monotonic():
+        return clock[0]
+
+    def fake_sleep(sec):
+        timeline.append(("sleep", sec))
+        clock[0] += sec
+
+    class SlowBusyClient:
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            return GetAssignmentResponse(
+                acc=accelerator.value, nbh=str(nbh), token="xsrf", variant=variant
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            post_calls[0] += 1
+            if post_calls[0] <= 3:
+                clock[0] += 30.8
+                raise _make_colab_request_error(503)
+            clock[0] += 3.2
+            return SimpleNamespace(
+                endpoint="gpu-g4-s-euw4a4-queuedok",
+                accelerator=Accelerator.G4,
+                variant=AssignmentVariant.GPU,
+                runtime_proxy_info=_make_proxy_info("gpu-g4-s-euw4a4-queuedok"),
+            )
+
+    monkeypatch.setattr("bridge.provider.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("bridge.provider.time.sleep", fake_sleep)
+    p.client_factory = lambda: SlowBusyClient()
+    logs = []
+    stages = []
+    session = p.allocate(
+        "G4",
+        on_log=lambda msg, src="GPU", lvl="info": logs.append((lvl, src, msg)),
+        on_stage=lambda st: (stages.append(st), timeline.append(("stage", st))),
+    )
+    assert session.endpoint == "gpu-g4-s-euw4a4-queuedok"
+    assert post_calls[0] == 4
+    retry_logs = [msg for _, _, msg in logs if "自动重试" in msg]
+    assert len(retry_logs) == 3
+    assert all("耗时 30.8 秒 · HTTP 503" in msg for msg in retry_logs)
+    congestion_hints = [msg for _, _, msg in logs if "算力池较紧张" in msg]
+    # Congestion guidance is emitted exactly once across 3 consecutive 503s.
+    assert len(congestion_hints) == 1
+    assert "L4 / A100 / H100" in congestion_hints[0]
+    assert stages == [
+        "正在分配 G4（第 2/5 次）",
+        "正在排队分配 G4（算力池较紧张 · 第 3/5 次）",
+        "正在排队分配 G4（算力池较紧张 · 第 4/5 次）",
+    ]
+    assert timeline == [
+        ("sleep", 6),
+        ("stage", "正在分配 G4（第 2/5 次）"),
+        ("sleep", 12),
+        ("stage", "正在排队分配 G4（算力池较紧张 · 第 3/5 次）"),
+        ("sleep", 20),
+        ("stage", "正在排队分配 G4（算力池较紧张 · 第 4/5 次）"),
+    ]
 
 
 def test_per_endpoint_vault_storage_avoids_packed_blob_limit():

@@ -298,3 +298,15 @@ func TestColabOneSplashRenderLightAndDarkSnapshots(t *testing.T) {
 		t.Fatalf("expected clear luminance separation between light (%.1f) and dark (%.1f) splash cards", lightLum, darkLum)
 	}
 }
+
+func TestColabOneSplashSpinnerDuration(t *testing.T) {
+	if colabOneSplashSpinnerDuration != 3*time.Second {
+		t.Fatalf("colabOneSplashSpinnerDuration = %v, want 3s", colabOneSplashSpinnerDuration)
+	}
+	if colabOneSplashSpinnerArcSpan != 0.75 {
+		t.Fatalf("colabOneSplashSpinnerArcSpan = %v, want 0.75 (3/4 arc)", colabOneSplashSpinnerArcSpan)
+	}
+	if colabOneSplashSpinnerSize < 120 || colabOneSplashSpinnerRadius < 50 {
+		t.Fatalf("expected oversized splash loading arc, got size=%.1f radius=%.1f", colabOneSplashSpinnerSize, colabOneSplashSpinnerRadius)
+	}
+}

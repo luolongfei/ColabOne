@@ -5125,7 +5125,7 @@ onUnmounted(() => {
 }
 
 .co-nav-circle-btn.is-spinning svg {
-  animation: co-nav-spin 0.85s linear infinite;
+  animation: co-nav-spin var(--co-spin-duration, 4s) linear infinite;
 }
 
 @keyframes co-nav-spin {

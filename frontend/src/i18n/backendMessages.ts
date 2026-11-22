@@ -1888,6 +1888,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^正在排队分配 (\S+)（算力池较紧张 · 第 (\d+)\/(\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, cur, total] = m;
+      switch (loc) {
+        case "en-US":
+          return `Queuing for ${gpu} (pool congested · attempt ${cur}/${total})`;
+        case "zh-TW":
+          return `正在排隊分配 ${gpu}（算力池較緊張 · 第 ${cur}/${total} 次）`;
+        case "zh-HK":
+          return `正在排隊分配 ${gpu}（算力池較緊張 · 第 ${cur}/${total} 次）`;
+        case "ja-JP":
+          return `${gpu} の割り当てを待機中（計算リソース混雑 · ${cur}/${total} 回目）`;
+        case "ko-KR":
+          return `${gpu} 할당 대기 중 (리소스 혼잡 · ${cur}/${total}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^正在分配 (\S+)（第 (\d+)\/(\d+) 次）$/,
     format: (m, loc) => {
       const [, gpu, cur, total] = m;
@@ -1928,9 +1948,9 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^Google Colab 分配 (\S+) GPU 暂时繁忙或超时（(HTTP \d+|请求超时|网络异常)），(\d+) 秒后自动重试（第 (\d+)\/(\d+) 次）$/,
+    re: /^Google Colab 分配 (\S+) GPU 暂时繁忙或超时（(?:耗时 (\d+(?:\.\d+)?) 秒 · )?(HTTP \d+|请求超时|网络异常)），(\d+) 秒后自动重试（第 (\d+)\/(\d+) 次）$/,
     format: (m, loc) => {
-      const [, gpu, reasonRaw, sec, cur, total] = m;
+      const [, gpu, elapsed, reasonRaw, sec, cur, total] = m;
       const reason =
         reasonRaw === "请求超时"
           ? {
@@ -1951,17 +1971,47 @@ const PATTERN_RULES: PatternRule[] = [
                 "ko-KR": "네트워크 오류",
               }[loc]
             : reasonRaw!;
+      const detail = elapsed
+        ? {
+            "zh-CN": `耗时 ${elapsed} 秒 · ${reason}`,
+            "en-US": `${elapsed}s · ${reason}`,
+            "zh-TW": `耗時 ${elapsed} 秒 · ${reason}`,
+            "zh-HK": `耗時 ${elapsed} 秒 · ${reason}`,
+            "ja-JP": `${elapsed} 秒経過 · ${reason}`,
+            "ko-KR": `${elapsed}초 경과 · ${reason}`,
+          }[loc]
+        : reason;
       switch (loc) {
         case "en-US":
-          return `Google Colab ${gpu} allocation temporarily busy or timed out (${reason}); retrying in ${sec}s (attempt ${cur}/${total})`;
+          return `Google Colab ${gpu} allocation temporarily busy or timed out (${detail}); retrying in ${sec}s (attempt ${cur}/${total})`;
         case "zh-TW":
-          return `Google Colab 分配 ${gpu} GPU 暫時忙碌或逾時（${reason}），${sec} 秒後自動重試（第 ${cur}/${total} 次）`;
+          return `Google Colab 分配 ${gpu} GPU 暫時忙碌或逾時（${detail}），${sec} 秒後自動重試（第 ${cur}/${total} 次）`;
         case "zh-HK":
-          return `Google Colab 分配 ${gpu} GPU 暫時繁忙或逾時（${reason}），${sec} 秒後自動重試（第 ${cur}/${total} 次）`;
+          return `Google Colab 分配 ${gpu} GPU 暫時繁忙或逾時（${detail}），${sec} 秒後自動重試（第 ${cur}/${total} 次）`;
         case "ja-JP":
-          return `Google Colab の ${gpu} GPU 割り当てが一時的に混雑またはタイムアウトしました（${reason}）。${sec} 秒後に自動再試行します（${cur}/${total} 回目）`;
+          return `Google Colab の ${gpu} GPU 割り当てが一時的に混雑またはタイムアウトしました（${detail}）。${sec} 秒後に自動再試行します（${cur}/${total} 回目）`;
         case "ko-KR":
-          return `Google Colab ${gpu} GPU 할당이 일시적으로 혼잡하거나 시간 초과되었습니다 (${reason}). ${sec}초 후 자동 재시도합니다 (${cur}/${total}회)`;
+          return `Google Colab ${gpu} GPU 할당이 일시적으로 혼잡하거나 시간 초과되었습니다 (${detail}). ${sec}초 후 자동 재시도합니다 (${cur}/${total}회)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前 Google Colab 的 (\S+) 算力池较紧张，正在排队调度；可继续等待，或稍后改选 (.+)$/,
+    format: (m, loc) => {
+      const [, gpu, altGpus] = m;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} capacity is currently congested and queued; you can keep waiting or switch to ${altGpus} later.`;
+        case "zh-TW":
+          return `目前 Google Colab 的 ${gpu} 算力池較緊張，正在排隊調度；可繼續等待，或稍後改選 ${altGpus}`;
+        case "zh-HK":
+          return `目前 Google Colab 的 ${gpu} 算力池較緊張，正在排隊調度；可繼續等待，或稍後改選 ${altGpus}`;
+        case "ja-JP":
+          return `現在 Google Colab の ${gpu} 計算リソースが混雑しており順番待ち中です。そのまま待機するか、後ほど ${altGpus} へ切り替えてください`;
+        case "ko-KR":
+          return `현재 Google Colab의 ${gpu} 리소스가 혼잡하여 대기 중입니다. 계속 기다리거나 나중에 ${altGpus}로 변경해 보세요.`;
         default:
           return m[0];
       }

@@ -365,7 +365,7 @@ function onIdleMinutesChange(event: Event) {
             @click="emit('refreshAccount')"
           >
             <template #icon>
-              <PhArrowsClockwise :size="14" :class="{ spinning: busy || refreshing }" />
+              <PhArrowsClockwise :size="14" :class="{ 'is-spinning': busy || refreshing }" />
             </template>
           </AButton>
         </ColabOneTooltip>
@@ -840,11 +840,11 @@ function onIdleMinutesChange(event: Event) {
   color: var(--co-text);
 }
 
-.spinning {
-  animation: spin-icon 0.9s linear infinite;
+.is-spinning {
+  animation: co-spin-icon var(--co-spin-duration, 4s) linear infinite;
 }
 
-@keyframes spin-icon {
+@keyframes co-spin-icon {
   to {
     transform: rotate(360deg);
   }
@@ -1233,7 +1233,7 @@ function onIdleMinutesChange(event: Event) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spinning,
+  .is-spinning,
   .co-pulse-icon {
     animation: none;
   }

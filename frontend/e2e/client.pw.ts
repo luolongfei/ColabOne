@@ -4507,3 +4507,75 @@ test("Toasts triggered inside ModelDrawer stay horizontally centered in the draw
     Math.abs(workspaceToast!.toastCenterX - workspaceToast!.workspaceCenterX),
   ).toBeLessThanOrEqual(3);
 });
+
+test("all frontend loading icons rotate at 4 seconds per revolution", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.operation = { title: "部署远端管理服务", detail: "" };
+    state.account.checked_at = Math.floor(Date.now() / 1000);
+  });
+
+  // 1. Ant Design <ASpin> 4-dot spinner (.ant-spin-dot-spin)
+  const spinDot = page.locator(".co-op-banner .ant-spin-dot-spin");
+  await expect(spinDot).toBeVisible();
+  const spinDotDuration = await spinDot.evaluate(
+    (el) => window.getComputedStyle(el).animationDuration,
+  );
+  expect(spinDotDuration).toBe("4s");
+
+  // Clear operation so navbar & billing refresh controls are enabled, then hold account.refresh in-flight.
+  await page.evaluate(() => {
+    (window as any).__state.operation = null;
+    const origCall = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, ...args: any[]) => {
+      if (
+        method === "ColabOneDesktop.Command" &&
+        args[0]?.action === "account.refresh"
+      ) {
+        await new Promise<void>((resolve) => {
+          (window as any).__releaseRefresh = resolve;
+        });
+      }
+      return origCall(method, ...args);
+    };
+  });
+
+  const navRefreshBtn = page.locator('button[aria-label="刷新账户实例"]');
+  await expect(navRefreshBtn).toBeEnabled();
+  await navRefreshBtn.click();
+
+  // 2. Top navbar refresh icon (.co-nav-circle-btn.is-spinning svg)
+  const navSpinner = page.locator(".co-nav-circle-btn.is-spinning svg");
+  await expect(navSpinner).toBeVisible();
+  expect(
+    await navSpinner.evaluate(
+      (el) => window.getComputedStyle(el).animationDuration,
+    ),
+  ).toBe("4s");
+
+  // 3. BillingCard refresh icon (.co-bc-refresh-btn .is-spinning)
+  const billingSpinner = page.locator(".co-bc-refresh-btn .is-spinning");
+  await expect(billingSpinner).toBeVisible();
+  expect(
+    await billingSpinner.evaluate(
+      (el) => window.getComputedStyle(el).animationDuration,
+    ),
+  ).toBe("4s");
+
+  // 4. Ant Design <AButton :loading> LoadingOutlined icon (.anticon-spin)
+  const btnSpinner = page.locator(".ant-btn-loading-icon .anticon-spin").first();
+  await expect(btnSpinner).toBeVisible();
+  expect(
+    await btnSpinner.evaluate(
+      (el) => window.getComputedStyle(el).animationDuration,
+    ),
+  ).toBe("4s");
+
+  await page.evaluate(() => {
+    (window as any).__releaseRefresh?.();
+  });
+  await expect(navSpinner).toHaveCount(0);
+});

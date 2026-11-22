@@ -24,6 +24,8 @@
   --co-radius-md: 12px;
   --co-radius-lg: 16px;
   --co-radius-pill: 9999px;
+  /* Unified rotation period for all loading & refresh spinner icons (4s per revolution) */
+  --co-spin-duration: 4s;
   /* Unified fluid desktop shell width & responsive edge gutters */
   --co-container-max: 1840px;
   --co-container-pad: clamp(20px, 2.2vw, 36px);
@@ -242,6 +244,16 @@ samp {
 
 .ant-btn .ant-btn-loading-icon > .anticon {
   margin-inline-end: 0 !important;
+}
+
+/* Unified 4s-per-revolution rotation speed for all Ant Design loading icons */
+.ant-spin .ant-spin-dot-spin,
+.ant-spin-dot.ant-spin-dot-spin,
+.anticon-spin,
+.anticon-spin::before,
+.ant-badge .anticon-spin {
+  -webkit-animation-duration: var(--co-spin-duration) !important;
+  animation-duration: var(--co-spin-duration) !important;
 }
 
 .ant-btn > svg,
