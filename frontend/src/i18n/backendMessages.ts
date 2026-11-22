@@ -355,6 +355,20 @@ function translateLoadPlanLabel(raw: string, loc: ColabOneLocale): string {
       "ko-KR": `GPU + RAM MoE 하이브리드 (--fit on · ${layers}개 전문가 계층 RAM 오프로드 · KV q8_0)`,
     }[loc];
   }
+  const manualMoeMatch = s.match(
+    /^GPU \+ 内存 MoE 手动卸载回退（--fit off · (\d+) 层专家内存卸载）$/,
+  );
+  if (manualMoeMatch) {
+    const layers = manualMoeMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `GPU + RAM manual MoE fallback (--fit off · ${layers} expert layers to RAM)`,
+      "zh-TW": `GPU + 記憶體 MoE 手動卸載回退（--fit off · ${layers} 層專家記憶體卸載）`,
+      "zh-HK": `GPU + 記憶體 MoE 手動卸載回退（--fit off · ${layers} 層專家記憶體卸載）`,
+      "ja-JP": `GPU + RAM 手動 MoE フォールバック（--fit off · ${layers} 層エキスパート RAM オフロード）`,
+      "ko-KR": `GPU + RAM 수동 MoE 폴백 (--fit off · ${layers}개 전문가 계층 RAM 오프로드)`,
+    }[loc];
+  }
   const exactPlan: Record<string, ColabOneLocaleTable> = {
     "GPU 显存 + 内存 PLE 协同装配（--fit on · KV q8_0）": {
       "zh-CN": s,
@@ -395,6 +409,22 @@ function translateLoadPlanLabel(raw: string, loc: ColabOneLocale): string {
       "zh-HK": "GPU + 記憶體智能混合裝配（--fit on · 緊湊 KV q4_0）",
       "ja-JP": "GPU + RAM ハイブリッド（--fit on · コンパクト KV q4_0）",
       "ko-KR": "GPU + RAM 하이브리드 (--fit on · 컴팩트 KV q4_0)",
+    },
+    "GPU + 内存标准 KV 兼容装配（--fit on · KV f16）": {
+      "zh-CN": s,
+      "en-US": "GPU + RAM compatible KV hybrid (--fit on · KV f16)",
+      "zh-TW": "GPU + 記憶體標準 KV 相容裝配（--fit on · KV f16）",
+      "zh-HK": "GPU + 記憶體標準 KV 兼容裝配（--fit on · KV f16）",
+      "ja-JP": "GPU + RAM 標準 KV 互換ロード（--fit on · KV f16）",
+      "ko-KR": "GPU + RAM 표준 KV 호환 로드 (--fit on · KV f16)",
+    },
+    "GPU + 内存保守上下文装配（--fit on · 4K · KV q4_0）": {
+      "zh-CN": s,
+      "en-US": "GPU + RAM conservative context (--fit on · 4K · KV q4_0)",
+      "zh-TW": "GPU + 記憶體保守上下文裝配（--fit on · 4K · KV q4_0）",
+      "zh-HK": "GPU + 記憶體保守上下文裝配（--fit on · 4K · KV q4_0）",
+      "ja-JP": "GPU + RAM 省メモリコンテキスト（--fit on · 4K · KV q4_0）",
+      "ko-KR": "GPU + RAM 절약 컨텍스트 로드 (--fit on · 4K · KV q4_0)",
     },
   };
   return exactPlan[s]?.[loc] ?? s;
@@ -3853,6 +3883,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^模型预热失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Model warmup failed: ${detail}`;
+        case "zh-TW":
+          return `模型預熱失敗：${detail}`;
+        case "zh-HK":
+          return `模型預熱失敗：${detail}`;
+        case "ja-JP":
+          return `モデルのウォームアップに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `모델 워밍업 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^启动 llama\.cpp：(.+)$/,
     format: (m, loc) => {
       const plan = translateLoadPlanLabel(m[1]!, loc);
@@ -3908,6 +3958,77 @@ const PATTERN_RULES: PatternRule[] = [
           return `プラン「${plan}」の起動に失敗しました。次のフォールバック案を試行します…`;
         case "ko-KR":
           return `'${plan}' 방안이 시작되지 않아 다음 폴백 로드 방안을 시도합니다…`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^方案「(.+?)」未启动成功（(.+)），自动尝试下一降级装载方案…$/s,
+    format: (m, loc) => {
+      const plan = translateLoadPlanLabel(m[1]!, loc);
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Plan '${plan}' failed (${detail}); trying next fallback plan…`;
+        case "zh-TW":
+          return `方案「${plan}」未啟動成功（${detail}），自動嘗試下一個降級載入方案…`;
+        case "zh-HK":
+          return `方案「${plan}」未啟動成功（${detail}），自動嘗試下一個降級載入方案…`;
+        case "ja-JP":
+          return `プラン「${plan}」の起動に失敗しました（${detail}）。次のフォールバック案を試行します…`;
+        case "ko-KR":
+          return `'${plan}' 방안이 시작되지 않아(${detail}) 다음 폴백 로드 방안을 시도합니다…`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前显存紧张，上下文已自动调整为 (\d+) tokens 以完成装载$/,
+    format: (m, loc) => {
+      const ctx = m[1];
+      switch (loc) {
+        case "en-US":
+          return `VRAM is tight; context was automatically adjusted to ${ctx} tokens to complete loading`;
+        case "zh-TW":
+          return `目前 VRAM 吃緊，上下文已自動調整為 ${ctx} tokens 以完成載入`;
+        case "zh-HK":
+          return `目前顯存緊張，上下文已自動調整為 ${ctx} tokens 以完成載入`;
+        case "ja-JP":
+          return `VRAM が逼迫しているため、ロード完了のためコンテキストを ${ctx} tokens に自動調整しました`;
+        case "ko-KR":
+          return `VRAM이 부족하여 로드를 완료하기 위해 컨텍스트를 ${ctx} tokens로 자동 조정했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^推理进程被系统终止（可能因系统内存不足 OOM）(?:：(.+))?$/s,
+    format: (m, loc) => {
+      const detail = m[1] ? translateInner(m[1], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return detail
+            ? `Inference process was killed by OS (likely host RAM OOM): ${detail}`
+            : "Inference process was killed by OS (likely host RAM OOM)";
+        case "zh-TW":
+          return detail
+            ? `推論處理程序遭系統終止（可能因系統記憶體不足 OOM）：${detail}`
+            : "推論處理程序遭系統終止（可能因系統記憶體不足 OOM）";
+        case "zh-HK":
+          return detail
+            ? `推理進程被系統終止（可能因系統記憶體不足 OOM）：${detail}`
+            : "推理進程被系統終止（可能因系統記憶體不足 OOM）";
+        case "ja-JP":
+          return detail
+            ? `推論プロセスが OS により強制終了されました（ホスト RAM 不足 OOM の可能性）: ${detail}`
+            : "推論プロセスが OS により強制終了されました（ホスト RAM 不足 OOM の可能性）";
+        case "ko-KR":
+          return detail
+            ? `추론 프로세스가 OS에 의해 종료되었습니다(시스템 RAM 부족 OOM 가능성): ${detail}`
+            : "추론 프로세스가 OS에 의해 종료되었습니다(시스템 RAM 부족 OOM 가능성)";
         default:
           return m[0];
       }

@@ -242,6 +242,8 @@ export interface RuntimeStatus {
   idle_minutes?: number;
   resources?: SystemResources;
   protocol?: number;
+  service_revision?: string;
+  upgrade_available?: boolean;
   active_options?: { context_length?: number; temperature?: number };
   capabilities?: string[];
   idle?: {

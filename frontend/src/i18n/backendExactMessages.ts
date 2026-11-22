@@ -2720,6 +2720,14 @@ export const EXACT_MESSAGES: Record<string, ColabOneLocaleTable> = {
     "モデルのロードが完了し、リモート推論サービスの準備が整いました",
     "모델 로드 완료, 원격 추론 서비스가 준비되었습니다",
   ),
+  "CUDA 推理内核预热超时，推理服务将继续就绪": row(
+    "CUDA 推理内核预热超时，推理服务将继续就绪",
+    "CUDA inference kernel warmup timed out; service will still become ready",
+    "CUDA 推論核心預熱逾時，推論服務將繼續就緒",
+    "CUDA 推理內核預熱超時，推理服務將繼續就緒",
+    "CUDA 推論カーネルのウォームアップがタイムアウトしましたが、サービスはそのまま起動を続行します",
+    "CUDA 추론 커널 워밍업 시간이 초과되었지만 추론 서비스는 계속 준비됩니다",
+  ),
   混合装载到显存与内存: row(
     "混合装载到显存与内存",
     "Hybrid loading across GPU VRAM and system RAM",
@@ -3143,6 +3151,14 @@ export const EXACT_MESSAGES: Record<string, ColabOneLocaleTable> = {
     "新版服務依賴已就緒，正在平滑停止舊管理服務",
     "新バージョンの依存関係が整いました。旧管理サービスを安全に停止しています",
     "새 버전 종속성이 준비되었습니다. 기존 관리 서비스를 안전하게 중지하는 중",
+  ),
+  "依赖清单未变化，跳过重复安装，正在平滑停止旧管理服务": row(
+    "依赖清单未变化，跳过重复安装，正在平滑停止旧管理服务",
+    "Dependencies unchanged; skipping reinstall and gracefully stopping previous control service",
+    "相依套件清單未變更，略過重複安裝，正在平滑停止舊管理服務",
+    "依賴清單未變化，跳過重複安裝，正在平滑停止舊管理服務",
+    "依存関係に変更がないため再インストールをスキップし、旧管理サービスを安全に停止しています",
+    "종속성 목록 변경이 없어 재설치를 건너뛰고 기존 관리 서비스를 안전하게 중지하는 중",
   ),
   "预算保护即将释放实例，未替换运行中的服务": row(
     "预算保护即将释放实例，未替换运行中的服务",

@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  computeColabOneModelDrawerWidth,
   computeColabOneToastDuration,
   createColabOneToastManager,
   isPersistentColabOneError,
+  resolveColabOneToastHorizontalBounds,
   resolveColabOneToastText,
 } from "./colabOneToast";
 
@@ -247,5 +249,79 @@ describe("ColabOne toast manager lifecycle", () => {
     );
     lang = "zh";
     expect(resolveColabOneToastText(manager.items.value[0])).toBe("请先登录");
+  });
+});
+
+describe("ColabOne toast horizontal bounds & drawer centering", () => {
+  it("computes ModelDrawer width consistently across wide, medium, and tiny viewports", () => {
+    expect(computeColabOneModelDrawerWidth(1280)).toBe(720);
+    expect(computeColabOneModelDrawerWidth(1000)).toBe(720);
+    expect(computeColabOneModelDrawerWidth(768)).toBe(720);
+    expect(computeColabOneModelDrawerWidth(600)).toBe(552);
+    expect(computeColabOneModelDrawerWidth(428)).toBe(380);
+    expect(computeColabOneModelDrawerWidth(400)).toBe(380);
+    expect(computeColabOneModelDrawerWidth(340)).toBe(340);
+  });
+
+  it("centers toasts within the right-hand ModelDrawer region when open", () => {
+    // 1280px viewport, 720px drawer at [560, 1280] -> leftOffset=560, rightOffset=0
+    expect(
+      resolveColabOneToastHorizontalBounds({
+        viewportWidth: 1280,
+        modelDrawerOpen: true,
+        inlineLogDrawerOpen: false,
+        inlineLogDrawerWidthPx: 420,
+      }),
+    ).toEqual({ leftOffsetPx: 560, rightOffsetPx: 0 });
+
+    // Even if inline LogDrawer is open behind the backdrop, ModelDrawer takes precedence
+    expect(
+      resolveColabOneToastHorizontalBounds({
+        viewportWidth: 1280,
+        modelDrawerOpen: true,
+        inlineLogDrawerOpen: true,
+        inlineLogDrawerWidthPx: 420,
+      }),
+    ).toEqual({ leftOffsetPx: 560, rightOffsetPx: 0 });
+
+    // Narrow 600px viewport -> drawer width 552px at [48, 600]
+    expect(
+      resolveColabOneToastHorizontalBounds({
+        viewportWidth: 600,
+        modelDrawerOpen: true,
+        inlineLogDrawerOpen: false,
+        inlineLogDrawerWidthPx: 0,
+      }),
+    ).toEqual({ leftOffsetPx: 48, rightOffsetPx: 0 });
+
+    // Ultra-narrow viewport clamps cleanly without negative offset
+    expect(
+      resolveColabOneToastHorizontalBounds({
+        viewportWidth: 340,
+        modelDrawerOpen: true,
+        inlineLogDrawerOpen: false,
+        inlineLogDrawerWidthPx: 0,
+      }),
+    ).toEqual({ leftOffsetPx: 0, rightOffsetPx: 0 });
+  });
+
+  it("centers toasts over the main workspace when ModelDrawer is closed", () => {
+    expect(
+      resolveColabOneToastHorizontalBounds({
+        viewportWidth: 1280,
+        modelDrawerOpen: false,
+        inlineLogDrawerOpen: false,
+        inlineLogDrawerWidthPx: 420,
+      }),
+    ).toEqual({ leftOffsetPx: 0, rightOffsetPx: 0 });
+
+    expect(
+      resolveColabOneToastHorizontalBounds({
+        viewportWidth: 1280,
+        modelDrawerOpen: false,
+        inlineLogDrawerOpen: true,
+        inlineLogDrawerWidthPx: 420,
+      }),
+    ).toEqual({ leftOffsetPx: 0, rightOffsetPx: 420 });
   });
 });

@@ -16,7 +16,7 @@ from bridge.auth import ColabOneAuth, ColabOneVault
 from bridge.activity import ColabOneActivityLog, safe_message
 from bridge.provider import ColabOneProvider
 from bridge.shortcuts import manage_shortcuts, shortcut_status
-from common.files import atomic_json
+from common.files import atomic_json, colabone_service_revision
 from common.location import infer_location_from_endpoint
 from common.models import ModelSpec, parse_hf_input, resolve_import
 from common.hub import search_models, model_files
@@ -177,6 +177,7 @@ class ColabOneController:
         self.pending_touch = False
         self.last_touch = 0
         self.touch_lock = threading.Lock()
+        self.expected_service_revision = colabone_service_revision(self.root)
         self.upgrade_attempted = set()
         self.release_plan = None
         self.monitor_lock = threading.RLock()
@@ -1512,6 +1513,22 @@ class ColabOneController:
                 return str(custom["name"])
         return model_id
 
+    def _runtime_needs_upgrade(self, runtime: dict) -> bool:
+        if not isinstance(runtime, dict) or runtime.get("state") != "ready":
+            return False
+        proto = runtime.get("protocol", 0)
+        if isinstance(proto, int) and 0 < proto < 7:
+            return True
+        if (
+            isinstance(proto, int)
+            and proto >= 7
+            and self.expected_service_revision
+            and str(runtime.get("service_revision") or "")
+            != self.expected_service_revision
+        ):
+            return True
+        return False
+
     def upgrade_service(self):
         self.activity.add("更新远端管理服务，保留模型缓存与工作流", "GPU")
         if ColabOneController._accepts_kwarg(self.provider.upgrade_service, "on_log"):
@@ -1527,6 +1544,10 @@ class ColabOneController:
     def refresh_remote(self, endpoint: str | None = None):
         had_sessions = bool(self._vault_sessions())
         state = self.remote("GET", "snapshot", endpoint=endpoint)
+        if isinstance(state.get("runtime"), dict):
+            state["runtime"]["upgrade_available"] = self._runtime_needs_upgrade(
+                state["runtime"]
+            )
         effective = endpoint or state["runtime"].get("id")
         target = effective or self._active_endpoint()
         sessions = self._vault_sessions()
@@ -3105,13 +3126,13 @@ class ColabOneController:
                         if now - self.last_config > 600:
                             self.configure_remote()
                         runtime = self.data["runtime"]
-                        proto = runtime.get("protocol", 0)
                         if (
-                            runtime.get("state") == "ready"
-                            and isinstance(proto, int)
-                            and 0 < proto < 7
+                            self._runtime_needs_upgrade(runtime)
                             and remote["endpoint"] not in self.upgrade_attempted
                             and not runtime.get("loaded_model")
+                            and not runtime.get("active_engine")
+                            and (runtime.get("public_api") or {}).get("state")
+                            not in ("starting", "ready")
                             and not any(
                                 t["state"] == "running"
                                 for t in runtime.get("tasks", [])

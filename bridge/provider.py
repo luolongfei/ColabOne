@@ -35,6 +35,10 @@ from colab_cli.contents import ContentsClient
 from colab_cli.runtime import ColabRuntime
 from bridge.activity import safe_message
 from bridge.drive_mount import ColabOneDriveMount
+from common.files import (
+    COLABONE_SERVICE_BUNDLE_FOLDERS,
+    COLABONE_SERVICE_BUNDLE_SUFFIXES,
+)
 from common.location import (
     infer_location_from_endpoint,
     location_from_zone,
@@ -1837,12 +1841,13 @@ class ColabOneProvider:
                 package = Path(tmp) / "colabone.zip"
                 file_count = 0
                 with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
-                    for folder in ("server", "common", "catalog"):
-                        for path in (self.root / folder).glob("*"):
-                            if path.is_file() and path.suffix in (
-                                ".py",
-                                ".json",
-                                ".txt",
+                    for folder in COLABONE_SERVICE_BUNDLE_FOLDERS:
+                        for path in sorted(
+                            (self.root / folder).glob("*"), key=lambda p: p.name
+                        ):
+                            if (
+                                path.is_file()
+                                and path.suffix in COLABONE_SERVICE_BUNDLE_SUFFIXES
                             ):
                                 archive.write(path, f"colabone/{folder}/{path.name}")
                                 file_count += 1
@@ -2034,12 +2039,13 @@ class ColabOneProvider:
                 package = Path(tmp) / "update.zip"
                 file_count = 0
                 with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
-                    for folder in ("server", "common", "catalog"):
-                        for path in (self.root / folder).glob("*"):
-                            if path.is_file() and path.suffix in (
-                                ".py",
-                                ".json",
-                                ".txt",
+                    for folder in COLABONE_SERVICE_BUNDLE_FOLDERS:
+                        for path in sorted(
+                            (self.root / folder).glob("*"), key=lambda p: p.name
+                        ):
+                            if (
+                                path.is_file()
+                                and path.suffix in COLABONE_SERVICE_BUNDLE_SUFFIXES
                             ):
                                 archive.write(path, f"colabone/{folder}/{path.name}")
                                 file_count += 1
@@ -2096,7 +2102,7 @@ class ColabOneProvider:
                             continue
                         _consume_update_line(part, from_stream=True)
 
-                exec_kwargs = {"timeout": 120}
+                exec_kwargs = {"timeout": 210}
                 if callable(on_log):
                     exec_kwargs["output_hook"] = _update_output_hook
                 outputs = self.execute(

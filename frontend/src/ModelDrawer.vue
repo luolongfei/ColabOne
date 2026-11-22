@@ -39,6 +39,7 @@ import HubBrowser from "./HubBrowser.vue";
 import ModelVersionPicker from "./ModelVersionPicker.vue";
 import RuntimeParamPresets from "./RuntimeParamPresets.vue";
 import { colabOneCommand } from "./api";
+import { computeColabOneModelDrawerWidth } from "./colabOneToast";
 import {
   describeModelRemoteStatus,
   filterCommonModels,
@@ -94,7 +95,7 @@ const viewportWidth = ref(
   typeof window !== "undefined" ? window.innerWidth : 1280,
 );
 const drawerWidth = computed(() =>
-  Math.min(720, Math.max(380, viewportWidth.value - 48)),
+  computeColabOneModelDrawerWidth(viewportWidth.value),
 );
 
 function onWindowResize() {
@@ -198,6 +199,23 @@ watch(
   () => props.state.runtime.id,
   () => {
     modelOptions.value = {};
+  },
+);
+
+watch(
+  () => [
+    props.state.runtime.loaded_model,
+    props.state.runtime.active_options?.context_length,
+    props.state.runtime.active_options?.temperature,
+  ],
+  ([loadedId]) => {
+    if (
+      typeof loadedId === "string" &&
+      loadedId &&
+      configModelId.value !== loadedId
+    ) {
+      delete modelOptions.value[loadedId];
+    }
   },
 );
 

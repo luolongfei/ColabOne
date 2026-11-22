@@ -1,4 +1,5 @@
 # Runs in the authenticated Colab kernel. Preserve data and the original budget guard.
+import hashlib
 import json
 import os
 import shutil
@@ -56,23 +57,49 @@ def colabone_update():
     staged_reqs = staged_root / "server/requirements.txt"
     if not staged_root.is_dir() or not staged_reqs.is_file():
         raise RuntimeError("更新包结构无效，未执行更新")
-    emit_log("更新包解压完成，正在校验并安装新版服务依赖")
-    # Install locked server dependencies before stopping the working service.
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--require-hashes",
-            "-r",
-            str(staged_reqs),
-        ],
-        check=True,
-        timeout=120,
-    )
-    emit_log("新版服务依赖已就绪，正在平滑停止旧管理服务")
+    rev_hasher = hashlib.sha256()
+    rev_count = 0
+    for folder in ("server", "common", "catalog"):
+        folder_path = staged_root / folder
+        if not folder_path.is_dir():
+            continue
+        for item in sorted(folder_path.glob("*"), key=lambda p: p.name):
+            if item.is_file() and item.suffix in (".py", ".json", ".txt"):
+                rev_hasher.update(f"{folder}/{item.name}".encode("utf-8"))
+                rev_hasher.update(b"\0")
+                rev_hasher.update(item.read_bytes())
+                rev_hasher.update(b"\0")
+                rev_count += 1
+    expected_rev = rev_hasher.hexdigest()[:16] if rev_count else ""
+    current_reqs = Path("/content/colabone/server/requirements.txt")
+    reqs_unchanged = False
+    try:
+        reqs_unchanged = (
+            current_reqs.is_file()
+            and current_reqs.read_bytes() == staged_reqs.read_bytes()
+        )
+    except OSError:
+        reqs_unchanged = False
+    if reqs_unchanged:
+        emit_log("依赖清单未变化，跳过重复安装，正在平滑停止旧管理服务")
+    else:
+        emit_log("更新包解压完成，正在校验并安装新版服务依赖")
+        # Install locked server dependencies before stopping the working service.
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--require-hashes",
+                "-r",
+                str(staged_reqs),
+            ],
+            check=True,
+            timeout=120,
+        )
+        emit_log("新版服务依赖已就绪，正在平滑停止旧管理服务")
     if cfg.get("deadline", 0) > 0 and cfg["deadline"] - time.time() < 60:
         raise RuntimeError("预算保护即将释放实例，未替换运行中的服务")
     backup = Path("/content/colabone-previous")
@@ -93,7 +120,12 @@ def colabone_update():
         raise RuntimeError("旧服务未退出，未替换代码，请稍后重试")
     emit_log("旧服务已退出，正在切换新版代码并重启管理服务")
     Path("/content/colabone").rename(backup)
-    staged_root.rename("/content/colabone")
+    try:
+        staged_root.rename("/content/colabone")
+    except BaseException:
+        if not Path("/content/colabone").exists() and backup.exists():
+            backup.rename("/content/colabone")
+        raise
     env = dict(
         os.environ,
         PYTHONPATH="/content/colabone",
@@ -121,12 +153,16 @@ def colabone_update():
             break
         try:
             with opener.open(req, timeout=1) as response:
-                if json.load(response).get("protocol", 0) >= 7:
+                data = json.load(response)
+                if data.get("protocol", 0) >= 7 and (
+                    not expected_rev or data.get("service_revision") == expected_rev
+                ):
                     emit_log("新版远端管理服务健康检查通过")
                     print("COLABONE_UPDATED=1", flush=True)
                     return
         except Exception:
-            time.sleep(0.5)
+            pass
+        time.sleep(0.5)
     emit_log("新版服务未能在超时前就绪，正在回滚至旧版服务", level="warning")
     server_log = Path("/content/colabone-server.log")
     tail = ""

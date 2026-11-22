@@ -239,17 +239,318 @@ def test_oversized_model_uses_hybrid_fit_and_falls_back_on_early_exit(
     assert task.state == "completed"
     assert runtime.loaded == oversized.id
     assert len(launched_cmds) == 2
-    # Attempt 1: --fit on, --flash-attn on, PLE CPU override, KV q8_0/q8_0
+    # Attempt 1: --fit on MUST pair with --n-gpu-layers auto and NO -ot / --n-cpu-moe
+    # (llama.cpp common_fit_params aborts if n_gpu_layers != auto or overrides are set).
     assert "--fit" in launched_cmds[0] and launched_cmds[0][launched_cmds[0].index("--fit") + 1] == "on"
+    assert launched_cmds[0][launched_cmds[0].index("--n-gpu-layers") + 1] == "auto"
+    assert launched_cmds[0][launched_cmds[0].index("--fit-target") + 1] == "2048"
     assert "--flash-attn" in launched_cmds[0]
-    assert "-ot" in launched_cmds[0] and "per_layer_token_embd=CPU" in launched_cmds[0]
+    assert "-ot" not in launched_cmds[0]
+    assert "--n-cpu-moe" not in launched_cmds[0]
     assert launched_cmds[0][launched_cmds[0].index("--cache-type-k") + 1] == "q8_0"
     assert launched_cmds[0][launched_cmds[0].index("--cache-type-v") + 1] == "q8_0"
-    # Attempt 2 fallback: asymmetric KV q4_0 / q8_0 with --fit on
+    # Attempt 2 fallback: asymmetric KV q4_0 / q8_0 with --fit on, auto ngl, wider margin
+    assert launched_cmds[1][launched_cmds[1].index("--n-gpu-layers") + 1] == "auto"
+    assert launched_cmds[1][launched_cmds[1].index("--fit-target") + 1] == "4096"
+    assert "-ot" not in launched_cmds[1]
     assert launched_cmds[1][launched_cmds[1].index("--cache-type-k") + 1] == "q4_0"
     assert launched_cmds[1][launched_cmds[1].index("--cache-type-v") + 1] == "q8_0"
     assert any("混合装载" in entry["message"] for entry in task.logs)
     runtime.unload()
+
+
+def test_mla_and_moe_preset_scenarios_avoid_fit_conflicts_and_asymmetric_kv(
+    runtime, monkeypatch
+):
+    glm_moe = ModelSpec(
+        id="glm53-flash-test",
+        name="GLM-5.3-Flash (320B-A18B)",
+        description="320B-A18B MoE / Q4",
+        min_vram_mib=0,
+        context_length=16384,
+        cpu_moe_layers=19,
+        files=[
+            {
+                "repo": "GCSA-AiLab/GLM-5.3-Flash-Uncensored-RCO-GSQ-GGUF",
+                "revision": "b" * 40,
+                "path": "Q4/GLM-5.3-Flash.gguf",
+                "size": 137 * 1024**3,
+                "sha256": hashlib.sha256(b"glm").hexdigest(),
+                "role": "model",
+            }
+        ],
+    )
+    gpu = {"name": "NVIDIA RTX PRO 6000", "total_mib": 98304, "used_mib": 512}
+    needs_hybrid, plans = runtime._build_llama_load_plans(
+        runtime.root / "llama-server",
+        glm_moe,
+        runtime.models_dir / glm_moe.id / glm_moe.files[0].path,
+        gpu,
+    )
+    assert needs_hybrid is True
+    # Every --fit on plan MUST keep --n-gpu-layers auto and NO tensor overrides.
+    for label, cmd in plans:
+        fit_val = cmd[cmd.index("--fit") + 1]
+        ngl_val = cmd[cmd.index("--n-gpu-layers") + 1]
+        if fit_val == "on":
+            assert ngl_val == "auto", f"plan {label} must use --n-gpu-layers auto"
+            assert "-ot" not in cmd, f"plan {label} must not pass -ot with --fit on"
+            assert "--n-cpu-moe" not in cmd, f"plan {label} must not pass --n-cpu-moe with --fit on"
+        else:
+            # Explicit manual MoE fallback uses --fit off + --n-gpu-layers all + --n-cpu-moe
+            assert ngl_val == "all"
+            assert cmd[cmd.index("--n-cpu-moe") + 1] == "19"
+        # MLA architecture must NEVER receive asymmetric K/V cache types.
+        if "--cache-type-k" in cmd and "--cache-type-v" in cmd:
+            assert cmd[cmd.index("--cache-type-k") + 1] == cmd[cmd.index("--cache-type-v") + 1]
+    # Verify scenario ladder includes f16 compatible fit, 4K context downscale, manual MoE, and minimal compat.
+    labels = [label for label, _ in plans]
+    assert any("KV f16" in lb for lb in labels)
+    assert any("4K" in lb for lb in labels)
+    assert any("手动卸载回退" in lb for lb in labels)
+    assert labels[-1] == "兼容模式装载"
+
+
+def test_adaptive_context_downscale_updates_active_options(runtime, monkeypatch):
+    oversized = ModelSpec(
+        id="deepseek-v41-big",
+        name="DeepSeek-V4.1-Flash",
+        description="Q8_0",
+        min_vram_mib=0,
+        context_length=32768,
+        files=[
+            {
+                "repo": "huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF",
+                "revision": "c" * 40,
+                "path": "DeepSeek-V4.1-Flash-Q8_0.gguf",
+                "size": 160 * 1024**3,
+                "sha256": hashlib.sha256(b"ds").hexdigest(),
+                "role": "model",
+            }
+        ],
+    )
+    runtime.add_model(oversized.model_dump())
+    monkeypatch.setattr(runtime, "installed", lambda m: m.id == oversized.id)
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": "NVIDIA L4", "total_mib": 24576, "used_mib": 256},
+    )
+    monkeypatch.setattr(
+        runtime, "prepare_engine", lambda _t: runtime.root / "llama-server"
+    )
+    launched_cmds = []
+
+    def fake_popen(args, stdout=None, **kwargs):
+        launched_cmds.append(list(args))
+        ctx = int(args[args.index("--ctx-size") + 1])
+        proc = Mock()
+        if ctx > 4096:
+            if stdout is not None:
+                stdout.write(
+                    b"0.01.000.000 E ggml_backend_cuda_buffer_type_alloc_buffer: cudaMalloc failed: out of memory\n"
+                )
+                stdout.flush()
+            proc.returncode = 1
+            proc.poll.return_value = 1
+        else:
+            proc.returncode = None
+            proc.poll.return_value = None
+        return proc
+
+    monkeypatch.setattr("server.runtime.subprocess.Popen", fake_popen)
+    runtime.http = Mock()
+    runtime.http.get.return_value = Response()
+
+    task = wait_task(runtime, runtime.load(oversized.id))
+    assert task.state == "completed"
+    assert runtime.loaded == oversized.id
+    assert runtime.active_options["context_length"] == 4096
+    assert any("上下文已自动调整为 4096 tokens" in entry["message"] for entry in task.logs)
+    runtime.unload()
+
+
+def test_fatal_non_retryable_gguf_error_fast_fails_with_clean_summary(
+    runtime, spec, monkeypatch
+):
+    install(runtime, spec)
+    monkeypatch.setattr(
+        runtime, "gpu_info", lambda: {"name": "Tesla T4", "total_mib": 15360, "used_mib": 128}
+    )
+    monkeypatch.setattr(
+        runtime, "prepare_engine", lambda _t: runtime.root / "llama-server"
+    )
+    attempts = []
+
+    def fake_popen(args, stdout=None, **kwargs):
+        attempts.append(list(args))
+        if stdout is not None:
+            stdout.write(
+                b"0.00.001.000 W security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)\n"
+                b"0.00.093.020 I srv load_model: loading model 'bad.gguf'\n"
+                b"0.00.120.000 E llama_model_load: error loading model: unknown model architecture: 'future_arch'\n"
+            )
+            stdout.flush()
+        proc = Mock()
+        proc.returncode = 1
+        proc.poll.return_value = 1
+        return proc
+
+    monkeypatch.setattr("server.runtime.subprocess.Popen", fake_popen)
+    task = wait_task(runtime, runtime.load(spec.id))
+    assert task.state == "failed"
+    assert len(attempts) == 1
+    assert "pull/25655" not in task.error
+    assert "unknown model architecture" in task.error
+    # Verify SIGKILL OOM helper produces explicit host RAM OOM hint.
+    oom_msg = runtime._summarize_engine_error("0.01 I loading weights\n", returncode=-9)
+    assert "系统内存不足 OOM" in oom_msg
+
+
+def test_service_revision_reported_and_triggers_upgrade_check(runtime, tmp_path):
+    from pathlib import Path
+    from bridge.controller import ColabOneController
+    from common.files import colabone_service_revision
+    from conftest import MemoryVault
+
+    st = runtime.status()
+    expected = colabone_service_revision(Path(__file__).resolve().parents[1])
+    assert expected and len(expected) == 16
+    assert st["service_revision"] == expected
+
+    ctrl = ColabOneController(
+        Path(__file__).resolve().parents[1],
+        vault=MemoryVault(),
+        config_dir=tmp_path,
+        background=False,
+    )
+    assert ctrl._runtime_needs_upgrade({"state": "ready", "protocol": 7}) is True
+    assert (
+        ctrl._runtime_needs_upgrade(
+            {"state": "ready", "protocol": 7, "service_revision": "0000000000000000"}
+        )
+        is True
+    )
+    assert (
+        ctrl._runtime_needs_upgrade(
+            {"state": "ready", "protocol": 7, "service_revision": expected}
+        )
+        is False
+    )
+
+
+def test_warmup_http_500_oom_triggers_fallback_plan_and_assert_summary(
+    runtime, spec, monkeypatch
+):
+    install(runtime, spec)
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": "NVIDIA A100 40GB", "total_mib": 40960, "used_mib": 256},
+    )
+    monkeypatch.setattr(
+        runtime, "prepare_engine", lambda _t: runtime.root / "llama-server"
+    )
+    launched_cmds = []
+
+    def fake_popen(args, **kwargs):
+        launched_cmds.append(list(args))
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.returncode = None
+        return proc
+
+    monkeypatch.setattr("server.runtime.subprocess.Popen", fake_popen)
+
+    class WarmupResp:
+        def __init__(self, status_code, text=""):
+            self.status_code = status_code
+            self.text = text
+
+    post_calls = {"n": 0}
+
+    def fake_post(*a, **k):
+        post_calls["n"] += 1
+        if post_calls["n"] == 1:
+            return WarmupResp(500, '{"error":"cudaMalloc failed: out of memory"}')
+        return WarmupResp(200, '{"choices":[{"message":{"content":"."}}]}')
+
+    runtime.http = Mock()
+    runtime.http.get.return_value = Response()
+    runtime.http.post.side_effect = fake_post
+
+    task = wait_task(runtime, runtime.load(spec.id, {"context_length": 65536}))
+    assert task.state == "completed"
+    assert len(launched_cmds) == 2
+    # A100 40G tier uses 1536 primary and 2560 wide margins.
+    assert launched_cmds[0][launched_cmds[0].index("--fit-target") + 1] == "1536"
+    assert launched_cmds[1][launched_cmds[1].index("--fit-target") + 1] == "2560"
+    # Verify non-hybrid large-context model still gets 4K compat_ctx in Scenario 6.
+    _, plans = runtime._build_llama_load_plans(
+        runtime.root / "llama-server",
+        spec.model_copy(update={"context_length": 65536}),
+        runtime.models_dir / spec.id / spec.files[0].path,
+        {"name": "NVIDIA A100 40GB", "total_mib": 40960, "used_mib": 256},
+    )
+    compat_label, compat_cmd = plans[-1]
+    assert compat_label == "兼容模式装载"
+    assert compat_cmd[compat_cmd.index("--ctx-size") + 1] == "4096"
+    # Verify C++ exception / GGML_ASSERT lines are extracted by _summarize_engine_error.
+    assert_summary = runtime._summarize_engine_error(
+        "0.00 I loading\nterminate called after throwing an instance of 'std::runtime_error'\n  what(): GGML_ASSERT(a == b) failed\n",
+        returncode=-6,
+    )
+    assert "GGML_ASSERT" in assert_summary
+    runtime.unload()
+
+
+def test_monitor_skips_auto_upgrade_while_public_api_tunnel_active(tmp_path):
+    from pathlib import Path
+    from bridge.controller import ColabOneController
+    from conftest import MemoryVault
+
+    vault = MemoryVault()
+    vault.set("runtime_session", {"endpoint": "ep-live", "token": "t", "url": "https://x"})
+    vault.set("remote", {"endpoint": "ep-live", "token": "ctrl-tok", "deadline": 0})
+    ctrl = ColabOneController(
+        Path(__file__).resolve().parents[1],
+        vault=vault,
+        config_dir=tmp_path,
+        background=False,
+    )
+    ctrl.provider = Mock()
+    ctrl.provider.account.return_value = {"logged_in": True, "balance": 100}
+    ctrl.provider.heartbeat.return_value = None
+    ctrl.remote = Mock(
+        side_effect=lambda method, path, body=None, endpoint=None: (
+            {
+                "runtime": {
+                    "id": "ep-live",
+                    "state": "ready",
+                    "protocol": 7,
+                    "service_revision": "stale00000000000",
+                    "loaded_model": None,
+                    "active_engine": None,
+                    "public_api": {"state": "ready", "enabled": True},
+                    "tasks": [],
+                },
+                "models": ctrl.presets(),
+                "workflows": [],
+                "comfy_outputs": [],
+            }
+            if path == "snapshot"
+            else {"ok": True}
+        )
+    )
+    ctrl.async_operation = Mock()
+    ctrl.stop = Mock()
+    ctrl.stop.is_set.side_effect = [False, True]
+    ctrl.stop.wait.return_value = True
+
+    ctrl.monitor()
+    # Active Public API tunnel must prevent unsolicited background hot-upgrade.
+    ctrl.async_operation.assert_not_called()
+    assert ctrl.data["runtime"]["upgrade_available"] is True
 
 
 def test_reloading_same_model_stops_previous_engine_before_measuring_vram(

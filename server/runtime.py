@@ -25,7 +25,7 @@ from common.comfyui import (
     WorkflowRunRequest,
     WorkflowTemplate,
 )
-from common.files import atomic_json
+from common.files import atomic_json, colabone_service_revision
 from common.location import infer_location_from_endpoint, probe_vm_location
 from common.models import ModelSpec
 from server.drive import ColabOneDrive
@@ -145,6 +145,9 @@ class ColabOneRuntime:
         self._dirty_seq: dict[str, int] = {}
         self._seq_counter = 0
         self.drive_restored = False
+        self.service_revision = colabone_service_revision(
+            Path(__file__).resolve().parents[1]
+        )
         self.runtime_id = os.environ.get("COLABONE_RUNTIME_ID", uuid.uuid4().hex)
         self.location = infer_location_from_endpoint(self.runtime_id)
         if (root / "location.json").is_file():
@@ -292,6 +295,7 @@ class ColabOneRuntime:
         comfy_running = self.comfy.is_running()
         return {
             "protocol": 7,
+            "service_revision": self.service_revision,
             "public_api": self.public_api.snapshot(),
             "capabilities": ["public_api", "comfyui"],
             "comfyui": comfy_status,
@@ -710,10 +714,112 @@ class ColabOneRuntime:
             raise ColabOneConflictError("请先下载模型到当前远端实例")
         return self.submit("load", model_id, lambda t: self._load(t, m))
 
+    @staticmethod
+    def _is_benign_engine_log_line(line: str) -> bool:
+        low = line.lower()
+        return (
+            "llama.cpp/pull/25655" in low
+            or "no api key is set and cors allows all origins" in low
+        )
+
+    @classmethod
+    def _summarize_engine_error(
+        cls, log_text: str, returncode: int | None = None
+    ) -> str:
+        lines = [
+            ln.strip()
+            for ln in (log_text or "").splitlines()
+            if ln.strip() and not cls._is_benign_engine_log_line(ln)
+        ]
+        key_markers = (
+            " E ",
+            "error:",
+            "failed to",
+            "cudamalloc failed",
+            "cuda error",
+            "out of memory",
+            "common_fit_params:",
+            "does not support",
+            "does not divide",
+            "unknown model architecture",
+            "not a gguf",
+            "invalid magic",
+            "missing tensor",
+            "ggml_backend",
+            "ggml_assert",
+            "terminate called",
+            "what():",
+            "assertion",
+            "segmentation fault",
+            "aborted",
+        )
+        important: list[str] = []
+        for ln in lines:
+            low = ln.lower()
+            if any(marker in ln or marker in low for marker in key_markers):
+                if not important or important[-1] != ln:
+                    important.append(ln)
+        selected = important[-4:] if important else lines[-4:]
+        summary = " | ".join(selected)
+        if len(summary) > 420:
+            summary = summary[:417].rstrip() + "..."
+        if returncode in (-9, 137):
+            oom_hint = "推理进程被系统终止（可能因系统内存不足 OOM）"
+            return f"{oom_hint}：{summary}" if summary else oom_hint
+        return summary
+
+    @staticmethod
+    def _is_fatal_non_retryable_load_error(log_text: str) -> bool:
+        low = (log_text or "").lower()
+        if any(
+            tok in low
+            for tok in (
+                "out of memory",
+                "cudamalloc",
+                "common_fit_params",
+                "cache type",
+                "flash_attn",
+                "does not support different k",
+                "does not divide",
+            )
+        ):
+            return False
+        return any(
+            tok in low
+            for tok in (
+                "unknown model architecture",
+                "not a gguf file",
+                "invalid magic",
+                "gguf_init_from_file: failed to open",
+                "failed to open gguf",
+                "missing tensor",
+            )
+        )
+
+    @staticmethod
+    def _plan_context_length(args: list[str], default_ctx: int) -> int:
+        try:
+            idx = args.index("--ctx-size")
+            return int(args[idx + 1])
+        except (ValueError, IndexError):
+            return default_ctx
+
     def _build_llama_load_plans(
         self, engine: Path, m: ModelSpec, model_path: Path, gpu: dict
     ) -> tuple[bool, list[tuple[str, list[str]]]]:
-        """Build ordered llama-server launch plans supporting automatic GPU + RAM hybrid offloading (--fit on)."""
+        """Build ordered scenario-based llama-server launch plans.
+
+        Verified against llama.cpp (b12032) `common/fit.cpp`:
+        - `common_fit_params()` aborts immediately if `n_gpu_layers != -1`
+          (`auto`) OR if `tensor_buft_overrides` is non-empty (`-ot`,
+          `--n-cpu-moe`, `--cpu-moe`).
+        - Large PLE tensors (`per_layer_token_embd` > 4 GiB) are handled
+          natively by `--lazy-mode auto` (CPU mmap lazy read) before tensor
+          overrides run, while `--fit on` natively balances MoE experts and
+          dense layers across VRAM and Host RAM.
+        - MLA architectures (DeepSeek / GLM-5 / Kimi) reject asymmetric K/V
+          cache types (`type_k != type_v`).
+        """
         model_bytes = sum(f.size for f in m.files)
         model_mib = model_bytes / (1024 * 1024)
         gpu_total_mib = int(gpu.get("total_mib") or 0)
@@ -722,18 +828,46 @@ class ColabOneRuntime:
             model_mib > 0 and (model_mib * 1.08 + 1024) > gpu_free_mib
         )
         identity_text = " ".join(
-            [m.id, m.name, m.description, *(f.repo for f in m.files), *(f.path for f in m.files)]
+            [
+                m.id,
+                m.name,
+                m.description,
+                *(f.repo for f in m.files),
+                *(f.path for f in m.files),
+            ]
         ).lower()
-        is_ple_hybrid = needs_hybrid and (
-            "flash-next" in identity_text or "flash_next" in identity_text
+        is_mla_arch = any(
+            tok in identity_text
+            for tok in ("deepseek", "glm-5", "glm5", "kimi", "mla")
         )
+        is_ple_hybrid = needs_hybrid and any(
+            tok in identity_text
+            for tok in (
+                "flash-next",
+                "flash_next",
+                "deepseek-v4",
+                "deepseek_v4",
+                "deepseek4",
+                "gemma-4",
+                "gemma4",
+            )
+        )
+        # Reserve headroom for CUDA 12.8 / cuBLAS / Blackwell runtime workspace.
+        if gpu_total_mib >= 75000:
+            primary_margin_mib, wide_margin_mib = 2048, 4096
+        elif gpu_total_mib >= 36000:
+            primary_margin_mib, wide_margin_mib = 1536, 2560
+        else:
+            primary_margin_mib, wide_margin_mib = 1024, 1536
 
         def make_fit_cmd(
-            kv_k: str,
-            kv_v: str,
             *,
-            use_cpu_moe: bool = False,
-            use_ple_cpu: bool = False,
+            ctx_size: int = m.context_length,
+            kv_k: str | None = "q8_0",
+            kv_v: str | None = "q8_0",
+            flash_attn: str | None = "on",
+            kv_unified: bool = True,
+            fit_target_mib: int | None = primary_margin_mib,
         ) -> list[str]:
             cmd = [
                 str(engine),
@@ -746,96 +880,139 @@ class ColabOneRuntime:
                 "--alias",
                 m.id,
                 "--ctx-size",
-                str(m.context_length),
+                str(ctx_size),
                 "--n-gpu-layers",
-                "999",
+                "auto",
                 "--fit",
                 "on",
+            ]
+            if fit_target_mib is not None:
+                cmd.extend(["--fit-target", str(fit_target_mib)])
+            if flash_attn:
+                cmd.extend(["--flash-attn", flash_attn])
+            if kv_k and kv_v:
+                cmd.extend(["--cache-type-k", kv_k, "--cache-type-v", kv_v])
+            if kv_unified:
+                cmd.append("--kv-unified")
+            cmd.extend(["--parallel", "1", "--jinja"])
+            return cmd
+
+        plans: list[tuple[str, list[str]]] = []
+
+        # Scenario 1: Primary optimal auto-fit (100% GPU residency when fitting in
+        # VRAM; native MoE/dense VRAM+RAM fit + native lazy-mmap PLE when oversized).
+        if is_ple_hybrid:
+            primary_label = "GPU 显存 + 内存 PLE 协同装配（--fit on · KV q8_0）"
+        elif needs_hybrid:
+            primary_label = "GPU 显存 + 系统内存智能混合装配（--fit on · KV q8_0）"
+        else:
+            primary_label = "全量 GPU 驻留（FlashAttn · --fit on · KV q8_0）"
+        plans.append((primary_label, make_fit_cmd(kv_k="q8_0", kv_v="q8_0")))
+
+        # Scenario 2: Tight-VRAM KV compression + wider CUDA workspace margin.
+        # Skip asymmetric KV on MLA models where llama.cpp requires type_k == type_v.
+        if not is_mla_arch:
+            plans.append(
+                (
+                    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）",
+                    make_fit_cmd(
+                        kv_k="q4_0",
+                        kv_v="q8_0",
+                        fit_target_mib=wide_margin_mib,
+                    ),
+                )
+            )
+        plans.append(
+            (
+                "GPU + 内存智能混合装配（--fit on · 紧凑 KV q4_0）",
+                make_fit_cmd(
+                    kv_k="q4_0",
+                    kv_v="q4_0",
+                    fit_target_mib=wide_margin_mib,
+                ),
+            )
+        )
+
+        # Scenario 3: Architecture-compatible native f16 KV + auto FlashAttn with
+        # --fit on (for head dimensions not divisible by 32 or models rejecting forced FA).
+        plans.append(
+            (
+                "GPU + 内存标准 KV 兼容装配（--fit on · KV f16）",
+                make_fit_cmd(
+                    kv_k=None,
+                    kv_v=None,
+                    flash_attn="auto",
+                    fit_target_mib=wide_margin_mib,
+                ),
+            )
+        )
+
+        # Scenario 4: Adaptive 4K context downscale when user requested >4K context
+        # on constrained hardware where full-context KV still exceeds free VRAM.
+        if m.context_length > 4096:
+            plans.append(
+                (
+                    "GPU + 内存保守上下文装配（--fit on · 4K · KV q4_0）",
+                    make_fit_cmd(
+                        ctx_size=4096,
+                        kv_k="q4_0",
+                        kv_v="q4_0",
+                        fit_target_mib=wide_margin_mib,
+                    ),
+                )
+            )
+
+        # Scenario 5: Preset manual MoE expert CPU offload fallback (explicit
+        # --fit off so --n-cpu-moe never conflicts with common_fit_params).
+        if m.cpu_moe_layers:
+            manual_moe_cmd = [
+                str(engine),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8081",
+                "--model",
+                str(model_path),
+                "--alias",
+                m.id,
+                "--ctx-size",
+                str(m.context_length),
+                "--n-gpu-layers",
+                "all",
+                "--fit",
+                "off",
                 "--flash-attn",
-                "on",
-                "--cache-type-k",
-                kv_k,
-                "--cache-type-v",
-                kv_v,
-                "--kv-unified",
+                "auto",
+                "--n-cpu-moe",
+                str(m.cpu_moe_layers),
                 "--parallel",
                 "1",
                 "--jinja",
             ]
-            if use_ple_cpu:
-                cmd.extend(["-ot", "per_layer_token_embd=CPU"])
-            if use_cpu_moe and m.cpu_moe_layers:
-                cmd.extend(["--n-cpu-moe", str(m.cpu_moe_layers)])
-            return cmd
-
-        plans: list[tuple[str, list[str]]] = []
-        if is_ple_hybrid:
             plans.append(
                 (
-                    "GPU 显存 + 内存 PLE 协同装配（--fit on · KV q8_0）",
-                    make_fit_cmd("q8_0", "q8_0", use_ple_cpu=True),
-                )
-            )
-            plans.append(
-                (
-                    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）",
-                    make_fit_cmd("q4_0", "q8_0", use_ple_cpu=True),
-                )
-            )
-        elif m.cpu_moe_layers:
-            plans.append(
-                (
-                    f"GPU + 内存 MoE 混合装配（--fit on · {m.cpu_moe_layers} 层专家内存卸载 · KV q8_0）",
-                    make_fit_cmd("q8_0", "q8_0", use_cpu_moe=True),
-                )
-            )
-            plans.append(
-                (
-                    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）",
-                    make_fit_cmd("q4_0", "q8_0"),
-                )
-            )
-        else:
-            primary_label = (
-                "GPU 显存 + 系统内存智能混合装配（--fit on · KV q8_0）"
-                if needs_hybrid
-                else "全量 GPU 驻留（FlashAttn · --fit on · KV q8_0）"
-            )
-            plans.append((primary_label, make_fit_cmd("q8_0", "q8_0")))
-            plans.append(
-                (
-                    "GPU + 内存智能混合装配（--fit on · 非对称 KV q4_0/q8_0）",
-                    make_fit_cmd("q4_0", "q8_0"),
+                    f"GPU + 内存 MoE 手动卸载回退（--fit off · {m.cpu_moe_layers} 层专家内存卸载）",
+                    manual_moe_cmd,
                 )
             )
 
+        # Scenario 6: Minimal compatibility mode (omits KV quant / FA / unified-KV
+        # while retaining --n-gpu-layers auto + --fit on and bounded 4K ctx so even
+        # models rejecting quantized KV with large requested contexts can load).
+        compat_ctx = min(m.context_length, 4096)
         plans.append(
             (
-                "GPU + 内存智能混合装配（--fit on · 紧凑 KV q4_0）",
-                make_fit_cmd("q4_0", "q4_0"),
+                "兼容模式装载",
+                make_fit_cmd(
+                    ctx_size=compat_ctx,
+                    kv_k=None,
+                    kv_v=None,
+                    flash_attn=None,
+                    kv_unified=False,
+                    fit_target_mib=None,
+                ),
             )
         )
-        legacy_cmd = [
-            str(engine),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8081",
-            "--model",
-            str(model_path),
-            "--alias",
-            m.id,
-            "--ctx-size",
-            str(m.context_length),
-            "--n-gpu-layers",
-            "99",
-            "--parallel",
-            "1",
-            "--jinja",
-        ]
-        if m.cpu_moe_layers:
-            legacy_cmd.extend(["--n-cpu-moe", str(m.cpu_moe_layers)])
-        plans.append(("兼容模式装载", legacy_cmd))
         return needs_hybrid, plans
 
     def _load(self, task, m):
@@ -880,9 +1057,11 @@ class ColabOneRuntime:
             if lib_search_root.is_dir()
             else set()
         )
-        env["LD_LIBRARY_PATH"] = (
-            ":".join(sorted(lib_dirs)) + ":" + env.get("LD_LIBRARY_PATH", "")
-        )
+        ld_parts = sorted(lib_dirs)
+        if env.get("LD_LIBRARY_PATH"):
+            ld_parts.append(env["LD_LIBRARY_PATH"])
+        if ld_parts:
+            env["LD_LIBRARY_PATH"] = ":".join(ld_parts)
         needs_hybrid, plans = self._build_llama_load_plans(engine, m, model_path, gpu)
         if needs_hybrid:
             task.note(
@@ -893,6 +1072,7 @@ class ColabOneRuntime:
         for attempt_idx, (plan_label, args) in enumerate(plans):
             task.check()
             task.note(f"启动 llama.cpp：{plan_label}")
+            effective_ctx = self._plan_context_length(args, m.context_length)
             with log.open("wb") as stream:
                 proc = self._start_engine(
                     task,
@@ -902,6 +1082,15 @@ class ColabOneRuntime:
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
                 )
+            raw_log = ""
+            attempt_detail = ""
+
+            def _read_engine_log() -> str:
+                try:
+                    return log.read_text(errors="replace")[-32768:]
+                except OSError:
+                    return ""
+
             try:
                 load_started = time.monotonic()
                 load_last_note = load_started
@@ -911,10 +1100,13 @@ class ColabOneRuntime:
                     task.check()
                     if proc.poll() is not None:
                         exited_early = True
-                        tail = log.read_text(errors="replace")[-1200:].strip()
+                        raw_log = _read_engine_log()
+                        attempt_detail = self._summarize_engine_error(
+                            raw_log, proc.returncode
+                        )
                         last_error = (
                             f"模型加载失败（推理进程已退出，退出码 {proc.returncode}）"
-                            + (f"：{tail}" if tail else "")
+                            + (f"：{attempt_detail}" if attempt_detail else "")
                         )
                         break
                     try:
@@ -927,21 +1119,38 @@ class ColabOneRuntime:
                             task.note(
                                 f"模型权重已就绪（{plan_label}，耗时 {time.monotonic() - load_started:.1f} 秒）"
                             )
-                            self._warmup_llama(task, proc, m.id)
+                            warmup_fatal = self._warmup_llama(task, proc, m.id)
                             if proc.poll() is not None:
                                 exited_early = True
-                                tail = log.read_text(errors="replace")[-1200:].strip()
+                                raw_log = _read_engine_log()
+                                attempt_detail = self._summarize_engine_error(
+                                    raw_log, proc.returncode
+                                )
                                 last_error = (
                                     f"模型预热失败（推理进程已退出，退出码 {proc.returncode}）"
-                                    + (f"：{tail}" if tail else "")
+                                    + (f"：{attempt_detail}" if attempt_detail else "")
                                 )
                                 break
+                            if warmup_fatal:
+                                exited_early = True
+                                raw_log = _read_engine_log()
+                                attempt_detail = (
+                                    self._summarize_engine_error(raw_log)
+                                    or warmup_fatal
+                                )
+                                last_error = f"模型预热失败：{attempt_detail}"
+                                break
+                            if effective_ctx != m.context_length:
+                                task.note(
+                                    f"当前显存紧张，上下文已自动调整为 {effective_ctx} tokens 以完成装载",
+                                    "warning",
+                                )
                             self._engine_ready(
                                 task,
                                 proc,
                                 m.id,
                                 {
-                                    "context_length": m.context_length,
+                                    "context_length": effective_ctx,
                                     "temperature": m.temperature,
                                 },
                             )
@@ -958,45 +1167,86 @@ class ColabOneRuntime:
                     task.message = (
                         "混合装载到显存与内存" if needs_hybrid else "加载到远端显存"
                     )
-                    time.sleep(1)
+                    if task.cancel.wait(1):
+                        task.check()
                 if not exited_early:
                     raise RuntimeError("模型加载超过 10 分钟")
             except BaseException:
                 self._stop_engine()
                 raise
             self._stop_engine()
+            if self._is_fatal_non_retryable_load_error(raw_log):
+                break
             if attempt_idx + 1 < len(plans):
-                task.note(
-                    f"方案「{plan_label}」未启动成功，自动尝试下一降级装载方案…",
-                    "warning",
-                )
+                if attempt_detail:
+                    task.note(
+                        f"方案「{plan_label}」未启动成功（{attempt_detail}），自动尝试下一降级装载方案…",
+                        "warning",
+                    )
+                else:
+                    task.note(
+                        f"方案「{plan_label}」未启动成功，自动尝试下一降级装载方案…",
+                        "warning",
+                    )
         raise RuntimeError(last_error)
 
-    def _warmup_llama(self, task, proc, model_id: str):
-        """Run a 1-token warmup so first-call CUDA PTX JIT finishes during load instead of timing out the first API request."""
-        post = getattr(self.http, "post", None)
-        if not callable(post):
-            return
+    def _warmup_llama(self, task, proc, model_id: str) -> str:
+        """Run a 1-token warmup so first-call CUDA PTX JIT finishes during load instead of timing out the first API request.
+
+        Returns a non-empty fatal reason if warmup hit a GPU/memory runtime error
+        while the process stayed alive so `_load()` can retry a safer fallback plan.
+        """
+        use_dedicated_session = isinstance(self.http, requests.Session)
+        post = None if use_dedicated_session else getattr(self.http, "post", None)
+        if not use_dedicated_session and not callable(post):
+            return ""
         warmup_started = time.monotonic()
         task.message = "正在预热 GPU 推理内核"
         task.note("正在预热远端 CUDA 推理内核，避免首次 API 调用超时")
         done = threading.Event()
+        outcome: dict[str, object] = {"status": None, "body": "", "exc": None}
 
         def _fire():
+            session = None
             try:
-                post(
-                    "http://127.0.0.1:8081/v1/chat/completions",
-                    json={
-                        "model": model_id,
-                        "messages": [{"role": "user", "content": "."}],
-                        "max_tokens": 1,
-                        "stream": False,
-                    },
-                    timeout=(5, 180),
-                )
-            except Exception:
-                pass
+                if use_dedicated_session:
+                    session = requests.Session()
+                    session.trust_env = False
+                    resp = session.post(
+                        "http://127.0.0.1:8081/v1/chat/completions",
+                        json={
+                            "model": model_id,
+                            "messages": [{"role": "user", "content": "."}],
+                            "max_tokens": 1,
+                            "stream": False,
+                        },
+                        timeout=(5, 180),
+                    )
+                else:
+                    resp = post(
+                        "http://127.0.0.1:8081/v1/chat/completions",
+                        json={
+                            "model": model_id,
+                            "messages": [{"role": "user", "content": "."}],
+                            "max_tokens": 1,
+                            "stream": False,
+                        },
+                        timeout=(5, 180),
+                    )
+                status = getattr(resp, "status_code", None)
+                if isinstance(status, int):
+                    outcome["status"] = status
+                text = getattr(resp, "text", "")
+                if isinstance(text, str):
+                    outcome["body"] = text[:500]
+            except Exception as exc:
+                outcome["exc"] = exc
             finally:
+                if session is not None:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
                 done.set()
 
         threading.Thread(target=_fire, daemon=True).start()
@@ -1004,12 +1254,32 @@ class ColabOneRuntime:
         while not done.is_set() and time.monotonic() < end:
             task.check()
             if proc.poll() is not None:
-                return
+                return ""
             done.wait(0.25)
-        if done.is_set() and proc.poll() is None:
+        if not done.is_set():
+            if proc.poll() is None:
+                task.note("CUDA 推理内核预热超时，推理服务将继续就绪", "warning")
+            return ""
+        if outcome["exc"] is not None:
+            # Give a crashing engine a brief moment to terminate so proc.poll() catches it.
+            deadline = time.monotonic() + 0.25
+            while proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            return ""
+        status = outcome["status"]
+        body = str(outcome["body"] or "")
+        if isinstance(status, int) and status >= 500:
+            low = body.lower()
+            if any(
+                tok in low
+                for tok in ("out of memory", "cudamalloc", "cuda error", "failed to alloc")
+            ):
+                return body.strip()[:300] or f"HTTP {status}"
+        if proc.poll() is None:
             task.note(
                 f"CUDA 推理内核预热完成（耗时 {time.monotonic() - warmup_started:.1f} 秒）"
             )
+        return ""
 
     @synchronized
     def _start_engine(self, task, args, **kwargs):

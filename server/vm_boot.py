@@ -2,6 +2,7 @@
 # The control service is loopback-only; the authenticated Colab kernel carries RPC.
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -68,6 +69,7 @@ def colabone_boot():
         )
         emit_log("已启动远端预算保护守护进程")
     emit_log("正在解压管理服务程序包")
+    shutil.rmtree("/content/colabone", ignore_errors=True)
     with zipfile.ZipFile("/content/colabone.zip") as archive:
         archive.extractall("/content")
     boot_root = Path(config["root"])

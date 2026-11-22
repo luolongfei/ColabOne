@@ -41,8 +41,93 @@ const PERSISTENT_ERROR_PATTERNS: readonly RegExp[] = [
   /mygo:\s*runtime not found/i,
 ];
 
+export const COLABONE_MODEL_DRAWER_MIN_WIDTH = 380;
+export const COLABONE_MODEL_DRAWER_MAX_WIDTH = 720;
+export const COLABONE_MODEL_DRAWER_GUTTER = 48;
+export const COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX = 68;
+
+export interface ColabOneToastHorizontalBounds {
+  leftOffsetPx: number;
+  rightOffsetPx: number;
+}
+
 function clamp(min: number, value: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Computes the right-docked ModelDrawer width for a given viewport width.
+ * Shared between ModelDrawer and the unified toast host so drawer-scoped
+ * toasts stay centered strictly within the drawer panel across all viewports.
+ */
+export function computeColabOneModelDrawerWidth(viewportWidth: number): number {
+  const safeViewport =
+    Number.isFinite(viewportWidth) && viewportWidth > 0
+      ? Math.round(viewportWidth)
+      : 1280;
+  return Math.min(
+    safeViewport,
+    Math.min(
+      COLABONE_MODEL_DRAWER_MAX_WIDTH,
+      Math.max(
+        COLABONE_MODEL_DRAWER_MIN_WIDTH,
+        safeViewport - COLABONE_MODEL_DRAWER_GUTTER,
+      ),
+    ),
+  );
+}
+
+/**
+ * Resolves the active horizontal surface bounds (`leftOffsetPx`, `rightOffsetPx`)
+ * for the floating toast host. When the right-hand overlay ModelDrawer is open,
+ * toasts center within the drawer region (taking precedence over any inline
+ * LogDrawer behind the backdrop). Otherwise they center over the main workspace.
+ */
+export function resolveColabOneToastHorizontalBounds(options: {
+  viewportWidth: number;
+  modelDrawerOpen: boolean;
+  modelDrawerWidthPx?: number;
+  inlineLogDrawerOpen: boolean;
+  inlineLogDrawerWidthPx: number;
+}): ColabOneToastHorizontalBounds {
+  const safeViewport =
+    Number.isFinite(options.viewportWidth) && options.viewportWidth > 0
+      ? Math.round(options.viewportWidth)
+      : 1280;
+
+  if (options.modelDrawerOpen) {
+    const rawDrawerWidth =
+      options.modelDrawerWidthPx !== undefined &&
+      Number.isFinite(options.modelDrawerWidthPx) &&
+      options.modelDrawerWidthPx > 0
+        ? Math.round(options.modelDrawerWidthPx)
+        : computeColabOneModelDrawerWidth(safeViewport);
+    const clampedDrawerWidth = Math.min(safeViewport, rawDrawerWidth);
+    return {
+      leftOffsetPx: Math.max(0, safeViewport - clampedDrawerWidth),
+      rightOffsetPx: 0,
+    };
+  }
+
+  if (options.inlineLogDrawerOpen) {
+    const safeLogWidth =
+      Number.isFinite(options.inlineLogDrawerWidthPx) &&
+      options.inlineLogDrawerWidthPx > 0
+        ? Math.min(
+            Math.max(0, safeViewport - 160),
+            Math.round(options.inlineLogDrawerWidthPx),
+          )
+        : 0;
+    return {
+      leftOffsetPx: 0,
+      rightOffsetPx: safeLogWidth,
+    };
+  }
+
+  return {
+    leftOffsetPx: 0,
+    rightOffsetPx: 0,
+  };
 }
 
 /**

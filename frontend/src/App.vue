@@ -109,8 +109,10 @@ import {
 import { createColabOneSnapshot, COLABONE_STATUS_LABELS, type AccountInstance } from "./types";
 import { createColabOneScrollController } from "./scrollTransition";
 import {
+  COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX,
   createColabOneToastManager,
   isPersistentColabOneError,
+  resolveColabOneToastHorizontalBounds,
   type ColabOneToastKind,
 } from "./colabOneToast";
 
@@ -136,8 +138,13 @@ const state = ref(createColabOneSnapshot()),
 let ipcFailures = 0;
 
 const toastManager = createColabOneToastManager({ maxVisible: 3 });
+const viewportWidth = ref(
+  typeof window !== "undefined" ? window.innerWidth : 1280,
+);
 const toastTopOffsetPx = ref(112);
+const drawerToastTopOffsetPx = ref(COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX);
 let toastLayoutObserver: ResizeObserver | null = null;
+let drawerHeaderMeasureFrame: number | null = null;
 let handledStateError = "";
 let snapshotSeq = 0;
 let appliedSnapshotSeq = 0;
@@ -1380,12 +1387,63 @@ async function copy(text: string) {
   }
 }
 
-function updateToastTopOffset() {
+const activeToastTopOffsetPx = computed(() =>
+  modelsDrawerOpen.value
+    ? drawerToastTopOffsetPx.value
+    : toastTopOffsetPx.value,
+);
+
+const toastHorizontalBounds = computed(() =>
+  resolveColabOneToastHorizontalBounds({
+    viewportWidth: viewportWidth.value,
+    modelDrawerOpen: modelsDrawerOpen.value,
+    inlineLogDrawerOpen: !logWindowStandalone.value && logsOpen.value,
+    inlineLogDrawerWidthPx: logDrawerWidth.value,
+  }),
+);
+
+function updateDrawerToastTopOffset() {
+  if (!modelsDrawerOpen.value || typeof document === "undefined") return;
+  const headerEl = document.querySelector<HTMLElement>(
+    ".co-model-drawer-root .ant-drawer-header",
+  );
+  if (!headerEl) return;
+  const bottom = Math.round(headerEl.getBoundingClientRect().bottom);
+  if (bottom > 0) {
+    drawerToastTopOffsetPx.value = Math.min(140, Math.max(56, bottom + 10));
+  }
+}
+
+function scheduleDrawerToastTopMeasure() {
+  updateDrawerToastTopOffset();
+  if (
+    typeof window === "undefined" ||
+    typeof window.requestAnimationFrame !== "function"
+  ) {
+    return;
+  }
+  if (drawerHeaderMeasureFrame !== null) {
+    window.cancelAnimationFrame(drawerHeaderMeasureFrame);
+  }
+  drawerHeaderMeasureFrame = window.requestAnimationFrame(() => {
+    drawerHeaderMeasureFrame = null;
+    updateDrawerToastTopOffset();
+  });
+}
+
+function updateToastLayout() {
+  if (typeof window !== "undefined") {
+    viewportWidth.value = window.innerWidth;
+  }
   const el = resolveContentElement();
-  if (!el) return;
-  const top = Math.round(el.getBoundingClientRect().top);
-  if (top > 0) {
-    toastTopOffsetPx.value = Math.min(260, Math.max(72, top + 6));
+  if (el) {
+    const top = Math.round(el.getBoundingClientRect().top);
+    if (top > 0) {
+      toastTopOffsetPx.value = Math.min(260, Math.max(72, top + 6));
+    }
+  }
+  if (modelsDrawerOpen.value) {
+    updateDrawerToastTopOffset();
   }
 }
 
@@ -1393,12 +1451,28 @@ watch(
   [
     persistentBannerError,
     () => state.value.operation,
-    () => ready.value && (state.value.runtime.protocol || 0) < 7,
+    () =>
+      ready.value &&
+      ((state.value.runtime.protocol || 0) < 7 ||
+        Boolean(state.value.runtime.upgrade_available)),
     logsOpen,
     logDrawerWidth,
   ],
   () => {
-    updateToastTopOffset();
+    updateToastLayout();
+  },
+  { flush: "post" },
+);
+
+watch(
+  modelsDrawerOpen,
+  (isOpen) => {
+    if (isOpen) {
+      drawerToastTopOffsetPx.value = COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX;
+      scheduleDrawerToastTopMeasure();
+    } else {
+      updateToastLayout();
+    }
   },
   { flush: "post" },
 );
@@ -1406,15 +1480,15 @@ watch(
 onMounted(() => {
   refresh();
   void syncLogWindowState();
-  updateToastTopOffset();
+  updateToastLayout();
   const contentEl = resolveContentElement();
   if (contentEl && typeof ResizeObserver !== "undefined") {
     toastLayoutObserver = new ResizeObserver(() => {
-      updateToastTopOffset();
+      updateToastLayout();
     });
     toastLayoutObserver.observe(contentEl);
   }
-  window.addEventListener("resize", updateToastTopOffset, { passive: true });
+  window.addEventListener("resize", updateToastLayout, { passive: true });
   clockTimer = setInterval(() => {
     if (!ipcDisconnected.value) clockNow.value = Date.now();
   }, 1000);
@@ -1431,7 +1505,11 @@ onUnmounted(() => {
   scrollController.cancel();
   toastLayoutObserver?.disconnect();
   toastLayoutObserver = null;
-  window.removeEventListener("resize", updateToastTopOffset);
+  if (drawerHeaderMeasureFrame !== null && typeof window !== "undefined") {
+    window.cancelAnimationFrame(drawerHeaderMeasureFrame);
+    drawerHeaderMeasureFrame = null;
+  }
+  window.removeEventListener("resize", updateToastLayout);
   clearInterval(clockTimer);
   for (const name of ["pointerdown", "keydown", "wheel"])
     window.removeEventListener(name, interaction);
@@ -1697,7 +1775,9 @@ onUnmounted(() => {
         <!-- Global Persistent System & Operation Banners -->
         <div
           v-if="
-            (ready && (state.runtime.protocol || 0) < 7) ||
+            (ready &&
+              ((state.runtime.protocol || 0) < 7 ||
+                Boolean(state.runtime.upgrade_available))) ||
             persistentBannerError ||
             state.operation
           "
@@ -1705,7 +1785,11 @@ onUnmounted(() => {
         >
           <div class="co-banners-inner">
             <AAlert
-              v-if="ready && (state.runtime.protocol || 0) < 7"
+              v-if="
+                ready &&
+                ((state.runtime.protocol || 0) < 7 ||
+                  Boolean(state.runtime.upgrade_available))
+              "
               type="info"
               show-icon
               :message="t('status.upgradeBanner')"
@@ -1715,7 +1799,10 @@ onUnmounted(() => {
                   type="primary"
                   size="small"
                   :disabled="
-                    !!task || !!state.runtime.loaded_model || !!state.operation
+                    !!task ||
+                    !!state.runtime.loaded_model ||
+                    !!state.runtime.active_engine ||
+                    !!state.operation
                   "
                   @click="act('runtime.upgrade')"
                 >
@@ -3410,8 +3497,9 @@ onUnmounted(() => {
       <ColabOneToastHost
         :items="toastManager.items.value"
         placement="top"
-        :top-offset-px="toastTopOffsetPx"
-        :right-offset-px="!logWindowStandalone && logsOpen ? logDrawerWidth : 0"
+        :top-offset-px="activeToastTopOffsetPx"
+        :left-offset-px="toastHorizontalBounds.leftOffsetPx"
+        :right-offset-px="toastHorizontalBounds.rightOffsetPx"
         @pause="toastManager.pause"
         @resume="toastManager.resume"
         @dismiss="toastManager.dismiss"

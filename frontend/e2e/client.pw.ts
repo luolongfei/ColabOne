@@ -4373,3 +4373,137 @@ test("Countdown error toast (zero layout shift + hover pause + persistent connec
   await page.locator('.co-locale-menu-item[data-locale="ja-JP"]').click();
   await expect(page.locator(".co-toast.is-success")).toHaveCount(1);
 });
+
+test("Toasts triggered inside ModelDrawer stay horizontally centered in the drawer across viewport widths and inline logs", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 840 });
+  await mock(page, true);
+
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.state = "ready";
+    s.runtime.protocol = 7;
+    s.runtime.loaded_model = "";
+    s.models[0].common = true;
+    s.models[0].downloaded = true;
+    s.models[0].loaded = false;
+  });
+
+  await navItem(page, "对外 API").click();
+  await expect(page.locator(".co-api-page-header")).toBeVisible();
+
+  const drawer = await openApiModelDrawer(page);
+  // Wait for drawer slide-in transition to settle before measuring bounding rects
+  await page.waitForTimeout(350);
+
+  const firstCard = drawer.locator(".co-model-card").first();
+  await firstCard.getByRole("button", { name: "装载" }).click();
+
+  const toast = page.locator(".co-toast.is-success");
+  await expect(toast).toBeVisible();
+  await expect(toast).toContainText("正在装载模型到显存");
+
+  const measureDrawerToast = () =>
+    page.evaluate(() => {
+      const content = document
+        .querySelector(".co-model-drawer-root .ant-drawer-content")
+        ?.getBoundingClientRect();
+      const header = document
+        .querySelector(".co-model-drawer-root .ant-drawer-header")
+        ?.getBoundingClientRect();
+      const toastEl = document
+        .querySelector(".co-toast")
+        ?.getBoundingClientRect();
+      if (!content || !header || !toastEl) return null;
+      return {
+        drawerLeft: content.left,
+        drawerRight: content.right,
+        drawerCenterX: (content.left + content.right) / 2,
+        headerBottom: header.bottom,
+        toastLeft: toastEl.left,
+        toastRight: toastEl.right,
+        toastTop: toastEl.top,
+        toastCenterX: (toastEl.left + toastEl.right) / 2,
+        viewportCenterX: window.innerWidth / 2,
+      };
+    });
+
+  const wide = await measureDrawerToast();
+  expect(wide).not.toBeNull();
+  expect(Math.abs(wide!.toastCenterX - wide!.drawerCenterX)).toBeLessThanOrEqual(2);
+  expect(wide!.toastLeft).toBeGreaterThanOrEqual(wide!.drawerLeft + 15);
+  expect(wide!.toastRight).toBeLessThanOrEqual(wide!.drawerRight - 15);
+  expect(wide!.toastTop).toBeGreaterThanOrEqual(wide!.headerBottom);
+
+  // Resizing to a narrower viewport keeps the toast centered inside the resized drawer
+  await page.setViewportSize({ width: 640, height: 800 });
+  // Wait for Ant Design Drawer's 300ms width transition to settle
+  await page.waitForTimeout(380);
+  const narrow = await measureDrawerToast();
+  expect(narrow).not.toBeNull();
+  expect(
+    Math.abs(narrow!.toastCenterX - narrow!.drawerCenterX),
+  ).toBeLessThanOrEqual(2);
+  expect(narrow!.toastLeft).toBeGreaterThanOrEqual(narrow!.drawerLeft + 15);
+  expect(narrow!.toastRight).toBeLessThanOrEqual(narrow!.drawerRight - 15);
+
+  // Closing the toast does not accidentally dismiss the underlying ModelDrawer
+  await toast.locator(".co-toast-close").click();
+  await expect(toast).toHaveCount(0);
+  await expect(drawer).toBeVisible();
+
+  // Close drawer, open inline LogDrawer (web preview), then reopen ModelDrawer:
+  // ModelDrawer overlay still centers toasts inside the drawer (ignoring inline LogDrawer behind backdrop)
+  await page.setViewportSize({ width: 1280, height: 840 });
+  await page.locator(".co-model-drawer-root .ant-drawer-close").click();
+  await expect(drawer).toBeHidden();
+
+  await page.locator('button[aria-label="展开运行日志"]').click();
+  await expect(page.locator(".co-log-drawer")).toBeVisible();
+
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.loaded_model = "";
+    s.runtime.tasks = [];
+    s.models[0].loaded = false;
+  });
+
+  const drawerWithLogs = await openApiModelDrawer(page);
+  await page.waitForTimeout(350);
+  await drawerWithLogs
+    .locator(".co-model-card")
+    .first()
+    .getByRole("button", { name: "装载" })
+    .click();
+  await expect(toast).toBeVisible();
+
+  const withLogs = await measureDrawerToast();
+  expect(withLogs).not.toBeNull();
+  expect(
+    Math.abs(withLogs!.toastCenterX - withLogs!.drawerCenterX),
+  ).toBeLessThanOrEqual(2);
+
+  // Closing the drawer while the toast is still visible re-centers it over the main workspace (left of inline LogDrawer)
+  await page.locator(".co-model-drawer-root .ant-drawer-close").click();
+  await expect(drawerWithLogs).toBeHidden();
+  await expect(toast).toBeVisible();
+
+  const workspaceToast = await page.evaluate(() => {
+    const workspace = document
+      .querySelector(".co-workspace")
+      ?.getBoundingClientRect();
+    const toastEl = document
+      .querySelector(".co-toast")
+      ?.getBoundingClientRect();
+    if (!workspace || !toastEl) return null;
+    return {
+      workspaceCenterX: (workspace.left + workspace.right) / 2,
+      toastCenterX: (toastEl.left + toastEl.right) / 2,
+    };
+  });
+  expect(workspaceToast).not.toBeNull();
+  expect(
+    Math.abs(workspaceToast!.toastCenterX - workspaceToast!.workspaceCenterX),
+  ).toBeLessThanOrEqual(3);
+});

@@ -18,11 +18,13 @@ const props = withDefaults(
     items: readonly ColabOneToastItem[];
     placement?: "top" | "bottom";
     topOffsetPx?: number;
+    leftOffsetPx?: number;
     rightOffsetPx?: number;
   }>(),
   {
     placement: "top",
     topOffsetPx: 112,
+    leftOffsetPx: 0,
     rightOffsetPx: 0,
   },
 );
@@ -55,7 +57,10 @@ const hostStyle = computed(() => {
   if (props.placement === "top" && Number.isFinite(props.topOffsetPx)) {
     style["--co-toast-top-offset"] = `${Math.max(12, Math.round(props.topOffsetPx))}px`;
   }
-  if (props.rightOffsetPx > 0) {
+  if (Number.isFinite(props.leftOffsetPx) && props.leftOffsetPx > 0) {
+    style["--co-toast-left-offset"] = `${Math.round(props.leftOffsetPx)}px`;
+  }
+  if (Number.isFinite(props.rightOffsetPx) && props.rightOffsetPx > 0) {
     style["--co-toast-right-offset"] = `${Math.round(props.rightOffsetPx)}px`;
   }
   return Object.keys(style).length ? style : undefined;
@@ -179,10 +184,11 @@ function isAssertive(item: ColabOneToastItem): boolean {
 <style scoped>
 .co-toast-host {
   position: fixed;
-  left: calc((100vw - var(--co-toast-right-offset, 0px)) / 2);
-  transform: translateX(-50%);
+  left: var(--co-toast-left-offset, 0px);
+  right: var(--co-toast-right-offset, 0px);
   z-index: 1200;
-  width: min(560px, calc(100vw - var(--co-toast-right-offset, 0px) - 32px));
+  padding-inline: 16px;
+  box-sizing: border-box;
   pointer-events: none;
   display: flex;
   flex-direction: column;
@@ -199,7 +205,7 @@ function isAssertive(item: ColabOneToastItem): boolean {
 
 .co-toast-stack {
   position: relative;
-  width: 100%;
+  width: min(560px, 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
