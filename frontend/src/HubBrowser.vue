@@ -39,6 +39,7 @@ import {
   formatColabOneFileSize,
   modalityBadgeMeta,
   summarizeColabOneRepoFit,
+  type ColabOneFileDiskState,
   type ColabOneGpuTarget,
   type ColabOneGpuTargetId,
   type ColabOneHubFile,
@@ -225,11 +226,71 @@ function fileSavedTag(fileName: string): string {
   return "";
 }
 
+function modelDiskStateFor(saved: ModelSpec): ColabOneFileDiskState {
+  if (effectiveRuntime.value.state === "stopped") {
+    return {};
+  }
+  const running = effectiveRuntime.value.tasks?.find(
+    (item) => item.state === "running" && item.model_id === saved.id,
+  );
+  if (
+    saved.downloaded ||
+    saved.loaded ||
+    effectiveRuntime.value.loaded_model === saved.id ||
+    running?.kind === "load"
+  ) {
+    return { downloaded: true };
+  }
+  const dlBytes =
+    running?.kind === "download"
+      ? running.download?.downloaded_bytes ||
+        Math.round(Math.min(1, running.progress || 0) * (saved.size || 0))
+      : 0;
+  const cachedBytes = Math.max(saved.cached_bytes || 0, dlBytes);
+  return cachedBytes > 0 ? { cachedBytes } : {};
+}
+
+function fileDiskState(fileName: string): ColabOneFileDiskState | undefined {
+  const saved = matchedSavedModel(fileName);
+  return saved ? modelDiskStateFor(saved) : undefined;
+}
+
+function repoDiskStatesMap(repoName: string): Map<string, ColabOneFileDiskState> {
+  const map = new Map<string, ColabOneFileDiskState>();
+  const summary = summaryFor(repoName);
+  for (const m of summary.savedModels) {
+    const st = modelDiskStateFor(m);
+    for (const f of m.files || []) {
+      const prev = map.get(f.path);
+      if (
+        !prev ||
+        st.downloaded ||
+        (!prev.downloaded && (st.cachedBytes || 0) > (prev.cachedBytes || 0))
+      ) {
+        map.set(f.path, st);
+      }
+    }
+  }
+  return map;
+}
+
 const fitByRepo = computed(() => {
   const map = new Map<string, ColabOneRepoFitSummary>();
   for (const r of repos.value) {
     if (r.sizeState === "ready" && r.files?.length) {
-      map.set(r.repo, summarizeColabOneRepoFit(r.files, props.targetGpu, 8192));
+      const comfyOnly = Boolean(
+        r.comfy_only || r.modality === "image" || r.modality === "video",
+      );
+      map.set(
+        r.repo,
+        summarizeColabOneRepoFit(
+          r.files,
+          props.targetGpu,
+          8192,
+          comfyOnly,
+          repoDiskStatesMap(r.repo),
+        ),
+      );
     }
   }
   return map;
@@ -643,6 +704,7 @@ async function install(mode: "save" | "download" | "load" = "load") {
 function fitBadgeColor(fit: ColabOneRepoFitSummary): string {
   if (fit.status === "compatible") return "success";
   if (fit.status === "tight") return "warning";
+  if (fit.status === "disk_overflow") return "error";
   if (fit.status === "hybrid" || fit.status === "heavy_hybrid") {
     return "default";
   }
@@ -824,6 +886,7 @@ onUnmounted(() => {
         :show-save-button="true"
         :show-use-loaded="!!loadedModelFor(chosen)"
         :saved-tag-for-file="fileSavedTag"
+        :file-disk-state="fileDiskState"
         :download-disabled-reason="downloadDisabledReason"
         @update:selected-filename="(v) => (filename = v)"
         @update:context-length="(v) => (contextLength = v)"
@@ -937,7 +1000,7 @@ onUnmounted(() => {
       >
         <ASpace :size="8" wrap>
           <AButton
-            v-if="targetGpu.id !== 'G4'"
+            v-if="targetGpu.id !== 'G4' && targetGpu.vramGb < 96"
             type="primary"
             size="small"
             @click="emit('switchGpu', 'G4')"
@@ -959,7 +1022,9 @@ onUnmounted(() => {
         :class="{
           selected: chosen === repo.repo,
           'is-overflow':
-            repoFitFor(repo.repo)?.status === 'heavy_hybrid' && !repo.comfy_only,
+            (repoFitFor(repo.repo)?.status === 'heavy_hybrid' ||
+              repoFitFor(repo.repo)?.status === 'disk_overflow') &&
+            !repo.comfy_only,
           'is-comfy-only': !!repo.comfy_only,
         }"
       >
@@ -1011,12 +1076,15 @@ onUnmounted(() => {
 
             <div class="co-hub-facts co-tabular">
               <span class="co-hub-size">
-                <strong v-if="repo.sizeState === 'ready'" class="co-sk-reveal">
-                  {{ formatColabOneFileSize(repo.minSize!)
-                  }}<template v-if="repo.maxSize !== repo.minSize">
-                    – {{ formatColabOneFileSize(repo.maxSize!) }}</template
-                  >
-                </strong>
+                <template v-if="repo.sizeState === 'ready'">
+                  {{ t("models.pickerDiskLabel") }}
+                  <strong class="co-sk-reveal">
+                    {{ formatColabOneFileSize(repo.minSize!)
+                    }}<template v-if="repo.maxSize !== repo.minSize">
+                      – {{ formatColabOneFileSize(repo.maxSize!) }}</template
+                    >
+                  </strong>
+                </template>
                 <strong v-else-if="repo.sizeState === 'unavailable'">
                   {{ t("common.unknownSize") }}
                 </strong>
@@ -1138,6 +1206,7 @@ onUnmounted(() => {
             :show-save-button="true"
             :show-use-loaded="!!loadedModelFor(repo.repo)"
             :saved-tag-for-file="fileSavedTag"
+            :file-disk-state="fileDiskState"
             :download-disabled-reason="downloadDisabledReason"
             @update:selected-filename="(v) => (filename = v)"
             @update:context-length="(v) => (contextLength = v)"

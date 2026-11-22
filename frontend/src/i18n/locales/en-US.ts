@@ -42,6 +42,7 @@ export const enUSMessages: ColabOneMessages = {
 
   // Navigation & Top Bar
   "nav.brandAria": "Back to Devices home",
+  "nav.versionAria": "Version {version}",
   "nav.mainAria": "Main navigation",
   "nav.device": "Devices",
   "nav.api": "Public API",
@@ -81,8 +82,24 @@ export const enUSMessages: ColabOneMessages = {
   "status.activeInstanceAria": "Active instance",
   "status.loadedModelChipTitle": "{name} loaded; click to open Public API",
   "status.upgradeBanner":
-    "This instance needs a remote service update to enable live telemetry, Public API, and ComfyUI. Finish active tasks and unload the model first; cached weights are preserved.",
+    "This instance needs a remote service update to enable live telemetry, Public API, and ComfyUI. Finish active tasks and unload the model or stop ComfyUI first; cached weights are preserved.",
   "status.upgradeAction": "Update Remote Service",
+  "status.upgradeOptionalReady":
+    "A minor remote service update is available (current features work normally). You can hot-update anytime; cached models and workflows are preserved.",
+  "status.upgradeOptionalBlockedModel":
+    "A minor remote service update is available (current features work normally). Unload the active model first to hot-update now (cached weights are preserved), or update later.",
+  "status.upgradeOptionalBlockedComfy":
+    "A minor remote service update is available (current features work normally). Stop ComfyUI first to hot-update now (cached weights are preserved), or update later.",
+  "status.upgradeOptionalBlockedTask":
+    "A minor remote service update is available (current features work normally). Wait for the active task to finish before hot-updating (cached weights are preserved), or update later.",
+  "status.upgradeBlockedModel":
+    "A model is currently loaded; unload it first before updating the remote service (cached weights are preserved).",
+  "status.upgradeBlockedComfy":
+    "ComfyUI is currently running; stop ComfyUI first before updating the remote service.",
+  "status.upgradeBlockedTask":
+    "Wait for the current remote task to finish before updating the remote service.",
+  "status.upgradeBlockedOperation":
+    "Wait for the current operation to finish before updating the remote service.",
 
   // Appearance
   "appearance.system": "System",
@@ -115,7 +132,7 @@ export const enUSMessages: ColabOneMessages = {
   "billing.cuPerHour": "CU/hr",
   "billing.rateValue": "{rate} CU/hr",
   "billing.ratePlaceholder": "-- CU/hr",
-  "billing.balanceUnread": "Unread",
+  "billing.balanceUnread": "Not synced",
   "billing.statusLoggedOut": "Signed Out",
   "billing.statusActive": "Billing Active",
   "billing.statusQuerying": "Checking Billing",
@@ -129,7 +146,7 @@ export const enUSMessages: ColabOneMessages = {
   "billing.enduranceExhausted": "0d 0h (Balance depleted)",
   "billing.enduranceExhaustedShort": "Depleted",
   "billing.enduranceExhaustedBar": "Balance Depleted",
-  "billing.enduranceAvailableApprox": "Est. {text}",
+  "billing.enduranceAvailableApprox": "{text} left",
   "billing.idleOption15": "15 min",
   "billing.idleOption30Default": "30 min (Default)",
   "billing.idleOption30Short": "30 min",
@@ -203,7 +220,7 @@ export const enUSMessages: ColabOneMessages = {
   "billing.cardIdleStandbyPrefix": "Auto-release after",
   "billing.cardIdleAutoReleaseSuffix": "idle",
   "billing.cardIdleStandbyNote":
-    "Pauses automatically during downloads, model loading, and inference to save CU",
+    "Auto-releases when idle to save CU; pauses automatically during downloads, loading, and inference",
   "billing.cardResetCountdown": "Reset Timer",
   "billing.cardIdleSelectLabel": "Idle Auto-Release",
   "billing.cardIdleSelectAria": "Idle auto-release timeout",
@@ -370,7 +387,9 @@ export const enUSMessages: ColabOneMessages = {
   "device.drivePendingSync": "{count} pending sync",
   "device.driveAutoPersist": "Model catalog, ComfyUI workflows & outputs auto-persisted",
   "device.driveAuthorizedHint":
-    "Google Drive authorized (My Drive / ColabOne_Drive). Mount anytime to sync models and ComfyUI outputs.",
+    "Google Drive authorized (My Drive / ColabOne_Drive). Mount anytime to sync your model catalog and ComfyUI outputs.",
+  "device.driveNeedAuthHint":
+    "Google Drive is not authorized yet. Re-authenticate in Settings to sync your model catalog and ComfyUI outputs.",
   "device.syncNow": "Sync Now",
   "device.mountDriveNow": "Mount Drive",
   "device.driveWaitingBrowserConfirm":
@@ -408,9 +427,11 @@ export const enUSMessages: ColabOneMessages = {
   "device.gpuSpecG4": "G4 · 96 GB VRAM (RTX PRO 6000)",
   "device.footerBase": "Model weights, Public API inference, and ComfyUI all run on the remote GPU.",
   "device.footerDriveMounted":
-    "Catalogs, workflows, and outputs sync to Google Drive (ColabOne_Drive) automatically before release.",
+    "Model catalogs, workflows, and outputs sync to Google Drive (ColabOne_Drive) automatically before release.",
   "device.footerDriveAuto":
-    "Drive auto-mount is enabled: starting a GPU connects ColabOne_Drive to persist catalogs, workflows, and outputs.",
+    "Drive auto-mount is enabled: starting a GPU connects ColabOne_Drive to persist model catalogs, workflows, and outputs.",
+  "device.footerDriveUnmountedActive":
+    "Drive auto-mount is enabled, but Drive is not mounted on this instance yet. Click \"Mount Drive\" above to connect ColabOne_Drive.",
   "device.footerDriveOff":
     "Without Drive mounted, releasing an instance clears unexported files. Export first or enable auto-mount in Settings.",
   "device.downloadVerifying": "Verifying SHA-256",
@@ -418,9 +439,9 @@ export const enUSMessages: ColabOneMessages = {
   "device.downloadMeta": "{conns} conns · File {idx}/{total}",
   "device.releaseModalTitle": "Select Remote Instances to Stop",
   "device.releaseModalDesc":
-    "Check the instances you want to terminate while keeping others running. Unexported files on stopped instances will be cleared.",
+    "Check the instances you want to stop; unchecked instances will keep running. Unexported files on stopped instances will be cleared.",
   "device.releaseLoading": "Fetching running instances…",
-  "device.releaseLoadFailed": "Failed to load instance list; cancel and try again.",
+  "device.releaseLoadFailed": "Failed to load instance list. Click Retry to try again.",
   "device.releaseSelectAll": "Select All ({count})",
   "device.releaseSelectManaged": "Managed Only ({count})",
   "device.releaseInstCurrent": "Active managed instance{model}",
@@ -428,6 +449,7 @@ export const enUSMessages: ColabOneMessages = {
   "device.releaseInstModelSuffix": " · Loaded {model}",
   "device.releaseInstExternal": "External Colab instance — confirm your data is saved before stopping",
   "device.releaseEmpty": "No running instances found; Google billing rate may still be updating.",
+  "device.releaseTargetMissing": "That instance has already stopped; select other instances or close this dialog.",
   "device.releaseBusyNotice": "Finishing current operation before stopping.",
   "device.releaseForceCheck":
     "I have exported or do not need to keep remote models and unexported outputs on selected instances (Force release)",
@@ -471,9 +493,10 @@ export const enUSMessages: ColabOneMessages = {
   "api.noModelLoaded": "No Model Loaded",
   "api.gpuStartingTag": "GPU Starting",
   "api.gpuStoppedTag": "GPU Stopped",
-  "api.modelIdLabel": "Model ID:",
+  "api.modelIdLabel": "Model ID: ",
   "api.vramUsage": "{vram} VRAM",
-  "api.taskProgressFallback": "Open the Model Drawer for detailed progress",
+  "api.taskProgressFallback": "Open \"Select Model\" for detailed progress",
+  "api.taskOutputTokens": "{count} tokens",
   "api.pickModelHintReady":
     "Choose and load a GGUF model from My Models or Community to start serving inference.",
   "api.pickModelHintOffline":
@@ -495,14 +518,14 @@ export const enUSMessages: ColabOneMessages = {
   "api.domainLabel": "API Domain",
   "api.tunnelTokenLabel": "Cloudflare Install Command or Tunnel Token",
   "api.tunnelTokenSavedPlaceholder": "Saved securely; leave blank to keep current",
-  "api.tunnelTokenEmptyPlaceholder": "Paste the full Cloudflare install command or token",
+  "api.tunnelTokenEmptyPlaceholder": "Paste the full Cloudflare install command or token (auto-extracted)",
   "api.saveConfig": "Save Config",
   "api.guideSummary": "First time? View 3-step setup guide",
   "api.guideStep1": "Create a Tunnel in Cloudflare Zero Trust and choose Cloudflared.",
   "api.openDashboard": "Open Dashboard",
   "api.guideStep2Prefix": "Add a public hostname with service type HTTP pointing to",
   "api.guideStep3":
-    "Paste Cloudflare's install command above, click Save, and start the service. ColabOne installs and verifies it remotely.",
+    "Paste Cloudflare's install command above, click \"Save Config\", and start the service. ColabOne installs and verifies it remotely.",
   "api.guideNote":
     "Do not enable Cloudflare interactive Access login on the API hostname, or API client requests will be blocked.",
   "api.credentialsHeading": "Live Access Credentials",
@@ -524,6 +547,20 @@ export const enUSMessages: ColabOneMessages = {
   "api.currentModelIdLabel": "Active Model ID",
   "api.modelIdEmpty": "Click \"Select Model\" above to load a GGUF model first",
   "api.copyModelIdAria": "Copy Model ID",
+  "api.editModelIdTooltip": "Customize public Model ID (applies immediately without reloading VRAM)",
+  "api.editModelIdUpgradeTooltip": "Update remote service first to customize Model IDs",
+  "api.editModelIdAria": "Edit Model ID",
+  "api.editModelIdPlaceholder": "e.g. colabone/qwen3.8-flash-next",
+  "api.resetModelIdTooltip": "Reset to default readable Model ID",
+  "api.resetModelIdAria": "Reset Model ID to default",
+  "api.modelIdEmptyError": "Please enter a valid Model ID",
+  "api.modelIdSavedNotice": "Public Model ID updated and active immediately.",
+  "api.modelIdResetNotice": "Model ID reset to default.",
+  "api.modelIdAutoAliasPrefix": "Want to switch models without editing client config? Use",
+  "api.modelIdAutoAliasSuffix": "to route to whichever model is loaded.",
+  "api.copyAutoAliasTooltip": "Copy fixed alias colabone/auto",
+  "api.modelIdLegacyHintPrefix": "Remote service update pending: still using legacy ID until updated, then switches to",
+  "api.modelIdLegacyHintSuffix": " (no re-download required).",
   "api.credentialsFootPrefix": "Stored securely in your OS credential store. Authenticate with",
   "api.credentialsFootSuffix": " and share only with trusted apps or teammates.",
   "api.examplesCardTitle": "Code Examples & Telemetry",
@@ -594,7 +631,7 @@ export const enUSMessages: ColabOneMessages = {
   "models.tabHub": "Community",
   "models.vramFilterLabel": "Target GPU",
   "models.vramFilterAria": "Filter by GPU VRAM",
-  "models.onlyRunnable": "Fits Only",
+  "models.onlyRunnable": "Runnable Only",
   "models.searchMinePlaceholder": "Search my models…",
   "models.searchMineAria": "Search saved models",
   "models.estimatedVram": "Est. VRAM ~{gb}",
@@ -647,8 +684,10 @@ export const enUSMessages: ColabOneMessages = {
     "Only removes {name} weights from the remote disk. Its entry in My Models stays saved.",
   "models.deleteFilesBtn": "Delete Files",
   "models.warnVramLow":
-    "Available VRAM ({have} GB) is below estimated need ({need} GB); loading may fail — consider a larger GPU.",
+    "Est. ~{need} GB far exceeds current {have} GB VRAM and typical RAM offload capacity; hybrid loading may be very slow or fail — consider a larger GPU.",
   "models.warnDiskLow": "Remote free disk ({free}) is smaller than model size ({size}).",
+  "models.warnDiskLowRemaining":
+    "Remote free disk ({free}) is smaller than remaining download ({remaining}; {cached} already cached).",
   "models.disabledStartGpu": "Start a remote GPU first",
   "models.disabledWaitTask": "Wait for the current task to finish",
   "models.disabledSyncingRemote": "Syncing remote state…",
@@ -682,13 +721,13 @@ export const enUSMessages: ColabOneMessages = {
   "models.hubViewRepo": "View Repo",
   "models.hubSearching": "Searching community models…",
   "models.hubEmpty": "No matching community GGUF models found. Try another keyword or filter.",
-  "models.hubAllOverflow": "All {count} models in this list exceed {gpu} VRAM",
+  "models.hubAllOverflow": "All {count} models in this list exceed {gpu} runnable capacity",
   "models.hubSwitchG4": "View for G4 · 96 GB",
   "models.hubShowAllModels": "Show All Models",
   "models.hubGatedTag": "Gated",
   "models.hubVersionCount": "{count} versions",
   "models.hubVersionCountSingle": "{count} version",
-  "models.hubHiddenOverflow": "Hid {count} models exceeding {gpu} VRAM",
+  "models.hubHiddenOverflow": "Hid {count} models exceeding {gpu} runnable capacity",
   "models.pickerAria": "Model version picker",
   "models.pickerLoading": "Loading versions & VRAM estimates…",
   "models.pickerComfyVideoTitle": "Video Generation Model (ComfyUI Only)",
@@ -841,6 +880,8 @@ export const enUSMessages: ColabOneMessages = {
   "models.compatHybridLabel": "Hybrid · VRAM+RAM",
   "models.compatHybridDetail":
     "Exceeds {gpu} VRAM by ~{overflow}; overflow weights offload to system RAM (--fit on). MoE/sparse models stay fast while dense models run slower.",
+  "models.compatHybridNearLimitDetail":
+    "Est. ~{gb}, near {gpu} VRAM limit; automatic VRAM + RAM hybrid loading (--fit on) will handle any minor spillover.",
   "models.compatHeavyHybridLabel": "Very Large · Hybrid",
   "models.compatHeavyHybridDetail":
     "Est. ~{gb}, exceeding {gpu} VRAM and typical host RAM. Still selectable for hybrid offload, but may be very slow or fail (recommended: {minGpu}).",
@@ -852,13 +893,38 @@ export const enUSMessages: ColabOneMessages = {
     "Weights exceed {gpu} VRAM, but all versions below support automatic VRAM + system RAM hybrid loading (--fit on) and can be selected directly.",
   "models.pickerSwitchFullVram": "Switch to {gpu} for full VRAM",
   "models.pickerOverflowToRamInline": "(~{overflow} via RAM)",
+  "models.pickerNearLimitToRamInline": "(near VRAM limit · RAM spillover as needed)",
   "models.pickerExpandVersionsHybrid": "Show all {count} versions ({hidden} more hybrid)",
   "models.pickerHybridAlert":
     "Automatic VRAM + RAM hybrid loading (--fit on) will be used: ~{overflow} above {gpu} VRAM will offload to host RAM; MoE models remain fast.",
+  "models.pickerHybridNearLimitAlert":
+    "Automatic VRAM + RAM hybrid loading (--fit on) will be used: this model is near {gpu} VRAM capacity, so any minor spillover will offload to host RAM.",
   "models.pickerHeavyHybridAlert":
     "Very large hybrid load notice: est. ~{gb} exceeds {gpu} VRAM and typical host RAM. You may still load it, though it may be slow or fail if RAM/disk is insufficient (recommended: {minGpu}).",
   "models.warnVramHybrid":
     "Est. ~{need} GB exceeds current {have} GB VRAM; automatic VRAM + RAM hybrid loading (--fit on) will be used.",
+  "models.compatGpuDiskApprox": "~{gb} GB free disk",
+  "models.compatGpuDiskLive": "{gb} GB free disk",
+  "models.pickerDiskLabel": "Disk",
+  "models.pickerDiskAvailApprox": "/ ~{avail}",
+  "models.pickerDiskAvailLive": "/ {avail} free",
+  "models.pickerDiskCachedInline": " (cached)",
+  "models.compatDiskExceedsLabel": "Exceeds Disk",
+  "models.compatDiskLowLabel": "Low Disk",
+  "models.compatDiskTightLabel": "Disk Tight",
+  "models.compatDiskExceedsVmDetail":
+    "Requires ~{need} of disk, exceeding {gpu} usable disk (~{avail} / {total} total); likely too large to download.",
+  "models.compatDiskLowLiveDetail":
+    "Requires ~{need} of disk, exceeding current {avail} free ({total} total); delete other downloaded models first to free space.",
+  "models.compatDiskTightDetail":
+    "Requires ~{need} of disk (~{avail} available); remaining remote disk space will be tight.",
+  "models.compatDiskOverflowRepoLabel": "Exceeds {gpu} Disk",
+  "models.pickerDiskExceedsCount": "{count} exceed disk",
+  "models.pickerAllDiskOverflowNotice":
+    "All versions exceed {gpu} usable disk space (~{avail}) and may fail to download; switch to a GPU tier with more disk or pick a smaller model.",
+  "models.pickerSwitchLargerDisk": "Switch to {gpu} (~{avail} disk)",
+  "models.paramEstDisk": "· Disk {gb}",
+  "models.estimatedDisk": "Disk {size}",
 
   // ComfyUI Page
   "comfy.subtitle":
@@ -968,7 +1034,7 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.canvasGuideStep1": "Create a Cloudflared Tunnel in Cloudflare Zero Trust.",
   "comfy.canvasGuideStep2Suffix": " (no need to enable Cloudflare Access login on top).",
   "comfy.canvasGuideStep3":
-    "Paste the Cloudflare install command or Tunnel Token above, click Save, then Start Native Canvas.",
+    "Paste the Cloudflare install command or Tunnel Token above, click \"Save Config\", then Start Native Canvas.",
   "comfy.startCanvas": "Start Native Canvas",
   "comfy.stopCanvas": "Stop Canvas Tunnel",
   "comfy.canvasAccessTitle": "Canvas Access",
@@ -1047,6 +1113,8 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.errInvalidOutputTransfer": "Invalid output transfer payload; please retry",
   "comfy.errInvalidOutputSize": "Invalid output size",
   "comfy.errUnsupportedPreview": "Preview is not supported for this file format",
+  "comfy.errUnsupportedImageFormat": "Unsupported image format. Choose a PNG, JPEG, or WebP file.",
+  "comfy.errUnsupportedAudioFormat": "Unsupported audio format. Choose a WAV, MP3, FLAC, OGG, or M4A file.",
   "comfy.errIncompleteTransfer": "Incomplete output transfer; please retry",
   "comfy.errOutputChecksum": "Output checksum verification failed; please retry",
 
@@ -1059,6 +1127,8 @@ export const enUSMessages: ColabOneMessages = {
   "settings.disconnected": "Not Connected",
   "settings.oauthBrowserHint":
     "Select and authorize your Google account in the browser; you will return here automatically.",
+  "settings.accountConnectedNoEmail":
+    "Google account connected. Click below to re-authenticate or switch accounts.",
   "settings.relogin": "Re-authenticate",
   "settings.reopenLoginPage": "Reopen Sign-in Page",
   "settings.loginSavedAutoRenew":
@@ -1078,8 +1148,8 @@ export const enUSMessages: ColabOneMessages = {
   "settings.driveHeading": "Google Drive",
   "settings.driveTagMounted": "Mounted · ColabOne_Drive",
   "settings.driveTagHeadlessReady": "Zero-Prompt Ready · Auto-Mount",
-  "settings.driveTagAuthorized": "Authorized · Native Drive",
-  "settings.driveTagReauth": "Re-sign in Required",
+  "settings.driveTagAuthorized": "Authorized · Native DriveFS",
+  "settings.driveTagReauth": "Re-auth Required",
   "settings.driveDescPrefix": "Reuses your local Google OAuth token to mount dedicated folder",
   "settings.driveDescSuffix":
     " to automatically persist your model list, ComfyUI workflows, and generated outputs.",
@@ -1087,7 +1157,7 @@ export const enUSMessages: ColabOneMessages = {
     "Your current login does not include Drive permission. Click \"Re-authenticate\" above once to enable automatic Drive mounting.",
   "settings.driveHeadlessTipTitle": "Enable Permanent Zero-Prompt Auto-Mount (Optional · Free)",
   "settings.driveHeadlessTipDesc":
-    "This account currently uses Colab native DriveFS (requires one browser Allow per new VM). Sign in to Google Cloud and accept the Terms of Service once (free, no credit card required) for permanent zero-prompt auto-mounting.",
+    "This account currently uses Colab native DriveFS (requires clicking \"Allow\" in your browser once per new VM). Sign in to Google Cloud and accept the Terms of Service once (free, no credit card required) for permanent zero-prompt auto-mounting.",
   "settings.driveOpenGcpConsole": "Open Google Cloud",
   "settings.driveCheckHeadless": "Check & Enable",
   "settings.driveHeadlessEnabledToast": "Permanent zero-prompt Google Drive auto-mount is now enabled",

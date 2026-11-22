@@ -49,6 +49,10 @@ class ColabOneLoadOptions(BaseModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
 
 
+class ColabOneModelApiIdRequest(BaseModel):
+    api_id: str = Field(default="", max_length=120)
+
+
 class ColabOneComfyInputUpload(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     data: str = Field(max_length=90 * 1024**2)
@@ -218,6 +222,10 @@ def create_colabone_app(runtime, token, background=False):
     @app.post("/api/v1/models/{model_id}/load", dependencies=auth)
     def load(model_id: str, body: ColabOneLoadOptions = ColabOneLoadOptions()):
         return runtime.load(model_id, body.model_dump(exclude_none=True))
+
+    @app.post("/api/v1/models/{model_id}/api-id", dependencies=auth)
+    def update_model_api_id(model_id: str, body: ColabOneModelApiIdRequest):
+        return runtime.update_model_api_id(model_id, body.api_id)
 
     @app.post("/api/v1/unload", dependencies=auth)
     def unload():

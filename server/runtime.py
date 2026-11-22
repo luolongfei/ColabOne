@@ -27,7 +27,11 @@ from common.comfyui import (
 )
 from common.files import atomic_json, colabone_service_revision
 from common.location import infer_location_from_endpoint, probe_vm_location
-from common.models import ModelSpec
+from common.models import (
+    ModelSpec,
+    resolve_colabone_api_model_id,
+    validate_colabone_api_model_id,
+)
 from server.drive import ColabOneDrive
 from server.telemetry import ColabOneResourceSampler
 from server.download import (
@@ -166,6 +170,7 @@ class ColabOneRuntime:
                 json.loads((catalog / "presets.json").read_text(encoding="utf-8")),
             )
         }
+        self._preset_api_ids = {mid: m.api_id for mid, m in self.models.items()}
         self.tasks: dict[str, ColabOneTask] = {}
         self.loaded = None
         self.active_options = {}
@@ -197,6 +202,14 @@ class ColabOneRuntime:
                         model = ModelSpec.model_validate(value)
                     except ValueError:
                         continue
+                    if (
+                        not model.api_id
+                        and model.id in self._preset_api_ids
+                        and self._preset_api_ids[model.id]
+                    ):
+                        model = model.model_copy(
+                            update={"api_id": self._preset_api_ids[model.id]}
+                        )
                     self.models[model.id] = model
                 self._mark_dirty("models")
 
@@ -296,6 +309,7 @@ class ColabOneRuntime:
         return {
             "protocol": 7,
             "service_revision": self.service_revision,
+            "api_model_aliases": True,
             "public_api": self.public_api.snapshot(),
             "capabilities": ["public_api", "comfyui"],
             "comfyui": comfy_status,
@@ -356,17 +370,43 @@ class ColabOneRuntime:
         except (OSError, ValueError):
             return False
 
+    def _partial_cached_bytes(self, model) -> int:
+        directory = self.models_dir / model.id
+        if not directory.exists():
+            return 0
+        total = 0
+        for f in model.files:
+            target = directory / f.path
+            try:
+                if target.exists() and target.stat().st_size == f.size:
+                    total += f.size
+                    continue
+            except OSError:
+                pass
+            partial = target.with_name(target.name + ".part")
+            try:
+                total += min(f.size, cached_bytes(partial, f.size, f.sha256))
+            except OSError:
+                pass
+        return total
+
     @synchronized
     def list_models(self):
-        return [
-            m.model_dump()
-            | {
-                "downloaded": self.installed(m),
-                "loaded": self.loaded == m.id,
-                "size": sum(f.size for f in m.files),
-            }
-            for m in self.models.values()
-        ]
+        out = []
+        for m in self.models.values():
+            size = sum(f.size for f in m.files)
+            downloaded = self.installed(m)
+            out.append(
+                m.model_dump()
+                | {
+                    "api_id": resolve_colabone_api_model_id(m),
+                    "downloaded": downloaded,
+                    "loaded": self.loaded == m.id,
+                    "size": size,
+                    "cached_bytes": size if downloaded else self._partial_cached_bytes(m),
+                }
+            )
+        return out
 
     def add_model(self, spec):
         m = ModelSpec.model_validate(spec)
@@ -378,13 +418,35 @@ class ColabOneRuntime:
                     or getattr(existing, "kind", "chat") != getattr(m, "kind", "chat")
                 ):
                     raise ColabOneConflictError("同名模型配置不同，请使用新模型 ID")
+            if not m.api_id and existing and existing.api_id:
+                m = m.model_copy(update={"api_id": existing.api_id})
             self.models[m.id] = m
             atomic_json(
                 self.root / "models.json",
                 [x.model_dump() for x in self.models.values()],
             )
             self._mark_dirty("models")
-        return m.model_dump()
+        return m.model_dump() | {"api_id": resolve_colabone_api_model_id(m)}
+
+    def update_model_api_id(self, model_id: str, api_id: str):
+        clean_api_id = validate_colabone_api_model_id(api_id, allow_empty=True)
+        with self.lock:
+            existing = self.models.get(model_id)
+            if existing is None:
+                raise KeyError(model_id)
+            target_api_id = (
+                clean_api_id
+                if clean_api_id
+                else self._preset_api_ids.get(model_id, "")
+            )
+            updated = existing.model_copy(update={"api_id": target_api_id})
+            self.models[model_id] = updated
+            atomic_json(
+                self.root / "models.json",
+                [x.model_dump() for x in self.models.values()],
+            )
+            self._mark_dirty("models")
+        return updated.model_dump() | {"api_id": resolve_colabone_api_model_id(updated)}
 
     def submit(self, kind, model_id, fn):
         with self.lock:
@@ -479,14 +541,7 @@ class ColabOneRuntime:
         task.note(
             f"准备下载 {model.name}：{len(model.files)} 个文件，共 {total / 1024**3:.2f} GiB，{threads} 线程，目标为远端 GPU 磁盘"
         )
-        remaining = sum(
-            max(
-                0,
-                f.size - cached_bytes(directory / (f.path + ".part"), f.size, f.sha256),
-            )
-            for f in model.files
-            if not (directory / f.path).exists()
-        )
+        remaining = max(0, total - self._partial_cached_bytes(model))
         free = shutil.disk_usage(directory).free
         task.note(
             f"远端可用磁盘 {free / 1024**3:.1f} GiB，本次预计新增 {remaining / 1024**3:.1f} GiB"
@@ -1022,7 +1077,7 @@ class ColabOneRuntime:
         if self.loaded or self.proc:
             prev_id = self.loaded
             if prev_id == m.id:
-                task.note(f"正在重新装载 {m.name}，先卸载当前实例以释放显存")
+                task.note(f"正在重新装载 {m.name}，先卸载当前已装载模型以释放显存")
             elif prev_id:
                 prev_model = self.models.get(prev_id)
                 prev_label = prev_model.name if prev_model else prev_id
@@ -1445,6 +1500,17 @@ class ColabOneRuntime:
                 for m in pulled_models:
                     if m.id not in self.models:
                         self.models[m.id] = m
+                        local_changed = True
+                    elif (
+                        m.api_id
+                        and m.files == self.models[m.id].files
+                        and getattr(m, "kind", "chat")
+                        == getattr(self.models[m.id], "kind", "chat")
+                        and self.models[m.id].api_id != m.api_id
+                    ):
+                        self.models[m.id] = self.models[m.id].model_copy(
+                            update={"api_id": m.api_id}
+                        )
                         local_changed = True
                 if local_changed:
                     atomic_json(

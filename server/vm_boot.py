@@ -67,7 +67,7 @@ def colabone_boot():
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        emit_log("已启动远端预算保护守护进程")
+        emit_log("已启动远端自动释放保护守护进程")
     emit_log("正在解压管理服务程序包")
     shutil.rmtree("/content/colabone", ignore_errors=True)
     with zipfile.ZipFile("/content/colabone.zip") as archive:

@@ -656,14 +656,26 @@ def test_allocate_retries_503_with_reconciliation_and_logs_progress():
     assert post_calls[0] == 3
     # Every retry reuses the exact same notebook hash for safe reconciliation.
     assert len(seen_nbhs) == 3 and len(set(seen_nbhs)) == 1
-    assert any("耗时" in msg and "HTTP 503" in msg and "第 2/4 次" in msg for _, _, msg in logs)
-    assert any("耗时" in msg and "HTTP 503" in msg and "第 3/4 次" in msg for _, _, msg in logs)
-    congestion_hints = [msg for _, _, msg in logs if "算力池较紧张" in msg]
+    assert any(
+        "Google Colab 当前 G4 算力紧张，暂未分配出 GPU" in msg
+        and "耗时" in msg
+        and "HTTP 503" in msg
+        and "第 2/4 次" in msg
+        for _, _, msg in logs
+    )
+    assert any(
+        "Google Colab 当前 G4 算力紧张，暂未分配出 GPU" in msg
+        and "耗时" in msg
+        and "HTTP 503" in msg
+        and "第 3/4 次" in msg
+        for _, _, msg in logs
+    )
+    congestion_hints = [msg for _, _, msg in logs if "算力持续紧张" in msg]
     assert len(congestion_hints) == 1
     assert "L4 / A100 / H100" in congestion_hints[0]
     assert stages == [
-        "正在分配 G4（第 2/4 次）",
-        "正在排队分配 G4（算力池较紧张 · 第 3/4 次）",
+        "Google 算力紧张，正在排队分配 G4（第 2/4 次）",
+        "Google 算力紧张，正在排队分配 G4（第 3/4 次）",
     ]
     assert p.active_endpoint() == "gpu-g4-s-usw4a1-retryok"
 
@@ -774,9 +786,17 @@ def test_allocate_translates_exhausted_503_412_and_400_into_clear_errors():
     p.client_factory = lambda: AlwaysFailingClient(503)
     with pytest.raises(RuntimeError) as exc_503:
         p.allocate("G4")
+    assert "Google Colab 当前 G4 算力紧张，暂未分配出 GPU" in str(exc_503.value)
     assert "HTTP 503" in str(exc_503.value)
     assert "已自动重试 2 次" in str(exc_503.value)
     assert "Failed to issue request" not in str(exc_503.value)
+
+    p.client_factory = lambda: AlwaysFailingClient(504)
+    with pytest.raises(RuntimeError) as exc_504:
+        p.allocate("G4")
+    assert "分配服务繁忙或超时，暂未分配出 GPU" in str(exc_504.value)
+    assert "HTTP 504" in str(exc_504.value)
+    assert "已自动重试 2 次" in str(exc_504.value)
 
     p.client_factory = lambda: AlwaysFailingClient(412)
     with pytest.raises(RuntimeError) as exc_412:
@@ -954,23 +974,26 @@ def test_allocate_emits_congestion_hint_once_across_repeated_503s(monkeypatch):
     assert post_calls[0] == 4
     retry_logs = [msg for _, _, msg in logs if "自动重试" in msg]
     assert len(retry_logs) == 3
-    assert all("耗时 30.8 秒 · HTTP 503" in msg for msg in retry_logs)
-    congestion_hints = [msg for _, _, msg in logs if "算力池较紧张" in msg]
+    assert all(
+        "Google Colab 当前 G4 算力紧张，暂未分配出 GPU（耗时 30.8 秒 · HTTP 503）" in msg
+        for msg in retry_logs
+    )
+    congestion_hints = [msg for _, _, msg in logs if "算力持续紧张" in msg]
     # Congestion guidance is emitted exactly once across 3 consecutive 503s.
     assert len(congestion_hints) == 1
     assert "L4 / A100 / H100" in congestion_hints[0]
     assert stages == [
-        "正在分配 G4（第 2/5 次）",
-        "正在排队分配 G4（算力池较紧张 · 第 3/5 次）",
-        "正在排队分配 G4（算力池较紧张 · 第 4/5 次）",
+        "Google 算力紧张，正在排队分配 G4（第 2/5 次）",
+        "Google 算力紧张，正在排队分配 G4（第 3/5 次）",
+        "Google 算力紧张，正在排队分配 G4（第 4/5 次）",
     ]
     assert timeline == [
         ("sleep", 6),
-        ("stage", "正在分配 G4（第 2/5 次）"),
+        ("stage", "Google 算力紧张，正在排队分配 G4（第 2/5 次）"),
         ("sleep", 12),
-        ("stage", "正在排队分配 G4（算力池较紧张 · 第 3/5 次）"),
+        ("stage", "Google 算力紧张，正在排队分配 G4（第 3/5 次）"),
         ("sleep", 20),
-        ("stage", "正在排队分配 G4（算力池较紧张 · 第 4/5 次）"),
+        ("stage", "Google 算力紧张，正在排队分配 G4（第 4/5 次）"),
     ]
 
 

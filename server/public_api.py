@@ -17,6 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from common.models import (
+    COLABONE_AUTO_API_MODEL_ID,
+    colabone_model_owner,
+    resolve_colabone_api_model_id,
+)
 from common.public_api import ColabOnePublicConfig
 from server.openai_compat import (
     COMPACTION_SYSTEM_PROMPT,
@@ -360,7 +365,7 @@ class ColabOnePublicGateway:
             with self.lock:
                 self.responses.clear()
             self.phase, self.error, self.key = "stopped", "", ""
-            self.note("对外 API 已关闭，远端模型仍可在客户端使用")
+            self.note("对外 API 已关闭，远端模型仍保留在显存中")
         return self.snapshot()
 
     def shutdown(self):
@@ -377,11 +382,21 @@ class ColabOnePublicGateway:
 
         if not self.enabled or self.runtime.quiescing:
             raise ColabOneConflictError("API 服务已关闭或实例正在释放")
-        model = self.runtime.models.get(identity)
-        if self.runtime.loaded != identity or model is None:
+        loaded_id = self.runtime.loaded
+        model = self.runtime.models.get(loaded_id) if loaded_id else None
+        if not loaded_id or model is None:
             raise ColabOneConflictError("请先在 ColabOne 加载请求的模型；API 不会自动下载或切换模型")
         if getattr(model, "kind", "chat") != "chat":
             raise ColabOneConflictError("请先在 ColabOne 加载 GGUF 聊天模型")
+        public_id = resolve_colabone_api_model_id(model)
+        requested = (identity or "").strip()
+        if (
+            requested != public_id
+            and requested != loaded_id
+            and requested.lower() != COLABONE_AUTO_API_MODEL_ID
+        ):
+            raise ColabOneConflictError("请先在 ColabOne 加载请求的模型；API 不会自动下载或切换模型")
+        return loaded_id, public_id
 
     def _active_context_length(self, model_id: str) -> int:
         with self.runtime.lock:
@@ -674,20 +689,21 @@ class ColabOnePublicGateway:
             self.jobs[result["id"]] = slot
             self.total += 1
             self.last_request = time.time()
+            display_model = slot.get("public_model") or slot["task"].model_id
             metric = slot.get("metric")
             if not isinstance(metric, dict):
                 metric, acc = self._init_slot_metric(
-                    slot["kind"], slot["task"].model_id, bool(slot.get("stream", False))
+                    slot["kind"], display_model, bool(slot.get("stream", False))
                 )
                 slot["metric"] = metric
                 slot.setdefault("acc", acc)
             metric["seq"] = self.total
             metric["id"] = result["id"]
-            metric["model"] = slot["task"].model_id
+            metric["model"] = display_model
             metric["_registered"] = True
             self.request_history.append(metric)
             self.note(
-                f"API 请求 #{self.total} · {slot['kind']} · 模型 {slot['task'].model_id}"
+                f"API 请求 #{self.total} · {slot['kind']} · 模型 {display_model}"
             )
             if metric["state"] != "running" and not metric.get("_finish_logged"):
                 metric["_finish_logged"] = True
@@ -895,6 +911,7 @@ class ColabOnePublicGateway:
                                             )
                                             continue
                                         suppress_chunk = False
+                                        out_line = line
                                         if raw_data:
                                             try:
                                                 chunk = json.loads(raw_data)
@@ -913,9 +930,19 @@ class ColabOnePublicGateway:
                                                     )
                                                 ):
                                                     suppress_chunk = True
+                                                elif (
+                                                    "model" in chunk
+                                                    and slot.get("public_model")
+                                                    and chunk.get("model") != slot["public_model"]
+                                                ):
+                                                    rewritten = dict(chunk)
+                                                    rewritten["model"] = slot["public_model"]
+                                                    out_line = "data: " + json.dumps(
+                                                        rewritten, ensure_ascii=False
+                                                    )
                                         if not suppress_chunk:
                                             await self._enqueue(
-                                                slot, task, (line + "\n\n").encode("utf-8")
+                                                slot, task, (out_line + "\n\n").encode("utf-8")
                                             )
                                     if not finished:
                                         raise RuntimeError("推理连接提前中断")
@@ -928,6 +955,12 @@ class ColabOnePublicGateway:
                                 result_json = await self._post_chat_json(
                                     http, task, upstream_payload
                                 )
+                                if (
+                                    isinstance(result_json, dict)
+                                    and "model" in result_json
+                                    and slot.get("public_model")
+                                ):
+                                    result_json["model"] = slot["public_model"]
                                 slot["result"] = result_json
                                 self._finalize_request(
                                     slot,
@@ -977,8 +1010,12 @@ class ColabOnePublicGateway:
             asyncio.run(consume())
 
         with self.runtime.lock:
-            self.require_model(model)
-            result = self.runtime.submit("public_chat", model, run)
+            internal_id, public_id = self.require_model(model)
+            upstream_payload["model"] = internal_id
+            slot["internal_model"] = internal_id
+            slot["public_model"] = public_id
+            metric["model"] = public_id
+            result = self.runtime.submit("public_chat", internal_id, run)
             return self.register(result, slot)
 
     def respond(self, raw_body: Any):
@@ -1027,7 +1064,7 @@ class ColabOnePublicGateway:
                                 summary, extra_usage, _ = await self._run_compaction_summary(
                                     http,
                                     task,
-                                    spec["model"],
+                                    slot.get("internal_model") or spec["model"],
                                     spec["input_items"],
                                     spec["instructions"],
                                 )
@@ -1207,8 +1244,13 @@ class ColabOnePublicGateway:
             asyncio.run(consume())
 
         with self.runtime.lock:
-            self.require_model(spec["model"])
-            result = self.runtime.submit("public_responses", spec["model"], run)
+            internal_id, public_id = self.require_model(spec["model"])
+            spec["model"] = public_id
+            spec["chat_payload"]["model"] = internal_id
+            slot["internal_model"] = internal_id
+            slot["public_model"] = public_id
+            metric["model"] = public_id
+            result = self.runtime.submit("public_responses", internal_id, run)
             return self.register(result, slot), stream
 
     def compact(self, raw_body: Any):
@@ -1240,7 +1282,7 @@ class ColabOnePublicGateway:
                             summary, usage, timings = await self._run_compaction_summary(
                                 http,
                                 task,
-                                spec["model"],
+                                slot.get("internal_model") or spec["model"],
                                 spec["items"],
                                 spec["instructions"],
                             )
@@ -1278,8 +1320,11 @@ class ColabOnePublicGateway:
             asyncio.run(consume())
 
         with self.runtime.lock:
-            self.require_model(spec["model"])
-            result = self.runtime.submit("public_compact", spec["model"], run)
+            internal_id, public_id = self.require_model(spec["model"])
+            slot["internal_model"] = internal_id
+            slot["public_model"] = public_id
+            metric["model"] = public_id
+            result = self.runtime.submit("public_compact", internal_id, run)
             return self.register(result, slot)
 
 
@@ -1373,7 +1418,7 @@ def create_colabone_public_app(g):
         return JSONResponse(
             {
                 "error": {
-                    "message": "请求参数不受支持，请查看 ColabOne 的 API 接入说明",
+                    "message": "请求参数不受支持，请查看 ColabOne「对外 API」中的接口列表与限制",
                     "type": "invalid_request_error",
                 }
             },
@@ -1396,31 +1441,39 @@ def create_colabone_public_app(g):
     def health():
         return {"service": "ColabOne inference", "instance": g.instance}
 
-    def _loaded_model_card() -> dict[str, Any] | None:
+    def _loaded_model_card_and_id() -> tuple[dict[str, Any] | None, str | None]:
         with g.runtime.lock:
             identity = g.runtime.loaded
             model = g.runtime.models.get(identity)
             if not model or getattr(model, "kind", "chat") != "chat":
-                return None
-            return {
-                "id": identity,
-                "object": "model",
-                "created": 0,
-                "owned_by": "colabone",
-                "kind": "chat",
-            }
+                return None, None
+            return (
+                {
+                    "id": resolve_colabone_api_model_id(model),
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": colabone_model_owner(model),
+                    "kind": "chat",
+                },
+                identity,
+            )
 
     @app.get("/v1/models", dependencies=auth)
     def models():
-        card = _loaded_model_card()
+        card, _ = _loaded_model_card_and_id()
         return {"object": "list", "data": [card] if card else []}
 
-    @app.get("/v1/models/{model_id}", dependencies=auth)
+    @app.get("/v1/models/{model_id:path}", dependencies=auth)
     def model_detail(model_id: str):
-        card = _loaded_model_card()
-        if not card or card["id"] != model_id:
+        card, loaded_id = _loaded_model_card_and_id()
+        if not card:
             raise KeyError(model_id)
-        return card
+        if (
+            model_id in (card["id"], loaded_id)
+            or model_id.lower() == COLABONE_AUTO_API_MODEL_ID
+        ):
+            return card
+        raise KeyError(model_id)
 
     async def wait(identity, request, timeout_seconds: int = 305):
         task = g.jobs[identity]["task"]
@@ -1434,7 +1487,7 @@ def create_colabone_public_app(g):
             task.request_cancel()
             raise HTTPException(
                 504,
-                "等待超时或调用已断开；请减少 max_tokens 或开启流式调用（stream=true）",
+                "等待超时或调用已断开；若为生成接口，可减小输出长度上限或开启流式调用（stream=true）",
             ) from None
         if task.state != "completed":
             raise HTTPException(502, task.error or "任务已取消")

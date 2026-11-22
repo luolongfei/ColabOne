@@ -15,7 +15,7 @@ COLABONE_APP_DESCRIPTIONS = {
     "zh-CN": COLABONE_APP_DESCRIPTION,
     "en-US": "ColabOne — Remote GPU Workspace",
     "zh-TW": "ColabOne — 遠端 GPU 工作區",
-    "zh-HK": "ColabOne — 遠端 GPU 工作空間",
+    "zh-HK": "ColabOne — 遠端 GPU 工作區",
     "ja-JP": "ColabOne — リモート GPU ワークスペース",
     "ko-KR": "ColabOne — 원격 GPU 워크스페이스",
 }

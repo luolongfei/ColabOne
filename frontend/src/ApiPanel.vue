@@ -20,6 +20,7 @@ import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import type { ColabOneToastKind } from "./colabOneToast";
 import {
+  PhArrowCounterClockwise,
   PhArrowRight,
   PhArrowsClockwise,
   PhArrowSquareOut,
@@ -31,9 +32,11 @@ import {
   PhFloppyDisk,
   PhHardDrives,
   PhKey,
+  PhPencilSimple,
   PhPlay,
   PhSpeedometer,
   PhStop,
+  PhX,
 } from "@phosphor-icons/vue";
 import ModelDrawer from "./ModelDrawer.vue";
 import { colabOneCommand, colabOneOpenURL, colabOneWriteClipboard } from "./api";
@@ -48,7 +51,13 @@ import {
 } from "./apiSpeed";
 import { formatIdlePolicyLabel } from "./billing";
 import { t, tb } from "./i18n";
-import type { PublicAPIRequestMetric, ColabOneSnapshot } from "./types";
+import {
+  COLABONE_AUTO_API_MODEL_ID,
+  colabOneModelApiId,
+  colabOneModelQuantTag,
+  type PublicAPIRequestMetric,
+  type ColabOneSnapshot,
+} from "./types";
 
 const props = defineProps<{
   state: ColabOneSnapshot;
@@ -88,7 +97,10 @@ const keyTimer = ref<ReturnType<typeof setTimeout>>();
 let keySeq = 0;
 let unmounted = false;
 const copyTimer = ref<ReturnType<typeof setTimeout>>();
-const copiedField = ref<"" | "url" | "key" | "model" | "code">("");
+const copiedField = ref<"" | "url" | "key" | "model" | "auto" | "code">("");
+const editingModelId = ref(false);
+const modelIdDraft = ref("");
+const savingModelId = ref(false);
 const busy = ref(false);
 const awaitingApiReady = ref(false);
 const language = ref<"curl" | "python" | "codex">("curl");
@@ -209,7 +221,30 @@ const base = computed(() =>
       ? `${props.state.api_settings.domain}/v1`
       : "https://YOUR-API-HOST/v1",
 );
-const selectedModel = computed(() => model.value?.id || "YOUR-MODEL-ID");
+const activeApiModelId = computed(() => colabOneModelApiId(model.value));
+const activeQuantTag = computed(() => colabOneModelQuantTag(model.value));
+const isLegacyRemoteAliasService = computed(
+  () =>
+    ready.value &&
+    !props.state.runtime.api_model_aliases &&
+    Boolean(props.state.runtime.upgrade_available),
+);
+const isLegacyRemoteModelId = computed(
+  () =>
+    isLegacyRemoteAliasService.value ||
+    (ready.value && !!model.value?.pending_api_id),
+);
+const canEditModelId = computed(
+  () =>
+    ready.value &&
+    !!model.value &&
+    !busy.value &&
+    !props.busy &&
+    !props.loading &&
+    !props.state.operation &&
+    !isLegacyRemoteModelId.value,
+);
+const selectedModel = computed(() => activeApiModelId.value || "YOUR-MODEL-ID");
 const code = computed(() => {
   const id = selectedModel.value;
   const prompt = t("api.samplePrompt");
@@ -264,6 +299,8 @@ watch(
   () => props.state.runtime.id,
   () => {
     awaitingApiReady.value = false;
+    editingModelId.value = false;
+    modelIdDraft.value = "";
     keySeq += 1;
     key.value = "";
     clearTimeout(keyTimer.value);
@@ -310,9 +347,58 @@ async function save() {
   }
 }
 
+watch(
+  () => [model.value?.id, isLegacyRemoteModelId.value, ready.value] as const,
+  ([, legacy, isReady], prev) => {
+    if (!prev || prev[0] !== model.value?.id || legacy || !isReady) {
+      editingModelId.value = false;
+      modelIdDraft.value = "";
+    }
+  },
+);
+
+function startEditModelId() {
+  if (!canEditModelId.value) return;
+  modelIdDraft.value = activeApiModelId.value;
+  editingModelId.value = true;
+}
+
+function cancelEditModelId() {
+  editingModelId.value = false;
+  modelIdDraft.value = "";
+}
+
+async function saveModelId(reset = false) {
+  if (!canEditModelId.value || !model.value || savingModelId.value) return;
+  const nextApiId = reset ? "" : modelIdDraft.value.trim();
+  if (!reset && !nextApiId) {
+    emit("error", t("api.modelIdEmptyError"));
+    return;
+  }
+  savingModelId.value = true;
+  try {
+    await colabOneCommand("model.set_api_id", {
+      id: model.value.id,
+      api_id: nextApiId,
+    });
+    editingModelId.value = false;
+    modelIdDraft.value = "";
+    emit("sync");
+    emit(
+      "notify",
+      reset ? t("api.modelIdResetNotice") : t("api.modelIdSavedNotice"),
+      "success",
+    );
+  } catch (e) {
+    emit("error", String(e));
+  } finally {
+    savingModelId.value = false;
+  }
+}
+
 async function copy(
   value: string,
-  field: "" | "url" | "key" | "model" | "code" = "",
+  field: "" | "url" | "key" | "model" | "auto" | "code" = "",
 ) {
   const markCopied = () => {
     emit("notify", t("common.copied"), "success");
@@ -562,6 +648,13 @@ onUnmounted(() => {
               <ATag :bordered="false" class="co-api-model-spec-tag">
                 {{ t("api.contextAndTemp", { ctx: activeContextK, temp: activeTemp }) }}
               </ATag>
+              <ATag
+                v-if="activeQuantTag"
+                :bordered="false"
+                class="co-api-model-spec-tag co-mono"
+              >
+                {{ activeQuantTag }}
+              </ATag>
             </template>
             <template v-else-if="activeModelTask">
               <strong class="co-api-model-name">
@@ -600,7 +693,7 @@ onUnmounted(() => {
 
           <div class="co-api-model-sub">
             <template v-if="model">
-              <span>{{ t("api.modelIdLabel") }}<code>{{ model.id }}</code></span>
+              <span>{{ t("api.modelIdLabel") }}<code>{{ activeApiModelId }}</code></span>
               <template v-if="state.runtime.gpu">
                 <span>·</span>
                 <span class="co-tabular">
@@ -879,7 +972,50 @@ onUnmounted(() => {
 
           <div class="co-cred-field">
             <span class="co-field-label">{{ t("api.currentModelIdLabel") }}</span>
-            <div class="co-api-copy-row">
+            <div v-if="editingModelId && model" class="co-api-copy-row co-api-model-edit-row">
+              <AInput
+                v-model:value="modelIdDraft"
+                size="small"
+                class="co-api-model-id-input co-mono"
+                :disabled="savingModelId"
+                :placeholder="t('api.editModelIdPlaceholder')"
+                :aria-label="t('api.editModelIdAria')"
+                autocomplete="off"
+                spellcheck="false"
+                @press-enter="saveModelId(false)"
+                @keydown.esc.stop="cancelEditModelId"
+              />
+              <ASpace :size="6" class="co-cred-actions">
+                <AButton
+                  type="primary"
+                  size="small"
+                  :loading="savingModelId"
+                  @click="saveModelId(false)"
+                >
+                  <template #icon><PhCheck :size="14" /></template>
+                  {{ t("common.save") }}
+                </AButton>
+                <ColabOneTooltip :title="t('api.resetModelIdTooltip')">
+                  <AButton
+                    size="small"
+                    :disabled="savingModelId"
+                    :aria-label="t('api.resetModelIdAria')"
+                    @click="saveModelId(true)"
+                  >
+                    <template #icon><PhArrowCounterClockwise :size="14" /></template>
+                  </AButton>
+                </ColabOneTooltip>
+                <AButton
+                  size="small"
+                  :disabled="savingModelId"
+                  :aria-label="t('common.cancel')"
+                  @click="cancelEditModelId"
+                >
+                  <template #icon><PhX :size="14" /></template>
+                </AButton>
+              </ASpace>
+            </div>
+            <div v-else class="co-api-copy-row">
               <span
                 v-if="props.loading"
                 class="co-api-code-sk"
@@ -893,20 +1029,63 @@ onUnmounted(() => {
                   :delay="100"
                 />
               </span>
-              <code v-else>{{ model?.id || t("api.modelIdEmpty") }}</code>
-              <AButton
-                size="small"
-                :aria-label="t('api.copyModelIdAria')"
-                :disabled="!model"
-                @click="copy(model!.id, 'model')"
-              >
-                <template #icon>
-                  <PhCheck v-if="copiedField === 'model'" :size="14" />
-                  <PhCopy v-else :size="14" />
-                </template>
-                {{ copiedField === "model" ? t("common.copied") : t("common.copy") }}
-              </AButton>
+              <code v-else>{{ activeApiModelId || t("api.modelIdEmpty") }}</code>
+              <ASpace :size="6" class="co-cred-actions">
+                <ColabOneTooltip
+                  :title="
+                    isLegacyRemoteModelId
+                      ? t('api.editModelIdUpgradeTooltip')
+                      : t('api.editModelIdTooltip')
+                  "
+                  :disabled="!model || props.loading"
+                >
+                  <AButton
+                    size="small"
+                    :aria-label="t('api.editModelIdAria')"
+                    :disabled="!canEditModelId"
+                    @click="startEditModelId"
+                  >
+                    <template #icon><PhPencilSimple :size="14" /></template>
+                  </AButton>
+                </ColabOneTooltip>
+                <AButton
+                  size="small"
+                  :aria-label="t('api.copyModelIdAria')"
+                  :disabled="!model"
+                  @click="copy(activeApiModelId, 'model')"
+                >
+                  <template #icon>
+                    <PhCheck v-if="copiedField === 'model'" :size="14" />
+                    <PhCopy v-else :size="14" />
+                  </template>
+                  {{ copiedField === "model" ? t("common.copied") : t("common.copy") }}
+                </AButton>
+              </ASpace>
             </div>
+            <p
+              v-if="isLegacyRemoteModelId && model?.pending_api_id"
+              class="co-field-help co-model-alias-help"
+            >
+              {{ t("api.modelIdLegacyHintPrefix") }}
+              <code>{{ model.pending_api_id }}</code>{{ t("api.modelIdLegacyHintSuffix") }}
+            </p>
+            <p
+              v-else-if="model && !isLegacyRemoteModelId"
+              class="co-field-help co-model-alias-help"
+            >
+              <span>{{ t("api.modelIdAutoAliasPrefix") }}</span>
+              <button
+                type="button"
+                class="co-inline-code-copy"
+                :title="t('api.copyAutoAliasTooltip')"
+                @click="copy(COLABONE_AUTO_API_MODEL_ID, 'auto')"
+              >
+                <code>{{ COLABONE_AUTO_API_MODEL_ID }}</code>
+                <PhCheck v-if="copiedField === 'auto'" :size="12" />
+                <PhCopy v-else :size="12" />
+              </button>
+              <span>{{ t("api.modelIdAutoAliasSuffix") }}</span>
+            </p>
           </div>
 
           <p class="co-field-help co-key-help">
@@ -1601,6 +1780,55 @@ onUnmounted(() => {
 
 .co-cred-actions {
   flex-shrink: 0;
+}
+
+.co-api-model-edit-row {
+  padding-left: 8px;
+}
+
+.co-api-model-id-input {
+  flex: 1;
+  min-width: 150px;
+}
+
+.co-model-alias-help {
+  display: block;
+  margin-top: 2px;
+}
+
+.co-inline-code-copy {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  gap: 4px;
+  margin: 0 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--co-border-secondary);
+  border-radius: 6px;
+  background: var(--co-subtle);
+  color: var(--co-text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.co-inline-code-copy:hover {
+  border-color: var(--co-accent);
+  color: var(--co-accent);
+}
+
+.co-inline-code-copy:focus-visible {
+  outline: 2px solid var(--co-focus-ring);
+  outline-offset: 1px;
+  border-color: var(--co-accent);
+}
+
+.co-field-help .co-inline-code-copy code {
+  font-family: var(--co-font-mono);
+  font-size: 12px;
+  padding: 0;
+  background: transparent;
+  color: inherit;
 }
 
 .co-key-help {

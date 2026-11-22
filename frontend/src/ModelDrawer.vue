@@ -49,13 +49,17 @@ import {
 import {
   buildColabOneGpuTargetOptions,
   estimateColabOneModelVramMib,
+  evaluateColabOneModelDiskFit,
+  evaluateColabOneTargetDiskFit,
   evaluateColabOneVramFit,
   formatColabOneGb,
   hasLiveRuntimeGpu,
   resolveColabOneDefaultGpuTarget,
   resolveColabOneGpuTarget,
+  type ColabOneFileDiskState,
   type ColabOneGpuTargetId,
   type ColabOneHubFile,
+  type ColabOneTargetDiskFit,
   type ColabOneVramFit,
 } from "./modelCompatibility";
 import {
@@ -327,14 +331,6 @@ function conciseStatusBadge(model: ModelSpec): {
   return null;
 }
 
-function modelFitForTarget(model: ModelSpec): ColabOneVramFit | null {
-  const ctx =
-    modelOptions.value[model.id]?.context_length || model.context_length || 8192;
-  const estMib = estimateColabOneModelVramMib(model, ctx);
-  if (estMib <= 0) return null;
-  return evaluateColabOneVramFit(estMib, targetGpu.value);
-}
-
 function modelFitTagColor(fit: ColabOneVramFit): string {
   if (fit.status === "comfortable") return "success";
   if (fit.status === "tight") return "warning";
@@ -351,24 +347,29 @@ function vramNotice(
   if (
     props.state.runtime.state === "stopped" ||
     !gpu?.total_mib ||
-    isModelLoaded(model)
+    isModelLoaded(model) ||
+    !liveGpuTarget.value
   ) {
     return null;
   }
   const ctx =
     modelOptions.value[model.id]?.context_length || model.context_length || 8192;
   const needMib = estimateColabOneModelVramMib(model, ctx);
-  if (!needMib || gpu.total_mib >= needMib) return null;
+  if (!needMib) return null;
+  const fit = evaluateColabOneVramFit(needMib, liveGpuTarget.value);
+  if (!fit.requiresHybrid) return null;
   const haveGb = (gpu.total_mib / 1024).toFixed(1).replace(/\.0$/, "");
   const needGb = (needMib / 1024).toFixed(1).replace(/\.0$/, "");
-  if (liveGpuTarget.value) {
-    const fit = evaluateColabOneVramFit(needMib, liveGpuTarget.value);
-    if (fit.status === "hybrid") {
-      return {
-        type: "info",
-        message: t("models.warnVramHybrid", { have: haveGb, need: needGb }),
-      };
-    }
+  if (fit.status === "hybrid") {
+    return {
+      type: "info",
+      message:
+        fit.overflowGb > 0
+          ? t("models.warnVramHybrid", { have: haveGb, need: needGb })
+          : t("models.pickerHybridNearLimitAlert", {
+              gpu: liveGpuTarget.value.shortLabel,
+            }),
+    };
   }
   return {
     type: "warning",
@@ -376,23 +377,134 @@ function vramNotice(
   };
 }
 
-function diskWarning(model: ModelSpec): string {
-  const free = props.state.runtime.disk_free;
+function modelDiskState(model: ModelSpec): ColabOneFileDiskState {
+  if (props.state.runtime.state === "stopped") {
+    return {};
+  }
+  const running = modelRunningTask(model);
+  if (model.downloaded || isModelLoaded(model) || running?.kind === "load") {
+    return { downloaded: true };
+  }
+  const dlBytes =
+    running?.kind === "download"
+      ? running.download?.downloaded_bytes ||
+        Math.round(Math.min(1, running.progress || 0) * (model.size || 0))
+      : 0;
+  const cachedBytes = Math.max(model.cached_bytes || 0, dlBytes);
+  return cachedBytes > 0 ? { cachedBytes } : {};
+}
+
+const modelFitById = computed(() => {
+  const map = new Map<string, ColabOneVramFit | null>();
+  for (const model of filtered.value) {
+    const ctx =
+      modelOptions.value[model.id]?.context_length || model.context_length || 8192;
+    const estMib = estimateColabOneModelVramMib(model, ctx);
+    map.set(
+      model.id,
+      estMib > 0 ? evaluateColabOneVramFit(estMib, targetGpu.value) : null,
+    );
+  }
+  return map;
+});
+
+function modelFitForTarget(model: ModelSpec): ColabOneVramFit | null {
+  if (modelFitById.value.has(model.id)) {
+    return modelFitById.value.get(model.id) ?? null;
+  }
+  const ctx =
+    modelOptions.value[model.id]?.context_length || model.context_length || 8192;
+  const estMib = estimateColabOneModelVramMib(model, ctx);
+  if (estMib <= 0) return null;
+  return evaluateColabOneVramFit(estMib, targetGpu.value);
+}
+
+const modelDiskFitById = computed(() => {
+  const map = new Map<string, ColabOneTargetDiskFit | null>();
+  for (const model of filtered.value) {
+    const running = modelRunningTask(model);
+    const taskTotal =
+      running?.kind === "download" ? running.download?.total_bytes || 0 : 0;
+    const effectiveSize = taskTotal || model.size || 0;
+    map.set(
+      model.id,
+      effectiveSize > 0
+        ? evaluateColabOneTargetDiskFit(
+            effectiveSize,
+            targetGpu.value,
+            modelDiskState(model),
+          )
+        : null,
+    );
+  }
+  return map;
+});
+
+function modelDiskFitForTarget(model: ModelSpec): ColabOneTargetDiskFit | null {
+  if (modelDiskFitById.value.has(model.id)) {
+    return modelDiskFitById.value.get(model.id) ?? null;
+  }
+  const running = modelRunningTask(model);
+  const taskTotal =
+    running?.kind === "download" ? running.download?.total_bytes || 0 : 0;
+  const effectiveSize = taskTotal || model.size || 0;
+  if (effectiveSize <= 0) return null;
+  return evaluateColabOneTargetDiskFit(
+    effectiveSize,
+    targetGpu.value,
+    modelDiskState(model),
+  );
+}
+
+function modelDiskTagColor(disk: ColabOneTargetDiskFit): string {
+  if (disk.status === "exceeds_vm") return "error";
+  if (disk.status === "insufficient_live" || disk.status === "tight") {
+    return "warning";
+  }
+  return "default";
+}
+
+function diskNotice(
+  model: ModelSpec,
+): { type: "error" | "warning"; message: string } | null {
+  const fit = modelDiskFitForTarget(model);
+  const type = fit?.status === "exceeds_vm" ? "error" : "warning";
   if (
-    props.state.runtime.state === "stopped" ||
-    model.downloaded ||
-    !free ||
-    !model.size
+    props.state.runtime.state !== "stopped" &&
+    selectedGpuId.value === "CURRENT"
   ) {
-    return "";
+    const liveWarning = evaluateColabOneModelDiskFit(
+      model,
+      props.state.runtime,
+    ).warning;
+    if (liveWarning) return { type, message: liveWarning };
+    if (fit && fit.insufficient && fit.detail) {
+      return { type, message: fit.detail };
+    }
+    return null;
   }
-  if (free < model.size) {
-    return t("models.warnDiskLow", {
-      free: bytes(free),
-      size: bytes(model.size),
-    });
-  }
-  return "";
+  return fit && fit.insufficient && fit.detail
+    ? { type, message: fit.detail }
+    : null;
+}
+
+function repoFileDiskState(
+  repo: string,
+  fileName: string,
+): ColabOneFileDiskState | undefined {
+  const summary = repoRemoteSummary(repo, props.state.models, props.state.runtime);
+  const matches = summary.savedModels.filter((m) =>
+    m.files?.some((f) => f.path === fileName),
+  );
+  if (!matches.length) return undefined;
+  const matched =
+    matches.find(
+      (m) => m.loaded || props.state.runtime.loaded_model === m.id,
+    ) ||
+    matches.find((m) => m.downloaded) ||
+    matches[0];
+  if (!matched) return undefined;
+  return modelDiskState(matched);
 }
 
 function loadedModelForRepo(repo: string): ModelSpec | undefined {
@@ -853,7 +965,7 @@ onUnmounted(() => {
             :aria-label="t('models.vramFilterAria')"
             option-label-prop="label"
             class="co-gpu-target-select"
-            :dropdown-match-select-width="260"
+            :dropdown-match-select-width="320"
             @change="onGpuTargetChange"
           >
             <ASelectOption
@@ -1008,7 +1120,8 @@ onUnmounted(() => {
               loading: modelRunningTask(model)?.kind === 'load',
               'is-overflow':
                 !isModelLoaded(model) &&
-                modelFitForTarget(model)?.status === 'heavy_hybrid',
+                (modelFitForTarget(model)?.status === 'heavy_hybrid' ||
+                  !!modelDiskFitForTarget(model)?.exceedsVm),
             }"
           >
             <div class="co-model-row-main">
@@ -1036,10 +1149,46 @@ onUnmounted(() => {
                   >
                     {{ modelFitForTarget(model)!.label }}
                   </ATag>
+                  <ATag
+                    v-if="modelDiskFitForTarget(model)?.label"
+                    :color="modelDiskTagColor(modelDiskFitForTarget(model)!)"
+                    :bordered="false"
+                    class="co-model-fit-pill"
+                  >
+                    {{ modelDiskFitForTarget(model)!.label }}
+                  </ATag>
                 </div>
 
                 <div class="co-model-sub co-tabular">
-                  <span>{{ bytes(model.size) }}</span>
+                  <span
+                    :class="{
+                      'co-disk-danger':
+                        modelDiskFitForTarget(model)?.status === 'exceeds_vm',
+                      'co-disk-warn':
+                        modelDiskFitForTarget(model)?.status ===
+                          'insufficient_live' ||
+                        modelDiskFitForTarget(model)?.status === 'tight',
+                    }"
+                  >
+                    <template v-if="model.size > 0">
+                      {{ t("models.estimatedDisk", { size: bytes(model.size) }) }}<template
+                        v-if="modelDiskFitForTarget(model)?.status === 'cached'"
+                      >{{ t("models.pickerDiskCachedInline") }}</template><template
+                        v-else-if="targetGpu.diskFreeGb > 0 || targetGpu.isLiveDisk"
+                      >{{ " " }}{{
+                          targetGpu.isLiveDisk
+                            ? t("models.pickerDiskAvailLive", {
+                                avail: formatColabOneGb(targetGpu.diskFreeGb),
+                              })
+                            : t("models.pickerDiskAvailApprox", {
+                                avail: formatColabOneGb(targetGpu.diskFreeGb),
+                              })
+                        }}</template>
+                    </template>
+                    <template v-else>
+                      {{ t("common.unknownSize") }}
+                    </template>
+                  </span>
                   <template v-if="modelFitForTarget(model)">
                     <span>·</span>
                     <span>
@@ -1068,7 +1217,7 @@ onUnmounted(() => {
                     @click="closeDrawer"
                   >
                     <template #icon><PhCheck :size="13" /></template>
-                    {{ t("models.badgeInUse") }}
+                    {{ t("models.useThisModel") }}
                   </AButton>
                   <AButton
                     size="small"
@@ -1227,10 +1376,10 @@ onUnmounted(() => {
               class="co-model-warning co-model-vram-warning"
             />
             <AAlert
-              v-if="diskWarning(model)"
-              type="warning"
+              v-if="diskNotice(model)"
+              :type="diskNotice(model)!.type"
               show-icon
-              :message="diskWarning(model)"
+              :message="diskNotice(model)!.message"
               class="co-model-warning"
             />
 
@@ -1428,6 +1577,7 @@ onUnmounted(() => {
                 :show-save-button="false"
                 :show-use-loaded="!!loadedModelForRepo(bm.repo)"
                 :saved-tag-for-file="(fn) => repoFileSavedTag(bm.repo, fn)"
+                :file-disk-state="(fn) => repoFileDiskState(bm.repo, fn)"
                 :download-disabled-reason="downloadDisabledReason"
                 @update:selected-filename="(v) => (repoSelectedFile = v)"
                 @update:context-length="(v) => (repoContextLength = v)"
@@ -1728,6 +1878,16 @@ onUnmounted(() => {
 
 .co-model-row.is-overflow {
   opacity: 0.72;
+}
+
+.co-disk-warn {
+  color: var(--co-warning-text);
+  font-weight: 500;
+}
+
+.co-disk-danger {
+  color: var(--co-danger, #cf1322);
+  font-weight: 500;
 }
 
 .co-model-row-skeleton {

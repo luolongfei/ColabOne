@@ -1,5 +1,15 @@
 import { test, expect } from "@playwright/test";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+
+const EXPECTED_APP_VERSION = `v${
+  JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../console/mygo.json", import.meta.url)),
+      "utf8",
+    ),
+  ).version
+}`;
 
 async function mock(page: any, ready = false, path = "/") {
   await page.addInitScript(
@@ -4104,7 +4114,7 @@ test("QA regressions: inline log drawer navbar layout, hub filter spacing, disab
   expect(navBoxes.center!.right).toBeLessThanOrEqual(navBoxes.right!.left + 1);
   await page.locator(".co-logs-trigger").click();
 
-  // 3. ModelDrawer: saved repo with loaded model offers "In Use" action, and HubBrowser shows no label overlap + disabled tooltip while busy
+  // 3. ModelDrawer: saved repo with loaded model offers "Use Model" action, and HubBrowser shows no label overlap + disabled tooltip while busy
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.runtime.state = "ready";
@@ -4124,10 +4134,10 @@ test("QA regressions: inline log drawer navbar layout, hub filter spacing, disab
   await page.getByRole("button", { name: /Select Model|Switch Model/i }).first().click();
   await expect(page.locator(".ant-drawer-content")).toBeVisible();
 
-  // Expand saved repo in Mine tab -> should render "Active" action button
+  // Expand saved repo in Mine tab -> should render "Use Model" action button
   await page.locator(".co-common-repo-row").getByRole("button", { name: "Versions" }).click();
   await expect(
-    page.locator(".co-repo-picker").getByRole("button", { name: "Active" }),
+    page.locator(".co-repo-picker").getByRole("button", { name: "Use Model" }),
   ).toBeVisible();
 
   // Switch to Community Hub -> verify Family label does not overlap first chip, and disabled Download button has tooltip when another task is running
@@ -4578,4 +4588,261 @@ test("all frontend loading icons rotate at 4 seconds per revolution", async ({
     (window as any).__releaseRefresh?.();
   });
   await expect(navSpinner).toHaveCount(0);
+});
+
+test("top-left brand displays app version badge beside ColabOne and adapts across themes and widths", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await mock(page, true);
+
+  const brand = page.locator(".co-brand");
+  const versionBadge = page.locator(".co-brand-version");
+  await expect(brand).toBeVisible();
+  await expect(versionBadge).toBeVisible();
+  await expect(versionBadge).toHaveText(/^v\d+\.\d+\.\d+/);
+  await expect(versionBadge).toHaveText(EXPECTED_APP_VERSION);
+  await expect(versionBadge).toHaveAttribute(
+    "aria-label",
+    `当前版本 ${EXPECTED_APP_VERSION}`,
+  );
+
+  // Positioned cleanly to the right of ColabOne on the same top navbar row without overlapping center nav.
+  const layout = await page.evaluate(() => {
+    const b = document.querySelector(".co-brand")!.getBoundingClientRect();
+    const v = document.querySelector(".co-brand-version")!.getBoundingClientRect();
+    const nav = document.querySelector(".co-nav-pill-track")!.getBoundingClientRect();
+    return {
+      brandRight: b.right,
+      brandMidY: (b.top + b.bottom) / 2,
+      verLeft: v.left,
+      verRight: v.right,
+      verMidY: (v.top + v.bottom) / 2,
+      navLeft: nav.left,
+      overflowX: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+  expect(layout.overflowX).toBe(0);
+  expect(layout.verLeft).toBeGreaterThanOrEqual(layout.brandRight - 1);
+  expect(layout.verRight).toBeLessThan(layout.navLeft - 8);
+  expect(Math.abs(layout.verMidY - layout.brandMidY)).toBeLessThanOrEqual(8);
+
+  // Version badge adapts cleanly in dark mode.
+  await page.getByRole("button", { name: "切换到深色模式" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(versionBadge).toHaveCSS("color", "rgb(156, 163, 181)");
+
+  // Compact desktop width (720px) keeps badge visible; narrow (<680px) collapses cleanly without overflow.
+  await page.setViewportSize({ width: 720, height: 800 });
+  await expect(versionBadge).toBeVisible();
+  await page.setViewportSize({ width: 640, height: 800 });
+  await expect(versionBadge).toBeHidden();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    ),
+  ).toBe(0);
+});
+
+test("model drawer disk warning compares free disk against remaining download bytes", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const GIB = 1024 ** 3;
+    const MIB = 1024 ** 2;
+    const totalBytes = Math.round(175.3 * GIB);
+    const downloadedBytes = Math.round(167.6 * GIB);
+    const state = (window as any).__state;
+    state.runtime.disk_free = Math.round(67.9 * GIB);
+    state.runtime.gpu = {
+      name: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      total_mib: 97887,
+      used_mib: 0,
+      util_percent: 0,
+      temp_c: 29,
+      power_w: 47,
+      power_limit_w: 600,
+    };
+    state.runtime.resources = {
+      gpu: state.runtime.gpu,
+      memory: {
+        total_bytes: Math.round(176.9 * GIB),
+        used_bytes: Math.round(3.9 * GIB),
+        available_bytes: Math.round(173.0 * GIB),
+        percent: 2.2,
+      },
+      disk: {
+        total_bytes: Math.round(235.7 * GIB),
+        used_bytes: Math.round(167.8 * GIB),
+        free_bytes: Math.round(67.9 * GIB),
+        percent: 71.2,
+      },
+      cpu: { cores: 48, percent: 0.2 },
+    };
+    state.runtime.tasks = [
+      {
+        id: "dl-active",
+        kind: "download",
+        model_id: "downloading-big",
+        state: "running",
+        progress: 0.96,
+        message: "Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf",
+        error: "",
+        download: {
+          downloaded_bytes: downloadedBytes,
+          total_bytes: totalBytes,
+          speed_bps: 229.9 * MIB,
+          eta_seconds: 35,
+          elapsed_seconds: 720,
+          resumed_bytes: 0,
+          threads: 32,
+          connections: 32,
+          phase: "downloading",
+          filename: "unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf",
+          file_index: 6,
+          file_count: 6,
+        },
+      },
+    ];
+    state.models = [
+      {
+        id: "downloading-big",
+        name: "Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+        description: "Q8_0 · unsloth-Q8_0",
+        repo: "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+        common: true,
+        custom: true,
+        size: totalBytes,
+        min_vram_mib: 185000,
+        downloaded: false,
+        loaded: false,
+        files: [],
+      },
+      {
+        id: "paused-partial",
+        name: "Paused-Partial-Model-GGUF",
+        description: "Q8_0",
+        repo: "org/Paused-Partial-Model-GGUF",
+        common: true,
+        custom: true,
+        size: totalBytes,
+        cached_bytes: downloadedBytes,
+        min_vram_mib: 185000,
+        downloaded: false,
+        loaded: false,
+        files: [],
+      },
+      {
+        id: "untouched-big",
+        name: "Untouched-Huge-Model-GGUF",
+        description: "Q8_0",
+        repo: "org/Untouched-Huge-Model-GGUF",
+        common: true,
+        custom: true,
+        size: totalBytes,
+        min_vram_mib: 185000,
+        downloaded: false,
+        loaded: false,
+        files: [],
+      },
+    ];
+  });
+
+  const drawer = await openApiModelDrawer(page);
+
+  const activeCard = drawer.locator(".co-model-card", {
+    hasText: "Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+  });
+  await expect(activeCard).toBeVisible();
+  await expect(activeCard).not.toContainText("远端可用磁盘");
+
+  const pausedCard = drawer.locator(".co-model-card", {
+    hasText: "Paused-Partial-Model-GGUF",
+  });
+  await expect(pausedCard).toBeVisible();
+  await expect(pausedCard).not.toContainText("远端可用磁盘");
+
+  const untouchedCard = drawer.locator(".co-model-card", {
+    hasText: "Untouched-Huge-Model-GGUF",
+  });
+  await expect(untouchedCard).toContainText(
+    "远端可用磁盘 67.9 GB 小于模型体积 175.3 GB",
+  );
+
+  // If free disk genuinely drops below the remaining 7.7 GB, both active and paused cards warn against remaining bytes.
+  await page.evaluate(() => {
+    const GIB = 1024 ** 3;
+    const state = (window as any).__state;
+    state.runtime.disk_free = Math.round(5.0 * GIB);
+    state.runtime.resources.disk.free_bytes = Math.round(5.0 * GIB);
+    state.runtime.resources.disk.used_bytes = Math.round(230.7 * GIB);
+  });
+  await expect(activeCard).toContainText(
+    "远端可用磁盘 5.0 GB 小于剩余待下载体积 7.7 GB（已缓存 167.6 GB）",
+  );
+  await expect(pausedCard).toContainText(
+    "远端可用磁盘 5.0 GB 小于剩余待下载体积 7.7 GB（已缓存 167.6 GB）",
+  );
+});
+
+test("remote service upgrade banner distinguishes optional revisions from legacy protocols, shows disabled tooltip, and supports dismissal", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.runtime.id = "gpu-g4-inst-1";
+    state.runtime.protocol = 7;
+    state.runtime.service_revision = "rev-before-fix";
+    state.runtime.upgrade_available = true;
+    state.runtime.loaded_model = "qwen";
+    state.runtime.active_engine = "llama";
+    state.models[0].downloaded = true;
+    state.models[0].loaded = true;
+  });
+
+  const banner = page.locator(".co-upgrade-banner");
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("远端服务有小版本更新，不影响当前正常使用");
+  await expect(banner).toContainText("需先卸载模型后再热更新");
+  await expect(banner).not.toContainText("以启用实时硬件监控");
+
+  const upgradeBtn = banner.getByRole("button", { name: "更新远端服务" });
+  await expect(upgradeBtn).toBeDisabled();
+
+  // Hovering the disabled button wrapper shows the specific blocker tooltip.
+  await banner.locator(".co-upgrade-action-wrap").hover();
+  await expect(page.locator(".ant-tooltip-inner")).toContainText(
+    "当前已装载模型，请先卸载模型后再更新远端服务",
+  );
+
+  // Optional update banner can be dismissed cleanly.
+  const closeBtn = banner.locator(".ant-alert-close-icon");
+  await expect(closeBtn).toBeVisible();
+  await closeBtn.click();
+  await expect(banner).toHaveCount(0);
+
+  // Switching to a different instance re-displays the optional upgrade banner; unloading enables the button.
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.runtime.id = "gpu-g4-inst-2";
+    state.runtime.loaded_model = "";
+    state.runtime.active_engine = null;
+    state.models[0].loaded = false;
+  });
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("可随时热更新");
+  await expect(upgradeBtn).toBeEnabled();
+
+  // Legacy protocol (< 7) shows required protocol upgrade copy and cannot be dismissed.
+  await page.evaluate(() => {
+    const state = (window as any).__state;
+    state.runtime.protocol = 6;
+    state.runtime.upgrade_available = true;
+  });
+  await expect(banner).toContainText(
+    "当前实例需要更新远端服务，以启用实时硬件监控、对外 API 与 ComfyUI 工作流引擎",
+  );
+  await expect(banner.locator(".ant-alert-close-icon")).toHaveCount(0);
 });

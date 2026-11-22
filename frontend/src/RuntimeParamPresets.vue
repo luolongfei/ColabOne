@@ -15,6 +15,7 @@ import {
   describeColabOneRuntimeParams,
   estimateColabOneKvCacheMib,
   estimateColabOneVramMib,
+  formatColabOneFileSize,
   formatColabOneGb,
   type ColabOneGpuTarget,
   type ColabOneParamPreset,
@@ -186,9 +187,9 @@ function setTemp(raw: unknown) {
         @update:value="setTemp"
       />
       <div class="co-temp-scale">
-        <span>{{ t("models.paramTempLow") }}</span>
-        <span>{{ t("models.paramTempMid") }}</span>
-        <span>{{ t("models.paramTempHigh") }}</span>
+        <span class="co-temp-tick-low">{{ t("models.paramTempLow") }}</span>
+        <span class="co-temp-tick-mid">{{ t("models.paramTempMid") }}</span>
+        <span class="co-temp-tick-high">{{ t("models.paramTempHigh") }}</span>
       </div>
     </div>
 
@@ -200,8 +201,23 @@ function setTemp(raw: unknown) {
         </span>
         <span v-if="estimatedTotalGb > 0" class="co-param-effect-vram co-tabular">
           {{ t("models.paramEstTotalVram", { gb: formatColabOneGb(estimatedTotalGb) }) }}<template v-if="targetGpu && targetGpu.vramGb > 0">
-            / {{ targetGpu.vramGb }} GB</template
+            / {{ targetGpu.vramGb }} GB ({{ targetGpu.shortLabel }})</template
           >
+          <template v-if="modelBytes && modelBytes > 0">
+            {{ " " }}{{ t("models.paramEstDisk", { gb: formatColabOneFileSize(modelBytes) }) }}<template
+              v-if="targetGpu && (targetGpu.diskFreeGb > 0 || targetGpu.isLiveDisk)"
+            >
+              {{ " " }}{{
+                targetGpu.isLiveDisk
+                  ? t("models.pickerDiskAvailLive", {
+                      avail: formatColabOneGb(targetGpu.diskFreeGb),
+                    })
+                  : t("models.pickerDiskAvailApprox", {
+                      avail: formatColabOneGb(targetGpu.diskFreeGb),
+                    })
+              }}
+            </template>
+          </template>
         </span>
       </div>
     </div>
@@ -334,11 +350,31 @@ function setTemp(raw: unknown) {
 }
 
 .co-temp-scale {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 16px;
   font-size: 10.5px;
+  line-height: 16px;
   color: var(--co-muted);
   margin-top: -4px;
+}
+
+.co-temp-tick-low {
+  position: absolute;
+  left: 0;
+  white-space: nowrap;
+}
+
+.co-temp-tick-mid {
+  position: absolute;
+  left: 35%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.co-temp-tick-high {
+  position: absolute;
+  right: 0;
+  white-space: nowrap;
 }
 
 .co-param-effect-box {

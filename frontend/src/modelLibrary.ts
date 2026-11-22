@@ -52,6 +52,7 @@ function matchesModelQuery(model: ModelSpec, normalizedQuery: string): boolean {
   if (!normalizedQuery) return true;
   const haystack = [
     model.name || "",
+    model.api_id || "",
     model.description || "",
     tb(model.description || ""),
     modelRepo(model),

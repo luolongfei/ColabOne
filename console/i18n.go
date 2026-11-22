@@ -122,7 +122,7 @@ func colabOneSetLocaleState(raw string) (string, bool) {
 var colabOneNativeCatalog = map[string]map[string]string{
 	colabOneLocaleZhCN: {
 		"tray.open":                  "打开 ColabOne",
-		"tray.quit":                  "退出客户端（远端空闲与预算保护继续）",
+		"tray.quit":                  "退出客户端（远端空闲自动释放保护继续）",
 		"window.logs":                "运行日志 · ColabOne",
 		"window.comfyCanvas":         "ComfyUI 原生画布 · ColabOne",
 		"err.unsupportedAppearance":  "不支持的外观模式",
@@ -156,7 +156,7 @@ var colabOneNativeCatalog = map[string]map[string]string{
 	},
 	colabOneLocaleEnUS: {
 		"tray.open":                  "Open ColabOne",
-		"tray.quit":                  "Quit ColabOne (remote idle & budget guards stay active)",
+		"tray.quit":                  "Quit ColabOne (remote idle auto-release guard stays active)",
 		"window.logs":                "Logs · ColabOne",
 		"window.comfyCanvas":         "ComfyUI Native Canvas · ColabOne",
 		"err.unsupportedAppearance":  "Unsupported appearance mode",
@@ -190,7 +190,7 @@ var colabOneNativeCatalog = map[string]map[string]string{
 	},
 	colabOneLocaleZhTW: {
 		"tray.open":                  "開啟 ColabOne",
-		"tray.quit":                  "結束用戶端（遠端閒置與預算保護將繼續運作）",
+		"tray.quit":                  "結束用戶端（遠端閒置自動釋放保護將繼續運作）",
 		"window.logs":                "執行日誌 · ColabOne",
 		"window.comfyCanvas":         "ComfyUI 原生畫布 · ColabOne",
 		"err.unsupportedAppearance":  "不支援的外觀模式",
@@ -224,7 +224,7 @@ var colabOneNativeCatalog = map[string]map[string]string{
 	},
 	colabOneLocaleZhHK: {
 		"tray.open":                  "開啟 ColabOne",
-		"tray.quit":                  "結束程式（遠端閒置與預算保護會繼續生效）",
+		"tray.quit":                  "結束程式（遠端閒置自動釋放保護會繼續生效）",
 		"window.logs":                "執行日誌 · ColabOne",
 		"window.comfyCanvas":         "ComfyUI 原生畫布 · ColabOne",
 		"err.unsupportedAppearance":  "不支援的外觀模式",
@@ -258,7 +258,7 @@ var colabOneNativeCatalog = map[string]map[string]string{
 	},
 	colabOneLocaleJaJP: {
 		"tray.open":                  "ColabOne を開く",
-		"tray.quit":                  "終了（リモートのアイドル自動解放・予算保護は継続）",
+		"tray.quit":                  "終了（リモートのアイドル自動解放保護は継続）",
 		"window.logs":                "実行ログ · ColabOne",
 		"window.comfyCanvas":         "ComfyUI ネイティブキャンバス · ColabOne",
 		"err.unsupportedAppearance":  "サポートされていない外観モードです",
@@ -292,7 +292,7 @@ var colabOneNativeCatalog = map[string]map[string]string{
 	},
 	colabOneLocaleKoKR: {
 		"tray.open":                  "ColabOne 열기",
-		"tray.quit":                  "앱 종료 (원격 유휴·예산 보호는 계속 유지)",
+		"tray.quit":                  "앱 종료 (원격 유휴 자동 해제 보호는 계속 유지)",
 		"window.logs":                "실행 로그 · ColabOne",
 		"window.comfyCanvas":         "ComfyUI 네이티브 캔버스 · ColabOne",
 		"err.unsupportedAppearance":  "지원하지 않는 화면 테마입니다",

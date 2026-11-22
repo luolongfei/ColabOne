@@ -42,6 +42,7 @@ export const zhHKMessages: ColabOneMessages = {
 
   // Navigation & Top Bar
   "nav.brandAria": "返回遠端裝置首頁",
+  "nav.versionAria": "目前版本 {version}",
   "nav.mainAria": "主導覽",
   "nav.device": "遠端裝置",
   "nav.api": "對外 API",
@@ -78,8 +79,24 @@ export const zhHKMessages: ColabOneMessages = {
   "status.activeInstanceAria": "目前工作實例",
   "status.loadedModelChipTitle": "已載入 {name}，點擊前往對外 API",
   "status.upgradeBanner":
-    "目前實例需要更新遠端服務，以啟用即時硬件監控、對外 API 與 ComfyUI 工作流引擎；請先結束任務並卸載模型，模型緩存會保留。",
+    "目前實例需要更新遠端服務，以啟用即時硬件監控、對外 API 與 ComfyUI 工作流引擎；請先結束任務並卸載模型或停止 ComfyUI，模型緩存會保留。",
   "status.upgradeAction": "更新遠端服務",
+  "status.upgradeOptionalReady":
+    "遠端服務有小版本更新，不影響目前正常使用；可隨時熱更新，已下載的模型緩存與工作流會完整保留。",
+  "status.upgradeOptionalBlockedModel":
+    "遠端服務有小版本更新，不影響目前正常使用；目前已載入模型，需先卸載模型後再熱更新（模型緩存會保留），亦可稍後更新。",
+  "status.upgradeOptionalBlockedComfy":
+    "遠端服務有小版本更新，不影響目前正常使用；目前 ComfyUI 運行中，需先停止 ComfyUI 後再熱更新（模型緩存會保留），亦可稍後更新。",
+  "status.upgradeOptionalBlockedTask":
+    "遠端服務有小版本更新，不影響目前正常使用；請等待目前任務結束後再熱更新（模型緩存會保留），亦可稍後更新。",
+  "status.upgradeBlockedModel":
+    "目前已載入模型，請先卸載模型後再更新遠端服務（模型緩存會保留）",
+  "status.upgradeBlockedComfy":
+    "目前 ComfyUI 運行中，請先停止 ComfyUI 後再更新遠端服務",
+  "status.upgradeBlockedTask":
+    "請先等待目前遠端任務結束後再更新遠端服務",
+  "status.upgradeBlockedOperation":
+    "請先等待目前操作完成後再更新遠端服務",
 
   // Appearance
   "appearance.system": "跟隨系統",
@@ -197,7 +214,7 @@ export const zhHKMessages: ColabOneMessages = {
   "billing.cardIdleReleasing": "正在釋放遠端實例資源…",
   "billing.cardIdleStandbyPrefix": "閒置無操作滿",
   "billing.cardIdleAutoReleaseSuffix": "自動釋放資源",
-  "billing.cardIdleStandbyNote": "下載、載入與推理期間自動暫停，避免浪費計算單元",
+  "billing.cardIdleStandbyNote": "長時間無操作自動釋放以節省計算單元；下載、載入與推理期間自動暫停倒數",
   "billing.cardResetCountdown": "重設倒數",
   "billing.cardIdleSelectLabel": "閒置自動釋放",
   "billing.cardIdleSelectAria": "閒置自動釋放時長",
@@ -356,10 +373,12 @@ export const zhHKMessages: ColabOneMessages = {
   "device.driveAutoPersist": "模型清單、ComfyUI 工作流及輸出作品自動持久保存",
   "device.driveAuthorizedHint":
     "已授權 Google 雲端硬碟（My Drive / ColabOne_Drive），可隨時掛載以自動同步模型清單及 ComfyUI 作品。",
+  "device.driveNeedAuthHint":
+    "尚未授權 Google 雲端硬碟；可在「設定」中重新登入授權，以自動同步模型清單及 ComfyUI 作品。",
   "device.syncNow": "即時同步",
   "device.mountDriveNow": "立即掛載雲端硬碟",
   "device.driveWaitingBrowserConfirm":
-    "請在瀏覽器中剔選全部雲端硬碟權限並點擊允許；完成後返回應用程式將自動繼續掛載，或點擊「我已完成授權」即時核驗。",
+    "請在瀏覽器中勾選全部雲端硬碟權限並點擊允許；完成後返回應用程式將自動繼續掛載，或點擊「我已完成授權」即時核驗。",
   "device.driveConfirmAuthorized": "我已完成授權",
   "device.driveReopenAuth": "重新開啟授權頁",
   "device.driveCancelMount": "取消掛載",
@@ -395,6 +414,8 @@ export const zhHKMessages: ColabOneMessages = {
     "模型清單、ComfyUI 工作流與輸出作品已自動同步至 Google 雲端硬碟 (ColabOne_Drive)，釋放實例前會自動保存。",
   "device.footerDriveAuto":
     "已開啟 Google 雲端硬碟自動掛載：啟動 GPU 後會自動連接 ColabOne_Drive，持久保存模型清單、工作流與作品。",
+  "device.footerDriveUnmountedActive":
+    "已開啟 Google 雲端硬碟自動掛載，目前實例尚未掛載；點擊上方「立即掛載雲端硬碟」即可連接 ColabOne_Drive 持久保存數據。",
   "device.footerDriveOff":
     "未掛載雲端硬碟時，釋放實例會清空未匯出的檔案；如需保留，請先匯出或在「設定」開啟自動掛載。",
   "device.downloadVerifying": "正在校驗 SHA-256",
@@ -402,9 +423,9 @@ export const zhHKMessages: ColabOneMessages = {
   "device.downloadMeta": "{conns} 個連線 · 檔案 {idx}/{total}",
   "device.releaseModalTitle": "選擇要停止的遠端實例",
   "device.releaseModalDesc":
-    "可勾選需要停止的實例，保留其他程式或網頁正在運行的實例。已選實例上的模型檔案及未匯出內容將會被清空。",
+    "勾選需要停止的實例，未勾選的實例將繼續運行。已選實例上的模型檔案及未匯出內容將會被清空。",
   "device.releaseLoading": "正在查詢運行實例…",
-  "device.releaseLoadFailed": "清單讀取失敗，請取消後重試。",
+  "device.releaseLoadFailed": "清單讀取失敗，請點擊重試。",
   "device.releaseSelectAll": "全選（{count}）",
   "device.releaseSelectManaged": "只選本程式（{count}）",
   "device.releaseInstCurrent": "本程式目前使用實例{model}",
@@ -412,6 +433,7 @@ export const zhHKMessages: ColabOneMessages = {
   "device.releaseInstModelSuffix": " · 已載入 {model}",
   "device.releaseInstExternal": "其他來源的 Colab 實例，停止前請確認數據已保存",
   "device.releaseEmpty": "未發現運行實例，Google 費率可能仍在更新。",
+  "device.releaseTargetMissing": "該實例已停止或不再運行，可勾選其他實例或關閉視窗。",
   "device.releaseBusyNotice": "正在結束目前操作，完成後即可停止。",
   "device.releaseForceCheck": "我已匯出或不需要保留所選實例上的遠端模型與未匯出作品（強制釋放）",
   "device.releaseConfirmAll": "確認停止全部（{count}）",
@@ -456,7 +478,8 @@ export const zhHKMessages: ColabOneMessages = {
   "api.gpuStoppedTag": "遠端 GPU 未啟動",
   "api.modelIdLabel": "模型 ID：",
   "api.vramUsage": "{vram} 顯存",
-  "api.taskProgressFallback": "可在模型抽屜查看詳細進度",
+  "api.taskProgressFallback": "可在「選擇模型」面板查看詳細進度",
+  "api.taskOutputTokens": "{count} tokens",
   "api.pickModelHintReady": "從「我的」或「社群」選擇並載入 GGUF 模型後，即可對外提供推理服務。",
   "api.pickModelHintOffline":
     "可先在「我的」或「社群」瀏覽及管理模型；啟動遠端 GPU 後一鍵下載並載入至顯存。",
@@ -468,7 +491,7 @@ export const zhHKMessages: ColabOneMessages = {
   "api.startingNotice": "正在遠端啟動 API 服務，公網驗證通過後會顯示調用網址。",
   "api.readyNotice": "對外 API 服務已開啟。",
   "api.savedConfigNotice": "固定域名隧道設定已儲存至本地憑證庫。",
-  "api.rotatedKeyNotice": "API Key 已更換，請重新開啟服務並在調用端同步更新金鑰。",
+  "api.rotatedKeyNotice": "API 金鑰已更換，請重新開啟服務並在調用端同步更新金鑰。",
   "api.connectionCardTitle": "固定域名與隧道設定",
   "api.connectionCardDesc":
     "透過固定公網 HTTPS 域名接入外部程式及 SDK，支援 SSE 串流輸出（{stream}）。域名與隧道保存在你的 Cloudflare 帳戶中。",
@@ -495,13 +518,27 @@ export const zhHKMessages: ColabOneMessages = {
   "api.hideKeyAria": "隱藏 API 金鑰",
   "api.showKeyAria": "顯示 API 金鑰",
   "api.copyKeyAria": "複製 API 金鑰",
-  "api.rotateConfirmTitle": "確認更換 API Key？",
+  "api.rotateConfirmTitle": "確認更換 API 金鑰？",
   "api.rotateConfirmDesc": "將會關閉對外 API 並令舊金鑰失效，調用端需要同步更新金鑰。",
   "api.rotateConfirmOk": "確認更換",
   "api.rotateBtn": "更換",
   "api.currentModelIdLabel": "目前模型 ID",
   "api.modelIdEmpty": "請先點擊上方「選擇模型」載入 GGUF 模型",
   "api.copyModelIdAria": "複製模型 ID",
+  "api.editModelIdTooltip": "自訂對外模型 ID（即時生效，無需重載顯存）",
+  "api.editModelIdUpgradeTooltip": "請先更新遠端服務後再自訂模型 ID",
+  "api.editModelIdAria": "自訂模型 ID",
+  "api.editModelIdPlaceholder": "例如 colabone/qwen3.8-flash-next",
+  "api.resetModelIdTooltip": "恢復預設可讀模型 ID",
+  "api.resetModelIdAria": "恢復預設模型 ID",
+  "api.modelIdEmptyError": "請輸入有效的模型 ID",
+  "api.modelIdSavedNotice": "對外模型 ID 已更新，即時生效。",
+  "api.modelIdResetNotice": "已恢復預設模型 ID。",
+  "api.modelIdAutoAliasPrefix": "切換模型不想改終端設定？亦可使用固定別名",
+  "api.modelIdAutoAliasSuffix": "自動路由至目前顯存模型。",
+  "api.copyAutoAliasTooltip": "複製固定別名 colabone/auto",
+  "api.modelIdLegacyHintPrefix": "遠端服務待更新：目前仍沿用舊 ID，更新後會自動啟用",
+  "api.modelIdLegacyHintSuffix": "（無需重下模型）。",
   "api.credentialsFootPrefix": "金鑰儲存在本地系統憑證庫。調用時使用",
   "api.credentialsFootSuffix": "，請只分享給受信任的程式或成員。",
   "api.examplesCardTitle": "調用範例與統計",
@@ -619,8 +656,11 @@ export const zhHKMessages: ColabOneMessages = {
   "models.deleteModalTitle": "刪除遠端模型檔案？",
   "models.deleteModalDesc": "只刪除遠端磁碟上的 {name} 模型檔案，「我的」清單記錄會保留。",
   "models.deleteFilesBtn": "刪除檔案",
-  "models.warnVramLow": "目前顯存 {have} GB 低於預估需求 {need} GB，載入可能失敗，建議換用更大顯存 GPU",
+  "models.warnVramLow":
+    "模型預估需約 {need} GB，大幅超出目前顯存 {have} GB 與一般系統記憶體協同範圍，混合載入可能極慢或失敗，建議換用更大顯存 GPU",
   "models.warnDiskLow": "遠端可用磁碟 {free} 小於模型容量 {size}",
+  "models.warnDiskLowRemaining":
+    "遠端可用磁碟 {free} 小於剩餘待下載容量 {remaining}（已緩存 {cached}）",
   "models.disabledStartGpu": "請先啟動遠端 GPU",
   "models.disabledWaitTask": "請等待目前任務完成",
   "models.disabledSyncingRemote": "正在同步遠端狀態…",
@@ -653,19 +693,19 @@ export const zhHKMessages: ColabOneMessages = {
   "models.hubViewRepo": "查看倉庫",
   "models.hubSearching": "正在搜尋社群模型…",
   "models.hubEmpty": "找不到匹配的社群 GGUF 模型，試試其他關鍵字或篩選條件",
-  "models.hubAllOverflow": "目前清單中的 {count} 個模型均超出 {gpu} 顯存",
+  "models.hubAllOverflow": "目前清單中的 {count} 個模型均超出 {gpu} 可運行容量",
   "models.hubSwitchG4": "切換按 G4 · 96 GB 查看",
   "models.hubShowAllModels": "顯示全部模型",
   "models.hubGatedTag": "需授權",
   "models.hubVersionCount": "{count} 個版本",
   "models.hubVersionCountSingle": "{count} 個版本",
-  "models.hubHiddenOverflow": "已隱藏 {count} 個超出 {gpu} 顯存的模型",
+  "models.hubHiddenOverflow": "已隱藏 {count} 個超出 {gpu} 可運行容量的模型",
   "models.pickerAria": "模型版本選擇",
   "models.pickerLoading": "正在讀取版本清單與顯存評估…",
   "models.pickerComfyVideoTitle": "影片生成模型（ComfyUI 專用）",
   "models.pickerComfyImageTitle": "圖片生成模型（ComfyUI 專用）",
   "models.pickerComfyDesc":
-    "此模型用於生圖／生片工作流，無法在「對外 API」文字對話引擎載入。可參考下方容量與顯存估算，再前往 ComfyUI 工作區配置使用。",
+    "此模型用於圖片／影片生成工作流，無法在「對外 API」文字對話引擎載入。可參考下方容量與顯存估算，再前往 ComfyUI 工作區配置使用。",
   "models.pickerGoComfyWorkspace": "前往 ComfyUI 工作區",
   "models.pickerRepoHome": "查看倉庫主頁",
   "models.pickerRepoHomeShort": "倉庫主頁",
@@ -775,8 +815,8 @@ export const zhHKMessages: ColabOneMessages = {
   "models.compatOverflowRepoLabel": "超出 {gpu} · 需 {minGpu}",
   "models.compatQuantFpTitle": "原版無損精度",
   "models.compatQuantFpDesc": "未壓縮原版權重，品質最高但顯存佔用極大",
-  "models.compatQuantQ8Title": "高質 · 接近原版",
-  "models.compatQuantQ8Desc": "8-bit 精度幾乎無損，大顯存高配首選",
+  "models.compatQuantQ8Title": "高精度 · 接近原版",
+  "models.compatQuantQ8Desc": "8-bit 精度幾乎無損，大顯存高規格首選",
   "models.compatQuantQ6Title": "高品質均衡",
   "models.compatQuantQ6Desc": "6-bit 精度非常接近原版，兼顧推理速度",
   "models.compatQuantQ5Title": "進階均衡",
@@ -784,7 +824,7 @@ export const zhHKMessages: ColabOneMessages = {
   "models.compatQuantQ4LightTitle": "輕量 4-bit",
   "models.compatQuantQ4MainTitle": "主流均衡",
   "models.compatQuantQ4LightDesc": "偏輕量的 4-bit 版本，更慳顯存與下載時間",
-  "models.compatQuantQ4MainDesc": "4-bit 黃金甜區，速度、容量與智能度最均衡",
+  "models.compatQuantQ4MainDesc": "4-bit 黃金平衡點，速度、容量與智能度最均衡",
   "models.compatQuantQ3Title": "慳顯存壓縮",
   "models.compatQuantQ3Desc": "3-bit 中度壓縮，顯存緊張時可考慮",
   "models.compatQuantQ2Title": "極限壓縮",
@@ -809,9 +849,11 @@ export const zhHKMessages: ColabOneMessages = {
   "models.compatHybridLabel": "混合載入 · 顯存+記憶體",
   "models.compatHybridDetail":
     "超出 {gpu} 顯存約 {overflow}，載入時自動將溢出權重分配至系統記憶體（--fit on）；MoE / 稀疏架構仍可高速運行，稠密模型速度會有所下降",
+  "models.compatHybridNearLimitDetail":
+    "預估需 ~{gb}，已接近 {gpu} 顯存上限；載入時將啟用顯存 + 系統記憶體混合載入（--fit on）自動承接少量溢出",
   "models.compatHeavyHybridLabel": "超大容量 · 混合載入",
   "models.compatHeavyHybridDetail":
-    "預估需 ~{gb}，已超出 {gpu} 顯存與常規記憶體範圍；仍可選取嘗試混合載入，但可能極慢或失敗（建議 {minGpu}）",
+    "預估需 ~{gb}，已超出 {gpu} 顯存與一般系統記憶體範圍；仍可選取嘗試混合載入，但可能極慢或失敗（建議 {minGpu}）",
   "models.compatHybridRepoLabel": "混合載入 · {gpu}+記憶體",
   "models.compatHeavyHybridRepoLabel": "超大容量 · 建議 {minGpu}",
   "models.pickerFullVramCount": "{count} 個全顯存",
@@ -819,14 +861,39 @@ export const zhHKMessages: ColabOneMessages = {
   "models.pickerAllHybridNotice":
     "模型體積大於目前所選 {gpu} 顯存，以下版本均支援「顯存 + 系統記憶體混合載入（--fit on）」，可直接選取運行。",
   "models.pickerSwitchFullVram": "切至 {gpu} 查看全顯存方案",
-  "models.pickerOverflowToRamInline": "（溢出約 {overflow} 走記憶體）",
+  "models.pickerOverflowToRamInline": "（溢出約 {overflow} 改由記憶體載入）",
+  "models.pickerNearLimitToRamInline": "（接近顯存上限 · 自動協同記憶體）",
   "models.pickerExpandVersionsHybrid": "展開全部 {count} 個版本（另有 {hidden} 個需混合載入）",
   "models.pickerHybridAlert":
     "將自動啟用「顯存 + 系統記憶體混合載入（--fit on）」：模型超出 {gpu} 顯存約 {overflow}，溢出權重與專家層會自動分配至遠端高速記憶體，MoE 架構仍可保持流暢生成。",
+  "models.pickerHybridNearLimitAlert":
+    "將自動啟用「顯存 + 系統記憶體混合載入（--fit on）」：模型已接近 {gpu} 顯存上限，若運行時出現少量溢出將自動分配至遠端高速記憶體。",
   "models.pickerHeavyHybridAlert":
-    "超大容量混合載入提示：模型預估需 ~{gb}，超出 {gpu} 顯存與常規記憶體範圍；仍可嘗試載入，但若遠端記憶體或磁碟不足可能較慢或失敗（建議 {minGpu}）。",
+    "超大容量混合載入提示：模型預估需 ~{gb}，超出 {gpu} 顯存與一般系統記憶體範圍；仍可嘗試載入，但若遠端記憶體或磁碟不足可能較慢或失敗（建議 {minGpu}）。",
   "models.warnVramHybrid":
     "模型預估需約 {need} GB，大於目前顯存 {have} GB，載入時將自動啟用顯存 + 系統記憶體混合載入（--fit on）",
+  "models.compatGpuDiskApprox": "約 {gb} GB 可用磁碟",
+  "models.compatGpuDiskLive": "可用磁碟 {gb} GB",
+  "models.pickerDiskLabel": "佔用磁碟",
+  "models.pickerDiskAvailApprox": "/ 約 {avail}",
+  "models.pickerDiskAvailLive": "/ {avail} 可用",
+  "models.pickerDiskCachedInline": "（已緩存）",
+  "models.compatDiskExceedsLabel": "超出磁碟",
+  "models.compatDiskLowLabel": "磁碟不足",
+  "models.compatDiskTightLabel": "磁碟偏緊",
+  "models.compatDiskExceedsVmDetail":
+    "需佔約 {need} 磁碟空間，已超出 {gpu} 可用磁碟容量（約 {avail} / 總 {total}），遠端磁碟可能裝不下",
+  "models.compatDiskLowLiveDetail":
+    "需佔約 {need} 磁碟空間，超過目前可用空間 {avail}（總 {total}）；請先刪除其他已下載模型釋放空間",
+  "models.compatDiskTightDetail":
+    "需佔約 {need} 磁碟空間（可用約 {avail}），下載後遠端剩餘空間會較緊張",
+  "models.compatDiskOverflowRepoLabel": "超出 {gpu} 磁碟",
+  "models.pickerDiskExceedsCount": "{count} 個超出磁碟",
+  "models.pickerAllDiskOverflowNotice":
+    "此倉庫所有版本均超出目前所選 {gpu} 的可用磁碟空間（約 {avail}），下載可能會因空間不足失敗；可切換更大磁碟的 GPU 規格或選擇較小模型。",
+  "models.pickerSwitchLargerDisk": "切至 {gpu}（約 {avail} 磁碟）",
+  "models.paramEstDisk": "· 佔用磁碟 {gb}",
+  "models.estimatedDisk": "佔用磁碟 {size}",
 
   // ComfyUI Page
   "comfy.subtitle": "在遠端 GPU 一鍵執行工作流表單，或透過安全隧道存取完整原生節點畫布。",
@@ -943,10 +1010,10 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.canvasNeedEngineHint": "請先點擊左側「先啟動 ComfyUI 引擎」，引擎就緒後即可開啟安全畫布隧道。",
   "comfy.canvasConnectingHint": "正在建立遠端安全代理與 Cloudflared 隧道，請稍候…",
   "comfy.canvasReadyToEnableHint":
-    "點擊左側「開啟原生畫布」後，即可在獨立桌面視窗或系統瀏覽器免密開啟完整 ComfyUI 節點編輯器。",
+    "點擊左側「開啟原生畫布」後，即可在獨立桌面視窗或系統瀏覽器無需輸入密碼開啟完整 ComfyUI 節點編輯器。",
   "comfy.canvasExportTipTitle": "將原生畫布匯出為一鍵表單",
   "comfy.canvasExportTipDesc":
-    "在畫布調試完成後，開啟 Settings → Enable Dev Mode Options → Save (API Format) 匯出 JSON，即可匯入「工作流工坊」生成參數表單。",
+    "在畫布調整完成後，開啟 Settings → Enable Dev Mode Options → Save (API Format) 匯出 JSON，即可匯入「工作流工坊」生成參數表單。",
   "comfy.importApiJsonNow": "即時匯入 API JSON",
   "comfy.importModalTitle": "匯入 ComfyUI 工作流 (API JSON)",
   "comfy.importModalDesc":
@@ -955,7 +1022,7 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.importDropHint": "只支援 ComfyUI「Save (API Format)」匯出的 API JSON",
   "comfy.importPickFile": "選擇 .json 檔案",
   "comfy.importNameLabel": "工作流名稱",
-  "comfy.importNamePlaceholder": "例如：Flux 文生圖 / 數碼人驅動",
+  "comfy.importNamePlaceholder": "例如：Flux 文生圖 / AI 虛擬人像",
   "comfy.importDescLabel": "簡介（可選）",
   "comfy.importDescPlaceholder": "簡要說明用途或所需模型權重…",
   "comfy.importJsonLabel": "API 工作流 JSON",
@@ -968,7 +1035,7 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.noticeImported": "工作流已匯入，已自動提取可調參數表單。",
   "comfy.noticeDeletedWorkflow": "已刪除工作流「{name}」。",
   "comfy.noticeStartingEngine":
-    "正在遠端準備並啟動 ComfyUI 引擎，首次啟動需要拉取並初始化環境，請稍候。",
+    "正在遠端準備並啟動 ComfyUI 引擎，首次啟動需要下載並初始化環境，請稍候。",
   "comfy.noticeFreeVram": "已請求 ComfyUI 釋放顯存及緩存模型。",
   "comfy.noticeStoppingEngine": "正在停止遠端 ComfyUI 引擎。",
   "comfy.noticeCancelRequested": "已請求取消目前任務。",
@@ -998,6 +1065,8 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.errInvalidOutputTransfer": "作品傳輸數據無效，請重試",
   "comfy.errInvalidOutputSize": "作品大小無效",
   "comfy.errUnsupportedPreview": "不支援預覽該檔案格式",
+  "comfy.errUnsupportedImageFormat": "不支援的圖片格式，請選擇 PNG / JPEG / WebP 檔案",
+  "comfy.errUnsupportedAudioFormat": "不支援的音訊格式，請選擇 WAV / MP3 / FLAC / OGG / M4A 檔案",
   "comfy.errIncompleteTransfer": "作品傳輸不完整，請重試",
   "comfy.errOutputChecksum": "作品校驗失敗，請重試",
 
@@ -1009,6 +1078,7 @@ export const zhHKMessages: ColabOneMessages = {
   "settings.connected": "已連線",
   "settings.disconnected": "未連線",
   "settings.oauthBrowserHint": "在瀏覽器選擇 Google 帳戶並授權，完成後會自動返回這裡。",
+  "settings.accountConnectedNoEmail": "已連線 Google 帳戶，點擊下方按鈕可重新授權或切換帳戶。",
   "settings.relogin": "重新登入",
   "settings.reopenLoginPage": "重新開啟登入頁",
   "settings.loginSavedAutoRenew": "登入已安全儲存在本地，重啟自動恢復、到期自動續期。",
@@ -1026,15 +1096,15 @@ export const zhHKMessages: ColabOneMessages = {
   "settings.driveHeading": "Google 雲端硬碟",
   "settings.driveTagMounted": "已掛載 · ColabOne_Drive",
   "settings.driveTagHeadlessReady": "免彈窗已就緒 · 自動掛載",
-  "settings.driveTagAuthorized": "已授權 · 原生驅動",
+  "settings.driveTagAuthorized": "已授權 · 原生 DriveFS",
   "settings.driveTagReauth": "需重新登入一次授權",
   "settings.driveDescPrefix": "沿用本地 Google OAuth 憑證自動掛載專屬目錄",
-  "settings.driveDescSuffix": "，自動持久保存模型清單、ComfyUI 工作流程與生成作品。",
+  "settings.driveDescSuffix": "，自動持久保存模型清單、ComfyUI 工作流與生成作品。",
   "settings.driveNeedScopeAlert":
     "目前授權尚未包含雲端硬碟權限；點擊上方「重新登入」補充授權後，後續實例將自動掛載雲端硬碟。",
-  "settings.driveHeadlessTipTitle": "開啟永久免彈窗自動掛載（可選・免費）",
+  "settings.driveHeadlessTipTitle": "開啟永久免彈窗自動掛載（可選 · 免費）",
   "settings.driveHeadlessTipDesc":
-    "目前帳戶預設使用 Colab 原生驅動掛載（每次新建實例需在瀏覽器確認一次）。登入 Google Cloud 同意一次服務條款（完全免費、無需綁卡）後，即可永久免彈窗自動掛載。",
+    "目前帳戶預設使用 Colab 原生 DriveFS 掛載（每次新建實例需在瀏覽器確認一次）。登入 Google Cloud 同意一次服務條款（完全免費、無需綁定信用卡）後，即可永久免彈窗自動掛載。",
   "settings.driveOpenGcpConsole": "開啟 Google Cloud",
   "settings.driveCheckHeadless": "檢測並開啟免彈窗",
   "settings.driveHeadlessEnabledToast": "已開啟 Google 雲端硬碟永久免彈窗自動掛載",
@@ -1068,7 +1138,7 @@ export const zhHKMessages: ColabOneMessages = {
   "settings.shortcutsTitle": "桌面與開始選單捷徑",
   "settings.shortcutsInStartMenu": "已加入開始選單",
   "settings.shortcutsDesc":
-    "目前為免安裝便攜版，無需管理員權限即可建立開始選單或桌面捷徑；如需常駐工作列，右鍵底部運行圖示選擇「固定到工作列」。",
+    "目前為免安裝便攜版，無需管理員權限即可建立開始選單或桌面捷徑；如需常駐工作列，右鍵底部運行圖示選擇「釘選到工作列」。",
   "settings.shortcutsUpdateStartMenu": "更新開始選單捷徑",
   "settings.shortcutsAddStartMenu": "加入開始選單",
   "settings.shortcutsUpdateDesktop": "更新桌面捷徑",
@@ -1077,7 +1147,7 @@ export const zhHKMessages: ColabOneMessages = {
   "settings.toastShortcutRemoved": "已移除捷徑",
   "settings.toastShortcutDesktop": "已建立桌面捷徑",
   "settings.toastShortcutBoth": "已加入開始選單與桌面",
-  "settings.toastShortcutStartMenu": "已加入開始選單，開啟後可在底部工作列右鍵固定",
+  "settings.toastShortcutStartMenu": "已加入開始選單，開啟後可在底部工作列右鍵釘選",
   "settings.aboutTitle": "關於與開源許可",
   "settings.aboutDesc":
     "ColabOne · 遠端 GGUF 對外 API 與 ComfyUI 工作流 · 憑證安全儲存在本地系統憑證庫",
@@ -1097,7 +1167,7 @@ export const zhHKMessages: ColabOneMessages = {
   "logs.emptyError": "暫無錯誤日誌",
   "logs.emptyAll": "暫無執行日誌，開始操作後會在此即時顯示。",
   "logs.tagError": "錯誤",
-  "logs.tagWarn": "提醒",
+  "logs.tagWarn": "警告",
   "logs.footerLimit": "最近 300 條 · 本次運行",
   "logs.following": "跟隨最新",
   "logs.jumpLatest": "回到最新",

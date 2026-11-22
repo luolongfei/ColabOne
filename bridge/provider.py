@@ -113,16 +113,25 @@ def _format_assign_error(
             )
         if status == 429:
             return "Google Colab 分配请求过于频繁（HTTP 429），请稍等片刻后重试"
-        if status in (502, 503, 504):
+        if status == 503:
             if retry_count > 0:
                 return (
-                    f"Google Colab 分配 {gpu_label} GPU 暂时不可用（HTTP {status}，"
-                    f"该型号可能算力紧张或后端分配超时），已自动重试 {retry_count} 次仍未成功，"
-                    "请稍后重试或切换其他 GPU 型号"
+                    f"Google Colab 当前 {gpu_label} 算力紧张，暂未分配出 GPU（HTTP 503），"
+                    f"已自动重试 {retry_count} 次仍未排到可用资源，请稍后重试或切换其他 GPU 型号"
                 )
             return (
-                f"Google Colab 分配 {gpu_label} GPU 暂时不可用（HTTP {status}，"
-                "该型号可能算力紧张或后端分配超时），请稍后重试或切换其他 GPU 型号"
+                f"Google Colab 当前 {gpu_label} 算力紧张，暂未分配出 GPU（HTTP 503），"
+                "请稍后重试或切换其他 GPU 型号"
+            )
+        if status in (502, 504):
+            if retry_count > 0:
+                return (
+                    f"Google Colab 当前 {gpu_label} 分配服务繁忙或超时，暂未分配出 GPU（HTTP {status}），"
+                    f"已自动重试 {retry_count} 次仍未成功，请稍后重试或切换其他 GPU 型号"
+                )
+            return (
+                f"Google Colab 当前 {gpu_label} 分配服务繁忙或超时，暂未分配出 GPU（HTTP {status}），"
+                "请稍后重试或切换其他 GPU 型号"
             )
         if status > 0:
             return f"Google Colab 分配 {gpu_label} GPU 失败（HTTP {status}），请稍后重试"
@@ -1396,13 +1405,18 @@ class ColabOneProvider:
         assignment = None
         consecutive_pool_busy = 0
         pool_busy_hint_emitted = False
+        last_retry_kind = ""
         for attempt in range(total_attempts):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("已取消 GPU 分配")
             if attempt > 0 and callable(on_stage):
-                if consecutive_pool_busy >= 2:
+                if last_retry_kind == "capacity":
                     on_stage(
-                        f"正在排队分配 {accel.value}（算力池较紧张 · 第 {attempt + 1}/{total_attempts} 次）"
+                        f"Google 算力紧张，正在排队分配 {accel.value}（第 {attempt + 1}/{total_attempts} 次）"
+                    )
+                elif last_retry_kind == "server_busy":
+                    on_stage(
+                        f"Google 分配服务繁忙，正在重试分配 {accel.value}（第 {attempt + 1}/{total_attempts} 次）"
                     )
                 else:
                     on_stage(
@@ -1464,35 +1478,46 @@ class ColabOneProvider:
                     except Exception:
                         pass
                     raise
-                if status in (502, 503, 504):
+                if status == 503:
                     consecutive_pool_busy += 1
+                    last_retry_kind = "capacity"
+                elif status in (502, 504):
+                    consecutive_pool_busy += 1
+                    last_retry_kind = "server_busy"
                 else:
                     consecutive_pool_busy = 0
+                    last_retry_kind = "network"
                 delay = delays[attempt]
                 next_attempt = attempt + 2
                 if retries_counter is not None:
                     retries_counter[0] = attempt + 1
-                reason_tag = (
-                    f"HTTP {status}"
-                    if status
-                    else (
+                if status == 503:
+                    retry_msg = (
+                        f"Google Colab 当前 {accel.value} 算力紧张，暂未分配出 GPU"
+                        f"（耗时 {elapsed:.1f} 秒 · HTTP 503），{delay} 秒后自动重试（第 {next_attempt}/{total_attempts} 次）"
+                    )
+                elif status in (502, 504):
+                    retry_msg = (
+                        f"Google Colab 当前 {accel.value} 分配服务繁忙，暂未分配出 GPU"
+                        f"（耗时 {elapsed:.1f} 秒 · HTTP {status}），{delay} 秒后自动重试（第 {next_attempt}/{total_attempts} 次）"
+                    )
+                else:
+                    reason_tag = (
                         "请求超时"
                         if isinstance(e, requests.exceptions.Timeout)
                         else "网络异常"
                     )
-                )
-                _emit_log(
-                    on_log,
-                    f"Google Colab 分配 {accel.value} GPU 暂时繁忙或超时（耗时 {elapsed:.1f} 秒 · {reason_tag}），{delay} 秒后自动重试（第 {next_attempt}/{total_attempts} 次）",
-                    "GPU",
-                    "warning",
-                )
+                    retry_msg = (
+                        f"Google Colab 分配 {accel.value} GPU 暂时繁忙或超时"
+                        f"（耗时 {elapsed:.1f} 秒 · {reason_tag}），{delay} 秒后自动重试（第 {next_attempt}/{total_attempts} 次）"
+                    )
+                _emit_log(on_log, retry_msg, "GPU", "warning")
                 if consecutive_pool_busy == 2 and not pool_busy_hint_emitted:
                     pool_busy_hint_emitted = True
                     alt_gpus = _alternative_gpu_hint(accel.value)
                     _emit_log(
                         on_log,
-                        f"当前 Google Colab 的 {accel.value} 算力池较紧张，正在排队调度；可继续等待，或稍后改选 {alt_gpus}",
+                        f"Google Colab 侧 {accel.value} 算力持续紧张，暂未放出空闲 GPU，客户端会继续自动排队；也可稍后改选 {alt_gpus}",
                         "GPU",
                         "warning",
                     )
@@ -2058,7 +2083,7 @@ class ColabOneProvider:
                             self.release()
                 except Exception:
                     raise RuntimeError(
-                        "启动失败且释放未确认。实例记录已保留，请在设备页立即重试释放"
+                        "启动失败且释放未确认。实例记录已保留，请在「远端设备」页立即重试停止实例"
                     ) from exc
                 if previous_active and previous_active in self.managed_endpoints():
                     self.set_active(previous_active)

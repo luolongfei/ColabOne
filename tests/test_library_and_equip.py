@@ -729,3 +729,153 @@ def test_desktop_shortcuts_create_and_remove_in_isolated_sandbox(tmp_path):
     with pytest.raises(ValueError, match="不合法"):
         ctl.command("desktop.shortcuts", {"target": "taskbar-hack"})
 
+
+def test_import_model_deduplicates_api_ids_and_supports_custom_rename_and_legacy_remote(
+    tmp_path, monkeypatch
+):
+    cfg_dir = tmp_path / "config"
+    session = Mock()
+    resp = Mock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {
+        "sha": "e" * 40,
+        "siblings": [
+            {
+                "rfilename": "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+                "lfs": {"sha256": "1" * 64, "size": 4096},
+            },
+            {
+                "rfilename": "Qwen3.8-Flash-Next-Q8_0.gguf",
+                "lfs": {"sha256": "2" * 64, "size": 8192},
+            },
+        ],
+    }
+    session.get.return_value = resp
+    c, _ = make_controller(cfg_dir, monkeypatch, session=session)
+
+    # First import of a repo gets the clean base ID (even though presets.json has same repo unloaded).
+    first = c.import_model(
+        {
+            "repo": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+            "filename": "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+        }
+    )
+    assert first.api_id == "colabone/qwen3.8-flash-next"
+
+    # Second import of a different quantization in the same repo disambiguates cleanly with -q8.
+    second = c.import_model(
+        {
+            "repo": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+            "filename": "Qwen3.8-Flash-Next-Q8_0.gguf",
+        }
+    )
+    assert second.api_id == "colabone/qwen3.8-flash-next-q8"
+
+    # Duplicate rename rejected; reserved colabone/auto rejected.
+    with pytest.raises(ValueError, match="已被其他模型使用"):
+        c.command(
+            "model.set_api_id",
+            {"id": second.id, "api_id": "colabone/qwen3.8-flash-next"},
+        )
+    with pytest.raises(ValueError, match="保留别名"):
+        c.command("model.set_api_id", {"id": second.id, "api_id": "colabone/auto"})
+
+    # Custom rename persists offline in library.json and reloads on fresh controller.
+    renamed = c.command(
+        "model.set_api_id", {"id": first.id, "api_id": "colabone/qwen-fast"}
+    )
+    assert renamed == {"ok": True, "id": first.id, "api_id": "colabone/qwen-fast"}
+
+    c2, _ = make_controller(cfg_dir, monkeypatch)
+    snap2 = c2.snapshot()
+    m1 = next(m for m in snap2["models"] if m["id"] == first.id)
+    assert m1["api_id"] == "colabone/qwen-fast"
+
+    # Legacy remote (upgrade_available=True, api_model_aliases missing):
+    # keeps callable live api_id == internal id and exposes pending_api_id for UI notice.
+    legacy_remote_model = {
+        k: v for k, v in first.model_dump().items() if k != "api_id"
+    } | {"downloaded": True, "loaded": True, "size": 4096}
+    c2.data["runtime"] = {
+        "state": "ready",
+        "id": "ep-legacy",
+        "protocol": 7,
+        "upgrade_available": True,
+    }
+    c2.data["models"] = [legacy_remote_model]
+    snap_legacy = c2.snapshot()
+    m_legacy = next(m for m in snap_legacy["models"] if m["id"] == first.id)
+    assert m_legacy["api_id"] == first.id
+    assert m_legacy["pending_api_id"] == "colabone/qwen-fast"
+
+    # Editing against an un-upgraded remote raises a clear upgrade hint.
+    with pytest.raises(RuntimeError, match="更新远端服务"):
+        c2.command("model.set_api_id", {"id": first.id, "api_id": "colabone/new"})
+
+    # Upgraded remote (api_model_aliases=True) syncs live via POST models/{id}/api-id.
+    c2.data["runtime"] = {
+        "state": "ready",
+        "id": "ep-new",
+        "protocol": 7,
+        "api_model_aliases": True,
+        "upgrade_available": False,
+    }
+    c2.data["models"] = [legacy_remote_model | {"api_id": "colabone/qwen-fast"}]
+    c2.remote = Mock(return_value={"ok": True})
+    c2.refresh_remote = Mock()
+    res = c2.command(
+        "model.set_api_id", {"id": first.id, "api_id": "colabone/qwen-pro"}
+    )
+    assert res == {"ok": True, "id": first.id, "api_id": "colabone/qwen-pro"}
+    c2.remote.assert_called_with(
+        "POST", f"models/{first.id}/api-id", {"api_id": "colabone/qwen-pro"}
+    )
+    c2.refresh_remote.assert_called_once()
+
+    # Resetting a disambiguated second variant preserves uniqueness instead of colliding.
+    c2.data["models"] = [
+        legacy_remote_model | {"api_id": "colabone/qwen3.8-flash-next"},
+        second.model_dump() | {"api_id": "colabone/custom-q8"},
+    ]
+    c2.api_id_overrides[first.id] = "colabone/qwen3.8-flash-next"
+    c2.remote.reset_mock()
+    c2.refresh_remote.reset_mock()
+    reset_res = c2.command("model.set_api_id", {"id": second.id, "api_id": ""})
+    assert reset_res == {
+        "ok": True,
+        "id": second.id,
+        "api_id": "colabone/qwen3.8-flash-next-q8",
+    }
+    c2.remote.assert_called_with(
+        "POST",
+        f"models/{second.id}/api-id",
+        {"api_id": "colabone/qwen3.8-flash-next-q8"},
+    )
+
+    # _sync_remote_api_id_overrides reconciles both api_id_overrides and custom_models after Drive restore.
+    c2.data["models"] = [
+        legacy_remote_model | {"api_id": "colabone/stale-from-drive"},
+        second.model_dump() | {"api_id": "colabone/stale-q8-from-drive"},
+    ]
+    c2.remote.reset_mock()
+    c2.refresh_remote.reset_mock()
+    c2._sync_remote_api_id_overrides()
+    c2.remote.assert_any_call(
+        "POST",
+        f"models/{first.id}/api-id",
+        {"api_id": "colabone/qwen3.8-flash-next"},
+        endpoint=None,
+    )
+    c2.remote.assert_any_call(
+        "POST",
+        f"models/{second.id}/api-id",
+        {"api_id": "colabone/qwen3.8-flash-next-q8"},
+        endpoint=None,
+    )
+
+    # _post_remote_model does not blindly retry without api_id on 409 conflicts.
+    c2.remote = Mock(side_effect=RuntimeError("同名模型配置不同，请使用新模型 ID"))
+    with pytest.raises(RuntimeError, match="同名模型配置不同"):
+        c2._post_remote_model(second.model_dump())
+    assert c2.remote.call_count == 1
+

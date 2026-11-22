@@ -42,6 +42,7 @@ export const jaJPMessages: ColabOneMessages = {
 
   // Navigation & Top Bar
   "nav.brandAria": "リモートデバイスホームへ戻る",
+  "nav.versionAria": "現在のバージョン {version}",
   "nav.mainAria": "メインナビゲーション",
   "nav.device": "リモートデバイス",
   "nav.api": "外部 API",
@@ -81,8 +82,24 @@ export const jaJPMessages: ColabOneMessages = {
   "status.activeInstanceAria": "現在のアクティブインスタンス",
   "status.loadedModelChipTitle": "{name} を読み込み済み（クリックして外部 API を開く）",
   "status.upgradeBanner":
-    "リアルタイム監視・外部 API・ComfyUI を利用するにはリモートサービスの更新が必要です。実行中のタスクを終えてモデルをアンロードしてから更新してください（キャッシュ済み重みは保持されます）。",
+    "リアルタイム監視・外部 API・ComfyUI を利用するにはリモートサービスの更新が必要です。実行中のタスクを終えてモデルをアンロードまたは ComfyUI を停止してから更新してください（キャッシュ済み重みは保持されます）。",
   "status.upgradeAction": "リモートサービスを更新",
+  "status.upgradeOptionalReady":
+    "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。キャッシュ済みモデルとワークフローを保持したままいつでも更新できます。",
+  "status.upgradeOptionalBlockedModel":
+    "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。今すぐ更新するには先にモデルをアンロードしてください（キャッシュは保持されます）。後で更新することもできます。",
+  "status.upgradeOptionalBlockedComfy":
+    "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。今すぐ更新するには先に ComfyUI を停止してください（キャッシュは保持されます）。後で更新することもできます。",
+  "status.upgradeOptionalBlockedTask":
+    "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。実行中のタスク完了後に更新できます（キャッシュは保持されます）。後で更新することもできます。",
+  "status.upgradeBlockedModel":
+    "モデルが読み込み済みです。リモートサービスを更新する前にモデルをアンロードしてください（キャッシュは保持されます）",
+  "status.upgradeBlockedComfy":
+    "ComfyUI が稼働中です。リモートサービスを更新する前に ComfyUI を停止してください",
+  "status.upgradeBlockedTask":
+    "現在のリモートタスクが完了してからリモートサービスを更新してください",
+  "status.upgradeBlockedOperation":
+    "現在の操作が完了してからリモートサービスを更新してください",
 
   // Appearance
   "appearance.system": "システムに従う",
@@ -126,7 +143,7 @@ export const jaJPMessages: ColabOneMessages = {
   "billing.enduranceReadingShort": "取得中",
   "billing.enduranceIdle": "課金なし · 残高消費なし",
   "billing.enduranceIdleShort": "消費なし",
-  "billing.enduranceExhausted": "0 日 0 時間（残高不足）",
+  "billing.enduranceExhausted": "0 日 0 時間（残高切れ）",
   "billing.enduranceExhaustedShort": "残高切れ",
   "billing.enduranceExhaustedBar": "残高切れ",
   "billing.enduranceAvailableApprox": "残り{text}",
@@ -143,7 +160,7 @@ export const jaJPMessages: ColabOneMessages = {
     "まもなく自動解放されます（残り {clock}）。クリックで延長し {policy} タイマーをリセット",
   "billing.barIdleCountdownTooltip":
     "{policy} 以上操作・タスクがないと自動解放されます。クリックでタイマーをリセット",
-  "billing.barIdlePaused": "タスク実行中 · 自動解放停止",
+  "billing.barIdlePaused": "タスク実行中 · 自動解放一時停止",
   "billing.barIdleImminent": "まもなく解放 {clock} · 延長",
   "billing.barIdleCountdown": "自動解放まで {clock}",
   "billing.barIdleCountdownAria": "自動解放まで {clock}、クリックでリセット",
@@ -182,7 +199,7 @@ export const jaJPMessages: ColabOneMessages = {
   "billing.cardEnduranceSubIdle": "インスタンス起動後に稼働可能時間を試算します",
   "billing.cardEnduranceSubExhausted": "アカウントのコンピュート残高が尽きました",
   "billing.cardEnduranceSubCritical": "残り 2 時間未満です。作業内容の保存・エクスポートをおすすめします",
-  "billing.cardEnduranceSubDepleted": "残高切れのため、インスタンスがいつ回収されてもおかしくない状態です",
+  "billing.cardEnduranceSubDepleted": "残高切れのため、インスタンスはいつでも回収される可能性があります",
   "billing.cardEnduranceSubWarning": "残り 12 時間未満 · {rate} CU/時 で試算",
   "billing.cardEnduranceSubHours": "合計約 {hours} 時間 · 現在のレートで連続稼働",
   "billing.cardEnduranceSubRate": "現在の {rate} CU/時 での連続稼働試算",
@@ -202,7 +219,7 @@ export const jaJPMessages: ColabOneMessages = {
   "billing.cardIdleStandbyPrefix": "無操作",
   "billing.cardIdleAutoReleaseSuffix": "で自動解放",
   "billing.cardIdleStandbyNote":
-    "ダウンロード・読み込み・推論中は自動停止し、不要な CU 消費を防ぎます",
+    "無操作時は自動解放して不要な CU 消費を防ぎます。ダウンロード・読み込み・推論中は自動一時停止します",
   "billing.cardResetCountdown": "タイマーをリセット",
   "billing.cardIdleSelectLabel": "アイドル自動解放",
   "billing.cardIdleSelectAria": "アイドル自動解放までの時間",
@@ -222,7 +239,7 @@ export const jaJPMessages: ColabOneMessages = {
   "monitor.badgePaused": "読み取り専用 · 一時停止",
   "monitor.badgeError": "取得失敗",
   "monitor.badgeStarting": "デプロイ中 · リアルタイム",
-  "monitor.badgeRemoteColabOne": "リモート ColabOne · 読取専用",
+  "monitor.badgeRemoteColabOne": "リモート ColabOne · 読み取り専用",
   "monitor.badgeRemoteReadonly": "読み取り専用 · リアルタイム",
   "monitor.badgeLive": "リアルタイム 60s",
   "monitor.badgeRemoteConnecting": "読み取り専用 · 接続中",
@@ -232,7 +249,7 @@ export const jaJPMessages: ColabOneMessages = {
   "monitor.subIpcPaused":
     "ローカルサービスとの接続が一時中断しました。復帰後にグラフ同期を再開します。",
   "monitor.subPaused":
-    "この外部インスタンスの読み取り専用監視を一時停止中（アイドル状態に影響しません）。再開ボタンで継続できます。",
+    "このリモートインスタンスの読み取り専用監視を一時停止中（アイドル状態に影響しません）。「監視を再開」で継続できます。",
   "monitor.subRemoteError": "読み取り専用サンプリングが一時的に失敗しました。自動で再試行します。",
   "monitor.subRemoteOfflineError":
     "リモートインスタンスの負荷を取得できませんでした。自動で再試行します。",
@@ -354,13 +371,13 @@ export const jaJPMessages: ColabOneMessages = {
   "device.stopAllCount": "すべて停止（{count} 台）",
   "device.stopInstance": "インスタンスを停止",
   "device.stopRemoteInstance": "リモートインスタンスを停止",
-  "device.idlePaused": "タスク実行中 · 自動解放停止中",
+  "device.idlePaused": "タスク実行中 · 自動解放一時停止中",
   "device.idleCountdownRemaining": "残り",
   "device.idleCountdownSuffix": "で自動解放",
   "device.idleReset": "リセット",
-  "device.idlePauseHint": "ダウンロード・読み込み・推論中はカウントダウンを自動停止",
+  "device.idlePauseHint": "ダウンロード・読み込み・推論中はカウントダウンを自動一時停止",
   "device.idlePolicySummary": "無操作 {policy} で自動解放",
-  "device.idlePolicyHint": "無操作時に自動解放・タスク実行中は自動停止",
+  "device.idlePolicyHint": "無操作時に自動解放・タスク実行中は自動一時停止",
   "device.driveMountedFull":
     "Google ドライブを自動マウント済み（My Drive / {folder}{free}）· {tail}",
   "device.driveFreeSegment": " · 空き {size}",
@@ -368,6 +385,8 @@ export const jaJPMessages: ColabOneMessages = {
   "device.driveAutoPersist": "モデル一覧・ComfyUI ワークフロー・生成物を自動保存",
   "device.driveAuthorizedHint":
     "Google ドライブ（My Drive / ColabOne_Drive）認可済み。いつでもマウントしてモデル一覧や ComfyUI 作品を同期できます。",
+  "device.driveNeedAuthHint":
+    "Google ドライブは未認可です。「設定」から再ログインして認可すると、モデル一覧や ComfyUI 作品を自動同期できます。",
   "device.syncNow": "今すぐ同期",
   "device.mountDriveNow": "ドライブをマウント",
   "device.driveWaitingBrowserConfirm":
@@ -408,6 +427,8 @@ export const jaJPMessages: ColabOneMessages = {
     "モデル一覧・ComfyUI ワークフロー・出力作品は Google ドライブ (ColabOne_Drive) へ自動保存され、解放前にも同期されます。",
   "device.footerDriveAuto":
     "ドライブ自動マウント有効: GPU 起動時に ColabOne_Drive へ接続し、モデル一覧・ワークフロー・作品を永続化します。",
+  "device.footerDriveUnmountedActive":
+    "ドライブ自動マウントは有効ですが、現在のインスタンスには未マウントです。上の「ドライブをマウント」をクリックして ColabOne_Drive へ接続できます。",
   "device.footerDriveOff":
     "ドライブ未マウント時はインスタンス解放で未エクスポートファイルが消去されます。先にエクスポートするか「設定」で自動マウントを有効にしてください。",
   "device.downloadVerifying": "SHA-256 検証中",
@@ -415,9 +436,9 @@ export const jaJPMessages: ColabOneMessages = {
   "device.downloadMeta": "{conns} 接続 · ファイル {idx}/{total}",
   "device.releaseModalTitle": "停止するリモートインスタンスを選択",
   "device.releaseModalDesc":
-    "停止するインスタンスを選択してください。チェックを外した外部インスタンスはそのまま維持されます。停止したインスタンス上の未保存データは消去されます。",
+    "停止するインスタンスを選択してください。チェックを外したインスタンスはそのまま稼働を続けます。停止したインスタンス上のモデルや未保存データは消去されます。",
   "device.releaseLoading": "稼働中のインスタンスを取得中…",
-  "device.releaseLoadFailed": "一覧の取得に失敗しました。キャンセルして再試行してください。",
+  "device.releaseLoadFailed": "一覧の取得に失敗しました。「再試行」をクリックしてください。",
   "device.releaseSelectAll": "すべて選択（{count}）",
   "device.releaseSelectManaged": "本アプリ管理のみ（{count}）",
   "device.releaseInstCurrent": "現在使用中の管理インスタンス{model}",
@@ -425,6 +446,7 @@ export const jaJPMessages: ColabOneMessages = {
   "device.releaseInstModelSuffix": " · 読込済み {model}",
   "device.releaseInstExternal": "外部起動の Colab インスタンス。停止前にデータ保存をご確認ください",
   "device.releaseEmpty": "稼働中のインスタンスはありません。Google 側の課金レートが更新中の場合があります。",
+  "device.releaseTargetMissing": "対象インスタンスはすでに停止しています。他のインスタンスを選択するか、ダイアログを閉じてください。",
   "device.releaseBusyNotice": "現在の処理を終了しています。完了後に停止できます。",
   "device.releaseForceCheck":
     "選択したインスタンス上のモデル・未エクスポート作品を保持不要であることを確認しました（強制解放）",
@@ -470,7 +492,8 @@ export const jaJPMessages: ColabOneMessages = {
   "api.gpuStoppedTag": "GPU 停止中",
   "api.modelIdLabel": "モデル ID: ",
   "api.vramUsage": "VRAM {vram}",
-  "api.taskProgressFallback": "詳細進捗はモデルドロワーで確認できます",
+  "api.taskProgressFallback": "詳細進捗は「モデル選択」パネルで確認できます",
+  "api.taskOutputTokens": "{count} tokens",
   "api.pickModelHintReady":
     "「マイモデル」または「コミュニティ」から GGUF モデルを読み込むと推論 API を提供できます。",
   "api.pickModelHintOffline":
@@ -520,6 +543,20 @@ export const jaJPMessages: ColabOneMessages = {
   "api.currentModelIdLabel": "現在のモデル ID",
   "api.modelIdEmpty": "上部の「モデル選択」から GGUF モデルを読み込んでください",
   "api.copyModelIdAria": "モデル ID をコピー",
+  "api.editModelIdTooltip": "公開モデル ID をカスタマイズ（VRAM 再読込なしで即時反映）",
+  "api.editModelIdUpgradeTooltip": "モデル ID を編集するには先にリモートサービスを更新してください",
+  "api.editModelIdAria": "モデル ID を編集",
+  "api.editModelIdPlaceholder": "例: colabone/qwen3.8-flash-next",
+  "api.resetModelIdTooltip": "既定の読みやすいモデル ID に戻す",
+  "api.resetModelIdAria": "既定のモデル ID に戻す",
+  "api.modelIdEmptyError": "有効なモデル ID を入力してください",
+  "api.modelIdSavedNotice": "公開モデル ID を更新しました（即時反映）。",
+  "api.modelIdResetNotice": "既定のモデル ID に戻しました。",
+  "api.modelIdAutoAliasPrefix": "モデル切替時に設定を変えたくない場合は固定エイリアス",
+  "api.modelIdAutoAliasSuffix": "で現在ロード済みのモデルへ自動ルーティングできます。",
+  "api.copyAutoAliasTooltip": "固定エイリアス colabone/auto をコピー",
+  "api.modelIdLegacyHintPrefix": "リモートサービス更新待ち: 現在は旧 ID を使用中ですが、更新後に自動で",
+  "api.modelIdLegacyHintSuffix": "へ切り替わります（再ダウンロード不要）。",
   "api.credentialsFootPrefix": "キーは OS の資格情報ストアに保存されます。呼び出しには",
   "api.credentialsFootSuffix": " を使用し、信頼できるアプリ・メンバーのみと共有してください。",
   "api.examplesCardTitle": "呼び出し例と統計",
@@ -641,8 +678,10 @@ export const jaJPMessages: ColabOneMessages = {
     "リモートディスク上の {name} のみ削除します。「マイモデル」の一覧登録は残ります。",
   "models.deleteFilesBtn": "ファイルを削除",
   "models.warnVramLow":
-    "現在の VRAM ({have} GB) が推定必要量 ({need} GB) を下回っています。より大きな GPU をおすすめします",
-  "models.warnDiskLow": "リモートの空きディスク ({free}) がモデルサイズ ({size}) より不足しています",
+    "推定必要量 ~{need} GB が現在の VRAM ({have} GB) と通常の RAM オフロード範囲を大きく超えており、ハイブリッド読み込みが極端に遅いか失敗する可能性があります。より大きな GPU をおすすめします",
+  "models.warnDiskLow": "リモートの空きディスク ({free}) がモデルサイズ ({size}) を下回っています",
+  "models.warnDiskLowRemaining":
+    "リモートの空きディスク ({free}) が残りのダウンロードサイズ ({remaining}、{cached} キャッシュ済み) より不足しています",
   "models.disabledStartGpu": "先にリモート GPU を起動してください",
   "models.disabledWaitTask": "現在のタスク完了をお待ちください",
   "models.disabledSyncingRemote": "リモート状態を同期中…",
@@ -676,13 +715,13 @@ export const jaJPMessages: ColabOneMessages = {
   "models.hubViewRepo": "リポジトリを開く",
   "models.hubSearching": "コミュニティモデルを検索中…",
   "models.hubEmpty": "条件に一致する GGUF モデルが見つかりませんでした。キーワードや条件を変更してください。",
-  "models.hubAllOverflow": "表示中の {count} 件すべてが {gpu} の VRAM を超過しています",
+  "models.hubAllOverflow": "表示中の {count} 件すべてが {gpu} の実行可能容量を超過しています",
   "models.hubSwitchG4": "G4 · 96 GB 基準に切替",
   "models.hubShowAllModels": "すべて表示",
   "models.hubGatedTag": "認可が必要",
   "models.hubVersionCount": "{count} 種類",
   "models.hubVersionCountSingle": "{count} 種類",
-  "models.hubHiddenOverflow": "{gpu} の VRAM を超える {count} 件を非表示中",
+  "models.hubHiddenOverflow": "{gpu} の実行可能容量を超える {count} 件を非表示中",
   "models.pickerAria": "モデルバージョン選択",
   "models.pickerLoading": "バージョン一覧と VRAM 見積を取得中…",
   "models.pickerComfyVideoTitle": "動画生成モデル（ComfyUI 専用）",
@@ -799,16 +838,16 @@ export const jaJPMessages: ColabOneMessages = {
   "models.compatOverflowRepoLabel": "{gpu} 超過 · {minGpu} 必要",
   "models.compatQuantFpTitle": "無圧縮フル精度",
   "models.compatQuantFpDesc": "非圧縮のオリジナル重み。最高品質だが膨大な VRAM が必要",
-  "models.compatQuantQ8Title": "高精細・原版同等 (8-bit)",
+  "models.compatQuantQ8Title": "高精度・オリジナル同等 (8-bit)",
   "models.compatQuantQ8Desc": "ほぼ劣化なしの 8-bit。大容量 GPU での最有力",
   "models.compatQuantQ6Title": "高品質バランス (6-bit)",
-  "models.compatQuantQ6Desc": "原版に極めて近く、推論速度との両立も優秀",
+  "models.compatQuantQ6Desc": "オリジナルに極めて近く、推論速度との両立も優秀",
   "models.compatQuantQ5Title": "上位バランス (5-bit)",
   "models.compatQuantQ5Desc": "Q4 より高精度かつ実用的なサイズ",
   "models.compatQuantQ4LightTitle": "軽量 4-bit",
   "models.compatQuantQ4MainTitle": "定番バランス (4-bit)",
   "models.compatQuantQ4LightDesc": "軽めの 4-bit 版。VRAM 節約とダウンロード短縮に有効",
-  "models.compatQuantQ4MainDesc": "速度・サイズ・知能の黄金バランス",
+  "models.compatQuantQ4MainDesc": "速度・サイズ・品質の黄金バランス",
   "models.compatQuantQ3Title": "省 VRAM 圧縮 (3-bit)",
   "models.compatQuantQ3Desc": "中程度の圧縮。VRAM が限られる場合の選択肢",
   "models.compatQuantQ2Title": "極限圧縮 (1〜2-bit)",
@@ -821,36 +860,63 @@ export const jaJPMessages: ColabOneMessages = {
   "models.compatEffectCtx16k": "コードや文書解析向け（約 1.2 万字）",
   "models.compatEffectCtx32k": "長文・複数ファイル向け（約 2.4 万字）、VRAM 追加必要",
   "models.compatEffectCtx64k": "超長文向け（約 4.8 万字）、VRAM 消費大",
-  "models.compatEffectTempLow": "厳密・決定的：ブレが少なくコーディング・翻訳・推論向き",
-  "models.compatEffectTempMid": "自然・バランス：一貫性と自然さを両立し日常会話向き",
-  "models.compatEffectTempHigh": "発想重視：豊かな表現で執筆やブレスト向き",
-  "models.compatEffectTempMax": "高ランダム：変化に富むが不安定になりやすい",
+  "models.compatEffectTempLow": "厳密・決定的: ブレが少なくコーディング・翻訳・推論向き",
+  "models.compatEffectTempMid": "自然・バランス: 一貫性と自然さを両立し日常会話向き",
+  "models.compatEffectTempHigh": "発想重視: 豊かな表現で執筆やブレスト向き",
+  "models.compatEffectTempMax": "高ランダム: 変化に富むが不安定になりやすい",
   "models.compatCustomPreset": "カスタム",
   "models.compatPresetWithBadge": "{label}（{badge}）",
   "models.compatCombinedEffect": "{ctx}K コンテキスト（{ctxEffect}）／温度 {temp}（{tempEffect}）",
-  "models.compatOver96Hybrid": "G4 96G + RAM連携",
+  "models.compatOver96Hybrid": "G4 96G + RAM 連携",
   "models.compatOver96HybridShort": "超大型 · ハイブリッド",
   "models.compatHybridLabel": "ハイブリッド · VRAM+RAM",
   "models.compatHybridDetail":
-    "{gpu} のVRAMを約 {overflow} 超過します。超過分はシステムRAMに自動オフロード（--fit on）され、MoE/疎構造は高速動作を維持します",
+    "{gpu} の VRAM を約 {overflow} 超過します。超過分はシステム RAM に自動オフロード（--fit on）され、MoE / スパースモデルは高速動作を維持しますが、密モデルでは速度が低下する場合があります",
+  "models.compatHybridNearLimitDetail":
+    "推定 ~{gb} で {gpu} の VRAM 上限に近接しています。読み込み時は VRAM + システム RAM ハイブリッド（--fit on）で少量の超過を自動退避します",
   "models.compatHeavyHybridLabel": "超大容量 · ハイブリッド",
   "models.compatHeavyHybridDetail":
-    "推定 ~{gb} で {gpu} のVRAMおよび通常RAM容量を超えます。選択してハイブリッド読み込みを試せますが、極端に低速または失敗する可能性があります（推奨: {minGpu}）",
+    "推定 ~{gb} で {gpu} の VRAM および通常 RAM 容量を超えます。選択してハイブリッド読み込みを試せますが、極端に低速または失敗する可能性があります（推奨: {minGpu}）",
   "models.compatHybridRepoLabel": "ハイブリッド · {gpu}+RAM",
   "models.compatHeavyHybridRepoLabel": "超大容量 · 推奨 {minGpu}",
-  "models.pickerFullVramCount": "{count} 件フルVRAM",
+  "models.pickerFullVramCount": "{count} 件フル VRAM",
   "models.pickerHybridCount": "{count} 件ハイブリッド",
   "models.pickerAllHybridNotice":
-    "モデルサイズが選択中の {gpu} VRAMを超えていますが、以下のバージョンはいずれも「VRAM + システムRAMのハイブリッド読み込み（--fit on）」で直接選択・実行できます。",
-  "models.pickerSwitchFullVram": "{gpu} でフルVRAM案を表示",
-  "models.pickerOverflowToRamInline": "（約 {overflow} はRAMへ）",
+    "モデルサイズが選択中の {gpu} VRAM を超えていますが、以下のバージョンはいずれも「VRAM + システム RAM のハイブリッド読み込み（--fit on）」で直接選択・実行できます。",
+  "models.pickerSwitchFullVram": "{gpu} でフル VRAM 案を表示",
+  "models.pickerOverflowToRamInline": "（約 {overflow} は RAM へ）",
+  "models.pickerNearLimitToRamInline": "（VRAM 上限付近 · 必要に応じ RAM 連携）",
   "models.pickerExpandVersionsHybrid": "全 {count} バージョンを表示（他 {hidden} 件はハイブリッド）",
   "models.pickerHybridAlert":
-    "「VRAM + システムRAMハイブリッド読み込み（--fit on）」を自動有効化します：{gpu} VRAMを約 {overflow} 超過する重みは高速RAMに配置され、MoE構成は滑らかに動作します。",
+    "「VRAM + システム RAM ハイブリッド読み込み（--fit on）」を自動有効化します: {gpu} VRAM を約 {overflow} 超過する重みは高速 RAM に配置され、MoE 構成は滑らかに動作します。",
+  "models.pickerHybridNearLimitAlert":
+    "「VRAM + システム RAM ハイブリッド読み込み（--fit on）」を自動有効化します: {gpu} の VRAM 上限に近いため、実行時に少量の超過が生じた場合は高速 RAM へ自動配置されます。",
   "models.pickerHeavyHybridAlert":
-    "超大容量ハイブリッド読み込みの注意：推定 ~{gb} は {gpu} のVRAMと通常RAMを超えます。読み込みは可能ですが、RAMやディスク不足により低速または失敗する場合があります（推奨: {minGpu}）。",
+    "超大容量ハイブリッド読み込みの注意: 推定 ~{gb} は {gpu} の VRAM と通常 RAM を超えます。読み込みは可能ですが、RAM やディスク不足により低速または失敗する場合があります（推奨: {minGpu}）。",
   "models.warnVramHybrid":
-    "推定 ~{need} GB が現在のVRAM {have} GBを超えるため、VRAM + RAMハイブリッド読み込み（--fit on）を自動適用します",
+    "推定 ~{need} GB が現在の VRAM {have} GB を超えるため、VRAM + RAM ハイブリッド読み込み（--fit on）を自動適用します",
+  "models.compatGpuDiskApprox": "空きディスク約 {gb} GB",
+  "models.compatGpuDiskLive": "空きディスク {gb} GB",
+  "models.pickerDiskLabel": "ディスク使用",
+  "models.pickerDiskAvailApprox": "/ 約 {avail}",
+  "models.pickerDiskAvailLive": "/ 空き {avail}",
+  "models.pickerDiskCachedInline": "（キャッシュ済み）",
+  "models.compatDiskExceedsLabel": "ディスク超過",
+  "models.compatDiskLowLabel": "ディスク不足",
+  "models.compatDiskTightLabel": "ディスク残少",
+  "models.compatDiskExceedsVmDetail":
+    "ディスク約 {need} が必要で、{gpu} の利用可能容量（約 {avail} / 合計 {total}）を超過するため保存できない可能性があります",
+  "models.compatDiskLowLiveDetail":
+    "ディスク約 {need} が必要で、現在の空き容量 {avail}（合計 {total}）を超えています。他の保存済みモデルを削除して空きを確保してください",
+  "models.compatDiskTightDetail":
+    "ディスク約 {need} を使用します（空き約 {avail}）。ダウンロード後は空き容量が少なくなります",
+  "models.compatDiskOverflowRepoLabel": "{gpu} ディスク超過",
+  "models.pickerDiskExceedsCount": "{count} 件ディスク超過",
+  "models.pickerAllDiskOverflowNotice":
+    "すべてのバージョンが選択中の {gpu} の利用可能ディスク容量（約 {avail}）を超えており、ダウンロードに失敗する可能性があります。より大容量ディスクの GPU へ切り替えるか、より小さいモデルをお選びください。",
+  "models.pickerSwitchLargerDisk": "{gpu} へ切替（約 {avail} ディスク）",
+  "models.paramEstDisk": "· ディスク {gb}",
+  "models.estimatedDisk": "ディスク {size}",
 
   // ComfyUI Page
   "comfy.subtitle":
@@ -957,7 +1023,7 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.canvasGuideStep1": "Cloudflare Zero Trust で Cloudflared トンネルを作成します。",
   "comfy.canvasGuideStep2Suffix": "（Cloudflare 側で対話型ログインを重複有効にする必要はありません）。",
   "comfy.canvasGuideStep3":
-    "インストールコマンドまたは Tunnel Token を上欄に貼り付けて保存し、「ネイティブキャンバスを開く」をクリックします。",
+    "インストールコマンドまたは Tunnel Token を上欄に貼り付けて保存し、「ネイティブキャンバスを開始」をクリックします。",
   "comfy.startCanvas": "ネイティブキャンバスを開始",
   "comfy.stopCanvas": "キャンバストンネル停止",
   "comfy.canvasAccessTitle": "キャンバスアクセス",
@@ -1034,6 +1100,8 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.errInvalidOutputTransfer": "出力転送データが無効です。再試行してください",
   "comfy.errInvalidOutputSize": "出力ファイルサイズが無効です",
   "comfy.errUnsupportedPreview": "このファイル形式のプレビューには対応していません",
+  "comfy.errUnsupportedImageFormat": "未対応の画像形式です。PNG / JPEG / WebP ファイルを選択してください",
+  "comfy.errUnsupportedAudioFormat": "未対応の音声形式です。WAV / MP3 / FLAC / OGG / M4A ファイルを選択してください",
   "comfy.errIncompleteTransfer": "出力データの転送が不完全です。再試行してください",
   "comfy.errOutputChecksum": "出力ファイルの整合性検証に失敗しました。再試行してください",
 
@@ -1045,6 +1113,7 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.connected": "連携済み",
   "settings.disconnected": "未連携",
   "settings.oauthBrowserHint": "ブラウザで Google アカウントを選択し認可すると、自動でアプリへ戻ります。",
+  "settings.accountConnectedNoEmail": "Google アカウントに連携済みです。下のボタンから再認可またはアカウント切替ができます。",
   "settings.relogin": "再ログイン",
   "settings.reopenLoginPage": "ログイン画面を再度開く",
   "settings.loginSavedAutoRenew":
@@ -1064,7 +1133,7 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.driveHeading": "Google ドライブ",
   "settings.driveTagMounted": "マウント済み · ColabOne_Drive",
   "settings.driveTagHeadlessReady": "確認不要で準備完了 · 自動マウント",
-  "settings.driveTagAuthorized": "認可済み · ネイティブ駆動",
+  "settings.driveTagAuthorized": "認可済み · ネイティブ DriveFS",
   "settings.driveTagReauth": "再ログインによる認可が必要",
   "settings.driveDescPrefix": "ローカルの Google OAuth 認証情報を再利用し専用フォルダ",
   "settings.driveDescSuffix":
@@ -1073,7 +1142,7 @@ export const jaJPMessages: ColabOneMessages = {
     "現在のログインにはドライブ権限が含まれていません。上の「再ログイン」で一度追加認可すると以降は自動マウントされます。",
   "settings.driveHeadlessTipTitle": "永久・確認不要の自動マウントを有効化（任意・無料）",
   "settings.driveHeadlessTipDesc":
-    "現在のアカウントは Colab ネイティブ駆動でマウントします（新規インスタンスごとにブラウザで 1 回許可が必要）。Google Cloud にサインインして利用規約へ 1 回同意すると（無料・カード不要）、以降は永久に確認不要で自動マウントされます。",
+    "現在のアカウントは Colab ネイティブ DriveFS でマウントします（新規インスタンスごとにブラウザで 1 回許可が必要）。Google Cloud にサインインして利用規約へ 1 回同意すると（無料・カード不要）、以降は永久に確認不要で自動マウントされます。",
   "settings.driveOpenGcpConsole": "Google Cloud を開く",
   "settings.driveCheckHeadless": "確認して有効化",
   "settings.driveHeadlessEnabledToast": "Google ドライブの永久・確認不要自動マウントを有効にしました",
@@ -1091,7 +1160,7 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.autoDriveDesc": "GPU 起動時に Google ドライブ (ColabOne_Drive) を自動マウント・同期",
   "settings.idleProtectionTitle": "アイドル自動解放保護",
   "settings.idleProtectionDesc":
-    "{policy} 以上操作・タスクがないとリモートリソースを自動解放します。操作するとタイマーはリセットされ、モデル取得・読込・API 推論・ComfyUI 実行中は自動停止します。",
+    "{policy} 以上操作・タスクがないとリモートリソースを自動解放します。操作するとタイマーはリセットされ、モデル取得・読込・API 推論・ComfyUI 実行中は自動一時停止します。",
   "settings.computeSyncNote":
     "デフォルト GPU と自動解放時間は「リモートデバイス」ページと即時同期されます。",
   "settings.appearanceCardTitle": "外観テーマと表示言語",

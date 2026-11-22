@@ -1101,3 +1101,183 @@ def test_public_api_estimates_speed_without_upstream_usage_and_bounds_history(
         gateway.runtime.tasks[t.id] = t
         gateway.register({"id": t.id}, {"kind": "chat"})
     assert len(gateway.snapshot()["recent_requests"]) == 50
+
+
+def test_public_api_readable_model_id_auto_alias_legacy_compat_and_live_rename(
+    gateway, spec
+):
+    runtime = gateway.runtime
+    hf_spec = spec.model_copy(
+        update={
+            "id": "hf-82b42fca20f78bbf",
+            "api_id": "",  # Legacy imported model without stored api_id
+            "name": "Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+            "files": [
+                spec.files[0].model_copy(
+                    update={
+                        "repo": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+                        "path": "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+                    }
+                )
+            ],
+        }
+    )
+    runtime.models[hf_spec.id] = hf_spec
+    runtime.loaded = hf_spec.id
+
+    captured_upstream = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        captured_upstream.append(body)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                text=(
+                    f'data: {{"id":"cmpl-1","model":"{hf_spec.id}","choices":[{{"delta":{{"content":"Hi"}}}}]}}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "cmpl-2",
+                "object": "chat.completion",
+                "model": hf_spec.id,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            },
+        )
+
+    runtime.chat_transport = httpx.MockTransport(upstream)
+
+    with (
+        TestClient(create_colabone_public_app(gateway)) as public_client,
+        TestClient(
+            create_colabone_app(runtime, "private-control-key-at-least-32-long")
+        ) as control_client,
+    ):
+        ctrl_auth = {"Authorization": "Bearer private-control-key-at-least-32-long"}
+
+        # /v1/models exposes clean readable colabone/* ID & HF owner instead of hf-<hash>.
+        listed = public_client.get("/v1/models", headers=AUTH).json()
+        assert len(listed["data"]) == 1
+        assert listed["data"][0]["id"] == "colabone/qwen3.8-flash-next"
+        assert listed["data"][0]["owned_by"] == "huihui-ai"
+
+        # /v1/models/{model_id:path} resolves readable ID, colabone/auto, and legacy internal ID.
+        for lookup in (
+            "colabone/qwen3.8-flash-next",
+            "colabone/auto",
+            hf_spec.id,
+        ):
+            r = public_client.get(f"/v1/models/{lookup}", headers=AUTH)
+            assert r.status_code == 200
+            assert r.json()["id"] == "colabone/qwen3.8-flash-next"
+        assert (
+            public_client.get("/v1/models/colabone/other", headers=AUTH).status_code
+            == 404
+        )
+
+        # Non-streaming chat accepts readable ID, forwards internal ID to llama-server,
+        # and rewrites response model to readable public ID.
+        r_chat = public_client.post(
+            "/v1/chat/completions",
+            json=chat(model="colabone/qwen3.8-flash-next"),
+            headers=AUTH,
+        )
+        assert r_chat.status_code == 200
+        assert r_chat.json()["model"] == "colabone/qwen3.8-flash-next"
+        assert captured_upstream[-1]["model"] == hf_spec.id
+
+        # Streaming chat with colabone/auto routes cleanly and rewrites SSE chunk model.
+        r_stream = public_client.post(
+            "/v1/chat/completions",
+            json=chat(model="colabone/auto", stream=True),
+            headers=AUTH,
+        )
+        assert r_stream.status_code == 200
+        sse_events = parse_sse_events(r_stream.text)
+        assert sse_events[0][1]["model"] == "colabone/qwen3.8-flash-next"
+        assert captured_upstream[-1]["model"] == hf_spec.id
+
+        # Responses API accepts colabone/auto and legacy hf-* ID, returning readable ID.
+        r_resp = public_client.post(
+            "/v1/responses",
+            json={"model": "colabone/auto", "input": "ping", "stream": False},
+            headers=AUTH,
+        )
+        assert r_resp.status_code == 200
+        assert r_resp.json()["model"] == "colabone/qwen3.8-flash-next"
+        assert captured_upstream[-1]["model"] == hf_spec.id
+
+        r_legacy = public_client.post(
+            "/v1/chat/completions",
+            json=chat(model=hf_spec.id),
+            headers=AUTH,
+        )
+        assert r_legacy.status_code == 200
+        assert r_legacy.json()["model"] == "colabone/qwen3.8-flash-next"
+
+        # Live rename via control API takes effect immediately without unloading VRAM.
+        r_rename = control_client.post(
+            f"/api/v1/models/{hf_spec.id}/api-id",
+            json={"api_id": "colabone/my-qwen"},
+            headers=ctrl_auth,
+        )
+        assert r_rename.status_code == 200
+        assert r_rename.json()["api_id"] == "colabone/my-qwen"
+        assert runtime.loaded == hf_spec.id
+        assert (
+            public_client.get("/v1/models", headers=AUTH).json()["data"][0]["id"]
+            == "colabone/my-qwen"
+        )
+        assert (
+            public_client.post(
+                "/v1/chat/completions",
+                json=chat(model="colabone/my-qwen"),
+                headers=AUTH,
+            ).status_code
+            == 200
+        )
+        # Old readable ID no longer matches once renamed (strict), while colabone/auto still routes.
+        assert (
+            public_client.post(
+                "/v1/chat/completions",
+                json=chat(model="colabone/qwen3.8-flash-next"),
+                headers=AUTH,
+            ).status_code
+            == 409
+        )
+        assert (
+            public_client.post(
+                "/v1/chat/completions",
+                json=chat(model="colabone/auto"),
+                headers=AUTH,
+            ).json()["model"]
+            == "colabone/my-qwen"
+        )
+
+        # Empty api_id resets back to default readable ID.
+        r_reset = control_client.post(
+            f"/api/v1/models/{hf_spec.id}/api-id",
+            json={"api_id": ""},
+            headers=ctrl_auth,
+        )
+        assert r_reset.status_code == 200
+        assert r_reset.json()["api_id"] == "colabone/qwen3.8-flash-next"
+
+    # Gateway logs & history record the readable model ID rather than raw hf-<hash>.
+    snap = gateway.snapshot()
+    assert any(
+        "colabone/qwen3.8-flash-next" in entry["message"] for entry in snap["logs"]
+    )
+    assert any(
+        rec["model"] == "colabone/my-qwen" for rec in snap["recent_requests"]
+    )

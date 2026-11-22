@@ -402,7 +402,13 @@ async function handleMediaFile(field: WorkflowField, file: File) {
     /^audio\//i.test(file.type) ||
     /\.(wav|mp3|flac|ogg|m4a)$/i.test(file.name);
   if ((kind === "image" && !isImageOk) || (kind === "audio" && !isAudioOk)) {
-    reportError(t("comfy.errReadLocalFile"));
+    reportError(
+      t(
+        kind === "audio"
+          ? "comfy.errUnsupportedAudioFormat"
+          : "comfy.errUnsupportedImageFormat",
+      ),
+    );
     return;
   }
   const maxBytes =
@@ -667,7 +673,7 @@ async function cancelActiveTask() {
 }
 
 async function runWorkflow() {
-  if (!gpuReady.value) return;
+  if (!gpuReady.value || comfyStarting.value) return;
   if (!comfyRunning.value) {
     await startComfy();
     return;
@@ -1839,14 +1845,23 @@ onUnmounted(() => {
 
                       <!-- Submit Bar -->
                       <div class="co-comfy-form-actions">
-                        <ColabOneTooltip :title="!gpuReady ? t('api.startGpuFirstTooltip') : ''">
+                        <ColabOneTooltip
+                          :title="
+                            !gpuReady
+                              ? gpuStarting
+                                ? t('api.gpuStartingTooltip')
+                                : t('api.startGpuFirstTooltip')
+                              : ''
+                          "
+                        >
                           <AButton
                             type="primary"
                             html-type="submit"
                             class="co-comfy-run-btn"
-                            :loading="submittingRun"
+                            :loading="submittingRun || comfyStarting"
                             :disabled="
                               !gpuReady ||
+                              comfyStarting ||
                               submittingRun ||
                               hasUploadingField ||
                               engineActionBlocked
@@ -1859,11 +1874,13 @@ onUnmounted(() => {
                             {{
                               !gpuReady
                                 ? t("comfy.runWorkflow")
-                                : !comfyRunning
-                                  ? t("comfy.startComfyFirst")
-                                  : submittingRun
-                                    ? t("common.submitting")
-                                    : t("comfy.runWorkflow")
+                                : comfyStarting
+                                  ? t("comfy.preparingBtn")
+                                  : !comfyRunning
+                                    ? t("comfy.startComfyFirst")
+                                    : submittingRun
+                                      ? t("common.submitting")
+                                      : t("comfy.runWorkflow")
                             }}
                           </AButton>
                         </ColabOneTooltip>
@@ -2365,7 +2382,14 @@ onUnmounted(() => {
                 <ADivider class="co-comfy-form-divider" />
 
                 <ASpace wrap :size="10">
-                  <ColabOneTooltip v-if="!gpuReady" :title="t('api.startGpuFirstTooltip')">
+                  <ColabOneTooltip
+                    v-if="!gpuReady"
+                    :title="
+                      gpuStarting
+                        ? t('api.gpuStartingTooltip')
+                        : t('api.startGpuFirstTooltip')
+                    "
+                  >
                     <AButton type="primary" disabled>
                       <template #icon>
                         <PhPlay :size="14" weight="fill" />
@@ -2571,6 +2595,9 @@ onUnmounted(() => {
                         {{ gpuStarting ? t("api.viewGpuProgress") : t("comfy.goStartGpuAlt") }}
                         <PhArrowRight :size="13" />
                       </AButton>
+                    </template>
+                    <template v-else-if="comfyStarting">
+                      {{ t("comfy.preparingDesc") }}
                     </template>
                     <template v-else-if="!comfyRunning">
                       {{ t("comfy.canvasNeedEngineHint") }}

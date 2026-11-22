@@ -166,7 +166,7 @@ func validateColabOneCanvasURL(raw string) (*url.URL, error) {
 		return nil, errors.New(colabOneT("err.canvasURLUserInfo"))
 	}
 	if strings.Contains(u.Host, "%") {
-		return nil, errors.New(colabOneT("err.canvasURLLoopback"))
+		return nil, errors.New(colabOneT("err.canvasURLHost"))
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if host == "" {

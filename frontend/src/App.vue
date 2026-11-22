@@ -60,6 +60,7 @@ import {
   PhUserCircle,
 } from "@phosphor-icons/vue";
 import rawAppIcon from "../../console/resources/icon.svg?raw";
+import { COLABONE_APP_VERSION_LABEL } from "./colabOneVersion";
 import { buildColabOneTheme } from "./colabOneTheme";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import {
@@ -106,7 +107,12 @@ import {
   colabOneSnapshot,
   colabOneWriteClipboard,
 } from "./api";
-import { createColabOneSnapshot, COLABONE_STATUS_LABELS, type AccountInstance } from "./types";
+import {
+  createColabOneSnapshot,
+  COLABONE_STATUS_LABELS,
+  evaluateColabOneRuntimeUpgrade,
+  type AccountInstance,
+} from "./types";
 import { createColabOneScrollController } from "./scrollTransition";
 import {
   COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX,
@@ -121,6 +127,8 @@ const appIcon = rawAppIcon.replace(
   'viewBox="0 0 1254 1254"',
   'viewBox="120 120 1014 1014"',
 );
+
+const appVersionLabel = COLABONE_APP_VERSION_LABEL;
 
 const colabOneTheme = computed(() =>
   buildColabOneTheme(colabOneEffectiveAppearance.value, colabOneLocaleCode.value),
@@ -257,6 +265,21 @@ function dismissPersistentError() {
   ipcError.value = "";
   if (state.value.error && isPersistentColabOneError(state.value.error)) {
     clearBackendStateError(String(state.value.error).trim());
+  }
+}
+
+const dismissedUpgradeKey = ref("");
+const upgradeBanner = computed(() => evaluateColabOneRuntimeUpgrade(state.value));
+const showUpgradeBanner = computed(
+  () =>
+    upgradeBanner.value.visible &&
+    (!upgradeBanner.value.dismissible ||
+      dismissedUpgradeKey.value !== upgradeBanner.value.dismissKey),
+);
+
+function dismissOptionalUpgrade() {
+  if (upgradeBanner.value.dismissible && upgradeBanner.value.dismissKey) {
+    dismissedUpgradeKey.value = upgradeBanner.value.dismissKey;
   }
 }
 
@@ -1291,7 +1314,7 @@ async function openRelease(onlyEndpoint?: string) {
       } else {
         // Target instance is no longer running; never fall back to selecting unrelated instances.
         selectedReleaseIds.value = [];
-        notify(t("device.releaseEmpty"), "info");
+        notify(t("device.releaseTargetMissing"), "info");
       }
     } else {
       selectedReleaseIds.value = plan.instances.map(
@@ -1451,10 +1474,7 @@ watch(
   [
     persistentBannerError,
     () => state.value.operation,
-    () =>
-      ready.value &&
-      ((state.value.runtime.protocol || 0) < 7 ||
-        Boolean(state.value.runtime.upgrade_available)),
+    showUpgradeBanner,
     logsOpen,
     logDrawerWidth,
   ],
@@ -1547,6 +1567,13 @@ onUnmounted(() => {
                 ></span>
                 <span class="co-brand-text">ColabOne</span>
               </button>
+              <span
+                class="co-brand-version"
+                :aria-label="t('nav.versionAria', { version: appVersionLabel })"
+                :title="`ColabOne ${appVersionLabel}`"
+              >
+                {{ appVersionLabel }}
+              </span>
             </div>
 
             <div class="co-nav-center">
@@ -1774,40 +1801,42 @@ onUnmounted(() => {
 
         <!-- Global Persistent System & Operation Banners -->
         <div
-          v-if="
-            (ready &&
-              ((state.runtime.protocol || 0) < 7 ||
-                Boolean(state.runtime.upgrade_available))) ||
-            persistentBannerError ||
-            state.operation
-          "
+          v-if="showUpgradeBanner || persistentBannerError || state.operation"
           class="co-banners"
         >
           <div class="co-banners-inner">
             <AAlert
-              v-if="
-                ready &&
-                ((state.runtime.protocol || 0) < 7 ||
-                  Boolean(state.runtime.upgrade_available))
-              "
+              v-if="showUpgradeBanner"
+              :key="upgradeBanner.dismissKey"
               type="info"
               show-icon
-              :message="t('status.upgradeBanner')"
+              :closable="upgradeBanner.dismissible"
+              :message="upgradeBanner.message"
+              class="co-upgrade-banner"
+              @close="dismissOptionalUpgrade"
             >
               <template #action>
-                <AButton
-                  type="primary"
-                  size="small"
-                  :disabled="
-                    !!task ||
-                    !!state.runtime.loaded_model ||
-                    !!state.runtime.active_engine ||
-                    !!state.operation
+                <ColabOneTooltip
+                  :title="
+                    upgradeBanner.disabledReason ||
+                    (busy ? t('status.upgradeBlockedOperation') : '')
                   "
-                  @click="act('runtime.upgrade')"
+                  placement="bottomRight"
                 >
-                  {{ t("status.upgradeAction") }}
-                </AButton>
+                  <span
+                    class="co-upgrade-action-wrap"
+                    :class="{ 'is-disabled': !upgradeBanner.canUpgrade || busy }"
+                  >
+                    <AButton
+                      type="primary"
+                      size="small"
+                      :disabled="!upgradeBanner.canUpgrade || busy"
+                      @click="act('runtime.upgrade')"
+                    >
+                      {{ t("status.upgradeAction") }}
+                    </AButton>
+                  </span>
+                </ColabOneTooltip>
               </template>
             </AAlert>
 
@@ -2297,8 +2326,11 @@ onUnmounted(() => {
                       <template v-else-if="state.runtime.drive?.error">
                         {{ tb(state.runtime.drive.error) }}
                       </template>
-                      <template v-else>
+                      <template v-else-if="state.setup.drive_authorized">
                         {{ t("device.driveAuthorizedHint") }}
+                      </template>
+                      <template v-else>
+                        {{ t("device.driveNeedAuthHint") }}
                       </template>
                     </span>
                     <template v-if="state.auth_url && state.operation && !state.setup.drive">
@@ -2683,7 +2715,9 @@ onUnmounted(() => {
                   state.setup.drive
                     ? t("device.footerDriveMounted")
                     : form.auto_drive && state.setup.drive_authorized
-                      ? t("device.footerDriveAuto")
+                      ? ready
+                        ? t("device.footerDriveUnmountedActive")
+                        : t("device.footerDriveAuto")
                       : t("device.footerDriveOff")
                 }}
               </p>
@@ -2789,7 +2823,12 @@ onUnmounted(() => {
                       }}</span>
                     </span>
                     <span v-else class="co-sk-reveal">
-                      {{ state.account.email || t("settings.oauthBrowserHint") }}
+                      {{
+                        state.account.email ||
+                        (state.setup.colab
+                          ? t("settings.accountConnectedNoEmail")
+                          : t("settings.oauthBrowserHint"))
+                      }}
                     </span>
                   </p>
 
@@ -3423,7 +3462,12 @@ onUnmounted(() => {
                       )
                     }}
                     <template v-if="activeApiSpeed.completionTokens">
-                      · {{ formatTokenCount(activeApiSpeed.completionTokens) }} tokens
+                      ·
+                      {{
+                        t("api.taskOutputTokens", {
+                          count: formatTokenCount(activeApiSpeed.completionTokens),
+                        })
+                      }}
                     </template>
                   </ATag>
                 </div>
@@ -3585,7 +3629,7 @@ onUnmounted(() => {
               :disabled="busy"
               @click="openRelease(releaseTargetEndpoint)"
             >
-              {{ t("common.refresh") }}
+              {{ t("common.retry") }}
             </AButton>
           </div>
 
@@ -3786,6 +3830,7 @@ onUnmounted(() => {
 .co-nav-left {
   display: flex;
   align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -3840,6 +3885,26 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.co-brand-version {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 3px;
+  padding: 3px 8px;
+  border-radius: var(--co-radius-pill);
+  border: 1px solid var(--co-version-border);
+  background: var(--co-version-bg);
+  color: var(--co-version-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.015em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: text;
 }
 
 /* ColabOne Centered Floating Capsule Pill Navigation */
@@ -4130,6 +4195,19 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.co-upgrade-banner :deep(.ant-alert-action) {
+  margin-inline-start: 12px;
+  flex-shrink: 0;
+}
+
+.co-upgrade-action-wrap {
+  display: inline-flex;
+}
+
+.co-upgrade-action-wrap.is-disabled {
+  cursor: not-allowed;
+}
+
 .co-op-message {
   display: inline-flex;
   align-items: center;
@@ -4216,6 +4294,12 @@ onUnmounted(() => {
     height: 38px;
   }
 
+  .co-brand-version {
+    margin-top: 2px;
+    padding: 2px 7px;
+    font-size: 10.5px;
+  }
+
   .co-logs-trigger {
     width: 40px;
     padding: 0;
@@ -4245,6 +4329,12 @@ onUnmounted(() => {
     position: absolute;
     top: 6px;
     right: 6px;
+  }
+}
+
+@container co-navbar (max-width: 680px) {
+  .co-brand-version {
+    display: none;
   }
 }
 

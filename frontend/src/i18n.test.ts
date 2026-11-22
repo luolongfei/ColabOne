@@ -317,14 +317,23 @@ describe("ColabOne reactive translations across helpers", () => {
       "新增启动远端 GPU",
       "正在分配 T4",
       "正在分配 G4（第 2/6 次）",
+      "Google 算力紧张，正在排队分配 G4（第 2/10 次）",
+      "Google 分配服务繁忙，正在重试分配 G4（第 2/10 次）",
       "正在排队分配 G4（算力池较紧张 · 第 3/10 次）",
+      "Google Colab 当前 G4 算力紧张，暂未分配出 GPU（耗时 30.9 秒 · HTTP 503），6 秒后自动重试（第 2/10 次）",
+      "Google Colab 当前 G4 分配服务繁忙，暂未分配出 GPU（耗时 30.8 秒 · HTTP 504），6 秒后自动重试（第 2/10 次）",
       "Google Colab 分配 G4 GPU 暂时繁忙或超时（HTTP 503），3 秒后自动重试（第 2/6 次）",
       "Google Colab 分配 G4 GPU 暂时繁忙或超时（请求超时），5 秒后自动重试（第 3/6 次）",
       "Google Colab 分配 G4 GPU 暂时繁忙或超时（耗时 30.8 秒 · HTTP 503），6 秒后自动重试（第 2/10 次）",
       "Google Colab 分配 G4 GPU 暂时繁忙或超时（耗时 12.5 秒 · 请求超时），12 秒后自动重试（第 3/10 次）",
       "Google Colab 分配 G4 GPU 暂时繁忙或超时（耗时 0.4 秒 · 网络异常），20 秒后自动重试（第 4/10 次）",
+      "Google Colab 侧 G4 算力持续紧张，暂未放出空闲 GPU，客户端会继续自动排队；也可稍后改选 L4 / A100 / H100",
       "当前 Google Colab 的 G4 算力池较紧张，正在排队调度；可继续等待，或稍后改选 L4 / A100 / H100",
       "已通过状态核验确认 G4 GPU 实例分配成功",
+      "Google Colab 当前 G4 算力紧张，暂未分配出 GPU（HTTP 503），已自动重试 9 次仍未排到可用资源，请稍后重试或切换其他 GPU 型号",
+      "Google Colab 当前 G4 算力紧张，暂未分配出 GPU（HTTP 503），请稍后重试或切换其他 GPU 型号",
+      "Google Colab 当前 G4 分配服务繁忙或超时，暂未分配出 GPU（HTTP 504），已自动重试 9 次仍未成功，请稍后重试或切换其他 GPU 型号",
+      "Google Colab 当前 G4 分配服务繁忙或超时，暂未分配出 GPU（HTTP 504），请稍后重试或切换其他 GPU 型号",
       "Google Colab 分配 G4 GPU 暂时不可用（HTTP 503，该型号可能算力紧张或后端分配超时），已自动重试 5 次仍未成功，请稍后重试或切换其他 GPU 型号",
       "Google Colab 分配 G4 GPU 暂时不可用（HTTP 503，该型号可能算力紧张或后端分配超时），请稍后重试或切换其他 GPU 型号",
       "Google Colab 分配 G4 GPU 请求超时，已自动重试 5 次仍未成功，请稍后重试或切换其他 GPU 型号",
@@ -497,6 +506,13 @@ describe("ColabOne reactive translations across helpers", () => {
       "ComfyUI 执行失败：节点 3(KSampler): CUDA OOM\nstack trace line",
       "远端初始化未完成：RuntimeError: pip failed\nexit code 1",
       "模型预热失败（推理进程已退出，退出码 137）：CUDA OOM\nkilled",
+      "Google 算力紧张，正在排队分配 G4（第 2/10 次）",
+      "Google 分配服务繁忙，正在重试分配 G4（第 2/10 次）",
+      "Google Colab 当前 G4 算力紧张，暂未分配出 GPU（耗时 30.9 秒 · HTTP 503），6 秒后自动重试（第 2/10 次）",
+      "Google Colab 当前 G4 分配服务繁忙，暂未分配出 GPU（耗时 30.8 秒 · HTTP 504），6 秒后自动重试（第 2/10 次）",
+      "Google Colab 侧 G4 算力持续紧张，暂未放出空闲 GPU，客户端会继续自动排队；也可稍后改选 L4 / A100 / H100",
+      "Google Colab 当前 G4 算力紧张，暂未分配出 GPU（HTTP 503），已自动重试 9 次仍未排到可用资源，请稍后重试或切换其他 GPU 型号",
+      "Google Colab 当前 G4 分配服务繁忙或超时，暂未分配出 GPU（HTTP 504），已自动重试 9 次仍未成功，请稍后重试或切换其他 GPU 型号",
       "Google Colab 分配 G4 GPU 暂时繁忙或超时（网络异常），16 秒后自动重试（第 5/10 次）",
       "Google Colab 分配 G4 GPU 网络连接中断，已自动重试 9 次仍未成功，请检查网络或代理后重试",
       "已取消 GPU 分配",
@@ -524,5 +540,84 @@ describe("ColabOne reactive translations across helpers", () => {
     expect(tb("请等待当前操作完成后再切换实例")).toContain("執行個體");
     setColabOneLocale("zh-HK", { persist: false, syncNative: false });
     expect(tb("请等待当前操作完成后再切换实例")).toContain("實例");
+  });
+
+  it("guards against mistranslated quantization, DriveFS, regional, and removed-budget copy", () => {
+    // 1. No image-quality wording ("高画质"/"高精細") for LLM quantization
+    for (const loc of ALL_LOCALES) {
+      const q8Title = COLABONE_MESSAGES[loc]["models.compatQuantQ8Title"];
+      expect(q8Title, loc).not.toContain("高画质");
+      expect(q8Title, loc).not.toContain("高精細");
+    }
+
+    // 2. No ambiguous "原生驱动"/"原生驅動"/"ネイティブ駆動" in UI messages or backend exact catalog
+    for (const loc of ALL_LOCALES) {
+      for (const [key, val] of Object.entries(COLABONE_MESSAGES[loc])) {
+        expect(val, `${loc}[${key}]`).not.toMatch(/原生驱[动動]|原生驅動|ネイティブ駆動/);
+      }
+    }
+    for (const [src, row] of Object.entries(EXACT_MESSAGES)) {
+      for (const loc of ALL_LOCALES) {
+        expect(row[loc], `EXACT[${src}][${loc}]`).not.toMatch(
+          /原生驱[动動]|原生驅動|ネイティブ駆動|预算保护|預算保護|budget-guard|Budget guard/,
+        );
+      }
+    }
+
+    // 3. No Japanese katakana middot (・) in non-ja-JP locales, and no Mainland "顯存" in zh-TW
+    for (const loc of ALL_LOCALES) {
+      if (loc === "ja-JP") continue;
+      for (const [key, val] of Object.entries(COLABONE_MESSAGES[loc])) {
+        expect(val, `${loc}[${key}] katakana middot`).not.toContain("\u30fb");
+      }
+    }
+    for (const [key, val] of Object.entries(COLABONE_MESSAGES["zh-TW"])) {
+      expect(val, `zh-TW[${key}] Mainland 顯存 leak`).not.toContain("顯存");
+    }
+    const spokenCantoneseRe = /[搵唔喺嘅啲咗冇]/;
+    for (const [key, val] of Object.entries(COLABONE_MESSAGES["zh-HK"])) {
+      expect(val, `zh-HK[${key}] spoken Cantonese`).not.toMatch(spokenCantoneseRe);
+    }
+    for (const [src, row] of Object.entries(EXACT_MESSAGES)) {
+      expect(row["zh-HK"], `EXACT[${src}][zh-HK] spoken Cantonese`).not.toMatch(
+        spokenCantoneseRe,
+      );
+    }
+
+    // 4. Updated backend messages translate cleanly across en-US and ko-KR
+    const updatedSamples = [
+      "登录未完成，请返回 ColabOne 重试。",
+      "等待登录超时。可点击「改用手动授权登录」，粘贴浏览器返回内容自动完成。",
+      "启动失败且释放未确认。实例记录已保留，请在「远端设备」页立即重试停止实例",
+      "对外 API 已关闭，远端模型仍保留在显存中",
+      "请求参数不受支持，请查看 ColabOne「对外 API」中的接口列表与限制",
+      "等待超时或调用已断开；若为生成接口，可减小输出长度上限或开启流式调用（stream=true）",
+      "正在重新装载 Qwen3-32B，先卸载当前已装载模型以释放显存",
+      "ComfyUI 模型子目录 checkpoints 不能是符号链接",
+      "已启动远端自动释放保护守护进程",
+      "远端自动释放保护即将释放实例，新服务会在下次启动时生效",
+      "远端自动释放保护即将释放实例，未替换运行中的服务",
+      "新服务未就绪，已恢复旧服务；模型文件与运行配置保持不变",
+      "新服务未就绪，已恢复旧服务；模型文件与运行配置保持不变（日志：stderr tail）",
+      "该模型属于图片/视频生成类（ComfyUI 专用），无法在「对外 API」文本引擎中装载，请前往 ComfyUI 工作区使用",
+      "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
+      "模型 API ID 必须为字符串",
+      "模型 API ID 不能为空",
+      "colabone/auto 为系统保留别名，请使用其他模型 ID",
+      "模型 API ID 仅支持字母、数字、点、下划线、连字符和斜杠，且不能以斜杠或点结尾",
+      "找不到指定模型",
+      "该模型 ID 已被其他模型使用，请换一个名称",
+      "请先更新远端服务后再自定义模型 ID",
+      "已更新模型 API ID：colabone/qwen3.8-flash-next",
+    ];
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+    for (const loc of ["en-US", "ko-KR"] as const) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of updatedSamples) {
+        const out = tb(sample);
+        expect(out, `${loc}: ${sample}`).not.toBe(sample);
+        expect(leakRe.test(out), `${loc} leak in "${out}"`).toBe(false);
+      }
+    }
   });
 });

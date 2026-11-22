@@ -4,11 +4,317 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable, Mapping
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+COLABONE_API_MODEL_PREFIX = "colabone/"
+COLABONE_AUTO_API_MODEL_ID = "colabone/auto"
+COLABONE_API_MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,119}$")
+
+_KNOWN_PACKAGER_PREFIXES = frozenset(
+    {
+        "huihui",
+        "unsloth",
+        "bartowski",
+        "mradermacher",
+        "lmstudio",
+        "maziyarpanahi",
+        "quantfactory",
+        "tensorblock",
+        "ggml",
+        "bullerwins",
+    }
+)
+_FORMAT_NOISE_TOKENS = frozenset(
+    {
+        "gguf",
+        "ggml",
+        "imatrix",
+        "exl2",
+        "awq",
+        "gptq",
+        "mlx",
+        "onnx",
+        "bnb",
+        "4bit",
+        "8bit",
+        "fp8",
+        "fp16",
+        "bf16",
+        "f16",
+        "f32",
+        "quant",
+        "quantized",
+        "ud",
+        "mxfp4",
+        "nvfp4",
+    }
+)
+_REPACK_MODIFIER_TOKENS = frozenset(
+    {
+        "abliterated",
+        "uncensored",
+        "heretic",
+        "ara",
+        "rvn",
+        "rco",
+        "gsq",
+        "lorablated",
+        "obliterated",
+        "unfiltered",
+        "decensored",
+    }
+)
+_CHAT_SUFFIX_TOKENS = frozenset({"instruct", "it"})
+_EMBEDDED_QUANT_RE = re.compile(
+    r"(?:^|[-_\s])(?:ud[-_])?(?:i|t)?q[1-8](?:_[0-9a-z]+)*(?=$|[-_\s])",
+    re.IGNORECASE,
+)
+_QUANT_TOKEN_RE = re.compile(
+    r"^(?:(?:i|t)?q[1-8](?:_[0-9a-z]+)*|k_(?:s|m|l|xl|xxl))$",
+    re.IGNORECASE,
+)
+_DATE_TAG_RE = re.compile(
+    r"^(?:(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])|2[3-9](?:0[1-9]|1[0-2])|20\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$"
+)
+_REPACK_VERSION_RE = re.compile(r"^v\d+(?:\.\d+)?$", re.IGNORECASE)
+_COMPACT_QUANT_RE = re.compile(
+    r"(mxfp4|nvfp4|bf16|fp16|f16|f32|fp8|(?:i|t)?q[1-8])",
+    re.IGNORECASE,
+)
+
+
+def validate_colabone_api_model_id(
+    value: Any, *, allow_empty: bool = False
+) -> str:
+    if value is None:
+        raw = ""
+    elif isinstance(value, str):
+        raw = value.strip()
+    else:
+        raise ValueError("模型 API ID 必须为字符串")
+    if not raw:
+        if allow_empty:
+            return ""
+        raise ValueError("模型 API ID 不能为空")
+    if raw.lower() == COLABONE_AUTO_API_MODEL_ID:
+        raise ValueError("colabone/auto 为系统保留别名，请使用其他模型 ID")
+    if (
+        len(raw) > 120
+        or not COLABONE_API_MODEL_ID_RE.fullmatch(raw)
+        or ".." in raw
+        or "//" in raw
+        or any(seg in (".", "..") for seg in raw.split("/"))
+        or raw.endswith("/")
+        or raw.endswith(".")
+    ):
+        raise ValueError(
+            "模型 API ID 仅支持字母、数字、点、下划线、连字符和斜杠，且不能以斜杠或点结尾"
+        )
+    return raw
+
+
+def _sanitize_slug_part(text: str, max_len: int = 56) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9.-]+", "-", (text or "").strip().lower())
+    cleaned = re.sub(r"\.{2,}", ".", cleaned)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-.")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip("-.")
+    return cleaned
+
+
+def colabone_default_api_model_id(
+    repo: str = "", filename: str = "", name: str = ""
+) -> str:
+    """Build a clean, human-readable `colabone/<model>` API identifier."""
+    repo_clean = (repo or "").strip().strip("/")
+    owner = ""
+    raw_source = ""
+    if "/" in repo_clean:
+        owner, raw_source = repo_clean.split("/", 1)
+    elif repo_clean:
+        raw_source = repo_clean
+    elif (name or "").strip():
+        raw_source = name.strip()
+    elif (filename or "").strip():
+        raw_source = PurePosixPath(filename.strip()).name
+
+    raw_source = re.sub(
+        r"(?:-\d{5}-of-\d{5})?\.gguf$", "", raw_source, flags=re.IGNORECASE
+    )
+    # Remove composite quantization suffixes (e.g. UD-Q4_K_XL, Q8_0) before splitting underscores.
+    stripped_quant = _EMBEDDED_QUANT_RE.sub("-", raw_source)
+    raw_tokens = [
+        tok.strip(".")
+        for tok in re.split(r"[^a-zA-Z0-9.]+", stripped_quant.lower())
+        if tok.strip(".")
+    ]
+
+    owner_prefixes: set[str] = set(_KNOWN_PACKAGER_PREFIXES)
+    if owner:
+        owner_low = owner.lower()
+        owner_prefixes.add(owner_low)
+        first_owner_seg = re.split(r"[^a-z0-9]+", owner_low)[0]
+        if first_owner_seg:
+            owner_prefixes.add(first_owner_seg)
+
+    tokens = list(raw_tokens)
+    while len(tokens) > 1 and tokens[0] in owner_prefixes:
+        tokens.pop(0)
+
+    kept: list[str] = []
+    seen_repack = False
+    for idx, tok in enumerate(tokens):
+        if tok in _FORMAT_NOISE_TOKENS or _QUANT_TOKEN_RE.fullmatch(tok):
+            continue
+        if tok in _REPACK_MODIFIER_TOKENS:
+            seen_repack = True
+            continue
+        if tok in _CHAT_SUFFIX_TOKENS:
+            continue
+        if idx > 0 and _DATE_TAG_RE.fullmatch(tok):
+            continue
+        if seen_repack and _REPACK_VERSION_RE.fullmatch(tok):
+            continue
+        kept.append(tok)
+
+    if not kept:
+        kept = [
+            tok
+            for tok in tokens
+            if tok not in _FORMAT_NOISE_TOKENS and not _QUANT_TOKEN_RE.fullmatch(tok)
+        ]
+    if not kept:
+        kept = raw_tokens
+
+    slug = _sanitize_slug_part("-".join(kept), max_len=56)
+    if not slug:
+        slug = _sanitize_slug_part(raw_source or name or "model", max_len=56) or "model"
+    if slug == "auto":
+        slug = "auto-model"
+    return f"{COLABONE_API_MODEL_PREFIX}{slug}"
+
+
+def colabone_compact_quant_tag(filename: str) -> str:
+    """Return a concise lowercase quant suffix (e.g. q4, q8, bf16) for collision fallback."""
+    from common.hub import extract_quantization
+
+    quant = extract_quantization(filename or "")
+    if not quant or quant == "GGUF":
+        return ""
+    match = _COMPACT_QUANT_RE.search(quant)
+    if match:
+        return match.group(1).lower()
+    return _sanitize_slug_part(quant, max_len=16)
+
+
+def colabone_unique_api_model_id(
+    base_api_id: str,
+    existing_ids: Iterable[str],
+    *,
+    repo: str = "",
+    filename: str = "",
+) -> str:
+    """Return `base_api_id` cleanly, appending a concise disambiguator only on collision."""
+    base = validate_colabone_api_model_id(base_api_id)
+    taken = {
+        str(item).strip().lower()
+        for item in existing_ids
+        if isinstance(item, str) and item.strip()
+    }
+    taken.add(COLABONE_AUTO_API_MODEL_ID)
+    if base.lower() not in taken:
+        return base
+
+    candidates: list[str] = []
+    compact_q = colabone_compact_quant_tag(filename)
+    if compact_q:
+        candidates.append(f"{base}-{compact_q}")
+    if filename:
+        from common.hub import extract_quantization
+
+        full_q = extract_quantization(filename)
+        if full_q and full_q != "GGUF":
+            full_q_slug = re.sub(r"[^a-z0-9_-]+", "-", full_q.lower()).strip("-_")
+            if full_q_slug and full_q_slug != compact_q:
+                candidates.append(f"{base}-{full_q_slug}")
+    if "/" in (repo or ""):
+        owner_seg = _sanitize_slug_part(
+            re.split(r"[^a-zA-Z0-9]+", repo.split("/", 1)[0])[0], max_len=16
+        )
+        if owner_seg and len(owner_seg) >= 2 and owner_seg not in base.lower():
+            candidates.append(f"{base}-{owner_seg}")
+
+    for cand in candidates:
+        cand = cand[:120].rstrip("-.")
+        if cand.lower() not in taken:
+            try:
+                return validate_colabone_api_model_id(cand)
+            except ValueError:
+                continue
+
+    for idx in range(2, 1000):
+        suffix = f"-{idx}"
+        cand = f"{base[: 120 - len(suffix)].rstrip('-.')}{suffix}"
+        if cand.lower() not in taken:
+            return cand
+    return base
+
+
+def _model_attr(model: ModelSpec | Mapping[str, Any], key: str, default: Any = "") -> Any:
+    if isinstance(model, Mapping):
+        return model.get(key, default)
+    return getattr(model, key, default)
+
+
+def colabone_model_owner(model: ModelSpec | Mapping[str, Any]) -> str:
+    files = _model_attr(model, "files", None) or []
+    first_repo = ""
+    if files:
+        first = files[0]
+        first_repo = (
+            str(first.get("repo") or "")
+            if isinstance(first, Mapping)
+            else str(getattr(first, "repo", "") or "")
+        )
+    if not first_repo:
+        first_repo = str(_model_attr(model, "repo", "") or "")
+    if "/" in first_repo:
+        owner = first_repo.split("/", 1)[0].strip()
+        if owner:
+            return owner
+    return "colabone"
+
+
+def resolve_colabone_api_model_id(model: ModelSpec | Mapping[str, Any]) -> str:
+    """Resolve the public OpenAI API model ID for a model spec or serialized dict."""
+    explicit = str(_model_attr(model, "api_id", "") or "").strip()
+    if explicit:
+        return explicit
+    internal_id = str(_model_attr(model, "id", "") or "").strip()
+    if internal_id.startswith("hf-"):
+        files = _model_attr(model, "files", None) or []
+        first_repo = ""
+        first_path = ""
+        if files:
+            first = files[0]
+            if isinstance(first, Mapping):
+                first_repo = str(first.get("repo") or "")
+                first_path = str(first.get("path") or "")
+            else:
+                first_repo = str(getattr(first, "repo", "") or "")
+                first_path = str(getattr(first, "path", "") or "")
+        if not first_repo:
+            first_repo = str(_model_attr(model, "repo", "") or "")
+        name = str(_model_attr(model, "name", "") or "")
+        return colabone_default_api_model_id(
+            repo=first_repo, filename=first_path, name=name
+        )
+    return internal_id
 
 
 class ModelFile(BaseModel):
@@ -63,6 +369,7 @@ class ModelFile(BaseModel):
 class ModelSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
+    api_id: str = Field(default="", max_length=120)
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
     min_vram_mib: int = Field(default=0, ge=0)
@@ -72,6 +379,11 @@ class ModelSpec(BaseModel):
     source: str = "Hugging Face"
     kind: Literal["chat"] = "chat"
     files: list[ModelFile] = Field(min_length=1, max_length=128)
+
+    @field_validator("api_id", mode="before")
+    @classmethod
+    def check_api_id(cls, value):
+        return validate_colabone_api_model_id(value, allow_empty=True)
 
     @model_validator(mode="after")
     def file_set(self):
@@ -160,7 +472,7 @@ def resolve_import(
     )
     if modality in ("image", "video"):
         raise ValueError(
-            "该模型属于图片/视频生成类（ComfyUI 专用），无法在对外文本 API 中装载，请前往 ComfyUI 工作区使用"
+            "该模型属于图片/视频生成类（ComfyUI 专用），无法在「对外 API」文本引擎中装载，请前往 ComfyUI 工作区使用"
         )
     raw_siblings = info.get("siblings") or []
     siblings = {
@@ -203,8 +515,12 @@ def resolve_import(
     description = (
         f"{quant} · {selected[0]}" if quant and quant != "GGUF" else selected[0]
     )
+    default_api_id = colabone_default_api_model_id(
+        repo=repo, filename=selected[0], name=display_name
+    )
     return ModelSpec(
         id=f"hf-{identity}",
+        api_id=default_api_id,
         name=display_name,
         description=description,
         min_vram_mib=0,

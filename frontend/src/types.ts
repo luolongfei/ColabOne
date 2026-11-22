@@ -2,6 +2,8 @@ import { t } from "./i18n";
 
 export interface ModelSpec {
   id: string;
+  api_id?: string;
+  pending_api_id?: string;
   kind?: "chat";
   context_length?: number;
   temperature?: number;
@@ -13,6 +15,7 @@ export interface ModelSpec {
   downloaded: boolean;
   loaded: boolean;
   size: number;
+  cached_bytes?: number;
   min_vram_mib: number;
   files: { repo: string; path: string }[];
 }
@@ -243,6 +246,7 @@ export interface RuntimeStatus {
   resources?: SystemResources;
   protocol?: number;
   service_revision?: string;
+  api_model_aliases?: boolean;
   upgrade_available?: boolean;
   active_options?: { context_length?: number; temperature?: number };
   capabilities?: string[];
@@ -414,6 +418,39 @@ export const COLABONE_STATUS_LABELS: Record<string, string> = {
     return t("status.failed");
   },
 };
+export const COLABONE_AUTO_API_MODEL_ID = "colabone/auto";
+
+const COLABONE_QUANT_TAG_PATTERNS = [
+  /(?<![A-Za-z0-9])(UD-(?:IQ|TQ|Q)[1-8](?:_[01K](?:_[A-Za-z0-9]+)?|_[A-Za-z]{1,4})?)(?![A-Za-z0-9])/i,
+  /(?<![A-Za-z0-9])((?:IQ|TQ|Q)[1-8](?:_[01K](?:_[A-Za-z0-9]+)?|_[A-Za-z]{1,4}))(?![A-Za-z0-9])/i,
+  /(?<![A-Za-z0-9])(MXFP4(?:_MOE)?|NVFP4|FP8(?:_E4M3(?:FN)?|_E5M2)?|BF16|FP16|F16|F32)(?![A-Za-z0-9])/i,
+  /(?<![A-Za-z0-9])(Q[2-8])(?![A-Za-z0-9])/i,
+];
+
+export function colabOneModelApiId(
+  model?: Pick<ModelSpec, "id" | "api_id"> | null,
+): string {
+  return model?.api_id?.trim() || model?.id?.trim() || "";
+}
+
+export function colabOneModelQuantTag(
+  model?: Pick<ModelSpec, "description" | "files"> | null,
+): string {
+  const candidates = [
+    model?.description || "",
+    model?.files?.[0]?.path || "",
+  ];
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const text = raw.replace(/(?:[-_]\d{5}-of-\d{5})?\.gguf$/i, "");
+    for (const pattern of COLABONE_QUANT_TAG_PATTERNS) {
+      const m = text.match(pattern);
+      if (m?.[1]) return m[1].toUpperCase();
+    }
+  }
+  return "";
+}
+
 export function canColabOneLoadModel(
   model: ModelSpec,
   state: ColabOneSnapshot,
@@ -425,4 +462,104 @@ export function canColabOneLoadModel(
     !state.operation &&
     !state.runtime.tasks?.some((t) => t.state === "running")
   );
+}
+
+export type ColabOneRuntimeUpgradeKind = "none" | "protocol" | "optional";
+
+export interface ColabOneRuntimeUpgradeState {
+  visible: boolean;
+  kind: ColabOneRuntimeUpgradeKind;
+  dismissible: boolean;
+  dismissKey: string;
+  message: string;
+  canUpgrade: boolean;
+  disabledReason: string;
+}
+
+export function evaluateColabOneRuntimeUpgrade(
+  state: ColabOneSnapshot,
+): ColabOneRuntimeUpgradeState {
+  const runtime = state.runtime;
+  if (runtime.state !== "ready") {
+    return {
+      visible: false,
+      kind: "none",
+      dismissible: false,
+      dismissKey: "",
+      message: "",
+      canUpgrade: false,
+      disabledReason: "",
+    };
+  }
+
+  const protocol = runtime.protocol || 0;
+  const kind: ColabOneRuntimeUpgradeKind =
+    protocol < 7
+      ? "protocol"
+      : runtime.upgrade_available
+        ? "optional"
+        : "none";
+
+  if (kind === "none") {
+    return {
+      visible: false,
+      kind: "none",
+      dismissible: false,
+      dismissKey: "",
+      message: "",
+      canUpgrade: false,
+      disabledReason: "",
+    };
+  }
+
+  const hasRunningTask = Boolean(
+    runtime.tasks?.some((item) => item.state === "running"),
+  );
+  const hasLoadedModel = Boolean(
+    runtime.loaded_model || runtime.active_engine === "llama",
+  );
+  const hasActiveComfy = Boolean(
+    runtime.active_engine === "comfyui" || runtime.comfyui?.running,
+  );
+  const hasOtherEngine = Boolean(
+    runtime.active_engine &&
+      runtime.active_engine !== "llama" &&
+      runtime.active_engine !== "comfyui",
+  );
+
+  let disabledReason = "";
+  if (state.operation) {
+    disabledReason = t("status.upgradeBlockedOperation");
+  } else if (hasRunningTask) {
+    disabledReason = t("status.upgradeBlockedTask");
+  } else if (hasLoadedModel) {
+    disabledReason = t("status.upgradeBlockedModel");
+  } else if (hasActiveComfy || hasOtherEngine) {
+    disabledReason = t("status.upgradeBlockedComfy");
+  }
+
+  let message: string;
+  if (kind === "protocol") {
+    message = t("status.upgradeBanner");
+  } else if (state.operation || hasRunningTask) {
+    message = t("status.upgradeOptionalBlockedTask");
+  } else if (hasLoadedModel) {
+    message = t("status.upgradeOptionalBlockedModel");
+  } else if (hasActiveComfy || hasOtherEngine) {
+    message = t("status.upgradeOptionalBlockedComfy");
+  } else {
+    message = t("status.upgradeOptionalReady");
+  }
+
+  const dismissKey = `${kind}::${runtime.id || "default"}::${runtime.service_revision || protocol}`;
+
+  return {
+    visible: true,
+    kind,
+    dismissible: kind === "optional",
+    dismissKey,
+    message,
+    canUpgrade: !disabledReason,
+    disabledReason,
+  };
 }

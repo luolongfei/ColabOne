@@ -20,6 +20,12 @@ export interface ColabOneGpuTarget {
   vramMib: number;
   /** Typical paired VM host RAM (GB) available for hybrid GPU+RAM offloading (--fit on). */
   hostRamGb: number;
+  /** Typical (or live measured) usable free disk capacity (GB) available for model weights. */
+  diskFreeGb: number;
+  /** Typical (or live measured) total local disk size (GB) of the Colab VM. */
+  diskTotalGb: number;
+  /** True when diskFreeGb comes from live runtime telemetry rather than static tier estimate. */
+  isLiveDisk?: boolean;
   isLive?: boolean;
 }
 
@@ -82,10 +88,38 @@ export interface ColabOneVramFit {
   minGpu: ColabOneMinGpuHint;
 }
 
+export type ColabOneDiskFitStatus =
+  | "ok"
+  | "tight"
+  | "insufficient_live"
+  | "exceeds_vm"
+  | "cached"
+  | "unrestricted";
+
+export interface ColabOneFileDiskState {
+  downloaded?: boolean;
+  cachedBytes?: number;
+}
+
+export interface ColabOneTargetDiskFit {
+  status: ColabOneDiskFitStatus;
+  requiredGb: number;
+  remainingGb: number;
+  availableGb: number;
+  totalGb: number;
+  isLive: boolean;
+  ratio: number;
+  insufficient: boolean;
+  exceedsVm: boolean;
+  label: string;
+  detail: string;
+}
+
 export interface ColabOneVersionOption {
   file: ColabOneHubFile;
   quant: ColabOneQuantInfo;
   fit: ColabOneVramFit;
+  disk: ColabOneTargetDiskFit;
   recommended: boolean;
   disabled: boolean;
   disabledReason: string;
@@ -97,12 +131,18 @@ export interface ColabOneVersionPlan {
   recommendedFilename: string;
   fullVramCount: number;
   hybridCount: number;
+  diskFittingCount: number;
+  diskInsufficientCount: number;
+  diskExceedsVmCount: number;
   unsupportedCount: number;
   totalCount: number;
   hasHidden: boolean;
   hiddenHybridCount: number;
   suggestedGpuId: Exclude<ColabOneGpuTargetId, "CURRENT" | "ALL"> | null;
   suggestedGpuLabel: string;
+  suggestedDiskGpuId: Exclude<ColabOneGpuTargetId, "CURRENT" | "ALL"> | null;
+  suggestedDiskGpuLabel: string;
+  suggestedDiskAvailGb: number;
 }
 
 export interface ColabOneRepoFitSummary {
@@ -111,10 +151,13 @@ export interface ColabOneRepoFitSummary {
     | "tight"
     | "hybrid"
     | "heavy_hybrid"
+    | "disk_overflow"
     | "unrestricted"
     | "unknown";
   fullVramCount: number;
   hybridCount: number;
+  diskFittingCount: number;
+  diskExceedsVm: boolean;
   totalSupported: number;
   minEstimatedGb: number;
   maxEstimatedGb: number;
@@ -140,66 +183,78 @@ export const COLABONE_STATIC_GPU_TARGETS: readonly ColabOneGpuTarget[] = [
     shortLabel: "G4 96G",
     label: "G4 · 96 GB",
     get subtitle() {
-      return t("models.compatGpuG4Sub");
+      return `${t("models.compatGpuG4Sub")} · ${t("models.compatGpuDiskApprox", { gb: 195 })}`;
     },
     vramGb: 96,
     vramMib: 96 * 1024,
     hostRamGb: 170,
+    diskFreeGb: 195,
+    diskTotalGb: 235,
   },
   {
     id: "H100",
     shortLabel: "H100 80G",
     label: "H100 · 80 GB",
     get subtitle() {
-      return t("models.compatGpuH100Sub");
+      return `${t("models.compatGpuH100Sub")} · ${t("models.compatGpuDiskApprox", { gb: 195 })}`;
     },
     vramGb: 80,
     vramMib: 80 * 1024,
     hostRamGb: 165,
+    diskFreeGb: 195,
+    diskTotalGb: 235,
   },
   {
     id: "A100_80",
     shortLabel: "A100 80G",
     label: "A100 · 80 GB",
     get subtitle() {
-      return t("models.compatGpuA10080Sub");
+      return `${t("models.compatGpuA10080Sub")} · ${t("models.compatGpuDiskApprox", { gb: 195 })}`;
     },
     vramGb: 80,
     vramMib: 80 * 1024,
     hostRamGb: 165,
+    diskFreeGb: 195,
+    diskTotalGb: 235,
   },
   {
     id: "A100_40",
     shortLabel: "A100 40G",
     label: "A100 · 40 GB",
     get subtitle() {
-      return t("models.compatGpuA10040Sub");
+      return `${t("models.compatGpuA10040Sub")} · ${t("models.compatGpuDiskApprox", { gb: 195 })}`;
     },
     vramGb: 40,
     vramMib: 40 * 1024,
     hostRamGb: 83,
+    diskFreeGb: 195,
+    diskTotalGb: 235,
   },
   {
     id: "L4",
     shortLabel: "L4 24G",
     label: "L4 · 24 GB",
     get subtitle() {
-      return t("models.compatGpuL4Sub");
+      return `${t("models.compatGpuL4Sub")} · ${t("models.compatGpuDiskApprox", { gb: 195 })}`;
     },
     vramGb: 24,
     vramMib: 24 * 1024,
     hostRamGb: 53,
+    diskFreeGb: 195,
+    diskTotalGb: 235,
   },
   {
     id: "T4",
     shortLabel: "T4 16G",
     label: "T4 · 16 GB",
     get subtitle() {
-      return t("models.compatGpuT4Sub");
+      return `${t("models.compatGpuT4Sub")} · ${t("models.compatGpuDiskApprox", { gb: 75 })}`;
     },
     vramGb: 16,
     vramMib: 16 * 1024,
     hostRamGb: 13,
+    diskFreeGb: 75,
+    diskTotalGb: 112,
   },
   {
     id: "ALL",
@@ -215,6 +270,8 @@ export const COLABONE_STATIC_GPU_TARGETS: readonly ColabOneGpuTarget[] = [
     vramGb: 0,
     vramMib: 0,
     hostRamGb: 0,
+    diskFreeGb: 0,
+    diskTotalGb: 0,
   },
 ];
 
@@ -467,6 +524,19 @@ function inferDefaultHostRamGb(vramGb: number): number {
   return 13;
 }
 
+function inferDefaultDiskFreeGb(vramGb: number): number {
+  return vramGb >= 20 ? 195 : 75;
+}
+
+function inferDefaultDiskTotalGb(vramGb: number): number {
+  return vramGb >= 20 ? 235 : 112;
+}
+
+export function estimateColabOneDiskGb(weightBytes: number): number {
+  if (!Number.isFinite(weightBytes) || weightBytes <= 0) return 0;
+  return weightBytes / 1024 ** 3;
+}
+
 export function mapSettingsGpuToTargetId(
   settingsGpu?: string | null,
 ): ColabOneGpuTargetId {
@@ -517,14 +587,36 @@ export function buildColabOneGpuTargetOptions(
       liveRamBytes > 0
         ? Math.max(4, Math.round(liveRamBytes / 1024 ** 3))
         : inferDefaultHostRamGb(vramGb);
+    const liveDiskFreeBytes = resolveColabOneDiskFreeBytes(runtime);
+    const liveDiskTotalBytes = runtime.resources?.disk?.total_bytes || 0;
+    const isLiveDisk = liveDiskFreeBytes !== null;
+    const diskFreeGb =
+      liveDiskFreeBytes !== null
+        ? Math.round((liveDiskFreeBytes / 1024 ** 3) * 10) / 10
+        : inferDefaultDiskFreeGb(vramGb);
+    const diskTotalGb = Math.max(
+      Math.ceil(diskFreeGb),
+      liveDiskTotalBytes > 0
+        ? Math.max(1, Math.round(liveDiskTotalBytes / 1024 ** 3))
+        : inferDefaultDiskTotalGb(vramGb),
+    );
+    const baseSub = localizedGpuName || t("models.compatLiveGpuSub");
+    const diskSub = isLiveDisk
+      ? t("models.compatGpuDiskLive", {
+          gb: String(diskFreeGb).replace(/\.0$/, ""),
+        })
+      : t("models.compatGpuDiskApprox", { gb: diskFreeGb });
     list.push({
       id: "CURRENT",
       shortLabel: shortName,
       label: t("models.compatLiveGpuLabel", { name: shortName }),
-      subtitle: localizedGpuName || t("models.compatLiveGpuSub"),
+      subtitle: `${baseSub} · ${diskSub}`,
       vramGb,
       vramMib,
       hostRamGb,
+      diskFreeGb,
+      diskTotalGb,
+      isLiveDisk,
       isLive: true,
     });
   }
@@ -551,6 +643,7 @@ export function estimateColabOneKvCacheMib(
   contextLength = 8192,
 ): number {
   if (!Number.isFinite(weightBytes) || weightBytes <= 0) return 0;
+  if (!Number.isFinite(contextLength) || contextLength <= 0) return 0;
   const weightMib = weightBytes / (1024 * 1024);
   if (weightMib < 64) return 0;
   const ctxFactor = Math.max(0.5, contextLength / 8192);
@@ -612,16 +705,17 @@ export function estimateColabOneModelVramMib(
 
 export function recommendColabOneMinGpu(
   estimatedVramMib: number,
+  comfyOnly = false,
 ): ColabOneMinGpuHint {
   const tiers: {
     id: Exclude<ColabOneGpuTargetId, "CURRENT" | "ALL">;
     label: string;
     maxMib: number;
   }[] = [
-    { id: "T4", label: "T4 16G", maxMib: 16 * 1024 * 0.96 },
-    { id: "L4", label: "L4 24G", maxMib: 24 * 1024 * 0.96 },
-    { id: "A100_40", label: "A100 40G", maxMib: 40 * 1024 * 0.96 },
-    { id: "A100_80", label: "H100 / A100 80G", maxMib: 80 * 1024 * 0.96 },
+    { id: "T4", label: "T4 16G", maxMib: 16 * 1024 * 0.98 },
+    { id: "L4", label: "L4 24G", maxMib: 24 * 1024 * 0.98 },
+    { id: "A100_40", label: "A100 40G", maxMib: 40 * 1024 * 0.98 },
+    { id: "A100_80", label: "H100 / A100 80G", maxMib: 80 * 1024 * 0.98 },
     { id: "G4", label: "G4 96G", maxMib: 96 * 1024 * 0.98 },
   ];
   for (const tier of tiers) {
@@ -629,15 +723,21 @@ export function recommendColabOneMinGpu(
       return { id: tier.id, label: tier.label };
     }
   }
-  return { id: "OVER_96G", label: t("models.compatOver96Hybrid") };
+  return {
+    id: "OVER_96G",
+    label: comfyOnly
+      ? t("models.compatOver96")
+      : t("models.compatOver96Hybrid"),
+  };
 }
 
 export function evaluateColabOneVramFit(
   estimatedVramMib: number,
   targetGpu: ColabOneGpuTarget,
+  comfyOnly = false,
 ): ColabOneVramFit {
   const estimatedVramGb = estimatedVramMib / 1024;
-  const minGpu = recommendColabOneMinGpu(estimatedVramMib);
+  const minGpu = recommendColabOneMinGpu(estimatedVramMib, comfyOnly);
 
   if (targetGpu.id === "ALL" || targetGpu.vramMib <= 0) {
     return {
@@ -648,7 +748,9 @@ export function evaluateColabOneVramFit(
       overflowGb: 0,
       label:
         minGpu.id === "OVER_96G"
-          ? t("models.compatOver96HybridShort")
+          ? comfyOnly
+            ? t("models.compatOver96Short")
+            : t("models.compatOver96HybridShort")
           : t("models.compatSuggestGpu", { gpu: minGpu.label }),
       detail: t("models.compatEstVramDetail", {
         gb: formatColabOneGb(estimatedVramGb),
@@ -695,7 +797,33 @@ export function evaluateColabOneVramFit(
     };
   }
 
-  const overflowGb = Math.max(0.5, estimatedVramGb - targetGpu.vramGb);
+  const rawOverflowGb = estimatedVramGb - targetGpu.vramGb;
+  const overflowGb = rawOverflowGb > 0.1 ? Math.max(0.5, rawOverflowGb) : 0;
+
+  if (comfyOnly) {
+    return {
+      status: "heavy_hybrid",
+      ratio,
+      estimatedVramMib,
+      estimatedVramGb,
+      overflowGb,
+      label: t("models.compatOverflowLabel"),
+      detail:
+        minGpu.id === "OVER_96G"
+          ? t("models.compatOverflowDetail96", {
+              gb: formatColabOneGb(estimatedVramGb),
+            })
+          : t("models.compatOverflowDetail", {
+              gb: formatColabOneGb(estimatedVramGb),
+              gpu: targetGpu.shortLabel,
+              minGpu: minGpu.label,
+            }),
+      selectable: false,
+      requiresHybrid: false,
+      minGpu,
+    };
+  }
+
   const hybridCapGb = targetGpu.vramGb + Math.max(8, targetGpu.hostRamGb * 0.85);
   if (estimatedVramGb <= hybridCapGb) {
     return {
@@ -705,10 +833,16 @@ export function evaluateColabOneVramFit(
       estimatedVramGb,
       overflowGb,
       label: t("models.compatHybridLabel"),
-      detail: t("models.compatHybridDetail", {
-        gpu: targetGpu.shortLabel,
-        overflow: formatColabOneGb(overflowGb),
-      }),
+      detail:
+        overflowGb > 0
+          ? t("models.compatHybridDetail", {
+              gpu: targetGpu.shortLabel,
+              overflow: formatColabOneGb(overflowGb),
+            })
+          : t("models.compatHybridNearLimitDetail", {
+              gb: formatColabOneGb(estimatedVramGb),
+              gpu: targetGpu.shortLabel,
+            }),
       selectable: true,
       requiresHybrid: true,
       minGpu,
@@ -781,7 +915,7 @@ export function describeColabOneQuantization(
       defaultScore: isMediumOrLarge ? 95 : 91,
     };
   }
-  if (/^(?:UD-)?Q4(?:_|$)|^IQ4(?:_|$)|^MXFP4/.test(code)) {
+  if (/^(?:UD-)?(?:Q4|IQ4)(?:_|$)|^MXFP4/.test(code)) {
     const isSweetSpot = /Q4_K_M|UD-Q4_K_XL|Q4_K_XL|Q4_K_L|MXFP4/.test(code);
     const isCompact4 = /Q4_K_S|IQ4_XS|Q4_0/.test(code);
     return {
@@ -844,6 +978,162 @@ function inferQuantFromFilename(filename: string): string {
   return "GGUF";
 }
 
+const COLABONE_DISK_SAFETY_MARGIN_GB = 0.5;
+
+export function evaluateColabOneTargetDiskFit(
+  weightBytes: number,
+  targetGpu: ColabOneGpuTarget,
+  state?: ColabOneFileDiskState,
+): ColabOneTargetDiskFit {
+  const requiredGb = estimateColabOneDiskGb(weightBytes);
+  const availableGb = Math.max(0, targetGpu.diskFreeGb || 0);
+  const totalGb = Math.max(availableGb, targetGpu.diskTotalGb || 0);
+  const isLive = !!targetGpu.isLiveDisk;
+  // Cached/downloaded state only applies to the currently connected live VM,
+  // never to hypothetical static GPU tier previews (e.g., checking T4 while on G4).
+  const liveState = targetGpu.isLive ? state : undefined;
+
+  if (liveState?.downloaded) {
+    return {
+      status: "cached",
+      requiredGb,
+      remainingGb: 0,
+      availableGb,
+      totalGb,
+      isLive,
+      ratio: 0,
+      insufficient: false,
+      exceedsVm: false,
+      label: "",
+      detail: "",
+    };
+  }
+
+  if (
+    targetGpu.id === "ALL" ||
+    requiredGb <= 0 ||
+    (availableGb <= 0 && !isLive)
+  ) {
+    return {
+      status: "unrestricted",
+      requiredGb,
+      remainingGb: requiredGb,
+      availableGb,
+      totalGb,
+      isLive,
+      ratio: 0,
+      insufficient: false,
+      exceedsVm: false,
+      label: "",
+      detail: "",
+    };
+  }
+
+  const cachedBytes = Math.max(0, liveState?.cachedBytes || 0);
+  const remainingGb = Math.max(0, (weightBytes - cachedBytes) / 1024 ** 3);
+  if (remainingGb <= 0) {
+    return {
+      status: "cached",
+      requiredGb,
+      remainingGb: 0,
+      availableGb,
+      totalGb,
+      isLive,
+      ratio: 0,
+      insufficient: false,
+      exceedsVm: false,
+      label: "",
+      detail: "",
+    };
+  }
+
+  const neededWithMargin = remainingGb + COLABONE_DISK_SAFETY_MARGIN_GB;
+  const ratio = availableGb > 0 ? neededWithMargin / availableGb : Infinity;
+
+  if (neededWithMargin > availableGb) {
+    // On a live VM, distinguish "exceeds current free disk (can clear other cached models)"
+    // from "exceeds the VM's entire disk capacity".
+    const exceedsVm = isLive
+      ? requiredGb + COLABONE_DISK_SAFETY_MARGIN_GB > Math.max(availableGb, totalGb - 1)
+      : true;
+    if (exceedsVm) {
+      return {
+        status: "exceeds_vm",
+        requiredGb,
+        remainingGb,
+        availableGb,
+        totalGb,
+        isLive,
+        ratio,
+        insufficient: true,
+        exceedsVm: true,
+        label: t("models.compatDiskExceedsLabel"),
+        detail: t("models.compatDiskExceedsVmDetail", {
+          need: formatColabOneGb(requiredGb),
+          gpu: targetGpu.shortLabel,
+          avail: formatColabOneGb(availableGb),
+          total: formatColabOneGb(totalGb),
+        }),
+      };
+    }
+    return {
+      status: "insufficient_live",
+      requiredGb,
+      remainingGb,
+      availableGb,
+      totalGb,
+      isLive,
+      ratio,
+      insufficient: true,
+      exceedsVm: false,
+      label: t("models.compatDiskLowLabel"),
+      detail: t("models.compatDiskLowLiveDetail", {
+        need: formatColabOneGb(remainingGb),
+        avail: formatColabOneGb(availableGb),
+        total: formatColabOneGb(totalGb),
+      }),
+    };
+  }
+
+  if (ratio > 0.85) {
+    return {
+      status: "tight",
+      requiredGb,
+      remainingGb,
+      availableGb,
+      totalGb,
+      isLive,
+      ratio,
+      insufficient: false,
+      exceedsVm: false,
+      label: t("models.compatDiskTightLabel"),
+      detail: t("models.compatDiskTightDetail", {
+        need: formatColabOneGb(remainingGb),
+        avail: formatColabOneGb(availableGb),
+      }),
+    };
+  }
+
+  return {
+    status: "ok",
+    requiredGb,
+    remainingGb,
+    availableGb,
+    totalGb,
+    isLive,
+    ratio,
+    insufficient: false,
+    exceedsVm: false,
+    label: "",
+    detail: "",
+  };
+}
+
+function diskTierRank(disk: ColabOneTargetDiskFit): number {
+  if (!disk.insufficient) return 0;
+  return disk.exceedsVm ? 2 : 1;
+}
+
 function fitTierRank(status: ColabOneVramFitStatus): number {
   switch (status) {
     case "comfortable":
@@ -864,15 +1154,23 @@ export function planColabOneVersionOptions(
   contextLength = 8192,
   selectedOrPreferred = "",
   savedFilenames?: ReadonlySet<string>,
+  comfyOnly = false,
+  fileDiskStates?: ReadonlyMap<string, ColabOneFileDiskState>,
 ): ColabOneVersionPlan {
+  const effectiveContext = comfyOnly ? 0 : contextLength;
   const evaluated: ColabOneVersionOption[] = files.map((file) => {
     const quant = describeColabOneQuantization(
       file.quantization,
       file.filename,
     );
-    const estMib = estimateColabOneVramMib(file.size, contextLength);
-    const fit = evaluateColabOneVramFit(estMib, targetGpu);
-    // Only broken/incomplete GGUF files are hard-disabled; oversized valid files remain selectable for GPU+RAM hybrid loading
+    const estMib = estimateColabOneVramMib(file.size, effectiveContext);
+    const fit = evaluateColabOneVramFit(estMib, targetGpu, comfyOnly);
+    const disk = evaluateColabOneTargetDiskFit(
+      file.size,
+      targetGpu,
+      fileDiskStates?.get(file.filename),
+    );
+    // Only broken/incomplete GGUF files are hard-disabled; oversized valid files remain selectable
     const disabled = !file.supported;
     const disabledReason = !file.supported
       ? tb(file.reason) || t("models.compatMissingShards")
@@ -881,6 +1179,7 @@ export function planColabOneVersionOptions(
       file,
       quant,
       fit,
+      disk,
       recommended: false,
       disabled,
       disabledReason,
@@ -888,11 +1187,13 @@ export function planColabOneVersionOptions(
   });
 
   // Pick single best recommended option among supported files:
-  // prefer full-VRAM comfortable -> tight -> hybrid (GPU+RAM) -> heavy_hybrid
+  // prefer files that fit on disk first, then full-VRAM comfortable -> tight -> hybrid -> heavy_hybrid
   const eligible = evaluated.filter((item) => !item.disabled);
   let recommended: ColabOneVersionOption | undefined;
   if (eligible.length) {
     const sortedForRec = [...eligible].sort((a, b) => {
+      const diskDiff = diskTierRank(a.disk) - diskTierRank(b.disk);
+      if (diskDiff !== 0) return diskDiff;
       const tierDiff = fitTierRank(a.fit.status) - fitTierRank(b.fit.status);
       if (tierDiff !== 0) return tierDiff;
       if (b.quant.defaultScore !== a.quant.defaultScore) {
@@ -904,23 +1205,24 @@ export function planColabOneVersionOptions(
       return a.file.size - b.file.size;
     });
     recommended = sortedForRec[0];
-    if (recommended) recommended.recommended = true;
+    if (recommended && !recommended.disk.exceedsVm) {
+      recommended.recommended = true;
+    }
   }
 
   // Order all options cleanly:
   // 1. Recommended
-  // 2. Full-VRAM comfortable -> tight (higher quality first)
-  // 3. Hybrid GPU+RAM -> heavy_hybrid (smallest overflow first)
+  // 2. Fits on disk -> live low disk -> exceeds VM disk
+  // 3. Full-VRAM comfortable -> tight -> Hybrid GPU+RAM -> heavy_hybrid
   // 4. Unsupported metadata
   const ordered = [...evaluated].sort((a, b) => {
     if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
-    const groupOf = (item: ColabOneVersionOption) => {
-      if (!item.file.supported) return 4;
-      return fitTierRank(item.fit.status);
-    };
-    const gDiff = groupOf(a) - groupOf(b);
+    if (a.file.supported !== b.file.supported) return a.file.supported ? -1 : 1;
+    const dDiff = diskTierRank(a.disk) - diskTierRank(b.disk);
+    if (dDiff !== 0) return dDiff;
+    const gDiff = fitTierRank(a.fit.status) - fitTierRank(b.fit.status);
     if (gDiff !== 0) return gDiff;
-    if (groupOf(a) >= 2) {
+    if (fitTierRank(a.fit.status) >= 2) {
       return a.file.size - b.file.size;
     }
     if (b.quant.qualityTier !== a.quant.qualityTier) {
@@ -951,10 +1253,14 @@ export function planColabOneVersionOptions(
         }
       }
     }
-    const fullVramPool = ordered.filter(
+    const diskOkOrdered = ordered.filter(
+      (o) => !o.disabled && !o.disk.exceedsVm,
+    );
+    const activeOrdered = diskOkOrdered.length ? diskOkOrdered : ordered;
+    const fullVramPool = activeOrdered.filter(
       (o) => !o.disabled && !o.fit.requiresHybrid,
     );
-    const hybridPool = ordered.filter(
+    const hybridPool = activeOrdered.filter(
       (o) => !o.disabled && o.fit.requiresHybrid,
     );
     const preferredPool = fullVramPool.length ? fullVramPool : hybridPool;
@@ -989,10 +1295,26 @@ export function planColabOneVersionOptions(
   }
 
   const fullVramCount = ordered.filter(
-    (o) => !o.disabled && !o.fit.requiresHybrid,
+    (o) =>
+      !o.disabled &&
+      !o.disk.exceedsVm &&
+      !o.fit.requiresHybrid &&
+      (!comfyOnly ||
+        o.fit.status === "comfortable" ||
+        o.fit.status === "tight" ||
+        o.fit.status === "unrestricted"),
   ).length;
   const hybridCount = ordered.filter(
-    (o) => !o.disabled && o.fit.requiresHybrid,
+    (o) => !o.disabled && !o.disk.exceedsVm && o.fit.requiresHybrid,
+  ).length;
+  const diskFittingCount = ordered.filter(
+    (o) => !o.disabled && !o.disk.exceedsVm,
+  ).length;
+  const diskInsufficientCount = ordered.filter(
+    (o) => !o.disabled && o.disk.insufficient,
+  ).length;
+  const diskExceedsVmCount = ordered.filter(
+    (o) => !o.disabled && o.disk.exceedsVm,
   ).length;
   const unsupportedCount = ordered.filter((o) => !o.file.supported).length;
   const curatedNames = new Set(curated.map((o) => o.file.filename));
@@ -1000,6 +1322,7 @@ export function planColabOneVersionOptions(
     (o) =>
       !curatedNames.has(o.file.filename) &&
       !o.disabled &&
+      !o.disk.exceedsVm &&
       o.fit.requiresHybrid,
   ).length;
 
@@ -1007,13 +1330,48 @@ export function planColabOneVersionOptions(
   let suggestedGpuId: Exclude<ColabOneGpuTargetId, "CURRENT" | "ALL"> | null =
     null;
   let suggestedGpuLabel = "";
-  if (fullVramCount === 0 && hybridCount > 0) {
-    const smallestSupported = evaluated
-      .filter((o) => o.file.supported && o.file.size > 0)
-      .sort((a, b) => a.file.size - b.file.size)[0];
-    if (smallestSupported && smallestSupported.fit.minGpu.id !== "OVER_96G") {
-      suggestedGpuId = smallestSupported.fit.minGpu.id;
-      suggestedGpuLabel = smallestSupported.fit.minGpu.label;
+  const smallestSupported = evaluated
+    .filter((o) => o.file.supported && o.file.size > 0)
+    .sort((a, b) => a.file.size - b.file.size)[0];
+  if (fullVramCount === 0 && hybridCount > 0 && smallestSupported) {
+    if (smallestSupported.fit.minGpu.id !== "OVER_96G") {
+      const candId = smallestSupported.fit.minGpu.id;
+      const candTarget = COLABONE_STATIC_GPU_TARGETS.find(
+        (g) => g.id === candId,
+      );
+      if (candTarget && candTarget.vramGb >= targetGpu.vramGb + 4) {
+        suggestedGpuId = candId;
+        suggestedGpuLabel = smallestSupported.fit.minGpu.label;
+      }
+    }
+  }
+
+  // Suggest a GPU tier with larger local disk when all versions exceed current GPU disk capacity
+  let suggestedDiskGpuId: Exclude<ColabOneGpuTargetId, "CURRENT" | "ALL"> | null =
+    null;
+  let suggestedDiskGpuLabel = "";
+  let suggestedDiskAvailGb = 0;
+  if (diskFittingCount === 0 && diskExceedsVmCount > 0 && smallestSupported) {
+    const neededGb =
+      estimateColabOneDiskGb(smallestSupported.file.size) +
+      COLABONE_DISK_SAFETY_MARGIN_GB;
+    const diskCandidates = [...COLABONE_STATIC_GPU_TARGETS]
+      .filter(
+        (g): g is ColabOneGpuTarget & { id: Exclude<ColabOneGpuTargetId, "CURRENT" | "ALL"> } =>
+          g.id !== "ALL" &&
+          g.diskFreeGb > targetGpu.diskFreeGb + 10 &&
+          g.diskFreeGb >= neededGb,
+      )
+      .sort((a, b) => a.vramGb - b.vramGb);
+    if (diskCandidates.length > 0) {
+      // Pick the smallest GPU tier whose VRAM also fits if possible, else the first larger-disk tier (e.g. L4)
+      const best =
+        diskCandidates.find(
+          (g) => smallestSupported.fit.estimatedVramMib <= g.vramMib * 0.98,
+        ) || diskCandidates[0]!;
+      suggestedDiskGpuId = best.id;
+      suggestedDiskGpuLabel = best.shortLabel;
+      suggestedDiskAvailGb = best.diskFreeGb;
     }
   }
 
@@ -1023,12 +1381,18 @@ export function planColabOneVersionOptions(
     recommendedFilename: recommended?.file.filename || "",
     fullVramCount,
     hybridCount,
+    diskFittingCount,
+    diskInsufficientCount,
+    diskExceedsVmCount,
     unsupportedCount,
     totalCount: ordered.length,
     hasHidden: ordered.length > curated.length,
     hiddenHybridCount,
     suggestedGpuId,
     suggestedGpuLabel,
+    suggestedDiskGpuId,
+    suggestedDiskGpuLabel,
+    suggestedDiskAvailGb,
   };
 }
 
@@ -1036,6 +1400,8 @@ export function summarizeColabOneRepoFit(
   files: ColabOneHubFile[],
   targetGpu: ColabOneGpuTarget,
   contextLength = 8192,
+  comfyOnly = false,
+  fileDiskStates?: ReadonlyMap<string, ColabOneFileDiskState>,
 ): ColabOneRepoFitSummary {
   const supported = files.filter((f) => f.supported && f.size > 0);
   if (!supported.length) {
@@ -1043,6 +1409,8 @@ export function summarizeColabOneRepoFit(
       status: "unknown",
       fullVramCount: 0,
       hybridCount: 0,
+      diskFittingCount: 0,
+      diskExceedsVm: false,
       totalSupported: 0,
       minEstimatedGb: 0,
       maxEstimatedGb: 0,
@@ -1052,7 +1420,15 @@ export function summarizeColabOneRepoFit(
       runnable: true,
     };
   }
-  const plan = planColabOneVersionOptions(supported, targetGpu, contextLength);
+  const plan = planColabOneVersionOptions(
+    supported,
+    targetGpu,
+    contextLength,
+    "",
+    undefined,
+    comfyOnly,
+    fileDiskStates,
+  );
   const estGbs = plan.all.map((o) => o.fit.estimatedVramGb);
   const minEstimatedGb = Math.min(...estGbs);
   const maxEstimatedGb = Math.max(...estGbs);
@@ -1064,27 +1440,52 @@ export function summarizeColabOneRepoFit(
       status: "unrestricted",
       fullVramCount: plan.fullVramCount,
       hybridCount: plan.hybridCount,
+      diskFittingCount: plan.diskFittingCount,
+      diskExceedsVm: false,
       totalSupported: supported.length,
       minEstimatedGb,
       maxEstimatedGb,
       recommendedQuant: rec?.quant.code || "",
       badgeLabel:
         smallest.fit.minGpu.id === "OVER_96G"
-          ? t("models.compatOver96HybridShort")
+          ? comfyOnly
+            ? t("models.compatOver96Short")
+            : t("models.compatOver96HybridShort")
           : t("models.compatSuggestGpu", { gpu: smallest.fit.minGpu.label }),
       minGpuHint: smallest.fit.minGpu.label,
       runnable: true,
     };
   }
 
+  if (plan.diskFittingCount === 0 && plan.diskExceedsVmCount > 0) {
+    return {
+      status: "disk_overflow",
+      fullVramCount: 0,
+      hybridCount: 0,
+      diskFittingCount: 0,
+      diskExceedsVm: true,
+      totalSupported: supported.length,
+      minEstimatedGb,
+      maxEstimatedGb,
+      recommendedQuant: rec?.quant.code || "",
+      badgeLabel: t("models.compatDiskOverflowRepoLabel", {
+        gpu: targetGpu.shortLabel,
+      }),
+      minGpuHint: smallest.fit.minGpu.label,
+      runnable: false,
+    };
+  }
+
   if (plan.fullVramCount > 0) {
     const hasComfortable = plan.all.some(
-      (o) => !o.disabled && o.fit.status === "comfortable",
+      (o) => !o.disabled && !o.disk.exceedsVm && o.fit.status === "comfortable",
     );
     return {
       status: hasComfortable ? "compatible" : "tight",
       fullVramCount: plan.fullVramCount,
       hybridCount: plan.hybridCount,
+      diskFittingCount: plan.diskFittingCount,
+      diskExceedsVm: false,
       totalSupported: supported.length,
       minEstimatedGb,
       maxEstimatedGb,
@@ -1097,14 +1498,39 @@ export function summarizeColabOneRepoFit(
     };
   }
 
+  if (comfyOnly) {
+    return {
+      status: "heavy_hybrid",
+      fullVramCount: 0,
+      hybridCount: 0,
+      diskFittingCount: plan.diskFittingCount,
+      diskExceedsVm: false,
+      totalSupported: supported.length,
+      minEstimatedGb,
+      maxEstimatedGb,
+      recommendedQuant: rec?.quant.code || "",
+      badgeLabel:
+        smallest.fit.minGpu.id === "OVER_96G"
+          ? t("models.compatOver96Short")
+          : t("models.compatOverflowRepoLabel", {
+              gpu: targetGpu.shortLabel,
+              minGpu: smallest.fit.minGpu.label,
+            }),
+      minGpuHint: smallest.fit.minGpu.label,
+      runnable: false,
+    };
+  }
+
   const hasStandardHybrid = plan.all.some(
-    (o) => !o.disabled && o.fit.status === "hybrid",
+    (o) => !o.disabled && !o.disk.exceedsVm && o.fit.status === "hybrid",
   );
   if (hasStandardHybrid) {
     return {
       status: "hybrid",
       fullVramCount: 0,
       hybridCount: plan.hybridCount,
+      diskFittingCount: plan.diskFittingCount,
+      diskExceedsVm: false,
       totalSupported: supported.length,
       minEstimatedGb,
       maxEstimatedGb,
@@ -1121,6 +1547,8 @@ export function summarizeColabOneRepoFit(
     status: "heavy_hybrid",
     fullVramCount: 0,
     hybridCount: plan.hybridCount,
+    diskFittingCount: plan.diskFittingCount,
+    diskExceedsVm: false,
     totalSupported: supported.length,
     minEstimatedGb,
     maxEstimatedGb,
@@ -1232,5 +1660,172 @@ export function modalityBadgeMeta(modality?: string): {
     label: t("models.compatModalityText"),
     color: "blue",
     comfyOnly: false,
+  };
+}
+
+export interface ColabOneDiskFit {
+  insufficient: boolean;
+  freeBytes: number;
+  totalBytes: number;
+  cachedBytes: number;
+  remainingBytes: number;
+  warning: string;
+}
+
+const COLABONE_DISK_MB = 1024 ** 2;
+const COLABONE_DISK_GB = 1024 ** 3;
+
+function formatColabOneDiskBytes(n: number, decimals = 1): string {
+  const safe = Math.max(0, n);
+  if (safe >= COLABONE_DISK_GB) {
+    return `${(safe / COLABONE_DISK_GB).toFixed(decimals)} GB`;
+  }
+  return `${(safe / COLABONE_DISK_MB).toFixed(decimals === 1 ? 0 : 1)} MB`;
+}
+
+function resolveColabOneDiskFreeBytes(runtime: RuntimeStatus): number | null {
+  const disk = runtime.resources?.disk;
+  if (
+    disk &&
+    typeof disk.free_bytes === "number" &&
+    Number.isFinite(disk.free_bytes) &&
+    disk.free_bytes >= 0
+  ) {
+    if (
+      disk.free_bytes > 0 ||
+      (typeof disk.total_bytes === "number" &&
+        Number.isFinite(disk.total_bytes) &&
+        disk.total_bytes > 0)
+    ) {
+      return disk.free_bytes;
+    }
+  }
+  if (
+    typeof runtime.disk_free === "number" &&
+    Number.isFinite(runtime.disk_free) &&
+    runtime.disk_free > 0
+  ) {
+    return runtime.disk_free;
+  }
+  return null;
+}
+
+export function evaluateColabOneModelDiskFit(
+  model: ModelSpec,
+  runtime: RuntimeStatus,
+): ColabOneDiskFit {
+  const runningTask =
+    runtime.state === "stopped"
+      ? undefined
+      : runtime.tasks?.find(
+          (item) => item.state === "running" && item.model_id === model.id,
+        );
+  const downloadTask =
+    runningTask?.kind === "download" ? runningTask : undefined;
+  const taskTotal =
+    downloadTask?.download &&
+    typeof downloadTask.download.total_bytes === "number" &&
+    Number.isFinite(downloadTask.download.total_bytes) &&
+    downloadTask.download.total_bytes > 0
+      ? downloadTask.download.total_bytes
+      : 0;
+  const totalBytes = taskTotal || (model.size > 0 ? model.size : 0);
+
+  const isLoaded =
+    runtime.state !== "stopped" &&
+    !!(model.loaded || (!!model.id && runtime.loaded_model === model.id));
+
+  if (
+    runtime.state === "stopped" ||
+    model.downloaded ||
+    isLoaded ||
+    runningTask?.kind === "load" ||
+    totalBytes <= 0
+  ) {
+    return {
+      insufficient: false,
+      freeBytes: 0,
+      totalBytes,
+      cachedBytes: model.downloaded || isLoaded ? totalBytes : 0,
+      remainingBytes: 0,
+      warning: "",
+    };
+  }
+
+  const serverCached =
+    typeof model.cached_bytes === "number" &&
+    Number.isFinite(model.cached_bytes) &&
+    model.cached_bytes > 0
+      ? model.cached_bytes
+      : 0;
+
+  let taskDownloaded = 0;
+  if (downloadTask) {
+    if (
+      downloadTask.download &&
+      typeof downloadTask.download.downloaded_bytes === "number" &&
+      Number.isFinite(downloadTask.download.downloaded_bytes) &&
+      downloadTask.download.downloaded_bytes > 0
+    ) {
+      taskDownloaded = downloadTask.download.downloaded_bytes;
+    } else if (
+      typeof downloadTask.progress === "number" &&
+      Number.isFinite(downloadTask.progress) &&
+      downloadTask.progress > 0
+    ) {
+      taskDownloaded = Math.round(
+        Math.min(1, downloadTask.progress) * totalBytes,
+      );
+    }
+  }
+
+  const cachedBytes = Math.min(
+    totalBytes,
+    Math.max(serverCached, taskDownloaded),
+  );
+  const remainingBytes = Math.max(0, totalBytes - cachedBytes);
+  const freeBytes = resolveColabOneDiskFreeBytes(runtime);
+
+  if (
+    freeBytes === null ||
+    remainingBytes <= 0 ||
+    freeBytes >= remainingBytes
+  ) {
+    return {
+      insufficient: false,
+      freeBytes: freeBytes ?? 0,
+      totalBytes,
+      cachedBytes,
+      remainingBytes,
+      warning: "",
+    };
+  }
+
+  let freeLabel = formatColabOneDiskBytes(freeBytes);
+  let needLabel = formatColabOneDiskBytes(remainingBytes);
+  if (freeLabel === needLabel) {
+    freeLabel = formatColabOneDiskBytes(freeBytes, 2);
+    needLabel = formatColabOneDiskBytes(remainingBytes, 2);
+  }
+
+  const warning =
+    cachedBytes >= COLABONE_DISK_MB
+      ? t("models.warnDiskLowRemaining", {
+          free: freeLabel,
+          remaining: needLabel,
+          cached: formatColabOneDiskBytes(cachedBytes),
+        })
+      : t("models.warnDiskLow", {
+          free: freeLabel,
+          size: needLabel,
+        });
+
+  return {
+    insufficient: true,
+    freeBytes,
+    totalBytes,
+    cachedBytes,
+    remainingBytes,
+    warning,
   };
 }

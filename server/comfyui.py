@@ -81,7 +81,8 @@ def _response_ok(resp) -> bool:
 
 def _ensure_dir(path: Path, label: str) -> None:
     if path.is_symlink():
-        raise ValueError(f"{label}不能是符号链接")
+        sep = " " if label and label[-1].isascii() else ""
+        raise ValueError(f"{label}{sep}不能是符号链接")
     path.mkdir(parents=True, exist_ok=True)
 
 

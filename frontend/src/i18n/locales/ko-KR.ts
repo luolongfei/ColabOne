@@ -42,6 +42,7 @@ export const koKRMessages: ColabOneMessages = {
 
   // Navigation & Top Bar
   "nav.brandAria": "원격 기기 홈으로 이동",
+  "nav.versionAria": "현재 버전 {version}",
   "nav.mainAria": "주 메뉴",
   "nav.device": "원격 기기",
   "nav.api": "외부 API",
@@ -81,8 +82,24 @@ export const koKRMessages: ColabOneMessages = {
   "status.activeInstanceAria": "현재 활성 인스턴스",
   "status.loadedModelChipTitle": "{name} 로드됨 · 클릭해 외부 API 열기",
   "status.upgradeBanner":
-    "실시간 모니터링, 외부 API 및 ComfyUI를 사용하려면 원격 서비스를 업데이트해야 합니다. 진행 중인 작업을 마치고 모델을 언로드한 뒤 업데이트하세요(캐시된 가중치는 유지됩니다).",
+    "실시간 모니터링, 외부 API 및 ComfyUI를 사용하려면 원격 서비스를 업데이트해야 합니다. 진행 중인 작업을 마치고 모델을 언로드하거나 ComfyUI를 중지한 뒤 업데이트하세요(캐시된 가중치는 유지됩니다).",
   "status.upgradeAction": "원격 서비스 업데이트",
+  "status.upgradeOptionalReady":
+    "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 캐시된 모델과 워크플로를 유지한 채 언제든 업데이트할 수 있습니다.",
+  "status.upgradeOptionalBlockedModel":
+    "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 지금 업데이트하려면 먼저 모델을 언로드하세요(캐시된 가중치는 유지됩니다). 나중에 업데이트해도 됩니다.",
+  "status.upgradeOptionalBlockedComfy":
+    "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 지금 업데이트하려면 먼저 ComfyUI를 중지하세요(캐시된 가중치는 유지됩니다). 나중에 업데이트해도 됩니다.",
+  "status.upgradeOptionalBlockedTask":
+    "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 진행 중인 작업이 끝난 뒤 업데이트할 수 있습니다(캐시된 가중치는 유지됩니다). 나중에 업데이트해도 됩니다.",
+  "status.upgradeBlockedModel":
+    "현재 모델이 로드되어 있습니다. 원격 서비스를 업데이트하기 전에 모델을 먼저 언로드하세요(캐시된 가중치는 유지됩니다).",
+  "status.upgradeBlockedComfy":
+    "현재 ComfyUI가 실행 중입니다. 원격 서비스를 업데이트하기 전에 ComfyUI를 먼저 중지하세요.",
+  "status.upgradeBlockedTask":
+    "현재 원격 작업이 끝난 뒤 원격 서비스를 업데이트해 주세요.",
+  "status.upgradeBlockedOperation":
+    "현재 작업이 완료된 뒤 원격 서비스를 업데이트해 주세요.",
 
   // Appearance
   "appearance.system": "시스템 설정",
@@ -124,12 +141,12 @@ export const koKRMessages: ColabOneMessages = {
   "billing.statusSyncingAccount": "계정 동기화 중",
   "billing.enduranceReading": "잔액 불러오는 중…",
   "billing.enduranceReadingShort": "확인 중",
-  "billing.enduranceIdle": "과금 없음 · 잔액 미소모",
-  "billing.enduranceIdleShort": "미소모",
+  "billing.enduranceIdle": "과금 없음 · 잔액 소모 없음",
+  "billing.enduranceIdleShort": "소모 없음",
   "billing.enduranceExhausted": "0일 0시간 (잔액 소진)",
   "billing.enduranceExhaustedShort": "소진됨",
   "billing.enduranceExhaustedBar": "잔액 소진",
-  "billing.enduranceAvailableApprox": "예상 {text}",
+  "billing.enduranceAvailableApprox": "{text} 남음",
   "billing.idleOption15": "15분",
   "billing.idleOption30Default": "30분 (기본값)",
   "billing.idleOption30Short": "30분",
@@ -143,7 +160,7 @@ export const koKRMessages: ColabOneMessages = {
     "곧 원격 리소스가 자동 해제됩니다 ({clock} 남음). 클릭해 연장하고 {policy} 타이머를 초기화하세요",
   "billing.barIdleCountdownTooltip":
     "{policy} 동안 활동이나 작업이 없으면 자동 해제됩니다. 클릭해 타이머를 초기화할 수 있습니다",
-  "billing.barIdlePaused": "작업 중 · 자동 해제 일시정지",
+  "billing.barIdlePaused": "작업 중 · 자동 해제 일시 정지",
   "billing.barIdleImminent": "곧 해제 {clock} · 연장",
   "billing.barIdleCountdown": "유휴 해제 {clock}",
   "billing.barIdleCountdownAria": "유휴 해제까지 {clock}, 클릭해 타이머 초기화",
@@ -201,7 +218,8 @@ export const koKRMessages: ColabOneMessages = {
   "billing.cardIdleReleasing": "원격 인스턴스 리소스를 해제하고 있습니다…",
   "billing.cardIdleStandbyPrefix": "유휴 상태",
   "billing.cardIdleAutoReleaseSuffix": "경과 시 자동 해제",
-  "billing.cardIdleStandbyNote": "다운로드, 로드, 추론 중에는 자동 정지되어 불필요한 CU 소모를 막습니다",
+  "billing.cardIdleStandbyNote":
+    "유휴 상태가 지속되면 자동 해제되어 불필요한 CU 소모를 막습니다. 다운로드, 로드, 추론 중에는 자동으로 일시 정지됩니다",
   "billing.cardResetCountdown": "타이머 초기화",
   "billing.cardIdleSelectLabel": "유휴 자동 해제",
   "billing.cardIdleSelectAria": "유휴 자동 해제 시간",
@@ -218,7 +236,7 @@ export const koKRMessages: ColabOneMessages = {
   "monitor.sourceRemoteColabOne": "원격 ColabOne",
   "monitor.sourceRemoteReadonly": "읽기 전용",
   "monitor.badgeIpcPaused": "로컬 재연결 중",
-  "monitor.badgePaused": "읽기 전용 · 일시정지",
+  "monitor.badgePaused": "읽기 전용 · 일시 정지",
   "monitor.badgeError": "수집 실패",
   "monitor.badgeStarting": "배포 중 · 실시간",
   "monitor.badgeRemoteColabOne": "원격 ColabOne · 읽기 전용",
@@ -231,7 +249,7 @@ export const koKRMessages: ColabOneMessages = {
   "monitor.subIpcPaused":
     "로컬 백그라운드 서비스와의 연결이 잠시 끊겼습니다. 복구되면 실시간 그래프를 이어서 표시합니다.",
   "monitor.subPaused":
-    "이 원격 인스턴스의 읽기 전용 수집을 일시 정지했습니다(유휴 상태에 영향 없음). 재개 버튼으로 계속할 수 있습니다.",
+    "이 원격 인스턴스의 읽기 전용 수집을 일시 정지했습니다(유휴 상태에 영향 없음). '모니터 재개'를 눌러 계속할 수 있습니다.",
   "monitor.subRemoteError": "읽기 전용 하드웨어 수집이 잠시 지연되었습니다. 자동으로 재시도합니다.",
   "monitor.subRemoteOfflineError":
     "원격 인스턴스의 하드웨어 지표를 불러오지 못했습니다. 자동으로 재시도합니다.",
@@ -353,19 +371,21 @@ export const koKRMessages: ColabOneMessages = {
   "device.stopAllCount": "모두 중지 ({count}대)",
   "device.stopInstance": "인스턴스 중지",
   "device.stopRemoteInstance": "원격 인스턴스 중지",
-  "device.idlePaused": "작업 중 · 자동 해제 일시정지",
+  "device.idlePaused": "작업 중 · 자동 해제 일시 정지",
   "device.idleCountdownRemaining": "자동 해제까지",
   "device.idleCountdownSuffix": "남음",
   "device.idleReset": "초기화",
-  "device.idlePauseHint": "다운로드, 로드, 추론 중에는 카운트다운 자동 일시정지",
+  "device.idlePauseHint": "다운로드, 로드, 추론 중에는 카운트다운 자동 일시 정지",
   "device.idlePolicySummary": "{policy} 유휴 시 자동 해제",
-  "device.idlePolicyHint": "유휴 시 자동 해제되며 작업 중에는 자동 일시정지됩니다",
+  "device.idlePolicyHint": "유휴 시 자동 해제되며 작업 중에는 자동 일시 정지됩니다",
   "device.driveMountedFull": "Google 드라이브 자동 마운트됨 (My Drive / {folder}{free}) · {tail}",
   "device.driveFreeSegment": " · 여유 {size}",
   "device.drivePendingSync": "동기화 대기 {count}건",
   "device.driveAutoPersist": "모델 목록, ComfyUI 워크플로 및 결과물 자동 보관",
   "device.driveAuthorizedHint":
-    "Google 드라이브 (My Drive / ColabOne_Drive) 권한이 승인되었습니다. 언제든 마운트해 모델과 ComfyUI 결과물을 동기화할 수 있습니다.",
+    "Google 드라이브 (My Drive / ColabOne_Drive) 권한이 승인되었습니다. 언제든 마운트해 모델 목록과 ComfyUI 결과물을 동기화할 수 있습니다.",
+  "device.driveNeedAuthHint":
+    "Google 드라이브 권한이 아직 승인되지 않았습니다. 설정에서 다시 로그인해 권한을 승인하면 모델 목록과 ComfyUI 결과물을 자동 동기화할 수 있습니다.",
   "device.syncNow": "지금 동기화",
   "device.mountDriveNow": "드라이브 마운트",
   "device.driveWaitingBrowserConfirm":
@@ -406,6 +426,8 @@ export const koKRMessages: ColabOneMessages = {
     "모델 목록, ComfyUI 워크플로, 출력 결과물이 Google 드라이브 (ColabOne_Drive)에 자동 저장되며 해제 전 동기화됩니다.",
   "device.footerDriveAuto":
     "드라이브 자동 마운트 켜짐: GPU 시작 시 ColabOne_Drive를 자동 연결해 모델 목록, 워크플로 및 결과물을 영구 보관합니다.",
+  "device.footerDriveUnmountedActive":
+    "드라이브 자동 마운트가 켜져 있지만 현재 인스턴스에는 마운트되지 않았습니다. 상단의 '드라이브 마운트'를 클릭해 ColabOne_Drive를 연결할 수 있습니다.",
   "device.footerDriveOff":
     "드라이브 미마운트 상태에서는 인스턴스 해제 시 내보내지 않은 파일이 삭제됩니다. 먼저 내보내거나 설정에서 자동 마운트를 켜세요.",
   "device.downloadVerifying": "SHA-256 무결성 검증 중",
@@ -413,9 +435,9 @@ export const koKRMessages: ColabOneMessages = {
   "device.downloadMeta": "연결 {conns}개 · 파일 {idx}/{total}",
   "device.releaseModalTitle": "중지할 원격 인스턴스 선택",
   "device.releaseModalDesc":
-    "중지할 인스턴스를 선택하세요. 선택하지 않은 외부 인스턴스는 계속 유지됩니다. 중지된 인스턴스의 모델과 미저장 결과물은 삭제됩니다.",
+    "중지할 인스턴스를 선택하세요. 선택하지 않은 인스턴스는 계속 실행됩니다. 중지된 인스턴스의 모델과 미저장 결과물은 삭제됩니다.",
   "device.releaseLoading": "실행 중인 인스턴스 조회 중…",
-  "device.releaseLoadFailed": "목록을 불러오지 못했습니다. 취소 후 다시 시도해 주세요.",
+  "device.releaseLoadFailed": "목록을 불러오지 못했습니다. 다시 시도를 눌러 주세요.",
   "device.releaseSelectAll": "전체 선택 ({count})",
   "device.releaseSelectManaged": "이 앱 관리만 ({count})",
   "device.releaseInstCurrent": "현재 사용 중인 관리 인스턴스{model}",
@@ -423,6 +445,7 @@ export const koKRMessages: ColabOneMessages = {
   "device.releaseInstModelSuffix": " · 로드됨 {model}",
   "device.releaseInstExternal": "외부에서 실행된 Colab 인스턴스입니다. 중지 전 데이터 저장을 확인하세요",
   "device.releaseEmpty": "실행 중인 인스턴스가 없습니다. Google 요율 반영이 잠시 지연될 수 있습니다.",
+  "device.releaseTargetMissing": "해당 인스턴스는 이미 중지되었습니다. 다른 인스턴스를 선택하거나 창을 닫아 주세요.",
   "device.releaseBusyNotice": "현재 작업을 마무리하고 있습니다. 완료 후 중지할 수 있습니다.",
   "device.releaseForceCheck":
     "선택한 인스턴스의 원격 모델 및 내보내지 않은 결과물을 보관할 필요가 없음을 확인했습니다 (강제 해제)",
@@ -468,7 +491,8 @@ export const koKRMessages: ColabOneMessages = {
   "api.gpuStoppedTag": "GPU 중지됨",
   "api.modelIdLabel": "모델 ID: ",
   "api.vramUsage": "VRAM {vram}",
-  "api.taskProgressFallback": "모델 서랍에서 자세한 진행 상태를 확인하세요",
+  "api.taskProgressFallback": "'모델 선택' 패널에서 자세한 진행 상태를 확인하세요",
+  "api.taskOutputTokens": "{count} tokens",
   "api.pickModelHintReady":
     "'내 모델' 또는 '커뮤니티'에서 GGUF 모델을 선택해 로드하면 외부 추론 API를 바로 열 수 있습니다.",
   "api.pickModelHintOffline":
@@ -517,6 +541,20 @@ export const koKRMessages: ColabOneMessages = {
   "api.currentModelIdLabel": "현재 모델 ID",
   "api.modelIdEmpty": "상단 '모델 선택'을 눌러 GGUF 모델을 먼저 로드해 주세요",
   "api.copyModelIdAria": "모델 ID 복사",
+  "api.editModelIdTooltip": "공개 모델 ID 사용자 지정 (VRAM 재로드 없이 즉시 적용)",
+  "api.editModelIdUpgradeTooltip": "모델 ID를 변경하려면 먼저 원격 서비스를 업데이트하세요",
+  "api.editModelIdAria": "모델 ID 편집",
+  "api.editModelIdPlaceholder": "예: colabone/qwen3.8-flash-next",
+  "api.resetModelIdTooltip": "기본 읽기 쉬운 모델 ID로 복원",
+  "api.resetModelIdAria": "기본 모델 ID로 복원",
+  "api.modelIdEmptyError": "유효한 모델 ID를 입력하세요",
+  "api.modelIdSavedNotice": "공개 모델 ID가 업데이트되어 즉시 적용되었습니다.",
+  "api.modelIdResetNotice": "기본 모델 ID로 복원되었습니다.",
+  "api.modelIdAutoAliasPrefix": "모델 전환 시 설정을 바꾸기 번거롭다면 고정 별칭",
+  "api.modelIdAutoAliasSuffix": "로 현재 로드된 모델에 자동 라우팅할 수 있습니다.",
+  "api.copyAutoAliasTooltip": "고정 별칭 colabone/auto 복사",
+  "api.modelIdLegacyHintPrefix": "원격 서비스 업데이트 대기 중: 현재는 이전 ID를 사용하며 업데이트 후 자동으로",
+  "api.modelIdLegacyHintSuffix": "(으)로 전환됩니다 (재다운로드 불필요).",
   "api.credentialsFootPrefix": "키는 OS 보안 저장소에 보관됩니다. 호출 시",
   "api.credentialsFootSuffix": " 헤더를 사용하며 신뢰할 수 있는 앱이나 팀원에게만 공유하세요.",
   "api.examplesCardTitle": "호출 예제 및 통계",
@@ -559,7 +597,7 @@ export const koKRMessages: ColabOneMessages = {
   "api.endpointsSummary": "엔드포인트 목록 및 제한",
   "api.endpointModelsDesc": ": 현재 VRAM에 로드된 GGUF 모델 정보를 반환합니다.",
   "api.endpointResponsesDesc":
-    "(및 GET / DELETE /v1/responses/{id}): SSE 스트리밍, 도구 호출, 추론 요약, compaction을 지원하는 OpenAI Responses API (Codex wire_api = \"responses\" 호환).",
+    " (및 GET / DELETE /v1/responses/{id}): SSE 스트리밍, 도구 호출, 추론 요약, compaction을 지원하는 OpenAI Responses API (Codex wire_api = \"responses\" 호환).",
   "api.endpointCompactDesc":
     ": Codex / OpenAI 컨텍스트 압축 엔드포인트. 긴 대화를 자동 요약해 표준 response.compaction 형식으로 반환합니다.",
   "api.endpointChatDesc":
@@ -628,7 +666,7 @@ export const koKRMessages: ColabOneMessages = {
   "models.chooseVersion": "버전 선택",
   "models.viewVram": "VRAM 확인",
   "models.selectVersionAria": "모델 버전 선택",
-  "models.emptySearch": "'{query}'와 일치하는 모델이 없습니다",
+  "models.emptySearch": "'{query}'와(과) 일치하는 모델이 없습니다",
   "models.clearSearch": "검색 초기화",
   "models.searchInCommunity": "커뮤니티에서 '{query}' 검색",
   "models.emptyMine": "저장된 모델이 아직 없습니다",
@@ -638,8 +676,10 @@ export const koKRMessages: ColabOneMessages = {
     "원격 디스크의 {name} 파일만 삭제하며 '내 모델' 목록 항목은 그대로 유지됩니다.",
   "models.deleteFilesBtn": "파일 삭제",
   "models.warnVramLow":
-    "현재 VRAM({have} GB)이 예상 필요량({need} GB)보다 적어 로드에 실패할 수 있습니다. 더 큰 GPU를 권장합니다.",
+    "예상 필요량(~{need} GB)이 현재 VRAM({have} GB)과 일반 RAM 오프로드 범위를 크게 초과하여 하이브리드 로드가 매우 느리거나 실패할 수 있습니다. 더 큰 GPU를 권장합니다.",
   "models.warnDiskLow": "원격 여유 디스크({free})가 모델 크기({size})보다 작습니다.",
+  "models.warnDiskLowRemaining":
+    "원격 여유 디스크({free})가 남은 다운로드 크기({remaining}, {cached} 캐시됨)보다 작습니다.",
   "models.disabledStartGpu": "먼저 원격 GPU를 시작해 주세요",
   "models.disabledWaitTask": "현재 작업이 끝날 때까지 기다려 주세요",
   "models.disabledSyncingRemote": "원격 상태 동기화 중…",
@@ -673,13 +713,13 @@ export const koKRMessages: ColabOneMessages = {
   "models.hubViewRepo": "저장소 보기",
   "models.hubSearching": "커뮤니티 모델 검색 중…",
   "models.hubEmpty": "조건에 맞는 GGUF 모델이 없습니다. 다른 키워드나 필터를 시도해 보세요.",
-  "models.hubAllOverflow": "현재 목록의 {count}개 모델 모두 {gpu} VRAM을 초과합니다",
+  "models.hubAllOverflow": "현재 목록의 {count}개 모델 모두 {gpu} 실행 가능 용량을 초과합니다",
   "models.hubSwitchG4": "G4 · 96 GB 기준으로 보기",
   "models.hubShowAllModels": "모든 모델 보기",
   "models.hubGatedTag": "승인 필요",
   "models.hubVersionCount": "{count}개 버전",
   "models.hubVersionCountSingle": "{count}개 버전",
-  "models.hubHiddenOverflow": "{gpu} VRAM을 초과하는 모델 {count}개를 숨겼습니다",
+  "models.hubHiddenOverflow": "{gpu} 실행 가능 용량을 초과하는 모델 {count}개를 숨겼습니다",
   "models.pickerAria": "모델 버전 선택",
   "models.pickerLoading": "버전 목록 및 VRAM 분석 불러오는 중…",
   "models.pickerComfyVideoTitle": "비디오 생성 모델 (ComfyUI 전용)",
@@ -714,7 +754,7 @@ export const koKRMessages: ColabOneMessages = {
   "models.pickerTightSuffix": "{desc} (VRAM 여유 빠듯함 · 8K 컨텍스트 권장)",
   "models.pickerCollapseCurated": "추천 {count}개만 보기",
   "models.pickerExpandVersions": "전체 {count}개 버전 펼치기",
-  "models.pickerExpandVersionsOverflow": "전체 {count}개 버전 펼치기 (VRAM 초과 {hidden}개 포함)",
+  "models.pickerExpandVersionsOverflow": "전체 {count}개 버전 펼치기 (추가 VRAM 초과 {hidden}개)",
   "models.pickerCollapseParams": "로드 파라미터 접기",
   "models.pickerLoadPreset": "프리셋: {title}",
   "models.pickerLiveVramBlocked":
@@ -829,7 +869,9 @@ export const koKRMessages: ColabOneMessages = {
   "models.compatOver96HybridShort": "초대형 · 하이브리드",
   "models.compatHybridLabel": "하이브리드 · VRAM+RAM",
   "models.compatHybridDetail":
-    "{gpu} VRAM을 약 {overflow} 초과합니다. 초과 가중치는 시스템 RAM으로 자동 오프로드(--fit on)되며 MoE 모델은 빠른 속도를 유지합니다",
+    "{gpu} VRAM을 약 {overflow} 초과합니다. 초과 가중치는 시스템 RAM으로 자동 오프로드(--fit on)되며 MoE / 희소 모델은 빠른 속도를 유지하지만 밀집 모델은 속도가 느려질 수 있습니다",
+  "models.compatHybridNearLimitDetail":
+    "예상 ~{gb}로 {gpu} VRAM 한도에 근접해 있습니다. 로드 시 VRAM + 시스템 RAM 하이브리드(--fit on)로 소량 초과분을 자동 오프로드합니다",
   "models.compatHeavyHybridLabel": "초대용량 · 하이브리드",
   "models.compatHeavyHybridDetail":
     "예상 ~{gb}로 {gpu} VRAM 및 일반 RAM 범위를 초과합니다. 선택하여 하이브리드 로드를 시도할 수 있으나 매우 느리거나 실패할 수 있습니다(권장: {minGpu}).",
@@ -841,13 +883,38 @@ export const koKRMessages: ColabOneMessages = {
     "모델 크기가 선택한 {gpu} VRAM을 초과하지만 아래 버전은 모두 'VRAM + 시스템 RAM 하이브리드 로드(--fit on)'를 지원하여 바로 선택하고 실행할 수 있습니다.",
   "models.pickerSwitchFullVram": "{gpu}에서 전체 VRAM 보기",
   "models.pickerOverflowToRamInline": "(약 {overflow} RAM 사용)",
-  "models.pickerExpandVersionsHybrid": "전체 {count}개 버전 펼치기(하이브리드 {hidden}개 포함)",
+  "models.pickerNearLimitToRamInline": "(VRAM 한도 근접 · 필요 시 RAM 보조)",
+  "models.pickerExpandVersionsHybrid": "전체 {count}개 버전 펼치기 (숨겨진 하이브리드 {hidden}개 추가)",
   "models.pickerHybridAlert":
     "'VRAM + 시스템 RAM 하이브리드 로드(--fit on)'가 자동 적용됩니다: {gpu} VRAM을 약 {overflow} 초과하는 가중치는 고속 RAM에 배치되며 MoE 모델은 원활히 생성됩니다.",
+  "models.pickerHybridNearLimitAlert":
+    "'VRAM + 시스템 RAM 하이브리드 로드(--fit on)'가 자동 적용됩니다: {gpu} VRAM 한도에 근접해 있어 실행 중 소량 초과분이 발생하면 고속 RAM으로 자동 오프로드됩니다.",
   "models.pickerHeavyHybridAlert":
     "초대용량 하이브리드 로드 안내: 예상 ~{gb}가 {gpu} VRAM과 일반 RAM 범위를 초과합니다. 로드는 가능하지만 RAM 또는 디스크 부족 시 느리거나 실패할 수 있습니다(권장: {minGpu}).",
   "models.warnVramHybrid":
     "예상 ~{need} GB가 현재 VRAM {have} GB를 초과하여 VRAM + RAM 하이브리드 로드(--fit on)가 자동 적용됩니다",
+  "models.compatGpuDiskApprox": "여유 디스크 약 {gb} GB",
+  "models.compatGpuDiskLive": "여유 디스크 {gb} GB",
+  "models.pickerDiskLabel": "디스크 사용",
+  "models.pickerDiskAvailApprox": "/ 약 {avail}",
+  "models.pickerDiskAvailLive": "/ {avail} 여유",
+  "models.pickerDiskCachedInline": " (캐시됨)",
+  "models.compatDiskExceedsLabel": "디스크 초과",
+  "models.compatDiskLowLabel": "디스크 부족",
+  "models.compatDiskTightLabel": "디스크 빠듯",
+  "models.compatDiskExceedsVmDetail":
+    "디스크 약 {need}가 필요해 {gpu} 사용 가능 용량(약 {avail} / 전체 {total})을 초과하므로 다운로드할 수 없을 수 있습니다",
+  "models.compatDiskLowLiveDetail":
+    "디스크 약 {need}가 필요해 현재 여유 공간 {avail}(전체 {total})을 초과합니다. 다른 다운로드 모델을 먼저 삭제해 공간을 확보하세요",
+  "models.compatDiskTightDetail":
+    "디스크 약 {need}를 사용합니다(여유 약 {avail}). 다운로드 후 원격 여유 공간이 빠듯해집니다",
+  "models.compatDiskOverflowRepoLabel": "{gpu} 디스크 초과",
+  "models.pickerDiskExceedsCount": "디스크 초과 {count}개",
+  "models.pickerAllDiskOverflowNotice":
+    "모든 버전이 선택한 {gpu}의 사용 가능 디스크 용량(약 {avail})을 초과하여 다운로드에 실패할 수 있습니다. 더 큰 디스크의 GPU 사양으로 전환하거나 더 작은 모델을 선택하세요.",
+  "models.pickerSwitchLargerDisk": "{gpu}로 전환 (약 {avail} 디스크)",
+  "models.paramEstDisk": "· 디스크 {gb}",
+  "models.estimatedDisk": "디스크 {size}",
 
   // ComfyUI Page
   "comfy.subtitle":
@@ -951,7 +1018,7 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.canvasDomainLabel": "캔버스 도메인",
   "comfy.canvasTokenEmptyPlaceholder": "Cloudflare 설치 명령어 또는 Tunnel Token 붙여넣기",
   "comfy.canvasGuideStep1": "Cloudflare Zero Trust에서 Cloudflared 터널을 생성합니다.",
-  "comfy.canvasGuideStep2Suffix": " (Cloudflare 대화형 로그인을 중복 활성화할 필요 없음).",
+  "comfy.canvasGuideStep2Suffix": " (Cloudflare 대화형 로그인을 중복 활성화할 필요는 없습니다).",
   "comfy.canvasGuideStep3":
     "Cloudflare 설치 명령어 또는 Tunnel Token을 위에 붙여넣고 저장한 뒤 '네이티브 캔버스 시작'을 누르세요.",
   "comfy.startCanvas": "네이티브 캔버스 시작",
@@ -1030,6 +1097,8 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.errInvalidOutputTransfer": "결과물 전송 데이터가 올바르지 않습니다. 다시 시도해 주세요",
   "comfy.errInvalidOutputSize": "결과물 파일 크기가 올바르지 않습니다",
   "comfy.errUnsupportedPreview": "이 파일 형식은 미리보기를 지원하지 않습니다",
+  "comfy.errUnsupportedImageFormat": "지원하지 않는 이미지 형식입니다. PNG / JPEG / WebP 파일을 선택해 주세요.",
+  "comfy.errUnsupportedAudioFormat": "지원하지 않는 오디오 형식입니다. WAV / MP3 / FLAC / OGG / M4A 파일을 선택해 주세요.",
   "comfy.errIncompleteTransfer": "결과물 전송이 완료되지 않았습니다. 다시 시도해 주세요",
   "comfy.errOutputChecksum": "결과물 무결성 검증에 실패했습니다. 다시 시도해 주세요",
 
@@ -1041,6 +1110,7 @@ export const koKRMessages: ColabOneMessages = {
   "settings.connected": "연결됨",
   "settings.disconnected": "연결 안 됨",
   "settings.oauthBrowserHint": "브라우저에서 Google 계정을 선택하고 권한을 승인하면 자동으로 돌아옵니다.",
+  "settings.accountConnectedNoEmail": "Google 계정이 연결되었습니다. 아래 버튼으로 다시 인증하거나 계정을 전환할 수 있습니다.",
   "settings.relogin": "다시 로그인",
   "settings.reopenLoginPage": "로그인 페이지 다시 열기",
   "settings.loginSavedAutoRenew":
@@ -1060,7 +1130,7 @@ export const koKRMessages: ColabOneMessages = {
   "settings.driveHeading": "Google 드라이브",
   "settings.driveTagMounted": "마운트됨 · ColabOne_Drive",
   "settings.driveTagHeadlessReady": "팝업 없음 준비됨 · 자동 마운트",
-  "settings.driveTagAuthorized": "승인됨 · 네이티브 드라이브",
+  "settings.driveTagAuthorized": "승인됨 · 네이티브 DriveFS",
   "settings.driveTagReauth": "재로그인 권한 필요",
   "settings.driveDescPrefix": "로컬 Google OAuth 자격 증명을 재사용해 전용 폴더",
   "settings.driveDescSuffix":
@@ -1069,7 +1139,7 @@ export const koKRMessages: ColabOneMessages = {
     "현재 로그인에 드라이브 권한이 포함되어 있지 않습니다. 상단 '다시 로그인'으로 한 번 추가 승인하면 이후 자동 마운트됩니다.",
   "settings.driveHeadlessTipTitle": "영구 무팝업 자동 마운트 활성화 (선택 · 무료)",
   "settings.driveHeadlessTipDesc":
-    "현재 계정은 Colab 네이티브 드라이브로 마운트됩니다(새 인스턴스마다 브라우저에서 1회 허용 필요). Google Cloud에 로그인해 서비스 약관에 1회 동의하면(무료·카드 불필요) 이후 영구적으로 팝업 없이 자동 마운트됩니다.",
+    "현재 계정은 Colab 네이티브 DriveFS로 마운트됩니다(새 인스턴스마다 브라우저에서 1회 허용 필요). Google Cloud에 로그인해 서비스 약관에 1회 동의하면(무료·카드 불필요) 이후 영구적으로 팝업 없이 자동 마운트됩니다.",
   "settings.driveOpenGcpConsole": "Google Cloud 열기",
   "settings.driveCheckHeadless": "확인 및 활성화",
   "settings.driveHeadlessEnabledToast": "Google 드라이브 영구 무팝업 자동 마운트가 활성화되었습니다",
@@ -1137,7 +1207,7 @@ export const koKRMessages: ColabOneMessages = {
   "logs.emptyError": "오류 로그가 없습니다",
   "logs.emptyAll": "로그가 아직 없습니다. 작업을 시작하면 실시간으로 표시됩니다.",
   "logs.tagError": "오류",
-  "logs.tagWarn": "알림",
+  "logs.tagWarn": "경고",
   "logs.footerLimit": "최근 300건 · 현재 세션",
   "logs.following": "최신 추적 중",
   "logs.jumpLatest": "최신으로 이동",

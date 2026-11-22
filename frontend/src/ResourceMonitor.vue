@@ -540,7 +540,7 @@ const gpuSubtitle = computed<string>(() => {
     return tb(props.runtime.gpu.name);
   }
   if (isCpuOnlyOnline.value) return t("monitor.gpuNoAccelerator");
-  if (telemetry.value.online) return "Colab GPU";
+  if (telemetry.value.online) return t("device.fallbackGpuName");
   if (isRemoteConnecting.value) {
     const accel = selectedMonitorOption.value?.accelerator;
     return accel
@@ -882,7 +882,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
       heroSub: tel.online
         ? tel.cpuCores
           ? `${tel.cpuCores} vCPU`
-          : "Colab vCPU"
+          : t("monitor.cpuRemoteCore")
         : "-- vCPU",
       progressPercent: cpuProgressPercent.value,
       progressColor: "var(--co-rm-cpu)",
@@ -1715,7 +1715,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                   ? t("monitor.driveFree", {
                       size: formatMetricBytes(effectiveDriveFreeBytes),
                     })
-                  : `${t("monitor.driveFreeLabel")} ${t("monitor.driveMountedShort")}`
+                  : t("monitor.driveMounted")
               }}
             </ATag>
           </template>
@@ -1886,7 +1886,9 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             <span class="co-rm-kv">
               <em>{{ t("monitor.statSpec") }}</em>
               <b class="co-rm-mono">{{
-                telemetry.cpuCores ? `${telemetry.cpuCores} vCPU` : "Colab vCPU"
+                telemetry.cpuCores
+                  ? `${telemetry.cpuCores} vCPU`
+                  : t("monitor.cpuRemoteCore")
               }}</b>
             </span>
           </template>

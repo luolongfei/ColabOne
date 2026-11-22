@@ -29,7 +29,7 @@
         const matchLocale = (raw) => {
           const s = String(raw || "").trim().replace(/_/g, "-").toLowerCase();
           if (!s) return "";
-          if (s === "zh-hk" || s === "zh-mo" || s.startsWith("zh-hant-hk") || s.startsWith("zh-hant-mo") || s.startsWith("yue")) return "zh-HK";
+          if (s === "zh-hk" || s === "zh-mo" || s.startsWith("zh-hant-hk") || s.startsWith("zh-hant-mo") || s === "yue" || s.startsWith("yue-")) return "zh-HK";
           if (s === "zh-tw" || s.startsWith("zh-hant")) return "zh-TW";
           if (s === "zh" || s === "zh-cn" || s === "zh-sg" || s.startsWith("zh-hans")) return "zh-CN";
           if (s === "ja" || s.startsWith("ja-")) return "ja-JP";
@@ -37,7 +37,7 @@
           if (s === "en" || s.startsWith("en-")) return "en-US";
           return "";
         };
-        let lang = supported.includes(storedLocale) ? storedLocale : "";
+        let lang = matchLocale(storedLocale);
         if (!lang) {
           const list = Array.isArray(navigator.languages) && navigator.languages.length ? navigator.languages : [navigator.language];
           for (const item of list) {

@@ -757,3 +757,87 @@ def test_warmup_crash_falls_back_to_next_llama_plan(runtime, spec, monkeypatch):
     runtime._load(ColabOneTask("load", spec.id), spec)
     assert len(procs) == 2
     assert runtime.loaded == spec.id
+
+
+def test_list_models_reports_cached_bytes_for_partial_and_sharded_models(runtime):
+    from server.download import CHUNK, metadata_path
+
+    shard1_data = b"a" * 1024
+    shard2_size = CHUNK + 512
+    shard2_digest = "b" * 64
+    sharded = ModelSpec.model_validate(
+        {
+            "id": "sharded-cache-test",
+            "name": "Sharded Cache Test",
+            "description": "test",
+            "min_vram_mib": 1000,
+            "files": [
+                {
+                    "repo": "org/repo",
+                    "revision": "a" * 40,
+                    "path": "sub/part-1.gguf",
+                    "size": len(shard1_data),
+                    "sha256": hashlib.sha256(shard1_data).hexdigest(),
+                    "role": "model",
+                },
+                {
+                    "repo": "org/repo",
+                    "revision": "a" * 40,
+                    "path": "sub/part-2.gguf",
+                    "size": shard2_size,
+                    "sha256": shard2_digest,
+                    "role": "shard",
+                },
+            ],
+        }
+    )
+    runtime.add_model(sharded.model_dump())
+
+    def entry():
+        return next(m for m in runtime.list_models() if m["id"] == sharded.id)
+
+    # Untouched model has 0 cached bytes
+    assert entry()["cached_bytes"] == 0
+    assert entry()["downloaded"] is False
+
+    # Shard 1 finalized + shard 2 sparse .part with only chunk 0 completed
+    directory = runtime.models_dir / sharded.id / "sub"
+    directory.mkdir(parents=True)
+    (directory / "part-1.gguf").write_bytes(shard1_data)
+    part2 = directory / "part-2.gguf.part"
+    with part2.open("wb") as handle:
+        handle.truncate(shard2_size)
+    metadata_path(part2).write_text(
+        json.dumps(
+            {
+                "size": shard2_size,
+                "sha256": shard2_digest,
+                "chunk": CHUNK,
+                "completed": [0],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Must count shard1 + completed chunk 0, NOT sparse file length (shard2_size)
+    assert entry()["cached_bytes"] == len(shard1_data) + CHUNK
+    assert entry()["downloaded"] is False
+
+    # Fully installed model reports full size
+    part2.unlink()
+    metadata_path(part2).unlink()
+    with (directory / "part-2.gguf").open("wb") as handle:
+        handle.truncate(shard2_size)
+    atomic_json(
+        runtime.models_dir / sharded.id / "verified.json",
+        {
+            "sub/part-1.gguf": hashlib.sha256(shard1_data).hexdigest(),
+            "sub/part-2.gguf": shard2_digest,
+        },
+    )
+    assert entry()["downloaded"] is True
+    assert entry()["cached_bytes"] == len(shard1_data) + shard2_size
+
+    # Deleting remote files resets cached_bytes to 0
+    runtime.delete(sharded.id)
+    assert entry()["downloaded"] is False
+    assert entry()["cached_bytes"] == 0

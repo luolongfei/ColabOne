@@ -40,6 +40,7 @@ export const zhCNMessages = {
 
   // Navigation & Top Bar
   "nav.brandAria": "返回远端设备首页",
+  "nav.versionAria": "当前版本 {version}",
   "nav.mainAria": "主导航",
   "nav.device": "远端设备",
   "nav.api": "对外 API",
@@ -69,15 +70,31 @@ export const zhCNMessages = {
   "status.failed": "操作失败",
   "status.ipcReconnecting": "本地服务重连中",
   "status.ipcReconnectingDetail": "与本地后台服务的连接短暂中断，正在自动重连…",
-  "status.remoteControlBriefDisconnect": "与远端实例的控制连接短暂中断，请稍候重试或刷新状态",
+  "status.remoteControlBriefDisconnect": "与远端实例的控制连接短暂中断，请稍后重试或刷新状态",
   "status.desktopInitializing": "桌面运行环境正在初始化，请稍候…",
   "status.requestTimeout": "请求响应超时，请检查网络或远端实例状态后重试",
   "status.preselectedGpu": "预选 {gpu}",
   "status.activeInstanceAria": "当前工作实例",
   "status.loadedModelChipTitle": "已装载 {name}，点击前往对外 API",
   "status.upgradeBanner":
-    "当前实例需要更新远端服务，以启用实时硬件监控、对外 API 与 ComfyUI 工作流引擎；请先结束任务并卸载模型，模型缓存会保留。",
+    "当前实例需要更新远端服务，以启用实时硬件监控、对外 API 与 ComfyUI 工作流引擎；请先结束任务并卸载模型或停止 ComfyUI，模型缓存会保留。",
   "status.upgradeAction": "更新远端服务",
+  "status.upgradeOptionalReady":
+    "远端服务有小版本更新，不影响当前正常使用；可随时热更新，已下载的模型缓存与工作流会完整保留。",
+  "status.upgradeOptionalBlockedModel":
+    "远端服务有小版本更新，不影响当前正常使用；当前已装载模型，需先卸载模型后再热更新（模型缓存会保留），也可稍后更新。",
+  "status.upgradeOptionalBlockedComfy":
+    "远端服务有小版本更新，不影响当前正常使用；当前 ComfyUI 运行中，需先停止 ComfyUI 后再热更新（模型缓存会保留），也可稍后更新。",
+  "status.upgradeOptionalBlockedTask":
+    "远端服务有小版本更新，不影响当前正常使用；请等待当前任务结束后再热更新（模型缓存会保留），也可稍后更新。",
+  "status.upgradeBlockedModel":
+    "当前已装载模型，请先卸载模型后再更新远端服务（模型缓存会保留）",
+  "status.upgradeBlockedComfy":
+    "当前 ComfyUI 运行中，请先停止 ComfyUI 后再更新远端服务",
+  "status.upgradeBlockedTask":
+    "请先等待当前远端任务结束后再更新远端服务",
+  "status.upgradeBlockedOperation":
+    "请先等待当前操作完成后再更新远端服务",
 
   // Appearance
   "appearance.system": "跟随系统",
@@ -195,7 +212,7 @@ export const zhCNMessages = {
   "billing.cardIdleReleasing": "正在释放远端实例资源…",
   "billing.cardIdleStandbyPrefix": "空闲无操作满",
   "billing.cardIdleAutoReleaseSuffix": "自动释放资源",
-  "billing.cardIdleStandbyNote": "下载、装载与推理期间自动暂停，避免白白消耗计算单元",
+  "billing.cardIdleStandbyNote": "长时间无操作自动释放以节省计算单元；下载、装载与推理期间自动暂停倒计时",
   "billing.cardResetCountdown": "重置倒计时",
   "billing.cardIdleSelectLabel": "空闲自动释放",
   "billing.cardIdleSelectAria": "空闲自动释放时长",
@@ -355,6 +372,8 @@ export const zhCNMessages = {
   "device.driveAutoPersist": "模型清单、ComfyUI 工作流与输出作品自动持久化",
   "device.driveAuthorizedHint":
     "已授权 Google 云盘（My Drive / ColabOne_Drive），可随时挂载以自动同步模型清单与 ComfyUI 作品。",
+  "device.driveNeedAuthHint":
+    "尚未授权 Google 云盘；可在「设置」中重新登录授权，以自动同步模型清单与 ComfyUI 作品。",
   "device.syncNow": "立即同步",
   "device.mountDriveNow": "立即挂载云盘",
   "device.driveWaitingBrowserConfirm":
@@ -394,6 +413,8 @@ export const zhCNMessages = {
     "模型清单、ComfyUI 工作流与输出作品已自动持久化到 Google 云盘 (ColabOne_Drive)，释放实例前会自动同步。",
   "device.footerDriveAuto":
     "已开启 Google 云盘自动挂载：启动 GPU 后将自动连接 ColabOne_Drive，持久保存模型清单、ComfyUI 工作流与输出作品。",
+  "device.footerDriveUnmountedActive":
+    "已开启 Google 云盘自动挂载，当前实例尚未挂载；点击上方「立即挂载云盘」即可连接 ColabOne_Drive 持久保存数据。",
   "device.footerDriveOff":
     "未挂载云盘时，释放实例将清空未导出的文件；如需保留，请先导出或在「设置」中开启云盘自动挂载。",
   "device.downloadVerifying": "正在校验 SHA-256",
@@ -401,9 +422,9 @@ export const zhCNMessages = {
   "device.downloadMeta": "{conns} 个连接 · 文件 {idx}/{total}",
   "device.releaseModalTitle": "选择要停止的远端实例",
   "device.releaseModalDesc":
-    "可勾选需要停止的实例，保留其他客户端或页面正在运行的实例。已选实例上的模型文件和未导出的内容会被清空。",
+    "勾选需要停止的实例，未勾选的实例将继续运行。已选实例上的模型文件和未导出的内容会被清空。",
   "device.releaseLoading": "正在查询运行实例…",
-  "device.releaseLoadFailed": "清单读取失败，请取消后重试。",
+  "device.releaseLoadFailed": "清单读取失败，请点击重试。",
   "device.releaseSelectAll": "全选（{count}）",
   "device.releaseSelectManaged": "仅选本客户端（{count}）",
   "device.releaseInstCurrent": "本客户端当前使用实例{model}",
@@ -411,6 +432,7 @@ export const zhCNMessages = {
   "device.releaseInstModelSuffix": " · 已装载 {model}",
   "device.releaseInstExternal": "其他来源的 Colab 实例，停止前请确认已保存数据",
   "device.releaseEmpty": "未发现运行实例，Google 费率可能仍在更新。",
+  "device.releaseTargetMissing": "该实例已停止或不再运行，可勾选其他实例或关闭窗口。",
   "device.releaseBusyNotice": "正在结束当前操作，完成后即可停止。",
   "device.releaseForceCheck": "我已导出或不需要保留所选实例上的远端模型与未导出作品（强制释放）",
   "device.releaseConfirmAll": "确认停止全部（{count}）",
@@ -455,7 +477,8 @@ export const zhCNMessages = {
   "api.gpuStoppedTag": "远端 GPU 未启动",
   "api.modelIdLabel": "模型 ID：",
   "api.vramUsage": "{vram} 显存",
-  "api.taskProgressFallback": "可在模型抽屉查看详细进度",
+  "api.taskProgressFallback": "可在「选择模型」面板查看详细进度",
+  "api.taskOutputTokens": "{count} tokens",
   "api.pickModelHintReady": "从「我的」或「社区」选择并装载 GGUF 模型后，即可对外提供推理服务。",
   "api.pickModelHintOffline":
     "可先在「我的」或「社区」浏览并管理模型；启动远端 GPU 后一键下载并装载到显存。",
@@ -501,6 +524,20 @@ export const zhCNMessages = {
   "api.currentModelIdLabel": "当前模型 ID",
   "api.modelIdEmpty": "请先点击上方「选择模型」装载 GGUF 模型",
   "api.copyModelIdAria": "复制模型 ID",
+  "api.editModelIdTooltip": "自定义对外模型 ID（立即生效，无需重载显存）",
+  "api.editModelIdUpgradeTooltip": "请先更新远端服务后再自定义模型 ID",
+  "api.editModelIdAria": "自定义模型 ID",
+  "api.editModelIdPlaceholder": "例如 colabone/qwen3.8-flash-next",
+  "api.resetModelIdTooltip": "恢复默认可读模型 ID",
+  "api.resetModelIdAria": "恢复默认模型 ID",
+  "api.modelIdEmptyError": "请输入有效的模型 ID",
+  "api.modelIdSavedNotice": "对外模型 ID 已更新，立即生效。",
+  "api.modelIdResetNotice": "已恢复默认模型 ID。",
+  "api.modelIdAutoAliasPrefix": "切模型不想改终端配置？也可使用固定别名",
+  "api.modelIdAutoAliasSuffix": "自动路由到当前显存模型。",
+  "api.copyAutoAliasTooltip": "复制固定别名 colabone/auto",
+  "api.modelIdLegacyHintPrefix": "远端服务待更新：当前仍沿用旧 ID，更新后将自动启用",
+  "api.modelIdLegacyHintSuffix": "（无需重下模型）。",
   "api.credentialsFootPrefix": "密钥保存在本机系统凭据库。调用时使用",
   "api.credentialsFootSuffix": "，仅分享给受信任的应用或成员。",
   "api.examplesCardTitle": "调用示例与统计",
@@ -621,8 +658,10 @@ export const zhCNMessages = {
     "仅删除远端磁盘上的 {name} 模型文件，「我的」列表记录会保留。",
   "models.deleteFilesBtn": "删除文件",
   "models.warnVramLow":
-    "当前显存 {have} GB 低于预估需求 {need} GB，装载可能失败，建议换用更大显存 GPU",
+    "模型预估需约 {need} GB，大幅超出当前显存 {have} GB 与常规内存协同范围，混合装载可能极慢或失败，建议换用更大显存 GPU",
   "models.warnDiskLow": "远端可用磁盘 {free} 小于模型体积 {size}",
+  "models.warnDiskLowRemaining":
+    "远端可用磁盘 {free} 小于剩余待下载体积 {remaining}（已缓存 {cached}）",
   "models.disabledStartGpu": "请先启动远端 GPU",
   "models.disabledWaitTask": "请等待当前任务完成",
   "models.disabledSyncingRemote": "正在同步远端状态…",
@@ -655,13 +694,13 @@ export const zhCNMessages = {
   "models.hubViewRepo": "查看仓库",
   "models.hubSearching": "正在搜索社区模型…",
   "models.hubEmpty": "没有找到匹配的社区 GGUF 模型，换个关键词或筛选条件试试",
-  "models.hubAllOverflow": "当前列表中的 {count} 个模型均超出 {gpu} 显存",
+  "models.hubAllOverflow": "当前列表中的 {count} 个模型均超出 {gpu} 可运行容量",
   "models.hubSwitchG4": "切换按 G4 · 96 GB 查看",
   "models.hubShowAllModels": "显示全部模型",
   "models.hubGatedTag": "需授权",
   "models.hubVersionCount": "{count} 个版本",
   "models.hubVersionCountSingle": "{count} 个版本",
-  "models.hubHiddenOverflow": "已隐藏 {count} 个超出 {gpu} 显存的模型",
+  "models.hubHiddenOverflow": "已隐藏 {count} 个超出 {gpu} 可运行容量的模型",
   "models.pickerAria": "模型版本选择",
   "models.pickerLoading": "正在读取版本清单与显存评估…",
   "models.pickerComfyVideoTitle": "视频生成模型（ComfyUI 专用）",
@@ -777,7 +816,7 @@ export const zhCNMessages = {
   "models.compatOverflowRepoLabel": "超出 {gpu} · 需 {minGpu}",
   "models.compatQuantFpTitle": "原版无损精度",
   "models.compatQuantFpDesc": "未压缩原版权重，质量最高但显存占用极大",
-  "models.compatQuantQ8Title": "高画质 · 接近原版",
+  "models.compatQuantQ8Title": "高精度 · 接近原版",
   "models.compatQuantQ8Desc": "8-bit 精度几乎无损，大显存高配首选",
   "models.compatQuantQ6Title": "高品质均衡",
   "models.compatQuantQ6Desc": "6-bit 精度非常接近原版，兼顾推理速度",
@@ -794,7 +833,7 @@ export const zhCNMessages = {
   "models.compatQuantStdTitle": "标准版本",
   "models.compatQuantStdDesc": "社区提供的 GGUF 模型权重",
   "models.compatMissingShards": "缺少完整分片或校验信息",
-  "models.compatEffectCtx4k": "约 3 千字短对话记忆，显存开销极低",
+  "models.compatEffectCtx4k": "约 3 千汉字短对话记忆，显存开销极低",
   "models.compatEffectCtx8k": "约 6 千汉字对话记忆，显存占用最低、响应快",
   "models.compatEffectCtx16k": "约 1.2 万汉字记忆，适合写代码与分析文档",
   "models.compatEffectCtx32k": "约 2.4 万汉字长文记忆，需预留更多显存",
@@ -811,6 +850,8 @@ export const zhCNMessages = {
   "models.compatHybridLabel": "混合装载 · 显存+内存",
   "models.compatHybridDetail":
     "超出 {gpu} 显存约 {overflow}，装载时自动将溢出权重分配至系统内存（--fit on）；MoE / 稀疏架构仍可高速运行，稠密模型速度会有所下降",
+  "models.compatHybridNearLimitDetail":
+    "预估需 ~{gb}，已接近 {gpu} 显存上限；装载时将启用显存 + 系统内存混合装载（--fit on）自动承接少量溢出",
   "models.compatHeavyHybridLabel": "超大容量 · 混合装载",
   "models.compatHeavyHybridDetail":
     "预估需 ~{gb}，已超出 {gpu} 显存与常规内存范围；仍可选中尝试混合装载，但可能极慢或失败（建议 {minGpu}）",
@@ -822,13 +863,38 @@ export const zhCNMessages = {
     "模型体积大于当前所选 {gpu} 显存，以下版本均支持「显存 + 系统内存混合装载（--fit on）」，可直接选中运行。",
   "models.pickerSwitchFullVram": "切到 {gpu} 查看全显存方案",
   "models.pickerOverflowToRamInline": "（溢出约 {overflow} 走内存）",
+  "models.pickerNearLimitToRamInline": "（接近显存上限 · 自动协同内存）",
   "models.pickerExpandVersionsHybrid": "展开全部 {count} 个版本（另有 {hidden} 个需混合装载）",
   "models.pickerHybridAlert":
     "将自动启用「显存 + 系统内存混合装载（--fit on）」：模型超出 {gpu} 显存约 {overflow}，溢出权重与专家层会自动分配至远端高速内存，MoE 架构仍可保持流畅生成。",
+  "models.pickerHybridNearLimitAlert":
+    "将自动启用「显存 + 系统内存混合装载（--fit on）」：模型已接近 {gpu} 显存上限，若运行时出现少量溢出将自动分配至远端高速内存。",
   "models.pickerHeavyHybridAlert":
     "超大容量混合装载提示：模型预估需 ~{gb}，超出 {gpu} 显存与常规内存范围；仍可尝试装载，但若远端内存或磁盘不足可能较慢或失败（建议 {minGpu}）。",
   "models.warnVramHybrid":
     "模型预估需约 {need} GB，大于当前显存 {have} GB，装载时将自动启用显存 + 系统内存混合装载（--fit on）",
+  "models.compatGpuDiskApprox": "约 {gb} GB 可用磁盘",
+  "models.compatGpuDiskLive": "可用磁盘 {gb} GB",
+  "models.pickerDiskLabel": "占用磁盘",
+  "models.pickerDiskAvailApprox": "/ 约 {avail}",
+  "models.pickerDiskAvailLive": "/ {avail} 可用",
+  "models.pickerDiskCachedInline": "（已缓存）",
+  "models.compatDiskExceedsLabel": "超出磁盘",
+  "models.compatDiskLowLabel": "磁盘不足",
+  "models.compatDiskTightLabel": "磁盘偏紧",
+  "models.compatDiskExceedsVmDetail":
+    "需占约 {need} 磁盘，已超出 {gpu} 可用磁盘容量（约 {avail} / 总 {total}），远端磁盘可能装不下",
+  "models.compatDiskLowLiveDetail":
+    "需占约 {need} 磁盘，超过当前可用空间 {avail}（总 {total}）；请先删除其他已下载模型释放空间",
+  "models.compatDiskTightDetail":
+    "需占约 {need} 磁盘（可用约 {avail}），下载后远端剩余空间会较紧张",
+  "models.compatDiskOverflowRepoLabel": "超出 {gpu} 磁盘",
+  "models.pickerDiskExceedsCount": "{count} 个超出磁盘",
+  "models.pickerAllDiskOverflowNotice":
+    "该仓库所有版本均超出当前所选 {gpu} 的可用磁盘空间（约 {avail}），下载可能会因空间不足失败；可切换更大磁盘的 GPU 规格或选择更小模型。",
+  "models.pickerSwitchLargerDisk": "切到 {gpu}（约 {avail} 磁盘）",
+  "models.paramEstDisk": "· 占用磁盘 {gb}",
+  "models.estimatedDisk": "占用磁盘 {size}",
 
   // ComfyUI Page
   "comfy.subtitle": "在远端 GPU 一键运行工作流表单，或通过安全隧道访问完整原生节点画布。",
@@ -1000,6 +1066,8 @@ export const zhCNMessages = {
   "comfy.errInvalidOutputTransfer": "作品传输数据无效，请重试",
   "comfy.errInvalidOutputSize": "作品大小不合法",
   "comfy.errUnsupportedPreview": "不支持预览该文件格式",
+  "comfy.errUnsupportedImageFormat": "不支持的图片格式，请选择 PNG / JPEG / WebP 文件",
+  "comfy.errUnsupportedAudioFormat": "不支持的音频格式，请选择 WAV / MP3 / FLAC / OGG / M4A 文件",
   "comfy.errIncompleteTransfer": "作品传输不完整，请重试",
   "comfy.errOutputChecksum": "作品校验失败，请重试",
 
@@ -1011,6 +1079,7 @@ export const zhCNMessages = {
   "settings.connected": "已连接",
   "settings.disconnected": "未连接",
   "settings.oauthBrowserHint": "在浏览器选择 Google 账户并授权，完成后会自动返回这里。",
+  "settings.accountConnectedNoEmail": "已连接 Google 账户，点击下方按钮可重新授权或切换账户。",
   "settings.relogin": "重新登录",
   "settings.reopenLoginPage": "重新打开登录页",
   "settings.loginSavedAutoRenew": "登录已安全保存在本机，重启自动恢复、到期自动续期。",
@@ -1028,15 +1097,15 @@ export const zhCNMessages = {
   "settings.driveHeading": "Google 云盘",
   "settings.driveTagMounted": "已挂载 · ColabOne_Drive",
   "settings.driveTagHeadlessReady": "免弹窗已就绪 · 自动挂载",
-  "settings.driveTagAuthorized": "已授权 · 原生驱动",
+  "settings.driveTagAuthorized": "已授权 · 原生 DriveFS",
   "settings.driveTagReauth": "需重新登录一次授权",
   "settings.driveDescPrefix": "复用本机 Google OAuth 凭据自动挂载专属目录",
   "settings.driveDescSuffix": "，自动持久保存模型清单、ComfyUI 工作流与生成作品。",
   "settings.driveNeedScopeAlert":
     "当前授权尚未包含云盘权限；点击上方「重新登录」补充授权后，后续实例将自动挂载云盘。",
-  "settings.driveHeadlessTipTitle": "开启永久免弹窗自动挂载（可选・免费）",
+  "settings.driveHeadlessTipTitle": "开启永久免弹窗自动挂载（可选 · 免费）",
   "settings.driveHeadlessTipDesc":
-    "当前账号默认使用 Colab 原生驱动挂载（每次新建实例需在浏览器确认一次）。登录 Google Cloud 同意一次服务条款（完全免费、无需绑卡）后，即可永久免弹窗自动挂载。",
+    "当前账户默认使用 Colab 原生 DriveFS 挂载（每次新建实例需在浏览器确认一次）。登录 Google Cloud 同意一次服务条款（完全免费、无需绑卡）后，即可永久免弹窗自动挂载。",
   "settings.driveOpenGcpConsole": "打开 Google Cloud",
   "settings.driveCheckHeadless": "检测并开启免弹窗",
   "settings.driveHeadlessEnabledToast": "已开启 Google 云盘永久免弹窗自动挂载",
@@ -1099,7 +1168,7 @@ export const zhCNMessages = {
   "logs.emptyError": "暂无错误日志",
   "logs.emptyAll": "暂无运行日志，开始操作后将在此实时显示。",
   "logs.tagError": "错误",
-  "logs.tagWarn": "提醒",
+  "logs.tagWarn": "警告",
   "logs.footerLimit": "最近 300 条 · 本次运行",
   "logs.following": "跟随最新",
   "logs.jumpLatest": "回到最新",

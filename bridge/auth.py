@@ -68,7 +68,7 @@ def _emit_auth_log(on_log, message: str, source: str = "云盘", level: str = "i
 _OAUTH_CALLBACK_TEXT = {
     "zh-CN": (
         "ColabOne 登录成功。你可以关闭此页面，返回客户端。",
-        "登录未完成，请返回 ColabOne 重试",
+        "登录未完成，请返回 ColabOne 重试。",
     ),
     "en-US": (
         "Signed in to ColabOne. You can close this tab and return to the app.",
@@ -686,7 +686,7 @@ class ColabOneAuth:
                     server.handle_request()
                 if not self.login_event.is_set():
                     raise RuntimeError(
-                        "等待登录超时。可点击“使用授权回执”，粘贴浏览器回显自动完成。"
+                        "等待登录超时。可点击「改用手动授权登录」，粘贴浏览器返回内容自动完成。"
                     )
                 if errors:
                     raise RuntimeError(errors[0])

@@ -18,7 +18,14 @@ from bridge.provider import ColabOneProvider
 from bridge.shortcuts import manage_shortcuts, shortcut_status
 from common.files import atomic_json, colabone_service_revision
 from common.location import infer_location_from_endpoint
-from common.models import ModelSpec, parse_hf_input, resolve_import
+from common.models import (
+    ModelSpec,
+    colabone_unique_api_model_id,
+    parse_hf_input,
+    resolve_colabone_api_model_id,
+    resolve_import,
+    validate_colabone_api_model_id,
+)
 from common.hub import search_models, model_files
 from common.public_api import ColabOnePublicConfig
 from common.comfyui import (
@@ -153,6 +160,7 @@ class ColabOneController:
         self.instance_states: dict[str, dict] = {}
         self.common_ids: set[str] = set()
         self.custom_models: dict[str, dict] = {}
+        self.api_id_overrides: dict[str, str] = {}
         self.common_repos: list[dict] = []
         self.default_common_version: int = 0
         self._load_library()
@@ -466,6 +474,19 @@ class ColabOneController:
                     self.custom_models[spec["id"]] = spec
                 except Exception:
                     continue
+            raw_overrides = raw.get("api_id_overrides")
+            if isinstance(raw_overrides, dict):
+                for raw_mid, raw_alias in raw_overrides.items():
+                    mid_str = str(raw_mid or "").strip()
+                    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", mid_str):
+                        continue
+                    try:
+                        clean_alias = validate_colabone_api_model_id(
+                            raw_alias, allow_empty=False
+                        )
+                    except ValueError:
+                        continue
+                    self.api_id_overrides[mid_str] = clean_alias
             raw_repos = (
                 raw.get("common_repos")
                 if "common_repos" in raw
@@ -533,6 +554,7 @@ class ColabOneController:
                 "default_common_version": self.default_common_version,
                 "common_ids": sorted(self.common_ids),
                 "custom_models": list(self.custom_models.values()),
+                "api_id_overrides": dict(self.api_id_overrides),
                 "common_repos": list(self.common_repos),
             }
             atomic_json(self.directory / "library.json", payload)
@@ -662,16 +684,30 @@ class ColabOneController:
             else:
                 self.remote_workflow_versions[workflow_id] = local_ver
 
-    def _decorate_models(self, base_models: list[dict]) -> list[dict]:
+    def _decorate_models(
+        self, base_models: list[dict], runtime: dict | None = None
+    ) -> list[dict]:
         preset_path = self.root / "catalog/presets.json"
-        preset_ids = (
-            {m["id"] for m in json.loads(preset_path.read_text(encoding="utf-8"))}
+        preset_map = (
+            {
+                m["id"]: m
+                for m in json.loads(preset_path.read_text(encoding="utf-8"))
+                if isinstance(m, dict) and m.get("id")
+            }
             if preset_path.exists()
-            else set()
+            else {}
+        )
+        preset_ids = set(preset_map)
+        remote_ready = isinstance(runtime, dict) and runtime.get("state") == "ready"
+        legacy_remote = (
+            remote_ready
+            and not bool(runtime.get("api_model_aliases"))
+            and bool(runtime.get("upgrade_available"))
         )
         with self.lock:
             common_ids = set(self.common_ids)
             custom_map = copy.deepcopy(self.custom_models)
+            api_overrides = dict(self.api_id_overrides)
         combined = [copy.deepcopy(m) for m in base_models]
         present = {m["id"] for m in combined}
         for mid, spec in custom_map.items():
@@ -687,21 +723,44 @@ class ColabOneController:
                 )
         out = []
         for m in combined:
-            m.pop("_local_only", None)
+            local_only = bool(m.pop("_local_only", False))
+            has_remote_api_id = bool(str(m.get("api_id") or "").strip())
             files = m.get("files") or []
             repo = (
                 str(files[0].get("repo") or "")
                 if files and isinstance(files[0], dict)
                 else str(m.get("repo") or "")
             )
-            out.append(
-                m
-                | {
-                    "repo": repo,
-                    "common": m["id"] in common_ids,
-                    "custom": m["id"] not in preset_ids,
-                }
+            mid = m["id"]
+            preset_api_id = str((preset_map.get(mid) or {}).get("api_id") or "").strip()
+            local_custom_api_id = str(
+                (custom_map.get(mid) or {}).get("api_id") or ""
+            ).strip()
+            override = api_overrides.get(mid, "")
+            desired_api_id = (
+                override
+                or (str(m.get("api_id") or "").strip() if not local_only else "")
+                or local_custom_api_id
+                or preset_api_id
+                or resolve_colabone_api_model_id(m)
             )
+            if legacy_remote and not local_only and not has_remote_api_id:
+                effective_api_id = mid
+                pending_api_id = desired_api_id if desired_api_id != mid else ""
+            else:
+                effective_api_id = desired_api_id
+                pending_api_id = ""
+            decorated = m | {
+                "api_id": effective_api_id,
+                "repo": repo,
+                "common": mid in common_ids,
+                "custom": mid not in preset_ids,
+            }
+            if pending_api_id:
+                decorated["pending_api_id"] = pending_api_id
+            else:
+                decorated.pop("pending_api_id", None)
+            out.append(decorated)
         return out
 
     def presets(self):
@@ -1216,7 +1275,9 @@ class ColabOneController:
         with self.lock:
             value = copy.deepcopy(self.data)
             common_repos = copy.deepcopy(self.common_repos)
-        value["models"] = self._decorate_models(value.get("models") or [])
+        value["models"] = self._decorate_models(
+            value.get("models") or [], value.get("runtime")
+        )
         value["workflows"] = self._merge_workflows(value.get("workflows"))
         value["comfy_outputs"] = value.get("comfy_outputs", [])
         value["common_repos"] = common_repos
@@ -1493,6 +1554,67 @@ class ColabOneController:
             self.last_config = time.time()
         if endpoint:
             self._ensure_instance_state(endpoint)["last_config"] = time.time()
+        self._sync_remote_api_id_overrides(endpoint=endpoint)
+
+    def _runtime_supports_api_aliases(self, endpoint: str | None = None) -> bool:
+        with self.lock:
+            rt = (
+                self.data["runtime"]
+                if endpoint is None or endpoint == self._active_endpoint()
+                else self._ensure_instance_state(endpoint)["runtime"]
+            )
+            if not isinstance(rt, dict):
+                return False
+            if rt.get("api_model_aliases"):
+                return True
+            # Legacy remote explicitly flagged for upgrade lacks the `api_id` field.
+            return not bool(rt.get("upgrade_available"))
+
+    def _sync_remote_api_id_overrides(self, endpoint: str | None = None):
+        with self.lock:
+            rt = (
+                self.data["runtime"]
+                if endpoint is None or endpoint == self._active_endpoint()
+                else self._ensure_instance_state(endpoint)["runtime"]
+            )
+            if not isinstance(rt, dict) or not rt.get("api_model_aliases"):
+                return
+            overrides = dict(self.api_id_overrides)
+            for mid, spec in self.custom_models.items():
+                if mid not in overrides and isinstance(spec, dict):
+                    custom_alias = str(spec.get("api_id") or "").strip()
+                    if custom_alias:
+                        overrides[mid] = custom_alias
+            models = (
+                list(self.data.get("models") or [])
+                if endpoint is None or endpoint == self._active_endpoint()
+                else list(self._ensure_instance_state(endpoint).get("models") or [])
+            )
+        if not overrides:
+            return
+        remote_by_id = {
+            m.get("id"): m for m in models if isinstance(m, dict) and m.get("id")
+        }
+        changed = False
+        for mid, alias in overrides.items():
+            rem = remote_by_id.get(mid)
+            if rem is None or str(rem.get("api_id") or "").strip() == alias:
+                continue
+            try:
+                self.remote(
+                    "POST",
+                    f"models/{mid}/api-id",
+                    {"api_id": alias},
+                    endpoint=endpoint,
+                )
+                changed = True
+            except Exception:
+                continue
+        if changed:
+            try:
+                self.refresh_remote(endpoint=endpoint)
+            except Exception:
+                pass
 
     def _accepts_kwarg(fn, name: str) -> bool:
         try:
@@ -1694,7 +1816,7 @@ class ColabOneController:
         self.drive_probe.clear()
         self.update(
             operation={
-                "title": "正在通过 Colab 原生驱动挂载 Google 云盘 (ColabOne_Drive)",
+                "title": "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
                 "running": True,
             },
             auth_url="",
@@ -1747,6 +1869,7 @@ class ColabOneController:
                 info = self._remote_long("POST", "drive/connect", timeout=180)
                 self.activity.add("正在刷新云盘与远端工作区状态", "云盘")
                 self.refresh_remote()
+                self._sync_remote_api_id_overrides()
                 mode = info.get("mode")
                 if mode == "mount":
                     self.activity.add(
@@ -1766,19 +1889,19 @@ class ColabOneController:
                 if callable(inv_fn):
                     inv_fn()
                 self.activity.add(
-                    "无感配额项目暂不可用，自动切换为 Google Colab 官方原生驱动挂载",
+                    "无感配额项目暂不可用，自动切换为 Google Colab 官方原生 DriveFS 挂载",
                     "云盘",
                     "warning",
                 )
 
         if reason == "gcp_tos_required":
             self.activity.add(
-                "当前账号尚未开通免费 GCP 配额项目，自动切换为 Google Colab 官方原生驱动挂载",
+                "当前账户尚未开通免费 GCP 配额项目，自动切换为 Google Colab 官方原生 DriveFS 挂载",
                 "云盘",
             )
         elif not rclone_conf:
             self.activity.add(
-                "正在通过 Google Colab 官方原生驱动挂载云盘 (ColabOne_Drive)",
+                "正在通过 Google Colab 官方原生 DriveFS 挂载云盘 (ColabOne_Drive)",
                 "云盘",
             )
 
@@ -1789,8 +1912,9 @@ class ColabOneController:
             )
         self.activity.add("正在刷新云盘与远端工作区状态", "云盘")
         self.refresh_remote()
+        self._sync_remote_api_id_overrides()
         self.activity.add(
-            "已通过 Google Colab 原生驱动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
+            "已通过 Google Colab 原生 DriveFS 挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
             "云盘",
         )
         return info
@@ -2006,6 +2130,7 @@ class ColabOneController:
                     )
                 try:
                     self.refresh_remote()
+                    self._sync_remote_api_id_overrides()
                     self.activity.add("已刷新云盘工作区与远端状态", "云盘")
                 except Exception:
                     pass
@@ -2017,8 +2142,9 @@ class ColabOneController:
                     info = self._connect_colab_drivefs(silent_only=True)
                     if info and info.get("connected"):
                         self.refresh_remote()
+                        self._sync_remote_api_id_overrides()
                         self.activity.add(
-                            "已通过 Google Colab 原生驱动自动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
+                            "已通过 Google Colab 原生 DriveFS 自动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)",
                             "云盘",
                         )
                     else:
@@ -2237,14 +2363,70 @@ class ColabOneController:
                 "计费",
             )
 
+    def _post_remote_model(self, spec: dict, endpoint: str | None = None):
+        payload = copy.deepcopy(spec)
+        supports_aliases = self._runtime_supports_api_aliases(endpoint=endpoint)
+        if not supports_aliases:
+            payload.pop("api_id", None)
+        kwargs = {"endpoint": endpoint} if endpoint is not None else {}
+        try:
+            return self.remote("POST", "models", payload, **kwargs)
+        except Exception as exc:
+            msg = str(exc).lower()
+            status = int(
+                getattr(getattr(exc, "response", None), "status_code", 0) or 0
+            )
+            is_schema_reject = (
+                status in (400, 422)
+                or "api_id" in msg
+                or "extra_forbidden" in msg
+                or "extra inputs are not permitted" in msg
+                or "http 400" in msg
+                or "http 422" in msg
+            )
+            if "api_id" in payload and is_schema_reject:
+                legacy_payload = {k: v for k, v in payload.items() if k != "api_id"}
+                return self.remote("POST", "models", legacy_payload, **kwargs)
+            raise
+
+    def _active_model_api_ids(self, *, exclude_id: str = "") -> set[str]:
+        """Collect API model IDs currently occupied by user-active library models."""
+        with self.lock:
+            runtime = copy.deepcopy(self.data.get("runtime") or {})
+            base_models = copy.deepcopy(self.data.get("models") or [])
+        decorated = self._decorate_models(base_models, runtime)
+        taken: set[str] = set()
+        for item in decorated:
+            mid = str(item.get("id") or "")
+            if not mid or mid == exclude_id:
+                continue
+            if not (
+                item.get("custom")
+                or item.get("common")
+                or item.get("downloaded")
+                or item.get("loaded")
+            ):
+                continue
+            api_id = str(
+                item.get("pending_api_id")
+                or item.get("api_id")
+                or resolve_colabone_api_model_id(item)
+            ).strip()
+            if api_id:
+                taken.add(api_id)
+        return taken
+
     def _ensure_remote_model(self, model_id: str):
         with self.lock:
             spec = copy.deepcopy(self.custom_models.get(model_id))
+            override = self.api_id_overrides.get(model_id, "")
             on_remote = any(
                 m.get("id") == model_id for m in (self.data.get("models") or [])
             )
         if spec and not on_remote:
-            self.remote("POST", "models", spec)
+            if override:
+                spec["api_id"] = override
+            self._post_remote_model(spec)
 
     def import_model(self, payload):
         repo_input = str(payload.get("repo") or "").strip()
@@ -2256,6 +2438,23 @@ class ColabOneController:
             self.vault.get("hf", ""),
             custom_name=str(payload.get("name") or ""),
         )
+        with self.lock:
+            existing_override = self.api_id_overrides.get(spec.id, "")
+            existing_custom = self.custom_models.get(spec.id) or {}
+            existing_api_id = str(
+                existing_override or existing_custom.get("api_id") or ""
+            ).strip()
+        if existing_api_id:
+            spec = spec.model_copy(update={"api_id": existing_api_id})
+        else:
+            existing_ids = self._active_model_api_ids(exclude_id=spec.id)
+            unique_api_id = colabone_unique_api_model_id(
+                spec.api_id or resolve_colabone_api_model_id(spec),
+                existing_ids,
+                repo=spec.files[0].repo if spec.files else "",
+                filename=spec.files[0].path if spec.files else "",
+            )
+            spec = spec.model_copy(update={"api_id": unique_api_id})
         total_gib = sum(f.size for f in spec.files) / 1024**3
         self.activity.add(
             f"已解析模型清单：{spec.name}（{len(spec.files)} 个文件，{total_gib:.2f} GiB）",
@@ -2269,12 +2468,85 @@ class ColabOneController:
         self._save_library()
         self.activity.add(f"已保存到本地模型库：{spec.name}", "模型")
         if self._vault_sessions() and self.data["runtime"].get("state") == "ready":
-            self.remote("POST", "models", dumped)
+            self._post_remote_model(dumped)
             self.refresh_remote()
             self.activity.add(f"已同步模型配置到远端实例：{spec.name}", "模型")
         elif not self._vault_sessions():
             self.update(models=self.presets())
         return spec
+
+    def set_model_api_id(self, model_id: str, api_id: str = ""):
+        mid = self.model_id({"id": model_id})
+        clean_api_id = validate_colabone_api_model_id(api_id, allow_empty=True)
+        presets_list = self.presets()
+        preset_map = {m["id"]: m for m in presets_list}
+        with self.lock:
+            runtime = copy.deepcopy(self.data.get("runtime") or {})
+            target_model = (
+                next(
+                    (
+                        m
+                        for m in (self.data.get("models") or [])
+                        if m.get("id") == mid
+                    ),
+                    None,
+                )
+                or self.custom_models.get(mid)
+                or preset_map.get(mid)
+            )
+        if not target_model:
+            raise ValueError("找不到指定模型")
+        if clean_api_id:
+            taken = {x.lower() for x in self._active_model_api_ids(exclude_id=mid)}
+            if clean_api_id.lower() in taken:
+                raise ValueError("该模型 ID 已被其他模型使用，请换一个名称")
+            effective_api_id = clean_api_id
+            resolved = clean_api_id
+        else:
+            preset_default = str((preset_map.get(mid) or {}).get("api_id") or "").strip()
+            base_default = preset_default or resolve_colabone_api_model_id(
+                dict(target_model, api_id="")
+            )
+            taken_ids = self._active_model_api_ids(exclude_id=mid)
+            files = target_model.get("files") or []
+            first_file = files[0] if files and isinstance(files[0], dict) else {}
+            unique_default = colabone_unique_api_model_id(
+                base_default,
+                taken_ids,
+                repo=str(first_file.get("repo") or target_model.get("repo") or ""),
+                filename=str(first_file.get("path") or ""),
+            )
+            effective_api_id = (
+                unique_default
+                if unique_default.lower() != base_default.lower()
+                else ""
+            )
+            resolved = unique_default
+        remote_ready = runtime.get("state") == "ready"
+        if remote_ready:
+            if not runtime.get("api_model_aliases") and runtime.get(
+                "upgrade_available"
+            ):
+                raise RuntimeError("请先更新远端服务后再自定义模型 ID")
+            self._ensure_remote_model(mid)
+            self.remote("POST", f"models/{mid}/api-id", {"api_id": effective_api_id})
+        with self.lock:
+            if effective_api_id:
+                if clean_api_id or mid not in self.custom_models:
+                    self.api_id_overrides[mid] = effective_api_id
+                else:
+                    self.api_id_overrides.pop(mid, None)
+            else:
+                self.api_id_overrides.pop(mid, None)
+            if mid in self.custom_models:
+                self.custom_models[mid]["api_id"] = effective_api_id
+        self._save_library()
+        if remote_ready:
+            self.refresh_remote()
+        elif not self._vault_sessions():
+            self.update(models=self.presets())
+        self.activity.add(f"已更新模型 API ID：{resolved}", "模型")
+        return {"ok": True, "id": mid, "api_id": resolved}
 
     def set_common_model(self, model_id: str, common: bool | None = None):
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", model_id):
@@ -2388,6 +2660,7 @@ class ColabOneController:
             if current and (current.get("downloaded") or current.get("loaded")):
                 raise RuntimeError("该模型已在远端下载或装载，请先删除远端文件后再移除本地记录")
             self.custom_models.pop(mid, None)
+            self.api_id_overrides.pop(mid, None)
             self.common_ids.discard(mid)
             self.data["models"] = [
                 m for m in (self.data.get("models") or []) if m.get("id") != mid
@@ -2994,6 +3267,11 @@ class ColabOneController:
         if action == "model.import":
             return self.async_operation(
                 "读取 Hugging Face 模型清单", lambda: self.import_model(payload)
+            )
+        if action == "model.set_api_id":
+            return self.set_model_api_id(
+                str(payload.get("id") or ""),
+                str(payload.get("api_id") or ""),
             )
         if action == "model.download":
             mid = self.model_id(payload)

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"image"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,7 +309,63 @@ func TestColabOneSplashSpinnerDuration(t *testing.T) {
 	if colabOneSplashSpinnerArcSpan != 0.75 {
 		t.Fatalf("colabOneSplashSpinnerArcSpan = %v, want 0.75 (3/4 arc)", colabOneSplashSpinnerArcSpan)
 	}
-	if colabOneSplashSpinnerSize < 120 || colabOneSplashSpinnerRadius < 50 {
-		t.Fatalf("expected oversized splash loading arc, got size=%.1f radius=%.1f", colabOneSplashSpinnerSize, colabOneSplashSpinnerRadius)
+	// Visual hierarchy: #1 Avatar (largest) > #2 3/4 Arc Loading Icon (second largest).
+	if !(colabOneSplashAvatarPedestalSize > colabOneSplashAvatarTileSize &&
+		colabOneSplashAvatarTileSize > colabOneSplashSpinnerSize &&
+		colabOneSplashSpinnerSize >= 60) {
+		t.Fatalf(
+			"unexpected splash hierarchy: avatarPedestal=%.1f avatarTile=%.1f spinner=%.1f",
+			colabOneSplashAvatarPedestalSize,
+			colabOneSplashAvatarTileSize,
+			colabOneSplashSpinnerSize,
+		)
+	}
+
+	// Phase math completes one full revolution every 3 seconds.
+	origin := time.Unix(1700000000, 0)
+	cases := []struct {
+		offset time.Duration
+		want   float64
+	}{
+		{-15 * time.Millisecond, 0.0},
+		{0, 0.0},
+		{750 * time.Millisecond, 0.25},
+		{1500 * time.Millisecond, 0.50},
+		{2250 * time.Millisecond, 0.75},
+		{3000 * time.Millisecond, 0.0},
+	}
+	for _, tc := range cases {
+		got := colabOneSplashSpinPhase(origin.Add(tc.offset), origin, colabOneSplashSpinnerDuration)
+		if math.Abs(got-tc.want) > 1e-6 {
+			t.Fatalf("offset=%v: spin phase = %.6f, want %.6f", tc.offset, got, tc.want)
+		}
+	}
+
+	// Render live frames 750ms apart (90° clockwise per step) well past the enter fade-in
+	// and prove the rendered 3/4 arc pixels visibly rotate and complete one full turn in 3s.
+	dark := true
+	shownAt := origin
+	baseTime := origin.Add(time.Second) // past 280ms enter animation so card opacity/scale are steady
+	renderAt := func(offset time.Duration) *image.RGBA {
+		now := baseTime.Add(offset)
+		state := &colabOneSplashViewState{
+			shownAt:     shownAt,
+			forceDark:   &dark,
+			forceLocale: colabOneLocaleEnUS,
+			forceNow:    &now,
+		}
+		return ui.Render(state.render, colabOneSplashWindowWidth, colabOneSplashWindowHeight, 2)
+	}
+	f0 := renderAt(0)
+	f1 := renderAt(750 * time.Millisecond)
+	f2 := renderAt(1500 * time.Millisecond)
+	f3 := renderAt(2250 * time.Millisecond)
+	f4 := renderAt(3000 * time.Millisecond)
+
+	if bytes.Equal(f0.Pix, f1.Pix) || bytes.Equal(f1.Pix, f2.Pix) || bytes.Equal(f2.Pix, f3.Pix) {
+		t.Fatal("expected splash 3/4 loading arc pixels to visibly rotate every 750ms")
+	}
+	if !bytes.Equal(f0.Pix, f4.Pix) {
+		t.Fatal("expected splash 3/4 loading arc to return to exact starting angle after 3000ms (1 full revolution)")
 	}
 }

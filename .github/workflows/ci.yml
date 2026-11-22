@@ -1,15 +1,18 @@
 name: CI
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      ref:
+        description: "Git ref or commit SHA to build and verify"
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
 jobs:
   check:
     name: check (${{ matrix.os }})
@@ -20,6 +23,8 @@ jobs:
         os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-go@v7
         with:
           go-version-file: console/go.mod
@@ -44,7 +49,8 @@ jobs:
         run: npx playwright test
       - name: Portable package and runtime self-test
         run: python tools/package.py --out dist
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: ColabOne-${{ matrix.os }}
           path: dist/ColabOne-*.zip
+          if-no-files-found: error

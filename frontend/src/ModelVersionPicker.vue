@@ -28,12 +28,14 @@ import RuntimeParamPresets from "./RuntimeParamPresets.vue";
 import { colabOneOpenURL } from "./api";
 import {
   describeColabOneRuntimeParams,
+  evaluateColabOneTargetDiskFit,
   evaluateColabOneVramFit,
   formatColabOneFileSize,
   formatColabOneGb,
   hasLiveRuntimeGpu,
   planColabOneVersionOptions,
   resolveColabOneGpuTarget,
+  type ColabOneFileDiskState,
   type ColabOneGpuTarget,
   type ColabOneGpuTargetId,
   type ColabOneHubFile,
@@ -62,6 +64,7 @@ const props = defineProps<{
   showSaveButton?: boolean;
   showUseLoaded?: boolean;
   savedTagForFile?: (filename: string) => string;
+  fileDiskState?: (filename: string) => ColabOneFileDiskState | undefined;
   downloadDisabledReason?: string;
 }>();
 
@@ -103,6 +106,16 @@ const savedFilenames = computed(() => {
   return set;
 });
 
+const fileDiskStates = computed(() => {
+  const map = new Map<string, ColabOneFileDiskState>();
+  if (!props.fileDiskState) return map;
+  for (const f of props.files) {
+    const st = props.fileDiskState(f.filename);
+    if (st) map.set(f.filename, st);
+  }
+  return map;
+});
+
 const plan = computed(() =>
   planColabOneVersionOptions(
     props.files,
@@ -110,6 +123,8 @@ const plan = computed(() =>
     props.ready ? props.contextLength : 8192,
     props.selectedFilename,
     savedFilenames.value,
+    isComfyOnly.value,
+    fileDiskStates.value,
   ),
 );
 
@@ -119,6 +134,16 @@ const visibleOptions = computed(() =>
 
 const selectedOption = computed<ColabOneVersionOption | undefined>(() =>
   plan.value.all.find((o) => o.file.filename === props.selectedFilename),
+);
+
+// Reset local state before auto-selecting when switching repositories
+watch(
+  () => props.repo,
+  () => {
+    showAllVersions.value = false;
+    showParams.value = false;
+    userManuallyPicked.value = false;
+  },
 );
 
 // Auto-select recommended version on load or GPU change unless user manually picked a still-valid version
@@ -149,15 +174,6 @@ watch(
   { immediate: true },
 );
 
-watch(
-  () => props.repo,
-  () => {
-    showAllVersions.value = false;
-    showParams.value = false;
-    userManuallyPicked.value = false;
-  },
-);
-
 const liveGpuTarget = computed(() =>
   hasLiveRuntimeGpu(props.runtime)
     ? resolveColabOneGpuTarget("CURRENT", props.runtime)
@@ -174,6 +190,7 @@ const activeSelectedFit = computed(() => {
     return evaluateColabOneVramFit(
       selectedOption.value.fit.estimatedVramMib,
       liveGpuTarget.value,
+      isComfyOnly.value,
     );
   }
   return selectedOption.value.fit;
@@ -189,10 +206,15 @@ const hybridNotice = computed<{
   if (fit.status === "hybrid") {
     return {
       type: "info",
-      message: t("models.pickerHybridAlert", {
-        gpu: gpu.shortLabel,
-        overflow: formatColabOneGb(fit.overflowGb),
-      }),
+      message:
+        fit.overflowGb > 0
+          ? t("models.pickerHybridAlert", {
+              gpu: gpu.shortLabel,
+              overflow: formatColabOneGb(fit.overflowGb),
+            })
+          : t("models.pickerHybridNearLimitAlert", {
+              gpu: gpu.shortLabel,
+            }),
     };
   }
   return {
@@ -203,6 +225,33 @@ const hybridNotice = computed<{
       minGpu: fit.minGpu.label,
     }),
   };
+});
+
+const activeSelectedDiskFit = computed(() => {
+  if (!selectedOption.value) return null;
+  if (props.ready && liveGpuTarget.value) {
+    return evaluateColabOneTargetDiskFit(
+      selectedOption.value.file.size,
+      liveGpuTarget.value,
+      fileDiskStates.value.get(selectedOption.value.file.filename),
+    );
+  }
+  return selectedOption.value.disk;
+});
+
+const diskNotice = computed<{
+  type: "error" | "warning";
+  message: string;
+} | null>(() => {
+  const disk = activeSelectedDiskFit.value;
+  if (!disk || !disk.detail) return null;
+  if (disk.status === "exceeds_vm") {
+    return { type: "error", message: disk.detail };
+  }
+  if (disk.status === "insufficient_live" || disk.status === "tight") {
+    return { type: "warning", message: disk.detail };
+  }
+  return null;
 });
 
 const paramSummary = computed(() =>
@@ -244,6 +293,14 @@ function fitTagColor(opt: ColabOneVersionOption): string {
     return "default";
   }
   return "blue";
+}
+
+function diskTagColor(opt: ColabOneVersionOption): string {
+  if (opt.disk.status === "exceeds_vm") return "error";
+  if (opt.disk.status === "insufficient_live" || opt.disk.status === "tight") {
+    return "warning";
+  }
+  return "default";
 }
 
 function savedTag(filename: string): string {
@@ -384,14 +441,40 @@ function savedTag(filename: string): string {
               >
                 {{ opt.fit.label }}
               </ATag>
+              <ATag
+                v-if="opt.file.supported && opt.disk.label"
+                :color="diskTagColor(opt)"
+                :bordered="false"
+                class="co-vc-disk-tag"
+              >
+                {{ opt.disk.label }}
+              </ATag>
             </div>
             <div class="co-vc-metrics co-tabular">
-              <span>
-                {{
-                  t("models.pickerFileSize", {
-                    size: formatColabOneFileSize(opt.file.size),
-                  })
-                }}
+              <span
+                class="co-vc-disk"
+                :class="{
+                  'is-disk-danger': opt.disk.status === 'exceeds_vm',
+                  'is-disk-warn':
+                    opt.disk.status === 'insufficient_live' ||
+                    opt.disk.status === 'tight',
+                }"
+              >
+                {{ t("models.pickerDiskLabel") }}
+                <strong>{{ formatColabOneFileSize(opt.file.size) }}</strong><template v-if="opt.disk.status === 'cached'">{{ t("models.pickerDiskCachedInline") }}</template><template
+                  v-else-if="
+                    opt.file.size > 0 &&
+                    (targetGpu.diskFreeGb > 0 || targetGpu.isLiveDisk)
+                  "
+                >{{ " " }}{{
+                    targetGpu.isLiveDisk
+                      ? t("models.pickerDiskAvailLive", {
+                          avail: formatColabOneGb(targetGpu.diskFreeGb),
+                        })
+                      : t("models.pickerDiskAvailApprox", {
+                          avail: formatColabOneGb(targetGpu.diskFreeGb),
+                        })
+                  }}</template>
               </span>
               <span>·</span>
               <span>
@@ -464,6 +547,24 @@ function savedTag(filename: string): string {
             >
               {{ t("models.pickerHybridCount", { count: plan.hybridCount }) }}
             </span>
+            <template
+              v-if="
+                (plan.fullVramCount > 0 || plan.hybridCount > 0) &&
+                plan.diskExceedsVmCount > 0
+              "
+            >
+              <span>/</span>
+            </template>
+            <span
+              v-if="plan.diskExceedsVmCount > 0"
+              class="co-vp-fit-disk-warn"
+            >
+              {{
+                t("models.pickerDiskExceedsCount", {
+                  count: plan.diskExceedsVmCount,
+                })
+              }}
+            </span>
           </template>
         </div>
 
@@ -479,9 +580,45 @@ function savedTag(filename: string): string {
         </AButton>
       </div>
 
-      <!-- Helpful tip when all versions exceed pure VRAM but are runnable via hybrid GPU+RAM offload -->
+      <!-- Warning banner when all versions exceed target GPU disk capacity -->
       <div
         v-if="
+          plan.diskFittingCount === 0 &&
+          plan.diskExceedsVmCount > 0 &&
+          (targetGpu.diskFreeGb > 0 || targetGpu.isLiveDisk)
+        "
+        class="co-vp-hybrid-banner co-vp-disk-banner"
+        role="status"
+      >
+        <div class="co-vp-hybrid-banner-text">
+          <PhInfo :size="15" class="co-vp-info-icon is-warn" />
+          <span>
+            {{
+              t("models.pickerAllDiskOverflowNotice", {
+                gpu: targetGpu.label,
+                avail: formatColabOneGb(targetGpu.diskFreeGb),
+              })
+            }}
+          </span>
+        </div>
+        <ASpace v-if="plan.suggestedDiskGpuId" :size="6" wrap>
+          <AButton
+            size="small"
+            @click="emit('switchGpu', plan.suggestedDiskGpuId)"
+          >
+            {{
+              t("models.pickerSwitchLargerDisk", {
+                gpu: plan.suggestedDiskGpuLabel,
+                avail: formatColabOneGb(plan.suggestedDiskAvailGb),
+              })
+            }}
+          </AButton>
+        </ASpace>
+      </div>
+
+      <!-- Helpful tip when all versions exceed pure VRAM but are runnable via hybrid GPU+RAM offload -->
+      <div
+        v-else-if="
           plan.fullVramCount === 0 &&
           plan.hybridCount > 0 &&
           targetGpu.vramMib > 0
@@ -529,6 +666,10 @@ function savedTag(filename: string): string {
               selectedFilename !== opt.file.filename,
             'is-heavy-hybrid':
               opt.fit.status === 'heavy_hybrid' &&
+              !opt.disabled &&
+              selectedFilename !== opt.file.filename,
+            'is-disk-overflow':
+              opt.disk.exceedsVm &&
               !opt.disabled &&
               selectedFilename !== opt.file.filename,
             'is-disabled': opt.disabled,
@@ -583,6 +724,15 @@ function savedTag(filename: string): string {
             </ATag>
 
             <ATag
+              v-if="opt.file.supported && opt.disk.label"
+              :color="diskTagColor(opt)"
+              :bordered="false"
+              class="co-vc-disk-tag"
+            >
+              {{ opt.disk.label }}
+            </ATag>
+
+            <ATag
               v-if="savedTag(opt.file.filename)"
               color="cyan"
               :bordered="false"
@@ -593,9 +743,30 @@ function savedTag(filename: string): string {
           </div>
 
           <div class="co-vc-metrics co-tabular">
-            <span class="co-vc-size">
-              {{ t("models.pickerSizeLabel") }}
-              <strong>{{ formatColabOneFileSize(opt.file.size) }}</strong>
+            <span
+              class="co-vc-size co-vc-disk"
+              :class="{
+                'is-disk-danger': opt.disk.status === 'exceeds_vm',
+                'is-disk-warn':
+                  opt.disk.status === 'insufficient_live' ||
+                  opt.disk.status === 'tight',
+              }"
+            >
+              {{ t("models.pickerDiskLabel") }}
+              <strong>{{ formatColabOneFileSize(opt.file.size) }}</strong><template v-if="opt.disk.status === 'cached'">{{ t("models.pickerDiskCachedInline") }}</template><template
+                v-else-if="
+                  opt.file.size > 0 &&
+                  (targetGpu.diskFreeGb > 0 || targetGpu.isLiveDisk)
+                "
+              >{{ " " }}{{
+                  targetGpu.isLiveDisk
+                    ? t("models.pickerDiskAvailLive", {
+                        avail: formatColabOneGb(targetGpu.diskFreeGb),
+                      })
+                    : t("models.pickerDiskAvailApprox", {
+                        avail: formatColabOneGb(targetGpu.diskFreeGb),
+                      })
+                }}</template>
             </span>
             <span>·</span>
             <span class="co-vc-vram">
@@ -605,9 +776,11 @@ function savedTag(filename: string): string {
                 / {{ targetGpu.vramGb }} GB
                 <template v-if="opt.fit.requiresHybrid">
                   {{
-                    t("models.pickerOverflowToRamInline", {
-                      overflow: formatColabOneGb(opt.fit.overflowGb),
-                    })
+                    opt.fit.overflowGb > 0
+                      ? t("models.pickerOverflowToRamInline", {
+                          overflow: formatColabOneGb(opt.fit.overflowGb),
+                        })
+                      : t("models.pickerNearLimitToRamInline")
                   }}
                 </template>
               </template>
@@ -626,22 +799,30 @@ function savedTag(filename: string): string {
             <span
               class="co-vc-desc"
               :class="{
+                'is-danger': opt.disk.status === 'exceeds_vm' && !opt.disabled,
                 'is-warn':
-                  (opt.fit.status === 'tight' ||
+                  (opt.disk.status === 'insufficient_live' ||
+                    opt.fit.status === 'tight' ||
                     opt.fit.status === 'heavy_hybrid') &&
+                  !opt.disabled &&
+                  opt.disk.status !== 'exceeds_vm',
+                'is-hybrid-note':
+                  opt.fit.status === 'hybrid' &&
+                  !opt.disk.insufficient &&
                   !opt.disabled,
-                'is-hybrid-note': opt.fit.status === 'hybrid' && !opt.disabled,
                 'is-disabled-reason': opt.disabled,
               }"
             >
               {{
                 opt.disabled
                   ? tb(opt.disabledReason)
-                  : opt.fit.requiresHybrid
-                    ? opt.fit.detail
-                    : opt.fit.status === "tight"
-                      ? t("models.pickerTightSuffix", { desc: opt.quant.desc })
-                      : opt.quant.desc
+                  : opt.disk.insufficient
+                    ? opt.disk.detail
+                    : opt.fit.requiresHybrid
+                      ? opt.fit.detail
+                      : opt.fit.status === "tight"
+                        ? t("models.pickerTightSuffix", { desc: opt.quant.desc })
+                        : opt.quant.desc
               }}
             </span>
             <span class="co-vc-file" :title="opt.file.filename">
@@ -686,9 +867,34 @@ function savedTag(filename: string): string {
           <ATag color="blue" :bordered="false">
             {{ selectedOption.quant.code }}
           </ATag>
-          <strong class="co-tabular">{{
-            formatColabOneFileSize(selectedOption.file.size)
-          }}</strong>
+          <span
+            class="co-tabular"
+            :class="{
+              'is-disk-danger': activeSelectedDiskFit?.status === 'exceeds_vm',
+              'is-disk-warn':
+                activeSelectedDiskFit?.status === 'insufficient_live' ||
+                activeSelectedDiskFit?.status === 'tight',
+            }"
+          >
+            {{ t("models.pickerDiskLabel") }}
+            <strong>{{
+              formatColabOneFileSize(selectedOption.file.size)
+            }}</strong><template v-if="activeSelectedDiskFit?.status === 'cached'">{{ t("models.pickerDiskCachedInline") }}</template><template
+              v-else-if="
+                selectedOption.file.size > 0 &&
+                (activeEvaluationGpu.diskFreeGb > 0 ||
+                  activeEvaluationGpu.isLiveDisk)
+              "
+            >{{ " " }}{{
+                activeEvaluationGpu.isLiveDisk
+                  ? t("models.pickerDiskAvailLive", {
+                      avail: formatColabOneGb(activeEvaluationGpu.diskFreeGb),
+                    })
+                  : t("models.pickerDiskAvailApprox", {
+                      avail: formatColabOneGb(activeEvaluationGpu.diskFreeGb),
+                    })
+              }}</template>
+          </span>
           <span>·</span>
           <span>
             {{
@@ -764,6 +970,15 @@ function savedTag(filename: string): string {
         class="co-vp-live-warn"
       />
 
+      <!-- Remote disk capacity notice -->
+      <AAlert
+        v-if="diskNotice"
+        :type="diskNotice.type"
+        show-icon
+        :message="diskNotice.message"
+        class="co-vp-disk-warn"
+      />
+
       <!-- Action Buttons -->
       <ASpace wrap :size="8" class="co-hub-install-actions">
         <template v-if="ready">
@@ -810,7 +1025,7 @@ function savedTag(filename: string): string {
             @click="emit('useLoaded')"
           >
             <template #icon><PhCheck :size="13" /></template>
-            {{ t("models.badgeInUse") }}
+            {{ t("models.useThisModel") }}
           </AButton>
         </template>
         <template v-else>
@@ -904,6 +1119,47 @@ function savedTag(filename: string): string {
 .co-vp-fit-hybrid {
   color: var(--co-secondary-text);
   font-weight: 500;
+}
+
+.co-vp-fit-disk-warn {
+  color: var(--co-warning-text);
+  font-weight: 500;
+}
+
+.co-vp-disk-banner {
+  border-color: var(--co-warning-border, var(--co-border));
+}
+
+.co-vp-info-icon.is-warn {
+  color: var(--co-warning-text);
+}
+
+.co-version-card.is-disk-overflow {
+  background: var(--co-subtle);
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+.co-vc-disk.is-disk-warn,
+.co-vc-disk.is-disk-warn strong,
+.co-summary-meta .is-disk-warn,
+.co-summary-meta .is-disk-warn strong {
+  color: var(--co-warning-text);
+}
+
+.co-vc-disk.is-disk-danger,
+.co-vc-disk.is-disk-danger strong,
+.co-summary-meta .is-disk-danger,
+.co-summary-meta .is-disk-danger strong,
+.co-vc-desc.is-danger {
+  color: var(--co-danger, #cf1322);
+}
+
+.co-vc-disk-tag {
+  margin-inline-end: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 6px;
 }
 
 .co-vp-hybrid-banner {

@@ -34,7 +34,7 @@ def colabone_update():
     ):
         raise RuntimeError("请等待任务结束并卸载模型或停止 ComfyUI 后再更新远端服务")
     if cfg.get("deadline", 0) > 0 and cfg["deadline"] - time.time() < 90:
-        raise RuntimeError("预算保护即将释放实例，新服务会在下次启动时生效")
+        raise RuntimeError("远端自动释放保护即将释放实例，新服务会在下次启动时生效")
     processes = []
     for item in Path("/proc").glob("[0-9]*/cmdline"):
         try:
@@ -101,7 +101,7 @@ def colabone_update():
         )
         emit_log("新版服务依赖已就绪，正在平滑停止旧管理服务")
     if cfg.get("deadline", 0) > 0 and cfg["deadline"] - time.time() < 60:
-        raise RuntimeError("预算保护即将释放实例，未替换运行中的服务")
+        raise RuntimeError("远端自动释放保护即将释放实例，未替换运行中的服务")
     backup = Path("/content/colabone-previous")
     shutil.rmtree(backup, ignore_errors=True)
     pid = processes[0]
@@ -195,7 +195,7 @@ def colabone_update():
         except Exception:
             time.sleep(0.5)
     base_msg = (
-        "新服务未就绪，已恢复旧服务；模型文件与预算保持不变"
+        "新服务未就绪，已恢复旧服务；模型文件与运行配置保持不变"
         if rollback_ok
         else "新服务未就绪且回滚后健康检查未通过，请重新连接或释放实例"
     )

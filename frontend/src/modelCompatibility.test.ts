@@ -5,6 +5,8 @@ import {
   describeColabOneQuantization,
   describeColabOneRuntimeParams,
   estimateColabOneVramMib,
+  evaluateColabOneModelDiskFit,
+  evaluateColabOneTargetDiskFit,
   evaluateColabOneVramFit,
   matchColabOneParamPreset,
   planColabOneVersionOptions,
@@ -13,6 +15,7 @@ import {
   summarizeColabOneRepoFit,
   type ColabOneHubFile,
 } from "./modelCompatibility";
+import type { ModelSpec, RuntimeStatus } from "./types";
 
 const makeFile = (
   filename: string,
@@ -141,7 +144,7 @@ describe("ColabOne GPU target resolution & VRAM fit", () => {
 describe("Beginner-friendly quantization descriptions & curated version planner", () => {
   it("translates technical quantization names into clear Chinese labels", () => {
     expect(describeColabOneQuantization("UD-Q4_K_XL").title).toBe("主流均衡");
-    expect(describeColabOneQuantization("Q8_0").title).toContain("高画质");
+    expect(describeColabOneQuantization("Q8_0").title).toContain("高精度");
     expect(describeColabOneQuantization("BF16").title).toContain("原版");
     expect(describeColabOneQuantization("IQ2_XXS").title).toBe("极限压缩");
     expect(
@@ -227,7 +230,7 @@ describe("Beginner-friendly quantization descriptions & curated version planner"
     expect(repoSummaryG4Mega.runnable).toBe(true);
     expect(repoSummaryG4Mega.badgeLabel).toContain("混合装载");
 
-    // On T4 (16 GB): huge files are heavy_hybrid (still selectable, suggests A100/H100 for full VRAM, runnable=false for Fits Only toggle)
+    // On T4 (16 GB VRAM, ~75 GB usable disk): 68 GiB is heavy_hybrid (fits disk tightly) while 120 GiB exceeds T4 disk
     const hugeFiles: ColabOneHubFile[] = [
       makeFile("Big-Q4_K_M.gguf", 68, "Q4_K_M"),
       makeFile("Big-Q8_0.gguf", 120, "Q8_0"),
@@ -238,7 +241,8 @@ describe("Beginner-friendly quantization descriptions & curated version planner"
       8192,
     );
     expect(t4Huge.fullVramCount).toBe(0);
-    expect(t4Huge.hybridCount).toBe(2);
+    expect(t4Huge.hybridCount).toBe(1);
+    expect(t4Huge.diskExceedsVmCount).toBe(1);
     expect(t4Huge.recommendedFilename).toBe("Big-Q4_K_M.gguf");
     expect(t4Huge.suggestedGpuId).toBe("A100_80");
     expect(t4Huge.all.every((o) => !o.disabled)).toBe(true);
@@ -280,5 +284,457 @@ describe("Runtime parameter presets & effect descriptions", () => {
     expect(custom.presetTitle).toBe("自定义档位");
     expect(custom.contextK).toBe(64);
     expect(custom.temperatureEffect).toContain("随机");
+  });
+});
+
+describe("ColabOne remote disk fit evaluation", () => {
+  const GIB = 1024 ** 3;
+  const MIB = 1024 ** 2;
+  const makeModel = (overrides: Partial<ModelSpec> = {}): ModelSpec => ({
+    id: "qwen-flash-q8",
+    name: "Qwen3.8-Flash-Next-GGUF",
+    description: "Q8_0",
+    downloaded: false,
+    loaded: false,
+    size: Math.round(175.3 * GIB),
+    min_vram_mib: 180000,
+    files: [{ repo: "org/repo", path: "model-00001-of-00006.gguf" }],
+    ...overrides,
+  });
+
+  const makeRuntime = (
+    overrides: Partial<RuntimeStatus> = {},
+  ): RuntimeStatus => ({
+    state: "ready",
+    disk_free: Math.round(67.9 * GIB),
+    resources: {
+      disk: {
+        total_bytes: Math.round(235.7 * GIB),
+        used_bytes: Math.round(167.8 * GIB),
+        free_bytes: Math.round(67.9 * GIB),
+        percent: 71.2,
+      },
+    },
+    tasks: [],
+    ...overrides,
+  });
+
+  it("does not warn during active download when free disk covers remaining bytes", () => {
+    const model = makeModel();
+    const runtime = makeRuntime({
+      tasks: [
+        {
+          id: "dl-1",
+          kind: "download",
+          model_id: model.id,
+          state: "running",
+          progress: 0.96,
+          message: "shard 6",
+          error: "",
+          download: {
+            downloaded_bytes: Math.round(167.6 * GIB),
+            total_bytes: Math.round(175.3 * GIB),
+            speed_bps: 229.9 * MIB,
+            eta_seconds: 35,
+            elapsed_seconds: 800,
+            resumed_bytes: 0,
+            threads: 32,
+            connections: 32,
+            phase: "downloading",
+            filename: "shard-6.gguf",
+            file_index: 6,
+            file_count: 6,
+          },
+        },
+      ],
+    });
+
+    const fit = evaluateColabOneModelDiskFit(model, runtime);
+    expect(fit.insufficient).toBe(false);
+    expect(fit.warning).toBe("");
+    expect(fit.cachedBytes).toBe(Math.round(167.6 * GIB));
+    expect(fit.remainingBytes).toBe(
+      Math.round(175.3 * GIB) - Math.round(167.6 * GIB),
+    );
+  });
+
+  it("warns against remaining bytes (with cached amount) when active download truly exceeds free disk", () => {
+    const model = makeModel();
+    const runtime = makeRuntime({
+      disk_free: Math.round(5.0 * GIB),
+      resources: {
+        disk: {
+          total_bytes: Math.round(235.7 * GIB),
+          used_bytes: Math.round(230.7 * GIB),
+          free_bytes: Math.round(5.0 * GIB),
+          percent: 97.9,
+        },
+      },
+      tasks: [
+        {
+          id: "dl-2",
+          kind: "download",
+          model_id: model.id,
+          state: "running",
+          progress: 0.96,
+          message: "shard 6",
+          error: "",
+          download: {
+            downloaded_bytes: Math.round(167.6 * GIB),
+            total_bytes: Math.round(175.3 * GIB),
+            speed_bps: 200 * MIB,
+            eta_seconds: 40,
+            elapsed_seconds: 800,
+            resumed_bytes: 0,
+            threads: 32,
+            connections: 32,
+            phase: "downloading",
+            filename: "shard-6.gguf",
+            file_index: 6,
+            file_count: 6,
+          },
+        },
+      ],
+    });
+
+    const fit = evaluateColabOneModelDiskFit(model, runtime);
+    expect(fit.insufficient).toBe(true);
+    expect(fit.warning).toContain("5.0 GB");
+    expect(fit.warning).toContain("7.7 GB");
+    expect(fit.warning).toContain("167.6 GB");
+    expect(fit.warning).not.toContain("175.3 GB");
+  });
+
+  it("accounts for server-reported cached_bytes after cancellation or during resume verification", () => {
+    const partialModel = makeModel({ cached_bytes: Math.round(167.6 * GIB) });
+
+    // Paused / cancelled with 67.9 GB free vs 7.7 GB remaining -> fits
+    const okFit = evaluateColabOneModelDiskFit(partialModel, makeRuntime());
+    expect(okFit.insufficient).toBe(false);
+    expect(okFit.warning).toBe("");
+
+    // Resuming while server is still hashing shard 1 (task downloaded_bytes=0) -> no false flicker
+    const resumingRuntime = makeRuntime({
+      tasks: [
+        {
+          id: "dl-resume",
+          kind: "download",
+          model_id: partialModel.id,
+          state: "running",
+          progress: 0,
+          message: "verifying shard 1",
+          error: "",
+          download: {
+            downloaded_bytes: 0,
+            total_bytes: Math.round(175.3 * GIB),
+            speed_bps: 0,
+            eta_seconds: null,
+            elapsed_seconds: 2,
+            resumed_bytes: 0,
+            threads: 32,
+            connections: 0,
+            phase: "connecting",
+            filename: "shard-1.gguf",
+            file_index: 1,
+            file_count: 6,
+          },
+        },
+      ],
+    });
+    expect(evaluateColabOneModelDiskFit(partialModel, resumingRuntime).insufficient).toBe(false);
+
+    // Paused / cancelled with only 4.0 GB free vs 7.7 GB remaining -> warns against remaining
+    const lowFit = evaluateColabOneModelDiskFit(
+      partialModel,
+      makeRuntime({
+        disk_free: Math.round(4.0 * GIB),
+        resources: {
+          disk: {
+            total_bytes: Math.round(235.7 * GIB),
+            used_bytes: Math.round(231.7 * GIB),
+            free_bytes: Math.round(4.0 * GIB),
+            percent: 98.3,
+          },
+        },
+      }),
+    );
+    expect(lowFit.insufficient).toBe(true);
+    expect(lowFit.warning).toContain("4.0 GB");
+    expect(lowFit.warning).toContain("7.7 GB");
+    expect(lowFit.warning).toContain("167.6 GB");
+  });
+
+  it("warns against full model size for untouched models and handles zero free disk, completion, and rounding", () => {
+    const untouched = makeModel();
+    const fit = evaluateColabOneModelDiskFit(untouched, makeRuntime());
+    expect(fit.insufficient).toBe(true);
+    expect(fit.warning).toContain("67.9 GB");
+    expect(fit.warning).toContain("175.3 GB");
+
+    // Genuinely 0 free bytes on a mounted volume (total_bytes > 0) still warns
+    const fullDiskFit = evaluateColabOneModelDiskFit(
+      untouched,
+      makeRuntime({
+        disk_free: 0,
+        resources: {
+          disk: {
+            total_bytes: Math.round(235.7 * GIB),
+            used_bytes: Math.round(235.7 * GIB),
+            free_bytes: 0,
+            percent: 100,
+          },
+        },
+      }),
+    );
+    expect(fullDiskFit.insufficient).toBe(true);
+    expect(fullDiskFit.warning).toContain("0 MB");
+
+    // Telemetry failure (total_bytes=0, free_bytes=0) does not falsely warn
+    const unknownDiskFit = evaluateColabOneModelDiskFit(
+      untouched,
+      makeRuntime({
+        disk_free: 0,
+        resources: {
+          disk: { total_bytes: 0, used_bytes: 0, free_bytes: 0, percent: 0 },
+        },
+      }),
+    );
+    expect(unknownDiskFit.insufficient).toBe(false);
+
+    // Downloaded, loaded, loading, verifying (remaining=0), or stopped never warn
+    expect(
+      evaluateColabOneModelDiskFit(makeModel({ downloaded: true }), makeRuntime())
+        .insufficient,
+    ).toBe(false);
+    expect(
+      evaluateColabOneModelDiskFit(
+        untouched,
+        makeRuntime({ loaded_model: untouched.id }),
+      ).insufficient,
+    ).toBe(false);
+    expect(
+      evaluateColabOneModelDiskFit(
+        untouched,
+        makeRuntime({ state: "stopped" }),
+      ).insufficient,
+    ).toBe(false);
+    expect(
+      evaluateColabOneModelDiskFit(
+        untouched,
+        makeRuntime({
+          disk_free: 100 * MIB,
+          resources: undefined,
+          tasks: [
+            {
+              id: "dl-verify",
+              kind: "download",
+              model_id: untouched.id,
+              state: "running",
+              progress: 1,
+              message: "verifying",
+              error: "",
+              download: {
+                downloaded_bytes: untouched.size,
+                total_bytes: untouched.size,
+                speed_bps: 0,
+                eta_seconds: 0,
+                elapsed_seconds: 900,
+                resumed_bytes: 0,
+                threads: 32,
+                connections: 0,
+                phase: "verifying",
+                filename: "shard-6.gguf",
+                file_index: 6,
+                file_count: 6,
+              },
+            },
+          ],
+        }),
+      ).insufficient,
+    ).toBe(false);
+
+    // Disambiguates values that would round identically at 1 decimal place
+    const tightFit = evaluateColabOneModelDiskFit(
+      makeModel({ size: Math.round(7.74 * GIB), cached_bytes: 0 }),
+      makeRuntime({
+        disk_free: Math.round(7.71 * GIB),
+        resources: undefined,
+      }),
+    );
+    expect(tightFit.insufficient).toBe(true);
+    expect(tightFit.warning).toContain("7.71 GB");
+    expect(tightFit.warning).toContain("7.74 GB");
+
+    // Sub-1MiB cache does not display misleading "(已缓存 0 MB)"
+    const tinyCacheFit = evaluateColabOneModelDiskFit(
+      makeModel({ size: 20 * GIB, cached_bytes: 256 * 1024 }),
+      makeRuntime({ disk_free: 10 * GIB, resources: undefined }),
+    );
+    expect(tinyCacheFit.insufficient).toBe(true);
+    expect(tinyCacheFit.warning).not.toContain("0 MB");
+  });
+});
+
+describe("Copy & VRAM edge-case consistency", () => {
+  it("handles near-limit hybrid VRAM without contradictory overflow numbers", () => {
+    const g4 = resolveColabOneGpuTarget("G4");
+    const nearLimitMib = Math.round(94.7 * 1024); // ratio ~0.986 > 0.98, but < 96 GB
+    const fit = evaluateColabOneVramFit(nearLimitMib, g4);
+    expect(fit.status).toBe("hybrid");
+    expect(fit.requiresHybrid).toBe(true);
+    expect(fit.overflowGb).toBe(0);
+    expect(fit.detail).not.toContain("0.5 GB");
+    expect(fit.detail).toContain("接近");
+  });
+
+  it("evaluates ComfyUI-only image/video models without LLM KV-cache or --fit on hybrid copy", () => {
+    const l4 = resolveColabOneGpuTarget("L4");
+    const vramZeroCtx = estimateColabOneVramMib(25 * 1024 ** 3, 0);
+    const vram8kCtx = estimateColabOneVramMib(25 * 1024 ** 3, 8192);
+    expect(vramZeroCtx).toBeLessThan(vram8kCtx);
+
+    const comfyFiles = [makeFile("Wan2.2-Q8_0.gguf", 25, "Q8_0")];
+    const plan = planColabOneVersionOptions(comfyFiles, l4, 8192, "", undefined, true);
+    expect(plan.all[0]!.fit.requiresHybrid).toBe(false);
+    expect(plan.all[0]!.fit.label).toBe("超出显存");
+    expect(plan.all[0]!.fit.detail).not.toContain("--fit on");
+
+    const summary = summarizeColabOneRepoFit(comfyFiles, l4, 8192, true);
+    expect(summary.runnable).toBe(false);
+    expect(summary.badgeLabel).not.toContain("混合装载");
+    expect(summary.badgeLabel).toContain("超出");
+  });
+
+  it("never suggests the same GPU tier for a live GPU with slightly lower reported VRAM", () => {
+    const liveT4 = resolveColabOneGpuTarget("CURRENT", {
+      state: "ready",
+      gpu: { name: "Tesla T4", total_mib: 15360, used_mib: 0 },
+    });
+    // Weight ~13.3 GiB -> est ~15.4 GiB: exceeds 15360 * 0.98 (hybrid on live 15 GiB T4),
+    // and fits static 16 GiB * 0.98 (minGpu.id === "T4"). Must NOT suggest "Switch to T4 16G".
+    const planOnLiveT4 = planColabOneVersionOptions(
+      [makeFile("Model-Q4.gguf", 13.3, "Q4_K_M")],
+      liveT4,
+      8192,
+    );
+    expect(planOnLiveT4.hybridCount).toBe(1);
+    expect(planOnLiveT4.suggestedGpuId).toBeNull();
+  });
+
+  it("classifies UD-IQ4_XS as compact 4-bit instead of generic standard version", () => {
+    expect(describeColabOneQuantization("UD-IQ4_XS").title).toBe("轻量 4-bit");
+  });
+
+  it("evaluates Colab VM disk capacity for static tiers, live telemetry, partial cache, and repo-level disk overflow", () => {
+    const t4 = resolveColabOneGpuTarget("T4");
+    const l4 = resolveColabOneGpuTarget("L4");
+    const g4 = resolveColabOneGpuTarget("G4");
+    expect(t4.diskFreeGb).toBe(75);
+    expect(t4.diskTotalGb).toBe(112);
+    expect(l4.diskFreeGb).toBe(195);
+    expect(g4.diskFreeGb).toBe(195);
+    expect(g4.diskTotalGb).toBe(235);
+
+    // 175.3 GiB model: fits tightly on clean G4 (195 GB free), exceeds T4 (75 GB free)
+    const q8Bytes = Math.round(175.3 * 1024 ** 3);
+    const g4Disk = evaluateColabOneTargetDiskFit(q8Bytes, g4);
+    expect(g4Disk.status).toBe("tight");
+    expect(g4Disk.insufficient).toBe(false);
+    expect(g4Disk.label).toBe("磁盘偏紧");
+
+    const t4Disk = evaluateColabOneTargetDiskFit(q8Bytes, t4);
+    expect(t4Disk.status).toBe("exceeds_vm");
+    expect(t4Disk.insufficient).toBe(true);
+    expect(t4Disk.exceedsVm).toBe(true);
+    expect(t4Disk.label).toBe("超出磁盘");
+
+    // Live G4 with 156.2 GB free out of 235.7 GB total:
+    // untouched 175.3 GiB -> insufficient_live (fits after deleting cached models),
+    // partially cached 79.3 GiB -> remaining 96 GiB fits cleanly!
+    const liveG4 = resolveColabOneGpuTarget("CURRENT", {
+      state: "ready",
+      gpu: { name: "NVIDIA RTX PRO 6000", total_mib: 97887, used_mib: 1024 },
+      resources: {
+        disk: {
+          total_bytes: Math.round(235.7 * 1024 ** 3),
+          used_bytes: Math.round(79.5 * 1024 ** 3),
+          free_bytes: Math.round(156.2 * 1024 ** 3),
+          percent: 33.7,
+        },
+      },
+    });
+    expect(liveG4.isLiveDisk).toBe(true);
+    expect(liveG4.diskFreeGb).toBe(156.2);
+    expect(liveG4.subtitle).toContain("156.2 GB");
+
+    const liveUntouched = evaluateColabOneTargetDiskFit(q8Bytes, liveG4);
+    expect(liveUntouched.status).toBe("insufficient_live");
+    expect(liveUntouched.insufficient).toBe(true);
+    expect(liveUntouched.exceedsVm).toBe(false);
+
+    const livePartial = evaluateColabOneTargetDiskFit(q8Bytes, liveG4, {
+      cachedBytes: Math.round(79.3 * 1024 ** 3),
+    });
+    expect(livePartial.status).toBe("ok");
+    expect(livePartial.insufficient).toBe(false);
+
+    const liveDownloaded = evaluateColabOneTargetDiskFit(q8Bytes, liveG4, {
+      downloaded: true,
+    });
+    expect(liveDownloaded.status).toBe("cached");
+    expect(liveDownloaded.insufficient).toBe(false);
+
+    // Downloaded state on live VM must NOT mask disk overflow when previewing a static GPU tier (e.g. T4)
+    const staticT4WithLiveState = evaluateColabOneTargetDiskFit(q8Bytes, t4, {
+      downloaded: true,
+    });
+    expect(staticT4WithLiveState.status).toBe("exceeds_vm");
+    expect(staticT4WithLiveState.exceedsVm).toBe(true);
+
+    // 250 GiB model exceeds even live G4 total disk capacity -> exceeds_vm
+    const huge250 = evaluateColabOneTargetDiskFit(250 * 1024 ** 3, liveG4);
+    expect(huge250.status).toBe("exceeds_vm");
+    expect(huge250.exceedsVm).toBe(true);
+
+    // Repo where all versions exceed T4 disk (90 GiB & 175 GiB) -> disk_overflow, runnable=false,
+    // no contradictory "recommended" badge, and suggests larger-disk GPU
+    const bigFiles = [
+      makeFile("Huge-Q4_K_M.gguf", 90, "Q4_K_M"),
+      makeFile("Huge-Q8_0.gguf", 175, "Q8_0"),
+    ];
+    const planOnT4 = planColabOneVersionOptions(bigFiles, t4, 8192);
+    expect(planOnT4.diskFittingCount).toBe(0);
+    expect(planOnT4.diskExceedsVmCount).toBe(2);
+    expect(planOnT4.suggestedDiskGpuId).not.toBeNull();
+    expect(planOnT4.all.every((o) => !o.recommended)).toBe(true);
+    expect(planOnT4.recommendedFilename).toBe("Huge-Q4_K_M.gguf");
+
+    // hiddenHybridCount excludes versions that exceed VM disk
+    const mixedT4Files = [
+      makeFile("M-IQ2_XXS.gguf", 4, "IQ2_XXS"),
+      makeFile("M-Q3_K_M.gguf", 6, "Q3_K_M"),
+      makeFile("M-Q4_K_M.gguf", 8, "Q4_K_M"),
+      makeFile("M-Q5_K_M.gguf", 10, "Q5_K_M"),
+      makeFile("M-Q8_0.gguf", 12, "Q8_0"),
+      makeFile("M-Huge.gguf", 120, "BF16"),
+    ];
+    const mixedPlanOnT4 = planColabOneVersionOptions(mixedT4Files, t4, 8192);
+    expect(mixedPlanOnT4.diskExceedsVmCount).toBe(1);
+    expect(mixedPlanOnT4.hiddenHybridCount).toBe(0);
+
+    const summaryOnT4 = summarizeColabOneRepoFit(bigFiles, t4, 8192);
+    expect(summaryOnT4.status).toBe("disk_overflow");
+    expect(summaryOnT4.runnable).toBe(false);
+    expect(summaryOnT4.diskExceedsVm).toBe(true);
+    expect(summaryOnT4.badgeLabel).toContain("磁盘");
+
+    // Repo where all versions exceed even G4 disk (220 GiB) -> disk_overflow on G4 too
+    const giantSummary = summarizeColabOneRepoFit(
+      [makeFile("Giant-BF16.gguf", 220, "BF16")],
+      g4,
+      8192,
+    );
+    expect(giantSummary.status).toBe("disk_overflow");
+    expect(giantSummary.runnable).toBe(false);
   });
 });
