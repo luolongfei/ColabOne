@@ -410,3 +410,49 @@ def test_poll_cursor_replays_only_unseen_events(runtime):
         ).json()
     assert result["state"] == "completed"
     assert [e["data"]["content"] for e in result["events"]] == ["b"]
+
+
+def test_touch_preserves_longer_hold_and_connect_drive_gates_sync_on_restore(runtime):
+    runtime.touch(180)
+    held_until = runtime.activity_until
+    runtime.touch(0)
+    assert runtime.activity_until >= held_until
+
+    runtime._mark_dirty("models")
+    runtime.drive.available = lambda: True
+    runtime.drive.connect = lambda: {}
+    runtime.drive.pull_workspace = lambda _dest=None: False
+    push_called = Mock(return_value=True)
+    runtime.drive.push_workspace = push_called
+    runtime.connect_drive()
+    assert runtime.drive_restored is False
+    push_called.assert_not_called()
+
+
+def test_warmup_crash_falls_back_to_next_llama_plan(runtime, spec, monkeypatch):
+    monkeypatch.setattr(runtime, "gpu_info", lambda: {"name": "T4", "total_mib": 16384, "used_mib": 0})
+    monkeypatch.setattr(runtime, "prepare_engine", lambda _t: runtime.root / "llama-server")
+    procs = []
+
+    def fake_popen(args, **kwargs):
+        proc = Mock()
+        idx = len(procs)
+        proc.returncode = None
+        proc.poll.return_value = None
+        procs.append((idx, proc))
+        return proc
+
+    monkeypatch.setattr("server.runtime.subprocess.Popen", fake_popen)
+    runtime.http = Mock()
+    runtime.http.get.return_value = Mock(status_code=200)
+
+    def fake_warmup(_task, proc, _model_id):
+        # Crash first plan during CUDA kernel warmup; succeed on second fallback plan.
+        if len(procs) == 1:
+            proc.returncode = 137
+            proc.poll.return_value = 137
+
+    monkeypatch.setattr(runtime, "_warmup_llama", fake_warmup)
+    runtime._load(ColabOneTask("load", spec.id), spec)
+    assert len(procs) == 2
+    assert runtime.loaded == spec.id

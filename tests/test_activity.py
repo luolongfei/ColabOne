@@ -237,3 +237,46 @@ def test_step_by_step_logs_for_startup_boot_stream_release_and_settings(
         "已确认实例停止并清理本机会话：gpu-g4-s-kkb-usw1b1-step",
     ):
         assert any(expected in m for m in rel_msgs), f"missing expected release log: {expected}"
+
+
+def test_activity_persists_redacted_lines_and_rotates_on_disk(tmp_path):
+    from bridge.activity import safe_message
+
+    assert (
+        safe_message(
+            "Failed to issue request POST https://colab.research.google.com/tun/m/assign?nbh=abc: Service Unavailable"
+        )
+        == "Failed to issue request POST [链接已隐藏]: Service Unavailable"
+    )
+
+    log_file = tmp_path / "activity.log"
+    log = ColabOneActivityLog(limit=10, log_path=log_file, max_bytes=16 * 1024)
+    log.add(
+        "Bearer super-secret-token https://example.com/?code=mycode hf_secret_abc",
+        "GPU",
+        "error",
+    )
+    assert log_file.is_file()
+    content = log_file.read_text(encoding="utf-8")
+    assert "[ERROR] [GPU]" in content
+    assert "[链接已隐藏]" in content
+    for leaked in ("super-secret-token", "mycode", "hf_secret_abc", "https://example.com"):
+        assert leaked not in content
+
+    # Trigger rotation above max_bytes (16 KiB)
+    for i in range(120):
+        log.add(f"entry-{i:03d} " + ("x" * 180), "GPU", "info")
+    backup = tmp_path / "activity.log.1"
+    assert backup.is_file()
+    assert log_file.stat().st_size < 18 * 1024
+
+    # Controller mirrors activity logs into config_dir/activity.log
+    ctrl_dir = tmp_path / "ctrl"
+    c = ColabOneController(
+        Path(__file__).resolve().parents[1],
+        vault=MemoryVault(),
+        config_dir=ctrl_dir,
+        background=False,
+    )
+    assert (ctrl_dir / "activity.log").is_file()
+    assert "客户端已启动" in (ctrl_dir / "activity.log").read_text(encoding="utf-8")

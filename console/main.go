@@ -14,8 +14,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,23 +36,28 @@ type ColabOneCommandRequest struct {
 }
 
 type ColabOneDesktop struct {
-	bridge          *colabOneBridge
-	winStore        *colabOneWindowStateStore
-	appearanceStore *colabOneAppearanceStore
-	appearanceSave  chan string
-	comfyMu         sync.Mutex
-	comfyWin        *mygo.Window
-	mainMu          sync.Mutex
-	mainWin         *mygo.Window
-	logMu           sync.Mutex
-	logWin          *mygo.Window
-	trayMu          sync.Mutex
-	tray            *mygo.Tray
-	splashMu        sync.Mutex
-	splashWin       *mygo.Window
-	splashState     *colabOneSplashViewState
-	startup         *colabOneStartupCoordinator
-	showMain        func()
+	bridge           *colabOneBridge
+	winStore         *colabOneWindowStateStore
+	appearanceStore  *colabOneAppearanceStore
+	appearanceMu     sync.Mutex
+	appearanceSave   chan string
+	appearanceDone   chan struct{}
+	appearanceClosed bool
+	comfyMu          sync.Mutex
+	comfyWin         *mygo.Window
+	mainMu           sync.Mutex
+	mainWin          *mygo.Window
+	logMu            sync.Mutex
+	logWin           *mygo.Window
+	logStateGen      atomic.Uint64
+	trayMu           sync.Mutex
+	tray             *mygo.Tray
+	splashMu         sync.Mutex
+	splashWin        *mygo.Window
+	splashState      *colabOneSplashViewState
+	splashFadeTimer  *time.Timer
+	startup          *colabOneStartupCoordinator
+	showMain         func()
 }
 
 func (d *ColabOneDesktop) invalidateSplash() {
@@ -89,13 +96,14 @@ func (d *ColabOneDesktop) beginSplashFadeOutOnMain(focusMain func()) {
 	}
 	splash.SetIgnoreMouseEvents(true)
 	splash.Invalidate()
-	time.AfterFunc(colabOneSplashDestroyDelay, func() {
+	timer := time.AfterFunc(colabOneSplashDestroyDelay, func() {
 		mygo.RunOnMain(func() {
 			d.splashMu.Lock()
 			cur := d.splashWin
 			if cur == splash {
 				d.splashWin = nil
 				d.splashState = nil
+				d.splashFadeTimer = nil
 			}
 			d.splashMu.Unlock()
 			if !splash.IsDestroyed() {
@@ -106,21 +114,36 @@ func (d *ColabOneDesktop) beginSplashFadeOutOnMain(focusMain func()) {
 			}
 		})
 	})
+	d.splashMu.Lock()
+	if d.splashFadeTimer != nil {
+		d.splashFadeTimer.Stop()
+	}
+	d.splashFadeTimer = timer
+	d.splashMu.Unlock()
 }
 
 func (d *ColabOneDesktop) cancelStartup() {
 	d.splashMu.Lock()
 	startup := d.startup
 	splash := d.splashWin
+	fadeTimer := d.splashFadeTimer
 	d.startup = nil
 	d.splashWin = nil
 	d.splashState = nil
+	d.splashFadeTimer = nil
 	d.splashMu.Unlock()
+	if fadeTimer != nil {
+		fadeTimer.Stop()
+	}
 	if startup != nil {
 		startup.Cancel()
 	}
 	if splash != nil && !splash.IsDestroyed() {
-		splash.Destroy()
+		mygo.RunOnMain(func() {
+			if !splash.IsDestroyed() {
+				splash.Destroy()
+			}
+		})
 	}
 }
 
@@ -154,22 +177,45 @@ func (d *ColabOneDesktop) SetAppearance(value string) error {
 	}
 	mygo.Theme.SetSource(mygo.ThemeSource(value))
 	if d.appearanceStore != nil {
-		if d.appearanceSave != nil {
+		d.appearanceMu.Lock()
+		ch := d.appearanceSave
+		closed := d.appearanceClosed
+		if ch != nil && !closed {
 			// Coalesce rapid updates without blocking the UI animation critical path.
 			select {
-			case <-d.appearanceSave:
+			case <-ch:
 			default:
 			}
 			select {
-			case d.appearanceSave <- value:
+			case ch <- value:
 			default:
 			}
+			d.appearanceMu.Unlock()
 		} else {
+			d.appearanceMu.Unlock()
 			_ = d.appearanceStore.Save(value)
 		}
 	}
 	d.invalidateSplash()
 	return nil
+}
+
+func (d *ColabOneDesktop) flushAppearance() {
+	d.appearanceMu.Lock()
+	if d.appearanceClosed || d.appearanceSave == nil {
+		d.appearanceMu.Unlock()
+		return
+	}
+	d.appearanceClosed = true
+	close(d.appearanceSave)
+	done := d.appearanceDone
+	d.appearanceMu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(1 * time.Second):
+		}
+	}
 }
 
 // SetLocale updates the active UI language for native tray menus, window
@@ -217,9 +263,13 @@ func (d *ColabOneDesktop) WriteClipboard(value string) error {
 }
 func validateColabOneExternalURL(value string) error {
 	u, err := url.Parse(value)
-	if err != nil || u.Scheme != "https" {
+	if err != nil || u.Scheme != "https" || u.Opaque != "" {
 		return errors.New(colabOneT("err.httpsOnly"))
 	}
+	if u.User != nil || u.Port() != "" {
+		return errors.New(colabOneT("err.unsupportedURL"))
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	allowed := []string{
 		"accounts.google.com",
 		"colab.research.google.com",
@@ -231,8 +281,8 @@ func validateColabOneExternalURL(value string) error {
 		"dash.cloudflare.com",
 		"developers.cloudflare.com",
 	}
-	for _, host := range allowed {
-		if u.Hostname() == host {
+	for _, h := range allowed {
+		if host == h {
 			return nil
 		}
 	}
@@ -247,10 +297,7 @@ func (d *ColabOneDesktop) OpenURL(value string) error {
 }
 
 func colabOneWindowBackground() string {
-	if mygo.Theme.IsDark() {
-		return "#0b0c0e"
-	}
-	return "#fafbfc"
+	return "light-dark(#fafbfc, #0b0c0e)"
 }
 
 func main() {
@@ -283,8 +330,10 @@ func main() {
 		winStore:        winStore,
 		appearanceStore: appearanceStore,
 		appearanceSave:  make(chan string, 1),
+		appearanceDone:  make(chan struct{}),
 	}
 	go func() {
+		defer close(d.appearanceDone)
 		for value := range d.appearanceSave {
 			_ = appearanceStore.Save(value)
 		}
@@ -342,7 +391,12 @@ func main() {
 		})
 		return win
 	}
-	show := func() {
+	var show func()
+	show = func() {
+		if !mygo.App.IsReady() {
+			mygo.App.WhenReady(show)
+			return
+		}
 		d.splashMu.Lock()
 		startup := d.startup
 		splashWin := d.splashWin
@@ -428,7 +482,9 @@ func main() {
 		startup.Start()
 	}
 	d.showMain = show
-	mygo.App.OnWindowAllClosed(func() {})
+	if runtime.GOOS == "darwin" {
+		mygo.App.OnWindowAllClosed(func() {})
+	}
 	mygo.App.OnActivate(func(bool) { show() })
 	mygo.App.OnSecondInstance(func([]string, string) { show() })
 	mygo.App.WhenReady(func() {
@@ -438,7 +494,12 @@ func main() {
 			d.trayMu.Lock()
 			d.tray = tray
 			d.trayMu.Unlock()
-			tray.OnClick(show)
+			if runtime.GOOS != "darwin" {
+				mygo.App.OnWindowAllClosed(func() {})
+			}
+			if runtime.GOOS == "windows" {
+				tray.OnClick(show)
+			}
 			mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 				d.trayMu.Lock()
 				d.tray = nil
@@ -448,8 +509,12 @@ func main() {
 		}
 		startWithSplash()
 	})
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
+		d.cancelStartup()
+	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		d.cancelStartup()
+		d.flushAppearance()
 		d.bridge.close()
 	})
 	if err := mygo.App.Run(); err != nil && !strings.Contains(err.Error(), "generate") {

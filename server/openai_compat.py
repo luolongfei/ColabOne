@@ -534,11 +534,15 @@ def _normalize_input_items(raw_input: Any, response_store: dict[str, dict[str, A
         elif isinstance(entry, dict):
             if entry.get("type") == "item_reference" and response_store:
                 ref_id = entry.get("id")
+                found = False
                 for saved in response_store.values():
                     for candidate in saved.get("items") or []:
                         if candidate.get("id") == ref_id:
                             items.append(candidate)
+                            found = True
                             break
+                    if found:
+                        break
             else:
                 items.append(entry)
         else:
@@ -1321,9 +1325,11 @@ class ColabOneResponsesStreamTranslator:
 
         reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning_delta, str) and reasoning_delta:
-            if self.reasoning_id is None:
+            if self.reasoning_id is None or self.reasoning_closed:
                 self.reasoning_id = f"rs_{secrets.token_hex(12)}"
                 self.reasoning_index = len(self.output)
+                self.reasoning_text = ""
+                self.reasoning_closed = False
                 item = {
                     "id": self.reasoning_id,
                     "type": "reasoning",
@@ -1364,9 +1370,11 @@ class ColabOneResponsesStreamTranslator:
         text_delta = delta.get("content")
         if isinstance(text_delta, str) and text_delta:
             events.extend(self._close_reasoning())
-            if self.msg_id is None:
+            if self.msg_id is None or self.msg_closed:
                 self.msg_id = f"msg_{secrets.token_hex(12)}"
                 self.msg_index = len(self.output)
+                self.msg_text = ""
+                self.msg_closed = False
                 item = {
                     "id": self.msg_id,
                     "type": "message",
@@ -1412,7 +1420,8 @@ class ColabOneResponsesStreamTranslator:
             for tc in tc_deltas:
                 if not isinstance(tc, dict):
                     continue
-                tc_idx = int(tc.get("index", 0))
+                raw_idx = tc.get("index")
+                tc_idx = int(raw_idx) if isinstance(raw_idx, int) else 0
                 fn = tc.get("function") or {}
                 entry = self.tool_calls.get(tc_idx)
                 if entry is None:
@@ -1432,6 +1441,7 @@ class ColabOneResponsesStreamTranslator:
                         "name": name,
                         "is_custom": is_custom,
                         "arguments": "",
+                        "buffered_args": [],
                         "added_emitted": False,
                     }
                     self.tool_calls[tc_idx] = entry
@@ -1455,14 +1465,6 @@ class ColabOneResponsesStreamTranslator:
                             "arguments": "",
                         }
                         self.output.append(item)
-                        if name:
-                            entry["added_emitted"] = True
-                            events.append(
-                                self._emit(
-                                    "response.output_item.added",
-                                    {"output_index": out_idx, "item": item},
-                                )
-                            )
                 else:
                     if isinstance(tc.get("id"), str) and tc["id"]:
                         entry["call_id"] = tc["id"]
@@ -1472,6 +1474,7 @@ class ColabOneResponsesStreamTranslator:
                         if entry["name"] in self.custom_names and not entry["added_emitted"]:
                             entry["is_custom"] = True
                             entry["item_id"] = f"ctc_{secrets.token_hex(12)}"
+                            entry["buffered_args"].clear()
                             self.output[entry["output_index"]] = {
                                 "id": entry["item_id"],
                                 "type": "custom_tool_call",
@@ -1483,7 +1486,23 @@ class ColabOneResponsesStreamTranslator:
                         else:
                             self.output[entry["output_index"]]["name"] = entry["name"]
 
-                if not entry["is_custom"] and not entry["added_emitted"] and entry["name"]:
+                arg_delta = fn.get("arguments")
+                has_arg_delta = isinstance(arg_delta, str) and bool(arg_delta)
+                could_be_custom_prefix = (
+                    not entry["is_custom"]
+                    and bool(entry["name"])
+                    and not has_arg_delta
+                    and any(
+                        cn.startswith(entry["name"]) and cn != entry["name"]
+                        for cn in self.custom_names
+                    )
+                )
+                if (
+                    not entry["is_custom"]
+                    and not entry["added_emitted"]
+                    and entry["name"]
+                    and not could_be_custom_prefix
+                ):
                     entry["added_emitted"] = True
                     events.append(
                         self._emit(
@@ -1494,21 +1513,35 @@ class ColabOneResponsesStreamTranslator:
                             },
                         )
                     )
-
-                arg_delta = fn.get("arguments")
-                if isinstance(arg_delta, str) and arg_delta:
-                    entry["arguments"] += arg_delta
-                    if not entry["is_custom"]:
+                    for buffered in entry["buffered_args"]:
                         events.append(
                             self._emit(
                                 "response.function_call_arguments.delta",
                                 {
                                     "item_id": entry["item_id"],
                                     "output_index": entry["output_index"],
-                                    "delta": arg_delta,
+                                    "delta": buffered,
                                 },
                             )
                         )
+                    entry["buffered_args"].clear()
+
+                if has_arg_delta:
+                    entry["arguments"] += arg_delta
+                    if not entry["is_custom"]:
+                        if entry["added_emitted"]:
+                            events.append(
+                                self._emit(
+                                    "response.function_call_arguments.delta",
+                                    {
+                                        "item_id": entry["item_id"],
+                                        "output_index": entry["output_index"],
+                                        "delta": arg_delta,
+                                    },
+                                )
+                            )
+                        else:
+                            entry["buffered_args"].append(arg_delta)
         return events
 
     def finish(self) -> list[bytes]:
@@ -1573,12 +1606,25 @@ class ColabOneResponsesStreamTranslator:
                 )
             else:
                 if not entry["added_emitted"]:
+                    entry["added_emitted"] = True
                     events.append(
                         self._emit(
                             "response.output_item.added",
                             {"output_index": out_idx, "item": self.output[out_idx]},
                         )
                     )
+                    for buffered in entry.get("buffered_args") or ():
+                        events.append(
+                            self._emit(
+                                "response.function_call_arguments.delta",
+                                {
+                                    "item_id": entry["item_id"],
+                                    "output_index": out_idx,
+                                    "delta": buffered,
+                                },
+                            )
+                        )
+                    entry["buffered_args"] = []
                 events.append(
                     self._emit(
                         "response.function_call_arguments.done",

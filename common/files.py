@@ -7,7 +7,7 @@ from pathlib import Path
 
 def atomic_json(path: Path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp = tempfile.mkstemp(prefix=".save-", dir=path.parent)
+    fd, temp = tempfile.mkstemp(prefix=".save-", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(data, stream, ensure_ascii=False, indent=2)

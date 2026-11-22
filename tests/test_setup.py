@@ -372,3 +372,83 @@ def test_frontend_locations_cover_all_python_countries_and_subregions():
     )
 
 
+def test_redesigned_oauth_completion_page_locales_security_and_favicon(monkeypatch):
+    import requests
+    from bridge.auth import ColabOneAuth
+    from bridge.oauth_page import render_colabone_oauth_page
+
+    # Render & verify all 6 locales (both success & error states) + HTML escaping.
+    for loc in ("zh-CN", "en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR"):
+        ok_html = render_colabone_oauth_page(
+            locale=loc,
+            ok=True,
+            message="ok msg",
+            email='user+<script>@example.com',
+        )
+        assert f'<html lang="{loc}">' in ok_html
+        assert 'class="is-success"' in ok_html
+        assert "prefers-color-scheme: dark" in ok_html
+        assert "data:image/svg+xml;base64," in ok_html
+        assert "co-close-btn" in ok_html
+        assert "<script>@" not in ok_html
+        assert "&lt;script&gt;@example.com" in ok_html
+
+        err_html = render_colabone_oauth_page(
+            locale=loc,
+            ok=False,
+            message="err <tag>",
+        )
+        assert 'class="is-error"' in err_html
+        assert "&lt;tag&gt;" in err_html
+
+    # Verify colab_login loopback serves the redesigned HTML with security headers + 204 favicon.
+    vault = MemoryVault()
+    auth = ColabOneAuth(vault)
+    auth.locale = "zh-CN"
+    auth.fetch_profile = lambda _creds: {"email": "demo@example.com", "sub": "sub-demo"}
+    code_val = "4/0A" + "B" * 28
+
+    class DummyCreds:
+        def to_json(self):
+            return json.dumps({"token": "tok", "refresh_token": "ref"})
+
+    flow = Mock(credentials=DummyCreds())
+    flow.authorization_url.return_value = ("https://accounts.google.com/o/oauth2/auth", "st-1")
+    monkeypatch.setattr(
+        "bridge.auth.InstalledAppFlow.from_client_config", lambda *a, **k: flow
+    )
+
+    captured = {}
+
+    def ready(_url):
+        def worker():
+            with requests.Session() as http:
+                http.trust_env = False
+                fav = http.get(flow.redirect_uri + "favicon.ico", timeout=3)
+                captured["favicon_status"] = fav.status_code
+                resp = http.get(
+                    flow.redirect_uri,
+                    params={"state": "st-1", "code": code_val},
+                    timeout=3,
+                )
+                captured["status"] = resp.status_code
+                captured["headers"] = dict(resp.headers)
+                captured["body"] = resp.text
+
+        t = threading.Thread(target=worker)
+        t.start()
+        captured["thread"] = t
+
+    auth.colab_login(ready)
+    captured["thread"].join(3)
+    assert captured["favicon_status"] == 204
+    assert captured["status"] == 200
+    assert captured["headers"].get("Cache-Control") == "no-store"
+    assert captured["headers"].get("X-Content-Type-Options") == "nosniff"
+    assert "default-src 'none'" in (captured["headers"].get("Content-Security-Policy") or "")
+    assert "demo@example.com" in captured["body"]
+    assert "已授权登录 ColabOne" in captured["body"]
+    assert "co-close-btn" in captured["body"]
+
+
+

@@ -9,12 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/egoist/mygo"
-	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -23,7 +24,8 @@ const (
 )
 
 var (
-	workflowOutputIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+	workflowOutputIDPattern     = regexp.MustCompile(`^[a-f0-9]{32}$`)
+	workflowOutputSHA256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	allowedOutputExtensions = map[string]bool{
 		"png":  true,
 		"jpg":  true,
@@ -65,13 +67,24 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 		return "", err
 	}
 	ext := strings.ToLower(chunk.Extension)
-	if chunk.Size <= 0 || chunk.Size > maxWorkflowOutputSize || !allowedOutputExtensions[ext] {
+	digest := strings.ToLower(strings.TrimSpace(chunk.SHA256))
+	if chunk.Size <= 0 || chunk.Size > maxWorkflowOutputSize || !allowedOutputExtensions[ext] || !workflowOutputSHA256Pattern.MatchString(digest) {
 		return "", errors.New(colabOneT("err.invalidOutputMetadata"))
 	}
-	size, digest := chunk.Size, chunk.SHA256
+	size := chunk.Size
+	defaultName := "ColabOne-" + id[:8] + "." + ext
+	defaultPath := defaultName
+	if dir, err := mygo.App.Path(mygo.PathDownloads); err == nil && dir != "" {
+		defaultPath = filepath.Join(dir, defaultName)
+	} else if home, err := mygo.App.Path(mygo.PathHome); err == nil && home != "" {
+		defaultPath = filepath.Join(home, defaultName)
+	}
 	path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
 		Parent:      mygo.CallerWindow(ctx),
-		DefaultPath: "ColabOne-" + id[:8] + "." + ext,
+		DefaultPath: defaultPath,
+		Filters: []mygo.FileFilter{
+			{Name: strings.ToUpper(ext), Extensions: []string{ext}},
+		},
 	})
 	if err != nil || path == "" {
 		return "", err
@@ -91,7 +104,7 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 	hash := sha256.New()
 	offset := int64(0)
 	for {
-		if chunk.Offset != offset || chunk.Size != size || chunk.SHA256 != digest {
+		if chunk.Offset != offset || chunk.Size != size || strings.ToLower(strings.TrimSpace(chunk.SHA256)) != digest {
 			return "", errors.New(colabOneT("err.outputTransferChanged"))
 		}
 		data, err := base64.StdEncoding.DecodeString(chunk.Data)
@@ -110,21 +123,32 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 		if err != nil {
 			return "", err
 		}
-		if err = json.Unmarshal([]byte(value), &chunk); err != nil {
+		var nextChunk colabOneMediaChunk
+		if err = json.Unmarshal([]byte(value), &nextChunk); err != nil {
 			return "", err
 		}
+		chunk = nextChunk
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != digest {
 		return "", errors.New(colabOneT("err.outputHashMismatch"))
 	}
+	if err = out.Sync(); err != nil {
+		return "", err
+	}
 	if err = out.Close(); err != nil {
 		return "", err
 	}
-	if err = os.Rename(tmpPath, path); err != nil {
-		return "", fmt.Errorf("%s%w", colabOneT("err.outputSaveFailedPrefix"), err)
+	var renameErr error
+	for range 4 {
+		renameErr = os.Rename(tmpPath, path)
+		if renameErr == nil {
+			keepTmp = true
+			return path, nil
+		}
+		time.Sleep(15 * time.Millisecond)
 	}
-	keepTmp = true
-	return path, nil
+	_ = os.Remove(tmpPath)
+	return "", fmt.Errorf("%s%w", colabOneT("err.outputSaveFailedPrefix"), renameErr)
 }
 
 func validateColabOneCanvasURL(raw string) (*url.URL, error) {
@@ -141,6 +165,9 @@ func validateColabOneCanvasURL(raw string) (*url.URL, error) {
 	if u.User != nil {
 		return nil, errors.New(colabOneT("err.canvasURLUserInfo"))
 	}
+	if strings.Contains(u.Host, "%") {
+		return nil, errors.New(colabOneT("err.canvasURLLoopback"))
+	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if host == "" {
 		return nil, errors.New(colabOneT("err.canvasURLHost"))
@@ -151,8 +178,11 @@ func validateColabOneCanvasURL(raw string) (*url.URL, error) {
 	if host == "trycloudflare.com" || strings.HasSuffix(host, ".trycloudflare.com") {
 		return nil, errors.New(colabOneT("err.canvasURLTemporary"))
 	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
-		return nil, errors.New(colabOneT("err.canvasURLLoopback"))
+	if addr, err := netip.ParseAddr(host); err == nil {
+		unmapped := addr.Unmap()
+		if unmapped.IsLoopback() || unmapped.IsUnspecified() || addr.Zone() != "" {
+			return nil, errors.New(colabOneT("err.canvasURLLoopback"))
+		}
 	}
 	if u.Path != "/_colabone_auth" {
 		return nil, errors.New(colabOneT("err.canvasURLPath"))
@@ -191,60 +221,48 @@ func (d *ColabOneDesktop) OpenComfyCanvas(ctx context.Context, target string) er
 	if target == "browser" {
 		return mygo.Shell.OpenExternal(canvasURL)
 	}
-	d.comfyMu.Lock()
-	existing := d.comfyWin
-	d.comfyMu.Unlock()
-	if existing != nil && !existing.IsDestroyed() {
-		if page := existing.Page(); page != nil {
-			if err := page.LoadURL(canvasURL); err != nil {
-				return err
-			}
-		}
-		existing.Show()
-		existing.Focus()
-		return nil
-	}
-	bg := colabOneWindowBackground()
-	win := mygo.NewWindow(mygo.WindowOptions{
-		Title:           colabOneT("window.comfyCanvas"),
-		URL:             canvasURL,
-		Width:           1440,
-		Height:          900,
-		MinWidth:        comfyMinWidth,
-		MinHeight:       comfyMinHeight,
-		StateKey:        "comfyui-canvas",
-		BackgroundColor: bg,
-	})
-	applyWindowIcon(win)
-	trackColabOneWindowState(d.winStore, "comfyui-canvas", win, 1440, 900, comfyMinWidth, comfyMinHeight)
-	win.OnClosed(func() {
+	var openErr error
+	mygo.RunOnMain(func() {
 		d.comfyMu.Lock()
-		if d.comfyWin == win {
-			d.comfyWin = nil
+		existing := d.comfyWin
+		d.comfyMu.Unlock()
+		if existing != nil && !existing.IsDestroyed() {
+			if page := existing.Page(); page != nil {
+				if err := page.LoadURL(canvasURL); err != nil {
+					openErr = err
+					return
+				}
+			}
+			existing.Show()
+			existing.Focus()
+			return
+		}
+		bg := colabOneWindowBackground()
+		win := mygo.NewWindow(mygo.WindowOptions{
+			Title:           colabOneT("window.comfyCanvas"),
+			URL:             canvasURL,
+			Width:           1440,
+			Height:          900,
+			MinWidth:        comfyMinWidth,
+			MinHeight:       comfyMinHeight,
+			StateKey:        "comfyui-canvas",
+			BackgroundColor: bg,
+			Page:            mygo.PageOptions{Untrusted: true},
+		})
+		applyWindowIcon(win)
+		trackColabOneWindowState(d.winStore, "comfyui-canvas", win, 1440, 900, comfyMinWidth, comfyMinHeight)
+		win.OnClosed(func() {
+			d.comfyMu.Lock()
+			if d.comfyWin == win {
+				d.comfyWin = nil
+			}
+			d.comfyMu.Unlock()
+		})
+		d.comfyMu.Lock()
+		if !win.IsDestroyed() {
+			d.comfyWin = win
 		}
 		d.comfyMu.Unlock()
 	})
-	d.comfyMu.Lock()
-	if prev := d.comfyWin; prev != nil && !prev.IsDestroyed() {
-		d.comfyMu.Unlock()
-		win.Close()
-		if page := prev.Page(); page != nil {
-			if err := page.LoadURL(canvasURL); err != nil {
-				return err
-			}
-		}
-		prev.Show()
-		prev.Focus()
-		return nil
-	}
-	d.comfyWin = win
-	d.comfyMu.Unlock()
-	if win.IsDestroyed() {
-		d.comfyMu.Lock()
-		if d.comfyWin == win {
-			d.comfyWin = nil
-		}
-		d.comfyMu.Unlock()
-	}
-	return nil
+	return openErr
 }

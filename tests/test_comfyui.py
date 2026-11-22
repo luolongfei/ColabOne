@@ -942,3 +942,90 @@ def test_controller_offline_workflow_import_delete_and_canvas_vault_security(tmp
     c.remote.assert_not_called()
     assert all(w["id"] != "wf-offline-1" for w in c.snapshot()["workflows"])
     assert json.loads((tmp_path / "workflows.json").read_text(encoding="utf-8")) == []
+
+
+def test_canvas_proxy_internal_probe_skips_activity_and_rejected_ws_does_not_hang():
+    import requests
+    import socket
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from server.comfy_proxy import COLABONE_INTERNAL_PROBE_HEADER
+
+    class RejectWsHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            body = b"ws forbidden"
+            self.send_response(403)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(body)
+
+    upstream = HTTPServer(("127.0.0.1", 0), RejectWsHandler)
+    up_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    up_thread.start()
+
+    touches = []
+    proxy = ColabOneCanvasProxyServer(
+        upstream_host="127.0.0.1",
+        upstream_port=upstream.server_port,
+        listen_host="127.0.0.1",
+        listen_port=0,
+        instance="inst-probe-test",
+        canvas_token="tok-probe-test",
+        session_cookie="sess-probe-test",
+        on_activity=lambda: touches.append(1),
+    )
+    proxy.start()
+    try:
+        base = f"http://127.0.0.1:{proxy.port}"
+        with requests.Session() as http:
+            http.trust_env = False
+            # Internal gateway health probe must NOT reset idle timer.
+            r1 = http.get(
+                f"{base}/_colabone_auth?token=tok-probe-test",
+                headers={COLABONE_INTERNAL_PROBE_HEADER: "inst-probe-test"},
+                allow_redirects=False,
+                timeout=3,
+            )
+            assert r1.status_code == 302
+            assert touches == []
+
+            # Real user browser handshake DOES reset idle timer.
+            r2 = http.get(
+                f"{base}/_colabone_auth?token=tok-probe-test",
+                allow_redirects=False,
+                timeout=3,
+            )
+            assert r2.status_code == 302
+            assert len(touches) == 1
+
+        # Rejected WebSocket upgrade (403 with upstream keep-alive) returns promptly without hanging.
+        with socket.create_connection(("127.0.0.1", proxy.port), timeout=3) as sock:
+            sock.settimeout(3)
+            req = (
+                "GET /ws HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{proxy.port}\r\n"
+                "Connection: Upgrade\r\n"
+                "Upgrade: websocket\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                f"Cookie: {COLABONE_COMFY_COOKIE}=sess-probe-test\r\n\r\n"
+            ).encode("latin-1")
+            sock.sendall(req)
+            chunks = []
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                chunks.append(data)
+            resp_text = b"".join(chunks).decode("latin-1", errors="replace")
+            assert "403" in resp_text and "ws forbidden" in resp_text
+    finally:
+        proxy.stop()
+        upstream.shutdown()
+        upstream.server_close()

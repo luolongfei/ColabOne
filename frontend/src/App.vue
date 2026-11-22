@@ -95,6 +95,7 @@ import {
   formatIdlePolicyLabel,
   friendlyErrorMessage,
   isTransientIpcError,
+  stripColabOneErrorPrefixes,
 } from "./billing";
 import {
   colabOneCommand,
@@ -129,7 +130,8 @@ const state = ref(createColabOneSnapshot()),
   page = ref("device"),
   ipcError = ref(""),
   ipcDisconnected = ref(false),
-  busy = ref(false),
+  busyCount = ref(0),
+  busy = computed(() => busyCount.value > 0),
   savingIdle = ref(false);
 let ipcFailures = 0;
 
@@ -138,6 +140,7 @@ const toastTopOffsetPx = ref(112);
 let toastLayoutObserver: ResizeObserver | null = null;
 let handledStateError = "";
 let snapshotSeq = 0;
+let appliedSnapshotSeq = 0;
 let clearingStateError: {
   text: string;
   startedAtSeq: number;
@@ -146,10 +149,7 @@ let clearingStateError: {
 const shownFailedTaskIds = new Set<string>();
 
 function normalizeErrorKey(raw: unknown): string {
-  return String(raw ?? "")
-    .trim()
-    .replace(/^(?:Error|CallError|RuntimeError|TypeError|ValueError):\s*/i, "")
-    .trim();
+  return stripColabOneErrorPrefixes(raw);
 }
 
 function formatError(
@@ -207,13 +207,26 @@ function clearBackendStateError(text: string) {
   if (String(state.value.error ?? "").trim() === text) {
     state.value.error = "";
   }
-  colabOneCommand("error.clear")
-    .catch(() => {})
-    .finally(() => {
+  colabOneCommand("error.clear", { expected: text })
+    .then(() => {
       if (clearingStateError === entry) {
         entry.completedAtSeq = snapshotSeq;
       }
+    })
+    .catch(() => {
+      if (clearingStateError === entry) {
+        clearingStateError = null;
+      }
     });
+}
+
+async function openExternalURL(url: string) {
+  if (!url) return;
+  try {
+    await colabOneOpenURL(url);
+  } catch (e) {
+    showError(e);
+  }
 }
 
 async function onPanelSync() {
@@ -727,6 +740,22 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 let initialized = false,
   openedAuth = "";
 let lastSyncedSettings: Partial<typeof state.value.settings> = {};
+const pendingSettings = new Map<string, number>();
+
+function beginPendingSetting(keys: readonly string[]) {
+  for (const key of keys) {
+    pendingSettings.set(key, (pendingSettings.get(key) ?? 0) + 1);
+  }
+}
+
+function endPendingSetting(keys: readonly string[]) {
+  for (const key of keys) {
+    const next = (pendingSettings.get(key) ?? 0) - 1;
+    if (next <= 0) pendingSettings.delete(key);
+    else pendingSettings.set(key, next);
+  }
+}
+
 function syncFormFromSettings(next: typeof state.value.settings | undefined) {
   if (!next) return;
   const keys = [
@@ -738,7 +767,7 @@ function syncFormFromSettings(next: typeof state.value.settings | undefined) {
   ] as const;
   if (!initialized) {
     for (const key of keys) {
-      if (next[key] !== undefined) {
+      if (next[key] !== undefined && !pendingSettings.has(key)) {
         (form.value as Record<string, unknown>)[key] = next[key];
       }
     }
@@ -747,6 +776,7 @@ function syncFormFromSettings(next: typeof state.value.settings | undefined) {
     return;
   }
   for (const key of keys) {
+    if (pendingSettings.has(key)) continue;
     if (next[key] !== undefined && next[key] !== lastSyncedSettings[key]) {
       (form.value as Record<string, unknown>)[key] = next[key];
       (lastSyncedSettings as Record<string, unknown>)[key] = next[key];
@@ -778,6 +808,8 @@ function onLocaleChanged(meta: ColabOneLocaleMeta) {
 async function syncSnapshot() {
   const snapId = ++snapshotSeq;
   const value = await colabOneSnapshot();
+  if (stopped || snapId < appliedSnapshotSeq) return;
+  appliedSnapshotSeq = snapId;
   const wasDisconnected = ipcDisconnected.value;
   ipcFailures = 0;
   ipcDisconnected.value = false;
@@ -808,8 +840,9 @@ async function syncSnapshot() {
         !value.operation &&
         (value.account.assignments ?? 0) === 0))
   ) {
+    const staleErr = String(value.error).trim();
     value.error = "";
-    colabOneCommand("error.clear").catch(() => {});
+    colabOneCommand("error.clear", { expected: staleErr }).catch(() => {});
   }
   if (value.runtime.idle?.server_time !== state.value.runtime.idle?.server_time)
     snapshotAt.value = Date.now();
@@ -833,7 +866,7 @@ async function refresh() {
 }
 
 async function act(action: string, payload: Record<string, unknown> = {}) {
-  busy.value = true;
+  busyCount.value += 1;
   try {
     const res = await colabOneCommand(action, payload);
     clearActionErrors();
@@ -843,7 +876,7 @@ async function act(action: string, payload: Record<string, unknown> = {}) {
     showError(e);
     return null;
   } finally {
-    busy.value = false;
+    busyCount.value = Math.max(0, busyCount.value - 1);
   }
 }
 
@@ -880,11 +913,61 @@ async function setupHeadlessDrive() {
   }
 }
 
+const confirmingDriveAuth = ref(false);
+let lastDriveProbeAt = 0;
+
+function clearConfirmDriveTimer() {
+  confirmingDriveAuth.value = false;
+}
+
+async function confirmDriveAuth() {
+  if (confirmingDriveAuth.value) return;
+  confirmingDriveAuth.value = true;
+  try {
+    await colabOneCommand("drive.confirm", {});
+    await syncSnapshot().catch(() => {});
+  } catch (e) {
+    showError(e);
+  } finally {
+    confirmingDriveAuth.value = false;
+  }
+}
+
+function probeDriveAuthOnReturn() {
+  if (
+    stopped ||
+    !state.value.auth_url ||
+    !state.value.operation ||
+    state.value.setup.drive
+  ) {
+    return;
+  }
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    return;
+  }
+  const now = Date.now();
+  if (now - lastDriveProbeAt < 1200) return;
+  lastDriveProbeAt = now;
+  void colabOneCommand("drive.probe", {}).catch(() => {});
+}
+
 watch(
   () => state.value.operation,
   (op) => {
     if (!op && checkingDriveHeadless.value) {
       finishHeadlessDriveCheck();
+    }
+    if (!op) {
+      clearConfirmDriveTimer();
+    }
+  },
+);
+
+watch(
+  () => state.value.auth_url,
+  (url) => {
+    if (!url) {
+      clearConfirmDriveTimer();
     }
   },
 );
@@ -896,10 +979,10 @@ async function changeIdleMinutes(rawMinutes: unknown) {
   form.value.idle_minutes = minutes;
   lastSyncedSettings.idle_minutes = minutes;
   savingIdle.value = true;
+  beginPendingSetting(["idle_minutes"]);
   try {
     await colabOneCommand("settings.save", { idle_minutes: minutes });
     clearActionErrors();
-    await syncSnapshot().catch(() => {});
     notify(
       t("device.toastIdleSet", { policy: formatIdlePolicyLabel(minutes) }),
       "success",
@@ -910,7 +993,9 @@ async function changeIdleMinutes(rawMinutes: unknown) {
     lastSyncedSettings.idle_minutes = previous;
     showError(e);
   } finally {
+    endPendingSetting(["idle_minutes"]);
     savingIdle.value = false;
+    await syncSnapshot().catch(() => {});
   }
 }
 
@@ -920,10 +1005,10 @@ async function changeDownloadThreads(rawThreads: unknown) {
   const previous = form.value.download_threads;
   form.value.download_threads = threads;
   lastSyncedSettings.download_threads = threads;
+  beginPendingSetting(["download_threads"]);
   try {
     await colabOneCommand("settings.save", { download_threads: threads });
     clearActionErrors();
-    await syncSnapshot().catch(() => {});
     notify(
       t("device.toastThreadsSet", { threads }),
       "success",
@@ -933,6 +1018,9 @@ async function changeDownloadThreads(rawThreads: unknown) {
     form.value.download_threads = previous;
     lastSyncedSettings.download_threads = previous;
     showError(e);
+  } finally {
+    endPendingSetting(["download_threads"]);
+    await syncSnapshot().catch(() => {});
   }
 }
 
@@ -948,10 +1036,10 @@ async function changeDefaultGpu(raw: unknown) {
   const previous = form.value.gpu;
   form.value.gpu = gpu;
   lastSyncedSettings.gpu = gpu;
+  beginPendingSetting(["gpu"]);
   try {
     await colabOneCommand("settings.save", { gpu });
     clearActionErrors();
-    await syncSnapshot().catch(() => {});
     notify(
       t("device.toastDefaultGpuSet", { gpu }),
       "success",
@@ -961,12 +1049,30 @@ async function changeDefaultGpu(raw: unknown) {
     form.value.gpu = previous;
     lastSyncedSettings.gpu = previous;
     showError(e);
+  } finally {
+    endPendingSetting(["gpu"]);
+    await syncSnapshot().catch(() => {});
   }
 }
 
-function onAutoDriveChange(raw: unknown) {
-  form.value.auto_drive = Boolean(raw);
-  void save();
+async function onAutoDriveChange(raw: unknown) {
+  const next = Boolean(raw);
+  const previous = form.value.auto_drive;
+  form.value.auto_drive = next;
+  lastSyncedSettings.auto_drive = next;
+  beginPendingSetting(["auto_drive"]);
+  try {
+    const res = await act("settings.save", { auto_drive: next });
+    if (res) {
+      notify(t("device.toastSettingsSaved"), "success", "setting-auto-drive");
+    } else {
+      form.value.auto_drive = previous;
+      lastSyncedSettings.auto_drive = previous;
+    }
+  } finally {
+    endPendingSetting(["auto_drive"]);
+    await syncSnapshot().catch(() => {});
+  }
 }
 
 let lastAppearancePointer: { x: number; y: number; at: number } | null = null;
@@ -1006,8 +1112,10 @@ async function manualLogin() {
   const result = await act("auth.colab.begin");
   if (result) {
     showAuthPaste.value = true;
-    openedAuth = result.url;
-    await colabOneOpenURL(result.url);
+    if (result.url && result.url !== openedAuth) {
+      openedAuth = result.url;
+      await openExternalURL(result.url);
+    }
   }
 }
 async function finishLogin() {
@@ -1144,19 +1252,40 @@ async function switchInstance(endpoint: string) {
   await act("runtime.select", { endpoint });
 }
 
+const releaseTargetEndpoint = ref<string | undefined>(undefined);
+let releasePreviewSeq = 0;
+
+watch(showRelease, (open) => {
+  if (!open) {
+    releasePreviewSeq += 1;
+    releasePlan.value = null;
+    selectedReleaseIds.value = [];
+    force.value = false;
+    releaseTargetEndpoint.value = undefined;
+  }
+});
+
 async function openRelease(onlyEndpoint?: string) {
+  const seq = ++releasePreviewSeq;
+  releaseTargetEndpoint.value = onlyEndpoint;
   showRelease.value = true;
   force.value = false;
   releasePlan.value = null;
   selectedReleaseIds.value = [];
   const plan = await act("runtime.release.preview");
+  if (seq !== releasePreviewSeq || !showRelease.value) return;
   releasePlan.value = plan;
   if (plan?.instances?.length) {
-    if (
-      onlyEndpoint &&
-      plan.instances.some((item: AccountInstance) => item.id === onlyEndpoint)
-    ) {
-      selectedReleaseIds.value = [onlyEndpoint];
+    if (onlyEndpoint) {
+      if (
+        plan.instances.some((item: AccountInstance) => item.id === onlyEndpoint)
+      ) {
+        selectedReleaseIds.value = [onlyEndpoint];
+      } else {
+        // Target instance is no longer running; never fall back to selecting unrelated instances.
+        selectedReleaseIds.value = [];
+        notify(t("device.releaseEmpty"), "info");
+      }
     } else {
       selectedReleaseIds.value = plan.instances.map(
         (item: AccountInstance) => item.id,
@@ -1293,9 +1422,12 @@ onMounted(() => {
     window.addEventListener(name, interaction, { passive: true });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("colabone:log-window-state", handleLogWindowEvent);
+  window.addEventListener("focus", probeDriveAuthOnReturn);
+  document.addEventListener("visibilitychange", probeDriveAuthOnReturn);
 });
 onUnmounted(() => {
   stopped = true;
+  clearConfirmDriveTimer();
   scrollController.cancel();
   toastLayoutObserver?.disconnect();
   toastLayoutObserver = null;
@@ -1305,6 +1437,8 @@ onUnmounted(() => {
     window.removeEventListener(name, interaction);
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("colabone:log-window-state", handleLogWindowEvent);
+  window.removeEventListener("focus", probeDriveAuthOnReturn);
+  document.removeEventListener("visibilitychange", probeDriveAuthOnReturn);
   clearTimeout(timer);
   toastManager.clear();
 });
@@ -2035,9 +2169,22 @@ onUnmounted(() => {
                     class="co-drive-strip co-sync-note"
                   >
                     <PhCloud :size="16" class="co-drive-icon" />
-                    <span class="co-drive-text">
+                    <span
+                      class="co-drive-text"
+                      :class="{
+                        'is-warning':
+                          !!state.drive_auth_hint &&
+                          !!state.auth_url &&
+                          !!state.operation &&
+                          !state.setup.drive,
+                      }"
+                    >
                       <template v-if="state.auth_url && state.operation && !state.setup.drive">
-                        {{ t("device.driveWaitingBrowserConfirm") }}
+                        {{
+                          state.drive_auth_hint
+                            ? tb(state.drive_auth_hint)
+                            : t("device.driveWaitingBrowserConfirm")
+                        }}
                       </template>
                       <template v-else-if="state.setup.drive">
                         {{
@@ -2068,16 +2215,24 @@ onUnmounted(() => {
                       </template>
                     </span>
                     <template v-if="state.auth_url && state.operation && !state.setup.drive">
-                      <ASpace :size="6">
+                      <ASpace :size="6" wrap>
                         <AButton
                           size="small"
                           type="primary"
-                          @click="colabOneOpenURL(state.auth_url)"
+                          :loading="confirmingDriveAuth"
+                          @click="confirmDriveAuth()"
+                        >
+                          {{ t("device.driveConfirmAuthorized") }}
+                        </AButton>
+                        <AButton
+                          size="small"
+                          @click="openExternalURL(state.auth_url)"
                         >
                           {{ t("device.driveReopenAuth") }}
                         </AButton>
                         <AButton
                           size="small"
+                          :disabled="busy"
                           @click="act('drive.cancel')"
                         >
                           {{ t("device.driveCancelMount") }}
@@ -2477,6 +2632,7 @@ onUnmounted(() => {
               :state="state"
               :loading="!snapshotLoaded"
               @device="openDevice"
+              @sync="onPanelSync"
               @notify="notify"
               @clear-error="clearActionErrors"
               @error="showError"
@@ -2574,9 +2730,9 @@ onUnmounted(() => {
                     </AButton>
 
                     <AButton
-                      v-if="state.auth_url && state.operation"
+                      v-if="state.auth_url && state.operation && !ready"
                       type="link"
-                      @click="colabOneOpenURL(state.auth_url)"
+                      @click="openExternalURL(state.auth_url)"
                     >
                       {{ t("settings.reopenLoginPage") }}
                     </AButton>
@@ -2729,7 +2885,7 @@ onUnmounted(() => {
                       <ASpace :size="8" wrap class="co-drive-headless-actions">
                         <AButton
                           size="small"
-                          @click="colabOneOpenURL('https://console.cloud.google.com/')"
+                          @click="openExternalURL('https://console.cloud.google.com/')"
                         >
                           {{ t("settings.driveOpenGcpConsole") }}
                         </AButton>
@@ -2774,17 +2930,38 @@ onUnmounted(() => {
                     <AButton
                       v-if="ready && state.auth_url && state.operation && !state.setup.drive"
                       type="primary"
-                      @click="colabOneOpenURL(state.auth_url)"
+                      :loading="confirmingDriveAuth"
+                      @click="confirmDriveAuth()"
+                    >
+                      {{ t("device.driveConfirmAuthorized") }}
+                    </AButton>
+                    <AButton
+                      v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                      @click="openExternalURL(state.auth_url)"
                     >
                       {{ t("device.driveReopenAuth") }}
                     </AButton>
                     <AButton
                       v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                      :disabled="busy"
                       @click="act('drive.cancel')"
                     >
                       {{ t("device.driveCancelMount") }}
                     </AButton>
                   </ASpace>
+                  <AAlert
+                    v-if="
+                      ready &&
+                      state.auth_url &&
+                      state.operation &&
+                      !state.setup.drive &&
+                      state.drive_auth_hint
+                    "
+                    type="warning"
+                    show-icon
+                    class="co-drive-hint-alert"
+                    :message="tb(state.drive_auth_hint)"
+                  />
                 </ACard>
 
                 <!-- Settings Card 3: Default Compute & Idle Release -->
@@ -2905,6 +3082,7 @@ onUnmounted(() => {
                       <div class="co-switch-row">
                         <ASwitch
                           :checked="form.auto_drive"
+                          :disabled="busy"
                           @update:checked="onAutoDriveChange"
                         />
                         <span class="co-switch-label">
@@ -3203,6 +3381,7 @@ onUnmounted(() => {
               <AButton
                 danger
                 size="small"
+                :disabled="busy"
                 @click="act('task.cancel', { id: task.id })"
               >
                 {{ t("common.cancel") }}
@@ -3313,6 +3492,13 @@ onUnmounted(() => {
 
           <div v-else-if="!releasePlan" class="co-modal-loading">
             <span>{{ t("device.releaseLoadFailed") }}</span>
+            <AButton
+              size="small"
+              :disabled="busy"
+              @click="openRelease(releaseTargetEndpoint)"
+            >
+              {{ t("common.refresh") }}
+            </AButton>
           </div>
 
           <template v-else>
@@ -4235,6 +4421,14 @@ onUnmounted(() => {
   min-width: 200px;
   font-size: 13px;
   color: var(--co-secondary-text);
+}
+
+.co-drive-text.is-warning {
+  color: var(--co-warning-text);
+}
+
+.co-drive-hint-alert {
+  margin-top: 12px;
 }
 
 /* Multi-Instance Card */

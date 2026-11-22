@@ -307,6 +307,22 @@ describe("ColabOne reactive translations across helpers", () => {
       "启动远端 GPU",
       "新增启动远端 GPU",
       "正在分配 T4",
+      "正在分配 G4（第 2/6 次）",
+      "Google Colab 分配 G4 GPU 暂时繁忙或超时（HTTP 503），3 秒后自动重试（第 2/6 次）",
+      "Google Colab 分配 G4 GPU 暂时繁忙或超时（请求超时），5 秒后自动重试（第 3/6 次）",
+      "已通过状态核验确认 G4 GPU 实例分配成功",
+      "Google Colab 分配 G4 GPU 暂时不可用（HTTP 503，该型号可能算力紧张或后端分配超时），已自动重试 5 次仍未成功，请稍后重试或切换其他 GPU 型号",
+      "Google Colab 分配 G4 GPU 暂时不可用（HTTP 503，该型号可能算力紧张或后端分配超时），请稍后重试或切换其他 GPU 型号",
+      "Google Colab 分配 G4 GPU 请求超时，已自动重试 5 次仍未成功，请稍后重试或切换其他 GPU 型号",
+      "Google Colab 分配 G4 GPU 请求超时，请稍后重试或切换其他 GPU 型号",
+      "Google Colab 拒绝分配 G4 GPU（HTTP 412）：当前账号活跃实例已达上限或受配额限制，请先释放已有实例或切换其他 GPU 型号",
+      "Google Colab 拒绝分配 G4 GPU（HTTP 400）：当前账号可能暂无该型号配额或权限，请切换其他 GPU 型号",
+      "Google Colab 授权校验失败（HTTP 403），请在设置中重新登录后重试",
+      "Google Colab 分配请求过于频繁（HTTP 429），请稍等片刻后重试",
+      "Google Colab 分配 G4 GPU 失败（HTTP 500），请稍后重试",
+      "Google Colab 分配 G4 GPU 失败，请检查网络连接后重试",
+      "远端初始化异常：RuntimeError: wheel install failed",
+      "远端初始化未完成：RuntimeError: wheel install failed",
       "等待远端内核",
       "部署远端管理服务",
       "安装远端服务依赖",
@@ -458,5 +474,41 @@ describe("ColabOne reactive translations across helpers", () => {
     expect(
       filterCommonModels(sampleModels, "dense", { state: "stopped" }).length,
     ).toBe(1);
+  });
+
+  it("translates multi-line backend errors, numeric ComfyUI fields, and Wave 1/2 messages without CJK leaks", () => {
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+    const samples = [
+      "模型加载失败：first line\nsecond line",
+      "ComfyUI 执行失败：节点 3(KSampler): CUDA OOM\nstack trace line",
+      "远端初始化未完成：RuntimeError: pip failed\nexit code 1",
+      "模型预热失败（推理进程已退出，退出码 137）：CUDA OOM\nkilled",
+      "Google Colab 分配 G4 GPU 暂时繁忙或超时（网络异常），16 秒后自动重试（第 5/10 次）",
+      "Google Colab 分配 G4 GPU 网络连接中断，已自动重试 9 次仍未成功，请检查网络或代理后重试",
+      "已取消 GPU 分配",
+      "请等待当前操作完成后再切换实例",
+      "云盘历史数据恢复未完成，为避免覆盖请重试或勾选强制释放",
+      "EmptyLatentImage · 宽度",
+      "EmptyLatentImage · 高度",
+      "EmptyHunyuanLatentVideo · 帧数",
+      "CreateVideo · 帧率 (FPS)",
+      "EmptyLatentImage · 批次大小",
+      "KSampler · 采样步数",
+      "KSampler · CFG 引导系数",
+      "KSampler · 重绘幅度",
+      "KSampler · 随机种子",
+    ];
+    for (const loc of ["en-US", "ko-KR"] as const) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of samples) {
+        const out = tb(sample);
+        expect(out, `${loc}: ${sample}`).not.toBe(sample);
+        expect(leakRe.test(out), `${loc} leak in "${out}"`).toBe(false);
+      }
+    }
+    setColabOneLocale("zh-TW", { persist: false, syncNative: false });
+    expect(tb("请等待当前操作完成后再切换实例")).toContain("執行個體");
+    setColabOneLocale("zh-HK", { persist: false, syncNative: false });
+    expect(tb("请等待当前操作完成后再切换实例")).toContain("實例");
   });
 });

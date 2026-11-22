@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 COLABONE_APP_NAME = "ColabOne"
@@ -18,6 +20,7 @@ COLABONE_APP_DESCRIPTIONS = {
     "ko-KR": "ColabOne — 원격 GPU 워크스페이스",
 }
 _CREATE_NO_WINDOW = 0x08000000
+_win_desktop_lock = threading.Lock()
 _cached_win_desktop: Path | None = None
 
 
@@ -25,10 +28,54 @@ def colabone_app_description(locale: str = "zh-CN") -> str:
     return COLABONE_APP_DESCRIPTIONS.get(locale, COLABONE_APP_DESCRIPTION)
 
 
+def _win_known_desktop_path() -> Path | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        # FOLDERID_Desktop = {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}
+        folder_id = _GUID(
+            0xB4BFCC3A,
+            0xDB2C,
+            0x424C,
+            (ctypes.c_ubyte * 8)(0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41),
+        )
+        shell32 = ctypes.windll.shell32
+        ole32 = ctypes.windll.ole32
+        ptr = ctypes.c_wchar_p()
+        hr = shell32.SHGetKnownFolderPath(
+            ctypes.byref(folder_id), 0, None, ctypes.byref(ptr)
+        )
+        try:
+            if hr == 0 and ptr.value:
+                return Path(ptr.value)
+        finally:
+            if ptr.value:
+                ole32.CoTaskMemFree(ptr)
+    except Exception:
+        pass
+    return None
+
+
 def _win_desktop_dir(query_shell: bool = False) -> Path:
     global _cached_win_desktop
-    if _cached_win_desktop is not None:
-        return _cached_win_desktop
+    with _win_desktop_lock:
+        if _cached_win_desktop is not None:
+            return _cached_win_desktop
+    known = _win_known_desktop_path()
+    if known is not None:
+        with _win_desktop_lock:
+            _cached_win_desktop = known
+        return known
     if query_shell and sys.platform == "win32":
         try:
             r = subprocess.run(
@@ -47,8 +94,10 @@ def _win_desktop_dir(query_shell: bool = False) -> Path:
             )
             found = r.stdout.strip()
             if r.returncode == 0 and found:
-                _cached_win_desktop = Path(found)
-                return _cached_win_desktop
+                resolved = Path(found)
+                with _win_desktop_lock:
+                    _cached_win_desktop = resolved
+                return resolved
         except Exception:
             pass
     onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer") or ""

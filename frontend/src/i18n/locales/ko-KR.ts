@@ -369,7 +369,8 @@ export const koKRMessages: ColabOneMessages = {
   "device.syncNow": "지금 동기화",
   "device.mountDriveNow": "드라이브 마운트",
   "device.driveWaitingBrowserConfirm":
-    "브라우저에서 허용을 클릭해 이 인스턴스의 Google 드라이브(ColabOne_Drive) 마운트를 승인하세요...",
+    "브라우저에서 모든 드라이브 권한을 선택하고 허용을 클릭하세요. 완료 후 앱으로 돌아오면 자동으로 계속되며, '승인을 완료했습니다'로 즉시 확인할 수 있습니다.",
+  "device.driveConfirmAuthorized": "승인을 완료했습니다",
   "device.driveReopenAuth": "승인 페이지 다시 열기",
   "device.driveCancelMount": "마운트 취소",
   "device.driveEnableHeadlessLink": "팝업 없이 자동 마운트 켜기",

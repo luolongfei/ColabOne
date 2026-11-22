@@ -66,7 +66,7 @@ class ColabOneTask:
         self.cancel = threading.Event()
         self.cancel_hook = None
         self.events = []
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.created_at = time.time()
         self.transfer = None
         self.logs = []
@@ -94,9 +94,10 @@ class ColabOneTask:
 
     def request_cancel(self):
         self.cancel.set()
-        if self.cancel_hook:
+        hook = self.cancel_hook
+        if hook:
             try:
-                self.cancel_hook()
+                hook()
             except RuntimeError:
                 pass  # The generation loop may have just finished.
 
@@ -105,23 +106,24 @@ class ColabOneTask:
             raise ColabOneCancelledError("操作已取消")
 
     def snapshot(self):
-        value = {
-            k: getattr(self, k)
-            for k in (
-                "id",
-                "kind",
-                "model_id",
-                "state",
-                "progress",
-                "error",
-                "message",
-                "created_at",
-            )
-        }
         with self.lock:
+            value = {
+                k: getattr(self, k)
+                for k in (
+                    "id",
+                    "kind",
+                    "model_id",
+                    "state",
+                    "progress",
+                    "error",
+                    "message",
+                    "created_at",
+                )
+            }
             value["logs"] = list(self.logs)
-        if self.transfer:
-            value["download"] = self.transfer.snapshot()
+            transfer = self.transfer
+        if transfer:
+            value["download"] = transfer.snapshot()
         return value
 
 
@@ -133,8 +135,10 @@ class ColabOneRuntime:
         self.models_dir.mkdir(exist_ok=True)
         self.lock = threading.RLock()
         self.sync_lock = threading.Lock()
+        self.release_lock = threading.Lock()
         self.quiescing = False
         self.auto_releasing = False
+        self.release_prepared = False
         self.http = http or requests.Session()
         self.http.trust_env = False
         self.drive = drive or ColabOneDrive(root, catalog, http=self.http)
@@ -178,13 +182,20 @@ class ColabOneRuntime:
         self.public_api = ColabOnePublicGateway(self)
         self.comfy = ColabOneComfyManager(self)
         if (root / "models.json").exists():
-            for value in json.loads((root / "models.json").read_text(encoding="utf-8")):
-                try:
-                    model = ModelSpec.model_validate(value)
-                except ValueError:
-                    continue
-                self.models[model.id] = model
-            self._mark_dirty("models")
+            try:
+                raw_models = json.loads(
+                    (root / "models.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                raw_models = []
+            if isinstance(raw_models, list):
+                for value in raw_models:
+                    try:
+                        model = ModelSpec.model_validate(value)
+                    except ValueError:
+                        continue
+                    self.models[model.id] = model
+                self._mark_dirty("models")
 
     def _mark_dirty(self, key: str):
         with self.lock:
@@ -209,7 +220,9 @@ class ColabOneRuntime:
         if self.quiescing:
             raise ColabOneConflictError("实例正在释放，无法延长闲置时间")
         self.last_active = time.time()
-        self.activity_until = self.last_active + hold_seconds
+        self.activity_until = max(
+            self.activity_until, self.last_active + hold_seconds
+        )
         return self.idle_status()
 
     def idle_status(self, now=None):
@@ -250,45 +263,55 @@ class ColabOneRuntime:
             return True
         return False
 
-    @synchronized
     def status(self):
-        if self.proc and self.proc.poll() is not None:
-            self.proc, self.loaded = None, None
-            self.active_options = {}
+        with self.lock:
+            if self.proc and self.proc.poll() is not None:
+                self.proc, self.loaded = None, None
+                self.active_options = {}
+            telemetry_alive = (
+                self._telemetry_thread is not None
+                and self._telemetry_thread.is_alive()
+            )
+            loaded = self.loaded
+            active_options = self.active_options.copy()
+            location = copy.deepcopy(self.location)
+            quiescing = self.quiescing
+            idle_minutes = self.idle_minutes
+            deadline = self.deadline
+            dirty_count = len(self._dirty_seq)
+            tasks = list(self.tasks.values())
         idle = self.idle_status()
-        cached = (
-            self.telemetry.latest(max_age=2.5)
-            if self._telemetry_thread is not None and self._telemetry_thread.is_alive()
-            else None
-        )
+        cached = self.telemetry.latest(max_age=2.5) if telemetry_alive else None
         if cached is not None:
             resources = cached
             gpu = cached["gpu"]
         else:
             gpu = self.gpu_info()
             resources = self.telemetry.sample(self.root, gpu_override=gpu)
+        comfy_status = self.comfy.status()
+        comfy_running = self.comfy.is_running()
         return {
             "protocol": 7,
             "public_api": self.public_api.snapshot(),
             "capabilities": ["public_api", "comfyui"],
-            "comfyui": self.comfy.status(),
+            "comfyui": comfy_status,
             "active_engine": "llama"
-            if self.loaded
-            else ("comfyui" if self.comfy.is_running() else None),
+            if loaded
+            else ("comfyui" if comfy_running else None),
             "idle": idle,
             "id": self.runtime_id,
-            "state": "releasing" if self.quiescing else "ready",
+            "state": "releasing" if quiescing else "ready",
             "gpu": gpu,
             "resources": resources,
-            "location": copy.deepcopy(self.location),
-            "loaded_model": self.loaded,
-            "active_options": self.active_options.copy(),
+            "location": location,
+            "loaded_model": loaded,
+            "active_options": active_options,
             "disk_free": resources["disk"]["free_bytes"],
             "idle_remaining": idle["remaining_seconds"],
-            "idle_minutes": self.idle_minutes,
-            "tasks": [t.snapshot() for t in self.tasks.values()],
-            "drive": self.drive.status(len(self._dirty_seq)),
-            "deadline": self.deadline,
+            "idle_minutes": idle_minutes,
+            "tasks": [t.snapshot() for t in tasks],
+            "drive": self.drive.status(dirty_count),
+            "deadline": deadline,
         }
 
     def detect_location(self) -> dict | None:
@@ -365,31 +388,51 @@ class ColabOneRuntime:
                 raise ColabOneConflictError("实例正在准备释放")
             if self.busy():
                 raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+            # Evict oldest finished tasks once history exceeds 50 entries.
+            finished_ids = [
+                tid
+                for tid, existing in self.tasks.items()
+                if existing.state != "running"
+            ]
+            while len(finished_ids) >= 50:
+                self.tasks.pop(finished_ids.pop(0), None)
             t = ColabOneTask(kind, model_id)
             self.tasks[t.id] = t
             self.last_active = time.time()
 
         def run():
+            final_state = "failed"
+            final_progress = None
+            final_error = ""
             try:
                 fn(t)
                 t.check()
-                t.state, t.progress = "completed", 1
+                final_state = "completed"
+                final_progress = 1
             except ColabOneCancelledError:
-                t.state = "cancelled"
+                final_state = "cancelled"
             except Exception as exc:
-                t.state, t.error = "failed", (str(exc) or type(exc).__name__)[:500]
+                final_state = "failed"
+                final_error = (str(exc) or type(exc).__name__)[:500]
             finally:
-                self.last_active = time.time()
-                if t.transfer:
-                    t.transfer.phase = t.state
-                    t.note(
-                        {
-                            "completed": "下载完成，全部文件 SHA-256 校验通过",
-                            "cancelled": "下载已取消，保留完成的分块以便续传",
-                            "failed": "下载失败：" + t.error,
-                        }.get(t.state, t.state)
-                    )
-                t.emit("done", t.snapshot())
+                with self.lock:
+                    self.last_active = time.time()
+                with t.lock:
+                    t.state = final_state
+                    if final_progress is not None:
+                        t.progress = final_progress
+                    if final_error:
+                        t.error = final_error
+                    if t.transfer:
+                        t.transfer.phase = t.state
+                        t.note(
+                            {
+                                "completed": "下载完成，全部文件 SHA-256 校验通过",
+                                "cancelled": "下载已取消，保留完成的分块以便续传",
+                                "failed": "下载失败：" + t.error,
+                            }.get(t.state, t.state)
+                        )
+                    t.emit("done", t.snapshot())
 
         threading.Thread(target=run, daemon=True).start()
         return t.snapshot()
@@ -537,41 +580,78 @@ class ColabOneRuntime:
         stats.phase = "downloading"
         if offset == file.size:
             return
-        headers = dict(headers)
-        if offset:
-            headers["Range"] = f"bytes={offset}-"
-        stats.active = 1
-        try:
-            with self.http.get(
-                url, headers=headers, stream=True, timeout=(10, 10)
-            ) as response:
-                response.raise_for_status()
-                if offset and response.status_code != 206:
-                    stats.resumed -= offset
-                    offset = 0
-                if response.status_code == 206 and not response.headers.get(
-                    "Content-Range", ""
-                ).startswith(f"bytes {offset}-"):
-                    raise RuntimeError("下载范围响应不匹配，请重试")
-                with partial.open("ab" if offset else "wb") as stream:
-                    for block in response.iter_content(1024**2):
-                        task.check()
-                        if offset + len(block) > file.size:
-                            raise RuntimeError("远端文件大于清单声明的大小")
-                        stream.write(block)
-                        offset += len(block)
-                        stats.wire(len(block))
-                        stats.downloaded = done + offset
-                        task.progress = (done + offset) / stats.total
-                        now = time.monotonic()
-                        if now - stats.last_report >= 5:
-                            stats.last_report = now
-                            view = stats.snapshot()
-                            task.note(
-                                f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
-                            )
-        finally:
-            stats.active = 0
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            task.check()
+            req_headers = dict(headers)
+            req_headers["Accept-Encoding"] = "identity"
+            if offset:
+                req_headers["Range"] = f"bytes={offset}-"
+            stats.active = 1
+            try:
+                with self.http.get(
+                    url, headers=req_headers, stream=True, timeout=(10, 30)
+                ) as response:
+                    if response.status_code == 416 and offset > 0:
+                        stats.resumed = max(0, stats.resumed - offset)
+                        partial.unlink(missing_ok=True)
+                        offset = 0
+                        stats.downloaded = done
+                        continue
+                    response.raise_for_status()
+                    if offset and response.status_code != 206:
+                        stats.resumed = max(0, stats.resumed - offset)
+                        offset = 0
+                    if response.status_code == 206:
+                        cr = response.headers.get("Content-Range", "").strip()
+                        if not cr.startswith(f"bytes {offset}-") or (
+                            "/" in cr and not cr.endswith(f"/{file.size}")
+                        ):
+                            raise RuntimeError("下载范围响应不匹配，请重试")
+                    with partial.open("ab" if offset else "wb") as stream:
+                        for block in response.iter_content(1024**2):
+                            task.check()
+                            if not block:
+                                continue
+                            if offset + len(block) > file.size:
+                                raise RuntimeError("远端文件大于清单声明的大小")
+                            stream.write(block)
+                            offset += len(block)
+                            stats.wire(len(block))
+                            stats.downloaded = done + offset
+                            task.progress = (done + offset) / stats.total
+                            now = time.monotonic()
+                            if now - stats.last_report >= 5:
+                                stats.last_report = now
+                                view = stats.snapshot()
+                                task.note(
+                                    f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
+                                )
+                return
+            except requests.HTTPError as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if (
+                    status_code not in (429, 500, 502, 503, 504)
+                    or attempt + 1 >= max_attempts
+                ):
+                    raise
+                task.note(
+                    f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（HTTP {status_code}）",
+                    "warning",
+                )
+                if task.cancel.wait(2**attempt):
+                    task.check()
+            except requests.RequestException as exc:
+                if attempt + 1 >= max_attempts:
+                    raise
+                task.note(
+                    f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（{type(exc).__name__}）",
+                    "warning",
+                )
+                if task.cancel.wait(2**attempt):
+                    task.check()
+            finally:
+                stats.active = 0
 
     @staticmethod
     def sha256(path, task=None):
@@ -598,18 +678,20 @@ class ColabOneRuntime:
             task.note(f"下载引擎组件 {i + 1}/{len(config['assets'])}")
             task.message = "安装远端 CUDA 推理引擎"
             target = root / f"asset-{i}.tar.gz"
-            with self.http.get(asset["url"], stream=True, timeout=(15, 60)) as r:
-                r.raise_for_status()
-                with target.open("wb") as out:
-                    for chunk in r.iter_content(1024**2):
-                        task.check()
-                        out.write(chunk)
-            if not asset["sha256"] or self.sha256(target, task) != asset["sha256"]:
-                raise RuntimeError("推理引擎 SHA-256 校验失败")
-            task.note(f"引擎组件 {i + 1} 校验通过，正在解压")
-            with tarfile.open(target) as archive:
-                archive.extractall(root, filter="data")
-            target.unlink()
+            try:
+                with self.http.get(asset["url"], stream=True, timeout=(15, 60)) as r:
+                    r.raise_for_status()
+                    with target.open("wb") as out:
+                        for chunk in r.iter_content(1024**2):
+                            task.check()
+                            out.write(chunk)
+                if not asset["sha256"] or self.sha256(target, task) != asset["sha256"]:
+                    raise RuntimeError("推理引擎 SHA-256 校验失败")
+                task.note(f"引擎组件 {i + 1} 校验通过，正在解压")
+                with tarfile.open(target) as archive:
+                    archive.extractall(root, filter="data")
+            finally:
+                target.unlink(missing_ok=True)
         binaries = list(root.rglob("llama-server"))
         if not binaries:
             raise RuntimeError("推理引擎包中没有 llama-server")
@@ -785,7 +867,19 @@ class ColabOneRuntime:
         file = next(f for f in m.files if f.role == "model")
         model_path = self.models_dir / m.id / file.path
         env = dict(os.environ)
-        lib_dirs = {str(p.parent) for p in engine.parent.parent.rglob("*.so*")}
+        engine_base = self.root / "engine"
+        try:
+            rel = engine.resolve().relative_to(engine_base.resolve())
+            lib_search_root = (
+                engine_base / rel.parts[0] if len(rel.parts) >= 2 else engine.parent
+            )
+        except ValueError:
+            lib_search_root = engine.parent
+        lib_dirs = (
+            {str(p.parent) for p in lib_search_root.rglob("*.so*")}
+            if lib_search_root.is_dir()
+            else set()
+        )
         env["LD_LIBRARY_PATH"] = (
             ":".join(sorted(lib_dirs)) + ":" + env.get("LD_LIBRARY_PATH", "")
         )
@@ -817,8 +911,11 @@ class ColabOneRuntime:
                     task.check()
                     if proc.poll() is not None:
                         exited_early = True
-                        tail = log.read_text(errors="replace")[-1200:]
-                        last_error = "模型加载失败：" + tail
+                        tail = log.read_text(errors="replace")[-1200:].strip()
+                        last_error = (
+                            f"模型加载失败（推理进程已退出，退出码 {proc.returncode}）"
+                            + (f"：{tail}" if tail else "")
+                        )
                         break
                     try:
                         if (
@@ -831,6 +928,14 @@ class ColabOneRuntime:
                                 f"模型权重已就绪（{plan_label}，耗时 {time.monotonic() - load_started:.1f} 秒）"
                             )
                             self._warmup_llama(task, proc, m.id)
+                            if proc.poll() is not None:
+                                exited_early = True
+                                tail = log.read_text(errors="replace")[-1200:].strip()
+                                last_error = (
+                                    f"模型预热失败（推理进程已退出，退出码 {proc.returncode}）"
+                                    + (f"：{tail}" if tail else "")
+                                )
+                                break
                             self._engine_ready(
                                 task,
                                 proc,
@@ -948,8 +1053,10 @@ class ColabOneRuntime:
             if self.busy():
                 raise ColabOneConflictError("请先停止当前任务")
             self._stop_engine()
-            if self.comfy.is_running():
-                self.comfy.free_memory(unload_models=True)
+            comfy_running = self.comfy.is_running()
+        if comfy_running:
+            self.comfy.free_memory(unload_models=True)
+        with self.lock:
             self.last_active = time.time()
 
     @synchronized
@@ -1025,8 +1132,8 @@ class ColabOneRuntime:
                     self._sync_to_drive()
                 return self.drive.status(len(self._dirty_seq))
             self.drive.connect()
-            self._restore_from_drive()
-            if self._dirty_seq:
+            restored = self._restore_from_drive()
+            if restored and self._dirty_seq:
                 self._sync_to_drive()
             return self.drive.status(len(self._dirty_seq))
 
@@ -1051,13 +1158,18 @@ class ColabOneRuntime:
                 return False
             pulled_models = []
             if (stage_dir / "models.json").is_file():
-                for raw_model in json.loads(
-                    (stage_dir / "models.json").read_text(encoding="utf-8")
-                ):
-                    try:
-                        pulled_models.append(ModelSpec.model_validate(raw_model))
-                    except ValueError:
-                        continue
+                try:
+                    raw_pulled = json.loads(
+                        (stage_dir / "models.json").read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError):
+                    raw_pulled = []
+                if isinstance(raw_pulled, list):
+                    for raw_model in raw_pulled:
+                        try:
+                            pulled_models.append(ModelSpec.model_validate(raw_model))
+                        except ValueError:
+                            continue
             with self.lock:
                 local_changed = False
                 for m in pulled_models:
@@ -1155,35 +1267,86 @@ class ColabOneRuntime:
                     self._dirty_seq.pop(k, None)
         return True
 
-    def prepare_release(self):
-        with self.lock:
-            self.quiescing = True
-            tasks = list(self.tasks.values())
-        try:
-            self.public_api.stop()
-            for task in tasks:
-                if task.state == "running":
-                    task.request_cancel()
-            self.comfy.stop_server()
-            deadline = time.monotonic() + 15
-            while any(t.state == "running" for t in tasks):
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("任务仍在停止，请稍后重试释放")
-                time.sleep(0.1)
-            self._stop_engine()
-            with self.sync_lock:
-                if self.drive.available():
-                    if not self.drive_restored:
-                        self._restore_from_drive()
-                    if self._dirty_seq and not self._sync_to_drive():
-                        raise RuntimeError(
-                            "云盘同步尚未完成，请重试或勾选强制释放"
-                        )
-                    self.drive.unmount()
-            return {"ok": True}
-        except Exception:
-            self.quiescing = False
-            raise
+    def prepare_release(self, *, auto: bool = False):
+        with self.release_lock:
+            with self.lock:
+                if self.release_prepared:
+                    return {"ok": True}
+                self.quiescing = True
+                tasks = list(self.tasks.values())
+            if auto:
+                for step in (
+                    self.public_api.stop,
+                    lambda: [
+                        task.request_cancel()
+                        for task in tasks
+                        if task.state == "running"
+                    ],
+                    self.comfy.stop_server,
+                ):
+                    try:
+                        step()
+                    except Exception:
+                        pass
+                deadline = time.monotonic() + 15
+                while any(t.state == "running" for t in tasks):
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.1)
+                for step in (self.comfy.stop_server, self._stop_engine):
+                    try:
+                        step()
+                    except Exception:
+                        pass
+                with self.sync_lock:
+                    try:
+                        if self.drive.available():
+                            if not self.drive_restored:
+                                self._restore_from_drive()
+                            if self.drive_restored and self._dirty_seq:
+                                self._sync_to_drive()
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            self.drive.unmount()
+                        except Exception:
+                            pass
+                with self.lock:
+                    self.release_prepared = True
+                return {"ok": True}
+            try:
+                self.public_api.stop()
+                for task in tasks:
+                    if task.state == "running":
+                        task.request_cancel()
+                self.comfy.stop_server()
+                deadline = time.monotonic() + 15
+                while any(t.state == "running" for t in tasks):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("任务仍在停止，请稍后重试释放")
+                    time.sleep(0.1)
+                self.comfy.stop_server()
+                self._stop_engine()
+                with self.sync_lock:
+                    if self.drive.available():
+                        if not self.drive_restored and not self._restore_from_drive():
+                            raise RuntimeError(
+                                "云盘历史数据恢复未完成，为避免覆盖请重试或勾选强制释放"
+                            )
+                        if self._dirty_seq and not self._sync_to_drive():
+                            raise RuntimeError(
+                                "云盘同步尚未完成，请重试或勾选强制释放"
+                            )
+                        self.drive.unmount()
+                with self.lock:
+                    self.release_prepared = True
+                return {"ok": True}
+            except Exception:
+                with self.lock:
+                    if not self.auto_releasing:
+                        self.quiescing = False
+                raise
 
     def start_background(self):
         # Prime baseline CPU and disk I/O counters immediately so the first
@@ -1237,10 +1400,15 @@ class ColabOneRuntime:
                 if self.busy():
                     self.last_active = time.time()
                 if self.claim_auto_release():
-                    try:
-                        self.prepare_release()
-                    except Exception:
-                        self.drive.unmount()
+                    if not self.release_prepared:
+                        try:
+                            self.prepare_release(auto=True)
+                        except Exception:
+                            try:
+                                with self.sync_lock:
+                                    self.drive.unmount()
+                            except Exception:
+                                pass
                     self.quiescing = True
                     addr = os.environ.get("TBE_RUNTIME_ADDR", "")
                     if addr:

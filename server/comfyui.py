@@ -426,7 +426,15 @@ class ColabOneComfyWorkflowStore:
             meta_path = self.outputs_dir / f"{identity}.json"
             if asset_path.is_symlink() or meta_path.is_symlink():
                 raise ValueError("作品文件不能是符号链接")
-            asset_path.write_bytes(data)
+            tmp_asset = self.outputs_dir / f".{identity}.{ext}.{uuid.uuid4().hex[:8]}.tmp"
+            try:
+                with tmp_asset.open("wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(tmp_asset, asset_path)
+            finally:
+                tmp_asset.unlink(missing_ok=True)
             atomic_json(meta_path, record)
             self.outputs[identity] = record
         if self.on_output_change:
@@ -555,7 +563,9 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
         pass
 
 
-def _run_command(args, task, log: Path, timeout: int = 1200, cwd=None) -> None:
+def _run_command(
+    args, task, log: Path, timeout: int = 1200, cwd=None, stopping=None
+) -> None:
     """Cancelable process group; subprocesses cannot outlive their task."""
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("wb") as out:
@@ -571,6 +581,10 @@ def _run_command(args, task, log: Path, timeout: int = 1200, cwd=None) -> None:
     try:
         while proc.poll() is None:
             task.check()
+            if isinstance(stopping, threading.Event) and stopping.is_set():
+                from server.runtime import ColabOneCancelledError
+
+                raise ColabOneCancelledError("实例正在停止，已取消 ComfyUI 准备")
             if time.monotonic() > end:
                 raise RuntimeError("远端 ComfyUI 准备超时，请查看运行日志")
             if time.monotonic() - noted > 5:
@@ -808,13 +822,56 @@ class ColabOneComfyManager:
             raise ValueError("ComfyUI 目录不能是符号链接")
         if not shutil.which("git"):
             raise RuntimeError("此远端缺少 Git，无法安装 ComfyUI")
+        stopping = getattr(self.runtime, "stopping", None)
+        git_dir = self.install_dir / ".git"
+        if git_dir.exists() and not git_dir.is_dir():
+            shutil.rmtree(self.install_dir, ignore_errors=True)
         self.install_dir.mkdir(parents=True, exist_ok=True)
         log = self.runtime.root / "comfyui-install.log"
         task.message = "首次安装远端 ComfyUI " + self.catalog.tag
         task.note(task.message)
-        if not (self.install_dir / ".git").exists():
+        if git_dir.is_dir():
+            # Clean stale git lockfiles left by a previously interrupted install.
+            for lock_file in git_dir.rglob("*.lock"):
+                try:
+                    lock_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                _run_command(
+                    [
+                        "git",
+                        "-C",
+                        str(self.install_dir),
+                        "remote",
+                        "set-url",
+                        "origin",
+                        self.catalog.repo,
+                    ],
+                    task,
+                    log,
+                    stopping=stopping,
+                )
+            except RuntimeError:
+                _run_command(
+                    [
+                        "git",
+                        "-C",
+                        str(self.install_dir),
+                        "remote",
+                        "add",
+                        "origin",
+                        self.catalog.repo,
+                    ],
+                    task,
+                    log,
+                    stopping=stopping,
+                )
+        else:
             task.note("正在初始化远端 ComfyUI 仓库目录")
-            _run_command(["git", "init", str(self.install_dir)], task, log)
+            _run_command(
+                ["git", "init", str(self.install_dir)], task, log, stopping=stopping
+            )
             _run_command(
                 [
                     "git",
@@ -827,6 +884,7 @@ class ColabOneComfyManager:
                 ],
                 task,
                 log,
+                stopping=stopping,
             )
         task.note("正在拉取 ComfyUI 指定版本源码")
         _run_command(
@@ -842,6 +900,7 @@ class ColabOneComfyManager:
             ],
             task,
             log,
+            stopping=stopping,
         )
         task.note("源码拉取完成，正在检出目标版本")
         _run_command(
@@ -850,11 +909,13 @@ class ColabOneComfyManager:
                 "-C",
                 str(self.install_dir),
                 "checkout",
+                "--force",
                 "--detach",
                 self.catalog.commit,
             ],
             task,
             log,
+            stopping=stopping,
         )
 
         req_file = self.install_dir / "requirements.txt"
@@ -880,6 +941,7 @@ class ColabOneComfyManager:
                     ],
                     task,
                     log,
+                    stopping=stopping,
                 )
 
         if not (self.install_dir / "main.py").is_file():
@@ -963,12 +1025,32 @@ class ColabOneComfyManager:
                     stdin=subprocess.DEVNULL,
                     start_new_session=True,
                 )
+            with self.lock:
+                if (
+                    task.cancel.is_set()
+                    or getattr(self.runtime, "quiescing", False)
+                    or (
+                        isinstance(getattr(self.runtime, "stopping", None), threading.Event)
+                        and self.runtime.stopping.is_set()
+                    )
+                ):
+                    from server.runtime import ColabOneCancelledError
+
+                    raise ColabOneCancelledError("实例正在停止，已取消启动 ComfyUI")
+                self.proc = proc
 
             start_t = time.monotonic()
             last_wait_note = start_t
             deadline = start_t + 180
             while time.monotonic() < deadline:
                 task.check()
+                if getattr(self.runtime, "quiescing", False) or (
+                    isinstance(getattr(self.runtime, "stopping", None), threading.Event)
+                    and self.runtime.stopping.is_set()
+                ):
+                    from server.runtime import ColabOneCancelledError
+
+                    raise ColabOneCancelledError("实例正在停止，已取消启动 ComfyUI")
                 if proc.poll() is not None:
                     tail = ""
                     if log.is_file():
@@ -982,7 +1064,21 @@ class ColabOneComfyManager:
                     )
                     if _response_ok(resp):
                         with self.lock:
-                            self.proc = proc
+                            task.check()
+                            if (
+                                self.proc is not proc
+                                or getattr(self.runtime, "quiescing", False)
+                                or (
+                                    isinstance(
+                                        getattr(self.runtime, "stopping", None),
+                                        threading.Event,
+                                    )
+                                    and self.runtime.stopping.is_set()
+                                )
+                            ):
+                                from server.runtime import ColabOneCancelledError
+
+                                raise ColabOneCancelledError("实例正在停止，已取消启动 ComfyUI")
                             self.state = "ready"
                             self.error = ""
                             self._queue_cache = (0, 0)
@@ -1008,7 +1104,8 @@ class ColabOneComfyManager:
 
             is_cancelled = isinstance(exc, ColabOneCancelledError) or task.cancel.is_set()
             with self.lock:
-                self.proc = None
+                if self.proc is proc:
+                    self.proc = None
                 if is_cancelled:
                     self.state = "stopped"
                     self.error = ""
@@ -1164,6 +1261,8 @@ class ColabOneComfyManager:
         started = time.monotonic()
         last_phase: str | None = None
         last_note = 0.0
+        hist_errors = 0
+        missing_polls = 0
         task.note(f"工作流已入队：{wf['name']}（任务 {prompt_id[:16]}）")
 
         try:
@@ -1174,11 +1273,22 @@ class ColabOneComfyManager:
                 if proc is not None and proc.poll() is not None:
                     raise RuntimeError("ComfyUI 进程在执行期间意外退出")
 
-                hist_resp = self.runtime.http.get(
-                    f"{self.base_url}/history/{prompt_id}", timeout=15
-                )
-                hist_resp.raise_for_status()
-                hist_data = hist_resp.json() or {}
+                try:
+                    hist_resp = self.runtime.http.get(
+                        f"{self.base_url}/history/{prompt_id}", timeout=15
+                    )
+                    hist_resp.raise_for_status()
+                    hist_data = hist_resp.json() or {}
+                    hist_errors = 0
+                except (requests.RequestException, OSError, ValueError) as exc:
+                    hist_errors += 1
+                    if hist_errors >= 5:
+                        raise RuntimeError(
+                            f"查询 ComfyUI 任务进度连续失败：{exc}"
+                        ) from None
+                    time.sleep(1.0)
+                    continue
+
                 if prompt_id in hist_data:
                     entry = hist_data[prompt_id] or {}
                     status_info = entry.get("status") or {}
@@ -1230,11 +1340,29 @@ class ColabOneComfyManager:
                                 "subfolder": subfolder,
                                 "type": file_type,
                             },
-                            timeout=60,
+                            stream=True,
+                            timeout=(10, 60),
                         )
-                        view_resp.raise_for_status()
+                        try:
+                            view_resp.raise_for_status()
+                            if isinstance(view_resp, requests.Response):
+                                buf = bytearray()
+                                for chunk in view_resp.iter_content(256 * 1024):
+                                    task.check()
+                                    if not chunk:
+                                        continue
+                                    buf.extend(chunk)
+                                    if len(buf) > MAX_OUTPUT_BYTES:
+                                        raise ValueError("生成结果超过最大体积限制")
+                                raw_output = bytes(buf)
+                            else:
+                                raw_output = view_resp.content
+                        finally:
+                            close_fn = getattr(view_resp, "close", None)
+                            if callable(close_fn):
+                                close_fn()
                         record = self.store.save_output(
-                            raw=view_resp.content,
+                            raw=raw_output,
                             workflow_id=wf["id"],
                             workflow_name=wf["name"],
                             filename=fname,
@@ -1259,11 +1387,14 @@ class ColabOneComfyManager:
 
                 phase = "running"
                 pending_pos = 0
+                queue_checked = False
+                in_queue = False
                 try:
                     q_resp = self.runtime.http.get(
                         self.base_url + "/queue", timeout=5
                     )
                     if _response_ok(q_resp):
+                        queue_checked = True
                         q_data = q_resp.json() or {}
                         q_running = q_data.get("queue_running") or []
                         q_pending = q_data.get("queue_pending") or []
@@ -1273,7 +1404,9 @@ class ColabOneComfyManager:
                             and str(q_entry[1]) == prompt_id
                             for q_entry in q_running
                         )
-                        if not in_running:
+                        if in_running:
+                            in_queue = True
+                        else:
                             for pos, q_entry in enumerate(q_pending, 1):
                                 if (
                                     isinstance(q_entry, (list, tuple))
@@ -1282,9 +1415,32 @@ class ColabOneComfyManager:
                                 ):
                                     phase = "queued"
                                     pending_pos = pos
+                                    in_queue = True
                                     break
-                except (requests.RequestException, OSError):
+                except (requests.RequestException, OSError, ValueError):
                     pass
+
+                if queue_checked:
+                    if in_queue:
+                        missing_polls = 0
+                    else:
+                        missing_polls += 1
+                        if missing_polls >= 10:
+                            # Final check against /history in case the prompt just finished.
+                            try:
+                                final_hist = self.runtime.http.get(
+                                    f"{self.base_url}/history/{prompt_id}", timeout=10
+                                )
+                                if _response_ok(final_hist) and prompt_id in (
+                                    final_hist.json() or {}
+                                ):
+                                    missing_polls = 0
+                                    continue
+                            except (requests.RequestException, OSError, ValueError):
+                                pass
+                            raise RuntimeError(
+                                "ComfyUI 任务已从执行队列消失且未生成结果，可能已在画布中被取消"
+                            )
 
                 if phase == "queued":
                     task.message = (
@@ -1308,7 +1464,7 @@ class ColabOneComfyManager:
             self._cancel_prompt(prompt_id)
             raise
         except BaseException:
+            self._cancel_prompt(prompt_id)
             if task.cancel.is_set():
-                self._cancel_prompt(prompt_id)
                 raise ColabOneCancelledError("操作已取消") from None
             raise

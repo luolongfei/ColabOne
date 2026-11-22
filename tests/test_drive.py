@@ -287,12 +287,16 @@ def test_rclone_workspace_sync_targets_workflows_and_comfy_outputs(tmp_path, mon
 
     pull_cmd, push_cmd = calls[0], calls[1]
     for cmd in (pull_cmd, push_cmd):
-        assert "/models.json" in cmd
-        assert "/workflows/**" in cmd
-        assert "/comfyui-outputs/**" in cmd
-        assert "/conversation-*.json" not in cmd
-        assert "/creations/**" not in cmd
-        assert "**/.trash/**" in cmd
+        assert "+ /models.json" in cmd
+        assert "+ /workflows/**" in cmd
+        assert "+ /comfyui-outputs/**" in cmd
+        assert "+ /conversation-*.json" not in cmd
+        assert "+ /creations/**" not in cmd
+        assert "- **/.trash/**" in cmd
+        assert "- **/.save-*" in cmd
+        assert "- **" in cmd
+        assert cmd.index("- **/.trash/**") < cmd.index("+ /workflows/**")
+        assert cmd.index("+ /comfyui-outputs/**") < cmd.index("- **")
 
     assert calls[2][-3:] == [
         "moveto",
@@ -541,22 +545,48 @@ def test_colab_drive_mount_credentials_propagation_and_cancel():
         colab_domain="https://colab.research.google.com",
         session=Mock(),
     )
-    client.session.get.return_value = SimpleNamespace(
-        status_code=200, text=")]}'\n" + json.dumps({"token": "xsrf-tok"})
-    )
-    client.session.post.side_effect = [
-        SimpleNamespace(
+    get_counter = [0]
+
+    def fake_get(_url, params=None, headers=None, timeout=15):
+        get_counter[0] += 1
+        assert headers and headers.get("X-Colab-Client-Agent") == "colab-cli"
+        assert headers.get("Accept") == "application/json"
+        return SimpleNamespace(
             status_code=200,
-            text=")]}'\n"
-            + json.dumps({"success": False, "unauthorized_redirect_uri": consent_uri}),
-        ),
-        SimpleNamespace(
+            text=")]}'\n" + json.dumps({"token": f"xsrf-tok-{get_counter[0]}"}),
+        )
+
+    post_calls = []
+
+    def fake_post(_url, params=None, headers=None, files=None, timeout=15):
+        post_calls.append((dict(params or {}), dict(headers or {})))
+        n = len(post_calls)
+        if n == 1:
+            # Initial dryrun=true returns consent URL.
+            assert params["dryrun"] == "true"
+            return SimpleNamespace(
+                status_code=200,
+                text=")]}'\n"
+                + json.dumps(
+                    {"success": False, "unauthorized_redirect_uri": consent_uri}
+                ),
+            )
+        if n == 2:
+            # First dryrun=false poll while user is still consenting returns HTTP 400 HTML
+            # (must NOT abort or crash JSON parser).
+            assert params["dryrun"] == "false"
+            return SimpleNamespace(
+                status_code=400,
+                text="<!DOCTYPE html><title>Error 400 (Bad Request)</title>",
+            )
+        # Subsequent dryrun=false poll succeeds once browser consent finishes!
+        assert params["dryrun"] == "false"
+        return SimpleNamespace(
             status_code=200, text=")]}'\n" + json.dumps({"success": True})
-        ),
-        SimpleNamespace(
-            status_code=200, text=")]}'\n" + json.dumps({"success": True})
-        ),
-    ]
+        )
+
+    client.session.get.side_effect = fake_get
+    client.session.post.side_effect = fake_post
 
     seen_urls = []
     sent_replies = []
@@ -572,7 +602,7 @@ def test_colab_drive_mount_credentials_propagation_and_cancel():
         client,
         "gpu-t4-test",
         on_auth_url=seen_urls.append,
-        poll_interval=0.01,
+        poll_interval=0.05,
     )
     handled = helper.hook(
         {
@@ -585,10 +615,96 @@ def test_colab_drive_mount_credentials_propagation_and_cancel():
     assert handled is True
     assert done.wait(3.0)
     assert seen_urls == [consent_uri, ""]
+    # Each POST must receive a distinct fresh XSRF token!
+    used_tokens = [hdrs["x-goog-colab-token"] for _, hdrs in post_calls]
+    assert used_tokens == ["xsrf-tok-1", "xsrf-tok-2", "xsrf-tok-3"]
     assert sent_replies[0]["content"]["value"] == {
         "type": "colab_reply",
         "colab_msg_id": "cm-1",
     }
+
+    # Explicit confirm_event wakes immediately, surfaces actionable hint if Google still
+    # rejects (e.g. unchecked granular consent or wrong browser account), then completes.
+    confirm_client = SimpleNamespace(
+        colab_domain="https://colab.research.google.com",
+        session=Mock(),
+    )
+    confirm_client.session.get.return_value = SimpleNamespace(
+        status_code=200, text='{"token":"fresh-tok"}'
+    )
+    confirm_evt = threading.Event()
+    probe_evt = threading.Event()
+    hints = []
+    confirm_step = [0]
+
+    def confirm_post(_url, params=None, headers=None, files=None, timeout=15):
+        confirm_step[0] += 1
+        if confirm_step[0] == 1:
+            return SimpleNamespace(
+                status_code=200,
+                text=json.dumps(
+                    {"success": False, "unauthorized_redirect_uri": consent_uri}
+                ),
+            )
+        if confirm_step[0] == 2:
+            return SimpleNamespace(status_code=400, text="<html>400</html>")
+        return SimpleNamespace(status_code=200, text=json.dumps({"success": True}))
+
+    confirm_client.session.post.side_effect = confirm_post
+
+    def on_url_trigger(u):
+        if u:
+            confirm_evt.set()
+
+    def on_hint_trigger(h):
+        hints.append(h)
+        if h:
+            probe_evt.set()
+
+    helper_confirm = ColabOneDriveMount(
+        confirm_client,
+        "gpu-t4-test",
+        on_auth_url=on_url_trigger,
+        confirm_event=confirm_evt,
+        probe_event=probe_evt,
+        on_hint=on_hint_trigger,
+        account_email="alice@example.com",
+        poll_interval=30.0,  # Long poll interval proves events wake up immediately.
+    )
+    assert helper_confirm.propagate() is True
+    assert any("alice@example.com" in h and "勾选全部云盘权限" in h for h in hints)
+    assert hints[-1] == ""
+
+    # Already-authorized fast path propagates immediately with fresh dryrun=false XSRF token.
+    fast_client = SimpleNamespace(
+        colab_domain="https://colab.research.google.com",
+        session=Mock(),
+    )
+    fast_get_dryruns = []
+    fast_post_dryruns = []
+
+    def fast_get(_url, params=None, headers=None, timeout=15):
+        fast_get_dryruns.append(params["dryrun"])
+        return SimpleNamespace(
+            status_code=200, text=json.dumps({"token": f"tok-{len(fast_get_dryruns)}"})
+        )
+
+    def fast_post(_url, params=None, headers=None, files=None, timeout=15):
+        fast_post_dryruns.append((params["dryrun"], headers["x-goog-colab-token"]))
+        return SimpleNamespace(status_code=200, text=json.dumps({"success": True}))
+
+    fast_client.session.get.side_effect = fast_get
+    fast_client.session.post.side_effect = fast_post
+    fast_urls = []
+    assert (
+        ColabOneDriveMount(
+            fast_client, "gpu-t4-test", on_auth_url=fast_urls.append
+        ).propagate()
+        is True
+    )
+    assert fast_urls == []
+    assert fast_get_dryruns == ["true", "false"]
+    assert fast_post_dryruns == [("true", "tok-1"), ("false", "tok-2")]
 
     # Untrusted redirect URLs must be rejected immediately.
     bad_client = SimpleNamespace(
@@ -617,7 +733,7 @@ def test_colab_drive_mount_credentials_propagation_and_cancel():
         ),
     )
     helper2 = ColabOneDriveMount(
-        client, "gpu-t4-test", cancel_event=cancel_evt, poll_interval=0.01
+        client, "gpu-t4-test", cancel_event=cancel_evt, poll_interval=0.05
     )
     helper2.hook(
         {
@@ -672,11 +788,18 @@ def test_controller_hybrid_drive_falls_back_to_colab_drivefs_when_no_quota_proje
     assert info["mode"] == "colab_drivefs"
     assert c.snapshot()["auth_url"] == ""
 
-    # 3) drive.cancel sets cancel event and clears auth_url; voluntary cancel produces no error toast.
-    c.update(auth_url="https://accounts.google.com/o/oauth2/v2/auth")
+    # 3) drive.confirm / drive.probe / drive.cancel work non-blockingly; voluntary cancel produces no error toast.
+    c.drive_confirm.clear()
+    c.drive_probe.clear()
+    assert c.command("drive.confirm", {}) == {"ok": True}
+    assert c.drive_confirm.is_set()
+    assert c.command("drive.probe", {}) == {"ok": True}
+    assert c.drive_probe.is_set()
+    c.update(auth_url="https://accounts.google.com/o/oauth2/v2/auth", drive_auth_hint="hint")
     assert c.command("drive.cancel", {}) == {"ok": True}
     assert c.drive_cancel.is_set()
     assert c.snapshot()["auth_url"] == ""
+    assert c.snapshot()["drive_auth_hint"] == ""
 
     def cancelled_mount(**kwargs):
         kwargs["cancel_event"].set()

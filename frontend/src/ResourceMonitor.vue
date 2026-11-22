@@ -526,13 +526,19 @@ const cpuRowChart = computed(() =>
   ),
 );
 
-const activeGpuDisplayName = computed<string>(
-  () => tb(telemetry.value.gpuName || props.runtime.gpu?.name || ""),
+const activeGpuDisplayName = computed<string>(() =>
+  telemetry.value.online
+    ? tb(telemetry.value.gpuName || props.runtime.gpu?.name || "")
+    : "",
 );
 
 const gpuSubtitle = computed<string>(() => {
-  if (telemetry.value.gpuName) return tb(telemetry.value.gpuName);
-  if (props.runtime.gpu?.name) return tb(props.runtime.gpu.name);
+  if (telemetry.value.online && telemetry.value.gpuName) {
+    return tb(telemetry.value.gpuName);
+  }
+  if (telemetry.value.online && props.runtime.gpu?.name) {
+    return tb(props.runtime.gpu.name);
+  }
   if (isCpuOnlyOnline.value) return t("monitor.gpuNoAccelerator");
   if (telemetry.value.online) return "Colab GPU";
   if (isRemoteConnecting.value) {
@@ -550,7 +556,7 @@ const gpuSubtitle = computed<string>(() => {
 });
 
 const cpuSubtitle = computed<string>(() =>
-  telemetry.value.cpuCores
+  telemetry.value.online && telemetry.value.cpuCores
     ? t("monitor.cpuCores", { count: telemetry.value.cpuCores })
     : telemetry.value.online
       ? t("monitor.cpuRemoteCore")
@@ -688,10 +694,11 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   if (!isRemoteReadonly.value || isRemoteColabOne.value || props.loadedModelName || props.runtime.loaded_model) {
     gpuStats.push({
       label: t("monitor.statLoadedModel"),
-      value:
-        props.loadedModelName ||
-        props.runtime.loaded_model ||
-        (tel.online ? t("monitor.statNoModel") : "--"),
+      value: tel.online
+        ? props.loadedModelName ||
+          props.runtime.loaded_model ||
+          t("monitor.statNoModel")
+        : "--",
     });
   } else {
     gpuStats.push({
@@ -2043,7 +2050,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             >
               <defs>
                 <linearGradient
-                  :id="`${uid}-row-${row.key}`"
+                  :id="`${uid}-row-grad-${row.key}`"
                   x1="0"
                   y1="0"
                   x2="0"
@@ -2082,7 +2089,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
               <template v-if="monitorSk.panels">
                 <path
                   :d="`${SK_ROW_WAVE_PATHS[row.key]} L ${ROW_W} ${ROW_H} L 0 ${ROW_H} Z`"
-                  :fill="`url(#${uid}-row-${row.key})`"
+                  :fill="`url(#${uid}-row-grad-${row.key})`"
                   class="co-rm-sk-area"
                 />
                 <path :d="SK_ROW_WAVE_PATHS[row.key]" class="co-rm-sk-wave" />
@@ -2091,7 +2098,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                 <path
                   v-if="row.showArea"
                   :d="row.primaryChart.areaPath"
-                  :fill="`url(#${uid}-row-${row.key})`"
+                  :fill="`url(#${uid}-row-grad-${row.key})`"
                 />
                 <path
                   v-if="row.secondaryChart"

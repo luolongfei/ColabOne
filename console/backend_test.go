@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFindRootFromPortableMacBundle(t *testing.T) {
@@ -113,5 +114,36 @@ func TestExportWorkflowOutputRejectsInvalidID(t *testing.T) {
 func TestWoff2MimeTypeRegistered(t *testing.T) {
 	if got := mime.TypeByExtension(".woff2"); !strings.HasPrefix(got, "font/woff2") {
 		t.Fatalf("expected .woff2 MIME type font/woff2, got %q", got)
+	}
+}
+
+func TestMethodTimeoutsAllowLongGPUAllocation(t *testing.T) {
+	if got := colabOneMethodTimeout("runtime.start"); got < 15*time.Minute {
+		t.Fatalf("runtime.start timeout too short for 10-attempt backoff: %v", got)
+	}
+	if got := colabOneMethodTimeout("snapshot"); got != 30*time.Second {
+		t.Fatalf("snapshot timeout = %v, want 30s", got)
+	}
+}
+
+func TestExternalAndCanvasURLHardening(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:pass@accounts.google.com/",
+		"https://accounts.google.com:8443/",
+	} {
+		if err := validateColabOneExternalURL(raw); err == nil {
+			t.Fatalf("accepted hardened external URL %q", raw)
+		}
+	}
+	if err := validateColabOneExternalURL("https://ACCOUNTS.GOOGLE.COM./"); err != nil {
+		t.Fatalf("rejected normalized allowed URL: %v", err)
+	}
+	for _, raw := range []string{
+		"https://[::1%25lo0]/_colabone_auth?token=abc",
+		"https://[::ffff:127.0.0.1]/_colabone_auth?token=abc",
+	} {
+		if _, err := validateColabOneCanvasURL(raw); err == nil {
+			t.Fatalf("accepted loopback/zone canvas URL %q", raw)
+		}
 	}
 }

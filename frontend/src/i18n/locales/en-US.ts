@@ -374,7 +374,8 @@ export const enUSMessages: ColabOneMessages = {
   "device.syncNow": "Sync Now",
   "device.mountDriveNow": "Mount Drive",
   "device.driveWaitingBrowserConfirm":
-    "Click Allow in your browser to authorize Google Drive (ColabOne_Drive) for this instance...",
+    "Check all Drive permissions and click Allow in your browser, then return here or click \"I've Authorized\" to finish mounting.",
+  "device.driveConfirmAuthorized": "I've Authorized",
   "device.driveReopenAuth": "Reopen Consent Page",
   "device.driveCancelMount": "Cancel",
   "device.driveEnableHeadlessLink": "Enable Zero-Prompt",

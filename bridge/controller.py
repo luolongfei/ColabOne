@@ -90,21 +90,37 @@ class ColabOneController:
             "locale": "",
         }
         if (self.directory / "settings.json").exists():
-            saved = json.loads(
-                (self.directory / "settings.json").read_text(encoding="utf-8")
-            )
-            for k in (
-                "gpu",
-                "idle_minutes",
-                "idle_countdown_seconds",
-                "auto_drive",
-                "download_threads",
-                "idle_policy",
-                "rclone_drive_policy",
-                "locale",
-            ):
-                if k in saved:
-                    self.settings[k] = saved[k]
+            try:
+                saved = json.loads(
+                    (self.directory / "settings.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                saved = None
+            if isinstance(saved, dict):
+                for k in (
+                    "gpu",
+                    "idle_minutes",
+                    "idle_countdown_seconds",
+                    "auto_drive",
+                    "download_threads",
+                    "idle_policy",
+                    "rclone_drive_policy",
+                    "locale",
+                ):
+                    if k in saved:
+                        self.settings[k] = saved[k]
+        if self.settings.get("gpu") not in ("T4", "L4", "A100", "G4", "H100"):
+            self.settings["gpu"] = "T4"
+        try:
+            idle_val = self.settings.get("idle_minutes", 30)
+            if isinstance(idle_val, bool) or not 1 <= int(idle_val) <= 240:
+                self.settings["idle_minutes"] = 30
+            else:
+                self.settings["idle_minutes"] = int(idle_val)
+        except (TypeError, ValueError):
+            self.settings["idle_minutes"] = 30
+        if not isinstance(self.settings.get("auto_drive"), bool):
+            self.settings["auto_drive"] = True
         if self.settings.get("locale") not in (
             "",
             "zh-CN",
@@ -132,6 +148,8 @@ class ColabOneController:
         self.operation_lock = threading.Lock()
         self.stop = threading.Event()
         self.drive_cancel = threading.Event()
+        self.drive_confirm = threading.Event()
+        self.drive_probe = threading.Event()
         self.instance_states: dict[str, dict] = {}
         self.common_ids: set[str] = set()
         self.custom_models: dict[str, dict] = {}
@@ -150,9 +168,10 @@ class ColabOneController:
             "operation": None,
             "error": "",
             "auth_url": "",
+            "drive_auth_hint": "",
         }
         self.last_auth = self.last_config = self.last_heartbeat = 0
-        self.activity = ColabOneActivityLog()
+        self.activity = ColabOneActivityLog(log_path=self.directory / "activity.log")
         self.task_activity = {}
         self.task_log_cursor = {}
         self.pending_touch = False
@@ -181,6 +200,8 @@ class ColabOneController:
     def close(self):
         self.stop.set()
         self.drive_cancel.set()
+        self.drive_confirm.set()
+        self.drive_probe.set()
         self._observer_wake.set()
         close_obs = getattr(self.provider, "close_observer", None)
         if callable(close_obs):
@@ -190,31 +211,58 @@ class ColabOneController:
                 pass
 
     def _vault_sessions(self) -> dict[str, dict]:
+        if isinstance(self.provider, ColabOneProvider):
+            return self.provider._sessions_map()
+        sessions: dict[str, dict] = {}
+        ids = self.vault.get("runtime_session_ids")
+        if isinstance(ids, list):
+            for ep in ids:
+                if isinstance(ep, str) and ep:
+                    item = self.vault.get(f"runtime_session:{ep}")
+                    if isinstance(item, dict) and item.get("endpoint"):
+                        sessions[item["endpoint"]] = item
         raw_map = self.vault.get("runtime_sessions")
-        sessions = dict(raw_map) if isinstance(raw_map, dict) else {}
+        if isinstance(raw_map, dict):
+            for item in raw_map.values():
+                if isinstance(item, dict) and item.get("endpoint"):
+                    sessions.setdefault(item["endpoint"], item)
         legacy = self.vault.get("runtime_session")
         if isinstance(legacy, dict) and legacy.get("endpoint"):
-            sessions[legacy["endpoint"]] = legacy
+            sessions.setdefault(legacy["endpoint"], legacy)
         return sessions
 
     def _vault_remotes(self) -> dict[str, dict]:
+        if isinstance(self.provider, ColabOneProvider):
+            return self.provider._remotes_map()
+        remotes: dict[str, dict] = {}
+        ids = self.vault.get("remote_ids")
+        if isinstance(ids, list):
+            for ep in ids:
+                if isinstance(ep, str) and ep:
+                    item = self.vault.get(f"remote:{ep}")
+                    if isinstance(item, dict) and item.get("endpoint"):
+                        remotes[item["endpoint"]] = item
         raw_map = self.vault.get("remotes")
-        remotes = dict(raw_map) if isinstance(raw_map, dict) else {}
+        if isinstance(raw_map, dict):
+            for item in raw_map.values():
+                if isinstance(item, dict) and item.get("endpoint"):
+                    remotes.setdefault(item["endpoint"], item)
         legacy = self.vault.get("remote")
         if isinstance(legacy, dict) and legacy.get("endpoint"):
-            remotes[legacy["endpoint"]] = legacy
+            remotes.setdefault(legacy["endpoint"], legacy)
         return remotes
 
     def _active_endpoint(self) -> str | None:
         sessions = self._vault_sessions()
-        remotes = self._vault_remotes()
+        if not sessions:
+            return None
         preferred = self.vault.get("active_endpoint")
-        if preferred and (preferred in sessions or preferred in remotes):
+        if preferred and preferred in sessions:
             return preferred
-        legacy = self.vault.get("runtime_session") or self.vault.get("remote")
-        if isinstance(legacy, dict) and legacy.get("endpoint"):
+        legacy = self.vault.get("runtime_session")
+        if isinstance(legacy, dict) and legacy.get("endpoint") in sessions:
             return legacy["endpoint"]
-        return next(iter(sessions), next(iter(remotes), None))
+        return next(iter(sessions), None)
 
     def _ensure_instance_state(self, endpoint: str) -> dict:
         with self.lock:
@@ -1183,11 +1231,12 @@ class ColabOneController:
         value["monitor"] = self._build_monitor_snapshot(
             enriched, value["runtime"], value["models"], active_ep
         )
-        value["settings"] = {
-            k: v
-            for k, v in self.settings.items()
-            if k not in ("idle_policy", "rclone_drive_policy")
-        }
+        with self.lock:
+            value["settings"] = {
+                k: v
+                for k, v in self.settings.items()
+                if k not in ("idle_policy", "rclone_drive_policy")
+            }
         api = self.vault.get("public_api", {})
         if not isinstance(api, dict):
             api = {}
@@ -1362,22 +1411,27 @@ class ColabOneController:
     def async_operation(self, title, fn):
         if not self.operation_lock.acquire(blocking=False):
             raise RuntimeError("请等待当前操作完成")
-        self.update(operation={"title": title, "running": True}, error="", auth_url="")
+        self.update(
+            operation={"title": title, "running": True},
+            error="",
+            auth_url="",
+            drive_auth_hint="",
+        )
 
         def run():
             try:
                 fn()
                 self.activity.add(title + "：完成")
             except ColabOneOperationCancelled as exc:
-                self.activity.add(safe_message(str(exc)[:300]), "云盘", "info")
+                self.activity.add(safe_message(exc)[:300], "云盘", "info")
             except Exception as exc:
                 # HTTP exception URLs may contain OAuth codes: surface only a safe reason.
-                if isinstance(exc, requests.HTTPError):
+                if isinstance(exc, requests.HTTPError) and exc.response is not None:
                     message = (
                         f"服务返回 HTTP {exc.response.status_code}，请检查授权和配置"
                     )
                 else:
-                    message = str(exc)[:500]
+                    message = safe_message(exc)[:500]
                 self.update(error=safe_message(message))
             finally:
                 self.update(operation=None)
@@ -1416,14 +1470,20 @@ class ColabOneController:
             if endpoint is None or endpoint == self._active_endpoint()
             else self._ensure_instance_state(endpoint)["runtime"]
         )
+        proto = rt.get("protocol")
+        with self.lock:
+            idle_min = self.settings["idle_minutes"]
+            countdown_sec = self.settings["idle_countdown_seconds"]
+        # Only downgrade to legacy 4-minute idle policy when the server explicitly
+        # reports protocol == 1; never clobber the user's timeout before the first
+        # snapshot has populated `protocol`.
+        effective_idle = 4 if proto == 1 else idle_min
         self.remote(
             "POST",
             "configure",
             {
-                "idle_minutes": self.settings["idle_minutes"]
-                if rt.get("protocol", 0) >= 2
-                else 4,
-                "idle_countdown_seconds": self.settings["idle_countdown_seconds"],
+                "idle_minutes": effective_idle,
+                "idle_countdown_seconds": countdown_sec,
                 "deadline": 0,
             },
             endpoint=endpoint,
@@ -1520,6 +1580,8 @@ class ColabOneController:
             )
 
     def select_instance(self, endpoint: str):
+        if self.operation_lock.locked():
+            raise RuntimeError("请等待当前操作完成后再切换实例")
         sessions = self._vault_sessions()
         if not endpoint or endpoint not in sessions:
             raise ValueError("所选实例不存在或不属于当前客户端")
@@ -1607,25 +1669,45 @@ class ColabOneController:
             if not authorized:
                 return None
         self.drive_cancel.clear()
+        self.drive_confirm.clear()
+        self.drive_probe.clear()
         self.update(
             operation={
                 "title": "正在通过 Colab 原生驱动挂载 Google 云盘 (ColabOne_Drive)",
                 "running": True,
             },
             auth_url="",
+            drive_auth_hint="",
         )
+        profile = self.vault.get("google_profile") or {}
+        account_email = str(
+            profile.get("email")
+            or (self.data.get("account") or {}).get("email")
+            or ""
+        ).strip()
+        mount_kwargs = {
+            "on_auth_url": lambda u: self.update(auth_url=u),
+            "on_log": self.activity.add,
+            "cancel_event": self.drive_cancel,
+        }
+        if ColabOneController._accepts_kwarg(mount_fn, "confirm_event"):
+            mount_kwargs["confirm_event"] = self.drive_confirm
+        if ColabOneController._accepts_kwarg(mount_fn, "probe_event"):
+            mount_kwargs["probe_event"] = self.drive_probe
+        if ColabOneController._accepts_kwarg(mount_fn, "on_hint"):
+            mount_kwargs["on_hint"] = lambda h: self.update(drive_auth_hint=h)
+        if account_email and ColabOneController._accepts_kwarg(
+            mount_fn, "account_email"
+        ):
+            mount_kwargs["account_email"] = account_email
         try:
-            mount_fn(
-                on_auth_url=lambda u: self.update(auth_url=u),
-                on_log=self.activity.add,
-                cancel_event=self.drive_cancel,
-            )
+            mount_fn(**mount_kwargs)
         except Exception:
             if self.drive_cancel.is_set():
                 raise ColabOneOperationCancelled("已取消 Google 云盘挂载") from None
             raise
         finally:
-            self.update(auth_url="")
+            self.update(auth_url="", drive_auth_hint="")
         self.activity.add("正在初始化 ColabOne_Drive 工作区并恢复持久化数据", "云盘")
         return self._remote_long("POST", "drive/connect", timeout=180)
 
@@ -1844,6 +1926,8 @@ class ColabOneController:
                 start_kwargs["on_telemetry"] = on_boot_telemetry
             if ColabOneController._accepts_kwarg(self.provider.start, "on_log"):
                 start_kwargs["on_log"] = self.activity.add
+            if ColabOneController._accepts_kwarg(self.provider.start, "cancel_event"):
+                start_kwargs["cancel_event"] = self.stop
             if create_new:
                 start_kwargs["create_new"] = True
             if rclone_conf:
@@ -1959,6 +2043,10 @@ class ColabOneController:
                 and previous_active
                 and previous_active in self._vault_sessions()
             ):
+                try:
+                    self.provider.set_active(previous_active)
+                except Exception:
+                    pass
                 self._activate_cached(previous_active)
             else:
                 self.update(
@@ -1986,7 +2074,7 @@ class ColabOneController:
             if ColabOneController._accepts_kwarg(self.provider.release, "on_log")
             else {}
         )
-        if use_explicit:
+        if target and (use_explicit or len(self._vault_sessions()) > 1):
             self.provider.release(target, **release_kwargs)
         else:
             self.provider.release(**release_kwargs)
@@ -2099,11 +2187,16 @@ class ColabOneController:
                 )
             else:
                 self._activate_cached(next_active)
-            self.update(account=self.provider.account())
+            try:
+                acct = self.provider.account()
+                if isinstance(acct, dict):
+                    self.update(account=acct)
+            except Exception:
+                pass
             self._observer_wake.set()
         self.release_plan = None
-        account = self.data["account"]
-        if not partial_selection and account["assignments"]:
+        account = self.data.get("account") or {}
+        if not partial_selection and account.get("assignments"):
             raise RuntimeError(
                 f"已处理确认的实例；当前账号仍有 {account['assignments']} 个实例，请再次停止全部"
             )
@@ -2158,7 +2251,7 @@ class ColabOneController:
             self.remote("POST", "models", dumped)
             self.refresh_remote()
             self.activity.add(f"已同步模型配置到远端实例：{spec.name}", "模型")
-        else:
+        elif not self._vault_sessions():
             self.update(models=self.presets())
         return spec
 
@@ -2315,16 +2408,18 @@ class ColabOneController:
             raise ValueError("自动挂载云盘设置不合法")
         if payload.get("hf_token"):
             self.vault.set("hf", payload["hf_token"])
-        idle_changed = (
-            "idle_minutes" in public
-            and public["idle_minutes"] != self.settings.get("idle_minutes")
-        )
-        self.settings.update(public)
-        atomic_json(self.directory / "settings.json", self.settings)
+        with self.lock:
+            idle_changed = (
+                "idle_minutes" in public
+                and public["idle_minutes"] != self.settings.get("idle_minutes")
+            )
+            self.settings.update(public)
+            snapshot_settings = dict(self.settings)
+        atomic_json(self.directory / "settings.json", snapshot_settings)
         summary_parts = [
-            f"默认 GPU: {self.settings['gpu']}",
-            f"空闲释放: {self.settings['idle_minutes']} 分钟",
-            f"下载并发: {self.settings['download_threads']} 线程",
+            f"默认 GPU: {snapshot_settings['gpu']}",
+            f"空闲释放: {snapshot_settings['idle_minutes']} 分钟",
+            f"下载并发: {snapshot_settings['download_threads']} 线程",
         ]
         if payload.get("hf_token"):
             summary_parts.append("已更新 Hugging Face Token")
@@ -2390,8 +2485,10 @@ class ColabOneController:
                 raise ValueError("不支持的语言选项")
             self.auth.locale = raw_locale
             if persist:
-                self.settings["locale"] = raw_locale
-                atomic_json(self.directory / "settings.json", self.settings)
+                with self.lock:
+                    self.settings["locale"] = raw_locale
+                    snapshot_settings = dict(self.settings)
+                atomic_json(self.directory / "settings.json", snapshot_settings)
             return {"ok": True, "locale": raw_locale, "persisted": persist}
         if action == "account.refresh":
             self.activity.add("正在刷新 Google 账号余额与运行实例状态", "计费")
@@ -2783,6 +2880,10 @@ class ColabOneController:
         if action == "settings.save":
             return self.save_settings(payload)
         if action == "auth.colab.begin":
+            if self.operation_lock.locked() and not getattr(
+                self.auth, "loopback_active", False
+            ):
+                raise RuntimeError("请等待当前操作完成")
             result = self.auth.colab_begin()
             self.update(auth_url=result["url"])
             self.activity.add("已生成 Google 授权链接，等待完成登录", "登录")
@@ -2791,7 +2892,10 @@ class ColabOneController:
 
             def login():
                 self.activity.add("已启动本地回调服务，等待浏览器完成 Google 授权", "登录")
-                self.auth.colab_login(lambda url: self.update(auth_url=url))
+                try:
+                    self.auth.colab_login(lambda url: self.update(auth_url=url))
+                finally:
+                    self.update(auth_url="")
                 self.last_auth = 0
                 self._reset_monitor_to_auto(close_observer=True, clear_observations=True)
                 with self.lock:
@@ -2822,7 +2926,7 @@ class ColabOneController:
                 )
                 self.activity.add("Google 登录已保存到本机，后续自动续期", "登录")
 
-            if self.operation_lock.locked():
+            if getattr(self.auth, "loopback_active", False):
                 # A paste can finish a pending loopback login; its operation then
                 # completes the login once the callback wait exits.
                 self.activity.add("收到手动粘贴的 Google 授权内容，正在校验", "登录")
@@ -2837,9 +2941,18 @@ class ColabOneController:
             return self.async_operation(
                 "检测并开启云盘免弹窗模式", self.setup_headless_drive
             )
+        if action == "drive.confirm":
+            self.drive_confirm.set()
+            self.activity.add("已收到完成确认，正在立即核验 Google 云盘授权状态", "云盘")
+            return {"ok": True}
+        if action == "drive.probe":
+            self.drive_probe.set()
+            return {"ok": True}
         if action == "drive.cancel":
             self.drive_cancel.set()
-            self.update(auth_url="")
+            self.drive_confirm.set()
+            self.drive_probe.set()
+            self.update(auth_url="", drive_auth_hint="")
             self.activity.add("已请求取消 Google 云盘挂载", "云盘")
             return {"ok": True}
         if action in ("drive.sync", "sync"):
@@ -2917,7 +3030,11 @@ class ColabOneController:
             self.activity.add("已向远端发送任务取消指令", "远端")
             return res
         if action == "error.clear":
-            self.update(error="")
+            expected = str(payload.get("expected") or "").strip()
+            with self.lock:
+                current = str(self.data.get("error") or "").strip()
+                if not expected or current == expected:
+                    self.data["error"] = ""
             return {"ok": True}
         raise ValueError("不支持的操作")
 
@@ -2930,39 +3047,69 @@ class ColabOneController:
 
     def monitor(self):
         while not self.stop.is_set():
+            had_conn_error = False
             try:
                 now = time.time()
                 if now - self.last_auth > 30:
-                    self.update(account=self.provider.account())
-                    self.last_auth = now
-                    self._observer_wake.set()
+                    try:
+                        self.update(account=self.provider.account())
+                        self.last_auth = now
+                        self._observer_wake.set()
+                    except Exception as exc:
+                        had_conn_error = True
+                        # Back off 15s instead of hammering every 2s and starving heartbeats.
+                        self.last_auth = now - 15
+                        self.update(
+                            error="连接检查失败："
+                            + type(exc).__name__
+                            + "。客户端会自动重试，请检查网络连接。"
+                        )
+                sessions = self._vault_sessions()
                 remotes = self._vault_remotes()
                 active_ep = self._active_endpoint()
-                remote = remotes.get(active_ep or "") or self.vault.get("remote")
+                if not sessions:
+                    if remotes or self.vault.get("remote") or self.vault.get("remotes"):
+                        self.provider.clear()
+                    remote = None
+                else:
+                    remote = remotes.get(active_ep or "")
                 if remote and not self.operation_lock.locked():
                     # Renew the proxy before any RPC. A failed configuration
                     # request must not starve the very heartbeat that repairs it.
-                    if now - self.last_heartbeat > 30:
-                        self.provider.heartbeat()
-                        self.last_heartbeat = now
-                        if not self._vault_sessions():
-                            with self.lock:
-                                self.remote_workflow_versions = {}
-                            self.update(
-                                runtime={"state": "stopped"},
-                                models=self.presets(),
-                                workflows=self._merge_workflows(None),
-                                comfy_outputs=[],
-                            )
-                            continue
-                    if now - self.last_config > 600:
-                        self.configure_remote()
                     try:
+                        if now - self.last_heartbeat > 30:
+                            self.provider.heartbeat()
+                            self.last_heartbeat = now
+                            remaining_sessions = self._vault_sessions()
+                            if not remaining_sessions:
+                                with self.lock:
+                                    self.remote_workflow_versions = {}
+                                self.update(
+                                    runtime={"state": "stopped"},
+                                    models=self.presets(),
+                                    workflows=self._merge_workflows(None),
+                                    comfy_outputs=[],
+                                )
+                                continue
+                            next_active = self._active_endpoint()
+                            if active_ep and next_active != active_ep:
+                                with self.lock:
+                                    self.instance_states.pop(active_ep, None)
+                                if next_active:
+                                    self._activate_cached(next_active)
+                                continue
                         self.send_activity()
+                        # Refresh snapshot BEFORE configure_remote so `protocol` is populated
+                        # and we never overwrite a live VM's idle_minutes down to legacy 4 min.
                         self.refresh_remote()
+                        if now - self.last_config > 600:
+                            self.configure_remote()
                         runtime = self.data["runtime"]
+                        proto = runtime.get("protocol", 0)
                         if (
-                            runtime.get("protocol", 0) < 7
+                            runtime.get("state") == "ready"
+                            and isinstance(proto, int)
+                            and 0 < proto < 7
                             and remote["endpoint"] not in self.upgrade_attempted
                             and not runtime.get("loaded_model")
                             and not any(
@@ -2996,17 +3143,20 @@ class ColabOneController:
                                 self.provider.heartbeat(ep)
                                 entry["last_heartbeat"] = now
                                 if ep not in self._vault_sessions():
-                                    self.instance_states.pop(ep, None)
+                                    with self.lock:
+                                        self.instance_states.pop(ep, None)
                                     continue
+                            self.refresh_remote(ep)
                             if now - entry.get("last_config", 0) > 600:
                                 self.configure_remote(ep)
-                            self.refresh_remote(ep)
                         except Exception:
                             entry["runtime"] = {
                                 "state": "disconnected",
                                 "id": ep,
                             }
-                if self.data.get("error", "").startswith("连接检查失败："):
+                if not had_conn_error and self.data.get("error", "").startswith(
+                    "连接检查失败："
+                ):
                     self.update(error="")
             except Exception as exc:
                 self.update(

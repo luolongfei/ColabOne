@@ -208,11 +208,16 @@ func (s *colabOneAppearanceStore) Save(value string) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return os.WriteFile(path, data, 0o644)
+	var renameErr error
+	for range 4 {
+		renameErr = os.Rename(tmp, path)
+		if renameErr == nil {
+			return nil
+		}
+		time.Sleep(15 * time.Millisecond)
 	}
-	return nil
+	_ = os.Remove(tmp)
+	return os.WriteFile(path, data, 0o644)
 }
 
 type colabOneSplashStrings struct {
@@ -707,16 +712,16 @@ func (s *colabOneSplashViewState) render(c *ui.Context) {
 }
 
 func drawWrappedArc(p *ui.Painter, cx, cy, rad, from, to, width float32, c ui.Color) {
-	from = float32(math.Mod(float64(from), 1))
-	if from < 0 {
-		from += 1
-	}
 	span := to - from
 	for span < 0 {
 		span += 1
 	}
 	if span > 1 {
 		span = 1
+	}
+	from = float32(math.Mod(float64(from), 1))
+	if from < 0 {
+		from += 1
 	}
 	end := from + span
 	if end <= 1 {

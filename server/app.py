@@ -20,6 +20,7 @@ from common.comfyui import (
     WorkflowImportRequest,
     WorkflowRunRequest,
 )
+from common.files import atomic_json
 from common.models import ModelSpec
 from common.public_api import ColabOnePublicConfig
 from server.runtime import ColabOneRuntime, ColabOneConflictError
@@ -65,13 +66,39 @@ def create_colabone_app(runtime, token, background=False):
         yield
         runtime.stopping.set()
         try:
+            with runtime.lock:
+                running_tasks = [
+                    t for t in runtime.tasks.values() if t.state == "running"
+                ]
+            for task in running_tasks:
+                try:
+                    task.request_cancel()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
             runtime.public_api.shutdown()
         finally:
             try:
                 runtime.comfy.stop_server()
             finally:
                 try:
-                    runtime.drive.unmount()
+                    with runtime.sync_lock:
+                        if (
+                            runtime.drive.available()
+                            and runtime.drive_restored
+                            and runtime._dirty_seq
+                        ):
+                            try:
+                                runtime._sync_to_drive()
+                            except Exception:
+                                pass
+                        # Do not flush_and_unmount native Colab DriveFS during normal
+                        # SIGTERM (e.g., hot-upgrade via vm_update.py); prepare_release()
+                        # unmounts DriveFS right before VM termination.
+                        if runtime.drive.mode != "colab_drivefs":
+                            runtime.drive.unmount()
                 finally:
                     runtime._stop_engine()
 
@@ -136,9 +163,23 @@ def create_colabone_app(runtime, token, background=False):
 
     @app.post("/api/v1/configure", dependencies=auth)
     def configure(body: ColabOneConfigureRequest):
-        runtime.idle_minutes = body.idle_minutes
-        runtime.idle_countdown_seconds = body.idle_countdown_seconds
-        runtime.deadline = body.deadline
+        with runtime.lock:
+            runtime.idle_minutes = body.idle_minutes
+            runtime.idle_countdown_seconds = body.idle_countdown_seconds
+            runtime.deadline = body.deadline
+        cfg_env = os.environ.get("COLABONE_REMOTE_CONFIG", "")
+        if cfg_env:
+            cfg_path = Path(cfg_env)
+            try:
+                if cfg_path.is_file():
+                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        data["idle_minutes"] = body.idle_minutes
+                        data["idle_countdown_seconds"] = body.idle_countdown_seconds
+                        data["deadline"] = body.deadline
+                        atomic_json(cfg_path, data)
+            except (OSError, ValueError):
+                pass
         return {"ok": True}
 
     @app.post("/api/v1/activity", dependencies=auth)
@@ -269,10 +310,12 @@ def create_colabone_app(runtime, token, background=False):
             while True:
                 with task.lock:
                     batch = task.events[cursor:]
+                    total = len(task.events)
+                    state = task.state
                 for event in batch:
                     cursor = event["seq"]
                     yield f"id: {cursor}\nevent: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-                if task.state != "running" and cursor >= len(task.events):
+                if state != "running" and cursor >= total:
                     break
                 yield ": heartbeat\n\n"
                 time.sleep(0.15)
@@ -310,6 +353,8 @@ if __name__ == "__main__":
     runtime.deadline = config.get("deadline", 0)
     if config.get("idle_minutes"):
         runtime.idle_minutes = int(config["idle_minutes"])
+    if config.get("idle_countdown_seconds"):
+        runtime.idle_countdown_seconds = int(config["idle_countdown_seconds"])
     uvicorn.run(
         create_colabone_app(runtime, config["token"], background=True),
         host="127.0.0.1",

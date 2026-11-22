@@ -254,11 +254,20 @@ const hiddenByVramCount = computed(() =>
   Math.max(0, repos.value.length - visibleRepos.value.length),
 );
 
-let generation = 0;
+let searchGeneration = 0;
+let previewGeneration = 0;
 let fileGeneration = 0;
 let timer: ReturnType<typeof setTimeout>;
 const details = new Map<string, Detail>();
 const pendingDetails = new Map<string, Promise<Detail>>();
+
+async function openExternalURL(url: string) {
+  try {
+    await colabOneOpenURL(url);
+  } catch (e) {
+    error.value = String(e);
+  }
+}
 
 async function detail(repo: string): Promise<Detail> {
   const cached = details.get(repo);
@@ -279,7 +288,7 @@ async function detail(repo: string): Promise<Detail> {
 async function previewSize(repo: string, id: number) {
   try {
     const result = await detail(repo);
-    if (id !== generation) return;
+    if (id !== previewGeneration) return;
     const row = repos.value.find((item) => item.repo === repo);
     if (!row) return;
     const sizes = (result.files || [])
@@ -306,7 +315,7 @@ async function previewSize(repo: string, id: number) {
         : { sizeState: "unavailable" },
     );
   } catch {
-    if (id === generation) {
+    if (id === previewGeneration) {
       const row = repos.value.find((item) => item.repo === repo);
       if (row) row.sizeState = "unavailable";
     }
@@ -316,7 +325,7 @@ async function previewSize(repo: string, id: number) {
 async function previewSizes(batch: Repo[], id: number) {
   let index = 0;
   async function worker() {
-    while (id === generation && index < batch.length) {
+    while (id === previewGeneration && index < batch.length) {
       const repo = batch[index++]!.repo;
       await previewSize(repo, id);
     }
@@ -325,7 +334,11 @@ async function previewSizes(batch: Repo[], id: number) {
 }
 
 async function search(more = false): Promise<boolean> {
-  const id = ++generation;
+  const id = ++searchGeneration;
+  if (!more) {
+    previewGeneration += 1;
+  }
+  const pGen = previewGeneration;
   loading.value = true;
   error.value = "";
   if (!more) {
@@ -340,7 +353,7 @@ async function search(more = false): Promise<boolean> {
       modality: modality.value,
       family: family.value,
     });
-    if (id !== generation) return false;
+    if (id !== searchGeneration) return false;
     const incoming: Repo[] = (result.models || []).map((r: Repo) => ({
       ...r,
       modality: r.modality || "text",
@@ -350,21 +363,27 @@ async function search(more = false): Promise<boolean> {
           : r.modality === "image" || r.modality === "video",
       sizeState: "loading" as const,
     }));
-    const all = more ? [...repos.value, ...incoming] : incoming;
+    const existingSet = new Set(repos.value.map((r) => r.repo));
+    const freshIncoming = more
+      ? incoming.filter((r) => !existingSet.has(r.repo))
+      : incoming;
+    const all = more ? [...repos.value, ...freshIncoming] : incoming;
     repos.value = [
       ...new Map<string, Repo>(all.map((r: Repo) => [r.repo, r])).values(),
     ];
     cursor.value = result.next_cursor || "";
     void previewSizes(
-      repos.value.filter((repo) => repo.sizeState === "loading"),
-      id,
+      more
+        ? freshIncoming
+        : repos.value.filter((repo) => repo.sizeState === "loading"),
+      pGen,
     );
     return true;
   } catch (e) {
-    if (id === generation) error.value = String(e);
+    if (id === searchGeneration) error.value = String(e);
     return false;
   } finally {
-    if (id === generation) loading.value = false;
+    if (id === searchGeneration) loading.value = false;
   }
 }
 
@@ -436,7 +455,8 @@ watch(
       });
       return;
     }
-    ++generation;
+    ++searchGeneration;
+    ++previewGeneration;
     loading.value = true;
     error.value = "";
     cursor.value = "";
@@ -552,14 +572,20 @@ async function toggleCommonRepo(repo: Repo) {
   if (togglingRepo.value || repo.comfy_only) return;
   const summary = summaryFor(repo.repo);
   const inCommonRepos = isCommonRepo(repo.repo);
-  if (!inCommonRepos && summary.common) {
-    for (const m of summary.savedModels) {
-      if (m.common) emit("toggleCommon", m);
-    }
-    return;
-  }
   togglingRepo.value = repo.repo;
   try {
+    if (!inCommonRepos && summary.common) {
+      for (const m of summary.savedModels) {
+        if (m.common) {
+          await colabOneCommand("model.common", { id: m.id, common: false });
+        }
+      }
+      emit(
+        "commonRepoUpdated",
+        t("models.toastRemovedFromMine", { name: repo.repo }),
+      );
+      return;
+    }
     const res = await colabOneCommand("common_repo.save", {
       repo: repo.repo,
       name: repo.repo.split("/").pop() || repo.repo,
@@ -569,7 +595,9 @@ async function toggleCommonRepo(repo: Repo) {
     });
     if (inCommonRepos && !res?.common && summary.common) {
       for (const m of summary.savedModels) {
-        if (m.common) emit("toggleCommon", m);
+        if (m.common) {
+          await colabOneCommand("model.common", { id: m.id, common: false });
+        }
       }
     }
     emit(
@@ -622,7 +650,8 @@ function fitBadgeColor(fit: ColabOneRepoFitSummary): string {
 }
 
 onUnmounted(() => {
-  ++generation;
+  ++searchGeneration;
+  ++previewGeneration;
   ++fileGeneration;
   clearTimeout(timer);
 });
@@ -767,7 +796,7 @@ onUnmounted(() => {
           type="link"
           size="small"
           class="co-inline-link"
-          @click="colabOneOpenURL('https://huggingface.co/' + chosen)"
+          @click="openExternalURL('https://huggingface.co/' + chosen)"
         >
           {{ t("models.hubViewRepo") }}
           <PhArrowSquareOut :size="12" />

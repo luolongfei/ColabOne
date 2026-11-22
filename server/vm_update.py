@@ -52,6 +52,10 @@ def colabone_update():
     stage.mkdir()
     with zipfile.ZipFile("/content/colabone-update.zip") as archive:
         archive.extractall(stage)
+    staged_root = stage / "colabone"
+    staged_reqs = staged_root / "server/requirements.txt"
+    if not staged_root.is_dir() or not staged_reqs.is_file():
+        raise RuntimeError("更新包结构无效，未执行更新")
     emit_log("更新包解压完成，正在校验并安装新版服务依赖")
     # Install locked server dependencies before stopping the working service.
     subprocess.run(
@@ -63,7 +67,7 @@ def colabone_update():
             "--disable-pip-version-check",
             "--require-hashes",
             "-r",
-            str(stage / "colabone/server/requirements.txt"),
+            str(staged_reqs),
         ],
         check=True,
         timeout=120,
@@ -75,7 +79,7 @@ def colabone_update():
     shutil.rmtree(backup, ignore_errors=True)
     pid = processes[0]
     os.kill(pid, signal.SIGTERM)
-    for _ in range(100):
+    for _ in range(450):
         if not Path(f"/proc/{pid}").exists():
             break
         # A parent may not reap immediately; zombies no longer hold the port.
@@ -89,7 +93,7 @@ def colabone_update():
         raise RuntimeError("旧服务未退出，未替换代码，请稍后重试")
     emit_log("旧服务已退出，正在切换新版代码并重启管理服务")
     Path("/content/colabone").rename(backup)
-    (stage / "colabone").rename("/content/colabone")
+    staged_root.rename("/content/colabone")
     env = dict(
         os.environ,
         PYTHONPATH="/content/colabone",
@@ -124,13 +128,42 @@ def colabone_update():
         except Exception:
             time.sleep(0.5)
     emit_log("新版服务未能在超时前就绪，正在回滚至旧版服务", level="warning")
+    server_log = Path("/content/colabone-server.log")
+    tail = ""
+    try:
+        if server_log.is_file():
+            tail = server_log.read_text(encoding="utf-8", errors="replace")[-400:].strip()
+    except OSError:
+        pass
     if proc.poll() is None:
         proc.terminate()
-        proc.wait(timeout=10)
-    shutil.rmtree("/content/colabone")
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+    shutil.rmtree("/content/colabone", ignore_errors=True)
     backup.rename("/content/colabone")
-    launch()
-    raise RuntimeError("新服务未就绪，已恢复旧服务；模型文件与预算保持不变")
+    rollback_proc = launch()
+    rollback_ok = False
+    for _ in range(30):
+        if rollback_proc.poll() is not None:
+            break
+        try:
+            opener.open("http://127.0.0.1:7860/health", timeout=1).close()
+            rollback_ok = True
+            break
+        except Exception:
+            time.sleep(0.5)
+    base_msg = (
+        "新服务未就绪，已恢复旧服务；模型文件与预算保持不变"
+        if rollback_ok
+        else "新服务未就绪且回滚后健康检查未通过，请重新连接或释放实例"
+    )
+    raise RuntimeError(base_msg + (f"（日志：{tail}）" if tail else ""))
 
 
 colabone_update()

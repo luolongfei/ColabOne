@@ -23,8 +23,12 @@ from server import tunnel as _tunnel
 from server.tunnel import ensure_binary, public_addresses
 
 COLABONE_COMFY_COOKIE = "colabone_comfy"
+COLABONE_INTERNAL_PROBE_HEADER = "X-ColabOne-Internal-Probe"
 MAX_HEAD_BYTES = 64 * 1024
 HEAD_READ_TIMEOUT = 15.0
+BODY_IDLE_TIMEOUT = 600.0
+WS_IDLE_TIMEOUT = 1800.0
+MAX_CONNECTIONS = 128
 CHUNK_SIZE = 64 * 1024
 ACTIVITY_THROTTLE_SECONDS = 3.0
 
@@ -315,6 +319,18 @@ class ColabOneCanvasProxyServer:
     async def _handle_client_wrapper(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        if len(self._tasks) >= MAX_CONNECTIONS:
+            try:
+                await self._send_json(
+                    writer,
+                    503,
+                    "Service Unavailable",
+                    {"error": "Too many active canvas connections"},
+                )
+            except Exception:
+                pass
+            await _close_writer(writer)
+            return
         task = asyncio.current_task()
         if task is not None:
             self._tasks.add(task)
@@ -441,7 +457,7 @@ class ColabOneCanvasProxyServer:
                 if host_count > 1:
                     return None
             elif lname == "content-length":
-                if not val.isdigit():
+                if not (val.isascii() and val.isdigit()):
                     return None
                 cl_values.add(val)
                 if len(cl_values) > 1:
@@ -549,7 +565,14 @@ class ColabOneCanvasProxyServer:
                 )
                 return
 
-            self._touch()
+            is_internal_probe = hmac.compare_digest(
+                header_map.get(COLABONE_INTERNAL_PROBE_HEADER.lower(), "").encode(
+                    "utf-8"
+                ),
+                self.instance.encode("utf-8"),
+            )
+            if not is_internal_probe:
+                self._touch()
             host = header_map.get("host", "").strip().lower()
             xfp = header_map.get("x-forwarded-proto", "").split(",")[0].strip().lower()
             is_https = (xfp == "https") or (
@@ -636,7 +659,9 @@ class ColabOneCanvasProxyServer:
             await upstream_writer.drain()
 
             c2u_task = asyncio.create_task(
-                self._pipe_client_to_upstream(reader, upstream_writer)
+                self._pipe_client_to_upstream(
+                    reader, upstream_writer, is_upgrade=is_upgrade
+                )
             )
             u2c_task = asyncio.create_task(
                 self._pipe_upstream_to_client(
@@ -654,7 +679,7 @@ class ColabOneCanvasProxyServer:
                     await asyncio.gather(c2u_task, u2c_task, return_exceptions=True)
                 else:
                     c2u_exc = c2u_task.exception() if not c2u_task.cancelled() else None
-                    if c2u_exc is not None:
+                    if c2u_exc is not None or writer.is_closing():
                         u2c_task.cancel()
                         await asyncio.gather(u2c_task, return_exceptions=True)
                     elif is_upgrade:
@@ -664,7 +689,11 @@ class ColabOneCanvasProxyServer:
                             u2c_task.cancel()
                             await asyncio.gather(u2c_task, return_exceptions=True)
                     else:
-                        await asyncio.gather(u2c_task, return_exceptions=True)
+                        try:
+                            await asyncio.wait_for(u2c_task, timeout=BODY_IDLE_TIMEOUT)
+                        except (TimeoutError, asyncio.CancelledError, OSError):
+                            u2c_task.cancel()
+                            await asyncio.gather(u2c_task, return_exceptions=True)
             finally:
                 for task in (c2u_task, u2c_task):
                     if not task.done():
@@ -722,9 +751,17 @@ class ColabOneCanvasProxyServer:
         self,
         client_reader: asyncio.StreamReader,
         upstream_writer: asyncio.StreamWriter,
+        *,
+        is_upgrade: bool = False,
     ) -> None:
+        idle_timeout = WS_IDLE_TIMEOUT if is_upgrade else BODY_IDLE_TIMEOUT
         while True:
-            chunk = await client_reader.read(CHUNK_SIZE)
+            try:
+                chunk = await asyncio.wait_for(
+                    client_reader.read(CHUNK_SIZE), timeout=idle_timeout
+                )
+            except TimeoutError:
+                return
             if not chunk:
                 if upstream_writer.can_write_eof():
                     try:
@@ -748,15 +785,6 @@ class ColabOneCanvasProxyServer:
         method: str,
         is_upgrade: bool,
     ) -> None:
-        if is_upgrade:
-            while True:
-                chunk = await upstream_reader.read(CHUNK_SIZE)
-                if not chunk:
-                    return
-                self._touch()
-                client_writer.write(chunk)
-                await client_writer.drain()
-
         buf = bytearray()
         sent_anything = False
         while True:
@@ -784,7 +812,19 @@ class ColabOneCanvasProxyServer:
                             {"error": "Upstream response headers too large"},
                         )
                     return
-                chunk = await upstream_reader.read(8192)
+                try:
+                    chunk = await asyncio.wait_for(
+                        upstream_reader.read(8192), timeout=BODY_IDLE_TIMEOUT
+                    )
+                except TimeoutError:
+                    if not sent_anything:
+                        await self._send_json(
+                            client_writer,
+                            504,
+                            "Gateway Timeout",
+                            {"error": "Upstream response timeout"},
+                        )
+                    return
                 if not chunk:
                     if not sent_anything:
                         await self._send_json(
@@ -799,7 +839,11 @@ class ColabOneCanvasProxyServer:
             lines = raw_head.split(b"\r\n")
             status_line = lines[0].decode("latin-1") if lines else ""
             parts = status_line.split(" ", 2)
-            status_code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+            status_code = (
+                int(parts[1])
+                if len(parts) >= 2 and parts[1].isascii() and parts[1].isdigit()
+                else 0
+            )
 
             # Forward 1xx interim responses (e.g. 100 Continue) and keep reading final response
             if 100 <= status_code < 200 and status_code != 101:
@@ -808,6 +852,26 @@ class ColabOneCanvasProxyServer:
                 sent_anything = True
                 buf = bytearray(leftover)
                 continue
+
+            # Only enter raw bidirectional WebSocket relay when upstream actually upgrades (101).
+            if is_upgrade and status_code == 101:
+                client_writer.write(raw_head + b"\r\n\r\n")
+                if leftover:
+                    client_writer.write(leftover)
+                await client_writer.drain()
+                self._touch()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            upstream_reader.read(CHUNK_SIZE), timeout=WS_IDLE_TIMEOUT
+                        )
+                    except TimeoutError:
+                        return
+                    if not chunk:
+                        return
+                    self._touch()
+                    client_writer.write(chunk)
+                    await client_writer.drain()
 
             out_lines = [lines[0]]
             has_te = False
@@ -824,7 +888,7 @@ class ColabOneCanvasProxyServer:
                     has_te = True
                 elif lname == b"content-length":
                     val_s = val_b.strip().decode("latin-1")
-                    if val_s.isdigit():
+                    if val_s.isascii() and val_s.isdigit():
                         content_length = int(val_s)
                 out_lines.append(hdr_line)
             out_lines.append(b"Connection: close")
@@ -846,7 +910,13 @@ class ColabOneCanvasProxyServer:
                     remaining -= len(piece)
                     self._touch()
                 while remaining > 0:
-                    chunk = await upstream_reader.read(min(CHUNK_SIZE, remaining))
+                    try:
+                        chunk = await asyncio.wait_for(
+                            upstream_reader.read(min(CHUNK_SIZE, remaining)),
+                            timeout=BODY_IDLE_TIMEOUT,
+                        )
+                    except TimeoutError:
+                        return
                     if not chunk:
                         return
                     client_writer.write(chunk)
@@ -860,7 +930,12 @@ class ColabOneCanvasProxyServer:
                 await client_writer.drain()
                 self._touch()
             while True:
-                chunk = await upstream_reader.read(CHUNK_SIZE)
+                try:
+                    chunk = await asyncio.wait_for(
+                        upstream_reader.read(CHUNK_SIZE), timeout=BODY_IDLE_TIMEOUT
+                    )
+                except TimeoutError:
+                    return
                 if not chunk:
                     return
                 client_writer.write(chunk)
@@ -998,18 +1073,24 @@ class ColabOneComfyCanvasGateway:
         return self.snapshot()
 
     def probe(self, origin: str) -> bool:
+        if self._tunnel_cancel.is_set():
+            return False
         _call_public_addresses(origin)
         # Never follow redirects or transmit canvas_token before verifying runtime identity.
         with requests.Session() as http:
             http.trust_env = False
 
-            def read(path: str) -> tuple[int, bytes, dict]:
-                with http.get(
-                    origin + path,
-                    stream=True,
-                    timeout=(5, 8),
-                    allow_redirects=False,
-                ) as response:
+            def read(
+                path: str, extra_headers: dict[str, str] | None = None
+            ) -> tuple[int, bytes, dict]:
+                req_kwargs: dict = {
+                    "stream": True,
+                    "timeout": (3, 5),
+                    "allow_redirects": False,
+                }
+                if extra_headers:
+                    req_kwargs["headers"] = extra_headers
+                with http.get(origin + path, **req_kwargs) as response:
                     data = bytearray()
                     for chunk in response.iter_content(2048):
                         data.extend(chunk)
@@ -1019,7 +1100,7 @@ class ColabOneComfyCanvasGateway:
                     return response.status_code, bytes(data), headers
 
             status, body, _ = read("/_colabone_health")
-            if status != 200:
+            if status != 200 or self._tunnel_cancel.is_set():
                 return False
             try:
                 payload = json.loads(body)
@@ -1029,10 +1110,13 @@ class ColabOneComfyCanvasGateway:
                 return False
 
             status, _, _ = read("/")
-            if status != 401:
+            if status != 401 or self._tunnel_cancel.is_set():
                 return False
 
-            status, _, headers = read(f"/_colabone_auth?token={self.canvas_token}")
+            status, _, headers = read(
+                f"/_colabone_auth?token={self.canvas_token}",
+                extra_headers={COLABONE_INTERNAL_PROBE_HEADER: self.instance},
+            )
             set_cookie = ""
             for k, v in headers.items():
                 if k.lower() == "set-cookie":
@@ -1172,7 +1256,10 @@ class ColabOneComfyCanvasGateway:
                         proc.wait(timeout=4)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-                        proc.wait(timeout=3)
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            pass
                 self._tunnel_proc = None
             if self._token_path is not None:
                 self._token_path.unlink(missing_ok=True)
@@ -1189,16 +1276,21 @@ class ColabOneComfyCanvasGateway:
             self._tunnel_cancel.set()
             self._terminate_tunnel()
             thread = self._tunnel_thread
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=35)
-                if thread.is_alive():
-                    raise RuntimeError("画布隧道仍在停止，请稍后重试")
-            self._tunnel_thread = None
-            self._stop_proxy()
-            if self.runtime is not None and getattr(self.runtime, "root", None):
-                (Path(self.runtime.root) / ".comfy-cloudflared-token").unlink(
-                    missing_ok=True
-                )
+            still_alive = False
+            try:
+                if thread is not None and thread is not threading.current_thread():
+                    thread.join(timeout=35)
+                    still_alive = thread.is_alive()
+                if not still_alive:
+                    self._tunnel_thread = None
+            finally:
+                self._stop_proxy()
+                if self.runtime is not None and getattr(self.runtime, "root", None):
+                    (Path(self.runtime.root) / ".comfy-cloudflared-token").unlink(
+                        missing_ok=True
+                    )
+            if still_alive:
+                raise RuntimeError("画布隧道仍在停止，请稍后重试")
             with self.lock:
                 self.enabled = False
                 self.phase = "stopped"

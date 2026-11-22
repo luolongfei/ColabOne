@@ -267,11 +267,18 @@ export function isTransientIpcError(raw: string): boolean {
   return TRANSIENT_IPC_PATTERNS.some((pattern) => pattern.test(raw));
 }
 
-export function friendlyErrorMessage(raw: string): string {
-  const cleaned = raw
+export function stripColabOneErrorPrefixes(raw: unknown): string {
+  return String(raw ?? "")
     .trim()
-    .replace(/^(?:Error:\s*)+/i, "")
+    .replace(
+      /^(?:(?:Error|CallError|RuntimeError|TypeError|ValueError):\s*)+/i,
+      "",
+    )
     .trim();
+}
+
+export function friendlyErrorMessage(raw: string): string {
+  const cleaned = stripColabOneErrorPrefixes(raw);
   if (!cleaned) {
     return "";
   }

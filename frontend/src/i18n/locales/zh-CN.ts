@@ -358,7 +358,8 @@ export const zhCNMessages = {
   "device.syncNow": "立即同步",
   "device.mountDriveNow": "立即挂载云盘",
   "device.driveWaitingBrowserConfirm":
-    "请在浏览器中点击允许，以确认当前实例挂载 Google 云盘 (ColabOne_Drive)...",
+    "请在浏览器中勾选全部云盘权限并点击允许；完成后回到客户端将自动继续挂载，或点击「我已完成授权」立即核验。",
+  "device.driveConfirmAuthorized": "我已完成授权",
   "device.driveReopenAuth": "重新打开授权页",
   "device.driveCancelMount": "取消挂载",
   "device.driveEnableHeadlessLink": "开启永久免弹窗",

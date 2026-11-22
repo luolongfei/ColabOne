@@ -151,6 +151,8 @@ class ColabOneResourceSampler:
                 if not lines:
                     raise ValueError("Empty nvidia-smi output")
                 return cls.parse_nvidia_smi_line(lines[0])
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                break
             except (OSError, ValueError, IndexError, subprocess.SubprocessError):
                 continue
         return dict(_GPU_UNAVAILABLE)

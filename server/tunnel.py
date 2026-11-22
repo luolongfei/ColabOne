@@ -9,8 +9,11 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 from urllib.parse import urlsplit
 import requests
+
+_CLOUDFLARED_INSTALL_LOCK = threading.Lock()
 
 
 def ensure_binary(root, catalog, cancel, note):
@@ -33,32 +36,38 @@ def ensure_binary(root, catalog, cancel, note):
             if hashlib.file_digest(cached, "sha256").hexdigest() == expected:
                 note("复用远端已校验的 Cloudflared " + manifest["tag"])
                 return target
-    note("正在远端下载 Cloudflared " + manifest["tag"])
-    partial = target.with_suffix(".part")
-    url = f"https://github.com/cloudflare/cloudflared/releases/download/{manifest['tag']}/cloudflared-linux-{arch}"
-    try:
-        with requests.Session() as http:
-            http.trust_env = False
-            with http.get(url, stream=True, timeout=(10, 15)) as response:
-                response.raise_for_status()
-                digest, size, started = hashlib.sha256(), 0, time.monotonic()
-                with partial.open("wb") as output:
-                    for chunk in response.iter_content(1024 * 1024):
-                        if cancel.is_set() or time.monotonic() - started > 180:
-                            raise RuntimeError("隧道安装已取消或超时")
-                        size += len(chunk)
-                        if size > 100 * 1024**2:
-                            raise RuntimeError("Cloudflared 文件大小异常")
-                        digest.update(chunk)
-                        output.write(chunk)
-                if digest.hexdigest() != expected:
-                    raise RuntimeError("Cloudflared 完整性校验失败")
-        partial.chmod(0o700)
-        partial.replace(target)
-        note("Cloudflared 下载完成，SHA-256 校验通过")
-        return target
-    finally:
-        partial.unlink(missing_ok=True)
+    with _CLOUDFLARED_INSTALL_LOCK:
+        if target.exists():
+            with target.open("rb") as cached:
+                if hashlib.file_digest(cached, "sha256").hexdigest() == expected:
+                    note("复用远端已校验的 Cloudflared " + manifest["tag"])
+                    return target
+        note("正在远端下载 Cloudflared " + manifest["tag"])
+        partial = folder / f".cloudflared-{manifest['tag']}.{uuid.uuid4().hex[:8]}.part"
+        url = f"https://github.com/cloudflare/cloudflared/releases/download/{manifest['tag']}/cloudflared-linux-{arch}"
+        try:
+            with requests.Session() as http:
+                http.trust_env = False
+                with http.get(url, stream=True, timeout=(10, 15)) as response:
+                    response.raise_for_status()
+                    digest, size, started = hashlib.sha256(), 0, time.monotonic()
+                    with partial.open("wb") as output:
+                        for chunk in response.iter_content(1024 * 1024):
+                            if cancel.is_set() or time.monotonic() - started > 180:
+                                raise RuntimeError("隧道安装已取消或超时")
+                            size += len(chunk)
+                            if size > 100 * 1024**2:
+                                raise RuntimeError("Cloudflared 文件大小异常")
+                            digest.update(chunk)
+                            output.write(chunk)
+                    if digest.hexdigest() != expected:
+                        raise RuntimeError("Cloudflared 完整性校验失败")
+            partial.chmod(0o700)
+            partial.replace(target)
+            note("Cloudflared 下载完成，SHA-256 校验通过")
+            return target
+        finally:
+            partial.unlink(missing_ok=True)
 
 
 def public_addresses(origin):
@@ -85,6 +94,8 @@ class ColabOneTunnel:
         self.thread.start()
 
     def probe(self, origin):
+        if self.cancel.is_set():
+            return False
         public_addresses(origin)
         # Never follow redirects or send the API key before verifying the runtime identity.
         with requests.Session() as http:
@@ -95,7 +106,7 @@ class ColabOneTunnel:
                     origin + path,
                     headers=headers,
                     stream=True,
-                    timeout=(5, 8),
+                    timeout=(3, 5),
                     allow_redirects=False,
                 ) as response:
                     data = bytearray()
@@ -108,14 +119,17 @@ class ColabOneTunnel:
             status, body = read("/health")
             if (
                 status != 200
+                or self.cancel.is_set()
                 or json.loads(body).get("instance") != self.gateway.instance
             ):
                 return False
             status, _ = read("/v1/models")
-            if status != 401:
+            if status != 401 or self.cancel.is_set():
                 return False
+            with self.gateway.lock:
+                api_key = self.gateway.key
             status, body = read(
-                "/v1/models", {"Authorization": "Bearer " + self.gateway.key}
+                "/v1/models", {"Authorization": "Bearer " + api_key}
             )
             return status == 200 and json.loads(body).get("object") == "list"
 
@@ -166,10 +180,20 @@ class ColabOneTunnel:
             g.note("Cloudflare 连接器已启动，正在验证固定域名连通性与密钥鉴权")
 
             def drain():
-                for _ in process.stdout:
-                    # Never store raw connector output: it may contain tokens/configuration.
+                stream = process.stdout
+                if stream is None:
+                    return
+                try:
+                    for _ in stream:
+                        # Never store raw connector output: it may contain tokens/configuration.
+                        pass
+                except (TypeError, ValueError, OSError):
                     pass
-                process.stdout.close()
+                finally:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
 
             threading.Thread(target=drain, daemon=True).start()
             started = time.monotonic()
@@ -188,15 +212,17 @@ class ColabOneTunnel:
                 if self.cancel.is_set():
                     break
                 if valid:
-                    if not was_ready:
-                        g.note("公网 API 已通过连通性和鉴权检查")
-                    g.phase, g.url, g.error = "ready", origin, ""
-                    g.checked_at = time.time()
+                    with g.lock:
+                        if not was_ready:
+                            g.note("公网 API 已通过连通性和鉴权检查")
+                        g.phase, g.url, g.error = "ready", origin, ""
+                        g.checked_at = time.time()
                     was_ready = True
                 elif was_ready:
-                    if g.phase != "reconnecting":
-                        g.note("公网连接暂时不可用，正在重新检查")
-                    g.phase = "reconnecting"
+                    with g.lock:
+                        if g.phase != "reconnecting":
+                            g.note("公网连接暂时不可用，正在重新检查")
+                        g.phase = "reconnecting"
                 elif time.monotonic() > deadline:
                     raise RuntimeError(
                         "公网地址验证超时；固定域名请映射到 http://127.0.0.1:7861，并检查 Cloudflare 路由与访问策略"
@@ -210,14 +236,16 @@ class ColabOneTunnel:
         except Exception as exc:
             if not self.cancel.is_set():
                 # Known messages only; HTTP exceptions can contain URLs/credentials.
-                g.error = (
+                err_msg = (
                     str(exc)
                     if isinstance(exc, RuntimeError)
                     else "Cloudflare 连接失败，请检查网络与隧道配置"
                 )
-                g.phase, g.enabled, g.url = "failed", False, ""
+                with g.lock:
+                    g.error = err_msg
+                    g.phase, g.enabled, g.url = "failed", False, ""
                 g.cancel_jobs()
-                g.note(g.error, "error")
+                g.note(err_msg, "error")
         finally:
             self.terminate()
 
@@ -230,7 +258,10 @@ class ColabOneTunnel:
                         self.process.wait(timeout=4)
                     except subprocess.TimeoutExpired:
                         self.process.kill()
-                        self.process.wait(timeout=3)
+                        try:
+                            self.process.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            pass
                 self.process = None
             if self.token_path:
                 self.token_path.unlink(missing_ok=True)
@@ -239,7 +270,12 @@ class ColabOneTunnel:
     def stop(self):
         self.cancel.set()
         self.terminate()
-        if self.thread and self.thread is not threading.current_thread():
-            self.thread.join(timeout=35)
-            if self.thread.is_alive():
-                raise RuntimeError("隧道仍在停止，请稍后重试")
+        try:
+            if self.thread and self.thread is not threading.current_thread():
+                self.thread.join(timeout=35)
+                if self.thread.is_alive():
+                    raise RuntimeError("隧道仍在停止，请稍后重试")
+        finally:
+            root = getattr(getattr(self.gateway, "runtime", None), "root", None)
+            if root:
+                (root / ".cloudflared-token").unlink(missing_ok=True)

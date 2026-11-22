@@ -79,20 +79,21 @@ func (s *colabOneWindowStateStore) loadLocked() (map[string]mygo.WindowState, er
 	if s.loaded {
 		return maps.Clone(s.states), nil
 	}
-	s.loaded = true
-	s.states = map[string]mygo.WindowState{}
-
 	path, err := s.pathFn()
 	if err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
+		s.states = map[string]mygo.WindowState{}
+		s.loaded = true
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	s.states = map[string]mygo.WindowState{}
+	s.loaded = true
 	var raw map[string]mygo.WindowState
 	if err := json.Unmarshal(data, &raw); err != nil {
 		// Ignore a damaged state file; the next resize or close will rewrite it cleanly.

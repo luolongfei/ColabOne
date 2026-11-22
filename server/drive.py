@@ -76,32 +76,47 @@ def format_rclone_error(stderr: str) -> str:
     return "Google 云盘连接失败：" + chosen[:180]
 
 
+_RCLONE_INSTALL_LOCK = threading.Lock()
+
+
+def _write_private_bytes(path: Path, data: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    os.chmod(path, 0o600)
+
+
 def stage_rclone_config(stage_path: Path, data_root: Path) -> Path | None:
     """Atomically install staged rclone config with 0600 permissions and remove stage."""
     if not stage_path.exists():
         return None
     target = data_root / ".rclone.conf"
     data_root.mkdir(parents=True, exist_ok=True)
-    tmp = data_root / ".rclone.conf.tmp"
-    old_umask = os.umask(0o077)
+    tmp = data_root / f".rclone.conf.{uuid.uuid4().hex[:8]}.tmp"
+    user_tmp: Path | None = None
     try:
         raw = stage_path.read_bytes()
-        tmp.write_bytes(raw)
-        tmp.chmod(0o600)
+        _write_private_bytes(tmp, raw)
         tmp.replace(target)
         # Also mirror into ~/.config/rclone/rclone.conf inside the remote container
         # when running in Colab (/content), so standard rclone invocations work too.
         if str(stage_path).startswith("/content/"):
             user_rc_dir = Path.home() / ".config" / "rclone"
             user_rc_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-            user_tmp = user_rc_dir / ".rclone.conf.tmp"
+            user_tmp = user_rc_dir / f".rclone.conf.{uuid.uuid4().hex[:8]}.tmp"
             user_dst = user_rc_dir / "rclone.conf"
-            user_tmp.write_bytes(raw)
-            user_tmp.chmod(0o600)
+            _write_private_bytes(user_tmp, raw)
             user_tmp.replace(user_dst)
     finally:
-        os.umask(old_umask)
         tmp.unlink(missing_ok=True)
+        if user_tmp is not None:
+            user_tmp.unlink(missing_ok=True)
         stage_path.unlink(missing_ok=True)
     return target
 
@@ -128,62 +143,66 @@ def ensure_rclone_binary(root: Path, catalog: Path, http=None) -> Path:
     binary = bin_dir / f"rclone-{tag}"
     if binary.is_file():
         return binary
-    archive_name = f"rclone-{tag}-linux-{arch}.zip"
-    part = bin_dir / (archive_name + ".part")
-    tmp_bin = bin_dir / f".rclone-{tag}.tmp"
-    urls = (
-        f"https://github.com/rclone/rclone/releases/download/{tag}/{archive_name}",
-        f"https://downloads.rclone.org/{tag}/{archive_name}",
-    )
-    own_session = http is None
-    session = http or requests.Session()
-    if own_session:
-        session.trust_env = False
-    try:
-        downloaded = False
-        for url in urls:
-            try:
-                with session.get(url, stream=True, timeout=(10, 30)) as resp:
-                    resp.raise_for_status()
-                    digest, size, started = hashlib.sha256(), 0, time.monotonic()
-                    with part.open("wb") as out:
-                        for chunk in resp.iter_content(1024 * 1024):
-                            if time.monotonic() - started > 180:
-                                raise RuntimeError("rclone 下载超时")
-                            size += len(chunk)
-                            if size > 120 * 1024**2:
-                                raise RuntimeError("rclone 安装包大小异常")
-                            digest.update(chunk)
-                            out.write(chunk)
-                if digest.hexdigest().lower() != expected.lower():
-                    raise RuntimeError("rclone SHA-256 校验失败")
-                downloaded = True
-                break
-            except Exception:
-                part.unlink(missing_ok=True)
-        if not downloaded:
-            raise RuntimeError("无法下载并通过校验 rclone 组件")
-        with zipfile.ZipFile(part, "r") as zf:
-            member = next(
-                (
-                    m
-                    for m in zf.namelist()
-                    if m.endswith("/rclone") and ".." not in m.split("/")
-                ),
-                None,
-            )
-            if not member:
-                raise RuntimeError("rclone 压缩包结构异常")
-            with zf.open(member, "r") as src, tmp_bin.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
-        tmp_bin.chmod(0o700)
-        tmp_bin.replace(binary)
-        return binary
-    finally:
-        part.unlink(missing_ok=True)
-        tmp_bin.unlink(missing_ok=True)
+    with _RCLONE_INSTALL_LOCK:
+        if binary.is_file():
+            return binary
+        archive_name = f"rclone-{tag}-linux-{arch}.zip"
+        token = uuid.uuid4().hex[:8]
+        part = bin_dir / f"{archive_name}.{token}.part"
+        tmp_bin = bin_dir / f".rclone-{tag}.{token}.tmp"
+        urls = (
+            f"https://github.com/rclone/rclone/releases/download/{tag}/{archive_name}",
+            f"https://downloads.rclone.org/{tag}/{archive_name}",
+        )
+        own_session = http is None
+        session = http or requests.Session()
         if own_session:
-            session.close()
+            session.trust_env = False
+        try:
+            downloaded = False
+            for url in urls:
+                try:
+                    with session.get(url, stream=True, timeout=(10, 30)) as resp:
+                        resp.raise_for_status()
+                        digest, size, started = hashlib.sha256(), 0, time.monotonic()
+                        with part.open("wb") as out:
+                            for chunk in resp.iter_content(1024 * 1024):
+                                if time.monotonic() - started > 180:
+                                    raise RuntimeError("rclone 下载超时")
+                                size += len(chunk)
+                                if size > 120 * 1024**2:
+                                    raise RuntimeError("rclone 安装包大小异常")
+                                digest.update(chunk)
+                                out.write(chunk)
+                    if digest.hexdigest().lower() != expected.lower():
+                        raise RuntimeError("rclone SHA-256 校验失败")
+                    downloaded = True
+                    break
+                except Exception:
+                    part.unlink(missing_ok=True)
+            if not downloaded:
+                raise RuntimeError("无法下载并通过校验 rclone 组件")
+            with zipfile.ZipFile(part, "r") as zf:
+                member = next(
+                    (
+                        m
+                        for m in zf.namelist()
+                        if m.endswith("/rclone") and ".." not in m.split("/")
+                    ),
+                    None,
+                )
+                if not member:
+                    raise RuntimeError("rclone 压缩包结构异常")
+                with zf.open(member, "r") as src, tmp_bin.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            tmp_bin.chmod(0o700)
+            tmp_bin.replace(binary)
+            return binary
+        finally:
+            part.unlink(missing_ok=True)
+            tmp_bin.unlink(missing_ok=True)
+            if own_session:
+                session.close()
 
 
 def _is_temp_name(name: str) -> bool:
@@ -212,6 +231,11 @@ def _copy_file_if_newer(src: Path, dst: Path) -> None:
     tmp = dst.parent / f".co-sync-{uuid.uuid4().hex[:8]}.tmp"
     try:
         shutil.copy2(src, tmp)
+        try:
+            with tmp.open("rb") as synced:
+                os.fsync(synced.fileno())
+        except OSError:
+            pass
         tmp.replace(dst)
     except OSError:
         tmp.unlink(missing_ok=True)
@@ -327,6 +351,20 @@ class ColabOneDrive:
         cmd.extend(args)
         return cmd
 
+    def _terminate_mount_proc(self) -> None:
+        proc = self.mount_proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+        self.mount_proc = None
+
     def _recover_stale_fuse(self):
         try:
             if self.mount_root.exists():
@@ -338,18 +376,25 @@ class ColabOneDrive:
                 ["umount", "-l", str(self.mount_root)],
             ):
                 if shutil.which(cmd[0]):
-                    subprocess.run(
-                        cmd,
-                        check=False,
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    try:
+                        subprocess.run(
+                            cmd,
+                            check=False,
+                            timeout=10,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
 
     def connect(self) -> dict:
         with self.lock:
+            staged_path = Path("/content/.colabone_rclone.conf")
             # 1) Prefer already-mounted official Google Colab DriveFS (zero rclone/GCP needed).
             if self.is_colab_drivefs_mounted():
+                staged_path.unlink(missing_ok=True)
+                self._terminate_mount_proc()
                 ws = self._drivefs_workspace_dir()
                 try:
                     ws.mkdir(parents=True, exist_ok=True)
@@ -363,21 +408,26 @@ class ColabOneDrive:
                 return self.status()
 
             # 2) Otherwise use headless rclone OAuth config.
-            stage_rclone_config(Path("/content/.colabone_rclone.conf"), self.root)
+            stage_rclone_config(staged_path, self.root)
             if not self._has_rclone_config():
                 self.mode = "disabled"
                 raise RuntimeError("未检测到云盘凭据配置；请确认已登录 Google 账户")
             binary = ensure_rclone_binary(self.root, self.catalog, self.http)
             self._recover_stale_fuse()
-            mkdir_res = subprocess.run(
-                self._rclone_cmd(binary, "mkdir", COLABONE_DRIVE_SPEC),
-                check=False,
-                timeout=25,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            try:
+                mkdir_res = subprocess.run(
+                    self._rclone_cmd(binary, "mkdir", COLABONE_DRIVE_SPEC),
+                    check=False,
+                    timeout=25,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                self.mode = "disabled"
+                self.error = "Google 云盘连接超时，请稍后重试"
+                raise RuntimeError(self.error) from None
             if mkdir_res.returncode != 0:
                 self.mode = "disabled"
                 self.error = format_rclone_error(mkdir_res.stderr or "")
@@ -392,6 +442,7 @@ class ColabOneDrive:
                 shutil.which("fusermount3") or shutil.which("fusermount")
             )
             if can_fuse:
+                self._terminate_mount_proc()
                 self.mount_root.mkdir(parents=True, exist_ok=True)
                 log_path = self.root / "rclone-mount.log"
                 with log_path.open("wb") as log_out:
@@ -426,6 +477,8 @@ class ColabOneDrive:
                     if self.mount_proc.poll() is not None:
                         break
                     time.sleep(0.4)
+                # Terminate lingering mount daemon before falling back to rclone_sync.
+                self._terminate_mount_proc()
                 # Clean up empty unmounted directory so local storage is never mistaken for Drive.
                 try:
                     if (
@@ -488,6 +541,25 @@ class ColabOneDrive:
             self.error = "Google 云盘同步失败，远端本地副本仍完整保留"
             return False
 
+    _WORKSPACE_FILTER_ARGS = (
+        "--filter",
+        "- **/.trash/**",
+        "--filter",
+        "- **/.save-*",
+        "--filter",
+        "- **/*.part*",
+        "--filter",
+        "- **/*.tmp*",
+        "--filter",
+        "+ /models.json",
+        "--filter",
+        "+ /workflows/**",
+        "--filter",
+        "+ /comfyui-outputs/**",
+        "--filter",
+        "- **",
+    )
+
     def pull_workspace(self, dest_dir: Path | None = None) -> bool:
         """Pull persisted models.json, workflows, and ComfyUI outputs into dest_dir."""
         with self.lock:
@@ -497,37 +569,30 @@ class ColabOneDrive:
             target_dir.mkdir(parents=True, exist_ok=True)
             if self.mode == "colab_drivefs":
                 return self._pull_drivefs_workspace(target_dir)
-            binary = ensure_rclone_binary(self.root, self.catalog, self.http)
-            res = subprocess.run(
-                self._rclone_cmd(
-                    binary,
-                    "copy",
-                    f"{COLABONE_DRIVE_SPEC}/workspace",
-                    str(target_dir),
-                    "--transfers",
-                    "8",
-                    "--checkers",
-                    "8",
-                    "--include",
-                    "/models.json",
-                    "--include",
-                    "/workflows/**",
-                    "--include",
-                    "/comfyui-outputs/**",
-                    "--exclude",
-                    "**/*.part*",
-                    "--exclude",
-                    "**/*.tmp*",
-                    "--exclude",
-                    "**/.trash/**",
-                ),
-                check=False,
-                timeout=120,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            try:
+                binary = ensure_rclone_binary(self.root, self.catalog, self.http)
+                res = subprocess.run(
+                    self._rclone_cmd(
+                        binary,
+                        "copy",
+                        f"{COLABONE_DRIVE_SPEC}/workspace",
+                        str(target_dir),
+                        "--transfers",
+                        "8",
+                        "--checkers",
+                        "8",
+                        *self._WORKSPACE_FILTER_ARGS,
+                    ),
+                    check=False,
+                    timeout=120,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except (subprocess.TimeoutExpired, OSError, RuntimeError):
+                self.error = "从 Google 云盘恢复历史数据未完成，稍后自动重试"
+                return False
             if res.returncode != 0:
                 self.error = "从 Google 云盘恢复历史数据未完成，稍后自动重试"
                 return False
@@ -541,39 +606,32 @@ class ColabOneDrive:
                 return False
             if self.mode == "colab_drivefs":
                 return self._push_drivefs_workspace()
-            binary = ensure_rclone_binary(self.root, self.catalog, self.http)
-            res = subprocess.run(
-                self._rclone_cmd(
-                    binary,
-                    "copy",
-                    str(self.root),
-                    f"{COLABONE_DRIVE_SPEC}/workspace",
-                    "--transfers",
-                    "8",
-                    "--checkers",
-                    "8",
-                    "--drive-chunk-size",
-                    "64M",
-                    "--include",
-                    "/models.json",
-                    "--include",
-                    "/workflows/**",
-                    "--include",
-                    "/comfyui-outputs/**",
-                    "--exclude",
-                    "**/*.part*",
-                    "--exclude",
-                    "**/*.tmp*",
-                    "--exclude",
-                    "**/.trash/**",
-                ),
-                check=False,
-                timeout=180,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            try:
+                binary = ensure_rclone_binary(self.root, self.catalog, self.http)
+                res = subprocess.run(
+                    self._rclone_cmd(
+                        binary,
+                        "copy",
+                        str(self.root),
+                        f"{COLABONE_DRIVE_SPEC}/workspace",
+                        "--transfers",
+                        "8",
+                        "--checkers",
+                        "8",
+                        "--drive-chunk-size",
+                        "64M",
+                        *self._WORKSPACE_FILTER_ARGS,
+                    ),
+                    check=False,
+                    timeout=180,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except (subprocess.TimeoutExpired, OSError, RuntimeError):
+                self.error = "Google 云盘同步失败，远端本地副本仍完整保留"
+                return False
             if res.returncode != 0:
                 self.error = "Google 云盘同步失败，远端本地副本仍完整保留"
                 return False
@@ -646,6 +704,10 @@ class ColabOneDrive:
         with self.lock:
             if self.mode == "colab_drivefs":
                 try:
+                    os.sync()
+                except OSError:
+                    pass
+                try:
                     from google.colab import drive as colab_drive
 
                     colab_drive.flush_and_unmount(timeout_ms=30000)
@@ -653,13 +715,7 @@ class ColabOneDrive:
                     pass
                 self.mode = "disabled"
                 return
-            if self.mount_proc and self.mount_proc.poll() is None:
-                self.mount_proc.terminate()
-                try:
-                    self.mount_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.mount_proc.kill()
-            self.mount_proc = None
+            self._terminate_mount_proc()
             if self.is_fuse_mounted():
                 for cmd in (
                     ["fusermount3", "-uz", str(self.mount_root)],
@@ -667,13 +723,33 @@ class ColabOneDrive:
                     ["umount", "-l", str(self.mount_root)],
                 ):
                     if shutil.which(cmd[0]):
-                        subprocess.run(
-                            cmd,
-                            check=False,
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
+                        try:
+                            subprocess.run(
+                                cmd,
+                                check=False,
+                                timeout=10,
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+            self.mode = "disabled"
+
+    def _existing_rclone_binary(self) -> Path | None:
+        existing = shutil.which("rclone")
+        if existing:
+            return Path(existing)
+        try:
+            manifest = json.loads((self.catalog / "rclone.json").read_text(encoding="utf-8"))
+            tag = manifest.get("tag")
+            if tag:
+                candidate = self.root / "bin" / f"rclone-{tag}"
+                if candidate.is_file():
+                    return candidate
+        except Exception:
+            pass
+        return None
 
     def _refresh_space(self):
         now = time.time()
@@ -692,10 +768,17 @@ class ColabOneDrive:
                 }
                 return
             except OSError:
-                pass
+                self._space_cache = {
+                    **self._space_cache,
+                    "ts": now,
+                }
+                return
         if self.available() and self.mode != "colab_drivefs":
             try:
-                binary = ensure_rclone_binary(self.root, self.catalog, self.http)
+                binary = self._existing_rclone_binary()
+                if binary is None:
+                    self._space_cache = {**self._space_cache, "ts": now}
+                    return
                 res = subprocess.run(
                     self._rclone_cmd(binary, "about", f"{COLABONE_DRIVE_REMOTE}:", "--json"),
                     check=False,
@@ -711,8 +794,10 @@ class ColabOneDrive:
                         "total_bytes": info.get("total"),
                         "free_bytes": info.get("free"),
                     }
+                    return
             except Exception:
                 pass
+            self._space_cache = {**self._space_cache, "ts": now}
 
     def status(self, pending: int = 0) -> dict:
         connected = self.available()

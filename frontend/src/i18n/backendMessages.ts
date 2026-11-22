@@ -230,6 +230,78 @@ const COMFY_FIELD_SUFFIX_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "入力音声",
     "ko-KR": "입력 오디오",
   },
+  宽度: {
+    "zh-CN": "宽度",
+    "en-US": "Width",
+    "zh-TW": "寬度",
+    "zh-HK": "寬度",
+    "ja-JP": "幅",
+    "ko-KR": "너비",
+  },
+  高度: {
+    "zh-CN": "高度",
+    "en-US": "Height",
+    "zh-TW": "高度",
+    "zh-HK": "高度",
+    "ja-JP": "高さ",
+    "ko-KR": "높이",
+  },
+  帧数: {
+    "zh-CN": "帧数",
+    "en-US": "Frames",
+    "zh-TW": "影格數",
+    "zh-HK": "幀數",
+    "ja-JP": "フレーム数",
+    "ko-KR": "프레임 수",
+  },
+  "帧率 (FPS)": {
+    "zh-CN": "帧率 (FPS)",
+    "en-US": "Frame Rate (FPS)",
+    "zh-TW": "影格率 (FPS)",
+    "zh-HK": "幀率 (FPS)",
+    "ja-JP": "フレームレート (FPS)",
+    "ko-KR": "프레임 속도 (FPS)",
+  },
+  批次大小: {
+    "zh-CN": "批次大小",
+    "en-US": "Batch Size",
+    "zh-TW": "批次大小",
+    "zh-HK": "批次大小",
+    "ja-JP": "バッチサイズ",
+    "ko-KR": "배치 크기",
+  },
+  采样步数: {
+    "zh-CN": "采样步数",
+    "en-US": "Sampling Steps",
+    "zh-TW": "取樣步數",
+    "zh-HK": "採樣步數",
+    "ja-JP": "サンプリングステップ数",
+    "ko-KR": "샘플링 스텝",
+  },
+  "CFG 引导系数": {
+    "zh-CN": "CFG 引导系数",
+    "en-US": "CFG Scale",
+    "zh-TW": "CFG 引導係數",
+    "zh-HK": "CFG 引導係數",
+    "ja-JP": "CFG スケール",
+    "ko-KR": "CFG 스케일",
+  },
+  重绘幅度: {
+    "zh-CN": "重绘幅度",
+    "en-US": "Denoise Strength",
+    "zh-TW": "重繪幅度",
+    "zh-HK": "重繪幅度",
+    "ja-JP": "ノイズ除去強度",
+    "ko-KR": "디노이즈 강도",
+  },
+  随机种子: {
+    "zh-CN": "随机种子",
+    "en-US": "Random Seed",
+    "zh-TW": "隨機種子",
+    "zh-HK": "隨機種子",
+    "ja-JP": "ランダムシード",
+    "ko-KR": "랜덤 시드",
+  },
 };
 
 function translateSymlinkDirLabel(raw: string, loc: ColabOneLocale): string {
@@ -478,7 +550,7 @@ function translateComfyErrorDetail(detail: string, loc: ColabOneLocale): string 
   return segments
     .map((seg) => {
       const trimmed = seg.trim();
-      const nodeMatch = trimmed.match(/^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/);
+      const nodeMatch = trimmed.match(/^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/s);
       if (nodeMatch) {
         const [, id, cls, msg] = nodeMatch;
         const inner = translateInner(msg!, loc);
@@ -559,13 +631,13 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模型下载|模型加载|外部 API 对话|外部 API Responses|外部 API 上下文压缩|ComfyUI 启动|ComfyUI 工作流|ComfyUI 任务|远端任务)：(进行中|已完成|失败|已取消)(.*)$/,
+    re: /^(模型下载|模型加载|外部 API 对话|外部 API Responses|外部 API 上下文压缩|ComfyUI 启动|ComfyUI 工作流|ComfyUI 任务|远端任务)：(进行中|已完成|失败|已取消)(.*)$/s,
     format: (m, loc) => {
       const kind = TASK_KIND_LABELS[m[1]!]?.[loc] ?? m[1]!;
       const status = TASK_STATE_LABELS[m[2]!]?.[loc] ?? m[2]!;
       let rest = (m[3] || "").trim();
       let pctPrefix = "";
-      const pctMatch = rest.match(/^·\s*(\d+%)(?:\s*·\s*(.*))?$/);
+      const pctMatch = rest.match(/^·\s*(\d+%)(?:\s*·\s*(.*))?$/s);
       if (pctMatch) {
         pctPrefix = ` · ${pctMatch[1]}`;
         rest = (pctMatch[2] || "").trim();
@@ -1786,6 +1858,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^正在分配 (\S+)（第 (\d+)\/(\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, cur, total] = m;
+      switch (loc) {
+        case "en-US":
+          return `Allocating ${gpu} (attempt ${cur}/${total})`;
+        case "zh-TW":
+          return `正在分配 ${gpu}（第 ${cur}/${total} 次）`;
+        case "zh-HK":
+          return `正在分配 ${gpu}（第 ${cur}/${total} 次）`;
+        case "ja-JP":
+          return `${gpu} を割り当て中（${cur}/${total} 回目）`;
+        case "ko-KR":
+          return `${gpu} 할당 중 (${cur}/${total}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^正在分配 (.+)$/,
     format: (m, loc) => {
       const gpu = m[1];
@@ -1800,6 +1892,365 @@ const PATTERN_RULES: PatternRule[] = [
           return `${gpu} を割り当て中`;
         case "ko-KR":
           return `${gpu} 할당 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 暂时繁忙或超时（(HTTP \d+|请求超时|网络异常)），(\d+) 秒后自动重试（第 (\d+)\/(\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, reasonRaw, sec, cur, total] = m;
+      const reason =
+        reasonRaw === "请求超时"
+          ? {
+              "zh-CN": "请求超时",
+              "en-US": "request timeout",
+              "zh-TW": "請求逾時",
+              "zh-HK": "請求逾時",
+              "ja-JP": "タイムアウト",
+              "ko-KR": "요청 시간 초과",
+            }[loc]
+          : reasonRaw === "网络异常"
+            ? {
+                "zh-CN": "网络异常",
+                "en-US": "network error",
+                "zh-TW": "網路異常",
+                "zh-HK": "網絡異常",
+                "ja-JP": "ネットワークエラー",
+                "ko-KR": "네트워크 오류",
+              }[loc]
+            : reasonRaw!;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} allocation temporarily busy or timed out (${reason}); retrying in ${sec}s (attempt ${cur}/${total})`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 暫時忙碌或逾時（${reason}），${sec} 秒後自動重試（第 ${cur}/${total} 次）`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 暫時繁忙或逾時（${reason}），${sec} 秒後自動重試（第 ${cur}/${total} 次）`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てが一時的に混雑またはタイムアウトしました（${reason}）。${sec} 秒後に自動再試行します（${cur}/${total} 回目）`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당이 일시적으로 혼잡하거나 시간 초과되었습니다 (${reason}). ${sec}초 후 자동 재시도합니다 (${cur}/${total}회)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 网络连接中断，已自动重试 (\d+) 次仍未成功，请检查网络或代理后重试$/,
+    format: (m, loc) => {
+      const [, gpu, count] = m;
+      switch (loc) {
+        case "en-US":
+          return `Network connection interrupted while allocating Google Colab ${gpu} GPU after ${count} automatic retries. Check your network or proxy and try again.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 網路連線中斷，已自動重試 ${count} 次仍未成功，請檢查網路或代理後重試`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 網絡連接中斷，已自動重試 ${count} 次仍未成功，請檢查網絡或代理後重試`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当て中にネットワーク接続が中断されました（${count} 回自動再試行しても失敗）。接続またはプロキシを確認して再試行してください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당 중 네트워크 연결이 끊겼습니다 (${count}회 자동 재시도 실패). 네트워크 또는 프록시를 확인한 뒤 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 失败，请检查网络连接后重试$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Failed to allocate Google Colab ${gpu} GPU. Check your network connection and try again.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 失敗，請檢查網路連線後重試`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 失敗，請檢查網絡連接後重試`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てに失敗しました。ネットワーク接続を確認して再試行してください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당에 실패했습니다. 네트워크 연결을 확인한 뒤 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^保存实例会话失败，已尝试释放刚分配的实例：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to save instance session; attempted to release the newly allocated instance: ${detail}`;
+        case "zh-TW":
+          return `儲存執行個體工作階段失敗，已嘗試釋放剛分配的執行個體：${detail}`;
+        case "zh-HK":
+          return `儲存實例工作階段失敗，已嘗試釋放剛分配的實例：${detail}`;
+        case "ja-JP":
+          return `インスタンスセッションの保存に失敗しました。割り当てたインスタンスの解放を試行しました: ${detail}`;
+        case "ko-KR":
+          return `인스턴스 세션 저장에 실패하여 새로 할당된 인스턴스 해제를 시도했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已通过状态核验确认 (\S+) GPU 实例分配成功$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Confirmed ${gpu} GPU instance allocation via status reconciliation`;
+        case "zh-TW":
+          return `已透過狀態核驗確認 ${gpu} GPU 執行個體分配成功`;
+        case "zh-HK":
+          return `已透過狀態核驗確認 ${gpu} GPU 實例分配成功`;
+        case "ja-JP":
+          return `ステータス照合により ${gpu} GPU インスタンスの割り当て完了を確認しました`;
+        case "ko-KR":
+          return `상태 확인을 통해 ${gpu} GPU 인스턴스 할당이 완료되었음을 확인했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 暂时不可用（HTTP (\d+)，该型号可能算力紧张或后端分配超时），已自动重试 (\d+) 次仍未成功，请稍后重试或切换其他 GPU 型号$/,
+    format: (m, loc) => {
+      const [, gpu, code, retries] = m;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} GPU allocation is temporarily unavailable (HTTP ${code}; capacity may be tight or backend provisioning timed out) after ${retries} automatic retries. Please retry later or switch to another GPU.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 暫時無法使用（HTTP ${code}，該型號可能算力緊張或後端分配逾時），已自動重試 ${retries} 次仍未成功，請稍後重試或切換其他 GPU 型號`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 暫時無法使用（HTTP ${code}，該型號可能算力緊張或後端分配逾時），已自動重試 ${retries} 次仍未成功，請稍後再試或切換其他 GPU 型號`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てが一時的に利用できません（HTTP ${code}、在庫逼迫またはバックエンド割り当てタイムアウト）。${retries} 回自動再試行しましたが失敗しました。しばらく待ってから再試行するか別の GPU をお試しください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당을 일시적으로 사용할 수 없습니다 (HTTP ${code}, 용량 부족 또는 백엔드 할당 시간 초과). ${retries}회 자동 재시도 후에도 실패했습니다. 잠시 후 다시 시도하거나 다른 GPU를 선택해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 暂时不可用（HTTP (\d+)，该型号可能算力紧张或后端分配超时），请稍后重试或切换其他 GPU 型号$/,
+    format: (m, loc) => {
+      const [, gpu, code] = m;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} GPU allocation is temporarily unavailable (HTTP ${code}; capacity may be tight or backend provisioning timed out). Please retry later or switch to another GPU.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 暫時無法使用（HTTP ${code}，該型號可能算力緊張或後端分配逾時），請稍後重試或切換其他 GPU 型號`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 暫時無法使用（HTTP ${code}，該型號可能算力緊張或後端分配逾時），請稍後再試或切換其他 GPU 型號`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てが一時的に利用できません（HTTP ${code}、在庫逼迫またはバックエンド割り当てタイムアウト）。しばらく待ってから再試行するか別の GPU をお試しください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당을 일시적으로 사용할 수 없습니다 (HTTP ${code}, 용량 부족 또는 백엔드 할당 시간 초과). 잠시 후 다시 시도하거나 다른 GPU를 선택해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 请求超时，已自动重试 (\d+) 次仍未成功，请稍后重试或切换其他 GPU 型号$/,
+    format: (m, loc) => {
+      const [, gpu, retries] = m;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} GPU allocation timed out after ${retries} automatic retries. Please retry later or switch to another GPU.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 請求逾時，已自動重試 ${retries} 次仍未成功，請稍後重試或切換其他 GPU 型號`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 請求逾時，已自動重試 ${retries} 次仍未成功，請稍後再試或切換其他 GPU 型號`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てリクエストがタイムアウトしました（${retries} 回自動再試行済み）。しばらく待ってから再試行するか別の GPU をお試しください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당 요청이 ${retries}회 자동 재시도 후에도 시간 초과되었습니다. 잠시 후 다시 시도하거나 다른 GPU를 선택해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 请求超时，请稍后重试或切换其他 GPU 型号$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} GPU allocation timed out. Please retry later or switch to another GPU.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 請求逾時，請稍後重試或切換其他 GPU 型號`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 請求逾時，請稍後再試或切換其他 GPU 型號`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てリクエストがタイムアウトしました。しばらく待ってから再試行するか別の GPU をお試しください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당 요청이 시간 초과되었습니다. 잠시 후 다시 시도하거나 다른 GPU를 선택해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 拒绝分配 (\S+) GPU（HTTP 412）：当前账号活跃实例已达上限或受配额限制，请先释放已有实例或切换其他 GPU 型号$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Colab refused ${gpu} GPU allocation (HTTP 412): active instance limit or temporary quota cap reached. Release an existing instance or try another GPU.`;
+        case "zh-TW":
+          return `Google Colab 拒絕分配 ${gpu} GPU（HTTP 412）：目前帳號執行中個體已達上限或受配額限制，請先釋放現有執行個體或切換其他 GPU 型號`;
+        case "zh-HK":
+          return `Google Colab 拒絕分配 ${gpu} GPU（HTTP 412）：目前帳號活躍實例已達上限或受配額限制，請先釋放現有實例或切換其他 GPU 型號`;
+        case "ja-JP":
+          return `Google Colab が ${gpu} GPU の割り当てを拒否しました（HTTP 412）: 稼働中のインスタンス上限または一時的なクォータ制限に達しています。既存インスタンスを解放するか別の GPU をお試しください`;
+        case "ko-KR":
+          return `Google Colab이 ${gpu} GPU 할당을 거부했습니다 (HTTP 412): 활성 인스턴스 한도 또는 일시적 할당량 제한에 도달했습니다. 기존 인스턴스를 해제하거나 다른 GPU를 선택해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 拒绝分配 (\S+) GPU（HTTP 400）：当前账号可能暂无该型号配额或权限，请切换其他 GPU 型号$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Colab rejected ${gpu} GPU allocation (HTTP 400): your account may not have quota or entitlement for this GPU. Try another GPU.`;
+        case "zh-TW":
+          return `Google Colab 拒絕分配 ${gpu} GPU（HTTP 400）：目前帳號可能暫無該型號配額或權限，請切換其他 GPU 型號`;
+        case "zh-HK":
+          return `Google Colab 拒絕分配 ${gpu} GPU（HTTP 400）：目前帳號可能暫無該型號配額或權限，請切換其他 GPU 型號`;
+        case "ja-JP":
+          return `Google Colab が ${gpu} GPU の割り当てを拒否しました（HTTP 400）: このアカウントには当該モデルの利用枠や権限がない可能性があります。別の GPU をお試しください`;
+        case "ko-KR":
+          return `Google Colab이 ${gpu} GPU 할당을 거부했습니다 (HTTP 400): 현재 계정에 해당 모델의 할당량이나 권한이 없을 수 있습니다. 다른 GPU를 선택해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 授权校验失败（HTTP (\d+)），请在设置中重新登录后重试$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Colab authorization check failed (HTTP ${code}). Please sign in again in Settings and retry.`;
+        case "zh-TW":
+          return `Google Colab 授權驗證失敗（HTTP ${code}），請在設定中重新登入後重試`;
+        case "zh-HK":
+          return `Google Colab 授權驗證失敗（HTTP ${code}），請在設定中重新登入後再試`;
+        case "ja-JP":
+          return `Google Colab の認証確認に失敗しました（HTTP ${code}）。設定から再ログインしてやり直してください`;
+        case "ko-KR":
+          return `Google Colab 인증 확인에 실패했습니다 (HTTP ${code}). 설정에서 다시 로그인한 후 재시도해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配请求过于频繁（HTTP 429），请稍等片刻后重试$/,
+    format: (m, loc) => {
+      switch (loc) {
+        case "en-US":
+          return "Too many Google Colab allocation requests (HTTP 429). Please wait a moment and retry.";
+        case "zh-TW":
+          return "Google Colab 分配請求過於頻繁（HTTP 429），請稍候片刻後重試";
+        case "zh-HK":
+          return "Google Colab 分配請求過於頻繁（HTTP 429），請稍候片刻後再試";
+        case "ja-JP":
+          return "Google Colab への割り当てリクエストが多すぎます（HTTP 429）。少し待ってから再試行してください";
+        case "ko-KR":
+          return "Google Colab 할당 요청이 너무 많습니다 (HTTP 429). 잠시 후 다시 시도해 주세요.";
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 失败（HTTP (\d+)），请稍后重试$/,
+    format: (m, loc) => {
+      const [, gpu, code] = m;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} GPU allocation failed (HTTP ${code}). Please retry later.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 失敗（HTTP ${code}），請稍後重試`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 失敗（HTTP ${code}），請稍後再試`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てに失敗しました（HTTP ${code}）。しばらくしてから再試行してください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당에 실패했습니다 (HTTP ${code}). 잠시 후 다시 시도해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 失败，请检查网络连接后重试$/,
+    format: (m, loc) => {
+      const gpu = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} GPU allocation failed. Please check your network connection and retry.`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 失敗，請檢查網路連線後重試`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 失敗，請檢查網絡連線後再試`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てに失敗しました。ネットワーク接続を確認して再試行してください`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당에 실패했습니다. 네트워크 연결을 확인한 후 다시 시도해 주세요.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端初始化异常：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote bootstrap exception: ${detail}`;
+        case "zh-TW":
+          return `遠端初始化例外：${detail}`;
+        case "zh-HK":
+          return `遠端初始化異常：${detail}`;
+        case "ja-JP":
+          return `リモート初期化エラー: ${detail}`;
+        case "ko-KR":
+          return `원격 초기화 예외: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端初始化未完成：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote initialization did not complete: ${detail}`;
+        case "zh-TW":
+          return `遠端初始化未完成：${detail}`;
+        case "zh-HK":
+          return `遠端初始化未完成：${detail}`;
+        case "ja-JP":
+          return `リモート初期化が完了しませんでした: ${detail}`;
+        case "ko-KR":
+          return `원격 초기화가 완료되지 않았습니다: ${detail}`;
         default:
           return m[0];
       }
@@ -1944,7 +2395,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^正在启动 (\S+) GPU/,
+    re: /^正在启动 (\S+) GPU(?:\.{3}|…)?$/,
     format: (m, loc) => {
       const gpu = m[1];
       switch (loc) {
@@ -2090,7 +2541,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^远端 ComfyUI 准备失败：(.+)$/,
+    re: /^远端 ComfyUI 准备失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
       switch (loc) {
@@ -2230,7 +2681,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^ComfyUI 启动失败：(.+)$/,
+    re: /^ComfyUI 启动失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
       switch (loc) {
@@ -2410,7 +2861,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^ComfyUI 执行失败：(.+)$/,
+    re: /^ComfyUI 执行失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateComfyErrorDetail(m[1]!, loc);
       switch (loc) {
@@ -2430,7 +2881,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/,
+    re: /^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/s,
     format: (m, loc) => translateComfyErrorDetail(m[0], loc),
   },
   {
@@ -2738,7 +3189,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^Google Colab 原生云盘挂载失败：(.+)$/,
+    re: /^Google Colab 原生云盘挂载失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
       switch (loc) {
@@ -3090,7 +3541,7 @@ const PATTERN_RULES: PatternRule[] = [
 
   // === server/runtime.py ===
   {
-    re: /^下载失败：(.+)$/,
+    re: /^下载失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
       switch (loc) {
@@ -3382,7 +3833,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^模型加载失败：(.+)$/,
+    re: /^模型加载失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
       switch (loc) {
@@ -3647,7 +4098,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^远端服务依赖安装失败：(.+)$/,
+    re: /^远端服务依赖安装失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
       switch (loc) {
@@ -3729,11 +4180,138 @@ const PATTERN_RULES: PatternRule[] = [
 
   // === common/comfyui.py ===
   {
-    re: /^(.+?) · (反向提示词|正向提示词|文本输入|参考图片|输入音频)$/,
+    re: /^(.+?) · (反向提示词|正向提示词|文本输入|参考图片|输入音频|宽度|高度|帧数|帧率 \(FPS\)|批次大小|采样步数|CFG 引导系数|重绘幅度|随机种子)$/,
     format: (m, loc) => {
       const [, title, suffix] = m;
       const mapped = COMFY_FIELD_SUFFIX_LABELS[suffix!]?.[loc] ?? suffix;
       return `${title} · ${mapped}`;
+    },
+  },
+  {
+    re: /^查询 ComfyUI 任务进度连续失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Repeated failures querying ComfyUI job progress: ${detail}`;
+        case "zh-TW":
+          return `查詢 ComfyUI 任務進度連續失敗：${detail}`;
+        case "zh-HK":
+          return `查詢 ComfyUI 任務進度連續失敗：${detail}`;
+        case "ja-JP":
+          return `ComfyUI ジョブ進捗の取得に連続して失敗しました: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI 작업 진행 상태 조회가 연속으로 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^单连接下载重试 (\d+)\/(\d+)（(.+)）$/,
+    format: (m, loc) => {
+      const [, cur, total, reason] = m;
+      switch (loc) {
+        case "en-US":
+          return `Single-stream download retry ${cur}/${total} (${reason})`;
+        case "zh-TW":
+          return `單連線下載重試 ${cur}/${total}（${reason}）`;
+        case "zh-HK":
+          return `單連接下載重試 ${cur}/${total}（${reason}）`;
+        case "ja-JP":
+          return `単一ストリームダウンロードを再試行中 ${cur}/${total}（${reason}）`;
+        case "ko-KR":
+          return `단일 연결 다운로드 재시도 ${cur}/${total} (${reason})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型(加载|预热)失败（推理进程已退出，退出码 ([^）]+)）(?:：(.+))?$/s,
+    format: (m, loc) => {
+      const [, stage, code, tailRaw] = m;
+      const tail = tailRaw ? translateInner(tailRaw, loc) : "";
+      const isWarmup = stage === "预热";
+      switch (loc) {
+        case "en-US":
+          return (
+            (isWarmup
+              ? `Model warmup failed (inference process exited with code ${code})`
+              : `Model load failed (inference process exited with code ${code})`) +
+            (tail ? `: ${tail}` : "")
+          );
+        case "zh-TW":
+          return (
+            (isWarmup
+              ? `模型預熱失敗（推理處理程序已結束，退出碼 ${code}）`
+              : `模型載入失敗（推理處理程序已結束，退出碼 ${code}）`) +
+            (tail ? `：${tail}` : "")
+          );
+        case "zh-HK":
+          return (
+            (isWarmup
+              ? `模型預熱失敗（推理進程已退出，退出碼 ${code}）`
+              : `模型載入失敗（推理進程已退出，退出碼 ${code}）`) +
+            (tail ? `：${tail}` : "")
+          );
+        case "ja-JP":
+          return (
+            (isWarmup
+              ? `モデルのウォームアップに失敗しました（推論プロセスが終了しました、終了コード ${code}）`
+              : `モデルの読み込みに失敗しました（推論プロセスが終了しました、終了コード ${code}）`) +
+            (tail ? `: ${tail}` : "")
+          );
+        case "ko-KR":
+          return (
+            (isWarmup
+              ? `모델 예열 실패 (추론 프로세스 종료, 종료 코드 ${code})`
+              : `모델 로드 실패 (추론 프로세스 종료, 종료 코드 ${code})`) +
+            (tail ? `: ${tail}` : "")
+          );
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^新服务未就绪，已恢复旧服务；模型文件与预算保持不变（日志：(.+)）$/s,
+    format: (m, loc) => {
+      const tail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `New service did not become ready; restored the previous service while keeping models and budget intact (log: ${tail})`;
+        case "zh-TW":
+          return `新服務尚未就緒，已恢復舊服務；模型檔案與預算保持不變（日誌：${tail}）`;
+        case "zh-HK":
+          return `新服務未就緒，已恢復舊服務；模型檔案與預算保持不變（日誌：${tail}）`;
+        case "ja-JP":
+          return `新しいサービスが準備完了せず、旧サービスへロールバックしました。モデルと予算は保持されます（ログ: ${tail}）`;
+        case "ko-KR":
+          return `새 서비스가 준비되지 않아 이전 서비스로 복구했습니다. 모델과 예산은 유지됩니다 (로그: ${tail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^新服务未就绪且回滚后健康检查未通过，请重新连接或释放实例（日志：(.+)）$/s,
+    format: (m, loc) => {
+      const tail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `New service did not become ready and rollback health check failed. Reconnect or release the instance (log: ${tail})`;
+        case "zh-TW":
+          return `新服務尚未就緒且回滾後健康檢查未通過，請重新連線或釋放執行個體（日誌：${tail}）`;
+        case "zh-HK":
+          return `新服務未就緒且回滾後健康檢查未通過，請重新連接或釋放實例（日誌：${tail}）`;
+        case "ja-JP":
+          return `新しいサービスが準備完了せず、ロールバック後のヘルスチェックにも失敗しました。再接続またはインスタンスを解放してください（ログ: ${tail}）`;
+        case "ko-KR":
+          return `새 서비스가 준비되지 않았고 롤백 후 상태 확인에도 실패했습니다. 다시 연결하거나 인스턴스를 해제하세요 (로그: ${tail})`;
+        default:
+          return m[0];
+      }
     },
   },
   {
@@ -3937,6 +4515,66 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^请在浏览器中使用 (.+) 勾选全部云盘权限并点击允许（仅本实例确认一次）$/,
+    format: (m, loc) => {
+      const email = m[1];
+      switch (loc) {
+        case "en-US":
+          return `In your browser, sign in as ${email}, check all Drive permissions, and click Allow (once per instance)`;
+        case "zh-TW":
+          return `請在瀏覽器中使用 ${email} 勾選全部雲端硬碟權限並點擊允許（僅本執行個體確認一次）`;
+        case "zh-HK":
+          return `請在瀏覽器中使用 ${email} 剔選全部雲端硬碟權限並點擊允許（僅本實例確認一次）`;
+        case "ja-JP":
+          return `ブラウザで ${email} を使用し、ドライブ権限をすべて選択して「許可」をクリックしてください（インスタンスごとに 1 回）`;
+        case "ko-KR":
+          return `브라우저에서 ${email} 계정으로 모든 드라이브 권한을 선택하고 허용을 클릭하세요(인스턴스당 1회)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^暂未检测到 (.+) 的云盘授权确认：请确认浏览器中选择了同一 Google 账号，并在授权页勾选全部云盘权限后重试$/,
+    format: (m, loc) => {
+      const email = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Drive authorization for ${email} was not detected yet: make sure you chose the same Google account in your browser, checked all Drive permission boxes, and try again.`;
+        case "zh-TW":
+          return `暫未偵測到 ${email} 的雲端硬碟授權確認：請確認瀏覽器中選擇了同一 Google 帳戶，並在授權頁勾選全部雲端硬碟權限後重試`;
+        case "zh-HK":
+          return `暫未檢測到 ${email} 的雲端硬碟授權確認：請確認瀏覽器中選擇了同一 Google 帳戶，並在授權頁剔選全部雲端硬碟權限後重試`;
+        case "ja-JP":
+          return `${email} のドライブ認可がまだ確認できません。ブラウザで同じ Google アカウントを選び、すべてのドライブ権限にチェックを入れて再試行してください`;
+        case "ko-KR":
+          return `${email} 계정의 드라이브 승인이 아직 확인되지 않았습니다. 브라우저에서 동일한 Google 계정을 선택하고 모든 드라이브 권한을 체크한 뒤 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^等待浏览器确认 (.+) 的 Google 云盘授权超时。请确认浏览器中登录了同一 Google 账号并在授权页勾选全部云盘权限后重试；本机登录仍保留$/,
+    format: (m, loc) => {
+      const email = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Timed out waiting for Google Drive consent for ${email}. Make sure you signed into the same Google account in your browser and checked all Drive permissions, then retry; your local sign-in is preserved.`;
+        case "zh-TW":
+          return `等待瀏覽器確認 ${email} 的 Google 雲端硬碟授權逾時。請確認瀏覽器中登入了同一 Google 帳戶並在授權頁勾選全部雲端硬碟權限後重試；本機登入仍保留`;
+        case "zh-HK":
+          return `等待瀏覽器確認 ${email} 的 Google 雲端硬碟授權逾時。請確認瀏覽器中登入了同一 Google 帳戶並在授權頁剔選全部雲端硬碟權限後重試；本機登入仍保留`;
+        case "ja-JP":
+          return `${email} の Google ドライブ認可確認がタイムアウトしました。ブラウザで同じ Google アカウントにログインし、すべてのドライブ権限にチェックを入れて再試行してください（ローカルログインは保持されます）`;
+        case "ko-KR":
+          return `${email} 계정의 Google 드라이브 승인 대기 시간이 초과되었습니다. 브라우저에서 동일한 Google 계정으로 로그인하고 모든 드라이브 권한을 체크한 뒤 다시 시도하세요(로컬 로그인은 유지됩니다)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^非法素材 ID:\s*(.+)$/,
     format: (m, loc) => {
       const id = m[1];
@@ -3969,16 +4607,27 @@ function applyRedactionTokens(text: string, locale: ColabOneLocale): string {
   return out;
 }
 
+function stripExceptionPrefix(text: string): string {
+  return text
+    .trim()
+    .replace(
+      /^(?:(?:Error|CallError|RuntimeError|TypeError|ValueError|LookupError|KeyError):\s*)+/i,
+      "",
+    )
+    .trim();
+}
+
 function translateInner(trimmed: string, locale: ColabOneLocale): string {
-  if (!trimmed) return trimmed;
-  const exact = EXACT_MESSAGES[trimmed];
+  const cleaned = stripExceptionPrefix(trimmed);
+  if (!cleaned) return trimmed;
+  const exact = EXACT_MESSAGES[cleaned];
   if (exact) return exact[locale];
-  if (locale === "zh-CN") return trimmed;
+  if (locale === "zh-CN") return cleaned;
   for (const rule of PATTERN_RULES) {
-    const m = trimmed.match(rule.re);
+    const m = cleaned.match(rule.re);
     if (m) return rule.format(m, locale);
   }
-  return trimmed;
+  return cleaned;
 }
 
 export function translateColabOneActivitySource(
@@ -3997,13 +4646,7 @@ export function translateColabOneBackendText(
 ): string {
   const raw = String(text ?? "");
   if (!raw) return raw;
-  const trimmed = raw
-    .trim()
-    .replace(
-      /^(?:(?:Error|CallError|RuntimeError|TypeError|ValueError|LookupError|KeyError):\s*)+/i,
-      "",
-    )
-    .trim();
+  const trimmed = stripExceptionPrefix(raw);
   if (!trimmed) return raw;
   const translated = translateInner(trimmed, locale);
   return applyRedactionTokens(translated, locale);

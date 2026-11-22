@@ -342,6 +342,7 @@ export interface ColabOneSnapshot {
   operation: null | { title: string; running: boolean };
   error: string;
   auth_url: string;
+  drive_auth_hint?: string;
   setup: {
     colab: boolean;
     drive: boolean;
@@ -375,6 +376,7 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
   operation: null,
   error: "",
   auth_url: "",
+  drive_auth_hint: "",
   setup: { colab: false, drive: false, drive_authorized: false, hf: false },
   settings: {
     gpu: "T4",

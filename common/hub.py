@@ -222,7 +222,10 @@ def search_models(
     if cursor:
         params["cursor"] = cursor
     response = request(params=params, token=token, session=session)
-    items = response.json()
+    try:
+        items = response.json()
+    except ValueError:
+        raise RuntimeError("模型社区返回了无效结果") from None
     if not isinstance(items, list):
         raise RuntimeError("模型社区返回了无效结果")
     models = []
@@ -269,10 +272,14 @@ def search_models(
 def model_files(repo, token="", session=None):
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         raise ValueError("模型仓库不合法")
-    info = request(
-        "/" + repo + "/revision/main", {"blobs": "true"}, token, session
-    ).json()
-    revision = info.get("sha", "")
+    resp = request("/" + repo + "/revision/main", {"blobs": "true"}, token, session)
+    try:
+        info = resp.json()
+    except ValueError:
+        raise RuntimeError("模型社区返回了无效结果") from None
+    if not isinstance(info, dict):
+        raise RuntimeError("模型社区返回了无效结果")
+    revision = str(info.get("sha") or "")
     if not re.fullmatch(r"[a-fA-F0-9]{40}", revision):
         raise RuntimeError("模型社区未返回固定版本，请重试")
     pipeline = str(info.get("pipeline_tag", "") or "")
@@ -280,25 +287,34 @@ def model_files(repo, token="", session=None):
     item_modality = classify_modality(pipeline, tags, repo)
     siblings = {
         item["rfilename"]: item
-        for item in info.get("siblings", [])
-        if item.get("rfilename")
+        for item in (info.get("siblings") or [])
+        if isinstance(item, dict) and isinstance(item.get("rfilename"), str) and item.get("rfilename")
     }
     files = []
     for name, item in siblings.items():
         if not name.lower().endswith(".gguf") or is_auxiliary_gguf(name):
             continue
-        match = re.fullmatch(r"(.+)-(\d{5})-of-(\d{5})\.gguf", name)
+        match = re.fullmatch(r"(.+)-(\d{5})-of-(\d{5})\.gguf", name, re.IGNORECASE)
         if match and match[2] != "00001":
             continue
         count = int(match[3]) if match else 1
+        suffix = name[-5:]
         group = (
-            [f"{match[1]}-{i:05d}-of-{count:05d}.gguf" for i in range(1, count + 1)]
-            if match and count <= 128
+            [f"{match[1]}-{i:05d}-of-{count:05d}{suffix}" for i in range(1, count + 1)]
+            if match and 1 <= count <= 128
             else [name]
         )
-        metadata = [siblings.get(path, {}).get("lfs", {}) for path in group]
+        metadata = [
+            (siblings.get(path) or {}).get("lfs")
+            if isinstance((siblings.get(path) or {}).get("lfs"), dict)
+            else {}
+            for path in group
+        ]
         supported = 0 < count <= 128 and all(
-            m.get("size", 0) > 0
+            isinstance(m.get("size"), int)
+            and not isinstance(m.get("size"), bool)
+            and m.get("size", 0) > 0
+            and isinstance(m.get("sha256"), str)
             and re.fullmatch(r"[a-fA-F0-9]{64}", m.get("sha256", ""))
             for m in metadata
         )
@@ -306,7 +322,13 @@ def model_files(repo, token="", session=None):
         files.append(
             {
                 "filename": name,
-                "size": sum(m.get("size", 0) for m in metadata),
+                "size": sum(
+                    m["size"]
+                    for m in metadata
+                    if isinstance(m.get("size"), int)
+                    and not isinstance(m.get("size"), bool)
+                    and m["size"] > 0
+                ),
                 "shards": count,
                 "quantization": quant,
                 "supported": bool(supported),

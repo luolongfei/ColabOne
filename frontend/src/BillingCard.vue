@@ -51,15 +51,19 @@ const emit = defineEmits<{
   openSettings: [];
 }>();
 
+const activeRuntimeId = computed(() =>
+  props.runtimeState === "stopped" ? undefined : props.runtimeId,
+);
+
 const overview = computed(() =>
-  describeColabOneBilling(props.account, props.runtimeId, props.nowMs),
+  describeColabOneBilling(props.account, activeRuntimeId.value, props.nowMs),
 );
 
 const skeleton = computed(() =>
   colabOneBillingSkeletonState({
     account: props.account,
     setupColab: props.setupColab,
-    runtimeId: props.runtimeId,
+    runtimeId: activeRuntimeId.value,
     loading: props.loading,
     refreshing: props.refreshing,
     hasError: props.hasError,

@@ -371,7 +371,8 @@ export const jaJPMessages: ColabOneMessages = {
   "device.syncNow": "今すぐ同期",
   "device.mountDriveNow": "ドライブをマウント",
   "device.driveWaitingBrowserConfirm":
-    "ブラウザで「許可」をクリックし、このインスタンスの Google ドライブ（ColabOne_Drive）マウントを承認してください...",
+    "ブラウザでドライブ権限をすべて選択して「許可」をクリックしてください。完了後に戻ると自動続行します（「認可を完了しました」で即時確認も可能）。",
+  "device.driveConfirmAuthorized": "認可を完了しました",
   "device.driveReopenAuth": "認可ページを再度開く",
   "device.driveCancelMount": "マウントをキャンセル",
   "device.driveEnableHeadlessLink": "確認不要モードを有効化",

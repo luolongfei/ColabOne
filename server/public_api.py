@@ -364,11 +364,13 @@ class ColabOnePublicGateway:
         return self.snapshot()
 
     def shutdown(self):
-        self.stop()
-        if self.server:
-            self.server.should_exit = True
-        if self.server_thread:
-            self.server_thread.join(timeout=7)
+        try:
+            self.stop()
+        finally:
+            if self.server:
+                self.server.should_exit = True
+            if self.server_thread:
+                self.server_thread.join(timeout=7)
 
     def require_model(self, identity):
         from server.runtime import ColabOneConflictError
@@ -397,14 +399,28 @@ class ColabOnePublicGateway:
         if not rid:
             return
         combined_items = list(input_items) + list(response_obj.get("output") or [])
+        approx_bytes = len(
+            json.dumps(
+                {"response": response_obj, "items": combined_items},
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+        max_total_bytes = 32 * 1024 * 1024
         with self.lock:
             self.responses[rid] = {
                 "response": response_obj,
                 "items": combined_items,
+                "_bytes": approx_bytes,
             }
             self.responses.move_to_end(rid)
-            while len(self.responses) > MAX_STORED_RESPONSES:
-                self.responses.popitem(last=False)
+            total_bytes = sum(
+                int(v.get("_bytes") or 0) for v in self.responses.values()
+            )
+            while len(self.responses) > MAX_STORED_RESPONSES or (
+                len(self.responses) > 1 and total_bytes > max_total_bytes
+            ):
+                _, evicted = self.responses.popitem(last=False)
+                total_bytes -= int(evicted.get("_bytes") or 0)
 
     def get_response(self, response_id: str) -> dict[str, Any]:
         with self.lock:
@@ -723,11 +739,6 @@ class ColabOnePublicGateway:
                 {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                 {},
             )
-        ctx_tokens = self._active_context_length(model_id)
-        summary_max_tokens = min(2048, max(512, ctx_tokens // 4))
-        char_budget = max(4000, int((ctx_tokens - summary_max_tokens - 512) * 2.8))
-        chunks = chunk_transcript_blocks(blocks, char_budget)
-
         sys_prompt = COMPACTION_SYSTEM_PROMPT
         if isinstance(instructions, str) and instructions.strip():
             trimmed_inst = instructions.strip()[:2000]
@@ -735,6 +746,13 @@ class ColabOnePublicGateway:
                 "\n\nActive session instructions context (for reference, do not copy verbatim):\n"
                 + trimmed_inst
             )
+
+        ctx_tokens = self._active_context_length(model_id)
+        summary_max_tokens = min(2048, max(256, ctx_tokens // 4))
+        reserved_tokens = summary_max_tokens + estimate_tokens(sys_prompt) + 256
+        avail_tokens = max(256, ctx_tokens - reserved_tokens)
+        char_budget = max(800, int(avail_tokens * 2.8))
+        chunks = chunk_transcript_blocks(blocks, char_budget)
 
         running_summary = ""
         total_in = 0
@@ -1031,7 +1049,7 @@ class ColabOnePublicGateway:
                                     and last_item.get("type") in (None, "message")
                                     and (
                                         anchor is None
-                                        or len(spec["input_items"]) > 1
+                                        or last_item is not anchor
                                     )
                                 ):
                                     compacted_items.append(last_item)

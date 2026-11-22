@@ -1,5 +1,5 @@
 import { ref, type Ref } from "vue";
-import { isTransientIpcError } from "./billing";
+import { isTransientIpcError, stripColabOneErrorPrefixes } from "./billing";
 
 export type ColabOneToastKind = "success" | "error" | "warning" | "info";
 
@@ -51,10 +51,7 @@ function clamp(min: number, value: number, max: number): number {
  * transient one-shot action/operation failure (auto-dismissing toast).
  */
 export function isPersistentColabOneError(raw: unknown): boolean {
-  const cleaned = String(raw ?? "")
-    .trim()
-    .replace(/^(?:Error|CallError|RuntimeError|TypeError|ValueError):\s*/i, "")
-    .trim();
+  const cleaned = stripColabOneErrorPrefixes(raw);
   if (!cleaned) return false;
   if (isTransientIpcError(cleaned)) return true;
   return PERSISTENT_ERROR_PATTERNS.some((pattern) => pattern.test(cleaned));

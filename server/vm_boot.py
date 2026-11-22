@@ -34,14 +34,31 @@ def colabone_boot():
     emit_log("已校验 Colab 运行时释放保护接口")
     if config.get("deadline", 0) > 0:
         guard = (
-            "import time,urllib.request\n"
-            "time.sleep(max(0,%r-time.time()))\n"
+            "import json,time,urllib.request\n"
+            "from pathlib import Path\n"
+            "cfg_path=Path(%r)\n"
+            "fallback_deadline=%r\n"
+            "unassign_url=%r\n"
+            "while True:\n"
+            " dl=fallback_deadline\n"
+            " try:\n"
+            "  d=json.loads(cfg_path.read_text(encoding='utf-8')).get('deadline')\n"
+            "  if d is not None: dl=float(d)\n"
+            " except Exception:\n"
+            "  pass\n"
+            " if dl<=0:\n"
+            "  time.sleep(30)\n"
+            "  continue\n"
+            " rem=(dl+40)-time.time()\n"
+            " if rem<=0:\n"
+            "  break\n"
+            " time.sleep(min(30,rem))\n"
             "while True:\n"
             " try:\n"
-            "  urllib.request.build_opener(urllib.request.ProxyHandler({})).open(urllib.request.Request(%r,data=b'',method='POST'),timeout=15)\n"
+            "  urllib.request.build_opener(urllib.request.ProxyHandler({})).open(urllib.request.Request(unassign_url,data=b'',method='POST'),timeout=15)\n"
             "  break\n"
             " except Exception: time.sleep(5)\n"
-        ) % (config["deadline"] + 40, "http://" + addr + "/unassign")
+        ) % (str(config_path), float(config["deadline"]), "http://" + addr + "/unassign")
         subprocess.Popen(
             [sys.executable, "-c", guard],
             stdin=subprocess.DEVNULL,
@@ -158,17 +175,36 @@ def colabone_boot():
             )
         emit_log("远端管理服务进程已拉起，等待健康检查通过")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        server_log = Path("/content/colabone-server.log")
+
+        def _server_log_tail():
+            try:
+                if server_log.is_file():
+                    return server_log.read_text(encoding="utf-8", errors="replace")[-600:].strip()
+            except OSError:
+                pass
+            return ""
+
+        status_req = urllib.request.Request(
+            "http://127.0.0.1:7860/api/v1/status",
+            headers={"Authorization": "Bearer " + config["token"]},
+        )
         health_started = time.monotonic()
         health_last_note = health_started
         for _ in range(60):
             if proc.poll() is not None:
-                raise RuntimeError("ColabOne service failed to start")
-            try:
-                opener.open("http://127.0.0.1:7860/health", timeout=1).close()
-                emit_log(
-                    f"远端管理服务健康检查通过（耗时 {time.monotonic() - health_started:.1f} 秒）"
+                tail = _server_log_tail()
+                raise RuntimeError(
+                    "ColabOne service failed to start" + (f": {tail}" if tail else "")
                 )
-                break
+            try:
+                with opener.open(status_req, timeout=2) as resp:
+                    status_payload = json.load(resp)
+                if status_payload.get("id") == config["runtime_id"]:
+                    emit_log(
+                        f"远端管理服务健康检查通过（耗时 {time.monotonic() - health_started:.1f} 秒）"
+                    )
+                    break
             except Exception:
                 now = time.monotonic()
                 if now - health_last_note >= 6:
@@ -178,7 +214,20 @@ def colabone_boot():
                     )
                 time.sleep(0.5)
         else:
-            raise RuntimeError("ColabOne service readiness timeout")
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        pass
+            tail = _server_log_tail()
+            raise RuntimeError(
+                "ColabOne service readiness timeout" + (f": {tail}" if tail else "")
+            )
     finally:
         with print_lock:
             telemetry_stop.set()

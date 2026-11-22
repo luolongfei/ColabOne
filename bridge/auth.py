@@ -15,9 +15,23 @@ from importlib import resources
 import keyring
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import AuthorizedSession, Request
-from google.auth.exceptions import RefreshError
+from google.auth.exceptions import RefreshError, TransportError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from colab_cli.auth import PUBLIC_SCOPES, REMOTE_REDIRECT_URI
+
+from bridge.oauth_page import render_colabone_oauth_page
+
+_VAULT_MISSING = object()
+
+
+class _BoundedTimeoutSession(requests.Session):
+    def __init__(self, default_timeout: float = 20.0):
+        super().__init__()
+        self._default_timeout = default_timeout
+
+    def request(self, method, url, **kwargs):
+        kwargs.setdefault("timeout", self._default_timeout)
+        return super().request(method, url, **kwargs)
 
 
 def parse_authorization_reply(text):
@@ -82,15 +96,22 @@ _OAUTH_CALLBACK_TEXT = {
 class ColabOneVault:
     def __init__(self):
         self.lock = threading.RLock()
+        self._cache: dict[str, object] = {}
 
     def get(self, name, default=None):
         with self.lock:
+            cached = self._cache.get(name, _VAULT_MISSING)
+            if cached is not _VAULT_MISSING:
+                return json.loads(cached) if cached is not None else default
             raw = keyring.get_password(COLABONE_KEYRING_SERVICE, name)
+            self._cache[name] = raw
             return json.loads(raw) if raw else default
 
     def set(self, name, value):
+        encoded = json.dumps(value)
         with self.lock:
-            keyring.set_password(COLABONE_KEYRING_SERVICE, name, json.dumps(value))
+            keyring.set_password(COLABONE_KEYRING_SERVICE, name, encoded)
+            self._cache[name] = encoded
 
     def delete(self, name):
         with self.lock:
@@ -98,6 +119,7 @@ class ColabOneVault:
                 keyring.delete_password(COLABONE_KEYRING_SERVICE, name)
             except keyring.errors.PasswordDeleteError:
                 pass
+            self._cache[name] = None
 
 
 class ColabOneAuth:
@@ -105,7 +127,9 @@ class ColabOneAuth:
         self.vault = vault
         self.flow = None
         self.lock = threading.RLock()
+        self._quota_lock = threading.RLock()
         self.login_event = threading.Event()
+        self.loopback_active = False
         self.locale = "zh-CN"
         self._quota_probe_cache: tuple[float, str, str] | None = None
 
@@ -118,14 +142,27 @@ class ColabOneAuth:
 
     @staticmethod
     def fetch_profile(credentials):
-        response = requests.get(
-            "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": "Bearer " + credentials.token},
-            timeout=20,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return {"email": data.get("email", ""), "sub": data["sub"]}
+        last_exc = None
+        for attempt in range(2):
+            try:
+                response = requests.get(
+                    "https://www.googleapis.com/oauth2/v3/userinfo",
+                    headers={"Authorization": "Bearer " + credentials.token},
+                    timeout=20,
+                )
+                if response.status_code in (500, 502, 503, 504) and attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                return {"email": data.get("email", ""), "sub": data["sub"]}
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                raise
+        raise last_exc  # pragma: no cover
 
     def credentials(self, name):
         # Serialize refresh and account switching so a stale request cannot overwrite
@@ -138,8 +175,9 @@ class ColabOneAuth:
             if not creds.valid:
                 if not creds.refresh_token:
                     raise RuntimeError("Google 授权无法自动续期，请在设置中重新登录")
+                session = _BoundedTimeoutSession(default_timeout=20.0)
                 try:
-                    creds.refresh(Request())
+                    creds.refresh(Request(session=session))
                 except RefreshError as exc:
                     if getattr(exc, "retryable", False):
                         raise RuntimeError(
@@ -148,6 +186,12 @@ class ColabOneAuth:
                     raise RuntimeError(
                         "Google 授权已失效，请在设置中重新登录"
                     ) from None
+                except (TransportError, requests.RequestException):
+                    raise RuntimeError(
+                        "Google 暂时无法续期，已保留本机登录，请稍后重试"
+                    ) from None
+                finally:
+                    session.close()
                 self.vault.set(name, json.loads(creds.to_json()))
             return creds
 
@@ -172,7 +216,7 @@ class ColabOneAuth:
         return client_id.startswith(COLABONE_GCP_ADC_CLIENT_PREFIX)
 
     def invalidate_drive_quota_project(self) -> None:
-        with self.lock:
+        with self._quota_lock:
             self.vault.delete("cloud_project")
             self._quota_probe_cache = None
 
@@ -231,7 +275,7 @@ class ColabOneAuth:
         needs_quota = self.requires_drive_quota_project()
         project_id = str(self.vault.get("cloud_project") or "")
         has_project = self._is_valid_project_id(project_id)
-        with self.lock:
+        with self._quota_lock:
             reason = self._quota_probe_cache[2] if self._quota_probe_cache else ""
         if not needs_quota:
             return {
@@ -265,7 +309,7 @@ class ColabOneAuth:
         if not self.requires_drive_quota_project():
             return "", "not_required"
 
-        with self.lock:
+        with self._quota_lock:
             if not force_refresh:
                 cached = self.vault.get("cloud_project")
                 if self._is_valid_project_id(cached):
@@ -280,10 +324,22 @@ class ColabOneAuth:
         saved = self.vault.get("colab") or {}
         scopes = saved.get("scopes") or []
         if not any("cloud-platform" in str(s).lower() for s in scopes):
-            with self.lock:
+            with self._quota_lock:
                 self._quota_probe_cache = (time.monotonic(), "", "no_cloud_scope")
             return "", "no_cloud_scope"
 
+        initial_sub = str((self.vault.get("google_profile") or {}).get("sub") or "")
+
+        def _persist_project(project_id: str, reason_tag: str) -> tuple[str, str]:
+            with self._quota_lock:
+                cur_sub = str((self.vault.get("google_profile") or {}).get("sub") or "")
+                if initial_sub and cur_sub and cur_sub != initial_sub:
+                    return "", "account_changed"
+                self.vault.set("cloud_project", project_id)
+                self._quota_probe_cache = (time.monotonic(), project_id, reason_tag)
+            return project_id, reason_tag
+
+        session = None
         try:
             creds = self.credentials("colab")
             session = AuthorizedSession(creds)
@@ -293,13 +349,15 @@ class ColabOneAuth:
                 timeout=12,
             )
             if resp.status_code != 200:
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    return "", "network_error"
                 text_lower = (resp.text or "").lower()
                 reason = (
                     "gcp_tos_required"
                     if ("terms of service" in text_lower or '"tos"' in text_lower)
                     else "gcp_project_unavailable"
                 )
-                with self.lock:
+                with self._quota_lock:
                     self._quota_probe_cache = (time.monotonic(), "", reason)
                 return "", reason
 
@@ -319,14 +377,7 @@ class ColabOneAuth:
                 if self._drive_api_enabled(session, pid) or self._enable_drive_api(
                     session, pid
                 ):
-                    self.vault.set("cloud_project", pid)
-                    with self.lock:
-                        self._quota_probe_cache = (
-                            time.monotonic(),
-                            pid,
-                            "reused_colabone_project",
-                        )
-                    return pid, "reused_colabone_project"
+                    return _persist_project(pid, "reused_colabone_project")
 
             # 2) Read-only check: reuse an existing active project that already
             #    has drive.googleapis.com enabled (never mutate unrelated projects).
@@ -335,20 +386,15 @@ class ColabOneAuth:
                 if pid.startswith(COLABONE_QUOTA_PROJECT_PREFIX):
                     continue
                 if self._drive_api_enabled(session, pid):
-                    self.vault.set("cloud_project", pid)
-                    with self.lock:
-                        self._quota_probe_cache = (
-                            time.monotonic(),
-                            pid,
-                            "reused_existing_project",
-                        )
-                    return pid, "reused_existing_project"
+                    return _persist_project(pid, "reused_existing_project")
 
             # 3) Attempt once to create a single free dedicated quota project.
             profile = self.profile()
             sub = str((profile or {}).get("sub") or "")
             if not sub:
                 return "", "gcp_project_unavailable"
+            if not initial_sub:
+                initial_sub = sub
             candidates = [
                 COLABONE_QUOTA_PROJECT_PREFIX
                 + hashlib.sha256(f"colabone-drive:{sub}".encode("utf-8")).hexdigest()[:10],
@@ -373,13 +419,18 @@ class ColabOneAuth:
                     continue
                 break
             if create_resp is None or create_resp.status_code != 200:
+                if (
+                    create_resp is not None
+                    and create_resp.status_code in (429, 500, 502, 503, 504)
+                ):
+                    return "", "network_error"
                 text_lower = (getattr(create_resp, "text", "") or "").lower()
                 reason = (
                     "gcp_tos_required"
                     if ("terms of service" in text_lower or '"tos"' in text_lower)
                     else "gcp_project_unavailable"
                 )
-                with self.lock:
+                with self._quota_lock:
                     self._quota_probe_cache = (time.monotonic(), "", reason)
                 return "", reason
 
@@ -404,26 +455,21 @@ class ColabOneAuth:
                     if ("terms of service" in err_str or '"tos"' in err_str)
                     else "gcp_project_unavailable"
                 )
-                with self.lock:
+                with self._quota_lock:
                     self._quota_probe_cache = (time.monotonic(), "", reason)
                 return "", reason
 
             if self._enable_drive_api(session, pid):
-                self.vault.set("cloud_project", pid)
-                with self.lock:
-                    self._quota_probe_cache = (
-                        time.monotonic(),
-                        pid,
-                        "created_colabone_project",
+                res_pid, res_reason = _persist_project(pid, "created_colabone_project")
+                if res_pid:
+                    _emit_auth_log(
+                        on_log,
+                        f"已自动初始化免费 Drive 配额项目 ({pid})，后续所有实例免弹窗自动挂载",
+                        "云盘",
                     )
-                _emit_auth_log(
-                    on_log,
-                    f"已自动初始化免费 Drive 配额项目 ({pid})，后续所有实例免弹窗自动挂载",
-                    "云盘",
-                )
-                return pid, "created_colabone_project"
+                return res_pid, res_reason
 
-            with self.lock:
+            with self._quota_lock:
                 self._quota_probe_cache = (
                     time.monotonic(),
                     "",
@@ -432,6 +478,12 @@ class ColabOneAuth:
             return "", "gcp_project_unavailable"
         except Exception:
             return "", "network_error"
+        finally:
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
 
     def build_rclone_conf(self, quota_project: str | None = None) -> str:
         """Build [colabone_gdrive] rclone config from the saved Google OAuth token."""
@@ -482,7 +534,9 @@ class ColabOneAuth:
 
     def _has_active_sessions(self):
         return bool(
-            self.vault.get("runtime_session") or self.vault.get("runtime_sessions")
+            self.vault.get("runtime_session_ids")
+            or self.vault.get("runtime_session")
+            or self.vault.get("runtime_sessions")
         )
 
     def colab_begin(self):
@@ -506,27 +560,38 @@ class ColabOneAuth:
             )
             return {"url": url}
 
-    def colab_finish(self, code):
+    def colab_finish(self, code, flow=None):
         with self.lock:
-            if not self.flow:
+            target_flow = flow if flow is not None else self.flow
+            if not target_flow:
                 raise RuntimeError("请先打开登录页面")
             if self._has_active_sessions():
                 raise RuntimeError("切换账号前请先释放当前实例")
             parsed = parse_authorization_reply(code)
             try:
-                self.flow.fetch_token(code=parsed)
+                if isinstance(target_flow, InstalledAppFlow):
+                    target_flow.fetch_token(code=parsed, timeout=20)
+                else:
+                    target_flow.fetch_token(code=parsed)
             except Exception:
                 raise RuntimeError(
                     "授权回显已失效或不属于本次登录，请重新打开登录页"
                 ) from None
-            profile = self.fetch_profile(self.flow.credentials)
+            try:
+                profile = self.fetch_profile(target_flow.credentials)
+            except Exception:
+                raise RuntimeError(
+                    "读取 Google 账号信息失败，请检查网络连接后重试"
+                ) from None
             previous = self.vault.get("google_profile") or {}
             if profile.get("sub") != previous.get("sub"):
                 self.vault.delete("cloud_project")
-            self._quota_probe_cache = None
+            with self._quota_lock:
+                self._quota_probe_cache = None
             self.vault.set("google_profile", profile)
-            self.vault.set("colab", json.loads(self.flow.credentials.to_json()))
-            self.flow = None
+            self.vault.set("colab", json.loads(target_flow.credentials.to_json()))
+            if flow is None or self.flow is target_flow:
+                self.flow = None
             self.login_event.set()
             return {"ok": True}
 
@@ -536,63 +601,94 @@ class ColabOneAuth:
         auth = self
         state = ""
         errors = []
+        local_flow = None
 
         class Callback(BaseHTTPRequestHandler):
+            timeout = 5
+
             def log_message(self, *_args):
                 pass  # Callback URLs contain an authorization code.
 
             def do_GET(self):
-                params = parse_qs(urlparse(self.path).query)
+                parsed_req = urlparse(self.path)
+                if parsed_req.path == "/favicon.ico":
+                    self.send_response(204)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                params = parse_qs(parsed_req.query)
                 if not hmac.compare_digest(params.get("state", [""])[0], state):
                     self.send_error(400, "Invalid OAuth state")
                     return
                 ok_msg, err_msg = _OAUTH_CALLBACK_TEXT.get(
                     auth.locale, _OAUTH_CALLBACK_TEXT["zh-CN"]
                 )
+                succeeded = False
+                email = ""
                 try:
                     if params.get("error"):
                         raise RuntimeError("Google 授权已取消，请重新登录")
-                    auth.colab_finish(params.get("code", [""])[0])
+                    auth.colab_finish(params.get("code", [""])[0], flow=local_flow)
+                    succeeded = True
+                    profile = auth.vault.get("google_profile") or {}
+                    email = str(profile.get("email") or "")
                     message = ok_msg
+                except RuntimeError as exc:
+                    errors.append(str(exc) or err_msg)
+                    auth.login_event.set()
+                    message = err_msg
                 except Exception:
                     errors.append(err_msg)
                     auth.login_event.set()
-                    message = errors[-1]
+                    message = err_msg
                 lang_attr = auth.locale if auth.locale in _OAUTH_CALLBACK_TEXT else "zh-CN"
-                content = (
-                    f'<!doctype html><html lang="{lang_attr}"><meta charset="utf-8"><title>ColabOne</title><body style="font:18px system-ui;padding:64px;color:#22634b"><h1>ColabOne</h1><p>'
-                    + message
-                    + "</p></body></html>"
+                content = render_colabone_oauth_page(
+                    locale=lang_attr,
+                    ok=succeeded,
+                    message=message,
+                    email=email,
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;",
+                )
                 self.end_headers()
                 self.wfile.write(content)
 
-        with HTTPServer(("127.0.0.1", 0), Callback) as server:
-            server.timeout = 0.5
-            cfg = json.loads(
-                resources.files("colab_cli")
-                .joinpath("oauth_config.json")
-                .read_text(encoding="utf-8")
-            )
-            with self.lock:
-                self.login_event.clear()
-                self.flow = InstalledAppFlow.from_client_config(
-                    cfg, PUBLIC_SCOPES, autogenerate_code_verifier=True
+        self.loopback_active = True
+        try:
+            with HTTPServer(("127.0.0.1", 0), Callback) as server:
+                server.timeout = 0.5
+                cfg = json.loads(
+                    resources.files("colab_cli")
+                    .joinpath("oauth_config.json")
+                    .read_text(encoding="utf-8")
                 )
-                self.flow.redirect_uri = f"http://localhost:{server.server_port}/"
-                url, state = self.flow.authorization_url(
-                    prompt="select_account consent", access_type="offline"
-                )
-            ready_callback(url)
-            deadline = time.monotonic() + 180
-            while not self.login_event.is_set() and time.monotonic() < deadline:
-                server.handle_request()
-            if not self.login_event.is_set():
-                raise RuntimeError(
-                    "等待登录超时。可点击“使用授权回执”，粘贴浏览器回显自动完成。"
-                )
-            if errors:
-                raise RuntimeError(errors[0])
+                with self.lock:
+                    self.login_event.clear()
+                    local_flow = InstalledAppFlow.from_client_config(
+                        cfg, PUBLIC_SCOPES, autogenerate_code_verifier=True
+                    )
+                    local_flow.redirect_uri = f"http://localhost:{server.server_port}/"
+                    self.flow = local_flow
+                    url, state = local_flow.authorization_url(
+                        prompt="select_account consent", access_type="offline"
+                    )
+                ready_callback(url)
+                deadline = time.monotonic() + 180
+                while not self.login_event.is_set() and time.monotonic() < deadline:
+                    server.handle_request()
+                if not self.login_event.is_set():
+                    raise RuntimeError(
+                        "等待登录超时。可点击“使用授权回执”，粘贴浏览器回显自动完成。"
+                    )
+                if errors:
+                    raise RuntimeError(errors[0])
+        finally:
+            self.loopback_active = False

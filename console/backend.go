@@ -24,8 +24,26 @@ type colabOneBridge struct {
 	writer  sync.Mutex
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
+	exitCh  chan struct{}
+	closed  bool
 	pending map[uint64]chan colabOneRPCReply
 	next    atomic.Uint64
+}
+
+func colabOneMethodTimeout(method string) time.Duration {
+	switch method {
+	case "snapshot", "logs.clear", "error.clear", "drive.cancel", "settings.save",
+		"shortcuts.status", "shortcuts.create", "shortcuts.remove":
+		return 30 * time.Second
+	case "runtime.start":
+		// Up to 10 exponential-backoff Colab allocation attempts + remote boot.
+		return 900 * time.Second
+	case "runtime.release", "runtime.release_all", "runtime.upgrade",
+		"drive.connect", "auth.colab.auto", "comfyui.output.asset":
+		return 300 * time.Second
+	default:
+		return 120 * time.Second
+	}
 }
 
 // The child is a private, trusted JSON stream. Scanner's token cap used to
@@ -70,6 +88,13 @@ func colabOnePythonAt(root string) (string, error) {
 func (b *colabOneBridge) start() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.startLocked()
+}
+
+func (b *colabOneBridge) startLocked() error {
+	if b.closed {
+		return errors.New(colabOneT("err.bridgeExited"))
+	}
 	if b.cmd != nil {
 		return nil
 	}
@@ -95,13 +120,25 @@ func (b *colabOneBridge) start() error {
 	if err != nil {
 		return err
 	}
-	// No credential-bearing subprocess output is written to a log file.
-	cmd.Stderr = io.Discard
+	// Leave Stderr nil so os/exec binds the OS null device without a copy goroutine.
+	cmd.Stderr = nil
 	if err = cmd.Start(); err != nil {
+		_ = stdin.Close()
 		return err
 	}
-	b.cmd, b.stdin, b.pending = cmd, stdin, map[uint64]chan colabOneRPCReply{}
+	cleanupJob := attachProcessLifetime(cmd)
+	exitCh := make(chan struct{})
+	b.cmd, b.stdin, b.exitCh = cmd, stdin, exitCh
+	if b.pending == nil {
+		b.pending = map[uint64]chan colabOneRPCReply{}
+	}
 	go func() {
+		defer close(exitCh)
+		defer func() {
+			if cleanupJob != nil {
+				cleanupJob()
+			}
+		}()
 		readErr := readColabOneReplies(stdout, func(reply colabOneRPCReply) {
 			b.mu.Lock()
 			ch := b.pending[reply.ID]
@@ -123,21 +160,39 @@ func (b *colabOneBridge) start() error {
 			ch <- colabOneRPCReply{Error: colabOneT("err.bridgeExited")}
 			delete(b.pending, id)
 		}
-		b.cmd = nil
+		if b.cmd == cmd {
+			b.cmd = nil
+			b.stdin = nil
+			b.exitCh = nil
+		}
 	}()
 	return nil
 }
+
 func (b *colabOneBridge) call(ctx context.Context, method string, payload map[string]any) (string, error) {
-	if err := b.start(); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	if payload == nil {
+		payload = map[string]any{}
 	}
 	id := b.next.Add(1)
 	ch := make(chan colabOneRPCReply, 1)
 	b.mu.Lock()
+	if err := b.startLocked(); err != nil {
+		b.mu.Unlock()
+		return "", err
+	}
 	b.pending[id] = ch
 	stdin := b.stdin
 	b.mu.Unlock()
 	defer func() { b.mu.Lock(); delete(b.pending, id); b.mu.Unlock() }()
+	if stdin == nil {
+		return "", errors.New(colabOneT("err.bridgeExited"))
+	}
 	body, err := json.Marshal(map[string]any{"id": id, "method": method, "payload": payload})
 	if err != nil {
 		return "", err
@@ -148,6 +203,8 @@ func (b *colabOneBridge) call(ctx context.Context, method string, payload map[st
 	if err != nil {
 		return "", err
 	}
+	timer := time.NewTimer(colabOneMethodTimeout(method))
+	defer timer.Stop()
 	select {
 	case reply := <-ch:
 		if reply.Error != "" {
@@ -156,14 +213,34 @@ func (b *colabOneBridge) call(ctx context.Context, method string, payload map[st
 		return string(reply.Result), nil
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case <-time.After(90 * time.Second):
+	case <-timer.C:
 		return "", errors.New(colabOneT("err.bridgeTimeout"))
 	}
 }
+
 func (b *colabOneBridge) close() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.stdin != nil {
-		_ = b.stdin.Close()
+	b.closed = true
+	stdin := b.stdin
+	cmd := b.cmd
+	exitCh := b.exitCh
+	b.stdin = nil
+	b.mu.Unlock()
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if exitCh != nil {
+		select {
+		case <-exitCh:
+			return
+		case <-time.After(2500 * time.Millisecond):
+		}
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		select {
+		case <-exitCh:
+		case <-time.After(time.Second):
+		}
 	}
 }

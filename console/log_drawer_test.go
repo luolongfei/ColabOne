@@ -99,3 +99,15 @@ func TestLogDrawerRPCWithoutWindowIsSafe(t *testing.T) {
 		t.Fatalf("unexpected closed state without window: %+v", st)
 	}
 }
+
+func TestPlanLogWindowBoundsHandlesMinimizedOffscreenMain(t *testing.T) {
+	work := mygo.Rectangle{X: 0, Y: 0, Width: 1920, Height: 1040}
+	minimized := mygo.Rectangle{X: -32000, Y: -32000, Width: 160, Height: 28}
+	got := planColabOneLogWindowBounds(minimized, work, 420)
+	if got.X < work.X || got.X+got.Width > work.X+work.Width {
+		t.Fatalf("log window placed off-screen horizontally: %+v (work=%+v)", got, work)
+	}
+	if got.Y < work.Y || got.Y+got.Height > work.Y+work.Height {
+		t.Fatalf("log window placed off-screen vertically: %+v (work=%+v)", got, work)
+	}
+}

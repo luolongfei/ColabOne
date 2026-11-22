@@ -591,3 +591,345 @@ def test_location_resolution_from_endpoint_metadata_ipinfo_and_trace(runtime, tm
         "region": "内华达",
         "zone": "us-west4-b",
     }
+
+
+def _make_colab_request_error(status: int, reason: str = "Service Unavailable"):
+    from colab_cli.client import ColabRequestError
+
+    resp = SimpleNamespace(status_code=status, reason=reason, text="<html>503</html>")
+    return ColabRequestError(
+        f"Failed to issue request POST https://colab.research.google.com/tun/m/assign?nbh=abc: {reason}",
+        request=SimpleNamespace(method="POST", url="https://colab.research.google.com/tun/m/assign"),
+        response=resp,
+        response_body=resp.text,
+    )
+
+
+def _make_proxy_info(endpoint: str):
+    from datetime import datetime, timedelta, timezone
+
+    return SimpleNamespace(
+        token="tok-" + endpoint,
+        url=f"https://{endpoint}.invalid",
+        expires_at=lambda: datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+
+def test_allocate_retries_503_with_reconciliation_and_logs_progress():
+    from colab_cli.client import GetAssignmentResponse, PostAssignmentResponse, Accelerator, AssignmentVariant
+
+    p, vault = make_provider()
+    p._assign_retry_delays = (0, 0, 0)
+    seen_nbhs = []
+    post_calls = [0]
+
+    class FakeTwoPhaseClient:
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            seen_nbhs.append(nbh)
+            return GetAssignmentResponse(
+                acc=accelerator.value,
+                nbh=str(nbh),
+                token=f"xsrf-{len(seen_nbhs)}",
+                variant=variant,
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            post_calls[0] += 1
+            if post_calls[0] < 3:
+                raise _make_colab_request_error(503)
+            return SimpleNamespace(
+                endpoint="gpu-g4-s-usw4a1-retryok",
+                accelerator=Accelerator.G4,
+                variant=AssignmentVariant.GPU,
+                runtime_proxy_info=_make_proxy_info("gpu-g4-s-usw4a1-retryok"),
+            )
+
+    p.client_factory = lambda: FakeTwoPhaseClient()
+    logs = []
+    stages = []
+    session = p.allocate(
+        "G4",
+        on_log=lambda msg, src="GPU", lvl="info": logs.append((lvl, src, msg)),
+        on_stage=stages.append,
+    )
+    assert session.endpoint == "gpu-g4-s-usw4a1-retryok"
+    assert post_calls[0] == 3
+    # Every retry reuses the exact same notebook hash for safe reconciliation.
+    assert len(seen_nbhs) == 3 and len(set(seen_nbhs)) == 1
+    assert any("HTTP 503" in msg and "第 2/4 次" in msg for _, _, msg in logs)
+    assert any("HTTP 503" in msg and "第 3/4 次" in msg for _, _, msg in logs)
+    assert stages == ["正在分配 G4（第 2/4 次）", "正在分配 G4（第 3/4 次）"]
+    assert p.active_endpoint() == "gpu-g4-s-usw4a1-retryok"
+
+
+def test_allocate_reconciles_existing_assignment_after_503_without_double_allocating():
+    from colab_cli.client import Assignment, GetAssignmentResponse, RuntimeProxyInfo
+
+    p, _ = make_provider()
+    p._assign_retry_delays = (0, 0)
+    get_calls = [0]
+    post_calls = [0]
+
+    class ReconcilingClient:
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            get_calls[0] += 1
+            if get_calls[0] == 1:
+                return GetAssignmentResponse(
+                    acc=accelerator.value,
+                    nbh=str(nbh),
+                    token="xsrf-1",
+                    variant=variant,
+                )
+            return Assignment(
+                endpoint="gpu-g4-s-asso1c1-reconciled",
+                runtimeProxyInfo=RuntimeProxyInfo(
+                    token="tok-rec",
+                    tokenExpiresInSeconds=3600,
+                    url="https://reconciled.invalid",
+                ),
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            post_calls[0] += 1
+            raise _make_colab_request_error(503)
+
+    p.client_factory = lambda: ReconcilingClient()
+    logs = []
+    session = p.allocate(
+        "G4", on_log=lambda msg, src="GPU", lvl="info": logs.append((lvl, src, msg))
+    )
+    assert session.endpoint == "gpu-g4-s-asso1c1-reconciled"
+    assert post_calls[0] == 1
+    assert get_calls[0] == 2
+    assert any("已通过状态核验确认 G4 GPU 实例分配成功" in msg for _, _, msg in logs)
+
+
+def test_allocate_final_reconciliation_adopts_vm_after_last_503():
+    from colab_cli.client import Assignment, GetAssignmentResponse, RuntimeProxyInfo
+
+    p, _ = make_provider()
+    p._assign_retry_delays = (0,)
+    get_calls = [0]
+    post_calls = [0]
+
+    class LastChanceReconcileClient:
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            get_calls[0] += 1
+            if get_calls[0] <= 2:
+                return GetAssignmentResponse(
+                    acc=accelerator.value,
+                    nbh=str(nbh),
+                    token=f"xsrf-{get_calls[0]}",
+                    variant=variant,
+                )
+            return Assignment(
+                endpoint="gpu-g4-s-usw4a1-final",
+                runtimeProxyInfo=RuntimeProxyInfo(
+                    token="tok-final",
+                    tokenExpiresInSeconds=3600,
+                    url="https://final.invalid",
+                ),
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            post_calls[0] += 1
+            raise _make_colab_request_error(503)
+
+    p.client_factory = lambda: LastChanceReconcileClient()
+    session = p.allocate("G4")
+    assert session.endpoint == "gpu-g4-s-usw4a1-final"
+    assert post_calls[0] == 2
+    assert get_calls[0] == 3
+
+
+def test_allocate_translates_exhausted_503_412_and_400_into_clear_errors():
+    from colab_cli.client import GetAssignmentResponse
+
+    p, _ = make_provider()
+    p._assign_retry_delays = (0, 0)
+
+    class AlwaysFailingClient:
+        def __init__(self, status):
+            self.status = status
+            self.shapes = []
+
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            self.shapes.append(shape)
+            return GetAssignmentResponse(
+                acc=accelerator.value,
+                nbh=str(nbh),
+                token="xsrf",
+                variant=variant,
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            raise _make_colab_request_error(self.status)
+
+    p.client_factory = lambda: AlwaysFailingClient(503)
+    with pytest.raises(RuntimeError) as exc_503:
+        p.allocate("G4")
+    assert "HTTP 503" in str(exc_503.value)
+    assert "已自动重试 2 次" in str(exc_503.value)
+    assert "Failed to issue request" not in str(exc_503.value)
+
+    p.client_factory = lambda: AlwaysFailingClient(412)
+    with pytest.raises(RuntimeError) as exc_412:
+        p.allocate("G4")
+    assert "HTTP 412" in str(exc_412.value)
+    assert "上限" in str(exc_412.value)
+
+    c400 = AlwaysFailingClient(400)
+    p.client_factory = lambda: c400
+    with pytest.raises(RuntimeError) as exc_400:
+        p.allocate("T4")
+    # T4 tries HIGH_RAM first, then falls back to None before surfacing friendly 400.
+    assert len(c400.shapes) == 2 and c400.shapes[1] is None
+    assert "HTTP 400" in str(exc_400.value)
+
+
+def test_start_surfaces_kernel_boot_error_details_before_rollback(monkeypatch):
+    p, _ = make_provider()
+    monkeypatch.setattr(
+        p, "account", lambda: {"logged_in": True, "rate": 10.05, "balance": 100}
+    )
+
+    def fake_allocate(gpu, on_log=None, on_stage=None):
+        sess = p_session("gpu-g4-booterr", gpu, "STANDARD")
+        p.save_session(sess, activate=True)
+        return sess
+
+    monkeypatch.setattr(p, "allocate", fake_allocate)
+    monkeypatch.setattr(p, "ready", lambda _s, on_log=None: None)
+    monkeypatch.setattr("bridge.provider.ContentsClient", Mock(return_value=Mock()))
+    monkeypatch.setattr(
+        p,
+        "execute",
+        Mock(
+            return_value=[
+                {
+                    "output_type": "error",
+                    "ename": "RuntimeError",
+                    "evalue": "pip dependency wheel failed",
+                }
+            ]
+        ),
+    )
+    release = Mock()
+    monkeypatch.setattr(p, "release", release)
+
+    with pytest.raises(RuntimeError, match="远端初始化未完成：RuntimeError: pip dependency wheel failed"):
+        p.start("G4", lambda _: None)
+    release.assert_called_once()
+
+
+def test_monitor_cleans_stale_remote_when_sessions_empty(tmp_path):
+    vault = MemoryVault()
+    vault.set("remote", {"endpoint": "stale-ep", "deadline": 0, "gpu": "G4"})
+    c = ColabOneController(
+        Path(__file__).resolve().parents[1],
+        vault=vault,
+        config_dir=tmp_path,
+        background=False,
+    )
+    c.last_auth = 1e12
+    c.last_heartbeat = 1e12
+    # Run one monitor iteration without blocking.
+    c.stop.wait = lambda _timeout=None: c.stop.set()
+    c.monitor()
+    assert vault.get("remote") is None
+    assert c.snapshot()["error"] == ""
+
+
+def test_allocate_exponential_backoff_10_attempts_and_cancel_interrupt(monkeypatch):
+    import threading
+    import requests as _requests
+    from colab_cli.client import GetAssignmentResponse
+    from bridge.provider import _COLABONE_ASSIGN_RETRY_DELAYS
+
+    assert _COLABONE_ASSIGN_RETRY_DELAYS == (2, 4, 8, 16, 30, 30, 30, 30, 30)
+    assert len(_COLABONE_ASSIGN_RETRY_DELAYS) == 9  # 1 initial + 9 retries = 10 attempts
+
+    p, _ = make_provider()
+    waited_delays = []
+    cancel_ev = threading.Event()
+
+    class NetworkDropClient:
+        def __init__(self):
+            self.posts = 0
+
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            return GetAssignmentResponse(
+                acc=accelerator.value, nbh=str(nbh), token="xsrf", variant=variant
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            self.posts += 1
+            if self.posts == 3:
+                cancel_ev.set()
+            raise _requests.ConnectionError("remote closed")
+
+    def fake_wait(timeout=None):
+        waited_delays.append(timeout)
+        return cancel_ev.is_set()
+
+    monkeypatch.setattr(cancel_ev, "wait", fake_wait)
+    p.client_factory = lambda: NetworkDropClient()
+    logs = []
+    with pytest.raises(RuntimeError, match="已取消 GPU 分配"):
+        p.allocate("G4", on_log=lambda msg, _lv="info": logs.append(msg), cancel_event=cancel_ev)
+    assert waited_delays == [2, 4, 8]
+    assert any("网络异常" in m and "第 2/10 次" in m for m in logs)
+
+
+def test_per_endpoint_vault_storage_avoids_packed_blob_limit():
+    p, vault = make_provider()
+    for idx in range(3):
+        ep = f"m-s-multi-{idx}"
+        p.save_session(p_session(ep, "G4", "STANDARD"), activate=(idx == 2))
+    assert vault.get("runtime_session_ids") == [
+        "m-s-multi-0",
+        "m-s-multi-1",
+        "m-s-multi-2",
+    ]
+    assert vault.get("runtime_sessions") is None
+    for idx in range(3):
+        assert vault.get(f"runtime_session:m-s-multi-{idx}")["endpoint"] == f"m-s-multi-{idx}"
+    assert len(p._sessions_map()) == 3
+    assert p.active_endpoint() == "m-s-multi-2"
+
+
+def test_safe_message_redacts_quoted_urls_ws_and_refresh_tokens():
+    from bridge.activity import safe_message
+
+    raw = (
+        "POST 'https://colab.example.com/tun/m/assign?authuser=0' failed; "
+        'ws="wss://proxy.example.com/api/kernels/123/channels" '
+        '"token": "ya29.super-secret-value" refresh=1//09AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+    )
+    cleaned = safe_message(raw)
+    assert "colab.example.com" not in cleaned
+    assert "proxy.example.com" not in cleaned
+    assert "ya29.super-secret-value" not in cleaned
+    assert "09AbCdEfGhIjKlMnOpQrStUvWxYz" not in cleaned
+    assert "[链接已隐藏]" in cleaned
+
+
+def test_error_clear_respects_expected_and_select_guards_busy(tmp_path):
+    c = ColabOneController(
+        Path(__file__).resolve().parents[1],
+        vault=MemoryVault(),
+        config_dir=tmp_path,
+        background=False,
+    )
+    c.data["error"] = "new error"
+    c.command("error.clear", {"expected": "older error"})
+    assert c.data["error"] == "new error"
+    c.command("error.clear", {"expected": "new error"})
+    assert c.data["error"] == ""
+
+    assert c.operation_lock.acquire(blocking=False)
+    try:
+        with pytest.raises(RuntimeError, match="请等待当前操作完成后再切换实例"):
+            c.command("runtime.select", {"endpoint": "ep-2"})
+    finally:
+        c.operation_lock.release()

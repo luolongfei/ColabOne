@@ -14,18 +14,28 @@ import (
 // launches where LANG is often unset.
 func colabOneDetectOSLocale() string {
 	for _, envKey := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
-		if raw := strings.TrimSpace(os.Getenv(envKey)); raw != "" && !strings.EqualFold(raw, "C") && !strings.EqualFold(raw, "POSIX") {
+		raw := strings.TrimSpace(os.Getenv(envKey))
+		upper := strings.ToUpper(raw)
+		if raw != "" && upper != "C" && upper != "POSIX" && !strings.HasPrefix(upper, "C.") && !strings.HasPrefix(upper, "POSIX.") {
 			return raw
 		}
 	}
 	if runtime.GOOS == "darwin" {
 		if out, err := exec.Command("defaults", "read", "-g", "AppleLanguages").Output(); err == nil {
+			first := ""
 			for _, line := range strings.Split(string(out), "\n") {
 				trimmed := strings.Trim(strings.TrimSpace(line), `",() `)
-				if trimmed != "" {
+				if trimmed == "" {
+					continue
+				}
+				if first == "" {
+					first = trimmed
+				}
+				if _, ok := colabOneNormalizeLocale(trimmed); ok {
 					return trimmed
 				}
 			}
+			return first
 		}
 	}
 	return ""

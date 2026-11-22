@@ -26,53 +26,58 @@ var (
 // a stale taskbar icon after in-place upgrades and avoids CreateIconFromResourceEx
 // nearest-neighbor aliasing on high-DPI displays.
 func applyWindowIcon(win *mygo.Window) {
-	if win == nil || win.IsDestroyed() {
+	if win == nil {
 		return
 	}
-	hwnd := win.NativeHandle()
-	if hwnd == 0 {
-		_ = win.SetIcon(trayIcon)
-		return
-	}
-	hInst, _, _ := procGetModuleHandleW.Call(0)
-	dpi := uintptr(96)
-	if procGetDpiForWindow.Find() == nil {
-		if d, _, _ := procGetDpiForWindow.Call(hwnd); d != 0 {
-			dpi = d
+	mygo.RunOnMain(func() {
+		if win.IsDestroyed() {
+			return
 		}
-	}
-	metric := func(index, fallback uintptr) uintptr {
-		if procGetSystemMetricsDpi.Find() == nil {
-			if n, _, _ := procGetSystemMetricsDpi.Call(index, dpi); n != 0 {
-				return n
+		hwnd := win.NativeHandle()
+		if hwnd == 0 {
+			_ = win.SetIcon(trayIcon)
+			return
+		}
+		hInst, _, _ := procGetModuleHandleW.Call(0)
+		dpi := uintptr(96)
+		if procGetDpiForWindow.Find() == nil {
+			if d, _, _ := procGetDpiForWindow.Call(hwnd); d != 0 {
+				dpi = d
 			}
 		}
-		if n, _, _ := procGetSystemMetrics.Call(index); n != 0 {
-			return n
+		metric := func(index, fallback uintptr) uintptr {
+			if procGetSystemMetricsDpi.Find() == nil {
+				if n, _, _ := procGetSystemMetricsDpi.Call(index, dpi); n != 0 {
+					return n
+				}
+			}
+			if n, _, _ := procGetSystemMetrics.Call(index); n != 0 {
+				return n
+			}
+			return fallback * dpi / 96
 		}
-		return fallback * dpi / 96
-	}
-	const (
-		imageIcon  = 1
-		lrShared   = 0x8000
-		wmSetIcon  = 0x0080
-		iconSmall  = 0
-		iconBig    = 1
-		smCxIcon   = 11
-		smCxSmIcon = 49
-	)
-	smallSz := metric(smCxSmIcon, 16)
-	bigSz := metric(smCxIcon, 32)
-	small, _, _ := procLoadImageW.Call(hInst, 1, imageIcon, smallSz, smallSz, lrShared)
-	big, _, _ := procLoadImageW.Call(hInst, 1, imageIcon, bigSz, bigSz, lrShared)
-	if small == 0 && big == 0 {
-		_ = win.SetIcon(trayIcon)
-		return
-	}
-	if small != 0 {
-		procSendMessageW.Call(hwnd, wmSetIcon, iconSmall, small)
-	}
-	if big != 0 {
-		procSendMessageW.Call(hwnd, wmSetIcon, iconBig, big)
-	}
+		const (
+			imageIcon  = 1
+			lrShared   = 0x8000
+			wmSetIcon  = 0x0080
+			iconSmall  = 0
+			iconBig    = 1
+			smCxIcon   = 11
+			smCxSmIcon = 49
+		)
+		smallSz := metric(smCxSmIcon, 16)
+		bigSz := metric(smCxIcon, 32)
+		small, _, _ := procLoadImageW.Call(hInst, 1, imageIcon, smallSz, smallSz, lrShared)
+		big, _, _ := procLoadImageW.Call(hInst, 1, imageIcon, bigSz, bigSz, lrShared)
+		if small == 0 && big == 0 {
+			_ = win.SetIcon(trayIcon)
+			return
+		}
+		if small != 0 {
+			procSendMessageW.Call(hwnd, wmSetIcon, iconSmall, small)
+		}
+		if big != 0 {
+			procSendMessageW.Call(hwnd, wmSetIcon, iconBig, big)
+		}
+	})
 }

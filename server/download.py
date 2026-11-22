@@ -227,6 +227,22 @@ def parallel_file(
                 return
             except ColabOneRangeUnsupportedError:
                 raise
+            except requests.HTTPError as exc:
+                check()
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code in (401, 403, 404, 410) or attempt + 1 >= attempts:
+                    raise RuntimeError(
+                        f"分块 {index + 1}/{len(lengths)} 下载失败（HTTP {status_code or type(exc).__name__}），已保留完成的分块，可重试续传"
+                    ) from None
+                task.note(
+                    f"分块 {index + 1}/{len(lengths)} 重试 {attempt + 1}/{attempts - 1}（HTTP {status_code or type(exc).__name__}）",
+                    "warning",
+                )
+                wait_until = time.monotonic() + retry_delay * 2**attempt
+                while time.monotonic() < wait_until:
+                    check()
+                    if task.cancel.wait(min(0.1, max(0.0, wait_until - time.monotonic()))):
+                        task.check()
             except Exception as exc:
                 check()
                 if attempt + 1 >= attempts:
@@ -237,8 +253,11 @@ def parallel_file(
                     f"分块 {index + 1}/{len(lengths)} 重试 {attempt + 1}/{attempts - 1}（{type(exc).__name__}）",
                     "warning",
                 )
-                if task.cancel.wait(retry_delay * 2**attempt):
-                    task.check()
+                wait_until = time.monotonic() + retry_delay * 2**attempt
+                while time.monotonic() < wait_until:
+                    check()
+                    if task.cancel.wait(min(0.1, max(0.0, wait_until - time.monotonic()))):
+                        task.check()
             finally:
                 with stats.lock:
                     stats.active -= 1

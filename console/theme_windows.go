@@ -56,7 +56,7 @@ func colabOneDetectSystemAppearance() string {
 		uintptr(unsafe.Pointer(&typ)),
 		uintptr(unsafe.Pointer(&val)),
 		uintptr(unsafe.Pointer(&size)),
-	); r != 0 {
+	); r != 0 || typ != 4 || size != 4 {
 		return ""
 	}
 	if val == 0 {

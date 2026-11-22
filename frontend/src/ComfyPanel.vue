@@ -80,6 +80,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   device: [];
+  sync: [];
   notify: [string, ColabOneToastKind?];
   clearError: [];
   error: [string];
@@ -112,6 +113,14 @@ function clearNotice() {
 }
 function reportError(err: unknown) {
   emit("error", String(err));
+}
+
+async function openExternalURL(url: string) {
+  try {
+    await colabOneOpenURL(url);
+  } catch (e) {
+    reportError(e);
+  }
 }
 
 // Engine & runtime status
@@ -234,6 +243,7 @@ const comfyTaskPercent = computed(() =>
 // Workflow Studio state
 const workflows = computed(() => props.state.workflows || []);
 const selectedWorkflowId = ref("");
+const pendingWorkflowId = ref("");
 const selectedWorkflow = computed(() =>
   workflows.value.find((w) => w.id === selectedWorkflowId.value),
 );
@@ -248,9 +258,19 @@ const pendingUploads = ref<Record<string, PendingUpload>>({});
 const uploadedInputIds = ref<Record<string, string>>({});
 const uploadedNames = ref<Record<string, string>>({});
 const localPreviews = ref<Record<string, string>>({});
-const uploadingField = ref("");
+const uploadingFields = ref<Record<string, boolean>>({});
+const hasUploadingField = computed(() =>
+  Object.values(uploadingFields.value).some(Boolean),
+);
+const uploadGen: Record<string, number> = {};
 const dragOverField = ref("");
 const submittingRun = ref(false);
+
+function selectWorkflow(id: string) {
+  if (submittingRun.value || hasUploadingField.value) return;
+  pendingWorkflowId.value = "";
+  selectedWorkflowId.value = id;
+}
 
 function revokeLocalPreview(key: string) {
   const url = localPreviews.value[key];
@@ -272,6 +292,14 @@ watch(
       selectedWorkflowId.value = "";
       return;
     }
+    if (
+      pendingWorkflowId.value &&
+      list.some((w) => w.id === pendingWorkflowId.value)
+    ) {
+      selectedWorkflowId.value = pendingWorkflowId.value;
+      pendingWorkflowId.value = "";
+      return;
+    }
     if (!list.some((w) => w.id === selectedWorkflowId.value)) {
       selectedWorkflowId.value = list[0].id;
     }
@@ -282,6 +310,10 @@ watch(
 watch(
   () => selectedWorkflow.value?.id,
   () => {
+    for (const k of Object.keys(uploadGen)) {
+      uploadGen[k] = (uploadGen[k] ?? 0) + 1;
+    }
+    uploadingFields.value = {};
     const wf = selectedWorkflow.value;
     fieldValues.value = wf ? defaultFieldValues(wf.fields) : {};
     pendingUploads.value = {};
@@ -298,6 +330,8 @@ watch(
     uploadedInputIds.value = {};
     uploadedNames.value = {};
     failedOutputs.value = {};
+    Object.values(blobUrls.value).forEach((url) => URL.revokeObjectURL(url));
+    blobUrls.value = {};
   },
 );
 
@@ -361,22 +395,42 @@ function readFileAsBase64(file: File): Promise<string> {
 async function handleMediaFile(field: WorkflowField, file: File) {
   const kind: "image" | "audio" =
     field.field_type === "audio" ? "audio" : "image";
+  const isImageOk =
+    /^image\/(png|jpeg|webp)$/i.test(file.type) ||
+    /\.(png|jpe?g|webp)$/i.test(file.name);
+  const isAudioOk =
+    /^audio\//i.test(file.type) ||
+    /\.(wav|mp3|flac|ogg|m4a)$/i.test(file.name);
+  if ((kind === "image" && !isImageOk) || (kind === "audio" && !isAudioOk)) {
+    reportError(t("comfy.errReadLocalFile"));
+    return;
+  }
   const maxBytes =
     kind === "audio" ? MAX_AUDIO_INPUT_BYTES : MAX_IMAGE_INPUT_BYTES;
   if (file.size > maxBytes) {
-    setNoticeKey(
-      kind === "audio" ? "comfy.errAudioTooLarge" : "comfy.errImageTooLarge",
+    reportError(
+      t(kind === "audio" ? "comfy.errAudioTooLarge" : "comfy.errImageTooLarge"),
     );
     return;
   }
 
-  uploadingField.value = field.key;
+  const gen = (uploadGen[field.key] = (uploadGen[field.key] ?? 0) + 1);
+  const targetWorkflowId = selectedWorkflowId.value;
+  const targetRuntimeId = props.state.runtime.id;
+  uploadingFields.value = { ...uploadingFields.value, [field.key]: true };
   clearNotice();
+  let nextPreviewUrl = "";
   try {
     const data = await readFileAsBase64(file);
-    revokeLocalPreview(field.key);
-    if (kind === "image" && /^image\/(png|jpeg|webp)$/i.test(file.type)) {
-      localPreviews.value[field.key] = URL.createObjectURL(file);
+    if (
+      disposed ||
+      uploadGen[field.key] !== gen ||
+      selectedWorkflowId.value !== targetWorkflowId
+    ) {
+      return;
+    }
+    if (kind === "image" && isImageOk) {
+      nextPreviewUrl = URL.createObjectURL(file);
     }
 
     if (gpuReady.value) {
@@ -384,9 +438,23 @@ async function handleMediaFile(field: WorkflowField, file: File) {
         filename: file.name,
         data,
       });
+      if (
+        disposed ||
+        uploadGen[field.key] !== gen ||
+        selectedWorkflowId.value !== targetWorkflowId ||
+        props.state.runtime.id !== targetRuntimeId
+      ) {
+        if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
+        return;
+      }
       const assetId = typeof res?.id === "string" ? res.id : "";
       if (!assetId) {
         throw new Error(t("comfy.errUploadNoId"));
+      }
+      revokeLocalPreview(field.key);
+      if (nextPreviewUrl) {
+        localPreviews.value[field.key] = nextPreviewUrl;
+        nextPreviewUrl = "";
       }
       uploadedInputIds.value[field.key] = assetId;
       fieldValues.value[field.key] = res?.filename || file.name;
@@ -394,6 +462,11 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       delete pendingUploads.value[field.key];
       setNoticeKey("comfy.noticeUploadedRemote", { name: file.name });
     } else {
+      revokeLocalPreview(field.key);
+      if (nextPreviewUrl) {
+        localPreviews.value[field.key] = nextPreviewUrl;
+        nextPreviewUrl = "";
+      }
       pendingUploads.value[field.key] = {
         filename: file.name,
         data,
@@ -405,10 +478,16 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       setNoticeKey("comfy.noticeStagedUpload", { name: file.name });
     }
   } catch (e) {
-    revokeLocalPreview(field.key);
-    reportError(e);
+    if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
+    if (!disposed && uploadGen[field.key] === gen) {
+      reportError(e);
+    }
   } finally {
-    uploadingField.value = "";
+    if (uploadGen[field.key] === gen) {
+      const next = { ...uploadingFields.value };
+      delete next[field.key];
+      uploadingFields.value = next;
+    }
   }
 }
 
@@ -422,7 +501,7 @@ async function onMediaSelected(field: WorkflowField, event: Event) {
 
 async function onMediaDrop(field: WorkflowField, event: DragEvent) {
   dragOverField.value = "";
-  if (uploadingField.value === field.key) return;
+  if (uploadingFields.value[field.key]) return;
   const file = event.dataTransfer?.files?.[0];
   if (!file) return;
   await handleMediaFile(field, file);
@@ -513,12 +592,14 @@ async function submitImport() {
     });
     const createdId = res?.id || res?.workflow?.id;
     if (typeof createdId === "string" && createdId) {
+      pendingWorkflowId.value = createdId;
       selectedWorkflowId.value = createdId;
     }
     importOpen.value = false;
     importName.value = "";
     importDescription.value = "";
     importRaw.value = "";
+    emit("sync");
     setNoticeKey("comfy.noticeImported");
   } catch (e) {
     reportError(e);
@@ -532,6 +613,7 @@ async function deleteWorkflow(target: WorkflowTemplate) {
   clearNotice();
   try {
     await colabOneCommand("comfyui.workflow.delete", { id: target.id });
+    emit("sync");
     setNoticeKey("comfy.noticeDeletedWorkflow", { name: target.name });
   } catch (e) {
     reportError(e);
@@ -550,6 +632,7 @@ async function actEngine(
   clearNotice();
   try {
     await colabOneCommand(action, payload);
+    emit("sync");
     if (successNoticeKey) setNoticeKey(successNoticeKey);
     return true;
   } catch (e) {
@@ -636,12 +719,14 @@ async function runWorkflow() {
       if (field.field_type === "boolean") {
         overrides[field.key] = Boolean(val);
       } else if (field.field_type === "integer") {
-        const num = Number(val);
+        const isBlank = val === "" || val === undefined || val === null;
+        const num = isBlank ? Number.NaN : Number(val);
         overrides[field.key] = Number.isFinite(num)
           ? Math.round(num)
-          : Number(field.default ?? 0);
+          : Math.round(Number(field.default ?? 0));
       } else if (field.field_type === "number") {
-        const num = Number(val);
+        const isBlank = val === "" || val === undefined || val === null;
+        const num = isBlank ? Number.NaN : Number(val);
         overrides[field.key] = Number.isFinite(num)
           ? num
           : Number(field.default ?? 0);
@@ -656,6 +741,7 @@ async function runWorkflow() {
       overrides,
       inputs,
     });
+    emit("sync");
     setNoticeKey("comfy.noticeRunSubmitted", { name: wf.name });
   } catch (e) {
     reportError(e);
@@ -669,6 +755,8 @@ const outputs = computed(() => props.state.comfy_outputs || []);
 const blobUrls = ref<Record<string, string>>({});
 const fetchingOutputs = ref<Record<string, boolean>>({});
 const failedOutputs = ref<Record<string, string>>({});
+const exportingOutputs = ref<Record<string, boolean>>({});
+const deletingOutputs = ref<Record<string, boolean>>({});
 let disposed = false;
 
 async function loadOutputPreview(item: WorkflowOutput) {
@@ -679,17 +767,27 @@ async function loadOutputPreview(item: WorkflowOutput) {
   ) {
     return;
   }
+  const targetRuntimeId = props.state.runtime.id;
   fetchingOutputs.value[item.id] = true;
   delete failedOutputs.value[item.id];
   try {
     const url = await outputBlobURL(item.id);
-    if (disposed) {
+    if (
+      disposed ||
+      props.state.runtime.id !== targetRuntimeId ||
+      !outputs.value.some((o) => o.id === item.id)
+    ) {
       URL.revokeObjectURL(url);
     } else {
+      if (blobUrls.value[item.id]) {
+        URL.revokeObjectURL(blobUrls.value[item.id]);
+      }
       blobUrls.value[item.id] = url;
     }
   } catch (e) {
-    failedOutputs.value[item.id] = String(e);
+    if (!disposed && props.state.runtime.id === targetRuntimeId) {
+      failedOutputs.value[item.id] = String(e);
+    }
   } finally {
     fetchingOutputs.value[item.id] = false;
   }
@@ -722,6 +820,8 @@ watch(
 );
 
 async function exportOutput(item: WorkflowOutput) {
+  if (exportingOutputs.value[item.id] || deletingOutputs.value[item.id]) return;
+  exportingOutputs.value = { ...exportingOutputs.value, [item.id]: true };
   try {
     const path = await colabOneExportWorkflowOutput(item.id);
     if (path) {
@@ -729,19 +829,32 @@ async function exportOutput(item: WorkflowOutput) {
     }
   } catch (e) {
     reportError(e);
+  } finally {
+    const next = { ...exportingOutputs.value };
+    delete next[item.id];
+    exportingOutputs.value = next;
   }
 }
 
 async function deleteOutput(target: WorkflowOutput) {
+  if (deletingOutputs.value[target.id] || exportingOutputs.value[target.id]) {
+    return;
+  }
+  deletingOutputs.value = { ...deletingOutputs.value, [target.id]: true };
   try {
     await colabOneCommand("comfyui.output.delete", { id: target.id });
     if (blobUrls.value[target.id]) {
       URL.revokeObjectURL(blobUrls.value[target.id]);
       delete blobUrls.value[target.id];
     }
+    emit("sync");
     setNoticeKey("comfy.noticeDeletedOutput");
   } catch (e) {
     reportError(e);
+  } finally {
+    const next = { ...deletingOutputs.value };
+    delete next[target.id];
+    deletingOutputs.value = next;
   }
 }
 
@@ -1323,11 +1436,15 @@ onUnmounted(() => {
                         role="option"
                         tabindex="0"
                         class="co-comfy-workflow-item"
-                        :class="{ selected: wf.id === selectedWorkflowId }"
+                        :class="{
+                          selected: wf.id === selectedWorkflowId,
+                          disabled: submittingRun || hasUploadingField,
+                        }"
                         :aria-selected="wf.id === selectedWorkflowId"
-                        @click="selectedWorkflowId = wf.id"
-                        @keydown.enter.prevent="selectedWorkflowId = wf.id"
-                        @keydown.space.prevent="selectedWorkflowId = wf.id"
+                        :aria-disabled="submittingRun || hasUploadingField"
+                        @click="selectWorkflow(wf.id)"
+                        @keydown.enter.prevent="selectWorkflow(wf.id)"
+                        @keydown.space.prevent="selectWorkflow(wf.id)"
                       >
                         <div class="co-comfy-workflow-item-main">
                           <div class="co-comfy-workflow-item-title">
@@ -1502,7 +1619,7 @@ onUnmounted(() => {
                               class="co-comfy-media-dropzone"
                               :class="{
                                 dragging: dragOverField === field.key,
-                                busy: uploadingField === field.key,
+                                busy: !!uploadingFields[field.key],
                               }"
                               @dragover.prevent="dragOverField = field.key"
                               @dragleave="
@@ -1519,11 +1636,11 @@ onUnmounted(() => {
                                     ? '.wav,.mp3,.flac,.ogg,.m4a,audio/*'
                                     : 'image/png,image/jpeg,image/webp'
                                 "
-                                :disabled="uploadingField === field.key"
+                                :disabled="!!uploadingFields[field.key]"
                                 @change="onMediaSelected(field, $event)"
                               />
                               <ColabOneSkeleton
-                                v-if="uploadingField === field.key"
+                                v-if="uploadingFields[field.key]"
                                 :width="42"
                                 :height="42"
                                 :radius="8"
@@ -1550,7 +1667,7 @@ onUnmounted(() => {
                                 />
                               </span>
                               <div class="co-comfy-media-dropzone-copy">
-                                <template v-if="uploadingField === field.key">
+                                <template v-if="uploadingFields[field.key]">
                                   <strong>{{ t("comfy.uploadingTitle") }}</strong>
                                   <small>{{ t("comfy.uploadingHint") }}</small>
                                 </template>
@@ -1731,7 +1848,7 @@ onUnmounted(() => {
                             :disabled="
                               !gpuReady ||
                               submittingRun ||
-                              !!uploadingField ||
+                              hasUploadingField ||
                               engineActionBlocked
                             "
                           >
@@ -2083,7 +2200,8 @@ onUnmounted(() => {
                         <div class="co-comfy-output-actions">
                           <AButton
                             size="small"
-                            :disabled="!gpuReady"
+                            :loading="!!exportingOutputs[item.id]"
+                            :disabled="!gpuReady || !!deletingOutputs[item.id]"
                             @click="exportOutput(item)"
                           >
                             <template #icon>
@@ -2097,7 +2215,11 @@ onUnmounted(() => {
                             :description="t('comfy.deleteOutputDesc', { name: item.filename })"
                             :ok-text="t('common.confirmDelete')"
                             :cancel-text="t('common.cancel')"
-                            :disabled="!gpuReady"
+                            :disabled="
+                              !gpuReady ||
+                              !!exportingOutputs[item.id] ||
+                              !!deletingOutputs[item.id]
+                            "
                             :ok-button-props="{ danger: true }"
                             placement="topRight"
                             @confirm="deleteOutput(item)"
@@ -2105,7 +2227,8 @@ onUnmounted(() => {
                             <AButton
                               size="small"
                               danger
-                              :disabled="!gpuReady"
+                              :loading="!!deletingOutputs[item.id]"
+                              :disabled="!gpuReady || !!exportingOutputs[item.id]"
                               :aria-label="t('comfy.deleteOutputAria')"
                             >
                               <template #icon>
@@ -2222,7 +2345,7 @@ onUnmounted(() => {
                           type="link"
                           size="small"
                           class="co-inline-link co-comfy-inline-link"
-                          @click="colabOneOpenURL('https://one.dash.cloudflare.com/')"
+                          @click="openExternalURL('https://one.dash.cloudflare.com/')"
                         >
                           {{ t("api.openDashboard") }}
                           <PhArrowSquareOut :size="14" />

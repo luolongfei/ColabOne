@@ -85,6 +85,8 @@ const tunnelToken = ref("");
 const key = ref("");
 const revealingKey = ref(false);
 const keyTimer = ref<ReturnType<typeof setTimeout>>();
+let keySeq = 0;
+let unmounted = false;
 const copyTimer = ref<ReturnType<typeof setTimeout>>();
 const copiedField = ref<"" | "url" | "key" | "model" | "code">("");
 const busy = ref(false);
@@ -262,6 +264,10 @@ watch(
   () => props.state.runtime.id,
   () => {
     awaitingApiReady.value = false;
+    keySeq += 1;
+    key.value = "";
+    clearTimeout(keyTimer.value);
+    keyTimer.value = undefined;
   },
 );
 
@@ -341,32 +347,53 @@ async function copyKey() {
   }
 }
 
+async function openExternalURL(url: string) {
+  try {
+    await colabOneOpenURL(url);
+  } catch (e) {
+    emit("error", String(e));
+  }
+}
+
 async function reveal() {
   if (revealingKey.value) return;
   if (key.value) {
+    keySeq += 1;
     key.value = "";
+    clearTimeout(keyTimer.value);
+    keyTimer.value = undefined;
     return;
   }
+  const seq = ++keySeq;
   revealingKey.value = true;
   try {
-    key.value = (await colabOneCommand("api.key")).key;
+    const res = await colabOneCommand("api.key");
+    if (unmounted || seq !== keySeq) return;
+    key.value = res.key;
     clearTimeout(keyTimer.value);
-    keyTimer.value = setTimeout(() => (key.value = ""), 30000);
+    keyTimer.value = setTimeout(() => {
+      if (seq === keySeq) key.value = "";
+    }, 30000);
   } catch (e) {
-    emit("error", String(e));
+    if (!unmounted && seq === keySeq) emit("error", String(e));
   } finally {
     revealingKey.value = false;
   }
 }
 
 async function rotate() {
+  keySeq += 1;
+  key.value = "";
+  clearTimeout(keyTimer.value);
+  keyTimer.value = undefined;
   if (await act("api.rotate")) {
-    key.value = "";
     emit("notify", t("api.rotatedKeyNotice"), "info");
   }
 }
 
 onUnmounted(() => {
+  unmounted = true;
+  keySeq += 1;
   key.value = "";
   clearTimeout(keyTimer.value);
   clearTimeout(copyTimer.value);
@@ -701,7 +728,7 @@ onUnmounted(() => {
                   type="link"
                   size="small"
                   class="co-inline-link co-inline-link-btn"
-                  @click="colabOneOpenURL('https://one.dash.cloudflare.com/')"
+                  @click="openExternalURL('https://one.dash.cloudflare.com/')"
                 >
                   {{ t("api.openDashboard") }}
                   <PhArrowSquareOut :size="13" />

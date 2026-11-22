@@ -359,7 +359,8 @@ export const zhTWMessages: ColabOneMessages = {
   "device.syncNow": "立即同步",
   "device.mountDriveNow": "立即掛載雲端硬碟",
   "device.driveWaitingBrowserConfirm":
-    "請在瀏覽器中點擊允許，以確認目前執行個體掛載 Google 雲端硬碟 (ColabOne_Drive)...",
+    "請在瀏覽器中勾選全部雲端硬碟權限並點擊允許；完成後回到用戶端將自動繼續掛載，或點擊「我已完成授權」立即核驗。",
+  "device.driveConfirmAuthorized": "我已完成授權",
   "device.driveReopenAuth": "重新開啟授權頁",
   "device.driveCancelMount": "取消掛載",
   "device.driveEnableHeadlessLink": "開啟永久免彈窗",

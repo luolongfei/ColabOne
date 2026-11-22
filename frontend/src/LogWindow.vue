@@ -17,6 +17,7 @@ import {
 } from "./i18n";
 import LogDrawer from "./LogDrawer.vue";
 import { colabOneCommand, colabOneSetLogDrawer, colabOneSnapshot, colabOneWriteClipboard } from "./api";
+import { friendlyErrorMessage } from "./billing";
 import { createColabOneSnapshot } from "./types";
 
 const colabOneTheme = computed(() =>
@@ -28,6 +29,8 @@ const toastManager = createColabOneToastManager({ maxVisible: 2 });
 
 let stopped = false;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let snapshotSeq = 0;
+let appliedSnapshotSeq = 0;
 
 const ready = computed(() => state.value.runtime.state === "ready");
 const task = computed(() =>
@@ -74,8 +77,12 @@ function notify(message: string, kind: ColabOneToastKind = "success") {
 }
 
 async function syncSnapshot() {
+  const seq = ++snapshotSeq;
   try {
-    state.value = await colabOneSnapshot();
+    const next = await colabOneSnapshot();
+    if (stopped || seq < appliedSnapshotSeq) return;
+    appliedSnapshotSeq = seq;
+    state.value = next;
     snapshotLoaded.value = true;
     hydrateColabOneLocaleFromSettings(state.value.settings?.locale);
   } catch {
@@ -110,8 +117,9 @@ async function clearLogs() {
   try {
     await colabOneCommand("logs.clear");
     await syncSnapshot();
-  } catch {
-    // Ignore transient clear error.
+  } catch (e) {
+    const msg = friendlyErrorMessage(String(e ?? ""));
+    if (msg) notify(msg, "error");
   }
 }
 

@@ -67,18 +67,22 @@ func planColabOneLogWindowBounds(mainBounds, workArea mygo.Rectangle, requestedW
 	}
 
 	workRight := workArea.X + workArea.Width
-	roomRight := workRight - rightEdge
-	if roomRight >= w {
-		return mygo.Rectangle{X: rightEdge, Y: y, Width: w, Height: h}
-	}
-	if roomRight >= minLogDrawerWidth {
-		return mygo.Rectangle{X: rightEdge, Y: y, Width: roomRight, Height: h}
+	if rightEdge >= workArea.X && rightEdge <= workRight {
+		roomRight := workRight - rightEdge
+		if roomRight >= w {
+			return mygo.Rectangle{X: rightEdge, Y: y, Width: w, Height: h}
+		}
+		if roomRight >= minLogDrawerWidth {
+			return mygo.Rectangle{X: rightEdge, Y: y, Width: roomRight, Height: h}
+		}
 	}
 
-	roomLeft := mainBounds.X - workArea.X
-	if roomLeft >= minLogDrawerWidth {
-		lw := min(w, roomLeft)
-		return mygo.Rectangle{X: mainBounds.X - lw, Y: y, Width: lw, Height: h}
+	if mainBounds.X >= workArea.X && mainBounds.X <= workRight {
+		roomLeft := mainBounds.X - workArea.X
+		if roomLeft >= minLogDrawerWidth {
+			lw := min(w, roomLeft)
+			return mygo.Rectangle{X: mainBounds.X - lw, Y: y, Width: lw, Height: h}
+		}
 	}
 
 	fw := min(w, workArea.Width)
@@ -133,6 +137,7 @@ func (d *ColabOneDesktop) clearLogWindow(win *mygo.Window) {
 }
 
 func (d *ColabOneDesktop) notifyMainLogWindowState(open bool) {
+	gen := d.logStateGen.Add(1)
 	win := d.mainWindow()
 	if win == nil || win.IsDestroyed() {
 		return
@@ -146,6 +151,9 @@ func (d *ColabOneDesktop) notifyMainLogWindowState(open bool) {
 		script = "window.dispatchEvent(new CustomEvent('colabone:log-window-state',{detail:{open:true}}))"
 	}
 	go func() {
+		if d.logStateGen.Load() != gen {
+			return
+		}
 		_, _ = page.Eval(script)
 	}()
 }
@@ -192,7 +200,7 @@ func (d *ColabOneDesktop) applyLogWindowOnMain(mainWin *mygo.Window, open bool, 
 	}
 
 	var mainBounds, workArea mygo.Rectangle
-	if mainWin != nil && !mainWin.IsDestroyed() {
+	if mainWin != nil && !mainWin.IsDestroyed() && !mainWin.IsMinimized() && mainWin.IsVisible() {
 		mainBounds = mainWin.Bounds()
 		workArea = mygo.Screen.DisplayMatching(mainBounds).WorkArea
 	} else {
@@ -215,6 +223,7 @@ func (d *ColabOneDesktop) applyLogWindowOnMain(mainWin *mygo.Window, open bool, 
 	applyWindowIcon(logWin)
 	logWin.SetBounds(rect)
 	d.setLogWindow(logWin)
+	d.logStateGen.Add(1)
 	logWin.OnClosed(func() {
 		d.clearLogWindow(logWin)
 		d.notifyMainLogWindowState(false)

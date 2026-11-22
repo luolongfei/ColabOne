@@ -188,8 +188,16 @@ watch(
       deleteTarget.value = null;
       manualGpuTarget.value = null;
       onlyRunnable.value = false;
+      modelOptions.value = {};
       resetRepoPicker();
     }
+  },
+);
+
+watch(
+  () => props.state.runtime.id,
+  () => {
+    modelOptions.value = {};
   },
 );
 
@@ -494,6 +502,7 @@ async function installFromMyRepo(mode: "load" | "download" | "save") {
   if (mode !== "save" && (!ready.value || !!task.value || isBusy.value)) {
     return;
   }
+  const gen = repoFileGen;
   repoInstalling.value = true;
   repoFilesError.value = "";
   try {
@@ -509,7 +518,9 @@ async function installFromMyRepo(mode: "load" | "download" | "save") {
       payload.temperature = repoTemperature.value;
     }
     await colabOneCommand("hub.install", payload);
-    resetRepoPicker();
+    if (gen === repoFileGen) {
+      resetRepoPicker();
+    }
     emit("sync");
     emit(
       "notify",
@@ -520,7 +531,7 @@ async function installFromMyRepo(mode: "load" | "download" | "save") {
           : t("models.toastSavedVersionMine"),
     );
   } catch (e) {
-    repoFilesError.value = String(e);
+    if (gen === repoFileGen) repoFilesError.value = String(e);
   } finally {
     repoInstalling.value = false;
   }
