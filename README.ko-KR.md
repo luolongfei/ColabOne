@@ -26,7 +26,7 @@ ColabOne은 **macOS (Apple Silicon)** 및 **Windows (x64)** 환경에서 빠른 
 
 내 컴퓨터에서는 데스크톱 UI와 경량 로컬 컨트롤러만 실행됩니다. 모든 모델 다운로드, GGUF 가중치, `llama.cpp` 추론 및 ComfyUI 실행은 오직 원격 Colab GPU에서만 처리됩니다.
 
-## 주요 기능
+## ✨ 주요 기능
 
 - **멀티 GPU 관리 및 실시간 텔레메트리 (`원격 기기`)** — 여러 대의 Colab GPU(`T4`, `L4`, `A100`, `H100`, `G4` RTX PRO 6000)를 시작·전환하고 원하는 인스턴스만 선택적으로 해제할 수 있으며, Google 계정에서 실행 중인 외부 인스턴스도 함께 조회할 수 있습니다. 실시간 과금 상태, `CU/시간` 소모 속도, 남은 CU 잔액, 예상 사용 가능 시간, 인스턴스 리전 국기와 함께 GPU VRAM·코어 부하, 시스템 RAM, 디스크 I/O, CPU의 60초 실시간 차트를 한눈에 확인합니다.
 - **스마트 유휴 자동 해제** — 설정 가능한 유휴 카운트다운(기본값 **30분**, `15분`~`2시간` 선택 가능)으로 컴퓨팅 잔액을 보호합니다. 원격 VM에서 직접 동작하므로 ColabOne을 종료해도 보호가 유지되며, 모델 다운로드, VRAM 로드, API 추론, ComfyUI 작업 중에는 카운트다운이 자동으로 일시 정지됩니다.
@@ -35,12 +35,12 @@ ColabOne은 **macOS (Apple Silicon)** 및 **Windows (x64)** 환경에서 빠른 
 - **Google 드라이브 자동 영구 보관** — 앱 전용 `drive.file` 권한으로 모델 목록, ComfyUI 워크플로, 생성 결과물을 `My Drive / ColabOne_Drive`에 자동 저장합니다. 별도 설정 없이 Colab 네이티브 DriveFS(새 VM당 1회 클릭)로 바로 동작하며, 무료 Google Cloud 서비스 약관에 한 번 동의하면 팝업 없는 영구 헤드리스 `rclone` 자동 마운트로 업그레이드됩니다.
 - **일상 사용에 맞춘 설계** — 독립 실행형 CPython 런타임을 포함한 포터블 패키지로 제공되어 로컬에 Python, Go, Node.js를 설치할 필요가 없습니다. 6개 UI 언어, 라이트/다크/시스템 설정 테마, OS 키체인 자격 증명 보관, 선택형 GPU 할당 전용 프록시, 원클릭 원격 서비스 핫 업데이트, 민감 정보가 자동 마스킹되는 실시간 **실행 로그** 패널(`Ctrl+J`)을 지원합니다.
 
-## 빠른 시작
+## 🚀 빠른 시작
 
 ColabOne은 **원격 기기 → 외부 API → ComfyUI → 설정**의 4개 사이드바 화면과 우측 슬라이드 오버 **실행 로그** 패널로 구성되어 있습니다.
 
 1. **다운로드 및 실행**
-   [Releases](https://github.com/luolongfei/ColabOne/releases)에서 플랫폼에 맞는 패키지를 다운로드하고(또는 [소스에서 직접 빌드](#소스에서-빌드하기)), 전체 폴더의 압축을 푼 뒤 `ColabOne.app`(macOS) 또는 `ColabOne.exe`(Windows)를 실행합니다. 앱과 같은 경로의 폴더(`runtime`, `site-packages`, `bridge` 등)는 그대로 유지해야 합니다. Windows에서는 관리자 권한 없이 **설정**에서 시작 메뉴 및 바탕 화면 바로 가기를 만들 수 있습니다.
+   [Releases](https://github.com/luolongfei/ColabOne/releases)에서 플랫폼에 맞는 패키지를 다운로드하고(또는 [소스에서 직접 빌드](#-소스에서-빌드하기)), 전체 폴더의 압축을 푼 뒤 `ColabOne.app`(macOS) 또는 `ColabOne.exe`(Windows)를 실행합니다. 앱과 같은 경로의 폴더(`runtime`, `site-packages`, `bridge` 등)는 그대로 유지해야 합니다. Windows에서는 관리자 권한 없이 **설정**에서 시작 메뉴 및 바탕 화면 바로 가기를 만들 수 있습니다.
 
 2. **Google 계정 로그인**
    **설정** → **Google 로그인**으로 이동해 브라우저에서 계정을 승인하면 ColabOne이 자동으로 로그인을 완료합니다. 브라우저가 자동으로 리디렉션되지 않고 인증 페이지를 표시하는 경우, 직접 붙여넣기 섹션을 펼치고 **붙여넣고 로그인 완료**를 클릭하세요. 자격 증명은 macOS 키체인 또는 Windows 자격 증명 관리자에 암호화되어 저장되며 재시작 시에도 자동으로 갱신됩니다.
@@ -55,11 +55,11 @@ ColabOne은 **원격 기기 → 외부 API → ComfyUI → 설정**의 4개 사�
 5. **사용 종료 후 리소스 해제**
    특정 인스턴스의 **개별 중지**를 클릭하거나, **모두 중지**를 클릭해 종료할 인스턴스만 선택적으로 체크하면 다른 세션은 유지한 채 원하는 인스턴스만 해제할 수 있습니다. 이 앱에서 관리하는 인스턴스는 해제 전에 공개 터널을 자동으로 닫고 `ColabOne_Drive` 동기화를 마무리합니다.
 
-## OpenAI 호환 외부 API
+## 🌐 OpenAI 호환 외부 API
 
 **외부 API**는 내장 단일 모델 GGUF 선택기와 원격 `llama-server`(`127.0.0.1:8081`) 기반의 전용 Bearer 인증 OpenAI 게이트웨이(`127.0.0.1:7861`)를 결합합니다. 관리용 라우트(`/api/v1/*`)는 내부 전용 제어 포트에 격리되어 외부에 절대 노출되지 않습니다.
 
-### 지원 엔드포인트
+### 📡 지원 엔드포인트
 
 | 메서드 | 엔드포인트 | 설명 |
 |---|---|---|
@@ -68,7 +68,7 @@ ColabOne은 **원격 기기 → 외부 API → ComfyUI → 설정**의 4개 사�
 | `POST` | `/v1/responses` | SSE 스트리밍, function 및 custom/`apply_patch` 도구, 추론 요약, 3단계 자동 컨텍스트 압축을 지원하는 OpenAI Responses API(`wire_api = "responses"`)입니다. |
 | `POST` | `/v1/responses/compact` | 긴 코딩 대화를 위한 Codex / OpenAI 컨텍스트 압축(`response.compaction`) 엔드포인트입니다. |
 
-### 외부 클라이언트 연결
+### 🔌 외부 클라이언트 연결
 
 1. **고정 도메인 터널 설정**: Cloudflare Zero Trust에서 Cloudflared Named Tunnel을 생성하고 공개 HTTPS 호스트 이름을 `http://127.0.0.1:7861`로 매핑합니다(API 호스트 이름에는 Cloudflare Access 대화형 로그인을 활성화하지 마세요). 설치 명령어 또는 Tunnel Token을 **외부 API**에 붙여넣고 **설정 저장**을 누른 뒤 **API 서비스 시작**을 클릭합니다. *(임시 `trycloudflare.com` 도메인은 의도적으로 비활성화되어 있습니다.)*
 2. **앱 또는 SDK에서 ColabOne 연결**: **Base URL**, **API Key**, **현재 모델 ID** (VRAM 재로드 없이 실시간 변경 가능 — 또는 현재 로드된 모델로 자동 라우팅되는 고정 별칭 `colabone/auto` 사용)를 복사해 연결합니다. 앱 내에서 **cURL**, **Python**, **Codex** 호출 예제와 요청별 실시간 토큰 처리량(`tok/s`, TTFT, 프리필 속도)을 바로 확인할 수 있습니다.
@@ -94,7 +94,7 @@ for event in stream:
 
 **외부 API**를 중지하면 GPU와 로드된 모델은 그대로 유지한 채 외부 접근만 차단되며, GPU 인스턴스를 중지하면 게이트웨이와 터널도 함께 자동 종료됩니다. 전체 라우트 명세와 오류 코드는 [docs/api.md](docs/api.md#public-inference-api-llm-openai-gateway)를 참고하세요.
 
-## ComfyUI 워크스페이스
+## 🎨 ComfyUI 워크스페이스
 
 ColabOne은 원격 Colab GPU(`127.0.0.1:8188`)에만 **ComfyUI `v0.46.0`** 버전을 배포하며 이중 레이어 워크스페이스를 제공합니다.
 
@@ -110,7 +110,7 @@ ColabOne은 원격 Colab GPU(`127.0.0.1:8188`)에만 **ComfyUI `v0.46.0`** 버�
   - `llama-server`(`8081`)와 `ComfyUI`(`8188`)는 GPU VRAM을 동시에 점유하지 않습니다. 엔진을 전환하면 원격 디스크의 캐시된 가중치는 유지한 채 현재 활성 엔진을 자동으로 언로드합니다.
   - 진행 중인 ComfyUI 대기열 작업과 네이티브 캔버스 요청은 유휴 자동 해제 카운트다운을 자동으로 일시 정지합니다.
 
-## 저장소, 과금 및 보안
+## 🔒 저장소, 과금 및 보안
 
 - **Google 드라이브 동기화**: 모델 목록, ComfyUI 워크플로, 생성 결과물은 권한이 제한된 `drive.file` 범위로 `My Drive / ColabOne_Drive`에 영구 보관됩니다(ColabOne은 무관한 개인 드라이브 파일에 접근할 수 없습니다). 모델 가중치는 Colab의 고속 임시 디스크에 저장되며 새 VM을 시작할 때마다 다시 다운로드할 수 있습니다. 모델을 언로드하거나 전환해도 활성 인스턴스의 캐시 파일은 삭제되지 않습니다.
 - **시스템 트레이 및 자동 해제**: 창을 닫으면 ColabOne은 시스템 트레이로 최소화됩니다. 앱을 종료하면 로컬 하트비트는 중지되지만 원격 VM의 유휴 자동 해제 보호는 계속 작동합니다. 네트워크 연결이 끊어져도 Colab 과금은 중단되지 않으므로 항상 **원격 기기**에서 중지 상태를 확인하세요.
@@ -118,16 +118,16 @@ ColabOne은 원격 Colab GPU(`127.0.0.1:8188`)에만 **ComfyUI `v0.46.0`** 버�
 - **자격 증명 및 개인정보 보호**: Google OAuth 토큰, API 키, Cloudflare Tunnel 토큰, 선택형 Hugging Face 토큰(승인 필요 저장소용), 선택형 GPU 할당 전용 프록시 설정은 모두 OS 키체인에 보관되며 로그(메모리 최근 300건 및 로컬 `0600` 권한 활동 로그)에서 민감 정보가 자동 마스킹됩니다. ColabOne은 기존 Colab CLI 프로필과 완전히 독립적으로 동작합니다.
 - **지원 범위 및 검증**: GGUF 가져오기는 40자리 커밋 SHA를 정확히 고정하고 저장소의 Python 코드를 실행하지 않은 채 모든 분할 파일을 SHA-256으로 검증합니다. 기존의 내장 데스크톱 채팅·이미지·비디오 페이지는 **외부 API**와 **ComfyUI**로 대체되었습니다. 에이전트 및 로컬 MCP 실행은 v0.1 범위에서 제외됩니다. 개발 빌드는 상용 코드 서명 또는 공증이 적용되어 있지 않으므로 언제든 소스를 직접 검토하거나 로컬에서 빌드해 사용할 수 있습니다.
 
-## 소스에서 빌드하기
+## 🔧 소스에서 빌드하기
 
-### 사전 요구 사항
+### 📋 사전 요구 사항
 
 - **Go** `1.27.3`
 - **Node.js** `24 LTS` (또는 `26`)
 - **Python** `3.12`
 - **`uv`** (또는 표준 `venv` + `pip`)
 
-### 환경 구성 및 빌드
+### 🔨 환경 구성 및 빌드
 
 ```sh
 uv venv --python 3.12
@@ -139,7 +139,7 @@ cd ..
 npm --prefix frontend run build
 ```
 
-### 검증 및 패키징
+### 📦 검증 및 패키징
 
 > Windows에서는 `.venv/bin/python` 대신 `.venv\Scripts\python.exe`를 사용하세요.
 
@@ -155,18 +155,18 @@ npm --prefix frontend run build
 
 모든 단위 테스트와 브라우저 테스트는 목(mock)을 사용해 100% 오프라인으로 실행되며, Google이나 Hugging Face에 접속하거나 GPU를 할당하지 않습니다. 실제 GPU 환경의 인수 검증은 엄격한 컴퓨팅 예산 하에 명시적으로만 수행합니다. 자세한 내용은 [docs/validation.md](docs/validation.md)를 참고하세요.
 
-## 문서
+## 📚 문서
 
 - [아키텍처 개요](docs/architecture.md) — 로컬 브리지, 원격 루프백 포트, 드라이브 동기화, 텔레메트리 및 보안 경계
 - [원격 및 외부 API 레퍼런스](docs/api.md) — 제어 라우트, OpenAI 게이트웨이 명세 및 ComfyUI 엔드포인트
 - [검증 기록](docs/validation.md) — 오프라인 CI 커버리지 및 실제 GPU 인수 검증 로그
 - [업스트림 출처 및 라이선스](third_party/SOURCES.md) — 버전이 고정된 서드파티 의존성 및 저작권 고지
 
-## 기여하기
+## 🤝 기여하기
 
 기여, 버그 제보, 기능 제안은 언제나 환영합니다! 로컬 개발 환경 구성, PR 가이드라인 및 오프라인 테스트 요구 사항은 [기여 가이드](CONTRIBUTING.md)를 참고하세요.
 
-### 기여자
+### 💖 기여자
 
 ColabOne을 함께 만들고 개선해 주신 모든 분들께 감사드립니다:
 
@@ -174,21 +174,18 @@ ColabOne을 함께 만들고 개선해 주신 모든 분들께 감사드립니�
   <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne Contributors" />
 </a>
 
-## 감사 인사
+## 🎉 감사 인사
 
-ColabOne의 설계, 구현 및 핵심 기능은 오픈소스 커뮤니티에서 큰 영감을 받았습니다. 특히 아래 두 참고 프로젝트의 제작자분들께 깊이 감사드립니다:
+[**Alma**](https://alma.now/)와 [**Antigravity-Manager**](https://github.com/lbjlaq/Antigravity-Manager)에 특별한 감사를 전합니다 — ColabOne의 UI 디자인과 시각적 완성도, 그리고 앱 로고에 이르기까지 두 프로젝트로부터 직접적인 영감과 참고를 얻었습니다.
+
+ColabOne은 아래 오픈소스 프로젝트들도 함께 기반으로 삼고 참고했습니다(자세한 내용은 [NOTICE](NOTICE) 및 [third_party/SOURCES.md](third_party/SOURCES.md) 참고):
 
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab GPU 할당, 런타임 준비 확인, 하트비트 수명 주기 관리 및 포터블 Python 패키징 설계에 참고했습니다.
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 데스크톱-Colab 브리지 아키텍처와 헤드리스 `rclone` Google 드라이브 마운트 패턴을 참고했습니다.
-
-소중한 결과물을 오픈소스로 공개해 ColabOne의 기반이 되어 준 두 프로젝트에 진심으로 감사드립니다.
-
-ColabOne은 아래 오픈소스 프로젝트들에도 기반하고 있으며 깊이 감사드립니다(자세한 내용은 [NOTICE](NOTICE) 및 [third_party/SOURCES.md](third_party/SOURCES.md) 참고):
-
 - **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 원격 노드 기반 이미지·비디오·멀티모달 워크플로 엔진.
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 모델 매니페스트, 고정 버전 `llama.cpp` CUDA 배포 및 병렬 범위 다운로드 전략.
 - **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)* 및 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
 
-## 라이선스
+## 📜 라이선스
 
 ColabOne은 원격 연동되는 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0)에 맞추어 **GNU General Public License v3.0** ([LICENSE](LICENSE)) 라이선스로 배포됩니다. 모든 업스트림 라이선스 및 저작권 고지는 [NOTICE](NOTICE)와 [third_party/SOURCES.md](third_party/SOURCES.md)에 보존되어 있습니다.

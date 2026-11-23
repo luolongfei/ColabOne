@@ -26,7 +26,7 @@ ColabOne puts your remote Google Colab GPUs behind a fast, native desktop app fo
 
 Your computer only runs the desktop UI and a lightweight local controller. All model downloads, GGUF weights, `llama.cpp` inference, and ComfyUI execution happen exclusively on the remote Colab GPU.
 
-## Highlights
+## ✨ Highlights
 
 - **Multi-GPU Management & Live Telemetry (`Devices`)** — Launch, switch between, and selectively release multiple Colab GPUs (`T4`, `L4`, `A100`, `H100`, `G4` RTX PRO 6000), while also inspecting external instances running on your Google account. Track live billing status, `CU/hr` burn rate, remaining CU balance, estimated runtime, region flags, and 60-second charts for GPU VRAM/utilization, RAM, disk I/O, and CPU.
 - **Smart Idle Auto-Release** — Protects your compute balance with a configurable idle countdown (default **30 min**; options from `15 min` to `2 hr`). Enforced on the remote VM so it keeps working even if you quit ColabOne, and automatically pauses during downloads, VRAM loads, API inference, and ComfyUI activity.
@@ -35,12 +35,12 @@ Your computer only runs the desktop UI and a lightweight local controller. All m
 - **Automatic Google Drive Persistence** — Saves your model catalog, ComfyUI workflows, and generated outputs to `My Drive / ColabOne_Drive` using app-scoped `drive.file` permissions. Works out of the box with Colab native DriveFS (one click per new VM) and upgrades to permanent zero-prompt headless `rclone` auto-mount once you accept the free Google Cloud Terms of Service.
 - **Built for Everyday Use** — Portable packages ship with a standalone CPython runtime (no local Python, Go, or Node required), 6 UI languages, Light/Dark/System themes, OS keychain secret storage, an optional assign-only GPU allocation proxy, one-click remote service hot-updates, and a live redacted log drawer (`Ctrl+J`).
 
-## Quick Start
+## 🚀 Quick Start
 
 ColabOne is organized around four sidebar views: **Devices → Public API → ComfyUI → Settings**, plus a slide-over **Logs** drawer on the right.
 
 1. **Download & Launch**
-   Download the archive for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#building-from-source)), extract the full folder, and open `ColabOne.app` (macOS) or `ColabOne.exe` (Windows). Keep sibling folders (`runtime`, `site-packages`, `bridge`, etc.) next to the app. On Windows, you can create Start Menu and Desktop shortcuts from **Settings** without admin rights.
+   Download the archive for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#-building-from-source)), extract the full folder, and open `ColabOne.app` (macOS) or `ColabOne.exe` (Windows). Keep sibling folders (`runtime`, `site-packages`, `bridge`, etc.) next to the app. On Windows, you can create Start Menu and Desktop shortcuts from **Settings** without admin rights.
 
 2. **Sign In with Google**
    Go to **Settings** → **Sign in with Google**, authorize your account in the browser, and ColabOne will complete login automatically. If your browser displays an authorization page instead of redirecting, expand the manual paste section and click **Paste & Sign In**. Credentials stay encrypted in macOS Keychain or Windows Credential Manager and auto-renew across restarts.
@@ -55,11 +55,11 @@ ColabOne is organized around four sidebar views: **Devices → Public API → Co
 5. **Release When Finished**
    Click **Stop** on an individual instance, or click **Stop All** to selectively check which instances to terminate while leaving other sessions untouched. Managed instances automatically close public tunnels and flush `ColabOne_Drive` before releasing.
 
-## Public OpenAI-Compatible API
+## 🌐 Public OpenAI-Compatible API
 
 **Public API** pairs a built-in single-model GGUF picker with a dedicated, Bearer-authenticated OpenAI gateway (`127.0.0.1:7861`) backed by remote `llama-server` (`127.0.0.1:8081`). Management routes (`/api/v1/*`) stay isolated on a private control port and are never exposed publicly.
 
-### Supported Endpoints
+### 📡 Supported Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -68,7 +68,7 @@ ColabOne is organized around four sidebar views: **Devices → Public API → Co
 | `POST` | `/v1/responses` | OpenAI Responses API (`wire_api = "responses"`) with SSE streaming, function & custom/`apply_patch` tools, reasoning summaries, and automatic 3-stage context compaction. |
 | `POST` | `/v1/responses/compact` | Codex / OpenAI context compaction (`response.compaction`) for long coding threads. |
 
-### Connecting External Clients
+### 🔌 Connecting External Clients
 
 1. **Configure a Fixed-Domain Tunnel**: In Cloudflare Zero Trust, create a Cloudflared Named Tunnel and map your public HTTPS hostname to `http://127.0.0.1:7861` (do not enable interactive Cloudflare Access login on the API hostname). Paste the install command or tunnel token into **Public API**, save, and click **Start Public API**. *(Temporary `trycloudflare.com` domains are intentionally disabled.)*
 2. **Point Your App or SDK to ColabOne**: Copy the **Base URL**, **API Key**, and **Active Model ID** (editable live without reloading VRAM — or use the fixed alias `colabone/auto` to route to whichever model is loaded). Built-in **cURL**, **Python**, and **Codex** snippets and live per-request token throughput (`tok/s`, TTFT, prefill speed) are shown right inside the app.
@@ -94,7 +94,7 @@ for event in stream:
 
 Stopping **Public API** revokes public access while keeping your GPU and loaded model warm; stopping the GPU automatically shuts down the gateway and tunnel. See [docs/api.md](docs/api.md#public-inference-api-llm-openai-gateway) for full route contracts and error codes.
 
-## ComfyUI Workspace
+## 🎨 ComfyUI Workspace
 
 ColabOne deploys **ComfyUI `v0.46.0`** exclusively on the remote Colab GPU (`127.0.0.1:8188`) with a dual-layer workspace:
 
@@ -110,7 +110,7 @@ ColabOne deploys **ComfyUI `v0.46.0`** exclusively on the remote Colab GPU (`127
   - `llama-server` (`8081`) and `ComfyUI` (`8188`) never occupy GPU VRAM at the same time. Switching automatically unloads the active engine while retaining cached weights on remote disk.
   - Active ComfyUI queues and Native Canvas requests automatically pause the idle auto-release countdown.
 
-## Storage, Billing & Security
+## 🔒 Storage, Billing & Security
 
 - **Google Drive Sync**: Model catalogs, ComfyUI workflows, and outputs persist to `My Drive / ColabOne_Drive` under the restricted `drive.file` scope (ColabOne cannot read unrelated personal Drive files). Model weights live on Colab's fast ephemeral disk and can be re-downloaded whenever you start a new VM. Unloading or switching models never deletes cached files on the active instance.
 - **System Tray & Auto-Release**: Closing the window minimizes ColabOne to the tray. Quitting stops local heartbeats, while the remote idle auto-release guard continues running on the VM. A dropped connection does not stop Colab billing — always confirm stopped status in **Devices**.
@@ -118,16 +118,16 @@ ColabOne deploys **ComfyUI `v0.46.0`** exclusively on the remote Colab GPU (`127
 - **Credentials & Privacy**: Google OAuth tokens, API keys, Cloudflare Tunnel tokens, optional Hugging Face tokens (for gated repos), and optional assign-only GPU allocation proxy settings are stored in your OS keychain and redacted from logs (last 300 entries in memory plus a local `0600` activity log). ColabOne stays completely independent of existing Colab CLI profiles.
 - **Scope & Verification**: GGUF imports pin exact 40-character commit SHAs and verify every shard with SHA-256 without executing repository Python code. Legacy built-in desktop chat/image/video pages have been retired in favor of **Public API** and **ComfyUI**. Agent and local MCP execution are out of scope for v0.1. Development builds are not commercially code-signed or notarized — inspect the source or build locally at any time.
 
-## Building from Source
+## 🔧 Building from Source
 
-### Prerequisites
+### 📋 Prerequisites
 
 - **Go** `1.27.3`
 - **Node.js** `24 LTS` (or `26`)
 - **Python** `3.12`
 - **`uv`** (or standard `venv` + `pip`)
 
-### Setup & Build
+### 🔨 Setup & Build
 
 ```sh
 uv venv --python 3.12
@@ -139,7 +139,7 @@ cd ..
 npm --prefix frontend run build
 ```
 
-### Verify & Package
+### 📦 Verify & Package
 
 > On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`.
 
@@ -155,18 +155,18 @@ Portable archives are written to `dist/` (with the unpacked staging directory at
 
 All unit and browser tests run 100% offline with mocks — they never contact Google or Hugging Face and never provision a GPU. Real-GPU acceptance is run explicitly on a strict compute budget; see [docs/validation.md](docs/validation.md).
 
-## Documentation
+## 📚 Documentation
 
 - [Architecture Overview](docs/architecture.md) — Local bridge, remote loopback ports, Drive sync, telemetry, and security boundaries
 - [Remote & Public API Reference](docs/api.md) — Control routes, OpenAI gateway contract, and ComfyUI endpoints
 - [Validation Record](docs/validation.md) — Offline CI coverage and real-GPU acceptance logs
 - [Upstream Provenance](third_party/SOURCES.md) — Pinned third-party dependencies and attributions
 
-## Contributing
+## 🤝 Contributing
 
 Contributions, bug reports, and feature suggestions are always welcome! See the [Contributing Guide](CONTRIBUTING.md) for local setup, PR guidelines, and offline testing requirements.
 
-### Contributors
+### 💖 Contributors
 
 Thanks to everyone who has helped build and improve ColabOne:
 
@@ -174,21 +174,18 @@ Thanks to everyone who has helped build and improve ColabOne:
   <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne Contributors" />
 </a>
 
-## Acknowledgments
+## 🎉 Acknowledgments
 
-ColabOne's design, implementation, and core features draw heavily from the open-source community. We are especially grateful to the authors of these two reference projects:
+Special thanks to **[Alma](https://alma.now/)** and **[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)** — ColabOne's UI design, visual polish, and even its logo were directly inspired by their work.
+
+ColabOne also builds on and references these open-source projects (full details in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md)):
 
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Referenced for Google Colab GPU allocation, runtime readiness, heartbeat lifecycle management, and portable Python packaging.
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — Referenced for desktop-to-Colab bridge architecture and headless `rclone` Google Drive mounting patterns.
-
-Thank you to both projects for open-sourcing their work and making ColabOne possible.
-
-ColabOne also builds on and thanks these open-source projects (full details in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md)):
-
 - **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — Remote node-based image, video, and multimodal workflow engine.
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — Model manifests, pinned `llama.cpp` CUDA deployment, and parallel range-download strategy.
 - **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
 
-## License
+## 📜 License
 
 ColabOne is licensed under the **GNU General Public License v3.0** ([LICENSE](LICENSE)) to align with remote-integrated [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0). All upstream license and copyright notices are preserved in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md).

@@ -26,7 +26,7 @@ ColabOne 為 **macOS (Apple Silicon)** 與 **Windows (x64)** 提供快速、原�
 
 你的電腦本機只會執行桌面介面與輕量級本機控制器；所有模型下載、GGUF 權重儲存、`llama.cpp` 推論與 ComfyUI 執行，全都在遠端 Colab GPU 上進行。
 
-## 核心特色
+## ✨ 核心特色
 
 - **多 GPU 管理與即時硬體監控（`遠端裝置`）** — 按需啟動、切換並選擇性釋放多台 Colab GPU（`T4`、`L4`、`A100`、`H100`、`G4` RTX PRO 6000），同時檢視 Google 帳戶中其他來源正在運作的執行個體。即時掌握計費狀態、`CU/小時` 消耗速率、剩餘 CU 餘額、預估可用時間、執行個體所在地區國旗，以及涵蓋 GPU VRAM／核心負載、系統記憶體、磁碟讀寫與 CPU 的 60 秒即時監控圖表。
 - **智慧閒置自動釋放** — 提供可自訂的閒置自動釋放倒數（預設 **30 分鐘**，可選 `15 分鐘` 至 `2 小時`）以守護你的運算單元餘額。機制直接部署於遠端 VM，即使關閉 ColabOne 仍會持續運作，並在模型下載、載入 VRAM、對外 API 推論與 ComfyUI 執行期間自動暫停倒數。
@@ -35,12 +35,12 @@ ColabOne 為 **macOS (Apple Silicon)** 與 **Windows (x64)** 提供快速、原�
 - **Google 雲端硬碟自動持久保存** — 使用應用程式範圍的 `drive.file` 權限，自動將模型清單、ComfyUI 工作流程與產出作品同步至 `My Drive / ColabOne_Drive`。開箱即支援 Colab 原生 DriveFS 掛載（每次新建執行個體僅需點擊一次授權），只要同意一次免費的 Google Cloud 服務條款，即可升級為 `rclone` 永久免彈窗自動掛載。
 - **為日常使用打造** — 免安裝可攜版內建獨立 CPython 執行環境（本機無需安裝 Python、Go 或 Node.js），支援 6 種介面語言、淺色／深色／跟隨系統外觀主題、本機系統鑰匙圈／憑證庫安全儲存、選用的 GPU 分配代理（僅分配階段）、一鍵熱更新遠端服務，以及自動遮蔽敏感資訊的即時執行日誌面板（`Ctrl+J`）。
 
-## 快速開始
+## 🚀 快速開始
 
 ColabOne 介面圍繞四個側邊欄檢視組織：**遠端裝置 → 對外 API → ComfyUI → 設定**，並於右側提供可滑出的 **執行日誌** 面板。
 
 1. **下載並啟動**
-   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的可攜版壓縮檔（或[從原始碼建置](#從原始碼建置)），完整解壓縮後執行 `ColabOne.app`（macOS）或 `ColabOne.exe`（Windows）。請保留應用程式同層的資料夾（`runtime`、`site-packages`、`bridge` 等）。在 Windows 上，你可以在 **設定** 中直接建立開始功能表與桌面捷徑，無需系統管理員權限。
+   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的可攜版壓縮檔（或[從原始碼建置](#-從原始碼建置)），完整解壓縮後執行 `ColabOne.app`（macOS）或 `ColabOne.exe`（Windows）。請保留應用程式同層的資料夾（`runtime`、`site-packages`、`bridge` 等）。在 Windows 上，你可以在 **設定** 中直接建立開始功能表與桌面捷徑，無需系統管理員權限。
 
 2. **登入 Google 帳戶**
    前往 **設定** → **登入 Google**，在瀏覽器中授權你的帳戶後，ColabOne 會自動完成登入。若瀏覽器顯示授權內容頁面而非自動跳轉，請展開手動貼上區塊並點擊 **貼上並完成登入**。憑證會加密儲存在 macOS 鑰匙圈或 Windows 憑證管理員中，重啟後自動恢復並續期。
@@ -55,11 +55,11 @@ ColabOne 介面圍繞四個側邊欄檢視組織：**遠端裝置 → 對外 API
 5. **使用完畢後釋放資源**
    在單一執行個體上點擊 **單獨停止**，或點擊 **停止全部** 勾選要終止的執行個體，未勾選的工作階段將不受影響並繼續運作。由本程式管理的執行個體在釋放前，會自動關閉公開通道並同步 `ColabOne_Drive`。
 
-## 對外 OpenAI 相容 API
+## 🌐 對外 OpenAI 相容 API
 
 **對外 API** 整合了內建的單模型 GGUF 選擇器，以及由遠端 `llama-server`（`127.0.0.1:8081`）驅動、採 Bearer 權杖驗證的專屬 OpenAI 閘道（`127.0.0.1:7861`）。管理路由（`/api/v1/*`）隔離在內部控制連接埠上，絕不會暴露至公開網路。
 
-### 支援端點
+### 📡 支援端點
 
 | 方法 | 端點 | 說明 |
 |---|---|---|
@@ -68,7 +68,7 @@ ColabOne 介面圍繞四個側邊欄檢視組織：**遠端裝置 → 對外 API
 | `POST` | `/v1/responses` | OpenAI Responses API（`wire_api = "responses"`），支援 SSE 串流、function 與 custom／`apply_patch` 工具、推理摘要，以及自動三階段上下文壓縮。 |
 | `POST` | `/v1/responses/compact` | 適用於長篇程式開發對話的 Codex / OpenAI 上下文壓縮端點（`response.compaction`）。 |
 
-### 連線外部用戶端
+### 🔌 連線外部用戶端
 
 1. **設定固定網域通道**：在 Cloudflare Zero Trust 中建立一個 Cloudflared Named Tunnel，並將你的公開 HTTPS 主機名稱對應至 `http://127.0.0.1:7861`（請勿為該 API 主機名稱開啟 Cloudflare 互動式 Access 登入驗證）。將安裝指令或 Tunnel Token 貼上至 **對外 API**，儲存後點擊 **開啟 API 服務**。（*程式刻意停用臨時 `trycloudflare.com` 網域。*）
 2. **將應用程式或 SDK 指向 ColabOne**：複製 **Base URL**、**API Key** 與 **目前模型 ID**（可即時編輯，無需重新載入 VRAM；亦可使用固定別名 `colabone/auto` 自動路由至目前載入的模型）。應用程式內建 **cURL**、**Python** 與 **Codex** 呼叫範例，並即時顯示每次請求的 Token 速度（`tok/s`、首字延遲 TTFT、提示詞預填充速度）。
@@ -94,7 +94,7 @@ for event in stream:
 
 關閉 **對外 API** 會立即撤銷外部存取權限，同時保留遠端 GPU 與已載入的模型於待機狀態；停止 GPU 則會自動關閉閘道與通道。完整的端點介面規格與錯誤碼請參閱 [docs/api.md](docs/api.md#public-inference-api-llm-openai-gateway)。
 
-## ComfyUI 工作區
+## 🎨 ComfyUI 工作區
 
 ColabOne 僅於遠端 Colab GPU（`127.0.0.1:8188`）部署 **ComfyUI `v0.46.0`**，並提供雙層工作區體驗：
 
@@ -110,7 +110,7 @@ ColabOne 僅於遠端 Colab GPU（`127.0.0.1:8188`）部署 **ComfyUI `v0.46.0`*
   - `llama-server`（`8081`）與 `ComfyUI`（`8188`）絕不會同時佔用 GPU VRAM。切換引擎時會自動卸載運作中的引擎，並保留快取於遠端磁碟的模型權重。
   - 運作中的 ComfyUI 執行佇列與原生畫布操作皆會自動暫停閒置自動釋放倒數。
 
-## 儲存、計費與安全性
+## 🔒 儲存、計費與安全性
 
 - **Google 雲端硬碟同步**：模型清單、ComfyUI 工作流程與輸出作品會以受限的 `drive.file` 權限範圍持久保存至 `My Drive / ColabOne_Drive`（ColabOne 無法存取其他無關的個人雲端硬碟檔案）。模型權重存放於 Colab 的高速暫存磁碟，每次啟動新 VM 時可重新下載；在運作中的執行個體上卸載或切換模型，絕不會刪除已快取的檔案。
 - **系統匣與自動釋放**：關閉視窗會將 ColabOne 最小化至系統匣。結束應用程式會停止本機心跳回報，但遠端 VM 上的閒置自動釋放保護機制仍會持續運作。網路斷線並不會停止 Colab 計費 — 請務必在 **遠端裝置** 確認執行個體已停止。
@@ -118,16 +118,16 @@ ColabOne 僅於遠端 Colab GPU（`127.0.0.1:8188`）部署 **ComfyUI `v0.46.0`*
 - **憑證與隱私保護**：Google OAuth 權杖、API 金鑰、Cloudflare Tunnel Token、選用的 Hugging Face Token（供存取受限儲存庫）以及選用的 GPU 分配代理（僅分配階段）設定，均儲存在本機系統鑰匙圈／憑證庫中，並於日誌中自動遮蔽（記憶體保留最近 300 筆，另寫入權限為 `0600` 的本機活動日誌）。ColabOne 與既有的 Colab CLI 設定檔完全獨立。
 - **功能範圍與安全驗證**：匯入 GGUF 模型時會鎖定完整的 40 字元 commit SHA，並對每個分片進行 SHA-256 驗證，全程不執行儲存庫內的 Python 程式碼。舊版內建桌面對話／圖片／影片頁面已下線，改由 **對外 API** 與 **ComfyUI** 取代。Agent 與本機 MCP 執行不在 v0.1 範圍內。開發版本未進行商業程式碼簽章或公證 — 歡迎隨時檢視原始碼或於本機自行建置。
 
-## 從原始碼建置
+## 🔧 從原始碼建置
 
-### 環境需求
+### 📋 環境需求
 
 - **Go** `1.27.3`
 - **Node.js** `24 LTS`（或 `26`）
 - **Python** `3.12`
 - **`uv`**（或標準 `venv` + `pip`）
 
-### 安裝與建置
+### 🔨 安裝與建置
 
 ```sh
 uv venv --python 3.12
@@ -139,7 +139,7 @@ cd ..
 npm --prefix frontend run build
 ```
 
-### 驗證與封裝
+### 📦 驗證與封裝
 
 > 在 Windows 上，請將 `.venv/bin/python` 替換為 `.venv\Scripts\python.exe`。
 
@@ -155,18 +155,18 @@ npm --prefix frontend run build
 
 所有單元測試與瀏覽器測試皆 100% 離線以模擬資料（Mock）執行 — 絕不會連線至 Google 或 Hugging Face，也不會配置真實 GPU。真實 GPU 驗收測試會在嚴格的運算預算下另行手動執行，詳情請參閱 [docs/validation.md](docs/validation.md)。
 
-## 相關文件
+## 📚 相關文件
 
 - [架構總覽](docs/architecture.md) — 本機橋接服務、遠端 loopback 連接埠、雲端硬碟同步、即時遙測與安全邊界
 - [遠端與對外 API 參考文件](docs/api.md) — 控制端點路由、OpenAI 閘道介面規格與 ComfyUI 端點
 - [驗證紀錄](docs/validation.md) — 離線 CI 測試涵蓋範圍與真實 GPU 驗收紀錄
 - [上游來源與授權歸屬](third_party/SOURCES.md) — 鎖定的第三方相依項目與授權宣告
 
-## 參與貢獻
+## 🤝 參與貢獻
 
 非常歡迎任何程式碼貢獻、錯誤回報與功能建議！本機開發環境建置、PR 規範與離線測試要求，請參閱[貢獻指南](CONTRIBUTING.md)。
 
-### 貢獻者
+### 💖 貢獻者
 
 感謝每一位協助開發與改進 ColabOne 的貢獻者：
 
@@ -174,21 +174,18 @@ npm --prefix frontend run build
   <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne 貢獻者" />
 </a>
 
-## 致謝
+## 🎉 致謝
 
-ColabOne 的架構設計、實作細節與核心功能深受開源社群啟發，特別感謝以下兩個參考專案的作者：
+特別感謝 **[Alma](https://alma.now/)** 與 **[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)** — ColabOne 的介面設計、視覺質感乃至應用程式 Logo，皆深受這兩個專案的啟發與參考。
+
+ColabOne 同時建構於並參考以下開源專案（完整資訊請參閱 [NOTICE](NOTICE) 與 [third_party/SOURCES.md](third_party/SOURCES.md)）：
 
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — 參考了 Google Colab GPU 分配、執行環境就緒檢測、心跳生命週期管理與可攜式 Python 封裝設計。
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 參考了桌面端與 Colab 之間的橋接架構，以及免彈窗 `rclone` Google 雲端硬碟掛載模式。
-
-衷心感謝這兩個專案的開源分享，讓 ColabOne 得以順利實現。
-
-ColabOne 同時建構於並感謝以下開源專案（完整資訊請參閱 [NOTICE](NOTICE) 與 [third_party/SOURCES.md](third_party/SOURCES.md)）：
-
 - **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 遠端節點式圖片、影片與多模態工作流程引擎。
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 模型清單設計、鎖定版本的 `llama.cpp` CUDA 部署與並行分段下載策略。
 - **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*，以及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
 
-## 授權條款
+## 📜 授權條款
 
 ColabOne 採用 **GNU General Public License v3.0**（[LICENSE](LICENSE)）授權條款，與遠端整合的 [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`，GPL-3.0）保持一致。所有上游授權與著作權聲明皆完整保留於 [NOTICE](NOTICE) 與 [third_party/SOURCES.md](third_party/SOURCES.md)。

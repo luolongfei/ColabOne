@@ -26,7 +26,7 @@ ColabOne は、**macOS (Apple Silicon)** および **Windows (x64)** 向けの�
 
 お使いの PC 上で動作するのはデスクトップ UI と軽量なローカル制御プロセスのみです。モデルのダウンロード、GGUF 重みファイルの保持、`llama.cpp` による推論、ComfyUI の実行はすべてリモートの Colab GPU 上で完結します。
 
-## 主な機能
+## ✨ 主な機能
 
 - **マルチ GPU 管理とリアルタイム監視（`リモートデバイス`）** — 複数の Colab GPU（`T4`、`L4`、`A100`、`H100`、`G4` RTX PRO 6000）を起動・切り替え・選択解放でき、同じ Google アカウント上で外部起動されたインスタンスの状態も確認できます。課金ステータス、`CU/時` の消費レート、残り CU 残高、連続稼働目安、リージョン国旗アイコンに加え、GPU VRAM／負荷・システムメモリ (RAM)・ディスク I/O・CPU の 60 秒リアルタイムグラフを監視できます。
 - **スマートアイドル自動解放** — 設定可能なアイドルカウントダウン（デフォルト **30 分**、`15 分`〜`2 時間` から選択可能）で不要なコンピュート残高の消費を防ぎます。保護機能はリモート VM 側で実行されるため ColabOne を終了しても継続して動作し、ダウンロード・VRAM への読み込み・API 推論・ComfyUI の実行中は自動で一時停止します。
@@ -35,12 +35,12 @@ ColabOne は、**macOS (Apple Silicon)** および **Windows (x64)** 向けの�
 - **Google ドライブへの自動永続化** — アプリ専用スコープの `drive.file` 権限を使い、モデル一覧・ComfyUI ワークフロー・生成物を `My Drive / ColabOne_Drive` へ自動保存します。標準では Colab ネイティブ DriveFS によりすぐ利用でき（新規 VM ごとに 1 クリックで許可）、無料の Google Cloud 利用規約に一度同意すれば、確認不要の永久ヘッドレス `rclone` 自動マウントへアップグレードできます。
 - **日常利用に配慮した設計** — スタンドアロン CPython ランタイム同梱のポータブルパッケージ（ローカルへの Python・Go・Node 導入不要）、6 言語 UI、ライト／ダーク／システムに従うのテーマ切替、OS キーチェーンによる認証情報保護、任意設定の GPU 割り当て専用プロキシ、ワンクリックのリモートサービスホットアップデート、機密情報をマスク済みのリアルタイム実行ログパネル（`Ctrl+J`）を備えています。
 
-## クイックスタート
+## 🚀 クイックスタート
 
 ColabOne は 4 つのサイドバー画面（**リモートデバイス → 外部 API → ComfyUI → 設定**）と、右側から開く **実行ログ** パネルで構成されています。
 
 1. **ダウンロードと起動**
-   [Releases](https://github.com/luolongfei/ColabOne/releases) からお使いの環境向けアーカイブをダウンロード（または[ソースからビルド](#ソースからビルド)）し、フォルダごと展開して `ColabOne.app`（macOS）または `ColabOne.exe`（Windows）を起動します。同階層のフォルダ（`runtime`、`site-packages`、`bridge` など）はアプリ本体と同じ場所に維持してください。Windows では **設定** から管理者権限なしでスタートメニューおよびデスクトップのショートカットを作成できます。
+   [Releases](https://github.com/luolongfei/ColabOne/releases) からお使いの環境向けアーカイブをダウンロード（または[ソースからビルド](#-ソースからビルド)）し、フォルダごと展開して `ColabOne.app`（macOS）または `ColabOne.exe`（Windows）を起動します。同階層のフォルダ（`runtime`、`site-packages`、`bridge` など）はアプリ本体と同じ場所に維持してください。Windows では **設定** から管理者権限なしでスタートメニューおよびデスクトップのショートカットを作成できます。
 
 2. **Google アカウントでログイン**
    **設定** → **Google でログイン** を開き、ブラウザでアカウントを認可すると自動でログインが完了します。リダイレクトされずブラウザに認可ページが表示された場合は、手動貼り付け欄を開いて **貼り付けてログイン完了** をクリックしてください。認証情報は macOS キーチェーンまたは Windows 資格情報マネージャーに暗号化保存され、再起動後も自動で復元・更新されます。
@@ -55,11 +55,11 @@ ColabOne は 4 つのサイドバー画面（**リモートデバイス → 外�
 5. **作業終了後の解放**
    各インスタンスの **個別に停止** をクリックするか、**すべて停止** から停止対象をチェックボックスで選択して解放します（チェックを外したインスタンスは稼働を継続します）。本アプリ管理のインスタンスは解放前に公開トンネルを閉じ、`ColabOne_Drive` への同期を自動で完了します。
 
-## OpenAI 互換の外部 API
+## 🌐 OpenAI 互換の外部 API
 
 **外部 API** は、内蔵の単一モデル GGUF ピッカーと、リモートの `llama-server`（`127.0.0.1:8081`）をバックエンドとする Bearer 認証付き専用 OpenAI ゲートウェイ（`127.0.0.1:7861`）を組み合わせた機能です。管理ルート（`/api/v1/*`）は非公開の制御ポートに分離されており、外部へ公開されることはありません。
 
-### 対応エンドポイント
+### 📡 対応エンドポイント
 
 | メソッド | エンドポイント | 説明 |
 |---|---|---|
@@ -68,7 +68,7 @@ ColabOne は 4 つのサイドバー画面（**リモートデバイス → 外�
 | `POST` | `/v1/responses` | SSE ストリーミング、function／custom（`apply_patch`）ツール、推論サマリー、3 段階の自動コンテキスト圧縮に対応した OpenAI Responses API（`wire_api = "responses"`）。 |
 | `POST` | `/v1/responses/compact` | 長文のコーディングスレッド向け Codex／OpenAI 互換コンテキスト圧縮エンドポイント（`response.compaction`）。 |
 
-### 外部クライアントからの接続
+### 🔌 外部クライアントからの接続
 
 1. **固定ドメイントンネルを設定**: Cloudflare Zero Trust で Cloudflared Named Tunnel を作成し、公開 HTTPS ホスト名の転送先を `http://127.0.0.1:7861` に設定します（API ホスト名に対して Cloudflare Access の対話型ログインは有効にしないでください）。発行されたインストールコマンドまたは Tunnel Token を **外部 API** に貼り付けて保存し、**API サービスを開始** をクリックします（*一時ドメイン `trycloudflare.com` は意図的に無効化されています*）。
 2. **アプリや SDK から ColabOne へ接続**: 画面に表示される **Base URL**、**API Key**、**現在のモデル ID**（VRAM を再読み込みせずに即時変更可能。現在読み込み中のモデルへ自動ルーティングする固定エイリアス `colabone/auto` も利用できます）をコピーしてクライアントへ設定します。アプリ内には **cURL**・**Python**・**Codex** のコード例と、リクエストごとのトークン生成速度（`tok/s`、TTFT、プリフィル速度）がリアルタイム表示されます。
@@ -94,7 +94,7 @@ for event in stream:
 
 **外部 API** を停止すると公開アクセスのみが遮断され、GPU インスタンスと読み込み済みモデルはそのまま維持されます。GPU を停止すると、ゲートウェイとトンネルも自動で終了します。エンドポイント仕様とエラーコードの詳細は [docs/api.md](docs/api.md#public-inference-api-llm-openai-gateway) を参照してください。
 
-## ComfyUI ワークスペース
+## 🎨 ComfyUI ワークスペース
 
 ColabOne は **ComfyUI `v0.46.0`** をリモートの Colab GPU 上（`127.0.0.1:8188`）のみにデプロイし、2 層構成のワークスペースを提供します。
 
@@ -110,7 +110,7 @@ ColabOne は **ComfyUI `v0.46.0`** をリモートの Colab GPU 上（`127.0.0.1
   - `llama-server`（`8081`）と `ComfyUI`（`8188`）が GPU VRAM を同時に占有することはありません。切り替え時には稼働中エンジンを自動アンロードしつつ、リモートディスク上のキャッシュ済み重みは保持します。
   - ComfyUI の実行キューやネイティブキャンバスへのリクエストがアクティブな間は、アイドル自動解放のカウントダウンが自動で一時停止します。
 
-## ストレージ・課金・セキュリティ
+## 🔒 ストレージ・課金・セキュリティ
 
 - **Google ドライブ同期**: モデル一覧・ComfyUI ワークフロー・出力作品は制限付きスコープ `drive.file` の下で `My Drive / ColabOne_Drive` に永続保存されます（ColabOne が無関係な個人ドライブファイルへアクセスすることはありません）。モデルの重みファイルは Colab の高速な一時ディスクに配置され、新しい VM を起動した際に再ダウンロードできます。モデルのアンロードや切り替えで稼働中インスタンス上のキャッシュファイルが削除されることはありません。
 - **システムトレイと自動解放**: ウィンドウを閉じると ColabOne はシステムトレイへ最小化されます。アプリを終了するとローカルのハートビートは止まりますが、リモート VM 上のアイドル自動解放保護は継続して動作します。通信断だけでは Colab の課金は停止しないため、必ず **リモートデバイス** 画面で停止済みを確認してください。
@@ -118,16 +118,16 @@ ColabOne は **ComfyUI `v0.46.0`** をリモートの Colab GPU 上（`127.0.0.1
 - **認証情報とプライバシー**: Google OAuth トークン、API キー、Cloudflare Tunnel Token、任意の Hugging Face Token（アクセス制限リポジトリ用）、任意設定の GPU 割り当て専用プロキシは OS キーチェーン／資格情報ストアに保存され、ログからは自動的にマスクされます（メモリ上に最新 300 件を保持し、ローカルには権限 `0600` のアクティビティログを記録）。既存の Colab CLI プロファイルとは完全に独立して動作します。
 - **対象範囲と整合性検証**: GGUF インポート時は 40 文字のコミット SHA を厳密に固定し、リポジトリ内の Python コードを一切実行せずに全分割ファイルを SHA-256 で検証します。従来のデスクトップ内蔵チャット／画像／動画ページは廃止され、**外部 API** と **ComfyUI** に統合されました。エージェント機能およびローカル MCP 実行は v0.1 の対象外です。開発ビルドには商用コード署名および公証が付与されていないため、必要に応じてソースコードを確認のうえローカルでビルドしてください。
 
-## ソースからビルド
+## 🔧 ソースからビルド
 
-### 前提条件
+### 📋 前提条件
 
 - **Go** `1.27.3`
 - **Node.js** `24 LTS`（または `26`）
 - **Python** `3.12`
 - **`uv`**（または標準の `venv` + `pip`）
 
-### セットアップとビルド
+### 🔨 セットアップとビルド
 
 ```sh
 uv venv --python 3.12
@@ -139,7 +139,7 @@ cd ..
 npm --prefix frontend run build
 ```
 
-### 検証とパッケージ化
+### 📦 検証とパッケージ化
 
 > Windows では `.venv/bin/python` を `.venv\Scripts\python.exe` に読み替えてください。
 
@@ -155,18 +155,18 @@ npm --prefix frontend run build
 
 すべての単体テストおよびブラウザテストはモックを使って 100% オフラインで動作し、Google や Hugging Face へ接続したり GPU を割り当てたりすることはありません。実 GPU による受け入れ検証は厳格な計算予算の下で明示的に実施しています。詳細は [docs/validation.md](docs/validation.md) を参照してください。
 
-## ドキュメント
+## 📚 ドキュメント
 
 - [アーキテクチャ概要](docs/architecture.md) — ローカルブリッジ、リモートループバックポート、Google ドライブ同期、テレメトリ、セキュリティ境界
 - [リモートおよび外部 API リファレンス](docs/api.md) — 制御ルート、OpenAI ゲートウェイ仕様、ComfyUI エンドポイント
 - [検証記録](docs/validation.md) — オフライン CI カバレッジと実 GPU 受け入れテストログ
 - [アップストリーム出典情報](third_party/SOURCES.md) — バージョン固定済みサードパーティ依存関係と帰属表示
 
-## コントリビューション
+## 🤝 コントリビューション
 
 コードの貢献、バグ報告、機能提案はいつでも歓迎しています。ローカル環境のセットアップ、PR ガイドライン、オフラインテストの要件については [コントリビューションガイド](CONTRIBUTING.md) をご覧ください。
 
-### コントリビューター
+### 💖 コントリビューター
 
 ColabOne の開発と改善に協力してくださった皆様に感謝いたします。
 
@@ -174,21 +174,18 @@ ColabOne の開発と改善に協力してくださった皆様に感謝いた�
   <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne コントリビューター" />
 </a>
 
-## 謝辞
+## 🎉 謝辞
 
-ColabOne の設計・実装・コア機能は、オープンソースコミュニティの知見に大きく支えられています。特に以下の 2 つのリファレンスプロジェクトの作者の皆様に深く感謝いたします。
+**[Alma](https://alma.now/)** および **[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)** に特別な感謝を捧げます — ColabOne の UI デザイン、ビジュアルの洗練、さらにはアプリロゴに至るまで、両プロジェクトから直接的な着想と参考を得ています。
+
+ColabOne は以下のオープンソースプロジェクトにも支えられ、参考にしています（詳細は [NOTICE](NOTICE) および [third_party/SOURCES.md](third_party/SOURCES.md) を参照）：
 
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab の GPU 割り当て、ランタイム起動確認、ハートビートによるライフサイクル管理、ポータブル Python パッケージングの設計で参考にさせていただきました。
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — デスクトップアプリと Colab 間のブリッジ構成およびヘッドレス `rclone` による Google ドライブマウント手法の設計で参考にさせていただきました。
-
-両プロジェクトの成果をオープンソースとして公開し、ColabOne の実現を支えてくださったことに心より感謝いたします。
-
-また、ColabOne は以下のオープンソースプロジェクトを活用・参照しています（詳細は [NOTICE](NOTICE) および [third_party/SOURCES.md](third_party/SOURCES.md) を参照）。
-
 - **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — リモートのノードベース画像・動画・マルチモーダルワークフローエンジン。
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — モデルマニフェスト、バージョン固定済み `llama.cpp` CUDA デプロイ、並列レンジダウンロード戦略。
 - **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*、および **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
 
-## ライセンス
+## 📜 ライセンス
 
 ColabOne は、リモート統合している [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`、GPL-3.0）に合わせ、**GNU General Public License v3.0**（[LICENSE](LICENSE)）の下でライセンスされています。すべてのアップストリームライセンスおよび著作権表記は [NOTICE](NOTICE) と [third_party/SOURCES.md](third_party/SOURCES.md) に保持されています。
