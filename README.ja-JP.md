@@ -160,11 +160,35 @@ npm --prefix frontend run build
 - [アーキテクチャ概要](docs/architecture.md) — ローカルブリッジ、リモートループバックポート、Google ドライブ同期、テレメトリ、セキュリティ境界
 - [リモートおよび外部 API リファレンス](docs/api.md) — 制御ルート、OpenAI ゲートウェイ仕様、ComfyUI エンドポイント
 - [検証記録](docs/validation.md) — オフライン CI カバレッジと実 GPU 受け入れテストログ
-- [コントリビューションガイド](CONTRIBUTING.md) — 開発ワークフロー、PR の要件、テストルール
 - [アップストリーム出典情報](third_party/SOURCES.md) — バージョン固定済みサードパーティ依存関係と帰属表示
 
-## ライセンスと謝辞
+## コントリビューション
 
-ColabOne は、リモート統合している [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`、GPL-3.0）に合わせ、**GNU General Public License v3.0**（[LICENSE](LICENSE)）の下でライセンスされています。
+コードの貢献、バグ報告、機能提案はいつでも歓迎しています。ローカル環境のセットアップ、PR ガイドライン、オフラインテストの要件については [コントリビューションガイド](CONTRIBUTING.md) をご覧ください。
 
-すべてのアップストリーム帰属表示およびライセンス表記は [NOTICE](NOTICE) と [third_party/SOURCES.md](third_party/SOURCES.md) に保持されています。これには Apache-2.0 コンポーネント（[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)、EasyColab、Google Colab CLI、`cloudflared`）、MIT コンポーネント（[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)、`rclone`、`flag-icons`、`Shiki`）、および同梱 UI フォントサブセット（`Sarasa UI SC`、SIL OFL 1.1）が含まれます。
+### コントリビューター
+
+ColabOne の開発と改善に協力してくださった皆様に感謝いたします。
+
+<a href="https://github.com/luolongfei/ColabOne/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne コントリビューター" />
+</a>
+
+## 謝辞
+
+ColabOne の設計・実装・コア機能は、オープンソースコミュニティの知見に大きく支えられています。特に以下の 2 つのリファレンスプロジェクトの作者の皆様に深く感謝いたします。
+
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab の GPU 割り当て、ランタイム起動確認、ハートビートによるライフサイクル管理、ポータブル Python パッケージングの設計で参考にさせていただきました。
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — デスクトップアプリと Colab 間のブリッジ構成およびヘッドレス `rclone` による Google ドライブマウント手法の設計で参考にさせていただきました。
+
+両プロジェクトの成果をオープンソースとして公開し、ColabOne の実現を支えてくださったことに心より感謝いたします。
+
+また、ColabOne は以下のオープンソースプロジェクトを活用・参照しています（詳細は [NOTICE](NOTICE) および [third_party/SOURCES.md](third_party/SOURCES.md) を参照）。
+
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — リモートのノードベース画像・動画・マルチモーダルワークフローエンジン。
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — モデルマニフェスト、バージョン固定済み `llama.cpp` CUDA デプロイ、並列レンジダウンロード戦略。
+- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*、および **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+
+## ライセンス
+
+ColabOne は、リモート統合している [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`、GPL-3.0）に合わせ、**GNU General Public License v3.0**（[LICENSE](LICENSE)）の下でライセンスされています。すべてのアップストリームライセンスおよび著作権表記は [NOTICE](NOTICE) と [third_party/SOURCES.md](third_party/SOURCES.md) に保持されています。

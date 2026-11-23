@@ -160,11 +160,35 @@ npm --prefix frontend run build
 - [아키텍처 개요](docs/architecture.md) — 로컬 브리지, 원격 루프백 포트, 드라이브 동기화, 텔레메트리 및 보안 경계
 - [원격 및 외부 API 레퍼런스](docs/api.md) — 제어 라우트, OpenAI 게이트웨이 명세 및 ComfyUI 엔드포인트
 - [검증 기록](docs/validation.md) — 오프라인 CI 커버리지 및 실제 GPU 인수 검증 로그
-- [기여 가이드](CONTRIBUTING.md) — 개발 워크플로, PR 기준 및 테스트 규칙
 - [업스트림 출처 및 라이선스](third_party/SOURCES.md) — 버전이 고정된 서드파티 의존성 및 저작권 고지
 
-## 라이선스 및 감사 인사
+## 기여하기
 
-ColabOne은 원격 연동되는 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0)에 맞추어 **GNU General Public License v3.0** ([LICENSE](LICENSE)) 라이선스로 배포됩니다.
+기여, 버그 제보, 기능 제안은 언제나 환영합니다! 로컬 개발 환경 구성, PR 가이드라인 및 오프라인 테스트 요구 사항은 [기여 가이드](CONTRIBUTING.md)를 참고하세요.
 
-모든 업스트림 저작권 표시 및 라이선스 고지는 [NOTICE](NOTICE)와 [third_party/SOURCES.md](third_party/SOURCES.md)에 보존되어 있으며, Apache-2.0 구성 요소([Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga), EasyColab, Google Colab CLI, `cloudflared`), MIT 구성 요소([colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service), `rclone`, `flag-icons`, `Shiki`) 및 번들 UI 폰트 서브셋(`Sarasa UI SC`, SIL OFL 1.1)이 포함됩니다.
+### 기여자
+
+ColabOne을 함께 만들고 개선해 주신 모든 분들께 감사드립니다:
+
+<a href="https://github.com/luolongfei/ColabOne/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne Contributors" />
+</a>
+
+## 감사 인사
+
+ColabOne의 설계, 구현 및 핵심 기능은 오픈소스 커뮤니티에서 큰 영감을 받았습니다. 특히 아래 두 참고 프로젝트의 제작자분들께 깊이 감사드립니다:
+
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab GPU 할당, 런타임 준비 확인, 하트비트 수명 주기 관리 및 포터블 Python 패키징 설계에 참고했습니다.
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 데스크톱-Colab 브리지 아키텍처와 헤드리스 `rclone` Google 드라이브 마운트 패턴을 참고했습니다.
+
+소중한 결과물을 오픈소스로 공개해 ColabOne의 기반이 되어 준 두 프로젝트에 진심으로 감사드립니다.
+
+ColabOne은 아래 오픈소스 프로젝트들에도 기반하고 있으며 깊이 감사드립니다(자세한 내용은 [NOTICE](NOTICE) 및 [third_party/SOURCES.md](third_party/SOURCES.md) 참고):
+
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 원격 노드 기반 이미지·비디오·멀티모달 워크플로 엔진.
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 모델 매니페스트, 고정 버전 `llama.cpp` CUDA 배포 및 병렬 범위 다운로드 전략.
+- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)* 및 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+
+## 라이선스
+
+ColabOne은 원격 연동되는 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0)에 맞추어 **GNU General Public License v3.0** ([LICENSE](LICENSE)) 라이선스로 배포됩니다. 모든 업스트림 라이선스 및 저작권 고지는 [NOTICE](NOTICE)와 [third_party/SOURCES.md](third_party/SOURCES.md)에 보존되어 있습니다.

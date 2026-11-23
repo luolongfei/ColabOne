@@ -160,11 +160,35 @@ All unit and browser tests run 100% offline with mocks — they never contact Go
 - [Architecture Overview](docs/architecture.md) — Local bridge, remote loopback ports, Drive sync, telemetry, and security boundaries
 - [Remote & Public API Reference](docs/api.md) — Control routes, OpenAI gateway contract, and ComfyUI endpoints
 - [Validation Record](docs/validation.md) — Offline CI coverage and real-GPU acceptance logs
-- [Contributing Guide](CONTRIBUTING.md) — Development workflow, PR expectations, and testing rules
 - [Upstream Provenance](third_party/SOURCES.md) — Pinned third-party dependencies and attributions
 
-## License & Acknowledgments
+## Contributing
 
-ColabOne is licensed under the **GNU General Public License v3.0** ([LICENSE](LICENSE)) to match remote-integrated [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0).
+Contributions, bug reports, and feature suggestions are always welcome! See the [Contributing Guide](CONTRIBUTING.md) for local setup, PR guidelines, and offline testing requirements.
 
-All upstream attribution and license notices are preserved in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md), including Apache-2.0 components ([Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga), EasyColab, Google Colab CLI, `cloudflared`), MIT components ([colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service), `rclone`, `flag-icons`, `Shiki`), and bundled UI font subsets (`Sarasa UI SC`, SIL OFL 1.1).
+### Contributors
+
+Thanks to everyone who has helped build and improve ColabOne:
+
+<a href="https://github.com/luolongfei/ColabOne/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne Contributors" />
+</a>
+
+## Acknowledgments
+
+ColabOne's design, implementation, and core features draw heavily from the open-source community. We are especially grateful to the authors of these two reference projects:
+
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Referenced for Google Colab GPU allocation, runtime readiness, heartbeat lifecycle management, and portable Python packaging.
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — Referenced for desktop-to-Colab bridge architecture and headless `rclone` Google Drive mounting patterns.
+
+Thank you to both projects for open-sourcing their work and making ColabOne possible.
+
+ColabOne also builds on and thanks these open-source projects (full details in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md)):
+
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — Remote node-based image, video, and multimodal workflow engine.
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — Model manifests, pinned `llama.cpp` CUDA deployment, and parallel range-download strategy.
+- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+
+## License
+
+ColabOne is licensed under the **GNU General Public License v3.0** ([LICENSE](LICENSE)) to align with remote-integrated [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0). All upstream license and copyright notices are preserved in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md).

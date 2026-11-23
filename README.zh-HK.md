@@ -160,11 +160,35 @@ npm --prefix frontend run build
 - [架構概覽](docs/architecture.md) — 本地控制橋接、遠端回環連接埠、雲端硬碟同步、硬件監控及安全邊界
 - [遠端與對外 API 參考](docs/api.md) — 控制路由、OpenAI 網關規範及 ComfyUI 介面說明
 - [驗證記錄](docs/validation.md) — 離線 CI 測試覆蓋率與真實 GPU 驗收日誌
-- [貢獻指南](CONTRIBUTING.md) — 開發流程、Pull Request 規範及測試規則
 - [上游來源清單](third_party/SOURCES.md) — 鎖定的第三方依賴項目與版權歸屬
 
-## 開源授權與鳴謝
+## 參與貢獻
 
-ColabOne 採用 **GNU General Public License v3.0**（[LICENSE](LICENSE)）開源授權，以配合遠端整合的 [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`，GPL-3.0）。
+非常歡迎提交貢獻、錯誤回報及功能建議！請參閱[貢獻指南](CONTRIBUTING.md)，了解本地開發環境設定、Pull Request 規範及離線測試要求。
 
-所有上游版權歸屬與授權聲明均完整保留於 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)，包括 Apache-2.0 組件（[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)、EasyColab、Google Colab CLI、`cloudflared`）、MIT 組件（[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)、`rclone`、`flag-icons`、`Shiki`）以及內置的介面字體子集（`Sarasa UI SC`，SIL OFL 1.1）。
+### 貢獻者
+
+感謝每一位協助構建及改進 ColabOne 的貢獻者：
+
+<a href="https://github.com/luolongfei/ColabOne/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=luolongfei/ColabOne" alt="ColabOne 貢獻者" />
+</a>
+
+## 鳴謝
+
+ColabOne 的設計、實現及核心功能深受開源社群啟發，在此特別感謝以下兩個參考項目的作者：
+
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — 參考其 Google Colab GPU 分配、執行環境就緒檢測、心跳生命週期管理及免安裝便攜 Python 打包方案。
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 參考其桌面端與 Colab 之間的橋接架構，以及無頭 `rclone` 掛載 Google 雲端硬碟的實踐模式。
+
+衷心感謝這兩個項目開源其成果，讓 ColabOne 得以誕生。
+
+ColabOne 亦建基於並感謝以下開源項目（完整詳情見 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)）：
+
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 遠端節點式圖片、影片與多模態工作流引擎。
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 模型清單、鎖定版本的 `llama.cpp` CUDA 部署及並發分段下載策略。
+- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)* 及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+
+## 開源授權
+
+ColabOne 採用 **GNU General Public License v3.0**（[LICENSE](LICENSE)）開源授權，以配合遠端整合的 [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`，GPL-3.0）。所有上游開源授權與版權聲明均完整保留於 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)。
