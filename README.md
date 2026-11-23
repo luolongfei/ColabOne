@@ -1,56 +1,133 @@
-# ColabOne
+<div align="center">
+  <img src="console/resources/icon.png" width="96" height="96" alt="ColabOne" />
+  <h1>ColabOne</h1>
+  <p><strong>A lightweight desktop workspace for Google Colab GPUs — serve OpenAI-compatible GGUF LLMs and run ComfyUI workflows remotely.</strong></p>
 
-一个管理 Google Colab 远端 GPU 的桌面客户端：启动并托管多台 GPU、下载并装载 GGUF 大模型、发布对外 OpenAI 兼容文本 API、运行远端 ComfyUI 工作流工坊与原生画布、持久化云盘作品、按需释放 GPU。
+  <p>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-2563eb?style=flat-square" alt="License: GPL-3.0" /></a>
+    <img src="https://img.shields.io/badge/Platform-macOS%20Apple%20Silicon%20%7C%20Windows%20x64-475569?style=flat-square" alt="Platform: macOS Apple Silicon | Windows x64" />
+    <img src="https://img.shields.io/badge/OpenAI%20API-Responses%20%26%20Chat-0f766e?style=flat-square" alt="OpenAI Responses & Chat API" />
+    <img src="https://img.shields.io/badge/ComfyUI-v0.46.0-7c3aed?style=flat-square" alt="ComfyUI v0.46.0" />
+  </p>
 
-支持 macOS Apple Silicon 与 Windows x64。所有模型权重、模型装载、LLM 推理与 ComfyUI 工作流执行都在远端 GPU 运行。本机只运行桌面界面和控制进程。
+  <p>
+    <strong>English</strong> ·
+    <a href="README.zh-CN.md">简体中文</a> ·
+    <a href="README.zh-TW.md">繁體中文（台灣）</a> ·
+    <a href="README.zh-HK.md">繁體中文（香港）</a> ·
+    <a href="README.ja-JP.md">日本語</a> ·
+    <a href="README.ko-KR.md">한국어</a>
+  </p>
+</div>
 
-## 首次使用
+---
 
-侧边栏按四阶段「**远端设备 → 对外 API → ComfyUI → 设置**」组织，运行日志保持右侧覆盖式抽屉：
+ColabOne puts your remote Google Colab GPUs behind a fast, native desktop app for **macOS (Apple Silicon)** and **Windows (x64)**. Spin up and manage multiple GPUs, monitor live hardware load and billing endurance, expose a private OpenAI-compatible LLM endpoint, and run ComfyUI workflows — with zero notebook wrangling and no VPN setup.
 
-1. 解压完整安装包，打开 `ColabOne.app` 或 `ColabOne.exe`。应用和旁边的 `runtime`、`site-packages`、`bridge` 等目录需要一起保留。
-2. 在「设置」点击「登录 Google」，在浏览器选择账户并授权，完成后自动返回。若浏览器返回授权内容，可展开「授权页返回了一段内容？点此手动粘贴」，整段粘贴或点击「粘贴并完成登录」。
-3. 在「远端设备」选择 GPU，点击启动；支持在客户端内同时启动并切换托管多台 GPU 实例，也可独立查看同账号下其他客户端启动的实例规格。顶栏与设备视图会自动解析实例所在国家/地区（通过 GCP 可用区/端点与虚拟机元数据及地理回退），并以清晰内置矢量 SVG 国旗/区旗展示。常驻顶栏与「远端设备」首页概览卡片同步展示实时计费状态（计费中 / 未计费空闲）、每小时算力消耗速率（`CU/小时`）、剩余 CU 余额以及人性化预计可用续航时间（`X 天 Y 小时`）；连接远端后，页面内嵌 ColabOne 实时硬件监控图表，直观呈现 GPU 利用率与显存、系统内存（`/proc/meminfo`）、磁盘容量与实时读写 I/O 速率（`/proc/diskstats`）、CPU 利用率（`/proc/stat`）及 60 个采样点的滚动历史曲线。默认选择 T4，已取消单次启动 CU 预算上限（`max_cu`），统一采用可配置的空闲自动释放倒计时（默认 **30 分钟**，支持 `15 分钟`、`30 分钟`、`45 分钟`、`1 小时`、`2 小时`，可在首页下拉框或「设置」随时调整）：用户交互会自动重置倒计时，远端下载、显存装载、外部 API 推理以及 ComfyUI 队列执行与画布活跃请求期间自动暂停倒计时。云盘持久化方面，未开通免费 GCP 配额项目的账户默认使用 Colab 原生 DriveFS（每台新实例在浏览器点击一次允许即可挂载 `My Drive / ColabOne_Drive`）；登录 Google Cloud 同意一次服务条款（免费、无需绑卡）后，即可解锁永久免弹窗的 `rclone` 自动挂载。
-4. 需要对外提供大模型文本接口时，进入「对外 API」，点击「选择模型 / 切换模型」打开右侧模型抽屉（双标签页：**我的** 与 **社区**）选定单个 GGUF 大模型：每张模型卡片均内联展示远端下载状态与显存装载状态徽章，支持内联调节上下文长度（`8K`–`64K`）和温度，点击「下载并装载」一步完成远端下载与 `llama.cpp`（loopback `8081`）显存装载（也可分步下载、快速切换或卸载模型）。「我的」默认自动收录 3 个常用社区模型仓库（`huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF`、`huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF`、`JonathanColetti/Qwen3.8-27B-Uncensored`），支持随时点击「移出我的」手动调整；切换到「社区」可实时检索 GGUF 量化版本并点击「加入我的」或一键下载并装载，分片自动一起下载，也保留手动导入。下载并发支持 16 或 32 线程（默认 16），显示速率、已下载量、剩余时间和连接数。装好模型后直接在「对外 API」配置固定域名与 Cloudflare Tunnel 并开启服务。
-5. 需要运行图像、视频或多模态节点工作流时，进入「ComfyUI」使用 **工作流工坊** 或 **原生画布**。
-6. 使用完毕可针对单台实例点击「单独停止」，或点击「停止全部（N 个实例）」勾选需要停止的实例，保留其他客户端仍在运行的实例。本客户端托管实例在正常释放前会自动关闭对外隧道并同步云盘数据。停止后重新查询实例数和费率，连接中断不等于停止计费。
+Your computer only runs the desktop UI and a lightweight local controller. All model downloads, GGUF weights, `llama.cpp` inference, and ComfyUI execution happen exclusively on the remote Colab GPU.
 
-登录凭据与自动续期信息保存在本机的 macOS Keychain / Windows Credential Manager，重启客户端后自动恢复。Google 撤销或要求重新授权时才需再次登录。点击顶部日志按钮打开右侧抽屉，不挤占主区域。抽屉显示启动、授权、下载、装载、对外 API、ComfyUI 与停止进度，支持筛选、复制、清空与收起；日志仅保留本次运行最近 300 条，不记录提示词、授权链接或访问密钥。常驻顶栏与首页概览卡片实时区分计费中与空闲状态，并展示 `CU/小时` 消耗速率、剩余 CU 余额及 `X 天 Y 小时` 预计续航；平台费率与余额可能存在延迟，以最近查询状态为准。
+## Highlights
 
-导入模型清单以及 ComfyUI 工作流（`/workflows/**`）与生成输出（`/comfyui-outputs/**`）自动持久化保存在 `My Drive / ColabOne_Drive`（权限限定于应用专属的 `drive.file` 域，不触碰个人云盘其他文件），也可在「ComfyUI」工作流工坊中经 SHA-256 校验后通过原生对话框导出到本地。模型权重存放在 Colab 临时高速磁盘，释放或平台回收后可重新下载。切换模型、卸载模型不会删除该实例已下载的其他模型。
+- **Multi-GPU Management & Live Telemetry (`Devices`)** — Launch, switch between, and selectively release multiple Colab GPUs (`T4`, `L4`, `A100`, `H100`, `G4` RTX PRO 6000), while also inspecting external instances running on your Google account. Track live billing status, `CU/hr` burn rate, remaining CU balance, estimated runtime, region flags, and 60-second charts for GPU VRAM/utilization, RAM, disk I/O, and CPU.
+- **Smart Idle Auto-Release** — Protects your compute balance with a configurable idle countdown (default **30 min**; options from `15 min` to `2 hr`). Enforced on the remote VM so it keeps working even if you quit ColabOne, and automatically pauses during downloads, VRAM loads, API inference, and ComfyUI activity.
+- **OpenAI-Compatible LLM Gateway (`Public API`)** — Browse and load Hugging Face GGUF models directly from the built-in **Select Model** drawer with real-time VRAM & disk fit checks, automatic VRAM + RAM hybrid loading (`--fit on`), 16/32-thread SHA-256-verified downloads, and `8K`–`128K` context presets. Expose `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and `/v1/responses/compact` over your own Cloudflare Named Tunnel.
+- **ComfyUI Studio & Native Canvas (`ComfyUI`)** — Run remote **ComfyUI `v0.46.0`** in two modes: **Workflow Studio** turns any ComfyUI API JSON into a clean parameter form with SHA-256-verified previews and local export, while **Native Canvas** opens the full node editor in a dedicated app window or browser over a token-authenticated tunnel.
+- **Automatic Google Drive Persistence** — Saves your model catalog, ComfyUI workflows, and generated outputs to `My Drive / ColabOne_Drive` using app-scoped `drive.file` permissions. Works out of the box with Colab native DriveFS (one click per new VM) and upgrades to permanent zero-prompt headless `rclone` auto-mount once you accept the free Google Cloud Terms of Service.
+- **Built for Everyday Use** — Portable packages ship with a standalone CPython runtime (no local Python, Go, or Node required), 6 UI languages, Light/Dark/System themes, OS keychain secret storage, an optional assign-only GPU allocation proxy, one-click remote service hot-updates, and a live redacted log drawer (`Ctrl+J`).
 
-关闭窗口后客户端留在托盘。退出客户端后，本机心跳停止，远端空闲自动释放倒计时保护仍继续运行；Colab 自身的资源限制仍然适用。显示的 CU 余额、`CU/小时` 费率与预计续航时间基于最近查询估算，平台账单存在延迟，不能作为精确计费结算依据。
+## Quick Start
 
-## 对外 API 服务
+ColabOne is organized around four sidebar views: **Devices → Public API → ComfyUI → Settings**, plus a slide-over **Logs** drawer on the right.
 
-「对外 API」内嵌单模型侧边栏抽屉，聚焦 GGUF 大模型文本推理（远端 `llama.cpp` 运行于 loopback `8081`，对外认证网关运行于远端 loopback `7861`）。在「对外 API」点击「选择模型」打开抽屉装载单个 GGUF 模型后即可直接开启服务（开启后侧边栏状态灯会亮起在线指示）：
+1. **Download & Launch**
+   Download the archive for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#building-from-source)), extract the full folder, and open `ColabOne.app` (macOS) or `ColabOne.exe` (Windows). Keep sibling folders (`runtime`, `site-packages`, `bridge`, etc.) next to the app. On Windows, you can create Start Menu and Desktop shortcuts from **Settings** without admin rights.
 
-1. 固定域名接入：填写公网 HTTPS 固定域名，将 Cloudflare Tunnel 安装命令或 Token 整段粘贴到输入框。按照页内三步说明将域名映射到远端 `http://127.0.0.1:7861`，保存并开启服务（不支持临时 `trycloudflare.com` 域名；支持 SSE 流式 `stream=true` 与非流式 `stream=false`）。
-2. 其他应用或 Codex 填入 Base URL、API Key 和当前模型 ID；网关开放带强制 Bearer 认证的 OpenAI 兼容接口 `/v1/models`、`/v1/chat/completions`、`/v1/responses` 与 Codex 上下文压缩接口 `/v1/responses/compact`，页面内提供 cURL / Python / Codex 接入示例。
+2. **Sign In with Google**
+   Go to **Settings** → **Sign in with Google**, authorize your account in the browser, and ColabOne will complete login automatically. If your browser displays an authorization page instead of redirecting, expand the manual paste section and click **Paste & Sign In**. Credentials stay encrypted in macOS Keychain or Windows Credential Manager and auto-renew across restarts.
 
-密钥与 Tunnel Token 保存在本机系统凭据库。对外 API 默认关闭，不暴露 GPU 管理接口。外部推理请求期间自动暂停空闲释放倒计时。关闭 API 只停止公网访问；停止 GPU 会同时停止 API。详见 [接口与限制](docs/api.md#public-inference-api-llm-openai-gateway)。
+3. **Launch a GPU**
+   Open **Devices**, select a GPU tier (defaults to `T4`) and idle auto-release timeout (default **30 min**), and click **Start GPU**. Once ready, the top bar and overview card display live billing endurance, instance location, hardware telemetry charts, and Google Drive mount status.
 
-## ComfyUI（工作流工坊与原生画布）
+4. **Serve an LLM or Run ComfyUI**
+   - **Text API**: Open **Public API** → **Select Model** to pick a GGUF model from **My Models** (pre-seeded with editable starter Hugging Face repos) or search under **Community**. Click **Download & Load** to fetch verified shards remotely and load them into `llama-server`, then configure your Cloudflare Named Tunnel and start the API.
+   - **Visual & Multimodal Workflows**: Open **ComfyUI** to import a workflow in **Workflow Studio** or launch the full node editor in **Native Canvas**.
 
-原桌面内置的「聊天」「画图」「视频」交互页及 `stable-diffusion.cpp`（`Z-Image Turbo`、`Wan2.2 5B`）固定单模型创作功能已移除，由侧边栏独立的 **ComfyUI** 入口统一承接视觉与多模态创作。ComfyUI（固定版本 `v0.46.0`）仅部署在远端 Colab GPU（loopback `8188`），采用双层 Mode 3 架构：
+5. **Release When Finished**
+   Click **Stop** on an individual instance, or click **Stop All** to selectively check which instances to terminate while leaving other sessions untouched. Managed instances automatically close public tunnels and flush `ColabOne_Drive` before releasing.
 
-- **工作流工坊（Phase 1 通用底座）**：
-  - 导入任意 ComfyUI API 格式 JSON 工作流，自动持久化至 `ColabOne_Drive/workflows/**`；
-  - 自动解析工作流节点并生成可视化参数表单，支持按需上传输入媒体（如参考图）；
-  - 提交可取消的远端队列执行并实时追踪节点进度；
-  - 在作品画廊预览生成产物并自动持久化到 `ColabOne_Drive/comfyui-outputs/**`，支持经完整 SHA-256 校验后通过原生保存对话框导出到本地；
-  - 通过可扩展的组件与资源包清单 `catalog/comfyui.json` 管理远端模型与工作流包（所有权重直接在远端下载校验，本机不下载权重）。
-- **原生画布（认证反向代理 + 隧道）**：
-  - 远端在 `127.0.0.1:8189` 启动带认证的 HTTP + WebSocket 反向代理，接入 `127.0.0.1:8188` 的 ComfyUI 引擎；
-  - 使用随机访问令牌经认证入口换取 `HttpOnly` Cookie 会话，并通过固定域名 Cloudflared Named Tunnel 安全对外暴露；
-  - 支持在独立桌面窗口（`ComfyUI 原生画布`）或系统浏览器中一键打开原生节点画布。
-- **显存互斥与空闲保护**：
-  - `llama-server`（`8081`）与 `ComfyUI`（`8188`）严格显存互斥，同一台 GPU 实例一次仅运行其中一个引擎；切换时自动卸载另一方并保留已下载的模型权重文件；
-  - ComfyUI 队列任务执行与原生画布活跃请求期间自动暂停 30 分钟空闲自动释放倒计时。
+## Public OpenAI-Compatible API
 
-## 开发
+**Public API** pairs a built-in single-model GGUF picker with a dedicated, Bearer-authenticated OpenAI gateway (`127.0.0.1:7861`) backed by remote `llama-server` (`127.0.0.1:8081`). Management routes (`/api/v1/*`) stay isolated on a private control port and are never exposed publicly.
 
-需要 Go 1.27.3、Node.js 24 LTS 或 26、Python 3.12，以及 `uv`（可用标准 venv/pip 替代）。
+### Supported Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/models` `/v1/models/{id}` | Lists the GGUF model currently loaded in remote VRAM (with active context length). |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions with `stream=true/false`, tool calling, and `developer` role support. |
+| `POST` | `/v1/responses` | OpenAI Responses API (`wire_api = "responses"`) with SSE streaming, function & custom/`apply_patch` tools, reasoning summaries, and automatic 3-stage context compaction. |
+| `POST` | `/v1/responses/compact` | Codex / OpenAI context compaction (`response.compaction`) for long coding threads. |
+
+### Connecting External Clients
+
+1. **Configure a Fixed-Domain Tunnel**: In Cloudflare Zero Trust, create a Cloudflared Named Tunnel and map your public HTTPS hostname to `http://127.0.0.1:7861` (do not enable interactive Cloudflare Access login on the API hostname). Paste the install command or tunnel token into **Public API**, save, and click **Start Public API**. *(Temporary `trycloudflare.com` domains are intentionally disabled.)*
+2. **Point Your App or SDK to ColabOne**: Copy the **Base URL**, **API Key**, and **Active Model ID** (editable live without reloading VRAM — or use the fixed alias `colabone/auto` to route to whichever model is loaded). Built-in **cURL**, **Python**, and **Codex** snippets and live per-request token throughput (`tok/s`, TTFT, prefill speed) are shown right inside the app.
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://api.example.com/v1",
+    api_key=os.environ["COLABONE_API_KEY"],
+)
+
+stream = client.responses.create(
+    model="colabone/auto",
+    input="Hello from ColabOne!",
+    stream=True,
+)
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="", flush=True)
+```
+
+Stopping **Public API** revokes public access while keeping your GPU and loaded model warm; stopping the GPU automatically shuts down the gateway and tunnel. See [docs/api.md](docs/api.md#public-inference-api-llm-openai-gateway) for full route contracts and error codes.
+
+## ComfyUI Workspace
+
+ColabOne deploys **ComfyUI `v0.46.0`** exclusively on the remote Colab GPU (`127.0.0.1:8188`) with a dual-layer workspace:
+
+- **Workflow Studio**
+  - Import any ComfyUI **Save (API Format)** JSON workflow — even offline before starting a GPU — and auto-generate typed parameter forms.
+  - Upload reference images or audio, submit cancellable remote queue runs, and track live node progress.
+  - Preview and export SHA-256-verified image, video, and audio outputs via native save dialogs; workflows (`/workflows/**`) and outputs (`/comfyui-outputs/**`) sync automatically to `ColabOne_Drive`.
+  - Manage remote model and workflow packs declaratively through `catalog/comfyui.json` (data-only manifests with pinned revisions and SHA-256 checks).
+- **Native Canvas**
+  - Runs a token-authenticated HTTP + WebSocket reverse proxy (`127.0.0.1:8189` → `8188`) behind your fixed-domain Cloudflare Named Tunnel.
+  - Exchanges a random per-session token for a scoped `HttpOnly` cookie and opens directly in a dedicated **ComfyUI Native Canvas** app window or your system browser.
+- **Strict VRAM Mutual Exclusion**
+  - `llama-server` (`8081`) and `ComfyUI` (`8188`) never occupy GPU VRAM at the same time. Switching automatically unloads the active engine while retaining cached weights on remote disk.
+  - Active ComfyUI queues and Native Canvas requests automatically pause the idle auto-release countdown.
+
+## Storage, Billing & Security
+
+- **Google Drive Sync**: Model catalogs, ComfyUI workflows, and outputs persist to `My Drive / ColabOne_Drive` under the restricted `drive.file` scope (ColabOne cannot read unrelated personal Drive files). Model weights live on Colab's fast ephemeral disk and can be re-downloaded whenever you start a new VM. Unloading or switching models never deletes cached files on the active instance.
+- **System Tray & Auto-Release**: Closing the window minimizes ColabOne to the tray. Quitting stops local heartbeats, while the remote idle auto-release guard continues running on the VM. A dropped connection does not stop Colab billing — always confirm stopped status in **Devices**.
+- **Billing Estimates**: Displayed CU balance, `CU/hr` burn rate, and estimated remaining runtime are based on recent Colab queries and may lag official billing statements.
+- **Credentials & Privacy**: Google OAuth tokens, API keys, Cloudflare Tunnel tokens, optional Hugging Face tokens (for gated repos), and optional assign-only GPU allocation proxy settings are stored in your OS keychain and redacted from logs (last 300 entries in memory plus a local `0600` activity log). ColabOne stays completely independent of existing Colab CLI profiles.
+- **Scope & Verification**: GGUF imports pin exact 40-character commit SHAs and verify every shard with SHA-256 without executing repository Python code. Legacy built-in desktop chat/image/video pages have been retired in favor of **Public API** and **ComfyUI**. Agent and local MCP execution are out of scope for v0.1. Development builds are not commercially code-signed or notarized — inspect the source or build locally at any time.
+
+## Building from Source
+
+### Prerequisites
+
+- **Go** `1.27.3`
+- **Node.js** `24 LTS` (or `26`)
+- **Python** `3.12`
+- **`uv`** (or standard `venv` + `pip`)
+
+### Setup & Build
 
 ```sh
 uv venv --python 3.12
@@ -62,26 +139,32 @@ cd ..
 npm --prefix frontend run build
 ```
 
-Windows 的 Python 路径为 `.venv\Scripts\python.exe`。以下命令用对应 Python 替换：
+### Verify & Package
+
+> On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`.
 
 ```sh
+# Run all offline checks (Python, Go vet/test, Vitest, frontend build, bridge self-test)
 .venv/bin/python tools/install.py --root work/check --check
+
+# Build a self-contained portable archive in dist/
 .venv/bin/python tools/package.py --out dist
 ```
 
-开发安装包保存在 `dist/`，已解压安装目录在 `work/package-stage/Programs/ColabOne`。打包会下载并校验独立 CPython 与依赖，用户无需另装 Python、Go 或 Node。
+Portable archives are written to `dist/` (with the unpacked staging directory at `work/package-stage/Programs/ColabOne`), bundling a hash-verified standalone CPython runtime and locked wheels so end users need no external toolchains.
 
-所有单元测试均不连接 Google 或 Hugging Face，不分配 GPU。真实 GPU 验收需首次授权后显式执行并严格限定测试算力消耗，使用轻量模型，结束必须核实实例已释放。双平台 CI 构建并运行离线测试及打包运行时自检；未经过 Windows 人工交互验证时不可将其标记为已完成。
+All unit and browser tests run 100% offline with mocks — they never contact Google or Hugging Face and never provision a GPU. Real-GPU acceptance is run explicitly on a strict compute budget; see [docs/validation.md](docs/validation.md).
 
-## 边界
+## Documentation
 
-- 支持同时创建并切换托管多台 ColabOne 实例（每台实例严格执行 `llama-server` 与 `ComfyUI` 显存互斥），并可独立展示账号下全部 Colab 实例规格，支持单实例释放或勾选释放，空闲自动释放保护针对本客户端托管实例。
-- GGUF 导入固定到 commit SHA，校验全部文件；不执行模型仓库中的 Python 代码。需要授权的模型可配置 Hugging Face Token。
-- 桌面端不再内置本地「聊天」「画图」「视频」交互页或 `stable-diffusion.cpp` 单模型创作配方；文本推理通过「对外 API」及其内置单模型选择抽屉（`/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/responses/compact`）提供，图像/视频与节点化多模态生成统一通过「ComfyUI」工作流工坊与原生画布执行。超大模型需要足够的远端显存和磁盘，加载失败会报告远端引擎错误。
-- Agent、本地 MCP、任意本地文件访问不在首版范围。
-- 敏感配置使用 macOS Keychain / Windows Credential Manager；不读取或改写原 Yoga、colab-cli 的账号配置。
-- 开发安装包未做商业代码签名或 macOS 公证。运行前可自行审阅代码并构建。
+- [Architecture Overview](docs/architecture.md) — Local bridge, remote loopback ports, Drive sync, telemetry, and security boundaries
+- [Remote & Public API Reference](docs/api.md) — Control routes, OpenAI gateway contract, and ComfyUI endpoints
+- [Validation Record](docs/validation.md) — Offline CI coverage and real-GPU acceptance logs
+- [Contributing Guide](CONTRIBUTING.md) — Development workflow, PR expectations, and testing rules
+- [Upstream Provenance](third_party/SOURCES.md) — Pinned third-party dependencies and attributions
 
-## 来源与许可
+## License & Acknowledgments
 
-主项目使用 **GNU GPL-3.0** 许可证（见 [LICENSE](LICENSE)），以匹配远端集成的 [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（GPL-3.0，`v0.46.0`）；同时完整保留 [Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)、EasyColab、Google Colab CLI 与 cloudflared 等上游 Apache-2.0 声明，以及 [colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service) 与 rclone 等上游 MIT 许可声明。详情见 [NOTICE](NOTICE)、[来源记录](third_party/SOURCES.md)、[架构](docs/architecture.md) 和 [API](docs/api.md)。
+ColabOne is licensed under the **GNU General Public License v3.0** ([LICENSE](LICENSE)) to match remote-integrated [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0).
+
+All upstream attribution and license notices are preserved in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md), including Apache-2.0 components ([Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga), EasyColab, Google Colab CLI, `cloudflared`), MIT components ([colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service), `rclone`, `flag-icons`, `Shiki`), and bundled UI font subsets (`Sarasa UI SC`, SIL OFL 1.1).
