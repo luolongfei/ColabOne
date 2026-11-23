@@ -85,7 +85,7 @@ export const zhCNMessages = {
   "status.upgradeOptionalReady":
     "远端服务有小版本更新，不影响当前正常使用；可随时热更新，已下载的模型缓存与工作流会完整保留。",
   "status.upgradeOptionalReadyWithConfirm":
-    "远端服务有小版本更新，不影响当前正常使用；点击即可自动停止当前服务并热更新（模型缓存会保留），也可稍后更新。",
+    "远端服务有小版本更新，不影响当前正常使用；点击即可热更新并自动按当前配置恢复模型与服务，也可稍后更新。",
   "status.upgradeOptionalBlockedModel":
     "远端服务有小版本更新，不影响当前正常使用；当前已装载模型，需先卸载模型后再热更新（模型缓存会保留），也可稍后更新。",
   "status.upgradeOptionalBlockedComfy":
@@ -101,17 +101,17 @@ export const zhCNMessages = {
   "status.upgradeBlockedOperation":
     "请先等待当前操作完成后再更新远端服务",
   "status.upgradeActiveTask": "正在运行中的远端任务（将被取消）",
-  "status.upgradeActiveModel": "已装载模型：{name}（将从显存卸载）",
-  "status.upgradeActiveModelGeneric": "已装载到显存的模型（将被卸载）",
-  "status.upgradeActiveApi": "对外 API 服务与公网隧道（将被关闭）",
-  "status.upgradeActiveComfy": "ComfyUI 工作流引擎与画布隧道（将被停止）",
-  "status.upgradeActiveEngine": "当前运行中的远端推理引擎（将被停止）",
+  "status.upgradeActiveModel": "已装载模型：{name}（更新后将按原规格自动重新装载）",
+  "status.upgradeActiveModelGeneric": "已装载到显存的模型（更新后将按原规格自动重新装载）",
+  "status.upgradeActiveApi": "对外 API 服务与公网隧道（更新后将按原配置自动重新开启）",
+  "status.upgradeActiveComfy": "ComfyUI 工作流引擎与画布隧道（更新后将自动重新启动）",
+  "status.upgradeActiveEngine": "当前运行中的远端推理引擎（更新后将自动恢复）",
   "status.upgradeConfirmTitle": "确认热更新远端服务",
   "status.upgradeConfirmLead":
-    "当前远端实例有正在运行的服务或任务，继续更新将先自动停止或卸载以下项目：",
+    "当前远端实例有正在运行的服务或任务，继续更新将短暂中断以下项目，并在更新完成后按原配置自动恢复：",
   "status.upgradeConfirmPreserveNote":
-    "已下载的模型权重、工作流、作品与配置都会完整保留，无需重新下载；更新完成后需重新装载模型或开启服务。",
-  "status.upgradeConfirmAction": "停止并立即更新",
+    "已下载的模型权重、工作流、作品与参数配置都会完整保留；更新完成后将自动按原上下文、温度与隧道配置重新装载模型并恢复已开启的服务，无需手动操作。",
+  "status.upgradeConfirmAction": "立即更新并自动恢复",
 
   // Appearance
   "appearance.system": "跟随系统",

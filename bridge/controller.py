@@ -9,6 +9,7 @@ import time
 import secrets
 import re
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -1707,17 +1708,99 @@ class ColabOneController:
             return True
         return False
 
-    def _prepare_remote_for_upgrade(self):
-        status = self.remote("GET", "status")
-        pub = status.get("public_api") or {}
-        if pub.get("enabled") or pub.get("state") in (
-            "starting",
-            "ready",
-            "reconnecting",
+    @staticmethod
+    def _extract_restore_model_options(raw_options: Any) -> dict[str, Any]:
+        if not isinstance(raw_options, dict):
+            return {}
+        out: dict[str, Any] = {}
+        ctx = raw_options.get("context_length")
+        if isinstance(ctx, int) and not isinstance(ctx, bool) and 512 <= ctx <= 262144:
+            out["context_length"] = ctx
+        temp = raw_options.get("temperature")
+        if (
+            isinstance(temp, (int, float))
+            and not isinstance(temp, bool)
+            and 0 <= float(temp) <= 2
         ):
+            out["temperature"] = float(temp)
+        return out
+
+    @staticmethod
+    def _format_model_options_label(options: dict[str, Any]) -> str:
+        parts: list[str] = []
+        ctx = options.get("context_length")
+        if isinstance(ctx, int) and ctx > 0:
+            if ctx % 1024 == 0:
+                parts.append(f"{ctx // 1024}K")
+            else:
+                parts.append(f"{ctx} tokens")
+        temp = options.get("temperature")
+        if isinstance(temp, (int, float)):
+            parts.append(f"温度 {temp:g}")
+        return " · ".join(parts)
+
+    def _call_upgrade_remote(
+        self,
+        method: str,
+        path: str,
+        payload: Any = None,
+        *,
+        endpoint: str | None = None,
+    ):
+        if endpoint:
+            if payload is None:
+                return self.remote(method, path, endpoint=endpoint)
+            return self.remote(method, path, payload, endpoint=endpoint)
+        if payload is None:
+            return self.remote(method, path)
+        return self.remote(method, path, payload)
+
+    def _prepare_remote_for_upgrade(self, *, endpoint: str | None = None) -> dict[str, Any]:
+        status = self._call_upgrade_remote("GET", "status", endpoint=endpoint)
+        pub = status.get("public_api") or {}
+        comfy = status.get("comfyui") or {}
+        comfy_canvas = comfy.get("canvas") or {}
+        loaded_model = str(status.get("loaded_model") or "").strip()
+        model_options = self._extract_restore_model_options(
+            status.get("active_options")
+        )
+        if loaded_model and not model_options:
+            with self.lock:
+                cached_rt = (
+                    self.data.get("runtime") or {}
+                    if not endpoint or endpoint == self._active_endpoint()
+                    else self._ensure_instance_state(endpoint).get("runtime") or {}
+                )
+                if str(cached_rt.get("loaded_model") or "").strip() == loaded_model:
+                    model_options = self._extract_restore_model_options(
+                        cached_rt.get("active_options")
+                    )
+
+        was_public_api = bool(
+            pub.get("enabled")
+            or pub.get("state") in ("starting", "ready", "reconnecting")
+        )
+        was_comfy_running = bool(
+            comfy.get("running")
+            or comfy.get("state") in ("starting", "running", "ready")
+            or status.get("active_engine") == "comfyui"
+        )
+        was_comfy_canvas = bool(
+            comfy_canvas.get("enabled")
+            or comfy_canvas.get("state") in ("starting", "ready", "reconnecting")
+        )
+        restore_plan: dict[str, Any] = {
+            "loaded_model": loaded_model,
+            "model_options": model_options,
+            "public_api": was_public_api,
+            "comfyui": bool(not loaded_model and was_comfy_running),
+            "comfyui_canvas": bool(not loaded_model and was_comfy_running and was_comfy_canvas),
+        }
+
+        if was_public_api:
             self.activity.add("更新前正在关闭对外 API 服务", "GPU")
-            self.remote("POST", "public-api/stop")
-            status = self.remote("GET", "status")
+            self._call_upgrade_remote("POST", "public-api/stop", endpoint=endpoint)
+            status = self._call_upgrade_remote("GET", "status", endpoint=endpoint)
 
         running_tasks = [
             t
@@ -1734,10 +1817,12 @@ class ColabOneController:
                     if tid and tid not in cancelled_ids and re.fullmatch(r"[a-f0-9]{32}", tid):
                         cancelled_ids.add(tid)
                         try:
-                            self.remote("DELETE", "tasks/" + tid)
+                            self._call_upgrade_remote(
+                                "DELETE", "tasks/" + tid, endpoint=endpoint
+                            )
                         except Exception:
                             pass
-                status = self.remote("GET", "status")
+                status = self._call_upgrade_remote("GET", "status", endpoint=endpoint)
                 running_tasks = [
                     t
                     for t in (status.get("tasks") or [])
@@ -1757,35 +1842,301 @@ class ColabOneController:
             or status.get("active_engine") == "comfyui"
         ):
             self.activity.add("更新前正在停止 ComfyUI 服务", "GPU")
-            self.remote("POST", "comfyui/stop")
-            status = self.remote("GET", "status")
+            self._call_upgrade_remote("POST", "comfyui/stop", endpoint=endpoint)
+            status = self._call_upgrade_remote("GET", "status", endpoint=endpoint)
 
         if status.get("loaded_model") or status.get("active_engine"):
             self.activity.add("更新前正在卸载当前显存模型（保留磁盘缓存）", "GPU")
-            self.remote("POST", "unload")
+            self._call_upgrade_remote("POST", "unload", endpoint=endpoint)
+        return restore_plan
 
-    def upgrade_service(self, force: bool = False):
+    def _restore_comfy_canvas_when_ready(
+        self,
+        canvas_payload: dict[str, Any],
+        *,
+        endpoint: str | None = None,
+        task_id: str = "",
+        timeout_seconds: float = 120.0,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline and not self.stop.is_set():
+            if endpoint and endpoint not in self._vault_sessions():
+                return
+            try:
+                status = self._call_upgrade_remote("GET", "status", endpoint=endpoint)
+            except Exception:
+                if self.stop.wait(1.0):
+                    return
+                continue
+            if status.get("loaded_model") or status.get("active_engine") == "llama":
+                return
+            comfy = status.get("comfyui") or {}
+            canvas = comfy.get("canvas") or {}
+            if comfy.get("running"):
+                if canvas.get("enabled") or canvas.get("state") in (
+                    "starting",
+                    "ready",
+                    "reconnecting",
+                ):
+                    return
+                try:
+                    self.activity.add(
+                        "ComfyUI 已就绪，正在按原配置自动恢复原生画布隧道",
+                        "ComfyUI",
+                    )
+                    self._call_upgrade_remote(
+                        "POST",
+                        "comfyui/canvas/start",
+                        canvas_payload,
+                        endpoint=endpoint,
+                    )
+                    if endpoint:
+                        self.refresh_remote(endpoint=endpoint)
+                    else:
+                        self.refresh_remote()
+                except Exception as exc:
+                    self.activity.add(
+                        f"自动恢复 ComfyUI 原生画布失败，请手动开启：{exc}",
+                        "ComfyUI",
+                        "warning",
+                    )
+                return
+            tasks = [t for t in (status.get("tasks") or []) if isinstance(t, dict)]
+            if task_id:
+                matched = next((t for t in tasks if t.get("id") == task_id), None)
+                if matched and matched.get("state") in ("failed", "cancelled", "completed"):
+                    # Either comfy_start failed/cancelled, or finished and user stopped ComfyUI.
+                    return
+            if comfy.get("state") == "stopped" and not any(
+                t.get("state") == "running" for t in tasks
+            ):
+                return
+            if self.stop.wait(1.0):
+                return
+        if not self.stop.is_set():
+            self.activity.add(
+                "等待 ComfyUI 启动超时，未能自动恢复原生画布，请手动开启",
+                "ComfyUI",
+                "warning",
+            )
+
+    def _restore_remote_after_upgrade(
+        self,
+        plan: dict[str, Any],
+        *,
+        endpoint: str | None = None,
+    ) -> None:
+        if not isinstance(plan, dict):
+            return
+        loaded_model = str(plan.get("loaded_model") or "").strip()
+        model_options = self._extract_restore_model_options(plan.get("model_options"))
+        want_public_api = bool(plan.get("public_api"))
+        want_comfyui = bool(plan.get("comfyui")) and not loaded_model
+        want_comfy_canvas = bool(plan.get("comfyui_canvas")) and want_comfyui
+        if not (loaded_model or want_public_api or want_comfyui):
+            return
+
+        changed = False
+        if loaded_model:
+            label = self._model_label(loaded_model)
+            spec_label = self._format_model_options_label(model_options)
+            suffix = f"（{spec_label}）" if spec_label else ""
+            try:
+                self._ensure_remote_model(loaded_model, endpoint=endpoint)
+                self.activity.add(
+                    f"正在按更新前规格自动重新装载模型 {label}{suffix}",
+                    "模型",
+                )
+                self._call_upgrade_remote(
+                    "POST",
+                    "models/" + loaded_model + "/load",
+                    model_options,
+                    endpoint=endpoint,
+                )
+                changed = True
+            except Exception as exc:
+                self.activity.add(
+                    f"自动重新装载模型 {label} 失败，请手动装载：{exc}",
+                    "模型",
+                    "warning",
+                )
+
+        if want_public_api:
+            saved = self.vault.get("public_api", {})
+            if not isinstance(saved, dict):
+                saved = {}
+            try:
+                api_config = ColabOnePublicConfig.model_validate(
+                    {
+                        "mode": "named",
+                        "domain": saved.get("domain", ""),
+                        "tunnel_token": saved.get("tunnel_token", ""),
+                        "api_key": saved.get("api_key", ""),
+                    }
+                )
+            except ValueError:
+                self.activity.add(
+                    "更新前对外 API 已开启，但本地缺少完整固定域名或隧道配置，请手动重新开启",
+                    "API",
+                    "warning",
+                )
+            else:
+                try:
+                    self.activity.add(
+                        "正在按更新前配置自动重新开启对外 API 服务与公网隧道",
+                        "API",
+                    )
+                    self._call_upgrade_remote(
+                        "POST",
+                        "public-api/start",
+                        api_config.model_dump(),
+                        endpoint=endpoint,
+                    )
+                    changed = True
+                except Exception as exc:
+                    self.activity.add(
+                        f"自动恢复对外 API 失败，请手动开启：{exc}",
+                        "API",
+                        "warning",
+                    )
+
+        if want_comfyui:
+            comfy_task_id = ""
+            comfy_started = False
+            try:
+                self.activity.add("正在自动重新启动 ComfyUI 工作流引擎", "ComfyUI")
+                res = self._call_upgrade_remote(
+                    "POST", "comfyui/start", endpoint=endpoint
+                )
+                if isinstance(res, dict) and res.get("id"):
+                    comfy_task_id = str(res["id"])
+                comfy_started = True
+                changed = True
+            except Exception as exc:
+                self.activity.add(
+                    f"自动重新启动 ComfyUI 失败，请手动启动：{exc}",
+                    "ComfyUI",
+                    "warning",
+                )
+
+            if comfy_started and want_comfy_canvas:
+                saved_canvas = self.vault.get("comfyui_canvas", {})
+                if not isinstance(saved_canvas, dict):
+                    saved_canvas = {}
+                try:
+                    canvas_config = ComfyCanvasConfig.model_validate(
+                        {
+                            "mode": "named",
+                            "domain": saved_canvas.get("domain", ""),
+                            "tunnel_token": saved_canvas.get("tunnel_token", ""),
+                        }
+                    )
+                except ValueError:
+                    self.activity.add(
+                        "更新前 ComfyUI 原生画布已开启，但本地缺少完整隧道配置，请手动重新开启",
+                        "ComfyUI",
+                        "warning",
+                    )
+                else:
+                    canvas_payload = canvas_config.model_dump()
+                    started_now = False
+                    try:
+                        cur_status = self._call_upgrade_remote(
+                            "GET", "status", endpoint=endpoint
+                        )
+                        cur_comfy = cur_status.get("comfyui") or {}
+                        cur_canvas = cur_comfy.get("canvas") or {}
+                        if cur_comfy.get("running"):
+                            if cur_canvas.get("enabled") or cur_canvas.get("state") in (
+                                "starting",
+                                "ready",
+                                "reconnecting",
+                            ):
+                                started_now = True
+                            else:
+                                self.activity.add(
+                                    "正在按更新前配置自动恢复 ComfyUI 原生画布隧道",
+                                    "ComfyUI",
+                                )
+                                self._call_upgrade_remote(
+                                    "POST",
+                                    "comfyui/canvas/start",
+                                    canvas_payload,
+                                    endpoint=endpoint,
+                                )
+                                started_now = True
+                                changed = True
+                    except Exception:
+                        started_now = False
+                    if not started_now:
+                        self.activity.add(
+                            "已预约 ComfyUI 就绪后自动按原配置恢复原生画布隧道",
+                            "ComfyUI",
+                        )
+                        threading.Thread(
+                            target=self._restore_comfy_canvas_when_ready,
+                            args=(canvas_payload,),
+                            kwargs={
+                                "endpoint": endpoint,
+                                "task_id": comfy_task_id,
+                            },
+                            daemon=True,
+                        ).start()
+
+        if changed:
+            try:
+                if endpoint:
+                    self.refresh_remote(endpoint=endpoint)
+                else:
+                    self.refresh_remote()
+            except Exception:
+                pass
+
+    def upgrade_service(self, force: bool = False, restore: bool = True):
+        target_endpoint = self._active_endpoint()
+        restore_plan: dict[str, Any] | None = None
         try:
             if force:
-                self._prepare_remote_for_upgrade()
+                restore_plan = self._prepare_remote_for_upgrade(
+                    endpoint=target_endpoint
+                )
             self.activity.add("更新远端管理服务，保留模型缓存与工作流", "GPU")
+            upgrade_kwargs: dict[str, Any] = {}
+            if target_endpoint and ColabOneController._accepts_kwarg(
+                self.provider.upgrade_service, "endpoint"
+            ):
+                upgrade_kwargs["endpoint"] = target_endpoint
             if ColabOneController._accepts_kwarg(
                 self.provider.upgrade_service, "on_log"
             ):
-                self.provider.upgrade_service(on_log=self.activity.add)
-            else:
-                self.provider.upgrade_service()
+                upgrade_kwargs["on_log"] = self.activity.add
+            self.provider.upgrade_service(**upgrade_kwargs)
         except Exception:
             if force:
                 try:
-                    self.refresh_remote()
+                    if target_endpoint:
+                        self.refresh_remote(endpoint=target_endpoint)
+                    else:
+                        self.refresh_remote()
                 except Exception:
                     pass
             raise
         self.activity.add("正在刷新远端服务状态", "GPU")
-        self.refresh_remote()
+        if target_endpoint:
+            self.refresh_remote(endpoint=target_endpoint)
+        else:
+            self.refresh_remote()
         self.activity.add("正在重新同步空闲自动释放策略", "GPU")
-        self.configure_remote()
+        if target_endpoint:
+            self.configure_remote(endpoint=target_endpoint)
+        else:
+            self.configure_remote()
+        try:
+            self._sync_remote_api_id_overrides(endpoint=target_endpoint)
+        except Exception:
+            pass
+        if force and restore and restore_plan:
+            self._restore_remote_after_upgrade(restore_plan, endpoint=target_endpoint)
         self.activity.add("远端管理服务已更新，支持模型 API、ComfyUI 与闲置保护", "GPU")
 
     def refresh_remote(self, endpoint: str | None = None):
@@ -2651,17 +3002,20 @@ class ColabOneController:
                 taken.add(api_id)
         return taken
 
-    def _ensure_remote_model(self, model_id: str):
+    def _ensure_remote_model(self, model_id: str, endpoint: str | None = None):
         with self.lock:
             spec = copy.deepcopy(self.custom_models.get(model_id))
             override = self.api_id_overrides.get(model_id, "")
-            on_remote = any(
-                m.get("id") == model_id for m in (self.data.get("models") or [])
+            models = (
+                self.data.get("models") or []
+                if not endpoint or endpoint == self._active_endpoint()
+                else self._ensure_instance_state(endpoint).get("models") or []
             )
+            on_remote = any(m.get("id") == model_id for m in models)
         if spec and not on_remote:
             if override:
                 spec["api_id"] = override
-            self._post_remote_model(spec)
+            self._post_remote_model(spec, endpoint=endpoint)
 
     def import_model(self, payload):
         repo_input = str(payload.get("repo") or "").strip()
@@ -3372,9 +3726,10 @@ class ColabOneController:
             )
         if action == "runtime.upgrade":
             force_upgrade = bool((payload or {}).get("force"))
+            restore_after = bool((payload or {}).get("restore", True))
             return self.async_operation(
                 "更新远端管理服务",
-                lambda: self.upgrade_service(force=force_upgrade),
+                lambda: self.upgrade_service(force=force_upgrade, restore=restore_after),
             )
         if action == "runtime.activity":
             # Queue rather than blocking the UI behind a kernel RPC.

@@ -297,7 +297,7 @@ async function requestRuntimeUpgrade() {
 async function confirmRuntimeUpgrade() {
   if (busy.value || state.value.operation) return;
   showUpgradeConfirm.value = false;
-  await act("runtime.upgrade", { force: true });
+  await act("runtime.upgrade", { force: true, restore: true });
 }
 
 watch(
@@ -2512,7 +2512,6 @@ onUnmounted(() => {
                         :width="112"
                         :height="32"
                         variant="button"
-                        tone="accent"
                         :delay="150"
                       />
                     </div>
@@ -3106,7 +3105,6 @@ onUnmounted(() => {
                             :width="62"
                             :height="22"
                             variant="tag"
-                            tone="accent"
                             :delay="(idx - 1) * 70"
                           />
                           <ColabOneSkeleton
@@ -3462,7 +3460,7 @@ onUnmounted(() => {
 
                         <div class="co-sr-control">
                           <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
-                            <ColabOneSkeleton :width="96" :height="30" variant="button" tone="accent" :delay="40" />
+                            <ColabOneSkeleton :width="96" :height="30" variant="button" :delay="40" />
                           </div>
                           <ASpace v-else :size="8" wrap>
                             <AButton
@@ -4199,7 +4197,7 @@ onUnmounted(() => {
                         </div>
                         <div class="co-sr-control">
                           <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
-                            <ColabOneSkeleton :width="112" :height="30" variant="button" tone="accent" :delay="120" />
+                            <ColabOneSkeleton :width="112" :height="30" variant="button" :delay="120" />
                             <ColabOneSkeleton :width="116" :height="30" variant="button" tone="subtle" :delay="150" />
                           </div>
                           <ASpace v-else :size="8" wrap>

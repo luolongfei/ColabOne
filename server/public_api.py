@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import math
 import queue
 import re
 import secrets
@@ -184,18 +185,116 @@ def _parse_llama_error(
     )
 
 
-def _compute_target_input_budget(ctx_tokens: int, max_tokens_opt: Any = None) -> int:
-    """Compute safe prompt token ceiling leaving headroom for generation and Jinja framing."""
-    output_reserve = min(max(512, ctx_tokens // 6), 4096)
+_HIGH_REASONING_EFFORTS = frozenset({"high", "xhigh", "ultra", "max", "persistent"})
+
+
+def _compute_target_input_budget(
+    ctx_tokens: int,
+    max_tokens_opt: Any = None,
+    *,
+    reasoning_effort: str | None = None,
+    extra_reserve: int = 0,
+) -> int:
+    """Compute safe prompt token ceiling leaving ample headroom for reasoning/tool output and Jinja framing."""
+    effort_low = reasoning_effort.strip().lower() if isinstance(reasoning_effort, str) else ""
+    output_reserve = (
+        min(max(512, ctx_tokens // 4), 28672)
+        if effort_low in _HIGH_REASONING_EFFORTS
+        else min(max(512, ctx_tokens // 5), 24576)
+    )
     if (
         isinstance(max_tokens_opt, int)
         and not isinstance(max_tokens_opt, bool)
         and 1 <= max_tokens_opt < output_reserve
     ):
         output_reserve = max(256, max_tokens_opt + 128)
+    # Apply learned KV-exhaustion boost AFTER base/explicit cap so recovery pressure is never wiped out.
+    if isinstance(extra_reserve, int) and extra_reserve > 0:
+        output_reserve = min(max(output_reserve, ctx_tokens // 2), output_reserve + extra_reserve)
     # Also keep ~4% margin for tokenizer & chat-template differences.
-    framing_margin = max(128, min(1024, ctx_tokens // 25))
-    return max(256, ctx_tokens - output_reserve - framing_margin)
+    framing_margin = max(128, min(6144, ctx_tokens // 25))
+    raw_budget = ctx_tokens - output_reserve - framing_margin
+    if ctx_tokens >= 1024:
+        return max(256, min(ctx_tokens - 256, max(ctx_tokens // 3, raw_budget)))
+    return max(256, raw_budget)
+
+
+def _clamp_upstream_max_tokens(payload: dict[str, Any], ctx_tokens: int) -> int | None:
+    """Record explicit client max_tokens and clamp oversized values so llama-server never rejects them."""
+    raw_max = payload.get("max_tokens")
+    if not isinstance(raw_max, int) or isinstance(raw_max, bool) or raw_max < 1:
+        return None
+    if raw_max >= ctx_tokens:
+        payload["max_tokens"] = max(256, ctx_tokens - 256)
+    return raw_max
+
+
+def _extract_choice_finish_reason(obj: Any) -> str | None:
+    if not isinstance(obj, dict):
+        return None
+    choices = obj.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return None
+    reason = choices[0].get("finish_reason")
+    return reason if isinstance(reason, str) and reason else None
+
+
+def _is_context_exhausted_length_stop(
+    finish_reason: str | None,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    ctx_tokens: int,
+    explicit_max_tokens: int | None,
+) -> bool:
+    """Return True when llama-server hit finish_reason='length' due to KV-cache exhaustion, not a client cap."""
+    if finish_reason != "length":
+        return False
+    if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
+        return False
+    if explicit_max_tokens is not None and completion_tokens >= max(1, explicit_max_tokens - 16):
+        return False
+    return (prompt_tokens + completion_tokens) >= max(256, ctx_tokens - 64)
+
+
+def _serialize_payload_for_tokenize(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> tuple[str, int]:
+    """Flatten chat messages + tools for an optional cold-start llama-server /tokenize probe."""
+    parts: list[str] = []
+    framing = 12
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        framing += 8
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            parts.append(content)
+        name = msg.get("name")
+        if isinstance(name, str) and name:
+            parts.append(name)
+            framing += 2
+        tool_call_id = msg.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            parts.append(tool_call_id)
+            framing += 2
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                framing += 12
+                fn = tc.get("function") or {}
+                if isinstance(fn, dict):
+                    if isinstance(fn.get("name"), str) and fn["name"]:
+                        parts.append(fn["name"])
+                    args = fn.get("arguments")
+                    if isinstance(args, str) and args:
+                        parts.append(args)
+    if tools:
+        framing += 32
+        parts.append(json.dumps(tools, ensure_ascii=False, separators=(",", ":")))
+    return "\n".join(parts), framing
 
 
 def _compute_reactive_tight_budget(
@@ -203,6 +302,8 @@ def _compute_reactive_tight_budget(
     cur_est_prompt: int,
     real_prompt_tokens: int | None,
     max_tokens_opt: Any = None,
+    *,
+    reasoning_effort: str | None = None,
 ) -> int:
     """Compute a strictly tighter estimator-space budget after an engine context-overflow 400.
 
@@ -211,7 +312,9 @@ def _compute_reactive_tight_budget(
     """
     safe_real = min(
         int(real_ctx * 0.72),
-        _compute_target_input_budget(real_ctx, max_tokens_opt),
+        _compute_target_input_budget(
+            real_ctx, max_tokens_opt, reasoning_effort=reasoning_effort
+        ),
     )
     candidates = [safe_real]
     if cur_est_prompt > 0:
@@ -408,6 +511,8 @@ class ColabOnePublicGateway:
         self.jobs = {}
         self.responses: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.compaction_cache: OrderedDict[str, str] = OrderedDict()
+        self._token_scale_by_model: dict[str, float] = {}
+        self._output_reserve_boost_by_model: dict[str, int] = {}
         self.completed, self.failed, self.total = 0, 0, 0
         self.last_request = 0
         self.lock = threading.RLock()
@@ -548,6 +653,8 @@ class ColabOnePublicGateway:
             with self.lock:
                 self.responses.clear()
                 self.compaction_cache.clear()
+                self._token_scale_by_model.clear()
+                self._output_reserve_boost_by_model.clear()
             self.phase, self.error, self.key = "stopped", "", ""
             self.note("对外 API 已关闭，远端模型仍保留在显存中")
         return self.snapshot()
@@ -677,6 +784,7 @@ class ColabOnePublicGateway:
             "delta_chars": 0,
             "prompt_tokens": None,
             "completion_tokens": None,
+            "finish_reason": None,
             "timings": {},
         }
         return metric, acc
@@ -695,6 +803,9 @@ class ColabOnePublicGateway:
                 acc["first_token_mono"] = now_mono
             acc["delta_chunks"] += 1
             acc["delta_chars"] += len(delta_text)
+        finish_reason = _extract_choice_finish_reason(chunk)
+        if finish_reason:
+            acc["finish_reason"] = finish_reason
         p_tok, c_tok = _extract_usage(chunk)
         if p_tok is not None:
             acc["prompt_tokens"] = p_tok
@@ -943,6 +1054,107 @@ class ColabOnePublicGateway:
             ):
                 _, evicted = self.compaction_cache.popitem(last=False)
                 total_bytes -= len(evicted.encode("utf-8"))
+
+    @staticmethod
+    def _calibration_key(internal_model: str, ctx_tokens: int) -> str:
+        return f"{internal_model}:{int(ctx_tokens)}"
+
+    def _has_token_scale(self, cal_key: str) -> bool:
+        with self.lock:
+            return cal_key in self._token_scale_by_model
+
+    def _get_token_scale(self, cal_key: str) -> float:
+        with self.lock:
+            return float(self._token_scale_by_model.get(cal_key, 1.0))
+
+    def _observe_real_prompt_tokens(
+        self,
+        cal_key: str,
+        est_tokens: int | None,
+        real_prompt_tokens: int | None,
+    ) -> float:
+        if (
+            not isinstance(est_tokens, int)
+            or not isinstance(real_prompt_tokens, int)
+            or est_tokens < 256
+            or real_prompt_tokens < 256
+        ):
+            return self._get_token_scale(cal_key)
+        observed = max(1.0, min(2.5, real_prompt_tokens / est_tokens))
+        with self.lock:
+            prev = self._token_scale_by_model.get(cal_key)
+            if prev is None:
+                updated = observed
+                if len(self._token_scale_by_model) >= 16:
+                    self._token_scale_by_model.pop(next(iter(self._token_scale_by_model)))
+            elif observed >= prev:
+                # Jump upward immediately on underestimation so the very next turn is protected.
+                updated = observed
+            else:
+                # Relax gently downward so a single dense turn doesn't permanently over-penalize.
+                updated = max(1.0, prev * 0.85 + observed * 0.15)
+            updated = round(updated, 4)
+            self._token_scale_by_model[cal_key] = updated
+            return updated
+
+    def _get_output_reserve_boost(self, cal_key: str) -> int:
+        with self.lock:
+            return int(self._output_reserve_boost_by_model.get(cal_key, 0))
+
+    def _record_context_exhaustion_pressure(self, cal_key: str, ctx_tokens: int) -> int:
+        step = min(16384, max(2048, ctx_tokens // 8))
+        cap = max(2048, ctx_tokens // 3)
+        with self.lock:
+            prev = int(self._output_reserve_boost_by_model.get(cal_key, 0))
+            updated = min(cap, prev + step)
+            if len(self._output_reserve_boost_by_model) >= 16 and cal_key not in self._output_reserve_boost_by_model:
+                self._output_reserve_boost_by_model.pop(
+                    next(iter(self._output_reserve_boost_by_model))
+                )
+            self._output_reserve_boost_by_model[cal_key] = updated
+            self.note(
+                f"检测到生成阶段耗尽上下文上限（{ctx_tokens} tokens），已自动提高后续请求预留输出空间（+{updated} tokens）",
+                level="warning",
+            )
+            return updated
+
+    async def _probe_exact_prompt_tokens(
+        self,
+        http: httpx.AsyncClient,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> int | None:
+        """Fail-open cold-start token count probe via llama-server's local /tokenize endpoint.
+
+        Bounds the probed slice to 400K chars (head + tail) and scales proportionally on multi-MB
+        payloads so /tokenize stays fast and bounded in memory.
+        """
+        text, framing = _serialize_payload_for_tokenize(messages, tools)
+        if not text:
+            return None
+        max_sample_chars = 400_000
+        if len(text) > max_sample_chars:
+            half = max_sample_chars // 2
+            sample = text[:half] + "\n" + text[-half:]
+            scale_factor = len(text) / len(sample)
+        else:
+            sample = text
+            scale_factor = 1.0
+        try:
+            resp = await http.post(
+                "http://127.0.0.1:8081/tokenize",
+                json={"content": sample, "add_special": False},
+                timeout=4.0,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            tokens = data.get("tokens") if isinstance(data, dict) else None
+            if isinstance(tokens, list):
+                return int(round(len(tokens) * scale_factor)) + framing
+        except Exception:
+            return None
+        return None
 
     def _record_compaction_metric(
         self,
@@ -1367,6 +1579,11 @@ class ColabOnePublicGateway:
     def chat(self, body, *, auto_compact: bool = True):
         raw = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else body
         model, stream, payload = normalize_chat_request(raw)
+        raw_reasoning_effort = (
+            raw.get("reasoning_effort")
+            if isinstance(raw, dict) and isinstance(raw.get("reasoning_effort"), str)
+            else payload.get("reasoning_effort")
+        )
         client_wants_usage = bool(
             stream
             and isinstance(raw, dict)
@@ -1397,6 +1614,7 @@ class ColabOnePublicGateway:
                 loop, current = asyncio.get_running_loop(), asyncio.current_task()
                 task.cancel_hook = lambda: loop.call_soon_threadsafe(current.cancel)
                 cur_est_prompt = est_prompt_tokens
+                cal_key = ""
                 try:
                     task.check()
                     async with asyncio.timeout(600 if stream else 300):
@@ -1407,22 +1625,51 @@ class ColabOnePublicGateway:
                         ) as http:
                             internal_model = slot.get("internal_model") or model
                             ctx_tokens = self._active_context_length(internal_model)
-                            target_budget = _compute_target_input_budget(
-                                ctx_tokens, upstream_payload.get("max_tokens")
+                            effective_ctx = ctx_tokens
+                            cal_key = self._calibration_key(internal_model, effective_ctx)
+                            explicit_max_tokens = _clamp_upstream_max_tokens(
+                                upstream_payload, effective_ctx
                             )
+                            target_budget = _compute_target_input_budget(
+                                effective_ctx,
+                                explicit_max_tokens,
+                                reasoning_effort=raw_reasoning_effort,
+                                extra_reserve=self._get_output_reserve_boost(cal_key),
+                            )
+
+                            if (
+                                auto_compact
+                                and self.runtime.chat_transport is None
+                                and not self._has_token_scale(cal_key)
+                                and cur_est_prompt >= int(target_budget * 0.45)
+                            ):
+                                probed = await self._probe_exact_prompt_tokens(
+                                    http,
+                                    upstream_payload.get("messages") or [],
+                                    upstream_payload.get("tools"),
+                                )
+                                task.check()
+                                if probed is not None:
+                                    self._observe_real_prompt_tokens(
+                                        cal_key, cur_est_prompt, probed
+                                    )
+
+                            scale = self._get_token_scale(cal_key)
+                            calibrated_prompt = int(math.ceil(cur_est_prompt * scale))
 
                             async def send_keepalive():
                                 if stream:
                                     await self._enqueue(slot, task, b": compacting\n\n")
 
-                            if auto_compact and cur_est_prompt > target_budget:
+                            if auto_compact and calibrated_prompt > target_budget:
+                                est_target_budget = max(256, int(target_budget / scale))
                                 comp_res = await self._auto_compact_chat_payload(
                                     http,
                                     task,
                                     internal_model,
                                     upstream_payload,
                                     ctx_tokens=ctx_tokens,
-                                    target_input_budget=target_budget,
+                                    target_input_budget=est_target_budget,
                                     keepalive_cb=send_keepalive,
                                 )
                                 if comp_res["compacted"]:
@@ -1430,8 +1677,11 @@ class ColabOnePublicGateway:
                                     cur_est_prompt = comp_res["compacted_tokens"]
                                     self._record_compaction_metric(
                                         slot,
-                                        original_tokens=comp_res["original_tokens"],
-                                        compacted_tokens=cur_est_prompt,
+                                        original_tokens=max(
+                                            calibrated_prompt,
+                                            int(math.ceil(comp_res["original_tokens"] * scale)),
+                                        ),
+                                        compacted_tokens=int(math.ceil(cur_est_prompt * scale)),
                                         stage=comp_res["stage"],
                                         ctx_tokens=ctx_tokens,
                                     )
@@ -1452,19 +1702,35 @@ class ColabOnePublicGateway:
                                                 default_ctx=ctx_tokens,
                                                 param="messages",
                                             )
+                                            if err.error_code == "context_length_exceeded":
+                                                real_ctx = err.context_length or effective_ctx
+                                                if real_ctx != effective_ctx:
+                                                    effective_ctx = real_ctx
+                                                    cal_key = self._calibration_key(
+                                                        internal_model, effective_ctx
+                                                    )
+                                                self._observe_real_prompt_tokens(
+                                                    cal_key, cur_est_prompt, err.prompt_tokens
+                                                )
                                             if (
                                                 auto_compact
                                                 and not reactive_retried
                                                 and err.error_code == "context_length_exceeded"
                                             ):
                                                 reactive_retried = True
-                                                real_ctx = err.context_length or ctx_tokens
-                                                real_in = err.prompt_tokens or cur_est_prompt
+                                                real_ctx = effective_ctx
+                                                real_in = err.prompt_tokens or int(
+                                                    math.ceil(
+                                                        cur_est_prompt
+                                                        * self._get_token_scale(cal_key)
+                                                    )
+                                                )
                                                 tight_budget = _compute_reactive_tight_budget(
                                                     real_ctx,
                                                     cur_est_prompt,
                                                     err.prompt_tokens,
-                                                    upstream_payload.get("max_tokens"),
+                                                    explicit_max_tokens,
+                                                    reasoning_effort=raw_reasoning_effort,
                                                 )
                                                 comp_res = await self._auto_compact_chat_payload(
                                                     http,
@@ -1479,12 +1745,21 @@ class ColabOnePublicGateway:
                                                 if comp_res["compacted"]:
                                                     upstream_payload["messages"] = comp_res["messages"]
                                                     cur_est_prompt = comp_res["compacted_tokens"]
+                                                    new_scale = self._get_token_scale(cal_key)
                                                     self._record_compaction_metric(
                                                         slot,
                                                         original_tokens=max(
-                                                            real_in, comp_res["original_tokens"]
+                                                            real_in,
+                                                            int(
+                                                                math.ceil(
+                                                                    comp_res["original_tokens"]
+                                                                    * new_scale
+                                                                )
+                                                            ),
                                                         ),
-                                                        compacted_tokens=cur_est_prompt,
+                                                        compacted_tokens=int(
+                                                            math.ceil(cur_est_prompt * new_scale)
+                                                        ),
                                                         stage=comp_res["stage"],
                                                         ctx_tokens=real_ctx,
                                                     )
@@ -1542,10 +1817,31 @@ class ColabOnePublicGateway:
                                         if not finished:
                                             raise RuntimeError("推理连接提前中断")
                                     break
+                                real_in = acc.get("prompt_tokens")
+                                if real_in is None:
+                                    real_in = acc.get("timings", {}).get("prompt_n")
+                                real_out = acc.get("completion_tokens")
+                                if real_out is None:
+                                    real_out = acc.get("timings", {}).get("predicted_n")
+                                self._observe_real_prompt_tokens(
+                                    cal_key, cur_est_prompt, real_in
+                                )
+                                if _is_context_exhausted_length_stop(
+                                    acc.get("finish_reason"),
+                                    real_in,
+                                    real_out,
+                                    effective_ctx,
+                                    explicit_max_tokens,
+                                ):
+                                    self._record_context_exhaustion_pressure(
+                                        cal_key, effective_ctx
+                                    )
                                 self._finalize_request(
                                     slot,
                                     state="completed",
-                                    fallback_prompt_tokens=cur_est_prompt,
+                                    fallback_prompt_tokens=int(
+                                        math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                                    ),
                                 )
                             else:
                                 try:
@@ -1553,18 +1849,33 @@ class ColabOnePublicGateway:
                                         http,
                                         task,
                                         upstream_payload,
-                                        default_ctx=ctx_tokens,
+                                        default_ctx=effective_ctx,
                                         error_param="messages",
                                     )
                                 except ColabOneEngineError as err:
+                                    if err.error_code == "context_length_exceeded":
+                                        real_ctx = err.context_length or effective_ctx
+                                        if real_ctx != effective_ctx:
+                                            effective_ctx = real_ctx
+                                            cal_key = self._calibration_key(
+                                                internal_model, effective_ctx
+                                            )
+                                        self._observe_real_prompt_tokens(
+                                            cal_key, cur_est_prompt, err.prompt_tokens
+                                        )
                                     if auto_compact and err.error_code == "context_length_exceeded":
-                                        real_ctx = err.context_length or ctx_tokens
-                                        real_in = err.prompt_tokens or cur_est_prompt
+                                        real_ctx = effective_ctx
+                                        real_in = err.prompt_tokens or int(
+                                            math.ceil(
+                                                cur_est_prompt * self._get_token_scale(cal_key)
+                                            )
+                                        )
                                         tight_budget = _compute_reactive_tight_budget(
                                             real_ctx,
                                             cur_est_prompt,
                                             err.prompt_tokens,
-                                            upstream_payload.get("max_tokens"),
+                                            explicit_max_tokens,
+                                            reasoning_effort=raw_reasoning_effort,
                                         )
                                         comp_res = await self._auto_compact_chat_payload(
                                             http,
@@ -1579,12 +1890,20 @@ class ColabOnePublicGateway:
                                             raise
                                         upstream_payload["messages"] = comp_res["messages"]
                                         cur_est_prompt = comp_res["compacted_tokens"]
+                                        new_scale = self._get_token_scale(cal_key)
                                         self._record_compaction_metric(
                                             slot,
                                             original_tokens=max(
-                                                real_in, comp_res["original_tokens"]
+                                                real_in,
+                                                int(
+                                                    math.ceil(
+                                                        comp_res["original_tokens"] * new_scale
+                                                    )
+                                                ),
                                             ),
-                                            compacted_tokens=cur_est_prompt,
+                                            compacted_tokens=int(
+                                                math.ceil(cur_est_prompt * new_scale)
+                                            ),
                                             stage=comp_res["stage"],
                                             ctx_tokens=real_ctx,
                                         )
@@ -1597,6 +1916,84 @@ class ColabOnePublicGateway:
                                         )
                                     else:
                                         raise
+                                real_in, real_out = _extract_usage(result_json)
+                                res_timings = _extract_timings(result_json)
+                                if real_in is None:
+                                    real_in = res_timings.get("prompt_n")
+                                if real_out is None:
+                                    real_out = res_timings.get("predicted_n")
+                                self._observe_real_prompt_tokens(
+                                    cal_key, cur_est_prompt, real_in
+                                )
+                                if _is_context_exhausted_length_stop(
+                                    _extract_choice_finish_reason(result_json),
+                                    real_in,
+                                    real_out,
+                                    effective_ctx,
+                                    explicit_max_tokens,
+                                ):
+                                    new_boost = self._record_context_exhaustion_pressure(
+                                        cal_key, effective_ctx
+                                    )
+                                    if auto_compact:
+                                        new_scale = self._get_token_scale(cal_key)
+                                        retry_target = _compute_target_input_budget(
+                                            effective_ctx,
+                                            explicit_max_tokens,
+                                            reasoning_effort=raw_reasoning_effort,
+                                            extra_reserve=new_boost,
+                                        )
+                                        est_retry_target = max(
+                                            256,
+                                            min(
+                                                int(retry_target / new_scale),
+                                                int(cur_est_prompt * 0.72),
+                                            ),
+                                        )
+                                        comp_res = await self._auto_compact_chat_payload(
+                                            http,
+                                            task,
+                                            internal_model,
+                                            upstream_payload,
+                                            ctx_tokens=effective_ctx,
+                                            target_input_budget=est_retry_target,
+                                            force=True,
+                                        )
+                                        if comp_res["compacted"]:
+                                            upstream_payload["messages"] = comp_res["messages"]
+                                            cur_est_prompt = comp_res["compacted_tokens"]
+                                            self._record_compaction_metric(
+                                                slot,
+                                                original_tokens=max(
+                                                    real_in or 0,
+                                                    int(
+                                                        math.ceil(
+                                                            comp_res["original_tokens"]
+                                                            * new_scale
+                                                        )
+                                                    ),
+                                                ),
+                                                compacted_tokens=int(
+                                                    math.ceil(cur_est_prompt * new_scale)
+                                                ),
+                                                stage=comp_res["stage"],
+                                                ctx_tokens=effective_ctx,
+                                            )
+                                            result_json = await self._post_chat_json(
+                                                http,
+                                                task,
+                                                upstream_payload,
+                                                default_ctx=effective_ctx,
+                                                error_param="messages",
+                                            )
+                                            retry_in, _ = _extract_usage(result_json)
+                                            if retry_in is None:
+                                                retry_in = _extract_timings(result_json).get(
+                                                    "prompt_n"
+                                                )
+                                            self._observe_real_prompt_tokens(
+                                                cal_key, cur_est_prompt, retry_in
+                                            )
                                 if (
                                     isinstance(result_json, dict)
                                     and "model" in result_json
@@ -1609,7 +2006,9 @@ class ColabOnePublicGateway:
                                     state="completed",
                                     response_obj=result_json,
                                     fallback_text=_extract_completion_text(result_json),
-                                    fallback_prompt_tokens=cur_est_prompt,
+                                    fallback_prompt_tokens=int(
+                                        math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                                    ),
                                 )
                     task.note("外部 API 聊天生成完成")
                 except (asyncio.CancelledError, ColabOneCancelledError):
@@ -1617,7 +2016,9 @@ class ColabOnePublicGateway:
                         slot,
                         state="cancelled",
                         error="API 请求已取消",
-                        fallback_prompt_tokens=cur_est_prompt,
+                        fallback_prompt_tokens=int(
+                            math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                        ),
                     )
                     raise ColabOneCancelledError("API 请求已取消") from None
                 except (TimeoutError, httpx.TimeoutException):
@@ -1626,7 +2027,9 @@ class ColabOnePublicGateway:
                         slot,
                         state="failed",
                         error=msg,
-                        fallback_prompt_tokens=cur_est_prompt,
+                        fallback_prompt_tokens=int(
+                            math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                        ),
                     )
                     raise RuntimeError(msg) from None
                 except httpx.HTTPError:
@@ -1635,7 +2038,9 @@ class ColabOnePublicGateway:
                         slot,
                         state="failed",
                         error=msg,
-                        fallback_prompt_tokens=cur_est_prompt,
+                        fallback_prompt_tokens=int(
+                            math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                        ),
                     )
                     raise RuntimeError(msg) from None
                 except ColabOneEngineError as exc:
@@ -1644,7 +2049,10 @@ class ColabOnePublicGateway:
                         slot,
                         state="failed",
                         error=exc.message,
-                        fallback_prompt_tokens=exc.prompt_tokens or cur_est_prompt,
+                        fallback_prompt_tokens=exc.prompt_tokens
+                        or int(
+                            math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                        ),
                     )
                     raise
                 except Exception as exc:
@@ -1652,7 +2060,9 @@ class ColabOnePublicGateway:
                         slot,
                         state="failed",
                         error=str(exc) or "推理失败",
-                        fallback_prompt_tokens=cur_est_prompt,
+                        fallback_prompt_tokens=int(
+                            math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                        ),
                     )
                     raise
                 finally:
@@ -1692,6 +2102,7 @@ class ColabOnePublicGateway:
                 task.cancel_hook = lambda: loop.call_soon_threadsafe(current.cancel)
                 translator: ColabOneResponsesStreamTranslator | None = None
                 est_in: int | None = None
+                cal_key = ""
                 try:
                     task.check()
                     async with asyncio.timeout(600 if stream else 300):
@@ -1779,17 +2190,46 @@ class ColabOnePublicGateway:
                                     log_note=False,
                                 )
 
-                            target_budget = _compute_target_input_budget(
-                                ctx_tokens, chat_payload.get("max_tokens")
+                            effective_ctx = ctx_tokens
+                            cal_key = self._calibration_key(internal_model, effective_ctx)
+                            raw_reasoning_effort = spec.get("raw_reasoning_effort")
+                            explicit_max_tokens = _clamp_upstream_max_tokens(
+                                chat_payload, effective_ctx
                             )
-                            if auto_compact and est_in > target_budget:
+                            target_budget = _compute_target_input_budget(
+                                effective_ctx,
+                                explicit_max_tokens,
+                                reasoning_effort=raw_reasoning_effort,
+                                extra_reserve=self._get_output_reserve_boost(cal_key),
+                            )
+
+                            if (
+                                auto_compact
+                                and self.runtime.chat_transport is None
+                                and not self._has_token_scale(cal_key)
+                                and est_in >= int(target_budget * 0.45)
+                            ):
+                                probed = await self._probe_exact_prompt_tokens(
+                                    http,
+                                    chat_payload.get("messages") or [],
+                                    chat_payload.get("tools"),
+                                )
+                                task.check()
+                                if probed is not None:
+                                    self._observe_real_prompt_tokens(cal_key, est_in, probed)
+
+                            scale = self._get_token_scale(cal_key)
+                            calibrated_est_in = int(math.ceil(est_in * scale))
+                            calibrated_raw_in = int(math.ceil(raw_est_in * scale))
+                            if auto_compact and calibrated_est_in > target_budget:
+                                est_target_budget = max(256, int(target_budget / scale))
                                 comp_res = await self._auto_compact_chat_payload(
                                     http,
                                     task,
                                     internal_model,
                                     chat_payload,
                                     ctx_tokens=ctx_tokens,
-                                    target_input_budget=target_budget,
+                                    target_input_budget=est_target_budget,
                                     instructions=spec["instructions"],
                                     keepalive_cb=send_keepalive,
                                 )
@@ -1797,14 +2237,17 @@ class ColabOnePublicGateway:
                                     chat_payload["messages"] = comp_res["messages"]
                                     est_in = comp_res["compacted_tokens"]
                                     gateway_auto_compacted = True
-                                    orig_toks = max(raw_est_in, comp_res["original_tokens"])
+                                    orig_toks = max(
+                                        calibrated_raw_in,
+                                        int(math.ceil(comp_res["original_tokens"] * scale)),
+                                    )
                                     # Report uncompacted context pressure on the wire so Codex CLI
                                     # sees last_token_usage >= auto_compact_limit and triggers native compaction.
                                     min_wire_input_tokens = orig_toks
                                     self._record_compaction_metric(
                                         slot,
                                         original_tokens=orig_toks,
-                                        compacted_tokens=est_in,
+                                        compacted_tokens=int(math.ceil(est_in * scale)),
                                         stage=comp_res["stage"],
                                         ctx_tokens=ctx_tokens,
                                     )
@@ -1812,7 +2255,9 @@ class ColabOnePublicGateway:
                             if stream:
                                 translator = ColabOneResponsesStreamTranslator(
                                     spec,
-                                    fallback_input_tokens=est_in,
+                                    fallback_input_tokens=int(
+                                        math.ceil(est_in * self._get_token_scale(cal_key))
+                                    ),
                                     prefix_output=prefix_output,
                                     extra_usage=extra_usage,
                                     min_input_tokens=min_wire_input_tokens,
@@ -1834,21 +2279,35 @@ class ColabOnePublicGateway:
                                                 default_ctx=ctx_tokens,
                                                 param="input",
                                             )
+                                            if err.error_code == "context_length_exceeded":
+                                                real_ctx = err.context_length or effective_ctx
+                                                if real_ctx != effective_ctx:
+                                                    effective_ctx = real_ctx
+                                                    cal_key = self._calibration_key(
+                                                        internal_model, effective_ctx
+                                                    )
+                                                self._observe_real_prompt_tokens(
+                                                    cal_key, est_in, err.prompt_tokens
+                                                )
                                             if (
                                                 auto_compact
                                                 and not reactive_retried
                                                 and err.error_code == "context_length_exceeded"
                                             ):
                                                 reactive_retried = True
-                                                real_ctx = err.context_length or ctx_tokens
+                                                real_ctx = effective_ctx
+                                                new_scale = self._get_token_scale(cal_key)
                                                 real_in = max(
-                                                    raw_est_in, err.prompt_tokens or est_in
+                                                    int(math.ceil(raw_est_in * new_scale)),
+                                                    err.prompt_tokens
+                                                    or int(math.ceil(est_in * new_scale)),
                                                 )
                                                 tight_budget = _compute_reactive_tight_budget(
                                                     real_ctx,
                                                     est_in,
                                                     err.prompt_tokens,
-                                                    chat_payload.get("max_tokens"),
+                                                    explicit_max_tokens,
+                                                    reasoning_effort=raw_reasoning_effort,
                                                 )
                                                 comp_res = await self._auto_compact_chat_payload(
                                                     http,
@@ -1868,12 +2327,17 @@ class ColabOnePublicGateway:
                                                     min_wire_input_tokens = max(
                                                         min_wire_input_tokens or 0, real_in
                                                     )
-                                                    translator.fallback_input_tokens = est_in
-                                                    translator.min_input_tokens = min_wire_input_tokens
+                                                    compacted_disp = int(
+                                                        math.ceil(est_in * new_scale)
+                                                    )
+                                                    translator.fallback_input_tokens = compacted_disp
+                                                    translator.min_input_tokens = (
+                                                        min_wire_input_tokens
+                                                    )
                                                     self._record_compaction_metric(
                                                         slot,
                                                         original_tokens=real_in,
-                                                        compacted_tokens=est_in,
+                                                        compacted_tokens=compacted_disp,
                                                         stage=comp_res["stage"],
                                                         ctx_tokens=real_ctx,
                                                     )
@@ -1906,6 +2370,26 @@ class ColabOnePublicGateway:
                                         if not finished:
                                             raise RuntimeError("推理连接提前中断")
                                     break
+                                raw_in, raw_out = _extract_usage(
+                                    {"usage": translator.raw_usage}
+                                    if isinstance(translator.raw_usage, dict)
+                                    else {}
+                                )
+                                if raw_in is None:
+                                    raw_in = acc.get("timings", {}).get("prompt_n")
+                                if raw_out is None:
+                                    raw_out = acc.get("timings", {}).get("predicted_n")
+                                self._observe_real_prompt_tokens(cal_key, est_in, raw_in)
+                                if _is_context_exhausted_length_stop(
+                                    translator.finish_reason,
+                                    raw_in,
+                                    raw_out,
+                                    effective_ctx,
+                                    explicit_max_tokens,
+                                ):
+                                    self._record_context_exhaustion_pressure(
+                                        cal_key, effective_ctx
+                                    )
                                 for ev in translator.finish():
                                     await self._enqueue(slot, task, ev)
                                 if spec["store"] and translator.final_response:
@@ -1932,7 +2416,9 @@ class ColabOnePublicGateway:
                                     slot,
                                     state="completed",
                                     usage_override=metric_usage,
-                                    fallback_prompt_tokens=est_in,
+                                    fallback_prompt_tokens=int(
+                                        math.ceil(est_in * self._get_token_scale(cal_key))
+                                    ),
                                 )
                             else:
                                 try:
@@ -1940,20 +2426,34 @@ class ColabOnePublicGateway:
                                         http,
                                         task,
                                         chat_payload,
-                                        default_ctx=ctx_tokens,
+                                        default_ctx=effective_ctx,
                                         error_param="input",
                                     )
                                 except ColabOneEngineError as err:
+                                    if err.error_code == "context_length_exceeded":
+                                        real_ctx = err.context_length or effective_ctx
+                                        if real_ctx != effective_ctx:
+                                            effective_ctx = real_ctx
+                                            cal_key = self._calibration_key(
+                                                internal_model, effective_ctx
+                                            )
+                                        self._observe_real_prompt_tokens(
+                                            cal_key, est_in, err.prompt_tokens
+                                        )
                                     if auto_compact and err.error_code == "context_length_exceeded":
-                                        real_ctx = err.context_length or ctx_tokens
+                                        real_ctx = effective_ctx
+                                        new_scale = self._get_token_scale(cal_key)
                                         real_in = max(
-                                            raw_est_in, err.prompt_tokens or est_in
+                                            int(math.ceil(raw_est_in * new_scale)),
+                                            err.prompt_tokens
+                                            or int(math.ceil(est_in * new_scale)),
                                         )
                                         tight_budget = _compute_reactive_tight_budget(
                                             real_ctx,
                                             est_in,
                                             err.prompt_tokens,
-                                            chat_payload.get("max_tokens"),
+                                            explicit_max_tokens,
+                                            reasoning_effort=raw_reasoning_effort,
                                         )
                                         comp_res = await self._auto_compact_chat_payload(
                                             http,
@@ -1976,7 +2476,7 @@ class ColabOnePublicGateway:
                                         self._record_compaction_metric(
                                             slot,
                                             original_tokens=real_in,
-                                            compacted_tokens=est_in,
+                                            compacted_tokens=int(math.ceil(est_in * new_scale)),
                                             stage=comp_res["stage"],
                                             ctx_tokens=real_ctx,
                                         )
@@ -1989,12 +2489,92 @@ class ColabOnePublicGateway:
                                         )
                                     else:
                                         raise
+                                real_in, real_out = _extract_usage(chat_json)
+                                chat_timings = _extract_timings(chat_json)
+                                if real_in is None:
+                                    real_in = chat_timings.get("prompt_n")
+                                if real_out is None:
+                                    real_out = chat_timings.get("predicted_n")
+                                self._observe_real_prompt_tokens(cal_key, est_in, real_in)
+                                if _is_context_exhausted_length_stop(
+                                    _extract_choice_finish_reason(chat_json),
+                                    real_in,
+                                    real_out,
+                                    effective_ctx,
+                                    explicit_max_tokens,
+                                ):
+                                    new_boost = self._record_context_exhaustion_pressure(
+                                        cal_key, effective_ctx
+                                    )
+                                    if auto_compact:
+                                        new_scale = self._get_token_scale(cal_key)
+                                        retry_target = _compute_target_input_budget(
+                                            effective_ctx,
+                                            explicit_max_tokens,
+                                            reasoning_effort=raw_reasoning_effort,
+                                            extra_reserve=new_boost,
+                                        )
+                                        est_retry_target = max(
+                                            256,
+                                            min(
+                                                int(retry_target / new_scale),
+                                                int(est_in * 0.72),
+                                            ),
+                                        )
+                                        comp_res = await self._auto_compact_chat_payload(
+                                            http,
+                                            task,
+                                            internal_model,
+                                            chat_payload,
+                                            ctx_tokens=effective_ctx,
+                                            target_input_budget=est_retry_target,
+                                            instructions=spec["instructions"],
+                                            force=True,
+                                        )
+                                        if comp_res["compacted"]:
+                                            chat_payload["messages"] = comp_res["messages"]
+                                            est_in = comp_res["compacted_tokens"]
+                                            gateway_auto_compacted = True
+                                            orig_toks = max(
+                                                real_in or 0,
+                                                int(math.ceil(raw_est_in * new_scale)),
+                                            )
+                                            min_wire_input_tokens = max(
+                                                min_wire_input_tokens or 0, orig_toks
+                                            )
+                                            self._record_compaction_metric(
+                                                slot,
+                                                original_tokens=orig_toks,
+                                                compacted_tokens=int(
+                                                    math.ceil(est_in * new_scale)
+                                                ),
+                                                stage=comp_res["stage"],
+                                                ctx_tokens=effective_ctx,
+                                            )
+                                            chat_json = await self._post_chat_json(
+                                                http,
+                                                task,
+                                                chat_payload,
+                                                default_ctx=effective_ctx,
+                                                error_param="input",
+                                            )
+                                            retry_in, _ = _extract_usage(chat_json)
+                                            if retry_in is None:
+                                                retry_in = _extract_timings(chat_json).get(
+                                                    "prompt_n"
+                                                )
+                                            self._observe_real_prompt_tokens(
+                                                cal_key, est_in, retry_in
+                                            )
+                                fallback_in_disp = int(
+                                    math.ceil(est_in * self._get_token_scale(cal_key))
+                                )
                                 resp_obj = chat_completion_to_response(
                                     chat_json,
                                     spec,
                                     prefix_output=prefix_output,
                                     extra_usage=extra_usage,
-                                    fallback_input_tokens=est_in,
+                                    fallback_input_tokens=fallback_in_disp,
                                     min_input_tokens=min_wire_input_tokens,
                                 )
                                 if spec["store"]:
@@ -2015,7 +2595,7 @@ class ColabOnePublicGateway:
                                     response_obj=chat_json,
                                     usage_override=metric_usage,
                                     fallback_text=_extract_completion_text(chat_json),
-                                    fallback_prompt_tokens=est_in,
+                                    fallback_prompt_tokens=fallback_in_disp,
                                 )
                     task.note("外部 API Responses 生成完成")
                 except (asyncio.CancelledError, ColabOneCancelledError):
@@ -2023,11 +2603,16 @@ class ColabOnePublicGateway:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail("API 请求已取消")
+                    cal_fallback = (
+                        int(math.ceil(est_in * self._get_token_scale(cal_key)))
+                        if isinstance(est_in, int)
+                        else None
+                    )
                     self._finalize_request(
                         slot,
                         state="cancelled",
                         error="API 请求已取消",
-                        fallback_prompt_tokens=est_in,
+                        fallback_prompt_tokens=cal_fallback,
                     )
                     raise ColabOneCancelledError("API 请求已取消") from None
                 except (TimeoutError, httpx.TimeoutException):
@@ -2036,11 +2621,16 @@ class ColabOnePublicGateway:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail(msg)
+                    cal_fallback = (
+                        int(math.ceil(est_in * self._get_token_scale(cal_key)))
+                        if isinstance(est_in, int)
+                        else None
+                    )
                     self._finalize_request(
                         slot,
                         state="failed",
                         error=msg,
-                        fallback_prompt_tokens=est_in,
+                        fallback_prompt_tokens=cal_fallback,
                     )
                     raise RuntimeError(msg) from None
                 except httpx.HTTPError:
@@ -2049,11 +2639,16 @@ class ColabOnePublicGateway:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail(msg)
+                    cal_fallback = (
+                        int(math.ceil(est_in * self._get_token_scale(cal_key)))
+                        if isinstance(est_in, int)
+                        else None
+                    )
                     self._finalize_request(
                         slot,
                         state="failed",
                         error=msg,
-                        fallback_prompt_tokens=est_in,
+                        fallback_prompt_tokens=cal_fallback,
                     )
                     raise RuntimeError(msg) from None
                 except ColabOneEngineError as exc:
@@ -2064,11 +2659,16 @@ class ColabOnePublicGateway:
                         slot["fail_event"] = translator.fail(
                             exc.message, code=exc.error_code
                         )
+                    cal_fallback = (
+                        int(math.ceil(est_in * self._get_token_scale(cal_key)))
+                        if isinstance(est_in, int)
+                        else None
+                    )
                     self._finalize_request(
                         slot,
                         state="failed",
                         error=exc.message,
-                        fallback_prompt_tokens=exc.prompt_tokens or est_in,
+                        fallback_prompt_tokens=exc.prompt_tokens or cal_fallback,
                     )
                     raise
                 except Exception as exc:
@@ -2076,11 +2676,16 @@ class ColabOnePublicGateway:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail(str(exc) or "推理失败")
+                    cal_fallback = (
+                        int(math.ceil(est_in * self._get_token_scale(cal_key)))
+                        if isinstance(est_in, int)
+                        else None
+                    )
                     self._finalize_request(
                         slot,
                         state="failed",
                         error=str(exc) or "推理失败",
-                        fallback_prompt_tokens=est_in,
+                        fallback_prompt_tokens=cal_fallback,
                     )
                     raise
                 finally:
@@ -2325,6 +2930,8 @@ def create_colabone_public_app(g):
                     "owned_by": colabone_model_owner(model),
                     "kind": "chat",
                     "context_length": ctx_len,
+                    "context_window": ctx_len,
+                    "max_model_len": ctx_len,
                 },
                 identity,
             )

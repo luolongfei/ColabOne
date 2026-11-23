@@ -562,7 +562,6 @@ onUnmounted(() => {
           :width="112"
           :height="32"
           variant="button"
-          tone="accent"
           :delay="80"
         />
         <ASpace v-else :size="8" wrap>
@@ -638,7 +637,7 @@ onUnmounted(() => {
               :height="18"
               :radius="5"
               variant="rect"
-              tone="accent"
+              tone="subtle"
             />
             <ColabOneSkeleton :width="72" :height="13" variant="text" tone="subtle" :delay="40" />
             <ColabOneSkeleton :width="154" :height="17" variant="text" :delay="75" />
@@ -1150,7 +1149,6 @@ onUnmounted(() => {
               :width="44"
               :height="26"
               variant="metric"
-              :tone="idx === 2 ? 'accent' : 'default'"
               :delay="(idx - 1) * 55 + 45"
             />
           </div>
@@ -1198,7 +1196,7 @@ onUnmounted(() => {
                   class="co-api-speed-icon"
                 />
                 <ColabOneSkeleton :width="56" :height="13" variant="text" tone="subtle" />
-                <ColabOneSkeleton :width="96" :height="16" variant="text" tone="accent" :delay="65" />
+                <ColabOneSkeleton :width="96" :height="16" variant="text" :delay="65" />
               </div>
               <div class="co-api-speed-summary-right">
                 <ColabOneSkeleton :width="72" :height="13" variant="text" tone="subtle" :delay="110" />
@@ -1346,25 +1344,18 @@ onUnmounted(() => {
                       <template
                         v-if="req.tokens_per_second && req.tokens_per_second > 0"
                       >
-                        {{
+                        <span class="co-sk-reveal">{{
                           formatTokenSpeed(
                             req.tokens_per_second,
                             !!req.estimated,
                           )
-                        }}
+                        }}</span>
                       </template>
                       <span
                         v-else-if="req.state === 'running'"
                         class="co-api-tps-pending"
                       >
-                        <ColabOneSkeleton
-                          :width="76"
-                          :height="14"
-                          variant="pill"
-                          tone="accent"
-                          inline
-                        />
-                        <span class="co-sr-only">{{
+                        <span class="co-api-tps-shimmer">{{
                           t("api.reqWaitingFirstToken")
                         }}</span>
                       </span>
@@ -1856,6 +1847,46 @@ onUnmounted(() => {
 .co-api-tps-pending {
   display: inline-flex;
   align-items: center;
+  font-family: var(--co-font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+}
+
+.co-api-tps-shimmer {
+  display: inline-block;
+  color: var(--co-shimmer-text-base);
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .co-api-tps-shimmer {
+    background-image: linear-gradient(
+      90deg,
+      var(--co-shimmer-text-base) 0%,
+      var(--co-shimmer-text-base) 26%,
+      var(--co-shimmer-text-mid) 44%,
+      var(--co-shimmer-text-peak) 50%,
+      var(--co-shimmer-text-mid) 56%,
+      var(--co-shimmer-text-base) 74%,
+      var(--co-shimmer-text-base) 100%
+    );
+    background-size: 200% 100%;
+    background-repeat: repeat-x;
+    background-position: 200% 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: co-text-shimmer 2.1s linear infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-api-tps-shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 .co-api-code-skeleton {
@@ -1868,11 +1899,10 @@ onUnmounted(() => {
   border-radius: 12px;
   background: var(--co-code-bg);
   box-shadow: var(--co-code-shadow);
-  --co-skeleton-base: rgba(255, 255, 255, 0.08);
-  --co-skeleton-base-subtle: rgba(255, 255, 255, 0.045);
-  --co-skeleton-sheen: rgba(255, 255, 255, 0.14);
-  --co-skeleton-tint: rgba(96, 165, 250, 0.12);
-  --co-skeleton-border: rgba(255, 255, 255, 0.06);
+  --co-skeleton-base: rgba(255, 255, 255, 0.095);
+  --co-skeleton-base-subtle: rgba(255, 255, 255, 0.052);
+  --co-skeleton-sheen: rgba(255, 255, 255, 0.145);
+  --co-skeleton-sheen-soft: rgba(255, 255, 255, 0.065);
 }
 
 .co-cred-actions {

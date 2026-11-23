@@ -2,9 +2,9 @@
 name: colabone-release
 description: >-
   Prepare, verify, tag, publish, or resume ColabOne releases, including
-  automatic patch (+1) version bumping, manifest synchronization, annotated
-  release notes, GitHub Actions tracking, failed-job recovery, and GitHub
-  Release artifact verification.
+  automatic patch (+1) version bumping, manifest synchronization, bilingual
+  (Chinese + English) annotated release notes, GitHub Actions tracking,
+  failed-job recovery, and GitHub Release artifact verification.
 ---
 
 # ColabOne Release
@@ -46,11 +46,14 @@ description: >-
    - 查看自上次发布以来的提交以归纳用户可见变更：`git log <latest_tag>..HEAD --oneline`（首次发版时查看最近提交记录）
    - 检查工作区全部未提交改动；不要将无关改动混入发布提交，**禁止**执行 `git add .` 或 `git add -A`
    - 按 [references/github-actions.md](references/github-actions.md) 做一次只读 Actions 权限探测
-2. **准备发布版本与发布说明**
-   - 可先加 `--dry-run` 预览解析出的目标版本、更新文件列表与发布说明，确认无误后再正式写入
-   - 运行 `scripts/prepare_release.py`，通过 `--added` / `--changed` / `--fixed` 传入发布说明条目；未指定版本时省略 `--version`（默认最后一位 `+1`）
-   - 脚本原子更新 `console/mygo.json`、`frontend/package.json`、`frontend/package-lock.json`（含 `packages[""].version`），并生成附注标签用的发布说明文件；写入失败会自动回滚
-   - 发布说明面向用户，简洁描述可见功能、体验改进或问题修复，不直接照搬内部实现细节或重构流水账
+2. **准备发布版本与中英双语发布说明**
+   - 可先加 `--dry-run` 预览解析出的目标版本、更新文件列表与中英双语发布说明，确认无误后再正式写入
+   - 运行 `scripts/prepare_release.py`，**必须同时传入成对的中英文发布说明条目**：
+     - 中文区块（上方）：`--added-zh` / `--changed-zh` / `--fixed-zh`（兼容 `--added` / `--changed` / `--fixed` 别名）
+     - 英文区块（下方）：`--added-en` / `--changed-en` / `--fixed-en`
+     - 未指定版本时省略 `--version`（默认最后一位 `+1`）
+   - 脚本会强校验双语完整性：任一有内容的分类都必须同时提供数量一致的中文与英文条目，否则拒绝写入；确认通过后原子更新 `console/mygo.json`、`frontend/package.json`、`frontend/package-lock.json`（含 `packages[""].version`），并生成附注标签用的中英双语发布说明文件（写入失败自动回滚）
+   - 发布说明面向用户，简洁描述可见功能、体验改进或问题修复，不直接照搬内部实现细节或重构流水账；英文区块应使用自然地道的英文准确表达对应变更（避免生硬直译），便于国际用户直接阅读
 3. **运行离线验证与发版前审查**
    - 使用与 CI 完全一致的校验器核对目标标签：`python3 tools/release_version.py --tag "v$VERSION"`
    - 运行完整离线检查套件（确保所有 Go、Python、前端构建与单测全部离线通过）：
@@ -74,7 +77,7 @@ description: >-
    - 若任务失败，读取对应尝试的失败日志并先定位根因：
      - 若属外部环境/网络抖动等非源码原因且已确认恢复，允许对已授权的同标签同 SHA 自动执行一次 `rerun-failed`；同因再次失败则停止重跑并报告阻塞
      - 若属源码或测试缺陷，不能靠重跑旧标签解决，应修复代码后按新版本流程发布下一版本（严禁删除或强制移动已推送标签）
-   - 工作流完成后，使用 `gh release view "v$VERSION"` 或 `scripts/github_actions.py release --tag "v$VERSION"` 核实 GitHub Release 已创建、预发布标记正确、发布说明已写入，且预期附件齐全且非空：
+   - 工作流完成后，使用 `gh release view "v$VERSION"` 或 `scripts/github_actions.py release --tag "v$VERSION"` 核实 GitHub Release 已创建、预发布标记正确、中英双语发布说明（上方中文、下方英文）已完整写入，且预期附件齐全且非空：
      - `ColabOne-<version>-windows-x64.zip`
      - `ColabOne-<version>-macos-arm64.zip`
      - `SHA256SUMS.txt`
@@ -82,7 +85,39 @@ description: >-
 
 ## 发布说明格式
 
-第一行固定为 `ColabOne vX.Y.Z`，空一行后按固定顺序仅输出有内容的二级标题：`## 新增功能`、`## 修改点`、`## 修复的 bug`。每类下用 `- ` 列表记录，每行一句，简洁清晰。
+发布说明必须为**中英双语**，拆分为上下两个独立区块——**最上方是中文区块，下方是英文区块**，中间以水平分隔线（`---`）隔开，**不额外添加“中文 / English”之类的语言总标题**，让中英文用户都能直接阅读：
+
+- 第一行固定为 `ColabOne vX.Y.Z`（作为附注标签标题）
+- 空一行后直接输出上方中文区块，按固定顺序仅输出有内容的二级标题：`## 新增功能`、`## 修改点`、`## 修复的 bug`
+- 空一行后输出水平分隔线 `---`
+- 空一行后直接输出下方英文区块，按固定顺序仅输出有内容的二级标题：`## New Features`、`## Changes`、`## Bug Fixes`
+- 每类下用 `- ` 列表记录，每行一句、简洁清晰，且中英文各分类的条目一一对应、语义一致（英文区块采用自然地道的英文表达，不生硬机翻）
+
+渲染模板示例：
+
+```markdown
+ColabOne vX.Y.Z
+
+## 新增功能
+- 支持新功能示例
+
+## 修改点
+- 优化交互体验示例
+
+## 修复的 bug
+- 修复已知问题示例
+
+---
+
+## New Features
+- Add example new feature
+
+## Changes
+- Improve example user experience
+
+## Bug Fixes
+- Fix example known issue
+```
 
 ## 常用命令
 
@@ -92,20 +127,27 @@ description: >-
 # 1. 预览下一版本（默认最后一位 +1，不改文件）
 python3 .agents/skills/colabone-release/scripts/prepare_release.py \
   --dry-run \
-  --added '支持新功能示例' \
-  --changed '优化交互体验示例' \
-  --fixed '修复已知问题示例' < /dev/null
+  --added-zh '支持新功能示例' \
+  --changed-zh '优化交互体验示例' \
+  --fixed-zh '修复已知问题示例' \
+  --added-en 'Add example new feature' \
+  --changed-en 'Improve example user experience' \
+  --fixed-en 'Fix example known issue' < /dev/null
 
 # 2. 正式准备发布（默认最后一位 +1）
 python3 .agents/skills/colabone-release/scripts/prepare_release.py \
-  --added '支持新功能示例' \
-  --changed '优化交互体验示例' \
-  --fixed '修复已知问题示例' < /dev/null
+  --added-zh '支持新功能示例' \
+  --changed-zh '优化交互体验示例' \
+  --fixed-zh '修复已知问题示例' \
+  --added-en 'Add example new feature' \
+  --changed-en 'Improve example user experience' \
+  --fixed-en 'Fix example known issue' < /dev/null
 
 # 如用户明确指定版本时：
 python3 .agents/skills/colabone-release/scripts/prepare_release.py \
   --version 0.2.0 \
-  --changed '明确指定版本发版示例' < /dev/null
+  --changed-zh '明确指定版本发版示例' \
+  --changed-en 'Release an explicitly specified version' < /dev/null
 ```
 
 校验与离线测试：

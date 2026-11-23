@@ -124,6 +124,7 @@ def _sample_release(tag: str = "v0.1.1", **changes):
         "tag_name": tag,
         "target_commitish": "main",
         "name": f"ColabOne {tag}",
+        "body": f"ColabOne {tag}\n\n## 修改点\n- 示例更新\n\n---\n\n## Changes\n- Sample update\n",
         "draft": False,
         "prerelease": "-" in version,
         "html_url": f"https://github.com/owner/repo/releases/tag/{tag}",
@@ -163,6 +164,21 @@ class SkillPackageTests(unittest.TestCase):
         frontmatter = match.group(1)
         self.assertIn("name: colabone-release", frontmatter)
         self.assertIn("description:", frontmatter)
+        for token in (
+            "## 新增功能",
+            "## 修改点",
+            "## 修复的 bug",
+            "---",
+            "## New Features",
+            "## Changes",
+            "## Bug Fixes",
+            "--added-zh",
+            "--added-en",
+        ):
+            self.assertIn(token, skill_md)
+        self.assertNotIn("## 中文", skill_md)
+        self.assertNotIn("## English", skill_md)
+        self.assertLess(skill_md.index("## 新增功能"), skill_md.index("## New Features"))
         self.assertTrue((SKILL_DIR / "agents/openai.yaml").is_file())
         self.assertTrue((SKILL_DIR / "references/release-checklist.md").is_file())
         self.assertTrue((SKILL_DIR / "references/github-actions.md").is_file())
@@ -193,9 +209,13 @@ class PrepareReleaseTests(unittest.TestCase):
 
             result = _run_prepare(
                 root,
-                "--added",
+                "--added-zh",
+                "新增项目级发版技能",
+                "--fixed-zh",
+                "修复发布说明格式问题",
+                "--added-en",
                 "Add workspace release skill",
-                "--fixed",
+                "--fixed-en",
                 "Fix release notes formatting",
                 "--notes-output",
                 str(notes_path),
@@ -224,10 +244,25 @@ class PrepareReleaseTests(unittest.TestCase):
                 self.assertNotIn(b"\r\n", (root / rel).read_bytes())
 
             notes = notes_path.read_text(encoding="utf-8")
-            self.assertTrue(notes.startswith("ColabOne v0.1.1\n\n"))
-            self.assertIn("## 新增功能\n- Add workspace release skill\n", notes)
+            expected = (
+                "ColabOne v0.1.1\n\n"
+                "## 新增功能\n"
+                "- 新增项目级发版技能\n\n"
+                "## 修复的 bug\n"
+                "- 修复发布说明格式问题\n\n"
+                "---\n\n"
+                "## New Features\n"
+                "- Add workspace release skill\n\n"
+                "## Bug Fixes\n"
+                "- Fix release notes formatting\n"
+            )
+            self.assertEqual(notes, expected)
+            self.assertNotIn("## 中文", notes)
+            self.assertNotIn("## English", notes)
             self.assertNotIn("## 修改点", notes)
-            self.assertIn("## 修复的 bug\n- Fix release notes formatting\n", notes)
+            self.assertNotIn("## Changes", notes)
+            self.assertLess(notes.index("## 新增功能"), notes.index("\n---\n"))
+            self.assertLess(notes.index("\n---\n"), notes.index("## New Features"))
 
     def test_default_version_uses_semver_max_tag_and_bumps_patch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -242,6 +277,8 @@ class PrepareReleaseTests(unittest.TestCase):
             result = _run_prepare(
                 root,
                 "--changed",
+                "基于 v0.1.10 递增补丁版本",
+                "--changed-en",
                 "Bump patch after v0.1.10",
                 "--notes-output",
                 str(notes_path),
@@ -260,6 +297,9 @@ class PrepareReleaseTests(unittest.TestCase):
             )
             self.assertEqual(lock_data["version"], "0.1.11")
             self.assertEqual(lock_data["packages"][""]["version"], "0.1.11")
+            notes = notes_path.read_text(encoding="utf-8")
+            self.assertIn("## 修改点\n- 基于 v0.1.10 递增补丁版本\n", notes)
+            self.assertIn("## Changes\n- Bump patch after v0.1.10\n", notes)
 
     def test_annotated_tag_roundtrip_matches_release_workflow_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -269,9 +309,13 @@ class PrepareReleaseTests(unittest.TestCase):
 
             result = _run_prepare(
                 root,
-                "--added",
+                "--added-zh",
+                "支持自动递增补丁版本发版",
+                "--changed-zh",
+                "完善发布检查清单",
+                "--added-en",
                 "Support automated patch releases",
-                "--changed",
+                "--changed-en",
                 "Refine release checklist",
                 "--notes-output",
                 str(notes_path),
@@ -295,8 +339,13 @@ class PrepareReleaseTests(unittest.TestCase):
             ).stdout.strip()
 
             self.assertEqual(subject, "ColabOne v0.1.1")
-            self.assertIn("## 新增功能\n- Support automated patch releases", body)
-            self.assertIn("## 修改点\n- Refine release checklist", body)
+            self.assertIn("## 新增功能\n- 支持自动递增补丁版本发版", body)
+            self.assertIn("## 修改点\n- 完善发布检查清单", body)
+            self.assertIn("\n\n---\n\n## New Features\n- Support automated patch releases", body)
+            self.assertIn("## Changes\n- Refine release checklist", body)
+            self.assertNotIn("## 中文", body)
+            self.assertNotIn("## English", body)
+            self.assertLess(body.index("## 新增功能"), body.index("## New Features"))
 
     def test_dry_run_previews_without_modifying_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -311,7 +360,9 @@ class PrepareReleaseTests(unittest.TestCase):
                 root,
                 "--dry-run",
                 "--json",
-                "--changed",
+                "--changed-zh",
+                "预览下一补丁版本发布说明",
+                "--changed-en",
                 "Preview next patch release",
                 "--notes-output",
                 str(notes_path),
@@ -322,7 +373,16 @@ class PrepareReleaseTests(unittest.TestCase):
             self.assertEqual(payload["version"], "0.1.1")
             self.assertEqual(payload["tag"], "v0.1.1")
             self.assertTrue(payload["dry_run"])
+            self.assertIn("## 修改点", payload["release_notes"])
+            self.assertIn("预览下一补丁版本发布说明", payload["release_notes"])
+            self.assertIn("## Changes", payload["release_notes"])
             self.assertIn("Preview next patch release", payload["release_notes"])
+            self.assertNotIn("## 中文", payload["release_notes"])
+            self.assertNotIn("## English", payload["release_notes"])
+            self.assertLess(
+                payload["release_notes"].index("## 修改点"),
+                payload["release_notes"].index("## Changes"),
+            )
             self.assertFalse(notes_path.exists())
             self.assertEqual(
                 {
@@ -342,7 +402,9 @@ class PrepareReleaseTests(unittest.TestCase):
                 root,
                 "--version",
                 "v0.2.0-rc.1",
-                "--added",
+                "--added-zh",
+                "准备候选发布版本",
+                "--added-en",
                 "Prepare release candidate",
                 "--notes-output",
                 str(notes_path),
@@ -358,7 +420,9 @@ class PrepareReleaseTests(unittest.TestCase):
 
             auto_from_rc = _run_prepare(
                 root,
-                "--changed",
+                "--changed-zh",
+                "预发布版本必须显式指定下一版本号",
+                "--changed-en",
                 "Should require explicit version from prerelease",
                 "--notes-output",
                 str(root / "fail-notes.md"),
@@ -370,7 +434,9 @@ class PrepareReleaseTests(unittest.TestCase):
                 root,
                 "--version",
                 "0.2.0",
-                "--changed",
+                "--changed-zh",
+                "将候选版本升级为正式版",
+                "--changed-en",
                 "Promote release candidate to stable",
                 "--notes-output",
                 str(root / "stable-notes.md"),
@@ -397,7 +463,9 @@ class PrepareReleaseTests(unittest.TestCase):
 
             result = _run_prepare(
                 root,
-                "--changed",
+                "--changed-zh",
+                "清单版本不一致时应拒绝写入",
+                "--changed-en",
                 "Should fail on drift",
                 "--notes-output",
                 str(root / "notes.md"),
@@ -422,7 +490,13 @@ class PrepareReleaseTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = _run_prepare(root, "--changed", "Duplicate key check")
+            result = _run_prepare(
+                root,
+                "--changed-zh",
+                "检测重复 JSON 键",
+                "--changed-en",
+                "Duplicate key check",
+            )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("duplicate JSON key", result.stderr)
 
@@ -432,18 +506,36 @@ class PrepareReleaseTests(unittest.TestCase):
             _create_fixture(root, "0.1.5")
             _run_git(root, "tag", "v0.1.4")
 
-            diverged = _run_prepare(root, "--changed", "Diverged source and tag")
+            diverged = _run_prepare(
+                root,
+                "--changed-zh",
+                "源码与最新标签不一致",
+                "--changed-en",
+                "Diverged source and tag",
+            )
             self.assertNotEqual(diverged.returncode, 0)
             self.assertIn("does not match latest tag", diverged.stderr)
 
             existing = _run_prepare(
-                root, "--version", "0.1.4", "--changed", "Existing tag"
+                root,
+                "--version",
+                "0.1.4",
+                "--changed-zh",
+                "标签已存在",
+                "--changed-en",
+                "Existing tag",
             )
             self.assertNotEqual(existing.returncode, 0)
             self.assertIn("already exists", existing.stderr)
 
             downgrade = _run_prepare(
-                root, "--version", "0.1.3", "--changed", "Downgrade"
+                root,
+                "--version",
+                "0.1.3",
+                "--changed-zh",
+                "版本回退",
+                "--changed-en",
+                "Downgrade",
             )
             self.assertNotEqual(downgrade.returncode, 0)
             self.assertIn("must be newer than latest tag", downgrade.stderr)
@@ -452,7 +544,13 @@ class PrepareReleaseTests(unittest.TestCase):
             root = Path(directory)
             _create_fixture(root, "0.2.0")
             downgrade_source = _run_prepare(
-                root, "--version", "0.1.9", "--changed", "Downgrade source"
+                root,
+                "--version",
+                "0.1.9",
+                "--changed-zh",
+                "低于当前源码版本",
+                "--changed-en",
+                "Downgrade source",
             )
             self.assertNotEqual(downgrade_source.returncode, 0)
             self.assertIn("must not downgrade source version", downgrade_source.stderr)
@@ -470,16 +568,74 @@ class PrepareReleaseTests(unittest.TestCase):
 
             empty = _run_prepare(root)
             self.assertNotEqual(empty.returncode, 0)
-            self.assertIn("at least one release note item", empty.stderr)
+            self.assertIn("at least one bilingual release note item", empty.stderr)
 
-            multiline = _run_prepare(root, "--changed", "line 1\nline 2")
-            self.assertNotEqual(multiline.returncode, 0)
-            self.assertIn("single line", multiline.stderr)
+            zh_only = _run_prepare(root, "--added-zh", "仅提供中文条目")
+            self.assertNotEqual(zh_only.returncode, 0)
+            self.assertIn("--added-en", zh_only.stderr)
+
+            en_only = _run_prepare(root, "--fixed-en", "Only English item")
+            self.assertNotEqual(en_only.returncode, 0)
+            self.assertIn("--fixed-zh", en_only.stderr)
+
+            category_mismatch = _run_prepare(
+                root,
+                "--added-zh",
+                "新增功能条目",
+                "--fixed-en",
+                "Fix bug item",
+            )
+            self.assertNotEqual(category_mismatch.returncode, 0)
+            self.assertIn("--added-en", category_mismatch.stderr)
+
+            count_mismatch = _run_prepare(
+                root,
+                "--added-zh",
+                "功能一",
+                "--added-zh",
+                "功能二",
+                "--added-en",
+                "Feature one",
+            )
+            self.assertNotEqual(count_mismatch.returncode, 0)
+            self.assertIn("count mismatch for added", count_mismatch.stderr)
+
+            multiline_zh = _run_prepare(
+                root,
+                "--changed-zh",
+                "line 1\nline 2",
+                "--changed-en",
+                "Single line English",
+            )
+            self.assertNotEqual(multiline_zh.returncode, 0)
+            self.assertIn("single line", multiline_zh.stderr)
+
+            multiline_en = _run_prepare(
+                root,
+                "--changed-zh",
+                "单行中文说明",
+                "--changed-en",
+                "line 1\nline 2",
+            )
+            self.assertNotEqual(multiline_en.returncode, 0)
+            self.assertIn("single line", multiline_en.stderr)
+
+            blank_en = _run_prepare(
+                root,
+                "--changed-zh",
+                "有效中文说明",
+                "--changed-en",
+                "   ",
+            )
+            self.assertNotEqual(blank_en.returncode, 0)
+            self.assertIn("must not be empty", blank_en.stderr)
 
             for protected in PREPARE.COLABONE_MANIFEST_PATHS:
                 collision = _run_prepare(
                     root,
-                    "--changed",
+                    "--changed-zh",
+                    "路径冲突检测",
+                    "--changed-en",
                     "Collision check",
                     "--notes-output",
                     str(root / protected),
@@ -514,7 +670,9 @@ class PrepareReleaseTests(unittest.TestCase):
                 [
                     sys.executable,
                     str(relocated),
-                    "--changed",
+                    "--changed-zh",
+                    "验证可移植技能跨目录执行",
+                    "--changed-en",
                     "Verify portable skill execution",
                 ],
                 cwd=directory,
@@ -538,10 +696,9 @@ class PrepareReleaseTests(unittest.TestCase):
                 ],
                 "0.1.1",
             )
-            self.assertIn(
-                "Verify portable skill execution",
-                expected_notes.read_text(encoding="utf-8"),
-            )
+            notes_text = expected_notes.read_text(encoding="utf-8")
+            self.assertIn("验证可移植技能跨目录执行", notes_text)
+            self.assertIn("Verify portable skill execution", notes_text)
 
     def test_utf8_release_notes_work_under_ascii_locale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -566,8 +723,10 @@ class PrepareReleaseTests(unittest.TestCase):
             preview = _run_prepare(
                 root,
                 "--dry-run",
-                "--added",
+                "--added-zh",
                 "支持版本号最后一位自动加一",
+                "--added-en",
+                "Support automatic patch version bumping",
                 "--notes-output",
                 str(notes_path),
                 env=ascii_env,
@@ -577,17 +736,22 @@ class PrepareReleaseTests(unittest.TestCase):
 
             result = _run_prepare(
                 root,
-                "--added",
+                "--added-zh",
                 "支持版本号最后一位自动加一",
+                "--added-en",
+                "Support automatic patch version bumping",
                 "--notes-output",
                 str(notes_path),
                 env=ascii_env,
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(
-                "支持版本号最后一位自动加一", notes_path.read_text(encoding="utf-8")
-            )
+            rendered = notes_path.read_text(encoding="utf-8")
+            self.assertIn("支持版本号最后一位自动加一", rendered)
+            self.assertIn("Support automatic patch version bumping", rendered)
+            self.assertNotIn("## 中文", rendered)
+            self.assertNotIn("## English", rendered)
+            self.assertLess(rendered.index("## 新增功能"), rendered.index("## New Features"))
             self.assertEqual(
                 json.loads((root / "console/mygo.json").read_text(encoding="utf-8"))[
                     "description"
@@ -879,6 +1043,9 @@ class GitHubActionsClientTests(unittest.TestCase):
         self.assertTrue(result["assets_complete"])
         self.assertEqual(result["missing_assets"], [])
         self.assertEqual(result["incomplete_assets"], [])
+        self.assertIn("## 修改点", result["body"])
+        self.assertIn("## Changes", result["body"])
+        self.assertLess(result["body"].index("## 修改点"), result["body"].index("## Changes"))
 
         missing_mac = _sample_release("v0.1.1")
         missing_mac["assets"] = [

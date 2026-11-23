@@ -942,7 +942,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             class="co-rm-hw-pills co-rm-hw-pills-sk"
             role="status"
           >
-            <ColabOneSkeleton variant="pill" :width="118" :height="24" tone="accent" :delay="0" />
+            <ColabOneSkeleton variant="pill" :width="118" :height="24" :delay="0" />
             <ColabOneSkeleton variant="pill" :width="56" :height="24" :delay="80" />
             <ColabOneSkeleton variant="pill" :width="74" :height="24" :delay="160" />
             <span class="co-sr-only">{{ offlineSubtitle }}</span>
@@ -1167,7 +1167,6 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             variant="metric"
             :width="44"
             :height="19"
-            tone="accent"
             :delay="0"
           />
           <strong v-else class="co-rm-live-val co-rm-mono co-sk-reveal">
@@ -1950,7 +1949,6 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                   variant="metric"
                   :width="46"
                   :height="17"
-                  :tone="row.key === 'gpu' ? 'accent' : 'default'"
                   :delay="rowIdx * 80"
                 />
                 <strong
@@ -2610,15 +2608,24 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   content: "";
   position: absolute;
   inset: 0;
+  width: 400%;
   background: linear-gradient(
-    105deg,
-    transparent 16%,
-    var(--co-skeleton-sheen) 46%,
-    var(--co-metric-tint) 56%,
-    transparent 86%
+    90deg,
+    transparent 0%,
+    transparent 10%,
+    var(--co-skeleton-sheen-soft) 19%,
+    var(--co-skeleton-sheen) 25%,
+    var(--co-metric-tint) 31%,
+    transparent 40%,
+    transparent 60%,
+    var(--co-skeleton-sheen-soft) 69%,
+    var(--co-skeleton-sheen) 75%,
+    var(--co-metric-tint) 81%,
+    transparent 90%,
+    transparent 100%
   );
-  transform: translate3d(-130%, 0, 0);
-  animation: co-skeleton-sweep 1.85s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  transform: translate3d(-50%, 0, 0);
+  animation: co-skeleton-wave 1.65s linear infinite;
   pointer-events: none;
   will-change: transform;
 }
@@ -3153,11 +3160,19 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 :root[data-theme="dark"] .co-monitor.is-connecting .co-rm-plot-frame::after,
 :root[data-theme="dark"] .co-monitor.is-skeleton .co-rm-plot-frame::after {
   background: linear-gradient(
-    105deg,
-    transparent 16%,
-    rgba(255, 255, 255, 0.11) 46%,
-    var(--co-metric-tint) 56%,
-    transparent 86%
+    90deg,
+    transparent 0%,
+    transparent 10%,
+    rgba(255, 255, 255, 0.05) 19%,
+    rgba(255, 255, 255, 0.12) 25%,
+    var(--co-metric-tint) 31%,
+    transparent 40%,
+    transparent 60%,
+    rgba(255, 255, 255, 0.05) 69%,
+    rgba(255, 255, 255, 0.12) 75%,
+    var(--co-metric-tint) 81%,
+    transparent 90%,
+    transparent 100%
   );
 }
 

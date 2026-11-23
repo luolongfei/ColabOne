@@ -90,7 +90,7 @@ export const enUSMessages: ColabOneMessages = {
   "status.upgradeOptionalReady":
     "A minor remote service update is available (current features work normally). You can hot-update anytime; cached models and workflows are preserved.",
   "status.upgradeOptionalReadyWithConfirm":
-    "A minor remote service update is available (current features work normally). Click update to stop active services and hot-update now (cached weights are preserved), or update later.",
+    "A minor remote service update is available (current features work normally). Click update to hot-update and automatically restore your model and services with the same settings, or update later.",
   "status.upgradeOptionalBlockedModel":
     "A minor remote service update is available (current features work normally). Unload the active model first to hot-update now (cached weights are preserved), or update later.",
   "status.upgradeOptionalBlockedComfy":
@@ -106,17 +106,17 @@ export const enUSMessages: ColabOneMessages = {
   "status.upgradeBlockedOperation":
     "Wait for the current operation to finish before updating the remote service.",
   "status.upgradeActiveTask": "Active remote task (will be cancelled)",
-  "status.upgradeActiveModel": "Loaded model: {name} (will be unloaded from VRAM)",
-  "status.upgradeActiveModelGeneric": "Model loaded in VRAM (will be unloaded)",
-  "status.upgradeActiveApi": "Public API gateway & tunnel (will be stopped)",
-  "status.upgradeActiveComfy": "ComfyUI workflow engine & canvas tunnel (will be stopped)",
-  "status.upgradeActiveEngine": "Active remote inference engine (will be stopped)",
+  "status.upgradeActiveModel": "Loaded model: {name} (will auto-reload with the same settings)",
+  "status.upgradeActiveModelGeneric": "Model loaded in VRAM (will auto-reload with the same settings)",
+  "status.upgradeActiveApi": "Public API gateway & tunnel (will auto-restart with the same config)",
+  "status.upgradeActiveComfy": "ComfyUI workflow engine & canvas tunnel (will auto-restart)",
+  "status.upgradeActiveEngine": "Active remote inference engine (will auto-restore)",
   "status.upgradeConfirmTitle": "Confirm Remote Service Hot-Update",
   "status.upgradeConfirmLead":
-    "This remote instance has active services or tasks. Continuing will automatically stop or unload the following items first:",
+    "This remote instance has active services or tasks. Continuing will briefly pause the following items and automatically restore them with your exact previous settings after updating:",
   "status.upgradeConfirmPreserveNote":
-    "Downloaded model weights, workflows, outputs, and settings are all preserved. Reload your model or re-enable services after the update finishes.",
-  "status.upgradeConfirmAction": "Stop & Update Now",
+    "Downloaded model weights, workflows, outputs, and settings are all preserved. After updating, ColabOne will automatically reload your model with the same context length and temperature and re-enable your active services.",
+  "status.upgradeConfirmAction": "Update & Auto-Restore",
 
   // Appearance
   "appearance.system": "System",

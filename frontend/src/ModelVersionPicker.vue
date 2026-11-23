@@ -345,7 +345,6 @@ function savedTag(filename: string): string {
               :width="card.quantW"
               :height="18"
               variant="tag"
-              tone="accent"
               :delay="idx * 70 + 60"
             />
             <ColabOneSkeleton

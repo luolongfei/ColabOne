@@ -12,7 +12,7 @@
 - `tools/package.py`：便携包打包与敏感信息审计脚本，在 CI 中分别产出 `ColabOne-<version>-windows-x64.zip` 与 `ColabOne-<version>-macos-arm64.zip`
 - `.github/workflows/ci.yml`：仅响应 `workflow_call` 与 `workflow_dispatch`，在 `windows-latest` 和 `macos-latest` 上运行离线检查、Playwright UI 回归测试并上传压缩包 artifact
 - `.github/workflows/release.yml`：响应 `v*` 标签推送与手动 `workflow_dispatch`；依次校验标签与提交、校验三处源码版本、调用 `ci.yml` 构建双平台便携包、生成 `SHA256SUMS.txt` 并创建/更新 GitHub Release
-- `.agents/skills/colabone-release/scripts/prepare_release.py`：发布准备脚本，默认将最后一位（patch）`+1`，原子更新三处版本清单并输出附注标签用的发布说明
+- `.agents/skills/colabone-release/scripts/prepare_release.py`：发布准备脚本，默认将最后一位（patch）`+1`，原子更新三处版本清单并输出中英双语（上方中文区块、下方英文区块）附注标签发布说明
 - `.agents/skills/colabone-release/scripts/github_actions.py`：GitHub Actions 查询、日志下载、安全重跑失败任务与 GitHub Release 产物验收脚本
 - `tests/test_release_workflow.py` 与 `tests/test_colabone_release_skill.py`：覆盖版本脚本、CI/Release 工作流契约、发布准备脚本及 Actions 客户端的离线单元测试
 
@@ -51,7 +51,7 @@ git add console/mygo.json frontend/package.json frontend/package-lock.json
 git commit -m "chore: release $VERSION"
 git tag -a "v$VERSION" -F "$RELEASE_NOTES_FILE" --cleanup=verbatim
 
-# 核对标签指向与渲染正文
+# 核对标签指向与双语渲染正文（确认上方中文区块、中间 ---、下方英文区块）
 git rev-parse "v${VERSION}^{commit}"
 git for-each-ref --format='--- SUBJECT ---%0a%(contents:subject)%0a--- BODY ---%0a%(contents:body)' "refs/tags/v${VERSION}"
 
@@ -64,7 +64,7 @@ git push origin "v$VERSION"
 
 - 按 [references/github-actions.md](github-actions.md) 持续跟踪 `.github/workflows/release.yml` 对应标签和提交 SHA 的运行结果
 - 全部四个阶段均需成功：`Validate release metadata`、`check (windows-latest)`、`check (macos-latest)`、`Publish GitHub Release`
-- 最终核实 GitHub Release 非草稿、预发布标记与标签一致、发布说明正确，且包含完整且非空的 3 个附件：
+- 最终核实 GitHub Release 非草稿、预发布标记与标签一致、中英双语发布说明（上方中文区块、下方英文区块）完整写入，且包含完整且非空的 3 个附件：
   - `ColabOne-<version>-windows-x64.zip`
   - `ColabOne-<version>-macos-arm64.zip`
   - `SHA256SUMS.txt`

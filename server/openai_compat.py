@@ -44,6 +44,27 @@ COMPACTION_SYSTEM_PROMPT = (
 )
 
 
+_HIGH_REASONING_EFFORTS = frozenset({"high", "xhigh", "ultra", "max", "persistent"})
+_DIRECT_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
+
+
+def normalize_reasoning_effort(raw_effort: Any) -> tuple[str | None, str | None]:
+    """Normalize client reasoning effort tiers (including Codex xhigh/ultra/max) for llama-server.
+
+    Returns ``(upstream_effort, raw_effort_lower)``.
+    """
+    if not isinstance(raw_effort, str):
+        return None, None
+    cleaned = raw_effort.strip().lower()
+    if not cleaned:
+        return None, None
+    if cleaned in _DIRECT_REASONING_EFFORTS:
+        return cleaned, cleaned
+    if cleaned in _HIGH_REASONING_EFFORTS:
+        return "high", cleaned
+    return None, cleaned
+
+
 def estimate_tokens(text: str) -> int:
     """Conservative CJK/code-aware token estimate (avoids 3-4x undercount on Chinese)."""
     if not text:
@@ -411,7 +432,7 @@ def normalize_chat_request(raw: Any) -> tuple[str, bool, dict[str, Any]]:
     if max_tokens is None:
         max_tokens = raw.get("max_completion_tokens")
     if max_tokens is not None:
-        payload["max_tokens"] = _validate_int(max_tokens, "max_tokens", 1, 131072)
+        payload["max_tokens"] = _validate_int(max_tokens, "max_tokens", 1, 1048576)
 
     if raw.get("seed") is not None:
         payload["seed"] = _validate_int(raw["seed"], "seed", -(2**63), 2**63 - 1)
@@ -465,14 +486,9 @@ def normalize_chat_request(raw: Any) -> tuple[str, bool, dict[str, Any]]:
                 "include_usage": raw["stream_options"]["include_usage"]
             }
 
-    if isinstance(raw.get("reasoning_effort"), str) and raw["reasoning_effort"] in (
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-    ):
-        payload["reasoning_effort"] = raw["reasoning_effort"]
+    upstream_effort, _ = normalize_reasoning_effort(raw.get("reasoning_effort"))
+    if upstream_effort is not None:
+        payload["reasoning_effort"] = upstream_effort
 
     return model, stream, payload
 
@@ -841,7 +857,7 @@ def normalize_responses_request(
     max_output_tokens = raw.get("max_output_tokens")
     if max_output_tokens is not None:
         chat_payload["max_tokens"] = _validate_int(
-            max_output_tokens, "max_output_tokens", 1, 131072
+            max_output_tokens, "max_output_tokens", 1, 1048576
         )
 
     if chat_tools:
@@ -868,10 +884,13 @@ def normalize_responses_request(
             }
 
     reasoning_cfg = raw.get("reasoning")
+    raw_reasoning_effort: str | None = None
     if isinstance(reasoning_cfg, dict):
-        effort = reasoning_cfg.get("effort")
-        if isinstance(effort, str) and effort in ("none", "minimal", "low", "medium", "high"):
-            chat_payload["reasoning_effort"] = effort
+        upstream_effort, raw_reasoning_effort = normalize_reasoning_effort(
+            reasoning_cfg.get("effort")
+        )
+        if upstream_effort is not None:
+            chat_payload["reasoning_effort"] = upstream_effort
 
     compact_threshold: int | None = None
     cm = raw.get("context_management")
@@ -906,6 +925,7 @@ def normalize_responses_request(
         "reasoning_echo": reasoning_cfg
         if isinstance(reasoning_cfg, dict)
         else {"effort": None, "summary": None},
+        "raw_reasoning_effort": raw_reasoning_effort,
         "metadata": raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
         "user": raw.get("user") if isinstance(raw.get("user"), str) else None,
         "store": store,

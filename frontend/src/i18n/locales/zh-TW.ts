@@ -87,7 +87,7 @@ export const zhTWMessages: ColabOneMessages = {
   "status.upgradeOptionalReady":
     "遠端服務有小版本更新，不影響目前正常使用；可隨時熱更新，已下載的模型快取與工作流程會完整保留。",
   "status.upgradeOptionalReadyWithConfirm":
-    "遠端服務有小版本更新，不影響目前正常使用；點擊即可自動停止目前服務並熱更新（模型快取會保留），亦可稍後再更新。",
+    "遠端服務有小版本更新，不影響目前正常使用；點擊即可熱更新並自動依目前設定恢復模型與服務，亦可稍後再更新。",
   "status.upgradeOptionalBlockedModel":
     "遠端服務有小版本更新，不影響目前正常使用；目前已載入模型，需先卸載模型後再熱更新（模型快取會保留），亦可稍後再更新。",
   "status.upgradeOptionalBlockedComfy":
@@ -103,17 +103,17 @@ export const zhTWMessages: ColabOneMessages = {
   "status.upgradeBlockedOperation":
     "請先等待目前操作完成後再更新遠端服務",
   "status.upgradeActiveTask": "執行中的遠端工作（將會取消）",
-  "status.upgradeActiveModel": "已載入模型：{name}（將從 VRAM 卸載）",
-  "status.upgradeActiveModelGeneric": "已載入 VRAM 的模型（將會卸載）",
-  "status.upgradeActiveApi": "對外 API 服務與公網通道（將會關閉）",
-  "status.upgradeActiveComfy": "ComfyUI 工作流程引擎與畫布通道（將會停止）",
-  "status.upgradeActiveEngine": "目前執行中的遠端推論引擎（將會停止）",
+  "status.upgradeActiveModel": "已載入模型：{name}（更新後將依原規格自動重新載入）",
+  "status.upgradeActiveModelGeneric": "已載入 VRAM 的模型（更新後將依原規格自動重新載入）",
+  "status.upgradeActiveApi": "對外 API 服務與公網通道（更新後將依原設定自動重新開啟）",
+  "status.upgradeActiveComfy": "ComfyUI 工作流程引擎與畫布通道（更新後將自動重新啟動）",
+  "status.upgradeActiveEngine": "目前執行中的遠端推論引擎（更新後將自動恢復）",
   "status.upgradeConfirmTitle": "確認熱更新遠端服務",
   "status.upgradeConfirmLead":
-    "目前遠端執行個體有正在運作的服務或工作，繼續更新會先自動停止或卸載以下項目：",
+    "目前遠端執行個體有正在運作的服務或工作，繼續更新會短暫中斷以下項目，並在更新完成後依原設定自動恢復：",
   "status.upgradeConfirmPreserveNote":
-    "已下載的模型權重、工作流程、成品與設定都會完整保留，無須重新下載；更新完成後需重新載入模型或開啟服務。",
-  "status.upgradeConfirmAction": "停止並立即更新",
+    "已下載的模型權重、工作流程、成品與參數設定都會完整保留；更新完成後將自動依原上下文、溫度與通道設定重新載入模型並恢復已開啟的服務，無須手動操作。",
+  "status.upgradeConfirmAction": "立即更新並自動恢復",
 
   // Appearance
   "appearance.system": "跟隨系統",

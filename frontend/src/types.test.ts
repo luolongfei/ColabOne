@@ -186,7 +186,7 @@ describe("remote service upgrade banner classification", () => {
     expect(active.dismissible).toBe(false);
     expect(active.canUpgrade).toBe(true);
     expect(active.needsConfirm).toBe(true);
-    expect(active.activeItems).toContain("已装载模型：qwen（将从显存卸载）");
+    expect(active.activeItems).toContain("已装载模型：qwen（更新后将按原规格自动重新装载）");
     expect(active.message).toContain("实时硬件监控");
     expect(active.disabledReason).toBe("");
 
@@ -230,13 +230,13 @@ describe("remote service upgrade banner classification", () => {
     expect(withModelAndApi.needsConfirm).toBe(true);
     expect(withModelAndApi.disabledReason).toBe("");
     expect(withModelAndApi.message).toContain("不影响当前正常使用");
-    expect(withModelAndApi.message).toContain("自动停止当前服务并热更新");
+    expect(withModelAndApi.message).toContain("自动按当前配置恢复模型与服务");
     expect(withModelAndApi.message).not.toContain("以启用实时硬件监控");
     expect(withModelAndApi.activeItems).toContain(
-      "已装载模型：qwen-flash（将从显存卸载）",
+      "已装载模型：qwen-flash（更新后将按原规格自动重新装载）",
     );
     expect(withModelAndApi.activeItems).toContain(
-      "对外 API 服务与公网隧道（将被关闭）",
+      "对外 API 服务与公网隧道（更新后将按原配置自动重新开启）",
     );
 
     state.runtime.loaded_model = "";
@@ -246,7 +246,7 @@ describe("remote service upgrade banner classification", () => {
     expect(withComfy.canUpgrade).toBe(true);
     expect(withComfy.needsConfirm).toBe(true);
     expect(withComfy.activeItems).toContain(
-      "ComfyUI 工作流引擎与画布隧道（将被停止）",
+      "ComfyUI 工作流引擎与画布隧道（更新后将自动重新启动）",
     );
 
     state.runtime.active_engine = null;
@@ -270,7 +270,7 @@ describe("remote service upgrade banner classification", () => {
     expect(withStartingComfyCanvas.canUpgrade).toBe(true);
     expect(withStartingComfyCanvas.needsConfirm).toBe(true);
     expect(withStartingComfyCanvas.activeItems).toContain(
-      "ComfyUI 工作流引擎与画布隧道（将被停止）",
+      "ComfyUI 工作流引擎与画布隧道（更新后将自动重新启动）",
     );
 
     state.runtime.comfyui = undefined;

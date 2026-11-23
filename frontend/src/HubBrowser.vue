@@ -940,7 +940,6 @@ onUnmounted(() => {
                 :width="row.fitW"
                 :height="18"
                 variant="tag"
-                tone="accent"
                 :delay="idx * 65 + 100"
               />
               <ColabOneSkeleton
@@ -1256,7 +1255,6 @@ onUnmounted(() => {
                   :width="row.fitW"
                   :height="18"
                   variant="tag"
-                  tone="accent"
                   :delay="idx * 70 + 105"
                 />
                 <ColabOneSkeleton

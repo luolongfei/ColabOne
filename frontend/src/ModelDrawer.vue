@@ -878,7 +878,6 @@ onUnmounted(() => {
           :width="82"
           :height="14"
           variant="text"
-          tone="accent"
           :delay="80"
         />
       </div>
@@ -1083,7 +1082,6 @@ onUnmounted(() => {
                   :height="24"
                   variant="button"
                   :radius="6"
-                  tone="accent"
                   :delay="idx * 70 + 95"
                 />
                 <ColabOneSkeleton

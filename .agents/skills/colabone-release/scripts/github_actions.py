@@ -418,6 +418,7 @@ def colabone_inspect_release(client: ColabOneActionsClient, tag: str) -> dict:
                 "tag_name",
                 "target_commitish",
                 "name",
+                "body",
                 "draft",
                 "prerelease",
                 "html_url",

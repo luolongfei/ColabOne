@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare ColabOne release version manifests and annotated-tag release notes."""
+"""Prepare ColabOne release version manifests and bilingual annotated-tag release notes."""
 
 from __future__ import annotations
 
@@ -126,22 +126,49 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--added-zh",
         "--added",
+        dest="added_zh",
         action="append",
         default=[],
-        help="User-visible new feature item. Repeat as needed.",
+        help="User-visible new feature item in Chinese (top section). Repeat as needed.",
     )
     parser.add_argument(
+        "--changed-zh",
         "--changed",
+        dest="changed_zh",
         action="append",
         default=[],
-        help="User-visible improvement or change item. Repeat as needed.",
+        help="User-visible improvement or change item in Chinese (top section). Repeat as needed.",
     )
     parser.add_argument(
+        "--fixed-zh",
         "--fixed",
+        dest="fixed_zh",
         action="append",
         default=[],
-        help="User-visible bug fix item. Repeat as needed.",
+        help="User-visible bug fix item in Chinese (top section). Repeat as needed.",
+    )
+    parser.add_argument(
+        "--added-en",
+        dest="added_en",
+        action="append",
+        default=[],
+        help="User-visible new feature item in English (bottom section). Must pair with --added-zh.",
+    )
+    parser.add_argument(
+        "--changed-en",
+        dest="changed_en",
+        action="append",
+        default=[],
+        help="User-visible improvement or change item in English (bottom section). Must pair with --changed-zh.",
+    )
+    parser.add_argument(
+        "--fixed-en",
+        dest="fixed_en",
+        action="append",
+        default=[],
+        help="User-visible bug fix item in English (bottom section). Must pair with --fixed-zh.",
     )
     parser.add_argument(
         "--repo-root",
@@ -335,46 +362,109 @@ def _normalize_cli_text(value: str) -> str:
     return value
 
 
+@dataclass(frozen=True)
+class ColabOneReleaseCopy:
+    """Validated bilingual (Chinese top, English bottom) release note items."""
+
+    added_zh: list[str]
+    changed_zh: list[str]
+    fixed_zh: list[str]
+    added_en: list[str]
+    changed_en: list[str]
+    fixed_en: list[str]
+
+
+def _validate_release_note_item(value: str) -> str:
+    normalized = _normalize_cli_text(value).strip()
+    if not normalized:
+        raise SystemExit("release note item must not be empty")
+    if len(normalized.splitlines()) != 1 or any(
+        ord(character) < 32 or ord(character) == 127
+        for character in normalized
+    ):
+        raise SystemExit(
+            "release note item must be a single line without control characters"
+        )
+    return normalized
+
+
 def colabone_validate_release_copy(
-    groups: list[list[str]],
-) -> list[list[str]]:
-    def validate(value: str) -> str:
-        normalized = _normalize_cli_text(value).strip()
-        if not normalized:
-            raise SystemExit("release note item must not be empty")
-        if len(normalized.splitlines()) != 1 or any(
-            ord(character) < 32 or ord(character) == 127
-            for character in normalized
-        ):
+    *,
+    added_zh: list[str],
+    changed_zh: list[str],
+    fixed_zh: list[str],
+    added_en: list[str],
+    changed_en: list[str],
+    fixed_en: list[str],
+) -> ColabOneReleaseCopy:
+    copy = ColabOneReleaseCopy(
+        added_zh=[_validate_release_note_item(item) for item in added_zh],
+        changed_zh=[_validate_release_note_item(item) for item in changed_zh],
+        fixed_zh=[_validate_release_note_item(item) for item in fixed_zh],
+        added_en=[_validate_release_note_item(item) for item in added_en],
+        changed_en=[_validate_release_note_item(item) for item in changed_en],
+        fixed_en=[_validate_release_note_item(item) for item in fixed_en],
+    )
+    pairs = (
+        ("added", copy.added_zh, copy.added_en),
+        ("changed", copy.changed_zh, copy.changed_en),
+        ("fixed", copy.fixed_zh, copy.fixed_en),
+    )
+    if not any(zh or en for _, zh, en in pairs):
+        raise SystemExit("at least one bilingual release note item is required")
+
+    for category, zh_items, en_items in pairs:
+        if zh_items and not en_items:
             raise SystemExit(
-                "release note item must be a single line without control characters"
+                f"bilingual release notes require --{category}-en items "
+                f"to match --{category}-zh"
             )
-        return normalized
+        if en_items and not zh_items:
+            raise SystemExit(
+                f"bilingual release notes require --{category}-zh items "
+                f"to match --{category}-en"
+            )
+        if len(zh_items) != len(en_items):
+            raise SystemExit(
+                f"bilingual release notes count mismatch for {category}: "
+                f"got {len(zh_items)} Chinese item(s) and "
+                f"{len(en_items)} English item(s)"
+            )
 
-    normalized_groups = [[validate(item) for item in items] for items in groups]
-    if not any(normalized_groups):
-        raise SystemExit("at least one release note item is required")
-    return normalized_groups
+    return copy
 
 
-def colabone_render_release_notes(
-    version: ColabOneSemVer,
-    added: list[str],
-    changed: list[str],
-    fixed: list[str],
-) -> str:
-    sections = [
-        ("## 新增功能", added),
-        ("## 修改点", changed),
-        ("## 修复的 bug", fixed),
-    ]
-    lines = [f"ColabOne v{version}", ""]
+def _render_language_block(
+    sections: list[tuple[str, list[str]]],
+) -> list[str]:
+    lines: list[str] = []
     for title, items in sections:
         if not items:
             continue
         lines.append(title)
         lines.extend(f"- {item}" for item in items)
         lines.append("")
+    return lines
+
+
+def colabone_render_release_notes(
+    version: ColabOneSemVer,
+    copy: ColabOneReleaseCopy,
+) -> str:
+    zh_sections = [
+        ("## 新增功能", copy.added_zh),
+        ("## 修改点", copy.changed_zh),
+        ("## 修复的 bug", copy.fixed_zh),
+    ]
+    en_sections = [
+        ("## New Features", copy.added_en),
+        ("## Changes", copy.changed_en),
+        ("## Bug Fixes", copy.fixed_en),
+    ]
+    lines = [f"ColabOne v{version}", ""]
+    lines.extend(_render_language_block(zh_sections))
+    lines.extend(["---", ""])
+    lines.extend(_render_language_block(en_sections))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -480,8 +570,13 @@ def main(argv: list[str] | None = None) -> int:
     if colabone_tag_exists(repo_root, tag):
         raise SystemExit(f"release tag {tag} already exists")
 
-    added, changed, fixed = colabone_validate_release_copy(
-        [args.added, args.changed, args.fixed]
+    release_copy = colabone_validate_release_copy(
+        added_zh=args.added_zh,
+        changed_zh=args.changed_zh,
+        fixed_zh=args.fixed_zh,
+        added_en=args.added_en,
+        changed_en=args.changed_en,
+        fixed_en=args.fixed_en,
     )
 
     notes_path = (
@@ -498,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     manifest_updates = colabone_render_manifest_updates(repo_root, target_version)
-    release_notes = colabone_render_release_notes(target_version, added, changed, fixed)
+    release_notes = colabone_render_release_notes(target_version, release_copy)
     updated_rel_paths = [
         path.relative_to(repo_root).as_posix() for path in manifest_updates
     ]

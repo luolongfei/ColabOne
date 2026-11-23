@@ -90,7 +90,7 @@ export const koKRMessages: ColabOneMessages = {
   "status.upgradeOptionalReady":
     "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 캐시된 모델과 워크플로를 유지한 채 언제든 업데이트할 수 있습니다.",
   "status.upgradeOptionalReadyWithConfirm":
-    "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 버튼을 누르면 실행 중인 서비스를 자동 중지하고 바로 업데이트할 수 있으며(캐시는 유지됩니다), 나중에 업데이트해도 됩니다.",
+    "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 버튼을 누르면 핫 업데이트 후 현재 설정 그대로 모델과 서비스를 자동 복구하며, 나중에 업데이트해도 됩니다.",
   "status.upgradeOptionalBlockedModel":
     "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 지금 업데이트하려면 먼저 모델을 언로드하세요(캐시된 가중치는 유지됩니다). 나중에 업데이트해도 됩니다.",
   "status.upgradeOptionalBlockedComfy":
@@ -106,17 +106,17 @@ export const koKRMessages: ColabOneMessages = {
   "status.upgradeBlockedOperation":
     "현재 작업이 완료된 뒤 원격 서비스를 업데이트해 주세요.",
   "status.upgradeActiveTask": "실행 중인 원격 작업 (취소됨)",
-  "status.upgradeActiveModel": "로드된 모델: {name} (VRAM에서 언로드됨)",
-  "status.upgradeActiveModelGeneric": "VRAM에 로드된 모델 (언로드됨)",
-  "status.upgradeActiveApi": "외부 API 서비스 및 공개 터널 (중지됨)",
-  "status.upgradeActiveComfy": "ComfyUI 워크플로 엔진 및 캔버스 터널 (중지됨)",
-  "status.upgradeActiveEngine": "실행 중인 원격 추론 엔진 (중지됨)",
+  "status.upgradeActiveModel": "로드된 모델: {name} (업데이트 후 기존 사양으로 자동 재로드)",
+  "status.upgradeActiveModelGeneric": "VRAM에 로드된 모델 (업데이트 후 기존 사양으로 자동 재로드)",
+  "status.upgradeActiveApi": "외부 API 서비스 및 공개 터널 (업데이트 후 기존 설정으로 자동 재시작)",
+  "status.upgradeActiveComfy": "ComfyUI 워크플로 엔진 및 캔버스 터널 (업데이트 후 자동 재시작)",
+  "status.upgradeActiveEngine": "실행 중인 원격 추론 엔진 (업데이트 후 자동 복구)",
   "status.upgradeConfirmTitle": "원격 서비스 핫 업데이트 확인",
   "status.upgradeConfirmLead":
-    "현재 원격 인스턴스에 실행 중인 서비스나 작업이 있습니다. 계속하면 아래 항목을 먼저 자동으로 중지하거나 언로드한 뒤 업데이트합니다:",
+    "현재 원격 인스턴스에 실행 중인 서비스나 작업이 있습니다. 계속하면 아래 항목을 잠시 중단한 뒤 업데이트하고, 완료 후 기존 설정으로 자동 복구합니다:",
   "status.upgradeConfirmPreserveNote":
-    "다운로드된 모델 가중치, 워크플로, 결과물 및 설정은 모두 그대로 유지됩니다. 업데이트 후 모델을 다시 로드하거나 서비스를 켜세요.",
-  "status.upgradeConfirmAction": "중지 후 바로 업데이트",
+    "다운로드된 모델 가중치, 워크플로, 결과물 및 설정은 모두 그대로 유지됩니다. 업데이트 후 기존 컨텍스트 길이·온도·터널 설정 그대로 모델과 실행 중인 서비스를 자동으로 복구합니다.",
+  "status.upgradeConfirmAction": "업데이트 후 자동 복구",
 
   // Appearance
   "appearance.system": "시스템 설정",

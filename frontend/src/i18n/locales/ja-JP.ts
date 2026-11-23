@@ -90,7 +90,7 @@ export const jaJPMessages: ColabOneMessages = {
   "status.upgradeOptionalReady":
     "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。キャッシュ済みモデルとワークフローを保持したままいつでも更新できます。",
   "status.upgradeOptionalReadyWithConfirm":
-    "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。クリックすると稼働中のサービスを自動停止して今すぐ更新できます（キャッシュは保持されます）。後で更新することもできます。",
+    "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。クリックするとホットアップデート後、現在の設定のままモデルとサービスを自動復元します。後で更新することもできます。",
   "status.upgradeOptionalBlockedModel":
     "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。今すぐ更新するには先にモデルをアンロードしてください（キャッシュは保持されます）。後で更新することもできます。",
   "status.upgradeOptionalBlockedComfy":
@@ -106,17 +106,17 @@ export const jaJPMessages: ColabOneMessages = {
   "status.upgradeBlockedOperation":
     "現在の操作が完了してからリモートサービスを更新してください",
   "status.upgradeActiveTask": "実行中のリモートタスク（キャンセルされます）",
-  "status.upgradeActiveModel": "読み込み済みモデル: {name}（VRAM からアンロードされます）",
-  "status.upgradeActiveModelGeneric": "VRAM に読み込み済みのモデル（アンロードされます）",
-  "status.upgradeActiveApi": "外部 API サービスと公開トンネル（停止されます）",
-  "status.upgradeActiveComfy": "ComfyUI ワークフローエンジンとキャンバストンネル（停止されます）",
-  "status.upgradeActiveEngine": "稼働中のリモート推論エンジン（停止されます）",
+  "status.upgradeActiveModel": "読み込み済みモデル: {name}（更新後に同じ設定で自動再読み込み）",
+  "status.upgradeActiveModelGeneric": "VRAM に読み込み済みのモデル（更新後に同じ設定で自動再読み込み）",
+  "status.upgradeActiveApi": "外部 API サービスと公開トンネル（更新後に同じ設定で自動再開）",
+  "status.upgradeActiveComfy": "ComfyUI ワークフローエンジンとキャンバストンネル（更新後に自動再開）",
+  "status.upgradeActiveEngine": "稼働中のリモート推論エンジン（更新後に自動復元）",
   "status.upgradeConfirmTitle": "リモートサービスのホットアップデートを確認",
   "status.upgradeConfirmLead":
-    "現在このリモートインスタンスでは以下のサービスまたはタスクが稼働中です。続行すると自動で停止・アンロードしてから更新します。",
+    "現在このリモートインスタンスでは以下のサービスまたはタスクが稼働中です。続行すると一時停止して更新し、完了後に元の設定で自動復元します。",
   "status.upgradeConfirmPreserveNote":
-    "ダウンロード済みのモデル重み・ワークフロー・生成物・設定はすべて保持され、再ダウンロードは不要です。更新後にモデルの再読み込みやサービス再開を行ってください。",
-  "status.upgradeConfirmAction": "停止して今すぐ更新",
+    "ダウンロード済みのモデル重み・ワークフロー・生成物・設定はすべて保持されます。更新完了後、元のコンテキスト長・温度・トンネル設定でモデルと稼働中サービスを自動復元します。",
+  "status.upgradeConfirmAction": "更新して自動復元",
 
   // Appearance
   "appearance.system": "システムに従う",

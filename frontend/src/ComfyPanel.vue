@@ -1147,7 +1147,6 @@ onUnmounted(() => {
             :width="116"
             :height="32"
             variant="button"
-            tone="accent"
             :delay="105"
           />
           <ASpace v-else wrap :size="8">
@@ -1393,7 +1392,6 @@ onUnmounted(() => {
                         width="100%"
                         :height="34"
                         variant="button"
-                        tone="accent"
                         :delay="190"
                       />
                     </div>
@@ -1951,7 +1949,6 @@ onUnmounted(() => {
                           height="100%"
                           :radius="0"
                           variant="rect"
-                          :tone="idx === 1 ? 'accent' : 'default'"
                           :delay="(idx - 1) * 90"
                         />
                       </div>
@@ -2573,7 +2570,6 @@ onUnmounted(() => {
                       width="100%"
                       :height="32"
                       variant="button"
-                      tone="accent"
                     />
                     <div class="co-comfy-canvas-secondary-row">
                       <ColabOneSkeleton

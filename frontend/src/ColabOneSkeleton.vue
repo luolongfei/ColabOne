@@ -50,13 +50,13 @@ const DEFAULT_HEIGHT: Record<ColabOneSkeletonVariant, string> = {
 };
 
 const DEFAULT_RADIUS: Record<ColabOneSkeletonVariant, string> = {
-  text: "6px",
-  metric: "8px",
+  text: "4px",
+  metric: "6px",
   pill: "9999px",
-  tag: "9999px",
+  tag: "6px",
   circle: "9999px",
-  button: "10px",
-  rect: "12px",
+  button: "8px",
+  rect: "10px",
   bar: "9999px",
 };
 
@@ -108,7 +108,6 @@ const resolvedStyle = computed<Record<string, string>>(() => {
   overflow: hidden;
   flex-shrink: 0;
   background: var(--co-skeleton-base);
-  box-shadow: inset 0 0 0 1px var(--co-skeleton-border);
   pointer-events: none;
   user-select: none;
 }
@@ -127,21 +126,53 @@ const resolvedStyle = computed<Record<string, string>>(() => {
   background: var(--co-skeleton-accent-base);
 }
 
+/* Seamless 2-period tiled wave shifted across -50% -> 0% on the GPU:
+ * continuously alive at any aspect ratio without borders or dead pauses. */
 .co-skeleton::after {
   content: "";
   position: absolute;
   inset: 0;
+  width: 400%;
   background: linear-gradient(
-    105deg,
-    transparent 14%,
-    var(--co-skeleton-sheen) 46%,
-    var(--co-skeleton-tint) 55%,
-    transparent 86%
+    90deg,
+    transparent 0%,
+    transparent 9%,
+    var(--co-skeleton-sheen-soft) 18%,
+    var(--co-skeleton-sheen) 25%,
+    var(--co-skeleton-sheen-soft) 32%,
+    transparent 41%,
+    transparent 59%,
+    var(--co-skeleton-sheen-soft) 68%,
+    var(--co-skeleton-sheen) 75%,
+    var(--co-skeleton-sheen-soft) 82%,
+    transparent 91%,
+    transparent 100%
   );
-  transform: translate3d(-130%, 0, 0);
-  animation: co-skeleton-sweep 1.85s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  animation-delay: var(--co-sk-delay, 0ms);
+  transform: translate3d(-50%, 0, 0);
+  animation: co-skeleton-wave 1.55s linear infinite;
+  animation-delay: calc(var(--co-sk-delay, 0ms) - 3100ms);
   will-change: transform;
+}
+
+/* Gemini-inspired soft iridescent blue/lavender wave for live AI & streaming states */
+.co-skeleton--accent::after {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 6%,
+    var(--co-skeleton-accent-mid) 16%,
+    var(--co-skeleton-accent-sheen) 25%,
+    var(--co-skeleton-accent-iris) 34%,
+    transparent 44%,
+    transparent 56%,
+    var(--co-skeleton-accent-mid) 66%,
+    var(--co-skeleton-accent-sheen) 75%,
+    var(--co-skeleton-accent-iris) 84%,
+    transparent 94%,
+    transparent 100%
+  );
+  animation-duration: 1.75s;
+  animation-delay: calc(var(--co-sk-delay, 0ms) - 3500ms);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1102,6 +1102,13 @@ def test_public_api_estimates_speed_without_upstream_usage_and_bounds_history(
 
     # Sub-tick completions (e.g. coarse Windows clocks) must still compute a positive speed estimate.
     assert _compute_token_speed(3, 0.0) == 3000.0
+    from server.public_api import _compute_target_input_budget
+
+    # Large 64K/128K windows must reserve generous output headroom (>10K / >20K) for thinking models.
+    assert 65536 - _compute_target_input_budget(65536) >= 12000
+    assert 131072 - _compute_target_input_budget(131072) >= 20000
+    # Explicit small max_tokens can still use tighter reserve.
+    assert _compute_target_input_budget(131072, 1024) > _compute_target_input_budget(131072)
 
     # Registering >50 requests stays bounded to MAX_REQUEST_HISTORY (50).
     for _ in range(60):
@@ -1862,3 +1869,287 @@ def test_clip_text_to_token_budget_strictly_bounds_cjk_emoji_and_ascii():
                     assert clipped != sample
                 else:
                     assert clipped == sample.strip()
+
+
+def test_gateway_auto_adapts_reasoning_tiers_large_max_tokens_and_model_metadata(gateway):
+    from server.public_api import _compute_target_input_budget
+
+    # High/xhigh/ultra reasoning tiers reserve extra output headroom on 64K and 128K windows.
+    assert 65536 - _compute_target_input_budget(65536, reasoning_effort="xhigh") >= 18000
+    assert 131072 - _compute_target_input_budget(131072, reasoning_effort="xhigh") >= 30000
+    assert _compute_target_input_budget(131072, reasoning_effort="xhigh") < _compute_target_input_budget(131072)
+    # Learned KV-exhaustion extra_reserve must still tighten budget even when explicit max_tokens is set.
+    assert _compute_target_input_budget(131072, 8192, extra_reserve=16384) < _compute_target_input_budget(131072, 8192)
+
+    gateway.runtime.active_options = {"context_length": 8192}
+    seen_bodies: list[dict] = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        seen_bodies.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 5, "total_tokens": 125},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        models = client.get("/v1/models", headers=AUTH).json()["data"]
+        assert models[0]["context_length"] == 8192
+        assert models[0]["context_window"] == 8192
+        assert models[0]["max_model_len"] == 8192
+
+        # Client configured for a 256K model with xhigh reasoning & huge max_output_tokens must adapt cleanly.
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "hello",
+                "reasoning": {"effort": "xhigh", "summary": "auto"},
+                "max_output_tokens": 262144,
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        assert seen_bodies[0]["reasoning_effort"] == "high"
+        assert seen_bodies[0]["max_tokens"] == 8192 - 256
+
+        # Same for /v1/chat/completions with ultra effort and 400K max_completion_tokens.
+        chat_resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "ultra",
+                "max_completion_tokens": 400000,
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert chat_resp.status_code == 200, chat_resp.text
+        assert seen_bodies[1]["reasoning_effort"] == "high"
+        assert seen_bodies[1]["max_tokens"] == 8192 - 256
+
+
+def test_gateway_self_calibrates_tokenizer_underestimation_and_proactively_compacts(gateway):
+    import asyncio
+    from server.openai_compat import estimate_messages_tokens
+
+    gateway.runtime.active_options = {"context_length": 8192}
+    seen_prompt_ests: list[int] = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        est = estimate_messages_tokens(body.get("messages") or [], body.get("tools"))
+        seen_prompt_ests.append(est)
+        # Simulate a dense-code/JSON tokenizer producing 1.8x more tokens than the heuristic.
+        real_prompt = int(est * 1.8)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Calibrated OK"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": real_prompt, "completion_tokens": 20, "total_tokens": real_prompt + 20},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        # Turn 1: moderate prompt (~1000 est -> 1800 real) teaches the gateway scale ~= 1.8x.
+        r1 = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [{"role": "user", "content": "code_token_density_sample " * 140}],
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert r1.status_code == 200, r1.text
+
+        # Turn 2: raw estimate is ~4200 (< 6227 uncalibrated budget), but calibrated real size is ~7560 (> 6227).
+        # Gateway must proactively compact BEFORE hitting llama-server.
+        long_items = []
+        for idx in range(6):
+            long_items.append({"role": "user", "content": f"Step {idx}: inspect log"})
+            long_items.append(
+                {
+                    "type": "function_call",
+                    "call_id": f"call_{idx}",
+                    "name": "read_file",
+                    "arguments": json.dumps({"path": f"file_{idx}.py"}),
+                }
+            )
+            long_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": f"call_{idx}",
+                    "output": f"dense_output_{idx}:" + ("a=1;b=2;" * 280),
+                }
+            )
+            long_items.append({"role": "assistant", "content": f"Reviewed step {idx}."})
+        long_items.append({"role": "user", "content": "Summarize and continue."})
+
+        r2 = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": long_items, "stream": False},
+            headers=AUTH,
+        )
+        assert r2.status_code == 200, r2.text
+        latest = gateway.snapshot()["recent_requests"][0]
+        assert latest["compacted"] is True
+        # Compacted raw estimate must have been scaled down by ~1.8x so real tokens fit safely inside 8192.
+        assert seen_prompt_ests[-1] * 1.8 <= 6400
+
+    # Also verify cold-start /tokenize probe helper works and fails open on errors.
+    async def check_probe():
+        ok_transport = httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"tokens": list(range(1500))})
+            if req.url.path == "/tokenize"
+            else httpx.Response(404)
+        )
+        async with httpx.AsyncClient(transport=ok_transport) as http:
+            probed = await gateway._probe_exact_prompt_tokens(
+                http, [{"role": "user", "content": "hello world"}], None
+            )
+            assert probed == 1500 + 20
+
+        # Multi-MB text must be bounded to a <= 400K-char sample and proportionally scaled.
+        seen_probe_lens: list[int] = []
+
+        def bounded_handler(req):
+            if req.url.path == "/tokenize":
+                body = json.loads(req.content)
+                seen_probe_lens.append(len(body["content"]))
+                return httpx.Response(200, json={"tokens": list(range(100_000))})
+            return httpx.Response(404)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(bounded_handler)) as http:
+            huge_text = "x" * 1_000_000
+            probed_huge = await gateway._probe_exact_prompt_tokens(
+                http, [{"role": "user", "content": huge_text}], None
+            )
+            assert seen_probe_lens and seen_probe_lens[0] <= 400_001
+            assert probed_huge is not None and 240_000 <= probed_huge <= 260_000
+
+        err_transport = httpx.MockTransport(lambda req: httpx.Response(500))
+        async with httpx.AsyncClient(transport=err_transport) as http:
+            assert (
+                await gateway._probe_exact_prompt_tokens(
+                    http, [{"role": "user", "content": "hello world"}], None
+                )
+                is None
+            )
+
+    asyncio.run(check_probe())
+
+
+def test_gateway_recovers_from_kv_cache_exhaustion_length_stop(gateway):
+    gateway.runtime.active_options = {"context_length": 4096}
+    calls: list[dict] = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        # First non-stream call simulates hitting exact KV-cache limit (3100 + 996 = 4096 -> finish_reason="length").
+        if len(calls) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "Partial answer cut off..."},
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 3100, "completion_tokens": 996, "total_tokens": 4096},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "Complete answer after auto-compaction."},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1200, "completion_tokens": 40, "total_tokens": 1240},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        items = []
+        for idx in range(5):
+            items.append({"role": "user", "content": f"Turn {idx} question"})
+            items.append(
+                {
+                    "type": "function_call",
+                    "call_id": f"c_{idx}",
+                    "name": "exec",
+                    "arguments": "{}",
+                }
+            )
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": f"c_{idx}",
+                    "output": f"log_{idx} " + ("output_line " * 140),
+                }
+            )
+            items.append({"role": "assistant", "content": f"Done {idx}"})
+        items.append({"role": "user", "content": "Final task"})
+
+        resp = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": items, "stream": False},
+            headers=AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "completed"
+        assert data["incomplete_details"] is None
+        assert "Complete answer" in data["output"][0]["content"][0]["text"]
+        # Gateway must have retried once with tighter compaction AND boosted output reserve for subsequent turns.
+        assert len(calls) >= 2
+        cal_key = gateway._calibration_key("test-model", 4096)
+        assert gateway._get_output_reserve_boost(cal_key) > 0
+
+        # Meanwhile, an explicit small max_output_tokens hitting finish_reason='length' must still report incomplete
+        # and must NOT falsely boost KV-exhaustion reserve.
+        prev_boost = gateway._get_output_reserve_boost(cal_key)
+
+        def explicit_cap_upstream(request):
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "Short"},
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 80, "completion_tokens": 16, "total_tokens": 96},
+                },
+            )
+
+        gateway.runtime.chat_transport = httpx.MockTransport(explicit_cap_upstream)
+        capped = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "Write a poem",
+                "max_output_tokens": 16,
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert capped.status_code == 200
+        capped_data = capped.json()
+        assert capped_data["status"] == "incomplete"
+        assert capped_data["incomplete_details"] == {"reason": "max_output_tokens"}
+        assert gateway._get_output_reserve_boost(cal_key) == prev_boost

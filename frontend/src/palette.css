@@ -60,14 +60,19 @@
   --co-shadow: rgba(15, 23, 42, 0.08);
   --co-soft-shadow: rgba(15, 23, 42, 0.04);
   --co-overlay: rgba(15, 23, 42, 0.38);
-  /* ColabOne refined satin skeleton tokens (Light) */
-  --co-skeleton-base: rgba(15, 23, 42, 0.062);
-  --co-skeleton-base-subtle: rgba(15, 23, 42, 0.038);
-  --co-skeleton-accent-base: rgba(59, 130, 246, 0.11);
+  /* ColabOne Google Material 3 & Gemini shimmer skeleton tokens (Light) */
+  --co-skeleton-base: rgba(15, 23, 42, 0.092);
+  --co-skeleton-base-subtle: rgba(15, 23, 42, 0.056);
   --co-skeleton-sheen: rgba(255, 255, 255, 0.84);
-  --co-skeleton-tint: rgba(59, 130, 246, 0.075);
-  --co-skeleton-border: rgba(15, 23, 42, 0.042);
-  --co-skeleton-card-bg: rgba(248, 250, 252, 0.85);
+  --co-skeleton-sheen-soft: rgba(255, 255, 255, 0.4);
+  --co-skeleton-accent-base: rgba(66, 133, 244, 0.11);
+  --co-skeleton-accent-mid: rgba(138, 180, 248, 0.44);
+  --co-skeleton-accent-iris: rgba(196, 181, 253, 0.28);
+  --co-skeleton-accent-sheen: rgba(255, 255, 255, 0.88);
+  --co-skeleton-card-bg: #ffffff;
+  --co-shimmer-text-base: #64748b;
+  --co-shimmer-text-mid: #3b82f6;
+  --co-shimmer-text-peak: #93c5fd;
   /* ColabOne floating toast & dark-surface highlighted code tokens (Light) */
   --co-toast-bg: rgba(255, 255, 255, 0.96);
   --co-toast-shadow:
@@ -141,14 +146,19 @@
   --co-shadow: rgba(0, 0, 0, 0.48);
   --co-soft-shadow: rgba(0, 0, 0, 0.28);
   --co-overlay: rgba(0, 0, 0, 0.56);
-  /* ColabOne refined obsidian satin skeleton tokens (Dark) */
-  --co-skeleton-base: rgba(255, 255, 255, 0.068);
-  --co-skeleton-base-subtle: rgba(255, 255, 255, 0.038);
-  --co-skeleton-accent-base: rgba(96, 165, 250, 0.15);
-  --co-skeleton-sheen: rgba(255, 255, 255, 0.135);
-  --co-skeleton-tint: rgba(96, 165, 250, 0.12);
-  --co-skeleton-border: rgba(255, 255, 255, 0.055);
-  --co-skeleton-card-bg: rgba(255, 255, 255, 0.025);
+  /* ColabOne Google Material 3 & Gemini shimmer skeleton tokens (Dark) */
+  --co-skeleton-base: rgba(255, 255, 255, 0.095);
+  --co-skeleton-base-subtle: rgba(255, 255, 255, 0.052);
+  --co-skeleton-sheen: rgba(255, 255, 255, 0.145);
+  --co-skeleton-sheen-soft: rgba(255, 255, 255, 0.065);
+  --co-skeleton-accent-base: rgba(138, 180, 248, 0.13);
+  --co-skeleton-accent-mid: rgba(138, 180, 248, 0.24);
+  --co-skeleton-accent-iris: rgba(196, 181, 253, 0.19);
+  --co-skeleton-accent-sheen: rgba(232, 240, 254, 0.24);
+  --co-skeleton-card-bg: rgba(255, 255, 255, 0.02);
+  --co-shimmer-text-base: #94a3b8;
+  --co-shimmer-text-mid: #60a5fa;
+  --co-shimmer-text-peak: #e0f2fe;
   /* ColabOne floating toast & dark-surface highlighted code tokens (Dark) */
   --co-toast-bg: rgba(28, 30, 38, 0.95);
   --co-toast-shadow:

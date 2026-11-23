@@ -937,13 +937,22 @@ samp {
   white-space: nowrap;
 }
 
-/* ColabOne unified satin shimmer skeleton engine */
-@keyframes co-skeleton-sweep {
+/* ColabOne unified Google Material 3 & Gemini wave skeleton engine */
+@keyframes co-skeleton-wave {
   0% {
-    transform: translate3d(-130%, 0, 0);
+    transform: translate3d(-50%, 0, 0);
   }
   100% {
-    transform: translate3d(130%, 0, 0);
+    transform: translate3d(0%, 0, 0);
+  }
+}
+
+@keyframes co-text-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: 0% 0;
   }
 }
 
