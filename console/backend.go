@@ -32,8 +32,10 @@ type colabOneBridge struct {
 
 func colabOneMethodTimeout(method string) time.Duration {
 	switch method {
-	case "snapshot", "logs.clear", "error.clear", "drive.cancel", "settings.save",
+	case "snapshot", "logs.clear", "error.clear", "drive.cancel", "drive.confirm", "drive.probe",
+		"runtime.start.cancel", "runtime.start.retry", "settings.save",
 		"api.key", "api.tunnel_token", "comfyui.canvas.tunnel_token", "settings.hf_token",
+		"settings.assign_proxy", "settings.assign_proxy.test",
 		"shortcuts.status", "shortcuts.create", "shortcuts.remove":
 		return 30 * time.Second
 	case "runtime.start":

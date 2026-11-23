@@ -23,6 +23,8 @@ from server.openai_compat import (
     MAX_BODY_BYTES,
     decode_compaction_content,
     encode_compaction_content,
+    estimate_messages_tokens,
+    estimate_tokens,
 )
 from server.public_api import ColabOneChatRequest, create_colabone_public_app
 from server.runtime import ColabOneConflictError, ColabOneTask
@@ -1284,3 +1286,575 @@ def test_public_api_readable_model_id_auto_alias_legacy_compat_and_live_rename(
     assert any(
         rec["model"] == "colabone/my-qwen" for rec in snap["recent_requests"]
     )
+
+
+def test_cjk_token_estimator_and_compaction_self_heal_on_overflow(gateway):
+    # CJK text should not be underestimated by 4x like naive len//4.
+    zh_sample = "测试上下文压缩与中文分词估算" * 100  # 1400 Chinese chars
+    en_sample = "hello world " * 100  # 1200 ASCII chars
+    assert estimate_tokens(zh_sample) >= 1500
+    assert 300 <= estimate_tokens(en_sample) <= 420
+    with_tools = estimate_messages_tokens(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "shell", "description": "d" * 800}}],
+    )
+    without_tools = estimate_messages_tokens([{"role": "user", "content": "hi"}])
+    assert with_tools > without_tools + 200
+
+    # /v1/responses/compact self-heals via shrink-and-retry if a chunk still triggers llama-server 400.
+    gateway.runtime.active_options = {"context_length": 4096}
+    attempts = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        attempts.append(body)
+        if len(attempts) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": 400,
+                        "type": "exceed_context_size_error",
+                        "message": "request (4500 tokens) exceeds the available context size (4096 tokens)",
+                        "n_prompt_tokens": 4500,
+                        "n_ctx": 4096,
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "已压缩中文对话摘要。"}}],
+                "usage": {"prompt_tokens": 1100, "completion_tokens": 24, "total_tokens": 1124},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        resp = client.post(
+            "/v1/responses/compact",
+            json={
+                "model": "test-model",
+                "instructions": "你是中文编程助手。",
+                "input": [
+                    {"role": "user", "content": "请帮我重构登录模块。" + ("细节说明" * 400)},
+                    {"role": "assistant", "content": "好的，先检查代码。" + ("分析过程" * 400)},
+                ],
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["object"] == "response.compaction"
+        comp_item = next(i for i in data["output"] if i["type"] == "compaction")
+        assert decode_compaction_content(comp_item["encrypted_content"]) == "已压缩中文对话摘要。"
+        # First attempt hit 400 -> gateway shrunk the chunk and succeeded on retry.
+        assert len(attempts) >= 2
+        assert len(attempts[1]["messages"][1]["content"]) < len(attempts[0]["messages"][1]["content"])
+
+
+def test_gateway_auto_compaction_three_stages_and_prefix_cache(gateway):
+    gateway.runtime.active_options = {"context_length": 4096}
+    captured = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        captured.append(body)
+        is_compact_call = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact_call:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Summary: investigated auth.py and found token expiry issue.",
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 900, "completion_tokens": 30, "total_tokens": 930},
+                },
+            )
+        if body.get("stream"):
+            sse = (
+                'data: {"choices":[{"delta":{"content":"Auto-compacted reply!"}}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":640,"completion_tokens":12,"total_tokens":652}}\n\n'
+                "data: [DONE]\n\n"
+            )
+            return httpx.Response(200, text=sse)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-compacted",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "Pruned reply!"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 520, "completion_tokens": 10, "total_tokens": 530},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        # 1. Stage 1 (prune): huge older tool output + JSON tool args pruned with 0 extra GPU calls.
+        stage1_msgs = [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Inspect big log."},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps({"path": "a.py", "content": "z" * 6000}),
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_old", "content": "log line\n" * 1800},
+            {"role": "assistant", "content": "Checked the log."},
+            {"role": "user", "content": "Now summarize the bug."},
+        ]
+        r1 = client.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "messages": stage1_msgs, "stream": False},
+            headers=AUTH,
+        )
+        assert r1.status_code == 200, r1.text
+        assert r1.json()["choices"][0]["message"]["content"] == "Pruned reply!"
+        # Stage 1 solved it without needing any extra summarization call.
+        assert len(captured) == 1
+        pruned_sent = captured[0]["messages"]
+        # Tool call arguments remain valid JSON and tool_call/tool pairing stays intact.
+        pruned_tc_args = pruned_sent[2]["tool_calls"][0]["function"]["arguments"]
+        assert isinstance(json.loads(pruned_tc_args), dict)
+        assert pruned_sent[3]["role"] == "tool" and pruned_sent[3]["tool_call_id"] == "call_old"
+        assert "pruned" in pruned_sent[3]["content"]
+        rec1 = gateway.snapshot()["recent_requests"][0]
+        assert rec1["compacted"] is True
+        assert rec1["compaction_stage"] == "prune"
+        assert rec1["original_prompt_tokens"] > rec1["prompt_tokens"]
+
+        # 2. Stage 2 (summary + incremental prefix cache) on streaming /v1/responses:
+        #    Wire usage.input_tokens reports real pre-compaction tokens (triggers Codex auto-compact),
+        #    while desktop telemetry records actual GPU prompt_tokens + original_prompt_tokens.
+        captured.clear()
+        shared_prefix = [
+            {"role": "user", "content": "Turn 1: " + ("alpha " * 900)},
+            {"role": "assistant", "content": "Reply 1: " + ("beta " * 900)},
+            {"role": "user", "content": "Turn 2: " + ("gamma " * 900)},
+            {"role": "assistant", "content": "Reply 2: " + ("delta " * 900)},
+        ]
+        r2 = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": "You are Codex.",
+                "input": [*shared_prefix, {"role": "user", "content": "What is the root cause?"}],
+                "stream": True,
+            },
+            headers=AUTH,
+        )
+        assert r2.status_code == 200, r2.text
+        events2 = parse_sse_events(r2.text)
+        assert events2[-1][0] == "response.completed"
+        wire_usage2 = events2[-1][1]["response"]["usage"]
+        # Wire usage reports real pre-compaction context size so Codex hits auto_compact_limit.
+        assert wire_usage2["input_tokens"] > 4096
+        assert wire_usage2["total_tokens"] == wire_usage2["input_tokens"] + wire_usage2["output_tokens"]
+        # Desktop telemetry reports actual compacted GPU tokens + original pre-compaction tokens.
+        rec2 = gateway.snapshot()["recent_requests"][0]
+        assert rec2["compacted"] is True
+        assert rec2["compaction_stage"] == "summary"
+        assert rec2["prompt_tokens"] == 640
+        assert rec2["original_prompt_tokens"] > 4096
+        summary_calls_turn1 = sum(
+            1
+            for req in captured
+            if any("Compact the following" in (m.get("content") or "") or "Update the running" in (m.get("content") or "") for m in req["messages"])
+        )
+        assert summary_calls_turn1 >= 1
+
+        # Turn 2 resends the exact same oversized prefix + a new trailing user message ->
+        # exact prefix cache hit means ZERO new summarization GPU calls!
+        captured.clear()
+        r3 = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": "You are Codex.",
+                "input": [*shared_prefix, {"role": "user", "content": "Apply the fix now."}],
+                "stream": True,
+            },
+            headers=AUTH,
+        )
+        assert r3.status_code == 200, r3.text
+        assert len(captured) == 1  # Directly hit prefix summary cache -> single inference call!
+        assert any(
+            "Compacted earlier conversation summary" in (m.get("content") or "")
+            for m in captured[0]["messages"]
+        )
+
+        # 3. Stage 3 (extreme single-turn clamp): single 10K-token message fits cleanly into 4K window.
+        captured.clear()
+        r4 = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "giant paste " * 3000}],
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert r4.status_code == 200, r4.text
+        assert estimate_messages_tokens(captured[0]["messages"]) < 4096
+        assert gateway.snapshot()["recent_requests"][0]["compaction_stage"] == "truncate"
+
+    # Stopping public gateway clears in-memory compaction cache.
+    assert len(gateway.compaction_cache) > 0
+    gateway.stop()
+    assert len(gateway.compaction_cache) == 0
+
+
+def test_gateway_reactive_retry_and_openai_context_length_exceeded_errors(gateway):
+    gateway.runtime.active_options = {"context_length": 8192}
+    calls = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        # First call simulates llama-server returning exceed_context_size_error even though
+        # local token estimate was below 8192 (e.g., dense special tokens / Jinja overhead).
+        if len(calls) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": 400,
+                        "type": "exceed_context_size_error",
+                        "message": "request (9500 tokens) exceeds the available context size (8192 tokens), try increasing it",
+                        "n_prompt_tokens": 9500,
+                        "n_ctx": 8192,
+                    }
+                },
+            )
+        if body.get("stream"):
+            sse = (
+                'data: {"choices":[{"delta":{"content":"Recovered!"}}]}\n\n'
+                'data: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":5,"total_tokens":1205}}\n\n'
+                "data: [DONE]\n\n"
+            )
+            return httpx.Response(200, text=sse)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Recovered!"}}],
+                "usage": {"prompt_tokens": 1200, "completion_tokens": 5, "total_tokens": 1205},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        # /v1/models exposes active context_length.
+        models_resp = client.get("/v1/models", headers=AUTH).json()
+        assert models_resp["data"][0]["context_length"] == 8192
+
+        # Reactive retry intercepts llama-server 400 exceed_context_size_error, compacts, and succeeds!
+        r_ok = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [
+                    {"role": "user", "content": "Step 1 " + ("x" * 2000)},
+                    {"role": "assistant", "content": "Done 1 " + ("y" * 2000)},
+                    {"role": "user", "content": "Step 2"},
+                ],
+                "stream": True,
+            },
+            headers=AUTH,
+        )
+        assert r_ok.status_code == 200, r_ok.text
+        evs = parse_sse_events(r_ok.text)
+        assert evs[-1][0] == "response.completed"
+        assert evs[-1][1]["response"]["usage"]["input_tokens"] == 9500
+        assert gateway.snapshot()["recent_requests"][0]["compacted"] is True
+
+        # With X-ColabOne-Auto-Compact: off, return exact OpenAI context_length_exceeded errors
+        # (HTTP 400 for non-stream, SSE response.failed code=context_length_exceeded for stream).
+        def always_overflow(_request):
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": 400,
+                        "type": "exceed_context_size_error",
+                        "message": "request (210528 tokens) exceeds the available context size (8192 tokens)",
+                        "n_prompt_tokens": 210528,
+                        "n_ctx": 8192,
+                    }
+                },
+            )
+
+        gateway.runtime.chat_transport = httpx.MockTransport(always_overflow)
+        opt_out_headers = {**AUTH, "X-ColabOne-Auto-Compact": "off"}
+
+        # Non-streaming /v1/responses -> HTTP 400 (NOT 502) with code=context_length_exceeded.
+        r_nonstream = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": "secret oversized prompt", "stream": False},
+            headers=opt_out_headers,
+        )
+        assert r_nonstream.status_code == 400
+        err_json = r_nonstream.json()["error"]
+        assert err_json["code"] == "context_length_exceeded"
+        assert err_json["type"] == "invalid_request_error"
+        assert err_json["param"] == "input"
+        assert "210528" in err_json["message"] and "8192" in err_json["message"]
+        assert "secret oversized prompt" not in r_nonstream.text
+
+        # Non-streaming /v1/chat/completions -> HTTP 400 with param="messages".
+        r_chat400 = client.post(
+            "/v1/chat/completions",
+            json=chat(stream=False),
+            headers=opt_out_headers,
+        )
+        assert r_chat400.status_code == 400
+        assert r_chat400.json()["error"]["code"] == "context_length_exceeded"
+        assert r_chat400.json()["error"]["param"] == "messages"
+
+        # Streaming /v1/responses -> spec-compliant response.failed with response.error.code=context_length_exceeded.
+        r_stream_fail = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": "secret oversized prompt", "stream": True},
+            headers=opt_out_headers,
+        )
+        assert r_stream_fail.status_code == 200
+        fail_events = parse_sse_events(r_stream_fail.text)
+        assert fail_events[-1][0] == "response.failed"
+        failed_err = fail_events[-1][1]["response"]["error"]
+        assert failed_err["code"] == "context_length_exceeded"
+        assert "210528" in failed_err["message"]
+        assert "secret oversized prompt" not in r_stream_fail.text
+
+
+def test_reactive_retry_calibrates_single_turn_underestimation_and_prunes_tool_args(
+    gateway,
+):
+    from server.openai_compat import (
+        _prune_tool_call_arguments,
+        estimate_messages_tokens,
+        estimate_tokens,
+        truncate_messages_to_budget,
+    )
+    from server.public_api import _format_request_finish_log
+
+    # 1) _prune_tool_call_arguments must keep valid JSON and stay strictly within tiny budgets.
+    tricky_json = json.dumps(
+        {"patch": ('line with "quotes" and \\backslash\n' * 120)},
+        ensure_ascii=False,
+    )
+    pruned_tight = _prune_tool_call_arguments(tricky_json, 32)
+    assert isinstance(json.loads(pruned_tight), dict)
+    assert estimate_tokens(pruned_tight) <= 32
+
+    # 2) Stage 3c must shrink oversized parallel tool_call arguments as well as message content.
+    parallel_calls = [
+        {
+            "id": f"call_{i}",
+            "type": "function",
+            "function": {
+                "name": "apply_patch",
+                "arguments": json.dumps({"input": ("x" * 2000)}, ensure_ascii=False),
+            },
+        }
+        for i in range(6)
+    ]
+    atomic_msgs = [
+        {"role": "user", "content": "Apply patches"},
+        {"role": "assistant", "content": None, "tool_calls": parallel_calls},
+        *[
+            {"role": "tool", "tool_call_id": f"call_{i}", "content": "ok " + ("y" * 2000)}
+            for i in range(6)
+        ],
+    ]
+    clamped, changed = truncate_messages_to_budget(atomic_msgs, None, 900)
+    assert changed is True
+    assert estimate_messages_tokens(clamped, None) <= 900
+    for tc in clamped[1]["tool_calls"]:
+        assert isinstance(json.loads(tc["function"]["arguments"]), dict)
+
+    # 3) _format_request_finish_log must never print nonsensical inverted compaction counts.
+    log_inverted = _format_request_finish_log(
+        {
+            "seq": 9,
+            "state": "completed",
+            "duration_ms": 500,
+            "compacted": True,
+            "original_prompt_tokens": 5000,
+            "prompt_tokens": 5200,
+            "completion_tokens": 10,
+        }
+    )
+    assert "自动压缩" not in log_inverted
+
+    # 4) Reactive retry on a single-turn message where estimator underestimates (est ~3500 < 8192*0.72)
+    #    must still calibrate downward from llama-server's n_prompt_tokens=9200 and succeed.
+    gateway.runtime.active_options = {"context_length": 8192}
+    sent_lengths: list[int] = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        total_chars = sum(len(str(m.get("content") or "")) for m in body["messages"])
+        sent_lengths.append(total_chars)
+        if len(sent_lengths) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": 400,
+                        "type": "exceed_context_size_error",
+                        "message": "request (9200 tokens) exceeds the available context size (8192 tokens)",
+                        "n_prompt_tokens": 9200,
+                        "n_ctx": 8192,
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Calibrated OK"}}],
+                "usage": {"prompt_tokens": 3100, "completion_tokens": 6, "total_tokens": 3106},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        # ~12,000 ASCII chars -> estimated ~3,500 tokens (< 8192 * 0.72 = 5898), single turn.
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "Single huge turn: " + ("abcdefghij" * 1200),
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["output"][0]["content"][0]["text"] == "Calibrated OK"
+        assert data["usage"]["input_tokens"] == 9200
+        assert len(sent_lengths) == 2
+        assert sent_lengths[1] < sent_lengths[0] * 0.75
+
+
+def test_compaction_log_ordering_deferred_until_register_and_skips_tiny_older_prefix(
+    gateway,
+):
+    from server.runtime import ColabOneTask
+
+    # 1) If _record_compaction_metric fires before register() (fast worker thread race),
+    #    the warning log must be deferred and emitted AFTER the start log with the real #seq.
+    metric, acc = gateway._init_slot_metric("responses", "test-model", False)
+    slot = {
+        "kind": "responses",
+        "stream": False,
+        "public_model": "test-model",
+        "metric": metric,
+        "acc": acc,
+    }
+    gateway._record_compaction_metric(
+        slot,
+        original_tokens=80000,
+        compacted_tokens=12000,
+        stage="prune",
+        ctx_tokens=65536,
+    )
+    assert not any("上下文超限" in entry["message"] for entry in gateway.logs)
+    task = ColabOneTask("public_responses", "test-model")
+    gateway.runtime.tasks[task.id] = task
+    gateway.register({"id": task.id}, slot)
+    msgs = [entry["message"] for entry in gateway.logs]
+    start_idx = next(i for i, m in enumerate(msgs) if m.startswith("API 请求 #1 ·"))
+    comp_idx = next(
+        i for i, m in enumerate(msgs) if m.startswith("API 请求 #1 上下文超限")
+    )
+    assert start_idx < comp_idx
+    task.state = "completed"
+
+    # 2) Tiny older prefix (<= 320 tokens) + huge newest message must skip Stage 2 LLM summary
+    #    and go straight to Stage 3 truncation (exactly 1 upstream call, no summary round-trip).
+    gateway.runtime.active_options = {"context_length": 4096}
+    seen_calls: list[dict] = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        seen_calls.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Direct truncate OK"}}],
+                "usage": {"prompt_tokens": 2200, "completion_tokens": 5, "total_tokens": 2205},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                    {"role": "user", "content": "Big paste: " + ("z" * 20000)},
+                ],
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        # Must NOT have issued a separate summarization call for "hi" / "hello".
+        assert len(seen_calls) == 1
+        assert gateway.snapshot()["recent_requests"][0]["compaction_stage"] == "truncate"
+
+
+def test_clip_text_to_token_budget_strictly_bounds_cjk_emoji_and_ascii():
+    from server.openai_compat import clip_text_to_token_budget, estimate_tokens
+
+    samples = [
+        "中文上下文压缩测试" * 4,
+        "中文上下文压缩测试" * 200,
+        "🚀🔥✨🎉" * 100,
+        "code_line_value = 12345;\n" * 400,
+        "短中文" * 8,
+    ]
+    markers = [
+        "\n[... omitted {omitted} chars ...]\n",
+        "\n[... truncated {omitted} chars to fit context window ...]\n",
+    ]
+    for sample in samples:
+        orig_toks = estimate_tokens(sample)
+        for budget in (16, 24, 32, 48, 128, 512):
+            for marker in markers:
+                clipped = clip_text_to_token_budget(
+                    sample, budget, marker_template=marker
+                )
+                clipped_toks = estimate_tokens(clipped)
+                assert clipped_toks <= budget, (
+                    f"budget={budget} got={clipped_toks} sample={sample[:20]!r}"
+                )
+                if orig_toks > budget:
+                    assert clipped_toks < orig_toks
+                    assert clipped != sample
+                else:
+                    assert clipped == sample.strip()

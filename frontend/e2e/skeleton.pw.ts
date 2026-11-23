@@ -572,3 +572,135 @@ test("async feature surfaces show targeted skeletons during Hub search, Version 
 
   expect(errors).toEqual([]);
 });
+
+test("starting instance detail skeleton, multi-instance cards, and monitor row skeletons stay vertically aligned", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+
+  await page.addInitScript(() => {
+    window.localStorage.setItem("colabone.monitor.layout", "rows");
+  });
+
+  const startingSnap = baseSnapshot({
+    runtime: {
+      state: "starting",
+      id: "gpu-t4-starting",
+      protocol: 7,
+      capabilities: ["public_api", "comfyui"],
+      location: { country: "IN", city: "Mumbai", region: "asia-south1" },
+      tasks: [],
+    },
+    operation: { kind: "start", title: "部署远程管理服务" },
+    account: {
+      logged_in: true,
+      email: "alice@colabone.dev",
+      balance: 2060.86,
+      rate: 11.62,
+      assignments: 3,
+      checked_at: Date.now() / 1000,
+      instances: [
+        {
+          id: "gpu-g4-tall",
+          managed: true,
+          active: false,
+          accelerator: "G4",
+          shape: "STANDARD",
+          state: "ready",
+          gpu_name: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+          vram_used_mib: 512,
+          vram_total_mib: 98304,
+          disk_free: 59.2 * 1024 ** 3,
+          active_task: "load",
+          location: { country: "NL", city: "Groningen", region: "europe-west4" },
+        },
+        {
+          id: "gpu-t4-compact",
+          managed: true,
+          active: false,
+          accelerator: "T4",
+          shape: "HIGH_RAM",
+          state: "ready",
+          gpu_name: "Tesla T4",
+          vram_used_mib: 0,
+          vram_total_mib: 15360,
+          disk_free: 235.5 * 1024 ** 3,
+          location: { country: "SG", city: "Singapore", region: "asia-southeast1" },
+        },
+        {
+          id: "gpu-t4-starting",
+          managed: true,
+          active: true,
+          accelerator: "T4",
+          shape: "HIGH_RAM",
+          state: "starting",
+          location: { country: "IN", city: "Mumbai", region: "asia-south1" },
+        },
+      ],
+    },
+  });
+
+  await setupControlledMock(page, {
+    holdInitialSnapshot: false,
+    snapshot: startingSnap,
+  });
+
+  await expect(page.locator(".co-instance-row.active .co-instance-detail-sk")).toBeVisible();
+
+  const offsets = await page.evaluate(() => {
+    const midY = (el: Element | null) => {
+      if (!el) return NaN;
+      const r = el.getBoundingClientRect();
+      return r.top + r.height / 2;
+    };
+
+    const detail = document.querySelector(".co-instance-row.active .co-instance-detail");
+    const detailFirst = detail?.firstElementChild ?? null;
+    const detailSk = detail?.querySelector(".co-instance-detail-sk .co-skeleton") ?? null;
+    const detailLast = detail?.lastElementChild ?? null;
+
+    const cards = [...document.querySelectorAll(".co-instance-row")];
+    const row1MainTopDiff =
+      cards.length >= 2
+        ? Math.abs(
+            cards[0].querySelector(".co-instance-main")!.getBoundingClientRect().top -
+              cards[1].querySelector(".co-instance-main")!.getBoundingClientRect().top,
+          )
+        : NaN;
+
+    const cpuRow = document.querySelector(".co-rm-row.co-metric-cpu");
+    const railTitleDiff = Math.abs(
+      midY(cpuRow?.querySelector(".co-rm-row-title") ?? null) -
+        midY(cpuRow?.querySelector(".co-rm-row-rail-line .co-skeleton") ?? null),
+    );
+    const railSubDiff = Math.abs(
+      midY(cpuRow?.querySelector(".co-rm-row-subtitle") ?? null) -
+        midY(cpuRow?.querySelector(".co-rm-row-rail-subline .co-skeleton") ?? null),
+    );
+    const statDiffs = [...(cpuRow?.querySelectorAll(".co-rm-row-stat") ?? [])].map(
+      (stat) =>
+        Math.abs(
+          midY(stat.querySelector("em")) -
+            midY(stat.querySelector(".co-skeleton")),
+        ),
+    );
+
+    return {
+      detailSkVsFirst: Math.abs(midY(detailSk) - midY(detailFirst)),
+      detailSkVsLast: Math.abs(midY(detailSk) - midY(detailLast)),
+      row1MainTopDiff,
+      railTitleDiff,
+      railSubDiff,
+      maxStatDiff: Math.max(...statDiffs),
+    };
+  });
+
+  expect(offsets.detailSkVsFirst).toBeLessThanOrEqual(1);
+  expect(offsets.detailSkVsLast).toBeLessThanOrEqual(1);
+  expect(offsets.row1MainTopDiff).toBeLessThanOrEqual(1);
+  expect(offsets.railTitleDiff).toBeLessThanOrEqual(1);
+  expect(offsets.railSubDiff).toBeLessThanOrEqual(1);
+  expect(offsets.maxStatDiff).toBeLessThanOrEqual(1);
+  expect(errors).toEqual([]);
+});

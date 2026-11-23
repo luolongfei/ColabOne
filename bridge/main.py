@@ -20,11 +20,14 @@ _FAST_RPC_METHODS = frozenset(
         "drive.cancel",
         "drive.confirm",
         "drive.probe",
+        "runtime.start.cancel",
+        "runtime.start.retry",
         "locale.set",
         "api.key",
         "api.tunnel_token",
         "comfyui.canvas.tunnel_token",
         "settings.hf_token",
+        "settings.assign_proxy",
     }
 )
 
@@ -50,7 +53,7 @@ def main():
     if "--self-test" in sys.argv:
         from common.models import ModelSpec
         from common.comfyui import ComfyCatalog
-        import keyring, fastapi, colab_cli  # noqa: F401
+        import keyring, fastapi, colab_cli, bridge.assign_proxy  # noqa: F401
 
         root = Path(__file__).resolve().parents[1]
         presets = json.loads(

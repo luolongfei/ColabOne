@@ -84,6 +84,8 @@ export const zhCNMessages = {
   "status.upgradeAction": "更新远端服务",
   "status.upgradeOptionalReady":
     "远端服务有小版本更新，不影响当前正常使用；可随时热更新，已下载的模型缓存与工作流会完整保留。",
+  "status.upgradeOptionalReadyWithConfirm":
+    "远端服务有小版本更新，不影响当前正常使用；点击即可自动停止当前服务并热更新（模型缓存会保留），也可稍后更新。",
   "status.upgradeOptionalBlockedModel":
     "远端服务有小版本更新，不影响当前正常使用；当前已装载模型，需先卸载模型后再热更新（模型缓存会保留），也可稍后更新。",
   "status.upgradeOptionalBlockedComfy":
@@ -98,6 +100,18 @@ export const zhCNMessages = {
     "请先等待当前远端任务结束后再更新远端服务",
   "status.upgradeBlockedOperation":
     "请先等待当前操作完成后再更新远端服务",
+  "status.upgradeActiveTask": "正在运行中的远端任务（将被取消）",
+  "status.upgradeActiveModel": "已装载模型：{name}（将从显存卸载）",
+  "status.upgradeActiveModelGeneric": "已装载到显存的模型（将被卸载）",
+  "status.upgradeActiveApi": "对外 API 服务与公网隧道（将被关闭）",
+  "status.upgradeActiveComfy": "ComfyUI 工作流引擎与画布隧道（将被停止）",
+  "status.upgradeActiveEngine": "当前运行中的远端推理引擎（将被停止）",
+  "status.upgradeConfirmTitle": "确认热更新远端服务",
+  "status.upgradeConfirmLead":
+    "当前远端实例有正在运行的服务或任务，继续更新将先自动停止或卸载以下项目：",
+  "status.upgradeConfirmPreserveNote":
+    "已下载的模型权重、工作流、作品与配置都会完整保留，无需重新下载；更新完成后需重新装载模型或开启服务。",
+  "status.upgradeConfirmAction": "停止并立即更新",
 
   // Appearance
   "appearance.system": "跟随系统",
@@ -361,6 +375,30 @@ export const zhCNMessages = {
   "device.stopAllCount": "停止全部（{count} 个实例）",
   "device.stopInstance": "停止实例",
   "device.stopRemoteInstance": "停止远端实例",
+  "device.cancelAllocation": "取消分配",
+  "device.cancellingAllocation": "正在取消…",
+  "device.cancelAllocationTooltip":
+    "停止当前分配或启动流程；若已分配实例将自动释放，不会产生残留计费",
+  "device.retryNow": "立即重试",
+  "device.retryingNow": "正在请求…",
+  "device.retryAllocationNowTooltip":
+    "跳过等待倒计时，立即向 Google 重新发起分配请求",
+  "device.retryAllocationRequestingTooltip":
+    "正在向 Google 请求分配，等待本次响应后可手动立即重试",
+  "device.waitingRetryCapacity":
+    "Google 算力紧张，{seconds} 秒后自动重试分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryCapacitySoon":
+    "Google 算力紧张，即将重试分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryServerBusy":
+    "Google 分配服务繁忙，{seconds} 秒后自动重试分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryServerBusySoon":
+    "Google 分配服务繁忙，即将重试分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryNetwork":
+    "分配请求未成功，{seconds} 秒后自动重试分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryNetworkSoon":
+    "分配请求未成功，即将重试分配 {gpu}（第 {next}/{total} 次）",
+  "device.toastAllocationCancelled": "已取消 GPU 分配",
+  "device.toastRetryTriggered": "已跳过等待，立即重试分配",
   "device.idlePaused": "任务运行中 · 自动释放已暂停",
   "device.idleCountdownRemaining": "剩余",
   "device.idleCountdownSuffix": "自动释放",
@@ -558,12 +596,17 @@ export const zhCNMessages = {
   "api.speedWaiting": "等待调用",
   "api.speedEmpty": "暂无调用",
   "api.reqStreamingTag": "流式",
+  "api.reqCompactedTag": "已压缩",
+  "api.reqCompactedTooltip": "输入上下文已从 {before} tokens 自动压缩为 {after} tokens 以适配当前显存窗口",
+  "api.reqCompactedGenericTooltip": "该请求触发了自动上下文压缩以适配当前模型窗口",
   "api.reqEstimatedTooltip": "上游未返回精确 timings，按输出内容与耗时估算",
   "api.reqPrefillTooltip": "提示词预填充速度 {speed}",
   "api.reqSpeedTooltip": "本次请求生成速度",
   "api.reqWaitingFirstToken": "等待首字…",
   "api.reqOutputTokens": "输出 {count} tokens",
   "api.reqInputTokens": "输入 {count} tokens",
+  "api.reqInputCompacted": "输入 {before} → {after} tokens",
+  "api.cancelRequestAria": "取消请求 #{seq}",
   "api.reqTtft": "首字 {duration}",
   "api.reqDuration": "耗时 {duration}",
   "api.reqPrefill": "预填充 {speed}",
@@ -793,6 +836,8 @@ export const zhCNMessages = {
   "models.compatCtx32kHint": "适合长文与代码库",
   "models.compatCtx64kChars": "约 4.8 万字",
   "models.compatCtx64kHint": "需大显存余量",
+  "models.compatCtx128kChars": "约 9.6 万字",
+  "models.compatCtx128kHint": "适合 G4 / H100 等超大显存",
   "models.compatPresetBalanced": "日常均衡",
   "models.compatPresetBalancedSum": "通用问答与日常对话，响应快、显存开销最低",
   "models.compatPresetBalancedVram": "显存开销低",
@@ -842,6 +887,7 @@ export const zhCNMessages = {
   "models.compatEffectCtx16k": "约 1.2 万汉字记忆，适合写代码与分析文档",
   "models.compatEffectCtx32k": "约 2.4 万汉字长文记忆，需预留更多显存",
   "models.compatEffectCtx64k": "约 4.8 万汉字超长记忆，显存占用较高",
+  "models.compatEffectCtx128k": "约 9.6 万汉字超大上下文，显存占用很高（推荐 G4 / H100）",
   "models.compatEffectTempLow": "严谨确定：回复稳定少发散，适合代码、翻译与推理",
   "models.compatEffectTempMid": "自然均衡：逻辑与流畅度兼顾，适合日常交流",
   "models.compatEffectTempHigh": "发散创意：表达更有想象力，适合写作与头脑风暴",
@@ -1079,7 +1125,17 @@ export const zhCNMessages = {
   "settings.title": "设置",
   "settings.subtitle": "管理 Google 账户、界面语言与外观主题、默认算力与空闲释放策略。",
   "settings.saveSettings": "保存设置",
-  "settings.googleCardTitle": "Google 账户与云盘授权",
+  "settings.floatingSaveHint": "可随时点击右侧按钮保存当前页面配置。",
+  "settings.floatingSaveAria": "浮动保存设置栏",
+  "settings.sectionAccount": "账户与凭据",
+  "settings.sectionCompute": "算力与网络",
+  "settings.sectionAppearance": "外观与语言",
+  "settings.sectionDesktop": "本机与关于",
+  "settings.downloadThreadsDesc": "远端下载模型权重时的并行连接数。",
+  "settings.assignProxyConfigureBtn": "配置代理",
+  "settings.assignProxyEditBtn": "编辑",
+  "settings.appearanceLabel": "外观主题",
+  "settings.googleCardTitle": "Google 账户",
   "settings.connected": "已连接",
   "settings.disconnected": "未连接",
   "settings.oauthBrowserHint": "在浏览器选择 Google 账户并授权，完成后会自动返回这里。",
@@ -1129,6 +1185,24 @@ export const zhCNMessages = {
   "settings.idleProtectionDesc":
     "超过 {policy} 无操作或任务时自动释放远端资源；继续操作会重置倒计时，模型下载与装载、对外 API 推理及 ComfyUI 运行期间自动暂停倒计时。",
   "settings.computeSyncNote": "默认 GPU 与空闲释放时长与「远端设备」实时同步，修改后立即生效。",
+  "settings.assignProxyTitle": "GPU 分配代理（仅分配阶段）",
+  "settings.assignProxyTagActive": "已启用 · 仅分配",
+  "settings.assignProxyTagSaved": "已保存 · 未启用",
+  "settings.assignProxyDesc":
+    "仅在向 Google Colab 请求分配 GPU 时经由该代理；后续内核连接、文件上传、模型推理、云盘同步与释放均不走此代理，兼顾隐私与稳定性。支持 HTTP / HTTPS / SOCKS5。",
+  "settings.assignProxySwitchLabel": "仅在请求分配 GPU 时启用代理",
+  "settings.assignProxyPlaceholder": "http://127.0.0.1:7890 或 socks5://user:pass@host:1080",
+  "settings.assignProxySavedPlaceholder": "已保存代理地址，输入新地址可覆盖更新",
+  "settings.assignProxySavedPlaceholderWithUrl": "已保存：{url}（输入新地址可更新）",
+  "settings.assignProxySaveBtn": "保存代理",
+  "settings.assignProxyTestBtn": "测试连通性",
+  "settings.assignProxyClearBtn": "清除代理",
+  "settings.assignProxyNeedUrlFirst": "请先填写代理地址后再启用",
+  "settings.assignProxyEnabledToast": "已开启 GPU 分配代理（仅分配阶段生效）",
+  "settings.assignProxyDisabledToast": "已关闭 GPU 分配代理",
+  "settings.assignProxySavedToast": "已保存并启用 GPU 分配代理（凭据已加密存储）",
+  "settings.assignProxyClearedToast": "已清除 GPU 分配代理",
+  "settings.assignProxyTestOkToast": "分配代理连通性测试通过（{ms} ms，仅加密握手检测）",
   "settings.appearanceCardTitle": "外观主题与界面语言",
   "settings.appearanceDesc": "仅对当前设备生效；选择「跟随系统」时将自动同步系统明暗外观。",
   "settings.appearanceAria": "外观模式",

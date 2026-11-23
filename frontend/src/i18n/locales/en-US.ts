@@ -89,6 +89,8 @@ export const enUSMessages: ColabOneMessages = {
   "status.upgradeAction": "Update Remote Service",
   "status.upgradeOptionalReady":
     "A minor remote service update is available (current features work normally). You can hot-update anytime; cached models and workflows are preserved.",
+  "status.upgradeOptionalReadyWithConfirm":
+    "A minor remote service update is available (current features work normally). Click update to stop active services and hot-update now (cached weights are preserved), or update later.",
   "status.upgradeOptionalBlockedModel":
     "A minor remote service update is available (current features work normally). Unload the active model first to hot-update now (cached weights are preserved), or update later.",
   "status.upgradeOptionalBlockedComfy":
@@ -103,6 +105,18 @@ export const enUSMessages: ColabOneMessages = {
     "Wait for the current remote task to finish before updating the remote service.",
   "status.upgradeBlockedOperation":
     "Wait for the current operation to finish before updating the remote service.",
+  "status.upgradeActiveTask": "Active remote task (will be cancelled)",
+  "status.upgradeActiveModel": "Loaded model: {name} (will be unloaded from VRAM)",
+  "status.upgradeActiveModelGeneric": "Model loaded in VRAM (will be unloaded)",
+  "status.upgradeActiveApi": "Public API gateway & tunnel (will be stopped)",
+  "status.upgradeActiveComfy": "ComfyUI workflow engine & canvas tunnel (will be stopped)",
+  "status.upgradeActiveEngine": "Active remote inference engine (will be stopped)",
+  "status.upgradeConfirmTitle": "Confirm Remote Service Hot-Update",
+  "status.upgradeConfirmLead":
+    "This remote instance has active services or tasks. Continuing will automatically stop or unload the following items first:",
+  "status.upgradeConfirmPreserveNote":
+    "Downloaded model weights, workflows, outputs, and settings are all preserved. Reload your model or re-enable services after the update finishes.",
+  "status.upgradeConfirmAction": "Stop & Update Now",
 
   // Appearance
   "appearance.system": "System",
@@ -378,6 +392,30 @@ export const enUSMessages: ColabOneMessages = {
   "device.stopAllCount": "Stop All ({count})",
   "device.stopInstance": "Stop Instance",
   "device.stopRemoteInstance": "Stop Remote Instance",
+  "device.cancelAllocation": "Cancel",
+  "device.cancellingAllocation": "Cancelling…",
+  "device.cancelAllocationTooltip":
+    "Stop the current allocation or startup; any newly allocated instance is released automatically",
+  "device.retryNow": "Retry Now",
+  "device.retryingNow": "Requesting…",
+  "device.retryAllocationNowTooltip":
+    "Skip the wait countdown and request GPU allocation from Google immediately",
+  "device.retryAllocationRequestingTooltip":
+    "Allocation request is in flight; manual retry becomes available after this response",
+  "device.waitingRetryCapacity":
+    "Google GPU capacity is tight; retrying {gpu} in {seconds}s (attempt {next}/{total})",
+  "device.waitingRetryCapacitySoon":
+    "Google GPU capacity is tight; retrying {gpu} now (attempt {next}/{total})",
+  "device.waitingRetryServerBusy":
+    "Google allocation service is busy; retrying {gpu} in {seconds}s (attempt {next}/{total})",
+  "device.waitingRetryServerBusySoon":
+    "Google allocation service is busy; retrying {gpu} now (attempt {next}/{total})",
+  "device.waitingRetryNetwork":
+    "Allocation attempt did not succeed; retrying {gpu} in {seconds}s (attempt {next}/{total})",
+  "device.waitingRetryNetworkSoon":
+    "Allocation attempt did not succeed; retrying {gpu} now (attempt {next}/{total})",
+  "device.toastAllocationCancelled": "GPU allocation cancelled",
+  "device.toastRetryTriggered": "Skipped wait; retrying allocation now",
   "device.idlePaused": "Busy · Auto-Release Paused",
   "device.idleCountdownRemaining": "Auto-release in",
   "device.idleCountdownSuffix": "",
@@ -581,6 +619,9 @@ export const enUSMessages: ColabOneMessages = {
   "api.speedWaiting": "Waiting",
   "api.speedEmpty": "No requests",
   "api.reqStreamingTag": "Stream",
+  "api.reqCompactedTag": "Compacted",
+  "api.reqCompactedTooltip": "Input context auto-compacted from {before} to {after} tokens to fit the active context window",
+  "api.reqCompactedGenericTooltip": "Automatic context compaction ran to fit the active model window",
   "api.reqEstimatedTooltip":
     "Upstream did not report exact timings; estimated from output tokens and duration",
   "api.reqPrefillTooltip": "Prompt prefill speed: {speed}",
@@ -588,6 +629,8 @@ export const enUSMessages: ColabOneMessages = {
   "api.reqWaitingFirstToken": "Waiting for first token…",
   "api.reqOutputTokens": "Out {count} tok",
   "api.reqInputTokens": "In {count} tok",
+  "api.reqInputCompacted": "In {before} → {after} tok",
+  "api.cancelRequestAria": "Cancel request #{seq}",
   "api.reqTtft": "TTFT {duration}",
   "api.reqDuration": "Time {duration}",
   "api.reqPrefill": "Prefill {speed}",
@@ -823,6 +866,8 @@ export const enUSMessages: ColabOneMessages = {
   "models.compatCtx32kHint": "Long docs & repos",
   "models.compatCtx64kChars": "~48K words",
   "models.compatCtx64kHint": "Needs high VRAM headroom",
+  "models.compatCtx128kChars": "~96K words",
+  "models.compatCtx128kHint": "Best for G4 / H100 high VRAM",
   "models.compatPresetBalanced": "Balanced",
   "models.compatPresetBalancedSum": "Fast general chat with minimal VRAM overhead",
   "models.compatPresetBalancedVram": "Low VRAM",
@@ -872,6 +917,7 @@ export const enUSMessages: ColabOneMessages = {
   "models.compatEffectCtx16k": "medium context (~12K words), great for code & docs",
   "models.compatEffectCtx32k": "long context (~24K words), requires extra VRAM",
   "models.compatEffectCtx64k": "extended context (~48K words), high VRAM usage",
+  "models.compatEffectCtx128k": "ultra-long context (~96K words), very high VRAM usage (G4 / H100 recommended)",
   "models.compatEffectTempLow": "precise & deterministic — ideal for coding, translation & logic",
   "models.compatEffectTempMid": "natural & balanced — strong coherence for everyday chat",
   "models.compatEffectTempHigh": "creative & expressive — great for writing & brainstorming",
@@ -1126,7 +1172,17 @@ export const enUSMessages: ColabOneMessages = {
   "settings.title": "Settings",
   "settings.subtitle": "Manage Google account, language & appearance, default GPU, and idle policy.",
   "settings.saveSettings": "Save Settings",
-  "settings.googleCardTitle": "Google Account & Drive Authorization",
+  "settings.floatingSaveHint": "Save your current compute, sync, and credential settings anytime.",
+  "settings.floatingSaveAria": "Floating save settings bar",
+  "settings.sectionAccount": "Accounts & Credentials",
+  "settings.sectionCompute": "Compute & Network",
+  "settings.sectionAppearance": "Appearance & Language",
+  "settings.sectionDesktop": "Desktop & About",
+  "settings.downloadThreadsDesc": "Parallel connections used when downloading model weights remotely.",
+  "settings.assignProxyConfigureBtn": "Configure",
+  "settings.assignProxyEditBtn": "Edit",
+  "settings.appearanceLabel": "Appearance",
+  "settings.googleCardTitle": "Google Account",
   "settings.connected": "Connected",
   "settings.disconnected": "Not Connected",
   "settings.oauthBrowserHint":
@@ -1183,6 +1239,24 @@ export const enUSMessages: ColabOneMessages = {
     "Automatically releases remote resources after {policy} of inactivity. Any interaction resets the timer; downloads, loading, API inference, and ComfyUI tasks pause it automatically.",
   "settings.computeSyncNote":
     "Default GPU and idle timeout sync live with the Devices page and take effect immediately.",
+  "settings.assignProxyTitle": "GPU Allocation Proxy (Assign Only)",
+  "settings.assignProxyTagActive": "Active · Assign Only",
+  "settings.assignProxyTagSaved": "Saved · Off",
+  "settings.assignProxyDesc":
+    "Used exclusively when requesting GPU allocation from Google Colab. All subsequent kernel connections, file uploads, inference, Drive sync, and release traffic bypass this proxy for privacy and reliability. Supports HTTP, HTTPS, and SOCKS5.",
+  "settings.assignProxySwitchLabel": "Use proxy only when requesting GPU allocation",
+  "settings.assignProxyPlaceholder": "http://127.0.0.1:7890 or socks5://user:pass@host:1080",
+  "settings.assignProxySavedPlaceholder": "Saved — enter a new proxy URL to overwrite",
+  "settings.assignProxySavedPlaceholderWithUrl": "Saved: {url} (enter a new URL to update)",
+  "settings.assignProxySaveBtn": "Save Proxy",
+  "settings.assignProxyTestBtn": "Test Connection",
+  "settings.assignProxyClearBtn": "Clear Proxy",
+  "settings.assignProxyNeedUrlFirst": "Enter a proxy URL before enabling",
+  "settings.assignProxyEnabledToast": "GPU allocation proxy enabled (allocation requests only)",
+  "settings.assignProxyDisabledToast": "GPU allocation proxy disabled",
+  "settings.assignProxySavedToast": "GPU allocation proxy saved and enabled (stored in OS keychain)",
+  "settings.assignProxyClearedToast": "GPU allocation proxy cleared",
+  "settings.assignProxyTestOkToast": "Allocation proxy reachable ({ms} ms · unauthenticated TLS check)",
   "settings.appearanceCardTitle": "Appearance & Language",
   "settings.appearanceDesc":
     "Applies on this device; choosing System automatically follows your OS light/dark theme.",

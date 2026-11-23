@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import secrets
 import time
@@ -44,9 +45,124 @@ COMPACTION_SYSTEM_PROMPT = (
 
 
 def estimate_tokens(text: str) -> int:
+    """Conservative CJK/code-aware token estimate (avoids 3-4x undercount on Chinese)."""
     if not text:
         return 0
-    return max(1, (len(text) + 3) // 4)
+    if text.isascii():
+        return max(1, (len(text) * 29 + 99) // 100)
+    n_chars = len(text)
+    extra_bytes = len(text.encode("utf-8")) - n_chars
+    return max(1, int(n_chars * 0.29 + extra_bytes * 0.46 + 0.99))
+
+
+def clip_text_to_token_budget(
+    text: str,
+    max_tokens: int,
+    *,
+    marker_template: str = "\n[... omitted {omitted} chars ...]\n",
+) -> str:
+    """Truncate text keeping head (2/3) + tail (1/3) so estimate_tokens(result) <= max_tokens."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    budget = max(16, int(max_tokens))
+    est = estimate_tokens(cleaned)
+    if est <= budget:
+        return cleaned
+
+    def clip_prefix(limit_toks: int) -> str:
+        # Guaranteed fallback: binary-search the longest prefix whose prefix + "..." fits limit_toks.
+        suffix = "..."
+        if estimate_tokens(suffix) >= limit_toks:
+            return suffix
+        lo, hi = 1, len(cleaned) - 1
+        best = suffix
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            cand = cleaned[:mid] + suffix
+            if estimate_tokens(cand) <= limit_toks:
+                best = cand
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
+
+    marker_est = estimate_tokens(marker_template.format(omitted=len(cleaned)))
+    content_budget = budget - marker_est
+    if content_budget < 8:
+        return clip_prefix(budget)
+
+    chars_per_tok = len(cleaned) / max(1, est)
+    char_limit = max(4, int(content_budget * chars_per_tok))
+    best_candidate: str | None = None
+    for _ in range(8):
+        if char_limit >= len(cleaned) - 1:
+            break
+        head = max(2, (char_limit * 2) // 3)
+        tail = max(1, char_limit - head)
+        if head + tail >= len(cleaned):
+            char_limit = max(4, len(cleaned) - 2)
+            head = max(2, (char_limit * 2) // 3)
+            tail = max(1, char_limit - head)
+            if head + tail >= len(cleaned):
+                break
+        omitted = len(cleaned) - head - tail
+        candidate = (
+            f"{cleaned[:head]}"
+            f"{marker_template.format(omitted=omitted)}"
+            f"{cleaned[-tail:]}"
+        )
+        cand_toks = estimate_tokens(candidate)
+        if cand_toks <= budget and cand_toks < est:
+            return candidate
+        if best_candidate is None or cand_toks < estimate_tokens(best_candidate):
+            best_candidate = candidate
+        if char_limit <= 4:
+            break
+        char_limit = max(4, int(char_limit * 0.72))
+
+    if best_candidate is not None and estimate_tokens(best_candidate) <= budget:
+        return best_candidate
+    return clip_prefix(budget)
+
+
+def estimate_messages_tokens(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> int:
+    """Estimate total prompt tokens for Chat Completions messages plus optional tool schemas."""
+    total = 12
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        total += 8
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            total += estimate_tokens(content)
+        name = msg.get("name")
+        if isinstance(name, str) and name:
+            total += estimate_tokens(name) + 2
+        tool_call_id = msg.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            total += estimate_tokens(tool_call_id) + 2
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                total += 12
+                fn = tc.get("function") or {}
+                if isinstance(fn, dict):
+                    if isinstance(fn.get("name"), str):
+                        total += estimate_tokens(fn["name"])
+                    args = fn.get("arguments")
+                    if isinstance(args, str) and args:
+                        total += estimate_tokens(args)
+    if tools:
+        total += 32 + estimate_tokens(
+            json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+        )
+    return total
 
 
 def encode_compaction_content(summary: str) -> str:
@@ -898,32 +1014,482 @@ def extract_anchor_user_item(items: list[dict[str, Any]], max_chars: int = 1200)
     return None
 
 
-def chunk_transcript_blocks(blocks: list[str], char_budget: int) -> list[str]:
-    """Pack rendered transcript blocks into chunks bounded by char_budget."""
+def chunk_transcript_blocks_by_tokens(
+    blocks: list[str],
+    token_budget: int,
+    *,
+    max_chunks: int = 6,
+) -> list[str]:
+    """Pack rendered transcript blocks into chunks bounded by CJK-aware token_budget."""
     if not blocks:
         return []
+    budget = max(128, int(token_budget))
     chunks: list[str] = []
     current: list[str] = []
-    current_len = 0
+    current_toks = 0
     for block in blocks:
-        if len(block) > char_budget:
-            head = char_budget * 2 // 3
-            tail = max(200, char_budget - head - 40)
-            block = f"{block[:head]}\n[... truncated ...]\n{block[-tail:]}"
-        sep = 2 if current else 0
-        if current and current_len + sep + len(block) > char_budget:
+        block_toks = estimate_tokens(block)
+        if block_toks > budget:
+            block = clip_text_to_token_budget(
+                block,
+                budget,
+                marker_template="\n[... truncated {omitted} chars ...]\n",
+            )
+            block_toks = estimate_tokens(block)
+        sep_toks = 2 if current else 0
+        if current and current_toks + sep_toks + block_toks > budget:
             chunks.append("\n\n".join(current))
             current = [block]
-            current_len = len(block)
+            current_toks = block_toks
         else:
             current.append(block)
-            current_len += sep + len(block)
+            current_toks += sep_toks + block_toks
     if current:
         chunks.append("\n\n".join(current))
-    if len(chunks) > 6:
-        # Keep earliest context + most recent 5 chunks so compaction finishes fast.
-        chunks = [chunks[0]] + chunks[-5:]
+    if len(chunks) > max_chunks:
+        # Keep earliest context + most recent (max_chunks - 1) chunks so compaction finishes fast.
+        chunks = [chunks[0]] + chunks[-(max_chunks - 1) :]
     return chunks
+
+
+def chunk_transcript_blocks(blocks: list[str], char_budget: int) -> list[str]:
+    """Pack rendered transcript blocks into chunks bounded by char_budget (compat wrapper)."""
+    approx_tok_budget = max(128, int(char_budget * 0.30))
+    return chunk_transcript_blocks_by_tokens(blocks, approx_tok_budget)
+
+
+def render_chat_messages_for_compaction(
+    messages: list[dict[str, Any]],
+    max_item_chars: int = 6000,
+) -> list[str]:
+    """Render Chat Completions messages into transcript blocks for rolling summarization."""
+    blocks: list[str] = []
+
+    def clip(text: str, limit: int = max_item_chars) -> str:
+        text = text.strip()
+        if len(text) <= limit:
+            return text
+        head = limit * 2 // 3
+        tail = limit - head
+        omitted = len(text) - head - tail
+        return f"{text[:head]}\n[... omitted {omitted} chars ...]\n{text[-tail:]}"
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user").upper()
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            if role == "TOOL":
+                blocks.append(f"[TOOL_OUTPUT]\n{clip(content, 4000)}")
+            else:
+                blocks.append(f"[{role}]\n{clip(content)}")
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                if not isinstance(fn, dict):
+                    continue
+                name = str(fn.get("name") or "tool")
+                args = fn.get("arguments", "")
+                if not isinstance(args, str):
+                    args = json.dumps(args, ensure_ascii=False)
+                blocks.append(f"[TOOL_CALL: {name}]\n{clip(args, 3000)}")
+    return blocks
+
+
+def group_chat_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[list[dict[str, Any]]]]:
+    """Split leading system prompt and group remaining messages into atomic Jinja-safe turns.
+
+    An assistant message containing ``tool_calls`` is kept together with all immediately
+    following ``role == "tool"`` responses so splitting or pruning never breaks tool pairing.
+    """
+    if not messages:
+        return None, []
+    idx = 0
+    leading_system: dict[str, Any] | None = None
+    if messages[0].get("role") == "system":
+        leading_system = dict(messages[0])
+        idx = 1
+    groups: list[list[dict[str, Any]]] = []
+    n = len(messages)
+    while idx < n:
+        msg = messages[idx]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            group = [msg]
+            idx += 1
+            while idx < n and messages[idx].get("role") == "tool":
+                group.append(messages[idx])
+                idx += 1
+            groups.append(group)
+        else:
+            groups.append([msg])
+            idx += 1
+    return leading_system, groups
+
+
+def hash_message_group(group: list[dict[str, Any]]) -> str:
+    """Stable short content digest for one atomic message group."""
+    raw = json.dumps(group, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _prune_tool_call_arguments(args: str, max_tokens: int) -> str:
+    budget = max(16, int(max_tokens))
+    if not args or estimate_tokens(args) <= budget:
+        return args
+    # Preserve valid JSON when the original arguments were a JSON object so strict Jinja templates never fail.
+    is_json_dict = False
+    try:
+        parsed = json.loads(args)
+        is_json_dict = isinstance(parsed, dict)
+    except Exception:
+        is_json_dict = False
+
+    if is_json_dict:
+        minimal = json.dumps(
+            {"_pruned": True, "_omitted_chars": len(args)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if budget <= 36:
+            return minimal
+        preview_budget = max(16, budget - 28)
+        for _ in range(3):
+            clipped_preview = clip_text_to_token_budget(
+                args,
+                preview_budget,
+                marker_template=" ... ({omitted} chars pruned) ... ",
+            )
+            wrapped = json.dumps(
+                {
+                    "_pruned": True,
+                    "_omitted_chars": max(0, len(args) - len(clipped_preview)),
+                    "_preview": clipped_preview,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if estimate_tokens(wrapped) <= budget:
+                return wrapped
+            if preview_budget <= 16:
+                return minimal
+            preview_budget = max(16, int(preview_budget * 0.6))
+        return minimal
+
+    return clip_text_to_token_budget(
+        args,
+        budget,
+        marker_template=" ... ({omitted} chars pruned) ... ",
+    )
+
+
+def prune_older_tool_outputs(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    target_tokens: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Stage 1 fast compaction: collapse bulky older tool outputs/arguments while keeping recent turns intact."""
+    leading_system, groups = group_chat_messages(messages)
+    if len(groups) < 2:
+        return messages, False
+
+    def rebuild(sys_msg: dict[str, Any] | None, gs: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        if sys_msg is not None:
+            out.append(sys_msg)
+        for g in gs:
+            out.extend(g)
+        return out
+
+    keep_recent = min(4, max(1, len(groups) // 4))
+    if len(groups) - keep_recent < 1:
+        keep_recent = len(groups) - 1
+    cutoff = len(groups) - keep_recent
+
+    changed = False
+    current_groups = [list(g) for g in groups]
+
+    for tool_tok_cap, arg_tok_cap in ((160, 140), (64, 64)):
+        next_groups: list[list[dict[str, Any]]] = []
+        for g_idx, group in enumerate(current_groups):
+            if g_idx >= cutoff:
+                next_groups.append(group)
+                continue
+            pruned_group: list[dict[str, Any]] = []
+            for msg in group:
+                role = msg.get("role")
+                if role == "tool" and isinstance(msg.get("content"), str):
+                    content = msg["content"]
+                    if estimate_tokens(content) > tool_tok_cap:
+                        pruned_text = clip_text_to_token_budget(
+                            content,
+                            tool_tok_cap,
+                            marker_template="\n[... pruned {omitted} chars of earlier tool output ...]\n",
+                        )
+                        pruned_group.append({**msg, "content": pruned_text})
+                        changed = True
+                    else:
+                        pruned_group.append(msg)
+                elif role == "assistant" and isinstance(msg.get("tool_calls"), list):
+                    new_calls = []
+                    call_changed = False
+                    for tc in msg["tool_calls"]:
+                        if not isinstance(tc, dict):
+                            new_calls.append(tc)
+                            continue
+                        fn = tc.get("function")
+                        if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                            pruned_args = _prune_tool_call_arguments(
+                                fn["arguments"], arg_tok_cap
+                            )
+                            if pruned_args != fn["arguments"]:
+                                call_changed = True
+                                new_calls.append(
+                                    {**tc, "function": {**fn, "arguments": pruned_args}}
+                                )
+                                continue
+                        new_calls.append(tc)
+                    if call_changed:
+                        changed = True
+                        pruned_group.append({**msg, "tool_calls": new_calls})
+                    else:
+                        pruned_group.append(msg)
+                else:
+                    pruned_group.append(msg)
+            next_groups.append(pruned_group)
+        current_groups = next_groups
+        candidate = rebuild(leading_system, current_groups)
+        if estimate_messages_tokens(candidate, tools) <= target_tokens:
+            return candidate, changed
+
+    return rebuild(leading_system, current_groups), changed
+
+
+def split_groups_for_summary(
+    leading_system: dict[str, Any] | None,
+    groups: list[list[dict[str, Any]]],
+    tools: list[dict[str, Any]] | None,
+    target_tokens: int,
+) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
+    """Split non-system turn groups into (older_to_summarize, recent_to_keep_verbatim)."""
+    if len(groups) <= 1:
+        return [], list(groups)
+
+    tools_and_sys = estimate_messages_tokens(
+        [leading_system] if leading_system else [], tools
+    )
+    # Leave room for the generated summary (~1000-1500 tokens) + framing.
+    recent_budget = max(256, int(max(512, target_tokens - tools_and_sys) * 0.45))
+
+    kept: list[list[dict[str, Any]]] = []
+    kept_tokens = 0
+    for group in reversed(groups):
+        g_toks = estimate_messages_tokens(group, None)
+        if not kept:
+            # Keep the most recent turn verbatim unless it alone dominates the window and there are older turns.
+            kept.append(group)
+            kept_tokens = g_toks
+            continue
+        if len(kept) < len(groups) - 1 and kept_tokens + g_toks <= recent_budget:
+            kept.append(group)
+            kept_tokens += g_toks
+        else:
+            break
+    kept.reverse()
+    split_at = len(groups) - len(kept)
+    return groups[:split_at], kept
+
+
+def assemble_compacted_chat_messages(
+    leading_system: dict[str, Any] | None,
+    summary_text: str,
+    recent_groups: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Combine system prompt + rolling summary + recent turn groups with Jinja-safe role order."""
+    summary_block = f"[Compacted earlier conversation summary]\n{summary_text.strip()}"
+    msgs: list[dict[str, Any]] = []
+    if leading_system and (leading_system.get("content") or "").strip():
+        msgs.append(
+            {
+                "role": "system",
+                "content": f"{leading_system['content'].strip()}\n\n{summary_block}",
+            }
+        )
+    else:
+        msgs.append({"role": "system", "content": summary_block})
+
+    tail_msgs: list[dict[str, Any]] = []
+    for group in recent_groups:
+        tail_msgs.extend(group)
+
+    if not tail_msgs:
+        tail_msgs.append(
+            {
+                "role": "user",
+                "content": "Continue with the task based on the compacted summary above.",
+            }
+        )
+    elif tail_msgs[0].get("role") != "user":
+        # Strict templates (Gemma/Mistral/Qwen) require a user turn after system before assistant/tool turns.
+        tail_msgs.insert(
+            0,
+            {
+                "role": "user",
+                "content": "Continue the conversation from the compacted summary above.",
+            },
+        )
+    msgs.extend(tail_msgs)
+    return _normalize_role_sequence(msgs)
+
+
+def truncate_messages_to_budget(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    target_tokens: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Stage 3 safety clamp: guarantee remaining messages fit inside target_tokens."""
+    if estimate_messages_tokens(messages, tools) <= target_tokens:
+        return messages, False
+
+    leading_system, groups = group_chat_messages(messages)
+    changed = False
+
+    def rebuild(sys_msg: dict[str, Any] | None, gs: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        if sys_msg is not None:
+            out.append(sys_msg)
+        for g in gs:
+            out.extend(g)
+        return _normalize_role_sequence(out)
+
+    # 3a. Drop earliest remaining groups while keeping at least the newest group.
+    while len(groups) > 1:
+        candidate = rebuild(leading_system, groups)
+        if estimate_messages_tokens(candidate, tools) <= target_tokens:
+            return candidate, changed
+        groups = groups[1:]
+        changed = True
+        if groups and groups[0] and groups[0][0].get("role") != "user":
+            groups[0] = [
+                {
+                    "role": "user",
+                    "content": "Continue based on the context above.",
+                },
+                *groups[0],
+            ]
+
+    # 3b. Fit remaining messages (and clip system prompt if it alone exceeds 40% of available budget).
+    tools_toks = estimate_messages_tokens([], tools)
+    avail_for_msgs = max(128, target_tokens - tools_toks)
+    if leading_system and isinstance(leading_system.get("content"), str):
+        sys_cap = max(128, int(avail_for_msgs * 0.40))
+        if estimate_tokens(leading_system["content"]) > sys_cap:
+            leading_system = {
+                **leading_system,
+                "content": clip_text_to_token_budget(
+                    leading_system["content"],
+                    sys_cap,
+                    marker_template="\n[... truncated {omitted} chars to fit context window ...]\n",
+                ),
+            }
+            changed = True
+
+    sys_toks = estimate_messages_tokens([leading_system] if leading_system else [], None)
+    body_budget = max(96, avail_for_msgs - sys_toks)
+
+    flat_tail = [msg for g in groups for msg in g]
+    if flat_tail:
+        per_msg_budget = max(48, (body_budget - len(flat_tail) * 16) // len(flat_tail))
+        clipped_tail: list[dict[str, Any]] = []
+        for msg in flat_tail:
+            new_msg = dict(msg)
+            if isinstance(new_msg.get("content"), str) and estimate_tokens(new_msg["content"]) > per_msg_budget:
+                new_msg["content"] = clip_text_to_token_budget(
+                    new_msg["content"],
+                    per_msg_budget,
+                    marker_template="\n[... truncated {omitted} chars to fit context window ...]\n",
+                )
+                changed = True
+            if isinstance(new_msg.get("tool_calls"), list):
+                call_cap = max(32, per_msg_budget // max(1, len(new_msg["tool_calls"])))
+                new_calls = []
+                for tc in new_msg["tool_calls"]:
+                    if isinstance(tc, dict) and isinstance((tc.get("function") or {}).get("arguments"), str):
+                        fn = tc["function"]
+                        pruned_args = _prune_tool_call_arguments(fn["arguments"], call_cap)
+                        if pruned_args != fn["arguments"]:
+                            changed = True
+                            new_calls.append({**tc, "function": {**fn, "arguments": pruned_args}})
+                            continue
+                    new_calls.append(tc)
+                new_msg["tool_calls"] = new_calls
+            clipped_tail.append(new_msg)
+        groups = [clipped_tail]
+
+    final_msgs = rebuild(leading_system, groups)
+    # 3c. Final tight pass on the largest message content or tool_call arguments if framing still pushed over.
+    max_passes = min(32, max(8, len(final_msgs) * 2))
+    for _ in range(max_passes):
+        cur_toks = estimate_messages_tokens(final_msgs, tools)
+        if cur_toks <= target_tokens:
+            break
+        excess = cur_toks - target_tokens + 48
+        best_kind = ""
+        best_msg_idx = -1
+        best_call_idx = -1
+        best_toks = 0
+        for i, m in enumerate(final_msgs):
+            c = m.get("content")
+            if isinstance(c, str):
+                t = estimate_tokens(c)
+                if t > best_toks:
+                    best_toks = t
+                    best_msg_idx = i
+                    best_call_idx = -1
+                    best_kind = "content"
+            tcs = m.get("tool_calls")
+            if isinstance(tcs, list):
+                for j, tc in enumerate(tcs):
+                    if isinstance(tc, dict) and isinstance((tc.get("function") or {}).get("arguments"), str):
+                        t = estimate_tokens(tc["function"]["arguments"])
+                        if t > best_toks:
+                            best_toks = t
+                            best_msg_idx = i
+                            best_call_idx = j
+                            best_kind = "tool_call"
+        if best_msg_idx < 0 or best_toks <= 36:
+            break
+        new_cap = max(24, best_toks - excess)
+        if best_kind == "content":
+            clipped = clip_text_to_token_budget(
+                final_msgs[best_msg_idx]["content"],
+                new_cap,
+                marker_template="\n[... truncated {omitted} chars to fit context window ...]\n",
+            )
+            if clipped == final_msgs[best_msg_idx]["content"]:
+                break
+            final_msgs[best_msg_idx] = {
+                **final_msgs[best_msg_idx],
+                "content": clipped,
+            }
+            changed = True
+        else:
+            msg = final_msgs[best_msg_idx]
+            calls = list(msg["tool_calls"])
+            tc = calls[best_call_idx]
+            fn = tc["function"]
+            pruned_args = _prune_tool_call_arguments(fn["arguments"], new_cap)
+            if pruned_args == fn["arguments"]:
+                break
+            calls[best_call_idx] = {**tc, "function": {**fn, "arguments": pruned_args}}
+            final_msgs[best_msg_idx] = {**msg, "tool_calls": calls}
+            changed = True
+    return final_msgs, changed
 
 
 def build_compaction_response(
@@ -1052,6 +1618,7 @@ def chat_completion_to_response(
     prefix_output: list[dict[str, Any]] | None = None,
     extra_usage: dict[str, Any] | None = None,
     fallback_input_tokens: int = 0,
+    min_input_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Convert a non-streaming Chat Completions JSON response into an OpenAI Responses API object."""
     rid = response_id or f"resp_{secrets.token_hex(12)}"
@@ -1156,6 +1723,9 @@ def chat_completion_to_response(
         fallback_output_tokens=est_out,
         fallback_reasoning_tokens=estimate_tokens(reasoning) if isinstance(reasoning, str) else 0,
     )
+    if isinstance(min_input_tokens, int) and min_input_tokens > usage["input_tokens"]:
+        usage["input_tokens"] = min_input_tokens
+        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
 
     is_incomplete = finish_reason == "length"
     return make_response_envelope(
@@ -1186,6 +1756,7 @@ class ColabOneResponsesStreamTranslator:
         fallback_input_tokens: int = 0,
         prefix_output: list[dict[str, Any]] | None = None,
         extra_usage: dict[str, Any] | None = None,
+        min_input_tokens: int | None = None,
     ):
         self.spec = spec
         self.response_id = f"resp_{secrets.token_hex(12)}"
@@ -1195,6 +1766,7 @@ class ColabOneResponsesStreamTranslator:
         self.custom_names: set[str] = spec.get("custom_tool_names") or set()
         self.fallback_input_tokens = fallback_input_tokens
         self.extra_usage = extra_usage
+        self.min_input_tokens = min_input_tokens
         self.prefix_output = list(prefix_output or [])
 
         self.reasoning_id: str | None = None
@@ -1678,6 +2250,12 @@ class ColabOneResponsesStreamTranslator:
             fallback_output_tokens=est_out,
             fallback_reasoning_tokens=estimate_tokens(self.reasoning_text),
         )
+        if (
+            isinstance(self.min_input_tokens, int)
+            and self.min_input_tokens > usage["input_tokens"]
+        ):
+            usage["input_tokens"] = self.min_input_tokens
+            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
         is_incomplete = self.finish_reason == "length"
         final = make_response_envelope(
             self.spec,
@@ -1697,7 +2275,7 @@ class ColabOneResponsesStreamTranslator:
         )
         return events
 
-    def fail(self, message: str) -> bytes:
+    def fail(self, message: str, *, code: str = "server_error") -> bytes:
         failed = make_response_envelope(
             self.spec,
             response_id=self.response_id,
@@ -1705,7 +2283,7 @@ class ColabOneResponsesStreamTranslator:
             status="failed",
             output=list(self.output),
             usage=None,
-            error={"code": "server_error", "message": message},
+            error={"code": code or "server_error", "message": message},
         )
         self.final_response = failed
         return self._emit("response.failed", {"response": failed})

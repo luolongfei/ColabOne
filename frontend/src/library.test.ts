@@ -78,12 +78,19 @@ describe("ColabOneSnapshot & ModelSpec defaults and library gating", () => {
       drive_authorized: false,
       hf: false,
     });
+    expect(first.assign_proxy_settings).toEqual({
+      enabled: false,
+      has_proxy: false,
+      masked_url: "",
+      has_auth: false,
+    });
     expect(first.settings).toEqual({
       gpu: "T4",
       idle_minutes: 30,
       idle_countdown_seconds: 60,
       auto_drive: true,
       download_threads: 16,
+      assign_proxy_enabled: false,
     });
 
     // Mutating one snapshot instance must not bleed into subsequent calls

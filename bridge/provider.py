@@ -13,7 +13,7 @@ import uuid
 import threading
 import zipfile
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import jupyter_kernel_client
 import requests
@@ -34,6 +34,11 @@ from colab_cli.state import SessionState
 from colab_cli.contents import ContentsClient
 from colab_cli.runtime import ColabRuntime
 from bridge.activity import safe_message
+from bridge.assign_proxy import (
+    ColabOneAssignOnlySession,
+    colabone_format_proxy_error,
+    colabone_parse_assign_proxy,
+)
 from bridge.drive_mount import ColabOneDriveMount
 from common.files import (
     COLABONE_SERVICE_BUNDLE_FOLDERS,
@@ -70,13 +75,25 @@ def _alternative_gpu_hint(gpu_label: str) -> str:
 
 
 def _format_assign_error(
-    gpu_label: str, exc: Exception, retry_count: int = 0
+    gpu_label: str,
+    exc: Exception,
+    retry_count: int = 0,
+    using_assign_proxy: bool = False,
 ) -> str:
     if isinstance(exc, TooManyAssignmentsError):
         return (
             f"Google Colab 拒绝分配 {gpu_label} GPU（HTTP 412）："
             "当前账号活跃实例已达上限或受配额限制，请先释放已有实例或切换其他 GPU 型号"
         )
+    if using_assign_proxy and isinstance(
+        exc,
+        (
+            requests.exceptions.ProxyError,
+            requests.exceptions.SSLError,
+            requests.exceptions.ConnectTimeout,
+        ),
+    ):
+        return colabone_format_proxy_error(exc)
     if isinstance(exc, (requests.exceptions.Timeout, TimeoutError)):
         if retry_count > 0:
             return (
@@ -418,6 +435,44 @@ def _emit_log(on_log, message: str, source: str = "GPU", level: str = "info") ->
         on_log(message)
 
 
+def _wait_for_retry(
+    delay: float,
+    cancel_event: threading.Event | None = None,
+    retry_event: threading.Event | None = None,
+) -> str:
+    """Wait up to `delay` seconds, waking early on cancel or manual retry.
+
+    Returns "cancel", "retry", or "timeout". Preserves single-call wait/sleep
+    semantics when `retry_event` is not provided.
+    """
+    if delay <= 0:
+        if cancel_event is not None and cancel_event.is_set():
+            return "cancel"
+        if retry_event is not None and retry_event.is_set():
+            return "retry"
+        return "timeout"
+    if retry_event is None:
+        if cancel_event is not None:
+            return "cancel" if cancel_event.wait(delay) else "timeout"
+        time.sleep(delay)
+        return "timeout"
+    if cancel_event is None:
+        return "retry" if retry_event.wait(delay) else "timeout"
+    if cancel_event.is_set():
+        return "cancel"
+    if retry_event.is_set():
+        return "retry"
+    deadline = time.monotonic() + delay
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "timeout"
+        if cancel_event.wait(min(0.05, remaining)):
+            return "cancel"
+        if retry_event.is_set():
+            return "retry"
+
+
 def _format_location_short(loc: dict | None) -> str:
     if not isinstance(loc, dict):
         return ""
@@ -750,6 +805,7 @@ class ColabOneProvider:
         self.client_factory = lambda: Client(
             Prod(), AuthorizedSession(auth.credentials("colab"))
         )
+        self.assign_client_factory = None
 
     @property
     def kernel_runtime(self):
@@ -909,6 +965,35 @@ class ColabOneProvider:
 
     def client(self):
         return self.client_factory()
+
+    def _make_assign_client(self, assign_proxy: str = ""):
+        """Build an isolated client strictly for `/tun/m/assign` when a proxy is set.
+
+        Returns ``(client, session_to_close, proxy_spec)``. When no proxy is
+        configured, falls back to ``self.client()`` without closing it.
+        """
+        raw = str(assign_proxy or "").strip()
+        if not raw:
+            return self.client(), None, None
+        spec = colabone_parse_assign_proxy(raw)
+        if spec is None:
+            return self.client(), None, None
+        if callable(self.assign_client_factory):
+            client = self.assign_client_factory(spec.normalized_url)
+            return client, getattr(client, "session", None), spec
+        # Ensure OAuth credentials are valid/refreshed on the regular non-proxy
+        # path before opening the allocation-only proxied session.
+        creds = self.auth.credentials("colab")
+        prod = Prod()
+        prod_parts = urlsplit(prod.domain)
+        allowed_origin = (
+            (prod_parts.scheme or "https").lower(),
+            (prod_parts.hostname or "colab.research.google.com").lower().rstrip("."),
+        )
+        session = ColabOneAssignOnlySession(
+            creds, spec.normalized_url, allowed_origin=allowed_origin
+        )
+        return Client(prod, session), session, spec
 
     def _cache_assignment_proxies(self, assignments) -> None:
         fresh: dict[str, dict] = {}
@@ -1390,11 +1475,16 @@ class ColabOneProvider:
         on_stage=None,
         retries_counter: list[int] | None = None,
         cancel_event: threading.Event | None = None,
+        retry_event: threading.Event | None = None,
+        on_retry_state=None,
+        using_assign_proxy: bool = False,
     ):
         has_two_phase = callable(
             getattr(type(client), "_get_assignment", None)
         ) and callable(getattr(type(client), "_post_assignment", None))
         if not has_two_phase:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("已取消 GPU 分配")
             return client.assign(
                 uuid.uuid4(), variant=Variant.GPU, accelerator=accel, shape=shape
             )
@@ -1409,6 +1499,22 @@ class ColabOneProvider:
         for attempt in range(total_attempts):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("已取消 GPU 分配")
+            if retry_event is not None:
+                retry_event.clear()
+            if callable(on_retry_state):
+                on_retry_state(
+                    {
+                        "waiting_retry": False,
+                        "retryable": False,
+                        "retry_at": 0.0,
+                        "attempt": attempt + 1,
+                        "next_attempt": attempt + 1,
+                        "total_attempts": total_attempts,
+                        "retry_kind": last_retry_kind,
+                        "has_retried": attempt > 0,
+                        "gpu": accel.value,
+                    }
+                )
             if attempt > 0 and callable(on_stage):
                 if last_retry_kind == "capacity":
                     on_stage(
@@ -1448,9 +1554,22 @@ class ColabOneProvider:
                 )
                 if status == 412:
                     raise TooManyAssignmentsError(str(e)) from e
+                if using_assign_proxy and isinstance(
+                    e,
+                    (
+                        requests.exceptions.ProxyError,
+                        requests.exceptions.SSLError,
+                        requests.exceptions.ConnectTimeout,
+                    ),
+                ):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("已取消 GPU 分配") from None
+                    raise
                 is_net_err = isinstance(e, (requests.RequestException, TransportError))
                 retryable = is_net_err or status in (502, 503, 504)
                 if not retryable:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("已取消 GPU 分配") from None
                     raise
                 if attempt >= len(delays):
                     # Final reconciliation: if the last POST hit Google's 30s
@@ -1463,6 +1582,8 @@ class ColabOneProvider:
                                     raise RuntimeError("已取消 GPU 分配")
                             else:
                                 time.sleep(2)
+                        elif cancel_event is not None and cancel_event.is_set():
+                            raise RuntimeError("已取消 GPU 分配")
                         reconciled = client._get_assignment(
                             nbh, Variant.GPU, accel, shape
                         )
@@ -1477,6 +1598,8 @@ class ColabOneProvider:
                         raise
                     except Exception:
                         pass
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("已取消 GPU 分配") from None
                     raise
                 if status == 503:
                     consecutive_pool_busy += 1
@@ -1525,13 +1648,50 @@ class ColabOneProvider:
                 # POST so an uncertain 503/504/timeout never double-allocates.
                 assignment = None
                 if delay > 0:
-                    if cancel_event is not None:
-                        if cancel_event.wait(delay):
-                            raise RuntimeError("已取消 GPU 分配")
-                    else:
-                        time.sleep(delay)
+                    if retry_event is not None:
+                        retry_event.clear()
+                    if callable(on_retry_state) and not (
+                        cancel_event is not None and cancel_event.is_set()
+                    ):
+                        on_retry_state(
+                            {
+                                "waiting_retry": True,
+                                "retryable": True,
+                                "retry_at": time.time() + delay,
+                                "attempt": attempt + 1,
+                                "next_attempt": next_attempt,
+                                "total_attempts": total_attempts,
+                                "retry_kind": last_retry_kind,
+                                "has_retried": True,
+                                "gpu": accel.value,
+                            }
+                        )
+                    wait_outcome = _wait_for_retry(
+                        delay,
+                        cancel_event=cancel_event,
+                        retry_event=retry_event,
+                    )
+                    if wait_outcome == "cancel":
+                        raise RuntimeError("已取消 GPU 分配")
+                    if wait_outcome == "retry":
+                        if retry_event is not None:
+                            retry_event.clear()
+                        _emit_log(
+                            on_log,
+                            f"已手动触发立即重试，跳过等待立即尝试分配 {accel.value}（第 {next_attempt}/{total_attempts} 次）",
+                            "GPU",
+                        )
 
-    def allocate(self, gpu, on_log=None, on_stage=None, cancel_event=None):
+    def allocate(
+        self,
+        gpu,
+        on_log=None,
+        on_stage=None,
+        cancel_event=None,
+        retry_event=None,
+        on_retry_state=None,
+        assign_proxy: str = "",
+    ):
         choices = {
             x.value.upper(): x
             for x in (
@@ -1556,48 +1716,77 @@ class ColabOneProvider:
             f"向 Google Colab 请求分配 {accel.value} GPU（{shape_label}）",
             "GPU",
         )
-        client = self.client()
+        client, assign_http_session, proxy_spec = self._make_assign_client(assign_proxy)
+        using_assign_proxy = proxy_spec is not None
+        if proxy_spec is not None:
+            _emit_log(
+                on_log,
+                f"本次 GPU 分配请求将经由代理（{proxy_spec.log_label}），后续连接与推理均不走代理",
+                "GPU",
+            )
         retries_used = [0]
         try:
             try:
-                result = self._assign_runtime(
-                    client,
-                    accel,
-                    shape,
-                    on_log=on_log,
-                    on_stage=on_stage,
-                    retries_counter=retries_used,
-                    cancel_event=cancel_event,
-                )
-            except ColabRequestError as e:
-                if shape is None or getattr(e.response, "status_code", 0) != 400:
-                    raise
-                _emit_log(
-                    on_log,
-                    "高内存规格暂不可用，自动切换为默认规格重试分配",
-                    "GPU",
-                    "warning",
-                )
-                retries_used[0] = 0
-                result = self._assign_runtime(
-                    client,
-                    accel,
-                    None,
-                    on_log=on_log,
-                    on_stage=on_stage,
-                    retries_counter=retries_used,
-                    cancel_event=cancel_event,
-                )
-                shape = None
-        except (
-            ColabRequestError,
-            TooManyAssignmentsError,
-            requests.RequestException,
-            TransportError,
-        ) as exc:
-            raise RuntimeError(
-                _format_assign_error(accel.value, exc, retries_used[0])
-            ) from exc
+                try:
+                    result = self._assign_runtime(
+                        client,
+                        accel,
+                        shape,
+                        on_log=on_log,
+                        on_stage=on_stage,
+                        retries_counter=retries_used,
+                        cancel_event=cancel_event,
+                        retry_event=retry_event,
+                        on_retry_state=on_retry_state,
+                        using_assign_proxy=using_assign_proxy,
+                    )
+                except ColabRequestError as e:
+                    if shape is None or getattr(e.response, "status_code", 0) != 400:
+                        raise
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("已取消 GPU 分配") from None
+                    _emit_log(
+                        on_log,
+                        "高内存规格暂不可用，自动切换为默认规格重试分配",
+                        "GPU",
+                        "warning",
+                    )
+                    retries_used[0] = 0
+                    result = self._assign_runtime(
+                        client,
+                        accel,
+                        None,
+                        on_log=on_log,
+                        on_stage=on_stage,
+                        retries_counter=retries_used,
+                        cancel_event=cancel_event,
+                        retry_event=retry_event,
+                        on_retry_state=on_retry_state,
+                        using_assign_proxy=using_assign_proxy,
+                    )
+                    shape = None
+            except (
+                ColabRequestError,
+                TooManyAssignmentsError,
+                requests.RequestException,
+                TransportError,
+            ) as exc:
+                raise RuntimeError(
+                    _format_assign_error(
+                        accel.value,
+                        exc,
+                        retries_used[0],
+                        using_assign_proxy=using_assign_proxy,
+                    )
+                ) from exc
+        finally:
+            if assign_http_session is not None and callable(
+                getattr(assign_http_session, "close", None)
+            ):
+                try:
+                    assign_http_session.close()
+                except Exception:
+                    pass
         info = result.runtime_proxy_info
         session = SessionState(
             name="colabone",
@@ -1618,7 +1807,8 @@ class ColabOneProvider:
             self.save_session(session, activate=True)
         except Exception as save_exc:
             try:
-                client.unassign(session.endpoint)
+                rollback_client = self.client() if using_assign_proxy else client
+                rollback_client.unassign(session.endpoint)
             except Exception:
                 pass
             raise RuntimeError(
@@ -1768,11 +1958,13 @@ class ColabOneProvider:
             pass
 
     @staticmethod
-    def ready(session, on_log=None):
+    def ready(session, on_log=None, cancel_event: threading.Event | None = None):
         started = time.monotonic()
         last_note = started
         deadline = started + 90
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("已取消 GPU 启动")
             try:
                 r = requests.get(
                     session.url.rstrip("/") + "/api/kernels",
@@ -1792,6 +1984,8 @@ class ColabOneProvider:
                     return
             except requests.RequestException:
                 pass
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("已取消 GPU 启动")
             now = time.monotonic()
             if now - last_note >= 8:
                 last_note = now
@@ -1800,8 +1994,27 @@ class ColabOneProvider:
                     f"仍在等待远端 Jupyter 内核响应（已等待 {int(now - started)} 秒）",
                     "GPU",
                 )
-            time.sleep(2)
+            if cancel_event is not None:
+                if cancel_event.wait(2):
+                    raise RuntimeError("已取消 GPU 启动")
+            else:
+                time.sleep(2)
         raise RuntimeError("远端内核未能在 90 秒内就绪")
+
+    def _abort_kernel_execution(self, endpoint: str) -> None:
+        with self.kernel_lock:
+            slot = self._kernels.get(endpoint)
+        rt = slot.get("runtime") if isinstance(slot, dict) else None
+        kc = getattr(rt, "_kernel_client", None)
+        ws_client = getattr(getattr(kc, "_manager", None), "client", None)
+        if ws_client is not None:
+            try:
+                ws_client.stop_channels()
+            except Exception:
+                pass
+            evt = getattr(ws_client, "_message_received", None)
+            if evt is not None:
+                evt.set()
 
     def start(
         self,
@@ -1812,6 +2025,9 @@ class ColabOneProvider:
         on_telemetry=None,
         on_log=None,
         cancel_event=None,
+        retry_event=None,
+        on_retry_state=None,
+        assign_proxy: str = "",
     ):
         if not callable(notify) and callable(create_new):
             notify, create_new = create_new, False
@@ -1830,6 +2046,8 @@ class ColabOneProvider:
                     )
                     return remote
                 raise RuntimeError("实例存在但部署未完成，请先释放后重新启动")
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("已取消 GPU 分配")
         _emit_log(on_log, "查询 Google Colab 账号余额与当前运行实例", "计费")
         try:
             before = self.account() or {}
@@ -1841,6 +2059,8 @@ class ColabOneProvider:
                 f"当前余额 {float(before.get('balance') or 0):.2f} CU · 活跃实例 {int(before.get('assignments') or 0)} 台",
                 "计费",
             )
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("已取消 GPU 分配")
         try:
             notify("正在分配 " + gpu)
             started = time.time()
@@ -1851,9 +2071,30 @@ class ColabOneProvider:
                 alloc_kwargs["on_stage"] = notify
             if cancel_event is not None and _accepts_kwarg(self.allocate, "cancel_event"):
                 alloc_kwargs["cancel_event"] = cancel_event
+            if retry_event is not None and _accepts_kwarg(self.allocate, "retry_event"):
+                alloc_kwargs["retry_event"] = retry_event
+            if callable(on_retry_state) and _accepts_kwarg(
+                self.allocate, "on_retry_state"
+            ):
+                alloc_kwargs["on_retry_state"] = on_retry_state
+            if str(assign_proxy or "").strip() and _accepts_kwarg(
+                self.allocate, "assign_proxy"
+            ):
+                alloc_kwargs["assign_proxy"] = str(assign_proxy).strip()
             session = self.allocate(gpu, **alloc_kwargs)
             allocated_endpoint = session.endpoint
             fresh = True
+            if callable(on_retry_state):
+                on_retry_state(
+                    {
+                        "waiting_retry": False,
+                        "retryable": False,
+                        "retry_at": 0.0,
+                        "has_retried": False,
+                        "allocated": True,
+                        "gpu": gpu.upper(),
+                    }
+                )
             try:
                 account = self.account() or {}
             except Exception:
@@ -1885,10 +2126,17 @@ class ColabOneProvider:
                 meta_parts.append(f"{float(rate):.2f} CU/小时")
             detail = f"（{' · '.join(meta_parts)}）" if meta_parts else ""
             _emit_log(on_log, f"已分配实例 {session.endpoint}{detail}", "GPU")
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("已取消 GPU 启动")
             notify("等待远端内核")
             ready_started = time.monotonic()
+            ready_kwargs = {}
             if _accepts_kwarg(self.ready, "on_log"):
-                self.ready(session, on_log=on_log)
+                ready_kwargs["on_log"] = on_log
+            if cancel_event is not None and _accepts_kwarg(self.ready, "cancel_event"):
+                ready_kwargs["cancel_event"] = cancel_event
+            if ready_kwargs:
+                self.ready(session, **ready_kwargs)
             else:
                 self.ready(session)
                 _emit_log(
@@ -1896,6 +2144,8 @@ class ColabOneProvider:
                     f"远端 Jupyter 内核已就绪（耗时 {time.monotonic() - ready_started:.1f} 秒）",
                     "GPU",
                 )
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("已取消 GPU 启动")
             notify("部署远端管理服务")
             with tempfile.TemporaryDirectory(prefix="colabone-upload-") as tmp:
                 package = Path(tmp) / "colabone.zip"
@@ -1929,11 +2179,17 @@ class ColabOneProvider:
                     )
                 )
                 config.chmod(0o600)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("已取消 GPU 启动")
                 _emit_log(on_log, "正在上传管理服务程序包 (colabone.zip)", "GPU")
                 self._upload_file(session, str(package), "content/colabone.zip")
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("已取消 GPU 启动")
                 _emit_log(on_log, "正在上传远端启动配置 (colabone-boot.json)", "GPU")
                 self._upload_file(session, str(config), "content/colabone-boot.json")
                 if rclone_conf:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("已取消 GPU 启动")
                     rc_local = Path(tmp) / "colabone-rclone.conf"
                     rc_local.write_text(rclone_conf, encoding="utf-8")
                     rc_local.chmod(0o600)
@@ -1941,6 +2197,8 @@ class ColabOneProvider:
                     self._upload_file(
                         session, str(rc_local), "content/.colabone_rclone.conf"
                     )
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("已取消 GPU 启动")
                 _emit_log(on_log, "文件上传完成，开始在远端内核执行引导脚本", "远端")
                 line_bufs: dict[str, str] = {}
                 streamed_telemetry = [False]
@@ -2003,15 +2261,32 @@ class ColabOneProvider:
                 exec_kwargs = {"timeout": 300}
                 if callable(on_telemetry) or callable(on_log):
                     exec_kwargs["output_hook"] = _boot_output_hook
-                outputs = self.execute(
-                    session,
-                    (self.root / "server/vm_boot.py").read_text(encoding="utf-8"),
-                    **exec_kwargs,
-                )
+                boot_cancel_stop = threading.Event()
+
+                def _watch_boot_cancel():
+                    if cancel_event is None:
+                        return
+                    while not boot_cancel_stop.is_set():
+                        if cancel_event.wait(0.2):
+                            self._abort_kernel_execution(session.endpoint)
+                            return
+
+                if cancel_event is not None:
+                    threading.Thread(target=_watch_boot_cancel, daemon=True).start()
+                try:
+                    outputs = self.execute(
+                        session,
+                        (self.root / "server/vm_boot.py").read_text(encoding="utf-8"),
+                        **exec_kwargs,
+                    )
+                finally:
+                    boot_cancel_stop.set()
                 for leftover in list(line_bufs.values()):
                     if leftover:
                         _consume_boot_line(leftover, from_stream=True)
                 line_bufs.clear()
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("已取消 GPU 启动")
             ready = False
             stdout_combined = "".join(
                 str(output.get("text", ""))
@@ -2063,13 +2338,22 @@ class ColabOneProvider:
             _emit_log(on_log, "远端管理服务引导完成", "远端")
             return remote
         except Exception as exc:
+            cancelled = cancel_event is not None and cancel_event.is_set()
             if fresh:
-                _emit_log(
-                    on_log,
-                    f"启动过程出错，正在自动回滚释放刚分配的实例：{allocated_endpoint}",
-                    "GPU",
-                    "warning",
-                )
+                if cancelled:
+                    notify("已取消启动，正在释放刚分配的实例")
+                    _emit_log(
+                        on_log,
+                        f"启动已取消，正在释放刚分配的实例：{allocated_endpoint}",
+                        "GPU",
+                    )
+                else:
+                    _emit_log(
+                        on_log,
+                        f"启动过程出错，正在自动回滚释放刚分配的实例：{allocated_endpoint}",
+                        "GPU",
+                        "warning",
+                    )
                 try:
                     if len(self.managed_endpoints()) > 1 and allocated_endpoint:
                         if _accepts_kwarg(self.release, "on_log"):
@@ -2083,7 +2367,9 @@ class ColabOneProvider:
                             self.release()
                 except Exception:
                     raise RuntimeError(
-                        "启动失败且释放未确认。实例记录已保留，请在「远端设备」页立即重试停止实例"
+                        "取消启动时未能确认释放刚分配的实例。实例记录已保留，请在「远端设备」页立即重试停止实例"
+                        if cancelled
+                        else "启动失败且释放未确认。实例记录已保留，请在「远端设备」页立即重试停止实例"
                     ) from exc
                 if previous_active and previous_active in self.managed_endpoints():
                     self.set_active(previous_active)

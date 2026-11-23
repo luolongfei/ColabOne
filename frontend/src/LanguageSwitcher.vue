@@ -263,11 +263,17 @@ onBeforeUnmount(() => {
 
 .co-locale-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
-@media (max-width: 420px) {
+@media (max-width: 600px) {
+  .co-locale-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 380px) {
   .co-locale-grid {
     grid-template-columns: 1fr;
   }
@@ -277,9 +283,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
-  padding: 6px 11px;
-  border-radius: 10px;
+  min-height: 34px;
+  padding: 5px 10px;
+  border-radius: 9px;
   border: 1px solid var(--co-border-secondary);
   background: var(--co-subtle);
   color: var(--co-text);

@@ -86,6 +86,8 @@ export const zhTWMessages: ColabOneMessages = {
   "status.upgradeAction": "更新遠端服務",
   "status.upgradeOptionalReady":
     "遠端服務有小版本更新，不影響目前正常使用；可隨時熱更新，已下載的模型快取與工作流程會完整保留。",
+  "status.upgradeOptionalReadyWithConfirm":
+    "遠端服務有小版本更新，不影響目前正常使用；點擊即可自動停止目前服務並熱更新（模型快取會保留），亦可稍後再更新。",
   "status.upgradeOptionalBlockedModel":
     "遠端服務有小版本更新，不影響目前正常使用；目前已載入模型，需先卸載模型後再熱更新（模型快取會保留），亦可稍後再更新。",
   "status.upgradeOptionalBlockedComfy":
@@ -100,6 +102,18 @@ export const zhTWMessages: ColabOneMessages = {
     "請先等待目前遠端工作結束後再更新遠端服務",
   "status.upgradeBlockedOperation":
     "請先等待目前操作完成後再更新遠端服務",
+  "status.upgradeActiveTask": "執行中的遠端工作（將會取消）",
+  "status.upgradeActiveModel": "已載入模型：{name}（將從 VRAM 卸載）",
+  "status.upgradeActiveModelGeneric": "已載入 VRAM 的模型（將會卸載）",
+  "status.upgradeActiveApi": "對外 API 服務與公網通道（將會關閉）",
+  "status.upgradeActiveComfy": "ComfyUI 工作流程引擎與畫布通道（將會停止）",
+  "status.upgradeActiveEngine": "目前執行中的遠端推論引擎（將會停止）",
+  "status.upgradeConfirmTitle": "確認熱更新遠端服務",
+  "status.upgradeConfirmLead":
+    "目前遠端執行個體有正在運作的服務或工作，繼續更新會先自動停止或卸載以下項目：",
+  "status.upgradeConfirmPreserveNote":
+    "已下載的模型權重、工作流程、成品與設定都會完整保留，無須重新下載；更新完成後需重新載入模型或開啟服務。",
+  "status.upgradeConfirmAction": "停止並立即更新",
 
   // Appearance
   "appearance.system": "跟隨系統",
@@ -363,6 +377,30 @@ export const zhTWMessages: ColabOneMessages = {
   "device.stopAllCount": "停止全部（{count} 個執行個體）",
   "device.stopInstance": "停止執行個體",
   "device.stopRemoteInstance": "停止遠端執行個體",
+  "device.cancelAllocation": "取消分配",
+  "device.cancellingAllocation": "正在取消…",
+  "device.cancelAllocationTooltip":
+    "停止目前的分配或啟動流程；若已分配執行個體將自動釋放，不會產生殘留計費",
+  "device.retryNow": "立即重試",
+  "device.retryingNow": "正在請求…",
+  "device.retryAllocationNowTooltip":
+    "略過等待倒數，立即向 Google 重新發起分配請求",
+  "device.retryAllocationRequestingTooltip":
+    "正在向 Google 請求分配，等待本次回應後可手動立即重試",
+  "device.waitingRetryCapacity":
+    "Google 算力緊張，{seconds} 秒後自動重試分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryCapacitySoon":
+    "Google 算力緊張，即將重試分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryServerBusy":
+    "Google 分配服務忙碌，{seconds} 秒後自動重試分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryServerBusySoon":
+    "Google 分配服務忙碌，即將重試分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryNetwork":
+    "分配請求未成功，{seconds} 秒後自動重試分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryNetworkSoon":
+    "分配請求未成功，即將重試分配 {gpu}（第 {next}/{total} 次）",
+  "device.toastAllocationCancelled": "已取消 GPU 分配",
+  "device.toastRetryTriggered": "已略過等待，立即重試分配",
   "device.idlePaused": "工作執行中 · 自動釋放已暫停",
   "device.idleCountdownRemaining": "剩餘",
   "device.idleCountdownSuffix": "自動釋放",
@@ -559,12 +597,17 @@ export const zhTWMessages: ColabOneMessages = {
   "api.speedWaiting": "等待呼叫",
   "api.speedEmpty": "尚無呼叫",
   "api.reqStreamingTag": "串流",
+  "api.reqCompactedTag": "已壓縮",
+  "api.reqCompactedTooltip": "輸入上下文已從 {before} tokens 自動壓縮為 {after} tokens 以符合目前 VRAM 視窗",
+  "api.reqCompactedGenericTooltip": "此請求已觸發自動上下文壓縮以符合目前模型視窗",
   "api.reqEstimatedTooltip": "上游未回傳精確 timings，依輸出內容與耗時估算",
   "api.reqPrefillTooltip": "提示詞預填充速度 {speed}",
   "api.reqSpeedTooltip": "本次請求生成速度",
   "api.reqWaitingFirstToken": "等待首字輸出…",
   "api.reqOutputTokens": "輸出 {count} tokens",
   "api.reqInputTokens": "輸入 {count} tokens",
+  "api.reqInputCompacted": "輸入 {before} → {after} tokens",
+  "api.cancelRequestAria": "取消請求 #{seq}",
   "api.reqTtft": "首字 {duration}",
   "api.reqDuration": "耗時 {duration}",
   "api.reqPrefill": "預填充 {speed}",
@@ -792,6 +835,8 @@ export const zhTWMessages: ColabOneMessages = {
   "models.compatCtx32kHint": "適合長文與程式碼庫",
   "models.compatCtx64kChars": "約 4.8 萬字",
   "models.compatCtx64kHint": "需較大 VRAM 餘裕",
+  "models.compatCtx128kChars": "約 9.6 萬字",
+  "models.compatCtx128kHint": "適合 G4 / H100 等大容量 VRAM",
   "models.compatPresetBalanced": "日常均衡",
   "models.compatPresetBalancedSum": "一般問答與日常對話，回應快、VRAM 開銷最低",
   "models.compatPresetBalancedVram": "VRAM 開銷低",
@@ -841,6 +886,7 @@ export const zhTWMessages: ColabOneMessages = {
   "models.compatEffectCtx16k": "約 1.2 萬字記憶，適合寫程式與分析文件",
   "models.compatEffectCtx32k": "約 2.4 萬字長文記憶，需預留較多 VRAM",
   "models.compatEffectCtx64k": "約 4.8 萬字超長記憶，VRAM 佔用較高",
+  "models.compatEffectCtx128k": "約 9.6 萬字超大上下文，VRAM 佔用很高（建議 G4 / H100）",
   "models.compatEffectTempLow": "嚴謹穩定：回覆一致不易發散，適合寫程式、翻譯與推理",
   "models.compatEffectTempMid": "自然均衡：邏輯與流暢度兼顧，適合日常交流",
   "models.compatEffectTempHigh": "發散創意：表達更有想像力，適合寫作與腦力激盪",
@@ -1078,7 +1124,17 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.title": "設定",
   "settings.subtitle": "管理 Google 帳戶、介面語言與外觀主題、預設算力與閒置釋放原則。",
   "settings.saveSettings": "儲存設定",
-  "settings.googleCardTitle": "Google 帳戶與雲端硬碟授權",
+  "settings.floatingSaveHint": "可隨時點擊右側按鈕儲存目前頁面設定。",
+  "settings.floatingSaveAria": "浮動儲存設定列",
+  "settings.sectionAccount": "帳戶與憑證",
+  "settings.sectionCompute": "算力與網路",
+  "settings.sectionAppearance": "外觀與語言",
+  "settings.sectionDesktop": "本機與關於",
+  "settings.downloadThreadsDesc": "遠端下載模型權重時的並行連線數。",
+  "settings.assignProxyConfigureBtn": "設定代理",
+  "settings.assignProxyEditBtn": "編輯",
+  "settings.appearanceLabel": "外觀主題",
+  "settings.googleCardTitle": "Google 帳戶",
   "settings.connected": "已連線",
   "settings.disconnected": "未連線",
   "settings.oauthBrowserHint": "請在瀏覽器選擇 Google 帳戶並授權，完成後會自動返回這裡。",
@@ -1128,6 +1184,24 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.idleProtectionDesc":
     "超過 {policy} 無操作或工作時自動釋放遠端資源；繼續操作會重設倒數，模型下載與載入、對外 API 推論及 ComfyUI 執行期間自動暫停倒數。",
   "settings.computeSyncNote": "預設 GPU 與閒置釋放時間會與「遠端裝置」即時同步，修改後立即生效。",
+  "settings.assignProxyTitle": "GPU 分配代理（僅分配階段）",
+  "settings.assignProxyTagActive": "已啟用 · 僅分配",
+  "settings.assignProxyTagSaved": "已儲存 · 未啟用",
+  "settings.assignProxyDesc":
+    "僅於向 Google Colab 請求分配 GPU 時經由該代理；後續核心連線、檔案上傳、模型推論、雲端硬碟同步與釋放皆不經過此代理，兼顧隱私與穩定性。支援 HTTP / HTTPS / SOCKS5。",
+  "settings.assignProxySwitchLabel": "僅於請求分配 GPU 時啟用代理",
+  "settings.assignProxyPlaceholder": "http://127.0.0.1:7890 或 socks5://user:pass@host:1080",
+  "settings.assignProxySavedPlaceholder": "已儲存代理位址，輸入新位址可覆蓋更新",
+  "settings.assignProxySavedPlaceholderWithUrl": "已儲存：{url}（輸入新位址可更新）",
+  "settings.assignProxySaveBtn": "儲存代理",
+  "settings.assignProxyTestBtn": "測試連線",
+  "settings.assignProxyClearBtn": "清除代理",
+  "settings.assignProxyNeedUrlFirst": "請先填寫代理位址後再啟用",
+  "settings.assignProxyEnabledToast": "已開啟 GPU 分配代理（僅分配階段生效）",
+  "settings.assignProxyDisabledToast": "已關閉 GPU 分配代理",
+  "settings.assignProxySavedToast": "已儲存並啟用 GPU 分配代理（憑證已安全儲存）",
+  "settings.assignProxyClearedToast": "已清除 GPU 分配代理",
+  "settings.assignProxyTestOkToast": "分配代理連線測試通過（{ms} ms，僅加密交握檢測）",
   "settings.appearanceCardTitle": "外觀主題與介面語言",
   "settings.appearanceDesc": "僅套用於目前裝置；選擇「跟隨系統」時將自動同步作業系統深淺外觀。",
   "settings.appearanceAria": "外觀模式",

@@ -530,6 +530,60 @@ function translateSettingsSummaryPart(part: string, loc: ColabOneLocale): string
       "ko-KR": "Hugging Face 토큰 업데이트됨",
     }[loc];
   }
+  if (s === "已清除分配代理") {
+    return {
+      "zh-CN": s,
+      "en-US": "Cleared allocation proxy",
+      "zh-TW": "已清除分配代理",
+      "zh-HK": "已清除分配代理",
+      "ja-JP": "割り当てプロキシを削除",
+      "ko-KR": "할당 프록시 삭제됨",
+    }[loc];
+  }
+  if (s === "已开启仅分配代理") {
+    return {
+      "zh-CN": s,
+      "en-US": "Allocation-only proxy enabled",
+      "zh-TW": "已開啟僅分配代理",
+      "zh-HK": "已開啟僅分配代理",
+      "ja-JP": "割り当て専用プロキシを有効化",
+      "ko-KR": "할당 전용 프록시 활성화됨",
+    }[loc];
+  }
+  if (s === "已关闭仅分配代理") {
+    return {
+      "zh-CN": s,
+      "en-US": "Allocation-only proxy disabled",
+      "zh-TW": "已關閉僅分配代理",
+      "zh-HK": "已關閉僅分配代理",
+      "ja-JP": "割り当て専用プロキシを無効化",
+      "ko-KR": "할당 전용 프록시 비활성화됨",
+    }[loc];
+  }
+  const proxyActiveMatch = s.match(/^已(?:启用|开启)仅分配代理（(.+)）$/);
+  if (proxyActiveMatch) {
+    const label = proxyActiveMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Allocation-only proxy active (${label})`,
+      "zh-TW": `已啟用僅分配代理（${label}）`,
+      "zh-HK": `已啟用僅分配代理（${label}）`,
+      "ja-JP": `割り当て専用プロキシ有効（${label}）`,
+      "ko-KR": `할당 전용 프록시 활성 (${label})`,
+    }[loc];
+  }
+  const proxySavedMatch = s.match(/^已保存分配代理（(.+)）$/);
+  if (proxySavedMatch) {
+    const label = proxySavedMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Saved allocation proxy (${label})`,
+      "zh-TW": `已儲存分配代理（${label}）`,
+      "zh-HK": `已儲存分配代理（${label}）`,
+      "ja-JP": `割り当てプロキシを保存（${label}）`,
+      "ko-KR": `할당 프록시 저장됨 (${label})`,
+    }[loc];
+  }
   return s;
 }
 
@@ -545,6 +599,18 @@ function translateApiFinishPart(part: string, loc: ColabOneLocale): string {
       "zh-HK": `輸出 ${n} tokens`,
       "ja-JP": `出力 ${n} tokens`,
       "ko-KR": `출력 ${n} tokens`,
+    }[loc];
+  }
+  const compMatch = s.match(/^自动压缩 (\d+)→(\d+) tokens$/);
+  if (compMatch) {
+    const [, before, after] = compMatch;
+    return {
+      "zh-CN": s,
+      "en-US": `auto-compacted ${before}→${after} tokens`,
+      "zh-TW": `自動壓縮 ${before}→${after} tokens`,
+      "zh-HK": `自動壓縮 ${before}→${after} tokens`,
+      "ja-JP": `自動圧縮 ${before}→${after} tokens`,
+      "ko-KR": `자동 압축 ${before}→${after} tokens`,
     }[loc];
   }
   const ttftMatch = s.match(/^首字 (.+)$/);
@@ -1942,6 +2008,46 @@ const PATTERN_RULES: PatternRule[] = [
           return `${gpu} の割り当てを待機中（計算リソース混雑 · ${cur}/${total} 回目）`;
         case "ko-KR":
           return `${gpu} 할당 대기 중 (리소스 혼잡 · ${cur}/${total}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已手动触发立即重试，跳过等待立即尝试分配 (\S+)（第 (\d+)\/(\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, cur, total] = m;
+      switch (loc) {
+        case "en-US":
+          return `Manual retry triggered; skipping wait to allocate ${gpu} now (attempt ${cur}/${total})`;
+        case "zh-TW":
+          return `已手動觸發立即重試，略過等待立即嘗試分配 ${gpu}（第 ${cur}/${total} 次）`;
+        case "zh-HK":
+          return `已手動觸發立即重試，跳過等待立即嘗試分配 ${gpu}（第 ${cur}/${total} 次）`;
+        case "ja-JP":
+          return `手動再試行を実行しました。待機をスキップして ${gpu} の割り当てを即時試行します（${cur}/${total} 回目）`;
+        case "ko-KR":
+          return `수동 재시도가 요청되어 대기를 건너뛰고 ${gpu} 할당을 즉시 시도합니다 (${cur}/${total}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^启动已取消，正在释放刚分配的实例：(.+)$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Startup cancelled; releasing newly allocated instance: ${ep}`;
+        case "zh-TW":
+          return `啟動已取消，正在釋放剛分配的執行個體：${ep}`;
+        case "zh-HK":
+          return `啟動已取消，正在釋放剛分配的實例：${ep}`;
+        case "ja-JP":
+          return `起動がキャンセルされました。割り当て済みのインスタンスを解放しています: ${ep}`;
+        case "ko-KR":
+          return `시작이 취소되어 방금 할당된 인스턴스를 해제하는 중: ${ep}`;
         default:
           return m[0];
       }
@@ -3781,6 +3887,67 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^输入上下文过长（(\d+) tokens），超过当前模型上下文上限（(\d+) tokens）$/,
+    format: (m, loc) => {
+      const [, promptTok, ctxTok] = m;
+      switch (loc) {
+        case "en-US":
+          return `Input context (${promptTok} tokens) exceeds the active model context limit (${ctxTok} tokens)`;
+        case "zh-TW":
+          return `輸入上下文過長（${promptTok} tokens），超過目前模型上下文上限（${ctxTok} tokens）`;
+        case "zh-HK":
+          return `輸入上下文過長（${promptTok} tokens），超過目前模型上下文上限（${ctxTok} tokens）`;
+        case "ja-JP":
+          return `入力コンテキスト（${promptTok} tokens）が現在のモデル上限（${ctxTok} tokens）を超えています`;
+        case "ko-KR":
+          return `입력 컨텍스트(${promptTok} tokens)가 현재 모델 컨텍스트 상한(${ctxTok} tokens)을 초과했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^输入上下文超过当前模型上限（(\d+) tokens）$/,
+    format: (m, loc) => {
+      const ctxTok = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Input context exceeds the active model context limit (${ctxTok} tokens)`;
+        case "zh-TW":
+          return `輸入上下文超過目前模型上限（${ctxTok} tokens）`;
+        case "zh-HK":
+          return `輸入上下文超過目前模型上限（${ctxTok} tokens）`;
+        case "ja-JP":
+          return `入力コンテキストが現在のモデル上限（${ctxTok} tokens）を超えています`;
+        case "ko-KR":
+          return `입력 컨텍스트가 현재 모델 컨텍스트 상한(${ctxTok} tokens)을 초과했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^API 请求(?: #(\d+) )?上下文超限（约 (\d+) \/ (\d+) tokens），已自动压缩为约 (\d+) tokens$/,
+    format: (m, loc) => {
+      const [, seq, origTok, ctxTok, afterTok] = m;
+      const reqPrefix = seq ? ` #${seq}` : "";
+      switch (loc) {
+        case "en-US":
+          return `API request${reqPrefix} exceeded context limit (~${origTok} / ${ctxTok} tokens); auto-compacted to ~${afterTok} tokens`;
+        case "zh-TW":
+          return `API 請求${reqPrefix} 上下文超限（約 ${origTok} / ${ctxTok} tokens），已自動壓縮為約 ${afterTok} tokens`;
+        case "zh-HK":
+          return `API 請求${reqPrefix} 上下文超限（約 ${origTok} / ${ctxTok} tokens），已自動壓縮為約 ${afterTok} tokens`;
+        case "ja-JP":
+          return `API リクエスト${reqPrefix} のコンテキスト上限超過（約 ${origTok} / ${ctxTok} tokens）のため約 ${afterTok} tokens に自動圧縮しました`;
+        case "ko-KR":
+          return `API 요청${reqPrefix} 컨텍스트 상한 초과(약 ${origTok} / ${ctxTok} tokens)로 약 ${afterTok} tokens로 자동 압축했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^请求体最大 (\d+) MB$/,
     format: (m, loc) => {
       const mb = m[1];
@@ -4942,6 +5109,47 @@ const PATTERN_RULES: PatternRule[] = [
           return `無効な素材 ID: ${id}`;
         case "ko-KR":
           return `유효하지 않은 자산 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^本次 GPU 分配请求将经由代理（(.+)），后续连接与推理均不走代理$/,
+    format: (m, loc) => {
+      const proxy = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Routing this GPU allocation request via proxy (${proxy}); subsequent kernel and inference traffic will bypass the proxy.`;
+        case "zh-TW":
+          return `本次 GPU 分配請求將經由代理（${proxy}），後續連線與推論皆不經過代理`;
+        case "zh-HK":
+          return `本次 GPU 分配請求將經由代理（${proxy}），後續連接及推理均不經代理`;
+        case "ja-JP":
+          return `今回の GPU 割り当て要求はプロキシ（${proxy}）を経由します（以降の接続と推論はプロキシを使用しません）`;
+        case "ko-KR":
+          return `이번 GPU 할당 요청은 프록시(${proxy})를 경유하며, 이후 연결 및 추론에는 프록시를 사용하지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^分配代理连通性测试通过（(.+) · (\d+) ms）$/,
+    format: (m, loc) => {
+      const proxy = m[1];
+      const ms = m[2];
+      switch (loc) {
+        case "en-US":
+          return `Allocation proxy connectivity check passed (${proxy} · ${ms} ms)`;
+        case "zh-TW":
+          return `分配代理連線測試通過（${proxy} · ${ms} ms）`;
+        case "zh-HK":
+          return `分配代理連通性測試通過（${proxy} · ${ms} ms）`;
+        case "ja-JP":
+          return `割り当てプロキシの接続テストに成功しました（${proxy} · ${ms} ms）`;
+        case "ko-KR":
+          return `할당 프록시 연결 테스트 성공 (${proxy} · ${ms} ms)`;
         default:
           return m[0];
       }

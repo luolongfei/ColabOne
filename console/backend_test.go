@@ -124,6 +124,16 @@ func TestMethodTimeoutsAllowLongGPUAllocation(t *testing.T) {
 	if got := colabOneMethodTimeout("snapshot"); got != 30*time.Second {
 		t.Fatalf("snapshot timeout = %v, want 30s", got)
 	}
+	for _, fastMethod := range []string{
+		"runtime.start.cancel",
+		"runtime.start.retry",
+		"settings.assign_proxy",
+		"settings.assign_proxy.test",
+	} {
+		if got := colabOneMethodTimeout(fastMethod); got != 30*time.Second {
+			t.Fatalf("%s timeout = %v, want 30s", fastMethod, got)
+		}
+	}
 }
 
 func TestExternalAndCanvasURLHardening(t *testing.T) {

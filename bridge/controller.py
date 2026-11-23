@@ -14,6 +14,12 @@ import requests
 
 from bridge.auth import ColabOneAuth, ColabOneVault
 from bridge.activity import ColabOneActivityLog, safe_message
+from bridge.assign_proxy import (
+    colabone_normalize_assign_proxy,
+    colabone_parse_assign_proxy,
+    colabone_proxy_log_label,
+    colabone_test_assign_proxy,
+)
 from bridge.provider import ColabOneProvider
 from bridge.shortcuts import manage_shortcuts, shortcut_status
 from common.files import atomic_json, colabone_service_revision
@@ -71,6 +77,10 @@ def colabone_config_dir():
 class ColabOneOperationCancelled(RuntimeError):
     """Raised when a user voluntarily cancels a long-running desktop operation."""
 
+    def __init__(self, message: str, source: str = "客户端"):
+        super().__init__(message)
+        self.source = source
+
 
 class ColabOneController:
     def __init__(self, root, vault=None, config_dir=None, background=True):
@@ -94,6 +104,7 @@ class ColabOneController:
             "idle_countdown_seconds": 60,
             "auto_drive": True,
             "download_threads": 16,
+            "assign_proxy_enabled": False,
             "locale": "",
         }
         if (self.directory / "settings.json").exists():
@@ -110,6 +121,7 @@ class ColabOneController:
                     "idle_countdown_seconds",
                     "auto_drive",
                     "download_threads",
+                    "assign_proxy_enabled",
                     "idle_policy",
                     "rclone_drive_policy",
                     "locale",
@@ -128,6 +140,8 @@ class ColabOneController:
             self.settings["idle_minutes"] = 30
         if not isinstance(self.settings.get("auto_drive"), bool):
             self.settings["auto_drive"] = True
+        if not isinstance(self.settings.get("assign_proxy_enabled"), bool):
+            self.settings["assign_proxy_enabled"] = False
         if self.settings.get("locale") not in (
             "",
             "zh-CN",
@@ -154,6 +168,8 @@ class ColabOneController:
         self.lock = threading.RLock()
         self.operation_lock = threading.Lock()
         self.stop = threading.Event()
+        self.start_cancel = threading.Event()
+        self.start_retry = threading.Event()
         self.drive_cancel = threading.Event()
         self.drive_confirm = threading.Event()
         self.drive_probe = threading.Event()
@@ -208,6 +224,8 @@ class ColabOneController:
 
     def close(self):
         self.stop.set()
+        self.start_cancel.set()
+        self.start_retry.set()
         self.drive_cancel.set()
         self.drive_confirm.set()
         self.drive_probe.set()
@@ -1293,12 +1311,33 @@ class ColabOneController:
         value["monitor"] = self._build_monitor_snapshot(
             enriched, value["runtime"], value["models"], active_ep
         )
+        raw_assign_proxy = self.vault.get("assign_proxy", "")
+        raw_assign_proxy = raw_assign_proxy if isinstance(raw_assign_proxy, str) else ""
+        assign_proxy_spec = None
+        if raw_assign_proxy:
+            try:
+                assign_proxy_spec = colabone_parse_assign_proxy(raw_assign_proxy)
+            except ValueError:
+                assign_proxy_spec = None
         with self.lock:
+            assign_proxy_enabled = (
+                bool(self.settings.get("assign_proxy_enabled"))
+                and assign_proxy_spec is not None
+            )
             value["settings"] = {
                 k: v
                 for k, v in self.settings.items()
                 if k not in ("idle_policy", "rclone_drive_policy")
             }
+            value["settings"]["assign_proxy_enabled"] = assign_proxy_enabled
+        value["assign_proxy_settings"] = {
+            "enabled": assign_proxy_enabled,
+            "has_proxy": assign_proxy_spec is not None,
+            "masked_url": assign_proxy_spec.masked_url if assign_proxy_spec else "",
+            "has_auth": bool(assign_proxy_spec.has_auth)
+            if assign_proxy_spec is not None
+            else False,
+        }
         api = self.vault.get("public_api", {})
         if not isinstance(api, dict):
             api = {}
@@ -1354,8 +1393,12 @@ class ColabOneController:
     def update(self, **values):
         with self.lock:
             operation = values.get("operation")
-            if operation and operation != self.data.get("operation"):
-                self.activity.add(operation["title"])
+            if isinstance(operation, dict):
+                prev_op = self.data.get("operation")
+                prev_title = prev_op.get("title") if isinstance(prev_op, dict) else None
+                next_title = operation.get("title")
+                if next_title and next_title != prev_title:
+                    self.activity.add(next_title)
             if values.get("error") and values["error"] != self.data.get("error"):
                 self.activity.add(values["error"], level="error")
             runtime = values.get("runtime")
@@ -1470,11 +1513,20 @@ class ColabOneController:
             ):
                 self._save_active_to_cache()
 
-    def async_operation(self, title, fn):
+    def async_operation(self, title, fn, meta: dict | None = None, on_start=None):
         if not self.operation_lock.acquire(blocking=False):
             raise RuntimeError("请等待当前操作完成")
+        try:
+            if callable(on_start):
+                on_start()
+        except Exception:
+            self.operation_lock.release()
+            raise
+        op = {"title": title, "running": True}
+        if isinstance(meta, dict):
+            op.update(meta)
         self.update(
-            operation={"title": title, "running": True},
+            operation=op,
             error="",
             auth_url="",
             drive_auth_hint="",
@@ -1485,7 +1537,11 @@ class ColabOneController:
                 fn()
                 self.activity.add(title + "：完成")
             except ColabOneOperationCancelled as exc:
-                self.activity.add(safe_message(exc)[:300], "云盘", "info")
+                self.activity.add(
+                    safe_message(exc)[:300],
+                    getattr(exc, "source", "客户端") or "客户端",
+                    "info",
+                )
             except Exception as exc:
                 # HTTP exception URLs may contain OAuth codes: surface only a safe reason.
                 if isinstance(exc, requests.HTTPError) and exc.response is not None:
@@ -1651,12 +1707,81 @@ class ColabOneController:
             return True
         return False
 
-    def upgrade_service(self):
-        self.activity.add("更新远端管理服务，保留模型缓存与工作流", "GPU")
-        if ColabOneController._accepts_kwarg(self.provider.upgrade_service, "on_log"):
-            self.provider.upgrade_service(on_log=self.activity.add)
-        else:
-            self.provider.upgrade_service()
+    def _prepare_remote_for_upgrade(self):
+        status = self.remote("GET", "status")
+        pub = status.get("public_api") or {}
+        if pub.get("enabled") or pub.get("state") in (
+            "starting",
+            "ready",
+            "reconnecting",
+        ):
+            self.activity.add("更新前正在关闭对外 API 服务", "GPU")
+            self.remote("POST", "public-api/stop")
+            status = self.remote("GET", "status")
+
+        running_tasks = [
+            t
+            for t in (status.get("tasks") or [])
+            if isinstance(t, dict) and t.get("state") == "running" and t.get("id")
+        ]
+        if running_tasks:
+            self.activity.add("更新前正在取消运行中的远端任务", "GPU")
+            cancelled_ids: set[str] = set()
+            deadline = time.monotonic() + 15.0
+            while True:
+                for t in running_tasks:
+                    tid = str(t.get("id") or "")
+                    if tid and tid not in cancelled_ids and re.fullmatch(r"[a-f0-9]{32}", tid):
+                        cancelled_ids.add(tid)
+                        try:
+                            self.remote("DELETE", "tasks/" + tid)
+                        except Exception:
+                            pass
+                status = self.remote("GET", "status")
+                running_tasks = [
+                    t
+                    for t in (status.get("tasks") or [])
+                    if isinstance(t, dict) and t.get("state") == "running"
+                ]
+                if not running_tasks or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.3)
+
+        comfy = status.get("comfyui") or {}
+        comfy_canvas = comfy.get("canvas") or {}
+        if (
+            comfy.get("running")
+            or comfy.get("state") in ("starting", "running", "ready")
+            or comfy_canvas.get("enabled")
+            or comfy_canvas.get("state") in ("starting", "ready", "reconnecting")
+            or status.get("active_engine") == "comfyui"
+        ):
+            self.activity.add("更新前正在停止 ComfyUI 服务", "GPU")
+            self.remote("POST", "comfyui/stop")
+            status = self.remote("GET", "status")
+
+        if status.get("loaded_model") or status.get("active_engine"):
+            self.activity.add("更新前正在卸载当前显存模型（保留磁盘缓存）", "GPU")
+            self.remote("POST", "unload")
+
+    def upgrade_service(self, force: bool = False):
+        try:
+            if force:
+                self._prepare_remote_for_upgrade()
+            self.activity.add("更新远端管理服务，保留模型缓存与工作流", "GPU")
+            if ColabOneController._accepts_kwarg(
+                self.provider.upgrade_service, "on_log"
+            ):
+                self.provider.upgrade_service(on_log=self.activity.add)
+            else:
+                self.provider.upgrade_service()
+        except Exception:
+            if force:
+                try:
+                    self.refresh_remote()
+                except Exception:
+                    pass
+            raise
         self.activity.add("正在刷新远端服务状态", "GPU")
         self.refresh_remote()
         self.activity.add("正在重新同步空闲自动释放策略", "GPU")
@@ -1847,7 +1972,9 @@ class ColabOneController:
             mount_fn(**mount_kwargs)
         except Exception:
             if self.drive_cancel.is_set():
-                raise ColabOneOperationCancelled("已取消 Google 云盘挂载") from None
+                raise ColabOneOperationCancelled(
+                    "已取消 Google 云盘挂载", source="云盘"
+                ) from None
             raise
         finally:
             self.update(auth_url="", drive_auth_hint="")
@@ -1980,47 +2107,29 @@ class ColabOneController:
         return result
 
     def start(self, create_new: bool = False, gpu: str | None = None):
-        self.activity.add("校验 Google 登录凭据", "登录")
-        self.auth.credentials("colab")
         target_gpu = gpu or self.settings["gpu"]
         if target_gpu not in ("T4", "L4", "A100", "G4", "H100"):
             raise ValueError("GPU 型号不合法")
 
-        if create_new:
-            self.activity.add(
-                f"准备新增远端 {target_gpu} 实例（保留现有运行实例）",
-                "GPU",
-            )
-            self._save_active_to_cache()
-            with self.lock:
-                self.data["models"] = self.presets()
-                self.data["workflows"] = self._merge_workflows(None)
-                self.data["comfy_outputs"] = []
-                self.remote_workflow_versions = {}
-
         previous_active = self._active_endpoint()
         existing_sessions = set(self._vault_sessions().keys())
-        rclone_conf = ""
-        drive_reason = ""
-        if self.settings.get("auto_drive", True):
-            try:
-                rclone_conf, drive_reason = self._resolve_headless_rclone_conf()
-            except Exception:
-                rclone_conf, drive_reason = "", "error"
-            if rclone_conf:
-                self.activity.add("已准备 Google 云盘自动挂载凭据", "云盘")
-            elif drive_reason in ("gcp_tos_required", "gcp_project_unavailable"):
-                self.activity.add(
-                    "当前账号未配置免费 GCP 配额项目，GPU 就绪后将使用 Colab 官方原生云盘模式",
-                    "云盘",
-                )
-            else:
-                self.activity.add("未检测到云盘无感凭据，本次启动跳过无感挂载", "云盘")
-        else:
-            self.activity.add("未开启自动挂载 Google 云盘，跳过云盘配置", "云盘")
 
-        self._reset_monitor_to_auto(close_observer=True)
-        self.update(runtime={"state": "starting"})
+        def _base_start_op(title: str | None = None) -> dict:
+            prev = self.data.get("operation")
+            op = dict(prev) if isinstance(prev, dict) else {}
+            op.setdefault("kind", "runtime_start")
+            op.setdefault("gpu", target_gpu)
+            op.setdefault("cancellable", True)
+            op.setdefault("cancelling", False)
+            op.setdefault("retryable", False)
+            op.setdefault("waiting_retry", False)
+            op.setdefault("retry_at", 0.0)
+            op.setdefault("has_retried", False)
+            op.setdefault("allocated", False)
+            op["running"] = True
+            if title is not None:
+                op["title"] = title
+            return op
 
         def notify(message):
             with self.lock:
@@ -2028,6 +2137,17 @@ class ColabOneController:
                 if current.get("state") == "ready":
                     self.update(operation={"title": message, "running": True})
                     return
+                op = _base_start_op()
+                if self.start_cancel.is_set():
+                    op["cancellable"] = False
+                    op["cancelling"] = True
+                    op["retryable"] = False
+                    op["waiting_retry"] = False
+                    op["retry_at"] = 0.0
+                    if "取消" in str(message or ""):
+                        op["title"] = message
+                else:
+                    op["title"] = message
                 next_rt = dict(current)
                 next_rt["state"] = "starting"
                 active_ep = self._active_endpoint()
@@ -2039,8 +2159,42 @@ class ColabOneController:
                         next_rt["location"] = rem["location"]
                 self.update(
                     runtime=next_rt,
-                    operation={"title": message, "running": True},
+                    operation=op,
                 )
+
+        def on_retry_state(info: dict):
+            if not isinstance(info, dict):
+                return
+            with self.lock:
+                prev = self.data.get("operation")
+                if not isinstance(prev, dict) or prev.get("kind") != "runtime_start":
+                    return
+                op = dict(prev)
+                if self.start_cancel.is_set() or op.get("cancelling"):
+                    op["cancellable"] = False
+                    op["cancelling"] = True
+                    op["retryable"] = False
+                    op["waiting_retry"] = False
+                    op["retry_at"] = 0.0
+                    if info.get("allocated"):
+                        op["allocated"] = True
+                    self.update(operation=op)
+                    return
+                for k in (
+                    "waiting_retry",
+                    "retryable",
+                    "retry_at",
+                    "attempt",
+                    "next_attempt",
+                    "total_attempts",
+                    "retry_kind",
+                    "has_retried",
+                    "allocated",
+                    "gpu",
+                ):
+                    if k in info:
+                        op[k] = info[k]
+                self.update(operation=op)
 
         def on_boot_telemetry(endpoint, location, sample):
             if not isinstance(sample, dict):
@@ -2066,18 +2220,77 @@ class ColabOneController:
                 self.update(runtime=next_rt)
 
         try:
+            self.activity.add("校验 Google 登录凭据", "登录")
+            self.auth.credentials("colab")
+            if self.start_cancel.is_set():
+                raise ColabOneOperationCancelled("已取消 GPU 分配", source="GPU")
+
+            if create_new:
+                self.activity.add(
+                    f"准备新增远端 {target_gpu} 实例（保留现有运行实例）",
+                    "GPU",
+                )
+                self._save_active_to_cache()
+                with self.lock:
+                    self.data["models"] = self.presets()
+                    self.data["workflows"] = self._merge_workflows(None)
+                    self.data["comfy_outputs"] = []
+                    self.remote_workflow_versions = {}
+
+            rclone_conf = ""
+            drive_reason = ""
+            if self.settings.get("auto_drive", True):
+                try:
+                    rclone_conf, drive_reason = self._resolve_headless_rclone_conf()
+                except Exception:
+                    rclone_conf, drive_reason = "", "error"
+                if rclone_conf:
+                    self.activity.add("已准备 Google 云盘自动挂载凭据", "云盘")
+                elif drive_reason in ("gcp_tos_required", "gcp_project_unavailable"):
+                    self.activity.add(
+                        "当前账号未配置免费 GCP 配额项目，GPU 就绪后将使用 Colab 官方原生云盘模式",
+                        "云盘",
+                    )
+                else:
+                    self.activity.add("未检测到云盘无感凭据，本次启动跳过无感挂载", "云盘")
+            else:
+                self.activity.add("未开启自动挂载 Google 云盘，跳过云盘配置", "云盘")
+
+            if self.start_cancel.is_set():
+                raise ColabOneOperationCancelled("已取消 GPU 分配", source="GPU")
+
+            self._reset_monitor_to_auto(close_observer=True)
+            self.update(runtime={"state": "starting"})
+
             start_kwargs = {}
             if ColabOneController._accepts_kwarg(self.provider.start, "on_telemetry"):
                 start_kwargs["on_telemetry"] = on_boot_telemetry
             if ColabOneController._accepts_kwarg(self.provider.start, "on_log"):
                 start_kwargs["on_log"] = self.activity.add
             if ColabOneController._accepts_kwarg(self.provider.start, "cancel_event"):
-                start_kwargs["cancel_event"] = self.stop
+                start_kwargs["cancel_event"] = self.start_cancel
+            if ColabOneController._accepts_kwarg(self.provider.start, "retry_event"):
+                start_kwargs["retry_event"] = self.start_retry
+            if ColabOneController._accepts_kwarg(self.provider.start, "on_retry_state"):
+                start_kwargs["on_retry_state"] = on_retry_state
             if create_new:
                 start_kwargs["create_new"] = True
             if rclone_conf:
                 start_kwargs["rclone_conf"] = rclone_conf
+            active_assign_proxy = ""
+            with self.lock:
+                proxy_enabled = bool(self.settings.get("assign_proxy_enabled"))
+            if proxy_enabled:
+                raw_proxy = self.vault.get("assign_proxy", "")
+                if isinstance(raw_proxy, str) and raw_proxy.strip():
+                    active_assign_proxy = colabone_normalize_assign_proxy(raw_proxy)
+            if active_assign_proxy and ColabOneController._accepts_kwarg(
+                self.provider.start, "assign_proxy"
+            ):
+                start_kwargs["assign_proxy"] = active_assign_proxy
             self.provider.start(target_gpu, notify, **start_kwargs)
+            if self.start_cancel.is_set():
+                raise ColabOneOperationCancelled("已取消 GPU 分配", source="GPU")
             self.activity.add("正在拉取远端实例硬件与模型快照", "GPU")
             try:
                 self.refresh_remote()
@@ -2087,6 +2300,18 @@ class ColabOneController:
                 )
                 time.sleep(1.5)
                 self.refresh_remote()
+            with self.lock:
+                prev_op = self.data.get("operation")
+                if isinstance(prev_op, dict) and prev_op.get("kind") == "runtime_start":
+                    done_op = dict(prev_op)
+                    done_op.update(
+                        cancellable=False,
+                        retryable=False,
+                        waiting_retry=False,
+                        retry_at=0.0,
+                        has_retried=False,
+                    )
+                    self.update(operation=done_op)
             self.activity.add(
                 f"正在同步空闲自动释放策略（{self.settings['idle_minutes']} 分钟）",
                 "GPU",
@@ -2199,7 +2424,17 @@ class ColabOneController:
                 self.update(
                     runtime={"state": "disconnected" if remaining_active else "stopped"}
                 )
+            self._observer_wake.set()
+            if self.start_cancel.is_set():
+                still_leftover = set(self._vault_sessions().keys()) - existing_sessions
+                if not still_leftover:
+                    raise ColabOneOperationCancelled(
+                        "已取消 GPU 分配", source="GPU"
+                    ) from None
             raise
+        finally:
+            self.start_cancel.clear()
+            self.start_retry.clear()
 
     def release(self, force=False, endpoint: str | None = None):
         active_ep = self._active_endpoint()
@@ -2677,6 +2912,7 @@ class ColabOneController:
                 "idle_minutes",
                 "auto_drive",
                 "download_threads",
+                "assign_proxy_enabled",
             )
             if k in payload
         }
@@ -2700,14 +2936,52 @@ class ColabOneController:
             raise ValueError("下载线程数请选择 16 或 32")
         if "auto_drive" in public and not isinstance(public["auto_drive"], bool):
             raise ValueError("自动挂载云盘设置不合法")
+        if "assign_proxy_enabled" in public and not isinstance(
+            public["assign_proxy_enabled"], bool
+        ):
+            raise ValueError("分配代理开关设置不合法")
+
+        clear_assign_proxy = bool(payload.get("clear_assign_proxy", False))
+        raw_assign_proxy = (
+            str(payload.get("assign_proxy") or "").strip()
+            if "assign_proxy" in payload
+            else ""
+        )
+        new_proxy_spec = None
+        if clear_assign_proxy:
+            public["assign_proxy_enabled"] = False
+        elif raw_assign_proxy:
+            new_proxy_spec = colabone_parse_assign_proxy(raw_assign_proxy)
+            if "assign_proxy_enabled" not in public:
+                public["assign_proxy_enabled"] = True
+
+        existing_proxy = self.vault.get("assign_proxy", "")
+        existing_proxy = existing_proxy if isinstance(existing_proxy, str) else ""
+        existing_proxy_spec = None
+        if existing_proxy.strip():
+            try:
+                existing_proxy_spec = colabone_parse_assign_proxy(existing_proxy)
+            except ValueError:
+                existing_proxy_spec = None
+        if public.get("assign_proxy_enabled") is True and not (
+            new_proxy_spec is not None or existing_proxy_spec is not None
+        ):
+            raise ValueError("请先填写并保存分配代理地址")
+
         hf_token = str(payload.get("hf_token") or "").strip()
         if hf_token:
             self.vault.set("hf", hf_token)
+        if clear_assign_proxy:
+            self.vault.delete("assign_proxy")
+        elif new_proxy_spec is not None:
+            self.vault.set("assign_proxy", new_proxy_spec.normalized_url)
+
         with self.lock:
             idle_changed = (
                 "idle_minutes" in public
                 and public["idle_minutes"] != self.settings.get("idle_minutes")
             )
+            prev_proxy_enabled = bool(self.settings.get("assign_proxy_enabled"))
             self.settings.update(public)
             snapshot_settings = dict(self.settings)
         atomic_json(self.directory / "settings.json", snapshot_settings)
@@ -2718,6 +2992,26 @@ class ColabOneController:
         ]
         if hf_token:
             summary_parts.append("已更新 Hugging Face Token")
+        if clear_assign_proxy:
+            summary_parts.append("已清除分配代理")
+        elif new_proxy_spec is not None:
+            if snapshot_settings.get("assign_proxy_enabled"):
+                summary_parts.append(f"已启用仅分配代理（{new_proxy_spec.log_label}）")
+            else:
+                summary_parts.append(f"已保存分配代理（{new_proxy_spec.log_label}）")
+        elif (
+            "assign_proxy_enabled" in public
+            and bool(snapshot_settings.get("assign_proxy_enabled")) != prev_proxy_enabled
+        ):
+            if snapshot_settings.get("assign_proxy_enabled"):
+                saved_label = colabone_proxy_log_label(existing_proxy)
+                summary_parts.append(
+                    f"已开启仅分配代理（{saved_label}）"
+                    if saved_label
+                    else "已开启仅分配代理"
+                )
+            else:
+                summary_parts.append("已关闭仅分配代理")
         self.activity.add("已保存设置（" + " · ".join(summary_parts) + "）", "设置")
         self.last_config = 0
         with self.lock:
@@ -3077,7 +3371,11 @@ class ColabOneController:
                 "GET", f"comfyui/outputs/{identity}/asset?offset={offset}"
             )
         if action == "runtime.upgrade":
-            return self.async_operation("更新远端管理服务", self.upgrade_service)
+            force_upgrade = bool((payload or {}).get("force"))
+            return self.async_operation(
+                "更新远端管理服务",
+                lambda: self.upgrade_service(force=force_upgrade),
+            )
         if action == "runtime.activity":
             # Queue rather than blocking the UI behind a kernel RPC.
             if self.data["runtime"].get("state") == "ready":
@@ -3189,6 +3487,22 @@ class ColabOneController:
         if action == "settings.hf_token":
             raw = self.vault.get("hf", "")
             return {"token": raw if isinstance(raw, str) else ""}
+        if action == "settings.assign_proxy":
+            raw = self.vault.get("assign_proxy", "")
+            return {"url": raw if isinstance(raw, str) else ""}
+        if action == "settings.assign_proxy.test":
+            raw = str(payload.get("assign_proxy") or "").strip()
+            if not raw:
+                saved = self.vault.get("assign_proxy", "")
+                raw = saved if isinstance(saved, str) else ""
+            if not raw.strip():
+                raise ValueError("请先填写或保存分配代理地址")
+            res = colabone_test_assign_proxy(raw)
+            self.activity.add(
+                f"分配代理连通性测试通过（{res['proxy']} · {res['latency_ms']} ms）",
+                "设置",
+            )
+            return res
         if action == "auth.colab.begin":
             if self.operation_lock.locked() and not getattr(
                 self.auth, "loopback_active", False
@@ -3270,10 +3584,74 @@ class ColabOneController:
         if action == "runtime.start":
             create_new = bool(payload.get("new"))
             gpu = payload.get("gpu")
+            target_gpu = gpu or self.settings["gpu"]
+
+            def _reset_start_signals():
+                self.start_cancel.clear()
+                self.start_retry.clear()
+
             return self.async_operation(
                 "新增启动远端 GPU" if create_new else "启动远端 GPU",
                 lambda: self.start(create_new=create_new, gpu=gpu),
+                meta={
+                    "kind": "runtime_start",
+                    "cancellable": True,
+                    "cancelling": False,
+                    "retryable": False,
+                    "waiting_retry": False,
+                    "retry_at": 0.0,
+                    "has_retried": False,
+                    "allocated": False,
+                    "gpu": target_gpu,
+                },
+                on_start=_reset_start_signals,
             )
+        if action == "runtime.start.cancel":
+            with self.lock:
+                op = self.data.get("operation")
+                if (
+                    not isinstance(op, dict)
+                    or op.get("kind") != "runtime_start"
+                    or not op.get("cancellable")
+                ):
+                    return {"ok": True, "cancelled": False}
+                next_op = dict(op)
+                next_op.update(
+                    title=(
+                        "正在取消启动并释放实例"
+                        if op.get("allocated")
+                        else "正在取消 GPU 分配"
+                    ),
+                    cancellable=False,
+                    cancelling=True,
+                    retryable=False,
+                    waiting_retry=False,
+                    retry_at=0.0,
+                )
+                self.start_cancel.set()
+                self.update(operation=next_op)
+            self.activity.add("已请求取消 GPU 分配", "GPU")
+            return {"ok": True, "cancelled": True}
+        if action == "runtime.start.retry":
+            with self.lock:
+                op = self.data.get("operation")
+                if (
+                    not isinstance(op, dict)
+                    or op.get("kind") != "runtime_start"
+                    or not op.get("waiting_retry")
+                    or op.get("cancelling")
+                    or self.start_cancel.is_set()
+                ):
+                    return {"ok": True, "triggered": False}
+                next_op = dict(op)
+                next_op.update(
+                    waiting_retry=False,
+                    retryable=False,
+                    retry_at=0.0,
+                )
+                self.start_retry.set()
+                self.update(operation=next_op)
+            return {"ok": True, "triggered": True}
         if action == "runtime.release":
             target_ep = payload.get("endpoint")
             return self.async_operation(

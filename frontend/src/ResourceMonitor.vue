@@ -2749,7 +2749,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 
 .co-rm-kv {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 4px;
 }
 
@@ -2869,13 +2869,13 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .co-rm-row-rail-line,
 .co-rm-row-rail-subline {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   min-width: 0;

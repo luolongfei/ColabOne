@@ -246,6 +246,31 @@ samp {
   margin-inline-end: 0 !important;
 }
 
+/* Replace Ant Design's 1/4-arc button loading glyph with a crisp 3/4 circle ring */
+.ant-btn .ant-btn-loading-icon .anticon-loading {
+  width: 1em;
+  height: 1em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ant-btn .ant-btn-loading-icon .anticon-loading > svg {
+  display: none;
+}
+
+.ant-btn .ant-btn-loading-icon .anticon-loading::after {
+  content: "";
+  display: block;
+  width: 1em;
+  height: 1em;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.25A5.75 5.75 0 1 1 2.25 8' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.25A5.75 5.75 0 1 1 2.25 8' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
 /* Unified 4s-per-revolution rotation speed for all Ant Design loading icons */
 .ant-spin .ant-spin-dot-spin,
 .ant-spin-dot.ant-spin-dot-spin,

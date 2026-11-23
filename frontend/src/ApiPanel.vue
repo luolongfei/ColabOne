@@ -103,6 +103,7 @@ const copiedField = ref<"" | "url" | "key" | "model" | "auto" | "code">("");
 const editingModelId = ref(false);
 const modelIdDraft = ref("");
 const savingModelId = ref(false);
+const cancellingRequestIds = ref<Record<string, boolean>>({});
 const busy = ref(false);
 const awaitingApiReady = ref(false);
 const language = ref<"curl" | "python" | "codex">("curl");
@@ -252,7 +253,7 @@ const code = computed(() => {
   const prompt = t("api.samplePrompt");
   if (language.value === "codex") {
     const ctx = activeContextTokens.value;
-    const compactLimit = Math.max(2048, Math.round(ctx * 0.8));
+    const compactLimit = Math.max(2048, Math.round(ctx * 0.75));
     return `# ~/.codex/config.toml\nmodel = "${id}"\nmodel_provider = "colabone"\nmodel_context_window = ${ctx}\nmodel_auto_compact_token_limit = ${compactLimit}\n\n[model_providers.colabone]\nname = "ColabOne"\nbase_url = "${base.value}"\nenv_key = "COLABONE_API_KEY"\nwire_api = "responses"\nsupports_websockets = false`;
   }
   if (language.value === "python") {
@@ -286,6 +287,24 @@ async function unloadModel() {
   }
 }
 
+async function cancelRequest(taskId: string) {
+  if (!taskId || cancellingRequestIds.value[taskId]) return;
+  cancellingRequestIds.value = {
+    ...cancellingRequestIds.value,
+    [taskId]: true,
+  };
+  try {
+    await colabOneCommand("task.cancel", { id: taskId });
+    emit("sync");
+  } catch (e) {
+    emit("error", String(e));
+  } finally {
+    const next = { ...cancellingRequestIds.value };
+    delete next[taskId];
+    cancellingRequestIds.value = next;
+  }
+}
+
 watch(
   () => api.value?.state,
   (next) => {
@@ -303,6 +322,7 @@ watch(
     awaitingApiReady.value = false;
     editingModelId.value = false;
     modelIdDraft.value = "";
+    cancellingRequestIds.value = {};
     keySeq += 1;
     key.value = "";
     clearTimeout(keyTimer.value);
@@ -1277,58 +1297,98 @@ onUnmounted(() => {
                   >
                     {{ t("api.reqStreamingTag") }}
                   </ATag>
+                  <ColabOneTooltip
+                    v-if="req.compacted"
+                    :title="
+                      req.original_prompt_tokens &&
+                      req.prompt_tokens &&
+                      req.original_prompt_tokens > req.prompt_tokens
+                        ? t('api.reqCompactedTooltip', {
+                            before: formatTokenCount(req.original_prompt_tokens),
+                            after: formatTokenCount(req.prompt_tokens),
+                          })
+                        : t('api.reqCompactedGenericTooltip')
+                    "
+                  >
+                    <ATag
+                      color="purple"
+                      :bordered="false"
+                      class="co-api-request-tag"
+                    >
+                      {{ t("api.reqCompactedTag") }}
+                    </ATag>
+                  </ColabOneTooltip>
                   <time class="co-api-request-time co-mono">
                     {{ formatRequestClock(req.started_at) }}
                   </time>
                 </div>
 
-                <ColabOneTooltip
-                  :title="
-                    req.estimated
-                      ? t('api.reqEstimatedTooltip')
-                      : req.prompt_tokens_per_second
-                        ? t('api.reqPrefillTooltip', {
-                            speed: formatTokenSpeed(req.prompt_tokens_per_second),
-                          })
-                        : t('api.reqSpeedTooltip')
-                  "
-                >
-                  <span
-                    class="co-api-request-tps co-mono"
-                    :class="{
-                      'is-live': req.state === 'running',
-                      'is-empty':
-                        !req.tokens_per_second || req.tokens_per_second <= 0,
-                    }"
+                <div class="co-api-request-right">
+                  <ColabOneTooltip
+                    :title="
+                      req.estimated
+                        ? t('api.reqEstimatedTooltip')
+                        : req.prompt_tokens_per_second
+                          ? t('api.reqPrefillTooltip', {
+                              speed: formatTokenSpeed(req.prompt_tokens_per_second),
+                            })
+                          : t('api.reqSpeedTooltip')
+                    "
                   >
-                    <template
-                      v-if="req.tokens_per_second && req.tokens_per_second > 0"
-                    >
-                      {{
-                        formatTokenSpeed(
-                          req.tokens_per_second,
-                          !!req.estimated,
-                        )
-                      }}
-                    </template>
                     <span
-                      v-else-if="req.state === 'running'"
-                      class="co-api-tps-pending"
+                      class="co-api-request-tps co-mono"
+                      :class="{
+                        'is-live': req.state === 'running',
+                        'is-empty':
+                          !req.tokens_per_second || req.tokens_per_second <= 0,
+                      }"
                     >
-                      <ColabOneSkeleton
-                        :width="76"
-                        :height="14"
-                        variant="pill"
-                        tone="accent"
-                        inline
-                      />
-                      <span class="co-sr-only">{{
-                        t("api.reqWaitingFirstToken")
-                      }}</span>
+                      <template
+                        v-if="req.tokens_per_second && req.tokens_per_second > 0"
+                      >
+                        {{
+                          formatTokenSpeed(
+                            req.tokens_per_second,
+                            !!req.estimated,
+                          )
+                        }}
+                      </template>
+                      <span
+                        v-else-if="req.state === 'running'"
+                        class="co-api-tps-pending"
+                      >
+                        <ColabOneSkeleton
+                          :width="76"
+                          :height="14"
+                          variant="pill"
+                          tone="accent"
+                          inline
+                        />
+                        <span class="co-sr-only">{{
+                          t("api.reqWaitingFirstToken")
+                        }}</span>
+                      </span>
+                      <template v-else>—</template>
                     </span>
-                    <template v-else>—</template>
-                  </span>
-                </ColabOneTooltip>
+                  </ColabOneTooltip>
+                  <AButton
+                    v-if="req.state === 'running' && req.id"
+                    danger
+                    size="small"
+                    class="co-api-request-cancel"
+                    :loading="!!cancellingRequestIds[req.id]"
+                    :disabled="
+                      busy ||
+                      !!props.busy ||
+                      !!state.operation ||
+                      !!cancellingRequestIds[req.id]
+                    "
+                    :aria-label="t('api.cancelRequestAria', { seq: req.seq })"
+                    @click="cancelRequest(req.id)"
+                  >
+                    {{ t("common.cancel") }}
+                  </AButton>
+                </div>
               </div>
 
               <div class="co-api-request-meta co-tabular">
@@ -1339,7 +1399,24 @@ onUnmounted(() => {
                     })
                   }}
                 </span>
-                <span v-if="req.prompt_tokens != null && req.prompt_tokens > 0">
+                <span
+                  v-if="
+                    req.compacted &&
+                    req.original_prompt_tokens != null &&
+                    req.original_prompt_tokens > 0 &&
+                    req.prompt_tokens != null &&
+                    req.prompt_tokens > 0 &&
+                    req.original_prompt_tokens > req.prompt_tokens
+                  "
+                >
+                  {{
+                    t("api.reqInputCompacted", {
+                      before: formatTokenCount(req.original_prompt_tokens),
+                      after: formatTokenCount(req.prompt_tokens),
+                    })
+                  }}
+                </span>
+                <span v-else-if="req.prompt_tokens != null && req.prompt_tokens > 0">
                   {{
                     t("api.reqInputTokens", {
                       count: formatTokenCount(req.prompt_tokens),
@@ -1634,7 +1711,7 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 18px;
-  align-items: stretch;
+  align-items: start;
 }
 
 .co-api-connection,
@@ -2034,6 +2111,21 @@ onUnmounted(() => {
 .co-api-request-time {
   font-size: 12px;
   color: var(--co-muted);
+}
+
+.co-api-request-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.co-api-request-cancel {
+  height: 22px;
+  padding-inline: 8px;
+  font-size: 11.5px;
+  line-height: 20px;
+  border-radius: 6px;
 }
 
 .co-api-request-tps {

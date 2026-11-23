@@ -116,6 +116,7 @@ const resolvedStyle = computed<Record<string, string>>(() => {
 .co-skeleton.is-inline {
   display: inline-block;
   vertical-align: middle;
+  align-self: center;
 }
 
 .co-skeleton--subtle {

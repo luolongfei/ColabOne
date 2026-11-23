@@ -1049,3 +1049,258 @@ def test_error_clear_respects_expected_and_select_guards_busy(tmp_path):
             c.command("runtime.select", {"endpoint": "ep-2"})
     finally:
         c.operation_lock.release()
+
+
+def test_allocate_retry_now_skips_backoff_wait_and_logs():
+    import threading
+    import time
+    from colab_cli.client import GetAssignmentResponse, Accelerator, AssignmentVariant
+
+    p, _ = make_provider()
+    p._assign_retry_delays = (30, 30)
+    cancel_ev = threading.Event()
+    retry_ev = threading.Event()
+    post_calls = [0]
+    retry_states = []
+    logs = []
+
+    class ManualRetryClient:
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            return GetAssignmentResponse(
+                acc=accelerator.value, nbh=str(nbh), token="xsrf", variant=variant
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            post_calls[0] += 1
+            if post_calls[0] == 1:
+                raise _make_colab_request_error(503)
+            return SimpleNamespace(
+                endpoint="gpu-g4-manual-retry-ok",
+                accelerator=Accelerator.G4,
+                variant=AssignmentVariant.GPU,
+                runtime_proxy_info=_make_proxy_info("gpu-g4-manual-retry-ok"),
+            )
+
+    def on_retry_state(info):
+        retry_states.append(dict(info))
+        if info.get("waiting_retry"):
+            retry_ev.set()
+
+    p.client_factory = lambda: ManualRetryClient()
+    started = time.monotonic()
+    session = p.allocate(
+        "G4",
+        on_log=lambda msg, src="GPU", lvl="info": logs.append(msg),
+        cancel_event=cancel_ev,
+        retry_event=retry_ev,
+        on_retry_state=on_retry_state,
+    )
+    elapsed = time.monotonic() - started
+    assert session.endpoint == "gpu-g4-manual-retry-ok"
+    assert post_calls[0] == 2
+    assert elapsed < 3.0
+    assert any(st.get("waiting_retry") and st.get("retryable") for st in retry_states)
+    assert retry_states[-1]["waiting_retry"] is False
+    assert retry_states[-1]["attempt"] == 2
+    assert any(
+        "已手动触发立即重试，跳过等待立即尝试分配 G4（第 2/3 次）" in m for m in logs
+    )
+
+
+def test_controller_start_cancel_and_retry_now_during_allocation(tmp_path):
+    import threading
+    import time
+    from colab_cli.client import GetAssignmentResponse, Accelerator, AssignmentVariant
+
+    root = Path(__file__).resolve().parents[1]
+
+    def _wait_until(pred, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return pred()
+
+    # 1) Cancel during 30s backoff wait cleans up cleanly with no error
+    vault1 = MemoryVault()
+    vault1.set("colab", {"refresh_token": "rt"})
+    c1 = ColabOneController(root, vault=vault1, config_dir=tmp_path / "c1", background=False)
+    c1.auth.credentials = lambda scope="colab": SimpleNamespace(token="tok")
+    c1.settings["auto_drive"] = False
+    c1.provider._assign_retry_delays = (30, 30)
+
+    class BusyOnceClient:
+        def get_consumption_user_info(self):
+            return SimpleNamespace(paid_compute_units_balance=100.0, consumption_rate_hourly=0.0)
+
+        def list_assignments(self):
+            return []
+
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            return GetAssignmentResponse(
+                acc=accelerator.value, nbh=str(nbh), token="xsrf", variant=variant
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            raise _make_colab_request_error(503)
+
+    c1.provider.client_factory = lambda: BusyOnceClient()
+    c1.command("runtime.start", {"gpu": "G4"})
+    assert _wait_until(
+        lambda: bool((c1.snapshot().get("operation") or {}).get("waiting_retry"))
+    )
+    snap = c1.snapshot()
+    op = snap["operation"]
+    assert op["kind"] == "runtime_start"
+    assert op["cancellable"] is True
+    assert op["retryable"] is True
+    assert op["waiting_retry"] is True
+    assert op["next_attempt"] == 2
+    assert op["total_attempts"] == 3
+    assert op["gpu"] == "G4"
+    assert op["retry_at"] > time.time()
+
+    started_cancel = time.monotonic()
+    res = c1.command("runtime.start.cancel", {})
+    assert res == {"ok": True, "cancelled": True}
+    assert _wait_until(lambda: c1.snapshot()["operation"] is None)
+    assert time.monotonic() - started_cancel < 3.0
+    final_snap = c1.snapshot()
+    assert final_snap["runtime"]["state"] == "stopped"
+    assert final_snap["error"] == ""
+    assert any(
+        entry["message"] == "已取消 GPU 分配" and entry["source"] == "GPU"
+        for entry in final_snap["logs"]
+    )
+
+    # 2) Manual retry skips 30s wait and completes start immediately
+    vault2 = MemoryVault()
+    vault2.set("colab", {"refresh_token": "rt"})
+    c2 = ColabOneController(root, vault=vault2, config_dir=tmp_path / "c2", background=False)
+    c2.auth.credentials = lambda scope="colab": SimpleNamespace(token="tok")
+    c2.settings["auto_drive"] = False
+    c2.provider._assign_retry_delays = (30, 30)
+    attempts = [0]
+
+    class RetryThenReadyClient:
+        def get_consumption_user_info(self):
+            return SimpleNamespace(paid_compute_units_balance=100.0, consumption_rate_hourly=1.5)
+
+        def list_assignments(self):
+            return []
+
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            return GetAssignmentResponse(
+                acc=accelerator.value, nbh=str(nbh), token="xsrf", variant=variant
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            attempts[0] += 1
+            if attempts[0] == 1:
+                raise _make_colab_request_error(503)
+            return SimpleNamespace(
+                endpoint="gpu-g4-retry-now-ep",
+                accelerator=Accelerator.G4,
+                variant=AssignmentVariant.GPU,
+                runtime_proxy_info=_make_proxy_info("gpu-g4-retry-now-ep"),
+            )
+
+    c2.provider.client_factory = lambda: RetryThenReadyClient()
+    c2.provider.ready = lambda session, on_log=None, cancel_event=None: None
+    c2.provider._upload_file = lambda session, local_path, remote_path: {}
+    c2.provider.execute = lambda session, code, **kw: [{"text": "COLABONE_READY=1\n"}]
+    c2.refresh_remote = lambda endpoint=None: c2.update(
+        runtime={"state": "ready", "id": "gpu-g4-retry-now-ep", "idle_minutes": 30}
+    )
+    c2.configure_remote = lambda endpoint=None: None
+
+    c2.command("runtime.start", {"gpu": "G4"})
+    assert _wait_until(
+        lambda: bool((c2.snapshot().get("operation") or {}).get("waiting_retry"))
+    )
+    started_retry = time.monotonic()
+    retry_res = c2.command("runtime.start.retry", {})
+    assert retry_res == {"ok": True, "triggered": True}
+    assert _wait_until(lambda: c2.snapshot()["operation"] is None)
+    assert time.monotonic() - started_retry < 3.0
+    assert attempts[0] == 2
+    assert c2.snapshot()["runtime"]["state"] == "ready"
+    assert c2.snapshot()["error"] == ""
+
+    # 3) Cancel after allocation (during kernel ready wait) rolls back and releases VM
+    vault3 = MemoryVault()
+    vault3.set("colab", {"refresh_token": "rt"})
+    c3 = ColabOneController(root, vault=vault3, config_dir=tmp_path / "c3", background=False)
+    c3.auth.credentials = lambda scope="colab": SimpleNamespace(token="tok")
+    c3.settings["auto_drive"] = False
+    entered_ready = threading.Event()
+    released_eps = []
+
+    class ImmediateAssignClient:
+        def get_consumption_user_info(self):
+            return SimpleNamespace(paid_compute_units_balance=100.0, consumption_rate_hourly=1.5)
+
+        def list_assignments(self):
+            return []
+
+        def _get_assignment(self, nbh, variant, accelerator, shape):
+            return GetAssignmentResponse(
+                acc=accelerator.value, nbh=str(nbh), token="xsrf", variant=variant
+            )
+
+        def _post_assignment(self, nbh, token, variant, accelerator, shape):
+            return SimpleNamespace(
+                endpoint="gpu-g4-rollback-ep",
+                accelerator=Accelerator.G4,
+                variant=AssignmentVariant.GPU,
+                runtime_proxy_info=_make_proxy_info("gpu-g4-rollback-ep"),
+            )
+
+    def blocking_ready(session, on_log=None, cancel_event=None):
+        entered_ready.set()
+        if cancel_event is not None and cancel_event.wait(10):
+            raise RuntimeError("已取消 GPU 启动")
+
+    def fake_release(endpoint=None, on_log=None):
+        ep = endpoint or c3.provider.active_endpoint()
+        released_eps.append(ep)
+        c3.provider.clear(ep)
+        return {"ok": True}
+
+    c3.provider.client_factory = lambda: ImmediateAssignClient()
+    c3.provider.ready = blocking_ready
+    c3.provider.release = fake_release
+
+    c3.command("runtime.start", {"gpu": "G4"})
+    assert entered_ready.wait(3.0)
+    cancel_res = c3.command("runtime.start.cancel", {})
+    assert cancel_res == {"ok": True, "cancelled": True}
+    assert _wait_until(lambda: c3.snapshot()["operation"] is None)
+    assert released_eps == ["gpu-g4-rollback-ep"]
+    assert c3.provider.managed_endpoints() == []
+    assert c3.snapshot()["runtime"]["state"] == "stopped"
+    assert c3.snapshot()["error"] == ""
+
+    # 4) Cancel while adding a second instance preserves existing active instance
+    vault4 = MemoryVault()
+    vault4.set("colab", {"refresh_token": "rt"})
+    c4 = ColabOneController(root, vault=vault4, config_dir=tmp_path / "c4", background=False)
+    c4.auth.credentials = lambda scope="colab": SimpleNamespace(token="tok")
+    c4.settings["auto_drive"] = False
+    c4.provider._assign_retry_delays = (30, 30)
+    c4.provider.save_session(p_session("gpu-existing-ep", "T4", "STANDARD"), activate=True)
+    c4.provider.save_remote({"endpoint": "gpu-existing-ep", "gpu": "T4"}, activate=True)
+    c4.update(runtime={"state": "ready", "id": "gpu-existing-ep"})
+    c4.provider.client_factory = lambda: BusyOnceClient()
+
+    c4.command("runtime.start", {"new": True, "gpu": "G4"})
+    assert _wait_until(
+        lambda: bool((c4.snapshot().get("operation") or {}).get("waiting_retry"))
+    )
+    assert c4.command("runtime.start.cancel", {}) == {"ok": True, "cancelled": True}
+    assert _wait_until(lambda: c4.snapshot()["operation"] is None)
+    assert c4.provider.active_endpoint() == "gpu-existing-ep"
+    assert c4.snapshot()["runtime"]["state"] == "ready"
+    assert c4.snapshot()["runtime"]["id"] == "gpu-existing-ep"
+    assert c4.snapshot()["error"] == ""

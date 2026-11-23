@@ -89,6 +89,8 @@ export const koKRMessages: ColabOneMessages = {
   "status.upgradeAction": "원격 서비스 업데이트",
   "status.upgradeOptionalReady":
     "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 캐시된 모델과 워크플로를 유지한 채 언제든 업데이트할 수 있습니다.",
+  "status.upgradeOptionalReadyWithConfirm":
+    "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 버튼을 누르면 실행 중인 서비스를 자동 중지하고 바로 업데이트할 수 있으며(캐시는 유지됩니다), 나중에 업데이트해도 됩니다.",
   "status.upgradeOptionalBlockedModel":
     "원격 서비스의 마이너 업데이트가 있습니다(현재 기능은 정상 동작합니다). 지금 업데이트하려면 먼저 모델을 언로드하세요(캐시된 가중치는 유지됩니다). 나중에 업데이트해도 됩니다.",
   "status.upgradeOptionalBlockedComfy":
@@ -103,6 +105,18 @@ export const koKRMessages: ColabOneMessages = {
     "현재 원격 작업이 끝난 뒤 원격 서비스를 업데이트해 주세요.",
   "status.upgradeBlockedOperation":
     "현재 작업이 완료된 뒤 원격 서비스를 업데이트해 주세요.",
+  "status.upgradeActiveTask": "실행 중인 원격 작업 (취소됨)",
+  "status.upgradeActiveModel": "로드된 모델: {name} (VRAM에서 언로드됨)",
+  "status.upgradeActiveModelGeneric": "VRAM에 로드된 모델 (언로드됨)",
+  "status.upgradeActiveApi": "외부 API 서비스 및 공개 터널 (중지됨)",
+  "status.upgradeActiveComfy": "ComfyUI 워크플로 엔진 및 캔버스 터널 (중지됨)",
+  "status.upgradeActiveEngine": "실행 중인 원격 추론 엔진 (중지됨)",
+  "status.upgradeConfirmTitle": "원격 서비스 핫 업데이트 확인",
+  "status.upgradeConfirmLead":
+    "현재 원격 인스턴스에 실행 중인 서비스나 작업이 있습니다. 계속하면 아래 항목을 먼저 자동으로 중지하거나 언로드한 뒤 업데이트합니다:",
+  "status.upgradeConfirmPreserveNote":
+    "다운로드된 모델 가중치, 워크플로, 결과물 및 설정은 모두 그대로 유지됩니다. 업데이트 후 모델을 다시 로드하거나 서비스를 켜세요.",
+  "status.upgradeConfirmAction": "중지 후 바로 업데이트",
 
   // Appearance
   "appearance.system": "시스템 설정",
@@ -374,6 +388,30 @@ export const koKRMessages: ColabOneMessages = {
   "device.stopAllCount": "모두 중지 ({count}대)",
   "device.stopInstance": "인스턴스 중지",
   "device.stopRemoteInstance": "원격 인스턴스 중지",
+  "device.cancelAllocation": "할당 취소",
+  "device.cancellingAllocation": "취소 중…",
+  "device.cancelAllocationTooltip":
+    "현재 할당 또는 시작을 중지합니다. 이미 할당된 인스턴스는 자동으로 해제되어 잔여 과금이 발생하지 않습니다",
+  "device.retryNow": "지금 다시 시도",
+  "device.retryingNow": "요청 중…",
+  "device.retryAllocationNowTooltip":
+    "대기 카운트다운을 건너뛰고 즉시 Google에 할당을 다시 요청합니다",
+  "device.retryAllocationRequestingTooltip":
+    "Google에 할당을 요청 중입니다. 응답 후 수동으로 즉시 재시도할 수 있습니다",
+  "device.waitingRetryCapacity":
+    "Google 연산 리소스 부족 · {seconds}초 후 {gpu} 할당 자동 재시도 ({next}/{total}회 시도)",
+  "device.waitingRetryCapacitySoon":
+    "Google 연산 리소스 부족 · 곧 {gpu} 할당 재시도 ({next}/{total}회 시도)",
+  "device.waitingRetryServerBusy":
+    "Google 할당 서비스 혼잡 · {seconds}초 후 {gpu} 할당 자동 재시도 ({next}/{total}회 시도)",
+  "device.waitingRetryServerBusySoon":
+    "Google 할당 서비스 혼잡 · 곧 {gpu} 할당 재시도 ({next}/{total}회 시도)",
+  "device.waitingRetryNetwork":
+    "할당 요청 실패 · {seconds}초 후 {gpu} 자동 재시도 ({next}/{total}회 시도)",
+  "device.waitingRetryNetworkSoon":
+    "할당 요청 실패 · 곧 {gpu} 재시도 ({next}/{total}회 시도)",
+  "device.toastAllocationCancelled": "GPU 할당이 취소되었습니다",
+  "device.toastRetryTriggered": "대기를 건너뛰고 즉시 다시 시도합니다",
   "device.idlePaused": "작업 중 · 자동 해제 일시 정지",
   "device.idleCountdownRemaining": "자동 해제까지",
   "device.idleCountdownSuffix": "남음",
@@ -575,12 +613,17 @@ export const koKRMessages: ColabOneMessages = {
   "api.speedWaiting": "요청 대기 중",
   "api.speedEmpty": "호출 없음",
   "api.reqStreamingTag": "스트림",
+  "api.reqCompactedTag": "압축됨",
+  "api.reqCompactedTooltip": "현재 컨텍스트 창에 맞게 입력을 {before}에서 {after} 토큰으로 자동 압축했습니다",
+  "api.reqCompactedGenericTooltip": "현재 모델 창에 맞게 자동 컨텍스트 압축이 실행되었습니다",
   "api.reqEstimatedTooltip": "정확한 timings가 없어 출력 토큰과 소요 시간으로 추정했습니다",
   "api.reqPrefillTooltip": "프롬프트 프리필 속도 {speed}",
   "api.reqSpeedTooltip": "이 요청의 생성 속도",
   "api.reqWaitingFirstToken": "첫 토큰 대기 중…",
   "api.reqOutputTokens": "출력 {count} tok",
   "api.reqInputTokens": "입력 {count} tok",
+  "api.reqInputCompacted": "입력 {before} → {after} tok",
+  "api.cancelRequestAria": "요청 #{seq} 취소",
   "api.reqTtft": "첫 응답 {duration}",
   "api.reqDuration": "소요 {duration}",
   "api.reqPrefill": "프리필 {speed}",
@@ -813,6 +856,8 @@ export const koKRMessages: ColabOneMessages = {
   "models.compatCtx32kHint": "긴 문서·코드베이스 적합",
   "models.compatCtx64kChars": "약 4.8만 자",
   "models.compatCtx64kHint": "넉넉한 VRAM 필요",
+  "models.compatCtx128kChars": "약 9.6만 자",
+  "models.compatCtx128kHint": "G4 / H100 등 대용량 VRAM 권장",
   "models.compatPresetBalanced": "일상 균형",
   "models.compatPresetBalancedSum": "일반 질문과 일상 대화에 적합하며 빠르고 VRAM 부담이 가장 적음",
   "models.compatPresetBalancedVram": "낮은 VRAM",
@@ -862,6 +907,7 @@ export const koKRMessages: ColabOneMessages = {
   "models.compatEffectCtx16k": "코드 및 문서 분석에 적합(약 1.2만 자)",
   "models.compatEffectCtx32k": "긴 문서 및 프로젝트 분석(약 2.4만 자), 추가 VRAM 필요",
   "models.compatEffectCtx64k": "초장문 기억(약 4.8만 자), 높은 VRAM 사용",
+  "models.compatEffectCtx128k": "초대형 컨텍스트(약 9.6만 자), 매우 높은 VRAM 사용 (G4 / H100 권장)",
   "models.compatEffectTempLow": "정밀·결정적: 일관성이 높아 코딩·번역·추론에 적합",
   "models.compatEffectTempMid": "자연스러운 균형: 논리와 유창함의 조화, 일상 대화에 적합",
   "models.compatEffectTempHigh": "창의적 발산: 표현력이 풍부해 글쓰기와 브레인스토밍에 적합",
@@ -1110,7 +1156,17 @@ export const koKRMessages: ColabOneMessages = {
   "settings.title": "설정",
   "settings.subtitle": "Google 계정, 언어 및 테마, 기본 컴퓨팅 사양과 유휴 해제 정책을 관리합니다.",
   "settings.saveSettings": "설정 저장",
-  "settings.googleCardTitle": "Google 계정 및 드라이브 권한",
+  "settings.floatingSaveHint": "오른쪽 버튼으로 언제든 현재 설정을 저장할 수 있습니다.",
+  "settings.floatingSaveAria": "플로팅 설정 저장 바",
+  "settings.sectionAccount": "계정 및 자격 증명",
+  "settings.sectionCompute": "컴퓨팅 및 네트워크",
+  "settings.sectionAppearance": "화면 및 언어",
+  "settings.sectionDesktop": "데스크톱 및 정보",
+  "settings.downloadThreadsDesc": "원격으로 모델 가중치를 다운로드할 때 사용하는 병렬 연결 수입니다.",
+  "settings.assignProxyConfigureBtn": "설정",
+  "settings.assignProxyEditBtn": "편집",
+  "settings.appearanceLabel": "화면 테마",
+  "settings.googleCardTitle": "Google 계정",
   "settings.connected": "연결됨",
   "settings.disconnected": "연결 안 됨",
   "settings.oauthBrowserHint": "브라우저에서 Google 계정을 선택하고 권한을 승인하면 자동으로 돌아옵니다.",
@@ -1164,6 +1220,24 @@ export const koKRMessages: ColabOneMessages = {
     "{policy} 동안 활동이나 작업이 없으면 원격 리소스를 자동 해제합니다. 조작 시 타이머가 초기화되며 모델 다운로드·로드·API 추론·ComfyUI 실행 중에는 자동으로 일시 정지됩니다.",
   "settings.computeSyncNote":
     "기본 GPU와 유휴 해제 시간은 '원격 기기' 페이지와 실시간 동기화되어 즉시 적용됩니다.",
+  "settings.assignProxyTitle": "GPU 할당 전용 프록시",
+  "settings.assignProxyTagActive": "활성 · 할당 시에만",
+  "settings.assignProxyTagSaved": "저장됨 · 꺼짐",
+  "settings.assignProxyDesc":
+    "Google Colab에 GPU 할당을 요청할 때만 이 프록시를 경유합니다. 이후 커널 연결, 파일 업로드, 모델 추론, 드라이브 동기화 및 해제 트래픽에는 사용하지 않아 개인정보 보호와 연결 안정성을 모두 지킵니다. HTTP / HTTPS / SOCKS5 지원.",
+  "settings.assignProxySwitchLabel": "GPU 할당 요청 시에만 프록시 사용",
+  "settings.assignProxyPlaceholder": "http://127.0.0.1:7890 또는 socks5://user:pass@host:1080",
+  "settings.assignProxySavedPlaceholder": "저장됨 — 새 프록시 주소를 입력하면 덮어씁니다",
+  "settings.assignProxySavedPlaceholderWithUrl": "저장됨: {url} (새 주소 입력 시 업데이트)",
+  "settings.assignProxySaveBtn": "프록시 저장",
+  "settings.assignProxyTestBtn": "연결 테스트",
+  "settings.assignProxyClearBtn": "프록시 삭제",
+  "settings.assignProxyNeedUrlFirst": "활성화하기 전에 프록시 주소를 입력하세요",
+  "settings.assignProxyEnabledToast": "GPU 할당 전용 프록시가 활성화되었습니다",
+  "settings.assignProxyDisabledToast": "GPU 할당 전용 프록시가 비활성화되었습니다",
+  "settings.assignProxySavedToast": "GPU 할당 전용 프록시를 저장하고 활성화했습니다 (OS 키체인 보관)",
+  "settings.assignProxyClearedToast": "GPU 할당 전용 프록시를 삭제했습니다",
+  "settings.assignProxyTestOkToast": "할당 프록시 연결 테스트 성공 ({ms} ms · 비인증 TLS 검증)",
   "settings.appearanceCardTitle": "화면 테마 및 표시 언어",
   "settings.appearanceDesc":
     "이 기기에만 적용됩니다. '시스템 설정'을 선택하면 OS의 라이트/다크 모드를 자동으로 따릅니다.",

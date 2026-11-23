@@ -89,6 +89,8 @@ export const jaJPMessages: ColabOneMessages = {
   "status.upgradeAction": "リモートサービスを更新",
   "status.upgradeOptionalReady":
     "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。キャッシュ済みモデルとワークフローを保持したままいつでも更新できます。",
+  "status.upgradeOptionalReadyWithConfirm":
+    "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。クリックすると稼働中のサービスを自動停止して今すぐ更新できます（キャッシュは保持されます）。後で更新することもできます。",
   "status.upgradeOptionalBlockedModel":
     "リモートサービスの軽微な更新があります（現在の機能はそのまま利用できます）。今すぐ更新するには先にモデルをアンロードしてください（キャッシュは保持されます）。後で更新することもできます。",
   "status.upgradeOptionalBlockedComfy":
@@ -103,6 +105,18 @@ export const jaJPMessages: ColabOneMessages = {
     "現在のリモートタスクが完了してからリモートサービスを更新してください",
   "status.upgradeBlockedOperation":
     "現在の操作が完了してからリモートサービスを更新してください",
+  "status.upgradeActiveTask": "実行中のリモートタスク（キャンセルされます）",
+  "status.upgradeActiveModel": "読み込み済みモデル: {name}（VRAM からアンロードされます）",
+  "status.upgradeActiveModelGeneric": "VRAM に読み込み済みのモデル（アンロードされます）",
+  "status.upgradeActiveApi": "外部 API サービスと公開トンネル（停止されます）",
+  "status.upgradeActiveComfy": "ComfyUI ワークフローエンジンとキャンバストンネル（停止されます）",
+  "status.upgradeActiveEngine": "稼働中のリモート推論エンジン（停止されます）",
+  "status.upgradeConfirmTitle": "リモートサービスのホットアップデートを確認",
+  "status.upgradeConfirmLead":
+    "現在このリモートインスタンスでは以下のサービスまたはタスクが稼働中です。続行すると自動で停止・アンロードしてから更新します。",
+  "status.upgradeConfirmPreserveNote":
+    "ダウンロード済みのモデル重み・ワークフロー・生成物・設定はすべて保持され、再ダウンロードは不要です。更新後にモデルの再読み込みやサービス再開を行ってください。",
+  "status.upgradeConfirmAction": "停止して今すぐ更新",
 
   // Appearance
   "appearance.system": "システムに従う",
@@ -374,6 +388,30 @@ export const jaJPMessages: ColabOneMessages = {
   "device.stopAllCount": "すべて停止（{count} 台）",
   "device.stopInstance": "インスタンスを停止",
   "device.stopRemoteInstance": "リモートインスタンスを停止",
+  "device.cancelAllocation": "割り当てをキャンセル",
+  "device.cancellingAllocation": "キャンセル中…",
+  "device.cancelAllocationTooltip":
+    "現在の割り当てまたは起動を中止します。すでに割り当てられたインスタンスは自動的に解放されます",
+  "device.retryNow": "今すぐ再試行",
+  "device.retryingNow": "リクエスト中…",
+  "device.retryAllocationNowTooltip":
+    "待機カウントダウンをスキップし、直ちに Google へ割り当てを再リクエストします",
+  "device.retryAllocationRequestingTooltip":
+    "Google へ割り当てをリクエスト中です。応答後に手動で即座に再試行できます",
+  "device.waitingRetryCapacity":
+    "Google の計算リソースが逼迫中 · {seconds} 秒後に {gpu} の割り当てを自動再試行（{next}/{total} 回目）",
+  "device.waitingRetryCapacitySoon":
+    "Google の計算リソースが逼迫中 · まもなく {gpu} の割り当てを再試行（{next}/{total} 回目）",
+  "device.waitingRetryServerBusy":
+    "Google の割り当てサービスが混雑中 · {seconds} 秒後に {gpu} の割り当てを自動再試行（{next}/{total} 回目）",
+  "device.waitingRetryServerBusySoon":
+    "Google の割り当てサービスが混雑中 · まもなく {gpu} の割り当てを再試行（{next}/{total} 回目）",
+  "device.waitingRetryNetwork":
+    "割り当てリクエストに失敗 · {seconds} 秒後に {gpu} を自動再試行（{next}/{total} 回目）",
+  "device.waitingRetryNetworkSoon":
+    "割り当てリクエストに失敗 · まもなく {gpu} を再試行（{next}/{total} 回目）",
+  "device.toastAllocationCancelled": "GPU の割り当てをキャンセルしました",
+  "device.toastRetryTriggered": "待機をスキップして今すぐ再試行します",
   "device.idlePaused": "タスク実行中 · 自動解放一時停止中",
   "device.idleCountdownRemaining": "残り",
   "device.idleCountdownSuffix": "で自動解放",
@@ -577,12 +615,17 @@ export const jaJPMessages: ColabOneMessages = {
   "api.speedWaiting": "待機中",
   "api.speedEmpty": "履歴なし",
   "api.reqStreamingTag": "ストリーム",
+  "api.reqCompactedTag": "圧縮済み",
+  "api.reqCompactedTooltip": "現在のコンテキスト長に合わせて入力を {before} から {after} トークンへ自動圧縮しました",
+  "api.reqCompactedGenericTooltip": "現在のモデルコンテキストに合わせて自動圧縮を実行しました",
   "api.reqEstimatedTooltip": "正確な timings が未返却のため出力トークンと所要時間から推定",
   "api.reqPrefillTooltip": "プロンプト処理速度 {speed}",
   "api.reqSpeedTooltip": "このリクエストの生成速度",
   "api.reqWaitingFirstToken": "初回トークン待機中…",
   "api.reqOutputTokens": "出力 {count} tok",
   "api.reqInputTokens": "入力 {count} tok",
+  "api.reqInputCompacted": "入力 {before} → {after} tok",
+  "api.cancelRequestAria": "リクエスト #{seq} をキャンセル",
   "api.reqTtft": "TTFT {duration}",
   "api.reqDuration": "所要 {duration}",
   "api.reqPrefill": "プリフィル {speed}",
@@ -815,6 +858,8 @@ export const jaJPMessages: ColabOneMessages = {
   "models.compatCtx32kHint": "長文・リポジトリ向き",
   "models.compatCtx64kChars": "約 4.8 万字",
   "models.compatCtx64kHint": "大容量 VRAM が必要",
+  "models.compatCtx128kChars": "約 9.6 万字",
+  "models.compatCtx128kHint": "G4 / H100 など大容量 VRAM 向け",
   "models.compatPresetBalanced": "標準バランス",
   "models.compatPresetBalancedSum": "日常会話や一般的な質問に最適。高速かつ VRAM 消費最小",
   "models.compatPresetBalancedVram": "低 VRAM",
@@ -864,6 +909,7 @@ export const jaJPMessages: ColabOneMessages = {
   "models.compatEffectCtx16k": "コードや文書解析向け（約 1.2 万字）",
   "models.compatEffectCtx32k": "長文・複数ファイル向け（約 2.4 万字）、VRAM 追加必要",
   "models.compatEffectCtx64k": "超長文向け（約 4.8 万字）、VRAM 消費大",
+  "models.compatEffectCtx128k": "特大コンテキスト（約 9.6 万字）、VRAM 消費特大（G4 / H100 推奨）",
   "models.compatEffectTempLow": "厳密・決定的: ブレが少なくコーディング・翻訳・推論向き",
   "models.compatEffectTempMid": "自然・バランス: 一貫性と自然さを両立し日常会話向き",
   "models.compatEffectTempHigh": "発想重視: 豊かな表現で執筆やブレスト向き",
@@ -1113,7 +1159,17 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.title": "設定",
   "settings.subtitle": "Google アカウント・表示言語・外観テーマ・デフォルト GPU・自動解放ポリシーを管理します。",
   "settings.saveSettings": "設定を保存",
-  "settings.googleCardTitle": "Google アカウントとドライブ認可",
+  "settings.floatingSaveHint": "右側のボタンからいつでも現在の設定を保存できます。",
+  "settings.floatingSaveAria": "フローティング設定保存バー",
+  "settings.sectionAccount": "アカウントと認証情報",
+  "settings.sectionCompute": "計算リソースとネットワーク",
+  "settings.sectionAppearance": "外観と言語",
+  "settings.sectionDesktop": "デスクトップと情報",
+  "settings.downloadThreadsDesc": "リモートでモデル重みをダウンロードする際の並列接続数。",
+  "settings.assignProxyConfigureBtn": "設定",
+  "settings.assignProxyEditBtn": "編集",
+  "settings.appearanceLabel": "外観テーマ",
+  "settings.googleCardTitle": "Google アカウント",
   "settings.connected": "連携済み",
   "settings.disconnected": "未連携",
   "settings.oauthBrowserHint": "ブラウザで Google アカウントを選択し認可すると、自動でアプリへ戻ります。",
@@ -1167,6 +1223,24 @@ export const jaJPMessages: ColabOneMessages = {
     "{policy} 以上操作・タスクがないとリモートリソースを自動解放します。操作するとタイマーはリセットされ、モデル取得・読込・API 推論・ComfyUI 実行中は自動一時停止します。",
   "settings.computeSyncNote":
     "デフォルト GPU と自動解放時間は「リモートデバイス」ページと即時同期されます。",
+  "settings.assignProxyTitle": "GPU 割り当て専用プロキシ",
+  "settings.assignProxyTagActive": "有効 · 割り当て時のみ",
+  "settings.assignProxyTagSaved": "保存済み · オフ",
+  "settings.assignProxyDesc":
+    "Google Colab へ GPU 割り当てを要求するときのみこのプロキシを経由します。その後のカーネル接続・アップロード・推論・ドライブ同期・解放には一切使用しないため、プライバシーと安定性を両立できます。HTTP / HTTPS / SOCKS5 対応。",
+  "settings.assignProxySwitchLabel": "GPU 割り当て要求時のみプロキシを使用",
+  "settings.assignProxyPlaceholder": "http://127.0.0.1:7890 または socks5://user:pass@host:1080",
+  "settings.assignProxySavedPlaceholder": "保存済み（新しいアドレスを入力すると上書き更新）",
+  "settings.assignProxySavedPlaceholderWithUrl": "保存済み：{url}（新しいアドレスで更新）",
+  "settings.assignProxySaveBtn": "プロキシを保存",
+  "settings.assignProxyTestBtn": "接続テスト",
+  "settings.assignProxyClearBtn": "プロキシを削除",
+  "settings.assignProxyNeedUrlFirst": "有効にする前にプロキシアドレスを入力してください",
+  "settings.assignProxyEnabledToast": "GPU 割り当て専用プロキシを有効にしました",
+  "settings.assignProxyDisabledToast": "GPU 割り当て専用プロキシを無効にしました",
+  "settings.assignProxySavedToast": "GPU 割り当て専用プロキシを保存して有効にしました（OS キーチェーンに保存）",
+  "settings.assignProxyClearedToast": "GPU 割り当て専用プロキシを削除しました",
+  "settings.assignProxyTestOkToast": "割り当てプロキシの接続テストに成功しました（{ms} ms・TLS 検証のみ）",
   "settings.appearanceCardTitle": "外観テーマと表示言語",
   "settings.appearanceDesc":
     "この端末のみに適用されます。「システムに従う」を選ぶと OS のライト／ダーク設定と連動します。",

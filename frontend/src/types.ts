@@ -145,6 +145,9 @@ export interface PublicAPIRequestMetric {
   duration_ms: number;
   ttft_ms?: number | null;
   prompt_tokens?: number | null;
+  original_prompt_tokens?: number | null;
+  compacted?: boolean;
+  compaction_stage?: "prune" | "summary" | "truncate" | "inline" | "";
   completion_tokens?: number | null;
   tokens_per_second?: number | null;
   prompt_tokens_per_second?: number | null;
@@ -316,6 +319,23 @@ export interface ActivityEntry {
   level: "info" | "warning" | "error";
   message: string;
 }
+export interface ColabOneOperation {
+  title: string;
+  running: boolean;
+  kind?: string;
+  cancellable?: boolean;
+  cancelling?: boolean;
+  retryable?: boolean;
+  waiting_retry?: boolean;
+  retry_at?: number;
+  attempt?: number;
+  next_attempt?: number;
+  total_attempts?: number;
+  retry_kind?: "capacity" | "server_busy" | "network" | string;
+  has_retried?: boolean;
+  allocated?: boolean;
+  gpu?: string;
+}
 export interface ColabOneSnapshot {
   active_endpoint?: string;
   monitor?: MonitorSnapshot;
@@ -329,6 +349,12 @@ export interface ColabOneSnapshot {
     mode: "named";
     domain: string;
     has_token: boolean;
+  };
+  assign_proxy_settings?: {
+    enabled: boolean;
+    has_proxy: boolean;
+    masked_url: string;
+    has_auth: boolean;
   };
   logs: ActivityEntry[];
   runtime: RuntimeStatus;
@@ -345,7 +371,7 @@ export interface ColabOneSnapshot {
     instances?: AccountInstance[];
     checked_at?: number;
   };
-  operation: null | { title: string; running: boolean };
+  operation: null | ColabOneOperation;
   error: string;
   auth_url: string;
   drive_auth_hint?: string;
@@ -367,6 +393,7 @@ export interface ColabOneSnapshot {
     idle_countdown_seconds: number;
     auto_drive: boolean;
     download_threads: number;
+    assign_proxy_enabled?: boolean;
     locale?: string;
   };
 }
@@ -384,12 +411,19 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
   auth_url: "",
   drive_auth_hint: "",
   setup: { colab: false, drive: false, drive_authorized: false, hf: false },
+  assign_proxy_settings: {
+    enabled: false,
+    has_proxy: false,
+    masked_url: "",
+    has_auth: false,
+  },
   settings: {
     gpu: "T4",
     idle_minutes: 30,
     idle_countdown_seconds: 60,
     auto_drive: true,
     download_threads: 16,
+    assign_proxy_enabled: false,
   },
 });
 export const COLABONE_STATUS_LABELS: Record<string, string> = {
@@ -473,6 +507,8 @@ export interface ColabOneRuntimeUpgradeState {
   dismissKey: string;
   message: string;
   canUpgrade: boolean;
+  needsConfirm: boolean;
+  activeItems: string[];
   disabledReason: string;
 }
 
@@ -488,6 +524,8 @@ export function evaluateColabOneRuntimeUpgrade(
       dismissKey: "",
       message: "",
       canUpgrade: false,
+      needsConfirm: false,
+      activeItems: [],
       disabledReason: "",
     };
   }
@@ -508,6 +546,8 @@ export function evaluateColabOneRuntimeUpgrade(
       dismissKey: "",
       message: "",
       canUpgrade: false,
+      needsConfirm: false,
+      activeItems: [],
       disabledReason: "",
     };
   }
@@ -518,8 +558,20 @@ export function evaluateColabOneRuntimeUpgrade(
   const hasLoadedModel = Boolean(
     runtime.loaded_model || runtime.active_engine === "llama",
   );
+  const hasPublicApi = Boolean(
+    runtime.public_api?.enabled ||
+      ["starting", "ready", "reconnecting"].includes(
+        runtime.public_api?.state || "",
+      ),
+  );
   const hasActiveComfy = Boolean(
-    runtime.active_engine === "comfyui" || runtime.comfyui?.running,
+    runtime.active_engine === "comfyui" ||
+      runtime.comfyui?.running ||
+      ["starting", "running", "ready"].includes(runtime.comfyui?.state || "") ||
+      runtime.comfyui?.canvas?.enabled ||
+      ["starting", "ready", "reconnecting"].includes(
+        runtime.comfyui?.canvas?.state || "",
+      ),
   );
   const hasOtherEngine = Boolean(
     runtime.active_engine &&
@@ -527,26 +579,45 @@ export function evaluateColabOneRuntimeUpgrade(
       runtime.active_engine !== "comfyui",
   );
 
-  let disabledReason = "";
-  if (state.operation) {
-    disabledReason = t("status.upgradeBlockedOperation");
-  } else if (hasRunningTask) {
-    disabledReason = t("status.upgradeBlockedTask");
-  } else if (hasLoadedModel) {
-    disabledReason = t("status.upgradeBlockedModel");
-  } else if (hasActiveComfy || hasOtherEngine) {
-    disabledReason = t("status.upgradeBlockedComfy");
+  const loadedModelName =
+    state.models.find(
+      (m) => m.loaded || (runtime.loaded_model && m.id === runtime.loaded_model),
+    )?.name ||
+    runtime.loaded_model ||
+    "";
+
+  const activeItems: string[] = [];
+  if (hasRunningTask) {
+    activeItems.push(t("status.upgradeActiveTask"));
   }
+  if (hasLoadedModel) {
+    activeItems.push(
+      loadedModelName
+        ? t("status.upgradeActiveModel", { name: loadedModelName })
+        : t("status.upgradeActiveModelGeneric"),
+    );
+  }
+  if (hasPublicApi) {
+    activeItems.push(t("status.upgradeActiveApi"));
+  }
+  if (hasActiveComfy) {
+    activeItems.push(t("status.upgradeActiveComfy"));
+  } else if (hasOtherEngine) {
+    activeItems.push(t("status.upgradeActiveEngine"));
+  }
+
+  const needsConfirm = activeItems.length > 0;
+  const disabledReason = state.operation
+    ? t("status.upgradeBlockedOperation")
+    : "";
 
   let message: string;
   if (kind === "protocol") {
     message = t("status.upgradeBanner");
-  } else if (state.operation || hasRunningTask) {
+  } else if (state.operation) {
     message = t("status.upgradeOptionalBlockedTask");
-  } else if (hasLoadedModel) {
-    message = t("status.upgradeOptionalBlockedModel");
-  } else if (hasActiveComfy || hasOtherEngine) {
-    message = t("status.upgradeOptionalBlockedComfy");
+  } else if (needsConfirm) {
+    message = t("status.upgradeOptionalReadyWithConfirm");
   } else {
     message = t("status.upgradeOptionalReady");
   }
@@ -560,6 +631,8 @@ export function evaluateColabOneRuntimeUpgrade(
     dismissKey,
     message,
     canUpgrade: !disabledReason,
+    needsConfirm,
+    activeItems,
     disabledReason,
   };
 }

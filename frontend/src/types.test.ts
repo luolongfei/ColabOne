@@ -173,28 +173,32 @@ describe("remote service upgrade banner classification", () => {
     });
   });
 
-  it("treats protocol < 7 as non-dismissible protocol upgrade with blocker tooltips", () => {
+  it("treats protocol < 7 as non-dismissible protocol upgrade and requests confirmation when active", () => {
     const legacy = createColabOneSnapshot();
     legacy.runtime.state = "ready";
     legacy.runtime.id = "gpu-legacy";
     legacy.runtime.protocol = 6;
     legacy.runtime.loaded_model = "qwen";
 
-    const blocked = evaluateColabOneRuntimeUpgrade(legacy);
-    expect(blocked.visible).toBe(true);
-    expect(blocked.kind).toBe("protocol");
-    expect(blocked.dismissible).toBe(false);
-    expect(blocked.canUpgrade).toBe(false);
-    expect(blocked.message).toContain("实时硬件监控");
-    expect(blocked.disabledReason).toContain("卸载模型");
+    const active = evaluateColabOneRuntimeUpgrade(legacy);
+    expect(active.visible).toBe(true);
+    expect(active.kind).toBe("protocol");
+    expect(active.dismissible).toBe(false);
+    expect(active.canUpgrade).toBe(true);
+    expect(active.needsConfirm).toBe(true);
+    expect(active.activeItems).toContain("已装载模型：qwen（将从显存卸载）");
+    expect(active.message).toContain("实时硬件监控");
+    expect(active.disabledReason).toBe("");
 
     legacy.runtime.loaded_model = "";
     const ready = evaluateColabOneRuntimeUpgrade(legacy);
     expect(ready.canUpgrade).toBe(true);
+    expect(ready.needsConfirm).toBe(false);
+    expect(ready.activeItems).toEqual([]);
     expect(ready.disabledReason).toBe("");
   });
 
-  it("treats protocol >= 7 revision mismatch as dismissible optional update with specific blocker messages", () => {
+  it("treats protocol >= 7 revision mismatch as dismissible optional update that confirms active items and only disables during operations", () => {
     const state = createColabOneSnapshot();
     state.runtime.state = "ready";
     state.runtime.id = "gpu-g4-1";
@@ -202,25 +206,74 @@ describe("remote service upgrade banner classification", () => {
     state.runtime.service_revision = "rev-old-1";
     state.runtime.upgrade_available = true;
     state.runtime.loaded_model = "qwen-flash";
+    state.runtime.public_api = {
+      enabled: true,
+      mode: "named",
+      state: "ready",
+      url: "https://api.example.com",
+      error: "",
+      streaming: true,
+      checked_at: 0,
+      requests: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+      last_request: 0,
+      recent_requests: [],
+    };
 
-    const withModel = evaluateColabOneRuntimeUpgrade(state);
-    expect(withModel.visible).toBe(true);
-    expect(withModel.kind).toBe("optional");
-    expect(withModel.dismissible).toBe(true);
-    expect(withModel.canUpgrade).toBe(false);
-    expect(withModel.message).toContain("不影响当前正常使用");
-    expect(withModel.message).toContain("卸载模型");
-    expect(withModel.message).not.toContain("以启用实时硬件监控");
-    expect(withModel.disabledReason).toContain("卸载模型");
+    const withModelAndApi = evaluateColabOneRuntimeUpgrade(state);
+    expect(withModelAndApi.visible).toBe(true);
+    expect(withModelAndApi.kind).toBe("optional");
+    expect(withModelAndApi.dismissible).toBe(true);
+    expect(withModelAndApi.canUpgrade).toBe(true);
+    expect(withModelAndApi.needsConfirm).toBe(true);
+    expect(withModelAndApi.disabledReason).toBe("");
+    expect(withModelAndApi.message).toContain("不影响当前正常使用");
+    expect(withModelAndApi.message).toContain("自动停止当前服务并热更新");
+    expect(withModelAndApi.message).not.toContain("以启用实时硬件监控");
+    expect(withModelAndApi.activeItems).toContain(
+      "已装载模型：qwen-flash（将从显存卸载）",
+    );
+    expect(withModelAndApi.activeItems).toContain(
+      "对外 API 服务与公网隧道（将被关闭）",
+    );
 
     state.runtime.loaded_model = "";
+    state.runtime.public_api = undefined;
     state.runtime.active_engine = "comfyui";
     const withComfy = evaluateColabOneRuntimeUpgrade(state);
-    expect(withComfy.canUpgrade).toBe(false);
-    expect(withComfy.message).toContain("ComfyUI");
-    expect(withComfy.disabledReason).toContain("ComfyUI");
+    expect(withComfy.canUpgrade).toBe(true);
+    expect(withComfy.needsConfirm).toBe(true);
+    expect(withComfy.activeItems).toContain(
+      "ComfyUI 工作流引擎与画布隧道（将被停止）",
+    );
 
     state.runtime.active_engine = null;
+    state.runtime.comfyui = {
+      installed: true,
+      running: false,
+      state: "starting",
+      queue_running: 0,
+      queue_pending: 0,
+      error: "",
+      canvas: {
+        state: "ready",
+        enabled: true,
+        mode: "named",
+        url: "https://canvas.example.com",
+        error: "",
+        checked_at: 0,
+      },
+    };
+    const withStartingComfyCanvas = evaluateColabOneRuntimeUpgrade(state);
+    expect(withStartingComfyCanvas.canUpgrade).toBe(true);
+    expect(withStartingComfyCanvas.needsConfirm).toBe(true);
+    expect(withStartingComfyCanvas.activeItems).toContain(
+      "ComfyUI 工作流引擎与画布隧道（将被停止）",
+    );
+
+    state.runtime.comfyui = undefined;
     state.runtime.tasks = [
       {
         id: "t-dl",
@@ -233,13 +286,21 @@ describe("remote service upgrade banner classification", () => {
       },
     ];
     const withTask = evaluateColabOneRuntimeUpgrade(state);
-    expect(withTask.canUpgrade).toBe(false);
-    expect(withTask.message).toContain("任务结束");
-    expect(withTask.disabledReason).toContain("远端任务");
+    expect(withTask.canUpgrade).toBe(true);
+    expect(withTask.needsConfirm).toBe(true);
+    expect(withTask.activeItems).toContain("正在运行中的远端任务（将被取消）");
 
+    state.operation = { title: "正在更新远端服务", running: true };
+    const duringOp = evaluateColabOneRuntimeUpgrade(state);
+    expect(duringOp.canUpgrade).toBe(false);
+    expect(duringOp.disabledReason).toContain("当前操作完成");
+
+    state.operation = null;
     state.runtime.tasks = [];
     const idle = evaluateColabOneRuntimeUpgrade(state);
     expect(idle.canUpgrade).toBe(true);
+    expect(idle.needsConfirm).toBe(false);
+    expect(idle.activeItems).toEqual([]);
     expect(idle.disabledReason).toBe("");
     expect(idle.message).toContain("随时热更新");
     expect(idle.dismissKey).toBe("optional::gpu-g4-1::rev-old-1");

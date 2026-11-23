@@ -13,7 +13,7 @@ import time
 def safe_message(message):
     text = str(message)
     text = re.sub(
-        r"(?:https?|wss?)://[^\s<>\"'\)\]]+?(?=[:;,.)]*(?:\s|[\"'<>)\]]|$))",
+        r"(?:https?|wss?|socks5h?)://[^\s<>\"'\)\]]+?(?=[:;,.)]*(?:\s|[\"'<>)\]]|$))",
         "[链接已隐藏]",
         text,
     )

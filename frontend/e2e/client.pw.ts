@@ -286,6 +286,51 @@ async function mock(page: any, ready = false, path = "/") {
             if (action === "api.tunnel_token") {
               return JSON.stringify({ token: savedSecrets.apiTunnelToken });
             }
+            if (action === "runtime.start.retry") {
+              if (
+                state.operation?.kind === "runtime_start" &&
+                state.operation?.waiting_retry &&
+                !state.operation?.cancelling
+              ) {
+                const next = Number(state.operation.next_attempt || 2);
+                const total = Number(state.operation.total_attempts || 10);
+                const gpu = state.operation.gpu || state.settings.gpu || "G4";
+                state.operation = {
+                  ...state.operation,
+                  title: `Google 算力紧张，正在排队分配 ${gpu}（第 ${next}/${total} 次）`,
+                  waiting_retry: false,
+                  retryable: false,
+                  retry_at: 0,
+                  attempt: next,
+                  has_retried: true,
+                };
+                return JSON.stringify({ ok: true, triggered: true });
+              }
+              return JSON.stringify({ ok: true, triggered: false });
+            }
+            if (action === "runtime.start.cancel") {
+              if (
+                state.operation?.kind === "runtime_start" &&
+                state.operation?.cancellable
+              ) {
+                if ((window as any).__deferStartCancel) {
+                  state.operation = {
+                    ...state.operation,
+                    title: "正在取消 GPU 分配",
+                    cancellable: false,
+                    cancelling: true,
+                    retryable: false,
+                    waiting_retry: false,
+                    retry_at: 0,
+                  };
+                } else {
+                  state.operation = null;
+                  state.runtime = { state: "stopped" };
+                }
+                return JSON.stringify({ ok: true, cancelled: true });
+              }
+              return JSON.stringify({ ok: true, cancelled: false });
+            }
             if (action === "runtime.release.preview")
               return JSON.stringify({
                 id: "reviewed-plan",
@@ -1421,7 +1466,22 @@ test("public API panel displays per-request token speed and live generation rate
   const panel = page.locator("#activity-panel");
   await expect(panel).toContainText("≈62.4 tokens/s");
   await expect(panel).toContainText("54.2 tokens/s");
-  await expect(page.locator(".co-task-bar")).toContainText("≈62.4 tokens/s");
+  // Public API inference requests do not render the bottom task dock; cancel lives inline on the running request row.
+  await expect(page.locator(".co-task-bar")).toHaveCount(0);
+  const inlineCancelBtn = speedSection.getByRole("button", {
+    name: "取消请求 #3",
+  });
+  await expect(inlineCancelBtn).toBeVisible();
+  await inlineCancelBtn.click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        ((window as any).__calls || []).filter(
+          (c: any) => c.action === "task.cancel",
+        ),
+      ),
+    )
+    .toEqual([{ action: "task.cancel", payload: { id: "req-3" } }]);
 
   await page.screenshot({
     path: fileURLToPath(
@@ -1429,6 +1489,22 @@ test("public API panel displays per-request token speed and live generation rate
     ),
     fullPage: true,
   });
+
+  // Concurrent non-API tasks (such as model download) still show the bottom task dock even when preceded by an API task.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.tasks.push({
+      id: "dl-concurrent-1",
+      kind: "download",
+      model_id: "qwen",
+      state: "running",
+      progress: 0.42,
+      message: "正在下载模型权重",
+      error: "",
+    });
+  });
+  await expect(page.locator(".co-task-bar")).toBeVisible();
+  await expect(page.locator(".co-task-bar")).toContainText("正在下载模型权重");
 });
 
 test("connected settings omits device jump buttons, keeps non-clickable billing strip, and preserves idle policy", async ({
@@ -2763,13 +2839,14 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
     rmCardCount: 4,
   });
 
-  // API page: wide aligned rails + 2-column form inputs + equal-height cards
+  // API page: wide aligned rails + 2-column form inputs + independent-height cards aligned at top
   await navItem(page, "对外 API").click();
   await expect(
     page.getByRole("heading", { name: "对外 API", exact: true }),
   ).toBeVisible();
   await checkRails(".co-api-model-slot");
   const apiLayout = await page.evaluate(() => {
+    const grid = document.querySelector(".co-api-grid")!;
     const left = document
       .querySelector(".co-api-connection")!
       .getBoundingClientRect();
@@ -2779,12 +2856,19 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
     const domain = document.querySelector("#api-domain")!.getBoundingClientRect();
     const tunnel = document.querySelector("#api-tunnel")!.getBoundingClientRect();
     return {
-      equalHeight: Math.abs(left.height - right.height) <= 2,
+      topAligned: Math.abs(left.top - right.top) <= 2,
+      sideBySide: right.left > left.right,
+      gridAlignItems: window.getComputedStyle(grid).alignItems,
       formSideBySide:
         Math.abs(domain.top - tunnel.top) <= 6 && tunnel.left > domain.right,
     };
   });
-  expect(apiLayout).toEqual({ equalHeight: true, formSideBySide: true });
+  expect(apiLayout).toEqual({
+    topAligned: true,
+    sideBySide: true,
+    gridAlignItems: "start",
+    formSideBySide: true,
+  });
 
   // ComfyUI page: wide aligned rails + vertically centered pill tabs
   await navItem(page, "ComfyUI").click();
@@ -2816,31 +2900,40 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
     expect(item.iconDelta).toBeLessThanOrEqual(1);
   }
 
-  // Settings page: wide aligned rails + Bento 2-col primary & 3-col secondary rows
+  // Settings page: centered native single-column compact grouped setting rows (macOS / ChatGPT style)
   await navItem(page, "设置").click();
   await expect(
     page.getByRole("heading", { name: "设置", exact: true }),
   ).toBeVisible();
-  await checkRails(".co-about-card");
   const settingsLayout = await page.evaluate(() => {
-    const primaryTops = Array.from(
-      document.querySelectorAll(".co-settings-row-primary > .co-settings-card"),
-    ).map((el) => Math.round(el.getBoundingClientRect().top));
-    const secondaryTops = Array.from(
-      document.querySelectorAll(".co-settings-row-secondary > .co-settings-card"),
-    ).map((el) => Math.round(el.getBoundingClientRect().top));
+    const inner = document
+      .querySelector(".co-settings-inner")!
+      .getBoundingClientRect();
+    const shell = document
+      .querySelector(".co-settings-page")!
+      .getBoundingClientRect();
+    const lists = Array.from(
+      document.querySelectorAll(".co-settings-list"),
+    );
+    const rowCounts = lists.map(
+      (list) => list.querySelectorAll(":scope > .co-settings-row").length,
+    );
     return {
-      primaryCols: primaryTops.length,
-      primaryRows: new Set(primaryTops).size,
-      secondaryCols: secondaryTops.length,
-      secondaryRows: new Set(secondaryTops).size,
+      overflowX: document.documentElement.scrollWidth - window.innerWidth,
+      innerWidth: Math.round(inner.width),
+      centeredDelta: Math.abs(
+        Math.round((inner.left + inner.right) / 2 - (shell.left + shell.right) / 2),
+      ),
+      listCount: lists.length,
+      rowCounts,
     };
   });
   expect(settingsLayout).toEqual({
-    primaryCols: 2,
-    primaryRows: 1,
-    secondaryCols: 3,
-    secondaryRows: 1,
+    overflowX: 0,
+    innerWidth: 840,
+    centeredDelta: 0,
+    listCount: 4,
+    rowCounts: [3, 5, 2, 2],
   });
 
   // Verify segmented control icons & labels stay vertically centered inside their pills
@@ -4630,7 +4723,7 @@ test("all frontend loading icons rotate at 4 seconds per revolution", async ({
     ),
   ).toBe("4s");
 
-  // 4. Ant Design <AButton :loading> LoadingOutlined icon (.anticon-spin)
+  // 4. Ant Design <AButton :loading> uses our 3/4-circle ring spinner (.anticon-spin)
   const btnSpinner = page.locator(".ant-btn-loading-icon .anticon-spin").first();
   await expect(btnSpinner).toBeVisible();
   expect(
@@ -4638,6 +4731,19 @@ test("all frontend loading icons rotate at 4 seconds per revolution", async ({
       (el) => window.getComputedStyle(el).animationDuration,
     ),
   ).toBe("4s");
+  expect(
+    await btnSpinner.evaluate((el) => {
+      const afterStyle = window.getComputedStyle(el, "::after");
+      const mask = afterStyle.maskImage || afterStyle.webkitMaskImage || "";
+      const svgDisplay = el.querySelector("svg")
+        ? window.getComputedStyle(el.querySelector("svg")!).display
+        : "";
+      return { mask, svgDisplay };
+    }),
+  ).toEqual({
+    mask: expect.stringContaining("data:image/svg+xml"),
+    svgDisplay: "none",
+  });
 
   await page.evaluate(() => {
     (window as any).__releaseRefresh?.();
@@ -4841,7 +4947,7 @@ test("model drawer disk warning compares free disk against remaining download by
   );
 });
 
-test("remote service upgrade banner distinguishes optional revisions from legacy protocols, shows disabled tooltip, and supports dismissal", async ({
+test("remote service upgrade banner stays clickable with confirmation modal when active, upgrades directly when idle, and supports dismissal", async ({
   page,
 }) => {
   await mock(page, true);
@@ -4860,17 +4966,32 @@ test("remote service upgrade banner distinguishes optional revisions from legacy
   const banner = page.locator(".co-upgrade-banner");
   await expect(banner).toBeVisible();
   await expect(banner).toContainText("远端服务有小版本更新，不影响当前正常使用");
-  await expect(banner).toContainText("需先卸载模型后再热更新");
+  await expect(banner).toContainText("点击即可自动停止当前服务并热更新");
   await expect(banner).not.toContainText("以启用实时硬件监控");
 
   const upgradeBtn = banner.getByRole("button", { name: "更新远端服务" });
-  await expect(upgradeBtn).toBeDisabled();
+  await expect(upgradeBtn).toBeEnabled();
 
-  // Hovering the disabled button wrapper shows the specific blocker tooltip.
-  await banner.locator(".co-upgrade-action-wrap").hover();
-  await expect(page.locator(".ant-tooltip-inner")).toContainText(
-    "当前已装载模型，请先卸载模型后再更新远端服务",
+  // Clicking while a model is loaded opens a confirmation modal listing active items.
+  await upgradeBtn.click();
+  const modal = page.locator(".ant-modal-content").filter({
+    hasText: "确认热更新远端服务",
+  });
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("已装载模型：Qwen2.5 · 0.5B（将从显存卸载）");
+  await expect(modal).toContainText("已下载的模型权重、工作流、作品与配置都会完整保留");
+
+  // Confirming sends runtime.upgrade with { force: true }.
+  await modal.getByRole("button", { name: "停止并立即更新" }).click();
+  await expect(modal).toBeHidden();
+  const forceUpgradeCalls = await page.evaluate(() =>
+    ((window as any).__calls || []).filter(
+      (c: any) => c.action === "runtime.upgrade",
+    ),
   );
+  expect(forceUpgradeCalls).toEqual([
+    { action: "runtime.upgrade", payload: { force: true } },
+  ]);
 
   // Optional update banner can be dismissed cleanly.
   const closeBtn = banner.locator(".ant-alert-close-icon");
@@ -4878,7 +4999,7 @@ test("remote service upgrade banner distinguishes optional revisions from legacy
   await closeBtn.click();
   await expect(banner).toHaveCount(0);
 
-  // Switching to a different instance re-displays the optional upgrade banner; unloading enables the button.
+  // Switching to a different instance re-displays the optional upgrade banner; when idle, clicking upgrades directly without modal.
   await page.evaluate(() => {
     const state = (window as any).__state;
     state.runtime.id = "gpu-g4-inst-2";
@@ -4889,6 +5010,17 @@ test("remote service upgrade banner distinguishes optional revisions from legacy
   await expect(banner).toBeVisible();
   await expect(banner).toContainText("可随时热更新");
   await expect(upgradeBtn).toBeEnabled();
+  await upgradeBtn.click();
+  await expect(modal).toBeHidden();
+  const allUpgradeCalls = await page.evaluate(() =>
+    ((window as any).__calls || []).filter(
+      (c: any) => c.action === "runtime.upgrade",
+    ),
+  );
+  expect(allUpgradeCalls).toEqual([
+    { action: "runtime.upgrade", payload: { force: true } },
+    { action: "runtime.upgrade", payload: {} },
+  ]);
 
   // Legacy protocol (< 7) shows required protocol upgrade copy and cannot be dismissed.
   await page.evaluate(() => {
@@ -5016,4 +5148,251 @@ test("secret inputs auto-extract tokens on paste and reveal saved secrets on eye
   await hfEyeBtn.click();
   await expect(hfInput).toHaveAttribute("type", "password");
   await expect(hfInput).toHaveValue("");
+});
+
+test("allocation banner and device card provide cancel and retry-now controls during congested startup", async ({
+  page,
+}) => {
+  await mock(page, false);
+
+  // 1) Initial allocation attempt: Cancel button visible & enabled in both banner and device card; Retry Now hidden until backoff
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.colab = true;
+    s.settings.gpu = "G4";
+    s.runtime = { state: "starting" };
+    s.operation = {
+      title: "正在分配 G4",
+      running: true,
+      kind: "runtime_start",
+      cancellable: true,
+      cancelling: false,
+      retryable: false,
+      waiting_retry: false,
+      retry_at: 0,
+      has_retried: false,
+      gpu: "G4",
+    };
+  });
+
+  const opBanner = page.locator(".co-op-banner");
+  await expect(opBanner).toContainText("正在分配 G4");
+  const bannerCancel = opBanner.locator(".co-op-cancel-btn");
+  const cardCancel = page.locator(".co-device-cancel-btn");
+  await expect(bannerCancel).toBeVisible();
+  await expect(bannerCancel).toBeEnabled();
+  await expect(cardCancel).toBeVisible();
+  await expect(cardCancel).toBeEnabled();
+  await expect(opBanner.locator(".co-op-retry-btn")).toHaveCount(0);
+
+  // 2) Capacity congestion enters retry countdown: countdown text + enabled Retry Now + enabled Cancel appear
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = {
+      title: "Google 算力紧张，正在排队分配 G4（第 8/10 次）",
+      running: true,
+      kind: "runtime_start",
+      cancellable: true,
+      cancelling: false,
+      retryable: true,
+      waiting_retry: true,
+      retry_at: Date.now() / 1000 + 25,
+      attempt: 8,
+      next_attempt: 9,
+      total_attempts: 10,
+      retry_kind: "capacity",
+      has_retried: true,
+      gpu: "G4",
+    };
+  });
+
+  await expect(opBanner).toContainText(/Google 算力紧张，\d+ 秒后自动重试分配 G4（第 9\/10 次）/);
+  const bannerRetry = opBanner.locator(".co-op-retry-btn");
+  const cardRetry = page.locator(".co-device-retry-btn");
+  await expect(bannerRetry).toBeVisible();
+  await expect(bannerRetry).toBeEnabled();
+  await expect(bannerRetry).toContainText("立即重试");
+  await expect(cardRetry).toBeVisible();
+  await expect(cardRetry).toBeEnabled();
+
+  // Banner actions stay reachable even when switched to another tab
+  await navItem(page, "对外 API").click();
+  await expect(bannerRetry).toBeVisible();
+  await expect(bannerCancel).toBeVisible();
+
+  // 3) Click Retry Now -> triggers runtime.start.retry and switches to requesting state (button disabled/loading while request is in flight)
+  await bannerRetry.click();
+  await expect(opBanner).toContainText("Google 算力紧张，正在排队分配 G4（第 9/10 次）");
+  await expect(bannerRetry).toBeDisabled();
+  await expect(bannerRetry).toContainText("正在请求…");
+  await expect(bannerCancel).toBeEnabled();
+
+  // 4) Click Cancel while in-flight (deferred completion) -> immediately displays cancelling state, then returns cleanly to stopped
+  await navItem(page, "远端设备").click();
+  await page.evaluate(() => {
+    (window as any).__deferStartCancel = true;
+  });
+  await cardCancel.click();
+  await expect(opBanner).toContainText("正在取消 GPU 分配");
+  await expect(bannerCancel).toBeDisabled();
+  await expect(bannerCancel).toContainText("正在取消…");
+  await expect(opBanner.locator(".co-op-retry-btn")).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = null;
+    s.runtime = { state: "stopped" };
+  });
+  await expect(opBanner).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "启动 GPU" })).toBeVisible();
+  await expect(
+    page.locator(".co-toast.is-info", { hasText: "已取消 GPU 分配" }),
+  ).toBeVisible();
+  await expect(page.locator(".co-toast.is-error")).toHaveCount(0);
+
+  const actions = await page.evaluate(() =>
+    ((window as any).__calls || []).map((c: any) => c.action),
+  );
+  expect(actions).toContain("runtime.start.retry");
+  expect(actions).toContain("runtime.start.cancel");
+});
+
+test("settings shows bottom floating save bar only when top save button scrolls out of view", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 760 });
+  await mock(page, true);
+  await navItem(page, "设置").click();
+  await expect(
+    page.getByRole("heading", { name: "设置", exact: true }),
+  ).toBeVisible();
+
+  const saveButtons = page.getByRole("button", { name: "保存设置", exact: true });
+  const topSlot = page.locator(".co-settings-top-save-slot");
+  const floatingBar = page.locator(".co-settings-floating-bar");
+
+  // 1) At top: top save button visible, floating bar hidden, strictly 1 save button
+  await expect(saveButtons).toHaveCount(1);
+  await expect(topSlot.getByRole("button", { name: "保存设置", exact: true })).toBeVisible();
+  await expect(floatingBar).toHaveCount(0);
+  const initialHeaderHeight = await page.evaluate(
+    () =>
+      Math.round(
+        document
+          .querySelector(".co-settings-page .co-page-header")!
+          .getBoundingClientRect().height,
+      ),
+  );
+
+  // 2) Scroll slightly so the top save button is still partially visible -> floating bar stays hidden
+  await page.evaluate(() => {
+    const content = document.querySelector(".co-content") as HTMLElement;
+    const slot = document.querySelector(".co-settings-top-save-slot") as HTMLElement;
+    const cRect = content.getBoundingClientRect();
+    const sRect = slot.getBoundingClientRect();
+    // Leave ~10px of the top save button visible
+    content.scrollTop = Math.max(1, Math.round(sRect.bottom - cRect.top - 10));
+  });
+  await expect(floatingBar).toHaveCount(0);
+  await expect(saveButtons).toHaveCount(1);
+
+  // 3) Scroll past the top save button -> floating bar appears at bottom, top button unmounts (still strictly 1 button, 0px header height shift)
+  await page.evaluate(() => {
+    const content = document.querySelector(".co-content") as HTMLElement;
+    content.scrollTop = 320;
+  });
+  await expect(floatingBar).toBeVisible();
+  await expect(saveButtons).toHaveCount(1);
+  await expect(topSlot.getByRole("button", { name: "保存设置", exact: true })).toHaveCount(0);
+  await expect(
+    floatingBar.getByRole("button", { name: "保存设置", exact: true }),
+  ).toBeVisible();
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const header = document
+          .querySelector(".co-settings-page .co-page-header")!
+          .getBoundingClientRect();
+        const inner = document
+          .querySelector(".co-settings-inner")!
+          .getBoundingClientRect();
+        const bar = document
+          .querySelector(".co-settings-floating-bar")!
+          .getBoundingClientRect();
+        const content = document
+          .querySelector(".co-content")!
+          .getBoundingClientRect();
+        return {
+          headerHeight: Math.round(header.height),
+          widthDelta: Math.abs(Math.round(bar.width - inner.width)),
+          bottomGap: Math.round(content.bottom - bar.bottom),
+          overflowX: document.documentElement.scrollWidth - window.innerWidth,
+        };
+      }),
+    )
+    .toEqual({
+      headerHeight: initialHeaderHeight,
+      widthDelta: expect.any(Number),
+      bottomGap: 16,
+      overflowX: 0,
+    });
+  const floatingWidthDelta = await page.evaluate(() => {
+    const inner = document
+      .querySelector(".co-settings-inner")!
+      .getBoundingClientRect();
+    const bar = document
+      .querySelector(".co-settings-floating-bar")!
+      .getBoundingClientRect();
+    return Math.abs(Math.round(bar.width - inner.width));
+  });
+  expect(floatingWidthDelta).toBeLessThanOrEqual(4);
+
+  // 4) Clicking the floating save button triggers settings.save
+  await floatingBar
+    .getByRole("button", { name: "保存设置", exact: true })
+    .click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        ((window as any).__calls || []).map((c: any) => c.action),
+      ),
+    )
+    .toContain("settings.save");
+
+  // 5) Scroll to the very bottom -> About row clears the floating bar without overlap
+  await page.evaluate(() => {
+    const content = document.querySelector(".co-content") as HTMLElement;
+    content.scrollTop = content.scrollHeight;
+  });
+  await expect(floatingBar).toBeVisible();
+  await expect(saveButtons).toHaveCount(1);
+  const bottomClearance = await page.evaluate(() => {
+    const about = document
+      .querySelector(".co-about-card")!
+      .getBoundingClientRect();
+    const bar = document
+      .querySelector(".co-settings-floating-bar")!
+      .getBoundingClientRect();
+    return Math.round(bar.top - about.bottom);
+  });
+  expect(bottomClearance).toBeGreaterThanOrEqual(8);
+
+  // 6) Scroll back to top -> floating bar disappears, top save button returns (still strictly 1 button)
+  await page.evaluate(() => {
+    const content = document.querySelector(".co-content") as HTMLElement;
+    content.scrollTop = 0;
+  });
+  await expect(floatingBar).toHaveCount(0);
+  await expect(topSlot.getByRole("button", { name: "保存设置", exact: true })).toBeVisible();
+  await expect(saveButtons).toHaveCount(1);
+
+  // 7) Switching away from Settings while scrolled down immediately hides the floating bar
+  await page.evaluate(() => {
+    const content = document.querySelector(".co-content") as HTMLElement;
+    content.scrollTop = 360;
+  });
+  await expect(floatingBar).toBeVisible();
+  await navItem(page, "远端设备").click();
+  await expect(floatingBar).toHaveCount(0);
 });

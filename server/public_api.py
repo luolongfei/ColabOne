@@ -1,9 +1,11 @@
 """Authenticated inference gateway. Runs on the GPU, separate from its control API."""
 
 import asyncio
+import hashlib
 import hmac
 import json
 import queue
+import re
 import secrets
 import threading
 import time
@@ -28,27 +30,196 @@ from server.openai_compat import (
     MAX_BODY_BYTES,
     MAX_RESPONSE_BYTES,
     ColabOneResponsesStreamTranslator,
+    assemble_compacted_chat_messages,
     build_compaction_response,
     chat_completion_to_response,
-    chunk_transcript_blocks,
+    chunk_transcript_blocks_by_tokens,
+    clip_text_to_token_budget,
     encode_compaction_content,
+    estimate_messages_tokens,
     estimate_tokens,
     extract_anchor_user_item,
+    group_chat_messages,
+    hash_message_group,
     normalize_chat_request,
     normalize_compact_request,
     normalize_responses_request,
+    prune_older_tool_outputs,
+    render_chat_messages_for_compaction,
     render_items_for_compaction,
     response_items_to_chat_messages,
+    split_groups_for_summary,
+    truncate_messages_to_budget,
 )
 from server.tunnel import ColabOneTunnel
 
 MAX_STORED_RESPONSES = 64
 MAX_REQUEST_HISTORY = 50
+MAX_COMPACTION_CACHE = 32
+MAX_COMPACTION_CACHE_BYTES = 2 * 1024 * 1024
 _ENDPOINT_BY_KIND = {
     "chat": "/v1/chat/completions",
     "responses": "/v1/responses",
     "compact": "/v1/responses/compact",
 }
+_CTX_EXCEEDED_RE = re.compile(
+    r"(\d+)\s*tokens?[^\d]{0,80}?(?:context\s*(?:size|length|window)|limit|n_ctx)[^\d]{0,40}?(\d+)",
+    re.IGNORECASE,
+)
+
+
+class ColabOneEngineError(RuntimeError):
+    """Structured upstream inference-engine error mapped to OpenAI-compatible wire codes."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 502,
+        error_code: str = "server_error",
+        error_type: str = "api_error",
+        param: str | None = None,
+        prompt_tokens: int | None = None,
+        context_length: int | None = None,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.error_code = error_code
+        self.error_type = error_type
+        self.param = param
+        self.prompt_tokens = prompt_tokens
+        self.context_length = context_length
+
+    def to_info(self) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "status_code": self.status_code,
+            "code": self.error_code,
+            "type": self.error_type,
+            "message": self.message,
+        }
+        if self.param:
+            info["param"] = self.param
+        return info
+
+
+def _parse_auto_compact_header(raw_value: str | None) -> bool:
+    if not isinstance(raw_value, str):
+        return True
+    cleaned = raw_value.strip().lower()
+    return cleaned not in ("0", "false", "off", "no", "none", "disabled")
+
+
+def _parse_llama_error(
+    status_code: int,
+    raw_body: bytes | str,
+    *,
+    default_ctx: int | None = None,
+    param: str = "input",
+) -> ColabOneEngineError:
+    text = (
+        raw_body.decode("utf-8", errors="replace")
+        if isinstance(raw_body, (bytes, bytearray))
+        else str(raw_body or "")
+    ).strip()
+    err_obj: dict[str, Any] = {}
+    if text:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                inner = parsed.get("error")
+                err_obj = inner if isinstance(inner, dict) else parsed
+        except ValueError:
+            err_obj = {}
+
+    raw_msg = str(err_obj.get("message") or text[:400]).strip()
+    raw_type = str(err_obj.get("type") or "").strip().lower()
+    raw_code = str(err_obj.get("code") or "").strip().lower()
+    low_msg = raw_msg.lower()
+
+    is_ctx_overflow = (
+        raw_type == "exceed_context_size_error"
+        or raw_code == "context_length_exceeded"
+        or "exceeds the available context size" in low_msg
+        or "exceed_context_size" in low_msg
+        or "context_length_exceeded" in low_msg
+        or "maximum context length" in low_msg
+        or "exceeds context window" in low_msg
+        or "prompt is too long" in low_msg
+    )
+
+    if is_ctx_overflow:
+        n_prompt = _nonneg_int(err_obj.get("n_prompt_tokens"))
+        n_ctx = _nonneg_int(err_obj.get("n_ctx"))
+        if n_prompt is None or n_ctx is None:
+            match = _CTX_EXCEEDED_RE.search(raw_msg)
+            if match:
+                if n_prompt is None:
+                    n_prompt = int(match.group(1))
+                if n_ctx is None:
+                    n_ctx = int(match.group(2))
+        if n_ctx is None and isinstance(default_ctx, int) and default_ctx > 0:
+            n_ctx = default_ctx
+        if n_prompt is not None and n_ctx is not None:
+            msg = f"输入上下文过长（{n_prompt} tokens），超过当前模型上下文上限（{n_ctx} tokens）"
+        elif n_ctx is not None:
+            msg = f"输入上下文超过当前模型上限（{n_ctx} tokens）"
+        else:
+            msg = "输入上下文超过当前模型上限"
+        return ColabOneEngineError(
+            msg,
+            status_code=400,
+            error_code="context_length_exceeded",
+            error_type="invalid_request_error",
+            param=param,
+            prompt_tokens=n_prompt,
+            context_length=n_ctx,
+        )
+
+    return ColabOneEngineError(
+        f"推理引擎返回 HTTP {status_code}",
+        status_code=502,
+        error_code="server_error",
+        error_type="api_error",
+    )
+
+
+def _compute_target_input_budget(ctx_tokens: int, max_tokens_opt: Any = None) -> int:
+    """Compute safe prompt token ceiling leaving headroom for generation and Jinja framing."""
+    output_reserve = min(max(512, ctx_tokens // 6), 4096)
+    if (
+        isinstance(max_tokens_opt, int)
+        and not isinstance(max_tokens_opt, bool)
+        and 1 <= max_tokens_opt < output_reserve
+    ):
+        output_reserve = max(256, max_tokens_opt + 128)
+    # Also keep ~4% margin for tokenizer & chat-template differences.
+    framing_margin = max(128, min(1024, ctx_tokens // 25))
+    return max(256, ctx_tokens - output_reserve - framing_margin)
+
+
+def _compute_reactive_tight_budget(
+    real_ctx: int,
+    cur_est_prompt: int,
+    real_prompt_tokens: int | None,
+    max_tokens_opt: Any = None,
+) -> int:
+    """Compute a strictly tighter estimator-space budget after an engine context-overflow 400.
+
+    Calibrates against llama-server's reported ``n_prompt_tokens`` when available so that
+    tokenizer underestimation never causes reactive retry to no-op.
+    """
+    safe_real = min(
+        int(real_ctx * 0.72),
+        _compute_target_input_budget(real_ctx, max_tokens_opt),
+    )
+    candidates = [safe_real]
+    if cur_est_prompt > 0:
+        candidates.append(int(cur_est_prompt * 0.65))
+        if isinstance(real_prompt_tokens, int) and real_prompt_tokens > 0:
+            calibrated = int(safe_real * (cur_est_prompt / real_prompt_tokens) * 0.90)
+            candidates.append(calibrated)
+    return max(256, min(candidates))
 
 
 def _positive_float(val: Any) -> float | None:
@@ -195,6 +366,17 @@ def _format_request_finish_log(rec: dict[str, Any]) -> str:
         comp = rec.get("completion_tokens")
         if isinstance(comp, int) and comp > 0:
             parts.append(f"输出 {comp} tokens")
+        if rec.get("compacted"):
+            orig_in = rec.get("original_prompt_tokens")
+            after_in = rec.get("prompt_tokens")
+            if (
+                isinstance(orig_in, int)
+                and isinstance(after_in, int)
+                and orig_in > 0
+                and after_in > 0
+                and orig_in > after_in
+            ):
+                parts.append(f"自动压缩 {orig_in}→{after_in} tokens")
         ttft = rec.get("ttft_ms")
         if isinstance(ttft, int) and ttft >= 0:
             parts.append(f"首字 {_format_duration_label(ttft)}")
@@ -225,6 +407,7 @@ class ColabOnePublicGateway:
         self.request_history: deque[dict[str, Any]] = deque(maxlen=MAX_REQUEST_HISTORY)
         self.jobs = {}
         self.responses: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.compaction_cache: OrderedDict[str, str] = OrderedDict()
         self.completed, self.failed, self.total = 0, 0, 0
         self.last_request = 0
         self.lock = threading.RLock()
@@ -364,6 +547,7 @@ class ColabOnePublicGateway:
             self.tunnel.stop()
             with self.lock:
                 self.responses.clear()
+                self.compaction_cache.clear()
             self.phase, self.error, self.key = "stopped", "", ""
             self.note("对外 API 已关闭，远端模型仍保留在显存中")
         return self.snapshot()
@@ -474,6 +658,9 @@ class ColabOnePublicGateway:
             "duration_ms": 0,
             "ttft_ms": None,
             "prompt_tokens": None,
+            "original_prompt_tokens": None,
+            "compacted": False,
+            "compaction_stage": "",
             "completion_tokens": 0,
             "tokens_per_second": None,
             "prompt_tokens_per_second": None,
@@ -705,6 +892,12 @@ class ColabOnePublicGateway:
             self.note(
                 f"API 请求 #{self.total} · {slot['kind']} · 模型 {display_model}"
             )
+            pending_notes = metric.pop("_pending_compaction_notes", None) or []
+            for orig_toks, comp_toks, ctx_toks in pending_notes:
+                self.note(
+                    f"API 请求 #{self.total} 上下文超限（约 {orig_toks} / {ctx_toks} tokens），已自动压缩为约 {comp_toks} tokens",
+                    level="warning",
+                )
             if metric["state"] != "running" and not metric.get("_finish_logged"):
                 metric["_finish_logged"] = True
                 self.note(
@@ -722,8 +915,88 @@ class ColabOnePublicGateway:
                 task.check()
                 await asyncio.sleep(0.02)
 
+    @staticmethod
+    async def _read_error_body(response: httpx.Response, limit: int = 65536) -> bytes:
+        buf = bytearray()
+        async for chunk in response.aiter_bytes():
+            buf.extend(chunk)
+            if len(buf) >= limit:
+                break
+        return bytes(buf[:limit])
+
+    def _compaction_cache_get(self, key: str) -> str | None:
+        with self.lock:
+            val = self.compaction_cache.get(key)
+            if val is not None:
+                self.compaction_cache.move_to_end(key)
+            return val
+
+    def _compaction_cache_put(self, key: str, summary: str) -> None:
+        if not key or not summary:
+            return
+        with self.lock:
+            self.compaction_cache[key] = summary
+            self.compaction_cache.move_to_end(key)
+            total_bytes = sum(len(v.encode("utf-8")) for v in self.compaction_cache.values())
+            while len(self.compaction_cache) > MAX_COMPACTION_CACHE or (
+                len(self.compaction_cache) > 1 and total_bytes > MAX_COMPACTION_CACHE_BYTES
+            ):
+                _, evicted = self.compaction_cache.popitem(last=False)
+                total_bytes -= len(evicted.encode("utf-8"))
+
+    def _record_compaction_metric(
+        self,
+        slot: dict[str, Any],
+        *,
+        original_tokens: int,
+        compacted_tokens: int,
+        stage: str,
+        ctx_tokens: int,
+        log_note: bool = True,
+    ) -> None:
+        metric = slot.get("metric")
+        emit_now = False
+        seq = 0
+        with self.lock:
+            if isinstance(metric, dict):
+                prev_orig = metric.get("original_prompt_tokens")
+                metric["compacted"] = True
+                metric["original_prompt_tokens"] = (
+                    max(prev_orig, original_tokens)
+                    if isinstance(prev_orig, int) and prev_orig > 0
+                    else original_tokens
+                )
+                metric["compaction_stage"] = stage
+                if log_note:
+                    if metric.get("_registered"):
+                        seq = int(metric.get("seq") or 0)
+                        emit_now = True
+                    else:
+                        metric.setdefault("_pending_compaction_notes", []).append(
+                            (original_tokens, compacted_tokens, ctx_tokens)
+                        )
+            elif log_note:
+                emit_now = True
+            if emit_now:
+                if seq > 0:
+                    self.note(
+                        f"API 请求 #{seq} 上下文超限（约 {original_tokens} / {ctx_tokens} tokens），已自动压缩为约 {compacted_tokens} tokens",
+                        level="warning",
+                    )
+                else:
+                    self.note(
+                        f"API 请求上下文超限（约 {original_tokens} / {ctx_tokens} tokens），已自动压缩为约 {compacted_tokens} tokens",
+                        level="warning",
+                    )
+
     async def _post_chat_json(
-        self, http: httpx.AsyncClient, task, payload: dict[str, Any]
+        self,
+        http: httpx.AsyncClient,
+        task,
+        payload: dict[str, Any],
+        *,
+        default_ctx: int | None = None,
+        error_param: str = "input",
     ) -> dict[str, Any]:
         async with http.stream(
             "POST",
@@ -731,7 +1004,13 @@ class ColabOnePublicGateway:
             json=payload,
         ) as response:
             if response.status_code != 200:
-                raise RuntimeError(f"推理引擎返回 HTTP {response.status_code}")
+                err_body = await self._read_error_body(response)
+                raise _parse_llama_error(
+                    response.status_code,
+                    err_body,
+                    default_ctx=default_ctx,
+                    param=error_param,
+                )
             data = bytearray()
             async for chunk in response.aiter_bytes():
                 task.check()
@@ -740,67 +1019,131 @@ class ColabOnePublicGateway:
                     raise RuntimeError("推理响应超过大小限制")
             return json.loads(data)
 
-    async def _run_compaction_summary(
+    async def _run_compaction_blocks(
         self,
         http: httpx.AsyncClient,
         task,
         model_id: str,
-        items: list[dict[str, Any]],
+        blocks: list[str],
         instructions: str | None,
+        *,
+        prior_summary: str = "",
+        ctx_tokens: int | None = None,
+        max_output_tokens: int | None = None,
+        keepalive_cb=None,
     ) -> tuple[str, dict[str, int], dict[str, Any]]:
-        blocks = render_items_for_compaction(items)
         if not blocks:
             return (
-                "No prior conversation history.",
+                prior_summary.strip() or "No prior conversation history.",
                 {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                 {},
             )
+        configured_ctx = self._active_context_length(model_id)
+        effective_ctx = (
+            min(configured_ctx, ctx_tokens)
+            if isinstance(ctx_tokens, int) and ctx_tokens >= 512
+            else configured_ctx
+        )
         sys_prompt = COMPACTION_SYSTEM_PROMPT
-        if isinstance(instructions, str) and instructions.strip():
-            trimmed_inst = instructions.strip()[:2000]
+        if isinstance(instructions, str) and instructions.strip() and effective_ctx >= 1536:
+            inst_cap = min(450, max(64, effective_ctx // 12))
+            trimmed_inst = clip_text_to_token_budget(instructions.strip(), inst_cap)
             sys_prompt += (
                 "\n\nActive session instructions context (for reference, do not copy verbatim):\n"
                 + trimmed_inst
             )
 
-        ctx_tokens = self._active_context_length(model_id)
-        summary_max_tokens = min(2048, max(256, ctx_tokens // 4))
-        reserved_tokens = summary_max_tokens + estimate_tokens(sys_prompt) + 256
-        avail_tokens = max(256, ctx_tokens - reserved_tokens)
-        char_budget = max(800, int(avail_tokens * 2.8))
-        chunks = chunk_transcript_blocks(blocks, char_budget)
+        summary_max_tokens = min(1536, max(128, effective_ctx // 6))
+        if isinstance(max_output_tokens, int) and max_output_tokens >= 128:
+            summary_max_tokens = min(summary_max_tokens, max_output_tokens)
+        running_summary_cap = min(1024, max(128, effective_ctx // 8))
+        reserved_tokens = (
+            summary_max_tokens + running_summary_cap + estimate_tokens(sys_prompt) + 128
+        )
+        avail_tokens = max(128, effective_ctx - reserved_tokens)
+        chunk_token_budget = max(128, int(avail_tokens * 0.85))
+        chunks = chunk_transcript_blocks_by_tokens(blocks, chunk_token_budget)
 
-        running_summary = ""
+        running_summary = prior_summary.strip()
         total_in = 0
         total_out = 0
         pred_n = 0
         pred_ms = 0.0
         prompt_n = 0
         prompt_ms = 0.0
+
         for idx, chunk_text in enumerate(chunks):
             task.check()
-            if idx == 0:
-                user_prompt = (
-                    "Compact the following conversation history into a concise continuation handoff summary:\n\n"
-                    + chunk_text
-                )
-            else:
-                user_prompt = (
-                    "Update the running continuation summary by incorporating the next segment of conversation history.\n\n"
-                    f"[RUNNING_SUMMARY]\n{running_summary}\n\n"
-                    f"[NEXT_HISTORY_SEGMENT]\n{chunk_text}"
-                )
-            compact_payload = {
-                "model": model_id,
-                "messages": [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "stream": False,
-                "temperature": 0.2,
-                "max_tokens": summary_max_tokens,
-            }
-            resp_json = await self._post_chat_json(http, task, compact_payload)
+            if keepalive_cb is not None:
+                await keepalive_cb()
+            cur_chunk = chunk_text
+            cur_running = (
+                clip_text_to_token_budget(running_summary, running_summary_cap)
+                if running_summary
+                else ""
+            )
+            cur_max_tokens = summary_max_tokens
+            resp_json: dict[str, Any] | None = None
+            user_prompt = ""
+            for shrink_attempt in range(3):
+                if not cur_running:
+                    user_prompt = (
+                        "Compact the following conversation history into a concise continuation handoff summary:\n\n"
+                        + cur_chunk
+                    )
+                else:
+                    user_prompt = (
+                        "Update the running continuation summary by incorporating the next segment of conversation history.\n\n"
+                        f"[RUNNING_SUMMARY]\n{cur_running}\n\n"
+                        f"[NEXT_HISTORY_SEGMENT]\n{cur_chunk}"
+                    )
+                compact_payload = {
+                    "model": model_id,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "stream": False,
+                    "temperature": 0.2,
+                    "max_tokens": cur_max_tokens,
+                }
+                try:
+                    resp_json = await self._post_chat_json(
+                        http,
+                        task,
+                        compact_payload,
+                        default_ctx=effective_ctx,
+                        error_param="input",
+                    )
+                    break
+                except ColabOneEngineError as exc:
+                    if exc.error_code != "context_length_exceeded" or shrink_attempt >= 2:
+                        raise
+                    # Self-heal if CJK/special tokens or smaller real n_ctx caused a chunk to overflow.
+                    if (
+                        isinstance(exc.context_length, int)
+                        and exc.context_length >= 512
+                        and exc.context_length < effective_ctx
+                    ):
+                        effective_ctx = exc.context_length
+                    cur_max_tokens = max(128, min(cur_max_tokens // 2, effective_ctx // 6))
+                    cur_toks = estimate_tokens(cur_chunk)
+                    ratio = 0.55
+                    if (
+                        isinstance(exc.prompt_tokens, int)
+                        and exc.prompt_tokens > 0
+                        and effective_ctx > 0
+                    ):
+                        ratio = min(ratio, max(0.25, (effective_ctx * 0.65) / exc.prompt_tokens))
+                    cur_chunk = clip_text_to_token_budget(
+                        cur_chunk, max(96, int(cur_toks * ratio))
+                    )
+                    if cur_running:
+                        cur_running = clip_text_to_token_budget(
+                            cur_running, max(96, int(estimate_tokens(cur_running) * 0.65))
+                        )
+
+            assert resp_json is not None
             choices = resp_json.get("choices") or []
             msg = (choices[0] or {}).get("message") or {} if choices else {}
             content = msg.get("content")
@@ -847,7 +1190,181 @@ class ColabOnePublicGateway:
             agg_timings,
         )
 
-    def chat(self, body):
+    async def _run_compaction_summary(
+        self,
+        http: httpx.AsyncClient,
+        task,
+        model_id: str,
+        items: list[dict[str, Any]],
+        instructions: str | None,
+        *,
+        keepalive_cb=None,
+    ) -> tuple[str, dict[str, int], dict[str, Any]]:
+        blocks = render_items_for_compaction(items)
+        return await self._run_compaction_blocks(
+            http,
+            task,
+            model_id,
+            blocks,
+            instructions,
+            keepalive_cb=keepalive_cb,
+        )
+
+    async def _auto_compact_chat_payload(
+        self,
+        http: httpx.AsyncClient,
+        task,
+        model_id: str,
+        chat_payload: dict[str, Any],
+        *,
+        ctx_tokens: int,
+        target_input_budget: int,
+        instructions: str | None = None,
+        force: bool = False,
+        keepalive_cb=None,
+    ) -> dict[str, Any]:
+        """Three-stage automatic context compactor:
+        1. Fast pruning of bulky older tool outputs/arguments (zero GPU overhead).
+        2. Rolling semantic summary of older turns with incremental prefix cache.
+        3. Extreme single-turn / tail safety clamp so messages always fit inside ctx_tokens.
+        """
+        raw_msgs = list(chat_payload.get("messages") or [])
+        tools = chat_payload.get("tools")
+        orig_tokens = estimate_messages_tokens(raw_msgs, tools)
+        if not force and orig_tokens <= target_input_budget:
+            return {
+                "compacted": False,
+                "stage": "",
+                "original_tokens": orig_tokens,
+                "compacted_tokens": orig_tokens,
+                "messages": raw_msgs,
+                "extra_usage": None,
+            }
+
+        # Stage 1: fast tool output & argument pruning on older turns.
+        pruned_msgs, pruned_changed = prune_older_tool_outputs(
+            raw_msgs, tools, target_input_budget
+        )
+        pruned_tokens = estimate_messages_tokens(pruned_msgs, tools)
+        if pruned_changed and pruned_tokens <= target_input_budget:
+            return {
+                "compacted": True,
+                "stage": "prune",
+                "original_tokens": orig_tokens,
+                "compacted_tokens": pruned_tokens,
+                "messages": pruned_msgs,
+                "extra_usage": None,
+            }
+
+        # Stage 2: rolling semantic summary of older atomic turn groups + incremental prefix cache.
+        leading_system, groups = group_chat_messages(raw_msgs)
+        older_groups, recent_groups = split_groups_for_summary(
+            leading_system, groups, tools, target_input_budget
+        )
+        candidate_msgs = pruned_msgs if pruned_changed else raw_msgs
+        extra_usage: dict[str, int] | None = None
+        had_summary = False
+
+        older_tokens = (
+            estimate_messages_tokens([m for grp in older_groups for m in grp], None)
+            if older_groups
+            else 0
+        )
+        # Only invoke LLM summarization when older turns are substantial enough to benefit from compression.
+        if older_groups and older_tokens > 320:
+            sys_hint = instructions
+            if not sys_hint and leading_system and isinstance(leading_system.get("content"), str):
+                sys_hint = leading_system["content"]
+            sys_hash = hashlib.sha256((sys_hint or "").encode("utf-8")).hexdigest()[:16]
+            # Build cumulative prefix chain hashes so stateless clients reusing an oversized prefix
+            # hit cached summaries or only summarize newly appended turns incrementally.
+            chain_hashes: list[str] = []
+            running_hash = hashlib.sha256(
+                f"{model_id}:{ctx_tokens}:{sys_hash}".encode("utf-8")
+            ).hexdigest()
+            for grp in older_groups:
+                running_hash = hashlib.sha256(
+                    f"{running_hash}:{hash_message_group(grp)}".encode("utf-8")
+                ).hexdigest()
+                chain_hashes.append(running_hash)
+
+            cached_idx = -1
+            prior_summary = ""
+            for i in range(len(chain_hashes) - 1, -1, -1):
+                hit = self._compaction_cache_get(chain_hashes[i])
+                if hit is not None:
+                    cached_idx = i
+                    prior_summary = hit
+                    break
+
+            summary_out_cap = min(1536, max(192, older_tokens // 2))
+            if cached_idx == len(chain_hashes) - 1 and prior_summary:
+                summary_text = prior_summary
+            else:
+                delta_groups = older_groups[cached_idx + 1 :]
+                delta_msgs = [m for grp in delta_groups for m in grp]
+                blocks = render_chat_messages_for_compaction(delta_msgs)
+                summary_text, extra_usage, _ = await self._run_compaction_blocks(
+                    http,
+                    task,
+                    model_id,
+                    blocks,
+                    sys_hint,
+                    prior_summary=prior_summary,
+                    ctx_tokens=ctx_tokens,
+                    max_output_tokens=summary_out_cap,
+                    keepalive_cb=keepalive_cb,
+                )
+                self._compaction_cache_put(chain_hashes[-1], summary_text)
+
+            summarized_msgs = assemble_compacted_chat_messages(
+                leading_system, summary_text, recent_groups
+            )
+            sum_tokens = estimate_messages_tokens(summarized_msgs, tools)
+            if sum_tokens < orig_tokens:
+                had_summary = True
+                candidate_msgs = summarized_msgs
+                if sum_tokens <= target_input_budget:
+                    return {
+                        "compacted": True,
+                        "stage": "summary",
+                        "original_tokens": orig_tokens,
+                        "compacted_tokens": sum_tokens,
+                        "messages": summarized_msgs,
+                        "extra_usage": extra_usage,
+                    }
+                # Before dropping entire recent turns in Stage 3, prune bulky tool outputs inside recent_groups.
+                pruned_sum_msgs, pruned_sum_changed = prune_older_tool_outputs(
+                    summarized_msgs, tools, target_input_budget
+                )
+                if pruned_sum_changed:
+                    pruned_sum_tokens = estimate_messages_tokens(pruned_sum_msgs, tools)
+                    candidate_msgs = pruned_sum_msgs
+                    if pruned_sum_tokens <= target_input_budget:
+                        return {
+                            "compacted": True,
+                            "stage": "summary",
+                            "original_tokens": orig_tokens,
+                            "compacted_tokens": pruned_sum_tokens,
+                            "messages": pruned_sum_msgs,
+                            "extra_usage": extra_usage,
+                        }
+
+        # Stage 3: extreme clamp for oversized single messages / system prompts / final tool outputs.
+        clamped_msgs, clamped_changed = truncate_messages_to_budget(
+            candidate_msgs, tools, target_input_budget
+        )
+        clamped_tokens = estimate_messages_tokens(clamped_msgs, tools)
+        return {
+            "compacted": bool(clamped_changed or had_summary or pruned_changed),
+            "stage": "truncate" if clamped_changed else ("summary" if had_summary else "prune"),
+            "original_tokens": orig_tokens,
+            "compacted_tokens": clamped_tokens,
+            "messages": clamped_msgs,
+            "extra_usage": extra_usage,
+        }
+
+    def chat(self, body, *, auto_compact: bool = True):
         raw = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else body
         model, stream, payload = normalize_chat_request(raw)
         client_wants_usage = bool(
@@ -859,14 +1376,15 @@ class ColabOnePublicGateway:
         upstream_payload = dict(payload)
         if stream:
             upstream_payload["stream_options"] = {"include_usage": True}
-        est_prompt_tokens = estimate_tokens(
-            json.dumps(payload.get("messages") or [], ensure_ascii=False)
+        est_prompt_tokens = estimate_messages_tokens(
+            payload.get("messages") or [], payload.get("tools")
         )
         metric, acc = self._init_slot_metric("chat", model, stream)
         slot: dict[str, Any] = {
             "kind": "chat",
             "stream": stream,
             "result": None,
+            "error_info": None,
             "queue": queue.Queue(maxsize=256),
             "metric": metric,
             "acc": acc,
@@ -878,6 +1396,7 @@ class ColabOnePublicGateway:
 
                 loop, current = asyncio.get_running_loop(), asyncio.current_task()
                 task.cancel_hook = lambda: loop.call_soon_threadsafe(current.cancel)
+                cur_est_prompt = est_prompt_tokens
                 try:
                     task.check()
                     async with asyncio.timeout(600 if stream else 300):
@@ -886,75 +1405,198 @@ class ColabOnePublicGateway:
                             transport=self.runtime.chat_transport,
                             timeout=httpx.Timeout(300, connect=10),
                         ) as http:
+                            internal_model = slot.get("internal_model") or model
+                            ctx_tokens = self._active_context_length(internal_model)
+                            target_budget = _compute_target_input_budget(
+                                ctx_tokens, upstream_payload.get("max_tokens")
+                            )
+
+                            async def send_keepalive():
+                                if stream:
+                                    await self._enqueue(slot, task, b": compacting\n\n")
+
+                            if auto_compact and cur_est_prompt > target_budget:
+                                comp_res = await self._auto_compact_chat_payload(
+                                    http,
+                                    task,
+                                    internal_model,
+                                    upstream_payload,
+                                    ctx_tokens=ctx_tokens,
+                                    target_input_budget=target_budget,
+                                    keepalive_cb=send_keepalive,
+                                )
+                                if comp_res["compacted"]:
+                                    upstream_payload["messages"] = comp_res["messages"]
+                                    cur_est_prompt = comp_res["compacted_tokens"]
+                                    self._record_compaction_metric(
+                                        slot,
+                                        original_tokens=comp_res["original_tokens"],
+                                        compacted_tokens=cur_est_prompt,
+                                        stage=comp_res["stage"],
+                                        ctx_tokens=ctx_tokens,
+                                    )
+
                             if stream:
-                                async with http.stream(
-                                    "POST",
-                                    "http://127.0.0.1:8081/v1/chat/completions",
-                                    json=upstream_payload,
-                                ) as response:
-                                    if response.status_code != 200:
-                                        raise RuntimeError(
-                                            f"推理引擎返回 HTTP {response.status_code}"
-                                        )
-                                    finished = False
-                                    async for line in response.aiter_lines():
-                                        task.check()
-                                        if len(line) > 2 * 1024 * 1024:
-                                            raise RuntimeError("推理响应超过大小限制")
-                                        if not line.startswith("data:"):
-                                            continue
-                                        raw_data = line[5:].strip()
-                                        if raw_data == "[DONE]":
-                                            finished = True
-                                            await self._enqueue(
-                                                slot, task, (line + "\n\n").encode("utf-8")
+                                reactive_retried = False
+                                while True:
+                                    async with http.stream(
+                                        "POST",
+                                        "http://127.0.0.1:8081/v1/chat/completions",
+                                        json=upstream_payload,
+                                    ) as response:
+                                        if response.status_code != 200:
+                                            err_body = await self._read_error_body(response)
+                                            err = _parse_llama_error(
+                                                response.status_code,
+                                                err_body,
+                                                default_ctx=ctx_tokens,
+                                                param="messages",
                                             )
-                                            continue
-                                        suppress_chunk = False
-                                        out_line = line
-                                        if raw_data:
-                                            try:
-                                                chunk = json.loads(raw_data)
-                                            except ValueError:
-                                                chunk = None
-                                            if isinstance(chunk, dict):
-                                                self._record_stream_delta(
-                                                    slot, chunk, time.monotonic()
+                                            if (
+                                                auto_compact
+                                                and not reactive_retried
+                                                and err.error_code == "context_length_exceeded"
+                                            ):
+                                                reactive_retried = True
+                                                real_ctx = err.context_length or ctx_tokens
+                                                real_in = err.prompt_tokens or cur_est_prompt
+                                                tight_budget = _compute_reactive_tight_budget(
+                                                    real_ctx,
+                                                    cur_est_prompt,
+                                                    err.prompt_tokens,
+                                                    upstream_payload.get("max_tokens"),
                                                 )
-                                                if (
-                                                    not client_wants_usage
-                                                    and not (chunk.get("choices") or [])
-                                                    and (
-                                                        chunk.get("usage") is not None
-                                                        or chunk.get("timings") is not None
+                                                comp_res = await self._auto_compact_chat_payload(
+                                                    http,
+                                                    task,
+                                                    internal_model,
+                                                    upstream_payload,
+                                                    ctx_tokens=real_ctx,
+                                                    target_input_budget=tight_budget,
+                                                    force=True,
+                                                    keepalive_cb=send_keepalive,
+                                                )
+                                                if comp_res["compacted"]:
+                                                    upstream_payload["messages"] = comp_res["messages"]
+                                                    cur_est_prompt = comp_res["compacted_tokens"]
+                                                    self._record_compaction_metric(
+                                                        slot,
+                                                        original_tokens=max(
+                                                            real_in, comp_res["original_tokens"]
+                                                        ),
+                                                        compacted_tokens=cur_est_prompt,
+                                                        stage=comp_res["stage"],
+                                                        ctx_tokens=real_ctx,
                                                     )
-                                                ):
-                                                    suppress_chunk = True
-                                                elif (
-                                                    "model" in chunk
-                                                    and slot.get("public_model")
-                                                    and chunk.get("model") != slot["public_model"]
-                                                ):
-                                                    rewritten = dict(chunk)
-                                                    rewritten["model"] = slot["public_model"]
-                                                    out_line = "data: " + json.dumps(
-                                                        rewritten, ensure_ascii=False
+                                                    continue
+                                            raise err
+
+                                        finished = False
+                                        async for line in response.aiter_lines():
+                                            task.check()
+                                            if len(line) > 2 * 1024 * 1024:
+                                                raise RuntimeError("推理响应超过大小限制")
+                                            if not line.startswith("data:"):
+                                                continue
+                                            raw_data = line[5:].strip()
+                                            if raw_data == "[DONE]":
+                                                finished = True
+                                                await self._enqueue(
+                                                    slot, task, (line + "\n\n").encode("utf-8")
+                                                )
+                                                continue
+                                            suppress_chunk = False
+                                            out_line = line
+                                            if raw_data:
+                                                try:
+                                                    chunk = json.loads(raw_data)
+                                                except ValueError:
+                                                    chunk = None
+                                                if isinstance(chunk, dict):
+                                                    self._record_stream_delta(
+                                                        slot, chunk, time.monotonic()
                                                     )
-                                        if not suppress_chunk:
-                                            await self._enqueue(
-                                                slot, task, (out_line + "\n\n").encode("utf-8")
-                                            )
-                                    if not finished:
-                                        raise RuntimeError("推理连接提前中断")
+                                                    if (
+                                                        not client_wants_usage
+                                                        and not (chunk.get("choices") or [])
+                                                        and (
+                                                            chunk.get("usage") is not None
+                                                            or chunk.get("timings") is not None
+                                                        )
+                                                    ):
+                                                        suppress_chunk = True
+                                                    elif (
+                                                        "model" in chunk
+                                                        and slot.get("public_model")
+                                                        and chunk.get("model") != slot["public_model"]
+                                                    ):
+                                                        rewritten = dict(chunk)
+                                                        rewritten["model"] = slot["public_model"]
+                                                        out_line = "data: " + json.dumps(
+                                                            rewritten, ensure_ascii=False
+                                                        )
+                                            if not suppress_chunk:
+                                                await self._enqueue(
+                                                    slot, task, (out_line + "\n\n").encode("utf-8")
+                                                )
+                                        if not finished:
+                                            raise RuntimeError("推理连接提前中断")
+                                    break
                                 self._finalize_request(
                                     slot,
                                     state="completed",
-                                    fallback_prompt_tokens=est_prompt_tokens,
+                                    fallback_prompt_tokens=cur_est_prompt,
                                 )
                             else:
-                                result_json = await self._post_chat_json(
-                                    http, task, upstream_payload
-                                )
+                                try:
+                                    result_json = await self._post_chat_json(
+                                        http,
+                                        task,
+                                        upstream_payload,
+                                        default_ctx=ctx_tokens,
+                                        error_param="messages",
+                                    )
+                                except ColabOneEngineError as err:
+                                    if auto_compact and err.error_code == "context_length_exceeded":
+                                        real_ctx = err.context_length or ctx_tokens
+                                        real_in = err.prompt_tokens or cur_est_prompt
+                                        tight_budget = _compute_reactive_tight_budget(
+                                            real_ctx,
+                                            cur_est_prompt,
+                                            err.prompt_tokens,
+                                            upstream_payload.get("max_tokens"),
+                                        )
+                                        comp_res = await self._auto_compact_chat_payload(
+                                            http,
+                                            task,
+                                            internal_model,
+                                            upstream_payload,
+                                            ctx_tokens=real_ctx,
+                                            target_input_budget=tight_budget,
+                                            force=True,
+                                        )
+                                        if not comp_res["compacted"]:
+                                            raise
+                                        upstream_payload["messages"] = comp_res["messages"]
+                                        cur_est_prompt = comp_res["compacted_tokens"]
+                                        self._record_compaction_metric(
+                                            slot,
+                                            original_tokens=max(
+                                                real_in, comp_res["original_tokens"]
+                                            ),
+                                            compacted_tokens=cur_est_prompt,
+                                            stage=comp_res["stage"],
+                                            ctx_tokens=real_ctx,
+                                        )
+                                        result_json = await self._post_chat_json(
+                                            http,
+                                            task,
+                                            upstream_payload,
+                                            default_ctx=real_ctx,
+                                            error_param="messages",
+                                        )
+                                    else:
+                                        raise
                                 if (
                                     isinstance(result_json, dict)
                                     and "model" in result_json
@@ -967,7 +1609,7 @@ class ColabOnePublicGateway:
                                     state="completed",
                                     response_obj=result_json,
                                     fallback_text=_extract_completion_text(result_json),
-                                    fallback_prompt_tokens=est_prompt_tokens,
+                                    fallback_prompt_tokens=cur_est_prompt,
                                 )
                     task.note("外部 API 聊天生成完成")
                 except (asyncio.CancelledError, ColabOneCancelledError):
@@ -975,7 +1617,7 @@ class ColabOnePublicGateway:
                         slot,
                         state="cancelled",
                         error="API 请求已取消",
-                        fallback_prompt_tokens=est_prompt_tokens,
+                        fallback_prompt_tokens=cur_est_prompt,
                     )
                     raise ColabOneCancelledError("API 请求已取消") from None
                 except (TimeoutError, httpx.TimeoutException):
@@ -984,7 +1626,7 @@ class ColabOnePublicGateway:
                         slot,
                         state="failed",
                         error=msg,
-                        fallback_prompt_tokens=est_prompt_tokens,
+                        fallback_prompt_tokens=cur_est_prompt,
                     )
                     raise RuntimeError(msg) from None
                 except httpx.HTTPError:
@@ -993,15 +1635,24 @@ class ColabOnePublicGateway:
                         slot,
                         state="failed",
                         error=msg,
-                        fallback_prompt_tokens=est_prompt_tokens,
+                        fallback_prompt_tokens=cur_est_prompt,
                     )
                     raise RuntimeError(msg) from None
+                except ColabOneEngineError as exc:
+                    slot["error_info"] = exc.to_info()
+                    self._finalize_request(
+                        slot,
+                        state="failed",
+                        error=exc.message,
+                        fallback_prompt_tokens=exc.prompt_tokens or cur_est_prompt,
+                    )
+                    raise
                 except Exception as exc:
                     self._finalize_request(
                         slot,
                         state="failed",
                         error=str(exc) or "推理失败",
-                        fallback_prompt_tokens=est_prompt_tokens,
+                        fallback_prompt_tokens=cur_est_prompt,
                     )
                     raise
                 finally:
@@ -1018,7 +1669,7 @@ class ColabOnePublicGateway:
             result = self.runtime.submit("public_chat", internal_id, run)
             return self.register(result, slot)
 
-    def respond(self, raw_body: Any):
+    def respond(self, raw_body: Any, *, auto_compact: bool = True):
         spec = normalize_responses_request(raw_body, self._responses_snapshot())
         stream = spec["stream"]
         metric, acc = self._init_slot_metric("responses", spec["model"], stream)
@@ -1026,6 +1677,7 @@ class ColabOnePublicGateway:
             "kind": "responses",
             "stream": stream,
             "result": None,
+            "error_info": None,
             "queue": queue.Queue(maxsize=512),
             "fail_event": None,
             "metric": metric,
@@ -1049,12 +1701,21 @@ class ColabOnePublicGateway:
                             timeout=httpx.Timeout(300, connect=10),
                         ) as http:
                             chat_payload = dict(spec["chat_payload"])
-                            est_in = estimate_tokens(
-                                json.dumps(chat_payload["messages"], ensure_ascii=False)
+                            internal_model = slot.get("internal_model") or spec["model"]
+                            ctx_tokens = self._active_context_length(internal_model)
+                            raw_est_in = estimate_messages_tokens(
+                                chat_payload["messages"], chat_payload.get("tools")
                             )
+                            est_in = raw_est_in
                             prefix_output: list[dict[str, Any]] = []
                             extra_usage: dict[str, int] | None = None
                             stored_input_items = list(spec["input_items"])
+                            min_wire_input_tokens: int | None = None
+                            gateway_auto_compacted = False
+
+                            async def send_keepalive():
+                                if stream:
+                                    await self._enqueue(slot, task, b": compacting\n\n")
 
                             should_compact = bool(spec["trigger_compaction"]) or (
                                 spec["compact_threshold"] is not None
@@ -1064,9 +1725,10 @@ class ColabOnePublicGateway:
                                 summary, extra_usage, _ = await self._run_compaction_summary(
                                     http,
                                     task,
-                                    slot.get("internal_model") or spec["model"],
+                                    internal_model,
                                     spec["input_items"],
                                     spec["instructions"],
+                                    keepalive_cb=send_keepalive,
                                 )
                                 comp_item = {
                                     "id": f"cmp_{secrets.token_hex(12)}",
@@ -1105,9 +1767,47 @@ class ColabOnePublicGateway:
                                     )
                                 chat_payload["messages"] = compacted_msgs
                                 stored_input_items = compacted_items
-                                est_in = estimate_tokens(
-                                    json.dumps(compacted_msgs, ensure_ascii=False)
+                                est_in = estimate_messages_tokens(
+                                    compacted_msgs, chat_payload.get("tools")
                                 )
+                                self._record_compaction_metric(
+                                    slot,
+                                    original_tokens=raw_est_in,
+                                    compacted_tokens=est_in,
+                                    stage="inline",
+                                    ctx_tokens=ctx_tokens,
+                                    log_note=False,
+                                )
+
+                            target_budget = _compute_target_input_budget(
+                                ctx_tokens, chat_payload.get("max_tokens")
+                            )
+                            if auto_compact and est_in > target_budget:
+                                comp_res = await self._auto_compact_chat_payload(
+                                    http,
+                                    task,
+                                    internal_model,
+                                    chat_payload,
+                                    ctx_tokens=ctx_tokens,
+                                    target_input_budget=target_budget,
+                                    instructions=spec["instructions"],
+                                    keepalive_cb=send_keepalive,
+                                )
+                                if comp_res["compacted"]:
+                                    chat_payload["messages"] = comp_res["messages"]
+                                    est_in = comp_res["compacted_tokens"]
+                                    gateway_auto_compacted = True
+                                    orig_toks = max(raw_est_in, comp_res["original_tokens"])
+                                    # Report uncompacted context pressure on the wire so Codex CLI
+                                    # sees last_token_usage >= auto_compact_limit and triggers native compaction.
+                                    min_wire_input_tokens = orig_toks
+                                    self._record_compaction_metric(
+                                        slot,
+                                        original_tokens=orig_toks,
+                                        compacted_tokens=est_in,
+                                        stage=comp_res["stage"],
+                                        ctx_tokens=ctx_tokens,
+                                    )
 
                             if stream:
                                 translator = ColabOneResponsesStreamTranslator(
@@ -1115,43 +1815,97 @@ class ColabOnePublicGateway:
                                     fallback_input_tokens=est_in,
                                     prefix_output=prefix_output,
                                     extra_usage=extra_usage,
+                                    min_input_tokens=min_wire_input_tokens,
                                 )
                                 for ev in translator.start():
                                     await self._enqueue(slot, task, ev)
-                                async with http.stream(
-                                    "POST",
-                                    "http://127.0.0.1:8081/v1/chat/completions",
-                                    json=chat_payload,
-                                ) as response:
-                                    if response.status_code != 200:
-                                        raise RuntimeError(
-                                            f"推理引擎返回 HTTP {response.status_code}"
-                                        )
-                                    finished = False
-                                    async for line in response.aiter_lines():
-                                        task.check()
-                                        if len(line) > 2 * 1024 * 1024:
-                                            raise RuntimeError("推理响应超过大小限制")
-                                        if not line.startswith("data:"):
-                                            continue
-                                        raw_data = line[5:].strip()
-                                        if not raw_data:
-                                            continue
-                                        if raw_data == "[DONE]":
-                                            finished = True
-                                            break
-                                        try:
-                                            chunk = json.loads(raw_data)
-                                        except ValueError:
-                                            continue
-                                        if isinstance(chunk, dict):
-                                            self._record_stream_delta(
-                                                slot, chunk, time.monotonic()
+                                reactive_retried = False
+                                while True:
+                                    async with http.stream(
+                                        "POST",
+                                        "http://127.0.0.1:8081/v1/chat/completions",
+                                        json=chat_payload,
+                                    ) as response:
+                                        if response.status_code != 200:
+                                            err_body = await self._read_error_body(response)
+                                            err = _parse_llama_error(
+                                                response.status_code,
+                                                err_body,
+                                                default_ctx=ctx_tokens,
+                                                param="input",
                                             )
-                                        for ev in translator.feed_chunk(chunk):
-                                            await self._enqueue(slot, task, ev)
-                                    if not finished:
-                                        raise RuntimeError("推理连接提前中断")
+                                            if (
+                                                auto_compact
+                                                and not reactive_retried
+                                                and err.error_code == "context_length_exceeded"
+                                            ):
+                                                reactive_retried = True
+                                                real_ctx = err.context_length or ctx_tokens
+                                                real_in = max(
+                                                    raw_est_in, err.prompt_tokens or est_in
+                                                )
+                                                tight_budget = _compute_reactive_tight_budget(
+                                                    real_ctx,
+                                                    est_in,
+                                                    err.prompt_tokens,
+                                                    chat_payload.get("max_tokens"),
+                                                )
+                                                comp_res = await self._auto_compact_chat_payload(
+                                                    http,
+                                                    task,
+                                                    internal_model,
+                                                    chat_payload,
+                                                    ctx_tokens=real_ctx,
+                                                    target_input_budget=tight_budget,
+                                                    instructions=spec["instructions"],
+                                                    force=True,
+                                                    keepalive_cb=send_keepalive,
+                                                )
+                                                if comp_res["compacted"]:
+                                                    chat_payload["messages"] = comp_res["messages"]
+                                                    est_in = comp_res["compacted_tokens"]
+                                                    gateway_auto_compacted = True
+                                                    min_wire_input_tokens = max(
+                                                        min_wire_input_tokens or 0, real_in
+                                                    )
+                                                    translator.fallback_input_tokens = est_in
+                                                    translator.min_input_tokens = min_wire_input_tokens
+                                                    self._record_compaction_metric(
+                                                        slot,
+                                                        original_tokens=real_in,
+                                                        compacted_tokens=est_in,
+                                                        stage=comp_res["stage"],
+                                                        ctx_tokens=real_ctx,
+                                                    )
+                                                    continue
+                                            raise err
+
+                                        finished = False
+                                        async for line in response.aiter_lines():
+                                            task.check()
+                                            if len(line) > 2 * 1024 * 1024:
+                                                raise RuntimeError("推理响应超过大小限制")
+                                            if not line.startswith("data:"):
+                                                continue
+                                            raw_data = line[5:].strip()
+                                            if not raw_data:
+                                                continue
+                                            if raw_data == "[DONE]":
+                                                finished = True
+                                                break
+                                            try:
+                                                chunk = json.loads(raw_data)
+                                            except ValueError:
+                                                continue
+                                            if isinstance(chunk, dict):
+                                                self._record_stream_delta(
+                                                    slot, chunk, time.monotonic()
+                                                )
+                                            for ev in translator.feed_chunk(chunk):
+                                                await self._enqueue(slot, task, ev)
+                                        if not finished:
+                                            raise RuntimeError("推理连接提前中断")
+                                    break
                                 for ev in translator.finish():
                                     await self._enqueue(slot, task, ev)
                                 if spec["store"] and translator.final_response:
@@ -1163,41 +1917,111 @@ class ColabOnePublicGateway:
                                     if isinstance(translator.final_response, dict)
                                     else None
                                 )
+                                # Keep GPU-side post-compaction prompt_tokens accurate in desktop telemetry
+                                # while reporting uncompacted input_tokens on the wire for Codex auto-compact.
+                                metric_usage = (
+                                    translator.raw_usage
+                                    if gateway_auto_compacted and isinstance(translator.raw_usage, dict)
+                                    else (
+                                        None
+                                        if gateway_auto_compacted
+                                        else (final_usage if isinstance(final_usage, dict) else None)
+                                    )
+                                )
                                 self._finalize_request(
                                     slot,
                                     state="completed",
-                                    usage_override=final_usage
-                                    if isinstance(final_usage, dict)
-                                    else None,
+                                    usage_override=metric_usage,
                                     fallback_prompt_tokens=est_in,
                                 )
                             else:
-                                chat_json = await self._post_chat_json(
-                                    http, task, chat_payload
-                                )
+                                try:
+                                    chat_json = await self._post_chat_json(
+                                        http,
+                                        task,
+                                        chat_payload,
+                                        default_ctx=ctx_tokens,
+                                        error_param="input",
+                                    )
+                                except ColabOneEngineError as err:
+                                    if auto_compact and err.error_code == "context_length_exceeded":
+                                        real_ctx = err.context_length or ctx_tokens
+                                        real_in = max(
+                                            raw_est_in, err.prompt_tokens or est_in
+                                        )
+                                        tight_budget = _compute_reactive_tight_budget(
+                                            real_ctx,
+                                            est_in,
+                                            err.prompt_tokens,
+                                            chat_payload.get("max_tokens"),
+                                        )
+                                        comp_res = await self._auto_compact_chat_payload(
+                                            http,
+                                            task,
+                                            internal_model,
+                                            chat_payload,
+                                            ctx_tokens=real_ctx,
+                                            target_input_budget=tight_budget,
+                                            instructions=spec["instructions"],
+                                            force=True,
+                                        )
+                                        if not comp_res["compacted"]:
+                                            raise
+                                        chat_payload["messages"] = comp_res["messages"]
+                                        est_in = comp_res["compacted_tokens"]
+                                        gateway_auto_compacted = True
+                                        min_wire_input_tokens = max(
+                                            min_wire_input_tokens or 0, real_in
+                                        )
+                                        self._record_compaction_metric(
+                                            slot,
+                                            original_tokens=real_in,
+                                            compacted_tokens=est_in,
+                                            stage=comp_res["stage"],
+                                            ctx_tokens=real_ctx,
+                                        )
+                                        chat_json = await self._post_chat_json(
+                                            http,
+                                            task,
+                                            chat_payload,
+                                            default_ctx=real_ctx,
+                                            error_param="input",
+                                        )
+                                    else:
+                                        raise
                                 resp_obj = chat_completion_to_response(
                                     chat_json,
                                     spec,
                                     prefix_output=prefix_output,
                                     extra_usage=extra_usage,
                                     fallback_input_tokens=est_in,
+                                    min_input_tokens=min_wire_input_tokens,
                                 )
                                 if spec["store"]:
                                     self._store_response(resp_obj, stored_input_items)
                                 slot["result"] = resp_obj
+                                metric_usage = (
+                                    None
+                                    if gateway_auto_compacted
+                                    else (
+                                        resp_obj.get("usage")
+                                        if isinstance(resp_obj.get("usage"), dict)
+                                        else None
+                                    )
+                                )
                                 self._finalize_request(
                                     slot,
                                     state="completed",
                                     response_obj=chat_json,
-                                    usage_override=resp_obj.get("usage")
-                                    if isinstance(resp_obj.get("usage"), dict)
-                                    else None,
+                                    usage_override=metric_usage,
                                     fallback_text=_extract_completion_text(chat_json),
                                     fallback_prompt_tokens=est_in,
                                 )
                     task.note("外部 API Responses 生成完成")
                 except (asyncio.CancelledError, ColabOneCancelledError):
-                    if translator is not None:
+                    if stream:
+                        if translator is None:
+                            translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail("API 请求已取消")
                     self._finalize_request(
                         slot,
@@ -1208,7 +2032,9 @@ class ColabOnePublicGateway:
                     raise ColabOneCancelledError("API 请求已取消") from None
                 except (TimeoutError, httpx.TimeoutException):
                     msg = "推理超时；请减少 max_output_tokens，或开启流式调用（stream=true）"
-                    if translator is not None:
+                    if stream:
+                        if translator is None:
+                            translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail(msg)
                     self._finalize_request(
                         slot,
@@ -1219,7 +2045,9 @@ class ColabOnePublicGateway:
                     raise RuntimeError(msg) from None
                 except httpx.HTTPError:
                     msg = "无法连接远端推理引擎"
-                    if translator is not None:
+                    if stream:
+                        if translator is None:
+                            translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail(msg)
                     self._finalize_request(
                         slot,
@@ -1228,8 +2056,25 @@ class ColabOnePublicGateway:
                         fallback_prompt_tokens=est_in,
                     )
                     raise RuntimeError(msg) from None
+                except ColabOneEngineError as exc:
+                    slot["error_info"] = exc.to_info()
+                    if stream:
+                        if translator is None:
+                            translator = ColabOneResponsesStreamTranslator(spec)
+                        slot["fail_event"] = translator.fail(
+                            exc.message, code=exc.error_code
+                        )
+                    self._finalize_request(
+                        slot,
+                        state="failed",
+                        error=exc.message,
+                        fallback_prompt_tokens=exc.prompt_tokens or est_in,
+                    )
+                    raise
                 except Exception as exc:
-                    if translator is not None:
+                    if stream:
+                        if translator is None:
+                            translator = ColabOneResponsesStreamTranslator(spec)
                         slot["fail_event"] = translator.fail(str(exc) or "推理失败")
                     self._finalize_request(
                         slot,
@@ -1260,6 +2105,7 @@ class ColabOnePublicGateway:
             "kind": "compact",
             "stream": False,
             "result": None,
+            "error_info": None,
             "queue": queue.Queue(maxsize=4),
             "metric": metric,
             "acc": acc,
@@ -1309,6 +2155,12 @@ class ColabOnePublicGateway:
                     msg = "无法连接远端推理引擎"
                     self._finalize_request(slot, state="failed", error=msg)
                     raise RuntimeError(msg) from None
+                except ColabOneEngineError as exc:
+                    slot["error_info"] = exc.to_info()
+                    self._finalize_request(
+                        slot, state="failed", error=exc.message
+                    )
+                    raise
                 except Exception as exc:
                     self._finalize_request(
                         slot, state="failed", error=str(exc) or "上下文压缩失败"
@@ -1392,6 +2244,23 @@ def create_colabone_public_app(g):
 
     auth = [Depends(authorize)]
 
+    class ColabOneAPIError(Exception):
+        def __init__(self, info: dict[str, Any]):
+            self.info = info
+
+    @app.exception_handler(ColabOneAPIError)
+    async def api_error(_, exc: ColabOneAPIError):
+        info = exc.info
+        err_body: dict[str, Any] = {
+            "message": str(info.get("message") or "请求失败"),
+            "type": str(info.get("type") or "api_error"),
+            "code": str(info.get("code") or "server_error"),
+        }
+        if info.get("param"):
+            err_body["param"] = str(info["param"])
+        status = int(info.get("status_code") or 502)
+        return JSONResponse({"error": err_body}, status_code=status)
+
     @app.exception_handler(HTTPException)
     async def http_error(_, exc):
         return JSONResponse(
@@ -1447,6 +2316,7 @@ def create_colabone_public_app(g):
             model = g.runtime.models.get(identity)
             if not model or getattr(model, "kind", "chat") != "chat":
                 return None, None
+            ctx_len = g._active_context_length(identity)
             return (
                 {
                     "id": resolve_colabone_api_model_id(model),
@@ -1454,6 +2324,7 @@ def create_colabone_public_app(g):
                     "created": 0,
                     "owned_by": colabone_model_owner(model),
                     "kind": "chat",
+                    "context_length": ctx_len,
                 },
                 identity,
             )
@@ -1476,7 +2347,8 @@ def create_colabone_public_app(g):
         raise KeyError(model_id)
 
     async def wait(identity, request, timeout_seconds: int = 305):
-        task = g.jobs[identity]["task"]
+        slot = g.jobs[identity]
+        task = slot["task"]
         try:
             async with asyncio.timeout(timeout_seconds):
                 while task.state == "running":
@@ -1490,12 +2362,18 @@ def create_colabone_public_app(g):
                 "等待超时或调用已断开；若为生成接口，可减小输出长度上限或开启流式调用（stream=true）",
             ) from None
         if task.state != "completed":
+            err_info = slot.get("error_info")
+            if isinstance(err_info, dict) and err_info.get("code"):
+                raise ColabOneAPIError(err_info)
             raise HTTPException(502, task.error or "任务已取消")
 
     @app.post("/v1/chat/completions", dependencies=auth)
     async def chat(request: Request):
         raw = await read_json(request)
-        identity = g.chat(raw)
+        auto_compact = _parse_auto_compact_header(
+            request.headers.get("x-colabone-auto-compact")
+        )
+        identity = g.chat(raw, auto_compact=auto_compact)
         slot = g.jobs[identity]
         is_stream = bool(isinstance(raw, dict) and raw.get("stream"))
         if not is_stream:
@@ -1511,12 +2389,20 @@ def create_colabone_public_app(g):
                     except queue.Empty:
                         await asyncio.sleep(0.05)
                 if task.state != "completed":
+                    err_info = slot.get("error_info")
+                    err_payload: dict[str, Any] = {
+                        "message": task.error or "API 请求已取消"
+                    }
+                    if isinstance(err_info, dict):
+                        if err_info.get("type"):
+                            err_payload["type"] = err_info["type"]
+                        if err_info.get("code"):
+                            err_payload["code"] = err_info["code"]
+                        if err_info.get("param"):
+                            err_payload["param"] = err_info["param"]
                     yield (
                         "data: "
-                        + json.dumps(
-                            {"error": {"message": task.error or "API 请求已取消"}},
-                            ensure_ascii=False,
-                        )
+                        + json.dumps({"error": err_payload}, ensure_ascii=False)
                         + "\n\n"
                     ).encode("utf-8")
             finally:
@@ -1540,7 +2426,10 @@ def create_colabone_public_app(g):
     @app.post("/v1/responses", dependencies=auth)
     async def responses(request: Request):
         raw = await read_json(request)
-        identity, is_stream = g.respond(raw)
+        auto_compact = _parse_auto_compact_header(
+            request.headers.get("x-colabone-auto-compact")
+        )
+        identity, is_stream = g.respond(raw, auto_compact=auto_compact)
         slot = g.jobs[identity]
         if not is_stream:
             await wait(identity, request)
@@ -1558,15 +2447,23 @@ def create_colabone_public_app(g):
                     if slot.get("fail_event"):
                         yield slot["fail_event"]
                     else:
+                        err_info = slot.get("error_info") or {}
+                        err_code = str(err_info.get("code") or "server_error")
+                        err_msg = str(
+                            err_info.get("message") or task.error or "API 请求已取消"
+                        )
                         yield (
                             "event: response.failed\n"
                             "data: "
                             + json.dumps(
                                 {
                                     "type": "response.failed",
-                                    "error": {
-                                        "code": "server_error",
-                                        "message": task.error or "API 请求已取消",
+                                    "response": {
+                                        "status": "failed",
+                                        "error": {
+                                            "code": err_code,
+                                            "message": err_msg,
+                                        },
                                     },
                                 },
                                 ensure_ascii=False,

@@ -284,6 +284,10 @@ describe("Runtime parameter presets & effect descriptions", () => {
     expect(custom.presetTitle).toBe("自定义档位");
     expect(custom.contextK).toBe(64);
     expect(custom.temperatureEffect).toContain("随机");
+
+    const ultra = describeColabOneRuntimeParams(131072, 0.4);
+    expect(ultra.contextK).toBe(128);
+    expect(ultra.contextEffect).toContain("9.6 万");
   });
 });
 

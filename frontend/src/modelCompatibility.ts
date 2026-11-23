@@ -425,6 +425,16 @@ export const COLABONE_CONTEXT_OPTIONS = [
       return t("models.compatCtx64kHint");
     },
   },
+  {
+    value: 131072,
+    label: "128K",
+    get approxChars() {
+      return t("models.compatCtx128kChars");
+    },
+    get hint() {
+      return t("models.compatCtx128kHint");
+    },
+  },
 ] as const;
 
 export const COLABONE_PARAM_PRESETS: readonly ColabOneParamPreset[] = [
@@ -1598,8 +1608,10 @@ export function describeColabOneRuntimeParams(
     contextEffect = t("models.compatEffectCtx16k");
   } else if (contextLength <= 32768) {
     contextEffect = t("models.compatEffectCtx32k");
-  } else {
+  } else if (contextLength <= 65536) {
     contextEffect = t("models.compatEffectCtx64k");
+  } else {
+    contextEffect = t("models.compatEffectCtx128k");
   }
 
   let temperatureEffect: string;

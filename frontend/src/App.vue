@@ -54,6 +54,7 @@ import {
   PhMoon,
   PhPlay,
   PhPlus,
+  PhShieldCheck,
   PhSlidersHorizontal,
   PhStop,
   PhSun,
@@ -89,7 +90,6 @@ import ResourceMonitor from "./ResourceMonitor.vue";
 import FlagIcon from "./FlagIcon.vue";
 import { locationFull, locationShort, locationTooltip } from "./location";
 import { resolveColabOneMonitorFallback } from "./telemetry";
-import { formatTokenCount, formatTokenSpeed } from "./apiSpeed";
 import {
   COLABONE_IDLE_RELEASE_OPTIONS,
   describeColabOneBilling,
@@ -270,6 +270,7 @@ function dismissPersistentError() {
 }
 
 const dismissedUpgradeKey = ref("");
+const showUpgradeConfirm = ref(false);
 const upgradeBanner = computed(() => evaluateColabOneRuntimeUpgrade(state.value));
 const showUpgradeBanner = computed(
   () =>
@@ -283,6 +284,30 @@ function dismissOptionalUpgrade() {
     dismissedUpgradeKey.value = upgradeBanner.value.dismissKey;
   }
 }
+
+async function requestRuntimeUpgrade() {
+  if (!upgradeBanner.value.canUpgrade || busy.value) return;
+  if (upgradeBanner.value.needsConfirm) {
+    showUpgradeConfirm.value = true;
+    return;
+  }
+  await act("runtime.upgrade");
+}
+
+async function confirmRuntimeUpgrade() {
+  if (busy.value || state.value.operation) return;
+  showUpgradeConfirm.value = false;
+  await act("runtime.upgrade", { force: true });
+}
+
+watch(
+  () => upgradeBanner.value.visible,
+  (visible) => {
+    if (!visible) {
+      showUpgradeConfirm.value = false;
+    }
+  },
+);
 
 watch(
   () => state.value.error,
@@ -353,6 +378,14 @@ const nav = computed(() => [
 const modelsDrawerOpen = ref(false);
 const contentRef = ref<ComponentPublicInstance | HTMLElement | null>(null);
 const scrollController = createColabOneScrollController();
+const settingsTopSaveSlotRef = ref<HTMLElement | null>(null);
+const settingsTopSaveWidthPx = ref<number | null>(null);
+const settingsSaveFloating = ref(false);
+const showFloatingSettingsSave = computed(
+  () => page.value === "settings" && settingsSaveFloating.value,
+);
+let settingsTopSaveObserver: IntersectionObserver | null = null;
+let observedScrollContentEl: HTMLElement | null = null;
 
 function resolveContentElement(): HTMLElement | null {
   const target = contentRef.value;
@@ -360,6 +393,57 @@ function resolveContentElement(): HTMLElement | null {
   if (target instanceof HTMLElement) return target;
   if ("$el" in target && target.$el instanceof HTMLElement) return target.$el;
   return null;
+}
+
+function updateSettingsFloatingSave() {
+  if (page.value !== "settings") {
+    settingsSaveFloating.value = false;
+    return;
+  }
+  const container = resolveContentElement();
+  const slot = settingsTopSaveSlotRef.value;
+  if (!container || !slot) {
+    settingsSaveFloating.value = false;
+    return;
+  }
+  const containerRect = container.getBoundingClientRect();
+  const slotRect = slot.getBoundingClientRect();
+  if (containerRect.height <= 0 || slotRect.height <= 0) {
+    settingsSaveFloating.value = false;
+    return;
+  }
+  if (!settingsSaveFloating.value && slotRect.width > 1) {
+    settingsTopSaveWidthPx.value = Math.ceil(slotRect.width);
+  }
+  settingsSaveFloating.value = slotRect.bottom <= containerRect.top + 1;
+}
+
+function bindSettingsTopSaveObserver() {
+  settingsTopSaveObserver?.disconnect();
+  settingsTopSaveObserver = null;
+  if (page.value !== "settings") {
+    settingsSaveFloating.value = false;
+    return;
+  }
+  const container = resolveContentElement();
+  const slot = settingsTopSaveSlotRef.value;
+  if (!container || !slot) {
+    settingsSaveFloating.value = false;
+    return;
+  }
+  if (typeof IntersectionObserver !== "undefined") {
+    settingsTopSaveObserver = new IntersectionObserver(
+      () => {
+        updateSettingsFloatingSave();
+      },
+      {
+        root: container,
+        threshold: [0],
+      },
+    );
+    settingsTopSaveObserver.observe(slot);
+  }
+  updateSettingsFloatingSave();
 }
 
 function scrollWorkspaceToTop() {
@@ -379,11 +463,19 @@ function selectPage(nextPage: string) {
 
 watch(page, (next) => {
   if (next !== "api") modelsDrawerOpen.value = false;
+  if (next !== "settings") settingsSaveFloating.value = false;
 });
 watch(
   page,
   () => {
     scrollWorkspaceToTop();
+  },
+  { flush: "post" },
+);
+watch(
+  [page, settingsTopSaveSlotRef],
+  () => {
+    bindSettingsTopSaveObserver();
   },
   { flush: "post" },
 );
@@ -484,6 +576,15 @@ const ready = computed(() => state.value.runtime.state === "ready");
 const task = computed(() =>
   state.value.runtime.tasks?.find((t) => t.state === "running"),
 );
+const dockTask = computed(() =>
+  state.value.runtime.tasks?.find(
+    (t) =>
+      t.state === "running" &&
+      t.kind !== "public_chat" &&
+      t.kind !== "public_responses" &&
+      t.kind !== "public_compact",
+  ),
+);
 
 const runtimeBadgeStatus = computed<"success" | "processing" | "default">(
   () => {
@@ -511,8 +612,8 @@ const runtimeTagColor = computed<"success" | "processing" | "default">(() => {
 });
 
 const currentActivity = computed(() =>
-  state.value.operation?.title
-    ? tb(state.value.operation.title)
+  operationBannerTitle.value
+    ? operationBannerTitle.value
     : task.value
       ? {
           download: t("task.download"),
@@ -673,6 +774,8 @@ const form = ref({
   idle_countdown_seconds: 60,
   auto_drive: true,
   download_threads: 16,
+  assign_proxy_enabled: false,
+  assign_proxy: "",
   hf_token: "",
 });
 const isPresetIdleMinutes = (m: number) =>
@@ -795,6 +898,7 @@ function syncFormFromSettings(next: typeof state.value.settings | undefined) {
     "idle_countdown_seconds",
     "auto_drive",
     "download_threads",
+    "assign_proxy_enabled",
   ] as const;
   if (!initialized) {
     for (const key of keys) {
@@ -875,8 +979,13 @@ async function syncSnapshot() {
     value.error = "";
     colabOneCommand("error.clear", { expected: staleErr }).catch(() => {});
   }
-  if (value.runtime.idle?.server_time !== state.value.runtime.idle?.server_time)
+  if (
+    value.runtime.idle?.server_time !== state.value.runtime.idle?.server_time ||
+    value.operation?.retry_at !== state.value.operation?.retry_at
+  ) {
     snapshotAt.value = Date.now();
+    clockNow.value = Date.now();
+  }
   state.value = value;
   snapshotLoaded.value = true;
   syncFormFromSettings(value.settings);
@@ -947,6 +1056,166 @@ async function setupHeadlessDrive() {
 const confirmingDriveAuth = ref(false);
 let lastDriveProbeAt = 0;
 
+const cancellingStart = ref(false);
+const retryingStart = ref(false);
+const startCancelPendingToast = ref(false);
+
+const isStartOperationActive = computed(
+  () => state.value.operation?.kind === "runtime_start",
+);
+const isStartCancelling = computed(
+  () =>
+    cancellingStart.value ||
+    Boolean(isStartOperationActive.value && state.value.operation?.cancelling),
+);
+const canCancelStart = computed(
+  () =>
+    isStartOperationActive.value &&
+    Boolean(state.value.operation?.cancellable) &&
+    !isStartCancelling.value,
+);
+const showStartCancelButton = computed(
+  () =>
+    isStartOperationActive.value &&
+    (Boolean(state.value.operation?.cancellable) ||
+      Boolean(state.value.operation?.cancelling) ||
+      cancellingStart.value),
+);
+const canRetryStartNow = computed(
+  () =>
+    isStartOperationActive.value &&
+    Boolean(state.value.operation?.waiting_retry) &&
+    !isStartCancelling.value &&
+    !retryingStart.value,
+);
+const showStartRetryButton = computed(
+  () =>
+    isStartOperationActive.value &&
+    !isStartCancelling.value &&
+    (Boolean(state.value.operation?.waiting_retry) ||
+      Boolean(state.value.operation?.has_retried)),
+);
+const showStartOperationActions = computed(
+  () => showStartRetryButton.value || showStartCancelButton.value,
+);
+
+const startRetryRemainingSeconds = computed<number | null>(() => {
+  const op = state.value.operation;
+  if (
+    !op ||
+    op.kind !== "runtime_start" ||
+    !op.waiting_retry ||
+    op.cancelling ||
+    cancellingStart.value
+  ) {
+    return null;
+  }
+  const retryAt = Number(op.retry_at || 0);
+  if (!Number.isFinite(retryAt) || retryAt <= 0) return null;
+  return Math.max(0, Math.ceil(retryAt - clockNow.value / 1000));
+});
+
+const operationBannerTitle = computed(() => {
+  const op = state.value.operation;
+  if (!op) return "";
+  if (
+    op.kind === "runtime_start" &&
+    op.waiting_retry &&
+    !op.cancelling &&
+    !cancellingStart.value
+  ) {
+    const gpu = op.gpu || form.value.gpu;
+    const next = Number(op.next_attempt || (op.attempt ? op.attempt + 1 : 2));
+    const total = Number(op.total_attempts || 10);
+    const remaining = startRetryRemainingSeconds.value;
+    const kind = op.retry_kind;
+    if (remaining !== null && remaining > 0) {
+      if (kind === "capacity") {
+        return t("device.waitingRetryCapacity", {
+          seconds: remaining,
+          gpu,
+          next,
+          total,
+        });
+      }
+      if (kind === "server_busy") {
+        return t("device.waitingRetryServerBusy", {
+          seconds: remaining,
+          gpu,
+          next,
+          total,
+        });
+      }
+      return t("device.waitingRetryNetwork", {
+        seconds: remaining,
+        gpu,
+        next,
+        total,
+      });
+    }
+    if (kind === "capacity") {
+      return t("device.waitingRetryCapacitySoon", { gpu, next, total });
+    }
+    if (kind === "server_busy") {
+      return t("device.waitingRetryServerBusySoon", { gpu, next, total });
+    }
+    return t("device.waitingRetryNetworkSoon", { gpu, next, total });
+  }
+  return tb(op.title);
+});
+
+async function cancelStart() {
+  if (!canCancelStart.value) return;
+  cancellingStart.value = true;
+  startCancelPendingToast.value = true;
+  try {
+    const res = await colabOneCommand("runtime.start.cancel", {});
+    if (!res?.cancelled) {
+      startCancelPendingToast.value = false;
+    }
+    await syncSnapshot().catch(() => {});
+    if (!state.value.operation) {
+      cancellingStart.value = false;
+      if (startCancelPendingToast.value && !state.value.error) {
+        startCancelPendingToast.value = false;
+        notify(
+          t("device.toastAllocationCancelled"),
+          "info",
+          "runtime-start-cancelled",
+        );
+      }
+    }
+  } catch (e) {
+    startCancelPendingToast.value = false;
+    cancellingStart.value = false;
+    showError(e);
+  } finally {
+    if (!state.value.operation || !state.value.operation.cancelling) {
+      cancellingStart.value = false;
+    }
+  }
+}
+
+async function retryStartNow() {
+  if (!canRetryStartNow.value) return;
+  retryingStart.value = true;
+  try {
+    const res = await colabOneCommand("runtime.start.retry", {});
+    if (res?.triggered) {
+      notify(
+        t("device.toastRetryTriggered"),
+        "info",
+        "runtime-start-retry-now",
+      );
+    }
+    await syncSnapshot().catch(() => {});
+  } catch (e) {
+    showError(e);
+  } finally {
+    retryingStart.value = false;
+  }
+}
+
 function clearConfirmDriveTimer() {
   confirmingDriveAuth.value = false;
 }
@@ -990,6 +1259,18 @@ watch(
     }
     if (!op) {
       clearConfirmDriveTimer();
+      cancellingStart.value = false;
+      retryingStart.value = false;
+      if (startCancelPendingToast.value) {
+        startCancelPendingToast.value = false;
+        if (!state.value.error) {
+          notify(
+            t("device.toastAllocationCancelled"),
+            "info",
+            "runtime-start-cancelled",
+          );
+        }
+      }
     }
   },
 );
@@ -1186,10 +1467,161 @@ watch(
 const hfTokenInputRef = ref<InstanceType<typeof ColabOneSecretInput> | null>(
   null,
 );
+const assignProxyInputRef = ref<InstanceType<
+  typeof ColabOneSecretInput
+> | null>(null);
+const savingAssignProxy = ref(false);
+const clearingAssignProxy = ref(false);
+const togglingAssignProxy = ref(false);
+const testingAssignProxy = ref(false);
+const assignProxyExpanded = ref(false);
+const assignProxyMutating = computed(
+  () =>
+    savingAssignProxy.value ||
+    clearingAssignProxy.value ||
+    togglingAssignProxy.value,
+);
+
+const assignProxySettings = computed(() => state.value.assign_proxy_settings);
+const hasSavedAssignProxy = computed(() =>
+  Boolean(assignProxySettings.value?.has_proxy),
+);
+const showAssignProxyEditor = computed(
+  () => assignProxyExpanded.value || Boolean(form.value.assign_proxy.trim()),
+);
+const assignProxySavedPlaceholder = computed(() =>
+  assignProxySettings.value?.masked_url
+    ? t("settings.assignProxySavedPlaceholderWithUrl", {
+        url: assignProxySettings.value.masked_url,
+      })
+    : t("settings.assignProxySavedPlaceholder"),
+);
 
 async function loadSavedHfToken(): Promise<string> {
   const res = await colabOneCommand("settings.hf_token");
   return typeof res?.token === "string" ? res.token : "";
+}
+
+async function loadSavedAssignProxy(): Promise<string> {
+  const res = await colabOneCommand("settings.assign_proxy");
+  return typeof res?.url === "string" ? res.url : "";
+}
+
+async function onAssignProxyEnabledChange(raw: unknown) {
+  if (assignProxyMutating.value || testingAssignProxy.value) return;
+  const next = Boolean(raw);
+  const draft = form.value.assign_proxy.trim();
+  if (next && !hasSavedAssignProxy.value && !draft) {
+    notify(
+      t("settings.assignProxyNeedUrlFirst"),
+      "warning",
+      "setting-assign-proxy-empty",
+    );
+    return;
+  }
+  const previous = form.value.assign_proxy_enabled;
+  form.value.assign_proxy_enabled = next;
+  lastSyncedSettings.assign_proxy_enabled = next;
+  beginPendingSetting(["assign_proxy_enabled"]);
+  togglingAssignProxy.value = true;
+  try {
+    const payload: Record<string, unknown> = { assign_proxy_enabled: next };
+    if (next && !hasSavedAssignProxy.value && draft) {
+      payload.assign_proxy = draft;
+    }
+    const res = await act("settings.save", payload);
+    if (res) {
+      if (payload.assign_proxy) {
+        form.value.assign_proxy = "";
+        assignProxyInputRef.value?.hide();
+      }
+      notify(
+        next
+          ? t("settings.assignProxyEnabledToast")
+          : t("settings.assignProxyDisabledToast"),
+        "success",
+        "setting-assign-proxy-toggle",
+      );
+    } else {
+      form.value.assign_proxy_enabled = previous;
+      lastSyncedSettings.assign_proxy_enabled = previous;
+    }
+  } finally {
+    togglingAssignProxy.value = false;
+    endPendingSetting(["assign_proxy_enabled"]);
+    await syncSnapshot().catch(() => {});
+  }
+}
+
+async function saveAssignProxy() {
+  if (assignProxyMutating.value || testingAssignProxy.value) return;
+  const raw = form.value.assign_proxy.trim();
+  if (!raw) return;
+  savingAssignProxy.value = true;
+  beginPendingSetting(["assign_proxy_enabled"]);
+  try {
+    const res = await act("settings.save", {
+      assign_proxy: raw,
+      assign_proxy_enabled: true,
+    });
+    if (res) {
+      form.value.assign_proxy = "";
+      form.value.assign_proxy_enabled = true;
+      lastSyncedSettings.assign_proxy_enabled = true;
+      assignProxyExpanded.value = false;
+      assignProxyInputRef.value?.hide();
+      notify(t("settings.assignProxySavedToast"), "success", "setting-assign-proxy-save");
+    }
+  } finally {
+    savingAssignProxy.value = false;
+    endPendingSetting(["assign_proxy_enabled"]);
+    await syncSnapshot().catch(() => {});
+  }
+}
+
+async function clearAssignProxy() {
+  if (assignProxyMutating.value || testingAssignProxy.value) return;
+  clearingAssignProxy.value = true;
+  beginPendingSetting(["assign_proxy_enabled"]);
+  try {
+    const res = await act("settings.save", { clear_assign_proxy: true });
+    if (res) {
+      form.value.assign_proxy = "";
+      form.value.assign_proxy_enabled = false;
+      lastSyncedSettings.assign_proxy_enabled = false;
+      assignProxyExpanded.value = false;
+      assignProxyInputRef.value?.hide();
+      notify(t("settings.assignProxyClearedToast"), "success", "setting-assign-proxy-clear");
+    }
+  } finally {
+    clearingAssignProxy.value = false;
+    endPendingSetting(["assign_proxy_enabled"]);
+    await syncSnapshot().catch(() => {});
+  }
+}
+
+async function testAssignProxy() {
+  if (assignProxyMutating.value || testingAssignProxy.value) return;
+  const raw = form.value.assign_proxy.trim();
+  if (!raw && !hasSavedAssignProxy.value) return;
+  testingAssignProxy.value = true;
+  try {
+    const res = await colabOneCommand(
+      "settings.assign_proxy.test",
+      raw ? { assign_proxy: raw } : {},
+    );
+    const ms = Number(res?.latency_ms || 0);
+    notify(
+      t("settings.assignProxyTestOkToast", { ms: ms > 0 ? ms : 1 }),
+      "success",
+      "setting-assign-proxy-test",
+    );
+    await syncSnapshot().catch(() => {});
+  } catch (err) {
+    showError(err);
+  } finally {
+    testingAssignProxy.value = false;
+  }
 }
 
 function onHfTokenExtracted() {
@@ -1517,13 +1949,24 @@ onMounted(() => {
   void syncLogWindowState();
   updateToastLayout();
   const contentEl = resolveContentElement();
-  if (contentEl && typeof ResizeObserver !== "undefined") {
-    toastLayoutObserver = new ResizeObserver(() => {
-      updateToastLayout();
+  if (contentEl) {
+    observedScrollContentEl = contentEl;
+    contentEl.addEventListener("scroll", updateSettingsFloatingSave, {
+      passive: true,
     });
-    toastLayoutObserver.observe(contentEl);
+    if (typeof ResizeObserver !== "undefined") {
+      toastLayoutObserver = new ResizeObserver(() => {
+        updateToastLayout();
+        updateSettingsFloatingSave();
+      });
+      toastLayoutObserver.observe(contentEl);
+    }
   }
+  bindSettingsTopSaveObserver();
   window.addEventListener("resize", updateToastLayout, { passive: true });
+  window.addEventListener("resize", updateSettingsFloatingSave, {
+    passive: true,
+  });
   clockTimer = setInterval(() => {
     if (!ipcDisconnected.value) clockNow.value = Date.now();
   }, 1000);
@@ -1538,6 +1981,13 @@ onUnmounted(() => {
   stopped = true;
   clearConfirmDriveTimer();
   scrollController.cancel();
+  settingsTopSaveObserver?.disconnect();
+  settingsTopSaveObserver = null;
+  observedScrollContentEl?.removeEventListener(
+    "scroll",
+    updateSettingsFloatingSave,
+  );
+  observedScrollContentEl = null;
   toastLayoutObserver?.disconnect();
   toastLayoutObserver = null;
   if (drawerHeaderMeasureFrame !== null && typeof window !== "undefined") {
@@ -1545,6 +1995,7 @@ onUnmounted(() => {
     drawerHeaderMeasureFrame = null;
   }
   window.removeEventListener("resize", updateToastLayout);
+  window.removeEventListener("resize", updateSettingsFloatingSave);
   clearInterval(clockTimer);
   for (const name of ["pointerdown", "keydown", "wheel"])
     window.removeEventListener(name, interaction);
@@ -1846,7 +2297,7 @@ onUnmounted(() => {
                       type="primary"
                       size="small"
                       :disabled="!upgradeBanner.canUpgrade || busy"
-                      @click="act('runtime.upgrade')"
+                      @click="requestRuntimeUpgrade"
                     >
                       {{ t("status.upgradeAction") }}
                     </AButton>
@@ -1873,14 +2324,78 @@ onUnmounted(() => {
               <template #message>
                 <span class="co-op-message" role="status">
                   <ASpin size="small" />
-                  <span>{{ tb(state.operation.title) }}</span>
+                  <span class="co-op-message-text co-tabular">{{
+                    operationBannerTitle
+                  }}</span>
                 </span>
+              </template>
+              <template v-if="showStartOperationActions" #action>
+                <ASpace :size="8" class="co-op-actions">
+                  <ColabOneTooltip
+                    v-if="showStartRetryButton"
+                    :title="
+                      canRetryStartNow
+                        ? t('device.retryAllocationNowTooltip')
+                        : t('device.retryAllocationRequestingTooltip')
+                    "
+                    placement="bottomRight"
+                  >
+                    <span
+                      class="co-op-action-wrap"
+                      :class="{ 'is-disabled': !canRetryStartNow }"
+                    >
+                      <AButton
+                        size="small"
+                        class="co-op-retry-btn"
+                        :loading="retryingStart || !canRetryStartNow"
+                        :disabled="!canRetryStartNow"
+                        @click="retryStartNow"
+                      >
+                        <template
+                          v-if="canRetryStartNow && !retryingStart"
+                          #icon
+                        >
+                          <PhArrowsClockwise :size="13" />
+                        </template>
+                        {{
+                          canRetryStartNow
+                            ? t("device.retryNow")
+                            : t("device.retryingNow")
+                        }}
+                      </AButton>
+                    </span>
+                  </ColabOneTooltip>
+                  <ColabOneTooltip
+                    v-if="showStartCancelButton"
+                    :title="t('device.cancelAllocationTooltip')"
+                    placement="bottomRight"
+                  >
+                    <AButton
+                      size="small"
+                      danger
+                      class="co-op-cancel-btn"
+                      :loading="isStartCancelling"
+                      :disabled="!canCancelStart"
+                      @click="cancelStart"
+                    >
+                      <template v-if="!isStartCancelling" #icon>
+                        <PhStop :size="13" weight="fill" />
+                      </template>
+                      {{
+                        isStartCancelling
+                          ? t("device.cancellingAllocation")
+                          : t("device.cancelAllocation")
+                      }}
+                    </AButton>
+                  </ColabOneTooltip>
+                </ASpace>
               </template>
             </AAlert>
           </div>
         </div>
 
-        <!-- Scrollable Workspace Content -->
+        <!-- Scrollable Workspace Content Stage -->
+        <div class="co-content-stage">
         <ALayoutContent ref="contentRef" class="co-content">
           <!-- STAGE 1: Remote Device -->
           <main
@@ -2165,6 +2680,69 @@ onUnmounted(() => {
                   </div>
 
                   <div class="co-device-actions co-device-action-group">
+                    <template
+                      v-if="
+                        isStartOperationActive &&
+                        state.runtime.state === 'starting' &&
+                        showStartOperationActions
+                      "
+                    >
+                      <ColabOneTooltip
+                        v-if="showStartRetryButton"
+                        :title="
+                          canRetryStartNow
+                            ? t('device.retryAllocationNowTooltip')
+                            : t('device.retryAllocationRequestingTooltip')
+                        "
+                      >
+                        <span
+                          class="co-op-action-wrap"
+                          :class="{ 'is-disabled': !canRetryStartNow }"
+                        >
+                          <AButton
+                            class="co-device-retry-btn"
+                            :loading="retryingStart || !canRetryStartNow"
+                            :disabled="!canRetryStartNow"
+                            @click="retryStartNow"
+                          >
+                            <template
+                              v-if="canRetryStartNow && !retryingStart"
+                              #icon
+                            >
+                              <PhArrowsClockwise :size="14" />
+                            </template>
+                            {{
+                              canRetryStartNow
+                                ? t("device.retryNow")
+                                : t("device.retryingNow")
+                            }}
+                          </AButton>
+                        </span>
+                      </ColabOneTooltip>
+                      <ColabOneTooltip
+                        v-if="showStartCancelButton"
+                        :title="t('device.cancelAllocationTooltip')"
+                      >
+                        <AButton
+                          type="primary"
+                          danger
+                          class="co-device-cancel-btn"
+                          :loading="isStartCancelling"
+                          :disabled="!canCancelStart"
+                          @click="cancelStart"
+                        >
+                          <template v-if="!isStartCancelling" #icon>
+                            <PhStop :size="14" weight="fill" />
+                          </template>
+                          {{
+                            isStartCancelling
+                              ? t("device.cancellingAllocation")
+                              : t("device.cancelAllocation")
+                          }}
+                        </AButton>
+                      </ColabOneTooltip>
+                    </template>
+                    <template v-else>
                     <ColabOneTooltip
                       v-if="state.runtime.state === 'stopped'"
                       :title="
@@ -2241,6 +2819,7 @@ onUnmounted(() => {
                             : t("device.stopRemoteInstance")
                       }}
                     </AButton>
+                    </template>
                   </div>
                 </div>
 
@@ -2443,7 +3022,7 @@ onUnmounted(() => {
                   :drive-free-bytes="effectiveMonitor.drive_free_bytes"
                   :loaded-model-name="effectiveMonitor.loaded_model_name"
                   :selected-gpu="form.gpu"
-                  :operation-title="state.operation?.title"
+                  :operation-title="operationBannerTitle"
                   :ipc-disconnected="ipcDisconnected"
                   :loading="!snapshotLoaded"
                   :switching="monitorSwitching"
@@ -2659,14 +3238,19 @@ onUnmounted(() => {
                               })
                             }}
                           </span>
-                          <ColabOneSkeleton
+                          <span
                             v-else-if="inst.state === 'starting'"
-                            :width="72"
-                            :height="12"
-                            variant="text"
-                            tone="subtle"
-                            inline
-                          />
+                            class="co-instance-detail-sk"
+                          >
+                            <span aria-hidden="true">·</span>
+                            <ColabOneSkeleton
+                              :width="72"
+                              :height="12"
+                              variant="text"
+                              tone="subtle"
+                              inline
+                            />
+                          </span>
                           <span v-if="inst.disk_free">
                             {{
                               t("device.diskFreeSegment", {
@@ -2789,743 +3373,987 @@ onUnmounted(() => {
                     {{ t("settings.subtitle") }}
                   </p>
                 </div>
-                <AButton
-                  type="primary"
-                  :disabled="busy"
-                  @click="save"
+                <div
+                  ref="settingsTopSaveSlotRef"
+                  class="co-settings-top-save-slot"
+                  :style="
+                    showFloatingSettingsSave && settingsTopSaveWidthPx
+                      ? { minWidth: `${settingsTopSaveWidthPx}px` }
+                      : undefined
+                  "
                 >
-                  {{ t("settings.saveSettings") }}
-                </AButton>
+                  <AButton
+                    v-if="!showFloatingSettingsSave"
+                    type="primary"
+                    :disabled="busy"
+                    @click="save"
+                  >
+                    {{ t("settings.saveSettings") }}
+                  </AButton>
+                </div>
               </div>
 
-              <!-- Settings Bento Row 1: Account/Drive + Compute/Idle Defaults -->
-              <div class="co-settings-row-primary">
-                <!-- Settings Card 1: Google Account & Drive Authorization -->
-                <ACard class="co-settings-card co-settings-section">
-                  <template #title>
-                    <div class="co-card-head-title">
-                      <span class="co-head-icon-badge is-blue" aria-hidden="true">
-                        <PhUserCircle :size="16" weight="duotone" />
-                      </span>
-                      <h2>{{ t("settings.googleCardTitle") }}</h2>
-                    </div>
-                  </template>
-                  <template #extra>
-                    <ColabOneSkeleton
-                      v-if="!snapshotLoaded"
-                      :width="56"
-                      :height="22"
-                      variant="tag"
-                    />
-                    <ATag v-else-if="state.setup.colab" color="success">
-                      {{ t("settings.connected") }}
-                    </ATag>
-                    <ATag v-else>{{ t("settings.disconnected") }}</ATag>
-                  </template>
+              <!-- Settings Native Single-Column Compact Grouped Rows -->
+              <div class="co-settings-stack">
+                <!-- Section 1: Accounts & Credentials -->
+                <section
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-account"
+                >
+                  <h2 id="settings-sec-account" class="co-settings-section-label">
+                    {{ t("settings.sectionAccount") }}
+                  </h2>
+                  <div class="co-settings-list">
+                    <!-- Row 1.1: Google Account -->
+                    <div class="co-settings-row co-settings-section">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-blue" aria-hidden="true">
+                              <PhUserCircle :size="14" weight="duotone" />
+                            </span>
+                            <h3 class="co-sr-title">{{ t("settings.googleCardTitle") }}</h3>
+                            <ColabOneSkeleton
+                              v-if="!snapshotLoaded"
+                              :width="52"
+                              :height="20"
+                              variant="tag"
+                              inline
+                            />
+                            <ATag v-else-if="state.setup.colab" color="success">
+                              {{ t("settings.connected") }}
+                            </ATag>
+                            <ATag v-else>{{ t("settings.disconnected") }}</ATag>
+                          </div>
 
-                  <p class="co-settings-desc">
-                    <span
-                      v-if="settingsEmailLoading"
-                      class="co-settings-email-sk"
-                      role="status"
-                      aria-busy="true"
-                    >
-                      <ColabOneSkeleton :width="196" :height="14" variant="text" inline />
-                      <span class="co-sr-only">{{
-                        snapshotLoaded
-                          ? t("billing.statusSyncingAccount")
-                          : t("common.loading")
-                      }}</span>
-                    </span>
-                    <span v-else class="co-sk-reveal">
-                      {{
-                        state.account.email ||
-                        (state.setup.colab
-                          ? t("settings.accountConnectedNoEmail")
-                          : t("settings.oauthBrowserHint"))
-                      }}
-                    </span>
-                  </p>
+                          <p class="co-sr-desc">
+                            <span
+                              v-if="settingsEmailLoading"
+                              class="co-settings-email-sk"
+                              role="status"
+                              aria-busy="true"
+                            >
+                              <ColabOneSkeleton :width="184" :height="13" variant="text" inline />
+                              <span class="co-sr-only">{{
+                                snapshotLoaded
+                                  ? t("billing.statusSyncingAccount")
+                                  : t("common.loading")
+                              }}</span>
+                            </span>
+                            <span v-else class="co-sk-reveal">
+                              {{
+                                state.account.email ||
+                                (state.setup.colab
+                                  ? t("settings.accountConnectedNoEmail")
+                                  : t("settings.oauthBrowserHint"))
+                              }}
+                            </span>
+                          </p>
 
-                  <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
-                    <ColabOneSkeleton :width="112" :height="32" variant="button" tone="accent" :delay="40" />
-                  </div>
-                  <ASpace v-else :size="8" wrap>
-                    <AButton
-                      :type="state.setup.colab ? 'default' : 'primary'"
-                      :disabled="
-                        busy ||
-                        !!state.operation ||
-                        state.runtime.state !== 'stopped'
-                      "
-                      @click="beginLogin"
-                    >
-                      <template #icon>
-                        <PhArrowSquareOut :size="15" />
-                      </template>
-                      {{
-                        state.setup.colab
-                          ? t("settings.relogin")
-                          : t("device.signInGoogle")
-                      }}
-                    </AButton>
+                          <p v-if="state.setup.colab" class="co-saved-login co-sr-saved-note">
+                            <PhCheck :size="13" />
+                            <span>{{
+                              state.setup.persistent_login
+                                ? t("settings.loginSavedAutoRenew")
+                                : t("settings.loginSavedHint")
+                            }}</span>
+                          </p>
+                        </div>
 
-                    <AButton
-                      v-if="state.auth_url && state.operation && !ready"
-                      type="link"
-                      @click="openExternalURL(state.auth_url)"
-                    >
-                      {{ t("settings.reopenLoginPage") }}
-                    </AButton>
-                  </ASpace>
-
-                  <p v-if="state.setup.colab" class="co-saved-login">
-                    <PhCheck :size="15" />
-                    <span>{{
-                      state.setup.persistent_login
-                        ? t("settings.loginSavedAutoRenew")
-                        : t("settings.loginSavedHint")
-                    }}</span>
-                  </p>
-
-                  <ACollapse
-                    :active-key="showAuthPaste ? ['paste'] : []"
-                    ghost
-                    class="co-inline-collapse"
-                    @update:active-key="onAuthPasteToggle"
-                  >
-                    <ACollapsePanel
-                      key="paste"
-                      :header="t('settings.manualAuthHeader')"
-                    >
-                      <div class="co-collapse-body">
-                        <p class="co-muted">
-                          {{ t("settings.manualAuthDesc") }}
-                        </p>
-                        <ASpace :size="8" wrap>
-                          <AButton
-                            :disabled="busy || state.runtime.state !== 'stopped'"
-                            @click="pasteLogin"
-                          >
-                            <template #icon>
-                              <PhCopy :size="15" />
-                            </template>
-                            {{ t("settings.pasteAndLogin") }}
-                          </AButton>
-                          <AButton
-                            type="link"
-                            :disabled="
-                              busy ||
-                              !!state.operation ||
-                              state.runtime.state !== 'stopped'
-                            "
-                            @click="manualLogin"
-                          >
-                            <template #icon>
-                              <PhArrowSquareOut :size="14" />
-                            </template>
-                            {{ t("settings.switchManualAuth") }}
-                          </AButton>
-                        </ASpace>
-                        <ATextarea
-                          v-model:value="code"
-                          :rows="3"
-                          autocomplete="off"
-                          autocapitalize="off"
-                          spellcheck="false"
-                          :placeholder="t('settings.authInputPlaceholder')"
-                          :aria-label="t('settings.authInputAria')"
-                        />
-                        <div>
-                          <AButton
-                            type="primary"
-                            :disabled="
-                              !code.trim() ||
-                              busy ||
-                              state.runtime.state !== 'stopped'
-                            "
-                            @click="finishLogin"
-                          >
-                            {{ t("settings.autoParseAndLogin") }}
-                          </AButton>
+                        <div class="co-sr-control">
+                          <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
+                            <ColabOneSkeleton :width="96" :height="30" variant="button" tone="accent" :delay="40" />
+                          </div>
+                          <ASpace v-else :size="8" wrap>
+                            <AButton
+                              v-if="state.auth_url && state.operation && !ready"
+                              type="link"
+                              size="small"
+                              @click="openExternalURL(state.auth_url)"
+                            >
+                              {{ t("settings.reopenLoginPage") }}
+                            </AButton>
+                            <AButton
+                              :type="state.setup.colab ? 'default' : 'primary'"
+                              :disabled="
+                                busy ||
+                                !!state.operation ||
+                                state.runtime.state !== 'stopped'
+                              "
+                              @click="beginLogin"
+                            >
+                              <template #icon>
+                                <PhArrowSquareOut :size="15" />
+                              </template>
+                              {{
+                                state.setup.colab
+                                  ? t("settings.relogin")
+                                  : t("device.signInGoogle")
+                              }}
+                            </AButton>
+                          </ASpace>
                         </div>
                       </div>
-                    </ACollapsePanel>
-                  </ACollapse>
 
-                  <ADivider class="co-section-divider" />
-
-                  <div class="co-drive-subhead">
-                    <div class="co-card-head-title">
-                      <span class="co-head-icon-badge is-emerald" aria-hidden="true">
-                        <PhCloud :size="16" weight="duotone" />
-                      </span>
-                      <h3>{{ t("settings.driveHeading") }}</h3>
+                      <ACollapse
+                        :active-key="showAuthPaste ? ['paste'] : []"
+                        ghost
+                        class="co-inline-collapse co-sr-collapse"
+                        @update:active-key="onAuthPasteToggle"
+                      >
+                        <ACollapsePanel
+                          key="paste"
+                          :header="t('settings.manualAuthHeader')"
+                        >
+                          <div class="co-collapse-body">
+                            <p class="co-muted">
+                              {{ t("settings.manualAuthDesc") }}
+                            </p>
+                            <ASpace :size="8" wrap>
+                              <AButton
+                                :disabled="busy || state.runtime.state !== 'stopped'"
+                                @click="pasteLogin"
+                              >
+                                <template #icon>
+                                  <PhCopy :size="15" />
+                                </template>
+                                {{ t("settings.pasteAndLogin") }}
+                              </AButton>
+                              <AButton
+                                type="link"
+                                :disabled="
+                                  busy ||
+                                  !!state.operation ||
+                                  state.runtime.state !== 'stopped'
+                                "
+                                @click="manualLogin"
+                              >
+                                <template #icon>
+                                  <PhArrowSquareOut :size="14" />
+                                </template>
+                                {{ t("settings.switchManualAuth") }}
+                              </AButton>
+                            </ASpace>
+                            <ATextarea
+                              v-model:value="code"
+                              :rows="3"
+                              autocomplete="off"
+                              autocapitalize="off"
+                              spellcheck="false"
+                              :placeholder="t('settings.authInputPlaceholder')"
+                              :aria-label="t('settings.authInputAria')"
+                            />
+                            <div>
+                              <AButton
+                                type="primary"
+                                :disabled="
+                                  !code.trim() ||
+                                  busy ||
+                                  state.runtime.state !== 'stopped'
+                                "
+                                @click="finishLogin"
+                              >
+                                {{ t("settings.autoParseAndLogin") }}
+                              </AButton>
+                            </div>
+                          </div>
+                        </ACollapsePanel>
+                      </ACollapse>
                     </div>
-                    <ColabOneSkeleton
-                      v-if="!snapshotLoaded"
-                      :width="56"
-                      :height="22"
-                      variant="tag"
-                      tone="subtle"
-                      :delay="60"
-                    />
-                    <ATag
-                      v-else
-                      :color="
-                        state.setup.drive ||
-                        state.setup.drive_headless ||
-                        state.setup.drive_authorized
-                          ? 'success'
-                          : 'default'
-                      "
-                    >
-                      {{
-                        state.setup.drive
-                          ? t("settings.driveTagMounted")
-                          : state.setup.drive_headless
-                            ? t("settings.driveTagHeadlessReady")
-                            : state.setup.drive_authorized
-                              ? t("settings.driveTagAuthorized")
-                              : state.setup.colab
-                                ? t("settings.driveTagReauth")
-                                : t("settings.disconnected")
-                      }}
-                    </ATag>
+
+                    <!-- Row 1.2: Google Drive -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-emerald" aria-hidden="true">
+                              <PhCloud :size="14" weight="duotone" />
+                            </span>
+                            <h3 class="co-sr-title">{{ t("settings.driveHeading") }}</h3>
+                            <ColabOneSkeleton
+                              v-if="!snapshotLoaded"
+                              :width="56"
+                              :height="20"
+                              variant="tag"
+                              tone="subtle"
+                              :delay="60"
+                              inline
+                            />
+                            <ATag
+                              v-else
+                              :color="
+                                state.setup.drive ||
+                                state.setup.drive_headless ||
+                                state.setup.drive_authorized
+                                  ? 'success'
+                                  : 'default'
+                              "
+                            >
+                              {{
+                                state.setup.drive
+                                  ? t("settings.driveTagMounted")
+                                  : state.setup.drive_headless
+                                    ? t("settings.driveTagHeadlessReady")
+                                    : state.setup.drive_authorized
+                                      ? t("settings.driveTagAuthorized")
+                                      : state.setup.colab
+                                        ? t("settings.driveTagReauth")
+                                        : t("settings.disconnected")
+                              }}
+                            </ATag>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.driveDescPrefix") }}
+                            <code>My Drive / ColabOne_Drive</code>{{ t("settings.driveDescSuffix") }}
+                          </p>
+                        </div>
+
+                        <div class="co-sr-control">
+                          <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
+                            <ColabOneSkeleton :width="108" :height="30" variant="button" tone="subtle" :delay="90" />
+                          </div>
+                          <ASpace v-else :size="8" wrap>
+                            <AButton
+                              :disabled="
+                                busy ||
+                                !ready ||
+                                !!state.operation ||
+                                !state.setup.colab
+                              "
+                              @click="
+                                act(state.setup.drive ? 'drive.sync' : 'drive.connect')
+                              "
+                            >
+                              <template #icon>
+                                <PhCloud :size="15" />
+                              </template>
+                              {{
+                                state.setup.drive
+                                  ? t("settings.driveSyncNow")
+                                  : t("settings.driveMountNow")
+                              }}
+                            </AButton>
+                            <AButton
+                              v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                              type="primary"
+                              :loading="confirmingDriveAuth"
+                              @click="confirmDriveAuth()"
+                            >
+                              {{ t("device.driveConfirmAuthorized") }}
+                            </AButton>
+                            <AButton
+                              v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                              @click="openExternalURL(state.auth_url)"
+                            >
+                              {{ t("device.driveReopenAuth") }}
+                            </AButton>
+                            <AButton
+                              v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                              :disabled="busy"
+                              @click="act('drive.cancel')"
+                            >
+                              {{ t("device.driveCancelMount") }}
+                            </AButton>
+                          </ASpace>
+                        </div>
+                      </div>
+
+                      <AAlert
+                        v-if="state.setup.colab && !state.setup.drive_authorized"
+                        type="warning"
+                        show-icon
+                        :message="t('settings.driveNeedScopeAlert')"
+                      />
+
+                      <div
+                        v-else-if="
+                          snapshotLoaded &&
+                          state.setup.colab &&
+                          state.setup.drive_authorized &&
+                          !state.setup.drive_headless
+                        "
+                        class="co-sr-callout"
+                      >
+                        <div class="co-sr-callout-copy">
+                          <strong class="co-sr-callout-title">{{
+                            t("settings.driveHeadlessTipTitle")
+                          }}</strong>
+                          <p class="co-sr-callout-desc">
+                            {{ t("settings.driveHeadlessTipDesc") }}
+                          </p>
+                        </div>
+                        <ASpace :size="8" wrap class="co-sr-callout-actions">
+                          <AButton
+                            size="small"
+                            @click="openExternalURL('https://console.cloud.google.com/')"
+                          >
+                            {{ t("settings.driveOpenGcpConsole") }}
+                          </AButton>
+                          <AButton
+                            size="small"
+                            type="primary"
+                            ghost
+                            :loading="checkingDriveHeadless"
+                            :disabled="busy || !!state.operation"
+                            @click="setupHeadlessDrive"
+                          >
+                            {{ t("settings.driveCheckHeadless") }}
+                          </AButton>
+                        </ASpace>
+                      </div>
+
+                      <AAlert
+                        v-if="
+                          ready &&
+                          state.auth_url &&
+                          state.operation &&
+                          !state.setup.drive &&
+                          state.drive_auth_hint
+                        "
+                        type="warning"
+                        show-icon
+                        :message="tb(state.drive_auth_hint)"
+                      />
+                    </div>
+
+                    <!-- Row 1.3: Hugging Face Token -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-violet" aria-hidden="true">
+                              <PhKey :size="14" weight="duotone" />
+                            </span>
+                            <h3 class="co-sr-title">{{ t("settings.hfCardTitle") }}</h3>
+                            <ColabOneSkeleton
+                              v-if="!snapshotLoaded"
+                              :width="46"
+                              :height="20"
+                              variant="tag"
+                              tone="subtle"
+                              :delay="80"
+                              inline
+                            />
+                            <ATag v-else-if="state.setup.hf" color="success">
+                              {{ t("settings.hfSavedTag") }}
+                            </ATag>
+                            <ATag v-else>{{ t("common.optional") }}</ATag>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.hfDesc") }}
+                          </p>
+                        </div>
+
+                        <div class="co-sr-control co-sr-control-input">
+                          <div class="co-hf-row">
+                            <ColabOneSecretInput
+                              ref="hfTokenInputRef"
+                              id="settings-hf-token"
+                              v-model:value="form.hf_token"
+                              :has-saved="!!state.setup.hf"
+                              :disabled="busy"
+                              autocomplete="new-password"
+                              :aria-label="t('settings.hfCardTitle')"
+                              :placeholder="t('settings.hfEmptyPlaceholder')"
+                              :saved-placeholder="t('settings.hfSavedPlaceholder')"
+                              :load-saved="loadSavedHfToken"
+                              :extract-secret="colabOneExtractHfToken"
+                              @extracted="onHfTokenExtracted"
+                              @error="showError($event)"
+                            />
+                            <AButton
+                              type="primary"
+                              :disabled="!form.hf_token.trim() || busy"
+                              @click="save"
+                            >
+                              {{ t("settings.hfSaveBtn") }}
+                            </AButton>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
+                </section>
 
-                  <p class="co-settings-desc">
-                    {{ t("settings.driveDescPrefix") }}
-                    <code>My Drive / ColabOne_Drive</code>{{ t("settings.driveDescSuffix") }}
-                  </p>
+                <!-- Section 2: Compute & Network -->
+                <section
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-compute"
+                >
+                  <h2 id="settings-sec-compute" class="co-settings-section-label">
+                    {{ t("settings.sectionCompute") }}
+                  </h2>
+                  <div class="co-settings-list">
+                    <!-- Row 2.1: Default GPU -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-blue" aria-hidden="true">
+                              <PhSlidersHorizontal :size="14" weight="duotone" />
+                            </span>
+                            <h3 class="co-sr-title">{{ t("settings.defaultGpuLabel") }}</h3>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.computeSyncNote") }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ColabOneSkeleton
+                            v-if="!snapshotLoaded"
+                            :width="248"
+                            :height="32"
+                            :radius="8"
+                            variant="rect"
+                          />
+                          <ASelect
+                            v-else
+                            :value="form.gpu"
+                            :aria-label="t('settings.defaultGpuAria')"
+                            class="co-sr-select co-sr-select-gpu co-sk-reveal"
+                            :dropdown-match-select-width="false"
+                            :disabled="busy || !!state.operation"
+                            @change="changeDefaultGpu"
+                          >
+                            <ASelectOption
+                              v-for="g in GPU_SPECS"
+                              :key="g.id"
+                              :value="g.id"
+                            >
+                              {{ g.label }}
+                            </ASelectOption>
+                          </ASelect>
+                        </div>
+                      </div>
+                    </div>
 
-                  <AAlert
-                    v-if="state.setup.colab && !state.setup.drive_authorized"
-                    type="warning"
-                    show-icon
-                    :message="t('settings.driveNeedScopeAlert')"
-                    class="co-sub-alert"
-                  />
+                    <!-- Row 2.2: Idle Auto-Release -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <h3 class="co-sr-title">{{ t("settings.idleDurationLabel") }}</h3>
+                          </div>
+                          <div v-if="!snapshotLoaded" class="co-idle-policy-sk" aria-hidden="true">
+                            <ColabOneSkeleton width="86%" :height="12" variant="text" tone="subtle" :delay="80" />
+                          </div>
+                          <p v-else class="co-sr-desc co-sk-reveal">
+                            {{
+                              t("settings.idleProtectionDesc", {
+                                policy: formatIdlePolicyLabel(form.idle_minutes),
+                              })
+                            }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ColabOneSkeleton
+                            v-if="!snapshotLoaded"
+                            :width="184"
+                            :height="32"
+                            :radius="8"
+                            variant="rect"
+                            tone="subtle"
+                            :delay="60"
+                          />
+                          <ASelect
+                            v-else
+                            :value="form.idle_minutes"
+                            :aria-label="t('device.idleReleaseAria')"
+                            class="co-sr-select co-sr-select-idle co-sk-reveal"
+                            :disabled="savingIdle"
+                            @change="changeIdleMinutes"
+                          >
+                            <ASelectOption
+                              v-if="!isPresetIdleMinutes(form.idle_minutes)"
+                              :value="form.idle_minutes"
+                            >
+                              {{ formatIdlePolicyLabel(form.idle_minutes) }}
+                            </ASelectOption>
+                            <ASelectOption
+                              v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
+                              :key="opt.value"
+                              :value="opt.value"
+                            >
+                              {{ opt.label }}
+                            </ASelectOption>
+                          </ASelect>
+                        </div>
+                      </div>
+                    </div>
 
-                  <AAlert
-                    v-else-if="
-                      snapshotLoaded &&
-                      state.setup.colab &&
-                      state.setup.drive_authorized &&
-                      !state.setup.drive_headless
-                    "
-                    type="info"
-                    show-icon
-                    :message="t('settings.driveHeadlessTipTitle')"
-                    class="co-sub-alert"
+                    <!-- Row 2.3: Download Concurrency -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <h3 class="co-sr-title">{{ t("settings.downloadThreadsLabel") }}</h3>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.downloadThreadsDesc") }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ColabOneSkeleton
+                            v-if="!snapshotLoaded"
+                            :width="156"
+                            :height="32"
+                            :radius="9999"
+                            variant="rect"
+                            tone="subtle"
+                            :delay="90"
+                          />
+                          <ASegmented
+                            v-else
+                            :value="form.download_threads"
+                            :options="downloadThreadOptions"
+                            :aria-label="t('settings.downloadThreadsAria')"
+                            class="co-sk-reveal"
+                            @change="changeDownloadThreads"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Row 2.4: Auto-Mount Drive -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <h3 class="co-sr-title">{{ t("settings.autoDriveLabel") }}</h3>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.autoDriveDesc") }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ColabOneSkeleton
+                            v-if="!snapshotLoaded"
+                            :width="44"
+                            :height="22"
+                            variant="pill"
+                            :delay="110"
+                          />
+                          <ASwitch
+                            v-else
+                            :checked="form.auto_drive"
+                            :disabled="busy"
+                            @update:checked="onAutoDriveChange"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Row 2.5: GPU Allocation Proxy (Assign Only, Progressive Disclosure) -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-emerald" aria-hidden="true">
+                              <PhShieldCheck :size="14" weight="duotone" />
+                            </span>
+                            <h3 class="co-sr-title">{{ t("settings.assignProxyTitle") }}</h3>
+                            <ColabOneSkeleton
+                              v-if="!snapshotLoaded"
+                              :width="60"
+                              :height="20"
+                              variant="tag"
+                              tone="subtle"
+                              :delay="120"
+                              inline
+                            />
+                            <ATag
+                              v-else-if="assignProxySettings?.enabled"
+                              color="success"
+                            >
+                              {{ t("settings.assignProxyTagActive") }}
+                            </ATag>
+                            <ATag v-else-if="hasSavedAssignProxy">
+                              {{ t("settings.assignProxyTagSaved") }}
+                            </ATag>
+                            <ATag v-else>{{ t("common.optional") }}</ATag>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.assignProxyDesc") }}
+                          </p>
+                        </div>
+
+                        <div class="co-sr-control">
+                          <ColabOneSkeleton
+                            v-if="!snapshotLoaded"
+                            :width="76"
+                            :height="28"
+                            variant="button"
+                            tone="subtle"
+                            :delay="130"
+                          />
+                          <template v-else>
+                            <ASwitch
+                              v-if="hasSavedAssignProxy"
+                              :checked="form.assign_proxy_enabled"
+                              :loading="togglingAssignProxy"
+                              :aria-label="t('settings.assignProxySwitchLabel')"
+                              :disabled="
+                                busy ||
+                                assignProxyMutating ||
+                                testingAssignProxy ||
+                                !!state.operation
+                              "
+                              @update:checked="onAssignProxyEnabledChange"
+                            />
+                            <AButton
+                              size="small"
+                              :disabled="busy || !!state.operation"
+                              @click="assignProxyExpanded = !assignProxyExpanded"
+                            >
+                              {{
+                                showAssignProxyEditor
+                                  ? t("common.collapse")
+                                  : hasSavedAssignProxy
+                                    ? t("settings.assignProxyEditBtn")
+                                    : t("settings.assignProxyConfigureBtn")
+                              }}
+                            </AButton>
+                          </template>
+                        </div>
+                      </div>
+
+                      <div
+                        v-if="snapshotLoaded && showAssignProxyEditor"
+                        class="co-sr-subpanel co-sk-reveal"
+                      >
+                        <div class="co-assign-proxy-input-row">
+                          <ColabOneSecretInput
+                            ref="assignProxyInputRef"
+                            id="settings-assign-proxy"
+                            v-model:value="form.assign_proxy"
+                            :has-saved="hasSavedAssignProxy"
+                            :disabled="
+                              busy ||
+                              assignProxyMutating ||
+                              testingAssignProxy ||
+                              !!state.operation
+                            "
+                            autocomplete="new-password"
+                            :aria-label="t('settings.assignProxyTitle')"
+                            :placeholder="t('settings.assignProxyPlaceholder')"
+                            :saved-placeholder="assignProxySavedPlaceholder"
+                            :load-saved="loadSavedAssignProxy"
+                            @error="showError($event)"
+                          />
+                          <AButton
+                            type="primary"
+                            :loading="savingAssignProxy"
+                            :disabled="
+                              !form.assign_proxy.trim() ||
+                              busy ||
+                              assignProxyMutating ||
+                              testingAssignProxy ||
+                              !!state.operation
+                            "
+                            @click="saveAssignProxy"
+                          >
+                            {{ t("settings.assignProxySaveBtn") }}
+                          </AButton>
+                        </div>
+
+                        <ASpace :size="8" wrap class="co-assign-proxy-actions">
+                          <AButton
+                            size="small"
+                            :loading="testingAssignProxy"
+                            :disabled="
+                              (!form.assign_proxy.trim() && !hasSavedAssignProxy) ||
+                              busy ||
+                              assignProxyMutating
+                            "
+                            @click="testAssignProxy"
+                          >
+                            {{ t("settings.assignProxyTestBtn") }}
+                          </AButton>
+                          <AButton
+                            v-if="hasSavedAssignProxy"
+                            size="small"
+                            type="link"
+                            danger
+                            :loading="clearingAssignProxy"
+                            :disabled="
+                              busy ||
+                              assignProxyMutating ||
+                              testingAssignProxy ||
+                              !!state.operation
+                            "
+                            @click="clearAssignProxy"
+                          >
+                            {{ t("settings.assignProxyClearBtn") }}
+                          </AButton>
+                        </ASpace>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- Section 3: Appearance & Language -->
+                <section
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-appearance"
+                >
+                  <h2 id="settings-sec-appearance" class="co-settings-section-label">
+                    {{ t("settings.sectionAppearance") }}
+                  </h2>
+                  <div
+                    class="co-settings-list co-appearance-section"
+                    aria-labelledby="appearance-heading"
                   >
-                    <template #description>
-                      <p class="co-drive-headless-desc">
-                        {{ t("settings.driveHeadlessTipDesc") }}
-                      </p>
-                      <ASpace :size="8" wrap class="co-drive-headless-actions">
-                        <AButton
-                          size="small"
-                          @click="openExternalURL('https://console.cloud.google.com/')"
+                    <!-- Row 3.1: Appearance Theme -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-amber" aria-hidden="true">
+                              <PhSun :size="14" weight="duotone" />
+                            </span>
+                            <h3 id="appearance-heading" class="co-sr-title">
+                              {{ t("settings.appearanceLabel") }}
+                            </h3>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.appearanceDesc") }}
+                          </p>
+                        </div>
+                        <div
+                          class="co-sr-control"
+                          @pointerdown.capture="rememberAppearancePointer"
                         >
-                          {{ t("settings.driveOpenGcpConsole") }}
-                        </AButton>
-                        <AButton
-                          size="small"
-                          type="primary"
-                          ghost
-                          :loading="checkingDriveHeadless"
-                          :disabled="busy || !!state.operation"
-                          @click="setupHeadlessDrive"
-                        >
-                          {{ t("settings.driveCheckHeadless") }}
-                        </AButton>
-                      </ASpace>
-                    </template>
-                  </AAlert>
-
-                  <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
-                    <ColabOneSkeleton :width="118" :height="32" variant="button" tone="subtle" :delay="90" />
-                  </div>
-                  <ASpace v-else :size="8" wrap>
-                    <AButton
-                      :disabled="
-                        busy ||
-                        !ready ||
-                        !!state.operation ||
-                        !state.setup.colab
-                      "
-                      @click="
-                        act(state.setup.drive ? 'drive.sync' : 'drive.connect')
-                      "
-                    >
-                      <template #icon>
-                        <PhCloud :size="15" />
-                      </template>
-                      {{
-                        state.setup.drive
-                          ? t("settings.driveSyncNow")
-                          : t("settings.driveMountNow")
-                      }}
-                    </AButton>
-                    <AButton
-                      v-if="ready && state.auth_url && state.operation && !state.setup.drive"
-                      type="primary"
-                      :loading="confirmingDriveAuth"
-                      @click="confirmDriveAuth()"
-                    >
-                      {{ t("device.driveConfirmAuthorized") }}
-                    </AButton>
-                    <AButton
-                      v-if="ready && state.auth_url && state.operation && !state.setup.drive"
-                      @click="openExternalURL(state.auth_url)"
-                    >
-                      {{ t("device.driveReopenAuth") }}
-                    </AButton>
-                    <AButton
-                      v-if="ready && state.auth_url && state.operation && !state.setup.drive"
-                      :disabled="busy"
-                      @click="act('drive.cancel')"
-                    >
-                      {{ t("device.driveCancelMount") }}
-                    </AButton>
-                  </ASpace>
-                  <AAlert
-                    v-if="
-                      ready &&
-                      state.auth_url &&
-                      state.operation &&
-                      !state.setup.drive &&
-                      state.drive_auth_hint
-                    "
-                    type="warning"
-                    show-icon
-                    class="co-drive-hint-alert"
-                    :message="tb(state.drive_auth_hint)"
-                  />
-                </ACard>
-
-                <!-- Settings Card 3: Default Compute & Idle Release -->
-                <ACard class="co-settings-card">
-                  <template #title>
-                    <div class="co-card-head-title">
-                      <span class="co-head-icon-badge is-blue" aria-hidden="true">
-                        <PhSlidersHorizontal :size="16" weight="duotone" />
-                      </span>
-                      <h2>{{ t("settings.computeCardTitle") }}</h2>
-                    </div>
-                  </template>
-                  <p class="co-settings-desc">
-                    {{ t("settings.computeCardDesc") }}
-                  </p>
-
-                  <div v-if="!snapshotLoaded" class="co-settings-grid" aria-hidden="true">
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.defaultGpuLabel") }}</span>
-                      <ColabOneSkeleton width="100%" :height="32" :radius="8" variant="rect" />
-                    </div>
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.idleDurationLabel") }}</span>
-                      <ColabOneSkeleton
-                        width="100%"
-                        :height="32"
-                        :radius="8"
-                        variant="rect"
-                        tone="subtle"
-                        :delay="60"
-                      />
-                    </div>
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.downloadThreadsLabel") }}</span>
-                      <ColabOneSkeleton
-                        :width="168"
-                        :height="32"
-                        :radius="8"
-                        variant="rect"
-                        tone="subtle"
-                        :delay="110"
-                      />
-                    </div>
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.autoDriveLabel") }}</span>
-                      <div class="co-switch-row">
-                        <ColabOneSkeleton :width="44" :height="22" variant="pill" :delay="150" />
-                        <ColabOneSkeleton
-                          width="72%"
-                          :height="14"
-                          variant="text"
-                          tone="subtle"
-                          :delay="180"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <div v-else class="co-settings-grid co-sk-reveal">
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.defaultGpuLabel") }}</span>
-                      <ASelect
-                        :value="form.gpu"
-                        :aria-label="t('settings.defaultGpuAria')"
-                        class="co-full-width"
-                        :dropdown-match-select-width="false"
-                        :disabled="busy || !!state.operation"
-                        @change="changeDefaultGpu"
-                      >
-                        <ASelectOption
-                          v-for="g in GPU_SPECS"
-                          :key="g.id"
-                          :value="g.id"
-                        >
-                          {{ g.label }}
-                        </ASelectOption>
-                      </ASelect>
-                    </div>
-
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.idleDurationLabel") }}</span>
-                      <ASelect
-                        :value="form.idle_minutes"
-                        :aria-label="t('device.idleReleaseAria')"
-                        class="co-full-width"
-                        :disabled="savingIdle"
-                        @change="changeIdleMinutes"
-                      >
-                        <ASelectOption
-                          v-if="!isPresetIdleMinutes(form.idle_minutes)"
-                          :value="form.idle_minutes"
-                        >
-                          {{ formatIdlePolicyLabel(form.idle_minutes) }}
-                        </ASelectOption>
-                        <ASelectOption
-                          v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
-                          :key="opt.value"
-                          :value="opt.value"
-                        >
-                          {{ opt.label }}
-                        </ASelectOption>
-                      </ASelect>
-                    </div>
-
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.downloadThreadsLabel") }}</span>
-                      <div>
-                        <ASegmented
-                          :value="form.download_threads"
-                          :options="downloadThreadOptions"
-                          :aria-label="t('settings.downloadThreadsAria')"
-                          @change="changeDownloadThreads"
-                        />
+                          <ASegmented
+                            :value="colabOneAppearance"
+                            :options="appearanceSegmentedOptions"
+                            :aria-label="t('settings.appearanceAria')"
+                            @change="onAppearanceChange"
+                          >
+                            <template #label="{ value, title, payload }">
+                              <span class="co-seg-item">
+                                <PhDesktop v-if="value === 'system'" :size="15" />
+                                <PhSun v-else-if="value === 'light'" :size="15" />
+                                <PhMoon v-else :size="15" />
+                                <span>{{ payload?.label ?? title ?? value }}</span>
+                              </span>
+                            </template>
+                          </ASegmented>
+                        </div>
                       </div>
                     </div>
 
-                    <div class="co-setting-field">
-                      <span class="co-field-label">{{ t("settings.autoDriveLabel") }}</span>
-                      <div class="co-switch-row">
-                        <ASwitch
-                          :checked="form.auto_drive"
-                          :disabled="busy"
-                          @update:checked="onAutoDriveChange"
-                        />
-                        <span class="co-switch-label">
-                          {{ t("settings.autoDriveDesc") }}
-                        </span>
+                    <!-- Row 3.2: Interface Language -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-info">
+                        <div class="co-sr-title-line">
+                          <h3 class="co-sr-title">{{ t("settings.languageLabel") }}</h3>
+                        </div>
+                        <p class="co-sr-desc">
+                          {{ t("settings.languageDesc") }}
+                        </p>
                       </div>
+                      <LanguageSwitcher mode="settings" @changed="onLocaleChanged" />
                     </div>
                   </div>
+                </section>
 
-                  <div class="co-idle-policy-box">
-                    <strong>{{ t("settings.idleProtectionTitle") }}</strong>
-                    <div v-if="!snapshotLoaded" class="co-idle-policy-sk" aria-hidden="true">
-                      <ColabOneSkeleton width="92%" :height="13" variant="text" tone="subtle" :delay="120" />
-                      <ColabOneSkeleton width="68%" :height="13" variant="text" tone="subtle" :delay="170" />
-                    </div>
-                    <p v-else class="co-sk-reveal">
-                      {{
-                        t("settings.idleProtectionDesc", {
-                          policy: formatIdlePolicyLabel(form.idle_minutes),
-                        })
-                      }}
-                    </p>
-                  </div>
-
-                  <p class="co-footnote">
-                    {{ t("settings.computeSyncNote") }}
-                  </p>
-                </ACard>
-              </div>
-
-              <!-- Settings Bento Row 2: Appearance & Language + HF Token + Desktop Shortcuts -->
-              <div class="co-settings-row-secondary">
-                <!-- Settings Card 2: Appearance & Interface Language -->
-                <ACard
-                  class="co-settings-card co-appearance-section"
-                  aria-labelledby="appearance-heading"
+                <!-- Section 4: Desktop & About -->
+                <section
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-desktop"
                 >
-                  <template #title>
-                    <div class="co-card-head-title">
-                      <span class="co-head-icon-badge is-amber" aria-hidden="true">
-                        <PhSun :size="16" weight="duotone" />
-                      </span>
-                      <h2 id="appearance-heading">{{ t("settings.appearanceCardTitle") }}</h2>
+                  <h2 id="settings-sec-desktop" class="co-settings-section-label">
+                    {{ t("settings.sectionDesktop") }}
+                  </h2>
+                  <div class="co-settings-list">
+                    <!-- Row 4.1: Desktop & Start Menu Shortcuts -->
+                    <div
+                      class="co-settings-row"
+                      aria-labelledby="shortcuts-heading"
+                    >
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-slate" aria-hidden="true">
+                              <PhDesktop :size="14" weight="duotone" />
+                            </span>
+                            <h3 id="shortcuts-heading" class="co-sr-title">
+                              {{ t("settings.shortcutsTitle") }}
+                            </h3>
+                            <ColabOneSkeleton
+                              v-if="!snapshotLoaded"
+                              :width="60"
+                              :height="20"
+                              variant="tag"
+                              tone="subtle"
+                              :delay="100"
+                              inline
+                            />
+                            <ATag v-else-if="state.setup.start_menu_shortcut" color="success">
+                              {{ t("settings.shortcutsInStartMenu") }}
+                            </ATag>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.shortcutsDesc") }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
+                            <ColabOneSkeleton :width="112" :height="30" variant="button" tone="accent" :delay="120" />
+                            <ColabOneSkeleton :width="116" :height="30" variant="button" tone="subtle" :delay="150" />
+                          </div>
+                          <ASpace v-else :size="8" wrap>
+                            <AButton
+                              :type="
+                                state.setup.start_menu_shortcut ? 'default' : 'primary'
+                              "
+                              :disabled="busy"
+                              @click="updateShortcut('start_menu')"
+                            >
+                              {{
+                                state.setup.start_menu_shortcut
+                                  ? t("settings.shortcutsUpdateStartMenu")
+                                  : t("settings.shortcutsAddStartMenu")
+                              }}
+                            </AButton>
+                            <AButton
+                              :disabled="busy"
+                              @click="updateShortcut('desktop')"
+                            >
+                              {{
+                                state.setup.desktop_shortcut
+                                  ? t("settings.shortcutsUpdateDesktop")
+                                  : t("settings.shortcutsAddDesktop")
+                              }}
+                            </AButton>
+                            <AButton
+                              v-if="
+                                state.setup.start_menu_shortcut ||
+                                state.setup.desktop_shortcut
+                              "
+                              type="link"
+                              danger
+                              size="small"
+                              :disabled="busy"
+                              @click="updateShortcut('both', true)"
+                            >
+                              {{ t("settings.shortcutsRemove") }}
+                            </AButton>
+                          </ASpace>
+                        </div>
+                      </div>
                     </div>
-                  </template>
-                  <p class="co-settings-desc">
-                    {{ t("settings.appearanceDesc") }}
-                  </p>
-                  <div @pointerdown.capture="rememberAppearancePointer">
-                    <ASegmented
-                      :value="colabOneAppearance"
-                      :options="appearanceSegmentedOptions"
-                      :aria-label="t('settings.appearanceAria')"
-                      @change="onAppearanceChange"
-                    >
-                      <template #label="{ value, title, payload }">
-                        <span class="co-seg-item">
-                          <PhDesktop v-if="value === 'system'" :size="15" />
-                          <PhSun v-else-if="value === 'light'" :size="15" />
-                          <PhMoon v-else :size="15" />
-                          <span>{{ payload?.label ?? title ?? value }}</span>
-                        </span>
-                      </template>
-                    </ASegmented>
-                  </div>
 
-                  <ADivider class="co-section-divider" />
-
-                  <div class="co-language-section">
-                    <span class="co-field-label">{{ t("settings.languageLabel") }}</span>
-                    <p class="co-settings-desc co-language-desc">
-                      {{ t("settings.languageDesc") }}
-                    </p>
-                    <LanguageSwitcher mode="settings" @changed="onLocaleChanged" />
-                  </div>
-                </ACard>
-
-                <!-- Settings Card 4: Hugging Face Token -->
-                <ACard class="co-settings-card">
-                  <template #title>
-                    <div class="co-card-head-title">
-                      <span class="co-head-icon-badge is-violet" aria-hidden="true">
-                        <PhKey :size="16" weight="duotone" />
-                      </span>
-                      <h2>{{ t("settings.hfCardTitle") }}</h2>
+                    <!-- Row 4.2: About & Open-Source Licenses -->
+                    <div class="co-settings-row co-about-card">
+                      <div class="co-about-row">
+                        <div class="co-about-copy">
+                          <div class="co-about-head">
+                            <span
+                              class="co-about-icon"
+                              aria-hidden="true"
+                              v-html="appIcon"
+                            ></span>
+                            <ATypographyTitle :level="5" class="co-about-title">
+                              {{ t("settings.aboutTitle") }}
+                            </ATypographyTitle>
+                            <span class="co-sr-version">{{ appVersionLabel }}</span>
+                          </div>
+                          <ATypographyText type="secondary" class="co-sr-about-desc">
+                            {{ t("settings.aboutDesc") }}
+                          </ATypographyText>
+                        </div>
+                        <div class="co-about-pills">
+                          <ATag color="blue" :bordered="false">GPL-3.0</ATag>
+                          <ATag>Apache-2.0</ATag>
+                          <ATag>MIT</ATag>
+                        </div>
+                      </div>
                     </div>
-                  </template>
-                  <template #extra>
-                    <ColabOneSkeleton
-                      v-if="!snapshotLoaded"
-                      :width="48"
-                      :height="22"
-                      variant="tag"
-                      tone="subtle"
-                      :delay="80"
-                    />
-                    <ATag v-else-if="state.setup.hf" color="success">
-                      {{ t("settings.hfSavedTag") }}
-                    </ATag>
-                    <ATag v-else>{{ t("common.optional") }}</ATag>
-                  </template>
-                  <p class="co-settings-desc">
-                    {{ t("settings.hfDesc") }}
-                  </p>
-                  <div class="co-hf-row">
-                    <ColabOneSecretInput
-                      ref="hfTokenInputRef"
-                      id="settings-hf-token"
-                      v-model:value="form.hf_token"
-                      :has-saved="!!state.setup.hf"
-                      :disabled="busy"
-                      autocomplete="new-password"
-                      :aria-label="t('settings.hfCardTitle')"
-                      :placeholder="t('settings.hfEmptyPlaceholder')"
-                      :saved-placeholder="t('settings.hfSavedPlaceholder')"
-                      :load-saved="loadSavedHfToken"
-                      :extract-secret="colabOneExtractHfToken"
-                      @extracted="onHfTokenExtracted"
-                      @error="showError($event)"
-                    />
-                    <AButton
-                      type="primary"
-                      :disabled="!form.hf_token.trim() || busy"
-                      @click="save"
-                    >
-                      {{ t("settings.hfSaveBtn") }}
-                    </AButton>
                   </div>
-                </ACard>
-
-                <!-- Settings Card 5: Desktop Shortcuts -->
-                <ACard
-                  class="co-settings-card"
-                  aria-labelledby="shortcuts-heading"
-                >
-                  <template #title>
-                    <div class="co-card-head-title">
-                      <span class="co-head-icon-badge is-slate" aria-hidden="true">
-                        <PhDesktop :size="16" weight="duotone" />
-                      </span>
-                      <h2 id="shortcuts-heading">{{ t("settings.shortcutsTitle") }}</h2>
-                    </div>
-                  </template>
-                  <template #extra>
-                    <ColabOneSkeleton
-                      v-if="!snapshotLoaded"
-                      :width="64"
-                      :height="22"
-                      variant="tag"
-                      tone="subtle"
-                      :delay="100"
-                    />
-                    <ATag v-else-if="state.setup.start_menu_shortcut" color="success">
-                      {{ t("settings.shortcutsInStartMenu") }}
-                    </ATag>
-                  </template>
-                  <p class="co-settings-desc">
-                    {{ t("settings.shortcutsDesc") }}
-                  </p>
-                  <div v-if="!snapshotLoaded" class="co-settings-btn-sk" aria-hidden="true">
-                    <ColabOneSkeleton :width="118" :height="32" variant="button" tone="accent" :delay="120" />
-                    <ColabOneSkeleton :width="124" :height="32" variant="button" tone="subtle" :delay="160" />
-                  </div>
-                  <ASpace v-else :size="8" wrap>
-                    <AButton
-                      :type="
-                        state.setup.start_menu_shortcut ? 'default' : 'primary'
-                      "
-                      :disabled="busy"
-                      @click="updateShortcut('start_menu')"
-                    >
-                      {{
-                        state.setup.start_menu_shortcut
-                          ? t("settings.shortcutsUpdateStartMenu")
-                          : t("settings.shortcutsAddStartMenu")
-                      }}
-                    </AButton>
-                    <AButton
-                      :disabled="busy"
-                      @click="updateShortcut('desktop')"
-                    >
-                      {{
-                        state.setup.desktop_shortcut
-                          ? t("settings.shortcutsUpdateDesktop")
-                          : t("settings.shortcutsAddDesktop")
-                      }}
-                    </AButton>
-                    <AButton
-                      v-if="
-                        state.setup.start_menu_shortcut ||
-                        state.setup.desktop_shortcut
-                      "
-                      type="link"
-                      danger
-                      :disabled="busy"
-                      @click="updateShortcut('both', true)"
-                    >
-                      {{ t("settings.shortcutsRemove") }}
-                    </AButton>
-                  </ASpace>
-                </ACard>
+                </section>
               </div>
-
-              <!-- Settings Card 6: About & Open-Source Licenses -->
-              <ACard class="co-settings-card co-about-card">
-                <div class="co-about-row">
-                  <div class="co-about-copy">
-                    <div class="co-about-head">
-                      <span
-                        class="co-about-icon"
-                        aria-hidden="true"
-                        v-html="appIcon"
-                      ></span>
-                      <ATypographyTitle :level="5" class="co-about-title">
-                        {{ t("settings.aboutTitle") }}
-                      </ATypographyTitle>
-                    </div>
-                    <ATypographyText type="secondary">
-                      {{ t("settings.aboutDesc") }}
-                    </ATypographyText>
-                  </div>
-                  <div class="co-about-pills">
-                    <ATag color="blue" :bordered="false">GPL-3.0</ATag>
-                    <ATag>Apache-2.0</ATag>
-                    <ATag>MIT</ATag>
-                  </div>
-                </div>
-              </ACard>
             </div>
           </main>
         </ALayoutContent>
 
-        <!-- Pinned Active Remote Task Progress Bar -->
-        <div v-if="task" class="co-task-dock">
+          <!-- Floating Bottom Save Bar (shown only once top Settings save button scrolls out of view) -->
+          <div
+            v-if="showFloatingSettingsSave"
+            class="co-settings-floating-wrap"
+            role="region"
+            :aria-label="t('settings.floatingSaveAria')"
+          >
+            <div class="co-settings-floating-bar">
+              <div class="co-settings-floating-info">
+                <span class="co-sr-icon is-blue" aria-hidden="true">
+                  <PhSlidersHorizontal :size="14" weight="duotone" />
+                </span>
+                <div class="co-settings-floating-copy">
+                  <span class="co-settings-floating-title">{{
+                    t("settings.title")
+                  }}</span>
+                  <span class="co-settings-floating-desc">{{
+                    t("settings.floatingSaveHint")
+                  }}</span>
+                </div>
+              </div>
+              <AButton
+                type="primary"
+                class="co-settings-floating-btn"
+                :disabled="busy"
+                @click="save"
+              >
+                {{ t("settings.saveSettings") }}
+              </AButton>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pinned Active Remote Task Progress Bar (excludes API inference, handled inline per request) -->
+        <div v-if="dockTask" class="co-task-dock">
           <ACard size="small" class="co-task-card co-task-bar">
             <div class="co-task-row">
               <ASpin size="small" />
               <div class="co-task-main">
                 <div class="co-task-head">
-                  <strong>{{ taskBarTitle(task.kind) }}</strong>
-                  <span class="co-muted">{{ tb(task.message) }}</span>
-                  <ATag
-                    v-if="
-                      (task.kind === 'public_chat' ||
-                        task.kind === 'public_responses' ||
-                        task.kind === 'public_compact') &&
-                      activeApiSpeed?.tokensPerSecond
-                    "
-                    color="blue"
-                    :bordered="false"
-                    class="co-mono"
-                  >
-                    {{
-                      formatTokenSpeed(
-                        activeApiSpeed.tokensPerSecond,
-                        !!activeApiSpeed.estimated,
-                      )
-                    }}
-                    <template v-if="activeApiSpeed.completionTokens">
-                      ·
-                      {{
-                        t("api.taskOutputTokens", {
-                          count: formatTokenCount(activeApiSpeed.completionTokens),
-                        })
-                      }}
-                    </template>
-                  </ATag>
+                  <strong>{{ taskBarTitle(dockTask.kind) }}</strong>
+                  <span class="co-muted">{{ tb(dockTask.message) }}</span>
                 </div>
-                <div v-if="task.download" class="co-download-stats">
+                <div v-if="dockTask.download" class="co-download-stats">
                   <b class="co-tabular">
-                    {{ (task.download.speed_bps / 1024 ** 2).toFixed(1) }} MiB/s
+                    {{ (dockTask.download.speed_bps / 1024 ** 2).toFixed(1) }} MiB/s
                   </b>
                   <span class="co-tabular">
-                    {{ bytes(task.download.downloaded_bytes) }} /
-                    {{ bytes(task.download.total_bytes) }}
+                    {{ bytes(dockTask.download.downloaded_bytes) }} /
+                    {{ bytes(dockTask.download.total_bytes) }}
                   </span>
                   <span>
                     {{
-                      task.download.phase === "verifying"
+                      dockTask.download.phase === "verifying"
                         ? t("device.downloadVerifying")
                         : t("device.downloadEta", {
-                            eta: duration(task.download.eta_seconds),
+                            eta: duration(dockTask.download.eta_seconds),
                           })
                     }}
                   </span>
                   <span class="co-tabular">
                     {{
                       t("device.downloadMeta", {
-                        conns: `${task.download.connections}/${task.download.threads}`,
-                        idx: task.download.file_index,
-                        total: task.download.file_count,
+                        conns: `${dockTask.download.connections}/${dockTask.download.threads}`,
+                        idx: dockTask.download.file_index,
+                        total: dockTask.download.file_count,
                       })
                     }}
                   </span>
                 </div>
                 <AProgress
                   v-if="
-                    task.kind === 'download' ||
-                    task.kind === 'comfyui_start' ||
-                    task.kind === 'comfyui_run'
+                    dockTask.kind === 'download' ||
+                    dockTask.kind === 'comfyui_start' ||
+                    dockTask.kind === 'comfyui_run'
                   "
-                  :percent="Math.round((task.progress || 0) * 100)"
+                  :percent="Math.round((dockTask.progress || 0) * 100)"
                   size="small"
                   status="active"
                 />
@@ -3534,7 +4362,7 @@ onUnmounted(() => {
                 danger
                 size="small"
                 :disabled="busy"
-                @click="act('task.cancel', { id: task.id })"
+                @click="act('task.cancel', { id: dockTask.id })"
               >
                 {{ t("common.cancel") }}
               </AButton>
@@ -3794,6 +4622,64 @@ onUnmounted(() => {
                       count: selectedReleaseIds.length,
                     })
               }}
+            </AButton>
+          </div>
+        </div>
+      </AModal>
+
+      <!-- Modal: Confirm Hot-Upgrading Remote Service While Active -->
+      <AModal
+        v-model:open="showUpgradeConfirm"
+        :title="t('status.upgradeConfirmTitle')"
+        :width="480"
+        :mask-closable="!busy"
+        :closable="!busy"
+        :footer="null"
+        centered
+      >
+        <div class="co-modal-stack">
+          <p class="co-muted co-modal-lead">
+            {{
+              upgradeBanner.activeItems.length
+                ? t("status.upgradeConfirmLead")
+                : t("status.upgradeOptionalReady")
+            }}
+          </p>
+
+          <ul
+            v-if="upgradeBanner.activeItems.length"
+            class="co-upgrade-confirm-list"
+          >
+            <li
+              v-for="item in upgradeBanner.activeItems"
+              :key="item"
+              class="co-upgrade-confirm-item"
+            >
+              <span class="co-upgrade-confirm-dot" aria-hidden="true" />
+              <span>{{ item }}</span>
+            </li>
+          </ul>
+
+          <AAlert
+            type="info"
+            show-icon
+            :message="t('status.upgradeConfirmPreserveNote')"
+          />
+
+          <div class="co-modal-footer">
+            <AButton
+              :disabled="busy"
+              @click="showUpgradeConfirm = false"
+            >
+              {{ t("common.cancel") }}
+            </AButton>
+            <AButton
+              type="primary"
+              :loading="busy"
+              :disabled="busy || !!state.operation"
+              @click="confirmRuntimeUpgrade"
+            >
+              {{ t("status.upgradeConfirmAction") }}
             </AButton>
           </div>
         </div>
@@ -4216,17 +5102,29 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.co-upgrade-banner :deep(.ant-alert-action) {
+.co-upgrade-banner :deep(.ant-alert-action),
+.co-op-banner :deep(.ant-alert-action) {
   margin-inline-start: 12px;
   flex-shrink: 0;
 }
 
-.co-upgrade-action-wrap {
+.co-op-banner {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.co-upgrade-action-wrap,
+.co-op-action-wrap {
   display: inline-flex;
 }
 
-.co-upgrade-action-wrap.is-disabled {
+.co-upgrade-action-wrap.is-disabled,
+.co-op-action-wrap.is-disabled {
   cursor: not-allowed;
+}
+
+.co-op-actions {
+  flex-shrink: 0;
 }
 
 .co-op-message {
@@ -4236,7 +5134,21 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
+.co-op-message-text {
+  line-height: 1.45;
+}
+
 /* Main Scrollable Content */
+.co-content-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .co-content {
   flex: 1;
   min-height: 0;
@@ -4257,6 +5169,10 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
+.co-settings-page {
+  padding-bottom: 92px;
+}
+
 .co-page-inner {
   width: 100%;
   display: flex;
@@ -4266,6 +5182,116 @@ onUnmounted(() => {
 
 .co-settings-inner {
   width: 100%;
+  max-width: 840px;
+  margin-inline: auto;
+  gap: 20px;
+}
+
+.co-settings-top-save-slot {
+  min-height: 32px;
+  min-width: 1px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.co-settings-floating-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  pointer-events: none;
+  padding: 20px var(--co-container-pad) 16px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--co-canvas) 78%, transparent) 52%,
+    var(--co-canvas) 100%
+  );
+}
+
+.co-settings-floating-bar {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 840px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  padding: 11px 16px 11px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--co-border);
+  background: var(--co-toast-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--co-toast-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  animation: co-settings-floating-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:global(:root[data-theme="dark"]) .co-settings-floating-bar {
+  border-color: rgba(255, 255, 255, 0.11);
+}
+
+.co-settings-floating-info {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  flex: 1;
+}
+
+.co-settings-floating-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.co-settings-floating-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--co-text);
+}
+
+.co-settings-floating-desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--co-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.co-settings-floating-btn {
+  flex-shrink: 0;
+}
+
+@keyframes co-settings-floating-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 520px) {
+  .co-settings-floating-desc {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-settings-floating-bar {
+    animation: none;
+  }
 }
 
 .co-panel-wrap {
@@ -4633,7 +5659,7 @@ onUnmounted(() => {
 /* Multi-Instance Card */
 .co-card-title-block {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -4652,7 +5678,7 @@ onUnmounted(() => {
 
 .co-instance-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
   padding: 14px 16px;
@@ -4692,15 +5718,24 @@ onUnmounted(() => {
 .co-instance-detail {
   margin: 0;
   font-size: 13px;
+  line-height: 1.5;
   color: var(--co-secondary-text);
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
+  gap: 3px 4px;
+}
+
+.co-instance-detail-sk {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
 }
 
 .co-instance-actions {
   display: flex;
   align-items: center;
+  align-self: center;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -4712,53 +5747,248 @@ onUnmounted(() => {
   color: var(--co-muted);
 }
 
-/* Settings Stage */
-.co-settings-row-primary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  align-items: stretch;
-}
-
-.co-settings-row-secondary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  align-items: stretch;
-}
-
-.co-settings-row-primary > .co-settings-card,
-.co-settings-row-secondary > .co-settings-card {
+/* Settings Stage — Native Single-Column Compact Grouped Rows (macOS / ChatGPT style) */
+.co-settings-stack {
   display: flex;
   flex-direction: column;
+  gap: 22px;
+}
+
+.co-settings-group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   min-width: 0;
 }
 
-.co-settings-row-primary > .co-settings-card :deep(.ant-card-body),
-.co-settings-row-secondary > .co-settings-card :deep(.ant-card-body) {
-  flex: 1;
+.co-settings-section-label {
+  margin: 0;
+  padding-inline: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  color: var(--co-muted);
+}
+
+.co-settings-list {
+  border-radius: 14px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+  box-shadow: var(--co-card-shadow);
+  overflow: hidden;
+}
+
+.co-settings-row {
+  padding: 15px 18px;
   display: flex;
   flex-direction: column;
+  gap: 10px;
 }
 
-@media (max-width: 1239px) {
-  .co-settings-row-secondary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .co-settings-row-secondary > .co-settings-card:last-child {
-    grid-column: 1 / -1;
-  }
+.co-settings-row + .co-settings-row {
+  border-top: 1px solid var(--co-border-secondary);
 }
 
-@media (max-width: 1024px) {
-  .co-settings-row-primary,
-  .co-settings-row-secondary {
-    grid-template-columns: 1fr;
+.co-sr-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.co-sr-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.co-sr-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.co-sr-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.co-sr-icon.is-blue {
+  background: var(--co-selected);
+  color: var(--co-accent);
+}
+
+.co-sr-icon.is-emerald {
+  background: var(--co-success-bg);
+  color: var(--co-success-text);
+}
+
+.co-sr-icon.is-amber {
+  background: var(--co-warning-bg);
+  color: var(--co-warning-text);
+}
+
+.co-sr-icon.is-violet {
+  background: rgba(139, 92, 246, 0.12);
+  color: #7c3aed;
+}
+
+:global(:root[data-theme="dark"]) .co-sr-icon.is-violet {
+  background: rgba(139, 92, 246, 0.18);
+  color: #a78bfa;
+}
+
+.co-sr-icon.is-slate {
+  background: var(--co-track);
+  color: var(--co-secondary-text);
+}
+
+.co-sr-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--co-text);
+}
+
+.co-sr-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--co-muted);
+}
+
+.co-sr-desc code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--co-subtle);
+  border: 1px solid var(--co-border-secondary);
+  font-size: 11.5px;
+  color: var(--co-secondary-text);
+}
+
+.co-saved-login.co-sr-saved-note {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.co-sr-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.co-sr-control-input {
+  width: 344px;
+  max-width: 100%;
+}
+
+.co-sr-select-gpu {
+  width: 248px;
+}
+
+.co-sr-select-idle {
+  width: 184px;
+}
+
+.co-inline-collapse.co-sr-collapse {
+  margin-top: -4px;
+}
+
+.co-inline-collapse.co-sr-collapse :deep(.ant-collapse-header) {
+  padding: 2px 0 !important;
+  font-size: 12.5px;
+}
+
+.co-sr-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  padding: 10px 13px;
+  border-radius: 10px;
+  background: var(--co-selected);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+}
+
+.co-sr-callout-copy {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.co-sr-callout-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--co-text);
+}
+
+.co-sr-callout-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--co-secondary-text);
+}
+
+.co-sr-callout-actions {
+  flex-shrink: 0;
+}
+
+.co-sr-subpanel {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--co-subtle);
+  border: 1px solid var(--co-border-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.co-sr-version {
+  font-family: var(--co-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  background: var(--co-track);
+  color: var(--co-muted);
+}
+
+.co-sr-about-desc {
+  font-size: 12.5px;
+}
+
+@media (max-width: 720px) {
+  .co-sr-main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
 
-  .co-settings-row-secondary > .co-settings-card:last-child {
-    grid-column: auto;
+  .co-sr-control {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .co-sr-control-input,
+  .co-sr-select-gpu,
+  .co-sr-select-idle {
+    width: 100%;
   }
 }
 
@@ -4871,15 +6101,6 @@ onUnmounted(() => {
   margin: 16px 0 !important;
 }
 
-.co-drive-subhead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-
 .co-sub-alert {
   margin-bottom: 12px;
 }
@@ -4988,7 +6209,24 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   width: 100%;
-  max-width: 560px;
+}
+
+.co-assign-proxy-controls,
+.co-assign-proxy-sk {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.co-assign-proxy-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.co-assign-proxy-actions {
+  margin-top: -2px;
 }
 
 .co-about-card :deep(.ant-card-body) {
@@ -5100,6 +6338,41 @@ onUnmounted(() => {
   margin: 0;
   font-size: 14px;
   line-height: 1.6;
+}
+
+.co-upgrade-confirm-list {
+  list-style: none;
+  margin: 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-subtle);
+}
+
+.co-upgrade-confirm-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--co-text);
+}
+
+.co-upgrade-confirm-item > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.co-upgrade-confirm-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--co-accent);
+  flex-shrink: 0;
 }
 
 .co-modal-loading {
