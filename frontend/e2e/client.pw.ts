@@ -3176,6 +3176,16 @@ test("switching or re-clicking top navbar tabs smoothly scrolls workspace conten
     page.getByRole("heading", { name: "对外 API", exact: true }),
   ).toBeVisible();
   await expect.poll(readScrollTop).toBe(0);
+  // Wait for the browser's final async `scroll` event at scrollTop=0 to flush
+  // (the animation sets scrollTop=0 inside rAF before the final scroll event fires).
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const h = (window as any).__scrollHistory as number[];
+        return h.length ? h[h.length - 1] : -1;
+      }),
+    )
+    .toBe(0);
 
   const apiHistory: number[] = await page.evaluate(
     () => (window as any).__scrollHistory,
@@ -4966,7 +4976,7 @@ test("remote service upgrade banner stays clickable with confirmation modal when
   const banner = page.locator(".co-upgrade-banner");
   await expect(banner).toBeVisible();
   await expect(banner).toContainText("远端服务有小版本更新，不影响当前正常使用");
-  await expect(banner).toContainText("点击即可自动停止当前服务并热更新");
+  await expect(banner).toContainText("点击即可热更新并自动按当前配置恢复模型与服务");
   await expect(banner).not.toContainText("以启用实时硬件监控");
 
   const upgradeBtn = banner.getByRole("button", { name: "更新远端服务" });
@@ -4978,11 +4988,11 @@ test("remote service upgrade banner stays clickable with confirmation modal when
     hasText: "确认热更新远端服务",
   });
   await expect(modal).toBeVisible();
-  await expect(modal).toContainText("已装载模型：Qwen2.5 · 0.5B（将从显存卸载）");
-  await expect(modal).toContainText("已下载的模型权重、工作流、作品与配置都会完整保留");
+  await expect(modal).toContainText("已装载模型：Qwen2.5 · 0.5B（更新后将按原规格自动重新装载）");
+  await expect(modal).toContainText("已下载的模型权重、工作流、作品与参数配置都会完整保留");
 
-  // Confirming sends runtime.upgrade with { force: true }.
-  await modal.getByRole("button", { name: "停止并立即更新" }).click();
+  // Confirming sends runtime.upgrade with { force: true, restore: true }.
+  await modal.getByRole("button", { name: "立即更新并自动恢复" }).click();
   await expect(modal).toBeHidden();
   const forceUpgradeCalls = await page.evaluate(() =>
     ((window as any).__calls || []).filter(
@@ -4990,7 +5000,7 @@ test("remote service upgrade banner stays clickable with confirmation modal when
     ),
   );
   expect(forceUpgradeCalls).toEqual([
-    { action: "runtime.upgrade", payload: { force: true } },
+    { action: "runtime.upgrade", payload: { force: true, restore: true } },
   ]);
 
   // Optional update banner can be dismissed cleanly.
@@ -5018,7 +5028,7 @@ test("remote service upgrade banner stays clickable with confirmation modal when
     ),
   );
   expect(allUpgradeCalls).toEqual([
-    { action: "runtime.upgrade", payload: { force: true } },
+    { action: "runtime.upgrade", payload: { force: true, restore: true } },
     { action: "runtime.upgrade", payload: {} },
   ]);
 
