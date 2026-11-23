@@ -22,9 +22,9 @@
 
 ---
 
-ColabOne puts your remote Google Colab GPUs behind a fast, native desktop app for **macOS (Apple Silicon)** and **Windows (x64)**. Spin up and manage multiple GPUs, monitor live hardware load and billing endurance, expose a private OpenAI-compatible LLM endpoint, and run ComfyUI workflows — with zero notebook wrangling and no VPN setup.
+ColabOne puts your remote Google Colab GPUs behind a fast, native desktop app for **macOS (Apple Silicon)** and **Windows (x64)**. Spin up and manage multiple GPUs, monitor live hardware load and billing endurance, expose a private OpenAI-compatible LLM endpoint, and run ComfyUI workflows — with zero notebook wrangling.
 
-Your computer only runs the desktop UI and a lightweight local controller. All model downloads, GGUF weights, `llama.cpp` inference, and ComfyUI execution happen exclusively on the remote Colab GPU.
+Your computer only runs a single pure Go native desktop binary (`ColabOne.app` / `ColabOne.exe`) with an embedded in-process controller — zero local Python runtime required. All model downloads, GGUF weights, `llama.cpp` inference, and ComfyUI execution happen exclusively on the remote Colab GPU (powered by the embedded Python control service uploaded automatically on startup).
 
 ## ✨ Highlights
 
@@ -33,14 +33,14 @@ Your computer only runs the desktop UI and a lightweight local controller. All m
 - **OpenAI-Compatible LLM Gateway (`Public API`)** — Browse and load Hugging Face GGUF models directly from the built-in **Select Model** drawer with real-time VRAM & disk fit checks, automatic VRAM + RAM hybrid loading (`--fit on`), 16/32-thread SHA-256-verified downloads, and `8K`–`128K` context presets. Expose `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and `/v1/responses/compact` over your own Cloudflare Named Tunnel.
 - **ComfyUI Studio & Native Canvas (`ComfyUI`)** — Run remote **ComfyUI `v0.46.0`** in two modes: **Workflow Studio** turns any ComfyUI API JSON into a clean parameter form with SHA-256-verified previews and local export, while **Native Canvas** opens the full node editor in a dedicated app window or browser over a token-authenticated tunnel.
 - **Automatic Google Drive Persistence** — Saves your model catalog, ComfyUI workflows, and generated outputs to `My Drive / ColabOne_Drive` using app-scoped `drive.file` permissions. Works out of the box with Colab native DriveFS (one click per new VM) and upgrades to permanent zero-prompt headless `rclone` auto-mount once you accept the free Google Cloud Terms of Service.
-- **Built for Everyday Use** — Portable packages ship with a standalone CPython runtime (no local Python, Go, or Node required), 6 UI languages, Light/Dark/System themes, OS keychain secret storage, an optional assign-only GPU allocation proxy, one-click remote service hot-updates, and a live redacted log drawer (`Ctrl+J`).
+- **Built for Everyday Use** — Ships as a pure Go single-binary desktop app (MyGo `v0.10.0` + in-process Go controller; zero local Python runtime or sibling `runtime/`/`site-packages/` folders needed, no local Python, Go, or Node required), with 6 UI languages, Light/Dark/System themes, OS keychain secret storage, an optional assign-only GPU allocation proxy, one-click remote service hot-updates, and a live redacted log drawer (`Ctrl+J`).
 
 ## 🚀 Quick Start
 
 ColabOne is organized around four sidebar views: **Devices → Public API → ComfyUI → Settings**, plus a slide-over **Logs** drawer on the right.
 
 1. **Download & Launch**
-   Download the archive for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#-building-from-source)), extract the full folder, and open `ColabOne.app` (macOS) or `ColabOne.exe` (Windows). Keep sibling folders (`runtime`, `site-packages`, `bridge`, etc.) next to the app. On Windows, you can create Start Menu and Desktop shortcuts from **Settings** without admin rights.
+   Download the archive for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#-building-from-source)), extract it, and open `ColabOne.app` (macOS) or `ColabOne.exe` (Windows). ColabOne is a self-contained pure Go single-binary app — no local Python runtime or sibling `runtime/`/`site-packages/` folders are required. On Windows, you can create Start Menu and Desktop shortcuts from **Settings** without admin rights.
 
 2. **Sign In with Google**
    Go to **Settings** → **Sign in with Google**, authorize your account in the browser, and ColabOne will complete login automatically. If your browser displays an authorization page instead of redirecting, expand the manual paste section and click **Paste & Sign In**. Credentials stay encrypted in macOS Keychain or Windows Credential Manager and auto-renew across restarts.
@@ -124,14 +124,14 @@ ColabOne deploys **ComfyUI `v0.46.0`** exclusively on the remote Colab GPU (`127
 
 - **Go** `1.27.3`
 - **Node.js** `24 LTS` (or `26`)
-- **Python** `3.12`
-- **`uv`** (or standard `venv` + `pip`)
+- **Python** `3.12` + **`uv`** (or standard `venv` + `pip`) — used only at build/test time to sync the embedded remote service bundle, run remote-service pytest suites, and execute packaging scripts
 
 ### 🔨 Setup & Build
 
 ```sh
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -r requirements-dev.txt
+.venv/bin/python tools/sync_service_bundle.py
 npm --prefix frontend ci
 cd console
 go tool mygo generate
@@ -144,20 +144,20 @@ npm --prefix frontend run build
 > On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`.
 
 ```sh
-# Run all offline checks (Python, Go vet/test, Vitest, frontend build, bridge self-test)
+# Run all offline checks (embedded service sync, Go vet/test, remote Python pytest, Vitest, frontend build)
 .venv/bin/python tools/install.py --root work/check --check
 
-# Build a self-contained portable archive in dist/
+# Build a self-contained pure Go single-binary archive in dist/
 .venv/bin/python tools/package.py --out dist
 ```
 
-Portable archives are written to `dist/` (with the unpacked staging directory at `work/package-stage/Programs/ColabOne`), bundling a hash-verified standalone CPython runtime and locked wheels so end users need no external toolchains.
+Portable archives are written to `dist/` (with the unpacked staging directory at `work/package-stage/Programs/ColabOne`), shipping the standalone pure Go binary (`ColabOne.app` / `ColabOne.exe`) with the compiled Vue frontend and remote Python control service (`server/`, `common/`, `catalog/`) embedded via `go:embed` — zero local Python runtime or sibling dependency folders required.
 
 All unit and browser tests run 100% offline with mocks — they never contact Google or Hugging Face and never provision a GPU. Real-GPU acceptance is run explicitly on a strict compute budget; see [docs/validation.md](docs/validation.md).
 
 ## 📚 Documentation
 
-- [Architecture Overview](docs/architecture.md) — Local bridge, remote loopback ports, Drive sync, telemetry, and security boundaries
+- [Architecture Overview](docs/architecture.md) — Pure Go in-process controller, embedded remote service, loopback ports, Drive sync, telemetry, and security boundaries
 - [Remote & Public API Reference](docs/api.md) — Control routes, OpenAI gateway contract, and ComfyUI endpoints
 - [Validation Record](docs/validation.md) — Offline CI coverage and real-GPU acceptance logs
 - [Upstream Provenance](third_party/SOURCES.md) — Pinned third-party dependencies and attributions
@@ -180,12 +180,12 @@ Special thanks to **[Alma](https://alma.now/)** and **[Antigravity-Manager](http
 
 Heartfelt thanks as well to the open-source projects below — ColabOne simply wouldn't exist without their open work and the foundation they provide (full details in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md)):
 
-- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Inspired our Google Colab GPU allocation, runtime readiness, heartbeat lifecycle, and portable Python packaging.
-- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — Inspired our desktop-to-Colab bridge architecture and headless `rclone` Google Drive mounting.
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Inspired our Google Colab GPU allocation, runtime readiness, and heartbeat lifecycle.
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — Inspired our desktop-to-Colab control architecture and headless `rclone` Google Drive mounting.
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — Inspired our model manifests, pinned `llama.cpp` CUDA deployment, and parallel range downloads.
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** *(MIT)* & **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — Remote GGUF LLM inference engine and node-based image, video, and multimodal workflow engine.
-- **Desktop & UI stack** — **[MyGo](https://github.com/egoist/mygo)**, **[Vue 3](https://github.com/vuejs/core)**, **[Vite](https://github.com/vitejs/vite)**, **[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**, **[Phosphor Icons](https://github.com/phosphor-icons/vue)**, **[Shiki](https://github.com/shikijs/shiki)**, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
-- **Backend, tunnel & Drive stack** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*, **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, and **[rclone](https://github.com/rclone/rclone)** *(MIT)*.
+- **Desktop & UI stack** — **[MyGo](https://github.com/egoist/mygo)** (`v0.10.0`, MIT), **[coder/websocket](https://github.com/coder/websocket)** *(ISC)*, **[Vue 3](https://github.com/vuejs/core)**, **[Vite](https://github.com/vitejs/vite)**, **[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**, **[Phosphor Icons](https://github.com/phosphor-icons/vue)**, **[Shiki](https://github.com/shikijs/shiki)**, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+- **Remote service, tunnel & Drive stack** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*, **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, and **[rclone](https://github.com/rclone/rclone)** *(MIT)*.
 
 ## 📜 License
 

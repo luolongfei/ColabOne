@@ -1,275 +1,15 @@
-import json
-import threading
+"""Offline contract tests for remote localization and shared location resolution."""
+
+from __future__ import annotations
+
+import re
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
-from urllib.parse import quote
-import pytest
-from bridge.auth import PUBLIC_SCOPES, parse_authorization_reply
-from conftest import MemoryVault
-from bridge.controller import ColabOneController
-
-CODE = "4/valid-example-code-that-is-not-a-real-secret"
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        CODE,
-        "Authorization complete\nCopy this code:\n" + CODE,
-        "https://localhost/?state=xyz&code=" + quote(CODE, safe=""),
-    ],
-)
-def test_authorization_reply_accepts_complete_page_or_url(text):
-    assert parse_authorization_reply(text) == CODE
-
-
-@pytest.mark.parametrize(
-    "text", ["", "not a code", CODE + "\n4/another-code-long-enough-to-be-ambiguous"]
-)
-def test_authorization_reply_rejects_missing_or_ambiguous_code(text):
-    with pytest.raises(ValueError):
-        parse_authorization_reply(text)
-
-
-def test_colab_oauth_scopes_include_drive_file_for_one_time_mount():
-    assert PUBLIC_SCOPES
-    assert "https://www.googleapis.com/auth/drive.file" in PUBLIC_SCOPES
-    assert "https://www.googleapis.com/auth/colaboratory" in PUBLIC_SCOPES
-
-
-def test_gpu_start_runs_without_browser_drive_consent_or_cloud_project(tmp_path):
-    c = ColabOneController(
-        Path(__file__).resolve().parents[1],
-        vault=MemoryVault(),
-        config_dir=tmp_path,
-        background=False,
-    )
-    c.auth = Mock()
-    c.auth.build_rclone_conf.return_value = ""
-    c.auth.has_drive_scope.return_value = True
-    c.provider = Mock()
-    c.provider.account.return_value = {"logged_in": True, "assignments": 1, "rate": 1.5}
-    c.remote = Mock()
-    c.refresh_remote = Mock()
-    c.start()
-    c.provider.start.assert_called_once()
-    assert c.remote.call_args_list[0].args[:2] == ("POST", "configure")
-    assert c.snapshot()["setup"]["drive_authorized"] is True
-    assert c.snapshot()["settings"]["auto_drive"] is True
-
-
-def test_google_loopback_checks_state_and_stores_login(monkeypatch):
-    import requests
-    from bridge.auth import ColabOneAuth
-
-    vault = MemoryVault()
-    auth = ColabOneAuth(vault)
-    captured_scopes = []
-
-    def make_flow(_cfg, scopes, **_kwargs):
-        captured_scopes.extend(scopes)
-        return flow
-
-    flow = SimpleNamespace(
-        authorization_url=lambda **_: (
-            "https://accounts.google.com/test",
-            "expected-state",
-        ),
-        fetch_token=Mock(),
-        credentials=SimpleNamespace(
-            to_json=lambda: json.dumps({"token": "test-token"})
-        ),
-    )
-    monkeypatch.setattr("bridge.auth.InstalledAppFlow.from_client_config", make_flow)
-    monkeypatch.setattr(
-        auth,
-        "fetch_profile",
-        lambda _: {"sub": "test-user", "email": "test@example.com"},
-    )
-    results = []
-    workers = []
-
-    def ready(_):
-        def callback():
-            with requests.Session() as http:
-                http.trust_env = False
-                results.append(
-                    http.get(
-                        flow.redirect_uri,
-                        params={"state": "wrong", "code": CODE},
-                        timeout=3,
-                    ).status_code
-                )
-                results.append(
-                    http.get(
-                        flow.redirect_uri,
-                        params={"state": "expected-state", "code": CODE},
-                        timeout=3,
-                    ).status_code
-                )
-
-        t = threading.Thread(target=callback)
-        workers.append(t)
-        t.start()
-
-    auth.colab_login(ready)
-    workers[0].join(3)
-    assert results == [400, 200]
-    assert "https://www.googleapis.com/auth/drive.file" in captured_scopes
-    flow.fetch_token.assert_called_once_with(code=CODE)
-    assert vault.get("colab")["token"] == "test-token"
-    assert auth.flow is None
-
-
-def test_private_bridge_uses_utf8_even_with_ascii_pipe_locale(tmp_path):
-    import os, subprocess, sys
-
-    root = Path(__file__).resolve().parents[1]
-    script = """
-import runpy,sys,types,threading
-class ColabOneController:
-    def __init__(self,root): self.stop=threading.Event()
-    def command(self,method,payload): return payload
-sys.modules['bridge.controller']=types.SimpleNamespace(ColabOneController=ColabOneController)
-runpy.run_path(%r,run_name='__main__')
-""" % str(root / "bridge/main.py")
-    body = {"id": 1, "method": "echo", "payload": {"text": "你好，远端 GPU"}}
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        input=(json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8"),
-        capture_output=True,
-        env={**os.environ, "PYTHONIOENCODING": "ascii"},
-        cwd=tmp_path,
-        timeout=10,
-        check=True,
-    )
-    assert json.loads(result.stdout.decode("utf-8"))["result"] == body["payload"]
-
-
-def test_saved_credentials_refresh_once_across_concurrent_requests(monkeypatch):
-    from bridge.auth import ColabOneAuth
-    from concurrent.futures import ThreadPoolExecutor
-
-    vault = MemoryVault()
-    vault.set("colab", {"token": "expired", "refresh_token": "saved-refresh"})
-    refreshed = []
-
-    class Credential:
-        def __init__(self, raw):
-            self.valid = raw["token"] == "new"
-            self.refresh_token = raw["refresh_token"]
-
-        def refresh(self, _):
-            refreshed.append(True)
-
-        def to_json(self):
-            return json.dumps({"token": "new", "refresh_token": self.refresh_token})
-
-    monkeypatch.setattr("bridge.auth.Credentials.from_authorized_user_info", Credential)
-    auth = ColabOneAuth(vault)
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(lambda _: auth.credentials("colab"), range(4)))
-    assert refreshed == [True]
-    assert vault.get("colab")["refresh_token"] == "saved-refresh"
-    # A new client process restores the same persistent authorization.
-    assert ColabOneAuth(vault).credentials("colab").valid
-
-
-def test_refresh_network_error_preserves_saved_login(monkeypatch):
-    from bridge.auth import ColabOneAuth
-
-    vault = MemoryVault()
-    raw = {"token": "expired", "refresh_token": "saved"}
-    vault.set("colab", raw)
-    credential = Mock(valid=False, refresh_token="saved")
-    credential.refresh.side_effect = OSError("network unavailable")
-    monkeypatch.setattr(
-        "bridge.auth.Credentials.from_authorized_user_info", lambda _: credential
-    )
-    with pytest.raises(OSError):
-        ColabOneAuth(vault).credentials("colab")
-    assert vault.get("colab") == raw
-
-
-def test_locale_command_persists_manual_choice_and_localizes_oauth_html(tmp_path):
-    from bridge.auth import _OAUTH_CALLBACK_TEXT
-    from bridge.controller import ColabOneController
-
-    ctl = ColabOneController(
-        tmp_path, vault=MemoryVault(), config_dir=tmp_path, background=False
-    )
-    # Non-persisted OS auto-detected sync updates runtime auth locale without writing settings.json
-    res = ctl.command("locale.set", {"locale": "ja-JP", "persist": False})
-    assert res == {"ok": True, "locale": "ja-JP", "persisted": False}
-    assert ctl.auth.locale == "ja-JP"
-    assert ctl.settings.get("locale", "") == ""
-
-    # Manual switch persists to settings.json and survives controller restart
-    res = ctl.command("locale.set", {"locale": "zh-HK", "persist": True})
-    assert res == {"ok": True, "locale": "zh-HK", "persisted": True}
-    assert ctl.settings["locale"] == "zh-HK"
-    assert ctl.auth.locale == "zh-HK"
-
-    reloaded = ColabOneController(
-        tmp_path, vault=MemoryVault(), config_dir=tmp_path, background=False
-    )
-    assert reloaded.settings["locale"] == "zh-HK"
-    assert reloaded.auth.locale == "zh-HK"
-
-    with pytest.raises(ValueError):
-        ctl.command("locale.set", {"locale": "xx-XX", "persist": True})
-
-    # Verify localized OAuth callback texts exist for all 6 supported locales
-    expected_snippets = {
-        "zh-CN": ("登录成功", "重试"),
-        "en-US": ("Signed in to ColabOne", "try again"),
-        "zh-TW": ("返回用戶端", "重試"),
-        "zh-HK": ("返回應用程式", "再試"),
-        "ja-JP": ("ログインが完了しました", "再試行"),
-        "ko-KR": ("로그인을 완료했습니다", "다시 시도"),
-    }
-    assert set(_OAUTH_CALLBACK_TEXT.keys()) == set(expected_snippets.keys())
-    for loc, (ok_snippet, err_snippet) in expected_snippets.items():
-        ok_msg, err_msg = _OAUTH_CALLBACK_TEXT[loc]
-        assert ok_snippet in ok_msg
-        assert err_snippet in err_msg
-
-
-def test_shortcuts_description_localized_across_locales(tmp_path, monkeypatch):
-    from bridge.shortcuts import (
-        COLABONE_APP_DESCRIPTIONS,
-        colabone_app_description,
-        manage_shortcuts,
-    )
-
-    assert set(COLABONE_APP_DESCRIPTIONS.keys()) == {
-        "zh-CN",
-        "en-US",
-        "zh-TW",
-        "zh-HK",
-        "ja-JP",
-        "ko-KR",
-    }
-    assert colabone_app_description("en-US") == "ColabOne — Remote GPU Workspace"
-    assert colabone_app_description("ja-JP") == "ColabOne — リモート GPU ワークスペース"
-    assert colabone_app_description("ko-KR") == "ColabOne — 원격 GPU 워크스페이스"
-
-    # Verify Linux .desktop entry uses the requested locale description
-    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    root = tmp_path / "app"
-    root.mkdir()
-    (root / "ColabOne").write_text("#!/bin/sh\n", encoding="utf-8")
-    manage_shortcuts(
-        root, target="desktop", platform_name="linux", locale="en-US"
-    )
-    desktop_file = tmp_path / "Desktop" / "ColabOne.desktop"
-    content = desktop_file.read_text(encoding="utf-8")
-    assert "Comment=ColabOne — Remote GPU Workspace" in content
 
 
 def test_comfy_proxy_401_html_respects_accept_language():
-    import socket
     from server.comfy_proxy import (
         ColabOneCanvasProxyServer,
         _UNAUTHORIZED_HTML_TEXT,
@@ -335,8 +75,6 @@ def test_comfy_proxy_401_html_respects_accept_language():
 
 
 def test_frontend_locations_cover_all_python_countries_and_subregions():
-    import re
-    from pathlib import Path
     from common.location import COUNTRY_NAMES_ZH, GCP_REGIONS, REGION_NAMES_ZH
 
     root = Path(__file__).resolve().parents[1]
@@ -372,83 +110,79 @@ def test_frontend_locations_cover_all_python_countries_and_subregions():
     )
 
 
-def test_redesigned_oauth_completion_page_locales_security_and_favicon(monkeypatch):
-    import requests
-    from bridge.auth import ColabOneAuth
-    from bridge.oauth_page import render_colabone_oauth_page
+def test_location_resolution_from_endpoint_metadata_ipinfo_and_trace(runtime):
+    from common.location import infer_location_from_endpoint, probe_vm_location
 
-    # Render & verify all 6 locales (both success & error states) + HTML escaping.
-    for loc in ("zh-CN", "en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR"):
-        ok_html = render_colabone_oauth_page(
-            locale=loc,
-            ok=True,
-            message="ok msg",
-            email='user+<script>@example.com',
-        )
-        assert f'<html lang="{loc}">' in ok_html
-        assert 'class="is-success"' in ok_html
-        assert "prefers-color-scheme: dark" in ok_html
-        assert "data:image/svg+xml;base64," in ok_html
-        assert "co-close-btn" in ok_html
-        assert "<script>@" not in ok_html
-        assert "&lt;script&gt;@example.com" in ok_html
+    assert infer_location_from_endpoint("gpu-t4-s-kkb-usw1b1-abc123") == {
+        "country": "US",
+        "country_name": "美国",
+        "region": "俄勒冈",
+        "zone": "us-west1-b",
+    }
+    assert infer_location_from_endpoint("m-s-kkb-ase1c1-999") == {
+        "country": "TW",
+        "country_name": "中国台湾",
+        "region": "彰化",
+        "zone": "asia-east1-c",
+    }
+    assert infer_location_from_endpoint("m-s-kkb-asse1a1-000") == {
+        "country": "SG",
+        "country_name": "新加坡",
+        "region": "",
+        "zone": "asia-southeast1-a",
+    }
+    assert infer_location_from_endpoint("m-s-1") is None
 
-        err_html = render_colabone_oauth_page(
-            locale=loc,
-            ok=False,
-            message="err <tag>",
-        )
-        assert 'class="is-error"' in err_html
-        assert "&lt;tag&gt;" in err_html
-
-    # Verify colab_login loopback serves the redesigned HTML with security headers + 204 favicon.
-    vault = MemoryVault()
-    auth = ColabOneAuth(vault)
-    auth.locale = "zh-CN"
-    auth.fetch_profile = lambda _creds: {"email": "demo@example.com", "sub": "sub-demo"}
-    code_val = "4/0A" + "B" * 28
-
-    class DummyCreds:
-        def to_json(self):
-            return json.dumps({"token": "tok", "refresh_token": "ref"})
-
-    flow = Mock(credentials=DummyCreds())
-    flow.authorization_url.return_value = ("https://accounts.google.com/o/oauth2/auth", "st-1")
-    monkeypatch.setattr(
-        "bridge.auth.InstalledAppFlow.from_client_config", lambda *a, **k: flow
+    # 1) GCP metadata server succeeds
+    http_meta = Mock()
+    http_meta.get.return_value = SimpleNamespace(
+        status_code=200, text="projects/12345/zones/europe-west4-a"
     )
+    runtime.http = http_meta
+    detected = runtime.detect_location()
+    assert detected == {
+        "country": "NL",
+        "country_name": "荷兰",
+        "region": "埃姆斯哈文",
+        "zone": "europe-west4-a",
+    }
+    assert runtime.status()["location"] == detected
 
-    captured = {}
+    # 2) Metadata blocked -> ipinfo fallback deduplicates redundant Singapore region
+    http_ipinfo = Mock()
 
-    def ready(_url):
-        def worker():
-            with requests.Session() as http:
-                http.trust_env = False
-                fav = http.get(flow.redirect_uri + "favicon.ico", timeout=3)
-                captured["favicon_status"] = fav.status_code
-                resp = http.get(
-                    flow.redirect_uri,
-                    params={"state": "st-1", "code": code_val},
-                    timeout=3,
-                )
-                captured["status"] = resp.status_code
-                captured["headers"] = dict(resp.headers)
-                captured["body"] = resp.text
+    def fake_get(url, **kwargs):
+        if "metadata.google.internal" in url:
+            raise OSError("blocked")
+        if "ipinfo.io" in url:
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "country": "SG",
+                    "region": "Singapore",
+                    "city": "Singapore",
+                },
+            )
+        raise AssertionError("should not reach later fallbacks")
 
-        t = threading.Thread(target=worker)
-        t.start()
-        captured["thread"] = t
+    http_ipinfo.get.side_effect = fake_get
+    assert probe_vm_location(http_ipinfo) == {
+        "country": "SG",
+        "country_name": "新加坡",
+        "region": "",
+        "zone": "",
+    }
 
-    auth.colab_login(ready)
-    captured["thread"].join(3)
-    assert captured["favicon_status"] == 204
-    assert captured["status"] == 200
-    assert captured["headers"].get("Cache-Control") == "no-store"
-    assert captured["headers"].get("X-Content-Type-Options") == "nosniff"
-    assert "default-src 'none'" in (captured["headers"].get("Content-Security-Policy") or "")
-    assert "demo@example.com" in captured["body"]
-    assert "已授权登录 ColabOne" in captured["body"]
-    assert "co-close-btn" in captured["body"]
-
-
-
+    # 3) Cloudflare trace fallback
+    http_trace = Mock()
+    http_trace.get.side_effect = lambda url, **kwargs: (
+        SimpleNamespace(status_code=200, text="ip=1.2.3.4\nloc=JP\ncolo=NRT\n")
+        if "cloudflare.com" in url
+        else (_ for _ in ()).throw(OSError("offline"))
+    )
+    assert probe_vm_location(http_trace) == {
+        "country": "JP",
+        "country_name": "日本",
+        "region": "",
+        "zone": "",
+    }

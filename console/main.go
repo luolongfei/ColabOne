@@ -12,8 +12,6 @@ import (
 	"mime"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -45,6 +43,7 @@ type ColabOneDesktop struct {
 	appearanceClosed bool
 	comfyMu          sync.Mutex
 	comfyWin         *mygo.Window
+	comfyOrigin      string
 	mainMu           sync.Mutex
 	mainWin          *mygo.Window
 	logMu            sync.Mutex
@@ -147,6 +146,27 @@ func (d *ColabOneDesktop) cancelStartup() {
 	}
 }
 
+func (d *ColabOneDesktop) destroyTray() {
+	d.trayMu.Lock()
+	tray := d.tray
+	d.tray = nil
+	d.trayMu.Unlock()
+	if tray != nil {
+		tray.Destroy()
+	}
+}
+
+func revealColabOneWindow(w *mygo.Window) {
+	if w == nil || w.IsDestroyed() {
+		return
+	}
+	if w.IsMinimized() {
+		w.Restore()
+	}
+	w.Show()
+	w.Focus()
+}
+
 func (d *ColabOneDesktop) buildTrayMenu() *mygo.Menu {
 	return mygo.NewMenu([]*mygo.MenuItem{
 		{Label: colabOneT("tray.open"), Click: func(*mygo.MenuItem, *mygo.Window) {
@@ -236,8 +256,11 @@ func (d *ColabOneDesktop) SetLocale(value string) error {
 		return nil
 	}
 	mygo.RunOnMain(func() {
-		if tray != nil {
-			tray.SetMenu(d.buildTrayMenu())
+		d.trayMu.Lock()
+		curTray := d.tray
+		d.trayMu.Unlock()
+		if curTray != nil {
+			curTray.SetMenu(d.buildTrayMenu())
 		}
 		if logWin != nil && !logWin.IsDestroyed() {
 			logWin.SetTitle(colabOneT("window.logs"))
@@ -302,23 +325,10 @@ func colabOneWindowBackground() string {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--self-test" {
-		exe, _ := os.Executable()
-		cwd, _ := os.Getwd()
-		root, err := colabOneRootAt(exe, cwd)
-		if err != nil {
+		if err := runColabOneSelfTest(); err != nil {
 			log.Fatal(err)
 		}
-		py, err := colabOnePythonAt(root)
-		if err != nil {
-			log.Fatal(err)
-		}
-		cmd := exec.Command(py, filepath.Join(root, "bridge", "main.py"), "--self-test")
-		cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(root, "site-packages")+string(os.PathListSeparator)+root)
-		out, err := cmd.CombinedOutput()
-		fmt.Print(string(out))
-		if err != nil {
-			log.Fatal(err)
-		}
+		fmt.Println("ColabOne runtime OK; no network or credentials accessed")
 		return
 	}
 	colabOneSetLocaleState(colabOneResolveInitialLocale())
@@ -403,14 +413,12 @@ func main() {
 		d.splashMu.Unlock()
 		if startup != nil && startup.IsActive() {
 			if splashWin != nil && !splashWin.IsDestroyed() {
-				splashWin.Show()
-				splashWin.Focus()
+				revealColabOneWindow(splashWin)
 			}
 			return
 		}
 		if win != nil && !win.IsDestroyed() {
-			win.Show()
-			win.Focus()
+			revealColabOneWindow(win)
 			return
 		}
 		ensureMainWindow(false)
@@ -419,7 +427,7 @@ func main() {
 		if saved := appearanceStore.Load(); saved != "" {
 			mygo.Theme.SetSource(mygo.ThemeSource(saved))
 		}
-		// Pre-warm the Python bridge concurrently while WebView initializes behind the splash.
+		// Pre-warm the in-process Go controller concurrently while WebView initializes behind the splash.
 		go func() {
 			_ = d.bridge.start()
 		}()
@@ -449,8 +457,7 @@ func main() {
 			OnReveal: func() {
 				mygo.RunOnMain(func() {
 					if mainWin != nil && !mainWin.IsDestroyed() {
-						mainWin.Show()
-						mainWin.Focus()
+						revealColabOneWindow(mainWin)
 					}
 					d.beginSplashFadeOutOnMain(func() {
 						if mainWin != nil && !mainWin.IsDestroyed() {
@@ -500,12 +507,6 @@ func main() {
 			if runtime.GOOS == "windows" {
 				tray.OnClick(show)
 			}
-			mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
-				d.trayMu.Lock()
-				d.tray = nil
-				d.trayMu.Unlock()
-				tray.Destroy()
-			})
 		}
 		startWithSplash()
 	})
@@ -514,6 +515,7 @@ func main() {
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		d.cancelStartup()
+		d.destroyTray()
 		d.flushAppearance()
 		d.bridge.close()
 	})

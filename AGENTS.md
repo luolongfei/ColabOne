@@ -1,11 +1,12 @@
 # ColabOne development
 
-- One desktop client; inference, weights, API serving and ComfyUI workflows belong to the remote runtime.
+- One pure Go single-binary desktop client (MyGo v0.10.0 + in-process Go controller; zero local Python runtime); inference, weights, API serving, ComfyUI workflows, and the embedded Python control service (`server/`, `common/`, `catalog/`) belong to the remote Colab runtime.
 - Run `python tools/install.py --root <temporary directory> --check` before commits. All tests are offline.
+- Whenever modifying `server/`, `common/`, or `catalog/`, run `python tools/sync_service_bundle.py` so `console/internal/servicebundle/embedded/` stays byte-for-byte in sync with source files (verified by `tests/test_go_python_contracts.py`).
 - On WSL2/Linux non-interactive shells, ALWAYS prepend `$HOME/.local/bin` to `PATH` and `$HOME/.local/sysroot/usr/lib/x86_64-linux-gnu` to `LD_LIBRARY_PATH`, and redirect stdin (`< /dev/null`). Never invoke Windows `/mnt/c/.../node.exe` or `npx.cmd` from Linux shells (they hang over WSL2 interop).
 - After any UI-related change (`frontend/`, desktop window/chrome in `console/`, or user-visible state/telemetry shown in the UI), ALWAYS rebuild and automatically restart the local desktop app (on WSL2/Windows via `bash work/run-win-dev.sh < /dev/null`) once checks pass, so the user always sees the latest UI immediately.
 - Never access live Google or Hugging Face from unit tests. Live acceptance is explicit and budgeted.
-- Preserve GPL-3.0, Apache-2.0 and upstream MIT notices. Never commit credentials, session state or model weights.
+- Preserve GPL-3.0, Apache-2.0, MIT, BSD-3-Clause, MIT-CMU, ISC, and SIL OFL 1.1 upstream notices. Never commit credentials, session state or model weights.
 - Follow the ColabOne hybrid layered naming convention across all new and refactored code:
   - Core domain classes, Go structs/RPC services, and exported domain types use `ColabOne*` (e.g. `ColabOneDesktop`, `ColabOneController`, `ColabOneProvider`, `ColabOneRuntime`, `ColabOneSnapshot`, `ColabOneTelemetryTracker`).
   - Branded entrypoints, bridge helpers, and theme/state helpers use `colabOne*` (TS/Go) or `colabone_*` / `create_colabone_*` (Python); keep local helper variables concise and idiomatic.

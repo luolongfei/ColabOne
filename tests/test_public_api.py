@@ -13,10 +13,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from bridge.activity import safe_message
-from bridge.controller import ColabOneController
 from common.public_api import ColabOnePublicConfig, public_origin, tunnel_token
-from conftest import MemoryVault, wait_task
+from conftest import wait_task
 from server.app import create_colabone_app
 from server.openai_compat import (
     COLABONE_COMPACTION_PREFIX,
@@ -727,53 +725,6 @@ def test_token_paste_domain_validation_and_key_redaction():
     for invalid in ("", "exampletoken", TOKEN + " " + TOKEN[:-3] + "ZZZ"):
         with pytest.raises(ValueError):
             tunnel_token(invalid)
-    assert KEY not in safe_message(KEY) and TOKEN not in safe_message(TOKEN)
-
-
-def test_controller_vault_persists_config_not_secrets_in_snapshot(tmp_path):
-    vault = MemoryVault()
-    # Legacy vault entry with mode="quick" is normalized to mode="named" in snapshots.
-    vault.set("public_api", {"mode": "quick", "api_key": KEY})
-    c = ColabOneController(
-        Path(__file__).parents[1], vault=vault, config_dir=tmp_path, background=False
-    )
-    assert c.snapshot()["api_settings"]["mode"] == "named"
-    assert c.command("api.tunnel_token", {}) == {"token": ""}
-
-    with pytest.raises(ValueError, match="临时域名"):
-        c.command("api.save", {"mode": "quick"})
-
-    c.command(
-        "api.save",
-        {
-            "domain": "api.example.com",
-            "tunnel_token": "cloudflared service install " + TOKEN,
-        },
-    )
-    key = c.command("api.key", {})["key"]
-    assert c.command("api.tunnel_token", {}) == {"token": TOKEN}
-    snap = c.snapshot()
-    assert (
-        snap["api_settings"]["mode"] == "named"
-        and snap["api_settings"]["domain"] == "https://api.example.com"
-        and snap["api_settings"]["has_token"]
-        and key not in json.dumps(snap)
-        and TOKEN not in json.dumps(snap)
-    )
-    assert not (tmp_path / "settings.json").exists()
-    recreated = ColabOneController(c.root, vault=vault, config_dir=tmp_path, background=False)
-    assert recreated.command("api.key", {})["key"] == key
-    assert recreated.command("api.tunnel_token", {}) == {"token": TOKEN}
-    vault.set("runtime_session", {"endpoint": "existing"})
-    c.remote = Mock(side_effect=RuntimeError("offline"))
-    with pytest.raises(RuntimeError):
-        c.command("api.rotate", {})
-    assert c.command("api.key", {})["key"] == key
-    c.remote = Mock(return_value={"ok": True})
-    c.refresh_remote = Mock()
-    c.command("api.rotate", {})
-    c.remote.assert_called_once_with("POST", "public-api/stop")
-    assert c.command("api.key", {})["key"] != key
 
 
 def test_job_memory_bounded_and_no_old_job_access(gateway):

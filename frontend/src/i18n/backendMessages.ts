@@ -9,6 +9,7 @@ import { translateColabOnePlaceName } from "./locations";
 
 interface PatternRule {
   re: RegExp;
+  when?: (text: string) => boolean;
   format: (m: RegExpMatchArray, locale: ColabOneLocale) => string;
 }
 
@@ -640,16 +641,92 @@ function translateApiFinishPart(part: string, loc: ColabOneLocale): string {
   return s;
 }
 
+const COMFY_NODE_SCHEMA_ERROR_RE =
+  /^节点 \S+ (?:必须为对象|缺少有效的 class_type|缺少有效的 inputs 对象|包含非法输入名称)$/;
+const COMFY_NODE_ERROR_RE =
+  /^节点 ([^\s(：]+?)(?:\(([^\r\n]+?)\))?:\s+(\S.*)$/s;
+
+function parseComfyNodeError(
+  trimmed: string,
+): { id: string; cls: string; msg: string } | null {
+  if (COMFY_NODE_SCHEMA_ERROR_RE.test(trimmed)) return null;
+  if (!trimmed.startsWith("节点 ")) return null;
+
+  let idx = 3;
+  while (idx < trimmed.length) {
+    const ch = trimmed[idx]!;
+    if (/\s/.test(ch) || ch === "：" || ch === "(") break;
+    idx++;
+  }
+  const rawId = trimmed.slice(3, idx);
+  if (!rawId) return null;
+
+  if (trimmed[idx] === "(") {
+    let pos = idx + 1;
+    let depth = 1;
+    let closeIdx = -1;
+    while (pos < trimmed.length) {
+      const ch = trimmed[pos]!;
+      if (ch === "\r" || ch === "\n") break;
+      if (ch === "(") {
+        depth++;
+      } else if (ch === ")") {
+        depth--;
+        if (depth === 0) {
+          closeIdx = pos;
+          break;
+        }
+      }
+      pos++;
+    }
+    if (closeIdx > idx + 1 && trimmed[closeIdx + 1] === ":") {
+      const afterColon = trimmed.slice(closeIdx + 2);
+      const wsMatch = afterColon.match(/^\s+/);
+      if (wsMatch) {
+        const msg = afterColon.slice(wsMatch[0].length);
+        if (msg) {
+          return {
+            id: rawId,
+            cls: trimmed.slice(idx + 1, closeIdx),
+            msg,
+          };
+        }
+      }
+    }
+    const fallback = trimmed.match(COMFY_NODE_ERROR_RE);
+    if (fallback && fallback[1] && fallback[2] && fallback[3]) {
+      return {
+        id: fallback[1],
+        cls: fallback[2],
+        msg: fallback[3],
+      };
+    }
+    return null;
+  }
+
+  if (!rawId.endsWith(":") || rawId.length <= 1) return null;
+  const afterId = trimmed.slice(idx);
+  const wsMatch = afterId.match(/^\s+/);
+  if (!wsMatch) return null;
+  const msg = afterId.slice(wsMatch[0].length);
+  if (!msg) return null;
+  return {
+    id: rawId.slice(0, -1),
+    cls: "",
+    msg,
+  };
+}
+
 function translateComfyErrorDetail(detail: string, loc: ColabOneLocale): string {
   const sep = loc === "en-US" || loc === "ko-KR" ? "; " : "；";
   const segments = detail.split("；");
   return segments
     .map((seg) => {
       const trimmed = seg.trim();
-      const nodeMatch = trimmed.match(/^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/s);
-      if (nodeMatch) {
-        const [, id, cls, msg] = nodeMatch;
-        const inner = translateInner(msg!, loc);
+      const parsed = parseComfyNodeError(trimmed);
+      if (parsed) {
+        const { id, cls, msg } = parsed;
+        const inner = translateInner(msg, loc);
         const nodePrefix = cls ? `${id} (${cls})` : id;
         switch (loc) {
           case "en-US":
@@ -746,7 +823,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
 
-  // === bridge/controller.py ===
+  // === console/internal/controller/controller.go ===
   {
     re: /^连接检查失败：(.+?)。客户端会自动重试，请检查网络连接。$/,
     format: (m, loc) => {
@@ -1571,7 +1648,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
 
-  // === bridge/provider.py ===
+  // === console/internal/provider/provider.go ===
   {
     re: /^查询 Google Colab 实例状态：(.+)$/,
     format: (m, loc) => {
@@ -2762,7 +2839,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
 
-  // === bridge/shortcuts.py ===
+  // === console/internal/shortcuts/shortcuts.go ===
   {
     re: /^移除快捷方式失败：(.+)$/,
     format: (m, loc) => {
@@ -3129,7 +3206,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^ComfyUI 拒绝了工作流：(.+)$/,
+    re: /^ComfyUI 拒绝了工作流：(.+)$/s,
     format: (m, loc) => {
       const detail = translateComfyErrorDetail(m[1]!, loc);
       switch (loc) {
@@ -3149,7 +3226,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^工作流节点校验失败：(.+)$/,
+    re: /^工作流节点校验失败：(.+)$/s,
     format: (m, loc) => {
       const detail = translateComfyErrorDetail(m[1]!, loc);
       switch (loc) {
@@ -3169,7 +3246,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^ComfyUI 未返回有效任务编号：(.+)$/,
+    re: /^ComfyUI 未返回有效任务编号：(.+)$/s,
     format: (m, loc) => {
       const detail = translateComfyErrorDetail(m[1]!, loc);
       switch (loc) {
@@ -3229,7 +3306,8 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^节点 ([^\s(：:]+)(?:\(([^)]+)\))?:\s*(.+)$/s,
+    re: /^节点 .+$/s,
+    when: (text) => parseComfyNodeError(text) !== null,
     format: (m, loc) => translateComfyErrorDetail(m[0], loc),
   },
   {
@@ -3435,7 +3513,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
 
-  // === server/drive.py & bridge/drive_mount.py ===
+  // === server/drive.py & console/internal/drivemount/drivemount.go ===
   {
     re: /^Google 云盘连接失败：(.+)$/,
     format: (m, loc) => {
@@ -4995,7 +5073,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^字段 (\S+) 包含非法浮点值$/,
+    re: /^字段 (.+?) 包含非法浮点值$/,
     format: (m, loc) => {
       const key = m[1];
       switch (loc) {
@@ -5155,6 +5233,302 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+  {
+    re: /^字段 (.+?) 的覆盖值类型不合法$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Invalid override value type for field ${key}`;
+        case "zh-TW":
+          return `欄位 ${key} 的覆寫值類型無效`;
+        case "zh-HK":
+          return `欄位 ${key} 的覆蓋值類型無效`;
+        case "ja-JP":
+          return `フィールド ${key} の上書き値の型が無効です`;
+        case "ko-KR":
+          return `필드 ${key}의 재정의 값 유형이 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^字段 (.+?) 不能为空值$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Field ${key} cannot be null`;
+        case "zh-TW":
+          return `欄位 ${key} 不可為空值`;
+        case "zh-HK":
+          return `欄位 ${key} 不能為空值`;
+        case "ja-JP":
+          return `フィールド ${key} に null は指定できません`;
+        case "ko-KR":
+          return `필드 ${key}은(는) null일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未知字段[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Unknown field: ${key}`;
+        case "zh-TW":
+          return `未知欄位：${key}`;
+        case "zh-HK":
+          return `未知欄位：${key}`;
+        case "ja-JP":
+          return `不明なフィールド: ${key}`;
+        case "ko-KR":
+          return `알 수 없는 필드: ${key}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === console/internal/models/models.go ===
+  {
+    re: /^模型文件配置包含不支持的字段[:：]\s*(.+?)$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Model file specification contains unsupported field: ${key}`;
+        case "zh-TW":
+          return `模型檔案設定包含不支援的欄位：${key}`;
+        case "zh-HK":
+          return `模型檔案設定包含不支援的欄位：${key}`;
+        case "ja-JP":
+          return `モデルファイル設定にサポートされていないフィールドが含まれています: ${key}`;
+        case "ko-KR":
+          return `모델 파일 설정에 지원하지 않는 필드가 포함되어 있습니다: ${key}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型文件字段 (.+?) 不能为空值$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Model file field ${key} cannot be null`;
+        case "zh-TW":
+          return `模型檔案欄位 ${key} 不可為空值`;
+        case "zh-HK":
+          return `模型檔案欄位 ${key} 不能為空值`;
+        case "ja-JP":
+          return `モデルファイルフィールド ${key} に null は指定できません`;
+        case "ko-KR":
+          return `모델 파일 필드 ${key}은(는) null일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型配置包含不支持的字段[:：]\s*(.+?)$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Model specification contains unsupported field: ${key}`;
+        case "zh-TW":
+          return `模型設定包含不支援的欄位：${key}`;
+        case "zh-HK":
+          return `模型設定包含不支援的欄位：${key}`;
+        case "ja-JP":
+          return `モデル設定にサポートされていないフィールドが含まれています: ${key}`;
+        case "ko-KR":
+          return `모델 설정에 지원하지 않는 필드가 포함되어 있습니다: ${key}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型配置字段 (.+?) 不能为空值$/,
+    format: (m, loc) => {
+      const key = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Model specification field ${key} cannot be null`;
+        case "zh-TW":
+          return `模型設定欄位 ${key} 不可為空值`;
+        case "zh-HK":
+          return `模型設定欄位 ${key} 不能為空值`;
+        case "ja-JP":
+          return `モデル設定フィールド ${key} に null は指定できません`;
+        case "ko-KR":
+          return `모델 설정 필드 ${key}은(는) null일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在按更新前规格自动重新装载模型 (.+?)(?:（((?:\d+K|\d+\s+tokens|上下文\s+\d+|温度\s+[^\s）·]+)(?:\s*·\s*(?:\d+K|\d+\s+tokens|上下文\s+\d+|温度\s+[^\s）·]+))*)）)?$/,
+    format: (m, loc) => {
+      const name = m[1];
+      const rawSpec = m[2] || "";
+      const formatSpec = (spec: string): string => {
+        if (!spec) return "";
+        const parts = spec.split(/\s*·\s*/).map((part) => {
+          const ctxMatch = part.match(/^上下文\s+(\d+)$/);
+          if (ctxMatch) {
+            const n = ctxMatch[1];
+            switch (loc) {
+              case "en-US":
+                return `context ${n}`;
+              case "zh-TW":
+              case "zh-HK":
+                return `上下文 ${n}`;
+              case "ja-JP":
+                return `コンテキスト ${n}`;
+              case "ko-KR":
+                return `컨텍스트 ${n}`;
+              default:
+                return part;
+            }
+          }
+          const tempMatch = part.match(/^温度\s+(.+)$/);
+          if (tempMatch) {
+            const t = tempMatch[1];
+            switch (loc) {
+              case "en-US":
+                return `temperature ${t}`;
+              case "zh-TW":
+              case "zh-HK":
+                return `溫度 ${t}`;
+              case "ja-JP":
+                return `温度 ${t}`;
+              case "ko-KR":
+                return `온도 ${t}`;
+              default:
+                return part;
+            }
+          }
+          return part;
+        });
+        return parts.join(" · ");
+      };
+      const specText = formatSpec(rawSpec);
+      switch (loc) {
+        case "en-US":
+          return specText
+            ? `Automatically reloading model ${name} with previous settings (${specText})`
+            : `Automatically reloading model ${name} with previous settings`;
+        case "zh-TW":
+          return specText
+            ? `正在依更新前規格自動重新載入模型 ${name}（${specText}）`
+            : `正在依更新前規格自動重新載入模型 ${name}`;
+        case "zh-HK":
+          return specText
+            ? `正在按更新前規格自動重新載入模型 ${name}（${specText}）`
+            : `正在按更新前規格自動重新載入模型 ${name}`;
+        case "ja-JP":
+          return specText
+            ? `更新前の設定でモデル ${name} を自動再読み込みしています（${specText}）`
+            : `更新前の設定でモデル ${name} を自動再読み込みしています`;
+        case "ko-KR":
+          return specText
+            ? `업데이트 전 설정으로 모델 ${name}을(를) 자동으로 다시 불러오는 중입니다 (${specText})`
+            : `업데이트 전 설정으로 모델 ${name}을(를) 자동으로 다시 불러오는 중입니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自动重新装载模型 (.+?) 失败，请手动装载：(.+)$/s,
+    format: (m, loc) => {
+      const name = m[1];
+      const detail = translateInner(m[2], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to reload model ${name} automatically; please load it manually: ${detail}`;
+        case "zh-TW":
+          return `自動重新載入模型 ${name} 失敗，請手動載入：${detail}`;
+        case "zh-HK":
+          return `自動重新載入模型 ${name} 失敗，請手動載入：${detail}`;
+        case "ja-JP":
+          return `モデル ${name} の自動再読み込みに失敗しました。手動で読み込んでください: ${detail}`;
+        case "ko-KR":
+          return `모델 ${name} 자동 다시 불러오기에 실패했습니다. 수동으로 불러와 주세요: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自动恢复对外 API 失败，请手动开启：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to restore Public API automatically; please enable it manually: ${detail}`;
+        case "zh-TW":
+          return `自動還原對外 API 失敗，請手動開啟：${detail}`;
+        case "zh-HK":
+          return `自動恢復對外 API 失敗，請手動開啟：${detail}`;
+        case "ja-JP":
+          return `パブリック API の自動復元に失敗しました。手動で起動してください: ${detail}`;
+        case "ko-KR":
+          return `외부 API 자동 복원에 실패했습니다. 수동으로 켜 주세요: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自动重新启动 ComfyUI 失败，请手动启动：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to restart ComfyUI automatically; please start it manually: ${detail}`;
+        case "zh-TW":
+          return `自動重新啟動 ComfyUI 失敗，請手動啟動：${detail}`;
+        case "zh-HK":
+          return `自動重新啟動 ComfyUI 失敗，請手動啟動：${detail}`;
+        case "ja-JP":
+          return `ComfyUI の自動再起動に失敗しました。手動で起動してください: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI 자동 재시작에 실패했습니다. 수동으로 시작해 주세요: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自动恢复 ComfyUI 原生画布失败，请手动开启：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to restore ComfyUI Native Canvas automatically; please enable it manually: ${detail}`;
+        case "zh-TW":
+          return `自動還原 ComfyUI 原生畫布失敗，請手動開啟：${detail}`;
+        case "zh-HK":
+          return `自動恢復 ComfyUI 原生畫布失敗，請手動開啟：${detail}`;
+        case "ja-JP":
+          return `ComfyUI ネイティブキャンバスの自動復元に失敗しました。手動で起動してください: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI 네이티브 캔버스 자동 복원에 실패했습니다. 수동으로 켜 주세요: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
 ];
 
 function applyRedactionTokens(text: string, locale: ColabOneLocale): string {
@@ -5185,6 +5559,7 @@ function translateInner(trimmed: string, locale: ColabOneLocale): string {
   if (exact) return exact[locale];
   if (locale === "zh-CN") return cleaned;
   for (const rule of PATTERN_RULES) {
+    if (rule.when && !rule.when(cleaned)) continue;
     const m = cleaned.match(rule.re);
     if (m) return rule.format(m, locale);
   }

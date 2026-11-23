@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import {
   computed,
+  defineAsyncComponent,
+  defineComponent,
+  h,
   onMounted,
   onUnmounted,
   ref,
+  shallowRef,
   watch,
+  type AsyncComponentLoader,
+  type Component,
   type ComponentPublicInstance,
 } from "vue";
 import {
@@ -80,8 +86,6 @@ import {
   tb,
   type ColabOneLocaleMeta,
 } from "./i18n";
-import ApiPanel from "./ApiPanel.vue";
-import ComfyPanel from "./ComfyPanel.vue";
 import BillingBar from "./BillingBar.vue";
 import BillingCard from "./BillingCard.vue";
 import LanguageSwitcher from "./LanguageSwitcher.vue";
@@ -90,6 +94,11 @@ import ResourceMonitor from "./ResourceMonitor.vue";
 import FlagIcon from "./FlagIcon.vue";
 import { locationFull, locationShort, locationTooltip } from "./location";
 import { resolveColabOneMonitorFallback } from "./telemetry";
+import {
+  COLABONE_HIDDEN_POLL_MS,
+  COLABONE_VISIBLE_POLL_MS,
+  createColabOneVisibilityPoller,
+} from "./colabOnePoller";
 import {
   COLABONE_IDLE_RELEASE_OPTIONS,
   describeColabOneBilling,
@@ -105,7 +114,7 @@ import {
   colabOneOpenURL,
   colabOneReadClipboard,
   colabOneSetLogDrawer,
-  colabOneSnapshot,
+  colabOneSnapshotRaw,
   colabOneWriteClipboard,
 } from "./api";
 import {
@@ -113,7 +122,191 @@ import {
   COLABONE_STATUS_LABELS,
   evaluateColabOneRuntimeUpgrade,
   type AccountInstance,
+  type ColabOneSnapshot,
 } from "./types";
+
+const ASYNC_PANEL_MAX_RETRIES = 2;
+const ASYNC_PANEL_RETRY_BASE_MS = 200;
+const pendingAsyncPanelRetryTimers = new Set<ReturnType<typeof setTimeout>>();
+
+type ColabOneAsyncPanelComponent<T extends Component = Component> = T & {
+  __asyncLoader?: () => Promise<unknown>;
+  __asyncResolved?: unknown;
+};
+
+const ColabOneAsyncPanelLoading = defineComponent({
+  name: "ColabOneAsyncPanelLoading",
+  inheritAttrs: false,
+  setup() {
+    return () =>
+      h(
+        "div",
+        {
+          class: "co-async-panel-shell",
+          role: "status",
+          "aria-busy": "true",
+          "aria-label": t("common.loading"),
+        },
+        [
+          h("div", { class: "co-async-panel-head" }, [
+            h(ColabOneSkeleton, { width: 164, height: 24, variant: "metric" }),
+            h(ColabOneSkeleton, {
+              width: "46%",
+              height: 14,
+              variant: "text",
+              tone: "subtle",
+              delay: 60,
+            }),
+          ]),
+          h(
+            ACard,
+            { class: "co-async-panel-card", bordered: true },
+            () => [
+              h("div", { class: "co-async-panel-card-body" }, [
+                h(ColabOneSkeleton, {
+                  width: "32%",
+                  height: 18,
+                  variant: "text",
+                }),
+                h(ColabOneSkeleton, {
+                  width: "82%",
+                  height: 14,
+                  variant: "text",
+                  tone: "subtle",
+                  delay: 80,
+                }),
+                h(ColabOneSkeleton, {
+                  width: "100%",
+                  height: 76,
+                  variant: "rect",
+                  tone: "subtle",
+                  delay: 140,
+                }),
+              ]),
+            ],
+          ),
+        ],
+      );
+  },
+});
+
+function defineColabOneAsyncPanel<
+  T extends Component = { new (): ComponentPublicInstance },
+>(
+  loader: AsyncComponentLoader<T>,
+  onLoadFail?: () => void,
+  onRetry?: () => void,
+): ColabOneAsyncPanelComponent<T> {
+  let autoRetries = 0;
+
+  const errorComponent = defineComponent({
+    name: "ColabOneAsyncPanelError",
+    inheritAttrs: false,
+    props: ["error"],
+    setup(props) {
+      onLoadFail?.();
+      return () => {
+        const rawErr: unknown = props.error;
+        const detail =
+          rawErr instanceof Error
+            ? formatError(rawErr.message)
+            : rawErr
+              ? formatError(rawErr)
+              : "";
+        return h("div", { class: "co-async-panel-shell" }, [
+          h(
+            ACard,
+            { class: "co-async-panel-error-card", bordered: true },
+            () => [
+              h(
+                "div",
+                { class: "co-async-panel-error-body", role: "alert" },
+                [
+                  h(
+                    "div",
+                    { class: "co-async-panel-error-title" },
+                    t("status.failed"),
+                  ),
+                  detail
+                    ? h("p", { class: "co-async-panel-error-desc" }, detail)
+                    : null,
+                  h(
+                    AButton,
+                    {
+                      type: "primary",
+                      onClick: () => {
+                        autoRetries = 0;
+                        onRetry?.();
+                      },
+                    },
+                    () => t("common.retry"),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ]);
+      };
+    },
+  });
+
+  return defineAsyncComponent<T>({
+    loader: () =>
+      loader().then((mod) => {
+        autoRetries = 0;
+        return mod;
+      }),
+    delay: 120,
+    loadingComponent: ColabOneAsyncPanelLoading,
+    errorComponent,
+    onError(_err, retry, fail) {
+      if (stopped) {
+        autoRetries = 0;
+        fail();
+        return;
+      }
+      if (autoRetries < ASYNC_PANEL_MAX_RETRIES) {
+        autoRetries += 1;
+        const delayMs = ASYNC_PANEL_RETRY_BASE_MS * autoRetries;
+        const timer = setTimeout(() => {
+          pendingAsyncPanelRetryTimers.delete(timer);
+          if (stopped) {
+            autoRetries = 0;
+            fail();
+            return;
+          }
+          retry();
+        }, delayMs);
+        pendingAsyncPanelRetryTimers.add(timer);
+        return;
+      }
+      autoRetries = 0;
+      onLoadFail?.();
+      fail();
+    },
+  }) as ColabOneAsyncPanelComponent<T>;
+}
+
+const apiPanelRetryKey = ref(0);
+const comfyPanelRetryKey = ref(0);
+const loadApiPanel = () => import("./ApiPanel.vue");
+const loadComfyPanel = () => import("./ComfyPanel.vue");
+const ApiPanel = defineColabOneAsyncPanel(
+  loadApiPanel,
+  () => {
+    modelsDrawerOpen.value = false;
+  },
+  () => {
+    apiPanelRetryKey.value += 1;
+  },
+);
+const ComfyPanel = defineColabOneAsyncPanel(
+  loadComfyPanel,
+  undefined,
+  () => {
+    comfyPanelRetryKey.value += 1;
+  },
+);
 import { createColabOneScrollController } from "./scrollTransition";
 import {
   COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX,
@@ -135,7 +328,7 @@ const colabOneTheme = computed(() =>
   buildColabOneTheme(colabOneEffectiveAppearance.value, colabOneLocaleCode.value),
 );
 
-const state = ref(createColabOneSnapshot()),
+const state = shallowRef(createColabOneSnapshot()),
   snapshotLoaded = ref(false),
   refreshingAccount = ref(false),
   page = ref("device"),
@@ -145,6 +338,9 @@ const state = ref(createColabOneSnapshot()),
   busy = computed(() => busyCount.value > 0),
   savingIdle = ref(false);
 let ipcFailures = 0;
+let lastSnapshotRaw: string | null = null;
+let panelsPrefetched = false;
+let cancelPanelPrefetch: (() => void) | null = null;
 
 const toastManager = createColabOneToastManager({ maxVisible: 3 });
 const viewportWidth = ref(
@@ -220,8 +416,9 @@ function clearBackendStateError(text: string) {
     completedAtSeq: null as number | null,
   };
   clearingStateError = entry;
+  lastSnapshotRaw = null;
   if (String(state.value.error ?? "").trim() === text) {
-    state.value.error = "";
+    state.value = { ...state.value, error: "" };
   }
   colabOneCommand("error.clear", { expected: text })
     .then(() => {
@@ -365,7 +562,7 @@ watch(
       resolveText: () => formatError(rawErr, "state"),
     });
   },
-  { deep: true, immediate: true },
+  { immediate: true },
 );
 
 const nav = computed(() => [
@@ -564,7 +761,7 @@ const billing = computed(() => (state.value.account.rate ?? 0) > 0);
 const accountStale = computed(
   () =>
     !state.value.account.checked_at ||
-    Date.now() / 1000 - state.value.account.checked_at > 60,
+    clockNow.value / 1000 - state.value.account.checked_at > 60,
 );
 const releasePlan = ref<{
   id: string;
@@ -795,8 +992,7 @@ const billingOverview = computed(() =>
 const code = ref(""),
   showAuthPaste = ref(false);
 
-let timer: ReturnType<typeof setTimeout>,
-  stopped = false;
+let stopped = false;
 let clockTimer: ReturnType<typeof setInterval>;
 let lastInteraction = 0;
 
@@ -874,43 +1070,66 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 let initialized = false,
   openedAuth = "";
 let lastSyncedSettings: Partial<typeof state.value.settings> = {};
-const pendingSettings = new Map<string, number>();
+const SYNCED_SETTING_KEYS = [
+  "gpu",
+  "idle_minutes",
+  "idle_countdown_seconds",
+  "auto_drive",
+  "download_threads",
+  "assign_proxy_enabled",
+] as const;
+type SyncedSettingKey = (typeof SYNCED_SETTING_KEYS)[number];
+const pendingSettings = new Map<SyncedSettingKey, number>();
 
-function beginPendingSetting(keys: readonly string[]) {
+function beginPendingSetting(keys: readonly SyncedSettingKey[]) {
   for (const key of keys) {
     pendingSettings.set(key, (pendingSettings.get(key) ?? 0) + 1);
   }
 }
 
-function endPendingSetting(keys: readonly string[]) {
+function endPendingSetting(
+  keys: readonly SyncedSettingKey[],
+  reconcile = false,
+) {
+  const settings = state.value.settings;
+  let released = false;
   for (const key of keys) {
     const next = (pendingSettings.get(key) ?? 0) - 1;
-    if (next <= 0) pendingSettings.delete(key);
-    else pendingSettings.set(key, next);
+    if (next <= 0) {
+      pendingSettings.delete(key);
+      released = true;
+      if (
+        reconcile &&
+        snapshotLoaded.value &&
+        settings &&
+        settings[key] !== undefined &&
+        settings[key] !== lastSyncedSettings[key]
+      ) {
+        (form.value as Record<string, unknown>)[key] = settings[key];
+        (lastSyncedSettings as Record<string, unknown>)[key] = settings[key];
+      }
+    } else {
+      pendingSettings.set(key, next);
+    }
+  }
+  if (released) {
+    lastSnapshotRaw = null;
   }
 }
 
 function syncFormFromSettings(next: typeof state.value.settings | undefined) {
   if (!next) return;
-  const keys = [
-    "gpu",
-    "idle_minutes",
-    "idle_countdown_seconds",
-    "auto_drive",
-    "download_threads",
-    "assign_proxy_enabled",
-  ] as const;
   if (!initialized) {
-    for (const key of keys) {
+    for (const key of SYNCED_SETTING_KEYS) {
       if (next[key] !== undefined && !pendingSettings.has(key)) {
         (form.value as Record<string, unknown>)[key] = next[key];
+        (lastSyncedSettings as Record<string, unknown>)[key] = next[key];
       }
     }
-    lastSyncedSettings = { ...next };
     initialized = true;
     return;
   }
-  for (const key of keys) {
+  for (const key of SYNCED_SETTING_KEYS) {
     if (pendingSettings.has(key)) continue;
     if (next[key] !== undefined && next[key] !== lastSyncedSettings[key]) {
       (form.value as Record<string, unknown>)[key] = next[key];
@@ -940,10 +1159,55 @@ function onLocaleChanged(meta: ColabOneLocaleMeta) {
   );
 }
 
+function prefetchAsyncPanel<T extends Component>(
+  panel: ColabOneAsyncPanelComponent<T>,
+  loader: AsyncComponentLoader<T>,
+) {
+  if (panel.__asyncResolved) return;
+  void loader()
+    .then(() => {
+      if (stopped || panel.__asyncResolved) return;
+      return panel.__asyncLoader?.();
+    })
+    .catch(() => {});
+}
+
+function scheduleSecondaryPanelPrefetch() {
+  if (panelsPrefetched || stopped || typeof window === "undefined") return;
+  panelsPrefetched = true;
+  const run = () => {
+    cancelPanelPrefetch = null;
+    if (stopped) return;
+    prefetchAsyncPanel(ApiPanel, loadApiPanel);
+    prefetchAsyncPanel(ComfyPanel, loadComfyPanel);
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    const id = window.requestIdleCallback(run, { timeout: 1500 });
+    cancelPanelPrefetch = () => window.cancelIdleCallback(id);
+  } else {
+    const id = setTimeout(run, 400);
+    cancelPanelPrefetch = () => clearTimeout(id);
+  }
+}
+
 async function syncSnapshot() {
   const snapId = ++snapshotSeq;
-  const value = await colabOneSnapshot();
+  const raw = await colabOneSnapshotRaw();
   if (stopped || snapId < appliedSnapshotSeq) return;
+  const unchanged =
+    snapshotLoaded.value &&
+    !clearingStateError &&
+    pendingSettings.size === 0 &&
+    lastSnapshotRaw !== null &&
+    raw === lastSnapshotRaw;
+  let value: ColabOneSnapshot | null = null;
+  if (!unchanged) {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Invalid snapshot payload");
+    }
+    value = parsed as ColabOneSnapshot;
+  }
   appliedSnapshotSeq = snapId;
   const wasDisconnected = ipcDisconnected.value;
   ipcFailures = 0;
@@ -951,6 +1215,10 @@ async function syncSnapshot() {
   if (ipcError.value) ipcError.value = "";
   toastManager.dismissGroup("ipc-transient");
   if (wasDisconnected) clockNow.value = Date.now();
+  if (unchanged || !value) {
+    return;
+  }
+  let mutatedLocally = false;
   const rawError = String(value.error ?? "").trim();
   if (clearingStateError) {
     if (rawError === clearingStateError.text) {
@@ -959,6 +1227,12 @@ async function syncSnapshot() {
         snapId <= clearingStateError.completedAtSeq
       ) {
         value.error = "";
+        mutatedLocally = true;
+      } else {
+        // Keep handledStateError intact so an error the user already dismissed
+        // never zombie-repops while the backend still reports the same string,
+        // while releasing clearingStateError so raw-snapshot caching resumes.
+        clearingStateError = null;
       }
     } else {
       clearingStateError = null;
@@ -977,6 +1251,7 @@ async function syncSnapshot() {
   ) {
     const staleErr = String(value.error).trim();
     value.error = "";
+    mutatedLocally = true;
     colabOneCommand("error.clear", { expected: staleErr }).catch(() => {});
   }
   if (
@@ -986,31 +1261,56 @@ async function syncSnapshot() {
     snapshotAt.value = Date.now();
     clockNow.value = Date.now();
   }
+  lastSnapshotRaw = mutatedLocally || pendingSettings.size > 0 ? null : raw;
   state.value = value;
   snapshotLoaded.value = true;
   syncFormFromSettings(value.settings);
   hydrateColabOneLocaleFromSettings(value.settings?.locale);
+  scheduleSecondaryPanelPrefetch();
 }
 
-async function refresh() {
+async function syncSnapshotQuietly(): Promise<boolean> {
   try {
     await syncSnapshot();
-  } catch (e) {
-    ipcFailures += 1;
-    if (ipcFailures >= 2) {
-      ipcDisconnected.value = true;
-      ipcError.value = String(e ?? "");
-    }
+    return !stopped;
+  } catch {
+    return false;
   }
-  if (!stopped) timer = setTimeout(refresh, 600);
 }
 
-async function act(action: string, payload: Record<string, unknown> = {}) {
+const snapshotPoller = createColabOneVisibilityPoller({
+  visibleMs: COLABONE_VISIBLE_POLL_MS,
+  hiddenMs: COLABONE_HIDDEN_POLL_MS,
+  tick: async () => {
+    try {
+      await syncSnapshot();
+    } catch (e) {
+      ipcFailures += 1;
+      if (ipcFailures >= 2) {
+        ipcDisconnected.value = true;
+        ipcError.value = String(e ?? "");
+      }
+    }
+  },
+  onVisible: () => {
+    if (!ipcDisconnected.value) {
+      clockNow.value = Date.now();
+    }
+  },
+});
+
+async function act(
+  action: string,
+  payload: Record<string, unknown> = {},
+  options: { skipSync?: boolean } = {},
+) {
   busyCount.value += 1;
   try {
     const res = await colabOneCommand(action, payload);
     clearActionErrors();
-    await syncSnapshot().catch(() => {});
+    if (!options.skipSync) {
+      await syncSnapshotQuietly();
+    }
     return res;
   } catch (e) {
     showError(e);
@@ -1301,38 +1601,77 @@ async function changeIdleMinutes(rawMinutes: unknown) {
       "setting-idle-policy",
     );
   } catch (e) {
-    form.value.idle_minutes = previous;
-    lastSyncedSettings.idle_minutes = previous;
+    if (form.value.idle_minutes === minutes) {
+      form.value.idle_minutes = previous;
+    }
+    if (lastSyncedSettings.idle_minutes === minutes) {
+      lastSyncedSettings.idle_minutes = previous;
+    }
     showError(e);
   } finally {
-    endPendingSetting(["idle_minutes"]);
+    const synced = await syncSnapshotQuietly();
+    endPendingSetting(["idle_minutes"], synced);
     savingIdle.value = false;
-    await syncSnapshot().catch(() => {});
   }
 }
+
+let savingDownloadThreads = false;
+let queuedDownloadThreads: number | null = null;
 
 async function changeDownloadThreads(rawThreads: unknown) {
   const threads = Number(rawThreads);
   if (threads !== 16 && threads !== 32) return;
-  const previous = form.value.download_threads;
+  if (savingDownloadThreads) {
+    queuedDownloadThreads = threads;
+    form.value.download_threads = threads;
+    lastSyncedSettings.download_threads = threads;
+    return;
+  }
+  let settled = form.value.download_threads;
   form.value.download_threads = threads;
   lastSyncedSettings.download_threads = threads;
+  savingDownloadThreads = true;
+  queuedDownloadThreads = threads;
   beginPendingSetting(["download_threads"]);
+  let synced = false;
   try {
-    await colabOneCommand("settings.save", { download_threads: threads });
-    clearActionErrors();
-    notify(
-      t("device.toastThreadsSet", { threads }),
-      "success",
-      "setting-download-threads",
-    );
-  } catch (e) {
-    form.value.download_threads = previous;
-    lastSyncedSettings.download_threads = previous;
-    showError(e);
+    while (!stopped && queuedDownloadThreads !== null) {
+      let lastSucceeded: number | null = null;
+      while (!stopped && queuedDownloadThreads !== null) {
+        const next = queuedDownloadThreads;
+        queuedDownloadThreads = null;
+        if (next === settled && lastSucceeded === next) continue;
+        try {
+          await colabOneCommand("settings.save", { download_threads: next });
+          settled = next;
+          lastSucceeded = next;
+          clearActionErrors();
+        } catch (e) {
+          lastSucceeded = null;
+          if (queuedDownloadThreads === null) {
+            if (form.value.download_threads === next) {
+              form.value.download_threads = settled;
+            }
+            if (lastSyncedSettings.download_threads === next) {
+              lastSyncedSettings.download_threads = settled;
+            }
+            showError(e);
+          }
+        }
+      }
+      if (!stopped && lastSucceeded !== null) {
+        notify(
+          t("device.toastThreadsSet", { threads: lastSucceeded }),
+          "success",
+          "setting-download-threads",
+        );
+      }
+      synced = await syncSnapshotQuietly();
+    }
   } finally {
-    endPendingSetting(["download_threads"]);
-    await syncSnapshot().catch(() => {});
+    queuedDownloadThreads = null;
+    savingDownloadThreads = false;
+    endPendingSetting(["download_threads"], synced);
   }
 }
 
@@ -1342,28 +1681,63 @@ function onGpuSelect(raw: unknown) {
   }
 }
 
+let savingDefaultGpu = false;
+let queuedDefaultGpu: string | null = null;
+
 async function changeDefaultGpu(raw: unknown) {
   if (raw === undefined || raw === null) return;
   const gpu = String(raw);
-  const previous = form.value.gpu;
+  if (savingDefaultGpu) {
+    queuedDefaultGpu = gpu;
+    form.value.gpu = gpu;
+    lastSyncedSettings.gpu = gpu;
+    return;
+  }
+  let settled = form.value.gpu;
   form.value.gpu = gpu;
   lastSyncedSettings.gpu = gpu;
+  savingDefaultGpu = true;
+  queuedDefaultGpu = gpu;
   beginPendingSetting(["gpu"]);
+  let synced = false;
   try {
-    await colabOneCommand("settings.save", { gpu });
-    clearActionErrors();
-    notify(
-      t("device.toastDefaultGpuSet", { gpu }),
-      "success",
-      "setting-default-gpu",
-    );
-  } catch (e) {
-    form.value.gpu = previous;
-    lastSyncedSettings.gpu = previous;
-    showError(e);
+    while (!stopped && queuedDefaultGpu !== null) {
+      let lastSucceeded: string | null = null;
+      while (!stopped && queuedDefaultGpu !== null) {
+        const next = queuedDefaultGpu;
+        queuedDefaultGpu = null;
+        if (next === settled && lastSucceeded === next) continue;
+        try {
+          await colabOneCommand("settings.save", { gpu: next });
+          settled = next;
+          lastSucceeded = next;
+          clearActionErrors();
+        } catch (e) {
+          lastSucceeded = null;
+          if (queuedDefaultGpu === null) {
+            if (form.value.gpu === next) {
+              form.value.gpu = settled;
+            }
+            if (lastSyncedSettings.gpu === next) {
+              lastSyncedSettings.gpu = settled;
+            }
+            showError(e);
+          }
+        }
+      }
+      if (!stopped && lastSucceeded !== null) {
+        notify(
+          t("device.toastDefaultGpuSet", { gpu: lastSucceeded }),
+          "success",
+          "setting-default-gpu",
+        );
+      }
+      synced = await syncSnapshotQuietly();
+    }
   } finally {
-    endPendingSetting(["gpu"]);
-    await syncSnapshot().catch(() => {});
+    queuedDefaultGpu = null;
+    savingDefaultGpu = false;
+    endPendingSetting(["gpu"], synced);
   }
 }
 
@@ -1374,16 +1748,24 @@ async function onAutoDriveChange(raw: unknown) {
   lastSyncedSettings.auto_drive = next;
   beginPendingSetting(["auto_drive"]);
   try {
-    const res = await act("settings.save", { auto_drive: next });
+    const res = await act(
+      "settings.save",
+      { auto_drive: next },
+      { skipSync: true },
+    );
     if (res) {
       notify(t("device.toastSettingsSaved"), "success", "setting-auto-drive");
     } else {
-      form.value.auto_drive = previous;
-      lastSyncedSettings.auto_drive = previous;
+      if (form.value.auto_drive === next) {
+        form.value.auto_drive = previous;
+      }
+      if (lastSyncedSettings.auto_drive === next) {
+        lastSyncedSettings.auto_drive = previous;
+      }
     }
   } finally {
-    endPendingSetting(["auto_drive"]);
-    await syncSnapshot().catch(() => {});
+    const synced = await syncSnapshotQuietly();
+    endPendingSetting(["auto_drive"], synced);
   }
 }
 
@@ -1529,7 +1911,7 @@ async function onAssignProxyEnabledChange(raw: unknown) {
     if (next && !hasSavedAssignProxy.value && draft) {
       payload.assign_proxy = draft;
     }
-    const res = await act("settings.save", payload);
+    const res = await act("settings.save", payload, { skipSync: true });
     if (res) {
       if (payload.assign_proxy) {
         form.value.assign_proxy = "";
@@ -1543,13 +1925,17 @@ async function onAssignProxyEnabledChange(raw: unknown) {
         "setting-assign-proxy-toggle",
       );
     } else {
-      form.value.assign_proxy_enabled = previous;
-      lastSyncedSettings.assign_proxy_enabled = previous;
+      if (form.value.assign_proxy_enabled === next) {
+        form.value.assign_proxy_enabled = previous;
+      }
+      if (lastSyncedSettings.assign_proxy_enabled === next) {
+        lastSyncedSettings.assign_proxy_enabled = previous;
+      }
     }
   } finally {
+    const synced = await syncSnapshotQuietly();
+    endPendingSetting(["assign_proxy_enabled"], synced);
     togglingAssignProxy.value = false;
-    endPendingSetting(["assign_proxy_enabled"]);
-    await syncSnapshot().catch(() => {});
   }
 }
 
@@ -1560,10 +1946,14 @@ async function saveAssignProxy() {
   savingAssignProxy.value = true;
   beginPendingSetting(["assign_proxy_enabled"]);
   try {
-    const res = await act("settings.save", {
-      assign_proxy: raw,
-      assign_proxy_enabled: true,
-    });
+    const res = await act(
+      "settings.save",
+      {
+        assign_proxy: raw,
+        assign_proxy_enabled: true,
+      },
+      { skipSync: true },
+    );
     if (res) {
       form.value.assign_proxy = "";
       form.value.assign_proxy_enabled = true;
@@ -1573,9 +1963,9 @@ async function saveAssignProxy() {
       notify(t("settings.assignProxySavedToast"), "success", "setting-assign-proxy-save");
     }
   } finally {
+    const synced = await syncSnapshotQuietly();
+    endPendingSetting(["assign_proxy_enabled"], synced);
     savingAssignProxy.value = false;
-    endPendingSetting(["assign_proxy_enabled"]);
-    await syncSnapshot().catch(() => {});
   }
 }
 
@@ -1584,7 +1974,11 @@ async function clearAssignProxy() {
   clearingAssignProxy.value = true;
   beginPendingSetting(["assign_proxy_enabled"]);
   try {
-    const res = await act("settings.save", { clear_assign_proxy: true });
+    const res = await act(
+      "settings.save",
+      { clear_assign_proxy: true },
+      { skipSync: true },
+    );
     if (res) {
       form.value.assign_proxy = "";
       form.value.assign_proxy_enabled = false;
@@ -1594,9 +1988,9 @@ async function clearAssignProxy() {
       notify(t("settings.assignProxyClearedToast"), "success", "setting-assign-proxy-clear");
     }
   } finally {
+    const synced = await syncSnapshotQuietly();
+    endPendingSetting(["assign_proxy_enabled"], synced);
     clearingAssignProxy.value = false;
-    endPendingSetting(["assign_proxy_enabled"]);
-    await syncSnapshot().catch(() => {});
   }
 }
 
@@ -1901,6 +2295,12 @@ function scheduleDrawerToastTopMeasure() {
   });
 }
 
+function onApiPanelMounted() {
+  if (modelsDrawerOpen.value) {
+    scheduleDrawerToastTopMeasure();
+  }
+}
+
 function updateToastLayout() {
   if (typeof window !== "undefined") {
     viewportWidth.value = window.innerWidth;
@@ -1945,7 +2345,7 @@ watch(
 );
 
 onMounted(() => {
-  refresh();
+  snapshotPoller.start();
   void syncLogWindowState();
   updateToastLayout();
   const contentEl = resolveContentElement();
@@ -1968,7 +2368,9 @@ onMounted(() => {
     passive: true,
   });
   clockTimer = setInterval(() => {
-    if (!ipcDisconnected.value) clockNow.value = Date.now();
+    if (!ipcDisconnected.value && !document.hidden) {
+      clockNow.value = Date.now();
+    }
   }, 1000);
   for (const name of ["pointerdown", "keydown", "wheel"])
     window.addEventListener(name, interaction, { passive: true });
@@ -1979,6 +2381,13 @@ onMounted(() => {
 });
 onUnmounted(() => {
   stopped = true;
+  snapshotPoller.stop();
+  cancelPanelPrefetch?.();
+  cancelPanelPrefetch = null;
+  for (const timer of pendingAsyncPanelRetryTimers) {
+    clearTimeout(timer);
+  }
+  pendingAsyncPanelRetryTimers.clear();
   clearConfirmDriveTimer();
   scrollController.cancel();
   settingsTopSaveObserver?.disconnect();
@@ -2003,7 +2412,6 @@ onUnmounted(() => {
   window.removeEventListener("colabone:log-window-state", handleLogWindowEvent);
   window.removeEventListener("focus", probeDriveAuthOnReturn);
   document.removeEventListener("visibilitychange", probeDriveAuthOnReturn);
-  clearTimeout(timer);
   toastManager.clear();
 });
 </script>
@@ -3328,10 +3736,12 @@ onUnmounted(() => {
             class="co-panel-wrap co-page-motion co-panel-host"
           >
             <ApiPanel
+              :key="apiPanelRetryKey"
               v-model:models-open="modelsDrawerOpen"
               :state="state"
               :busy="busy"
               :loading="!snapshotLoaded"
+              @vue:mounted="onApiPanelMounted"
               @device="openDevice"
               @comfyui="selectPage('comfyui')"
               @sync="onPanelSync"
@@ -3347,6 +3757,7 @@ onUnmounted(() => {
             class="co-panel-wrap co-page-motion co-panel-host"
           >
             <ComfyPanel
+              :key="comfyPanelRetryKey"
               :state="state"
               :loading="!snapshotLoaded"
               @device="openDevice"
@@ -6517,6 +6928,60 @@ onUnmounted(() => {
   to {
     transform: rotate(360deg);
   }
+}
+
+.co-panel-host :deep(.co-async-panel-shell) {
+  width: 100%;
+  max-width: var(--co-container-max);
+  margin: 0 auto;
+  padding: 16px var(--co-container-pad) 32px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.co-panel-host :deep(.co-async-panel-head) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.co-panel-host :deep(.co-async-panel-card) {
+  border-radius: var(--co-radius-md);
+  background: var(--co-skeleton-card-bg);
+}
+
+.co-panel-host :deep(.co-async-panel-card-body) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.co-panel-host :deep(.co-async-panel-error-card) {
+  border-radius: var(--co-radius-md);
+  background: var(--co-surface);
+}
+
+.co-panel-host :deep(.co-async-panel-error-body) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 4px;
+}
+
+.co-panel-host :deep(.co-async-panel-error-title) {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--co-text);
+}
+
+.co-panel-host :deep(.co-async-panel-error-desc) {
+  margin: 0;
+  font-size: 13px;
+  color: var(--co-secondary-text);
+  word-break: break-word;
 }
 
 @media (prefers-reduced-motion: reduce) {

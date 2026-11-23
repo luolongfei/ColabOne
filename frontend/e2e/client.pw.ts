@@ -694,6 +694,9 @@ async function mock(page: any, ready = false, path = "/") {
           }
           return "";
         },
+        callWith(method: string, args: any[] = []) {
+          return this.call(method, ...args);
+        },
       };
     },
     { ready },

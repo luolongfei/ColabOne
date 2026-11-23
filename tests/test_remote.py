@@ -407,36 +407,14 @@ def test_fatal_non_retryable_gguf_error_fast_fails_with_clean_summary(
     assert "系统内存不足 OOM" in oom_msg
 
 
-def test_service_revision_reported_and_triggers_upgrade_check(runtime, tmp_path):
+def test_service_revision_reported_by_remote_status(runtime):
     from pathlib import Path
-    from bridge.controller import ColabOneController
     from common.files import colabone_service_revision
-    from conftest import MemoryVault
 
     st = runtime.status()
     expected = colabone_service_revision(Path(__file__).resolve().parents[1])
     assert expected and len(expected) == 16
     assert st["service_revision"] == expected
-
-    ctrl = ColabOneController(
-        Path(__file__).resolve().parents[1],
-        vault=MemoryVault(),
-        config_dir=tmp_path,
-        background=False,
-    )
-    assert ctrl._runtime_needs_upgrade({"state": "ready", "protocol": 7}) is True
-    assert (
-        ctrl._runtime_needs_upgrade(
-            {"state": "ready", "protocol": 7, "service_revision": "0000000000000000"}
-        )
-        is True
-    )
-    assert (
-        ctrl._runtime_needs_upgrade(
-            {"state": "ready", "protocol": 7, "service_revision": expected}
-        )
-        is False
-    )
 
 
 def test_warmup_http_500_oom_triggers_fallback_plan_and_assert_summary(
@@ -502,55 +480,6 @@ def test_warmup_http_500_oom_triggers_fallback_plan_and_assert_summary(
     )
     assert "GGML_ASSERT" in assert_summary
     runtime.unload()
-
-
-def test_monitor_skips_auto_upgrade_while_public_api_tunnel_active(tmp_path):
-    from pathlib import Path
-    from bridge.controller import ColabOneController
-    from conftest import MemoryVault
-
-    vault = MemoryVault()
-    vault.set("runtime_session", {"endpoint": "ep-live", "token": "t", "url": "https://x"})
-    vault.set("remote", {"endpoint": "ep-live", "token": "ctrl-tok", "deadline": 0})
-    ctrl = ColabOneController(
-        Path(__file__).resolve().parents[1],
-        vault=vault,
-        config_dir=tmp_path,
-        background=False,
-    )
-    ctrl.provider = Mock()
-    ctrl.provider.account.return_value = {"logged_in": True, "balance": 100}
-    ctrl.provider.heartbeat.return_value = None
-    ctrl.remote = Mock(
-        side_effect=lambda method, path, body=None, endpoint=None: (
-            {
-                "runtime": {
-                    "id": "ep-live",
-                    "state": "ready",
-                    "protocol": 7,
-                    "service_revision": "stale00000000000",
-                    "loaded_model": None,
-                    "active_engine": None,
-                    "public_api": {"state": "ready", "enabled": True},
-                    "tasks": [],
-                },
-                "models": ctrl.presets(),
-                "workflows": [],
-                "comfy_outputs": [],
-            }
-            if path == "snapshot"
-            else {"ok": True}
-        )
-    )
-    ctrl.async_operation = Mock()
-    ctrl.stop = Mock()
-    ctrl.stop.is_set.side_effect = [False, True]
-    ctrl.stop.wait.return_value = True
-
-    ctrl.monitor()
-    # Active Public API tunnel must prevent unsolicited background hot-upgrade.
-    ctrl.async_operation.assert_not_called()
-    assert ctrl.data["runtime"]["upgrade_available"] is True
 
 
 def test_reloading_same_model_stops_previous_engine_before_measuring_vram(

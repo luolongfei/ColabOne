@@ -47,7 +47,7 @@ jobs:
       - name: Offline UI regression tests
         working-directory: frontend
         run: npx playwright test
-      - name: Portable package and runtime self-test
+      - name: Portable pure Go package and self-test
         run: python tools/package.py --out dist
       - uses: actions/upload-artifact@v7
         with:

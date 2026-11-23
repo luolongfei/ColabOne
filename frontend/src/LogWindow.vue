@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { ConfigProvider as AConfigProvider } from "ant-design-vue";
 import ColabOneToastHost from "./ColabOneToastHost.vue";
 import { buildColabOneTheme } from "./colabOneTheme";
 import { colabOneEffectiveAppearance } from "./appearance";
+import {
+  COLABONE_HIDDEN_POLL_MS,
+  COLABONE_LOG_WINDOW_VISIBLE_POLL_MS,
+  createColabOneVisibilityPoller,
+} from "./colabOnePoller";
 import {
   createColabOneToastManager,
   type ColabOneToastKind,
@@ -16,21 +21,26 @@ import {
   tb,
 } from "./i18n";
 import LogDrawer from "./LogDrawer.vue";
-import { colabOneCommand, colabOneSetLogDrawer, colabOneSnapshot, colabOneWriteClipboard } from "./api";
+import {
+  colabOneCommand,
+  colabOneSetLogDrawer,
+  colabOneSnapshotRaw,
+  colabOneWriteClipboard,
+} from "./api";
 import { friendlyErrorMessage } from "./billing";
-import { createColabOneSnapshot } from "./types";
+import { createColabOneSnapshot, type ColabOneSnapshot } from "./types";
 
 const colabOneTheme = computed(() =>
   buildColabOneTheme(colabOneEffectiveAppearance.value, colabOneLocaleCode.value),
 );
-const state = ref(createColabOneSnapshot());
+const state = shallowRef(createColabOneSnapshot());
 const snapshotLoaded = ref(false);
 const toastManager = createColabOneToastManager({ maxVisible: 2 });
 
 let stopped = false;
-let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let snapshotSeq = 0;
 let appliedSnapshotSeq = 0;
+let lastSnapshotRaw: string | null = null;
 
 const ready = computed(() => state.value.runtime.state === "ready");
 const task = computed(() =>
@@ -79,9 +89,23 @@ function notify(message: string, kind: ColabOneToastKind = "success") {
 async function syncSnapshot() {
   const seq = ++snapshotSeq;
   try {
-    const next = await colabOneSnapshot();
+    const raw = await colabOneSnapshotRaw();
     if (stopped || seq < appliedSnapshotSeq) return;
+    const unchanged =
+      snapshotLoaded.value &&
+      lastSnapshotRaw !== null &&
+      raw === lastSnapshotRaw;
+    let next: ColabOneSnapshot | null = null;
+    if (!unchanged) {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Invalid snapshot payload");
+      }
+      next = parsed as ColabOneSnapshot;
+    }
     appliedSnapshotSeq = seq;
+    if (unchanged || !next) return;
+    lastSnapshotRaw = raw;
     state.value = next;
     snapshotLoaded.value = true;
     hydrateColabOneLocaleFromSettings(state.value.settings?.locale);
@@ -90,13 +114,11 @@ async function syncSnapshot() {
   }
 }
 
-async function pollLoop() {
-  if (stopped) return;
-  await syncSnapshot();
-  if (!stopped) {
-    pollTimer = setTimeout(pollLoop, 1000);
-  }
-}
+const snapshotPoller = createColabOneVisibilityPoller({
+  visibleMs: COLABONE_LOG_WINDOW_VISIBLE_POLL_MS,
+  hiddenMs: COLABONE_HIDDEN_POLL_MS,
+  tick: syncSnapshot,
+});
 
 async function copy(text: string) {
   try {
@@ -140,13 +162,13 @@ watch(
 
 onMounted(() => {
   document.title = t("logs.windowTitle");
-  void pollLoop();
+  snapshotPoller.start();
   window.addEventListener("keydown", handleKeydown);
 });
 
 onUnmounted(() => {
   stopped = true;
-  clearTimeout(pollTimer);
+  snapshotPoller.stop();
   toastManager.clear();
   window.removeEventListener("keydown", handleKeydown);
 });

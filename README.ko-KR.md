@@ -22,9 +22,9 @@
 
 ---
 
-ColabOne은 **macOS (Apple Silicon)** 및 **Windows (x64)** 환경에서 빠른 네이티브 데스크톱 앱으로 원격 Google Colab GPU를 바로 다룰 수 있게 해줍니다. 노트북을 직접 조작하거나 VPN을 설정할 필요 없이 여러 대의 GPU를 시작·관리하고, 실시간 하드웨어 부하와 잔액 기준 예상 가동 시간을 모니터링하며, 개인용 OpenAI 호환 LLM 엔드포인트와 ComfyUI 워크플로를 손쉽게 실행할 수 있습니다.
+ColabOne은 **macOS (Apple Silicon)** 및 **Windows (x64)** 환경에서 빠른 네이티브 데스크톱 앱으로 원격 Google Colab GPU를 바로 다룰 수 있게 해줍니다. 노트북을 직접 조작할 필요 없이 여러 대의 GPU를 시작·관리하고, 실시간 하드웨어 부하와 잔액 기준 예상 가동 시간을 모니터링하며, 개인용 OpenAI 호환 LLM 엔드포인트와 ComfyUI 워크플로를 손쉽게 실행할 수 있습니다.
 
-내 컴퓨터에서는 데스크톱 UI와 경량 로컬 컨트롤러만 실행됩니다. 모든 모델 다운로드, GGUF 가중치, `llama.cpp` 추론 및 ComfyUI 실행은 오직 원격 Colab GPU에서만 처리됩니다.
+내 컴퓨터에서는 인프로세스 컨트롤러가 내장된 단일 순수 Go 네이티브 데스크톱 바이너리(`ColabOne.app` / `ColabOne.exe`)만 실행되며, 로컬 Python 런타임이 전혀 필요하지 않습니다. 모든 모델 다운로드, GGUF 가중치, `llama.cpp` 추론 및 ComfyUI 실행은 오직 원격 Colab GPU에서만 처리됩니다(시작 시 자동 업로드되는 내장 Python 제어 서비스 기반).
 
 ## ✨ 주요 기능
 
@@ -33,14 +33,14 @@ ColabOne은 **macOS (Apple Silicon)** 및 **Windows (x64)** 환경에서 빠른 
 - **OpenAI 호환 LLM 게이트웨이 (`외부 API`)** — 내장 **모델 선택** 패널에서 Hugging Face GGUF 모델을 직접 탐색하고 로드할 수 있습니다. 실시간 VRAM 및 디스크 적합성 검사, 자동 VRAM + RAM 하이브리드 로드(`--fit on`), 16/32스레드 병렬 다운로드 및 SHA-256 무결성 검증, `8K`~`128K` 컨텍스트 프리셋을 지원합니다. 개인 Cloudflare Named Tunnel을 통해 `/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/responses/compact` 엔드포인트를 안전하게 공개할 수 있습니다.
 - **ComfyUI 워크플로 스튜디오 및 네이티브 캔버스 (`ComfyUI`)** — 원격 **ComfyUI `v0.46.0`** 버전을 두 가지 모드로 실행합니다. **워크플로 스튜디오**는 ComfyUI API JSON을 깔끔한 파라미터 입력 폼으로 자동 변환하고 SHA-256으로 검증된 미리보기와 로컬 내보내기를 제공하며, **네이티브 캔버스**는 토큰 인증 터널을 통해 전용 앱 창이나 브라우저에서 전체 노드 편집기를 바로 열어줍니다.
 - **Google 드라이브 자동 영구 보관** — 앱 전용 `drive.file` 권한으로 모델 목록, ComfyUI 워크플로, 생성 결과물을 `My Drive / ColabOne_Drive`에 자동 저장합니다. 별도 설정 없이 Colab 네이티브 DriveFS(새 VM당 1회 클릭)로 바로 동작하며, 무료 Google Cloud 서비스 약관에 한 번 동의하면 팝업 없는 영구 헤드리스 `rclone` 자동 마운트로 업그레이드됩니다.
-- **일상 사용에 맞춘 설계** — 독립 실행형 CPython 런타임을 포함한 포터블 패키지로 제공되어 로컬에 Python, Go, Node.js를 설치할 필요가 없습니다. 6개 UI 언어, 라이트/다크/시스템 설정 테마, OS 키체인 자격 증명 보관, 선택형 GPU 할당 전용 프록시, 원클릭 원격 서비스 핫 업데이트, 민감 정보가 자동 마스킹되는 실시간 **실행 로그** 패널(`Ctrl+J`)을 지원합니다.
+- **일상 사용에 맞춘 설계** — 순수 Go 단일 바이너리 데스크톱 앱(MyGo `v0.10.0` + 인프로세스 Go 컨트롤러; 로컬 Python 런타임이나 동일 경로의 `runtime/`·`site-packages/` 폴더 불필요, 로컬에 Python·Go·Node.js 설치 불필요)으로 제공되며, 6개 UI 언어, 라이트/다크/시스템 설정 테마, OS 키체인 자격 증명 보관, 선택형 GPU 할당 전용 프록시, 원클릭 원격 서비스 핫 업데이트, 민감 정보가 자동 마스킹되는 실시간 **실행 로그** 패널(`Ctrl+J`)을 지원합니다.
 
 ## 🚀 빠른 시작
 
 ColabOne은 **원격 기기 → 외부 API → ComfyUI → 설정**의 4개 사이드바 화면과 우측 슬라이드 오버 **실행 로그** 패널로 구성되어 있습니다.
 
 1. **다운로드 및 실행**
-   [Releases](https://github.com/luolongfei/ColabOne/releases)에서 플랫폼에 맞는 패키지를 다운로드하고(또는 [소스에서 직접 빌드](#-소스에서-빌드하기)), 전체 폴더의 압축을 푼 뒤 `ColabOne.app`(macOS) 또는 `ColabOne.exe`(Windows)를 실행합니다. 앱과 같은 경로의 폴더(`runtime`, `site-packages`, `bridge` 등)는 그대로 유지해야 합니다. Windows에서는 관리자 권한 없이 **설정**에서 시작 메뉴 및 바탕 화면 바로 가기를 만들 수 있습니다.
+   [Releases](https://github.com/luolongfei/ColabOne/releases)에서 플랫폼에 맞는 패키지를 다운로드하고(또는 [소스에서 직접 빌드](#-소스에서-빌드하기)), 압축을 푼 뒤 `ColabOne.app`(macOS) 또는 `ColabOne.exe`(Windows)를 실행합니다. ColabOne은 완전히 독립 실행되는 순수 Go 단일 바이너리 앱이므로 로컬 Python 런타임이나 동일 경로의 `runtime/`·`site-packages/` 폴더가 필요하지 않습니다. Windows에서는 관리자 권한 없이 **설정**에서 시작 메뉴 및 바탕 화면 바로 가기를 만들 수 있습니다.
 
 2. **Google 계정 로그인**
    **설정** → **Google 로그인**으로 이동해 브라우저에서 계정을 승인하면 ColabOne이 자동으로 로그인을 완료합니다. 브라우저가 자동으로 리디렉션되지 않고 인증 페이지를 표시하는 경우, 직접 붙여넣기 섹션을 펼치고 **붙여넣고 로그인 완료**를 클릭하세요. 자격 증명은 macOS 키체인 또는 Windows 자격 증명 관리자에 암호화되어 저장되며 재시작 시에도 자동으로 갱신됩니다.
@@ -124,14 +124,14 @@ ColabOne은 원격 Colab GPU(`127.0.0.1:8188`)에만 **ComfyUI `v0.46.0`** 버�
 
 - **Go** `1.27.3`
 - **Node.js** `24 LTS` (또는 `26`)
-- **Python** `3.12`
-- **`uv`** (또는 표준 `venv` + `pip`)
+- **Python** `3.12` + **`uv`** (또는 표준 `venv` + `pip`) — 빌드 및 테스트 단계 전용(내장 원격 서비스 번들 동기화, 원격 서비스 Python 테스트, 패키징 스크립트 실행)
 
 ### 🔨 환경 구성 및 빌드
 
 ```sh
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -r requirements-dev.txt
+.venv/bin/python tools/sync_service_bundle.py
 npm --prefix frontend ci
 cd console
 go tool mygo generate
@@ -144,20 +144,20 @@ npm --prefix frontend run build
 > Windows에서는 `.venv/bin/python` 대신 `.venv\Scripts\python.exe`를 사용하세요.
 
 ```sh
-# 모든 오프라인 검사 실행 (Python, Go vet/test, Vitest, 프론트엔드 빌드, 브리지 자체 테스트)
+# 모든 오프라인 검사 실행 (내장 서비스 번들 동기화, Go vet/test, 원격 Python pytest, Vitest, 프론트엔드 빌드)
 .venv/bin/python tools/install.py --root work/check --check
 
-# dist/ 디렉터리에 독립 실행형 포터블 패키지 빌드
+# dist/ 디렉터리에 순수 Go 단일 바이너리 포터블 패키지 빌드
 .venv/bin/python tools/package.py --out dist
 ```
 
-포터블 패키지는 `dist/`에 생성되며(압축 해제된 스테이징 디렉터리는 `work/package-stage/Programs/ColabOne`), 해시 검증된 독립 실행형 CPython 런타임과 버전이 고정된 wheel 패키지가 함께 번들되어 최종 사용자가 별도 도구 체인을 설치할 필요가 없습니다.
+포터블 패키지는 `dist/`에 생성되며(압축 해제된 스테이징 디렉터리는 `work/package-stage/Programs/ColabOne`), 컴파일된 Vue 프론트엔드와 원격 Python 제어 서비스(`server/`, `common/`, `catalog/`)가 `go:embed`로 내장된 독립 실행형 순수 Go 바이너리(`ColabOne.app` / `ColabOne.exe`)를 제공하므로 최종 사용자가 로컬 Python 런타임이나 동일 경로의 의존성 폴더를 따로 둘 필요가 없습니다.
 
 모든 단위 테스트와 브라우저 테스트는 목(mock)을 사용해 100% 오프라인으로 실행되며, Google이나 Hugging Face에 접속하거나 GPU를 할당하지 않습니다. 실제 GPU 환경의 인수 검증은 엄격한 컴퓨팅 예산 하에 명시적으로만 수행합니다. 자세한 내용은 [docs/validation.md](docs/validation.md)를 참고하세요.
 
 ## 📚 문서
 
-- [아키텍처 개요](docs/architecture.md) — 로컬 브리지, 원격 루프백 포트, 드라이브 동기화, 텔레메트리 및 보안 경계
+- [아키텍처 개요](docs/architecture.md) — 순수 Go 인프로세스 컨트롤러, 내장 원격 서비스, 루프백 포트, 드라이브 동기화, 텔레메트리 및 보안 경계
 - [원격 및 외부 API 레퍼런스](docs/api.md) — 제어 라우트, OpenAI 게이트웨이 명세 및 ComfyUI 엔드포인트
 - [검증 기록](docs/validation.md) — 오프라인 CI 커버리지 및 실제 GPU 인수 검증 로그
 - [업스트림 출처 및 라이선스](third_party/SOURCES.md) — 버전이 고정된 서드파티 의존성 및 저작권 고지
@@ -180,12 +180,12 @@ ColabOne을 함께 만들고 개선해 주신 모든 분들께 감사드립니�
 
 아래 오픈소스 프로젝트들에도 깊이 감사드립니다. 이들의 오픈소스 공개와 든든한 기술 기반이 있었기에 지금의 ColabOne이 탄생할 수 있었습니다(자세한 내용은 [NOTICE](NOTICE) 및 [third_party/SOURCES.md](third_party/SOURCES.md) 참고):
 
-- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab GPU 할당, 런타임 준비 확인, 하트비트 수명 주기 관리 및 포터블 Python 패키징 설계에 참고했습니다.
-- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 데스크톱-Colab 브리지 아키텍처와 헤드리스 `rclone` Google 드라이브 마운트 패턴을 참고했습니다.
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab GPU 할당, 런타임 준비 확인 및 하트비트 수명 주기 관리 설계에 참고했습니다.
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 데스크톱-Colab 제어 아키텍처와 헤드리스 `rclone` Google 드라이브 마운트 패턴을 참고했습니다.
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 모델 매니페스트, 고정 버전 `llama.cpp` CUDA 배포 및 병렬 범위 다운로드 전략을 참고했습니다.
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** *(MIT)* 및 **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 원격 GGUF LLM 추론 엔진과 노드 기반 이미지·비디오·멀티모달 워크플로 엔진으로 통합되어 있습니다.
-- **데스크톱 및 프론트엔드 UI 스택** — **[MyGo](https://github.com/egoist/mygo)**, **[Vue 3](https://github.com/vuejs/core)**, **[Vite](https://github.com/vitejs/vite)**, **[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**, **[Phosphor Icons](https://github.com/phosphor-icons/vue)**, **[Shiki](https://github.com/shikijs/shiki)**, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)* 및 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
-- **백엔드, 터널 및 드라이브 스택** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*, **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)* 및 **[rclone](https://github.com/rclone/rclone)** *(MIT)*.
+- **데스크톱 및 프론트엔드 UI 스택** — **[MyGo](https://github.com/egoist/mygo)** (`v0.10.0`, MIT), **[coder/websocket](https://github.com/coder/websocket)** *(ISC)*, **[Vue 3](https://github.com/vuejs/core)**, **[Vite](https://github.com/vitejs/vite)**, **[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**, **[Phosphor Icons](https://github.com/phosphor-icons/vue)**, **[Shiki](https://github.com/shikijs/shiki)**, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)* 및 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+- **원격 서비스, 터널 및 드라이브 스택** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*, **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)* 및 **[rclone](https://github.com/rclone/rclone)** *(MIT)*.
 
 ## 📜 라이선스
 

@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import ValidationError
 
-from bridge.controller import ColabOneController
 from common.comfyui import (
     ComfyCanvasConfig,
     ComfyCatalog,
@@ -860,90 +859,6 @@ def test_comfy_run_route_uploads_inputs_saves_output_and_snapshot_hides_canvas_t
         assert free_resp.status_code == 200
         free_call = next(kw for url, kw in captured_posts if url.endswith("/free"))
         assert free_call["json"] == {"unload_models": True, "free_memory": True}
-
-
-# ---------------------------------------------------------------------------
-# 4. Controller offline & online ComfyUI commands (bridge.controller)
-# ---------------------------------------------------------------------------
-
-
-def test_controller_offline_workflow_import_delete_and_canvas_vault_security(tmp_path):
-    vault = MemoryVault()
-    c = ColabOneController(ROOT, vault=vault, config_dir=tmp_path, background=False)
-    c.remote = Mock()
-
-    assert c.snapshot()["runtime"]["state"] == "stopped"
-
-    # Offline import persists to workflows.json without calling remote RPC.
-    imported = c.command(
-        "comfyui.workflow.import",
-        {
-            "id": "wf-offline-1",
-            "name": "离线导入工作流",
-            "description": "无需 GPU",
-            "workflow": sample_api_workflow(),
-        },
-    )
-    assert imported["id"] == "wf-offline-1"
-    c.remote.assert_not_called()
-    assert (tmp_path / "workflows.json").is_file()
-    assert any(w["id"] == "wf-offline-1" for w in c.snapshot()["workflows"])
-
-    # Fresh Controller instance reloads offline workflows from workflows.json.
-    reloaded = ColabOneController(ROOT, vault=vault, config_dir=tmp_path, background=False)
-    assert any(w["id"] == "wf-offline-1" for w in reloaded.snapshot()["workflows"])
-
-    # Legacy quick-mode vault data reports named mode, and quick save is rejected.
-    vault.set("comfyui_canvas", {"mode": "quick"})
-    assert c.snapshot()["comfy_canvas_settings"]["mode"] == "named"
-    assert c.command("comfyui.canvas.tunnel_token", {}) == {"token": ""}
-    with pytest.raises(ValueError, match="临时域名"):
-        c.command("comfyui.canvas.save", {"mode": "quick"})
-
-    # Save named canvas config -> stored in vault, never leaked in snapshot().
-    res = c.command(
-        "comfyui.canvas.save",
-        {
-            "domain": "comfy.example.com",
-            "tunnel_token": "cloudflared service install " + TUNNEL_TOKEN,
-        },
-    )
-    assert res == {"ok": True}
-    snap = c.snapshot()
-    assert snap["comfy_canvas_settings"] == {
-        "mode": "named",
-        "domain": "https://comfy.example.com",
-        "has_token": True,
-    }
-    assert TUNNEL_TOKEN not in json.dumps(snap)
-    assert vault.get("comfyui_canvas")["tunnel_token"] == TUNNEL_TOKEN
-    assert c.command("comfyui.canvas.tunnel_token", {}) == {"token": TUNNEL_TOKEN}
-
-    # Online comfyui.run syncs offline custom workflow before running.
-    c.data["runtime"] = {"state": "ready", "id": "ep-comfy"}
-    c.remote = Mock(
-        side_effect=lambda method, path, body=None, endpoint=None: (
-            imported if path == "comfyui/workflows" else {"id": "task-1", "state": "running"}
-        )
-    )
-    c.refresh_remote = Mock()
-    c.command(
-        "comfyui.run",
-        {"workflow_id": "wf-offline-1", "overrides": {"3.text": "new prompt"}, "inputs": {}},
-    )
-    called_routes = [(call.args[0], call.args[1]) for call in c.remote.call_args_list]
-    assert called_routes == [
-        ("POST", "comfyui/workflows"),
-        ("POST", "comfyui/run"),
-    ]
-
-    # Offline delete removes workflow from workflows.json and snapshot.
-    c.data["runtime"] = {"state": "stopped"}
-    c.remote = Mock()
-    assert c.command("comfyui.workflow.delete", {"id": "wf-offline-1"}) == {"ok": True}
-    c.remote.assert_not_called()
-    assert all(w["id"] != "wf-offline-1" for w in c.snapshot()["workflows"])
-    assert json.loads((tmp_path / "workflows.json").read_text(encoding="utf-8")) == []
 
 
 def test_canvas_proxy_internal_probe_skips_activity_and_rejected_ws_does_not_hang():

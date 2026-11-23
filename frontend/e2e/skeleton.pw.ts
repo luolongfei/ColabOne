@@ -228,6 +228,9 @@ async function setupControlledMock(
           }
           return {};
         },
+        callWith(method: string, args: any[] = []) {
+          return this.call(method, ...args);
+        },
       };
     },
     { holdInitialSnapshot, initialTheme, snapshot },

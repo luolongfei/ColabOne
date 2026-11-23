@@ -352,6 +352,7 @@ class ModelFile(BaseModel):
             or "." in p.parts
             or ":" in value
             or "\\" in value
+            or "\x00" in value
             or len(value) > 512
             or not value.lower().endswith(".gguf")
         ):

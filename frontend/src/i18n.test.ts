@@ -634,6 +634,45 @@ describe("ColabOne reactive translations across helpers", () => {
       "更新前正在取消运行中的远端任务",
       "更新前正在停止 ComfyUI 服务",
       "更新前正在卸载当前显存模型（保留磁盘缓存）",
+      "文件大小必须大于 0",
+      "工作流名称长度不合法",
+      "工作流描述长度不能超过 1000",
+      "字段 3.steps 的覆盖值类型不合法",
+      "字段 3.clip skip 的覆盖值类型不合法",
+      "字段 3.clip skip 包含非法浮点值",
+      "字段 3.clip skip 不能为空值",
+      "字段 mode 不能为空值",
+      "字段 options 不能为空值",
+      "ComfyUI 已就绪，正在按原配置自动恢复原生画布隧道",
+      "等待 ComfyUI 启动超时，未能自动恢复原生画布，请手动开启",
+      "正在按更新前规格自动重新装载模型 Qwen3.8（8K · 温度 0.7）",
+      "正在按更新前规格自动重新装载模型 Qwen3.8（4096 tokens · 温度 0.7）",
+      "正在按更新前规格自动重新装载模型 Qwen3.8（上下文 8192 · 温度 0.7）",
+      "正在按更新前规格自动重新装载模型 Qwen3.8（温度 0.7 · 8K）",
+      "正在按更新前规格自动重新装载模型 Qwen3.8",
+      "自动重新装载模型 Qwen3.8 失败，请手动装载：远端服务未返回响应",
+      "正在按更新前配置自动重新开启对外 API 服务与公网隧道",
+      "自动恢复对外 API 失败，请手动开启：远端服务未返回响应",
+      "正在自动重新启动 ComfyUI 工作流引擎",
+      "自动重新启动 ComfyUI 失败，请手动启动：远端服务未返回响应",
+      "自动恢复 ComfyUI 原生画布失败，请手动开启：远端服务未返回响应",
+      "已预约 ComfyUI 就绪后自动按原配置恢复原生画布隧道",
+      "Google Colab 返回了空的实例分配结果",
+      "客户端正在关闭",
+      "远端快照格式无效",
+      "远端实例未连接",
+      "远端实例硬件监控通道已关闭",
+      "远端实例管理通道已关闭",
+      "读取本地模型库配置失败，已保留原文件未覆盖",
+      "未知字段: extra_field",
+      "模型文件配置包含不支持的字段: extra_field",
+      "模型文件配置包含不支持的字段: extra field",
+      "模型文件字段 sha256 不能为空值",
+      "模型配置包含不支持的字段: unknown_key",
+      "模型配置字段 files 不能为空值",
+      "模型文件大小必须大于 0",
+      "模型名称长度需在 1 到 200 之间",
+      "ComfyUI 端口必须在 1024 到 65535 之间",
     ];
     const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
     for (const loc of ["en-US", "ko-KR"] as const) {
@@ -642,6 +681,509 @@ describe("ColabOne reactive translations across helpers", () => {
         const out = tb(sample);
         expect(out, `${loc}: ${sample}`).not.toBe(sample);
         expect(leakRe.test(out), `${loc} leak in "${out}"`).toBe(false);
+      }
+    }
+
+    // Verify all 4 Go models.go validation errors across all 6 locales
+    const modelsGoErrors = [
+      "模型文件配置包含不支持的字段: extra_field",
+      "模型文件字段 sha256 不能为空值",
+      "模型配置包含不支持的字段: unknown_key",
+      "模型配置字段 files 不能为空值",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const msg of modelsGoErrors) {
+        const out = tb(msg);
+        if (loc === "zh-CN") {
+          expect(out).toBe(msg);
+        } else {
+          expect(out, `${loc}: ${msg}`).not.toBe(msg);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(leakRe.test(out), `${loc} leak in "${out}"`).toBe(false);
+        }
+        if (loc === "zh-HK") {
+          expect(out, `zh-HK spoken Cantonese in "${out}"`).not.toMatch(
+            spokenCantoneseRe,
+          );
+        }
+      }
+    }
+    setColabOneLocale("zh-TW", { persist: false, syncNative: false });
+    expect(tb("模型文件配置包含不支持的字段: extra_field")).toBe(
+      "模型檔案設定包含不支援的欄位：extra_field",
+    );
+    expect(tb("模型文件字段 sha256 不能为空值")).toBe(
+      "模型檔案欄位 sha256 不可為空值",
+    );
+    expect(tb("模型配置包含不支持的字段: unknown_key")).toBe(
+      "模型設定包含不支援的欄位：unknown_key",
+    );
+    expect(tb("模型配置字段 files 不能为空值")).toBe(
+      "模型設定欄位 files 不可為空值",
+    );
+    setColabOneLocale("zh-HK", { persist: false, syncNative: false });
+    expect(tb("模型文件字段 sha256 不能为空值")).toBe(
+      "模型檔案欄位 sha256 不能為空值",
+    );
+    expect(tb("模型配置字段 files 不能为空值")).toBe(
+      "模型設定欄位 files 不能為空值",
+    );
+
+    setColabOneLocale("en-US", { persist: false, syncNative: false });
+    expect(tb("模型文件配置包含不支持的字段: extra_field")).toBe(
+      "Model file specification contains unsupported field: extra_field",
+    );
+    expect(tb("模型文件字段 sha256 不能为空值")).toBe(
+      "Model file field sha256 cannot be null",
+    );
+    expect(tb("模型配置包含不支持的字段: unknown_key")).toBe(
+      "Model specification contains unsupported field: unknown_key",
+    );
+    expect(tb("模型配置字段 files 不能为空值")).toBe(
+      "Model specification field files cannot be null",
+    );
+    expect(tb("字段 3.clip skip 的覆盖值类型不合法")).toBe(
+      "Invalid override value type for field 3.clip skip",
+    );
+    expect(tb("字段 3.clip skip 包含非法浮点值")).toBe(
+      "Field 3.clip skip contains an invalid floating-point value",
+    );
+    expect(tb("字段 3.clip skip 不能为空值")).toBe(
+      "Field 3.clip skip cannot be null",
+    );
+    expect(tb("字段 options 不能为空值")).toBe("Field options cannot be null");
+    expect(tb("正在按更新前规格自动重新装载模型 Qwen3（微调）")).toBe(
+      "Automatically reloading model Qwen3（微调） with previous settings",
+    );
+    expect(
+      tb("正在按更新前规格自动重新装载模型 Qwen3（微调）（8K · 温度 0.7）"),
+    ).toBe(
+      "Automatically reloading model Qwen3（微调） with previous settings (8K · temperature 0.7)",
+    );
+    expect(
+      tb("正在按更新前规格自动重新装载模型 Qwen3（温度 0.7）（微调）"),
+    ).toBe(
+      "Automatically reloading model Qwen3（温度 0.7）（微调） with previous settings",
+    );
+    expect(
+      tb(
+        "正在按更新前规格自动重新装载模型 Qwen3（温度 0.7）（微调）（8K · 温度 0.7）",
+      ),
+    ).toBe(
+      "Automatically reloading model Qwen3（温度 0.7）（微调） with previous settings (8K · temperature 0.7)",
+    );
+  });
+
+  it("preserves ComfyUI subgraph node IDs containing colons across all 6 locales", () => {
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+    const simplifiedLeakRe = /节点|必须为对象|输入名称|未知执行错误|执行失败/;
+
+    const expectedByMessage: Record<string, Record<ColabOneLocale, string>> = {
+      "节点 3_a:1 必须为对象": {
+        "zh-CN": "节点 3_a:1 必须为对象",
+        "en-US": "Node 3_a:1 must be an object",
+        "zh-TW": "節點 3_a:1 必須為物件",
+        "zh-HK": "節點 3_a:1 必須為物件",
+        "ja-JP": "ノード 3_a:1 はオブジェクトである必要があります",
+        "ko-KR": "노드 3_a:1은(는) 객체여야 합니다",
+      },
+      "节点 3_a:1 缺少有效的 class_type": {
+        "zh-CN": "节点 3_a:1 缺少有效的 class_type",
+        "en-US": "Node 3_a:1 is missing a valid class_type",
+        "zh-TW": "節點 3_a:1 缺少有效的 class_type",
+        "zh-HK": "節點 3_a:1 缺少有效的 class_type",
+        "ja-JP": "ノード 3_a:1 に有効な class_type がありません",
+        "ko-KR": "노드 3_a:1에 유효한 class_type이 없습니다",
+      },
+      "节点 3_a:1 缺少有效的 inputs 对象": {
+        "zh-CN": "节点 3_a:1 缺少有效的 inputs 对象",
+        "en-US": "Node 3_a:1 is missing a valid inputs object",
+        "zh-TW": "節點 3_a:1 缺少有效的 inputs 物件",
+        "zh-HK": "節點 3_a:1 缺少有效的 inputs 物件",
+        "ja-JP": "ノード 3_a:1 に有効な inputs オブジェクトがありません",
+        "ko-KR": "노드 3_a:1에 유효한 inputs 객체가 없습니다",
+      },
+      "节点 3_a:1 包含非法输入名称": {
+        "zh-CN": "节点 3_a:1 包含非法输入名称",
+        "en-US": "Node 3_a:1 contains an invalid input name",
+        "zh-TW": "節點 3_a:1 包含無效的輸入名稱",
+        "zh-HK": "節點 3_a:1 包含無效的輸入名稱",
+        "ja-JP": "ノード 3_a:1 に無効な入力名が含まれています",
+        "ko-KR": "노드 3_a:1에 유효하지 않은 입력 이름이 포함되어 있습니다",
+      },
+      "节点 10:3(KSampler): Out of memory": {
+        "zh-CN": "节点 10:3(KSampler): Out of memory",
+        "en-US": "Node 10:3 (KSampler): Out of memory",
+        "zh-TW": "節點 10:3(KSampler): Out of memory",
+        "zh-HK": "節點 10:3(KSampler): Out of memory",
+        "ja-JP": "ノード 10:3(KSampler): Out of memory",
+        "ko-KR": "노드 10:3 (KSampler): Out of memory",
+      },
+      "节点 7(KSampler): 未知执行错误": {
+        "zh-CN": "节点 7(KSampler): 未知执行错误",
+        "en-US": "Node 7 (KSampler): Unknown execution error",
+        "zh-TW": "節點 7(KSampler): 未知執行錯誤",
+        "zh-HK": "節點 7(KSampler): 未知執行錯誤",
+        "ja-JP": "ノード 7(KSampler): 不明な実行エラー",
+        "ko-KR": "노드 7 (KSampler): 알 수 없는 실행 오류",
+      },
+      "节点 10:3: missing input": {
+        "zh-CN": "节点 10:3: missing input",
+        "en-US": "Node 10:3: missing input",
+        "zh-TW": "節點 10:3: missing input",
+        "zh-HK": "節點 10:3: missing input",
+        "ja-JP": "ノード 10:3: missing input",
+        "ko-KR": "노드 10:3: missing input",
+      },
+      "节点 10:3(KSampler (Efficient)): Out of memory": {
+        "zh-CN": "节点 10:3(KSampler (Efficient)): Out of memory",
+        "en-US": "Node 10:3 (KSampler (Efficient)): Out of memory",
+        "zh-TW": "節點 10:3(KSampler (Efficient)): Out of memory",
+        "zh-HK": "節點 10:3(KSampler (Efficient)): Out of memory",
+        "ja-JP": "ノード 10:3(KSampler (Efficient)): Out of memory",
+        "ko-KR": "노드 10:3 (KSampler (Efficient)): Out of memory",
+      },
+      "节点 10:3:5(Foo (v2)): bad value": {
+        "zh-CN": "节点 10:3:5(Foo (v2)): bad value",
+        "en-US": "Node 10:3:5 (Foo (v2)): bad value",
+        "zh-TW": "節點 10:3:5(Foo (v2)): bad value",
+        "zh-HK": "節點 10:3:5(Foo (v2)): bad value",
+        "ja-JP": "ノード 10:3:5(Foo (v2)): bad value",
+        "ko-KR": "노드 10:3:5 (Foo (v2)): bad value",
+      },
+      "节点 10:3(KSampler (Efficient)): failed (cuda): retry": {
+        "zh-CN": "节点 10:3(KSampler (Efficient)): failed (cuda): retry",
+        "en-US": "Node 10:3 (KSampler (Efficient)): failed (cuda): retry",
+        "zh-TW": "節點 10:3(KSampler (Efficient)): failed (cuda): retry",
+        "zh-HK": "節點 10:3(KSampler (Efficient)): failed (cuda): retry",
+        "ja-JP": "ノード 10:3(KSampler (Efficient)): failed (cuda): retry",
+        "ko-KR": "노드 10:3 (KSampler (Efficient)): failed (cuda): retry",
+      },
+      "节点 10: detail (extra): more": {
+        "zh-CN": "节点 10: detail (extra): more",
+        "en-US": "Node 10: detail (extra): more",
+        "zh-TW": "節點 10: detail (extra): more",
+        "zh-HK": "節點 10: detail (extra): more",
+        "ja-JP": "ノード 10: detail (extra): more",
+        "ko-KR": "노드 10: detail (extra): more",
+      },
+      "ComfyUI 执行失败：节点 10:3(Load Image (Upload)): 未知执行错误": {
+        "zh-CN": "ComfyUI 执行失败：节点 10:3(Load Image (Upload)): 未知执行错误",
+        "en-US": "ComfyUI execution failed: Node 10:3 (Load Image (Upload)): Unknown execution error",
+        "zh-TW": "ComfyUI 執行失敗：節點 10:3(Load Image (Upload)): 未知執行錯誤",
+        "zh-HK": "ComfyUI 執行失敗：節點 10:3(Load Image (Upload)): 未知執行錯誤",
+        "ja-JP": "ComfyUI の実行に失敗しました: ノード 10:3(Load Image (Upload)): 不明な実行エラー",
+        "ko-KR": "ComfyUI 실행 실패: 노드 10:3 (Load Image (Upload)): 알 수 없는 실행 오류",
+      },
+    };
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const [sample, expected] of Object.entries(expectedByMessage)) {
+        const out = tb(sample);
+        expect(out, `${loc}: ${sample}`).toBe(expected[loc]);
+        if (loc !== "zh-CN") {
+          expect(
+            simplifiedLeakRe.test(out),
+            `Simplified Chinese leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            leakRe.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+        }
+      }
+    }
+
+    // Wrapped ComfyUI error messages via translateComfyErrorDetail preserve subgraph IDs too
+    setColabOneLocale("en-US", { persist: false, syncNative: false });
+    expect(tb("工作流节点校验失败：节点 3_a:1 必须为对象")).toBe(
+      "Workflow node validation failed: Node 3_a:1 must be an object",
+    );
+    expect(tb("ComfyUI 执行失败：节点 10:3(KSampler): Out of memory")).toBe(
+      "ComfyUI execution failed: Node 10:3 (KSampler): Out of memory",
+    );
+    expect(tb("ComfyUI 拒绝了工作流：节点 10:3: missing input")).toBe(
+      "ComfyUI rejected workflow: Node 10:3: missing input",
+    );
+  });
+
+  it("handles trailing-colon node IDs, multi-line ComfyUI wrapper errors, and inner ): inside class_type across all 6 locales", () => {
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+    const simplifiedLeakRe =
+      /节点|必须|对象|输入|执行|错误|拒绝|校验|任务|编号|失败/;
+
+    const expectedByMessage: Record<string, Record<ColabOneLocale, string>> = {
+      // 1. Trailing-colon node IDs in schema-validation errors (direct and wrapped)
+      "节点 3_a: 必须为对象": {
+        "zh-CN": "节点 3_a: 必须为对象",
+        "en-US": "Node 3_a: must be an object",
+        "zh-TW": "節點 3_a: 必須為物件",
+        "zh-HK": "節點 3_a: 必須為物件",
+        "ja-JP": "ノード 3_a: はオブジェクトである必要があります",
+        "ko-KR": "노드 3_a:은(는) 객체여야 합니다",
+      },
+      "节点 3_a: 缺少有效的 class_type": {
+        "zh-CN": "节点 3_a: 缺少有效的 class_type",
+        "en-US": "Node 3_a: is missing a valid class_type",
+        "zh-TW": "節點 3_a: 缺少有效的 class_type",
+        "zh-HK": "節點 3_a: 缺少有效的 class_type",
+        "ja-JP": "ノード 3_a: に有効な class_type がありません",
+        "ko-KR": "노드 3_a:에 유효한 class_type이 없습니다",
+      },
+      "节点 3_a: 缺少有效的 inputs 对象": {
+        "zh-CN": "节点 3_a: 缺少有效的 inputs 对象",
+        "en-US": "Node 3_a: is missing a valid inputs object",
+        "zh-TW": "節點 3_a: 缺少有效的 inputs 物件",
+        "zh-HK": "節點 3_a: 缺少有效的 inputs 物件",
+        "ja-JP": "ノード 3_a: に有効な inputs オブジェクトがありません",
+        "ko-KR": "노드 3_a:에 유효한 inputs 객체가 없습니다",
+      },
+      "节点 3_a: 包含非法输入名称": {
+        "zh-CN": "节点 3_a: 包含非法输入名称",
+        "en-US": "Node 3_a: contains an invalid input name",
+        "zh-TW": "節點 3_a: 包含無效的輸入名稱",
+        "zh-HK": "節點 3_a: 包含無效的輸入名稱",
+        "ja-JP": "ノード 3_a: に無効な入力名が含まれています",
+        "ko-KR": "노드 3_a:에 유효하지 않은 입력 이름이 포함되어 있습니다",
+      },
+      "工作流节点校验失败：节点 3_a: 必须为对象": {
+        "zh-CN": "工作流节点校验失败：节点 3_a: 必须为对象",
+        "en-US": "Workflow node validation failed: Node 3_a: must be an object",
+        "zh-TW": "工作流程節點驗證失敗：節點 3_a: 必須為物件",
+        "zh-HK": "工作流節點校驗失敗：節點 3_a: 必須為物件",
+        "ja-JP":
+          "ワークフローノードの検証に失敗しました: ノード 3_a: はオブジェクトである必要があります",
+        "ko-KR": "워크플로 노드 검증 실패: 노드 3_a:은(는) 객체여야 합니다",
+      },
+      "节点 3_a:: missing input": {
+        "zh-CN": "节点 3_a:: missing input",
+        "en-US": "Node 3_a:: missing input",
+        "zh-TW": "節點 3_a:: missing input",
+        "zh-HK": "節點 3_a:: missing input",
+        "ja-JP": "ノード 3_a:: missing input",
+        "ko-KR": "노드 3_a:: missing input",
+      },
+
+      // 2. Multi-line ComfyUI rejection / validation / prompt-ID & compound task errors
+      "ComfyUI 拒绝了工作流：节点 10(KSampler): invalid input\nline 2": {
+        "zh-CN": "ComfyUI 拒绝了工作流：节点 10(KSampler): invalid input\nline 2",
+        "en-US":
+          "ComfyUI rejected workflow: Node 10 (KSampler): invalid input\nline 2",
+        "zh-TW":
+          "ComfyUI 拒絕了工作流程：節點 10(KSampler): invalid input\nline 2",
+        "zh-HK":
+          "ComfyUI 拒絕了工作流：節點 10(KSampler): invalid input\nline 2",
+        "ja-JP":
+          "ComfyUI がワークフローを拒否しました: ノード 10(KSampler): invalid input\nline 2",
+        "ko-KR":
+          "ComfyUI가 워크플로를 거부했습니다: 노드 10 (KSampler): invalid input\nline 2",
+      },
+      "工作流节点校验失败：节点 10(KSampler): invalid input\nline 2": {
+        "zh-CN": "工作流节点校验失败：节点 10(KSampler): invalid input\nline 2",
+        "en-US":
+          "Workflow node validation failed: Node 10 (KSampler): invalid input\nline 2",
+        "zh-TW":
+          "工作流程節點驗證失敗：節點 10(KSampler): invalid input\nline 2",
+        "zh-HK":
+          "工作流節點校驗失敗：節點 10(KSampler): invalid input\nline 2",
+        "ja-JP":
+          "ワークフローノードの検証に失敗しました: ノード 10(KSampler): invalid input\nline 2",
+        "ko-KR":
+          "워크플로 노드 검증 실패: 노드 10 (KSampler): invalid input\nline 2",
+      },
+      "ComfyUI 未返回有效任务编号：节点 10(KSampler): invalid input\nline 2": {
+        "zh-CN":
+          "ComfyUI 未返回有效任务编号：节点 10(KSampler): invalid input\nline 2",
+        "en-US":
+          "ComfyUI did not return a valid prompt ID: Node 10 (KSampler): invalid input\nline 2",
+        "zh-TW":
+          "ComfyUI 未回傳有效任務編號：節點 10(KSampler): invalid input\nline 2",
+        "zh-HK":
+          "ComfyUI 未返回有效任務編號：節點 10(KSampler): invalid input\nline 2",
+        "ja-JP":
+          "ComfyUI から有効なジョブ ID が返されませんでした: ノード 10(KSampler): invalid input\nline 2",
+        "ko-KR":
+          "ComfyUI가 유효한 작업 ID를 반환하지 않았습니다: 노드 10 (KSampler): invalid input\nline 2",
+      },
+      "ComfyUI 工作流：失败 · 提交工作流：Flux Demo · ComfyUI 拒绝了工作流：节点 10(KSampler): invalid\nline 2":
+        {
+          "zh-CN":
+            "ComfyUI 工作流：失败 · 提交工作流：Flux Demo · ComfyUI 拒绝了工作流：节点 10(KSampler): invalid\nline 2",
+          "en-US":
+            "ComfyUI workflow: Failed · Submitting workflow: Flux Demo · ComfyUI rejected workflow: Node 10 (KSampler): invalid\nline 2",
+          "zh-TW":
+            "ComfyUI 工作流程：失敗 · 提交工作流程：Flux Demo · ComfyUI 拒絕了工作流程：節點 10(KSampler): invalid\nline 2",
+          "zh-HK":
+            "ComfyUI 工作流：失敗 · 提交工作流：Flux Demo · ComfyUI 拒絕了工作流：節點 10(KSampler): invalid\nline 2",
+          "ja-JP":
+            "ComfyUI ワークフロー: 失敗 · ワークフローを送信中: Flux Demo · ComfyUI がワークフローを拒否しました: ノード 10(KSampler): invalid\nline 2",
+          "ko-KR":
+            "ComfyUI 워크플로: 실패 · 워크플로 제출 중: Flux Demo · ComfyUI가 워크플로를 거부했습니다: 노드 10 (KSampler): invalid\nline 2",
+        },
+
+      // 3. Inner ): inside parenthesized class_type & unmatched-( fallback
+      "节点 10(Foo (Bar): Baz): 未知执行错误": {
+        "zh-CN": "节点 10(Foo (Bar): Baz): 未知执行错误",
+        "en-US": "Node 10 (Foo (Bar): Baz): Unknown execution error",
+        "zh-TW": "節點 10(Foo (Bar): Baz): 未知執行錯誤",
+        "zh-HK": "節點 10(Foo (Bar): Baz): 未知執行錯誤",
+        "ja-JP": "ノード 10(Foo (Bar): Baz): 不明な実行エラー",
+        "ko-KR": "노드 10 (Foo (Bar): Baz): 알 수 없는 실행 오류",
+      },
+      "节点 10:3(Foo (Bar): Baz): 未知执行错误": {
+        "zh-CN": "节点 10:3(Foo (Bar): Baz): 未知执行错误",
+        "en-US": "Node 10:3 (Foo (Bar): Baz): Unknown execution error",
+        "zh-TW": "節點 10:3(Foo (Bar): Baz): 未知執行錯誤",
+        "zh-HK": "節點 10:3(Foo (Bar): Baz): 未知執行錯誤",
+        "ja-JP": "ノード 10:3(Foo (Bar): Baz): 不明な実行エラー",
+        "ko-KR": "노드 10:3 (Foo (Bar): Baz): 알 수 없는 실행 오류",
+      },
+      "节点 10(Foo (Bar): 未知执行错误": {
+        "zh-CN": "节点 10(Foo (Bar): 未知执行错误",
+        "en-US": "Node 10 (Foo (Bar): Unknown execution error",
+        "zh-TW": "節點 10(Foo (Bar): 未知執行錯誤",
+        "zh-HK": "節點 10(Foo (Bar): 未知執行錯誤",
+        "ja-JP": "ノード 10(Foo (Bar): 不明な実行エラー",
+        "ko-KR": "노드 10 (Foo (Bar): 알 수 없는 실행 오류",
+      },
+      "节点 10(Foo (Bar): invalid\nline 2": {
+        "zh-CN": "节点 10(Foo (Bar): invalid\nline 2",
+        "en-US": "Node 10 (Foo (Bar): invalid\nline 2",
+        "zh-TW": "節點 10(Foo (Bar): invalid\nline 2",
+        "zh-HK": "節點 10(Foo (Bar): invalid\nline 2",
+        "ja-JP": "ノード 10(Foo (Bar): invalid\nline 2",
+        "ko-KR": "노드 10 (Foo (Bar): invalid\nline 2",
+      },
+    };
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const [sample, expected] of Object.entries(expectedByMessage)) {
+        const out = tb(sample);
+        expect(out, `${loc}: ${sample}`).toBe(expected[loc]);
+        if (loc !== "zh-CN") {
+          expect(
+            simplifiedLeakRe.test(out),
+            `Simplified Chinese leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            leakRe.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("handles unmatched-) ComfyUI class_type fallback, preserves non-matching node strings, and translates multi-line auto-restore errors across all 6 locales", () => {
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+    const simplifiedLeakRe =
+      /节点|未知执行错误|自动|装载|加载|失败|请手动|对外|开启|启动|画布/;
+
+    const expectedByMessage: Record<string, Record<ColabOneLocale, string>> = {
+      // 1. ComfyUI custom node class names containing unmatched ')'
+      "节点 10(KSampler) v2): 未知执行错误": {
+        "zh-CN": "节点 10(KSampler) v2): 未知执行错误",
+        "en-US": "Node 10 (KSampler) v2): Unknown execution error",
+        "zh-TW": "節點 10(KSampler) v2): 未知執行錯誤",
+        "zh-HK": "節點 10(KSampler) v2): 未知執行錯誤",
+        "ja-JP": "ノード 10(KSampler) v2): 不明な実行エラー",
+        "ko-KR": "노드 10 (KSampler) v2): 알 수 없는 실행 오류",
+      },
+      "节点 10(Foo (v1))): 未知执行错误": {
+        "zh-CN": "节点 10(Foo (v1))): 未知执行错误",
+        "en-US": "Node 10 (Foo (v1))): Unknown execution error",
+        "zh-TW": "節點 10(Foo (v1))): 未知執行錯誤",
+        "zh-HK": "節點 10(Foo (v1))): 未知執行錯誤",
+        "ja-JP": "ノード 10(Foo (v1))): 不明な実行エラー",
+        "ko-KR": "노드 10 (Foo (v1))): 알 수 없는 실행 오류",
+      },
+
+      // 2. Multi-line auto-restore failure errors for all 4 rules
+      "自动重新装载模型 Qwen3 失败，请手动装载：模型加载失败：first\nsecond": {
+        "zh-CN":
+          "自动重新装载模型 Qwen3 失败，请手动装载：模型加载失败：first\nsecond",
+        "en-US":
+          "Failed to reload model Qwen3 automatically; please load it manually: Model load failed: first\nsecond",
+        "zh-TW":
+          "自動重新載入模型 Qwen3 失敗，請手動載入：模型載入失敗：first\nsecond",
+        "zh-HK":
+          "自動重新載入模型 Qwen3 失敗，請手動載入：模型載入失敗：first\nsecond",
+        "ja-JP":
+          "モデル Qwen3 の自動再読み込みに失敗しました。手動で読み込んでください: モデルのロードに失敗しました: first\nsecond",
+        "ko-KR":
+          "모델 Qwen3 자동 다시 불러오기에 실패했습니다. 수동으로 불러와 주세요: 모델 로드 실패: first\nsecond",
+      },
+      "自动恢复对外 API 失败，请手动开启：first\nsecond": {
+        "zh-CN": "自动恢复对外 API 失败，请手动开启：first\nsecond",
+        "en-US":
+          "Failed to restore Public API automatically; please enable it manually: first\nsecond",
+        "zh-TW": "自動還原對外 API 失敗，請手動開啟：first\nsecond",
+        "zh-HK": "自動恢復對外 API 失敗，請手動開啟：first\nsecond",
+        "ja-JP":
+          "パブリック API の自動復元に失敗しました。手動で起動してください: first\nsecond",
+        "ko-KR":
+          "외부 API 자동 복원에 실패했습니다. 수동으로 켜 주세요: first\nsecond",
+      },
+      "自动重新启动 ComfyUI 失败，请手动启动：first\nsecond": {
+        "zh-CN": "自动重新启动 ComfyUI 失败，请手动启动：first\nsecond",
+        "en-US":
+          "Failed to restart ComfyUI automatically; please start it manually: first\nsecond",
+        "zh-TW": "自動重新啟動 ComfyUI 失敗，請手動啟動：first\nsecond",
+        "zh-HK": "自動重新啟動 ComfyUI 失敗，請手動啟動：first\nsecond",
+        "ja-JP":
+          "ComfyUI の自動再起動に失敗しました。手動で起動してください: first\nsecond",
+        "ko-KR":
+          "ComfyUI 자동 재시작에 실패했습니다. 수동으로 시작해 주세요: first\nsecond",
+      },
+      "自动恢复 ComfyUI 原生画布失败，请手动开启：first\nsecond": {
+        "zh-CN": "自动恢复 ComfyUI 原生画布失败，请手动开启：first\nsecond",
+        "en-US":
+          "Failed to restore ComfyUI Native Canvas automatically; please enable it manually: first\nsecond",
+        "zh-TW": "自動還原 ComfyUI 原生畫布失敗，請手動開啟：first\nsecond",
+        "zh-HK": "自動恢復 ComfyUI 原生畫布失敗，請手動開啟：first\nsecond",
+        "ja-JP":
+          "ComfyUI ネイティブキャンバスの自動復元に失敗しました。手動で起動してください: first\nsecond",
+        "ko-KR":
+          "ComfyUI 네이티브 캔버스 자동 복원에 실패했습니다. 수동으로 켜 주세요: first\nsecond",
+      },
+    };
+
+    const nonMatchingNodeSamples = [
+      "节点 10(Foo) bar: baz",
+      "节点 10(): missing input",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const [sample, expected] of Object.entries(expectedByMessage)) {
+        const out = tb(sample);
+        expect(out, `${loc}: ${sample}`).toBe(expected[loc]);
+        if (loc !== "zh-CN") {
+          expect(
+            simplifiedLeakRe.test(out),
+            `Simplified Chinese leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            leakRe.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+        }
+      }
+      for (const sample of nonMatchingNodeSamples) {
+        expect(
+          tb(sample),
+          `${loc} must not misparse non-matching node string "${sample}"`,
+        ).toBe(sample);
       }
     }
   });

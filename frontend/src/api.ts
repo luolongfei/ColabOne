@@ -1,8 +1,12 @@
 import { ColabOneDesktop, type ColabOneLogDrawerState } from "./colabOneBridge";
 import type { ColabOneSnapshot } from "./types";
 
+export async function colabOneSnapshotRaw(): Promise<string> {
+  return ColabOneDesktop.snapshot();
+}
+
 export async function colabOneSnapshot(): Promise<ColabOneSnapshot> {
-  return JSON.parse(await ColabOneDesktop.snapshot());
+  return JSON.parse(await colabOneSnapshotRaw());
 }
 
 export async function colabOneCommand(

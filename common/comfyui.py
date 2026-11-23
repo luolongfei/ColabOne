@@ -247,7 +247,7 @@ def validate_comfy_api_workflow(workflow: Any) -> dict[str, dict[str, Any]]:
         raise ValueError(f"工作流节点数量不能超过 {_MAX_WORKFLOW_NODES} 个")
     try:
         encoded = json.dumps(
-            workflow, ensure_ascii=False, allow_nan=False
+            workflow, ensure_ascii=False, allow_nan=False, separators=(",", ":")
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ValueError("工作流包含无法序列化的内容") from exc

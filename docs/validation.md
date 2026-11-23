@@ -1,6 +1,13 @@
 # Validation record
 
-## Full change review — 2026-11-15
+## Pure Go single-binary desktop architecture (current)
+
+- The desktop client is now a pure Go single-binary native application (`MyGo v0.10.0` + in-process Go controller + `coder/websocket`), shipping zero local Python runtime, zero subprocess bridge pipes, and no sibling `runtime/` or `site-packages/` folders.
+- The remote Python control service (`server/`, `common/`, `catalog/`) is embedded directly inside the Go binary (`console/internal/servicebundle/embedded/` via `go:embed`, synced with `tools/sync_service_bundle.py`) and deployed exclusively onto the remote Colab GPU runtime.
+- Offline validation (`tools/install.py --root work/check --check`) runs `go vet`/`go test` across all Go desktop/controller packages, cross-language contract tests (`tests/test_go_python_contracts.py`), remote-service & packaging pytest suites, Vitest frontend tests, and production frontend + native binary builds with zero live Google, Hugging Face, or GPU calls.
+- The dated `2026-11-15` entries below are historical records captured prior to retiring the legacy local Python bridge and bundled CPython runtime.
+
+## Full change review — 2026-11-15 (historical)
 
 Reviewed the ColabOne changes from the initial unified-client implementation through the white-background vector icon, focusing on remote lifecycle, credentials, Drive synchronization, download/load/chat/creative paths, public API, desktop transport, appearance and packaging. This review did not allocate a GPU or change the user's account credentials.
 
@@ -20,7 +27,7 @@ The user's final color preference restores blue accents for navigation, primary 
 
 These checks use mock engines/transports and temporary storage. They do not replace a new real-GPU acceptance run; real image/video generation and external Cloudflare routing remain unverified in this review because the user declined another paid allocation. Earlier real T4 results below are historical and are not presented as validation of this patch.
 
-## Verified locally
+## Historical local verification — 2026-11-15
 
 - macOS Apple Silicon: Go vet/tests, Vue TypeScript production build, Python compile/import self-test.
 - 80 offline Python tests: authenticated remote API, model manifests/shards, 8/32-worker HTTP download, sparse resume/hash verification, low disk/VRAM, model retention, cancellation, event replay, upload races, Drive flush/disconnect protection, consent propagation, owned-instance release, idle countdown/authorization leases, failed-start cleanup, whole-page authorization parsing, OAuth callback state, and UTF-8 process pipes under an ASCII locale.

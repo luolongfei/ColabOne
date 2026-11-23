@@ -22,9 +22,9 @@
 
 ---
 
-ColabOne 為 **macOS（Apple Silicon）** 及 **Windows（x64）** 提供流暢的原生桌面應用程式，讓你直接管理遠端 Google Colab GPU。無需折騰 Notebook，亦無需設定 VPN，即可一鍵啟動並管理多部 GPU 實例、即時監控硬件負載與計費續航、架設私密 OpenAI 相容大語言模型介面，並執行 ComfyUI 工作流。
+ColabOne 為 **macOS（Apple Silicon）** 及 **Windows（x64）** 提供流暢的原生桌面應用程式，讓你直接管理遠端 Google Colab GPU。無需折騰 Notebook，即可一鍵啟動並管理多部 GPU 實例、即時監控硬件負載與計費續航、架設私密 OpenAI 相容大語言模型介面，並執行 ComfyUI 工作流。
 
-你的電腦只會運行桌面介面及輕量級本地控制進程。所有模型下載、GGUF 權重、`llama.cpp` 推理及 ComfyUI 運算均只在遠端 Colab GPU 上執行。
+你的電腦只會運行單一純 Go 原生桌面執行檔（`ColabOne.app` / `ColabOne.exe`），所有本地控制邏輯均內置於同一進程中 —— 本地完全無需 Python 執行環境。所有模型下載、GGUF 權重、`llama.cpp` 推理及 ComfyUI 運算均只在遠端 Colab GPU 上執行（由啟動時自動上傳的內嵌式 Python 遠端控制服務驅動）。
 
 ## ✨ 核心亮點
 
@@ -33,14 +33,14 @@ ColabOne 為 **macOS（Apple Silicon）** 及 **Windows（x64）** 提供流暢�
 - **OpenAI 相容大語言模型網關（`對外 API`）** — 直接在內置的**選擇模型**面板瀏覽並載入 Hugging Face GGUF 模型，提供即時顯存與磁碟適配評估、自動顯存 + 系統記憶體混合載入（`--fit on`）、16／32 線程並發並經 SHA-256 校驗的高速下載，以及 `8K`–`128K` 上下文檔位。透過你自己的 Cloudflare Named Tunnel 對外提供 `/v1/models`、`/v1/chat/completions`、`/v1/responses` 及 `/v1/responses/compact` 介面。
 - **ComfyUI 工作流工坊與原生畫布（`ComfyUI`）** — 以雙模式運行遠端 **ComfyUI `v0.46.0`**：**工作流工坊**可將任何 ComfyUI API JSON 自動轉換為簡潔的參數表單，支援經 SHA-256 校驗的線上預覽與匯出至本地；**原生畫布**則透過獨立令牌認證的安全隧道，在專屬桌面視窗或系統瀏覽器開啟完整節點編輯器。
 - **Google 雲端硬碟自動持久保存** — 以僅限本程式存取的 `drive.file` 權限，自動將模型清單、ComfyUI 工作流與輸出作品保存至 `My Drive / ColabOne_Drive`。開箱即支援 Colab 原生 DriveFS（每次新建實例只需於瀏覽器點擊確認一次），在免費同意一次 Google Cloud 服務條款後，更可升級為永久免彈窗的無頭 `rclone` 自動掛載。
-- **為日常使用而設** — 免安裝便攜包內置獨立 CPython 執行環境（無需在本地安裝 Python、Go 或 Node），支援 6 種介面語言、淺色／深色／跟隨系統外觀主題、本地系統憑證庫加密儲存、可選的 GPU 分配代理（僅分配階段）、一鍵遠端服務熱更新，以及即時脫敏的**執行日誌**面板（`Ctrl+J`）。
+- **為日常使用而設** — 採用純 Go 單一執行檔架構（MyGo `v0.10.0` + 進程內 Go 控制器，無需本地 Python 執行環境或同層 `runtime/`、`site-packages/` 目錄，亦無需在本地安裝 Python、Go 或 Node），支援 6 種介面語言、淺色／深色／跟隨系統外觀主題、本地系統憑證庫加密儲存、可選的 GPU 分配代理（僅分配階段）、一鍵遠端服務熱更新，以及即時脫敏的**執行日誌**面板（`Ctrl+J`）。
 
 ## 🚀 快速上手
 
 ColabOne 採用四個側邊欄分頁設計：**遠端裝置 → 對外 API → ComfyUI → 設定**，並於右側配備可滑出展開的**執行日誌**面板。
 
 1. **下載並啟動**
-   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的便攜壓縮包（或[從源碼構建](#-從源碼構建)），完整解壓資料夾後開啟 `ColabOne.app`（macOS）或 `ColabOne.exe`（Windows）。請保留同層目錄（`runtime`、`site-packages`、`bridge` 等）與主程式在同一資料夾內。於 Windows 平台，可在**設定**內直接建立開始選單及桌面捷徑，無需管理員權限。
+   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的壓縮包（或[從源碼構建](#-從源碼構建)），解壓後直接開啟 `ColabOne.app`（macOS）或 `ColabOne.exe`（Windows）。ColabOne 是完全自包含的純 Go 單一執行檔應用程式，無需本地 Python 執行環境，亦無需保留同層的 `runtime/` 或 `site-packages/` 資料夾。於 Windows 平台，可在**設定**內直接建立開始選單及桌面捷徑，無需管理員權限。
 
 2. **登入 Google 帳戶**
    前往**設定** → **登入 Google**，在瀏覽器完成帳戶授權後，ColabOne 會自動完成登入。如果瀏覽器顯示授權頁內容而未自動跳轉，可展開手動貼上區域並點擊**貼上並完成登入**。登入憑證會加密儲存在 macOS 鑰匙圈（Keychain）或 Windows 憑證管理員中，重啟程式會自動恢復並續期。
@@ -124,14 +124,14 @@ ColabOne 只會將 **ComfyUI `v0.46.0`** 部署於遠端 Colab GPU（`127.0.0.1:
 
 - **Go** `1.27.3`
 - **Node.js** `24 LTS`（或 `26`）
-- **Python** `3.12`
-- **`uv`**（或標準 `venv` + `pip`）
+- **Python** `3.12` 及 **`uv`**（或標準 `venv` + `pip`）—— 僅用於構建與測試階段（同步內嵌遠端服務包、執行遠端 Python 單元測試及打包腳本）
 
 ### 🔨 初始化與構建
 
 ```sh
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -r requirements-dev.txt
+.venv/bin/python tools/sync_service_bundle.py
 npm --prefix frontend ci
 cd console
 go tool mygo generate
@@ -144,20 +144,20 @@ npm --prefix frontend run build
 > 於 Windows 平台，請將 `.venv/bin/python` 替換為 `.venv\Scripts\python.exe`。
 
 ```sh
-# 執行全部離線檢查（Python、Go vet/test、Vitest、前端構建及橋接自檢）
+# 執行全部離線檢查（內嵌服務包同步檢查、Go vet/test、遠端 Python pytest、Vitest 及前端構建）
 .venv/bin/python tools/install.py --root work/check --check
 
-# 在 dist/ 目錄打包獨立便攜壓縮包
+# 在 dist/ 目錄打包純 Go 單一執行檔便攜壓縮包
 .venv/bin/python tools/package.py --out dist
 ```
 
-打包完成的免安裝便攜壓縮包會輸出至 `dist/`（未壓縮暫存目錄位於 `work/package-stage/Programs/ColabOne`），內含經雜湊校驗的獨立 CPython 執行環境與鎖定版本的 Wheel 套件，讓終端用戶無需安裝任何外部工具鏈即可直接使用。
+打包完成的免安裝便攜壓縮包會輸出至 `dist/`（未壓縮暫存目錄位於 `work/package-stage/Programs/ColabOne`），內含獨立的純 Go 單一執行檔（`ColabOne.app` / `ColabOne.exe`），並透過 `go:embed` 直接內嵌編譯後的 Vue 前端資源及遠端 Python 控制服務（`server/`、`common/`、`catalog/`），終端用戶無需本地 Python 執行環境或任何同層依賴資料夾。
 
 所有單元測試與瀏覽器測試均 100% 離線使用模擬（Mock）運行——絕不會連接 Google 或 Hugging Face，亦不會申請任何 GPU 實例。真實 GPU 驗收測試會在嚴格的算力預算下明確觸發執行，詳見 [docs/validation.md](docs/validation.md)。
 
 ## 📚 技術文件
 
-- [架構概覽](docs/architecture.md) — 本地控制橋接、遠端回環連接埠、雲端硬碟同步、硬件監控及安全邊界
+- [架構概覽](docs/architecture.md) — 純 Go 進程內控制器、內嵌遠端服務、回環連接埠、雲端硬碟同步、硬件監控及安全邊界
 - [遠端與對外 API 參考](docs/api.md) — 控制路由、OpenAI 網關規範及 ComfyUI 介面說明
 - [驗證記錄](docs/validation.md) — 離線 CI 測試覆蓋率與真實 GPU 驗收日誌
 - [上游來源清單](third_party/SOURCES.md) — 鎖定的第三方依賴項目與版權歸屬
@@ -180,12 +180,12 @@ npm --prefix frontend run build
 
 同時衷心感謝以下開源項目，正因為有它們的開源分享與底層支撐，才有了今天的 ColabOne（完整詳情見 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)）：
 
-- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — 參考其 Google Colab GPU 分配、執行環境就緒檢測、心跳生命週期管理及免安裝便攜 Python 打包方案。
-- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 參考其桌面端與 Colab 之間的橋接架構，以及無頭 `rclone` 掛載 Google 雲端硬碟的實踐模式。
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — 參考其 Google Colab GPU 分配、執行環境就緒檢測及心跳生命週期管理方案。
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 參考其桌面端與 Colab 之間的控制架構，以及無頭 `rclone` 掛載 Google 雲端硬碟的實踐模式。
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 參考其模型清單、鎖定版本的 `llama.cpp` CUDA 部署及並發分段下載策略。
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** *(MIT)* 與 **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 分別作為遠端 GGUF 大語言模型推理引擎，以及節點式圖片、影片與多模態工作流引擎整合。
-- **桌面端與前端 UI 技術棧** — **[MyGo](https://github.com/egoist/mygo)**、**[Vue 3](https://github.com/vuejs/core)**、**[Vite](https://github.com/vitejs/vite)**、**[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**、**[Phosphor Icons](https://github.com/phosphor-icons/vue)**、**[Shiki](https://github.com/shikijs/shiki)**、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)* 及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
-- **後端、隧道與雲端硬碟依賴** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*、**[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)* 及 **[rclone](https://github.com/rclone/rclone)** *(MIT)*。
+- **桌面端與前端 UI 技術棧** — **[MyGo](https://github.com/egoist/mygo)** (`v0.10.0`, MIT)、**[coder/websocket](https://github.com/coder/websocket)** *(ISC)*、**[Vue 3](https://github.com/vuejs/core)**、**[Vite](https://github.com/vitejs/vite)**、**[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**、**[Phosphor Icons](https://github.com/phosphor-icons/vue)**、**[Shiki](https://github.com/shikijs/shiki)**、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)* 及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **遠端服務、隧道與雲端硬碟依賴** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*、**[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)* 及 **[rclone](https://github.com/rclone/rclone)** *(MIT)*。
 
 ## 📜 開源授權
 

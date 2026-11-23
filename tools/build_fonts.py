@@ -69,7 +69,7 @@ LAYOUT_FEATURES = [
     "zero",
 ]
 
-SCAN_DIRS = ("frontend/src", "bridge", "server", "common", "catalog", "console")
+SCAN_DIRS = ("frontend/src", "server", "common", "catalog", "console")
 SCAN_SUFFIXES = {".vue", ".ts", ".js", ".css", ".html", ".py", ".go", ".json"}
 
 

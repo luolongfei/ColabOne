@@ -8,7 +8,7 @@
 - `frontend/package.json`：前端包清单，`version` 字段与 `console/mygo.json` 保持同步
 - `frontend/package-lock.json`：npm 锁文件，顶层 `version` 与 `packages[""].version` 均与 `console/mygo.json` 保持同步
 - `tools/release_version.py`：CI 与本地共用的版本清单校验/更新工具（`--check`、`--tag`、`--set`）
-- `tools/install.py`：离线检查入口（`python3 tools/install.py --root <tmp> --check`），依次执行 Python 字节码编译、`mygo generate`、前端构建、`go vet`、`go test`、`pytest tests`、`vitest` 与 `bridge/main.py --self-test`
+- `tools/install.py`：离线检查入口（`python3 tools/install.py --root <tmp> --check`），依次执行 Python 字节码编译、只读嵌入式远端服务包一致性校验（`check_service_bundle`，不做写入同步；更新远端源码后需手动运行 `python3 tools/sync_service_bundle.py`）、`mygo generate` 绑定一致性校验、前端构建、`go vet`、`go test`、`pytest tests`、`vitest` 与纯 Go `go run . --self-test`
 - `tools/package.py`：便携包打包与敏感信息审计脚本，在 CI 中分别产出 `ColabOne-<version>-windows-x64.zip` 与 `ColabOne-<version>-macos-arm64.zip`
 - `.github/workflows/ci.yml`：仅响应 `workflow_call` 与 `workflow_dispatch`，在 `windows-latest` 和 `macos-latest` 上运行离线检查、Playwright UI 回归测试并上传压缩包 artifact
 - `.github/workflows/release.yml`：响应 `v*` 标签推送与手动 `workflow_dispatch`；依次校验标签与提交、校验三处源码版本、调用 `ci.yml` 构建双平台便携包、生成 `SHA256SUMS.txt` 并创建/更新 GitHub Release

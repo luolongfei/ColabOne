@@ -72,7 +72,7 @@ func colabOneConfigDir() string {
 		if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
 			return filepath.Join(local, "ColabOne")
 		}
-		// Match bridge/controller.py colabone_config_dir() on Linux (~/.local/share/ColabOne).
+		// Match controller.DefaultConfigDir() on Linux (~/.local/share/ColabOne).
 		return filepath.Join(home, ".local", "share", "ColabOne")
 	}
 }

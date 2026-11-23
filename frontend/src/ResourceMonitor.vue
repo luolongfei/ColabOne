@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import {
   Badge as ABadge,
   Button as AButton,
@@ -131,11 +139,26 @@ function openMetricDetail(metric: MetricKey): void {
 
 const tracker = new ColabOneTelemetryTracker();
 const nowTick = ref<number>(Date.now());
-const telemetry = ref<ColabOneTelemetry>(
+const telemetry = shallowRef<ColabOneTelemetry>(
   tracker.pushSnapshot(props.runtime, Date.now() / 1000),
 );
 
 let tickTimer: ReturnType<typeof setInterval> | undefined;
+
+function tickTelemetry() {
+  if (props.ipcDisconnected || isPaused.value || document.hidden) return;
+  const nowMs = Date.now();
+  nowTick.value = nowMs;
+  if (props.runtime.state === "ready" || telemetry.value.online) {
+    telemetry.value = tracker.pushSnapshot(props.runtime, nowMs / 1000);
+  }
+}
+
+function handleVisibilityChange() {
+  if (!document.hidden) {
+    tickTelemetry();
+  }
+}
 
 watch(
   () => props.runtime,
@@ -151,18 +174,13 @@ watch(
 );
 
 onMounted(() => {
-  tickTimer = setInterval(() => {
-    if (props.ipcDisconnected || isPaused.value) return;
-    const nowMs = Date.now();
-    nowTick.value = nowMs;
-    if (props.runtime.state === "ready" || telemetry.value.online) {
-      telemetry.value = tracker.pushSnapshot(props.runtime, nowMs / 1000);
-    }
-  }, 1000);
+  tickTimer = setInterval(tickTelemetry, 1000);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 
 onUnmounted(() => {
   clearHighlight();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   if (tickTimer !== undefined) {
     clearInterval(tickTimer);
     tickTimer = undefined;

@@ -194,8 +194,7 @@ func (d *ColabOneDesktop) applyLogWindowOnMain(mainWin *mygo.Window, open bool, 
 	}
 
 	if existing != nil && !existing.IsDestroyed() {
-		existing.Show()
-		existing.Focus()
+		revealColabOneWindow(existing)
 		return ColabOneLogDrawerState{Open: true, Standalone: true}
 	}
 

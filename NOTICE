@@ -13,12 +13,29 @@ ColabOne modifications, 2026. Model manifests, CUDA deployment and parallel rang
 
 ColabOne Drive persistence reuses Google Colab CLI OAuth refresh credentials (`drive.file` scope, Copyright 2026 Google LLC, Apache License 2.0) and mounts/synchronizes `ColabOne_Drive` on the remote runtime via rclone by Nick Craig-Wood (MIT), pinned to v1.76.0. See server/drive.py, third_party/rclone.LICENSE and third_party/SOURCES.md.
 
+Remote LLM inference uses llama.cpp (release b12032, https://github.com/ggml-org/llama.cpp), Copyright (c) 2023-present The ggml authors, licensed under the MIT License. Prebuilt CUDA release assets are downloaded with verified SHA-256 only on the remote Colab runtime and are not bundled in the desktop client distribution. See catalog/engine.json and third_party/SOURCES.md.
+
 Remote public API and authenticated ComfyUI canvas tunneling uses cloudflared by Cloudflare, Inc. (Apache License 2.0), pinned to release 2026.11.0, downloaded with verified SHA-256 only on the remote Colab runtime. See catalog/cloudflared.json and third_party/SOURCES.md.
 
 Remote workflow and visual generation integrates ComfyUI by Comfy-Org (https://github.com/Comfy-Org/ComfyUI), licensed under the GNU General Public License, Version 3 (GPL-3.0), pinned to tag v0.46.0 (commit a277b5bf213e8a44fa34817b7770b54f86ef4cea). ComfyUI is fetched only on the remote Colab runtime and is not bundled in the desktop client distribution. See third_party/SOURCES.md.
+
+Remote Colab control service dependencies (pinned with SHA-256 hashes in server/requirements.txt and installed only on the remote Colab runtime, not bundled in the desktop client distribution) directly use:
+- fastapi 0.165.0 (https://github.com/fastapi/fastapi), Copyright (c) 2018 Sebastián Ramírez, MIT License.
+- uvicorn 0.54.0 (https://github.com/Kludex/uvicorn), Copyright (c) 2017-present, Encode OSS Ltd, BSD-3-Clause License.
+- requests 2.34.2 (https://github.com/psf/requests), Copyright 2019 Kenneth Reitz, Apache License, Version 2.0.
+- pydantic 2.14.4 (https://github.com/pydantic/pydantic), Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors, MIT License.
+- httpx 0.28.1 (https://github.com/encode/httpx), Copyright (c) 2019, Encode OSS Ltd, BSD-3-Clause License.
+- Pillow 13.0.0 (https://github.com/python-pillow/Pillow), Copyright (c) 2010 by Jeffrey 'Alex' Clark and contributors (with PIL portions Copyright (c) 1997-2011 by Secret Labs AB and Copyright (c) 1995-2011 by Fredrik Lundh and contributors), MIT-CMU License.
+See server/requirements.in, server/requirements.txt, and third_party/SOURCES.md.
+
+Desktop UI bundles Vue (vue 3.5.46, https://github.com/vuejs/core), Copyright (c) 2018-present, Yuxi (Evan) You, licensed under the MIT License; Ant Design Vue (ant-design-vue 4.2.6, https://github.com/vueComponent/ant-design-vue), Copyright (c) 2017-present ant-design-vue (with portions Copyright (c) 2015-present Alipay.com and Copyright (c) 2019-present Anthony Fu), licensed under the MIT License; and Phosphor Icons (@phosphor-icons/vue 2.2.1, https://github.com/phosphor-icons/vue), Copyright (c) 2020 Phosphor Icons, licensed under the MIT License. See third_party/SOURCES.md.
 
 Desktop UI typography bundles Simplified Chinese WOFF2 subsets of Sarasa UI SC (Sarasa Gothic v1.0.43, https://github.com/be5invis/Sarasa-Gothic), Copyright (c) 2015-2025 Renzhi Li (Belleve Invis), with portions Copyright (c) 2016 The Inter Project Authors, Copyright (c) 2014-2021 Adobe Systems Incorporated (with Reserved Font Name 'Source'), and Copyright (c) 2012 Google Inc. The bundled font files under frontend/src/assets/fonts/ are distributed solely under the SIL Open Font License, Version 1.1 (SIL OFL 1.1), separate from the GPL-3.0 application code. See third_party/sarasa-gothic.LICENSE and third_party/SOURCES.md.
 
 Desktop language switcher flag icons are sourced from flag-icons (v7.6.0, https://github.com/lipis/flag-icons), Copyright (c) 2013 Panayiotis Lipiridis, licensed under the MIT License. See third_party/SOURCES.md.
 
 Desktop code block syntax highlighting uses Shiki (@shikijs/core, @shikijs/engine-javascript, @shikijs/langs, @shikijs/themes, v4.6.0, https://github.com/shikijs/shiki), Copyright (c) 2021 Pine Wu and Copyright (c) 2023 Anthony Fu, licensed under the MIT License. See third_party/SOURCES.md.
+
+Desktop shell, native WebView host, typed IPC bindings, and single-binary packaging use MyGo (github.com/egoist/mygo v0.10.0 and mygo-runtime 0.10.0, https://github.com/egoist/mygo), Copyright (c) 2026 MyGo contributors, licensed under the MIT License. See third_party/SOURCES.md.
+
+Desktop-to-Colab Jupyter kernel WebSocket RPC uses coder/websocket (github.com/coder/websocket, v1.8.15, https://github.com/coder/websocket), Copyright (c) 2025 Coder, licensed under the ISC License. See third_party/SOURCES.md.
