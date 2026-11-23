@@ -342,7 +342,7 @@ def _compute_token_speed(
         decode_sec = elapsed_sec - first_token_elapsed_sec
         if completion_tokens > 1 and decode_sec >= 0.01:
             return round((completion_tokens - 1) / decode_sec, 2)
-    if elapsed_sec > 0:
+    if elapsed_sec >= 0:
         return round(completion_tokens / max(elapsed_sec, 0.001), 2)
     return None
 
@@ -429,7 +429,7 @@ class ColabOnePublicGateway:
             )
 
     def _serialize_request_history(self) -> tuple[list[dict[str, Any]], float | None, float | None]:
-        now_mono = time.monotonic()
+        now_mono = time.perf_counter()
         recent: list[dict[str, Any]] = []
         active_tps: float | None = None
         latest_completed_tps: float | None = None
@@ -644,7 +644,7 @@ class ColabOnePublicGateway:
         kind: str, model: str, stream: bool
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         now = time.time()
-        started_mono = time.monotonic()
+        started_mono = time.perf_counter()
         metric: dict[str, Any] = {
             "seq": 0,
             "id": "",
@@ -766,7 +766,7 @@ class ColabOnePublicGateway:
         acc = slot.get("acc")
         if not isinstance(metric, dict) or not isinstance(acc, dict):
             return
-        now_mono = time.monotonic()
+        now_mono = time.perf_counter()
         elapsed_sec = max(0.0, now_mono - acc["started_mono"])
         first_elapsed = (
             max(0.0, acc["first_token_mono"] - acc["started_mono"])
@@ -1514,7 +1514,7 @@ class ColabOnePublicGateway:
                                                     chunk = None
                                                 if isinstance(chunk, dict):
                                                     self._record_stream_delta(
-                                                        slot, chunk, time.monotonic()
+                                                        slot, chunk, time.perf_counter()
                                                     )
                                                     if (
                                                         not client_wants_usage
@@ -1899,7 +1899,7 @@ class ColabOnePublicGateway:
                                                 continue
                                             if isinstance(chunk, dict):
                                                 self._record_stream_delta(
-                                                    slot, chunk, time.monotonic()
+                                                    slot, chunk, time.perf_counter()
                                                 )
                                             for ev in translator.feed_chunk(chunk):
                                                 await self._enqueue(slot, task, ev)

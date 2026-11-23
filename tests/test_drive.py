@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,14 +63,24 @@ def test_build_rclone_conf_uses_colabone_naming_and_drive_file_scope(monkeypatch
     assert auth.build_rclone_conf() == ""
 
 
-def test_stage_rclone_config_enforces_0600_and_removes_staging(tmp_path):
+def test_stage_rclone_config_enforces_0600_and_removes_staging(tmp_path, monkeypatch):
+    chmod_calls = []
+    real_chmod = os.chmod
+
+    def spy_chmod(path, mode, *args, **kwargs):
+        chmod_calls.append((Path(path), mode))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", spy_chmod)
     stage = tmp_path / "staged.conf"
     stage.write_text(f"[{COLABONE_DRIVE_REMOTE}]\ntype = drive\n", encoding="utf-8")
     data_root = tmp_path / "colabone-data"
     dst = stage_rclone_config(stage, data_root)
     assert dst == data_root / ".rclone.conf"
     assert not stage.exists()
-    assert (dst.stat().st_mode & 0o777) == 0o600
+    assert any(mode == 0o600 for _, mode in chmod_calls)
+    if os.name != "nt":
+        assert (dst.stat().st_mode & 0o777) == 0o600
     assert f"[{COLABONE_DRIVE_REMOTE}]" in dst.read_text(encoding="utf-8")
 
 
@@ -77,6 +88,15 @@ def test_ensure_rclone_binary_verifies_sha256_and_extracts(tmp_path, monkeypatch
     monkeypatch.setattr("server.drive.shutil.which", lambda _: None)
     monkeypatch.setattr("server.drive.platform.system", lambda: "Linux")
     monkeypatch.setattr("server.drive.platform.machine", lambda: "x86_64")
+
+    chmod_calls = []
+    real_chmod = os.chmod
+
+    def spy_chmod(path, mode, *args, **kwargs):
+        chmod_calls.append((Path(path), mode))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", spy_chmod)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -101,7 +121,9 @@ def test_ensure_rclone_binary_verifies_sha256_and_extracts(tmp_path, monkeypatch
 
     binary = ensure_rclone_binary(tmp_path / "data", catalog, http=http)
     assert binary.is_file()
-    assert (binary.stat().st_mode & 0o777) == 0o700
+    assert any(mode == 0o700 for _, mode in chmod_calls)
+    if os.name != "nt":
+        assert (binary.stat().st_mode & 0o777) == 0o700
 
     # Wrong SHA-256 must be rejected.
     bad_catalog = tmp_path / "bad-catalog"

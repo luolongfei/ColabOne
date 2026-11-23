@@ -1098,6 +1098,10 @@ def test_public_api_estimates_speed_without_upstream_usage_and_bounds_history(
     assert rec["estimated"] is True
     assert rec["tokens_per_second"] is not None and rec["tokens_per_second"] > 0
     assert any("≈" in entry["message"] and "tokens/s" in entry["message"] for entry in snap["logs"])
+    from server.public_api import _compute_token_speed
+
+    # Sub-tick completions (e.g. coarse Windows clocks) must still compute a positive speed estimate.
+    assert _compute_token_speed(3, 0.0) == 3000.0
 
     # Registering >50 requests stays bounded to MAX_REQUEST_HISTORY (50).
     for _ in range(60):
