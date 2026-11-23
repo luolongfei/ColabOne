@@ -183,8 +183,9 @@ ColabOne の開発と改善に協力してくださった皆様に感謝いた�
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab の GPU 割り当て、ランタイム起動確認、ハートビートによるライフサイクル管理、ポータブル Python パッケージングの設計で参考にさせていただきました。
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — デスクトップアプリと Colab 間のブリッジ構成およびヘッドレス `rclone` による Google ドライブマウント手法の設計で参考にさせていただきました。
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — モデルマニフェスト、バージョン固定済み `llama.cpp` CUDA デプロイ、並列レンジダウンロード戦略の設計で参考にさせていただきました。
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — リモートのノードベース画像・動画・マルチモーダルワークフローエンジンとして統合しています。
-- **主要な依存ツール・ライブラリ** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*、および **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** *(MIT)*・**[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — リモートの GGUF LLM 推論エンジンおよびノードベース画像・動画・マルチモーダルワークフローエンジンとして統合しています。
+- **デスクトップ・UI スタック** — **[MyGo](https://github.com/egoist/mygo)**、**[Vue 3](https://github.com/vuejs/core)**、**[Vite](https://github.com/vitejs/vite)**、**[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**、**[Phosphor Icons](https://github.com/phosphor-icons/vue)**、**[Shiki](https://github.com/shikijs/shiki)**、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、および **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **バックエンド・トンネル・ドライブ基盤** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*、**[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、および **[rclone](https://github.com/rclone/rclone)** *(MIT)*。
 
 ## 📜 ライセンス
 

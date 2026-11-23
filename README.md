@@ -183,8 +183,9 @@ Heartfelt thanks as well to the open-source projects below — ColabOne simply w
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Inspired our Google Colab GPU allocation, runtime readiness, heartbeat lifecycle, and portable Python packaging.
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — Inspired our desktop-to-Colab bridge architecture and headless `rclone` Google Drive mounting.
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — Inspired our model manifests, pinned `llama.cpp` CUDA deployment, and parallel range downloads.
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — Integrated as the remote node-based image, video, and multimodal workflow engine.
-- **Core dependencies & assets** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** *(MIT)* & **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — Remote GGUF LLM inference engine and node-based image, video, and multimodal workflow engine.
+- **Desktop & UI stack** — **[MyGo](https://github.com/egoist/mygo)**, **[Vue 3](https://github.com/vuejs/core)**, **[Vite](https://github.com/vitejs/vite)**, **[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**, **[Phosphor Icons](https://github.com/phosphor-icons/vue)**, **[Shiki](https://github.com/shikijs/shiki)**, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+- **Backend, tunnel & Drive stack** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*, **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, and **[rclone](https://github.com/rclone/rclone)** *(MIT)*.
 
 ## 📜 License
 

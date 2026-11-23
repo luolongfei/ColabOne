@@ -183,8 +183,9 @@ npm --prefix frontend run build
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — 參考了 Google Colab GPU 分配、執行環境就緒檢測、心跳生命週期管理與可攜式 Python 封裝設計。
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 參考了桌面端與 Colab 之間的橋接架構，以及免彈窗 `rclone` Google 雲端硬碟掛載模式。
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 參考了模型清單設計、鎖定版本的 `llama.cpp` CUDA 部署與並行分段下載策略。
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 整合為底層引擎，驅動遠端節點式圖片、影片與多模態工作流程。
-- **核心開源相依項目與資源** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*，以及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** *(MIT)* 與 **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 分別整合為遠端 GGUF LLM 推論引擎與節點式圖片、影片及多模態工作流程引擎。
+- **桌面端與前端 UI 技術棧** — **[MyGo](https://github.com/egoist/mygo)**、**[Vue 3](https://github.com/vuejs/core)**、**[Vite](https://github.com/vitejs/vite)**、**[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**、**[Phosphor Icons](https://github.com/phosphor-icons/vue)**、**[Shiki](https://github.com/shikijs/shiki)**、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*，以及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **後端、通道與雲端硬碟相依項目** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*、**[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)* 與 **[rclone](https://github.com/rclone/rclone)** *(MIT)*。
 
 ## 📜 授權條款
 

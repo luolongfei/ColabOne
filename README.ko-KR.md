@@ -183,8 +183,9 @@ ColabOne을 함께 만들고 개선해 주신 모든 분들께 감사드립니�
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab GPU 할당, 런타임 준비 확인, 하트비트 수명 주기 관리 및 포터블 Python 패키징 설계에 참고했습니다.
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 데스크톱-Colab 브리지 아키텍처와 헤드리스 `rclone` Google 드라이브 마운트 패턴을 참고했습니다.
 - **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 모델 매니페스트, 고정 버전 `llama.cpp` CUDA 배포 및 병렬 범위 다운로드 전략을 참고했습니다.
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 원격 노드 기반 이미지·비디오·멀티모달 워크플로 엔진으로 통합되어 있습니다.
-- **핵심 오픈소스 의존성 및 리소스** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)* 및 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** *(MIT)* 및 **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 원격 GGUF LLM 추론 엔진과 노드 기반 이미지·비디오·멀티모달 워크플로 엔진으로 통합되어 있습니다.
+- **데스크톱 및 프론트엔드 UI 스택** — **[MyGo](https://github.com/egoist/mygo)**, **[Vue 3](https://github.com/vuejs/core)**, **[Vite](https://github.com/vitejs/vite)**, **[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)**, **[Phosphor Icons](https://github.com/phosphor-icons/vue)**, **[Shiki](https://github.com/shikijs/shiki)**, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)* 및 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+- **백엔드, 터널 및 드라이브 스택** — **[FastAPI](https://github.com/fastapi/fastapi)** *(MIT)*, **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)* 및 **[rclone](https://github.com/rclone/rclone)** *(MIT)*.
 
 ## 📜 라이선스
 
