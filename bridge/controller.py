@@ -2700,8 +2700,9 @@ class ColabOneController:
             raise ValueError("下载线程数请选择 16 或 32")
         if "auto_drive" in public and not isinstance(public["auto_drive"], bool):
             raise ValueError("自动挂载云盘设置不合法")
-        if payload.get("hf_token"):
-            self.vault.set("hf", payload["hf_token"])
+        hf_token = str(payload.get("hf_token") or "").strip()
+        if hf_token:
+            self.vault.set("hf", hf_token)
         with self.lock:
             idle_changed = (
                 "idle_minutes" in public
@@ -2715,7 +2716,7 @@ class ColabOneController:
             f"空闲释放: {snapshot_settings['idle_minutes']} 分钟",
             f"下载并发: {snapshot_settings['download_threads']} 线程",
         ]
-        if payload.get("hf_token"):
+        if hf_token:
             summary_parts.append("已更新 Hugging Face Token")
         self.activity.add("已保存设置（" + " · ".join(summary_parts) + "）", "设置")
         self.last_config = 0
@@ -2809,10 +2810,17 @@ class ColabOneController:
             return self.retry_monitor()
         if action == "api.key":
             api = self.vault.get("public_api", {})
+            if not isinstance(api, dict):
+                api = {}
             if not api.get("api_key"):
                 api["api_key"] = "co_" + secrets.token_urlsafe(36)
                 self.vault.set("public_api", api)
             return {"key": api["api_key"]}
+        if action == "api.tunnel_token":
+            api = self.vault.get("public_api", {})
+            if not isinstance(api, dict):
+                api = {}
+            return {"token": str(api.get("tunnel_token") or "")}
         if action == "api.rotate":
             # Revoke the running gateway first. Never report a local-only rotation as successful.
             if self._vault_sessions():
@@ -2949,6 +2957,11 @@ class ColabOneController:
             return self.async_operation("关闭 ComfyUI 原生画布", stop_canvas)
         if action == "comfyui.canvas.url":
             return self.remote("GET", "comfyui/canvas/url")
+        if action == "comfyui.canvas.tunnel_token":
+            canvas = self.vault.get("comfyui_canvas", {})
+            if not isinstance(canvas, dict):
+                canvas = {}
+            return {"token": str(canvas.get("tunnel_token") or "")}
         if action == "comfyui.workflow.import":
             req = WorkflowImportRequest.model_validate(payload)
             if self.data["runtime"].get("state") == "ready":
@@ -3173,6 +3186,9 @@ class ColabOneController:
             )
         if action == "settings.save":
             return self.save_settings(payload)
+        if action == "settings.hf_token":
+            raw = self.vault.get("hf", "")
+            return {"token": raw if isinstance(raw, str) else ""}
         if action == "auth.colab.begin":
             if self.operation_lock.locked() and not getattr(
                 self.auth, "loopback_active", False

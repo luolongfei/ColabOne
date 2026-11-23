@@ -7,7 +7,6 @@ import {
   Card as ACard,
   Divider as ADivider,
   Input as AInput,
-  InputPassword as AInputPassword,
   Popconfirm as APopconfirm,
   Segmented as ASegmented,
   Space as ASpace,
@@ -16,8 +15,10 @@ import {
   Tag as ATag,
 } from "ant-design-vue";
 import ColabOneCodeBlock from "./ColabOneCodeBlock.vue";
+import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import { colabOneExtractTunnelToken } from "./colabOneSecretToken";
 import type { ColabOneToastKind } from "./colabOneToast";
 import {
   PhArrowCounterClockwise,
@@ -91,6 +92,7 @@ function openModelDrawer() {
 const domain = ref(props.state.api_settings?.domain || "");
 const settingsDirty = ref(false);
 const tunnelToken = ref("");
+const tunnelInputRef = ref<InstanceType<typeof ColabOneSecretInput> | null>(null);
 const key = ref("");
 const revealingKey = ref(false);
 const keyTimer = ref<ReturnType<typeof setTimeout>>();
@@ -322,6 +324,7 @@ async function start() {
     })
   ) {
     tunnelToken.value = "";
+    tunnelInputRef.value?.hide();
     settingsDirty.value = false;
     if (api.value?.state === "ready") {
       awaitingApiReady.value = false;
@@ -342,9 +345,19 @@ async function save() {
     })
   ) {
     tunnelToken.value = "";
+    tunnelInputRef.value?.hide();
     settingsDirty.value = false;
     emit("notify", t("api.savedConfigNotice"), "success");
   }
+}
+
+async function loadSavedTunnelToken(): Promise<string> {
+  const res = await colabOneCommand("api.tunnel_token");
+  return typeof res?.token === "string" ? res.token : "";
+}
+
+function onTunnelTokenExtracted() {
+  emit("notify", t("api.tunnelTokenExtractedToast"), "success");
 }
 
 watch(
@@ -786,17 +799,18 @@ onUnmounted(() => {
               <label class="co-field-label" for="api-tunnel">
                 {{ t("api.tunnelTokenLabel") }}
               </label>
-              <AInputPassword
+              <ColabOneSecretInput
+                ref="tunnelInputRef"
                 id="api-tunnel"
                 v-model:value="tunnelToken"
+                :has-saved="!!state.api_settings?.has_token"
                 :disabled="enabled || busy"
-                :placeholder="
-                  state.api_settings?.has_token
-                    ? t('api.tunnelTokenSavedPlaceholder')
-                    : t('api.tunnelTokenEmptyPlaceholder')
-                "
-                autocomplete="off"
-                spellcheck="false"
+                :placeholder="t('api.tunnelTokenEmptyPlaceholder')"
+                :saved-placeholder="t('api.tunnelTokenSavedPlaceholder')"
+                :load-saved="loadSavedTunnelToken"
+                :extract-secret="colabOneExtractTunnelToken"
+                @extracted="onTunnelTokenExtracted"
+                @error="emit('error', $event)"
               />
             </div>
           </div>
@@ -1773,9 +1787,15 @@ onUnmounted(() => {
   gap: 9px;
   min-height: 122px;
   padding: 14px 16px;
-  border: 1px solid var(--co-border-secondary);
+  border: 1px solid var(--co-code-border);
   border-radius: 12px;
-  background: var(--co-skeleton-card-bg);
+  background: var(--co-code-bg);
+  box-shadow: var(--co-code-shadow);
+  --co-skeleton-base: rgba(255, 255, 255, 0.08);
+  --co-skeleton-base-subtle: rgba(255, 255, 255, 0.045);
+  --co-skeleton-sheen: rgba(255, 255, 255, 0.14);
+  --co-skeleton-tint: rgba(96, 165, 250, 0.12);
+  --co-skeleton-border: rgba(255, 255, 255, 0.06);
 }
 
 .co-cred-actions {

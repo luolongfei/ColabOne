@@ -6,6 +6,9 @@ export const jaJPMessages: ColabOneMessages = {
   "common.copied": "コピーしました",
   "common.copyFailed": "コピーに失敗しました。手動で選択してコピーしてください",
   "common.copyFailedShort": "コピーに失敗しました。手動でコピーしてください",
+  "common.revealSavedSecret": "保存済みのキーを表示",
+  "common.showSecret": "キーを表示",
+  "common.hideSecret": "キーを隠す",
   "common.cancel": "キャンセル",
   "common.close": "閉じる",
   "common.notificationsAria": "通知",
@@ -506,6 +509,7 @@ export const jaJPMessages: ColabOneMessages = {
   "api.startingNotice": "リモートで API サービスを起動中。公開 URL の検証後に接続先が表示されます。",
   "api.readyNotice": "外部 API サービスを開始しました。",
   "api.savedConfigNotice": "固定ドメイントンネル設定を OS 資格情報ストアに保存しました。",
+  "api.tunnelTokenExtractedToast": "Tunnel Token を自動抽出しました",
   "api.rotatedKeyNotice":
     "API キーを再生成しました。サービスを再開し、クライアント側のキーも更新してください。",
   "api.connectionCardTitle": "固定ドメインとトンネル設定",
@@ -1177,6 +1181,7 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.hfSavedPlaceholder": "保存済み（新しい値を入力すると上書き更新）",
   "settings.hfEmptyPlaceholder": "hf_...（アクセス制限リポジトリ利用時に入力）",
   "settings.hfSaveBtn": "Token を保存",
+  "settings.hfTokenExtractedToast": "Hugging Face Token を自動抽出しました",
   "settings.shortcutsTitle": "デスクトップ・スタートメニューショートカット",
   "settings.shortcutsInStartMenu": "スタートメニュー登録済み",
   "settings.shortcutsDesc":

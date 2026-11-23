@@ -736,6 +736,7 @@ def test_controller_vault_persists_config_not_secrets_in_snapshot(tmp_path):
         Path(__file__).parents[1], vault=vault, config_dir=tmp_path, background=False
     )
     assert c.snapshot()["api_settings"]["mode"] == "named"
+    assert c.command("api.tunnel_token", {}) == {"token": ""}
 
     with pytest.raises(ValueError, match="临时域名"):
         c.command("api.save", {"mode": "quick"})
@@ -748,6 +749,7 @@ def test_controller_vault_persists_config_not_secrets_in_snapshot(tmp_path):
         },
     )
     key = c.command("api.key", {})["key"]
+    assert c.command("api.tunnel_token", {}) == {"token": TOKEN}
     snap = c.snapshot()
     assert (
         snap["api_settings"]["mode"] == "named"
@@ -759,6 +761,7 @@ def test_controller_vault_persists_config_not_secrets_in_snapshot(tmp_path):
     assert not (tmp_path / "settings.json").exists()
     recreated = ColabOneController(c.root, vault=vault, config_dir=tmp_path, background=False)
     assert recreated.command("api.key", {})["key"] == key
+    assert recreated.command("api.tunnel_token", {}) == {"token": TOKEN}
     vault.set("runtime_session", {"endpoint": "existing"})
     c.remote = Mock(side_effect=RuntimeError("offline"))
     with pytest.raises(RuntimeError):

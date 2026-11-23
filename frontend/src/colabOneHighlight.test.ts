@@ -25,7 +25,7 @@ describe("ColabOne syntax highlighting engine", () => {
     expect(normalizeColabOneCodeLanguage(undefined)).toBe("text");
   });
 
-  it("highlights cURL commands, flags, URLs, env vars, and embedded JSON with distinct light/dark colors", () => {
+  it("highlights cURL commands, flags, URLs, env vars, and embedded JSON with distinct dark-surface colors", () => {
     const curlSample = `curl -N "https://YOUR-API-HOST/v1/chat/completions" \\
   -H "Authorization: Bearer $COLABONE_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -59,30 +59,29 @@ describe("ColabOne syntax highlighting engine", () => {
     const jsonNumToken = findToken("512");
     const jsonBoolToken = findToken("true");
 
-    expect(cmdToken?.lightColor).toBeTruthy();
-    expect(cmdToken?.darkColor).toBeTruthy();
-    expect(flagToken?.lightColor).toBeTruthy();
-    expect(urlToken?.lightColor).toBeTruthy();
-    expect(envVarToken?.lightColor).toBeTruthy();
-    expect(jsonKeyToken?.lightColor).toBeTruthy();
-    expect(jsonValToken?.lightColor).toBeTruthy();
-    expect(jsonNumToken?.lightColor).toBeTruthy();
-    expect(jsonBoolToken?.lightColor).toBeTruthy();
+    expect(cmdToken?.color).toBeTruthy();
+    expect(flagToken?.color).toBeTruthy();
+    expect(urlToken?.color).toBeTruthy();
+    expect(envVarToken?.color).toBeTruthy();
+    expect(jsonKeyToken?.color).toBeTruthy();
+    expect(jsonValToken?.color).toBeTruthy();
+    expect(jsonNumToken?.color).toBeTruthy();
+    expect(jsonBoolToken?.color).toBeTruthy();
 
     // Command, flag, string, and env variable each receive distinct colors
     const shellColors = new Set([
-      cmdToken!.lightColor,
-      flagToken!.lightColor,
-      urlToken!.lightColor,
-      envVarToken!.lightColor,
+      cmdToken!.color,
+      flagToken!.color,
+      urlToken!.color,
+      envVarToken!.color,
     ]);
     expect(shellColors.size).toBe(4);
 
     // Embedded JSON keys, string values, and numbers receive distinct colors
     const jsonColors = new Set([
-      jsonKeyToken!.lightColor,
-      jsonValToken!.lightColor,
-      jsonNumToken!.lightColor,
+      jsonKeyToken!.color,
+      jsonValToken!.color,
+      jsonNumToken!.color,
     ]);
     expect(jsonColors.size).toBe(3);
   });
@@ -105,10 +104,10 @@ reply = client.chat.completions.create(
     const pyColors = new Set(
       pyLines
         .flat()
-        .map((token) => token.lightColor)
+        .map((token) => token.color)
         .filter(Boolean),
     );
-    expect(pyColors.size).toBeGreaterThanOrEqual(4);
+    expect(pyColors.size).toBeGreaterThanOrEqual(5);
 
     const tomlSample = `# ~/.codex/config.toml
 model = "YOUR-MODEL-ID"
@@ -120,13 +119,14 @@ wire_api = "responses"
 supports_websockets = false`;
     const tomlLines = highlightColabOneCode(tomlSample, "codex");
     expect(reconstruct(tomlLines)).toBe(tomlSample);
+    expect(tomlLines[0][0].fontStyle).toBe("italic");
     const tomlColors = new Set(
       tomlLines
         .flat()
-        .map((token) => token.lightColor)
+        .map((token) => token.color)
         .filter(Boolean),
     );
-    expect(tomlColors.size).toBeGreaterThanOrEqual(4);
+    expect(tomlColors.size).toBeGreaterThanOrEqual(5);
   });
 
   it("handles edge cases (empty strings, CRLF, malformed JSON quotes, HTML characters) safely", () => {
@@ -158,7 +158,7 @@ supports_websockets = false`;
     const giant = `curl "${"x".repeat(70000)}"`;
     const giantLines = highlightColabOneCode(giant, "curl");
     expect(reconstruct(giantLines)).toBe(giant);
-    expect(giantLines[0][0].lightColor).toBeUndefined();
+    expect(giantLines[0][0].color).toBeUndefined();
 
     // Repeated calls hit the LRU cache and return consistent tokenized structure
     const first = highlightColabOneCode("curl -I https://example.com", "curl");

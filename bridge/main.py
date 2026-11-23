@@ -21,6 +21,10 @@ _FAST_RPC_METHODS = frozenset(
         "drive.confirm",
         "drive.probe",
         "locale.set",
+        "api.key",
+        "api.tunnel_token",
+        "comfyui.canvas.tunnel_token",
+        "settings.hf_token",
     }
 )
 

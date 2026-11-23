@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from bridge.activity import ColabOneActivityLog
 from bridge.controller import ColabOneController
@@ -215,9 +216,13 @@ def test_step_by_step_logs_for_startup_boot_stream_release_and_settings(
     ):
         assert any(expected in m for m in msgs), f"missing expected log: {expected}"
 
-    # Verify settings save logs cleanly without leaking hf_token
-    c.save_settings({"gpu": "G4", "idle_minutes": 45, "hf_token": "hf_super_secret_token"})
-    settings_msgs = [item["message"] for item in c.snapshot()["logs"]]
+    # Verify settings save logs cleanly without leaking hf_token, while settings.hf_token reveals it on demand
+    assert c.command("settings.hf_token", {}) == {"token": ""}
+    c.save_settings({"gpu": "G4", "idle_minutes": 45, "hf_token": "  hf_super_secret_token  "})
+    assert c.command("settings.hf_token", {}) == {"token": "hf_super_secret_token"}
+    snap = c.snapshot()
+    assert "hf_super_secret_token" not in json.dumps(snap)
+    settings_msgs = [item["message"] for item in snap["logs"]]
     assert any("已保存设置" in m and "45 分钟" in m and "Hugging Face Token" in m for m in settings_msgs)
     assert all("hf_super_secret_token" not in m for m in settings_msgs)
 

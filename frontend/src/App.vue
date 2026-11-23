@@ -18,7 +18,6 @@ import {
   ConfigProvider as AConfigProvider,
   Divider as ADivider,
   Empty as AEmpty,
-  InputPassword as AInputPassword,
   Layout as ALayout,
   LayoutContent as ALayoutContent,
   Modal as AModal,
@@ -34,9 +33,11 @@ import {
   TypographyText as ATypographyText,
   TypographyTitle as ATypographyTitle,
 } from "ant-design-vue";
+import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneToastHost from "./ColabOneToastHost.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import { colabOneExtractHfToken } from "./colabOneSecretToken";
 import {
   PhArrowSquareOut,
   PhArrowsClockwise,
@@ -1182,6 +1183,19 @@ watch(
   },
 );
 
+const hfTokenInputRef = ref<InstanceType<typeof ColabOneSecretInput> | null>(
+  null,
+);
+
+async function loadSavedHfToken(): Promise<string> {
+  const res = await colabOneCommand("settings.hf_token");
+  return typeof res?.token === "string" ? res.token : "";
+}
+
+function onHfTokenExtracted() {
+  notify(t("settings.hfTokenExtractedToast"), "success");
+}
+
 async function save() {
   const payload: Record<string, unknown> = {
     gpu: form.value.gpu,
@@ -1201,6 +1215,7 @@ async function save() {
       download_threads: form.value.download_threads,
     };
     form.value.hf_token = "";
+    hfTokenInputRef.value?.hide();
     notify(t("device.toastSettingsSaved"));
   }
 }
@@ -3314,14 +3329,20 @@ onUnmounted(() => {
                     {{ t("settings.hfDesc") }}
                   </p>
                   <div class="co-hf-row">
-                    <AInputPassword
+                    <ColabOneSecretInput
+                      ref="hfTokenInputRef"
+                      id="settings-hf-token"
                       v-model:value="form.hf_token"
+                      :has-saved="!!state.setup.hf"
+                      :disabled="busy"
                       autocomplete="new-password"
-                      :placeholder="
-                        state.setup.hf
-                          ? t('settings.hfSavedPlaceholder')
-                          : t('settings.hfEmptyPlaceholder')
-                      "
+                      :aria-label="t('settings.hfCardTitle')"
+                      :placeholder="t('settings.hfEmptyPlaceholder')"
+                      :saved-placeholder="t('settings.hfSavedPlaceholder')"
+                      :load-saved="loadSavedHfToken"
+                      :extract-secret="colabOneExtractHfToken"
+                      @extracted="onHfTokenExtracted"
+                      @error="showError($event)"
                     />
                     <AButton
                       type="primary"

@@ -32,23 +32,14 @@ const preStyle = computed<CSSProperties | undefined>(() =>
   props.maxHeight ? { maxHeight: props.maxHeight } : undefined,
 );
 
-function tokenStyle(token: ColabOneHighlightedToken): CSSProperties {
-  const style: Record<string, string> = {};
-  if (token.lightColor) style["--co-hl-light"] = token.lightColor;
-  if (token.darkColor) style["--co-hl-dark"] = token.darkColor;
-  if (token.lightFontStyle) {
-    style["--co-hl-light-style"] = token.lightFontStyle;
-  }
-  if (token.darkFontStyle) {
-    style["--co-hl-dark-style"] = token.darkFontStyle;
-  }
-  if (token.lightFontWeight) {
-    style["--co-hl-light-weight"] = token.lightFontWeight;
-  }
-  if (token.darkFontWeight) {
-    style["--co-hl-dark-weight"] = token.darkFontWeight;
-  }
-  return style as CSSProperties;
+function tokenStyle(
+  token: ColabOneHighlightedToken,
+): CSSProperties | undefined {
+  const style: CSSProperties = {};
+  if (token.color) style.color = token.color;
+  if (token.fontStyle) style.fontStyle = token.fontStyle;
+  if (token.fontWeight) style.fontWeight = token.fontWeight;
+  return Object.keys(style).length ? style : undefined;
 }
 </script>
 
@@ -70,10 +61,12 @@ function tokenStyle(token: ColabOneHighlightedToken): CSSProperties {
 <style scoped>
 .co-code-highlighted {
   padding: 14px 16px;
-  border: 1px solid var(--co-border-secondary);
+  border: 1px solid var(--co-code-border);
   border-radius: var(--co-radius-md);
-  background: var(--co-subtle);
-  color: var(--co-text);
+  background: var(--co-code-bg);
+  color: var(--co-code-text);
+  box-shadow: var(--co-code-shadow);
+  color-scheme: dark;
   font-family: var(--co-font-mono);
   font-size: 13px;
   line-height: 1.6;
@@ -106,19 +99,5 @@ function tokenStyle(token: ColabOneHighlightedToken): CSSProperties {
 
 .co-code-highlighted ::selection {
   background: var(--co-code-selection);
-}
-</style>
-
-<style>
-.co-code-highlighted .co-code-tok {
-  color: var(--co-hl-light, var(--co-text));
-  font-style: var(--co-hl-light-style, normal);
-  font-weight: var(--co-hl-light-weight, inherit);
-}
-
-:root[data-theme="dark"] .co-code-highlighted .co-code-tok {
-  color: var(--co-hl-dark, var(--co-text));
-  font-style: var(--co-hl-dark-style, normal);
-  font-weight: var(--co-hl-dark-weight, inherit);
 }
 </style>

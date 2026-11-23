@@ -6,6 +6,9 @@ export const koKRMessages: ColabOneMessages = {
   "common.copied": "복사됨",
   "common.copyFailed": "복사에 실패했습니다. 직접 선택해 복사해 주세요",
   "common.copyFailedShort": "복사 실패 — 직접 복사해 주세요",
+  "common.revealSavedSecret": "저장된 키 보기",
+  "common.showSecret": "키 보기",
+  "common.hideSecret": "키 숨기기",
   "common.cancel": "취소",
   "common.close": "닫기",
   "common.notificationsAria": "알림",
@@ -505,6 +508,7 @@ export const koKRMessages: ColabOneMessages = {
   "api.startingNotice": "원격 API 서비스를 시작하고 있습니다. 퍼블릭 도메인 검증 후 주소가 표시됩니다.",
   "api.readyNotice": "외부 API 서비스가 켜졌습니다.",
   "api.savedConfigNotice": "고정 도메인 터널 설정을 OS 자격 증명 저장소에 저장했습니다.",
+  "api.tunnelTokenExtractedToast": "Tunnel Token이 자동 추출되었습니다",
   "api.rotatedKeyNotice": "API 키가 재발급되었습니다. 서비스를 다시 켜고 클라이언트 키도 업데이트하세요.",
   "api.connectionCardTitle": "고정 도메인 및 터널 설정",
   "api.connectionCardDesc":
@@ -1174,6 +1178,7 @@ export const koKRMessages: ColabOneMessages = {
   "settings.hfSavedPlaceholder": "저장됨 — 새 값을 입력하면 덮어씁니다",
   "settings.hfEmptyPlaceholder": "hf_... (접근 제한 모델 저장소 이용 시 입력)",
   "settings.hfSaveBtn": "토큰 저장",
+  "settings.hfTokenExtractedToast": "Hugging Face 토큰이 자동 추출되었습니다",
   "settings.shortcutsTitle": "바탕 화면 및 시작 메뉴 바로 가기",
   "settings.shortcutsInStartMenu": "시작 메뉴에 추가됨",
   "settings.shortcutsDesc":

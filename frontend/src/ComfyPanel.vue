@@ -9,7 +9,6 @@ import {
   Empty as AEmpty,
   Input as AInput,
   InputNumber as AInputNumber,
-  InputPassword as AInputPassword,
   Modal as AModal,
   Popconfirm as APopconfirm,
   Progress as AProgress,
@@ -22,8 +21,10 @@ import {
   Tag as ATag,
   Textarea as ATextarea,
 } from "ant-design-vue";
+import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import { colabOneExtractTunnelToken } from "./colabOneSecretToken";
 import {
   PhAppWindow,
   PhArrowRight,
@@ -879,6 +880,9 @@ function outputKindColor(kind: WorkflowOutput["kind"]) {
 // Native Canvas tab state
 const canvasDomain = ref(props.state.comfy_canvas_settings?.domain || "");
 const canvasTunnelToken = ref("");
+const canvasTokenInputRef = ref<InstanceType<typeof ColabOneSecretInput> | null>(
+  null,
+);
 const canvasSettingsEdited = ref(false);
 const copiedCanvasUrl = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -959,6 +963,7 @@ async function startCanvas() {
   );
   if (ok) {
     canvasTunnelToken.value = "";
+    canvasTokenInputRef.value?.hide();
     canvasSettingsEdited.value = false;
   }
 }
@@ -975,8 +980,18 @@ async function saveCanvasSettings() {
   );
   if (ok) {
     canvasTunnelToken.value = "";
+    canvasTokenInputRef.value?.hide();
     canvasSettingsEdited.value = false;
   }
+}
+
+async function loadSavedCanvasToken(): Promise<string> {
+  const res = await colabOneCommand("comfyui.canvas.tunnel_token");
+  return typeof res?.token === "string" ? res.token : "";
+}
+
+function onCanvasTokenExtracted() {
+  emit("notify", t("api.tunnelTokenExtractedToast"), "success");
 }
 
 async function stopCanvas() {
@@ -2339,17 +2354,18 @@ onUnmounted(() => {
                     >
                       <span>{{ t("api.tunnelTokenLabel") }}</span>
                     </label>
-                    <AInputPassword
+                    <ColabOneSecretInput
+                      ref="canvasTokenInputRef"
                       id="comfy-canvas-token"
                       v-model:value="canvasTunnelToken"
+                      :has-saved="!!state.comfy_canvas_settings?.has_token"
                       :disabled="canvasEnabled || busy"
-                      :placeholder="
-                        state.comfy_canvas_settings?.has_token
-                          ? t('api.tunnelTokenSavedPlaceholder')
-                          : t('comfy.canvasTokenEmptyPlaceholder')
-                      "
-                      autocomplete="off"
-                      spellcheck="false"
+                      :placeholder="t('comfy.canvasTokenEmptyPlaceholder')"
+                      :saved-placeholder="t('api.tunnelTokenSavedPlaceholder')"
+                      :load-saved="loadSavedCanvasToken"
+                      :extract-secret="colabOneExtractTunnelToken"
+                      @extracted="onCanvasTokenExtracted"
+                      @error="reportError($event)"
                     />
                   </div>
 

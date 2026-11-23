@@ -815,15 +815,30 @@ samp {
   margin: 0;
   padding: 14px 16px;
   border-radius: var(--co-radius-md);
-  border: 1px solid var(--co-border-secondary);
-  background: var(--co-subtle);
-  color: var(--co-text);
+  border: 1px solid var(--co-code-border);
+  background: var(--co-code-bg);
+  color: var(--co-code-text);
+  box-shadow: var(--co-code-shadow);
+  color-scheme: dark;
   font-family: var(--co-font-mono);
   font-size: 13px;
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.co-code-block[data-scrolling="true"] {
+  scrollbar-color: var(--co-code-scrollbar) transparent;
+}
+
+.co-code-block[data-scrolling="true"]::-webkit-scrollbar-thumb {
+  background: var(--co-code-scrollbar);
+}
+
+.co-code-block::-webkit-scrollbar-thumb:hover,
+.co-code-block::-webkit-scrollbar-thumb:active {
+  background: var(--co-code-scrollbar-hover) !important;
 }
 
 .co-card-hover {

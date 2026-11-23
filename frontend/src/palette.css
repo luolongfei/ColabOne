@@ -68,12 +68,20 @@
   --co-skeleton-tint: rgba(59, 130, 246, 0.075);
   --co-skeleton-border: rgba(15, 23, 42, 0.042);
   --co-skeleton-card-bg: rgba(248, 250, 252, 0.85);
-  /* ColabOne floating toast & highlighted code surface tokens (Light) */
+  /* ColabOne floating toast & dark-surface highlighted code tokens (Light) */
   --co-toast-bg: rgba(255, 255, 255, 0.96);
   --co-toast-shadow:
     0 12px 32px rgba(15, 23, 42, 0.13),
     0 2px 6px rgba(15, 23, 42, 0.06);
-  --co-code-selection: rgba(59, 130, 246, 0.2);
+  --co-code-bg: #111318;
+  --co-code-text: #e6edf3;
+  --co-code-border: #232734;
+  --co-code-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 1px 2px rgba(15, 23, 42, 0.1);
+  --co-code-selection: rgba(96, 165, 250, 0.3);
+  --co-code-scrollbar: rgba(255, 255, 255, 0.24);
+  --co-code-scrollbar-hover: rgba(255, 255, 255, 0.48);
   /* ColabOne top-bar brand version badge tokens (Light) */
   --co-version-bg: rgba(15, 23, 42, 0.045);
   --co-version-border: rgba(15, 23, 42, 0.085);
@@ -141,12 +149,18 @@
   --co-skeleton-tint: rgba(96, 165, 250, 0.12);
   --co-skeleton-border: rgba(255, 255, 255, 0.055);
   --co-skeleton-card-bg: rgba(255, 255, 255, 0.025);
-  /* ColabOne floating toast & highlighted code surface tokens (Dark) */
+  /* ColabOne floating toast & dark-surface highlighted code tokens (Dark) */
   --co-toast-bg: rgba(28, 30, 38, 0.95);
   --co-toast-shadow:
     0 16px 38px rgba(0, 0, 0, 0.52),
     0 2px 8px rgba(0, 0, 0, 0.34);
+  --co-code-bg: #111318;
+  --co-code-text: #e6edf3;
+  --co-code-border: rgba(255, 255, 255, 0.09);
+  --co-code-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   --co-code-selection: rgba(96, 165, 250, 0.28);
+  --co-code-scrollbar: rgba(255, 255, 255, 0.22);
+  --co-code-scrollbar-hover: rgba(255, 255, 255, 0.5);
   /* ColabOne top-bar brand version badge tokens (Dark) */
   --co-version-bg: rgba(255, 255, 255, 0.06);
   --co-version-border: rgba(255, 255, 255, 0.11);

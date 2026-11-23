@@ -1,5 +1,6 @@
 import {
   createHighlighterCoreSync,
+  getTokenStyleObject,
   type HighlighterCore,
   type ThemedToken,
 } from "@shikijs/core";
@@ -9,7 +10,6 @@ import langPython from "@shikijs/langs/python";
 import langShellscript from "@shikijs/langs/shellscript";
 import langToml from "@shikijs/langs/toml";
 import themeOneDarkPro from "@shikijs/themes/one-dark-pro";
-import themeOneLight from "@shikijs/themes/one-light";
 
 export type ColabOneCodeLanguage =
   | "shellscript"
@@ -20,22 +20,17 @@ export type ColabOneCodeLanguage =
 
 export interface ColabOneHighlightedToken {
   content: string;
-  lightColor?: string;
-  darkColor?: string;
-  lightFontStyle?: string;
-  darkFontStyle?: string;
-  lightFontWeight?: string;
-  darkFontWeight?: string;
+  color?: string;
+  fontStyle?: string;
+  fontWeight?: string;
 }
 
 export type ColabOneHighlightedLine = ColabOneHighlightedToken[];
 
-const LIGHT_THEME = "one-light";
-const DARK_THEME = "one-dark-pro";
+const CODE_THEME = "one-dark-pro";
 
-// Matching single-quote string delimiter colors from one-light / one-dark-pro.
-const QUOTE_LIGHT_COLOR = "#50A14F";
-const QUOTE_DARK_COLOR = "#98C379";
+// Matching single-quote string delimiter color from one-dark-pro.
+const QUOTE_COLOR = "#98C379";
 const MAX_HIGHLIGHT_CHARS = 65536;
 const HIGHLIGHT_CACHE_LIMIT = 24;
 
@@ -45,7 +40,7 @@ const highlightCache = new Map<string, ColabOneHighlightedLine[]>();
 function getColabOneHighlighter(): HighlighterCore {
   if (!cachedHighlighter) {
     cachedHighlighter = createHighlighterCoreSync({
-      themes: [themeOneLight, themeOneDarkPro],
+      themes: [themeOneDarkPro],
       langs: [langShellscript, langPython, langToml, langJson],
       engine: createJavaScriptRegexEngine(),
     });
@@ -84,15 +79,12 @@ export function normalizeColabOneCodeLanguage(
 }
 
 function mapShikiToken(token: ThemedToken): ColabOneHighlightedToken {
-  const style = token.htmlStyle ?? {};
+  const style = getTokenStyleObject(token);
   return {
     content: token.content,
-    lightColor: style["--shiki-light"] || undefined,
-    darkColor: style["--shiki-dark"] || undefined,
-    lightFontStyle: style["--shiki-light-font-style"] || undefined,
-    darkFontStyle: style["--shiki-dark-font-style"] || undefined,
-    lightFontWeight: style["--shiki-light-font-weight"] || undefined,
-    darkFontWeight: style["--shiki-dark-font-weight"] || undefined,
+    color: style.color || undefined,
+    fontStyle: style["font-style"] || undefined,
+    fontWeight: style["font-weight"] || undefined,
   };
 }
 
@@ -103,11 +95,7 @@ function tokenizeWithShiki(
   const highlighter = getColabOneHighlighter();
   const { tokens } = highlighter.codeToTokens(code, {
     lang,
-    themes: {
-      light: LIGHT_THEME,
-      dark: DARK_THEME,
-    },
-    defaultColor: false,
+    theme: CODE_THEME,
   });
   return tokens.map((line) => line.map(mapShikiToken));
 }
@@ -244,8 +232,8 @@ function rememberHighlight(
 }
 
 /**
- * Synchronously tokenizes code into dual-theme (Light/Dark) structured tokens
- * using VS Code TextMate grammars via Shiki's zero-WASM JavaScript engine.
+ * Synchronously tokenizes code into dark-surface structured tokens using VS Code
+ * TextMate grammars (One Dark Pro) via Shiki's zero-WASM JavaScript engine.
  */
 export function highlightColabOneCode(
   rawCode: string,
@@ -282,8 +270,7 @@ export function highlightColabOneCode(
               [
                 {
                   content: seg.text,
-                  lightColor: QUOTE_LIGHT_COLOR,
-                  darkColor: QUOTE_DARK_COLOR,
+                  color: QUOTE_COLOR,
                 },
               ],
             ]);

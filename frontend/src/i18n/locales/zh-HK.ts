@@ -6,6 +6,9 @@ export const zhHKMessages: ColabOneMessages = {
   "common.copied": "已複製",
   "common.copyFailed": "複製失敗，請手動選取並複製",
   "common.copyFailedShort": "複製失敗，請手動複製",
+  "common.revealSavedSecret": "檢視已儲存金鑰",
+  "common.showSecret": "顯示金鑰",
+  "common.hideSecret": "隱藏金鑰",
   "common.cancel": "取消",
   "common.close": "關閉",
   "common.notificationsAria": "通知提示",
@@ -491,6 +494,7 @@ export const zhHKMessages: ColabOneMessages = {
   "api.startingNotice": "正在遠端啟動 API 服務，公網驗證通過後會顯示調用網址。",
   "api.readyNotice": "對外 API 服務已開啟。",
   "api.savedConfigNotice": "固定域名隧道設定已儲存至本地憑證庫。",
+  "api.tunnelTokenExtractedToast": "已自動提取 Tunnel Token",
   "api.rotatedKeyNotice": "API 金鑰已更換，請重新開啟服務並在調用端同步更新金鑰。",
   "api.connectionCardTitle": "固定域名與隧道設定",
   "api.connectionCardDesc":
@@ -1135,6 +1139,7 @@ export const zhHKMessages: ColabOneMessages = {
   "settings.hfSavedPlaceholder": "已儲存，輸入新值可覆蓋更新",
   "settings.hfEmptyPlaceholder": "hf_...（存取受限模型倉庫時填寫）",
   "settings.hfSaveBtn": "儲存 Token",
+  "settings.hfTokenExtractedToast": "已自動提取 Hugging Face Token",
   "settings.shortcutsTitle": "桌面與開始選單捷徑",
   "settings.shortcutsInStartMenu": "已加入開始選單",
   "settings.shortcutsDesc":

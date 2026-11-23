@@ -176,8 +176,14 @@ async function mock(page: any, ready = false, path = "/") {
       const logDrawerCalls: any[] = [];
       const nativeLocales: string[] = [];
       const localeCommands: any[] = [];
+      const savedSecrets: { apiTunnelToken: string; canvasTunnelToken: string; hfToken: string } = {
+        apiTunnelToken: "",
+        canvasTunnelToken: "",
+        hfToken: "",
+      };
       (window as any).__state = state;
       (window as any).__calls = calls;
+      (window as any).__savedSecrets = savedSecrets;
       (window as any).__canvasOpenCalls = canvasOpenCalls;
       (window as any).__exportCalls = exportCalls;
       (window as any).__logDrawerCalls = logDrawerCalls;
@@ -251,6 +257,34 @@ async function mock(page: any, ready = false, path = "/") {
               ]) {
                 if (payload && k in payload) state.settings[k] = payload[k];
               }
+              if (payload?.hf_token && String(payload.hf_token).trim()) {
+                savedSecrets.hfToken = String(payload.hf_token).trim();
+                state.setup.hf = true;
+              }
+            }
+            if (action === "settings.hf_token") {
+              return JSON.stringify({ token: savedSecrets.hfToken });
+            }
+            if (action === "api.save") {
+              const rawDomain = (payload?.domain || "").trim();
+              const normalized = rawDomain
+                ? rawDomain.startsWith("https://")
+                  ? rawDomain
+                  : `https://${rawDomain}`
+                : "";
+              if (payload?.tunnel_token && String(payload.tunnel_token).trim()) {
+                savedSecrets.apiTunnelToken = String(payload.tunnel_token).trim();
+              }
+              state.api_settings = {
+                mode: "named",
+                domain: normalized,
+                has_token: !!savedSecrets.apiTunnelToken || !!state.api_settings?.has_token,
+                has_key: !!state.api_settings?.has_key,
+              };
+              return JSON.stringify({ ok: true });
+            }
+            if (action === "api.tunnel_token") {
+              return JSON.stringify({ token: savedSecrets.apiTunnelToken });
             }
             if (action === "runtime.release.preview")
               return JSON.stringify({
@@ -501,12 +535,18 @@ async function mock(page: any, ready = false, path = "/") {
                   ? rawDomain
                   : `https://${rawDomain}`
                 : "";
+              if (payload?.tunnel_token && String(payload.tunnel_token).trim()) {
+                savedSecrets.canvasTunnelToken = String(payload.tunnel_token).trim();
+              }
               state.comfy_canvas_settings = {
                 mode: "named",
                 domain: normalized,
-                has_token: !!payload?.tunnel_token || !!state.comfy_canvas_settings?.has_token,
+                has_token: !!savedSecrets.canvasTunnelToken || !!state.comfy_canvas_settings?.has_token,
               };
               return JSON.stringify({ ok: true });
+            }
+            if (action === "comfyui.canvas.tunnel_token") {
+              return JSON.stringify({ token: savedSecrets.canvasTunnelToken });
             }
             if (action === "comfyui.canvas.start") {
               const rawDomain = (
@@ -4269,7 +4309,7 @@ test("Countdown error toast (zero layout shift + hover pause + persistent connec
   });
   await expect(page.locator(".co-banners .ant-alert-error")).toHaveCount(0);
 
-  // 2. Unified syntax highlighting across cURL (with embedded JSON), Python, Codex TOML, and Dark theme
+  // 2. Unified dark-surface syntax highlighting across cURL (with embedded JSON), Python, Codex TOML, in both Light and Dark themes
   const codeBlock = page.locator(".co-api-examples pre.co-code-highlighted");
   await expect(codeBlock).toBeVisible();
   await expect(codeBlock).toHaveAttribute("data-language", "shellscript");
@@ -4281,6 +4321,7 @@ test("Countdown error toast (zero layout shift + hover pause + persistent connec
       return hit ? window.getComputedStyle(hit).color : null;
     };
     return {
+      bg: window.getComputedStyle(pre).backgroundColor,
       totalTokens: tokens.length,
       curl: byText("curl"),
       flag: byText("-H"),
@@ -4294,8 +4335,10 @@ test("Countdown error toast (zero layout shift + hover pause + persistent connec
       ).size,
     };
   });
+  // Light mode renders the code block on a deep dark surface with bright One Dark Pro syntax tokens
+  expect(lightCurlColors.bg).toBe("rgb(17, 19, 24)");
   expect(lightCurlColors.totalTokens).toBeGreaterThan(15);
-  expect(lightCurlColors.distinctCount).toBeGreaterThanOrEqual(4);
+  expect(lightCurlColors.distinctCount).toBeGreaterThanOrEqual(5);
   expect(lightCurlColors.curl).not.toBe(lightCurlColors.flag);
   expect(lightCurlColors.curl).not.toBe(lightCurlColors.envVar);
   expect(lightCurlColors.jsonKey).not.toBe(lightCurlColors.jsonNumber);
@@ -4314,15 +4357,24 @@ test("Countdown error toast (zero layout shift + hover pause + persistent connec
         .map((el) => window.getComputedStyle(el).color),
     ).size;
   });
-  expect(pyDistinct).toBeGreaterThanOrEqual(4);
+  expect(pyDistinct).toBeGreaterThanOrEqual(5);
 
   await segmentedItem(
     page.locator('.ant-segmented[aria-label="调用示例语言"]'),
     "Codex",
   ).click();
   await expect(codeBlock).toHaveAttribute("data-language", "toml");
+  const tomlDistinct = await codeBlock.evaluate((pre) => {
+    const tokens = Array.from(pre.querySelectorAll(".co-code-tok"));
+    return new Set(
+      tokens
+        .filter((el) => (el.textContent || "").trim().length > 0)
+        .map((el) => window.getComputedStyle(el).color),
+    ).size;
+  });
+  expect(tomlDistinct).toBeGreaterThanOrEqual(5);
 
-  // Switch back to cURL and toggle Dark mode — verify syntax palette switches immediately
+  // Switch back to cURL and toggle Dark mode — verify dark surface and syntax palette stay consistent
   await segmentedItem(
     page.locator('.ant-segmented[aria-label="调用示例语言"]'),
     "cURL",
@@ -4330,14 +4382,17 @@ test("Countdown error toast (zero layout shift + hover pause + persistent connec
   await page.locator('button[aria-label="切换到深色模式"]').click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
-  const darkCurlColor = await codeBlock.evaluate((pre) => {
+  const darkCurlState = await codeBlock.evaluate((pre) => {
     const hit = Array.from(pre.querySelectorAll(".co-code-tok")).find(
       (el) => el.textContent?.trim() === "curl",
     );
-    return hit ? window.getComputedStyle(hit).color : null;
+    return {
+      bg: window.getComputedStyle(pre).backgroundColor,
+      curl: hit ? window.getComputedStyle(hit).color : null,
+    };
   });
-  expect(darkCurlColor).toBeTruthy();
-  expect(darkCurlColor).not.toBe(lightCurlColors.curl);
+  expect(darkCurlState.bg).toBe("rgb(17, 19, 24)");
+  expect(darkCurlState.curl).toBe(lightCurlColors.curl);
 
   // 3. Narrow viewport (wrapped status bar) + active operation banner: toast dynamically clears top chrome
   await page.setViewportSize({ width: 960, height: 800 });
@@ -4845,4 +4900,120 @@ test("remote service upgrade banner distinguishes optional revisions from legacy
     "当前实例需要更新远端服务，以启用实时硬件监控、对外 API 与 ComfyUI 工作流引擎",
   );
   await expect(banner.locator(".ant-alert-close-icon")).toHaveCount(0);
+});
+
+test("secret inputs auto-extract tokens on paste and reveal saved secrets on eye click across API, ComfyUI, and Settings", async ({
+  page,
+}) => {
+  await mock(page, true);
+  const apiToken = Buffer.from(
+    JSON.stringify({ a: "acc-api-1", t: "tun-api-1", s: "sec-api-1" }),
+  ).toString("base64");
+  const canvasToken = Buffer.from(
+    JSON.stringify({ a: "acc-comfy-2", t: "tun-comfy-2", s: "sec-comfy-2" }),
+  ).toString("base64");
+  const hfToken = "hf_ColabOneSecretToken1234567890";
+
+  // 1) Public API Tunnel Token: paste install command -> auto-extract -> save -> reveal saved (stopped & running)
+  await navItem(page, "对外 API").click();
+  await page.getByLabel("API 域名", { exact: true }).fill("api.example.com");
+  const apiTunnelInput = page.locator("#api-tunnel");
+  await apiTunnelInput.evaluate((el, text) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, `sudo cloudflared service install ${apiToken}`);
+  await expect(apiTunnelInput).toHaveValue(apiToken);
+
+  const apiEyeBtn = page.locator(".co-api-connection .co-secret-toggle");
+  await apiEyeBtn.click();
+  await expect(apiTunnelInput).toHaveAttribute("type", "text");
+  await expect(apiTunnelInput).toHaveValue(apiToken);
+
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect(apiTunnelInput).toHaveValue("");
+  await expect(apiTunnelInput).toHaveAttribute("type", "password");
+  await expect(apiTunnelInput).toHaveAttribute("placeholder", "已安全保存；留空继续使用");
+
+  // Click eye button after saving -> loads and reveals saved tunnel token
+  await apiEyeBtn.click();
+  await expect(apiTunnelInput).toHaveAttribute("type", "text");
+  await expect(apiTunnelInput).toHaveValue(apiToken);
+  // Click eye again -> hides it back
+  await apiEyeBtn.click();
+  await expect(apiTunnelInput).toHaveAttribute("type", "password");
+  await expect(apiTunnelInput).toHaveValue("");
+
+  // Even while Public API is running (locked), clicking the eye reveals the saved token read-only
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.public_api = {
+      state: "ready",
+      enabled: true,
+      mode: "named",
+      url: "https://api.example.com",
+      error: "",
+      streaming: true,
+      checked_at: Date.now() / 1000,
+      requests: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+      last_request: 0,
+    };
+  });
+  await expect(apiTunnelInput).toBeDisabled();
+  await expect(apiEyeBtn).toBeEnabled();
+  await apiEyeBtn.click();
+  await expect(apiTunnelInput).toHaveAttribute("readonly", "");
+  await expect(apiTunnelInput).toHaveAttribute("type", "text");
+  await expect(apiTunnelInput).toHaveValue(apiToken);
+  await apiEyeBtn.click();
+  await expect(apiTunnelInput).toBeDisabled();
+  await expect(apiTunnelInput).toHaveValue("");
+
+  // 2) ComfyUI Native Canvas Tunnel Token: paste install command -> auto-extract -> save -> reveal saved
+  await navItem(page, "ComfyUI").click();
+  await page.locator(".co-comfy-tabs .ant-tabs-tab", { hasText: "原生画布" }).click();
+  await page.locator("#comfy-canvas-domain").fill("comfy.example.com");
+  const canvasTokenInput = page.locator("#comfy-canvas-token");
+  await canvasTokenInput.evaluate((el, text) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, `docker run cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${canvasToken}`);
+  await expect(canvasTokenInput).toHaveValue(canvasToken);
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect(canvasTokenInput).toHaveValue("");
+
+  const canvasEyeBtn = page.locator(".co-comfy-canvas-grid .co-secret-toggle");
+  await canvasEyeBtn.click();
+  await expect(canvasTokenInput).toHaveAttribute("type", "text");
+  await expect(canvasTokenInput).toHaveValue(canvasToken);
+
+  // 3) Settings Hugging Face Token: paste export snippet -> auto-extract -> save -> reveal saved without enabling Save button
+  await navItem(page, "设置").click();
+  const hfInput = page.locator("#settings-hf-token");
+  const hfSaveBtn = page.getByRole("button", { name: "保存 Token", exact: true });
+  await expect(hfSaveBtn).toBeDisabled();
+  await hfInput.evaluate((el, text) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, `export HF_TOKEN="${hfToken}"`);
+  await expect(hfInput).toHaveValue(hfToken);
+  await expect(hfSaveBtn).toBeEnabled();
+  await hfSaveBtn.click();
+  await expect(hfInput).toHaveValue("");
+  await expect(hfSaveBtn).toBeDisabled();
+
+  const hfEyeBtn = page.locator(".co-hf-row .co-secret-toggle");
+  await hfEyeBtn.click();
+  await expect(hfInput).toHaveAttribute("type", "text");
+  await expect(hfInput).toHaveValue(hfToken);
+  // Viewing saved HF token does not dirty the draft or enable re-saving unchanged value
+  await expect(hfSaveBtn).toBeDisabled();
+  await hfEyeBtn.click();
+  await expect(hfInput).toHaveAttribute("type", "password");
+  await expect(hfInput).toHaveValue("");
 });

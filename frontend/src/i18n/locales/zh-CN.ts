@@ -4,6 +4,9 @@ export const zhCNMessages = {
   "common.copied": "已复制",
   "common.copyFailed": "复制失败，请手动选择并复制",
   "common.copyFailedShort": "复制失败，请手动复制",
+  "common.revealSavedSecret": "查看已保存密钥",
+  "common.showSecret": "显示密钥",
+  "common.hideSecret": "隐藏密钥",
   "common.cancel": "取消",
   "common.close": "关闭",
   "common.notificationsAria": "通知提示",
@@ -490,6 +493,7 @@ export const zhCNMessages = {
   "api.startingNotice": "正在远端启动 API 服务，公网验证通过后将显示调用地址。",
   "api.readyNotice": "对外 API 服务已开启。",
   "api.savedConfigNotice": "固定域名隧道配置已保存到本机凭据库。",
+  "api.tunnelTokenExtractedToast": "已自动提取 Tunnel Token",
   "api.rotatedKeyNotice": "API Key 已更换，请重新开启服务并在调用方同步更新密钥。",
   "api.connectionCardTitle": "固定域名与隧道配置",
   "api.connectionCardDesc":
@@ -1136,6 +1140,7 @@ export const zhCNMessages = {
   "settings.hfSavedPlaceholder": "已保存，输入新值可覆盖更新",
   "settings.hfEmptyPlaceholder": "hf_...（访问受限模型仓库时填写）",
   "settings.hfSaveBtn": "保存 Token",
+  "settings.hfTokenExtractedToast": "已自动提取 Hugging Face Token",
   "settings.shortcutsTitle": "桌面与开始菜单快捷方式",
   "settings.shortcutsInStartMenu": "已加入开始菜单",
   "settings.shortcutsDesc":

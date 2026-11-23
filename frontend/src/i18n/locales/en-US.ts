@@ -6,6 +6,9 @@ export const enUSMessages: ColabOneMessages = {
   "common.copied": "Copied",
   "common.copyFailed": "Copy failed; please select and copy manually",
   "common.copyFailedShort": "Copy failed; please copy manually",
+  "common.revealSavedSecret": "View saved secret",
+  "common.showSecret": "Show secret",
+  "common.hideSecret": "Hide secret",
   "common.cancel": "Cancel",
   "common.close": "Close",
   "common.notificationsAria": "Notifications",
@@ -510,6 +513,7 @@ export const enUSMessages: ColabOneMessages = {
     "Starting remote API service; your public endpoint will appear once verified.",
   "api.readyNotice": "Public API service is live.",
   "api.savedConfigNotice": "Custom domain tunnel configuration saved to OS keychain.",
+  "api.tunnelTokenExtractedToast": "Tunnel Token auto-extracted",
   "api.rotatedKeyNotice":
     "API key rotated. Restart the service and update your clients with the new key.",
   "api.connectionCardTitle": "Custom Domain & Tunnel",
@@ -1193,6 +1197,7 @@ export const enUSMessages: ColabOneMessages = {
   "settings.hfSavedPlaceholder": "Saved — enter a new value to overwrite",
   "settings.hfEmptyPlaceholder": "hf_... (only for gated model repositories)",
   "settings.hfSaveBtn": "Save Token",
+  "settings.hfTokenExtractedToast": "Hugging Face Token auto-extracted",
   "settings.shortcutsTitle": "Desktop & Start Menu Shortcuts",
   "settings.shortcutsInStartMenu": "In Start Menu",
   "settings.shortcutsDesc":

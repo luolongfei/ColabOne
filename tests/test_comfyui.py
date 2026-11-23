@@ -896,6 +896,7 @@ def test_controller_offline_workflow_import_delete_and_canvas_vault_security(tmp
     # Legacy quick-mode vault data reports named mode, and quick save is rejected.
     vault.set("comfyui_canvas", {"mode": "quick"})
     assert c.snapshot()["comfy_canvas_settings"]["mode"] == "named"
+    assert c.command("comfyui.canvas.tunnel_token", {}) == {"token": ""}
     with pytest.raises(ValueError, match="临时域名"):
         c.command("comfyui.canvas.save", {"mode": "quick"})
 
@@ -916,6 +917,7 @@ def test_controller_offline_workflow_import_delete_and_canvas_vault_security(tmp
     }
     assert TUNNEL_TOKEN not in json.dumps(snap)
     assert vault.get("comfyui_canvas")["tunnel_token"] == TUNNEL_TOKEN
+    assert c.command("comfyui.canvas.tunnel_token", {}) == {"token": TUNNEL_TOKEN}
 
     # Online comfyui.run syncs offline custom workflow before running.
     c.data["runtime"] = {"state": "ready", "id": "ep-comfy"}
