@@ -178,13 +178,13 @@ ColabOne の開発と改善に協力してくださった皆様に感謝いた�
 
 **[Alma](https://alma.now/)** および **[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)** に特別な感謝を捧げます — ColabOne の UI デザイン、ビジュアルの洗練、さらにはアプリロゴに至るまで、両プロジェクトから直接的な着想と参考を得ています。
 
-ColabOne は以下のオープンソースプロジェクトにも支えられ、参考にしています（詳細は [NOTICE](NOTICE) および [third_party/SOURCES.md](third_party/SOURCES.md) を参照）：
+あわせて以下のオープンソースプロジェクトにも心より感謝いたします。これら素晴らしいオープンソースの知見と基盤があってこそ、ColabOne は誕生しました（詳細は [NOTICE](NOTICE) および [third_party/SOURCES.md](third_party/SOURCES.md) を参照）：
 
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Google Colab の GPU 割り当て、ランタイム起動確認、ハートビートによるライフサイクル管理、ポータブル Python パッケージングの設計で参考にさせていただきました。
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — デスクトップアプリと Colab 間のブリッジ構成およびヘッドレス `rclone` による Google ドライブマウント手法の設計で参考にさせていただきました。
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — リモートのノードベース画像・動画・マルチモーダルワークフローエンジン。
-- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — モデルマニフェスト、バージョン固定済み `llama.cpp` CUDA デプロイ、並列レンジダウンロード戦略。
-- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*、および **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — モデルマニフェスト、バージョン固定済み `llama.cpp` CUDA デプロイ、並列レンジダウンロード戦略の設計で参考にさせていただきました。
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — リモートのノードベース画像・動画・マルチモーダルワークフローエンジンとして統合しています。
+- **主要な依存ツール・ライブラリ** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*、および **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
 
 ## 📜 ライセンス
 

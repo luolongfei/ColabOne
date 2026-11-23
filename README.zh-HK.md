@@ -178,13 +178,13 @@ npm --prefix frontend run build
 
 特別感謝 **[Alma](https://alma.now/)** 及 **[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)** — ColabOne 的介面設計、視覺打磨以至應用程式 Logo，均直接深受這兩個項目的啟發與參考。
 
-ColabOne 亦建基於並參考了以下開源項目（完整詳情見 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)）：
+同時衷心感謝以下開源項目，正因為有它們的開源分享與底層支撐，才有了今天的 ColabOne（完整詳情見 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)）：
 
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — 參考其 Google Colab GPU 分配、執行環境就緒檢測、心跳生命週期管理及免安裝便攜 Python 打包方案。
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 參考其桌面端與 Colab 之間的橋接架構，以及無頭 `rclone` 掛載 Google 雲端硬碟的實踐模式。
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 遠端節點式圖片、影片與多模態工作流引擎。
-- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 模型清單、鎖定版本的 `llama.cpp` CUDA 部署及並發分段下載策略。
-- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)* 及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 參考其模型清單、鎖定版本的 `llama.cpp` CUDA 部署及並發分段下載策略。
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 作為底層引擎整合，驅動遠端節點式圖片、影片與多模態工作流。
+- **核心開源依賴與資源** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)* 及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
 
 ## 📜 開源授權
 

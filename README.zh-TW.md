@@ -178,13 +178,13 @@ npm --prefix frontend run build
 
 特別感謝 **[Alma](https://alma.now/)** 與 **[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)** — ColabOne 的介面設計、視覺質感乃至應用程式 Logo，皆深受這兩個專案的啟發與參考。
 
-ColabOne 同時建構於並參考以下開源專案（完整資訊請參閱 [NOTICE](NOTICE) 與 [third_party/SOURCES.md](third_party/SOURCES.md)）：
+同時衷心感謝以下開源專案，正是因為有它們的開源分享與底層支撐，才有了今天的 ColabOne（完整資訊請參閱 [NOTICE](NOTICE) 與 [third_party/SOURCES.md](third_party/SOURCES.md)）：
 
 - **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — 參考了 Google Colab GPU 分配、執行環境就緒檢測、心跳生命週期管理與可攜式 Python 封裝設計。
 - **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — 參考了桌面端與 Colab 之間的橋接架構，以及免彈窗 `rclone` Google 雲端硬碟掛載模式。
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 遠端節點式圖片、影片與多模態工作流程引擎。
-- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 模型清單設計、鎖定版本的 `llama.cpp` CUDA 部署與並行分段下載策略。
-- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*，以及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — 參考了模型清單設計、鎖定版本的 `llama.cpp` CUDA 部署與並行分段下載策略。
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — 整合為底層引擎，驅動遠端節點式圖片、影片與多模態工作流程。
+- **核心開源相依項目與資源** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*、**[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*、**[rclone](https://github.com/rclone/rclone)** *(MIT)*、**[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*、**[Shiki](https://github.com/shikijs/shiki)** *(MIT)*，以及 **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*。
 
 ## 📜 授權條款
 

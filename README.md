@@ -178,13 +178,13 @@ Thanks to everyone who has helped build and improve ColabOne:
 
 Special thanks to **[Alma](https://alma.now/)** and **[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)** — ColabOne's UI design, visual polish, and even its logo were directly inspired by their work.
 
-ColabOne also builds on and references these open-source projects (full details in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md)):
+Heartfelt thanks as well to the open-source projects below — ColabOne simply wouldn't exist without their open work and the foundation they provide (full details in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md)):
 
-- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Referenced for Google Colab GPU allocation, runtime readiness, heartbeat lifecycle management, and portable Python packaging.
-- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — Referenced for desktop-to-Colab bridge architecture and headless `rclone` Google Drive mounting patterns.
-- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — Remote node-based image, video, and multimodal workflow engine.
-- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — Model manifests, pinned `llama.cpp` CUDA deployment, and parallel range-download strategy.
-- **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
+- **[Colab-yoga](https://github.com/incredible404-rgb/Colab-yoga)** *(Apache-2.0)* — Inspired our Google Colab GPU allocation, runtime readiness, heartbeat lifecycle, and portable Python packaging.
+- **[EasyColab](https://github.com/wy51ai/easycolab)** *(Apache-2.0)* — Inspired our desktop-to-Colab bridge architecture and headless `rclone` Google Drive mounting.
+- **[colab-gpu-llm-service](https://github.com/incredible404-rgb/colab-gpu-llm-service)** *(MIT)* — Inspired our model manifests, pinned `llama.cpp` CUDA deployment, and parallel range downloads.
+- **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** (`v0.46.0`, GPL-3.0) — Integrated as the remote node-based image, video, and multimodal workflow engine.
+- **Core dependencies & assets** — **[Google Colab CLI](https://github.com/googlecolab/google-colab-cli)** *(Apache-2.0)*, **[cloudflared](https://github.com/cloudflare/cloudflared)** *(Apache-2.0)*, **[rclone](https://github.com/rclone/rclone)** *(MIT)*, **[flag-icons](https://github.com/lipis/flag-icons)** *(MIT)*, **[Shiki](https://github.com/shikijs/shiki)** *(MIT)*, and **[Sarasa Gothic](https://github.com/be5invis/Sarasa-Gothic)** *(SIL OFL 1.1)*.
 
 ## 📜 License
 
