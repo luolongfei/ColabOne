@@ -477,18 +477,6 @@ const billingAriaLabel = computed(() => {
   font-weight: 600;
 }
 
-.co-billing-dot-badge {
-  display: inline-flex;
-  align-items: center;
-  line-height: 1;
-}
-
-.co-billing-dot-badge :deep(.ant-badge-status-dot) {
-  width: 6px;
-  height: 6px;
-  top: 0;
-}
-
 .co-billing-pill.active .co-billing-dot-badge :deep(.ant-badge-status-processing::after) {
   border-color: var(--co-danger);
 }
@@ -589,16 +577,7 @@ const billingAriaLabel = computed(() => {
 }
 
 .co-stale-dot-badge {
-  display: inline-flex;
-  align-items: center;
   margin-left: -2px;
-  line-height: 1;
-}
-
-.co-stale-dot-badge :deep(.ant-badge-status-dot) {
-  width: 6px;
-  height: 6px;
-  top: 0;
 }
 
 .co-billing-tip {

@@ -698,6 +698,10 @@ samp {
   line-height: 1;
 }
 
+.ant-tag > svg {
+  flex-shrink: 0;
+}
+
 .ant-tag-default,
 .ant-tag:not([class*="ant-tag-"]) {
   background: var(--co-track);
@@ -731,8 +735,37 @@ samp {
   color: var(--co-danger-text);
 }
 
-.ant-tag .ant-badge-status-dot {
+/* Unified status dots — outrank Ant Design Vue's (0,3,0) status-dot rule so every
+ * dot stays 6x6 and vertically centered, and hide the phantom empty status-text span. */
+:root .ant-badge.ant-badge-status {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+:root .ant-badge.ant-badge-status .ant-badge-status-dot {
   top: 0;
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+}
+
+:root .ant-badge.ant-badge-status .ant-badge-status-text:empty {
+  display: none;
+  margin-inline-start: 0;
+}
+
+/* Trim asymmetric Latin font metrics (notably Windows Segoe UI) inside compact pills/badges
+ * so icons, status dots, and text share the exact optical centerline without shifting CJK em-boxes. */
+:root[lang="en-US"] .ant-tag,
+:root[lang="en-US"] .ant-tag > span:not(.ant-badge),
+:root[lang="en-US"] .ant-badge.ant-badge-status .ant-badge-status-text,
+:root[lang="en-US"] .co-idle-timer-inner > span,
+:root[lang="en-US"] .co-billing-metric,
+:root[lang="en-US"] .co-billing-metric > span {
+  text-box-trim: trim-both;
+  text-box-edge: cap alphabetic;
 }
 
 /* Switches */

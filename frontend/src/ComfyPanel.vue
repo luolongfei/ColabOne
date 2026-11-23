@@ -2862,10 +2862,6 @@ onUnmounted(() => {
   color: var(--co-text);
 }
 
-.co-comfy-status-tag :deep(.ant-badge-status-dot) {
-  top: 0;
-}
-
 .co-comfy-queue-tag {
   font-variant-numeric: tabular-nums;
 }

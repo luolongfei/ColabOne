@@ -5406,3 +5406,77 @@ test("settings shows bottom floating save bar only when top save button scrolls 
   await navItem(page, "远端设备").click();
   await expect(floatingBar).toHaveCount(0);
 });
+
+test("status badge dots stay vertically centered without phantom empty-text gap across themes and locales", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.goto("/");
+  await expect(page.locator(".co-runtime-tag")).toBeVisible();
+
+  const inspectBadge = async (selector: string) =>
+    page.evaluate((sel) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const centerY = rect.top + rect.height / 2;
+      const dot = el.querySelector(".ant-badge-status-dot") as HTMLElement | null;
+      const dotRect = dot?.getBoundingClientRect() ?? null;
+      const dotCs = dot ? getComputedStyle(dot) : null;
+      const statusText = el.querySelector(".ant-badge-status-text") as HTMLElement | null;
+      const statusTextCs = statusText ? getComputedStyle(statusText) : null;
+      const label = el.querySelector(":scope > span:not(.ant-badge)") as HTMLElement | null;
+      const labelRect = label?.getBoundingClientRect() ?? null;
+      const tagCs = getComputedStyle(el);
+      return {
+        dotTop: dotCs?.top ?? null,
+        dotWidth: dotCs?.width ?? null,
+        dotHeight: dotCs?.height ?? null,
+        dotDeltaY: dotRect ? Math.abs(dotRect.top + dotRect.height / 2 - centerY) : null,
+        emptyTextDisplay:
+          statusText && statusText.textContent === "" ? statusTextCs?.display ?? null : null,
+        dotToLabelGap:
+          dotRect && labelRect ? Math.round((labelRect.left - dotRect.right) * 10) / 10 : null,
+        textBoxTrim: tagCs.textBoxTrim,
+      };
+    }, selector);
+
+  const zhRuntime = await inspectBadge(".co-runtime-tag");
+  expect(zhRuntime).not.toBeNull();
+  expect(zhRuntime!.dotTop).toBe("0px");
+  expect(zhRuntime!.dotWidth).toBe("6px");
+  expect(zhRuntime!.dotHeight).toBe("6px");
+  expect(zhRuntime!.dotDeltaY!).toBeLessThanOrEqual(0.5);
+  expect(zhRuntime!.emptyTextDisplay).toBe("none");
+  expect(zhRuntime!.dotToLabelGap!).toBeGreaterThanOrEqual(4);
+  expect(zhRuntime!.dotToLabelGap!).toBeLessThanOrEqual(6);
+  expect(zhRuntime!.textBoxTrim).toBe("none");
+
+  const rmLive = await inspectBadge(".co-rm-live-badge");
+  expect(rmLive).not.toBeNull();
+  expect(rmLive!.dotTop).toBe("0px");
+  expect(rmLive!.dotDeltaY!).toBeLessThanOrEqual(0.5);
+
+  await navItem(page, "对外 API").click();
+  await expect(page.locator(".co-api-status-tag")).toBeVisible();
+  const apiStatus = await inspectBadge(".co-api-status-tag");
+  expect(apiStatus).not.toBeNull();
+  expect(apiStatus!.dotTop).toBe("0px");
+  expect(apiStatus!.dotDeltaY!).toBeLessThanOrEqual(0.5);
+  expect(apiStatus!.emptyTextDisplay).toBe("none");
+  expect(apiStatus!.dotToLabelGap!).toBeLessThanOrEqual(6);
+
+  // Switch to en-US and toggle theme to verify dynamic CSS-in-JS never regresses alignment
+  await page.evaluate(() => {
+    document.documentElement.lang = "en-US";
+  });
+  await page.locator("header .co-nav-right button").nth(1).click();
+  await page.waitForTimeout(150);
+
+  const enApiStatus = await inspectBadge(".co-api-status-tag");
+  expect(enApiStatus).not.toBeNull();
+  expect(enApiStatus!.dotTop).toBe("0px");
+  expect(enApiStatus!.dotDeltaY!).toBeLessThanOrEqual(0.5);
+  expect(enApiStatus!.emptyTextDisplay).toBe("none");
+  expect(enApiStatus!.textBoxTrim).toBe("trim-both");
+});

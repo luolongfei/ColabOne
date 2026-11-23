@@ -760,18 +760,6 @@ function onIdleMinutesChange(event: Event) {
   border-color: rgba(59, 130, 246, 0.28);
 }
 
-.co-bc-status-dot {
-  display: inline-flex;
-  align-items: center;
-  line-height: 1;
-}
-
-.co-bc-status-dot :deep(.ant-badge-status-dot) {
-  width: 6px;
-  height: 6px;
-  top: 0;
-}
-
 .co-bc-status-tag.billing .co-bc-status-dot :deep(.ant-badge-status-processing::after) {
   border-color: var(--co-danger);
 }
