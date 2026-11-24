@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
 const hasSystemChrome =
@@ -6,6 +7,13 @@ const hasSystemChrome =
   (process.platform === "darwin" ||
     process.platform === "win32" ||
     fs.existsSync("/opt/google/chrome/chrome"));
+
+const distIndexPath = fileURLToPath(
+  new URL("./dist/index.html", import.meta.url),
+);
+const usePrebuiltDist = Boolean(
+  process.env.CI && fs.existsSync(distIndexPath),
+);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -17,9 +25,11 @@ export default defineConfig({
     viewport: { width: 1280, height: 850 },
   },
   webServer: {
-    command: "npm run dev -- --port 4173",
+    command: usePrebuiltDist
+      ? "npm run preview -- --port 4173 --strictPort"
+      : "npm run preview:e2e",
     url: "http://127.0.0.1:4173",
-    reuseExistingServer: true,
+    reuseExistingServer: !process.env.CI,
   },
   reporter: "list",
 });

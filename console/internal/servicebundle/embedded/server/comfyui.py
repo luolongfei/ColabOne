@@ -892,6 +892,7 @@ class ColabOneComfyManager:
         self._queue_cache: tuple[int, int] = (0, 0)
         self._queue_checked_at: float = -10.0
         self._loaded_pack_signature: str = ""
+        self._history_poll_interval: float = 0.5
 
         self.store = ColabOneComfyWorkflowStore(
             runtime.root,
@@ -2110,7 +2111,8 @@ class ColabOneComfyManager:
                             last_phase, last_note = phase, time.monotonic()
 
                     if not task.cancel.is_set():
-                        ws_wakeup.wait(0.5)
+                        if self._history_poll_interval > 0:
+                            ws_wakeup.wait(self._history_poll_interval)
                         ws_wakeup.clear()
             except ColabOneCancelledError:
                 with ws_lock:

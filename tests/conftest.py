@@ -38,8 +38,26 @@ def spec():
     )
 
 
+class _NoopComfyWsMonitor:
+    """Offline test double so runtime tests never dial real loopback port 8188."""
+
+    connected = False
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self) -> bool:
+        return False
+
+    def stop(self) -> None:
+        pass
+
+    def set_prompt_id(self, _prompt_id: str) -> None:
+        pass
+
+
 @pytest.fixture
-def runtime(tmp_path, spec):
+def runtime(tmp_path, spec, monkeypatch):
     catalog = tmp_path / "catalog"
     catalog.mkdir()
     (catalog / "presets.json").write_text(json.dumps([spec.model_dump()]))
@@ -56,10 +74,13 @@ def runtime(tmp_path, spec):
             }
         )
     )
-    return ColabOneRuntime(tmp_path / "remote", catalog)
+    monkeypatch.setattr("server.comfyui.ColabOneComfyWsMonitor", _NoopComfyWsMonitor)
+    rt = ColabOneRuntime(tmp_path / "remote", catalog)
+    rt.comfy._history_poll_interval = 0.0
+    return rt
 
 
-def wait_task(runtime, result, timeout=3):
+def wait_task(runtime, result, timeout=10):
     task = runtime.tasks[result["id"]]
     deadline = time.monotonic() + timeout
     while task.state == "running" and time.monotonic() < deadline:

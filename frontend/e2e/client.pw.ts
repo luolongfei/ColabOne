@@ -1766,22 +1766,32 @@ test("log drawer expands independently to the right without covering workspace a
   await page.getByRole("button", { name: "展开运行日志" }).click();
   await expect(panel).toBeVisible();
 
-  // Wait for transition to settle before measuring non-overlapping geometry.
-  await page.waitForTimeout(250);
-  const wsBox = (await workspace.boundingBox())!;
-  const drawerBox = (await panel.boundingBox())!;
-  const topbarBox = (await page.locator(".co-status-bar").boundingBox())!;
-  const toggleBtnBox = (await page
-    .getByRole("button", { name: "收起运行日志", exact: true })
-    .boundingBox())!;
-
-  // Drawer sits strictly to the right of the main workspace (zero overlap!).
-  expect(drawerBox.x).toBeGreaterThanOrEqual(wsBox.x + wsBox.width - 1);
-  expect(drawerBox.width).toBeGreaterThanOrEqual(300);
-  expect(topbarBox.x + topbarBox.width).toBeLessThanOrEqual(drawerBox.x + 1);
-  expect(toggleBtnBox.x + toggleBtnBox.width).toBeLessThanOrEqual(
-    drawerBox.x + 1,
-  );
+  // Poll until drawer transition settles into non-overlapping geometry.
+  await expect
+    .poll(async () => {
+      const [wsBox, drawerBox, topbarBox, toggleBtnBox] = await Promise.all([
+        workspace.boundingBox(),
+        panel.boundingBox(),
+        page.locator(".co-status-bar").boundingBox(),
+        page
+          .getByRole("button", { name: "收起运行日志", exact: true })
+          .boundingBox(),
+      ]);
+      if (!wsBox || !drawerBox || !topbarBox || !toggleBtnBox) return null;
+      return {
+        drawerRightOfWorkspace: drawerBox.x >= wsBox.x + wsBox.width - 1,
+        drawerWideEnough: drawerBox.width >= 300,
+        topbarLeftOfDrawer: topbarBox.x + topbarBox.width <= drawerBox.x + 1,
+        toggleLeftOfDrawer:
+          toggleBtnBox.x + toggleBtnBox.width <= drawerBox.x + 1,
+      };
+    })
+    .toEqual({
+      drawerRightOfWorkspace: true,
+      drawerWideEnough: true,
+      topbarLeftOfDrawer: true,
+      toggleLeftOfDrawer: true,
+    });
 
   // Native window rightward expansion API was notified.
   expect(await page.evaluate(() => (window as any).__logDrawerCalls)).toEqual([
@@ -5635,8 +5645,6 @@ test("Toasts triggered inside ModelDrawer stay horizontally centered in the draw
   await expect(page.locator(".co-api-page-header")).toBeVisible();
 
   const drawer = await openApiModelDrawer(page);
-  // Wait for drawer slide-in transition to settle before measuring bounding rects
-  await page.waitForTimeout(350);
 
   const firstCard = drawer.locator(".co-model-card").first();
   await firstCard.getByRole("button", { name: "装载" }).click();
@@ -5670,24 +5678,41 @@ test("Toasts triggered inside ModelDrawer stay horizontally centered in the draw
       };
     });
 
-  const wide = await measureDrawerToast();
-  expect(wide).not.toBeNull();
-  expect(Math.abs(wide!.toastCenterX - wide!.drawerCenterX)).toBeLessThanOrEqual(2);
-  expect(wide!.toastLeft).toBeGreaterThanOrEqual(wide!.drawerLeft + 15);
-  expect(wide!.toastRight).toBeLessThanOrEqual(wide!.drawerRight - 15);
-  expect(wide!.toastTop).toBeGreaterThanOrEqual(wide!.headerBottom);
+  await expect
+    .poll(async () => {
+      const m = await measureDrawerToast();
+      if (!m) return null;
+      return {
+        centered: Math.abs(m.toastCenterX - m.drawerCenterX) <= 2,
+        insideLeft: m.toastLeft >= m.drawerLeft + 15,
+        insideRight: m.toastRight <= m.drawerRight - 15,
+        belowHeader: m.toastTop >= m.headerBottom,
+      };
+    })
+    .toEqual({
+      centered: true,
+      insideLeft: true,
+      insideRight: true,
+      belowHeader: true,
+    });
 
   // Resizing to a narrower viewport keeps the toast centered inside the resized drawer
   await page.setViewportSize({ width: 640, height: 800 });
-  // Wait for Ant Design Drawer's 300ms width transition to settle
-  await page.waitForTimeout(380);
-  const narrow = await measureDrawerToast();
-  expect(narrow).not.toBeNull();
-  expect(
-    Math.abs(narrow!.toastCenterX - narrow!.drawerCenterX),
-  ).toBeLessThanOrEqual(2);
-  expect(narrow!.toastLeft).toBeGreaterThanOrEqual(narrow!.drawerLeft + 15);
-  expect(narrow!.toastRight).toBeLessThanOrEqual(narrow!.drawerRight - 15);
+  await expect
+    .poll(async () => {
+      const m = await measureDrawerToast();
+      if (!m) return null;
+      return {
+        centered: Math.abs(m.toastCenterX - m.drawerCenterX) <= 2,
+        insideLeft: m.toastLeft >= m.drawerLeft + 15,
+        insideRight: m.toastRight <= m.drawerRight - 15,
+      };
+    })
+    .toEqual({
+      centered: true,
+      insideLeft: true,
+      insideRight: true,
+    });
 
   // Closing the toast does not accidentally dismiss the underlying ModelDrawer
   await toast.locator(".co-toast-close").click();
@@ -5711,7 +5736,6 @@ test("Toasts triggered inside ModelDrawer stay horizontally centered in the draw
   });
 
   const drawerWithLogs = await openApiModelDrawer(page);
-  await page.waitForTimeout(350);
   await drawerWithLogs
     .locator(".co-model-card")
     .first()
@@ -5719,34 +5743,38 @@ test("Toasts triggered inside ModelDrawer stay horizontally centered in the draw
     .click();
   await expect(toast).toBeVisible();
 
-  const withLogs = await measureDrawerToast();
-  expect(withLogs).not.toBeNull();
-  expect(
-    Math.abs(withLogs!.toastCenterX - withLogs!.drawerCenterX),
-  ).toBeLessThanOrEqual(2);
+  await expect
+    .poll(async () => {
+      const m = await measureDrawerToast();
+      if (!m) return null;
+      return Math.abs(m.toastCenterX - m.drawerCenterX) <= 2;
+    })
+    .toBe(true);
 
   // Closing the drawer while the toast is still visible re-centers it over the main workspace (left of inline LogDrawer)
   await page.locator(".co-model-drawer-root .ant-drawer-close").click();
   await expect(drawerWithLogs).toBeHidden();
   await expect(toast).toBeVisible();
 
-  const workspaceToast = await page.evaluate(() => {
-    const workspace = document
-      .querySelector(".co-workspace")
-      ?.getBoundingClientRect();
-    const toastEl = document
-      .querySelector(".co-toast")
-      ?.getBoundingClientRect();
-    if (!workspace || !toastEl) return null;
-    return {
-      workspaceCenterX: (workspace.left + workspace.right) / 2,
-      toastCenterX: (toastEl.left + toastEl.right) / 2,
-    };
-  });
-  expect(workspaceToast).not.toBeNull();
-  expect(
-    Math.abs(workspaceToast!.toastCenterX - workspaceToast!.workspaceCenterX),
-  ).toBeLessThanOrEqual(3);
+  await expect
+    .poll(async () => {
+      const m = await page.evaluate(() => {
+        const workspace = document
+          .querySelector(".co-workspace")
+          ?.getBoundingClientRect();
+        const toastEl = document
+          .querySelector(".co-toast")
+          ?.getBoundingClientRect();
+        if (!workspace || !toastEl) return null;
+        return {
+          workspaceCenterX: (workspace.left + workspace.right) / 2,
+          toastCenterX: (toastEl.left + toastEl.right) / 2,
+        };
+      });
+      if (!m) return null;
+      return Math.abs(m.toastCenterX - m.workspaceCenterX) <= 3;
+    })
+    .toBe(true);
 });
 
 test("all frontend loading icons rotate at 4 seconds per revolution", async ({
@@ -6660,11 +6688,21 @@ test("CU consumption trend chart defaults to live 24h, supports calendar date se
       y: Math.round(narrowBox.height * 0.5),
     },
   });
-  const tipBox = (await cuCard.locator(".co-cu-tooltip").boundingBox())!;
-  expect(tipBox.x).toBeGreaterThanOrEqual(narrowBox.x - 1);
-  expect(tipBox.x + tipBox.width).toBeLessThanOrEqual(
-    narrowBox.x + narrowBox.width + 1,
-  );
+  const cuTooltip = cuCard.locator(".co-cu-tooltip");
+  await expect(cuTooltip).toBeVisible();
+  await expect
+    .poll(async () => {
+      const [stageBox, tipBox] = await Promise.all([
+        stage.boundingBox(),
+        cuTooltip.boundingBox(),
+      ]);
+      if (!stageBox || !tipBox) return null;
+      return {
+        withinLeft: tipBox.x >= stageBox.x - 1,
+        withinRight: tipBox.x + tipBox.width <= stageBox.x + stageBox.width + 1,
+      };
+    })
+    .toEqual({ withinLeft: true, withinRight: true });
 });
 
 test("default GPU selection is G4 across devices, settings, top bar, and model drawer", async ({
@@ -6746,19 +6784,28 @@ test("auto-update surfaces navbar badge, renders bilingual release notes safely,
   const modal = page.getByTestId("update-modal");
   await expect(modal).toBeVisible();
   // Anchored compact popover under the version badge (no full-page dimmed modal backdrop).
+  // Poll geometry until Ant Design Vue's vc-align finishes positioning the portal below the trigger.
   await expect(page.locator(".ant-modal-mask")).toHaveCount(0);
-  const [btnBox, popBox] = await Promise.all([
-    versionBtn.boundingBox(),
-    modal.boundingBox(),
-  ]);
-  expect(btnBox).not.toBeNull();
-  expect(popBox).not.toBeNull();
-  if (btnBox && popBox) {
-    expect(popBox.width).toBeLessThanOrEqual(420);
-    expect(popBox.y).toBeGreaterThanOrEqual(btnBox.y + btnBox.height - 2);
-    expect(popBox.y - (btnBox.y + btnBox.height)).toBeLessThan(28);
-    expect(Math.abs(popBox.x - btnBox.x)).toBeLessThan(48);
-  }
+  await expect
+    .poll(async () => {
+      const [btnBox, popBox] = await Promise.all([
+        versionBtn.boundingBox(),
+        modal.boundingBox(),
+      ]);
+      if (!btnBox || !popBox) return null;
+      return {
+        widthOk: popBox.width <= 420,
+        belowTrigger: popBox.y >= btnBox.y + btnBox.height - 2,
+        closeBelow: popBox.y - (btnBox.y + btnBox.height) < 28,
+        leftAligned: Math.abs(popBox.x - btnBox.x) < 48,
+      };
+    })
+    .toEqual({
+      widthOk: true,
+      belowTrigger: true,
+      closeBelow: true,
+      leftAligned: true,
+    });
   await expect(modal).toContainText("v0.1.6 → v0.1.7");
 
   // Chinese notes render by default; attempted script tag renders as literal text with zero XSS.

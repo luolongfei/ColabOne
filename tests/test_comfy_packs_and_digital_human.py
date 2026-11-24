@@ -1255,6 +1255,7 @@ def test_comfy_ws_monitor_loopback_live_and_unreachable_fallback():
         host="127.0.0.1",
         port=closed_port,
         client_id="colabone-unreachable",
+        connect_timeout=0.5,
     )
     assert unreachable.start() is False
     unreachable.stop()
