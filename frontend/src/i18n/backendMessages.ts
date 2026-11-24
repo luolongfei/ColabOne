@@ -4164,6 +4164,107 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^Google 云盘导出目录不可读写：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Google Drive export folder is not readable/writable: ${detail}`;
+        case "zh-TW":
+          return `Google 雲端硬碟匯出目錄無法讀寫：${detail}`;
+        case "zh-HK":
+          return `Google 雲端硬碟匯出目錄無法讀寫：${detail}`;
+        case "ja-JP":
+          return `Google ドライブ出力フォルダの読み書きができません: ${detail}`;
+        case "ko-KR":
+          return `Google 드라이브 내보내기 폴더를 읽고 쓸 수 없습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^写入 Google 云盘失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to write to Google Drive: ${detail}`;
+        case "zh-TW":
+          return `寫入 Google 雲端硬碟失敗：${detail}`;
+        case "zh-HK":
+          return `寫入 Google 雲端硬碟失敗：${detail}`;
+        case "ja-JP":
+          return `Google ドライブへの書き込みに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Google 드라이브 쓰기 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^导出到 Google 云盘失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to export to Google Drive: ${detail}`;
+        case "zh-TW":
+          return `匯出至 Google 雲端硬碟失敗：${detail}`;
+        case "zh-HK":
+          return `匯出至 Google 雲端硬碟失敗：${detail}`;
+        case "ja-JP":
+          return `Google ドライブへの保存に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Google 드라이브 내보내기 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已将作品导出至 Google 云盘：My Drive \/ (.+) \/ (.+)$/,
+    format: (m, loc) => {
+      const folder = m[1]!;
+      const name = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Exported output to Google Drive: My Drive / ${folder} / ${name}`;
+        case "zh-TW":
+          return `已將作品匯出至 Google 雲端硬碟：My Drive / ${folder} / ${name}`;
+        case "zh-HK":
+          return `已將作品匯出至 Google 雲端硬碟：My Drive / ${folder} / ${name}`;
+        case "ja-JP":
+          return `作品を Google ドライブへ保存しました: My Drive / ${folder} / ${name}`;
+        case "ko-KR":
+          return `결과물을 Google 드라이브로 저장했습니다: My Drive / ${folder} / ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已将作品导出至 Google 云盘 \((.+)\)$/,
+    format: (m, loc) => {
+      const folder = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Exported output to Google Drive (${folder})`;
+        case "zh-TW":
+          return `已將作品匯出至 Google 雲端硬碟 (${folder})`;
+        case "zh-HK":
+          return `已將作品匯出至 Google 雲端硬碟 (${folder})`;
+        case "ja-JP":
+          return `作品を Google ドライブ (${folder}) へ保存しました`;
+        case "ko-KR":
+          return `결과물을 Google 드라이브(${folder})로 저장했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^已自动初始化免费 Drive 配额项目 \(([^)]+)\)，后续所有实例免弹窗自动挂载$/,
     format: (m, loc) => {
       const pid = m[1];

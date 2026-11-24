@@ -621,10 +621,65 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		c.log("远端已受理 ComfyUI 工作流任务", "ComfyUI", "info")
 		return res, nil
 
-	case "comfyui.output.asset", "comfyui.output.delete":
+	case "comfyui.output.asset", "comfyui.output.delete", "comfyui.output.export_drive":
 		identity := asString(payload["id"])
 		if !reHex32ID.MatchString(identity) {
 			return nil, errors.New("产物编号不合法")
+		}
+		if action == "comfyui.output.export_drive" {
+			if len(c.vaultSessions()) == 0 {
+				return nil, errors.New("请先启动远端 GPU 实例")
+			}
+			c.mu.Lock()
+			rt := deepCopyMap(asMap(c.data["runtime"]))
+			c.mu.Unlock()
+			if asString(rt["state"]) != "ready" {
+				return nil, errors.New("请先启动远端 GPU 实例")
+			}
+			if !asBool(asMap(rt["drive"])["connected"]) {
+				return nil, errors.New("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载")
+			}
+			if caps := asAnySlice(rt["capabilities"]); len(caps) > 0 && !c.hasRemoteCapability("comfyui_drive_export") {
+				return nil, errors.New("当前远端服务版本暂不支持作品直传 Google 云盘，请先点击顶部「立即热更新」升级远端服务后再试")
+			}
+			c.log("正在将 ComfyUI 作品直传导出至 Google 云盘 (ColabOne_Drive/outputs)", "云盘", "info")
+			res, err := c.remoteLong(ctx, "POST", "comfyui/outputs/"+identity+"/export-drive", nil, 240*time.Second)
+			if err != nil {
+				if isNotFoundError(err) && !strings.Contains(err.Error(), "资源不存在") {
+					return nil, errors.New("当前远端服务版本暂不支持作品直传 Google 云盘，请先点击顶部「立即热更新」升级远端服务后再试")
+				}
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "Google 云盘连接已断开") ||
+					strings.Contains(errMsg, "未检测到云盘凭据") ||
+					strings.Contains(errMsg, "尚未连接 Google 云盘") {
+					c.mu.Lock()
+					nextRT := deepCopyMap(asMap(c.data["runtime"]))
+					c.mu.Unlock()
+					if nextRT != nil {
+						driveMap := deepCopyMap(asMap(nextRT["drive"]))
+						if driveMap == nil {
+							driveMap = map[string]any{}
+						}
+						driveMap["connected"] = false
+						driveMap["mode"] = "disabled"
+						nextRT["drive"] = driveMap
+						c.Update(map[string]any{"runtime": nextRT})
+					}
+				}
+				return nil, err
+			}
+			resMap := asMap(res)
+			remoteFolder := asString(resMap["remote_folder"])
+			if remoteFolder == "" {
+				remoteFolder = "ColabOne_Drive/outputs"
+			}
+			exportedName := asString(resMap["filename"])
+			if exportedName != "" {
+				c.log(fmt.Sprintf("已将作品导出至 Google 云盘：My Drive / %s / %s", remoteFolder, exportedName), "云盘", "info")
+			} else {
+				c.log("已将作品导出至 Google 云盘 ("+remoteFolder+")", "云盘", "info")
+			}
+			return res, nil
 		}
 		if action == "comfyui.output.delete" {
 			c.log("正在删除远端 ComfyUI 作品文件", "ComfyUI", "info")
@@ -996,7 +1051,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return c.asyncOperation("挂载 Google 云盘 (ColabOne_Drive)", func() error {
 			_, err := c.ConnectDrive(c.rootCtx)
 			return err
-		}, nil, nil)
+		}, map[string]any{"kind": "drive_connect"}, nil)
 
 	case "drive.setup_headless":
 		return c.asyncOperation("检测并开启云盘免弹窗模式", func() error {

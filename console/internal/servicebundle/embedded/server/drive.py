@@ -22,17 +22,118 @@ import threading
 import time
 import uuid
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import requests
 
 COLABONE_DRIVE_REMOTE = "colabone_gdrive"
 COLABONE_DRIVE_FOLDER = "ColabOne_Drive"
+COLABONE_DRIVE_OUTPUTS_SUBDIR = "outputs"
 COLABONE_DRIVE_SPEC = f"{COLABONE_DRIVE_REMOTE}:{COLABONE_DRIVE_FOLDER}"
 DEFAULT_MOUNT_ROOT = Path("/content/drive/MyDrive")
 _QUOTA_PROJECT_LINE_RE = re.compile(
     r"^\s*#\s*colabone_quota_project\s*=\s*([a-z][a-z0-9-]{4,28}[a-z0-9])\s*$"
 )
+_EXPORT_EXT_RE = re.compile(r"^[a-z0-9]{1,10}$")
+_FORBIDDEN_EXPORT_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]+')
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+)
+_EXPORT_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
+def sanitize_drive_export_filename(
+    filename: str, output_id: str, extension: str
+) -> str:
+    """Return a cross-platform safe basename guaranteed to end with `.<extension>`."""
+    ext = str(extension or "").lstrip(".").lower()
+    if not _EXPORT_EXT_RE.fullmatch(ext):
+        raise ValueError("输出文件格式不合法")
+    raw = str(filename or "").replace("\\", "/").replace("\x00", "")
+    base = PurePosixPath(raw).name if raw else ""
+    base = _FORBIDDEN_EXPORT_CHARS_RE.sub("_", base).strip().strip(". ")
+    while ".." in base:
+        base = base.replace("..", "_")
+    base = base.strip(". ")
+    suffix = f".{ext}"
+    if base.lower().endswith(suffix):
+        stem = base[: -len(suffix)]
+    else:
+        stem = base
+    stem = stem.strip(". ")[:180].rstrip(". ")
+    if not stem or stem in (".", "..") or not stem.strip("_"):
+        short_id = re.sub(r"[^a-zA-Z0-9]", "", str(output_id or ""))[:8]
+        stem = f"colabone-{short_id}" if short_id else "colabone-output"
+    elif stem.split(".", 1)[0].upper() in _WINDOWS_RESERVED_STEMS:
+        stem = f"colabone-{stem}"[:180].rstrip(". ")
+    return f"{stem}.{ext}"
+
+
+def _hash_file(path: Path, algorithm: str = "sha256") -> str:
+    hasher = hashlib.new(algorithm)
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(_EXPORT_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest().lower()
+
+
+def _stream_write_file(src: Path, target: Path) -> None:
+    with src.open("rb") as reader, target.open("wb") as writer:
+        while True:
+            chunk = reader.read(_EXPORT_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            writer.write(chunk)
+        writer.flush()
+        try:
+            os.fsync(writer.fileno())
+        except OSError:
+            pass
+
+
+def _copy_file_stream(src: Path, dst: Path) -> None:
+    """Stream-copy src into dst with fsync, preferring atomic rename in dst.parent."""
+    if src.is_symlink() or not src.is_file():
+        raise FileNotFoundError(str(src))
+    if dst.is_symlink():
+        raise ValueError("云盘导出目标不能是符号链接")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.parent / f".co-export-{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        _stream_write_file(src, tmp)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    try:
+        tmp.replace(dst)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if dst.is_symlink():
+            raise ValueError("云盘导出目标不能是符号链接") from None
+        try:
+            _stream_write_file(src, dst)
+        except OSError:
+            try:
+                dst.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
 
 def parse_rclone_quota_project(config_path: Path) -> str:
@@ -297,6 +398,13 @@ class ColabOneDrive:
 
     def _drivefs_workspace_dir(self) -> Path:
         return self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER / "workspace"
+
+    def _drivefs_outputs_dir(self) -> Path:
+        return (
+            self._active_mydrive_dir()
+            / COLABONE_DRIVE_FOLDER
+            / COLABONE_DRIVE_OUTPUTS_SUBDIR
+        )
 
     def is_colab_drivefs_mounted(self) -> bool:
         """Return True if official Google Colab DriveFS is mounted at mount_root.parent."""
@@ -699,6 +807,248 @@ class ColabOneDrive:
                     )
             except Exception:
                 pass
+
+    def _inspect_rclone_remote_file(
+        self, binary: Path, remote_path: str
+    ) -> tuple[str, dict | str | None]:
+        """Inspect remote_path via rclone lsjson --stat --hash.
+
+        Returns ("exists", entry_dict), ("missing", None), or ("error", message).
+        """
+        try:
+            res = subprocess.run(
+                self._rclone_cmd(binary, "lsjson", "--stat", "--hash", remote_path),
+                check=False,
+                timeout=20,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.TimeoutExpired:
+            return ("error", "导出到 Google 云盘超时，请稍后重试")
+        except OSError as exc:
+            return ("error", f"导出到 Google 云盘失败：{exc}")
+        if res.returncode != 0:
+            err_low = (res.stderr or "").lower()
+            if res.returncode in (3, 4) or "not found" in err_low:
+                return ("missing", None)
+            return ("error", format_rclone_error(res.stderr or ""))
+        if not res.stdout or not res.stdout.strip():
+            return ("missing", None)
+        try:
+            parsed = json.loads(res.stdout)
+        except ValueError:
+            return ("missing", None)
+        if isinstance(parsed, dict):
+            return ("exists", parsed)
+        if isinstance(parsed, list):
+            for entry in parsed:
+                if isinstance(entry, dict):
+                    return ("exists", entry)
+        return ("missing", None)
+
+    def export_output_file(
+        self,
+        src_path: Path,
+        *,
+        filename: str,
+        output_id: str,
+        extension: str,
+        expected_sha256: str = "",
+        expected_size: int | None = None,
+    ) -> dict:
+        """Export a ComfyUI output directly from the remote VM to Google Drive outputs/."""
+        with self.lock:
+            if not self.available():
+                raise ValueError("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载")
+            src = Path(src_path)
+            if src.is_symlink() or not src.is_file():
+                raise FileNotFoundError(str(src))
+            actual_size = src.stat().st_size
+            if actual_size <= 0:
+                raise ValueError("生成结果为空")
+            clean_name = sanitize_drive_export_filename(filename, output_id, extension)
+            ext = clean_name.rsplit(".", 1)[1]
+            stem = clean_name[: -(len(ext) + 1)]
+            short_id = re.sub(r"[^a-zA-Z0-9]", "", str(output_id or ""))[:8] or "copy"
+            sha256_expected = (expected_sha256 or "").strip().lower()
+            if expected_size is not None and actual_size != expected_size:
+                sha256_expected = ""
+            remote_folder = f"{COLABONE_DRIVE_FOLDER}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}"
+
+            def _ensure_src_sha256() -> str:
+                nonlocal sha256_expected
+                if not sha256_expected:
+                    sha256_expected = _hash_file(src, "sha256")
+                return sha256_expected
+
+            def _build_candidates() -> list[str]:
+                base_stem = stem[:168].rstrip(". ") or "colabone-output"
+                items = [clean_name]
+                disambig = f"{base_stem}-{short_id}.{ext}"
+                if disambig.lower() != clean_name.lower():
+                    items.append(disambig)
+                return items
+
+            if self.mode == "colab_drivefs":
+                if not self.is_colab_drivefs_mounted():
+                    self.mode = "disabled"
+                    self.error = "Google 云盘连接已断开，请重新挂载后再试"
+                    raise RuntimeError(self.error)
+                folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+                out_dir = self._drivefs_outputs_dir()
+                if folder_dir.is_symlink() or out_dir.is_symlink():
+                    raise ValueError("云盘导出目录不能是符号链接")
+                try:
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise RuntimeError(f"Google 云盘导出目录不可读写：{exc}") from None
+
+                target_dst: Path | None = None
+                for cand in _build_candidates():
+                    dst = out_dir / cand
+                    if dst.is_symlink():
+                        continue
+                    if dst.exists():
+                        if dst.is_file():
+                            try:
+                                if dst.stat().st_size == actual_size and _hash_file(
+                                    dst, "sha256"
+                                ) == _ensure_src_sha256():
+                                    self.error = ""
+                                    return {
+                                        "ok": True,
+                                        "already_exists": True,
+                                        "filename": dst.name,
+                                        "remote_folder": remote_folder,
+                                        "drive_path": f"My Drive/{remote_folder}/{dst.name}",
+                                        "size": actual_size,
+                                        "mode": self.mode,
+                                    }
+                            except OSError:
+                                pass
+                        continue
+                    target_dst = dst
+                    break
+
+                if target_dst is None:
+                    base_stem = stem[:160].rstrip(". ") or "colabone-output"
+                    target_dst = (
+                        out_dir / f"{base_stem}-{short_id}-{uuid.uuid4().hex[:4]}.{ext}"
+                    )
+
+                try:
+                    _copy_file_stream(src, target_dst)
+                except OSError as exc:
+                    raise RuntimeError(f"写入 Google 云盘失败：{exc}") from None
+
+                self.error = ""
+                self._space_cache["ts"] = 0.0
+                return {
+                    "ok": True,
+                    "already_exists": False,
+                    "filename": target_dst.name,
+                    "remote_folder": remote_folder,
+                    "drive_path": f"My Drive/{remote_folder}/{target_dst.name}",
+                    "size": actual_size,
+                    "mode": self.mode,
+                }
+
+            if not self._has_rclone_config():
+                self.mode = "disabled"
+                self.error = "未检测到云盘凭据配置，请重新挂载 Google 云盘"
+                raise RuntimeError(self.error)
+
+            binary = ensure_rclone_binary(self.root, self.catalog, self.http)
+            remote_dir = f"{COLABONE_DRIVE_SPEC}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}"
+            src_md5_cache: str | None = None
+
+            def _entry_matches_src(entry: dict) -> bool:
+                nonlocal src_md5_cache
+                if entry.get("IsDir"):
+                    return False
+                if entry.get("Size") != actual_size:
+                    return False
+                raw_hashes = entry.get("Hashes")
+                if not isinstance(raw_hashes, dict):
+                    return False
+                hashes = {
+                    str(k).lower().replace("-", ""): str(v).strip().lower()
+                    for k, v in raw_hashes.items()
+                    if isinstance(v, str) and v.strip()
+                }
+                if "sha256" in hashes:
+                    return hashes["sha256"] == _ensure_src_sha256()
+                if "md5" in hashes:
+                    if src_md5_cache is None:
+                        src_md5_cache = _hash_file(src, "md5")
+                    return hashes["md5"] == src_md5_cache
+                return False
+
+            final_name: str | None = None
+            for cand in _build_candidates():
+                inspect_status, inspect_payload = self._inspect_rclone_remote_file(
+                    binary, f"{remote_dir}/{cand}"
+                )
+                if inspect_status == "error":
+                    raise RuntimeError(
+                        str(inspect_payload or format_rclone_error(""))
+                    )
+                if inspect_status == "missing" or not isinstance(inspect_payload, dict):
+                    final_name = cand
+                    break
+                if _entry_matches_src(inspect_payload):
+                    self.error = ""
+                    return {
+                        "ok": True,
+                        "already_exists": True,
+                        "filename": cand,
+                        "remote_folder": remote_folder,
+                        "drive_path": f"My Drive/{remote_folder}/{cand}",
+                        "size": actual_size,
+                        "mode": self.mode,
+                    }
+
+            if final_name is None:
+                base_stem = stem[:160].rstrip(". ") or "colabone-output"
+                final_name = f"{base_stem}-{short_id}-{uuid.uuid4().hex[:4]}.{ext}"
+
+            try:
+                res = subprocess.run(
+                    self._rclone_cmd(
+                        binary,
+                        "copyto",
+                        str(src),
+                        f"{remote_dir}/{final_name}",
+                        "--drive-chunk-size",
+                        "64M",
+                    ),
+                    check=False,
+                    timeout=210,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("导出到 Google 云盘超时，请稍后重试") from None
+            except OSError as exc:
+                raise RuntimeError(f"导出到 Google 云盘失败：{exc}") from None
+
+            if res.returncode != 0:
+                raise RuntimeError(format_rclone_error(res.stderr or ""))
+
+            self.error = ""
+            self._space_cache["ts"] = 0.0
+            return {
+                "ok": True,
+                "already_exists": False,
+                "filename": final_name,
+                "remote_folder": remote_folder,
+                "drive_path": f"My Drive/{remote_folder}/{final_name}",
+                "size": actual_size,
+                "mode": self.mode,
+            }
 
     def unmount(self):
         with self.lock:

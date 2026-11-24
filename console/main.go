@@ -314,6 +314,7 @@ func validateColabOneExternalURL(value string) error {
 		"colab.research.google.com",
 		"console.cloud.google.com",
 		"developers.google.com",
+		"drive.google.com",
 		"github.com",
 		"huggingface.co",
 		"one.dash.cloudflare.com",

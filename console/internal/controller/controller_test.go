@@ -8367,3 +8367,128 @@ func TestComfyUIHardeningUploadRunBuiltinAuthorityAndTTSEngines(t *testing.T) {
 		}
 	})
 }
+
+func TestComfyUIOutputExportDriveCommand(t *testing.T) {
+	t.Run("comfyui_output_export_drive_validation_and_forwarding", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		ctrl := h.ctrl
+		validID := strings.Repeat("a", 32)
+
+		// 1. Invalid output ID rejected immediately.
+		if _, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": "../bad"}); err == nil || !strings.Contains(err.Error(), "产物编号不合法") {
+			t.Fatalf("expected invalid ID error, got: %v", err)
+		}
+
+		// 2. Stopped runtime rejected.
+		if _, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": validID}); err == nil || !strings.Contains(err.Error(), "请先启动远端 GPU 实例") {
+			t.Fatalf("expected stopped runtime error, got: %v", err)
+		}
+
+		h.provider.addManagedSession("ep-drive", "A100", "STANDARD", true)
+
+		// 3. Ready runtime without Drive connected rejected.
+		ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state":        "ready",
+				"id":           "ep-drive",
+				"drive":        map[string]any{"connected": false},
+				"capabilities": []string{"public_api", "comfyui", "comfyui_hf_token", "comfyui_drive_export"},
+			},
+		})
+		if _, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": validID}); err == nil || !strings.Contains(err.Error(), "尚未连接 Google 云盘") {
+			t.Fatalf("expected unmounted drive error, got: %v", err)
+		}
+
+		// 4. Pre-upgrade remote lacking comfyui_drive_export capability returns actionable upgrade error.
+		ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state":        "ready",
+				"id":           "ep-drive",
+				"drive":        map[string]any{"connected": true},
+				"capabilities": []string{"public_api", "comfyui", "comfyui_hf_token"},
+			},
+		})
+		if _, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": validID}); err == nil || !strings.Contains(err.Error(), "立即热更新") {
+			t.Fatalf("expected hot-update guidance error, got: %v", err)
+		}
+
+		// 5. Happy path forwards POST comfyui/outputs/{id}/export-drive and logs saved Drive path.
+		var calledMethod, calledPath string
+		h.provider.rpcFn = func(_ context.Context, method, path string, _ any, _ ColabOneRPCOptions) (any, error) {
+			calledMethod = method
+			calledPath = path
+			return map[string]any{
+				"ok":             true,
+				"id":             validID,
+				"filename":       "avatar_720x1280.mp4",
+				"remote_folder":  "ColabOne_Drive/outputs",
+				"drive_path":     "My Drive/ColabOne_Drive/outputs/avatar_720x1280.mp4",
+				"already_exists": false,
+				"size":           123456,
+			}, nil
+		}
+		ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state":        "ready",
+				"id":           "ep-drive",
+				"drive":        map[string]any{"connected": true},
+				"capabilities": []string{"public_api", "comfyui", "comfyui_hf_token", "comfyui_drive_export"},
+			},
+		})
+		rawRes, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": validID})
+		if err != nil {
+			t.Fatalf("comfyui.output.export_drive failed: %v", err)
+		}
+		if calledMethod != "POST" || calledPath != "comfyui/outputs/"+validID+"/export-drive" {
+			t.Fatalf("unexpected remote call: %s %s", calledMethod, calledPath)
+		}
+		resMap := asMap(rawRes)
+		if !asBool(resMap["ok"]) || asString(resMap["filename"]) != "avatar_720x1280.mp4" {
+			t.Fatalf("unexpected export result: %#v", rawRes)
+		}
+		foundExportLog := false
+		for _, entry := range ctrl.activity.Snapshot() {
+			if strings.Contains(entry.Message, "My Drive / ColabOne_Drive/outputs / avatar_720x1280.mp4") {
+				foundExportLog = true
+				break
+			}
+		}
+		if !foundExportLog {
+			t.Fatalf("expected Drive export activity log, got: %#v", ctrl.activity.Snapshot())
+		}
+
+		// 6. Legacy remote omitting capabilities that returns route-level HTTP 404 yields upgrade message.
+		ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state": "ready",
+				"id":    "ep-drive",
+				"drive": map[string]any{"connected": true},
+			},
+		})
+		h.provider.rpcFn = func(_ context.Context, _, _ string, _ any, _ ColabOneRPCOptions) (any, error) {
+			return nil, &ColabOneHTTPError{StatusCode: 404, Message: "Not Found"}
+		}
+		if _, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": validID}); err == nil || !strings.Contains(err.Error(), "立即热更新") {
+			t.Fatalf("expected upgrade guidance on route-level 404, got: %v", err)
+		}
+
+		// 7. Output-level 404 ("资源不存在") must NOT be misclassified as needing hot-update.
+		h.provider.rpcFn = func(_ context.Context, _, _ string, _ any, _ ColabOneRPCOptions) (any, error) {
+			return nil, &ColabOneHTTPError{StatusCode: 404, Message: "资源不存在"}
+		}
+		if _, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": validID}); err == nil || !strings.Contains(err.Error(), "资源不存在") || strings.Contains(err.Error(), "立即热更新") {
+			t.Fatalf("expected resource-missing 404 to stay intact, got: %v", err)
+		}
+
+		// 8. Remote Drive disconnect error immediately clears cached setup.drive so UI offers reconnect.
+		h.provider.rpcFn = func(_ context.Context, _, _ string, _ any, _ ColabOneRPCOptions) (any, error) {
+			return nil, &ColabOneHTTPError{StatusCode: 502, Message: "Google 云盘连接已断开，请重新挂载后再试"}
+		}
+		if _, err := ctrl.Command(context.Background(), "comfyui.output.export_drive", map[string]any{"id": validID}); err == nil || !strings.Contains(err.Error(), "已断开") {
+			t.Fatalf("expected Drive disconnect error, got: %v", err)
+		}
+		if asBool(asMap(ctrl.Snapshot()["setup"])["drive"]) {
+			t.Fatalf("expected setup.drive to flip false immediately after disconnect error, got: %#v", ctrl.Snapshot()["setup"])
+		}
+	})
+}

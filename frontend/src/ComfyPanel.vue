@@ -18,6 +18,11 @@ import {
   Tag as ATag,
   Textarea as ATextarea,
 } from "ant-design-vue";
+import ColabOneDriveExportModal, {
+  formatColabOneDrivePath,
+  isColabOneDriveConnectOperation,
+  type ColabOneDriveExportResult,
+} from "./ColabOneDriveExportModal.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
@@ -44,7 +49,10 @@ import {
   PhCaretRight,
   PhCheck,
   PhCheckCircle,
+  PhCloud,
   PhCloudArrowDown,
+  PhCloudArrowUp,
+  PhCloudCheck,
   PhDownloadSimple,
   PhEye,
   PhEyeSlash,
@@ -52,6 +60,7 @@ import {
   PhGraph,
   PhHardDrives,
   PhImage,
+  PhInfo,
   PhLink,
   PhPlay,
   PhPlus,
@@ -121,6 +130,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   device: [];
+  settings: [];
+  upgrade: [];
   sync: [];
   notify: [string, ColabOneToastKind?];
   clearError: [];
@@ -1197,6 +1208,7 @@ watch(
     }
     abortAllOutputFetches();
     failedOutputs.value = {};
+    exportedDriveOutputs.value = {};
     const staleUrls = Object.values(blobUrls.value);
     blobUrls.value = {};
     revokeBlobUrlsDeferred(staleUrls);
@@ -1862,6 +1874,7 @@ async function runWorkflow() {
 
 // Output gallery & lazy Blob URL preview
 const MAX_INLINE_PREVIEW_BYTES = 48 * 1024 * 1024;
+const GOOGLE_DRIVE_HOME_URL = "https://drive.google.com/drive/my-drive";
 interface OutputPreviewError {
   code: "media" | "fetch";
   detail?: string;
@@ -1871,8 +1884,71 @@ const blobUrls = ref<Record<string, string>>({});
 const fetchingOutputs = ref<Record<string, boolean>>({});
 const failedOutputs = ref<Record<string, OutputPreviewError>>({});
 const exportingOutputs = ref<Record<string, boolean>>({});
+const exportingDriveOutputs = ref<Record<string, boolean>>({});
+const exportedDriveOutputs = ref<Record<string, ColabOneDriveExportResult>>({});
 const deletingOutputs = ref<Record<string, boolean>>({});
+const deleteConfirmOutputId = ref("");
 const outputFetchControllers = new Map<string, AbortController>();
+
+// Google Drive setup & cloud-to-cloud export modal state
+const driveModalOpen = ref(false);
+const driveModalTarget = ref<WorkflowOutput | null>(null);
+const driveModalAutoExport = ref(false);
+const driveModalResult = ref<ColabOneDriveExportResult | null>(null);
+const driveModalError = ref("");
+const connectingDriveInModal = ref(false);
+const sawDriveConnectOpInModal = ref(false);
+const driveConnectBaselineError = ref("");
+const confirmingDriveAuthInModal = ref(false);
+const checkingHeadlessInModal = ref(false);
+const sawHeadlessOpInModal = ref(false);
+const headlessBaselineError = ref("");
+const savingAutoDriveInModal = ref(false);
+let driveConnectReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+let headlessReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearDriveConnectTimer() {
+  if (driveConnectReconcileTimer !== null) {
+    clearTimeout(driveConnectReconcileTimer);
+    driveConnectReconcileTimer = null;
+  }
+}
+
+function clearHeadlessTimer() {
+  if (headlessReconcileTimer !== null) {
+    clearTimeout(headlessReconcileTimer);
+    headlessReconcileTimer = null;
+  }
+}
+
+function clearDriveModalTimers() {
+  clearDriveConnectTimer();
+  clearHeadlessTimer();
+}
+
+const driveWaitingBrowserAuth = computed(
+  () =>
+    gpuReady.value &&
+    !props.state.setup.drive &&
+    Boolean(props.state.auth_url) &&
+    isColabOneDriveConnectOperation(props.state.operation),
+);
+const needsUpgradeForDriveExport = computed(() => {
+  const caps = props.state.runtime.capabilities;
+  return Boolean(
+    gpuReady.value &&
+      props.state.runtime.upgrade_available &&
+      Array.isArray(caps) &&
+      caps.length > 0 &&
+      !caps.includes("comfyui_drive_export"),
+  );
+});
+const driveModalExporting = computed(() =>
+  Boolean(
+    driveModalTarget.value &&
+      exportingDriveOutputs.value[driveModalTarget.value.id],
+  ),
+);
 
 function isOutputTooLargeForPreview(item: WorkflowOutput): boolean {
   return Number.isFinite(item.size) && item.size > MAX_INLINE_PREVIEW_BYTES;
@@ -2042,6 +2118,21 @@ watch(
         delete failedOutputs.value[id];
       }
     }
+    for (const id of Object.keys(exportedDriveOutputs.value)) {
+      if (!activeIds.has(id)) {
+        const next = { ...exportedDriveOutputs.value };
+        delete next[id];
+        exportedDriveOutputs.value = next;
+      }
+    }
+    if (
+      driveModalTarget.value &&
+      !activeIds.has(driveModalTarget.value.id) &&
+      !driveModalResult.value
+    ) {
+      driveModalTarget.value = null;
+      driveModalAutoExport.value = false;
+    }
     for (const id of Array.from(outputFetchControllers.keys())) {
       if (!activeIds.has(id)) {
         abortOutputFetch(id);
@@ -2053,6 +2144,369 @@ watch(
   },
   { immediate: true },
 );
+
+watch(
+  () => props.state.runtime.id,
+  (nextId, prevId) => {
+    if (prevId && nextId !== prevId) {
+      exportedDriveOutputs.value = {};
+      if (driveModalOpen.value) {
+        driveModalTarget.value = null;
+        driveModalAutoExport.value = false;
+        driveModalResult.value = null;
+        driveModalError.value = "";
+      }
+    }
+  },
+);
+
+function finishHeadlessCheckInModal() {
+  clearHeadlessTimer();
+  checkingHeadlessInModal.value = false;
+  sawHeadlessOpInModal.value = false;
+  const stateErr = String(props.state.error || "").trim();
+  if (props.state.setup.drive_headless && !stateErr) {
+    emit("notify", t("settings.driveHeadlessEnabledToast"), "success");
+  } else if (stateErr) {
+    driveModalError.value = stateErr;
+  }
+}
+
+watch(
+  () => [
+    driveModalOpen.value,
+    Boolean(props.state.setup.drive),
+    Boolean(props.state.operation),
+    isColabOneDriveConnectOperation(props.state.operation),
+    props.state.runtime.state,
+    String(props.state.error || "").trim(),
+    Boolean(props.state.setup.drive_headless),
+    needsUpgradeForDriveExport.value,
+  ] as const,
+  ([
+    open,
+    connected,
+    opActive,
+    driveOpActive,
+    _rtState,
+    stateErr,
+    driveHeadless,
+    needsUpgrade,
+  ]) => {
+    if (connectingDriveInModal.value) {
+      if (driveOpActive) {
+        sawDriveConnectOpInModal.value = true;
+        clearDriveConnectTimer();
+      } else if (connected) {
+        clearDriveConnectTimer();
+        connectingDriveInModal.value = false;
+        sawDriveConnectOpInModal.value = false;
+      } else if (sawDriveConnectOpInModal.value) {
+        clearDriveConnectTimer();
+        connectingDriveInModal.value = false;
+        sawDriveConnectOpInModal.value = false;
+        driveModalAutoExport.value = false;
+        if (stateErr) {
+          driveModalError.value = stateErr;
+        }
+      } else if (
+        !opActive &&
+        stateErr &&
+        stateErr !== driveConnectBaselineError.value
+      ) {
+        clearDriveConnectTimer();
+        connectingDriveInModal.value = false;
+        driveModalAutoExport.value = false;
+        driveModalError.value = stateErr;
+      }
+    }
+    if (checkingHeadlessInModal.value) {
+      if (opActive && !driveOpActive) {
+        sawHeadlessOpInModal.value = true;
+        clearHeadlessTimer();
+      } else if (sawHeadlessOpInModal.value && !opActive) {
+        finishHeadlessCheckInModal();
+      } else if (
+        !opActive &&
+        (driveHeadless ||
+          (stateErr && stateErr !== headlessBaselineError.value))
+      ) {
+        finishHeadlessCheckInModal();
+      }
+    }
+    if (!open || !connected || opActive) return;
+    if (driveModalAutoExport.value && driveModalTarget.value) {
+      const target = driveModalTarget.value;
+      if (!outputs.value.some((o) => o.id === target.id)) {
+        driveModalAutoExport.value = false;
+        return;
+      }
+      if (needsUpgrade) {
+        driveModalAutoExport.value = false;
+        return;
+      }
+      if (!exportingDriveOutputs.value[target.id] && !driveModalResult.value) {
+        driveModalAutoExport.value = false;
+        void runDriveExport(target, { fromModal: true });
+      }
+    }
+  },
+);
+
+watch(
+  () => props.state.auth_url,
+  (url) => {
+    if (!url) {
+      confirmingDriveAuthInModal.value = false;
+    }
+  },
+);
+
+watch(driveModalOpen, (open) => {
+  if (!open) {
+    clearDriveModalTimers();
+    driveModalAutoExport.value = false;
+    driveModalResult.value = null;
+    driveModalError.value = "";
+    connectingDriveInModal.value = false;
+    sawDriveConnectOpInModal.value = false;
+    checkingHeadlessInModal.value = false;
+    sawHeadlessOpInModal.value = false;
+  }
+});
+
+function openDriveSetupModal(
+  target: WorkflowOutput | null = null,
+  autoExport = false,
+) {
+  driveModalTarget.value = target;
+  driveModalAutoExport.value = autoExport;
+  driveModalResult.value = null;
+  driveModalError.value = "";
+  driveModalOpen.value = true;
+}
+
+async function runDriveExport(
+  item: WorkflowOutput,
+  opts: { fromModal: boolean },
+) {
+  if (
+    !gpuReady.value ||
+    exportingDriveOutputs.value[item.id] ||
+    deletingOutputs.value[item.id]
+  ) {
+    return;
+  }
+  exportingDriveOutputs.value = {
+    ...exportingDriveOutputs.value,
+    [item.id]: true,
+  };
+  if (opts.fromModal) {
+    driveModalError.value = "";
+  }
+  const targetRuntimeId = props.state.runtime.id;
+  try {
+    const res = await colabOneCommand("comfyui.output.export_drive", {
+      id: item.id,
+    });
+    if (disposed || props.state.runtime.id !== targetRuntimeId) {
+      return;
+    }
+    const remoteFolder =
+      typeof res?.remote_folder === "string" && res.remote_folder.trim()
+        ? res.remote_folder.trim()
+        : `${props.state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+    const filename =
+      typeof res?.filename === "string" && res.filename.trim()
+        ? res.filename.trim()
+        : item.filename;
+    const drivePath =
+      typeof res?.drive_path === "string" && res.drive_path.trim()
+        ? res.drive_path.trim()
+        : `My Drive/${remoteFolder}/${filename}`;
+    const result: ColabOneDriveExportResult = {
+      id: item.id,
+      filename,
+      remoteFolder,
+      drivePath,
+      alreadyExists: Boolean(res?.already_exists),
+      size: typeof res?.size === "number" ? res.size : item.size,
+    };
+    exportedDriveOutputs.value = {
+      ...exportedDriveOutputs.value,
+      [item.id]: result,
+    };
+    if (
+      opts.fromModal &&
+      driveModalOpen.value &&
+      driveModalTarget.value?.id === item.id
+    ) {
+      driveModalResult.value = result;
+    }
+    setNoticeKey(
+      result.alreadyExists
+        ? "comfy.noticeExportedDriveExists"
+        : "comfy.noticeExportedDrive",
+      { path: formatColabOneDrivePath(drivePath) },
+    );
+  } catch (e) {
+    if (!disposed) {
+      const msg = String(e);
+      emit("sync");
+      if (opts.fromModal && driveModalOpen.value) {
+        driveModalError.value = msg;
+      } else {
+        reportError(e);
+      }
+    }
+  } finally {
+    const next = { ...exportingDriveOutputs.value };
+    delete next[item.id];
+    exportingDriveOutputs.value = next;
+  }
+}
+
+async function exportOutputToDrive(item: WorkflowOutput) {
+  if (
+    !gpuReady.value ||
+    exportingDriveOutputs.value[item.id] ||
+    deletingOutputs.value[item.id]
+  ) {
+    return;
+  }
+  if (!props.state.setup.drive || needsUpgradeForDriveExport.value) {
+    openDriveSetupModal(item, !props.state.setup.drive);
+    return;
+  }
+  await runDriveExport(item, { fromModal: false });
+}
+
+async function connectDriveFromModal() {
+  if (connectingDriveInModal.value || props.state.operation) return;
+  clearDriveConnectTimer();
+  connectingDriveInModal.value = true;
+  sawDriveConnectOpInModal.value = false;
+  driveConnectBaselineError.value = String(props.state.error || "").trim();
+  driveModalError.value = "";
+  if (driveModalTarget.value) {
+    driveModalAutoExport.value = true;
+  }
+  try {
+    await colabOneCommand("drive.connect", {});
+    emit("sync");
+    driveConnectReconcileTimer = setTimeout(() => {
+      driveConnectReconcileTimer = null;
+      if (
+        !disposed &&
+        connectingDriveInModal.value &&
+        !sawDriveConnectOpInModal.value &&
+        !isColabOneDriveConnectOperation(props.state.operation)
+      ) {
+        connectingDriveInModal.value = false;
+        if (!props.state.setup.drive) {
+          driveModalAutoExport.value = false;
+          const stateErr = String(props.state.error || "").trim();
+          if (stateErr && stateErr !== driveConnectBaselineError.value) {
+            driveModalError.value = stateErr;
+          }
+        }
+      }
+    }, 2500);
+  } catch (e) {
+    clearDriveConnectTimer();
+    connectingDriveInModal.value = false;
+    sawDriveConnectOpInModal.value = false;
+    driveModalAutoExport.value = false;
+    driveModalError.value = String(e);
+  }
+}
+
+async function confirmDriveAuthFromModal() {
+  if (confirmingDriveAuthInModal.value) return;
+  confirmingDriveAuthInModal.value = true;
+  driveModalError.value = "";
+  try {
+    await colabOneCommand("drive.confirm", {});
+    emit("sync");
+  } catch (e) {
+    driveModalError.value = String(e);
+  } finally {
+    confirmingDriveAuthInModal.value = false;
+  }
+}
+
+async function cancelDriveAuthFromModal() {
+  clearDriveConnectTimer();
+  connectingDriveInModal.value = false;
+  sawDriveConnectOpInModal.value = false;
+  driveModalAutoExport.value = false;
+  driveModalError.value = "";
+  try {
+    await colabOneCommand("drive.cancel", {});
+    emit("sync");
+  } catch (e) {
+    driveModalError.value = String(e);
+  }
+}
+
+async function setupHeadlessDriveFromModal() {
+  if (checkingHeadlessInModal.value || props.state.operation) return;
+  clearHeadlessTimer();
+  checkingHeadlessInModal.value = true;
+  sawHeadlessOpInModal.value = false;
+  headlessBaselineError.value = String(props.state.error || "").trim();
+  driveModalError.value = "";
+  try {
+    await colabOneCommand("drive.setup_headless", {});
+    emit("sync");
+    headlessReconcileTimer = setTimeout(() => {
+      headlessReconcileTimer = null;
+      if (
+        !disposed &&
+        checkingHeadlessInModal.value &&
+        !sawHeadlessOpInModal.value &&
+        !props.state.operation
+      ) {
+        finishHeadlessCheckInModal();
+      }
+    }, 2500);
+  } catch (e) {
+    clearHeadlessTimer();
+    checkingHeadlessInModal.value = false;
+    sawHeadlessOpInModal.value = false;
+    driveModalError.value = String(e);
+  }
+}
+
+async function toggleAutoDriveFromModal(next: boolean) {
+  if (savingAutoDriveInModal.value) return;
+  savingAutoDriveInModal.value = true;
+  driveModalError.value = "";
+  try {
+    await colabOneCommand("settings.save", { auto_drive: next });
+    emit("sync");
+  } catch (e) {
+    driveModalError.value = String(e);
+  } finally {
+    savingAutoDriveInModal.value = false;
+  }
+}
+
+function exportTargetFromModal() {
+  if (!driveModalTarget.value) return;
+  void runDriveExport(driveModalTarget.value, { fromModal: true });
+}
+
+function triggerUpgradeFromDriveModal() {
+  driveModalOpen.value = false;
+  emit("upgrade");
+}
+
+function openSettingsFromDriveModal() {
+  driveModalOpen.value = false;
+  outputsDrawerOpen.value = false;
+  emit("settings");
+}
 
 async function exportOutput(item: WorkflowOutput) {
   if (exportingOutputs.value[item.id] || deletingOutputs.value[item.id]) return;
@@ -2072,7 +2526,11 @@ async function exportOutput(item: WorkflowOutput) {
 }
 
 async function deleteOutput(target: WorkflowOutput) {
-  if (deletingOutputs.value[target.id] || exportingOutputs.value[target.id]) {
+  if (
+    deletingOutputs.value[target.id] ||
+    exportingOutputs.value[target.id] ||
+    exportingDriveOutputs.value[target.id]
+  ) {
     return;
   }
   deletingOutputs.value = { ...deletingOutputs.value, [target.id]: true };
@@ -2085,6 +2543,11 @@ async function deleteOutput(target: WorkflowOutput) {
       revokeBlobUrlsDeferred([url]);
     }
     delete failedOutputs.value[target.id];
+    if (exportedDriveOutputs.value[target.id]) {
+      const nextExported = { ...exportedDriveOutputs.value };
+      delete nextExported[target.id];
+      exportedDriveOutputs.value = nextExported;
+    }
     emit("sync");
     setNoticeKey("comfy.noticeDeletedOutput");
   } catch (e) {
@@ -2357,7 +2820,14 @@ function hasVisibleAntOverlay(): boolean {
 
 function handlePanelKeydown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
-  if (importOpen.value || deleteConfirmWorkflowId.value) return;
+  if (
+    importOpen.value ||
+    driveModalOpen.value ||
+    deleteConfirmWorkflowId.value ||
+    deleteConfirmOutputId.value
+  ) {
+    return;
+  }
   if (hasVisibleAntOverlay()) {
     return;
   }
@@ -2431,6 +2901,7 @@ onUnmounted(() => {
   window.removeEventListener("beforeunload", onWindowPageHide);
   document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
   clearTimeout(copyTimer);
+  clearDriveModalTimers();
   disposed = true;
   pauseOutputsDrawerMedia();
   abortAllOutputFetches();
@@ -3873,7 +4344,7 @@ onUnmounted(() => {
             weight="duotone"
             class="co-comfy-drawer-accent-icon"
           />
-          <span>{{ t("comfy.galleryTitle") }}</span>
+          <span class="co-comfy-drawer-title-text">{{ t("comfy.galleryTitle") }}</span>
           <ColabOneSkeleton
             v-if="props.loading"
             :width="42"
@@ -3889,13 +4360,55 @@ onUnmounted(() => {
       </template>
 
       <template #extra>
-        <span class="co-comfy-outputs-persist-hint">
-          {{
-            state.setup.drive
-              ? t("comfy.drivePersistHint")
-              : t("comfy.localExportHint")
-          }}
-        </span>
+        <AButton
+          v-if="driveWaitingBrowserAuth"
+          size="small"
+          class="co-comfy-outputs-drive-pill is-warning"
+          data-testid="comfy-outputs-drive-pill"
+          @click="openDriveSetupModal(null, false)"
+        >
+          <template #icon><PhCloud :size="14" weight="duotone" /></template>
+          {{ t("comfy.outputsDriveWaitingPill") }}
+        </AButton>
+        <ColabOneTooltip
+          v-else-if="state.setup.drive"
+          :title="
+            t('comfy.outputsDriveConnectedTooltip', {
+              folder: state.runtime.drive?.remote_folder || 'ColabOne_Drive',
+            })
+          "
+        >
+          <AButton
+            size="small"
+            class="co-comfy-outputs-drive-pill is-connected"
+            data-testid="comfy-outputs-drive-pill"
+            @click="openDriveSetupModal(null, false)"
+          >
+            <template #icon><PhCloudCheck :size="14" weight="duotone" /></template>
+            {{ t("comfy.outputsDriveConnectedPill") }}
+          </AButton>
+        </ColabOneTooltip>
+        <ColabOneTooltip
+          v-else
+          :title="
+            !gpuReady
+              ? gpuStarting
+                ? t('api.gpuStartingTooltip')
+                : t('api.startGpuFirstTooltip')
+              : t('comfy.outputsDriveSetupTooltip')
+          "
+        >
+          <AButton
+            size="small"
+            class="co-comfy-outputs-drive-pill"
+            :disabled="!gpuReady"
+            data-testid="comfy-outputs-drive-pill"
+            @click="openDriveSetupModal(null, false)"
+          >
+            <template #icon><PhCloud :size="14" weight="duotone" /></template>
+            {{ t("comfy.outputsDriveSetupPill") }}
+          </AButton>
+        </ColabOneTooltip>
       </template>
 
       <div
@@ -3903,6 +4416,64 @@ onUnmounted(() => {
         role="region"
         :aria-label="t('comfy.outputsDrawerAria')"
       >
+        <!-- Full-Width Unclipped Storage & Persistence Hint Strip -->
+        <div
+          class="co-comfy-outputs-storage-bar"
+          :class="{
+            'is-connected': state.setup.drive,
+            'is-waiting': driveWaitingBrowserAuth,
+          }"
+          data-testid="comfy-outputs-storage-bar"
+        >
+          <PhCloudCheck
+            v-if="state.setup.drive"
+            :size="16"
+            weight="duotone"
+            class="co-comfy-outputs-storage-icon"
+            aria-hidden="true"
+          />
+          <PhInfo
+            v-else
+            :size="16"
+            weight="duotone"
+            class="co-comfy-outputs-storage-icon"
+            aria-hidden="true"
+          />
+          <span class="co-comfy-outputs-storage-text">
+            {{
+              driveWaitingBrowserAuth
+                ? t("comfy.driveWaitingHint")
+                : state.setup.drive
+                  ? t("comfy.drivePersistHint")
+                  : t("comfy.localExportHint")
+            }}
+          </span>
+          <AButton
+            v-if="state.setup.drive"
+            type="link"
+            size="small"
+            class="co-inline-link co-comfy-outputs-storage-action"
+            @click="openExternalURL(GOOGLE_DRIVE_HOME_URL)"
+          >
+            {{ t("comfy.driveOpenGoogleDriveShort") }}
+            <PhArrowSquareOut :size="13" />
+          </AButton>
+          <AButton
+            v-else-if="gpuReady"
+            type="link"
+            size="small"
+            class="co-inline-link co-comfy-outputs-storage-action"
+            @click="openDriveSetupModal(null, false)"
+          >
+            {{
+              driveWaitingBrowserAuth
+                ? t("comfy.outputsDriveContinueAuth")
+                : t("comfy.outputsDriveConfigureNow")
+            }}
+            <PhArrowRight :size="13" />
+          </AButton>
+        </div>
+
         <div
           v-if="props.loading && !outputs.length"
           class="co-comfy-output-grid"
@@ -3964,21 +4535,31 @@ onUnmounted(() => {
                 />
               </div>
               <div class="co-comfy-output-actions">
+                <div class="co-comfy-output-export-group">
+                  <ColabOneSkeleton
+                    :width="82"
+                    :height="24"
+                    variant="button"
+                    :radius="6"
+                    tone="subtle"
+                    :delay="(idx - 1) * 90 + 185"
+                  />
+                  <ColabOneSkeleton
+                    :width="82"
+                    :height="24"
+                    variant="button"
+                    :radius="6"
+                    tone="subtle"
+                    :delay="(idx - 1) * 90 + 205"
+                  />
+                </div>
                 <ColabOneSkeleton
-                  :width="82"
+                  :width="26"
                   :height="24"
                   variant="button"
                   :radius="6"
                   tone="subtle"
-                  :delay="(idx - 1) * 90 + 185"
-                />
-                <ColabOneSkeleton
-                  :width="62"
-                  :height="24"
-                  variant="button"
-                  :radius="6"
-                  tone="subtle"
-                  :delay="(idx - 1) * 90 + 210"
+                  :delay="(idx - 1) * 90 + 225"
                 />
               </div>
             </div>
@@ -3998,13 +4579,6 @@ onUnmounted(() => {
             <p class="co-comfy-empty-copy">
               {{ t("comfy.emptyOutputsDesc") }}
             </p>
-            <small class="co-comfy-empty-hint">
-              {{
-                state.setup.drive
-                  ? t("comfy.drivePersistHint")
-                  : t("comfy.localExportHint")
-              }}
-            </small>
           </AEmpty>
         </div>
 
@@ -4248,17 +4822,62 @@ onUnmounted(() => {
               />
 
               <div class="co-comfy-output-actions">
-                <AButton
-                  size="small"
-                  :loading="!!exportingOutputs[item.id]"
-                  :disabled="!gpuReady || !!deletingOutputs[item.id]"
-                  @click="exportOutput(item)"
-                >
-                  <template #icon>
-                    <PhDownloadSimple :size="14" />
-                  </template>
-                  {{ t("comfy.exportLocal") }}
-                </AButton>
+                <div class="co-comfy-output-export-group">
+                  <AButton
+                    size="small"
+                    :loading="!!exportingOutputs[item.id]"
+                    :disabled="!gpuReady || !!deletingOutputs[item.id]"
+                    @click="exportOutput(item)"
+                  >
+                    <template #icon>
+                      <PhDownloadSimple :size="14" />
+                    </template>
+                    {{ t("comfy.exportLocal") }}
+                  </AButton>
+
+                  <ColabOneTooltip
+                    :title="
+                      !gpuReady
+                        ? gpuStarting
+                          ? t('api.gpuStartingTooltip')
+                          : t('api.startGpuFirstTooltip')
+                        : exportedDriveOutputs[item.id]
+                          ? t('comfy.exportDriveDoneTooltip', {
+                              path: formatColabOneDrivePath(
+                                exportedDriveOutputs[item.id].drivePath,
+                              ),
+                            })
+                          : state.setup.drive
+                            ? t('comfy.exportDriveReadyTooltip')
+                            : t('comfy.exportDriveSetupTooltip')
+                    "
+                  >
+                    <AButton
+                      size="small"
+                      class="co-comfy-export-drive-btn"
+                      :class="{
+                        'is-exported': !!exportedDriveOutputs[item.id],
+                      }"
+                      :loading="!!exportingDriveOutputs[item.id]"
+                      :disabled="!gpuReady || !!deletingOutputs[item.id]"
+                      data-testid="comfy-output-export-drive"
+                      @click="exportOutputToDrive(item)"
+                    >
+                      <template #icon>
+                        <PhCloudCheck
+                          v-if="exportedDriveOutputs[item.id]"
+                          :size="14"
+                        />
+                        <PhCloudArrowUp v-else :size="14" />
+                      </template>
+                      {{
+                        exportedDriveOutputs[item.id]
+                          ? t("comfy.exportedToDrive")
+                          : t("comfy.exportDrive")
+                      }}
+                    </AButton>
+                  </ColabOneTooltip>
+                </div>
 
                 <APopconfirm
                   :title="t('comfy.deleteOutputTitle')"
@@ -4270,24 +4889,45 @@ onUnmounted(() => {
                   :disabled="
                     !gpuReady ||
                     !!exportingOutputs[item.id] ||
+                    !!exportingDriveOutputs[item.id] ||
                     !!deletingOutputs[item.id]
                   "
                   :ok-button-props="{ danger: true }"
                   placement="topRight"
+                  @open-change="
+                    (open) => {
+                      if (open) {
+                        deleteConfirmOutputId = item.id;
+                      } else if (deleteConfirmOutputId === item.id) {
+                        deleteConfirmOutputId = '';
+                      }
+                    }
+                  "
                   @confirm="deleteOutput(item)"
                 >
-                  <AButton
-                    size="small"
-                    danger
-                    :loading="!!deletingOutputs[item.id]"
-                    :disabled="!gpuReady || !!exportingOutputs[item.id]"
-                    :aria-label="t('comfy.deleteOutputAria')"
-                  >
-                    <template #icon>
-                      <PhTrash :size="14" />
-                    </template>
-                    {{ t("common.delete") }}
-                  </AButton>
+                  <span class="co-popconfirm-anchor">
+                    <ColabOneTooltip
+                      :title="t('comfy.deleteOutputAria')"
+                      :disabled="deleteConfirmOutputId === item.id"
+                    >
+                      <AButton
+                        size="small"
+                        danger
+                        class="co-comfy-output-delete-btn"
+                        :loading="!!deletingOutputs[item.id]"
+                        :disabled="
+                          !gpuReady ||
+                          !!exportingOutputs[item.id] ||
+                          !!exportingDriveOutputs[item.id]
+                        "
+                        :aria-label="t('comfy.deleteOutputAria')"
+                      >
+                        <template #icon>
+                          <PhTrash :size="14" />
+                        </template>
+                      </AButton>
+                    </ColabOneTooltip>
+                  </span>
                 </APopconfirm>
               </div>
             </div>
@@ -4295,6 +4935,30 @@ onUnmounted(() => {
         </div>
       </div>
     </ADrawer>
+
+    <!-- Google Drive Configuration & Export Modal -->
+    <ColabOneDriveExportModal
+      v-model:open="driveModalOpen"
+      :state="state"
+      :target-output="driveModalTarget"
+      :exporting="driveModalExporting"
+      :export-result="driveModalResult"
+      :export-error="driveModalError"
+      :connecting="connectingDriveInModal"
+      :confirming-auth="confirmingDriveAuthInModal"
+      :checking-headless="checkingHeadlessInModal"
+      :saving-auto-drive="savingAutoDriveInModal"
+      :needs-remote-upgrade="needsUpgradeForDriveExport"
+      @connect="connectDriveFromModal"
+      @confirm-auth="confirmDriveAuthFromModal"
+      @cancel-auth="cancelDriveAuthFromModal"
+      @setup-headless="setupHeadlessDriveFromModal"
+      @export-now="exportTargetFromModal"
+      @upgrade="triggerUpgradeFromDriveModal"
+      @open-settings="openSettingsFromDriveModal"
+      @toggle-auto-drive="toggleAutoDriveFromModal"
+      @open-url="openExternalURL"
+    />
 
     <!-- Import Workflow Modal -->
     <AModal
@@ -4981,10 +5645,19 @@ onUnmounted(() => {
 }
 
 /* Shared Drawer Header & Footer Polish */
+:global(.co-comfy-param-drawer-root .ant-drawer-header),
+:global(.co-comfy-outputs-drawer-root .ant-drawer-header) {
+  gap: 12px;
+}
+
 :global(.co-comfy-param-drawer-root .ant-drawer-title),
 :global(.co-comfy-outputs-drawer-root .ant-drawer-title) {
   min-width: 0;
   overflow: hidden;
+}
+
+:global(.co-comfy-outputs-drawer-root .ant-drawer-extra) {
+  flex-shrink: 0;
 }
 
 :global(.co-comfy-param-drawer-root .ant-drawer-footer) {
@@ -5342,19 +6015,84 @@ onUnmounted(() => {
 .co-comfy-outputs-drawer-body {
   display: flex;
   flex-direction: column;
+  gap: 14px;
   min-height: 100%;
   min-width: 0;
 }
 
-.co-comfy-outputs-persist-hint {
+.co-comfy-outputs-drive-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 9999px;
   font-size: 12px;
-  color: var(--co-muted);
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: inline-block;
-  vertical-align: middle;
+  font-weight: 500;
+  padding-inline: 10px;
+}
+
+.co-comfy-outputs-drive-pill.is-connected {
+  color: var(--co-success-text);
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+}
+
+.co-comfy-outputs-drive-pill.is-connected:hover:not(:disabled) {
+  color: var(--co-success-text);
+  border-color: var(--co-success);
+}
+
+.co-comfy-outputs-drive-pill.is-warning {
+  color: var(--co-warning-text);
+  background: var(--co-warning-bg);
+  border-color: var(--co-warning-border);
+}
+
+.co-comfy-outputs-storage-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 10px 13px;
+  border-radius: 11px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-subtle);
+  color: var(--co-secondary-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.co-comfy-outputs-storage-bar.is-connected {
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+  color: var(--co-success-text);
+}
+
+.co-comfy-outputs-storage-bar.is-waiting {
+  background: var(--co-warning-bg);
+  border-color: var(--co-warning-border);
+  color: var(--co-warning-text);
+}
+
+.co-comfy-outputs-storage-icon {
+  flex-shrink: 0;
+}
+
+.co-comfy-outputs-storage-text {
+  flex: 1 1 220px;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.co-comfy-outputs-storage-action {
+  padding-inline: 0;
+  height: auto;
+  font-size: 12.5px;
+  font-weight: 550;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .co-comfy-gallery-empty-wrap {
@@ -5362,14 +6100,14 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 48px 16px;
+  padding: 40px 16px;
 }
 
 .co-comfy-output-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(276px, 100%), 1fr));
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .co-comfy-output-item {
@@ -5608,7 +6346,9 @@ onUnmounted(() => {
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 6px;
+  min-width: 0;
 }
 
 .co-comfy-output-title-row {
@@ -5616,6 +6356,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
 .co-comfy-output-title-row strong {
@@ -5624,9 +6365,18 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.co-comfy-output-title-row :deep(.ant-tag) {
+  margin-inline-end: 0;
+  flex-shrink: 0;
 }
 
 .co-comfy-output-filename {
+  display: block;
+  max-width: 100%;
   font-size: 12px;
   color: var(--co-muted);
   overflow: hidden;
@@ -5642,17 +6392,50 @@ onUnmounted(() => {
   margin-top: 2px;
 }
 
+.co-comfy-output-meta-tags :deep(.ant-tag) {
+  margin-inline-end: 0;
+}
+
 .co-comfy-output-error {
   margin-top: 4px;
 }
 
 .co-comfy-output-actions {
-  margin-top: 6px;
+  margin-top: auto;
+  padding-top: 6px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+}
+
+.co-comfy-output-export-group {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.co-comfy-export-drive-btn.is-exported {
+  color: var(--co-success-text);
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+}
+
+.co-comfy-export-drive-btn.is-exported:hover:not(:disabled) {
+  color: var(--co-success-text);
+  border-color: var(--co-success);
+}
+
+.co-comfy-output-delete-btn {
+  flex-shrink: 0;
+  width: 28px;
+  padding-inline: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Tab 2: Native Canvas */
@@ -5918,10 +6701,6 @@ onUnmounted(() => {
 @media (max-width: 560px) {
   .co-comfy-advanced-grid {
     grid-template-columns: 1fr;
-  }
-
-  .co-comfy-outputs-persist-hint {
-    display: none;
   }
 }
 </style>

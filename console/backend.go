@@ -57,7 +57,7 @@ func colabOneMethodTimeout(method string) time.Duration {
 		return 900 * time.Second
 	case "runtime.release", "runtime.release.all", "runtime.upgrade",
 		"drive.connect", "auth.colab.auto", "comfyui.input.upload", "comfyui.output.asset",
-		"comfyui.draft.media.save", "comfyui.draft.media.read":
+		"comfyui.output.export_drive", "comfyui.draft.media.save", "comfyui.draft.media.read":
 		return 300 * time.Second
 	default:
 		return 120 * time.Second

@@ -11,6 +11,7 @@ export const koKRMessages: ColabOneMessages = {
   "common.hideSecret": "키 숨기기",
   "common.cancel": "취소",
   "common.close": "닫기",
+  "common.done": "완료",
   "common.notificationsAria": "알림",
   "common.confirm": "확인",
   "common.confirmDelete": "삭제",
@@ -1122,10 +1123,24 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.outputCount": "{count}개",
   "comfy.emptyOutputs": "텅 비었어요",
   "comfy.emptyOutputsDesc":
-    "워크플로를 실행하면 생성된 이미지·비디오·오디오가 여기에 표시되며 미리보기와 로컬 내보내기를 지원합니다.",
-  "comfy.drivePersistHint": "Google 드라이브가 마운트되어 결과물이 자동으로 보관됩니다.",
+    "워크플로를 실행하면 생성된 이미지·비디오·오디오가 여기에 표시되며 미리보기, 로컬 저장 또는 Google 드라이브 직접 저장을 지원합니다.",
+  "comfy.drivePersistHint":
+    "Google 드라이브(My Drive / ColabOne_Drive)가 연결되어 결과물이 자동 보관되며, '드라이브로 저장'으로 outputs 폴더에 바로 저장할 수 있습니다.",
   "comfy.localExportHint":
-    "결과물은 원격 GPU에 임시 저장됩니다. 인스턴스를 해제하기 전에 로컬로 내보내세요.",
+    "결과물은 원격 GPU에 임시 저장됩니다. 인스턴스를 해제하기 전에 로컬로 내보내거나 Google 드라이브에 영구 저장하세요.",
+  "comfy.driveWaitingHint":
+    "브라우저에서 Google 드라이브 권한 승인을 기다리고 있습니다. 승인 후 결과물을 바로 드라이브에 영구 저장할 수 있습니다.",
+  "comfy.outputsDriveConnectedPill": "드라이브 연결됨",
+  "comfy.outputsDriveConnectedTooltip":
+    "Google 드라이브(My Drive / {folder})에 연결되어 클라우드 직접 저장 및 자동 보관을 지원합니다.",
+  "comfy.outputsDriveSetupPill": "Google 드라이브 설정",
+  "comfy.outputsDriveSetupTooltip":
+    "Google 드라이브를 인증·연결하면 원격 GPU에서 결과물을 빠르게 직접 영구 저장할 수 있습니다.",
+  "comfy.outputsDriveWaitingPill": "드라이브 인증 대기",
+  "comfy.outputsDriveConfigureNow": "드라이브 설정",
+  "comfy.outputsDriveContinueAuth": "인증 상태 보기",
+  "comfy.driveOpenGoogleDrive": "Google 드라이브 열기",
+  "comfy.driveOpenGoogleDriveShort": "드라이브 열기",
   "comfy.loadingOutput": "원격 결과물 불러오는 중…",
   "comfy.retryPreview": "미리보기 재시도",
   "comfy.loadVideoPreview": "비디오 미리보기 로드",
@@ -1133,9 +1148,17 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.loadImagePreview": "이미지 미리보기 로드",
   "comfy.defaultWorkflowName": "ComfyUI 워크플로",
   "comfy.exportLocal": "로컬로 내보내기",
+  "comfy.exportDrive": "드라이브로 저장",
+  "comfy.exportedToDrive": "드라이브 저장됨",
+  "comfy.exportDriveReadyTooltip":
+    "원격 GPU에서 Google 드라이브(My Drive / ColabOne_Drive / outputs)로 빠르게 직접 전송하여 영구 보관",
+  "comfy.exportDriveSetupTooltip":
+    "처음 사용 시 Google 드라이브 인증 설정 창이 열리며, 완료 후 결과물을 자동으로 영구 저장합니다",
+  "comfy.exportDriveDoneTooltip":
+    "Google 드라이브에 저장됨: {path} (클릭하여 다시 확인 또는 저장)",
   "comfy.deleteOutputTitle": "이 결과물을 삭제할까요?",
   "comfy.deleteOutputDesc":
-    "원격 출력 폴더에서 '{name}' 파일을 삭제합니다. 이미 로컬에 내보낸 파일에는 영향이 없습니다.",
+    "원격 출력 폴더에서 '{name}' 파일을 삭제합니다. 이미 로컬 또는 Google 드라이브에 저장한 파일에는 영향이 없습니다.",
   "comfy.deleteOutputAria": "결과물 삭제",
   "comfy.kindVideo": "비디오",
   "comfy.kindAudio": "오디오",
@@ -1205,7 +1228,71 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.noticeRunSubmitted":
     "워크플로 '{name}'을(를) 원격 대기열에 등록했습니다(실행 중 유휴 해제 일시 정지).",
   "comfy.noticeExported": "결과물을 로컬로 내보냈습니다.",
+  "comfy.noticeExportedDrive": "결과물을 Google 드라이브로 저장했습니다: {path}",
+  "comfy.noticeExportedDriveExists": "이미 Google 드라이브에 저장된 결과물입니다: {path}",
   "comfy.noticeDeletedOutput": "결과물을 삭제했습니다.",
+  "comfy.driveModalTitleExport": "Google 드라이브로 저장",
+  "comfy.driveModalTitleConfig": "Google 드라이브 설정",
+  "comfy.driveModalTagExported": "저장됨",
+  "comfy.driveModalTagExporting": "저장 중",
+  "comfy.driveModalTagWaitingAuth": "브라우저 인증 대기",
+  "comfy.driveModalTagConnected": "연결됨",
+  "comfy.driveModalTagHeadlessReady": "자동 연결 가능",
+  "comfy.driveModalTagNotConnected": "미설정",
+  "comfy.driveModalDestPrefix": "저장 경로:",
+  "comfy.driveExportSuccessTitle": "Google 드라이브에 저장했습니다",
+  "comfy.driveExportAlreadySavedTitle": "Google 드라이브에 이미 저장되어 있습니다",
+  "comfy.driveExportSuccessDesc":
+    "클라우드에서 Google 드라이브로 직접 전송해 영구 저장했습니다. 원격 GPU 인스턴스를 해제해도 유지됩니다.",
+  "comfy.driveExportingTitle": "원격 GPU에서 Google 드라이브로 직접 전송 중…",
+  "comfy.driveExportingDesc": "로컬 다운로드를 거치지 않고 클라우드에서 바로 전송하고 있습니다.",
+  "comfy.driveExportingBtn": "저장 중…",
+  "comfy.driveModalWaitingAuthTitle": "브라우저에서 Google 드라이브 권한을 승인해 주세요",
+  "comfy.driveModalAuthStep1": "열린 브라우저 페이지에서 ColabOne과 동일한 Google 계정을 선택하세요",
+  "comfy.driveModalAuthStep2": "모든 Google 드라이브 권한을 선택하고 '허용 / Allow'을 클릭하세요",
+  "comfy.driveModalAuthStep3Export":
+    "이 창으로 돌아와 아래 '인증 완료 확인'을 클릭하면(창 복귀 시 자동 감지) 결과물을 자동으로 드라이브에 저장합니다",
+  "comfy.driveModalAuthStep3Connect":
+    "이 창으로 돌아와 아래 '인증 완료 확인'을 클릭하면(창 복귀 시 자동 감지) 연결이 완료됩니다",
+  "comfy.driveModalConnectingTitle": "Google 드라이브 연결 및 마운트 중…",
+  "comfy.driveModalConnectingDesc":
+    "브라우저에 Google 권한 페이지가 열리면 동일한 계정으로 허용해 주세요.",
+  "comfy.driveModalConnectingBtn": "연결 중…",
+  "comfy.driveModalUpgradeTitle": "직접 저장을 사용하려면 원격 서비스 핫 업데이트가 필요합니다",
+  "comfy.driveModalUpgradeDesc":
+    "Google 드라이브 연결이 완료되었습니다. 원격 서비스를 핫 업데이트하면 outputs 폴더로 바로 내보낼 수 있습니다(GPU는 해제되지 않으며 생성된 결과물도 유지됩니다).",
+  "comfy.driveModalUpgradeBtn": "원격 서비스 핫 업데이트",
+  "comfy.driveModalConnectedTitle": "Google 드라이브 연결됨",
+  "comfy.driveModalConnectedExportDesc":
+    "저장 경로 My Drive / {folder}{free} 준비가 완료되었습니다. 아래 버튼을 눌러 바로 클라우드 영구 저장을 시작하세요.",
+  "comfy.driveModalConnectedOnlyDesc":
+    "My Drive / {folder}{free}에 연결되었습니다. 이제 결과물에서 한 번의 클릭으로 outputs 폴더에 영구 저장할 수 있으며 작업 공간도 자동 동기화됩니다.",
+  "comfy.driveModalNeedLoginTitle": "먼저 Google 계정에 로그인해 주세요",
+  "comfy.driveModalNeedLoginDesc":
+    "Google 드라이브를 연결하려면 먼저 '설정'에서 Google 계정 로그인을 완료해야 합니다.",
+  "comfy.driveModalGoSettings": "설정으로 이동",
+  "comfy.driveModalNeedGpuTitle": "먼저 원격 GPU 인스턴스를 시작해 주세요",
+  "comfy.driveModalNeedGpuDesc":
+    "클라우드 직접 저장은 실행 중인 원격 GPU 인스턴스에 Google 드라이브를 마운트해야 사용할 수 있습니다.",
+  "comfy.driveModalSetupHeadline": "Google 드라이브 인증 및 연결",
+  "comfy.driveModalSetupHeadlessExportDesc":
+    "자동 연결 자격 증명이 준비되어 있습니다. 아래 버튼을 누르면 Google 드라이브를 마운트한 뒤 자동으로 저장을 시작합니다.",
+  "comfy.driveModalSetupHeadlessOnlyDesc":
+    "자동 연결 자격 증명이 준비되어 있습니다. 아래 버튼을 누르면 Google 드라이브가 마운트되어 결과물을 원클릭으로 영구 저장할 수 있습니다.",
+  "comfy.driveModalSetupAuthExportDesc":
+    "현재 인스턴스에 Google 드라이브가 아직 연결되지 않았습니다. 아래 버튼을 눌러 브라우저에서 공식 인증을 완료하면 이 결과물을 자동으로 드라이브에 영구 저장합니다.",
+  "comfy.driveModalSetupAuthOnlyDesc":
+    "현재 인스턴스에 Google 드라이브가 아직 연결되지 않았습니다. 한 번 인증해 연결하면 원격 결과물을 빠르게 Google 드라이브에 영구 저장할 수 있습니다.",
+  "comfy.driveModalBenefitSpeed": "클라우드 직접 전송: 원격 GPU에서 바로 기록해 더 빠르고 로컬 트래픽을 절약",
+  "comfy.driveModalBenefitPersist": "영구 보관: 인스턴스 해제나 결과물 정리 후에도 Google 드라이브에 안전하게 보존",
+  "comfy.driveModalBenefitPath": "보관 폴더:",
+  "comfy.driveModalAutoMountLabel": "다음 GPU 인스턴스 시작 시 Google 드라이브 자동 마운트",
+  "comfy.driveModalConnectAndExportBtn": "드라이브 연결 및 저장",
+  "comfy.driveModalConnectBtn": "Google 드라이브 연결",
+  "comfy.driveModalAuthAndExportBtn": "인증 후 드라이브로 저장",
+  "comfy.driveModalAuthBtn": "인증 후 드라이브 연결",
+  "comfy.driveExportNowBtn": "지금 드라이브로 저장",
+  "comfy.driveRetryExportBtn": "드라이브 저장 다시 시도",
   "comfy.noticeStartingCanvas": "네이티브 캔버스 고정 도메인 터널을 시작 중입니다. 검증 후 열 수 있습니다.",
   "comfy.noticeSavedCanvasConfig": "네이티브 캔버스 터널 설정을 OS 자격 증명 저장소에 저장했습니다.",
   "comfy.noticeStoppedCanvas": "네이티브 캔버스 보안 터널을 중지했습니다.",
@@ -1276,9 +1363,9 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.preflightPackWillDownload":
     "첫 실행 시 원격에서 약 {size}의 모델과 노드 종속성을 자동 다운로드합니다",
   "comfy.videoPreviewTooLarge":
-    "동영상 용량이 큽니다({size}). 메모리 절약을 위해 아래 \"로컬로 내보내기\"로 저장해 재생하세요.",
+    "파일 용량이 큽니다({size}). 메모리 절약을 위해 아래 \"로컬로 내보내기\" 또는 \"드라이브로 저장\"으로 확인하세요.",
   "comfy.mediaPreviewError":
-    "내장 플레이어에서 이 미디어를 재생할 수 없습니다. \"로컬로 내보내기\"로 확인하세요.",
+    "내장 플레이어에서 이 미디어를 재생할 수 없습니다. \"로컬로 내보내기\" 또는 \"드라이브로 저장\"으로 확인하세요.",
   "comfy.errImportTooLarge": "워크플로 JSON 크기가 2 MB 상한을 초과했습니다",
   "comfy.errImportTooManyNodes": "워크플로 노드 수가 최대 500개를 초과했습니다",
   "comfy.errImportInvalidNodeId":

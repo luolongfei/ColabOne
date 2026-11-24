@@ -4752,6 +4752,8 @@ onUnmounted(() => {
               :state="state"
               :loading="!snapshotLoaded"
               @device="openDevice"
+              @settings="selectPage('settings')"
+              @upgrade="requestRuntimeUpgrade"
               @sync="onPanelSync"
               @notify="notify"
               @clear-error="clearActionErrors"
@@ -6345,6 +6347,7 @@ onUnmounted(() => {
         :mask-closable="!busy"
         :closable="!busy"
         :footer="null"
+        :z-index="1050"
         centered
       >
         <div class="co-modal-stack">

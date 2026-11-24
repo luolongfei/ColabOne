@@ -11,6 +11,7 @@ export const zhTWMessages: ColabOneMessages = {
   "common.hideSecret": "隱藏金鑰",
   "common.cancel": "取消",
   "common.close": "關閉",
+  "common.done": "完成",
   "common.notificationsAria": "通知提示",
   "common.confirm": "確認",
   "common.confirmDelete": "確認刪除",
@@ -1097,9 +1098,24 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.outputCount": "{count} 件",
   "comfy.emptyOutputs": "空空如也",
   "comfy.emptyOutputsDesc":
-    "執行任意工作流程後，產生的圖片、影片與音訊會自動顯示於此，支援線上預覽與一鍵匯出至本機。",
-  "comfy.drivePersistHint": "已掛載 Google 雲端硬碟，輸出作品將自動持久保存。",
-  "comfy.localExportHint": "輸出暫存於目前遠端 GPU，建議在釋放執行個體前先匯出至本機。",
+    "執行任意工作流程後，產生的圖片、影片與音訊會自動顯示於此，支援線上預覽、匯出至本機或直接儲存至 Google 雲端硬碟。",
+  "comfy.drivePersistHint":
+    "已掛載 Google 雲端硬碟（My Drive / ColabOne_Drive），作品會自動持久保存，也可點選「匯出到雲端」直接儲存至 outputs 目錄。",
+  "comfy.localExportHint":
+    "作品暫存於目前遠端 GPU，建議在釋放執行個體前先匯出至本機，或匯出到 Google 雲端硬碟永久保存。",
+  "comfy.driveWaitingHint":
+    "正在等待瀏覽器完成 Google 雲端硬碟授權確認，授權後即可直接匯出並永久保存作品。",
+  "comfy.outputsDriveConnectedPill": "雲端硬碟已掛載",
+  "comfy.outputsDriveConnectedTooltip":
+    "已連線 Google 雲端硬碟（My Drive / {folder}），支援雲端直傳匯出並自動持久保存。",
+  "comfy.outputsDriveSetupPill": "設定 Google 雲端硬碟",
+  "comfy.outputsDriveSetupTooltip":
+    "授權並連線 Google 雲端硬碟後，即可直接從遠端 GPU 快速匯出作品永久保存。",
+  "comfy.outputsDriveWaitingPill": "待確認雲端硬碟授權",
+  "comfy.outputsDriveConfigureNow": "設定雲端硬碟",
+  "comfy.outputsDriveContinueAuth": "檢視授權進度",
+  "comfy.driveOpenGoogleDrive": "開啟 Google 雲端硬碟",
+  "comfy.driveOpenGoogleDriveShort": "開啟雲端硬碟",
   "comfy.loadingOutput": "正在讀取遠端作品…",
   "comfy.retryPreview": "重試預覽",
   "comfy.loadVideoPreview": "載入影片預覽",
@@ -1107,8 +1123,17 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.loadImagePreview": "載入圖片預覽",
   "comfy.defaultWorkflowName": "ComfyUI 工作流程",
   "comfy.exportLocal": "匯出至本機",
+  "comfy.exportDrive": "匯出到雲端",
+  "comfy.exportedToDrive": "已存雲端",
+  "comfy.exportDriveReadyTooltip":
+    "雲端直傳至 Google 雲端硬碟（My Drive / ColabOne_Drive / outputs），速度更快且永久保存",
+  "comfy.exportDriveSetupTooltip":
+    "首次使用將彈出 Google 雲端硬碟授權設定，完成後自動將作品雲端直傳並永久保存",
+  "comfy.exportDriveDoneTooltip":
+    "已儲存至 Google 雲端硬碟：{path}（點選可再次確認匯出）",
   "comfy.deleteOutputTitle": "刪除這件輸出作品？",
-  "comfy.deleteOutputDesc": "檔案「{name}」將從遠端輸出目錄移除；已匯出至本機的檔案不受影響。",
+  "comfy.deleteOutputDesc":
+    "檔案「{name}」將從遠端輸出目錄移除；已匯出至本機或 Google 雲端硬碟的檔案不受影響。",
   "comfy.deleteOutputAria": "刪除作品",
   "comfy.kindVideo": "影片",
   "comfy.kindAudio": "音訊",
@@ -1173,7 +1198,71 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.noticeCancelRequested": "已請求取消目前工作。",
   "comfy.noticeRunSubmitted": "工作流程「{name}」已送出至遠端佇列；執行期間暫停閒置釋放計時。",
   "comfy.noticeExported": "作品已匯出至本機。",
+  "comfy.noticeExportedDrive": "作品已匯出至 Google 雲端硬碟：{path}",
+  "comfy.noticeExportedDriveExists": "該作品已儲存於 Google 雲端硬碟：{path}",
   "comfy.noticeDeletedOutput": "已刪除該輸出作品。",
+  "comfy.driveModalTitleExport": "匯出到 Google 雲端硬碟",
+  "comfy.driveModalTitleConfig": "設定 Google 雲端硬碟",
+  "comfy.driveModalTagExported": "已匯出",
+  "comfy.driveModalTagExporting": "正在匯出",
+  "comfy.driveModalTagWaitingAuth": "等待瀏覽器授權",
+  "comfy.driveModalTagConnected": "已連線",
+  "comfy.driveModalTagHeadlessReady": "免彈窗就緒",
+  "comfy.driveModalTagNotConnected": "未設定",
+  "comfy.driveModalDestPrefix": "儲存路徑：",
+  "comfy.driveExportSuccessTitle": "已成功匯出到 Google 雲端硬碟",
+  "comfy.driveExportAlreadySavedTitle": "作品已存在於 Google 雲端硬碟",
+  "comfy.driveExportSuccessDesc":
+    "檔案已透過雲端直傳永久保存至你的 Google 雲端硬碟，即使釋放遠端 GPU 執行個體也不會遺失。",
+  "comfy.driveExportingTitle": "正在從遠端 GPU 直傳至 Google 雲端硬碟…",
+  "comfy.driveExportingDesc": "雲端內網直傳無須經過本機下載，請稍候片刻。",
+  "comfy.driveExportingBtn": "正在匯出…",
+  "comfy.driveModalWaitingAuthTitle": "請在瀏覽器中完成 Google 雲端硬碟授權",
+  "comfy.driveModalAuthStep1": "在已開啟的瀏覽器頁面中選擇與 ColabOne 相同的 Google 帳戶",
+  "comfy.driveModalAuthStep2": "勾選全部 Google 雲端硬碟權限並點選「允許 / Allow」",
+  "comfy.driveModalAuthStep3Export":
+    "返回本視窗點選下方「我已完成授權」（切回視窗時也會自動偵測），授權成功後將自動把作品匯出到雲端硬碟",
+  "comfy.driveModalAuthStep3Connect":
+    "返回本視窗點選下方「我已完成授權」（切回視窗時也會自動偵測）即可完成連線",
+  "comfy.driveModalConnectingTitle": "正在連線並掛載 Google 雲端硬碟…",
+  "comfy.driveModalConnectingDesc":
+    "若瀏覽器彈出 Google 授權頁面，請登入相同帳戶並點選允許。",
+  "comfy.driveModalConnectingBtn": "正在連線…",
+  "comfy.driveModalUpgradeTitle": "需要熱更新遠端服務以啟用作品直傳",
+  "comfy.driveModalUpgradeDesc":
+    "Google 雲端硬碟已連線成功！目前遠端服務為舊版本，點選下方按鈕熱更新後即可直接將作品匯出至 outputs 目錄（不會釋放 GPU，已產生的作品會完整保留）。",
+  "comfy.driveModalUpgradeBtn": "立即熱更新遠端服務",
+  "comfy.driveModalConnectedTitle": "Google 雲端硬碟已連線",
+  "comfy.driveModalConnectedExportDesc":
+    "目標目錄 My Drive / {folder}{free} 已就緒，點選下方按鈕即可雲端直傳永久保存。",
+  "comfy.driveModalConnectedOnlyDesc":
+    "已掛載 My Drive / {folder}{free}。現在可在作品區一鍵將作品直傳匯出至 outputs 目錄永久保存，工作區也會自動同步。",
+  "comfy.driveModalNeedLoginTitle": "請先登入 Google 帳戶",
+  "comfy.driveModalNeedLoginDesc":
+    "連線 Google 雲端硬碟需要先在「設定」中完成 Google 帳戶登入。",
+  "comfy.driveModalGoSettings": "前往設定",
+  "comfy.driveModalNeedGpuTitle": "請先啟動遠端 GPU 執行個體",
+  "comfy.driveModalNeedGpuDesc":
+    "雲端直傳匯出需要在執行中的遠端 GPU 執行個體上掛載 Google 雲端硬碟。",
+  "comfy.driveModalSetupHeadline": "授權並連線你的 Google 雲端硬碟",
+  "comfy.driveModalSetupHeadlessExportDesc":
+    "已偵測到免彈窗雲端硬碟憑證，點選下方按鈕即可立即掛載 Google 雲端硬碟並自動開始匯出。",
+  "comfy.driveModalSetupHeadlessOnlyDesc":
+    "已偵測到免彈窗雲端硬碟憑證，點選下方按鈕即可立即掛載 Google 雲端硬碟，之後可一鍵高速匯出作品永久保存。",
+  "comfy.driveModalSetupAuthExportDesc":
+    "目前執行個體尚未掛載 Google 雲端硬碟。點選下方按鈕將開啟瀏覽器進行官方授權，完成後自動將這件作品直接傳到 Google 雲端硬碟永久保存。",
+  "comfy.driveModalSetupAuthOnlyDesc":
+    "目前執行個體尚未掛載 Google 雲端硬碟。點選下方按鈕完成一次授權後，即可直接把遠端作品高速匯出到 Google 雲端硬碟永久保存。",
+  "comfy.driveModalBenefitSpeed": "雲端直傳：直接從遠端 GPU 寫入雲端硬碟，傳輸更快更省流量",
+  "comfy.driveModalBenefitPersist": "永久保存：獨立歸檔，釋放執行個體或清理作品區後依然保留",
+  "comfy.driveModalBenefitPath": "歸檔目錄：",
+  "comfy.driveModalAutoMountLabel": "下次啟動 GPU 執行個體時自動掛載 Google 雲端硬碟",
+  "comfy.driveModalConnectAndExportBtn": "連線雲端硬碟並匯出",
+  "comfy.driveModalConnectBtn": "連線 Google 雲端硬碟",
+  "comfy.driveModalAuthAndExportBtn": "授權並匯出到雲端",
+  "comfy.driveModalAuthBtn": "授權並連線雲端硬碟",
+  "comfy.driveExportNowBtn": "立即匯出到雲端",
+  "comfy.driveRetryExportBtn": "重試匯出到雲端",
   "comfy.noticeStartingCanvas": "正在開啟原生畫布固定網域通道，驗證通過後即可開啟。",
   "comfy.noticeSavedCanvasConfig": "原生畫布固定網域設定已儲存至本機憑證庫。",
   "comfy.noticeStoppedCanvas": "已關閉原生畫布安全通道。",
@@ -1243,9 +1332,9 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.preflightPackWillDownload":
     "首次執行將自動在遠端下載約 {size} 權重與節點相依套件",
   "comfy.videoPreviewTooLarge":
-    "影片檔案較大（{size}），為避免佔用過多記憶體，建議直接點選下方「匯出到本機」播放",
+    "檔案體積較大（{size}），為避免佔用過多記憶體，建議直接點選下方「匯出至本機」或「匯出到雲端」檢視",
   "comfy.mediaPreviewError":
-    "無法在內建播放器中解碼此媒體，請點選「匯出到本機」檢視",
+    "無法在內建播放器中解碼此媒體，請點選「匯出至本機」或「匯出到雲端」檢視",
   "comfy.errImportTooLarge": "工作流程 JSON 體積超過 2 MB 上限",
   "comfy.errImportTooManyNodes": "工作流程節點數量超過 500 個上限",
   "comfy.errImportInvalidNodeId": "包含不合法的節點 ID「{id}」",

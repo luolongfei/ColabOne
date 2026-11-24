@@ -1848,4 +1848,47 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       }
     }
   });
+
+  it("translates ComfyUI Google Drive direct export backend messages across all 6 locales", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
+    const driveExportBackendMsgs = [
+      "当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载",
+      "当前远端服务版本暂不支持作品直传 Google 云盘，请先点击顶部「立即热更新」升级远端服务后再试",
+      "正在将 ComfyUI 作品直传导出至 Google 云盘 (ColabOne_Drive/outputs)",
+      "Google 云盘连接已断开，请重新挂载后再试",
+      "未检测到云盘凭据配置，请重新挂载 Google 云盘",
+      "导出到 Google 云盘超时，请稍后重试",
+      "已将作品导出至 Google 云盘：My Drive / ColabOne_Drive/outputs / avatar_720x1280.mp4",
+      "已将作品导出至 Google 云盘 (ColabOne_Drive/outputs)",
+      "Google 云盘导出目录不可读写：Permission denied",
+      "写入 Google 云盘失败：I/O error",
+      "导出到 Google 云盘失败：network reset",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const msg of driveExportBackendMsgs) {
+        const out = translateColabOneBackendText(msg, loc);
+        expect(tb(msg), `tb() parity for ${loc}: ${msg}`).toBe(out);
+        expect(out.trim().length, `empty translation for ${loc}: ${msg}`).toBeGreaterThan(0);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${msg}" -> "${out}"`,
+          ).toBe(false);
+          expect(out).not.toBe(msg);
+        }
+        if (loc === "ja-JP") {
+          expect(out).not.toBe(msg);
+        }
+        if (loc === "zh-TW") {
+          expect(out).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(out).not.toMatch(SPOKEN_CANTONESE_RE);
+        }
+      }
+    }
+  });
+
 });

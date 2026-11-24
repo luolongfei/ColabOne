@@ -9,6 +9,7 @@ export const zhCNMessages = {
   "common.hideSecret": "隐藏密钥",
   "common.cancel": "取消",
   "common.close": "关闭",
+  "common.done": "完成",
   "common.notificationsAria": "通知提示",
   "common.confirm": "确认",
   "common.confirmDelete": "确认删除",
@@ -1098,9 +1099,24 @@ export const zhCNMessages = {
   "comfy.outputCount": "{count} 件",
   "comfy.emptyOutputs": "空空如也",
   "comfy.emptyOutputsDesc":
-    "运行任意工作流后，生成的图片、视频与音频会自动展示在这里，支持在线预览与一键导出到本地。",
-  "comfy.drivePersistHint": "已挂载 Google 云盘，输出产物将自动持久化。",
-  "comfy.localExportHint": "输出暂存在当前远端 GPU，建议在释放实例前导出到本地。",
+    "运行任意工作流后，生成的图片、视频与音频会自动展示在这里，支持在线预览、导出到本地或直接保存至 Google 云盘。",
+  "comfy.drivePersistHint":
+    "已挂载 Google 云盘（My Drive / ColabOne_Drive），作品会自动持久化，也可点击「导出到云盘」直接保存至 outputs 目录。",
+  "comfy.localExportHint":
+    "作品暂存在当前远端 GPU，建议在释放实例前导出到本地，或导出到 Google 云盘永久保存。",
+  "comfy.driveWaitingHint":
+    "正在等待浏览器完成 Google 云盘授权确认，授权后即可直接导出并永久保存作品。",
+  "comfy.outputsDriveConnectedPill": "云盘已挂载",
+  "comfy.outputsDriveConnectedTooltip":
+    "已连接 Google 云盘（My Drive / {folder}），支持云端直传导出并自动持久化。",
+  "comfy.outputsDriveSetupPill": "配置 Google 云盘",
+  "comfy.outputsDriveSetupTooltip":
+    "授权并连接 Google 云盘后，可直接从远端 GPU 快速导出作品永久保存。",
+  "comfy.outputsDriveWaitingPill": "待确认云盘授权",
+  "comfy.outputsDriveConfigureNow": "配置云盘",
+  "comfy.outputsDriveContinueAuth": "查看授权进度",
+  "comfy.driveOpenGoogleDrive": "打开 Google 云盘",
+  "comfy.driveOpenGoogleDriveShort": "打开云盘",
   "comfy.loadingOutput": "正在读取远端作品…",
   "comfy.retryPreview": "重试预览",
   "comfy.loadVideoPreview": "加载视频预览",
@@ -1108,8 +1124,17 @@ export const zhCNMessages = {
   "comfy.loadImagePreview": "加载图片预览",
   "comfy.defaultWorkflowName": "ComfyUI 工作流",
   "comfy.exportLocal": "导出到本地",
+  "comfy.exportDrive": "导出到云盘",
+  "comfy.exportedToDrive": "已存云盘",
+  "comfy.exportDriveReadyTooltip":
+    "云端直传至 Google 云盘（My Drive / ColabOne_Drive / outputs），速度更快且永久保存",
+  "comfy.exportDriveSetupTooltip":
+    "首次使用将弹出 Google 云盘授权配置，完成后自动将作品云端直传并永久保存",
+  "comfy.exportDriveDoneTooltip":
+    "已保存至 Google 云盘：{path}（点击可再次确认导出）",
   "comfy.deleteOutputTitle": "删除这件输出作品？",
-  "comfy.deleteOutputDesc": "文件「{name}」将从远端输出目录移除；已导出到本地的文件不受影响。",
+  "comfy.deleteOutputDesc":
+    "文件「{name}」将从远端输出目录移除；已导出到本地或 Google 云盘的文件不受影响。",
   "comfy.deleteOutputAria": "删除作品",
   "comfy.kindVideo": "视频",
   "comfy.kindAudio": "音频",
@@ -1174,7 +1199,71 @@ export const zhCNMessages = {
   "comfy.noticeCancelRequested": "已请求取消当前任务。",
   "comfy.noticeRunSubmitted": "工作流「{name}」已提交至远端队列；运行期间暂停空闲释放计时。",
   "comfy.noticeExported": "作品已导出到本地。",
+  "comfy.noticeExportedDrive": "作品已导出到 Google 云盘：{path}",
+  "comfy.noticeExportedDriveExists": "该作品已保存在 Google 云盘：{path}",
   "comfy.noticeDeletedOutput": "已删除该输出作品。",
+  "comfy.driveModalTitleExport": "导出到 Google 云盘",
+  "comfy.driveModalTitleConfig": "配置 Google 云盘",
+  "comfy.driveModalTagExported": "已导出",
+  "comfy.driveModalTagExporting": "正在导出",
+  "comfy.driveModalTagWaitingAuth": "等待浏览器授权",
+  "comfy.driveModalTagConnected": "已连接",
+  "comfy.driveModalTagHeadlessReady": "免弹窗就绪",
+  "comfy.driveModalTagNotConnected": "未配置",
+  "comfy.driveModalDestPrefix": "保存路径：",
+  "comfy.driveExportSuccessTitle": "已成功导出到 Google 云盘",
+  "comfy.driveExportAlreadySavedTitle": "作品已存在于 Google 云盘",
+  "comfy.driveExportSuccessDesc":
+    "文件已通过云端直传永久保存至你的 Google 云盘，即使释放远端 GPU 实例也不会丢失。",
+  "comfy.driveExportingTitle": "正在从远端 GPU 直传至 Google 云盘…",
+  "comfy.driveExportingDesc": "云端内网直传无需经过本机下载，请稍候片刻。",
+  "comfy.driveExportingBtn": "正在导出…",
+  "comfy.driveModalWaitingAuthTitle": "请在浏览器中完成 Google 云盘授权",
+  "comfy.driveModalAuthStep1": "在已打开的浏览器页面中选择与 ColabOne 相同的 Google 账号",
+  "comfy.driveModalAuthStep2": "勾选全部 Google 云盘权限并点击「允许 / Allow」",
+  "comfy.driveModalAuthStep3Export":
+    "返回本窗口点击下方「我已完成授权」（切回窗口时也会自动检测），授权成功后将自动把作品导出到云盘",
+  "comfy.driveModalAuthStep3Connect":
+    "返回本窗口点击下方「我已完成授权」（切回窗口时也会自动检测）即可完成连接",
+  "comfy.driveModalConnectingTitle": "正在连接并挂载 Google 云盘…",
+  "comfy.driveModalConnectingDesc":
+    "如浏览器弹出 Google 授权页面，请登录同一账号并点击允许。",
+  "comfy.driveModalConnectingBtn": "正在连接…",
+  "comfy.driveModalUpgradeTitle": "需要热更新远端服务以启用作品直传",
+  "comfy.driveModalUpgradeDesc":
+    "Google 云盘已连接成功！当前远端服务为旧版本，点击下方按钮热更新后即可直接将作品导出至 outputs 目录（不会释放 GPU，已生成的作品会完整保留）。",
+  "comfy.driveModalUpgradeBtn": "立即热更新远端服务",
+  "comfy.driveModalConnectedTitle": "Google 云盘已连接",
+  "comfy.driveModalConnectedExportDesc":
+    "目标目录 My Drive / {folder}{free} 已就绪，点击下方按钮即可云端直传永久保存。",
+  "comfy.driveModalConnectedOnlyDesc":
+    "已挂载 My Drive / {folder}{free}。现在可在作品区一键将作品直传导出至 outputs 目录永久保存，工作区也会自动同步。",
+  "comfy.driveModalNeedLoginTitle": "请先登录 Google 账号",
+  "comfy.driveModalNeedLoginDesc":
+    "连接 Google 云盘需要先在「设置」中完成 Google 账号登录。",
+  "comfy.driveModalGoSettings": "前往设置",
+  "comfy.driveModalNeedGpuTitle": "请先启动远端 GPU 实例",
+  "comfy.driveModalNeedGpuDesc":
+    "云端直传导出需要在运行中的远端 GPU 实例上挂载 Google 云盘。",
+  "comfy.driveModalSetupHeadline": "授权并连接你的 Google 云盘",
+  "comfy.driveModalSetupHeadlessExportDesc":
+    "已检测到免弹窗云盘凭据，点击下方按钮即可立即挂载 Google 云盘并自动开始导出。",
+  "comfy.driveModalSetupHeadlessOnlyDesc":
+    "已检测到免弹窗云盘凭据，点击下方按钮即可立即挂载 Google 云盘，之后可一键高速导出作品永久保存。",
+  "comfy.driveModalSetupAuthExportDesc":
+    "当前实例尚未挂载 Google 云盘。点击下方按钮将打开浏览器进行官方授权，完成后自动把这件作品直接传到 Google 云盘永久保存。",
+  "comfy.driveModalSetupAuthOnlyDesc":
+    "当前实例尚未挂载 Google 云盘。点击下方按钮完成一次授权后，即可直接把远端作品高速导出到 Google 云盘永久保存。",
+  "comfy.driveModalBenefitSpeed": "云端直传：直接从远端 GPU 写入云盘，传输更快更省流量",
+  "comfy.driveModalBenefitPersist": "永久保存：独立归档，释放实例或清理作品区后依然保留",
+  "comfy.driveModalBenefitPath": "归档目录：",
+  "comfy.driveModalAutoMountLabel": "下次启动 GPU 实例时自动挂载 Google 云盘",
+  "comfy.driveModalConnectAndExportBtn": "连接云盘并导出",
+  "comfy.driveModalConnectBtn": "连接 Google 云盘",
+  "comfy.driveModalAuthAndExportBtn": "授权并导出到云盘",
+  "comfy.driveModalAuthBtn": "授权并连接云盘",
+  "comfy.driveExportNowBtn": "立即导出到云盘",
+  "comfy.driveRetryExportBtn": "重试导出到云盘",
   "comfy.noticeStartingCanvas": "正在开启原生画布固定域名隧道，验证通过后即可打开。",
   "comfy.noticeSavedCanvasConfig": "原生画布固定域名配置已保存到本机凭据库。",
   "comfy.noticeStoppedCanvas": "已关闭原生画布安全隧道。",
@@ -1245,9 +1334,9 @@ export const zhCNMessages = {
   "comfy.preflightPackWillDownload":
     "首次运行将自动在远端下载约 {size} 权重与节点依赖",
   "comfy.videoPreviewTooLarge":
-    "视频体积较大（{size}），为避免占用过多内存建议直接点击下方「导出到本地」播放",
+    "文件体积较大（{size}），为避免占用过多内存建议直接点击下方「导出到本地」或「导出到云盘」查看",
   "comfy.mediaPreviewError":
-    "无法在内置播放器中解码该媒体，请点击「导出到本地」查看",
+    "无法在内置播放器中解码该媒体，请点击「导出到本地」或「导出到云盘」查看",
   "comfy.errImportTooLarge": "工作流 JSON 体积超过 2 MB 上限",
   "comfy.errImportTooManyNodes": "工作流节点数量超过 500 个上限",
   "comfy.errImportInvalidNodeId": "包含不合法的节点 ID「{id}」",

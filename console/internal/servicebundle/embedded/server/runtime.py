@@ -449,7 +449,12 @@ class ColabOneRuntime:
             "service_revision": self.service_revision,
             "api_model_aliases": True,
             "public_api": self.public_api.snapshot(),
-            "capabilities": ["public_api", "comfyui", "comfyui_hf_token"],
+            "capabilities": [
+                "public_api",
+                "comfyui",
+                "comfyui_hf_token",
+                "comfyui_drive_export",
+            ],
             "comfyui": comfy_status,
             "active_engine": "llama"
             if loaded
@@ -1836,6 +1841,42 @@ class ColabOneRuntime:
                     return {"ok": False, **self.drive.status(len(self._dirty_seq))}
             ok = self._sync_to_drive()
             return {"ok": ok, **self.drive.status(len(self._dirty_seq))}
+
+    def export_comfy_output_to_drive(self, output_id: str) -> dict:
+        if not isinstance(output_id, str) or not re.fullmatch(r"[a-f0-9]{32}", output_id):
+            raise ValueError("产物编号不合法")
+        self.touch(hold_seconds=210)
+        with self.comfy.store.lock:
+            item = self.comfy.store.outputs[output_id]
+            ext = item["extension"]
+            filename = item["filename"]
+            sha256 = item["sha256"]
+            size = int(item["size"])
+            src_path = self.comfy.store.outputs_dir / f"{output_id}.{ext}"
+            if src_path.is_symlink():
+                raise ValueError("作品不能是符号链接")
+            if not src_path.is_file():
+                raise KeyError(output_id)
+
+        if not self.drive.available():
+            if self.drive.configured():
+                self.connect_drive()
+        if not self.drive.available():
+            raise ValueError("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载")
+
+        try:
+            result = self.drive.export_output_file(
+                src_path,
+                filename=filename,
+                output_id=output_id,
+                extension=ext,
+                expected_sha256=sha256,
+                expected_size=size,
+            )
+        except FileNotFoundError:
+            raise KeyError(output_id) from None
+        self.touch()
+        return {"id": output_id, **result}
 
     def _restore_from_drive(self) -> bool:
         stage_dir = self.root / ".drive-pull"

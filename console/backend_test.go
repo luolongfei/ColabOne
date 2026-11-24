@@ -115,10 +115,13 @@ func TestExternalURLsAreRestricted(t *testing.T) {
 			t.Fatalf("accepted %s", url)
 		}
 	}
-	for _, url := range []string{"https://accounts.google.com/", "https://console.cloud.google.com/"} {
+	for _, url := range []string{"https://accounts.google.com/", "https://console.cloud.google.com/", "https://drive.google.com/drive/my-drive"} {
 		if err := validateColabOneExternalURL(url); err != nil {
 			t.Fatalf("rejected allowed URL %s: %v", url, err)
 		}
+	}
+	if got := colabOneMethodTimeout("comfyui.output.export_drive"); got != 300*time.Second {
+		t.Fatalf("expected 300s timeout for comfyui.output.export_drive, got %v", got)
 	}
 }
 

@@ -964,6 +964,26 @@ async function mock(page: any, ready = false, path = "/") {
               );
               return JSON.stringify({ ok: true });
             }
+            if (action === "comfyui.output.export_drive") {
+              const target = (state.comfy_outputs || []).find(
+                (o: any) => o.id === payload?.id,
+              );
+              if (!state.setup?.drive) {
+                throw new Error("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载");
+              }
+              const filename = target?.filename || "output.mp4";
+              const folder = `${state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+              return JSON.stringify({
+                ok: true,
+                id: payload?.id || "",
+                filename,
+                remote_folder: folder,
+                drive_path: `My Drive/${folder}/${filename}`,
+                already_exists: false,
+                size: target?.size || 1024,
+                mode: state.runtime.drive?.mode || "colab_drivefs",
+              });
+            }
             return JSON.stringify({ ok: true });
           }
           return "";
@@ -7026,4 +7046,312 @@ test("settings page customizes GPU allocation max attempts with 20 default and 1
     })
     .toContain(100);
   await expect(attemptsInput).toHaveValue("100");
+});
+
+test("ComfyUI outputs drawer renders full unclipped storage hint and supports Google Drive setup modal + direct cloud export", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1080, height: 760 });
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.drive = false;
+    s.setup.drive_authorized = true;
+    s.setup.drive_headless = false;
+    s.account.email = "creator@example.com";
+    s.runtime.capabilities = [
+      "public_api",
+      "comfyui",
+      "comfyui_hf_token",
+      "comfyui_drive_export",
+    ];
+    s.runtime.comfyui = {
+      installed: true,
+      running: true,
+      state: "ready",
+      tag: "v0.46.0",
+      queue_running: 0,
+      queue_pending: 0,
+      error: "",
+    };
+    s.comfy_outputs = [
+      {
+        id: "11111111111111111111111111111111",
+        workflow_id: "digital-human-longcat",
+        workflow_name: "口播数字人 · 旗舰高清版",
+        kind: "video",
+        filename: "digital-human-longcat_720x1280_1795517066.mp4",
+        extension: "mp4",
+        mime: "video/mp4",
+        size: 5_861_000,
+        created_at: 1_700_005_000,
+        elapsed: 3462,
+      },
+      {
+        id: "22222222222222222222222222222222",
+        workflow_id: "flux-demo",
+        workflow_name: "Flux 高清文生图",
+        kind: "image",
+        filename: "flux_poster_0001.png",
+        extension: "png",
+        mime: "image/png",
+        size: 820_000,
+        created_at: 1_700_004_000,
+        elapsed: 18,
+      },
+    ];
+  });
+
+  await navItem(page, "ComfyUI").click();
+  await page.locator(".co-comfy-outputs-trigger").click();
+  const outputsDrawer = page.locator(
+    ".co-comfy-outputs-drawer-root .ant-drawer-content",
+  );
+  await expect(outputsDrawer).toBeVisible();
+
+  // 1. Storage notice is shown in full without ellipsis truncation and header pill is visible.
+  const storageBar = outputsDrawer.getByTestId("comfy-outputs-storage-bar");
+  await expect(storageBar).toBeVisible();
+  await expect(storageBar).toContainText(
+    "作品暂存在当前远端 GPU，建议在释放实例前导出到本地，或导出到 Google 云盘永久保存。",
+  );
+  const storageTextMetrics = await storageBar
+    .locator(".co-comfy-outputs-storage-text")
+    .evaluate((el) => {
+      const style = window.getComputedStyle(el);
+      return {
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+      };
+    });
+  expect(storageTextMetrics.textOverflow).not.toBe("ellipsis");
+  expect(storageTextMetrics.whiteSpace).toBe("normal");
+  expect(storageTextMetrics.scrollWidth).toBeLessThanOrEqual(
+    storageTextMetrics.clientWidth + 1,
+  );
+  await expect(
+    outputsDrawer.getByTestId("comfy-outputs-drive-pill"),
+  ).toContainText("配置 Google 云盘");
+
+  // 2. Clicking "导出到云盘" when Drive is NOT configured opens the Drive setup & authorization modal.
+  const driveExportBtns = outputsDrawer.getByTestId("comfy-output-export-drive");
+  await expect(driveExportBtns).toHaveCount(2);
+  await expect(driveExportBtns.nth(0)).toContainText("导出到云盘");
+  await driveExportBtns.nth(0).click();
+
+  const driveModal = page.locator(".co-drive-export-modal-wrap .ant-modal-content");
+  await expect(driveModal).toBeVisible();
+  await expect(driveModal).toContainText("导出到 Google 云盘");
+  await expect(driveModal).toContainText("digital-human-longcat_720x1280_1795517066.mp4");
+  await expect(driveModal).toContainText("My Drive / ColabOne_Drive / outputs");
+
+  // Trigger authorization & connection from inside the modal -> calls drive.connect.
+  await driveModal.getByRole("button", { name: "授权并导出到云盘" }).click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        ((window as any).__calls || []).some((c: any) => c.action === "drive.connect"),
+      ),
+    )
+    .toBe(true);
+
+  // Simulate backend opening Google DriveFS consent URL -> modal shows in-place browser auth steps.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = {
+      title: "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
+      running: true,
+    };
+    s.auth_url = "https://accounts.google.com/o/oauth2/auth?mock=drivefs";
+  });
+  await expect(driveModal).toContainText("请在浏览器中完成 Google 云盘授权");
+  await expect(driveModal).toContainText("creator@example.com");
+  await driveModal.getByRole("button", { name: "我已完成授权" }).click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        ((window as any).__calls || []).some((c: any) => c.action === "drive.confirm"),
+      ),
+    )
+    .toBe(true);
+
+  // Simulate DriveFS mount completing -> modal automatically exports the queued artwork!
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = null;
+    s.auth_url = "";
+    s.setup.drive = true;
+    s.runtime.drive = {
+      connected: true,
+      mode: "colab_drivefs",
+      remote_folder: "ColabOne_Drive",
+      free_bytes: 50 * 1024 ** 3,
+    };
+  });
+  await expect(driveModal).toContainText("已成功导出到 Google 云盘");
+  await expect(driveModal).toContainText(
+    "My Drive / ColabOne_Drive / outputs / digital-human-longcat_720x1280_1795517066.mp4",
+  );
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        ((window as any).__calls || []).some(
+          (c: any) =>
+            c.action === "comfyui.output.export_drive" &&
+            c.payload?.id === "11111111111111111111111111111111",
+        ),
+      ),
+    )
+    .toBe(true);
+
+  // Close modal; outputs drawer remains open; first card now shows "已存云盘".
+  await driveModal.getByRole("button", { name: /^完\s*成$/ }).click();
+  await expect(driveModal).toBeHidden();
+  await expect(outputsDrawer).toBeVisible();
+  await expect(
+    outputsDrawer.getByTestId("comfy-outputs-drive-pill"),
+  ).toContainText("云盘已挂载");
+  await expect(driveExportBtns.nth(0)).toContainText("已存云盘");
+
+  // 3. Clicking "导出到云盘" on the second card when Drive IS mounted exports directly without opening the setup modal.
+  await driveExportBtns.nth(1).click();
+  await expect(driveModal).toBeHidden();
+  await expect(driveExportBtns.nth(1)).toContainText("已存云盘");
+  await expect(page.locator(".co-toast-stack")).toContainText(
+    "My Drive / ColabOne_Drive / outputs / flux_poster_0001.png",
+  );
+});
+
+test("ComfyUI Drive export modal handles async errors, non-drive operations, and upgrade confirm z-index above drawer", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1080, height: 760 });
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.drive = false;
+    s.setup.drive_authorized = true;
+    s.setup.drive_headless = false;
+    s.account.email = "creator@example.com";
+    s.runtime.upgrade_available = true;
+    s.runtime.capabilities = ["public_api", "comfyui", "comfyui_hf_token"];
+    s.runtime.drive = {
+      connected: false,
+      mode: "disabled",
+      remote_folder: "ColabOne_Drive",
+    };
+    s.runtime.comfyui = {
+      state: "ready",
+      running: true,
+      installed: true,
+      tag: "v0.46.0",
+      queue_running: 0,
+      queue_pending: 0,
+      error: "",
+      canvas: { enabled: false, state: "off" },
+    };
+    s.runtime.tasks = [];
+    s.comfy_outputs = [
+      {
+        id: "33333333333333333333333333333333",
+        workflow_id: "wf-longcat",
+        workflow_name: "口播数字人 · 旗舰高清版",
+        kind: "video",
+        filename: "edge_case_video.mp4",
+        extension: "mp4",
+        mime: "video/mp4",
+        size: 4_200_000,
+        created_at: 1_700_005_000,
+        elapsed: 90,
+      },
+    ];
+  });
+
+  await navItem(page, "ComfyUI").click();
+  await page.locator(".co-comfy-outputs-trigger").click();
+  const outputsDrawer = page.locator(
+    ".co-comfy-outputs-drawer-root .ant-drawer-content",
+  );
+  await expect(outputsDrawer).toBeVisible();
+
+  // Open Drive export modal from card.
+  await outputsDrawer.getByTestId("comfy-output-export-drive").click();
+  const driveModal = page.locator(".co-drive-export-modal-wrap .ant-modal-content");
+  await expect(driveModal).toBeVisible();
+
+  // 1. Running a non-Drive operation (e.g. drive.setup_headless) must NOT hijack the modal into "正在连接云盘".
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = { title: "检测并开启云盘免弹窗模式", running: true };
+  });
+  await expect(driveModal).toContainText("授权并连接你的 Google 云盘");
+  await expect(driveModal).not.toContainText("正在连接并挂载 Google 云盘");
+  await expect(
+    driveModal.getByRole("button", { name: "授权并导出到云盘" }),
+  ).toBeDisabled();
+
+  // Clear unrelated operation.
+  await page.evaluate(() => {
+    (window as any).__state.operation = null;
+  });
+  await expect(
+    driveModal.getByRole("button", { name: "授权并导出到云盘" }),
+  ).toBeEnabled();
+
+  // 2. Async drive.connect failure populates the error alert inside the modal and does NOT stay stuck loading.
+  await driveModal.getByRole("button", { name: "授权并导出到云盘" }).click();
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = {
+      title: "挂载 Google 云盘 (ColabOne_Drive)",
+      running: true,
+      kind: "drive_connect",
+    };
+  });
+  await expect(driveModal).toContainText("正在连接并挂载 Google 云盘");
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = null;
+    s.error = "Google 云盘连接失败：授权未完成";
+  });
+  await expect(driveModal).toContainText("Google 云盘连接失败：授权未完成");
+  await expect(
+    driveModal.getByRole("button", { name: "授权并导出到云盘" }),
+  ).toBeVisible();
+
+  // 3. Once Drive connects on a pre-upgrade runtime, clicking "立即热更新远端服务" opens the upgrade confirm modal ABOVE the outputs drawer (z-index > drawer).
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.error = "";
+    s.setup.drive = true;
+    s.runtime.drive = {
+      connected: true,
+      mode: "colab_drivefs",
+      remote_folder: "ColabOne_Drive",
+    };
+  });
+  await expect(driveModal).toContainText("立即热更新远端服务");
+  await driveModal.getByRole("button", { name: "立即热更新远端服务" }).click();
+  await expect(driveModal).toBeHidden();
+
+  const upgradeConfirmWrap = page
+    .locator(".ant-modal-wrap:not(.co-drive-export-modal-wrap)")
+    .filter({ hasText: "确认热更新远端服务" })
+    .first();
+  await expect(upgradeConfirmWrap).toBeVisible();
+  const zOrder = await page.evaluate(() => {
+    const drawer = document.querySelector(".co-comfy-outputs-drawer-root .ant-drawer-content-wrapper")
+      ?.parentElement as HTMLElement | null;
+    const wraps = Array.from(
+      document.querySelectorAll<HTMLElement>(".ant-modal-wrap:not(.co-drive-export-modal-wrap)"),
+    ).filter((el) => (el.textContent || "").includes("确认热更新远端服务"));
+    const modalWrap = wraps[0] || null;
+    return {
+      drawerZ: drawer ? Number(window.getComputedStyle(drawer).zIndex || 0) : 0,
+      modalZ: modalWrap ? Number(window.getComputedStyle(modalWrap).zIndex || 0) : 0,
+    };
+  });
+  expect(zOrder.modalZ).toBeGreaterThan(zOrder.drawerZ);
 });

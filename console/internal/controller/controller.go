@@ -2196,6 +2196,7 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 		"operation": map[string]any{
 			"title":   "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
 			"running": true,
+			"kind":    "drive_connect",
 		},
 		"auth_url":        "",
 		"drive_auth_hint": "",

@@ -332,6 +332,10 @@ def create_colabone_app(runtime, token, background=False):
         runtime.touch()
         return runtime.comfy.store.asset(output_id, offset, length)
 
+    @app.post("/api/v1/comfyui/outputs/{output_id}/export-drive", dependencies=auth)
+    def comfyui_export_output_drive(output_id: str):
+        return runtime.export_comfy_output_to_drive(output_id)
+
     @app.delete("/api/v1/comfyui/outputs/{output_id}", dependencies=auth)
     def comfyui_delete_output(output_id: str):
         runtime.touch()

@@ -11,6 +11,7 @@ export const jaJPMessages: ColabOneMessages = {
   "common.hideSecret": "キーを隠す",
   "common.cancel": "キャンセル",
   "common.close": "閉じる",
+  "common.done": "完了",
   "common.notificationsAria": "通知",
   "common.confirm": "確定",
   "common.confirmDelete": "削除する",
@@ -1125,10 +1126,24 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.outputCount": "{count} 件",
   "comfy.emptyOutputs": "空っぽです",
   "comfy.emptyOutputsDesc":
-    "ワークフローを実行すると生成された画像・動画・音声がここに表示され、プレビューやローカル保存ができます。",
-  "comfy.drivePersistHint": "Google ドライブ接続済みのため、出力作品は自動的に永続保存されます。",
+    "ワークフローを実行すると生成された画像・動画・音声がここに表示され、プレビュー、ローカル保存、または Google ドライブへの直接保存ができます。",
+  "comfy.drivePersistHint":
+    "Google ドライブ接続済み（My Drive / ColabOne_Drive）— 出力は自動永続化され、「ドライブへ保存」で outputs フォルダへ直接保存できます。",
   "comfy.localExportHint":
-    "出力はリモート GPU 上に一時保存されています。インスタンス解放前にローカルへエクスポートしてください。",
+    "出力はリモート GPU 上に一時保存されています。インスタンス解放前にローカル保存または Google ドライブへ保存してください。",
+  "comfy.driveWaitingHint":
+    "ブラウザでの Google ドライブ認証を待機中です。承認後に作品を直接クラウド保存できます。",
+  "comfy.outputsDriveConnectedPill": "ドライブ接続済",
+  "comfy.outputsDriveConnectedTooltip":
+    "Google ドライブ（My Drive / {folder}）に接続済みです。クラウド直接保存と自動永続化に対応しています。",
+  "comfy.outputsDriveSetupPill": "Google ドライブ設定",
+  "comfy.outputsDriveSetupTooltip":
+    "Google ドライブを認証・接続すると、リモート GPU から作品を高速に直接保存して永続保管できます。",
+  "comfy.outputsDriveWaitingPill": "ドライブ認証待ち",
+  "comfy.outputsDriveConfigureNow": "ドライブ設定",
+  "comfy.outputsDriveContinueAuth": "認証状況を確認",
+  "comfy.driveOpenGoogleDrive": "Google ドライブを開く",
+  "comfy.driveOpenGoogleDriveShort": "ドライブを開く",
   "comfy.loadingOutput": "リモート作品を読み込み中…",
   "comfy.retryPreview": "プレビュー再試行",
   "comfy.loadVideoPreview": "動画プレビューを読み込む",
@@ -1136,9 +1151,17 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.loadImagePreview": "画像プレビューを読み込む",
   "comfy.defaultWorkflowName": "ComfyUI ワークフロー",
   "comfy.exportLocal": "ローカルへ保存",
+  "comfy.exportDrive": "ドライブへ保存",
+  "comfy.exportedToDrive": "ドライブ保存済",
+  "comfy.exportDriveReadyTooltip":
+    "リモート GPU から Google ドライブ（My Drive / ColabOne_Drive / outputs）へ高速直接アップロードして永続保存",
+  "comfy.exportDriveSetupTooltip":
+    "初回は Google ドライブ認証設定が開き、完了後に自動でクラウドへ直接保存します",
+  "comfy.exportDriveDoneTooltip":
+    "Google ドライブに保存済み: {path}（クリックで再確認・再保存）",
   "comfy.deleteOutputTitle": "この出力作品を削除しますか？",
   "comfy.deleteOutputDesc":
-    "リモート出力フォルダから「{name}」を削除します。すでにローカル保存したファイルには影響しません。",
+    "リモート出力フォルダから「{name}」を削除します。すでにローカルまたは Google ドライブへ保存したファイルには影響しません。",
   "comfy.deleteOutputAria": "出力を削除",
   "comfy.kindVideo": "動画",
   "comfy.kindAudio": "音声",
@@ -1208,7 +1231,71 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.noticeRunSubmitted":
     "ワークフロー「{name}」をリモートキューへ送信しました（実行中は自動解放を一時停止）。",
   "comfy.noticeExported": "出力作品をローカルへ保存しました。",
+  "comfy.noticeExportedDrive": "出力作品を Google ドライブへ保存しました: {path}",
+  "comfy.noticeExportedDriveExists": "この作品はすでに Google ドライブに保存されています: {path}",
   "comfy.noticeDeletedOutput": "出力作品を削除しました。",
+  "comfy.driveModalTitleExport": "Google ドライブへ保存",
+  "comfy.driveModalTitleConfig": "Google ドライブの設定",
+  "comfy.driveModalTagExported": "保存済み",
+  "comfy.driveModalTagExporting": "保存中",
+  "comfy.driveModalTagWaitingAuth": "ブラウザ認証待ち",
+  "comfy.driveModalTagConnected": "接続済み",
+  "comfy.driveModalTagHeadlessReady": "自動接続可",
+  "comfy.driveModalTagNotConnected": "未設定",
+  "comfy.driveModalDestPrefix": "保存先:",
+  "comfy.driveExportSuccessTitle": "Google ドライブへ保存しました",
+  "comfy.driveExportAlreadySavedTitle": "Google ドライブに保存済みです",
+  "comfy.driveExportSuccessDesc":
+    "クラウド間で直接転送し永続保存しました。リモート GPU インスタンスを解放しても失われません。",
+  "comfy.driveExportingTitle": "リモート GPU から Google ドライブへ直接転送中…",
+  "comfy.driveExportingDesc": "ローカルを経由せずクラウド間で転送しています。しばらくお待ちください。",
+  "comfy.driveExportingBtn": "保存中…",
+  "comfy.driveModalWaitingAuthTitle": "ブラウザで Google ドライブの認証を完了してください",
+  "comfy.driveModalAuthStep1": "開いたブラウザ画面で ColabOne と同じ Google アカウントを選択します",
+  "comfy.driveModalAuthStep2": "すべての Google ドライブ権限にチェックを入れ、「許可 / Allow」をクリックします",
+  "comfy.driveModalAuthStep3Export":
+    "この画面に戻って下の「認証完了を確認」をクリックすると（ウィンドウ復帰時にも自動検知）、自動でドライブへ保存します",
+  "comfy.driveModalAuthStep3Connect":
+    "この画面に戻って下の「認証完了を確認」をクリックすると（ウィンドウ復帰時にも自動検知）接続が完了します",
+  "comfy.driveModalConnectingTitle": "Google ドライブへ接続・マウント中…",
+  "comfy.driveModalConnectingDesc":
+    "ブラウザに Google 認証ページが開いた場合は、同じアカウントで許可してください。",
+  "comfy.driveModalConnectingBtn": "接続中…",
+  "comfy.driveModalUpgradeTitle": "直接保存を有効にするためリモートサービスのホットアップデートが必要です",
+  "comfy.driveModalUpgradeDesc":
+    "Google ドライブの接続は完了しました。リモートサービスをホットアップデートすると outputs フォルダへ直接保存できます（GPU は解放されず、生成済み作品も保持されます）。",
+  "comfy.driveModalUpgradeBtn": "リモートをホットアップデート",
+  "comfy.driveModalConnectedTitle": "Google ドライブ接続済み",
+  "comfy.driveModalConnectedExportDesc":
+    "保存先 My Drive / {folder}{free} の準備が整いました。下のボタンからクラウド直接転送で永続保存できます。",
+  "comfy.driveModalConnectedOnlyDesc":
+    "My Drive / {folder}{free} をマウントしました。ギャラリーから outputs フォルダへワンクリックで直接保存でき、ワークスペースも自動同期されます。",
+  "comfy.driveModalNeedLoginTitle": "先に Google アカウントでログインしてください",
+  "comfy.driveModalNeedLoginDesc":
+    "Google ドライブを接続するには、まず「設定」で Google アカウントにログインする必要があります。",
+  "comfy.driveModalGoSettings": "設定を開く",
+  "comfy.driveModalNeedGpuTitle": "先にリモート GPU インスタンスを起動してください",
+  "comfy.driveModalNeedGpuDesc":
+    "クラウド直接保存には稼働中のリモート GPU インスタンスで Google ドライブをマウントする必要があります。",
+  "comfy.driveModalSetupHeadline": "Google ドライブを認証して接続",
+  "comfy.driveModalSetupHeadlessExportDesc":
+    "自動接続用の認証情報が準備できています。下のボタンをクリックすると Google ドライブをマウントし、自動で保存を開始します。",
+  "comfy.driveModalSetupHeadlessOnlyDesc":
+    "自動接続用の認証情報が準備できています。下のボタンをクリックすると Google ドライブをマウントし、ワンクリックで作品を直接永続保存できます。",
+  "comfy.driveModalSetupAuthExportDesc":
+    "このインスタンスにはまだ Google ドライブがマウントされていません。下のボタンからブラウザ認証を完了すると、自動的に作品を Google ドライブへ直接保存します。",
+  "comfy.driveModalSetupAuthOnlyDesc":
+    "このインスタンスにはまだ Google ドライブがマウントされていません。一度認証して接続すると、リモート作品を高速に Google ドライブへ永続保存できます。",
+  "comfy.driveModalBenefitSpeed": "クラウド直接転送：リモート GPU から直接書き込むため高速で通信量も節約",
+  "comfy.driveModalBenefitPersist": "永続アーカイブ：インスタンス解放やギャラリー削除後も Google ドライブに残ります",
+  "comfy.driveModalBenefitPath": "保存先フォルダ：",
+  "comfy.driveModalAutoMountLabel": "次回 GPU 起動時に Google ドライブを自動マウントする",
+  "comfy.driveModalConnectAndExportBtn": "ドライブに接続して保存",
+  "comfy.driveModalConnectBtn": "Google ドライブに接続",
+  "comfy.driveModalAuthAndExportBtn": "認証してドライブへ保存",
+  "comfy.driveModalAuthBtn": "認証してドライブに接続",
+  "comfy.driveExportNowBtn": "今すぐドライブへ保存",
+  "comfy.driveRetryExportBtn": "ドライブ保存を再試行",
   "comfy.noticeStartingCanvas": "ネイティブキャンバス用トンネルを開始しています。検証完了後に開けます。",
   "comfy.noticeSavedCanvasConfig": "ネイティブキャンバスのトンネル設定を OS 資格情報ストアに保存しました。",
   "comfy.noticeStoppedCanvas": "ネイティブキャンバスの安全トンネルを停止しました。",
@@ -1279,9 +1366,9 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.preflightPackWillDownload":
     "初回実行時に約 {size} のモデルとノード依存関係をリモートで自動ダウンロードします",
   "comfy.videoPreviewTooLarge":
-    "動画サイズが大きいため（{size}）、メモリ節約のため下の「ローカルに保存」から再生することをおすすめします",
+    "ファイルサイズが大きいため（{size}）、メモリ節約のため下の「ローカルへ保存」または「ドライブへ保存」から確認することをおすすめします",
   "comfy.mediaPreviewError":
-    "内蔵プレーヤーでこのメディアを再生できません。「ローカルに保存」して確認してください。",
+    "内蔵プレーヤーでこのメディアを再生できません。「ローカルへ保存」または「ドライブへ保存」して確認してください。",
   "comfy.errImportTooLarge": "ワークフロー JSON が 2 MB の上限を超えています",
   "comfy.errImportTooManyNodes":
     "ワークフローのノード数が上限（500）を超えています",
