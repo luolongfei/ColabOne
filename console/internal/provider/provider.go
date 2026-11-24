@@ -38,20 +38,47 @@ var (
 	ColabOneServiceBundleSuffixes = []string{".py", ".json", ".txt"}
 )
 
-// DefaultAssignRetryDelays returns the default 9-retry backoff schedule (10 total attempts:
-// 1 initial + 9 retries with 6s -> 12s -> 20s -> 30s capped delays).
-func DefaultAssignRetryDelays() []time.Duration {
-	return []time.Duration{
-		6 * time.Second,
-		12 * time.Second,
-		20 * time.Second,
-		30 * time.Second,
-		30 * time.Second,
-		30 * time.Second,
-		30 * time.Second,
-		30 * time.Second,
-		30 * time.Second,
+const (
+	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS is the default total number of GPU allocation attempts
+	// (1 initial attempt + 19 retries = 20 total attempts).
+	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 20
+
+	// COLABONE_ASSIGN_BACKOFF_INITIAL is the initial exponential backoff delay after the first failed attempt.
+	COLABONE_ASSIGN_BACKOFF_INITIAL = 2 * time.Second
+
+	// COLABONE_ASSIGN_BACKOFF_MAX is the maximum capped exponential backoff delay (32s).
+	COLABONE_ASSIGN_BACKOFF_MAX = 32 * time.Second
+)
+
+// AssignRetryDelays builds the capped exponential-backoff retry schedule for maxAttempts total attempts:
+// 2s -> 4s -> 8s -> 16s -> 32s, staying at 32s for all subsequent retries.
+// Returns an empty slice when maxAttempts <= 1 (single attempt, no retries).
+func AssignRetryDelays(maxAttempts int) []time.Duration {
+	if maxAttempts <= 1 {
+		return []time.Duration{}
 	}
+	retryCount := maxAttempts - 1
+	delays := make([]time.Duration, retryCount)
+	delay := COLABONE_ASSIGN_BACKOFF_INITIAL
+	for i := 0; i < retryCount; i++ {
+		if delay > COLABONE_ASSIGN_BACKOFF_MAX {
+			delay = COLABONE_ASSIGN_BACKOFF_MAX
+		}
+		delays[i] = delay
+		if delay < COLABONE_ASSIGN_BACKOFF_MAX {
+			delay *= 2
+			if delay > COLABONE_ASSIGN_BACKOFF_MAX {
+				delay = COLABONE_ASSIGN_BACKOFF_MAX
+			}
+		}
+	}
+	return delays
+}
+
+// DefaultAssignRetryDelays returns the default 19-retry backoff schedule (20 total attempts:
+// 1 initial + 19 retries with 2s -> 4s -> 8s -> 16s -> 32s capped delays).
+func DefaultAssignRetryDelays() []time.Duration {
+	return AssignRetryDelays(COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS)
 }
 
 var colabOneAltGPUHints = map[string]string{
@@ -1297,6 +1324,9 @@ func (p *ColabOneProvider) assignRuntime(
 ) (*Assignment, error) {
 	nbh := newUUIDv4()
 	delays := p.assignRetryDelays
+	if opts.MaxAttempts > 0 {
+		delays = AssignRetryDelays(opts.MaxAttempts)
+	}
 	totalAttempts := 1 + len(delays)
 	xsrfToken := ""
 	consecutivePoolBusy := 0
@@ -2882,6 +2912,7 @@ func (p *ColabOneProvider) Start(
 		RetryCh:      opts.RetryCh,
 		OnRetryState: opts.OnRetryState,
 		AssignProxy:  strings.TrimSpace(opts.AssignProxy),
+		MaxAttempts:  opts.MaxAttempts,
 	})
 	if err != nil {
 		return rollback(err)

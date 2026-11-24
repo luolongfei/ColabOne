@@ -25,6 +25,7 @@ import {
   ConfigProvider as AConfigProvider,
   Divider as ADivider,
   Empty as AEmpty,
+  InputNumber as AInputNumber,
   Layout as ALayout,
   LayoutContent as ALayoutContent,
   Modal as AModal,
@@ -43,6 +44,7 @@ import {
 import ColabOneCloseModal from "./ColabOneCloseModal.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
+import ColabOneSelectTooltipHost from "./ColabOneSelectTooltipHost.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneToastHost from "./ColabOneToastHost.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
@@ -169,7 +171,10 @@ import {
   writeColabOneSeenUpdateVersion,
 } from "./colabOneUpdater";
 import {
+  COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
   COLABONE_DEFAULT_GPU,
+  COLABONE_MAX_ASSIGN_MAX_ATTEMPTS,
+  COLABONE_MIN_ASSIGN_MAX_ATTEMPTS,
   createColabOneSnapshot,
   COLABONE_STATUS_LABELS,
   evaluateColabOneRuntimeUpgrade,
@@ -1026,6 +1031,16 @@ const activeLocation = computed(() => {
 const managedInstances = computed(() =>
   accountInstances.value.filter((i) => i.managed),
 );
+function formatColabOneTopbarInstanceLabel(inst: AccountInstance): string {
+  const parts = [inst.accelerator || "GPU"];
+  if (inst.location?.country) {
+    const loc = locationShort(inst.location);
+    if (loc) parts.push(loc);
+  }
+  parts.push(inst.id);
+  const base = parts.join(" · ");
+  return inst.loaded_model ? `${base} (${inst.loaded_model})` : base;
+}
 const externalInstances = computed(() =>
   accountInstances.value.filter((i) => !i.managed),
 );
@@ -1102,10 +1117,23 @@ const form = ref({
   idle_countdown_seconds: 60,
   auto_drive: true,
   download_threads: 16,
+  assign_max_attempts: COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS as number,
   assign_proxy_enabled: false,
   assign_proxy: "",
   hf_token: "",
 });
+const assignMaxAttemptsDraft = ref<number | undefined>(
+  COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+);
+const editingAssignMaxAttempts = ref(false);
+watch(
+  () => form.value.assign_max_attempts,
+  (val) => {
+    if (!editingAssignMaxAttempts.value) {
+      assignMaxAttemptsDraft.value = val;
+    }
+  },
+);
 const isPresetIdleMinutes = (m: number) =>
   COLABONE_IDLE_RELEASE_OPTIONS.some((opt) => opt.value === m);
 
@@ -1261,6 +1289,7 @@ const SYNCED_SETTING_KEYS = [
   "idle_countdown_seconds",
   "auto_drive",
   "download_threads",
+  "assign_max_attempts",
   "assign_proxy_enabled",
 ] as const;
 type SyncedSettingKey = (typeof SYNCED_SETTING_KEYS)[number];
@@ -1611,7 +1640,11 @@ const operationBannerTitle = computed(() => {
   ) {
     const gpu = op.gpu || form.value.gpu;
     const next = Number(op.next_attempt || (op.attempt ? op.attempt + 1 : 2));
-    const total = Number(op.total_attempts || 10);
+    const total = Number(
+      op.total_attempts ||
+        form.value.assign_max_attempts ||
+        COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+    );
     const remaining = startRetryRemainingSeconds.value;
     const kind = op.retry_kind;
     if (remaining !== null && remaining > 0) {
@@ -1857,6 +1890,120 @@ async function changeDownloadThreads(rawThreads: unknown) {
     queuedDownloadThreads = null;
     savingDownloadThreads = false;
     endPendingSetting(["download_threads"], synced);
+  }
+}
+
+function normalizeAssignMaxAttempts(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  const rounded = Math.round(num);
+  return Math.min(
+    COLABONE_MAX_ASSIGN_MAX_ATTEMPTS,
+    Math.max(COLABONE_MIN_ASSIGN_MAX_ATTEMPTS, rounded),
+  );
+}
+
+function onAssignMaxAttemptsInput(raw: unknown) {
+  if (raw === null || raw === undefined || raw === "") {
+    assignMaxAttemptsDraft.value = undefined;
+    return;
+  }
+  const num = Number(raw);
+  if (Number.isFinite(num)) {
+    assignMaxAttemptsDraft.value = num;
+  }
+}
+
+function onAssignMaxAttemptsStep(raw: unknown) {
+  const next = normalizeAssignMaxAttempts(raw);
+  if (next === null) return;
+  assignMaxAttemptsDraft.value = next;
+  void changeAssignMaxAttempts(next);
+}
+
+function commitAssignMaxAttempts() {
+  const next = normalizeAssignMaxAttempts(assignMaxAttemptsDraft.value);
+  if (next === null) {
+    assignMaxAttemptsDraft.value = form.value.assign_max_attempts;
+    return;
+  }
+  assignMaxAttemptsDraft.value = next;
+  if (next !== form.value.assign_max_attempts) {
+    void changeAssignMaxAttempts(next);
+  }
+}
+
+function onAssignMaxAttemptsBlur() {
+  editingAssignMaxAttempts.value = false;
+  commitAssignMaxAttempts();
+}
+
+let savingAssignMaxAttempts = false;
+let queuedAssignMaxAttempts: number | null = null;
+
+async function changeAssignMaxAttempts(rawAttempts: unknown) {
+  const attempts = normalizeAssignMaxAttempts(rawAttempts);
+  if (attempts === null) return;
+  if (savingAssignMaxAttempts) {
+    queuedAssignMaxAttempts = attempts;
+    form.value.assign_max_attempts = attempts;
+    assignMaxAttemptsDraft.value = attempts;
+    lastSyncedSettings.assign_max_attempts = attempts;
+    return;
+  }
+  let settled = form.value.assign_max_attempts;
+  form.value.assign_max_attempts = attempts;
+  assignMaxAttemptsDraft.value = attempts;
+  lastSyncedSettings.assign_max_attempts = attempts;
+  savingAssignMaxAttempts = true;
+  queuedAssignMaxAttempts = attempts;
+  beginPendingSetting(["assign_max_attempts"]);
+  let synced = false;
+  try {
+    while (!stopped && queuedAssignMaxAttempts !== null) {
+      let lastSucceeded: number | null = null;
+      while (!stopped && queuedAssignMaxAttempts !== null) {
+        const next = queuedAssignMaxAttempts;
+        queuedAssignMaxAttempts = null;
+        if (next === settled && lastSucceeded === next) continue;
+        try {
+          await colabOneCommand("settings.save", { assign_max_attempts: next });
+          settled = next;
+          lastSucceeded = next;
+          clearActionErrors();
+        } catch (e) {
+          lastSucceeded = null;
+          if (queuedAssignMaxAttempts === null) {
+            if (form.value.assign_max_attempts === next) {
+              form.value.assign_max_attempts = settled;
+            }
+            if (
+              !editingAssignMaxAttempts.value ||
+              assignMaxAttemptsDraft.value === next
+            ) {
+              assignMaxAttemptsDraft.value = settled;
+            }
+            if (lastSyncedSettings.assign_max_attempts === next) {
+              lastSyncedSettings.assign_max_attempts = settled;
+            }
+            showError(e);
+          }
+        }
+      }
+      if (!stopped && lastSucceeded !== null) {
+        notify(
+          t("device.toastAssignMaxAttemptsSet", { count: lastSucceeded }),
+          "success",
+          "setting-assign-max-attempts",
+        );
+      }
+      synced = await syncSnapshotQuietly();
+    }
+  } finally {
+    queuedAssignMaxAttempts = null;
+    savingAssignMaxAttempts = false;
+    endPendingSetting(["assign_max_attempts"], synced);
   }
 }
 
@@ -2208,11 +2355,21 @@ function onHfTokenExtracted() {
 }
 
 async function save() {
+  const normalizedAttempts = normalizeAssignMaxAttempts(
+    assignMaxAttemptsDraft.value,
+  );
+  if (normalizedAttempts !== null) {
+    form.value.assign_max_attempts = normalizedAttempts;
+    assignMaxAttemptsDraft.value = normalizedAttempts;
+  } else {
+    assignMaxAttemptsDraft.value = form.value.assign_max_attempts;
+  }
   const payload: Record<string, unknown> = {
     gpu: form.value.gpu,
     idle_minutes: form.value.idle_minutes,
     auto_drive: form.value.auto_drive,
     download_threads: form.value.download_threads,
+    assign_max_attempts: form.value.assign_max_attempts,
   };
   if (form.value.hf_token.trim()) {
     payload.hf_token = form.value.hf_token.trim();
@@ -2224,6 +2381,7 @@ async function save() {
       idle_minutes: form.value.idle_minutes,
       auto_drive: form.value.auto_drive,
       download_threads: form.value.download_threads,
+      assign_max_attempts: form.value.assign_max_attempts,
     };
     form.value.hf_token = "";
     hfTokenInputRef.value?.hide();
@@ -3443,14 +3601,9 @@ onUnmounted(() => {
                   v-for="inst in managedInstances"
                   :key="inst.id"
                   :value="inst.id"
+                  :data-co-full-title="formatColabOneTopbarInstanceLabel(inst)"
                 >
-                  {{ inst.accelerator || "GPU" }} ·
-                  {{
-                    inst.location?.country
-                      ? `${locationShort(inst.location)} · `
-                      : ""
-                  }}{{ inst.id }}
-                  {{ inst.loaded_model ? `(${inst.loaded_model})` : "" }}
+                  {{ formatColabOneTopbarInstanceLabel(inst) }}
                 </ASelectOption>
               </ASelect>
             </div>
@@ -5118,6 +5271,7 @@ onUnmounted(() => {
                             :value="form.idle_minutes"
                             :aria-label="t('device.idleReleaseAria')"
                             class="co-sr-select co-sr-select-idle co-sk-reveal"
+                            :dropdown-match-select-width="false"
                             :disabled="savingIdle"
                             @change="changeIdleMinutes"
                           >
@@ -5201,7 +5355,51 @@ onUnmounted(() => {
                       </div>
                     </div>
 
-                    <!-- Row 2.5: GPU Allocation Proxy (Assign Only, Progressive Disclosure) -->
+                    <!-- Row 2.5: GPU Allocation Max Attempts -->
+                    <div class="co-settings-row">
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <h3 class="co-sr-title">{{ t("settings.assignMaxAttemptsLabel") }}</h3>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.assignMaxAttemptsDesc") }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ColabOneSkeleton
+                            v-if="!snapshotLoaded"
+                            :width="116"
+                            :height="32"
+                            :radius="8"
+                            variant="rect"
+                            tone="subtle"
+                            :delay="115"
+                          />
+                          <div v-else class="co-sr-attempts-wrap co-sk-reveal">
+                            <AInputNumber
+                              id="settings-assign-max-attempts"
+                              :value="assignMaxAttemptsDraft"
+                              :min="COLABONE_MIN_ASSIGN_MAX_ATTEMPTS"
+                              :max="COLABONE_MAX_ASSIGN_MAX_ATTEMPTS"
+                              :step="1"
+                              :precision="0"
+                              :aria-label="t('settings.assignMaxAttemptsAria')"
+                              class="co-sr-attempts-input"
+                              :disabled="busy"
+                              @update:value="onAssignMaxAttemptsInput"
+                              @step="onAssignMaxAttemptsStep"
+                              @focus="editingAssignMaxAttempts = true"
+                              @blur="onAssignMaxAttemptsBlur"
+                              @press-enter="commitAssignMaxAttempts"
+                            />
+                            <span class="co-sr-unit">{{ t("settings.assignMaxAttemptsUnit") }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Row 2.6: GPU Allocation Proxy (Assign Only, Progressive Disclosure) -->
                     <div class="co-settings-row">
                       <div class="co-sr-main">
                         <div class="co-sr-info">
@@ -5906,6 +6104,9 @@ onUnmounted(() => {
         @resume="toastManager.resume"
         @dismiss="toastManager.dismiss"
       />
+
+      <!-- Global Hover Tooltip for Truncated Select Triggers & Options -->
+      <ColabOneSelectTooltipHost />
 
       <!-- Modal: Selective Instance Release Review -->
       <AModal
@@ -7569,6 +7770,26 @@ onUnmounted(() => {
 
 .co-sr-select-idle {
   width: 184px;
+}
+
+.co-sr-attempts-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.co-sr-attempts-input {
+  width: 108px;
+}
+
+.co-sr-attempts-input :deep(.ant-input-number-input) {
+  font-variant-numeric: tabular-nums;
+}
+
+.co-sr-unit {
+  font-size: 12.5px;
+  color: var(--co-muted);
+  white-space: nowrap;
 }
 
 .co-inline-collapse.co-sr-collapse {

@@ -168,6 +168,7 @@ async function mock(page: any, ready = false, path = "/") {
           idle_countdown_seconds: 60,
           auto_drive: true,
           download_threads: 16,
+          assign_max_attempts: 20,
         },
       };
       const calls: any[] = [];
@@ -517,6 +518,7 @@ async function mock(page: any, ready = false, path = "/") {
                 "idle_minutes",
                 "auto_drive",
                 "download_threads",
+                "assign_max_attempts",
               ]) {
                 if (payload && k in payload) state.settings[k] = payload[k];
               }
@@ -3563,7 +3565,7 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
     innerWidth: 840,
     centeredDelta: 0,
     listCount: 4,
-    rowCounts: [3, 5, 3, 4],
+    rowCounts: [3, 6, 3, 4],
   });
 
   // Verify segmented control icons & labels stay vertically centered inside their pills
@@ -6972,4 +6974,56 @@ test("privacy mask blurs personal info across Devices, API, ComfyUI, Settings, a
   expect(
     await page.evaluate(() => window.localStorage.getItem("colabone.privacy.default")),
   ).toBe("1");
+});
+
+test("settings page customizes GPU allocation max attempts with 20 default and 1-100 clamping", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await navItem(page, "设置").click();
+
+  const attemptsInput = page.locator("#settings-assign-max-attempts");
+  await expect(attemptsInput).toBeVisible();
+  await expect(attemptsInput).toHaveValue("20");
+
+  // Enter custom value (32) and commit with Enter -> triggers settings.save immediately
+  await attemptsInput.click();
+  await attemptsInput.fill("32");
+  await attemptsInput.press("Enter");
+  await expect
+    .poll(async () => {
+      const calls = await page.evaluate(() => (window as any).__calls);
+      return calls
+        .filter((c: any) => c.action === "settings.save")
+        .map((c: any) => c.payload?.assign_max_attempts);
+    })
+    .toContain(32);
+  await expect(attemptsInput).toHaveValue("32");
+
+  // Click step-up button -> increments to 33 and persists immediately
+  const stepUp = page.locator(".co-sr-attempts-input .ant-input-number-handler-up");
+  await stepUp.click({ force: true });
+  await expect
+    .poll(async () => {
+      const calls = await page.evaluate(() => (window as any).__calls);
+      return calls
+        .filter((c: any) => c.action === "settings.save")
+        .map((c: any) => c.payload?.assign_max_attempts);
+    })
+    .toContain(33);
+  await expect(attemptsInput).toHaveValue("33");
+
+  // Out-of-range value clamps to 100 on blur
+  await attemptsInput.click();
+  await attemptsInput.fill("250");
+  await attemptsInput.blur();
+  await expect
+    .poll(async () => {
+      const calls = await page.evaluate(() => (window as any).__calls);
+      return calls
+        .filter((c: any) => c.action === "settings.save")
+        .map((c: any) => c.payload?.assign_max_attempts);
+    })
+    .toContain(100);
+  await expect(attemptsInput).toHaveValue("100");
 });

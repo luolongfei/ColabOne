@@ -37,6 +37,15 @@ const (
 	// COLABONE_DEFAULT_GPU_POLICY_VERSION tracks one-time migration of the legacy T4 default to G4.
 	COLABONE_DEFAULT_GPU_POLICY_VERSION = 1
 
+	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS is the default maximum GPU allocation attempt count.
+	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 20
+
+	// COLABONE_MIN_ASSIGN_MAX_ATTEMPTS is the minimum allowed GPU allocation attempt count.
+	COLABONE_MIN_ASSIGN_MAX_ATTEMPTS = 1
+
+	// COLABONE_MAX_ASSIGN_MAX_ATTEMPTS is the maximum allowed GPU allocation attempt count.
+	COLABONE_MAX_ASSIGN_MAX_ATTEMPTS = 100
+
 	colabOneMaxOutputAssetOffset = 512 * 1024 * 1024
 )
 
@@ -438,6 +447,7 @@ type ColabOneStartOptions struct {
 	CreateNew    bool
 	RcloneConf   string
 	AssignProxy  string
+	MaxAttempts  int
 	OnLog        LogFunc
 	OnTelemetry  func(endpoint string, location map[string]any, sample map[string]any)
 	OnRetryState func(info map[string]any)

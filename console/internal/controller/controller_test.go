@@ -1144,6 +1144,9 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	if freshSettings["gpu"] != "G4" {
 		t.Fatalf("expected fresh default gpu G4, got %v", freshSettings["gpu"])
 	}
+	if v, _ := asInt(freshSettings["assign_max_attempts"]); v != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS {
+		t.Fatalf("expected fresh default assign_max_attempts=%d, got %v", COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS, freshSettings["assign_max_attempts"])
+	}
 	if _, hasPolicy := freshSettings["default_gpu_policy"]; hasPolicy {
 		t.Fatalf("internal default_gpu_policy must not be exposed in snapshot settings")
 	}
@@ -1168,12 +1171,13 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 
 	legacyDir := t.TempDir()
 	legacySettings := map[string]any{
-		"gpu":              "T4",
-		"idle_minutes":     3,
-		"idle_policy":      2,
-		"download_threads": 8,
-		"auto_drive":       false,
-		"max_cu":           5,
+		"gpu":                 "T4",
+		"idle_minutes":        3,
+		"idle_policy":         2,
+		"download_threads":    8,
+		"assign_max_attempts": 999,
+		"auto_drive":          false,
+		"max_cu":              5,
 	}
 	b, _ := json.Marshal(legacySettings)
 	if err := os.WriteFile(filepath.Join(legacyDir, "settings.json"), b, 0o600); err != nil {
@@ -1199,6 +1203,9 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	}
 	if v, _ := asInt(settings["download_threads"]); v != 16 {
 		t.Fatalf("expected migrated download_threads=16, got %v", settings["download_threads"])
+	}
+	if v, _ := asInt(settings["assign_max_attempts"]); v != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS {
+		t.Fatalf("expected out-of-range assign_max_attempts reset to %d, got %v", COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS, settings["assign_max_attempts"])
 	}
 	if settings["auto_drive"] != true {
 		t.Fatalf("expected rclone_drive_policy migration auto_drive=true, got %v", settings["auto_drive"])
@@ -1226,13 +1233,19 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	if _, err := ctrl.Command(context.Background(), "settings.save", map[string]any{"gpu": "RTX9999"}); err == nil {
 		t.Fatal("expected invalid gpu to fail")
 	}
+	for _, badAttempts := range []any{0, -5, 101, 12.5, true, "20"} {
+		if _, err := ctrl.Command(context.Background(), "settings.save", map[string]any{"assign_max_attempts": badAttempts}); err == nil || !strings.Contains(err.Error(), "1 至 100 次") {
+			t.Fatalf("expected assign_max_attempts=%#v to fail with range error, got %v", badAttempts, err)
+		}
+	}
 
 	// Save valid settings (including explicit T4 after migration) + HF token isolated from settings.json & snapshot.
 	res, err := ctrl.Command(context.Background(), "settings.save", map[string]any{
-		"gpu":              "T4",
-		"idle_minutes":     45,
-		"download_threads": 32,
-		"hf_token":         "  hf_super_secret_token  ",
+		"gpu":                 "T4",
+		"idle_minutes":        45,
+		"download_threads":    32,
+		"assign_max_attempts": 32,
+		"hf_token":            "  hf_super_secret_token  ",
 	})
 	if err != nil || asMap(res)["ok"] != true {
 		t.Fatalf("settings.save failed: %v %#v", err, res)
@@ -1268,6 +1281,9 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	}
 	if v, _ := asInt(rSettings["download_threads"]); v != 32 {
 		t.Fatalf("expected persisted download_threads=32, got %v", rSettings["download_threads"])
+	}
+	if v, _ := asInt(rSettings["assign_max_attempts"]); v != 32 {
+		t.Fatalf("expected persisted assign_max_attempts=32, got %v", rSettings["assign_max_attempts"])
 	}
 }
 
@@ -2094,6 +2110,9 @@ func TestStartBootTelemetryRetryCancelAndRollback(t *testing.T) {
 
 	var seenBootTelemetry bool
 	h.provider.startFn = func(ctx context.Context, gpu string, notify func(string), opts ColabOneStartOptions) (map[string]any, error) {
+		if opts.MaxAttempts != 35 {
+			t.Errorf("expected custom assign_max_attempts=35 forwarded to provider.Start, got %d", opts.MaxAttempts)
+		}
 		notify("等待重试分配 " + gpu)
 		opts.OnRetryState(map[string]any{
 			"waiting_retry":  true,
@@ -2123,6 +2142,9 @@ func TestStartBootTelemetryRetryCancelAndRollback(t *testing.T) {
 		return map[string]any{"endpoint": "gpu-t4-ass1-boot"}, nil
 	}
 
+	if _, err := h.ctrl.Command(context.Background(), "settings.save", map[string]any{"assign_max_attempts": 35}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.ctrl.Command(context.Background(), "runtime.start", map[string]any{"gpu": "G4"}); err != nil {
 		t.Fatal(err)
 	}

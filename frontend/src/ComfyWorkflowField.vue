@@ -13,7 +13,8 @@ import {
 } from "ant-design-vue";
 import { PhImage, PhWaveform } from "@phosphor-icons/vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
-import { t, tb } from "./i18n";
+import { resolveColabOneWorkflowFieldPlaceholder } from "./comfyui";
+import { colabOneLocaleCode, t, tb } from "./i18n";
 import type { ComfyTtsEngineSpec, WorkflowField } from "./types";
 
 const props = defineProps<{
@@ -29,6 +30,8 @@ const props = defineProps<{
   uploading?: boolean;
   uploadedName?: string;
   hasPendingUpload?: boolean;
+  hasUploadedRemote?: boolean;
+  hasDraftMedia?: boolean;
   localPreview?: string;
   showTtsStrip?: boolean;
   selectedTtsEngine?: ComfyTtsEngineSpec;
@@ -36,6 +39,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:value": [string | number | boolean];
+  "field-blur": [field: WorkflowField];
   "media-select": [field: WorkflowField, file: File];
   "media-clear": [field: WorkflowField];
 }>();
@@ -74,6 +78,13 @@ const isAudioSourceSegmented = computed(
 
 const stringValue = computed(() =>
   props.value !== undefined && props.value !== null ? String(props.value) : "",
+);
+
+const fieldPlaceholder = computed(() =>
+  resolveColabOneWorkflowFieldPlaceholder(
+    props.field,
+    colabOneLocaleCode.value,
+  ),
 );
 
 const numberValue = computed<number | undefined>(() => {
@@ -355,14 +366,22 @@ function onMediaDrop(event: DragEvent) {
         </div>
       </label>
 
-      <div v-if="uploadedName || hasPendingUpload" class="co-comfy-media-status">
+      <div
+        v-if="uploadedName || hasPendingUpload || hasDraftMedia"
+        class="co-comfy-media-status"
+      >
         <ASpace :size="6" wrap>
-          <ATag :color="hasPendingUpload ? 'warning' : 'success'">
-            {{
-              hasPendingUpload
-                ? t("comfy.pendingUpload")
-                : t("comfy.uploadedRemote")
-            }}
+          <ATag v-if="hasPendingUpload" color="warning">
+            {{ t("comfy.pendingUpload") }}
+          </ATag>
+          <ATag
+            v-else-if="hasUploadedRemote ?? Boolean(uploadedName)"
+            color="success"
+          >
+            {{ t("comfy.uploadedRemote") }}
+          </ATag>
+          <ATag v-if="hasDraftMedia" color="blue">
+            {{ t("comfy.draftLocalMediaTag") }}
           </ATag>
           <ATag v-if="uploadedName" class="co-comfy-filename-pill">
             {{ uploadedName }}
@@ -409,9 +428,11 @@ function onMediaDrop(event: DragEvent) {
         v-if="field.field_type === 'textarea'"
         :id="inputId"
         :value="stringValue"
+        :placeholder="fieldPlaceholder || undefined"
         :auto-size="{ minRows: 3, maxRows: compact ? 7 : 8 }"
         :disabled="disabled"
         @update:value="(val) => emit('update:value', val)"
+        @blur="emit('field-blur', field)"
       />
 
       <ASelect
@@ -419,12 +440,16 @@ function onMediaDrop(event: DragEvent) {
         :id="inputId"
         :value="stringValue"
         :disabled="disabled"
+        :dropdown-match-select-width="false"
+        popup-class-name="co-comfy-select-dropdown"
         class="co-comfy-full-width"
         @update:value="(val) => emit('update:value', String(val ?? ''))"
+        @blur="emit('field-blur', field)"
       >
         <ASelectOption
           v-if="stringValue && !(field.options || []).includes(stringValue)"
           :value="stringValue"
+          :data-co-full-title="selectOptionLabel(stringValue)"
         >
           {{ selectOptionLabel(stringValue) }}
         </ASelectOption>
@@ -432,6 +457,7 @@ function onMediaDrop(event: DragEvent) {
           v-for="opt in field.options || []"
           :key="opt"
           :value="opt"
+          :data-co-full-title="selectOptionLabel(opt)"
         >
           {{ selectOptionLabel(opt) }}
         </ASelectOption>
@@ -450,14 +476,17 @@ function onMediaDrop(event: DragEvent) {
         :disabled="disabled"
         class="co-comfy-full-width"
         @update:value="onNumberChange"
+        @blur="emit('field-blur', field)"
       />
 
       <AInput
         v-else
         :id="inputId"
         :value="stringValue"
+        :placeholder="fieldPlaceholder || undefined"
         :disabled="disabled"
         @update:value="(val) => emit('update:value', val)"
+        @blur="emit('field-blur', field)"
       />
 
       <small v-if="requiredHint" class="co-comfy-field-required-hint">

@@ -76,6 +76,19 @@ import {
 import { formatIdlePolicyLabel } from "./billing";
 import { colabOneLocaleCode, t, tb } from "./i18n";
 import {
+  clearColabOneWorkflowDraft,
+  colabOneBase64ToBlob,
+  deleteColabOneWorkflowDraftMedia,
+  hasColabOneDraftContent,
+  loadColabOneWorkflowDraft,
+  mergeColabOneWorkflowDraftFields,
+  readColabOneWorkflowDraftMedia,
+  sanitizeColabOneDraftFieldsForSave,
+  saveColabOneWorkflowDraft,
+  saveColabOneWorkflowDraftMedia,
+  type ColabOneWorkflowDraftMediaMeta,
+} from "./comfyDrafts";
+import {
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
   extractPublicHost,
@@ -86,6 +99,7 @@ import {
   outputBlobURL,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  remapColabOnePresetPromptFieldsForLocale,
   resolveSelectedTtsEngine,
   workflowModelsTotalBytes,
 } from "./comfyui";
@@ -729,6 +743,301 @@ const hasUploadingField = computed(() =>
 );
 const uploadGen: Record<string, number> = {};
 const submittingRun = ref(false);
+let disposed = false;
+
+// Real-time workflow draft persistence state
+const DRAFT_SAVE_DEBOUNCE_MS = 350;
+const draftMediaMeta = ref<Record<string, ColabOneWorkflowDraftMediaMeta>>({});
+const draftStatus = ref<"idle" | "saving" | "saved" | "restored">("idle");
+const draftStatusLabel = computed(() => {
+  if (draftStatus.value === "saving") return t("comfy.draftSavingBadge");
+  if (draftStatus.value === "saved") return t("comfy.draftSavedBadge");
+  if (draftStatus.value === "restored") return t("comfy.draftRestoredBadge");
+  return "";
+});
+let draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let draftDirty = false;
+let draftWorkflowId = "";
+let activeDraftWorkflow: WorkflowTemplate | undefined;
+let draftLoadGen = 0;
+let draftRestoreGen = 0;
+let draftSaveGen = 0;
+let draftRestoring = false;
+
+function formatDraftErrorDetail(err: unknown): string {
+  const raw =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : String(err ?? "");
+  const cleaned = raw
+    .replace(/^(?:Error:\s*)+/i, "")
+    .replace(/^not found:\s*/i, "")
+    .trim();
+  return cleaned ? tb(cleaned) : tb(raw);
+}
+
+function cancelDraftSaveTimer() {
+  if (draftSaveTimer !== null) {
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+  }
+}
+
+function flushDraftSave(
+  overrideWf?: WorkflowTemplate,
+  opts?: { silent?: boolean },
+) {
+  cancelDraftSaveTimer();
+  if (!draftDirty) {
+    return;
+  }
+  const wf =
+    overrideWf ??
+    (draftWorkflowId
+      ? (workflows.value.find((w) => w.id === draftWorkflowId) ??
+        (activeDraftWorkflow?.id === draftWorkflowId
+          ? activeDraftWorkflow
+          : undefined))
+      : undefined);
+  draftDirty = false;
+  if (!wf) {
+    return;
+  }
+  const targetWorkflowId = wf.id;
+  const loadGen = draftLoadGen;
+  const saveGen = ++draftSaveGen;
+  const snapshot = { ...fieldValues.value };
+  const sanitized = sanitizeColabOneDraftFieldsForSave(wf.fields, snapshot);
+  if (
+    !disposed &&
+    !opts?.silent &&
+    selectedWorkflowId.value === targetWorkflowId
+  ) {
+    draftStatus.value = "saving";
+  }
+  void saveColabOneWorkflowDraft(targetWorkflowId, sanitized)
+    .then((saved) => {
+      if (
+        disposed ||
+        loadGen !== draftLoadGen ||
+        saveGen !== draftSaveGen ||
+        selectedWorkflowId.value !== targetWorkflowId
+      ) {
+        return;
+      }
+      if (saved) {
+        draftStatus.value = "saved";
+      } else if (draftStatus.value === "saving") {
+        draftStatus.value = "idle";
+      }
+    })
+    .catch((err) => {
+      if (
+        disposed ||
+        opts?.silent ||
+        loadGen !== draftLoadGen ||
+        saveGen !== draftSaveGen ||
+        selectedWorkflowId.value !== targetWorkflowId
+      ) {
+        return;
+      }
+      if (draftStatus.value === "saving") {
+        draftStatus.value = "idle";
+      }
+      reportError(
+        t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
+      );
+    });
+}
+
+function scheduleDraftSave(immediate: boolean) {
+  if (draftRestoring || !selectedWorkflow.value || !draftWorkflowId) {
+    return;
+  }
+  draftDirty = true;
+  if (immediate) {
+    flushDraftSave();
+    return;
+  }
+  cancelDraftSaveTimer();
+  draftSaveTimer = setTimeout(() => {
+    draftSaveTimer = null;
+    flushDraftSave();
+  }, DRAFT_SAVE_DEBOUNCE_MS);
+}
+
+function onFieldValueUpdate(
+  field: WorkflowField,
+  val: string | number | boolean,
+) {
+  ++draftRestoreGen;
+  fieldValues.value[field.key] = val;
+  const isDiscrete =
+    field.field_type === "select" || field.field_type === "boolean";
+  scheduleDraftSave(isDiscrete);
+}
+
+function onFieldBlur(_field: WorkflowField) {
+  flushDraftSave();
+}
+
+async function hydrateDraftMediaField(
+  wf: WorkflowTemplate,
+  fieldKey: string,
+  loadGen: number,
+  options?: { keepPreview?: boolean },
+) {
+  const mediaGen = uploadGen[fieldKey] ?? 0;
+  let payload = null;
+  try {
+    payload = await readColabOneWorkflowDraftMedia(wf.id, fieldKey);
+  } catch {
+    payload = null;
+  }
+  if (
+    disposed ||
+    loadGen !== draftLoadGen ||
+    selectedWorkflowId.value !== wf.id ||
+    (uploadGen[fieldKey] ?? 0) !== mediaGen
+  ) {
+    return;
+  }
+
+  let previewUrl = "";
+  if (payload && payload.data) {
+    if (
+      payload.kind === "image" &&
+      (!options?.keepPreview || !localPreviews.value[fieldKey])
+    ) {
+      try {
+        const blob = colabOneBase64ToBlob(payload.data, payload.mime);
+        previewUrl = URL.createObjectURL(blob);
+      } catch {
+        payload = null;
+      }
+    }
+  }
+
+  if (payload && payload.data) {
+    if (previewUrl) {
+      revokeLocalPreview(fieldKey);
+      localPreviews.value[fieldKey] = previewUrl;
+    }
+    if (!uploadedInputIds.value[fieldKey]) {
+      pendingUploads.value[fieldKey] = {
+        filename: payload.filename,
+        data: payload.data,
+        kind: payload.kind,
+      };
+    }
+    return;
+  }
+
+  if (draftMediaMeta.value[fieldKey]) {
+    const nextMeta = { ...draftMediaMeta.value };
+    delete nextMeta[fieldKey];
+    draftMediaMeta.value = nextMeta;
+    void deleteColabOneWorkflowDraftMedia(wf.id, fieldKey).catch(() => {});
+  }
+  delete pendingUploads.value[fieldKey];
+  if (!uploadedInputIds.value[fieldKey]) {
+    revokeLocalPreview(fieldKey);
+    delete uploadedNames.value[fieldKey];
+    const field = wf.fields.find((f) => f.key === fieldKey);
+    fieldValues.value[fieldKey] =
+      field && field.default !== undefined && field.default !== null
+        ? String(field.default)
+        : "";
+  }
+}
+
+async function restoreWorkflowDraft(
+  wf: WorkflowTemplate,
+  loadGen: number,
+  restoreGen: number,
+) {
+  let draft = null;
+  try {
+    draft = await loadColabOneWorkflowDraft(wf.id);
+  } catch {
+    return;
+  }
+  if (
+    disposed ||
+    loadGen !== draftLoadGen ||
+    restoreGen !== draftRestoreGen ||
+    selectedWorkflowId.value !== wf.id
+  ) {
+    return;
+  }
+  if (
+    !draft ||
+    draftDirty ||
+    hasUploadingField.value ||
+    Object.keys(pendingUploads.value).length > 0 ||
+    Object.keys(uploadedInputIds.value).length > 0 ||
+    Object.keys(draftMediaMeta.value).length > 0
+  ) {
+    return;
+  }
+
+  const mediaFieldMap = new Map(
+    wf.fields
+      .filter((f) => f.field_type === "image" || f.field_type === "audio")
+      .map((f) => [f.key, f]),
+  );
+  const validMedia: Record<string, ColabOneWorkflowDraftMediaMeta> = {};
+  for (const [key, meta] of Object.entries(draft.media || {})) {
+    const field = mediaFieldMap.get(key);
+    if (!field) continue;
+    if (
+      (field.field_type === "image" && meta.kind !== "image") ||
+      (field.field_type === "audio" && meta.kind !== "audio")
+    ) {
+      continue;
+    }
+    validMedia[key] = meta;
+  }
+
+  const mergedFields = mergeColabOneWorkflowDraftFields(
+    wf.fields,
+    draft.fields,
+    colabOneLocaleCode.value,
+    validMedia,
+  );
+  const nextUploadedNames: Record<string, string> = {};
+  for (const [key, meta] of Object.entries(validMedia)) {
+    nextUploadedNames[key] = meta.filename;
+    mergedFields[key] = meta.filename;
+  }
+
+  draftRestoring = true;
+  try {
+    fieldValues.value = mergedFields;
+    draftMediaMeta.value = validMedia;
+    uploadedNames.value = nextUploadedNames;
+  } finally {
+    draftRestoring = false;
+  }
+
+  const mediaKeys = Object.keys(validMedia);
+  if (
+    hasColabOneDraftContent(
+      wf.fields,
+      mergedFields,
+      mediaKeys,
+      colabOneLocaleCode.value,
+    )
+  ) {
+    draftStatus.value = "restored";
+  }
+
+  for (const fieldKey of mediaKeys) {
+    void hydrateDraftMediaField(wf, fieldKey, loadGen);
+  }
+}
 
 const runButtonDisabledTooltip = computed(() => {
   if (!gpuReady.value) {
@@ -762,10 +1071,12 @@ function openWorkflowDrawer(id: string) {
 }
 
 function closeParamDrawer() {
+  flushDraftSave();
   paramDrawerOpen.value = false;
 }
 
 function openOutputsDrawer() {
+  flushDraftSave();
   paramDrawerOpen.value = false;
   outputsDrawerOpen.value = true;
 }
@@ -812,18 +1123,40 @@ watch(
 
 watch(
   () => selectedWorkflow.value?.id,
-  () => {
+  (newId, oldId) => {
+    if (oldId && oldId !== newId && draftDirty && draftWorkflowId === oldId) {
+      const prevWf =
+        workflows.value.find((w) => w.id === oldId) ??
+        (activeDraftWorkflow?.id === oldId ? activeDraftWorkflow : undefined);
+      if (prevWf) {
+        flushDraftSave(prevWf);
+      }
+    }
+    const loadGen = ++draftLoadGen;
+    const restoreGen = ++draftRestoreGen;
+    ++draftSaveGen;
+    cancelDraftSaveTimer();
+    draftDirty = false;
+    draftStatus.value = "idle";
+    draftMediaMeta.value = {};
     advancedExpanded.value = false;
     for (const k of Object.keys(uploadGen)) {
       uploadGen[k] = (uploadGen[k] ?? 0) + 1;
     }
     uploadingFields.value = {};
     const wf = selectedWorkflow.value;
-    fieldValues.value = wf ? defaultFieldValues(wf.fields) : {};
+    activeDraftWorkflow = wf;
+    draftWorkflowId = wf?.id || "";
+    fieldValues.value = wf
+      ? defaultFieldValues(wf.fields, colabOneLocaleCode.value)
+      : {};
     pendingUploads.value = {};
     uploadedInputIds.value = {};
     uploadedNames.value = {};
     revokeAllLocalPreviews();
+    if (wf) {
+      void restoreWorkflowDraft(wf, loadGen, restoreGen);
+    }
   },
   { immediate: true },
 );
@@ -831,12 +1164,11 @@ watch(
 watch(
   () => props.state.runtime.id,
   () => {
-    const fieldMap = new Map(
-      (selectedWorkflow.value?.fields || []).map((f) => [f.key, f]),
-    );
+    const wf = selectedWorkflow.value;
+    const fieldMap = new Map((wf?.fields || []).map((f) => [f.key, f]));
     const remoteOnlyKeys = new Set(
       Object.keys(uploadedInputIds.value).filter(
-        (key) => !pendingUploads.value[key],
+        (key) => !pendingUploads.value[key] && !draftMediaMeta.value[key],
       ),
     );
     for (const key of remoteOnlyKeys) {
@@ -849,12 +1181,20 @@ watch(
           : "";
     }
     for (const key of Object.keys(uploadedNames.value)) {
-      if (!pendingUploads.value[key]) {
+      if (!pendingUploads.value[key] && !draftMediaMeta.value[key]) {
         revokeLocalPreview(key);
         delete uploadedNames.value[key];
       }
     }
     uploadedInputIds.value = {};
+    if (wf) {
+      const loadGen = draftLoadGen;
+      for (const key of Object.keys(draftMediaMeta.value)) {
+        if (!pendingUploads.value[key]) {
+          void hydrateDraftMediaField(wf, key, loadGen, { keepPreview: true });
+        }
+      }
+    }
     abortAllOutputFetches();
     failedOutputs.value = {};
     const staleUrls = Object.values(blobUrls.value);
@@ -871,15 +1211,30 @@ function resetFields() {
   if (!selectedWorkflow.value || submittingRun.value || hasUploadingField.value) {
     return;
   }
+  const wf = selectedWorkflow.value;
+  ++draftLoadGen;
+  ++draftRestoreGen;
+  ++draftSaveGen;
+  cancelDraftSaveTimer();
+  draftDirty = false;
+  draftStatus.value = "idle";
+  draftMediaMeta.value = {};
   for (const k of Object.keys(uploadGen)) {
     uploadGen[k] = (uploadGen[k] ?? 0) + 1;
   }
   uploadingFields.value = {};
-  fieldValues.value = defaultFieldValues(selectedWorkflow.value.fields);
+  fieldValues.value = defaultFieldValues(wf.fields, colabOneLocaleCode.value);
   pendingUploads.value = {};
   uploadedInputIds.value = {};
   uploadedNames.value = {};
   revokeAllLocalPreviews();
+  void clearColabOneWorkflowDraft(wf.id).catch((err) => {
+    if (!disposed && selectedWorkflowId.value === wf.id) {
+      reportError(
+        t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
+      );
+    }
+  });
   setNoticeKey("comfy.noticeResetDefaults");
 }
 
@@ -931,13 +1286,17 @@ async function handleMediaFile(field: WorkflowField, file: File) {
   }
 
   const gen = (uploadGen[field.key] = (uploadGen[field.key] ?? 0) + 1);
+  ++draftRestoreGen;
+  const loadGen = draftLoadGen;
   const targetWorkflowId = selectedWorkflowId.value;
+  const targetWf = selectedWorkflow.value;
   uploadingFields.value = { ...uploadingFields.value, [field.key]: true };
   let nextPreviewUrl = "";
   try {
     const data = await readFileAsBase64(file);
     if (
       disposed ||
+      loadGen !== draftLoadGen ||
       uploadGen[field.key] !== gen ||
       selectedWorkflowId.value !== targetWorkflowId
     ) {
@@ -947,14 +1306,63 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       nextPreviewUrl = URL.createObjectURL(file);
     }
 
+    // Immediately persist media into local workflow draft (both online & offline)
+    let savedDraftMeta: ColabOneWorkflowDraftMediaMeta | null = null;
+    let draftSaveErr: unknown = null;
+    if (targetWorkflowId) {
+      try {
+        savedDraftMeta = await saveColabOneWorkflowDraftMedia(
+          targetWorkflowId,
+          field.key,
+          { filename: file.name, kind, data },
+        );
+      } catch (draftErr) {
+        draftSaveErr = draftErr;
+      }
+    }
+    if (
+      disposed ||
+      loadGen !== draftLoadGen ||
+      uploadGen[field.key] !== gen ||
+      selectedWorkflowId.value !== targetWorkflowId
+    ) {
+      if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
+      return;
+    }
+
+    const effectiveFilename = savedDraftMeta?.filename || file.name;
+    if (savedDraftMeta) {
+      draftMediaMeta.value = {
+        ...draftMediaMeta.value,
+        [field.key]: savedDraftMeta,
+      };
+      revokeLocalPreview(field.key);
+      if (nextPreviewUrl) {
+        localPreviews.value[field.key] = nextPreviewUrl;
+        nextPreviewUrl = "";
+      }
+      pendingUploads.value[field.key] = {
+        filename: effectiveFilename,
+        data,
+        kind,
+      };
+      delete uploadedInputIds.value[field.key];
+      fieldValues.value[field.key] = effectiveFilename;
+      uploadedNames.value[field.key] = effectiveFilename;
+      draftStatus.value = "saved";
+      draftDirty = true;
+      flushDraftSave(targetWf);
+    }
+
     if (gpuReady.value) {
       const uploadRuntimeId = props.state.runtime.id;
       const res = await colabOneCommand("comfyui.input.upload", {
-        filename: file.name,
+        filename: effectiveFilename,
         data,
       });
       if (
         disposed ||
+        loadGen !== draftLoadGen ||
         uploadGen[field.key] !== gen ||
         selectedWorkflowId.value !== targetWorkflowId ||
         props.state.runtime.id !== uploadRuntimeId
@@ -966,31 +1374,89 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       if (!assetId) {
         throw new Error(t("comfy.errUploadNoId"));
       }
-      revokeLocalPreview(field.key);
+      if (!savedDraftMeta && draftMediaMeta.value[field.key]) {
+        const nextMeta = { ...draftMediaMeta.value };
+        delete nextMeta[field.key];
+        draftMediaMeta.value = nextMeta;
+        if (targetWorkflowId) {
+          void deleteColabOneWorkflowDraftMedia(
+            targetWorkflowId,
+            field.key,
+          ).catch(() => {});
+        }
+      }
       if (nextPreviewUrl) {
+        revokeLocalPreview(field.key);
         localPreviews.value[field.key] = nextPreviewUrl;
         nextPreviewUrl = "";
       }
       uploadedInputIds.value[field.key] = assetId;
-      fieldValues.value[field.key] = res?.filename || file.name;
-      uploadedNames.value[field.key] = file.name;
+      const nextFieldVal = res?.filename || effectiveFilename;
+      const fieldChanged = fieldValues.value[field.key] !== nextFieldVal;
+      fieldValues.value[field.key] = nextFieldVal;
+      uploadedNames.value[field.key] = effectiveFilename;
       delete pendingUploads.value[field.key];
-      setNoticeKey("comfy.noticeUploadedRemote", { name: file.name });
-    } else {
-      revokeLocalPreview(field.key);
-      if (nextPreviewUrl) {
-        localPreviews.value[field.key] = nextPreviewUrl;
-        nextPreviewUrl = "";
+      if (fieldChanged || !savedDraftMeta) {
+        draftDirty = true;
+        flushDraftSave(targetWf);
       }
-      pendingUploads.value[field.key] = {
-        filename: file.name,
-        data,
-        kind,
-      };
-      delete uploadedInputIds.value[field.key];
-      fieldValues.value[field.key] = file.name;
-      uploadedNames.value[field.key] = file.name;
-      setNoticeKey("comfy.noticeStagedUpload", { name: file.name });
+      if (draftSaveErr) {
+        emit(
+          "notify",
+          t("comfy.noticeUploadedRemote", { name: effectiveFilename }),
+          "success",
+        );
+        reportError(
+          t("comfy.errSaveDraft", {
+            detail: formatDraftErrorDetail(draftSaveErr),
+          }),
+        );
+      } else {
+        setNoticeKey("comfy.noticeUploadedRemote", { name: effectiveFilename });
+      }
+    } else {
+      if (!savedDraftMeta) {
+        if (draftMediaMeta.value[field.key]) {
+          const nextMeta = { ...draftMediaMeta.value };
+          delete nextMeta[field.key];
+          draftMediaMeta.value = nextMeta;
+          if (targetWorkflowId) {
+            void deleteColabOneWorkflowDraftMedia(
+              targetWorkflowId,
+              field.key,
+            ).catch(() => {});
+          }
+        }
+        revokeLocalPreview(field.key);
+        if (nextPreviewUrl) {
+          localPreviews.value[field.key] = nextPreviewUrl;
+          nextPreviewUrl = "";
+        }
+        pendingUploads.value[field.key] = {
+          filename: effectiveFilename,
+          data,
+          kind,
+        };
+        delete uploadedInputIds.value[field.key];
+        fieldValues.value[field.key] = effectiveFilename;
+        uploadedNames.value[field.key] = effectiveFilename;
+        draftDirty = true;
+        flushDraftSave(targetWf);
+      }
+      if (draftSaveErr) {
+        emit(
+          "notify",
+          t("comfy.noticeStagedUpload", { name: effectiveFilename }),
+          "info",
+        );
+        reportError(
+          t("comfy.errSaveDraft", {
+            detail: formatDraftErrorDetail(draftSaveErr),
+          }),
+        );
+      } else {
+        setNoticeKey("comfy.noticeStagedUpload", { name: effectiveFilename });
+      }
     }
   } catch (e) {
     if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
@@ -1010,15 +1476,39 @@ function clearMediaField(field: WorkflowField) {
   if (submittingRun.value || uploadingFields.value[field.key]) {
     return;
   }
+  ++draftRestoreGen;
   uploadGen[field.key] = (uploadGen[field.key] ?? 0) + 1;
   delete pendingUploads.value[field.key];
   delete uploadedInputIds.value[field.key];
   delete uploadedNames.value[field.key];
   revokeLocalPreview(field.key);
+  if (draftMediaMeta.value[field.key]) {
+    const nextMeta = { ...draftMediaMeta.value };
+    delete nextMeta[field.key];
+    draftMediaMeta.value = nextMeta;
+  }
   fieldValues.value[field.key] =
     field.default !== undefined && field.default !== null
       ? String(field.default)
       : "";
+  const wf = selectedWorkflow.value;
+  const wfId = wf?.id || draftWorkflowId;
+  if (wfId) {
+    const loadGen = draftLoadGen;
+    void deleteColabOneWorkflowDraftMedia(wfId, field.key).catch((err) => {
+      if (
+        !disposed &&
+        loadGen === draftLoadGen &&
+        selectedWorkflowId.value === wfId
+      ) {
+        reportError(
+          t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
+        );
+      }
+    });
+    draftDirty = true;
+    flushDraftSave(wf);
+  }
 }
 
 // Import modal
@@ -1047,6 +1537,7 @@ const canSubmitImport = computed(
 );
 
 function openImportModal() {
+  flushDraftSave();
   paramDrawerOpen.value = false;
   outputsDrawerOpen.value = false;
   importOpen.value = true;
@@ -1132,6 +1623,16 @@ async function deleteWorkflow(target: WorkflowTemplate) {
   busy.value = true;
   try {
     await colabOneCommand("comfyui.workflow.delete", { id: target.id });
+    if (draftWorkflowId === target.id) {
+      ++draftLoadGen;
+      ++draftRestoreGen;
+      ++draftSaveGen;
+      cancelDraftSaveTimer();
+      draftDirty = false;
+      draftStatus.value = "idle";
+      draftMediaMeta.value = {};
+    }
+    void clearColabOneWorkflowDraft(target.id).catch(() => {});
     if (selectedWorkflowId.value === target.id) {
       paramDrawerOpen.value = false;
     }
@@ -1209,7 +1710,7 @@ async function runWorkflow() {
     wf,
     fieldValues.value,
     uploadedInputIds.value,
-    pendingUploads.value,
+    { ...draftMediaMeta.value, ...pendingUploads.value },
   );
   if (missing.length > 0) {
     const firstMissing = missing[0];
@@ -1244,6 +1745,7 @@ async function runWorkflow() {
 
   const targetRuntimeId = props.state.runtime.id;
   const targetWorkflowId = wf.id;
+  flushDraftSave(wf);
   submittingRun.value = true;
   try {
     const activeFields = wf.fields.filter(
@@ -1252,6 +1754,58 @@ async function runWorkflow() {
         field.key === "pipeline.audio_source",
     );
     const activeFieldKeys = new Set(activeFields.map((field) => field.key));
+
+    // Ensure any active draft-backed media field is hydrated before uploading
+    for (const key of Object.keys(draftMediaMeta.value)) {
+      if (
+        !activeFieldKeys.has(key) ||
+        uploadedInputIds.value[key] ||
+        pendingUploads.value[key]
+      ) {
+        continue;
+      }
+      let payload = null;
+      let draftReadErr: unknown = null;
+      try {
+        payload = await readColabOneWorkflowDraftMedia(targetWorkflowId, key);
+      } catch (readErr) {
+        draftReadErr = readErr;
+        payload = null;
+      }
+      if (
+        disposed ||
+        props.state.runtime.id !== targetRuntimeId ||
+        selectedWorkflowId.value !== targetWorkflowId
+      ) {
+        return;
+      }
+      if (payload && payload.data) {
+        pendingUploads.value[key] = {
+          filename: payload.filename,
+          data: payload.data,
+          kind: payload.kind,
+        };
+      } else {
+        const nextMeta = { ...draftMediaMeta.value };
+        delete nextMeta[key];
+        draftMediaMeta.value = nextMeta;
+        void deleteColabOneWorkflowDraftMedia(targetWorkflowId, key).catch(
+          () => {},
+        );
+        revokeLocalPreview(key);
+        delete uploadedNames.value[key];
+        const field = wf.fields.find((f) => f.key === key);
+        fieldValues.value[key] =
+          field && field.default !== undefined && field.default !== null
+            ? String(field.default)
+            : "";
+        throw new Error(
+          draftReadErr
+            ? formatDraftErrorDetail(draftReadErr)
+            : t("comfy.errReadLocalFile"),
+        );
+      }
+    }
 
     // Upload only queued media files for currently active/visible fields
     for (const [key, item] of Object.entries(pendingUploads.value)) {
@@ -1319,7 +1873,6 @@ const failedOutputs = ref<Record<string, OutputPreviewError>>({});
 const exportingOutputs = ref<Record<string, boolean>>({});
 const deletingOutputs = ref<Record<string, boolean>>({});
 const outputFetchControllers = new Map<string, AbortController>();
-let disposed = false;
 
 function isOutputTooLargeForPreview(item: WorkflowOutput): boolean {
   return Number.isFinite(item.size) && item.size > MAX_INLINE_PREVIEW_BYTES;
@@ -1817,19 +2370,66 @@ function handlePanelKeydown(e: KeyboardEvent) {
   }
 }
 
-watch(colabOneLocaleCode, () => {
+function onWindowPageHide() {
+  flushDraftSave(undefined, { silent: true });
+}
+
+function onDocumentVisibilityChange() {
+  if (
+    typeof document !== "undefined" &&
+    document.visibilityState === "hidden"
+  ) {
+    flushDraftSave(undefined, { silent: true });
+  }
+}
+
+watch(colabOneLocaleCode, (nextLocale) => {
   syncTabsAriaLabel();
+  const wf = selectedWorkflow.value;
+  if (!wf) return;
+  const current = fieldValues.value;
+  const remapped = remapColabOnePresetPromptFieldsForLocale(
+    wf.fields,
+    current,
+    nextLocale,
+  );
+  let changed = false;
+  for (const key of Object.keys(remapped)) {
+    if (remapped[key] !== current[key]) {
+      changed = true;
+      break;
+    }
+  }
+  if (changed) {
+    fieldValues.value = remapped;
+  }
+});
+
+watch(paramDrawerOpen, (open) => {
+  if (!open) {
+    flushDraftSave();
+  }
 });
 
 onMounted(() => {
   syncTabsAriaLabel();
   window.addEventListener("resize", onWindowResize);
   window.addEventListener("keydown", handlePanelKeydown, true);
+  window.addEventListener("blur", onWindowPageHide);
+  window.addEventListener("pagehide", onWindowPageHide);
+  window.addEventListener("beforeunload", onWindowPageHide);
+  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
 });
 
 onUnmounted(() => {
+  flushDraftSave(undefined, { silent: true });
+  cancelDraftSaveTimer();
   window.removeEventListener("resize", onWindowResize);
   window.removeEventListener("keydown", handlePanelKeydown, true);
+  window.removeEventListener("blur", onWindowPageHide);
+  window.removeEventListener("pagehide", onWindowPageHide);
+  window.removeEventListener("beforeunload", onWindowPageHide);
+  document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
   clearTimeout(copyTimer);
   disposed = true;
   pauseOutputsDrawerMedia();
@@ -3010,10 +3610,13 @@ onUnmounted(() => {
                 :uploading="!!uploadingFields[field.key]"
                 :uploaded-name="uploadedNames[field.key]"
                 :has-pending-upload="!!pendingUploads[field.key]"
+                :has-uploaded-remote="!!uploadedInputIds[field.key]"
+                :has-draft-media="!!draftMediaMeta[field.key]"
                 :local-preview="localPreviews[field.key]"
                 :show-tts-strip="shouldRenderTtsStripAfter(field)"
                 :selected-tts-engine="selectedTtsEngine"
-                @update:value="(val) => (fieldValues[field.key] = val)"
+                @update:value="(val) => onFieldValueUpdate(field, val)"
+                @field-blur="onFieldBlur"
                 @media-select="handleMediaFile"
                 @media-clear="clearMediaField"
               />
@@ -3075,10 +3678,13 @@ onUnmounted(() => {
                     :uploading="!!uploadingFields[field.key]"
                     :uploaded-name="uploadedNames[field.key]"
                     :has-pending-upload="!!pendingUploads[field.key]"
+                    :has-uploaded-remote="!!uploadedInputIds[field.key]"
+                    :has-draft-media="!!draftMediaMeta[field.key]"
                     :local-preview="localPreviews[field.key]"
                     :show-tts-strip="shouldRenderTtsStripAfter(field)"
                     :selected-tts-engine="selectedTtsEngine"
-                    @update:value="(val) => (fieldValues[field.key] = val)"
+                    @update:value="(val) => onFieldValueUpdate(field, val)"
+                    @field-blur="onFieldBlur"
                     @media-select="handleMediaFile"
                     @media-clear="clearMediaField"
                   />
@@ -3190,37 +3796,53 @@ onUnmounted(() => {
               {{ t("comfy.cancelTask") }}
             </AButton>
           </ASpace>
-          <ColabOneTooltip :title="runButtonDisabledTooltip">
-            <AButton
-              type="primary"
-              class="co-comfy-drawer-run-btn"
-              :loading="submittingRun || comfyStarting"
-              :disabled="
-                !gpuReady ||
-                comfyStarting ||
-                submittingRun ||
-                hasUploadingField ||
-                engineActionBlocked
-              "
-              @click="runWorkflow"
+          <div class="co-comfy-param-drawer-footer-right">
+            <span
+              v-if="draftStatusLabel"
+              class="co-comfy-draft-status"
+              :class="`is-${draftStatus}`"
+              role="status"
+              aria-live="polite"
             >
-              <template #icon>
-                <PhSparkle v-if="comfyRunning" :size="15" />
-                <PhPlay v-else :size="14" weight="fill" />
-              </template>
-              {{
-                !gpuReady
-                  ? t("comfy.runWorkflow")
-                  : comfyStarting
-                    ? t("comfy.preparingBtn")
-                    : !comfyRunning
-                      ? t("comfy.startComfyFirst")
-                      : submittingRun
-                        ? t("common.submitting")
-                        : t("comfy.runWorkflow")
-              }}
-            </AButton>
-          </ColabOneTooltip>
+              <PhCheck
+                v-if="draftStatus === 'saved' || draftStatus === 'restored'"
+                :size="13"
+                aria-hidden="true"
+              />
+              <span>{{ draftStatusLabel }}</span>
+            </span>
+            <ColabOneTooltip :title="runButtonDisabledTooltip">
+              <AButton
+                type="primary"
+                class="co-comfy-drawer-run-btn"
+                :loading="submittingRun || comfyStarting"
+                :disabled="
+                  !gpuReady ||
+                  comfyStarting ||
+                  submittingRun ||
+                  hasUploadingField ||
+                  engineActionBlocked
+                "
+                @click="runWorkflow"
+              >
+                <template #icon>
+                  <PhSparkle v-if="comfyRunning" :size="15" />
+                  <PhPlay v-else :size="14" weight="fill" />
+                </template>
+                {{
+                  !gpuReady
+                    ? t("comfy.runWorkflow")
+                    : comfyStarting
+                      ? t("comfy.preparingBtn")
+                      : !comfyRunning
+                        ? t("comfy.startComfyFirst")
+                        : submittingRun
+                          ? t("common.submitting")
+                          : t("comfy.runWorkflow")
+                }}
+              </AButton>
+            </ColabOneTooltip>
+          </div>
         </div>
       </template>
     </ADrawer>
@@ -4671,6 +5293,45 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.co-comfy-param-drawer-footer-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.co-comfy-draft-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--co-muted);
+  background: var(--co-subtle);
+  border: 1px solid var(--co-border-secondary);
+  white-space: nowrap;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.co-comfy-draft-status.is-saved {
+  color: var(--co-success-text);
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+}
+
+.co-comfy-draft-status.is-restored {
+  color: var(--co-secondary-text);
 }
 
 .co-comfy-drawer-run-btn {

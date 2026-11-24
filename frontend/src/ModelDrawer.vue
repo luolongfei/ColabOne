@@ -964,7 +964,8 @@ onUnmounted(() => {
             :aria-label="t('models.vramFilterAria')"
             option-label-prop="label"
             class="co-gpu-target-select"
-            :dropdown-match-select-width="320"
+            popup-class-name="co-gpu-target-dropdown"
+            :dropdown-match-select-width="false"
             @change="onGpuTargetChange"
           >
             <ASelectOption
@@ -973,10 +974,15 @@ onUnmounted(() => {
               :value="opt.id"
               :label="opt.label"
             >
-              <div class="co-gpu-opt-row">
+              <div
+                class="co-gpu-opt-row"
+                :data-co-full-title="
+                  opt.subtitle ? `${opt.label} · ${opt.subtitle}` : opt.label
+                "
+              >
                 <span class="co-gpu-opt-main">
                   <ABadge v-if="opt.isLive" status="success" />
-                  <span>{{ opt.label }}</span>
+                  <span class="co-gpu-opt-label">{{ opt.label }}</span>
                 </span>
                 <span class="co-gpu-opt-sub">{{ opt.subtitle }}</span>
               </div>
@@ -1804,7 +1810,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
 }
 
 .co-gpu-opt-main {
@@ -1812,11 +1819,25 @@ onUnmounted(() => {
   align-items: center;
   gap: 5px;
   font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.co-gpu-opt-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .co-gpu-opt-sub {
   font-size: 11px;
   color: var(--co-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .co-only-runnable-check {
@@ -2064,5 +2085,11 @@ onUnmounted(() => {
     width: 100%;
     justify-content: flex-end;
   }
+}
+</style>
+
+<style>
+.co-gpu-target-dropdown {
+  min-width: min(320px, calc(100vw - 24px)) !important;
 }
 </style>

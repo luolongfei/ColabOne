@@ -302,6 +302,33 @@ const isCpuOnlyOnline = computed<boolean>(
       isRemoteReadonly.value),
 );
 
+function formatMonitorSourceTag(opt: MonitorOption): string {
+  if (opt.managed) {
+    return opt.active
+      ? t("monitor.sourceLocalCurrent")
+      : t("monitor.sourceLocal");
+  }
+  return opt.source === "remote_colabone"
+    ? t("monitor.sourceRemoteColabOne")
+    : t("monitor.sourceRemoteReadonly");
+}
+
+function formatMonitorOptionFullTitle(opt: MonitorOption): string {
+  const parts = [
+    formatMonitorSourceTag(opt),
+    opt.accelerator || opt.variant || "GPU",
+  ];
+  if (opt.location?.country) {
+    const loc = locationShort(opt.location);
+    if (loc) parts.push(loc);
+  }
+  parts.push(opt.id);
+  if (opt.loaded_model) {
+    parts.push(opt.loaded_model);
+  }
+  return parts.join(" · ");
+}
+
 function formatMonitorTriggerLabel(opt: MonitorOption): string {
   const prefix = opt.managed
     ? t("monitor.sourceLocal")
@@ -1062,7 +1089,10 @@ const stackedRows = computed<StackedRowItem[]>(() => {
             :value="opt.id"
             :label="formatMonitorTriggerLabel(opt)"
           >
-            <div class="co-rm-opt-row">
+            <div
+              class="co-rm-opt-row"
+              :data-co-full-title="formatMonitorOptionFullTitle(opt)"
+            >
               <span
                 class="co-rm-opt-tag"
                 :class="
@@ -1073,15 +1103,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
                       : 'is-remote'
                 "
               >
-                {{
-                  opt.managed
-                    ? opt.active
-                      ? t("monitor.sourceLocalCurrent")
-                      : t("monitor.sourceLocal")
-                    : opt.source === "remote_colabone"
-                      ? t("monitor.sourceRemoteColabOne")
-                      : t("monitor.sourceRemoteReadonly")
-                }}
+                {{ formatMonitorSourceTag(opt) }}
               </span>
               <span class="co-rm-opt-accel">{{
                 opt.accelerator || opt.variant || "GPU"
@@ -3211,6 +3233,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.4;
   padding: 1px 0;
@@ -3246,6 +3269,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   font-weight: 600;
   color: var(--co-text);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-rm-opt-loc {
@@ -3254,6 +3278,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   gap: 3px;
   color: var(--co-secondary-text);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-rm-opt-id {
@@ -3261,12 +3286,16 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   font-size: 11px;
   color: var(--co-muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-rm-opt-model {
   font-size: 11px;
   color: var(--co-accent-strong);
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 :root[data-theme="dark"] .co-rm-opt-tag.is-local {

@@ -511,7 +511,33 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		merged := c.mergeWorkflowsLocked(remaining)
 		c.mu.Unlock()
 		c.Update(map[string]any{"workflows": merged})
+		_ = c.clearWorkflowDraft(wid)
 		c.log("已删除 ComfyUI 工作流："+wid, "ComfyUI", "info")
+		return map[string]any{"ok": true}, nil
+
+	case "comfyui.draft.get":
+		return c.getWorkflowDraft(payload)
+
+	case "comfyui.draft.save":
+		return c.saveWorkflowDraft(payload)
+
+	case "comfyui.draft.media.save":
+		return c.saveWorkflowDraftMedia(payload)
+
+	case "comfyui.draft.media.read":
+		return c.readWorkflowDraftMedia(payload)
+
+	case "comfyui.draft.media.delete":
+		return c.deleteWorkflowDraftMedia(payload)
+
+	case "comfyui.draft.clear":
+		wfID, err := validateWorkflowDraftID(payload["workflow_id"])
+		if err != nil {
+			return nil, err
+		}
+		if err := c.clearWorkflowDraft(wfID); err != nil {
+			return nil, err
+		}
 		return map[string]any{"ok": true}, nil
 
 	case "comfyui.input.upload":

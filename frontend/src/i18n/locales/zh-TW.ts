@@ -563,6 +563,7 @@ export const zhTWMessages: ColabOneMessages = {
   "device.toastRefreshed": "帳戶計費與執行個體狀態已重新整理",
   "device.toastIdleSet": "已將閒置自動釋放設為 {policy}",
   "device.toastThreadsSet": "已將遠端下載並行數設為 {threads} 執行緒",
+  "device.toastAssignMaxAttemptsSet": "已將 GPU 分配最大嘗試次數設為 {count} 次",
   "device.toastDefaultGpuSet": "已將預設 GPU 設為 {gpu}",
   "device.toastSettingsSaved": "設定已儲存",
 
@@ -1256,6 +1257,28 @@ export const zhTWMessages: ColabOneMessages = {
     "目前選用的 IndexTTS-2 引擎必須上傳參考音色音訊",
   "comfy.runBlockedBusy": "目前有正在執行的任務或操作，請稍候",
   "comfy.runBlockedUploading": "素材正在上傳中，請稍候完成",
+  "comfy.defaultVisualPrompt":
+    "清晰攝影棚人像鏡頭，主播面向鏡頭自然說話，臉部表情生動自然，頭部輕微擺動，自然眨眼，焦距銳利，柔和攝影棚燈光，背景穩定不晃動",
+  "comfy.placeholderScriptText":
+    "例如：大家好，歡迎來到今天的分享！接下來我將帶你快速了解如何用 AI 輕鬆製作自然流暢的口播影片。",
+  "comfy.placeholderVoiceRefText":
+    "例如：你好，歡迎收聽今天的節目，這段清晰的人聲將作為音色複製參考。",
+  "comfy.placeholderVoicePrompt":
+    "例如：沉穩磁性的青年男聲，語速適中、發音清晰；或清亮親切的女主播聲線",
+  "comfy.placeholderEmotionPrompt":
+    "例如：專業沉穩、輕鬆愉快，或語氣標籤 [laugh]",
+  "comfy.placeholderVisualPrompt":
+    "例如：清晰攝影棚人像鏡頭，主播自然微笑講解，頭部輕微點頭，柔和打光，背景穩定",
+  "comfy.placeholderNegativePrompt":
+    "例如：畫面模糊、過曝、人物變形、多餘手指、雜亂背景、低畫質",
+  "comfy.placeholderGenericPrompt":
+    "例如：電影級柔和光影，細節清晰，主體突出，構圖自然",
+  "comfy.placeholderGenericText": "請輸入參數內容…",
+  "comfy.draftSavedBadge": "草稿已自動儲存",
+  "comfy.draftSavingBadge": "正在儲存草稿…",
+  "comfy.draftRestoredBadge": "已還原上次草稿",
+  "comfy.draftLocalMediaTag": "草稿已儲存",
+  "comfy.errSaveDraft": "自動儲存草稿失敗：{detail}",
 
   // Settings Page
   "settings.title": "設定",
@@ -1317,6 +1340,11 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} 執行緒",
   "settings.autoDriveLabel": "雲端硬碟自動掛載",
   "settings.autoDriveDesc": "啟動 GPU 時自動掛載並同步 Google 雲端硬碟 (ColabOne_Drive)",
+  "settings.assignMaxAttemptsLabel": "GPU 分配最大嘗試次數",
+  "settings.assignMaxAttemptsAria": "GPU 分配最大嘗試次數",
+  "settings.assignMaxAttemptsUnit": "次",
+  "settings.assignMaxAttemptsDesc":
+    "算力緊張或請求繁忙時自動排隊重試的總嘗試次數上限（1–100 次，預設 20 次）。每次重試採指數退避（2s → 4s → 8s → 16s → 32s），達 32 秒後後續間隔固定為 32 秒；設為 1 次則不自動重試。",
   "settings.idleProtectionTitle": "閒置自動釋放保護",
   "settings.idleProtectionDesc":
     "超過 {policy} 無操作或工作時自動釋放遠端資源；繼續操作會重設倒數，模型下載與載入、對外 API 推論及 ComfyUI 執行期間自動暫停倒數。",

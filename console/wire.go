@@ -906,6 +906,7 @@ func (w *wireControllerProviderAdapter) Start(ctx context.Context, gpu string, n
 		RetryCh:      bridgeRepeatEvent(opts.RetryEvent, done, &bridgeWG),
 		OnRetryState: opts.OnRetryState,
 		AssignProxy:  opts.AssignProxy,
+		MaxAttempts:  opts.MaxAttempts,
 	})
 }
 

@@ -92,7 +92,8 @@ samp {
 
 /* Hide lingering tooltip fade-outs before View Transition captures the old frame */
 :root.co-vt-hide-tooltips .co-tooltip-overlay,
-:root.co-vt-hide-tooltips .ant-tooltip {
+:root.co-vt-hide-tooltips .ant-tooltip,
+:root.co-vt-hide-tooltips .co-select-overflow-tooltip {
   display: none !important;
 }
 
@@ -519,6 +520,162 @@ samp {
   background: var(--co-subtle) !important;
   border-color: var(--co-border-secondary) !important;
   color: var(--co-muted) !important;
+}
+
+/* ColabOne Select dropdown popups — crisp bounds, smooth option contrast & clean ellipsis */
+body .ant-select-dropdown {
+  max-width: min(520px, calc(100vw - 24px));
+  padding: 5px;
+  border-radius: var(--co-radius-md);
+  border: 1px solid var(--co-border);
+  background: var(--co-elevated);
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.12),
+    0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+:root[data-theme="dark"] body .ant-select-dropdown {
+  box-shadow:
+    0 16px 38px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.32);
+}
+
+body .ant-select-dropdown .ant-select-item {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: var(--co-radius-sm);
+  line-height: 1.4;
+  color: var(--co-text);
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+body .ant-select-dropdown .ant-select-item-option-grouped {
+  padding-inline-start: 22px;
+}
+
+body .ant-select-dropdown .ant-select-item-group {
+  min-height: 26px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--co-muted);
+}
+
+body .ant-select-dropdown .ant-select-item-option-content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body
+  .ant-select-dropdown
+  .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+  background-color: var(--co-soft-hover);
+}
+
+body
+  .ant-select-dropdown
+  .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background-color: var(--co-selected);
+  color: var(--co-accent-strong);
+  font-weight: 600;
+}
+
+body
+  .ant-select-dropdown
+  .ant-select-item-option-selected.ant-select-item-option-active:not(
+    .ant-select-item-option-disabled
+  ) {
+  background-color: rgba(59, 130, 246, 0.14);
+}
+
+:root[data-theme="dark"]
+  body
+  .ant-select-dropdown
+  .ant-select-item-option-selected.ant-select-item-option-active:not(
+    .ant-select-item-option-disabled
+  ) {
+  background-color: rgba(59, 130, 246, 0.24);
+}
+
+body .ant-select-dropdown .ant-select-item-option-disabled {
+  color: var(--co-muted);
+  opacity: 0.62;
+}
+
+/* ColabOne floating hover tooltip for truncated Select triggers & options */
+.co-select-overflow-tooltip {
+  position: fixed;
+  z-index: 2200;
+  pointer-events: none;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(460px, calc(100vw - 24px));
+  padding: 6px 10px;
+  border-radius: var(--co-radius-sm);
+  background: rgba(17, 24, 39, 0.94);
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 10px 28px rgba(15, 23, 42, 0.24),
+    0 2px 6px rgba(15, 23, 42, 0.12);
+  font-family: var(--co-font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.005em;
+  text-align: start;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  visibility: hidden;
+  opacity: 0;
+}
+
+:root[data-theme="dark"] .co-select-overflow-tooltip {
+  background: rgba(39, 43, 56, 0.97);
+  color: #f4f4f5;
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 14px 34px rgba(0, 0, 0, 0.56),
+    0 2px 8px rgba(0, 0, 0, 0.34);
+}
+
+@keyframes co-select-tip-enter-top {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes co-select-tip-enter-bottom {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.co-select-overflow-tooltip.is-positioned {
+  visibility: visible;
+  opacity: 1;
+}
+
+.co-select-overflow-tooltip.is-positioned.is-top {
+  animation: co-select-tip-enter-top 0.14s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.co-select-overflow-tooltip.is-positioned.is-bottom {
+  animation: co-select-tip-enter-bottom 0.14s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* Alerts */
@@ -1214,7 +1371,9 @@ input.co-privacy-masked-input.is-peeking.ant-input {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .co-sk-reveal {
+  .co-sk-reveal,
+  .co-select-overflow-tooltip.is-positioned.is-top,
+  .co-select-overflow-tooltip.is-positioned.is-bottom {
     animation: none;
   }
 

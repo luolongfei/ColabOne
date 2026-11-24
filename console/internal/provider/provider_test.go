@@ -1144,9 +1144,13 @@ func TestAllocateTranslatesExhausted503504412And400WithShapeFallback(t *testing.
 
 func TestAllocateDefaultBackoffScheduleAndCancelInterrupt(t *testing.T) {
 	wantDelays := []time.Duration{
-		6 * time.Second, 12 * time.Second, 20 * time.Second,
-		30 * time.Second, 30 * time.Second, 30 * time.Second,
-		30 * time.Second, 30 * time.Second, 30 * time.Second,
+		2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
+		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
+		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
+		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
+	}
+	if len(wantDelays) != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS-1 {
+		t.Fatalf("unexpected expected delay count: %d", len(wantDelays))
 	}
 	if !reflect.DeepEqual(DefaultAssignRetryDelays(), wantDelays) {
 		t.Fatalf("default backoff mismatch: %v", DefaultAssignRetryDelays())
@@ -1192,31 +1196,127 @@ func TestAllocateDefaultBackoffScheduleAndCancelInterrupt(t *testing.T) {
 	if !errors.Is(err, ErrAllocationCancelled) {
 		t.Fatalf("expected ErrAllocationCancelled, got %v", err)
 	}
-	if !reflect.DeepEqual(waited, []int{6, 12, 20}) {
-		t.Fatalf("expected waited=[6 12 20], got %v", waited)
+	if !reflect.DeepEqual(waited, []int{2, 4, 8}) {
+		t.Fatalf("expected waited=[2 4 8], got %v", waited)
 	}
-	wantStages := []string{"正在分配 G4（第 2/10 次）", "正在分配 G4（第 3/10 次）"}
+	wantStages := []string{"正在分配 G4（第 2/20 次）", "正在分配 G4（第 3/20 次）"}
 	if !reflect.DeepEqual(stages, wantStages) {
 		t.Fatalf("stages mismatch: got=%v want=%v", stages, wantStages)
 	}
 	wantTimeline := []string{
-		"wait:6",
-		"stage:正在分配 G4（第 2/10 次）",
-		"wait:12",
-		"stage:正在分配 G4（第 3/10 次）",
-		"wait:20",
+		"wait:2",
+		"stage:正在分配 G4（第 2/20 次）",
+		"wait:4",
+		"stage:正在分配 G4（第 3/20 次）",
+		"wait:8",
 	}
 	if !reflect.DeepEqual(timeline, wantTimeline) {
 		t.Fatalf("timeline mismatch: got=%v want=%v", timeline, wantTimeline)
 	}
 	hasNetLog := false
 	for _, m := range logs {
-		if strings.Contains(m, "耗时") && strings.Contains(m, "网络异常") && strings.Contains(m, "第 2/10 次") {
+		if strings.Contains(m, "耗时") && strings.Contains(m, "网络异常") && strings.Contains(m, "第 2/20 次") {
 			hasNetLog = true
 		}
 	}
 	if !hasNetLog {
 		t.Fatalf("missing network retry log: %v", logs)
+	}
+}
+
+func TestAssignRetryDelaysScheduleAndCustomMaxAttempts(t *testing.T) {
+	if got := AssignRetryDelays(0); len(got) != 0 {
+		t.Fatalf("AssignRetryDelays(0) = %v, want empty", got)
+	}
+	if got := AssignRetryDelays(1); len(got) != 0 {
+		t.Fatalf("AssignRetryDelays(1) = %v, want empty", got)
+	}
+	if got := AssignRetryDelays(2); !reflect.DeepEqual(got, []time.Duration{2 * time.Second}) {
+		t.Fatalf("AssignRetryDelays(2) = %v, want [2s]", got)
+	}
+	want8 := []time.Duration{
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		16 * time.Second,
+		32 * time.Second,
+		32 * time.Second,
+		32 * time.Second,
+	}
+	if got := AssignRetryDelays(8); !reflect.DeepEqual(got, want8) {
+		t.Fatalf("AssignRetryDelays(8) = %v, want %v", got, want8)
+	}
+
+	// Custom MaxAttempts=7: verifies exponential backoff 2 -> 4 -> 8 -> 16 -> 32 -> 32 and exact stage denominators.
+	posts := 0
+	var waited []int
+	var stages []string
+	client := &fakeColabClient{
+		postAssign: func(ctx context.Context, nbh, token, variant, accel, shape string) (*Assignment, error) {
+			posts++
+			return nil, &ColabRequestError{StatusCode: 503}
+		},
+	}
+	p := NewColabOneProvider(ColabOneProviderConfig{
+		Vault:         newMemoryVault(),
+		ClientFactory: func(string) (ColabClient, error) { return client, nil },
+		SleepFn: func(ctx context.Context, d time.Duration) error {
+			waited = append(waited, int(d.Seconds()))
+			return nil
+		},
+	})
+	_, err := p.Allocate(context.Background(), "G4", AllocateOptions{
+		MaxAttempts: 7,
+		OnStage:     func(st string) { stages = append(stages, st) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "已自动重试 6 次") {
+		t.Fatalf("expected 6 retries exhausted error, got %v", err)
+	}
+	if posts != 7 {
+		t.Fatalf("expected 7 POST attempts, got %d", posts)
+	}
+	// 6 backoff sleeps + 1 final 2s reconciliation pause before final GetAssignment.
+	wantWaited := []int{2, 4, 8, 16, 32, 32, 2}
+	if !reflect.DeepEqual(waited, wantWaited) {
+		t.Fatalf("waited mismatch: got=%v want=%v", waited, wantWaited)
+	}
+	wantStages := []string{
+		"Google 算力紧张，正在排队分配 G4（第 2/7 次）",
+		"Google 算力紧张，正在排队分配 G4（第 3/7 次）",
+		"Google 算力紧张，正在排队分配 G4（第 4/7 次）",
+		"Google 算力紧张，正在排队分配 G4（第 5/7 次）",
+		"Google 算力紧张，正在排队分配 G4（第 6/7 次）",
+		"Google 算力紧张，正在排队分配 G4（第 7/7 次）",
+	}
+	if !reflect.DeepEqual(stages, wantStages) {
+		t.Fatalf("stages mismatch: got=%v want=%v", stages, wantStages)
+	}
+
+	// Custom MaxAttempts=1: single attempt without retries.
+	postsSingle := 0
+	waitsSingle := 0
+	clientSingle := &fakeColabClient{
+		postAssign: func(ctx context.Context, nbh, token, variant, accel, shape string) (*Assignment, error) {
+			postsSingle++
+			return nil, &ColabRequestError{StatusCode: 503}
+		},
+	}
+	pSingle := NewColabOneProvider(ColabOneProviderConfig{
+		Vault:         newMemoryVault(),
+		ClientFactory: func(string) (ColabClient, error) { return clientSingle, nil },
+		SleepFn: func(ctx context.Context, d time.Duration) error {
+			waitsSingle++
+			return nil
+		},
+	})
+	_, errSingle := pSingle.Allocate(context.Background(), "G4", AllocateOptions{
+		MaxAttempts: 1,
+	})
+	if errSingle == nil || strings.Contains(errSingle.Error(), "已自动重试") {
+		t.Fatalf("expected single-attempt 503 error without retry count, got %v", errSingle)
+	}
+	if postsSingle != 1 || waitsSingle != 0 {
+		t.Fatalf("expected 1 POST and 0 waits for MaxAttempts=1, got posts=%d waits=%d", postsSingle, waitsSingle)
 	}
 }
 

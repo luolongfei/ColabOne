@@ -413,7 +413,8 @@ describe("ColabOne reactive translations across helpers", () => {
       // Persistent connection error banner
       "连接检查失败：ConnectionError。客户端会自动重试，请检查网络连接。",
       // Settings summary & idle countdown
-      "已保存设置（默认 GPU: T4 · 空闲释放: 30 分钟 · 下载并发: 16 线程 · 已更新 Hugging Face Token）",
+      "已保存设置（默认 GPU: T4 · 空闲释放: 30 分钟 · 下载并发: 16 线程 · 分配重试上限: 20 次 · 已更新 Hugging Face Token）",
+      "GPU 分配最大尝试次数必须在 1 至 100 次之间",
       "空闲自动释放倒计时剩余 45 秒；继续操作可重置倒计时",
       "服务返回 HTTP 403，请检查授权和配置",
       // Download / engine / ComfyUI / tunnel / Public API / Drive / VM boot
@@ -1710,6 +1711,140 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       }
       if (loc === "zh-TW") {
         expect(out).not.toMatch(FORBIDDEN_ZH_TW_RE);
+      }
+    }
+  });
+
+  it("provides localized ComfyUI default visual prompt, input placeholders, draft status keys, and multilingual prompt description across all 6 locales", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
+    const localizedPromptAndDraftKeys: ColabOneMessageKey[] = [
+      "comfy.defaultVisualPrompt",
+      "comfy.placeholderScriptText",
+      "comfy.placeholderVoiceRefText",
+      "comfy.placeholderVoicePrompt",
+      "comfy.placeholderEmotionPrompt",
+      "comfy.placeholderVisualPrompt",
+      "comfy.placeholderNegativePrompt",
+      "comfy.placeholderGenericPrompt",
+      "comfy.placeholderGenericText",
+      "comfy.draftSavedBadge",
+      "comfy.draftSavingBadge",
+      "comfy.draftRestoredBadge",
+      "comfy.draftLocalMediaTag",
+      "comfy.errSaveDraft",
+    ];
+
+    for (const key of localizedPromptAndDraftKeys) {
+      const seenValues = new Set<string>();
+      for (const loc of ALL_LOCALES) {
+        const val = COLABONE_MESSAGES[loc][key];
+        expect(val.trim().length, `empty ${loc}[${key}]`).toBeGreaterThan(0);
+        seenValues.add(val);
+
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(val),
+            `CJK/fullwidth leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            val,
+            `forbidden zh-TW term in ${key}: "${val}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            val,
+            `spoken Cantonese leak in zh-HK[${key}]: "${val}"`,
+          ).not.toMatch(SPOKEN_CANTONESE_RE);
+        }
+      }
+      // Every non-CJK locale must differ from zh-CN
+      for (const loc of ["en-US", "ja-JP", "ko-KR"] as const) {
+        expect(
+          COLABONE_MESSAGES[loc][key],
+          `${loc}[${key}] must be localized`,
+        ).not.toBe(COLABONE_MESSAGES["zh-CN"][key]);
+      }
+      expect(
+        seenValues.size,
+        `${key} should have distinct localized strings`,
+      ).toBeGreaterThanOrEqual(5);
+    }
+
+    // All 6 locales provide a distinct default visual prompt, and en-US matches catalog canonical fallback
+    const defaultVisualPrompts = ALL_LOCALES.map(
+      (loc) => COLABONE_MESSAGES[loc]["comfy.defaultVisualPrompt"],
+    );
+    expect(new Set(defaultVisualPrompts).size).toBe(ALL_LOCALES.length);
+    for (const tpl of comfyCatalog.templates) {
+      const posField = tpl.fields.find((f) => f.key === "5.positive_prompt");
+      expect(posField, `${tpl.id} must have 5.positive_prompt`).toBeTruthy();
+      expect(posField?.default).toBe(
+        COLABONE_MESSAGES["en-US"]["comfy.defaultVisualPrompt"],
+      );
+      expect(posField?.description).toBe(
+        "描述主播说话时的神态、头部微动、光线与镜头风格（支持中英文等多语种自然描述）。",
+      );
+    }
+
+    // Updated multilingual prompt description and draft backend messages translate cleanly across all 6 locales
+    const updatedDescription =
+      "描述主播说话时的神态、头部微动、光线与镜头风格（支持中英文等多语种自然描述）。";
+    const legacyDescription =
+      "描述主播说话时的神态、头部微动、光线与镜头风格（建议使用英文短语获得最佳稳定性）。";
+    const draftBackendMessages = [
+      updatedDescription,
+      legacyDescription,
+      "草稿素材不存在",
+      "读取本地 ComfyUI 草稿配置失败，已保留原文件未覆盖",
+      "草稿字段键不合法",
+      "草稿文本字段超过 200000 字节上限",
+      "草稿字段数值不合法",
+      "草稿字段仅支持文本、数值或布尔值",
+      "草稿字段必须为对象",
+      "草稿字段数量不能超过 128 个",
+      "草稿素材类型仅支持 image 或 audio",
+      "草稿目录未配置",
+      "草稿目录不安全",
+      "草稿元数据路径不安全",
+      "草稿素材 ID 不合法",
+      "草稿素材大小信息不合法",
+      "草稿素材校验信息不合法",
+      "草稿素材路径不安全",
+      "草稿素材文件已丢失",
+      "草稿素材大小超出允许范围，文件可能已损坏",
+      "草稿素材大小校验失败，文件可能已损坏",
+      "草稿素材哈希校验失败，文件可能已损坏",
+      "不支持的图片输入文件格式",
+      "不支持的音频输入文件格式",
+      "不支持的图片输入文件格式：mp3",
+      "不支持的音频输入文件格式：png",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const msg of draftBackendMessages) {
+        const out = translateColabOneBackendText(msg, loc);
+        expect(tb(msg), `tb() parity for ${loc}: ${msg}`).toBe(out);
+        expect(out.trim().length, `empty translation for ${loc}: ${msg}`).toBeGreaterThan(0);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${msg}" -> "${out}"`,
+          ).toBe(false);
+          expect(out).not.toBe(msg);
+        }
+        if (loc === "ja-JP") {
+          expect(out).not.toBe(msg);
+        }
+        if (loc === "zh-TW") {
+          expect(out).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(out).not.toMatch(SPOKEN_CANTONESE_RE);
+        }
       }
     }
   });

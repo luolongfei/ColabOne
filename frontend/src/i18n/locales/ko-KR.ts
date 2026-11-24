@@ -576,6 +576,7 @@ export const koKRMessages: ColabOneMessages = {
   "device.toastRefreshed": "계정 과금 및 인스턴스 상태를 새로고침했습니다",
   "device.toastIdleSet": "유휴 자동 해제를 {policy}(으)로 설정했습니다",
   "device.toastThreadsSet": "원격 다운로드 동시 스레드를 {threads}개로 설정했습니다",
+  "device.toastAssignMaxAttemptsSet": "GPU 할당 최대 시도 횟수를 {count}회로 설정했습니다",
   "device.toastDefaultGpuSet": "기본 GPU를 {gpu}(으)로 설정했습니다",
   "device.toastSettingsSaved": "설정이 저장되었습니다",
 
@@ -1294,6 +1295,28 @@ export const koKRMessages: ColabOneMessages = {
     "다른 작업이나 동작이 실행 중입니다. 잠시만 기다려 주세요",
   "comfy.runBlockedUploading":
     "미디어가 업로드 중입니다. 완료될 때까지 기다려 주세요",
+  "comfy.defaultVisualPrompt":
+    "선명한 스튜디오 인물 샷, 카메라를 향해 자연스럽게 말하는 진행자, 생동감 있는 얼굴 표정, 부드러운 머리 움직임, 자연스러운 눈 깜빡임, 또렷한 초점, 부드러운 스튜디오 조명, 안정적인 배경",
+  "comfy.placeholderScriptText":
+    "예시: 안녕하세요, 오늘의 소개에 오신 것을 환영합니다! 지금부터 AI로 자연스럽고 매끄러운 스피치 영상을 손쉽게 만드는 방법을 알려드릴게요.",
+  "comfy.placeholderVoiceRefText":
+    "예시: 안녕하세요, 오늘 방송을 들어주셔서 감사합니다. 이 선명한 음성이 보이스 클로닝의 참조 음성으로 사용됩니다.",
+  "comfy.placeholderVoicePrompt":
+    "예시: 차분하고 매력적인 젊은 남성 목소리, 적당한 속도와 또렷한 발음 또는 밝고 친근한 여성 진행자 톤",
+  "comfy.placeholderEmotionPrompt":
+    "예시: 전문적이고 차분한 어조, 밝고 경쾌한 분위기, 또는 인라인 태그 [laugh]",
+  "comfy.placeholderVisualPrompt":
+    "예시: 선명한 스튜디오 인물 샷, 자연스럽게 미소 지으며 설명하는 진행자, 부드러운 고개 끄덕임, 은은한 조명, 안정적인 배경",
+  "comfy.placeholderNegativePrompt":
+    "예시: 흐림, 과다 노출, 인물 왜곡, 여분의 손가락, 복잡한 배경, 저화질",
+  "comfy.placeholderGenericPrompt":
+    "예시: 영화 같은 부드러운 조명, 선명한 디테일, 돋보이는 피사체, 자연스러운 구도",
+  "comfy.placeholderGenericText": "파라미터 내용을 입력하세요...",
+  "comfy.draftSavedBadge": "초안 자동 저장됨",
+  "comfy.draftSavingBadge": "초안 저장 중...",
+  "comfy.draftRestoredBadge": "이전 초안 복원됨",
+  "comfy.draftLocalMediaTag": "초안에 저장됨",
+  "comfy.errSaveDraft": "초안 자동 저장 실패: {detail}",
 
   // Settings Page
   "settings.title": "설정",
@@ -1358,6 +1381,11 @@ export const koKRMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} 스레드",
   "settings.autoDriveLabel": "드라이브 자동 마운트",
   "settings.autoDriveDesc": "GPU 시작 시 Google 드라이브 (ColabOne_Drive) 자동 마운트 및 동기화",
+  "settings.assignMaxAttemptsLabel": "GPU 할당 최대 시도 횟수",
+  "settings.assignMaxAttemptsAria": "GPU 할당 최대 시도 횟수",
+  "settings.assignMaxAttemptsUnit": "회",
+  "settings.assignMaxAttemptsDesc":
+    "GPU 혼잡 시 자동 재시도를 포함한 총 할당 시도 횟수 상한입니다(1–100회, 기본 20회). 재시도 간격은 지수 백오프(2s → 4s → 8s → 16s → 32s)로 증가하며 이후 32초로 고정됩니다. 1로 설정하면 자동 재시도를 사용하지 않습니다.",
   "settings.idleProtectionTitle": "유휴 자동 해제 보호",
   "settings.idleProtectionDesc":
     "{policy} 동안 활동이나 작업이 없으면 원격 리소스를 자동 해제합니다. 조작 시 타이머가 초기화되며 모델 다운로드·로드·API 추론·ComfyUI 실행 중에는 자동으로 일시 정지됩니다.",

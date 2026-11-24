@@ -476,6 +476,7 @@ type AllocateOptions struct {
 	RetryCh      <-chan struct{}
 	OnRetryState RetryStateFn
 	AssignProxy  string
+	MaxAttempts  int
 }
 
 // StartOptions configures end-to-end GPU allocation, readiness check, and remote service deployment.
@@ -488,6 +489,7 @@ type StartOptions struct {
 	RetryCh      <-chan struct{}
 	OnRetryState RetryStateFn
 	AssignProxy  string
+	MaxAttempts  int
 }
 
 // ColabOneAssignProxySpec holds a validated and normalized allocation-only proxy specification.

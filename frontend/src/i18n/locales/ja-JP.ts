@@ -577,6 +577,7 @@ export const jaJPMessages: ColabOneMessages = {
   "device.toastRefreshed": "課金情報とインスタンス状態を更新しました",
   "device.toastIdleSet": "アイドル自動解放を {policy} に設定しました",
   "device.toastThreadsSet": "ダウンロード並列数を {threads} スレッドに設定しました",
+  "device.toastAssignMaxAttemptsSet": "GPU 割り当ての最大試行回数を {count} 回に設定しました",
   "device.toastDefaultGpuSet": "デフォルト GPU を {gpu} に設定しました",
   "device.toastSettingsSaved": "設定を保存しました",
 
@@ -1297,6 +1298,28 @@ export const jaJPMessages: ColabOneMessages = {
     "別のタスクまたは操作を実行中です。しばらくお待ちください",
   "comfy.runBlockedUploading":
     "素材をアップロード中です。完了までお待ちください",
+  "comfy.defaultVisualPrompt":
+    "鮮明なスタジオのポートレート映像。カメラに向かって自然に話す話者、豊かな表情、穏やかな頭の動き、自然なまばたき、シャープなピント、柔らかなスタジオ照明、安定した背景",
+  "comfy.placeholderScriptText":
+    "例：みなさんこんにちは、本日のご紹介へようこそ！これから AI を使って自然で滑らかなトーク動画を簡単に作る方法をご案内します。",
+  "comfy.placeholderVoiceRefText":
+    "例：こんにちは、本日の番組をお聴きいただきありがとうございます。このクリアな音声を声質クローンの参照として使用します。",
+  "comfy.placeholderVoicePrompt":
+    "例：落ち着きと深みのある若い男性の声、適度な話速で明瞭な発音／明るく親しみやすい女性アナウンサーの声質",
+  "comfy.placeholderEmotionPrompt":
+    "例：落ち着いたプロフェッショナル調、明るく親しみやすい口調、またはタグ [laugh]",
+  "comfy.placeholderVisualPrompt":
+    "例：鮮明なスタジオのポートレート映像、自然に微笑みながら解説する話者、穏やかなうなずき、柔らかな照明、安定した背景",
+  "comfy.placeholderNegativePrompt":
+    "例：ぼやけ、露出オーバー、人物の崩れ、余分な指、雑然とした背景、低画質",
+  "comfy.placeholderGenericPrompt":
+    "例：映画のような柔らかな光と影、鮮明なディテール、際立つ被写体、自然な構図",
+  "comfy.placeholderGenericText": "パラメータ内容を入力してください…",
+  "comfy.draftSavedBadge": "下書き自動保存済み",
+  "comfy.draftSavingBadge": "下書きを保存中…",
+  "comfy.draftRestoredBadge": "前回の下書きを復元済み",
+  "comfy.draftLocalMediaTag": "下書き保存済み",
+  "comfy.errSaveDraft": "下書きの自動保存に失敗しました: {detail}",
 
   // Settings Page
   "settings.title": "設定",
@@ -1361,6 +1384,11 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} スレッド",
   "settings.autoDriveLabel": "ドライブ自動マウント",
   "settings.autoDriveDesc": "GPU 起動時に Google ドライブ (ColabOne_Drive) を自動マウント・同期",
+  "settings.assignMaxAttemptsLabel": "GPU 割り当て最大試行回数",
+  "settings.assignMaxAttemptsAria": "GPU 割り当ての最大試行回数",
+  "settings.assignMaxAttemptsUnit": "回",
+  "settings.assignMaxAttemptsDesc":
+    "GPU が混雑している際の自動リトライを含む合計試行回数の上限（1〜100 回、既定 20 回）。リトライ間隔は指数バックオフ（2s → 4s → 8s → 16s → 32s）で増加し、以降は 32 秒固定になります。1 に設定すると自動リトライを行いません。",
   "settings.idleProtectionTitle": "アイドル自動解放保護",
   "settings.idleProtectionDesc":
     "{policy} 以上操作・タスクがないとリモートリソースを自動解放します。操作するとタイマーはリセットされ、モデル取得・読込・API 推論・ComfyUI 実行中は自動一時停止します。",

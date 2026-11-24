@@ -178,7 +178,7 @@ func TestWoff2MimeTypeRegistered(t *testing.T) {
 
 func TestMethodTimeoutsAllowLongGPUAllocation(t *testing.T) {
 	if got := colabOneMethodTimeout("runtime.start"); got < 15*time.Minute {
-		t.Fatalf("runtime.start timeout too short for 10-attempt backoff: %v", got)
+		t.Fatalf("runtime.start timeout too short for exponential-backoff allocation: %v", got)
 	}
 	if got := colabOneMethodTimeout("snapshot"); got != 30*time.Second {
 		t.Fatalf("snapshot timeout = %v, want 30s", got)
@@ -188,10 +188,74 @@ func TestMethodTimeoutsAllowLongGPUAllocation(t *testing.T) {
 		"runtime.start.retry",
 		"settings.assign_proxy",
 		"settings.assign_proxy.test",
+		"comfyui.draft.get",
+		"comfyui.draft.save",
+		"comfyui.draft.clear",
+		"comfyui.draft.media.delete",
 	} {
 		if got := colabOneMethodTimeout(fastMethod); got != 30*time.Second {
 			t.Fatalf("%s timeout = %v, want 30s", fastMethod, got)
 		}
+	}
+	for _, mediaMethod := range []string{
+		"comfyui.draft.media.save",
+		"comfyui.draft.media.read",
+	} {
+		if got := colabOneMethodTimeout(mediaMethod); got != 300*time.Second {
+			t.Fatalf("%s timeout = %v, want 300s", mediaMethod, got)
+		}
+	}
+}
+
+func TestWorkflowDraftBridgeRoundTrip(t *testing.T) {
+	cfgDir := t.TempDir()
+	b := &colabOneBridge{
+		factory: func() *controller.ColabOneController {
+			return newColabOneWiredController("", cfgDir, vault.NewMemoryVault(), false)
+		},
+	}
+	defer b.close()
+	ctx := context.Background()
+
+	if raw, err := b.call(ctx, "comfyui.draft.save", map[string]any{
+		"workflow_id": "wf-bridge",
+		"fields":      map[string]any{"6.text": "bridge prompt", "3.seed": json.Number("42")},
+	}); err != nil || !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("bridge comfyui.draft.save failed: raw=%s err=%v", raw, err)
+	}
+
+	mediaRaw, err := b.call(ctx, "comfyui.draft.media.save", map[string]any{
+		"workflow_id": "wf-bridge",
+		"field_key":   "10.image",
+		"filename":    "sample.png",
+		"kind":        "image",
+		"data":        "iVBORw0KGgo=",
+	})
+	if err != nil || !strings.Contains(mediaRaw, `"mime":"image/png"`) {
+		t.Fatalf("bridge comfyui.draft.media.save failed: raw=%s err=%v", mediaRaw, err)
+	}
+
+	readRaw, err := b.call(ctx, "comfyui.draft.media.read", map[string]any{
+		"workflow_id": "wf-bridge",
+		"field_key":   "10.image",
+	})
+	if err != nil || !strings.Contains(readRaw, `"data":"iVBORw0KGgo="`) {
+		t.Fatalf("bridge comfyui.draft.media.read failed: raw=%s err=%v", readRaw, err)
+	}
+
+	getRaw, err := b.call(ctx, "comfyui.draft.get", map[string]any{"workflow_id": "wf-bridge"})
+	if err != nil || !strings.Contains(getRaw, `"bridge prompt"`) || !strings.Contains(getRaw, `"sample.png"`) {
+		t.Fatalf("bridge comfyui.draft.get failed: raw=%s err=%v", getRaw, err)
+	}
+
+	if _, err := b.call(ctx, "comfyui.draft.media.delete", map[string]any{
+		"workflow_id": "wf-bridge",
+		"field_key":   "10.image",
+	}); err != nil {
+		t.Fatalf("bridge comfyui.draft.media.delete failed: %v", err)
+	}
+	if _, err := b.call(ctx, "comfyui.draft.clear", map[string]any{"workflow_id": "wf-bridge"}); err != nil {
+		t.Fatalf("bridge comfyui.draft.clear failed: %v", err)
 	}
 }
 

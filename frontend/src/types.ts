@@ -507,11 +507,15 @@ export interface ColabOneSnapshot {
     idle_countdown_seconds: number;
     auto_drive: boolean;
     download_threads: number;
+    assign_max_attempts?: number;
     assign_proxy_enabled?: boolean;
     locale?: string;
   };
 }
 export const COLABONE_DEFAULT_GPU = "G4" as const;
+export const COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 20 as const;
+export const COLABONE_MIN_ASSIGN_MAX_ATTEMPTS = 1 as const;
+export const COLABONE_MAX_ASSIGN_MAX_ATTEMPTS = 100 as const;
 
 export const createColabOneSnapshot = (): ColabOneSnapshot => ({
   active_endpoint: "",
@@ -540,6 +544,7 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
     idle_countdown_seconds: 60,
     auto_drive: true,
     download_threads: 16,
+    assign_max_attempts: COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
     assign_proxy_enabled: false,
   },
 });

@@ -357,6 +357,7 @@ func (c *ColabOneController) loadSettings() {
 		"idle_countdown_seconds": 60,
 		"auto_drive":             true,
 		"download_threads":       16,
+		"assign_max_attempts":    COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
 		"assign_proxy_enabled":   false,
 		"locale":                 "",
 	}
@@ -370,6 +371,7 @@ func (c *ColabOneController) loadSettings() {
 				"idle_countdown_seconds",
 				"auto_drive",
 				"download_threads",
+				"assign_max_attempts",
 				"assign_proxy_enabled",
 				"idle_policy",
 				"rclone_drive_policy",
@@ -422,6 +424,13 @@ func (c *ColabOneController) loadSettings() {
 		c.settings["download_threads"] = 16
 	} else {
 		c.settings["download_threads"] = threads
+	}
+
+	maxAttempts, ok := asExactInt(c.settings["assign_max_attempts"])
+	if !ok || maxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || maxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+		c.settings["assign_max_attempts"] = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
+	} else {
+		c.settings["assign_max_attempts"] = maxAttempts
 	}
 
 	// Migrate legacy 3-minute policy to the 30-minute idle auto-release default.

@@ -1,5 +1,5 @@
 import { colabOneCommand } from "./api";
-import { t } from "./i18n";
+import { COLABONE_LOCALE_LIST, t, type ColabOneLocale } from "./i18n";
 import type {
   ColabOneComfyTtsEngineSpec,
   WorkflowField,
@@ -226,35 +226,136 @@ export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
   return { ok: true, workflow: parsed };
 }
 
+export const COLABONE_CANONICAL_VISUAL_PROMPT =
+  "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background";
+
+export function isColabOnePresetVisualPrompt(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed === COLABONE_CANONICAL_VISUAL_PROMPT) {
+    return true;
+  }
+  for (const meta of COLABONE_LOCALE_LIST) {
+    if (
+      trimmed === t("comfy.defaultVisualPrompt", undefined, meta.code).trim()
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resolveColabOneWorkflowFieldDefault(
+  field: WorkflowField,
+  locale?: ColabOneLocale,
+): string | number | boolean {
+  const hasDefault = field.default !== undefined && field.default !== null;
+  if (field.field_type === "boolean") {
+    return hasDefault ? parseBooleanValue(field.default, false) : false;
+  }
+  if (field.field_type === "integer" || field.field_type === "number") {
+    return resolveNumericFieldValue(field.default, field);
+  }
+  if (field.field_type === "select") {
+    const trimmedDefault = hasDefault ? String(field.default).trim() : "";
+    if (trimmedDefault !== "") {
+      return trimmedDefault;
+    }
+    if (field.options && field.options.length > 0) {
+      return field.options[0];
+    }
+    return "";
+  }
+  if (
+    typeof field.default === "string" &&
+    isColabOnePresetVisualPrompt(field.default)
+  ) {
+    return t("comfy.defaultVisualPrompt", undefined, locale);
+  }
+  return hasDefault ? String(field.default) : "";
+}
+
 export function defaultFieldValues(
   fields: WorkflowField[],
+  locale?: ColabOneLocale,
 ): Record<string, string | number | boolean> {
   const values: Record<string, string | number | boolean> = {};
   for (const field of fields || []) {
-    const hasDefault = field.default !== undefined && field.default !== null;
-    if (field.field_type === "boolean") {
-      values[field.key] = hasDefault
-        ? parseBooleanValue(field.default, false)
-        : false;
-    } else if (
-      field.field_type === "integer" ||
-      field.field_type === "number"
-    ) {
-      values[field.key] = resolveNumericFieldValue(field.default, field);
-    } else if (field.field_type === "select") {
-      const trimmedDefault = hasDefault ? String(field.default).trim() : "";
-      if (trimmedDefault !== "") {
-        values[field.key] = trimmedDefault;
-      } else if (field.options && field.options.length > 0) {
-        values[field.key] = field.options[0];
-      } else {
-        values[field.key] = "";
-      }
-    } else {
-      values[field.key] = hasDefault ? String(field.default) : "";
-    }
+    values[field.key] = resolveColabOneWorkflowFieldDefault(field, locale);
   }
   return values;
+}
+
+export function remapColabOnePresetPromptFieldsForLocale(
+  fields: WorkflowField[] | undefined,
+  values: Record<string, string | number | boolean>,
+  nextLocale?: ColabOneLocale,
+): Record<string, string | number | boolean> {
+  const next: Record<string, string | number | boolean> = { ...values };
+  for (const field of fields || []) {
+    if (
+      typeof field.default === "string" &&
+      isColabOnePresetVisualPrompt(field.default) &&
+      hasOwn(values, field.key) &&
+      isColabOnePresetVisualPrompt(values[field.key])
+    ) {
+      next[field.key] = t("comfy.defaultVisualPrompt", undefined, nextLocale);
+    }
+  }
+  return next;
+}
+
+export function resolveColabOneWorkflowFieldPlaceholder(
+  field: WorkflowField,
+  locale?: ColabOneLocale,
+): string {
+  if (field.field_type !== "text" && field.field_type !== "textarea") {
+    return "";
+  }
+  switch (field.key) {
+    case "pipeline.script_text":
+      return t("comfy.placeholderScriptText", undefined, locale);
+    case "pipeline.voice_ref_text":
+      return t("comfy.placeholderVoiceRefText", undefined, locale);
+    case "pipeline.voice_prompt":
+      return t("comfy.placeholderVoicePrompt", undefined, locale);
+    case "pipeline.emotion_prompt":
+      return t("comfy.placeholderEmotionPrompt", undefined, locale);
+    case "5.positive_prompt":
+      return t("comfy.placeholderVisualPrompt", undefined, locale);
+    default:
+      break;
+  }
+  if (
+    typeof field.default === "string" &&
+    isColabOnePresetVisualPrompt(field.default)
+  ) {
+    return t("comfy.placeholderVisualPrompt", undefined, locale);
+  }
+  const combined = `${field.input_name || ""} ${field.label || ""}`.toLowerCase();
+  if (
+    combined.includes("negative") ||
+    combined.includes("反向") ||
+    combined.includes("负向") ||
+    combined.includes("負向")
+  ) {
+    return t("comfy.placeholderNegativePrompt", undefined, locale);
+  }
+  if (
+    combined.includes("prompt") ||
+    combined.includes("positive") ||
+    combined.includes("正向") ||
+    combined.includes("提示词") ||
+    combined.includes("提示詞")
+  ) {
+    return t("comfy.placeholderGenericPrompt", undefined, locale);
+  }
+  return t("comfy.placeholderGenericText", undefined, locale);
 }
 
 export function buildColabOneWorkflowOverrides(

@@ -1,21 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CANVAS_FORMAT_ERROR,
+  COLABONE_CANONICAL_VISUAL_PROMPT,
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
   extractPublicHost,
   formatOutputSize,
   groupWorkflowFields,
   hasNonCommercialNotice,
+  isColabOnePresetVisualPrompt,
   isWorkflowFieldVisible,
   missingRequiredWorkflowFields,
   outputBlobURL,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  remapColabOnePresetPromptFieldsForLocale,
+  resolveColabOneWorkflowFieldDefault,
+  resolveColabOneWorkflowFieldPlaceholder,
   resolveSelectedTtsEngine,
   workflowModelsTotalBytes,
 } from "./comfyui";
-import { t } from "./i18n";
+import { COLABONE_LOCALE_LIST, t, type ColabOneLocale } from "./i18n";
 import type {
   ColabOneComfyNodePatch,
   ColabOneComfyPipelineSpec,
@@ -1956,5 +1961,295 @@ describe("ColabOne narrowed ComfyUI & TaskStatus types", () => {
     expect(legacyTts.id).toBe("voxcpm2");
     expect(output.extension).toBe("mp4");
     expect(task.logs?.[0].seq).toBe(1);
+  });
+});
+
+describe("localized workflow defaults, preset visual prompt, and placeholders", () => {
+  const ALL_LOCALES: ColabOneLocale[] = [
+    "zh-CN",
+    "en-US",
+    "zh-TW",
+    "zh-HK",
+    "ja-JP",
+    "ko-KR",
+  ];
+
+  const visualPromptField = makeField({
+    key: "5.positive_prompt",
+    label: "画面风格提示词",
+    node_id: "5",
+    input_name: "positive_prompt",
+    field_type: "textarea",
+    default: COLABONE_CANONICAL_VISUAL_PROMPT,
+  });
+
+  it("localizes canonical visual prompt in defaultFieldValues and resolveColabOneWorkflowFieldDefault for all 6 locales", () => {
+    expect(COLABONE_LOCALE_LIST.map((m) => m.code)).toEqual(ALL_LOCALES);
+
+    for (const locale of ALL_LOCALES) {
+      const expected = t("comfy.defaultVisualPrompt", undefined, locale);
+      expect(expected.trim().length).toBeGreaterThan(0);
+
+      expect(
+        resolveColabOneWorkflowFieldDefault(visualPromptField, locale),
+      ).toBe(expected);
+
+      const values = defaultFieldValues(
+        [
+          visualPromptField,
+          makeField({
+            key: "pipeline.script_text",
+            field_type: "textarea",
+            default: "",
+          }),
+          makeField({
+            key: "custom.text",
+            field_type: "text",
+            default: "custom non-preset default",
+          }),
+        ],
+        locale,
+      );
+      expect(values["5.positive_prompt"]).toBe(expected);
+      expect(values["pipeline.script_text"]).toBe("");
+      expect(values["custom.text"]).toBe("custom non-preset default");
+    }
+  });
+
+  it("recognizes canonical and all 6 localized preset visual prompts and rejects custom/empty/non-string values", () => {
+    expect(isColabOnePresetVisualPrompt(COLABONE_CANONICAL_VISUAL_PROMPT)).toBe(
+      true,
+    );
+    expect(
+      isColabOnePresetVisualPrompt(`  ${COLABONE_CANONICAL_VISUAL_PROMPT}  `),
+    ).toBe(true);
+
+    for (const locale of ALL_LOCALES) {
+      const localized = t("comfy.defaultVisualPrompt", undefined, locale);
+      expect(isColabOnePresetVisualPrompt(localized)).toBe(true);
+      expect(isColabOnePresetVisualPrompt(`  ${localized}\n`)).toBe(true);
+    }
+
+    expect(isColabOnePresetVisualPrompt("")).toBe(false);
+    expect(isColabOnePresetVisualPrompt("   ")).toBe(false);
+    expect(isColabOnePresetVisualPrompt("A custom studio portrait")).toBe(false);
+    expect(isColabOnePresetVisualPrompt(`${COLABONE_CANONICAL_VISUAL_PROMPT}!`)).toBe(
+      false,
+    );
+    expect(isColabOnePresetVisualPrompt(null)).toBe(false);
+    expect(isColabOnePresetVisualPrompt(undefined)).toBe(false);
+    expect(isColabOnePresetVisualPrompt(42)).toBe(false);
+    expect(isColabOnePresetVisualPrompt(true)).toBe(false);
+  });
+
+  it("remaps untouched preset prompt across locales while preserving user-edited and explicitly cleared values", () => {
+    const fields: WorkflowField[] = [
+      visualPromptField,
+      makeField({
+        key: "pipeline.script_text",
+        field_type: "textarea",
+        default: "",
+      }),
+    ];
+
+    const original = {
+      "5.positive_prompt": t("comfy.defaultVisualPrompt", undefined, "zh-CN"),
+      "pipeline.script_text": "hello world",
+    };
+    const remapped = remapColabOnePresetPromptFieldsForLocale(
+      fields,
+      original,
+      "ja-JP",
+    );
+    expect(remapped["5.positive_prompt"]).toBe(
+      t("comfy.defaultVisualPrompt", undefined, "ja-JP"),
+    );
+    expect(remapped["pipeline.script_text"]).toBe("hello world");
+    // Does not mutate input
+    expect(original["5.positive_prompt"]).toBe(
+      t("comfy.defaultVisualPrompt", undefined, "zh-CN"),
+    );
+
+    // User-edited prompt must never be overwritten
+    const edited = remapColabOnePresetPromptFieldsForLocale(
+      fields,
+      {
+        "5.positive_prompt": "My custom cinematic lighting prompt",
+        "pipeline.script_text": "script",
+      },
+      "en-US",
+    );
+    expect(edited["5.positive_prompt"]).toBe(
+      "My custom cinematic lighting prompt",
+    );
+
+    // Explicitly cleared empty string must never be overwritten
+    const cleared = remapColabOnePresetPromptFieldsForLocale(
+      fields,
+      {
+        "5.positive_prompt": "",
+      },
+      "ko-KR",
+    );
+    expect(cleared["5.positive_prompt"]).toBe("");
+
+    // Handles undefined fields safely
+    expect(
+      remapColabOnePresetPromptFieldsForLocale(
+        undefined,
+        { "5.positive_prompt": COLABONE_CANONICAL_VISUAL_PROMPT },
+        "zh-HK",
+      ),
+    ).toEqual({ "5.positive_prompt": COLABONE_CANONICAL_VISUAL_PROMPT });
+  });
+
+  it("resolves localized placeholders for builtin fields, custom workflow heuristics, and non-text fields", () => {
+    for (const locale of ALL_LOCALES) {
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({ key: "pipeline.script_text", field_type: "textarea" }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderScriptText", undefined, locale));
+
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({ key: "pipeline.voice_ref_text", field_type: "textarea" }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderVoiceRefText", undefined, locale));
+
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({ key: "pipeline.voice_prompt", field_type: "text" }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderVoicePrompt", undefined, locale));
+
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({ key: "pipeline.emotion_prompt", field_type: "text" }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderEmotionPrompt", undefined, locale));
+
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({ key: "5.positive_prompt", field_type: "textarea" }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderVisualPrompt", undefined, locale));
+
+      // Any field whose default is the preset visual prompt gets placeholderVisualPrompt
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({
+            key: "99.custom_prompt",
+            input_name: "text",
+            label: "Prompt",
+            field_type: "textarea",
+            default: COLABONE_CANONICAL_VISUAL_PROMPT,
+          }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderVisualPrompt", undefined, locale));
+
+      // Custom workflow heuristics: negative before prompt
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({
+            key: "7.negative_prompt",
+            input_name: "negative_prompt",
+            label: "Negative Prompt",
+            field_type: "textarea",
+          }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderNegativePrompt", undefined, locale));
+
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({
+            key: "7.text",
+            input_name: "text",
+            label: "反向提示词",
+            field_type: "textarea",
+          }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderNegativePrompt", undefined, locale));
+
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({
+            key: "7.neg_cn",
+            input_name: "text",
+            label: "负向描述",
+            field_type: "text",
+          }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderNegativePrompt", undefined, locale));
+
+      // Custom positive / generic prompt
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({
+            key: "6.positive_prompt",
+            input_name: "positive_prompt",
+            label: "Positive",
+            field_type: "textarea",
+          }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderGenericPrompt", undefined, locale));
+
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({
+            key: "6.zh_prompt",
+            input_name: "text",
+            label: "正向提示詞",
+            field_type: "textarea",
+          }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderGenericPrompt", undefined, locale));
+
+      // Generic text fallback
+      expect(
+        resolveColabOneWorkflowFieldPlaceholder(
+          makeField({
+            key: "12.filename_prefix",
+            input_name: "filename_prefix",
+            label: "Output Prefix",
+            field_type: "text",
+          }),
+          locale,
+        ),
+      ).toBe(t("comfy.placeholderGenericText", undefined, locale));
+
+      // Non-text/textarea field types return ""
+      for (const nonTextType of [
+        "select",
+        "number",
+        "integer",
+        "boolean",
+        "image",
+        "audio",
+      ] as const) {
+        expect(
+          resolveColabOneWorkflowFieldPlaceholder(
+            makeField({
+              key: "pipeline.script_text",
+              input_name: "positive_prompt",
+              label: "Prompt",
+              field_type: nonTextType,
+            }),
+            locale,
+          ),
+        ).toBe("");
+      }
+    }
   });
 });

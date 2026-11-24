@@ -271,6 +271,19 @@ const hasCustomIdleOption = computed(
     ),
 );
 
+const customIdleOptionLabel = computed(() =>
+  t("billing.cardIdleCurrentOption", {
+    policy: formatIdlePolicyLabel(selectedIdleMinutes.value),
+  }),
+);
+
+const selectedIdleOptionLabel = computed(() => {
+  const matched = COLABONE_IDLE_RELEASE_OPTIONS.find(
+    (opt) => opt.value === selectedIdleMinutes.value,
+  );
+  return matched ? matched.label : customIdleOptionLabel.value;
+});
+
 const isIdleCountdownActive = computed(
   () =>
     props.runtimeState === "ready" &&
@@ -705,21 +718,23 @@ function onIdleMinutesChange(event: Event) {
           <select
             class="co-idle-select"
             :value="selectedIdleMinutes"
+            :title="selectedIdleOptionLabel"
             :aria-label="t('billing.cardIdleSelectAria')"
             :disabled="busy"
             @change="onIdleMinutesChange"
           >
-            <option v-if="hasCustomIdleOption" :value="selectedIdleMinutes">
-              {{
-                t("billing.cardIdleCurrentOption", {
-                  policy: formatIdlePolicyLabel(selectedIdleMinutes),
-                })
-              }}
+            <option
+              v-if="hasCustomIdleOption"
+              :value="selectedIdleMinutes"
+              :title="customIdleOptionLabel"
+            >
+              {{ customIdleOptionLabel }}
             </option>
             <option
               v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
               :key="opt.value"
               :value="opt.value"
+              :title="opt.label"
             >
               {{ opt.label }}
             </option>

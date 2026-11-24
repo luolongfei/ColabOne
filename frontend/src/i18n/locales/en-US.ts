@@ -580,6 +580,7 @@ export const enUSMessages: ColabOneMessages = {
   "device.toastRefreshed": "Billing and instance status refreshed",
   "device.toastIdleSet": "Idle auto-release set to {policy}",
   "device.toastThreadsSet": "Remote download concurrency set to {threads} threads",
+  "device.toastAssignMaxAttemptsSet": "Max GPU allocation attempts set to {count}",
   "device.toastDefaultGpuSet": "Default GPU set to {gpu}",
   "device.toastSettingsSaved": "Settings saved",
 
@@ -1305,6 +1306,28 @@ export const enUSMessages: ColabOneMessages = {
     "IndexTTS-2 requires a reference voice audio file",
   "comfy.runBlockedBusy": "Another task or operation is currently running",
   "comfy.runBlockedUploading": "Media is still uploading",
+  "comfy.defaultVisualPrompt":
+    "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+  "comfy.placeholderScriptText":
+    "Example: Hi everyone, welcome to today's session! Next, I'll walk you through how to easily create natural, studio-quality talking videos with AI.",
+  "comfy.placeholderVoiceRefText":
+    "Example: Hello, welcome to today's program. This clear voice recording will be used as the reference for voice cloning.",
+  "comfy.placeholderVoicePrompt":
+    "Example: Warm, composed young male voice with steady pace and clear articulation, or a bright, friendly female anchor voice",
+  "comfy.placeholderEmotionPrompt":
+    "Example: Professional and calm, upbeat and friendly, or inline tag [laugh]",
+  "comfy.placeholderVisualPrompt":
+    "Example: Clear studio portrait shot, speaker smiling and explaining naturally, subtle head nods, soft lighting, stable background",
+  "comfy.placeholderNegativePrompt":
+    "Example: blurry, overexposed, deformed subject, extra fingers, cluttered background, low quality",
+  "comfy.placeholderGenericPrompt":
+    "Example: Cinematic soft lighting, crisp details, clear focal subject, natural composition",
+  "comfy.placeholderGenericText": "Enter parameter value...",
+  "comfy.draftSavedBadge": "Draft auto-saved",
+  "comfy.draftSavingBadge": "Saving draft...",
+  "comfy.draftRestoredBadge": "Previous draft restored",
+  "comfy.draftLocalMediaTag": "Saved in draft",
+  "comfy.errSaveDraft": "Failed to auto-save draft: {detail}",
 
   // Settings Page
   "settings.title": "Settings",
@@ -1372,6 +1395,11 @@ export const enUSMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} Threads",
   "settings.autoDriveLabel": "Auto-Mount Drive",
   "settings.autoDriveDesc": "Automatically mount and sync Google Drive (ColabOne_Drive) on GPU start",
+  "settings.assignMaxAttemptsLabel": "Max GPU Allocation Attempts",
+  "settings.assignMaxAttemptsAria": "Maximum GPU allocation attempts",
+  "settings.assignMaxAttemptsUnit": "attempts",
+  "settings.assignMaxAttemptsDesc":
+    "Maximum total allocation attempts when Colab GPUs are busy (1–100, default 20). Retries use exponential backoff (2s → 4s → 8s → 16s → 32s), staying at 32s thereafter; set to 1 to disable automatic retries.",
   "settings.idleProtectionTitle": "Idle Auto-Release Protection",
   "settings.idleProtectionDesc":
     "Automatically releases remote resources after {policy} of inactivity. Any interaction resets the timer; downloads, loading, API inference, and ComfyUI tasks pause it automatically.",

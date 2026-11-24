@@ -79,6 +79,7 @@ type ColabOneController struct {
 	commonRepos             []map[string]any
 	defaultCommonVersion    int
 	customWorkflows         map[string]map[string]any
+	workflowDrafts          map[string]*ColabOneWorkflowDraft
 	remoteWorkflowVersions  map[string]float64
 	taskActivity            map[string]taskActivitySig
 	taskLogCursor           map[string]int64
@@ -228,6 +229,7 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		apiIDOverrides:         make(map[string]string),
 		commonRepos:            make([]map[string]any, 0),
 		customWorkflows:        make(map[string]map[string]any),
+		workflowDrafts:         make(map[string]*ColabOneWorkflowDraft),
 		remoteWorkflowVersions: make(map[string]float64),
 		taskActivity:           make(map[string]taskActivitySig),
 		taskLogCursor:          make(map[string]int64),
@@ -249,6 +251,7 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 	c.loadSettings()
 	c.loadLibrary()
 	c.loadWorkflows()
+	c.loadWorkflowDrafts()
 	c.cuUsage = NewColabOneCUUsageStore(configDir, nil)
 
 	c.data = map[string]any{
@@ -2379,6 +2382,10 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 	autoDrive := asBoolDefault(c.settings, "auto_drive", true)
 	proxyEnabled := asBool(c.settings["assign_proxy_enabled"])
 	idleMin, _ := asInt(c.settings["idle_minutes"])
+	assignMaxAttempts, ok := asExactInt(c.settings["assign_max_attempts"])
+	if !ok || assignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || assignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+		assignMaxAttempts = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
+	}
 	c.mu.Unlock()
 
 	if !validColabOneGPUs[targetGPU] {
@@ -2682,6 +2689,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		CreateNew:    createNew,
 		RcloneConf:   rcloneConf,
 		AssignProxy:  activeAssignProxy,
+		MaxAttempts:  assignMaxAttempts,
 		OnLog:        c.logFunc(),
 		OnTelemetry:  onBootTelemetry,
 		OnRetryState: onRetryState,
@@ -3637,10 +3645,14 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	curGPU := asString(c.settings["gpu"])
 	curIdle, _ := asInt(c.settings["idle_minutes"])
 	curThreads, _ := asInt(c.settings["download_threads"])
+	curAssignMaxAttempts, ok := asExactInt(c.settings["assign_max_attempts"])
+	if !ok || curAssignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || curAssignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+		curAssignMaxAttempts = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
+	}
 	c.mu.Unlock()
 
 	public := make(map[string]any)
-	for _, k := range []string{"gpu", "idle_minutes", "auto_drive", "download_threads", "assign_proxy_enabled"} {
+	for _, k := range []string{"gpu", "idle_minutes", "auto_drive", "download_threads", "assign_max_attempts", "assign_proxy_enabled"} {
 		if v, exists := payload[k]; exists {
 			public[k] = v
 		}
@@ -3680,6 +3692,18 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	}
 	if _, exists := public["download_threads"]; exists {
 		public["download_threads"] = threadsVal
+	}
+
+	rawAssignMaxAttempts := any(curAssignMaxAttempts)
+	if v, exists := public["assign_max_attempts"]; exists {
+		rawAssignMaxAttempts = v
+	}
+	assignMaxAttemptsVal, ok := asExactInt(rawAssignMaxAttempts)
+	if !ok || assignMaxAttemptsVal < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || assignMaxAttemptsVal > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+		return nil, fmt.Errorf("GPU 分配最大尝试次数必须在 %d 至 %d 次之间", COLABONE_MIN_ASSIGN_MAX_ATTEMPTS, COLABONE_MAX_ASSIGN_MAX_ATTEMPTS)
+	}
+	if _, exists := public["assign_max_attempts"]; exists {
+		public["assign_max_attempts"] = assignMaxAttemptsVal
 	}
 
 	if v, exists := public["auto_drive"]; exists {
@@ -3783,10 +3807,15 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 
 	snapIdle, _ := asInt(snapshotSettings["idle_minutes"])
 	snapThreads, _ := asInt(snapshotSettings["download_threads"])
+	snapAssignMaxAttempts, ok := asExactInt(snapshotSettings["assign_max_attempts"])
+	if !ok || snapAssignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || snapAssignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+		snapAssignMaxAttempts = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
+	}
 	summaryParts := []string{
 		fmt.Sprintf("默认 GPU: %s", asString(snapshotSettings["gpu"])),
 		fmt.Sprintf("空闲释放: %d 分钟", snapIdle),
 		fmt.Sprintf("下载并发: %d 线程", snapThreads),
+		fmt.Sprintf("分配重试上限: %d 次", snapAssignMaxAttempts),
 	}
 	if hfToken != "" {
 		summaryParts = append(summaryParts, "已更新 Hugging Face Token")

@@ -817,6 +817,18 @@ function translateSettingsSummaryPart(part: string, loc: ColabOneLocale): string
       "ko-KR": `다운로드 동시성: ${thr}스레드`,
     }[loc];
   }
+  const retryCapMatch = s.match(/^分配重试上限:\s*(\d+) 次$/);
+  if (retryCapMatch) {
+    const count = retryCapMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Max allocation attempts: ${count}`,
+      "zh-TW": `分配重試上限: ${count} 次`,
+      "zh-HK": `分配重試上限: ${count} 次`,
+      "ja-JP": `割り当て試行上限: ${count} 回`,
+      "ko-KR": `할당 시도 상한: ${count}회`,
+    }[loc];
+  }
   if (s === "已更新 Hugging Face Token") {
     return {
       "zh-CN": s,
@@ -3411,6 +3423,27 @@ const PATTERN_RULES: PatternRule[] = [
           return `入力ファイルがサイズ上限を超えています（最大 ${mb} MB）`;
         case "ko-KR":
           return `입력 파일이 크기 제한을 초과했습니다 (최대 ${mb} MB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的(图片|音频)输入文件格式：(.+)$/,
+    format: (m, loc) => {
+      const isAudio = m[1] === "音频";
+      const ext = translateFallbackUnknownWord(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Unsupported ${isAudio ? "audio" : "image"} input file format: ${ext}`;
+        case "zh-TW":
+          return `不支援的${isAudio ? "音訊" : "圖片"}輸入檔案格式：${ext}`;
+        case "zh-HK":
+          return `不支援的${isAudio ? "音訊" : "圖片"}輸入檔案格式：${ext}`;
+        case "ja-JP":
+          return `サポートされていない${isAudio ? "音声" : "画像"}入力ファイル形式です: ${ext}`;
+        case "ko-KR":
+          return `지원하지 않는 ${isAudio ? "오디오" : "이미지"} 입력 파일 형식입니다: ${ext}`;
         default:
           return m[0];
       }

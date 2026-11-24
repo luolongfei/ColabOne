@@ -562,6 +562,7 @@ export const zhCNMessages = {
   "device.toastRefreshed": "账户计费与实例状态已刷新",
   "device.toastIdleSet": "已将空闲自动释放设为 {policy}",
   "device.toastThreadsSet": "已将远端下载并发设为 {threads} 线程",
+  "device.toastAssignMaxAttemptsSet": "已将 GPU 分配最大尝试次数设为 {count} 次",
   "device.toastDefaultGpuSet": "已将默认 GPU 设为 {gpu}",
   "device.toastSettingsSaved": "设置已保存",
 
@@ -1258,6 +1259,28 @@ export const zhCNMessages = {
     "当前选用的 IndexTTS-2 引擎必须上传参考音色音频",
   "comfy.runBlockedBusy": "当前有正在执行的任务或操作，请稍候",
   "comfy.runBlockedUploading": "素材正在上传中，请稍候完成",
+  "comfy.defaultVisualPrompt":
+    "清晰演播室人像镜头，主播面向镜头自然说话，面部表情生动自然，头部轻微摆动，自然眨眼，焦距锐利，柔和演播室灯光，背景稳定不抖动",
+  "comfy.placeholderScriptText":
+    "例如：大家好，欢迎来到今天的分享！接下来我将带你快速了解如何用 AI 轻松生成自然流畅的口播视频。",
+  "comfy.placeholderVoiceRefText":
+    "例如：你好，欢迎收听今天的节目，这段清晰的人声将作为音色克隆参考。",
+  "comfy.placeholderVoicePrompt":
+    "例如：沉稳磁性的青年男声，语速适中、吐字清晰；或清亮亲切的女主播声线",
+  "comfy.placeholderEmotionPrompt":
+    "例如：专业沉稳、轻松愉快，或语气标签 [laugh]",
+  "comfy.placeholderVisualPrompt":
+    "例如：清晰演播室人像镜头，主播自然微笑讲解，头部轻微点头，柔和布光，背景稳定",
+  "comfy.placeholderNegativePrompt":
+    "例如：画面模糊、过曝、人物变形、多余手指、杂乱背景、低画质",
+  "comfy.placeholderGenericPrompt":
+    "例如：电影级柔和光影，细节清晰，主体突出，构图自然",
+  "comfy.placeholderGenericText": "请输入参数内容…",
+  "comfy.draftSavedBadge": "草稿已自动保存",
+  "comfy.draftSavingBadge": "正在保存草稿…",
+  "comfy.draftRestoredBadge": "已恢复上次草稿",
+  "comfy.draftLocalMediaTag": "草稿已保存",
+  "comfy.errSaveDraft": "自动保存草稿失败：{detail}",
 
   // Settings Page
   "settings.title": "设置",
@@ -1319,6 +1342,11 @@ export const zhCNMessages = {
   "settings.threadsOption": "{count} 线程",
   "settings.autoDriveLabel": "云盘自动挂载",
   "settings.autoDriveDesc": "启动 GPU 时自动挂载并同步 Google 云盘 (ColabOne_Drive)",
+  "settings.assignMaxAttemptsLabel": "GPU 分配最大尝试次数",
+  "settings.assignMaxAttemptsAria": "GPU 分配最大尝试次数",
+  "settings.assignMaxAttemptsUnit": "次",
+  "settings.assignMaxAttemptsDesc":
+    "算力紧张或请求繁忙时自动排队重试的总尝试次数上限（1–100 次，默认 20 次）。每次重试按指数退避（2s → 4s → 8s → 16s → 32s），达到 32 秒后后续间隔固定为 32 秒；设为 1 次则不自动重试。",
   "settings.idleProtectionTitle": "空闲自动释放保护",
   "settings.idleProtectionDesc":
     "超过 {policy} 无操作或任务时自动释放远端资源；继续操作会重置倒计时，模型下载与装载、对外 API 推理及 ComfyUI 运行期间自动暂停倒计时。",
