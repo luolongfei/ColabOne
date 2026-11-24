@@ -64,8 +64,12 @@ git push origin "v$VERSION"
 
 - 按 [references/github-actions.md](github-actions.md) 持续跟踪 `.github/workflows/release.yml` 对应标签和提交 SHA 的运行结果
 - 全部四个阶段均需成功：`Validate release metadata`、`check (windows-latest)`、`check (macos-latest)`、`Publish GitHub Release`
-- 最终核实 GitHub Release 非草稿、预发布标记与标签一致、中英双语发布说明（上方中文区块、下方英文区块）完整写入，且包含完整且非空的 3 个附件：
+- 最终核实 GitHub Release 非草稿、预发布标记与标签一致、中英双语发布说明（上方中文区块、下方英文区块）完整写入，且包含完整且非空的 7 个必选附件：
   - `ColabOne-<version>-windows-x64.zip`
   - `ColabOne-<version>-macos-arm64.zip`
-  - `SHA256SUMS.txt`
+  - `colabone-<version>-windows-amd64.tar.gz`
+  - `colabone-<version>-darwin-arm64.tar.gz`
+  - `update-windows-amd64.json`
+  - `update-darwin-arm64.json`
+  - `SHA256SUMS.txt`（以及如有前序签名版本时的 `.delta` 增量补丁）
 - 推送标签本身不代表发布完成；只有工作流全部成功且 Release 附件验收通过后，才报告发布完成

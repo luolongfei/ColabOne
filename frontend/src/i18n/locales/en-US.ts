@@ -1346,6 +1346,18 @@ export const enUSMessages: ColabOneMessages = {
   "settings.hfEmptyPlaceholder": "hf_... (only for gated model repositories)",
   "settings.hfSaveBtn": "Save Token",
   "settings.hfTokenExtractedToast": "Hugging Face Token auto-extracted",
+  "settings.closeBehaviorTitle": "When Closing Window",
+  "settings.closeBehaviorDesc":
+    "Choose what happens when you close the main window or close it from the taskbar. When set to Ask, Quit is selected by default.",
+  "settings.closeBehaviorDescNoTray":
+    "No system tray is available in this environment; closing the main window will quit the app directly.",
+  "settings.closeBehaviorAria": "Window close behavior",
+  "settings.closeBehaviorAsk": "Ask",
+  "settings.closeBehaviorQuit": "Quit",
+  "settings.closeBehaviorBackground": "Background",
+  "settings.closeBehaviorToastAsk": "Set window close behavior to ask every time",
+  "settings.closeBehaviorToastQuit": "Set window close behavior to quit directly",
+  "settings.closeBehaviorToastBackground": "Set window close behavior to run in background",
   "settings.shortcutsTitle": "Desktop & Start Menu Shortcuts",
   "settings.shortcutsInStartMenu": "In Start Menu",
   "settings.shortcutsDesc":
@@ -1383,6 +1395,115 @@ export const enUSMessages: ColabOneMessages = {
   "logs.footerLimit": "Latest 300 entries · Current session",
   "logs.following": "Following",
   "logs.jumpLatest": "Jump to Latest",
+
+  // App Self-Update
+  "update.navUpdateBadge": "Update",
+  "update.navRestartBadge": "Restart",
+  "update.navDownloadingBadge": "Updating {percent}%",
+  "update.navVersionTooltipAvailable": "New version v{version} available — click to view update",
+  "update.navVersionTooltipRestart": "Version v{version} is ready — click to restart and update",
+  "update.navVersionTooltipDownloading": "Downloading ColabOne v{version} ({percent}%)",
+  "update.navVersionTooltipDefault": "ColabOne {version} · Click to check for updates",
+  "update.settingsTitle": "App Updates",
+  "update.settingsDesc":
+    "Check for and install Ed25519-verified stable or prerelease builds directly from GitHub Releases, with incremental binary patch support.",
+  "update.statusUpToDate": "Up to Date",
+  "update.statusChecking": "Checking…",
+  "update.statusAvailable": "v{version} Available",
+  "update.statusDownloading": "Downloading {percent}%",
+  "update.statusInstalling": "Verifying & Installing…",
+  "update.statusReadyToRestart": "Ready to Restart",
+  "update.statusReadOnly": "Read-Only · Manual Update",
+  "update.statusDevBuild": "Dev Build",
+  "update.statusError": "Check Failed",
+  "update.lastCheckedNever": "Not checked yet",
+  "update.lastCheckedAt": "Last checked: {time}",
+  "update.btnCheck": "Check for Updates",
+  "update.btnChecking": "Checking…",
+  "update.btnUpdateNow": "Update Now",
+  "update.btnViewUpdate": "View Update",
+  "update.btnRestartNow": "Restart to Update",
+  "update.btnRestartLater": "Restart Later",
+  "update.btnCancelDownload": "Cancel Download",
+  "update.btnSkipVersion": "Skip This Version",
+  "update.btnRemindLater": "Remind Me Later",
+  "update.btnRetry": "Retry",
+  "update.btnOpenReleases": "Download on GitHub",
+  "update.prefAutoCheckLabel": "Automatically check on launch",
+  "update.prefAutoCheckDesc":
+    "Silently checks for updates on startup and every 6 hours; you always choose when to install.",
+  "update.prefPrereleaseLabel": "Include prerelease builds",
+  "update.prefPrereleaseDesc":
+    "Try preview builds (such as rc / beta) early; turning this off returns to the stable channel on the next newer stable release.",
+  "update.modalTitleAvailable": "Update Available",
+  "update.modalTitleReady": "Update Ready",
+  "update.modalTitleUpToDate": "You're Up to Date",
+  "update.modalTitleError": "Update Check Failed",
+  "update.modalTitleDisabled": "Software Update",
+  "update.modalPrereleaseTag": "Prerelease",
+  "update.modalVersionTransition": "v{current} → v{target}",
+  "update.modalPublishedAt": "Released {date}",
+  "update.modalNotesHeading": "What's New",
+  "update.modalNotesEmpty":
+    "No release notes are available for this version. View details on GitHub Releases.",
+  "update.modalToggleFullNotes": "Show Full Bilingual Notes",
+  "update.modalToggleLocalNotes": "Show Current Language Only",
+  "update.modalActiveGpuNotice":
+    "Updating and restarting the desktop app will not stop your running remote GPU, Public API, or ComfyUI tunnels — it reconnects automatically after restart.",
+  "update.modalActiveOpWarning":
+    "A local operation is currently in progress (such as starting/releasing a GPU or Drive sign-in). Wait for it to finish before restarting.",
+  "update.modalReadOnlyWarning":
+    "The install directory is not writable, so in-place replacement is unavailable. Download the update manually from GitHub Releases below.",
+  "update.modalManifestMissingWarning":
+    "This release does not include an automatic update package for your platform yet. Download it manually from GitHub Releases below.",
+  "update.modalDevBuildNotice":
+    "Self-replacement is disabled in local development builds. Packaged release builds support one-click automatic updates.",
+  "update.modalDownloadingHint":
+    "Downloading signed update package (with incremental diff patch support)…",
+  "update.modalInstallingHint":
+    "Verifying Ed25519 signature and applying update — please do not close the app…",
+  "update.modalReadyHint":
+    "ColabOne v{version} is verified and ready. Restart the app to switch to the new version.",
+  "update.modalUpToDateDesc": "You are running ColabOne v{version}, the latest available version.",
+  "update.errProxy":
+    "Failed to connect through your system proxy. Verify that your proxy is running and configured properly, or download manually from GitHub Releases.",
+  "update.errTimeout":
+    "The connection to GitHub or update download timed out. Check your network or proxy stability and retry, or download manually below.",
+  "update.errTls":
+    "HTTPS / TLS certificate verification failed. Check your system clock, proxy certificate, or firewall settings and retry.",
+  "update.errNetwork":
+    "Unable to reach GitHub. Check your network connection or system proxy and retry, or download manually below.",
+  "update.errNotFound":
+    "No update manifest was found for your platform yet. Please try again later or download manually from GitHub Releases.",
+  "update.errDetailLabel": "Diagnostic details",
+  "update.errRateLimited":
+    "GitHub API rate limit reached. Try again later or download manually from GitHub Releases.",
+  "update.errSignature":
+    "Update signature verification failed. The downloaded update patch may have been tampered with or corrupted, so installation was aborted. Click below to download an official package from GitHub.",
+  "update.errPermission":
+    "The install directory is not writable. Download and replace the app manually from GitHub Releases.",
+  "update.errUnknown":
+    "An unexpected error occurred while updating. Please retry or download manually from GitHub Releases.",
+  "update.toastUpToDate": "Already up to date (v{version})",
+  "update.toastSkipped": "Skipped automatic update reminders for v{version}",
+  "update.toastPrefsSaved": "Update preferences saved",
+
+  // Close Window Confirmation Modal
+  "close.modalTitle": "Close ColabOne",
+  "close.modalLead": "Choose what happens when you close the main window:",
+  "close.optionQuitTitle": "Quit directly",
+  "close.optionQuitDesc":
+    "Exit the local desktop client completely. Running remote GPUs and remote idle auto-release protection stay active.",
+  "close.optionBackgroundTitle": "Run in background",
+  "close.optionBackgroundDesc":
+    "Hide the window and keep running in the system tray so you can reopen it anytime.",
+  "close.defaultTag": "Default",
+  "close.activeOpWarning":
+    "A local operation (such as starting/releasing a GPU or downloading an update) is currently in progress. Quitting will interrupt it; running in the background keeps it going.",
+  "close.rememberLabel": "Remember my choice and don't ask again",
+  "close.rememberHint": "You can change this anytime in Settings → Desktop & About.",
+  "close.confirmQuitBtn": "Quit",
+  "close.confirmBackgroundBtn": "Run in Background",
 
   // Location
   "location.tooltipWithZone": "Instance location: {full} ({zone})",

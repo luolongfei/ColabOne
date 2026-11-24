@@ -330,6 +330,11 @@ func (c *ColabOneController) spawn(fn func()) bool {
 	return true
 }
 
+// LogActivity appends a desktop-originated log entry into the shared activity log.
+func (c *ColabOneController) LogActivity(message, source, level string) {
+	c.log(message, source, level)
+}
+
 func (c *ColabOneController) log(message, source, level string) {
 	if source == "" {
 		source = "客户端"
@@ -886,7 +891,7 @@ func (c *ColabOneController) Snapshot() map[string]any {
 	assignProxyEnabled := asBool(c.settings["assign_proxy_enabled"]) && assignProxySpec != nil
 	publicSettings := make(map[string]any, len(c.settings))
 	for k, v := range c.settings {
-		if k == "idle_policy" || k == "rclone_drive_policy" {
+		if k == "idle_policy" || k == "rclone_drive_policy" || k == "default_gpu_policy" {
 			continue
 		}
 		publicSettings[k] = v

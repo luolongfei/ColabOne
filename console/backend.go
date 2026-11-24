@@ -238,6 +238,20 @@ func (b *colabOneBridge) call(ctx context.Context, method string, payload map[st
 	return encodeColabOneResultJSON(result)
 }
 
+func (b *colabOneBridge) logActivity(message, source, level string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	ctrl := b.ctrl
+	closed := b.closed
+	b.mu.Unlock()
+	if ctrl == nil || closed {
+		return
+	}
+	ctrl.LogActivity(message, source, level)
+}
+
 func (b *colabOneBridge) close() {
 	b.closeWithTimeout(colabOneBridgeCloseTimeout)
 }

@@ -10,7 +10,7 @@
   3. `Publish GitHub Release`：确认标签未漂移、下载双平台压缩包、生成 `SHA256SUMS.txt` 并发布 GitHub Release
 - 发布完成必须同时满足：
   1. 匹配当前 `release.yml` + `push` + `vX.Y.Z` + 精确 `git_sha` 的运行状态为 `completed` 且结论为 `success`
-  2. GitHub Release 已创建（非 draft），`prerelease` 标记与版本号一致，中英双语发布说明（上方中文区块、下方英文区块）完整写入，且全部 3 个预期附件均为 `uploaded` 且字节数大于 0：`ColabOne-<version>-windows-x64.zip`、`ColabOne-<version>-macos-arm64.zip`、`SHA256SUMS.txt`
+  2. GitHub Release 已创建（非 draft），`prerelease` 标记与版本号一致，中英双语发布说明（上方中文区块、下方英文区块）完整写入，且全部 7 个必选附件均为 `uploaded` 且字节数大于 0：`ColabOne-<version>-windows-x64.zip`、`ColabOne-<version>-macos-arm64.zip`、`colabone-<version>-windows-amd64.tar.gz`、`colabone-<version>-darwin-arm64.tar.gz`、`update-windows-amd64.json`、`update-darwin-arm64.json`、`SHA256SUMS.txt`（如存在前序签名版本还会附带 `.delta` 增量补丁）
 
 ## 工具、凭据和权限
 

@@ -5,6 +5,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -66,11 +68,19 @@ var (
 	}
 
 	videoPipelines = map[string]struct{}{
-		"text-to-video":  {},
-		"image-to-video": {},
-		"video-to-video": {},
-		"any-to-video":   {},
+		"text-to-video":       {},
+		"image-to-video":      {},
+		"image-text-to-video": {},
+		"video-to-video":      {},
+		"any-to-video":        {},
 	}
+
+	modalitySearchPipelines = map[string][]string{
+		"image": {"text-to-image", "image-to-image"},
+		"video": {"text-to-video", "image-to-video", "image-text-to-video", "video-to-video"},
+	}
+
+	compoundCursorPrefix = "c1:"
 
 	imagePipelines = map[string]struct{}{
 		"text-to-image":                  {},
@@ -100,14 +110,20 @@ var (
 		"object-detection":             {},
 	}
 
+	minimaxImageRepoRe = regexp.MustCompile(
+		`(?i)(?:^|[-_/.])minimax[-_]?h3[-_.]image(?:$|[-_/.])`,
+	)
 	videoRepoRe = regexp.MustCompile(
-		`(?i)(?:^|[-_/.])(?:wan2(?:\.[12])?|wan[-_]?2|ltx[-_]?video|ltx[-_]?2|` +
-			`hunyuan[-_]?video|cogvideox?|mochi[-_]?1|skyreels|framepack|` +
+		`(?i)(?:^|[-_/.])(?:minimax[-_]?h3|hyperflow[-_]?h3|fasth3|` +
+			`wan2(?:\.\d+)?|wan[-_]?2|wan[-_]?animate|ltx[-_]?video|ltx[-_]?\d(?:\.\d+)?|ltxv|` +
+			`hunyuan[-_]?video|cogvideox?|mochi[-_]?1|skyreels|seedvr2?|scail|` +
+			`viggle|liveavatar|longcat[-_]?video|framepack|` +
 			`animatediff|t2v|i2v|v2v)(?:$|[-_/.])`,
 	)
 	imageRepoRe = regexp.MustCompile(
-		`(?i)(?:^|[-_/.])(?:flux(?:\.?[12])?|sdxl|sd3(?:\.?5)?|stable[-_]?diffusion|` +
-			`z[-_]?image|qwen[-_]?image|hidream|lumina[-_]?image|kolors|pixart|` +
+		`(?i)(?:^|[-_/.])(?:flux(?:\.?[123])?|sdxl|sd3(?:\.?5)?|stable[-_]?diffusion|` +
+			`z[-_]?image|qwen[-_]?image|moss[-_]?image|minimax[-_]?h3[-_.]image|` +
+			`hidream|lumina[-_]?image|kolors|pixart|` +
 			`auraflow|chroma|kontext|omnigen)(?:$|[-_/.])`,
 	)
 
@@ -115,16 +131,28 @@ var (
 		label   string
 		pattern *regexp.Regexp
 	}{
+		{"Qwen-Image", regexp.MustCompile(`(?i)(?:^|[-_/])qwen[-_]?image`)},
 		{"Qwen", regexp.MustCompile(`(?i)qwen|qwq`)},
 		{"DeepSeek", regexp.MustCompile(`(?i)deepseek`)},
 		{"GLM", regexp.MustCompile(`(?i)(?:^|[-_/])glm[-_.\d]|chatglm`)},
 		{"Gemma", regexp.MustCompile(`(?i)gemma`)},
 		{"Llama", regexp.MustCompile(`(?i)llama`)},
 		{"Mistral", regexp.MustCompile(`(?i)mistral|mixtral|pixtral|devstral|magistral`)},
-		{"FLUX", regexp.MustCompile(`(?i)(?:^|[-_/])flux(?:\.?[12]|[-_.]|$)`)},
-		{"Wan", regexp.MustCompile(`(?i)(?:^|[-_/])wan2(?:\.[12])?|wan[-_]?2`)},
-		{"LTX", regexp.MustCompile(`(?i)(?:^|[-_/])ltx[-_]?(?:video|2)`)},
+		{"MiniMax-H3", regexp.MustCompile(`(?i)(?:^|[-_/])(?:minimax[-_]?h3|hyperflow[-_]?h3|fasth3)`)},
+		{"FLUX", regexp.MustCompile(`(?i)(?:^|[-_/])flux(?:\.?[123]|[-_.]|$)`)},
+		{"Z-Image", regexp.MustCompile(`(?i)(?:^|[-_/])z[-_]?image`)},
+		{"MOSS-Image", regexp.MustCompile(`(?i)(?:^|[-_/])moss[-_]?image`)},
+		{"HiDream", regexp.MustCompile(`(?i)hidream`)},
+		{"Chroma", regexp.MustCompile(`(?i)(?:^|[-_/])chroma(?:[-_.]|$)`)},
+		{"Wan", regexp.MustCompile(`(?i)(?:^|[-_/])wan(?:2(?:\.\d+)?|[-_]?2|[-_]?animate|[-_]?1\.3b)`)},
+		{"LTX", regexp.MustCompile(`(?i)(?:^|[-_/])ltx(?:[-_]?(?:video|\d)|v)`)},
 		{"Hunyuan", regexp.MustCompile(`(?i)hunyuan`)},
+		{"SeedVR2", regexp.MustCompile(`(?i)(?:^|[-_/])seedvr2?`)},
+		{"SkyReels", regexp.MustCompile(`(?i)skyreels`)},
+		{"SCAIL", regexp.MustCompile(`(?i)(?:^|[-_/])scail`)},
+		{"LiveAvatar", regexp.MustCompile(`(?i)liveavatar`)},
+		{"Viggle", regexp.MustCompile(`(?i)(?:^|[-_/])viggle`)},
+		{"Mochi", regexp.MustCompile(`(?i)(?:^|[-_/])mochi(?:[-_.]|$)`)},
 	}
 
 	// Matches parameter scale tokens such as 27B or 125B-A6B bounded by start/end or [-_/.].
@@ -370,6 +398,9 @@ func ClassifyModality(pipelineTag string, tags []string, repo string) string {
 		return "image"
 	}
 	repoName := strings.TrimSpace(repo)
+	if minimaxImageRepoRe.MatchString(repoName) {
+		return "image"
+	}
 	if videoRepoRe.MatchString(repoName) {
 		return "video"
 	}
@@ -434,10 +465,302 @@ func (c *ColabOneHubClient) SearchModels(
 		effectiveQuery = strings.TrimSpace(cleanFamily + " " + cleanQuery)
 	}
 
+	if pipelines, multi := modalitySearchPipelines[normModality]; multi {
+		return c.searchMultiPipelineModels(ctx, effectiveQuery, sortKey, sortParam, normModality, pipelines, opts.Cursor, opts.Token)
+	}
+
+	if strings.HasPrefix(opts.Cursor, compoundCursorPrefix) {
+		return nil, ErrInvalidSearchCursor
+	}
+
 	limit := "20"
 	if normModality == "text" {
 		limit = "30"
 	}
+	models, nextCursor, err := c.fetchHubModelsPage(ctx, effectiveQuery, sortParam, normModality, "", limit, opts.Cursor, opts.Token)
+	if err != nil {
+		return nil, err
+	}
+	return &ColabOneHubSearchResult{
+		Models:     models,
+		NextCursor: nextCursor,
+	}, nil
+}
+
+type pipelineTarget struct {
+	pipeline string
+	cursor   string
+}
+
+type pipelinePageResult struct {
+	pipeline   string
+	models     []ColabOneHubModel
+	nextCursor string
+	err        error
+}
+
+func encodeCompoundCursor(cursors map[string]string, priorityOrder []string) string {
+	if len(cursors) == 0 {
+		return ""
+	}
+	encode := func(m map[string]string) string {
+		if len(m) == 0 {
+			return ""
+		}
+		raw, err := json.Marshal(m)
+		if err != nil {
+			return ""
+		}
+		return compoundCursorPrefix + base64.RawURLEncoding.EncodeToString(raw)
+	}
+	if encoded := encode(cursors); encoded != "" && utf8.RuneCountInString(encoded) <= maxCursorRunes {
+		return encoded
+	}
+	// If the combined cursor exceeds maxCursorRunes, retain highest-priority pipelines that fit.
+	trimmed := make(map[string]string, len(cursors))
+	for _, p := range priorityOrder {
+		v, ok := cursors[p]
+		if !ok {
+			continue
+		}
+		trimmed[p] = v
+		if encoded := encode(trimmed); encoded == "" || utf8.RuneCountInString(encoded) > maxCursorRunes {
+			delete(trimmed, p)
+		}
+	}
+	return encode(trimmed)
+}
+
+func decodeCompoundCursor(cursor string, allowed []string) (map[string]string, error) {
+	payload := strings.TrimPrefix(cursor, compoundCursorPrefix)
+	if payload == "" {
+		return nil, ErrInvalidSearchCursor
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, ErrInvalidSearchCursor
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded) == 0 {
+		return nil, ErrInvalidSearchCursor
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, p := range allowed {
+		allowedSet[p] = struct{}{}
+	}
+	for k, v := range decoded {
+		if _, ok := allowedSet[k]; !ok || strings.TrimSpace(v) == "" {
+			return nil, ErrInvalidSearchCursor
+		}
+	}
+	return decoded, nil
+}
+
+func (c *ColabOneHubClient) searchMultiPipelineModels(
+	ctx context.Context,
+	effectiveQuery string,
+	sortKey string,
+	sortParam string,
+	normModality string,
+	pipelines []string,
+	cursor string,
+	token string,
+) (*ColabOneHubSearchResult, error) {
+	limit := "15"
+	if normModality == "video" {
+		limit = "10"
+	}
+
+	var targets []pipelineTarget
+	useCompoundCursor := true
+	if cursor == "" {
+		targets = make([]pipelineTarget, 0, len(pipelines))
+		for _, p := range pipelines {
+			targets = append(targets, pipelineTarget{pipeline: p})
+		}
+	} else if strings.HasPrefix(cursor, compoundCursorPrefix) {
+		cursorMap, err := decodeCompoundCursor(cursor, pipelines)
+		if err != nil {
+			return nil, err
+		}
+		targets = make([]pipelineTarget, 0, len(cursorMap))
+		for _, p := range pipelines {
+			if cur, ok := cursorMap[p]; ok {
+				targets = append(targets, pipelineTarget{pipeline: p, cursor: cur})
+			}
+		}
+	} else {
+		// Backward-compatible fallback for legacy raw Hugging Face cursors.
+		useCompoundCursor = false
+		targets = []pipelineTarget{{pipeline: pipelines[0], cursor: cursor}}
+	}
+
+	pages := make([]pipelinePageResult, len(targets))
+	if len(targets) == 1 {
+		t := targets[0]
+		models, nextCur, err := c.fetchHubModelsPage(ctx, effectiveQuery, sortParam, normModality, t.pipeline, limit, t.cursor, token)
+		pages[0] = pipelinePageResult{pipeline: t.pipeline, models: models, nextCursor: nextCur, err: err}
+	} else {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		reqCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Add(len(targets))
+		for i, t := range targets {
+			go func(idx int, target pipelineTarget) {
+				defer wg.Done()
+				models, nextCur, err := c.fetchHubModelsPage(reqCtx, effectiveQuery, sortParam, normModality, target.pipeline, limit, target.cursor, token)
+				if errors.Is(err, ErrHubAccessDenied) || errors.Is(err, ErrHubRateLimited) {
+					cancel()
+				}
+				pages[idx] = pipelinePageResult{
+					pipeline:   target.pipeline,
+					models:     models,
+					nextCursor: nextCur,
+					err:        err,
+				}
+			}(i, t)
+		}
+		wg.Wait()
+	}
+
+	var firstErr error
+	succeeded := 0
+	for _, page := range pages {
+		if page.err != nil {
+			if errors.Is(page.err, ErrHubAccessDenied) {
+				return nil, page.err
+			}
+			if firstErr == nil {
+				firstErr = page.err
+			}
+			continue
+		}
+		succeeded++
+	}
+	for _, page := range pages {
+		if errors.Is(page.err, ErrHubRateLimited) {
+			return nil, page.err
+		}
+	}
+	if succeeded == 0 {
+		return nil, firstErr
+	}
+
+	merged := make([]ColabOneHubModel, 0, len(pages)*10)
+	seenIdx := make(map[string]int)
+	nextMap := make(map[string]string)
+	for i, page := range pages {
+		if page.err != nil {
+			// On page 2+, retain the failed sub-pipeline's previous cursor so the next
+			// "Load More" retries it cleanly instead of silently losing its remaining pages.
+			if targets[i].cursor != "" {
+				nextMap[page.pipeline] = targets[i].cursor
+			}
+			continue
+		}
+		if page.nextCursor != "" {
+			nextMap[page.pipeline] = page.nextCursor
+		}
+		for _, m := range page.models {
+			if idx, exists := seenIdx[m.Repo]; exists {
+				if m.Downloads > merged[idx].Downloads {
+					merged[idx] = m
+				}
+				continue
+			}
+			seenIdx[m.Repo] = len(merged)
+			merged = append(merged, m)
+		}
+	}
+
+	sortHubModels(merged, sortKey)
+
+	nextCursor := ""
+	if useCompoundCursor {
+		nextCursor = encodeCompoundCursor(nextMap, pipelines)
+	} else if len(pages) == 1 && pages[0].err == nil {
+		nextCursor = pages[0].nextCursor
+	}
+	return &ColabOneHubSearchResult{
+		Models:     merged,
+		NextCursor: nextCursor,
+	}, nil
+}
+
+func parseHubTimestampNano(raw string) (int64, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return ts.UnixNano(), true
+	}
+	return 0, false
+}
+
+func sortHubModels(models []ColabOneHubModel, sortKey string) {
+	var tsCache map[string]int64
+	var tsValid map[string]bool
+	if sortKey == "updated" && len(models) > 1 {
+		tsCache = make(map[string]int64, len(models))
+		tsValid = make(map[string]bool, len(models))
+		for _, m := range models {
+			if _, seen := tsValid[m.Updated]; !seen {
+				ns, ok := parseHubTimestampNano(m.Updated)
+				tsCache[m.Updated] = ns
+				tsValid[m.Updated] = ok
+			}
+		}
+	}
+	sort.SliceStable(models, func(i, j int) bool {
+		a, b := models[i], models[j]
+		switch sortKey {
+		case "likes":
+			if a.Likes != b.Likes {
+				return a.Likes > b.Likes
+			}
+			if a.Downloads != b.Downloads {
+				return a.Downloads > b.Downloads
+			}
+		case "updated":
+			aOk, bOk := tsValid[a.Updated], tsValid[b.Updated]
+			if aOk && bOk {
+				if tsCache[a.Updated] != tsCache[b.Updated] {
+					return tsCache[a.Updated] > tsCache[b.Updated]
+				}
+			} else if aOk != bOk {
+				return aOk
+			} else if a.Updated != b.Updated {
+				return a.Updated > b.Updated
+			}
+			if a.Downloads != b.Downloads {
+				return a.Downloads > b.Downloads
+			}
+		default:
+			if a.Downloads != b.Downloads {
+				return a.Downloads > b.Downloads
+			}
+			if a.Likes != b.Likes {
+				return a.Likes > b.Likes
+			}
+		}
+		return a.Repo < b.Repo
+	})
+}
+
+func (c *ColabOneHubClient) fetchHubModelsPage(
+	ctx context.Context,
+	effectiveQuery string,
+	sortParam string,
+	normModality string,
+	pipelineTag string,
+	limit string,
+	cursor string,
+	token string,
+) ([]ColabOneHubModel, string, error) {
 	params := url.Values{
 		"search":    {effectiveQuery},
 		"filter":    {"gguf"},
@@ -445,24 +768,21 @@ func (c *ColabOneHubClient) SearchModels(
 		"direction": {"-1"},
 		"limit":     {limit},
 	}
-	switch normModality {
-	case "image":
-		params.Set("pipeline_tag", "text-to-image")
-	case "video":
-		params.Set("pipeline_tag", "text-to-video")
+	if pipelineTag != "" {
+		params.Set("pipeline_tag", pipelineTag)
 	}
-	if opts.Cursor != "" {
-		params.Set("cursor", opts.Cursor)
+	if cursor != "" {
+		params.Set("cursor", cursor)
 	}
 
-	body, headers, err := c.doGet(ctx, "", params, opts.Token)
+	body, headers, err := c.doGet(ctx, "", params, token)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	rawItems, err := decodeJSONArray(body)
 	if err != nil {
-		return nil, ErrHubInvalidResponse
+		return nil, "", ErrHubInvalidResponse
 	}
 
 	models := make([]ColabOneHubModel, 0, len(rawItems))
@@ -506,10 +826,7 @@ func (c *ColabOneHubClient) SearchModels(
 	}
 
 	nextCursor := extractTrustedNextCursor(headers.Values("Link"))
-	return &ColabOneHubSearchResult{
-		Models:     models,
-		NextCursor: nextCursor,
-	}, nil
+	return models, nextCursor, nil
 }
 
 // ModelFiles fetches the pinned main revision metadata and runnable GGUF file list for a repo.

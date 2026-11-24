@@ -1,5 +1,9 @@
 import { t, tb } from "./i18n";
-import type { ModelSpec, RuntimeStatus } from "./types";
+import {
+  COLABONE_DEFAULT_GPU,
+  type ModelSpec,
+  type RuntimeStatus,
+} from "./types";
 
 export type ColabOneGpuTargetId =
   | "CURRENT"
@@ -354,11 +358,14 @@ export const COLABONE_HUB_FAMILIES_BY_MODALITY: Record<
         return t("common.all");
       },
     },
-    { id: "FLUX", label: "FLUX" },
     { id: "Qwen-Image", label: "Qwen-Image" },
-    { id: "SD3", label: "SD3.5 / SDXL" },
     { id: "Z-Image", label: "Z-Image" },
+    { id: "MiniMax-H3", label: "MiniMax H3" },
+    { id: "FLUX", label: "FLUX" },
+    { id: "MOSS-Image", label: "MOSS-Image" },
+    { id: "Chroma", label: "Chroma" },
     { id: "HiDream", label: "HiDream" },
+    { id: "SD3", label: "SD3.5 / SDXL" },
   ],
   video: [
     {
@@ -367,6 +374,7 @@ export const COLABONE_HUB_FAMILIES_BY_MODALITY: Record<
         return t("common.all");
       },
     },
+    { id: "MiniMax-H3", label: "MiniMax H3" },
     {
       id: "Wan",
       get label() {
@@ -380,7 +388,9 @@ export const COLABONE_HUB_FAMILIES_BY_MODALITY: Record<
         return t("models.compatFamilyHunyuan");
       },
     },
-    { id: "CogVideo", label: "CogVideo" },
+    { id: "SeedVR2", label: "SeedVR2" },
+    { id: "SkyReels", label: "SkyReels" },
+    { id: "SCAIL", label: "SCAIL" },
   ],
 };
 
@@ -562,7 +572,7 @@ export function mapSettingsGpuToTargetId(
     case "T4":
       return "T4";
     default:
-      return "G4";
+      return COLABONE_DEFAULT_GPU;
   }
 }
 

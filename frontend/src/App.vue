@@ -4,6 +4,7 @@ import {
   defineAsyncComponent,
   defineComponent,
   h,
+  nextTick,
   onMounted,
   onUnmounted,
   ref,
@@ -39,17 +40,21 @@ import {
   TypographyText as ATypographyText,
   TypographyTitle as ATypographyTitle,
 } from "ant-design-vue";
+import ColabOneCloseModal from "./ColabOneCloseModal.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneToastHost from "./ColabOneToastHost.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import ColabOneUpdateModal from "./ColabOneUpdateModal.vue";
 import { colabOneExtractHfToken } from "./colabOneSecretToken";
 import {
+  PhAppWindow,
   PhArrowSquareOut,
   PhArrowsClockwise,
   PhCaretRight,
   PhCheck,
   PhCloud,
+  PhCloudArrowDown,
   PhCopy,
   PhDesktop,
   PhFlowArrow,
@@ -60,15 +65,21 @@ import {
   PhMoon,
   PhPlay,
   PhPlus,
+  PhQuestion,
   PhShieldCheck,
+  PhSignOut,
   PhSlidersHorizontal,
   PhStop,
   PhSun,
   PhTerminalWindow,
+  PhTray,
   PhUserCircle,
 } from "@phosphor-icons/vue";
 import rawAppIcon from "../../console/resources/icon.svg?raw";
-import { COLABONE_APP_VERSION_LABEL } from "./colabOneVersion";
+import {
+  COLABONE_APP_VERSION,
+  COLABONE_APP_VERSION_LABEL,
+} from "./colabOneVersion";
 import { buildColabOneTheme } from "./colabOneTheme";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import {
@@ -110,15 +121,45 @@ import {
   stripColabOneErrorPrefixes,
 } from "./billing";
 import {
+  colabOneCancelUpdateInstall,
+  colabOneCheckForUpdate,
   colabOneCommand,
+  colabOneGetCloseBehavior,
   colabOneGetLogDrawerState,
+  colabOneGetUpdateState,
+  colabOneOnCloseBehavior,
+  colabOneOnCloseRequest,
+  colabOneOnUpdateOpen,
+  colabOneOnUpdateState,
   colabOneOpenURL,
   colabOneReadClipboard,
+  colabOneRelaunchForUpdate,
+  colabOneResolveCloseRequest,
+  colabOneSetCloseBehavior,
   colabOneSetLogDrawer,
+  colabOneSetUpdatePreferences,
+  colabOneSkipUpdateVersion,
   colabOneSnapshotRaw,
+  colabOneStartUpdateInstall,
   colabOneWriteClipboard,
+  normalizeColabOneCloseAction,
+  normalizeColabOneCloseBehavior,
+  type ColabOneCloseAction,
+  type ColabOneCloseBehaviorState,
+  type ColabOneUpdateState,
 } from "./api";
 import {
+  COLABONE_RELEASES_URL,
+  createColabOneUpdateState,
+  hasColabOneActiveUpdatePill,
+  hasColabOneUnreadUpdateDot,
+  normalizeColabOneUpdateState,
+  normalizeColabOneUpdateVersion,
+  readColabOneSeenUpdateVersion,
+  writeColabOneSeenUpdateVersion,
+} from "./colabOneUpdater";
+import {
+  COLABONE_DEFAULT_GPU,
   createColabOneSnapshot,
   COLABONE_STATUS_LABELS,
   evaluateColabOneRuntimeUpgrade,
@@ -338,6 +379,16 @@ const state = shallowRef(createColabOneSnapshot()),
   busyCount = ref(0),
   busy = computed(() => busyCount.value > 0),
   savingIdle = ref(false);
+const updateState = ref<ColabOneUpdateState>(createColabOneUpdateState());
+const updateModalOpen = ref(false);
+const checkingUpdate = ref(false);
+const savingUpdatePrefs = ref(false);
+const seenUpdateVersion = ref<string>(readColabOneSeenUpdateVersion());
+let unsubUpdateState: (() => void) | null = null;
+let unsubUpdateOpen: (() => void) | null = null;
+let updateProgressPollTimer: ReturnType<typeof setInterval> | null = null;
+let updatePollInFlight = false;
+let lastUpdatePushAt = 0;
 let ipcFailures = 0;
 let lastSnapshotRaw: string | null = null;
 let panelsPrefetched = false;
@@ -989,7 +1040,7 @@ const GPU_SPECS = computed(
 );
 
 const form = ref({
-  gpu: "T4",
+  gpu: COLABONE_DEFAULT_GPU as string,
   idle_minutes: 30,
   idle_countdown_seconds: 60,
   auto_drive: true,
@@ -1051,6 +1102,9 @@ function interaction(event?: Event) {
 
 function handleGlobalKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
+    if (closeModalOpen.value || updateModalOpen.value) {
+      return;
+    }
     if (showRelease.value && !busy.value) {
       showRelease.value = false;
     } else if (
@@ -1063,6 +1117,9 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     return;
   }
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "j") {
+    if (closeModalOpen.value) {
+      return;
+    }
     e.preventDefault();
     void setLogsOpen(!logsOpen.value);
     return;
@@ -1073,7 +1130,9 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     !e.metaKey &&
     !e.shiftKey &&
     !modelsDrawerOpen.value &&
-    !showRelease.value
+    !showRelease.value &&
+    !updateModalOpen.value &&
+    !closeModalOpen.value
   ) {
     const map: Record<string, string> = {
       "1": "device",
@@ -2367,9 +2426,484 @@ watch(
   { flush: "post" },
 );
 
+function stopUpdateProgressPoll() {
+  if (updateProgressPollTimer !== null) {
+    clearInterval(updateProgressPollTimer);
+    updateProgressPollTimer = null;
+  }
+}
+
+function applyUpdateState(
+  raw: Partial<ColabOneUpdateState> | null | undefined,
+  fromPush = false,
+) {
+  if (fromPush) {
+    lastUpdatePushAt = Date.now();
+  }
+  const normalized = normalizeColabOneUpdateState(raw);
+  updateState.value = normalized;
+  const inFlight =
+    normalized.status === "downloading" || normalized.status === "installing";
+  if (inFlight) {
+    if (updateProgressPollTimer === null && !stopped) {
+      updateProgressPollTimer = setInterval(() => {
+        if (stopped) {
+          stopUpdateProgressPoll();
+          return;
+        }
+        // Skip redundant polling when native Go push events are actively arriving.
+        if (updatePollInFlight || Date.now() - lastUpdatePushAt < 1000) {
+          return;
+        }
+        updatePollInFlight = true;
+        void colabOneGetUpdateState()
+          .then((next) => {
+            if (!stopped) applyUpdateState(next);
+          })
+          .catch(() => {})
+          .finally(() => {
+            updatePollInFlight = false;
+          });
+      }, 350);
+    }
+  } else {
+    stopUpdateProgressPoll();
+  }
+}
+
+const isCheckingUpdate = computed(
+  () => checkingUpdate.value || updateState.value.status === "checking",
+);
+
+const showNavUpdateDot = computed(() =>
+  hasColabOneUnreadUpdateDot(updateState.value, seenUpdateVersion.value),
+);
+
+const showNavUpdatePill = computed(() =>
+  hasColabOneActiveUpdatePill(updateState.value),
+);
+
+function markUpdateVersionSeen(version?: string) {
+  const normalized = normalizeColabOneUpdateVersion(
+    version ?? updateState.value.available_version,
+  );
+  if (!normalized) return;
+  seenUpdateVersion.value = normalized;
+  writeColabOneSeenUpdateVersion(normalized);
+}
+
+watch(
+  [
+    updateModalOpen,
+    () => updateState.value.status,
+    () => updateState.value.available_version,
+  ],
+  ([isOpen, status, availableVersion]) => {
+    if (isOpen && status === "available" && availableVersion) {
+      markUpdateVersionSeen(availableVersion);
+    }
+  },
+);
+
+const navVersionTooltip = computed(() => {
+  const st = updateState.value;
+  if (st.status === "ready_to_restart") {
+    return t("update.navVersionTooltipRestart", {
+      version: st.available_version || COLABONE_APP_VERSION,
+    });
+  }
+  if (st.status === "downloading" || st.status === "installing") {
+    return t("update.navVersionTooltipDownloading", {
+      version: st.available_version || COLABONE_APP_VERSION,
+      percent: Math.round(st.progress_percent),
+    });
+  }
+  if (st.status === "available" && st.available_version) {
+    return t("update.navVersionTooltipAvailable", {
+      version: st.available_version,
+    });
+  }
+  return t("update.navVersionTooltipDefault", { version: appVersionLabel });
+});
+
+const navUpdateBadgeLabel = computed(() => {
+  const st = updateState.value;
+  if (!showNavUpdatePill.value) return "";
+  if (st.status === "ready_to_restart") {
+    return t("update.navRestartBadge");
+  }
+  if (st.status === "downloading" || st.status === "installing") {
+    return t("update.navDownloadingBadge", {
+      percent: Math.round(st.progress_percent),
+    });
+  }
+  return t("update.navUpdateBadge");
+});
+
+const updateStatusTag = computed<{ label: string; color?: string } | null>(
+  () => {
+    const st = updateState.value;
+    if (st.status === "ready_to_restart") {
+      return { label: t("update.statusReadyToRestart"), color: "success" };
+    }
+    if (st.status === "downloading") {
+      return {
+        label: t("update.statusDownloading", {
+          percent: Math.round(st.progress_percent),
+        }),
+        color: "processing",
+      };
+    }
+    if (st.status === "installing") {
+      return { label: t("update.statusInstalling"), color: "processing" };
+    }
+    if (isCheckingUpdate.value) {
+      return { label: t("update.statusChecking"), color: "processing" };
+    }
+    if (st.status === "available" && st.available_version) {
+      return {
+        label: t("update.statusAvailable", { version: st.available_version }),
+        color: "blue",
+      };
+    }
+    if (st.status === "error") {
+      return { label: t("update.statusError"), color: "error" };
+    }
+    if (st.status === "disabled") {
+      if (st.disabled_reason === "read_only_install") {
+        return { label: t("update.statusReadOnly"), color: "warning" };
+      }
+      return { label: t("update.statusDevBuild") };
+    }
+    if (st.status === "up_to_date") {
+      return { label: t("update.statusUpToDate"), color: "success" };
+    }
+    if (st.disabled_reason === "read_only_install") {
+      return { label: t("update.statusReadOnly"), color: "warning" };
+    }
+    return null;
+  },
+);
+
+const showUpdateReadOnlySecondaryTag = computed(
+  () =>
+    updateState.value.disabled_reason === "read_only_install" &&
+    updateState.value.status !== "disabled" &&
+    updateState.value.status !== "idle",
+);
+
+const updateLastCheckedText = computed(() => {
+  const ts = updateState.value.last_checked_at;
+  if (!ts || !Number.isFinite(ts) || ts <= 0) {
+    return t("update.lastCheckedNever");
+  }
+  const ms = ts > 1e12 ? ts : ts * 1000;
+  try {
+    const formatted = new Intl.DateTimeFormat(colabOneLocaleCode.value, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(ms));
+    return t("update.lastCheckedAt", { time: formatted });
+  } catch {
+    return t("update.lastCheckedAt", { time: new Date(ms).toLocaleString() });
+  }
+});
+
+async function handleCheckForUpdate(openModalOnResult = false) {
+  if (checkingUpdate.value) return;
+  checkingUpdate.value = true;
+  try {
+    const next = await colabOneCheckForUpdate(true);
+    applyUpdateState(next);
+    const status = updateState.value.status;
+    if (
+      status === "available" ||
+      status === "ready_to_restart" ||
+      status === "error" ||
+      openModalOnResult
+    ) {
+      updateModalOpen.value = true;
+    } else if (status === "up_to_date" && !updateModalOpen.value) {
+      notify(
+        t("update.toastUpToDate", {
+          version: updateState.value.current_version || COLABONE_APP_VERSION,
+        }),
+        "success",
+        "update-up-to-date",
+      );
+    }
+  } catch (e) {
+    try {
+      const latest = await colabOneGetUpdateState();
+      applyUpdateState(latest);
+    } catch {
+      // Ignore secondary state refresh error.
+    }
+    if (updateState.value.status !== "error") {
+      applyUpdateState({
+        ...updateState.value,
+        status: "error",
+        error_code: updateState.value.error_code || "unknown",
+        error_message:
+          normalizeErrorKey(e) || updateState.value.error_message,
+      });
+    }
+    updateModalOpen.value = true;
+  } finally {
+    checkingUpdate.value = false;
+  }
+}
+
+async function handleStartUpdateInstall() {
+  try {
+    const next = await colabOneStartUpdateInstall();
+    applyUpdateState(next);
+  } catch (e) {
+    try {
+      const latest = await colabOneGetUpdateState();
+      applyUpdateState(latest);
+    } catch {
+      // Ignore secondary state refresh error.
+    }
+    showError(e);
+  }
+}
+
+async function handleCancelUpdateInstall() {
+  try {
+    const next = await colabOneCancelUpdateInstall();
+    applyUpdateState(next);
+  } catch (e) {
+    showError(e);
+  }
+}
+
+async function handleRelaunchForUpdate() {
+  if (state.value.operation) return;
+  try {
+    await colabOneRelaunchForUpdate();
+  } catch (e) {
+    showError(e);
+  }
+}
+
+async function handleSkipUpdateVersion(version?: string) {
+  const targetVersion = String(
+    version || updateState.value.available_version || "",
+  ).trim();
+  if (!targetVersion) return;
+  try {
+    const next = await colabOneSkipUpdateVersion(targetVersion);
+    applyUpdateState(next);
+    updateModalOpen.value = false;
+    notify(
+      t("update.toastSkipped", { version: targetVersion }),
+      "info",
+      "update-skipped",
+    );
+  } catch (e) {
+    showError(e);
+  }
+}
+
+async function handleToggleUpdatePref(
+  field: "auto_check" | "include_prerelease",
+  value: boolean,
+) {
+  if (savingUpdatePrefs.value) return;
+  const nextAuto =
+    field === "auto_check" ? value : updateState.value.auto_check;
+  const nextPre =
+    field === "include_prerelease"
+      ? value
+      : updateState.value.include_prerelease;
+  savingUpdatePrefs.value = true;
+  try {
+    const next = await colabOneSetUpdatePreferences(nextAuto, nextPre);
+    applyUpdateState(next);
+    notify(t("update.toastPrefsSaved"), "success", "update-prefs-saved");
+  } catch (e) {
+    showError(e);
+  } finally {
+    savingUpdatePrefs.value = false;
+  }
+}
+
+async function handleOpenReleasePage(url?: string) {
+  await openExternalURL(
+    url || updateState.value.release_url || COLABONE_RELEASES_URL,
+  );
+}
+
+function handleBrandVersionClick() {
+  markUpdateVersionSeen();
+  updateModalOpen.value = true;
+}
+
+const closeBehaviorState = ref<ColabOneCloseBehaviorState>({
+  behavior: "ask",
+  default_choice: "quit",
+  can_background: true,
+});
+const savingCloseBehavior = ref(false);
+const closeModalOpen = ref(false);
+const closeModalDefaultChoice = ref<ColabOneCloseAction>("quit");
+const closeModalSubmitting = ref(false);
+const closeModalSuppressLeave = ref(false);
+let unsubCloseRequest: (() => void) | null = null;
+let unsubCloseBehavior: (() => void) | null = null;
+
+const closeBehaviorSegmentedOptions = computed(() => [
+  {
+    value: "ask",
+    title: t("settings.closeBehaviorAsk"),
+    payload: { label: t("settings.closeBehaviorAsk") },
+  },
+  {
+    value: "quit",
+    title: t("settings.closeBehaviorQuit"),
+    payload: { label: t("settings.closeBehaviorQuit") },
+  },
+  {
+    value: "background",
+    title: t("settings.closeBehaviorBackground"),
+    disabled: !closeBehaviorState.value.can_background,
+    payload: { label: t("settings.closeBehaviorBackground") },
+  },
+]);
+
+const hasActiveCloseBlockingOp = computed(
+  () =>
+    Boolean(state.value.operation) ||
+    updateState.value.status === "downloading" ||
+    updateState.value.status === "installing",
+);
+
+function applyCloseBehaviorState(raw: ColabOneCloseBehaviorState) {
+  closeBehaviorState.value = {
+    behavior: normalizeColabOneCloseBehavior(raw?.behavior),
+    default_choice: normalizeColabOneCloseAction(raw?.default_choice),
+    can_background:
+      typeof raw?.can_background === "boolean" ? raw.can_background : true,
+  };
+}
+
+async function handleChangeCloseBehavior(raw: unknown) {
+  if (raw !== "ask" && raw !== "quit" && raw !== "background") {
+    return;
+  }
+  const next = raw;
+  if (
+    savingCloseBehavior.value ||
+    next === closeBehaviorState.value.behavior
+  ) {
+    return;
+  }
+  if (next === "background" && !closeBehaviorState.value.can_background) {
+    return;
+  }
+  const prev = closeBehaviorState.value.behavior;
+  closeBehaviorState.value = {
+    ...closeBehaviorState.value,
+    behavior: next,
+  };
+  savingCloseBehavior.value = true;
+  try {
+    const saved = await colabOneSetCloseBehavior(next);
+    applyCloseBehaviorState(saved);
+    const toastKey =
+      saved.behavior === "quit"
+        ? "settings.closeBehaviorToastQuit"
+        : saved.behavior === "background"
+          ? "settings.closeBehaviorToastBackground"
+          : "settings.closeBehaviorToastAsk";
+    notify(t(toastKey), "success", "setting-close-behavior");
+  } catch (e) {
+    closeBehaviorState.value = {
+      ...closeBehaviorState.value,
+      behavior: prev,
+    };
+    showError(e);
+  } finally {
+    savingCloseBehavior.value = false;
+  }
+}
+
+async function handleConfirmCloseModal(payload: {
+  action: ColabOneCloseAction;
+  remember: boolean;
+}) {
+  if (closeModalSubmitting.value) return;
+  closeModalSubmitting.value = true;
+  const isBackground = payload.action === "background";
+  if (isBackground) {
+    closeModalSuppressLeave.value = true;
+    closeModalOpen.value = false;
+    await nextTick();
+  }
+  try {
+    await colabOneResolveCloseRequest(payload.action, payload.remember);
+    if (payload.remember) {
+      closeBehaviorState.value = {
+        ...closeBehaviorState.value,
+        behavior: payload.action,
+      };
+    }
+    if (!isBackground) {
+      closeModalOpen.value = false;
+    }
+  } catch (e) {
+    if (isBackground) {
+      closeModalSuppressLeave.value = false;
+      closeModalOpen.value = true;
+    }
+    showError(e);
+  } finally {
+    closeModalSubmitting.value = false;
+    closeModalSuppressLeave.value = false;
+  }
+}
+
 onMounted(() => {
   snapshotPoller.start();
   void syncLogWindowState();
+  unsubCloseRequest = colabOneOnCloseRequest((req) => {
+    if (stopped || closeModalSubmitting.value) return;
+    closeBehaviorState.value = {
+      ...closeBehaviorState.value,
+      default_choice: normalizeColabOneCloseAction(req.default_choice),
+      can_background: req.can_background,
+    };
+    if (!closeModalOpen.value) {
+      closeModalSuppressLeave.value = false;
+      closeModalDefaultChoice.value = normalizeColabOneCloseAction(
+        req.default_choice,
+      );
+      closeModalOpen.value = true;
+    }
+  });
+  unsubCloseBehavior = colabOneOnCloseBehavior((st) => {
+    if (!stopped) applyCloseBehaviorState(st);
+  });
+  void colabOneGetCloseBehavior()
+    .then((st) => {
+      if (!stopped) applyCloseBehaviorState(st);
+    })
+    .catch(() => {});
+  unsubUpdateState = colabOneOnUpdateState((st) => {
+    if (!stopped) applyUpdateState(st, true);
+  });
+  unsubUpdateOpen = colabOneOnUpdateOpen(() => {
+    if (!stopped) updateModalOpen.value = true;
+  });
+  void colabOneGetUpdateState()
+    .then((st) => {
+      if (!stopped && lastUpdatePushAt === 0) applyUpdateState(st);
+    })
+    .catch(() => {});
   updateToastLayout();
   const contentEl = resolveContentElement();
   if (contentEl) {
@@ -2405,6 +2939,15 @@ onMounted(() => {
 onUnmounted(() => {
   stopped = true;
   snapshotPoller.stop();
+  unsubUpdateState?.();
+  unsubUpdateState = null;
+  unsubUpdateOpen?.();
+  unsubUpdateOpen = null;
+  unsubCloseRequest?.();
+  unsubCloseRequest = null;
+  unsubCloseBehavior?.();
+  unsubCloseBehavior = null;
+  stopUpdateProgressPoll();
   cancelPanelPrefetch?.();
   cancelPanelPrefetch = null;
   for (const timer of pendingAsyncPanelRetryTimers) {
@@ -2468,13 +3011,39 @@ onUnmounted(() => {
                 ></span>
                 <span class="co-brand-text">ColabOne</span>
               </button>
-              <span
-                class="co-brand-version"
-                :aria-label="t('nav.versionAria', { version: appVersionLabel })"
-                :title="`ColabOne ${appVersionLabel}`"
-              >
-                {{ appVersionLabel }}
-              </span>
+              <ColabOneTooltip :title="navVersionTooltip" placement="bottom">
+                <button
+                  type="button"
+                  class="co-brand-version"
+                  :class="{
+                    'is-update-unread': showNavUpdateDot,
+                    'is-update-ready':
+                      updateState.status === 'ready_to_restart',
+                    'is-update-downloading':
+                      updateState.status === 'downloading' ||
+                      updateState.status === 'installing',
+                  }"
+                  data-testid="nav-version-btn"
+                  :aria-label="navVersionTooltip"
+                  @click="handleBrandVersionClick"
+                >
+                  <span class="co-brand-version-text">{{ appVersionLabel }}</span>
+                  <span
+                    v-if="showNavUpdatePill"
+                    class="co-nav-update-pill"
+                    data-testid="nav-update-pill"
+                  >
+                    <span class="co-nav-update-dot" aria-hidden="true" />
+                    <span>{{ navUpdateBadgeLabel }}</span>
+                  </span>
+                  <span
+                    v-if="showNavUpdateDot"
+                    class="co-brand-version-dot"
+                    data-testid="nav-update-dot"
+                    aria-hidden="true"
+                  />
+                </button>
+              </ColabOneTooltip>
             </div>
 
             <div class="co-nav-center">
@@ -4624,7 +5193,56 @@ onUnmounted(() => {
                     {{ t("settings.sectionDesktop") }}
                   </h2>
                   <div class="co-settings-list">
-                    <!-- Row 4.1: Desktop & Start Menu Shortcuts -->
+                    <!-- Row 4.1: Main Window Close Behavior -->
+                    <div
+                      class="co-settings-row"
+                      data-testid="settings-close-behavior-row"
+                      aria-labelledby="close-behavior-heading"
+                    >
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-slate" aria-hidden="true">
+                              <PhAppWindow :size="14" weight="duotone" />
+                            </span>
+                            <h3 id="close-behavior-heading" class="co-sr-title">
+                              {{ t("settings.closeBehaviorTitle") }}
+                            </h3>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{
+                              closeBehaviorState.can_background
+                                ? t("settings.closeBehaviorDesc")
+                                : t("settings.closeBehaviorDescNoTray")
+                            }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ASegmented
+                            :value="closeBehaviorState.behavior"
+                            :options="closeBehaviorSegmentedOptions"
+                            :disabled="savingCloseBehavior"
+                            :aria-label="t('settings.closeBehaviorAria')"
+                            data-testid="settings-close-behavior-segmented"
+                            @change="handleChangeCloseBehavior"
+                          >
+                            <template #label="{ value, title, payload }">
+                              <span class="co-seg-item">
+                                <PhQuestion v-if="value === 'ask'" :size="15" />
+                                <PhSignOut
+                                  v-else-if="value === 'quit'"
+                                  :size="15"
+                                />
+                                <PhTray v-else :size="15" />
+                                <span>{{ payload?.label ?? title ?? value }}</span>
+                              </span>
+                            </template>
+                          </ASegmented>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Row 4.2: Desktop & Start Menu Shortcuts -->
                     <div
                       class="co-settings-row"
                       aria-labelledby="shortcuts-heading"
@@ -4702,7 +5320,169 @@ onUnmounted(() => {
                       </div>
                     </div>
 
-                    <!-- Row 4.2: About & Open-Source Licenses -->
+                    <!-- Row 4.2: Software Updates -->
+                    <div
+                      class="co-settings-row"
+                      data-testid="settings-update-row"
+                      aria-labelledby="updates-heading"
+                    >
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-blue" aria-hidden="true">
+                              <PhCloudArrowDown :size="14" weight="duotone" />
+                            </span>
+                            <h3 id="updates-heading" class="co-sr-title">
+                              {{ t("update.settingsTitle") }}
+                            </h3>
+                            <ATag
+                              v-if="updateStatusTag"
+                              :color="updateStatusTag.color"
+                              data-testid="settings-update-status-tag"
+                            >
+                              {{ updateStatusTag.label }}
+                            </ATag>
+                            <ATag
+                              v-if="showUpdateReadOnlySecondaryTag"
+                              color="warning"
+                            >
+                              {{ t("update.statusReadOnly") }}
+                            </ATag>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("update.settingsDesc") }}
+                          </p>
+                          <p
+                            class="co-sr-meta"
+                            data-testid="settings-update-last-checked"
+                          >
+                            {{ updateLastCheckedText }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ASpace :size="8" wrap>
+                            <AButton
+                              v-if="updateState.status === 'ready_to_restart'"
+                              type="primary"
+                              data-testid="settings-update-restart-btn"
+                              @click="updateModalOpen = true"
+                            >
+                              {{ t("update.btnRestartNow") }}
+                            </AButton>
+                            <AButton
+                              v-else-if="
+                                updateState.status === 'downloading' ||
+                                updateState.status === 'installing'
+                              "
+                              type="primary"
+                              data-testid="settings-update-view-btn"
+                              @click="updateModalOpen = true"
+                            >
+                              {{ t("update.btnViewUpdate") }}
+                            </AButton>
+                            <template
+                              v-else-if="updateState.status === 'available'"
+                            >
+                              <AButton
+                                type="primary"
+                                data-testid="settings-update-now-btn"
+                                @click="updateModalOpen = true"
+                              >
+                                {{ t("update.btnUpdateNow") }}
+                              </AButton>
+                              <AButton
+                                :loading="isCheckingUpdate"
+                                data-testid="settings-update-check-btn"
+                                @click="handleCheckForUpdate(false)"
+                              >
+                                {{
+                                  isCheckingUpdate
+                                    ? t("update.btnChecking")
+                                    : t("update.btnCheck")
+                                }}
+                              </AButton>
+                            </template>
+                            <AButton
+                              v-else
+                              :loading="isCheckingUpdate"
+                              :disabled="updateState.status === 'disabled'"
+                              data-testid="settings-update-check-btn"
+                              @click="handleCheckForUpdate(false)"
+                            >
+                              {{
+                                isCheckingUpdate
+                                  ? t("update.btnChecking")
+                                  : t("update.btnCheck")
+                              }}
+                            </AButton>
+                            <AButton
+                              type="link"
+                              size="small"
+                              data-testid="settings-update-releases-btn"
+                              @click="handleOpenReleasePage()"
+                            >
+                              {{ t("update.btnOpenReleases") }}
+                            </AButton>
+                          </ASpace>
+                        </div>
+                      </div>
+
+                      <div class="co-sr-subpanel co-update-prefs">
+                        <div class="co-sr-toggle-row">
+                          <div class="co-sr-toggle-copy">
+                            <span class="co-sr-toggle-title">
+                              {{ t("update.prefAutoCheckLabel") }}
+                            </span>
+                            <span class="co-sr-toggle-desc">
+                              {{ t("update.prefAutoCheckDesc") }}
+                            </span>
+                          </div>
+                          <ASwitch
+                            size="small"
+                            :checked="updateState.auto_check"
+                            :aria-label="t('update.prefAutoCheckLabel')"
+                            :disabled="
+                              savingUpdatePrefs ||
+                              updateState.status === 'disabled'
+                            "
+                            data-testid="settings-update-auto-check-switch"
+                            @change="
+                              (v) =>
+                                handleToggleUpdatePref('auto_check', Boolean(v))
+                            "
+                          />
+                        </div>
+                        <div class="co-sr-toggle-row">
+                          <div class="co-sr-toggle-copy">
+                            <span class="co-sr-toggle-title">
+                              {{ t("update.prefPrereleaseLabel") }}
+                            </span>
+                            <span class="co-sr-toggle-desc">
+                              {{ t("update.prefPrereleaseDesc") }}
+                            </span>
+                          </div>
+                          <ASwitch
+                            size="small"
+                            :checked="updateState.include_prerelease"
+                            :aria-label="t('update.prefPrereleaseLabel')"
+                            :disabled="
+                              savingUpdatePrefs ||
+                              updateState.status === 'disabled'
+                            "
+                            data-testid="settings-update-prerelease-switch"
+                            @change="
+                              (v) =>
+                                handleToggleUpdatePref(
+                                  'include_prerelease',
+                                  Boolean(v),
+                                )
+                            "
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Row 4.3: About & Open-Source Licenses -->
                     <div class="co-settings-row co-about-card">
                       <div class="co-about-row">
                         <div class="co-about-copy">
@@ -5142,6 +5922,36 @@ onUnmounted(() => {
           </div>
         </div>
       </AModal>
+
+      <!-- Modal: In-App Desktop Software Update -->
+      <ColabOneUpdateModal
+        :open="updateModalOpen"
+        :update-state="updateState"
+        :checking="isCheckingUpdate"
+        :has-active-runtime="
+          state.runtime.state === 'ready' || state.runtime.state === 'starting'
+        "
+        :has-active-operation="Boolean(state.operation)"
+        @update:open="updateModalOpen = $event"
+        @check="handleCheckForUpdate(true)"
+        @install="handleStartUpdateInstall"
+        @cancel="handleCancelUpdateInstall"
+        @relaunch="handleRelaunchForUpdate"
+        @skip="handleSkipUpdateVersion"
+        @open-release-page="handleOpenReleasePage"
+      />
+
+      <!-- Modal: Main Window Close Behavior Prompt -->
+      <ColabOneCloseModal
+        :open="closeModalOpen"
+        :default-choice="closeModalDefaultChoice"
+        :can-background="closeBehaviorState.can_background"
+        :submitting="closeModalSubmitting"
+        :has-active-operation="hasActiveCloseBlockingOp"
+        :suppress-leave-transition="closeModalSuppressLeave"
+        @update:open="closeModalOpen = $event"
+        @confirm="handleConfirmCloseModal"
+      />
     </ALayout>
   </AConfigProvider>
 </template>
@@ -5253,9 +6063,11 @@ onUnmounted(() => {
 }
 
 .co-brand-version {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   flex-shrink: 0;
   margin-top: 3px;
   padding: 3px 8px;
@@ -5263,13 +6075,124 @@ onUnmounted(() => {
   border: 1px solid var(--co-version-border);
   background: var(--co-version-bg);
   color: var(--co-version-text);
+  font-family: inherit;
   font-size: 11px;
   font-weight: 600;
   line-height: 1.1;
   letter-spacing: 0.015em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  user-select: text;
+  user-select: none;
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.12s ease;
+}
+
+.co-brand-version:hover {
+  background: var(--co-hover);
+  border-color: var(--co-border);
+  color: var(--co-text);
+}
+
+.co-brand-version:active {
+  transform: scale(0.97);
+}
+
+.co-brand-version:focus-visible {
+  outline: 2px solid var(--co-focus);
+  outline-offset: 2px;
+}
+
+.co-brand-version-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--co-danger);
+  box-shadow: 0 0 0 2px var(--co-canvas);
+  pointer-events: none;
+}
+
+.co-brand-version.is-update-downloading {
+  background: var(--co-selected);
+  border-color: rgba(59, 130, 246, 0.34);
+  color: var(--co-accent-strong);
+}
+
+.co-brand-version.is-update-downloading:hover {
+  border-color: rgba(59, 130, 246, 0.56);
+  background: var(--co-selected);
+  color: var(--co-accent-strong);
+}
+
+:global(:root[data-theme="dark"]) .co-brand-version.is-update-downloading {
+  border-color: rgba(96, 165, 250, 0.42);
+}
+
+.co-brand-version.is-update-ready {
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+  color: var(--co-success-text);
+}
+
+.co-brand-version.is-update-ready:hover {
+  background: var(--co-success-bg);
+  border-color: var(--co-success);
+  color: var(--co-success-text);
+}
+
+.co-brand-version-text {
+  line-height: 1.1;
+}
+
+.co-nav-update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1.5px 6px;
+  margin-right: -3px;
+  border-radius: var(--co-radius-pill);
+  background: var(--co-accent);
+  color: var(--co-on-accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+}
+
+.co-brand-version.is-update-ready .co-nav-update-pill {
+  background: var(--co-success);
+  color: #ffffff;
+}
+
+.co-nav-update-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.co-brand-version.is-update-ready .co-nav-update-dot,
+.co-brand-version.is-update-downloading .co-nav-update-dot {
+  animation: co-update-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes co-update-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
 }
 
 /* ColabOne Centered Floating Capsule Pill Navigation */
@@ -5802,7 +6725,13 @@ onUnmounted(() => {
   .co-brand-version {
     margin-top: 2px;
     padding: 2px 7px;
+    gap: 5px;
     font-size: 10.5px;
+  }
+
+  .co-nav-update-pill {
+    padding: 1px 5px;
+    font-size: 9.5px;
   }
 
   .co-logs-trigger {
@@ -6415,6 +7344,52 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.co-sr-meta {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--co-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.co-update-prefs {
+  padding: 4px 14px;
+  gap: 0;
+}
+
+.co-sr-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+}
+
+.co-sr-toggle-row + .co-sr-toggle-row {
+  border-top: 1px solid var(--co-border-secondary);
+}
+
+.co-sr-toggle-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.co-sr-toggle-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--co-text);
+}
+
+.co-sr-toggle-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--co-muted);
 }
 
 .co-sr-version {
@@ -7034,7 +8009,9 @@ onUnmounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .co-nav-circle-btn.is-spinning svg {
+  .co-nav-circle-btn.is-spinning svg,
+  .co-brand-version.is-update-ready .co-nav-update-dot,
+  .co-brand-version.is-update-downloading .co-nav-update-dot {
     animation: none;
   }
 }

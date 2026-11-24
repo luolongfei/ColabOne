@@ -3030,7 +3030,22 @@ onUnmounted(() => {
 }
 
 .co-comfy-empty-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   padding: 16px 8px;
+}
+
+.co-comfy-empty-card :deep(.ant-card-body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.co-comfy-empty-card :deep(.ant-card-body::before),
+.co-comfy-empty-card :deep(.ant-card-body::after) {
+  display: none;
 }
 
 .co-comfy-empty-emblem {
@@ -3147,6 +3162,23 @@ onUnmounted(() => {
 }
 
 /* Dynamic Parameter Runner */
+.co-comfy-param-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.co-comfy-param-card :deep(.ant-card-body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.co-comfy-param-card :deep(.ant-card-body::before),
+.co-comfy-param-card :deep(.ant-card-body::after) {
+  display: none;
+}
+
 .co-comfy-param-title-wrap {
   display: flex;
   flex-direction: column;

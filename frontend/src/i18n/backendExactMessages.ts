@@ -32,6 +32,7 @@ export const SOURCE_LABELS: Record<string, ColabOneLocaleTable> = {
   云盘: row("云盘", "Drive", "雲端硬碟", "雲端硬碟", "ドライブ", "드라이브"),
   工作流: row("工作流", "Workflow", "工作流程", "工作流", "ワークフロー", "워크플로"),
   监控: row("监控", "Monitor", "監控", "監控", "監視", "모니터"),
+  更新: row("更新", "Update", "更新", "更新", "更新", "업데이트"),
 };
 
 export const REDACTION_TOKENS: Record<string, ColabOneLocaleTable> = {

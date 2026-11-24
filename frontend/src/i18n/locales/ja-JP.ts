@@ -1330,6 +1330,18 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.hfEmptyPlaceholder": "hf_...（アクセス制限リポジトリ利用時に入力）",
   "settings.hfSaveBtn": "Token を保存",
   "settings.hfTokenExtractedToast": "Hugging Face Token を自動抽出しました",
+  "settings.closeBehaviorTitle": "ウィンドウを閉じる時の動作",
+  "settings.closeBehaviorDesc":
+    "メインウィンドウを閉じるボタンまたはタスクバーから閉じる際の動作を設定します。「毎回確認」の場合、ダイアログでは「直接終了」が初期選択されます。",
+  "settings.closeBehaviorDescNoTray":
+    "現在の環境ではシステムトレイを利用できないため、メインウィンドウを閉じるとそのまま終了します。",
+  "settings.closeBehaviorAria": "ウィンドウを閉じる時の動作",
+  "settings.closeBehaviorAsk": "毎回確認",
+  "settings.closeBehaviorQuit": "直接終了",
+  "settings.closeBehaviorBackground": "バックグラウンド",
+  "settings.closeBehaviorToastAsk": "ウィンドウを閉じる時に毎回確認するよう設定しました",
+  "settings.closeBehaviorToastQuit": "ウィンドウを閉じる時に直接終了するよう設定しました",
+  "settings.closeBehaviorToastBackground": "ウィンドウを閉じる時にバックグラウンド実行するよう設定しました",
   "settings.shortcutsTitle": "デスクトップ・スタートメニューショートカット",
   "settings.shortcutsInStartMenu": "スタートメニュー登録済み",
   "settings.shortcutsDesc":
@@ -1367,6 +1379,113 @@ export const jaJPMessages: ColabOneMessages = {
   "logs.footerLimit": "最新 300 件 · 今回のセッション",
   "logs.following": "最新を追従中",
   "logs.jumpLatest": "最新へ移動",
+
+  // Client Auto-Update
+  "update.navUpdateBadge": "更新あり",
+  "update.navRestartBadge": "再起動で更新",
+  "update.navDownloadingBadge": "更新中 {percent}%",
+  "update.navVersionTooltipAvailable": "新しいバージョン v{version} が利用可能です。クリックして更新を確認",
+  "update.navVersionTooltipRestart": "新しいバージョン v{version} の準備ができました。クリックして再起動し更新を完了",
+  "update.navVersionTooltipDownloading": "ColabOne v{version} をダウンロード中（{percent}%）",
+  "update.navVersionTooltipDefault": "ColabOne {version} · クリックして更新を確認",
+  "update.settingsTitle": "クライアント更新",
+  "update.settingsDesc":
+    "GitHub Releases から Ed25519 署名検証済みの正式版またはプレリリース版を直接確認・インストールします。差分パッチ更新に対応しています。",
+  "update.statusUpToDate": "最新です",
+  "update.statusChecking": "確認中…",
+  "update.statusAvailable": "新バージョン v{version}",
+  "update.statusDownloading": "ダウンロード中 {percent}%",
+  "update.statusInstalling": "検証・インストール中…",
+  "update.statusReadyToRestart": "再起動で適用",
+  "update.statusReadOnly": "ディレクトリ読み取り専用 · 手動更新が必要",
+  "update.statusDevBuild": "開発ビルド",
+  "update.statusError": "確認失敗",
+  "update.lastCheckedNever": "まだ更新を確認していません",
+  "update.lastCheckedAt": "前回の確認: {time}",
+  "update.btnCheck": "更新を確認",
+  "update.btnChecking": "確認中…",
+  "update.btnUpdateNow": "今すぐ更新",
+  "update.btnViewUpdate": "更新を見る",
+  "update.btnRestartNow": "今すぐ再起動して更新",
+  "update.btnRestartLater": "後で再起動",
+  "update.btnCancelDownload": "ダウンロードをキャンセル",
+  "update.btnSkipVersion": "このバージョンをスキップ",
+  "update.btnRemindLater": "後で通知",
+  "update.btnRetry": "再試行",
+  "update.btnOpenReleases": "GitHub でダウンロード",
+  "update.prefAutoCheckLabel": "起動時に更新を自動確認",
+  "update.prefAutoCheckDesc":
+    "起動後にバックグラウンドで新バージョンを確認し、その後 6 時間ごとに再確認します。更新するかどうかは手動で選択できます。",
+  "update.prefPrereleaseLabel": "プレリリース版（Prerelease）を受け取る",
+  "update.prefPrereleaseDesc":
+    "テスト候補版（rc / beta など）をいち早く試せます。オフにすると、次のより新しい正式版が公開された際に自動で安定チャンネルに戻ります。",
+  "update.modalTitleAvailable": "新しいバージョンが見つかりました",
+  "update.modalTitleReady": "更新の準備が完了しました",
+  "update.modalTitleUpToDate": "最新バージョンです",
+  "update.modalTitleError": "更新の確認に失敗しました",
+  "update.modalTitleDisabled": "ソフトウェア更新",
+  "update.modalPrereleaseTag": "プレリリース",
+  "update.modalVersionTransition": "v{current} → v{target}",
+  "update.modalPublishedAt": "{date} 公開",
+  "update.modalNotesHeading": "更新内容",
+  "update.modalNotesEmpty": "このリリースの詳細な変更履歴はありません。GitHub Releases でご確認いただけます。",
+  "update.modalToggleFullNotes": "中英の原文をすべて表示",
+  "update.modalToggleLocalNotes": "現在の言語のみ表示",
+  "update.modalActiveGpuNotice":
+    "デスクトップクライアントを更新・再起動しても、稼働中のリモート GPU・外部 API・ComfyUI トンネルは停止せず、再起動後に自動再接続されます。",
+  "update.modalActiveOpWarning":
+    "現在実行中のローカル操作（GPU の起動・解放やドライブ認可など）があります。完了してからクライアントを再起動してください。",
+  "update.modalReadOnlyWarning":
+    "現在のインストールディレクトリに書き込み権限がないため、自動上書きできません。下のボタンから GitHub Releases を開き、手動でダウンロードして置き換えてください。",
+  "update.modalManifestMissingWarning":
+    "このリリースには現在のプラットフォーム向け自動更新パッケージがまだ含まれていません。下のボタンから GitHub Releases で手動ダウンロードしてください。",
+  "update.modalDevBuildNotice":
+    "現在はローカル開発ビルドのため自動置換が無効になっています。パッケージ済みの正式クライアントではワンクリック自動更新に対応しています。",
+  "update.modalDownloadingHint": "署名付き更新パッケージをダウンロードしています（差分パッチ対応）…",
+  "update.modalInstallingHint":
+    "Ed25519 署名を検証してプログラムファイルを置き換えています。クライアントを閉じないでください…",
+  "update.modalReadyHint":
+    "ColabOne v{version} の検証と準備が完了しました。クライアントを再起動すると新バージョンが有効になります。",
+  "update.modalUpToDateDesc": "現在実行中の ColabOne v{version} は利用可能な最新バージョンです。",
+  "update.errProxy":
+    "システムプロキシへの接続に失敗しました。プロキシが起動していてポート設定が正しいか確認するか、GitHub Releases から手動でダウンロードしてください。",
+  "update.errTimeout":
+    "GitHub への接続または更新パッケージのダウンロードがタイムアウトしました。ネットワークやプロキシを確認して再試行するか、手動でダウンロードしてください。",
+  "update.errTls":
+    "HTTPS / TLS 証明書の検証に失敗しました。システム時刻、プロキシ証明書、またはファイアウォール設定を確認して再試行してください。",
+  "update.errNetwork":
+    "GitHub に接続できません。ネットワーク接続やシステムプロキシを確認して再試行するか、下のリンクから手動でダウンロードしてください。",
+  "update.errNotFound":
+    "現在のプラットフォーム向け更新マニフェストがまだ見つかりません。しばらくしてから再試行するか、GitHub Releases から手動でダウンロードしてください。",
+  "update.errDetailLabel": "診断詳細",
+  "update.errRateLimited":
+    "GitHub API のリクエスト回数制限に達しました。しばらくしてから再試行するか、GitHub Releases から手動でダウンロードしてください。",
+  "update.errSignature":
+    "更新パッチの署名検証に失敗しました。ダウンロードした更新パッケージが改ざんまたは破損している可能性があるため、インストールを自動的に中止しました。下のボタンから公式の GitHub Releases よりダウンロードしてください。",
+  "update.errPermission":
+    "現在のインストールディレクトリに書き込めません。GitHub Releases から更新パッケージを手動でダウンロードして置き換えてください。",
+  "update.errUnknown":
+    "更新処理中にエラーが発生しました。しばらくしてから再試行するか、GitHub Releases から手動でダウンロードしてください。",
+  "update.toastUpToDate": "最新バージョンです（v{version}）",
+  "update.toastSkipped": "v{version} の自動更新通知をスキップしました",
+  "update.toastPrefsSaved": "更新設定を保存しました",
+
+  // Close Window Confirmation Modal
+  "close.modalTitle": "ColabOne を閉じる",
+  "close.modalLead": "メインウィンドウを閉じる時の動作を選択してください：",
+  "close.optionQuitTitle": "直接終了",
+  "close.optionQuitDesc":
+    "ローカルクライアントを完全に終了します。稼働中のリモート GPU とアイドル自動解放保護は継続されます。",
+  "close.optionBackgroundTitle": "バックグラウンドで実行",
+  "close.optionBackgroundDesc":
+    "ウィンドウを非表示にしてシステムトレイに常駐し、トレイアイコンからいつでも再表示できます。",
+  "close.defaultTag": "既定",
+  "close.activeOpWarning":
+    "現在実行中のローカル操作（GPU の起動・解放やクライアント更新など）があります。直接終了するとローカル処理が中断されますが、バックグラウンド実行を選ぶと継続できます。",
+  "close.rememberLabel": "この選択を記憶し、次回から確認しない",
+  "close.rememberHint": "「設定 → デスクトップと情報」からいつでも変更できます。",
+  "close.confirmQuitBtn": "直接終了",
+  "close.confirmBackgroundBtn": "バックグラウンドで実行",
 
   // Location
   "location.tooltipWithZone": "インスタンス所在地: {full} ({zone})",

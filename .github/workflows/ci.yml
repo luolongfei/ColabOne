@@ -8,6 +8,10 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      MYGO_UPDATER_PRIVATE_KEY:
+        description: "Ed25519 private key for signing MyGo in-app auto-update archives and deltas"
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -48,9 +52,16 @@ jobs:
         working-directory: frontend
         run: npx playwright test
       - name: Portable pure Go package and self-test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: python tools/package.py --out dist
       - uses: actions/upload-artifact@v7
         with:
           name: ColabOne-${{ matrix.os }}
-          path: dist/ColabOne-*.zip
+          path: |
+            dist/ColabOne-*.zip
+            dist/colabone-*.tar.gz
+            dist/colabone-*.delta
+            dist/update-*.json
           if-no-files-found: error

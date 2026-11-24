@@ -430,6 +430,8 @@ export interface ColabOneSnapshot {
     locale?: string;
   };
 }
+export const COLABONE_DEFAULT_GPU = "G4" as const;
+
 export const createColabOneSnapshot = (): ColabOneSnapshot => ({
   active_endpoint: "",
   logs: [],
@@ -451,7 +453,7 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
     has_auth: false,
   },
   settings: {
-    gpu: "T4",
+    gpu: COLABONE_DEFAULT_GPU,
     idle_minutes: 30,
     idle_countdown_seconds: 60,
     auto_drive: true,

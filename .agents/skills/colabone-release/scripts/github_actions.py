@@ -39,6 +39,10 @@ def colabone_expected_release_assets(tag: str) -> list[str]:
     return [
         f"ColabOne-{version}-windows-x64.zip",
         f"ColabOne-{version}-macos-arm64.zip",
+        f"colabone-{version}-windows-amd64.tar.gz",
+        f"colabone-{version}-darwin-arm64.tar.gz",
+        "update-windows-amd64.json",
+        "update-darwin-arm64.json",
         "SHA256SUMS.txt",
     ]
 

@@ -70,17 +70,21 @@ description: >-
    - 核对标签指向提交及标签内容，再先推分支、后推标签：
      `git push origin main`
      `git push origin "vX.Y.Z"`
-   - 注意：推送 `main` 不会触发 `ci.yml` 或 `release.yml`；推送 `v*` 标签后才会触发 `.github/workflows/release.yml`（先校验标签与源码版本，再调用 `ci.yml` 构建并测试 Windows 与 macOS 便携包，最后生成 `SHA256SUMS.txt` 并发布 GitHub Release）
+   - 注意：推送 `main` 不会触发 `ci.yml` 或 `release.yml`；推送 `v*` 标签后才会触发 `.github/workflows/release.yml`（需配置仓库 Secret `MYGO_UPDATER_PRIVATE_KEY` 用于签名 MyGo 自动更新包与增量补丁；工作流会先校验标签与源码版本，再调用 `ci.yml` 构建并测试双平台便携包与自动更新包，将附注标签的中英双语发布说明自动注入 `update-*.json`，生成 `SHA256SUMS.txt`，最后先以草稿模式上传产物并原子发布 GitHub Release）
 5. **跟进 GitHub Actions 并验收 GitHub Release**
    - 按 workflow（`release.yml`）、`push` 事件、标签和提交 SHA 精确匹配本次运行，不拿仓库最新运行代替本次运行
    - 持续跟踪运行与各任务状态（`Validate release metadata`、`check (windows-latest)`、`check (macos-latest)`、`Publish GitHub Release`）
    - 若任务失败，读取对应尝试的失败日志并先定位根因：
      - 若属外部环境/网络抖动等非源码原因且已确认恢复，允许对已授权的同标签同 SHA 自动执行一次 `rerun-failed`；同因再次失败则停止重跑并报告阻塞
      - 若属源码或测试缺陷，不能靠重跑旧标签解决，应修复代码后按新版本流程发布下一版本（严禁删除或强制移动已推送标签）
-   - 工作流完成后，使用 `gh release view "v$VERSION"` 或 `scripts/github_actions.py release --tag "v$VERSION"` 核实 GitHub Release 已创建、预发布标记正确、中英双语发布说明（上方中文、下方英文）已完整写入，且预期附件齐全且非空：
+   - 工作流完成后，使用 `gh release view "v$VERSION"` 或 `scripts/github_actions.py release --tag "v$VERSION"` 核实 GitHub Release 已创建且非草稿、预发布标记正确、中英双语发布说明（上方中文、下方英文）已完整写入，且 7 个必选附件齐全且非空：
      - `ColabOne-<version>-windows-x64.zip`
      - `ColabOne-<version>-macos-arm64.zip`
-     - `SHA256SUMS.txt`
+     - `colabone-<version>-windows-amd64.tar.gz`
+     - `colabone-<version>-darwin-arm64.tar.gz`
+     - `update-windows-amd64.json`
+     - `update-darwin-arm64.json`
+     - `SHA256SUMS.txt`（以及前序版本存在时的 `.delta` 增量补丁）
    - 汇报时附带 Actions 运行链接、GitHub Release 链接及产物验收结果；如有部分失败、等待或未核实项需明确说明
 
 ## 发布说明格式

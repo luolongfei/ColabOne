@@ -76,7 +76,7 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
       hf: false,
     },
     settings: {
-      gpu: "T4",
+      gpu: "G4",
       idle_minutes: 30,
       idle_countdown_seconds: 60,
       auto_drive: true,

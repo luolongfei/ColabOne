@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,14 +139,21 @@ func TestClassifyModality(t *testing.T) {
 	}{
 		{"video pipeline", "text-to-video", nil, "org/model", "video"},
 		{"video pipeline trimmed case", " Image-To-Video ", nil, "org/model", "video"},
+		{"video image-text-to-video", "image-text-to-video", nil, "unsloth/MiniMax-H3-GGUF", "video"},
 		{"video any-to-video", "any-to-video", nil, "", "video"},
 		{"image pipeline", "text-to-image", nil, "org/wan2.1", "image"},
+		{"image minimax h3 image pipeline", "text-to-image", nil, "Hearthscale/MiniMax-H3-Image-GGUF", "image"},
 		{"image inpainting", "inpainting", nil, "", "image"},
 		{"text pipeline overrides repo", "text-generation", []string{"text-to-image"}, "city96/FLUX.1-dev-gguf", "text"},
 		{"text conversational", "conversational", nil, "city96/Wan2.1-T2V-14B-gguf", "text"},
 		{"text image-text-to-text", "image-text-to-text", nil, "", "text"},
 		{"tags video beats image regardless of order", "", []string{"text-to-image", "video-to-video"}, "org/model", "video"},
 		{"tags image", "", []string{"gguf", " Image-To-Image "}, "org/model", "image"},
+		{"repo minimax h3 video", "", nil, "DeepBeepMeep/MiniMax-H3", "video"},
+		{"repo minimax h3 image", "", nil, "org/MiniMax-H3-Image-GGUF", "image"},
+		{"repo hyperflow h3", "", nil, "VideoRebirthAI/hyperflow-h3-flash", "video"},
+		{"repo seedvr2", "", nil, "AInVFX/SeedVR2_comfyUI", "video"},
+		{"repo scail", "", nil, "realrebelai/SCAIL-2_GGUF", "video"},
 		{"repo wan2.1", "", nil, "city96/Wan2.1-T2V-14B-gguf", "video"},
 		{"repo wan2.2", "", nil, "org/wan2.2-model", "video"},
 		{"repo ltx video", "", nil, "org/ltx-video-2b", "video"},
@@ -203,11 +211,18 @@ func TestInferFamily(t *testing.T) {
 		{"org/Magistral-Small", "Mistral"},
 		{"city96/FLUX.1-dev-gguf", "FLUX"},
 		{"org/flux", "FLUX"},
+		{"unsloth/Qwen-Image-2.1-Turbo-GGUF", "Qwen-Image"},
+		{"unsloth/MOSS-Image-SFT-GGUF", "MOSS-Image"},
+		{"unsloth/MiniMax-H3-GGUF", "MiniMax-H3"},
+		{"VideoRebirthAI/hyperflow-h3-flash", "MiniMax-H3"},
 		{"city96/Wan2.1-T2V-14B-gguf", "Wan"},
 		{"org/wan-2-gguf", "Wan"},
 		{"org/LTX-Video-GGUF", "LTX"},
 		{"org/ltx_2-gguf", "LTX"},
 		{"org/Hunyuan-Large-GGUF", "Hunyuan"},
+		{"AInVFX/SeedVR2_comfyUI", "SeedVR2"},
+		{"ThePun1sher/SkyReels-V2-I2V-14B-720P-GGUF", "SkyReels"},
+		{"realrebelai/SCAIL-2_GGUF", "SCAIL"},
 		{"qwen-org/unknown-model-GGUF", ""},
 		{"org/other-model", ""},
 		{"", ""},
@@ -381,9 +396,82 @@ func TestSearchModelsMultipleLinkHeaders(t *testing.T) {
 }
 
 func TestSearchModelsModalityAndFamilyFiltering(t *testing.T) {
-	var lastValues map[string][]string
+	var (
+		mu         sync.Mutex
+		seenValues []url.Values
+	)
+	recordQuery := func(q url.Values) {
+		mu.Lock()
+		defer mu.Unlock()
+		seenValues = append(seenValues, q)
+	}
+	resetQueries := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		seenValues = nil
+	}
+	lastQuery := func() url.Values {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(seenValues) == 0 {
+			return nil
+		}
+		return seenValues[len(seenValues)-1]
+	}
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lastValues = r.URL.Query()
+		q := r.URL.Query()
+		recordQuery(q)
+		pt := q.Get("pipeline_tag")
+		cur := q.Get("cursor")
+		switch pt {
+		case "text-to-image":
+			w.Header().Set("Link", `<https://huggingface.co/api/models?cursor=img-t2i-p2>; rel="next"`)
+			_, _ = w.Write([]byte(`[
+				{"id":"city96/FLUX.1-dev-gguf","downloads":9000,"pipeline_tag":"text-to-image","gated":"manual"}
+			]`))
+			return
+		case "image-to-image":
+			_, _ = w.Write([]byte(`[
+				{"id":"unsloth/FLUX.2-klein-4B-GGUF","downloads":512000,"pipeline_tag":"image-to-image","gated":false}
+			]`))
+			return
+		case "text-to-video":
+			if cur == "vid-t2v-p2" {
+				_, _ = w.Write([]byte(`[
+					{"id":"city96/Wan2.1-T2V-14B-gguf","downloads":38000,"pipeline_tag":"text-to-video","gated":false}
+				]`))
+				return
+			}
+			w.Header().Set("Link", `<https://huggingface.co/api/models?cursor=vid-t2v-p2>; rel="next"`)
+			_, _ = w.Write([]byte(`[
+				{"id":"QuantStack/Wan2.2-T2V-A14B-GGUF","downloads":752000,"pipeline_tag":"text-to-video","gated":false}
+			]`))
+			return
+		case "image-to-video":
+			_, _ = w.Write([]byte(`[
+				{"id":"QuantStack/Wan2.2-I2V-A14B-GGUF","downloads":1269000,"pipeline_tag":"image-to-video","gated":false},
+				{"id":"QuantStack/Wan2.2-T2V-A14B-GGUF","downloads":752000,"pipeline_tag":"image-to-video","gated":false}
+			]`))
+			return
+		case "image-text-to-video":
+			if cur == "vid-it2v-p2" {
+				_, _ = w.Write([]byte(`[
+					{"id":"Abiray/MiniMax-H3-Pruned-GGUF","downloads":925000,"pipeline_tag":"image-text-to-video","gated":false}
+				]`))
+				return
+			}
+			w.Header().Set("Link", `<https://huggingface.co/api/models?cursor=vid-it2v-p2>; rel="next"`)
+			_, _ = w.Write([]byte(`[
+				{"id":"unsloth/MiniMax-H3-GGUF","downloads":3563000,"pipeline_tag":"image-text-to-video","gated":false}
+			]`))
+			return
+		case "video-to-video":
+			_, _ = w.Write([]byte(`[
+				{"id":"AInVFX/SeedVR2_comfyUI","downloads":211000,"pipeline_tag":"video-to-video","gated":false}
+			]`))
+			return
+		}
 		_, _ = w.Write([]byte(`[
 			{"id":"unsloth/Qwen3-32B-GGUF","downloads":5000,"pipeline_tag":"text-generation","gated":false},
 			{"id":"city96/FLUX.1-dev-gguf","downloads":9000,"pipeline_tag":"text-to-image","gated":"manual"},
@@ -405,13 +493,13 @@ func TestSearchModelsModalityAndFamilyFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("text search failed: %v", err)
 	}
-	if got := lastValues["search"][0]; got != "Qwen 32B" {
+	if got := lastQuery().Get("search"); got != "Qwen 32B" {
 		t.Fatalf("search = %q, want %q", got, "Qwen 32B")
 	}
-	if got := lastValues["limit"][0]; got != "30" {
+	if got := lastQuery().Get("limit"); got != "30" {
 		t.Fatalf("limit = %q, want 30 for text modality", got)
 	}
-	if _, hasPipe := lastValues["pipeline_tag"]; hasPipe {
+	if _, hasPipe := lastQuery()["pipeline_tag"]; hasPipe {
 		t.Fatalf("text modality must not send pipeline_tag")
 	}
 	if len(textRes.Models) != 1 || textRes.Models[0].Repo != "unsloth/Qwen3-32B-GGUF" {
@@ -429,10 +517,12 @@ func TestSearchModelsModalityAndFamilyFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dedup family search failed: %v", err)
 	}
-	if got := lastValues["search"][0]; got != "qwen3 32B" {
+	if got := lastQuery().Get("search"); got != "qwen3 32B" {
 		t.Fatalf("search = %q, want %q", got, "qwen3 32B")
 	}
 
+	// Image modality aggregates text-to-image + image-to-image sorted by downloads.
+	resetQueries()
 	imgRes, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{
 		Modality: "image",
 		Family:   "FLUX",
@@ -440,14 +530,20 @@ func TestSearchModelsModalityAndFamilyFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("image search failed: %v", err)
 	}
-	if got := lastValues["pipeline_tag"][0]; got != "text-to-image" {
-		t.Fatalf("pipeline_tag = %q, want text-to-image", got)
+	imgPipelines := map[string]bool{}
+	mu.Lock()
+	for _, q := range seenValues {
+		imgPipelines[q.Get("pipeline_tag")] = true
+		if q.Get("search") != "FLUX" || q.Get("limit") != "15" {
+			t.Fatalf("unexpected image query params: %v", q)
+		}
 	}
-	if got := lastValues["search"][0]; got != "FLUX" {
-		t.Fatalf("search = %q, want FLUX", got)
+	mu.Unlock()
+	if !imgPipelines["text-to-image"] || !imgPipelines["image-to-image"] {
+		t.Fatalf("expected both text-to-image and image-to-image queried, got %v", imgPipelines)
 	}
-	if got := lastValues["limit"][0]; got != "20" {
-		t.Fatalf("limit = %q, want 20", got)
+	if len(imgRes.Models) != 2 || imgRes.Models[0].Repo != "unsloth/FLUX.2-klein-4B-GGUF" {
+		t.Fatalf("expected merged image models sorted by downloads, got %+v", imgRes.Models)
 	}
 	for _, m := range imgRes.Models {
 		if m.Modality != "image" || !m.ComfyOnly {
@@ -455,19 +551,74 @@ func TestSearchModelsModalityAndFamilyFiltering(t *testing.T) {
 		}
 	}
 
+	// Video modality aggregates T2V + I2V + IT2V + V2V, deduplicates, sorts by downloads, and paginates via compound cursor.
+	resetQueries()
 	vidRes, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{
 		Modality: "video",
 	})
 	if err != nil {
 		t.Fatalf("video search failed: %v", err)
 	}
-	if got := lastValues["pipeline_tag"][0]; got != "text-to-video" {
-		t.Fatalf("pipeline_tag = %q, want text-to-video", got)
-	}
-	for _, m := range vidRes.Models {
-		if m.Modality != "video" || !m.ComfyOnly {
-			t.Fatalf("expected video+comfy_only, got %+v", m)
+	vidPipelines := map[string]bool{}
+	mu.Lock()
+	for _, q := range seenValues {
+		vidPipelines[q.Get("pipeline_tag")] = true
+		if q.Get("limit") != "10" {
+			t.Fatalf("expected limit=10 for video sub-pipeline, got %v", q)
 		}
+	}
+	mu.Unlock()
+	for _, wantPT := range []string{"text-to-video", "image-to-video", "image-text-to-video", "video-to-video"} {
+		if !vidPipelines[wantPT] {
+			t.Fatalf("expected video pipeline %q queried, got %v", wantPT, vidPipelines)
+		}
+	}
+	wantOrder := []string{
+		"unsloth/MiniMax-H3-GGUF",
+		"QuantStack/Wan2.2-I2V-A14B-GGUF",
+		"QuantStack/Wan2.2-T2V-A14B-GGUF",
+		"AInVFX/SeedVR2_comfyUI",
+	}
+	if len(vidRes.Models) != len(wantOrder) {
+		t.Fatalf("expected %d deduplicated video models, got %d: %+v", len(wantOrder), len(vidRes.Models), vidRes.Models)
+	}
+	for i, wantRepo := range wantOrder {
+		if vidRes.Models[i].Repo != wantRepo {
+			t.Fatalf("vidRes.Models[%d].Repo = %q, want %q", i, vidRes.Models[i].Repo, wantRepo)
+		}
+		if vidRes.Models[i].Modality != "video" || !vidRes.Models[i].ComfyOnly {
+			t.Fatalf("expected video+comfy_only, got %+v", vidRes.Models[i])
+		}
+	}
+	if vidRes.Models[0].Family != "MiniMax-H3" {
+		t.Fatalf("expected MiniMax-H3 family, got %q", vidRes.Models[0].Family)
+	}
+	if !strings.HasPrefix(vidRes.NextCursor, "c1:") {
+		t.Fatalf("expected compound next_cursor, got %q", vidRes.NextCursor)
+	}
+
+	// Follow compound cursor -> only pipelines with remaining pages are fetched.
+	resetQueries()
+	vidPage2, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{
+		Modality: "video",
+		Cursor:   vidRes.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("video page 2 failed: %v", err)
+	}
+	if len(vidPage2.Models) != 2 || vidPage2.Models[0].Repo != "Abiray/MiniMax-H3-Pruned-GGUF" || vidPage2.Models[1].Repo != "city96/Wan2.1-T2V-14B-gguf" {
+		t.Fatalf("unexpected video page 2 models: %+v", vidPage2.Models)
+	}
+	if vidPage2.NextCursor != "" {
+		t.Fatalf("expected empty next_cursor when all sub-pages exhausted, got %q", vidPage2.NextCursor)
+	}
+
+	// Malformed or cross-modality compound cursors must fail validation.
+	if _, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{Modality: "video", Cursor: "c1:!!!"}); !errors.Is(err, ErrInvalidSearchCursor) {
+		t.Fatalf("expected ErrInvalidSearchCursor for malformed c1 cursor, got %v", err)
+	}
+	if _, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{Modality: "text", Cursor: vidRes.NextCursor}); !errors.Is(err, ErrInvalidSearchCursor) {
+		t.Fatalf("expected ErrInvalidSearchCursor for c1 cursor on text modality, got %v", err)
 	}
 
 	allRes, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{
@@ -491,6 +642,132 @@ func TestSearchModelsModalityAndFamilyFiltering(t *testing.T) {
 	}
 	if byRepo["city96/Wan2.1-T2V-14B-gguf"].Modality != "video" || !byRepo["city96/Wan2.1-T2V-14B-gguf"].ComfyOnly || !byRepo["city96/Wan2.1-T2V-14B-gguf"].Gated {
 		t.Fatalf("unexpected Wan entry: %+v", byRepo["city96/Wan2.1-T2V-14B-gguf"])
+	}
+}
+
+func TestSearchMultiPipelineEdgeCases(t *testing.T) {
+	// 1. Mixed RFC3339 timestamps (with/without fractional seconds & timezone offsets) sort chronologically.
+	models := []ColabOneHubModel{
+		{Repo: "org/b", Updated: "2026-11-20T12:00:00Z", Downloads: 10},
+		{Repo: "org/a", Updated: "2026-11-20T12:00:00+00:00", Downloads: 10},
+		{Repo: "org/c", Updated: "2026-11-20T12:00:00.500Z", Downloads: 5},
+		{Repo: "org/d", Updated: "", Downloads: 999},
+	}
+	sortHubModels(models, "updated")
+	gotRepos := []string{models[0].Repo, models[1].Repo, models[2].Repo, models[3].Repo}
+	wantRepos := []string{"org/c", "org/a", "org/b", "org/d"}
+	for i := range wantRepos {
+		if gotRepos[i] != wantRepos[i] {
+			t.Fatalf("updated sort order = %v, want %v", gotRepos, wantRepos)
+		}
+	}
+
+	// 2. Partial transient failure on page 2 preserves failed sub-pipeline's cursor for retry.
+	var it2vCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pt := r.URL.Query().Get("pipeline_tag")
+		cur := r.URL.Query().Get("cursor")
+		if pt == "image-text-to-video" && cur == "cur-it2v" {
+			if it2vCalls.Add(1) == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			_, _ = w.Write([]byte(`[{"id":"unsloth/MiniMax-H3-GGUF","downloads":3563000,"pipeline_tag":"image-text-to-video"}]`))
+			return
+		}
+		if pt == "text-to-video" && cur == "cur-t2v" {
+			_, _ = w.Write([]byte(`[{"id":"QuantStack/Wan2.2-T2V-A14B-GGUF","downloads":752000,"pipeline_tag":"text-to-video"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	client := &ColabOneHubClient{BaseURL: srv.URL, HTTPClient: srv.Client()}
+	page2Cursor := encodeCompoundCursor(map[string]string{
+		"text-to-video":       "cur-t2v",
+		"image-text-to-video": "cur-it2v",
+	}, modalitySearchPipelines["video"])
+
+	res2, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{
+		Modality: "video",
+		Cursor:   page2Cursor,
+	})
+	if err != nil {
+		t.Fatalf("partial page2 should succeed with surviving pipeline: %v", err)
+	}
+	if len(res2.Models) != 1 || res2.Models[0].Repo != "QuantStack/Wan2.2-T2V-A14B-GGUF" {
+		t.Fatalf("unexpected partial page2 models: %+v", res2.Models)
+	}
+	if res2.NextCursor == "" {
+		t.Fatalf("expected failed sub-pipeline cursor preserved for retry")
+	}
+	res3, err := client.SearchModels(context.Background(), ColabOneHubSearchOptions{
+		Modality: "video",
+		Cursor:   res2.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("retry page3 failed: %v", err)
+	}
+	if len(res3.Models) != 1 || res3.Models[0].Repo != "unsloth/MiniMax-H3-GGUF" || res3.NextCursor != "" {
+		t.Fatalf("unexpected retry page3 result: %+v", res3)
+	}
+
+	// 3. Fatal 403 on one sub-pipeline cancels slow in-flight sibling requests promptly.
+	siblingEntered := make(chan struct{})
+	var siblingEnterOnce sync.Once
+	siblingCancelled := make(chan struct{}, 1)
+	cancelSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("pipeline_tag") == "text-to-image" {
+			select {
+			case <-siblingEntered:
+			case <-r.Context().Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		siblingEnterOnce.Do(func() { close(siblingEntered) })
+		select {
+		case <-r.Context().Done():
+			select {
+			case siblingCancelled <- struct{}{}:
+			default:
+			}
+		case <-time.After(5 * time.Second):
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer cancelSrv.Close()
+
+	cancelClient := &ColabOneHubClient{BaseURL: cancelSrv.URL, HTTPClient: cancelSrv.Client()}
+	start := time.Now()
+	_, err = cancelClient.SearchModels(context.Background(), ColabOneHubSearchOptions{Modality: "image"})
+	if !errors.Is(err, ErrHubAccessDenied) {
+		t.Fatalf("expected ErrHubAccessDenied, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("expected fast sibling cancellation, took %v", elapsed)
+	}
+	select {
+	case <-siblingCancelled:
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected slow sibling request context cancelled on 403")
+	}
+
+	// 4. Future Wan2.5 / LTX-3 versions are classified and family-tagged cleanly.
+	if got := ClassifyModality("", nil, "org/Wan2.5-T2V-GGUF"); got != "video" {
+		t.Fatalf("Wan2.5 modality = %q, want video", got)
+	}
+	if got := InferFamily("org/Wan2.5-T2V-GGUF"); got != "Wan" {
+		t.Fatalf("Wan2.5 family = %q, want Wan", got)
+	}
+	if got := ClassifyModality("", nil, "org/LTX-3-GGUF"); got != "video" {
+		t.Fatalf("LTX-3 modality = %q, want video", got)
+	}
+	if got := InferFamily("org/LTX-3-GGUF"); got != "LTX" {
+		t.Fatalf("LTX-3 family = %q, want LTX", got)
 	}
 }
 

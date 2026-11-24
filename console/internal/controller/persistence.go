@@ -352,7 +352,7 @@ func (a *ColabOneActivityLog) Clear() {
 
 func (c *ColabOneController) loadSettings() {
 	c.settings = map[string]any{
-		"gpu":                    "T4",
+		"gpu":                    COLABONE_DEFAULT_GPU,
 		"idle_minutes":           30,
 		"idle_countdown_seconds": 60,
 		"auto_drive":             true,
@@ -373,6 +373,7 @@ func (c *ColabOneController) loadSettings() {
 				"assign_proxy_enabled",
 				"idle_policy",
 				"rclone_drive_policy",
+				"default_gpu_policy",
 				"locale",
 			}
 			for _, k := range allowed {
@@ -384,7 +385,7 @@ func (c *ColabOneController) loadSettings() {
 	}
 
 	if gpu, ok := c.settings["gpu"].(string); !ok || !validColabOneGPUs[gpu] {
-		c.settings["gpu"] = "T4"
+		c.settings["gpu"] = COLABONE_DEFAULT_GPU
 	}
 
 	if idleVal, ok := asInt(c.settings["idle_minutes"]); !ok || idleVal < 1 || idleVal > 240 {
@@ -440,6 +441,17 @@ func (c *ColabOneController) loadSettings() {
 		c.settings["rclone_drive_policy"] = 1
 	} else {
 		c.settings["rclone_drive_policy"] = 1
+	}
+
+	// Migrate legacy T4 default GPU to G4 once upgraded while preserving explicit non-T4 selections.
+	defaultGPUPolicy, ok := asExactInt(c.settings["default_gpu_policy"])
+	if !ok || defaultGPUPolicy != COLABONE_DEFAULT_GPU_POLICY_VERSION {
+		if c.settings["gpu"] == "T4" {
+			c.settings["gpu"] = COLABONE_DEFAULT_GPU
+		}
+		c.settings["default_gpu_policy"] = COLABONE_DEFAULT_GPU_POLICY_VERSION
+	} else {
+		c.settings["default_gpu_policy"] = COLABONE_DEFAULT_GPU_POLICY_VERSION
 	}
 }
 

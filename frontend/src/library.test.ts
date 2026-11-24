@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   canColabOneLoadModel,
+  COLABONE_DEFAULT_GPU,
   createColabOneSnapshot,
   COLABONE_STATUS_LABELS,
   type CommonRepo,
@@ -84,8 +85,9 @@ describe("ColabOneSnapshot & ModelSpec defaults and library gating", () => {
       masked_url: "",
       has_auth: false,
     });
+    expect(COLABONE_DEFAULT_GPU).toBe("G4");
     expect(first.settings).toEqual({
-      gpu: "T4",
+      gpu: "G4",
       idle_minutes: 30,
       idle_countdown_seconds: 60,
       auto_drive: true,

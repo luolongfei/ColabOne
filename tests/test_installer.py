@@ -426,6 +426,47 @@ def test_install_stages_pure_go_binary_and_removes_legacy_dirs(
     package_mod.audit(target)
 
 
+def test_package_stages_mygo_updater_artifacts_and_mygo_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(install_mod, "_host_goarch", lambda: "amd64")
+
+    fake_root = tmp_path / "repo"
+    (fake_root / "third_party").mkdir(parents=True)
+    (fake_root / "third_party/rclone.LICENSE").write_text("MIT\n", encoding="utf-8")
+    for name in ("README.md", "LICENSE", "NOTICE"):
+        (fake_root / name).write_text(name + "\n", encoding="utf-8")
+    (fake_root / "console").mkdir(parents=True)
+    (fake_root / "console/mygo.json").write_text(
+        json.dumps({"name": "ColabOne", "version": "0.1.7"}), encoding="utf-8"
+    )
+
+    dist_dir = fake_root / "console/dist/windows-amd64"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "ColabOne.exe").write_bytes(b"pe-stub")
+    (dist_dir / ".mygo-files").write_text("ColabOne.exe\nLICENSE\nNOTICE\nREADME.md\nthird_party\n", encoding="utf-8")
+    (dist_dir / "colabone-0.1.7-windows-amd64.tar.gz").write_bytes(b"tar-stub")
+    (dist_dir / "colabone-0.1.6-to-0.1.7-windows-amd64.delta").write_bytes(b"delta-stub")
+    (dist_dir / "update-windows-amd64.json").write_text(
+        json.dumps({"version": "0.1.7", "url": "https://example.invalid/a.tar.gz", "size": 8, "signature": "sig"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(install_mod, "ROOT", fake_root)
+    monkeypatch.setattr(install_mod, "sync_service_bundle", lambda root=fake_root, embed_dir=None: 10)
+    monkeypatch.setattr(install_mod, "run", lambda args, cwd=fake_root, timeout=300, **kw: None)
+
+    out_dir = tmp_path / "out"
+    package_mod.main(["--out", str(out_dir)])
+
+    zip_path = out_dir / "ColabOne-0.1.7-windows-x64.zip"
+    assert zip_path.is_file()
+    with zipfile.ZipFile(zip_path) as zf:
+        assert "ColabOne/.mygo-files" in set(zf.namelist())
+    assert (out_dir / "colabone-0.1.7-windows-amd64.tar.gz").is_file()
+    assert (out_dir / "colabone-0.1.6-to-0.1.7-windows-amd64.delta").is_file()
+    assert (out_dir / "update-windows-amd64.json").is_file()
+
+
 def test_check_runs_pure_go_pipeline_without_bridge(monkeypatch):
     events = []
     committed_bridge = install_mod.ROOT / "frontend" / "src" / "colabOneBridge.ts"

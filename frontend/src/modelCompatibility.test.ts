@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COLABONE_HUB_FAMILIES_BY_MODALITY,
   COLABONE_PARAM_PRESETS,
   buildColabOneGpuTargetOptions,
   describeColabOneQuantization,
@@ -15,7 +16,12 @@ import {
   summarizeColabOneRepoFit,
   type ColabOneHubFile,
 } from "./modelCompatibility";
-import type { ModelSpec, RuntimeStatus } from "./types";
+import {
+  COLABONE_DEFAULT_GPU,
+  createColabOneSnapshot,
+  type ModelSpec,
+  type RuntimeStatus,
+} from "./types";
 
 const makeFile = (
   filename: string,
@@ -64,6 +70,15 @@ describe("ColabOne GPU target resolution & VRAM fit", () => {
     expect(options.some((o) => o.id === "A100_80")).toBe(true);
     expect(options.some((o) => o.id === "ALL")).toBe(true);
 
+    expect(
+      resolveColabOneDefaultGpuTarget({ state: "stopped" }),
+    ).toBe("G4");
+    expect(
+      resolveColabOneDefaultGpuTarget(
+        { state: "stopped" },
+        createColabOneSnapshot().settings.gpu,
+      ),
+    ).toBe(COLABONE_DEFAULT_GPU);
     expect(
       resolveColabOneDefaultGpuTarget({ state: "stopped" }, "G4"),
     ).toBe("G4");
@@ -740,5 +755,30 @@ describe("Copy & VRAM edge-case consistency", () => {
     );
     expect(giantSummary.status).toBe("disk_overflow");
     expect(giantSummary.runnable).toBe(false);
+  });
+
+  it("exposes popular MiniMax H3 and active video/image families in community filter chips", () => {
+    const videoIds = COLABONE_HUB_FAMILIES_BY_MODALITY.video.map((f) => f.id);
+    expect(videoIds).toEqual([
+      "",
+      "MiniMax-H3",
+      "Wan",
+      "LTX",
+      "HunyuanVideo",
+      "SeedVR2",
+      "SkyReels",
+      "SCAIL",
+    ]);
+    expect(
+      COLABONE_HUB_FAMILIES_BY_MODALITY.video.find((f) => f.id === "MiniMax-H3")
+        ?.label,
+    ).toBe("MiniMax H3");
+
+    const imageIds = COLABONE_HUB_FAMILIES_BY_MODALITY.image.map((f) => f.id);
+    expect(imageIds).toContain("MiniMax-H3");
+    expect(imageIds).toContain("Qwen-Image");
+    expect(imageIds).toContain("Z-Image");
+    expect(imageIds).toContain("FLUX");
+    expect(imageIds).toContain("MOSS-Image");
   });
 });

@@ -7,5 +7,20 @@
   "icon": "resources/icon.png",
   "frontendDist": "../frontend/dist",
   "bindings": "../frontend/src/colabOneBridge.ts",
-  "buildCommand": "npm --prefix ../frontend run build"
+  "buildCommand": "npm --prefix ../frontend run build",
+  "resourcesExclude": [
+    "README.md",
+    "icon.png",
+    "icon.svg"
+  ],
+  "resources": [
+    "../LICENSE",
+    "../NOTICE",
+    "../README.md",
+    "../third_party"
+  ],
+  "updates": {
+    "publicKey": "q6yp/j91zJb5QM5UeWLTSWX8gOGcO0fiW4FG/UehKRM=",
+    "github": "luolongfei/ColabOne"
+  }
 }

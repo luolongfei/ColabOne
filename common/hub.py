@@ -1,17 +1,45 @@
 """Hugging Face metadata only: model weights are fetched exclusively by the GPU."""
 
 from __future__ import annotations
+import base64
+from datetime import datetime, timezone
+import json
 import re
 from urllib.parse import urlparse, parse_qs
 import requests
+
+
+class _HubAccessDeniedError(RuntimeError):
+    """Raised when Hugging Face returns 401/403."""
+
+
+class _HubRateLimitedError(RuntimeError):
+    """Raised when Hugging Face returns 429."""
 
 API = "https://huggingface.co/api/models"
 SORTS = {"downloads": "downloads", "updated": "lastModified", "likes": "likes"}
 MODALITIES = frozenset({"all", "text", "image", "video"})
 
 _VIDEO_PIPELINES = frozenset(
-    {"text-to-video", "image-to-video", "video-to-video", "any-to-video"}
+    {
+        "text-to-video",
+        "image-to-video",
+        "image-text-to-video",
+        "video-to-video",
+        "any-to-video",
+    }
 )
+_MODALITY_SEARCH_PIPELINES: dict[str, tuple[str, ...]] = {
+    "image": ("text-to-image", "image-to-image"),
+    "video": (
+        "text-to-video",
+        "image-to-video",
+        "image-text-to-video",
+        "video-to-video",
+    ),
+}
+_COMPOUND_CURSOR_PREFIX = "c1:"
+_MAX_CURSOR_RUNES = 4096
 _IMAGE_PIPELINES = frozenset(
     {
         "text-to-image",
@@ -43,29 +71,48 @@ _NON_CHAT_PIPELINES = frozenset(
         "object-detection",
     }
 )
+_MINIMAX_IMAGE_REPO_RE = re.compile(
+    r"(?:^|[-_/.])minimax[-_]?h3[-_.]image(?:$|[-_/.])",
+    re.I,
+)
 _VIDEO_REPO_RE = re.compile(
-    r"(?:^|[-_/.])(?:wan2(?:\.[12])?|wan[-_]?2|ltx[-_]?video|ltx[-_]?2|"
-    r"hunyuan[-_]?video|cogvideox?|mochi[-_]?1|skyreels|framepack|"
+    r"(?:^|[-_/.])(?:minimax[-_]?h3|hyperflow[-_]?h3|fasth3|"
+    r"wan2(?:\.\d+)?|wan[-_]?2|wan[-_]?animate|ltx[-_]?video|ltx[-_]?\d(?:\.\d+)?|ltxv|"
+    r"hunyuan[-_]?video|cogvideox?|mochi[-_]?1|skyreels|seedvr2?|scail|"
+    r"viggle|liveavatar|longcat[-_]?video|framepack|"
     r"animatediff|t2v|i2v|v2v)(?:$|[-_/.])",
     re.I,
 )
 _IMAGE_REPO_RE = re.compile(
-    r"(?:^|[-_/.])(?:flux(?:\.?[12])?|sdxl|sd3(?:\.?5)?|stable[-_]?diffusion|"
-    r"z[-_]?image|qwen[-_]?image|hidream|lumina[-_]?image|kolors|pixart|"
+    r"(?:^|[-_/.])(?:flux(?:\.?[123])?|sdxl|sd3(?:\.?5)?|stable[-_]?diffusion|"
+    r"z[-_]?image|qwen[-_]?image|moss[-_]?image|minimax[-_]?h3[-_.]image|"
+    r"hidream|lumina[-_]?image|kolors|pixart|"
     r"auraflow|chroma|kontext|omnigen)(?:$|[-_/.])",
     re.I,
 )
 _FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("Qwen-Image", re.compile(r"(?:^|[-_/])qwen[-_]?image", re.I)),
     ("Qwen", re.compile(r"qwen|qwq", re.I)),
     ("DeepSeek", re.compile(r"deepseek", re.I)),
     ("GLM", re.compile(r"(?:^|[-_/])glm[-_.\d]|chatglm", re.I)),
     ("Gemma", re.compile(r"gemma", re.I)),
     ("Llama", re.compile(r"llama", re.I)),
     ("Mistral", re.compile(r"mistral|mixtral|pixtral|devstral|magistral", re.I)),
-    ("FLUX", re.compile(r"(?:^|[-_/])flux(?:\.?[12]|[-_.]|$)", re.I)),
-    ("Wan", re.compile(r"(?:^|[-_/])wan2(?:\.[12])?|wan[-_]?2", re.I)),
-    ("LTX", re.compile(r"(?:^|[-_/])ltx[-_]?(?:video|2)", re.I)),
+    ("MiniMax-H3", re.compile(r"(?:^|[-_/])(?:minimax[-_]?h3|hyperflow[-_]?h3|fasth3)", re.I)),
+    ("FLUX", re.compile(r"(?:^|[-_/])flux(?:\.?[123]|[-_.]|$)", re.I)),
+    ("Z-Image", re.compile(r"(?:^|[-_/])z[-_]?image", re.I)),
+    ("MOSS-Image", re.compile(r"(?:^|[-_/])moss[-_]?image", re.I)),
+    ("HiDream", re.compile(r"hidream", re.I)),
+    ("Chroma", re.compile(r"(?:^|[-_/])chroma(?:[-_.]|$)", re.I)),
+    ("Wan", re.compile(r"(?:^|[-_/])wan(?:2(?:\.\d+)?|[-_]?2|[-_]?animate|[-_]?1\.3b)", re.I)),
+    ("LTX", re.compile(r"(?:^|[-_/])ltx(?:[-_]?(?:video|\d)|v)", re.I)),
     ("Hunyuan", re.compile(r"hunyuan", re.I)),
+    ("SeedVR2", re.compile(r"(?:^|[-_/])seedvr2?", re.I)),
+    ("SkyReels", re.compile(r"skyreels", re.I)),
+    ("SCAIL", re.compile(r"(?:^|[-_/])scail", re.I)),
+    ("LiveAvatar", re.compile(r"liveavatar", re.I)),
+    ("Viggle", re.compile(r"(?:^|[-_/])viggle", re.I)),
+    ("Mochi", re.compile(r"(?:^|[-_/])mochi(?:[-_.]|$)", re.I)),
 )
 _PARAMS_RE = re.compile(
     r"(?:^|[-_/.])(\d+(?:\.\d+)?[BM](?:-A\d+(?:\.\d+)?[BM])?)(?=$|[-_/.])",
@@ -141,6 +188,8 @@ def classify_modality(
     if tag_set & _IMAGE_PIPELINES:
         return "image"
     repo_name = (repo or "").strip()
+    if _MINIMAX_IMAGE_REPO_RE.search(repo_name):
+        return "image"
     if _VIDEO_REPO_RE.search(repo_name):
         return "video"
     if _IMAGE_REPO_RE.search(repo_name):
@@ -173,52 +222,81 @@ def request(path="", params=None, token="", session=None):
             timeout=20,
         )
         if response.status_code in (401, 403):
-            raise RuntimeError(
+            raise _HubAccessDeniedError(
                 "这个仓库需要访问权限，请在设置中保存有权限的 Hugging Face Token"
             )
         if response.status_code == 429:
-            raise RuntimeError("Hugging Face 请求较多，请稍后重试")
+            raise _HubRateLimitedError("Hugging Face 请求较多，请稍后重试")
         response.raise_for_status()
         return response
     except requests.RequestException:
         raise RuntimeError("无法连接 Hugging Face，请检查网络后重试") from None
 
 
-def search_models(
-    query="",
-    sort="downloads",
-    cursor="",
-    token="",
-    session=None,
-    modality="all",
-    family="",
-):
-    if not isinstance(query, str) or len(query) > 200 or sort not in SORTS:
-        raise ValueError("模型搜索条件不合法")
-    if not isinstance(cursor, str) or len(cursor) > 4096:
+def _encode_compound_cursor(
+    cursors: dict[str, str], priority_order: tuple[str, ...]
+) -> str:
+    if not cursors:
+        return ""
+
+    def _encode(mapping: dict[str, str]) -> str:
+        if not mapping:
+            return ""
+        raw = json.dumps(mapping, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return _COMPOUND_CURSOR_PREFIX + base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    encoded = _encode(cursors)
+    if len(encoded) <= _MAX_CURSOR_RUNES:
+        return encoded
+    trimmed: dict[str, str] = {}
+    for p in priority_order:
+        if p not in cursors:
+            continue
+        trimmed[p] = cursors[p]
+        if len(_encode(trimmed)) > _MAX_CURSOR_RUNES:
+            trimmed.pop(p, None)
+    return _encode(trimmed)
+
+
+def _decode_compound_cursor(cursor: str, allowed: tuple[str, ...]) -> dict[str, str]:
+    payload = cursor[len(_COMPOUND_CURSOR_PREFIX) :]
+    if not payload or not re.fullmatch(r"[A-Za-z0-9_-]+", payload):
         raise ValueError("搜索分页不合法")
-    norm_modality = str(modality or "all").strip().lower()
-    if norm_modality not in MODALITIES:
-        raise ValueError("模型类型筛选条件不合法")
-    if not isinstance(family, str) or len(family) > 64:
-        raise ValueError("模型系列筛选条件不合法")
-    clean_query = query.strip()
-    clean_family = family.strip()
-    if clean_family and clean_family.lower() not in clean_query.lower():
-        effective_query = f"{clean_family} {clean_query}".strip()
-    else:
-        effective_query = clean_query
+    pad = "=" * (-len(payload) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload + pad).decode("utf-8"))
+    except Exception:
+        raise ValueError("搜索分页不合法") from None
+    if not isinstance(decoded, dict) or not decoded:
+        raise ValueError("搜索分页不合法")
+    allowed_set = set(allowed)
+    result: dict[str, str] = {}
+    for k, v in decoded.items():
+        if not isinstance(k, str) or k not in allowed_set or not isinstance(v, str) or not v.strip():
+            raise ValueError("搜索分页不合法")
+        result[k] = v
+    return result
+
+
+def _fetch_models_page(
+    effective_query: str,
+    sort: str,
+    norm_modality: str,
+    pipeline_tag: str,
+    limit: int,
+    cursor: str,
+    token: str,
+    session,
+) -> tuple[list[dict], str]:
     params: dict = {
         "search": effective_query,
         "filter": "gguf",
         "sort": SORTS[sort],
         "direction": -1,
-        "limit": 30 if norm_modality == "text" else 20,
+        "limit": limit,
     }
-    if norm_modality == "image":
-        params["pipeline_tag"] = "text-to-image"
-    elif norm_modality == "video":
-        params["pipeline_tag"] = "text-to-video"
+    if pipeline_tag:
+        params["pipeline_tag"] = pipeline_tag
     if cursor:
         params["cursor"] = cursor
     response = request(params=params, token=token, session=session)
@@ -266,6 +344,158 @@ def search_models(
         and parsed.path == "/api/models"
     ):
         next_cursor = parse_qs(parsed.query).get("cursor", [""])[0]
+    return models, next_cursor
+
+
+def _parse_timestamp_sec(raw: str) -> tuple[bool, float]:
+    text = str(raw or "").strip()
+    if not text:
+        return (False, 0.0)
+    norm = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    norm = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), norm)
+    try:
+        dt = datetime.fromisoformat(norm)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (True, dt.timestamp())
+    except ValueError:
+        return (False, 0.0)
+
+
+def _sort_hub_models(models: list[dict], sort_key: str) -> None:
+    if sort_key == "likes":
+        models.sort(
+            key=lambda m: (
+                -(m.get("likes") or 0),
+                -(m.get("downloads") or 0),
+                m.get("repo", ""),
+            )
+        )
+    elif sort_key == "updated":
+        models.sort(
+            key=lambda m: (
+                -(m.get("downloads") or 0),
+                m.get("repo", ""),
+            )
+        )
+
+        def _updated_key(m: dict) -> tuple[bool, float, str]:
+            raw = str(m.get("updated") or "")
+            ok, ts = _parse_timestamp_sec(raw)
+            return (True, ts, "") if ok else (False, 0.0, raw)
+
+        models.sort(key=_updated_key, reverse=True)
+    else:
+        models.sort(
+            key=lambda m: (
+                -(m.get("downloads") or 0),
+                -(m.get("likes") or 0),
+                m.get("repo", ""),
+            )
+        )
+
+
+def search_models(
+    query="",
+    sort="downloads",
+    cursor="",
+    token="",
+    session=None,
+    modality="all",
+    family="",
+):
+    if not isinstance(query, str) or len(query) > 200 or sort not in SORTS:
+        raise ValueError("模型搜索条件不合法")
+    if not isinstance(cursor, str) or len(cursor) > _MAX_CURSOR_RUNES:
+        raise ValueError("搜索分页不合法")
+    norm_modality = str(modality or "all").strip().lower()
+    if norm_modality not in MODALITIES:
+        raise ValueError("模型类型筛选条件不合法")
+    if not isinstance(family, str) or len(family) > 64:
+        raise ValueError("模型系列筛选条件不合法")
+    clean_query = query.strip()
+    clean_family = family.strip()
+    if clean_family and clean_family.lower() not in clean_query.lower():
+        effective_query = f"{clean_family} {clean_query}".strip()
+    else:
+        effective_query = clean_query
+
+    pipelines = _MODALITY_SEARCH_PIPELINES.get(norm_modality)
+    if pipelines:
+        limit = 10 if norm_modality == "video" else 15
+        use_compound = True
+        if not cursor:
+            targets = [(p, "") for p in pipelines]
+        elif cursor.startswith(_COMPOUND_CURSOR_PREFIX):
+            cursor_map = _decode_compound_cursor(cursor, pipelines)
+            targets = [(p, cursor_map[p]) for p in pipelines if p in cursor_map]
+        else:
+            use_compound = False
+            targets = [(pipelines[0], cursor)]
+
+        merged: list[dict] = []
+        seen_idx: dict[str, int] = {}
+        next_map: dict[str, str] = {}
+        first_err: Exception | None = None
+        succeeded = 0
+        single_next = ""
+
+        for p_tag, p_cursor in targets:
+            try:
+                page_models, page_next = _fetch_models_page(
+                    effective_query,
+                    sort,
+                    norm_modality,
+                    p_tag,
+                    limit,
+                    p_cursor,
+                    token,
+                    session,
+                )
+            except (_HubAccessDeniedError, _HubRateLimitedError):
+                raise
+            except RuntimeError as exc:
+                if first_err is None:
+                    first_err = exc
+                if p_cursor:
+                    next_map[p_tag] = p_cursor
+                continue
+            succeeded += 1
+            if page_next:
+                next_map[p_tag] = page_next
+                single_next = page_next
+            for m in page_models:
+                repo = m["repo"]
+                if repo in seen_idx:
+                    idx = seen_idx[repo]
+                    if (m.get("downloads") or 0) > (merged[idx].get("downloads") or 0):
+                        merged[idx] = m
+                else:
+                    seen_idx[repo] = len(merged)
+                    merged.append(m)
+
+        if succeeded == 0 and first_err is not None:
+            raise first_err
+
+        _sort_hub_models(merged, sort)
+        next_cursor = (
+            _encode_compound_cursor(next_map, pipelines) if use_compound else single_next
+        )
+        return {"models": merged, "next_cursor": next_cursor}
+
+    if cursor.startswith(_COMPOUND_CURSOR_PREFIX):
+        raise ValueError("搜索分页不合法")
+
+    models, next_cursor = _fetch_models_page(
+        effective_query,
+        sort,
+        norm_modality,
+        "",
+        30 if norm_modality == "text" else 20,
+        cursor,
+        token,
+        session,
+    )
     return {"models": models, "next_cursor": next_cursor}
 
 

@@ -6,6 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from tools.release_update_manifest import (
+    ColabOneUpdateManifestError,
+    colabone_prepare_update_manifests,
+    main as release_update_manifest_main,
+)
 from tools.release_version import (
     ColabOneReleaseVersionError,
     colabone_parse_release_tag,
@@ -55,9 +60,81 @@ def test_release_workflow_triggers_only_on_version_tags_and_manual_dispatch():
     assert "SHA256SUMS.txt" in workflow
     assert "gh release create" in workflow
     assert "gh release upload" in workflow
+    assert "gh release edit" in workflow
+    assert "MYGO_UPDATER_PRIVATE_KEY" in workflow
+    assert "tools/release_update_manifest.py" in workflow
     assert "group: release-${{ inputs.tag || github.ref_name }}" in workflow
     assert "format('refs/tags/{0}', inputs.tag)" in workflow
     assert "%(contents:subject)" in workflow
+
+    ci_workflow = _read(".github/workflows/ci.yml")
+    assert "MYGO_UPDATER_PRIVATE_KEY" in ci_workflow
+    assert "dist/update-*.json" in ci_workflow
+    assert "dist/colabone-*.tar.gz" in ci_workflow
+
+
+def test_release_update_manifest_validates_and_injects_bilingual_notes(tmp_path: Path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    notes_file = tmp_path / "notes.md"
+    notes_file.write_text(
+        "ColabOne v0.1.7\n\n## 新增功能\n- 自动更新\n\n---\n\n## New Features\n- Auto-update\n",
+        encoding="utf-8",
+    )
+
+    for target in ("windows-amd64", "darwin-arm64"):
+        archive = dist / f"colabone-0.1.7-{target}.tar.gz"
+        archive.write_bytes(b"signed-archive-bytes")
+        delta = dist / f"colabone-0.1.6-to-0.1.7-{target}.delta"
+        delta.write_bytes(b"delta-bytes")
+        manifest = {
+            "version": "0.1.7",
+            "date": "2026-11-23T18:00:00Z",
+            "url": f"https://github.com/luolongfei/ColabOne/releases/download/v0.1.7/{archive.name}",
+            "size": archive.stat().st_size,
+            "signature": "c2lnbmF0dXJl",
+            "deltas": [
+                {
+                    "from": "0.1.6",
+                    "url": f"https://github.com/luolongfei/ColabOne/releases/download/v0.1.7/{delta.name}",
+                    "size": delta.stat().st_size,
+                    "signature": "ZGVsdGFzaWc=",
+                }
+            ],
+        }
+        (dist / f"update-{target}.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
+    assert (
+        release_update_manifest_main(
+            [
+                "--dist",
+                str(dist),
+                "--version",
+                "0.1.7",
+                "--notes-file",
+                str(notes_file),
+            ]
+        )
+        == 0
+    )
+
+    for target in ("windows-amd64", "darwin-arm64"):
+        updated = json.loads((dist / f"update-{target}.json").read_text(encoding="utf-8"))
+        assert updated["signature"] == "c2lnbmF0dXJl"
+        assert "## 新增功能" in updated["notes"]
+        assert "## New Features" in updated["notes"]
+
+    # Missing archive must fail loudly.
+    (dist / "colabone-0.1.7-darwin-arm64.tar.gz").unlink()
+    with pytest.raises(ColabOneUpdateManifestError, match="Missing signed update archive"):
+        colabone_prepare_update_manifests(dist, "0.1.7", "notes")
+
+    # Missing manifest must fail with clear guidance about MYGO_UPDATER_PRIVATE_KEY.
+    (dist / "update-darwin-arm64.json").unlink()
+    with pytest.raises(ColabOneUpdateManifestError, match="MYGO_UPDATER_PRIVATE_KEY"):
+        colabone_prepare_update_manifests(dist, "0.1.7", "notes")
 
 
 def test_repository_version_manifests_are_consistent_and_default_to_valid_semver():

@@ -163,7 +163,7 @@ async function mock(page: any, ready = false, path = "/") {
           hf: false,
         },
         settings: {
-          gpu: "T4",
+          gpu: "G4",
           idle_minutes: 30,
           idle_countdown_seconds: 60,
           auto_drive: true,
@@ -177,6 +177,61 @@ async function mock(page: any, ready = false, path = "/") {
       const nativeLocales: string[] = [];
       const localeCommands: any[] = [];
       const billingUsageCalls: any[] = [];
+      const defaultUpdateState: any = {
+        status: "up_to_date",
+        current_version: "0.1.6",
+        available_version: "",
+        is_prerelease: false,
+        release_date: "",
+        release_url: "https://github.com/luolongfei/ColabOne/releases",
+        notes_raw: "",
+        notes_zh: "",
+        notes_en: "",
+        downloaded_bytes: 0,
+        total_bytes: 0,
+        progress_percent: 0,
+        speed_bps: 0,
+        can_self_update: true,
+        disabled_reason: "",
+        auto_check: true,
+        include_prerelease: false,
+        skipped_version: "",
+        last_checked_at: 0,
+        error_code: "",
+        error_message: "",
+      };
+      const updateState: any = (window as any).__initialUpdateState
+        ? { ...defaultUpdateState, ...(window as any).__initialUpdateState }
+        : { ...defaultUpdateState };
+      const updateCalls: any[] = [];
+      const defaultCloseBehaviorState = {
+        behavior: "ask",
+        default_choice: "quit",
+        can_background: true,
+      };
+      const closeBehaviorState: any = (window as any).__initialCloseBehaviorState
+        ? {
+            ...defaultCloseBehaviorState,
+            ...(window as any).__initialCloseBehaviorState,
+          }
+        : { ...defaultCloseBehaviorState };
+      const closeBehaviorCalls: any[] = [];
+      const openedUrls: string[] = [];
+      const mygoEventListeners = new Map<string, Set<(payload: any) => void>>();
+      const subscribeMyGoEvent = (
+        name: string,
+        listener: (payload: any) => void,
+      ) => {
+        let listeners = mygoEventListeners.get(name);
+        if (!listeners) {
+          listeners = new Set();
+          mygoEventListeners.set(name, listeners);
+        }
+        listeners.add(listener);
+        return () => {
+          listeners?.delete(listener);
+        };
+      };
       const savedSecrets: { apiTunnelToken: string; canvasTunnelToken: string; hfToken: string } = {
         apiTunnelToken: "",
         canvasTunnelToken: "",
@@ -191,9 +246,132 @@ async function mock(page: any, ready = false, path = "/") {
       (window as any).__nativeLocales = nativeLocales;
       (window as any).__localeCommands = localeCommands;
       (window as any).__billingUsageCalls = billingUsageCalls;
+      (window as any).__updateState = updateState;
+      (window as any).__updateCalls = updateCalls;
+      (window as any).__closeBehaviorState = closeBehaviorState;
+      (window as any).__closeBehaviorCalls = closeBehaviorCalls;
+      (window as any).__openedUrls = openedUrls;
+      (window as any).__emitMyGoEvent = (name: string, payload: any) => {
+        const listeners = mygoEventListeners.get(name);
+        if (!listeners) return;
+        for (const listener of Array.from(listeners)) {
+          listener(payload);
+        }
+      };
       (window as any).mygo = {
         call: async (method: string, ...args: any[]) => {
           const request = args[0];
+          if (method === "ColabOneDesktop.OpenURL") {
+            openedUrls.push(String(request ?? ""));
+            return;
+          }
+          if (method === "ColabOneDesktop.GetCloseBehavior") {
+            return { ...closeBehaviorState };
+          }
+          if (method === "ColabOneDesktop.SetCloseBehavior") {
+            const nextBehavior = String(args[0] ?? "ask");
+            closeBehaviorState.behavior = nextBehavior;
+            closeBehaviorCalls.push({ method: "set", behavior: nextBehavior });
+            const next = { ...closeBehaviorState };
+            (window as any).__emitMyGoEvent("colabone-close-behavior", next);
+            return next;
+          }
+          if (method === "ColabOneDesktop.ResolveCloseRequest") {
+            const action = String(args[0] ?? "quit");
+            const remember = Boolean(args[1]);
+            closeBehaviorCalls.push({ method: "resolve", action, remember });
+            if (remember && (action === "quit" || action === "background")) {
+              closeBehaviorState.behavior = action;
+              (window as any).__emitMyGoEvent("colabone-close-behavior", {
+                ...closeBehaviorState,
+              });
+            }
+            return;
+          }
+          if (
+            method === "ColabOneDesktop.GetUpdateState" ||
+            method === "ColabOneDesktop.CheckForUpdate" ||
+            method === "ColabOneDesktop.StartUpdateInstall" ||
+            method === "ColabOneDesktop.CancelUpdateInstall" ||
+            method === "ColabOneDesktop.SkipUpdateVersion" ||
+            method === "ColabOneDesktop.SetUpdatePreferences" ||
+            method === "ColabOneDesktop.RelaunchForUpdate"
+          ) {
+            if (method === "ColabOneDesktop.CheckForUpdate") {
+              updateCalls.push({ method: "check", manual: args[0] });
+            } else if (method === "ColabOneDesktop.StartUpdateInstall") {
+              updateCalls.push({ method: "install" });
+            } else if (method === "ColabOneDesktop.CancelUpdateInstall") {
+              updateCalls.push({ method: "cancel" });
+            } else if (method === "ColabOneDesktop.SkipUpdateVersion") {
+              updateCalls.push({ method: "skip", version: args[0] });
+            } else if (method === "ColabOneDesktop.SetUpdatePreferences") {
+              updateCalls.push({
+                method: "prefs",
+                autoCheck: args[0],
+                includePrerelease: args[1],
+              });
+            } else if (method === "ColabOneDesktop.RelaunchForUpdate") {
+              updateCalls.push({ method: "relaunch" });
+            }
+            if (typeof (window as any).__onUpdateCall === "function") {
+              const override = await (window as any).__onUpdateCall(
+                method,
+                args,
+                updateState,
+              );
+              if (override !== undefined) {
+                return override;
+              }
+            }
+            if (method === "ColabOneDesktop.GetUpdateState") {
+              return { ...updateState };
+            }
+            if (method === "ColabOneDesktop.CheckForUpdate") {
+              if (typeof (window as any).__onCheckForUpdate === "function") {
+                return await (window as any).__onCheckForUpdate(
+                  args[0],
+                  updateState,
+                );
+              }
+              return { ...updateState };
+            }
+            if (method === "ColabOneDesktop.StartUpdateInstall") {
+              if (typeof (window as any).__onStartUpdateInstall === "function") {
+                return await (window as any).__onStartUpdateInstall(updateState);
+              }
+              updateState.status = "ready_to_restart";
+              updateState.progress_percent = 100;
+              const next = { ...updateState };
+              (window as any).__emitMyGoEvent("colabone-update", next);
+              return next;
+            }
+            if (method === "ColabOneDesktop.CancelUpdateInstall") {
+              updateState.status = "available";
+              updateState.progress_percent = 0;
+              const next = { ...updateState };
+              (window as any).__emitMyGoEvent("colabone-update", next);
+              return next;
+            }
+            if (method === "ColabOneDesktop.SkipUpdateVersion") {
+              updateState.skipped_version = args[0];
+              updateState.status = "up_to_date";
+              updateState.available_version = "";
+              const next = { ...updateState };
+              (window as any).__emitMyGoEvent("colabone-update", next);
+              return next;
+            }
+            if (method === "ColabOneDesktop.SetUpdatePreferences") {
+              updateState.auto_check = Boolean(args[0]);
+              updateState.include_prerelease = Boolean(args[1]);
+              const next = { ...updateState };
+              (window as any).__emitMyGoEvent("colabone-update", next);
+              return next;
+            }
+            if (method === "ColabOneDesktop.RelaunchForUpdate") {
+              return;
+            }
+          }
           if (method === "ColabOneDesktop.SetAppearance") {
             (window as any).__nativeAppearance = request;
             return;
@@ -781,6 +959,16 @@ async function mock(page: any, ready = false, path = "/") {
         },
         callWith(method: string, args: any[] = []) {
           return this.call(method, ...args);
+        },
+        on(name: string, listener: (payload: any) => void) {
+          return subscribeMyGoEvent(name, listener);
+        },
+        once(name: string, listener: (payload: any) => void) {
+          const unsub = subscribeMyGoEvent(name, (payload: any) => {
+            unsub();
+            listener(payload);
+          });
+          return unsub;
         },
       };
     },
@@ -2130,6 +2318,18 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
     tablist.getByRole("tab", { name: /^工作流工坊/ }),
   ).toHaveAttribute("aria-selected", "true");
 
+  // Empty workflow card and output gallery card share identical top & bottom bounds.
+  const emptyCardBox = await page.locator(".co-comfy-empty-card").boundingBox();
+  const galleryCardBox = await page
+    .locator(".co-comfy-gallery-card")
+    .boundingBox();
+  expect(emptyCardBox).not.toBeNull();
+  expect(galleryCardBox).not.toBeNull();
+  expect(Math.abs(emptyCardBox!.y - galleryCardBox!.y)).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(emptyCardBox!.height - galleryCardBox!.height),
+  ).toBeLessThanOrEqual(1);
+
   // Open import modal while GPU is stopped (offline import).
   await page
     .getByRole("button", { name: "导入 API 工作流 (JSON)" })
@@ -2174,6 +2374,21 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
   );
   const promptArea = page.locator(".co-comfy-param-form textarea").first();
   await expect(promptArea).toHaveValue("ocean sunrise");
+
+  // Populated left column bottom aligns flush with the output gallery card.
+  const paramCardBox = await page.locator(".co-comfy-param-card").boundingBox();
+  const populatedGalleryBox = await page
+    .locator(".co-comfy-gallery-card")
+    .boundingBox();
+  expect(paramCardBox).not.toBeNull();
+  expect(populatedGalleryBox).not.toBeNull();
+  expect(
+    Math.abs(
+      paramCardBox!.y +
+        paramCardBox!.height -
+        (populatedGalleryBox!.y + populatedGalleryBox!.height),
+    ),
+  ).toBeLessThanOrEqual(1);
 
   // Bring GPU online, start ComfyUI engine, edit prompt, and submit run.
   await page.evaluate(() => {
@@ -2669,6 +2884,7 @@ test("resource monitor shows connecting state before kernel telemetry and live c
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.setup.colab = true;
+    s.settings.gpu = "T4";
     s.runtime = { state: "starting" };
     s.operation = { title: "部署远端管理服务", running: true };
   });
@@ -3021,7 +3237,7 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
     innerWidth: 840,
     centeredDelta: 0,
     listCount: 4,
-    rowCounts: [3, 5, 2, 2],
+    rowCounts: [3, 5, 2, 4],
   });
 
   // Verify segmented control icons & labels stay vertically centered inside their pills
@@ -3876,6 +4092,32 @@ test("model drawer supports GPU VRAM filtering, curated version cards, modality/
   await expect(drawer.locator(".co-comfy-modality-banner")).toContainText(
     "ComfyUI 专用",
   );
+  // Popular video families including MiniMax H3 are exposed as quick filter chips
+  for (const label of [
+    "MiniMax H3",
+    "Wan 万相",
+    "LTX-Video",
+    "混元视频",
+    "SeedVR2",
+    "SkyReels",
+    "SCAIL",
+  ]) {
+    await expect(familyGroup.getByRole("button", { name: label })).toBeVisible();
+  }
+  await familyGroup.getByRole("button", { name: "MiniMax H3" }).click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const calls = (window as any).__calls as any[];
+        return [...calls].reverse().find((c) => c.action === "hub.search")
+          ?.payload;
+      }),
+    )
+    .toMatchObject({
+      modality: "video",
+      family: "MiniMax-H3",
+    });
+  await familyGroup.getByRole("button", { name: "全部" }).click();
   const videoCard = drawer.locator(".co-hub-repo", {
     hasText: "Wan2.1-T2V-14B-gguf",
   });
@@ -4863,7 +5105,7 @@ test("top-left brand displays app version badge beside ColabOne and adapts acros
   await expect(versionBadge).toHaveText(EXPECTED_APP_VERSION);
   await expect(versionBadge).toHaveAttribute(
     "aria-label",
-    `当前版本 ${EXPECTED_APP_VERSION}`,
+    `ColabOne ${EXPECTED_APP_VERSION} · 点击检查更新`,
   );
 
   // Positioned cleanly to the right of ColabOne on the same top navbar row without overlapping center nav.
@@ -5680,4 +5922,423 @@ test("CU consumption trend chart defaults to live 24h, supports calendar date se
   expect(tipBox.x + tipBox.width).toBeLessThanOrEqual(
     narrowBox.x + narrowBox.width + 1,
   );
+});
+
+test("default GPU selection is G4 across devices, settings, top bar, and model drawer", async ({
+  page,
+}) => {
+  await mock(page, false);
+
+  await expect(page.locator(".co-connection-gpu")).toContainText("预选 G4");
+  await expect(antSelect(page, "GPU 型号")).toContainText(
+    "G4 · 96 GB 显存（RTX PRO 6000）",
+  );
+
+  await navItem(page, "设置").click();
+  await expect(antSelect(page, "默认 GPU 型号")).toContainText(
+    "G4 · 96 GB 显存（RTX PRO 6000）",
+  );
+
+  const drawer = await openApiModelDrawer(page);
+  await expect(antSelect(drawer, "按 GPU 显存筛选")).toContainText(
+    "G4 · 96 GB",
+  );
+});
+
+test("auto-update surfaces navbar badge, renders bilingual release notes safely, downloads, and respects active GPU/operation guards", async ({
+  page,
+}) => {
+  const dialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  const notesZh = [
+    "### 本次更新",
+    "- 新增应用内增量自动更新与签名校验",
+    "- 安全测试：<script>alert(1)</script>",
+  ].join("\n");
+  const notesEn = [
+    "### What's New",
+    "- Added signed in-app delta auto-update support",
+    "- Security test: <script>alert(1)</script>",
+  ].join("\n");
+  const notesRaw = `${notesZh}\n\n---\n\n${notesEn}`;
+
+  await page.addInitScript(
+    ({ notesRaw, notesZh, notesEn }) => {
+      (window as any).__initialUpdateState = {
+        status: "available",
+        current_version: "0.1.6",
+        available_version: "0.1.7",
+        is_prerelease: false,
+        release_date: "2026-11-24T00:00:00Z",
+        release_url:
+          "https://github.com/luolongfei/ColabOne/releases/tag/v0.1.7",
+        notes_raw: notesRaw,
+        notes_zh: notesZh,
+        notes_en: notesEn,
+        can_self_update: true,
+        disabled_reason: "",
+        auto_check: true,
+        include_prerelease: false,
+        last_checked_at: Math.floor(Date.now() / 1000) - 120,
+      };
+    },
+    { notesRaw, notesZh, notesEn },
+  );
+
+  await mock(page, true);
+
+  const versionBtn = page.getByTestId("nav-version-btn");
+  const versionDot = page.getByTestId("nav-update-dot");
+  await expect(versionBtn).toBeVisible();
+  await expect(versionDot).toBeVisible();
+  await expect(page.getByTestId("nav-update-pill")).toHaveCount(0);
+
+  await versionBtn.click();
+  // Clicking the version badge immediately clears the red dot regardless of whether the user updates.
+  await expect(versionDot).toHaveCount(0);
+  const modal = page.getByTestId("update-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("v0.1.6 → v0.1.7");
+
+  // Chinese notes render by default; attempted script tag renders as literal text with zero XSS.
+  const notesBody = modal.getByTestId("update-notes-body");
+  await expect(notesBody).toContainText("新增应用内增量自动更新与签名校验");
+  await expect(notesBody).toContainText("<script>alert(1)</script>");
+  await expect(notesBody).not.toContainText(
+    "Added signed in-app delta auto-update support",
+  );
+  await expect(modal.locator("script")).toHaveCount(0);
+  expect(dialogs).toEqual([]);
+
+  // Toggling full bilingual notes displays both Chinese and English sections safely.
+  await modal.getByRole("button", { name: "查看中英完整原文" }).click();
+  await expect(notesBody).toContainText("新增应用内增量自动更新与签名校验");
+  await expect(notesBody).toContainText(
+    "Added signed in-app delta auto-update support",
+  );
+  await expect(modal.locator("script")).toHaveCount(0);
+  expect(dialogs).toEqual([]);
+
+  // Active GPU notice reassures the user that restarting the desktop client keeps the remote GPU alive.
+  await expect(modal).toContainText("不会停止正在运行的远端 GPU");
+
+  // Dismiss modal without updating: red dot must stay removed and seen version persisted.
+  await modal.getByRole("button", { name: "稍后提醒" }).click();
+  await expect(modal).toBeHidden();
+  await expect(versionDot).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.localStorage.getItem("colabone.update.seenVersion"),
+      ),
+    )
+    .toBe("0.1.7");
+
+  await navItem(page, "设置").click();
+  const updateRow = page.getByTestId("settings-update-row");
+  await updateRow.scrollIntoViewIfNeeded();
+  await expect(updateRow).toBeVisible();
+  await expect(updateRow).toContainText("有新版本 v0.1.7");
+
+  const autoCheckSwitch = updateRow.getByTestId(
+    "settings-update-auto-check-switch",
+  );
+  const prereleaseSwitch = updateRow.getByTestId(
+    "settings-update-prerelease-switch",
+  );
+  await expect(autoCheckSwitch).toHaveAttribute("aria-checked", "true");
+  await expect(prereleaseSwitch).toHaveAttribute("aria-checked", "false");
+
+  await autoCheckSwitch.click();
+  await expect(autoCheckSwitch).toHaveAttribute("aria-checked", "false");
+  await expect(prereleaseSwitch).toBeEnabled();
+  await prereleaseSwitch.click();
+  await expect(prereleaseSwitch).toHaveAttribute("aria-checked", "true");
+
+  const prefCalls = await page.evaluate(() =>
+    (window as any).__updateCalls.filter((c: any) => c.method === "prefs"),
+  );
+  expect(prefCalls).toEqual([
+    { method: "prefs", autoCheck: false, includePrerelease: false },
+    { method: "prefs", autoCheck: false, includePrerelease: true },
+  ]);
+
+  // Reopen update modal, install update, verify ready_to_restart + active operation guard + relaunch.
+  await versionBtn.click();
+  await expect(modal).toBeVisible();
+
+  const installBtn = page.getByTestId("update-install-btn");
+  await expect(installBtn).toBeVisible();
+  await installBtn.click();
+
+  const relaunchBtn = page.getByTestId("update-relaunch-btn");
+  await expect(relaunchBtn).toBeVisible();
+  await expect(relaunchBtn).toBeEnabled();
+  await expect(modal).toContainText("更新已就绪");
+  await expect(versionBtn).toContainText("重启更新");
+
+  // Active local operation disables relaunch and warns the user until it finishes.
+  await page.evaluate(() => {
+    (window as any).__state.operation = {
+      kind: "runtime_start",
+      title: "部署远端管理服务",
+      running: true,
+    };
+  });
+  await expect(modal).toContainText("当前有正在执行的本地操作");
+  await expect(relaunchBtn).toBeDisabled();
+
+  // Clearing the active operation re-enables relaunch and invokes RelaunchForUpdate.
+  await page.evaluate(() => {
+    (window as any).__state.operation = null;
+  });
+  await expect(relaunchBtn).toBeEnabled();
+  await relaunchBtn.click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__updateCalls.map((c: any) => c.method),
+      ),
+    )
+    .toContain("relaunch");
+
+  const updateCalls = await page.evaluate(() => (window as any).__updateCalls);
+  expect(updateCalls).toContainEqual({ method: "install" });
+  expect(updateCalls).toContainEqual({ method: "relaunch" });
+});
+
+test("auto-update read-only fallback opens GitHub Releases and skip version suppresses badge", async ({
+  page,
+}) => {
+  const releaseUrl =
+    "https://github.com/luolongfei/ColabOne/releases/tag/v0.1.7";
+
+  await page.addInitScript(
+    ({ releaseUrl }) => {
+      (window as any).__initialUpdateState = {
+        status: "available",
+        current_version: "0.1.6",
+        available_version: "0.1.7",
+        is_prerelease: false,
+        release_date: "2026-11-24T00:00:00Z",
+        release_url: releaseUrl,
+        notes_raw: "### 更新\n- 修复若干已知问题",
+        notes_zh: "### 更新\n- 修复若干已知问题",
+        notes_en: "### Changes\n- Fixed several issues",
+        can_self_update: false,
+        disabled_reason: "read_only_install",
+        auto_check: true,
+        include_prerelease: false,
+        last_checked_at: Math.floor(Date.now() / 1000) - 60,
+      };
+    },
+    { releaseUrl },
+  );
+
+  await mock(page, false);
+
+  const versionBtn = page.getByTestId("nav-version-btn");
+  const versionDot = page.getByTestId("nav-update-dot");
+  await expect(versionBtn).toBeVisible();
+  await expect(versionDot).toBeVisible();
+
+  await versionBtn.click();
+  await expect(versionDot).toHaveCount(0);
+  const modal = page.getByTestId("update-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("当前安装目录缺少写入权限");
+  await expect(page.getByTestId("update-install-btn")).toHaveCount(0);
+
+  const manualBtn = page.getByTestId("update-manual-btn");
+  await expect(manualBtn).toBeVisible();
+  await manualBtn.click();
+
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__openedUrls))
+    .toEqual([releaseUrl]);
+
+  const skipBtn = page.getByTestId("update-skip-btn");
+  await expect(skipBtn).toBeVisible();
+  await skipBtn.click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__updateCalls.filter((c: any) => c.method === "skip"),
+      ),
+    )
+    .toEqual([{ method: "skip", version: "0.1.7" }]);
+
+  await expect(modal).toBeHidden();
+  await expect(versionDot).toHaveCount(0);
+  await expect(page.getByTestId("nav-update-pill")).toHaveCount(0);
+  await expect(versionBtn).not.toContainText("重启更新");
+
+  // A subsequent newer release brings the unread red dot back until clicked again.
+  await page.evaluate(() => {
+    (window as any).__emitMyGoEvent("colabone-update", {
+      status: "available",
+      current_version: "0.1.6",
+      available_version: "0.1.8",
+      can_self_update: true,
+      auto_check: true,
+      include_prerelease: false,
+    });
+  });
+  await expect(versionDot).toBeVisible();
+  await versionBtn.click();
+  await expect(versionDot).toHaveCount(0);
+});
+
+test("close window prompt defaults to quit, supports remember choice, and syncs with Settings", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await expect(navItem(page, "设置")).toBeVisible();
+
+  // Trigger native close-window request event (as sent by taskbar "Close window" or titlebar X).
+  await page.evaluate(() => {
+    (window as any).__emitMyGoEvent("colabone-close-request", {
+      default_choice: "quit",
+      can_background: true,
+    });
+  });
+
+  const modal = page.getByTestId("close-modal");
+  await expect(modal).toBeVisible();
+  const quitOption = modal.getByTestId("close-option-quit");
+  const bgOption = modal.getByTestId("close-option-background");
+  const confirmBtn = modal.getByTestId("close-confirm-btn");
+  const cancelBtn = modal.getByTestId("close-cancel-btn");
+  const rememberBox = modal.getByTestId("close-remember-checkbox");
+
+  // Quit is selected by default with clear "默认" badge and matching primary action label.
+  await expect(quitOption).toHaveAttribute("aria-checked", "true");
+  await expect(bgOption).toHaveAttribute("aria-checked", "false");
+  await expect(quitOption).toContainText("默认");
+  await expect(confirmBtn).toContainText("直接退出");
+
+  // Active local operation shows warning only while Quit is selected.
+  await page.evaluate(() => {
+    (window as any).__state.operation = {
+      kind: "runtime_start",
+      title: "部署远端管理服务",
+      running: true,
+    };
+  });
+  await expect(modal).toContainText("直接退出会中断本地进度");
+  await bgOption.click();
+  await expect(bgOption).toHaveAttribute("aria-checked", "true");
+  await expect(confirmBtn).toContainText("后台运行");
+  await expect(modal).not.toContainText("直接退出会中断本地进度");
+
+  // Cancel closes modal without dispatching ResolveCloseRequest.
+  await cancelBtn.click();
+  await expect(modal).toBeHidden();
+  expect(
+    await page.evaluate(() => (window as any).__closeBehaviorCalls.length),
+  ).toBe(0);
+
+  // Re-trigger close prompt: resets back to default Quit + unchecked Remember.
+  await page.evaluate(() => {
+    (window as any).__state.operation = null;
+    (window as any).__emitMyGoEvent("colabone-close-request", {
+      default_choice: "quit",
+      can_background: true,
+    });
+  });
+  await expect(modal).toBeVisible();
+  await expect(quitOption).toHaveAttribute("aria-checked", "true");
+  await expect(rememberBox).not.toBeChecked();
+
+  // Select Background + check "记住我的选择" and confirm.
+  await bgOption.click();
+  await rememberBox.check();
+  await confirmBtn.click();
+  await expect(modal).toBeHidden();
+
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__closeBehaviorCalls))
+    .toEqual([{ method: "resolve", action: "background", remember: true }]);
+
+  // Open Settings → Desktop & About: close behavior segmented control reflects remembered "后台运行".
+  await navItem(page, "设置").click();
+  const row = page.getByTestId("settings-close-behavior-row");
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeVisible();
+  const seg = row.getByTestId("settings-close-behavior-segmented");
+  await expect(seg.locator(".ant-segmented-item-selected")).toContainText(
+    "后台运行",
+  );
+
+  // User can change close behavior anytime in Settings (to Quit and back to Ask).
+  await segmentedItem(seg, "直接退出").click();
+  await expect(seg.locator(".ant-segmented-item-selected")).toContainText(
+    "直接退出",
+  );
+  await segmentedItem(seg, "每次询问").click();
+  await expect(seg.locator(".ant-segmented-item-selected")).toContainText(
+    "每次询问",
+  );
+
+  const setCalls = await page.evaluate(() =>
+    (window as any).__closeBehaviorCalls.filter((c: any) => c.method === "set"),
+  );
+  expect(setCalls).toEqual([
+    { method: "set", behavior: "quit" },
+    { method: "set", behavior: "ask" },
+  ]);
+
+  // Confirm default Quit directly from modal without remembering (and test keyboard navigation + Escape guard + dark mode).
+  await page.evaluate(() => {
+    (window as any).__emitMyGoEvent("colabone-close-request", {
+      default_choice: "quit",
+      can_background: true,
+    });
+  });
+  await expect(modal).toBeVisible();
+  await expect(quitOption).toHaveAttribute("aria-checked", "true");
+  await expect(quitOption).toHaveAttribute("tabindex", "0");
+  await expect(bgOption).toHaveAttribute("tabindex", "-1");
+
+  // Pressing Alt+1 while the close modal is open must NOT switch pages underneath.
+  await page.keyboard.press("Alt+1");
+  await expect(page.getByTestId("settings-close-behavior-row")).toBeVisible();
+
+  // Roving-tabindex keyboard navigation moves both aria-checked and real DOM focus.
+  await quitOption.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(bgOption).toHaveAttribute("aria-checked", "true");
+  await expect(bgOption).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(quitOption).toHaveAttribute("aria-checked", "true");
+  await expect(quitOption).toBeFocused();
+
+  // Dark mode + zero horizontal overflow with modal open.
+  const overflowModal = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflowModal).toBe(0);
+
+  // Pressing Enter on the focused Quit radio option confirms immediately.
+  await page.keyboard.press("Enter");
+  await expect(modal).toBeHidden();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__closeBehaviorCalls.filter(
+          (c: any) => c.method === "resolve",
+        ),
+      ),
+    )
+    .toEqual([
+      { method: "resolve", action: "background", remember: true },
+      { method: "resolve", action: "quit", remember: false },
+    ]);
 });

@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/luolongfei/ColabOne/console/internal/updater"
 	"log"
 	"mime"
 	"net/url"
@@ -56,7 +57,19 @@ type ColabOneDesktop struct {
 	splashState      *colabOneSplashViewState
 	splashFadeTimer  *time.Timer
 	startup          *colabOneStartupCoordinator
+	updater          *updater.ColabOneUpdater
 	showMain         func()
+
+	closeBehaviorWriteMu sync.Mutex
+	closeBehaviorMu      sync.RWMutex
+	closeBehaviorStore   *colabOneCloseBehaviorStore
+	closeBehavior        string
+	closePromptReady     atomic.Bool
+	appQuitting          atomic.Bool
+	canBackgroundFn      func() bool
+	hideMainFn           func()
+	quitAppFn            func()
+	emitCloseReqFn       func(*mygo.Window, ColabOneCloseRequest) error
 }
 
 func (d *ColabOneDesktop) invalidateSplash() {
@@ -173,6 +186,9 @@ func (d *ColabOneDesktop) buildTrayMenu() *mygo.Menu {
 			if d.showMain != nil {
 				d.showMain()
 			}
+		}},
+		{Label: d.trayUpdateLabel(), Click: func(*mygo.MenuItem, *mygo.Window) {
+			d.handleTrayUpdateClick()
 		}},
 		mygo.Separator(),
 		{Label: colabOneT("tray.quit"), Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
@@ -342,6 +358,8 @@ func main() {
 		appearanceSave:  make(chan string, 1),
 		appearanceDone:  make(chan struct{}),
 	}
+	d.initCloseBehavior(nil)
+	d.initUpdater(colabOneConfigDir(), nil)
 	go func() {
 		defer close(d.appearanceDone)
 		for value := range d.appearanceSave {
@@ -393,7 +411,31 @@ func main() {
 		trackColabOneWindowState(winStore, "main", win, defaultMainWidth, defaultMainHeight, mainMinWidth, mainMinHeight)
 		d.setMainWindow(win)
 		current := win
+		d.closePromptReady.Store(false)
+		win.OnClose(func(e *mygo.CloseEvent) {
+			d.handleMainWindowClose(current, e)
+		})
+		if page := win.Page(); page != nil {
+			page.OnDidNavigate(func(string) {
+				if d.mainWindow() == current {
+					d.closePromptReady.Store(false)
+				}
+			})
+			page.OnDidFailLoad(func(*mygo.LoadError) {
+				if d.mainWindow() == current {
+					d.closePromptReady.Store(false)
+				}
+			})
+			page.OnRenderProcessGone(func(string) {
+				if d.mainWindow() == current {
+					d.closePromptReady.Store(false)
+				}
+			})
+		}
 		win.OnClosed(func() {
+			if d.mainWindow() == current {
+				d.closePromptReady.Store(false)
+			}
 			d.clearMainWindow(current)
 			if win == current {
 				win = nil
@@ -509,12 +551,18 @@ func main() {
 			}
 		}
 		startWithSplash()
+		d.startUpdaterBackground()
 	})
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
+		d.appQuitting.Store(true)
 		d.cancelStartup()
+	})
+	mygo.App.OnQuitCanceled(func() {
+		d.appQuitting.Store(false)
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		d.cancelStartup()
+		d.closeUpdater()
 		d.destroyTray()
 		d.flushAppearance()
 		d.bridge.close()

@@ -1327,6 +1327,18 @@ export const koKRMessages: ColabOneMessages = {
   "settings.hfEmptyPlaceholder": "hf_... (접근 제한 모델 저장소 이용 시 입력)",
   "settings.hfSaveBtn": "토큰 저장",
   "settings.hfTokenExtractedToast": "Hugging Face 토큰이 자동 추출되었습니다",
+  "settings.closeBehaviorTitle": "창 닫기 동작",
+  "settings.closeBehaviorDesc":
+    "메인 창 닫기 버튼이나 작업 표시줄에서 창을 닫을 때의 동작을 설정합니다. '매번 묻기'로 설정하면 대화 상자에서 '바로 종료'가 기본 선택됩니다.",
+  "settings.closeBehaviorDescNoTray":
+    "현재 환경에서는 시스템 트레이를 사용할 수 없어 메인 창을 닫으면 클라이언트가 바로 종료됩니다.",
+  "settings.closeBehaviorAria": "창 닫기 동작",
+  "settings.closeBehaviorAsk": "매번 묻기",
+  "settings.closeBehaviorQuit": "바로 종료",
+  "settings.closeBehaviorBackground": "백그라운드",
+  "settings.closeBehaviorToastAsk": "창 닫기 동작을 '매번 묻기'로 설정했습니다",
+  "settings.closeBehaviorToastQuit": "창 닫기 동작을 '바로 종료'로 설정했습니다",
+  "settings.closeBehaviorToastBackground": "창 닫기 동작을 '백그라운드 실행'으로 설정했습니다",
   "settings.shortcutsTitle": "바탕 화면 및 시작 메뉴 바로 가기",
   "settings.shortcutsInStartMenu": "시작 메뉴에 추가됨",
   "settings.shortcutsDesc":
@@ -1364,6 +1376,113 @@ export const koKRMessages: ColabOneMessages = {
   "logs.footerLimit": "최근 300건 · 현재 세션",
   "logs.following": "최신 추적 중",
   "logs.jumpLatest": "최신으로 이동",
+
+  // Client Auto-Update
+  "update.navUpdateBadge": "업데이트",
+  "update.navRestartBadge": "재시작 업데이트",
+  "update.navDownloadingBadge": "업데이트 중 {percent}%",
+  "update.navVersionTooltipAvailable": "새 버전 v{version} 사용 가능 · 클릭해 업데이트 확인",
+  "update.navVersionTooltipRestart": "새 버전 v{version} 준비 완료 · 클릭해 재시작하여 업데이트 완료",
+  "update.navVersionTooltipDownloading": "ColabOne v{version} 다운로드 중 ({percent}%)",
+  "update.navVersionTooltipDefault": "ColabOne {version} · 클릭해 업데이트 확인",
+  "update.settingsTitle": "클라이언트 업데이트",
+  "update.settingsDesc":
+    "GitHub Releases에서 Ed25519 서명이 검증된 정식 버전 또는 프리릴리스 버전을 직접 확인하고 설치합니다. 증분 패치 업데이트를 지원합니다.",
+  "update.statusUpToDate": "최신 버전",
+  "update.statusChecking": "확인 중…",
+  "update.statusAvailable": "새 버전 v{version}",
+  "update.statusDownloading": "다운로드 중 {percent}%",
+  "update.statusInstalling": "검증 및 설치 중…",
+  "update.statusReadyToRestart": "재시작 시 적용",
+  "update.statusReadOnly": "폴더 읽기 전용 · 수동 업데이트 필요",
+  "update.statusDevBuild": "개발 빌드",
+  "update.statusError": "확인 실패",
+  "update.lastCheckedNever": "아직 업데이트를 확인하지 않음",
+  "update.lastCheckedAt": "마지막 확인: {time}",
+  "update.btnCheck": "업데이트 확인",
+  "update.btnChecking": "확인 중…",
+  "update.btnUpdateNow": "지금 업데이트",
+  "update.btnViewUpdate": "업데이트 보기",
+  "update.btnRestartNow": "지금 재시작하여 업데이트",
+  "update.btnRestartLater": "나중에 재시작",
+  "update.btnCancelDownload": "다운로드 취소",
+  "update.btnSkipVersion": "이 버전 건너뛰기",
+  "update.btnRemindLater": "나중에 알림",
+  "update.btnRetry": "다시 시도",
+  "update.btnOpenReleases": "GitHub에서 다운로드",
+  "update.prefAutoCheckLabel": "시작 시 자동 업데이트 확인",
+  "update.prefAutoCheckDesc":
+    "클라이언트 시작 후 백그라운드에서 새 버전을 확인하고 6시간마다 다시 확인합니다. 새 버전이 발견되면 업데이트 여부를 직접 선택할 수 있습니다.",
+  "update.prefPrereleaseLabel": "프리릴리스 버전 받기 (Prerelease)",
+  "update.prefPrereleaseDesc":
+    "테스트 후보 버전(rc / beta 등)을 먼저 체험할 수 있습니다. 끄면 다음 상위 정식 버전이 출시될 때 자동으로 안정 채널로 복귀합니다.",
+  "update.modalTitleAvailable": "새 버전 발견",
+  "update.modalTitleReady": "업데이트 준비 완료",
+  "update.modalTitleUpToDate": "최신 버전입니다",
+  "update.modalTitleError": "업데이트 확인 실패",
+  "update.modalTitleDisabled": "소프트웨어 업데이트",
+  "update.modalPrereleaseTag": "프리릴리스",
+  "update.modalVersionTransition": "v{current} → v{target}",
+  "update.modalPublishedAt": "{date} 출시",
+  "update.modalNotesHeading": "업데이트 내용",
+  "update.modalNotesEmpty": "이번 릴리스의 상세 변경 내역이 없습니다. GitHub Releases에서 확인하실 수 있습니다.",
+  "update.modalToggleFullNotes": "중문·영문 전체 원문 보기",
+  "update.modalToggleLocalNotes": "현재 언어만 보기",
+  "update.modalActiveGpuNotice":
+    "데스크톱 클라이언트를 업데이트하고 재시작해도 실행 중인 원격 GPU, 외부 API 및 ComfyUI 터널은 중지되지 않으며 재시작 후 자동으로 다시 연결됩니다.",
+  "update.modalActiveOpWarning":
+    "현재 진행 중인 로컬 작업(GPU 시작/해제 또는 드라이브 권한 승인 등)이 있습니다. 해당 작업이 완료된 후 클라이언트를 재시작해 주세요.",
+  "update.modalReadOnlyWarning":
+    "현재 설치 폴더에 쓰기 권한이 없어 바로 교체할 수 없습니다. 아래 버튼을 눌러 GitHub Releases에서 수동으로 다운로드해 교체해 주세요.",
+  "update.modalManifestMissingWarning":
+    "이 릴리스에는 현재 플랫폼용 자동 업데이트 패키지가 아직 포함되어 있지 않습니다. 아래 버튼을 눌러 GitHub Releases에서 수동으로 다운로드해 주세요.",
+  "update.modalDevBuildNotice":
+    "현재 로컬 개발 빌드이므로 자동 교체가 비활성화되어 있습니다. 패키징된 정식 클라이언트에서는 원클릭 자동 업데이트를 지원합니다.",
+  "update.modalDownloadingHint": "서명된 업데이트 패키지를 다운로드하고 있습니다 (증분 패치 지원)…",
+  "update.modalInstallingHint":
+    "Ed25519 서명을 검증하고 프로그램 파일을 교체하고 있습니다. 클라이언트를 닫지 마세요…",
+  "update.modalReadyHint":
+    "ColabOne v{version} 검증 및 준비가 완료되었습니다. 클라이언트를 재시작하면 새 버전이 적용됩니다.",
+  "update.modalUpToDateDesc": "현재 실행 중인 버전(ColabOne v{version})이 사용 가능한 최신 버전입니다.",
+  "update.errProxy":
+    "시스템 프록시 연결에 실패했습니다. 프록시가 실행 중이며 포트 설정이 올바른지 확인하거나 GitHub Releases에서 수동으로 다운로드해 주세요.",
+  "update.errTimeout":
+    "GitHub 연결 또는 업데이트 다운로드 시간이 초과되었습니다. 네트워크나 프록시 상태를 확인한 뒤 다시 시도하거나 수동으로 다운로드해 주세요.",
+  "update.errTls":
+    "HTTPS / TLS 인증서 검증에 실패했습니다. 시스템 시간, 프록시 인증서 또는 방화벽 설정을 확인한 뒤 다시 시도해 주세요.",
+  "update.errNetwork":
+    "GitHub에 연결할 수 없습니다. 네트워크 연결 또는 시스템 프록시를 확인한 뒤 다시 시도하거나 아래 링크에서 수동으로 다운로드해 주세요.",
+  "update.errNotFound":
+    "현재 플랫폼용 업데이트 매니페스트를 아직 찾을 수 없습니다. 잠시 후 다시 시도하거나 GitHub Releases에서 수동으로 다운로드하세요.",
+  "update.errDetailLabel": "진단 상세",
+  "update.errRateLimited":
+    "GitHub API 요청 한도가 일시적으로 초과되었습니다. 잠시 후 다시 시도하거나 GitHub Releases에서 수동으로 다운로드해 주세요.",
+  "update.errSignature":
+    "업데이트 패치 서명 검증에 실패했습니다. 다운로드한 업데이트 패키지가 변조되었거나 손상되었을 수 있어 설치를 자동으로 중단했습니다. 아래 버튼을 눌러 공식 GitHub Releases에서 정식 설치 패키지를 다운로드해 주세요.",
+  "update.errPermission":
+    "현재 설치 폴더에 쓸 수 없습니다. GitHub Releases에서 업데이트 패키지를 수동으로 다운로드해 교체해 주세요.",
+  "update.errUnknown":
+    "업데이트 중 오류가 발생했습니다. 잠시 후 다시 시도하거나 GitHub Releases에서 수동으로 다운로드해 주세요.",
+  "update.toastUpToDate": "이미 최신 버전입니다 (v{version})",
+  "update.toastSkipped": "v{version} 자동 업데이트 알림을 건너뛰었습니다",
+  "update.toastPrefsSaved": "업데이트 설정이 저장되었습니다",
+
+  // Close Window Confirmation Modal
+  "close.modalTitle": "ColabOne 닫기",
+  "close.modalLead": "메인 창을 닫을 때 실행할 동작을 선택하세요:",
+  "close.optionQuitTitle": "바로 종료",
+  "close.optionQuitDesc":
+    "로컬 클라이언트를 완전히 종료합니다. 실행 중인 원격 GPU와 유휴 자동 해제 보호는 계속 유지됩니다.",
+  "close.optionBackgroundTitle": "백그라운드 실행",
+  "close.optionBackgroundDesc":
+    "메인 창을 숨기고 시스템 트레이에서 계속 실행하며, 트레이 아이콘을 클릭해 언제든 다시 열 수 있습니다.",
+  "close.defaultTag": "기본",
+  "close.activeOpWarning":
+    "현재 진행 중인 로컬 작업(GPU 시작/해제 또는 클라이언트 업데이트 등)이 있습니다. 바로 종료하면 로컬 진행이 중단되며, 백그라운드 실행을 선택하면 계속 유지됩니다.",
+  "close.rememberLabel": "선택 기억하기 (다음부터 묻지 않기)",
+  "close.rememberHint": "'설정 → 데스크톱 및 정보'에서 언제든지 변경할 수 있습니다.",
+  "close.confirmQuitBtn": "바로 종료",
+  "close.confirmBackgroundBtn": "백그라운드 실행",
 
   // Location
   "location.tooltipWithZone": "인스턴스 위치: {full} ({zone})",

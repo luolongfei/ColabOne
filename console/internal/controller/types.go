@@ -31,6 +31,12 @@ const (
 	// COLABONE_DEFAULT_COMMON_VERSION tracks one-time seeding of default common repositories.
 	COLABONE_DEFAULT_COMMON_VERSION = 1
 
+	// COLABONE_DEFAULT_GPU is the default Colab GPU accelerator tier for new and migrated settings.
+	COLABONE_DEFAULT_GPU = "G4"
+
+	// COLABONE_DEFAULT_GPU_POLICY_VERSION tracks one-time migration of the legacy T4 default to G4.
+	COLABONE_DEFAULT_GPU_POLICY_VERSION = 1
+
 	colabOneMaxOutputAssetOffset = 512 * 1024 * 1024
 )
 

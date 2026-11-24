@@ -1129,8 +1129,44 @@ func TestActivityLogBoundedDiskAndRotation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
+	// Fresh install defaults to G4.
+	freshDir := t.TempDir()
+	freshCtrl := NewColabOneController(ColabOneControllerConfig{
+		Root:           freshDir,
+		ConfigDir:      freshDir,
+		Vault:          NewColabOneMemoryVault(),
+		ServiceBundler: defaultMockBundler(),
+	})
+	freshSettings := asMap(freshCtrl.Snapshot()["settings"])
+	freshCtrl.Close()
+	if freshSettings["gpu"] != "G4" {
+		t.Fatalf("expected fresh default gpu G4, got %v", freshSettings["gpu"])
+	}
+	if _, hasPolicy := freshSettings["default_gpu_policy"]; hasPolicy {
+		t.Fatalf("internal default_gpu_policy must not be exposed in snapshot settings")
+	}
+
+	// Legacy settings.json with explicit non-T4 GPU is preserved across upgrade.
+	explicitDir := t.TempDir()
+	explicitBytes, _ := json.Marshal(map[string]any{"gpu": "A100"})
+	if err := os.WriteFile(filepath.Join(explicitDir, "settings.json"), explicitBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	explicitCtrl := NewColabOneController(ColabOneControllerConfig{
+		Root:           explicitDir,
+		ConfigDir:      explicitDir,
+		Vault:          NewColabOneMemoryVault(),
+		ServiceBundler: defaultMockBundler(),
+	})
+	explicitSettings := asMap(explicitCtrl.Snapshot()["settings"])
+	explicitCtrl.Close()
+	if explicitSettings["gpu"] != "A100" {
+		t.Fatalf("expected explicit legacy gpu A100 preserved, got %v", explicitSettings["gpu"])
+	}
+
 	legacyDir := t.TempDir()
 	legacySettings := map[string]any{
+		"gpu":              "T4",
 		"idle_minutes":     3,
 		"idle_policy":      2,
 		"download_threads": 8,
@@ -1153,8 +1189,8 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 
 	snap := ctrl.Snapshot()
 	settings := asMap(snap["settings"])
-	if settings["gpu"] != "T4" {
-		t.Fatalf("expected gpu T4, got %v", settings["gpu"])
+	if settings["gpu"] != "G4" {
+		t.Fatalf("expected legacy default gpu T4 migrated to G4, got %v", settings["gpu"])
 	}
 	if v, _ := asInt(settings["idle_minutes"]); v != 30 {
 		t.Fatalf("expected migrated idle_minutes=30, got %v", settings["idle_minutes"])
@@ -1171,6 +1207,9 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	if _, hasPolicy := settings["idle_policy"]; hasPolicy {
 		t.Fatalf("internal idle_policy must not be exposed in snapshot settings")
 	}
+	if _, hasGPUPolicy := settings["default_gpu_policy"]; hasGPUPolicy {
+		t.Fatalf("internal default_gpu_policy must not be exposed in snapshot settings")
+	}
 
 	// Validation errors.
 	if _, err := ctrl.Command(context.Background(), "settings.save", map[string]any{"download_threads": 8}); err == nil || !strings.Contains(err.Error(), "16 或 32") {
@@ -1186,9 +1225,9 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 		t.Fatal("expected invalid gpu to fail")
 	}
 
-	// Save valid settings + HF token isolated from settings.json & snapshot.
+	// Save valid settings (including explicit T4 after migration) + HF token isolated from settings.json & snapshot.
 	res, err := ctrl.Command(context.Background(), "settings.save", map[string]any{
-		"gpu":              "G4",
+		"gpu":              "T4",
 		"idle_minutes":     45,
 		"download_threads": 32,
 		"hf_token":         "  hf_super_secret_token  ",
@@ -1210,7 +1249,7 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 		t.Fatalf("unexpected settings.hf_token result: %v %#v", err, tokRes)
 	}
 
-	// Reload verifies persistence.
+	// Reload verifies persistence (including explicit T4 not overwritten back to G4).
 	reloaded := NewColabOneController(ColabOneControllerConfig{
 		Root:           legacyDir,
 		ConfigDir:      legacyDir,
@@ -1219,6 +1258,9 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	})
 	defer reloaded.Close()
 	rSettings := asMap(reloaded.Snapshot()["settings"])
+	if rSettings["gpu"] != "T4" {
+		t.Fatalf("expected explicit post-migration gpu=T4 persisted, got %v", rSettings["gpu"])
+	}
 	if v, _ := asInt(rSettings["idle_minutes"]); v != 45 {
 		t.Fatalf("expected persisted idle_minutes=45, got %v", rSettings["idle_minutes"])
 	}

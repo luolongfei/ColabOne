@@ -146,6 +146,34 @@ def _sample_release(tag: str = "v0.1.1", **changes):
             },
             {
                 "id": 3,
+                "name": f"colabone-{version}-windows-amd64.tar.gz",
+                "size": 1024,
+                "state": "uploaded",
+                "browser_download_url": f"https://example.invalid/colabone-{version}-windows-amd64.tar.gz",
+            },
+            {
+                "id": 4,
+                "name": f"colabone-{version}-darwin-arm64.tar.gz",
+                "size": 2048,
+                "state": "uploaded",
+                "browser_download_url": f"https://example.invalid/colabone-{version}-darwin-arm64.tar.gz",
+            },
+            {
+                "id": 5,
+                "name": "update-windows-amd64.json",
+                "size": 320,
+                "state": "uploaded",
+                "browser_download_url": "https://example.invalid/update-windows-amd64.json",
+            },
+            {
+                "id": 6,
+                "name": "update-darwin-arm64.json",
+                "size": 320,
+                "state": "uploaded",
+                "browser_download_url": "https://example.invalid/update-darwin-arm64.json",
+            },
+            {
+                "id": 7,
                 "name": "SHA256SUMS.txt",
                 "size": 160,
                 "state": "uploaded",
@@ -1059,7 +1087,7 @@ class GitHubActionsClientTests(unittest.TestCase):
         self.assertEqual(result["missing_assets"], ["ColabOne-0.1.1-macos-arm64.zip"])
 
         empty_asset = _sample_release("v0.1.1")
-        empty_asset["assets"][2]["size"] = 0
+        empty_asset["assets"][-1]["size"] = 0
         with patch.object(self.client, "json", return_value=empty_asset):
             result = ACTIONS.colabone_inspect_release(self.client, "v0.1.1")
         self.assertFalse(result["assets_complete"])

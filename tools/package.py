@@ -67,6 +67,49 @@ def audit(root):
                 raise RuntimeError("Credential pattern in package: " + path.name)
 
 
+def stage_mygo_updater_artifacts(
+    platform_dir: Path,
+    out: Path,
+    version: str,
+    goos: str,
+    goarch: str,
+) -> list[Path]:
+    """Copy MyGo signed updater artifacts (.tar.gz, .delta, update-<target>.json) into out."""
+    target = f"{goos}-{goarch}"
+    manifest_src = platform_dir / f"update-{target}.json"
+    if not manifest_src.is_file():
+        return []
+
+    manifest_raw = manifest_src.read_text(encoding="utf-8")
+    manifest = json.loads(manifest_raw)
+    if str(manifest.get("version") or "").lstrip("vV") != version:
+        raise RuntimeError(
+            f"MyGo updater manifest {manifest_src.name} version {manifest.get('version')!r} != {version!r}"
+        )
+    if not manifest.get("signature"):
+        raise RuntimeError(f"MyGo updater manifest {manifest_src.name} is missing signature")
+
+    archive_src = platform_dir / f"colabone-{version}-{target}.tar.gz"
+    if not archive_src.is_file():
+        raise RuntimeError(
+            f"MyGo updater manifest {manifest_src.name} is missing archive {archive_src.name}"
+        )
+
+    copied: list[Path] = []
+    candidates = [
+        archive_src,
+        *sorted(platform_dir.glob(f"colabone-*-to-{version}-{target}.delta")),
+        manifest_src,
+    ]
+    for src in candidates:
+        if not src.is_file():
+            continue
+        dst = out / src.name
+        shutil.copy2(src, dst)
+        copied.append(dst)
+    return copied
+
+
 def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser()
     p.add_argument("--out", default="dist")
@@ -81,10 +124,14 @@ def main(argv: list[str] | None = None):
     version = json.loads(
         (install.ROOT / "console/mygo.json").read_text(encoding="utf-8")
     )["version"]
-    platform = _archive_platform(install._host_goos(), install._host_goarch())
+    goos = install._host_goos()
+    goarch = install._host_goarch()
+    platform = _archive_platform(goos, goarch)
     file = shutil.make_archive(
         str(out / f"ColabOne-{version}-{platform}"), "zip", target.parent, target.name
     )
+    platform_dir = install.ROOT / "console/dist" / f"{goos}-{goarch}"
+    stage_mygo_updater_artifacts(platform_dir, out, version, goos, goarch)
     print(file)
 
 

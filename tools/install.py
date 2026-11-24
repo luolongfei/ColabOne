@@ -153,6 +153,8 @@ def _find_built_app(platform_dir: Path, goos: str | None = None) -> Path:
             ".sha256",
             ".txt",
             ".sig",
+            ".json",
+            ".delta",
         )
         entries = sorted(platform_dir.iterdir()) if platform_dir.is_dir() else []
         candidates = [
@@ -230,6 +232,9 @@ def install(root, check_only=False):
         replace_tree(app, installed_app)
     else:
         shutil.copy2(app, installed_app)
+    mygo_files = platform_dir / ".mygo-files"
+    if goos != "darwin" and mygo_files.is_file():
+        shutil.copy2(mygo_files, target / ".mygo-files")
     replace_tree(
         ROOT / "third_party",
         target / "third_party",

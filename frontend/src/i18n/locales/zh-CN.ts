@@ -1289,6 +1289,18 @@ export const zhCNMessages = {
   "settings.hfEmptyPlaceholder": "hf_...（访问受限模型仓库时填写）",
   "settings.hfSaveBtn": "保存 Token",
   "settings.hfTokenExtractedToast": "已自动提取 Hugging Face Token",
+  "settings.closeBehaviorTitle": "关闭窗口行为",
+  "settings.closeBehaviorDesc":
+    "控制点击窗口关闭按钮或从任务栏关闭时的行为；设为「每次询问」时，弹窗默认选中「直接退出」。",
+  "settings.closeBehaviorDescNoTray":
+    "当前系统环境未检测到可用托盘，关闭主窗口时将直接退出客户端。",
+  "settings.closeBehaviorAria": "关闭窗口行为",
+  "settings.closeBehaviorAsk": "每次询问",
+  "settings.closeBehaviorQuit": "直接退出",
+  "settings.closeBehaviorBackground": "后台运行",
+  "settings.closeBehaviorToastAsk": "已设为关闭窗口时每次询问",
+  "settings.closeBehaviorToastQuit": "已设为关闭窗口时直接退出",
+  "settings.closeBehaviorToastBackground": "已设为关闭窗口时后台运行",
   "settings.shortcutsTitle": "桌面与开始菜单快捷方式",
   "settings.shortcutsInStartMenu": "已加入开始菜单",
   "settings.shortcutsDesc":
@@ -1325,6 +1337,110 @@ export const zhCNMessages = {
   "logs.footerLimit": "最近 300 条 · 本次运行",
   "logs.following": "跟随最新",
   "logs.jumpLatest": "回到最新",
+
+  // App Self-Update
+  "update.navUpdateBadge": "有更新",
+  "update.navRestartBadge": "重启更新",
+  "update.navDownloadingBadge": "更新中 {percent}%",
+  "update.navVersionTooltipAvailable": "发现新版本 v{version}，点击查看更新",
+  "update.navVersionTooltipRestart": "新版本 v{version} 已就绪，点击重启完成更新",
+  "update.navVersionTooltipDownloading": "正在下载 ColabOne v{version}（{percent}%）",
+  "update.navVersionTooltipDefault": "ColabOne {version} · 点击检查更新",
+  "update.settingsTitle": "客户端更新",
+  "update.settingsDesc":
+    "直接从 GitHub Releases 检查并安装经 Ed25519 签名校验的正式版或预发布版，支持增量补丁更新。",
+  "update.statusUpToDate": "已是最新",
+  "update.statusChecking": "检查中…",
+  "update.statusAvailable": "有新版本 v{version}",
+  "update.statusDownloading": "下载中 {percent}%",
+  "update.statusInstalling": "正在校验并安装…",
+  "update.statusReadyToRestart": "待重启生效",
+  "update.statusReadOnly": "目录只读 · 需手动更新",
+  "update.statusDevBuild": "开发构建",
+  "update.statusError": "检查失败",
+  "update.lastCheckedNever": "尚未检查更新",
+  "update.lastCheckedAt": "上次检查：{time}",
+  "update.btnCheck": "检查更新",
+  "update.btnChecking": "正在检查…",
+  "update.btnUpdateNow": "立即更新",
+  "update.btnViewUpdate": "查看更新",
+  "update.btnRestartNow": "立即重启完成更新",
+  "update.btnRestartLater": "稍后重启",
+  "update.btnCancelDownload": "取消下载",
+  "update.btnSkipVersion": "跳过此版本",
+  "update.btnRemindLater": "稍后提醒",
+  "update.btnRetry": "重试",
+  "update.btnOpenReleases": "前往 GitHub 下载",
+  "update.prefAutoCheckLabel": "启动时自动检查更新",
+  "update.prefAutoCheckDesc":
+    "启动客户端后静默检查新版本并每 6 小时复查一次，发现新版本后由你决定是否更新。",
+  "update.prefPrereleaseLabel": "接收预发布版本（Prerelease）",
+  "update.prefPrereleaseDesc":
+    "抢先体验候选测试版（如 rc / beta）；关闭后会在下一个更高正式版发布时自动回到稳定通道。",
+  "update.modalTitleAvailable": "发现新版本",
+  "update.modalTitleReady": "更新已就绪",
+  "update.modalTitleUpToDate": "已是最新版本",
+  "update.modalTitleError": "检查更新失败",
+  "update.modalTitleDisabled": "软件更新",
+  "update.modalPrereleaseTag": "预发布版",
+  "update.modalVersionTransition": "v{current} → v{target}",
+  "update.modalPublishedAt": "发布于 {date}",
+  "update.modalNotesHeading": "更新内容",
+  "update.modalNotesEmpty": "暂无本次发布的详细变更说明，可前往 GitHub Releases 查看。",
+  "update.modalToggleFullNotes": "查看中英完整原文",
+  "update.modalToggleLocalNotes": "仅看当前语言",
+  "update.modalActiveGpuNotice":
+    "更新并重启桌面客户端不会停止正在运行的远端 GPU、对外 API 或 ComfyUI 隧道，重启后将自动重连。",
+  "update.modalActiveOpWarning":
+    "当前有正在执行的本地操作（如启动/释放 GPU 或云盘授权），请等待该操作完成后再重启客户端。",
+  "update.modalReadOnlyWarning":
+    "当前安装目录缺少写入权限，无法直接原地替换。请点击下方按钮前往 GitHub Releases 手动下载替换。",
+  "update.modalManifestMissingWarning":
+    "该版本暂未提供当前平台的自动更新包，请点击下方按钮前往 GitHub Releases 手动下载。",
+  "update.modalDevBuildNotice":
+    "当前为本地开发构建，已禁用自动替换；打包后的正式客户端支持一键自动更新。",
+  "update.modalDownloadingHint": "正在下载签名更新包（支持增量差分补丁）…",
+  "update.modalInstallingHint": "正在校验 Ed25519 签名并替换程序文件，请勿关闭客户端…",
+  "update.modalReadyHint": "ColabOne v{version} 已校验并准备就绪，重启客户端后即可启用新版本。",
+  "update.modalUpToDateDesc": "当前运行的 ColabOne v{version} 已是最新可用版本。",
+  "update.errProxy":
+    "系统代理连接失败，请确认代理软件已启动且代理端口配置正确，或前往 GitHub Releases 手动下载。",
+  "update.errTimeout":
+    "连接 GitHub 或下载更新包超时，请检查当前网络/代理稳定性后重试，或手动下载。",
+  "update.errTls":
+    "安全连接（HTTPS / TLS）校验失败，请检查系统时间、代理证书或防火墙设置后重试。",
+  "update.errNetwork":
+    "无法连接 GitHub，请检查网络连接或系统代理后重试，或点击下方链接手动下载。",
+  "update.errNotFound":
+    "暂未找到适用于当前平台的更新清单，请稍后重试或前往 GitHub Releases 手动下载。",
+  "update.errDetailLabel": "诊断详情",
+  "update.errRateLimited":
+    "GitHub 接口请求频率暂时受限，请稍后重试或前往 GitHub Releases 手动下载。",
+  "update.errSignature":
+    "更新补丁签名校验失败，当前下载的更新包可能已被篡改或损坏，已自动中止安装。请点击下方按钮前往 GitHub 官网下载正版安装包。",
+  "update.errPermission":
+    "当前安装目录不可写入，请前往 GitHub Releases 手动下载更新包替换。",
+  "update.errUnknown": "更新过程遇到异常，请稍后重试或前往 GitHub Releases 手动下载。",
+  "update.toastUpToDate": "当前已是最新版本（v{version}）",
+  "update.toastSkipped": "已跳过 v{version} 的自动更新提醒",
+  "update.toastPrefsSaved": "更新偏好已保存",
+
+  // Close Window Confirmation Modal
+  "close.modalTitle": "关闭 ColabOne",
+  "close.modalLead": "请选择关闭主窗口时的操作：",
+  "close.optionQuitTitle": "直接退出",
+  "close.optionQuitDesc":
+    "完全关闭本地客户端；正在运行的远端 GPU 与空闲自动释放保护将继续生效。",
+  "close.optionBackgroundTitle": "后台运行",
+  "close.optionBackgroundDesc":
+    "隐藏主窗口并最小化到系统托盘，随时点击托盘图标即可重新打开。",
+  "close.defaultTag": "默认",
+  "close.activeOpWarning":
+    "当前有正在执行的本地操作（如启动/释放 GPU 或客户端更新）。直接退出会中断本地进度，选择「后台运行」可保持其继续执行。",
+  "close.rememberLabel": "记住我的选择，下次不再提示",
+  "close.rememberHint": "后续可随时在「设置 → 本机与关于」中修改。",
+  "close.confirmQuitBtn": "直接退出",
+  "close.confirmBackgroundBtn": "后台运行",
 
   // Location
   "location.tooltipWithZone": "实例位置：{full} ({zone})",
