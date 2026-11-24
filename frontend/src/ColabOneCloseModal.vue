@@ -39,6 +39,7 @@ const emit = defineEmits<{
 
 const selectedAction = ref<ColabOneCloseAction>("quit");
 const rememberChoice = ref(false);
+const modalBodyRef = ref<HTMLElement | null>(null);
 const quitOptionRef = ref<HTMLButtonElement | null>(null);
 const backgroundOptionRef = ref<HTMLButtonElement | null>(null);
 const confirmBtnWrapRef = ref<HTMLElement | null>(null);
@@ -61,6 +62,11 @@ function scheduleConfirmFocus() {
   cancelScheduledFocus();
   const focusConfirm = () => {
     if (!props.open) return;
+    const active =
+      typeof document !== "undefined" ? document.activeElement : null;
+    if (active && modalBodyRef.value?.contains(active)) {
+      return;
+    }
     const btn = confirmBtnWrapRef.value?.querySelector<HTMLButtonElement>(
       "button:not([disabled])",
     );
@@ -206,7 +212,11 @@ function handleConfirm() {
       </div>
     </template>
 
-    <div class="co-close-modal-body">
+    <div
+      ref="modalBodyRef"
+      class="co-close-modal-body"
+      @focusin="cancelScheduledFocus"
+    >
       <p class="co-close-lead">{{ t("close.modalLead") }}</p>
 
       <div

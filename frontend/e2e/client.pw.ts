@@ -6312,6 +6312,7 @@ test("close window prompt defaults to quit, supports remember choice, and syncs 
 
   // Roving-tabindex keyboard navigation moves both aria-checked and real DOM focus.
   await quitOption.focus();
+  await expect(quitOption).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(bgOption).toHaveAttribute("aria-checked", "true");
   await expect(bgOption).toBeFocused();
