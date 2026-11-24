@@ -2,7 +2,7 @@
   "name": "ColabOne",
   "slug": "colabone",
   "identifier": "app.colabone.desktop",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Remote GPU workspace",
   "icon": "resources/icon.png",
   "frontendDist": "../frontend/dist",
