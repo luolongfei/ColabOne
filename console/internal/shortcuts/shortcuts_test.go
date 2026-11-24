@@ -128,9 +128,9 @@ func TestShortcutsDescriptionLocalizedAcrossLocales(t *testing.T) {
 		"Type=Application\n",
 		"Name=ColabOne\n",
 		"Comment=ColabOne — Remote GPU Workspace\n",
-		`Exec="` + binPath + "\"\n",
-		"Path=" + root + "\n",
-		"Icon=" + filepath.Join(root, "console", "resources", "icon.png") + "\n",
+		"Exec=" + escapeDesktopExecArg(binPath) + "\n",
+		"Path=" + escapeDesktopStringValue(root) + "\n",
+		"Icon=" + escapeDesktopStringValue(filepath.Join(root, "console", "resources", "icon.png")) + "\n",
 		"Terminal=false\n",
 		"Categories=Development;Utility;\n",
 	} {
@@ -198,10 +198,10 @@ func TestLinuxShortcutPrefersRootIconAndLowercaseBinaryFallback(t *testing.T) {
 	if !strings.Contains(content, "Comment=ColabOne — リモート GPU ワークスペース\n") {
 		t.Errorf("missing ja-JP comment: %s", content)
 	}
-	if !strings.Contains(content, `Exec="`+lowerBin+"\"\n") {
+	if !strings.Contains(content, "Exec="+escapeDesktopExecArg(lowerBin)+"\n") {
 		t.Errorf("expected lowercase binary %s in Exec, got: %s", lowerBin, content)
 	}
-	if !strings.Contains(content, "Icon="+rootIcon+"\n") {
+	if !strings.Contains(content, "Icon="+escapeDesktopStringValue(rootIcon)+"\n") {
 		t.Errorf("expected root icon %s, got: %s", rootIcon, content)
 	}
 	if runtime.GOOS != "windows" {
@@ -327,6 +327,9 @@ func TestShortcutPathsSandboxAndPlatformNormalization(t *testing.T) {
 
 func TestWindowsPathsFallbacksAndCaching(t *testing.T) {
 	tmp := t.TempDir()
+	if realTmp, err := filepath.EvalSymlinks(tmp); err == nil && realTmp != "" {
+		tmp = realTmp
+	}
 	home := filepath.Join(tmp, "home")
 	appdata := filepath.Join(tmp, "AppData", "Roaming")
 	onedrive := filepath.Join(tmp, "OneDrive")
@@ -548,6 +551,9 @@ func TestDarwinShortcutsSymlinksAndBundleResolution(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
+	if realTmp, err := filepath.EvalSymlinks(tmp); err == nil && realTmp != "" {
+		tmp = realTmp
+	}
 	home := filepath.Join(tmp, "home")
 	stubHomeDir(t, home)
 	stubExecutable(t, filepath.Join(tmp, "bin", "test-runner"), nil)
@@ -646,6 +652,9 @@ func TestDarwinShortcutsSymlinksAndBundleResolution(t *testing.T) {
 
 func TestDarwinResolvesRootInsideAppBundle(t *testing.T) {
 	tmp := t.TempDir()
+	if realTmp, err := filepath.EvalSymlinks(tmp); err == nil && realTmp != "" {
+		tmp = realTmp
+	}
 	stubExecutable(t, filepath.Join(tmp, "other-bin"), nil)
 	bundle := filepath.Join(tmp, "ColabOne.app")
 	resourcesDir := filepath.Join(bundle, "Contents", "Resources")

@@ -291,6 +291,11 @@ func resolveTargetBinary(root, plat string) string {
 			}
 		}
 		for _, cand := range candidates {
+			if isExactCaseFile(cand) {
+				return cand
+			}
+		}
+		for _, cand := range candidates {
 			if isFile(cand) {
 				return cand
 			}
@@ -550,6 +555,23 @@ func existsOrLink(path string) bool {
 func isFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func isExactCaseFile(path string) bool {
+	if !isFile(path) {
+		return false
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		return true
+	}
+	want := filepath.Base(path)
+	for _, entry := range entries {
+		if entry.Name() == want {
+			return true
+		}
+	}
+	return false
 }
 
 func isDir(path string) bool {
