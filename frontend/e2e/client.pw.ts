@@ -549,6 +549,9 @@ async function mock(page: any, ready = false, path = "/") {
             if (action === "api.tunnel_token") {
               return JSON.stringify({ token: savedSecrets.apiTunnelToken });
             }
+            if (action === "api.key") {
+              return JSON.stringify({ key: "sk-test-privacy-key-999" });
+            }
             if (action === "runtime.start.retry") {
               if (
                 state.operation?.kind === "runtime_start" &&
@@ -943,6 +946,12 @@ async function mock(page: any, ready = false, path = "/") {
                 (w: any) => w.id !== payload?.id,
               );
               return JSON.stringify({ ok: true });
+            }
+            if (action === "comfyui.input.upload") {
+              return JSON.stringify({
+                id: `asset-mock-${calls.length}`,
+                filename: payload?.filename || "upload.bin",
+              });
             }
             if (action === "comfyui.run") {
               return JSON.stringify({ id: "task-comfy-run", state: "running" });
@@ -2318,17 +2327,17 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
     tablist.getByRole("tab", { name: /^工作流工坊/ }),
   ).toHaveAttribute("aria-selected", "true");
 
-  // Empty workflow card and output gallery card share identical top & bottom bounds.
-  const emptyCardBox = await page.locator(".co-comfy-empty-card").boundingBox();
-  const galleryCardBox = await page
-    .locator(".co-comfy-gallery-card")
-    .boundingBox();
-  expect(emptyCardBox).not.toBeNull();
-  expect(galleryCardBox).not.toBeNull();
-  expect(Math.abs(emptyCardBox!.y - galleryCardBox!.y)).toBeLessThanOrEqual(1);
-  expect(
-    Math.abs(emptyCardBox!.height - galleryCardBox!.height),
-  ).toBeLessThanOrEqual(1);
+  // Outputs gallery is tucked inside a drawer by default; toolbar exposes the Outputs trigger button.
+  await expect(page.locator(".co-comfy-outputs-drawer-root")).toHaveCount(0);
+  await expect(page.locator(".co-comfy-param-drawer-root")).toHaveCount(0);
+  await expect(page.locator(".co-comfy-gallery-card")).toHaveCount(0);
+  await expect(page.locator(".co-comfy-param-card")).toHaveCount(0);
+  const outputsTrigger = page.locator(".co-comfy-outputs-trigger");
+  await expect(outputsTrigger).toBeVisible();
+  await expect(outputsTrigger).toContainText("输出结果");
+
+  // Empty workflow card renders cleanly on its own without any stretched side gallery.
+  await expect(page.locator(".co-comfy-empty-card")).toBeVisible();
 
   // Open import modal while GPU is stopped (offline import).
   await page
@@ -2368,29 +2377,27 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
   await modal.getByRole("button", { name: "导入工作流", exact: true }).click();
   await expect(modal).toBeHidden();
 
-  // Imported workflow renders dynamic form fields.
-  await expect(page.locator(".co-comfy-workflow-list")).toContainText(
-    "测试文生图工作流",
+  // Imported workflow appears in the workflow list and automatically opens its Parameter Configuration Drawer.
+  const workflowCard = page
+    .locator(".co-comfy-workflow-list .co-comfy-workflow-item", {
+      hasText: "测试文生图工作流",
+    })
+    .first();
+  await expect(workflowCard).toBeVisible();
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
   );
-  const promptArea = page.locator(".co-comfy-param-form textarea").first();
+  await expect(paramDrawer).toBeVisible();
+  const promptArea = paramDrawer.locator(".co-comfy-param-form textarea").first();
   await expect(promptArea).toHaveValue("ocean sunrise");
 
-  // Populated left column bottom aligns flush with the output gallery card.
-  const paramCardBox = await page.locator(".co-comfy-param-card").boundingBox();
-  const populatedGalleryBox = await page
-    .locator(".co-comfy-gallery-card")
-    .boundingBox();
-  expect(paramCardBox).not.toBeNull();
-  expect(populatedGalleryBox).not.toBeNull();
-  expect(
-    Math.abs(
-      paramCardBox!.y +
-        paramCardBox!.height -
-        (populatedGalleryBox!.y + populatedGalleryBox!.height),
-    ),
-  ).toBeLessThanOrEqual(1);
+  // Close the Parameter Configuration Drawer, bring GPU online, start ComfyUI, and reopen via the workflow card.
+  await paramDrawer
+    .locator(".ant-drawer-footer")
+    .getByRole("button", { name: /^关\s*闭$/ })
+    .click();
+  await expect(paramDrawer).toBeHidden();
 
-  // Bring GPU online, start ComfyUI engine, edit prompt, and submit run.
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.runtime.state = "ready";
@@ -2403,8 +2410,15 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
     page.getByRole("button", { name: "停止 ComfyUI" }),
   ).toBeVisible();
 
+  await workflowCard.click();
+  await expect(paramDrawer).toBeVisible();
+  await expect(promptArea).toHaveValue("ocean sunrise");
+
+  // Edit prompt inside the drawer and submit -> verifies comfyui.run overrides and auto-close.
   await promptArea.fill("neon harbor rain");
-  await page.getByRole("button", { name: "运行工作流" }).click();
+  await paramDrawer.getByRole("button", { name: "运行工作流" }).click();
+  await expect(paramDrawer).toBeHidden();
+
   const calls = await page.evaluate(() => (window as any).__calls);
   expect(
     calls.some((c: any) => c.action === "comfyui.workflow.import"),
@@ -2416,6 +2430,318 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
     "6.seed": 42,
     "6.steps": 20,
   });
+
+  // Clicking the Outputs trigger opens the Output Results Drawer showing the clean empty state.
+  await outputsTrigger.click();
+  const outputsDrawer = page.locator(
+    ".co-comfy-outputs-drawer-root .ant-drawer-content",
+  );
+  await expect(outputsDrawer).toBeVisible();
+  await expect(outputsDrawer).toContainText("空空如也");
+  await page.keyboard.press("Escape");
+  await expect(outputsDrawer).toBeHidden();
+});
+
+test("ComfyUI built-in digital human template shows beginner essentials first and reveals license warning for non-commercial TTS in Advanced Settings", async ({
+  page,
+}) => {
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+  }, comfyCatalog);
+
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+
+  const digitalHumanCard = page
+    .locator(".co-comfy-workflow-list .co-comfy-workflow-item", {
+      hasText: "口播数字人 · 长视频推荐版",
+    })
+    .first();
+  await expect(digitalHumanCard).toBeVisible();
+  await digitalHumanCard.click();
+
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+
+  // Only beginner-essential basic fields are visible by default; Advanced Settings starts collapsed.
+  await expect(paramDrawer).toContainText("主播人像照片");
+  await expect(paramDrawer.locator(".co-comfy-segmented")).toBeVisible();
+  await expect(paramDrawer).toContainText("口播文稿");
+  await expect(paramDrawer).toContainText("输出画幅与清晰度");
+
+  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
+  await expect(advancedToggle).toBeVisible();
+  await expect(advancedToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_tts_engine"),
+  ).toBeHidden();
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
+
+  // Expanding Advanced Settings exposes the remote TTS engine selector; picking fish_s2_pro shows the license alert.
+  await advancedToggle.click();
+  await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
+  const ttsSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_tts_engine)",
+  );
+  await expect(ttsSelect).toBeVisible();
+  await chooseAntOption(page, ttsSelect, /Fish Speech S2-Pro/);
+
+  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
+  await expect(licenseAlert).toBeVisible();
+  await expect(licenseAlert).toContainText("Fish Speech S2-Pro");
+
+  // License alert remains visible even if Advanced Settings is collapsed again.
+  await advancedToggle.click();
+  await expect(advancedToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(licenseAlert).toBeVisible();
+});
+
+test("ComfyUI built-in digital human workflows translate cleanly to Japanese across cards, Parameter Drawer, and TTS engine", async ({
+  page,
+}) => {
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+    s.runtime.active_engine = "comfyui";
+    s.runtime.comfyui.running = true;
+    s.runtime.comfyui.state = "ready";
+  }, comfyCatalog);
+
+  // Switch locale to ja-JP via the top navbar locale switcher.
+  await page.getByTestId("topbar-locale-trigger").click();
+  await page.locator('.co-locale-menu-item[data-locale="ja-JP"]').click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "ja-JP");
+
+  // Open ComfyUI Studio and confirm localized header + both built-in workflow cards.
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", {
+      name: "ComfyUI ワークフローエンジン",
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  const cards = page.locator(".co-comfy-workflow-list .co-comfy-workflow-item");
+  await expect(cards).toHaveCount(2);
+
+  const infiniteTalkCard = cards.nth(0);
+  await expect(
+    infiniteTalkCard.locator(".co-comfy-wf-card-title"),
+  ).toHaveText("デジタルヒューマン・長尺おすすめ版");
+  await expect(
+    infiniteTalkCard.locator(".co-comfy-workflow-desc"),
+  ).toContainText("人物写真と台本（または音声）を入力");
+  await expect(infiniteTalkCard).not.toContainText("口播数字人");
+  await expect(infiniteTalkCard).not.toContainText("输入人像照片");
+
+  const longCatCard = cards.nth(1);
+  await expect(longCatCard.locator(".co-comfy-wf-card-title")).toHaveText(
+    "デジタルヒューマン・フラッグシップ HD 版",
+  );
+  await expect(longCatCard.locator(".co-comfy-workflow-desc")).toContainText(
+    "ネイティブ 720p レンダリング",
+  );
+  await expect(longCatCard).not.toContainText("口播数字人");
+  await expect(longCatCard).not.toContainText("输入人像照片");
+
+  // Open the Parameter Drawer and verify Japanese header, guide/field descriptions, preflight strip, and TTS engine.
+  await infiniteTalkCard.click();
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+  await expect(
+    paramDrawer.locator(".co-comfy-drawer-title-text"),
+  ).toHaveText("デジタルヒューマン・長尺おすすめ版");
+  await expect(
+    paramDrawer.locator(".co-comfy-beginner-guide"),
+  ).toContainText("入力：人物写真 + 原稿または音声");
+  await expect(
+    paramDrawer.locator(".co-comfy-field-desc").first(),
+  ).toContainText("正面または上半身");
+  await expect(paramDrawer.locator(".co-comfy-segmented")).toContainText(
+    "台本を入力（AI 自動音声）",
+  );
+  await expect(paramDrawer.locator(".co-comfy-segmented")).toContainText(
+    "既存音声をアップロード",
+  );
+
+  // T4 (15 GB) preflight VRAM warning strip renders in Japanese inside the drawer.
+  const preflightWarning = paramDrawer.locator(
+    ".co-comfy-preflight-strip.is-warning",
+  );
+  await expect(preflightWarning).toBeVisible();
+  await expect(preflightWarning).toContainText("GPU VRAM が不足しています");
+  await expect(preflightWarning).toContainText("40 GB");
+  await expect(preflightWarning).toContainText("15 GB");
+
+  // Expand Advanced Settings and verify TTS engine name & description render in Japanese.
+  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
+  await advancedToggle.click();
+  await expect(
+    paramDrawer.locator(".co-comfy-tts-strip-name"),
+  ).toHaveText("VoxCPM2（OpenBMB・48kHz 商用推奨）");
+  await expect(
+    paramDrawer.locator(".co-comfy-tts-strip-desc"),
+  ).toContainText("ゼロショット");
+
+  // Confirm zero leaked Simplified Chinese labels/descriptions inside the drawer.
+  await expect(paramDrawer).not.toContainText("口播数字人");
+  await expect(paramDrawer).not.toContainText("输入人像照片");
+  await expect(paramDrawer).not.toContainText("主播人像照片");
+  await expect(paramDrawer).not.toContainText("商用推荐");
+  await expect(paramDrawer).not.toContainText("面壁智能开源");
+});
+
+test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required reference audio, T4 preflight VRAM warning, and LogDrawer Escape coordination", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+    s.runtime.active_engine = "comfyui";
+    s.runtime.comfyui.running = true;
+    s.runtime.comfyui.state = "ready";
+  }, comfyCatalog);
+
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+
+  // Open inline LogDrawer first so both LogDrawer and Parameter Drawer are active simultaneously.
+  const logPanel = page.locator("#activity-panel");
+  await page.getByRole("button", { name: "展开运行日志" }).click();
+  await expect(logPanel).toBeVisible();
+
+  const digitalHumanCard = page
+    .locator(".co-comfy-workflow-list .co-comfy-workflow-item", {
+      hasText: "口播数字人 · 长视频推荐版",
+    })
+    .first();
+  await expect(digitalHumanCard).toBeVisible();
+  await digitalHumanCard.click();
+
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+  await expect(logPanel).toBeVisible();
+
+  // 1. Preflight VRAM warning banner on T4 (15 GB) for InfiniteTalk (40 GB+ required).
+  const preflightWarning = paramDrawer.locator(
+    ".co-comfy-preflight-strip.is-warning",
+  );
+  await expect(preflightWarning).toBeVisible();
+  await expect(preflightWarning).toContainText(
+    "当前 GPU 显存不足（需 40 GB，当前 15 GB）",
+  );
+
+  // 2. Escape coordination with LogDrawer: first Escape closes ONLY Parameter Drawer while keeping LogDrawer open.
+  await page.keyboard.press("Escape");
+  await expect(paramDrawer).toBeHidden();
+  await expect(logPanel).toBeVisible();
+
+  // Second Escape now closes LogDrawer cleanly.
+  await page.keyboard.press("Escape");
+  await expect(logPanel).toHaveCount(0);
+
+  // Reopen Parameter Drawer for audio source toggle & IndexTTS-2 validation checks.
+  await digitalHumanCard.click();
+  await expect(paramDrawer).toBeVisible();
+
+  // 3. Audio source toggle (tts <-> audio): switching to uploaded audio hides script_text and suppresses non-commercial TTS alert.
+  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
+  await advancedToggle.click();
+  const ttsSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_tts_engine)",
+  );
+  await expect(ttsSelect).toBeVisible();
+  await chooseAntOption(page, ttsSelect, /Fish Speech S2-Pro/);
+  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
+  await expect(licenseAlert).toBeVisible();
+  await expect(licenseAlert).toContainText("Fish Speech S2-Pro");
+
+  const audioModeBtn = paramDrawer.locator(
+    '.co-comfy-segmented button[role="radio"]',
+    { hasText: "上传现成音频" },
+  );
+  const ttsModeBtn = paramDrawer.locator(
+    '.co-comfy-segmented button[role="radio"]',
+    { hasText: "输入文稿（AI 自动配音）" },
+  );
+  await audioModeBtn.click();
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_script_text"),
+  ).toHaveCount(0);
+  await expect(paramDrawer.locator("#comfy-field-2_audio")).toHaveCount(1);
+  await expect(licenseAlert).toHaveCount(0);
+
+  // 4. Switch back to TTS, provide portrait + script, pick IndexTTS-2 without voice_ref_audio -> blocks run with validation error.
+  await ttsModeBtn.click();
+  const scriptInput = paramDrawer.locator("#comfy-field-pipeline_script_text");
+  await expect(scriptInput).toBeVisible();
+  await scriptInput.fill("大家好，这是一段用于离线回归验证的口播文稿。");
+
+  // Upload a minimal PNG for the required presenter portrait so voice_ref_audio is the sole missing required field.
+  await paramDrawer.locator("#comfy-field-1_image").setInputFiles({
+    name: "presenter.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    ]),
+  });
+  await expect(paramDrawer).toContainText("presenter.png");
+
+  await chooseAntOption(page, ttsSelect, /IndexTTS-2/);
+  await expect(licenseAlert).toBeVisible();
+  await expect(licenseAlert).toContainText("IndexTTS-2");
+  await expect(
+    paramDrawer.locator(".co-comfy-field-required-hint"),
+  ).toContainText("当前选用的 IndexTTS-2 引擎必须上传参考音色音频");
+
+  await paramDrawer.locator(".co-comfy-drawer-run-btn").click();
+
+  // Submission must be blocked: no comfyui.run emitted, drawer stays open, and error toast explains missing reference voice.
+  const errorToast = page.locator(".co-toast.is-error .co-toast-message").last();
+  await expect(errorToast).toBeVisible();
+  await expect(errorToast).toContainText("请先填写或上传必填项：参考音色");
+  await expect(errorToast).not.toContainText("（可选）");
+  await expect(paramDrawer).toBeVisible();
+  const runCalls = await page.evaluate(() =>
+    ((window as any).__calls || []).filter((c: any) => c.action === "comfyui.run"),
+  );
+  expect(runCalls).toHaveLength(0);
 });
 
 test("ComfyUI Native Canvas manages authenticated tunnel and opens window or browser without exposing token", async ({
@@ -3237,7 +3563,7 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
     innerWidth: 840,
     centeredDelta: 0,
     listCount: 4,
-    rowCounts: [3, 5, 2, 4],
+    rowCounts: [3, 5, 3, 4],
   });
 
   // Verify segmented control icons & labels stay vertically centered inside their pills
@@ -5800,7 +6126,7 @@ test("status badge dots stay vertically centered without phantom empty-text gap 
   await page.evaluate(() => {
     document.documentElement.lang = "en-US";
   });
-  await page.locator("header .co-nav-right button").nth(1).click();
+  await page.getByRole("button", { name: /切换到深色模式|切换到浅色模式/ }).click();
   await page.waitForTimeout(150);
 
   const enApiStatus = await inspectBadge(".co-api-status-tag");
@@ -5901,7 +6227,7 @@ test("CU consumption trend chart defaults to live 24h, supports calendar date se
 
   // Return to live 24h and verify dark mode + narrow-viewport tooltip containment + zero overflow
   await cuCard.getByTestId("cu-now-btn").click();
-  await page.locator("header .co-nav-right button").nth(1).click();
+  await page.getByRole("button", { name: /切换到深色模式|切换到浅色模式/ }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   const overflowDark = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
@@ -6362,4 +6688,288 @@ test("close window prompt defaults to quit, supports remember choice, and syncs 
       { method: "resolve", action: "background", remember: true },
       { method: "resolve", action: "quit", remember: false },
     ]);
+});
+
+test("privacy mask blurs personal info across Devices, API, ComfyUI, Settings, and Logs while keeping CU balance and real clipboard copy", async ({
+  page,
+}) => {
+  await mock(page, true);
+  await page.evaluate(() => {
+    const st = (window as any).__state;
+    st.account.email = "alex.chen@gmail.com";
+    st.account.balance = 1975.28;
+    st.api_settings = {
+      mode: "named",
+      domain: "https://colabone.acme.dev",
+      has_token: true,
+      has_key: true,
+    };
+    st.runtime.public_api = {
+      state: "ready",
+      enabled: true,
+      mode: "named",
+      url: "https://colabone.acme.dev",
+      error: "",
+      streaming: true,
+      checked_at: Date.now() / 1000,
+      requests: 3,
+      active: 0,
+      completed: 3,
+      failed: 0,
+      last_request: Date.now() / 1000,
+    };
+    st.comfy_canvas_settings = {
+      mode: "named",
+      domain: "comfy.acme.dev",
+      has_token: true,
+    };
+    st.runtime.comfyui.running = true;
+    st.runtime.comfyui.state = "ready";
+    st.runtime.comfyui.canvas = {
+      state: "ready",
+      enabled: true,
+      mode: "named",
+      url: "https://comfy.acme.dev/?colabone_auth=secret",
+      error: "",
+      checked_at: Date.now() / 1000,
+      active_connections: 1,
+    };
+    st.assign_proxy_settings = {
+      enabled: true,
+      has_proxy: true,
+      masked_url: "socks5://***@10.24.0.8:1080",
+      has_auth: true,
+    };
+    st.settings.assign_proxy_enabled = true;
+    st.logs = [
+      {
+        id: 101,
+        time: Date.now() / 1000 - 30,
+        source: "登录",
+        level: "info",
+        message: "请在浏览器中使用 alex.chen@gmail.com 勾选全部云盘权限并点击允许（仅本实例确认一次）",
+      },
+      {
+        id: 102,
+        time: Date.now() / 1000 - 20,
+        source: "云盘",
+        level: "info",
+        message: "已确认免弹窗云盘配额项目 (colabone-proj-8891)，后续所有实例免弹窗自动挂载",
+      },
+      {
+        id: 103,
+        time: Date.now() / 1000 - 10,
+        source: "设置",
+        level: "info",
+        message: "已保存分配代理（socks5://***@10.24.0.8:1080）",
+      },
+      {
+        id: 104,
+        time: Date.now() / 1000 - 5,
+        source: "API",
+        level: "info",
+        message: "对外 API 已就绪：https://colabone.acme.dev/v1",
+      },
+    ];
+  });
+
+  // Wait for updated snapshot to render on Devices page (initially unmasked).
+  const billingSub = page.getByTestId("billing-account-subtitle");
+  await expect(billingSub).toContainText("alex.chen@gmail.com");
+  await expect(page.locator(".co-billing-card")).toContainText("1975.28");
+
+  const privacyBtn = page.getByTestId("nav-privacy-toggle");
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "false");
+
+  // 1. Enable privacy mask via topbar quick toggle.
+  await privacyBtn.click();
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "true");
+  await expect(privacyBtn).toHaveClass(/is-active/);
+
+  // Devices page: email is frosted-masked with zero real characters in DOM text or title, while CU balance stays visible.
+  const billingMask = billingSub.locator('[data-privacy-masked="true"]');
+  await expect(billingMask).toBeVisible();
+  await expect(billingSub).not.toContainText("alex.chen");
+  await expect(billingSub).not.toContainText("gmail.com");
+  expect(await billingSub.getAttribute("title")).toBeNull();
+  await expect(page.locator(".co-billing-card")).toContainText("1975.28");
+
+  // Hovering the mosaic automatically reveals the original email, preserves min-width (no shrink flicker),
+  // collapses on window blur, and re-masks when the pointer moves away.
+  const preHoverBox = (await billingMask.boundingBox())!;
+  await billingMask.hover();
+  await expect(billingMask).toHaveAttribute("data-privacy-peeking", "true");
+  await expect(billingSub).toContainText("alex.chen@gmail.com");
+  const peekingBox = (await billingMask.boundingBox())!;
+  expect(peekingBox.width).toBeGreaterThanOrEqual(Math.floor(preHoverBox.width));
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(billingMask).not.toHaveAttribute("data-privacy-peeking", "true");
+  await expect(billingSub).not.toContainText("alex.chen");
+  await page.mouse.move(10, 10);
+  await billingMask.hover();
+  await expect(billingSub).toContainText("alex.chen@gmail.com");
+  await page.mouse.move(10, 10);
+  await expect(billingMask).not.toHaveAttribute("data-privacy-peeking", "true");
+  await expect(billingSub).not.toContainText("alex.chen");
+
+  // 2. Public API page: domain input is masked & readonly, Base URL & code block blur ONLY the personal domain,
+  //    hovering each mosaic peeks the original value, and Copy Base URL / Copy Code always copy real values.
+  await navItem(page, "对外 API").click();
+  const domainInput = page.locator("#api-domain");
+  await expect(domainInput).toHaveAttribute("readonly", "");
+  const maskedDomainVal = await domainInput.inputValue();
+  expect(maskedDomainVal.startsWith("https://")).toBe(true);
+  expect(maskedDomainVal).not.toContain("colabone.acme.dev");
+
+  // Hovering the API domain input host reveals the real domain even while the input is disabled/readonly.
+  await domainInput.locator("..").hover();
+  await expect(domainInput).toHaveValue("https://colabone.acme.dev");
+  await page.mouse.move(10, 10);
+  expect(await domainInput.inputValue()).not.toContain("colabone.acme.dev");
+
+  const baseUrlEl = page.getByTestId("api-base-url");
+  const baseUrlMask = baseUrlEl.locator('[data-privacy-masked="true"]');
+  await expect(baseUrlMask).toBeVisible();
+  await expect(baseUrlEl).toContainText("https://");
+  await expect(baseUrlEl).toContainText("/v1");
+  await expect(baseUrlEl).not.toContainText("colabone.acme.dev");
+  await baseUrlMask.hover();
+  await expect(baseUrlEl).toContainText("https://colabone.acme.dev/v1");
+  await page.mouse.move(10, 10);
+  await expect(baseUrlEl).not.toContainText("colabone.acme.dev");
+
+  const codeBlock = page.locator(".co-api-code-block");
+  const codeMask = codeBlock.locator('[data-privacy-masked="true"]');
+  await expect(codeMask).toBeVisible();
+  await expect(codeBlock).toContainText("https://");
+  await expect(codeBlock).toContainText("/v1/chat/completions");
+  await expect(codeBlock).not.toContainText("colabone.acme.dev");
+  await codeMask.hover();
+  await expect(codeMask).toHaveAttribute("data-privacy-peeking", "true");
+  await expect(codeBlock).toContainText("https://colabone.acme.dev/v1/chat/completions");
+  // Telemetry poll updates with unchanged domains must NOT drop an active hover peek.
+  await page.evaluate(() => {
+    (window as any).__state.runtime.gpu.used_mib += 64;
+  });
+  await page.waitForTimeout(1100);
+  await expect(codeMask).toHaveAttribute("data-privacy-peeking", "true");
+  await expect(codeBlock).toContainText("https://colabone.acme.dev/v1/chat/completions");
+  await page.mouse.move(10, 10);
+  await expect(codeBlock).not.toContainText("colabone.acme.dev");
+
+  // Auto-repeated Ctrl+Shift+M keydown events must be ignored (no rapid flicker).
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "M",
+        code: "KeyM",
+        ctrlKey: true,
+        shiftKey: true,
+        repeat: true,
+        bubbles: true,
+      }),
+    );
+  });
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "true");
+
+  // Copy Base URL & Copy Code still write the real URL to clipboard.
+  await page.getByRole("button", { name: "复制 API 地址" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__clipboard))
+    .toBe("https://colabone.acme.dev/v1");
+
+  await page.getByRole("button", { name: "复制代码" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__clipboard))
+    .toContain("https://colabone.acme.dev/v1/chat/completions");
+
+  // Temporarily turn mask OFF via Ctrl+Shift+M, reveal API key, then turn mask back ON -> API key auto-collapses.
+  await page.keyboard.press("Control+Shift+M");
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "false");
+  await expect(domainInput).toHaveValue("https://colabone.acme.dev");
+  await page.getByRole("button", { name: "显示 API 密钥" }).click();
+  await expect(page.locator(".co-api-access")).toContainText("sk-test-privacy-key-999");
+  await privacyBtn.click();
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".co-api-access")).not.toContainText("sk-test-privacy-key-999");
+
+  // 3. ComfyUI Canvas tab: canvas domain input and public host are masked.
+  await navItem(page, "ComfyUI").click();
+  await page.getByRole("tab", { name: /原生画布/ }).click();
+  const canvasDomainInput = page.locator("#comfy-canvas-domain");
+  await expect(canvasDomainInput).toHaveAttribute("readonly", "");
+  expect(await canvasDomainInput.inputValue()).not.toContain("comfy.acme.dev");
+  const canvasHostEl = page.getByTestId("comfy-canvas-public-host");
+  const canvasHostMask = canvasHostEl.locator('[data-privacy-masked="true"]');
+  await expect(canvasHostMask).toBeVisible();
+  await expect(canvasHostEl).not.toContainText("comfy.acme.dev");
+  await canvasHostMask.hover();
+  await expect(canvasHostEl).toContainText("comfy.acme.dev");
+  await page.mouse.move(10, 10);
+  await expect(canvasHostEl).not.toContainText("comfy.acme.dev");
+
+  // 4. Logs drawer: emails, quota project IDs, proxy IPs, and custom domains are masked visually,
+  //    hovering a mosaic peeks its original value, and Copy Logs copies the real text.
+  await page.locator(".co-logs-trigger").click();
+  const logFeed = page.locator(".co-log-feed");
+  await expect(logFeed).toBeVisible();
+  await expect(logFeed).not.toContainText("alex.chen@gmail.com");
+  await expect(logFeed).not.toContainText("colabone-proj-8891");
+  await expect(logFeed).not.toContainText("10.24.0.8");
+  await expect(logFeed).not.toContainText("colabone.acme.dev");
+  expect(await logFeed.locator('[data-privacy-masked="true"]').count()).toBeGreaterThanOrEqual(4);
+  const firstLogMask = logFeed.locator('[data-privacy-masked="true"]').first();
+  await firstLogMask.hover();
+  await expect(logFeed).toContainText("alex.chen@gmail.com");
+  await page.mouse.move(10, 10);
+  await expect(logFeed).not.toContainText("alex.chen@gmail.com");
+
+  await page.getByRole("button", { name: "复制日志" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__clipboard))
+    .toContain("alex.chen@gmail.com");
+  await page.locator(".co-logs-trigger").click();
+
+  // 5. Settings page: email masked, expanded proxy hides masked_url IP, and startup default is decoupled from current session.
+  await navItem(page, "设置").click();
+  const googleRow = page.locator(".co-settings-row").first();
+  await expect(googleRow.locator('[data-privacy-masked="true"]')).toBeVisible();
+  await expect(googleRow).not.toContainText("alex.chen@gmail.com");
+
+  await page.getByRole("button", { name: /^编\s*辑$/ }).click();
+  const proxyInput = page.locator("#settings-assign-proxy");
+  await expect(proxyInput).toBeVisible();
+  expect(await proxyInput.getAttribute("placeholder")).not.toContain("10.24.0.8");
+
+  const defaultRow = page.getByTestId("settings-privacy-default-row");
+  await defaultRow.scrollIntoViewIfNeeded();
+  await expect(defaultRow.getByTestId("settings-privacy-active-tag")).toBeVisible();
+  const defaultSwitch = page.getByTestId("settings-privacy-default-switch");
+  await expect(defaultSwitch).toHaveAttribute("aria-checked", "false");
+
+  // Turn OFF active session first, then turn ON startup default -> active session must remain OFF (decoupled).
+  await privacyBtn.click();
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "false");
+  await defaultSwitch.click();
+  await expect(defaultSwitch).toHaveAttribute("aria-checked", "true");
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "false");
+  expect(
+    await page.evaluate(() => window.localStorage.getItem("colabone.privacy.default")),
+  ).toBe("1");
+
+  // Reload (simulating app relaunch): boots into masked state automatically because startup default is ON.
+  await page.reload();
+  await expect(page.getByTestId("nav-privacy-toggle")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  // Toggling session OFF does NOT flip the startup default setting.
+  await page.getByTestId("nav-privacy-toggle").click();
+  await expect(page.getByTestId("nav-privacy-toggle")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(
+    await page.evaluate(() => window.localStorage.getItem("colabone.privacy.default")),
+  ).toBe("1");
 });

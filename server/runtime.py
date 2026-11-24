@@ -4,6 +4,7 @@ CUDA deployment adapted from colab-gpu-llm-service (MIT; see third_party).
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -43,6 +44,98 @@ from server.download import (
     ColabOneRangeUnsupportedError,
     CHUNK,
 )
+
+
+_UNSET = object()
+
+_BEARER_SECRET_RE = re.compile(r"(?i)\bBearer\s+[^\s'\"`,;}\]]+")
+_HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9_-]{4,}\b")
+_HF_NON_SECRET_IDENTIFIERS = frozenset(
+    {
+        "hf_token",
+        "hf_hub",
+        "hf_home",
+        "hf_cache",
+        "hf_transfer",
+        "hf_endpoint",
+        "hf_xet",
+    }
+)
+
+
+def _validate_hf_token(token: str) -> str:
+    if not token:
+        return ""
+    if not isinstance(token, str):
+        raise ValueError("hf_token 格式不合法")
+    if any(c in ("\r", "\n") or ord(c) < 32 or ord(c) == 127 for c in token):
+        raise ValueError("hf_token 包含非法空白或控制字符")
+    clean = token.strip()
+    if any(c.isspace() for c in clean):
+        raise ValueError("hf_token 包含非法空白或控制字符")
+    return clean
+
+
+def _scrub_hf_match(match: re.Match[str]) -> str:
+    tok = match.group(0)
+    if tok.lower() in _HF_NON_SECRET_IDENTIFIERS:
+        return tok
+    return "***"
+
+
+def _scrub_secret_text(text: str, *secrets: str) -> str:
+    result = str(text or "")
+    if not result:
+        return ""
+    candidates: list[str] = []
+    for secret in secrets:
+        if not isinstance(secret, str):
+            continue
+        stripped = secret.strip()
+        if not stripped:
+            continue
+        for variant in (secret, stripped, repr(secret)[1:-1], repr(stripped)[1:-1]):
+            if variant and variant not in candidates:
+                candidates.append(variant)
+    for cand in sorted(candidates, key=len, reverse=True):
+        if cand in result:
+            result = result.replace(cand, "***")
+    result = _BEARER_SECRET_RE.sub("Bearer ***", result)
+    result = _HF_TOKEN_RE.sub(_scrub_hf_match, result)
+    return result
+
+
+class _TrackedRLock:
+    """Reentrant lock that tracks whether the current thread holds it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._local = threading.local()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        ok = (
+            self._lock.acquire(blocking, timeout)
+            if timeout != -1
+            else self._lock.acquire(blocking)
+        )
+        if ok:
+            self._local.depth = getattr(self._local, "depth", 0) + 1
+        return ok
+
+    def release(self) -> None:
+        self._local.depth = max(0, getattr(self._local, "depth", 0) - 1)
+        self._lock.release()
+
+    def held_by_current_thread(self) -> bool:
+        return getattr(self._local, "depth", 0) > 0
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.release()
+        return False
 
 
 def synchronized(fn):
@@ -97,13 +190,34 @@ class ColabOneTask:
                 {"seq": len(self.events) + 1, "event": event, "data": data}
             )
 
+    def update(
+        self,
+        progress=_UNSET,
+        message=_UNSET,
+        transfer=_UNSET,
+        *,
+        kind=_UNSET,
+        monotonic_progress: bool = False,
+    ):
+        with self.lock:
+            if progress is not _UNSET and progress is not None:
+                if not monotonic_progress or progress > self.progress:
+                    self.progress = progress
+            if message is not _UNSET and message is not None:
+                self.message = message
+            if transfer is not _UNSET:
+                self.transfer = transfer
+            if kind is not _UNSET and kind is not None:
+                self.kind = kind
+
     def request_cancel(self):
         self.cancel.set()
-        hook = self.cancel_hook
+        with self.lock:
+            hook = self.cancel_hook
         if hook:
             try:
                 hook()
-            except RuntimeError:
+            except Exception:
                 pass  # The generation loop may have just finished.
 
     def check(self):
@@ -138,7 +252,8 @@ class ColabOneRuntime:
         self.root.mkdir(parents=True, exist_ok=True)
         self.models_dir = root / "models"
         self.models_dir.mkdir(exist_ok=True)
-        self.lock = threading.RLock()
+        self.lock = _TrackedRLock()
+        self._comfy_lifecycle_lock = threading.Lock()
         self.sync_lock = threading.Lock()
         self.release_lock = threading.Lock()
         self.quiescing = False
@@ -219,14 +334,35 @@ class ColabOneRuntime:
             self._seq_counter += 1
             self._dirty_seq[key] = self._seq_counter
 
-    def busy(self):
+    def _refresh_comfy_queue_if_needed(self) -> None:
+        held_fn = getattr(self.lock, "held_by_current_thread", None)
+        if callable(held_fn) and held_fn():
+            return
+        if self.comfy.is_running():
+            try:
+                self.comfy.queue_counts()
+            except Exception:
+                pass
+
+    def busy(self, *, _use_cached_queue: bool = False):
+        held_fn = getattr(self.lock, "held_by_current_thread", None)
+        already_locked = bool(held_fn()) if callable(held_fn) else False
         with self.lock:
             tasks = list(self.tasks.values())
         if any(t.state == "running" for t in tasks):
             return True
         if self.comfy.is_running():
             try:
-                if sum(self.comfy.queue_counts()) > 0:
+                if _use_cached_queue or already_locked:
+                    cached_fn = getattr(self.comfy, "queue_counts_cached", None)
+                    counts = (
+                        cached_fn()
+                        if callable(cached_fn)
+                        else self.comfy.queue_counts()
+                    )
+                else:
+                    counts = self.comfy.queue_counts()
+                if sum(counts) > 0:
                     return True
             except Exception:
                 pass
@@ -240,11 +376,11 @@ class ColabOneRuntime:
         self.activity_until = max(
             self.activity_until, self.last_active + hold_seconds
         )
-        return self.idle_status()
+        return self.idle_status(_use_cached_queue=True)
 
-    def idle_status(self, now=None):
+    def idle_status(self, now=None, *, _use_cached_queue: bool = False):
         now = time.time() if now is None else now
-        active = self.busy() or now < self.activity_until
+        active = self.busy(_use_cached_queue=_use_cached_queue) or now < self.activity_until
         elapsed = (
             0 if active else max(0, now - max(self.last_active, self.activity_until))
         )
@@ -263,22 +399,23 @@ class ColabOneRuntime:
             "server_time": now,
         }
 
-    @synchronized
     def claim_auto_release(self, now=None):
-        now = time.time() if now is None else now
-        if self.auto_releasing:
-            return True
-        if self.quiescing:
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            now = time.time() if now is None else now
+            if self.auto_releasing:
+                return True
+            if self.quiescing:
+                return False
+            budget_due = bool(self.deadline > 0 and now >= self.deadline)
+            idle = self.idle_status(now)
+            if budget_due or (
+                idle["phase"] == "countdown" and idle["remaining_seconds"] <= 0
+            ):
+                self.quiescing = True
+                self.auto_releasing = True
+                return True
             return False
-        budget_due = bool(self.deadline > 0 and now >= self.deadline)
-        idle = self.idle_status(now)
-        if budget_due or (
-            idle["phase"] == "countdown" and idle["remaining_seconds"] <= 0
-        ):
-            self.quiescing = True
-            self.auto_releasing = True
-            return True
-        return False
 
     def status(self):
         with self.lock:
@@ -297,7 +434,9 @@ class ColabOneRuntime:
             deadline = self.deadline
             dirty_count = len(self._dirty_seq)
             tasks = list(self.tasks.values())
-        idle = self.idle_status()
+        comfy_status = self.comfy.status()
+        comfy_running = bool(comfy_status.get("running"))
+        idle = self.idle_status(_use_cached_queue=True)
         cached = self.telemetry.latest(max_age=2.5) if telemetry_alive else None
         if cached is not None:
             resources = cached
@@ -305,14 +444,12 @@ class ColabOneRuntime:
         else:
             gpu = self.gpu_info()
             resources = self.telemetry.sample(self.root, gpu_override=gpu)
-        comfy_status = self.comfy.status()
-        comfy_running = self.comfy.is_running()
         return {
             "protocol": 7,
             "service_revision": self.service_revision,
             "api_model_aliases": True,
             "public_api": self.public_api.snapshot(),
-            "capabilities": ["public_api", "comfyui"],
+            "capabilities": ["public_api", "comfyui", "comfyui_hf_token"],
             "comfyui": comfy_status,
             "active_engine": "llama"
             if loaded
@@ -450,8 +587,9 @@ class ColabOneRuntime:
         return updated.model_dump() | {"api_id": resolve_colabone_api_model_id(updated)}
 
     def submit(self, kind, model_id, fn):
+        self._refresh_comfy_queue_if_needed()
         with self.lock:
-            if self.quiescing:
+            if self.quiescing or self.stopping.is_set():
                 raise ColabOneConflictError("实例正在准备释放")
             if self.busy():
                 raise ColabOneConflictError("请等待当前任务完成，或先停止它")
@@ -480,18 +618,28 @@ class ColabOneRuntime:
                 final_state = "cancelled"
             except Exception as exc:
                 final_state = "failed"
-                final_error = (str(exc) or type(exc).__name__)[:500]
+                final_error = _scrub_secret_text(str(exc) or type(exc).__name__)[:500]
             finally:
                 with self.lock:
                     self.last_active = time.time()
+                with t.lock:
+                    transfer = t.transfer
+                transfer_snap = None
+                if transfer is not None:
+                    transfer_lock = getattr(transfer, "lock", None)
+                    if transfer_lock is not None:
+                        with transfer_lock:
+                            transfer.phase = final_state
+                    else:
+                        transfer.phase = final_state
+                    transfer_snap = transfer.snapshot()
                 with t.lock:
                     t.state = final_state
                     if final_progress is not None:
                         t.progress = final_progress
                     if final_error:
                         t.error = final_error
-                    if t.transfer:
-                        t.transfer.phase = t.state
+                    if transfer is not None:
                         t.note(
                             {
                                 "completed": "下载完成，全部文件 SHA-256 校验通过",
@@ -499,46 +647,83 @@ class ColabOneRuntime:
                                 "failed": "下载失败：" + t.error,
                             }.get(t.state, t.state)
                         )
-                    t.emit("done", t.snapshot())
+                    done_payload = {
+                        k: getattr(t, k)
+                        for k in (
+                            "id",
+                            "kind",
+                            "model_id",
+                            "state",
+                            "progress",
+                            "error",
+                            "message",
+                            "created_at",
+                        )
+                    }
+                    done_payload["logs"] = list(t.logs)
+                    if transfer_snap is not None:
+                        done_payload["download"] = transfer_snap
+                    t.emit("done", done_payload)
 
         threading.Thread(target=run, daemon=True).start()
         return t.snapshot()
 
-    @synchronized
     def download(self, model_id, token="", threads=16, load=False, options=None):
         if threads not in (16, 32):
             raise ValueError("下载线程数请选择 16 或 32")
-        model = self.models[model_id]
-        load_spec = model
-        if load and options:
-            if model.kind != "chat":
-                raise ValueError("上下文参数仅用于聊天模型")
-            load_spec = ModelSpec.model_validate(model.model_dump() | options)
-        already = self.installed(model)
-        initial_kind = "load" if (load and already) else "download"
+        clean_token = _validate_hf_token(token)
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            model = self.models[model_id]
+            load_spec = model
+            if load and options:
+                if model.kind != "chat":
+                    raise ValueError("上下文参数仅用于聊天模型")
+                load_spec = ModelSpec.model_validate(model.model_dump() | options)
+            already = self.installed(model)
+            initial_kind = "load" if (load and already) else "download"
 
-        def pipeline(t):
-            if not self.installed(model):
-                self._download(t, model, token, threads)
-                if load and t.transfer:
-                    t.transfer.phase = "completed"
-                    t.note("下载完成，全部文件 SHA-256 校验通过")
-                    t.transfer = None
-            if load:
-                t.check()
-                t.kind = "load"
-                t.progress = 0.95
-                t.message = "正在将模型装载到远端 GPU 显存"
-                self._load(t, load_spec)
+            def pipeline(t):
+                try:
+                    if not self.installed(model):
+                        self._download(t, model, clean_token, threads)
+                        if load and t.transfer:
+                            transfer_lock = getattr(t.transfer, "lock", None)
+                            if transfer_lock is not None:
+                                with transfer_lock:
+                                    t.transfer.phase = "completed"
+                            else:
+                                t.transfer.phase = "completed"
+                            t.note("下载完成，全部文件 SHA-256 校验通过")
+                            t.update(transfer=None)
+                    if load:
+                        t.check()
+                        t.update(
+                            kind="load",
+                            progress=0.95,
+                            message="正在将模型装载到远端 GPU 显存",
+                        )
+                        self._load(t, load_spec)
+                except ColabOneCancelledError:
+                    raise
+                except Exception as exc:
+                    scrubbed = _scrub_secret_text(
+                        str(exc) or type(exc).__name__, token, clean_token
+                    )
+                    if scrubbed != str(exc):
+                        raise RuntimeError(scrubbed) from None
+                    raise
 
-        return self.submit(initial_kind, model_id, pipeline)
+            return self.submit(initial_kind, model_id, pipeline)
 
     def _download(self, task, model, token, threads=16):
+        clean_token = _validate_hf_token(token)
         directory = self.models_dir / model.id
         directory.mkdir(exist_ok=True)
         total = sum(f.size for f in model.files)
-        task.transfer = ColabOneTransfer(total, threads)
-        task.transfer.count = len(model.files)
+        transfer = ColabOneTransfer(total, threads)
+        transfer.count = len(model.files)
+        task.update(transfer=transfer)
         task.note(
             f"准备下载 {model.name}：{len(model.files)} 个文件，共 {total / 1024**3:.2f} GiB，{threads} 线程，目标为远端 GPU 磁盘"
         )
@@ -577,11 +762,11 @@ class ColabOneRuntime:
             required = max(0, file.size - cached_bytes(partial, file.size, file.sha256))
             if shutil.disk_usage(directory).free < required + 512 * 1024**2:
                 raise RuntimeError("远端磁盘空间不足，请删除其他已下载模型")
-            task.message = file.path
+            task.update(message=file.path)
             task.note(
                 f"文件 {index}/{len(model.files)} · {file.path} · {file.size / 1024**3:.2f} GiB"
             )
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            headers = {"Authorization": f"Bearer {clean_token}"} if clean_token else {}
             url = f"https://huggingface.co/{file.repo}/resolve/{file.revision}/{quote(file.path)}"
             if file.size > CHUNK:
                 resumed_before = stats.resumed
@@ -608,7 +793,7 @@ class ColabOneRuntime:
             else:
                 self._download_single(url, headers, partial, file, task, done)
             stats.phase = "verifying"
-            task.message = "校验 SHA-256 · " + file.path
+            task.update(message="校验 SHA-256 · " + file.path)
             task.note(f"文件 {index}/{len(model.files)} 传输完成，正在校验 SHA-256")
             if (
                 partial.stat().st_size != file.size
@@ -679,7 +864,7 @@ class ColabOneRuntime:
                             offset += len(block)
                             stats.wire(len(block))
                             stats.downloaded = done + offset
-                            task.progress = (done + offset) / stats.total
+                            task.update(progress=(done + offset) / stats.total)
                             now = time.monotonic()
                             if now - stats.last_report >= 5:
                                 stats.last_report = now
@@ -694,7 +879,13 @@ class ColabOneRuntime:
                     status_code not in (429, 500, 502, 503, 504)
                     or attempt + 1 >= max_attempts
                 ):
-                    raise
+                    if status_code in (401, 403):
+                        raise RuntimeError(
+                            f"单连接下载鉴权失败（HTTP {status_code}），请在设置中检查 Hugging Face Token"
+                        ) from None
+                    raise RuntimeError(
+                        f"单连接下载失败（HTTP {status_code or type(exc).__name__}）"
+                    ) from None
                 task.note(
                     f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（HTTP {status_code}）",
                     "warning",
@@ -702,8 +893,19 @@ class ColabOneRuntime:
                 if task.cancel.wait(2**attempt):
                     task.check()
             except requests.RequestException as exc:
-                if attempt + 1 >= max_attempts:
-                    raise
+                if (
+                    isinstance(
+                        exc,
+                        (
+                            requests.exceptions.InvalidHeader,
+                            requests.exceptions.InvalidURL,
+                        ),
+                    )
+                    or attempt + 1 >= max_attempts
+                ):
+                    raise RuntimeError(
+                        f"单连接下载失败（{type(exc).__name__}）"
+                    ) from None
                 task.note(
                     f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（{type(exc).__name__}）",
                     "warning",
@@ -736,7 +938,7 @@ class ColabOneRuntime:
         task.note("首次加载，准备远端 CUDA 推理引擎 " + config["tag"])
         for i, asset in enumerate(config["assets"]):
             task.note(f"下载引擎组件 {i + 1}/{len(config['assets'])}")
-            task.message = "安装远端 CUDA 推理引擎"
+            task.update(message="安装远端 CUDA 推理引擎")
             target = root / f"asset-{i}.tar.gz"
             try:
                 with self.http.get(asset["url"], stream=True, timeout=(15, 60)) as r:
@@ -759,16 +961,17 @@ class ColabOneRuntime:
         task.note("远端 CUDA 推理引擎安装完成")
         return binaries[0]
 
-    @synchronized
     def load(self, model_id, options=None):
-        m = self.models[model_id]
-        if options:
-            if m.kind != "chat":
-                raise ValueError("上下文参数仅用于聊天模型")
-            m = ModelSpec.model_validate(m.model_dump() | options)
-        if not self.installed(m):
-            raise ColabOneConflictError("请先下载模型到当前远端实例")
-        return self.submit("load", model_id, lambda t: self._load(t, m))
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            m = self.models[model_id]
+            if options:
+                if m.kind != "chat":
+                    raise ValueError("上下文参数仅用于聊天模型")
+                m = ModelSpec.model_validate(m.model_dump() | options)
+            if not self.installed(m):
+                raise ColabOneConflictError("请先下载模型到当前远端实例")
+            return self.submit("load", model_id, lambda t: self._load(t, m))
 
     @staticmethod
     def _is_benign_engine_log_line(line: str) -> bool:
@@ -1337,8 +1540,8 @@ class ColabOneRuntime:
                         task.note(
                             f"正在载入模型权重（已耗时 {int(now - load_started)} 秒）"
                         )
-                    task.message = (
-                        "混合装载到显存与内存" if needs_hybrid else "加载到远端显存"
+                    task.update(
+                        message="混合装载到显存与内存" if needs_hybrid else "加载到远端显存"
                     )
                     if task.cancel.wait(1):
                         task.check()
@@ -1374,7 +1577,7 @@ class ColabOneRuntime:
         if not use_dedicated_session and not callable(post):
             return ""
         warmup_started = time.monotonic()
-        task.message = "正在预热 GPU 推理内核"
+        task.update(message="正在预热 GPU 推理内核")
         task.note("正在预热远端 CUDA 推理内核，避免首次 API 调用超时")
         done = threading.Event()
         outcome: dict[str, object] = {"status": None, "body": "", "exc": None}
@@ -1492,6 +1695,7 @@ class ColabOneRuntime:
             self.active_options = {}
 
     def unload(self):
+        self._refresh_comfy_queue_if_needed()
         with self.lock:
             if self.busy():
                 raise ColabOneConflictError("请先停止当前任务")
@@ -1502,60 +1706,100 @@ class ColabOneRuntime:
         with self.lock:
             self.last_active = time.time()
 
-    @synchronized
     def start_comfyui(self):
-        return self.submit("comfyui_start", "", lambda t: self.comfy.start_server(t))
+        with self._comfy_lifecycle_lock:
+            self._refresh_comfy_queue_if_needed()
+            with self.lock:
+                return self.submit(
+                    "comfyui_start", "", lambda t: self.comfy.start_server(t)
+                )
 
     def stop_comfyui(self):
-        with self.lock:
-            comfy_tasks = [
-                t
-                for t in self.tasks.values()
-                if t.state == "running" and t.kind in ("comfyui_start", "comfyui_run")
-            ]
+        with self._comfy_lifecycle_lock:
+            with self.lock:
+                comfy_tasks = [
+                    t
+                    for t in self.tasks.values()
+                    if t.state == "running"
+                    and t.kind in ("comfyui_start", "comfyui_run")
+                ]
             for t in comfy_tasks:
-                t.request_cancel()
-        self.comfy.stop_server()
-        deadline = time.monotonic() + 10
-        while any(t.state == "running" for t in comfy_tasks):
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(0.05)
-        if comfy_tasks and self.comfy.is_running():
+                try:
+                    t.request_cancel()
+                except Exception:
+                    pass
             self.comfy.stop_server()
-        with self.lock:
-            self.last_active = time.time()
+            deadline = time.monotonic() + 10
+            while any(t.state == "running" for t in comfy_tasks):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            if comfy_tasks and self.comfy.is_running():
+                self.comfy.stop_server()
+            with self.lock:
+                self.last_active = time.time()
 
     def free_comfyui(self):
-        with self.lock:
-            if self.quiescing:
-                raise ColabOneConflictError("实例正在准备释放")
-            if self.busy():
-                raise ColabOneConflictError("请先等待当前任务完成，或先停止它")
-        result = self.comfy.free_memory(unload_models=True)
-        with self.lock:
-            self.last_active = time.time()
-        return result if result is not None else {"ok": True}
+        with self._comfy_lifecycle_lock:
+            self._refresh_comfy_queue_if_needed()
+            with self.lock:
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneConflictError("实例正在准备释放")
+                if self.busy():
+                    raise ColabOneConflictError("请先等待当前任务完成，或先停止它")
+            result = self.comfy.free_memory(unload_models=True)
+            with self.lock:
+                self.last_active = time.time()
+            return result if result is not None else {"ok": True}
 
-    @synchronized
-    def run_comfyui_workflow(self, request_data: dict):
-        req = WorkflowRunRequest.model_validate(request_data)
-        if hasattr(self.comfy.store, "get_workflow"):
-            if self.comfy.store.get_workflow(req.workflow_id) is None:
-                raise KeyError("工作流不存在")
-        else:
-            if not any(
-                w.get("id") == req.workflow_id
-                for w in self.comfy.store.list_workflows()
-            ):
-                raise KeyError("工作流不存在")
-        return self.submit(
-            "comfyui_run",
-            req.workflow_id,
-            lambda t: self.comfy.run_workflow(t, req),
+    def run_comfyui_workflow(self, request_data: dict | WorkflowRunRequest):
+        raw_token_secret = (
+            request_data.get("hf_token", "")
+            if isinstance(request_data, dict)
+            and isinstance(request_data.get("hf_token"), str)
+            else ""
         )
+        req = (
+            request_data
+            if isinstance(request_data, WorkflowRunRequest)
+            else WorkflowRunRequest.model_validate(request_data)
+        )
+        with self._comfy_lifecycle_lock:
+            self._refresh_comfy_queue_if_needed()
+            with self.lock:
+                if hasattr(self.comfy.store, "get_workflow"):
+                    if self.comfy.store.get_workflow(req.workflow_id) is None:
+                        raise KeyError("工作流不存在")
+                else:
+                    if not any(
+                        w.get("id") == req.workflow_id
+                        for w in self.comfy.store.list_workflows()
+                    ):
+                        raise KeyError("工作流不存在")
+                token_secret = getattr(req, "hf_token", "") or ""
+
+                def _execute(task):
+                    try:
+                        return self.comfy.run_workflow(task, req)
+                    except ColabOneCancelledError:
+                        raise
+                    except Exception as exc:
+                        raw_msg = str(exc) or type(exc).__name__
+                        scrubbed = _scrub_secret_text(
+                            raw_msg, raw_token_secret, token_secret
+                        )
+                        if scrubbed != raw_msg:
+                            raise RuntimeError(scrubbed) from None
+                        raise
+
+                return self.submit(
+                    "comfyui_run",
+                    req.workflow_id,
+                    _execute,
+                )
 
     def delete(self, model_id):
+        self._refresh_comfy_queue_if_needed()
         with self.lock:
             if self.busy() or self.loaded == model_id:
                 raise ColabOneConflictError("请先停止任务并卸载此模型")
@@ -1635,72 +1879,79 @@ class ColabOneRuntime:
                         self.root / "models.json",
                         [x.model_dump() for x in self.models.values()],
                     )
-            workflows_stage = stage_dir / "workflows"
-            if workflows_stage.is_dir():
-                dst_workflows = self.root / "workflows"
-                if not dst_workflows.is_symlink():
-                    dst_workflows.mkdir(parents=True, exist_ok=True)
-                    for wf_path in workflows_stage.glob("*.json"):
-                        try:
-                            if wf_path.is_symlink() or not wf_path.is_file():
-                                continue
-                            raw_wf = json.loads(wf_path.read_text(encoding="utf-8"))
-                            if not isinstance(raw_wf, dict):
-                                continue
-                            raw_wf["source"] = "custom"
-                            remote_data = WorkflowTemplate.model_validate(
-                                raw_wf
-                            ).model_dump()
-                            if (
-                                remote_data["id"] != wf_path.stem
-                                or remote_data["id"] in self.comfy.store.builtins
-                            ):
-                                continue
-                            dst_wf = dst_workflows / wf_path.name
-                            if dst_wf.is_symlink():
-                                continue
-                            if dst_wf.is_file():
-                                local_data = json.loads(
-                                    dst_wf.read_text(encoding="utf-8")
-                                )
-                                if local_data.get(
-                                    "updated_at", 0
-                                ) >= remote_data.get("updated_at", 0):
+            with self.comfy.store.lock:
+                workflows_stage = stage_dir / "workflows"
+                if workflows_stage.is_dir():
+                    dst_workflows = self.root / "workflows"
+                    if not dst_workflows.is_symlink():
+                        dst_workflows.mkdir(parents=True, exist_ok=True)
+                        for wf_path in workflows_stage.glob("*.json"):
+                            try:
+                                if wf_path.is_symlink() or not wf_path.is_file():
                                     continue
-                            atomic_json(dst_wf, remote_data)
-                        except (OSError, ValueError, KeyError):
-                            continue
-            outputs_stage = stage_dir / "comfyui-outputs"
-            if outputs_stage.is_dir():
-                dst_outputs = self.root / "comfyui-outputs"
-                if not dst_outputs.is_symlink():
-                    dst_outputs.mkdir(parents=True, exist_ok=True)
-                    for meta_path in outputs_stage.glob("*.json"):
-                        try:
-                            if meta_path.is_symlink() or not meta_path.is_file():
+                                raw_wf = json.loads(wf_path.read_text(encoding="utf-8"))
+                                if not isinstance(raw_wf, dict):
+                                    continue
+                                raw_wf["source"] = "custom"
+                                remote_data = WorkflowTemplate.model_validate(
+                                    raw_wf
+                                ).model_dump()
+                                if (
+                                    remote_data["id"] != wf_path.stem
+                                    or remote_data["id"] in self.comfy.store.builtins
+                                ):
+                                    continue
+                                dst_wf = dst_workflows / wf_path.name
+                                if dst_wf.is_symlink():
+                                    continue
+                                if dst_wf.is_file():
+                                    local_data = json.loads(
+                                        dst_wf.read_text(encoding="utf-8")
+                                    )
+                                    if local_data.get(
+                                        "updated_at", 0
+                                    ) >= remote_data.get("updated_at", 0):
+                                        continue
+                                atomic_json(dst_wf, remote_data)
+                            except (OSError, ValueError, KeyError):
                                 continue
-                            rec = WorkflowOutputRecord.model_validate_json(
-                                meta_path.read_text(encoding="utf-8")
-                            ).model_dump()
-                            ident = rec["id"]
-                            ext = rec["extension"]
-                            asset_src = outputs_stage / f"{ident}.{ext}"
-                            if (
-                                ident != meta_path.stem
-                                or not asset_src.is_file()
-                                or asset_src.is_symlink()
-                                or asset_src.stat().st_size != rec["size"]
-                            ):
+                outputs_stage = stage_dir / "comfyui-outputs"
+                if outputs_stage.is_dir():
+                    dst_outputs = self.root / "comfyui-outputs"
+                    if not dst_outputs.is_symlink():
+                        dst_outputs.mkdir(parents=True, exist_ok=True)
+                        for meta_path in outputs_stage.glob("*.json"):
+                            try:
+                                if meta_path.is_symlink() or not meta_path.is_file():
+                                    continue
+                                rec = WorkflowOutputRecord.model_validate_json(
+                                    meta_path.read_text(encoding="utf-8")
+                                ).model_dump()
+                                ident = rec["id"]
+                                ext = rec["extension"]
+                                asset_src = outputs_stage / f"{ident}.{ext}"
+                                if (
+                                    ident != meta_path.stem
+                                    or not asset_src.is_file()
+                                    or asset_src.is_symlink()
+                                    or asset_src.stat().st_size != rec["size"]
+                                ):
+                                    continue
+                                dst_asset = dst_outputs / asset_src.name
+                                dst_meta = dst_outputs / meta_path.name
+                                if not dst_asset.exists() and not dst_asset.is_symlink():
+                                    try:
+                                        os.replace(asset_src, dst_asset)
+                                    except OSError as exc:
+                                        if exc.errno == errno.EXDEV:
+                                            shutil.copy2(asset_src, dst_asset)
+                                        else:
+                                            raise
+                                if not dst_meta.exists() and not dst_meta.is_symlink():
+                                    atomic_json(dst_meta, rec)
+                            except (OSError, ValueError, KeyError):
                                 continue
-                            dst_asset = dst_outputs / asset_src.name
-                            dst_meta = dst_outputs / meta_path.name
-                            if not dst_asset.exists() and not dst_asset.is_symlink():
-                                shutil.copy2(asset_src, dst_asset)
-                            if not dst_meta.exists() and not dst_meta.is_symlink():
-                                atomic_json(dst_meta, rec)
-                        except (OSError, ValueError, KeyError):
-                            continue
-            self.comfy.store.reload_from_disk()
+                self.comfy.store.reload_from_disk()
             self.drive_restored = True
             return True
         finally:

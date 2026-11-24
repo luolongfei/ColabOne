@@ -4,5 +4,1627 @@
   "commit": "a277b5bf213e8a44fa34817b7770b54f86ef4cea",
   "port": 8188,
   "proxy_port": 8189,
-  "templates": []
+  "tts_engines": [
+    {
+      "id": "voxcpm2",
+      "name": "VoxCPM2（OpenBMB · 48kHz 商用推荐）",
+      "description": "面壁智能开源 48 kHz 高保真语音合成与零样本声音克隆引擎，支持文本捏声线与中英混读，Apache-2.0 可商用。",
+      "repo": "openbmb/VoxCPM2",
+      "revision": "7936080b41163874f38610f46f438e2c0757f9fd",
+      "aux_repo": "",
+      "aux_revision": "",
+      "license": "Apache-2.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "min_vram_mib": 8192,
+      "sample_rate": 48000,
+      "supports_voice_clone": true,
+      "supports_voice_design": true,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": false,
+      "pip_packages": [
+        "voxcpm",
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub"
+      ],
+      "source_repo": "https://github.com/OpenBMB/VoxCPM.git",
+      "source_commit": "300e4260b509066151d623dc9c0aa922cf82232b"
+    },
+    {
+      "id": "qwen3_tts",
+      "name": "Qwen3-TTS 1.7B（通义千问 · 多语种商用）",
+      "description": "阿里通义开源 1.7B 语音大模型，支持零样本音色克隆与独立 VoiceDesign 文本捏声线，中英日韩多语种自然口播，Apache-2.0 可商用。",
+      "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+      "aux_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+      "aux_revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+      "license": "Apache-2.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "min_vram_mib": 8192,
+      "sample_rate": 24000,
+      "supports_voice_clone": true,
+      "supports_voice_design": true,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": false,
+      "pip_packages": [
+        "qwen-tts",
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub"
+      ],
+      "source_repo": "https://github.com/QwenLM/Qwen3-TTS.git",
+      "source_commit": "022e286b98fbec7e1e916cb940cdf532cd9f488e"
+    },
+    {
+      "id": "fish_s2_pro",
+      "name": "Fish Speech S2-Pro（情绪标签 · 仅非商用）",
+      "description": "支持情绪与副语言内联标签的高表现力 44.1 kHz 语音合成模型，适合拟人化表达；模型权重仅限个人学习与非商业研究。",
+      "repo": "fishaudio/s2-pro",
+      "revision": "1de9996b6be38b745688de084d87a5633f714e4e",
+      "aux_repo": "",
+      "aux_revision": "",
+      "license": "Fish Audio Research License",
+      "commercial_ok": false,
+      "license_notice": "仅限个人学习与非商业研究使用；如需商业使用须另行向 Fish Audio 获取商业授权。",
+      "min_vram_mib": 20480,
+      "sample_rate": 44100,
+      "supports_voice_clone": true,
+      "supports_voice_design": false,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": true,
+      "pip_packages": [
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub"
+      ],
+      "source_repo": "https://github.com/fishaudio/fish-speech.git",
+      "source_commit": "0f8a12e8a651062fdee9c33a894bdccd3a8513f1"
+    },
+    {
+      "id": "indextts2",
+      "name": "IndexTTS-2（情绪分离控制 · 仅非商用）",
+      "description": "支持音色参考与独立情绪参考音频分离控制的自回归语音引擎，可精细调节语气与情绪表现；权重仅限个人学习与非商业研究。",
+      "repo": "IndexTeam/IndexTTS-2",
+      "revision": "740dcaff396282ffb241903d150ac011cd4b1ede",
+      "aux_repo": "",
+      "aux_revision": "",
+      "license": "IndexTTS Research / Non-Commercial",
+      "commercial_ok": false,
+      "license_notice": "仅限个人学习与非商业研究使用；商用前请核查 IndexTeam 上游权重许可协议。",
+      "min_vram_mib": 10240,
+      "sample_rate": 22050,
+      "supports_voice_clone": true,
+      "supports_voice_design": false,
+      "supports_emotion_ref": true,
+      "supports_inline_tags": false,
+      "pip_packages": [
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub",
+        "omegaconf",
+        "einops"
+      ],
+      "source_repo": "https://github.com/index-tts/index-tts.git",
+      "source_commit": "d9e41aac89fd00b3d71497fddb287b7f24613712"
+    }
+  ],
+  "templates": [
+    {
+      "id": "digital-human-infinitetalk",
+      "name": "口播数字人 · 长视频推荐版",
+      "description": "输入人像照片与口播文稿（或音频），自动生成口型自然、支持多分钟不崩脸的高清有声视频（MP4）。",
+      "source": "builtin",
+      "min_vram_mib": 40960,
+      "min_disk_mib": 46080,
+      "recommended_gpu": "G4 96 GB / A100 80 GB",
+      "license": "Apache-2.0 / CC-BY-4.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "custom_nodes": [
+        {
+          "name": "ComfyUI-WanVideoWrapper",
+          "repo": "https://github.com/kijai/ComfyUI-WanVideoWrapper.git",
+          "commit": "a7439db30bed0c5b5fa437d77ae8a7bb220dfd00",
+          "install_requirements": true
+        },
+        {
+          "name": "ComfyUI-KJNodes",
+          "repo": "https://github.com/kijai/ComfyUI-KJNodes.git",
+          "commit": "187868f53a7d9df007dbfe85891dab41453f7933",
+          "install_requirements": true
+        },
+        {
+          "name": "ComfyUI-VideoHelperSuite",
+          "repo": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
+          "commit": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+          "install_requirements": true
+        }
+      ],
+      "node_patches": [
+        {
+          "node_name": "ComfyUI-WanVideoWrapper",
+          "kind": "wav2vec2_hidden_states_hook"
+        }
+      ],
+      "pip_packages": [
+        "color-matcher",
+        "pyloudnorm",
+        "accelerate",
+        "einops",
+        "ftfy",
+        "sentencepiece",
+        "soundfile"
+      ],
+      "models": [
+        {
+          "repo": "Kijai/WanVideo_comfy_fp8_scaled",
+          "revision": "033a4e487f60220b3d6e469599a6aebc46e13cee",
+          "path": "I2V/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors",
+          "target_dir": "diffusion_models",
+          "size": 16643349018,
+          "sha256": "2ff922282cd84589702e6e8c26e083d1160bfc2b217dd44e1ae2688441dc495d"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy_fp8_scaled",
+          "revision": "033a4e487f60220b3d6e469599a6aebc46e13cee",
+          "path": "InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors",
+          "target_dir": "diffusion_models",
+          "size": 2713548210,
+          "sha256": "bd6e0e6feab8c22a482b1c4dd7c0504c215c35b507ddc3b4dcaa5d3ef539879e"
+        },
+        {
+          "repo": "Kijai/wav2vec2_safetensors",
+          "revision": "87847d3bc53702afda44078249e7c33e867827c4",
+          "path": "wav2vec2-chinese-base_fp16.safetensors",
+          "target_dir": "wav2vec2",
+          "size": 190115368,
+          "sha256": "000813e441020f18cff844c969d2d5d4adc2a5ce46b2db1f23950b05d88805b4"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+          "target_dir": "text_encoders",
+          "size": 6731333792,
+          "sha256": "3fe5173588270c22505d4f9158bb1644b78331b8614206a97e92760b960c9ffa"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+          "target_dir": "loras",
+          "size": 738005744,
+          "sha256": "85c4a61c30e0497aa44b91d93a893b624708461a56fe5485183b28fa07e2dfb3"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "Wan2_1_VAE_bf16.safetensors",
+          "target_dir": "vae",
+          "size": 253806278,
+          "sha256": "1ab9a32cc2c740f6e39d80d367ce5dcc28db8c71b79b28670546b8973e9d75f9"
+        },
+        {
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "revision": "d6258323e18f14c60d37899da97ca555f3118259",
+          "path": "split_files/clip_vision/clip_vision_h.safetensors",
+          "target_dir": "clip_vision",
+          "size": 1264219396,
+          "sha256": "64a7ef761bfccbadbaa3da77366aac4185a6c58fa5de5f589b42a65bcc21f161"
+        },
+        {
+          "repo": "Phips/2xNomosUni_span_multijpg",
+          "revision": "ed6111c4cabdaf42b75e6535600d5370cce9e4e2",
+          "path": "2xNomosUni_span_multijpg.safetensors",
+          "target_dir": "upscale_models",
+          "size": 4461056,
+          "sha256": "bee2a9c082f2b8f6e7f5db504b36593c24a1a959511f587114c399ca58b9c92c"
+        }
+      ],
+      "pipeline": {
+        "kind": "digital_human",
+        "video_backend": "infinitetalk",
+        "default_tts_engine": "voxcpm2",
+        "supported_tts_engines": [
+          "voxcpm2",
+          "qwen3_tts",
+          "fish_s2_pro",
+          "indextts2"
+        ],
+        "max_segment_seconds": 20.0,
+        "tail_frame_offset_seconds": 0.08,
+        "output_fps": 25,
+        "target_width": 1280,
+        "target_height": 720,
+        "upscale_mode": "ai_2x",
+        "audio_node_key": "2.audio",
+        "image_node_key": "1.image",
+        "prompt_node_key": "5.positive_prompt",
+        "frames_node_key": "9.num_frames",
+        "width_node_key": "3.width",
+        "height_node_key": "3.height",
+        "fps_node_key": "9.fps",
+        "steps_node_key": "15.steps",
+        "seed_node_key": "15.seed"
+      },
+      "workflow": {
+        "1": {
+          "class_type": "LoadImage",
+          "_meta": {
+            "title": "主播形象图"
+          },
+          "inputs": {
+            "image": "portrait.png"
+          }
+        },
+        "2": {
+          "class_type": "LoadAudio",
+          "_meta": {
+            "title": "口播驱动音频"
+          },
+          "inputs": {
+            "audio": "voice.wav"
+          }
+        },
+        "3": {
+          "class_type": "ImageResizeKJv2",
+          "_meta": {
+            "title": "缩放主播画面"
+          },
+          "inputs": {
+            "image": [
+              "1",
+              0
+            ],
+            "width": 832,
+            "height": 480,
+            "upscale_method": "lanczos",
+            "keep_proportion": "crop",
+            "pad_color": "0, 0, 0",
+            "crop_position": "center",
+            "divisible_by": 16,
+            "device": "cpu"
+          }
+        },
+        "4": {
+          "class_type": "WanVideoVAELoader",
+          "_meta": {
+            "title": "加载 Wan2.1 VAE"
+          },
+          "inputs": {
+            "model_name": "Wan2_1_VAE_bf16.safetensors",
+            "precision": "bf16",
+            "use_cpu_cache": false
+          }
+        },
+        "5": {
+          "class_type": "WanVideoTextEncodeCached",
+          "_meta": {
+            "title": "画面与口播风格提示词"
+          },
+          "inputs": {
+            "model_name": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+            "precision": "bf16",
+            "positive_prompt": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+            "negative_prompt": "bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
+            "quantization": "fp8_e4m3fn",
+            "use_disk_cache": true,
+            "device": "gpu"
+          }
+        },
+        "6": {
+          "class_type": "CLIPVisionLoader",
+          "_meta": {
+            "title": "加载 CLIP Vision"
+          },
+          "inputs": {
+            "clip_name": "clip_vision_h.safetensors"
+          }
+        },
+        "7": {
+          "class_type": "WanVideoClipVisionEncode",
+          "_meta": {
+            "title": "编码主播视觉特征"
+          },
+          "inputs": {
+            "clip_vision": [
+              "6",
+              0
+            ],
+            "image_1": [
+              "3",
+              0
+            ],
+            "strength_1": 1.0,
+            "strength_2": 1.0,
+            "crop": "center",
+            "combine_embeds": "average",
+            "force_offload": true,
+            "tiles": 0,
+            "ratio": 0.5
+          }
+        },
+        "8": {
+          "class_type": "Wav2VecModelLoader",
+          "_meta": {
+            "title": "加载中文 Wav2Vec2"
+          },
+          "inputs": {
+            "model": "wav2vec2-chinese-base_fp16.safetensors",
+            "base_precision": "fp16",
+            "load_device": "main_device"
+          }
+        },
+        "9": {
+          "class_type": "MultiTalkWav2VecEmbeds",
+          "_meta": {
+            "title": "提取音频口型特征"
+          },
+          "inputs": {
+            "wav2vec_model": [
+              "8",
+              0
+            ],
+            "audio_1": [
+              "2",
+              0
+            ],
+            "normalize_loudness": false,
+            "num_frames": 1125,
+            "fps": 25.0,
+            "audio_scale": 1.0,
+            "audio_cfg_scale": 1.0,
+            "multi_audio_type": "para",
+            "add_noise_floor": false,
+            "smooth_transients": false
+          }
+        },
+        "10": {
+          "class_type": "MultiTalkModelLoader",
+          "_meta": {
+            "title": "加载 InfiniteTalk 音频驱动权重"
+          },
+          "inputs": {
+            "model": "Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors"
+          }
+        },
+        "11": {
+          "class_type": "VHS_VideoCombine",
+          "_meta": {
+            "title": "合成有声 MP4 视频"
+          },
+          "inputs": {
+            "images": [
+              "16",
+              0
+            ],
+            "audio": [
+              "2",
+              0
+            ],
+            "frame_rate": 25,
+            "loop_count": 0,
+            "filename_prefix": "ColabOne_InfiniteTalk",
+            "format": "video/h264-mp4",
+            "pix_fmt": "yuv420p",
+            "crf": 19,
+            "save_metadata": true,
+            "trim_to_audio": false,
+            "pingpong": false,
+            "save_output": true
+          }
+        },
+        "12": {
+          "class_type": "WanVideoLoraSelect",
+          "_meta": {
+            "title": "加载 LightX2V 蒸馏加速 LoRA"
+          },
+          "inputs": {
+            "lora": "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+            "strength": 1.0,
+            "low_mem_load": false,
+            "merge_loras": false
+          }
+        },
+        "13": {
+          "class_type": "WanVideoModelLoader",
+          "_meta": {
+            "title": "加载 Wan2.1-I2V-14B 主模型"
+          },
+          "inputs": {
+            "model": "Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors",
+            "base_precision": "bf16",
+            "quantization": "fp8_e4m3fn_scaled",
+            "load_device": "offload_device",
+            "attention_mode": "sdpa",
+            "lora": [
+              "12",
+              0
+            ],
+            "multitalk_model": [
+              "10",
+              0
+            ],
+            "rms_norm_function": "default"
+          }
+        },
+        "14": {
+          "class_type": "WanVideoImageToVideoMultiTalk",
+          "_meta": {
+            "title": "InfiniteTalk 滑窗条件编码"
+          },
+          "inputs": {
+            "vae": [
+              "4",
+              0
+            ],
+            "width": [
+              "3",
+              1
+            ],
+            "height": [
+              "3",
+              2
+            ],
+            "frame_window_size": 81,
+            "motion_frame": 9,
+            "force_offload": false,
+            "colormatch": "mkl",
+            "start_image": [
+              "3",
+              0
+            ],
+            "tiled_vae": false,
+            "clip_embeds": [
+              "7",
+              0
+            ],
+            "mode": "infinitetalk",
+            "output_path": ""
+          }
+        },
+        "15": {
+          "class_type": "WanVideoSampler",
+          "_meta": {
+            "title": "InfiniteTalk 扩散采样器"
+          },
+          "inputs": {
+            "model": [
+              "13",
+              0
+            ],
+            "image_embeds": [
+              "14",
+              0
+            ],
+            "text_embeds": [
+              "5",
+              0
+            ],
+            "multitalk_embeds": [
+              "9",
+              0
+            ],
+            "steps": 6,
+            "cfg": 1.0,
+            "shift": 11.0,
+            "seed": 42,
+            "force_offload": true,
+            "scheduler": "dpm++_sde",
+            "riflex_freq_index": 0,
+            "denoise_strength": 1.0,
+            "batched_cfg": false,
+            "rope_function": "comfy",
+            "start_step": 0,
+            "end_step": -1,
+            "add_noise_to_samples": false
+          }
+        },
+        "16": {
+          "class_type": "WanVideoDecode",
+          "_meta": {
+            "title": "VAE 视频解码"
+          },
+          "inputs": {
+            "vae": [
+              "4",
+              0
+            ],
+            "samples": [
+              "15",
+              0
+            ],
+            "enable_vae_tiling": false,
+            "tile_x": 272,
+            "tile_y": 272,
+            "tile_stride_x": 144,
+            "tile_stride_y": 128,
+            "normalization": "default"
+          }
+        }
+      },
+      "fields": [
+        {
+          "key": "1.image",
+          "label": "主播人像照片",
+          "node_id": "1",
+          "input_name": "image",
+          "field_type": "image",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "上传主播正面或半身清晰照片（PNG/JPG/WebP），建议面部光线均匀、无遮挡。",
+          "group": "basic",
+          "required": true,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.audio_source",
+          "label": "配音方式",
+          "node_id": "pipeline",
+          "input_name": "audio_source",
+          "field_type": "select",
+          "default": "tts",
+          "options": [
+            "tts",
+            "audio"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "选择输入文稿由 AI 自动配音，或直接上传已录好的音频文件。",
+          "group": "basic",
+          "required": true,
+          "visible_when": null,
+          "option_labels": {
+            "tts": "输入文稿（AI 自动配音）",
+            "audio": "上传现成音频"
+          }
+        },
+        {
+          "key": "pipeline.script_text",
+          "label": "口播文稿",
+          "node_id": "pipeline",
+          "input_name": "script_text",
+          "field_type": "textarea",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "输入主播需要朗读的完整文稿，长文稿会自动分句合成并自然衔接。",
+          "group": "basic",
+          "required": true,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "2.audio",
+          "label": "驱动音频文件",
+          "node_id": "2",
+          "input_name": "audio",
+          "field_type": "audio",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "上传已录好的口播音频（支持 WAV/MP3/FLAC/OGG/M4A），长音频将自动分段生成。",
+          "group": "basic",
+          "required": true,
+          "visible_when": {
+            "pipeline.audio_source": "audio"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.voice_ref_audio",
+          "label": "参考音色（可选）",
+          "node_id": "pipeline",
+          "input_name": "voice_ref_audio",
+          "field_type": "audio",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "上传 5～15 秒清晰人声即可克隆该音色；留空则使用默认自然音色（选用 IndexTTS-2 时必须上传）。",
+          "group": "basic",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.target_resolution",
+          "label": "输出画幅与清晰度",
+          "node_id": "pipeline",
+          "input_name": "target_resolution",
+          "field_type": "select",
+          "default": "1280x720",
+          "options": [
+            "1280x720",
+            "720x1280",
+            "1920x1080",
+            "1080x1920"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "选择成片的横竖屏比例与清晰度，默认横屏 720p 兼顾画质与生成速度。",
+          "group": "basic",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {
+            "1280x720": "横屏高清 720p（16:9 · 推荐）",
+            "720x1280": "竖屏高清 720p（9:16 · 短视频）",
+            "1920x1080": "横屏超清 1080p（16:9）",
+            "1080x1920": "竖屏超清 1080p（9:16）"
+          }
+        },
+        {
+          "key": "pipeline.tts_engine",
+          "label": "远端 TTS 语音引擎",
+          "node_id": "pipeline",
+          "input_name": "tts_engine",
+          "field_type": "select",
+          "default": "voxcpm2",
+          "options": [
+            "voxcpm2",
+            "qwen3_tts",
+            "fish_s2_pro",
+            "indextts2"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "在远端 Colab GPU 独立子进程合成高保真口播音频，完成后立即释放显存再启动视频生成。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {
+            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
+            "qwen3_tts": "Qwen3-TTS 1.7B（多语种 · 克隆/捏声线 · Apache-2.0 可商用）",
+            "fish_s2_pro": "Fish Speech S2-Pro（情绪内联标签 · 仅非商用）",
+            "indextts2": "IndexTTS-2（独立情绪音频控制 · 仅非商用）"
+          }
+        },
+        {
+          "key": "pipeline.voice_ref_text",
+          "label": "参考音色对应文字（可选）",
+          "node_id": "pipeline",
+          "input_name": "voice_ref_text",
+          "field_type": "text",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "填写参考音色音频中说出的准确文字，有助于提升克隆咬字清晰度与音色还原度。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.voice_prompt",
+          "label": "声线与风格描述（文本捏声线，可选）",
+          "node_id": "pipeline",
+          "input_name": "voice_prompt",
+          "field_type": "text",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "通过自然语言描述期望音色与风格（适用于 VoxCPM2 / Qwen3-TTS，例如：沉稳男声、清亮女主播）。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.emotion_ref_audio",
+          "label": "情绪参考音频（IndexTTS-2 专属，可选）",
+          "node_id": "pipeline",
+          "input_name": "emotion_ref_audio",
+          "field_type": "audio",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "单独提供情绪语气参考音频，实现与参考音色分离的精细情绪迁移。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts",
+            "pipeline.tts_engine": "indextts2"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.emotion_prompt",
+          "label": "情绪提示词 / 语气标签（可选）",
+          "node_id": "pipeline",
+          "input_name": "emotion_prompt",
+          "field_type": "text",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "适用于 IndexTTS-2 情绪描述或 Fish S2 语气提示（如专业沉稳、轻松愉快）。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.pause_seconds",
+          "label": "句间自然停顿（秒）",
+          "node_id": "pipeline",
+          "input_name": "pause_seconds",
+          "field_type": "number",
+          "default": 0.28,
+          "options": [],
+          "min_value": 0.0,
+          "max_value": 1.5,
+          "step": 0.02,
+          "description": "长文稿分句合成后每句之间插入的自然气口停顿时长，默认 0.28 秒。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "5.positive_prompt",
+          "label": "画面与动作风格提示词",
+          "node_id": "5",
+          "input_name": "positive_prompt",
+          "field_type": "textarea",
+          "default": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "描述主播说话时的神态、头部微动、光线与镜头风格（建议使用英文短语获得最佳稳定性）。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.upscale_mode",
+          "label": "画质超分模式",
+          "node_id": "pipeline",
+          "input_name": "upscale_mode",
+          "field_type": "select",
+          "default": "ai_2x",
+          "options": [
+            "ai_2x",
+            "lanczos",
+            "none"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "InfiniteTalk 基础渲染为 480p，默认开启 2xNomosUni AI 细节超分输出高清 720p/1080p。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {
+            "ai_2x": "AI 2x 细节超分（2xNomosUni SPAN · 推荐高清）",
+            "lanczos": "Lanczos 高质量缩放（速度快）",
+            "none": "原生 480p 输出（不超分）"
+          }
+        },
+        {
+          "key": "pipeline.max_segment_seconds",
+          "label": "单段最大时长（秒）",
+          "node_id": "pipeline",
+          "input_name": "max_segment_seconds",
+          "field_type": "number",
+          "default": 20,
+          "options": [],
+          "min_value": 10,
+          "max_value": 45,
+          "step": 5,
+          "description": "总音频超过该时长时，自动在静音谷或文稿句界切段并抽取尾帧接力渲染，默认 20 秒兼顾 AI 超分内存安全与长视频画质稳定。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "15.steps",
+          "label": "采样步数（LightX2V 蒸馏）",
+          "node_id": "15",
+          "input_name": "steps",
+          "field_type": "integer",
+          "default": 6,
+          "options": [],
+          "min_value": 4,
+          "max_value": 20,
+          "step": 1,
+          "description": "配合 LightX2V 蒸馏加速 LoRA 推荐 6 步，兼顾速度与口型清晰度。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "15.seed",
+          "label": "随机种子",
+          "node_id": "15",
+          "input_name": "seed",
+          "field_type": "integer",
+          "default": 42,
+          "options": [],
+          "min_value": 0,
+          "max_value": 2147483647,
+          "step": 1,
+          "description": "固定种子可复现相同的头部动作与神态，修改种子可生成不同自然动作。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        }
+      ],
+      "node_count": 16
+    },
+    {
+      "id": "digital-human-longcat",
+      "name": "口播数字人 · 旗舰高清版",
+      "description": "输入人像照片与口播文稿（或音频），原生 720p 渲染输出面部细节更细腻的高清有声视频（MP4）。",
+      "source": "builtin",
+      "min_vram_mib": 49152,
+      "min_disk_mib": 56320,
+      "recommended_gpu": "G4 96 GB / A100 80 GB / H100 80 GB",
+      "license": "MIT / Apache-2.0 / CC-BY-4.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "custom_nodes": [
+        {
+          "name": "ComfyUI-WanVideoWrapper",
+          "repo": "https://github.com/kijai/ComfyUI-WanVideoWrapper.git",
+          "commit": "a7439db30bed0c5b5fa437d77ae8a7bb220dfd00",
+          "install_requirements": true
+        },
+        {
+          "name": "ComfyUI-KJNodes",
+          "repo": "https://github.com/kijai/ComfyUI-KJNodes.git",
+          "commit": "187868f53a7d9df007dbfe85891dab41453f7933",
+          "install_requirements": true
+        },
+        {
+          "name": "ComfyUI-VideoHelperSuite",
+          "repo": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
+          "commit": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+          "install_requirements": true
+        }
+      ],
+      "node_patches": [
+        {
+          "node_name": "ComfyUI-WanVideoWrapper",
+          "kind": "wav2vec2_hidden_states_hook"
+        }
+      ],
+      "pip_packages": [
+        "color-matcher",
+        "pyloudnorm",
+        "accelerate",
+        "einops",
+        "ftfy",
+        "sentencepiece",
+        "soundfile"
+      ],
+      "models": [
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "LongCat/LongCat-Avatar-15_bf16.safetensors",
+          "target_dir": "diffusion_models",
+          "size": 31706036736,
+          "sha256": "7186e134eb6e9ca6346f8db8b981bfe13fc725fa1bb9f0ad007ed29690d10349"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "LongCat/LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors",
+          "target_dir": "loras",
+          "size": 1261613536,
+          "sha256": "fe8f66e2c9e7dffb910311c71a5e5927678439a23e83fd291b49870d1bca6157"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "Wan2_1_VAE_bf16.safetensors",
+          "target_dir": "vae",
+          "size": 253806278,
+          "sha256": "1ab9a32cc2c740f6e39d80d367ce5dcc28db8c71b79b28670546b8973e9d75f9"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+          "target_dir": "text_encoders",
+          "size": 6731333792,
+          "sha256": "3fe5173588270c22505d4f9158bb1644b78331b8614206a97e92760b960c9ffa"
+        },
+        {
+          "repo": "Kijai/WanVideo_comfy",
+          "revision": "8260d429d19fd7a72304cad059160b95d843913f",
+          "path": "HuMo/whisper_large_v3_encoder_fp16.safetensors",
+          "target_dir": "audio_encoders",
+          "size": 1693870272,
+          "sha256": "fe5624f5db7413815a5decbc2afb1f7a8015f37519d6e9ae6dc7fad7c0c6c253"
+        },
+        {
+          "repo": "Phips/2xNomosUni_span_multijpg",
+          "revision": "ed6111c4cabdaf42b75e6535600d5370cce9e4e2",
+          "path": "2xNomosUni_span_multijpg.safetensors",
+          "target_dir": "upscale_models",
+          "size": 4461056,
+          "sha256": "bee2a9c082f2b8f6e7f5db504b36593c24a1a959511f587114c399ca58b9c92c"
+        }
+      ],
+      "pipeline": {
+        "kind": "digital_human",
+        "video_backend": "longcat_avatar",
+        "default_tts_engine": "voxcpm2",
+        "supported_tts_engines": [
+          "voxcpm2",
+          "qwen3_tts",
+          "fish_s2_pro",
+          "indextts2"
+        ],
+        "max_segment_seconds": 6.0,
+        "tail_frame_offset_seconds": 0.08,
+        "output_fps": 25,
+        "target_width": 1280,
+        "target_height": 720,
+        "upscale_mode": "lanczos",
+        "audio_node_key": "2.audio",
+        "image_node_key": "1.image",
+        "prompt_node_key": "5.positive_prompt",
+        "frames_node_key": "9.num_frames",
+        "width_node_key": "3.width",
+        "height_node_key": "3.height",
+        "fps_node_key": "9.fps",
+        "steps_node_key": "14.steps",
+        "seed_node_key": "15.seed"
+      },
+      "workflow": {
+        "1": {
+          "class_type": "LoadImage",
+          "_meta": {
+            "title": "主播形象图"
+          },
+          "inputs": {
+            "image": "portrait.png"
+          }
+        },
+        "2": {
+          "class_type": "LoadAudio",
+          "_meta": {
+            "title": "口播驱动音频"
+          },
+          "inputs": {
+            "audio": "voice.wav"
+          }
+        },
+        "3": {
+          "class_type": "ImageResizeKJv2",
+          "_meta": {
+            "title": "缩放主播画面"
+          },
+          "inputs": {
+            "image": [
+              "1",
+              0
+            ],
+            "width": 1280,
+            "height": 768,
+            "upscale_method": "lanczos",
+            "keep_proportion": "crop",
+            "pad_color": "0, 0, 0",
+            "crop_position": "center",
+            "divisible_by": 16,
+            "device": "cpu"
+          }
+        },
+        "4": {
+          "class_type": "WanVideoVAELoader",
+          "_meta": {
+            "title": "加载 Wan2.1 VAE"
+          },
+          "inputs": {
+            "model_name": "Wan2_1_VAE_bf16.safetensors",
+            "precision": "bf16",
+            "use_cpu_cache": false
+          }
+        },
+        "5": {
+          "class_type": "WanVideoTextEncodeCached",
+          "_meta": {
+            "title": "画面与口播风格提示词"
+          },
+          "inputs": {
+            "model_name": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+            "precision": "bf16",
+            "positive_prompt": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+            "negative_prompt": "bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
+            "quantization": "fp8_e4m3fn",
+            "use_disk_cache": true,
+            "device": "gpu"
+          }
+        },
+        "6": {
+          "class_type": "WanVideoEncode",
+          "_meta": {
+            "title": "编码首帧参考潜空间"
+          },
+          "inputs": {
+            "vae": [
+              "4",
+              0
+            ],
+            "image": [
+              "3",
+              0
+            ],
+            "enable_vae_tiling": false,
+            "tile_x": 272,
+            "tile_y": 272,
+            "tile_stride_x": 144,
+            "tile_stride_y": 128,
+            "noise_aug_strength": 0.0,
+            "latent_strength": 1.0
+          }
+        },
+        "8": {
+          "class_type": "WhisperModelLoader",
+          "_meta": {
+            "title": "Whisper 音频编码器"
+          },
+          "inputs": {
+            "model": "whisper_large_v3_encoder_fp16.safetensors",
+            "base_precision": "fp16",
+            "load_device": "main_device"
+          }
+        },
+        "9": {
+          "class_type": "LongCatAvatarWhisperEmbeds",
+          "_meta": {
+            "title": "LongCat Whisper 音频特征"
+          },
+          "inputs": {
+            "whisper_model": [
+              "8",
+              0
+            ],
+            "audio_1": [
+              "2",
+              0
+            ],
+            "normalize_loudness": false,
+            "num_frames": 93,
+            "fps": 25.0,
+            "audio_scale": 1.0,
+            "audio_cfg_scale": 1.0,
+            "multi_audio_type": "para"
+          }
+        },
+        "10": {
+          "class_type": "WanVideoLongCatAvatarExtendEmbeds",
+          "_meta": {
+            "title": "LongCat 音视频融合条件"
+          },
+          "inputs": {
+            "prev_latents": [
+              "6",
+              0
+            ],
+            "audio_embeds": [
+              "9",
+              0
+            ],
+            "num_frames": [
+              "9",
+              2
+            ],
+            "overlap": 1,
+            "frames_processed": 0,
+            "if_not_enough_audio": "pad_with_start",
+            "ref_frame_index": 10,
+            "ref_mask_frame_range": 3
+          }
+        },
+        "11": {
+          "class_type": "VHS_VideoCombine",
+          "_meta": {
+            "title": "合成有声 MP4 视频"
+          },
+          "inputs": {
+            "images": [
+              "16",
+              0
+            ],
+            "audio": [
+              "2",
+              0
+            ],
+            "frame_rate": 25,
+            "loop_count": 0,
+            "filename_prefix": "ColabOne_LongCatAvatar",
+            "format": "video/h264-mp4",
+            "pix_fmt": "yuv420p",
+            "crf": 19,
+            "save_metadata": true,
+            "trim_to_audio": false,
+            "pingpong": false,
+            "save_output": true
+          }
+        },
+        "12": {
+          "class_type": "WanVideoLoraSelect",
+          "_meta": {
+            "title": "加载 LongCat DMD 蒸馏 LoRA"
+          },
+          "inputs": {
+            "lora": "LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors",
+            "strength": 0.9,
+            "low_mem_load": false,
+            "merge_loras": true
+          }
+        },
+        "13": {
+          "class_type": "WanVideoModelLoader",
+          "_meta": {
+            "title": "加载 LongCat-Avatar 1.5 主模型"
+          },
+          "inputs": {
+            "model": "LongCat-Avatar-15_bf16.safetensors",
+            "base_precision": "bf16",
+            "quantization": "disabled",
+            "load_device": "offload_device",
+            "attention_mode": "sdpa",
+            "lora": [
+              "12",
+              0
+            ],
+            "rms_norm_function": "default"
+          }
+        },
+        "14": {
+          "class_type": "WanVideoSchedulerv2",
+          "_meta": {
+            "title": "LongCat 蒸馏调度器"
+          },
+          "inputs": {
+            "scheduler": "longcat_distill_euler",
+            "steps": 12,
+            "shift": 12.0,
+            "start_step": 0,
+            "end_step": -1,
+            "enhance_hf": false
+          }
+        },
+        "15": {
+          "class_type": "WanVideoSamplerv2",
+          "_meta": {
+            "title": "LongCat-Avatar 扩散采样器"
+          },
+          "inputs": {
+            "model": [
+              "13",
+              0
+            ],
+            "image_embeds": [
+              "10",
+              0
+            ],
+            "text_embeds": [
+              "5",
+              0
+            ],
+            "scheduler": [
+              "14",
+              0
+            ],
+            "cfg": 1.0,
+            "seed": 42,
+            "force_offload": true,
+            "add_noise_to_samples": false
+          }
+        },
+        "16": {
+          "class_type": "WanVideoDecode",
+          "_meta": {
+            "title": "VAE 视频解码"
+          },
+          "inputs": {
+            "vae": [
+              "4",
+              0
+            ],
+            "samples": [
+              "15",
+              0
+            ],
+            "enable_vae_tiling": true,
+            "tile_x": 272,
+            "tile_y": 272,
+            "tile_stride_x": 144,
+            "tile_stride_y": 128,
+            "normalization": "default"
+          }
+        }
+      },
+      "fields": [
+        {
+          "key": "1.image",
+          "label": "主播人像照片",
+          "node_id": "1",
+          "input_name": "image",
+          "field_type": "image",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "上传主播正面或半身清晰照片（PNG/JPG/WebP），建议面部光线均匀、无遮挡。",
+          "group": "basic",
+          "required": true,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.audio_source",
+          "label": "配音方式",
+          "node_id": "pipeline",
+          "input_name": "audio_source",
+          "field_type": "select",
+          "default": "tts",
+          "options": [
+            "tts",
+            "audio"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "选择输入文稿由 AI 自动配音，或直接上传已录好的音频文件。",
+          "group": "basic",
+          "required": true,
+          "visible_when": null,
+          "option_labels": {
+            "tts": "输入文稿（AI 自动配音）",
+            "audio": "上传现成音频"
+          }
+        },
+        {
+          "key": "pipeline.script_text",
+          "label": "口播文稿",
+          "node_id": "pipeline",
+          "input_name": "script_text",
+          "field_type": "textarea",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "输入主播需要朗读的完整文稿，长文稿会自动分句合成并自然衔接。",
+          "group": "basic",
+          "required": true,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "2.audio",
+          "label": "驱动音频文件",
+          "node_id": "2",
+          "input_name": "audio",
+          "field_type": "audio",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "上传已录好的口播音频（支持 WAV/MP3/FLAC/OGG/M4A），长音频将自动分段生成。",
+          "group": "basic",
+          "required": true,
+          "visible_when": {
+            "pipeline.audio_source": "audio"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.voice_ref_audio",
+          "label": "参考音色（可选）",
+          "node_id": "pipeline",
+          "input_name": "voice_ref_audio",
+          "field_type": "audio",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "上传 5～15 秒清晰人声即可克隆该音色；留空则使用默认自然音色（选用 IndexTTS-2 时必须上传）。",
+          "group": "basic",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.target_resolution",
+          "label": "输出画幅与清晰度",
+          "node_id": "pipeline",
+          "input_name": "target_resolution",
+          "field_type": "select",
+          "default": "1280x720",
+          "options": [
+            "1280x720",
+            "720x1280",
+            "1920x1080",
+            "1080x1920"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "选择成片的横竖屏比例与清晰度，默认横屏 720p 兼顾画质与生成速度。",
+          "group": "basic",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {
+            "1280x720": "横屏高清 720p（16:9 · 推荐）",
+            "720x1280": "竖屏高清 720p（9:16 · 短视频）",
+            "1920x1080": "横屏超清 1080p（16:9）",
+            "1080x1920": "竖屏超清 1080p（9:16）"
+          }
+        },
+        {
+          "key": "pipeline.tts_engine",
+          "label": "远端 TTS 语音引擎",
+          "node_id": "pipeline",
+          "input_name": "tts_engine",
+          "field_type": "select",
+          "default": "voxcpm2",
+          "options": [
+            "voxcpm2",
+            "qwen3_tts",
+            "fish_s2_pro",
+            "indextts2"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "在远端 Colab GPU 独立子进程合成高保真口播音频，完成后立即释放显存再启动视频生成。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {
+            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
+            "qwen3_tts": "Qwen3-TTS 1.7B（多语种 · 克隆/捏声线 · Apache-2.0 可商用）",
+            "fish_s2_pro": "Fish Speech S2-Pro（情绪内联标签 · 仅非商用）",
+            "indextts2": "IndexTTS-2（独立情绪音频控制 · 仅非商用）"
+          }
+        },
+        {
+          "key": "pipeline.voice_ref_text",
+          "label": "参考音色对应文字（可选）",
+          "node_id": "pipeline",
+          "input_name": "voice_ref_text",
+          "field_type": "text",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "填写参考音色音频中说出的准确文字，有助于提升克隆咬字清晰度与音色还原度。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.voice_prompt",
+          "label": "声线与风格描述（文本捏声线，可选）",
+          "node_id": "pipeline",
+          "input_name": "voice_prompt",
+          "field_type": "text",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "通过自然语言描述期望音色与风格（适用于 VoxCPM2 / Qwen3-TTS，例如：沉稳男声、清亮女主播）。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.emotion_ref_audio",
+          "label": "情绪参考音频（IndexTTS-2 专属，可选）",
+          "node_id": "pipeline",
+          "input_name": "emotion_ref_audio",
+          "field_type": "audio",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "单独提供情绪语气参考音频，实现与参考音色分离的精细情绪迁移。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts",
+            "pipeline.tts_engine": "indextts2"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.emotion_prompt",
+          "label": "情绪提示词 / 语气标签（可选）",
+          "node_id": "pipeline",
+          "input_name": "emotion_prompt",
+          "field_type": "text",
+          "default": "",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "适用于 IndexTTS-2 情绪描述或 Fish S2 语气提示（如专业沉稳、轻松愉快）。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.pause_seconds",
+          "label": "句间自然停顿（秒）",
+          "node_id": "pipeline",
+          "input_name": "pause_seconds",
+          "field_type": "number",
+          "default": 0.28,
+          "options": [],
+          "min_value": 0.0,
+          "max_value": 1.5,
+          "step": 0.02,
+          "description": "长文稿分句合成后每句之间插入的自然气口停顿时长，默认 0.28 秒。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {}
+        },
+        {
+          "key": "5.positive_prompt",
+          "label": "画面与动作风格提示词",
+          "node_id": "5",
+          "input_name": "positive_prompt",
+          "field_type": "textarea",
+          "default": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+          "options": [],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "描述主播说话时的神态、头部微动、光线与镜头风格（建议使用英文短语获得最佳稳定性）。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "pipeline.upscale_mode",
+          "label": "画质超分模式",
+          "node_id": "pipeline",
+          "input_name": "upscale_mode",
+          "field_type": "select",
+          "default": "lanczos",
+          "options": [
+            "lanczos",
+            "ai_2x",
+            "none"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "LongCat-Avatar 原生以 720p 级画质渲染，默认使用 Lanczos 精准适配所选 16:9/9:16 分辨率；如需 1080p 细节增强可选 AI 2x 超分。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {
+            "lanczos": "Lanczos 高质量适配（默认推荐 · 精准输出所选画幅）",
+            "ai_2x": "AI 2x 细节超分（2xNomosUni SPAN · 1080p 增强）",
+            "none": "原生渲染尺寸输出（不缩放，保留原生画幅）"
+          }
+        },
+        {
+          "key": "pipeline.max_segment_seconds",
+          "label": "单段最大时长（秒）",
+          "node_id": "pipeline",
+          "input_name": "max_segment_seconds",
+          "field_type": "number",
+          "default": 6,
+          "options": [],
+          "min_value": 3,
+          "max_value": 9,
+          "step": 1,
+          "description": "LongCat-Avatar 1.5 单次扩散窗口上限为 256 帧（25fps），默认 6 秒自动分段并尾帧接力渲染，兼顾口型连贯与显存安全。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "14.steps",
+          "label": "采样步数（LongCat DMD 蒸馏）",
+          "node_id": "14",
+          "input_name": "steps",
+          "field_type": "integer",
+          "default": 12,
+          "options": [],
+          "min_value": 6,
+          "max_value": 30,
+          "step": 1,
+          "description": "配合 LongCat DMD 蒸馏 LoRA 推荐 12 步，步数越高单帧皮肤与口型细节越丰富。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        },
+        {
+          "key": "15.seed",
+          "label": "随机种子",
+          "node_id": "15",
+          "input_name": "seed",
+          "field_type": "integer",
+          "default": 42,
+          "options": [],
+          "min_value": 0,
+          "max_value": 2147483647,
+          "step": 1,
+          "description": "固定种子可复现相同的头部动作与神态，修改种子可生成不同自然动作。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {}
+        }
+      ],
+      "node_count": 15
+    }
+  ]
 }

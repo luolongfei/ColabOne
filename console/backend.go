@@ -55,7 +55,7 @@ func colabOneMethodTimeout(method string) time.Duration {
 		// Up to 10 exponential-backoff Colab allocation attempts + remote boot.
 		return 900 * time.Second
 	case "runtime.release", "runtime.release.all", "runtime.upgrade",
-		"drive.connect", "auth.colab.auto", "comfyui.output.asset":
+		"drive.connect", "auth.colab.auto", "comfyui.input.upload", "comfyui.output.asset":
 		return 300 * time.Second
 	default:
 		return 120 * time.Second

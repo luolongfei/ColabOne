@@ -10,6 +10,11 @@ import {
   Tag as ATag,
 } from "ant-design-vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
+import {
+  colabOnePrivacyActive,
+  colabOneSynthesizeEmail,
+} from "./colabOnePrivacy";
 import {
   COLABONE_IDLE_RELEASE_OPTIONS,
   describeColabOneBilling,
@@ -134,14 +139,41 @@ const balanceValueText = computed(() =>
   hasFiniteBalance.value ? (props.account.balance as number).toFixed(2) : "--",
 );
 
+const balanceSubtitleEmail = computed(() =>
+  props.setupColab && hasFiniteBalance.value ? (props.account.email || "") : "",
+);
+
 const balanceSubtitle = computed(() => {
   if (!props.setupColab) return t("billing.cardBalanceSubLoggedOut");
   if (!hasFiniteBalance.value) return t("billing.cardBalanceSubUnread");
-  const label = props.account.email || t("billing.cardBalanceSubDefaultLabel");
+  const rawLabel =
+    props.account.email || t("billing.cardBalanceSubDefaultLabel");
+  const label =
+    props.account.email && colabOnePrivacyActive.value
+      ? colabOneSynthesizeEmail(props.account.email)
+      : rawLabel;
   if (overview.value.stale) {
     return t("billing.cardBalanceSubStale", { label });
   }
   return label;
+});
+
+const balanceSubtitleTitle = computed(() =>
+  balanceSubtitleEmail.value && colabOnePrivacyActive.value
+    ? undefined
+    : balanceSubtitle.value,
+);
+
+const balanceStaleParts = computed(() => {
+  if (!balanceSubtitleEmail.value || !overview.value.stale) return null;
+  const sentinel = "__COLABONE_EMAIL_SLOT__";
+  const template = t("billing.cardBalanceSubStale", { label: sentinel });
+  const idx = template.indexOf(sentinel);
+  if (idx < 0) return null;
+  return {
+    prefix: template.slice(0, idx),
+    suffix: template.slice(idx + sentinel.length),
+  };
 });
 
 const endurancePrimaryText = computed(() => {
@@ -428,9 +460,26 @@ function onIdleMinutesChange(event: Event) {
               <span class="co-bc-stat-unit">CU</span>
             </template>
           </AStatistic>
-          <small class="co-metric-sub co-sk-reveal" :title="balanceSubtitle">{{
-            balanceSubtitle
-          }}</small>
+          <small
+            class="co-metric-sub co-sk-reveal"
+            data-testid="billing-account-subtitle"
+            :title="balanceSubtitleTitle"
+          >
+            <template v-if="balanceSubtitleEmail">
+              <template v-if="balanceStaleParts">
+                {{ balanceStaleParts.prefix }}<ColabOnePrivacyText
+                  :text="balanceSubtitleEmail"
+                  kind="email"
+                />{{ balanceStaleParts.suffix }}
+              </template>
+              <ColabOnePrivacyText
+                v-else
+                :text="balanceSubtitleEmail"
+                kind="email"
+              />
+            </template>
+            <template v-else>{{ balanceSubtitle }}</template>
+          </small>
         </template>
       </div>
 

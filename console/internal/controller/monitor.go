@@ -853,6 +853,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 							"runtime":       map[string]any{"state": "stopped"},
 							"models":        c.Presets(),
 							"workflows":     c.mergeWorkflowsLocked(nil),
+							"tts_engines":   c.builtinTtsEngines(),
 							"comfy_outputs": []any{},
 						})
 					}
@@ -917,6 +918,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 								"runtime":       map[string]any{"state": "stopped"},
 								"models":        c.Presets(),
 								"workflows":     c.mergeWorkflowsLocked(nil),
+								"tts_engines":   c.builtinTtsEngines(),
 								"comfy_outputs": []any{},
 							})
 						}

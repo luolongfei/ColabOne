@@ -20,7 +20,8 @@ const (
 	defaultContentsUploadTimeout  = 60 * time.Second
 	defaultContentsRequestTimeout = 60 * time.Second
 	defaultContentsDeleteTimeout  = 15 * time.Second
-	maxContentsResponseBytes      = 64 << 20 // 64 MiB
+	maxContentsResponseBytes      = 64 << 20        // 64 MiB
+	contentsUploadChunkBytes      = 6 * 1024 * 1024 // 6 MiB raw (exact multiple of 3 -> clean unpadded 8 MiB base64 per PUT)
 )
 
 // ColabOneContentsClient interacts with a Colab runtime's Jupyter Contents API
@@ -81,8 +82,11 @@ type contentsUploadPayload struct {
 }
 
 // UploadBytes uploads raw bytes to remotePath via PUT /api/contents/{quotedPath}
-// encoded as base64 chunk 1 with query parameters authuser=0 and
-// colab-runtime-proxy-token={proxyToken}.
+// encoded as base64 with query parameters authuser=0 and
+// colab-runtime-proxy-token={proxyToken}. Payloads up to 6 MiB use a single
+// PUT with chunk=1; larger payloads use standard Jupyter Contents API
+// multi-chunk PUTs (chunk = 1, 2, ..., -1) with 6 MiB (multiple-of-3) chunks
+// so every chunk encodes as clean unpadded base64 well under proxy/Tornado limits.
 func (c *ColabOneContentsClient) UploadBytes(
 	ctx context.Context,
 	baseURL, proxyToken, remotePath string,
@@ -104,21 +108,50 @@ func (c *ColabOneContentsClient) UploadBytes(
 
 	parts := strings.Split(remotePath, "/")
 	filename := parts[len(parts)-1]
-	payload := contentsUploadPayload{
-		Name:    filename,
-		Path:    remotePath,
-		Type:    "file",
-		Format:  "base64",
-		Content: base64.StdEncoding.EncodeToString(data),
-		Chunk:   1,
-	}
-	bodyBytes, err := json.Marshal(payload)
-	if err != nil {
+
+	if len(data) <= contentsUploadChunkBytes {
+		payload := contentsUploadPayload{
+			Name:    filename,
+			Path:    remotePath,
+			Type:    "file",
+			Format:  "base64",
+			Content: base64.StdEncoding.EncodeToString(data),
+			Chunk:   1,
+		}
+		bodyBytes, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		_, err = c.doRequest(ctx, http.MethodPut, baseURL, proxyToken, remotePath, nil, bodyBytes, false)
 		return err
 	}
 
-	_, err = c.doRequest(ctx, http.MethodPut, baseURL, proxyToken, remotePath, nil, bodyBytes, false)
-	return err
+	chunkIdx := 1
+	for offset := 0; offset < len(data); offset += contentsUploadChunkBytes {
+		end := offset + contentsUploadChunkBytes
+		chunkNum := chunkIdx
+		if end >= len(data) {
+			end = len(data)
+			chunkNum = -1
+		}
+		payload := contentsUploadPayload{
+			Name:    filename,
+			Path:    remotePath,
+			Type:    "file",
+			Format:  "base64",
+			Content: base64.StdEncoding.EncodeToString(data[offset:end]),
+			Chunk:   chunkNum,
+		}
+		bodyBytes, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if _, err := c.doRequest(ctx, http.MethodPut, baseURL, proxyToken, remotePath, nil, bodyBytes, false); err != nil {
+			return err
+		}
+		chunkIdx++
+	}
+	return nil
 }
 
 // DeleteFile deletes remotePath via DELETE /api/contents/{quotedPath}.

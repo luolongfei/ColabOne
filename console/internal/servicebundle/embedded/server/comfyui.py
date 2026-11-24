@@ -8,6 +8,7 @@ import base64
 import copy
 import hashlib
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -19,6 +20,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from functools import wraps
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -61,6 +63,15 @@ COMFY_MODEL_SUBDIRS = (
 _WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 _ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _PROMPT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+_STRIPPED_SUBPROCESS_ENV_KEYS = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+
+
+def _sanitized_subprocess_env() -> dict[str, str]:
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _STRIPPED_SUBPROCESS_ENV_KEYS
+    }
 
 
 def store_locked(fn):
@@ -442,12 +453,129 @@ class ColabOneComfyWorkflowStore:
             self.on_output_change(identity)
         return copy.deepcopy(record)
 
+    def save_output_file(
+        self,
+        src_path: Path,
+        workflow_id: str,
+        workflow_name: str,
+        filename: str,
+        mime_type: str | None = None,
+        elapsed: float = 0.0,
+        prompt_id: str = "",
+        extension: str | None = None,
+        kind: str | None = None,
+    ) -> dict:
+        """Stream an output file from disk into immutable storage without loading it into RAM."""
+        if isinstance(mime_type, (int, float)) and not isinstance(mime_type, bool):
+            # Support positional (src_path, workflow_id, workflow_name, filename, elapsed, prompt_id)
+            if isinstance(elapsed, str) and not prompt_id:
+                prompt_id = elapsed
+            elapsed = float(mime_type)
+            mime_type = None
+
+        src = Path(src_path)
+        if src.is_symlink() or not src.is_file():
+            raise ValueError("生成结果文件不存在")
+        stat_size = src.stat().st_size
+        if stat_size <= 0:
+            raise ValueError("生成结果为空")
+        if stat_size > MAX_OUTPUT_BYTES:
+            raise ValueError("生成结果超过最大体积限制")
+
+        safe_name = _safe_basename(filename)
+        if ".." in safe_name:
+            safe_name = safe_name.replace("..", "_")
+        ext = (
+            str(extension).lstrip(".").lower()
+            if extension
+            else (PurePosixPath(safe_name).suffix.lstrip(".").lower() if safe_name else "")
+        )
+        if not ext or ext not in ALLOWED_OUTPUT_MIME:
+            raise ValueError(f"不支持的输出文件格式：{ext or '未知'}")
+        expected_kind, expected_mime = ALLOWED_OUTPUT_MIME[ext]
+        final_kind = str(kind).strip() if kind else expected_kind
+        final_mime = str(mime_type).strip() if mime_type else expected_mime
+        if final_kind != expected_kind or final_mime != expected_mime:
+            raise ValueError(f"输出文件格式与类型不匹配：{ext}")
+        if len(safe_name) > 255:
+            stem = PurePosixPath(safe_name).stem[: 254 - len(ext)]
+            safe_name = f"{stem or 'output'}.{ext}"
+
+        identity = uuid.uuid4().hex
+        tmp_asset = self.outputs_dir / f".{identity}.{ext}.{uuid.uuid4().hex[:8]}.tmp"
+        hasher = hashlib.sha256()
+        total_bytes = 0
+        header_buf = bytearray()
+        chunk_size = 1024 * 1024  # 1 MiB streaming chunks
+
+        try:
+            with src.open("rb") as reader, tmp_asset.open("wb") as writer:
+                while True:
+                    chunk = reader.read(chunk_size)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_OUTPUT_BYTES:
+                        raise ValueError("生成结果超过最大体积限制")
+                    if ext == "png" and len(header_buf) < 8:
+                        need = 8 - len(header_buf)
+                        header_buf.extend(chunk[:need])
+                        if len(header_buf) >= 8 and not bytes(header_buf).startswith(
+                            b"\x89PNG\r\n\x1a\n"
+                        ):
+                            raise ValueError("引擎返回的 PNG 图片格式不正确")
+                    hasher.update(chunk)
+                    writer.write(chunk)
+                if total_bytes <= 0:
+                    raise ValueError("生成结果为空")
+                if ext == "png" and not bytes(header_buf).startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise ValueError("引擎返回的 PNG 图片格式不正确")
+                writer.flush()
+                os.fsync(writer.fileno())
+
+            record = WorkflowOutputRecord.model_validate(
+                {
+                    "id": identity,
+                    "workflow_id": workflow_id,
+                    "workflow_name": (workflow_name or workflow_id)[:160],
+                    "kind": final_kind,
+                    "filename": safe_name,
+                    "extension": ext,
+                    "mime": final_mime,
+                    "size": total_bytes,
+                    "sha256": hasher.hexdigest(),
+                    "created_at": time.time(),
+                    "elapsed": max(0.0, float(elapsed)),
+                    "prompt_id": (prompt_id or "")[:120],
+                }
+            ).model_dump()
+
+            with self.lock:
+                asset_path = self.outputs_dir / f"{identity}.{ext}"
+                meta_path = self.outputs_dir / f"{identity}.json"
+                if asset_path.is_symlink() or meta_path.is_symlink():
+                    raise ValueError("作品文件不能是符号链接")
+                os.replace(tmp_asset, asset_path)
+                atomic_json(meta_path, record)
+                self.outputs[identity] = record
+        finally:
+            tmp_asset.unlink(missing_ok=True)
+
+        if self.on_output_change:
+            self.on_output_change(identity)
+        return copy.deepcopy(record)
+
     @store_locked
     def asset(
         self, identity: str, offset: int = 0, length: int = 512 * 1024
     ) -> dict:
         item = self.outputs[identity]
-        if offset < 0 or offset > item["size"] or not 1 <= length <= 512 * 1024:
+        size = item["size"]
+        if (
+            offset < 0
+            or (offset >= size if size > 0 else offset > 0)
+            or not 1 <= length <= 512 * 1024
+        ):
             raise ValueError("作品读取范围不合法")
         path = self.outputs_dir / f"{identity}.{item['extension']}"
         if path.is_symlink():
@@ -527,41 +655,74 @@ def write_extra_model_paths(
     return yaml_path
 
 
+def _pg_has_members(pgid: int) -> bool:
+    """Return True if any process still exists in POSIX process group `pgid`."""
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return False
+
+
 def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> None:
-    if proc.poll() is not None:
-        return
-    used_pg = False
     pid = getattr(proc, "pid", None)
-    if isinstance(pid, int) and hasattr(os, "killpg"):
+    own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+    can_killpg = (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid > 0
+        and hasattr(os, "killpg")
+        and pid != own_pgrp
+    )
+    leader_alive = proc.poll() is None
+
+    if not leader_alive and not can_killpg:
+        return
+
+    used_pg = False
+    if can_killpg:
         try:
             os.killpg(pid, signal.SIGTERM)
             used_pg = True
         except (ProcessLookupError, PermissionError, OSError):
             pass
-    if not used_pg:
+
+    if leader_alive and not used_pg:
         try:
             proc.terminate()
         except OSError:
             pass
-    try:
-        proc.wait(timeout=timeout)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    if used_pg and isinstance(pid, int) and hasattr(os, "killpg"):
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    if leader_alive:
         try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
             pass
-    else:
+
+    # Even after the leader process exits, wait for surviving process-group
+    # members to terminate cleanly after SIGTERM, then SIGKILL stragglers.
+    if used_pg:
+        while _pg_has_members(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if _pg_has_members(pid):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+    elif proc.poll() is None:
         try:
             proc.kill()
         except OSError:
             pass
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        pass
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=max(0.5, float(timeout)))
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _run_command(
@@ -573,6 +734,7 @@ def _run_command(
         proc = subprocess.Popen(
             args,
             cwd=cwd,
+            env=_sanitized_subprocess_env(),
             stdout=out,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -602,33 +764,7 @@ def _run_command(
                 + log.read_text(encoding="utf-8", errors="replace")[-600:]
             )
     finally:
-        if proc.poll() is None:
-            _terminate_process_group(proc)
-
-
-def _req_package_name(line: str) -> str:
-    raw = line.split("#", 1)[0].strip()
-    if not raw or raw.startswith("-"):
-        return ""
-    match = re.match(r"^([A-Za-z0-9_.-]+)", raw)
-    if not match:
-        return ""
-    return re.sub(r"[-_.]+", "-", match.group(1)).lower()
-
-
-def _filter_requirements(req_path: Path, out_path: Path, skip_torch: bool) -> bool:
-    kept: list[str] = []
-    for raw_line in req_path.read_text(encoding="utf-8").splitlines():
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if skip_torch and _req_package_name(stripped) in TORCH_SKIP_PACKAGES:
-            continue
-        kept.append(stripped)
-    if not kept:
-        return False
-    out_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-    return True
+        _terminate_process_group(proc)
 
 
 def _load_catalog(catalog_dir: Path | None) -> ComfyCatalog:
@@ -705,10 +841,36 @@ def _extract_history_error(status_info: dict[str, Any]) -> str:
                 else (f"节点 {node_id}: " if node_id else "")
             )
             return f"{prefix}{exc_msg}"[:600]
+        if (
+            isinstance(msg, (list, tuple))
+            and len(msg) >= 1
+            and msg[0] == "execution_interrupted"
+        ):
+            info = msg[1] if len(msg) >= 2 and isinstance(msg[1], dict) else {}
+            node_id = info.get("node_id") or ""
+            node_type = info.get("node_type") or ""
+            if node_id and node_type:
+                return f"节点 {node_id}({node_type}): 工作流执行已中断"[:600]
+            if node_id:
+                return f"节点 {node_id}: 工作流执行已中断"[:600]
+            return "工作流执行已中断"
     for key in ("error", "message", "detail"):
         if status_info.get(key):
             return str(status_info[key])[:600]
+    if status_info.get("completed") is False:
+        return "工作流执行未完成或已中断"
     return "工作流执行出错"
+
+
+from server import comfy_packs
+from server.comfy_packs import (
+    ColabOneComfyPackManager,
+    _filter_requirements,
+    _req_package_name,
+)
+from server.comfy_ws import ColabOneComfyWsMonitor
+from server.digital_human import ColabOneDigitalHumanRunner
+from server.tts_engines import ColabOneRemoteTtsRunner
 
 
 class ColabOneComfyManager:
@@ -728,6 +890,7 @@ class ColabOneComfyManager:
         self.error = ""
         self._queue_cache: tuple[int, int] = (0, 0)
         self._queue_checked_at: float = -10.0
+        self._loaded_pack_signature: str = ""
 
         self.store = ColabOneComfyWorkflowStore(
             runtime.root,
@@ -742,14 +905,45 @@ class ColabOneComfyManager:
         self.canvas = ColabOneComfyCanvasGateway(
             runtime, upstream_port=self.port, proxy_port=self.proxy_port
         )
+        self.packs = ColabOneComfyPackManager(
+            runtime, self.install_dir, self.models_dir
+        )
+        engines_by_id = {
+            (e["id"] if isinstance(e, dict) else e.id): (
+                dict(e) if isinstance(e, dict) else e.model_dump()
+            )
+            for e in (getattr(self.catalog, "tts_engines", None) or [])
+        }
+        self.tts = ColabOneRemoteTtsRunner(runtime, engines_by_id)
+        self.digital_human = ColabOneDigitalHumanRunner(self, self.tts)
 
     def is_installed(self) -> bool:
-        return (
-            not self.install_dir.is_symlink()
-            and (self.install_dir / "main.py").is_file()
-            and not (self.install_dir / "main.py").is_symlink()
-            and (self.install_dir / ".complete").exists()
-        )
+        marker = self.install_dir / ".complete"
+        if (
+            self.install_dir.is_symlink()
+            or not (self.install_dir / "main.py").is_file()
+            or (self.install_dir / "main.py").is_symlink()
+            or marker.is_symlink()
+            or not marker.is_file()
+        ):
+            return False
+        try:
+            raw = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if not raw:
+            # Backwards compatible with legacy empty .complete marker files and tests.
+            return True
+        try:
+            meta = json.loads(raw)
+        except ValueError:
+            return True
+        if isinstance(meta, dict):
+            recorded_commit = str(meta.get("commit") or "").strip().lower()
+            expected_commit = str(self.catalog.commit or "").strip().lower()
+            if recorded_commit and expected_commit and recorded_commit != expected_commit:
+                return False
+        return True
 
     def is_running(self) -> bool:
         with self.lock:
@@ -761,6 +955,9 @@ class ColabOneComfyManager:
 
     def queue_counts(self) -> tuple[int, int]:
         if not self.is_running():
+            with self.lock:
+                self._queue_cache = (0, 0)
+                self._queue_checked_at = time.monotonic()
             return (0, 0)
         try:
             resp = self.runtime.http.get(self.base_url + "/queue", timeout=1.5)
@@ -769,9 +966,24 @@ class ColabOneComfyManager:
             data = resp.json() or {}
             running = data.get("queue_running") or []
             pending = data.get("queue_pending") or []
-            return (len(running), len(pending))
+            counts = (len(running), len(pending))
+            with self.lock:
+                self._queue_cache = counts
+                self._queue_checked_at = time.monotonic()
+            return counts
         except Exception:
             return (0, 0)
+
+    def queue_counts_cached(self) -> tuple[int, int]:
+        """Return the last cached ComfyUI queue counts without blocking on HTTP."""
+        with self.lock:
+            if (
+                self.proc is None
+                or self.proc.poll() is not None
+                or self.state != "ready"
+            ):
+                return (0, 0)
+            return self._queue_cache
 
     def status(self) -> dict:
         with self.lock:
@@ -784,6 +996,7 @@ class ColabOneComfyManager:
                         self.error = f"ComfyUI 进程异常退出（退出码 {code}）"
                 self._queue_cache = (0, 0)
                 self._queue_checked_at = -10.0
+                self._loaded_pack_signature = ""
             running = self.is_running()
             state = self.state
             error = self.error
@@ -812,8 +1025,12 @@ class ColabOneComfyManager:
             "queue_running": q_run,
             "queue_pending": q_pend,
             "error": error,
+            "active_pack": self.packs.active_pack_id,
             "canvas": self.canvas.snapshot(),
         }
+
+    def list_tts_engines(self) -> list[dict]:
+        return self.tts.list_engines()
 
     def prepare(self, task) -> Path:
         if self.is_installed():
@@ -929,17 +1146,22 @@ class ColabOneComfyManager:
                     "正在安装 ComfyUI 依赖包"
                     + ("（保留现有 CUDA PyTorch）" if has_torch else "")
                 )
+                pip_cmd = [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-input",
+                    "--disable-pip-version-check",
+                ]
+                constraints_path = comfy_packs._write_torch_constraints(
+                    self.install_dir
+                )
+                if constraints_path is not None:
+                    pip_cmd.extend(["-c", str(constraints_path)])
+                pip_cmd.extend(["-r", str(filtered_req)])
                 _run_command(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--no-input",
-                        "--disable-pip-version-check",
-                        "-r",
-                        str(filtered_req),
-                    ],
+                    pip_cmd,
                     task,
                     log,
                     stopping=stopping,
@@ -947,7 +1169,13 @@ class ColabOneComfyManager:
 
         if not (self.install_dir / "main.py").is_file():
             raise RuntimeError("ComfyUI 安装不完整：缺少 main.py")
-        (self.install_dir / ".complete").touch()
+        complete_marker = self.install_dir / ".complete"
+        if complete_marker.is_symlink():
+            raise ValueError("ComfyUI 完成标记不能是符号链接")
+        atomic_json(
+            complete_marker,
+            {"commit": self.catalog.commit, "tag": self.catalog.tag},
+        )
         task.note("远端 ComfyUI " + self.catalog.tag + " 安装完成")
         return self.install_dir
 
@@ -1011,16 +1239,18 @@ class ColabOneComfyManager:
                 str(self.io_out_dir),
             ]
             if (gpu.get("total_mib") or 0) >= 40000:
-                args.append("--highvram")
+                args.append("--disable-mmap")
 
             log = self.runtime.root / "comfyui.log"
             task.message = "正在启动远端 ComfyUI 引擎"
             task.note(f"已生成模型路径配置，正在启动远端 ComfyUI（端口 {self.port}）")
+            launch_pack_sig = str(getattr(self.packs, "active_pack_signature", "") or "")
             cwd = str(self.install_dir) if self.install_dir.is_dir() else None
             with log.open("wb") as out:
                 proc = subprocess.Popen(
                     args,
                     cwd=cwd,
+                    env=_sanitized_subprocess_env(),
                     stdout=out,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -1084,6 +1314,7 @@ class ColabOneComfyManager:
                             self.error = ""
                             self._queue_cache = (0, 0)
                             self._queue_checked_at = -10.0
+                            self._loaded_pack_signature = launch_pack_sig
                         task.note(
                             f"远端 ComfyUI 引擎已就绪（耗时 {time.monotonic() - start_t:.1f} 秒）"
                         )
@@ -1115,6 +1346,7 @@ class ColabOneComfyManager:
                     self.error = (str(exc) or type(exc).__name__)[:500]
                 self._queue_cache = (0, 0)
                 self._queue_checked_at = -10.0
+                self._loaded_pack_signature = ""
             raise
 
     def stop_server(self) -> None:
@@ -1133,6 +1365,7 @@ class ColabOneComfyManager:
                     self.error = ""
                     self._queue_cache = (0, 0)
                     self._queue_checked_at = -10.0
+                    self._loaded_pack_signature = ""
 
     def free_memory(self, unload_models: bool = True) -> dict:
         if not self.is_running():
@@ -1168,10 +1401,8 @@ class ColabOneComfyManager:
         return safe_name
 
     def _cancel_prompt(self, prompt_id: str) -> None:
-        try:
-            self.runtime.http.post(self.base_url + "/interrupt", timeout=3)
-        except Exception:
-            pass
+        if not prompt_id:
+            return
         try:
             self.runtime.http.post(
                 self.base_url + "/queue",
@@ -1180,10 +1411,744 @@ class ColabOneComfyManager:
             )
         except Exception:
             pass
+        try:
+            resp = self.runtime.http.post(
+                self.base_url + "/interrupt",
+                json={"prompt_id": prompt_id},
+                timeout=3,
+            )
+            if not _response_ok(resp):
+                self.runtime.http.post(self.base_url + "/interrupt", timeout=3)
+        except Exception:
+            pass
 
-    def run_workflow(self, task, request: WorkflowRunRequest) -> list[dict]:
+    def ensure_template_ready(
+        self,
+        task,
+        wf: dict,
+        hf_token: str = "",
+        progress_range: tuple[float, float] | None = None,
+    ) -> None:
+        task.check()
+        has_pack_requirements = bool(
+            wf.get("custom_nodes")
+            or wf.get("pip_packages")
+            or wf.get("models")
+            or wf.get("node_patches")
+            or (wf.get("min_vram_mib") or 0) > 0
+            or (wf.get("min_disk_mib") or 0) > 0
+        )
+        if has_pack_requirements:
+            self.packs.check_preflight(wf)
+            if not self.is_running():
+                self.prepare(task)
+                task.check()
+            ensure_kwargs: dict[str, Any] = {"hf_token": hf_token}
+            if progress_range is not None:
+                try:
+                    sig = inspect.signature(self.packs.ensure_pack)
+                    if "progress_range" in sig.parameters or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in sig.parameters.values()
+                    ):
+                        ensure_kwargs["progress_range"] = progress_range
+                except (TypeError, ValueError):
+                    ensure_kwargs["progress_range"] = progress_range
+            needs_restart = self.packs.ensure_pack(task, wf, **ensure_kwargs)
+            current_pack_sig = str(
+                getattr(self.packs, "active_pack_signature", "") or ""
+            )
+            with self.lock:
+                loaded_pack_sig = self._loaded_pack_signature
+            if self.is_running() and (
+                needs_restart or loaded_pack_sig != current_pack_sig
+            ):
+                task.note("自定义节点包已变更，正在重启远端 ComfyUI 引擎以加载新节点")
+                self.stop_server()
+        if not self.is_running():
+            self.start_server(task)
+        task.check()
+
+    def _fetch_output_to_path(
+        self,
+        task,
+        filename: str,
+        dest_path: Path,
+        *,
+        subfolder: str = "",
+        file_type: str = "output",
+    ) -> Path:
+        """Stream a ComfyUI `/view` artifact directly to disk without buffering it in RAM."""
+        dest = Path(dest_path)
+        if dest.is_symlink():
+            raise ValueError("输出缓存文件不能是符号链接")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        view_resp = self.runtime.http.get(
+            self.base_url + "/view",
+            params={
+                "filename": filename,
+                "subfolder": subfolder,
+                "type": file_type,
+            },
+            stream=True,
+            timeout=(10, 60),
+        )
+        total = 0
+        try:
+            view_resp.raise_for_status()
+            is_streamable_requests_resp = (
+                isinstance(view_resp, requests.Response)
+                and getattr(view_resp, "raw", None) is not None
+                and not getattr(view_resp, "_content_consumed", False)
+            )
+            is_streamable_stub = False
+            if not isinstance(view_resp, requests.Response):
+                from unittest.mock import NonCallableMock
+
+                is_streamable_stub = (
+                    not isinstance(view_resp, NonCallableMock)
+                    and callable(getattr(view_resp, "iter_content", None))
+                    and not isinstance(
+                        getattr(view_resp, "content", None), (bytes, bytearray)
+                    )
+                )
+            with dest.open("wb") as out:
+                if is_streamable_requests_resp or is_streamable_stub:
+                    for chunk in view_resp.iter_content(256 * 1024):
+                        task.check()
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > MAX_OUTPUT_BYTES:
+                            raise ValueError("生成结果超过最大体积限制")
+                        out.write(chunk)
+                else:
+                    raw_bytes = bytes(view_resp.content)
+                    if len(raw_bytes) > MAX_OUTPUT_BYTES:
+                        raise ValueError("生成结果超过最大体积限制")
+                    out.write(raw_bytes)
+            return dest
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
+        finally:
+            close_fn = getattr(view_resp, "close", None)
+            if callable(close_fn):
+                close_fn()
+
+    def _upload_input_file(self, fname: str, fpath: Path) -> str:
+        raw_bytes = fpath.read_bytes()
+        ext = fpath.suffix.lstrip(".").lower()
+        uploaded_name = ""
+        try:
+            resp = self.runtime.http.post(
+                self.base_url + "/upload/image",
+                files={"image": (fname, raw_bytes)},
+                data={"overwrite": "true"},
+                timeout=30,
+            )
+            if _response_ok(resp):
+                body = resp.json() or {}
+                subfolder = str(body.get("subfolder") or "").strip("/")
+                name = str(body.get("name") or fname)
+                uploaded_name = f"{subfolder}/{name}" if subfolder else name
+            elif ext not in IMAGE_INPUT_EXTENSIONS:
+                uploaded_name = self._stage_input_file(fname, raw_bytes)
+            else:
+                resp.raise_for_status()
+        except requests.RequestException:
+            if ext not in IMAGE_INPUT_EXTENSIONS:
+                uploaded_name = self._stage_input_file(fname, raw_bytes)
+            else:
+                raise
+        return uploaded_name
+
+    def _execute_single_prompt(
+        self,
+        task,
+        wf: dict,
+        prompt_payload: dict,
+        *,
+        progress_range: tuple[float, float] = (0.08, 0.96),
+        segment_label: str = "",
+        save_to_store: bool = True,
+        output_dir: Path | None = None,
+    ) -> list[dict]:
         from server.runtime import ColabOneCancelledError
 
+        task.check()
+        lo, hi = progress_range
+        lo = max(0.0, min(1.0, float(lo)))
+        hi = max(lo, min(1.0, float(hi)))
+        span = hi - lo
+        sampler_hi = lo + span * 0.92
+        prefix = f"{segment_label} · " if segment_label else ""
+        task_lock = getattr(task, "lock", None)
+
+        node_titles: dict[str, str] = {}
+        for node_id, node in (prompt_payload or {}).items():
+            if not isinstance(node, dict):
+                continue
+            meta = node.get("_meta")
+            raw_title = meta.get("title") if isinstance(meta, dict) else None
+            if isinstance(raw_title, str) and raw_title.strip():
+                node_titles[str(node_id)] = raw_title.strip()
+            elif (
+                isinstance(node.get("class_type"), str)
+                and node["class_type"].strip()
+            ):
+                node_titles[str(node_id)] = node["class_type"].strip()
+
+        client_id = (
+            f"colabone-{task.id}-{uuid.uuid4().hex[:8]}"
+            if (segment_label or not save_to_store)
+            else f"colabone-{task.id}"
+        )
+
+        ws_lock = threading.Lock()
+        ws_wakeup = threading.Event()
+        ws_state: dict[str, Any] = {
+            "active": False,
+            "last_node": "",
+            "last_note_at": 0.0,
+            "done": False,
+            "error": "",
+        }
+        cancel_state: dict[str, Any] = {
+            "prompt_id": "",
+            "finished": False,
+            "interrupted": False,
+        }
+
+        phase_labels = {
+            "starting": "正在启动执行",
+            "cached": "复用已缓存节点",
+            "executing": "远端 GPU 执行中",
+            "executed": "节点已完成",
+            "sampling": "采样中",
+        }
+
+        def _on_ws_progress(event: dict) -> None:
+            if not isinstance(event, dict):
+                return
+            node_title = str(
+                event.get("node_title") or event.get("node_id") or ""
+            ).strip()
+            step = event.get("step")
+            max_steps = event.get("max_steps")
+            fraction = event.get("fraction")
+            phase = str(event.get("phase") or "").strip()
+
+            if (
+                isinstance(step, int)
+                and not isinstance(step, bool)
+                and isinstance(max_steps, int)
+                and not isinstance(max_steps, bool)
+                and (max_steps > 1 or (phase == "sampling" and max_steps > 0))
+            ):
+                step_part = f" · 采样 {step}/{max_steps}"
+            else:
+                step_part = ""
+
+            if node_title:
+                msg = f"{prefix}{wf['name']} · {node_title}{step_part}"
+            elif phase:
+                label = phase_labels.get(phase, phase)
+                msg = f"{prefix}{wf['name']} · {label}{step_part}"
+            else:
+                msg = f"{prefix}{wf['name']} · 远端 GPU 执行中{step_part}"
+
+            now = time.monotonic()
+            should_note = False
+            with ws_lock:
+                ws_state["active"] = True
+                node_key = f"{node_title}:{phase}"
+                if node_title and node_key != ws_state["last_node"]:
+                    ws_state["last_node"] = node_key
+                    ws_state["last_note_at"] = now
+                    should_note = True
+                elif now - ws_state["last_note_at"] >= 5.0:
+                    ws_state["last_note_at"] = now
+                    should_note = True
+
+            with task_lock if task_lock is not None else nullcontext():
+                task.message = msg
+                if isinstance(fraction, (int, float)) and not isinstance(
+                    fraction, bool
+                ):
+                    clamped = max(0.0, min(1.0, float(fraction)))
+                    scaled = lo + span * 0.92 * clamped
+                    if scaled > task.progress:
+                        task.progress = min(sampler_hi, scaled)
+            if should_note:
+                task.note(msg)
+
+        def _on_ws_error(err: Any = None) -> None:
+            with ws_lock:
+                ws_state["error"] = str(err) if err else "工作流执行出错"
+            ws_wakeup.set()
+
+        def _on_ws_done(_event: Any = None) -> None:
+            with ws_lock:
+                ws_state["done"] = True
+            ws_wakeup.set()
+
+        ws_monitor = None
+        has_cancel_hook_attr = hasattr(task, "cancel_hook")
+        prev_cancel_hook = None
+        if has_cancel_hook_attr:
+            with task_lock if task_lock is not None else nullcontext():
+                prev_cancel_hook = task.cancel_hook
+
+        def _cancel_hook() -> None:
+            ws_wakeup.set()
+            if callable(prev_cancel_hook):
+                try:
+                    prev_cancel_hook()
+                except Exception:
+                    pass
+            with ws_lock:
+                pid = cancel_state["prompt_id"]
+                if pid and not cancel_state["finished"] and not cancel_state["interrupted"]:
+                    cancel_state["interrupted"] = True
+                else:
+                    pid = ""
+            if pid:
+                self._cancel_prompt(pid)
+            if ws_monitor is not None:
+                try:
+                    ws_monitor.stop()
+                except Exception:
+                    pass
+
+        if has_cancel_hook_attr:
+            with task_lock if task_lock is not None else nullcontext():
+                task.cancel_hook = _cancel_hook
+
+        try:
+            task.check()
+            try:
+                ws_monitor = ColabOneComfyWsMonitor(
+                    "127.0.0.1",
+                    self.port,
+                    client_id,
+                    node_titles=node_titles,
+                    on_progress=_on_ws_progress,
+                    on_error=_on_ws_error,
+                    on_done=_on_ws_done,
+                )
+                if task.cancel.is_set():
+                    task.check()
+                ws_monitor.start()
+                if task.cancel.is_set():
+                    try:
+                        ws_monitor.stop()
+                    except Exception:
+                        pass
+                    task.check()
+            except ColabOneCancelledError:
+                raise
+            except Exception:
+                ws_monitor = None
+
+            submit_msg = f"{prefix}提交工作流：{wf['name']}"
+            with task_lock if task_lock is not None else nullcontext():
+                task.message = submit_msg
+            task.note(submit_msg)
+            task.check()
+            submit_resp = self.runtime.http.post(
+                self.base_url + "/prompt",
+                json={"prompt": prompt_payload, "client_id": client_id},
+                timeout=30,
+            )
+            try:
+                submit_body = submit_resp.json() or {}
+            except ValueError:
+                submit_body = {}
+            if not _response_ok(submit_resp):
+                detail = _format_comfy_errors(submit_body)
+                if detail:
+                    raise RuntimeError(f"ComfyUI 拒绝了工作流：{detail}")
+                submit_resp.raise_for_status()
+            node_errors = submit_body.get("node_errors")
+            if isinstance(node_errors, dict) and node_errors:
+                detail = _format_comfy_errors(submit_body)
+                raise RuntimeError(f"工作流节点校验失败：{detail}")
+            prompt_id = str(submit_body.get("prompt_id") or "")
+            if not prompt_id or not _PROMPT_ID_RE.fullmatch(prompt_id):
+                detail = _format_comfy_errors(submit_body)
+                raise RuntimeError(
+                    f"ComfyUI 未返回有效任务编号：{detail or '未知错误'}"
+                )
+
+            with ws_lock:
+                cancel_state["prompt_id"] = prompt_id
+
+            if ws_monitor is not None:
+                set_pid = getattr(ws_monitor, "set_prompt_id", None)
+                if callable(set_pid):
+                    try:
+                        set_pid(prompt_id)
+                    except Exception:
+                        pass
+
+            started = time.monotonic()
+            last_phase: str | None = None
+            last_note = 0.0
+            hist_errors = 0
+            missing_polls = 0
+            prompt_finished = False
+            task.note(f"{prefix}工作流已入队：{wf['name']}（任务 {prompt_id[:16]}）")
+
+            try:
+                while True:
+                    task.check()
+                    with self.lock:
+                        proc = self.proc
+                    if proc is not None and proc.poll() is not None:
+                        raise RuntimeError("ComfyUI 进程在执行期间意外退出")
+
+                    try:
+                        hist_resp = self.runtime.http.get(
+                            f"{self.base_url}/history/{prompt_id}", timeout=15
+                        )
+                        hist_resp.raise_for_status()
+                        hist_data = hist_resp.json() or {}
+                        hist_errors = 0
+                    except (requests.RequestException, OSError, ValueError) as exc:
+                        hist_errors += 1
+                        if hist_errors >= 5:
+                            raise RuntimeError(
+                                f"查询 ComfyUI 任务进度连续失败：{exc}"
+                            ) from None
+                        time.sleep(1.0)
+                        continue
+
+                    if prompt_id in hist_data:
+                        prompt_finished = True
+                        with ws_lock:
+                            cancel_state["finished"] = True
+                        entry = hist_data[prompt_id] or {}
+                        status_info = entry.get("status") or {}
+                        status_str = str(status_info.get("status_str") or "").strip().lower()
+                        has_interrupted_msg = any(
+                            isinstance(msg, (list, tuple))
+                            and len(msg) >= 1
+                            and msg[0] == "execution_interrupted"
+                            for msg in (status_info.get("messages") or [])
+                        )
+                        if (
+                            status_str == "error"
+                            or status_info.get("completed") is False
+                            or has_interrupted_msg
+                        ):
+                            raise RuntimeError(
+                                "ComfyUI 执行失败："
+                                + _extract_history_error(status_info)
+                            )
+
+                        output_items: list[tuple[str, dict[str, Any]]] = []
+                        seen: set[tuple[str, str, str]] = set()
+                        for node_out in (entry.get("outputs") or {}).values():
+                            if not isinstance(node_out, dict):
+                                continue
+                            for media_key in ("images", "gifs", "videos", "audio"):
+                                items = node_out.get(media_key)
+                                if not isinstance(items, list):
+                                    continue
+                                for item in items:
+                                    if not isinstance(item, dict) or not item.get(
+                                        "filename"
+                                    ):
+                                        continue
+                                    key = (
+                                        str(item["filename"]),
+                                        str(item.get("subfolder") or ""),
+                                        str(item.get("type") or "output"),
+                                    )
+                                    if key in seen:
+                                        continue
+                                    seen.add(key)
+                                    output_items.append((media_key, item))
+
+                        elapsed = time.monotonic() - started
+                        total_items = len(output_items)
+                        if total_items and save_to_store:
+                            task.note(
+                                f"{prefix}工作流推理完成，正在保存 {total_items} 个输出作品"
+                            )
+                        raw_results: list[dict[str, Any]] = []
+                        for idx, (media_key, item) in enumerate(output_items, 1):
+                            task.check()
+                            fname = str(item["filename"])
+                            subfolder = str(item.get("subfolder") or "")
+                            file_type = str(item.get("type") or "output")
+                            safe_fname = _safe_basename(fname) or f"output_{idx:03d}.bin"
+                            if save_to_store:
+                                item_msg = (
+                                    f"{prefix}保存作品 {idx}/{total_items} · "
+                                    f"{safe_fname}"
+                                )
+                            else:
+                                item_msg = (
+                                    f"{prefix}获取输出 {idx}/{total_items} · "
+                                    f"{safe_fname}"
+                                )
+                            with task_lock if task_lock is not None else nullcontext():
+                                task.message = item_msg
+                            if save_to_store:
+                                tmp_dl = (
+                                    self.store.outputs_dir
+                                    / f".dl-{uuid.uuid4().hex[:12]}.tmp"
+                                )
+                                try:
+                                    self._fetch_output_to_path(
+                                        task,
+                                        fname,
+                                        tmp_dl,
+                                        subfolder=subfolder,
+                                        file_type=file_type,
+                                    )
+                                    record = self.store.save_output_file(
+                                        src_path=tmp_dl,
+                                        workflow_id=wf["id"],
+                                        workflow_name=wf["name"],
+                                        filename=fname,
+                                        elapsed=elapsed,
+                                        prompt_id=prompt_id,
+                                    )
+                                    with (
+                                        task_lock
+                                        if task_lock is not None
+                                        else nullcontext()
+                                    ):
+                                        task.outputs.append(record)
+                                finally:
+                                    tmp_dl.unlink(missing_ok=True)
+                            elif output_dir is not None:
+                                dl_dest = (
+                                    Path(output_dir)
+                                    / f"{prompt_id[:16]}_{idx:03d}_{safe_fname}"
+                                )
+                                if Path(output_dir).resolve() not in dl_dest.resolve().parents:
+                                    raise ValueError("输出文件路径不合法")
+                                self._fetch_output_to_path(
+                                    task,
+                                    fname,
+                                    dl_dest,
+                                    subfolder=subfolder,
+                                    file_type=file_type,
+                                )
+                                raw_results.append(
+                                    {
+                                        "filename": fname,
+                                        "path": str(dl_dest),
+                                        "media_key": media_key,
+                                        "prompt_id": prompt_id,
+                                        "subfolder": subfolder,
+                                        "type": file_type,
+                                    }
+                                )
+                            else:
+                                tmp_dl = (
+                                    self.store.outputs_dir
+                                    / f".seg-{uuid.uuid4().hex[:12]}.tmp"
+                                )
+                                try:
+                                    self._fetch_output_to_path(
+                                        task,
+                                        fname,
+                                        tmp_dl,
+                                        subfolder=subfolder,
+                                        file_type=file_type,
+                                    )
+                                    raw_output = tmp_dl.read_bytes()
+                                finally:
+                                    tmp_dl.unlink(missing_ok=True)
+                                raw_results.append(
+                                    {
+                                        "filename": fname,
+                                        "bytes": raw_output,
+                                        "media_key": media_key,
+                                        "prompt_id": prompt_id,
+                                        "subfolder": subfolder,
+                                        "type": file_type,
+                                    }
+                                )
+                            if total_items > 0:
+                                fetch_prog = lo + span * (
+                                    0.92 + 0.08 * (idx / total_items)
+                                )
+                                with task_lock if task_lock is not None else nullcontext():
+                                    if fetch_prog > task.progress:
+                                        task.progress = min(hi, fetch_prog)
+
+                        if save_to_store:
+                            with task_lock if task_lock is not None else nullcontext():
+                                saved_outputs = list(task.outputs)
+                                task.progress = 1
+                            if not output_items:
+                                task.note("工作流执行完成，未产生可保存的输出文件")
+                            else:
+                                task.note(
+                                    f"工作流执行完成，已保存 {len(saved_outputs)} 个作品到远端 GPU"
+                                )
+                            return saved_outputs
+                        with task_lock if task_lock is not None else nullcontext():
+                            if hi > task.progress:
+                                task.progress = hi
+                        return raw_results
+
+                    elapsed = time.monotonic() - started
+                    if elapsed > 3600:
+                        with ws_lock:
+                            cancel_state["interrupted"] = True
+                        self._cancel_prompt(prompt_id)
+                        raise RuntimeError("工作流执行超过 60 分钟，已取消任务")
+
+                    phase = "running"
+                    pending_pos = 0
+                    queue_checked = False
+                    in_queue = False
+                    try:
+                        q_resp = self.runtime.http.get(
+                            self.base_url + "/queue", timeout=5
+                        )
+                        if _response_ok(q_resp):
+                            queue_checked = True
+                            q_data = q_resp.json() or {}
+                            q_running = q_data.get("queue_running") or []
+                            q_pending = q_data.get("queue_pending") or []
+                            in_running = any(
+                                isinstance(q_entry, (list, tuple))
+                                and len(q_entry) >= 2
+                                and str(q_entry[1]) == prompt_id
+                                for q_entry in q_running
+                            )
+                            if in_running:
+                                in_queue = True
+                            else:
+                                for pos, q_entry in enumerate(q_pending, 1):
+                                    if (
+                                        isinstance(q_entry, (list, tuple))
+                                        and len(q_entry) >= 2
+                                        and str(q_entry[1]) == prompt_id
+                                    ):
+                                        phase = "queued"
+                                        pending_pos = pos
+                                        in_queue = True
+                                        break
+                    except (requests.RequestException, OSError, ValueError):
+                        pass
+
+                    if queue_checked:
+                        if in_queue:
+                            missing_polls = 0
+                        else:
+                            missing_polls += 1
+                            if missing_polls >= 10:
+                                # Final check against /history in case the prompt just finished.
+                                try:
+                                    final_hist = self.runtime.http.get(
+                                        f"{self.base_url}/history/{prompt_id}",
+                                        timeout=10,
+                                    )
+                                    if _response_ok(final_hist) and prompt_id in (
+                                        final_hist.json() or {}
+                                    ):
+                                        missing_polls = 0
+                                        continue
+                                except (requests.RequestException, OSError, ValueError):
+                                    pass
+                                with ws_lock:
+                                    ws_err = ws_state["error"]
+                                if ws_err:
+                                    raise RuntimeError("ComfyUI 执行失败：" + ws_err)
+                                raise RuntimeError(
+                                    "ComfyUI 任务已从执行队列消失且未生成结果，可能已在画布中被取消"
+                                )
+
+                    ws_is_connected = bool(
+                        ws_monitor is not None and getattr(ws_monitor, "connected", False)
+                    )
+                    with ws_lock:
+                        ws_active = ws_is_connected and ws_state["active"]
+
+                    if phase == "queued":
+                        queued_msg = (
+                            f"{prefix}{wf['name']} · 排队中（第 {pending_pos} 位）· 已用 {int(elapsed)} 秒"
+                        )
+                        with task_lock if task_lock is not None else nullcontext():
+                            task.message = queued_msg
+                            queued_progress = lo if segment_label else 0.05
+                            if queued_progress > task.progress:
+                                task.progress = queued_progress
+                        if phase != last_phase or time.monotonic() - last_note >= 5:
+                            task.note(queued_msg)
+                            last_phase, last_note = phase, time.monotonic()
+                    elif not ws_active:
+                        run_msg = (
+                            f"{prefix}{wf['name']} · 远端 GPU 执行中 · 已用 {int(elapsed)} 秒"
+                        )
+                        heuristic = lo + span * 0.92 * (
+                            1.0 - 1.0 / (1.0 + elapsed / 30.0)
+                        )
+                        with task_lock if task_lock is not None else nullcontext():
+                            task.message = run_msg
+                            if heuristic > task.progress:
+                                task.progress = min(sampler_hi, heuristic)
+                        if phase != last_phase or time.monotonic() - last_note >= 5:
+                            task.note(run_msg)
+                            last_phase, last_note = phase, time.monotonic()
+
+                    if not task.cancel.is_set():
+                        ws_wakeup.wait(0.5)
+                        ws_wakeup.clear()
+            except ColabOneCancelledError:
+                with ws_lock:
+                    should_cancel = (
+                        not prompt_finished
+                        and not cancel_state["finished"]
+                        and not cancel_state["interrupted"]
+                    )
+                    if should_cancel:
+                        cancel_state["interrupted"] = True
+                if should_cancel:
+                    self._cancel_prompt(prompt_id)
+                raise
+            except BaseException:
+                with ws_lock:
+                    should_cancel = (
+                        not prompt_finished
+                        and not cancel_state["finished"]
+                        and not cancel_state["interrupted"]
+                    )
+                    if should_cancel:
+                        cancel_state["interrupted"] = True
+                if should_cancel:
+                    self._cancel_prompt(prompt_id)
+                if task.cancel.is_set():
+                    raise ColabOneCancelledError("操作已取消") from None
+                raise
+        finally:
+            if has_cancel_hook_attr:
+                with task_lock if task_lock is not None else nullcontext():
+                    task.cancel_hook = prev_cancel_hook
+            if ws_monitor is not None:
+                try:
+                    ws_monitor.stop()
+                except Exception:
+                    pass
+            with self.lock:
+                self._queue_cache = (0, 0)
+                self._queue_checked_at = -10.0
+            if self.is_running():
+                try:
+                    self.queue_counts()
+                except Exception:
+                    pass
+
+    def run_workflow(self, task, request: WorkflowRunRequest) -> list[dict]:
         req = (
             request
             if isinstance(request, WorkflowRunRequest)
@@ -1195,8 +2160,12 @@ class ColabOneComfyManager:
             fname, fpath = self.store.input_file(input_id)
             resolved_inputs.append((field_key, fname, fpath))
 
-        if not self.is_running():
-            self.start_server(task)
+        if (wf.get("pipeline") or {}).get("kind") == "digital_human":
+            return self.digital_human.run(task, wf, req, resolved_inputs)
+
+        self.ensure_template_ready(
+            task, wf, hf_token=getattr(req, "hf_token", "") or ""
+        )
         task.check()
 
         media_map: dict[str, str] = {}
@@ -1204,268 +2173,11 @@ class ColabOneComfyManager:
             task.note(f"正在向 ComfyUI 上传 {len(resolved_inputs)} 个输入素材")
         for field_key, fname, fpath in resolved_inputs:
             task.check()
-            raw_bytes = fpath.read_bytes()
-            ext = fpath.suffix.lstrip(".").lower()
-            uploaded_name = ""
-            try:
-                resp = self.runtime.http.post(
-                    self.base_url + "/upload/image",
-                    files={"image": (fname, raw_bytes)},
-                    data={"overwrite": "true"},
-                    timeout=30,
-                )
-                if _response_ok(resp):
-                    body = resp.json() or {}
-                    subfolder = str(body.get("subfolder") or "").strip("/")
-                    name = str(body.get("name") or fname)
-                    uploaded_name = f"{subfolder}/{name}" if subfolder else name
-                elif ext not in IMAGE_INPUT_EXTENSIONS:
-                    uploaded_name = self._stage_input_file(fname, raw_bytes)
-                else:
-                    resp.raise_for_status()
-            except requests.RequestException:
-                if ext not in IMAGE_INPUT_EXTENSIONS:
-                    uploaded_name = self._stage_input_file(fname, raw_bytes)
-                else:
-                    raise
-            media_map[field_key] = uploaded_name
+            media_map[field_key] = self._upload_input_file(fname, fpath)
 
         prompt_payload = apply_workflow_overrides(
             wf["workflow"], req.overrides, media_map
         )
-
-        task.message = f"提交工作流：{wf['name']}"
-        task.note(task.message)
-        submit_resp = self.runtime.http.post(
-            self.base_url + "/prompt",
-            json={"prompt": prompt_payload, "client_id": f"colabone-{task.id}"},
-            timeout=30,
+        return self._execute_single_prompt(
+            task, wf, prompt_payload, save_to_store=True
         )
-        try:
-            submit_body = submit_resp.json() or {}
-        except ValueError:
-            submit_body = {}
-        if not _response_ok(submit_resp):
-            detail = _format_comfy_errors(submit_body)
-            if detail:
-                raise RuntimeError(f"ComfyUI 拒绝了工作流：{detail}")
-            submit_resp.raise_for_status()
-        node_errors = submit_body.get("node_errors")
-        if isinstance(node_errors, dict) and node_errors:
-            detail = _format_comfy_errors(submit_body)
-            raise RuntimeError(f"工作流节点校验失败：{detail}")
-        prompt_id = str(submit_body.get("prompt_id") or "")
-        if not prompt_id or not _PROMPT_ID_RE.fullmatch(prompt_id):
-            detail = _format_comfy_errors(submit_body)
-            raise RuntimeError(f"ComfyUI 未返回有效任务编号：{detail or '未知错误'}")
-
-        started = time.monotonic()
-        last_phase: str | None = None
-        last_note = 0.0
-        hist_errors = 0
-        missing_polls = 0
-        task.note(f"工作流已入队：{wf['name']}（任务 {prompt_id[:16]}）")
-
-        try:
-            while True:
-                task.check()
-                with self.lock:
-                    proc = self.proc
-                if proc is not None and proc.poll() is not None:
-                    raise RuntimeError("ComfyUI 进程在执行期间意外退出")
-
-                try:
-                    hist_resp = self.runtime.http.get(
-                        f"{self.base_url}/history/{prompt_id}", timeout=15
-                    )
-                    hist_resp.raise_for_status()
-                    hist_data = hist_resp.json() or {}
-                    hist_errors = 0
-                except (requests.RequestException, OSError, ValueError) as exc:
-                    hist_errors += 1
-                    if hist_errors >= 5:
-                        raise RuntimeError(
-                            f"查询 ComfyUI 任务进度连续失败：{exc}"
-                        ) from None
-                    time.sleep(1.0)
-                    continue
-
-                if prompt_id in hist_data:
-                    entry = hist_data[prompt_id] or {}
-                    status_info = entry.get("status") or {}
-                    if status_info.get("status_str") == "error":
-                        raise RuntimeError(
-                            "ComfyUI 执行失败：" + _extract_history_error(status_info)
-                        )
-
-                    output_items: list[dict[str, Any]] = []
-                    seen: set[tuple[str, str, str]] = set()
-                    for node_out in (entry.get("outputs") or {}).values():
-                        if not isinstance(node_out, dict):
-                            continue
-                        for media_key in ("images", "gifs", "videos", "audio"):
-                            items = node_out.get(media_key)
-                            if not isinstance(items, list):
-                                continue
-                            for item in items:
-                                if not isinstance(item, dict) or not item.get(
-                                    "filename"
-                                ):
-                                    continue
-                                key = (
-                                    str(item["filename"]),
-                                    str(item.get("subfolder") or ""),
-                                    str(item.get("type") or "output"),
-                                )
-                                if key in seen:
-                                    continue
-                                seen.add(key)
-                                output_items.append(item)
-
-                    elapsed = time.monotonic() - started
-                    total_items = len(output_items)
-                    if total_items:
-                        task.note(f"工作流推理完成，正在保存 {total_items} 个输出作品")
-                    for idx, item in enumerate(output_items, 1):
-                        task.check()
-                        fname = str(item["filename"])
-                        subfolder = str(item.get("subfolder") or "")
-                        file_type = str(item.get("type") or "output")
-                        task.message = (
-                            f"保存作品 {idx}/{total_items} · {_safe_basename(fname) or fname}"
-                        )
-                        view_resp = self.runtime.http.get(
-                            self.base_url + "/view",
-                            params={
-                                "filename": fname,
-                                "subfolder": subfolder,
-                                "type": file_type,
-                            },
-                            stream=True,
-                            timeout=(10, 60),
-                        )
-                        try:
-                            view_resp.raise_for_status()
-                            if isinstance(view_resp, requests.Response):
-                                buf = bytearray()
-                                for chunk in view_resp.iter_content(256 * 1024):
-                                    task.check()
-                                    if not chunk:
-                                        continue
-                                    buf.extend(chunk)
-                                    if len(buf) > MAX_OUTPUT_BYTES:
-                                        raise ValueError("生成结果超过最大体积限制")
-                                raw_output = bytes(buf)
-                            else:
-                                raw_output = view_resp.content
-                        finally:
-                            close_fn = getattr(view_resp, "close", None)
-                            if callable(close_fn):
-                                close_fn()
-                        record = self.store.save_output(
-                            raw=raw_output,
-                            workflow_id=wf["id"],
-                            workflow_name=wf["name"],
-                            filename=fname,
-                            elapsed=elapsed,
-                            prompt_id=prompt_id,
-                        )
-                        task.outputs.append(record)
-
-                    if not output_items:
-                        task.note("工作流执行完成，未产生可保存的输出文件")
-                    else:
-                        task.note(
-                            f"工作流执行完成，已保存 {len(task.outputs)} 个作品到远端 GPU"
-                        )
-                    task.progress = 1
-                    return task.outputs
-
-                elapsed = time.monotonic() - started
-                if elapsed > 3600:
-                    self._cancel_prompt(prompt_id)
-                    raise RuntimeError("工作流执行超过 60 分钟，已取消任务")
-
-                phase = "running"
-                pending_pos = 0
-                queue_checked = False
-                in_queue = False
-                try:
-                    q_resp = self.runtime.http.get(
-                        self.base_url + "/queue", timeout=5
-                    )
-                    if _response_ok(q_resp):
-                        queue_checked = True
-                        q_data = q_resp.json() or {}
-                        q_running = q_data.get("queue_running") or []
-                        q_pending = q_data.get("queue_pending") or []
-                        in_running = any(
-                            isinstance(q_entry, (list, tuple))
-                            and len(q_entry) >= 2
-                            and str(q_entry[1]) == prompt_id
-                            for q_entry in q_running
-                        )
-                        if in_running:
-                            in_queue = True
-                        else:
-                            for pos, q_entry in enumerate(q_pending, 1):
-                                if (
-                                    isinstance(q_entry, (list, tuple))
-                                    and len(q_entry) >= 2
-                                    and str(q_entry[1]) == prompt_id
-                                ):
-                                    phase = "queued"
-                                    pending_pos = pos
-                                    in_queue = True
-                                    break
-                except (requests.RequestException, OSError, ValueError):
-                    pass
-
-                if queue_checked:
-                    if in_queue:
-                        missing_polls = 0
-                    else:
-                        missing_polls += 1
-                        if missing_polls >= 10:
-                            # Final check against /history in case the prompt just finished.
-                            try:
-                                final_hist = self.runtime.http.get(
-                                    f"{self.base_url}/history/{prompt_id}", timeout=10
-                                )
-                                if _response_ok(final_hist) and prompt_id in (
-                                    final_hist.json() or {}
-                                ):
-                                    missing_polls = 0
-                                    continue
-                            except (requests.RequestException, OSError, ValueError):
-                                pass
-                            raise RuntimeError(
-                                "ComfyUI 任务已从执行队列消失且未生成结果，可能已在画布中被取消"
-                            )
-
-                if phase == "queued":
-                    task.message = (
-                        f"{wf['name']} · 排队中（第 {pending_pos} 位）· 已用 {int(elapsed)} 秒"
-                    )
-                    task.progress = 0.05
-                else:
-                    task.message = (
-                        f"{wf['name']} · 远端 GPU 执行中 · 已用 {int(elapsed)} 秒"
-                    )
-                    task.progress = min(
-                        0.92, 0.1 + 0.82 * (1.0 - 1.0 / (1.0 + elapsed / 30.0))
-                    )
-
-                if phase != last_phase or time.monotonic() - last_note >= 5:
-                    task.note(task.message)
-                    last_phase, last_note = phase, time.monotonic()
-
-                time.sleep(0.5)
-        except ColabOneCancelledError:
-            self._cancel_prompt(prompt_id)
-            raise
-        except BaseException:
-            self._cancel_prompt(prompt_id)
-            if task.cancel.is_set():
-                raise ColabOneCancelledError("操作已取消") from None
-            raise

@@ -1,6 +1,7 @@
 """Authenticated remote API. Never run this on the desktop for normal operation."""
 
 from __future__ import annotations
+import asyncio
 import hmac
 import json
 import os
@@ -13,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from common.comfyui import (
     ComfyCanvasConfig,
@@ -27,11 +28,21 @@ from server.runtime import ColabOneRuntime, ColabOneConflictError
 
 
 class ColabOneDownloadRequest(BaseModel):
-    hf_token: str = ""
+    hf_token: str = Field(default="", max_length=512, repr=False)
     threads: Literal[16, 32] = 16
     load: bool = False
     context_length: int | None = Field(default=None, ge=512, le=262144)
     temperature: float | None = Field(default=None, ge=0, le=2)
+
+    @field_validator("hf_token")
+    @classmethod
+    def valid_hf_token(cls, value: str) -> str:
+        if any(c in ("\r", "\n") or ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("hf_token 包含非法空白或控制字符")
+        token = value.strip()
+        if any(c.isspace() for c in token):
+            raise ValueError("hf_token 包含非法空白或控制字符")
+        return token
 
 
 class ColabOneConfigureRequest(BaseModel):
@@ -55,7 +66,7 @@ class ColabOneModelApiIdRequest(BaseModel):
 
 class ColabOneComfyInputUpload(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
-    data: str = Field(max_length=90 * 1024**2)
+    data: str = Field(max_length=98 * 1024**2)
 
 
 def create_colabone_app(runtime, token, background=False):
@@ -68,43 +79,62 @@ def create_colabone_app(runtime, token, background=False):
             threading.Thread(target=runtime.detect_location, daemon=True).start()
             runtime.start_background()
         yield
-        runtime.stopping.set()
+        with runtime.lock:
+            runtime.stopping.set()
         try:
+            def _is_task_running(t) -> bool:
+                t_lock = getattr(t, "lock", None)
+                if t_lock is not None:
+                    with t_lock:
+                        val = getattr(t, "state", getattr(t, "status", ""))
+                else:
+                    val = getattr(t, "state", getattr(t, "status", ""))
+                return val == "running"
+
             with runtime.lock:
                 running_tasks = [
-                    t for t in runtime.tasks.values() if t.state == "running"
+                    t for t in runtime.tasks.values() if _is_task_running(t)
                 ]
             for task in running_tasks:
                 try:
-                    task.request_cancel()
+                    await asyncio.to_thread(task.request_cancel)
                 except Exception:
                     pass
+            if running_tasks:
+                deadline = time.monotonic() + 5.0
+                while any(_is_task_running(t) for t in running_tasks):
+                    if time.monotonic() >= deadline:
+                        break
+                    await asyncio.sleep(0.1)
         except Exception:
             pass
         try:
-            runtime.public_api.shutdown()
+            await asyncio.to_thread(runtime.public_api.shutdown)
         finally:
             try:
-                runtime.comfy.stop_server()
+                await asyncio.to_thread(runtime.comfy.stop_server)
             finally:
-                try:
-                    with runtime.sync_lock:
-                        if (
-                            runtime.drive.available()
-                            and runtime.drive_restored
-                            and runtime._dirty_seq
-                        ):
-                            try:
-                                runtime._sync_to_drive()
-                            except Exception:
-                                pass
-                        # Do not flush_and_unmount native Colab DriveFS during normal
-                        # SIGTERM (e.g., hot-upgrade via vm_update.py); prepare_release()
-                        # unmounts DriveFS right before VM termination.
-                        if runtime.drive.mode != "colab_drivefs":
-                            runtime.drive.unmount()
-                finally:
-                    runtime._stop_engine()
+                def _flush_drive_and_stop_engine() -> None:
+                    try:
+                        with runtime.sync_lock:
+                            if (
+                                runtime.drive.available()
+                                and runtime.drive_restored
+                                and runtime._dirty_seq
+                            ):
+                                try:
+                                    runtime._sync_to_drive()
+                                except Exception:
+                                    pass
+                            # Do not flush_and_unmount native Colab DriveFS during normal
+                            # SIGTERM (e.g., hot-upgrade via vm_update.py); prepare_release()
+                            # unmounts DriveFS right before VM termination.
+                            if runtime.drive.mode != "colab_drivefs":
+                                runtime.drive.unmount()
+                    finally:
+                        runtime._stop_engine()
+
+                await asyncio.to_thread(_flush_drive_and_stop_engine)
 
     app = FastAPI(
         title="ColabOne",
@@ -155,6 +185,7 @@ def create_colabone_app(runtime, token, background=False):
             "models": runtime.list_models(),
             "workflows": runtime.comfy.store.list_workflows(),
             "comfy_outputs": runtime.comfy.store.list_outputs(),
+            "tts_engines": runtime.comfy.list_tts_engines(),
         }
 
     @app.post("/api/v1/public-api/start", dependencies=auth)
@@ -264,6 +295,10 @@ def create_colabone_app(runtime, token, background=False):
         runtime.touch()
         return runtime.comfy.canvas_url()
 
+    @app.get("/api/v1/comfyui/tts-engines", dependencies=auth)
+    def comfyui_tts_engines():
+        return runtime.comfy.list_tts_engines()
+
     @app.get("/api/v1/comfyui/workflows", dependencies=auth)
     def comfyui_workflows():
         return runtime.comfy.store.list_workflows()
@@ -305,13 +340,19 @@ def create_colabone_app(runtime, token, background=False):
 
     @app.get("/api/v1/tasks/{task_id}/poll", dependencies=auth)
     def poll(task_id: str, after: int = 0):
-        task = runtime.tasks[task_id]
+        with runtime.lock:
+            task = runtime.tasks.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
         with task.lock:
             return {"events": task.events[max(0, after) :], "state": task.state}
 
     @app.get("/api/v1/tasks/{task_id}/events", dependencies=auth)
     def events(task_id: str, after: int = 0):
-        task = runtime.tasks[task_id]
+        with runtime.lock:
+            task = runtime.tasks.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
 
         def stream():
             cursor = max(0, after)
@@ -336,7 +377,11 @@ def create_colabone_app(runtime, token, background=False):
 
     @app.delete("/api/v1/tasks/{task_id}", dependencies=auth)
     def cancel(task_id: str):
-        runtime.tasks[task_id].request_cancel()
+        with runtime.lock:
+            task = runtime.tasks.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        task.request_cancel()
         return {"ok": True}
 
     @app.post("/api/v1/prepare-release", dependencies=auth)

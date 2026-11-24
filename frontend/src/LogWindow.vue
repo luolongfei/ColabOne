@@ -5,6 +5,10 @@ import ColabOneToastHost from "./ColabOneToastHost.vue";
 import { buildColabOneTheme } from "./colabOneTheme";
 import { colabOneEffectiveAppearance } from "./appearance";
 import {
+  buildColabOnePrivacyContext,
+  toggleColabOnePrivacyActive,
+} from "./colabOnePrivacy";
+import {
   COLABONE_HIDDEN_POLL_MS,
   COLABONE_LOG_WINDOW_VISIBLE_POLL_MS,
   createColabOneVisibilityPoller,
@@ -36,6 +40,7 @@ const colabOneTheme = computed(() =>
 const state = shallowRef(createColabOneSnapshot());
 const snapshotLoaded = ref(false);
 const toastManager = createColabOneToastManager({ maxVisible: 2 });
+const privacyContext = computed(() => buildColabOnePrivacyContext(state.value));
 
 let stopped = false;
 let snapshotSeq = 0;
@@ -146,6 +151,17 @@ async function clearLogs() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  if (
+    (e.ctrlKey || e.metaKey) &&
+    e.shiftKey &&
+    !e.altKey &&
+    (e.code === "KeyM" || e.key.toLowerCase() === "m")
+  ) {
+    if (e.repeat) return;
+    e.preventDefault();
+    toggleColabOnePrivacyActive();
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "j") {
     e.preventDefault();
     void colabOneSetLogDrawer(false, 420);
@@ -184,6 +200,7 @@ onUnmounted(() => {
         :logs="state.logs || []"
         :current-activity="currentActivity"
         :running="!!(state.operation || task)"
+        :privacy-context="privacyContext"
         :active-speed="activeApiSpeed"
         @copy="copy"
         @clear="clearLogs"
@@ -192,6 +209,7 @@ onUnmounted(() => {
       <ColabOneToastHost
         :items="toastManager.items.value"
         placement="bottom"
+        :privacy-context="privacyContext"
         @pause="toastManager.pause"
         @resume="toastManager.resume"
         @dismiss="toastManager.dismiss"

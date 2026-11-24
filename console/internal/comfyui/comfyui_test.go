@@ -572,6 +572,73 @@ func TestComfyCatalogFileAndValidation(t *testing.T) {
 		t.Fatalf("unexpected catalog ports: port=%d proxy_port=%d", catalog.Port, catalog.ProxyPort)
 	}
 
+	// Real catalog/comfyui.json round-trips cleanly whether templates / tts_engines are empty or populated.
+	catalogWire := marshalJSONMap(t, &catalog)
+	templatesWire, ok := catalogWire["templates"].([]any)
+	if !ok {
+		t.Fatalf("catalog templates should marshal as JSON array, got %#v", catalogWire["templates"])
+	}
+	seenTplIDs := make(map[string]struct{}, len(catalog.Templates))
+	for i, tpl := range catalog.Templates {
+		if tpl.ID == "" {
+			t.Fatalf("catalog template[%d] has empty ID", i)
+		}
+		if _, dup := seenTplIDs[tpl.ID]; dup {
+			t.Fatalf("catalog template[%d] duplicate ID %q", i, tpl.ID)
+		}
+		seenTplIDs[tpl.ID] = struct{}{}
+		if tpl.NodeCount <= 0 {
+			t.Fatalf("catalog template %q has invalid node_count=%d", tpl.ID, tpl.NodeCount)
+		}
+		if i < len(templatesWire) {
+			if tplObj, ok := templatesWire[i].(map[string]any); ok {
+				if rawPipe, hasPipe := tplObj["pipeline"]; hasPipe && rawPipe != nil {
+					pipeObj, ok := rawPipe.(map[string]any)
+					if !ok {
+						t.Fatalf("catalog template %q pipeline should be object or null, got %#v", tpl.ID, rawPipe)
+					}
+					kind, _ := pipeObj["kind"].(string)
+					if kind != "comfy_standard" && kind != "digital_human" {
+						t.Fatalf("catalog template %q has invalid pipeline.kind=%q", tpl.ID, kind)
+					}
+				}
+			}
+		}
+	}
+	if rawEngines, exists := catalogWire["tts_engines"]; exists {
+		enginesWire, ok := rawEngines.([]any)
+		if !ok {
+			t.Fatalf("catalog tts_engines should marshal as JSON array, got %#v", rawEngines)
+		}
+		seenEngineIDs := make(map[string]struct{}, len(enginesWire))
+		for i, item := range enginesWire {
+			eng, ok := item.(map[string]any)
+			if !ok {
+				t.Fatalf("catalog tts_engines[%d] should be JSON object, got %#v", i, item)
+			}
+			id, _ := eng["id"].(string)
+			name, _ := eng["name"].(string)
+			repo, _ := eng["repo"].(string)
+			rev, _ := eng["revision"].(string)
+			sr, _ := eng["sample_rate"].(float64)
+			if id == "" || name == "" || repo == "" || rev == "" {
+				t.Fatalf("catalog tts_engines[%d] missing required metadata: %#v", i, eng)
+			}
+			if _, dup := seenEngineIDs[id]; dup {
+				t.Fatalf("catalog tts_engines[%d] duplicate ID %q", i, id)
+			}
+			seenEngineIDs[id] = struct{}{}
+			if sr < 8000 || sr > 96000 {
+				t.Fatalf("catalog tts_engines[%d] (%s) sample_rate=%v out of [8000, 96000]", i, id, sr)
+			}
+		}
+	}
+	roundTripRaw := mustMarshalJSON(t, &catalog)
+	var roundTripCat ColabOneComfyCatalog
+	if err := unmarshalAndValidateSchema(roundTripRaw, &roundTripCat); err != nil {
+		t.Fatalf("round-trip catalog/comfyui.json failed: %v", err)
+	}
+
 	// Same port & proxy_port must fail.
 	badSamePort := catalog
 	badSamePort.ProxyPort = catalog.Port
@@ -590,6 +657,12 @@ func TestComfyCatalogFileAndValidation(t *testing.T) {
 	if omittedPorts.Port != 8188 || omittedPorts.ProxyPort != 8189 {
 		t.Fatalf("omitted ports = %d/%d, want 8188/8189", omittedPorts.Port, omittedPorts.ProxyPort)
 	}
+	omittedWire := marshalJSONMap(t, &omittedPorts)
+	if rawEngines, exists := omittedWire["tts_engines"]; exists {
+		if _, ok := rawEngines.([]any); !ok {
+			t.Fatalf("omitted tts_engines should marshal as [] when present, got %#v", rawEngines)
+		}
+	}
 	var explicitZero ColabOneComfyCatalog
 	if err := json.Unmarshal([]byte(`{"repo":"Comfy-Org/ComfyUI","tag":"v0.46.0","commit":"`+strings.Repeat("a", 40)+`","port":0}`), &explicitZero); err == nil {
 		t.Fatalf("explicit port=0 should fail unmarshal")
@@ -603,6 +676,85 @@ func TestComfyCatalogFileAndValidation(t *testing.T) {
 	}
 	if err := dupCat.Validate(); err == nil || err.Error() != "内置工作流模板 ID 重复" {
 		t.Fatalf("duplicate template ID error = %v", err)
+	}
+
+	// Valid distinct tts_engines accepted; duplicate IDs, invalid entry, and null rejected.
+	makeEngine := func(id string) map[string]any {
+		return map[string]any{
+			"id":       id,
+			"name":     "TTS " + id,
+			"repo":     "openbmb/VoxCPM2",
+			"revision": strings.Repeat("a", 40),
+		}
+	}
+	validTTSCatalogRaw := mustMarshalJSON(t, map[string]any{
+		"repo":   "Comfy-Org/ComfyUI",
+		"tag":    "v0.46.0",
+		"commit": strings.Repeat("a", 40),
+		"tts_engines": []map[string]any{
+			makeEngine("voxcpm2"),
+			{
+				"id":           "qwen3_tts",
+				"name":         "Qwen3-TTS",
+				"repo":         "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+				"revision":     strings.Repeat("b", 40),
+				"aux_repo":     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+				"aux_revision": strings.Repeat("c", 40),
+				"sample_rate":  24000,
+			},
+			{
+				"id":             "fish_s2_pro",
+				"name":           "Fish S2 Pro",
+				"repo":           "fishaudio/s2-pro",
+				"revision":       strings.Repeat("d", 40),
+				"commercial_ok":  false,
+				"license":        "Fish Audio Research License",
+				"license_notice": "Non-commercial research only",
+				"sample_rate":    44100,
+			},
+		},
+	})
+	var validTTSCatalog ColabOneComfyCatalog
+	if err := unmarshalAndValidateSchema(validTTSCatalogRaw, &validTTSCatalog); err != nil {
+		t.Fatalf("valid catalog with tts_engines failed: %v", err)
+	}
+
+	dupTTSCatalogRaw := mustMarshalJSON(t, map[string]any{
+		"repo":   "Comfy-Org/ComfyUI",
+		"tag":    "v0.46.0",
+		"commit": strings.Repeat("a", 40),
+		"tts_engines": []map[string]any{
+			makeEngine("voxcpm2"),
+			makeEngine("voxcpm2"),
+		},
+	})
+	var dupTTSCatalog ColabOneComfyCatalog
+	if err := unmarshalAndValidateSchema(dupTTSCatalogRaw, &dupTTSCatalog); err == nil {
+		t.Fatalf("duplicate tts_engines IDs should fail validation")
+	}
+
+	invalidTTSCatalogRaw := mustMarshalJSON(t, map[string]any{
+		"repo":   "Comfy-Org/ComfyUI",
+		"tag":    "v0.46.0",
+		"commit": strings.Repeat("a", 40),
+		"tts_engines": []map[string]any{
+			{
+				"id":       "broken_tts",
+				"name":     "Broken TTS",
+				"repo":     "openbmb/VoxCPM2",
+				"revision": strings.Repeat("a", 40),
+				"aux_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+			},
+		},
+	})
+	var invalidTTSCatalog ColabOneComfyCatalog
+	if err := unmarshalAndValidateSchema(invalidTTSCatalogRaw, &invalidTTSCatalog); err == nil {
+		t.Fatalf("catalog with invalid tts_engines entry should fail validation")
+	}
+
+	var nullTTSCatalog ColabOneComfyCatalog
+	if err := json.Unmarshal([]byte(`{"repo":"Comfy-Org/ComfyUI","tag":"v0.46.0","commit":"`+strings.Repeat("a", 40)+`","tts_engines":null}`), &nullTTSCatalog); err == nil {
+		t.Fatalf("explicit tts_engines: null should fail unmarshal")
 	}
 
 	// Extra unknown field rejected.
@@ -709,6 +861,7 @@ func TestWorkflowTemplateImportRunOutputAndCanvasConfig(t *testing.T) {
 		ID:          "wf_demo-1",
 		Name:        "  Demo Studio Flow  ",
 		Description: "Text + Image + Audio",
+		Source:      "builtin",
 		Workflow:    sampleAPIWorkflow(),
 		PipPackages: []string{"soundfile>=0.12", "  einops  "},
 		CustomNodes: []ColabOneComfyNodeSpec{
@@ -731,13 +884,13 @@ func TestWorkflowTemplateImportRunOutputAndCanvasConfig(t *testing.T) {
 		},
 	}
 	if err := tmpl.Validate(); err != nil {
-		t.Fatalf("valid template failed: %v", err)
+		t.Fatalf("valid builtin template failed: %v", err)
 	}
 	if tmpl.Name != "Demo Studio Flow" {
 		t.Fatalf("trimmed template name = %q", tmpl.Name)
 	}
-	if tmpl.Source != "custom" {
-		t.Fatalf("default source = %q, want custom", tmpl.Source)
+	if tmpl.Source != "builtin" {
+		t.Fatalf("builtin source = %q, want builtin", tmpl.Source)
 	}
 	if tmpl.NodeCount != len(sampleAPIWorkflow()) {
 		t.Fatalf("node_count = %d, want %d", tmpl.NodeCount, len(sampleAPIWorkflow()))
@@ -749,10 +902,30 @@ func TestWorkflowTemplateImportRunOutputAndCanvasConfig(t *testing.T) {
 		t.Fatalf("pip package not trimmed: %q", tmpl.PipPackages[1])
 	}
 
+	// Clean custom template defaults Source to "custom".
+	customTmpl := ColabOneWorkflowTemplate{
+		ID:       "wf_custom-clean",
+		Name:     "  Clean Custom Flow  ",
+		Workflow: sampleAPIWorkflow(),
+	}
+	if err := customTmpl.Validate(); err != nil {
+		t.Fatalf("clean custom template failed: %v", err)
+	}
+	if customTmpl.Name != "Clean Custom Flow" {
+		t.Fatalf("trimmed custom template name = %q", customTmpl.Name)
+	}
+	if customTmpl.Source != "custom" {
+		t.Fatalf("default source = %q, want custom", customTmpl.Source)
+	}
+	if customTmpl.NodeCount != len(sampleAPIWorkflow()) {
+		t.Fatalf("custom node_count = %d, want %d", customTmpl.NodeCount, len(sampleAPIWorkflow()))
+	}
+
 	// Bad pip package rejected.
 	badPip := ColabOneWorkflowTemplate{
 		ID:          "bad_pip",
 		Name:        "Bad pip",
+		Source:      "builtin",
 		Workflow:    sampleAPIWorkflow(),
 		PipPackages: []string{"--extra-index-url https://evil.invalid"},
 	}
@@ -1312,5 +1485,1504 @@ func TestWorkflowOutputRecordCreatedAtAndFieldOptionsStrictUnmarshal(t *testing.
 	exactWF["1"].(map[string]any)["inputs"].(map[string]any)["text"] = strings.Repeat("a", exactPad+1)
 	if _, err := ValidateComfyAPIWorkflow(exactWF); err == nil || !strings.Contains(err.Error(), "最大 2 MiB") {
 		t.Fatalf("2 MiB + 1 byte workflow should fail with size error, got %v", err)
+	}
+}
+
+type validatableSchema interface {
+	Validate() error
+}
+
+func mustMarshalJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal JSON fixture %T: %v", v, err)
+	}
+	return string(b)
+}
+
+func marshalJSONMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal %T: %v", v, err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal marshaled %T: %v", v, err)
+	}
+	return out
+}
+
+func unmarshalAndValidateSchema(raw string, dst validatableSchema) error {
+	if err := json.Unmarshal([]byte(raw), dst); err != nil {
+		return err
+	}
+	return dst.Validate()
+}
+
+func TestComfyNodePatchValidation(t *testing.T) {
+	// Valid allowlisted patch kind + whitespace trimming on node_name.
+	var patch ColabOneComfyNodePatch
+	if err := unmarshalAndValidateSchema(`{"node_name":"  ComfyUI-WanVideoWrapper  ","kind":"wav2vec2_hidden_states_hook"}`, &patch); err != nil {
+		t.Fatalf("valid node patch failed: %v", err)
+	}
+	wire := marshalJSONMap(t, &patch)
+	if wire["node_name"] != "ComfyUI-WanVideoWrapper" || wire["kind"] != "wav2vec2_hidden_states_hook" {
+		t.Fatalf("unexpected marshaled node patch: %#v", wire)
+	}
+
+	// Exact 120-rune node_name boundary accepted.
+	var maxLenPatch ColabOneComfyNodePatch
+	maxName := strings.Repeat("n", 120)
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, map[string]any{
+		"node_name": maxName,
+		"kind":      "wav2vec2_hidden_states_hook",
+	}), &maxLenPatch); err != nil {
+		t.Fatalf("120-rune node_name should pass: %v", err)
+	}
+
+	// Path traversal, unsafe characters, blank, and >120-rune node_name rejected.
+	for _, badName := range []string{
+		"",
+		"   ",
+		".",
+		"..",
+		"../evil",
+		"a..b",
+		"a/b",
+		`a\b`,
+		"a:b",
+		"a\x00b",
+		strings.Repeat("n", 121),
+	} {
+		var bad ColabOneComfyNodePatch
+		raw := mustMarshalJSON(t, map[string]any{
+			"node_name": badName,
+			"kind":      "wav2vec2_hidden_states_hook",
+		})
+		if err := unmarshalAndValidateSchema(raw, &bad); err == nil {
+			t.Fatalf("bad node_name %q should fail validation", badName)
+		}
+	}
+
+	// Unknown / empty / wrong-case patch kind rejected.
+	for _, badKind := range []string{
+		"",
+		"unknown_patch",
+		"arbitrary_python_exec",
+		"WAV2VEC2_HIDDEN_STATES_HOOK",
+	} {
+		var bad ColabOneComfyNodePatch
+		raw := mustMarshalJSON(t, map[string]any{
+			"node_name": "ComfyUI-WanVideoWrapper",
+			"kind":      badKind,
+		})
+		if err := unmarshalAndValidateSchema(raw, &bad); err == nil {
+			t.Fatalf("bad patch kind %q should fail validation", badKind)
+		}
+	}
+
+	// Strict JSON: unknown fields and nulls rejected.
+	for _, raw := range []string{
+		`null`,
+		`{"node_name":"ComfyUI-WanVideoWrapper","kind":"wav2vec2_hidden_states_hook","extra":true}`,
+		`{"node_name":null,"kind":"wav2vec2_hidden_states_hook"}`,
+		`{"node_name":"ComfyUI-WanVideoWrapper","kind":null}`,
+	} {
+		var bad ColabOneComfyNodePatch
+		if err := unmarshalAndValidateSchema(raw, &bad); err == nil {
+			t.Fatalf("strict JSON patch payload %s should fail", raw)
+		}
+	}
+}
+
+func TestComfyTtsEngineSpecValidation(t *testing.T) {
+	revA := strings.Repeat("a", 40)
+	revB := strings.Repeat("b", 40)
+	revC := strings.Repeat("c", 40)
+
+	// 1. Minimal valid payload verifies defaults: commercial_ok=true, sample_rate=48000, license="Apache-2.0", supports_voice_clone=true.
+	var minimal ColabOneComfyTtsEngineSpec
+	minimalRaw := mustMarshalJSON(t, map[string]any{
+		"id":       "voxcpm2",
+		"name":     "  VoxCPM2  ",
+		"repo":     "openbmb/VoxCPM2",
+		"revision": revA,
+	})
+	if err := unmarshalAndValidateSchema(minimalRaw, &minimal); err != nil {
+		t.Fatalf("minimal tts engine failed: %v", err)
+	}
+	wire := marshalJSONMap(t, &minimal)
+	if wire["id"] != "voxcpm2" || wire["name"] != "VoxCPM2" {
+		t.Fatalf("unexpected id/name: %#v", wire)
+	}
+	if wire["commercial_ok"] != true {
+		t.Fatalf("commercial_ok = %#v, want true", wire["commercial_ok"])
+	}
+	if wire["sample_rate"] != float64(48000) {
+		t.Fatalf("sample_rate = %#v, want 48000", wire["sample_rate"])
+	}
+	if wire["license"] != "Apache-2.0" {
+		t.Fatalf("license = %#v, want Apache-2.0", wire["license"])
+	}
+	if wire["supports_voice_clone"] != true {
+		t.Fatalf("supports_voice_clone = %#v, want true", wire["supports_voice_clone"])
+	}
+	if wire["supports_voice_design"] != false || wire["supports_emotion_ref"] != false || wire["supports_inline_tags"] != false {
+		t.Fatalf("unexpected default capability flags: %#v", wire)
+	}
+	if wire["min_vram_mib"] != float64(0) {
+		t.Fatalf("min_vram_mib = %#v, want 0", wire["min_vram_mib"])
+	}
+	if rawPip, exists := wire["pip_packages"]; exists {
+		if _, ok := rawPip.([]any); !ok {
+			t.Fatalf("pip_packages should be JSON array [], got %#v", rawPip)
+		}
+	}
+
+	// 2. Non-commercial engine preserves commercial_ok=false, license_notice, explicit supports_voice_clone=false, pip trimming, source_repo/source_commit.
+	var nonCommercial ColabOneComfyTtsEngineSpec
+	nonCommercialRaw := mustMarshalJSON(t, map[string]any{
+		"id":                   "fish_s2_pro",
+		"name":                 "Fish Audio S2 Pro",
+		"description":          "Multi-speaker expressive TTS with inline emotion tags",
+		"repo":                 "fishaudio/s2-pro",
+		"revision":             revA,
+		"license":              "Fish Audio Research License",
+		"commercial_ok":        false,
+		"license_notice":       "仅限个人学习与非商业研究使用；如需商业使用须另行向 Fish Audio 获取商业授权。",
+		"min_vram_mib":         12288,
+		"sample_rate":          44100,
+		"supports_voice_clone": false,
+		"supports_inline_tags": true,
+		"pip_packages":         []string{"fish-speech", "  soundfile>=0.12  "},
+		"source_repo":          "https://github.com/fishaudio/fish-speech.git",
+		"source_commit":        revB,
+	})
+	if err := unmarshalAndValidateSchema(nonCommercialRaw, &nonCommercial); err != nil {
+		t.Fatalf("non-commercial tts engine failed: %v", err)
+	}
+	ncWire := marshalJSONMap(t, &nonCommercial)
+	if ncWire["commercial_ok"] != false {
+		t.Fatalf("explicit commercial_ok=false was not preserved: %#v", ncWire["commercial_ok"])
+	}
+	if ncWire["supports_voice_clone"] != false {
+		t.Fatalf("explicit supports_voice_clone=false was not preserved: %#v", ncWire["supports_voice_clone"])
+	}
+	if ncWire["supports_inline_tags"] != true || ncWire["sample_rate"] != float64(44100) || ncWire["min_vram_mib"] != float64(12288) {
+		t.Fatalf("unexpected non-commercial fields: %#v", ncWire)
+	}
+	if ncWire["license_notice"] != "仅限个人学习与非商业研究使用；如需商业使用须另行向 Fish Audio 获取商业授权。" {
+		t.Fatalf("license_notice = %#v", ncWire["license_notice"])
+	}
+	if pips, ok := ncWire["pip_packages"].([]any); !ok || len(pips) != 2 || pips[1] != "soundfile>=0.12" {
+		t.Fatalf("pip_packages not trimmed/preserved: %#v", ncWire["pip_packages"])
+	}
+
+	// 3. Dual-repo engine (aux_repo + aux_revision) and owner/repo source_repo slug accepted.
+	var dualRepo ColabOneComfyTtsEngineSpec
+	dualRepoRaw := mustMarshalJSON(t, map[string]any{
+		"id":                    "qwen3_tts",
+		"name":                  "Qwen3-TTS 1.7B",
+		"repo":                  "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+		"revision":              revA,
+		"aux_repo":              "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+		"aux_revision":          revB,
+		"sample_rate":           24000,
+		"supports_voice_design": true,
+		"source_repo":           "QwenLM/Qwen3-TTS",
+		"source_commit":         revC,
+	})
+	if err := unmarshalAndValidateSchema(dualRepoRaw, &dualRepo); err != nil {
+		t.Fatalf("dual-repo tts engine failed: %v", err)
+	}
+	dualWire := marshalJSONMap(t, &dualRepo)
+	if dualWire["aux_repo"] != "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign" || dualWire["aux_revision"] != revB {
+		t.Fatalf("aux_repo/aux_revision not preserved: %#v", dualWire)
+	}
+
+	// Boundary sample_rate values (8000 and 96000) accepted.
+	for _, sr := range []int{8000, 96000} {
+		var boundary ColabOneComfyTtsEngineSpec
+		raw := mustMarshalJSON(t, map[string]any{
+			"id":          fmt.Sprintf("sr_%d", sr),
+			"name":        "Boundary SR",
+			"repo":        "openbmb/VoxCPM2",
+			"revision":    revA,
+			"sample_rate": sr,
+		})
+		if err := unmarshalAndValidateSchema(raw, &boundary); err != nil {
+			t.Fatalf("sample_rate=%d should pass: %v", sr, err)
+		}
+	}
+
+	// 4. Invalid payloads rejected.
+	tooManyPips := make([]string, 65)
+	for i := range tooManyPips {
+		tooManyPips[i] = fmt.Sprintf("pkg%d", i)
+	}
+	baseEngine := func() map[string]any {
+		return map[string]any{
+			"id":       "voxcpm2",
+			"name":     "VoxCPM2",
+			"repo":     "openbmb/VoxCPM2",
+			"revision": revA,
+		}
+	}
+	badCases := []struct {
+		name   string
+		mutate func(m map[string]any)
+	}{
+		{"emptyID", func(m map[string]any) { m["id"] = "" }},
+		{"traversalID", func(m map[string]any) { m["id"] = "../evil" }},
+		{"overlongID", func(m map[string]any) { m["id"] = strings.Repeat("a", 81) }},
+		{"blankName", func(m map[string]any) { m["name"] = "   " }},
+		{"overlongName", func(m map[string]any) { m["name"] = strings.Repeat("n", 161) }},
+		{"overlongDescription", func(m map[string]any) { m["description"] = strings.Repeat("d", 1001) }},
+		{"badRepoNoSlash", func(m map[string]any) { m["repo"] = "invalid-repo" }},
+		{"badRepoTraversal", func(m map[string]any) { m["repo"] = "../evil" }},
+		{"badRepoURL", func(m map[string]any) { m["repo"] = "https://huggingface.co/openbmb/VoxCPM2" }},
+		{"shortRevision", func(m map[string]any) { m["revision"] = "abc123" }},
+		{"nonHexRevision", func(m map[string]any) { m["revision"] = strings.Repeat("g", 40) }},
+		{"auxRepoWithoutAuxRevision", func(m map[string]any) { m["aux_repo"] = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign" }},
+		{"auxRepoWithEmptyAuxRevision", func(m map[string]any) {
+			m["aux_repo"] = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+			m["aux_revision"] = ""
+		}},
+		{"auxRepoWithBadAuxRevision", func(m map[string]any) {
+			m["aux_repo"] = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+			m["aux_revision"] = "bad-sha"
+		}},
+		{"badAuxRepoWithValidAuxRevision", func(m map[string]any) {
+			m["aux_repo"] = "../evil"
+			m["aux_revision"] = revB
+		}},
+		{"badAuxRevisionAlone", func(m map[string]any) { m["aux_revision"] = "not-a-sha" }},
+		{"overlongLicense", func(m map[string]any) { m["license"] = strings.Repeat("L", 161) }},
+		{"overlongLicenseNotice", func(m map[string]any) { m["license_notice"] = strings.Repeat("x", 601) }},
+		{"negativeMinVRAM", func(m map[string]any) { m["min_vram_mib"] = -1 }},
+		{"sampleRateTooLow", func(m map[string]any) { m["sample_rate"] = 7999 }},
+		{"sampleRateTooHigh", func(m map[string]any) { m["sample_rate"] = 96001 }},
+		{"sampleRateNegative", func(m map[string]any) { m["sample_rate"] = -48000 }},
+		{"pipFlagInjection", func(m map[string]any) { m["pip_packages"] = []string{"--extra-index-url https://evil.invalid"} }},
+		{"pipURLInjection", func(m map[string]any) { m["pip_packages"] = []string{"https://evil.invalid/pkg.whl"} }},
+		{"pipTraversal", func(m map[string]any) { m["pip_packages"] = []string{"../localpkg"} }},
+		{"pipBlank", func(m map[string]any) { m["pip_packages"] = []string{"   "} }},
+		{"pipTooMany", func(m map[string]any) { m["pip_packages"] = tooManyPips }},
+		{"badSourceRepoHTTP", func(m map[string]any) { m["source_repo"] = "http://github.com/owner/repo" }},
+		{"badSourceRepoTraversal", func(m map[string]any) { m["source_repo"] = "../evil" }},
+		{"badSourceCommit", func(m map[string]any) { m["source_commit"] = "not-40-hex" }},
+		{"unknownExtraField", func(m map[string]any) { m["extra_field"] = true }},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := baseEngine()
+			tc.mutate(m)
+			var spec ColabOneComfyTtsEngineSpec
+			if err := unmarshalAndValidateSchema(mustMarshalJSON(t, m), &spec); err == nil {
+				t.Fatalf("%s: expected validation error", tc.name)
+			}
+		})
+	}
+
+	// Null strictness checks.
+	for _, raw := range []string{
+		`null`,
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","commercial_ok":null}`,
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","sample_rate":null}`,
+	} {
+		var spec ColabOneComfyTtsEngineSpec
+		if err := unmarshalAndValidateSchema(raw, &spec); err == nil {
+			t.Fatalf("null payload %s should fail", raw)
+		}
+	}
+}
+
+func TestComfyPipelineSpecValidation(t *testing.T) {
+	// 1. Empty JSON object populates all locked defaults.
+	var defSpec ColabOneComfyPipelineSpec
+	if err := unmarshalAndValidateSchema(`{}`, &defSpec); err != nil {
+		t.Fatalf("default pipeline spec failed: %v", err)
+	}
+	defWire := marshalJSONMap(t, &defSpec)
+	if defWire["kind"] != "comfy_standard" {
+		t.Fatalf("default kind = %#v, want comfy_standard", defWire["kind"])
+	}
+	if defWire["video_backend"] != "custom" {
+		t.Fatalf("default video_backend = %#v, want custom", defWire["video_backend"])
+	}
+	if defWire["default_tts_engine"] != "voxcpm2" {
+		t.Fatalf("default default_tts_engine = %#v, want voxcpm2", defWire["default_tts_engine"])
+	}
+	if defWire["max_segment_seconds"] != float64(45.0) {
+		t.Fatalf("default max_segment_seconds = %#v, want 45.0", defWire["max_segment_seconds"])
+	}
+	if defWire["tail_frame_offset_seconds"] != float64(0.08) {
+		t.Fatalf("default tail_frame_offset_seconds = %#v, want 0.08", defWire["tail_frame_offset_seconds"])
+	}
+	if defWire["output_fps"] != float64(25) {
+		t.Fatalf("default output_fps = %#v, want 25", defWire["output_fps"])
+	}
+	if defWire["target_width"] != float64(1280) || defWire["target_height"] != float64(720) {
+		t.Fatalf("default target resolution = %vx%v, want 1280x720", defWire["target_width"], defWire["target_height"])
+	}
+	if defWire["upscale_mode"] != "none" {
+		t.Fatalf("default upscale_mode = %#v, want none", defWire["upscale_mode"])
+	}
+	if rawSupported, exists := defWire["supported_tts_engines"]; exists {
+		if _, ok := rawSupported.([]any); !ok {
+			t.Fatalf("default supported_tts_engines should be JSON array [], got %#v", rawSupported)
+		}
+	}
+
+	// 2. Valid digital_human configs for both infinitetalk and longcat_avatar (plus lanczos upscale).
+	var infSpec ColabOneComfyPipelineSpec
+	infRaw := mustMarshalJSON(t, map[string]any{
+		"kind":                      "digital_human",
+		"video_backend":             "infinitetalk",
+		"default_tts_engine":        "voxcpm2",
+		"supported_tts_engines":     []string{"voxcpm2", "qwen3_tts", "fish_s2_pro", "indextts2"},
+		"max_segment_seconds":       45.0,
+		"tail_frame_offset_seconds": 0.08,
+		"output_fps":                25,
+		"target_width":              1280,
+		"target_height":             720,
+		"upscale_mode":              "ai_2x",
+		"audio_node_key":            "2.audio",
+		"image_node_key":            "1.image",
+		"prompt_node_key":           "5.positive_prompt",
+		"frames_node_key":           "7.frame_window_size",
+		"width_node_key":            "7.width",
+		"height_node_key":           "7.height",
+		"fps_node_key":              "11.frame_rate",
+		"steps_node_key":            "8.steps",
+		"seed_node_key":             "8.seed",
+	})
+	if err := unmarshalAndValidateSchema(infRaw, &infSpec); err != nil {
+		t.Fatalf("valid infinitetalk pipeline failed: %v", err)
+	}
+	infWire := marshalJSONMap(t, &infSpec)
+	if infWire["kind"] != "digital_human" || infWire["video_backend"] != "infinitetalk" || infWire["upscale_mode"] != "ai_2x" {
+		t.Fatalf("unexpected infinitetalk pipeline wire: %#v", infWire)
+	}
+	if infWire["audio_node_key"] != "2.audio" || infWire["seed_node_key"] != "8.seed" {
+		t.Fatalf("node keys not preserved: %#v", infWire)
+	}
+
+	var longcatSpec ColabOneComfyPipelineSpec
+	longcatRaw := mustMarshalJSON(t, map[string]any{
+		"kind":                      "digital_human",
+		"video_backend":             "longcat_avatar",
+		"default_tts_engine":        "qwen3_tts",
+		"supported_tts_engines":     []string{"voxcpm2", "qwen3_tts"},
+		"max_segment_seconds":       60.0,
+		"tail_frame_offset_seconds": 0.12,
+		"output_fps":                30,
+		"target_width":              1920,
+		"target_height":             1080,
+		"upscale_mode":              "lanczos",
+		"audio_node_key":            "2.audio",
+		"image_node_key":            "1.image",
+	})
+	if err := unmarshalAndValidateSchema(longcatRaw, &longcatSpec); err != nil {
+		t.Fatalf("valid longcat_avatar pipeline failed: %v", err)
+	}
+	lcWire := marshalJSONMap(t, &longcatSpec)
+	if lcWire["video_backend"] != "longcat_avatar" || lcWire["upscale_mode"] != "lanczos" || lcWire["output_fps"] != float64(30) {
+		t.Fatalf("unexpected longcat_avatar pipeline wire: %#v", lcWire)
+	}
+
+	// Boundary values accepted.
+	for _, tc := range []map[string]any{
+		{"max_segment_seconds": 5.0, "tail_frame_offset_seconds": 0.0, "output_fps": 1, "target_width": 64, "target_height": 64},
+		{"max_segment_seconds": 300.0, "tail_frame_offset_seconds": 1.0, "output_fps": 60, "target_width": 4096, "target_height": 4096},
+	} {
+		var bSpec ColabOneComfyPipelineSpec
+		if err := unmarshalAndValidateSchema(mustMarshalJSON(t, tc), &bSpec); err != nil {
+			t.Fatalf("boundary pipeline %v should pass: %v", tc, err)
+		}
+	}
+
+	// 3. Invalid pipeline parameters rejected.
+	tooManyEngines := make([]string, 17)
+	for i := range tooManyEngines {
+		tooManyEngines[i] = fmt.Sprintf("tts_%d", i)
+	}
+	badPayloads := []struct {
+		name string
+		body map[string]any
+	}{
+		{"unknownKind", map[string]any{"kind": "realtime_stream"}},
+		{"unknownBackend", map[string]any{"video_backend": "sora_v2"}},
+		{"unknownUpscaleMode", map[string]any{"upscale_mode": "esrgan_4x"}},
+		{"maxSegTooSmall", map[string]any{"max_segment_seconds": 4.9}},
+		{"maxSegTooLarge", map[string]any{"max_segment_seconds": 300.1}},
+		{"maxSegNegative", map[string]any{"max_segment_seconds": -5.0}},
+		{"tailOffsetNegative", map[string]any{"tail_frame_offset_seconds": -0.01}},
+		{"tailOffsetTooLarge", map[string]any{"tail_frame_offset_seconds": 1.01}},
+		{"fpsNegative", map[string]any{"output_fps": -1}},
+		{"fpsTooHigh", map[string]any{"output_fps": 61}},
+		{"widthTooSmall", map[string]any{"target_width": 63}},
+		{"widthTooLarge", map[string]any{"target_width": 4097}},
+		{"heightTooSmall", map[string]any{"target_height": 63}},
+		{"heightTooLarge", map[string]any{"target_height": 4097}},
+		{"defaultTtsOverlong", map[string]any{"default_tts_engine": strings.Repeat("a", 81)}},
+		{"supportedTtsInvalidID", map[string]any{"supported_tts_engines": []string{"../evil"}}},
+		{"supportedTtsTooMany", map[string]any{"supported_tts_engines": tooManyEngines}},
+		{"unknownExtraField", map[string]any{"extra": 123}},
+	}
+	for _, tc := range badPayloads {
+		t.Run(tc.name, func(t *testing.T) {
+			var p ColabOneComfyPipelineSpec
+			if err := unmarshalAndValidateSchema(mustMarshalJSON(t, tc.body), &p); err == nil {
+				t.Fatalf("%s: expected validation error", tc.name)
+			}
+		})
+	}
+
+	// All 9 *_node_key fields reject invalid node_id.input_name keys.
+	nodeKeyFields := []string{
+		"audio_node_key",
+		"image_node_key",
+		"prompt_node_key",
+		"frames_node_key",
+		"width_node_key",
+		"height_node_key",
+		"fps_node_key",
+		"steps_node_key",
+		"seed_node_key",
+	}
+	for _, fieldName := range nodeKeyFields {
+		for _, badKey := range []string{"no_dot", "../evil.input", "1.", ".input"} {
+			var p ColabOneComfyPipelineSpec
+			raw := mustMarshalJSON(t, map[string]any{fieldName: badKey})
+			if err := unmarshalAndValidateSchema(raw, &p); err == nil {
+				t.Fatalf("%s=%q should fail validation", fieldName, badKey)
+			}
+		}
+	}
+
+	// Top-level null and overflowing numeric JSON rejected.
+	for _, raw := range []string{`null`, `{"max_segment_seconds":1e9999}`} {
+		var p ColabOneComfyPipelineSpec
+		if err := unmarshalAndValidateSchema(raw, &p); err == nil {
+			t.Fatalf("pipeline payload %s should fail", raw)
+		}
+	}
+}
+
+func TestWorkflowFieldExtendedSchemaValidation(t *testing.T) {
+	// 1. Valid extended field with description, group, required, visible_when (string + bool), and option_labels.
+	var extField ColabOneWorkflowField
+	extRaw := mustMarshalJSON(t, map[string]any{
+		"key":         "pipeline.emotion_ref_audio",
+		"label":       "情绪参考音频",
+		"node_id":     "pipeline",
+		"input_name":  "emotion_ref_audio",
+		"field_type":  "audio",
+		"description": "上传一段用于引导情绪的短音频",
+		"group":       "voice",
+		"required":    true,
+		"visible_when": map[string]any{
+			"pipeline.audio_source": "tts",
+			"pipeline.tts_engine":   "indextts2",
+			"1.use_emotion":         true,
+			"1.mute_audio":          false,
+		},
+		"options": []string{"tts", "audio"},
+		"option_labels": map[string]string{
+			"tts":   "文本配音 (TTS)",
+			"audio": "上传驱动音频",
+		},
+	})
+	if err := unmarshalAndValidateSchema(extRaw, &extField); err != nil {
+		t.Fatalf("valid extended workflow field failed: %v", err)
+	}
+	wire := marshalJSONMap(t, &extField)
+	if wire["description"] != "上传一段用于引导情绪的短音频" || wire["group"] != "voice" || wire["required"] != true {
+		t.Fatalf("unexpected extended metadata on field: %#v", wire)
+	}
+	vw, ok := wire["visible_when"].(map[string]any)
+	if !ok || vw["pipeline.audio_source"] != "tts" || vw["pipeline.tts_engine"] != "indextts2" || vw["1.use_emotion"] != true || vw["1.mute_audio"] != false {
+		t.Fatalf("visible_when did not round-trip: %#v", wire["visible_when"])
+	}
+	ol, ok := wire["option_labels"].(map[string]any)
+	if !ok || ol["tts"] != "文本配音 (TTS)" || ol["audio"] != "上传驱动音频" {
+		t.Fatalf("option_labels did not round-trip: %#v", wire["option_labels"])
+	}
+
+	// 2. Explicit visible_when: null is allowed (nullable in decodeStrictJSONObject); omitted new fields default safely.
+	var nullVW ColabOneWorkflowField
+	if err := unmarshalAndValidateSchema(`{"key":"1.prompt","label":"Prompt","node_id":"1","input_name":"prompt","field_type":"textarea","visible_when":null}`, &nullVW); err != nil {
+		t.Fatalf("explicit visible_when: null should pass: %v", err)
+	}
+	nullVWWire := marshalJSONMap(t, &nullVW)
+	if nullVWWire["required"] != false {
+		t.Fatalf("default required = %#v, want false", nullVWWire["required"])
+	}
+	if _, ok := nullVWWire["options"].([]any); !ok {
+		t.Fatalf("options should marshal as [], got %#v", nullVWWire["options"])
+	}
+	if olVal, exists := nullVWWire["option_labels"]; exists && olVal == nil {
+		t.Fatalf("option_labels should not marshal as null when present")
+	}
+
+	// 3. Exact boundary lengths accepted (description=400 runes, group=64 runes).
+	var maxBoundary ColabOneWorkflowField
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, map[string]any{
+		"key":         "1.text",
+		"label":       "Text",
+		"node_id":     "1",
+		"input_name":  "text",
+		"field_type":  "text",
+		"description": strings.Repeat("文", 400),
+		"group":       strings.Repeat("g", 64),
+	}), &maxBoundary); err != nil {
+		t.Fatalf("boundary description/group lengths should pass: %v", err)
+	}
+
+	// 4. Reject overlong description/group, invalid visible_when keys/values, and non-nullable nulls.
+	baseField := func() map[string]any {
+		return map[string]any{
+			"key":        "1.text",
+			"label":      "Text",
+			"node_id":    "1",
+			"input_name": "text",
+			"field_type": "text",
+		}
+	}
+	badCases := []struct {
+		name   string
+		mutate func(m map[string]any)
+	}{
+		{"overlongDescription", func(m map[string]any) { m["description"] = strings.Repeat("d", 401) }},
+		{"overlongGroup", func(m map[string]any) { m["group"] = strings.Repeat("g", 65) }},
+		{"visibleWhenBadKeyNoDot", func(m map[string]any) { m["visible_when"] = map[string]any{"no_dot": "tts"} }},
+		{"visibleWhenBadKeyTraversal", func(m map[string]any) { m["visible_when"] = map[string]any{"../evil.mode": "tts"} }},
+		{"visibleWhenBadKeyEmptyInput", func(m map[string]any) { m["visible_when"] = map[string]any{"1.": "tts"} }},
+		{"visibleWhenBadKeyEmptyNode", func(m map[string]any) { m["visible_when"] = map[string]any{".mode": "tts"} }},
+		{"visibleWhenIntValue", func(m map[string]any) { m["visible_when"] = map[string]any{"pipeline.audio_source": 123} }},
+		{"visibleWhenFloatValue", func(m map[string]any) { m["visible_when"] = map[string]any{"pipeline.audio_source": 1.5} }},
+		{"visibleWhenNullValue", func(m map[string]any) { m["visible_when"] = map[string]any{"pipeline.audio_source": nil} }},
+		{"visibleWhenSliceValue", func(m map[string]any) { m["visible_when"] = map[string]any{"pipeline.audio_source": []string{"tts"}} }},
+		{"visibleWhenObjectValue", func(m map[string]any) {
+			m["visible_when"] = map[string]any{"pipeline.audio_source": map[string]string{"a": "b"}}
+		}},
+		{"optionLabelsNull", func(m map[string]any) { m["option_labels"] = nil }},
+		{"optionLabelsNonStringVal", func(m map[string]any) { m["option_labels"] = map[string]any{"tts": 123} }},
+		{"descriptionNull", func(m map[string]any) { m["description"] = nil }},
+		{"groupNull", func(m map[string]any) { m["group"] = nil }},
+		{"requiredNull", func(m map[string]any) { m["required"] = nil }},
+		{"unknownField", func(m map[string]any) { m["unknown_extra"] = true }},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := baseField()
+			tc.mutate(m)
+			var f ColabOneWorkflowField
+			if err := unmarshalAndValidateSchema(mustMarshalJSON(t, m), &f); err == nil {
+				t.Fatalf("%s: expected validation error", tc.name)
+			}
+		})
+	}
+}
+
+func TestWorkflowTemplateExtendedSchemaValidation(t *testing.T) {
+	baseTemplate := func() map[string]any {
+		return map[string]any{
+			"id":       "wf_digital_human",
+			"name":     "Digital Human Template",
+			"workflow": sampleAPIWorkflow(),
+		}
+	}
+
+	// 1. Omitted commercial_ok defaults to true when unmarshaled from JSON.
+	var defaultCommercial ColabOneWorkflowTemplate
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, baseTemplate()), &defaultCommercial); err != nil {
+		t.Fatalf("template with omitted commercial_ok failed: %v", err)
+	}
+	defWire := marshalJSONMap(t, &defaultCommercial)
+	if defWire["commercial_ok"] != true {
+		t.Fatalf("omitted commercial_ok = %#v, want true", defWire["commercial_ok"])
+	}
+	if npVal, exists := defWire["node_patches"]; exists {
+		if _, ok := npVal.([]any); !ok {
+			t.Fatalf("node_patches should marshal as [] when present, got %#v", npVal)
+		}
+	}
+
+	// 2. Explicit commercial_ok=false is preserved along with license_notice.
+	mFalse := baseTemplate()
+	mFalse["commercial_ok"] = false
+	mFalse["license"] = "Non-Commercial Research License"
+	mFalse["license_notice"] = "Research use only; contact upstream for commercial licensing."
+	var explicitFalse ColabOneWorkflowTemplate
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, mFalse), &explicitFalse); err != nil {
+		t.Fatalf("template with explicit commercial_ok=false failed: %v", err)
+	}
+	falseWire := marshalJSONMap(t, &explicitFalse)
+	if falseWire["commercial_ok"] != false {
+		t.Fatalf("explicit commercial_ok=false was not preserved: %#v", falseWire["commercial_ok"])
+	}
+	if falseWire["license"] != "Non-Commercial Research License" || falseWire["license_notice"] != "Research use only; contact upstream for commercial licensing." {
+		t.Fatalf("license metadata not preserved: %#v", falseWire)
+	}
+
+	// 3. Full extended template with min_disk_mib, recommended_gpu, license, node_patches, and pipeline.
+	mFull := baseTemplate()
+	mFull["source"] = "builtin"
+	mFull["min_vram_mib"] = 24576
+	mFull["min_disk_mib"] = 61440
+	mFull["recommended_gpu"] = "G4 96 GB / A100 80 GB"
+	mFull["license"] = "Apache-2.0"
+	mFull["commercial_ok"] = true
+	mFull["license_notice"] = ""
+	mFull["custom_nodes"] = []map[string]any{
+		{
+			"name":   "ComfyUI-WanVideoWrapper",
+			"repo":   "https://github.com/kijai/ComfyUI-WanVideoWrapper.git",
+			"commit": strings.Repeat("a", 40),
+		},
+	}
+	mFull["node_patches"] = []map[string]any{
+		{
+			"node_name": "ComfyUI-WanVideoWrapper",
+			"kind":      "wav2vec2_hidden_states_hook",
+		},
+	}
+	mFull["pipeline"] = map[string]any{
+		"kind":                  "digital_human",
+		"video_backend":         "infinitetalk",
+		"default_tts_engine":    "voxcpm2",
+		"supported_tts_engines": []string{"voxcpm2", "qwen3_tts"},
+		"upscale_mode":          "ai_2x",
+		"audio_node_key":        "2.audio",
+		"image_node_key":        "1.image",
+	}
+	var fullTpl ColabOneWorkflowTemplate
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, mFull), &fullTpl); err != nil {
+		t.Fatalf("full extended template failed: %v", err)
+	}
+	fullWire := marshalJSONMap(t, &fullTpl)
+	if fullWire["min_disk_mib"] != float64(61440) || fullWire["recommended_gpu"] != "G4 96 GB / A100 80 GB" || fullWire["license"] != "Apache-2.0" {
+		t.Fatalf("unexpected extended template metadata: %#v", fullWire)
+	}
+	patchesWire, ok := fullWire["node_patches"].([]any)
+	if !ok || len(patchesWire) != 1 {
+		t.Fatalf("node_patches did not round-trip: %#v", fullWire["node_patches"])
+	}
+	pipeWire, ok := fullWire["pipeline"].(map[string]any)
+	if !ok || pipeWire["kind"] != "digital_human" || pipeWire["video_backend"] != "infinitetalk" || pipeWire["upscale_mode"] != "ai_2x" {
+		t.Fatalf("pipeline did not round-trip: %#v", fullWire["pipeline"])
+	}
+
+	// 4. Explicit pipeline: null is allowed (nullable in decodeStrictJSONObject).
+	mNullPipe := baseTemplate()
+	mNullPipe["pipeline"] = nil
+	var nullPipeTpl ColabOneWorkflowTemplate
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, mNullPipe), &nullPipeTpl); err != nil {
+		t.Fatalf("explicit pipeline: null should pass: %v", err)
+	}
+
+	// 5. Exact boundary lengths/counts accepted (recommended_gpu=120, license=160, license_notice=600, 16 node_patches).
+	customNodes16 := make([]map[string]any, 16)
+	patches16 := make([]map[string]any, 16)
+	for i := range patches16 {
+		nodeName := fmt.Sprintf("n%d", i)
+		customNodes16[i] = map[string]any{
+			"name":   nodeName,
+			"repo":   fmt.Sprintf("https://github.com/example/%s.git", nodeName),
+			"commit": strings.Repeat("a", 40),
+		}
+		patches16[i] = map[string]any{
+			"node_name": nodeName,
+			"kind":      "wav2vec2_hidden_states_hook",
+		}
+	}
+	mBoundary := baseTemplate()
+	mBoundary["source"] = "builtin"
+	mBoundary["recommended_gpu"] = strings.Repeat("G", 120)
+	mBoundary["license"] = strings.Repeat("L", 160)
+	mBoundary["license_notice"] = strings.Repeat("N", 600)
+	mBoundary["custom_nodes"] = customNodes16
+	mBoundary["node_patches"] = patches16
+	var boundaryTpl ColabOneWorkflowTemplate
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, mBoundary), &boundaryTpl); err != nil {
+		t.Fatalf("boundary template fields should pass: %v", err)
+	}
+
+	// 6. All 10 locked ComfyModelRef target_dir values remain accepted.
+	for _, dir := range []string{
+		"checkpoints",
+		"diffusion_models",
+		"loras",
+		"vae",
+		"text_encoders",
+		"clip_vision",
+		"wav2vec2",
+		"controlnet",
+		"upscale_models",
+		"audio_encoders",
+	} {
+		ref := ColabOneComfyModelRef{
+			Repo:      "Kijai/WanVideo_comfy",
+			Revision:  strings.Repeat("a", 40),
+			Path:      "model.safetensors",
+			TargetDir: dir,
+			Size:      1024,
+			SHA256:    strings.Repeat("b", 64),
+		}
+		if err := ref.Validate(); err != nil {
+			t.Fatalf("target_dir %q should be valid: %v", dir, err)
+		}
+	}
+
+	// 7. Invalid extended template fields rejected.
+	patches17 := append(append([]map[string]any{}, patches16...), map[string]any{
+		"node_name": "n16",
+		"kind":      "wav2vec2_hidden_states_hook",
+	})
+	badCases := []struct {
+		name   string
+		mutate func(m map[string]any)
+	}{
+		{"negativeMinDisk", func(m map[string]any) { m["min_disk_mib"] = -1 }},
+		{"overlongRecommendedGPU", func(m map[string]any) { m["recommended_gpu"] = strings.Repeat("G", 121) }},
+		{"overlongLicense", func(m map[string]any) { m["license"] = strings.Repeat("L", 161) }},
+		{"overlongLicenseNotice", func(m map[string]any) { m["license_notice"] = strings.Repeat("N", 601) }},
+		{"commercialOKNull", func(m map[string]any) { m["commercial_ok"] = nil }},
+		{"invalidNodePatchTraversal", func(m map[string]any) {
+			m["node_patches"] = []map[string]any{{"node_name": "../evil", "kind": "wav2vec2_hidden_states_hook"}}
+		}},
+		{"invalidNodePatchKind", func(m map[string]any) {
+			m["node_patches"] = []map[string]any{{"node_name": "ComfyUI-WanVideoWrapper", "kind": "bad_kind"}}
+		}},
+		{"tooManyNodePatches", func(m map[string]any) { m["node_patches"] = patches17 }},
+		{"invalidNestedPipeline", func(m map[string]any) {
+			m["pipeline"] = map[string]any{"kind": "digital_human", "upscale_mode": "invalid_mode"}
+		}},
+		{"invalidNestedPipelineSeg", func(m map[string]any) {
+			m["pipeline"] = map[string]any{"max_segment_seconds": 2.0}
+		}},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := baseTemplate()
+			tc.mutate(m)
+			var tpl ColabOneWorkflowTemplate
+			if err := unmarshalAndValidateSchema(mustMarshalJSON(t, m), &tpl); err == nil {
+				t.Fatalf("%s: expected validation error", tc.name)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunRequestHFTokenAndPipelineKeysValidation(t *testing.T) {
+	// 1. Omitted and empty hf_token accepted.
+	for _, raw := range []string{
+		`{"workflow_id":"wf_demo-1"}`,
+		`{"workflow_id":"wf_demo-1","hf_token":""}`,
+	} {
+		var req ColabOneWorkflowRunRequest
+		if err := unmarshalAndValidateSchema(raw, &req); err != nil {
+			t.Fatalf("payload %s should pass: %v", raw, err)
+		}
+	}
+
+	// 2. Valid hf_token accepted and preserved, including digital human pipeline.* overrides/inputs.
+	token := "hf_test_token_value_1234567890"
+	validRaw := mustMarshalJSON(t, map[string]any{
+		"workflow_id": "wf_digital_human",
+		"hf_token":    token,
+		"overrides": map[string]any{
+			"pipeline.audio_source":        "tts",
+			"pipeline.tts_engine":          "voxcpm2",
+			"pipeline.pause_seconds":       0.28,
+			"pipeline.target_resolution":   "1280x720",
+			"pipeline.upscale_mode":        "ai_2x",
+			"pipeline.max_segment_seconds": 45,
+		},
+		"inputs": map[string]string{
+			"1.image":                    strings.Repeat("a", 32),
+			"pipeline.voice_ref_audio":   strings.Repeat("b", 32),
+			"pipeline.emotion_ref_audio": strings.Repeat("c", 32),
+		},
+	})
+	var req ColabOneWorkflowRunRequest
+	if err := unmarshalAndValidateSchema(validRaw, &req); err != nil {
+		t.Fatalf("valid run request with hf_token failed: %v", err)
+	}
+	wire := marshalJSONMap(t, &req)
+	if wire["hf_token"] != token {
+		t.Fatalf("hf_token not preserved: got %#v, want %q", wire["hf_token"], token)
+	}
+
+	// 3. Exact 512-rune hf_token boundary accepted.
+	maxTok := "hf_" + strings.Repeat("x", 509)
+	var maxReq ColabOneWorkflowRunRequest
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, map[string]any{
+		"workflow_id": "wf_demo-1",
+		"hf_token":    maxTok,
+	}), &maxReq); err != nil {
+		t.Fatalf("512-rune hf_token should pass: %v", err)
+	}
+	if marshalJSONMap(t, &maxReq)["hf_token"] != maxTok {
+		t.Fatalf("512-rune hf_token not preserved")
+	}
+
+	// 4. Oversized 513-rune hf_token and explicit hf_token: null rejected.
+	overTok := "hf_" + strings.Repeat("x", 510)
+	var overReq ColabOneWorkflowRunRequest
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, map[string]any{
+		"workflow_id": "wf_demo-1",
+		"hf_token":    overTok,
+	}), &overReq); err == nil {
+		t.Fatalf("513-rune hf_token should fail validation")
+	}
+
+	var nullTokReq ColabOneWorkflowRunRequest
+	if err := unmarshalAndValidateSchema(`{"workflow_id":"wf_demo-1","hf_token":null}`, &nullTokReq); err == nil {
+		t.Fatalf("hf_token: null should fail validation")
+	}
+}
+
+func TestValidateComfyInputUploadHardening(t *testing.T) {
+	validPNG := base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\nvalid-png-bytes"))
+	validWAV := base64.StdEncoding.EncodeToString([]byte("RIFF\x24\x00\x00\x00WAVEfmt "))
+
+	// Valid PNG, WAV, double-dot basename (matching Python _safe_basename), data-URI wrapped, and whitespace-folded base64 payloads pass.
+	for _, tc := range []struct {
+		name     string
+		filename string
+		data     string
+	}{
+		{"validPNG", "portrait.png", validPNG},
+		{"validUpperPNG", "PORTRAIT.PNG", validPNG},
+		{"validDoubleDotBasename", "a..b.png", validPNG},
+		{"validWAV", "voice.wav", validWAV},
+		{"validDataURI", "portrait.png", "data:image/png;base64," + validPNG},
+		{"validFoldedBase64", "voice.wav", validWAV[:4] + "\r\n " + validWAV[4:]},
+	} {
+		if err := ValidateComfyInputUpload(tc.filename, tc.data); err != nil {
+			t.Fatalf("%s: expected valid upload to pass, got %v", tc.name, err)
+		}
+	}
+
+	// Exact 16 MiB image boundary passes; 16 MiB + 1 byte is rejected.
+	// 16 MiB = 16777216 = 3 * 5592405 + 1 -> 5592405*"AAAA" + "AA==" (exact), +"AAA=" (+1 byte).
+	exactImgB64 := strings.Repeat("AAAA", MaxImageInputBytes/3) + "AA=="
+	if err := ValidateComfyInputUpload("exact16m.png", exactImgB64); err != nil {
+		t.Fatalf("exact 16 MiB image should pass, got %v", err)
+	}
+	overImgB64 := strings.Repeat("AAAA", MaxImageInputBytes/3) + "AAA="
+	if err := ValidateComfyInputUpload("over16m.png", overImgB64); err == nil || !strings.Contains(err.Error(), "最大 16 MB") {
+		t.Fatalf("oversized image (>16 MiB): err = %v, want size limit error (16 MB)", err)
+	}
+
+	// Oversized audio (>64 MiB): exact decoded +1 byte AND fast-rejected encoded length cap.
+	// 64 MiB = 67108864 = 3 * 22369621 + 1 -> 22369621*"AAAA" + "AAA=" (64 MiB + 1 byte).
+	overAudioB64 := strings.Repeat("AAAA", MaxAudioInputBytes/3) + "AAA="
+	if err := ValidateComfyInputUpload("over64m.wav", overAudioB64); err == nil || !strings.Contains(err.Error(), "最大 64 MB") {
+		t.Fatalf("oversized audio (>64 MiB): err = %v, want size limit error (64 MB)", err)
+	}
+	hugeAudioB64 := strings.Repeat("A", MaxAudioInputBytes+MaxAudioInputBytes/2+8192)
+	if err := ValidateComfyInputUpload("huge.wav", hugeAudioB64); err == nil || !strings.Contains(err.Error(), "最大 64 MB") {
+		t.Fatalf("huge encoded audio: err = %v, want size limit error (64 MB)", err)
+	}
+
+	// 0-byte empty payloads rejected.
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"emptyString", ""},
+		{"whitespaceOnly", "   \n\t  "},
+		{"emptyDataURI", "data:image/png;base64,"},
+		{"whitespaceDataURI", "data:audio/wav;base64,   "},
+	} {
+		if err := ValidateComfyInputUpload("empty.png", tc.data); err == nil || !strings.Contains(err.Error(), "输入文件内容为空") {
+			t.Fatalf("%s: err = %v, want empty file error", tc.name, err)
+		}
+	}
+
+	// Forbidden extensions rejected.
+	for _, badFile := range []string{"audio.aac", "payload.exe", "script.sh", "noext", ".png"} {
+		if err := ValidateComfyInputUpload(badFile, validPNG); err == nil || !strings.Contains(err.Error(), "不支持的输入文件格式") {
+			t.Fatalf("forbidden extension %q: err = %v, want unsupported format error", badFile, err)
+		}
+	}
+
+	// Path traversal and unsafe filenames rejected.
+	for _, badName := range []string{"", "   ", ".", "..", "../a.png", "dir/a.png", `dir\a.png`, "a\x00.png"} {
+		if err := ValidateComfyInputUpload(badName, validPNG); err == nil || !strings.Contains(err.Error(), "输入文件名不合法") {
+			t.Fatalf("unsafe filename %q: err = %v, want invalid filename error", badName, err)
+		}
+	}
+
+	// Invalid base64 payloads rejected.
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"badLengthMod4", "abc"},
+		{"illegalChars", "!!!!"},
+		{"earlyPadding", strings.Repeat("AAAA", 1023) + "AA==" + "AAAA"},
+		{"malformedDataURI", "data:image/png;base64"},
+	} {
+		if err := ValidateComfyInputUpload("bad.png", tc.data); err == nil {
+			t.Fatalf("invalid base64 %s: expected error", tc.name)
+		}
+	}
+}
+
+func TestWorkflowRunRequestRedactsHFTokenInStringAndGoString(t *testing.T) {
+	const secret = "hf_super_secret_run_token_987654321"
+	req := ColabOneWorkflowRunRequest{
+		WorkflowID: "digital-human-infinitetalk",
+		Overrides:  map[string]any{"pipeline.tts_engine": "voxcpm2"},
+		Inputs:     map[string]string{"1.image": strings.Repeat("a", 32)},
+		HFToken:    secret,
+	}
+	for _, formatted := range []string{
+		req.String(),
+		fmt.Sprintf("%s", req),
+		fmt.Sprintf("%v", req),
+		fmt.Sprintf("%#v", req),
+		fmt.Sprintf("%v", &req),
+	} {
+		if strings.Contains(formatted, secret) {
+			t.Fatalf("ColabOneWorkflowRunRequest leaked HFToken in %q", formatted)
+		}
+		if !strings.Contains(formatted, "[redacted]") {
+			t.Fatalf("expected [redacted] marker in %q", formatted)
+		}
+	}
+}
+
+func TestExtractWorkflowFieldsSkipsWanVideoTextEncodeCachedLoaderKeys(t *testing.T) {
+	wf := map[string]any{
+		"5": map[string]any{
+			"class_type": "WanVideoTextEncodeCached",
+			"_meta":      map[string]any{"title": "画面与口播风格提示词"},
+			"inputs": map[string]any{
+				"model_name":      "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+				"precision":       "bf16",
+				"positive_prompt": "clear studio portrait speaking naturally",
+				"negative_prompt": "blurry, distorted",
+				"quantization":    "fp8_e4m3fn",
+				"use_disk_cache":  true,
+				"device":          "gpu",
+				"load_device":     "offload_device",
+				"base_precision":  "bf16",
+				"attention_mode":  "sdpa",
+			},
+		},
+	}
+
+	fields := ExtractWorkflowFields(wf)
+	gotKeys := make([]string, len(fields))
+	for i, f := range fields {
+		gotKeys[i] = f.Key
+	}
+	wantKeys := []string{"5.positive_prompt", "5.negative_prompt"}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("extracted keys = %v, want %v", gotKeys, wantKeys)
+	}
+}
+
+func TestComfyModelRefAudioEncodersAndCatalogCrossRefValidation(t *testing.T) {
+	revA := strings.Repeat("a", 40)
+	shaB := strings.Repeat("b", 64)
+
+	// 1. "audio_encoders" MUST be accepted in ColabOneComfyModelRef.TargetDir.
+	whisperRef := ColabOneComfyModelRef{
+		Repo:      "Kijai/WanVideo_comfy",
+		Revision:  revA,
+		Path:      "HuMo/whisper_large_v3_encoder_fp16.safetensors",
+		TargetDir: "audio_encoders",
+		Size:      1693870272,
+		SHA256:    shaB,
+	}
+	if err := whisperRef.Validate(); err != nil {
+		t.Fatalf("audio_encoders target_dir should be accepted, got %v", err)
+	}
+
+	makeBaseCatalog := func() ColabOneComfyCatalog {
+		return ColabOneComfyCatalog{
+			Repo:      "https://github.com/Comfy-Org/ComfyUI.git",
+			Tag:       "v0.46.0",
+			Commit:    revA,
+			Port:      8188,
+			ProxyPort: 8189,
+			TtsEngines: []ColabOneComfyTtsEngineSpec{
+				{
+					ID:         "voxcpm2",
+					Name:       "VoxCPM2",
+					Repo:       "openbmb/VoxCPM2",
+					Revision:   revA,
+					SampleRate: 48000,
+				},
+			},
+			Templates: []ColabOneWorkflowTemplate{
+				{
+					ID:     "wf-cross-ref",
+					Name:   "CrossRef Test",
+					Source: "builtin",
+					CustomNodes: []ColabOneComfyNodeSpec{
+						{
+							Name:                "ComfyUI-WanVideoWrapper",
+							Repo:                "https://github.com/kijai/ComfyUI-WanVideoWrapper.git",
+							Commit:              revA,
+							InstallRequirements: true,
+						},
+					},
+					NodePatches: []ColabOneComfyNodePatch{
+						{
+							NodeName: "ComfyUI-WanVideoWrapper",
+							Kind:     "wav2vec2_hidden_states_hook",
+						},
+					},
+					Models: []ColabOneComfyModelRef{whisperRef},
+					Pipeline: &ColabOneComfyPipelineSpec{
+						Kind:                "digital_human",
+						VideoBackend:        "longcat_avatar",
+						DefaultTtsEngine:    "voxcpm2",
+						SupportedTtsEngines: []string{"voxcpm2"},
+					},
+					Workflow: sampleAPIWorkflow(),
+				},
+			},
+		}
+	}
+
+	// Valid catalog with matching node_patches and supported_tts_engines passes.
+	validCat := makeBaseCatalog()
+	if err := validCat.Validate(); err != nil {
+		t.Fatalf("valid cross-referenced catalog failed: %v", err)
+	}
+
+	// 2. Unknown node_patches[*].node_name rejected (both with empty and non-empty custom_nodes).
+	badPatchCat := makeBaseCatalog()
+	badPatchCat.Templates[0].NodePatches = []ColabOneComfyNodePatch{
+		{NodeName: "ComfyUI-UnknownNode", Kind: "wav2vec2_hidden_states_hook"},
+	}
+	if err := badPatchCat.Validate(); err == nil || !strings.Contains(err.Error(), "节点补丁引用的自定义节点不存在") {
+		t.Fatalf("unknown node_patches[*].node_name: err = %v", err)
+	}
+
+	badPatchEmptyNodesCat := makeBaseCatalog()
+	badPatchEmptyNodesCat.Templates[0].CustomNodes = nil
+	badPatchEmptyNodesCat.Templates[0].NodePatches = []ColabOneComfyNodePatch{
+		{NodeName: "ComfyUI-GhostNode", Kind: "wav2vec2_hidden_states_hook"},
+	}
+	if err := badPatchEmptyNodesCat.Validate(); err == nil || !strings.Contains(err.Error(), "节点补丁引用的自定义节点不存在") {
+		t.Fatalf("node_patches with empty custom_nodes: err = %v", err)
+	}
+
+	// 3. Unknown pipeline.supported_tts_engines and default_tts_engine rejected.
+	badSupportedTTS := makeBaseCatalog()
+	badSupportedTTS.Templates[0].Pipeline.SupportedTtsEngines = []string{"voxcpm2", "nonexistent_tts"}
+	if err := badSupportedTTS.Validate(); err == nil || !strings.Contains(err.Error(), "引用了未定义的 TTS 引擎") {
+		t.Fatalf("unknown pipeline.supported_tts_engines: err = %v", err)
+	}
+
+	badDefaultTTS := makeBaseCatalog()
+	badDefaultTTS.Templates[0].Pipeline.DefaultTtsEngine = "ghost_tts"
+	if err := badDefaultTTS.Validate(); err == nil || !strings.Contains(err.Error(), "引用了未定义的默认 TTS 引擎") {
+		t.Fatalf("unknown pipeline.default_tts_engine: err = %v", err)
+	}
+}
+
+func TestRound2WorkflowTemplateAuthorityAndNodePatchValidation(t *testing.T) {
+	revA := strings.Repeat("a", 40)
+	shaB := strings.Repeat("b", 64)
+
+	// 1. Direct ColabOneWorkflowTemplate.Validate() rejects non-empty NodePatches when CustomNodes is empty.
+	directEmptyNodes := ColabOneWorkflowTemplate{
+		ID:     "wf_direct_patch_empty",
+		Name:   "Direct Patch Empty Nodes",
+		Source: "builtin",
+		NodePatches: []ColabOneComfyNodePatch{
+			{NodeName: "ComfyUI-WanVideoWrapper", Kind: "wav2vec2_hidden_states_hook"},
+		},
+		Workflow: sampleAPIWorkflow(),
+	}
+	if err := directEmptyNodes.Validate(); err == nil || !strings.Contains(err.Error(), "节点补丁引用的自定义节点不存在") {
+		t.Fatalf("direct Validate() with NodePatches and empty CustomNodes: err = %v", err)
+	}
+
+	// Direct Validate() also rejects NodePatches referencing an undeclared node when CustomNodes is non-empty.
+	directMismatchNodes := ColabOneWorkflowTemplate{
+		ID:     "wf_direct_patch_mismatch",
+		Name:   "Direct Patch Mismatch",
+		Source: "builtin",
+		CustomNodes: []ColabOneComfyNodeSpec{
+			{
+				Name:   "ComfyUI-OtherNode",
+				Repo:   "https://github.com/example/ComfyUI-OtherNode.git",
+				Commit: revA,
+			},
+		},
+		NodePatches: []ColabOneComfyNodePatch{
+			{NodeName: "ComfyUI-WanVideoWrapper", Kind: "wav2vec2_hidden_states_hook"},
+		},
+		Workflow: sampleAPIWorkflow(),
+	}
+	if err := directMismatchNodes.Validate(); err == nil || !strings.Contains(err.Error(), "节点补丁引用的自定义节点不存在") {
+		t.Fatalf("direct Validate() with mismatched NodePatches: err = %v", err)
+	}
+
+	// 2. Non-builtin templates (explicit "custom" and defaulted "") reject every privileged dependency field.
+	for _, src := range []string{"", "custom"} {
+		srcLabel := src
+		if srcLabel == "" {
+			srcLabel = "default_empty"
+		}
+		cases := []struct {
+			name   string
+			mutate func(tpl *ColabOneWorkflowTemplate)
+		}{
+			{
+				name: "custom_nodes",
+				mutate: func(tpl *ColabOneWorkflowTemplate) {
+					tpl.CustomNodes = []ColabOneComfyNodeSpec{{
+						Name:   "ComfyUI-TestNode",
+						Repo:   "https://github.com/example/ComfyUI-TestNode.git",
+						Commit: revA,
+					}}
+				},
+			},
+			{
+				name: "pip_packages",
+				mutate: func(tpl *ColabOneWorkflowTemplate) {
+					tpl.PipPackages = []string{"einops>=0.7"}
+				},
+			},
+			{
+				name: "node_patches",
+				mutate: func(tpl *ColabOneWorkflowTemplate) {
+					tpl.NodePatches = []ColabOneComfyNodePatch{{
+						NodeName: "ComfyUI-TestNode",
+						Kind:     "wav2vec2_hidden_states_hook",
+					}}
+				},
+			},
+			{
+				name: "models",
+				mutate: func(tpl *ColabOneWorkflowTemplate) {
+					tpl.Models = []ColabOneComfyModelRef{{
+						Repo:      "org/comfy-weights",
+						Revision:  revA,
+						Path:      "model.safetensors",
+						TargetDir: "checkpoints",
+						Size:      1024,
+						SHA256:    shaB,
+					}}
+				},
+			},
+			{
+				name: "pipeline",
+				mutate: func(tpl *ColabOneWorkflowTemplate) {
+					tpl.Pipeline = &ColabOneComfyPipelineSpec{
+						Kind:         "digital_human",
+						VideoBackend: "infinitetalk",
+					}
+				},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(srcLabel+"/"+tc.name, func(t *testing.T) {
+				tpl := ColabOneWorkflowTemplate{
+					ID:       "wf_custom_reject_" + tc.name,
+					Name:     "Custom Reject " + tc.name,
+					Source:   src,
+					Workflow: sampleAPIWorkflow(),
+				}
+				tc.mutate(&tpl)
+				if err := tpl.Validate(); err == nil || !strings.Contains(err.Error(), "自定义工作流模板不允许声明远端依赖包、模型下载或流水线配置") {
+					t.Fatalf("source=%q with %s: err = %v, want custom template dependency rejection", src, tc.name, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRound2WorkflowJSONNestingDepthCap(t *testing.T) {
+	buildNestedMap := func(levels int) any {
+		var v any = "leaf"
+		for i := 0; i < levels; i++ {
+			v = map[string]any{"next": v}
+		}
+		return v
+	}
+	buildNestedSlice := func(levels int) any {
+		var v any = 1
+		for i := 0; i < levels; i++ {
+			v = []any{v}
+		}
+		return v
+	}
+	makeWFWithDeepInput := func(deepVal any) map[string]any {
+		return map[string]any{
+			"1": map[string]any{
+				"class_type": "CustomNode",
+				"inputs": map[string]any{
+					"deep": deepVal,
+				},
+			},
+		}
+	}
+
+	// workflow(0) -> node(1) -> inputs(2) -> 29 nested containers(3..31) -> scalar(32): exact limit passes.
+	for _, tc := range []struct {
+		name string
+		val  any
+	}{
+		{"mapAtLimit32", buildNestedMap(29)},
+		{"sliceAtLimit32", buildNestedSlice(29)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ValidateComfyAPIWorkflow(makeWFWithDeepInput(tc.val)); err != nil {
+				t.Fatalf("%s should pass at exact 32-layer limit, got %v", tc.name, err)
+			}
+		})
+	}
+
+	// 30 nested containers inside inputs puts the innermost container at depth 32 -> exceeds 32-layer limit.
+	const wantErr = "工作流 JSON 嵌套层级超过 32 层上限"
+	for _, tc := range []struct {
+		name string
+		val  any
+	}{
+		{"mapDepth33", buildNestedMap(30)},
+		{"sliceDepth33", buildNestedSlice(30)},
+		{"mapDepth48", buildNestedMap(45)},
+		{"sliceDepth48", buildNestedSlice(45)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := makeWFWithDeepInput(tc.val)
+			if _, err := ValidateComfyAPIWorkflow(wf); err == nil || err.Error() != wantErr {
+				t.Fatalf("ValidateComfyAPIWorkflow(%s): err = %v, want %q", tc.name, err, wantErr)
+			}
+			tpl := ColabOneWorkflowTemplate{
+				ID:       "wf_deep",
+				Name:     "Deep Flow",
+				Workflow: wf,
+			}
+			if err := tpl.Validate(); err == nil || err.Error() != wantErr {
+				t.Fatalf("Template.Validate(%s): err = %v, want %q", tc.name, err, wantErr)
+			}
+			imp := ColabOneWorkflowImportRequest{
+				Name:     "Deep Import",
+				Workflow: wf,
+			}
+			if err := imp.Validate(); err == nil || err.Error() != wantErr {
+				t.Fatalf("ImportRequest.Validate(%s): err = %v, want %q", tc.name, err, wantErr)
+			}
+		})
+	}
+}
+
+func TestRound2RunRequestHFTokenNodeNameAndPipFlags(t *testing.T) {
+	revA := strings.Repeat("a", 40)
+
+	// 1. ColabOneWorkflowRunRequest.Validate() rejects \r, \n, control chars, and embedded/unicode whitespace in HFToken.
+	badTokens := []struct {
+		name  string
+		token string
+	}{
+		{"cr", "hf_abc\rdef"},
+		{"lf", "hf_abc\ndef"},
+		{"crlf", "hf_abc\r\ndef"},
+		{"trailingLF", "hf_abcdef\n"},
+		{"tab", "hf_abc\tdef"},
+		{"nul", "hf_abc\x00def"},
+		{"del", "hf_abc\x7fdef"},
+		{"embeddedSpace", "hf_abc def"},
+		{"unicodeSpace", "hf_abc\u3000def"},
+		{"leadingNBSP", "\u00a0hf_abcdef"},
+	}
+	for _, tc := range badTokens {
+		t.Run("hf_token/"+tc.name, func(t *testing.T) {
+			req := ColabOneWorkflowRunRequest{
+				WorkflowID: "wf_demo-1",
+				HFToken:    tc.token,
+			}
+			if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "hf_token 包含非法空白或控制字符") {
+				t.Fatalf("direct Validate(%s): err = %v", tc.name, err)
+			}
+			var decoded ColabOneWorkflowRunRequest
+			raw := mustMarshalJSON(t, map[string]any{
+				"workflow_id": "wf_demo-1",
+				"hf_token":    tc.token,
+			})
+			if err := unmarshalAndValidateSchema(raw, &decoded); err == nil || !strings.Contains(err.Error(), "hf_token 包含非法空白或控制字符") {
+				t.Fatalf("unmarshal+Validate(%s): err = %v", tc.name, err)
+			}
+		})
+	}
+
+	// Leading/trailing ASCII spaces are trimmed cleanly on a valid token.
+	trimReq := ColabOneWorkflowRunRequest{
+		WorkflowID: "wf_demo-1",
+		HFToken:    "  hf_clean_token_42  ",
+	}
+	if err := trimReq.Validate(); err != nil {
+		t.Fatalf("ASCII-padded clean HFToken should pass: %v", err)
+	}
+	if trimReq.HFToken != "hf_clean_token_42" {
+		t.Fatalf("trimmed HFToken = %q, want %q", trimReq.HFToken, "hf_clean_token_42")
+	}
+
+	// 2. Leading-dot custom node names rejected in both ColabOneComfyNodeSpec and ColabOneComfyNodePatch.
+	for _, badNode := range []string{".hidden", ".git", " .leading-dot "} {
+		nodeSpec := ColabOneComfyNodeSpec{
+			Name:   badNode,
+			Repo:   "https://github.com/example/ComfyUI-Node.git",
+			Commit: revA,
+		}
+		if err := nodeSpec.Validate(); err == nil || !strings.Contains(err.Error(), "自定义节点名称不合法") {
+			t.Fatalf("NodeSpec leading-dot %q: err = %v", badNode, err)
+		}
+		patchSpec := ColabOneComfyNodePatch{
+			NodeName: badNode,
+			Kind:     "wav2vec2_hidden_states_hook",
+		}
+		if err := patchSpec.Validate(); err == nil || !strings.Contains(err.Error(), "自定义节点名称不合法") {
+			t.Fatalf("NodePatch leading-dot %q: err = %v", badNode, err)
+		}
+	}
+
+	// 3. Pip flag injections (e.g. "numpy --pre") rejected in both workflow templates and TTS engine specs.
+	for _, badPip := range []string{
+		"numpy --pre",
+		"numpy -e .",
+		"numpy -i https://evil.invalid/simple",
+		"torch --extra-index-url https://evil.invalid",
+		"-r requirements.txt",
+		"--pre",
+	} {
+		tpl := ColabOneWorkflowTemplate{
+			ID:          "wf_bad_pip",
+			Name:        "Bad Pip",
+			Source:      "builtin",
+			PipPackages: []string{badPip},
+			Workflow:    sampleAPIWorkflow(),
+		}
+		if err := tpl.Validate(); err == nil || !strings.Contains(err.Error(), "非法的 pip 依赖声明") {
+			t.Fatalf("Template bad pip %q: err = %v", badPip, err)
+		}
+		tts := ColabOneComfyTtsEngineSpec{
+			ID:          "vox_bad_pip",
+			Name:        "Vox Bad Pip",
+			Repo:        "openbmb/VoxCPM2",
+			Revision:    revA,
+			PipPackages: []string{badPip},
+		}
+		if err := tts.Validate(); err == nil || !strings.Contains(err.Error(), "非法的 pip 依赖声明") {
+			t.Fatalf("TtsEngine bad pip %q: err = %v", badPip, err)
+		}
+	}
+
+	// Legitimate hyphenated package names continue to pass.
+	goodPipTpl := ColabOneWorkflowTemplate{
+		ID:          "wf_good_pip",
+		Name:        "Good Pip",
+		Source:      "builtin",
+		PipPackages: []string{"huggingface-hub>=0.25", "soundfile>=0.12"},
+		Workflow:    sampleAPIWorkflow(),
+	}
+	if err := goodPipTpl.Validate(); err != nil {
+		t.Fatalf("valid hyphenated pip packages should pass: %v", err)
+	}
+}
+
+func TestRound2ExtractFieldsInvalidNodeIDsAndIntegralFloatCoercion(t *testing.T) {
+	// 1. ExtractWorkflowFields skips invalid node IDs while preserving valid node IDs (and "pipeline").
+	wf := map[string]any{
+		"bad node": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"text": "should skip spaces"},
+		},
+		"../evil": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"text": "should skip traversal"},
+		},
+		"node.with.dot": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"text": "should skip dot"},
+		},
+		"": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"text": "should skip empty"},
+		},
+		"1": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"text": "valid prompt"},
+		},
+		"pipeline": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"prompt": "valid pipeline prompt"},
+		},
+	}
+	fields := ExtractWorkflowFields(wf)
+	gotKeys := make([]string, len(fields))
+	for i, f := range fields {
+		gotKeys[i] = f.Key
+		if err := f.Validate(); err != nil {
+			t.Fatalf("extracted field %q should always pass Validate(), got %v", f.Key, err)
+		}
+	}
+	wantKeys := []string{"1.text", "pipeline.prompt"}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("ExtractWorkflowFields keys = %v, want %v", gotKeys, wantKeys)
+	}
+
+	// 2. ApplyWorkflowOverrides coerces integral floats (25.0) to int64 on existing integer inputs,
+	// preserves non-integral floats, and leaves existing float inputs as float64.
+	overrideWF := map[string]any{
+		"6": map[string]any{
+			"class_type": "KSampler",
+			"inputs": map[string]any{
+				"steps":       20,                // int
+				"seed":        int64(42),         // int64
+				"width":       json.Number("512"), // integral json.Number
+				"height":      512,               // int overridden with fractional float
+				"cfg":         7.5,               // float64 overridden with integral float
+			},
+		},
+	}
+	applied, err := ApplyWorkflowOverrides(overrideWF, map[string]any{
+		"6.steps":  float64(25.0),
+		"6.seed":   float32(16.0),
+		"6.width":  json.Number("768.0"),
+		"6.height": float64(512.5),
+		"6.cfg":    float64(8.0),
+	}, nil)
+	if err != nil {
+		t.Fatalf("ApplyWorkflowOverrides failed: %v", err)
+	}
+	inputs := applied["6"].(map[string]any)["inputs"].(map[string]any)
+
+	stepsVal, ok := inputs["steps"].(int64)
+	if !ok || stepsVal != 25 {
+		t.Fatalf("6.steps = %#v (%T), want int64(25)", inputs["steps"], inputs["steps"])
+	}
+	seedVal, ok := inputs["seed"].(int64)
+	if !ok || seedVal != 16 {
+		t.Fatalf("6.seed = %#v (%T), want int64(16)", inputs["seed"], inputs["seed"])
+	}
+	widthVal, ok := inputs["width"].(int64)
+	if !ok || widthVal != 768 {
+		t.Fatalf("6.width = %#v (%T), want int64(768)", inputs["width"], inputs["width"])
+	}
+	heightVal, ok := inputs["height"].(float64)
+	if !ok || heightVal != 512.5 {
+		t.Fatalf("6.height = %#v (%T), want float64(512.5)", inputs["height"], inputs["height"])
+	}
+	cfgVal, ok := inputs["cfg"].(float64)
+	if !ok || cfgVal != 8.0 {
+		t.Fatalf("6.cfg = %#v (%T), want float64(8.0)", inputs["cfg"], inputs["cfg"])
 	}
 }

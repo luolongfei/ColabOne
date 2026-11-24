@@ -8,6 +8,8 @@ import {
   PhXCircle,
 } from "@phosphor-icons/vue";
 import { t } from "./i18n";
+import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
+import type { ColabOnePrivacyContext } from "./colabOnePrivacy";
 import {
   resolveColabOneToastText,
   type ColabOneToastItem,
@@ -20,12 +22,14 @@ const props = withDefaults(
     topOffsetPx?: number;
     leftOffsetPx?: number;
     rightOffsetPx?: number;
+    privacyContext?: ColabOnePrivacyContext;
   }>(),
   {
     placement: "top",
     topOffsetPx: 112,
     leftOffsetPx: 0,
     rightOffsetPx: 0,
+    privacyContext: undefined,
   },
 );
 
@@ -155,7 +159,12 @@ function isAssertive(item: ColabOneToastItem): boolean {
           <PhCheckCircle v-else :size="18" weight="fill" />
         </span>
 
-        <span class="co-toast-message">{{ resolveColabOneToastText(item) }}</span>
+        <span class="co-toast-message">
+          <ColabOnePrivacyText
+            :text="resolveColabOneToastText(item)"
+            :context="props.privacyContext"
+          />
+        </span>
 
         <button
           type="button"

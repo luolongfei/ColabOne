@@ -41,11 +41,19 @@ import {
   TypographyTitle as ATypographyTitle,
 } from "ant-design-vue";
 import ColabOneCloseModal from "./ColabOneCloseModal.vue";
+import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneToastHost from "./ColabOneToastHost.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import ColabOneUpdateModal from "./ColabOneUpdateModal.vue";
+import {
+  buildColabOnePrivacyContext,
+  colabOnePrivacyActive,
+  colabOnePrivacyDefault,
+  setColabOnePrivacyDefault,
+  toggleColabOnePrivacyActive,
+} from "./colabOnePrivacy";
 import { colabOneExtractHfToken } from "./colabOneSecretToken";
 import {
   PhAppWindow,
@@ -57,6 +65,8 @@ import {
   PhCloudArrowDown,
   PhCopy,
   PhDesktop,
+  PhEye,
+  PhEyeSlash,
   PhFlowArrow,
   PhGearSix,
   PhGlobe,
@@ -344,7 +354,9 @@ const ApiPanel = defineColabOneAsyncPanel(
 );
 const ComfyPanel = defineColabOneAsyncPanel(
   loadComfyPanel,
-  undefined,
+  () => {
+    resetComfyDrawerState();
+  },
   () => {
     comfyPanelRetryKey.value += 1;
   },
@@ -625,6 +637,32 @@ const nav = computed(() => [
 ]);
 
 const modelsDrawerOpen = ref(false);
+const comfyDrawerState = ref<{
+  open: boolean;
+  width: number;
+  rootSelector: string;
+}>({ open: false, width: 0, rootSelector: "" });
+
+function resetComfyDrawerState() {
+  comfyDrawerState.value = { open: false, width: 0, rootSelector: "" };
+}
+
+function onComfyDrawerState(next: {
+  open: boolean;
+  width: number;
+  rootSelector: string;
+}) {
+  if (!next.open) {
+    resetComfyDrawerState();
+    return;
+  }
+  if (page.value !== "comfyui") return;
+  comfyDrawerState.value = {
+    open: true,
+    width: next.width,
+    rootSelector: next.rootSelector,
+  };
+}
 const cuUsageHighlighted = ref(false);
 let cuUsageHighlightTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -734,6 +772,7 @@ function selectPage(nextPage: string) {
 
 watch(page, (next) => {
   if (next !== "api") modelsDrawerOpen.value = false;
+  if (next !== "comfyui") resetComfyDrawerState();
   if (next !== "settings") settingsSaveFloating.value = false;
 });
 watch(
@@ -755,6 +794,24 @@ function toggleAppearance(event?: MouseEvent) {
   const next: ColabOneAppearance =
     colabOneEffectiveAppearance.value === "dark" ? "light" : "dark";
   setColabOneAppearance(next, event);
+}
+
+const privacyContext = computed(() => buildColabOnePrivacyContext(state.value));
+
+function togglePrivacyMask() {
+  toggleColabOnePrivacyActive();
+}
+
+function onPrivacyDefaultChange(raw: unknown) {
+  const next = Boolean(raw);
+  setColabOnePrivacyDefault(next);
+  notify(
+    next
+      ? t("settings.privacyMaskDefaultEnabledToast")
+      : t("settings.privacyMaskDefaultDisabledToast"),
+    "success",
+    "setting-privacy-default",
+  );
 }
 
 const logsOpen = ref(false);
@@ -1100,6 +1157,33 @@ function interaction(event?: Event) {
   colabOneCommand("runtime.activity").catch(() => {});
 }
 
+function hasVisibleAntModalOverlay(): boolean {
+  if (typeof document === "undefined") return false;
+  const modals = document.querySelectorAll<HTMLElement>(".ant-modal-wrap");
+  for (const el of modals) {
+    if (/\bant-[\w-]+-leave(?:-active|-to)?\b/.test(el.className)) {
+      continue;
+    }
+    const dialog = el.querySelector<HTMLElement>(".ant-modal");
+    if (
+      dialog &&
+      /\bant-[\w-]+-leave(?:-active|-to)?\b/.test(dialog.className)
+    ) {
+      continue;
+    }
+    const style = window.getComputedStyle(el);
+    if (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.pointerEvents !== "none" &&
+      el.getBoundingClientRect().height > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function handleGlobalKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
     if (closeModalOpen.value) {
@@ -1112,12 +1196,26 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     if (showRelease.value && !busy.value) {
       showRelease.value = false;
     } else if (
-      !modelsDrawerOpen.value &&
+      !activeOverlayDrawer.value.open &&
+      !hasVisibleAntModalOverlay() &&
       !logWindowStandalone.value &&
       logsOpen.value
     ) {
       void setLogsOpen(false);
     }
+    return;
+  }
+  if (
+    (e.ctrlKey || e.metaKey) &&
+    e.shiftKey &&
+    !e.altKey &&
+    (e.code === "KeyM" || e.key.toLowerCase() === "m")
+  ) {
+    if (closeModalOpen.value || e.repeat) {
+      return;
+    }
+    e.preventDefault();
+    togglePrivacyMask();
     return;
   }
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "j") {
@@ -1133,10 +1231,11 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     !e.ctrlKey &&
     !e.metaKey &&
     !e.shiftKey &&
-    !modelsDrawerOpen.value &&
+    !activeOverlayDrawer.value.open &&
     !showRelease.value &&
     !updateModalOpen.value &&
-    !closeModalOpen.value
+    !closeModalOpen.value &&
+    !hasVisibleAntModalOverlay()
   ) {
     const map: Record<string, string> = {
       "1": "device",
@@ -1958,7 +2057,7 @@ const showAssignProxyEditor = computed(
   () => assignProxyExpanded.value || Boolean(form.value.assign_proxy.trim()),
 );
 const assignProxySavedPlaceholder = computed(() =>
-  assignProxySettings.value?.masked_url
+  assignProxySettings.value?.masked_url && !colabOnePrivacyActive.value
     ? t("settings.assignProxySavedPlaceholderWithUrl", {
         url: assignProxySettings.value.masked_url,
       })
@@ -2337,8 +2436,33 @@ async function copy(text: string) {
   }
 }
 
+const activeOverlayDrawer = computed(() => {
+  if (modelsDrawerOpen.value) {
+    return {
+      open: true,
+      width: undefined as number | undefined,
+      rootSelector: ".co-model-drawer-root",
+    };
+  }
+  if (page.value === "comfyui" && comfyDrawerState.value.open) {
+    return {
+      open: true,
+      width:
+        comfyDrawerState.value.width > 0
+          ? comfyDrawerState.value.width
+          : undefined,
+      rootSelector: comfyDrawerState.value.rootSelector,
+    };
+  }
+  return {
+    open: false,
+    width: undefined as number | undefined,
+    rootSelector: "",
+  };
+});
+
 const activeToastTopOffsetPx = computed(() =>
-  modelsDrawerOpen.value
+  activeOverlayDrawer.value.open
     ? drawerToastTopOffsetPx.value
     : toastTopOffsetPx.value,
 );
@@ -2346,16 +2470,18 @@ const activeToastTopOffsetPx = computed(() =>
 const toastHorizontalBounds = computed(() =>
   resolveColabOneToastHorizontalBounds({
     viewportWidth: viewportWidth.value,
-    modelDrawerOpen: modelsDrawerOpen.value,
+    modelDrawerOpen: activeOverlayDrawer.value.open,
+    modelDrawerWidthPx: activeOverlayDrawer.value.width,
     inlineLogDrawerOpen: !logWindowStandalone.value && logsOpen.value,
     inlineLogDrawerWidthPx: logDrawerWidth.value,
   }),
 );
 
 function updateDrawerToastTopOffset() {
-  if (!modelsDrawerOpen.value || typeof document === "undefined") return;
+  const { open, rootSelector } = activeOverlayDrawer.value;
+  if (!open || !rootSelector || typeof document === "undefined") return;
   const headerEl = document.querySelector<HTMLElement>(
-    ".co-model-drawer-root .ant-drawer-header",
+    `${rootSelector} .ant-drawer-header`,
   );
   if (!headerEl) return;
   const bottom = Math.round(headerEl.getBoundingClientRect().bottom);
@@ -2398,7 +2524,7 @@ function updateToastLayout() {
       toastTopOffsetPx.value = Math.min(260, Math.max(72, top + 6));
     }
   }
-  if (modelsDrawerOpen.value) {
+  if (activeOverlayDrawer.value.open) {
     updateDrawerToastTopOffset();
   }
 }
@@ -2418,10 +2544,18 @@ watch(
 );
 
 watch(
-  modelsDrawerOpen,
-  (isOpen) => {
+  () =>
+    [
+      activeOverlayDrawer.value.open,
+      activeOverlayDrawer.value.rootSelector,
+      activeOverlayDrawer.value.width,
+    ] as const,
+  ([isOpen, rootSelector], prev) => {
     if (isOpen) {
-      drawerToastTopOffsetPx.value = COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX;
+      const [prevOpen, prevRootSelector] = prev ?? [false, ""];
+      if (!prevOpen || rootSelector !== prevRootSelector) {
+        drawerToastTopOffsetPx.value = COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX;
+      }
       scheduleDrawerToastTopMeasure();
     } else {
       updateToastLayout();
@@ -3146,6 +3280,36 @@ onUnmounted(() => {
 
               <ColabOneTooltip
                 :title="
+                  colabOnePrivacyActive
+                    ? t('nav.privacyDisableTooltip')
+                    : t('nav.privacyEnableTooltip')
+                "
+                placement="bottom"
+              >
+                <button
+                  type="button"
+                  class="co-nav-circle-btn co-nav-privacy-btn"
+                  :class="{ 'is-active': colabOnePrivacyActive }"
+                  data-testid="nav-privacy-toggle"
+                  :aria-pressed="colabOnePrivacyActive"
+                  :aria-label="
+                    colabOnePrivacyActive
+                      ? t('nav.privacyDisableAria')
+                      : t('nav.privacyEnableAria')
+                  "
+                  @click="togglePrivacyMask"
+                >
+                  <PhEyeSlash
+                    v-if="colabOnePrivacyActive"
+                    :size="17"
+                    weight="duotone"
+                  />
+                  <PhEye v-else :size="17" />
+                </button>
+              </ColabOneTooltip>
+
+              <ColabOneTooltip
+                :title="
                   colabOneEffectiveAppearance === 'dark'
                     ? t('nav.switchLight')
                     : t('nav.switchDark')
@@ -3356,9 +3520,15 @@ onUnmounted(() => {
               type="error"
               show-icon
               closable
-              :message="persistentBannerError"
               @close="dismissPersistentError"
-            />
+            >
+              <template #message>
+                <ColabOnePrivacyText
+                  :text="persistentBannerError"
+                  :context="privacyContext"
+                />
+              </template>
+            </AAlert>
 
             <AAlert
               v-if="state.operation"
@@ -3934,35 +4104,44 @@ onUnmounted(() => {
                       }"
                     >
                       <template v-if="state.auth_url && state.operation && !state.setup.drive">
-                        {{
-                          state.drive_auth_hint
-                            ? tb(state.drive_auth_hint)
-                            : t("device.driveWaitingBrowserConfirm")
-                        }}
+                        <ColabOnePrivacyText
+                          v-if="state.drive_auth_hint"
+                          :text="tb(state.drive_auth_hint)"
+                          :context="privacyContext"
+                        />
+                        <template v-else>{{
+                          t("device.driveWaitingBrowserConfirm")
+                        }}</template>
                       </template>
                       <template v-else-if="state.setup.drive">
-                        {{
-                          state.runtime.drive?.error
-                            ? tb(state.runtime.drive.error)
-                            : t("device.driveMountedFull", {
-                                folder:
-                                  state.runtime.drive?.remote_folder ||
-                                  "ColabOne_Drive",
-                                free: state.runtime.drive?.free_bytes
-                                  ? t("device.driveFreeSegment", {
-                                      size: bytes(state.runtime.drive.free_bytes),
-                                    })
-                                  : "",
-                                tail: state.runtime.drive?.pending
-                                  ? t("device.drivePendingSync", {
-                                      count: state.runtime.drive.pending,
-                                    })
-                                  : t("device.driveAutoPersist"),
-                              })
-                        }}
+                        <ColabOnePrivacyText
+                          v-if="state.runtime.drive?.error"
+                          :text="tb(state.runtime.drive.error)"
+                          :context="privacyContext"
+                        />
+                        <template v-else>{{
+                          t("device.driveMountedFull", {
+                            folder:
+                              state.runtime.drive?.remote_folder ||
+                              "ColabOne_Drive",
+                            free: state.runtime.drive?.free_bytes
+                              ? t("device.driveFreeSegment", {
+                                  size: bytes(state.runtime.drive.free_bytes),
+                                })
+                              : "",
+                            tail: state.runtime.drive?.pending
+                              ? t("device.drivePendingSync", {
+                                  count: state.runtime.drive.pending,
+                                })
+                              : t("device.driveAutoPersist"),
+                          })
+                        }}</template>
                       </template>
                       <template v-else-if="state.runtime.drive?.error">
-                        {{ tb(state.runtime.drive.error) }}
+                        <ColabOnePrivacyText
+                          :text="tb(state.runtime.drive.error)"
+                          :context="privacyContext"
+                        />
                       </template>
                       <template v-else-if="state.setup.drive_authorized">
                         {{ t("device.driveAuthorizedHint") }}
@@ -4424,6 +4603,7 @@ onUnmounted(() => {
               @notify="notify"
               @clear-error="clearActionErrors"
               @error="showError"
+              @drawer-state="onComfyDrawerState"
             />
           </main>
 
@@ -4509,12 +4689,16 @@ onUnmounted(() => {
                               }}</span>
                             </span>
                             <span v-else class="co-sk-reveal">
-                              {{
-                                state.account.email ||
-                                (state.setup.colab
+                              <ColabOnePrivacyText
+                                v-if="state.account.email"
+                                :text="state.account.email"
+                                kind="email"
+                              />
+                              <template v-else>{{
+                                state.setup.colab
                                   ? t("settings.accountConnectedNoEmail")
-                                  : t("settings.oauthBrowserHint"))
-                              }}
+                                  : t("settings.oauthBrowserHint")
+                              }}</template>
                             </span>
                           </p>
 
@@ -4780,8 +4964,14 @@ onUnmounted(() => {
                         "
                         type="warning"
                         show-icon
-                        :message="tb(state.drive_auth_hint)"
-                      />
+                      >
+                        <template #message>
+                          <ColabOnePrivacyText
+                            :text="tb(state.drive_auth_hint)"
+                            :context="privacyContext"
+                          />
+                        </template>
+                      </AAlert>
                     </div>
 
                     <!-- Row 1.3: Hugging Face Token -->
@@ -5222,6 +5412,44 @@ onUnmounted(() => {
                       </div>
                       <LanguageSwitcher mode="settings" @changed="onLocaleChanged" />
                     </div>
+
+                    <!-- Row 3.3: Privacy Mask Default on Startup -->
+                    <div
+                      class="co-settings-row"
+                      data-testid="settings-privacy-default-row"
+                      aria-labelledby="privacy-mask-heading"
+                    >
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-violet" aria-hidden="true">
+                              <PhEyeSlash :size="14" weight="duotone" />
+                            </span>
+                            <h3 id="privacy-mask-heading" class="co-sr-title">
+                              {{ t("settings.privacyMaskDefaultTitle") }}
+                            </h3>
+                            <ATag
+                              v-if="colabOnePrivacyActive"
+                              color="blue"
+                              data-testid="settings-privacy-active-tag"
+                            >
+                              {{ t("settings.privacyMaskActiveTag") }}
+                            </ATag>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.privacyMaskDefaultDesc") }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ASwitch
+                            :checked="colabOnePrivacyDefault"
+                            :aria-label="t('settings.privacyMaskDefaultTitle')"
+                            data-testid="settings-privacy-default-switch"
+                            @update:checked="onPrivacyDefaultChange"
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </section>
 
@@ -5660,6 +5888,7 @@ onUnmounted(() => {
         :current-activity="currentActivity"
         :running="!!(state.operation || task)"
         :active-speed="activeApiSpeed"
+        :privacy-context="privacyContext"
         @update:width="onLogDrawerWidthChange"
         @copy="copy"
         @clear="act('logs.clear')"
@@ -5672,6 +5901,7 @@ onUnmounted(() => {
         :top-offset-px="activeToastTopOffsetPx"
         :left-offset-px="toastHorizontalBounds.leftOffsetPx"
         :right-offset-px="toastHorizontalBounds.rightOffsetPx"
+        :privacy-context="privacyContext"
         @pause="toastManager.pause"
         @resume="toastManager.resume"
         @dismiss="toastManager.dismiss"
@@ -6351,6 +6581,27 @@ onUnmounted(() => {
 .co-nav-circle-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.co-nav-privacy-btn.is-active {
+  background: var(--co-selected);
+  color: var(--co-accent-strong);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.34);
+}
+
+.co-nav-privacy-btn.is-active:hover:not(:disabled) {
+  background: var(--co-selected);
+  color: var(--co-accent-strong);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.54);
+}
+
+:global(:root[data-theme="dark"]) .co-nav-privacy-btn.is-active {
+  border-color: rgba(96, 165, 250, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.24);
+}
+
+:global(:root[data-theme="dark"]) .co-nav-privacy-btn.is-active:hover:not(:disabled) {
+  border-color: rgba(96, 165, 250, 0.64);
 }
 
 .co-nav-circle-btn:focus-visible,

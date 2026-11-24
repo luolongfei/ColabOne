@@ -746,14 +746,22 @@ func (c *ColabOneController) loadWorkflows() {
 	default:
 		return
 	}
+	builtinIDs := c.builtinWorkflowIDSet()
 	for _, item := range items {
-		wf, err := c.validateWorkflowTemplate(item)
+		if item == nil {
+			continue
+		}
+		candidate := deepCopyMap(item)
+		candidate["source"] = "custom"
+		wf, err := c.validateWorkflowTemplate(candidate)
 		if err != nil || wf == nil {
 			continue
 		}
-		if id := asString(wf["id"]); id != "" {
-			c.customWorkflows[id] = wf
+		id := asString(wf["id"])
+		if id == "" || builtinIDs[id] {
+			continue
 		}
+		c.customWorkflows[id] = wf
 	}
 }
 
@@ -784,35 +792,124 @@ func (c *ColabOneController) saveWorkflows() error {
 	return AtomicJSON(filepath.Join(c.directory, "workflows.json"), list)
 }
 
-func (c *ColabOneController) builtinWorkflows() []map[string]any {
+func (c *ColabOneController) loadBuiltinComfyCatalog() {
 	c.builtinWFsOnce.Do(func() {
+		c.cachedBuiltinWFs = []map[string]any{}
+		c.cachedBuiltinTtsEngines = []map[string]any{}
 		rawBytes, err := c.bundler.ReadComfyCatalogJSON()
 		if err != nil || len(rawBytes) == 0 {
-			c.cachedBuiltinWFs = []map[string]any{}
 			return
 		}
 		var raw map[string]any
-		if decodeJSONWithNumbers(rawBytes, &raw) != nil || raw == nil {
-			c.cachedBuiltinWFs = []map[string]any{}
+		if decErr := decodeJSONWithNumbers(rawBytes, &raw); decErr != nil || raw == nil {
+			if c.activity != nil {
+				c.log("解析内置 ComfyUI 目录失败，已回退为空目录："+SafeMessage(fmt.Sprint(decErr)), "ComfyUI", "warning")
+			}
+			return
+		}
+		if bundleValidator, ok := c.comfy.(ComfyCatalogValidator); ok {
+			bundle, valErr := bundleValidator.ValidateCatalogBundle(raw)
+			if valErr != nil {
+				if c.activity != nil {
+					c.log("校验内置 ComfyUI 目录失败，已回退为空目录："+SafeMessage(valErr.Error()), "ComfyUI", "warning")
+				}
+				return
+			}
+			if bundle.Templates != nil {
+				c.cachedBuiltinWFs = deepCopyMapSlice(bundle.Templates)
+			}
+			if bundle.TtsEngines != nil {
+				c.cachedBuiltinTtsEngines = deepCopyMapSlice(bundle.TtsEngines)
+			}
 			return
 		}
 		if c.comfy != nil {
-			templates, err := c.comfy.ValidateCatalog(raw)
-			if err != nil || templates == nil {
-				c.cachedBuiltinWFs = []map[string]any{}
+			templates, valErr := c.comfy.ValidateCatalog(raw)
+			if valErr != nil || templates == nil {
+				if valErr != nil && c.activity != nil {
+					c.log("校验内置 ComfyUI 模板目录失败，已回退为空目录："+SafeMessage(valErr.Error()), "ComfyUI", "warning")
+				}
 				return
 			}
-			c.cachedBuiltinWFs = templates
-			return
+			c.cachedBuiltinWFs = deepCopyMapSlice(templates)
+		} else if templates := asMapSlice(raw["templates"]); templates != nil {
+			c.cachedBuiltinWFs = deepCopyMapSlice(templates)
 		}
-		templates := asMapSlice(raw["templates"])
-		if templates == nil {
-			c.cachedBuiltinWFs = []map[string]any{}
-			return
+		if engines := asMapSlice(raw["tts_engines"]); engines != nil {
+			c.cachedBuiltinTtsEngines = deepCopyMapSlice(engines)
 		}
-		c.cachedBuiltinWFs = deepCopyMapSlice(templates)
 	})
-	return c.cachedBuiltinWFs
+}
+
+func (c *ColabOneController) builtinWorkflows() []map[string]any {
+	c.loadBuiltinComfyCatalog()
+	return deepCopyMapSlice(c.cachedBuiltinWFs)
+}
+
+func (c *ColabOneController) builtinWorkflowIDSet() map[string]bool {
+	builtins := c.builtinWorkflows()
+	ids := make(map[string]bool, len(builtins))
+	for _, wf := range builtins {
+		if id := asString(wf["id"]); id != "" {
+			ids[id] = true
+		}
+	}
+	return ids
+}
+
+func (c *ColabOneController) builtinTtsEngines() []map[string]any {
+	c.loadBuiltinComfyCatalog()
+	return deepCopyMapSlice(c.cachedBuiltinTtsEngines)
+}
+
+func (c *ColabOneController) mergeTtsEngines(remote []map[string]any) []map[string]any {
+	builtins := c.builtinTtsEngines()
+	builtinIDs := make(map[string]bool, len(builtins))
+	merged := make(map[string]map[string]any, len(builtins)+len(remote))
+	order := make([]string, 0, len(builtins)+len(remote))
+
+	for _, eng := range builtins {
+		if eng == nil {
+			continue
+		}
+		id := asString(eng["id"])
+		if id == "" {
+			continue
+		}
+		if _, exists := merged[id]; !exists {
+			order = append(order, id)
+		}
+		builtinIDs[id] = true
+		merged[id] = deepCopyMap(eng)
+	}
+
+	for _, eng := range remote {
+		if eng == nil {
+			continue
+		}
+		id := asString(eng["id"])
+		if id == "" {
+			continue
+		}
+		if builtinIDs[id] {
+			// Keep embedded catalog authoritative for built-in TTS engine metadata
+			// (matching mergeWorkflowsWithLocal's built-in policy so Snapshot().workflows
+			// and Snapshot().tts_engines never split-brain on older runtimes).
+			continue
+		}
+		if _, exists := merged[id]; !exists {
+			order = append(order, id)
+		}
+		merged[id] = deepCopyMap(eng)
+	}
+
+	out := make([]map[string]any, 0, len(order))
+	for _, id := range order {
+		if eng := merged[id]; eng != nil {
+			out = append(out, eng)
+		}
+	}
+	return out
 }
 
 func (c *ColabOneController) mergeWorkflows(remoteWorkflows []map[string]any) []map[string]any {
@@ -847,6 +944,9 @@ func (c *ColabOneController) mergeWorkflowsWithLocal(localMap map[string]map[str
 		if wf == nil || wid == "" {
 			continue
 		}
+		if _, isBuiltin := builtinOrder[wid]; isBuiltin {
+			continue
+		}
 		prev, exists := merged[wid]
 		wfTS, _ := asFloat(wf["updated_at"])
 		prevTS, _ := asFloat(prev["updated_at"])
@@ -860,6 +960,15 @@ func (c *ColabOneController) mergeWorkflowsWithLocal(localMap map[string]map[str
 		}
 		wid := asString(wf["id"])
 		if wid == "" {
+			continue
+		}
+		if _, isBuiltin := builtinOrder[wid]; isBuiltin {
+			// Keep embedded catalog authoritative for built-in template metadata;
+			// never overwrite with stale remote/cached built-ins (updated_at == 0).
+			continue
+		}
+		if asString(wf["source"]) == "builtin" {
+			// Do not pull in retired remote built-in templates absent from builtinOrder.
 			continue
 		}
 		prev, exists := merged[wid]

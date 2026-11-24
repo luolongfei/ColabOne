@@ -58,6 +58,13 @@ export const koKRMessages: ColabOneMessages = {
   "nav.refreshAria": "계정 인스턴스 새로고침",
   "nav.switchLight": "라이트 모드로 전환",
   "nav.switchDark": "다크 모드로 전환",
+  "nav.privacyEnableTooltip": "개인정보 가리기 켜기 (Ctrl+Shift+M)",
+  "nav.privacyDisableTooltip": "개인정보 가리기 끄기 (Ctrl+Shift+M)",
+  "nav.privacyEnableAria": "개인정보 가리기 켜기",
+  "nav.privacyDisableAria": "개인정보 가리기 끄기",
+  "privacy.maskedFieldAria": "개인정보 보호를 위해 가려짐",
+  "privacy.secretLockedTooltip": "개인정보 가리기가 켜져 있어 평문을 표시할 수 없습니다",
+  "privacy.inputReadonlyTooltip": "개인정보 가리기가 켜져 있어 도메인을 편집할 수 없습니다",
   "nav.logsOpenTooltip": "실행 로그 닫기 (Ctrl+J)",
   "nav.logsClosedTooltip": "실행 로그 열기 (Ctrl+J)",
   "nav.logsCollapseAria": "실행 로그 접기",
@@ -1225,6 +1232,68 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.errUnsupportedAudioFormat": "지원하지 않는 오디오 형식입니다. WAV / MP3 / FLAC / OGG / M4A 파일을 선택해 주세요.",
   "comfy.errIncompleteTransfer": "결과물 전송이 완료되지 않았습니다. 다시 시도해 주세요",
   "comfy.errOutputChecksum": "결과물 무결성 검증에 실패했습니다. 다시 시도해 주세요",
+  "comfy.licenseCommercialOk": "상업적 이용 가능",
+  "comfy.licenseNonCommercial": "비상업 / 연구 전용",
+  "comfy.licenseNoticeTitle": "모델 라이선스 안내",
+  "comfy.recommendedGpu": "권장 {gpu}",
+  "comfy.modelDepsTag": "가중치 {count}개 · {size}",
+  "comfy.packNodesTag": "노드 팩 {count}개",
+  "comfy.groupMedia": "1. 인물 이미지 및 미디어",
+  "comfy.groupVoice": "2. 음성 및 원격 TTS",
+  "comfy.groupVideo": "3. 영상 스타일 및 화질",
+  "comfy.groupAdvanced": "4. 고급 파라미터",
+  "comfy.ttsEngineCardTitle": "선택된 원격 TTS 엔진",
+  "comfy.ttsCapabilityClone": "음성 복제",
+  "comfy.ttsCapabilityDesign": "음성 디자인",
+  "comfy.ttsCapabilityEmotion": "감정 제어",
+  "comfy.ttsCapabilityTags": "인라인 태그",
+  "comfy.ttsSampleRate": "{khz} kHz",
+  "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
+  "comfy.requiredFieldHint": "필수 항목을 먼저 입력하거나 업로드해 주세요: {label}",
+  "comfy.pipelineDigitalHumanTag": "장시간 영상 디지털 휴먼",
+  "comfy.ttsNonCommercialAlert":
+    "선택한 TTS 엔진 '{name}'은(는) 비상업/연구 전용 라이선스가 적용됩니다: {notice}",
+  "comfy.openOutputsBtn": "출력 결과",
+  "comfy.configureAndRun": "파라미터 설정",
+  "comfy.paramDrawerAria": "워크플로 파라미터 설정 서랍",
+  "comfy.outputsDrawerAria": "출력 결과 서랍",
+  "comfy.advancedToggleTitle": "고급 설정",
+  "comfy.advancedDefaultHint": "최적의 기본 조합이 설정되어 있습니다 — 필요할 때만 펼쳐 조정하세요",
+  "comfy.beginnerPresetHint": "권장 파라미터가 미리 설정되어 있습니다. 아래 기본 항목만 입력해 바로 실행하세요",
+  "comfy.ioSummaryDigitalHuman": "입력: 인물 사진 + 대본 또는 오디오 → 출력: 고화질 음성 영상 (MP4)",
+  "comfy.specsDetailTitle": "하드웨어 및 종속성 사양",
+  "comfy.viewOutputsShort": "결과 보기",
+  "comfy.workflowNonCommercialAlert":
+    "선택한 워크플로 '{name}'은(는) 비상업/연구 전용 라이선스가 적용됩니다: {notice}",
+  "comfy.combinedNonCommercialAlert":
+    "현재 구성({names})에 비상업/연구 라이선스 구성 요소가 포함되어 있습니다: {notices}",
+  "comfy.preflightVramInsufficient":
+    "GPU VRAM이 부족합니다(필요 {required} GB, 현재 {available} GB). 권장 GPU({gpu})로 전환하세요.",
+  "comfy.preflightDiskInsufficient":
+    "원격 디스크 공간이 부족합니다(약 {required} GB 필요, 현재 {available} GB 여유)",
+  "comfy.preflightPackReady": "워크플로 팩과 모델이 준비되어 바로 실행할 수 있습니다",
+  "comfy.preflightPackWillDownload":
+    "첫 실행 시 원격에서 약 {size}의 모델과 노드 종속성을 자동 다운로드합니다",
+  "comfy.videoPreviewTooLarge":
+    "동영상 용량이 큽니다({size}). 메모리 절약을 위해 아래 \"로컬로 내보내기\"로 저장해 재생하세요.",
+  "comfy.mediaPreviewError":
+    "내장 플레이어에서 이 미디어를 재생할 수 없습니다. \"로컬로 내보내기\"로 확인하세요.",
+  "comfy.errImportTooLarge": "워크플로 JSON 크기가 2 MB 상한을 초과했습니다",
+  "comfy.errImportTooManyNodes": "워크플로 노드 수가 최대 500개를 초과했습니다",
+  "comfy.errImportInvalidNodeId":
+    "유효하지 않은 노드 ID \"{id}\"가 포함되어 있습니다",
+  "comfy.errImportInvalidClassType":
+    "노드 \"{id}\"의 class_type이 160자 제한을 초과했습니다",
+  "comfy.errImportInvalidInputKey":
+    "노드 \"{id}\"에 빈 입력 키가 포함되어 있습니다",
+  "comfy.errEmptyFile":
+    "선택한 파일이 비어 있습니다(0 B). 유효한 파일을 선택하세요.",
+  "comfy.indextts2RefRequiredHint":
+    "선택한 IndexTTS-2 엔진은 참조 음성 오디오 업로드가 필수입니다",
+  "comfy.runBlockedBusy":
+    "다른 작업이나 동작이 실행 중입니다. 잠시만 기다려 주세요",
+  "comfy.runBlockedUploading":
+    "미디어가 업로드 중입니다. 완료될 때까지 기다려 주세요",
 
   // Settings Page
   "settings.title": "설정",
@@ -1319,6 +1388,12 @@ export const koKRMessages: ColabOneMessages = {
   "settings.languageLabel": "표시 언어",
   "settings.languageDesc":
     "기본적으로 시스템 언어에 맞춰 자동 선택됩니다. 수동으로 변경하면 선택한 언어가 유지되며 OS 언어로 덮어쓰지 않습니다.",
+  "settings.privacyMaskDefaultTitle": "시작 시 개인정보 가리기 기본 활성화",
+  "settings.privacyMaskDefaultDesc":
+    "앱을 시작할 때마다 이메일, 사용자 지정 도메인, 프록시 주소 및 로그의 개인 식별 정보를 자동으로 흐리게 가립니다(CU 잔액과 하드웨어 모니터링은 그대로 표시). 현재 세션에서는 상단 아이콘 또는 Ctrl+Shift+M으로 언제든 전환할 수 있습니다.",
+  "settings.privacyMaskActiveTag": "가리기 활성",
+  "settings.privacyMaskDefaultEnabledToast": "다음 시작부터 개인정보 가리기가 기본 활성화됩니다",
+  "settings.privacyMaskDefaultDisabledToast": "다음 시작 시 기본 개인정보 가리기가 해제됩니다",
   "settings.hfCardTitle": "Hugging Face Token",
   "settings.hfSavedTag": "토큰 저장됨",
   "settings.hfDesc":

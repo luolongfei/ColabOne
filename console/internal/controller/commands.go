@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Command dispatches a desktop RPC action and sanitizes the result for JSON transport.
@@ -386,6 +387,10 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if err != nil {
 			return nil, err
 		}
+		builtinIDs := c.builtinWorkflowIDSet()
+		if reqID := asString(req["id"]); reqID != "" && builtinIDs[reqID] {
+			return nil, errors.New("不能覆盖内置工作流模板")
+		}
 		c.mu.Lock()
 		rtState := asString(asMap(c.data["runtime"])["state"])
 		c.mu.Unlock()
@@ -399,7 +404,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			if validated, err := c.validateWorkflowTemplate(itemMap); err == nil && validated != nil {
 				storedItem = validated
 			}
-			if id := asString(storedItem["id"]); id != "" {
+			if id := asString(storedItem["id"]); id != "" && !builtinIDs[id] {
 				ver, _ := asFloat(storedItem["updated_at"])
 				c.mu.Lock()
 				c.customWorkflows[id] = deepCopyMap(storedItem)
@@ -424,6 +429,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if wfID == "" {
 			wfID = "wf-" + generateTokenHex(6)
 		}
+		if builtinIDs[wfID] {
+			return nil, errors.New("不能覆盖内置工作流模板")
+		}
 		item, err := c.validateWorkflowTemplate(map[string]any{
 			"id":          wfID,
 			"name":        asString(req["name"]),
@@ -440,7 +448,11 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		itemID := asString(item["id"])
 		c.customWorkflows[itemID] = deepCopyMap(item)
 		delete(c.remoteWorkflowVersions, itemID)
-		merged := c.mergeWorkflowsLocked(asMapSlice(c.data["workflows"]))
+		var baseWorkflows []map[string]any
+		if asString(asMap(c.data["runtime"])["state"]) != "stopped" {
+			baseWorkflows = asMapSlice(c.data["workflows"])
+		}
+		merged := c.mergeWorkflowsLocked(baseWorkflows)
 		c.mu.Unlock()
 		if err := c.saveWorkflows(); err != nil {
 			return nil, err
@@ -453,6 +465,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		wid := asString(payload["id"])
 		if !reModelID.MatchString(wid) {
 			return nil, errors.New("工作流 ID 不合法")
+		}
+		if c.builtinWorkflowIDSet()[wid] {
+			return nil, errors.New("内置工作流模板不可删除")
 		}
 		c.mu.Lock()
 		removedLocal, hadLocal := c.customWorkflows[wid]
@@ -484,10 +499,13 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			}
 		}
 		c.mu.Lock()
-		remaining := make([]map[string]any, 0)
-		for _, w := range asMapSlice(c.data["workflows"]) {
-			if asString(w["id"]) != wid {
-				remaining = append(remaining, w)
+		var remaining []map[string]any
+		if asString(asMap(c.data["runtime"])["state"]) != "stopped" {
+			remaining = make([]map[string]any, 0)
+			for _, w := range asMapSlice(c.data["workflows"]) {
+				if asString(w["id"]) != wid {
+					remaining = append(remaining, w)
+				}
 			}
 		}
 		merged := c.mergeWorkflowsLocked(remaining)
@@ -497,7 +515,13 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return map[string]any{"ok": true}, nil
 
 	case "comfyui.input.upload":
-		fname := asString(payload["filename"])
+		fname := strings.TrimSpace(asString(payload["filename"]))
+		rawData := asString(payload["data"])
+		if uploadValidator, ok := c.comfy.(ComfyInputUploadValidator); ok {
+			if err := uploadValidator.ValidateInputUpload(fname, rawData); err != nil {
+				return nil, err
+			}
+		}
 		display := fname
 		if display == "" {
 			display = "文件"
@@ -505,8 +529,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		c.log("正在上传 ComfyUI 输入素材："+display, "ComfyUI", "info")
 		res, err := c.remote(ctx, "POST", "comfyui/inputs", map[string]any{
 			"filename": fname,
-			"data":     asString(payload["data"]),
-		}, "", 0)
+			"data":     rawData,
+		}, "", 300*time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -517,7 +541,41 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if c.comfy == nil {
 			return nil, errors.New("ComfyValidator 未配置")
 		}
-		req, err := c.comfy.ValidateWorkflowRun(payload)
+		reqCopy := deepCopyMap(payload)
+		if reqCopy == nil {
+			reqCopy = map[string]any{}
+		}
+		explicitTok := ""
+		if rawTok, hasTok := reqCopy["hf_token"]; hasTok {
+			if tokStr, ok := rawTok.(string); ok {
+				cleaned, err := validateCleanHFToken(tokStr)
+				if err != nil {
+					return nil, err
+				}
+				if cleaned == "" {
+					delete(reqCopy, "hf_token")
+				} else {
+					explicitTok = cleaned
+					reqCopy["hf_token"] = cleaned
+				}
+			}
+		}
+		if explicitTok == "" {
+			if _, hasTok := reqCopy["hf_token"]; !hasTok && c.hasRemoteCapability("comfyui_hf_token") {
+				if v, ok := c.vault.Get("hf"); ok {
+					if s, ok := v.(string); ok {
+						cleaned, err := validateCleanHFToken(s)
+						if err != nil {
+							return nil, err
+						}
+						if cleaned != "" {
+							reqCopy["hf_token"] = cleaned
+						}
+					}
+				}
+			}
+		}
+		req, err := c.comfy.ValidateWorkflowRun(reqCopy)
 		if err != nil {
 			return nil, err
 		}
@@ -531,7 +589,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			return nil, err
 		}
 		if err := c.RefreshRemote(ctx, ""); err != nil {
-			return nil, err
+			c.log("远端已受理 ComfyUI 工作流任务，但刷新状态失败（将自动重试）："+errTypeName(err), "ComfyUI", "warning")
+			return res, nil
 		}
 		c.log("远端已受理 ComfyUI 工作流任务", "ComfyUI", "info")
 		return res, nil
@@ -854,6 +913,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			c.Update(map[string]any{
 				"models":        c.Presets(),
 				"workflows":     c.mergeWorkflows(nil),
+				"tts_engines":   c.builtinTtsEngines(),
 				"comfy_outputs": []any{},
 				"auth_url":      "",
 			})
@@ -898,6 +958,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			c.Update(map[string]any{
 				"models":        c.Presets(),
 				"workflows":     c.mergeWorkflows(nil),
+				"tts_engines":   c.builtinTtsEngines(),
 				"comfy_outputs": []any{},
 				"auth_url":      "",
 			})

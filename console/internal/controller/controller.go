@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type taskActivitySig struct {
@@ -26,6 +28,7 @@ type instanceCache struct {
 	Runtime                map[string]any
 	Models                 []map[string]any
 	Workflows              []map[string]any
+	TtsEngines             []map[string]any
 	ComfyOutputs           []any
 	RemoteWorkflowVersions map[string]float64
 	LastHeartbeat          float64
@@ -65,32 +68,33 @@ type ColabOneController struct {
 	startRetryDelay    time.Duration
 
 	// Lock ordering: persistMu -> mu -> monitorMu (never invert).
-	persistMu              sync.Mutex
-	mu                     sync.Mutex
-	settings               map[string]any
-	data                   map[string]any
-	instanceStates         map[string]*instanceCache
-	commonIDs              map[string]bool
-	customModels           map[string]map[string]any
-	apiIDOverrides         map[string]string
-	commonRepos            []map[string]any
-	defaultCommonVersion   int
-	customWorkflows        map[string]map[string]any
-	remoteWorkflowVersions map[string]float64
-	taskActivity           map[string]taskActivitySig
-	taskLogCursor          map[string]int64
-	lastAuth               float64
-	lastConfig             float64
-	lastHeartbeat          float64
-	pendingTouch           bool
-	lastTouch              float64
-	expectedServiceRev     string
-	presetsOnce            sync.Once
-	cachedRawPresets       []map[string]any
-	builtinWFsOnce         sync.Once
-	cachedBuiltinWFs       []map[string]any
-	upgradeAttempted       map[string]bool
-	releasePlan            *releasePlanState
+	persistMu               sync.Mutex
+	mu                      sync.Mutex
+	settings                map[string]any
+	data                    map[string]any
+	instanceStates          map[string]*instanceCache
+	commonIDs               map[string]bool
+	customModels            map[string]map[string]any
+	apiIDOverrides          map[string]string
+	commonRepos             []map[string]any
+	defaultCommonVersion    int
+	customWorkflows         map[string]map[string]any
+	remoteWorkflowVersions  map[string]float64
+	taskActivity            map[string]taskActivitySig
+	taskLogCursor           map[string]int64
+	lastAuth                float64
+	lastConfig              float64
+	lastHeartbeat           float64
+	pendingTouch            bool
+	lastTouch               float64
+	expectedServiceRev      string
+	presetsOnce             sync.Once
+	cachedRawPresets        []map[string]any
+	builtinWFsOnce          sync.Once
+	cachedBuiltinWFs        []map[string]any
+	cachedBuiltinTtsEngines []map[string]any
+	upgradeAttempted        map[string]bool
+	releasePlan             *releasePlanState
 
 	opBusy           atomic.Bool
 	opGen            atomic.Uint64
@@ -252,6 +256,7 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		"account":         map[string]any{"logged_in": false},
 		"models":          c.Presets(),
 		"workflows":       c.mergeWorkflows(nil),
+		"tts_engines":     c.builtinTtsEngines(),
 		"comfy_outputs":   []any{},
 		"operation":       nil,
 		"error":           "",
@@ -507,6 +512,7 @@ func (c *ColabOneController) ensureInstanceStateLocked(endpoint string) *instanc
 			Runtime:                map[string]any{"state": "stopped", "id": endpoint},
 			Models:                 c.Presets(),
 			Workflows:              []map[string]any{},
+			TtsEngines:             []map[string]any{},
 			ComfyOutputs:           []any{},
 			RemoteWorkflowVersions: make(map[string]float64),
 		}
@@ -543,6 +549,7 @@ func (c *ColabOneController) saveActiveToCacheWithSessionsLocked(sessions map[st
 	entry.Runtime = deepCopyMap(rt)
 	entry.Models = deepCopyMapSlice(asMapSlice(c.data["models"]))
 	entry.Workflows = deepCopyMapSlice(asMapSlice(c.data["workflows"]))
+	entry.TtsEngines = deepCopyMapSlice(asMapSlice(c.data["tts_engines"]))
 	entry.ComfyOutputs = deepCopySlice(asAnySlice(c.data["comfy_outputs"]))
 	if entry.ComfyOutputs == nil {
 		entry.ComfyOutputs = []any{}
@@ -576,6 +583,7 @@ func (c *ColabOneController) activateCachedWithSessionsLocked(endpoint string, s
 			c.data["runtime"] = deepCopyMap(entry.Runtime)
 			c.data["models"] = deepCopyMapSlice(entry.Models)
 			c.data["workflows"] = c.mergeWorkflowsLocked(entry.Workflows)
+			c.data["tts_engines"] = c.mergeTtsEngines(entry.TtsEngines)
 			outputs := deepCopySlice(entry.ComfyOutputs)
 			if outputs == nil {
 				outputs = []any{}
@@ -592,6 +600,7 @@ func (c *ColabOneController) activateCachedWithSessionsLocked(endpoint string, s
 	c.data["runtime"] = map[string]any{"state": "stopped"}
 	c.data["models"] = c.Presets()
 	c.data["workflows"] = c.mergeWorkflowsLocked(nil)
+	c.data["tts_engines"] = c.builtinTtsEngines()
 	c.data["comfy_outputs"] = []any{}
 	c.remoteWorkflowVersions = make(map[string]float64)
 }
@@ -847,7 +856,14 @@ func (c *ColabOneController) Snapshot() map[string]any {
 	}
 	decoratedModels := c.decorateModels(asMapSlice(value["models"]), rt)
 	value["models"] = decoratedModels
-	value["workflows"] = c.mergeWorkflows(asMapSlice(value["workflows"]))
+	var remoteWorkflows []map[string]any
+	var remoteTtsEngines []map[string]any
+	if asString(rt["state"]) != "stopped" {
+		remoteWorkflows = asMapSlice(value["workflows"])
+		remoteTtsEngines = asMapSlice(value["tts_engines"])
+	}
+	value["workflows"] = c.mergeWorkflows(remoteWorkflows)
+	value["tts_engines"] = c.mergeTtsEngines(remoteTtsEngines)
 	outputs := asAnySlice(value["comfy_outputs"])
 	if outputs == nil {
 		outputs = []any{}
@@ -992,7 +1008,7 @@ func (c *ColabOneController) Update(values map[string]any) {
 	var activeEP string
 	needSessions := false
 	for k := range values {
-		if k == "runtime" || k == "models" || k == "workflows" || k == "comfy_outputs" {
+		if k == "runtime" || k == "models" || k == "workflows" || k == "tts_engines" || k == "comfy_outputs" {
 			needSessions = true
 			break
 		}
@@ -1221,10 +1237,16 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 		c.taskActivity = nextActivity
 	}
 
+	if rt, ok := values["runtime"].(map[string]any); ok && asString(rt["state"]) == "stopped" {
+		if _, hasTTS := values["tts_engines"]; !hasTTS {
+			c.data["tts_engines"] = c.builtinTtsEngines()
+		}
+	}
+
 	cacheDirty := false
 	for k, v := range values {
 		c.data[k] = deepCopyAny(v)
-		if k == "runtime" || k == "models" || k == "workflows" || k == "comfy_outputs" {
+		if k == "runtime" || k == "models" || k == "workflows" || k == "tts_engines" || k == "comfy_outputs" {
 			cacheDirty = true
 		}
 	}
@@ -1395,6 +1417,42 @@ func (c *ColabOneController) runtimeSupportsAPIAliases(endpoint string) bool {
 		return true
 	}
 	return !asBool(rt["upgrade_available"])
+}
+
+func (c *ColabOneController) hasRemoteCapability(capability string) bool {
+	if capability == "" {
+		return false
+	}
+	c.mu.Lock()
+	rt := asMap(c.data["runtime"])
+	c.mu.Unlock()
+	if rt == nil {
+		return false
+	}
+	for _, item := range asAnySlice(rt["capabilities"]) {
+		if asString(item) == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func validateCleanHFToken(raw string) (string, error) {
+	for _, ch := range raw {
+		if ch == '\r' || ch == '\n' || ch < 0x20 || ch == 0x7f || unicode.IsControl(ch) {
+			return "", errors.New("hf_token 包含非法空白或控制字符")
+		}
+	}
+	trimmed := strings.Trim(raw, " ")
+	for _, ch := range trimmed {
+		if unicode.IsSpace(ch) {
+			return "", errors.New("hf_token 包含非法空白或控制字符")
+		}
+	}
+	if utf8.RuneCountInString(trimmed) > 512 {
+		return "", errors.New("hf_token 长度不能超过 512")
+	}
+	return trimmed, nil
 }
 
 func (c *ColabOneController) syncRemoteAPIIDOverrides(ctx context.Context, endpoint string, background bool) {
@@ -1942,6 +2000,7 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 
 	rawWorkflows := asMapSlice(state["workflows"])
 	mergedWorkflows := c.mergeWorkflows(rawWorkflows)
+	mergedTtsEngines := c.mergeTtsEngines(asMapSlice(state["tts_engines"]))
 	comfyOutputs := asAnySlice(state["comfy_outputs"])
 	if comfyOutputs == nil {
 		comfyOutputs = []any{}
@@ -1995,6 +2054,7 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 		entry.Runtime = deepCopyMap(rt)
 		entry.Models = deepCopyMapSlice(models)
 		entry.Workflows = deepCopyMapSlice(mergedWorkflows)
+		entry.TtsEngines = deepCopyMapSlice(mergedTtsEngines)
 		entry.ComfyOutputs = deepCopySlice(comfyOutputs)
 		verCopy := make(map[string]float64, len(remoteVersions))
 		for k, v := range remoteVersions {
@@ -2010,6 +2070,7 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 			"runtime":       rt,
 			"models":        models,
 			"workflows":     mergedWorkflows,
+			"tts_engines":   mergedTtsEngines,
 			"comfy_outputs": comfyOutputs,
 		}, curSessions, activeEP)
 	}
@@ -2533,6 +2594,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 					"runtime":       map[string]any{"state": "stopped"},
 					"models":        c.Presets(),
 					"workflows":     c.mergeWorkflowsLocked(nil),
+					"tts_engines":   c.builtinTtsEngines(),
 					"comfy_outputs": []any{},
 				})
 				c.mu.Unlock()
@@ -2572,6 +2634,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		c.mu.Lock()
 		c.data["models"] = c.Presets()
 		c.data["workflows"] = c.mergeWorkflowsLocked(nil)
+		c.data["tts_engines"] = c.builtinTtsEngines()
 		c.data["comfy_outputs"] = []any{}
 		c.remoteWorkflowVersions = make(map[string]float64)
 		c.mu.Unlock()
@@ -2811,6 +2874,7 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 			"runtime":       map[string]any{"state": "stopped"},
 			"models":        c.Presets(),
 			"workflows":     c.mergeWorkflowsLocked(nil),
+			"tts_engines":   c.builtinTtsEngines(),
 			"comfy_outputs": []any{},
 		})
 		c.mu.Unlock()
@@ -2982,6 +3046,7 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 					"runtime":       map[string]any{"state": "stopped"},
 					"models":        c.Presets(),
 					"workflows":     c.mergeWorkflowsLocked(nil),
+					"tts_engines":   c.builtinTtsEngines(),
 					"comfy_outputs": []any{},
 				})
 				c.mu.Unlock()
@@ -3668,7 +3733,18 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 		}
 	}
 
-	hfToken := asTrimmedString(payload["hf_token"])
+	hfToken := ""
+	if rawHF, exists := payload["hf_token"]; exists && rawHF != nil {
+		rawStr, ok := rawHF.(string)
+		if !ok {
+			return nil, errors.New("hf_token 格式不合法")
+		}
+		cleaned, err := validateCleanHFToken(rawStr)
+		if err != nil {
+			return nil, err
+		}
+		hfToken = cleaned
+	}
 	if hfToken != "" {
 		if err := c.vault.Set("hf", hfToken); err != nil {
 			return nil, err

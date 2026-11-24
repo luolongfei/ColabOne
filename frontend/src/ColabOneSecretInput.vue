@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Input as AInput } from "ant-design-vue";
 import { PhEye, PhEyeSlash, PhSpinnerGap } from "@phosphor-icons/vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import { colabOnePrivacyActive } from "./colabOnePrivacy";
 import { t } from "./i18n";
 import {
   colabOneResolveSecretInput,
@@ -79,13 +80,17 @@ const isLockedReveal = computed(() =>
   Boolean(props.disabled && showingSaved.value),
 );
 
+const privacyLocked = computed(() => colabOnePrivacyActive.value);
+
 const toggleDisabled = computed(
   () =>
+    privacyLocked.value ||
     loadingSaved.value ||
     (props.disabled && !props.hasSaved && !props.value && !showingSaved.value),
 );
 
 const toggleLabel = computed(() => {
+  if (privacyLocked.value) return t("privacy.secretLockedTooltip");
   if (visible.value) return t("common.hideSecret");
   if (props.hasSaved && !props.value && props.loadSaved) {
     return t("common.revealSavedSecret");
@@ -114,7 +119,7 @@ async function toggleVisibility() {
     loadingSaved.value = true;
     try {
       const saved = await props.loadSaved();
-      if (unmounted || seq !== revealSeq) return;
+      if (unmounted || seq !== revealSeq || privacyLocked.value) return;
       if (props.value) {
         showingSaved.value = false;
         revealedSaved.value = "";
@@ -233,6 +238,16 @@ watch(
   },
 );
 
+watch(
+  colabOnePrivacyActive,
+  (masked) => {
+    if (masked && (visible.value || showingSaved.value || loadingSaved.value)) {
+      hide();
+    }
+  },
+  { immediate: true },
+);
+
 onBeforeUnmount(() => {
   unmounted = true;
   hide();
@@ -262,27 +277,32 @@ defineExpose({ hide });
     @paste="onPaste"
   >
     <template #suffix>
-      <ColabOneTooltip :title="toggleLabel" :disabled="toggleDisabled">
-        <button
-          type="button"
-          class="co-secret-toggle"
-          :class="{ 'is-active': visible }"
-          :disabled="toggleDisabled"
-          :aria-label="toggleLabel"
-          :aria-pressed="visible"
-          @mousedown.prevent
-          @mouseup.prevent
-          @click.stop="toggleVisibility"
-        >
-          <PhSpinnerGap
-            v-if="loadingSaved"
-            :size="15"
-            class="co-secret-spin"
-            aria-hidden="true"
-          />
-          <PhEye v-else-if="visible" :size="15" aria-hidden="true" />
-          <PhEyeSlash v-else :size="15" aria-hidden="true" />
-        </button>
+      <ColabOneTooltip
+        :title="toggleLabel"
+        :disabled="toggleDisabled && !privacyLocked"
+      >
+        <span class="co-secret-toggle-wrap">
+          <button
+            type="button"
+            class="co-secret-toggle"
+            :class="{ 'is-active': visible }"
+            :disabled="toggleDisabled"
+            :aria-label="toggleLabel"
+            :aria-pressed="visible"
+            @mousedown.prevent
+            @mouseup.prevent
+            @click.stop="toggleVisibility"
+          >
+            <PhSpinnerGap
+              v-if="loadingSaved"
+              :size="15"
+              class="co-secret-spin"
+              aria-hidden="true"
+            />
+            <PhEye v-else-if="visible" :size="15" aria-hidden="true" />
+            <PhEyeSlash v-else :size="15" aria-hidden="true" />
+          </button>
+        </span>
       </ColabOneTooltip>
     </template>
   </AInput>
@@ -302,6 +322,12 @@ defineExpose({ hide });
 
 .co-secret-input.is-locked-reveal :deep(input) {
   color: var(--co-secondary-text);
+}
+
+.co-secret-toggle-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .co-secret-toggle {

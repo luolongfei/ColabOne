@@ -4,6 +4,7 @@ package comfyui
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/luolongfei/ColabOne/console/internal/publicapi"
@@ -29,10 +31,14 @@ const (
 	MaxImageInputBytes = 16 * 1024 * 1024
 	// MaxAudioInputBytes is the maximum size of an uploaded ComfyUI input audio file (64 MiB).
 	MaxAudioInputBytes = 64 * 1024 * 1024
+	// MaxWorkflowNestingDepth is the maximum JSON container nesting depth allowed in a workflow.
+	MaxWorkflowNestingDepth = 32
 
 	maxWorkflowNodes = 500
 	maxAutoFields    = 32
 )
+
+var errWorkflowNestingTooDeep = errors.New("工作流 JSON 嵌套层级超过 32 层上限")
 
 // ColabOneOutputMediaSpec describes the media kind and MIME type for a supported output extension.
 type ColabOneOutputMediaSpec struct {
@@ -85,9 +91,10 @@ var (
 	workflowIDRe  = regexp.MustCompile(`\A[a-zA-Z0-9_-]{1,80}\z`)
 	repoSlugRe    = regexp.MustCompile(`\A[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+\z`)
 	githubRepoRe  = regexp.MustCompile(`\Ahttps://github\.com/([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+?)(?:\.git)?/?\z`)
-	assetIDRe     = regexp.MustCompile(`\A[a-f0-9]{32}\z`)
-	pipPkgRe      = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._\-\[\],<>=!~ ]{0,199}\z`)
-	commitSHARe   = regexp.MustCompile(`\A[a-fA-F0-9]{40}\z`)
+	assetIDRe           = regexp.MustCompile(`\A[a-f0-9]{32}\z`)
+	pipPkgRe            = regexp.MustCompile(`\A[A-Za-z0-9](?:[A-Za-z0-9._\[\],<>=!~]|-[A-Za-z0-9._\[\],<>=!~]| +[A-Za-z0-9._\[\],<>=!~])*\z`)
+	pipWhitespaceFlagRe = regexp.MustCompile(`\s-`)
+	commitSHARe         = regexp.MustCompile(`\A[a-fA-F0-9]{40}\z`)
 	sha256AnyRe   = regexp.MustCompile(`\A[a-fA-F0-9]{64}\z`)
 	sha256LowerRe = regexp.MustCompile(`\A[a-f0-9]{64}\z`)
 
@@ -130,6 +137,27 @@ var (
 		"audio": true,
 	}
 
+	allowedNodePatchKinds = map[string]bool{
+		"wav2vec2_hidden_states_hook": true,
+	}
+
+	allowedPipelineKinds = map[string]bool{
+		"comfy_standard": true,
+		"digital_human":  true,
+	}
+
+	allowedVideoBackends = map[string]bool{
+		"infinitetalk":   true,
+		"longcat_avatar": true,
+		"custom":         true,
+	}
+
+	allowedUpscaleModes = map[string]bool{
+		"none":    true,
+		"ai_2x":   true,
+		"lanczos": true,
+	}
+
 	textInputNames = map[string]bool{
 		"text":            true,
 		"prompt":          true,
@@ -138,6 +166,23 @@ var (
 		"string":          true,
 		"positive_prompt": true,
 		"negative_prompt": true,
+	}
+
+	excludedTextInputNames = map[string]bool{
+		"model_name":     true,
+		"precision":      true,
+		"quantization":   true,
+		"device":         true,
+		"load_device":    true,
+		"base_precision": true,
+		"attention_mode": true,
+	}
+
+	imageInputExtensions = map[string]bool{
+		"png":  true,
+		"jpg":  true,
+		"jpeg": true,
+		"webp": true,
 	}
 
 	imageLoaderInputNames = map[string]bool{
@@ -262,6 +307,13 @@ func decodeStrictJSONObject(data []byte, dst any, nullableKeys ...string) error 
 }
 
 func validateWorkflowNumbers(v any) error {
+	return validateWorkflowNumbersDepth(v, 0)
+}
+
+func validateWorkflowNumbersDepth(v any, depth int) error {
+	if depth > MaxWorkflowNestingDepth {
+		return errWorkflowNestingTooDeep
+	}
 	switch x := v.(type) {
 	case nil, bool, string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return nil
@@ -289,22 +341,31 @@ func validateWorkflowNumbers(v any) error {
 		}
 		return nil
 	case map[string]any:
+		if depth >= MaxWorkflowNestingDepth {
+			return errWorkflowNestingTooDeep
+		}
 		for _, item := range x {
-			if err := validateWorkflowNumbers(item); err != nil {
+			if err := validateWorkflowNumbersDepth(item, depth+1); err != nil {
 				return err
 			}
 		}
 		return nil
 	case map[string]map[string]any:
+		if depth >= MaxWorkflowNestingDepth {
+			return errWorkflowNestingTooDeep
+		}
 		for _, item := range x {
-			if err := validateWorkflowNumbers(item); err != nil {
+			if err := validateWorkflowNumbersDepth(item, depth+1); err != nil {
 				return err
 			}
 		}
 		return nil
 	case []any:
+		if depth >= MaxWorkflowNestingDepth {
+			return errWorkflowNestingTooDeep
+		}
 		for _, item := range x {
-			if err := validateWorkflowNumbers(item); err != nil {
+			if err := validateWorkflowNumbersDepth(item, depth+1); err != nil {
 				return err
 			}
 		}
@@ -313,21 +374,82 @@ func validateWorkflowNumbers(v any) error {
 		rv := reflect.ValueOf(v)
 		switch rv.Kind() {
 		case reflect.Slice, reflect.Array:
+			if depth >= MaxWorkflowNestingDepth {
+				return errWorkflowNestingTooDeep
+			}
 			for i := 0; i < rv.Len(); i++ {
-				if err := validateWorkflowNumbers(rv.Index(i).Interface()); err != nil {
+				if err := validateWorkflowNumbersDepth(rv.Index(i).Interface(), depth+1); err != nil {
 					return err
 				}
 			}
 		case reflect.Map:
+			if depth >= MaxWorkflowNestingDepth {
+				return errWorkflowNestingTooDeep
+			}
 			iter := rv.MapRange()
 			for iter.Next() {
-				if err := validateWorkflowNumbers(iter.Value().Interface()); err != nil {
+				if err := validateWorkflowNumbersDepth(iter.Value().Interface(), depth+1); err != nil {
 					return err
 				}
 			}
 		}
 		return nil
 	}
+}
+
+func validateSafeNodeName(raw string) (string, error) {
+	if utf8.RuneCountInString(raw) > 120 {
+		return "", errors.New("自定义节点名称不合法")
+	}
+	name := strings.TrimSpace(raw)
+	if name == "" ||
+		strings.HasPrefix(name, ".") ||
+		strings.Contains(name, "..") ||
+		strings.ContainsAny(name, `/\:`+"\x00") ||
+		utf8.RuneCountInString(name) > 120 {
+		return "", errors.New("自定义节点名称不合法")
+	}
+	return name, nil
+}
+
+func validateSafePipPackages(pkgs []string) ([]string, error) {
+	if len(pkgs) > 64 {
+		return nil, errors.New("pip 依赖数量不能超过 64 个")
+	}
+	cleaned := make([]string, 0, len(pkgs))
+	for _, item := range pkgs {
+		pkg := strings.TrimSpace(item)
+		if pkg == "" ||
+			len(pkg) > 200 ||
+			strings.HasPrefix(pkg, "-") ||
+			strings.Contains(pkg, "--") ||
+			pipWhitespaceFlagRe.MatchString(pkg) ||
+			strings.Contains(pkg, "://") ||
+			strings.Contains(pkg, "..") ||
+			!pipPkgRe.MatchString(pkg) {
+			return nil, fmt.Errorf("非法的 pip 依赖声明: %q", item)
+		}
+		cleaned = append(cleaned, pkg)
+	}
+	return cleaned, nil
+}
+
+func validateCleanHFToken(raw string) (string, error) {
+	for _, ch := range raw {
+		if ch == '\r' || ch == '\n' || ch < 0x20 || ch == 0x7f || unicode.IsControl(ch) {
+			return "", errors.New("hf_token 包含非法空白或控制字符")
+		}
+	}
+	trimmed := strings.Trim(raw, " ")
+	for _, ch := range trimmed {
+		if unicode.IsSpace(ch) {
+			return "", errors.New("hf_token 包含非法空白或控制字符")
+		}
+	}
+	if utf8.RuneCountInString(raw) > 512 || utf8.RuneCountInString(trimmed) > 512 {
+		return "", errors.New("hf_token 长度不能超过 512")
+	}
+	return trimmed, nil
 }
 
 func validateOwnerRepo(value, message string) (string, error) {
@@ -371,6 +493,31 @@ func validateFieldKey(key string) (string, string, error) {
 
 func isFiniteFloat64(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+func isStrictIntValue(v any) bool {
+	switch x := v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	case json.Number:
+		if _, err := strconv.ParseInt(string(x), 10, 64); err == nil {
+			return true
+		}
+		_, err := strconv.ParseUint(string(x), 10, 64)
+		return err == nil
+	default:
+		return false
+	}
+}
+
+func coerceIntegralFloatToInt64(f float64) (int64, bool) {
+	if !isFiniteFloat64(f) || math.Trunc(f) != f {
+		return 0, false
+	}
+	if f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
+		return 0, false
+	}
+	return int64(f), true
 }
 
 func isIntValue(v any) bool {
@@ -724,17 +871,9 @@ func (s *ColabOneComfyNodeSpec) UnmarshalJSON(data []byte) error {
 
 // Validate normalizes and validates a ColabOneComfyNodeSpec.
 func (s *ColabOneComfyNodeSpec) Validate() error {
-	if utf8.RuneCountInString(s.Name) > 120 {
-		return errors.New("自定义节点名称不合法")
-	}
-	name := strings.TrimSpace(s.Name)
-	if name == "" ||
-		name == "." ||
-		name == ".." ||
-		strings.Contains(name, "..") ||
-		strings.ContainsAny(name, `/\:`+"\x00") ||
-		utf8.RuneCountInString(name) > 120 {
-		return errors.New("自定义节点名称不合法")
+	name, err := validateSafeNodeName(s.Name)
+	if err != nil {
+		return err
 	}
 	s.Name = name
 
@@ -752,6 +891,37 @@ func (s *ColabOneComfyNodeSpec) Validate() error {
 
 	if !commitSHARe.MatchString(s.Commit) {
 		return errors.New("commit 必须为 40 位十六进制 SHA")
+	}
+	return nil
+}
+
+// ColabOneComfyNodePatch declares an allowlisted named runtime patch for a pinned custom node.
+type ColabOneComfyNodePatch struct {
+	NodeName string `json:"node_name"`
+	Kind     string `json:"kind"`
+}
+
+// UnmarshalJSON decodes a ColabOneComfyNodePatch with unknown fields and nulls forbidden.
+func (p *ColabOneComfyNodePatch) UnmarshalJSON(data []byte) error {
+	type alias ColabOneComfyNodePatch
+	var aux alias
+	if err := decodeStrictJSONObject(data, &aux); err != nil {
+		return err
+	}
+	*p = ColabOneComfyNodePatch(aux)
+	return nil
+}
+
+// Validate normalizes and validates a ColabOneComfyNodePatch.
+func (p *ColabOneComfyNodePatch) Validate() error {
+	name, err := validateSafeNodeName(p.NodeName)
+	if err != nil {
+		return err
+	}
+	p.NodeName = name
+
+	if !allowedNodePatchKinds[p.Kind] {
+		return errors.New("节点补丁类型不合法")
 	}
 	return nil
 }
@@ -829,35 +999,474 @@ func validateModelFilePath(value string) error {
 	return nil
 }
 
+// ColabOneComfyTtsEngineSpec declares a pinned remote GPU TTS engine for digital-human pipelines.
+type ColabOneComfyTtsEngineSpec struct {
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description"`
+	Repo                string   `json:"repo"`
+	Revision            string   `json:"revision"`
+	AuxRepo             string   `json:"aux_repo"`
+	AuxRevision         string   `json:"aux_revision"`
+	License             string   `json:"license"`
+	CommercialOK        bool     `json:"commercial_ok"`
+	LicenseNotice       string   `json:"license_notice"`
+	MinVRAMMib          int      `json:"min_vram_mib"`
+	SampleRate          int      `json:"sample_rate"`
+	SupportsVoiceClone  bool     `json:"supports_voice_clone"`
+	SupportsVoiceDesign bool     `json:"supports_voice_design"`
+	SupportsEmotionRef  bool     `json:"supports_emotion_ref"`
+	SupportsInlineTags  bool     `json:"supports_inline_tags"`
+	PipPackages         []string `json:"pip_packages"`
+	SourceRepo          string   `json:"source_repo"`
+	SourceCommit        string   `json:"source_commit"`
+}
+
+// UnmarshalJSON decodes a ColabOneComfyTtsEngineSpec with unknown fields forbidden and
+// Pydantic-parity defaults for license, commercial_ok, sample_rate, and supports_voice_clone.
+func (s *ColabOneComfyTtsEngineSpec) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID                  string    `json:"id"`
+		Name                string    `json:"name"`
+		Description         string    `json:"description"`
+		Repo                string    `json:"repo"`
+		Revision            string    `json:"revision"`
+		AuxRepo             string    `json:"aux_repo"`
+		AuxRevision         string    `json:"aux_revision"`
+		License             *string   `json:"license"`
+		CommercialOK        *bool     `json:"commercial_ok"`
+		LicenseNotice       string    `json:"license_notice"`
+		MinVRAMMib          int       `json:"min_vram_mib"`
+		SampleRate          *int      `json:"sample_rate"`
+		SupportsVoiceClone  *bool     `json:"supports_voice_clone"`
+		SupportsVoiceDesign bool      `json:"supports_voice_design"`
+		SupportsEmotionRef  bool      `json:"supports_emotion_ref"`
+		SupportsInlineTags  bool      `json:"supports_inline_tags"`
+		PipPackages         []*string `json:"pip_packages"`
+		SourceRepo          string    `json:"source_repo"`
+		SourceCommit        string    `json:"source_commit"`
+	}
+	if err := decodeStrictJSONObject(data, &raw); err != nil {
+		return err
+	}
+	license := "Apache-2.0"
+	if raw.License != nil {
+		if strings.TrimSpace(*raw.License) == "" {
+			return errors.New("许可协议名称不能为空")
+		}
+		license = *raw.License
+	}
+	commercialOK := true
+	if raw.CommercialOK != nil {
+		commercialOK = *raw.CommercialOK
+	}
+	sampleRate := 48000
+	if raw.SampleRate != nil {
+		if *raw.SampleRate == 0 {
+			return errors.New("TTS 采样率必须在 8000 到 96000 之间")
+		}
+		sampleRate = *raw.SampleRate
+	}
+	supportsVoiceClone := true
+	if raw.SupportsVoiceClone != nil {
+		supportsVoiceClone = *raw.SupportsVoiceClone
+	}
+	pipPackages := make([]string, 0, len(raw.PipPackages))
+	for _, pkg := range raw.PipPackages {
+		if pkg == nil {
+			return errors.New("字段 pip_packages 不能为空值")
+		}
+		pipPackages = append(pipPackages, *pkg)
+	}
+	*s = ColabOneComfyTtsEngineSpec{
+		ID:                  raw.ID,
+		Name:                raw.Name,
+		Description:         raw.Description,
+		Repo:                raw.Repo,
+		Revision:            raw.Revision,
+		AuxRepo:             raw.AuxRepo,
+		AuxRevision:         raw.AuxRevision,
+		License:             license,
+		CommercialOK:        commercialOK,
+		LicenseNotice:       raw.LicenseNotice,
+		MinVRAMMib:          raw.MinVRAMMib,
+		SampleRate:          sampleRate,
+		SupportsVoiceClone:  supportsVoiceClone,
+		SupportsVoiceDesign: raw.SupportsVoiceDesign,
+		SupportsEmotionRef:  raw.SupportsEmotionRef,
+		SupportsInlineTags:  raw.SupportsInlineTags,
+		PipPackages:         pipPackages,
+		SourceRepo:          raw.SourceRepo,
+		SourceCommit:        raw.SourceCommit,
+	}
+	return nil
+}
+
+// Validate normalizes and validates a ColabOneComfyTtsEngineSpec.
+func (s *ColabOneComfyTtsEngineSpec) Validate() error {
+	if !workflowIDRe.MatchString(s.ID) {
+		return errors.New("TTS 引擎 ID 不合法")
+	}
+	if utf8.RuneCountInString(s.Name) > 160 {
+		return errors.New("TTS 引擎名称长度不合法")
+	}
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		return errors.New("TTS 引擎名称不能为空")
+	}
+	s.Name = name
+
+	if utf8.RuneCountInString(s.Description) > 1000 {
+		return errors.New("TTS 引擎描述长度不能超过 1000")
+	}
+
+	if utf8.RuneCountInString(s.Repo) > 300 {
+		return errors.New("需要 Hugging Face 的 owner/repository")
+	}
+	repo, err := validateOwnerRepo(s.Repo, "需要 Hugging Face 的 owner/repository")
+	if err != nil {
+		return err
+	}
+	if utf8.RuneCountInString(repo) > 300 {
+		return errors.New("需要 Hugging Face 的 owner/repository")
+	}
+	s.Repo = repo
+
+	if !commitSHARe.MatchString(s.Revision) {
+		return errors.New("revision 必须为 40 位十六进制 SHA")
+	}
+
+	if s.AuxRepo != "" {
+		if utf8.RuneCountInString(s.AuxRepo) > 300 {
+			return errors.New("需要 Hugging Face 的 owner/repository")
+		}
+		auxRepo, err := validateOwnerRepo(s.AuxRepo, "需要 Hugging Face 的 owner/repository")
+		if err != nil {
+			return err
+		}
+		if utf8.RuneCountInString(auxRepo) > 300 {
+			return errors.New("需要 Hugging Face 的 owner/repository")
+		}
+		s.AuxRepo = auxRepo
+	}
+	if s.AuxRevision != "" && !commitSHARe.MatchString(s.AuxRevision) {
+		return errors.New("aux_revision 必须为 40 位十六进制 SHA")
+	}
+	if s.AuxRepo != "" && s.AuxRevision == "" {
+		return errors.New("设置 aux_repo 时必须提供 40 位十六进制 aux_revision")
+	}
+
+	if s.License == "" {
+		s.License = "Apache-2.0"
+	}
+	if utf8.RuneCountInString(s.License) > 160 {
+		return errors.New("许可协议名称长度不合法")
+	}
+	lic := strings.TrimSpace(s.License)
+	if lic == "" {
+		return errors.New("许可协议名称不能为空")
+	}
+	s.License = lic
+
+	if utf8.RuneCountInString(s.LicenseNotice) > 600 {
+		return errors.New("许可协议提示长度不能超过 600")
+	}
+	if s.MinVRAMMib < 0 {
+		return errors.New("最低显存需求不能为负数")
+	}
+	if s.SampleRate == 0 {
+		s.SampleRate = 48000
+	}
+	if s.SampleRate < 8000 || s.SampleRate > 96000 {
+		return errors.New("TTS 采样率必须在 8000 到 96000 之间")
+	}
+
+	cleanedPip, err := validateSafePipPackages(s.PipPackages)
+	if err != nil {
+		return err
+	}
+	s.PipPackages = cleanedPip
+
+	if s.SourceRepo != "" {
+		if utf8.RuneCountInString(s.SourceRepo) > 300 {
+			return errors.New("GitHub 仓库地址不合法")
+		}
+		sourceRepo, err := validateGitHubOrSlug(s.SourceRepo)
+		if err != nil {
+			return err
+		}
+		if utf8.RuneCountInString(sourceRepo) > 300 {
+			return errors.New("GitHub 仓库地址不合法")
+		}
+		s.SourceRepo = sourceRepo
+	}
+	if s.SourceCommit != "" && !commitSHARe.MatchString(s.SourceCommit) {
+		return errors.New("source_commit 必须为 40 位十六进制 SHA")
+	}
+	return nil
+}
+
+// ColabOneComfyPipelineSpec declares optional multi-stage pipeline configuration for a workflow template.
+type ColabOneComfyPipelineSpec struct {
+	Kind                   string   `json:"kind"`
+	VideoBackend           string   `json:"video_backend"`
+	DefaultTtsEngine       string   `json:"default_tts_engine"`
+	SupportedTtsEngines    []string `json:"supported_tts_engines"`
+	MaxSegmentSeconds      float64  `json:"max_segment_seconds"`
+	TailFrameOffsetSeconds float64  `json:"tail_frame_offset_seconds"`
+	OutputFPS              int      `json:"output_fps"`
+	TargetWidth            int      `json:"target_width"`
+	TargetHeight           int      `json:"target_height"`
+	UpscaleMode            string   `json:"upscale_mode"`
+	AudioNodeKey           string   `json:"audio_node_key"`
+	ImageNodeKey           string   `json:"image_node_key"`
+	PromptNodeKey          string   `json:"prompt_node_key"`
+	FramesNodeKey          string   `json:"frames_node_key"`
+	WidthNodeKey           string   `json:"width_node_key"`
+	HeightNodeKey          string   `json:"height_node_key"`
+	FPSNodeKey             string   `json:"fps_node_key"`
+	StepsNodeKey           string   `json:"steps_node_key"`
+	SeedNodeKey            string   `json:"seed_node_key"`
+}
+
+// UnmarshalJSON decodes a ColabOneComfyPipelineSpec with unknown fields forbidden and
+// Pydantic-parity defaults when fields are omitted.
+func (p *ColabOneComfyPipelineSpec) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Kind                   *string   `json:"kind"`
+		VideoBackend           *string   `json:"video_backend"`
+		DefaultTtsEngine       *string   `json:"default_tts_engine"`
+		SupportedTtsEngines    []*string `json:"supported_tts_engines"`
+		MaxSegmentSeconds      *float64  `json:"max_segment_seconds"`
+		TailFrameOffsetSeconds *float64  `json:"tail_frame_offset_seconds"`
+		OutputFPS              *int      `json:"output_fps"`
+		TargetWidth            *int      `json:"target_width"`
+		TargetHeight           *int      `json:"target_height"`
+		UpscaleMode            *string   `json:"upscale_mode"`
+		AudioNodeKey           string    `json:"audio_node_key"`
+		ImageNodeKey           string    `json:"image_node_key"`
+		PromptNodeKey          string    `json:"prompt_node_key"`
+		FramesNodeKey          string    `json:"frames_node_key"`
+		WidthNodeKey           string    `json:"width_node_key"`
+		HeightNodeKey          string    `json:"height_node_key"`
+		FPSNodeKey             string    `json:"fps_node_key"`
+		StepsNodeKey           string    `json:"steps_node_key"`
+		SeedNodeKey            string    `json:"seed_node_key"`
+	}
+	if err := decodeStrictJSONObject(data, &raw); err != nil {
+		return err
+	}
+
+	kind := "comfy_standard"
+	if raw.Kind != nil {
+		if *raw.Kind == "" {
+			return errors.New("流水线类型不合法")
+		}
+		kind = *raw.Kind
+	}
+	videoBackend := "custom"
+	if raw.VideoBackend != nil {
+		if *raw.VideoBackend == "" {
+			return errors.New("视频生成后端不合法")
+		}
+		videoBackend = *raw.VideoBackend
+	}
+	defaultTtsEngine := "voxcpm2"
+	if raw.DefaultTtsEngine != nil {
+		defaultTtsEngine = *raw.DefaultTtsEngine
+	}
+	supportedTtsEngines := make([]string, 0, len(raw.SupportedTtsEngines))
+	for _, eng := range raw.SupportedTtsEngines {
+		if eng == nil {
+			return errors.New("字段 supported_tts_engines 不能为空值")
+		}
+		supportedTtsEngines = append(supportedTtsEngines, *eng)
+	}
+	maxSegmentSeconds := 45.0
+	if raw.MaxSegmentSeconds != nil {
+		if *raw.MaxSegmentSeconds == 0 {
+			return errors.New("分段时长必须在 5.0 到 300.0 秒之间")
+		}
+		maxSegmentSeconds = *raw.MaxSegmentSeconds
+	}
+	tailFrameOffsetSeconds := 0.08
+	if raw.TailFrameOffsetSeconds != nil {
+		tailFrameOffsetSeconds = *raw.TailFrameOffsetSeconds
+	}
+	outputFPS := 25
+	if raw.OutputFPS != nil {
+		if *raw.OutputFPS == 0 {
+			return errors.New("输出帧率必须在 1 到 60 之间")
+		}
+		outputFPS = *raw.OutputFPS
+	}
+	targetWidth := 1280
+	if raw.TargetWidth != nil {
+		if *raw.TargetWidth == 0 {
+			return errors.New("目标宽度必须在 64 到 4096 之间")
+		}
+		targetWidth = *raw.TargetWidth
+	}
+	targetHeight := 720
+	if raw.TargetHeight != nil {
+		if *raw.TargetHeight == 0 {
+			return errors.New("目标高度必须在 64 到 4096 之间")
+		}
+		targetHeight = *raw.TargetHeight
+	}
+	upscaleMode := "none"
+	if raw.UpscaleMode != nil {
+		if *raw.UpscaleMode == "" {
+			return errors.New("超分模式不合法")
+		}
+		upscaleMode = *raw.UpscaleMode
+	}
+
+	*p = ColabOneComfyPipelineSpec{
+		Kind:                   kind,
+		VideoBackend:           videoBackend,
+		DefaultTtsEngine:       defaultTtsEngine,
+		SupportedTtsEngines:    supportedTtsEngines,
+		MaxSegmentSeconds:      maxSegmentSeconds,
+		TailFrameOffsetSeconds: tailFrameOffsetSeconds,
+		OutputFPS:              outputFPS,
+		TargetWidth:            targetWidth,
+		TargetHeight:           targetHeight,
+		UpscaleMode:            upscaleMode,
+		AudioNodeKey:           raw.AudioNodeKey,
+		ImageNodeKey:           raw.ImageNodeKey,
+		PromptNodeKey:          raw.PromptNodeKey,
+		FramesNodeKey:          raw.FramesNodeKey,
+		WidthNodeKey:           raw.WidthNodeKey,
+		HeightNodeKey:          raw.HeightNodeKey,
+		FPSNodeKey:             raw.FPSNodeKey,
+		StepsNodeKey:           raw.StepsNodeKey,
+		SeedNodeKey:            raw.SeedNodeKey,
+	}
+	return nil
+}
+
+// Validate normalizes and validates a ColabOneComfyPipelineSpec.
+func (p *ColabOneComfyPipelineSpec) Validate() error {
+	if p.Kind == "" {
+		p.Kind = "comfy_standard"
+	}
+	if !allowedPipelineKinds[p.Kind] {
+		return errors.New("流水线类型不合法")
+	}
+	if p.VideoBackend == "" {
+		p.VideoBackend = "custom"
+	}
+	if !allowedVideoBackends[p.VideoBackend] {
+		return errors.New("视频生成后端不合法")
+	}
+	if p.DefaultTtsEngine != "" && !workflowIDRe.MatchString(p.DefaultTtsEngine) {
+		return fmt.Errorf("非法的 TTS 引擎 ID: %q", p.DefaultTtsEngine)
+	}
+	if len(p.SupportedTtsEngines) > 16 {
+		return errors.New("支持的 TTS 引擎数量不能超过 16 个")
+	}
+	for _, engineID := range p.SupportedTtsEngines {
+		if !workflowIDRe.MatchString(engineID) {
+			return fmt.Errorf("非法的 TTS 引擎 ID: %q", engineID)
+		}
+	}
+	if p.SupportedTtsEngines == nil {
+		p.SupportedTtsEngines = []string{}
+	}
+	if p.MaxSegmentSeconds == 0 {
+		p.MaxSegmentSeconds = 45.0
+	}
+	if !isFiniteFloat64(p.MaxSegmentSeconds) || p.MaxSegmentSeconds < 5.0 || p.MaxSegmentSeconds > 300.0 {
+		return errors.New("分段时长必须在 5.0 到 300.0 秒之间")
+	}
+	if !isFiniteFloat64(p.TailFrameOffsetSeconds) || p.TailFrameOffsetSeconds < 0.0 || p.TailFrameOffsetSeconds > 1.0 {
+		return errors.New("尾帧回退偏移必须在 0.0 到 1.0 秒之间")
+	}
+	if p.OutputFPS == 0 {
+		p.OutputFPS = 25
+	}
+	if p.OutputFPS < 1 || p.OutputFPS > 60 {
+		return errors.New("输出帧率必须在 1 到 60 之间")
+	}
+	if p.TargetWidth == 0 {
+		p.TargetWidth = 1280
+	}
+	if p.TargetWidth < 64 || p.TargetWidth > 4096 {
+		return errors.New("目标宽度必须在 64 到 4096 之间")
+	}
+	if p.TargetHeight == 0 {
+		p.TargetHeight = 720
+	}
+	if p.TargetHeight < 64 || p.TargetHeight > 4096 {
+		return errors.New("目标高度必须在 64 到 4096 之间")
+	}
+	if p.UpscaleMode == "" {
+		p.UpscaleMode = "none"
+	}
+	if !allowedUpscaleModes[p.UpscaleMode] {
+		return errors.New("超分模式不合法")
+	}
+
+	for _, nodeKey := range []string{
+		p.AudioNodeKey,
+		p.ImageNodeKey,
+		p.PromptNodeKey,
+		p.FramesNodeKey,
+		p.WidthNodeKey,
+		p.HeightNodeKey,
+		p.FPSNodeKey,
+		p.StepsNodeKey,
+		p.SeedNodeKey,
+	} {
+		if nodeKey != "" {
+			if _, _, err := validateFieldKey(nodeKey); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ColabOneWorkflowField describes an editable parameter extracted from or declared on a workflow.
 type ColabOneWorkflowField struct {
-	Key       string   `json:"key"`
-	Label     string   `json:"label"`
-	NodeID    string   `json:"node_id"`
-	InputName string   `json:"input_name"`
-	FieldType string   `json:"field_type"`
-	Default   any      `json:"default"`
-	Options   []string `json:"options"`
-	MinValue  *float64 `json:"min_value"`
-	MaxValue  *float64 `json:"max_value"`
-	Step      *float64 `json:"step"`
+	Key          string            `json:"key"`
+	Label        string            `json:"label"`
+	NodeID       string            `json:"node_id"`
+	InputName    string            `json:"input_name"`
+	FieldType    string            `json:"field_type"`
+	Default      any               `json:"default"`
+	Options      []string          `json:"options"`
+	MinValue     *float64          `json:"min_value"`
+	MaxValue     *float64          `json:"max_value"`
+	Step         *float64          `json:"step"`
+	Description  string            `json:"description"`
+	Group        string            `json:"group"`
+	Required     bool              `json:"required"`
+	VisibleWhen  map[string]any    `json:"visible_when"`
+	OptionLabels map[string]string `json:"option_labels"`
 }
 
 // UnmarshalJSON decodes a ColabOneWorkflowField with unknown fields forbidden.
 func (f *ColabOneWorkflowField) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Key       string    `json:"key"`
-		Label     string    `json:"label"`
-		NodeID    string    `json:"node_id"`
-		InputName string    `json:"input_name"`
-		FieldType string    `json:"field_type"`
-		Default   any       `json:"default"`
-		Options   []*string `json:"options"`
-		MinValue  *float64  `json:"min_value"`
-		MaxValue  *float64  `json:"max_value"`
-		Step      *float64  `json:"step"`
+		Key          string             `json:"key"`
+		Label        string             `json:"label"`
+		NodeID       string             `json:"node_id"`
+		InputName    string             `json:"input_name"`
+		FieldType    string             `json:"field_type"`
+		Default      any                `json:"default"`
+		Options      []*string          `json:"options"`
+		MinValue     *float64           `json:"min_value"`
+		MaxValue     *float64           `json:"max_value"`
+		Step         *float64           `json:"step"`
+		Description  string             `json:"description"`
+		Group        string             `json:"group"`
+		Required     bool               `json:"required"`
+		VisibleWhen  map[string]any     `json:"visible_when"`
+		OptionLabels map[string]*string `json:"option_labels"`
 	}
-	if err := decodeStrictJSONObject(data, &raw, "default", "min_value", "max_value", "step"); err != nil {
+	if err := decodeStrictJSONObject(data, &raw, "default", "min_value", "max_value", "step", "visible_when"); err != nil {
 		return err
 	}
 	options := make([]string, 0, len(raw.Options))
@@ -867,17 +1476,37 @@ func (f *ColabOneWorkflowField) UnmarshalJSON(data []byte) error {
 		}
 		options = append(options, *opt)
 	}
+	optionLabels := make(map[string]string, len(raw.OptionLabels))
+	if len(raw.OptionLabels) > 0 {
+		keys := make([]string, 0, len(raw.OptionLabels))
+		for k := range raw.OptionLabels {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := raw.OptionLabels[k]
+			if v == nil {
+				return errors.New("字段 option_labels 不能为空值")
+			}
+			optionLabels[k] = *v
+		}
+	}
 	*f = ColabOneWorkflowField{
-		Key:       raw.Key,
-		Label:     raw.Label,
-		NodeID:    raw.NodeID,
-		InputName: raw.InputName,
-		FieldType: raw.FieldType,
-		Default:   raw.Default,
-		Options:   options,
-		MinValue:  raw.MinValue,
-		MaxValue:  raw.MaxValue,
-		Step:      raw.Step,
+		Key:          raw.Key,
+		Label:        raw.Label,
+		NodeID:       raw.NodeID,
+		InputName:    raw.InputName,
+		FieldType:    raw.FieldType,
+		Default:      raw.Default,
+		Options:      options,
+		MinValue:     raw.MinValue,
+		MaxValue:     raw.MaxValue,
+		Step:         raw.Step,
+		Description:  raw.Description,
+		Group:        raw.Group,
+		Required:     raw.Required,
+		VisibleWhen:  raw.VisibleWhen,
+		OptionLabels: optionLabels,
 	}
 	return nil
 }
@@ -933,8 +1562,38 @@ func (f *ColabOneWorkflowField) Validate() error {
 	if f.Step != nil && !isFiniteFloat64(*f.Step) {
 		return fmt.Errorf("字段 %s 包含非法浮点值", f.Key)
 	}
+	if utf8.RuneCountInString(f.Description) > 400 {
+		return errors.New("字段描述长度不能超过 400")
+	}
+	if utf8.RuneCountInString(f.Group) > 64 {
+		return errors.New("字段分组名称长度不能超过 64")
+	}
+	if f.VisibleWhen != nil {
+		keys := make([]string, 0, len(f.VisibleWhen))
+		for k := range f.VisibleWhen {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if _, _, err := validateFieldKey(k); err != nil {
+				return err
+			}
+			switch f.VisibleWhen[k].(type) {
+			case string, bool:
+			default:
+				return fmt.Errorf("visible_when 条件 %s 的值必须为字符串或布尔值", k)
+			}
+		}
+	}
 	if f.Key != f.NodeID+"."+f.InputName {
 		return errors.New("字段 key 必须为 {node_id}.{input_name}")
+	}
+	parsedNodeID, parsedInputName, err := validateFieldKey(f.Key)
+	if err != nil {
+		return err
+	}
+	if parsedNodeID != f.NodeID || parsedInputName != f.InputName {
+		return fmt.Errorf("非法字段键: %q", f.Key)
 	}
 	if f.MinValue != nil && f.MaxValue != nil && *f.MinValue > *f.MaxValue {
 		return errors.New("min_value 不能大于 max_value")
@@ -942,44 +1601,61 @@ func (f *ColabOneWorkflowField) Validate() error {
 	if f.Options == nil {
 		f.Options = []string{}
 	}
+	if f.OptionLabels == nil {
+		f.OptionLabels = map[string]string{}
+	}
 	return nil
 }
 
 // ColabOneWorkflowTemplate represents a built-in or user-imported ComfyUI workflow template.
 type ColabOneWorkflowTemplate struct {
-	ID          string                  `json:"id"`
-	Name        string                  `json:"name"`
-	Description string                  `json:"description"`
-	Source      string                  `json:"source"`
-	MinVRAMMib  int                     `json:"min_vram_mib"`
-	CreatedAt   float64                 `json:"created_at"`
-	UpdatedAt   float64                 `json:"updated_at"`
-	CustomNodes []ColabOneComfyNodeSpec `json:"custom_nodes"`
-	PipPackages []string                `json:"pip_packages"`
-	Models      []ColabOneComfyModelRef `json:"models"`
-	Workflow    map[string]any          `json:"workflow"`
-	Fields      []ColabOneWorkflowField `json:"fields"`
-	NodeCount   int                     `json:"node_count"`
+	ID             string                     `json:"id"`
+	Name           string                     `json:"name"`
+	Description    string                     `json:"description"`
+	Source         string                     `json:"source"`
+	MinVRAMMib     int                        `json:"min_vram_mib"`
+	MinDiskMib     int                        `json:"min_disk_mib"`
+	RecommendedGPU string                     `json:"recommended_gpu"`
+	License        string                     `json:"license"`
+	CommercialOK   bool                       `json:"commercial_ok"`
+	LicenseNotice  string                     `json:"license_notice"`
+	CreatedAt      float64                    `json:"created_at"`
+	UpdatedAt      float64                    `json:"updated_at"`
+	CustomNodes    []ColabOneComfyNodeSpec    `json:"custom_nodes"`
+	NodePatches    []ColabOneComfyNodePatch   `json:"node_patches"`
+	PipPackages    []string                   `json:"pip_packages"`
+	Models         []ColabOneComfyModelRef    `json:"models"`
+	Pipeline       *ColabOneComfyPipelineSpec `json:"pipeline"`
+	Workflow       map[string]any             `json:"workflow"`
+	Fields         []ColabOneWorkflowField    `json:"fields"`
+	NodeCount      int                        `json:"node_count"`
 }
 
 // UnmarshalJSON decodes a ColabOneWorkflowTemplate with unknown fields forbidden.
 func (t *ColabOneWorkflowTemplate) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID          string                  `json:"id"`
-		Name        string                  `json:"name"`
-		Description string                  `json:"description"`
-		Source      *string                 `json:"source"`
-		MinVRAMMib  int                     `json:"min_vram_mib"`
-		CreatedAt   float64                 `json:"created_at"`
-		UpdatedAt   float64                 `json:"updated_at"`
-		CustomNodes []ColabOneComfyNodeSpec `json:"custom_nodes"`
-		PipPackages []string                `json:"pip_packages"`
-		Models      []ColabOneComfyModelRef `json:"models"`
-		Workflow    map[string]any          `json:"workflow"`
-		Fields      []ColabOneWorkflowField `json:"fields"`
-		NodeCount   int                     `json:"node_count"`
+		ID             string                     `json:"id"`
+		Name           string                     `json:"name"`
+		Description    string                     `json:"description"`
+		Source         *string                    `json:"source"`
+		MinVRAMMib     int                        `json:"min_vram_mib"`
+		MinDiskMib     int                        `json:"min_disk_mib"`
+		RecommendedGPU string                     `json:"recommended_gpu"`
+		License        string                     `json:"license"`
+		CommercialOK   *bool                      `json:"commercial_ok"`
+		LicenseNotice  string                     `json:"license_notice"`
+		CreatedAt      float64                    `json:"created_at"`
+		UpdatedAt      float64                    `json:"updated_at"`
+		CustomNodes    []ColabOneComfyNodeSpec    `json:"custom_nodes"`
+		NodePatches    []ColabOneComfyNodePatch   `json:"node_patches"`
+		PipPackages    []*string                  `json:"pip_packages"`
+		Models         []ColabOneComfyModelRef    `json:"models"`
+		Pipeline       *ColabOneComfyPipelineSpec `json:"pipeline"`
+		Workflow       map[string]any             `json:"workflow"`
+		Fields         []ColabOneWorkflowField    `json:"fields"`
+		NodeCount      int                        `json:"node_count"`
 	}
-	if err := decodeStrictJSONObject(data, &raw); err != nil {
+	if err := decodeStrictJSONObject(data, &raw, "pipeline"); err != nil {
 		return err
 	}
 	source := "custom"
@@ -989,20 +1665,54 @@ func (t *ColabOneWorkflowTemplate) UnmarshalJSON(data []byte) error {
 		}
 		source = *raw.Source
 	}
+	commercialOK := true
+	if raw.CommercialOK != nil {
+		commercialOK = *raw.CommercialOK
+	}
+	pipPackages := make([]string, 0, len(raw.PipPackages))
+	for _, pkg := range raw.PipPackages {
+		if pkg == nil {
+			return errors.New("字段 pip_packages 不能为空值")
+		}
+		pipPackages = append(pipPackages, *pkg)
+	}
+	customNodes := raw.CustomNodes
+	if customNodes == nil {
+		customNodes = []ColabOneComfyNodeSpec{}
+	}
+	nodePatches := raw.NodePatches
+	if nodePatches == nil {
+		nodePatches = []ColabOneComfyNodePatch{}
+	}
+	models := raw.Models
+	if models == nil {
+		models = []ColabOneComfyModelRef{}
+	}
+	fields := raw.Fields
+	if fields == nil {
+		fields = []ColabOneWorkflowField{}
+	}
 	*t = ColabOneWorkflowTemplate{
-		ID:          raw.ID,
-		Name:        raw.Name,
-		Description: raw.Description,
-		Source:      source,
-		MinVRAMMib:  raw.MinVRAMMib,
-		CreatedAt:   raw.CreatedAt,
-		UpdatedAt:   raw.UpdatedAt,
-		CustomNodes: raw.CustomNodes,
-		PipPackages: raw.PipPackages,
-		Models:      raw.Models,
-		Workflow:    raw.Workflow,
-		Fields:      raw.Fields,
-		NodeCount:   raw.NodeCount,
+		ID:             raw.ID,
+		Name:           raw.Name,
+		Description:    raw.Description,
+		Source:         source,
+		MinVRAMMib:     raw.MinVRAMMib,
+		MinDiskMib:     raw.MinDiskMib,
+		RecommendedGPU: raw.RecommendedGPU,
+		License:        raw.License,
+		CommercialOK:   commercialOK,
+		LicenseNotice:  raw.LicenseNotice,
+		CreatedAt:      raw.CreatedAt,
+		UpdatedAt:      raw.UpdatedAt,
+		CustomNodes:    customNodes,
+		NodePatches:    nodePatches,
+		PipPackages:    pipPackages,
+		Models:         models,
+		Pipeline:       raw.Pipeline,
+		Workflow:       raw.Workflow,
+		Fields:         fields,
+		NodeCount:      raw.NodeCount,
 	}
 	return nil
 }
@@ -1036,6 +1746,18 @@ func (t *ColabOneWorkflowTemplate) Validate() error {
 	if t.MinVRAMMib < 0 {
 		return errors.New("最低显存需求不能为负数")
 	}
+	if t.MinDiskMib < 0 {
+		return errors.New("最低磁盘空间需求不能为负数")
+	}
+	if utf8.RuneCountInString(t.RecommendedGPU) > 120 {
+		return errors.New("推荐 GPU 描述长度不能超过 120")
+	}
+	if utf8.RuneCountInString(t.License) > 160 {
+		return errors.New("工作流许可协议长度不能超过 160")
+	}
+	if utf8.RuneCountInString(t.LicenseNotice) > 600 {
+		return errors.New("工作流许可协议提示长度不能超过 600")
+	}
 	if !isFiniteFloat64(t.CreatedAt) || t.CreatedAt < 0 {
 		return errors.New("创建时间不合法")
 	}
@@ -1055,20 +1777,21 @@ func (t *ColabOneWorkflowTemplate) Validate() error {
 		t.CustomNodes = []ColabOneComfyNodeSpec{}
 	}
 
-	if len(t.PipPackages) > 64 {
-		return errors.New("pip 依赖数量不能超过 64 个")
+	if len(t.NodePatches) > 16 {
+		return errors.New("节点补丁数量不能超过 16 个")
 	}
-	cleanedPip := make([]string, 0, len(t.PipPackages))
-	for _, item := range t.PipPackages {
-		pkg := strings.TrimSpace(item)
-		if pkg == "" ||
-			strings.HasPrefix(pkg, "-") ||
-			strings.Contains(pkg, "://") ||
-			strings.Contains(pkg, "..") ||
-			!pipPkgRe.MatchString(pkg) {
-			return fmt.Errorf("非法的 pip 依赖声明: %q", item)
+	for i := range t.NodePatches {
+		if err := t.NodePatches[i].Validate(); err != nil {
+			return err
 		}
-		cleanedPip = append(cleanedPip, pkg)
+	}
+	if t.NodePatches == nil {
+		t.NodePatches = []ColabOneComfyNodePatch{}
+	}
+
+	cleanedPip, err := validateSafePipPackages(t.PipPackages)
+	if err != nil {
+		return err
 	}
 	t.PipPackages = cleanedPip
 
@@ -1082,6 +1805,28 @@ func (t *ColabOneWorkflowTemplate) Validate() error {
 	}
 	if t.Models == nil {
 		t.Models = []ColabOneComfyModelRef{}
+	}
+
+	if t.Pipeline != nil {
+		if err := t.Pipeline.Validate(); err != nil {
+			return err
+		}
+	}
+
+	if t.Source != "builtin" && (len(t.CustomNodes) > 0 || len(t.PipPackages) > 0 || len(t.NodePatches) > 0 || len(t.Models) > 0 || t.Pipeline != nil) {
+		return errors.New("自定义工作流模板不允许声明远端依赖包、模型下载或流水线配置")
+	}
+
+	if len(t.NodePatches) > 0 {
+		customNodeNames := make(map[string]struct{}, len(t.CustomNodes))
+		for _, cn := range t.CustomNodes {
+			customNodeNames[cn.Name] = struct{}{}
+		}
+		for _, patch := range t.NodePatches {
+			if _, ok := customNodeNames[patch.NodeName]; !ok {
+				return fmt.Errorf("节点补丁引用的自定义节点不存在: %s", patch.NodeName)
+			}
+		}
 	}
 
 	normalized, err := ValidateComfyAPIWorkflow(t.Workflow)
@@ -1158,6 +1903,17 @@ type ColabOneWorkflowRunRequest struct {
 	WorkflowID string            `json:"workflow_id"`
 	Overrides  map[string]any    `json:"overrides"`
 	Inputs     map[string]string `json:"inputs"`
+	HFToken    string            `json:"hf_token,omitempty"`
+}
+
+// String redacts HFToken so logging a ColabOneWorkflowRunRequest never leaks credentials.
+func (r ColabOneWorkflowRunRequest) String() string {
+	return fmt.Sprintf("ColabOneWorkflowRunRequest{WorkflowID:%q, Overrides:%v, Inputs:%v, HFToken:[redacted]}", r.WorkflowID, r.Overrides, r.Inputs)
+}
+
+// GoString redacts HFToken when formatted with %#v.
+func (r ColabOneWorkflowRunRequest) GoString() string {
+	return r.String()
 }
 
 // UnmarshalJSON decodes a ColabOneWorkflowRunRequest with unknown fields forbidden.
@@ -1176,6 +1932,11 @@ func (r *ColabOneWorkflowRunRequest) Validate() error {
 	if !workflowIDRe.MatchString(r.WorkflowID) {
 		return errors.New("工作流 ID 不合法")
 	}
+	cleanedTok, err := validateCleanHFToken(r.HFToken)
+	if err != nil {
+		return err
+	}
+	r.HFToken = cleanedTok
 	if len(r.Overrides) > 128 {
 		return errors.New("参数覆盖项数量不能超过 128 个")
 	}
@@ -1417,26 +2178,28 @@ func (c *ColabOneComfyCanvasConfig) Validate() error {
 	return nil
 }
 
-// ColabOneComfyCatalog describes the pinned ComfyUI repository, ports, and built-in templates.
+// ColabOneComfyCatalog describes the pinned ComfyUI repository, ports, built-in templates, and TTS engines.
 type ColabOneComfyCatalog struct {
-	Repo      string                     `json:"repo"`
-	Tag       string                     `json:"tag"`
-	Commit    string                     `json:"commit"`
-	Port      int                        `json:"port"`
-	ProxyPort int                        `json:"proxy_port"`
-	Templates []ColabOneWorkflowTemplate `json:"templates"`
+	Repo       string                       `json:"repo"`
+	Tag        string                       `json:"tag"`
+	Commit     string                       `json:"commit"`
+	Port       int                          `json:"port"`
+	ProxyPort  int                          `json:"proxy_port"`
+	Templates  []ColabOneWorkflowTemplate   `json:"templates"`
+	TtsEngines []ColabOneComfyTtsEngineSpec `json:"tts_engines"`
 }
 
 // UnmarshalJSON decodes a ColabOneComfyCatalog with unknown fields forbidden and
 // default ports 8188 / 8189 when omitted.
 func (c *ColabOneComfyCatalog) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Repo      string                     `json:"repo"`
-		Tag       string                     `json:"tag"`
-		Commit    string                     `json:"commit"`
-		Port      *int                       `json:"port"`
-		ProxyPort *int                       `json:"proxy_port"`
-		Templates []ColabOneWorkflowTemplate `json:"templates"`
+		Repo       string                       `json:"repo"`
+		Tag        string                       `json:"tag"`
+		Commit     string                       `json:"commit"`
+		Port       *int                         `json:"port"`
+		ProxyPort  *int                         `json:"proxy_port"`
+		Templates  []ColabOneWorkflowTemplate   `json:"templates"`
+		TtsEngines []ColabOneComfyTtsEngineSpec `json:"tts_engines"`
 	}
 	if err := decodeStrictJSONObject(data, &raw); err != nil {
 		return err
@@ -1455,18 +2218,27 @@ func (c *ColabOneComfyCatalog) UnmarshalJSON(data []byte) error {
 		}
 		proxyPort = *raw.ProxyPort
 	}
+	templates := raw.Templates
+	if templates == nil {
+		templates = []ColabOneWorkflowTemplate{}
+	}
+	ttsEngines := raw.TtsEngines
+	if ttsEngines == nil {
+		ttsEngines = []ColabOneComfyTtsEngineSpec{}
+	}
 	*c = ColabOneComfyCatalog{
-		Repo:      raw.Repo,
-		Tag:       raw.Tag,
-		Commit:    raw.Commit,
-		Port:      port,
-		ProxyPort: proxyPort,
-		Templates: raw.Templates,
+		Repo:       raw.Repo,
+		Tag:        raw.Tag,
+		Commit:     raw.Commit,
+		Port:       port,
+		ProxyPort:  proxyPort,
+		Templates:  templates,
+		TtsEngines: ttsEngines,
 	}
 	return nil
 }
 
-// Validate normalizes and validates a ColabOneComfyCatalog and all embedded templates.
+// Validate normalizes and validates a ColabOneComfyCatalog, all embedded templates, and TTS engines.
 func (c *ColabOneComfyCatalog) Validate() error {
 	repo, err := validateGitHubOrSlug(c.Repo)
 	if err != nil {
@@ -1510,12 +2282,138 @@ func (c *ColabOneComfyCatalog) Validate() error {
 		}
 		seenIDs[id] = struct{}{}
 	}
+
+	if c.TtsEngines == nil {
+		c.TtsEngines = []ColabOneComfyTtsEngineSpec{}
+	}
+	seenEngineIDs := make(map[string]struct{}, len(c.TtsEngines))
+	for i := range c.TtsEngines {
+		if err := c.TtsEngines[i].Validate(); err != nil {
+			return err
+		}
+		id := c.TtsEngines[i].ID
+		if _, dup := seenEngineIDs[id]; dup {
+			return errors.New("内置 TTS 引擎 ID 重复")
+		}
+		seenEngineIDs[id] = struct{}{}
+	}
+
+	if len(c.TtsEngines) > 0 {
+		for _, tpl := range c.Templates {
+			if tpl.Pipeline == nil {
+				continue
+			}
+			if tpl.Pipeline.DefaultTtsEngine != "" {
+				if _, ok := seenEngineIDs[tpl.Pipeline.DefaultTtsEngine]; !ok {
+					return fmt.Errorf("工作流模板 %s 引用了未定义的默认 TTS 引擎: %s", tpl.ID, tpl.Pipeline.DefaultTtsEngine)
+				}
+			}
+			for _, engineID := range tpl.Pipeline.SupportedTtsEngines {
+				if _, ok := seenEngineIDs[engineID]; !ok {
+					return fmt.Errorf("工作流模板 %s 引用了未定义的 TTS 引擎: %s", tpl.ID, engineID)
+				}
+			}
+		}
+	}
 	return nil
 }
 
 // ---------------------------------------------------------------------------
 // Core pure workflow functions
 // ---------------------------------------------------------------------------
+
+// ValidateComfyInputUpload validates a ComfyUI input media upload payload locally
+// before transmission: safe basename (no path separators or traversal), supported
+// extension in AllowedInputExtensions, valid non-empty base64 (optionally wrapped
+// in a data: URI), and exact 16 MiB image / 64 MiB audio byte caps.
+func ValidateComfyInputUpload(filename, dataB64 string) error {
+	name := strings.TrimSpace(filename)
+	if name == "" ||
+		utf8.RuneCountInString(name) > 255 ||
+		name == "." ||
+		name == ".." ||
+		strings.ContainsAny(name, `/\`+"\x00") {
+		return errors.New("输入文件名不合法")
+	}
+	dotExt := path.Ext(name)
+	ext := ""
+	if dotExt != "" && len(name) > len(dotExt) {
+		ext = strings.ToLower(strings.TrimPrefix(dotExt, "."))
+	}
+	if ext == "" || !AllowedInputExtensions[ext] {
+		displayExt := ext
+		if displayExt == "" {
+			displayExt = "未知"
+		}
+		return fmt.Errorf("不支持的输入文件格式：%s", displayExt)
+	}
+
+	maxBytes := MaxAudioInputBytes
+	if imageInputExtensions[ext] {
+		maxBytes = MaxImageInputBytes
+	}
+	limitMB := maxBytes / (1024 * 1024)
+
+	payload := strings.TrimSpace(dataB64)
+	if payload == "" {
+		return errors.New("输入文件内容为空")
+	}
+	if strings.HasPrefix(payload, "data:") {
+		_, after, ok := strings.Cut(payload, ",")
+		if !ok {
+			return errors.New("输入文件编码格式无效")
+		}
+		payload = after
+	}
+
+	maxEncodedLen := maxBytes + maxBytes/2 + 4096
+	if len(payload) > maxEncodedLen {
+		return fmt.Errorf("输入文件超过大小限制（最大 %d MB）", limitMB)
+	}
+
+	clean := payload
+	if strings.IndexFunc(payload, unicode.IsSpace) >= 0 {
+		clean = strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return -1
+			}
+			return r
+		}, payload)
+	}
+	if clean == "" {
+		return errors.New("输入文件内容为空")
+	}
+	if len(clean)%4 != 0 {
+		return errors.New("输入文件 Base64 编码无效")
+	}
+
+	const b64ChunkSize = 4096 // multiple of 4
+	var decodeBuf [(b64ChunkSize / 4) * 3]byte
+	totalDecoded := 0
+	for offset := 0; offset < len(clean); offset += b64ChunkSize {
+		end := offset + b64ChunkSize
+		isLast := end >= len(clean)
+		if isLast {
+			end = len(clean)
+		}
+		chunk := clean[offset:end]
+		if !isLast && strings.IndexByte(chunk, '=') >= 0 {
+			return errors.New("输入文件 Base64 编码无效")
+		}
+		n, err := base64.StdEncoding.Decode(decodeBuf[:], []byte(chunk))
+		if err != nil {
+			return errors.New("输入文件 Base64 编码无效")
+		}
+		totalDecoded += n
+		if totalDecoded > maxBytes {
+			return fmt.Errorf("输入文件超过大小限制（最大 %d MB）", limitMB)
+		}
+	}
+	if totalDecoded == 0 {
+		return errors.New("输入文件内容为空")
+	}
+	return nil
+}
 
 // ValidateComfyAPIWorkflow validates a ComfyUI API-format workflow JSON object,
 // rejects canvas-format exports, enforces node count and serialized size limits,
@@ -1539,6 +2437,9 @@ func ValidateComfyAPIWorkflow(workflow map[string]any) (map[string]map[string]an
 		return nil, fmt.Errorf("工作流节点数量不能超过 %d 个", maxWorkflowNodes)
 	}
 	if err := validateWorkflowNumbers(workflow); err != nil {
+		if errors.Is(err, errWorkflowNestingTooDeep) {
+			return nil, err
+		}
 		return nil, errors.New("工作流包含无法序列化的内容")
 	}
 	encoded, err := encodeWorkflowJSON(workflow)
@@ -1611,6 +2512,9 @@ func ExtractWorkflowFields(workflow map[string]any) []ColabOneWorkflowField {
 	}
 
 	for _, nodeID := range nodeIDs {
+		if nodeID != "pipeline" && !nodeIDRe.MatchString(nodeID) {
+			continue
+		}
 		node, ok := workflow[nodeID].(map[string]any)
 		if !ok || node == nil {
 			continue
@@ -1651,13 +2555,14 @@ func ExtractWorkflowFields(workflow map[string]any) []ColabOneWorkflowField {
 						priority:  0,
 						inputName: inputName,
 						field: ColabOneWorkflowField{
-							Key:       key,
-							Label:     trimLabel(title + " · 参考图片"),
-							NodeID:    nodeID,
-							InputName: inputName,
-							FieldType: "image",
-							Default:   strVal,
-							Options:   []string{},
+							Key:          key,
+							Label:        trimLabel(title + " · 参考图片"),
+							NodeID:       nodeID,
+							InputName:    inputName,
+							FieldType:    "image",
+							Default:      strVal,
+							Options:      []string{},
+							OptionLabels: map[string]string{},
 						},
 					})
 					continue
@@ -1672,34 +2577,37 @@ func ExtractWorkflowFields(workflow map[string]any) []ColabOneWorkflowField {
 						priority:  1,
 						inputName: inputName,
 						field: ColabOneWorkflowField{
-							Key:       key,
-							Label:     trimLabel(title + " · 输入音频"),
-							NodeID:    nodeID,
-							InputName: inputName,
-							FieldType: "audio",
-							Default:   strVal,
-							Options:   []string{},
+							Key:          key,
+							Label:        trimLabel(title + " · 输入音频"),
+							NodeID:       nodeID,
+							InputName:    inputName,
+							FieldType:    "audio",
+							Default:      strVal,
+							Options:      []string{},
+							OptionLabels: map[string]string{},
 						},
 					})
 					continue
 				}
 
-				if strings.Contains(ctLower, "text") ||
-					strings.Contains(ctLower, "prompt") ||
-					strings.Contains(ctLower, "string") ||
-					textInputNames[nameLower] {
+				if !excludedTextInputNames[nameLower] &&
+					(strings.Contains(ctLower, "text") ||
+						strings.Contains(ctLower, "prompt") ||
+						strings.Contains(ctLower, "string") ||
+						textInputNames[nameLower]) {
 					label, priority := promptLabelAndPriority(title, ctLower, nameLower)
 					nodeFields = append(nodeFields, candidateField{
 						priority:  priority,
 						inputName: inputName,
 						field: ColabOneWorkflowField{
-							Key:       key,
-							Label:     label,
-							NodeID:    nodeID,
-							InputName: inputName,
-							FieldType: "textarea",
-							Default:   strVal,
-							Options:   []string{},
+							Key:          key,
+							Label:        label,
+							NodeID:       nodeID,
+							InputName:    inputName,
+							FieldType:    "textarea",
+							Default:      strVal,
+							Options:      []string{},
+							OptionLabels: map[string]string{},
 						},
 					})
 					continue
@@ -1724,16 +2632,17 @@ func ExtractWorkflowFields(workflow map[string]any) []ColabOneWorkflowField {
 						priority:  spec.priority,
 						inputName: inputName,
 						field: ColabOneWorkflowField{
-							Key:       key,
-							Label:     trimLabel(title + " · " + spec.cnName),
-							NodeID:    nodeID,
-							InputName: inputName,
-							FieldType: spec.fieldType,
-							Default:   defaultVal,
-							Options:   []string{},
-							MinValue:  copyFloatPtr(spec.minValue),
-							MaxValue:  copyFloatPtr(spec.maxValue),
-							Step:      copyFloatPtr(spec.step),
+							Key:          key,
+							Label:        trimLabel(title + " · " + spec.cnName),
+							NodeID:       nodeID,
+							InputName:    inputName,
+							FieldType:    spec.fieldType,
+							Default:      defaultVal,
+							Options:      []string{},
+							MinValue:     copyFloatPtr(spec.minValue),
+							MaxValue:     copyFloatPtr(spec.maxValue),
+							Step:         copyFloatPtr(spec.step),
+							OptionLabels: map[string]string{},
 						},
 					})
 				}
@@ -1806,6 +2715,7 @@ func ApplyWorkflowOverrides(
 			if !ok {
 				continue
 			}
+			existing := inputs[inputName]
 			val := overrides[key]
 			switch v := val.(type) {
 			case bool:
@@ -1813,13 +2723,26 @@ func ApplyWorkflowOverrides(
 			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 				inputs[inputName] = v
 			case float32:
-				if !isFiniteFloat64(float64(v)) {
+				f := float64(v)
+				if !isFiniteFloat64(f) {
 					return nil, fmt.Errorf("字段 %s 包含非法浮点值", key)
+				}
+				if isStrictIntValue(existing) {
+					if n, ok := coerceIntegralFloatToInt64(f); ok {
+						inputs[inputName] = n
+						break
+					}
 				}
 				inputs[inputName] = v
 			case float64:
 				if !isFiniteFloat64(v) {
 					return nil, fmt.Errorf("字段 %s 包含非法浮点值", key)
+				}
+				if isStrictIntValue(existing) {
+					if n, ok := coerceIntegralFloatToInt64(v); ok {
+						inputs[inputName] = n
+						break
+					}
 				}
 				inputs[inputName] = v
 			case json.Number:
@@ -1828,6 +2751,12 @@ func ApplyWorkflowOverrides(
 				} else if u, err := strconv.ParseUint(string(v), 10, 64); err == nil {
 					inputs[inputName] = u
 				} else if f, err := strconv.ParseFloat(string(v), 64); err == nil && isFiniteFloat64(f) {
+					if isStrictIntValue(existing) {
+						if n, ok := coerceIntegralFloatToInt64(f); ok {
+							inputs[inputName] = n
+							break
+						}
+					}
 					inputs[inputName] = f
 				} else {
 					return nil, fmt.Errorf("字段 %s 包含非法浮点值", key)

@@ -17,6 +17,7 @@ from common.public_api import (
 )
 
 MAX_WORKFLOW_BYTES = 2 * 1024 * 1024  # 2 MiB
+MAX_WORKFLOW_NESTING_DEPTH = 32
 MAX_OUTPUT_BYTES = 512 * 1024 * 1024  # 512 MiB
 MAX_IMAGE_INPUT_BYTES = 16 * 1024 * 1024  # 16 MiB
 MAX_AUDIO_INPUT_BYTES = 64 * 1024 * 1024  # 64 MiB
@@ -46,14 +47,65 @@ ALLOWED_INPUT_EXTENSIONS: set[str] = {
     "m4a",
 }
 
+ALLOWED_MODEL_TARGET_DIRS: tuple[str, ...] = (
+    "checkpoints",
+    "diffusion_models",
+    "loras",
+    "vae",
+    "text_encoders",
+    "clip_vision",
+    "wav2vec2",
+    "controlnet",
+    "upscale_models",
+    "audio_encoders",
+)
+
 _MAX_WORKFLOW_NODES = 500
 _MAX_AUTO_FIELDS = 32
-_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_:-]{1,80}$")
-_REPO_SLUG_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
-_GITHUB_REPO_RE = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
-_ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}$")
-_PIP_PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\],<>=!~ ]{0,199}$")
+_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9_:-]{1,80}$", re.ASCII)
+_WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$", re.ASCII)
+_REPO_SLUG_RE = re.compile(r"^[\w.-]+/[\w.-]+$", re.ASCII)
+_GITHUB_REPO_RE = re.compile(
+    r"^https://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", re.ASCII
+)
+_ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}$", re.ASCII)
+_PIP_PKG_RE = re.compile(
+    r"^(?!.*--)(?!.*\s-)[A-Za-z0-9][A-Za-z0-9._\-\[\],<>=!~ ]{0,199}$",
+    re.ASCII,
+)
 _COMFY_MODEL_EXTENSIONS = (".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin")
+
+
+def _validate_safe_node_name(value: str) -> str:
+    name = value.strip()
+    if (
+        not name
+        or name.startswith(".")
+        or name in (".", "..")
+        or ".." in name
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+        or "\x00" in name
+    ):
+        raise ValueError("自定义节点名称不合法")
+    return name
+
+
+def _validate_pip_packages(value: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for item in value:
+        pkg = item.strip()
+        if (
+            not pkg
+            or pkg.startswith("-")
+            or "://" in pkg
+            or ".." in pkg
+            or not _PIP_PKG_RE.fullmatch(pkg)
+        ):
+            raise ValueError(f"非法的 pip 依赖声明: {item!r}")
+        cleaned.append(pkg)
+    return cleaned
 
 
 def _validate_owner_repo(value: str, message: str = "需要 owner/repository") -> str:
@@ -80,7 +132,11 @@ def _validate_field_key(key: str) -> tuple[str, str]:
     if not isinstance(key, str) or not key or len(key) > 160 or "." not in key:
         raise ValueError(f"非法字段键: {key!r}")
     node_id, input_name = key.split(".", 1)
-    if not _NODE_ID_RE.fullmatch(node_id) or not input_name or len(input_name) > 80:
+    if (
+        (node_id != "pipeline" and not _NODE_ID_RE.fullmatch(node_id))
+        or not input_name
+        or len(input_name) > 80
+    ):
         raise ValueError(f"非法字段键: {key!r}")
     return node_id, input_name
 
@@ -97,7 +153,7 @@ def _is_node_link(value: Any) -> bool:
 
 
 def _node_sort_key(node_id: str) -> tuple[int, int, str]:
-    if node_id.isdigit():
+    if node_id.isascii() and node_id.isdigit():
         return (0, int(node_id), node_id)
     return (1, 0, node_id)
 
@@ -124,23 +180,23 @@ class ComfyNodeSpec(BaseModel):
     @field_validator("name")
     @classmethod
     def safe_name(cls, value: str) -> str:
-        name = value.strip()
-        if (
-            not name
-            or name in (".", "..")
-            or ".." in name
-            or "/" in name
-            or "\\" in name
-            or ":" in name
-            or "\x00" in name
-        ):
-            raise ValueError("自定义节点名称不合法")
-        return name
+        return _validate_safe_node_name(value)
 
     @field_validator("repo")
     @classmethod
     def valid_repo(cls, value: str) -> str:
         return _validate_github_or_slug(value)
+
+
+class ComfyNodePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    node_name: str = Field(min_length=1, max_length=120)
+    kind: Literal["wav2vec2_hidden_states_hook"]
+
+    @field_validator("node_name")
+    @classmethod
+    def safe_node_name(cls, value: str) -> str:
+        return _validate_safe_node_name(value)
 
 
 class ComfyModelRef(BaseModel):
@@ -194,6 +250,126 @@ class ComfyModelRef(BaseModel):
         return value.lower()
 
 
+class ComfyTtsEngineSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=1000)
+    repo: str = Field(min_length=1, max_length=300)
+    revision: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
+    aux_repo: str = Field(default="", max_length=300)
+    aux_revision: str = Field(default="", pattern=r"^(?:[a-fA-F0-9]{40})?$")
+    license: str = Field(default="Apache-2.0", min_length=1, max_length=160)
+    commercial_ok: bool = True
+    license_notice: str = Field(default="", max_length=600)
+    min_vram_mib: int = Field(default=0, ge=0)
+    sample_rate: int = Field(default=48000, ge=8000, le=96000)
+    supports_voice_clone: bool = True
+    supports_voice_design: bool = False
+    supports_emotion_ref: bool = False
+    supports_inline_tags: bool = False
+    pip_packages: list[str] = Field(default_factory=list, max_length=64)
+    source_repo: str = Field(default="", max_length=300)
+    source_commit: str = Field(default="", pattern=r"^(?:[a-fA-F0-9]{40})?$")
+
+    @field_validator("name")
+    @classmethod
+    def non_blank_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("TTS 引擎名称不能为空")
+        return name
+
+    @field_validator("license")
+    @classmethod
+    def non_blank_license(cls, value: str) -> str:
+        lic = value.strip()
+        if not lic:
+            raise ValueError("许可协议名称不能为空")
+        return lic
+
+    @field_validator("repo")
+    @classmethod
+    def valid_repo(cls, value: str) -> str:
+        return _validate_owner_repo(value, "需要 Hugging Face 的 owner/repository")
+
+    @field_validator("aux_repo")
+    @classmethod
+    def valid_aux_repo(cls, value: str) -> str:
+        if not value:
+            return ""
+        return _validate_owner_repo(value, "需要 Hugging Face 的 owner/repository")
+
+    @field_validator("pip_packages")
+    @classmethod
+    def safe_pip_packages(cls, value: list[str]) -> list[str]:
+        return _validate_pip_packages(value)
+
+    @field_validator("source_repo")
+    @classmethod
+    def valid_source_repo(cls, value: str) -> str:
+        if not value:
+            return ""
+        return _validate_github_or_slug(value)
+
+    @model_validator(mode="after")
+    def consistent_aux(self):
+        if self.aux_repo and not self.aux_revision:
+            raise ValueError("设置 aux_repo 时必须提供 40 位十六进制 aux_revision")
+        return self
+
+
+class ComfyPipelineSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    kind: Literal["comfy_standard", "digital_human"] = "comfy_standard"
+    video_backend: Literal["infinitetalk", "longcat_avatar", "custom"] = "custom"
+    default_tts_engine: str = Field(
+        default="voxcpm2", max_length=80, pattern=r"^(?:[a-zA-Z0-9_-]{1,80})?$"
+    )
+    supported_tts_engines: list[str] = Field(default_factory=list, max_length=16)
+    max_segment_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
+    tail_frame_offset_seconds: float = Field(default=0.08, ge=0.0, le=1.0)
+    output_fps: int = Field(default=25, ge=1, le=60)
+    target_width: int = Field(default=1280, ge=64, le=4096)
+    target_height: int = Field(default=720, ge=64, le=4096)
+    upscale_mode: Literal["none", "ai_2x", "lanczos"] = "none"
+    audio_node_key: str = Field(default="", max_length=160)
+    image_node_key: str = Field(default="", max_length=160)
+    prompt_node_key: str = Field(default="", max_length=160)
+    frames_node_key: str = Field(default="", max_length=160)
+    width_node_key: str = Field(default="", max_length=160)
+    height_node_key: str = Field(default="", max_length=160)
+    fps_node_key: str = Field(default="", max_length=160)
+    steps_node_key: str = Field(default="", max_length=160)
+    seed_node_key: str = Field(default="", max_length=160)
+
+    @field_validator("supported_tts_engines")
+    @classmethod
+    def valid_supported_tts_engines(cls, value: list[str]) -> list[str]:
+        for engine_id in value:
+            if not isinstance(engine_id, str) or not _WORKFLOW_ID_RE.fullmatch(engine_id):
+                raise ValueError(f"非法的 TTS 引擎 ID: {engine_id!r}")
+        return value
+
+    @field_validator(
+        "audio_node_key",
+        "image_node_key",
+        "prompt_node_key",
+        "frames_node_key",
+        "width_node_key",
+        "height_node_key",
+        "fps_node_key",
+        "steps_node_key",
+        "seed_node_key",
+    )
+    @classmethod
+    def valid_node_key(cls, value: str) -> str:
+        if not value:
+            return ""
+        _validate_field_key(value)
+        return value
+
+
 class WorkflowField(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     key: str = Field(min_length=1, max_length=160)
@@ -215,12 +391,31 @@ class WorkflowField(BaseModel):
     min_value: float | None = None
     max_value: float | None = None
     step: float | None = None
+    description: str = Field(default="", max_length=400)
+    group: str = Field(default="", max_length=64)
+    required: bool = False
+    visible_when: dict[str, str | bool] | None = None
+    option_labels: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("visible_when")
+    @classmethod
+    def valid_visible_when(
+        cls, value: dict[str, str | bool] | None
+    ) -> dict[str, str | bool] | None:
+        if value is None:
+            return None
+        for key in value:
+            _validate_field_key(key)
+        return value
 
     @model_validator(mode="after")
     def consistent(self):
         expected_key = f"{self.node_id}.{self.input_name}"
         if self.key != expected_key:
             raise ValueError("字段 key 必须为 {node_id}.{input_name}")
+        parsed_node_id, parsed_input_name = _validate_field_key(self.key)
+        if parsed_node_id != self.node_id or parsed_input_name != self.input_name:
+            raise ValueError(f"非法字段键: {self.key!r}")
         if (
             self.min_value is not None
             and self.max_value is not None
@@ -228,6 +423,29 @@ class WorkflowField(BaseModel):
         ):
             raise ValueError("min_value 不能大于 max_value")
         return self
+
+
+def _check_workflow_nesting_depth(
+    value: Any, max_depth: int = MAX_WORKFLOW_NESTING_DEPTH
+) -> None:
+    """Iteratively cap JSON container nesting depth before serialization/deepcopy."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if isinstance(current, dict):
+            children = current.values()
+        elif isinstance(current, (list, tuple)):
+            children = current
+        else:
+            continue
+        if depth > max_depth:
+            raise ValueError(f"工作流 JSON 嵌套层级超过 {max_depth} 层上限")
+        next_depth = depth + 1
+        for child in children:
+            if isinstance(child, (dict, list, tuple)):
+                if next_depth > max_depth:
+                    raise ValueError(f"工作流 JSON 嵌套层级超过 {max_depth} 层上限")
+                stack.append((child, next_depth))
 
 
 def validate_comfy_api_workflow(workflow: Any) -> dict[str, dict[str, Any]]:
@@ -245,6 +463,7 @@ def validate_comfy_api_workflow(workflow: Any) -> dict[str, dict[str, Any]]:
         )
     if len(workflow) > _MAX_WORKFLOW_NODES:
         raise ValueError(f"工作流节点数量不能超过 {_MAX_WORKFLOW_NODES} 个")
+    _check_workflow_nesting_depth(workflow, MAX_WORKFLOW_NESTING_DEPTH)
     try:
         encoded = json.dumps(
             workflow, ensure_ascii=False, allow_nan=False, separators=(",", ":")
@@ -314,6 +533,16 @@ _TEXT_INPUT_NAMES = {
     "negative_prompt",
 }
 
+_NON_PROMPT_STRING_INPUT_NAMES = {
+    "model_name",
+    "precision",
+    "quantization",
+    "device",
+    "load_device",
+    "base_precision",
+    "attention_mode",
+}
+
 _IMAGE_LOADER_INPUT_NAMES = {"image", "image_path", "file", "filename"}
 _AUDIO_LOADER_INPUT_NAMES = {"audio", "audio_file", "audio_path", "file", "filename"}
 
@@ -348,6 +577,8 @@ def extract_workflow_fields(workflow: dict[str, Any]) -> list[WorkflowField]:
     for node_id in sorted(
         (k for k in workflow if isinstance(k, str)), key=_node_sort_key
     ):
+        if node_id != "pipeline" and not _NODE_ID_RE.fullmatch(node_id):
+            continue
         node = workflow.get(node_id)
         if not isinstance(node, dict):
             continue
@@ -423,9 +654,13 @@ def extract_workflow_fields(workflow: dict[str, Any]) -> list[WorkflowField]:
                 )
                 continue
 
-            if isinstance(val, str) and (
-                any(tok in ct_lower for tok in ("text", "prompt", "string"))
-                or name_lower in _TEXT_INPUT_NAMES
+            if (
+                isinstance(val, str)
+                and name_lower not in _NON_PROMPT_STRING_INPUT_NAMES
+                and (
+                    any(tok in ct_lower for tok in ("text", "prompt", "string"))
+                    or name_lower in _TEXT_INPUT_NAMES
+                )
             ):
                 label, priority = _prompt_label_and_priority(title, ct_lower, name_lower)
                 node_fields.append(
@@ -516,7 +751,15 @@ def apply_workflow_overrides(
             elif isinstance(value, float):
                 if not math.isfinite(value):
                     raise ValueError(f"字段 {key} 包含非法浮点值")
-                inputs[input_name] = value
+                existing = inputs[input_name]
+                if (
+                    isinstance(existing, int)
+                    and not isinstance(existing, bool)
+                    and value.is_integer()
+                ):
+                    inputs[input_name] = int(value)
+                else:
+                    inputs[input_name] = value
             elif isinstance(value, str):
                 inputs[input_name] = value
 
@@ -534,17 +777,24 @@ def apply_workflow_overrides(
 
 
 class WorkflowTemplate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=1000)
     source: Literal["builtin", "custom"] = "custom"
     min_vram_mib: int = Field(default=0, ge=0)
+    min_disk_mib: int = Field(default=0, ge=0)
+    recommended_gpu: str = Field(default="", max_length=120)
+    license: str = Field(default="", max_length=160)
+    commercial_ok: bool = True
+    license_notice: str = Field(default="", max_length=600)
     created_at: float = Field(default=0.0, ge=0)
     updated_at: float = Field(default=0.0, ge=0)
     custom_nodes: list[ComfyNodeSpec] = Field(default_factory=list, max_length=32)
+    node_patches: list[ComfyNodePatch] = Field(default_factory=list, max_length=16)
     pip_packages: list[str] = Field(default_factory=list, max_length=64)
     models: list[ComfyModelRef] = Field(default_factory=list, max_length=32)
+    pipeline: ComfyPipelineSpec | None = None
     workflow: dict[str, Any]
     fields: list[WorkflowField] = Field(default_factory=list, max_length=64)
     node_count: int = Field(default=0, ge=0)
@@ -560,19 +810,7 @@ class WorkflowTemplate(BaseModel):
     @field_validator("pip_packages")
     @classmethod
     def safe_pip_packages(cls, value: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        for item in value:
-            pkg = item.strip()
-            if (
-                not pkg
-                or pkg.startswith("-")
-                or "://" in pkg
-                or ".." in pkg
-                or not _PIP_PKG_RE.fullmatch(pkg)
-            ):
-                raise ValueError(f"非法的 pip 依赖声明: {item!r}")
-            cleaned.append(pkg)
-        return cleaned
+        return _validate_pip_packages(value)
 
     @field_validator("workflow")
     @classmethod
@@ -581,6 +819,23 @@ class WorkflowTemplate(BaseModel):
 
     @model_validator(mode="after")
     def populate_defaults(self):
+        if self.source != "builtin" and (
+            self.custom_nodes
+            or self.pip_packages
+            or self.node_patches
+            or self.models
+            or self.pipeline is not None
+        ):
+            raise ValueError(
+                "自定义工作流模板不允许声明远端依赖包、模型下载或流水线配置"
+            )
+        if self.node_patches:
+            custom_node_names = {node.name for node in self.custom_nodes}
+            for patch in self.node_patches:
+                if patch.node_name not in custom_node_names:
+                    raise ValueError(
+                        f"节点补丁引用了未在 custom_nodes 中声明的节点: {patch.node_name!r}"
+                    )
         self.node_count = len(self.workflow)
         if not self.fields:
             self.fields = extract_workflow_fields(self.workflow)
@@ -613,6 +868,17 @@ class WorkflowRunRequest(BaseModel):
     workflow_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     overrides: dict[str, str | int | float | bool] = Field(default_factory=dict)
     inputs: dict[str, str] = Field(default_factory=dict)
+    hf_token: str = Field(default="", max_length=512, repr=False)
+
+    @field_validator("hf_token")
+    @classmethod
+    def valid_hf_token(cls, value: str) -> str:
+        if any(c in ("\r", "\n") or ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("hf_token 包含非法空白或控制字符")
+        token = value.strip()
+        if any(c.isspace() for c in token):
+            raise ValueError("hf_token 包含非法空白或控制字符")
+        return token
 
     @field_validator("overrides")
     @classmethod
@@ -696,6 +962,7 @@ class ComfyCatalog(BaseModel):
     port: int = Field(default=8188, ge=1024, le=65535)
     proxy_port: int = Field(default=8189, ge=1024, le=65535)
     templates: list[WorkflowTemplate] = Field(default_factory=list)
+    tts_engines: list[ComfyTtsEngineSpec] = Field(default_factory=list)
 
     @field_validator("repo")
     @classmethod
@@ -708,4 +975,24 @@ class ComfyCatalog(BaseModel):
             raise ValueError("ComfyUI 端口与代理端口不能相同")
         if len({t.id for t in self.templates}) != len(self.templates):
             raise ValueError("内置工作流模板 ID 重复")
+        engine_ids = {e.id for e in self.tts_engines}
+        if len(engine_ids) != len(self.tts_engines):
+            raise ValueError("内置 TTS 引擎 ID 重复")
+        if engine_ids:
+            for tmpl in self.templates:
+                pipeline = tmpl.pipeline
+                if pipeline is None:
+                    continue
+                if (
+                    pipeline.default_tts_engine
+                    and pipeline.default_tts_engine not in engine_ids
+                ):
+                    raise ValueError(
+                        f"模板 {tmpl.id!r} 的默认 TTS 引擎未在 tts_engines 中声明: {pipeline.default_tts_engine!r}"
+                    )
+                for engine_id in pipeline.supported_tts_engines:
+                    if engine_id not in engine_ids:
+                        raise ValueError(
+                            f"模板 {tmpl.id!r} 引用了未在 tts_engines 中声明的 TTS 引擎: {engine_id!r}"
+                        )
         return self

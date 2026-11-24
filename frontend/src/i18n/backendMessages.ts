@@ -188,6 +188,190 @@ const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "ComfyUI 出力ディレクトリ",
     "ko-KR": "ComfyUI 출력 디렉터리",
   },
+  "ComfyUI 节点包根目录": {
+    "zh-CN": "ComfyUI 节点包根目录",
+    "en-US": "ComfyUI node packs root directory",
+    "zh-TW": "ComfyUI 節點套件根目錄",
+    "zh-HK": "ComfyUI 節點套件根目錄",
+    "ja-JP": "ComfyUI ノードパックルートディレクトリ",
+    "ko-KR": "ComfyUI 노드 팩 루트 디렉터리",
+  },
+  "ComfyUI 安装目录": {
+    "zh-CN": "ComfyUI 安装目录",
+    "en-US": "ComfyUI installation directory",
+    "zh-TW": "ComfyUI 安裝目錄",
+    "zh-HK": "ComfyUI 安裝目錄",
+    "ja-JP": "ComfyUI インストールディレクトリ",
+    "ko-KR": "ComfyUI 설치 디렉터리",
+  },
+  "ComfyUI 自定义节点目录": {
+    "zh-CN": "ComfyUI 自定义节点目录",
+    "en-US": "ComfyUI custom nodes directory",
+    "zh-TW": "ComfyUI 自訂節點目錄",
+    "zh-HK": "ComfyUI 自訂節點目錄",
+    "ja-JP": "ComfyUI カスタムノードディレクトリ",
+    "ko-KR": "ComfyUI 사용자 지정 노드 디렉터리",
+  },
+  节点包目录: {
+    "zh-CN": "节点包目录",
+    "en-US": "Node pack directory",
+    "zh-TW": "節點套件目錄",
+    "zh-HK": "節點套件目錄",
+    "ja-JP": "ノードパックディレクトリ",
+    "ko-KR": "노드 팩 디렉터리",
+  },
+  托管节点清单文件: {
+    "zh-CN": "托管节点清单文件",
+    "en-US": "Managed nodes manifest file",
+    "zh-TW": "託管節點清單檔案",
+    "zh-HK": "託管節點清單檔案",
+    "ja-JP": "管理対象ノードマニフェストファイル",
+    "ko-KR": "관리 노드 매니페스트 파일",
+  },
+  "TTS 引擎目录": {
+    "zh-CN": "TTS 引擎目录",
+    "en-US": "TTS engines directory",
+    "zh-TW": "TTS 引擎目錄",
+    "zh-HK": "TTS 引擎目錄",
+    "ja-JP": "TTS エンジンディレクトリ",
+    "ko-KR": "TTS 엔진 디렉터리",
+  },
+  "TTS 引擎子目录": {
+    "zh-CN": "TTS 引擎子目录",
+    "en-US": "TTS engine subdirectory",
+    "zh-TW": "TTS 引擎子目錄",
+    "zh-HK": "TTS 引擎子目錄",
+    "ja-JP": "TTS エンジンサブディレクトリ",
+    "ko-KR": "TTS 엔진 하위 디렉터리",
+  },
+  "TTS 源码目录": {
+    "zh-CN": "TTS 源码目录",
+    "en-US": "TTS source directory",
+    "zh-TW": "TTS 原始碼目錄",
+    "zh-HK": "TTS 源碼目錄",
+    "ja-JP": "TTS ソースディレクトリ",
+    "ko-KR": "TTS 소스 디렉터리",
+  },
+  "TTS 工作目录": {
+    "zh-CN": "TTS 工作目录",
+    "en-US": "TTS working directory",
+    "zh-TW": "TTS 工作目錄",
+    "zh-HK": "TTS 工作目錄",
+    "ja-JP": "TTS 作業ディレクトリ",
+    "ko-KR": "TTS 작업 디렉터리",
+  },
+  "TTS 片段目录": {
+    "zh-CN": "TTS 片段目录",
+    "en-US": "TTS segments directory",
+    "zh-TW": "TTS 片段目錄",
+    "zh-HK": "TTS 片段目錄",
+    "ja-JP": "TTS セグメントディレクトリ",
+    "ko-KR": "TTS 구간 디렉터리",
+  },
+  "TTS 虚拟环境目录": {
+    "zh-CN": "TTS 虚拟环境目录",
+    "en-US": "TTS virtual environment directory",
+    "zh-TW": "TTS 虛擬環境目錄",
+    "zh-HK": "TTS 虛擬環境目錄",
+    "ja-JP": "TTS 仮想環境ディレクトリ",
+    "ko-KR": "TTS 가상 환경 디렉터리",
+  },
+  "TTS 引擎虚拟环境目录": {
+    "zh-CN": "TTS 引擎虚拟环境目录",
+    "en-US": "TTS engine virtual environment directory",
+    "zh-TW": "TTS 引擎虛擬環境目錄",
+    "zh-HK": "TTS 引擎虛擬環境目錄",
+    "ja-JP": "TTS エンジン仮想環境ディレクトリ",
+    "ko-KR": "TTS 엔진 가상 환경 디렉터리",
+  },
+  "TTS 源码依赖文件": {
+    "zh-CN": "TTS 源码依赖文件",
+    "en-US": "TTS source requirements file",
+    "zh-TW": "TTS 原始碼相依套件檔案",
+    "zh-HK": "TTS 源碼依賴檔案",
+    "ja-JP": "TTS ソース依存関係ファイル",
+    "ko-KR": "TTS 소스 종속성 파일",
+  },
+  参考音频转码目标: {
+    "zh-CN": "参考音频转码目标",
+    "en-US": "Reference audio transcode target",
+    "zh-TW": "參考音訊轉碼目標",
+    "zh-HK": "參考音訊轉碼目標",
+    "ja-JP": "参照音声の変換先ファイル",
+    "ko-KR": "참조 오디오 변환 대상 파일",
+  },
+  依赖约束目录: {
+    "zh-CN": "依赖约束目录",
+    "en-US": "Dependency constraints directory",
+    "zh-TW": "相依套件約束目錄",
+    "zh-HK": "依賴約束目錄",
+    "ja-JP": "依存関係制約ディレクトリ",
+    "ko-KR": "종속성 제약 디렉터리",
+  },
+  "PyTorch 约束文件": {
+    "zh-CN": "PyTorch 约束文件",
+    "en-US": "PyTorch constraints file",
+    "zh-TW": "PyTorch 約束檔案",
+    "zh-HK": "PyTorch 約束檔案",
+    "ja-JP": "PyTorch 制約ファイル",
+    "ko-KR": "PyTorch 제약 파일",
+  },
+  "ComfyUI 完成标记": {
+    "zh-CN": "ComfyUI 完成标记",
+    "en-US": "ComfyUI completion marker",
+    "zh-TW": "ComfyUI 完成標記",
+    "zh-HK": "ComfyUI 完成標記",
+    "ja-JP": "ComfyUI 完了マーカー",
+    "ko-KR": "ComfyUI 완료 마커",
+  },
+  模型路径配置文件: {
+    "zh-CN": "模型路径配置文件",
+    "en-US": "Model paths config file",
+    "zh-TW": "模型路徑設定檔",
+    "zh-HK": "模型路徑配置檔",
+    "ja-JP": "モデルパス設定ファイル",
+    "ko-KR": "모델 경로 설정 파일",
+  },
+  工作流文件: {
+    "zh-CN": "工作流文件",
+    "en-US": "Workflow file",
+    "zh-TW": "工作流程檔案",
+    "zh-HK": "工作流檔案",
+    "ja-JP": "ワークフローファイル",
+    "ko-KR": "워크플로 파일",
+  },
+  输入文件: {
+    "zh-CN": "输入文件",
+    "en-US": "Input file",
+    "zh-TW": "輸入檔案",
+    "zh-HK": "輸入檔案",
+    "ja-JP": "入力ファイル",
+    "ko-KR": "입력 파일",
+  },
+  作品文件: {
+    "zh-CN": "作品文件",
+    "en-US": "Output file",
+    "zh-TW": "作品檔案",
+    "zh-HK": "作品檔案",
+    "ja-JP": "出力ファイル",
+    "ko-KR": "결과물 파일",
+  },
+  作品: {
+    "zh-CN": "作品",
+    "en-US": "Output",
+    "zh-TW": "作品",
+    "zh-HK": "作品",
+    "ja-JP": "出力",
+    "ko-KR": "결과물",
+  },
+  输出缓存文件: {
+    "zh-CN": "输出缓存文件",
+    "en-US": "Output cache file",
+    "zh-TW": "輸出快取檔案",
+    "zh-HK": "輸出快取檔案",
+    "ja-JP": "出力キャッシュファイル",
+    "ko-KR": "출력 캐시 파일",
+  },
 };
 
 const COMFY_FIELD_SUFFIX_LABELS: Record<string, ColabOneLocaleTable> = {
@@ -326,7 +510,119 @@ function translateSymlinkDirLabel(raw: string, loc: ColabOneLocale): string {
         return s;
     }
   }
+  const customNode = s.match(/^自定义节点目录 (.+)$/);
+  if (customNode) {
+    const dir = customNode[1];
+    switch (loc) {
+      case "en-US":
+        return `Custom node directory ${dir}`;
+      case "zh-TW":
+        return `自訂節點目錄 ${dir}`;
+      case "zh-HK":
+        return `自訂節點目錄 ${dir}`;
+      case "ja-JP":
+        return `カスタムノードディレクトリ ${dir}`;
+      case "ko-KR":
+        return `사용자 지정 노드 디렉터리 ${dir}`;
+      default:
+        return s;
+    }
+  }
+  const packDir = s.match(/^节点包目录 (.+)$/);
+  if (packDir) {
+    const dir = packDir[1];
+    switch (loc) {
+      case "en-US":
+        return `Node pack directory ${dir}`;
+      case "zh-TW":
+        return `節點套件目錄 ${dir}`;
+      case "zh-HK":
+        return `節點套件目錄 ${dir}`;
+      case "ja-JP":
+        return `ノードパックディレクトリ ${dir}`;
+      case "ko-KR":
+        return `노드 팩 디렉터리 ${dir}`;
+      default:
+        return s;
+    }
+  }
+  const ttsSub = s.match(/^TTS (引擎目录|引擎子目录|虚拟环境目录) (.+)$/);
+  if (ttsSub) {
+    const base = SYMLINK_DIR_LABELS[`TTS ${ttsSub[1]}`]?.[loc] ?? `TTS ${ttsSub[1]}`;
+    return `${base} ${ttsSub[2]}`;
+  }
   return s;
+}
+
+function formatSegmentLabel(
+  cur: string,
+  total: string,
+  loc: ColabOneLocale,
+): string {
+  switch (loc) {
+    case "en-US":
+      return `Segment ${cur}/${total}`;
+    case "zh-TW":
+    case "zh-HK":
+      return `第 ${cur}/${total} 段`;
+    case "ja-JP":
+      return `セグメント ${cur}/${total}`;
+    case "ko-KR":
+      return `세그먼트 ${cur}/${total}`;
+    default:
+      return `第 ${cur}/${total} 段`;
+  }
+}
+
+function translateCommitLabel(raw: string, loc: ColabOneLocale): string {
+  const s = raw.trim();
+  if (s === "提交哈希") {
+    return {
+      "zh-CN": s,
+      "en-US": "Commit hash",
+      "zh-TW": "提交雜湊",
+      "zh-HK": "提交哈希",
+      "ja-JP": "コミットハッシュ",
+      "ko-KR": "커밋 해시",
+    }[loc];
+  }
+  if (s === "模型修订版本") {
+    return {
+      "zh-CN": s,
+      "en-US": "Model revision",
+      "zh-TW": "模型修訂版本",
+      "zh-HK": "模型修訂版本",
+      "ja-JP": "モデルリビジョン",
+      "ko-KR": "모델 리비전",
+    }[loc];
+  }
+  const nodeCommit = s.match(/^节点 (.+?) 提交哈希$/);
+  if (nodeCommit) {
+    const name = nodeCommit[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Node ${name} commit hash`,
+      "zh-TW": `節點 ${name} 提交雜湊`,
+      "zh-HK": `節點 ${name} 提交哈希`,
+      "ja-JP": `ノード ${name} のコミットハッシュ`,
+      "ko-KR": `노드 ${name} 커밋 해시`,
+    }[loc];
+  }
+  return s;
+}
+
+function translateGpuVramDesc(raw: string, loc: ColabOneLocale): string {
+  const s = raw.trim();
+  const paren = s.match(/^(.+?)（([^）]+)）$/);
+  if (paren) {
+    const gpu = translateInner(paren[1]!, loc);
+    const mem = paren[2]!;
+    if (loc === "en-US" || loc === "ko-KR") {
+      return `${gpu} (${mem})`;
+    }
+    return `${gpu}（${mem}）`;
+  }
+  return translateInner(s, loc);
 }
 
 function translateLoadPlanLabel(raw: string, loc: ColabOneLocale): string {
@@ -748,13 +1044,80 @@ function translateComfyErrorDetail(detail: string, loc: ColabOneLocale): string 
     .join(sep);
 }
 
-function translateTaskTail(tail: string, loc: ColabOneLocale): string {
+const HAN_CHAR_RE = /[\u3400-\u9fff\uf900-\ufaff]/g;
+
+function countHanChars(text: string): number {
+  return text.match(HAN_CHAR_RE)?.length ?? 0;
+}
+
+const COMFY_WORKFLOW_NAMES = new Set<string>([
+  "口播数字人 · 长视频推荐版",
+  "口播数字人 · 旗舰高清版",
+  "口播数字人 · InfiniteTalk 长视频版（配 AI 2x 超分）",
+  "口播数字人 · LongCat-Avatar 旗舰高清版（原生 720p）",
+]);
+
+const COMFY_WS_NODE_OR_PHASE_LABELS = new Set<string>([
+  // server/comfyui.py WebSocket phase_labels
+  "正在启动执行",
+  "复用已缓存节点",
+  "远端 GPU 执行中",
+  "节点已完成",
+  "采样中",
+  // catalog/comfyui.json & server/digital_human.py workflow node titles
+  "主播形象图",
+  "缩放主播画面",
+  "加载 Wan2.1 VAE",
+  "画面与口播风格提示词",
+  "加载 CLIP Vision",
+  "编码主播视觉特征",
+  "加载中文 Wav2Vec2",
+  "提取音频口型特征",
+  "口播驱动音频",
+  "加载 InfiniteTalk 音频驱动权重",
+  "合成有声 MP4 视频",
+  "加载 LightX2V 蒸馏加速 LoRA",
+  "加载 Wan2.1-I2V-14B 主模型",
+  "InfiniteTalk 滑窗条件编码",
+  "InfiniteTalk 扩散采样器",
+  "VAE 视频解码",
+  "编码首帧参考潜空间",
+  "Whisper 音频编码器",
+  "LongCat Whisper 音频特征",
+  "LongCat 音视频融合条件",
+  "加载 LongCat DMD 蒸馏 LoRA",
+  "加载 LongCat-Avatar 1.5 主模型",
+  "LongCat 蒸馏调度器",
+  "LongCat-Avatar 扩散采样器",
+  "AI 超分模型加载",
+  "AI 2x 细节超分",
+  "目标分辨率精调",
+]);
+
+const UNHANDLED_PROGRESS_TAIL_RE =
+  /^(?:已用(?:时)?\s*\d+\s*(?:秒|s)|排队中|正在渲染|采样\s+\d+\/\d+|耗时\s*[\d.]+|进度\s+[\d.]+%)/;
+
+function translateTaskTail(
+  tail: string,
+  loc: ColabOneLocale,
+  status: string,
+): string {
   const trimmed = tail.trim();
   if (!trimmed) return "";
+
+  const whole = translateInner(trimmed, loc);
   const parts = trimmed.split(" · ");
-  if (parts.length >= 2) {
-    // Prefer splitting message + error when both sides match independent rules
-    // (prevents greedy trailing (.+) rules on message from swallowing an appended error).
+  if (parts.length < 2) return whole;
+
+  // Never split an exact-catalog entry (e.g. "口播数字人 · 长视频推荐版").
+  if (Object.prototype.hasOwnProperty.call(EXACT_MESSAGES, trimmed)) {
+    return whole;
+  }
+
+  // Active and completed tasks only carry task.message (no appended task.error).
+  // Translate the entire tail first so built-in middot workflow names are never sliced.
+  if (status === "进行中" || status === "已完成") {
+    if (whole !== trimmed) return whole;
     for (let i = parts.length - 1; i >= 1; i--) {
       const left = parts.slice(0, i).join(" · ");
       const right = parts.slice(i).join(" · ");
@@ -764,10 +1127,6 @@ function translateTaskTail(tail: string, loc: ColabOneLocale): string {
         return `${leftT} · ${rightT}`;
       }
     }
-  }
-  const whole = translateInner(trimmed, loc);
-  if (whole !== trimmed) return whole;
-  if (parts.length >= 2) {
     for (let i = parts.length - 1; i >= 1; i--) {
       const left = parts.slice(0, i).join(" · ");
       const right = parts.slice(i).join(" · ");
@@ -777,8 +1136,54 @@ function translateTaskTail(tail: string, loc: ColabOneLocale): string {
         return `${leftT} · ${rightT}`;
       }
     }
+    return whole;
   }
-  return whole;
+
+  // Failed / cancelled tasks may combine "message · error" or carry only one of them.
+  // Score `whole` vs each split candidate by untranslated Han count (in loc for
+  // en-US/ko-KR, or en-US as a structural completeness oracle for CJK locales) so we
+  // separate appended errors without slicing built-in middot workflow names in half.
+  const scoreLocale: ColabOneLocale =
+    loc === "en-US" || loc === "ko-KR" ? loc : "en-US";
+  const wholeScoreT =
+    scoreLocale === loc ? whole : translateInner(trimmed, scoreLocale);
+  let bestText = whole;
+  let bestHan = countHanChars(wholeScoreT);
+  let bestChanged = whole !== trimmed;
+  let bestBothSplit = false;
+
+  for (let i = parts.length - 1; i >= 1; i--) {
+    const left = parts.slice(0, i).join(" · ");
+    const right = parts.slice(i).join(" · ");
+    const leftT = translateInner(left, loc);
+    const rightT = translateInner(right, loc);
+    const bothChanged = leftT !== left && rightT !== right;
+    const anyChanged = leftT !== left || rightT !== right;
+    if (!anyChanged) continue;
+
+    const leftScoreT =
+      scoreLocale === loc ? leftT : translateInner(left, scoreLocale);
+    const rightScoreT =
+      scoreLocale === loc ? rightT : translateInner(right, scoreLocale);
+    const candHan = countHanChars(leftScoreT) + countHanChars(rightScoreT);
+    const candText = `${leftT} · ${rightT}`;
+
+    if (
+      candHan < bestHan ||
+      (candHan === bestHan && !bestChanged) ||
+      (candHan === bestHan &&
+        bothChanged &&
+        !bestBothSplit &&
+        candText !== whole)
+    ) {
+      bestText = candText;
+      bestHan = candHan;
+      bestChanged = true;
+      bestBothSplit = bothChanged;
+    }
+  }
+
+  return bestText;
 }
 
 const PATTERN_RULES: PatternRule[] = [
@@ -807,7 +1212,8 @@ const PATTERN_RULES: PatternRule[] = [
     re: /^(模型下载|模型加载|外部 API 对话|外部 API Responses|外部 API 上下文压缩|ComfyUI 启动|ComfyUI 工作流|ComfyUI 任务|远端任务)：(进行中|已完成|失败|已取消)(.*)$/s,
     format: (m, loc) => {
       const kind = TASK_KIND_LABELS[m[1]!]?.[loc] ?? m[1]!;
-      const status = TASK_STATE_LABELS[m[2]!]?.[loc] ?? m[2]!;
+      const rawStatus = m[2]!;
+      const status = TASK_STATE_LABELS[rawStatus]?.[loc] ?? rawStatus;
       let rest = (m[3] || "").trim();
       let pctPrefix = "";
       const pctMatch = rest.match(/^·\s*(\d+%)(?:\s*·\s*(.*))?$/s);
@@ -817,13 +1223,43 @@ const PATTERN_RULES: PatternRule[] = [
       } else if (rest.startsWith("·")) {
         rest = rest.slice(1).trim();
       }
-      const tailText = rest ? ` · ${translateTaskTail(rest, loc)}` : "";
+      const tailText = rest
+        ? ` · ${translateTaskTail(rest, loc, rawStatus)}`
+        : "";
       const colon = loc === "zh-TW" || loc === "zh-HK" ? "：" : ": ";
       return `${kind}${colon}${status}${pctPrefix}${tailText}`;
     },
   },
+  {
+    re: /^第 (\d+)\/(\d+) 段 · (.+)$/s,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      const rest = translateInner(m[3]!, loc);
+      return `${seg} · ${rest}`;
+    },
+  },
 
   // === console/internal/controller/controller.go ===
+  {
+    re: /^远端已受理 ComfyUI 工作流任务，但刷新状态失败（将自动重试）：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote accepted the ComfyUI workflow task, but refreshing status failed (will retry automatically): ${detail}`;
+        case "zh-TW":
+          return `遠端已受理 ComfyUI 工作流程任務，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "zh-HK":
+          return `遠端已受理 ComfyUI 工作流任務，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "ja-JP":
+          return `リモートで ComfyUI ワークフロータスクを受け付けましたが、状態の更新に失敗しました（自動で再試行します）: ${detail}`;
+        case "ko-KR":
+          return `원격에서 ComfyUI 워크플로 작업을 수락했지만 상태 새로고침에 실패했습니다 (자동 재시도 예정): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
   {
     re: /^连接检查失败：(.+?)。客户端会自动重试，请检查网络连接。$/,
     format: (m, loc) => {
@@ -1350,7 +1786,7 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^已导入 ComfyUI 工作流：(.+)$/,
     format: (m, loc) => {
-      const name = m[1];
+      const name = translateInner(m[1]!, loc);
       switch (loc) {
         case "en-US":
           return `Imported ComfyUI workflow: ${name}`;
@@ -1370,7 +1806,7 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^已离线保存 ComfyUI 工作流：(.+)$/,
     format: (m, loc) => {
-      const name = m[1];
+      const name = translateInner(m[1]!, loc);
       switch (loc) {
         case "en-US":
           return `Saved ComfyUI workflow offline: ${name}`;
@@ -1390,7 +1826,7 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^已删除 ComfyUI 工作流：(.+)$/,
     format: (m, loc) => {
-      const wid = m[1];
+      const wid = translateInner(m[1]!, loc);
       switch (loc) {
         case "en-US":
           return `Deleted ComfyUI workflow: ${wid}`;
@@ -1450,7 +1886,7 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^请求运行 ComfyUI 工作流：(.+)$/,
     format: (m, loc) => {
-      const wid = m[1];
+      const wid = translateInner(m[1]!, loc);
       switch (loc) {
         case "en-US":
           return `Requesting ComfyUI workflow run: ${wid}`;
@@ -2906,6 +3342,61 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^(模型文件|模型临时文件|过滤后的依赖文件|目标文件)不能是符号链接：(.+)$/,
+    format: (m, loc) => {
+      const kindMap: Record<string, ColabOneLocaleTable> = {
+        模型文件: {
+          "zh-CN": "模型文件",
+          "en-US": "Model file",
+          "zh-TW": "模型檔案",
+          "zh-HK": "模型檔案",
+          "ja-JP": "モデルファイル",
+          "ko-KR": "모델 파일",
+        },
+        模型临时文件: {
+          "zh-CN": "模型临时文件",
+          "en-US": "Temporary model file",
+          "zh-TW": "模型暫存檔案",
+          "zh-HK": "模型臨時檔案",
+          "ja-JP": "モデル一時ファイル",
+          "ko-KR": "모델 임시 파일",
+        },
+        过滤后的依赖文件: {
+          "zh-CN": "过滤后的依赖文件",
+          "en-US": "Filtered requirements file",
+          "zh-TW": "過濾後的相依套件檔案",
+          "zh-HK": "過濾後的依賴檔案",
+          "ja-JP": "フィルタ済み依存関係ファイル",
+          "ko-KR": "필터링된 종속성 파일",
+        },
+        目标文件: {
+          "zh-CN": "目标文件",
+          "en-US": "Target file",
+          "zh-TW": "目標檔案",
+          "zh-HK": "目標檔案",
+          "ja-JP": "対象ファイル",
+          "ko-KR": "대상 파일",
+        },
+      };
+      const label = kindMap[m[1]!]?.[loc] ?? m[1]!;
+      const name = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${label} cannot be a symbolic link: ${name}`;
+        case "zh-TW":
+          return `${label}不可為符號連結：${name}`;
+        case "zh-HK":
+          return `${label}不能是符號連結：${name}`;
+        case "ja-JP":
+          return `${label}にシンボリックリンクは使用できません: ${name}`;
+        case "ko-KR":
+          return `${label}은(는) 심볼릭 링크일 수 없습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^输入文件超过大小限制（最大 (\d+) MB）$/,
     format: (m, loc) => {
       const mb = m[1];
@@ -3186,9 +3677,9 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^提交工作流：(.+)$/,
+    re: /^(?:正在)?提交工作流：(.+)$/,
     format: (m, loc) => {
-      const name = m[1];
+      const name = translateInner(m[1]!, loc);
       switch (loc) {
         case "en-US":
           return `Submitting workflow: ${name}`;
@@ -3268,7 +3759,8 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^工作流已入队：(.+?)（任务 (\S+)）$/,
     format: (m, loc) => {
-      const [, name, pid] = m;
+      const name = translateInner(m[1]!, loc);
+      const pid = m[2]!;
       switch (loc) {
         case "en-US":
           return `Workflow queued: ${name} (task ${pid})`;
@@ -3351,6 +3843,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^获取输出 (\d+)\/(\d+) · (.+)$/,
+    format: (m, loc) => {
+      const [, idx, total, name] = m;
+      switch (loc) {
+        case "en-US":
+          return `Fetching output ${idx}/${total} · ${name}`;
+        case "zh-TW":
+          return `取得輸出 ${idx}/${total} · ${name}`;
+        case "zh-HK":
+          return `獲取輸出 ${idx}/${total} · ${name}`;
+        case "ja-JP":
+          return `出力を取得中 ${idx}/${total} · ${name}`;
+        case "ko-KR":
+          return `출력 가져오는 중 ${idx}/${total} · ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^工作流执行完成，已保存 (\d+) 个作品到远端 GPU$/,
     format: (m, loc) => {
       const n = m[1];
@@ -3373,7 +3885,9 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^(.+?) · 排队中（第 (\d+) 位）· 已用 (\d+) 秒$/,
     format: (m, loc) => {
-      const [, name, pos, sec] = m;
+      const name = translateInner(m[1]!, loc);
+      const pos = m[2]!;
+      const sec = m[3]!;
       switch (loc) {
         case "en-US":
           return `${name} · Queued (#${pos}) · ${sec}s elapsed`;
@@ -3393,7 +3907,8 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^(.+?) · 远端 GPU 执行中 · 已用 (\d+) 秒$/,
     format: (m, loc) => {
-      const [, name, sec] = m;
+      const name = translateInner(m[1]!, loc);
+      const sec = m[2]!;
       switch (loc) {
         case "en-US":
           return `${name} · Running on remote GPU · ${sec}s elapsed`;
@@ -3405,6 +3920,67 @@ const PATTERN_RULES: PatternRule[] = [
           return `${name} · リモート GPU で実行中 · ${sec} 秒経過`;
         case "ko-KR":
           return `${name} · 원격 GPU에서 실행 중 · ${sec}초 경과`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 正在远端 GPU 运行 · 已用时 (\d+)s$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const sec = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${name} · Running on remote GPU · ${sec}s elapsed`;
+        case "zh-TW":
+          return `${name} · 遠端 GPU 執行中 · 已用 ${sec} 秒`;
+        case "zh-HK":
+          return `${name} · 遠端 GPU 執行中 · 已用 ${sec} 秒`;
+        case "ja-JP":
+          return `${name} · リモート GPU で実行中 · ${sec} 秒経過`;
+        case "ko-KR":
+          return `${name} · 원격 GPU에서 실행 중 · ${sec}초 경과`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 已在 ComfyUI 队列排队$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${name} · Queued in ComfyUI`;
+        case "zh-TW":
+          return `${name} · 已進入 ComfyUI 佇列`;
+        case "zh-HK":
+          return `${name} · 已在 ComfyUI 隊列排隊`;
+        case "ja-JP":
+          return `${name} · ComfyUI キューで待機中`;
+        case "ko-KR":
+          return `${name} · ComfyUI 대기열에 등록됨`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流 (.+?) 已完成$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Workflow ${name} completed`;
+        case "zh-TW":
+          return `工作流程 ${name} 已完成`;
+        case "zh-HK":
+          return `工作流 ${name} 已完成`;
+        case "ja-JP":
+          return `ワークフロー ${name} が完了しました`;
+        case "ko-KR":
+          return `워크플로 ${name} 완료됨`;
         default:
           return m[0];
       }
@@ -4780,8 +5356,9 @@ const PATTERN_RULES: PatternRule[] = [
   {
     re: /^(.+?) · (反向提示词|正向提示词|文本输入|参考图片|输入音频|宽度|高度|帧数|帧率 \(FPS\)|批次大小|采样步数|CFG 引导系数|重绘幅度|随机种子)$/,
     format: (m, loc) => {
-      const [, title, suffix] = m;
-      const mapped = COMFY_FIELD_SUFFIX_LABELS[suffix!]?.[loc] ?? suffix;
+      const title = translateInner(m[1]!, loc);
+      const suffix = m[2]!;
+      const mapped = COMFY_FIELD_SUFFIX_LABELS[suffix]?.[loc] ?? suffix;
       return `${title} · ${mapped}`;
     },
   },
@@ -5093,7 +5670,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^非法的 pip 依赖声明:\s*(.+)$/,
+    re: /^非法的 pip 依赖声明[:：]\s*(.+)$/,
     format: (m, loc) => {
       const item = m[1];
       switch (loc) {
@@ -5527,6 +6104,2656 @@ const PATTERN_RULES: PatternRule[] = [
         default:
           return m[0];
       }
+    },
+  },
+
+  // === server/comfy_packs.py ===
+  {
+    re: /^当前远端 GPU 显存不足：此工作流至少需要 ([\d.]+ (?:GB|GiB|MiB)) 显存，当前 GPU 为 (.+?)(?:，推荐切换至 (.+))?$/,
+    format: (m, loc) => {
+      const req = m[1]!;
+      const cur = translateGpuVramDesc(m[2]!, loc);
+      const rec = m[3]?.trim() ?? "";
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote GPU VRAM: this workflow requires at least ${req} VRAM, current GPU is ${cur}${rec ? `. Recommended GPU: ${rec}` : ""}`;
+        case "zh-TW":
+          return `目前遠端 GPU VRAM 不足：此工作流程至少需要 ${req} VRAM，目前 GPU 為 ${cur}${rec ? `，建議切換至 ${rec}` : ""}`;
+        case "zh-HK":
+          return `目前遠端 GPU 顯存不足：此工作流至少需要 ${req} 顯存，目前 GPU 為 ${cur}${rec ? `，建議切換至 ${rec}` : ""}`;
+        case "ja-JP":
+          return `リモート GPU の VRAM が不足しています。このワークフローには少なくとも ${req} の VRAM が必要ですが、現在の GPU は ${cur} です${rec ? `（推奨 GPU: ${rec}）` : ""}`;
+        case "ko-KR":
+          return `원격 GPU VRAM이 부족합니다: 이 워크플로는 최소 ${req} VRAM이 필요하며 현재 GPU는 ${cur}입니다${rec ? ` (권장 GPU: ${rec})` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端磁盘空间不足：至少需要 ([\d.]+) GiB 可用空间（当前仅剩 ([\d.]+) GiB），请清理其他模型或更换磁盘空间更大的远端实例$/,
+    format: (m, loc) => {
+      const [, req, free] = m;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote disk space: requires at least ${req} GiB free (${free} GiB available). Clear other models or switch to a remote instance with more disk space.`;
+        case "zh-TW":
+          return `遠端磁碟空間不足：至少需要 ${req} GiB 可用空間（目前僅剩 ${free} GiB），請清理其他模型或更換磁碟空間更大的遠端執行個體`;
+        case "zh-HK":
+          return `遠端磁碟空間不足：至少需要 ${req} GiB 可用空間（目前僅剩 ${free} GiB），請清理其他模型或更換磁碟空間更大的遠端實例`;
+        case "ja-JP":
+          return `リモートディスク容量が不足しています: 少なくとも ${req} GiB の空き容量が必要です（現在 ${free} GiB 空き）。他のモデルを削除するか、ディスク容量の大きいインスタンスに切り替えてください`;
+        case "ko-KR":
+          return `원격 디스크 공간이 부족합니다: 최소 ${req} GiB의 여유 공간이 필요합니다(현재 ${free} GiB 남음). 다른 모델을 정리하거나 디스크 용량이 더 큰 원격 인스턴스로 전환하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用远端已就绪的节点包：(.+)$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing ready remote custom node pack: ${wfName}`;
+        case "zh-TW":
+          return `重複使用遠端已就緒的節點套件：${wfName}`;
+        case "zh-HK":
+          return `複用遠端已就緒的節點套件：${wfName}`;
+        case "ja-JP":
+          return `準備済みのリモートノードパックを再利用します: ${wfName}`;
+        case "ko-KR":
+          return `준비된 원격 노드 팩 재사용 중: ${wfName}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^准备自定义节点 · (.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Preparing custom node · ${name}`;
+        case "zh-TW":
+          return `準備自訂節點 · ${name}`;
+        case "zh-HK":
+          return `準備自訂節點 · ${name}`;
+        case "ja-JP":
+          return `カスタムノードを準備中 · ${name}`;
+        case "ko-KR":
+          return `사용자 지정 노드 준비 중 · ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在拉取节点包 (.+?)（([^）]+)）$/,
+    format: (m, loc) => {
+      const [, name, commit] = m;
+      switch (loc) {
+        case "en-US":
+          return `Fetching custom node pack ${name} (${commit})`;
+        case "zh-TW":
+          return `正在拉取節點套件 ${name}（${commit}）`;
+        case "zh-HK":
+          return `正在拉取節點套件 ${name}（${commit}）`;
+        case "ja-JP":
+          return `ノードパック ${name} を取得中（${commit}）`;
+        case "ko-KR":
+          return `노드 팩 ${name} 가져오는 중 (${commit})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^安装节点依赖 · (.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Installing node dependencies · ${name}`;
+        case "zh-TW":
+          return `安裝節點相依套件 · ${name}`;
+        case "zh-HK":
+          return `安裝節點依賴 · ${name}`;
+        case "ja-JP":
+          return `ノード依存関係をインストール中 · ${name}`;
+        case "ko-KR":
+          return `노드 종속성 설치 중 · ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装 (.+?) 依赖（保留现有 CUDA PyTorch）$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Installing dependencies for ${name} (preserving existing CUDA PyTorch)`;
+        case "zh-TW":
+          return `正在安裝 ${name} 相依套件（保留現有 CUDA PyTorch）`;
+        case "zh-HK":
+          return `正在安裝 ${name} 依賴（保留現有 CUDA PyTorch）`;
+        case "ja-JP":
+          return `${name} の依存関係をインストール中（既存の CUDA PyTorch を保持）`;
+        case "ko-KR":
+          return `${name} 종속성 설치 중 (기존 CUDA PyTorch 유지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^安装工作流依赖包 · (.+)$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Installing workflow packages · ${wfName}`;
+        case "zh-TW":
+          return `安裝工作流程相依套件 · ${wfName}`;
+        case "zh-HK":
+          return `安裝工作流依賴套件 · ${wfName}`;
+        case "ja-JP":
+          return `ワークフローパッケージをインストール中 · ${wfName}`;
+        case "ko-KR":
+          return `워크플로 패키지 설치 중 · ${wfName}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装工作流额外依赖（(\d+) 个包）$/,
+    format: (m, loc) => {
+      const n = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Installing extra workflow dependencies (${n} package(s))`;
+        case "zh-TW":
+          return `正在安裝工作流程額外相依套件（${n} 個套件）`;
+        case "zh-HK":
+          return `正在安裝工作流額外依賴（${n} 個套件）`;
+        case "ja-JP":
+          return `ワークフローの追加依存関係をインストール中（${n} パッケージ）`;
+        case "ko-KR":
+          return `워크플로 추가 종속성 설치 중 (${n}개 패키지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已应用节点兼容补丁：(.+)$/,
+    format: (m, loc) => {
+      const label = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Applied node compatibility patch: ${label}`;
+        case "zh-TW":
+          return `已套用節點相容性修補程式：${label}`;
+        case "zh-HK":
+          return `已套用節點兼容補丁：${label}`;
+        case "ja-JP":
+          return `ノード互換パッチを適用しました: ${label}`;
+        case "ko-KR":
+          return `노드 호환 패치를 적용했습니다: ${label}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流节点包准备完成：(.+)$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Workflow custom node pack ready: ${wfName}`;
+        case "zh-TW":
+          return `工作流程節點套件準備完成：${wfName}`;
+        case "zh-HK":
+          return `工作流節點套件準備完成：${wfName}`;
+        case "ja-JP":
+          return `ワークフローのノードパック準備が完了しました: ${wfName}`;
+        case "ko-KR":
+          return `워크플로 노드 팩 준비 완료: ${wfName}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自定义节点(目录|符号链接) (.+?) 已存在且非 ColabOne 托管，请手动移走后重试$/,
+    format: (m, loc) => {
+      const isSymlink = m[1] === "符号链接";
+      const name = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return isSymlink
+            ? `Custom node symbolic link ${name} already exists and is not managed by ColabOne; move it manually and retry`
+            : `Custom node directory ${name} already exists and is not managed by ColabOne; move it manually and retry`;
+        case "zh-TW":
+          return isSymlink
+            ? `自訂節點符號連結 ${name} 已存在且非 ColabOne 託管，請手動移開後重試`
+            : `自訂節點目錄 ${name} 已存在且非 ColabOne 託管，請手動移開後重試`;
+        case "zh-HK":
+          return isSymlink
+            ? `自訂節點符號連結 ${name} 已存在且非 ColabOne 託管，請手動移走後重試`
+            : `自訂節點目錄 ${name} 已存在且非 ColabOne 託管，請手動移走後重試`;
+        case "ja-JP":
+          return isSymlink
+            ? `カスタムノードのシンボリックリンク ${name} は既に存在し ColabOne 管理対象外です。手動で移動してから再試行してください`
+            : `カスタムノードディレクトリ ${name} は既に存在し ColabOne 管理対象外です。手動で移動してから再試行してください`;
+        case "ko-KR":
+          return isSymlink
+            ? `사용자 지정 노드 심볼릭 링크 ${name}이(가) 이미 존재하며 ColabOne에서 관리되지 않습니다. 수동으로 이동한 후 다시 시도하세요`
+            : `사용자 지정 노드 디렉터리 ${name}이(가) 이미 존재하며 ColabOne에서 관리되지 않습니다. 수동으로 이동한 후 다시 시도하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流所需的 (\d+) 个模型权重均已校验就绪，跳过下载$/,
+    format: (m, loc) => {
+      const n = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `All ${n} required workflow model weight(s) are verified and ready; skipping download`;
+        case "zh-TW":
+          return `工作流程所需的 ${n} 個模型權重皆已驗證就緒，略過下載`;
+        case "zh-HK":
+          return `工作流所需的 ${n} 個模型權重均已校驗就緒，跳過下載`;
+        case "ja-JP":
+          return `ワークフローに必要な ${n} 件のモデル重みはすべて検証済みのためダウンロードをスキップします`;
+        case "ko-KR":
+          return `워크플로에 필요한 모델 가중치 ${n}개가 모두 검증 완료되어 다운로드를 건너뜁니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^准备下载工作流权重：(\d+) 个文件，共 ([\d.]+) GiB，(\d+) 线程$/,
+    format: (m, loc) => {
+      const [, count, gib, threads] = m;
+      switch (loc) {
+        case "en-US":
+          return `Preparing to download workflow weights: ${count} file(s), ${gib} GiB total, ${threads} threads`;
+        case "zh-TW":
+          return `準備下載工作流程權重：${count} 個檔案，共 ${gib} GiB，${threads} 執行緒`;
+        case "zh-HK":
+          return `準備下載工作流權重：${count} 個檔案，共 ${gib} GiB，${threads} 線程`;
+        case "ja-JP":
+          return `ワークフローの重みをダウンロード準備中: ${count} ファイル、合計 ${gib} GiB、${threads} スレッド`;
+        case "ko-KR":
+          return `워크플로 가중치 다운로드 준비 중: ${count}개 파일, 총 ${gib} GiB, ${threads}스레드`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型 (\d+)\/(\d+) 已存在且校验通过，跳过：(.+)$/,
+    format: (m, loc) => {
+      const [, idx, total, name] = m;
+      switch (loc) {
+        case "en-US":
+          return `Model ${idx}/${total} already exists and passed verification; skipping: ${name}`;
+        case "zh-TW":
+          return `模型 ${idx}/${total} 已存在且驗證通過，略過：${name}`;
+        case "zh-HK":
+          return `模型 ${idx}/${total} 已存在且校驗通過，跳過：${name}`;
+        case "ja-JP":
+          return `モデル ${idx}/${total} は既に検証済みのためスキップします: ${name}`;
+        case "ko-KR":
+          return `모델 ${idx}/${total}이(가) 이미 존재하며 검증을 통과해 건너뜁니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^发现未通过校验的模型文件，重新下载：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Found unverified model file; re-downloading: ${name}`;
+        case "zh-TW":
+          return `發現未通過驗證的模型檔案，重新下載：${name}`;
+        case "zh-HK":
+          return `發現未通過校驗的模型檔案，重新下載：${name}`;
+        case "ja-JP":
+          return `検証未通過のモデルファイルを検出したため再ダウンロードします: ${name}`;
+        case "ko-KR":
+          return `검증에 통과하지 못한 모델 파일을 발견해 다시 다운로드합니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^下载模型 (\d+)\/(\d+) · (.+)$/,
+    format: (m, loc) => {
+      const [, idx, total, name] = m;
+      switch (loc) {
+        case "en-US":
+          return `Downloading model ${idx}/${total} · ${name}`;
+        case "zh-TW":
+          return `下載模型 ${idx}/${total} · ${name}`;
+        case "zh-HK":
+          return `下載模型 ${idx}/${total} · ${name}`;
+        case "ja-JP":
+          return `モデルをダウンロード中 ${idx}/${total} · ${name}`;
+        case "ko-KR":
+          return `모델 다운로드 중 ${idx}/${total} · ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型 (\d+)\/(\d+) · (.+?) · ([\d.]+) GiB$/,
+    format: (m, loc) => {
+      const [, idx, total, name, gib] = m;
+      switch (loc) {
+        case "en-US":
+          return `Model ${idx}/${total} · ${name} · ${gib} GiB`;
+        case "zh-TW":
+          return `模型 ${idx}/${total} · ${name} · ${gib} GiB`;
+        case "zh-HK":
+          return `模型 ${idx}/${total} · ${name} · ${gib} GiB`;
+        case "ja-JP":
+          return `モデル ${idx}/${total} · ${name} · ${gib} GiB`;
+        case "ko-KR":
+          return `모델 ${idx}/${total} · ${name} · ${gib} GiB`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型 (\d+)\/(\d+) 传输完成，正在校验 SHA-256$/,
+    format: (m, loc) => {
+      const [, idx, total] = m;
+      switch (loc) {
+        case "en-US":
+          return `Model ${idx}/${total} transfer complete; verifying SHA-256`;
+        case "zh-TW":
+          return `模型 ${idx}/${total} 傳輸完成，正在驗證 SHA-256`;
+        case "zh-HK":
+          return `模型 ${idx}/${total} 傳輸完成，正在校驗 SHA-256`;
+        case "ja-JP":
+          return `モデル ${idx}/${total} の転送が完了しました。SHA-256 を検証中`;
+        case "ko-KR":
+          return `모델 ${idx}/${total} 전송 완료, SHA-256 검증 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型 (\d+)\/(\d+) 校验通过，已保存到远端：(.+)$/,
+    format: (m, loc) => {
+      const [, idx, total, name] = m;
+      switch (loc) {
+        case "en-US":
+          return `Model ${idx}/${total} verified and saved remotely: ${name}`;
+        case "zh-TW":
+          return `模型 ${idx}/${total} 驗證通過，已儲存至遠端：${name}`;
+        case "zh-HK":
+          return `模型 ${idx}/${total} 校驗通過，已儲存到遠端：${name}`;
+        case "ja-JP":
+          return `モデル ${idx}/${total} の検証に合格しリモートに保存しました: ${name}`;
+        case "ko-KR":
+          return `모델 ${idx}/${total} 검증 통과, 원격에 저장됨: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型文件校验失败：(.+?)，请重新下载$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Model file verification failed: ${name}. Please download again.`;
+        case "zh-TW":
+          return `模型檔案驗證失敗：${name}，請重新下載`;
+        case "zh-HK":
+          return `模型檔案校驗失敗：${name}，請重新下載`;
+        case "ja-JP":
+          return `モデルファイルの検証に失敗しました: ${name}。再ダウンロードしてください`;
+        case "ko-KR":
+          return `모델 파일 검증 실패: ${name}. 다시 다운로드해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流权重全部已验证：([\d.]+) GiB，用时 ([\d.]+) 秒，平均传输 ([\d.]+) MiB\/s；复用 ([\d.]+) MiB$/,
+    format: (m, loc) => {
+      const [, gib, sec, speed, reused] = m;
+      switch (loc) {
+        case "en-US":
+          return `All workflow weights verified: ${gib} GiB in ${sec}s, avg ${speed} MiB/s; reused ${reused} MiB`;
+        case "zh-TW":
+          return `工作流程權重全部驗證完成：${gib} GiB，耗時 ${sec} 秒，平均傳輸 ${speed} MiB/s；重複使用 ${reused} MiB`;
+        case "zh-HK":
+          return `工作流權重全部已驗證：${gib} GiB，用時 ${sec} 秒，平均傳輸 ${speed} MiB/s；複用 ${reused} MiB`;
+        case "ja-JP":
+          return `すべてのワークフロー重みを検証しました: ${gib} GiB（所要 ${sec} 秒、平均 ${speed} MiB/s、再利用 ${reused} MiB）`;
+        case "ko-KR":
+          return `워크플로 가중치 전체 검증 완료: ${gib} GiB, 소요 ${sec}초, 평균 ${speed} MiB/s, 재사용 ${reused} MiB`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型下载鉴权失败（HTTP (\d+)），请在设置中配置有效的 Hugging Face Token$/,
+    format: (m, loc) => {
+      const code = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Model download authentication failed (HTTP ${code}). Please configure a valid Hugging Face Token in Settings.`;
+        case "zh-TW":
+          return `模型下載驗證失敗（HTTP ${code}），請在設定中配置有效的 Hugging Face Token`;
+        case "zh-HK":
+          return `模型下載鑑權失敗（HTTP ${code}），請在設定中配置有效的 Hugging Face Token`;
+        case "ja-JP":
+          return `モデルダウンロードの認証に失敗しました（HTTP ${code}）。設定で有効な Hugging Face Token を構成してください`;
+        case "ko-KR":
+          return `모델 다운로드 인증 실패 (HTTP ${code}). 설정에서 유효한 Hugging Face 토큰을 구성해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型单连接下载失败（(.+)）$/,
+    format: (m, loc) => {
+      const reason = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Single-stream model download failed (${reason})`;
+        case "zh-TW":
+          return `模型單連線下載失敗（${reason}）`;
+        case "zh-HK":
+          return `模型單連接下載失敗（${reason}）`;
+        case "ja-JP":
+          return `モデルの単一接続ダウンロードに失敗しました（${reason}）`;
+        case "ko-KR":
+          return `모델 단일 연결 다운로드 실패 (${reason})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^单连接下载失败（(.+)）$/,
+    format: (m, loc) => {
+      const reason = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Single-stream download failed (${reason})`;
+        case "zh-TW":
+          return `單連線下載失敗（${reason}）`;
+        case "zh-HK":
+          return `單連接下載失敗（${reason}）`;
+        case "ja-JP":
+          return `単一接続ダウンロードに失敗しました（${reason}）`;
+        case "ko-KR":
+          return `단일 연결 다운로드 실패 (${reason})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型临时路径不能是目录：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Temporary model path cannot be a directory: ${path}`;
+        case "zh-TW":
+          return `模型暫存路徑不可為目錄：${path}`;
+        case "zh-HK":
+          return `模型臨時路徑不能是目錄：${path}`;
+        case "ja-JP":
+          return `モデル一時パスにディレクトリは指定できません: ${path}`;
+        case "ko-KR":
+          return `모델 임시 경로는 디렉터리일 수 없습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型目标路径已存在同名目录：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `A directory with the same name already exists at the model target path: ${path}`;
+        case "zh-TW":
+          return `模型目標路徑已存在同名目錄：${path}`;
+        case "zh-HK":
+          return `模型目標路徑已存在同名目錄：${path}`;
+        case "ja-JP":
+          return `モデル保存先パスに同名のディレクトリが既に存在します: ${path}`;
+        case "ko-KR":
+          return `모델 대상 경로에 같은 이름의 디렉터리가 이미 존재합니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在下载 (.+)$/,
+    format: (m, loc) => {
+      const target = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Downloading ${target}`;
+        case "zh-TW":
+          return `正在下載 ${target}`;
+        case "zh-HK":
+          return `正在下載 ${target}`;
+        case "ja-JP":
+          return `${target} をダウンロード中`;
+        case "ko-KR":
+          return `${target} 다운로드 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在校验 (.+)$/,
+    format: (m, loc) => {
+      const target = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Verifying ${target}`;
+        case "zh-TW":
+          return `正在驗證 ${target}`;
+        case "zh-HK":
+          return `正在校驗 ${target}`;
+        case "ja-JP":
+          return `${target} を検証中`;
+        case "ko-KR":
+          return `${target} 검증 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型文件大小不匹配(?:[:：]\s*(.+))?$/,
+    format: (m, loc) => {
+      const tail = m[1]?.trim() ?? "";
+      switch (loc) {
+        case "en-US":
+          return tail ? `Model file size mismatch: ${tail}` : "Model file size mismatch";
+        case "zh-TW":
+          return tail ? `模型檔案大小不相符：${tail}` : "模型檔案大小不相符";
+        case "zh-HK":
+          return tail ? `模型檔案大小不匹配：${tail}` : "模型檔案大小不匹配";
+        case "ja-JP":
+          return tail ? `モデルファイルサイズが一致しません: ${tail}` : "モデルファイルサイズが一致しません";
+        case "ko-KR":
+          return tail ? `모델 파일 크기가 일치하지 않습니다: ${tail}` : "모델 파일 크기가 일치하지 않습니다";
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型 SHA-256 校验失败(?:[:：]\s*(.+))?$/,
+    format: (m, loc) => {
+      const tail = m[1]?.trim() ?? "";
+      switch (loc) {
+        case "en-US":
+          return tail ? `Model SHA-256 verification failed: ${tail}` : "Model SHA-256 verification failed";
+        case "zh-TW":
+          return tail ? `模型 SHA-256 驗證失敗：${tail}` : "模型 SHA-256 驗證失敗";
+        case "zh-HK":
+          return tail ? `模型 SHA-256 校驗失敗：${tail}` : "模型 SHA-256 校驗失敗";
+        case "ja-JP":
+          return tail ? `モデルの SHA-256 検証に失敗しました: ${tail}` : "モデルの SHA-256 検証に失敗しました";
+        case "ko-KR":
+          return tail ? `모델 SHA-256 검증 실패: ${tail}` : "모델 SHA-256 검증 실패";
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^下载模型失败(?:[:：]\s*(.+))?$/s,
+    format: (m, loc) => {
+      const detail = m[1] ? translateInner(m[1], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return detail ? `Failed to download model: ${detail}` : "Failed to download model";
+        case "zh-TW":
+          return detail ? `下載模型失敗：${detail}` : "下載模型失敗";
+        case "zh-HK":
+          return detail ? `下載模型失敗：${detail}` : "下載模型失敗";
+        case "ja-JP":
+          return detail ? `モデルのダウンロードに失敗しました: ${detail}` : "モデルのダウンロードに失敗しました";
+        case "ko-KR":
+          return detail ? `모델 다운로드 실패: ${detail}` : "모델 다운로드 실패";
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^期望 dict 或模型对象，实际为 (.+)$/,
+    format: (m, loc) => {
+      const actual = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Expected dict or model object, got ${actual}`;
+        case "zh-TW":
+          return `預期 dict 或模型物件，實際為 ${actual}`;
+        case "zh-HK":
+          return `期望 dict 或模型物件，實際為 ${actual}`;
+        case "ja-JP":
+          return `dict またはモデルオブジェクトが必要ですが、${actual} を受け取りました`;
+        case "ko-KR":
+          return `dict 또는 모델 객체가 필요하지만 ${actual}을(를) 받았습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自定义节点名称不合法：(.+)$/,
+    format: (m, loc) => {
+      const val = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid custom node name: ${val}`;
+        case "zh-TW":
+          return `自訂節點名稱無效：${val}`;
+        case "zh-HK":
+          return `自訂節點名稱無效：${val}`;
+        case "ja-JP":
+          return `無効なカスタムノード名: ${val}`;
+        case "ko-KR":
+          return `유효하지 않은 사용자 지정 노드 이름: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(提交哈希|模型修订版本|节点 .+? 提交哈希)必须为 40 位十六进制 SHA：(.+)$/,
+    format: (m, loc) => {
+      const label = translateCommitLabel(m[1]!, loc);
+      const val = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${label} must be a 40-character hexadecimal SHA: ${val}`;
+        case "zh-TW":
+          return `${label}必須為 40 位十六進位 SHA：${val}`;
+        case "zh-HK":
+          return `${label}必須為 40 位十六進位 SHA：${val}`;
+        case "ja-JP":
+          return `${label}は 40 桁の 16 進 SHA である必要があります: ${val}`;
+        case "ko-KR":
+          return `${label}은(는) 40자리 16진수 SHA여야 합니다: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(提交哈希|模型修订版本|节点 .+? 提交哈希)不合法$/,
+    format: (m, loc) => {
+      const label = translateCommitLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label.toLowerCase()}`;
+        case "zh-TW":
+          return `${label}無效`;
+        case "zh-HK":
+          return `${label}無效`;
+        case "ja-JP":
+          return `${label}が無効です`;
+        case "ko-KR":
+          return `유효하지 않은 ${label}입니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自定义节点仓库地址不合法：(.+)$/,
+    format: (m, loc) => {
+      const val = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid custom node repository URL: ${val}`;
+        case "zh-TW":
+          return `自訂節點儲存庫網址無效：${val}`;
+        case "zh-HK":
+          return `自訂節點倉庫地址無效：${val}`;
+        case "ja-JP":
+          return `無効なカスタムノードリポジトリ URL: ${val}`;
+        case "ko-KR":
+          return `유효하지 않은 사용자 지정 노드 저장소 URL: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型仓库地址不合法：(.+)$/,
+    format: (m, loc) => {
+      const val = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid model repository address: ${val}`;
+        case "zh-TW":
+          return `模型儲存庫位址無效：${val}`;
+        case "zh-HK":
+          return `模型倉庫地址無效：${val}`;
+        case "ja-JP":
+          return `無効なモデルリポジトリ指定: ${val}`;
+        case "ko-KR":
+          return `유효하지 않은 모델 저장소 주소: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^无法解析 multitalk\/nodes\.py：(.+)$/s,
+    format: (m, loc) => {
+      const detail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Failed to parse multitalk/nodes.py: ${detail}`;
+        case "zh-TW":
+          return `無法解析 multitalk/nodes.py：${detail}`;
+        case "zh-HK":
+          return `無法解析 multitalk/nodes.py：${detail}`;
+        case "ja-JP":
+          return `multitalk/nodes.py の解析に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `multitalk/nodes.py 파싱 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^应用 wav2vec2 兼容补丁后语法校验失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Syntax check failed after applying wav2vec2 compatibility patch: ${detail}`;
+        case "zh-TW":
+          return `套用 wav2vec2 相容性修補程式後語法驗證失敗：${detail}`;
+        case "zh-HK":
+          return `套用 wav2vec2 兼容補丁後語法校驗失敗：${detail}`;
+        case "ja-JP":
+          return `wav2vec2 互換パッチ適用後の構文検証に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `wav2vec2 호환 패치 적용 후 구문 검사 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的模型子目录：(.+)$/,
+    format: (m, loc) => {
+      const dir = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported model subdirectory: ${dir}`;
+        case "zh-TW":
+          return `不支援的模型子目錄：${dir}`;
+        case "zh-HK":
+          return `不支援的模型子目錄：${dir}`;
+        case "ja-JP":
+          return `サポートされていないモデルサブディレクトリ: ${dir}`;
+        case "ko-KR":
+          return `지원하지 않는 모델 하위 디렉터리: ${dir}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型文件路径不合法：(.+)$/,
+    format: (m, loc) => {
+      const val = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid model file path: ${val}`;
+        case "zh-TW":
+          return `模型檔案路徑無效：${val}`;
+        case "zh-HK":
+          return `模型檔案路徑無效：${val}`;
+        case "ja-JP":
+          return `無効なモデルファイルパス: ${val}`;
+        case "ko-KR":
+          return `유효하지 않은 모델 파일 경로: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型文件名不合法：(.+)$/,
+    format: (m, loc) => {
+      const val = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid model filename: ${val}`;
+        case "zh-TW":
+          return `模型檔案名稱無效：${val}`;
+        case "zh-HK":
+          return `模型檔案名稱無效：${val}`;
+        case "ja-JP":
+          return `無効なモデルファイル名: ${val}`;
+        case "ko-KR":
+          return `유효하지 않은 모델 파일 이름: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^存在同路径但校验信息冲突的模型声明：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Conflicting verification metadata for duplicate model path: ${name}`;
+        case "zh-TW":
+          return `存在相同路徑但驗證資訊衝突的模型宣告：${name}`;
+        case "zh-HK":
+          return `存在同路徑但校驗資訊衝突的模型聲明：${name}`;
+        case "ja-JP":
+          return `同一パスで検証情報が競合するモデル定義があります: ${name}`;
+        case "ko-KR":
+          return `동일 경로에 검증 정보가 충돌하는 모델 선언이 있습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不允许的自定义节点补丁类型：(.+)$/,
+    format: (m, loc) => {
+      const kind = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Disallowed custom node patch type: ${kind}`;
+        case "zh-TW":
+          return `不允許的自訂節點修補類型：${kind}`;
+        case "zh-HK":
+          return `不允許的自訂節點補丁類型：${kind}`;
+        case "ja-JP":
+          return `許可されていないカスタムノードパッチ種別: ${kind}`;
+        case "ko-KR":
+          return `허용되지 않는 사용자 지정 노드 패치 유형: ${kind}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点补丁目标文件不存在：(.+)$/,
+    format: (m, loc) => {
+      const file = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Node patch target file does not exist: ${file}`;
+        case "zh-TW":
+          return `節點修補目標檔案不存在：${file}`;
+        case "zh-HK":
+          return `節點補丁目標檔案不存在：${file}`;
+        case "ja-JP":
+          return `ノードパッチの対象ファイルが見つかりません: ${file}`;
+        case "ko-KR":
+          return `노드 패치 대상 파일이 존재하지 않습니다: ${file}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自定义节点名称重复：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Duplicate custom node name: ${name}`;
+        case "zh-TW":
+          return `自訂節點名稱重複：${name}`;
+        case "zh-HK":
+          return `自訂節點名稱重複：${name}`;
+        case "ja-JP":
+          return `カスタムノード名が重複しています: ${name}`;
+        case "ko-KR":
+          return `사용자 지정 노드 이름이 중복되었습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型校验元数据不合法：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid model verification metadata: ${name}`;
+        case "zh-TW":
+          return `模型驗證中繼資料無效：${name}`;
+        case "zh-HK":
+          return `模型校驗元數據無效：${name}`;
+        case "ja-JP":
+          return `モデルの検証メタデータが無効です: ${name}`;
+        case "ko-KR":
+          return `유효하지 않은 모델 검증 메타데이터: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流编号不合法：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid workflow ID: ${id}`;
+        case "zh-TW":
+          return `工作流程編號無效：${id}`;
+        case "zh-HK":
+          return `工作流編號無效：${id}`;
+        case "ja-JP":
+          return `無効なワークフロー ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 워크플로 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/tts_engines.py ===
+  {
+    re: /^未检测到可用远端 GPU，(.+?) 需要至少 (\d+) MiB 显存$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const mib = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `No available remote GPU detected; ${label} requires at least ${mib} MiB VRAM`;
+        case "zh-TW":
+          return `未偵測到可用遠端 GPU，${label} 需要至少 ${mib} MiB VRAM`;
+        case "zh-HK":
+          return `未檢測到可用遠端 GPU，${label} 需要至少 ${mib} MiB 顯存`;
+        case "ja-JP":
+          return `利用可能なリモート GPU が検出されません。${label} には少なくとも ${mib} MiB の VRAM が必要です`;
+        case "ko-KR":
+          return `사용 가능한 원격 GPU가 감지되지 않았습니다. ${label}에는 최소 ${mib} MiB VRAM이 필요합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 TTS 引擎 (.+?) 需要至少 (\d+) MiB 显存，当前仅 (\d+) MiB$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const req = m[2]!;
+      const avail = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Remote TTS engine ${label} requires at least ${req} MiB VRAM, but only ${avail} MiB is available`;
+        case "zh-TW":
+          return `遠端 TTS 引擎 ${label} 需要至少 ${req} MiB VRAM，目前僅 ${avail} MiB`;
+        case "zh-HK":
+          return `遠端 TTS 引擎 ${label} 需要至少 ${req} MiB 顯存，目前僅 ${avail} MiB`;
+        case "ja-JP":
+          return `リモート TTS エンジン ${label} には少なくとも ${req} MiB の VRAM が必要ですが、現在は ${avail} MiB のみです`;
+        case "ko-KR":
+          return `원격 TTS 엔진 ${label}은(는) 최소 ${req} MiB VRAM이 필요하지만 현재 ${avail} MiB만 사용 가능합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未知的远端 TTS 引擎：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unknown remote TTS engine: ${id}`;
+        case "zh-TW":
+          return `未知的遠端 TTS 引擎：${id}`;
+        case "zh-HK":
+          return `未知的遠端 TTS 引擎：${id}`;
+        case "ja-JP":
+          return `不明なリモート TTS エンジン: ${id}`;
+        case "ko-KR":
+          return `알 수 없는 원격 TTS 엔진: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法的 TTS 引擎编号：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid TTS engine ID: ${id}`;
+        case "zh-TW":
+          return `無效的 TTS 引擎編號：${id}`;
+        case "zh-HK":
+          return `無效的 TTS 引擎編號：${id}`;
+        case "ja-JP":
+          return `無効な TTS エンジン ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 TTS 엔진 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已就绪的远端 TTS 引擎环境：(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing ready remote TTS engine environment: ${name}`;
+        case "zh-TW":
+          return `重複使用已就緒的遠端 TTS 引擎環境：${name}`;
+        case "zh-HK":
+          return `複用已就緒的遠端 TTS 引擎環境：${name}`;
+        case "ja-JP":
+          return `準備済みのリモート TTS エンジン環境を再利用します: ${name}`;
+        case "ko-KR":
+          return `준비된 원격 TTS 엔진 환경 재사용 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装远端 TTS 引擎依赖：(.+?)（共 (\d+) 个包，保留现有 PyTorch）$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const n = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Installing remote TTS engine dependencies: ${name} (${n} package(s), preserving existing PyTorch)`;
+        case "zh-TW":
+          return `正在安裝遠端 TTS 引擎相依套件：${name}（共 ${n} 個套件，保留現有 PyTorch）`;
+        case "zh-HK":
+          return `正在安裝遠端 TTS 引擎依賴：${name}（共 ${n} 個套件，保留現有 PyTorch）`;
+        case "ja-JP":
+          return `リモート TTS エンジンの依存関係をインストール中: ${name}（計 ${n} パッケージ、既存 PyTorch を保持）`;
+        case "ko-KR":
+          return `원격 TTS 엔진 종속성 설치 중: ${name} (총 ${n}개 패키지, 기존 PyTorch 유지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端缺少 Git，无法拉取 TTS 引擎源码：(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Git is missing on the remote runtime; cannot fetch TTS engine source: ${name}`;
+        case "zh-TW":
+          return `遠端缺少 Git，無法拉取 TTS 引擎原始碼：${name}`;
+        case "zh-HK":
+          return `遠端缺少 Git，無法拉取 TTS 引擎源碼：${name}`;
+        case "ja-JP":
+          return `リモート環境に Git がないため TTS エンジンのソースを取得できません: ${name}`;
+        case "ko-KR":
+          return `원격 런타임에 Git이 없어 TTS 엔진 소스를 가져올 수 없습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在拉取远端 TTS 引擎源码：(.+?)@([a-fA-F0-9]+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const rev = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Fetching remote TTS engine source: ${name}@${rev}`;
+        case "zh-TW":
+          return `正在拉取遠端 TTS 引擎原始碼：${name}@${rev}`;
+        case "zh-HK":
+          return `正在拉取遠端 TTS 引擎源碼：${name}@${rev}`;
+        case "ja-JP":
+          return `リモート TTS エンジンのソースを取得中: ${name}@${rev}`;
+        case "ko-KR":
+          return `원격 TTS 엔진 소스 가져오는 중: ${name}@${rev}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装 (.+?) 源码依赖（保留现有 PyTorch）$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Installing source dependencies for ${name} (preserving existing PyTorch)`;
+        case "zh-TW":
+          return `正在安裝 ${name} 原始碼相依套件（保留現有 PyTorch）`;
+        case "zh-HK":
+          return `正在安裝 ${name} 源碼依賴（保留現有 PyTorch）`;
+        case "ja-JP":
+          return `${name} のソース依存関係をインストール中（既存 PyTorch を保持）`;
+        case "ko-KR":
+          return `${name} 소스 종속성 설치 중 (기존 PyTorch 유지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 TTS 引擎环境就绪：(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote TTS engine environment ready: ${name}`;
+        case "zh-TW":
+          return `遠端 TTS 引擎環境已就緒：${name}`;
+        case "zh-HK":
+          return `遠端 TTS 引擎環境就緒：${name}`;
+        case "ja-JP":
+          return `リモート TTS エンジン環境の準備が完了しました: ${name}`;
+        case "ko-KR":
+          return `원격 TTS 엔진 환경 준비 완료: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在准备远端 TTS 环境(?:[:：]\s*(.+)|（(.+)）)?(?:\.{3}|…)?$/,
+    format: (m, loc) => {
+      const rawName = (m[1] || m[2] || "").trim();
+      const name = rawName ? translateInner(rawName, loc) : "";
+      switch (loc) {
+        case "en-US":
+          return name
+            ? `Preparing remote TTS environment: ${name}`
+            : "Preparing remote TTS environment";
+        case "zh-TW":
+          return name
+            ? `正在準備遠端 TTS 環境：${name}`
+            : "正在準備遠端 TTS 環境";
+        case "zh-HK":
+          return name
+            ? `正在準備遠端 TTS 環境：${name}`
+            : "正在準備遠端 TTS 環境";
+        case "ja-JP":
+          return name
+            ? `リモート TTS 環境を準備中: ${name}`
+            : "リモート TTS 環境を準備中";
+        case "ko-KR":
+          return name
+            ? `원격 TTS 환경 준비 중: ${name}`
+            : "원격 TTS 환경 준비 중";
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在创建远端 TTS 独立虚拟环境：(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Creating isolated remote TTS virtual environment: ${name}`;
+        case "zh-TW":
+          return `正在建立遠端 TTS 獨立虛擬環境：${name}`;
+        case "zh-HK":
+          return `正在建立遠端 TTS 獨立虛擬環境：${name}`;
+        case "ja-JP":
+          return `リモート TTS 用の独立仮想環境を作成中: ${name}`;
+        case "ko-KR":
+          return `원격 TTS 독립 가상 환경 생성 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装 (.+?) 依赖(?:\.{3}|…)?$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Installing ${name} dependencies`;
+        case "zh-TW":
+          return `正在安裝 ${name} 相依套件`;
+        case "zh-HK":
+          return `正在安裝 ${name} 依賴`;
+        case "ja-JP":
+          return `${name} の依存関係をインストール中`;
+        case "ko-KR":
+          return `${name} 종속성 설치 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在远端合成语音(?:\.{3}|…)?$/,
+    format: (m, loc) => {
+      switch (loc) {
+        case "en-US":
+          return "Synthesizing speech remotely";
+        case "zh-TW":
+          return "正在遠端合成語音";
+        case "zh-HK":
+          return "正在遠端合成語音";
+        case "ja-JP":
+          return "リモートで音声を合成中";
+        case "ko-KR":
+          return "원격에서 음성 합성 중";
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已完成第 (\d+)\/(\d+) 句合成(?:\.{3}|…)?$/,
+    format: (m, loc) => {
+      const [, cur, total] = m;
+      switch (loc) {
+        case "en-US":
+          return `Synthesized sentence ${cur}/${total}`;
+        case "zh-TW":
+          return `已完成第 ${cur}/${total} 句合成`;
+        case "zh-HK":
+          return `已完成第 ${cur}/${total} 句合成`;
+        case "ja-JP":
+          return `${cur}/${total} 文目の合成が完了しました`;
+        case "ko-KR":
+          return `${cur}/${total}번째 문장 합성 완료`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在合成并标准化 48\s*kHz 母带音频(?:\.{3}|…)?$/,
+    format: (m, loc) => {
+      switch (loc) {
+        case "en-US":
+          return "Assembling and normalizing 48 kHz master audio";
+        case "zh-TW":
+          return "正在合成並標準化 48 kHz 母帶音訊";
+        case "zh-HK":
+          return "正在合成並標準化 48 kHz 母帶音訊";
+        case "ja-JP":
+          return "48 kHz マスター音声を結合・正規化中";
+        case "ko-KR":
+          return "48 kHz 마스터 오디오 합성 및 정규화 중";
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非商用许可提示：当前 TTS 引擎「(.+?)」采用 (.+?)(?: — (.+))?$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const lic = m[2]!;
+      const notice = m[3] ? translateInner(m[3], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return `Non-commercial license notice: TTS engine "${name}" uses ${lic}${notice ? ` - ${notice}` : ""}`;
+        case "zh-TW":
+          return `非商用授權提示：目前 TTS 引擎「${name}」採用 ${lic}${notice ? ` — ${notice}` : ""}`;
+        case "zh-HK":
+          return `非商用許可提示：目前 TTS 引擎「${name}」採用 ${lic}${notice ? ` — ${notice}` : ""}`;
+        case "ja-JP":
+          return `非商用ライセンス通知: TTS エンジン「${name}」は ${lic} を採用しています${notice ? ` — ${notice}` : ""}`;
+        case "ko-KR":
+          return `비상업 라이선스 안내: TTS 엔진 "${name}"은(는) ${lic} 라이선스를 사용합니다${notice ? ` - ${notice}` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^开始远端 TTS 合成：(.+?)（共 (\d+) 段）$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const count = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Starting remote TTS synthesis: ${name} (${count} segment(s))`;
+        case "zh-TW":
+          return `開始遠端 TTS 合成：${name}（共 ${count} 段）`;
+        case "zh-HK":
+          return `開始遠端 TTS 合成：${name}（共 ${count} 段）`;
+        case "ja-JP":
+          return `リモート TTS 合成を開始します: ${name}（計 ${count} セグメント）`;
+        case "ko-KR":
+          return `원격 TTS 합성 시작: ${name} (총 ${count}개 구간)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 TTS 合成完成：(.+?)（总时长 ([\d.]+) 秒，(\d+) Hz）$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const dur = m[2]!;
+      const sr = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Remote TTS synthesis completed: ${name} (duration ${dur}s, ${sr} Hz)`;
+        case "zh-TW":
+          return `遠端 TTS 合成完成：${name}（總時長 ${dur} 秒，${sr} Hz）`;
+        case "zh-HK":
+          return `遠端 TTS 合成完成：${name}（總時長 ${dur} 秒，${sr} Hz）`;
+        case "ja-JP":
+          return `リモート TTS 合成が完了しました: ${name}（合計 ${dur} 秒、${sr} Hz）`;
+        case "ko-KR":
+          return `원격 TTS 합성 완료: ${name} (총 길이 ${dur}초, ${sr} Hz)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 TTS 执行失败（退出码 (-?\d+)）(?:：(.*))?$/s,
+    format: (m, loc) => {
+      const code = m[1]!;
+      const tailRaw = (m[2] ?? "").trim();
+      const tail = tailRaw ? translateInner(tailRaw, loc) : "";
+      switch (loc) {
+        case "en-US":
+          return `Remote TTS execution failed (exit code ${code})${tail ? `: ${tail}` : ""}`;
+        case "zh-TW":
+          return `遠端 TTS 執行失敗（結束代碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "zh-HK":
+          return `遠端 TTS 執行失敗（退出碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "ja-JP":
+          return `リモート TTS の実行に失敗しました（終了コード ${code}）${tail ? `: ${tail}` : ""}`;
+        case "ko-KR":
+          return `원격 TTS 실행 실패 (종료 코드 ${code})${tail ? `: ${tail}` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^TTS 推理进程异常退出（退出码 (-?\d+)）(?:：(.*))?$/s,
+    format: (m, loc) => {
+      const code = m[1]!;
+      const tailRaw = (m[2] ?? "").trim();
+      const tail = tailRaw ? translateInner(tailRaw, loc) : "";
+      switch (loc) {
+        case "en-US":
+          return `TTS inference process exited unexpectedly (exit code ${code})${tail ? `: ${tail}` : ""}`;
+        case "zh-TW":
+          return `TTS 推論處理程序異常結束（結束代碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "zh-HK":
+          return `TTS 推理進程異常退出（退出碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "ja-JP":
+          return `TTS 推論プロセスが異常終了しました（終了コード ${code}）${tail ? `: ${tail}` : ""}`;
+        case "ko-KR":
+          return `TTS 추론 프로세스가 비정상 종료되었습니다 (종료 코드 ${code})${tail ? `: ${tail}` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 TTS 引擎 (.+?) 未生成第 (\d+) 段音频：(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const idx = m[2]!;
+      const path = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Remote TTS engine ${name} did not produce audio segment ${idx}: ${path}`;
+        case "zh-TW":
+          return `遠端 TTS 引擎 ${name} 未產生第 ${idx} 段音訊：${path}`;
+        case "zh-HK":
+          return `遠端 TTS 引擎 ${name} 未生成第 ${idx} 段音訊：${path}`;
+        case "ja-JP":
+          return `リモート TTS エンジン ${name} が第 ${idx} セグメント音声を生成しませんでした: ${path}`;
+        case "ko-KR":
+          return `원격 TTS 엔진 ${name}이(가) ${idx}번째 오디오 구간을 생성하지 못했습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的 TTS 引擎脚本：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported TTS engine worker script: ${id}`;
+        case "zh-TW":
+          return `不支援的 TTS 引擎指令碼：${id}`;
+        case "zh-HK":
+          return `不支援的 TTS 引擎腳本：${id}`;
+        case "ja-JP":
+          return `サポートされていない TTS エンジンスクリプト: ${id}`;
+        case "ko-KR":
+          return `지원하지 않는 TTS 엔진 스크립트: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^synth_fn 返回了不支持的结果类型：(.+)$/,
+    format: (m, loc) => {
+      const typeName = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `synth_fn returned an unsupported result type: ${typeName}`;
+        case "zh-TW":
+          return `synth_fn 回傳了不支援的結果類型：${typeName}`;
+        case "zh-HK":
+          return `synth_fn 返回了不支援的結果類型：${typeName}`;
+        case "ja-JP":
+          return `synth_fn がサポートされていない結果型を返しました: ${typeName}`;
+        case "ko-KR":
+          return `synth_fn이 지원하지 않는 결과 유형을 반환했습니다: ${typeName}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音色参考音频文件不存在：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Reference voice audio file does not exist: ${path}`;
+        case "zh-TW":
+          return `音色參考音訊檔案不存在：${path}`;
+        case "zh-HK":
+          return `聲線參考音訊檔案不存在：${path}`;
+        case "ja-JP":
+          return `参照音声ファイルが見つかりません: ${path}`;
+        case "ko-KR":
+          return `참조 음성 오디오 파일이 존재하지 않습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^情绪参考音频文件不存在：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Emotion reference audio file does not exist: ${path}`;
+        case "zh-TW":
+          return `情緒參考音訊檔案不存在：${path}`;
+        case "zh-HK":
+          return `情緒參考音訊檔案不存在：${path}`;
+        case "ja-JP":
+          return `感情参照音声ファイルが見つかりません: ${path}`;
+        case "ko-KR":
+          return `감정 참조 오디오 파일이 존재하지 않습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^无效的 WAV 文件头：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid WAV file header: ${path}`;
+        case "zh-TW":
+          return `無效的 WAV 檔頭：${path}`;
+        case "zh-HK":
+          return `無效的 WAV 檔案頭：${path}`;
+        case "ja-JP":
+          return `無効な WAV ファイルヘッダー: ${path}`;
+        case "ko-KR":
+          return `유효하지 않은 WAV 파일 헤더: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的 WAV 编码格式：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported WAV encoding format: ${path}`;
+        case "zh-TW":
+          return `不支援的 WAV 編碼格式：${path}`;
+        case "zh-HK":
+          return `不支援的 WAV 編碼格式：${path}`;
+        case "ja-JP":
+          return `サポートされていない WAV エンコード形式: ${path}`;
+        case "ko-KR":
+          return `지원하지 않는 WAV 인코딩 형식: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的浮点 WAV 位深：(.+)$/,
+    format: (m, loc) => {
+      const bits = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported floating-point WAV bit depth: ${bits}`;
+        case "zh-TW":
+          return `不支援的浮點 WAV 位元深度：${bits}`;
+        case "zh-HK":
+          return `不支援的浮點 WAV 位深：${bits}`;
+        case "ja-JP":
+          return `サポートされていない浮動小数点 WAV ビット深度: ${bits}`;
+        case "ko-KR":
+          return `지원하지 않는 부동소수점 WAV 비트 깊이: ${bits}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^WAV 文件不存在：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `WAV file does not exist: ${path}`;
+        case "zh-TW":
+          return `WAV 檔案不存在：${path}`;
+        case "zh-HK":
+          return `WAV 檔案不存在：${path}`;
+        case "ja-JP":
+          return `WAV ファイルが見つかりません: ${path}`;
+        case "ko-KR":
+          return `WAV 파일이 존재하지 않습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^WAV 采样率无效：(.+)$/,
+    format: (m, loc) => {
+      const sr = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid WAV sample rate: ${sr}`;
+        case "zh-TW":
+          return `WAV 取樣率無效：${sr}`;
+        case "zh-HK":
+          return `WAV 採樣率無效：${sr}`;
+        case "ja-JP":
+          return `無効な WAV サンプリングレート: ${sr}`;
+        case "ko-KR":
+          return `유효하지 않은 WAV 샘플링 레이트: ${sr}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的 PCM 位宽：(.+?) 字节$/,
+    format: (m, loc) => {
+      const width = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported PCM sample width: ${width} byte(s)`;
+        case "zh-TW":
+          return `不支援的 PCM 位元寬度：${width} 位元組`;
+        case "zh-HK":
+          return `不支援的 PCM 位寬：${width} 位元組`;
+        case "ja-JP":
+          return `サポートされていない PCM サンプル幅: ${width} バイト`;
+        case "ko-KR":
+          return `지원하지 않는 PCM 샘플 너비: ${width}바이트`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(目标)?采样率必须大于 0：(.+)$/,
+    format: (m, loc) => {
+      const isTarget = Boolean(m[1]);
+      const val = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${isTarget ? "Target sample rate" : "Sample rate"} must be greater than 0: ${val}`;
+        case "zh-TW":
+          return `${isTarget ? "目標取樣率" : "取樣率"}必須大於 0：${val}`;
+        case "zh-HK":
+          return `${isTarget ? "目標採樣率" : "採樣率"}必須大於 0：${val}`;
+        case "ja-JP":
+          return `${isTarget ? "目標サンプリングレート" : "サンプリングレート"}は 0 より大きい必要があります: ${val}`;
+        case "ko-KR":
+          return `${isTarget ? "목표 샘플링 레이트" : "샘플링 레이트"}는 0보다 커야 합니다: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^在 (.+?) 中未找到 Fish Speech 解码器权重文件$/,
+    format: (m, loc) => {
+      const dir = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Fish Speech decoder checkpoint was not found in ${dir}`;
+        case "zh-TW":
+          return `在 ${dir} 中找不到 Fish Speech 解碼器權重檔案`;
+        case "zh-HK":
+          return `在 ${dir} 中未找到 Fish Speech 解碼器權重檔案`;
+        case "ja-JP":
+          return `${dir} に Fish Speech デコーダーの重みファイルが見つかりません`;
+        case "ko-KR":
+          return `${dir}에서 Fish Speech 디코더 가중치 파일을 찾을 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Fish Speech S2 Pro 推理失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Fish Speech S2 Pro inference failed: ${detail}`;
+        case "zh-TW":
+          return `Fish Speech S2 Pro 推論失敗：${detail}`;
+        case "zh-HK":
+          return `Fish Speech S2 Pro 推理失敗：${detail}`;
+        case "ja-JP":
+          return `Fish Speech S2 Pro の推論に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Fish Speech S2 Pro 추론 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Fish Speech S2 Pro 未返回第 (\d+) 段音频$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Fish Speech S2 Pro did not return audio segment ${idx}`;
+        case "zh-TW":
+          return `Fish Speech S2 Pro 未回傳第 ${idx} 段音訊`;
+        case "zh-HK":
+          return `Fish Speech S2 Pro 未返回第 ${idx} 段音訊`;
+        case "ja-JP":
+          return `Fish Speech S2 Pro から第 ${idx} セグメント音声が返されませんでした`;
+        case "ko-KR":
+          return `Fish Speech S2 Pro가 ${idx}번째 오디오 구간을 반환하지 않았습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^在 (.+?) 中未找到 IndexTTS2 配置文件 config\.yaml$/,
+    format: (m, loc) => {
+      const dir = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `IndexTTS2 config.yaml was not found in ${dir}`;
+        case "zh-TW":
+          return `在 ${dir} 中找不到 IndexTTS2 設定檔 config.yaml`;
+        case "zh-HK":
+          return `在 ${dir} 中未找到 IndexTTS2 配置檔 config.yaml`;
+        case "ja-JP":
+          return `${dir} に IndexTTS2 設定ファイル config.yaml が見つかりません`;
+        case "ko-KR":
+          return `${dir}에서 IndexTTS2 설정 파일 config.yaml을 찾을 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^IndexTTS2 未生成第 (\d+) 段音频：(.+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      const path = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `IndexTTS2 did not produce audio segment ${idx}: ${path}`;
+        case "zh-TW":
+          return `IndexTTS2 未產生第 ${idx} 段音訊：${path}`;
+        case "zh-HK":
+          return `IndexTTS2 未生成第 ${idx} 段音訊：${path}`;
+        case "ja-JP":
+          return `IndexTTS2 が第 ${idx} セグメント音声を生成しませんでした: ${path}`;
+        case "ko-KR":
+          return `IndexTTS2가 ${idx}번째 오디오 구간을 생성하지 못했습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/digital_human.py ===
+  {
+    re: /^不支持的 (PCM|WAV) 采样位深：(.+?) 字节$/,
+    format: (m, loc) => {
+      const [, fmt, width] = m;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported ${fmt} sample bit depth: ${width} byte(s)`;
+        case "zh-TW":
+          return `不支援的 ${fmt} 取樣位元深度：${width} 位元組`;
+        case "zh-HK":
+          return `不支援的 ${fmt} 採樣位深：${width} 位元組`;
+        case "ja-JP":
+          return `サポートされていない ${fmt} サンプルビット深度: ${width} バイト`;
+        case "ko-KR":
+          return `지원하지 않는 ${fmt} 샘플 비트 깊이: ${width}바이트`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音视频处理失败（退出码 (-?\d+)）(?:：(.*))?$/s,
+    format: (m, loc) => {
+      const code = m[1]!;
+      const tailRaw = (m[2] ?? "").trim();
+      const tail = tailRaw ? translateInner(tailRaw, loc) : "";
+      switch (loc) {
+        case "en-US":
+          return `Audio/video processing failed (exit code ${code})${tail ? `: ${tail}` : ""}`;
+        case "zh-TW":
+          return `影音處理失敗（結束代碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "zh-HK":
+          return `音影片處理失敗（退出碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "ja-JP":
+          return `音声・動画処理に失敗しました（終了コード ${code}）${tail ? `: ${tail}` : ""}`;
+        case "ko-KR":
+          return `오디오/비디오 처리 실패 (종료 코드 ${code})${tail ? `: ${tail}` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音视频处理命令失败（退出码 (-?\d+)）$/,
+    format: (m, loc) => {
+      const code = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Audio/video processing command failed (exit code ${code})`;
+        case "zh-TW":
+          return `影音處理命令失敗（結束代碼 ${code}）`;
+        case "zh-HK":
+          return `音影片處理命令失敗（退出碼 ${code}）`;
+        case "ja-JP":
+          return `音声・動画処理コマンドが失敗しました（終了コード ${code}）`;
+        case "ko-KR":
+          return `오디오/비디오 처리 명령 실패 (종료 코드 ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^无法从远端 ComfyUI 获取分段输出文件：(.+)$/,
+    format: (m, loc) => {
+      const fname = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unable to fetch segment output file from remote ComfyUI: ${fname}`;
+        case "zh-TW":
+          return `無法從遠端 ComfyUI 取得分段輸出檔案：${fname}`;
+        case "zh-HK":
+          return `無法從遠端 ComfyUI 獲取分段輸出檔案：${fname}`;
+        case "ja-JP":
+          return `リモート ComfyUI からセグメント出力ファイルを取得できません: ${fname}`;
+        case "ko-KR":
+          return `원격 ComfyUI에서 구간 출력 파일을 가져올 수 없습니다: ${fname}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^无法从第 (\d+) 段视频提取尾帧用于长视频衔接(?:：(.+))?$/s,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      const detail = m[2] ? translateInner(m[2], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return detail
+            ? `Unable to extract tail frame from video segment ${idx} for long-video continuation: ${detail}`
+            : `Unable to extract tail frame from video segment ${idx} for long-video continuation`;
+        case "zh-TW":
+          return detail
+            ? `無法從第 ${idx} 段影片擷取末影格以進行長影片銜接：${detail}`
+            : `無法從第 ${idx} 段影片擷取末影格以進行長影片銜接`;
+        case "zh-HK":
+          return detail
+            ? `無法從第 ${idx} 段影片提取尾幀用於長影片銜接：${detail}`
+            : `無法從第 ${idx} 段影片提取尾幀用於長影片銜接`;
+        case "ja-JP":
+          return detail
+            ? `長尺動画の連結用に第 ${idx} セグメント動画から末尾フレームを抽出できませんでした: ${detail}`
+            : `長尺動画の連結用に第 ${idx} セグメント動画から末尾フレームを抽出できませんでした`;
+        case "ko-KR":
+          return detail
+            ? `장편 영상 연결을 위해 ${idx}번째 영상 구간에서 마지막 프레임을 추출할 수 없습니다: ${detail}`
+            : `장편 영상 연결을 위해 ${idx}번째 영상 구간에서 마지막 프레임을 추출할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前模板不支持所选语音引擎：(.+)$/,
+    format: (m, loc) => {
+      const engine = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Selected TTS engine is not supported by this template: ${engine}`;
+        case "zh-TW":
+          return `目前範本不支援所選語音引擎：${engine}`;
+        case "zh-HK":
+          return `目前範本不支援所選語音引擎：${engine}`;
+        case "ja-JP":
+          return `このテンプレートは選択された音声エンジンに対応していません: ${engine}`;
+        case "ko-KR":
+          return `현재 템플릿은 선택한 음성 엔진을 지원하지 않습니다: ${engine}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^释放 ComfyUI 显存时出现非致命提示：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Non-fatal warning while releasing ComfyUI VRAM: ${detail}`;
+        case "zh-TW":
+          return `釋放 ComfyUI VRAM 時出現非致命提示：${detail}`;
+        case "zh-HK":
+          return `釋放 ComfyUI 顯存時出現非致命提示：${detail}`;
+        case "ja-JP":
+          return `ComfyUI の VRAM 解放時に軽微な警告が発生しました: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI VRAM 해제 중 치명적이지 않은 경고 발생: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在使用远端 TTS 引擎（(.+?)）合成高保真配音$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Synthesizing high-fidelity voiceover with remote TTS engine (${engine})`;
+        case "zh-TW":
+          return `正在使用遠端 TTS 引擎（${engine}）合成高傳真配音`;
+        case "zh-HK":
+          return `正在使用遠端 TTS 引擎（${engine}）合成高保真配音`;
+        case "ja-JP":
+          return `リモート TTS エンジン（${engine}）で高音質音声を合成中`;
+        case "ko-KR":
+          return `원격 TTS 엔진(${engine})으로 고음질 더빙을 합성하는 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端配音完成，音频总时长 ([\d.]+) 秒$/,
+    format: (m, loc) => {
+      const dur = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Remote voiceover completed; total audio duration ${dur}s`;
+        case "zh-TW":
+          return `遠端配音完成，音訊總時長 ${dur} 秒`;
+        case "zh-HK":
+          return `遠端配音完成，音訊總時長 ${dur} 秒`;
+        case "ja-JP":
+          return `リモート音声合成が完了しました（合計 ${dur} 秒）`;
+        case "ko-KR":
+          return `원격 더빙 완료, 전체 오디오 길이 ${dur}초`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音频预处理完成，总时长 ([\d.]+) 秒，检测到 (\d+) 处自然换气静音点$/,
+    format: (m, loc) => {
+      const [, dur, count] = m;
+      switch (loc) {
+        case "en-US":
+          return `Audio preprocessing completed (${dur}s total; detected ${count} natural silence valley(s))`;
+        case "zh-TW":
+          return `音訊前處理完成，總時長 ${dur} 秒，偵測到 ${count} 處自然換氣靜音點`;
+        case "zh-HK":
+          return `音訊預處理完成，總時長 ${dur} 秒，檢測到 ${count} 處自然換氣靜音點`;
+        case "ja-JP":
+          return `音声前処理が完了しました（合計 ${dur} 秒、自然な無音ポイントを ${count} 箇所検出）`;
+        case "ko-KR":
+          return `오디오 전처리 완료 (총 ${dur}초, 자연 무음 구간 ${count}곳 감지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的音频来源模式：(.+)$/,
+    format: (m, loc) => {
+      const mode = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported audio source mode: ${mode}`;
+        case "zh-TW":
+          return `不支援的音訊來源模式：${mode}`;
+        case "zh-HK":
+          return `不支援的音訊來源模式：${mode}`;
+        case "ja-JP":
+          return `サポートされていない音声ソースモード: ${mode}`;
+        case "ko-KR":
+          return `지원하지 않는 오디오 소스 모드: ${mode}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在预处理主播参考图（(\d+)[×x](\d+)）$/,
+    format: (m, loc) => {
+      const [, w, h] = m;
+      switch (loc) {
+        case "en-US":
+          return `Preprocessing presenter portrait (${w}x${h})`;
+        case "zh-TW":
+          return `正在前處理主播參考圖（${w}×${h}）`;
+        case "zh-HK":
+          return `正在預處理主播參考圖（${w}×${h}）`;
+        case "ja-JP":
+          return `プレゼンター参照画像を前処理中（${w}×${h}）`;
+        case "ko-KR":
+          return `진행자 참조 이미지 전처리 중 (${w}x${h})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在准备远端视频环境与模型权重：(.+)$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Preparing remote video environment and model weights: ${wfName}`;
+        case "zh-TW":
+          return `正在準備遠端影片環境與模型權重：${wfName}`;
+        case "zh-HK":
+          return `正在準備遠端影片環境與模型權重：${wfName}`;
+        case "ja-JP":
+          return `リモート動画環境とモデル重みを準備中: ${wfName}`;
+        case "ko-KR":
+          return `원격 영상 환경 및 모델 가중치 준비 중: ${wfName}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^分段规划完成：共 (\d+) 段（总时长 ([\d.]+) 秒，基础渲染 (\d+)[×x](\d+)，目标输出 (\d+)[×x](\d+) @ (\d+)fps）$/,
+    format: (m, loc) => {
+      const [, segs, dur, bw, bh, tw, th, fps] = m;
+      switch (loc) {
+        case "en-US":
+          return `Segment plan ready: ${segs} segment(s) (${dur}s total, base ${bw}x${bh}, target ${tw}x${th} @ ${fps} fps)`;
+        case "zh-TW":
+          return `分段規劃完成：共 ${segs} 段（總時長 ${dur} 秒，基礎算繪 ${bw}×${bh}，目標輸出 ${tw}×${th} @ ${fps}fps）`;
+        case "zh-HK":
+          return `分段規劃完成：共 ${segs} 段（總時長 ${dur} 秒，基礎渲染 ${bw}×${bh}，目標輸出 ${tw}×${th} @ ${fps}fps）`;
+        case "ja-JP":
+          return `セグメント計画が完了しました: 計 ${segs} セグメント（合計 ${dur} 秒、ベース ${bw}×${bh}、出力 ${tw}×${th} @ ${fps}fps）`;
+        case "ko-KR":
+          return `구간 계획 완료: 총 ${segs}개 구간 (전체 ${dur}초, 기본 렌더링 ${bw}x${bh}, 목표 출력 ${tw}x${th} @ ${fps}fps)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 正在渲染 第 (\d+)\/(\d+) 段（([\d.]+)s[–-]([\d.]+)s，(\d+) 帧）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const [, , cur, total, start, end, frames] = m;
+      switch (loc) {
+        case "en-US":
+          return `${wfName} · Rendering Segment ${cur}/${total} (${start}s-${end}s, ${frames} frames)`;
+        case "zh-TW":
+          return `${wfName} · 正在算繪 第 ${cur}/${total} 段（${start}s–${end}s，${frames} 影格）`;
+        case "zh-HK":
+          return `${wfName} · 正在渲染 第 ${cur}/${total} 段（${start}s–${end}s，${frames} 幀）`;
+        case "ja-JP":
+          return `${wfName} · セグメント ${cur}/${total} をレンダリング中（${start}s–${end}s、${frames} フレーム）`;
+        case "ko-KR":
+          return `${wfName} · 세그먼트 ${cur}/${total} 렌더링 중 (${start}s-${end}s, ${frames}프레임)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 执行完成但未产出(?:有效)?视频文件$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      const valid = m[0].includes("有效");
+      switch (loc) {
+        case "en-US":
+          return valid
+            ? `${seg} completed without producing a valid video file`
+            : `${seg} completed without producing a video file`;
+        case "zh-TW":
+          return valid
+            ? `${seg} 執行完成但未產出有效影片檔案`
+            : `${seg} 執行完成但未產出影片檔案`;
+        case "zh-HK":
+          return valid
+            ? `${seg} 執行完成但未產出有效影片檔案`
+            : `${seg} 執行完成但未產出影片檔案`;
+        case "ja-JP":
+          return valid
+            ? `${seg} は完了しましたが有効な動画ファイルが出力されませんでした`
+            : `${seg} は完了しましたが動画ファイルが出力されませんでした`;
+        case "ko-KR":
+          return valid
+            ? `${seg} 실행은 완료되었으나 유효한 동영상 파일이 생성되지 않았습니다`
+            : `${seg} 실행은 완료되었으나 동영상 파일이 생성되지 않았습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 返回了图片而非视频文件，请检查视频输出节点格式$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${seg} returned an image instead of a video file; please check the video output node format`;
+        case "zh-TW":
+          return `${seg} 回傳了圖片而非影片檔案，請檢查影片輸出節點格式`;
+        case "zh-HK":
+          return `${seg} 返回了圖片而非影片檔案，請檢查影片輸出節點格式`;
+        case "ja-JP":
+          return `${seg} は動画ファイルではなく画像を返しました。動画出力ノードの形式を確認してください`;
+        case "ko-KR":
+          return `${seg}에서 동영상이 아닌 이미지 파일이 반환되었습니다. 동영상 출력 노드 형식을 확인해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 下载的视频文件为空$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Downloaded video file for ${seg} is empty`;
+        case "zh-TW":
+          return `${seg} 下載的影片檔案為空`;
+        case "zh-HK":
+          return `${seg} 下載的影片檔案為空`;
+        case "ja-JP":
+          return `${seg} でダウンロードした動画ファイルが空です`;
+        case "ko-KR":
+          return `${seg}에서 다운로드한 동영상 파일이 비어 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 数字人长视频生成完成（共 (\d+) 段，([\d.]+) 秒，(\d+)[×x](\d+)）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const [, , segs, dur, w, h] = m;
+      switch (loc) {
+        case "en-US":
+          return `${wfName} · Digital human video completed (${segs} segment(s), ${dur}s, ${w}x${h})`;
+        case "zh-TW":
+          return `${wfName} · 數位人長影片產生完成（共 ${segs} 段，${dur} 秒，${w}×${h}）`;
+        case "zh-HK":
+          return `${wfName} · 數碼人長影片生成完成（共 ${segs} 段，${dur} 秒，${w}×${h}）`;
+        case "ja-JP":
+          return `${wfName} · デジタルヒューマン長尺動画の生成が完了しました（計 ${segs} セグメント、${dur} 秒、${w}×${h}）`;
+        case "ko-KR":
+          return `${wfName} · 디지털 휴먼 장편 영상 생성 완료 (총 ${segs}개 구간, ${dur}초, ${w}x${h})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === common/comfyui.py & console/internal/comfyui/comfyui.go extra validation ===
+  {
+    re: /^非法的 TTS 引擎 ID[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid TTS engine ID: ${id}`;
+        case "zh-TW":
+          return `無效的 TTS 引擎 ID：${id}`;
+        case "zh-HK":
+          return `無效的 TTS 引擎 ID：${id}`;
+        case "ja-JP":
+          return `無効な TTS エンジン ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 TTS 엔진 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^visible_when 条件 (.+?) 的值必须为字符串或布尔值$/,
+    format: (m, loc) => {
+      const key = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `visible_when condition ${key} value must be a string or boolean`;
+        case "zh-TW":
+          return `visible_when 條件 ${key} 的值必須為字串或布林值`;
+        case "zh-HK":
+          return `visible_when 條件 ${key} 的值必須為字串或布林值`;
+        case "ja-JP":
+          return `visible_when 条件 ${key} の値は文字列または真偽値である必要があります`;
+        case "ko-KR":
+          return `visible_when 조건 ${key}의 값은 문자열 또는 불리언이어야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^分段时长必须在 ([\d.]+) 到 ([\d.]+) 秒之间$/,
+    format: (m, loc) => {
+      const [, lo, hi] = m;
+      switch (loc) {
+        case "en-US":
+          return `Segment duration must be between ${lo} and ${hi} seconds`;
+        case "zh-TW":
+          return `分段時長必須介於 ${lo} 到 ${hi} 秒之間`;
+        case "zh-HK":
+          return `分段時長必須在 ${lo} 到 ${hi} 秒之間`;
+        case "ja-JP":
+          return `セグメント長は ${lo}〜${hi} 秒の範囲で指定してください`;
+        case "ko-KR":
+          return `구간 길이는 ${lo}초에서 ${hi}초 사이여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^无法词法解析 multitalk\/nodes\.py：(.+)$/s,
+    format: (m, loc) => {
+      const detail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Failed to tokenize multitalk/nodes.py: ${detail}`;
+        case "zh-TW":
+          return `無法進行詞法解析 multitalk/nodes.py：${detail}`;
+        case "zh-HK":
+          return `無法詞法解析 multitalk/nodes.py：${detail}`;
+        case "ja-JP":
+          return `multitalk/nodes.py の字句解析に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `multitalk/nodes.py 어휘 분석 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型文件名与保留控制文件冲突：(.+)$/,
+    format: (m, loc) => {
+      const fname = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Model filename conflicts with reserved control file: ${fname}`;
+        case "zh-TW":
+          return `模型檔案名稱與保留控制檔案衝突：${fname}`;
+        case "zh-HK":
+          return `模型檔案名稱與保留控制檔案衝突：${fname}`;
+        case "ja-JP":
+          return `モデルファイル名が予約済み制御ファイルと競合しています: ${fname}`;
+        case "ko-KR":
+          return `모델 파일 이름이 예약된 제어 파일과 충돌합니다: ${fname}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的 PCM WAV 位深：(.+)$/,
+    format: (m, loc) => {
+      const bits = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported PCM WAV bit depth: ${bits}`;
+        case "zh-TW":
+          return `不支援的 PCM WAV 位元深度：${bits}`;
+        case "zh-HK":
+          return `不支援的 PCM WAV 位深：${bits}`;
+        case "ja-JP":
+          return `サポートされていない PCM WAV ビット深度: ${bits}`;
+        case "ko-KR":
+          return `지원하지 않는 PCM WAV 비트 깊이: ${bits}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在为远端 TTS 引擎创建隔离虚拟环境：(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Creating isolated virtual environment for remote TTS engine: ${name}`;
+        case "zh-TW":
+          return `正在為遠端 TTS 引擎建立隔離虛擬環境：${name}`;
+        case "zh-HK":
+          return `正在為遠端 TTS 引擎建立隔離虛擬環境：${name}`;
+        case "ja-JP":
+          return `リモート TTS エンジン用の隔離仮想環境を作成中: ${name}`;
+        case "ko-KR":
+          return `원격 TTS 엔진용 격리 가상 환경 생성 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端缺少 ffmpeg，无法将参考音频转换为标准 WAV 格式：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `ffmpeg is missing on the remote runtime; cannot convert reference audio to standard WAV: ${name}`;
+        case "zh-TW":
+          return `遠端缺少 ffmpeg，無法將參考音訊轉換為標準 WAV 格式：${name}`;
+        case "zh-HK":
+          return `遠端缺少 ffmpeg，無法將參考音訊轉換為標準 WAV 格式：${name}`;
+        case "ja-JP":
+          return `リモート環境に ffmpeg がないため参照音声を標準 WAV 形式に変換できません: ${name}`;
+        case "ko-KR":
+          return `원격 런타임에 ffmpeg가 없어 참조 오디오를 표준 WAV 형식으로 변환할 수 없습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在将参考音频转码为标准 24 kHz PCM WAV：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Transcoding reference audio to standard 24 kHz PCM WAV: ${name}`;
+        case "zh-TW":
+          return `正在將參考音訊轉碼為標準 24 kHz PCM WAV：${name}`;
+        case "zh-HK":
+          return `正在將參考音訊轉碼為標準 24 kHz PCM WAV：${name}`;
+        case "ja-JP":
+          return `参照音声を標準 24 kHz PCM WAV に変換中: ${name}`;
+        case "ko-KR":
+          return `참조 오디오를 표준 24 kHz PCM WAV로 변환 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^参考音频转码失败，未生成输出文件：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Reference audio transcoding failed; output file was not created: ${path}`;
+        case "zh-TW":
+          return `參考音訊轉碼失敗，未產生輸出檔案：${path}`;
+        case "zh-HK":
+          return `參考音訊轉碼失敗，未生成輸出檔案：${path}`;
+        case "ja-JP":
+          return `参照音声の変換に失敗し、出力ファイルが生成されませんでした: ${path}`;
+        case "ko-KR":
+          return `참조 오디오 변환에 실패하여 출력 파일이 생성되지 않았습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 参数格式无效：不能为布尔值$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label} parameter format: boolean is not allowed`;
+        case "zh-TW":
+          return `${label} 參數格式無效：不可為布林值`;
+        case "zh-HK":
+          return `${label} 參數格式無效：不能為布林值`;
+        case "ja-JP":
+          return `${label} パラメータ形式が無効です: 真偽値は指定できません`;
+        case "ko-KR":
+          return `${label} 매개변수 형식이 올바르지 않습니다: 불리언 값은 허용되지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 参数格式无效：(.+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const raw = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label} parameter format: ${raw}`;
+        case "zh-TW":
+          return `${label} 參數格式無效：${raw}`;
+        case "zh-HK":
+          return `${label} 參數格式無效：${raw}`;
+        case "ja-JP":
+          return `${label} パラメータ形式が無効です: ${raw}`;
+        case "ko-KR":
+          return `${label} 매개변수 형식이 올바르지 않습니다: ${raw}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 必须为有限数值$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} must be a finite number`;
+        case "zh-TW":
+          return `${label} 必須為有限數值`;
+        case "zh-HK":
+          return `${label} 必須為有限數值`;
+        case "ja-JP":
+          return `${label} は有限の数値である必要があります`;
+        case "ko-KR":
+          return `${label}은(는) 유한한 숫자여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^输出文件格式与类型不匹配：(.+)$/,
+    format: (m, loc) => {
+      const ext = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Output file format does not match media type: ${ext}`;
+        case "zh-TW":
+          return `輸出檔案格式與類型不相符：${ext}`;
+        case "zh-HK":
+          return `輸出檔案格式與類型不匹配：${ext}`;
+        case "ja-JP":
+          return `出力ファイル形式と種別が一致しません: ${ext}`;
+        case "ko-KR":
+          return `출력 파일 형식이 유형과 일치하지 않습니다: ${ext}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点补丁引用了未在 custom_nodes 中声明的节点[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Node patch references a node not declared in custom_nodes: ${name}`;
+        case "zh-TW":
+          return `節點修補參考了未在 custom_nodes 中宣告的節點：${name}`;
+        case "zh-HK":
+          return `節點補丁引用了未在 custom_nodes 中聲明的節點：${name}`;
+        case "ja-JP":
+          return `ノードパッチが custom_nodes に未定義のノードを参照しています: ${name}`;
+        case "ko-KR":
+          return `노드 패치가 custom_nodes에 선언되지 않은 노드를 참조합니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^节点补丁引用的自定义节点不存在[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Custom node referenced by node patch does not exist: ${name}`;
+        case "zh-TW":
+          return `節點修補參考的自訂節點不存在：${name}`;
+        case "zh-HK":
+          return `節點補丁引用的自訂節點不存在：${name}`;
+        case "ja-JP":
+          return `ノードパッチが参照するカスタムノードが存在しません: ${name}`;
+        case "ko-KR":
+          return `노드 패치가 참조하는 사용자 지정 노드가 존재하지 않습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模板 (.+?) 的默认 TTS 引擎未在 tts_engines 中声明[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const [, tmplId, engineId] = m;
+      switch (loc) {
+        case "en-US":
+          return `Template ${tmplId} default TTS engine is not declared in tts_engines: ${engineId}`;
+        case "zh-TW":
+          return `範本 ${tmplId} 的預設 TTS 引擎未在 tts_engines 中宣告：${engineId}`;
+        case "zh-HK":
+          return `範本 ${tmplId} 的預設 TTS 引擎未在 tts_engines 中聲明：${engineId}`;
+        case "ja-JP":
+          return `テンプレート ${tmplId} のデフォルト TTS エンジンが tts_engines に定義されていません: ${engineId}`;
+        case "ko-KR":
+          return `템플릿 ${tmplId}의 기본 TTS 엔진이 tts_engines에 선언되지 않았습니다: ${engineId}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模板 (.+?) 引用了未在 tts_engines 中声明的 TTS 引擎[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const [, tmplId, engineId] = m;
+      switch (loc) {
+        case "en-US":
+          return `Template ${tmplId} references a TTS engine not declared in tts_engines: ${engineId}`;
+        case "zh-TW":
+          return `範本 ${tmplId} 參考了未在 tts_engines 中宣告的 TTS 引擎：${engineId}`;
+        case "zh-HK":
+          return `範本 ${tmplId} 引用了未在 tts_engines 中聲明的 TTS 引擎：${engineId}`;
+        case "ja-JP":
+          return `テンプレート ${tmplId} が tts_engines に未定義の TTS エンジンを参照しています: ${engineId}`;
+        case "ko-KR":
+          return `템플릿 ${tmplId}이(가) tts_engines에 선언되지 않은 TTS 엔진을 참조합니다: ${engineId}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流模板 (.+?) 引用了未定义的默认 TTS 引擎[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const [, tmplId, engineId] = m;
+      switch (loc) {
+        case "en-US":
+          return `Workflow template ${tmplId} references an undefined default TTS engine: ${engineId}`;
+        case "zh-TW":
+          return `工作流程範本 ${tmplId} 參考了未定義的預設 TTS 引擎：${engineId}`;
+        case "zh-HK":
+          return `工作流範本 ${tmplId} 引用了未定義的預設 TTS 引擎：${engineId}`;
+        case "ja-JP":
+          return `ワークフローテンプレート ${tmplId} が未定義のデフォルト TTS エンジンを参照しています: ${engineId}`;
+        case "ko-KR":
+          return `워크플로 템플릿 ${tmplId}이(가) 정의되지 않은 기본 TTS 엔진을 참조합니다: ${engineId}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作流模板 (.+?) 引用了未定义的 TTS 引擎[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const [, tmplId, engineId] = m;
+      switch (loc) {
+        case "en-US":
+          return `Workflow template ${tmplId} references an undefined TTS engine: ${engineId}`;
+        case "zh-TW":
+          return `工作流程範本 ${tmplId} 參考了未定義的 TTS 引擎：${engineId}`;
+        case "zh-HK":
+          return `工作流範本 ${tmplId} 引用了未定義的 TTS 引擎：${engineId}`;
+        case "ja-JP":
+          return `ワークフローテンプレート ${tmplId} が未定義の TTS エンジンを参照しています: ${engineId}`;
+        case "ko-KR":
+          return `워크플로 템플릿 ${tmplId}이(가) 정의되지 않은 TTS 엔진을 참조합니다: ${engineId}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/comfyui.py WebSocket live progress (placed last so specific · rules run first) ===
+  {
+    re: /^(.+) · 采样 (\d+)\/(\d+)$/,
+    format: (m, loc) => {
+      const head = translateInner(m[1]!, loc);
+      const step = m[2]!;
+      const maxSteps = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `${head} · Step ${step}/${maxSteps}`;
+        case "zh-TW":
+          return `${head} · 取樣 ${step}/${maxSteps}`;
+        case "zh-HK":
+          return `${head} · 採樣 ${step}/${maxSteps}`;
+        case "ja-JP":
+          return `${head} · ステップ ${step}/${maxSteps}`;
+        case "ko-KR":
+          return `${head} · 스텝 ${step}/${maxSteps}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+) · ([^·]+)$/,
+    when: (text) => {
+      const idx = text.lastIndexOf(" · ");
+      if (idx <= 0) return false;
+      const left = text.slice(0, idx);
+      const right = text.slice(idx + 3);
+      if (
+        !right ||
+        right.includes("·") ||
+        /[\r\n]/.test(right) ||
+        UNHANDLED_PROGRESS_TAIL_RE.test(right)
+      ) {
+        return false;
+      }
+      if (COMFY_WS_NODE_OR_PHASE_LABELS.has(right)) {
+        return true;
+      }
+      return (
+        COMFY_WORKFLOW_NAMES.has(left) &&
+        !/[：:]/.test(right) &&
+        !/[\u3400-\u9fff\uf900-\ufaff]/.test(right)
+      );
+    },
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const nodeOrPhase = translateInner(m[2]!, loc);
+      return `${wfName} · ${nodeOrPhase}`;
     },
   },
 ];

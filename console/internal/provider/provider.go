@@ -2082,12 +2082,17 @@ func quoteRemotePath(remotePath string) string {
 	return strings.Join(parts, "/")
 }
 
+const providerContentsUploadChunkBytes = 6 * 1024 * 1024 // 6 MiB raw (exact multiple of 3 -> clean unpadded 8 MiB base64 per PUT)
+
 func (c *defaultContentsClient) UploadBytes(
 	ctx context.Context,
 	baseURL, proxyToken, remotePath string,
 	data []byte,
 	timeout time.Duration,
 ) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
@@ -2096,18 +2101,6 @@ func (c *defaultContentsClient) UploadBytes(
 
 	parts := strings.Split(strings.Trim(remotePath, "/"), "/")
 	filename := parts[len(parts)-1]
-	payload := map[string]any{
-		"name":    filename,
-		"path":    remotePath,
-		"type":    "file",
-		"format":  "base64",
-		"content": base64.StdEncoding.EncodeToString(data),
-		"chunk":   1,
-	}
-	bodyBytes, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
 
 	quotedPath := quoteRemotePath(remotePath)
 	q := url.Values{}
@@ -2115,27 +2108,61 @@ func (c *defaultContentsClient) UploadBytes(
 	q.Set("colab-runtime-proxy-token", proxyToken)
 	fullURL := strings.TrimRight(baseURL, "/") + "/api/contents/" + quotedPath + "?" + q.Encode()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPut, fullURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return redactProviderURLError(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Colab-Client-Agent", "colab-cli")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return redactProviderURLError(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &ColabRequestError{
-			StatusCode:   resp.StatusCode,
-			Method:       http.MethodPut,
-			URL:          redactProviderProxyTokenURL(fullURL),
-			Reason:       resp.Status,
-			ResponseBody: string(respBody),
+	sendChunk := func(chunkBytes []byte, chunkNum int) error {
+		payload := map[string]any{
+			"name":    filename,
+			"path":    remotePath,
+			"type":    "file",
+			"format":  "base64",
+			"content": base64.StdEncoding.EncodeToString(chunkBytes),
+			"chunk":   chunkNum,
 		}
+		bodyBytes, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPut, fullURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return redactProviderURLError(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Colab-Client-Agent", "colab-cli")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return redactProviderURLError(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return &ColabRequestError{
+				StatusCode:   resp.StatusCode,
+				Method:       http.MethodPut,
+				URL:          redactProviderProxyTokenURL(fullURL),
+				Reason:       resp.Status,
+				ResponseBody: string(respBody),
+			}
+		}
+		return nil
+	}
+
+	if len(data) <= providerContentsUploadChunkBytes {
+		return sendChunk(data, 1)
+	}
+
+	chunkIdx := 1
+	for offset := 0; offset < len(data); offset += providerContentsUploadChunkBytes {
+		end := offset + providerContentsUploadChunkBytes
+		chunkNum := chunkIdx
+		if end >= len(data) {
+			end = len(data)
+			chunkNum = -1
+		}
+		if err := sendChunk(data[offset:end], chunkNum); err != nil {
+			return err
+		}
+		chunkIdx++
 	}
 	return nil
 }
@@ -2436,15 +2463,58 @@ func (p *ColabOneProvider) uploadBytesWithSlot(
 	timeout time.Duration,
 	heldSlot *kernelSlot,
 ) (*ColabOneSessionState, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	effectiveTimeout := timeout
+	if effectiveTimeout <= 0 {
+		effectiveTimeout = 60 * time.Second
+	}
+	uploadDeadline := p.now().Add(effectiveTimeout)
+	if ctxDeadline, hasDeadline := ctx.Deadline(); hasDeadline && ctxDeadline.Before(uploadDeadline) {
+		uploadDeadline = ctxDeadline
+	}
+
+	cleanupPartial := func(sess *ColabOneSessionState) {
+		if len(data) <= providerContentsUploadChunkBytes || p.closed.Load() || sess == nil || remotePath == "" {
+			return
+		}
+		delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopDelWatch := p.cancelOnClose(delCancel)
+		p.deleteRemoteFile(delCtx, sess, remotePath)
+		stopDelWatch()
+		delCancel()
+	}
+
 	rotated := false
 	cur := session
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		err := p.contents.UploadBytes(ctx, cur.URL, cur.Token, remotePath, data, timeout)
+		if ctx.Err() != nil {
+			cleanupPartial(cur)
+			return cur, ctx.Err()
+		}
+		remaining := uploadDeadline.Sub(p.now())
+		if remaining <= 0 {
+			cleanupPartial(cur)
+			if lastErr != nil {
+				return cur, lastErr
+			}
+			return cur, context.DeadlineExceeded
+		}
+		attemptTimeout := remaining
+		if timeout > 0 && attemptTimeout > timeout {
+			attemptTimeout = timeout
+		}
+		err := p.contents.UploadBytes(ctx, cur.URL, cur.Token, remotePath, data, attemptTimeout)
 		if err == nil {
 			return cur, nil
 		}
 		lastErr = err
+		if ctx.Err() != nil {
+			cleanupPartial(cur)
+			return cur, err
+		}
 		status := httpStatusCode(err)
 		if (status == 401 || status == 403) && !rotated {
 			rotated = true
@@ -2455,14 +2525,33 @@ func (p *ColabOneProvider) uploadBytesWithSlot(
 				continue
 			}
 		}
+		// Never retry a full-upload context.DeadlineExceeded from chunk 1 (its upload budget is
+		// already exhausted) or any transient error when insufficient outer budget remains.
+		if errors.Is(err, context.DeadlineExceeded) {
+			cleanupPartial(cur)
+			return cur, err
+		}
 		if (status == 502 || status == 503 || status == 504 || (status == 0 && isNetworkOrTransportError(err))) && attempt < 2 {
-			if sleepErr := p.sleep(ctx, p.uploadRetryDelay*time.Duration(attempt+1)); sleepErr != nil {
+			retryDelay := p.uploadRetryDelay * time.Duration(attempt+1)
+			remAfter := uploadDeadline.Sub(p.now())
+			minRetryBudget := retryDelay + time.Second
+			if effectiveTimeout < 2*time.Second {
+				minRetryBudget = retryDelay
+			}
+			if remAfter <= minRetryBudget {
+				cleanupPartial(cur)
+				return cur, err
+			}
+			if sleepErr := p.sleep(ctx, retryDelay); sleepErr != nil {
+				cleanupPartial(cur)
 				return cur, sleepErr
 			}
 			continue
 		}
+		cleanupPartial(cur)
 		return cur, err
 	}
+	cleanupPartial(cur)
 	if lastErr != nil {
 		return cur, lastErr
 	}
@@ -3234,9 +3323,21 @@ func (p *ColabOneProvider) UpgradeService(ctx context.Context, endpoint string, 
 // Kernel RPC tunnel
 // ---------------------------------------------------------------------------
 
+func (p *ColabOneProvider) isSlotDetached(endpoint string, slot *kernelSlot) bool {
+	if slot == nil || slot.clearing.Load() {
+		return true
+	}
+	p.kernelMu.Lock()
+	cur := p.kernels[endpoint]
+	p.kernelMu.Unlock()
+	return cur != slot
+}
+
 // RPC tunnels an authenticated HTTP request to the loopback ColabOne remote service
 // (http://127.0.0.1:7860/api/v1/<path>) over Colab's Jupyter kernel channel.
-// Non-nil bodies are uploaded as ephemeral files in /content/ and unlinked after execution.
+// Non-nil bodies are uploaded as ephemeral files in /content/ before acquiring the
+// per-endpoint kernel lock (so multi-minute audio uploads never block Heartbeat,
+// Telemetry, Cancel, or Clear) and unlinked after execution.
 func (p *ColabOneProvider) RPC(
 	ctx context.Context,
 	method string,
@@ -3275,12 +3376,32 @@ func (p *ColabOneProvider) RPC(
 		httpTimeoutSec = 20
 	}
 
+	uploadSec := execSec
+	if uploadSec < 45 {
+		uploadSec = 45
+	}
+	if uploadSec > 300 {
+		uploadSec = 300
+	}
+	uploadTimeout := time.Duration(uploadSec) * time.Second
+	preRefreshMargin := max(60*time.Second, uploadTimeout+30*time.Second)
+
+	var bodyBytes []byte
+	if body != nil {
+		bodyBytes, err = marshalJSONNoEscapeHTML(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	targetEP := session.Endpoint
-	slot, err := p.lockKernelSlot(targetEP)
+	// Obtain (or register) the slot reference WITHOUT locking slot.mu so large uploads
+	// never stall concurrent Heartbeat/Telemetry/Cancel/Clear while still detecting
+	// Clear() or eviction racing with the upload or between retries.
+	originSlot, err := p.kernelSlot(targetEP)
 	if err != nil {
 		return nil, err
 	}
-	defer slot.mu.Unlock()
 
 	maxAttempts := 1
 	if idempotent {
@@ -3291,22 +3412,32 @@ func (p *ColabOneProvider) RPC(
 		if p.closed.Load() {
 			return nil, ErrProviderClosed
 		}
-		if slot.evicted || slot.clearing.Load() {
+		if p.isSlotDetached(targetEP, originSlot) {
 			return nil, errors.New("请先启动远端 GPU")
 		}
-		session, err = p.session(ctx, false, targetEP, false, slot)
+
+		// Phase 1 (unlocked): pre-refresh proxy token when expiring within
+		// max(60s, uploadTimeout+30s) and upload ephemeral JSON body BEFORE
+		// acquiring slot.mu.
+		session, err = p.session(ctx, false, targetEP, false, nil)
 		if err != nil {
 			return nil, err
 		}
-		if session != nil && (session.TokenExpiresAt == nil || !session.TokenExpiresAt.After(p.now().Add(60*time.Second))) {
+		if session != nil && (session.TokenExpiresAt == nil || !session.TokenExpiresAt.After(p.now().Add(preRefreshMargin))) {
 			// Refresh before uploading or executing. Retrying a failed POST
 			// could duplicate a model download, generation or release.
-			session, err = p.session(ctx, true, session.Endpoint, true, slot)
+			session, err = p.session(ctx, true, session.Endpoint, true, nil)
 			if err != nil {
 				return nil, err
 			}
 		}
 		if session == nil {
+			return nil, errors.New("请先启动远端 GPU")
+		}
+		if p.closed.Load() {
+			return nil, ErrProviderClosed
+		}
+		if p.isSlotDetached(targetEP, originSlot) {
 			return nil, errors.New("请先启动远端 GPU")
 		}
 
@@ -3315,22 +3446,57 @@ func (p *ColabOneProvider) RPC(
 		if body != nil {
 			remoteName := "colabone-rpc-" + newUUIDHex() + ".json"
 			remoteRel = "content/" + remoteName
-			bodyBytes, err := marshalJSONNoEscapeHTML(body)
-			if err != nil {
-				return nil, err
-			}
-			uploadSec := execSec
-			if uploadSec < 45 {
-				uploadSec = 45
-			}
-			if uploadSec > 120 {
-				uploadSec = 120
-			}
-			session, err = p.uploadBytesWithSlot(ctx, session, remoteRel, bodyBytes, time.Duration(uploadSec)*time.Second, slot)
+			session, err = p.uploadBytes(ctx, session, remoteRel, bodyBytes, uploadTimeout)
 			if err != nil {
 				return nil, err
 			}
 			requestPath = "/content/" + remoteName
+		}
+
+		if p.closed.Load() {
+			return nil, ErrProviderClosed
+		}
+		if p.isSlotDetached(targetEP, originSlot) {
+			return nil, errors.New("请先启动远端 GPU")
+		}
+
+		// Phase 2 (locked): acquire slot.mu ONLY around kernel execution & state.
+		slot, lockErr := p.lockKernelSlot(targetEP)
+		if lockErr != nil {
+			if remoteRel != "" && !p.closed.Load() && !p.isSlotDetached(targetEP, originSlot) {
+				delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				stopDelWatch := p.cancelOnClose(delCancel)
+				p.deleteRemoteFile(delCtx, session, remoteRel)
+				stopDelWatch()
+				delCancel()
+			}
+			return nil, lockErr
+		}
+		if slot != originSlot || slot.evicted || slot.clearing.Load() {
+			slot.mu.Unlock()
+			return nil, errors.New("请先启动远端 GPU")
+		}
+
+		latestSess, sessErr := p.session(ctx, false, targetEP, false, slot)
+		if sessErr != nil {
+			slot.mu.Unlock()
+			return nil, sessErr
+		}
+		if latestSess == nil {
+			slot.mu.Unlock()
+			return nil, errors.New("请先启动远端 GPU")
+		}
+		session = latestSess
+		if session.TokenExpiresAt == nil || !session.TokenExpiresAt.After(p.now().Add(60*time.Second)) {
+			session, err = p.session(ctx, true, session.Endpoint, true, slot)
+			if err != nil {
+				slot.mu.Unlock()
+				return nil, err
+			}
+			if session == nil {
+				slot.mu.Unlock()
+				return nil, errors.New("请先启动远端 GPU")
+			}
 		}
 
 		code := buildRPCCode(requestPath, path, method, httpTimeoutSec)
@@ -3340,9 +3506,11 @@ func (p *ColabOneProvider) RPC(
 		})
 		if execErr != nil {
 			if p.closed.Load() {
+				slot.mu.Unlock()
 				return nil, ErrProviderClosed
 			}
 			if slot.evicted || slot.clearing.Load() {
+				slot.mu.Unlock()
 				return nil, errors.New("请先启动远端 GPU")
 			}
 			if remoteRel != "" {
@@ -3352,6 +3520,7 @@ func (p *ColabOneProvider) RPC(
 				stopDelWatch()
 				delCancel()
 				if p.closed.Load() {
+					slot.mu.Unlock()
 					return nil, ErrProviderClosed
 				}
 			}
@@ -3361,8 +3530,10 @@ func (p *ColabOneProvider) RPC(
 				if status == 401 || status == 403 {
 					_, _ = p.session(ctx, true, session.Endpoint, true, slot)
 				}
+				slot.mu.Unlock()
 				continue
 			}
+			slot.mu.Unlock()
 			return nil, execErr
 		}
 
@@ -3378,8 +3549,10 @@ func (p *ColabOneProvider) RPC(
 				dec := json.NewDecoder(strings.NewReader(rawJSON))
 				dec.UseNumber()
 				if err := dec.Decode(&res); err != nil {
+					slot.mu.Unlock()
 					return nil, err
 				}
+				slot.mu.Unlock()
 				if !res.OK {
 					errText := ""
 					switch v := res.Error.(type) {
@@ -3402,8 +3575,10 @@ func (p *ColabOneProvider) RPC(
 
 		if idempotent && attempt == 0 && !slot.evicted && !slot.clearing.Load() {
 			p.closeKernelSlotLocked(slot)
+			slot.mu.Unlock()
 			continue
 		}
+		slot.mu.Unlock()
 		return nil, errors.New("Colab 控制连接没有返回结果，请检查网络后重试")
 	}
 

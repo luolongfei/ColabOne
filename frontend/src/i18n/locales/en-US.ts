@@ -59,6 +59,13 @@ export const enUSMessages: ColabOneMessages = {
   "nav.refreshAria": "Refresh account instances",
   "nav.switchLight": "Switch to Light Mode",
   "nav.switchDark": "Switch to Dark Mode",
+  "nav.privacyEnableTooltip": "Enable Privacy Mask (Ctrl+Shift+M)",
+  "nav.privacyDisableTooltip": "Disable Privacy Mask (Ctrl+Shift+M)",
+  "nav.privacyEnableAria": "Enable privacy mask",
+  "nav.privacyDisableAria": "Disable privacy mask",
+  "privacy.maskedFieldAria": "Redacted by privacy mask",
+  "privacy.secretLockedTooltip": "Privacy mask is on — turn it off to reveal plaintext",
+  "privacy.inputReadonlyTooltip": "Privacy mask is on — turn it off to edit domain",
   "nav.logsOpenTooltip": "Close Logs (Ctrl+J)",
   "nav.logsClosedTooltip": "Open Logs (Ctrl+J)",
   "nav.logsCollapseAria": "Collapse Logs",
@@ -1241,6 +1248,63 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.errUnsupportedAudioFormat": "Unsupported audio format. Choose a WAV, MP3, FLAC, OGG, or M4A file.",
   "comfy.errIncompleteTransfer": "Incomplete output transfer; please retry",
   "comfy.errOutputChecksum": "Output checksum verification failed; please retry",
+  "comfy.licenseCommercialOk": "Commercial OK",
+  "comfy.licenseNonCommercial": "Non-Commercial / Research Only",
+  "comfy.licenseNoticeTitle": "Model License Notice",
+  "comfy.recommendedGpu": "Rec. {gpu}",
+  "comfy.modelDepsTag": "{count} weights · {size}",
+  "comfy.packNodesTag": "{count} node packs",
+  "comfy.groupMedia": "1. Portrait & Media",
+  "comfy.groupVoice": "2. Voice & Remote TTS",
+  "comfy.groupVideo": "3. Video Style & Quality",
+  "comfy.groupAdvanced": "4. Advanced Parameters",
+  "comfy.ttsEngineCardTitle": "Selected Remote TTS Engine",
+  "comfy.ttsCapabilityClone": "Voice Clone",
+  "comfy.ttsCapabilityDesign": "Voice Design",
+  "comfy.ttsCapabilityEmotion": "Emotion Control",
+  "comfy.ttsCapabilityTags": "Inline Tags",
+  "comfy.ttsSampleRate": "{khz} kHz",
+  "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
+  "comfy.requiredFieldHint": "Please provide required field: {label}",
+  "comfy.pipelineDigitalHumanTag": "Long-Video Digital Human",
+  "comfy.ttsNonCommercialAlert":
+    "Selected TTS engine \"{name}\" uses a non-commercial/research license: {notice}",
+  "comfy.openOutputsBtn": "Outputs",
+  "comfy.configureAndRun": "Configure",
+  "comfy.paramDrawerAria": "Workflow parameter drawer",
+  "comfy.outputsDrawerAria": "Output results drawer",
+  "comfy.advancedToggleTitle": "Advanced Settings",
+  "comfy.advancedDefaultHint": "Best defaults pre-configured — expand to fine-tune",
+  "comfy.beginnerPresetHint": "Best parameters pre-selected — fill the essentials below to run",
+  "comfy.ioSummaryDigitalHuman": "Input: Portrait photo + script or audio → Output: HD talking video (MP4)",
+  "comfy.specsDetailTitle": "Hardware & Dependency Specs",
+  "comfy.viewOutputsShort": "View Outputs",
+  "comfy.workflowNonCommercialAlert":
+    "Selected workflow \"{name}\" uses a non-commercial/research license: {notice}",
+  "comfy.combinedNonCommercialAlert":
+    "Current selection ({names}) includes non-commercial/research components: {notices}",
+  "comfy.preflightVramInsufficient":
+    "Insufficient GPU VRAM (requires {required} GB, current {available} GB). Switch to recommended GPU ({gpu}).",
+  "comfy.preflightDiskInsufficient":
+    "Insufficient remote disk space (requires ~{required} GB, available {available} GB)",
+  "comfy.preflightPackReady": "Workflow pack and models are ready",
+  "comfy.preflightPackWillDownload":
+    "First run will download ~{size} of models and custom nodes remotely",
+  "comfy.videoPreviewTooLarge":
+    "Video is large ({size}). Click \"Export\" below to save and play locally without high memory usage.",
+  "comfy.mediaPreviewError":
+    "Unable to decode this media in the built-in player. Click \"Export\" to view locally.",
+  "comfy.errImportTooLarge": "Workflow JSON exceeds the 2 MB limit",
+  "comfy.errImportTooManyNodes": "Workflow exceeds the 500-node limit",
+  "comfy.errImportInvalidNodeId": "Invalid node ID \"{id}\"",
+  "comfy.errImportInvalidClassType":
+    "Node \"{id}\" class_type exceeds 160 characters",
+  "comfy.errImportInvalidInputKey": "Node \"{id}\" contains an empty input key",
+  "comfy.errEmptyFile": "Selected file is empty (0 B). Please choose a valid file.",
+  "comfy.indextts2RefRequiredHint":
+    "IndexTTS-2 requires a reference voice audio file",
+  "comfy.runBlockedBusy": "Another task or operation is currently running",
+  "comfy.runBlockedUploading": "Media is still uploading",
 
   // Settings Page
   "settings.title": "Settings",
@@ -1338,6 +1402,14 @@ export const enUSMessages: ColabOneMessages = {
   "settings.languageLabel": "Interface Language",
   "settings.languageDesc":
     "Follows your system language by default. Once you pick a language manually, your preference is kept and never overwritten by the OS.",
+  "settings.privacyMaskDefaultTitle": "Enable Privacy Mask on Startup",
+  "settings.privacyMaskDefaultDesc":
+    "Automatically blurs your email, custom domains, proxy hosts, and sensitive log fields each time ColabOne launches while keeping CU balance and hardware metrics visible. Toggle the current session anytime from the top bar or Ctrl+Shift+M.",
+  "settings.privacyMaskActiveTag": "Mask Active",
+  "settings.privacyMaskDefaultEnabledToast":
+    "Privacy mask will be enabled by default on next launch",
+  "settings.privacyMaskDefaultDisabledToast":
+    "Privacy mask will be off by default on next launch",
   "settings.hfCardTitle": "Hugging Face Token",
   "settings.hfSavedTag": "Token Saved",
   "settings.hfDesc":

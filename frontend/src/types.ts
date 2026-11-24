@@ -36,6 +36,13 @@ export interface TaskStatus {
   progress: number;
   message: string;
   error: string;
+  created_at?: number;
+  logs?: {
+    seq: number;
+    time: number;
+    message: string;
+    level: string;
+  }[];
   download?: {
     downloaded_bytes: number;
     total_bytes: number;
@@ -51,6 +58,55 @@ export interface TaskStatus {
     file_count: number;
   };
 }
+export interface ColabOneComfyNodePatch {
+  node_name: string;
+  kind: "wav2vec2_hidden_states_hook";
+}
+export type ComfyNodePatch = ColabOneComfyNodePatch;
+export interface ColabOneComfyTtsEngineSpec {
+  id: string;
+  name: string;
+  description: string;
+  repo: string;
+  revision: string;
+  aux_repo?: string;
+  aux_revision?: string;
+  license: string;
+  commercial_ok: boolean;
+  license_notice: string;
+  min_vram_mib: number;
+  sample_rate: number;
+  supports_voice_clone: boolean;
+  supports_voice_design: boolean;
+  supports_emotion_ref: boolean;
+  supports_inline_tags: boolean;
+  pip_packages?: string[];
+  source_repo?: string;
+  source_commit?: string;
+}
+export type ComfyTtsEngineSpec = ColabOneComfyTtsEngineSpec;
+export interface ColabOneComfyPipelineSpec {
+  kind: "comfy_standard" | "digital_human";
+  video_backend?: "infinitetalk" | "longcat_avatar" | "custom";
+  default_tts_engine?: string;
+  supported_tts_engines?: string[];
+  max_segment_seconds?: number;
+  tail_frame_offset_seconds?: number;
+  output_fps?: number;
+  target_width?: number;
+  target_height?: number;
+  upscale_mode?: "none" | "ai_2x" | "lanczos";
+  audio_node_key?: string;
+  image_node_key?: string;
+  prompt_node_key?: string;
+  frames_node_key?: string;
+  width_node_key?: string;
+  height_node_key?: string;
+  fps_node_key?: string;
+  steps_node_key?: string;
+  seed_node_key?: string;
+}
+export type ComfyPipelineSpec = ColabOneComfyPipelineSpec;
 export interface WorkflowField {
   key: string;
   label: string;
@@ -70,6 +126,11 @@ export interface WorkflowField {
   min_value?: number | null;
   max_value?: number | null;
   step?: number | null;
+  description?: string;
+  group?: string;
+  required?: boolean;
+  visible_when?: Record<string, string | boolean> | null;
+  option_labels?: Record<string, string>;
 }
 export interface WorkflowTemplate {
   id: string;
@@ -77,6 +138,11 @@ export interface WorkflowTemplate {
   description: string;
   source: "builtin" | "custom";
   min_vram_mib: number;
+  min_disk_mib?: number;
+  recommended_gpu?: string;
+  license?: string;
+  commercial_ok?: boolean;
+  license_notice?: string;
   created_at?: number;
   updated_at?: number;
   node_count: number;
@@ -87,6 +153,7 @@ export interface WorkflowTemplate {
     commit: string;
     install_requirements?: boolean;
   }[];
+  node_patches?: ComfyNodePatch[];
   pip_packages?: string[];
   models?: {
     repo: string;
@@ -96,15 +163,27 @@ export interface WorkflowTemplate {
     size: number;
     sha256: string;
   }[];
+  pipeline?: ComfyPipelineSpec | null;
   workflow?: Record<string, unknown>;
 }
+export type ColabOneWorkflowOutputExtension =
+  | "png"
+  | "jpg"
+  | "jpeg"
+  | "webp"
+  | "gif"
+  | "mp4"
+  | "webm"
+  | "wav"
+  | "mp3"
+  | "flac";
 export interface WorkflowOutput {
   id: string;
   workflow_id: string;
   workflow_name: string;
   kind: "image" | "video" | "audio";
   filename: string;
-  extension: string;
+  extension: ColabOneWorkflowOutputExtension;
   mime: string;
   size: number;
   sha256?: string;
@@ -127,6 +206,7 @@ export interface ComfyStatus {
   state: string;
   port?: number;
   tag?: string;
+  active_pack?: string;
   queue_running: number;
   queue_pending: number;
   error: string;
@@ -394,6 +474,7 @@ export interface ColabOneSnapshot {
   models: ModelSpec[];
   common_repos?: CommonRepo[];
   workflows: WorkflowTemplate[];
+  tts_engines?: ComfyTtsEngineSpec[];
   comfy_outputs: WorkflowOutput[];
   account: {
     logged_in: boolean;
@@ -439,6 +520,7 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
   models: [],
   common_repos: [],
   workflows: [],
+  tts_engines: [],
   comfy_outputs: [],
   account: { logged_in: false },
   operation: null,

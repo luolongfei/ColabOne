@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import comfyCatalog from "../../catalog/comfyui.json";
 import {
   COLABONE_ANTD_LOCALES,
   COLABONE_LOCALE_LIST,
@@ -13,6 +14,7 @@ import {
   setColabOneLocale,
   t,
   tb,
+  translateColabOneBackendText,
   tsrc,
   type ColabOneLocale,
   type ColabOneMessageKey,
@@ -1226,6 +1228,488 @@ describe("ColabOne reactive translations across helpers", () => {
           tb(sample),
           `${loc} must not misparse non-matching node string "${sample}"`,
         ).toBe(sample);
+      }
+    }
+  });
+});
+
+describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
+  const CJK_OR_FULLWIDTH_RE =
+    /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、～]/;
+  const HAN_RE = /[\u3400-\u9fff\uf900-\ufaff]/;
+  const SPOKEN_CANTONESE_RE = /[搵唔喺嘅啲咗冇]/;
+
+  it("translates every user-facing string in catalog/comfyui.json cleanly across all 6 locales", () => {
+    const entries: Array<{ path: string; text: string }> = [];
+
+    for (const eng of comfyCatalog.tts_engines) {
+      if (eng.name) {
+        entries.push({ path: `tts_engines.${eng.id}.name`, text: eng.name });
+      }
+      if (eng.description) {
+        entries.push({
+          path: `tts_engines.${eng.id}.description`,
+          text: eng.description,
+        });
+      }
+      if (eng.license_notice) {
+        entries.push({
+          path: `tts_engines.${eng.id}.license_notice`,
+          text: eng.license_notice,
+        });
+      }
+    }
+
+    for (const tpl of comfyCatalog.templates) {
+      if (tpl.name) {
+        entries.push({ path: `templates.${tpl.id}.name`, text: tpl.name });
+      }
+      if (tpl.description) {
+        entries.push({
+          path: `templates.${tpl.id}.description`,
+          text: tpl.description,
+        });
+      }
+      if (tpl.license_notice) {
+        entries.push({
+          path: `templates.${tpl.id}.license_notice`,
+          text: tpl.license_notice,
+        });
+      }
+      for (const field of tpl.fields) {
+        if (field.label) {
+          entries.push({
+            path: `templates.${tpl.id}.fields.${field.key}.label`,
+            text: field.label,
+          });
+        }
+        if (field.description) {
+          entries.push({
+            path: `templates.${tpl.id}.fields.${field.key}.description`,
+            text: field.description,
+          });
+        }
+        for (const [optKey, optLabel] of Object.entries(
+          field.option_labels || {},
+        )) {
+          if (typeof optLabel === "string" && optLabel) {
+            entries.push({
+              path: `templates.${tpl.id}.fields.${field.key}.option_labels.${optKey}`,
+              text: optLabel,
+            });
+          }
+        }
+      }
+      for (const [nodeId, node] of Object.entries(tpl.workflow || {})) {
+        const title = (node as { _meta?: { title?: string } })?._meta?.title;
+        if (title) {
+          entries.push({
+            path: `templates.${tpl.id}.workflow.${nodeId}._meta.title`,
+            text: title,
+          });
+        }
+      }
+    }
+
+    // Guard against silently vacuous catalog traversal
+    expect(entries.length).toBeGreaterThanOrEqual(100);
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const { path, text } of entries) {
+        const out = translateColabOneBackendText(text, loc);
+        expect(tb(text), `tb() parity for ${loc} ${path}`).toBe(out);
+        expect(out.trim().length, `empty translation for ${loc} ${path}`).toBeGreaterThan(0);
+
+        if (loc === "zh-CN") {
+          expect(out, `zh-CN identity for ${path}`).toBe(text);
+          continue;
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for ${path}: "${text}" -> "${out}"`,
+          ).toBe(false);
+          expect(
+            out,
+            `${loc} must translate ${path}: "${text}"`,
+          ).not.toBe(text);
+        }
+        if (loc === "ja-JP" && HAN_RE.test(text)) {
+          expect(
+            out,
+            `ja-JP must translate Simplified Chinese ${path}: "${text}"`,
+          ).not.toBe(text);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            out,
+            `zh-TW Mainland VRAM leak in ${path}: "${out}"`,
+          ).not.toMatch(/显存|顯存/);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            out,
+            `zh-HK spoken Cantonese in ${path}: "${out}"`,
+          ).not.toMatch(SPOKEN_CANTONESE_RE);
+        }
+      }
+    }
+
+    // Spot-check user's exact Japanese screenshot strings
+    expect(
+      translateColabOneBackendText("口播数字人 · 长视频推荐版", "ja-JP"),
+    ).toBe("デジタルヒューマン・長尺おすすめ版");
+    expect(
+      translateColabOneBackendText("口播数字人 · 旗舰高清版", "ja-JP"),
+    ).toBe("デジタルヒューマン・フラッグシップ HD 版");
+    expect(
+      translateColabOneBackendText(
+        "输入人像照片与口播文稿（或音频），自动生成口型自然、支持多分钟不崩脸的高清有声视频（MP4）。",
+        "ja-JP",
+      ),
+    ).toContain("人物写真と台本");
+    expect(
+      translateColabOneBackendText(
+        "VoxCPM2（OpenBMB · 48kHz 商用推荐）",
+        "ja-JP",
+      ),
+    ).toBe("VoxCPM2（OpenBMB・48kHz 商用推奨）");
+  });
+
+  it("translates dynamic ComfyUI pack, WebSocket, TTS, digital human, and Go validation runtime messages across all 6 locales", () => {
+    const runtimeSamples: string[] = [
+      // === server/comfyui.py compound & WebSocket live progress ===
+      "第 1/3 段 · 口播数字人 · 长视频推荐版 · InfiniteTalk 扩散采样器 · 采样 3/6",
+      "第 2/3 段 · 口播数字人 · 旗舰高清版 · LongCat-Avatar 扩散采样器 · 采样 8/12",
+      "第 1/3 段 · 口播数字人 · 长视频推荐版 · 远端 GPU 执行中 · 采样 3/6",
+      "第 1/3 段 · 口播数字人 · 长视频推荐版 · 排队中（第 2 位）· 已用 14 秒",
+      "第 1/3 段 · 提交工作流：口播数字人 · 长视频推荐版",
+      "第 1/3 段 · 工作流已入队：口播数字人 · 长视频推荐版（任务 prompt-1234567890）",
+      "第 1/3 段 · 工作流推理完成，正在保存 1 个输出作品",
+      "ComfyUI 工作流：进行中 · 55% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · InfiniteTalk 扩散采样器 · 采样 3/6",
+      "自定义节点包已变更，正在重启远端 ComfyUI 引擎以加载新节点",
+
+      // === server/comfy_ws.py ===
+      "节点 15(WanVideoSampler): 工作流执行已中断",
+      "节点 15: 工作流执行已中断",
+      "工作流执行已中断",
+      "工作流执行出错",
+
+      // === server/comfy_packs.py (VRAM/disk preflight, custom nodes, pip, weights, symlinks) ===
+      "当前远端实例未检测到可用 NVIDIA GPU，无法运行该工作流",
+      "当前远端 GPU 显存不足：此工作流至少需要 40.0 GB 显存，当前 GPU 为 NVIDIA T4（15.0 GB），推荐切换至 G4 96 GB / A100 80 GB",
+      "远端磁盘空间不足：至少需要 45.0 GiB 可用空间（当前仅剩 18.5 GiB），请清理其他模型或更换磁盘空间更大的远端实例",
+      "复用远端已就绪的节点包：口播数字人 · 长视频推荐版",
+      "准备自定义节点 · ComfyUI-WanVideoWrapper",
+      "正在拉取节点包 ComfyUI-WanVideoWrapper（a7439db30b）",
+      "安装节点依赖 · ComfyUI-WanVideoWrapper",
+      "正在安装 ComfyUI-WanVideoWrapper 依赖（保留现有 CUDA PyTorch）",
+      "安装工作流依赖包 · 口播数字人 · 长视频推荐版",
+      "正在安装工作流额外依赖（7 个包）",
+      "已应用节点兼容补丁：ComfyUI-WanVideoWrapper:wav2vec2_hidden_states_hook",
+      "工作流节点包准备完成：口播数字人 · 长视频推荐版",
+      "自定义节点目录 ComfyUI-WanVideoWrapper 已存在且非 ColabOne 托管，请手动移走后重试",
+      "工作流所需的 8 个模型权重均已校验就绪，跳过下载",
+      "准备下载工作流权重：8 个文件，共 26.57 GiB，16 线程",
+      "下载模型 1/8 · Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors",
+      "模型 1/8 传输完成，正在校验 SHA-256",
+      "模型 1/8 校验通过，已保存到远端：Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors",
+      "工作流权重全部已验证：26.57 GiB，用时 92.4 秒，平均传输 294.2 MiB/s；复用 128.0 MiB",
+
+      // === server/tts_engines.py (isolated venv, pip, source, transcode, synthesis, VRAM, IndexTTS2) ===
+      "未检测到可用远端 GPU，VoxCPM2（OpenBMB · 48kHz 商用推荐） 需要至少 8192 MiB 显存",
+      "远端 TTS 引擎 IndexTTS-2（情绪分离控制 · 仅非商用） 需要至少 10240 MiB 显存，当前仅 8192 MiB",
+      "复用已就绪的远端 TTS 引擎环境：VoxCPM2（OpenBMB · 48kHz 商用推荐）",
+      "正在为远端 TTS 引擎创建隔离虚拟环境：VoxCPM2（OpenBMB · 48kHz 商用推荐）",
+      "正在创建远端 TTS 独立虚拟环境：VoxCPM2（OpenBMB · 48kHz 商用推荐）",
+      "正在安装远端 TTS 引擎依赖：VoxCPM2（OpenBMB · 48kHz 商用推荐）（共 4 个包，保留现有 PyTorch）",
+      "正在拉取远端 TTS 引擎源码：IndexTTS-2（情绪分离控制 · 仅非商用）@d9e41aac89",
+      "正在安装 IndexTTS-2（情绪分离控制 · 仅非商用） 源码依赖（保留现有 PyTorch）",
+      "远端 TTS 引擎环境就绪：VoxCPM2（OpenBMB · 48kHz 商用推荐）",
+      "正在将参考音频转码为标准 24 kHz PCM WAV：voice_ref.mp3",
+      "开始远端 TTS 合成：VoxCPM2（OpenBMB · 48kHz 商用推荐）（共 3 段）",
+      "正在远端合成语音…",
+      "已完成第 2/3 句合成",
+      "正在合成并标准化 48 kHz 母带音频…",
+      "远端 TTS 合成完成：VoxCPM2（OpenBMB · 48kHz 商用推荐）（总时长 42.50 秒，48000 Hz）",
+      "非商用许可提示：当前 TTS 引擎「IndexTTS-2（情绪分离控制 · 仅非商用）」采用 IndexTTS Research / Non-Commercial",
+      "IndexTTS2 需要上传音色参考音频才能进行语音合成",
+      "IndexTTS2 需要提供音色参考音频（ref_audio_path）",
+      "VoxCPM2 当前版本克隆音色时需要同时填写参考音频对应文本",
+      "远端 TTS 执行失败（退出码 1）：CUDA out of memory",
+      "实例正在停止，已取消远端 TTS 任务",
+
+      // === server/digital_human.py (pipeline orchestration, segmentation, muxing, errors) ===
+      "请先输入数字人播报文案，或切换为上传成品音频模式",
+      "正在释放 ComfyUI 显存以启动远端配音引擎",
+      "正在使用远端 TTS 引擎（voxcpm2）合成高保真配音",
+      "远端配音完成，音频总时长 62.4 秒",
+      "正在预处理上传音频（48 kHz / -23 LUFS）",
+      "音频预处理完成，总时长 62.4 秒，检测到 5 处自然换气静音点",
+      "正在预处理主播参考图（832×480）",
+      "正在准备远端视频环境与模型权重：口播数字人 · 长视频推荐版",
+      "分段规划完成：共 2 段（总时长 62.4 秒，基础渲染 832×480，目标输出 1280×720 @ 25fps）",
+      "口播数字人 · 长视频推荐版 · 正在渲染 第 1/2 段（0.0s–44.2s，1105 帧）",
+      "正在进行最终视频拼接、分辨率精调与 48 kHz 高保真音频合成",
+      "口播数字人 · 长视频推荐版 · 数字人长视频生成完成（共 2 段，62.4 秒，1280×720）",
+      "第 2/2 段 下载的视频文件为空",
+      "无法从第 1 段视频提取尾帧用于长视频衔接",
+      "音视频处理失败（退出码 1）：ffmpeg exited",
+
+      // === Symlink safety errors across comfy_packs.py, tts_engines.py, comfyui.py ===
+      "ComfyUI 节点包根目录不能是符号链接",
+      "自定义节点目录 ComfyUI-WanVideoWrapper 不能是符号链接",
+      "节点包目录 digital-human-infinitetalk 不能是符号链接",
+      "TTS 引擎目录不能是符号链接",
+      "TTS 引擎虚拟环境目录不能是符号链接",
+      "TTS 源码目录不能是符号链接",
+      "TTS 工作目录不能是符号链接",
+      "PyTorch 约束文件不能是符号链接",
+      "参考音频转码目标不能是符号链接",
+      "模型文件不能是符号链接：Wan2_1_VAE_bf16.safetensors",
+      "模型临时文件不能是符号链接：Wan2_1_VAE_bf16.safetensors.part",
+      "过滤后的依赖文件不能是符号链接：requirements.txt",
+      "目标文件不能是符号链接：nodes.py",
+
+      // === console/internal/comfyui/comfyui.go validation errors ===
+      "工作流模板 digital-human-infinitetalk 引用了未定义的默认 TTS 引擎: bad_tts",
+      "工作流模板 digital-human-infinitetalk 引用了未定义的 TTS 引擎: bad_tts",
+      "节点补丁引用的自定义节点不存在: MissingNode",
+      "内置工作流模板 ID 重复",
+      "内置 TTS 引擎 ID 重复",
+      "分段时长必须在 3 到 9 秒之间",
+      "visible_when 条件 pipeline.audio_source 的值必须为字符串或布尔值",
+      "非法的 TTS 引擎 ID: bad/id",
+      "输出文件格式与类型不匹配：.gif",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of runtimeSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ja-JP") {
+          expect(out, `ja-JP must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            out,
+            `zh-TW Mainland VRAM leak in "${sample}" -> "${out}"`,
+          ).not.toMatch(/显存|顯存/);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            out,
+            `zh-HK spoken Cantonese in "${sample}" -> "${out}"`,
+          ).not.toMatch(SPOKEN_CANTONESE_RE);
+        }
+      }
+    }
+
+    // Exact multi-locale verification for the compound segment + sampler progress line
+    const compoundSample =
+      "第 1/3 段 · 口播数字人 · 长视频推荐版 · InfiniteTalk 扩散采样器 · 采样 3/6";
+    const expectedCompound: Record<ColabOneLocale, string> = {
+      "zh-CN":
+        "第 1/3 段 · 口播数字人 · 长视频推荐版 · InfiniteTalk 扩散采样器 · 采样 3/6",
+      "en-US":
+        "Segment 1/3 · Talking Avatar · Long-Video Recommended · InfiniteTalk Diffusion Sampler · Step 3/6",
+      "zh-TW":
+        "第 1/3 段 · 口播數位人 · 長影片推薦版 · InfiniteTalk 擴散取樣器 · 取樣 3/6",
+      "zh-HK":
+        "第 1/3 段 · 口播數碼人 · 長影片推薦版 · InfiniteTalk 擴散採樣器 · 採樣 3/6",
+      "ja-JP":
+        "セグメント 1/3 · デジタルヒューマン・長尺おすすめ版 · InfiniteTalk 拡散サンプラー · ステップ 3/6",
+      "ko-KR":
+        "세그먼트 1/3 · 토킹 아바타 · 장편 영상 추천 · InfiniteTalk 확산 샘플러 · 스텝 3/6",
+    };
+    for (const loc of ALL_LOCALES) {
+      expect(
+        translateColabOneBackendText(compoundSample, loc),
+        `compound progress for ${loc}`,
+      ).toBe(expectedCompound[loc]);
+    }
+
+    // Exact multi-locale verification for IndexTTS2 reference-audio requirement
+    const indexTtsMsg = "IndexTTS2 需要上传音色参考音频才能进行语音合成";
+    expect(translateColabOneBackendText(indexTtsMsg, "en-US")).toContain(
+      "IndexTTS2",
+    );
+    expect(translateColabOneBackendText(indexTtsMsg, "ja-JP")).toContain(
+      "IndexTTS2",
+    );
+    expect(translateColabOneBackendText(indexTtsMsg, "ja-JP")).not.toBe(
+      indexTtsMsg,
+    );
+    expect(translateColabOneBackendText(indexTtsMsg, "ko-KR")).toContain(
+      "IndexTTS2",
+    );
+  });
+
+  it("translates Round-2 C1/C2 progress, middot-preserving failure splits, and HIGH backend messages across all 6 locales with zero leaks or forbidden zh-TW terms", () => {
+    const FORBIDDEN_ZH_TW_RE = /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染/;
+
+    const strictSamples: string[] = [
+      // Round-2 C1 & C2 compound progress with middot workflow name
+      "ComfyUI 工作流：进行中 · 45% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 远端 GPU 执行中 · 已用 28 秒",
+      "ComfyUI 工作流：进行中 · 30% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 排队中（第 1 位）· 已用 12 秒",
+      // Failure split without slicing middot workflow name (real backend error detail forms)
+      "ComfyUI 工作流：失败 · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 无法从第 1 段视频提取尾帧用于长视频衔接：音视频处理命令失败（退出码 1）",
+      "ComfyUI 工作流：失败 · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 无法从第 1 段视频提取尾帧用于长视频衔接：退出码 1",
+      "ComfyUI 工作流：失败 · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 无法从第 1 段视频提取尾帧用于长视频衔接",
+      // Round-2 HIGH backend messages
+      "节点已完成",
+      "ComfyUI 工作流：进行中 · 80% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 节点已完成",
+      "远端已受理 ComfyUI 工作流任务，但刷新状态失败（将自动重试）：timeout",
+      "第 1/2 段 执行完成但未产出有效视频文件",
+      "第 1/2 段 返回了图片而非视频文件，请检查视频输出节点格式",
+      "单段最大时长 参数格式无效：不能为布尔值",
+      "尾帧偏移时长 必须为有限数值",
+      "自定义节点符号链接 ComfyUI-Foo 已存在且非 ColabOne 托管，请手动移走后重试",
+      "模型临时路径不能是目录：foo.part",
+      "模型目标路径已存在同名目录：foo.safetensors",
+      "输出缓存文件不能是符号链接",
+      "工作流 JSON 嵌套层级超过 32 层上限",
+      "hf_token 包含非法空白或控制字符",
+      "自定义工作流模板不允许声明远端依赖包、模型下载或流水线配置",
+      "Qwen3-TTS 缺少音色参考音频或 VoiceDesign 辅助模型配置",
+      "单连接下载失败（InvalidHeader）",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of strictSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(out.trim().length, `empty output for ${loc}: ${sample}`).toBeGreaterThan(0);
+
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `Han/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            out,
+            `forbidden zh-TW term in "${sample}" -> "${out}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            out,
+            `zh-HK spoken Cantonese in "${sample}" -> "${out}"`,
+          ).not.toMatch(SPOKEN_CANTONESE_RE);
+        }
+      }
+    }
+
+    // Exact 6-locale assertions for C1, C2, and middot-preserving failure split
+    const exactCases: Record<string, Record<ColabOneLocale, string>> = {
+      "ComfyUI 工作流：进行中 · 45% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 远端 GPU 执行中 · 已用 28 秒":
+        {
+          "zh-CN":
+            "ComfyUI 工作流：进行中 · 45% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 远端 GPU 执行中 · 已用 28 秒",
+          "en-US":
+            "ComfyUI workflow: Running · 45% · Segment 1/3 · Talking Avatar · Long-Video Recommended · Running on remote GPU · 28s elapsed",
+          "zh-TW":
+            "ComfyUI 工作流程：進行中 · 45% · 第 1/3 段 · 口播數位人 · 長影片推薦版 · 遠端 GPU 執行中 · 已用 28 秒",
+          "zh-HK":
+            "ComfyUI 工作流：進行中 · 45% · 第 1/3 段 · 口播數碼人 · 長影片推薦版 · 遠端 GPU 執行中 · 已用 28 秒",
+          "ja-JP":
+            "ComfyUI ワークフロー: 実行中 · 45% · セグメント 1/3 · デジタルヒューマン・長尺おすすめ版 · リモート GPU で実行中 · 28 秒経過",
+          "ko-KR":
+            "ComfyUI 워크플로: 진행 중 · 45% · 세그먼트 1/3 · 토킹 아바타 · 장편 영상 추천 · 원격 GPU에서 실행 중 · 28초 경과",
+        },
+      "ComfyUI 工作流：进行中 · 30% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 排队中（第 1 位）· 已用 12 秒":
+        {
+          "zh-CN":
+            "ComfyUI 工作流：进行中 · 30% · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 排队中（第 1 位）· 已用 12 秒",
+          "en-US":
+            "ComfyUI workflow: Running · 30% · Segment 1/3 · Talking Avatar · Long-Video Recommended · Queued (#1) · 12s elapsed",
+          "zh-TW":
+            "ComfyUI 工作流程：進行中 · 30% · 第 1/3 段 · 口播數位人 · 長影片推薦版 · 排隊中（第 1 位）· 已用 12 秒",
+          "zh-HK":
+            "ComfyUI 工作流：進行中 · 30% · 第 1/3 段 · 口播數碼人 · 長影片推薦版 · 排隊中（第 1 位）· 已用 12 秒",
+          "ja-JP":
+            "ComfyUI ワークフロー: 実行中 · 30% · セグメント 1/3 · デジタルヒューマン・長尺おすすめ版 · キュー待機中（1 番目）· 12 秒経過",
+          "ko-KR":
+            "ComfyUI 워크플로: 진행 중 · 30% · 세그먼트 1/3 · 토킹 아바타 · 장편 영상 추천 · 대기 중 (1번째) · 12초 경과",
+        },
+      "ComfyUI 工作流：失败 · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 无法从第 1 段视频提取尾帧用于长视频衔接：音视频处理命令失败（退出码 1）":
+        {
+          "zh-CN":
+            "ComfyUI 工作流：失败 · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 无法从第 1 段视频提取尾帧用于长视频衔接：音视频处理命令失败（退出码 1）",
+          "en-US":
+            "ComfyUI workflow: Failed · Segment 1/3 · Talking Avatar · Long-Video Recommended · Unable to extract tail frame from video segment 1 for long-video continuation: Audio/video processing command failed (exit code 1)",
+          "zh-TW":
+            "ComfyUI 工作流程：失敗 · 第 1/3 段 · 口播數位人 · 長影片推薦版 · 無法從第 1 段影片擷取末影格以進行長影片銜接：影音處理命令失敗（結束代碼 1）",
+          "zh-HK":
+            "ComfyUI 工作流：失敗 · 第 1/3 段 · 口播數碼人 · 長影片推薦版 · 無法從第 1 段影片提取尾幀用於長影片銜接：音影片處理命令失敗（退出碼 1）",
+          "ja-JP":
+            "ComfyUI ワークフロー: 失敗 · セグメント 1/3 · デジタルヒューマン・長尺おすすめ版 · 長尺動画の連結用に第 1 セグメント動画から末尾フレームを抽出できませんでした: 音声・動画処理コマンドが失敗しました（終了コード 1）",
+          "ko-KR":
+            "ComfyUI 워크플로: 실패 · 세그먼트 1/3 · 토킹 아바타 · 장편 영상 추천 · 장편 영상 연결을 위해 1번째 영상 구간에서 마지막 프레임을 추출할 수 없습니다: 오디오/비디오 처리 명령 실패 (종료 코드 1)",
+        },
+    };
+
+    for (const loc of ALL_LOCALES) {
+      for (const [sample, expectedByLoc] of Object.entries(exactCases)) {
+        expect(
+          translateColabOneBackendText(sample, loc),
+          `exact Round-2 translation for ${loc}: ${sample}`,
+        ).toBe(expectedByLoc[loc]);
+      }
+    }
+
+    // Failure split with arbitrary detail suffix preserves intact middot workflow name across all 6 locales
+    const arbitraryDetailFailure =
+      "ComfyUI 工作流：失败 · 第 1/3 段 · 口播数字人 · 长视频推荐版 · 无法从第 1 段视频提取尾帧用于长视频衔接：ffmpeg 退出码 1";
+    const expectedArbitraryDetailFailure: Record<ColabOneLocale, string> = {
+      "zh-CN": arbitraryDetailFailure,
+      "en-US":
+        "ComfyUI workflow: Failed · Segment 1/3 · Talking Avatar · Long-Video Recommended · Unable to extract tail frame from video segment 1 for long-video continuation: ffmpeg 退出码 1",
+      "zh-TW":
+        "ComfyUI 工作流程：失敗 · 第 1/3 段 · 口播數位人 · 長影片推薦版 · 無法從第 1 段影片擷取末影格以進行長影片銜接：ffmpeg 退出码 1",
+      "zh-HK":
+        "ComfyUI 工作流：失敗 · 第 1/3 段 · 口播數碼人 · 長影片推薦版 · 無法從第 1 段影片提取尾幀用於長影片銜接：ffmpeg 退出码 1",
+      "ja-JP":
+        "ComfyUI ワークフロー: 失敗 · セグメント 1/3 · デジタルヒューマン・長尺おすすめ版 · 長尺動画の連結用に第 1 セグメント動画から末尾フレームを抽出できませんでした: ffmpeg 退出码 1",
+      "ko-KR":
+        "ComfyUI 워크플로: 실패 · 세그먼트 1/3 · 토킹 아바타 · 장편 영상 추천 · 장편 영상 연결을 위해 1번째 영상 구간에서 마지막 프레임을 추출할 수 없습니다: ffmpeg 退出码 1",
+    };
+    for (const loc of ALL_LOCALES) {
+      const out = translateColabOneBackendText(arbitraryDetailFailure, loc);
+      expect(out, `failure split for ${loc}`).toBe(
+        expectedArbitraryDetailFailure[loc],
+      );
+      if (loc === "en-US" || loc === "ko-KR") {
+        const prefixBeforeRawDetail = out.replace(/: ffmpeg 退出码 1$/, "");
+        expect(
+          CJK_OR_FULLWIDTH_RE.test(prefixBeforeRawDetail),
+          `Han/fullwidth leak in ${loc} failure prefix: "${prefixBeforeRawDetail}"`,
+        ).toBe(false);
+      }
+      if (loc === "zh-TW") {
+        expect(out).not.toMatch(FORBIDDEN_ZH_TW_RE);
       }
     }
   });

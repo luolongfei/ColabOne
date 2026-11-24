@@ -221,7 +221,7 @@ def test_server_app_boots_offline_with_protocol_7_and_auth_contract(tmp_path, mo
         assert status["protocol"] == 7
         assert status["service_revision"] == colabone_service_revision(ROOT)
         assert status["api_model_aliases"] is True
-        assert status["capabilities"] == ["public_api", "comfyui"]
+        assert status["capabilities"] == ["public_api", "comfyui", "comfyui_hf_token"]
         assert status["state"] == "ready"
         assert status["idle_minutes"] == 30
         assert status["idle"]["phase"] in ("watching", "countdown", "active")

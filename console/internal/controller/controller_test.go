@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/comfyui"
 )
 
 // ---------------------------------------------------------------------------
@@ -7647,6 +7649,699 @@ func TestMonitorOpGenAndSaveSettingsBailoutFixes(t *testing.T) {
 			if strings.Contains(entry.Message, "同步空闲释放时长") {
 				t.Fatalf("SaveSettings emitted false idle_minutes sync log when pushed=false without opGen bump: %+v", entry)
 			}
+		}
+	})
+}
+
+type realComfyTestAdapter struct{}
+
+var (
+	_ ComfyValidator            = realComfyTestAdapter{}
+	_ ComfyCatalogValidator     = realComfyTestAdapter{}
+	_ ComfyInputUploadValidator = realComfyTestAdapter{}
+)
+
+func comfyStructToMap(v any) (map[string]any, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := decodeJSONWithNumbers(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (realComfyTestAdapter) ValidateCatalogBundle(raw map[string]any) (ComfyCatalogBundle, error) {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return ComfyCatalogBundle{}, err
+	}
+	var cat comfyui.ColabOneComfyCatalog
+	if err := json.Unmarshal(b, &cat); err != nil {
+		return ComfyCatalogBundle{}, err
+	}
+	if err := cat.Validate(); err != nil {
+		return ComfyCatalogBundle{}, err
+	}
+	templates := make([]map[string]any, 0, len(cat.Templates))
+	for _, tpl := range cat.Templates {
+		m, err := comfyStructToMap(tpl)
+		if err != nil {
+			return ComfyCatalogBundle{}, err
+		}
+		templates = append(templates, m)
+	}
+	engines := make([]map[string]any, 0, len(cat.TtsEngines))
+	for _, eng := range cat.TtsEngines {
+		m, err := comfyStructToMap(eng)
+		if err != nil {
+			return ComfyCatalogBundle{}, err
+		}
+		engines = append(engines, m)
+	}
+	return ComfyCatalogBundle{Templates: templates, TtsEngines: engines}, nil
+}
+
+func (a realComfyTestAdapter) ValidateCatalog(raw map[string]any) ([]map[string]any, error) {
+	bundle, err := a.ValidateCatalogBundle(raw)
+	if err != nil {
+		return nil, err
+	}
+	return bundle.Templates, nil
+}
+
+func (realComfyTestAdapter) ValidateInputUpload(filename, dataB64 string) error {
+	return comfyui.ValidateComfyInputUpload(filename, dataB64)
+}
+
+func (realComfyTestAdapter) ValidateWorkflowTemplate(raw map[string]any) (map[string]any, error) {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var tpl comfyui.ColabOneWorkflowTemplate
+	if err := json.Unmarshal(b, &tpl); err != nil {
+		return nil, err
+	}
+	if err := tpl.Validate(); err != nil {
+		return nil, err
+	}
+	return comfyStructToMap(tpl)
+}
+
+func (realComfyTestAdapter) ValidateWorkflowImport(raw map[string]any) (map[string]any, error) {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var req comfyui.ColabOneWorkflowImportRequest
+	if err := json.Unmarshal(b, &req); err != nil {
+		return nil, err
+	}
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+	return comfyStructToMap(req)
+}
+
+func (realComfyTestAdapter) ValidateWorkflowRun(raw map[string]any) (map[string]any, error) {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var req comfyui.ColabOneWorkflowRunRequest
+	if err := json.Unmarshal(b, &req); err != nil {
+		return nil, err
+	}
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+	return comfyStructToMap(req)
+}
+
+func (realComfyTestAdapter) ValidateCanvasConfig(raw map[string]any) (map[string]any, error) {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var cfg comfyui.ColabOneComfyCanvasConfig
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return comfyStructToMap(cfg)
+}
+
+func TestComfyUIHardeningUploadRunBuiltinAuthorityAndTTSEngines(t *testing.T) {
+	revA := strings.Repeat("a", 40)
+	revB := strings.Repeat("b", 40)
+	wfGraph := map[string]any{
+		"1": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"text": "studio portrait"},
+		},
+	}
+
+	makeHardenedBundler := func() *mockBundler {
+		b := defaultMockBundler()
+		comfyRaw, err := json.Marshal(map[string]any{
+			"repo":       "https://github.com/Comfy-Org/ComfyUI.git",
+			"tag":        "v0.46.0",
+			"commit":     revA,
+			"port":       8188,
+			"proxy_port": 8189,
+			"tts_engines": []map[string]any{
+				{
+					// Deliberately omit commercial_ok, sample_rate, license, supports_voice_clone
+					// to verify ValidateCatalogBundle normalizes defaults.
+					"id":       "voxcpm2",
+					"name":     "  VoxCPM2  ",
+					"repo":     "openbmb/VoxCPM2",
+					"revision": revA,
+				},
+				{
+					"id":                   "indextts2",
+					"name":                 "IndexTTS-2",
+					"repo":                 "IndexTeam/IndexTTS-2",
+					"revision":             revB,
+					"license":              "IndexTTS Research",
+					"commercial_ok":        false,
+					"license_notice":       "仅限非商业研究",
+					"sample_rate":          24000,
+					"supports_emotion_ref": true,
+				},
+			},
+			"templates": []map[string]any{
+				{
+					"id":          "digital-human-longcat",
+					"name":        "Embedded LongCat 1.5",
+					"description": "authoritative embedded template",
+					"source":      "builtin",
+					"workflow":    wfGraph,
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal comfy catalog: %v", err)
+		}
+		b.comfyJSON = comfyRaw
+		return b
+	}
+
+	newHardenedController := func(t *testing.T, cfgDir string) (*ColabOneController, *ColabOneMemoryVault, *mockProvider) {
+		t.Helper()
+		vault := NewColabOneMemoryVault()
+		prov := newMockProvider(vault)
+		ctrl := NewColabOneController(ColabOneControllerConfig{
+			Root:           cfgDir,
+			ConfigDir:      cfgDir,
+			Background:     false,
+			Vault:          vault,
+			Auth:           newMockAuth(),
+			Provider:       prov,
+			Comfy:          realComfyTestAdapter{},
+			PublicAPI:      mockPublicAPI{},
+			ServiceBundler: makeHardenedBundler(),
+		})
+		t.Cleanup(func() { ctrl.Close() })
+		return ctrl, vault, prov
+	}
+
+	t.Run("comfyui_input_upload_rejects_invalid_extension_and_empty_locally_before_remote", func(t *testing.T) {
+		ctrl, _, prov := newHardenedController(t, t.TempDir())
+		prov.addManagedSession("ep-up", "A100", "STANDARD", true)
+		ctrl.Update(map[string]any{"runtime": map[string]any{"state": "ready", "id": "ep-up"}})
+
+		validB64 := base64.StdEncoding.EncodeToString([]byte("valid-media-bytes"))
+
+		for _, tc := range []struct {
+			name     string
+			filename string
+			data     string
+			wantSub  string
+		}{
+			{"forbiddenAAC", "voice.aac", validB64, "不支持的输入文件格式"},
+			{"forbiddenEXE", "evil.exe", validB64, "不支持的输入文件格式"},
+			{"zeroByteEmpty", "portrait.png", "", "输入文件内容为空"},
+			{"zeroByteDataURI", "voice.wav", "data:audio/wav;base64,", "输入文件内容为空"},
+			{"pathTraversal", "../portrait.png", validB64, "输入文件名不合法"},
+		} {
+			if _, err := ctrl.Command(context.Background(), "comfyui.input.upload", map[string]any{
+				"filename": tc.filename,
+				"data":     tc.data,
+			}); err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("%s: err = %v, want substring %q", tc.name, err, tc.wantSub)
+			}
+		}
+
+		prov.mu.Lock()
+		rpcCountBefore := len(prov.rpcCalls)
+		prov.mu.Unlock()
+		if rpcCountBefore != 0 {
+			t.Fatalf("expected 0 remote RPC calls for locally rejected uploads, got %d", rpcCountBefore)
+		}
+
+		// Valid PNG upload passes local validation and reaches remote POST comfyui/inputs.
+		if _, err := ctrl.Command(context.Background(), "comfyui.input.upload", map[string]any{
+			"filename": "portrait.png",
+			"data":     validB64,
+		}); err != nil {
+			t.Fatalf("valid PNG upload failed: %v", err)
+		}
+		prov.mu.Lock()
+		defer prov.mu.Unlock()
+		if len(prov.rpcCalls) != 1 || prov.rpcCalls[0].Method != "POST" || prov.rpcCalls[0].Path != "comfyui/inputs" {
+			t.Fatalf("expected single POST comfyui/inputs RPC, got %#v", prov.rpcCalls)
+		}
+	})
+
+	t.Run("comfyui_run_hf_token_injection_override_limit_and_refresh_failure_tolerance", func(t *testing.T) {
+		ctrl, vault, prov := newHardenedController(t, t.TempDir())
+		prov.addManagedSession("ep-run", "A100", "STANDARD", true)
+		runtimeCaps := []string{"public_api", "comfyui", "comfyui_hf_token"}
+		ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state":        "ready",
+				"id":           "ep-run",
+				"capabilities": runtimeCaps,
+			},
+		})
+
+		var runBodies []map[string]any
+		failSnapshot := false
+		prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+			if path == "comfyui/run" {
+				runBodies = append(runBodies, deepCopyMap(asMap(body)))
+				return map[string]any{"id": "task-accepted-1", "state": "running"}, nil
+			}
+			if path == "snapshot" {
+				if failSnapshot {
+					return nil, errors.New("transient snapshot timeout")
+				}
+				rt := map[string]any{"state": "ready", "id": "ep-run", "protocol": 7, "tasks": []any{}}
+				if runtimeCaps != nil {
+					rt["capabilities"] = runtimeCaps
+				}
+				return map[string]any{
+					"runtime":       rt,
+					"models":        []any{},
+					"workflows":     []any{},
+					"comfy_outputs": []any{},
+				}, nil
+			}
+			return map[string]any{"ok": true}, nil
+		}
+
+		// 1. Auto-inject vault hf_token when omitted or blank.
+		if err := vault.Set("hf", "  hf_vault_auto_secret_123  "); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+			"overrides":   map[string]any{},
+			"inputs":      map[string]any{},
+		}); err != nil {
+			t.Fatalf("comfyui.run (vault auto-inject) failed: %v", err)
+		}
+		if _, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+			"hf_token":    "   ",
+			"overrides":   map[string]any{},
+			"inputs":      map[string]any{},
+		}); err != nil {
+			t.Fatalf("comfyui.run (whitespace hf_token auto-inject) failed: %v", err)
+		}
+		if len(runBodies) != 2 ||
+			asString(runBodies[0]["hf_token"]) != "hf_vault_auto_secret_123" ||
+			asString(runBodies[1]["hf_token"]) != "hf_vault_auto_secret_123" {
+			t.Fatalf("expected vault hf_token auto-injected, got %#v", runBodies)
+		}
+
+		// 2. Respect explicit non-empty hf_token instead of overwriting with vault token.
+		if _, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+			"hf_token":    "hf_explicit_caller_token_999",
+			"overrides":   map[string]any{},
+			"inputs":      map[string]any{},
+		}); err != nil {
+			t.Fatalf("comfyui.run (explicit hf_token) failed: %v", err)
+		}
+		if len(runBodies) != 3 || asString(runBodies[2]["hf_token"]) != "hf_explicit_caller_token_999" {
+			t.Fatalf("expected explicit hf_token preserved, got %#v", runBodies)
+		}
+
+		// 3. Reject >512-rune hf_token (both explicit and from vault) BEFORE making remote RPCs.
+		prov.mu.Lock()
+		callsBeforeOverlong := len(prov.rpcCalls)
+		prov.mu.Unlock()
+
+		if _, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+			"hf_token":    strings.Repeat("x", 513),
+		}); err == nil || !strings.Contains(err.Error(), "hf_token 长度不能超过 512") {
+			t.Fatalf("expected >512-rune explicit hf_token rejected, got %v", err)
+		}
+
+		if err := vault.Set("hf", strings.Repeat("v", 513)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+		}); err == nil || !strings.Contains(err.Error(), "hf_token 长度不能超过 512") {
+			t.Fatalf("expected >512-rune vault hf_token rejected, got %v", err)
+		}
+
+		prov.mu.Lock()
+		callsAfterOverlong := len(prov.rpcCalls)
+		prov.mu.Unlock()
+		if callsAfterOverlong != callsBeforeOverlong {
+			t.Fatalf("expected 0 remote calls for >512-rune hf_token, got %d extra calls", callsAfterOverlong-callsBeforeOverlong)
+		}
+
+		// 4. Tolerate transient RefreshRemote failure after remote POST comfyui/run succeeded.
+		if err := vault.Set("hf", "hf_valid_token_after"); err != nil {
+			t.Fatal(err)
+		}
+		failSnapshot = true
+		res, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+			"overrides":   map[string]any{},
+			"inputs":      map[string]any{},
+		})
+		if err != nil {
+			t.Fatalf("comfyui.run should tolerate transient RefreshRemote failure, got err=%v", err)
+		}
+		if asString(asMap(res)["id"]) != "task-accepted-1" {
+			t.Fatalf("expected accepted remote task response, got %#v", res)
+		}
+		foundWarn := false
+		for _, entry := range ctrl.activity.Snapshot() {
+			if entry.Level == "warning" && strings.Contains(entry.Message, "远端已受理 ComfyUI 工作流任务，但刷新状态失败") {
+				foundWarn = true
+				break
+			}
+		}
+		if !foundWarn {
+			t.Fatalf("expected warning activity log for transient RefreshRemote failure after comfyui.run")
+		}
+
+		// 5. On a pre-upgrade v7 remote WITHOUT "comfyui_hf_token" in capabilities, vault hf_token
+		// MUST NOT be auto-injected (preventing HTTP 422 on older remote servers with extra="forbid").
+		failSnapshot = false
+		for _, tc := range []struct {
+			name string
+			caps []string
+		}{
+			{"legacy_caps_without_hf_token", []string{"public_api", "comfyui"}},
+			{"omitted_capabilities", nil},
+		} {
+			runtimeCaps = tc.caps
+			rtUpdate := map[string]any{"state": "ready", "id": "ep-run", "protocol": 7}
+			if tc.caps != nil {
+				rtUpdate["capabilities"] = tc.caps
+			} else {
+				rtUpdate["capabilities"] = nil
+			}
+			ctrl.Update(map[string]any{"runtime": rtUpdate})
+
+			beforeCount := len(runBodies)
+			if _, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+				"workflow_id": "digital-human-longcat",
+				"overrides":   map[string]any{},
+				"inputs":      map[string]any{},
+			}); err != nil {
+				t.Fatalf("%s: comfyui.run failed: %v", tc.name, err)
+			}
+			if _, err := ctrl.Command(context.Background(), "comfyui.run", map[string]any{
+				"workflow_id": "digital-human-longcat",
+				"hf_token":    "   ",
+				"overrides":   map[string]any{},
+				"inputs":      map[string]any{},
+			}); err != nil {
+				t.Fatalf("%s: comfyui.run (blank hf_token) failed: %v", tc.name, err)
+			}
+			if len(runBodies) != beforeCount+2 {
+				t.Fatalf("%s: expected 2 run bodies, got %d", tc.name, len(runBodies)-beforeCount)
+			}
+			for i := beforeCount; i < len(runBodies); i++ {
+				if tok, exists := runBodies[i]["hf_token"]; exists && asString(tok) != "" {
+					t.Fatalf("%s: pre-upgrade remote must not receive auto-injected hf_token, got %#v", tc.name, runBodies[i])
+				}
+			}
+		}
+	})
+
+	t.Run("save_settings_rejects_control_and_whitespace_hf_token", func(t *testing.T) {
+		ctrl, vault, _ := newHardenedController(t, t.TempDir())
+		if err := vault.Set("hf", "hf_existing_safe_token"); err != nil {
+			t.Fatal(err)
+		}
+
+		for _, tc := range []struct {
+			name  string
+			token string
+		}{
+			{"cr", "hf_bad\rtoken"},
+			{"lf", "hf_bad\ntoken"},
+			{"crlf", "hf_bad\r\ntoken"},
+			{"tab", "hf_bad\ttoken"},
+			{"embedded_space", "hf_bad token"},
+			{"unicode_space", "hf_bad\u3000token"},
+			{"nul_control", "hf_bad\x00token"},
+			{"del_control", "hf_bad\x7ftoken"},
+		} {
+			if _, err := ctrl.SaveSettings(context.Background(), map[string]any{
+				"hf_token": tc.token,
+			}); err == nil || !strings.Contains(err.Error(), "hf_token 包含非法空白或控制字符") {
+				t.Fatalf("SaveSettings(%s): err = %v, want invalid whitespace/control error", tc.name, err)
+			}
+			gotVault, _ := vault.Get("hf")
+			if asString(gotVault) != "hf_existing_safe_token" {
+				t.Fatalf("SaveSettings(%s) mutated vault hf token to %q", tc.name, asString(gotVault))
+			}
+		}
+
+		// Valid ASCII-padded hf_token is trimmed and persisted cleanly.
+		if _, err := ctrl.SaveSettings(context.Background(), map[string]any{
+			"hf_token": "  hf_clean_saved_token_123  ",
+		}); err != nil {
+			t.Fatalf("SaveSettings with clean padded hf_token failed: %v", err)
+		}
+		gotVault, _ := vault.Get("hf")
+		if asString(gotVault) != "hf_clean_saved_token_123" {
+			t.Fatalf("vault hf token = %q, want %q", asString(gotVault), "hf_clean_saved_token_123")
+		}
+	})
+
+	t.Run("builtin_template_authority_over_stale_remote_and_local_workflows_json_and_offline_rejections", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		// Pre-seed workflows.json with a poisoned entry carrying the built-in ID + a valid custom entry.
+		poisonedLocal, err := json.Marshal([]map[string]any{
+			{
+				"id":          "digital-human-longcat",
+				"name":        "Poisoned Local Shadow",
+				"description": "must never shadow embedded builtin",
+				"source":      "custom",
+				"updated_at":  9999999999.0,
+				"workflow":    wfGraph,
+			},
+			{
+				"id":          "wf-user-custom",
+				"name":        "User Custom Flow",
+				"description": "kept",
+				"source":      "custom",
+				"updated_at":  500.0,
+				"workflow":    wfGraph,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cfgDir, "workflows.json"), poisonedLocal, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		ctrl, _, prov := newHardenedController(t, cfgDir)
+
+		findWF := func(list []map[string]any, id string) map[string]any {
+			for _, w := range list {
+				if asString(w["id"]) == id {
+					return w
+				}
+			}
+			return nil
+		}
+
+		// 1. Local workflows.json entry with built-in ID MUST NOT shadow embedded built-in.
+		offlineWFs := asMapSlice(ctrl.Snapshot()["workflows"])
+		longcatOffline := findWF(offlineWFs, "digital-human-longcat")
+		if longcatOffline == nil || asString(longcatOffline["name"]) != "Embedded LongCat 1.5" || asString(longcatOffline["source"]) != "builtin" {
+			t.Fatalf("local workflows.json shadowed embedded builtin: %#v", longcatOffline)
+		}
+		if findWF(offlineWFs, "wf-user-custom") == nil {
+			t.Fatalf("legitimate custom workflow missing from offline snapshot: %#v", offlineWFs)
+		}
+		ctrl.mu.Lock()
+		_, hasPoisonedCustom := ctrl.customWorkflows["digital-human-longcat"]
+		ctrl.mu.Unlock()
+		if hasPoisonedCustom {
+			t.Fatal("loadWorkflows must ignore local workflows.json entries colliding with built-in IDs")
+		}
+
+		// 2. Offline comfyui.workflow.import and comfyui.workflow.delete reject built-in IDs.
+		if _, err := ctrl.Command(context.Background(), "comfyui.workflow.import", map[string]any{
+			"id":       "digital-human-longcat",
+			"name":     "Attempted Hijack",
+			"workflow": wfGraph,
+		}); err == nil || !strings.Contains(err.Error(), "不能覆盖内置工作流模板") {
+			t.Fatalf("offline import with built-in ID: err = %v", err)
+		}
+		if _, err := ctrl.Command(context.Background(), "comfyui.workflow.delete", map[string]any{
+			"id": "digital-human-longcat",
+		}); err == nil || !strings.Contains(err.Error(), "内置工作流模板不可删除") {
+			t.Fatalf("offline delete with built-in ID: err = %v", err)
+		}
+		prov.mu.Lock()
+		offlineRPCs := len(prov.rpcCalls)
+		prov.mu.Unlock()
+		if offlineRPCs != 0 {
+			t.Fatalf("expected 0 RPC calls for rejected offline built-in import/delete, got %d", offlineRPCs)
+		}
+
+		// 3. Stale remote built-in and retired remote built-in MUST NOT shadow or pollute embedded catalog.
+		prov.addManagedSession("ep-auth", "A100", "STANDARD", true)
+		prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+			if path == "snapshot" {
+				return map[string]any{
+					"runtime": map[string]any{"state": "ready", "id": "ep-auth", "protocol": 7, "tasks": []any{}},
+					"models":  []any{},
+					"workflows": []map[string]any{
+						{
+							"id":          "digital-human-longcat",
+							"name":        "Stale Remote LongCat",
+							"description": "outdated remote copy",
+							"source":      "builtin",
+							"updated_at":  9999999999.0,
+							"workflow":    wfGraph,
+						},
+						{
+							"id":       "retired-remote-builtin",
+							"name":     "Retired Builtin",
+							"source":   "builtin",
+							"workflow": wfGraph,
+						},
+						{
+							"id":         "wf-remote-custom",
+							"name":       "Remote Custom Flow",
+							"source":     "custom",
+							"updated_at": 600.0,
+							"workflow":   wfGraph,
+						},
+					},
+					"comfy_outputs": []any{},
+				}, nil
+			}
+			return map[string]any{"ok": true}, nil
+		}
+		if err := ctrl.RefreshRemote(context.Background(), ""); err != nil {
+			t.Fatalf("RefreshRemote failed: %v", err)
+		}
+
+		onlineWFs := asMapSlice(ctrl.Snapshot()["workflows"])
+		longcatOnline := findWF(onlineWFs, "digital-human-longcat")
+		if longcatOnline == nil || asString(longcatOnline["name"]) != "Embedded LongCat 1.5" || asString(longcatOnline["description"]) != "authoritative embedded template" {
+			t.Fatalf("stale remote built-in shadowed embedded built-in: %#v", longcatOnline)
+		}
+		if findWF(onlineWFs, "retired-remote-builtin") != nil {
+			t.Fatalf("retired remote built-in should not appear in snapshot: %#v", onlineWFs)
+		}
+		if findWF(onlineWFs, "wf-remote-custom") == nil || findWF(onlineWFs, "wf-user-custom") == nil {
+			t.Fatalf("expected custom workflows preserved alongside authoritative built-in: %#v", onlineWFs)
+		}
+	})
+
+	t.Run("snapshot_includes_normalized_tts_engines_offline_and_online", func(t *testing.T) {
+		ctrl, _, prov := newHardenedController(t, t.TempDir())
+
+		findEngine := func(list []map[string]any, id string) map[string]any {
+			for _, item := range list {
+				if asString(item["id"]) == id {
+					return item
+				}
+			}
+			return nil
+		}
+
+		// 1. Offline Snapshot() includes normalized embedded tts_engines (defaults applied by ValidateCatalogBundle).
+		offlineEngines := asMapSlice(ctrl.Snapshot()["tts_engines"])
+		if len(offlineEngines) != 2 {
+			t.Fatalf("expected 2 offline tts_engines, got %#v", offlineEngines)
+		}
+		voxOffline := findEngine(offlineEngines, "voxcpm2")
+		if voxOffline == nil ||
+			asString(voxOffline["name"]) != "VoxCPM2" ||
+			!asBool(voxOffline["commercial_ok"]) ||
+			asString(voxOffline["license"]) != "Apache-2.0" ||
+			!asBool(voxOffline["supports_voice_clone"]) {
+			t.Fatalf("offline voxcpm2 not normalized: %#v", voxOffline)
+		}
+		if sr, ok := asInt(voxOffline["sample_rate"]); !ok || sr != 48000 {
+			t.Fatalf("offline voxcpm2 sample_rate = %#v, want 48000", voxOffline["sample_rate"])
+		}
+		idxOffline := findEngine(offlineEngines, "indextts2")
+		if idxOffline == nil || asBool(idxOffline["commercial_ok"]) || !asBool(idxOffline["supports_emotion_ref"]) {
+			t.Fatalf("offline indextts2 metadata mismatch: %#v", idxOffline)
+		}
+
+		// 2. Online Snapshot() reflects remote tts_engines when remote reports them.
+		prov.addManagedSession("ep-tts", "A100", "STANDARD", true)
+		var remoteEnginesPayload []map[string]any
+		prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+			if path == "snapshot" {
+				resp := map[string]any{
+					"runtime":       map[string]any{"state": "ready", "id": "ep-tts", "protocol": 7, "tasks": []any{}},
+					"models":        []any{},
+					"workflows":     []any{},
+					"comfy_outputs": []any{},
+				}
+				if remoteEnginesPayload != nil {
+					resp["tts_engines"] = remoteEnginesPayload
+				}
+				return resp, nil
+			}
+			return map[string]any{"ok": true}, nil
+		}
+
+		remoteEnginesPayload = []map[string]any{
+			{
+				"id":                   "voxcpm2",
+				"name":                 "VoxCPM2 Remote",
+				"commercial_ok":        true,
+				"sample_rate":          48000,
+				"supports_voice_clone": true,
+			},
+			{
+				"id":                   "fish_s2_pro",
+				"name":                 "Fish Audio S2 Pro",
+				"commercial_ok":        false,
+				"sample_rate":          44100,
+				"supports_inline_tags": true,
+			},
+		}
+		if err := ctrl.RefreshRemote(context.Background(), ""); err != nil {
+			t.Fatalf("RefreshRemote (with remote tts_engines) failed: %v", err)
+		}
+		onlineEngines := asMapSlice(ctrl.Snapshot()["tts_engines"])
+		voxOnline := findEngine(onlineEngines, "voxcpm2")
+		idxOnline := findEngine(onlineEngines, "indextts2")
+		fishOnline := findEngine(onlineEngines, "fish_s2_pro")
+		if len(onlineEngines) != 3 ||
+			voxOnline == nil || asString(voxOnline["name"]) != "VoxCPM2" ||
+			idxOnline == nil ||
+			fishOnline == nil || asString(fishOnline["name"]) != "Fish Audio S2 Pro" {
+			t.Fatalf("online Snapshot() tts_engines built-in authority merge mismatch: %#v", onlineEngines)
+		}
+
+		// 3. Online fallback: when remote snapshot omits tts_engines, Snapshot() falls back
+		// cleanly to normalized embedded built-in tts_engines.
+		remoteEnginesPayload = nil
+		if err := ctrl.RefreshRemote(context.Background(), ""); err != nil {
+			t.Fatalf("RefreshRemote (omitted remote tts_engines) failed: %v", err)
+		}
+		fallbackEngines := asMapSlice(ctrl.Snapshot()["tts_engines"])
+		if len(fallbackEngines) != 2 || findEngine(fallbackEngines, "voxcpm2") == nil || findEngine(fallbackEngines, "indextts2") == nil {
+			t.Fatalf("online fallback tts_engines mismatch: %#v", fallbackEngines)
+		}
+
+		// 4. Transitioning back to stopped restores normalized built-in tts_engines.
+		ctrl.Update(map[string]any{"runtime": map[string]any{"state": "stopped"}})
+		stoppedEngines := asMapSlice(ctrl.Snapshot()["tts_engines"])
+		if len(stoppedEngines) != 2 || findEngine(stoppedEngines, "indextts2") == nil {
+			t.Fatalf("stopped Snapshot() tts_engines mismatch: %#v", stoppedEngines)
 		}
 	})
 }

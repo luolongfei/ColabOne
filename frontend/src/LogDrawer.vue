@@ -10,7 +10,9 @@ import {
   Tag as ATag,
 } from "ant-design-vue";
 import { PhCopy, PhSpeedometer, PhTrash } from "@phosphor-icons/vue";
+import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import type { ColabOnePrivacyContext } from "./colabOnePrivacy";
 import { formatTokenSpeed } from "./apiSpeed";
 import type { ActivityEntry } from "./types";
 
@@ -26,6 +28,7 @@ const props = defineProps<{
   logs: ActivityEntry[];
   currentActivity: string;
   running: boolean;
+  privacyContext?: ColabOnePrivacyContext;
   activeSpeed?: {
     tokensPerSecond?: number | null;
     completionTokens?: number | null;
@@ -207,7 +210,12 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <ASpin v-if="running" size="small" />
-            <span>{{ tb(currentActivity) }}</span>
+            <span>
+              <ColabOnePrivacyText
+                :text="tb(currentActivity)"
+                :context="props.privacyContext"
+              />
+            </span>
           </template>
         </p>
       </div>
@@ -332,7 +340,12 @@ onUnmounted(() => {
               {{ t("logs.tagWarn") }}
             </ATag>
           </div>
-          <p class="co-log-entry-msg co-mono">{{ tb(entry.message) }}</p>
+          <p class="co-log-entry-msg co-mono">
+            <ColabOnePrivacyText
+              :text="tb(entry.message)"
+              :context="props.privacyContext"
+            />
+          </p>
         </div>
       </div>
     </div>

@@ -247,6 +247,7 @@ def test_comfy_models_and_catalog_validation():
         id="wf_demo-1",
         name="Demo Studio Flow",
         description="Text + Image + Audio",
+        source="builtin",
         workflow=sample_api_workflow(),
         pip_packages=["soundfile>=0.12", "einops"],
         custom_nodes=[
@@ -274,9 +275,47 @@ def test_comfy_models_and_catalog_validation():
         WorkflowTemplate(
             id="bad_pip",
             name="Bad pip",
+            source="builtin",
             workflow=sample_api_workflow(),
             pip_packages=["--extra-index-url https://evil.invalid"],
         )
+
+    for forbidden_kwargs in (
+        {
+            "custom_nodes": [
+                ComfyNodeSpec(
+                    name="ComfyUI-TestNode",
+                    repo="https://github.com/example/ComfyUI-TestNode.git",
+                    commit="a" * 40,
+                )
+            ]
+        },
+        {"pip_packages": ["einops"]},
+        {
+            "models": [
+                ComfyModelRef(
+                    repo="org/comfy-weights",
+                    revision="b" * 40,
+                    path="flux/model.safetensors",
+                    target_dir="diffusion_models",
+                    size=1024,
+                    sha256="c" * 64,
+                )
+            ]
+        },
+        {"pipeline": {"kind": "digital_human"}},
+    ):
+        with pytest.raises(
+            ValidationError,
+            match="自定义工作流模板不允许声明远端依赖包、模型下载或流水线配置",
+        ):
+            WorkflowTemplate(
+                id="custom_forbidden",
+                name="Custom Forbidden",
+                source="custom",
+                workflow=sample_api_workflow(),
+                **forbidden_kwargs,
+            )
 
     req = WorkflowImportRequest(name="  My Flow  ", workflow=sample_api_workflow())
     assert req.name == "My Flow"
@@ -833,7 +872,11 @@ def test_comfy_run_route_uploads_inputs_saves_output_and_snapshot_hides_canvas_t
         assert snap_resp.status_code == 200
         snap = snap_resp.json()
         assert snap["runtime"]["protocol"] == 7
-        assert snap["runtime"]["capabilities"] == ["public_api", "comfyui"]
+        assert snap["runtime"]["capabilities"] == [
+            "public_api",
+            "comfyui",
+            "comfyui_hf_token",
+        ]
         assert snap["runtime"]["comfyui"]["running"] is True
         assert any(w["id"] == "wf-e2e" for w in snap["workflows"])
         assert len(snap["comfy_outputs"]) == 1

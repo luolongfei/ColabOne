@@ -1,29 +1,37 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   Alert as AAlert,
   Badge as ABadge,
   Button as AButton,
   Card as ACard,
   Divider as ADivider,
+  Drawer as ADrawer,
   Empty as AEmpty,
   Input as AInput,
-  InputNumber as AInputNumber,
   Modal as AModal,
   Popconfirm as APopconfirm,
   Progress as AProgress,
-  Select as ASelect,
-  SelectOption as ASelectOption,
   Space as ASpace,
-  Switch as ASwitch,
   TabPane as ATabPane,
   Tabs as ATabs,
   Tag as ATag,
   Textarea as ATextarea,
 } from "ant-design-vue";
+import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
+import ComfyWorkflowField from "./ComfyWorkflowField.vue";
+import {
+  buildColabOnePrivacyContext,
+  colabOnePrivacyActive,
+  colabOnePrivacyPeekResetTick,
+  colabOneSynthesizeDomainInput,
+  extractColabOneHostFromInput,
+  isColabOnePublicHost,
+  segmentColabOneDomainInput,
+} from "./colabOnePrivacy";
 import { colabOneExtractTunnelToken } from "./colabOneSecretToken";
 import {
   PhAppWindow,
@@ -32,8 +40,14 @@ import {
   PhArrowsClockwise,
   PhBroom,
   PhBrowsers,
+  PhCaretDown,
+  PhCaretRight,
   PhCheck,
+  PhCheckCircle,
+  PhCloudArrowDown,
   PhDownloadSimple,
+  PhEye,
+  PhEyeSlash,
   PhFileCode,
   PhGraph,
   PhHardDrives,
@@ -49,6 +63,7 @@ import {
   PhTreeStructure,
   PhUploadSimple,
   PhVideoCamera,
+  PhWarningCircle,
   PhWaveform,
 } from "@phosphor-icons/vue";
 import {
@@ -61,15 +76,26 @@ import {
 import { formatIdlePolicyLabel } from "./billing";
 import { colabOneLocaleCode, t, tb } from "./i18n";
 import {
+  buildColabOneWorkflowOverrides,
   defaultFieldValues,
   extractPublicHost,
   formatOutputSize,
+  hasNonCommercialNotice,
+  isWorkflowFieldVisible,
+  missingRequiredWorkflowFields,
   outputBlobURL,
   parseWorkflowImportJSON,
+  partitionWorkflowFields,
+  resolveSelectedTtsEngine,
+  workflowModelsTotalBytes,
 } from "./comfyui";
-import type { ColabOneToastKind } from "./colabOneToast";
+import {
+  computeColabOneModelDrawerWidth,
+  type ColabOneToastKind,
+} from "./colabOneToast";
 import type {
   ColabOneSnapshot,
+  ComfyTtsEngineSpec,
   WorkflowField,
   WorkflowOutput,
   WorkflowTemplate,
@@ -85,6 +111,7 @@ const emit = defineEmits<{
   notify: [string, ColabOneToastKind?];
   clearError: [];
   error: [string];
+  "drawer-state": [{ open: boolean; width: number; rootSelector: string }];
 }>();
 
 const activeTab = ref<"studio" | "canvas">("studio");
@@ -109,9 +136,6 @@ function setNoticeKey(
   }
   emit("notify", t(key, params), INFO_NOTICE_KEYS.has(key) ? "info" : "success");
 }
-function clearNotice() {
-  // Transient notices auto-dismiss in ColabOneToastHost.
-}
 function reportError(err: unknown) {
   emit("error", String(err));
 }
@@ -132,7 +156,9 @@ const canvas = computed(() => comfy.value?.canvas);
 const comfyTag = computed(() => comfy.value?.tag || "v0.46.0");
 
 const activeTask = computed(() =>
-  props.state.runtime.tasks?.find((t) => t.state === "running"),
+  props.state.runtime.state === "stopped"
+    ? undefined
+    : props.state.runtime.tasks?.find((t) => t.state === "running"),
 );
 const comfyTask = computed(() =>
   activeTask.value &&
@@ -241,14 +267,452 @@ const comfyTaskPercent = computed(() =>
   Math.max(0, Math.min(100, Math.round((comfyTask.value?.progress || 0) * 100))),
 );
 
-// Workflow Studio state
+function formatComfyByteSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return formatOutputSize(0);
+  }
+  if (bytes >= 1024 ** 3) {
+    return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  }
+  return formatOutputSize(bytes);
+}
+
+function formatComfyDownloadSpeed(speedBps: number): string {
+  if (!Number.isFinite(speedBps) || speedBps <= 0) {
+    return "0 MB/s";
+  }
+  if (speedBps >= 1024 ** 3) {
+    return `${(speedBps / 1024 ** 3).toFixed(2)} GB/s`;
+  }
+  if (speedBps >= 1024 ** 2) {
+    return `${(speedBps / 1024 ** 2).toFixed(1)} MB/s`;
+  }
+  if (speedBps >= 1024) {
+    return `${(speedBps / 1024).toFixed(0)} KB/s`;
+  }
+  return `${Math.round(speedBps)} B/s`;
+}
+
+function formatComfyEta(seconds: number | null | undefined): string {
+  if (
+    seconds === null ||
+    seconds === undefined ||
+    !Number.isFinite(seconds) ||
+    seconds < 0
+  ) {
+    return "";
+  }
+  const whole = Math.ceil(seconds);
+  const mins = Math.floor(whole / 60);
+  const secs = whole % 60;
+  if (mins >= 60) {
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hrs}:${String(remMins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+const comfyTaskDownloadSummary = computed(() => {
+  const dl = comfyTask.value?.download;
+  if (
+    !dl ||
+    (!dl.total_bytes && !dl.downloaded_bytes && !dl.speed_bps && !dl.filename)
+  ) {
+    return null;
+  }
+  const primary = t("comfy.downloadProgressMeta", {
+    done: formatComfyByteSize(dl.downloaded_bytes || 0),
+    total: formatComfyByteSize(dl.total_bytes || 0),
+    speed:
+      dl.phase === "verifying"
+        ? t("device.downloadVerifying")
+        : formatComfyDownloadSpeed(dl.speed_bps || 0),
+  });
+  const etaStr = dl.phase !== "verifying" ? formatComfyEta(dl.eta_seconds) : "";
+  const etaText = etaStr ? t("device.downloadEta", { eta: etaStr }) : "";
+  const fileCounter =
+    dl.file_count && dl.file_count > 1 && dl.file_index
+      ? `${dl.file_index}/${dl.file_count}`
+      : "";
+  return {
+    primary,
+    etaText,
+    filename: dl.filename || "",
+    fileCounter,
+  };
+});
+
+// Workflow Studio & Drawer state
 const workflows = computed(() => props.state.workflows || []);
+const ttsEngines = computed<ComfyTtsEngineSpec[]>(
+  () => props.state.tts_engines || [],
+);
 const selectedWorkflowId = ref("");
 const pendingWorkflowId = ref("");
 const selectedWorkflow = computed(() =>
   workflows.value.find((w) => w.id === selectedWorkflowId.value),
 );
 const fieldValues = ref<Record<string, string | number | boolean>>({});
+
+const paramDrawerOpen = ref(false);
+const outputsDrawerOpen = ref(false);
+const advancedExpanded = ref(false);
+const viewportWidth = ref(
+  typeof window !== "undefined" ? window.innerWidth : 1280,
+);
+const paramDrawerWidth = computed(() =>
+  Math.min(
+    viewportWidth.value,
+    Math.min(620, Math.max(420, viewportWidth.value - 32)),
+  ),
+);
+const outputsDrawerWidth = computed(() =>
+  computeColabOneModelDrawerWidth(viewportWidth.value),
+);
+
+function onWindowResize() {
+  viewportWidth.value = window.innerWidth;
+}
+
+const activeDrawerState = computed(() => {
+  if (paramDrawerOpen.value && selectedWorkflow.value) {
+    return {
+      open: true,
+      width: paramDrawerWidth.value,
+      rootSelector: ".co-comfy-param-drawer-root",
+    };
+  }
+  if (outputsDrawerOpen.value) {
+    return {
+      open: true,
+      width: outputsDrawerWidth.value,
+      rootSelector: ".co-comfy-outputs-drawer-root",
+    };
+  }
+  return { open: false, width: 0, rootSelector: "" };
+});
+
+watch(
+  activeDrawerState,
+  (next) => {
+    emit("drawer-state", next);
+  },
+  { immediate: true },
+);
+
+const isDigitalHumanWorkflow = computed(
+  () => selectedWorkflow.value?.pipeline?.kind === "digital_human",
+);
+
+const visibleFields = computed(() =>
+  (selectedWorkflow.value?.fields || []).filter((f) =>
+    isWorkflowFieldVisible(f, fieldValues.value),
+  ),
+);
+const fieldPartitions = computed(() =>
+  partitionWorkflowFields(visibleFields.value),
+);
+const selectedTtsEngine = computed<ComfyTtsEngineSpec | undefined>(() =>
+  resolveSelectedTtsEngine(
+    selectedWorkflow.value,
+    fieldValues.value,
+    ttsEngines.value,
+  ),
+);
+const resolvedTtsEngineId = computed(() => {
+  if (
+    !isDigitalHumanWorkflow.value ||
+    (fieldValues.value["pipeline.audio_source"] ?? "tts") !== "tts"
+  ) {
+    return "";
+  }
+  const raw = fieldValues.value["pipeline.tts_engine"];
+  if (typeof raw === "string" && raw.trim()) {
+    return raw.trim();
+  }
+  return (selectedWorkflow.value?.pipeline?.default_tts_engine || "").trim();
+});
+const showTtsEngineStrip = computed(
+  () =>
+    isDigitalHumanWorkflow.value &&
+    (fieldValues.value["pipeline.audio_source"] ?? "tts") === "tts" &&
+    !!selectedTtsEngine.value,
+);
+const nonCommercialNotice = computed(() =>
+  hasNonCommercialNotice(selectedWorkflow.value, selectedTtsEngine.value),
+);
+const nonCommercialAlertDescription = computed(() => {
+  const notice = nonCommercialNotice.value;
+  if (!notice) return "";
+  const items = notice.items || [];
+  if (notice.restrictedBy === "workflow" && items.length >= 1) {
+    const item = items[0];
+    return t("comfy.workflowNonCommercialAlert", {
+      name: tb(item.name),
+      notice: item.notice
+        ? tb(item.notice)
+        : item.license
+          ? tb(item.license)
+          : t("comfy.licenseNonCommercial"),
+    });
+  }
+  if (notice.restrictedBy === "tts" && items.length >= 1) {
+    const item = items[0];
+    return t("comfy.ttsNonCommercialAlert", {
+      name: tb(item.name),
+      notice: item.notice
+        ? tb(item.notice)
+        : item.license
+          ? tb(item.license)
+          : t("comfy.licenseNonCommercial"),
+    });
+  }
+  if (notice.restrictedBy === "both" && items.length >= 2) {
+    const names = items.map((item) => tb(item.name)).join(" + ");
+    const notices = Array.from(
+      new Set(
+        items.map((item) =>
+          item.notice
+            ? tb(item.notice)
+            : item.license
+              ? tb(item.license)
+              : t("comfy.licenseNonCommercial"),
+        ),
+      ),
+    ).join(" ");
+    return t("comfy.combinedNonCommercialAlert", { names, notices });
+  }
+  return t("comfy.ttsNonCommercialAlert", {
+    name: tb(notice.sourceName),
+    notice: notice.notice
+      ? tb(notice.notice)
+      : notice.license
+        ? tb(notice.license)
+        : t("comfy.licenseNonCommercial"),
+  });
+});
+
+interface WorkflowPreflightItem {
+  tone: "warning" | "ready" | "info";
+  text: string;
+}
+
+const PREFLIGHT_DISK_HEADROOM_BYTES = 4 * 1024 ** 3;
+
+function formatGiBFloor(gb: number): string {
+  if (!Number.isFinite(gb) || gb <= 0) return "0";
+  const floored = Math.floor(gb * 10) / 10;
+  return floored.toFixed(1).replace(/\.0$/, "");
+}
+
+const workflowPreflightItems = computed<WorkflowPreflightItem[]>(() => {
+  const wf = selectedWorkflow.value;
+  if (!wf) return [];
+  const minVramMib = wf.min_vram_mib || 0;
+  const minDiskMib = wf.min_disk_mib || 0;
+  const modelBytes = workflowModelsTotalBytes(wf);
+  if (minVramMib <= 0 && minDiskMib <= 0 && !(wf.models?.length || 0)) {
+    return [];
+  }
+
+  const isPackActive = gpuReady.value && comfy.value?.active_pack === wf.id;
+  const items: WorkflowPreflightItem[] = [];
+  if (gpuReady.value) {
+    const primaryGpuMib = props.state.runtime.gpu?.total_mib;
+    const fallbackGpuMib = props.state.runtime.resources?.gpu?.total_mib;
+    const gpuTotalMib =
+      typeof primaryGpuMib === "number" &&
+      Number.isFinite(primaryGpuMib) &&
+      primaryGpuMib > 0
+        ? primaryGpuMib
+        : typeof fallbackGpuMib === "number" &&
+            Number.isFinite(fallbackGpuMib) &&
+            fallbackGpuMib > 0
+          ? fallbackGpuMib
+          : undefined;
+    if (
+      minVramMib > 0 &&
+      gpuTotalMib !== undefined &&
+      gpuTotalMib < minVramMib
+    ) {
+      const requiredGb = Math.max(1, Math.ceil(minVramMib / 1024));
+      items.push({
+        tone: "warning",
+        text: t("comfy.preflightVramInsufficient", {
+          required: requiredGb,
+          available: formatGiBFloor(gpuTotalMib / 1024),
+          gpu: wf.recommended_gpu ? tb(wf.recommended_gpu) : `${requiredGb} GB+ GPU`,
+        }),
+      });
+    }
+
+    const diskFreeBytes =
+      typeof props.state.runtime.disk_free === "number" &&
+      Number.isFinite(props.state.runtime.disk_free) &&
+      props.state.runtime.disk_free > 0
+        ? props.state.runtime.disk_free
+        : typeof props.state.runtime.resources?.disk?.free_bytes === "number" &&
+            Number.isFinite(props.state.runtime.resources.disk.free_bytes) &&
+            props.state.runtime.resources.disk.free_bytes > 0
+          ? props.state.runtime.resources.disk.free_bytes
+          : undefined;
+    if (diskFreeBytes !== undefined) {
+      const requiredDiskBytes = isPackActive
+        ? PREFLIGHT_DISK_HEADROOM_BYTES
+        : minDiskMib > 0
+          ? minDiskMib * 1024 ** 2
+          : 0;
+      if (requiredDiskBytes > 0 && diskFreeBytes < requiredDiskBytes) {
+        const requiredGb = Math.max(1, Math.ceil(requiredDiskBytes / 1024 ** 3));
+        items.push({
+          tone: "warning",
+          text: t("comfy.preflightDiskInsufficient", {
+            required: requiredGb,
+            available: formatGiBFloor(diskFreeBytes / 1024 ** 3),
+          }),
+        });
+      }
+    }
+  }
+
+  if (items.length === 0) {
+    if (isPackActive) {
+      items.push({
+        tone: "ready",
+        text: t("comfy.preflightPackReady"),
+      });
+    } else if (modelBytes > 0) {
+      items.push({
+        tone: "info",
+        text: t("comfy.preflightPackWillDownload", {
+          size: formatComfyByteSize(modelBytes),
+        }),
+      });
+    }
+  }
+  return items;
+});
+
+const hasWorkflowSpecs = computed(() => {
+  const wf = selectedWorkflow.value;
+  if (!wf) return false;
+  return Boolean(
+    wf.min_vram_mib > 0 ||
+      wf.recommended_gpu ||
+      wf.models?.length ||
+      wf.custom_nodes?.length ||
+      wf.license,
+  );
+});
+
+function formatTtsSampleRateKhz(sampleRate: number): string {
+  const khz = sampleRate / 1000;
+  return Number.isInteger(khz)
+    ? String(khz)
+    : khz.toFixed(1).replace(/\.0$/, "");
+}
+
+const advancedPresetSummary = computed(() => {
+  if (!isDigitalHumanWorkflow.value) {
+    return t("comfy.advancedDefaultHint");
+  }
+  const parts: string[] = [];
+  if (showTtsEngineStrip.value && selectedTtsEngine.value) {
+    const rawName = selectedTtsEngine.value.name
+      ? tb(selectedTtsEngine.value.name)
+      : selectedTtsEngine.value.id;
+    const shortName = rawName.split(/[（(]/)[0].trim() || rawName;
+    if (selectedTtsEngine.value.sample_rate > 0) {
+      parts.push(
+        `${shortName} · ${t("comfy.ttsSampleRate", {
+          khz: formatTtsSampleRateKhz(selectedTtsEngine.value.sample_rate),
+        })}`,
+      );
+    } else {
+      parts.push(shortName);
+    }
+  }
+  const upscale = String(
+    fieldValues.value["pipeline.upscale_mode"] ??
+      selectedWorkflow.value?.pipeline?.upscale_mode ??
+      "",
+  );
+  if (upscale === "ai_2x") {
+    parts.push("AI 2x");
+  } else if (upscale === "lanczos") {
+    parts.push("Lanczos");
+  }
+  return parts.length > 0 ? parts.join(" · ") : t("comfy.advancedDefaultHint");
+});
+
+const runningWorkflowName = computed(() => {
+  const runningId = comfyRunTask.value?.model_id;
+  const matched = runningId
+    ? workflows.value.find((w) => w.id === runningId)
+    : undefined;
+  const rawName = matched?.name || selectedWorkflow.value?.name || "";
+  return rawName ? tb(rawName) : t("comfy.defaultWorkflowName");
+});
+
+function formatWorkflowCardSpecs(wf: WorkflowTemplate): string {
+  const parts: string[] = [];
+  if (wf.source === "builtin" || wf.min_vram_mib > 0 || wf.models?.length) {
+    if (wf.min_vram_mib > 0) {
+      parts.push(`${Math.max(1, Math.round(wf.min_vram_mib / 1024))} GB+`);
+    }
+    const totalBytes = workflowModelsTotalBytes(wf);
+    if (totalBytes > 0) {
+      parts.push(formatComfyByteSize(totalBytes));
+    }
+    if (wf.license) {
+      parts.push(tb(wf.license));
+    }
+  }
+  if (parts.length === 0) {
+    parts.push(t("comfy.nodeCount", { count: wf.node_count }));
+    parts.push(t("comfy.fieldCount", { count: wf.fields.length }));
+  }
+  return parts.join(" · ");
+}
+
+function formatFieldNodeMeta(field: WorkflowField): string {
+  if (field.node_id === "pipeline") {
+    return "";
+  }
+  if (selectedWorkflow.value?.source === "builtin") {
+    return "";
+  }
+  return `${t("comfy.nodePrefix", { id: field.node_id })} ${field.input_name}`;
+}
+
+function shouldRenderTtsStripAfter(field: WorkflowField): boolean {
+  return showTtsEngineStrip.value && field.key === "pipeline.tts_engine";
+}
+
+function isFieldForceRequired(field: WorkflowField): boolean {
+  return (
+    field.key === "pipeline.voice_ref_audio" &&
+    resolvedTtsEngineId.value === "indextts2"
+  );
+}
+
+function fieldRequiredHint(field: WorkflowField): string {
+  if (isFieldForceRequired(field)) {
+    return t("comfy.indextts2RefRequiredHint");
+  }
+  return "";
+}
+
+function isWideAdvancedField(field: WorkflowField): boolean {
+  return (
+    field.field_type === "textarea" ||
+    field.field_type === "image" ||
+    field.field_type === "audio" ||
+    field.field_type === "boolean" ||
+    field.key === "pipeline.tts_engine"
+  );
+}
 
 interface PendingUpload {
   filename: string;
@@ -264,13 +728,50 @@ const hasUploadingField = computed(() =>
   Object.values(uploadingFields.value).some(Boolean),
 );
 const uploadGen: Record<string, number> = {};
-const dragOverField = ref("");
 const submittingRun = ref(false);
+
+const runButtonDisabledTooltip = computed(() => {
+  if (!gpuReady.value) {
+    return gpuStarting.value
+      ? t("api.gpuStartingTooltip")
+      : t("api.startGpuFirstTooltip");
+  }
+  if (hasUploadingField.value) {
+    return t("comfy.runBlockedUploading");
+  }
+  if (comfyStarting.value || submittingRun.value) {
+    return "";
+  }
+  if (engineActionBlocked.value) {
+    return t("comfy.runBlockedBusy");
+  }
+  return "";
+});
 
 function selectWorkflow(id: string) {
   if (submittingRun.value || hasUploadingField.value) return;
   pendingWorkflowId.value = "";
   selectedWorkflowId.value = id;
+}
+
+function openWorkflowDrawer(id: string) {
+  if (submittingRun.value || hasUploadingField.value) return;
+  selectWorkflow(id);
+  outputsDrawerOpen.value = false;
+  paramDrawerOpen.value = true;
+}
+
+function closeParamDrawer() {
+  paramDrawerOpen.value = false;
+}
+
+function openOutputsDrawer() {
+  paramDrawerOpen.value = false;
+  outputsDrawerOpen.value = true;
+}
+
+function closeOutputsDrawer() {
+  outputsDrawerOpen.value = false;
 }
 
 function revokeLocalPreview(key: string) {
@@ -291,6 +792,7 @@ watch(
   (list) => {
     if (!list.length) {
       selectedWorkflowId.value = "";
+      paramDrawerOpen.value = false;
       return;
     }
     if (
@@ -311,6 +813,7 @@ watch(
 watch(
   () => selectedWorkflow.value?.id,
   () => {
+    advancedExpanded.value = false;
     for (const k of Object.keys(uploadGen)) {
       uploadGen[k] = (uploadGen[k] ?? 0) + 1;
     }
@@ -328,11 +831,35 @@ watch(
 watch(
   () => props.state.runtime.id,
   () => {
+    const fieldMap = new Map(
+      (selectedWorkflow.value?.fields || []).map((f) => [f.key, f]),
+    );
+    const remoteOnlyKeys = new Set(
+      Object.keys(uploadedInputIds.value).filter(
+        (key) => !pendingUploads.value[key],
+      ),
+    );
+    for (const key of remoteOnlyKeys) {
+      revokeLocalPreview(key);
+      delete uploadedNames.value[key];
+      const field = fieldMap.get(key);
+      fieldValues.value[key] =
+        field && field.default !== undefined && field.default !== null
+          ? String(field.default)
+          : "";
+    }
+    for (const key of Object.keys(uploadedNames.value)) {
+      if (!pendingUploads.value[key]) {
+        revokeLocalPreview(key);
+        delete uploadedNames.value[key];
+      }
+    }
     uploadedInputIds.value = {};
-    uploadedNames.value = {};
+    abortAllOutputFetches();
     failedOutputs.value = {};
-    Object.values(blobUrls.value).forEach((url) => URL.revokeObjectURL(url));
+    const staleUrls = Object.values(blobUrls.value);
     blobUrls.value = {};
+    revokeBlobUrlsDeferred(staleUrls);
   },
 );
 
@@ -340,35 +867,14 @@ function fieldInputId(field: WorkflowField): string {
   return `comfy-field-${field.key.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
 
-function stringFieldValue(key: string): string {
-  const value = fieldValues.value[key];
-  return value !== undefined && value !== null ? String(value) : "";
-}
-
-function numberFieldValue(field: WorkflowField): number | undefined {
-  const value = fieldValues.value[field.key];
-  if (value === "" || value === undefined || value === null) return undefined;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : undefined;
-}
-
-function onNumberFieldChange(
-  field: WorkflowField,
-  value: string | number | null,
-  isInteger: boolean,
-) {
-  if (value === null || value === "") {
-    fieldValues.value[field.key] = "";
+function resetFields() {
+  if (!selectedWorkflow.value || submittingRun.value || hasUploadingField.value) {
     return;
   }
-  const num = Number(value);
-  if (Number.isFinite(num)) {
-    fieldValues.value[field.key] = isInteger ? Math.round(num) : num;
+  for (const k of Object.keys(uploadGen)) {
+    uploadGen[k] = (uploadGen[k] ?? 0) + 1;
   }
-}
-
-function resetFields() {
-  if (!selectedWorkflow.value) return;
+  uploadingFields.value = {};
   fieldValues.value = defaultFieldValues(selectedWorkflow.value.fields);
   pendingUploads.value = {};
   uploadedInputIds.value = {};
@@ -379,6 +885,8 @@ function resetFields() {
 
 const MAX_IMAGE_INPUT_BYTES = 16 * 1024 ** 2;
 const MAX_AUDIO_INPUT_BYTES = 64 * 1024 ** 2;
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp)$/i;
+const AUDIO_EXT_RE = /\.(wav|mp3|flac|ogg|m4a)$/i;
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -394,14 +902,11 @@ function readFileAsBase64(file: File): Promise<string> {
 }
 
 async function handleMediaFile(field: WorkflowField, file: File) {
+  if (submittingRun.value || uploadingFields.value[field.key]) return;
   const kind: "image" | "audio" =
     field.field_type === "audio" ? "audio" : "image";
-  const isImageOk =
-    /^image\/(png|jpeg|webp)$/i.test(file.type) ||
-    /\.(png|jpe?g|webp)$/i.test(file.name);
-  const isAudioOk =
-    /^audio\//i.test(file.type) ||
-    /\.(wav|mp3|flac|ogg|m4a)$/i.test(file.name);
+  const isImageOk = IMAGE_EXT_RE.test(file.name);
+  const isAudioOk = AUDIO_EXT_RE.test(file.name);
   if ((kind === "image" && !isImageOk) || (kind === "audio" && !isAudioOk)) {
     reportError(
       t(
@@ -410,6 +915,10 @@ async function handleMediaFile(field: WorkflowField, file: File) {
           : "comfy.errUnsupportedImageFormat",
       ),
     );
+    return;
+  }
+  if (file.size <= 0) {
+    reportError(t("comfy.errEmptyFile"));
     return;
   }
   const maxBytes =
@@ -423,9 +932,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
 
   const gen = (uploadGen[field.key] = (uploadGen[field.key] ?? 0) + 1);
   const targetWorkflowId = selectedWorkflowId.value;
-  const targetRuntimeId = props.state.runtime.id;
   uploadingFields.value = { ...uploadingFields.value, [field.key]: true };
-  clearNotice();
   let nextPreviewUrl = "";
   try {
     const data = await readFileAsBase64(file);
@@ -441,6 +948,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
     }
 
     if (gpuReady.value) {
+      const uploadRuntimeId = props.state.runtime.id;
       const res = await colabOneCommand("comfyui.input.upload", {
         filename: file.name,
         data,
@@ -449,7 +957,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
         disposed ||
         uploadGen[field.key] !== gen ||
         selectedWorkflowId.value !== targetWorkflowId ||
-        props.state.runtime.id !== targetRuntimeId
+        props.state.runtime.id !== uploadRuntimeId
       ) {
         if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
         return;
@@ -498,23 +1006,11 @@ async function handleMediaFile(field: WorkflowField, file: File) {
   }
 }
 
-async function onMediaSelected(field: WorkflowField, event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = "";
-  if (!file) return;
-  await handleMediaFile(field, file);
-}
-
-async function onMediaDrop(field: WorkflowField, event: DragEvent) {
-  dragOverField.value = "";
-  if (uploadingFields.value[field.key]) return;
-  const file = event.dataTransfer?.files?.[0];
-  if (!file) return;
-  await handleMediaFile(field, file);
-}
-
 function clearMediaField(field: WorkflowField) {
+  if (submittingRun.value || uploadingFields.value[field.key]) {
+    return;
+  }
+  uploadGen[field.key] = (uploadGen[field.key] ?? 0) + 1;
   delete pendingUploads.value[field.key];
   delete uploadedInputIds.value[field.key];
   delete uploadedNames.value[field.key];
@@ -526,6 +1022,7 @@ function clearMediaField(field: WorkflowField) {
 }
 
 // Import modal
+const MAX_IMPORT_JSON_BYTES = 2 * 1024 * 1024;
 const importOpen = ref(false);
 const importName = ref("");
 const importDescription = ref("");
@@ -550,6 +1047,8 @@ const canSubmitImport = computed(
 );
 
 function openImportModal() {
+  paramDrawerOpen.value = false;
+  outputsDrawerOpen.value = false;
   importOpen.value = true;
 }
 
@@ -559,7 +1058,20 @@ function closeImportModal() {
   importDragging.value = false;
 }
 
+function onImportDragLeave(event: DragEvent) {
+  const current = event.currentTarget as HTMLElement | null;
+  const related = event.relatedTarget as Node | null;
+  if (current && related && current.contains(related)) {
+    return;
+  }
+  importDragging.value = false;
+}
+
 async function readImportFile(file: File) {
+  if (file.size > MAX_IMPORT_JSON_BYTES) {
+    reportError(t("comfy.errImportTooLarge"));
+    return;
+  }
   try {
     const text = await file.text();
     importRaw.value = text;
@@ -567,7 +1079,7 @@ async function readImportFile(file: File) {
       importName.value = file.name.replace(/\.json$/i, "");
     }
   } catch (e) {
-    emit("error", String(e));
+    reportError(e);
   }
 }
 
@@ -590,7 +1102,6 @@ async function onImportFileDrop(event: DragEvent) {
 async function submitImport() {
   if (!canSubmitImport.value || !importValidation.value?.ok) return;
   importing.value = true;
-  clearNotice();
   try {
     const res = await colabOneCommand("comfyui.workflow.import", {
       name: importName.value.trim(),
@@ -606,6 +1117,8 @@ async function submitImport() {
     importName.value = "";
     importDescription.value = "";
     importRaw.value = "";
+    outputsDrawerOpen.value = false;
+    paramDrawerOpen.value = true;
     emit("sync");
     setNoticeKey("comfy.noticeImported");
   } catch (e) {
@@ -617,11 +1130,13 @@ async function submitImport() {
 
 async function deleteWorkflow(target: WorkflowTemplate) {
   busy.value = true;
-  clearNotice();
   try {
     await colabOneCommand("comfyui.workflow.delete", { id: target.id });
+    if (selectedWorkflowId.value === target.id) {
+      paramDrawerOpen.value = false;
+    }
     emit("sync");
-    setNoticeKey("comfy.noticeDeletedWorkflow", { name: target.name });
+    setNoticeKey("comfy.noticeDeletedWorkflow", { name: tb(target.name) });
   } catch (e) {
     reportError(e);
   } finally {
@@ -636,7 +1151,6 @@ async function actEngine(
   successNoticeKey?: Parameters<typeof t>[0],
 ) {
   busy.value = true;
-  clearNotice();
   try {
     await colabOneCommand(action, payload);
     emit("sync");
@@ -674,154 +1188,315 @@ async function cancelActiveTask() {
 }
 
 async function runWorkflow() {
+  if (
+    submittingRun.value ||
+    hasUploadingField.value ||
+    engineActionBlocked.value
+  ) {
+    return;
+  }
   if (!gpuReady.value || comfyStarting.value) return;
   if (!comfyRunning.value) {
     await startComfy();
     return;
   }
-  if (
-    !selectedWorkflow.value ||
-    submittingRun.value ||
-    engineActionBlocked.value
-  ) {
+  if (!selectedWorkflow.value) {
     return;
   }
 
+  const wf = selectedWorkflow.value;
+  const missing = missingRequiredWorkflowFields(
+    wf,
+    fieldValues.value,
+    uploadedInputIds.value,
+    pendingUploads.value,
+  );
+  if (missing.length > 0) {
+    const firstMissing = missing[0];
+    const rawMissingLabel = tb(firstMissing.label);
+    const missingLabel =
+      rawMissingLabel
+        .replace(
+          /\s*(?:[（(]\s*(?:可选|可選|選填|任意|선택|optional)\s*[）)])\s*$/i,
+          "",
+        )
+        .trim() || rawMissingLabel;
+    reportError(t("comfy.requiredFieldHint", { label: missingLabel }));
+    const isInAdvanced = fieldPartitions.value.advanced.some(
+      (f) => f.key === firstMissing.key,
+    );
+    if (isInAdvanced && !advancedExpanded.value) {
+      advancedExpanded.value = true;
+    }
+    await nextTick();
+    if (!disposed) {
+      const targetEl = document.getElementById(fieldInputId(firstMissing));
+      if (targetEl) {
+        (targetEl.closest(".co-comfy-field") || targetEl).scrollIntoView?.({
+          behavior: "smooth",
+          block: "center",
+        });
+        targetEl.focus();
+      }
+    }
+    return;
+  }
+
+  const targetRuntimeId = props.state.runtime.id;
+  const targetWorkflowId = wf.id;
   submittingRun.value = true;
-  clearNotice();
   try {
-    const wf = selectedWorkflow.value;
-    // Upload any queued media files before submitting workflow
+    const activeFields = wf.fields.filter(
+      (field) =>
+        isWorkflowFieldVisible(field, fieldValues.value) ||
+        field.key === "pipeline.audio_source",
+    );
+    const activeFieldKeys = new Set(activeFields.map((field) => field.key));
+
+    // Upload only queued media files for currently active/visible fields
     for (const [key, item] of Object.entries(pendingUploads.value)) {
+      if (!activeFieldKeys.has(key)) {
+        continue;
+      }
       const res = await colabOneCommand("comfyui.input.upload", {
         filename: item.filename,
         data: item.data,
       });
+      if (
+        disposed ||
+        props.state.runtime.id !== targetRuntimeId ||
+        selectedWorkflowId.value !== targetWorkflowId
+      ) {
+        return;
+      }
       const assetId = typeof res?.id === "string" ? res.id : "";
       if (!assetId) {
         throw new Error(t("comfy.errUploadNamedFailed", { name: item.filename }));
       }
       uploadedInputIds.value[key] = assetId;
       fieldValues.value[key] = res?.filename || item.filename;
+      uploadedNames.value[key] = item.filename;
       delete pendingUploads.value[key];
     }
 
-    const overrides: Record<string, string | number | boolean> = {};
-    const inputs: Record<string, string> = {};
-    for (const field of wf.fields) {
-      if (field.field_type === "image" || field.field_type === "audio") {
-        const assetId = uploadedInputIds.value[field.key];
-        if (assetId) {
-          inputs[field.key] = assetId;
-          continue;
-        }
-        const val = fieldValues.value[field.key];
-        if (typeof val === "string" && val.trim()) {
-          overrides[field.key] = val;
-        }
-        continue;
-      }
-
-      const val = fieldValues.value[field.key];
-      if (field.field_type === "boolean") {
-        overrides[field.key] = Boolean(val);
-      } else if (field.field_type === "integer") {
-        const isBlank = val === "" || val === undefined || val === null;
-        const num = isBlank ? Number.NaN : Number(val);
-        overrides[field.key] = Number.isFinite(num)
-          ? Math.round(num)
-          : Math.round(Number(field.default ?? 0));
-      } else if (field.field_type === "number") {
-        const isBlank = val === "" || val === undefined || val === null;
-        const num = isBlank ? Number.NaN : Number(val);
-        overrides[field.key] = Number.isFinite(num)
-          ? num
-          : Number(field.default ?? 0);
-      } else {
-        overrides[field.key] =
-          val !== undefined && val !== null ? String(val) : "";
-      }
-    }
+    const { overrides, inputs } = buildColabOneWorkflowOverrides(
+      wf,
+      fieldValues.value,
+      activeFields,
+      { uploadedInputIds: uploadedInputIds.value },
+    );
 
     await colabOneCommand("comfyui.run", {
       workflow_id: wf.id,
       overrides,
       inputs,
     });
+    if (disposed || props.state.runtime.id !== targetRuntimeId) {
+      return;
+    }
+    paramDrawerOpen.value = false;
     emit("sync");
-    setNoticeKey("comfy.noticeRunSubmitted", { name: wf.name });
+    setNoticeKey("comfy.noticeRunSubmitted", { name: tb(wf.name) });
   } catch (e) {
-    reportError(e);
+    if (!disposed) {
+      reportError(e);
+    }
   } finally {
     submittingRun.value = false;
   }
 }
 
 // Output gallery & lazy Blob URL preview
+const MAX_INLINE_PREVIEW_BYTES = 48 * 1024 * 1024;
+interface OutputPreviewError {
+  code: "media" | "fetch";
+  detail?: string;
+}
 const outputs = computed(() => props.state.comfy_outputs || []);
 const blobUrls = ref<Record<string, string>>({});
 const fetchingOutputs = ref<Record<string, boolean>>({});
-const failedOutputs = ref<Record<string, string>>({});
+const failedOutputs = ref<Record<string, OutputPreviewError>>({});
 const exportingOutputs = ref<Record<string, boolean>>({});
 const deletingOutputs = ref<Record<string, boolean>>({});
+const outputFetchControllers = new Map<string, AbortController>();
 let disposed = false;
+
+function isOutputTooLargeForPreview(item: WorkflowOutput): boolean {
+  return Number.isFinite(item.size) && item.size > MAX_INLINE_PREVIEW_BYTES;
+}
+
+function formatOutputPreviewError(
+  err: OutputPreviewError | undefined,
+): string {
+  if (!err) return "";
+  if (err.code === "media") {
+    return t("comfy.mediaPreviewError");
+  }
+  return err.detail ? tb(err.detail) : t("comfy.mediaPreviewError");
+}
+
+function revokeBlobUrlsDeferred(urls: string[]) {
+  if (!urls.length) return;
+  void nextTick(() => {
+    urls.forEach((url) => URL.revokeObjectURL(url));
+  });
+}
+
+function abortOutputFetch(id: string) {
+  const ctrl = outputFetchControllers.get(id);
+  if (ctrl) {
+    ctrl.abort();
+    outputFetchControllers.delete(id);
+  }
+  delete fetchingOutputs.value[id];
+}
+
+function abortAllOutputFetches() {
+  for (const ctrl of outputFetchControllers.values()) {
+    ctrl.abort();
+  }
+  outputFetchControllers.clear();
+  fetchingOutputs.value = {};
+}
+
+function pauseOutputsDrawerMedia() {
+  if (typeof document === "undefined") return;
+  const root = document.querySelector(".co-comfy-outputs-drawer-root");
+  if (!root) return;
+  root.querySelectorAll<HTMLMediaElement>("video, audio").forEach((el) => {
+    try {
+      el.pause();
+    } catch {
+      // Ignore media elements not yet initialized.
+    }
+  });
+}
+
+function releaseHeavyOutputBlobs() {
+  const heavyIds = new Set(
+    outputs.value
+      .filter((item) => item.kind === "video" || item.kind === "audio")
+      .map((item) => item.id),
+  );
+  const urlsToRevoke: string[] = [];
+  for (const [id, url] of Object.entries(blobUrls.value)) {
+    if (heavyIds.has(id)) {
+      urlsToRevoke.push(url);
+      delete blobUrls.value[id];
+    }
+  }
+  revokeBlobUrlsDeferred(urlsToRevoke);
+}
+
+function onOutputMediaError(item: WorkflowOutput) {
+  if (disposed || !outputsDrawerOpen.value || !blobUrls.value[item.id]) return;
+  const url = blobUrls.value[item.id];
+  delete blobUrls.value[item.id];
+  revokeBlobUrlsDeferred([url]);
+  failedOutputs.value[item.id] = { code: "media" };
+}
+
+function triggerRecentImagePreviews(list: WorkflowOutput[]) {
+  if (!gpuReady.value || !outputsDrawerOpen.value || disposed) return;
+  for (const item of list.slice(0, 6)) {
+    if (
+      item.kind === "image" &&
+      !isOutputTooLargeForPreview(item) &&
+      !blobUrls.value[item.id] &&
+      !failedOutputs.value[item.id] &&
+      !Object.values(fetchingOutputs.value).some(Boolean)
+    ) {
+      void loadOutputPreview(item);
+      break;
+    }
+  }
+}
 
 async function loadOutputPreview(item: WorkflowOutput) {
   if (
+    isOutputTooLargeForPreview(item) ||
     blobUrls.value[item.id] ||
     fetchingOutputs.value[item.id] ||
-    !gpuReady.value
+    !gpuReady.value ||
+    !outputsDrawerOpen.value
   ) {
     return;
   }
   const targetRuntimeId = props.state.runtime.id;
+  abortOutputFetch(item.id);
+  const controller = new AbortController();
+  outputFetchControllers.set(item.id, controller);
   fetchingOutputs.value[item.id] = true;
   delete failedOutputs.value[item.id];
   try {
-    const url = await outputBlobURL(item.id);
+    const url = await outputBlobURL(item.id, controller.signal);
     if (
       disposed ||
+      controller.signal.aborted ||
+      outputFetchControllers.get(item.id) !== controller ||
+      !outputsDrawerOpen.value ||
       props.state.runtime.id !== targetRuntimeId ||
       !outputs.value.some((o) => o.id === item.id)
     ) {
       URL.revokeObjectURL(url);
     } else {
-      if (blobUrls.value[item.id]) {
-        URL.revokeObjectURL(blobUrls.value[item.id]);
-      }
+      const prevUrl = blobUrls.value[item.id];
       blobUrls.value[item.id] = url;
+      if (prevUrl) {
+        revokeBlobUrlsDeferred([prevUrl]);
+      }
     }
   } catch (e) {
-    if (!disposed && props.state.runtime.id === targetRuntimeId) {
-      failedOutputs.value[item.id] = String(e);
+    const aborted =
+      controller.signal.aborted ||
+      (e instanceof DOMException && e.name === "AbortError");
+    if (!aborted && !disposed && props.state.runtime.id === targetRuntimeId) {
+      failedOutputs.value[item.id] = { code: "fetch", detail: String(e) };
     }
   } finally {
-    fetchingOutputs.value[item.id] = false;
+    if (outputFetchControllers.get(item.id) === controller) {
+      outputFetchControllers.delete(item.id);
+      delete fetchingOutputs.value[item.id];
+    }
+    if (!disposed && outputsDrawerOpen.value && gpuReady.value) {
+      triggerRecentImagePreviews(outputs.value);
+    }
   }
 }
 
+watch(outputsDrawerOpen, (open) => {
+  if (!open) {
+    pauseOutputsDrawerMedia();
+    abortAllOutputFetches();
+    releaseHeavyOutputBlobs();
+  }
+});
+
 watch(
-  [outputs, gpuReady],
-  ([list, ready]) => {
+  [outputs, gpuReady, outputsDrawerOpen],
+  ([list, ready, drawerOpen]) => {
     const activeIds = new Set(list.map((item) => item.id));
+    const staleUrls: string[] = [];
     for (const [id, url] of Object.entries(blobUrls.value)) {
       if (!activeIds.has(id)) {
-        URL.revokeObjectURL(url);
+        staleUrls.push(url);
         delete blobUrls.value[id];
       }
     }
-    if (!ready) return;
-    // Automatically load previews for recent image outputs without saturating the bridge.
-    for (const item of list.slice(0, 6)) {
-      if (
-        item.kind === "image" &&
-        !blobUrls.value[item.id] &&
-        !failedOutputs.value[item.id] &&
-        !Object.values(fetchingOutputs.value).some(Boolean)
-      ) {
-        void loadOutputPreview(item);
+    revokeBlobUrlsDeferred(staleUrls);
+    for (const id of Object.keys(failedOutputs.value)) {
+      if (!activeIds.has(id)) {
+        delete failedOutputs.value[id];
       }
     }
+    for (const id of Array.from(outputFetchControllers.keys())) {
+      if (!activeIds.has(id)) {
+        abortOutputFetch(id);
+      }
+    }
+    if (!ready || !drawerOpen) return;
+    // Automatically load previews for recent image outputs without saturating the bridge.
+    triggerRecentImagePreviews(list);
   },
   { immediate: true },
 );
@@ -849,11 +1524,14 @@ async function deleteOutput(target: WorkflowOutput) {
   }
   deletingOutputs.value = { ...deletingOutputs.value, [target.id]: true };
   try {
+    abortOutputFetch(target.id);
     await colabOneCommand("comfyui.output.delete", { id: target.id });
-    if (blobUrls.value[target.id]) {
-      URL.revokeObjectURL(blobUrls.value[target.id]);
+    const url = blobUrls.value[target.id];
+    if (url) {
       delete blobUrls.value[target.id];
+      revokeBlobUrlsDeferred([url]);
     }
+    delete failedOutputs.value[target.id];
     emit("sync");
     setNoticeKey("comfy.noticeDeletedOutput");
   } catch (e) {
@@ -879,6 +1557,63 @@ function outputKindColor(kind: WorkflowOutput["kind"]) {
 
 // Native Canvas tab state
 const canvasDomain = ref(props.state.comfy_canvas_settings?.domain || "");
+const privacyContext = computed(() => {
+  const ctx = buildColabOnePrivacyContext(props.state);
+  const draftHost = extractColabOneHostFromInput(canvasDomain.value);
+  if (
+    draftHost &&
+    !isColabOnePublicHost(draftHost) &&
+    !ctx.hosts?.includes(draftHost)
+  ) {
+    return { ...ctx, hosts: [...(ctx.hosts || []), draftHost] };
+  }
+  return ctx;
+});
+const isCanvasDomainMasked = computed(
+  () => colabOnePrivacyActive.value && Boolean(canvasDomain.value.trim()),
+);
+const canvasDomainPeeking = ref(false);
+const canvasDomainHostRef = ref<HTMLElement | null>(null);
+const displayedCanvasDomain = computed(() =>
+  isCanvasDomainMasked.value && !canvasDomainPeeking.value
+    ? colabOneSynthesizeDomainInput(canvasDomain.value)
+    : canvasDomain.value,
+);
+const canvasDomainMaskSegments = computed(() =>
+  isCanvasDomainMasked.value
+    ? segmentColabOneDomainInput(canvasDomain.value)
+    : [],
+);
+
+function onCanvasDomainPeekEnter() {
+  if (isCanvasDomainMasked.value) {
+    canvasDomainPeeking.value = true;
+  }
+}
+
+function clearCanvasDomainPeek() {
+  canvasDomainPeeking.value = false;
+  if (
+    typeof document !== "undefined" &&
+    canvasDomainHostRef.value &&
+    document.activeElement instanceof HTMLElement &&
+    canvasDomainHostRef.value.contains(document.activeElement)
+  ) {
+    document.activeElement.blur();
+  }
+}
+
+watch([colabOnePrivacyActive, colabOnePrivacyPeekResetTick], clearCanvasDomainPeek);
+watch(isCanvasDomainMasked, (masked) => {
+  if (!masked) clearCanvasDomainPeek();
+});
+
+function onCanvasDomainUpdate(next: string) {
+  if (colabOnePrivacyActive.value) return;
+  canvasDomain.value = next;
+  canvasSettingsEdited.value = true;
+}
+
 const canvasTunnelToken = ref("");
 const canvasTokenInputRef = ref<InstanceType<typeof ColabOneSecretInput> | null>(
   null,
@@ -999,7 +1734,6 @@ async function stopCanvas() {
 }
 
 async function launchCanvas(target: "window" | "browser") {
-  clearNotice();
   try {
     await colabOneOpenComfyCanvas(target);
   } catch (e) {
@@ -1008,7 +1742,6 @@ async function launchCanvas(target: "window" | "browser") {
 }
 
 async function copyCanvasAuthUrl() {
-  clearNotice();
   try {
     const res = await colabOneCommand("comfyui.canvas.url");
     const url =
@@ -1041,19 +1774,69 @@ function syncTabsAriaLabel() {
     ?.setAttribute("aria-label", t("comfy.modeAria"));
 }
 
+function hasVisibleAntOverlay(): boolean {
+  if (typeof document === "undefined") return false;
+  const overlays = document.querySelectorAll<HTMLElement>(
+    [
+      ".ant-modal-wrap",
+      ".ant-popconfirm:not(.ant-popover-hidden)",
+      ".ant-popover:not(.ant-popover-hidden)",
+      ".ant-dropdown:not(.ant-dropdown-hidden)",
+      ".ant-select-dropdown:not(.ant-select-dropdown-hidden)",
+    ].join(", "),
+  );
+  for (const el of overlays) {
+    if (/\bant-[\w-]+-leave(?:-active|-to)?\b/.test(el.className)) {
+      continue;
+    }
+    const style = window.getComputedStyle(el);
+    if (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.pointerEvents !== "none" &&
+      el.getBoundingClientRect().height > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function handlePanelKeydown(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  if (importOpen.value || deleteConfirmWorkflowId.value) return;
+  if (hasVisibleAntOverlay()) {
+    return;
+  }
+  if (paramDrawerOpen.value && selectedWorkflow.value) {
+    e.stopImmediatePropagation();
+    closeParamDrawer();
+  } else if (outputsDrawerOpen.value) {
+    e.stopImmediatePropagation();
+    closeOutputsDrawer();
+  }
+}
+
 watch(colabOneLocaleCode, () => {
   syncTabsAriaLabel();
 });
 
 onMounted(() => {
   syncTabsAriaLabel();
+  window.addEventListener("resize", onWindowResize);
+  window.addEventListener("keydown", handlePanelKeydown, true);
 });
 
 onUnmounted(() => {
+  window.removeEventListener("resize", onWindowResize);
+  window.removeEventListener("keydown", handlePanelKeydown, true);
   clearTimeout(copyTimer);
   disposed = true;
+  pauseOutputsDrawerMedia();
+  abortAllOutputFetches();
   Object.values(blobUrls.value).forEach((url) => URL.revokeObjectURL(url));
   revokeAllLocalPreviews();
+  emit("drawer-state", { open: false, width: 0, rootSelector: "" });
 });
 </script>
 
@@ -1216,8 +1999,14 @@ onUnmounted(() => {
         type="error"
         show-icon
         class="co-comfy-card-alert"
-        :message="tb(comfy.error)"
-      />
+      >
+        <template #message>
+          <ColabOnePrivacyText
+            :text="tb(comfy.error)"
+            :context="privacyContext"
+          />
+        </template>
+      </AAlert>
 
       <!-- Active ComfyUI task progress bar -->
       <div v-if="comfyTask" class="co-comfy-task-banner" role="status">
@@ -1230,6 +2019,31 @@ onUnmounted(() => {
             }}</strong>
             <span class="co-comfy-mono">{{ comfyTaskPercent }}%</span>
           </div>
+          <div
+            v-if="comfyTaskDownloadSummary"
+            class="co-comfy-task-download-meta"
+          >
+            <span class="co-comfy-mono">
+              {{ comfyTaskDownloadSummary.primary }}
+            </span>
+            <span
+              v-if="comfyTaskDownloadSummary.etaText"
+              class="co-comfy-mono"
+            >
+              · {{ comfyTaskDownloadSummary.etaText }}
+            </span>
+            <span
+              v-if="comfyTaskDownloadSummary.filename"
+              class="co-comfy-task-download-file co-comfy-mono"
+            >
+              ·
+              {{
+                comfyTaskDownloadSummary.fileCounter
+                  ? `[${comfyTaskDownloadSummary.fileCounter}] ${comfyTaskDownloadSummary.filename}`
+                  : comfyTaskDownloadSummary.filename
+              }}
+            </span>
+          </div>
           <AProgress
             :percent="comfyTaskPercent"
             status="active"
@@ -1237,13 +2051,24 @@ onUnmounted(() => {
             size="small"
           />
         </div>
-        <AButton
-          size="small"
-          danger
-          @click="cancelActiveTask"
-        >
-          {{ t("comfy.cancelTask") }}
-        </AButton>
+        <div class="co-comfy-task-actions">
+          <AButton
+            v-if="comfyRunTask"
+            size="small"
+            class="co-comfy-task-outputs-btn"
+            @click="openOutputsDrawer"
+          >
+            <template #icon><PhImage :size="14" /></template>
+            {{ t("comfy.viewOutputsShort") }}
+          </AButton>
+          <AButton
+            size="small"
+            danger
+            @click="cancelActiveTask"
+          >
+            {{ t("comfy.cancelTask") }}
+          </AButton>
+        </div>
       </div>
     </ACard>
 
@@ -1288,990 +2113,287 @@ onUnmounted(() => {
                 </div>
                 <p>{{ t("comfy.studioDesc") }}</p>
               </div>
-              <AButton
-                type="primary"
-                @click="openImportModal"
-              >
-                <template #icon><PhPlus :size="15" /></template>
-                {{ t("comfy.importBtn") }}
-              </AButton>
+              <ASpace :size="10" wrap class="co-comfy-studio-toolbar-actions">
+                <AButton
+                  class="co-comfy-outputs-trigger"
+                  :class="{
+                    'is-active': outputsDrawerOpen,
+                    'is-running': !!(comfyRunTask || submittingRun),
+                  }"
+                  @click="openOutputsDrawer"
+                >
+                  <template #icon><PhImage :size="15" /></template>
+                  <span>{{ t("comfy.openOutputsBtn") }}</span>
+                  <ABadge
+                    v-if="comfyRunTask || submittingRun"
+                    status="processing"
+                    class="co-comfy-outputs-pulse"
+                  />
+                  <span
+                    v-if="outputs.length > 0"
+                    class="co-comfy-outputs-count co-comfy-mono"
+                  >
+                    {{ outputs.length }}
+                  </span>
+                </AButton>
+                <AButton
+                  type="primary"
+                  @click="openImportModal"
+                >
+                  <template #icon><PhPlus :size="15" /></template>
+                  {{ t("comfy.importBtn") }}
+                </AButton>
+              </ASpace>
             </div>
 
-            <div class="co-comfy-studio-grid">
-              <!-- Left Column: Workflow Library + Dynamic Parameter Runner -->
-              <div class="co-comfy-left-col">
-                <!-- Initial Cold-Start Skeleton -->
-                <template v-if="props.loading && !workflows.length">
-                  <ACard
-                    size="small"
-                    class="co-comfy-card"
-                    :title="t('comfy.importedListTitle')"
-                  >
-                    <div
-                      class="co-comfy-workflow-list"
-                      role="status"
-                      aria-busy="true"
-                    >
-                      <span class="co-sr-only">{{ t("common.loading") }}</span>
-                      <div
-                        v-for="idx in 2"
-                        :key="idx"
-                        class="co-comfy-workflow-item co-comfy-wf-skeleton"
-                      >
-                        <div class="co-comfy-workflow-item-main">
-                          <div class="co-comfy-workflow-item-title">
-                            <ColabOneSkeleton
-                              :width="idx === 1 ? '56%' : '48%'"
-                              :height="15"
-                              variant="text"
-                              :delay="(idx - 1) * 75"
-                            />
-                            <ColabOneSkeleton
-                              :width="44"
-                              :height="19"
-                              variant="tag"
-                              tone="subtle"
-                              :delay="(idx - 1) * 75 + 45"
-                            />
-                          </div>
-                          <div class="co-comfy-wf-sk-desc">
-                            <ColabOneSkeleton
-                              :width="idx === 1 ? '82%' : '70%'"
-                              :height="12"
-                              variant="text"
-                              tone="subtle"
-                              :delay="(idx - 1) * 75 + 80"
-                            />
-                          </div>
-                          <div class="co-comfy-workflow-badges">
-                            <ColabOneSkeleton
-                              :width="56"
-                              :height="18"
-                              variant="tag"
-                              tone="subtle"
-                              :delay="(idx - 1) * 75 + 105"
-                            />
-                            <ColabOneSkeleton
-                              :width="62"
-                              :height="18"
-                              variant="tag"
-                              tone="subtle"
-                              :delay="(idx - 1) * 75 + 135"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </ACard>
-
-                  <ACard size="small" class="co-comfy-card co-comfy-param-card">
-                    <div class="co-comfy-fields-stack" aria-hidden="true">
-                      <div class="co-comfy-field-control">
-                        <ColabOneSkeleton :width="92" :height="13" variant="text" />
-                        <ColabOneSkeleton
-                          width="100%"
-                          :height="68"
-                          :radius="8"
-                          variant="rect"
-                          tone="subtle"
-                          :delay="60"
-                        />
-                      </div>
-                      <div class="co-comfy-field-control">
-                        <ColabOneSkeleton :width="76" :height="13" variant="text" :delay="110" />
-                        <ColabOneSkeleton
-                          width="100%"
-                          :height="32"
-                          :radius="8"
-                          variant="rect"
-                          tone="subtle"
-                          :delay="150"
-                        />
-                      </div>
-                      <ColabOneSkeleton
-                        width="100%"
-                        :height="34"
-                        variant="button"
-                        :delay="190"
-                      />
-                    </div>
-                  </ACard>
-                </template>
-
-                <!-- Empty state when no workflows exist -->
-                <ACard
-                  v-else-if="!workflows.length"
-                  class="co-comfy-card co-comfy-empty-card"
-                >
-                  <AEmpty :description="t('comfy.emptyWorkflows')">
-                    <template #image>
-                      <div class="co-comfy-empty-emblem">
-                        <PhTreeStructure :size="30" weight="duotone" />
-                      </div>
-                    </template>
-                    <p class="co-comfy-empty-copy">
-                      {{ t("comfy.emptyWorkflowsDesc") }}
-                    </p>
-                    <ASpace wrap :size="10" class="co-comfy-empty-actions">
-                      <AButton
-                        type="primary"
-                        @click="openImportModal"
-                      >
-                        <template #icon><PhUploadSimple :size="15" /></template>
-                        {{ t("comfy.importBtnShort") }}
-                      </AButton>
-                      <AButton
-                        @click="activeTab = 'canvas'"
-                      >
-                        <template #icon><PhGraph :size="15" /></template>
-                        {{ t("comfy.goCanvasBuild") }}
-                      </AButton>
-                    </ASpace>
-                  </AEmpty>
-                </ACard>
-
-                <!-- Workflow library + dynamic parameter form -->
-                <template v-else>
-                  <ACard
-                    size="small"
-                    class="co-comfy-card"
-                    :title="t('comfy.importedListTitle')"
-                    :aria-label="t('comfy.workflowListAria')"
-                  >
-                    <template #extra>
-                      <ATag class="co-comfy-count-tag">
-                        {{ t("comfy.studioCountShort", { count: workflows.length }) }}
-                      </ATag>
-                    </template>
-
-                    <div
-                      class="co-comfy-workflow-list"
-                      role="listbox"
-                      :aria-label="t('comfy.selectWorkflowAria')"
-                    >
-                      <div
-                        v-for="wf in workflows"
-                        :key="wf.id"
-                        role="option"
-                        tabindex="0"
-                        class="co-comfy-workflow-item"
-                        :class="{
-                          selected: wf.id === selectedWorkflowId,
-                          disabled: submittingRun || hasUploadingField,
-                        }"
-                        :aria-selected="wf.id === selectedWorkflowId"
-                        :aria-disabled="submittingRun || hasUploadingField"
-                        @click="selectWorkflow(wf.id)"
-                        @keydown.enter.prevent="selectWorkflow(wf.id)"
-                        @keydown.space.prevent="selectWorkflow(wf.id)"
-                      >
-                        <div class="co-comfy-workflow-item-main">
-                          <div class="co-comfy-workflow-item-title">
-                            <strong>{{ wf.name }}</strong>
-                            <ATag
-                              :color="
-                                wf.source === 'builtin' ? 'blue' : 'default'
-                              "
-                            >
-                              {{
-                                wf.source === "builtin"
-                                  ? t("comfy.sourceBuiltin")
-                                  : t("comfy.sourceCustom")
-                              }}
-                            </ATag>
-                          </div>
-                          <p
-                            v-if="wf.description"
-                            class="co-comfy-workflow-desc"
-                          >
-                            {{ wf.description }}
-                          </p>
-                          <div class="co-comfy-workflow-badges">
-                            <ATag class="co-comfy-meta-tag">
-                              {{ t("comfy.nodeCount", { count: wf.node_count }) }}
-                            </ATag>
-                            <ATag class="co-comfy-meta-tag">
-                              {{ t("comfy.fieldCount", { count: wf.fields.length }) }}
-                            </ATag>
-                            <ATag
-                              v-if="wf.min_vram_mib > 0"
-                              color="gold"
-                              class="co-comfy-meta-tag"
-                            >
-                              {{
-                                t("comfy.recommendedVram", {
-                                  vram: `${Math.max(1, Math.round(wf.min_vram_mib / 1024))} GB+`,
-                                })
-                              }}
-                            </ATag>
-                          </div>
-                        </div>
-
-                        <div
-                          v-if="wf.source === 'custom'"
-                          class="co-comfy-wf-actions"
-                          @click.stop
-                        >
-                          <APopconfirm
-                            :title="t('comfy.deleteWorkflowTitle', { name: wf.name })"
-                            :description="t('comfy.deleteWorkflowDesc')"
-                            :ok-text="t('common.confirmDelete')"
-                            :cancel-text="t('common.cancel')"
-                            :ok-button-props="{ danger: true }"
-                            placement="topRight"
-                            @open-change="
-                              (open) => {
-                                deleteConfirmWorkflowId = open ? wf.id : '';
-                              }
-                            "
-                            @confirm="deleteWorkflow(wf)"
-                          >
-                            <span class="co-popconfirm-anchor">
-                              <ColabOneTooltip
-                                :title="t('comfy.deleteWorkflowTooltip')"
-                                :disabled="deleteConfirmWorkflowId === wf.id"
-                              >
-                                <AButton
-                                  type="text"
-                                  size="small"
-                                  danger
-                                  :aria-label="t('comfy.deleteWorkflowTooltip')"
-                                  :disabled="busy"
-                                >
-                                  <template #icon>
-                                    <PhTrash :size="15" />
-                                  </template>
-                                </AButton>
-                              </ColabOneTooltip>
-                            </span>
-                          </APopconfirm>
-                        </div>
-                      </div>
-                    </div>
-                  </ACard>
-
-                  <!-- Dynamic Parameter Runner Card -->
-                  <ACard
-                    v-if="selectedWorkflow"
-                    size="small"
-                    class="co-comfy-card co-comfy-param-card"
-                  >
-                    <template #title>
-                      <div class="co-comfy-param-title-wrap">
-                        <span>{{ selectedWorkflow.name }}</span>
-                        <small
-                          v-if="selectedWorkflow.description"
-                          class="co-comfy-param-subtitle"
-                        >
-                          {{ selectedWorkflow.description }}
-                        </small>
-                      </div>
-                    </template>
-                    <template #extra>
-                      <AButton
-                        v-if="selectedWorkflow.fields.length"
-                        type="text"
-                        size="small"
-                        @click="resetFields"
-                      >
-                        <template #icon>
-                          <PhArrowsClockwise :size="14" />
-                        </template>
-                        {{ t("comfy.resetDefaults") }}
-                      </AButton>
-                    </template>
-
-                    <form
-                      class="co-comfy-param-form"
-                      @submit.prevent="runWorkflow"
-                    >
-                      <AAlert
-                        v-if="!selectedWorkflow.fields.length"
-                        type="info"
-                        show-icon
-                        :message="t('comfy.noEditableFields')"
-                      />
-
-                      <div v-else class="co-comfy-fields-stack">
-                        <div
-                          v-for="field in selectedWorkflow.fields"
-                          :key="field.key"
-                          class="co-comfy-field"
-                        >
-                          <!-- Boolean Switch -->
-                          <div
-                            v-if="field.field_type === 'boolean'"
-                            class="co-comfy-switch-row"
-                          >
-                            <div class="co-comfy-switch-copy">
-                              <strong>{{ tb(field.label) }}</strong>
-                              <small class="co-comfy-field-node">
-                                {{ t("comfy.nodePrefix", { id: field.node_id }) }}
-                                {{ field.input_name }}
-                              </small>
-                            </div>
-                            <ASwitch
-                              :checked="Boolean(fieldValues[field.key])"
-                              @update:checked="
-                                (val) => (fieldValues[field.key] = Boolean(val))
-                              "
-                            />
-                          </div>
-
-                          <!-- Image / Audio Drag-and-Drop Upload Box -->
-                          <div
-                            v-else-if="
-                              field.field_type === 'image' ||
-                              field.field_type === 'audio'
-                            "
-                            class="co-comfy-media-field"
-                          >
-                            <div class="co-comfy-field-label-row">
-                              <span>{{ tb(field.label) }}</span>
-                              <small class="co-comfy-field-node">
-                                {{ t("comfy.nodePrefix", { id: field.node_id }) }}
-                                {{ field.input_name }}
-                              </small>
-                            </div>
-
-                            <label
-                              class="co-comfy-media-dropzone"
-                              :class="{
-                                dragging: dragOverField === field.key,
-                                busy: !!uploadingFields[field.key],
-                              }"
-                              @dragover.prevent="dragOverField = field.key"
-                              @dragleave="
-                                if (dragOverField === field.key)
-                                  dragOverField = '';
-                              "
-                              @drop.prevent="onMediaDrop(field, $event)"
-                            >
-                              <input
-                                class="co-visually-hidden"
-                                type="file"
-                                :accept="
-                                  field.field_type === 'audio'
-                                    ? '.wav,.mp3,.flac,.ogg,.m4a,audio/*'
-                                    : 'image/png,image/jpeg,image/webp'
-                                "
-                                :disabled="!!uploadingFields[field.key]"
-                                @change="onMediaSelected(field, $event)"
-                              />
-                              <ColabOneSkeleton
-                                v-if="uploadingFields[field.key]"
-                                :width="42"
-                                :height="42"
-                                :radius="8"
-                                variant="rect"
-                                tone="accent"
-                              />
-                              <img
-                                v-else-if="
-                                  field.field_type === 'image' &&
-                                  localPreviews[field.key]
-                                "
-                                :src="localPreviews[field.key]"
-                                :alt="uploadedNames[field.key] || tb(field.label)"
-                                class="co-comfy-media-thumb"
-                              />
-                              <span v-else class="co-comfy-media-icon-wrap">
-                                <component
-                                  :is="
-                                    field.field_type === 'audio'
-                                      ? PhWaveform
-                                      : PhImage
-                                  "
-                                  :size="20"
-                                />
-                              </span>
-                              <div class="co-comfy-media-dropzone-copy">
-                                <template v-if="uploadingFields[field.key]">
-                                  <strong>{{ t("comfy.uploadingTitle") }}</strong>
-                                  <small>{{ t("comfy.uploadingHint") }}</small>
-                                </template>
-                                <template v-else-if="uploadedNames[field.key]">
-                                  <strong>{{ uploadedNames[field.key] }}</strong>
-                                  <small>{{ t("comfy.replaceFileHint") }}</small>
-                                </template>
-                                <template v-else-if="fieldValues[field.key]">
-                                  <strong>
-                                    {{
-                                      t("comfy.currentFile", {
-                                        name: String(fieldValues[field.key]),
-                                      })
-                                    }}
-                                  </strong>
-                                  <small>{{ t("comfy.replaceFileHint") }}</small>
-                                </template>
-                                <template v-else>
-                                  <strong>
-                                    {{
-                                      field.field_type === "audio"
-                                        ? t("comfy.dropAudio")
-                                        : t("comfy.dropImage")
-                                    }}
-                                  </strong>
-                                  <small>
-                                    {{
-                                      field.field_type === "audio"
-                                        ? t("comfy.audioFormats")
-                                        : t("comfy.imageFormats")
-                                    }}
-                                  </small>
-                                </template>
-                              </div>
-                            </label>
-
-                            <div
-                              v-if="
-                                uploadedNames[field.key] ||
-                                pendingUploads[field.key]
-                              "
-                              class="co-comfy-media-status"
-                            >
-                              <ASpace :size="6" wrap>
-                                <ATag
-                                  :color="
-                                    pendingUploads[field.key]
-                                      ? 'warning'
-                                      : 'success'
-                                  "
-                                >
-                                  {{
-                                    pendingUploads[field.key]
-                                      ? t("comfy.pendingUpload")
-                                      : t("comfy.uploadedRemote")
-                                  }}
-                                </ATag>
-                                <ATag
-                                  v-if="uploadedNames[field.key]"
-                                  class="co-comfy-filename-pill"
-                                >
-                                  {{ uploadedNames[field.key] }}
-                                </ATag>
-                              </ASpace>
-                              <AButton
-                                type="link"
-                                size="small"
-                                danger
-                                @click="clearMediaField(field)"
-                              >
-                                {{ t("common.clear") }}
-                              </AButton>
-                            </div>
-                          </div>
-
-                          <!-- Standard Labeled AntD Controls -->
-                          <div v-else class="co-comfy-field-control">
-                            <label
-                              :for="fieldInputId(field)"
-                              class="co-comfy-field-label-row"
-                            >
-                              <span>{{ tb(field.label) }}</span>
-                              <small class="co-comfy-field-node">
-                                {{ t("comfy.nodePrefix", { id: field.node_id }) }}
-                                {{ field.input_name }}
-                              </small>
-                            </label>
-
-                            <ATextarea
-                              v-if="field.field_type === 'textarea'"
-                              :id="fieldInputId(field)"
-                              :value="stringFieldValue(field.key)"
-                              :auto-size="{ minRows: 3, maxRows: 8 }"
-                              @update:value="
-                                (val) => (fieldValues[field.key] = val)
-                              "
-                            />
-
-                            <ASelect
-                              v-else-if="field.field_type === 'select'"
-                              :id="fieldInputId(field)"
-                              :value="stringFieldValue(field.key)"
-                              class="co-comfy-full-width"
-                              @update:value="
-                                (val) =>
-                                  (fieldValues[field.key] = String(val ?? ''))
-                              "
-                            >
-                              <ASelectOption
-                                v-if="
-                                  fieldValues[field.key] &&
-                                  !(field.options || []).includes(
-                                    String(fieldValues[field.key]),
-                                  )
-                                "
-                                :value="String(fieldValues[field.key])"
-                              >
-                                {{ fieldValues[field.key] }}
-                              </ASelectOption>
-                              <ASelectOption
-                                v-for="opt in field.options || []"
-                                :key="opt"
-                                :value="opt"
-                              >
-                                {{ opt }}
-                              </ASelectOption>
-                            </ASelect>
-
-                            <AInputNumber
-                              v-else-if="
-                                field.field_type === 'integer' ||
-                                field.field_type === 'number'
-                              "
-                              :id="fieldInputId(field)"
-                              :value="numberFieldValue(field)"
-                              :min="field.min_value ?? undefined"
-                              :max="field.max_value ?? undefined"
-                              :step="
-                                field.step ??
-                                (field.field_type === 'integer' ? 1 : 0.1)
-                              "
-                              :precision="
-                                field.field_type === 'integer' ? 0 : undefined
-                              "
-                              class="co-comfy-full-width"
-                              @update:value="
-                                (val) =>
-                                  onNumberFieldChange(
-                                    field,
-                                    val,
-                                    field.field_type === 'integer',
-                                  )
-                              "
-                            />
-
-                            <AInput
-                              v-else
-                              :id="fieldInputId(field)"
-                              :value="stringFieldValue(field.key)"
-                              @update:value="
-                                (val) => (fieldValues[field.key] = val)
-                              "
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <ADivider class="co-comfy-form-divider" />
-
-                      <!-- Submit Bar -->
-                      <div class="co-comfy-form-actions">
-                        <ColabOneTooltip
-                          :title="
-                            !gpuReady
-                              ? gpuStarting
-                                ? t('api.gpuStartingTooltip')
-                                : t('api.startGpuFirstTooltip')
-                              : ''
-                          "
-                        >
-                          <AButton
-                            type="primary"
-                            html-type="submit"
-                            class="co-comfy-run-btn"
-                            :loading="submittingRun || comfyStarting"
-                            :disabled="
-                              !gpuReady ||
-                              comfyStarting ||
-                              submittingRun ||
-                              hasUploadingField ||
-                              engineActionBlocked
-                            "
-                          >
-                            <template #icon>
-                              <PhSparkle v-if="comfyRunning" :size="15" />
-                              <PhPlay v-else :size="14" weight="fill" />
-                            </template>
-                            {{
-                              !gpuReady
-                                ? t("comfy.runWorkflow")
-                                : comfyStarting
-                                  ? t("comfy.preparingBtn")
-                                  : !comfyRunning
-                                    ? t("comfy.startComfyFirst")
-                                    : submittingRun
-                                      ? t("common.submitting")
-                                      : t("comfy.runWorkflow")
-                            }}
-                          </AButton>
-                        </ColabOneTooltip>
-                        <AButton
-                          v-if="comfyRunTask || comfyTask"
-                          danger
-                          @click="cancelActiveTask"
-                        >
-                          {{ t("comfy.cancelTask") }}
-                        </AButton>
-                      </div>
-                    </form>
-                  </ACard>
-                </template>
-              </div>
-
-              <!-- Right Column: Output Gallery Card -->
-              <section class="co-comfy-gallery-col" :aria-label="t('comfy.galleryTitle')">
-                <ACard
-                  size="small"
-                  class="co-comfy-card co-comfy-gallery-card"
-                  :title="t('comfy.galleryTitle')"
-                >
-                  <template #extra>
+            <!-- Initial Cold-Start Skeleton -->
+            <div
+              v-if="props.loading && !workflows.length"
+              class="co-comfy-workflow-list"
+              role="status"
+              aria-busy="true"
+            >
+              <span class="co-sr-only">{{ t("common.loading") }}</span>
+              <div
+                v-for="idx in 2"
+                :key="idx"
+                class="co-comfy-workflow-item co-comfy-wf-skeleton"
+              >
+                <div class="co-comfy-wf-card-head">
+                  <ColabOneSkeleton
+                    :width="40"
+                    :height="40"
+                    :radius="11"
+                    variant="rect"
+                    tone="subtle"
+                    :delay="(idx - 1) * 75"
+                  />
+                  <div class="co-comfy-wf-card-heading">
                     <ColabOneSkeleton
-                      v-if="props.loading"
+                      :width="idx === 1 ? '60%' : '52%'"
+                      :height="16"
+                      variant="text"
+                      :delay="(idx - 1) * 75 + 35"
+                    />
+                    <ColabOneSkeleton
                       :width="42"
-                      :height="22"
+                      :height="20"
                       variant="tag"
                       tone="subtle"
-                      inline
+                      :delay="(idx - 1) * 75 + 65"
                     />
-                    <ATag v-else class="co-comfy-count-tag co-sk-reveal">
-                      {{ t("comfy.outputCount", { count: outputs.length }) }}
+                  </div>
+                </div>
+                <div class="co-comfy-wf-sk-desc">
+                  <ColabOneSkeleton
+                    :width="idx === 1 ? '92%' : '86%'"
+                    :height="13"
+                    variant="text"
+                    tone="subtle"
+                    :delay="(idx - 1) * 75 + 90"
+                  />
+                  <ColabOneSkeleton
+                    :width="idx === 1 ? '68%' : '62%'"
+                    :height="13"
+                    variant="text"
+                    tone="subtle"
+                    :delay="(idx - 1) * 75 + 115"
+                  />
+                </div>
+                <div class="co-comfy-wf-card-footer">
+                  <ColabOneSkeleton
+                    :width="128"
+                    :height="13"
+                    variant="text"
+                    tone="subtle"
+                    :delay="(idx - 1) * 75 + 140"
+                  />
+                  <ColabOneSkeleton
+                    :width="76"
+                    :height="14"
+                    variant="text"
+                    tone="subtle"
+                    :delay="(idx - 1) * 75 + 165"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty state when no workflows exist -->
+            <ACard
+              v-else-if="!workflows.length"
+              class="co-comfy-card co-comfy-empty-card"
+            >
+              <AEmpty :description="t('comfy.emptyWorkflows')">
+                <template #image>
+                  <div class="co-comfy-empty-emblem">
+                    <PhTreeStructure :size="30" weight="duotone" />
+                  </div>
+                </template>
+                <p class="co-comfy-empty-copy">
+                  {{ t("comfy.emptyWorkflowsDesc") }}
+                </p>
+                <ASpace wrap :size="10" class="co-comfy-empty-actions">
+                  <AButton
+                    type="primary"
+                    @click="openImportModal"
+                  >
+                    <template #icon><PhUploadSimple :size="15" /></template>
+                    {{ t("comfy.importBtnShort") }}
+                  </AButton>
+                  <AButton
+                    @click="activeTab = 'canvas'"
+                  >
+                    <template #icon><PhGraph :size="15" /></template>
+                    {{ t("comfy.goCanvasBuild") }}
+                  </AButton>
+                </ASpace>
+              </AEmpty>
+            </ACard>
+
+            <!-- Populated Workflow Card Grid -->
+            <div
+              v-else
+              class="co-comfy-workflow-list co-sk-reveal"
+              role="listbox"
+              :aria-label="t('comfy.selectWorkflowAria')"
+            >
+              <div
+                v-for="wf in workflows"
+                :key="wf.id"
+                role="option"
+                tabindex="0"
+                class="co-comfy-workflow-item"
+                :class="{
+                  'is-selected': wf.id === selectedWorkflowId && paramDrawerOpen,
+                  'is-disabled': submittingRun || hasUploadingField,
+                }"
+                :aria-selected="wf.id === selectedWorkflowId"
+                :aria-disabled="submittingRun || hasUploadingField"
+                @click="openWorkflowDrawer(wf.id)"
+                @keydown.enter.prevent="openWorkflowDrawer(wf.id)"
+                @keydown.space.prevent="openWorkflowDrawer(wf.id)"
+              >
+                <div class="co-comfy-wf-card-head">
+                  <div
+                    class="co-comfy-wf-emblem"
+                    :class="{ 'is-pipeline': wf.pipeline?.kind === 'digital_human' }"
+                    aria-hidden="true"
+                  >
+                    <PhVideoCamera
+                      v-if="wf.pipeline?.kind === 'digital_human'"
+                      :size="20"
+                      weight="duotone"
+                    />
+                    <PhTreeStructure v-else :size="20" weight="duotone" />
+                  </div>
+
+                  <div class="co-comfy-wf-card-heading">
+                    <strong class="co-comfy-wf-card-title">{{ tb(wf.name) }}</strong>
+                    <ATag
+                      :color="wf.source === 'builtin' ? 'blue' : 'default'"
+                      :bordered="false"
+                      class="co-comfy-source-tag"
+                    >
+                      {{
+                        wf.source === "builtin"
+                          ? t("comfy.sourceBuiltin")
+                          : t("comfy.sourceCustom")
+                      }}
                     </ATag>
-                  </template>
-
-                  <div
-                    v-if="props.loading && !outputs.length"
-                    class="co-comfy-output-grid"
-                    role="status"
-                    aria-busy="true"
-                  >
-                    <span class="co-sr-only">{{ t("common.loading") }}</span>
-                    <article
-                      v-for="idx in 2"
-                      :key="idx"
-                      class="co-comfy-output-item co-comfy-output-skeleton"
-                    >
-                      <div class="co-comfy-output-frame co-comfy-output-frame-sk">
-                        <ColabOneSkeleton
-                          width="100%"
-                          height="100%"
-                          :radius="0"
-                          variant="rect"
-                          :delay="(idx - 1) * 90"
-                        />
-                      </div>
-                      <div class="co-comfy-output-body">
-                        <div class="co-comfy-output-title-row">
-                          <ColabOneSkeleton
-                            :width="idx === 1 ? '62%' : '54%'"
-                            :height="15"
-                            variant="text"
-                            :delay="(idx - 1) * 90 + 40"
-                          />
-                          <ColabOneSkeleton
-                            :width="42"
-                            :height="20"
-                            variant="tag"
-                            tone="subtle"
-                            :delay="(idx - 1) * 90 + 70"
-                          />
-                        </div>
-                        <ColabOneSkeleton
-                          width="76%"
-                          :height="12"
-                          variant="text"
-                          tone="subtle"
-                          :delay="(idx - 1) * 90 + 100"
-                        />
-                        <div class="co-comfy-output-meta-tags">
-                          <ColabOneSkeleton
-                            :width="54"
-                            :height="20"
-                            variant="tag"
-                            tone="subtle"
-                            :delay="(idx - 1) * 90 + 130"
-                          />
-                          <ColabOneSkeleton
-                            :width="48"
-                            :height="20"
-                            variant="tag"
-                            tone="subtle"
-                            :delay="(idx - 1) * 90 + 160"
-                          />
-                        </div>
-                        <div class="co-comfy-output-actions">
-                          <ColabOneSkeleton
-                            :width="82"
-                            :height="24"
-                            variant="button"
-                            :radius="6"
-                            tone="subtle"
-                            :delay="(idx - 1) * 90 + 185"
-                          />
-                          <ColabOneSkeleton
-                            :width="62"
-                            :height="24"
-                            variant="button"
-                            :radius="6"
-                            tone="subtle"
-                            :delay="(idx - 1) * 90 + 210"
-                          />
-                        </div>
-                      </div>
-                    </article>
                   </div>
 
                   <div
-                    v-else-if="!outputs.length && !comfyRunTask && !submittingRun"
-                    class="co-comfy-gallery-empty-wrap"
+                    v-if="wf.source === 'custom'"
+                    class="co-comfy-wf-actions"
+                    @click.stop
+                    @keydown.stop
                   >
-                    <AEmpty :description="t('comfy.emptyOutputs')">
-                      <template #image>
-                        <div class="co-comfy-empty-emblem">
-                          <PhImage :size="30" />
-                        </div>
-                      </template>
-                      <p class="co-comfy-empty-copy">
-                        {{ t("comfy.emptyOutputsDesc") }}
-                      </p>
-                      <small class="co-comfy-empty-hint">
-                        {{
-                          state.setup.drive
-                            ? t("comfy.drivePersistHint")
-                            : t("comfy.localExportHint")
-                        }}
-                      </small>
-                    </AEmpty>
-                  </div>
-
-                  <div v-else class="co-comfy-output-grid co-sk-reveal">
-                    <!-- Active Workflow Generating Artwork Skeleton -->
-                    <article
-                      v-if="comfyRunTask || submittingRun"
-                      class="co-comfy-output-item co-comfy-output-generating"
-                      role="status"
-                      aria-busy="true"
+                    <APopconfirm
+                      :title="t('comfy.deleteWorkflowTitle', { name: tb(wf.name) })"
+                      :description="t('comfy.deleteWorkflowDesc')"
+                      :ok-text="t('common.confirmDelete')"
+                      :cancel-text="t('common.cancel')"
+                      :disabled="busy"
+                      :ok-button-props="{ danger: true }"
+                      placement="topRight"
+                      @open-change="
+                        (open) => {
+                          if (open) {
+                            deleteConfirmWorkflowId = wf.id;
+                          } else if (deleteConfirmWorkflowId === wf.id) {
+                            deleteConfirmWorkflowId = '';
+                          }
+                        }
+                      "
+                      @confirm="deleteWorkflow(wf)"
                     >
-                      <div class="co-comfy-output-frame co-comfy-gen-frame">
-                        <ColabOneSkeleton
-                          width="100%"
-                          height="100%"
-                          :radius="0"
-                          variant="rect"
-                          tone="accent"
-                        />
-                        <div class="co-comfy-preview-pill">
-                          <PhSparkle :size="14" weight="duotone" class="co-comfy-gen-sparkle" />
-                          <span>
-                            {{
-                              comfyRunTask
-                                ? `${t("comfy.tagQueueRunning")} · ${comfyTaskPercent}%`
-                                : t("common.submitting")
-                            }}
-                          </span>
-                        </div>
-                        <span
-                          class="co-comfy-gen-bar"
-                          :style="{ width: `${Math.max(8, comfyTaskPercent)}%` }"
-                          aria-hidden="true"
-                        />
-                      </div>
-                      <div class="co-comfy-output-body">
-                        <div class="co-comfy-output-title-row">
-                          <strong>{{
-                            selectedWorkflow?.name || t("comfy.defaultWorkflowName")
-                          }}</strong>
-                          <ATag color="processing" class="co-comfy-status-tag">
-                            <ABadge status="processing" />
-                            <span>{{ t("comfy.tagQueueRunning") }}</span>
-                          </ATag>
-                        </div>
-                        <ColabOneSkeleton
-                          width="74%"
-                          :height="12"
-                          variant="text"
-                          tone="subtle"
-                          :delay="60"
-                        />
-                        <div class="co-comfy-output-meta-tags">
-                          <ColabOneSkeleton
-                            :width="58"
-                            :height="18"
-                            variant="tag"
-                            tone="subtle"
-                            :delay="100"
-                          />
-                          <ColabOneSkeleton
-                            :width="48"
-                            :height="18"
-                            variant="tag"
-                            tone="subtle"
-                            :delay="140"
-                          />
-                        </div>
-                      </div>
-                    </article>
-
-                    <article
-                      v-for="item in outputs"
-                      :key="item.id"
-                      class="co-comfy-output-item"
-                    >
-                      <div class="co-comfy-output-frame">
-                        <img
-                          v-if="item.kind === 'image' && blobUrls[item.id]"
-                          :src="blobUrls[item.id]"
-                          :alt="item.filename"
-                          class="co-sk-reveal"
-                        />
-                        <video
-                          v-else-if="item.kind === 'video' && blobUrls[item.id]"
-                          :src="blobUrls[item.id]"
-                          controls
-                          preload="metadata"
-                          class="co-sk-reveal"
-                        />
-                        <div
-                          v-else-if="item.kind === 'audio' && blobUrls[item.id]"
-                          class="co-comfy-audio-box co-sk-reveal"
+                      <span class="co-popconfirm-anchor">
+                        <ColabOneTooltip
+                          :title="t('comfy.deleteWorkflowTooltip')"
+                          :disabled="deleteConfirmWorkflowId === wf.id"
                         >
-                          <PhWaveform :size="28" class="co-comfy-audio-icon" />
-                          <audio
-                            :src="blobUrls[item.id]"
-                            controls
-                            preload="metadata"
-                          />
-                        </div>
-                        <div
-                          v-else-if="fetchingOutputs[item.id]"
-                          class="co-comfy-preview-loading co-comfy-preview-skeleton"
-                          role="status"
-                          aria-busy="true"
-                        >
-                          <ColabOneSkeleton
-                            width="100%"
-                            height="100%"
-                            :radius="0"
-                            variant="rect"
-                            tone="subtle"
-                          />
-                          <div class="co-comfy-preview-pill">
-                            <component
-                              :is="
-                                item.kind === 'video'
-                                  ? PhVideoCamera
-                                  : item.kind === 'audio'
-                                    ? PhWaveform
-                                    : PhImage
-                              "
-                              :size="15"
-                            />
-                            <span>{{ t("comfy.loadingOutput") }}</span>
-                          </div>
-                        </div>
-                        <button
-                          v-else
-                          type="button"
-                          class="co-comfy-preview-trigger"
-                          :disabled="!gpuReady"
-                          @click="loadOutputPreview(item)"
-                        >
-                          <component
-                            :is="
-                              item.kind === 'video'
-                                ? PhVideoCamera
-                                : item.kind === 'audio'
-                                  ? PhWaveform
-                                  : PhImage
-                            "
-                            :size="28"
-                          />
-                          <span>
-                            {{
-                              failedOutputs[item.id]
-                                ? t("comfy.retryPreview")
-                                : item.kind === "video"
-                                  ? t("comfy.loadVideoPreview")
-                                  : item.kind === "audio"
-                                    ? t("comfy.loadAudioPreview")
-                                    : t("comfy.loadImagePreview")
-                            }}
-                          </span>
-                        </button>
-                      </div>
-
-                      <div class="co-comfy-output-body">
-                        <div class="co-comfy-output-title-row">
-                          <ColabOneTooltip :title="item.workflow_name || t('comfy.defaultWorkflowName')">
-                            <strong>{{
-                              item.workflow_name || t("comfy.defaultWorkflowName")
-                            }}</strong>
-                          </ColabOneTooltip>
-                          <ATag :color="outputKindColor(item.kind)">
-                            {{ outputKindLabel(item.kind) }}
-                          </ATag>
-                        </div>
-
-                        <ColabOneTooltip :title="item.filename">
-                          <small class="co-comfy-mono co-comfy-output-filename">
-                            {{ item.filename }}
-                          </small>
-                        </ColabOneTooltip>
-
-                        <div class="co-comfy-output-meta-tags">
-                          <ATag class="co-comfy-meta-tag">
-                            {{ formatOutputSize(item.size) }}
-                          </ATag>
-                          <ATag class="co-comfy-meta-tag">
-                            {{ t("common.secondsShort", { value: item.elapsed.toFixed(1) }) }}
-                          </ATag>
-                        </div>
-
-                        <AAlert
-                          v-if="failedOutputs[item.id]"
-                          type="error"
-                          class="co-comfy-output-error"
-                          :message="tb(failedOutputs[item.id])"
-                        />
-
-                        <div class="co-comfy-output-actions">
                           <AButton
+                            type="text"
                             size="small"
-                            :loading="!!exportingOutputs[item.id]"
-                            :disabled="!gpuReady || !!deletingOutputs[item.id]"
-                            @click="exportOutput(item)"
+                            danger
+                            class="co-comfy-wf-delete-btn"
+                            :aria-label="t('comfy.deleteWorkflowTooltip')"
+                            :disabled="busy"
                           >
                             <template #icon>
-                              <PhDownloadSimple :size="14" />
+                              <PhTrash :size="15" />
                             </template>
-                            {{ t("comfy.exportLocal") }}
                           </AButton>
-
-                          <APopconfirm
-                            :title="t('comfy.deleteOutputTitle')"
-                            :description="t('comfy.deleteOutputDesc', { name: item.filename })"
-                            :ok-text="t('common.confirmDelete')"
-                            :cancel-text="t('common.cancel')"
-                            :disabled="
-                              !gpuReady ||
-                              !!exportingOutputs[item.id] ||
-                              !!deletingOutputs[item.id]
-                            "
-                            :ok-button-props="{ danger: true }"
-                            placement="topRight"
-                            @confirm="deleteOutput(item)"
-                          >
-                            <AButton
-                              size="small"
-                              danger
-                              :loading="!!deletingOutputs[item.id]"
-                              :disabled="!gpuReady || !!exportingOutputs[item.id]"
-                              :aria-label="t('comfy.deleteOutputAria')"
-                            >
-                              <template #icon>
-                                <PhTrash :size="14" />
-                              </template>
-                              {{ t("common.delete") }}
-                            </AButton>
-                          </APopconfirm>
-                        </div>
-                      </div>
-                    </article>
+                        </ColabOneTooltip>
+                      </span>
+                    </APopconfirm>
                   </div>
-                </ACard>
-              </section>
+                </div>
+
+                <p
+                  v-if="wf.description"
+                  class="co-comfy-workflow-desc"
+                >
+                  {{ tb(wf.description) }}
+                </p>
+
+                <div
+                  v-if="wf.pipeline?.kind === 'digital_human'"
+                  class="co-comfy-wf-io-strip"
+                >
+                  {{ t("comfy.ioSummaryDigitalHuman") }}
+                </div>
+
+                <div class="co-comfy-wf-card-footer">
+                  <div class="co-comfy-wf-specs">
+                    <span class="co-comfy-wf-spec-text">
+                      {{ formatWorkflowCardSpecs(wf) }}
+                    </span>
+                    <ColabOneTooltip
+                      v-if="wf.commercial_ok === false"
+                      :title="
+                        wf.license_notice
+                          ? tb(wf.license_notice)
+                          : t('comfy.licenseNonCommercial')
+                      "
+                    >
+                      <ATag
+                        color="orange"
+                        :bordered="false"
+                        class="co-comfy-noncommercial-pill"
+                      >
+                        {{ t("comfy.licenseNonCommercial") }}
+                      </ATag>
+                    </ColabOneTooltip>
+                  </div>
+                  <span class="co-comfy-wf-cta" aria-hidden="true">
+                    <PhSlidersHorizontal :size="14" />
+                    <span>{{ t("comfy.configureAndRun") }}</span>
+                    <PhArrowRight :size="13" class="co-comfy-wf-cta-arrow" />
+                  </span>
+                </div>
+              </div>
             </div>
           </section>
         </ATabPane>
@@ -2314,8 +2436,14 @@ onUnmounted(() => {
               v-if="canvas?.error"
               type="error"
               show-icon
-              :message="tb(canvas.error)"
-            />
+            >
+              <template #message>
+                <ColabOnePrivacyText
+                  :text="tb(canvas.error)"
+                  :context="privacyContext"
+                />
+              </template>
+            </AAlert>
 
             <div class="co-comfy-canvas-grid">
               <!-- Fixed-Domain Tunnel & Lifecycle Card -->
@@ -2332,16 +2460,80 @@ onUnmounted(() => {
                     >
                       <span>{{ t("comfy.canvasDomainLabel") }}</span>
                     </label>
-                    <AInput
-                      id="comfy-canvas-domain"
-                      v-model:value="canvasDomain"
-                      :disabled="canvasEnabled || busy"
-                      placeholder="comfy.example.com"
-                      autocomplete="off"
-                      spellcheck="false"
-                      allow-clear
-                      @change="canvasSettingsEdited = true"
-                    />
+                    <div
+                      ref="canvasDomainHostRef"
+                      class="co-privacy-input-host"
+                      @mouseenter="onCanvasDomainPeekEnter"
+                      @mouseleave="clearCanvasDomainPeek"
+                    >
+                      <AInput
+                        id="comfy-canvas-domain"
+                        :value="displayedCanvasDomain"
+                        :disabled="canvasEnabled || busy"
+                        :readonly="colabOnePrivacyActive"
+                        placeholder="comfy.example.com"
+                        autocomplete="off"
+                        spellcheck="false"
+                        :allow-clear="!colabOnePrivacyActive"
+                        :class="{
+                          'co-privacy-masked-input': isCanvasDomainMasked,
+                          'co-privacy-readonly-input': colabOnePrivacyActive,
+                          'is-peeking':
+                            isCanvasDomainMasked && canvasDomainPeeking,
+                        }"
+                        :data-privacy-masked="
+                          isCanvasDomainMasked ? 'true' : undefined
+                        "
+                        :data-privacy-peeking="
+                          isCanvasDomainMasked && canvasDomainPeeking
+                            ? 'true'
+                            : undefined
+                        "
+                        @update:value="onCanvasDomainUpdate"
+                      >
+                        <template v-if="colabOnePrivacyActive" #suffix>
+                          <ColabOneTooltip
+                            :title="t('privacy.inputReadonlyTooltip')"
+                          >
+                            <span
+                              class="co-privacy-input-badge"
+                              aria-hidden="true"
+                            >
+                              <PhEye
+                                v-if="
+                                  isCanvasDomainMasked && canvasDomainPeeking
+                                "
+                                :size="15"
+                              />
+                              <PhEyeSlash v-else :size="15" />
+                            </span>
+                          </ColabOneTooltip>
+                        </template>
+                      </AInput>
+                      <div
+                        v-if="isCanvasDomainMasked"
+                        class="co-privacy-input-veil"
+                        :class="{
+                          'is-peeking': canvasDomainPeeking,
+                          'is-disabled': canvasEnabled || busy,
+                        }"
+                        aria-hidden="true"
+                      >
+                        <template
+                          v-for="(seg, idx) in canvasDomainMaskSegments"
+                          :key="idx"
+                        >
+                          <span v-if="seg.masked" class="co-privacy-mask">
+                            <span class="co-privacy-mask-glyphs">{{
+                              seg.text
+                            }}</span>
+                          </span>
+                          <span v-else class="co-privacy-input-veil-plain">{{
+                            seg.text
+                          }}</span>
+                        </template>
+                      </div>
+                    </div>
                   </div>
 
                   <div class="co-comfy-field-control">
@@ -2511,9 +2703,20 @@ onUnmounted(() => {
                         props.loading ? t("common.loading") : canvasStatusLabel
                       }}</span>
                     </span>
-                    <code v-else class="co-comfy-mono co-sk-reveal">{{
-                      canvasPublicHost || t("comfy.canvasPublicHostEmpty")
-                    }}</code>
+                    <code
+                      v-else
+                      class="co-comfy-mono co-sk-reveal"
+                      data-testid="comfy-canvas-public-host"
+                    >
+                      <ColabOnePrivacyText
+                        v-if="canvasPublicHost"
+                        :text="canvasPublicHost"
+                        kind="host"
+                      />
+                      <template v-else>{{
+                        t("comfy.canvasPublicHostEmpty")
+                      }}</template>
+                    </code>
                     <ATag v-if="canvasReady" color="success">HTTPS</ATag>
                   </div>
                 </div>
@@ -2655,6 +2858,822 @@ onUnmounted(() => {
       </ATabs>
     </div>
 
+    <!-- Drawer 1: Workflow Parameter Configuration Drawer -->
+    <ADrawer
+      :open="paramDrawerOpen && !!selectedWorkflow"
+      placement="right"
+      :width="paramDrawerWidth"
+      :mask="true"
+      :mask-closable="true"
+      :keyboard="false"
+      :destroy-on-close="false"
+      :z-index="1010"
+      :header-style="{ padding: '14px 20px' }"
+      :body-style="{ padding: '16px 20px 24px', overflowY: 'auto' }"
+      :footer-style="{ padding: '12px 20px' }"
+      root-class-name="co-comfy-param-drawer-root"
+      @update:open="
+        (val) => {
+          if (!val) closeParamDrawer();
+        }
+      "
+    >
+      <template #title>
+        <div v-if="selectedWorkflow" class="co-comfy-drawer-title">
+          <span
+            class="co-comfy-drawer-title-icon"
+            :class="{ 'is-pipeline': isDigitalHumanWorkflow }"
+            aria-hidden="true"
+          >
+            <PhVideoCamera
+              v-if="isDigitalHumanWorkflow"
+              :size="16"
+              weight="duotone"
+            />
+            <PhTreeStructure v-else :size="16" weight="duotone" />
+          </span>
+          <span class="co-comfy-drawer-title-text">
+            {{ tb(selectedWorkflow.name) }}
+          </span>
+          <ATag
+            :color="selectedWorkflow.source === 'builtin' ? 'blue' : 'default'"
+            :bordered="false"
+            class="co-comfy-source-tag"
+          >
+            {{
+              selectedWorkflow.source === "builtin"
+                ? t("comfy.sourceBuiltin")
+                : t("comfy.sourceCustom")
+            }}
+          </ATag>
+        </div>
+      </template>
+
+      <template #extra>
+        <AButton
+          v-if="selectedWorkflow && selectedWorkflow.fields.length"
+          type="text"
+          size="small"
+          class="co-comfy-reset-btn"
+          :disabled="submittingRun || hasUploadingField"
+          @click="resetFields"
+        >
+          <template #icon><PhArrowsClockwise :size="14" /></template>
+          {{ t("comfy.resetDefaults") }}
+        </AButton>
+      </template>
+
+      <div
+        v-if="selectedWorkflow"
+        class="co-comfy-param-drawer-body"
+        role="region"
+        :aria-label="t('comfy.paramDrawerAria')"
+      >
+        <!-- Clean Beginner Guide Strip -->
+        <div v-if="isDigitalHumanWorkflow" class="co-comfy-beginner-guide">
+          <span class="co-comfy-beginner-guide-io">
+            {{ t("comfy.ioSummaryDigitalHuman") }}
+          </span>
+          <span class="co-comfy-beginner-guide-hint">
+            {{ t("comfy.beginnerPresetHint") }}
+          </span>
+        </div>
+        <p
+          v-else-if="selectedWorkflow.description"
+          class="co-comfy-drawer-desc"
+        >
+          {{ tb(selectedWorkflow.description) }}
+        </p>
+
+        <!-- Minimalist Preflight & Pack Readiness Strip -->
+        <div
+          v-if="workflowPreflightItems.length"
+          class="co-comfy-preflight-list"
+          role="status"
+        >
+          <div
+            v-for="(pf, idx) in workflowPreflightItems"
+            :key="idx"
+            class="co-comfy-preflight-strip"
+            :class="`is-${pf.tone}`"
+          >
+            <PhWarningCircle
+              v-if="pf.tone === 'warning'"
+              :size="15"
+              weight="fill"
+              class="co-comfy-preflight-icon"
+              aria-hidden="true"
+            />
+            <PhCheckCircle
+              v-else-if="pf.tone === 'ready'"
+              :size="15"
+              weight="fill"
+              class="co-comfy-preflight-icon"
+              aria-hidden="true"
+            />
+            <PhCloudArrowDown
+              v-else
+              :size="15"
+              weight="duotone"
+              class="co-comfy-preflight-icon"
+              aria-hidden="true"
+            />
+            <span class="co-comfy-preflight-text">{{ pf.text }}</span>
+          </div>
+        </div>
+
+        <form
+          id="co-comfy-param-form"
+          class="co-comfy-param-form"
+          @submit.prevent="runWorkflow"
+        >
+          <AAlert
+            v-if="!visibleFields.length"
+            type="info"
+            show-icon
+            :message="t('comfy.noEditableFields')"
+          />
+
+          <template v-else>
+            <!-- Primary Essential Inputs -->
+            <div class="co-comfy-primary-fields">
+              <ComfyWorkflowField
+                v-for="field in fieldPartitions.primary"
+                :key="field.key"
+                :field="field"
+                :value="fieldValues[field.key]"
+                :input-id="fieldInputId(field)"
+                :node-meta="formatFieldNodeMeta(field)"
+                :disabled="submittingRun"
+                :force-required="isFieldForceRequired(field)"
+                :required-hint="fieldRequiredHint(field)"
+                :uploading="!!uploadingFields[field.key]"
+                :uploaded-name="uploadedNames[field.key]"
+                :has-pending-upload="!!pendingUploads[field.key]"
+                :local-preview="localPreviews[field.key]"
+                :show-tts-strip="shouldRenderTtsStripAfter(field)"
+                :selected-tts-engine="selectedTtsEngine"
+                @update:value="(val) => (fieldValues[field.key] = val)"
+                @media-select="handleMediaFile"
+                @media-clear="clearMediaField"
+              />
+            </div>
+
+            <!-- Collapsible Advanced Settings Panel (collapsed by default) -->
+            <div
+              v-if="fieldPartitions.advanced.length || hasWorkflowSpecs"
+              class="co-comfy-advanced-panel"
+              :class="{ 'is-open': advancedExpanded }"
+            >
+              <button
+                type="button"
+                class="co-comfy-advanced-toggle"
+                :aria-expanded="advancedExpanded"
+                @click="advancedExpanded = !advancedExpanded"
+              >
+                <span class="co-comfy-advanced-toggle-main">
+                  <PhSlidersHorizontal
+                    :size="15"
+                    class="co-comfy-advanced-toggle-icon"
+                  />
+                  <strong class="co-comfy-advanced-toggle-title">
+                    {{ t("comfy.advancedToggleTitle") }}
+                  </strong>
+                  <span class="co-comfy-advanced-summary-chip">
+                    {{ advancedPresetSummary }}
+                  </span>
+                </span>
+                <PhCaretDown
+                  v-if="advancedExpanded"
+                  :size="15"
+                  class="co-comfy-advanced-caret"
+                />
+                <PhCaretRight
+                  v-else
+                  :size="15"
+                  class="co-comfy-advanced-caret"
+                />
+              </button>
+
+              <div v-if="advancedExpanded" class="co-comfy-advanced-body">
+                <div
+                  v-if="fieldPartitions.advanced.length"
+                  class="co-comfy-advanced-grid"
+                >
+                  <ComfyWorkflowField
+                    v-for="field in fieldPartitions.advanced"
+                    :key="field.key"
+                    :field="field"
+                    :value="fieldValues[field.key]"
+                    :input-id="fieldInputId(field)"
+                    :node-meta="formatFieldNodeMeta(field)"
+                    :wide="isWideAdvancedField(field)"
+                    :compact="true"
+                    :disabled="submittingRun"
+                    :force-required="isFieldForceRequired(field)"
+                    :required-hint="fieldRequiredHint(field)"
+                    :uploading="!!uploadingFields[field.key]"
+                    :uploaded-name="uploadedNames[field.key]"
+                    :has-pending-upload="!!pendingUploads[field.key]"
+                    :local-preview="localPreviews[field.key]"
+                    :show-tts-strip="shouldRenderTtsStripAfter(field)"
+                    :selected-tts-engine="selectedTtsEngine"
+                    @update:value="(val) => (fieldValues[field.key] = val)"
+                    @media-select="handleMediaFile"
+                    @media-clear="clearMediaField"
+                  />
+                </div>
+
+                <!-- Compact Hardware & Dependency Specs Footer -->
+                <div v-if="hasWorkflowSpecs" class="co-comfy-specs-box">
+                  <div class="co-comfy-specs-title">
+                    {{ t("comfy.specsDetailTitle") }}
+                  </div>
+                  <div class="co-comfy-specs-pills">
+                    <ATag
+                      v-if="selectedWorkflow.min_vram_mib > 0"
+                      class="co-comfy-meta-tag"
+                    >
+                      {{
+                        t("comfy.recommendedVram", {
+                          vram: `${Math.max(1, Math.round(selectedWorkflow.min_vram_mib / 1024))} GB+`,
+                        })
+                      }}
+                    </ATag>
+                    <ATag
+                      v-if="selectedWorkflow.recommended_gpu"
+                      class="co-comfy-meta-tag"
+                    >
+                      {{
+                        t("comfy.recommendedGpu", {
+                          gpu: tb(selectedWorkflow.recommended_gpu),
+                        })
+                      }}
+                    </ATag>
+                    <ATag
+                      v-if="selectedWorkflow.models?.length"
+                      class="co-comfy-meta-tag"
+                    >
+                      {{
+                        t("comfy.modelDepsTag", {
+                          count: selectedWorkflow.models.length,
+                          size: formatComfyByteSize(
+                            workflowModelsTotalBytes(selectedWorkflow),
+                          ),
+                        })
+                      }}
+                    </ATag>
+                    <ATag
+                      v-if="selectedWorkflow.custom_nodes?.length"
+                      class="co-comfy-meta-tag"
+                    >
+                      {{
+                        t("comfy.packNodesTag", {
+                          count: selectedWorkflow.custom_nodes.length,
+                        })
+                      }}
+                    </ATag>
+                    <ColabOneTooltip
+                      v-if="selectedWorkflow.license"
+                      :title="
+                        selectedWorkflow.license_notice
+                          ? tb(selectedWorkflow.license_notice)
+                          : selectedWorkflow.commercial_ok === false
+                            ? t('comfy.licenseNonCommercial')
+                            : t('comfy.licenseCommercialOk')
+                      "
+                    >
+                      <ATag
+                        :color="
+                          selectedWorkflow.commercial_ok === false
+                            ? 'orange'
+                            : 'green'
+                        "
+                        class="co-comfy-meta-tag"
+                      >
+                        {{
+                          selectedWorkflow.commercial_ok === false
+                            ? `${tb(selectedWorkflow.license)} · ${t("comfy.licenseNonCommercial")}`
+                            : tb(selectedWorkflow.license)
+                        }}
+                      </ATag>
+                    </ColabOneTooltip>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </form>
+
+        <!-- Always-Visible Non-Commercial License Warning -->
+        <AAlert
+          v-if="nonCommercialNotice"
+          type="warning"
+          show-icon
+          class="co-comfy-license-alert"
+          :message="t('comfy.licenseNoticeTitle')"
+          :description="nonCommercialAlertDescription"
+        />
+      </div>
+
+      <template #footer>
+        <div v-if="selectedWorkflow" class="co-comfy-param-drawer-footer">
+          <ASpace :size="8">
+            <AButton @click="closeParamDrawer">
+              {{ t("common.close") }}
+            </AButton>
+            <AButton
+              v-if="comfyRunTask || comfyTask"
+              danger
+              @click="cancelActiveTask"
+            >
+              {{ t("comfy.cancelTask") }}
+            </AButton>
+          </ASpace>
+          <ColabOneTooltip :title="runButtonDisabledTooltip">
+            <AButton
+              type="primary"
+              class="co-comfy-drawer-run-btn"
+              :loading="submittingRun || comfyStarting"
+              :disabled="
+                !gpuReady ||
+                comfyStarting ||
+                submittingRun ||
+                hasUploadingField ||
+                engineActionBlocked
+              "
+              @click="runWorkflow"
+            >
+              <template #icon>
+                <PhSparkle v-if="comfyRunning" :size="15" />
+                <PhPlay v-else :size="14" weight="fill" />
+              </template>
+              {{
+                !gpuReady
+                  ? t("comfy.runWorkflow")
+                  : comfyStarting
+                    ? t("comfy.preparingBtn")
+                    : !comfyRunning
+                      ? t("comfy.startComfyFirst")
+                      : submittingRun
+                        ? t("common.submitting")
+                        : t("comfy.runWorkflow")
+              }}
+            </AButton>
+          </ColabOneTooltip>
+        </div>
+      </template>
+    </ADrawer>
+
+    <!-- Drawer 2: Output Results Drawer -->
+    <ADrawer
+      :open="outputsDrawerOpen"
+      placement="right"
+      :width="outputsDrawerWidth"
+      :mask="true"
+      :mask-closable="true"
+      :keyboard="false"
+      :destroy-on-close="false"
+      :z-index="1010"
+      :header-style="{ padding: '14px 20px' }"
+      :body-style="{ padding: '16px 20px 24px', overflowY: 'auto' }"
+      root-class-name="co-comfy-outputs-drawer-root"
+      @update:open="
+        (val) => {
+          if (!val) closeOutputsDrawer();
+        }
+      "
+    >
+      <template #title>
+        <div class="co-comfy-drawer-title">
+          <PhImage
+            :size="18"
+            weight="duotone"
+            class="co-comfy-drawer-accent-icon"
+          />
+          <span>{{ t("comfy.galleryTitle") }}</span>
+          <ColabOneSkeleton
+            v-if="props.loading"
+            :width="42"
+            :height="22"
+            variant="tag"
+            tone="subtle"
+            inline
+          />
+          <ATag v-else class="co-comfy-count-tag co-sk-reveal">
+            {{ t("comfy.outputCount", { count: outputs.length }) }}
+          </ATag>
+        </div>
+      </template>
+
+      <template #extra>
+        <span class="co-comfy-outputs-persist-hint">
+          {{
+            state.setup.drive
+              ? t("comfy.drivePersistHint")
+              : t("comfy.localExportHint")
+          }}
+        </span>
+      </template>
+
+      <div
+        class="co-comfy-outputs-drawer-body"
+        role="region"
+        :aria-label="t('comfy.outputsDrawerAria')"
+      >
+        <div
+          v-if="props.loading && !outputs.length"
+          class="co-comfy-output-grid"
+          role="status"
+          aria-busy="true"
+        >
+          <span class="co-sr-only">{{ t("common.loading") }}</span>
+          <article
+            v-for="idx in 2"
+            :key="idx"
+            class="co-comfy-output-item co-comfy-output-skeleton"
+          >
+            <div class="co-comfy-output-frame co-comfy-output-frame-sk">
+              <ColabOneSkeleton
+                width="100%"
+                height="100%"
+                :radius="0"
+                variant="rect"
+                :delay="(idx - 1) * 90"
+              />
+            </div>
+            <div class="co-comfy-output-body">
+              <div class="co-comfy-output-title-row">
+                <ColabOneSkeleton
+                  :width="idx === 1 ? '62%' : '54%'"
+                  :height="15"
+                  variant="text"
+                  :delay="(idx - 1) * 90 + 40"
+                />
+                <ColabOneSkeleton
+                  :width="42"
+                  :height="20"
+                  variant="tag"
+                  tone="subtle"
+                  :delay="(idx - 1) * 90 + 70"
+                />
+              </div>
+              <ColabOneSkeleton
+                width="76%"
+                :height="12"
+                variant="text"
+                tone="subtle"
+                :delay="(idx - 1) * 90 + 100"
+              />
+              <div class="co-comfy-output-meta-tags">
+                <ColabOneSkeleton
+                  :width="54"
+                  :height="20"
+                  variant="tag"
+                  tone="subtle"
+                  :delay="(idx - 1) * 90 + 130"
+                />
+                <ColabOneSkeleton
+                  :width="48"
+                  :height="20"
+                  variant="tag"
+                  tone="subtle"
+                  :delay="(idx - 1) * 90 + 160"
+                />
+              </div>
+              <div class="co-comfy-output-actions">
+                <ColabOneSkeleton
+                  :width="82"
+                  :height="24"
+                  variant="button"
+                  :radius="6"
+                  tone="subtle"
+                  :delay="(idx - 1) * 90 + 185"
+                />
+                <ColabOneSkeleton
+                  :width="62"
+                  :height="24"
+                  variant="button"
+                  :radius="6"
+                  tone="subtle"
+                  :delay="(idx - 1) * 90 + 210"
+                />
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div
+          v-else-if="!outputs.length && !comfyRunTask && !submittingRun"
+          class="co-comfy-gallery-empty-wrap"
+        >
+          <AEmpty :description="t('comfy.emptyOutputs')">
+            <template #image>
+              <div class="co-comfy-empty-emblem">
+                <PhImage :size="30" />
+              </div>
+            </template>
+            <p class="co-comfy-empty-copy">
+              {{ t("comfy.emptyOutputsDesc") }}
+            </p>
+            <small class="co-comfy-empty-hint">
+              {{
+                state.setup.drive
+                  ? t("comfy.drivePersistHint")
+                  : t("comfy.localExportHint")
+              }}
+            </small>
+          </AEmpty>
+        </div>
+
+        <div v-else class="co-comfy-output-grid co-sk-reveal">
+          <!-- Active Workflow Generating Artwork Skeleton -->
+          <article
+            v-if="comfyRunTask || submittingRun"
+            class="co-comfy-output-item co-comfy-output-generating"
+            role="status"
+            aria-busy="true"
+          >
+            <div class="co-comfy-output-frame co-comfy-gen-frame">
+              <ColabOneSkeleton
+                width="100%"
+                height="100%"
+                :radius="0"
+                variant="rect"
+                tone="accent"
+              />
+              <div class="co-comfy-preview-pill">
+                <PhSparkle
+                  :size="14"
+                  weight="duotone"
+                  class="co-comfy-gen-sparkle"
+                />
+                <span>
+                  {{
+                    comfyRunTask
+                      ? `${t("comfy.tagQueueRunning")} · ${comfyTaskPercent}%`
+                      : t("common.submitting")
+                  }}
+                </span>
+              </div>
+              <span
+                class="co-comfy-gen-bar"
+                :style="{ width: `${Math.max(8, comfyTaskPercent)}%` }"
+                aria-hidden="true"
+              />
+            </div>
+            <div class="co-comfy-output-body">
+              <div class="co-comfy-output-title-row">
+                <strong>{{ runningWorkflowName }}</strong>
+                <ATag color="processing" class="co-comfy-status-tag">
+                  <ABadge status="processing" />
+                  <span>{{ t("comfy.tagQueueRunning") }}</span>
+                </ATag>
+              </div>
+              <p
+                v-if="comfyRunTask?.message"
+                class="co-comfy-gen-message"
+              >
+                {{ tb(comfyRunTask.message) }}
+              </p>
+              <ColabOneSkeleton
+                v-else
+                width="74%"
+                :height="12"
+                variant="text"
+                tone="subtle"
+                :delay="60"
+              />
+              <div class="co-comfy-output-meta-tags">
+                <ColabOneSkeleton
+                  :width="58"
+                  :height="18"
+                  variant="tag"
+                  tone="subtle"
+                  :delay="100"
+                />
+                <ColabOneSkeleton
+                  :width="48"
+                  :height="18"
+                  variant="tag"
+                  tone="subtle"
+                  :delay="140"
+                />
+              </div>
+            </div>
+          </article>
+
+          <article
+            v-for="item in outputs"
+            :key="item.id"
+            class="co-comfy-output-item"
+          >
+            <div class="co-comfy-output-frame">
+              <img
+                v-if="item.kind === 'image' && blobUrls[item.id]"
+                :src="blobUrls[item.id]"
+                :alt="item.filename"
+                class="co-sk-reveal"
+                @error="onOutputMediaError(item)"
+              />
+              <video
+                v-else-if="item.kind === 'video' && blobUrls[item.id]"
+                :src="blobUrls[item.id]"
+                controls
+                playsinline
+                preload="metadata"
+                class="co-sk-reveal"
+                @error="onOutputMediaError(item)"
+              />
+              <div
+                v-else-if="item.kind === 'audio' && blobUrls[item.id]"
+                class="co-comfy-audio-box co-sk-reveal"
+              >
+                <PhWaveform :size="28" class="co-comfy-audio-icon" />
+                <audio
+                  :src="blobUrls[item.id]"
+                  controls
+                  preload="metadata"
+                  @error="onOutputMediaError(item)"
+                />
+              </div>
+              <div
+                v-else-if="isOutputTooLargeForPreview(item)"
+                class="co-comfy-preview-large-notice"
+              >
+                <component
+                  :is="
+                    item.kind === 'video'
+                      ? PhVideoCamera
+                      : item.kind === 'audio'
+                        ? PhWaveform
+                        : PhImage
+                  "
+                  :size="26"
+                  class="co-comfy-preview-large-icon"
+                />
+                <p>
+                  {{
+                    t("comfy.videoPreviewTooLarge", {
+                      size: formatComfyByteSize(item.size),
+                    })
+                  }}
+                </p>
+              </div>
+              <div
+                v-else-if="fetchingOutputs[item.id]"
+                class="co-comfy-preview-loading co-comfy-preview-skeleton"
+                role="status"
+                aria-busy="true"
+              >
+                <ColabOneSkeleton
+                  width="100%"
+                  height="100%"
+                  :radius="0"
+                  variant="rect"
+                  tone="subtle"
+                />
+                <div class="co-comfy-preview-pill">
+                  <component
+                    :is="
+                      item.kind === 'video'
+                        ? PhVideoCamera
+                        : item.kind === 'audio'
+                          ? PhWaveform
+                          : PhImage
+                    "
+                    :size="15"
+                  />
+                  <span>{{ t("comfy.loadingOutput") }}</span>
+                </div>
+              </div>
+              <button
+                v-else
+                type="button"
+                class="co-comfy-preview-trigger"
+                :disabled="!gpuReady"
+                @click="loadOutputPreview(item)"
+              >
+                <component
+                  :is="
+                    item.kind === 'video'
+                      ? PhVideoCamera
+                      : item.kind === 'audio'
+                        ? PhWaveform
+                        : PhImage
+                  "
+                  :size="28"
+                />
+                <span>
+                  {{
+                    failedOutputs[item.id]
+                      ? t("comfy.retryPreview")
+                      : item.kind === "video"
+                        ? t("comfy.loadVideoPreview")
+                        : item.kind === "audio"
+                          ? t("comfy.loadAudioPreview")
+                          : t("comfy.loadImagePreview")
+                  }}
+                </span>
+              </button>
+            </div>
+
+            <div class="co-comfy-output-body">
+              <div class="co-comfy-output-title-row">
+                <ColabOneTooltip
+                  :title="
+                    item.workflow_name
+                      ? tb(item.workflow_name)
+                      : t('comfy.defaultWorkflowName')
+                  "
+                >
+                  <strong>{{
+                    item.workflow_name
+                      ? tb(item.workflow_name)
+                      : t("comfy.defaultWorkflowName")
+                  }}</strong>
+                </ColabOneTooltip>
+                <ATag :color="outputKindColor(item.kind)">
+                  {{ outputKindLabel(item.kind) }}
+                </ATag>
+              </div>
+
+              <ColabOneTooltip :title="item.filename">
+                <small class="co-comfy-mono co-comfy-output-filename">
+                  {{ item.filename }}
+                </small>
+              </ColabOneTooltip>
+
+              <div class="co-comfy-output-meta-tags">
+                <ATag class="co-comfy-meta-tag">
+                  {{ formatOutputSize(item.size) }}
+                </ATag>
+                <ATag
+                  v-if="Number.isFinite(item.elapsed)"
+                  class="co-comfy-meta-tag"
+                >
+                  {{
+                    t("common.secondsShort", { value: item.elapsed.toFixed(1) })
+                  }}
+                </ATag>
+              </div>
+
+              <AAlert
+                v-if="failedOutputs[item.id]"
+                type="error"
+                class="co-comfy-output-error"
+                :message="formatOutputPreviewError(failedOutputs[item.id])"
+              />
+
+              <div class="co-comfy-output-actions">
+                <AButton
+                  size="small"
+                  :loading="!!exportingOutputs[item.id]"
+                  :disabled="!gpuReady || !!deletingOutputs[item.id]"
+                  @click="exportOutput(item)"
+                >
+                  <template #icon>
+                    <PhDownloadSimple :size="14" />
+                  </template>
+                  {{ t("comfy.exportLocal") }}
+                </AButton>
+
+                <APopconfirm
+                  :title="t('comfy.deleteOutputTitle')"
+                  :description="
+                    t('comfy.deleteOutputDesc', { name: item.filename })
+                  "
+                  :ok-text="t('common.confirmDelete')"
+                  :cancel-text="t('common.cancel')"
+                  :disabled="
+                    !gpuReady ||
+                    !!exportingOutputs[item.id] ||
+                    !!deletingOutputs[item.id]
+                  "
+                  :ok-button-props="{ danger: true }"
+                  placement="topRight"
+                  @confirm="deleteOutput(item)"
+                >
+                  <AButton
+                    size="small"
+                    danger
+                    :loading="!!deletingOutputs[item.id]"
+                    :disabled="!gpuReady || !!exportingOutputs[item.id]"
+                    :aria-label="t('comfy.deleteOutputAria')"
+                  >
+                    <template #icon>
+                      <PhTrash :size="14" />
+                    </template>
+                    {{ t("common.delete") }}
+                  </AButton>
+                </APopconfirm>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </ADrawer>
+
     <!-- Import Workflow Modal -->
     <AModal
       v-model:open="importOpen"
@@ -2665,6 +3684,7 @@ onUnmounted(() => {
       :closable="!importing"
       :mask-closable="!importing"
       :keyboard="!importing"
+      :z-index="1050"
       @cancel="closeImportModal"
     >
       <div class="co-comfy-import-body">
@@ -2675,10 +3695,10 @@ onUnmounted(() => {
         <!-- Drag/Drop or Choose .json File Box -->
         <div
           class="co-comfy-import-dropzone"
-          :class="{ dragging: importDragging, disabled: importing }"
+          :class="{ 'is-dragging': importDragging, 'is-disabled': importing }"
           @click="!importing && importFileInput?.click()"
           @dragover.prevent="if (!importing) importDragging = true;"
-          @dragleave="importDragging = false"
+          @dragleave="onImportDragLeave"
           @drop.prevent="onImportFileDrop"
         >
           <input
@@ -2807,10 +3827,6 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.co-comfy-full-width {
-  width: 100%;
-}
-
 .co-popconfirm-anchor {
   display: inline-flex;
   align-items: center;
@@ -2839,6 +3855,10 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   flex-shrink: 0;
+}
+
+:root[data-theme="dark"] .co-comfy-engine-icon {
+  color: var(--co-accent-strong);
 }
 
 .co-comfy-engine-meta {
@@ -2917,6 +3937,35 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
 }
 
+.co-comfy-task-download-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-task-download-file {
+  color: var(--co-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.co-comfy-task-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.co-comfy-task-outputs-btn {
+  font-weight: 500;
+}
+
 /* Dual-layer Workspace Tabs */
 .co-comfy-tabs-wrap {
   min-width: 0;
@@ -2960,7 +4009,7 @@ onUnmounted(() => {
   color: var(--co-accent-strong);
 }
 
-:global(:root[data-theme="dark"])
+:root[data-theme="dark"]
   .co-comfy-tabs
   :deep(.ant-tabs-tab-active .co-comfy-tab-badge .ant-badge-count) {
   background: rgba(59, 130, 246, 0.24);
@@ -3010,18 +4059,44 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.co-comfy-studio-grid {
-  display: grid;
-  grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
-  gap: 18px;
-  align-items: stretch;
+.co-comfy-studio-toolbar-actions {
+  flex-shrink: 0;
 }
 
-.co-comfy-left-col {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
+.co-comfy-outputs-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-comfy-outputs-trigger.is-active,
+.co-comfy-outputs-trigger.is-running {
+  border-color: rgba(59, 130, 246, 0.42);
+}
+
+.co-comfy-outputs-pulse {
+  display: inline-flex;
+  align-items: center;
+}
+
+.co-comfy-outputs-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  background: var(--co-selected);
+  color: var(--co-accent-strong);
+}
+
+:root[data-theme="dark"] .co-comfy-outputs-count {
+  background: rgba(59, 130, 246, 0.24);
+  color: var(--co-accent-strong);
 }
 
 .co-comfy-card {
@@ -3030,16 +4105,13 @@ onUnmounted(() => {
 }
 
 .co-comfy-empty-card {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  padding: 16px 8px;
+  padding: 28px 16px;
 }
 
 .co-comfy-empty-card :deep(.ant-card-body) {
-  flex: 1;
   display: flex;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
 }
 
@@ -3060,8 +4132,12 @@ onUnmounted(() => {
   place-items: center;
 }
 
+:root[data-theme="dark"] .co-comfy-empty-emblem {
+  color: var(--co-accent-strong);
+}
+
 .co-comfy-empty-copy {
-  max-width: 360px;
+  max-width: 400px;
   margin: 0 auto 14px;
   font-size: 13px;
   line-height: 1.65;
@@ -3078,64 +4154,128 @@ onUnmounted(() => {
   justify-content: center;
 }
 
-/* Workflow Library List */
+/* Full-Width Spacious Workflow Card Grid */
 .co-comfy-workflow-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 280px;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 820px) {
+  .co-comfy-workflow-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .co-comfy-workflow-item {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 12px 14px;
-  border-radius: 12px;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  border-radius: 14px;
   border: 1px solid var(--co-border-secondary);
-  background: var(--co-subtle);
+  background: var(--co-surface);
+  box-shadow: var(--co-card-shadow);
   cursor: pointer;
+  min-width: 0;
   transition:
-    background 0.16s ease,
     border-color 0.16s ease,
-    box-shadow 0.16s ease;
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
 }
 
 .co-comfy-workflow-item:hover {
-  background: var(--co-soft-hover);
-  border-color: var(--co-border);
+  border-color: var(--co-accent);
+  box-shadow: var(--co-card-shadow-hover);
+  transform: translateY(-1px);
 }
 
-.co-comfy-workflow-item.selected {
+.co-comfy-workflow-item:focus-visible {
+  outline: none;
+  border-color: var(--co-accent);
+  box-shadow: 0 0 0 3px var(--co-focus-ring);
+}
+
+.co-comfy-workflow-item.is-selected {
+  border-color: var(--co-accent);
+  box-shadow: 0 0 0 2px var(--co-focus-ring);
+}
+
+.co-comfy-workflow-item.is-disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.co-comfy-wf-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.co-comfy-wf-emblem {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  border: 1px solid rgba(59, 130, 246, 0.14);
   background: var(--co-selected);
-  border: 1.5px solid var(--co-accent);
-  box-shadow: none;
+  color: var(--co-accent);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
 }
 
-.co-comfy-workflow-item-main {
+:root[data-theme="dark"] .co-comfy-wf-emblem {
+  border-color: rgba(59, 130, 246, 0.26);
+  color: var(--co-accent-strong);
+}
+
+.co-comfy-wf-card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
   min-width: 0;
   flex: 1;
 }
 
-.co-comfy-workflow-item-title {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.co-comfy-workflow-item-title strong {
-  font-size: 14px;
+.co-comfy-wf-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.38;
   color: var(--co-text);
   overflow-wrap: anywhere;
 }
 
+.co-comfy-source-tag {
+  font-size: 11.5px;
+  line-height: 18px;
+  min-height: 20px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.co-comfy-wf-actions {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.co-comfy-wf-delete-btn {
+  opacity: 0.72;
+  transition: opacity 0.15s ease;
+}
+
+.co-comfy-workflow-item:hover .co-comfy-wf-delete-btn,
+.co-comfy-wf-delete-btn:focus-visible {
+  opacity: 1;
+}
+
 .co-comfy-workflow-desc {
-  margin: 4px 0 0;
+  margin: 0;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--co-secondary-text);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -3143,67 +4283,241 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.co-comfy-workflow-badges {
+.co-comfy-wf-io-strip {
+  padding: 7px 11px;
+  border-radius: 9px;
+  background: var(--co-subtle);
+  border: 1px solid var(--co-border-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--co-secondary-text);
+  overflow-wrap: anywhere;
+}
+
+.co-comfy-wf-card-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--co-border-secondary);
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+}
+
+.co-comfy-wf-specs {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.co-comfy-wf-spec-text {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--co-muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.co-comfy-noncommercial-pill {
+  font-size: 11px;
+  line-height: 17px;
+  min-height: 19px;
+  padding: 0 7px;
+}
+
+.co-comfy-wf-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--co-secondary-text);
+  flex-shrink: 0;
+  transition: color 0.16s ease;
+}
+
+.co-comfy-wf-cta-arrow {
+  transition: transform 0.16s ease;
+}
+
+.co-comfy-workflow-item:hover .co-comfy-wf-cta,
+.co-comfy-workflow-item.is-selected .co-comfy-wf-cta {
+  color: var(--co-accent);
+}
+
+.co-comfy-workflow-item:hover .co-comfy-wf-cta-arrow {
+  transform: translateX(2px);
 }
 
 .co-comfy-meta-tag {
   font-size: 12px;
   line-height: 18px;
-  padding-inline: 7px;
+  padding-inline: 8px;
 }
 
-.co-comfy-wf-actions {
+/* Shared Drawer Header & Footer Polish */
+:global(.co-comfy-param-drawer-root .ant-drawer-title),
+:global(.co-comfy-outputs-drawer-root .ant-drawer-title) {
+  min-width: 0;
+  overflow: hidden;
+}
+
+:global(.co-comfy-param-drawer-root .ant-drawer-footer) {
+  border-top: 1px solid var(--co-border-secondary);
+  background: var(--co-elevated);
+}
+
+.co-comfy-drawer-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.co-comfy-drawer-title-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--co-selected);
+  color: var(--co-accent);
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
 }
 
-/* Dynamic Parameter Runner */
-.co-comfy-param-card {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+:root[data-theme="dark"] .co-comfy-drawer-title-icon {
+  color: var(--co-accent-strong);
 }
 
-.co-comfy-param-card :deep(.ant-card-body) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+.co-comfy-drawer-accent-icon {
+  color: var(--co-accent);
+  flex-shrink: 0;
 }
 
-.co-comfy-param-card :deep(.ant-card-body::before),
-.co-comfy-param-card :deep(.ant-card-body::after) {
-  display: none;
+:root[data-theme="dark"] .co-comfy-drawer-accent-icon {
+  color: var(--co-accent-strong);
 }
 
-.co-comfy-param-title-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 2px 0;
+.co-comfy-drawer-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--co-text);
 }
 
-.co-comfy-param-subtitle {
-  font-size: 12px;
-  font-weight: 400;
+.co-comfy-reset-btn {
   color: var(--co-muted);
-  white-space: normal;
-  line-height: 1.45;
 }
 
-.co-comfy-fields-stack {
+.co-comfy-reset-btn:hover {
+  color: var(--co-text);
+}
+
+/* Drawer 1: Workflow Parameter Configuration Drawer */
+.co-comfy-param-drawer-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  min-width: 0;
+}
+
+.co-comfy-beginner-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 14px;
+  border-radius: 11px;
+  background: var(--co-subtle);
+  border: 1px solid var(--co-border-secondary);
+}
+
+.co-comfy-beginner-guide-io {
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.45;
+  color: var(--co-text);
+}
+
+.co-comfy-beginner-guide-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--co-muted);
+}
+
+.co-comfy-drawer-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--co-secondary-text);
+}
+
+/* Minimalist Preflight & Pack Readiness Strip */
+.co-comfy-preflight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.co-comfy-preflight-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-subtle);
+  font-size: 12.5px;
+  line-height: 1.48;
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-preflight-strip.is-warning {
+  background: var(--co-warning-bg);
+  border-color: var(--co-warning-border);
+  color: var(--co-warning-text);
+}
+
+.co-comfy-preflight-strip.is-ready {
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+  color: var(--co-success-text);
+}
+
+.co-comfy-preflight-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.co-comfy-preflight-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.co-comfy-param-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.co-comfy-primary-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
 }
 
 .co-comfy-field-control {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .co-comfy-field-label-row {
@@ -3217,157 +4531,169 @@ onUnmounted(() => {
   color: var(--co-text);
 }
 
-.co-comfy-field-node {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--co-muted);
-  font-family: var(--co-font-mono);
-}
-
-.co-comfy-switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--co-subtle);
+/* Collapsible Advanced Settings Accordion */
+.co-comfy-advanced-panel {
+  border-radius: 12px;
   border: 1px solid var(--co-border-secondary);
-}
-
-.co-comfy-switch-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.co-comfy-switch-copy strong {
-  font-size: 13px;
-  font-weight: 550;
-  color: var(--co-text);
-}
-
-/* Image / Audio Drag-and-Drop Field */
-.co-comfy-media-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.co-comfy-media-dropzone {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1.5px dashed var(--co-border);
   background: var(--co-subtle);
-  cursor: pointer;
-  margin: 0;
+  overflow: hidden;
   transition:
     border-color 0.16s ease,
-    background 0.16s ease;
+    background-color 0.16s ease;
 }
 
-.co-comfy-media-dropzone:hover,
-.co-comfy-media-dropzone.dragging {
-  border-color: var(--co-accent);
-  background: var(--co-hover);
-}
-
-.co-comfy-media-dropzone.busy {
-  opacity: 0.72;
-  cursor: wait;
-}
-
-.co-comfy-media-icon-wrap {
-  width: 38px;
-  height: 38px;
-  border-radius: 8px;
+.co-comfy-advanced-panel.is-open {
+  border-color: var(--co-border);
   background: var(--co-surface);
-  border: 1px solid var(--co-border-secondary);
-  color: var(--co-accent);
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
 }
 
-.co-comfy-media-thumb {
-  width: 42px;
-  height: 42px;
-  border-radius: 6px;
-  object-fit: cover;
-  border: 1px solid var(--co-border-secondary);
-  flex-shrink: 0;
-}
-
-.co-comfy-media-dropzone-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.co-comfy-media-dropzone-copy strong {
-  font-size: 13px;
-  font-weight: 550;
-  color: var(--co-text);
-  overflow-wrap: anywhere;
-}
-
-.co-comfy-media-dropzone-copy small {
-  font-size: 12px;
-  color: var(--co-muted);
-}
-
-.co-comfy-media-status {
+.co-comfy-advanced-toggle {
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: var(--co-text);
+  transition: background-color 0.15s ease;
 }
 
-.co-comfy-filename-pill {
-  max-width: 210px;
+.co-comfy-advanced-toggle:hover {
+  background: var(--co-soft-hover);
+}
+
+.co-comfy-advanced-toggle:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--co-focus-ring);
+}
+
+.co-comfy-advanced-toggle-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.co-comfy-advanced-toggle-icon {
+  color: var(--co-accent);
+  flex-shrink: 0;
+}
+
+.co-comfy-advanced-toggle-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--co-text);
+  flex-shrink: 0;
+}
+
+.co-comfy-advanced-summary-chip {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--co-muted);
+  background: var(--co-surface);
+  border: 1px solid var(--co-border-secondary);
+  padding: 2px 9px;
+  border-radius: 9999px;
+  font-variant-numeric: tabular-nums;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.co-comfy-advanced-panel.is-open .co-comfy-advanced-summary-chip {
+  background: var(--co-subtle);
+}
+
+.co-comfy-advanced-caret {
+  color: var(--co-muted);
+  flex-shrink: 0;
+}
+
+.co-comfy-advanced-body {
+  padding: 14px;
+  border-top: 1px solid var(--co-border-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.co-comfy-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.co-comfy-advanced-grid :deep(.is-wide) {
+  grid-column: 1 / -1;
+}
+
+.co-comfy-specs-box {
+  padding-top: 12px;
+  border-top: 1px solid var(--co-border-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.co-comfy-specs-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--co-muted);
+}
+
+.co-comfy-specs-pills {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .co-comfy-form-divider {
   margin: 16px 0 14px;
 }
 
-.co-comfy-form-actions {
+.co-comfy-license-alert {
+  border-radius: 10px;
+}
+
+.co-comfy-param-drawer-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
-.co-comfy-run-btn {
-  flex: 1;
+.co-comfy-drawer-run-btn {
+  min-width: 148px;
 }
 
-/* Output Gallery */
-.co-comfy-gallery-col {
+/* Drawer 2: Output Results Drawer */
+.co-comfy-outputs-drawer-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
 }
 
-.co-comfy-gallery-card {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
-.co-comfy-gallery-card :deep(.ant-card-body) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+.co-comfy-outputs-persist-hint {
+  font-size: 12px;
+  color: var(--co-muted);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 .co-comfy-gallery-empty-wrap {
@@ -3375,7 +4701,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 36px 16px;
+  padding: 48px 16px;
 }
 
 .co-comfy-output-grid {
@@ -3429,6 +4755,35 @@ onUnmounted(() => {
 
 .co-comfy-audio-icon {
   color: var(--co-accent);
+}
+
+:root[data-theme="dark"] .co-comfy-audio-icon {
+  color: var(--co-accent-strong);
+}
+
+.co-comfy-preview-large-notice {
+  width: 100%;
+  min-height: 164px;
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-preview-large-notice p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 240px;
+}
+
+.co-comfy-preview-large-icon {
+  color: var(--co-muted);
+  flex-shrink: 0;
 }
 
 .co-comfy-audio-box audio {
@@ -3492,6 +4847,14 @@ onUnmounted(() => {
   color: var(--co-accent);
 }
 
+.co-comfy-gen-message {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--co-secondary-text);
+  overflow-wrap: anywhere;
+}
+
 .co-comfy-gen-bar {
   position: absolute;
   left: 0;
@@ -3506,10 +4869,19 @@ onUnmounted(() => {
   background: var(--co-skeleton-card-bg);
   cursor: default;
   pointer-events: none;
+  box-shadow: none;
+}
+
+.co-comfy-wf-skeleton:hover {
+  border-color: var(--co-border-secondary);
+  box-shadow: none;
+  transform: none;
 }
 
 .co-comfy-wf-sk-desc {
-  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .co-comfy-host-sk {
@@ -3829,12 +5201,12 @@ onUnmounted(() => {
 }
 
 .co-comfy-import-dropzone:hover,
-.co-comfy-import-dropzone.dragging {
+.co-comfy-import-dropzone.is-dragging {
   border-color: var(--co-accent);
   background: var(--co-hover);
 }
 
-.co-comfy-import-dropzone.disabled {
+.co-comfy-import-dropzone.is-disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -3869,15 +5241,7 @@ onUnmounted(() => {
   line-height: 1.55;
 }
 
-@media (max-width: 1050px) {
-  .co-comfy-studio-grid {
-    grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
-    gap: 14px;
-  }
-}
-
 @media (max-width: 860px) {
-  .co-comfy-studio-grid,
   .co-comfy-canvas-grid,
   .co-comfy-canvas-secondary-row,
   .co-comfy-canvas-metrics {
@@ -3887,6 +5251,16 @@ onUnmounted(() => {
   .co-comfy-engine-actions {
     width: 100%;
     margin-left: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .co-comfy-advanced-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .co-comfy-outputs-persist-hint {
+    display: none;
   }
 }
 </style>

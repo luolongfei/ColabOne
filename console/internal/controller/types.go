@@ -550,6 +550,25 @@ type ComfyValidator interface {
 	ValidateCanvasConfig(raw map[string]any) (map[string]any, error)
 }
 
+// ComfyCatalogBundle holds validated and normalized built-in workflow templates
+// and TTS engine specifications decoded from catalog/comfyui.json.
+type ComfyCatalogBundle struct {
+	Templates  []map[string]any
+	TtsEngines []map[string]any
+}
+
+// ComfyCatalogValidator is an optional interface that ComfyValidator implementations
+// may satisfy to return both normalized workflow templates and normalized TTS engines.
+type ComfyCatalogValidator interface {
+	ValidateCatalogBundle(raw map[string]any) (ComfyCatalogBundle, error)
+}
+
+// ComfyInputUploadValidator is an optional interface that ComfyValidator implementations
+// may satisfy to validate ComfyUI input media uploads before making a remote RPC.
+type ComfyInputUploadValidator interface {
+	ValidateInputUpload(filename, dataB64 string) error
+}
+
 // PublicAPIValidator validates named-tunnel Public API gateway configurations.
 type PublicAPIValidator interface {
 	ValidatePublicConfig(raw map[string]any) (map[string]any, error)

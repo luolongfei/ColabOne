@@ -82,11 +82,17 @@ def test_status_and_snapshot_report_protocol_7_and_comfyui_capabilities(
     with TestClient(create_colabone_app(runtime, TOKEN)) as client:
         st = client.get("/api/v1/status", headers=AUTH).json()
         assert st["protocol"] == 7
-        assert st["capabilities"] == ["public_api", "comfyui"]
+        assert st["capabilities"] == ["public_api", "comfyui", "comfyui_hf_token"]
         assert "comfyui" in st
         assert st["active_engine"] is None
         snap = client.get("/api/v1/snapshot", headers=AUTH).json()
-        assert set(snap) == {"runtime", "models", "workflows", "comfy_outputs"}
+        assert set(snap) == {
+            "runtime",
+            "models",
+            "workflows",
+            "comfy_outputs",
+            "tts_engines",
+        }
         assert "conversations" not in snap and "creations" not in snap
         assert client.post("/api/v1/turns", json={"text": "hi"}, headers=AUTH).status_code == 404
         assert client.get("/api/v1/conversations", headers=AUTH).status_code == 404

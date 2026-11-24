@@ -548,18 +548,31 @@ test("async feature surfaces show targeted skeletons during Hub search, Version 
   await expect(page.locator(".co-version-card").first()).toBeVisible();
   await page.keyboard.press("Escape");
 
-  // 4. ComfyUI page: live generating artwork skeleton + preview loading skeleton + Canvas connecting skeleton
+  // 4. ComfyUI page: live generating artwork skeleton + preview loading skeleton (in Outputs drawer) + Canvas connecting skeleton
   await page.evaluate(() => (window as any).__armGate("comfyui.output.asset"));
   await page.getByRole("menuitem", { name: "ComfyUI" }).click();
-  await expect(page.locator(".co-comfy-output-generating")).toBeVisible();
-  await expect(page.locator(".co-comfy-preview-skeleton")).toBeVisible();
+  await page.locator(".co-comfy-outputs-trigger").click();
+  const outputsDrawer = page.locator(
+    ".co-comfy-outputs-drawer-root .ant-drawer-content",
+  );
+  await expect(outputsDrawer).toBeVisible();
+  await expect(
+    outputsDrawer.locator(".co-comfy-output-generating"),
+  ).toBeVisible();
+  await expect(
+    outputsDrawer.locator(".co-comfy-preview-skeleton"),
+  ).toBeVisible();
   await page.evaluate(() =>
     (window as any).__releaseGate("comfyui.output.asset"),
   );
-  await expect(page.locator(".co-comfy-preview-skeleton")).toHaveCount(0);
   await expect(
-    page.locator('.co-comfy-output-frame img[alt="demo_0001.png"]'),
+    outputsDrawer.locator(".co-comfy-preview-skeleton"),
+  ).toHaveCount(0);
+  await expect(
+    outputsDrawer.locator('.co-comfy-output-frame img[alt="demo_0001.png"]'),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(outputsDrawer).toBeHidden();
 
   await page
     .locator(".co-comfy-tabs")

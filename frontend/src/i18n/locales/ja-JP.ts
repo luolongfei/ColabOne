@@ -58,6 +58,13 @@ export const jaJPMessages: ColabOneMessages = {
   "nav.refreshAria": "アカウントインスタンスを更新",
   "nav.switchLight": "ライトモードに切り替え",
   "nav.switchDark": "ダークモードに切り替え",
+  "nav.privacyEnableTooltip": "プライバシーマスクを有効化 (Ctrl+Shift+M)",
+  "nav.privacyDisableTooltip": "プライバシーマスクを解除 (Ctrl+Shift+M)",
+  "nav.privacyEnableAria": "プライバシーマスクを有効化",
+  "nav.privacyDisableAria": "プライバシーマスクを解除",
+  "privacy.maskedFieldAria": "プライバシー保護のためマスク済み",
+  "privacy.secretLockedTooltip": "プライバシーマスク有効中は平文を表示できません",
+  "privacy.inputReadonlyTooltip": "プライバシーマスク有効中はドメインを編集できません",
   "nav.logsOpenTooltip": "実行ログを閉じる (Ctrl+J)",
   "nav.logsClosedTooltip": "実行ログを開く (Ctrl+J)",
   "nav.logsCollapseAria": "実行ログを閉じる",
@@ -1228,6 +1235,68 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.errUnsupportedAudioFormat": "未対応の音声形式です。WAV / MP3 / FLAC / OGG / M4A ファイルを選択してください",
   "comfy.errIncompleteTransfer": "出力データの転送が不完全です。再試行してください",
   "comfy.errOutputChecksum": "出力ファイルの整合性検証に失敗しました。再試行してください",
+  "comfy.licenseCommercialOk": "商用利用可",
+  "comfy.licenseNonCommercial": "非商用・研究限定",
+  "comfy.licenseNoticeTitle": "モデルライセンスに関する注意",
+  "comfy.recommendedGpu": "推奨 {gpu}",
+  "comfy.modelDepsTag": "重み {count} 件 · {size}",
+  "comfy.packNodesTag": "ノードパック {count} 件",
+  "comfy.groupMedia": "① 人物画像と素材",
+  "comfy.groupVoice": "② 音声とリモート TTS",
+  "comfy.groupVideo": "③ 映像スタイルと画質",
+  "comfy.groupAdvanced": "④ 詳細パラメータ",
+  "comfy.ttsEngineCardTitle": "選択中のリモート TTS エンジン",
+  "comfy.ttsCapabilityClone": "ボイスクローン",
+  "comfy.ttsCapabilityDesign": "ボイスデザイン",
+  "comfy.ttsCapabilityEmotion": "感情コントロール",
+  "comfy.ttsCapabilityTags": "感情インラインタグ",
+  "comfy.ttsSampleRate": "{khz} kHz",
+  "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
+  "comfy.requiredFieldHint": "必須項目を入力またはアップロードしてください: {label}",
+  "comfy.pipelineDigitalHumanTag": "長尺動画デジタルヒューマン",
+  "comfy.ttsNonCommercialAlert":
+    "選択中の音声エンジン「{name}」は非商用・研究限定ライセンスです: {notice}",
+  "comfy.openOutputsBtn": "出力結果",
+  "comfy.configureAndRun": "パラメータ設定",
+  "comfy.paramDrawerAria": "ワークフローパラメータ設定ドロワー",
+  "comfy.outputsDrawerAria": "出力結果ドロワー",
+  "comfy.advancedToggleTitle": "詳細設定",
+  "comfy.advancedDefaultHint": "最適な初期設定を適用済み・必要時のみ展開",
+  "comfy.beginnerPresetHint": "推奨パラメータ設定済み・下の基本項目だけで実行できます",
+  "comfy.ioSummaryDigitalHuman": "入力：人物写真 + 原稿または音声 → 出力：高画質音声付き動画 (MP4)",
+  "comfy.specsDetailTitle": "ハードウェアと依存仕様",
+  "comfy.viewOutputsShort": "結果を見る",
+  "comfy.workflowNonCommercialAlert":
+    "選択中のワークフロー「{name}」は非商用・研究限定ライセンスです: {notice}",
+  "comfy.combinedNonCommercialAlert":
+    "現在の組み合わせ（{names}）には非商用・研究限定ライセンスのコンポーネントが含まれます: {notices}",
+  "comfy.preflightVramInsufficient":
+    "GPU VRAM が不足しています（必要 {required} GB、現在 {available} GB）。推奨 GPU（{gpu}）に切り替えてください。",
+  "comfy.preflightDiskInsufficient":
+    "リモートディスク容量が不足しています（約 {required} GB 必要、現在 {available} GB 空き）",
+  "comfy.preflightPackReady": "ワークフローパックとモデルは準備完了です",
+  "comfy.preflightPackWillDownload":
+    "初回実行時に約 {size} のモデルとノード依存関係をリモートで自動ダウンロードします",
+  "comfy.videoPreviewTooLarge":
+    "動画サイズが大きいため（{size}）、メモリ節約のため下の「ローカルに保存」から再生することをおすすめします",
+  "comfy.mediaPreviewError":
+    "内蔵プレーヤーでこのメディアを再生できません。「ローカルに保存」して確認してください。",
+  "comfy.errImportTooLarge": "ワークフロー JSON が 2 MB の上限を超えています",
+  "comfy.errImportTooManyNodes":
+    "ワークフローのノード数が上限（500）を超えています",
+  "comfy.errImportInvalidNodeId": "無効なノード ID「{id}」が含まれています",
+  "comfy.errImportInvalidClassType":
+    "ノード「{id}」の class_type が 160 文字の上限を超えています",
+  "comfy.errImportInvalidInputKey":
+    "ノード「{id}」に空の入力キーが含まれています",
+  "comfy.errEmptyFile":
+    "選択したファイルは空（0 B）です。有効なファイルを選択してください。",
+  "comfy.indextts2RefRequiredHint":
+    "選択中の IndexTTS-2 エンジンには参照音声ファイルのアップロードが必須です",
+  "comfy.runBlockedBusy":
+    "別のタスクまたは操作を実行中です。しばらくお待ちください",
+  "comfy.runBlockedUploading":
+    "素材をアップロード中です。完了までお待ちください",
 
   // Settings Page
   "settings.title": "設定",
@@ -1322,6 +1391,12 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.languageLabel": "表示言語",
   "settings.languageDesc":
     "初期状態では OS の言語に合わせて自動選択されます。手動で切り替えると選択が保持され、OS 言語で上書きされなくなります。",
+  "settings.privacyMaskDefaultTitle": "起動時にプライバシーマスクを有効化",
+  "settings.privacyMaskDefaultDesc":
+    "アプリ起動時にメール、独自ドメイン、プロキシ先、ログ内の個人特定情報を自動でぼかします（CU 残高とハードウェア監視はそのまま表示）。現在のセッションは上部アイコンまたは Ctrl+Shift+M でいつでも切り替えられます。",
+  "settings.privacyMaskActiveTag": "マスク中",
+  "settings.privacyMaskDefaultEnabledToast": "次回起動時からプライバシーマスクを既定で有効にします",
+  "settings.privacyMaskDefaultDisabledToast": "次回起動時の既定プライバシーマスクを解除しました",
   "settings.hfCardTitle": "Hugging Face Token",
   "settings.hfSavedTag": "Token 保存済み",
   "settings.hfDesc":

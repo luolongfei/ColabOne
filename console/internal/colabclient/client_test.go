@@ -1808,3 +1808,274 @@ func TestCredentialStructsRedactTokensInStringAndGoString(t *testing.T) {
 	assertRedacted(t, "ColabOneListedAssignment(value)", listed, proxyTok)
 	assertRedacted(t, "ColabOneListedAssignment(ptr)", &listed, proxyTok)
 }
+
+func TestContentsClientUploadBytesMultiChunkAndBoundaries(t *testing.T) {
+	const (
+		sixMiB   = 6 * 1024 * 1024
+		proxyTok = "multi-chunk-proxy-secret-7731"
+	)
+
+	makeDeterministicBytes := func(size int) []byte {
+		buf := make([]byte, size)
+		for i := range buf {
+			buf[i] = byte((i*31 + i/257 + 7) & 0xff)
+		}
+		return buf
+	}
+
+	type capturedChunk struct {
+		name    string
+		path    string
+		typ     string
+		format  string
+		content string
+		chunk   int
+	}
+
+	assertIntSliceEqual := func(t *testing.T, label string, got, want []int) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s: chunks = %v (len %d), want %v (len %d)", label, got, len(got), want, len(want))
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("%s: chunks = %v, want %v", label, got, want)
+			}
+		}
+	}
+
+	t.Run("exact_6MiB_single_put_chunk_1", func(t *testing.T) {
+		data := makeDeterministicBytes(sixMiB)
+		var (
+			mu       sync.Mutex
+			captured []capturedChunk
+		)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPut {
+				t.Errorf("expected PUT, got %s", r.Method)
+			}
+			var payload contentsUploadPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode PUT payload failed: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			captured = append(captured, capturedChunk{
+				name:    payload.Name,
+				path:    payload.Path,
+				typ:     payload.Type,
+				format:  payload.Format,
+				content: payload.Content,
+				chunk:   payload.Chunk,
+			})
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer srv.Close()
+
+		cc := NewColabOneContentsClient(srv.Client())
+		if err := cc.UploadBytes(context.Background(), srv.URL, proxyTok, "content/exact6m.bin", data, 15*time.Second); err != nil {
+			t.Fatalf("UploadBytes(6 MiB) failed: %v", err)
+		}
+
+		if len(captured) != 1 {
+			t.Fatalf("expected exactly 1 PUT for exact 6 MiB boundary, got %d", len(captured))
+		}
+		got := captured[0]
+		if got.chunk != 1 || got.typ != "file" || got.format != "base64" || got.name != "exact6m.bin" || got.path != "content/exact6m.bin" {
+			t.Fatalf("unexpected metadata for exact 6 MiB upload: name=%q path=%q type=%q format=%q chunk=%d", got.name, got.path, got.typ, got.format, got.chunk)
+		}
+		if strings.Contains(got.content, "=") {
+			t.Fatalf("exact 6 MiB chunk base64 should be unpadded (multiple of 3), got trailing padding")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(got.content)
+		if err != nil {
+			t.Fatalf("base64 decode failed: %v", err)
+		}
+		if !bytes.Equal(decoded, data) {
+			t.Fatalf("exact 6 MiB decoded bytes mismatch (got len %d, want %d)", len(decoded), len(data))
+		}
+	})
+
+	t.Run("multi_chunk_13MiB_chunks_1_2_neg1_and_reassembly", func(t *testing.T) {
+		data := makeDeterministicBytes(13 * 1024 * 1024)
+		var (
+			mu       sync.Mutex
+			captured []capturedChunk
+		)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPut {
+				t.Errorf("expected PUT, got %s", r.Method)
+			}
+			var payload contentsUploadPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode PUT payload failed: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			captured = append(captured, capturedChunk{
+				name:    payload.Name,
+				path:    payload.Path,
+				typ:     payload.Type,
+				format:  payload.Format,
+				content: payload.Content,
+				chunk:   payload.Chunk,
+			})
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer srv.Close()
+
+		cc := NewColabOneContentsClient(srv.Client())
+		if err := cc.UploadBytes(context.Background(), srv.URL, proxyTok, "content/media/audio13m.wav", data, 30*time.Second); err != nil {
+			t.Fatalf("UploadBytes(13 MiB) failed: %v", err)
+		}
+
+		gotChunks := make([]int, len(captured))
+		var perChunkReassembled bytes.Buffer
+		var concatB64 strings.Builder
+		for i, c := range captured {
+			gotChunks[i] = c.chunk
+			if c.name != "audio13m.wav" || c.path != "content/media/audio13m.wav" || c.typ != "file" || c.format != "base64" {
+				t.Fatalf("chunk[%d] metadata mismatch: name=%q path=%q type=%q format=%q", i, c.name, c.path, c.typ, c.format)
+			}
+			if c.chunk > 0 {
+				if strings.Contains(c.content, "=") {
+					t.Fatalf("non-final chunk %d must be cleanly unpadded base64", c.chunk)
+				}
+				if len(c.content) != (sixMiB/3)*4 {
+					t.Fatalf("non-final chunk %d base64 len = %d, want %d", c.chunk, len(c.content), (sixMiB/3)*4)
+				}
+			}
+			part, err := base64.StdEncoding.DecodeString(c.content)
+			if err != nil {
+				t.Fatalf("chunk[%d] base64 decode failed: %v", i, err)
+			}
+			perChunkReassembled.Write(part)
+			concatB64.WriteString(c.content)
+		}
+		assertIntSliceEqual(t, "13 MiB chunks", gotChunks, []int{1, 2, -1})
+
+		if !bytes.Equal(perChunkReassembled.Bytes(), data) {
+			t.Fatalf("13 MiB per-chunk reassembled bytes mismatch (got len %d, want %d)", perChunkReassembled.Len(), len(data))
+		}
+		// Because all intermediate chunks are exact multiples of 3 (unpadded), concatenating
+		// all base64 chunks directly before decoding must also yield byte-identical output.
+		concatDecoded, err := base64.StdEncoding.DecodeString(concatB64.String())
+		if err != nil {
+			t.Fatalf("concatenated base64 decode failed: %v", err)
+		}
+		if !bytes.Equal(concatDecoded, data) {
+			t.Fatalf("13 MiB concatenated base64 bytes mismatch (got len %d, want %d)", len(concatDecoded), len(data))
+		}
+	})
+
+	t.Run("exact_12MiB_chunks_1_neg1_no_empty_final_chunk", func(t *testing.T) {
+		data := makeDeterministicBytes(12 * 1024 * 1024)
+		var (
+			mu       sync.Mutex
+			captured []capturedChunk
+		)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload contentsUploadPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode PUT payload failed: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			captured = append(captured, capturedChunk{
+				name:    payload.Name,
+				path:    payload.Path,
+				typ:     payload.Type,
+				format:  payload.Format,
+				content: payload.Content,
+				chunk:   payload.Chunk,
+			})
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer srv.Close()
+
+		cc := NewColabOneContentsClient(srv.Client())
+		if err := cc.UploadBytes(context.Background(), srv.URL, proxyTok, "content/exact12m.bin", data, 30*time.Second); err != nil {
+			t.Fatalf("UploadBytes(12 MiB) failed: %v", err)
+		}
+
+		gotChunks := make([]int, len(captured))
+		var reassembled bytes.Buffer
+		for i, c := range captured {
+			gotChunks[i] = c.chunk
+			if len(c.content) == 0 {
+				t.Fatalf("chunk[%d] (chunk=%d) must not be empty", i, c.chunk)
+			}
+			if strings.Contains(c.content, "=") {
+				t.Fatalf("exact 12 MiB chunk[%d] should be cleanly unpadded base64", i)
+			}
+			part, err := base64.StdEncoding.DecodeString(c.content)
+			if err != nil {
+				t.Fatalf("chunk[%d] decode failed: %v", i, err)
+			}
+			if len(part) != sixMiB {
+				t.Fatalf("chunk[%d] decoded len = %d, want %d", i, len(part), sixMiB)
+			}
+			reassembled.Write(part)
+		}
+		assertIntSliceEqual(t, "12 MiB chunks", gotChunks, []int{1, -1})
+		if !bytes.Equal(reassembled.Bytes(), data) {
+			t.Fatalf("12 MiB reassembled bytes mismatch (got len %d, want %d)", reassembled.Len(), len(data))
+		}
+	})
+
+	t.Run("mid_upload_http_500_on_chunk_2_aborts_before_chunk_neg1", func(t *testing.T) {
+		data := makeDeterministicBytes(13 * 1024 * 1024)
+		var (
+			mu           sync.Mutex
+			seenChunks   []int
+		)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload contentsUploadPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode PUT payload failed: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			seenChunks = append(seenChunks, payload.Chunk)
+			mu.Unlock()
+			if payload.Chunk == 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("disk full during chunk 2"))
+				return
+			}
+			if payload.Chunk == -1 {
+				t.Errorf("UploadBytes continued to chunk -1 after HTTP 500 on chunk 2")
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer srv.Close()
+
+		cc := NewColabOneContentsClient(srv.Client())
+		err := cc.UploadBytes(context.Background(), srv.URL, proxyTok, "content/failchunk2.bin", data, 30*time.Second)
+		if err == nil {
+			t.Fatal("expected HTTP 500 error on chunk 2, got nil")
+		}
+		var reqErr *ColabOneRequestError
+		if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusInternalServerError || reqErr.Method != http.MethodPut {
+			t.Fatalf("expected HTTP 500 PUT ColabOneRequestError, got %v", err)
+		}
+		if !strings.Contains(reqErr.Body, "disk full during chunk 2") {
+			t.Fatalf("expected error body to propagate, got %q", reqErr.Body)
+		}
+		if strings.Contains(reqErr.URL, proxyTok) || strings.Contains(err.Error(), proxyTok) {
+			t.Fatalf("HTTP 500 error leaked proxy token: %v", err)
+		}
+		assertIntSliceEqual(t, "chunks before chunk-2 HTTP 500 abort", seenChunks, []int{1, 2})
+	})
+}

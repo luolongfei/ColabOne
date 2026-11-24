@@ -1128,27 +1128,56 @@ func (wireModelsAdapter) ResolveImport(ctx context.Context, repo, filename, revi
 
 type wireComfyAdapter struct{}
 
-func (wireComfyAdapter) ValidateCatalog(raw map[string]any) ([]map[string]any, error) {
+var (
+	_ controller.ComfyValidator            = wireComfyAdapter{}
+	_ controller.ComfyCatalogValidator     = wireComfyAdapter{}
+	_ controller.ComfyInputUploadValidator = wireComfyAdapter{}
+)
+
+func (wireComfyAdapter) ValidateCatalogBundle(raw map[string]any) (controller.ComfyCatalogBundle, error) {
 	b, err := json.Marshal(raw)
 	if err != nil {
-		return nil, err
+		return controller.ComfyCatalogBundle{}, err
 	}
 	var cat comfyui.ColabOneComfyCatalog
 	if err := json.Unmarshal(b, &cat); err != nil {
-		return nil, err
+		return controller.ComfyCatalogBundle{}, err
 	}
 	if err := cat.Validate(); err != nil {
-		return nil, err
+		return controller.ComfyCatalogBundle{}, err
 	}
-	out := make([]map[string]any, 0, len(cat.Templates))
+	templates := make([]map[string]any, 0, len(cat.Templates))
 	for _, tpl := range cat.Templates {
 		m, err := structToMap(tpl)
 		if err != nil {
-			return nil, err
+			return controller.ComfyCatalogBundle{}, err
 		}
-		out = append(out, m)
+		templates = append(templates, m)
 	}
-	return out, nil
+	engines := make([]map[string]any, 0, len(cat.TtsEngines))
+	for _, eng := range cat.TtsEngines {
+		m, err := structToMap(eng)
+		if err != nil {
+			return controller.ComfyCatalogBundle{}, err
+		}
+		engines = append(engines, m)
+	}
+	return controller.ComfyCatalogBundle{
+		Templates:  templates,
+		TtsEngines: engines,
+	}, nil
+}
+
+func (w wireComfyAdapter) ValidateCatalog(raw map[string]any) ([]map[string]any, error) {
+	bundle, err := w.ValidateCatalogBundle(raw)
+	if err != nil {
+		return nil, err
+	}
+	return bundle.Templates, nil
+}
+
+func (wireComfyAdapter) ValidateInputUpload(filename, dataB64 string) error {
+	return comfyui.ValidateComfyInputUpload(filename, dataB64)
 }
 
 func (wireComfyAdapter) ValidateWorkflowTemplate(raw map[string]any) (map[string]any, error) {
