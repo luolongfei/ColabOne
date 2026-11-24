@@ -166,6 +166,9 @@ class ColabOneTask:
         self.events = []
         self.lock = threading.RLock()
         self.created_at = time.time()
+        self._started_monotonic = time.monotonic()
+        self.finished_at: float | None = None
+        self.elapsed_seconds: float | None = None
         self.transfer = None
         self.logs = []
         self.log_seq = 0
@@ -239,6 +242,13 @@ class ColabOneTask:
                     "created_at",
                 )
             }
+            value["elapsed_seconds"] = (
+                self.elapsed_seconds
+                if self.elapsed_seconds is not None
+                else round(max(0.0, time.monotonic() - self._started_monotonic), 3)
+            )
+            if self.finished_at is not None:
+                value["finished_at"] = self.finished_at
             value["logs"] = list(self.logs)
             transfer = self.transfer
         if transfer:
@@ -640,6 +650,10 @@ class ColabOneRuntime:
                     transfer_snap = transfer.snapshot()
                 with t.lock:
                     t.state = final_state
+                    t.finished_at = time.time()
+                    t.elapsed_seconds = round(
+                        max(0.0, time.monotonic() - t._started_monotonic), 3
+                    )
                     if final_progress is not None:
                         t.progress = final_progress
                     if final_error:
@@ -663,6 +677,8 @@ class ColabOneRuntime:
                             "error",
                             "message",
                             "created_at",
+                            "finished_at",
+                            "elapsed_seconds",
                         )
                     }
                     done_payload["logs"] = list(t.logs)

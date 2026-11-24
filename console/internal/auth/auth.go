@@ -1016,6 +1016,19 @@ func (a *ColabOneAuth) InvalidateDriveQuotaProject() {
 	a.quotaProbeCache = nil
 }
 
+// ResetAccountState clears in-memory OAuth login flows and Drive quota probe caches
+// after vault credentials have been replaced externally (such as by migration import).
+func (a *ColabOneAuth) ResetAccountState() {
+	a.mu.Lock()
+	a.flow = nil
+	a.loginEvt.Clear()
+	a.quotaMu.Lock()
+	a.quotaEpoch++
+	a.quotaProbeCache = nil
+	a.quotaMu.Unlock()
+	a.mu.Unlock()
+}
+
 // DriveQuotaStatus returns the offline readiness snapshot for headless Drive
 // quota-project mode.
 func (a *ColabOneAuth) DriveQuotaStatus() map[string]any {

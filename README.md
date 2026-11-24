@@ -39,8 +39,8 @@ Your computer only runs a single pure Go native desktop binary (`ColabOne.app` /
 
 ColabOne is organized around four sidebar views: **Devices → Public API → ComfyUI → Settings**, plus a slide-over **Logs** drawer on the right.
 
-1. **Download & Launch**
-   Download the archive for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#-building-from-source)), extract it, and open `ColabOne.app` (macOS) or `ColabOne.exe` (Windows). ColabOne is a self-contained pure Go single-binary app — no local Python runtime or sibling `runtime/`/`site-packages/` folders are required. On Windows, you can create Start Menu and Desktop shortcuts from **Settings** without admin rights.
+1. **Download & Install**
+   Download the native installer for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#-building-from-source)): run the `.exe` setup installer on Windows (per-user install, no admin rights required) or open the `.dmg` disk image on macOS and drag `ColabOne.app` into **Applications**. ColabOne is a self-contained pure Go single-binary app — no local Python runtime or sibling `runtime/`/`site-packages/` folders are required. On Windows, you can also manage Start Menu and Desktop shortcuts from **Settings** without admin rights.
 
 2. **Sign In with Google**
    Go to **Settings** → **Sign in with Google**, authorize your account in the browser, and ColabOne will complete login automatically. If your browser displays an authorization page instead of redirecting, expand the manual paste section and click **Paste & Sign In**. Credentials stay encrypted in macOS Keychain or Windows Credential Manager and auto-renew across restarts.
@@ -147,11 +147,11 @@ npm --prefix frontend run build
 # Run all offline checks (embedded service sync, Go vet/test, remote Python pytest, Vitest, frontend build)
 .venv/bin/python tools/install.py --root work/check --check
 
-# Build a self-contained pure Go single-binary archive in dist/
+# Build the native pure Go installer (.exe on Windows, .dmg on macOS) in dist/
 .venv/bin/python tools/package.py --out dist
 ```
 
-Portable archives are written to `dist/` (with the unpacked staging directory at `work/package-stage/Programs/ColabOne`), shipping the standalone pure Go binary (`ColabOne.app` / `ColabOne.exe`) with the compiled Vue frontend and remote Python control service (`server/`, `common/`, `catalog/`) embedded via `go:embed` — zero local Python runtime or sibling dependency folders required.
+Native installers (`ColabOne-<version>-windows-x64-setup.exe` / `ColabOne-<version>-macos-arm64.dmg`) are written to `dist/` (with the unpacked staging directory at `work/package-stage/Programs/ColabOne`; pass `--portable-zip` if you also want a portable `.zip`), shipping the standalone pure Go binary (`ColabOne.app` / `ColabOne.exe`) with the compiled Vue frontend and remote Python control service (`server/`, `common/`, `catalog/`) embedded via `go:embed` — zero local Python runtime or sibling dependency folders required.
 
 All unit and browser tests run 100% offline with mocks — they never contact Google or Hugging Face and never provision a GPU. Real-GPU acceptance is run explicitly on a strict compute budget; see [docs/validation.md](docs/validation.md).
 

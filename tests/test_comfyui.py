@@ -990,3 +990,50 @@ def test_canvas_proxy_internal_probe_skips_activity_and_rejected_ws_does_not_han
         proxy.stop()
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_format_colabone_duration_zh_and_task_elapsed_fields(runtime):
+    from common.comfyui import format_colabone_duration_zh
+
+    assert format_colabone_duration_zh(0) == "0 秒"
+    assert format_colabone_duration_zh(0, subsecond=True) == "0.0 秒"
+    assert format_colabone_duration_zh(4.24, subsecond=True) == "4.2 秒"
+    assert format_colabone_duration_zh(59.96, subsecond=True) == "1 分钟"
+    assert format_colabone_duration_zh(60) == "1 分钟"
+    assert format_colabone_duration_zh(754) == "12 分 34 秒"
+    assert format_colabone_duration_zh(3600) == "1 小时"
+    assert format_colabone_duration_zh(4500) == "1 小时 15 分"
+    assert format_colabone_duration_zh(4523.4, subsecond=True) == "1 小时 15 分 23 秒"
+    assert format_colabone_duration_zh(-5) == "0 秒"
+
+    running_seen = threading.Event()
+    release_task = threading.Event()
+
+    def _work(task):
+        running_seen.set()
+        release_task.wait(timeout=3.0)
+        return {"ok": True}
+
+    submitted = runtime.submit("comfyui_run", "digital-human-longcat", _work)
+    t = runtime.tasks[submitted["id"]]
+    assert running_seen.wait(timeout=2.0)
+    live_snap = t.snapshot()
+    assert live_snap["state"] == "running"
+    assert live_snap.get("finished_at") is None
+    assert isinstance(live_snap["elapsed_seconds"], float)
+    assert live_snap["elapsed_seconds"] >= 0.0
+
+    release_task.set()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and t.state == "running":
+        time.sleep(0.01)
+
+    done_snap = t.snapshot()
+    assert done_snap["state"] == "completed"
+    assert isinstance(done_snap["finished_at"], float)
+    assert done_snap["finished_at"] >= done_snap["created_at"]
+    assert isinstance(done_snap["elapsed_seconds"], float)
+    assert done_snap["elapsed_seconds"] >= 0.0
+    frozen_elapsed = done_snap["elapsed_seconds"]
+    time.sleep(0.05)
+    assert t.snapshot()["elapsed_seconds"] == frozen_elapsed

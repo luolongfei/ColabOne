@@ -32,9 +32,11 @@ export const zhCNMessages = {
   "common.submitting": "正在提交…",
   "common.secondsShort": "{value} 秒",
   "common.minutes": "{value} 分钟",
+  "common.minutesSeconds": "{minutes} 分 {seconds} 秒",
   "common.hours": "{value} 小时",
   "common.hoursMinutes": "{hours} 小时 {minutes} 分钟",
   "common.hoursMinutesShort": "{hours} 小时 {minutes} 分",
+  "common.hoursMinutesSeconds": "{hours} 小时 {minutes} 分 {seconds} 秒",
   "common.daysHours": "{days} 天 {hours} 小时",
   "common.approxDaysHours": "约 {days} 天 {hours} 小时",
   "common.approxHoursMinutes": "约 {hours} 小时 {minutes} 分钟",
@@ -148,6 +150,8 @@ export const zhCNMessages = {
   "task.kindComfyRun": "运行 ComfyUI 工作流中",
   "task.gpuReadyIdle": "GPU 已就绪，等待操作",
   "task.gpuWaitingStart": "等待启动远端 GPU",
+  "task.elapsedLive": "已耗时 {duration}",
+  "task.elapsedTotal": "耗时 {duration}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/小时",
@@ -1198,6 +1202,8 @@ export const zhCNMessages = {
   "comfy.noticeStoppingEngine": "正在停止远端 ComfyUI 引擎。",
   "comfy.noticeCancelRequested": "已请求取消当前任务。",
   "comfy.noticeRunSubmitted": "工作流「{name}」已提交至远端队列；运行期间暂停空闲释放计时。",
+  "comfy.noticeRunCompleted": "工作流「{name}」已完成 · 总耗时 {duration}",
+  "comfy.noticeRunCompletedNoDuration": "工作流「{name}」已完成。",
   "comfy.noticeExported": "作品已导出到本地。",
   "comfy.noticeExportedDrive": "作品已导出到 Google 云盘：{path}",
   "comfy.noticeExportedDriveExists": "该作品已保存在 Google 云盘：{path}",
@@ -1345,11 +1351,11 @@ export const zhCNMessages = {
   "comfy.errImportInvalidInputKey": "节点「{id}」包含空白输入键名",
   "comfy.errEmptyFile": "所选文件为空（0 B），请重新选择有效素材",
   "comfy.indextts2RefRequiredHint":
-    "当前选用的 IndexTTS-2 引擎必须上传参考音色音频",
+    "IndexTTS-2 选择「自定义音色」时必须上传参考音色音频",
   "comfy.runBlockedBusy": "当前有正在执行的任务或操作，请稍候",
   "comfy.runBlockedUploading": "素材正在上传中，请稍候完成",
   "comfy.defaultVisualPrompt":
-    "清晰演播室人像镜头，主播面向镜头自然说话，面部表情生动自然，头部轻微摆动，自然眨眼，焦距锐利，柔和演播室灯光，背景稳定不抖动",
+    "固定机位中景，主播亲切自然地面对镜头娓娓道来，说话时配合自然丰富的手势与抬手示意动作，面部表情生动、眉眼微动、头部随语调自然轻点与微倾，肩部自然起伏、自然眨眼，口型与语音精准贴合，柔和棚拍布光，画质锐利清晰，背景稳定。",
   "comfy.placeholderScriptText":
     "例如：大家好，欢迎来到今天的分享！接下来我将带你快速了解如何用 AI 轻松生成自然流畅的口播视频。",
   "comfy.placeholderVoiceRefText":
@@ -1628,6 +1634,92 @@ export const zhCNMessages = {
   "close.rememberHint": "后续可随时在「设置 → 本机与关于」中修改。",
   "close.confirmQuitBtn": "直接退出",
   "close.confirmBackgroundBtn": "后台运行",
+
+  // One-Click Migration (Export / Import)
+  "settings.sectionMigration": "数据与迁移",
+  "settings.migrationTitle": "一键迁移（导入 / 导出）",
+  "settings.migrationEncryptedTag": "密码加密",
+  "settings.migrationDesc":
+    "将当前 Google 登录状态、第三方密钥、全部软件设置、模型库与自定义工作流加密导出为 .colabone 文件；在另一台新电脑导入后即可免登录恢复完全一致的体验。",
+  "settings.migrationExportBtn": "导出迁移文件",
+  "settings.migrationImportBtn": "导入迁移文件",
+
+  "migration.homeImportBtn": "导入迁移文件",
+  "migration.exportModalTitle": "导出迁移文件",
+  "migration.exportModalDesc":
+    "选择需要打包的数据模块并设置迁移密码。所有敏感凭据仅在本地加密封装，支持 Windows 与 macOS 跨平台迁移。",
+  "migration.importDecryptModalTitle": "解锁迁移文件",
+  "migration.importPreviewModalTitle": "确认导入迁移配置",
+  "migration.selectModulesLabel": "选择要导出的模块",
+  "migration.selectAllBtn": "全选（整机迁移）",
+  "migration.selectConfigOnlyBtn": "仅配置与工作流（不含账号密钥）",
+  "migration.moduleAccountTitle": "Google 账号与云盘认证",
+  "migration.moduleAccountDesc":
+    "包含 OAuth 自动续期凭据、账号信息与免弹窗 Google 云盘配额项目，导入后无需重新登录。",
+  "migration.moduleCredentialsTitle": "第三方密钥与公网隧道",
+  "migration.moduleCredentialsDesc":
+    "包含 Hugging Face Token、GPU 分配代理、对外 API 与 ComfyUI 画布的固定域名和 Tunnel Token。",
+  "migration.moduleSettingsTitle": "全部软件与外观设置",
+  "migration.moduleSettingsDesc":
+    "包含默认 GPU、空闲释放、下载线程、自动云盘、浅/深色主题、语言、隐私脱敏、关闭行为与更新偏好。",
+  "migration.moduleLibraryTitle": "模型库与自定义工作流",
+  "migration.moduleLibraryDesc":
+    "包含常用模型、自定义导入模型、API 别名、常用仓库书签与自定义 ComfyUI 工作流模板。",
+  "migration.moduleCuUsageTitle": "CU 算力消耗历史",
+  "migration.moduleCuUsageDesc":
+    "包含本地记录的 30 分钟粒度算力消费曲线与余额历史统计数据。",
+  "migration.moduleDraftsTitle": "ComfyUI 工作流文本草稿",
+  "migration.moduleDraftsDesc":
+    "仅包含未提交的提示词与数值参数草稿，不含大体积本地图片/音频素材，保持单文件轻量。",
+  "migration.moduleNotIncluded": "未包含",
+  "migration.summarySignedIn": "已登录",
+  "migration.summaryNotSignedIn": "未登录",
+  "migration.summaryDriveReady": "云盘免弹窗就绪",
+  "migration.summaryConfiguredCount": "已配置 {count} 项",
+  "migration.summaryEmpty": "暂无数据",
+  "migration.summaryIdleMinutes": "空闲 {minutes} 分钟",
+  "migration.summaryThreads": "{count} 线程",
+  "migration.summaryCustomModels": "{count} 个自定义模型",
+  "migration.summaryCommonRepos": "{count} 个常用仓库",
+  "migration.summaryCustomWorkflows": "{count} 个工作流",
+  "migration.summaryCuDays": "{days} 天记录",
+  "migration.summaryDraftsCount": "{count} 个草稿",
+  "migration.exportPasswordTitle": "设置迁移密码（必填）",
+  "migration.exportPasswordDesc":
+    "导出文件使用 Argon2id + AES-256-GCM 强制加密，至少输入 {min} 位字符。请牢记密码，丢失后无法找回。",
+  "migration.exportPasswordPlaceholder": "请输入迁移密码（至少 6 位）",
+  "migration.exportPasswordConfirmPlaceholder": "请再次输入以确认密码",
+  "migration.passwordTooShort": "迁移密码至少需要 {min} 位非空白字符",
+  "migration.passwordTooLong": "迁移密码过长，请缩短后重试",
+  "migration.passwordMismatch": "两次输入的迁移密码不一致",
+  "migration.exportConfirmBtn": "选择保存位置并导出",
+  "migration.exportingBtn": "正在加密导出…",
+  "migration.exportSuccessToast": "已加密导出迁移文件：{filename}",
+  "migration.encryptedArchiveBadge": "ColabOne 加密迁移文件",
+  "migration.changeFileBtn": "更换文件",
+  "migration.importPasswordTitle": "输入迁移密码",
+  "migration.importPasswordDesc":
+    "请输入导出此文件时设置的迁移密码。解密后将先展示内容摘要，由你确认后再写入本机。",
+  "migration.importPasswordPlaceholder": "请输入迁移密码",
+  "migration.decryptContinueBtn": "解密并查看摘要",
+  "migration.decryptingBtn": "正在解密验证…",
+  "migration.metaSourceOS": "来源系统",
+  "migration.activeInstancesAccountBlocked":
+    "当前有运行中的 GPU 实例，已暂停勾选「Google 账号与云盘认证」。如需切换账号请先释放实例，或保持取消勾选仅导入其他模块。",
+  "migration.closeBehaviorFallbackNotice":
+    "当前系统环境暂不支持最小化到托盘后台运行，导入后关闭窗口行为将自动回退为「直接退出」。",
+  "migration.importModulesTitle": "确认要导入的模块",
+  "migration.importModulesHint": "可取消勾选不需要覆盖的项目",
+  "migration.overwriteWarningTitle": "导入将覆盖本机所选模块的现有数据",
+  "migration.overwriteWarningDesc":
+    "仅会覆盖上面勾选且文件中包含的模块，未勾选或文件未包含的模块将保持本机原样；导入完成后立即生效，无需重启。",
+  "migration.overwriteWarningDescWithAccount":
+    "导入完成后将立即热生效并自动刷新 Google 账号与云端实例状态（无需重启）。同一账号支持多台电脑同时登录，但建议避免同时操作同一台远端 GPU 实例。",
+  "migration.applyConfirmBtn": "确认覆盖并导入（{count} 项）",
+  "migration.importingBtn": "正在导入并生效…",
+  "migration.importSuccessToast": "已成功导入 {count} 项配置并立即生效",
+  "migration.importSuccessWithAccountToast":
+    "迁移导入完成（{email}），配置已立即生效并正在同步账号状态",
 
   // Location
   "location.tooltipWithZone": "实例位置：{full} ({zone})",

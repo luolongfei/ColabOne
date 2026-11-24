@@ -39,8 +39,8 @@ ColabOne은 **macOS (Apple Silicon)** 및 **Windows (x64)** 환경에서 빠른 
 
 ColabOne은 **원격 기기 → 외부 API → ComfyUI → 설정**의 4개 사이드바 화면과 우측 슬라이드 오버 **실행 로그** 패널로 구성되어 있습니다.
 
-1. **다운로드 및 실행**
-   [Releases](https://github.com/luolongfei/ColabOne/releases)에서 플랫폼에 맞는 패키지를 다운로드하고(또는 [소스에서 직접 빌드](#-소스에서-빌드하기)), 압축을 푼 뒤 `ColabOne.app`(macOS) 또는 `ColabOne.exe`(Windows)를 실행합니다. ColabOne은 완전히 독립 실행되는 순수 Go 단일 바이너리 앱이므로 로컬 Python 런타임이나 동일 경로의 `runtime/`·`site-packages/` 폴더가 필요하지 않습니다. Windows에서는 관리자 권한 없이 **설정**에서 시작 메뉴 및 바탕 화면 바로 가기를 만들 수 있습니다.
+1. **다운로드 및 설치**
+   [Releases](https://github.com/luolongfei/ColabOne/releases)에서 플랫폼에 맞는 설치 파일을 다운로드합니다(또는 [소스에서 직접 빌드](#-소스에서-빌드하기)). Windows에서는 `.exe` 설치 프로그램을 실행하고(사용자 단위 설치, 관리자 권한 불필요), macOS에서는 `.dmg` 디스크 이미지를 열어 `ColabOne.app`을 **응용 프로그램** 폴더로 드래그하세요. ColabOne은 완전히 독립 실행되는 순수 Go 단일 바이너리 앱이므로 로컬 Python 런타임이나 동일 경로의 `runtime/`·`site-packages/` 폴더가 필요하지 않습니다. Windows에서는 관리자 권한 없이 **설정**에서도 시작 메뉴 및 바탕 화면 바로 가기를 관리할 수 있습니다.
 
 2. **Google 계정 로그인**
    **설정** → **Google 로그인**으로 이동해 브라우저에서 계정을 승인하면 ColabOne이 자동으로 로그인을 완료합니다. 브라우저가 자동으로 리디렉션되지 않고 인증 페이지를 표시하는 경우, 직접 붙여넣기 섹션을 펼치고 **붙여넣고 로그인 완료**를 클릭하세요. 자격 증명은 macOS 키체인 또는 Windows 자격 증명 관리자에 암호화되어 저장되며 재시작 시에도 자동으로 갱신됩니다.
@@ -147,11 +147,11 @@ npm --prefix frontend run build
 # 모든 오프라인 검사 실행 (내장 서비스 번들 동기화, Go vet/test, 원격 Python pytest, Vitest, 프론트엔드 빌드)
 .venv/bin/python tools/install.py --root work/check --check
 
-# dist/ 디렉터리에 순수 Go 단일 바이너리 포터블 패키지 빌드
+# dist/ 디렉터리에 네이티브 순수 Go 설치 프로그램(Windows는 .exe, macOS는 .dmg) 빌드
 .venv/bin/python tools/package.py --out dist
 ```
 
-포터블 패키지는 `dist/`에 생성되며(압축 해제된 스테이징 디렉터리는 `work/package-stage/Programs/ColabOne`), 컴파일된 Vue 프론트엔드와 원격 Python 제어 서비스(`server/`, `common/`, `catalog/`)가 `go:embed`로 내장된 독립 실행형 순수 Go 바이너리(`ColabOne.app` / `ColabOne.exe`)를 제공하므로 최종 사용자가 로컬 Python 런타임이나 동일 경로의 의존성 폴더를 따로 둘 필요가 없습니다.
+네이티브 설치 프로그램(`ColabOne-<version>-windows-x64-setup.exe` / `ColabOne-<version>-macos-arm64.dmg`)은 `dist/`에 생성되며(압축 해제된 스테이징 디렉터리는 `work/package-stage/Programs/ColabOne`, 포터블 `.zip`도 필요하면 `--portable-zip` 추가), 컴파일된 Vue 프론트엔드와 원격 Python 제어 서비스(`server/`, `common/`, `catalog/`)가 `go:embed`로 내장된 독립 실행형 순수 Go 바이너리(`ColabOne.app` / `ColabOne.exe`)를 제공하므로 최종 사용자가 로컬 Python 런타임이나 동일 경로의 의존성 폴더를 따로 둘 필요가 없습니다.
 
 모든 단위 테스트와 브라우저 테스트는 목(mock)을 사용해 100% 오프라인으로 실행되며, Google이나 Hugging Face에 접속하거나 GPU를 할당하지 않습니다. 실제 GPU 환경의 인수 검증은 엄격한 컴퓨팅 예산 하에 명시적으로만 수행합니다. 자세한 내용은 [docs/validation.md](docs/validation.md)를 참고하세요.
 

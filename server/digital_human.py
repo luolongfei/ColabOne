@@ -37,6 +37,7 @@ from common.comfyui import (
     MAX_OUTPUT_BYTES,
     WorkflowRunRequest,
     apply_workflow_overrides,
+    format_colabone_duration_zh,
 )
 
 if TYPE_CHECKING:
@@ -79,6 +80,38 @@ LONGCAT_MAX_SEGMENT_SECONDS = 9.5
 AI_UPSCALE_MAX_SEGMENT_SECONDS = 20.0
 _STALE_WORK_DIR_MAX_AGE_SECONDS = 24 * 3600
 _SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+_FFMPEG_CFR_CACHE_LOCK = threading.Lock()
+_FFMPEG_CFR_CACHE: dict[str, tuple[str, str]] = {}
+
+
+def _resolve_ffmpeg_cfr_args(ffmpeg_bin: str) -> list[str]:
+    """Return ['-fps_mode', 'cfr'] on FFmpeg >= 5.1, falling back to ['-vsync', 'cfr'] on older builds."""
+    key = str(ffmpeg_bin or "").strip() or "ffmpeg"
+    with _FFMPEG_CFR_CACHE_LOCK:
+        cached = _FFMPEG_CFR_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+
+    chosen: tuple[str, str] = ("-vsync", "cfr")
+    try:
+        res = subprocess.run(
+            [key, "-hide_banner", "-h"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=_sanitized_subprocess_env(),
+        )
+        help_text = (res.stdout or "") + "\n" + (res.stderr or "")
+        if "-fps_mode" in help_text:
+            chosen = ("-fps_mode", "cfr")
+    except Exception:
+        chosen = ("-vsync", "cfr")
+
+    with _FFMPEG_CFR_CACHE_LOCK:
+        _FFMPEG_CFR_CACHE[key] = chosen
+    return list(chosen)
 
 
 def _sanitize_task_tag(raw_tag: Any, *, allow_empty: bool = False) -> str:
@@ -187,14 +220,19 @@ def parse_target_resolution(
 
 
 def compute_base_dimensions(
-    video_backend: str, target_w: int, target_h: int
+    video_backend: str,
+    target_w: int,
+    target_h: int,
+    render_quality: str | None = None,
 ) -> tuple[int, int]:
     """Compute native diffusion base (width, height) for a video backend."""
     portrait = int(target_h) > int(target_w)
     backend = str(video_backend or "").strip().lower()
     if backend == "longcat_avatar":
-        if max(int(target_w), int(target_h)) >= 1280:
+        rq = str(render_quality or "").strip().lower()
+        if rq == "native_720p" and max(int(target_w), int(target_h)) >= 1280:
             return (768, 1280) if portrait else (1280, 768)
+        # Official Meituan / Kijai 480p golden window (default & balanced_480p_ai2x).
         return (480, 832) if portrait else (832, 480)
     # "infinitetalk" (Wan2.1 480p sweet spot) and fallback "custom".
     return (480, 832) if portrait else (832, 480)
@@ -604,6 +642,189 @@ def inject_ai_upscale_nodes(
     return result
 
 
+def apply_longcat_acceleration(
+    workflow: dict[str, Any],
+    *,
+    profile: str = "max",
+    gpu_caps: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Deep-copy a LongCat-Avatar workflow and apply GPU-aware ComfyUI acceleration settings.
+
+    Never mutates InfiniteTalk (MultiTalk*) workflows. Safe to call repeatedly when
+    stepping down from ``max`` -> ``balanced`` -> ``compat``.
+    """
+    result = copy.deepcopy(workflow)
+    norm_profile = str(profile or "").strip().lower()
+    if norm_profile not in ("max", "balanced", "compat"):
+        norm_profile = "max"
+
+    caps = dict(gpu_caps) if isinstance(gpu_caps, dict) else {}
+
+    if isinstance(result, dict) and any(
+        isinstance(node, dict)
+        and node.get("class_type") in ("MultiTalkModelLoader", "MultiTalkWav2VecEmbeds")
+        for node in result.values()
+    ):
+        return (
+            result,
+            {
+                "profile": "compat",
+                "attention_mode": "sdpa",
+                "quantization": "disabled",
+                "resident_vram": False,
+                "vae_tiling": True,
+                "torch_compile": False,
+                "rms_norm_function": "default",
+            },
+        )
+
+    try:
+        vram_mib = int(caps.get("vram_mib") or 0)
+    except (TypeError, ValueError):
+        vram_mib = 0
+
+    if norm_profile == "compat":
+        attention_mode = "sdpa"
+        quantization = "disabled"
+        resident_vram = False
+        vae_tiling = True
+        torch_compile = False
+        rms_norm_function = "default"
+    else:
+        quantization = (
+            "fp8_e4m3fn_fast" if bool(caps.get("fp8_fast_supported")) else "disabled"
+        )
+        if bool(caps.get("sageattn3_available")) and bool(
+            caps.get("sageattn_available")
+        ):
+            attention_mode = "sageattn_3"
+        elif bool(caps.get("sageattn_available")):
+            attention_mode = "sageattn"
+        elif bool(caps.get("flash_attn_2_available")):
+            attention_mode = "flash_attn_2"
+        else:
+            attention_mode = "sdpa"
+
+        torch_compile = norm_profile == "max" and bool(
+            caps.get("torch_compile_supported")
+        )
+        vram_threshold = 44000 if quantization == "fp8_e4m3fn_fast" else 65536
+        resident_vram = vram_mib >= vram_threshold
+        vae_tiling = not resident_vram
+        rms_norm_function = "default" if torch_compile else "pytorch"
+
+    if isinstance(result, dict):
+        has_model_loader = False
+        for node in list(result.values()):
+            if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+                continue
+            cls = node.get("class_type")
+            inputs = node["inputs"]
+            if cls == "WanVideoModelLoader":
+                has_model_loader = True
+                inputs["attention_mode"] = attention_mode
+                inputs["quantization"] = quantization
+                inputs["load_device"] = (
+                    "main_device" if resident_vram else "offload_device"
+                )
+                inputs["rms_norm_function"] = rms_norm_function
+                if torch_compile:
+                    inputs["compile_args"] = ["colabone_torch_compile", 0]
+                else:
+                    inputs.pop("compile_args", None)
+            elif cls == "WanVideoSamplerv2":
+                inputs["force_offload"] = not resident_vram
+            elif cls == "WanVideoDecode":
+                inputs["enable_vae_tiling"] = vae_tiling
+            elif cls == "WanVideoLoraSelect":
+                if quantization == "fp8_e4m3fn_fast":
+                    inputs["merge_loras"] = True
+
+        if torch_compile and has_model_loader:
+            result["colabone_torch_compile"] = {
+                "class_type": "WanVideoTorchCompileSettings",
+                "_meta": {"title": "torch.compile 算子加速"},
+                "inputs": {
+                    "backend": "inductor",
+                    "fullgraph": False,
+                    "mode": "default",
+                    "dynamic": True,
+                    "dynamo_cache_size_limit": 64,
+                    "compile_transformer_blocks_only": True,
+                    "dynamo_recompile_limit": 128,
+                    "force_parameter_static_shapes": False,
+                    "allow_unmerged_lora_compile": False,
+                },
+            }
+        else:
+            result.pop("colabone_torch_compile", None)
+
+    summary = {
+        "profile": norm_profile,
+        "attention_mode": attention_mode,
+        "quantization": quantization,
+        "resident_vram": resident_vram,
+        "vae_tiling": vae_tiling,
+        "torch_compile": torch_compile,
+        "rms_norm_function": rms_norm_function,
+    }
+    return (result, summary)
+
+
+def inject_longcat_ref_latent_nodes(
+    workflow: dict[str, Any],
+    ref_image_name: str,
+) -> dict[str, Any]:
+    """Deep-copy workflow and inject original-portrait ref_latent anchor nodes for LongCat relay segments.
+
+    Idempotent if called again; no-op when ``ref_image_name`` is empty or
+    ``WanVideoLongCatAvatarExtendEmbeds`` / ``WanVideoVAELoader`` is absent.
+    """
+    result = copy.deepcopy(workflow)
+    image_name = str(ref_image_name or "").strip()
+    if not image_name or not isinstance(result, dict):
+        return result
+
+    extend_node: dict[str, Any] | None = None
+    vae_node_id: str | None = None
+    for nid, node in result.items():
+        if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+            continue
+        cls = node.get("class_type")
+        if cls == "WanVideoLongCatAvatarExtendEmbeds" and extend_node is None:
+            extend_node = node
+        elif cls == "WanVideoVAELoader" and vae_node_id is None:
+            vae_node_id = str(nid)
+
+    if extend_node is None or vae_node_id is None:
+        return result
+
+    result["colabone_ref_image"] = {
+        "class_type": "LoadImage",
+        "_meta": {"title": "原始人像参考图（锁脸）"},
+        "inputs": {
+            "image": image_name,
+        },
+    }
+    result["colabone_ref_encode"] = {
+        "class_type": "WanVideoEncode",
+        "_meta": {"title": "原始人像参考潜变量"},
+        "inputs": {
+            "vae": [vae_node_id, 0],
+            "image": ["colabone_ref_image", 0],
+            "enable_vae_tiling": False,
+            "tile_x": 272,
+            "tile_y": 272,
+            "tile_stride_x": 144,
+            "tile_stride_y": 128,
+            "noise_aug_strength": 0.0,
+            "latent_strength": 1.0,
+        },
+    }
+    extend_node["inputs"]["ref_latent"] = ["colabone_ref_encode", 0]
+    return result
+
+
 def build_concat_filter_script(
     segment_exact_frames: list[int],
     *,
@@ -680,9 +901,18 @@ def _wav_duration_seconds(wav_path: Path) -> float:
 
 
 def slice_wav_segment(
-    src_wav: Path, dst_wav: Path, start_sec: float, end_sec: float
+    src_wav: Path,
+    dst_wav: Path,
+    start_sec: float,
+    end_sec: float,
+    pad_to_seconds: float | None = None,
 ) -> Path:
-    """Losslessly slice a PCM WAV segment [start_sec, end_sec] using stdlib wave."""
+    """Losslessly slice a PCM WAV segment [start_sec, end_sec] using stdlib wave.
+
+    When ``pad_to_seconds`` is provided and exceeds the sliced duration, appends
+    trailing PCM silence so downstream audio-driven video nodes never receive
+    short audio clips.
+    """
     src = Path(src_wav)
     dst = Path(dst_wav)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -705,6 +935,8 @@ def slice_wav_segment(
 
         reader.setpos(start_frame)
         remaining = end_frame - start_frame
+        frame_bytes = max(1, nchannels * sampwidth)
+        written_frames = 0
         with wave.open(str(dst), "wb") as writer:
             writer.setnchannels(nchannels)
             writer.setsampwidth(sampwidth)
@@ -716,7 +948,23 @@ def slice_wav_segment(
                 if not data:
                     break
                 writer.writeframes(data)
-                remaining -= to_read
+                actual_frames = len(data) // frame_bytes
+                written_frames += actual_frames
+                remaining -= actual_frames if actual_frames > 0 else to_read
+
+            if pad_to_seconds is not None:
+                pad_target_sec = max(0.0, float(pad_to_seconds))
+                target_frames = int(
+                    math.ceil(max(0.0, pad_target_sec * framerate - 1e-9))
+                )
+                pad_frames = target_frames - written_frames
+                if pad_frames > 0:
+                    silence_byte = b"\x80" if sampwidth == 1 else b"\x00"
+                    silence_frame = silence_byte * frame_bytes
+                    while pad_frames > 0:
+                        batch = min(chunk_frames, pad_frames)
+                        writer.writeframes(silence_frame * batch)
+                        pad_frames -= batch
     return dst
 
 
@@ -1789,6 +2037,54 @@ class ColabOneDigitalHumanRunner:
         detail = f"：{last_err}" if last_err else ""
         raise RuntimeError(f"无法从第 {seg_idx} 段视频提取尾帧用于长视频衔接{detail}")
 
+    def _probe_longcat_gpu_caps(self) -> dict[str, Any]:
+        """Probe remote GPU acceleration capabilities for LongCat-Avatar safely."""
+        gpu_info: dict[str, Any] = {}
+        runtime = getattr(self.manager, "runtime", None)
+        gpu_info_fn = getattr(runtime, "gpu_info", None)
+        if callable(gpu_info_fn):
+            try:
+                raw = gpu_info_fn()
+                if isinstance(raw, dict):
+                    gpu_info = raw
+            except Exception:
+                gpu_info = {}
+
+        try:
+            from server import comfy_packs as _comfy_packs
+
+            probe_fn = getattr(
+                _comfy_packs, "probe_gpu_acceleration_capabilities", None
+            )
+            if callable(probe_fn):
+                probed = probe_fn(gpu_info)
+                if isinstance(probed, dict):
+                    return dict(probed)
+        except Exception:
+            pass
+
+        raw_vram = gpu_info.get("total_mib") or gpu_info.get("vram_mib") or 0
+        try:
+            vram_mib = int(raw_vram)
+        except (TypeError, ValueError):
+            vram_mib = 0
+        return {
+            "gpu_name": str(gpu_info.get("name") or ""),
+            "vram_mib": vram_mib,
+            "cc_major": 0,
+            "cc_minor": 0,
+            "torch_version": "",
+            "cuda_version": "",
+            "nvcc_version": "",
+            "triton_available": False,
+            "torch_compile_supported": False,
+            "fp8_fast_supported": False,
+            "sageattn_version": "",
+            "sageattn_available": False,
+            "sageattn3_available": False,
+            "flash_attn_2_available": False,
+        }
+
     def run(
         self,
         task,
@@ -1797,6 +2093,8 @@ class ColabOneDigitalHumanRunner:
         resolved_inputs: list[tuple[str, str, Path]],
     ) -> list[dict[str, Any]]:
         """Execute the full 4-stage remote digital human pipeline."""
+        from server.runtime import ColabOneCancelledError
+
         started = time.monotonic()
         task.check()
 
@@ -1877,16 +2175,48 @@ class ColabOneDigitalHumanRunner:
         if audio_source not in ("tts", "audio"):
             raise ValueError(f"不支持的音频来源模式：{audio_source}")
 
+        render_quality = str(
+            overrides.get("pipeline.render_quality") or "balanced_480p_ai2x"
+        ).strip().lower()
+        if render_quality not in ("balanced_480p_ai2x", "native_720p"):
+            render_quality = "balanced_480p_ai2x"
+
+        accel_profile = str(
+            overrides.get("pipeline.acceleration_profile") or "max"
+        ).strip().lower()
+        if accel_profile not in ("max", "balanced", "compat"):
+            accel_profile = "max"
+
+        voice_preset = str(overrides.get("pipeline.voice_preset") or "").strip()
+
         res_spec = overrides.get("pipeline.target_resolution")
         target_w, target_h = parse_target_resolution(
             str(res_spec) if res_spec else "",
             default=(default_target_w, default_target_h),
         )
-        base_w, base_h = compute_base_dimensions(video_backend, target_w, target_h)
+        if video_backend == "longcat_avatar":
+            base_w, base_h = compute_base_dimensions(
+                video_backend, target_w, target_h, render_quality=render_quality
+            )
+        else:
+            base_w, base_h = compute_base_dimensions(video_backend, target_w, target_h)
 
-        upscale_mode = str(
-            overrides.get("pipeline.upscale_mode") or default_upscale_mode or "none"
-        ).strip().lower()
+        explicit_upscale = overrides.get("pipeline.upscale_mode")
+        has_explicit_upscale = (
+            "pipeline.upscale_mode" in overrides
+            and explicit_upscale is not None
+            and str(explicit_upscale).strip() != ""
+        )
+        if (
+            video_backend == "longcat_avatar"
+            and render_quality == "native_720p"
+            and not has_explicit_upscale
+        ):
+            upscale_mode = "lanczos"
+        else:
+            upscale_mode = str(
+                explicit_upscale or default_upscale_mode or "none"
+            ).strip().lower()
         if upscale_mode not in ("none", "ai_2x", "lanczos"):
             upscale_mode = "none"
 
@@ -1959,7 +2289,20 @@ class ColabOneDigitalHumanRunner:
             if tts_engine == "indextts2" and (
                 ref_audio_path is None or not ref_audio_path.is_file()
             ):
-                raise ValueError("IndexTTS2 需要上传音色参考音频才能进行语音合成")
+                if voice_preset.lower() == "custom":
+                    raise ValueError(
+                        "IndexTTS2 在自定义音色模式下需要上传音色参考音频才能进行语音合成"
+                    )
+                if voice_preset:
+                    from server.tts_engines import resolve_colabone_voice_preset
+
+                    engine_spec = (
+                        get_engine_fn(tts_engine)
+                        if callable(get_engine_fn)
+                        else {"id": tts_engine}
+                    )
+                    if resolve_colabone_voice_preset(engine_spec, voice_preset) is None:
+                        raise ValueError("IndexTTS2 需要上传音色参考音频才能进行语音合成")
             if ref_audio_path is not None and not ref_audio_path.is_file():
                 raise ValueError("音色参考音频文件不存在")
 
@@ -2069,19 +2412,28 @@ class ColabOneDigitalHumanRunner:
                 _update_task(task, progress=0.05, message=tts_msg)
                 task.note(tts_msg)
 
-                tts_result = self.tts_runner.synthesize(
-                    task,
-                    engine_id=tts_engine,
-                    script_text=script_text,
-                    work_dir=tts_dir,
-                    ref_audio_path=ref_audio_path,
-                    ref_text=ref_text,
-                    voice_prompt=voice_prompt,
-                    emotion_ref_path=emotion_ref_path,
-                    emotion_prompt=emotion_prompt,
-                    pause_seconds=pause_seconds,
-                    hf_token=hf_token,
-                )
+                synth_kwargs: dict[str, Any] = {
+                    "engine_id": tts_engine,
+                    "script_text": script_text,
+                    "work_dir": tts_dir,
+                    "ref_audio_path": ref_audio_path,
+                    "ref_text": ref_text,
+                    "voice_prompt": voice_prompt,
+                    "emotion_ref_path": emotion_ref_path,
+                    "emotion_prompt": emotion_prompt,
+                    "pause_seconds": pause_seconds,
+                    "hf_token": hf_token,
+                }
+                try:
+                    synth_sig = inspect.signature(self.tts_runner.synthesize)
+                    if "voice_preset" in synth_sig.parameters or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in synth_sig.parameters.values()
+                    ):
+                        synth_kwargs["voice_preset"] = voice_preset
+                except (TypeError, ValueError):
+                    pass
+                tts_result = self.tts_runner.synthesize(task, **synth_kwargs)
                 master_audio_path = Path(tts_result["audio_path"])
                 raw_manifest = tts_result.get("manifest")
                 manifest = raw_manifest if isinstance(raw_manifest, dict) else None
@@ -2150,6 +2502,90 @@ class ColabOneDigitalHumanRunner:
                 ensure_fn(task, wf, **ensure_kwargs)
             elif not self.manager.is_running():
                 self.manager.start_server(task)
+
+            active_accel_profile = accel_profile
+            longcat_gpu_caps: dict[str, Any] = {}
+            if video_backend == "longcat_avatar" and active_accel_profile != "compat":
+                task.check()
+                longcat_gpu_caps = self._probe_longcat_gpu_caps()
+                ensure_sage_fn = (
+                    getattr(packs, "ensure_sageattention_wheels", None)
+                    if packs is not None
+                    else None
+                )
+                is_real_unpatched_sage = (
+                    getattr(ensure_sage_fn, "__module__", "") == "server.comfy_packs"
+                    and getattr(ensure_sage_fn, "__qualname__", "")
+                    == "ColabOneComfyPackManager.ensure_sageattention_wheels"
+                )
+                if callable(ensure_sage_fn) and (
+                    self._run_cmd_fn is None or not is_real_unpatched_sage
+                ):
+                    try:
+                        sage_kwargs: dict[str, Any] = {}
+                        try:
+                            sage_sig = inspect.signature(ensure_sage_fn)
+                            has_sage_var_kw = any(
+                                p.kind == inspect.Parameter.VAR_KEYWORD
+                                for p in sage_sig.parameters.values()
+                            )
+                            if has_sage_var_kw or "gpu_caps" in sage_sig.parameters:
+                                sage_kwargs["gpu_caps"] = longcat_gpu_caps
+                            if has_sage_var_kw or "allow_sage3" in sage_sig.parameters:
+                                sage_kwargs["allow_sage3"] = (
+                                    active_accel_profile == "max"
+                                )
+                        except (TypeError, ValueError):
+                            sage_kwargs = {
+                                "gpu_caps": longcat_gpu_caps,
+                                "allow_sage3": active_accel_profile == "max",
+                            }
+                        updated_caps = ensure_sage_fn(task, **sage_kwargs)
+                        if isinstance(updated_caps, dict):
+                            installed_any = bool(updated_caps.get("installed_any"))
+                            longcat_gpu_caps = {**longcat_gpu_caps, **updated_caps}
+                            if installed_any:
+                                is_running_fn = getattr(
+                                    self.manager, "is_running", None
+                                )
+                                stop_fn = getattr(self.manager, "stop_server", None)
+                                start_fn = getattr(self.manager, "start_server", None)
+                                if (
+                                    callable(is_running_fn)
+                                    and is_running_fn()
+                                    and callable(stop_fn)
+                                    and callable(start_fn)
+                                ):
+                                    task.note(
+                                        "已安装 SageAttention 加速算子，正在重启远端 ComfyUI 引擎以加载新内核"
+                                    )
+                                    stop_fn()
+                                    task.check()
+                                    start_fn(task)
+                                    clear_restart_fn = getattr(
+                                        packs, "clear_pending_pip_restart", None
+                                    )
+                                    if callable(clear_restart_fn):
+                                        clear_restart_fn()
+                    except ColabOneCancelledError:
+                        raise
+                    except Exception as exc:
+                        task.note(
+                            f"准备 SageAttention 算子时出现非致命异常，将自动使用当前可用注意力实现：{exc}",
+                            level="warning",
+                        )
+
+                _, stage2_accel_summary = apply_longcat_acceleration(
+                    wf["workflow"],
+                    profile=active_accel_profile,
+                    gpu_caps=longcat_gpu_caps,
+                )
+                task.note(
+                    f"已启用 LongCat 远端加速栈：注意力={stage2_accel_summary['attention_mode']}，"
+                    f"量化={stage2_accel_summary['quantization']}，"
+                    f"显存常驻={'是' if stage2_accel_summary['resident_vram'] else '否'}，"
+                    f"torch.compile={'开' if stage2_accel_summary['torch_compile'] else '关'}"
+                )
 
             task.check()
             _update_task(task, progress=0.30)
@@ -2228,6 +2664,19 @@ class ColabOneDigitalHumanRunner:
             # ------------------------------------------------------------------
             # Stage 3 — Multi-Segment Relay Rendering (32%..90% progress)
             # ------------------------------------------------------------------
+            uploaded_anchor_ref = ""
+            if video_backend == "longcat_avatar" and total_segs > 1:
+                anchor_ref_name = f"dh_{safe_task_tag}_anchor_ref.png"
+                uploaded_anchor_ref = self._upload_to_comfy(
+                    task,
+                    anchor_ref_name,
+                    anchor_prepared_path,
+                    is_image=True,
+                )
+                temp_io_in_files.add(anchor_ref_name)
+                if uploaded_anchor_ref:
+                    temp_io_in_files.add(uploaded_anchor_ref)
+
             seg_span = (0.90 - 0.32) / total_segs
             segment_mp4s: list[Path] = []
             segment_exact_frames: list[int] = []
@@ -2242,9 +2691,18 @@ class ColabOneDigitalHumanRunner:
                 exact_frames,
             ) in enumerate(segment_plan):
                 task.check()
+                seg_started = time.monotonic()
                 seg_lo = 0.32 + idx * seg_span
                 seg_hi = 0.32 + (idx + 1) * seg_span
                 segment_label = f"第 {idx + 1}/{total_segs} 段"
+
+                # Compute Wan 4k+1 aligned frame count BEFORE slicing audio so
+                # Whisper/Wav2Vec embeds always receive at least (num_frames + 2)
+                # frames of audio (zero int() truncation, zero pad_with_start drift).
+                raw_frames = exact_frames + (1 if idx > 0 else 0)
+                num_frames = align_wan_frames(raw_frames, minimum=17)
+                if video_backend == "longcat_avatar":
+                    num_frames = min(num_frames, LONGCAT_MAX_FRAMES)
 
                 # Slice segment audio cleanly with stdlib wave (lossless & offline-safe).
                 # For idx > 0, start 1 frame earlier so frame 0 overlaps the relay anchor
@@ -2254,30 +2712,48 @@ class ColabOneDigitalHumanRunner:
                     if idx > 0
                     else seg_start
                 )
+                min_audio_dur = (num_frames + 2) / float(output_fps)
+                lookahead_end = seg_audio_start + min_audio_dur
+                slice_end = max(seg_audio_start, min(duration, lookahead_end))
                 seg_audio_path = work_dir / f"seg_{idx:03d}.wav"
                 if _is_readable_pcm_wav(master_audio_path):
                     slice_wav_segment(
-                        master_audio_path, seg_audio_path, seg_audio_start, seg_end
+                        master_audio_path,
+                        seg_audio_path,
+                        seg_audio_start,
+                        slice_end,
+                        pad_to_seconds=min_audio_dur,
                     )
                 else:
-                    self._invoke_run_cmd(
+                    slice_dur = max(0.0, slice_end - seg_audio_start)
+                    pad_needed = max(0.0, min_audio_dur - slice_dur)
+                    ffmpeg_slice_cmd = [
+                        ffmpeg_bin,
+                        "-y",
+                        "-protocol_whitelist",
+                        "file,pipe",
+                        "-ss",
+                        f"{seg_audio_start:.6f}",
+                        "-to",
+                        f"{slice_end:.6f}",
+                        "-i",
+                        str(master_audio_path),
+                    ]
+                    if pad_needed > 1e-4:
+                        ffmpeg_slice_cmd.extend(
+                            ["-af", f"apad=whole_dur={min_audio_dur:.6f}"]
+                        )
+                    ffmpeg_slice_cmd.extend(
                         [
-                            ffmpeg_bin,
-                            "-y",
-                            "-protocol_whitelist",
-                            "file,pipe",
-                            "-ss",
-                            f"{seg_audio_start:.6f}",
-                            "-to",
-                            f"{seg_end:.6f}",
-                            "-i",
-                            str(master_audio_path),
                             "-ar",
                             "48000",
                             "-c:a",
                             "pcm_s16le",
                             str(seg_audio_path),
-                        ],
+                        ]
+                    )
+                    self._invoke_run_cmd(
+                        ffmpeg_slice_cmd,
                         task,
                         work_dir / f"ffmpeg_slice_{idx:03d}.log",
                         timeout=120,
@@ -2330,16 +2806,10 @@ class ColabOneDigitalHumanRunner:
                 if uploaded_aud:
                     temp_io_in_files.add(uploaded_aud)
 
-                # Build per-segment overrides and Wan 4k+1 aligned frame count.
-                # For idx > 0, request +1 overlap frame (exact_frames + 1) so frame 0 absorbs
-                # the relay tail frame and Stage 4 trims [1, exact_frames + 1) cleanly.
+                # Build per-segment overrides using the precomputed Wan 4k+1 frame count.
                 seg_overrides: dict[str, Any] = {
                     k: v for k, v in overrides.items() if not k.startswith("pipeline.")
                 }
-                raw_frames = exact_frames + (1 if idx > 0 else 0)
-                num_frames = align_wan_frames(raw_frames, minimum=17)
-                if video_backend == "longcat_avatar":
-                    num_frames = min(num_frames, LONGCAT_MAX_FRAMES)
 
                 if width_node_key:
                     seg_overrides[width_node_key] = int(base_w)
@@ -2412,6 +2882,17 @@ class ColabOneDigitalHumanRunner:
                         vhs_inputs["save_metadata"] = False
                         vhs_inputs.pop("audio", None)
 
+                # For LongCat-Avatar relay segments (idx > 0), anchor identity to the
+                # original prepared portrait via ref_latent to prevent long-video drift.
+                if (
+                    video_backend == "longcat_avatar"
+                    and idx > 0
+                    and uploaded_anchor_ref
+                ):
+                    prompt_payload = inject_longcat_ref_latent_nodes(
+                        prompt_payload, uploaded_anchor_ref
+                    )
+
                 # Inject in-graph AI 2x super-resolution (ImageUpscaleWithModel -> VHS_VideoCombine).
                 seg_ai_upscaled = False
                 if upscale_mode == "ai_2x" and upscale_model_name:
@@ -2451,7 +2932,112 @@ class ColabOneDigitalHumanRunner:
                 except (TypeError, ValueError):
                     exec_kwargs["save_to_store"] = False
 
-                exec_result = exec_fn(task, wf, prompt_payload, **exec_kwargs)
+                if video_backend == "longcat_avatar":
+                    base_prompt_payload = prompt_payload
+                    attempted_accel_keys: set[tuple[Any, ...]] = set()
+                    while True:
+                        task.check()
+                        prompt_payload, accel_summary = apply_longcat_acceleration(
+                            base_prompt_payload,
+                            profile=active_accel_profile,
+                            gpu_caps=longcat_gpu_caps,
+                        )
+                        accel_key = (
+                            accel_summary["profile"],
+                            accel_summary["attention_mode"],
+                            accel_summary["quantization"],
+                            accel_summary["resident_vram"],
+                            accel_summary["torch_compile"],
+                        )
+                        attempted_accel_keys.add(accel_key)
+                        try:
+                            exec_result = exec_fn(
+                                task, wf, prompt_payload, **exec_kwargs
+                            )
+                            break
+                        except ColabOneCancelledError:
+                            raise
+                        except RuntimeError as exc:
+                            task.check()
+                            stopping = getattr(
+                                getattr(self.manager, "runtime", None),
+                                "stopping",
+                                None,
+                            )
+                            if (
+                                isinstance(stopping, threading.Event)
+                                and stopping.is_set()
+                            ):
+                                raise
+
+                            next_profile = active_accel_profile
+                            next_caps = dict(longcat_gpu_caps)
+                            fallback_reason = ""
+                            if accel_summary["torch_compile"]:
+                                next_profile = "balanced"
+                                fallback_reason = (
+                                    "关闭 torch.compile 编译加速（回退至高速稳健模式）"
+                                )
+                            elif accel_summary["attention_mode"] == "sageattn_3":
+                                next_caps["sageattn3_available"] = False
+                                fallback_reason = (
+                                    "关闭 SageAttention 3（回退至 SageAttention 2）"
+                                )
+                            elif (
+                                accel_summary["attention_mode"] != "sdpa"
+                                or accel_summary["quantization"] != "disabled"
+                                or accel_summary["resident_vram"]
+                            ):
+                                next_profile = "compat"
+                                fallback_reason = (
+                                    "回退至兼容保底模式（SDPA + BF16 + 常规显存卸载）"
+                                )
+                            else:
+                                raise
+
+                            _, preview_next = apply_longcat_acceleration(
+                                base_prompt_payload,
+                                profile=next_profile,
+                                gpu_caps=next_caps,
+                            )
+                            next_key = (
+                                preview_next["profile"],
+                                preview_next["attention_mode"],
+                                preview_next["quantization"],
+                                preview_next["resident_vram"],
+                                preview_next["torch_compile"],
+                            )
+                            if next_key in attempted_accel_keys:
+                                raise
+
+                            active_accel_profile = next_profile
+                            longcat_gpu_caps = next_caps
+                            task.note(
+                                f"{segment_label} 加速算子执行异常（{exc}），已自动{fallback_reason}并重试",
+                                level="warning",
+                            )
+                            is_running_fn = getattr(
+                                self.manager, "is_running", None
+                            )
+                            start_fn = getattr(self.manager, "start_server", None)
+                            free_fn = getattr(self.manager, "free_memory", None)
+                            if (
+                                callable(is_running_fn)
+                                and not is_running_fn()
+                                and callable(start_fn)
+                            ):
+                                task.note(
+                                    f"{segment_label} 检测到远端 ComfyUI 已退出，正在重启引擎后继续回退重试",
+                                    level="warning",
+                                )
+                                start_fn(task)
+                            elif callable(free_fn):
+                                try:
+                                    free_fn(unload_models=True)
+                                except Exception:
+                                    pass
+                else:
+                    exec_result = exec_fn(task, wf, prompt_payload, **exec_kwargs)
                 seg_prompt_id, output_items = _parse_single_prompt_result(exec_result)
                 if seg_prompt_id:
                     last_prompt_id = seg_prompt_id
@@ -2496,6 +3082,10 @@ class ColabOneDigitalHumanRunner:
                 segment_mp4s.append(seg_mp4_path)
                 segment_exact_frames.append(exact_frames)
                 _update_task(task, progress=round(seg_hi, 4))
+                seg_elapsed = max(0.0, time.monotonic() - seg_started)
+                task.note(
+                    f"{wf_name} · {segment_label} 渲染完成（耗时 {format_colabone_duration_zh(seg_elapsed, subsecond=True)}）"
+                )
 
             # ------------------------------------------------------------------
             # Stage 4 — Final Frame-Exact Concat, Scale/Crop & 48kHz Audio Muxing (90%..100%)
@@ -2539,6 +3129,11 @@ class ColabOneDigitalHumanRunner:
                 ["-protocol_whitelist", "file,pipe", "-i", str(master_audio_path)]
             )
 
+            cfr_args = (
+                ["-fps_mode", "cfr"]
+                if self._run_cmd_fn is not None
+                else _resolve_ffmpeg_cfr_args(ffmpeg_bin)
+            )
             final_cmd = [
                 ffmpeg_bin,
                 "-y",
@@ -2552,11 +3147,12 @@ class ColabOneDigitalHumanRunner:
                 "-c:v",
                 "libx264",
                 "-preset",
-                "medium",
+                "fast",
                 "-crf",
                 "18",
                 "-pix_fmt",
                 "yuv420p",
+                *cfr_args,
                 "-r",
                 str(output_fps),
                 "-c:a",
@@ -2613,9 +3209,10 @@ class ColabOneDigitalHumanRunner:
                     elapsed=elapsed,
                     prompt_id=last_prompt_id,
                 )
+            elapsed_label = format_colabone_duration_zh(elapsed, subsecond=True)
             done_msg = (
                 f"{wf_name} · 数字人长视频生成完成"
-                f"（共 {total_segs} 段，{duration:.1f} 秒，{out_w}×{out_h}）"
+                f"（共 {total_segs} 段，{duration:.1f} 秒，{out_w}×{out_h}，总耗时 {elapsed_label}）"
             )
             _update_task(task, progress=1, message=done_msg, append_output=record)
             task.note(done_msg)

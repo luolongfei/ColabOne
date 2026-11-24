@@ -376,6 +376,91 @@ describe("hasColabOneDraftContent", () => {
       hasColabOneDraftContent(fields, defaults, ["1.image"], "en-US"),
     ).toBe(true);
   });
+
+  it("migrates exact pre-optimization LongCat defaults when restoring legacy drafts while preserving custom values and post-upgrade choices", () => {
+    const longCatFields: WorkflowField[] = [
+      makeField({
+        key: "pipeline.script_text",
+        field_type: "textarea",
+        default: "",
+      }),
+      makeField({
+        key: "pipeline.render_quality",
+        field_type: "select",
+        default: "balanced_480p_ai2x",
+      }),
+      makeField({
+        key: "pipeline.upscale_mode",
+        field_type: "select",
+        default: "ai_2x",
+      }),
+      makeField({
+        key: "pipeline.max_segment_seconds",
+        field_type: "number",
+        default: 3.7,
+      }),
+      makeField({
+        key: "14.steps",
+        field_type: "integer",
+        default: 8,
+      }),
+      makeField({
+        key: "5.positive_prompt",
+        field_type: "textarea",
+        default: COLABONE_CANONICAL_VISUAL_PROMPT,
+      }),
+    ];
+
+    // 1. Pre-optimization saved draft (no pipeline.render_quality key) with old untouched defaults
+    const migrated = mergeColabOneWorkflowDraftFields(
+      longCatFields,
+      {
+        "pipeline.script_text": "保留我的播报文稿",
+        "pipeline.upscale_mode": "none",
+        "pipeline.max_segment_seconds": 9,
+        "14.steps": 12,
+        "5.positive_prompt":
+          "清晰演播室人像镜头，主播面向镜头自然说话，面部表情生动自然，头部轻微摆动，自然眨眼，焦距锐利，柔和演播室灯光，背景稳定不抖动",
+      },
+      "zh-CN",
+    );
+    expect(migrated["pipeline.script_text"]).toBe("保留我的播报文稿");
+    expect(migrated["pipeline.render_quality"]).toBe("balanced_480p_ai2x");
+    expect(migrated["pipeline.upscale_mode"]).toBe("ai_2x");
+    expect(migrated["pipeline.max_segment_seconds"]).toBe(3.7);
+    expect(migrated["14.steps"]).toBe(8);
+    expect(migrated["5.positive_prompt"]).toBe(t("comfy.defaultVisualPrompt", undefined, "zh-CN"));
+
+    // 2. Pre-optimization saved draft with user-customized non-default values keeps custom values
+    const legacyCustom = mergeColabOneWorkflowDraftFields(
+      longCatFields,
+      {
+        "pipeline.upscale_mode": "lanczos",
+        "pipeline.max_segment_seconds": 6,
+        "14.steps": 16,
+      },
+      "zh-CN",
+    );
+    expect(legacyCustom["pipeline.upscale_mode"]).toBe("lanczos");
+    expect(legacyCustom["pipeline.max_segment_seconds"]).toBe(6);
+    expect(legacyCustom["14.steps"]).toBe(16);
+
+    // 3. Post-optimization saved draft (contains pipeline.render_quality) preserves explicit none/9/12
+    const postUpgrade = mergeColabOneWorkflowDraftFields(
+      longCatFields,
+      {
+        "pipeline.render_quality": "native_720p",
+        "pipeline.upscale_mode": "none",
+        "pipeline.max_segment_seconds": 9,
+        "14.steps": 12,
+      },
+      "zh-CN",
+    );
+    expect(postUpgrade["pipeline.render_quality"]).toBe("native_720p");
+    expect(postUpgrade["pipeline.upscale_mode"]).toBe("none");
+    expect(postUpgrade["pipeline.max_segment_seconds"]).toBe(9);
+    expect(postUpgrade["14.steps"]).toBe(12);
+  });
 });
 
 describe("sanitizeColabOneDraftFieldsForSave", () => {

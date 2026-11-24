@@ -34,9 +34,11 @@ export const zhTWMessages: ColabOneMessages = {
   "common.submitting": "送出中…",
   "common.secondsShort": "{value} 秒",
   "common.minutes": "{value} 分鐘",
+  "common.minutesSeconds": "{minutes} 分 {seconds} 秒",
   "common.hours": "{value} 小時",
   "common.hoursMinutes": "{hours} 小時 {minutes} 分鐘",
   "common.hoursMinutesShort": "{hours} 小時 {minutes} 分",
+  "common.hoursMinutesSeconds": "{hours} 小時 {minutes} 分 {seconds} 秒",
   "common.daysHours": "{days} 天 {hours} 小時",
   "common.approxDaysHours": "約 {days} 天 {hours} 小時",
   "common.approxHoursMinutes": "約 {hours} 小時 {minutes} 分鐘",
@@ -150,6 +152,8 @@ export const zhTWMessages: ColabOneMessages = {
   "task.kindComfyRun": "執行 ComfyUI 工作流程中",
   "task.gpuReadyIdle": "GPU 已就緒，等待操作",
   "task.gpuWaitingStart": "等待啟動遠端 GPU",
+  "task.elapsedLive": "已耗時 {duration}",
+  "task.elapsedTotal": "耗時 {duration}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/小時",
@@ -1197,6 +1201,8 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.noticeStoppingEngine": "正在停止遠端 ComfyUI 引擎。",
   "comfy.noticeCancelRequested": "已請求取消目前工作。",
   "comfy.noticeRunSubmitted": "工作流程「{name}」已送出至遠端佇列；執行期間暫停閒置釋放計時。",
+  "comfy.noticeRunCompleted": "工作流程「{name}」已完成 · 總耗時 {duration}",
+  "comfy.noticeRunCompletedNoDuration": "工作流程「{name}」已完成。",
   "comfy.noticeExported": "作品已匯出至本機。",
   "comfy.noticeExportedDrive": "作品已匯出至 Google 雲端硬碟：{path}",
   "comfy.noticeExportedDriveExists": "該作品已儲存於 Google 雲端硬碟：{path}",
@@ -1343,11 +1349,11 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.errImportInvalidInputKey": "節點「{id}」包含空白輸入鍵名",
   "comfy.errEmptyFile": "所選檔案為空（0 B），請重新選擇有效素材",
   "comfy.indextts2RefRequiredHint":
-    "目前選用的 IndexTTS-2 引擎必須上傳參考音色音訊",
+    "IndexTTS-2 選擇「自訂音色」時必須上傳參考音色音訊",
   "comfy.runBlockedBusy": "目前有正在執行的任務或操作，請稍候",
   "comfy.runBlockedUploading": "素材正在上傳中，請稍候完成",
   "comfy.defaultVisualPrompt":
-    "清晰攝影棚人像鏡頭，主播面向鏡頭自然說話，臉部表情生動自然，頭部輕微擺動，自然眨眼，焦距銳利，柔和攝影棚燈光，背景穩定不晃動",
+    "固定機位中景，主播親切自然地面對鏡頭娓娓道來，說話時配合自然豐富的手勢與抬手示意動作，臉部表情生動、眉眼微動、頭部隨語調自然輕點與微傾，肩部自然起伏、自然眨眼，口型與語音精準貼合，柔和棚拍燈光，畫質銳利清晰，背景穩定。",
   "comfy.placeholderScriptText":
     "例如：大家好，歡迎來到今天的分享！接下來我將帶你快速了解如何用 AI 輕鬆製作自然流暢的口播影片。",
   "comfy.placeholderVoiceRefText":
@@ -1626,6 +1632,92 @@ export const zhTWMessages: ColabOneMessages = {
   "close.rememberHint": "後續可隨時於「設定 → 本機與關於」中修改。",
   "close.confirmQuitBtn": "直接結束",
   "close.confirmBackgroundBtn": "背景執行",
+
+  // One-Click Migration (Export / Import)
+  "settings.sectionMigration": "資料與遷移",
+  "settings.migrationTitle": "一鍵遷移（匯入／匯出）",
+  "settings.migrationEncryptedTag": "密碼加密",
+  "settings.migrationDesc":
+    "將目前 Google 登入狀態、第三方金鑰、全部軟體設定、模型庫與自訂工作流程加密匯出為 .colabone 檔案；在另一台新電腦匯入即可免重新登入還原一致體驗。",
+  "settings.migrationExportBtn": "匯出遷移檔案",
+  "settings.migrationImportBtn": "匯入遷移檔案",
+
+  "migration.homeImportBtn": "匯入遷移檔案",
+  "migration.exportModalTitle": "匯出遷移檔案",
+  "migration.exportModalDesc":
+    "選擇要打包的資料模組並設定遷移密碼。所有敏感憑證僅於本機加密封裝，支援 Windows 與 macOS 跨平台遷移。",
+  "migration.importDecryptModalTitle": "解鎖遷移檔案",
+  "migration.importPreviewModalTitle": "確認匯入遷移設定",
+  "migration.selectModulesLabel": "選擇要匯出的模組",
+  "migration.selectAllBtn": "全選（整機遷移）",
+  "migration.selectConfigOnlyBtn": "僅設定與工作流程（不含帳號金鑰）",
+  "migration.moduleAccountTitle": "Google 帳號與雲端硬碟認證",
+  "migration.moduleAccountDesc":
+    "包含 OAuth 自動續期憑證、帳號資訊與免彈窗 Google 雲端硬碟配額專案，匯入後無須重新登入。",
+  "migration.moduleCredentialsTitle": "第三方金鑰與公網隧道",
+  "migration.moduleCredentialsDesc":
+    "包含 Hugging Face Token、GPU 分配代理、對外 API 與 ComfyUI 畫布的固定網域和 Tunnel Token。",
+  "migration.moduleSettingsTitle": "全部軟體與外觀設定",
+  "migration.moduleSettingsDesc":
+    "包含預設 GPU、閒置釋放、下載執行緒、自動雲端硬碟、淺／深色主題、語言、隱私遮罩、關閉行為與更新偏好。",
+  "migration.moduleLibraryTitle": "模型庫與自訂工作流程",
+  "migration.moduleLibraryDesc":
+    "包含常用模型、自訂匯入模型、API 別名、常用儲存庫書籤與自訂 ComfyUI 工作流程範本。",
+  "migration.moduleCuUsageTitle": "CU 算力消耗歷史",
+  "migration.moduleCuUsageDesc":
+    "包含本機記錄的 30 分鐘粒度算力消費趨勢與餘額歷史統計資料。",
+  "migration.moduleDraftsTitle": "ComfyUI 工作流程文字草稿",
+  "migration.moduleDraftsDesc":
+    "僅包含未提交的提示詞與數值參數草稿，不含大體積本機圖片／音訊素材，保持單檔輕量。",
+  "migration.moduleNotIncluded": "未包含",
+  "migration.summarySignedIn": "已登入",
+  "migration.summaryNotSignedIn": "未登入",
+  "migration.summaryDriveReady": "雲端硬碟免彈窗就緒",
+  "migration.summaryConfiguredCount": "已設定 {count} 項",
+  "migration.summaryEmpty": "暫無資料",
+  "migration.summaryIdleMinutes": "閒置 {minutes} 分鐘",
+  "migration.summaryThreads": "{count} 執行緒",
+  "migration.summaryCustomModels": "{count} 個自訂模型",
+  "migration.summaryCommonRepos": "{count} 個常用儲存庫",
+  "migration.summaryCustomWorkflows": "{count} 個工作流程",
+  "migration.summaryCuDays": "{days} 天記錄",
+  "migration.summaryDraftsCount": "{count} 個草稿",
+  "migration.exportPasswordTitle": "設定遷移密碼（必填）",
+  "migration.exportPasswordDesc":
+    "匯出檔案採用 Argon2id + AES-256-GCM 強制加密，至少輸入 {min} 位字元。請妥善記住密碼，遺失後無法找回。",
+  "migration.exportPasswordPlaceholder": "請輸入遷移密碼（至少 6 位）",
+  "migration.exportPasswordConfirmPlaceholder": "請再次輸入以確認密碼",
+  "migration.passwordTooShort": "遷移密碼至少需要 {min} 位非空白字元",
+  "migration.passwordTooLong": "遷移密碼過長，請縮短後重試",
+  "migration.passwordMismatch": "兩次輸入的遷移密碼不一致",
+  "migration.exportConfirmBtn": "選擇儲存位置並匯出",
+  "migration.exportingBtn": "正在加密匯出…",
+  "migration.exportSuccessToast": "已加密匯出遷移檔案：{filename}",
+  "migration.encryptedArchiveBadge": "ColabOne 加密遷移檔案",
+  "migration.changeFileBtn": "更換檔案",
+  "migration.importPasswordTitle": "輸入遷移密碼",
+  "migration.importPasswordDesc":
+    "請輸入匯出此檔案時設定的遷移密碼。解密後會先顯示內容摘要，由您確認後再寫入本機。",
+  "migration.importPasswordPlaceholder": "請輸入遷移密碼",
+  "migration.decryptContinueBtn": "解密並檢視摘要",
+  "migration.decryptingBtn": "正在解密驗證…",
+  "migration.metaSourceOS": "來源系統",
+  "migration.activeInstancesAccountBlocked":
+    "目前有執行中的 GPU 執行個體，已自動取消勾選「Google 帳號與雲端硬碟認證」。如需切換帳號請先釋放執行個體，或保持取消勾選僅匯入其他模組。",
+  "migration.closeBehaviorFallbackNotice":
+    "目前系統環境暫不支援最小化至系統匣背景執行，匯入後關閉視窗行為將自動回退為「直接結束」。",
+  "migration.importModulesTitle": "確認要匯入的模組",
+  "migration.importModulesHint": "可取消勾選不需要覆蓋的項目",
+  "migration.overwriteWarningTitle": "匯入將覆蓋本機所選模組的現有資料",
+  "migration.overwriteWarningDesc":
+    "僅會覆蓋上方勾選且檔案中包含的模組，未勾選或檔案未包含的模組將維持本機原樣；匯入完成後立即生效，無須重新啟動。",
+  "migration.overwriteWarningDescWithAccount":
+    "匯入完成後將立即生效並自動重新整理 Google 帳號與雲端執行個體狀態（無須重啟）。同一帳號支援多台電腦同時登入，但建議避免同時操作同一台遠端 GPU 執行個體。",
+  "migration.applyConfirmBtn": "確認覆蓋並匯入（{count} 項）",
+  "migration.importingBtn": "正在匯入並生效…",
+  "migration.importSuccessToast": "已成功匯入 {count} 項設定並立即生效",
+  "migration.importSuccessWithAccountToast":
+    "遷移匯入完成（{email}），設定已立即生效並正在同步帳號狀態",
 
   // Location
   "location.tooltipWithZone": "執行個體位置：{full} ({zone})",

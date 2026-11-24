@@ -342,6 +342,29 @@ export function colabOneBase64ToBlob(base64: string, mime: string): Blob {
   });
 }
 
+const COLABONE_LEGACY_LONGCAT_DEFAULTS: Record<string, string | number> = {
+  "pipeline.upscale_mode": "none",
+  "pipeline.max_segment_seconds": 9,
+  "14.steps": 12,
+};
+
+function isLegacyLongCatDefaultValue(fieldKey: string, raw: unknown): boolean {
+  if (!hasOwn(COLABONE_LEGACY_LONGCAT_DEFAULTS, fieldKey)) {
+    return false;
+  }
+  const legacy = COLABONE_LEGACY_LONGCAT_DEFAULTS[fieldKey];
+  if (typeof legacy === "number") {
+    const parsed =
+      typeof raw === "number"
+        ? raw
+        : typeof raw === "string" && raw.trim() !== ""
+          ? Number(raw.trim())
+          : NaN;
+    return Number.isFinite(parsed) && parsed === legacy;
+  }
+  return typeof raw === "string" && raw.trim() === legacy;
+}
+
 export function mergeColabOneWorkflowDraftFields(
   fields: WorkflowField[],
   draftFields: Record<string, string | number | boolean> | undefined,
@@ -349,6 +372,11 @@ export function mergeColabOneWorkflowDraftFields(
   validMedia?: Record<string, ColabOneWorkflowDraftMediaMeta>,
 ): Record<string, string | number | boolean> {
   const merged = defaultFieldValues(fields, locale);
+  const isPreOptimizationLongCatDraft =
+    isPlainRecord(draftFields) &&
+    Object.keys(draftFields).length > 0 &&
+    (fields || []).some((field) => field.key === "pipeline.render_quality") &&
+    !hasOwn(draftFields, "pipeline.render_quality");
 
   for (const field of fields || []) {
     if (field.field_type === "image" || field.field_type === "audio") {
@@ -368,6 +396,12 @@ export function mergeColabOneWorkflowDraftFields(
     }
     const raw: unknown = draftFields[field.key];
     if (raw === undefined || raw === null) {
+      continue;
+    }
+    if (
+      isPreOptimizationLongCatDraft &&
+      isLegacyLongCatDefaultValue(field.key, raw)
+    ) {
       continue;
     }
 

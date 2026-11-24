@@ -180,18 +180,18 @@ def test_package_archive_platform_defaults_and_fallback(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("platform_name", "machine", "expected_platform"),
+    ("platform_name", "machine", "goos", "goarch", "mygo_name", "expected_name"),
     [
-        ("darwin", "arm64", "macos-arm64"),
-        ("darwin", "x86_64", "macos-x64"),
-        ("win32", "AMD64", "windows-x64"),
-        ("win32", "ARM64", "windows-arm64"),
-        ("linux", "x86_64", "linux-x64"),
-        ("linux", "aarch64", "linux-arm64"),
+        ("darwin", "arm64", "darwin", "arm64", "colabone-0.9.9-arm64.dmg", "ColabOne-0.9.9-macos-arm64.dmg"),
+        ("darwin", "x86_64", "darwin", "amd64", "colabone-0.9.9-amd64.dmg", "ColabOne-0.9.9-macos-x64.dmg"),
+        ("win32", "AMD64", "windows", "amd64", "colabone-setup-0.9.9-amd64.exe", "ColabOne-0.9.9-windows-x64-setup.exe"),
+        ("win32", "ARM64", "windows", "arm64", "colabone-setup-0.9.9-arm64.exe", "ColabOne-0.9.9-windows-arm64-setup.exe"),
+        ("linux", "x86_64", "linux", "amd64", None, "ColabOne-0.9.9-linux-x64.zip"),
+        ("linux", "aarch64", "linux", "arm64", None, "ColabOne-0.9.9-linux-arm64.zip"),
     ],
 )
-def test_package_main_names_archive_for_host_platform(
-    tmp_path, monkeypatch, capsys, platform_name, machine, expected_platform
+def test_package_main_stages_native_installer_or_linux_archive(
+    tmp_path, monkeypatch, capsys, platform_name, machine, goos, goarch, mygo_name, expected_name
 ):
     monkeypatch.setattr(sys, "platform", platform_name)
     monkeypatch.setattr(install_mod.platform, "machine", lambda: machine)
@@ -199,10 +199,18 @@ def test_package_main_names_archive_for_host_platform(
     fake_root = tmp_path / "repo"
     (fake_root / "console").mkdir(parents=True)
     (fake_root / "console" / "mygo.json").write_text(
-        json.dumps({"version": "0.9.9"}), encoding="utf-8"
+        json.dumps({"name": "ColabOne", "slug": "colabone", "version": "0.9.9"}),
+        encoding="utf-8",
     )
+    platform_dir = fake_root / "console/dist" / f"{goos}-{goarch}"
+    platform_dir.mkdir(parents=True)
+    if mygo_name is not None:
+        (platform_dir / mygo_name).write_bytes(b"native-installer-bytes")
 
-    def fake_install(root_dir):
+    installer_flags = []
+
+    def fake_install(root_dir, build_installer=False):
+        installer_flags.append(build_installer)
         target = Path(root_dir) / "Programs" / "ColabOne"
         _make_clean_pure_go_stage(target)
         return target
@@ -211,18 +219,48 @@ def test_package_main_names_archive_for_host_platform(
     monkeypatch.setattr(install_mod, "install", fake_install)
 
     out_dir = tmp_path / "dist"
-    monkeypatch.setattr(sys, "argv", ["package.py", "--out", str(out_dir)])
-    package_mod.main()
+    package_mod.main(["--out", str(out_dir)])
 
-    expected_zip = (out_dir / f"ColabOne-0.9.9-{expected_platform}.zip").resolve()
-    assert expected_zip.is_file()
-    assert capsys.readouterr().out.strip() == str(expected_zip)
+    expected_artifact = (out_dir / expected_name).resolve()
+    assert expected_artifact.is_file()
+    assert capsys.readouterr().out.strip() == str(expected_artifact)
+    assert installer_flags == [goos in ("windows", "darwin")]
 
-    with zipfile.ZipFile(expected_zip) as zf:
-        names = set(zf.namelist())
-    assert "ColabOne/README.md" in names
-    for forbidden in package_mod.FORBIDDEN_LEGACY_DIRS:
-        assert not any(forbidden in Path(name).parts for name in names)
+    if mygo_name is not None:
+        assert expected_artifact.read_bytes() == b"native-installer-bytes"
+        assert list(out_dir.glob("*.zip")) == []
+    else:
+        with zipfile.ZipFile(expected_artifact) as zf:
+            names = set(zf.namelist())
+        assert "ColabOne/README.md" in names
+        for forbidden in package_mod.FORBIDDEN_LEGACY_DIRS:
+            assert not any(forbidden in Path(name).parts for name in names)
+
+
+def test_package_stage_platform_installer_rejects_missing_or_empty(tmp_path):
+    platform_dir = tmp_path / "console-dist" / "windows-amd64"
+    platform_dir.mkdir(parents=True)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    with pytest.raises(RuntimeError, match="Windows NSIS installer"):
+        package_mod.stage_platform_installer(
+            platform_dir, out, "0.1.9", "windows", "amd64"
+        )
+
+    empty_exe = platform_dir / "colabone-setup-0.1.9-amd64.exe"
+    empty_exe.write_bytes(b"")
+    with pytest.raises(RuntimeError, match="Windows NSIS installer"):
+        package_mod.stage_platform_installer(
+            platform_dir, out, "0.1.9", "windows", "amd64"
+        )
+
+    mac_dir = tmp_path / "console-dist" / "darwin-arm64"
+    mac_dir.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="macOS disk image"):
+        package_mod.stage_platform_installer(
+            mac_dir, out, "0.1.9", "darwin", "arm64"
+        )
 
 
 def test_package_audit_rejects_private_state_and_credentials(tmp_path):
@@ -415,9 +453,33 @@ def test_install_stages_pure_go_binary_and_removes_legacy_dirs(
         "-platform",
         f"{goos}/{goarch}",
     ]
+    if goos == "darwin":
+        assert "-skip-dmg" in events[1][1]
+    elif goos == "windows":
+        assert "-skip-installer" in events[1][1]
 
     expected_exec = runtime_bundle.app_executable(target / expected_app_name)
     assert events[2] == ("run", [str(expected_exec), "--self-test"], target)
+
+    # Enabling build_installer omits -skip-dmg / -skip-installer and uses extended timeout.
+    events.clear()
+    timeouts = []
+
+    def fake_run_with_timeout(args, cwd=fake_root, timeout=300, **kwargs):
+        events.append(("run", list(args), Path(cwd)))
+        timeouts.append(timeout)
+
+    monkeypatch.setattr(install_mod, "run", fake_run_with_timeout)
+    install_mod.install(str(sandbox), check_only=False, build_installer=True)
+    assert events[1][1] == [
+        "go",
+        "tool",
+        "mygo",
+        "build",
+        "-platform",
+        f"{goos}/{goarch}",
+    ]
+    assert timeouts[0] == 600
 
     staged_names = sorted(p.name for p in target.iterdir())
     assert staged_names == sorted(
@@ -426,7 +488,7 @@ def test_install_stages_pure_go_binary_and_removes_legacy_dirs(
     package_mod.audit(target)
 
 
-def test_package_stages_mygo_updater_artifacts_and_mygo_files(tmp_path, monkeypatch):
+def test_package_stages_native_installer_updater_artifacts_and_optional_portable_zip(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(install_mod, "_host_goarch", lambda: "amd64")
 
@@ -437,12 +499,14 @@ def test_package_stages_mygo_updater_artifacts_and_mygo_files(tmp_path, monkeypa
         (fake_root / name).write_text(name + "\n", encoding="utf-8")
     (fake_root / "console").mkdir(parents=True)
     (fake_root / "console/mygo.json").write_text(
-        json.dumps({"name": "ColabOne", "version": "0.1.7"}), encoding="utf-8"
+        json.dumps({"name": "ColabOne", "slug": "colabone", "version": "0.1.7"}),
+        encoding="utf-8",
     )
 
     dist_dir = fake_root / "console/dist/windows-amd64"
     dist_dir.mkdir(parents=True)
     (dist_dir / "ColabOne.exe").write_bytes(b"pe-stub")
+    (dist_dir / "colabone-setup-0.1.7-amd64.exe").write_bytes(b"nsis-installer-stub")
     (dist_dir / ".mygo-files").write_text("ColabOne.exe\nLICENSE\nNOTICE\nREADME.md\nthird_party\n", encoding="utf-8")
     (dist_dir / "colabone-0.1.7-windows-amd64.tar.gz").write_bytes(b"tar-stub")
     (dist_dir / "colabone-0.1.6-to-0.1.7-windows-amd64.delta").write_bytes(b"delta-stub")
@@ -458,13 +522,29 @@ def test_package_stages_mygo_updater_artifacts_and_mygo_files(tmp_path, monkeypa
     out_dir = tmp_path / "out"
     package_mod.main(["--out", str(out_dir)])
 
-    zip_path = out_dir / "ColabOne-0.1.7-windows-x64.zip"
-    assert zip_path.is_file()
-    with zipfile.ZipFile(zip_path) as zf:
-        assert "ColabOne/.mygo-files" in set(zf.namelist())
+    installer_path = out_dir / "ColabOne-0.1.7-windows-x64-setup.exe"
+    assert installer_path.is_file()
+    assert installer_path.read_bytes() == b"nsis-installer-stub"
+    assert not (out_dir / "ColabOne-0.1.7-windows-x64.zip").exists()
     assert (out_dir / "colabone-0.1.7-windows-amd64.tar.gz").is_file()
     assert (out_dir / "colabone-0.1.6-to-0.1.7-windows-amd64.delta").is_file()
     assert (out_dir / "update-windows-amd64.json").is_file()
+
+    # Passing --portable-zip emits the portable zip alongside the native installer.
+    portable_out = tmp_path / "out-portable"
+    package_mod.main(["--out", str(portable_out), "--portable-zip"])
+    assert (portable_out / "ColabOne-0.1.7-windows-x64-setup.exe").is_file()
+    zip_path = portable_out / "ColabOne-0.1.7-windows-x64.zip"
+    assert zip_path.is_file()
+    with zipfile.ZipFile(zip_path) as zf:
+        assert "ColabOne/.mygo-files" in set(zf.namelist())
+
+    # If updater artifact staging fails after copying the installer, out dir is rolled back cleanly.
+    (dist_dir / "colabone-0.1.7-windows-amd64.tar.gz").unlink()
+    failed_out = tmp_path / "out-failed"
+    with pytest.raises(RuntimeError, match="missing archive"):
+        package_mod.main(["--out", str(failed_out)])
+    assert list(failed_out.iterdir()) == []
 
 
 def test_check_runs_pure_go_pipeline_without_bridge(monkeypatch):

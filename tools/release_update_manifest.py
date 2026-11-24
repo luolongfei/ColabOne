@@ -6,14 +6,81 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Sequence
+import urllib.parse
 
 DEFAULT_TARGETS = ("windows-amd64", "darwin-arm64")
+DEFAULT_GITHUB_REPO = "luolongfei/ColabOne"
+_GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_BILINGUAL_BLANK_DIVIDER_RE = re.compile(r"\n\n[ \t]*---[ \t]*\n\n")
+_BILINGUAL_DIVIDER_RE = re.compile(r"\n[ \t]*---[ \t]*\n")
+_ZH_DOWNLOADS_HEADING_RE = re.compile(r"^##\s+下载安装\s*$", re.MULTILINE)
+_EN_DOWNLOADS_HEADING_RE = re.compile(r"^##\s+Downloads\s*$", re.MULTILINE)
 
 
 class ColabOneUpdateManifestError(ValueError):
     """Raised when signed MyGo update artifacts are missing or inconsistent."""
+
+
+def colabone_render_github_release_body(
+    notes: str,
+    version: str,
+    *,
+    repo: str = DEFAULT_GITHUB_REPO,
+    tag: str | None = None,
+) -> str:
+    """Append bilingual direct installer download links to GitHub Release notes."""
+    clean_version = version.lstrip("vV").strip()
+    if not clean_version:
+        raise ColabOneUpdateManifestError("Release version must not be empty")
+    clean_tag = (tag or f"v{clean_version}").strip()
+    if not clean_tag:
+        raise ColabOneUpdateManifestError("Release tag must not be empty")
+    clean_repo = (repo or DEFAULT_GITHUB_REPO).strip().strip("/")
+    if not _GITHUB_REPO_RE.fullmatch(clean_repo):
+        raise ColabOneUpdateManifestError(f"Invalid GitHub repository {repo!r}; expected owner/repo")
+
+    win_name = f"ColabOne-{clean_version}-windows-x64-setup.exe"
+    mac_name = f"ColabOne-{clean_version}-macos-arm64.dmg"
+    base_url = (
+        f"https://github.com/{clean_repo}/releases/download/"
+        f"{urllib.parse.quote(clean_tag, safe='')}"
+    )
+    win_url = f"{base_url}/{urllib.parse.quote(win_name, safe='')}"
+    mac_url = f"{base_url}/{urllib.parse.quote(mac_name, safe='')}"
+
+    zh_block = "\n".join(
+        [
+            "## 下载安装",
+            f"- **Windows (x64)**：[{win_name}]({win_url})（双击安装，无需管理员权限）",
+            f"- **macOS (Apple Silicon)**：[{mac_name}]({mac_url})（打开后拖入「应用程序」）",
+            "- 其余 `.tar.gz`、`.delta`、`update-*.json` 为应用内自动更新专用文件，无需手动下载。",
+        ]
+    )
+    en_block = "\n".join(
+        [
+            "## Downloads",
+            f"- **Windows (x64)**: [{win_name}]({win_url}) (standard installer, no admin required)",
+            f"- **macOS (Apple Silicon)**: [{mac_name}]({mac_url}) (open and drag to Applications)",
+            "- `.tar.gz`, `.delta`, and `update-*.json` files are for in-app auto-updates only — no manual download needed.",
+        ]
+    )
+
+    cleaned = notes.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not cleaned:
+        return f"ColabOne {clean_tag}\n\n{zh_block}\n\n---\n\n{en_block}\n"
+    if _ZH_DOWNLOADS_HEADING_RE.search(cleaned) and _EN_DOWNLOADS_HEADING_RE.search(cleaned):
+        return cleaned + "\n"
+
+    match = _BILINGUAL_BLANK_DIVIDER_RE.search(cleaned) or _BILINGUAL_DIVIDER_RE.search(cleaned)
+    if match is not None:
+        zh_part = cleaned[: match.start()].rstrip()
+        en_part = cleaned[match.end() :].strip()
+        return f"{zh_part}\n\n{zh_block}\n\n---\n\n{en_part}\n\n{en_block}\n"
+
+    return f"{cleaned}\n\n{zh_block}\n\n---\n\n{en_block}\n"
 
 
 def _load_manifest(path: Path) -> dict:
@@ -139,6 +206,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--version", required=True, help="Expected SemVer release version (e.g. 0.1.7)")
     parser.add_argument("--notes-file", type=Path, default=None, help="Markdown file with bilingual release notes")
     parser.add_argument(
+        "--release-body-output",
+        type=Path,
+        default=None,
+        help="Optional output path for GitHub Release body enriched with direct installer download links",
+    )
+    parser.add_argument(
+        "--repo",
+        default=DEFAULT_GITHUB_REPO,
+        help="GitHub owner/repo used when rendering direct installer download links",
+    )
+    parser.add_argument(
+        "--tag",
+        default="",
+        help="GitHub release tag (defaults to v<version>) used when rendering download links",
+    )
+    parser.add_argument(
         "--targets",
         nargs="+",
         default=list(DEFAULT_TARGETS),
@@ -157,6 +240,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             notes=notes,
             targets=args.targets,
         )
+        if args.release_body_output is not None:
+            rendered_body = colabone_render_github_release_body(
+                notes,
+                args.version,
+                repo=args.repo,
+                tag=args.tag or None,
+            )
+            args.release_body_output.parent.mkdir(parents=True, exist_ok=True)
+            args.release_body_output.write_text(
+                rendered_body,
+                encoding="utf-8",
+                newline="\n",
+            )
     except ColabOneUpdateManifestError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

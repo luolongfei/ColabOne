@@ -34,9 +34,11 @@ export const enUSMessages: ColabOneMessages = {
   "common.submitting": "Submitting…",
   "common.secondsShort": "{value}s",
   "common.minutes": "{value} min",
+  "common.minutesSeconds": "{minutes}m {seconds}s",
   "common.hours": "{value} hr",
   "common.hoursMinutes": "{hours} hr {minutes} min",
   "common.hoursMinutesShort": "{hours}h {minutes}m",
+  "common.hoursMinutesSeconds": "{hours}h {minutes}m {seconds}s",
   "common.daysHours": "{days}d {hours}h",
   "common.approxDaysHours": "~{days}d {hours}h",
   "common.approxHoursMinutes": "~{hours}h {minutes}m",
@@ -153,6 +155,8 @@ export const enUSMessages: ColabOneMessages = {
   "task.kindComfyRun": "Running ComfyUI Workflow",
   "task.gpuReadyIdle": "GPU ready — standing by",
   "task.gpuWaitingStart": "Waiting for remote GPU",
+  "task.elapsedLive": "Elapsed {duration}",
+  "task.elapsedTotal": "Took {duration}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/hr",
@@ -1241,6 +1245,8 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.noticeCancelRequested": "Cancellation requested for the active task.",
   "comfy.noticeRunSubmitted":
     "Submitted \"{name}\" to the remote queue; idle auto-release paused while running.",
+  "comfy.noticeRunCompleted": "\"{name}\" completed · total {duration}",
+  "comfy.noticeRunCompletedNoDuration": "\"{name}\" completed.",
   "comfy.noticeExported": "Output exported locally.",
   "comfy.noticeExportedDrive": "Output exported to Google Drive: {path}",
   "comfy.noticeExportedDriveExists": "Output is already saved in Google Drive: {path}",
@@ -1390,11 +1396,11 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.errImportInvalidInputKey": "Node \"{id}\" contains an empty input key",
   "comfy.errEmptyFile": "Selected file is empty (0 B). Please choose a valid file.",
   "comfy.indextts2RefRequiredHint":
-    "IndexTTS-2 requires a reference voice audio file",
+    "IndexTTS-2 requires a reference voice audio file when Custom Voice is selected",
   "comfy.runBlockedBusy": "Another task or operation is currently running",
   "comfy.runBlockedUploading": "Media is still uploading",
   "comfy.defaultVisualPrompt":
-    "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+    "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, making expressive, natural hand gestures and open-palm movements to emphasize points while talking, lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background",
   "comfy.placeholderScriptText":
     "Example: Hi everyone, welcome to today's session! Next, I'll walk you through how to easily create natural, studio-quality talking videos with AI.",
   "comfy.placeholderVoiceRefText":
@@ -1691,6 +1697,92 @@ export const enUSMessages: ColabOneMessages = {
   "close.rememberHint": "You can change this anytime in Settings → Desktop & About.",
   "close.confirmQuitBtn": "Quit",
   "close.confirmBackgroundBtn": "Run in Background",
+
+  // One-Click Migration (Export / Import)
+  "settings.sectionMigration": "Data & Migration",
+  "settings.migrationTitle": "One-Click Migration (Import / Export)",
+  "settings.migrationEncryptedTag": "Encrypted",
+  "settings.migrationDesc":
+    "Export your Google sign-in session, saved credentials, all settings, model library, and custom workflows into an encrypted .colabone file. Import it on a new computer to restore everything without signing in again.",
+  "settings.migrationExportBtn": "Export Migration File",
+  "settings.migrationImportBtn": "Import Migration File",
+
+  "migration.homeImportBtn": "Import Migration File",
+  "migration.exportModalTitle": "Export Migration File",
+  "migration.exportModalDesc":
+    "Choose the modules to package and set a migration password. All sensitive credentials are encrypted locally and work seamlessly across Windows and macOS.",
+  "migration.importDecryptModalTitle": "Unlock Migration File",
+  "migration.importPreviewModalTitle": "Review & Confirm Migration Import",
+  "migration.selectModulesLabel": "Modules to export",
+  "migration.selectAllBtn": "Select All (Full Migration)",
+  "migration.selectConfigOnlyBtn": "Config & Workflows Only (No Secrets)",
+  "migration.moduleAccountTitle": "Google Account & Drive Auth",
+  "migration.moduleAccountDesc":
+    "Includes auto-renewing OAuth credentials, profile info, and headless Google Drive quota project so the new PC stays signed in.",
+  "migration.moduleCredentialsTitle": "Third-Party Keys & Public Tunnels",
+  "migration.moduleCredentialsDesc":
+    "Includes Hugging Face Token, GPU allocation proxy, and fixed domains / Tunnel Tokens for Public API and ComfyUI Canvas.",
+  "migration.moduleSettingsTitle": "All App & Appearance Settings",
+  "migration.moduleSettingsDesc":
+    "Includes default GPU, idle release, download threads, auto Drive, theme, language, privacy mask default, close behavior, and update preferences.",
+  "migration.moduleLibraryTitle": "Model Library & Custom Workflows",
+  "migration.moduleLibraryDesc":
+    "Includes common models, custom imported models, API aliases, bookmarked repos, and custom ComfyUI workflow templates.",
+  "migration.moduleCuUsageTitle": "Compute Unit (CU) Usage History",
+  "migration.moduleCuUsageDesc":
+    "Includes locally recorded 30-minute Compute Unit consumption trends and balance statistics.",
+  "migration.moduleDraftsTitle": "ComfyUI Text Drafts",
+  "migration.moduleDraftsDesc":
+    "Includes uncommitted prompt and parameter drafts only (excludes large local image/audio files to keep the archive lightweight).",
+  "migration.moduleNotIncluded": "Not included",
+  "migration.summarySignedIn": "Signed in",
+  "migration.summaryNotSignedIn": "Not signed in",
+  "migration.summaryDriveReady": "Headless Drive ready",
+  "migration.summaryConfiguredCount": "{count} configured",
+  "migration.summaryEmpty": "Empty",
+  "migration.summaryIdleMinutes": "Idle {minutes}m",
+  "migration.summaryThreads": "{count} threads",
+  "migration.summaryCustomModels": "{count} custom models",
+  "migration.summaryCommonRepos": "{count} saved repos",
+  "migration.summaryCustomWorkflows": "{count} workflows",
+  "migration.summaryCuDays": "{days} days",
+  "migration.summaryDraftsCount": "{count} drafts",
+  "migration.exportPasswordTitle": "Set Migration Password (Required)",
+  "migration.exportPasswordDesc":
+    "Archives are always encrypted with Argon2id + AES-256-GCM. Enter at least {min} characters and store it safely — it cannot be recovered if lost.",
+  "migration.exportPasswordPlaceholder": "Enter migration password (min 6 chars)",
+  "migration.exportPasswordConfirmPlaceholder": "Re-enter password to confirm",
+  "migration.passwordTooShort": "Password must be at least {min} non-blank characters",
+  "migration.passwordTooLong": "Password is too long; please use a shorter one",
+  "migration.passwordMismatch": "Passwords do not match",
+  "migration.exportConfirmBtn": "Choose Save Location & Export",
+  "migration.exportingBtn": "Encrypting & exporting…",
+  "migration.exportSuccessToast": "Exported encrypted migration file: {filename}",
+  "migration.encryptedArchiveBadge": "ColabOne Encrypted Migration File",
+  "migration.changeFileBtn": "Change File",
+  "migration.importPasswordTitle": "Enter Migration Password",
+  "migration.importPasswordDesc":
+    "Enter the password set when this file was exported. You will review a full summary before anything is written to this machine.",
+  "migration.importPasswordPlaceholder": "Enter migration password",
+  "migration.decryptContinueBtn": "Decrypt & Preview",
+  "migration.decryptingBtn": "Decrypting…",
+  "migration.metaSourceOS": "Source OS",
+  "migration.activeInstancesAccountBlocked":
+    "A GPU instance is currently running on this machine, so 'Google Account & Drive Auth' has been unchecked. Release active instances first to switch accounts, or keep it unchecked to import other modules.",
+  "migration.closeBehaviorFallbackNotice":
+    "Minimizing to system tray is unavailable on this device; window close behavior will fall back to 'Quit'.",
+  "migration.importModulesTitle": "Select modules to import",
+  "migration.importModulesHint": "Uncheck anything you prefer to keep unchanged",
+  "migration.overwriteWarningTitle": "Selected modules will overwrite local data",
+  "migration.overwriteWarningDesc":
+    "Only modules included in the file and checked above will be overwritten. Unchecked or omitted modules remain untouched, and changes take effect immediately without restarting.",
+  "migration.overwriteWarningDescWithAccount":
+    "Changes take effect immediately without restarting, and Google account/instance status will sync right away. The same Google account can stay signed in on multiple PCs, though avoid controlling the same running GPU simultaneously.",
+  "migration.applyConfirmBtn": "Overwrite & Import ({count})",
+  "migration.importingBtn": "Importing…",
+  "migration.importSuccessToast": "Imported {count} configuration modules and applied immediately",
+  "migration.importSuccessWithAccountToast":
+    "Migration imported ({email}); settings applied and syncing account status",
 
   // Location
   "location.tooltipWithZone": "Instance location: {full} ({zone})",

@@ -37,8 +37,8 @@ def colabone_expected_release_assets(tag: str) -> list[str]:
         raise ColabOneActionsError("invalid_release_tag", tag=tag)
     version = match.group(1)
     return [
-        f"ColabOne-{version}-windows-x64.zip",
-        f"ColabOne-{version}-macos-arm64.zip",
+        f"ColabOne-{version}-windows-x64-setup.exe",
+        f"ColabOne-{version}-macos-arm64.dmg",
         f"colabone-{version}-windows-amd64.tar.gz",
         f"colabone-{version}-darwin-arm64.tar.gz",
         "update-windows-amd64.json",

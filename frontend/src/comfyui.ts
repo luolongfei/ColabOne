@@ -227,7 +227,16 @@ export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
 }
 
 export const COLABONE_CANONICAL_VISUAL_PROMPT =
-  "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background";
+  "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, making expressive, natural hand gestures and open-palm movements to emphasize points while talking, lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background";
+
+export const COLABONE_LEGACY_VISUAL_PROMPTS: ReadonlySet<string> = new Set([
+  "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+  "清晰演播室人像镜头，主播面向镜头自然说话，面部表情生动自然，头部轻微摆动，自然眨眼，焦距锐利，柔和演播室灯光，背景稳定不抖动",
+  "清晰攝影棚人像鏡頭，主播面向鏡頭自然說話，臉部表情生動自然，頭部輕微擺動，自然眨眼，焦距銳利，柔和攝影棚燈光，背景穩定不晃動",
+  "清晰錄影廠人像鏡頭，主播面向鏡頭自然說話，面部表情生動自然，頭部輕微擺動，自然眨眼，焦距銳利，柔和錄影廠燈光，背景穩定不晃動",
+  "鮮明なスタジオのポートレート映像。カメラに向かって自然に話す話者、豊かな表情、穏やかな頭の動き、自然なまばたき、シャープなピント、柔らかなスタジオ照明、安定した背景",
+  "선명한 스튜디오 인물 샷, 카메라를 향해 자연스럽게 말하는 진행자, 생동감 있는 얼굴 표정, 부드러운 머리 움직임, 자연스러운 눈 깜빡임, 또렷한 초점, 부드러운 스튜디오 조명, 안정적인 배경",
+]);
 
 export function isColabOnePresetVisualPrompt(value: unknown): boolean {
   if (typeof value !== "string") {
@@ -237,7 +246,10 @@ export function isColabOnePresetVisualPrompt(value: unknown): boolean {
   if (!trimmed) {
     return false;
   }
-  if (trimmed === COLABONE_CANONICAL_VISUAL_PROMPT) {
+  if (
+    trimmed === COLABONE_CANONICAL_VISUAL_PROMPT ||
+    COLABONE_LEGACY_VISUAL_PROMPTS.has(trimmed)
+  ) {
     return true;
   }
   for (const meta of COLABONE_LOCALE_LIST) {
@@ -873,6 +885,50 @@ export function hasNonCommercialNotice(
   };
 }
 
+export function isColabOneVoiceRefRequired(
+  wf: WorkflowTemplate | undefined,
+  values: Record<string, string | number | boolean> = {},
+): boolean {
+  if (!wf || wf.pipeline?.kind !== "digital_human") {
+    return false;
+  }
+  const rawAudioSource = hasOwn(values, "pipeline.audio_source")
+    ? values["pipeline.audio_source"]
+    : undefined;
+  if (String(rawAudioSource ?? "tts").trim() !== "tts") {
+    return false;
+  }
+  const rawTtsEngine = hasOwn(values, "pipeline.tts_engine")
+    ? values["pipeline.tts_engine"]
+    : undefined;
+  const resolvedTtsEngineId =
+    typeof rawTtsEngine === "string" && rawTtsEngine.trim()
+      ? rawTtsEngine.trim()
+      : (wf.pipeline.default_tts_engine || "").trim();
+  if (resolvedTtsEngineId !== "indextts2") {
+    return false;
+  }
+  const voicePresetField = (wf.fields || []).find(
+    (field) => field.key === "pipeline.voice_preset",
+  );
+  if (!voicePresetField) {
+    return true;
+  }
+  const rawVoicePreset = hasOwn(values, "pipeline.voice_preset")
+    ? values["pipeline.voice_preset"]
+    : undefined;
+  const resolvedVoicePreset =
+    rawVoicePreset !== undefined &&
+    rawVoicePreset !== null &&
+    String(rawVoicePreset).trim() !== ""
+      ? String(rawVoicePreset).trim()
+      : voicePresetField.default !== undefined &&
+          voicePresetField.default !== null
+        ? String(voicePresetField.default).trim()
+        : "";
+  return resolvedVoicePreset === "custom";
+}
+
 export function missingRequiredWorkflowFields(
   wf: WorkflowTemplate | undefined,
   values: Record<string, string | number | boolean>,
@@ -883,17 +939,7 @@ export function missingRequiredWorkflowFields(
     return [];
   }
 
-  const rawTtsEngine = hasOwn(values, "pipeline.tts_engine")
-    ? values["pipeline.tts_engine"]
-    : undefined;
-  const resolvedTtsEngineId =
-    typeof rawTtsEngine === "string" && rawTtsEngine.trim()
-      ? rawTtsEngine.trim()
-      : (wf.pipeline?.default_tts_engine || "").trim();
-  const requiresVoiceRefAudio =
-    wf.pipeline?.kind === "digital_human" &&
-    String(values?.["pipeline.audio_source"] ?? "tts").trim() === "tts" &&
-    resolvedTtsEngineId === "indextts2";
+  const requiresVoiceRefAudio = isColabOneVoiceRefRequired(wf, values);
 
   const missing: WorkflowField[] = [];
   for (const field of wf.fields) {

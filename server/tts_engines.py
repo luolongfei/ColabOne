@@ -93,6 +93,186 @@ _SOFT_LIMITER_KNEE = 0.85
 _SOFT_LIMITER_CEILING = 0.96
 _SILENCE_FLOOR_RMS = 10.0 ** (-70.0 / 20.0)
 
+DEFAULT_COLABONE_VOICE_PRESET = "shen_zhiyi"
+COLABONE_VOICE_PRESET_ANCHOR_TEXT = (
+    "大家好，欢迎来到今天的节目。我们将用清晰自然的声音，为您娓娓道来每一个精彩细节，"
+    "希望这段分享能带给您轻松愉快的收听体验。"
+)
+COLABONE_TTS_VOICE_PRESETS: dict[str, dict[str, Any]] = {
+    "shen_zhiyi": {
+        "id": "shen_zhiyi",
+        "name": "知性女主播 · 沈知意",
+        "gender": "female",
+        "style": "知性主播",
+        "seed": 202601,
+        "voxcpm_prompt": (
+            "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, "
+            "natural smooth pacing, friendly confident professional tone"
+        ),
+        "qwen_instruct": (
+            "26岁年轻知性女性主播，清澈温润的现代标准普通话，吐字清晰圆润，"
+            "棚录近麦高保真质感，语速自然流畅，专业沉稳且富有亲和力。"
+        ),
+    },
+    "lin_xiaoman": {
+        "id": "lin_xiaoman",
+        "name": "甜美活力 · 林小满",
+        "gender": "female",
+        "style": "甜美活力",
+        "seed": 202602,
+        "voxcpm_prompt": (
+            "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, "
+            "clear crisp articulation, cheerful energetic natural rhythm"
+        ),
+        "qwen_instruct": (
+            "22岁甜美活泼的年轻女生，嗓音清亮灵动略带笑意，元气自然不腻耳，"
+            "咬字轻快清晰，节奏明快富有感染力。"
+        ),
+    },
+    "su_wanqing": {
+        "id": "su_wanqing",
+        "name": "温柔治愈 · 苏晚晴",
+        "gender": "female",
+        "style": "温柔治愈",
+        "seed": 202603,
+        "voxcpm_prompt": (
+            "A 25-year-old Chinese young woman, soft gentle healing radio voice, "
+            "warm delicate breathy tone, calm unhurried soothing studio narration"
+        ),
+        "qwen_instruct": (
+            "25岁温柔治愈系年轻女声，声线柔和细腻、气息温暖舒缓，语调轻柔自然，"
+            "像深夜电台好友娓娓道来，耐听且有安全感。"
+        ),
+    },
+    "gu_qinglan": {
+        "id": "gu_qinglan",
+        "name": "干练职场 · 顾清岚",
+        "gender": "female",
+        "style": "干练御姐",
+        "seed": 202604,
+        "voxcpm_prompt": (
+            "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, "
+            "crisp decisive articulation, persuasive confident executive tone"
+        ),
+        "qwen_instruct": (
+            "30岁成熟干练的职场女性，中低音区醇厚清亮，吐字干净利落，"
+            "逻辑停顿清晰，语气温和而坚定，极富专业说服力。"
+        ),
+    },
+    "lu_mingwei": {
+        "id": "lu_mingwei",
+        "name": "播音气质 · 陆明薇",
+        "gender": "female",
+        "style": "新闻播音",
+        "seed": 202605,
+        "voxcpm_prompt": (
+            "A 28-year-old professional Chinese female broadcast news anchor, "
+            "resonant polished studio voice, crisp standard Mandarin diction, "
+            "steady authoritative warm cadence"
+        ),
+        "qwen_instruct": (
+            "28岁专业新闻女播音员，胸腔共鸣饱满大气，标准普通话字正腔圆，"
+            "重音与停连考究，沉稳大方且自然流畅。"
+        ),
+    },
+}
+_VOICE_PRESET_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def resolve_colabone_voice_preset(
+    engine: dict[str, Any], preset_id: str | None
+) -> dict[str, Any] | None:
+    """Resolve a built-in named voice preset for a TTS engine, merging catalog & canonical defaults."""
+    raw = str(preset_id or "").strip()
+    if raw.lower() == "custom":
+        return None
+    target_id = raw or DEFAULT_COLABONE_VOICE_PRESET
+
+    if hasattr(engine, "model_dump"):
+        engine_dict = engine.model_dump()
+    elif isinstance(engine, dict):
+        engine_dict = engine
+    else:
+        engine_dict = {}
+    engine_id = str(engine_dict.get("id") or "").strip()
+
+    engine_entry: dict[str, Any] | None = None
+    for item in engine_dict.get("voice_presets") or []:
+        if hasattr(item, "model_dump"):
+            candidate = item.model_dump()
+        elif isinstance(item, dict):
+            candidate = copy.deepcopy(item)
+        else:
+            continue
+        if str(candidate.get("id") or "").strip() == target_id:
+            engine_entry = candidate
+            break
+
+    fallback_entry = COLABONE_TTS_VOICE_PRESETS.get(target_id)
+    if engine_entry is None and fallback_entry is None:
+        return None
+
+    merged: dict[str, Any] = copy.deepcopy(fallback_entry) if fallback_entry is not None else {}
+    if engine_entry is not None:
+        for key, val in engine_entry.items():
+            if key == "seed":
+                if val is not None and not isinstance(val, bool):
+                    try:
+                        merged["seed"] = max(0, int(val))
+                    except (TypeError, ValueError):
+                        pass
+            elif key == "prompt":
+                if str(val or "").strip():
+                    merged["prompt"] = str(val).strip()
+            elif val not in (None, ""):
+                merged[key] = copy.deepcopy(val)
+
+    merged["id"] = str(merged.get("id") or target_id).strip()
+    merged["name"] = str(merged.get("name") or merged["id"]).strip()
+    merged["gender"] = str(merged.get("gender") or "female").strip() or "female"
+    merged["style"] = str(merged.get("style") or "").strip()
+
+    seed_val = merged.get("seed")
+    if isinstance(seed_val, bool) or seed_val is None:
+        seed_val = int(fallback_entry["seed"]) if fallback_entry is not None else 42
+    else:
+        try:
+            seed_val = int(seed_val)
+        except (TypeError, ValueError):
+            seed_val = int(fallback_entry["seed"]) if fallback_entry is not None else 42
+    merged["seed"] = max(0, seed_val)
+
+    prompt_val = str(merged.get("prompt") or "").strip()
+    if not prompt_val:
+        if engine_id == "qwen3_tts":
+            prompt_val = str(
+                merged.get("qwen_instruct") or merged.get("voxcpm_prompt") or ""
+            ).strip()
+        else:
+            prompt_val = str(
+                merged.get("voxcpm_prompt") or merged.get("qwen_instruct") or ""
+            ).strip()
+    merged["prompt"] = prompt_val
+    if not str(merged.get("voxcpm_prompt") or "").strip():
+        merged["voxcpm_prompt"] = prompt_val
+    if not str(merged.get("qwen_instruct") or "").strip():
+        merged["qwen_instruct"] = prompt_val
+    return merged
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=".save-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
 
 # ---------------------------------------------------------------------------
 # 1. Pure script segmentation helpers
@@ -2083,6 +2263,11 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
         ref_audio_path = (cfg.get("ref_audio_path") or "").strip()
         ref_text = (cfg.get("ref_text") or "").strip()
         voice_prompt = (cfg.get("voice_prompt") or "").strip()
+        voice_seed = cfg.get("voice_seed")
+        default_voice_prompt = (
+            "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, "
+            "natural smooth pacing, friendly confident professional tone"
+        )
         segments = cfg.get("segments") or []
 
         model = _load_voxcpm_model(repo, revision, cache_dir, token)
@@ -2128,6 +2313,32 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
         active_ref_audio = ref_audio_path
         active_ref_text = ref_text
 
+        if isinstance(voice_seed, int) and not isinstance(voice_seed, bool) and voice_seed >= 0:
+            try:
+                import random as _py_random
+
+                _py_random.seed(voice_seed)
+            except Exception:
+                pass
+            try:
+                import numpy as _np
+
+                _np.random.seed(voice_seed % (2**32))
+            except Exception:
+                pass
+            try:
+                import torch
+
+                torch.manual_seed(voice_seed)
+                cuda_mod = getattr(torch, "cuda", None)
+                if cuda_mod is not None and callable(getattr(cuda_mod, "manual_seed_all", None)):
+                    cuda_mod.manual_seed_all(voice_seed)
+            except Exception:
+                pass
+
+        def _sanitize_voxcpm_prompt(raw_prompt: str) -> str:
+            return " ".join(raw_prompt.replace("(", " ").replace(")", " ").split())
+
         total = len(segments)
         for idx, seg in enumerate(segments):
             seg_text = str(seg["text"])
@@ -2135,7 +2346,7 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
             kwargs = {
                 "text": seg_text,
                 "inference_timesteps": 18,
-                "cfg_value": 1.7,
+                "cfg_value": 2.0,
                 "normalize": True,
             }
             if active_ref_audio:
@@ -2146,17 +2357,21 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
                         kwargs["reference_wav_path"] = active_ref_audio
                 elif "reference_wav_path" in gen_params:
                     kwargs["reference_wav_path"] = active_ref_audio
-                    if voice_prompt:
-                        kwargs["text"] = f"({voice_prompt}){seg_text}"
+                    safe_vp = _sanitize_voxcpm_prompt(voice_prompt)
+                    if safe_vp:
+                        kwargs["text"] = f"({safe_vp}){seg_text}"
                 else:
                     raise ValueError(
                         "VoxCPM2 当前版本克隆音色时需要同时填写参考音频对应文本"
                     )
-            elif voice_prompt:
+            else:
+                effective_voice_prompt = (
+                    _sanitize_voxcpm_prompt(voice_prompt) or default_voice_prompt
+                )
                 if "voice_prompt" in gen_params:
-                    kwargs["voice_prompt"] = voice_prompt
+                    kwargs["voice_prompt"] = effective_voice_prompt
                 else:
-                    kwargs["text"] = f"({voice_prompt}){seg_text}"
+                    kwargs["text"] = f"({effective_voice_prompt}){seg_text}"
 
             if not has_var_kw:
                 kwargs = {k: v for k, v in kwargs.items() if k in gen_params}
@@ -2229,6 +2444,7 @@ _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
         ref_audio_path = (cfg.get("ref_audio_path") or "").strip()
         ref_text = (cfg.get("ref_text") or "").strip()
         voice_prompt = (cfg.get("voice_prompt") or "").strip()
+        voice_seed = cfg.get("voice_seed")
         segments = cfg.get("segments") or []
 
         if not ref_audio_path and not aux_repo:
@@ -2240,7 +2456,8 @@ _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
             selected_repo = aux_repo
             selected_rev = aux_revision
             effective_instruct = (
-                voice_prompt or "自然清晰的普通话标准主播声线，语速适中，吐字清晰"
+                voice_prompt
+                or "26岁年轻知性女性主播，清澈温润的现代标准普通话，吐字清晰圆润，棚录近麦高保真质感，语速自然流畅，专业沉稳且富有亲和力。"
             )
         else:
             selected_repo = repo
@@ -2260,6 +2477,29 @@ _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
                 ref_text=ref_text or None,
                 x_vector_only_mode=(not bool(ref_text)),
             )
+
+        if isinstance(voice_seed, int) and not isinstance(voice_seed, bool) and voice_seed >= 0:
+            try:
+                import random as _py_random
+
+                _py_random.seed(voice_seed)
+            except Exception:
+                pass
+            try:
+                import numpy as _np
+
+                _np.random.seed(voice_seed % (2**32))
+            except Exception:
+                pass
+            try:
+                import torch
+
+                torch.manual_seed(voice_seed)
+                cuda_mod = getattr(torch, "cuda", None)
+                if cuda_mod is not None and callable(getattr(cuda_mod, "manual_seed_all", None)):
+                    cuda_mod.manual_seed_all(voice_seed)
+            except Exception:
+                pass
 
         total = len(segments)
         default_sr = int(cfg.get("sample_rate") or 24000)
@@ -3325,6 +3565,209 @@ class ColabOneRemoteTtsRunner:
             raise ValueError(f"不支持的 TTS 引擎脚本：{engine_id!r}")
         return _WORKER_COMMON_HEADER + body
 
+    def _ensure_preset_reference_audio(
+        self,
+        task: Any,
+        preset: dict[str, Any],
+        *,
+        hf_token: str = "",
+    ) -> tuple[Path, str]:
+        """Return a cached 48 kHz studio female WAV anchor & transcript, synthesizing once via VoxCPM2."""
+        preset_id = str(preset.get("id") or "").strip()
+        if not _VOICE_PRESET_ID_RE.fullmatch(preset_id):
+            raise ValueError(f"非法的内置音色预设编号：{preset_id!r}")
+        preset_name = str(preset.get("name") or preset_id).strip()
+        anchor_text = COLABONE_VOICE_PRESET_ANCHOR_TEXT
+
+        if self.engines_dir.is_symlink():
+            raise ValueError("TTS 引擎目录不能是符号链接")
+        self.engines_dir.mkdir(parents=True, exist_ok=True)
+        presets_dir = self.engines_dir / "_voice_presets"
+        if presets_dir.is_symlink():
+            raise ValueError("内置女声缓存目录不能是符号链接")
+        presets_dir.mkdir(parents=True, exist_ok=True)
+
+        wav_path = presets_dir / f"{preset_id}.wav"
+        txt_path = presets_dir / f"{preset_id}.txt"
+        if wav_path.is_symlink() or txt_path.is_symlink():
+            raise ValueError("内置女声缓存文件不能是符号链接")
+
+        with self._lock:
+            if (
+                wav_path.is_file()
+                and not wav_path.is_symlink()
+                and wav_path.stat().st_size > 0
+                and txt_path.is_file()
+                and not txt_path.is_symlink()
+            ):
+                cached_text = txt_path.read_text(encoding="utf-8").strip() or anchor_text
+                _safe_task_note(task, f"复用已缓存的内置女声参考样本：{preset_name}")
+                return wav_path, cached_text
+
+            check_fn = getattr(task, "check", None)
+            if callable(check_fn):
+                check_fn()
+
+            if "voxcpm2" not in self.engines_by_id:
+                raise RuntimeError(
+                    f"缺少 VoxCPM2 引擎配置，无法生成内置女声参考样本：{preset_name}"
+                )
+            vox_engine = self.get_engine("voxcpm2")
+            self.check_vram(
+                vox_engine,
+                allow_unavailable=(self.synth_fn is not None or self.run_cmd_fn is not None),
+            )
+
+            gen_msg = f"正在生成并缓存内置女声参考样本：{preset_name}"
+            _safe_task_update(task, message=gen_msg)
+            _safe_task_note(task, gen_msg)
+
+            canonical = COLABONE_TTS_VOICE_PRESETS.get(preset_id) or {}
+            vox_prompt = str(
+                preset.get("voxcpm_prompt")
+                or canonical.get("voxcpm_prompt")
+                or preset.get("prompt")
+                or COLABONE_TTS_VOICE_PRESETS[DEFAULT_COLABONE_VOICE_PRESET]["voxcpm_prompt"]
+            ).strip()
+            raw_seed = preset.get("seed", canonical.get("seed", 42))
+            preset_seed = (
+                int(raw_seed)
+                if isinstance(raw_seed, int)
+                and not isinstance(raw_seed, bool)
+                and raw_seed >= 0
+                else 42
+            )
+
+            tmp_work = Path(
+                tempfile.mkdtemp(prefix=f".preset-{preset_id}-", dir=str(presets_dir))
+            )
+            tmp_wav_target: Path | None = None
+            try:
+                raw_anchor_wav = tmp_work / "anchor_raw.wav"
+                seg_entries = [
+                    {
+                        "index": 0,
+                        "text": anchor_text,
+                        "output_wav": str(raw_anchor_wav),
+                    }
+                ]
+                anchor_config: dict[str, Any] = {
+                    "engine_id": "voxcpm2",
+                    "repo": str(vox_engine.get("repo") or ""),
+                    "revision": str(vox_engine.get("revision") or ""),
+                    "aux_repo": str(vox_engine.get("aux_repo") or ""),
+                    "aux_revision": str(vox_engine.get("aux_revision") or ""),
+                    "source_dir": "",
+                    "cache_dir": str(self.engines_dir / "_hf_cache"),
+                    "sample_rate": int(vox_engine.get("sample_rate") or 48000),
+                    "segments": seg_entries,
+                    "ref_audio_path": "",
+                    "ref_text": "",
+                    "voice_prompt": vox_prompt,
+                    "voice_preset": preset_id,
+                    "voice_seed": preset_seed,
+                    "emotion_ref_path": "",
+                    "emotion_prompt": "",
+                }
+
+                generated_wav = raw_anchor_wav
+                if self.synth_fn is not None:
+                    segment_wavs = self._invoke_synth_fn(
+                        task=task,
+                        engine=vox_engine,
+                        segments=[anchor_text],
+                        segments_dir=tmp_work,
+                        seg_entries=seg_entries,
+                        config=anchor_config,
+                        ref_audio_path=None,
+                        ref_text="",
+                        voice_prompt=vox_prompt,
+                        voice_preset=preset_id,
+                        voice_seed=preset_seed,
+                        emotion_ref_path=None,
+                        emotion_prompt="",
+                        hf_token=hf_token,
+                    )
+                    if segment_wavs:
+                        generated_wav = Path(segment_wavs[0][1])
+                else:
+                    env_dir = self.ensure_engine_env(task, vox_engine, hf_token="")
+                    worker_python = str(_resolve_venv_python(env_dir / ".venv"))
+                    source_dir = env_dir / "source"
+                    if source_dir.is_dir():
+                        anchor_config["source_dir"] = str(source_dir)
+
+                    worker_path = tmp_work / "worker_voxcpm2.py"
+                    config_path = tmp_work / "config_voxcpm2.json"
+                    log_path = tmp_work / "preset_voxcpm2.log"
+                    if (
+                        worker_path.is_symlink()
+                        or config_path.is_symlink()
+                        or log_path.is_symlink()
+                    ):
+                        raise ValueError("内置女声生成临时路径不能是符号链接")
+
+                    worker_path.write_text(
+                        self.build_worker_script("voxcpm2"), encoding="utf-8"
+                    )
+                    atomic_json(config_path, anchor_config)
+
+                    worker_env = dict(os.environ)
+                    worker_env["PYTHONUNBUFFERED"] = "1"
+                    if hf_token:
+                        worker_env["HF_TOKEN"] = hf_token
+                        worker_env["HUGGING_FACE_HUB_TOKEN"] = hf_token
+                    else:
+                        worker_env.pop("HF_TOKEN", None)
+                        worker_env.pop("HUGGING_FACE_HUB_TOKEN", None)
+
+                    self._invoke_command(
+                        [worker_python, str(worker_path), "--config", str(config_path)],
+                        task,
+                        log_path,
+                        timeout=1800,
+                        cwd=tmp_work,
+                        env=worker_env,
+                        secret_to_scrub=hf_token,
+                    )
+
+                if not generated_wav.is_file() or generated_wav.stat().st_size <= 0:
+                    raise RuntimeError(f"内置女声参考样本生成失败：{preset_name}")
+
+                fd, tmp_wav_str = tempfile.mkstemp(
+                    prefix=f".{preset_id}-", suffix=".wav.tmp", dir=str(presets_dir)
+                )
+                os.close(fd)
+                tmp_wav_target = Path(tmp_wav_str)
+
+                try:
+                    assemble_colabone_tts_master(
+                        [(anchor_text, generated_wav)],
+                        out_wav=tmp_wav_target,
+                        manifest_path=tmp_work / "anchor_manifest.json",
+                        pause_seconds=0.0,
+                        target_sr=48000,
+                        target_lufs=-23.0,
+                    )
+                except (wave.Error, EOFError, ValueError):
+                    if self.run_cmd_fn is None:
+                        raise
+                    shutil.copyfile(generated_wav, tmp_wav_target)
+
+                with open(tmp_wav_target, "r+b") as stream:
+                    os.fsync(stream.fileno())
+                os.replace(tmp_wav_target, wav_path)
+                tmp_wav_target = None
+                _atomic_write_text(txt_path, anchor_text + "\n")
+                return wav_path, anchor_text
+            finally:
+                if tmp_wav_target is not None and tmp_wav_target.exists():
+                    try:
+                        tmp_wav_target.unlink()
+                    except OSError:
+                        pass
+                shutil.rmtree(tmp_work, ignore_errors=True)
+
     def _invoke_synth_fn(
         self,
         *,
@@ -3340,6 +3783,8 @@ class ColabOneRemoteTtsRunner:
         emotion_ref_path: Path | None,
         emotion_prompt: str,
         hf_token: str,
+        voice_preset: str = "",
+        voice_seed: int | None = None,
     ) -> list[tuple[str, Path]]:
         assert self.synth_fn is not None
         fn = self.synth_fn
@@ -3363,6 +3808,8 @@ class ColabOneRemoteTtsRunner:
             "ref_audio_path": ref_audio_path,
             "ref_text": ref_text,
             "voice_prompt": voice_prompt,
+            "voice_preset": voice_preset,
+            "voice_seed": voice_seed,
             "emotion_ref_path": emotion_ref_path,
             "emotion_prompt": emotion_prompt,
             "hf_token": hf_token,
@@ -3413,6 +3860,7 @@ class ColabOneRemoteTtsRunner:
         emotion_prompt: str = "",
         pause_seconds: float = 0.28,
         hf_token: str = "",
+        voice_preset: str = "",
     ) -> dict[str, Any]:
         """Run remote GPU TTS synthesis in an isolated subprocess and assemble master WAV."""
         check_fn = getattr(task, "check", None)
@@ -3440,9 +3888,26 @@ class ColabOneRemoteTtsRunner:
             if not resolved_emo_audio.is_file():
                 raise ValueError(f"情绪参考音频文件不存在：{resolved_emo_audio}")
 
-        # Always enforce IndexTTS2 reference audio requirement regardless of synth_fn.
+        raw_voice_preset = str(voice_preset or "").strip()
+        user_voice_prompt = str(voice_prompt or "").strip()
+        effective_ref_text = str(ref_text or "")
+        effective_voice_prompt = str(voice_prompt or "")
+        effective_voice_preset = ""
+        effective_voice_seed: int | None = None
+        resolved_preset: dict[str, Any] | None = None
+
+        if resolved_ref_audio is None:
+            resolved_preset = resolve_colabone_voice_preset(engine, raw_voice_preset)
+
+        # Enforce IndexTTS2 reference audio requirement for custom/unknown voices
+        # and legacy offline synth_fn invocations that omit voice_preset.
         if engine["id"] == "indextts2" and resolved_ref_audio is None:
-            raise ValueError("IndexTTS2 需要上传音色参考音频才能进行语音合成")
+            if (
+                raw_voice_preset.lower() == "custom"
+                or resolved_preset is None
+                or (raw_voice_preset == "" and self.synth_fn is not None)
+            ):
+                raise ValueError("IndexTTS2 需要上传音色参考音频才能进行语音合成")
 
         if not engine.get("commercial_ok", True):
             lic = str(engine.get("license") or "Non-Commercial").strip()
@@ -3462,6 +3927,63 @@ class ColabOneRemoteTtsRunner:
         if segments_dir.is_symlink():
             raise ValueError("TTS 片段目录不能是符号链接")
         segments_dir.mkdir(parents=True, exist_ok=True)
+
+        if resolved_ref_audio is None and resolved_preset is not None:
+            preset_id = str(resolved_preset["id"])
+            preset_seed = int(resolved_preset["seed"])
+            preset_prompt = str(
+                resolved_preset.get("prompt")
+                or (
+                    resolved_preset.get("qwen_instruct")
+                    if engine["id"] == "qwen3_tts"
+                    else resolved_preset.get("voxcpm_prompt")
+                )
+                or ""
+            ).strip()
+            effective_voice_preset = preset_id
+            effective_voice_seed = preset_seed
+
+            if engine["id"] in ("voxcpm2", "qwen3_tts"):
+                if not user_voice_prompt and preset_prompt:
+                    effective_voice_prompt = preset_prompt
+            elif engine["id"] in ("fish_s2_pro", "indextts2"):
+                if not user_voice_prompt and preset_prompt:
+                    effective_voice_prompt = preset_prompt
+                presets_dir = self.engines_dir / "_voice_presets"
+                cached_wav = presets_dir / f"{preset_id}.wav"
+                cached_txt = presets_dir / f"{preset_id}.txt"
+                has_symlink_preset = (
+                    self.engines_dir.is_symlink()
+                    or presets_dir.is_symlink()
+                    or cached_wav.is_symlink()
+                    or cached_txt.is_symlink()
+                )
+                has_cached_preset = (
+                    not has_symlink_preset
+                    and cached_wav.is_file()
+                    and cached_wav.stat().st_size > 0
+                    and cached_txt.is_file()
+                )
+                anchor_helper_overridden = (
+                    getattr(self._ensure_preset_reference_audio, "__func__", None)
+                    is not ColabOneRemoteTtsRunner._ensure_preset_reference_audio
+                )
+                if (
+                    self.synth_fn is None
+                    or has_cached_preset
+                    or has_symlink_preset
+                    or anchor_helper_overridden
+                ):
+                    anchor_wav, anchor_text = self._ensure_preset_reference_audio(
+                        task,
+                        resolved_preset,
+                        hf_token=hf_token,
+                    )
+                    resolved_ref_audio = Path(anchor_wav)
+                    if not effective_ref_text.strip():
+                        effective_ref_text = str(
+                            anchor_text or COLABONE_VOICE_PRESET_ANCHOR_TEXT
+                        )
 
         ref_target_sr = max(24000, int(engine.get("sample_rate") or 24000))
         if resolved_ref_audio is not None:
@@ -3502,8 +4024,10 @@ class ColabOneRemoteTtsRunner:
             "sample_rate": int(engine.get("sample_rate") or 48000),
             "segments": seg_entries,
             "ref_audio_path": str(resolved_ref_audio) if resolved_ref_audio else "",
-            "ref_text": str(ref_text or ""),
-            "voice_prompt": str(voice_prompt or ""),
+            "ref_text": effective_ref_text,
+            "voice_prompt": effective_voice_prompt,
+            "voice_preset": effective_voice_preset,
+            "voice_seed": effective_voice_seed,
             "emotion_ref_path": str(resolved_emo_audio) if resolved_emo_audio else "",
             "emotion_prompt": str(emotion_prompt or ""),
         }
@@ -3521,8 +4045,10 @@ class ColabOneRemoteTtsRunner:
                 seg_entries=seg_entries,
                 config=base_config,
                 ref_audio_path=resolved_ref_audio,
-                ref_text=str(ref_text or ""),
-                voice_prompt=str(voice_prompt or ""),
+                ref_text=effective_ref_text,
+                voice_prompt=effective_voice_prompt,
+                voice_preset=effective_voice_preset,
+                voice_seed=effective_voice_seed,
                 emotion_ref_path=resolved_emo_audio,
                 emotion_prompt=str(emotion_prompt or ""),
                 hf_token=hf_token,

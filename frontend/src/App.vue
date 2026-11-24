@@ -42,6 +42,7 @@ import {
   TypographyTitle as ATypographyTitle,
 } from "ant-design-vue";
 import ColabOneCloseModal from "./ColabOneCloseModal.vue";
+import ColabOneMigrationModal from "./ColabOneMigrationModal.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSelectTooltipHost from "./ColabOneSelectTooltipHost.vue";
@@ -63,10 +64,12 @@ import {
   PhArrowsClockwise,
   PhCaretRight,
   PhCheck,
+  PhClock,
   PhCloud,
   PhCloudArrowDown,
   PhCopy,
   PhDesktop,
+  PhDownloadSimple,
   PhEye,
   PhEyeSlash,
   PhFlowArrow,
@@ -75,6 +78,7 @@ import {
   PhHardDrives,
   PhKey,
   PhMoon,
+  PhPackage,
   PhPlay,
   PhPlus,
   PhQuestion,
@@ -85,6 +89,7 @@ import {
   PhSun,
   PhTerminalWindow,
   PhTray,
+  PhUploadSimple,
   PhUserCircle,
 } from "@phosphor-icons/vue";
 import rawAppIcon from "../../console/resources/icon.svg?raw";
@@ -133,6 +138,10 @@ import {
   stripColabOneErrorPrefixes,
 } from "./billing";
 import {
+  formatColabOneDuration,
+  resolveColabOneTaskElapsedSeconds,
+} from "./colabOneDuration";
+import {
   colabOneCancelUpdateInstall,
   colabOneCheckForUpdate,
   colabOneCommand,
@@ -142,8 +151,14 @@ import {
   colabOneOnCloseBehavior,
   colabOneOnCloseRequest,
   colabOneOnUpdateOpen,
+  colabOneApplyMigrationPreview,
+  colabOneCancelMigrationSession,
+  colabOneDecryptMigrationPreview,
+  colabOneExportMigrationFile,
+  colabOneGetMigrationExportSummary,
   colabOneOnUpdateState,
   colabOneOpenURL,
+  colabOnePickMigrationFile,
   colabOneReadClipboard,
   colabOneRelaunchForUpdate,
   colabOneResolveCloseRequest,
@@ -158,8 +173,16 @@ import {
   normalizeColabOneCloseBehavior,
   type ColabOneCloseAction,
   type ColabOneCloseBehaviorState,
+  type ColabOneMigrationExportSummary,
+  type ColabOneMigrationPickResult,
+  type ColabOneMigrationPreview,
   type ColabOneUpdateState,
 } from "./api";
+import {
+  applyColabOneMigrationUIPrefs,
+  collectColabOneMigrationUIPrefs,
+  type ColabOneMigrationModuleId,
+} from "./colabOneMigration";
 import {
   COLABONE_RELEASES_URL,
   createColabOneUpdateState,
@@ -428,6 +451,8 @@ let clearingStateError: {
   completedAtSeq: number | null;
 } | null = null;
 const shownFailedTaskIds = new Set<string>();
+const observedRunningComfyTaskIds = new Set<string>();
+const shownCompletedComfyTaskIds = new Set<string>();
 
 function normalizeErrorKey(raw: unknown): string {
   return stripColabOneErrorPrefixes(raw);
@@ -612,6 +637,84 @@ watch(
   () => state.value.runtime.tasks,
   (tasks) => {
     if (!tasks?.length) return;
+    for (const item of tasks) {
+      if (item.kind !== "comfyui_run") continue;
+      if (item.state === "running") {
+        observedRunningComfyTaskIds.add(item.id);
+      } else if (item.state === "failed" || item.state === "cancelled") {
+        observedRunningComfyTaskIds.delete(item.id);
+      }
+    }
+    const newlyCompletedComfy = tasks.filter(
+      (item) =>
+        item.kind === "comfyui_run" &&
+        item.state === "completed" &&
+        observedRunningComfyTaskIds.has(item.id) &&
+        !shownCompletedComfyTaskIds.has(item.id),
+    );
+    for (const item of newlyCompletedComfy) {
+      observedRunningComfyTaskIds.delete(item.id);
+      shownCompletedComfyTaskIds.add(item.id);
+      while (shownCompletedComfyTaskIds.size > 200) {
+        const oldest = shownCompletedComfyTaskIds.values().next().value;
+        if (oldest === undefined) break;
+        shownCompletedComfyTaskIds.delete(oldest);
+      }
+      const wf = state.value.workflows.find((w) => w.id === item.model_id);
+      const rawName = wf?.name || "";
+      let elapsedSec = resolveColabOneTaskElapsedSeconds(
+        item,
+        state.value.runtime,
+        clockNow.value,
+        snapshotAt.value,
+      );
+      if (elapsedSec === null) {
+        const hasTaskCreated =
+          typeof item.created_at === "number" &&
+          Number.isFinite(item.created_at) &&
+          item.created_at > 0;
+        const matchedOutput = (state.value.comfy_outputs || []).find(
+          (o) =>
+            o.workflow_id === item.model_id &&
+            Number.isFinite(o.elapsed) &&
+            (!hasTaskCreated ||
+              !Number.isFinite(o.created_at) ||
+              o.created_at >= (item.created_at as number) - 5),
+        );
+        if (matchedOutput) {
+          elapsedSec = matchedOutput.elapsed;
+        } else if (
+          hasTaskCreated &&
+          typeof state.value.runtime.idle?.server_time === "number" &&
+          Number.isFinite(state.value.runtime.idle.server_time)
+        ) {
+          elapsedSec = Math.max(
+            0,
+            state.value.runtime.idle.server_time - (item.created_at as number),
+          );
+        }
+      }
+      const capturedElapsed = elapsedSec;
+      toastManager.push({
+        kind: "success",
+        group: "task-completed",
+        dedupeKey: `task-completed:${item.id}`,
+        durationMs: 6500,
+        resolveText: () => {
+          const name = rawName ? tb(rawName) : t("comfy.defaultWorkflowName");
+          if (capturedElapsed !== null) {
+            return t("comfy.noticeRunCompleted", {
+              name,
+              duration: formatColabOneDuration(capturedElapsed, {
+                precision: "auto",
+                locale: colabOneLocaleCode.value,
+              }),
+            });
+          }
+          return t("comfy.noticeRunCompletedNoDuration", { name });
+        },
+      });
+    }
     const unseenFailed = tasks.filter(
       (item) =>
         item.state === "failed" &&
@@ -1157,6 +1260,34 @@ let lastInteraction = 0;
 
 const idle = computed(() => state.value.runtime.idle);
 const snapshotAt = ref(Date.now());
+const activeTaskElapsedLabel = computed(() => {
+  const secs = resolveColabOneTaskElapsedSeconds(
+    task.value,
+    state.value.runtime,
+    clockNow.value,
+    snapshotAt.value,
+  );
+  return secs === null
+    ? ""
+    : formatColabOneDuration(secs, {
+        precision: "integer",
+        locale: colabOneLocaleCode.value,
+      });
+});
+const dockTaskElapsedLabel = computed(() => {
+  const secs = resolveColabOneTaskElapsedSeconds(
+    dockTask.value,
+    state.value.runtime,
+    clockNow.value,
+    snapshotAt.value,
+  );
+  return secs === null
+    ? ""
+    : formatColabOneDuration(secs, {
+        precision: "integer",
+        locale: colabOneLocaleCode.value,
+      });
+});
 const idleRemaining = computed(() =>
   Math.max(
     0,
@@ -1468,9 +1599,19 @@ async function syncSnapshot() {
     mutatedLocally = true;
     colabOneCommand("error.clear", { expected: staleErr }).catch(() => {});
   }
+  const prevRunningTask = state.value.runtime.tasks?.find(
+    (item) => item.state === "running",
+  );
+  const nextRunningTask = value.runtime.tasks?.find(
+    (item) => item.state === "running",
+  );
   if (
     value.runtime.idle?.server_time !== state.value.runtime.idle?.server_time ||
-    value.operation?.retry_at !== state.value.operation?.retry_at
+    value.operation?.retry_at !== state.value.operation?.retry_at ||
+    nextRunningTask?.id !== prevRunningTask?.id ||
+    nextRunningTask?.elapsed_seconds !== prevRunningTask?.elapsed_seconds ||
+    nextRunningTask?.download?.elapsed_seconds !==
+      prevRunningTask?.download?.elapsed_seconds
   ) {
     snapshotAt.value = Date.now();
     clockNow.value = Date.now();
@@ -3172,6 +3313,290 @@ async function handleConfirmCloseModal(payload: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// One-click Migration (Encrypted Export / Import)
+// ---------------------------------------------------------------------------
+
+const migrationModalOpen = ref(false);
+const migrationModalMode = ref<"export" | "import">("export");
+const migrationExportSummary = ref<ColabOneMigrationExportSummary | null>(null);
+const migrationExportLoading = ref(false);
+const migrationExportSubmitting = ref(false);
+const migrationExportError = ref("");
+
+const migrationImportStep = ref<"decrypt" | "preview">("decrypt");
+const migrationPickedFile = ref<ColabOneMigrationPickResult | null>(null);
+const migrationImportPreview = ref<ColabOneMigrationPreview | null>(null);
+const migrationPickingFile = ref(false);
+const migrationImportDecrypting = ref(false);
+const migrationImportApplying = ref(false);
+const migrationImportError = ref("");
+
+const migrationUiSyncKey = ref(0);
+const migrationApiSyncKey = ref(0);
+const migrationComfySyncKey = ref(0);
+let migrationExportReqSeq = 0;
+
+function formatMigrationError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  return friendlyErrorMessage(raw);
+}
+
+function currentMigrationSessionId(): string {
+  return (
+    migrationImportPreview.value?.preview_id ||
+    migrationPickedFile.value?.file_token ||
+    ""
+  );
+}
+
+function resetMigrationModalState(cancelRemoteSession = true) {
+  migrationExportReqSeq += 1;
+  const sessionId = currentMigrationSessionId();
+  migrationExportLoading.value = false;
+  migrationExportError.value = "";
+  migrationImportError.value = "";
+  migrationPickedFile.value = null;
+  migrationImportPreview.value = null;
+  migrationImportStep.value = "decrypt";
+  if (cancelRemoteSession && sessionId) {
+    void colabOneCancelMigrationSession(sessionId).catch(() => {});
+  }
+}
+
+function handleMigrationModalOpenChange(nextOpen: boolean) {
+  migrationModalOpen.value = nextOpen;
+  if (!nextOpen) {
+    resetMigrationModalState(true);
+  }
+}
+
+async function openMigrationExport() {
+  if (migrationExportSubmitting.value) return;
+  resetMigrationModalState(true);
+  const seq = ++migrationExportReqSeq;
+  migrationModalMode.value = "export";
+  migrationExportSummary.value = null;
+  migrationExportError.value = "";
+  migrationModalOpen.value = true;
+  migrationExportLoading.value = true;
+  try {
+    const uiPrefs = collectColabOneMigrationUIPrefs(
+      window.localStorage,
+      colabOneAppearance.value,
+    );
+    const summary = await colabOneGetMigrationExportSummary(uiPrefs);
+    if (seq !== migrationExportReqSeq || !migrationModalOpen.value || migrationModalMode.value !== "export") {
+      return;
+    }
+    migrationExportSummary.value = summary;
+  } catch (e) {
+    if (seq !== migrationExportReqSeq || !migrationModalOpen.value || migrationModalMode.value !== "export") {
+      return;
+    }
+    migrationExportError.value = formatMigrationError(e);
+  } finally {
+    if (seq === migrationExportReqSeq) {
+      migrationExportLoading.value = false;
+    }
+  }
+}
+
+async function handleMigrationExport(payload: {
+  modules: ColabOneMigrationModuleId[];
+  password: string;
+}) {
+  if (migrationExportSubmitting.value) return;
+  migrationExportSubmitting.value = true;
+  migrationExportError.value = "";
+  try {
+    const uiPrefs = collectColabOneMigrationUIPrefs(
+      window.localStorage,
+      colabOneAppearance.value,
+    );
+    const res = await colabOneExportMigrationFile({
+      modules: payload.modules,
+      password: payload.password,
+      ui_prefs: uiPrefs,
+    });
+    if (res.cancelled) {
+      return;
+    }
+    migrationModalOpen.value = false;
+    resetMigrationModalState(false);
+    notify(
+      t("migration.exportSuccessToast", {
+        filename: res.filename || "ColabOne.colabone",
+      }),
+      "success",
+      "migration-export",
+    );
+    void syncSnapshotQuietly();
+  } catch (e) {
+    migrationExportError.value = formatMigrationError(e);
+  } finally {
+    migrationExportSubmitting.value = false;
+  }
+}
+
+async function openMigrationImport() {
+  if (
+    migrationPickingFile.value ||
+    migrationImportDecrypting.value ||
+    migrationImportApplying.value
+  ) {
+    return;
+  }
+  migrationPickingFile.value = true;
+  migrationImportError.value = "";
+  try {
+    const picked = await colabOnePickMigrationFile();
+    if (picked.cancelled || !picked.file_token) {
+      return;
+    }
+    migrationModalMode.value = "import";
+    migrationImportStep.value = "decrypt";
+    migrationPickedFile.value = picked;
+    migrationImportPreview.value = null;
+    migrationImportError.value = "";
+    migrationModalOpen.value = true;
+  } catch (e) {
+    if (migrationModalOpen.value && migrationModalMode.value === "import") {
+      migrationImportError.value = formatMigrationError(e);
+    } else {
+      showError(e);
+    }
+  } finally {
+    migrationPickingFile.value = false;
+  }
+}
+
+async function handleMigrationDecrypt(payload: {
+  fileToken: string;
+  password: string;
+}) {
+  if (migrationImportDecrypting.value) return;
+  migrationImportDecrypting.value = true;
+  migrationImportError.value = "";
+  try {
+    const preview = await colabOneDecryptMigrationPreview(
+      payload.fileToken,
+      payload.password,
+    );
+    migrationImportPreview.value = preview;
+    migrationImportStep.value = "preview";
+    migrationImportError.value = "";
+  } catch (e) {
+    migrationImportError.value = formatMigrationError(e);
+  } finally {
+    migrationImportDecrypting.value = false;
+  }
+}
+
+async function handleMigrationApply(payload: {
+  previewId: string;
+  modules: ColabOneMigrationModuleId[];
+}) {
+  if (migrationImportApplying.value) return;
+  migrationImportApplying.value = true;
+  migrationImportError.value = "";
+  try {
+    const res = await colabOneApplyMigrationPreview({
+      preview_id: payload.previewId,
+      modules: payload.modules,
+    });
+
+    if (res.applied_ui_prefs) {
+      applyColabOneMigrationUIPrefs(res.applied_ui_prefs, {
+        setAppearance: (mode) => {
+          setColabOneAppearance(mode);
+        },
+        setLogsWidth: (width) => {
+          logDrawerWidth.value = width;
+        },
+      });
+    }
+
+    const appliedSet = new Set(res.applied_modules || []);
+    if (appliedSet.has("settings")) {
+      editingAssignMaxAttempts.value = false;
+      try {
+        applyCloseBehaviorState(await colabOneGetCloseBehavior());
+      } catch {
+        // Ignore offline fallback errors.
+      }
+      try {
+        updateState.value = normalizeColabOneUpdateState(
+          await colabOneGetUpdateState(),
+        );
+      } catch {
+        // Ignore offline fallback errors.
+      }
+    }
+
+    if (appliedSet.has("credentials")) {
+      form.value.hf_token = "";
+      form.value.assign_proxy = "";
+      assignProxyExpanded.value = false;
+      hfTokenInputRef.value?.hide();
+      assignProxyInputRef.value?.hide();
+    }
+
+    if (appliedSet.has("workflow_drafts")) {
+      try {
+        localStorage.removeItem(COLABONE_STORAGE_KEYS.comfyDrafts);
+      } catch {
+        // Ignore restricted storage contexts.
+      }
+    }
+
+    // Force immediate full form & snapshot re-hydration on hot-apply.
+    initialized = false;
+    lastSyncedSettings = {};
+    lastSnapshotRaw = null;
+    await syncSnapshotQuietly();
+
+    if (appliedSet.has("settings") || appliedSet.has("cu_usage")) {
+      migrationUiSyncKey.value += 1;
+    }
+    if (appliedSet.has("credentials") || appliedSet.has("library_workflows")) {
+      migrationApiSyncKey.value += 1;
+    }
+    if (
+      appliedSet.has("workflow_drafts") ||
+      appliedSet.has("library_workflows") ||
+      appliedSet.has("credentials")
+    ) {
+      migrationComfySyncKey.value += 1;
+    }
+
+    migrationModalOpen.value = false;
+    resetMigrationModalState(false);
+
+    if (res.account_imported && res.account_logged_in) {
+      notify(
+        t("migration.importSuccessWithAccountToast", {
+          email: res.account_email || t("migration.summarySignedIn"),
+        }),
+        "success",
+        "migration-import",
+      );
+    } else {
+      notify(
+        t("migration.importSuccessToast", {
+          count: res.applied_modules?.length || payload.modules.length,
+        }),
+        "success",
+        "migration-import",
+      );
+    }
+  } catch (e) {
+    migrationImportError.value = formatMigrationError(e);
+  } finally {
+    migrationImportApplying.value = false;
+  }
+}
+
 onMounted(() => {
   snapshotPoller.start();
   void syncLogWindowState();
@@ -3806,6 +4231,17 @@ onUnmounted(() => {
                       </template>
                       {{ t("device.signInGoogle") }}
                     </AButton>
+                    <AButton
+                      :loading="migrationPickingFile"
+                      :disabled="busy || !!state.operation"
+                      data-testid="home-migration-import-btn"
+                      @click="openMigrationImport"
+                    >
+                      <template #icon>
+                        <PhDownloadSimple :size="15" />
+                      </template>
+                      {{ t("migration.homeImportBtn") }}
+                    </AButton>
                     <AButton @click="selectPage('settings')">
                       <span>{{ t("device.moreSettings") }}</span>
                       <PhCaretRight :size="14" />
@@ -4393,6 +4829,7 @@ onUnmounted(() => {
                 :aria-label="t('device.resourceMonitorAria')"
               >
                 <ResourceMonitor
+                  :key="`rm-${migrationUiSyncKey}`"
                   class="co-monitor"
                   :runtime="effectiveMonitor.runtime"
                   :drive-connected="effectiveMonitor.drive_connected"
@@ -4422,6 +4859,7 @@ onUnmounted(() => {
                 :aria-label="t('cuUsage.sectionAria')"
               >
                 <CuUsageChart
+                  :key="`cu-${migrationUiSyncKey}`"
                   :account="state.account"
                   :setup-colab="state.setup.colab"
                   :loading="!snapshotLoaded"
@@ -4727,7 +5165,7 @@ onUnmounted(() => {
             class="co-panel-wrap co-page-motion co-panel-host"
           >
             <ApiPanel
-              :key="apiPanelRetryKey"
+              :key="`${apiPanelRetryKey}-${migrationApiSyncKey}`"
               v-model:models-open="modelsDrawerOpen"
               :state="state"
               :busy="busy"
@@ -4748,9 +5186,11 @@ onUnmounted(() => {
             class="co-panel-wrap co-page-motion co-panel-host"
           >
             <ComfyPanel
-              :key="comfyPanelRetryKey"
+              :key="`${comfyPanelRetryKey}-${migrationComfySyncKey}`"
               :state="state"
               :loading="!snapshotLoaded"
+              :clock-now="clockNow"
+              :snapshot-at="snapshotAt"
               @device="openDevice"
               @settings="selectPage('settings')"
               @upgrade="requestRuntimeUpgrade"
@@ -5653,7 +6093,70 @@ onUnmounted(() => {
                   </div>
                 </section>
 
-                <!-- Section 4: Desktop & About -->
+                <!-- Section 4: Data & One-Click Migration -->
+                <section
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-migration"
+                >
+                  <h2 id="settings-sec-migration" class="co-settings-section-label">
+                    {{ t("settings.sectionMigration") }}
+                  </h2>
+                  <div class="co-settings-list">
+                    <div
+                      class="co-settings-row"
+                      data-testid="settings-migration-row"
+                      aria-labelledby="migration-heading"
+                    >
+                      <div class="co-sr-main">
+                        <div class="co-sr-info">
+                          <div class="co-sr-title-line">
+                            <span class="co-sr-icon is-blue" aria-hidden="true">
+                              <PhPackage :size="14" weight="duotone" />
+                            </span>
+                            <h3 id="migration-heading" class="co-sr-title">
+                              {{ t("settings.migrationTitle") }}
+                            </h3>
+                            <ATag color="blue" :bordered="false">
+                              {{ t("settings.migrationEncryptedTag") }}
+                            </ATag>
+                          </div>
+                          <p class="co-sr-desc">
+                            {{ t("settings.migrationDesc") }}
+                          </p>
+                        </div>
+                        <div class="co-sr-control">
+                          <ASpace :size="8" wrap>
+                            <AButton
+                              type="primary"
+                              :loading="migrationExportLoading"
+                              :disabled="busy || !!state.operation"
+                              data-testid="settings-migration-export-btn"
+                              @click="openMigrationExport"
+                            >
+                              <template #icon>
+                                <PhUploadSimple :size="15" />
+                              </template>
+                              {{ t("settings.migrationExportBtn") }}
+                            </AButton>
+                            <AButton
+                              :loading="migrationPickingFile"
+                              :disabled="busy || !!state.operation"
+                              data-testid="settings-migration-import-btn"
+                              @click="openMigrationImport"
+                            >
+                              <template #icon>
+                                <PhDownloadSimple :size="15" />
+                              </template>
+                              {{ t("settings.migrationImportBtn") }}
+                            </AButton>
+                          </ASpace>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- Section 5: Desktop & About -->
                 <section
                   class="co-settings-group-block"
                   aria-labelledby="settings-sec-desktop"
@@ -6026,6 +6529,16 @@ onUnmounted(() => {
                 <div class="co-task-head">
                   <strong>{{ taskBarTitle(dockTask.kind) }}</strong>
                   <span class="co-muted">{{ tb(dockTask.message) }}</span>
+                  <span
+                    v-if="dockTaskElapsedLabel"
+                    class="co-task-elapsed co-tabular"
+                    data-testid="dock-task-elapsed"
+                  >
+                    <PhClock :size="13" aria-hidden="true" />
+                    <span>{{
+                      t("task.elapsedLive", { duration: dockTaskElapsedLabel })
+                    }}</span>
+                  </span>
                 </div>
                 <div v-if="dockTask.download" class="co-download-stats">
                   <b class="co-tabular">
@@ -6088,6 +6601,7 @@ onUnmounted(() => {
         :current-activity="currentActivity"
         :running="!!(state.operation || task)"
         :active-speed="activeApiSpeed"
+        :active-elapsed="activeTaskElapsedLabel"
         :privacy-context="privacyContext"
         @update:width="onLogDrawerWidthChange"
         @copy="copy"
@@ -6408,6 +6922,28 @@ onUnmounted(() => {
         :suppress-leave-transition="closeModalSuppressLeave"
         @update:open="closeModalOpen = $event"
         @confirm="handleConfirmCloseModal"
+      />
+
+      <!-- Modal: One-Click Encrypted Migration (Export / Import) -->
+      <ColabOneMigrationModal
+        :open="migrationModalOpen"
+        :mode="migrationModalMode"
+        :state="state"
+        :export-summary="migrationExportSummary"
+        :export-loading="migrationExportLoading"
+        :export-submitting="migrationExportSubmitting"
+        :export-error="migrationExportError"
+        :import-step="migrationImportStep"
+        :picked-file="migrationPickedFile"
+        :import-preview="migrationImportPreview"
+        :import-decrypting="migrationImportDecrypting"
+        :import-applying="migrationImportApplying"
+        :import-error="migrationImportError"
+        @update:open="handleMigrationModalOpenChange"
+        @export="handleMigrationExport"
+        @repick="openMigrationImport"
+        @decrypt="handleMigrationDecrypt"
+        @apply="handleMigrationApply"
       />
     </ALayout>
   </AConfigProvider>
@@ -8253,6 +8789,21 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
   font-size: 13px;
+}
+
+.co-task-elapsed {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--co-secondary-text);
+  background: var(--co-surface);
+  border: 1px solid var(--co-border-secondary);
+  white-space: nowrap;
 }
 
 .co-download-stats {

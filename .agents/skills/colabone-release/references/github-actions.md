@@ -6,11 +6,11 @@
 
 - `.github/workflows/release.yml` 负责整条发布链路：
   1. `Validate release metadata`：核验 SemVer 标签、提交 SHA 和三处源码版本清单
-  2. `Build and check packages`（复用 `.github/workflows/ci.yml`）：在 `windows-latest` 与 `macos-latest` 上执行离线检查、Playwright UI 回归测试和便携包打包审计
-  3. `Publish GitHub Release`：确认标签未漂移、下载双平台压缩包、生成 `SHA256SUMS.txt` 并发布 GitHub Release
+  2. `Build and check packages`（复用 `.github/workflows/ci.yml`）：在 `windows-latest` 与 `macos-latest` 上执行离线检查、Playwright UI 回归测试和原生安装包打包审计
+  3. `Publish GitHub Release`：确认标签未漂移、下载双平台安装包与自动更新产物、生成 `SHA256SUMS.txt` 并发布 GitHub Release
 - 发布完成必须同时满足：
   1. 匹配当前 `release.yml` + `push` + `vX.Y.Z` + 精确 `git_sha` 的运行状态为 `completed` 且结论为 `success`
-  2. GitHub Release 已创建（非 draft），`prerelease` 标记与版本号一致，中英双语发布说明（上方中文区块、下方英文区块）完整写入，且全部 7 个必选附件均为 `uploaded` 且字节数大于 0：`ColabOne-<version>-windows-x64.zip`、`ColabOne-<version>-macos-arm64.zip`、`colabone-<version>-windows-amd64.tar.gz`、`colabone-<version>-darwin-arm64.tar.gz`、`update-windows-amd64.json`、`update-darwin-arm64.json`、`SHA256SUMS.txt`（如存在前序签名版本还会附带 `.delta` 增量补丁）
+  2. GitHub Release 已创建（非 draft），`prerelease` 标记与版本号一致，中英双语发布说明（上方中文区块、下方英文区块）完整写入，且全部 7 个必选附件均为 `uploaded` 且字节数大于 0：`ColabOne-<version>-windows-x64-setup.exe`、`ColabOne-<version>-macos-arm64.dmg`、`colabone-<version>-windows-amd64.tar.gz`、`colabone-<version>-darwin-arm64.tar.gz`、`update-windows-amd64.json`、`update-darwin-arm64.json`、`SHA256SUMS.txt`（如存在前序签名版本还会附带 `.delta` 增量补丁）
 
 ## 工具、凭据和权限
 
@@ -58,7 +58,7 @@ python3 "$SCRIPT" show --run-id "$RUN_ID" --attempt "$ATTEMPT" < /dev/null
 python3 "$SCRIPT" logs --job-id "$JOB_ID" --output "$JOB_LOG_PATH" < /dev/null
 python3 "$SCRIPT" logs --run-id "$RUN_ID" --attempt "$ATTEMPT" --output "$RUN_LOG_ARCHIVE_PATH" < /dev/null
 
-# 4. 验收 GitHub Release 与 3 个预期附件
+# 4. 验收 GitHub Release 与 7 个预期附件
 python3 "$SCRIPT" release --tag "$RELEASE_TAG" < /dev/null
 ```
 

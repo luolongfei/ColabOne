@@ -9,6 +9,7 @@ from tools.package import stage_mygo_updater_artifacts
 from tools.release_update_manifest import (
     ColabOneUpdateManifestError,
     colabone_prepare_update_manifests,
+    colabone_render_github_release_body,
     main as release_update_manifest_main,
 )
 
@@ -324,19 +325,27 @@ def test_cli_exit_codes_for_invalid_and_missing_files(tmp_path: Path, capsys):
     assert rc == 1
     assert "Expected JSON object" in captured.err
 
-    # Valid dist with CRLF notes file -> exit code 0 and prints updated manifest path.
+    # Valid dist with CRLF notes file -> exit code 0, prints updated manifest path,
+    # keeps update manifest notes clean, and writes enriched GitHub Release body when requested.
     good_dist = tmp_path / "good-dist"
     manifest_path, _ = _create_signed_target_artifacts(good_dist, target="darwin-arm64")
     notes_file = tmp_path / "notes.md"
-    notes_file.write_bytes(b"## \xe4\xb8\xad\xe6\x96\x87\r\n---\r\n## English\r\n")
+    notes_file.write_bytes(b"## \xe4\xb8\xad\xe6\x96\x87\r\n- \xe6\x9b\xb4\xe6\x96\xb0\r\n\r\n---\r\n\r\n## English\r\n- Update\r\n")
+    release_body_file = tmp_path / "github-release-body.md"
     rc = release_update_manifest_main(
         [
             "--dist",
             str(good_dist),
             "--version",
             "0.1.7",
+            "--tag",
+            "v0.1.7",
+            "--repo",
+            "example/ColabOne",
             "--notes-file",
             str(notes_file),
+            "--release-body-output",
+            str(release_body_file),
             "--targets",
             "darwin-arm64",
         ]
@@ -344,7 +353,52 @@ def test_cli_exit_codes_for_invalid_and_missing_files(tmp_path: Path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert str(manifest_path) in captured.out
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["notes"] == "## 中文\n---\n## English"
+    manifest_notes = json.loads(manifest_path.read_text(encoding="utf-8"))["notes"]
+    assert manifest_notes == "## 中文\n- 更新\n\n---\n\n## English\n- Update"
+    assert "## 下载安装" not in manifest_notes
+    assert "## Downloads" not in manifest_notes
+
+    body = release_body_file.read_text(encoding="utf-8")
+    assert b"\r\n" not in release_body_file.read_bytes()
+    assert "https://github.com/example/ColabOne/releases/download/v0.1.7/ColabOne-0.1.7-windows-x64-setup.exe" in body
+    assert "https://github.com/example/ColabOne/releases/download/v0.1.7/ColabOne-0.1.7-macos-arm64.dmg" in body
+    assert body.index("## 中文") < body.index("## 下载安装") < body.index("\n---\n") < body.index("## English") < body.index("## Downloads")
+
+
+def test_render_github_release_body_handles_empty_plain_and_idempotent_inputs():
+    empty_body = colabone_render_github_release_body("", "0.1.9")
+    assert empty_body.startswith("ColabOne v0.1.9\n\n## 下载安装\n")
+    assert "## Downloads\n" in empty_body
+    assert "ColabOne-0.1.9-windows-x64-setup.exe" in empty_body
+    assert "ColabOne-0.1.9-macos-arm64.dmg" in empty_body
+
+    # Re-rendering an already-enriched body must be idempotent.
+    assert colabone_render_github_release_body(empty_body, "0.1.9") == empty_body
+
+    # Inline mentions of "## 下载安装" / "## Downloads" inside changelog bullets must not suppress real sections.
+    inline_mention = (
+        "ColabOne v0.2.0-rc.1\n\n"
+        "## 修改点\n- 优化 `## 下载安装` 与 `## Downloads` 说明文案\n\n"
+        "---\n\n"
+        "## Changes\n- Polish `## 下载安装` and `## Downloads` copy\n"
+    )
+    rendered_prerelease = colabone_render_github_release_body(
+        inline_mention, "0.2.0-rc.1", tag="v0.2.0-rc.1"
+    )
+    assert "\n## 下载安装\n" in rendered_prerelease
+    assert "\n## Downloads\n" in rendered_prerelease
+    assert "/releases/download/v0.2.0-rc.1/ColabOne-0.2.0-rc.1-windows-x64-setup.exe" in rendered_prerelease
+    assert "/releases/download/v0.2.0-rc.1/ColabOne-0.2.0-rc.1-macos-arm64.dmg" in rendered_prerelease
+
+    plain_body = colabone_render_github_release_body("ColabOne v0.1.9\n\nManual notes", "0.1.9")
+    assert plain_body.startswith("ColabOne v0.1.9\n\nManual notes\n\n## 下载安装\n")
+    assert "\n---\n\n## Downloads\n" in plain_body
+
+    with pytest.raises(ColabOneUpdateManifestError, match="must not be empty"):
+        colabone_render_github_release_body("notes", "v")
+
+    with pytest.raises(ColabOneUpdateManifestError, match="Invalid GitHub repository"):
+        colabone_render_github_release_body("notes", "0.1.9", repo="https://evil.invalid/a/b")
 
 
 # ---------------------------------------------------------------------------

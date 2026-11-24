@@ -36,6 +36,158 @@ export interface ColabOneLogDrawerState {
   delta: number;
 }
 
+/** ColabOneMigrationAccountSummary summarizes Google account status without any tokens. */
+export interface ColabOneMigrationAccountSummary {
+  has_login: boolean;
+  persistent_login: boolean;
+  email: string;
+  has_drive_scope: boolean;
+  has_cloud_project: boolean;
+}
+
+/** ColabOneMigrationApplyRequest selects which decrypted modules to apply on this machine. */
+export interface ColabOneMigrationApplyRequest {
+  preview_id: string;
+  modules: string[];
+}
+
+/** ColabOneMigrationApplyResult reports applied modules and UI preferences to hot-sync in WebView. */
+export interface ColabOneMigrationApplyResult {
+  applied_modules: string[];
+  account_imported: boolean;
+  account_logged_in: boolean;
+  account_email?: string;
+  applied_ui_prefs?: ColabOneMigrationUIPrefs;
+  close_behavior?: string;
+  warnings?: string[];
+}
+
+/** ColabOneMigrationCUUsageSummary summarizes persisted Compute Unit consumption records. */
+export interface ColabOneMigrationCUUsageSummary {
+  account_count: number;
+  bucket_count: number;
+  day_count: number;
+}
+
+/** ColabOneMigrationCredentialsSummary summarizes configured secrets without raw keys/tokens. */
+export interface ColabOneMigrationCredentialsSummary {
+  has_hf_token: boolean;
+  has_assign_proxy: boolean;
+  has_public_api: boolean;
+  public_api_domain: string;
+  has_comfy_canvas: boolean;
+  comfy_canvas_domain: string;
+  configured_count: number;
+}
+
+/** ColabOneMigrationDraftsSummary summarizes ComfyUI text-only workflow drafts. */
+export interface ColabOneMigrationDraftsSummary {
+  draft_count: number;
+  field_count: number;
+}
+
+/**
+ * ColabOneMigrationExportRequest carries user selections from the Export modal.
+ * Raw secrets are read strictly inside Go and never cross the WebView boundary.
+ */
+export interface ColabOneMigrationExportRequest {
+  modules: string[];
+  password: string;
+  ui_prefs?: ColabOneMigrationUIPrefs;
+}
+
+/** ColabOneMigrationExportResult reports the outcome of ExportMigrationFile. */
+export interface ColabOneMigrationExportResult {
+  cancelled: boolean;
+  filename?: string;
+  size_bytes?: number;
+  modules?: string[];
+}
+
+/**
+ * ColabOneMigrationExportSummary describes live redacted module summaries shown
+ * in the Export Migration modal before the user chooses a password and saves.
+ */
+export interface ColabOneMigrationExportSummary {
+  app_version: string;
+  source_os: string;
+  has_active_operation: boolean;
+  has_running_instances: boolean;
+  modules: ColabOneMigrationModuleSummary[];
+}
+
+/** ColabOneMigrationLibrarySummary summarizes local model library and custom workflow counts. */
+export interface ColabOneMigrationLibrarySummary {
+  common_model_count: number;
+  custom_model_count: number;
+  common_repo_count: number;
+  api_id_override_count: number;
+  custom_workflow_count: number;
+}
+
+/** ColabOneMigrationModuleSummary describes one module row in Export / Import UI modals. */
+export interface ColabOneMigrationModuleSummary {
+  id: string;
+  included: boolean;
+  has_data: boolean;
+  account?: ColabOneMigrationAccountSummary;
+  credentials?: ColabOneMigrationCredentialsSummary;
+  settings?: ColabOneMigrationSettingsSummary;
+  library_workflows?: ColabOneMigrationLibrarySummary;
+  cu_usage?: ColabOneMigrationCUUsageSummary;
+  workflow_drafts?: ColabOneMigrationDraftsSummary;
+}
+
+/** ColabOneMigrationPickResult reports outer-envelope metadata for a chosen .colabone file. */
+export interface ColabOneMigrationPickResult {
+  cancelled: boolean;
+  file_token?: string;
+  filename?: string;
+  file_size?: number;
+  schema_version?: number;
+}
+
+/**
+ * ColabOneMigrationPreview reports strictly redacted archive metadata after
+ * password decryption so the user can review and select modules before applying.
+ */
+export interface ColabOneMigrationPreview {
+  preview_id: string;
+  filename: string;
+  app_version: string;
+  exported_at: string;
+  source_os: string;
+  schema_version: number;
+  has_active_operation: boolean;
+  has_running_instances: boolean;
+  can_run_in_background: boolean;
+  modules: ColabOneMigrationModuleSummary[];
+  warnings?: string[];
+}
+
+/** ColabOneMigrationSettingsSummary summarizes key software and desktop preferences. */
+export interface ColabOneMigrationSettingsSummary {
+  gpu: string;
+  idle_minutes: number;
+  download_threads: number;
+  auto_drive: boolean;
+  assign_proxy_enabled: boolean;
+  locale: string;
+  appearance: string;
+  close_behavior: string;
+  privacy_mask_default: boolean;
+}
+
+/** ColabOneMigrationUIPrefs captures WebView localStorage preferences synced across machines. */
+export interface ColabOneMigrationUIPrefs {
+  appearance?: string;
+  locale?: string;
+  privacy_mask_default?: boolean;
+  monitor_layout?: string;
+  cu_usage_metric?: string;
+  logs_width?: number;
+}
+
 /** ColabOneUpdateState is the JSON-serializable state snapshot rendered by the UI. */
 export interface ColabOneUpdateState {
   status: string;
@@ -64,11 +216,34 @@ export interface ColabOneUpdateState {
 // ---- Services ----
 
 export const ColabOneDesktop = {
+  /**
+   * ApplyMigrationPreview atomically applies user-selected modules from the
+   * decrypted preview session across controller stores, OS credential vault, and
+   * native desktop settings, then immediately wipes the cached preview from memory.
+   */
+  applyMigrationPreview: bind<[ColabOneMigrationApplyRequest], ColabOneMigrationApplyResult>("ColabOneDesktop.ApplyMigrationPreview", (req: ColabOneMigrationApplyRequest) => [req]),
+  /**
+   * CancelMigrationSession discards any pending picked file or decrypted preview
+   * held in desktop memory when the user closes or cancels the Migration modal.
+   */
+  cancelMigrationSession: bind<[string], void>("ColabOneDesktop.CancelMigrationSession", (sessionID: string) => [sessionID]),
   /** CancelUpdateInstall cancels an in-progress update download. */
   cancelUpdateInstall: bind<[], ColabOneUpdateState>("ColabOneDesktop.CancelUpdateInstall", () => []),
   /** CheckForUpdate queries GitHub Releases for a newer version of ColabOne. */
   checkForUpdate: bind<[boolean], ColabOneUpdateState>("ColabOneDesktop.CheckForUpdate", (manual: boolean) => [manual]),
   command: bind<[ColabOneCommandRequest], string>("ColabOneDesktop.Command", (request: ColabOneCommandRequest) => [request]),
+  /**
+   * DecryptMigrationPreview decrypts the pending .colabone archive identified by
+   * fileToken inside Go, caches the validated payload under a short-lived PreviewID,
+   * and returns strictly redacted summaries to the WebView.
+   */
+  decryptMigrationPreview: bind<[string, string], ColabOneMigrationPreview>("ColabOneDesktop.DecryptMigrationPreview", (fileToken: string, password: string) => [fileToken, password]),
+  /**
+   * ExportMigrationFile validates selections and password, opens the native Save
+   * dialog, encrypts the selected modules in-process with Argon2id + AES-256-GCM,
+   * and writes the resulting .colabone archive atomically to disk.
+   */
+  exportMigrationFile: bind<[ColabOneMigrationExportRequest], ColabOneMigrationExportResult>("ColabOneDesktop.ExportMigrationFile", (req: ColabOneMigrationExportRequest) => [req]),
   /**
    * ExportWorkflowOutput accepts only a remote artifact ID. The save destination
    * comes from the native dialog, never a path supplied by remote workflow output.
@@ -81,6 +256,11 @@ export const ColabOneDesktop = {
   getCloseBehavior: bind<[], ColabOneCloseBehaviorState>("ColabOneDesktop.GetCloseBehavior", () => []),
   /** GetLogDrawerState reports whether the standalone runtime log window is open. */
   getLogDrawerState: bind<[], ColabOneLogDrawerState>("ColabOneDesktop.GetLogDrawerState", () => []),
+  /**
+   * GetMigrationExportSummary returns live redacted summaries for all 6 migration
+   * modules on this machine so the Export modal can preview what will be packaged.
+   */
+  getMigrationExportSummary: bind<[ColabOneMigrationUIPrefs | null], ColabOneMigrationExportSummary>("ColabOneDesktop.GetMigrationExportSummary", (uiPrefs: ColabOneMigrationUIPrefs | null) => [uiPrefs]),
   /** GetUpdateState returns the current desktop self-update status, progress, and preferences. */
   getUpdateState: bind<[], ColabOneUpdateState>("ColabOneDesktop.GetUpdateState", () => []),
   /**
@@ -90,6 +270,12 @@ export const ColabOneDesktop = {
    */
   openComfyCanvas: bind<[string], void>("ColabOneDesktop.OpenComfyCanvas", (target: string) => [target]),
   openURL: bind<[string], void>("ColabOneDesktop.OpenURL", (value: string) => [value]),
+  /**
+   * PickMigrationFile opens the native Open dialog, validates the outer .colabone
+   * archive header without exposing any file path or contents to the WebView, and
+   * caches the raw archive under a short-lived FileToken for decryption.
+   */
+  pickMigrationFile: bind<[], ColabOneMigrationPickResult>("ColabOneDesktop.PickMigrationFile", () => []),
   readClipboard: bind<[], string>("ColabOneDesktop.ReadClipboard", () => []),
   /** RelaunchForUpdate restarts ColabOne to activate an installed update. */
   relaunchForUpdate: bind<[], void>("ColabOneDesktop.RelaunchForUpdate", () => []),

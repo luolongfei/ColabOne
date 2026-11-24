@@ -441,14 +441,16 @@ function onMediaDrop(event: DragEvent) {
         :value="stringValue"
         :disabled="disabled"
         :dropdown-match-select-width="false"
+        option-label-prop="label"
         popup-class-name="co-comfy-select-dropdown"
-        class="co-comfy-full-width"
+        class="co-comfy-full-width co-comfy-select"
         @update:value="(val) => emit('update:value', String(val ?? ''))"
         @blur="emit('field-blur', field)"
       >
         <ASelectOption
           v-if="stringValue && !(field.options || []).includes(stringValue)"
           :value="stringValue"
+          :label="selectOptionLabel(stringValue)"
           :data-co-full-title="selectOptionLabel(stringValue)"
         >
           {{ selectOptionLabel(stringValue) }}
@@ -457,6 +459,7 @@ function onMediaDrop(event: DragEvent) {
           v-for="opt in field.options || []"
           :key="opt"
           :value="opt"
+          :label="selectOptionLabel(opt)"
           :data-co-full-title="selectOptionLabel(opt)"
         >
           {{ selectOptionLabel(opt) }}
@@ -598,6 +601,19 @@ function onMediaDrop(event: DragEvent) {
 
 .co-comfy-full-width {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.co-comfy-select :deep(.ant-select-selector) {
+  min-width: 0;
+}
+
+.co-comfy-select :deep(.ant-select-selection-item) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .co-comfy-meta-tag {
@@ -911,6 +927,21 @@ function onMediaDrop(event: DragEvent) {
 
 .co-comfy-filename-pill {
   max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>
+
+<style>
+body .ant-select-dropdown.co-comfy-select-dropdown {
+  max-width: min(580px, calc(100vw - 24px));
+}
+
+body
+  .ant-select-dropdown.co-comfy-select-dropdown
+  .ant-select-item-option-content {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

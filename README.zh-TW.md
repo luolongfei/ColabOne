@@ -39,8 +39,8 @@ ColabOne 為 **macOS (Apple Silicon)** 與 **Windows (x64)** 提供快速、原�
 
 ColabOne 介面圍繞四個側邊欄檢視組織：**遠端裝置 → 對外 API → ComfyUI → 設定**，並於右側提供可滑出的 **執行日誌** 面板。
 
-1. **下載並啟動**
-   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的壓縮檔（或[從原始碼建置](#-從原始碼建置)），解壓縮後直接執行 `ColabOne.app`（macOS）或 `ColabOne.exe`（Windows）。ColabOne 是完全自包含的純 Go 單一執行檔應用程式，無需本機 Python 執行環境，也不需要同層的 `runtime/` 或 `site-packages/` 資料夾。在 Windows 上，你可以在 **設定** 中直接建立開始功能表與桌面捷徑，無需系統管理員權限。
+1. **下載並安裝**
+   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的安裝檔（或[從原始碼建置](#-從原始碼建置)）：Windows 雙擊執行 `.exe` 安裝程式（安裝於目前使用者目錄，無需系統管理員權限），macOS 開啟 `.dmg` 磁碟映像檔並將 `ColabOne.app` 拖入**應用程式**。ColabOne 是完全自包含的純 Go 單一執行檔應用程式，無需本機 Python 執行環境，也不需要同層的 `runtime/` 或 `site-packages/` 資料夾。在 Windows 上，你也可以隨時在 **設定** 中管理開始功能表與桌面捷徑，無需系統管理員權限。
 
 2. **登入 Google 帳戶**
    前往 **設定** → **登入 Google**，在瀏覽器中授權你的帳戶後，ColabOne 會自動完成登入。若瀏覽器顯示授權內容頁面而非自動跳轉，請展開手動貼上區塊並點擊 **貼上並完成登入**。憑證會加密儲存在 macOS 鑰匙圈或 Windows 憑證管理員中，重啟後自動恢復並續期。
@@ -147,11 +147,11 @@ npm --prefix frontend run build
 # 執行所有離線檢查（內嵌服務包同步驗證、Go vet/test、遠端 Python pytest、Vitest 與前端建置）
 .venv/bin/python tools/install.py --root work/check --check
 
-# 於 dist/ 建置純 Go 單一執行檔可攜版壓縮檔
+# 於 dist/ 建置原生純 Go 安裝檔（Windows 為 .exe，macOS 為 .dmg）
 .venv/bin/python tools/package.py --out dist
 ```
 
-可攜版壓縮檔會輸出至 `dist/`（未壓縮的暫存組裝目錄位於 `work/package-stage/Programs/ColabOne`），封裝獨立的純 Go 單一執行檔（`ColabOne.app` / `ColabOne.exe`），並透過 `go:embed` 直接內嵌編譯後的 Vue 前端資源與遠端 Python 控制服務（`server/`、`common/`、`catalog/`），終端使用者無需本機 Python 執行環境或任何同層相依資料夾。
+原生安裝檔（`ColabOne-<version>-windows-x64-setup.exe` / `ColabOne-<version>-macos-arm64.dmg`）會輸出至 `dist/`（未壓縮的暫存組裝目錄位於 `work/package-stage/Programs/ColabOne`；如另需可攜版壓縮檔可加上 `--portable-zip`），封裝獨立的純 Go 單一執行檔（`ColabOne.app` / `ColabOne.exe`），並透過 `go:embed` 直接內嵌編譯後的 Vue 前端資源與遠端 Python 控制服務（`server/`、`common/`、`catalog/`），終端使用者無需本機 Python 執行環境或任何同層相依資料夾。
 
 所有單元測試與瀏覽器測試皆 100% 離線以模擬資料（Mock）執行 — 絕不會連線至 Google 或 Hugging Face，也不會配置真實 GPU。真實 GPU 驗收測試會在嚴格的運算預算下另行手動執行，詳情請參閱 [docs/validation.md](docs/validation.md)。
 

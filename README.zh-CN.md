@@ -39,8 +39,8 @@ ColabOne 是一款面向 **macOS (Apple Silicon)** 与 **Windows (x64)** 的原�
 
 ColabOne 围绕四个侧边栏视图组织：**远端设备 → 对外 API → ComfyUI → 设置**，并在右侧提供可滑出展开的**运行日志**抽屉。
 
-1. **下载并启动**
-   从 [Releases](https://github.com/luolongfei/ColabOne/releases) 下载对应平台的压缩包（或[从源码构建](#-从源码构建)），解压后直接打开 `ColabOne.app`（macOS）或 `ColabOne.exe`（Windows）。ColabOne 是完全自包含的纯 Go 单文件桌面应用，无需本机 Python 运行时，也无需保留 `runtime/`、`site-packages/` 等同级目录。在 Windows 上，无需管理员权限即可在**设置**中创建开始菜单与桌面快捷方式。
+1. **下载并安装**
+   从 [Releases](https://github.com/luolongfei/ColabOne/releases) 下载对应平台的安装包（或[从源码构建](#-从源码构建)）：Windows 双击运行 `.exe` 安装程序（当前用户目录安装，无需管理员权限），macOS 打开 `.dmg` 镜像并将 `ColabOne.app` 拖入**应用程序**。ColabOne 是完全自包含的纯 Go 单文件桌面应用，无需本机 Python 运行时，也无需保留 `runtime/`、`site-packages/` 等同级目录。在 Windows 上，无需管理员权限也可随时在**设置**中管理开始菜单与桌面快捷方式。
 
 2. **登录 Google 账户**
    前往**设置** → **登录 Google**，在浏览器中完成账户授权，ColabOne 会自动完成登录。如果浏览器停留在授权页面而未自动跳转，请展开手动粘贴区域并点击**粘贴并完成登录**。凭据会加密保存在 macOS 钥匙串或 Windows 凭据管理器中，重启自动恢复并到期自动续期。
@@ -147,11 +147,11 @@ npm --prefix frontend run build
 # 运行全部离线检查（嵌入式服务包同步校验、Go vet/test、远端 Python pytest、Vitest 与前端构建）
 .venv/bin/python tools/install.py --root work/check --check
 
-# 在 dist/ 目录构建纯 Go 单文件便携压缩包
+# 在 dist/ 目录构建原生纯 Go 安装包（Windows 为 .exe，macOS 为 .dmg）
 .venv/bin/python tools/package.py --out dist
 ```
 
-便携压缩包会输出至 `dist/`（解包暂存目录位于 `work/package-stage/Programs/ColabOne`），仅包含独立的纯 Go 主程序（`ColabOne.app` / `ColabOne.exe`），其内部已通过 `go:embed` 嵌入编译后的 Vue 前端资源与远端 Python 控制服务（`server/`、`common/`、`catalog/`），终端用户无需本机 Python 运行时或任何同级依赖目录。
+原生安装包（`ColabOne-<version>-windows-x64-setup.exe` / `ColabOne-<version>-macos-arm64.dmg`）会输出至 `dist/`（解包暂存目录位于 `work/package-stage/Programs/ColabOne`；如本地另需便携版可附加 `--portable-zip`），内置独立的纯 Go 主程序（`ColabOne.app` / `ColabOne.exe`），其内部已通过 `go:embed` 嵌入编译后的 Vue 前端资源与远端 Python 控制服务（`server/`、`common/`、`catalog/`），终端用户无需本机 Python 运行时或任何同级依赖目录。
 
 所有单元测试与浏览器测试均 100% 基于 Mock 离线运行 —— 绝不会连接 Google 或 Hugging Face，也不会分配真实 GPU。真机 GPU 验收仅在严格算力预算下显式执行，详见 [docs/validation.md](docs/validation.md)。
 

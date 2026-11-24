@@ -51,7 +51,7 @@ jobs:
       - name: Offline UI regression tests
         working-directory: frontend
         run: npx playwright test
-      - name: Portable pure Go package and self-test
+      - name: Build native installer package and self-test
         env:
           GH_TOKEN: ${{ github.token }}
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
@@ -60,7 +60,8 @@ jobs:
         with:
           name: ColabOne-${{ matrix.os }}
           path: |
-            dist/ColabOne-*.zip
+            dist/ColabOne-*-setup.exe
+            dist/ColabOne-*.dmg
             dist/colabone-*.tar.gz
             dist/colabone-*.delta
             dist/update-*.json

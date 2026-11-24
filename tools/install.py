@@ -201,7 +201,7 @@ def check():
     run(["go", "run", ".", "--self-test"], ROOT / "console")
 
 
-def install(root, check_only=False):
+def install(root, check_only=False, build_installer=False):
     paths = bundle.ColabOneInstallPaths(root)
     if check_only:
         check()
@@ -217,11 +217,12 @@ def install(root, check_only=False):
         "-platform",
         f"{goos}/{goarch}",
     ]
-    if goos == "darwin":
-        build_cmd.append("-skip-dmg")
-    elif goos == "windows":
-        build_cmd.append("-skip-installer")
-    run(build_cmd, ROOT / "console")
+    if not build_installer:
+        if goos == "darwin":
+            build_cmd.append("-skip-dmg")
+        elif goos == "windows":
+            build_cmd.append("-skip-installer")
+    run(build_cmd, ROOT / "console", timeout=600 if build_installer else 300)
     platform_dir = ROOT / "console/dist" / f"{goos}-{goarch}"
     app = _find_built_app(platform_dir, goos)
     target = paths.target_install
@@ -254,8 +255,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, help="Isolated installation root")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--installer",
+        action="store_true",
+        help="Build the native platform installer (.exe on Windows, .dmg on macOS)",
+    )
     args = parser.parse_args()
-    install(args.root, args.check)
+    install(args.root, args.check, build_installer=args.installer)
 
 
 if __name__ == "__main__":

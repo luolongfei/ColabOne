@@ -8368,6 +8368,127 @@ func TestComfyUIHardeningUploadRunBuiltinAuthorityAndTTSEngines(t *testing.T) {
 	})
 }
 
+func TestTaskDurationFormattingAndActivityLogs(t *testing.T) {
+	t.Run("formatColabOneDurationZh_boundaries", func(t *testing.T) {
+		cases := []struct {
+			secs      float64
+			subsecond bool
+			want      string
+		}{
+			{0, false, "0 秒"},
+			{0, true, "0.0 秒"},
+			{4.24, true, "4.2 秒"},
+			{42.9, false, "42 秒"},
+			{59.96, true, "1 分钟"},
+			{60, true, "1 分钟"},
+			{754, true, "12 分 34 秒"},
+			{3600, true, "1 小时"},
+			{4500, true, "1 小时 15 分"},
+			{4523.4, true, "1 小时 15 分 23 秒"},
+			{math.NaN(), true, "0.0 秒"},
+			{-10, false, "0 秒"},
+		}
+		for _, tc := range cases {
+			if got := formatColabOneDurationZh(tc.secs, tc.subsecond); got != tc.want {
+				t.Fatalf("formatColabOneDurationZh(%v, %v) = %q, want %q", tc.secs, tc.subsecond, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("resolveTaskElapsedSeconds_precedence_and_legacy_fallback", func(t *testing.T) {
+		if got, ok := resolveTaskElapsedSeconds(map[string]any{
+			"elapsed_seconds": 123.4,
+			"created_at":      1000.0,
+			"finished_at":     1500.0,
+		}, 2000.0); !ok || math.Abs(got-123.4) > 1e-6 {
+			t.Fatalf("expected explicit elapsed_seconds 123.4, got (%v, %v)", got, ok)
+		}
+
+		if got, ok := resolveTaskElapsedSeconds(map[string]any{
+			"created_at":  1000.0,
+			"finished_at": 1425.5,
+		}, 2000.0); !ok || math.Abs(got-425.5) > 1e-6 {
+			t.Fatalf("expected finished_at-created_at 425.5, got (%v, %v)", got, ok)
+		}
+
+		// Backwards-compatible fallback for already-running older remote servers
+		if got, ok := resolveTaskElapsedSeconds(map[string]any{
+			"created_at": 1000.0,
+		}, 5523.0); !ok || math.Abs(got-4523.0) > 1e-6 {
+			t.Fatalf("expected serverTime-created_at 4523.0, got (%v, %v)", got, ok)
+		}
+
+		if _, ok := resolveTaskElapsedSeconds(map[string]any{"state": "completed"}, 0); ok {
+			t.Fatal("expected ok=false when no timestamps exist")
+		}
+	})
+
+	t.Run("terminal_task_logs_include_duration_without_duplication", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		ctrl := h.ctrl
+
+		// 1. Legacy remote task completing without "耗时" in message -> controller appends human-friendly elapsed time from server_time - created_at.
+		ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state": "ready",
+				"idle":  map[string]any{"server_time": 1700004523.0},
+				"tasks": []map[string]any{
+					{
+						"id":         "task-legacy-1",
+						"kind":       "comfyui_run",
+						"state":      "completed",
+						"progress":   1.0,
+						"created_at": 1700000000.0,
+						"message":    "工作流执行完成，已保存 1 个作品到远端 GPU",
+					},
+				},
+			},
+		})
+
+		// 2. Modern remote task whose message already carries "耗时" -> controller must NOT duplicate "· 耗时 ...".
+		ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state": "ready",
+				"idle":  map[string]any{"server_time": 1700005000.0},
+				"tasks": []map[string]any{
+					{
+						"id":              "task-modern-1",
+						"kind":            "comfyui_run",
+						"state":           "completed",
+						"progress":        1.0,
+						"created_at":      1700004000.0,
+						"finished_at":     1700004754.0,
+						"elapsed_seconds": 754.0,
+						"message":         "工作流执行完成，已保存 1 个作品到远端 GPU（耗时 12 分 34 秒）",
+					},
+				},
+			},
+		})
+
+		logs := ctrl.activity.Snapshot()
+		foundLegacy := false
+		foundModern := false
+		for _, entry := range logs {
+			msg := entry.Message
+			if strings.Contains(msg, "ComfyUI 工作流：已完成 · 耗时 1 小时 15 分 23 秒 · 工作流执行完成") {
+				foundLegacy = true
+			}
+			if strings.Contains(msg, "工作流执行完成，已保存 1 个作品到远端 GPU（耗时 12 分 34 秒）") {
+				foundModern = true
+				if strings.Count(msg, "耗时") != 1 {
+					t.Fatalf("expected single duration mention in modern log, got: %q", msg)
+				}
+			}
+		}
+		if !foundLegacy {
+			t.Fatalf("expected legacy terminal task log with formatted duration, logs=%#v", logs)
+		}
+		if !foundModern {
+			t.Fatalf("expected modern terminal task log without duplicate duration, logs=%#v", logs)
+		}
+	})
+}
+
 func TestComfyUIOutputExportDriveCommand(t *testing.T) {
 	t.Run("comfyui_output_export_drive_validation_and_forwarding", func(t *testing.T) {
 		h := newTestHarness(t, false)

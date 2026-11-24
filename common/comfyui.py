@@ -250,6 +250,25 @@ class ComfyModelRef(BaseModel):
         return value.lower()
 
 
+class ComfyTtsVoicePreset(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    name: str = Field(min_length=1, max_length=80)
+    gender: Literal["female", "male", "neutral"] = "female"
+    style: str = Field(default="", max_length=80)
+    description: str = Field(default="", max_length=240)
+    prompt: str = Field(default="", max_length=600)
+    seed: int = Field(default=42, ge=0, le=2147483647)
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("内置音色名称不能为空")
+        return cleaned
+
+
 class ComfyTtsEngineSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
@@ -271,6 +290,7 @@ class ComfyTtsEngineSpec(BaseModel):
     pip_packages: list[str] = Field(default_factory=list, max_length=64)
     source_repo: str = Field(default="", max_length=300)
     source_commit: str = Field(default="", pattern=r"^(?:[a-fA-F0-9]{40})?$")
+    voice_presets: list[ComfyTtsVoicePreset] = Field(default_factory=list, max_length=24)
 
     @field_validator("name")
     @classmethod
@@ -327,7 +347,7 @@ class ComfyPipelineSpec(BaseModel):
         default="voxcpm2", max_length=80, pattern=r"^(?:[a-zA-Z0-9_-]{1,80})?$"
     )
     supported_tts_engines: list[str] = Field(default_factory=list, max_length=16)
-    max_segment_seconds: float = Field(default=45.0, ge=5.0, le=300.0)
+    max_segment_seconds: float = Field(default=45.0, ge=3.0, le=300.0)
     tail_frame_offset_seconds: float = Field(default=0.08, ge=0.0, le=1.0)
     output_fps: int = Field(default=25, ge=1, le=60)
     target_width: int = Field(default=1280, ge=64, le=4096)
@@ -996,3 +1016,35 @@ class ComfyCatalog(BaseModel):
                             f"模板 {tmpl.id!r} 引用了未在 tts_engines 中声明的 TTS 引擎: {engine_id!r}"
                         )
         return self
+
+
+def format_colabone_duration_zh(seconds: float, *, subsecond: bool = False) -> str:
+    """Format elapsed seconds into a human-friendly Chinese duration string (秒 / 分 / 小时)."""
+    try:
+        val = float(seconds)
+    except (TypeError, ValueError):
+        return "0 秒"
+    if not math.isfinite(val) or val <= 0.0:
+        return "0.0 秒" if subsecond else "0 秒"
+
+    if subsecond and val < 60.0:
+        rounded_tenths = round(val, 1)
+        if rounded_tenths < 60.0:
+            return f"{rounded_tenths:.1f} 秒"
+        return "1 分钟"
+
+    total_seconds = int(round(val)) if subsecond else int(val)
+    if total_seconds < 60:
+        return f"{total_seconds} 秒"
+
+    hours, rem = divmod(total_seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    if hours == 0:
+        if secs == 0:
+            return f"{mins} 分钟"
+        return f"{mins} 分 {secs} 秒"
+    if mins == 0 and secs == 0:
+        return f"{hours} 小时"
+    if secs == 0:
+        return f"{hours} 小时 {mins} 分"
+    return f"{hours} 小时 {mins} 分 {secs} 秒"

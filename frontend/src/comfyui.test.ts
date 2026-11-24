@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CANVAS_FORMAT_ERROR,
   COLABONE_CANONICAL_VISUAL_PROMPT,
+  COLABONE_LEGACY_VISUAL_PROMPTS,
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
   extractPublicHost,
@@ -9,6 +10,7 @@ import {
   groupWorkflowFields,
   hasNonCommercialNotice,
   isColabOnePresetVisualPrompt,
+  isColabOneVoiceRefRequired,
   isWorkflowFieldVisible,
   missingRequiredWorkflowFields,
   outputBlobURL,
@@ -25,9 +27,11 @@ import type {
   ColabOneComfyNodePatch,
   ColabOneComfyPipelineSpec,
   ColabOneComfyTtsEngineSpec,
+  ColabOneComfyTtsVoicePreset,
   ComfyNodePatch,
   ComfyPipelineSpec,
   ComfyTtsEngineSpec,
+  ComfyTtsVoicePreset,
   TaskStatus,
   WorkflowField,
   WorkflowOutput,
@@ -1757,6 +1761,163 @@ describe("missingRequiredWorkflowFields", () => {
       ),
     ).toEqual([]);
   });
+
+  it("allows indextts2 without uploaded voice_ref_audio when built-in voice_preset is selected and requires it only for custom", () => {
+    const voicePresetField = makeField({
+      key: "pipeline.voice_preset",
+      label: "内置女声音色",
+      field_type: "select",
+      group: "basic",
+      default: "shen_zhiyi",
+      options: [
+        "shen_zhiyi",
+        "lin_xiaoman",
+        "su_wanqing",
+        "gu_qinglan",
+        "lu_mingwei",
+        "custom",
+      ],
+      required: false,
+      visible_when: { "pipeline.audio_source": "tts" },
+    });
+    const presetWf = makeWorkflow({
+      fields: [...digitalHumanFields, voicePresetField],
+    });
+    const legacyWf = makeWorkflow({ fields: digitalHumanFields });
+
+    // Direct helper checks: legacy workflow without pipeline.voice_preset stays required
+    expect(isColabOneVoiceRefRequired(undefined, {})).toBe(false);
+    expect(
+      isColabOneVoiceRefRequired(
+        makeWorkflow({ pipeline: { kind: "comfy_standard" } }),
+        { "pipeline.audio_source": "tts", "pipeline.tts_engine": "indextts2" },
+      ),
+    ).toBe(false);
+    expect(
+      isColabOneVoiceRefRequired(legacyWf, {
+        "pipeline.audio_source": "tts",
+        "pipeline.tts_engine": "indextts2",
+      }),
+    ).toBe(true);
+    expect(
+      isColabOneVoiceRefRequired(legacyWf, {
+        "pipeline.audio_source": "audio",
+        "pipeline.tts_engine": "indextts2",
+      }),
+    ).toBe(false);
+
+    // Built-in named presets (and unset fallback to default "shen_zhiyi") do NOT require uploaded voice_ref_audio
+    for (const presetId of [
+      "shen_zhiyi",
+      "lin_xiaoman",
+      "su_wanqing",
+      "gu_qinglan",
+      "lu_mingwei",
+      "",
+    ]) {
+      const vals = {
+        "pipeline.audio_source": "tts",
+        "pipeline.tts_engine": "indextts2",
+        "pipeline.voice_preset": presetId,
+        "pipeline.script_text": "hello world",
+        "8.steps": 8,
+      };
+      expect(isColabOneVoiceRefRequired(presetWf, vals)).toBe(false);
+      expect(
+        missingRequiredWorkflowFields(presetWf, vals, { "1.image": "img_01" }, {}),
+      ).toEqual([]);
+    }
+
+    // Omitting pipeline.voice_preset when field default is "shen_zhiyi" does NOT require voice_ref_audio
+    expect(
+      isColabOneVoiceRefRequired(presetWf, {
+        "pipeline.audio_source": "tts",
+        "pipeline.tts_engine": "indextts2",
+      }),
+    ).toBe(false);
+
+    // Selecting "custom" (including padded whitespace) requires pipeline.voice_ref_audio for indextts2
+    for (const customPreset of ["custom", " custom "]) {
+      const customVals = {
+        "pipeline.audio_source": "tts",
+        "pipeline.tts_engine": "indextts2",
+        "pipeline.voice_preset": customPreset,
+        "pipeline.script_text": "hello world",
+        "8.steps": 8,
+      };
+      expect(isColabOneVoiceRefRequired(presetWf, customVals)).toBe(true);
+      expect(
+        missingRequiredWorkflowFields(
+          presetWf,
+          customVals,
+          { "1.image": "img_01" },
+          {},
+        ).map((f) => f.key),
+      ).toEqual(["pipeline.voice_ref_audio"]);
+
+      // Satisfied once uploaded or staged as pending
+      expect(
+        missingRequiredWorkflowFields(
+          presetWf,
+          customVals,
+          { "1.image": "img_01", "pipeline.voice_ref_audio": "aud_ref_01" },
+          {},
+        ),
+      ).toEqual([]);
+      expect(
+        missingRequiredWorkflowFields(
+          presetWf,
+          customVals,
+          { "1.image": "img_01" },
+          { "pipeline.voice_ref_audio": { filename: "ref.wav" } },
+        ),
+      ).toEqual([]);
+    }
+
+    // Non-indextts2 engines do NOT require voice_ref_audio even under "custom"
+    for (const engineId of ["voxcpm2", "qwen3_tts", "fish_s2_pro"]) {
+      const vals = {
+        "pipeline.audio_source": "tts",
+        "pipeline.tts_engine": engineId,
+        "pipeline.voice_preset": "custom",
+        "pipeline.script_text": "hello world",
+        "8.steps": 8,
+      };
+      expect(isColabOneVoiceRefRequired(presetWf, vals)).toBe(false);
+      expect(
+        missingRequiredWorkflowFields(presetWf, vals, { "1.image": "img_01" }, {}),
+      ).toEqual([]);
+    }
+
+    // Audio mode never requires voice_ref_audio even under indextts2 + custom
+    expect(
+      isColabOneVoiceRefRequired(presetWf, {
+        "pipeline.audio_source": "audio",
+        "pipeline.tts_engine": "indextts2",
+        "pipeline.voice_preset": "custom",
+      }),
+    ).toBe(false);
+
+    // If a template explicitly defaults pipeline.voice_preset to "custom", omitting the value still requires ref audio
+    const customDefaultWf = makeWorkflow({
+      fields: [
+        ...digitalHumanFields,
+        makeField({
+          key: "pipeline.voice_preset",
+          field_type: "select",
+          default: "custom",
+          options: ["custom", "shen_zhiyi"],
+          visible_when: { "pipeline.audio_source": "tts" },
+        }),
+      ],
+    });
+    expect(
+      isColabOneVoiceRefRequired(customDefaultWf, {
+        "pipeline.audio_source": "tts",
+        "pipeline.tts_engine": "indextts2",
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("buildColabOneWorkflowOverrides", () => {
@@ -1916,6 +2077,98 @@ describe("buildColabOneWorkflowOverrides", () => {
       inputs: {},
     });
   });
+
+  it("serializes pipeline.voice_preset, pipeline.render_quality, and pipeline.acceleration_profile with defaults and visibility rules", () => {
+    const longcatFields: WorkflowField[] = [
+      makeField({
+        key: "pipeline.audio_source",
+        field_type: "select",
+        default: "tts",
+        options: ["tts", "audio"],
+      }),
+      makeField({
+        key: "pipeline.voice_preset",
+        field_type: "select",
+        group: "basic",
+        default: "shen_zhiyi",
+        options: [
+          "shen_zhiyi",
+          "lin_xiaoman",
+          "su_wanqing",
+          "gu_qinglan",
+          "lu_mingwei",
+          "custom",
+        ],
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "pipeline.render_quality",
+        field_type: "select",
+        group: "advanced",
+        default: "balanced_480p_ai2x",
+        options: ["balanced_480p_ai2x", "native_720p"],
+        visible_when: null,
+      }),
+      makeField({
+        key: "pipeline.acceleration_profile",
+        field_type: "select",
+        group: "advanced",
+        default: "max",
+        options: ["max", "balanced", "compat"],
+        visible_when: null,
+      }),
+    ];
+    const wf = makeWorkflow({
+      id: "digital-human-longcat",
+      fields: longcatFields,
+      pipeline: {
+        kind: "digital_human",
+        video_backend: "longcat_avatar",
+        default_tts_engine: "voxcpm2",
+      },
+    });
+
+    // Explicit trimmed values in TTS mode
+    const explicit = buildColabOneWorkflowOverrides(wf, {
+      "pipeline.audio_source": "tts",
+      "pipeline.voice_preset": " lin_xiaoman ",
+      "pipeline.render_quality": " native_720p ",
+      "pipeline.acceleration_profile": " balanced ",
+    });
+    expect(explicit.overrides).toEqual({
+      "pipeline.audio_source": "tts",
+      "pipeline.voice_preset": "lin_xiaoman",
+      "pipeline.render_quality": "native_720p",
+      "pipeline.acceleration_profile": "balanced",
+    });
+
+    // Blank / unset values fall back to field defaults
+    const defaulted = buildColabOneWorkflowOverrides(wf, {
+      "pipeline.audio_source": "tts",
+      "pipeline.voice_preset": "   ",
+      "pipeline.render_quality": "",
+    });
+    expect(defaulted.overrides).toEqual({
+      "pipeline.audio_source": "tts",
+      "pipeline.voice_preset": "shen_zhiyi",
+      "pipeline.render_quality": "balanced_480p_ai2x",
+      "pipeline.acceleration_profile": "max",
+    });
+
+    // Audio mode hides pipeline.voice_preset while preserving render_quality & acceleration_profile
+    const audioMode = buildColabOneWorkflowOverrides(wf, {
+      "pipeline.audio_source": "audio",
+      "pipeline.voice_preset": "gu_qinglan",
+      "pipeline.render_quality": "balanced_480p_ai2x",
+      "pipeline.acceleration_profile": "compat",
+    });
+    expect(audioMode.overrides).toEqual({
+      "pipeline.audio_source": "audio",
+      "pipeline.render_quality": "balanced_480p_ai2x",
+      "pipeline.acceleration_profile": "compat",
+    });
+    expect("pipeline.voice_preset" in audioMode.overrides).toBe(false);
+  });
 });
 
 describe("ColabOne narrowed ComfyUI & TaskStatus types", () => {
@@ -1930,7 +2183,20 @@ describe("ColabOne narrowed ComfyUI & TaskStatus types", () => {
       video_backend: "longcat_avatar",
     };
     const legacyPipeline: ComfyPipelineSpec = pipeline;
-    const tts: ColabOneComfyTtsEngineSpec = makeTtsEngine({ id: "voxcpm2" });
+    const voicePreset: ColabOneComfyTtsVoicePreset = {
+      id: "shen_zhiyi",
+      name: "知性女主播 · 沈知意",
+      gender: "female",
+      style: "知性主播",
+      description: "清澈温润的现代标准普通话",
+      prompt: "A 26-year-old Chinese female host",
+      seed: 202601,
+    };
+    const legacyVoicePreset: ComfyTtsVoicePreset = voicePreset;
+    const tts: ColabOneComfyTtsEngineSpec = makeTtsEngine({
+      id: "voxcpm2",
+      voice_presets: [voicePreset],
+    });
     const legacyTts: ComfyTtsEngineSpec = tts;
     const output: WorkflowOutput = {
       id: "a".repeat(32),
@@ -1958,7 +2224,10 @@ describe("ColabOne narrowed ComfyUI & TaskStatus types", () => {
 
     expect(legacyPatch.kind).toBe("wav2vec2_hidden_states_hook");
     expect(legacyPipeline.kind).toBe("digital_human");
+    expect(legacyVoicePreset.id).toBe("shen_zhiyi");
+    expect(legacyVoicePreset.gender).toBe("female");
     expect(legacyTts.id).toBe("voxcpm2");
+    expect(legacyTts.voice_presets?.[0].seed).toBe(202601);
     expect(output.extension).toBe("mp4");
     expect(task.logs?.[0].seq).toBe(1);
   });
@@ -2016,7 +2285,14 @@ describe("localized workflow defaults, preset visual prompt, and placeholders", 
     }
   });
 
-  it("recognizes canonical and all 6 localized preset visual prompts and rejects custom/empty/non-string values", () => {
+  it("recognizes canonical, all 6 localized, and all 6 legacy preset visual prompts and rejects custom/empty/non-string values", () => {
+    expect(COLABONE_CANONICAL_VISUAL_PROMPT).toBe(
+      "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, making expressive, natural hand gestures and open-palm movements to emphasize points while talking, lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background",
+    );
+    expect(COLABONE_CANONICAL_VISUAL_PROMPT).toBe(
+      t("comfy.defaultVisualPrompt", undefined, "en-US"),
+    );
+    expect(COLABONE_LEGACY_VISUAL_PROMPTS.size).toBe(6);
     expect(isColabOnePresetVisualPrompt(COLABONE_CANONICAL_VISUAL_PROMPT)).toBe(
       true,
     );
@@ -2030,6 +2306,11 @@ describe("localized workflow defaults, preset visual prompt, and placeholders", 
       expect(isColabOnePresetVisualPrompt(`  ${localized}\n`)).toBe(true);
     }
 
+    for (const legacyPrompt of COLABONE_LEGACY_VISUAL_PROMPTS) {
+      expect(isColabOnePresetVisualPrompt(legacyPrompt)).toBe(true);
+      expect(isColabOnePresetVisualPrompt(`  ${legacyPrompt}  `)).toBe(true);
+    }
+
     expect(isColabOnePresetVisualPrompt("")).toBe(false);
     expect(isColabOnePresetVisualPrompt("   ")).toBe(false);
     expect(isColabOnePresetVisualPrompt("A custom studio portrait")).toBe(false);
@@ -2040,6 +2321,78 @@ describe("localized workflow defaults, preset visual prompt, and placeholders", 
     expect(isColabOnePresetVisualPrompt(undefined)).toBe(false);
     expect(isColabOnePresetVisualPrompt(42)).toBe(false);
     expect(isColabOnePresetVisualPrompt(true)).toBe(false);
+  });
+
+  it("upgrades stale unedited legacy visual prompt drafts on locale remap and default resolution without touching custom prompts", () => {
+    const legacyEnPrompt =
+      "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background";
+    const legacyZhCnPrompt =
+      "清晰演播室人像镜头，主播面向镜头自然说话，面部表情生动自然，头部轻微摆动，自然眨眼，焦距锐利，柔和演播室灯光，背景稳定不抖动";
+    const legacyZhTwPrompt =
+      "清晰攝影棚人像鏡頭，主播面向鏡頭自然說話，臉部表情生動自然，頭部輕微擺動，自然眨眼，焦距銳利，柔和攝影棚燈光，背景穩定不晃動";
+    const legacyZhHkPrompt =
+      "清晰錄影廠人像鏡頭，主播面向鏡頭自然說話，面部表情生動自然，頭部輕微擺動，自然眨眼，焦距銳利，柔和錄影廠燈光，背景穩定不晃動";
+    const legacyJaPrompt =
+      "鮮明なスタジオのポートレート映像。カメラに向かって自然に話す話者、豊かな表情、穏やかな頭の動き、自然なまばたき、シャープなピント、柔らかなスタジオ照明、安定した背景";
+    const legacyKoPrompt =
+      "선명한 스튜디오 인물 샷, 카메라를 향해 자연스럽게 말하는 진행자, 생동감 있는 얼굴 표정, 부드러운 머리 움직임, 자연스러운 눈 깜빡임, 또렷한 초점, 부드러운 스튜디오 조명, 안정적인 배경";
+
+    const fields: WorkflowField[] = [
+      visualPromptField,
+      makeField({
+        key: "pipeline.script_text",
+        field_type: "textarea",
+        default: "",
+      }),
+    ];
+
+    for (const legacyPrompt of [
+      legacyEnPrompt,
+      legacyZhCnPrompt,
+      legacyZhTwPrompt,
+      legacyZhHkPrompt,
+      legacyJaPrompt,
+      legacyKoPrompt,
+    ]) {
+      for (const targetLocale of ALL_LOCALES) {
+        const upgraded = remapColabOnePresetPromptFieldsForLocale(
+          fields,
+          {
+            "5.positive_prompt": legacyPrompt,
+            "pipeline.script_text": "keep my script",
+          },
+          targetLocale,
+        );
+        expect(upgraded["5.positive_prompt"]).toBe(
+          t("comfy.defaultVisualPrompt", undefined, targetLocale),
+        );
+        expect(upgraded["5.positive_prompt"]).not.toBe(legacyPrompt);
+        expect(upgraded["pipeline.script_text"]).toBe("keep my script");
+      }
+    }
+
+    // Legacy template field default also resolves to the new localized visual prompt
+    const legacyField = makeField({
+      key: "5.positive_prompt",
+      field_type: "textarea",
+      default: legacyEnPrompt,
+    });
+    expect(resolveColabOneWorkflowFieldDefault(legacyField, "en-US")).toBe(
+      COLABONE_CANONICAL_VISUAL_PROMPT,
+    );
+    expect(resolveColabOneWorkflowFieldDefault(legacyField, "zh-CN")).toBe(
+      t("comfy.defaultVisualPrompt", undefined, "zh-CN"),
+    );
+
+    // Custom user prompt that starts similarly to legacy text must NOT be upgraded
+    const customUntouched = remapColabOnePresetPromptFieldsForLocale(
+      fields,
+      { "5.positive_prompt": `${legacyEnPrompt}, dramatic neon backdrop` },
+      "zh-CN",
+    );
+    expect(customUntouched["5.positive_prompt"]).toBe(
+      `${legacyEnPrompt}, dramatic neon backdrop`,
+    );
   });
 
   it("remaps untouched preset prompt across locales while preserving user-edited and explicitly cleared values", () => {

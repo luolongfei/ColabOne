@@ -1147,6 +1147,9 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 			"cancelled": "已取消",
 		}
 
+		idle := asMap(rt["idle"])
+		serverTime, _ := asFloat(idle["server_time"])
+
 		tasks := asMapSlice(rt["tasks"])
 		activeTaskIDs := make(map[string]bool, len(tasks))
 		for _, task := range tasks {
@@ -1200,6 +1203,11 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 			if tKind == "download" {
 				detail = fmt.Sprintf(" · %d%%", bucket*10)
 			}
+			if (tState == "completed" || tState == "failed" || tState == "cancelled") && !strings.Contains(tMsg, "耗时") {
+				if elapsedSec, ok := resolveTaskElapsedSeconds(task, serverTime); ok {
+					detail += " · 耗时 " + formatColabOneDurationZh(elapsedSec, true)
+				}
+			}
 			if tMsg != "" {
 				detail += " · " + tMsg
 			}
@@ -1213,7 +1221,6 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 			c.log(kindLabel+"："+statusLabel+detail, "远端", lvl)
 		}
 
-		idle := asMap(rt["idle"])
 		prevIdle := asMap(previous["idle"])
 		if asString(idle["phase"]) == "countdown" && asString(prevIdle["phase"]) != "countdown" {
 			remFloat, ok := asFloat(idle["remaining_seconds"])
@@ -3954,4 +3961,65 @@ func (c *ColabOneController) validateComfyCanvasConfig(raw map[string]any) (map[
 		return nil, errors.New("ComfyValidator 未配置")
 	}
 	return c.comfy.ValidateCanvasConfig(raw)
+}
+
+func resolveTaskElapsedSeconds(task map[string]any, serverTime float64) (float64, bool) {
+	if task == nil {
+		return 0, false
+	}
+	if elapsed, ok := asFloat(task["elapsed_seconds"]); ok && !math.IsNaN(elapsed) && !math.IsInf(elapsed, 0) && elapsed >= 0 {
+		return elapsed, true
+	}
+	createdAt, hasCreated := asFloat(task["created_at"])
+	if !hasCreated || math.IsNaN(createdAt) || math.IsInf(createdAt, 0) || createdAt <= 0 {
+		return 0, false
+	}
+	if finishedAt, hasFinished := asFloat(task["finished_at"]); hasFinished && !math.IsNaN(finishedAt) && !math.IsInf(finishedAt, 0) && finishedAt > 0 {
+		return math.Max(0, finishedAt-createdAt), true
+	}
+	if !math.IsNaN(serverTime) && !math.IsInf(serverTime, 0) && serverTime > 0 {
+		return math.Max(0, serverTime-createdAt), true
+	}
+	return 0, false
+}
+
+func formatColabOneDurationZh(seconds float64, subsecond bool) string {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 {
+		if subsecond {
+			return "0.0 秒"
+		}
+		return "0 秒"
+	}
+	if subsecond && seconds < 60 {
+		roundedTenths := math.Round(seconds*10) / 10
+		if roundedTenths < 60 {
+			return fmt.Sprintf("%.1f 秒", roundedTenths)
+		}
+		return "1 分钟"
+	}
+	var total int64
+	if subsecond {
+		total = int64(math.Round(seconds))
+	} else {
+		total = int64(seconds)
+	}
+	if total < 60 {
+		return fmt.Sprintf("%d 秒", total)
+	}
+	hours := total / 3600
+	mins := (total % 3600) / 60
+	secs := total % 60
+	if hours == 0 {
+		if secs == 0 {
+			return fmt.Sprintf("%d 分钟", mins)
+		}
+		return fmt.Sprintf("%d 分 %d 秒", mins, secs)
+	}
+	if mins == 0 && secs == 0 {
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	if secs == 0 {
+		return fmt.Sprintf("%d 小时 %d 分", hours, mins)
+	}
+	return fmt.Sprintf("%d 小时 %d 分 %d 秒", hours, mins, secs)
 }

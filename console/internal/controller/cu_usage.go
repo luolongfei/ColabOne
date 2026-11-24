@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -156,26 +158,12 @@ func colabOneCleanFloat(v float64) (float64, bool) {
 	return v, true
 }
 
-func (s *ColabOneCUUsageStore) load() {
-	if s.path == "" {
-		return
+func parseCUUsageDiskFile(disk *colabOneCUUsageDiskFile) (string, map[string]*ColabOneCUUsageAccountData) {
+	accounts := make(map[string]*ColabOneCUUsageAccountData)
+	if disk == nil {
+		return "", accounts
 	}
-	raw, err := os.ReadFile(s.path)
-	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
-		return
-	}
-	var disk colabOneCUUsageDiskFile
-	if decodeJSONWithNumbers(raw, &disk) != nil || disk.Accounts == nil {
-		// Preserve corrupt file on disk instead of silently clobbering it on the next Flush().
-		corruptPath := s.path + ".corrupt"
-		if os.Rename(s.path, corruptPath) != nil {
-			_ = os.WriteFile(corruptPath, raw, 0o600)
-		}
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.activeAccountKey = strings.TrimSpace(disk.LastAccountKey)
+	activeKey := strings.TrimSpace(disk.LastAccountKey)
 	for key, diskAcct := range disk.Accounts {
 		if strings.TrimSpace(key) == "" || diskAcct == nil {
 			continue
@@ -248,8 +236,180 @@ func (s *ColabOneCUUsageStore) load() {
 			}
 			acct.Buckets[aligned] = &cp
 		}
-		s.accounts[key] = acct
+		accounts[key] = acct
 	}
+	return activeKey, accounts
+}
+
+func (s *ColabOneCUUsageStore) load() {
+	if s.path == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.path)
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+		return
+	}
+	var disk colabOneCUUsageDiskFile
+	if decodeJSONWithNumbers(raw, &disk) != nil || disk.Accounts == nil {
+		// Preserve corrupt file on disk instead of silently clobbering it on the next Flush().
+		corruptPath := s.path + ".corrupt"
+		if os.Rename(s.path, corruptPath) != nil {
+			_ = os.WriteFile(corruptPath, raw, 0o600)
+		}
+		return
+	}
+	activeKey, parsed := parseCUUsageDiskFile(&disk)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeAccountKey = activeKey
+	s.accounts = parsed
+}
+
+func (s *ColabOneCUUsageStore) buildDiskSnapshotLocked() colabOneCUUsageDiskFile {
+	disk := colabOneCUUsageDiskFile{
+		Version:        colabOneCUUsageSchemaVersion,
+		BucketSeconds:  colabOneCUBucketSeconds,
+		LastAccountKey: s.activeAccountKey,
+		Accounts:       make(map[string]*colabOneCUUsageDiskAccount, len(s.accounts)),
+	}
+	for key, acct := range s.accounts {
+		if acct == nil {
+			continue
+		}
+		keys := make([]int64, 0, len(acct.Buckets))
+		for ts := range acct.Buckets {
+			keys = append(keys, ts)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		list := make([]ColabOneCUUsageBucket, 0, len(keys))
+		for _, ts := range keys {
+			b := acct.Buckets[ts]
+			if b == nil {
+				continue
+			}
+			cp := *b
+			cp.Consumed = colabOneRoundCU(cp.Consumed)
+			cp.Topup = colabOneRoundCU(cp.Topup)
+			cp.RateSum = colabOneRoundCU(cp.RateSum)
+			cp.RateSec = math.Round(cp.RateSec*10) / 10
+			cp.RateMax = colabOneRoundCU(cp.RateMax)
+			cp.ActiveSec = math.Round(cp.ActiveSec*10) / 10
+			if cp.HasBalance {
+				cp.BalanceStart = colabOneRoundCU(cp.BalanceStart)
+				cp.BalanceEnd = colabOneRoundCU(cp.BalanceEnd)
+			}
+			list = append(list, cp)
+		}
+		var anchorCopy *ColabOneCUUsageAnchor
+		if acct.LastAnchor != nil {
+			ac := *acct.LastAnchor
+			anchorCopy = &ac
+		}
+		disk.Accounts[key] = &colabOneCUUsageDiskAccount{
+			LastAnchor: anchorCopy,
+			Buckets:    list,
+		}
+	}
+	return disk
+}
+
+// ExportDiskMap returns a JSON-safe map snapshot of all persisted CU usage history.
+func (s *ColabOneCUUsageStore) ExportDiskMap() map[string]any {
+	if s == nil {
+		return map[string]any{
+			"version":        colabOneCUUsageSchemaVersion,
+			"bucket_seconds": colabOneCUBucketSeconds,
+			"accounts":       map[string]any{},
+		}
+	}
+	s.mu.Lock()
+	disk := s.buildDiskSnapshotLocked()
+	s.mu.Unlock()
+	raw, err := json.Marshal(disk)
+	if err != nil {
+		return map[string]any{
+			"version":        colabOneCUUsageSchemaVersion,
+			"bucket_seconds": colabOneCUBucketSeconds,
+			"accounts":       map[string]any{},
+		}
+	}
+	var out map[string]any
+	if err := decodeJSONWithNumbers(raw, &out); err != nil || out == nil {
+		return map[string]any{
+			"version":        colabOneCUUsageSchemaVersion,
+			"bucket_seconds": colabOneCUBucketSeconds,
+			"accounts":       map[string]any{},
+		}
+	}
+	return out
+}
+
+func validateCUUsageDiskMap(raw map[string]any) (*colabOneCUUsageDiskFile, error) {
+	if len(raw) == 0 {
+		return &colabOneCUUsageDiskFile{
+			Version:       colabOneCUUsageSchemaVersion,
+			BucketSeconds: colabOneCUBucketSeconds,
+			Accounts:      map[string]*colabOneCUUsageDiskAccount{},
+		}, nil
+	}
+	encoded, err := json.Marshal(SanitizeJSONValue(raw))
+	if err != nil {
+		return nil, errors.New("CU 算力消耗历史格式无效")
+	}
+	var disk colabOneCUUsageDiskFile
+	if err := decodeJSONWithNumbers(encoded, &disk); err != nil {
+		return nil, errors.New("CU 算力消耗历史格式无效")
+	}
+	if disk.Accounts == nil {
+		disk.Accounts = map[string]*colabOneCUUsageDiskAccount{}
+	}
+	return &disk, nil
+}
+
+// ReplaceFromDiskMap validates and atomically replaces all stored CU usage data
+// (both in memory and on disk), rolling back in-memory state if disk persistence fails.
+func (s *ColabOneCUUsageStore) ReplaceFromDiskMap(raw map[string]any) error {
+	if s == nil {
+		return nil
+	}
+	disk, err := validateCUUsageDiskMap(raw)
+	if err != nil {
+		return err
+	}
+	activeKey, parsed := parseCUUsageDiskFile(disk)
+
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+
+	s.mu.Lock()
+	prevAccounts := s.accounts
+	prevActiveKey := s.activeAccountKey
+	prevDirty := s.dirty
+	prevSavedAt := s.lastSavedAt
+
+	s.accounts = parsed
+	s.activeAccountKey = activeKey
+	nowSec := int64(math.Floor(s.nowFn()))
+	for _, acct := range s.accounts {
+		s.pruneAccountLocked(acct, nowSec)
+	}
+	nextDisk := s.buildDiskSnapshotLocked()
+	s.dirty = false
+	s.lastSavedAt = s.nowFn()
+	s.mu.Unlock()
+
+	if s.path != "" {
+		if err := AtomicJSON(s.path, nextDisk); err != nil {
+			s.mu.Lock()
+			s.accounts = prevAccounts
+			s.activeAccountKey = prevActiveKey
+			s.dirty = prevDirty
+			s.lastSavedAt = prevSavedAt
+			s.mu.Unlock()
+			return err
+		}
+	}
+	return nil
 }
 
 // ResetActiveAccount clears the active account binding on re-login so the next
@@ -770,50 +930,7 @@ func (s *ColabOneCUUsageStore) Flush() error {
 		s.mu.Unlock()
 		return nil
 	}
-	disk := colabOneCUUsageDiskFile{
-		Version:        colabOneCUUsageSchemaVersion,
-		BucketSeconds:  colabOneCUBucketSeconds,
-		LastAccountKey: s.activeAccountKey,
-		Accounts:       make(map[string]*colabOneCUUsageDiskAccount, len(s.accounts)),
-	}
-	for key, acct := range s.accounts {
-		if acct == nil {
-			continue
-		}
-		keys := make([]int64, 0, len(acct.Buckets))
-		for ts := range acct.Buckets {
-			keys = append(keys, ts)
-		}
-		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-		list := make([]ColabOneCUUsageBucket, 0, len(keys))
-		for _, ts := range keys {
-			b := acct.Buckets[ts]
-			if b == nil {
-				continue
-			}
-			cp := *b
-			cp.Consumed = colabOneRoundCU(cp.Consumed)
-			cp.Topup = colabOneRoundCU(cp.Topup)
-			cp.RateSum = colabOneRoundCU(cp.RateSum)
-			cp.RateSec = math.Round(cp.RateSec*10) / 10
-			cp.RateMax = colabOneRoundCU(cp.RateMax)
-			cp.ActiveSec = math.Round(cp.ActiveSec*10) / 10
-			if cp.HasBalance {
-				cp.BalanceStart = colabOneRoundCU(cp.BalanceStart)
-				cp.BalanceEnd = colabOneRoundCU(cp.BalanceEnd)
-			}
-			list = append(list, cp)
-		}
-		var anchorCopy *ColabOneCUUsageAnchor
-		if acct.LastAnchor != nil {
-			ac := *acct.LastAnchor
-			anchorCopy = &ac
-		}
-		disk.Accounts[key] = &colabOneCUUsageDiskAccount{
-			LastAnchor: anchorCopy,
-			Buckets:    list,
-		}
-	}
+	disk := s.buildDiskSnapshotLocked()
 	s.dirty = false
 	s.lastSavedAt = s.nowFn()
 	s.mu.Unlock()

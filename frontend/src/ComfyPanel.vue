@@ -49,6 +49,7 @@ import {
   PhCaretRight,
   PhCheck,
   PhCheckCircle,
+  PhClock,
   PhCloud,
   PhCloudArrowDown,
   PhCloudArrowUp,
@@ -83,6 +84,10 @@ import {
   colabOneWriteClipboard,
 } from "./api";
 import { formatIdlePolicyLabel } from "./billing";
+import {
+  formatColabOneDuration,
+  resolveColabOneTaskElapsedSeconds,
+} from "./colabOneDuration";
 import { colabOneLocaleCode, t, tb } from "./i18n";
 import {
   clearColabOneWorkflowDraft,
@@ -103,6 +108,7 @@ import {
   extractPublicHost,
   formatOutputSize,
   hasNonCommercialNotice,
+  isColabOneVoiceRefRequired,
   isWorkflowFieldVisible,
   missingRequiredWorkflowFields,
   outputBlobURL,
@@ -127,6 +133,8 @@ import type {
 const props = defineProps<{
   state: ColabOneSnapshot;
   loading?: boolean;
+  clockNow?: number;
+  snapshotAt?: number;
 }>();
 const emit = defineEmits<{
   device: [];
@@ -292,6 +300,53 @@ const comfyTaskPercent = computed(() =>
   Math.max(0, Math.min(100, Math.round((comfyTask.value?.progress || 0) * 100))),
 );
 
+const fallbackClockNow = ref(Date.now());
+const fallbackSnapshotAt = ref(Date.now());
+let fallbackClockTimer: ReturnType<typeof setInterval> | null = null;
+
+watch(
+  () => [
+    props.state.runtime.idle?.server_time,
+    comfyTask.value?.id,
+    comfyTask.value?.elapsed_seconds,
+  ],
+  () => {
+    if (props.snapshotAt === undefined) {
+      fallbackSnapshotAt.value = Date.now();
+      fallbackClockNow.value = Date.now();
+    }
+  },
+);
+
+const effectiveClockNow = computed(
+  () => props.clockNow ?? fallbackClockNow.value,
+);
+const effectiveSnapshotAt = computed(
+  () => props.snapshotAt ?? fallbackSnapshotAt.value,
+);
+
+const comfyTaskElapsedText = computed(() => {
+  const secs = resolveColabOneTaskElapsedSeconds(
+    comfyTask.value,
+    props.state.runtime,
+    effectiveClockNow.value,
+    effectiveSnapshotAt.value,
+  );
+  return secs === null
+    ? ""
+    : formatColabOneDuration(secs, {
+        precision: "integer",
+        locale: colabOneLocaleCode.value,
+      });
+});
+
+function formatOutputElapsed(elapsed: number): string {
+  return formatColabOneDuration(elapsed, {
+    precision: "auto",
+    locale: colabOneLocaleCode.value,
+  });
+}
+
 function formatComfyByteSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return formatOutputSize(0);
@@ -445,23 +500,14 @@ const selectedTtsEngine = computed<ComfyTtsEngineSpec | undefined>(() =>
     ttsEngines.value,
   ),
 );
-const resolvedTtsEngineId = computed(() => {
-  if (
-    !isDigitalHumanWorkflow.value ||
-    (fieldValues.value["pipeline.audio_source"] ?? "tts") !== "tts"
-  ) {
-    return "";
-  }
-  const raw = fieldValues.value["pipeline.tts_engine"];
-  if (typeof raw === "string" && raw.trim()) {
-    return raw.trim();
-  }
-  return (selectedWorkflow.value?.pipeline?.default_tts_engine || "").trim();
-});
+const indextts2RequiresVoiceRef = computed(() =>
+  isColabOneVoiceRefRequired(selectedWorkflow.value, fieldValues.value),
+);
 const showTtsEngineStrip = computed(
   () =>
     isDigitalHumanWorkflow.value &&
-    (fieldValues.value["pipeline.audio_source"] ?? "tts") === "tts" &&
+    String(fieldValues.value["pipeline.audio_source"] ?? "tts").trim() ===
+      "tts" &&
     !!selectedTtsEngine.value,
 );
 const nonCommercialNotice = computed(() =>
@@ -658,6 +704,14 @@ const advancedPresetSummary = computed(() => {
       parts.push(shortName);
     }
   }
+  const renderQuality = String(
+    fieldValues.value["pipeline.render_quality"] ?? "",
+  ).trim();
+  if (renderQuality === "balanced_480p_ai2x") {
+    parts.push("480p");
+  } else if (renderQuality === "native_720p") {
+    parts.push("720p");
+  }
   const upscale = String(
     fieldValues.value["pipeline.upscale_mode"] ??
       selectedWorkflow.value?.pipeline?.upscale_mode ??
@@ -717,8 +771,7 @@ function shouldRenderTtsStripAfter(field: WorkflowField): boolean {
 
 function isFieldForceRequired(field: WorkflowField): boolean {
   return (
-    field.key === "pipeline.voice_ref_audio" &&
-    resolvedTtsEngineId.value === "indextts2"
+    field.key === "pipeline.voice_ref_audio" && indextts2RequiresVoiceRef.value
   );
 }
 
@@ -735,7 +788,10 @@ function isWideAdvancedField(field: WorkflowField): boolean {
     field.field_type === "image" ||
     field.field_type === "audio" ||
     field.field_type === "boolean" ||
-    field.key === "pipeline.tts_engine"
+    field.key === "pipeline.tts_engine" ||
+    field.key === "pipeline.render_quality" ||
+    field.key === "pipeline.acceleration_profile" ||
+    field.key === "pipeline.upscale_mode"
   );
 }
 
@@ -885,6 +941,39 @@ function onFieldValueUpdate(
 ) {
   ++draftRestoreGen;
   fieldValues.value[field.key] = val;
+  const wf = selectedWorkflow.value;
+  const isLongCatWorkflow =
+    wf?.id === "digital-human-longcat" ||
+    wf?.pipeline?.video_backend === "longcat_avatar";
+  const upscaleField = wf?.fields.find(
+    (f) => f.key === "pipeline.upscale_mode",
+  );
+  if (
+    field.key === "pipeline.render_quality" &&
+    isLongCatWorkflow &&
+    upscaleField
+  ) {
+    const nextQuality = typeof val === "string" ? val.trim() : "";
+    const currentUpscale = String(
+      fieldValues.value["pipeline.upscale_mode"] ?? "",
+    ).trim();
+    const allowedUpscaleOptions = upscaleField.options || [];
+    const supportsOption = (opt: string) =>
+      allowedUpscaleOptions.length === 0 || allowedUpscaleOptions.includes(opt);
+    if (
+      nextQuality === "native_720p" &&
+      currentUpscale === "ai_2x" &&
+      supportsOption("lanczos")
+    ) {
+      fieldValues.value["pipeline.upscale_mode"] = "lanczos";
+    } else if (
+      nextQuality === "balanced_480p_ai2x" &&
+      currentUpscale === "lanczos" &&
+      supportsOption("ai_2x")
+    ) {
+      fieldValues.value["pipeline.upscale_mode"] = "ai_2x";
+    }
+  }
   const isDiscrete =
     field.field_type === "select" || field.field_type === "boolean";
   scheduleDraftSave(isDiscrete);
@@ -1012,11 +1101,15 @@ async function restoreWorkflowDraft(
     validMedia[key] = meta;
   }
 
-  const mergedFields = mergeColabOneWorkflowDraftFields(
+  const mergedFields = remapColabOnePresetPromptFieldsForLocale(
     wf.fields,
-    draft.fields,
+    mergeColabOneWorkflowDraftFields(
+      wf.fields,
+      draft.fields,
+      colabOneLocaleCode.value,
+      validMedia,
+    ),
     colabOneLocaleCode.value,
-    validMedia,
   );
   const nextUploadedNames: Record<string, string> = {};
   for (const [key, meta] of Object.entries(validMedia)) {
@@ -2883,6 +2976,13 @@ watch(paramDrawerOpen, (open) => {
 
 onMounted(() => {
   syncTabsAriaLabel();
+  if (props.clockNow === undefined) {
+    fallbackClockTimer = setInterval(() => {
+      if (typeof document === "undefined" || !document.hidden) {
+        fallbackClockNow.value = Date.now();
+      }
+    }, 1000);
+  }
   window.addEventListener("resize", onWindowResize);
   window.addEventListener("keydown", handlePanelKeydown, true);
   window.addEventListener("blur", onWindowPageHide);
@@ -2894,6 +2994,10 @@ onMounted(() => {
 onUnmounted(() => {
   flushDraftSave(undefined, { silent: true });
   cancelDraftSaveTimer();
+  if (fallbackClockTimer !== null) {
+    clearInterval(fallbackClockTimer);
+    fallbackClockTimer = null;
+  }
   window.removeEventListener("resize", onWindowResize);
   window.removeEventListener("keydown", handlePanelKeydown, true);
   window.removeEventListener("blur", onWindowPageHide);
@@ -3088,7 +3192,19 @@ onUnmounted(() => {
                 ? tb(comfyTask.message)
                 : t("comfy.taskRunningFallback")
             }}</strong>
-            <span class="co-comfy-mono">{{ comfyTaskPercent }}%</span>
+            <div class="co-comfy-task-metrics">
+              <span
+                v-if="comfyTaskElapsedText"
+                class="co-comfy-task-elapsed co-comfy-mono"
+                data-testid="comfy-task-elapsed"
+              >
+                <PhClock :size="13" aria-hidden="true" />
+                <span>{{
+                  t("task.elapsedLive", { duration: comfyTaskElapsedText })
+                }}</span>
+              </span>
+              <span class="co-comfy-mono">{{ comfyTaskPercent }}%</span>
+            </div>
           </div>
           <div
             v-if="comfyTaskDownloadSummary"
@@ -4641,7 +4757,18 @@ onUnmounted(() => {
                 :delay="60"
               />
               <div class="co-comfy-output-meta-tags">
+                <ATag
+                  v-if="comfyTaskElapsedText"
+                  class="co-comfy-meta-tag co-comfy-elapsed-tag"
+                  data-testid="comfy-gen-elapsed"
+                >
+                  <PhClock :size="12" aria-hidden="true" />
+                  <span>{{
+                    t("task.elapsedLive", { duration: comfyTaskElapsedText })
+                  }}</span>
+                </ATag>
                 <ColabOneSkeleton
+                  v-else
                   :width="58"
                   :height="18"
                   variant="tag"
@@ -4806,11 +4933,15 @@ onUnmounted(() => {
                 </ATag>
                 <ATag
                   v-if="Number.isFinite(item.elapsed)"
-                  class="co-comfy-meta-tag"
+                  class="co-comfy-meta-tag co-comfy-elapsed-tag"
+                  data-testid="comfy-output-elapsed"
                 >
-                  {{
-                    t("common.secondsShort", { value: item.elapsed.toFixed(1) })
-                  }}
+                  <PhClock :size="12" aria-hidden="true" />
+                  <span>{{
+                    t("task.elapsedTotal", {
+                      duration: formatOutputElapsed(item.elapsed),
+                    })
+                  }}</span>
                 </ATag>
               </div>
 
@@ -5221,6 +5352,34 @@ onUnmounted(() => {
   color: var(--co-text);
   font-weight: 550;
   overflow-wrap: anywhere;
+}
+
+.co-comfy-task-metrics {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.co-comfy-task-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--co-secondary-text);
+  background: var(--co-surface);
+  border: 1px solid var(--co-border-secondary);
+  white-space: nowrap;
+}
+
+.co-comfy-elapsed-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .co-comfy-task-download-meta {

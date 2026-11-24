@@ -32,6 +32,10 @@ import {
   colabOneWriteClipboard,
 } from "./api";
 import { friendlyErrorMessage } from "./billing";
+import {
+  formatColabOneDuration,
+  resolveColabOneTaskElapsedSeconds,
+} from "./colabOneDuration";
 import { createColabOneSnapshot, type ColabOneSnapshot } from "./types";
 
 const colabOneTheme = computed(() =>
@@ -46,11 +50,29 @@ let stopped = false;
 let snapshotSeq = 0;
 let appliedSnapshotSeq = 0;
 let lastSnapshotRaw: string | null = null;
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+
+const clockNow = ref(Date.now());
+const snapshotAt = ref(Date.now());
 
 const ready = computed(() => state.value.runtime.state === "ready");
 const task = computed(() =>
   state.value.runtime.tasks?.find((t) => t.state === "running"),
 );
+const activeTaskElapsedLabel = computed(() => {
+  const secs = resolveColabOneTaskElapsedSeconds(
+    task.value,
+    state.value.runtime,
+    clockNow.value,
+    snapshotAt.value,
+  );
+  return secs === null
+    ? ""
+    : formatColabOneDuration(secs, {
+        precision: "integer",
+        locale: colabOneLocaleCode.value,
+      });
+});
 const activeApiRequest = computed(
   () =>
     state.value.runtime.public_api?.recent_requests?.find(
@@ -110,6 +132,18 @@ async function syncSnapshot() {
     }
     appliedSnapshotSeq = seq;
     if (unchanged || !next) return;
+    const prevRunning = state.value.runtime.tasks?.find((item) => item.state === "running");
+    const nextRunning = next.runtime.tasks?.find((item) => item.state === "running");
+    if (
+      next.runtime.idle?.server_time !== state.value.runtime.idle?.server_time ||
+      nextRunning?.id !== prevRunning?.id ||
+      nextRunning?.elapsed_seconds !== prevRunning?.elapsed_seconds ||
+      nextRunning?.download?.elapsed_seconds !==
+        prevRunning?.download?.elapsed_seconds
+    ) {
+      snapshotAt.value = Date.now();
+      clockNow.value = Date.now();
+    }
     lastSnapshotRaw = raw;
     state.value = next;
     snapshotLoaded.value = true;
@@ -179,11 +213,20 @@ watch(
 onMounted(() => {
   document.title = t("logs.windowTitle");
   snapshotPoller.start();
+  clockTimer = setInterval(() => {
+    if (!document.hidden) {
+      clockNow.value = Date.now();
+    }
+  }, 1000);
   window.addEventListener("keydown", handleKeydown);
 });
 
 onUnmounted(() => {
   stopped = true;
+  if (clockTimer !== null) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
   snapshotPoller.stop();
   toastManager.clear();
   window.removeEventListener("keydown", handleKeydown);
@@ -202,6 +245,7 @@ onUnmounted(() => {
         :running="!!(state.operation || task)"
         :privacy-context="privacyContext"
         :active-speed="activeApiSpeed"
+        :active-elapsed="activeTaskElapsedLabel"
         @copy="copy"
         @clear="clearLogs"
       />

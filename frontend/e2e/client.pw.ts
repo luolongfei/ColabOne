@@ -251,6 +251,8 @@ async function mock(page: any, ready = false, path = "/") {
       (window as any).__updateCalls = updateCalls;
       (window as any).__closeBehaviorState = closeBehaviorState;
       (window as any).__closeBehaviorCalls = closeBehaviorCalls;
+      const migrationCalls: any[] = [];
+      (window as any).__migrationCalls = migrationCalls;
       (window as any).__openedUrls = openedUrls;
       (window as any).__emitMyGoEvent = (name: string, payload: any) => {
         const listeners = mygoEventListeners.get(name);
@@ -264,6 +266,232 @@ async function mock(page: any, ready = false, path = "/") {
           const request = args[0];
           if (method === "ColabOneDesktop.OpenURL") {
             openedUrls.push(String(request ?? ""));
+            return;
+          }
+          if (
+            method === "ColabOneDesktop.GetMigrationExportSummary" ||
+            method === "ColabOneDesktop.ExportMigrationFile" ||
+            method === "ColabOneDesktop.PickMigrationFile" ||
+            method === "ColabOneDesktop.DecryptMigrationPreview" ||
+            method === "ColabOneDesktop.ApplyMigrationPreview" ||
+            method === "ColabOneDesktop.CancelMigrationSession"
+          ) {
+            migrationCalls.push({ method, args });
+            if (typeof (window as any).__onMigrationCall === "function") {
+              const override = await (window as any).__onMigrationCall(
+                method,
+                args,
+                state,
+              );
+              if (override !== undefined) {
+                return override;
+              }
+            }
+            if (method === "ColabOneDesktop.GetMigrationExportSummary") {
+              return {
+                app_version: "v0.1.8",
+                source_os: "windows",
+                has_active_operation: Boolean(state.operation),
+                has_running_instances: state.runtime.state === "ready",
+                modules: [
+                  {
+                    id: "account",
+                    included: true,
+                    has_data: Boolean(state.setup.colab),
+                    account: {
+                      has_login: Boolean(state.setup.colab),
+                      persistent_login: Boolean(state.setup.persistent_login),
+                      email: state.account?.email || "",
+                      has_drive_scope: Boolean(state.setup.drive_authorized),
+                      has_cloud_project: Boolean(state.setup.drive_headless),
+                    },
+                  },
+                  {
+                    id: "credentials",
+                    included: true,
+                    has_data: true,
+                    credentials: {
+                      has_hf_token: Boolean(state.setup.hf),
+                      has_assign_proxy: Boolean(state.assign_proxy_settings?.has_proxy),
+                      has_public_api: Boolean(state.api_settings?.domain),
+                      public_api_domain: state.api_settings?.domain || "",
+                      has_comfy_canvas: Boolean(state.comfy_canvas_settings?.domain),
+                      comfy_canvas_domain: state.comfy_canvas_settings?.domain || "",
+                      configured_count: 2,
+                    },
+                  },
+                  {
+                    id: "settings",
+                    included: true,
+                    has_data: true,
+                    settings: {
+                      gpu: state.settings.gpu || "G4",
+                      idle_minutes: state.settings.idle_minutes || 30,
+                      download_threads: state.settings.download_threads || 16,
+                      auto_drive: Boolean(state.settings.auto_drive),
+                      assign_proxy_enabled: Boolean(state.settings.assign_proxy_enabled),
+                      locale: state.settings.locale || "zh-CN",
+                      appearance: "light",
+                      close_behavior: closeBehaviorState.behavior,
+                      privacy_mask_default: false,
+                    },
+                  },
+                  {
+                    id: "library_workflows",
+                    included: true,
+                    has_data: true,
+                    library_workflows: {
+                      common_model_count: 2,
+                      custom_model_count: 1,
+                      common_repo_count: 3,
+                      api_id_override_count: 1,
+                      custom_workflow_count: 2,
+                    },
+                  },
+                  {
+                    id: "cu_usage",
+                    included: true,
+                    has_data: true,
+                    cu_usage: { account_count: 1, bucket_count: 16, day_count: 5 },
+                  },
+                  {
+                    id: "workflow_drafts",
+                    included: true,
+                    has_data: true,
+                    workflow_drafts: { draft_count: 1, field_count: 3 },
+                  },
+                ],
+              };
+            }
+            if (method === "ColabOneDesktop.ExportMigrationFile") {
+              return {
+                cancelled: false,
+                filename: "ColabOne-Backup-20261124.colabone",
+                size_bytes: 4096,
+                modules: request?.modules || [],
+              };
+            }
+            if (method === "ColabOneDesktop.PickMigrationFile") {
+              return {
+                cancelled: false,
+                file_token: "file-tok-1",
+                filename: "ColabOne-Backup-20261124.colabone",
+                file_size: 4096,
+                schema_version: 1,
+              };
+            }
+            if (method === "ColabOneDesktop.DecryptMigrationPreview") {
+              if (args[1] !== "secret123") {
+                throw new Error("迁移密码错误或文件已被篡改，请重试");
+              }
+              return {
+                preview_id: "prev-1",
+                filename: "ColabOne-Backup-20261124.colabone",
+                app_version: "v0.1.8",
+                exported_at: "2026-11-24T12:00:00Z",
+                source_os: "darwin",
+                schema_version: 1,
+                has_active_operation: Boolean(state.operation),
+                has_running_instances: state.runtime.state === "ready",
+                can_run_in_background: closeBehaviorState.can_background,
+                modules: [
+                  {
+                    id: "account",
+                    included: true,
+                    has_data: true,
+                    account: {
+                      has_login: true,
+                      persistent_login: true,
+                      email: "migrated@example.com",
+                      has_drive_scope: true,
+                      has_cloud_project: true,
+                    },
+                  },
+                  {
+                    id: "credentials",
+                    included: true,
+                    has_data: true,
+                    credentials: {
+                      has_hf_token: true,
+                      has_assign_proxy: false,
+                      has_public_api: true,
+                      public_api_domain: "api.migrated.dev",
+                      has_comfy_canvas: false,
+                      comfy_canvas_domain: "",
+                      configured_count: 2,
+                    },
+                  },
+                  {
+                    id: "settings",
+                    included: true,
+                    has_data: true,
+                    settings: {
+                      gpu: "L4",
+                      idle_minutes: 60,
+                      download_threads: 32,
+                      auto_drive: true,
+                      assign_proxy_enabled: false,
+                      locale: "zh-CN",
+                      appearance: "dark",
+                      close_behavior: "background",
+                      privacy_mask_default: true,
+                    },
+                  },
+                  {
+                    id: "library_workflows",
+                    included: true,
+                    has_data: true,
+                    library_workflows: {
+                      common_model_count: 2,
+                      custom_model_count: 1,
+                      common_repo_count: 3,
+                      api_id_override_count: 1,
+                      custom_workflow_count: 2,
+                    },
+                  },
+                  {
+                    id: "cu_usage",
+                    included: false,
+                    has_data: false,
+                  },
+                  {
+                    id: "workflow_drafts",
+                    included: true,
+                    has_data: true,
+                    workflow_drafts: { draft_count: 1, field_count: 4 },
+                  },
+                ],
+                warnings: state.runtime.state === "ready" ? ["active_instances_block_account"] : [],
+              };
+            }
+            if (method === "ColabOneDesktop.ApplyMigrationPreview") {
+              const mods = Array.isArray(request?.modules) ? request.modules : [];
+              if (mods.includes("account")) {
+                state.setup.colab = true;
+                state.setup.persistent_login = true;
+                state.account.logged_in = true;
+                state.account.email = "migrated@example.com";
+              }
+              if (mods.includes("settings")) {
+                state.settings.gpu = "L4";
+                state.settings.idle_minutes = 60;
+              }
+              return {
+                applied_modules: mods,
+                account_imported: mods.includes("account"),
+                account_logged_in: mods.includes("account"),
+                account_email: mods.includes("account") ? "migrated@example.com" : "",
+                applied_ui_prefs: mods.includes("settings")
+                  ? {
+                      appearance: "dark",
+                      locale: "zh-CN",
+                      privacy_mask_default: true,
+                    }
+                  : undefined,
+                close_behavior: mods.includes("settings") ? "background" : "",
+                warnings: [],
+              };
+            }
             return;
           }
           if (method === "ColabOneDesktop.GetCloseBehavior") {
@@ -2582,10 +2810,14 @@ test("ComfyUI built-in digital human workflows translate cleanly to Japanese acr
     "デジタルヒューマン・フラッグシップ HD 版",
   );
   await expect(longCatCard.locator(".co-comfy-workflow-desc")).toContainText(
-    "ネイティブ 720p レンダリング",
+    "公式 480p 高速拡散",
+  );
+  await expect(longCatCard.locator(".co-comfy-workflow-desc")).toContainText(
+    "ネイティブ 720p",
   );
   await expect(longCatCard).not.toContainText("口播数字人");
   await expect(longCatCard).not.toContainText("输入人像照片");
+  await expect(longCatCard).not.toContainText("默认采用");
 
   // Open the Parameter Drawer and verify Japanese header, guide/field descriptions, preflight strip, and TTS engine.
   await infiniteTalkCard.click();
@@ -2729,13 +2961,15 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
   await expect(paramDrawer.locator("#comfy-field-2_audio")).toHaveCount(1);
   await expect(licenseAlert).toHaveCount(0);
 
-  // 4. Switch back to TTS, provide portrait + script, pick IndexTTS-2 without voice_ref_audio -> blocks run with validation error.
+  // 4. Switch back to TTS, provide portrait + script, pick IndexTTS-2:
+  //    - Built-in named female voices (沈知意 / 林小满) do NOT require uploading voice_ref_audio.
+  //    - Switching pipeline.voice_preset to custom (自定义音色) enforces required voice_ref_audio.
   await ttsModeBtn.click();
   const scriptInput = paramDrawer.locator("#comfy-field-pipeline_script_text");
   await expect(scriptInput).toBeVisible();
   await scriptInput.fill("大家好，这是一段用于离线回归验证的口播文稿。");
 
-  // Upload a minimal PNG for the required presenter portrait so voice_ref_audio is the sole missing required field.
+  // Upload a minimal PNG for the required presenter portrait.
   await paramDrawer.locator("#comfy-field-1_image").setInputFiles({
     name: "presenter.png",
     mimeType: "image/png",
@@ -2745,12 +2979,30 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
   });
   await expect(paramDrawer).toContainText("presenter.png");
 
+  const voicePresetSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_voice_preset)",
+  );
+  await expect(voicePresetSelect).toBeVisible();
+  await expect(voicePresetSelect).toContainText("沈知意 · 知性女主播");
+
   await chooseAntOption(page, ttsSelect, /IndexTTS-2/);
   await expect(licenseAlert).toBeVisible();
   await expect(licenseAlert).toContainText("IndexTTS-2");
+
+  // With default built-in female voice (沈知意) or switching to 林小满, voice_ref_audio is NOT required.
+  await expect(paramDrawer.locator(".co-comfy-field-required-hint")).toHaveCount(
+    0,
+  );
+  await chooseAntOption(page, voicePresetSelect, /林小满 · 甜美活力/);
+  await expect(paramDrawer.locator(".co-comfy-field-required-hint")).toHaveCount(
+    0,
+  );
+
+  // Switching to custom voice enforces required voice_ref_audio on IndexTTS-2 and blocks run.
+  await chooseAntOption(page, voicePresetSelect, /自定义音色/);
   await expect(
     paramDrawer.locator(".co-comfy-field-required-hint"),
-  ).toContainText("当前选用的 IndexTTS-2 引擎必须上传参考音色音频");
+  ).toContainText("IndexTTS-2 选择「自定义音色」时必须上传参考音色音频");
 
   await paramDrawer.locator(".co-comfy-drawer-run-btn").click();
 
@@ -2760,10 +3012,153 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
   await expect(errorToast).toContainText("请先填写或上传必填项：参考音色");
   await expect(errorToast).not.toContainText("（可选）");
   await expect(paramDrawer).toBeVisible();
-  const runCalls = await page.evaluate(() =>
+  const blockedRunCalls = await page.evaluate(() =>
     ((window as any).__calls || []).filter((c: any) => c.action === "comfyui.run"),
   );
-  expect(runCalls).toHaveLength(0);
+  expect(blockedRunCalls).toHaveLength(0);
+
+  // Switching back to built-in female voice (林小满 · 甜美活力) clears the requirement and submits cleanly without uploading audio.
+  await chooseAntOption(page, voicePresetSelect, /林小满 · 甜美活力/);
+  await expect(paramDrawer.locator(".co-comfy-field-required-hint")).toHaveCount(
+    0,
+  );
+  await paramDrawer.locator(".co-comfy-drawer-run-btn").click();
+  await expect(paramDrawer).toBeHidden();
+  const submittedRunCalls = await page.evaluate(() =>
+    ((window as any).__calls || []).filter((c: any) => c.action === "comfyui.run"),
+  );
+  expect(submittedRunCalls).toHaveLength(1);
+  expect(submittedRunCalls[0]?.payload?.overrides).toMatchObject({
+    "pipeline.tts_engine": "indextts2",
+    "pipeline.voice_preset": "lin_xiaoman",
+  });
+});
+
+test("ComfyUI LongCat-Avatar flagship template exposes built-in female voices, optimized 8-step/3.7s/gesture defaults, and auto-syncs upscale mode with render quality", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+    s.runtime.active_engine = "comfyui";
+    s.runtime.comfyui.running = true;
+    s.runtime.comfyui.state = "ready";
+    s.runtime.gpu = {
+      name: "NVIDIA RTX PRO 6000 Blackwell",
+      total_mib: 98304,
+      used_mib: 1024,
+    };
+  }, comfyCatalog);
+
+  await navItem(page, "ComfyUI").click();
+  const longCatCard = page
+    .locator(".co-comfy-workflow-list .co-comfy-workflow-item", {
+      hasText: "口播数字人 · 旗舰高清版",
+    })
+    .first();
+  await expect(longCatCard).toBeVisible();
+  await longCatCard.click();
+
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+
+  // 1. Basic params display the built-in female voice selector with all 5 named female voices + custom.
+  await expect(paramDrawer).toContainText("内置女声音色");
+  const voicePresetSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_voice_preset)",
+  );
+  await expect(voicePresetSelect).toBeVisible();
+  await expect(voicePresetSelect).toContainText("沈知意 · 知性女主播");
+
+  await voicePresetSelect.click();
+  const voiceDropdown = page
+    .locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)")
+    .last();
+  await expect(voiceDropdown).toBeVisible();
+  for (const voiceLabel of [
+    "沈知意 · 知性女主播",
+    "林小满 · 甜美活力",
+    "苏晚晴 · 温柔治愈",
+    "顾清岚 · 干练职场",
+    "陆明薇 · 播音气质",
+    "自定义音色",
+  ]) {
+    await expect(voiceDropdown).toContainText(voiceLabel);
+  }
+  await voiceDropdown
+    .locator(".ant-select-item-option", { hasText: "苏晚晴 · 温柔治愈" })
+    .first()
+    .click();
+  await expect(voicePresetSelect).toContainText("苏晚晴 · 温柔治愈");
+
+  // Advanced controls stay collapsed until expanded.
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_render_quality"),
+  ).toBeHidden();
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_acceleration_profile"),
+  ).toBeHidden();
+
+  // 2. Expand Advanced Settings and verify optimized LongCat defaults (8 steps, 3.7s, gesture-rich prompt,
+  //    render quality, and GPU acceleration stack).
+  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
+  await advancedToggle.click();
+  await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
+
+  await expect(paramDrawer).toContainText("渲染清晰度与速度模式");
+  await expect(paramDrawer).toContainText("远端 GPU 加速栈");
+
+  const renderQualitySelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_render_quality)",
+  );
+  const accelSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_acceleration_profile)",
+  );
+  const upscaleSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_upscale_mode)",
+  );
+
+  await expect(renderQualitySelect).toBeVisible();
+  await expect(renderQualitySelect).toContainText(
+    "官方 480p 极速扩散 + AI 2x 细节超分",
+  );
+  await expect(accelSelect).toBeVisible();
+  await expect(accelSelect).toContainText("极致全栈加速");
+  await expect(upscaleSelect).toBeVisible();
+  await expect(upscaleSelect).toContainText("AI 2x 细节超分");
+
+  await expect(paramDrawer.locator("#comfy-field-14_steps")).toHaveValue("8");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_max_segment_seconds"),
+  ).toHaveValue("3.7");
+  await expect(paramDrawer.locator("#comfy-field-5_positive_prompt")).toHaveValue(
+    /手势/,
+  );
+  await expect(paramDrawer.locator("#comfy-field-5_positive_prompt")).toHaveValue(
+    /口型与语音精准贴合/,
+  );
+
+  // 3. Toggling render quality auto-syncs upscale_mode between AI 2x (480p) and Lanczos (native 720p).
+  await chooseAntOption(page, renderQualitySelect, /原生 720p 极致细节/);
+  await expect(upscaleSelect).toContainText("Lanczos 高质量适配");
+
+  await chooseAntOption(
+    page,
+    renderQualitySelect,
+    /官方 480p 极速扩散 \+ AI 2x 细节超分/,
+  );
+  await expect(upscaleSelect).toContainText("AI 2x 细节超分");
 });
 
 test("ComfyUI Native Canvas manages authenticated tunnel and opens window or browser without exposing token", async ({
@@ -7048,6 +7443,145 @@ test("settings page customizes GPU allocation max attempts with 20 default and 1
   await expect(attemptsInput).toHaveValue("100");
 });
 
+test("displays human-friendly live and total task elapsed duration across ComfyUI banner, dock, outputs drawer, log drawer, and completion toast", async ({
+  page,
+}) => {
+  await mock(page, true);
+
+  // Seed a running digital human workflow (using legacy created_at + idle.server_time without elapsed_seconds
+  // to verify immediate compatibility with already-running remote instances) plus a completed multi-hour output.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const serverNow = 1_700_004_523;
+    s.runtime.idle = {
+      phase: "active",
+      timeout_minutes: 30,
+      remaining_seconds: 1800,
+      server_time: serverNow,
+    };
+    s.runtime.comfyui = {
+      ...s.runtime.comfyui,
+      installed: true,
+      running: true,
+      state: "ready",
+      queue_running: 1,
+      queue_pending: 0,
+    };
+    s.workflows = [
+      {
+        id: "digital-human-longcat",
+        name: "口播数字人 · 旗舰高清版",
+        description: "原生 720p 数字人长视频",
+        source: "builtin",
+        min_vram_mib: 48000,
+        node_count: 15,
+        fields: [],
+        workflow: {},
+      },
+    ];
+    s.runtime.tasks = [
+      {
+        id: "task-dh-live",
+        kind: "comfyui_run",
+        model_id: "digital-human-longcat",
+        state: "running",
+        progress: 0.6,
+        message: "第 3/6 段 · 口播数字人 · 旗舰高清版 · LongCat-Avatar 扩散采样器 · 采样 4/12",
+        created_at: serverNow - 4523, // 1h 15m 23s ago
+      },
+    ];
+    s.comfy_outputs = [
+      {
+        id: "out-prev-long",
+        workflow_id: "digital-human-longcat",
+        workflow_name: "口播数字人 · 旗舰高清版",
+        filename: "longcat_prev.mp4",
+        mime: "video/mp4",
+        kind: "video",
+        size: 12_400_000,
+        created_at: serverNow - 9000,
+        elapsed: 4523.4,
+      },
+      {
+        id: "out-prev-short",
+        workflow_id: "digital-human-longcat",
+        workflow_name: "口播数字人 · 旗舰高清版",
+        filename: "longcat_short.mp4",
+        mime: "video/mp4",
+        kind: "video",
+        size: 2_100_000,
+        created_at: serverNow - 9500,
+        elapsed: 185.2,
+      },
+    ];
+  });
+
+  await navItem(page, "ComfyUI").click();
+
+  // 1. ComfyUI active task banner and pinned bottom task dock both display human-friendly live elapsed time.
+  const comfyElapsed = page.getByTestId("comfy-task-elapsed");
+  const dockElapsed = page.getByTestId("dock-task-elapsed");
+  await expect(comfyElapsed).toBeVisible();
+  await expect(comfyElapsed).toContainText(/已耗时 1 小时 15 分 2[3-9] 秒/);
+  await expect(dockElapsed).toBeVisible();
+  await expect(dockElapsed).toContainText(/已耗时 1 小时 15 分 2[3-9] 秒/);
+
+  // 2. Outputs drawer displays live generating card elapsed time and formatted historical output durations (not raw "4523.4 秒").
+  await page.locator(".co-comfy-outputs-trigger").click();
+  const outputsDrawer = page.locator(
+    ".co-comfy-outputs-drawer-root .ant-drawer-content",
+  );
+  await expect(outputsDrawer).toBeVisible();
+  await expect(outputsDrawer.getByTestId("comfy-gen-elapsed")).toContainText(
+    /已耗时 1 小时 15 分 2[3-9] 秒/,
+  );
+  const outputElapsedTags = outputsDrawer.getByTestId("comfy-output-elapsed");
+  await expect(outputElapsedTags).toHaveCount(2);
+  await expect(outputElapsedTags.nth(0)).toContainText("耗时 1 小时 15 分 23 秒");
+  await expect(outputElapsedTags.nth(1)).toContainText("耗时 3 分 5 秒");
+  await expect(outputsDrawer).not.toContainText("4523.4");
+  await page.keyboard.press("Escape");
+  await expect(outputsDrawer).toBeHidden();
+
+  // 3. Log drawer displays live elapsed tag alongside status.
+  await page.locator(".co-logs-trigger").click();
+  const logElapsed = page.getByTestId("log-drawer-elapsed");
+  await expect(logElapsed).toBeVisible();
+  await expect(logElapsed).toContainText(/已耗时 1 小时 15 分 2[3-9] 秒/);
+  await page.locator(".co-logs-trigger").click();
+
+  // 4. When the running ComfyUI task completes, a success toast reports total elapsed duration.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const serverDone = 1_700_005_320;
+    s.runtime.idle = {
+      ...s.runtime.idle,
+      server_time: serverDone,
+    };
+    s.runtime.comfyui = {
+      ...s.runtime.comfyui,
+      queue_running: 0,
+    };
+    s.runtime.tasks = [
+      {
+        id: "task-dh-live",
+        kind: "comfyui_run",
+        model_id: "digital-human-longcat",
+        state: "completed",
+        progress: 1,
+        message: "口播数字人 · 旗舰高清版 · 数字人长视频生成完成（共 6 段，33.0 秒，1280×720，总耗时 1 小时 28 分 40 秒）",
+        created_at: 1_700_000_000,
+        finished_at: serverDone,
+        elapsed_seconds: 5320.2,
+      },
+    ];
+  });
+
+  await expect(page.locator(".co-toast-stack")).toContainText(
+    "工作流「口播数字人 · 旗舰高清版」已完成 · 总耗时 1 小时 28 分 40 秒",
+  );
+});
+
 test("ComfyUI outputs drawer renders full unclipped storage hint and supports Google Drive setup modal + direct cloud export", async ({
   page,
 }) => {
@@ -7354,4 +7888,101 @@ test("ComfyUI Drive export modal handles async errors, non-drive operations, and
     };
   });
   expect(zOrder.modalZ).toBeGreaterThan(zOrder.drawerZ);
+});
+
+test("one-click encrypted migration supports selective export, unauthenticated quick import with wrong-password retry, and active-instance account guard", async ({
+  page,
+}) => {
+  await mock(page, false);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.colab = false;
+    s.account.logged_in = false;
+    s.account.email = "";
+  });
+
+  // 1. Brand-new unauthenticated home shows "导入迁移文件" quick entrypoint.
+  const homeImportBtn = page.getByTestId("home-migration-import-btn");
+  await expect(homeImportBtn).toBeVisible();
+  await homeImportBtn.click();
+
+  // Step 1: Unlock modal shows picked file; wrong password displays inline error without closing.
+  const decryptModal = page.getByTestId("migration-import-decrypt-modal");
+  await expect(decryptModal).toBeVisible();
+  await expect(page.getByTestId("migration-picked-filename")).toContainText(
+    "ColabOne-Backup-20261124.colabone",
+  );
+  await page.getByTestId("migration-import-password").fill("wrong-pw");
+  await page.getByTestId("migration-decrypt-submit").click();
+  await expect(page.getByTestId("migration-import-error")).toContainText(
+    "迁移密码错误或文件已被篡改",
+  );
+
+  // Correct password unlocks redacted preview with unincluded cu_usage disabled.
+  await page.getByTestId("migration-import-password").fill("secret123");
+  await page.getByTestId("migration-decrypt-submit").click();
+  const previewModal = page.getByTestId("migration-import-preview-modal");
+  await expect(previewModal).toBeVisible();
+  await expect(previewModal).toContainText("macOS");
+  await expect(previewModal).toContainText("migrated@example.com");
+  await expect(page.getByTestId("migration-import-mod-cu_usage")).toContainText(
+    "未包含",
+  );
+
+  // Apply migration -> hot-applies account + dark theme + hides unauthenticated banner!
+  await page.getByTestId("migration-apply-submit").click();
+  await expect(previewModal).toBeHidden();
+  await expect(homeImportBtn).toBeHidden();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+  // 2. Settings → Data & Migration → Export modal with module presets and password checks.
+  await navItem(page, "设置").click();
+  const migRow = page.getByTestId("settings-migration-row");
+  await expect(migRow).toBeVisible();
+  await page.getByTestId("settings-migration-export-btn").click();
+
+  const exportModal = page.getByTestId("migration-export-modal");
+  await expect(exportModal).toBeVisible();
+
+  // Quick toggle "仅配置与工作流" unchecks account & credentials; "全选" restores all.
+  await page.getByTestId("migration-export-config-only").click();
+  await expect(
+    page.getByTestId("migration-export-mod-account").locator("input[type='checkbox']"),
+  ).not.toBeChecked();
+  await expect(
+    page.getByTestId("migration-export-mod-settings").locator("input[type='checkbox']"),
+  ).toBeChecked();
+  await page.getByTestId("migration-export-select-all").click();
+  await expect(
+    page.getByTestId("migration-export-mod-account").locator("input[type='checkbox']"),
+  ).toBeChecked();
+
+  // Password validation enforces >= 6 chars and matching confirmation.
+  const exportSubmit = page.getByTestId("migration-export-submit");
+  await expect(exportSubmit).toBeDisabled();
+  await page.getByTestId("migration-export-password").fill("12345");
+  await page.getByTestId("migration-export-confirm").fill("12345");
+  await expect(exportSubmit).toBeDisabled();
+  await page.getByTestId("migration-export-password").fill("secret123");
+  await page.getByTestId("migration-export-confirm").fill("secret999");
+  await expect(exportSubmit).toBeDisabled();
+  await page.getByTestId("migration-export-confirm").fill("secret123");
+  await expect(exportSubmit).toBeEnabled();
+
+  await exportSubmit.click();
+  await expect(exportModal).toBeHidden();
+
+  // 3. Running GPU instance auto-disables account module during Import preview.
+  await page.evaluate(() => {
+    (window as any).__state.runtime.state = "ready";
+  });
+  await page.getByTestId("settings-migration-import-btn").click();
+  await page.getByTestId("migration-import-password").fill("secret123");
+  await page.getByTestId("migration-decrypt-submit").click();
+  await expect(page.getByTestId("migration-active-instances-alert")).toBeVisible();
+  const accountCheckbox = page
+    .getByTestId("migration-import-mod-account")
+    .locator("input[type='checkbox']");
+  await expect(accountCheckbox).toBeDisabled();
+  await expect(accountCheckbox).not.toBeChecked();
 });

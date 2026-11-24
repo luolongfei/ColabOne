@@ -39,8 +39,8 @@ ColabOne 為 **macOS（Apple Silicon）** 及 **Windows（x64）** 提供流暢�
 
 ColabOne 採用四個側邊欄分頁設計：**遠端裝置 → 對外 API → ComfyUI → 設定**，並於右側配備可滑出展開的**執行日誌**面板。
 
-1. **下載並啟動**
-   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的壓縮包（或[從源碼構建](#-從源碼構建)），解壓後直接開啟 `ColabOne.app`（macOS）或 `ColabOne.exe`（Windows）。ColabOne 是完全自包含的純 Go 單一執行檔應用程式，無需本地 Python 執行環境，亦無需保留同層的 `runtime/` 或 `site-packages/` 資料夾。於 Windows 平台，可在**設定**內直接建立開始選單及桌面捷徑，無需管理員權限。
+1. **下載並安裝**
+   從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的安裝程式（或[從源碼構建](#-從源碼構建)）：Windows 雙擊執行 `.exe` 安裝程式（安裝至目前用戶目錄，無需管理員權限），macOS 打開 `.dmg` 磁碟映像並將 `ColabOne.app` 拖入**應用程式**。ColabOne 是完全自包含的純 Go 單一執行檔應用程式，無需本地 Python 執行環境，亦無需保留同層的 `runtime/` 或 `site-packages/` 資料夾。於 Windows 平台，亦可隨時於**設定**內管理開始選單及桌面捷徑，無需管理員權限。
 
 2. **登入 Google 帳戶**
    前往**設定** → **登入 Google**，在瀏覽器完成帳戶授權後，ColabOne 會自動完成登入。如果瀏覽器顯示授權頁內容而未自動跳轉，可展開手動貼上區域並點擊**貼上並完成登入**。登入憑證會加密儲存在 macOS 鑰匙圈（Keychain）或 Windows 憑證管理員中，重啟程式會自動恢復並續期。
@@ -147,11 +147,11 @@ npm --prefix frontend run build
 # 執行全部離線檢查（內嵌服務包同步檢查、Go vet/test、遠端 Python pytest、Vitest 及前端構建）
 .venv/bin/python tools/install.py --root work/check --check
 
-# 在 dist/ 目錄打包純 Go 單一執行檔便攜壓縮包
+# 在 dist/ 目錄打包原生純 Go 安裝檔（Windows 為 .exe，macOS 為 .dmg）
 .venv/bin/python tools/package.py --out dist
 ```
 
-打包完成的免安裝便攜壓縮包會輸出至 `dist/`（未壓縮暫存目錄位於 `work/package-stage/Programs/ColabOne`），內含獨立的純 Go 單一執行檔（`ColabOne.app` / `ColabOne.exe`），並透過 `go:embed` 直接內嵌編譯後的 Vue 前端資源及遠端 Python 控制服務（`server/`、`common/`、`catalog/`），終端用戶無需本地 Python 執行環境或任何同層依賴資料夾。
+原生安裝檔（`ColabOne-<version>-windows-x64-setup.exe` / `ColabOne-<version>-macos-arm64.dmg`）會輸出至 `dist/`（未壓縮暫存目錄位於 `work/package-stage/Programs/ColabOne`；如另需免安裝便攜壓縮包可加上 `--portable-zip`），內含獨立的純 Go 單一執行檔（`ColabOne.app` / `ColabOne.exe`），並透過 `go:embed` 直接內嵌編譯後的 Vue 前端資源及遠端 Python 控制服務（`server/`、`common/`、`catalog/`），終端用戶無需本地 Python 執行環境或任何同層依賴資料夾。
 
 所有單元測試與瀏覽器測試均 100% 離線使用模擬（Mock）運行——絕不會連接 Google 或 Hugging Face，亦不會申請任何 GPU 實例。真實 GPU 驗收測試會在嚴格的算力預算下明確觸發執行，詳見 [docs/validation.md](docs/validation.md)。
 

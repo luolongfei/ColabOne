@@ -34,8 +34,10 @@ const (
 	// MaxWorkflowNestingDepth is the maximum JSON container nesting depth allowed in a workflow.
 	MaxWorkflowNestingDepth = 32
 
-	maxWorkflowNodes = 500
-	maxAutoFields    = 32
+	maxWorkflowNodes         = 500
+	maxAutoFields            = 32
+	maxVoicePresetsPerEngine = 24
+	maxVoicePresetSeed       = 2147483647
 )
 
 var errWorkflowNestingTooDeep = errors.New("工作流 JSON 嵌套层级超过 32 层上限")
@@ -87,16 +89,17 @@ var defaultAllowedOutputMIME = map[string]ColabOneOutputMediaSpec{
 }
 
 var (
-	nodeIDRe      = regexp.MustCompile(`\A[a-zA-Z0-9_:-]{1,80}\z`)
-	workflowIDRe  = regexp.MustCompile(`\A[a-zA-Z0-9_-]{1,80}\z`)
-	repoSlugRe    = regexp.MustCompile(`\A[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+\z`)
-	githubRepoRe  = regexp.MustCompile(`\Ahttps://github\.com/([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+?)(?:\.git)?/?\z`)
+	nodeIDRe            = regexp.MustCompile(`\A[a-zA-Z0-9_:-]{1,80}\z`)
+	workflowIDRe        = regexp.MustCompile(`\A[a-zA-Z0-9_-]{1,80}\z`)
+	voicePresetIDRe     = regexp.MustCompile(`\A[a-zA-Z0-9_-]{1,64}\z`)
+	repoSlugRe          = regexp.MustCompile(`\A[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+\z`)
+	githubRepoRe        = regexp.MustCompile(`\Ahttps://github\.com/([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+?)(?:\.git)?/?\z`)
 	assetIDRe           = regexp.MustCompile(`\A[a-f0-9]{32}\z`)
 	pipPkgRe            = regexp.MustCompile(`\A[A-Za-z0-9](?:[A-Za-z0-9._\[\],<>=!~]|-[A-Za-z0-9._\[\],<>=!~]| +[A-Za-z0-9._\[\],<>=!~])*\z`)
 	pipWhitespaceFlagRe = regexp.MustCompile(`\s-`)
 	commitSHARe         = regexp.MustCompile(`\A[a-fA-F0-9]{40}\z`)
-	sha256AnyRe   = regexp.MustCompile(`\A[a-fA-F0-9]{64}\z`)
-	sha256LowerRe = regexp.MustCompile(`\A[a-f0-9]{64}\z`)
+	sha256AnyRe         = regexp.MustCompile(`\A[a-fA-F0-9]{64}\z`)
+	sha256LowerRe       = regexp.MustCompile(`\A[a-f0-9]{64}\z`)
 
 	comfyModelExtensions = map[string]bool{
 		".safetensors": true,
@@ -156,6 +159,12 @@ var (
 		"none":    true,
 		"ai_2x":   true,
 		"lanczos": true,
+	}
+
+	allowedVoicePresetGenders = map[string]bool{
+		"female":  true,
+		"male":    true,
+		"neutral": true,
 	}
 
 	textInputNames = map[string]bool{
@@ -999,52 +1008,138 @@ func validateModelFilePath(value string) error {
 	return nil
 }
 
+// ColabOneComfyTtsVoicePreset declares a built-in named voice preset for a remote TTS engine.
+type ColabOneComfyTtsVoicePreset struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Gender      string `json:"gender"`
+	Style       string `json:"style"`
+	Description string `json:"description"`
+	Prompt      string `json:"prompt"`
+	Seed        int    `json:"seed"`
+}
+
+// UnmarshalJSON decodes a ColabOneComfyTtsVoicePreset with unknown fields and nulls
+// forbidden and Pydantic-parity defaults for gender ("female") and seed (42).
+func (p *ColabOneComfyTtsVoicePreset) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID          string  `json:"id"`
+		Name        string  `json:"name"`
+		Gender      *string `json:"gender"`
+		Style       string  `json:"style"`
+		Description string  `json:"description"`
+		Prompt      string  `json:"prompt"`
+		Seed        *int    `json:"seed"`
+	}
+	if err := decodeStrictJSONObject(data, &raw); err != nil {
+		return err
+	}
+	gender := "female"
+	if raw.Gender != nil {
+		if *raw.Gender == "" {
+			return errors.New("内置音色性别不合法")
+		}
+		gender = *raw.Gender
+	}
+	seed := 42
+	if raw.Seed != nil {
+		seed = *raw.Seed
+	}
+	*p = ColabOneComfyTtsVoicePreset{
+		ID:          raw.ID,
+		Name:        raw.Name,
+		Gender:      gender,
+		Style:       raw.Style,
+		Description: raw.Description,
+		Prompt:      raw.Prompt,
+		Seed:        seed,
+	}
+	return nil
+}
+
+// Validate normalizes and validates a ColabOneComfyTtsVoicePreset.
+func (p *ColabOneComfyTtsVoicePreset) Validate() error {
+	if !voicePresetIDRe.MatchString(p.ID) {
+		return errors.New("内置音色 ID 不合法")
+	}
+	if utf8.RuneCountInString(p.Name) > 80 {
+		return errors.New("内置音色名称长度不合法")
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return errors.New("内置音色名称不能为空")
+	}
+	p.Name = name
+
+	if p.Gender == "" {
+		p.Gender = "female"
+	}
+	if !allowedVoicePresetGenders[p.Gender] {
+		return errors.New("内置音色性别不合法")
+	}
+	if utf8.RuneCountInString(p.Style) > 80 {
+		return errors.New("内置音色风格长度不能超过 80")
+	}
+	if utf8.RuneCountInString(p.Description) > 240 {
+		return errors.New("内置音色描述长度不能超过 240")
+	}
+	if utf8.RuneCountInString(p.Prompt) > 600 {
+		return errors.New("内置音色提示词长度不能超过 600")
+	}
+	if p.Seed < 0 || p.Seed > maxVoicePresetSeed {
+		return errors.New("内置音色随机种子必须在 0 到 2147483647 之间")
+	}
+	return nil
+}
+
 // ColabOneComfyTtsEngineSpec declares a pinned remote GPU TTS engine for digital-human pipelines.
 type ColabOneComfyTtsEngineSpec struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	Repo                string   `json:"repo"`
-	Revision            string   `json:"revision"`
-	AuxRepo             string   `json:"aux_repo"`
-	AuxRevision         string   `json:"aux_revision"`
-	License             string   `json:"license"`
-	CommercialOK        bool     `json:"commercial_ok"`
-	LicenseNotice       string   `json:"license_notice"`
-	MinVRAMMib          int      `json:"min_vram_mib"`
-	SampleRate          int      `json:"sample_rate"`
-	SupportsVoiceClone  bool     `json:"supports_voice_clone"`
-	SupportsVoiceDesign bool     `json:"supports_voice_design"`
-	SupportsEmotionRef  bool     `json:"supports_emotion_ref"`
-	SupportsInlineTags  bool     `json:"supports_inline_tags"`
-	PipPackages         []string `json:"pip_packages"`
-	SourceRepo          string   `json:"source_repo"`
-	SourceCommit        string   `json:"source_commit"`
+	ID                  string                        `json:"id"`
+	Name                string                        `json:"name"`
+	Description         string                        `json:"description"`
+	Repo                string                        `json:"repo"`
+	Revision            string                        `json:"revision"`
+	AuxRepo             string                        `json:"aux_repo"`
+	AuxRevision         string                        `json:"aux_revision"`
+	License             string                        `json:"license"`
+	CommercialOK        bool                          `json:"commercial_ok"`
+	LicenseNotice       string                        `json:"license_notice"`
+	MinVRAMMib          int                           `json:"min_vram_mib"`
+	SampleRate          int                           `json:"sample_rate"`
+	SupportsVoiceClone  bool                          `json:"supports_voice_clone"`
+	SupportsVoiceDesign bool                          `json:"supports_voice_design"`
+	SupportsEmotionRef  bool                          `json:"supports_emotion_ref"`
+	SupportsInlineTags  bool                          `json:"supports_inline_tags"`
+	PipPackages         []string                      `json:"pip_packages"`
+	SourceRepo          string                        `json:"source_repo"`
+	SourceCommit        string                        `json:"source_commit"`
+	VoicePresets        []ColabOneComfyTtsVoicePreset `json:"voice_presets"`
 }
 
 // UnmarshalJSON decodes a ColabOneComfyTtsEngineSpec with unknown fields forbidden and
-// Pydantic-parity defaults for license, commercial_ok, sample_rate, and supports_voice_clone.
+// Pydantic-parity defaults for license, commercial_ok, sample_rate, supports_voice_clone, and voice_presets.
 func (s *ColabOneComfyTtsEngineSpec) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID                  string    `json:"id"`
-		Name                string    `json:"name"`
-		Description         string    `json:"description"`
-		Repo                string    `json:"repo"`
-		Revision            string    `json:"revision"`
-		AuxRepo             string    `json:"aux_repo"`
-		AuxRevision         string    `json:"aux_revision"`
-		License             *string   `json:"license"`
-		CommercialOK        *bool     `json:"commercial_ok"`
-		LicenseNotice       string    `json:"license_notice"`
-		MinVRAMMib          int       `json:"min_vram_mib"`
-		SampleRate          *int      `json:"sample_rate"`
-		SupportsVoiceClone  *bool     `json:"supports_voice_clone"`
-		SupportsVoiceDesign bool      `json:"supports_voice_design"`
-		SupportsEmotionRef  bool      `json:"supports_emotion_ref"`
-		SupportsInlineTags  bool      `json:"supports_inline_tags"`
-		PipPackages         []*string `json:"pip_packages"`
-		SourceRepo          string    `json:"source_repo"`
-		SourceCommit        string    `json:"source_commit"`
+		ID                  string                        `json:"id"`
+		Name                string                        `json:"name"`
+		Description         string                        `json:"description"`
+		Repo                string                        `json:"repo"`
+		Revision            string                        `json:"revision"`
+		AuxRepo             string                        `json:"aux_repo"`
+		AuxRevision         string                        `json:"aux_revision"`
+		License             *string                       `json:"license"`
+		CommercialOK        *bool                         `json:"commercial_ok"`
+		LicenseNotice       string                        `json:"license_notice"`
+		MinVRAMMib          int                           `json:"min_vram_mib"`
+		SampleRate          *int                          `json:"sample_rate"`
+		SupportsVoiceClone  *bool                         `json:"supports_voice_clone"`
+		SupportsVoiceDesign bool                          `json:"supports_voice_design"`
+		SupportsEmotionRef  bool                          `json:"supports_emotion_ref"`
+		SupportsInlineTags  bool                          `json:"supports_inline_tags"`
+		PipPackages         []*string                     `json:"pip_packages"`
+		SourceRepo          string                        `json:"source_repo"`
+		SourceCommit        string                        `json:"source_commit"`
+		VoicePresets        []ColabOneComfyTtsVoicePreset `json:"voice_presets"`
 	}
 	if err := decodeStrictJSONObject(data, &raw); err != nil {
 		return err
@@ -1078,6 +1173,10 @@ func (s *ColabOneComfyTtsEngineSpec) UnmarshalJSON(data []byte) error {
 		}
 		pipPackages = append(pipPackages, *pkg)
 	}
+	voicePresets := raw.VoicePresets
+	if voicePresets == nil {
+		voicePresets = []ColabOneComfyTtsVoicePreset{}
+	}
 	*s = ColabOneComfyTtsEngineSpec{
 		ID:                  raw.ID,
 		Name:                raw.Name,
@@ -1098,6 +1197,7 @@ func (s *ColabOneComfyTtsEngineSpec) UnmarshalJSON(data []byte) error {
 		PipPackages:         pipPackages,
 		SourceRepo:          raw.SourceRepo,
 		SourceCommit:        raw.SourceCommit,
+		VoicePresets:        voicePresets,
 	}
 	return nil
 }
@@ -1203,6 +1303,18 @@ func (s *ColabOneComfyTtsEngineSpec) Validate() error {
 	if s.SourceCommit != "" && !commitSHARe.MatchString(s.SourceCommit) {
 		return errors.New("source_commit 必须为 40 位十六进制 SHA")
 	}
+
+	if len(s.VoicePresets) > maxVoicePresetsPerEngine {
+		return errors.New("内置音色预设数量不能超过 24 个")
+	}
+	for i := range s.VoicePresets {
+		if err := s.VoicePresets[i].Validate(); err != nil {
+			return err
+		}
+	}
+	if s.VoicePresets == nil {
+		s.VoicePresets = []ColabOneComfyTtsVoicePreset{}
+	}
 	return nil
 }
 
@@ -1285,7 +1397,7 @@ func (p *ColabOneComfyPipelineSpec) UnmarshalJSON(data []byte) error {
 	maxSegmentSeconds := 45.0
 	if raw.MaxSegmentSeconds != nil {
 		if *raw.MaxSegmentSeconds == 0 {
-			return errors.New("分段时长必须在 5.0 到 300.0 秒之间")
+			return errors.New("分段时长必须在 3.0 到 300.0 秒之间")
 		}
 		maxSegmentSeconds = *raw.MaxSegmentSeconds
 	}
@@ -1377,8 +1489,8 @@ func (p *ColabOneComfyPipelineSpec) Validate() error {
 	if p.MaxSegmentSeconds == 0 {
 		p.MaxSegmentSeconds = 45.0
 	}
-	if !isFiniteFloat64(p.MaxSegmentSeconds) || p.MaxSegmentSeconds < 5.0 || p.MaxSegmentSeconds > 300.0 {
-		return errors.New("分段时长必须在 5.0 到 300.0 秒之间")
+	if !isFiniteFloat64(p.MaxSegmentSeconds) || p.MaxSegmentSeconds < 3.0 || p.MaxSegmentSeconds > 300.0 {
+		return errors.New("分段时长必须在 3.0 到 300.0 秒之间")
 	}
 	if !isFiniteFloat64(p.TailFrameOffsetSeconds) || p.TailFrameOffsetSeconds < 0.0 || p.TailFrameOffsetSeconds > 1.0 {
 		return errors.New("尾帧回退偏移必须在 0.0 到 1.0 秒之间")

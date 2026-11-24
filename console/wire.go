@@ -320,6 +320,9 @@ func (c *wireControllerAuthAdapter) HasDriveScope() bool   { return c.a.HasDrive
 func (c *wireControllerAuthAdapter) InvalidateDriveQuotaProject() {
 	c.a.InvalidateDriveQuotaProject()
 }
+func (c *wireControllerAuthAdapter) ResetAccountState() {
+	c.a.ResetAccountState()
+}
 func (c *wireControllerAuthAdapter) RequiresDriveQuotaProject() bool {
 	return c.a.RequiresDriveQuotaProject()
 }

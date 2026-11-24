@@ -39,8 +39,8 @@ ColabOne は、**macOS (Apple Silicon)** および **Windows (x64)** 向けの�
 
 ColabOne は 4 つのサイドバー画面（**リモートデバイス → 外部 API → ComfyUI → 設定**）と、右側から開く **実行ログ** パネルで構成されています。
 
-1. **ダウンロードと起動**
-   [Releases](https://github.com/luolongfei/ColabOne/releases) からお使いの環境向けアーカイブをダウンロード（または[ソースからビルド](#-ソースからビルド)）して展開し、`ColabOne.app`（macOS）または `ColabOne.exe`（Windows）を起動します。ColabOne は自己完結型のピュア Go 単一バイナリアプリのため、ローカルの Python ランタイムや同階層の `runtime/`・`site-packages/` フォルダは不要です。Windows では **設定** から管理者権限なしでスタートメニューおよびデスクトップのショートカットを作成できます。
+1. **ダウンロードとインストール**
+   [Releases](https://github.com/luolongfei/ColabOne/releases) からお使いの環境向けインストーラーをダウンロード（または[ソースからビルド](#-ソースからビルド)）します。Windows では `.exe` インストーラーを実行（ユーザー単位でインストール、管理者権限不要）、macOS では `.dmg` ディスクイメージを開いて `ColabOne.app` を **アプリケーション** フォルダへドラッグしてください。ColabOne は自己完結型のピュア Go 単一バイナリアプリのため、ローカルの Python ランタイムや同階層の `runtime/`・`site-packages/` フォルダは不要です。Windows では **設定** からも管理者権限なしでスタートメニューおよびデスクトップのショートカットを管理できます。
 
 2. **Google アカウントでログイン**
    **設定** → **Google でログイン** を開き、ブラウザでアカウントを認可すると自動でログインが完了します。リダイレクトされずブラウザに認可ページが表示された場合は、手動貼り付け欄を開いて **貼り付けてログイン完了** をクリックしてください。認証情報は macOS キーチェーンまたは Windows 資格情報マネージャーに暗号化保存され、再起動後も自動で復元・更新されます。
@@ -147,11 +147,11 @@ npm --prefix frontend run build
 # すべてのオフライン検証を実行（埋め込みサービス同期・Go vet/test・リモート Python pytest・Vitest・フロントエンドビルド）
 .venv/bin/python tools/install.py --root work/check --check
 
-# 自己完結型のピュア Go 単一バイナリアーカイブを dist/ にビルド
+# ネイティブのピュア Go インストーラー（Windows は .exe、macOS は .dmg）を dist/ にビルド
 .venv/bin/python tools/package.py --out dist
 ```
 
-ポータブルアーカイブは `dist/` に出力され（展開済みステージングディレクトリは `work/package-stage/Programs/ColabOne`）、ビルド済み Vue フロントエンドとリモート Python 制御サービス（`server/`、`common/`、`catalog/`）を `go:embed` で内蔵した単独のピュア Go バイナリ（`ColabOne.app` / `ColabOne.exe`）を収録します。エンドユーザー側でローカル Python ランタイムや同階層の依存フォルダを用意する必要はありません。
+ネイティブインストーラー（`ColabOne-<version>-windows-x64-setup.exe` / `ColabOne-<version>-macos-arm64.dmg`）は `dist/` に出力され（展開済みステージングディレクトリは `work/package-stage/Programs/ColabOne`、ポータブル `.zip` も必要な場合は `--portable-zip` を指定）、ビルド済み Vue フロントエンドとリモート Python 制御サービス（`server/`、`common/`、`catalog/`）を `go:embed` で内蔵した単独のピュア Go バイナリ（`ColabOne.app` / `ColabOne.exe`）を収録します。エンドユーザー側でローカル Python ランタイムや同階層の依存フォルダを用意する必要はありません。
 
 すべての単体テストおよびブラウザテストはモックを使って 100% オフラインで動作し、Google や Hugging Face へ接続したり GPU を割り当てたりすることはありません。実 GPU による受け入れ検証は厳格な計算予算の下で明示的に実施しています。詳細は [docs/validation.md](docs/validation.md) を参照してください。
 

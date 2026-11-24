@@ -1849,6 +1849,99 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     }
   });
 
+  it("translates human-friendly task elapsed duration keys and backend logs across all 6 locales", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
+    const durationKeys: ColabOneMessageKey[] = [
+      "common.minutesSeconds",
+      "common.hoursMinutesSeconds",
+      "task.elapsedLive",
+      "task.elapsedTotal",
+      "comfy.noticeRunCompleted",
+      "comfy.noticeRunCompletedNoDuration",
+    ];
+    for (const key of durationKeys) {
+      for (const loc of ALL_LOCALES) {
+        const val = COLABONE_MESSAGES[loc][key];
+        expect(val.trim().length, `empty ${loc}[${key}]`).toBeGreaterThan(0);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(val),
+            `CJK/fullwidth leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(val, `forbidden zh-TW term in ${key}: "${val}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(val, `spoken Cantonese leak in zh-HK[${key}]: "${val}"`).not.toMatch(
+            SPOKEN_CANTONESE_RE,
+          );
+        }
+      }
+    }
+
+    const durationBackendLogs = [
+      "ComfyUI 工作流：已完成 · 耗时 1 小时 15 分 23 秒 · 工作流执行完成，已保存 1 个作品到远端 GPU（耗时 1 小时 15 分 23 秒）",
+      "ComfyUI 工作流：已取消 · 耗时 12 分 34 秒",
+      "工作流执行完成，已保存 2 个作品到远端 GPU（耗时 3 分 18 秒）",
+      "口播数字人 · 旗舰高清版 · 第 3/6 段 渲染完成（耗时 18 分 42 秒）",
+      "口播数字人 · 旗舰高清版 · 数字人长视频生成完成（共 6 段，33.0 秒，1280×720，总耗时 1 小时 52 分 10 秒）",
+      "口播数字人 · 旗舰高清版 · 远端 GPU 执行中 · 已用 14 分 5 秒",
+      "Flux Demo · 排队中（第 1 位）· 已用 1 小时 2 分 9 秒",
+      "Flux Demo · 远端 GPU 执行中 · 已用 3725 秒",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const msg of durationBackendLogs) {
+        const out = translateColabOneBackendText(msg, loc);
+        expect(tb(msg), `tb() parity for ${loc}: ${msg}`).toBe(out);
+        expect(out.trim().length, `empty translation for ${loc}: ${msg}`).toBeGreaterThan(0);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${msg}" -> "${out}"`,
+          ).toBe(false);
+          expect(out).not.toBe(msg);
+        }
+        if (loc === "ja-JP") {
+          expect(out).not.toBe(msg);
+        }
+        if (loc === "zh-TW") {
+          expect(out).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(out).not.toMatch(SPOKEN_CANTONESE_RE);
+        }
+      }
+    }
+
+    // Spot-check exact human-friendly English formatting (including legacy "已用 3725 秒" promotion to 1h 2m 5s)
+    expect(
+      translateColabOneBackendText(
+        "ComfyUI 工作流：已完成 · 耗时 1 小时 15 分 23 秒",
+        "en-US",
+      ),
+    ).toBe("ComfyUI workflow: Completed · took 1h 15m 23s");
+    expect(
+      translateColabOneBackendText(
+        "Flux Demo · 远端 GPU 执行中 · 已用 3725 秒",
+        "en-US",
+      ),
+    ).toBe("Flux Demo · Running on remote GPU · 1h 2m 5s elapsed");
+    expect(
+      translateColabOneBackendText(
+        "口播数字人 · 旗舰高清版 · 第 3/6 段 渲染完成（耗时 18 分 42 秒）",
+        "en-US",
+      ),
+    ).toBe(
+      "Talking Avatar · Flagship HD · Segment 3/6 rendered (took 18m 42s)",
+    );
+  });
+
   it("translates ComfyUI Google Drive direct export backend messages across all 6 locales", () => {
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
@@ -1891,4 +1984,226 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     }
   });
 
+  it("translates LongCat acceleration options, built-in female voice presets, and dynamic acceleration/voice logs across all 6 locales with zero leaks", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+
+    const staticCatalogAndValidationStrings = [
+      // Updated digital-human-longcat description
+      "输入人像照片与口播文稿（或音频），默认采用官方 480p 极速扩散 + AI 2x 细节超分与全栈 GPU 加速，并支持一键切换原生 720p 极致细节。",
+      // pipeline.voice_preset label, description, 6 option_labels
+      "内置女声音色",
+      "为所有远端配音引擎内置 5 位好听的中文女声；若上传了参考音色音频，将优先克隆所传音色。",
+      "沈知意 · 知性女主播（清澈温润 · 默认推荐）",
+      "林小满 · 甜美活力（清亮灵动 · 种草口播）",
+      "苏晚晴 · 温柔治愈（柔和细腻 · 故事解说）",
+      "顾清岚 · 干练职场（醇厚沉稳 · 商业科技）",
+      "陆明薇 · 播音气质（字正腔圆 · 资讯讲解）",
+      "自定义音色（使用下方参考音色或文本捏声线）",
+      // 5 short voice names & styles
+      "知性女主播 · 沈知意",
+      "甜美活力 · 林小满",
+      "温柔治愈 · 苏晚晴",
+      "干练职场 · 顾清岚",
+      "播音气质 · 陆明薇",
+      "知性主播",
+      "甜美活力",
+      "温柔治愈",
+      "干练御姐",
+      "新闻播音",
+      // Updated pipeline.voice_ref_audio description
+      "上传 5～15 秒清晰人声即可克隆该音色（优先级高于内置女声）；留空则自动使用上方所选内置女声（IndexTTS-2 仅在选用「自定义音色」时必须上传）。",
+      // pipeline.render_quality label, description, 2 option_labels
+      "渲染清晰度与速度模式",
+      "官方 480p 极速扩散 + AI 2x 细节超分（默认推荐 · 极快）",
+      "原生 720p 极致细节（1280×768 扩散 · 细节上限但较慢）",
+      "默认采用美团与 Kijai 官方 480p（832×480）扩散叠加 AI 2x 细节超分，速度提升数倍且保留精准口型；切至原生 720p 可追求极限单帧纹理。",
+      // pipeline.acceleration_profile label, description, 3 option_labels
+      "远端 GPU 加速栈",
+      "极致全栈加速（SageAttention 2/3 + FP8 Fast + 常驻显存 + torch.compile · 推荐）",
+      "高速稳健（SageAttention + FP8 Fast + 常驻显存，跳过编译预热）",
+      "兼容保底（原生 BF16 + SDPA，关闭底层算子加速）",
+      "自动按远端 GPU 架构启用最强算子组合，并将 SageAttention 编译产物缓存至云盘复用；任一项不兼容时自动安全回退。",
+      // Updated pipeline.upscale_mode description & option_labels
+      "默认配合 480p 扩散开启 2xNomosUni AI 细节超分输出高清 720p/1080p；若切至原生 720p 扩散，可选 Lanczos 精准适配画幅。",
+      "AI 2x 细节超分（2xNomosUni SPAN · 推荐高清）",
+      "Lanczos 高质量适配（精准输出所选画幅）",
+      "原生渲染尺寸输出（不缩放，保留原生画幅）",
+      // Updated pipeline.max_segment_seconds & 14.steps descriptions
+      "LongCat-Avatar 1.5 原生黄金窗口为 93 帧（约 3.7 秒 @ 25fps），默认 3.7 秒可避开二次方注意力耗时激增，并自动接入原图参考锁脸防漂移。",
+      "配合 LongCat-Avatar 1.5 DMD 蒸馏 LoRA 官方推荐 8 步，兼顾极速采样与精准口型细节（可按需在 6～12 步微调）。",
+      // Schema & TTS validation strings
+      "分段时长必须在 3.0 到 300.0 秒之间",
+      "IndexTTS2 在自定义音色模式下需要上传音色参考音频才能进行语音合成",
+    ];
+
+    const dynamicOptimizationLogs = [
+      "已启用 LongCat 远端加速栈：注意力=sageattn_3，量化=fp8_e4m3fn_fast，显存常驻=是，torch.compile=开",
+      "已启用 LongCat 远端加速栈：注意力=sdpa，量化=disabled，显存常驻=否，torch.compile=关",
+      "复用已缓存的 SageAttention 2 加速包（sageattention-2.2.0-sm89.whl）",
+      "复用已缓存的 SageAttention 3 加速包（sm120）",
+      "正在为远端 GPU（NVIDIA L4 · sm89）编译 SageAttention 2 加速包（首次需 1～3 分钟，完成后自动缓存复用）",
+      "正在为远端 GPU（NVIDIA RTX PRO 6000 · sm120）编译 SageAttention 3 加速包（首次需 1～3 分钟，完成后自动缓存复用）",
+      "SageAttention 加速包构建或安装跳过，将自动回退：nvcc not found",
+      "LongCat 加速算子执行异常，自动回退至高速稳健（关闭 torch.compile）：InductorError",
+      "LongCat 加速算子执行异常，自动回退至兼容保底（原生 BF16 + SDPA）：CUDA error",
+      "LongCat 加速算子执行异常，自动回退至 SageAttention 2：unsupported sm",
+      "复用已缓存的内置女声参考样本：知性女主播 · 沈知意",
+      "正在生成并缓存内置女声参考样本：甜美活力 · 林小满",
+      "ComfyUI 工作流：进行中 · 20% · 正在生成并缓存内置女声参考样本：知性女主播 · 沈知意",
+      "ComfyUI 工作流：进行中 · 35% · 已启用 LongCat 远端加速栈：注意力=sageattn，量化=fp8_e4m3fn_fast，显存常驻=是，torch.compile=开",
+    ];
+
+    const allSamples = [
+      ...staticCatalogAndValidationStrings,
+      ...dynamicOptimizationLogs,
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of allSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(
+          out.trim().length,
+          `empty translation for ${loc}: ${sample}`,
+        ).toBeGreaterThan(0);
+
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc !== "ja-JP") {
+          expect(
+            out,
+            `katakana middot leak in ${loc} for "${sample}" -> "${out}"`,
+          ).not.toContain("\u30fb");
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ja-JP") {
+          expect(out, `ja-JP must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            out,
+            `forbidden zh-TW term in "${sample}" -> "${out}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            out,
+            `spoken Cantonese leak in zh-HK for "${sample}" -> "${out}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
+        }
+      }
+    }
+
+    // Spot-check exact multi-locale outputs for key dynamic logs & presets
+    expect(
+      translateColabOneBackendText(
+        "已启用 LongCat 远端加速栈：注意力=sageattn_3，量化=fp8_e4m3fn_fast，显存常驻=是，torch.compile=开",
+        "en-US",
+      ),
+    ).toBe(
+      "Enabled LongCat remote acceleration stack: attention=sageattn_3, quantization=fp8_e4m3fn_fast, resident VRAM=yes, torch.compile=on",
+    );
+    expect(
+      translateColabOneBackendText(
+        "已启用 LongCat 远端加速栈：注意力=sageattn_3，量化=fp8_e4m3fn_fast，显存常驻=是，torch.compile=开",
+        "zh-TW",
+      ),
+    ).toBe(
+      "已啟用 LongCat 遠端加速堆疊：注意力=sageattn_3，量化=fp8_e4m3fn_fast，顯示記憶體常駐=是，torch.compile=開",
+    );
+    expect(
+      translateColabOneBackendText(
+        "复用已缓存的内置女声参考样本：知性女主播 · 沈知意",
+        "en-US",
+      ),
+    ).toBe(
+      "Reusing cached built-in female voice reference sample: Intellectual Host · Shen Zhiyi",
+    );
+    expect(
+      translateColabOneBackendText(
+        "LongCat 加速算子执行异常，自动回退至高速稳健（关闭 torch.compile）：InductorError",
+        "en-US",
+      ),
+    ).toBe(
+      "LongCat accelerated kernel failed; automatically falling back to Fast & Stable (torch.compile off): InductorError",
+    );
+    expect(
+      translateColabOneBackendText(
+        "正在为远端 GPU（NVIDIA L4 · sm89）编译 SageAttention 2 加速包（首次需 1～3 分钟，完成后自动缓存复用）",
+        "ko-KR",
+      ),
+    ).toBe(
+      "원격 GPU (NVIDIA L4 · sm89)용 SageAttention 2 가속 패키지 컴파일 중 (최초 1-3분 소요, 완료 후 자동 캐시 재사용)",
+    );
+
+    // Verify all runtime acceleration logs, injected node titles, and Go voice_presets validation errors
+    const extraAuditSamples = [
+      "torch.compile 算子加速",
+      "原始人像参考图（锁脸）",
+      "原始人像参考潜变量",
+      "已安装 SageAttention 加速算子，正在重启远端 ComfyUI 引擎以加载新内核",
+      "正在为 sm_120 构建 SageAttention 2 加速包（首次构建后将缓存复用）",
+      "正在为 Blackwell sm_120 构建 SageAttention 3 加速包（首次构建后将缓存复用）",
+      "构建 SageAttention 2 加速包 · sm_120",
+      "SageAttention 2 加速包构建并安装完成（sm_120）",
+      "当前 GPU 计算能力为 sm_75（低于 sm_80），跳过 SageAttention 加速包安装",
+      "未检测到满足 sm_120 要求的 nvcc（需要 CUDA >= 12.8），跳过 SageAttention 2 源码构建",
+      "未检测到满足 Blackwell sm_120 要求的 nvcc（需要 CUDA >= 12.8），跳过 SageAttention 3 源码构建",
+      "当前 PyTorch 2.7.1 低于 2.8，跳过 SageAttention 3 源码构建（已启用 SageAttention 2）",
+      "准备 SageAttention 算子时出现非致命异常，将自动使用当前可用注意力实现：nvcc failed",
+      "第 1/3 段 加速算子执行异常（InductorError），已自动关闭 torch.compile 编译加速（回退至高速稳健模式）并重试",
+      "第 1/3 段 检测到远端 ComfyUI 已退出，正在重启引擎后继续回退重试",
+      "缺少 VoxCPM2 引擎配置，无法生成内置女声参考样本：知性女主播 · 沈知意",
+      "内置女声参考样本生成失败：知性女主播 · 沈知意",
+      "内置女声缓存目录不能是符号链接",
+      "加速包缓存目录不能是符号链接",
+      "内置音色 ID 不合法",
+      "内置音色名称长度不合法",
+      "内置音色名称不能为空",
+      "内置音色性别不合法",
+      "内置音色风格长度不能超过 80",
+      "内置音色描述长度不能超过 240",
+      "内置音色提示词长度不能超过 600",
+      "内置音色随机种子必须在 0 到 2147483647 之间",
+      "内置音色预设数量不能超过 24 个",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of extraAuditSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${sample}" -> "${out}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK for "${sample}" -> "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+    }
+  });
 });

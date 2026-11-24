@@ -33,6 +33,7 @@ from common.comfyui import (
     ComfyNodePatch,
     ComfyPipelineSpec,
     ComfyTtsEngineSpec,
+    ComfyTtsVoicePreset,
     WorkflowField,
     WorkflowRunRequest,
 )
@@ -311,6 +312,7 @@ def test_real_catalog_validates_digital_human_templates_and_tts_engines():
             "pipeline.audio_source",
             "pipeline.tts_engine",
             "pipeline.script_text",
+            "pipeline.voice_preset",
             "pipeline.target_resolution",
             "pipeline.upscale_mode",
         ):
@@ -360,14 +362,54 @@ def test_schema_negative_validation_for_new_models():
         with pytest.raises(ValidationError):
             ComfyNodePatch.model_validate(bad_patch)
 
-    # 2. ComfyTtsEngineSpec
+    # 2. ComfyTtsVoicePreset & ComfyTtsEngineSpec
+    valid_preset = ComfyTtsVoicePreset(
+        id="shen_zhiyi",
+        name="知性女主播 · 沈知意",
+        gender="female",
+        style="知性主播",
+        description="清澈温润的专业女主播",
+        prompt="clear warm female host",
+        seed=202601,
+    )
+    assert valid_preset.id == "shen_zhiyi"
+    assert valid_preset.gender == "female"
+    assert valid_preset.seed == 202601
+    default_preset = ComfyTtsVoicePreset(id="minimal_voice", name="Minimal Voice")
+    assert default_preset.gender == "female"
+    assert default_preset.seed == 42
+    for bad_preset in (
+        {"id": "", "name": "Empty ID"},
+        {"id": "../evil", "name": "Traversal ID"},
+        {"id": "bad id spaces", "name": "Spaces ID"},
+        {"id": "a" * 65, "name": "Too Long ID"},
+        {"id": "ok_id", "name": ""},
+        {"id": "ok_id", "name": "n" * 81},
+        {"id": "ok_id", "name": "Bad Gender", "gender": "robot"},
+        {"id": "ok_id", "name": "Neg Seed", "seed": -1},
+        {"id": "ok_id", "name": "Huge Seed", "seed": 2147483648},
+        {"id": "ok_id", "name": "Long Style", "style": "s" * 81},
+        {"id": "ok_id", "name": "Long Desc", "description": "d" * 241},
+        {"id": "ok_id", "name": "Long Prompt", "prompt": "p" * 601},
+        {"id": "ok_id", "name": "Extra Key", "unexpected": True},
+    ):
+        with pytest.raises(ValidationError):
+            ComfyTtsVoicePreset.model_validate(bad_preset)
+
     base_engine = {
         "id": "demo_tts",
         "name": "Demo TTS",
         "repo": "org/demo-tts",
         "revision": "a" * 40,
     }
-    assert ComfyTtsEngineSpec.model_validate(base_engine).commercial_ok is True
+    parsed_base_engine = ComfyTtsEngineSpec.model_validate(base_engine)
+    assert parsed_base_engine.commercial_ok is True
+    assert parsed_base_engine.voice_presets == []
+    with_presets = ComfyTtsEngineSpec.model_validate(
+        base_engine | {"voice_presets": [valid_preset.model_dump()]}
+    )
+    assert len(with_presets.voice_presets) == 1
+    assert with_presets.voice_presets[0].id == "shen_zhiyi"
     for bad_update in (
         {"id": "../evil"},
         {"id": "bad id with spaces"},
@@ -384,6 +426,12 @@ def test_schema_negative_validation_for_new_models():
         {"pip_packages": ["--index-url https://evil.invalid"]},
         {"pip_packages": ["git+https://github.com/evil/pkg.git"]},
         {"source_commit": "not-a-sha"},
+        {"voice_presets": [{"id": "../bad", "name": "Bad"}]},
+        {
+            "voice_presets": [
+                {"id": f"voice_{idx}", "name": f"Voice {idx}"} for idx in range(25)
+            ]
+        },
         {"unexpected": 1},
     ):
         with pytest.raises(ValidationError):
@@ -402,11 +450,13 @@ def test_schema_negative_validation_for_new_models():
 
     # 3. ComfyPipelineSpec
     assert ComfyPipelineSpec().kind == "comfy_standard"
+    assert ComfyPipelineSpec(max_segment_seconds=3.0).max_segment_seconds == pytest.approx(3.0)
+    assert ComfyPipelineSpec(max_segment_seconds=3.7).max_segment_seconds == pytest.approx(3.7)
     for bad_pipe in (
         {"kind": "unknown_pipeline"},
         {"video_backend": "unsupported_backend"},
         {"upscale_mode": "ai_8x"},
-        {"max_segment_seconds": 4.0},
+        {"max_segment_seconds": 2.9},
         {"max_segment_seconds": 301.0},
         {"tail_frame_offset_seconds": -0.01},
         {"tail_frame_offset_seconds": 1.5},
@@ -1386,7 +1436,7 @@ def test_remote_tts_runner_all_four_engines_and_worker_script_ast(tmp_path):
             # IndexTTS2 MUST reject missing reference audio before invoking synth_fn.
             with pytest.raises(
                 ValueError,
-                match="IndexTTS2 需要上传音色参考音频才能进行语音合成",
+                match=r"IndexTTS2.*需要上传音色参考音频才能进行语音合成",
             ):
                 runner.synthesize(
                     task,
@@ -1446,13 +1496,40 @@ def test_digital_human_resolution_and_base_dimensions():
     assert compute_base_dimensions("infinitetalk", 720, 1280) == (480, 832)
     assert compute_base_dimensions("infinitetalk", 1080, 1920) == (480, 832)
 
-    # LongCat-Avatar: native 720p+ (1280x768 / 768x1280), smaller (<720p) falls back to 480p
-    assert compute_base_dimensions("longcat_avatar", 1280, 720) == (1280, 768)
-    assert compute_base_dimensions("longcat_avatar", 1920, 1080) == (1280, 768)
-    assert compute_base_dimensions("longcat_avatar", 720, 1280) == (768, 1280)
-    assert compute_base_dimensions("longcat_avatar", 1080, 1920) == (768, 1280)
+    # LongCat-Avatar: defaults to official 480p (832x480 / 480x832) for fast diffusion + AI 2x upscale,
+    # and switches to native 720p (1280x768 / 768x1280) when render_quality="native_720p" (with <720p falling back to 480p).
+    assert compute_base_dimensions("longcat_avatar", 1280, 720) == (832, 480)
+    assert compute_base_dimensions("longcat_avatar", 1920, 1080) == (832, 480)
+    assert compute_base_dimensions("longcat_avatar", 720, 1280) == (480, 832)
+    assert compute_base_dimensions("longcat_avatar", 1080, 1920) == (480, 832)
     assert compute_base_dimensions("longcat_avatar", 832, 480) == (832, 480)
     assert compute_base_dimensions("longcat_avatar", 480, 832) == (480, 832)
+
+    assert compute_base_dimensions(
+        "longcat_avatar", 1280, 720, render_quality="balanced_480p_ai2x"
+    ) == (832, 480)
+    assert compute_base_dimensions(
+        "longcat_avatar", 720, 1280, render_quality="balanced_480p_ai2x"
+    ) == (480, 832)
+
+    assert compute_base_dimensions(
+        "longcat_avatar", 1280, 720, render_quality="native_720p"
+    ) == (1280, 768)
+    assert compute_base_dimensions(
+        "longcat_avatar", 1920, 1080, render_quality="native_720p"
+    ) == (1280, 768)
+    assert compute_base_dimensions(
+        "longcat_avatar", 720, 1280, render_quality="native_720p"
+    ) == (768, 1280)
+    assert compute_base_dimensions(
+        "longcat_avatar", 1080, 1920, render_quality="native_720p"
+    ) == (768, 1280)
+    assert compute_base_dimensions(
+        "longcat_avatar", 832, 480, render_quality="native_720p"
+    ) == (832, 480)
+    assert compute_base_dimensions(
+        "longcat_avatar", 480, 832, render_quality="native_720p"
+    ) == (480, 832)
 
 
 def test_detect_pcm_silence_valleys_and_plan_audio_segments(tmp_path):
@@ -1759,6 +1836,8 @@ def test_digital_human_runner_e2e_tts_multisegment_and_audio_mode(
     assert submitted_prompts[1]["1"]["inputs"]["image"] != submitted_prompts[0]["1"]["inputs"]["image"]
     assert submitted_prompts[1]["7"]["inputs"]["seed"] == submitted_prompts[0]["7"]["inputs"]["seed"] + 1
     assert len(ffmpeg_calls) >= 2
+    assert "总耗时" in task_tts.message
+    assert any("渲染完成（耗时" in entry["message"] for entry in task_tts.logs)
 
     # --- Case B: "audio" mode skips TTS synthesis and produces final MP4 ---
     submitted_prompts.clear()
@@ -1826,7 +1905,19 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
     )
     tts_by_id = {e.id: e for e in catalog.tts_engines}
 
-    # Verify LongCat-Avatar 1.5 + Round-2 catalog contract.
+    # Verify LongCat-Avatar 1.5 + Extreme Optimization catalog contract.
+    canonical_gesture_prompt = (
+        "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, "
+        "making expressive, natural hand gestures and open-palm movements to emphasize points while talking, "
+        "lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, "
+        "natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background"
+    )
+    assert longcat.workflow["3"]["inputs"]["width"] == 832
+    assert longcat.workflow["3"]["inputs"]["height"] == 480
+    assert longcat.workflow["5"]["inputs"]["positive_prompt"] == canonical_gesture_prompt
+    assert "hand gestures" in longcat.workflow["5"]["inputs"]["positive_prompt"]
+    assert "frozen hands" in longcat.workflow["5"]["inputs"]["negative_prompt"]
+    assert infinitetalk.workflow["5"]["inputs"]["positive_prompt"] == canonical_gesture_prompt
     assert longcat.workflow["8"]["class_type"] == "WhisperModelLoader"
     assert (
         longcat.workflow["8"]["inputs"]["model"]
@@ -1834,8 +1925,14 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
     )
     assert longcat.workflow["9"]["class_type"] == "LongCatAvatarWhisperEmbeds"
     assert longcat.workflow["9"]["inputs"]["fps"] == 25.0
+    assert longcat.workflow["9"]["inputs"]["num_frames"] == 93
+    assert longcat.workflow["9"]["inputs"]["audio_scale"] == pytest.approx(1.15)
     assert longcat.workflow["9"]["inputs"]["normalize_loudness"] is False
+    assert longcat.workflow["12"]["inputs"]["strength"] == pytest.approx(1.0)
     assert longcat.workflow["12"]["inputs"]["merge_loras"] is True
+    assert longcat.workflow["14"]["inputs"]["scheduler"] == "longcat_distill_euler"
+    assert longcat.workflow["14"]["inputs"]["steps"] == 8
+    assert longcat.workflow["14"]["inputs"]["shift"] == pytest.approx(7.0)
     assert longcat.workflow["16"]["inputs"]["enable_vae_tiling"] is True
     model_targets = {
         f"{m.target_dir}/{PurePosixPath(m.path).name}" for m in longcat.models
@@ -1844,11 +1941,56 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
     assert longcat.pipeline is not None
     assert longcat.pipeline.video_backend == "longcat_avatar"
     assert longcat.pipeline.output_fps == 25
-    assert longcat.pipeline.upscale_mode == "lanczos"
-    longcat_upscale_field = next(
-        f for f in longcat.fields if f.key == "pipeline.upscale_mode"
-    )
-    assert longcat_upscale_field.default == "lanczos"
+    assert longcat.pipeline.max_segment_seconds == pytest.approx(3.7)
+    assert longcat.pipeline.upscale_mode == "ai_2x"
+
+    longcat_fields = {f.key: f for f in longcat.fields}
+    infinitetalk_fields = {f.key: f for f in infinitetalk.fields}
+    assert longcat_fields["pipeline.upscale_mode"].default == "ai_2x"
+    assert longcat_fields["pipeline.max_segment_seconds"].default == pytest.approx(3.7)
+    assert longcat_fields["pipeline.max_segment_seconds"].min_value == pytest.approx(3.0)
+    assert longcat_fields["14.steps"].default == 8
+    assert longcat_fields["14.steps"].min_value == 4
+    assert longcat_fields["5.positive_prompt"].default == canonical_gesture_prompt
+    assert infinitetalk_fields["5.positive_prompt"].default == canonical_gesture_prompt
+
+    render_quality_field = longcat_fields["pipeline.render_quality"]
+    assert render_quality_field.group == "advanced"
+    assert render_quality_field.default == "balanced_480p_ai2x"
+    assert render_quality_field.options == ["balanced_480p_ai2x", "native_720p"]
+
+    accel_field = longcat_fields["pipeline.acceleration_profile"]
+    assert accel_field.group == "advanced"
+    assert accel_field.default == "max"
+    assert accel_field.options == ["max", "balanced", "compat"]
+
+    expected_voice_ids = [
+        "shen_zhiyi",
+        "lin_xiaoman",
+        "su_wanqing",
+        "gu_qinglan",
+        "lu_mingwei",
+    ]
+    for tmpl_fields in (longcat_fields, infinitetalk_fields):
+        vp_field = tmpl_fields["pipeline.voice_preset"]
+        assert vp_field.group == "basic"
+        assert vp_field.default == "shen_zhiyi"
+        assert vp_field.visible_when == {"pipeline.audio_source": "tts"}
+        assert vp_field.options == [*expected_voice_ids, "custom"]
+
+    for eid in ("voxcpm2", "qwen3_tts", "fish_s2_pro", "indextts2"):
+        eng = tts_by_id[eid]
+        assert [p.id for p in eng.voice_presets] == expected_voice_ids
+        assert all(p.gender == "female" for p in eng.voice_presets)
+        assert [p.seed for p in eng.voice_presets] == [
+            202601,
+            202602,
+            202603,
+            202604,
+            202605,
+        ]
+        assert all(p.name.strip() != "" for p in eng.voice_presets)
+
     assert len(longcat.node_patches) == 1
     assert longcat.node_patches[0].node_name == "ComfyUI-WanVideoWrapper"
     assert longcat.node_patches[0].kind == "wav2vec2_hidden_states_hook"
@@ -1880,6 +2022,17 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
     runtime.comfy.state = "ready"
     monkeypatch.setattr(runtime.comfy.packs, "check_preflight", lambda _wf: None)
     monkeypatch.setattr(runtime.comfy.packs, "ensure_pack", lambda *a, **k: False)
+    if hasattr(runtime.comfy.packs, "ensure_sageattention_wheels"):
+        monkeypatch.setattr(
+            runtime.comfy.packs,
+            "ensure_sageattention_wheels",
+            lambda _task, *, gpu_caps=None, **_k: {
+                **(gpu_caps or {}),
+                "sageattn_available": False,
+                "sageattn3_available": False,
+                "installed_any": False,
+            },
+        )
 
     submitted_prompts: list[dict] = []
     fake_mp4 = b"\x00\x00\x00\x18ftypmp42longcat-seg"
@@ -3519,5 +3672,2028 @@ def test_r2_tts_engines_venv_voxcpm2_stereo_silence_pip_scrub_and_int16(
     assert stereo_i16 == pytest.approx([0.5, -0.5, 0.0, 0.0], abs=1e-6)
     assert scaled_i32 == pytest.approx([0.0, 1.0], abs=1e-6)
     assert scaled_f32 == pytest.approx([0.25, -0.5], abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 8. Extreme Digital Human Optimization & Built-in Female Voice Tests
+# ---------------------------------------------------------------------------
+
+
+def _sample_longcat_workflow() -> dict:
+    return {
+        "1": {
+            "class_type": "LoadImage",
+            "_meta": {"title": "主播形象图"},
+            "inputs": {"image": "portrait.png"},
+        },
+        "2": {
+            "class_type": "LoadAudio",
+            "_meta": {"title": "口播驱动音频"},
+            "inputs": {"audio": "voice.wav"},
+        },
+        "3": {
+            "class_type": "ImageResizeKJv2",
+            "_meta": {"title": "缩放主播画面"},
+            "inputs": {
+                "image": ["1", 0],
+                "width": 832,
+                "height": 480,
+                "upscale_method": "lanczos",
+                "keep_proportion": "crop",
+                "divisible_by": 16,
+            },
+        },
+        "4": {
+            "class_type": "WanVideoVAELoader",
+            "_meta": {"title": "加载 Wan2.1 VAE"},
+            "inputs": {
+                "model_name": "Wan2_1_VAE_bf16.safetensors",
+                "precision": "bf16",
+                "use_cpu_cache": False,
+            },
+        },
+        "5": {
+            "class_type": "WanVideoTextEncodeCached",
+            "_meta": {"title": "画面与口播风格提示词"},
+            "inputs": {
+                "model_name": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+                "positive_prompt": "Static medium shot of an engaging presenter speaking warmly with expressive hand gestures",
+                "negative_prompt": "static, frozen hands, blurry",
+            },
+        },
+        "6": {
+            "class_type": "WanVideoEncode",
+            "_meta": {"title": "编码首帧参考潜空间"},
+            "inputs": {
+                "vae": ["4", 0],
+                "image": ["3", 0],
+                "enable_vae_tiling": False,
+                "tile_x": 272,
+                "tile_y": 272,
+                "tile_stride_x": 144,
+                "tile_stride_y": 128,
+                "noise_aug_strength": 0.0,
+                "latent_strength": 1.0,
+            },
+        },
+        "8": {
+            "class_type": "WhisperModelLoader",
+            "_meta": {"title": "Whisper 音频编码器"},
+            "inputs": {
+                "model": "whisper_large_v3_encoder_fp16.safetensors",
+                "base_precision": "fp16",
+                "load_device": "main_device",
+            },
+        },
+        "9": {
+            "class_type": "LongCatAvatarWhisperEmbeds",
+            "_meta": {"title": "LongCat Whisper 音频特征"},
+            "inputs": {
+                "whisper_model": ["8", 0],
+                "audio_1": ["2", 0],
+                "normalize_loudness": False,
+                "num_frames": 93,
+                "fps": 25.0,
+                "audio_scale": 1.15,
+                "audio_cfg_scale": 1.0,
+                "multi_audio_type": "para",
+            },
+        },
+        "10": {
+            "class_type": "WanVideoLongCatAvatarExtendEmbeds",
+            "_meta": {"title": "LongCat 音视频融合条件"},
+            "inputs": {
+                "prev_latents": ["6", 0],
+                "audio_embeds": ["9", 0],
+                "num_frames": ["9", 2],
+                "overlap": 1,
+                "frames_processed": 0,
+                "if_not_enough_audio": "pad_with_start",
+                "ref_frame_index": 10,
+                "ref_mask_frame_range": 3,
+            },
+        },
+        "11": {
+            "class_type": "VHS_VideoCombine",
+            "_meta": {"title": "合成有声 MP4 视频"},
+            "inputs": {
+                "images": ["16", 0],
+                "audio": ["2", 0],
+                "frame_rate": 25,
+                "format": "video/h264-mp4",
+                "filename_prefix": "ColabOne_LongCatAvatar",
+            },
+        },
+        "12": {
+            "class_type": "WanVideoLoraSelect",
+            "_meta": {"title": "加载 LongCat DMD 蒸馏 LoRA"},
+            "inputs": {
+                "lora": "LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors",
+                "strength": 1.0,
+                "low_mem_load": False,
+                "merge_loras": True,
+            },
+        },
+        "13": {
+            "class_type": "WanVideoModelLoader",
+            "_meta": {"title": "加载 LongCat-Avatar 1.5 主模型"},
+            "inputs": {
+                "model": "LongCat-Avatar-15_bf16.safetensors",
+                "base_precision": "bf16",
+                "quantization": "disabled",
+                "load_device": "offload_device",
+                "attention_mode": "sdpa",
+                "lora": ["12", 0],
+                "rms_norm_function": "default",
+            },
+        },
+        "14": {
+            "class_type": "WanVideoSchedulerv2",
+            "_meta": {"title": "LongCat 蒸馏调度器"},
+            "inputs": {
+                "scheduler": "longcat_distill_euler",
+                "steps": 8,
+                "shift": 7.0,
+                "start_step": 0,
+                "end_step": -1,
+                "enhance_hf": False,
+            },
+        },
+        "15": {
+            "class_type": "WanVideoSamplerv2",
+            "_meta": {"title": "LongCat-Avatar 扩散采样器"},
+            "inputs": {
+                "model": ["13", 0],
+                "image_embeds": ["10", 0],
+                "text_embeds": ["5", 0],
+                "scheduler": ["14", 0],
+                "cfg": 1.0,
+                "seed": 42,
+                "force_offload": True,
+                "add_noise_to_samples": False,
+            },
+        },
+        "16": {
+            "class_type": "WanVideoDecode",
+            "_meta": {"title": "VAE 视频解码"},
+            "inputs": {
+                "vae": ["4", 0],
+                "samples": ["15", 0],
+                "enable_vae_tiling": True,
+                "tile_x": 272,
+                "tile_y": 272,
+                "tile_stride_x": 144,
+                "tile_stride_y": 128,
+                "normalization": "default",
+            },
+        },
+    }
+
+
+def _sample_longcat_template() -> dict:
+    return {
+        "id": "digital-human-longcat",
+        "name": "口播数字人 · 旗舰高清版",
+        "source": "builtin",
+        "min_vram_mib": 49152,
+        "pipeline": {
+            "kind": "digital_human",
+            "video_backend": "longcat_avatar",
+            "default_tts_engine": "voxcpm2",
+            "supported_tts_engines": ["voxcpm2", "qwen3_tts", "fish_s2_pro", "indextts2"],
+            "max_segment_seconds": 3.7,
+            "tail_frame_offset_seconds": 0.08,
+            "output_fps": 25,
+            "target_width": 1280,
+            "target_height": 720,
+            "upscale_mode": "ai_2x",
+            "audio_node_key": "2.audio",
+            "image_node_key": "1.image",
+            "prompt_node_key": "5.positive_prompt",
+            "frames_node_key": "9.num_frames",
+            "width_node_key": "3.width",
+            "height_node_key": "3.height",
+            "fps_node_key": "9.fps",
+            "steps_node_key": "14.steps",
+            "seed_node_key": "15.seed",
+        },
+        "models": [
+            {
+                "repo": "Phips/2xNomosUni_span_multijpg",
+                "revision": "ed6111c4cabdaf42b75e6535600d5370cce9e4e2",
+                "path": "2xNomosUni_span_multijpg.safetensors",
+                "target_dir": "upscale_models",
+                "size": 4461056,
+                "sha256": "bee2a9c082f2b8f6e7f5db504b36593c24a1a959511f587114c399ca58b9c92c",
+            }
+        ],
+        "workflow": _sample_longcat_workflow(),
+    }
+
+
+def test_opt_apply_longcat_acceleration_five_gpu_profiles_and_three_modes():
+    from server.digital_human import apply_longcat_acceleration
+
+    base_wf = _sample_longcat_workflow()
+    snapshot_before = json.dumps(base_wf, sort_keys=True)
+
+    # 1. Blackwell sm_120 96 GB (sage3 + sage2 + fp8_fast + torch.compile) across max / balanced / compat.
+    blackwell_caps = {
+        "gpu_name": "NVIDIA RTX PRO 6000 Blackwell",
+        "vram_mib": 98304,
+        "cc_major": 12,
+        "cc_minor": 0,
+        "fp8_fast_supported": True,
+        "torch_compile_supported": True,
+        "sageattn_available": True,
+        "sageattn3_available": True,
+        "flash_attn_2_available": False,
+    }
+    wf_bw_max, sum_bw_max = apply_longcat_acceleration(
+        base_wf, profile="max", gpu_caps=blackwell_caps
+    )
+    assert json.dumps(base_wf, sort_keys=True) == snapshot_before
+    assert sum_bw_max["profile"] == "max"
+    assert sum_bw_max["attention_mode"] == "sageattn_3"
+    assert sum_bw_max["quantization"] == "fp8_e4m3fn_fast"
+    assert sum_bw_max["resident_vram"] is True
+    assert sum_bw_max["vae_tiling"] is False
+    assert sum_bw_max["torch_compile"] is True
+    assert sum_bw_max["rms_norm_function"] == "default"
+    assert wf_bw_max["13"]["inputs"]["attention_mode"] == "sageattn_3"
+    assert wf_bw_max["13"]["inputs"]["quantization"] == "fp8_e4m3fn_fast"
+    assert wf_bw_max["13"]["inputs"]["load_device"] == "main_device"
+    assert wf_bw_max["13"]["inputs"]["rms_norm_function"] == "default"
+    assert wf_bw_max["13"]["inputs"]["compile_args"] == ["colabone_torch_compile", 0]
+    compile_node = wf_bw_max["colabone_torch_compile"]
+    assert compile_node["class_type"] == "WanVideoTorchCompileSettings"
+    assert compile_node["inputs"]["backend"] == "inductor"
+    assert compile_node["inputs"]["fullgraph"] is False
+    assert compile_node["inputs"]["compile_transformer_blocks_only"] is True
+    assert wf_bw_max["15"]["inputs"]["force_offload"] is False
+    assert wf_bw_max["16"]["inputs"]["enable_vae_tiling"] is False
+
+    wf_bw_bal, sum_bw_bal = apply_longcat_acceleration(
+        base_wf, profile="balanced", gpu_caps=blackwell_caps
+    )
+    assert sum_bw_bal["profile"] == "balanced"
+    assert sum_bw_bal["attention_mode"] == "sageattn_3"
+    assert sum_bw_bal["quantization"] == "fp8_e4m3fn_fast"
+    assert sum_bw_bal["resident_vram"] is True
+    assert sum_bw_bal["vae_tiling"] is False
+    assert sum_bw_bal["torch_compile"] is False
+    assert sum_bw_bal["rms_norm_function"] == "pytorch"
+    assert "colabone_torch_compile" not in wf_bw_bal
+    assert "compile_args" not in wf_bw_bal["13"]["inputs"]
+    assert wf_bw_bal["13"]["inputs"]["rms_norm_function"] == "pytorch"
+
+    wf_bw_compat, sum_bw_compat = apply_longcat_acceleration(
+        base_wf, profile="compat", gpu_caps=blackwell_caps
+    )
+    assert sum_bw_compat["profile"] == "compat"
+    assert sum_bw_compat["attention_mode"] == "sdpa"
+    assert sum_bw_compat["quantization"] == "disabled"
+    assert sum_bw_compat["resident_vram"] is False
+    assert sum_bw_compat["vae_tiling"] is True
+    assert sum_bw_compat["torch_compile"] is False
+    assert sum_bw_compat["rms_norm_function"] == "default"
+    assert wf_bw_compat["13"]["inputs"]["attention_mode"] == "sdpa"
+    assert wf_bw_compat["13"]["inputs"]["quantization"] == "disabled"
+    assert wf_bw_compat["13"]["inputs"]["load_device"] == "offload_device"
+    assert wf_bw_compat["15"]["inputs"]["force_offload"] is True
+    assert wf_bw_compat["16"]["inputs"]["enable_vae_tiling"] is True
+    assert "colabone_torch_compile" not in wf_bw_compat
+
+    # 2. Hopper sm_90 80 GB (H100): sageattn + fp8_e4m3fn_fast + resident + compile.
+    hopper_caps = {
+        "gpu_name": "NVIDIA H100 80GB HBM3",
+        "vram_mib": 81920,
+        "cc_major": 9,
+        "cc_minor": 0,
+        "fp8_fast_supported": True,
+        "torch_compile_supported": True,
+        "sageattn_available": True,
+        "sageattn3_available": False,
+        "flash_attn_2_available": True,
+    }
+    wf_h100, sum_h100 = apply_longcat_acceleration(
+        base_wf, profile="max", gpu_caps=hopper_caps
+    )
+    assert sum_h100["attention_mode"] == "sageattn"
+    assert sum_h100["quantization"] == "fp8_e4m3fn_fast"
+    assert sum_h100["resident_vram"] is True
+    assert sum_h100["vae_tiling"] is False
+    assert sum_h100["torch_compile"] is True
+    assert wf_h100["13"]["inputs"]["attention_mode"] == "sageattn"
+    assert wf_h100["13"]["inputs"]["load_device"] == "main_device"
+
+    # 3. Ada sm_89 24 GB (L4): fp8_fast + sageattn, but non-resident offload + tiled VAE.
+    ada_caps = {
+        "gpu_name": "NVIDIA L4",
+        "vram_mib": 24576,
+        "cc_major": 8,
+        "cc_minor": 9,
+        "fp8_fast_supported": True,
+        "torch_compile_supported": True,
+        "sageattn_available": True,
+        "sageattn3_available": False,
+        "flash_attn_2_available": False,
+    }
+    wf_ada, sum_ada = apply_longcat_acceleration(
+        base_wf, profile="max", gpu_caps=ada_caps
+    )
+    assert sum_ada["attention_mode"] == "sageattn"
+    assert sum_ada["quantization"] == "fp8_e4m3fn_fast"
+    assert sum_ada["resident_vram"] is False
+    assert sum_ada["vae_tiling"] is True
+    assert sum_ada["torch_compile"] is True
+    assert wf_ada["13"]["inputs"]["load_device"] == "offload_device"
+    assert wf_ada["15"]["inputs"]["force_offload"] is True
+    assert wf_ada["16"]["inputs"]["enable_vae_tiling"] is True
+
+    # 4. Ampere sm_80 80 GB (A100): BF16 resident (no fp8_fast), while A100 40 GB offloads.
+    ampere_80_caps = {
+        "gpu_name": "NVIDIA A100-SXM4-80GB",
+        "vram_mib": 81920,
+        "cc_major": 8,
+        "cc_minor": 0,
+        "fp8_fast_supported": False,
+        "torch_compile_supported": True,
+        "sageattn_available": True,
+        "sageattn3_available": False,
+        "flash_attn_2_available": True,
+    }
+    wf_a100, sum_a100 = apply_longcat_acceleration(
+        base_wf, profile="max", gpu_caps=ampere_80_caps
+    )
+    assert sum_a100["attention_mode"] == "sageattn"
+    assert sum_a100["quantization"] == "disabled"
+    assert sum_a100["resident_vram"] is True
+    assert sum_a100["vae_tiling"] is False
+    assert sum_a100["torch_compile"] is True
+    assert wf_a100["13"]["inputs"]["quantization"] == "disabled"
+    assert wf_a100["13"]["inputs"]["load_device"] == "main_device"
+    assert wf_a100["15"]["inputs"]["force_offload"] is False
+
+    _, sum_a100_40 = apply_longcat_acceleration(
+        base_wf, profile="balanced", gpu_caps={**ampere_80_caps, "vram_mib": 40960}
+    )
+    assert sum_a100_40["quantization"] == "disabled"
+    assert sum_a100_40["resident_vram"] is False
+    assert sum_a100_40["vae_tiling"] is True
+    assert sum_a100_40["torch_compile"] is False
+
+    # 5. Turing sm_75 16 GB (T4): full fallback to sdpa + disabled + offload + no compile.
+    turing_caps = {
+        "gpu_name": "NVIDIA Tesla T4",
+        "vram_mib": 15360,
+        "cc_major": 7,
+        "cc_minor": 5,
+        "fp8_fast_supported": False,
+        "torch_compile_supported": False,
+        "sageattn_available": False,
+        "sageattn3_available": False,
+        "flash_attn_2_available": False,
+    }
+    wf_t4, sum_t4 = apply_longcat_acceleration(
+        base_wf, profile="max", gpu_caps=turing_caps
+    )
+    assert sum_t4["attention_mode"] == "sdpa"
+    assert sum_t4["quantization"] == "disabled"
+    assert sum_t4["resident_vram"] is False
+    assert sum_t4["vae_tiling"] is True
+    assert sum_t4["torch_compile"] is False
+    assert wf_t4["13"]["inputs"]["attention_mode"] == "sdpa"
+    assert wf_t4["13"]["inputs"]["load_device"] == "offload_device"
+    assert wf_t4["15"]["inputs"]["force_offload"] is True
+    assert wf_t4["16"]["inputs"]["enable_vae_tiling"] is True
+    assert "colabone_torch_compile" not in wf_t4
+
+    # When SageAttention is absent but FlashAttention-2 is available, balanced/max falls back to flash_attn_2.
+    _, sum_fa2 = apply_longcat_acceleration(
+        base_wf,
+        profile="balanced",
+        gpu_caps={**hopper_caps, "sageattn_available": False, "flash_attn_2_available": True},
+    )
+    assert sum_fa2["attention_mode"] == "flash_attn_2"
+
+
+def test_opt_probe_gpu_acceleration_capabilities_rejects_sageattn_v1_accepts_v2(
+    monkeypatch,
+):
+    import importlib.metadata
+    import importlib.util
+    import shutil
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+    import types
+
+    from server.comfy_packs import probe_gpu_acceleration_capabilities
+
+    orig_find_spec = importlib.util.find_spec
+    orig_meta_version = importlib.metadata.version
+    orig_which = shutil.which
+    orig_sub_run = subprocess.run
+    orig_sub_check_output = subprocess.check_output
+
+    def _run_probe(
+        *,
+        cc: tuple[int, int],
+        vram_mib: int,
+        torch_ver: str,
+        cuda_ver: str,
+        nvcc_ver: str,
+        sage_ver: str | None,
+        has_sage3: bool,
+        has_triton: bool = True,
+        has_flash: bool = False,
+    ) -> dict:
+        fake_torch = types.ModuleType("torch")
+        fake_torch.__version__ = torch_ver  # type: ignore[attr-defined]
+        fake_torch.version = types.SimpleNamespace(cuda=cuda_ver)  # type: ignore[attr-defined]
+        fake_torch.cuda = types.SimpleNamespace(  # type: ignore[attr-defined]
+            is_available=lambda: True,
+            get_device_capability=lambda _idx=0: cc,
+            get_device_name=lambda _idx=0: f"Mock GPU sm_{cc[0]}{cc[1]}",
+            get_device_properties=lambda _idx=0: types.SimpleNamespace(
+                name=f"Mock GPU sm_{cc[0]}{cc[1]}",
+                major=cc[0],
+                minor=cc[1],
+                total_memory=vram_mib * 1024 * 1024,
+            ),
+        )
+
+        present_specs = {
+            "triton": object() if has_triton else None,
+            "sageattention": object() if sage_ver is not None else None,
+            "sageattn3": object() if has_sage3 else None,
+            "flash_attn": object() if has_flash else None,
+        }
+
+        def fake_find_spec(name, package=None):
+            if name in present_specs:
+                return present_specs[name]
+            return orig_find_spec(name, package)
+
+        def fake_meta_version(dist_name):
+            norm = dist_name.lower().replace("_", "-")
+            if norm == "sageattention":
+                if sage_ver is not None:
+                    return sage_ver
+                raise importlib.metadata.PackageNotFoundError(dist_name)
+            if norm in ("sageattn3", "sageattention3-blackwell"):
+                if has_sage3:
+                    return "1.0.0"
+                raise importlib.metadata.PackageNotFoundError(dist_name)
+            if norm == "triton":
+                if has_triton:
+                    return "3.3.0"
+                raise importlib.metadata.PackageNotFoundError(dist_name)
+            if norm == "flash-attn":
+                if has_flash:
+                    return "2.7.4"
+                raise importlib.metadata.PackageNotFoundError(dist_name)
+            return orig_meta_version(dist_name)
+
+        def fake_which(cmd, *a, **k):
+            if cmd == "nvcc":
+                return "/usr/local/cuda/bin/nvcc" if nvcc_ver else None
+            return orig_which(cmd, *a, **k)
+
+        nvcc_stdout = (
+            f"nvcc: NVIDIA (R) Cuda compiler driver\n"
+            f"Cuda compilation tools, release {nvcc_ver}, V{nvcc_ver}.93\n"
+        )
+
+        def fake_sub_run(cmd, *a, **k):
+            if cmd and Path(str(cmd[0])).name == "nvcc":
+                return subprocess.CompletedProcess(cmd, 0, stdout=nvcc_stdout, stderr="")
+            return orig_sub_run(cmd, *a, **k)
+
+        def fake_sub_check_output(cmd, *a, **k):
+            if cmd and Path(str(cmd[0])).name == "nvcc":
+                return nvcc_stdout if k.get("text") else nvcc_stdout.encode("utf-8")
+            return orig_sub_check_output(cmd, *a, **k)
+
+        with monkeypatch.context() as mp:
+            mp.setitem(sys.modules, "torch", fake_torch)
+            if sage_ver is not None:
+                fake_sage = types.ModuleType("sageattention")
+                fake_sage.__version__ = sage_ver  # type: ignore[attr-defined]
+                mp.setitem(sys.modules, "sageattention", fake_sage)
+            else:
+                mp.delitem(sys.modules, "sageattention", raising=False)
+            mp.setattr(importlib.util, "find_spec", fake_find_spec)
+            mp.setattr(importlib.metadata, "version", fake_meta_version)
+            mp.setattr(shutil, "which", fake_which)
+            mp.setattr(subprocess, "run", fake_sub_run)
+            mp.setattr(subprocess, "check_output", fake_sub_check_output)
+            return probe_gpu_acceleration_capabilities(
+                {"name": f"Mock GPU sm_{cc[0]}{cc[1]}", "total_mib": vram_mib}
+            )
+
+    expected_keys = {
+        "gpu_name",
+        "vram_mib",
+        "cc_major",
+        "cc_minor",
+        "torch_version",
+        "cuda_version",
+        "nvcc_version",
+        "triton_available",
+        "torch_compile_supported",
+        "fp8_fast_supported",
+        "sageattn_version",
+        "sageattn_available",
+        "sageattn3_available",
+        "flash_attn_2_available",
+    }
+
+    # 1. PyPI sageattention==1.0.6 MUST be rejected (sageattn_available is False).
+    caps_v1 = _run_probe(
+        cc=(12, 0),
+        vram_mib=98304,
+        torch_ver="2.9.0+cu128",
+        cuda_ver="12.8",
+        nvcc_ver="12.8",
+        sage_ver="1.0.6",
+        has_sage3=False,
+    )
+    assert expected_keys.issubset(caps_v1.keys())
+    assert caps_v1["sageattn_available"] is False
+    assert caps_v1["cc_major"] == 12
+    assert caps_v1["cc_minor"] == 0
+    assert caps_v1["fp8_fast_supported"] is True
+    assert caps_v1["triton_available"] is True
+    assert caps_v1["torch_compile_supported"] is True
+    assert caps_v1["sageattn3_available"] is False
+
+    # 2. Source-built sageattention==2.2.0 + sageattn3 on Blackwell sm_120 MUST be accepted.
+    caps_v2 = _run_probe(
+        cc=(12, 0),
+        vram_mib=98304,
+        torch_ver="2.9.0+cu128",
+        cuda_ver="12.8",
+        nvcc_ver="12.8",
+        sage_ver="2.2.0",
+        has_sage3=True,
+    )
+    assert caps_v2["sageattn_available"] is True
+    assert caps_v2["sageattn_version"] == "2.2.0"
+    assert caps_v2["sageattn3_available"] is True
+    assert caps_v2["fp8_fast_supported"] is True
+    assert caps_v2["torch_compile_supported"] is True
+
+    # 3. sageattn3 MUST be False on non-Blackwell (Hopper sm_90) even if package spec exists.
+    caps_h100 = _run_probe(
+        cc=(9, 0),
+        vram_mib=81920,
+        torch_ver="2.9.0+cu128",
+        cuda_ver="12.8",
+        nvcc_ver="12.8",
+        sage_ver="2.2.0",
+        has_sage3=True,
+        has_flash=True,
+    )
+    assert caps_h100["sageattn_available"] is True
+    assert caps_h100["sageattn3_available"] is False
+    assert caps_h100["flash_attn_2_available"] is True
+    assert caps_h100["fp8_fast_supported"] is True
+
+    # 4. Ampere sm_80: fp8_fast_supported is False, torch<2.7 disables torch_compile_supported.
+    caps_a100_old_torch = _run_probe(
+        cc=(8, 0),
+        vram_mib=81920,
+        torch_ver="2.6.0+cu124",
+        cuda_ver="12.4",
+        nvcc_ver="12.4",
+        sage_ver="2.2.0",
+        has_sage3=False,
+    )
+    assert caps_a100_old_torch["fp8_fast_supported"] is False
+    assert caps_a100_old_torch["torch_compile_supported"] is False
+    assert caps_a100_old_torch["sageattn_available"] is True
+
+
+def test_opt_ensure_sageattention_wheels_cache_reuse_drive_build_and_graceful_degrade(
+    tmp_path, monkeypatch
+):
+    import shutil
+    import zipfile
+
+    from server import comfy_packs
+    from server.comfy_packs import (
+        ColabOneComfyPackManager,
+        SAGEATTN_COMMIT,
+        SAGEATTN_REPO_URL,
+    )
+
+    assert SAGEATTN_REPO_URL == "https://github.com/thu-ml/SageAttention.git"
+    assert _HEX_40_RE.fullmatch(SAGEATTN_COMMIT)
+
+    rt = _make_mock_runtime(tmp_path, total_mib=81920)
+    drive_ws = tmp_path / "drive_mount" / "ColabOne_Drive" / "workspace"
+    drive_ws.mkdir(parents=True, exist_ok=True)
+    mock_drive = Mock()
+    mock_drive.mode = "colab_drivefs"
+    mock_drive.mount_root = tmp_path / "drive_mount"
+    mock_drive.available.return_value = True
+    mock_drive.is_colab_drivefs_mounted.return_value = True
+    mock_drive._drivefs_workspace_dir.return_value = drive_ws
+    rt.drive = mock_drive
+
+    install_dir = rt.root / "comfyui"
+    models_dir = rt.root / "comfyui-models"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    mgr = ColabOneComfyPackManager(rt, install_dir, models_dir)
+
+    orig_which = shutil.which
+    nvcc_present = {"ok": True}
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *a, **k: (
+            ("/usr/local/cuda/bin/nvcc" if nvcc_present["ok"] else None)
+            if cmd == "nvcc"
+            else ("/usr/bin/git" if cmd == "git" else orig_which(cmd, *a, **k))
+        ),
+    )
+
+    def _write_dummy_whl(dest_dir: Path, filename: str) -> Path:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        whl_path = dest_dir / filename
+        with zipfile.ZipFile(whl_path, "w") as zf:
+            zf.writestr("METADATA", "Metadata-Version: 2.1\nName: sageattention\nVersion: 2.2.0\n")
+        return whl_path
+
+    # 1. Graceful no-op on Turing (cc_major < 8) and when nvcc is missing.
+    noop_cmds: list[list[str]] = []
+    turing_caps = {
+        "gpu_name": "NVIDIA Tesla T4",
+        "vram_mib": 15360,
+        "cc_major": 7,
+        "cc_minor": 5,
+        "torch_version": "2.9.0+cu128",
+        "cuda_version": "12.8",
+        "nvcc_version": "12.8",
+        "sageattn_available": False,
+        "sageattn3_available": False,
+    }
+    res_t4 = mgr.ensure_sageattention_wheels(
+        ColabOneTask("comfyui_run", "t4-noop"),
+        gpu_caps=turing_caps,
+        run_cmd_fn=lambda *a, **k: noop_cmds.append([str(x) for x in a[0]]),
+    )
+    assert noop_cmds == []
+    assert res_t4["sageattn_available"] is False
+
+    nvcc_present["ok"] = False
+    no_nvcc_caps = {
+        **turing_caps,
+        "gpu_name": "NVIDIA H100",
+        "vram_mib": 81920,
+        "cc_major": 9,
+        "cc_minor": 0,
+        "nvcc_version": "",
+    }
+    res_no_nvcc = mgr.ensure_sageattention_wheels(
+        ColabOneTask("comfyui_run", "no-nvcc"),
+        gpu_caps=no_nvcc_caps,
+        run_cmd_fn=lambda *a, **k: noop_cmds.append([str(x) for x in a[0]]),
+    )
+    assert noop_cmds == []
+    assert res_no_nvcc["sageattn_available"] is False
+    nvcc_present["ok"] = True
+
+    # 2. Cache miss -> builds wheel via mocked run_cmd_fn, installs, caches locally + mirrors to Drive.
+    hopper_caps = {
+        "gpu_name": "NVIDIA H100 80GB HBM3",
+        "vram_mib": 81920,
+        "cc_major": 9,
+        "cc_minor": 0,
+        "torch_version": "2.9.0+cu128",
+        "cuda_version": "12.8",
+        "nvcc_version": "12.8",
+        "triton_available": True,
+        "torch_compile_supported": True,
+        "fp8_fast_supported": True,
+        "sageattn_version": "",
+        "sageattn_available": False,
+        "sageattn3_available": False,
+        "flash_attn_2_available": False,
+    }
+    recorded_cmds: list[tuple[list[str], dict | None]] = []
+    install_state = {"sage2": False, "sage3": False}
+
+    def fake_run_cmd(*args, **kwargs):
+        cmd = [str(x) for x in args[0]]
+        env = kwargs.get("env")
+        recorded_cmds.append((cmd, dict(env) if isinstance(env, dict) else None))
+        if "git" in Path(cmd[0]).name:
+            if "init" in cmd:
+                target = Path(cmd[cmd.index("init") + 1])
+                target.mkdir(parents=True, exist_ok=True)
+                (target / ".git").mkdir(exist_ok=True)
+            elif "clone" in cmd:
+                target = Path(cmd[-1])
+                target.mkdir(parents=True, exist_ok=True)
+                (target / ".git").mkdir(exist_ok=True)
+                (target / "setup.py").write_text("# stub\n", encoding="utf-8")
+                (target / "sageattention3_blackwell").mkdir(exist_ok=True)
+                (target / "sageattention3_blackwell" / "setup.py").write_text(
+                    "# stub\n", encoding="utf-8"
+                )
+            elif "-C" in cmd:
+                target = Path(cmd[cmd.index("-C") + 1])
+                target.mkdir(parents=True, exist_ok=True)
+                (target / ".git").mkdir(exist_ok=True)
+                (target / "setup.py").write_text("# stub\n", encoding="utf-8")
+                (target / "sageattention3_blackwell").mkdir(exist_ok=True)
+                (target / "sageattention3_blackwell" / "setup.py").write_text(
+                    "# stub\n", encoding="utf-8"
+                )
+        elif "pip" in cmd and "wheel" in cmd:
+            wdir = None
+            for flag in ("--wheel-dir", "-w"):
+                if flag in cmd:
+                    wdir = Path(cmd[cmd.index(flag) + 1])
+                    break
+            assert wdir is not None, f"pip wheel missing --wheel-dir: {cmd}"
+            is_sage3 = any("sageattention3_blackwell" in tok for tok in cmd)
+            whl_name = (
+                "sageattn3-1.0.0-cp312-cp312-linux_x86_64.whl"
+                if is_sage3
+                else "sageattention-2.2.0-cp312-cp312-linux_x86_64.whl"
+            )
+            _write_dummy_whl(wdir, whl_name)
+        elif "pip" in cmd and "install" in cmd:
+            if any("sageattn3" in tok or "sageattention3" in tok for tok in cmd):
+                install_state["sage3"] = True
+            else:
+                install_state["sage2"] = True
+        return ""
+
+    monkeypatch.setattr(
+        comfy_packs,
+        "probe_gpu_acceleration_capabilities",
+        lambda gpu_info=None: {
+            **hopper_caps,
+            "sageattn_version": "2.2.0" if install_state["sage2"] else "",
+            "sageattn_available": install_state["sage2"],
+            "sageattn3_available": install_state["sage3"],
+        },
+    )
+
+    task_build = ColabOneTask("comfyui_run", "sage-build")
+    res_build = mgr.ensure_sageattention_wheels(
+        task_build,
+        gpu_caps=hopper_caps,
+        allow_sage3=False,
+        run_cmd_fn=fake_run_cmd,
+    )
+    assert res_build["sageattn_available"] is True
+    assert res_build.get("installed_any") is True
+
+    wheel_builds = [
+        (cmd, env) for cmd, env in recorded_cmds if "pip" in cmd and "wheel" in cmd
+    ]
+    assert len(wheel_builds) == 1
+    build_cmd, build_env = wheel_builds[0]
+    assert "--no-build-isolation" in build_cmd
+    assert "--no-deps" in build_cmd
+    assert build_env is not None
+    assert build_env.get("TORCH_CUDA_ARCH_LIST") == "9.0"
+    assert build_env.get("EXT_PARALLEL") == "4"
+    assert build_env.get("NVCC_APPEND_FLAGS") == "--threads 8"
+    assert int(build_env.get("MAX_JOBS", "0")) >= 1
+
+    pip_installs = [cmd for cmd, _ in recorded_cmds if "pip" in cmd and "install" in cmd]
+    assert len(pip_installs) == 1
+    assert "--no-deps" in pip_installs[0]
+    assert any(tok.endswith(".whl") for tok in pip_installs[0])
+
+    local_whls = list((rt.root / "wheel-cache").rglob("*.whl"))
+    drive_whls = list((drive_ws / "wheel-cache").rglob("*.whl"))
+    assert len(local_whls) >= 1, "Expected wheel cached under runtime.root/wheel-cache"
+    assert len(drive_whls) >= 1, "Expected wheel mirrored under Drive wheel-cache"
+
+    # 3. Local cache hit reuses cached .whl with ZERO git/build commands.
+    recorded_cmds.clear()
+    install_state["sage2"] = False
+    res_local_hit = mgr.ensure_sageattention_wheels(
+        ColabOneTask("comfyui_run", "sage-local-hit"),
+        gpu_caps=hopper_caps,
+        allow_sage3=False,
+        run_cmd_fn=fake_run_cmd,
+    )
+    assert res_local_hit["sageattn_available"] is True
+    assert not any("git" in Path(cmd[0]).name for cmd, _ in recorded_cmds)
+    assert not any("pip" in cmd and "wheel" in cmd for cmd, _ in recorded_cmds)
+    assert any(
+        "pip" in cmd and "install" in cmd and "--no-deps" in cmd
+        for cmd, _ in recorded_cmds
+    )
+
+    # 4. Drive cache hit on fresh VM (local wheel-cache wiped, Drive wheel-cache intact).
+    shutil.rmtree(rt.root / "wheel-cache")
+    recorded_cmds.clear()
+    install_state["sage2"] = False
+    res_drive_hit = mgr.ensure_sageattention_wheels(
+        ColabOneTask("comfyui_run", "sage-drive-hit"),
+        gpu_caps=hopper_caps,
+        allow_sage3=False,
+        run_cmd_fn=fake_run_cmd,
+    )
+    assert res_drive_hit["sageattn_available"] is True
+    assert not any("git" in Path(cmd[0]).name for cmd, _ in recorded_cmds)
+    assert not any("pip" in cmd and "wheel" in cmd for cmd, _ in recorded_cmds)
+    assert any(
+        "pip" in cmd and "install" in cmd and "--no-deps" in cmd
+        for cmd, _ in recorded_cmds
+    )
+
+    # 5. Build failure degrades gracefully (NEVER raises!) and logs a clear warning.
+    rt_fail = _make_mock_runtime(tmp_path / "fail_vm", total_mib=81920)
+    mgr_fail = ColabOneComfyPackManager(
+        rt_fail, rt_fail.root / "comfyui", rt_fail.root / "comfyui-models"
+    )
+    install_state["sage2"] = False
+    task_fail = ColabOneTask("comfyui_run", "sage-build-fail")
+
+    def failing_run_cmd(*args, **kwargs):
+        raise RuntimeError("nvcc fatal: unsupported compiler")
+
+    res_fail = mgr_fail.ensure_sageattention_wheels(
+        task_fail,
+        gpu_caps=hopper_caps,
+        allow_sage3=False,
+        run_cmd_fn=failing_run_cmd,
+    )
+    assert res_fail["sageattn_available"] is False
+    assert any(entry["level"] == "warning" for entry in task_fail.logs)
+
+
+def test_opt_longcat_ref_latent_omitted_seg0_and_injected_segments_1_to_n(
+    runtime, tmp_path, monkeypatch
+):
+    from server.digital_human import (
+        ColabOneDigitalHumanRunner,
+        inject_longcat_ref_latent_nodes,
+    )
+
+    # 1. Direct unit test of inject_longcat_ref_latent_nodes.
+    base_wf = _sample_longcat_workflow()
+    snapshot_before = json.dumps(base_wf, sort_keys=True)
+    injected = inject_longcat_ref_latent_nodes(base_wf, "anchor_orig.png")
+    assert json.dumps(base_wf, sort_keys=True) == snapshot_before
+    assert injected["colabone_ref_image"]["class_type"] == "LoadImage"
+    assert injected["colabone_ref_image"]["inputs"]["image"] == "anchor_orig.png"
+    assert injected["colabone_ref_encode"]["class_type"] == "WanVideoEncode"
+    assert injected["colabone_ref_encode"]["inputs"]["vae"] == ["4", 0]
+    assert injected["colabone_ref_encode"]["inputs"]["image"] == ["colabone_ref_image", 0]
+    assert injected["colabone_ref_encode"]["inputs"]["noise_aug_strength"] == 0.0
+    assert injected["colabone_ref_encode"]["inputs"]["latent_strength"] == 1.0
+    assert injected["10"]["inputs"]["ref_latent"] == ["colabone_ref_encode", 0]
+
+    # 2. Full multi-segment LongCat runner test: omitted on segment 0, injected on segments 1..N.
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": "NVIDIA A100-SXM4-80GB", "total_mib": 81920, "used_mib": 1024},
+    )
+    monkeypatch.setattr("server.comfyui.time.sleep", lambda _: None)
+    monkeypatch.setattr("server.digital_human.time.sleep", lambda _: None, raising=False)
+
+    comfy_proc = Mock()
+    comfy_proc.poll.return_value = None
+    comfy_proc.pid = None
+    runtime.comfy.proc = comfy_proc
+    runtime.comfy.state = "ready"
+    monkeypatch.setattr(runtime.comfy.packs, "check_preflight", lambda _wf: None)
+    monkeypatch.setattr(runtime.comfy.packs, "ensure_pack", lambda *a, **k: False)
+    if hasattr(runtime.comfy.packs, "ensure_sageattention_wheels"):
+        monkeypatch.setattr(
+            runtime.comfy.packs,
+            "ensure_sageattention_wheels",
+            lambda _task, *, gpu_caps=None, **_k: {
+                **(gpu_caps or {}),
+                "sageattn_available": False,
+                "sageattn3_available": False,
+                "installed_any": False,
+            },
+        )
+
+    submitted_prompts: list[dict] = []
+    fake_mp4 = b"\x00\x00\x00\x18ftypmp42longcat-ref-seg"
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/upload/image"):
+            fname = (kwargs.get("files") or {}).get("image", ("uploaded.bin",))[0]
+            return make_http_resp({"name": fname, "subfolder": ""})
+        if url.endswith("/prompt"):
+            idx = len(submitted_prompts) + 1
+            submitted_prompts.append(copy.deepcopy(kwargs["json"]["prompt"]))
+            return make_http_resp({"prompt_id": f"ref-prompt-{idx}"})
+        if url.endswith("/free") or url.endswith("/interrupt"):
+            return make_http_resp({"ok": True})
+        raise AssertionError(f"Unexpected POST {url}")
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/system_stats"):
+            return make_http_resp({"system": {"comfyui_version": "0.46.0"}})
+        if url.endswith("/queue"):
+            return make_http_resp({"queue_running": [], "queue_pending": []})
+        if "/history/" in url:
+            pid = url.rsplit("/", 1)[-1]
+            return make_http_resp(
+                {
+                    pid: {
+                        "status": {"status_str": "success"},
+                        "outputs": {
+                            "11": {
+                                "gifs": [
+                                    {
+                                        "filename": f"{pid}.mp4",
+                                        "subfolder": "",
+                                        "type": "output",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            )
+        if url.endswith("/view"):
+            return make_http_resp(content=fake_mp4)
+        raise AssertionError(f"Unexpected GET {url}")
+
+    runtime.http = Mock()
+    runtime.http.post.side_effect = fake_post
+    runtime.http.get.side_effect = fake_get
+
+    tail_png = make_png_bytes("orange", size=(64, 64))
+
+    def fake_ffmpeg(*args, **kwargs):
+        cmd = [str(x) for x in args[0]]
+        out = Path(cmd[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix.lower() in (".png", ".jpg", ".jpeg"):
+            out.write_bytes(tail_png)
+        elif out.suffix.lower() == ".mp4":
+            out.write_bytes(b"\x00\x00\x00\x18ftypmp42longcat-ref-final")
+        return ""
+
+    sr = 48000
+    one_sec = b"".join(
+        struct.pack("<h", int(10000 * math.sin(2.0 * math.pi * 440.0 * i / sr)))
+        for i in range(sr)
+    )
+    wav_9s = tmp_path / "longcat_9s.wav"
+    with wave.open(str(wav_9s), "wb") as wf_out:
+        wf_out.setnchannels(1)
+        wf_out.setsampwidth(2)
+        wf_out.setframerate(sr)
+        wf_out.writeframes(one_sec * 9)
+
+    portrait = tmp_path / "anchor.png"
+    portrait.write_bytes(make_png_bytes("purple", size=(64, 64)))
+
+    runner = ColabOneDigitalHumanRunner(runtime.comfy, None, run_cmd_fn=fake_ffmpeg)
+    req = WorkflowRunRequest(
+        workflow_id="digital-human-longcat",
+        overrides={
+            "pipeline.audio_source": "audio",
+            "pipeline.max_segment_seconds": 3.7,
+            "pipeline.target_resolution": "1280x720",
+            "pipeline.upscale_mode": "ai_2x",
+        },
+        inputs={"1.image": "a" * 32, "2.audio": "b" * 32},
+    )
+    outputs = runner.run(
+        ColabOneTask("comfyui_run", "digital-human-longcat"),
+        _sample_longcat_template(),
+        req,
+        [("1.image", "anchor.png", portrait), ("2.audio", "longcat_9s.wav", wav_9s)],
+    )
+    assert len(outputs) == 1
+    assert len(submitted_prompts) >= 3
+
+    # Segment 0 MUST NOT inject ref_latent nodes.
+    seg0 = submitted_prompts[0]
+    assert "colabone_ref_image" not in seg0
+    assert "colabone_ref_encode" not in seg0
+    assert "ref_latent" not in seg0["10"]["inputs"]
+
+    # Segments 1..N MUST inject ref_latent wired to the original anchor image (not the relay tail frame).
+    ref_names_seen: set[str] = set()
+    for seg_prompt in submitted_prompts[1:]:
+        assert "colabone_ref_image" in seg_prompt
+        assert "colabone_ref_encode" in seg_prompt
+        assert seg_prompt["colabone_ref_image"]["class_type"] == "LoadImage"
+        assert seg_prompt["colabone_ref_encode"]["class_type"] == "WanVideoEncode"
+        assert seg_prompt["colabone_ref_encode"]["inputs"]["image"] == [
+            "colabone_ref_image",
+            0,
+        ]
+        assert seg_prompt["colabone_ref_encode"]["inputs"]["vae"] == ["4", 0]
+        assert seg_prompt["10"]["inputs"]["ref_latent"] == ["colabone_ref_encode", 0]
+        ref_name = seg_prompt["colabone_ref_image"]["inputs"]["image"]
+        assert isinstance(ref_name, str) and ref_name != ""
+        assert ref_name != seg_prompt["1"]["inputs"]["image"]
+        ref_names_seen.add(ref_name)
+    assert len(ref_names_seen) == 1
+
+
+def test_opt_lipsync_lookahead_audio_slicing_and_stage4_ffmpeg_fast_cfr(
+    runtime, tmp_path, monkeypatch
+):
+    from server.digital_human import ColabOneDigitalHumanRunner
+
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": "NVIDIA A100-SXM4-80GB", "total_mib": 81920, "used_mib": 1024},
+    )
+    monkeypatch.setattr("server.comfyui.time.sleep", lambda _: None)
+    monkeypatch.setattr("server.digital_human.time.sleep", lambda _: None, raising=False)
+
+    comfy_proc = Mock()
+    comfy_proc.poll.return_value = None
+    comfy_proc.pid = None
+    runtime.comfy.proc = comfy_proc
+    runtime.comfy.state = "ready"
+    monkeypatch.setattr(runtime.comfy.packs, "check_preflight", lambda _wf: None)
+    monkeypatch.setattr(runtime.comfy.packs, "ensure_pack", lambda *a, **k: False)
+    if hasattr(runtime.comfy.packs, "ensure_sageattention_wheels"):
+        monkeypatch.setattr(
+            runtime.comfy.packs,
+            "ensure_sageattention_wheels",
+            lambda _task, *, gpu_caps=None, **_k: {
+                **(gpu_caps or {}),
+                "sageattn_available": False,
+                "sageattn3_available": False,
+                "installed_any": False,
+            },
+        )
+
+    submitted_prompts: list[dict] = []
+    uploaded_wavs_by_name: dict[str, bytes] = {}
+    final_ffmpeg_cmds: list[list[str]] = []
+    fake_mp4 = b"\x00\x00\x00\x18ftypmp42lipsync-seg"
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/upload/image"):
+            file_tuple = (kwargs.get("files") or {}).get("image")
+            fname = file_tuple[0] if file_tuple else "uploaded.bin"
+            raw_bytes = file_tuple[1] if file_tuple and len(file_tuple) > 1 else b""
+            if str(fname).lower().endswith(".wav"):
+                uploaded_wavs_by_name[str(fname)] = bytes(raw_bytes)
+            return make_http_resp({"name": fname, "subfolder": ""})
+        if url.endswith("/prompt"):
+            idx = len(submitted_prompts) + 1
+            submitted_prompts.append(copy.deepcopy(kwargs["json"]["prompt"]))
+            return make_http_resp({"prompt_id": f"ls-prompt-{idx}"})
+        if url.endswith("/free") or url.endswith("/interrupt"):
+            return make_http_resp({"ok": True})
+        raise AssertionError(f"Unexpected POST {url}")
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/system_stats"):
+            return make_http_resp({"system": {"comfyui_version": "0.46.0"}})
+        if url.endswith("/queue"):
+            return make_http_resp({"queue_running": [], "queue_pending": []})
+        if "/history/" in url:
+            pid = url.rsplit("/", 1)[-1]
+            return make_http_resp(
+                {
+                    pid: {
+                        "status": {"status_str": "success"},
+                        "outputs": {
+                            "11": {
+                                "gifs": [
+                                    {
+                                        "filename": f"{pid}.mp4",
+                                        "subfolder": "",
+                                        "type": "output",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            )
+        if url.endswith("/view"):
+            return make_http_resp(content=fake_mp4)
+        raise AssertionError(f"Unexpected GET {url}")
+
+    runtime.http = Mock()
+    runtime.http.post.side_effect = fake_post
+    runtime.http.get.side_effect = fake_get
+
+    tail_png = make_png_bytes("teal", size=(64, 64))
+
+    def spy_ffmpeg(*args, **kwargs):
+        cmd = [str(x) for x in args[0]]
+        if "-filter_complex_script" in cmd:
+            final_ffmpeg_cmds.append(cmd)
+        out = Path(cmd[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix.lower() in (".png", ".jpg", ".jpeg"):
+            out.write_bytes(tail_png)
+        elif out.suffix.lower() == ".mp4":
+            out.write_bytes(b"\x00\x00\x00\x18ftypmp42lipsync-final")
+        return ""
+
+    # 8.2s audio @ 48kHz with max_segment_seconds=3.7 yields 3 segments, with final segment
+    # requiring trailing silence padding so LongCatAvatarWhisperEmbeds receives >= (num_frames + 2) frames.
+    sr = 48000
+    wav_8_2s = tmp_path / "lipsync_8_2s.wav"
+    total_samples = int(round(8.2 * sr))
+    one_sec_pcm = b"".join(
+        struct.pack("<h", int(12000 * math.sin(2.0 * math.pi * 440.0 * i / sr)))
+        for i in range(sr)
+    )
+    full_pcm = (one_sec_pcm * 9)[: total_samples * 2]
+    with wave.open(str(wav_8_2s), "wb") as wf_out:
+        wf_out.setnchannels(1)
+        wf_out.setsampwidth(2)
+        wf_out.setframerate(sr)
+        wf_out.writeframes(full_pcm)
+
+    portrait = tmp_path / "ls_portrait.png"
+    portrait.write_bytes(make_png_bytes("blue", size=(64, 64)))
+
+    runner = ColabOneDigitalHumanRunner(runtime.comfy, None, run_cmd_fn=spy_ffmpeg)
+    req = WorkflowRunRequest(
+        workflow_id="digital-human-longcat",
+        overrides={
+            "pipeline.audio_source": "audio",
+            "pipeline.max_segment_seconds": 3.7,
+            "pipeline.target_resolution": "1280x720",
+            "pipeline.upscale_mode": "ai_2x",
+        },
+        inputs={"1.image": "a" * 32, "2.audio": "b" * 32},
+    )
+    outputs = runner.run(
+        ColabOneTask("comfyui_run", "digital-human-longcat"),
+        _sample_longcat_template(),
+        req,
+        [("1.image", "ls_portrait.png", portrait), ("2.audio", "lipsync_8_2s.wav", wav_8_2s)],
+    )
+    assert len(outputs) == 1
+    assert len(submitted_prompts) >= 3
+
+    for idx, prompt in enumerate(submitted_prompts):
+        num_frames = int(prompt["9"]["inputs"]["num_frames"])
+        aud_name = prompt["2"]["inputs"]["audio"]
+        assert aud_name in uploaded_wavs_by_name, f"Segment {idx} audio not uploaded"
+        with wave.open(io.BytesIO(uploaded_wavs_by_name[aud_name]), "rb") as wf_in:
+            wav_sr = wf_in.getframerate()
+            wav_frames = wf_in.getnframes()
+            wav_raw = wf_in.readframes(wav_frames)
+        wav_dur = wav_frames / float(wav_sr)
+        needed_dur = (num_frames + 2) / 25.0
+        assert wav_dur >= needed_dur - 0.002, (
+            f"Segment {idx} WAV duration {wav_dur:.4f}s < needed (num_frames+2)/fps={needed_dur:.4f}s"
+        )
+        # Final segment extends past master audio end -> trailing samples must be padded silence (0).
+        if idx == len(submitted_prompts) - 1:
+            tail_samples = struct.unpack(f"<{min(200, len(wav_raw) // 2)}h", wav_raw[-400:])
+            assert all(s == 0 for s in tail_samples), (
+                "Final segment lookahead pad should be clean trailing silence"
+            )
+
+    # Verify Stage 4 FFmpeg uses -preset fast, -fps_mode cfr, and -r 25.
+    assert len(final_ffmpeg_cmds) == 1
+    final_cmd = final_ffmpeg_cmds[0]
+    assert "-preset" in final_cmd
+    assert final_cmd[final_cmd.index("-preset") + 1] == "fast"
+    assert "-fps_mode" in final_cmd
+    assert final_cmd[final_cmd.index("-fps_mode") + 1] == "cfr"
+    assert "-r" in final_cmd
+    assert final_cmd[final_cmd.index("-r") + 1] == "25"
+
+
+def test_opt_longcat_runtime_acceleration_fallback_cascade_recovers_cleanly(
+    runtime, tmp_path, monkeypatch
+):
+    from server import comfy_packs, digital_human
+    from server.digital_human import ColabOneDigitalHumanRunner
+    from server.runtime import ColabOneCancelledError
+
+    blackwell_caps = {
+        "gpu_name": "NVIDIA RTX PRO 6000 Blackwell",
+        "vram_mib": 98304,
+        "cc_major": 12,
+        "cc_minor": 0,
+        "torch_version": "2.9.0+cu128",
+        "cuda_version": "12.8",
+        "nvcc_version": "12.8",
+        "triton_available": True,
+        "torch_compile_supported": True,
+        "fp8_fast_supported": True,
+        "sageattn_version": "2.2.0",
+        "sageattn_available": True,
+        "sageattn3_available": True,
+        "flash_attn_2_available": False,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": blackwell_caps["gpu_name"], "total_mib": 98304, "used_mib": 1024},
+    )
+    monkeypatch.setattr(
+        comfy_packs, "probe_gpu_acceleration_capabilities", lambda _g=None: dict(blackwell_caps)
+    )
+    monkeypatch.setattr(
+        digital_human,
+        "probe_gpu_acceleration_capabilities",
+        lambda _g=None: dict(blackwell_caps),
+        raising=False,
+    )
+    monkeypatch.setattr("server.comfyui.time.sleep", lambda _: None)
+    monkeypatch.setattr("server.digital_human.time.sleep", lambda _: None, raising=False)
+
+    comfy_proc = Mock()
+    comfy_proc.poll.return_value = None
+    comfy_proc.pid = None
+    runtime.comfy.proc = comfy_proc
+    runtime.comfy.state = "ready"
+    monkeypatch.setattr(runtime.comfy.packs, "check_preflight", lambda _wf: None)
+    monkeypatch.setattr(runtime.comfy.packs, "ensure_pack", lambda *a, **k: False)
+    if hasattr(runtime.comfy.packs, "ensure_sageattention_wheels"):
+        monkeypatch.setattr(
+            runtime.comfy.packs,
+            "ensure_sageattention_wheels",
+            lambda _task, *, gpu_caps=None, **_k: {
+                **blackwell_caps,
+                "installed_any": False,
+            },
+        )
+    monkeypatch.setattr(
+        runtime.comfy, "_upload_input_file", lambda fname, _path: str(fname)
+    )
+
+    def fake_ffmpeg(*args, **kwargs):
+        cmd = [str(x) for x in args[0]]
+        out = Path(cmd[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix.lower() == ".mp4":
+            out.write_bytes(b"\x00\x00\x00\x18ftypmp42fallback-final")
+        return ""
+
+    wav_3s = write_pcm16_wav(
+        tmp_path / "short_3s.wav",
+        make_sine_samples(3.0, freq_hz=440.0, amp=0.35, sample_rate=48000),
+        sample_rate=48000,
+    )
+    portrait = tmp_path / "fb_portrait.png"
+    portrait.write_bytes(make_png_bytes("navy", size=(64, 64)))
+    runner = ColabOneDigitalHumanRunner(runtime.comfy, None, run_cmd_fn=fake_ffmpeg)
+    req = WorkflowRunRequest(
+        workflow_id="digital-human-longcat",
+        overrides={
+            "pipeline.audio_source": "audio",
+            "pipeline.max_segment_seconds": 3.7,
+            "pipeline.target_resolution": "1280x720",
+            "pipeline.upscale_mode": "ai_2x",
+            "pipeline.acceleration_profile": "max",
+        },
+        inputs={"1.image": "a" * 32, "2.audio": "b" * 32},
+    )
+
+    # Case A: Fails under torch.compile -> steps down to balanced (compile off, keeping sageattn_3 + fp8_fast).
+    attempts_a: list[dict] = []
+
+    def exec_fail_compile(task, wf, prompt, **kwargs):
+        loader = prompt["13"]["inputs"]
+        has_compile = "compile_args" in loader or "colabone_torch_compile" in prompt
+        attempts_a.append(
+            {
+                "compile": has_compile,
+                "attention_mode": loader.get("attention_mode"),
+                "quantization": loader.get("quantization"),
+            }
+        )
+        if has_compile:
+            raise RuntimeError("torch._inductor lowering failed on custom kernel")
+        return ("fb-prompt-ok", [b"\x00\x00\x00\x18ftypmp42recovered-seg"])
+
+    monkeypatch.setattr(runtime.comfy, "_execute_single_prompt", exec_fail_compile)
+    task_a = ColabOneTask("comfyui_run", "digital-human-longcat")
+    outputs_a = runner.run(
+        task_a,
+        _sample_longcat_template(),
+        req,
+        [("1.image", "fb_portrait.png", portrait), ("2.audio", "short_3s.wav", wav_3s)],
+    )
+    assert len(outputs_a) == 1
+    assert len(attempts_a) == 2
+    assert attempts_a[0] == {
+        "compile": True,
+        "attention_mode": "sageattn_3",
+        "quantization": "fp8_e4m3fn_fast",
+    }
+    assert attempts_a[1] == {
+        "compile": False,
+        "attention_mode": "sageattn_3",
+        "quantization": "fp8_e4m3fn_fast",
+    }
+    assert any(entry["level"] == "warning" for entry in task_a.logs)
+
+    # Case B: Full cascade (compile -> sageattn_3 -> sageattn -> compat sdpa + disabled BF16).
+    attempts_b: list[dict] = []
+
+    def exec_full_cascade(task, wf, prompt, **kwargs):
+        loader = prompt["13"]["inputs"]
+        has_compile = "compile_args" in loader or "colabone_torch_compile" in prompt
+        attn = loader.get("attention_mode")
+        quant = loader.get("quantization")
+        attempts_b.append(
+            {"compile": has_compile, "attention_mode": attn, "quantization": quant}
+        )
+        if has_compile:
+            raise RuntimeError("inductor compile failed")
+        if attn == "sageattn_3":
+            raise RuntimeError("sageattn3 FP4 kernel unsupported")
+        if attn == "sageattn":
+            raise RuntimeError("sageattn2 CUDA error")
+        return ("fb-compat-ok", [b"\x00\x00\x00\x18ftypmp42compat-seg"])
+
+    monkeypatch.setattr(runtime.comfy, "_execute_single_prompt", exec_full_cascade)
+    task_b = ColabOneTask("comfyui_run", "digital-human-longcat")
+    outputs_b = runner.run(
+        task_b,
+        _sample_longcat_template(),
+        req,
+        [("1.image", "fb_portrait.png", portrait), ("2.audio", "short_3s.wav", wav_3s)],
+    )
+    assert len(outputs_b) == 1
+    assert attempts_b == [
+        {"compile": True, "attention_mode": "sageattn_3", "quantization": "fp8_e4m3fn_fast"},
+        {"compile": False, "attention_mode": "sageattn_3", "quantization": "fp8_e4m3fn_fast"},
+        {"compile": False, "attention_mode": "sageattn", "quantization": "fp8_e4m3fn_fast"},
+        {"compile": False, "attention_mode": "sdpa", "quantization": "disabled"},
+    ]
+    assert sum(1 for entry in task_b.logs if entry["level"] == "warning") >= 3
+
+    # Case C: Cancellation MUST propagate immediately without stepping down or retrying.
+    cancel_attempts = {"count": 0}
+
+    def exec_cancelled(task, wf, prompt, **kwargs):
+        cancel_attempts["count"] += 1
+        raise ColabOneCancelledError("用户取消任务")
+
+    monkeypatch.setattr(runtime.comfy, "_execute_single_prompt", exec_cancelled)
+    with pytest.raises(ColabOneCancelledError):
+        runner.run(
+            ColabOneTask("comfyui_run", "digital-human-longcat"),
+            _sample_longcat_template(),
+            req,
+            [("1.image", "fb_portrait.png", portrait), ("2.audio", "short_3s.wav", wav_3s)],
+        )
+    assert cancel_attempts["count"] == 1
+
+
+def test_opt_builtin_named_female_voices_across_all_four_tts_engines(
+    tmp_path, monkeypatch
+):
+    import os
+    import subprocess
+    import sys
+
+    from server.tts_engines import (
+        COLABONE_TTS_VOICE_PRESETS,
+        COLABONE_VOICE_PRESET_ANCHOR_TEXT,
+        ColabOneRemoteTtsRunner,
+        DEFAULT_COLABONE_VOICE_PRESET,
+        resolve_colabone_voice_preset,
+    )
+
+    # 1. Verify canonical 5 named female voices and resolver semantics.
+    expected_voices = {
+        "shen_zhiyi": 202601,
+        "lin_xiaoman": 202602,
+        "su_wanqing": 202603,
+        "gu_qinglan": 202604,
+        "lu_mingwei": 202605,
+    }
+    assert DEFAULT_COLABONE_VOICE_PRESET == "shen_zhiyi"
+    assert "大家好，欢迎来到今天的节目" in COLABONE_VOICE_PRESET_ANCHOR_TEXT
+    assert set(expected_voices.keys()).issubset(COLABONE_TTS_VOICE_PRESETS.keys())
+
+    catalog = ComfyCatalog.model_validate_json(
+        (ROOT / "catalog" / "comfyui.json").read_text(encoding="utf-8")
+    )
+    engines_by_id = {e.id: e.model_dump() for e in catalog.tts_engines}
+
+    for eid in ("voxcpm2", "qwen3_tts", "fish_s2_pro", "indextts2"):
+        eng = engines_by_id[eid]
+        assert resolve_colabone_voice_preset(eng, "custom") is None
+        default_resolved = resolve_colabone_voice_preset(eng, "")
+        assert default_resolved is not None
+        assert default_resolved["id"] == "shen_zhiyi"
+        assert default_resolved["seed"] == 202601
+        for vid, expected_seed in expected_voices.items():
+            resolved = resolve_colabone_voice_preset(eng, vid)
+            assert resolved is not None
+            assert resolved["id"] == vid
+            assert resolved["gender"] == "female"
+            assert resolved["seed"] == expected_seed
+            assert str(resolved.get("prompt") or "").strip() != ""
+
+    rt = _make_mock_runtime(tmp_path, total_mib=81920)
+    captured_configs: list[dict] = []
+
+    def capture_synth(config: dict):
+        captured_configs.append(copy.deepcopy(config))
+        sr = int(config.get("sample_rate") or 24000)
+        for seg in config.get("segments") or []:
+            write_pcm16_wav(
+                Path(seg["output_wav"]),
+                make_sine_samples(0.4, freq_hz=380.0, amp=0.35, sample_rate=sr),
+                sample_rate=sr,
+            )
+        return None
+
+    runner = ColabOneRemoteTtsRunner(rt, engines_by_id, synth_fn=capture_synth)
+
+    # 2. VoxCPM2 runner passes preset voice_prompt + voice_seed; worker uses cfg_value=2.0 + (prompt) + seed.
+    runner.synthesize(
+        ColabOneTask("comfyui_run", "vox-preset"),
+        engine_id="voxcpm2",
+        script_text="欢迎收看今天的精彩分享。",
+        work_dir=tmp_path / "work_vox",
+        voice_preset="lin_xiaoman",
+    )
+    vox_cfg = captured_configs[-1]
+    assert vox_cfg["voice_seed"] == 202602
+    assert "22-year-old" in vox_cfg["voice_prompt"]
+
+    mock_pkg_dir = tmp_path / "mock_tts_pkgs"
+    mock_pkg_dir.mkdir(parents=True, exist_ok=True)
+    seed_log_json = tmp_path / "torch_seeds.json"
+    vox_capture_json = tmp_path / "vox_worker_cap.json"
+    qwen_capture_json = tmp_path / "qwen_worker_cap.json"
+
+    (mock_pkg_dir / "torch.py").write_text(
+        (
+            "import json\n"
+            "from pathlib import Path\n"
+            "float32 = 'float32'\n"
+            "float16 = 'float16'\n"
+            "bfloat16 = 'bfloat16'\n"
+            f"_SEED_LOG = Path({str(seed_log_json)!r})\n"
+            "def _rec(kind, val):\n"
+            "    cur = json.loads(_SEED_LOG.read_text('utf-8')) if _SEED_LOG.is_file() else []\n"
+            "    cur.append([kind, int(val)])\n"
+            "    _SEED_LOG.write_text(json.dumps(cur), encoding='utf-8')\n"
+            "def manual_seed(val):\n"
+            "    _rec('cpu', val)\n"
+            "class _Cuda:\n"
+            "    @staticmethod\n"
+            "    def is_available(): return False\n"
+            "    @staticmethod\n"
+            "    def is_bf16_supported(): return False\n"
+            "    @staticmethod\n"
+            "    def manual_seed_all(val): _rec('cuda', val)\n"
+            "    @staticmethod\n"
+            "    def empty_cache(): pass\n"
+            "cuda = _Cuda()\n"
+        ),
+        encoding="utf-8",
+    )
+    (mock_pkg_dir / "huggingface_hub.py").write_text(
+        "def snapshot_download(**kwargs):\n    return '.'\n",
+        encoding="utf-8",
+    )
+    (mock_pkg_dir / "voxcpm.py").write_text(
+        (
+            "import json\n"
+            "from pathlib import Path\n"
+            "class VoxCPM:\n"
+            "    sample_rate = 48000\n"
+            "    @classmethod\n"
+            "    def from_pretrained(cls, repo, **kwargs):\n"
+            "        return cls()\n"
+            "    def generate(self, text, prompt_wav_path=None, prompt_text=None, "
+            "reference_wav_path=None, cfg_value=2.0, inference_timesteps=18, normalize=True):\n"
+            f"        Path({str(vox_capture_json)!r}).write_text(json.dumps({{"
+            "'text': text, 'cfg_value': cfg_value, 'inference_timesteps': inference_timesteps"
+            "}), encoding='utf-8')\n"
+            "        return [0.1, -0.1] * 240\n"
+        ),
+        encoding="utf-8",
+    )
+    (mock_pkg_dir / "qwen_tts.py").write_text(
+        (
+            "import json\n"
+            "from pathlib import Path\n"
+            "class Qwen3TTSModel:\n"
+            "    @classmethod\n"
+            "    def from_pretrained(cls, local_dir, **kwargs):\n"
+            "        return cls()\n"
+            "    def generate_voice_design(self, text, language='Auto', instruct=''):\n"
+            f"        Path({str(qwen_capture_json)!r}).write_text(json.dumps({{"
+            "'text': text, 'language': language, 'instruct': instruct"
+            "}), encoding='utf-8')\n"
+            "        return [[0.1, -0.1] * 240], 24000\n"
+        ),
+        encoding="utf-8",
+    )
+
+    sub_env = dict(os.environ)
+    sub_env["PYTHONPATH"] = str(mock_pkg_dir) + (
+        os.pathsep + sub_env["PYTHONPATH"] if sub_env.get("PYTHONPATH") else ""
+    )
+
+    vox_worker_py = tmp_path / "opt_worker_voxcpm2.py"
+    vox_worker_py.write_text(runner.build_worker_script("voxcpm2"), encoding="utf-8")
+    vox_out_wav = tmp_path / "opt_vox_seg0.wav"
+    vox_cfg_file = tmp_path / "opt_vox_cfg.json"
+    vox_cfg_file.write_text(
+        json.dumps(
+            {
+                "repo": "openbmb/VoxCPM2",
+                "revision": "7936080b41163874f38610f46f438e2c0757f9fd",
+                "cache_dir": str(tmp_path / "cache"),
+                "sample_rate": 48000,
+                "ref_audio_path": "",
+                "ref_text": "",
+                "voice_prompt": vox_cfg["voice_prompt"],
+                "voice_seed": 202602,
+                "segments": [{"index": 0, "text": "你好世界", "output_wav": str(vox_out_wav)}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    res_vox_proc = subprocess.run(
+        [sys.executable, str(vox_worker_py), "--config", str(vox_cfg_file)],
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert res_vox_proc.returncode == 0, res_vox_proc.stderr
+    vox_gen = json.loads(vox_capture_json.read_text(encoding="utf-8"))
+    assert vox_gen["cfg_value"] == pytest.approx(2.0)
+    assert vox_gen["inference_timesteps"] == 18
+    assert vox_gen["text"] == f"({vox_cfg['voice_prompt']})你好世界"
+    seeds_recorded = json.loads(seed_log_json.read_text(encoding="utf-8"))
+    assert ["cpu", 202602] in seeds_recorded
+
+    # VoxCPM2 with empty voice_prompt & no ref_audio MUST still apply default fallback (prompt) prefix.
+    vox_fallback_cfg = tmp_path / "opt_vox_fallback_cfg.json"
+    vox_fallback_cfg.write_text(
+        json.dumps(
+            {
+                "repo": "openbmb/VoxCPM2",
+                "revision": "7936080b41163874f38610f46f438e2c0757f9fd",
+                "cache_dir": str(tmp_path / "cache"),
+                "sample_rate": 48000,
+                "ref_audio_path": "",
+                "ref_text": "",
+                "voice_prompt": "",
+                "segments": [{"index": 0, "text": "兜底女声测试", "output_wav": str(vox_out_wav)}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    res_vox_fb = subprocess.run(
+        [sys.executable, str(vox_worker_py), "--config", str(vox_fallback_cfg)],
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert res_vox_fb.returncode == 0, res_vox_fb.stderr
+    vox_fb_gen = json.loads(vox_capture_json.read_text(encoding="utf-8"))
+    assert vox_fb_gen["text"].startswith("(") and vox_fb_gen["text"].endswith(")兜底女声测试")
+
+    # 3. Qwen3-TTS runner & worker use rich Chinese instruct + voice_seed.
+    runner.synthesize(
+        ColabOneTask("comfyui_run", "qwen-preset"),
+        engine_id="qwen3_tts",
+        script_text="夜深了，来听一段温暖治愈的故事。",
+        work_dir=tmp_path / "work_qwen",
+        voice_preset="su_wanqing",
+    )
+    qwen_cfg = captured_configs[-1]
+    assert qwen_cfg["voice_seed"] == 202603
+    assert "温柔治愈" in qwen_cfg["voice_prompt"]
+
+    seed_log_json.unlink(missing_ok=True)
+    qwen_worker_py = tmp_path / "opt_worker_qwen3.py"
+    qwen_worker_py.write_text(runner.build_worker_script("qwen3_tts"), encoding="utf-8")
+    qwen_out_wav = tmp_path / "opt_qwen_seg0.wav"
+    qwen_cfg_file = tmp_path / "opt_qwen_cfg.json"
+    qwen_cfg_file.write_text(
+        json.dumps(
+            {
+                "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+                "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+                "aux_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+                "aux_revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+                "cache_dir": str(tmp_path / "cache"),
+                "sample_rate": 24000,
+                "ref_audio_path": "",
+                "ref_text": "",
+                "voice_prompt": qwen_cfg["voice_prompt"],
+                "voice_seed": 202603,
+                "segments": [{"index": 0, "text": "晚安好梦", "output_wav": str(qwen_out_wav)}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    res_qwen_proc = subprocess.run(
+        [sys.executable, str(qwen_worker_py), "--config", str(qwen_cfg_file)],
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert res_qwen_proc.returncode == 0, res_qwen_proc.stderr
+    qwen_gen = json.loads(qwen_capture_json.read_text(encoding="utf-8"))
+    assert "温柔治愈" in qwen_gen["instruct"]
+    qwen_seeds = json.loads(seed_log_json.read_text(encoding="utf-8"))
+    assert ["cpu", 202603] in qwen_seeds
+
+    # 4. Reference-driven engines (IndexTTS-2 & Fish S2 Pro): built-in preset anchor works cleanly,
+    # user ref_audio_path takes priority, and IndexTTS-2 still rejects "custom" without ref_audio_path.
+    presets_cache_dir = runner.engines_dir / "_voice_presets"
+    presets_cache_dir.mkdir(parents=True, exist_ok=True)
+    for preset_id in ("gu_qinglan", "lu_mingwei"):
+        write_pcm16_wav(
+            presets_cache_dir / f"{preset_id}.wav",
+            make_sine_samples(0.6, freq_hz=330.0, amp=0.35, sample_rate=48000),
+            sample_rate=48000,
+        )
+        (presets_cache_dir / f"{preset_id}.txt").write_text(
+            COLABONE_VOICE_PRESET_ANCHOR_TEXT, encoding="utf-8"
+        )
+
+    res_idx_preset = runner.synthesize(
+        ColabOneTask("comfyui_run", "indextts2-preset"),
+        engine_id="indextts2",
+        script_text="今天我们从三个关键指标分析季度增长。",
+        work_dir=tmp_path / "work_indextts2_preset",
+        voice_preset="gu_qinglan",
+    )
+    assert Path(res_idx_preset["audio_path"]).is_file()
+    idx_cfg = captured_configs[-1]
+    assert Path(idx_cfg["ref_audio_path"]).name == "gu_qinglan.wav"
+
+    # IndexTTS-2 MUST still reject voice_preset="custom" when ref_audio_path is missing.
+    with pytest.raises(ValueError, match=r"IndexTTS2.*需要上传音色参考音频"):
+        runner.synthesize(
+            ColabOneTask("comfyui_run", "indextts2-custom-missing"),
+            engine_id="indextts2",
+            script_text="缺少自定义音色参考音频应该报错。",
+            work_dir=tmp_path / "work_indextts2_custom",
+            voice_preset="custom",
+        )
+
+    # User-uploaded ref_audio_path overrides built-in voice_preset.
+    user_ref_wav = write_pcm16_wav(
+        tmp_path / "user_custom_voice.wav",
+        make_sine_samples(0.5, freq_hz=280.0, amp=0.35, sample_rate=24000),
+        sample_rate=24000,
+    )
+    runner.synthesize(
+        ColabOneTask("comfyui_run", "indextts2-user-override"),
+        engine_id="indextts2",
+        script_text="优先克隆用户自己上传的参考音色。",
+        work_dir=tmp_path / "work_indextts2_override",
+        ref_audio_path=user_ref_wav,
+        voice_preset="gu_qinglan",
+    )
+    assert Path(captured_configs[-1]["ref_audio_path"]) == user_ref_wav
+
+    # Fish Speech S2 Pro resolves cached female preset anchor + anchor text cleanly.
+    res_fish_preset = runner.synthesize(
+        ColabOneTask("comfyui_run", "fish-preset"),
+        engine_id="fish_s2_pro",
+        script_text="以下是今天的晚间重点新闻播报。",
+        work_dir=tmp_path / "work_fish_preset",
+        voice_preset="lu_mingwei",
+    )
+    assert Path(res_fish_preset["audio_path"]).is_file()
+    fish_cfg = captured_configs[-1]
+    assert Path(fish_cfg["ref_audio_path"]).name == "lu_mingwei.wav"
+    assert fish_cfg["ref_text"] == COLABONE_VOICE_PRESET_ANCHOR_TEXT
+
+
+def test_opt_audit_regressions_nvidia_smi_probe_dynamic_compile_ffmpeg_cfr_and_preflight(
+    tmp_path: Path, monkeypatch
+):
+    """Regression suite for audit fixes: zero-torch GPU probe, dynamic compile, FFmpeg 4.4 CFR fallback,
+    SageAttention Blackwell gates + restart flag clearing, voice preset whitespace validation, and
+    IndexTTS2 unknown-preset preflight rejection before VRAM unload."""
+    import importlib.metadata
+    import importlib.util
+    import shutil
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    from pydantic import ValidationError
+
+    from common.comfyui import ComfyTtsVoicePreset, WorkflowRunRequest
+    from server import comfy_packs, digital_human
+    from server.comfy_packs import ColabOneComfyPackManager, probe_gpu_acceleration_capabilities
+    from server.digital_human import (
+        ColabOneDigitalHumanRunner,
+        _FFMPEG_CFR_CACHE,
+        _resolve_ffmpeg_cfr_args,
+        apply_longcat_acceleration,
+    )
+    from server.runtime import ColabOneTask
+
+    # 1. ComfyTtsVoicePreset strips and rejects whitespace-only names (Go/Python parity).
+    with pytest.raises(ValidationError):
+        ComfyTtsVoicePreset(id="ws_only", name="   ")
+    trimmed = ComfyTtsVoicePreset(id="ok_id", name="  沈知意  ")
+    assert trimmed.name == "沈知意"
+
+    # 2. probe_gpu_acceleration_capabilities must NOT cold-import torch when absent from sys.modules;
+    #    it probes nvidia-smi + importlib.metadata cleanly with zero CUDA context allocation.
+    orig_find_spec = importlib.util.find_spec
+    orig_meta_version = importlib.metadata.version
+    orig_which = shutil.which
+    orig_sub_run = subprocess.run
+
+    def fake_which(cmd, *a, **k):
+        if cmd == "nvidia-smi":
+            return "/usr/bin/nvidia-smi"
+        if cmd == "nvcc":
+            return "/usr/local/cuda/bin/nvcc"
+        return orig_which(cmd, *a, **k)
+
+    def fake_run(cmd, *a, **k):
+        exe = Path(str(cmd[0])).name if cmd else ""
+        if exe == "nvidia-smi":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="NVIDIA RTX PRO 6000 Blackwell, 98304, 12.0\n", stderr=""
+            )
+        if exe == "nvcc":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="Cuda compilation tools, release 12.8, V12.8.93\n", stderr=""
+            )
+        return orig_sub_run(cmd, *a, **k)
+
+    with monkeypatch.context() as mp:
+        mp.delitem(sys.modules, "torch", raising=False)
+        mp.setattr(shutil, "which", fake_which)
+        mp.setattr(subprocess, "run", fake_run)
+        mp.setattr(
+            importlib.metadata,
+            "version",
+            lambda name: "2.8.0+cu128"
+            if name.lower() == "torch"
+            else ("2.2.0" if name.lower() == "sageattention" else orig_meta_version(name)),
+        )
+        mp.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name, package=None: object()
+            if name in ("triton", "sageattention", "sageattn3")
+            else orig_find_spec(name, package),
+        )
+        caps = probe_gpu_acceleration_capabilities({})
+        assert "torch" not in sys.modules
+        assert caps["gpu_name"] == "NVIDIA RTX PRO 6000 Blackwell"
+        assert caps["vram_mib"] == 98304
+        assert (caps["cc_major"], caps["cc_minor"]) == (12, 0)
+        assert caps["torch_version"] == "2.8.0+cu128"
+        assert caps["cuda_version"] == "12.8"
+        assert caps["fp8_fast_supported"] is True
+        assert caps["torch_compile_supported"] is True
+        assert caps["sageattn_available"] is True
+        assert caps["sageattn3_available"] is True
+
+    # 3. apply_longcat_acceleration enables dynamic=True in WanVideoTorchCompileSettings
+    #    so variable-length silence-valley segments compile once without per-segment recompilation.
+    real_cat = ComfyCatalog.model_validate(
+        json.loads((Path(__file__).resolve().parents[1] / "catalog" / "comfyui.json").read_text(encoding="utf-8"))
+    )
+    longcat_wf = next(t for t in real_cat.templates if t.id == "digital-human-longcat").model_dump()
+    patched_wf, summary = apply_longcat_acceleration(
+        longcat_wf["workflow"],
+        profile="max",
+        gpu_caps={
+            "vram_mib": 98304,
+            "fp8_fast_supported": True,
+            "torch_compile_supported": True,
+            "sageattn_available": True,
+            "sageattn3_available": True,
+        },
+    )
+    assert summary["torch_compile"] is True
+    assert patched_wf["colabone_torch_compile"]["inputs"]["dynamic"] is True
+
+    # 4. _resolve_ffmpeg_cfr_args probes FFmpeg capability cleanly: -fps_mode on >=5.1, -vsync on 4.4.
+    _FFMPEG_CFR_CACHE.clear()
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            subprocess,
+            "run",
+            lambda cmd, *a, **k: subprocess.CompletedProcess(
+                cmd, 0, stdout="-fps_mode[:stream_spec]  set framerate mode", stderr=""
+            ),
+        )
+        assert _resolve_ffmpeg_cfr_args("/fake/ffmpeg-6") == ["-fps_mode", "cfr"]
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            subprocess,
+            "run",
+            lambda cmd, *a, **k: subprocess.CompletedProcess(
+                cmd, 0, stdout="-vsync parameter  video sync method", stderr=""
+            ),
+        )
+        assert _resolve_ffmpeg_cfr_args("/fake/ffmpeg-4.4") == ["-vsync", "cfr"]
+    _FFMPEG_CFR_CACHE.clear()
+
+    # 5. ensure_sageattention_wheels skips Blackwell sage3 when sage2 failed OR when torch < 2.8,
+    #    and clear_pending_pip_restart resets the restart marker cleanly.
+    rt = SimpleNamespace(
+        root=tmp_path / "rt_sage",
+        gpu_info=lambda: {"name": "Blackwell", "total_mib": 98304},
+        stopping=threading.Event(),
+        drive=None,
+    )
+    rt.root.mkdir(parents=True, exist_ok=True)
+    built_targets: list[str] = []
+
+    def fake_build_cmd(args, task, log, **kwargs):
+        if "wheel" in args:
+            target = str(args[-1])
+            built_targets.append(target)
+            if "sageattention3_blackwell" not in target:
+                raise RuntimeError("simulated sage2 build failure")
+
+    packs = ColabOneComfyPackManager(
+        rt,
+        install_dir=tmp_path / "comfy",
+        models_dir=tmp_path / "models",
+        run_cmd_fn=fake_build_cmd,
+    )
+    res_fail_sage2 = packs.ensure_sageattention_wheels(
+        ColabOneTask("comfyui_run", "sage2-fail"),
+        gpu_caps={
+            "cc_major": 12,
+            "cc_minor": 0,
+            "torch_version": "2.8.0+cu128",
+            "cuda_version": "12.8",
+            "nvcc_version": "12.8",
+            "sageattn_available": False,
+            "sageattn3_available": False,
+        },
+        allow_sage3=True,
+    )
+    assert res_fail_sage2["installed_any"] is False
+    assert not any("sageattention3_blackwell" in t for t in built_targets)
+
+    # Also skip sage3 source build when torch < 2.8 even if sage2 is already available.
+    built_targets.clear()
+    task_torch27 = ColabOneTask("comfyui_run", "sage3-torch27")
+    res_torch27 = packs.ensure_sageattention_wheels(
+        task_torch27,
+        gpu_caps={
+            "cc_major": 12,
+            "cc_minor": 0,
+            "torch_version": "2.7.1+cu128",
+            "cuda_version": "12.8",
+            "nvcc_version": "12.8",
+            "sageattn_available": True,
+            "sageattn3_available": False,
+        },
+        allow_sage3=True,
+    )
+    assert res_torch27["installed_any"] is False
+    assert built_targets == []
+    assert any("低于 2.8" in str(entry.get("message", "")) for entry in task_torch27.logs)
+
+    packs._pending_pip_restart = True
+    packs.clear_pending_pip_restart()
+    assert packs._pending_pip_restart is False
+
+    # 6. Digital human preflight rejects unknown voice_preset for indextts2 BEFORE unloading LLM/VRAM.
+    unload_called = {"llm": False, "comfy": False}
+    fake_rt = SimpleNamespace(
+        root=tmp_path / "rt_preflight",
+        loaded="qwen3",
+        _stop_engine=lambda: unload_called.__setitem__("llm", True),
+        stopping=threading.Event(),
+        gpu_info=lambda: {"name": "Blackwell", "total_mib": 98304},
+    )
+    fake_mgr = SimpleNamespace(
+        runtime=fake_rt,
+        packs=None,
+        is_running=lambda: True,
+        free_memory=lambda unload_models=True: unload_called.__setitem__("comfy", True),
+    )
+    fake_tts = SimpleNamespace(
+        get_engine=lambda eid: {"id": eid, "voice_presets": []},
+        synthesize=lambda *a, **k: pytest.fail("synthesize must not run on invalid preflight"),
+    )
+    anchor_png = tmp_path / "anchor.png"
+    anchor_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    runner = ColabOneDigitalHumanRunner(fake_mgr, fake_tts, run_cmd_fn=lambda *a, **k: None)
+    with pytest.raises(ValueError, match="IndexTTS2 需要上传音色参考音频"):
+        runner.run(
+            ColabOneTask("comfyui_run", "bad-preset"),
+            longcat_wf,
+            WorkflowRunRequest(
+                workflow_id="digital-human-longcat",
+                overrides={
+                    "pipeline.audio_source": "tts",
+                    "pipeline.tts_engine": "indextts2",
+                    "pipeline.voice_preset": "nonexistent_voice_id",
+                    "pipeline.script_text": "测试预检拦截。",
+                }
+            ),
+            [("1.image", "anchor.png", anchor_png)],
+        )
+    assert unload_called == {"llm": False, "comfy": False}
+
+    # 7. Round-2 audit regressions: RAM-aware NVCC concurrency, sageattention3_blackwell wheel
+    #    matching, worker script AST + random/numpy seeding, and VRAM cleanup before fallback retry.
+    import os as _os
+
+    from server.comfy_packs import _sageattention_build_env
+    from server.tts_engines import ColabOneRemoteTtsRunner
+
+    with monkeypatch.context() as mp:
+        mp.setattr(comfy_packs, "_detect_total_ram_gib", lambda: 16.0)
+        mp.setattr(_os, "cpu_count", lambda: 12)
+        small_ram_env = _sageattention_build_env(8, 0)
+        assert small_ram_env["TORCH_CUDA_ARCH_LIST"] == "8.0"
+        assert small_ram_env["EXT_PARALLEL"] == "4"
+        assert small_ram_env["NVCC_APPEND_FLAGS"] == "--threads 8"
+        assert small_ram_env["MAX_JOBS"] == "4"
+
+        mp.setattr(comfy_packs, "_detect_total_ram_gib", lambda: 51.0)
+        mid_ram_env = _sageattention_build_env(8, 9)
+        assert mid_ram_env["MAX_JOBS"] == "6"
+
+        mp.setattr(comfy_packs, "_detect_total_ram_gib", lambda: 96.0)
+        hi_ram_env = _sageattention_build_env(12, 0)
+        assert hi_ram_env["TORCH_CUDA_ARCH_LIST"] == "12.0"
+        assert hi_ram_env["MAX_JOBS"] == "12"
+
+    # sageattention3_blackwell-*.whl matches cached wheel lookup on Blackwell.
+    py_tag = f"{sys.version_info.major}{sys.version_info.minor}"
+    bw_cache_dir = (
+        rt.root
+        / "wheel-cache"
+        / comfy_packs._sanitize_cache_key(
+            f"sageattention-{comfy_packs.SAGEATTN_COMMIT[:10]}-py{py_tag}-torch2.8.0-cu12.8-sm120"
+        )
+    )
+    bw_cache_dir.mkdir(parents=True, exist_ok=True)
+    bw_whl = bw_cache_dir / f"sageattention3_blackwell-1.0.0-cp{py_tag}-cp{py_tag}-linux_x86_64.whl"
+    bw_whl.write_bytes(b"wheel-bytes")
+    installed_wheels: list[str] = []
+    packs_bw = ColabOneComfyPackManager(
+        rt,
+        install_dir=tmp_path / "comfy_bw",
+        models_dir=tmp_path / "models_bw",
+        run_cmd_fn=lambda args, task, log, **kw: installed_wheels.append(str(args[-1]))
+        if "install" in args
+        else None,
+    )
+    res_bw_whl = packs_bw.ensure_sageattention_wheels(
+        ColabOneTask("comfyui_run", "bw-whl-name"),
+        gpu_caps={
+            "cc_major": 12,
+            "cc_minor": 0,
+            "torch_version": "2.8.0",
+            "cuda_version": "12.8",
+            "nvcc_version": "12.8",
+            "sageattn_available": True,
+            "sageattn3_available": False,
+        },
+        allow_sage3=True,
+    )
+    assert res_bw_whl["installed_any"] is True
+    assert res_bw_whl["sageattn3_available"] is True
+    assert any("sageattention3_blackwell-" in p for p in installed_wheels)
+
+    # All 4 worker scripts remain syntactically valid AST and VoxCPM2/Qwen3 seed random+numpy+torch.
+    tts_check = ColabOneRemoteTtsRunner(rt, {e.id: e.model_dump() for e in real_cat.tts_engines})
+    for eid in ("voxcpm2", "qwen3_tts", "fish_s2_pro", "indextts2"):
+        script = tts_check.build_worker_script(eid)
+        ast.parse(script)
+        if eid in ("voxcpm2", "qwen3_tts"):
+            assert "_py_random.seed(voice_seed)" in script
+            assert "_np.random.seed(voice_seed" in script
+            assert "torch.manual_seed(voice_seed)" in script
+        if eid == "voxcpm2":
+            assert "_sanitize_voxcpm_prompt" in script
+
+
+
 
 

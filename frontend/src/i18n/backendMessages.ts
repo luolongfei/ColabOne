@@ -372,6 +372,94 @@ const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "出力キャッシュファイル",
     "ko-KR": "출력 캐시 파일",
   },
+  内置女声缓存目录: {
+    "zh-CN": "内置女声缓存目录",
+    "en-US": "Built-in female voice cache directory",
+    "zh-TW": "內建女聲快取目錄",
+    "zh-HK": "內置女聲快取目錄",
+    "ja-JP": "組み込み女性ボイスキャッシュディレクトリ",
+    "ko-KR": "기본 제공 여성 음색 캐시 디렉터리",
+  },
+  内置女声缓存文件: {
+    "zh-CN": "内置女声缓存文件",
+    "en-US": "Built-in female voice cache file",
+    "zh-TW": "內建女聲快取檔案",
+    "zh-HK": "內置女聲快取檔案",
+    "ja-JP": "組み込み女性ボイスキャッシュファイル",
+    "ko-KR": "기본 제공 여성 음색 캐시 파일",
+  },
+  内置女声生成临时路径: {
+    "zh-CN": "内置女声生成临时路径",
+    "en-US": "Built-in female voice temp path",
+    "zh-TW": "內建女聲產生暫存路徑",
+    "zh-HK": "內置女聲生成臨時路徑",
+    "ja-JP": "組み込み女性ボイス生成の一時パス",
+    "ko-KR": "기본 제공 여성 음색 임시 경로",
+  },
+  加速包缓存根目录: {
+    "zh-CN": "加速包缓存根目录",
+    "en-US": "Acceleration package cache root directory",
+    "zh-TW": "加速套件快取根目錄",
+    "zh-HK": "加速套件快取根目錄",
+    "ja-JP": "高速化パッケージキャッシュルートディレクトリ",
+    "ko-KR": "가속 패키지 캐시 루트 디렉터리",
+  },
+  加速包缓存目录: {
+    "zh-CN": "加速包缓存目录",
+    "en-US": "Acceleration package cache directory",
+    "zh-TW": "加速套件快取目錄",
+    "zh-HK": "加速套件快取目錄",
+    "ja-JP": "高速化パッケージキャッシュディレクトリ",
+    "ko-KR": "가속 패키지 캐시 디렉터리",
+  },
+  云盘加速包缓存根目录: {
+    "zh-CN": "云盘加速包缓存根目录",
+    "en-US": "Google Drive acceleration package cache root",
+    "zh-TW": "雲端硬碟加速套件快取根目錄",
+    "zh-HK": "雲端硬碟加速套件快取根目錄",
+    "ja-JP": "Google ドライブ高速化パッケージキャッシュルート",
+    "ko-KR": "Google 드라이브 가속 패키지 캐시 루트",
+  },
+  云盘加速包缓存目录: {
+    "zh-CN": "云盘加速包缓存目录",
+    "en-US": "Google Drive acceleration package cache directory",
+    "zh-TW": "雲端硬碟加速套件快取目錄",
+    "zh-HK": "雲端硬碟加速套件快取目錄",
+    "ja-JP": "Google ドライブ高速化パッケージキャッシュディレクトリ",
+    "ko-KR": "Google 드라이브 가속 패키지 캐시 디렉터리",
+  },
+  加速包构建目录: {
+    "zh-CN": "加速包构建目录",
+    "en-US": "Acceleration package build directory",
+    "zh-TW": "加速套件建置目錄",
+    "zh-HK": "加速套件構建目錄",
+    "ja-JP": "高速化パッケージビルドディレクトリ",
+    "ko-KR": "가속 패키지 빌드 디렉터리",
+  },
+  "SageAttention 源码目录": {
+    "zh-CN": "SageAttention 源码目录",
+    "en-US": "SageAttention source directory",
+    "zh-TW": "SageAttention 原始碼目錄",
+    "zh-HK": "SageAttention 源碼目錄",
+    "ja-JP": "SageAttention ソースディレクトリ",
+    "ko-KR": "SageAttention 소스 디렉터리",
+  },
+  "SageAttention .git 目录": {
+    "zh-CN": "SageAttention .git 目录",
+    "en-US": "SageAttention .git directory",
+    "zh-TW": "SageAttention .git 目錄",
+    "zh-HK": "SageAttention .git 目錄",
+    "ja-JP": "SageAttention .git ディレクトリ",
+    "ko-KR": "SageAttention .git 디렉터리",
+  },
+  "SageAttention 3 源码目录": {
+    "zh-CN": "SageAttention 3 源码目录",
+    "en-US": "SageAttention 3 source directory",
+    "zh-TW": "SageAttention 3 原始碼目錄",
+    "zh-HK": "SageAttention 3 源碼目錄",
+    "ja-JP": "SageAttention 3 ソースディレクトリ",
+    "ko-KR": "SageAttention 3 소스 디렉터리",
+  },
 };
 
 const COMFY_FIELD_SUFFIX_LABELS: Record<string, ColabOneLocaleTable> = {
@@ -751,6 +839,132 @@ function translateFallbackUnknownWord(raw: string, loc: ColabOneLocale): string 
   }[loc];
 }
 
+function translateLongCatAccelToken(raw: string, loc: ColabOneLocale): string {
+  const s = raw.trim();
+  if (loc === "zh-CN" || !s) return s;
+  const known: Record<string, ColabOneLocaleTable> = {
+    关闭: {
+      "zh-CN": "关闭",
+      "en-US": "disabled",
+      "zh-TW": "停用",
+      "zh-HK": "關閉",
+      "ja-JP": "無効",
+      "ko-KR": "비활성화",
+    },
+    禁用: {
+      "zh-CN": "禁用",
+      "en-US": "disabled",
+      "zh-TW": "停用",
+      "zh-HK": "停用",
+      "ja-JP": "無効",
+      "ko-KR": "비활성화",
+    },
+    无: {
+      "zh-CN": "无",
+      "en-US": "none",
+      "zh-TW": "無",
+      "zh-HK": "無",
+      "ja-JP": "なし",
+      "ko-KR": "없음",
+    },
+  };
+  return known[s]?.[loc] ?? translateInner(s, loc);
+}
+
+function translateLongCatFallbackTarget(
+  raw: string,
+  loc: ColabOneLocale,
+): string {
+  const s = raw.trim();
+  if (loc === "zh-CN" || !s) return s;
+  if (EXACT_MESSAGES[s]) return EXACT_MESSAGES[s][loc];
+  const known: Record<string, ColabOneLocaleTable> = {
+    高速稳健: {
+      "zh-CN": "高速稳健",
+      "en-US": "Fast & Stable",
+      "zh-TW": "高速穩健",
+      "zh-HK": "高速穩健",
+      "ja-JP": "高速・安定",
+      "ko-KR": "고속 안정",
+    },
+    兼容保底: {
+      "zh-CN": "兼容保底",
+      "en-US": "Compatibility Fallback",
+      "zh-TW": "相容保底",
+      "zh-HK": "兼容保底",
+      "ja-JP": "互換フォールバック",
+      "ko-KR": "호환성 폴백",
+    },
+    兼容模式: {
+      "zh-CN": "兼容模式",
+      "en-US": "Compatibility Mode",
+      "zh-TW": "相容模式",
+      "zh-HK": "兼容模式",
+      "ja-JP": "互換モード",
+      "ko-KR": "호환 모드",
+    },
+    "原生 BF16 + SDPA": {
+      "zh-CN": "原生 BF16 + SDPA",
+      "en-US": "Native BF16 + SDPA",
+      "zh-TW": "原生 BF16 + SDPA",
+      "zh-HK": "原生 BF16 + SDPA",
+      "ja-JP": "ネイティブ BF16 + SDPA",
+      "ko-KR": "네이티브 BF16 + SDPA",
+    },
+    "关闭 torch.compile": {
+      "zh-CN": "关闭 torch.compile",
+      "en-US": "torch.compile off",
+      "zh-TW": "關閉 torch.compile",
+      "zh-HK": "關閉 torch.compile",
+      "ja-JP": "torch.compile オフ",
+      "ko-KR": "torch.compile 끔",
+    },
+    关闭编译: {
+      "zh-CN": "关闭编译",
+      "en-US": "compile off",
+      "zh-TW": "關閉編譯",
+      "zh-HK": "關閉編譯",
+      "ja-JP": "コンパイルオフ",
+      "ko-KR": "컴파일 끔",
+    },
+    跳过编译预热: {
+      "zh-CN": "跳过编译预热",
+      "en-US": "skip compile warmup",
+      "zh-TW": "略過編譯預熱",
+      "zh-HK": "跳過編譯預熱",
+      "ja-JP": "コンパイル予熱をスキップ",
+      "ko-KR": "컴파일 예열 생략",
+    },
+  };
+  if (known[s]) return known[s][loc];
+  const paren = s.match(/^(.+?)（([^）]+)）$/);
+  if (paren) {
+    const head = translateLongCatFallbackTarget(paren[1]!, loc);
+    const note = translateLongCatFallbackTarget(paren[2]!, loc);
+    return loc === "en-US" || loc === "ko-KR"
+      ? `${head} (${note})`
+      : `${head}（${note}）`;
+  }
+  const modeMatch = s.match(/^(.+?)\s*模式$/);
+  if (modeMatch) {
+    const base = translateLongCatFallbackTarget(modeMatch[1]!, loc);
+    switch (loc) {
+      case "en-US":
+        return `${base} mode`;
+      case "zh-TW":
+      case "zh-HK":
+        return `${base} 模式`;
+      case "ja-JP":
+        return `${base} モード`;
+      case "ko-KR":
+        return `${base} 모드`;
+      default:
+        return s;
+    }
+  }
+  return translateInner(s, loc);
+}
+
 function translateAllocationMetaPart(part: string, loc: ColabOneLocale): string {
   const s = part.trim();
   if (!s) return "";
@@ -936,15 +1150,206 @@ function translateApiFinishPart(part: string, loc: ColabOneLocale): string {
   }
   const durMatch = s.match(/^耗时 (.+)$/);
   if (durMatch) {
-    const val = durMatch[1];
+    const val = translateZhDuration(durMatch[1]!, loc);
     return {
-      "zh-CN": s,
+      "zh-CN": `耗时 ${val}`,
       "en-US": `elapsed ${val}`,
       "zh-TW": `耗時 ${val}`,
       "zh-HK": `耗時 ${val}`,
       "ja-JP": `所要 ${val}`,
       "ko-KR": `소요 ${val}`,
     }[loc];
+  }
+  return s;
+}
+
+function formatIntegerSecondsForLocale(
+  totalSeconds: number,
+  loc: ColabOneLocale,
+): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  if (safe < 60) {
+    switch (loc) {
+      case "en-US":
+        return `${safe}s`;
+      case "ko-KR":
+        return `${safe}초`;
+      default:
+        return `${safe} 秒`;
+    }
+  }
+  const hours = Math.floor(safe / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+  if (hours === 0) {
+    if (secs === 0) {
+      switch (loc) {
+        case "en-US":
+          return `${mins} min`;
+        case "zh-TW":
+        case "zh-HK":
+          return `${mins} 分鐘`;
+        case "ja-JP":
+          return `${mins} 分`;
+        case "ko-KR":
+          return `${mins}분`;
+        default:
+          return `${mins} 分钟`;
+      }
+    }
+    switch (loc) {
+      case "en-US":
+        return `${mins}m ${secs}s`;
+      case "ko-KR":
+        return `${mins}분 ${secs}초`;
+      default:
+        return `${mins} 分 ${secs} 秒`;
+    }
+  }
+  if (mins === 0 && secs === 0) {
+    switch (loc) {
+      case "en-US":
+        return `${hours} hr`;
+      case "zh-TW":
+      case "zh-HK":
+        return `${hours} 小時`;
+      case "ja-JP":
+        return `${hours} 時間`;
+      case "ko-KR":
+        return `${hours}시간`;
+      default:
+        return `${hours} 小时`;
+    }
+  }
+  if (secs === 0) {
+    switch (loc) {
+      case "en-US":
+        return `${hours}h ${mins}m`;
+      case "zh-TW":
+      case "zh-HK":
+        return `${hours} 小時 ${mins} 分`;
+      case "ja-JP":
+        return `${hours} 時間 ${mins} 分`;
+      case "ko-KR":
+        return `${hours}시간 ${mins}분`;
+      default:
+        return `${hours} 小时 ${mins} 分`;
+    }
+  }
+  switch (loc) {
+    case "en-US":
+      return `${hours}h ${mins}m ${secs}s`;
+    case "zh-TW":
+    case "zh-HK":
+      return `${hours} 小時 ${mins} 分 ${secs} 秒`;
+    case "ja-JP":
+      return `${hours} 時間 ${mins} 分 ${secs} 秒`;
+    case "ko-KR":
+      return `${hours}시간 ${mins}분 ${secs}초`;
+    default:
+      return `${hours} 小时 ${mins} 分 ${secs} 秒`;
+  }
+}
+
+function translateZhDuration(raw: string, loc: ColabOneLocale): string {
+  const s = raw.trim();
+  const hms = s.match(/^(\d+)\s*小时\s*(\d+)\s*分\s*(\d+)\s*秒$/);
+  if (hms) {
+    const [, h, m, sec] = hms;
+    switch (loc) {
+      case "en-US":
+        return `${h}h ${m}m ${sec}s`;
+      case "zh-TW":
+      case "zh-HK":
+        return `${h} 小時 ${m} 分 ${sec} 秒`;
+      case "ja-JP":
+        return `${h} 時間 ${m} 分 ${sec} 秒`;
+      case "ko-KR":
+        return `${h}시간 ${m}분 ${sec}초`;
+      default:
+        return `${h} 小时 ${m} 分 ${sec} 秒`;
+    }
+  }
+  const hm = s.match(/^(\d+)\s*小时\s*(\d+)\s*分(?:钟)?$/);
+  if (hm) {
+    const [, h, m] = hm;
+    switch (loc) {
+      case "en-US":
+        return `${h}h ${m}m`;
+      case "zh-TW":
+      case "zh-HK":
+        return `${h} 小時 ${m} 分`;
+      case "ja-JP":
+        return `${h} 時間 ${m} 分`;
+      case "ko-KR":
+        return `${h}시간 ${m}분`;
+      default:
+        return `${h} 小时 ${m} 分`;
+    }
+  }
+  const hOnly = s.match(/^(\d+)\s*小时$/);
+  if (hOnly) {
+    const h = hOnly[1]!;
+    switch (loc) {
+      case "en-US":
+        return `${h} hr`;
+      case "zh-TW":
+      case "zh-HK":
+        return `${h} 小時`;
+      case "ja-JP":
+        return `${h} 時間`;
+      case "ko-KR":
+        return `${h}시간`;
+      default:
+        return `${h} 小时`;
+    }
+  }
+  const ms = s.match(/^(\d+)\s*分\s*(\d+)\s*秒$/);
+  if (ms) {
+    const [, m, sec] = ms;
+    switch (loc) {
+      case "en-US":
+        return `${m}m ${sec}s`;
+      case "ko-KR":
+        return `${m}분 ${sec}초`;
+      default:
+        return `${m} 分 ${sec} 秒`;
+    }
+  }
+  const mOnly = s.match(/^(\d+)\s*分钟$/);
+  if (mOnly) {
+    const m = mOnly[1]!;
+    switch (loc) {
+      case "en-US":
+        return `${m} min`;
+      case "zh-TW":
+      case "zh-HK":
+        return `${m} 分鐘`;
+      case "ja-JP":
+        return `${m} 分`;
+      case "ko-KR":
+        return `${m}분`;
+      default:
+        return `${m} 分钟`;
+    }
+  }
+  const secOnly = s.match(/^([\d.]+)\s*秒$/);
+  if (secOnly) {
+    const val = secOnly[1]!;
+    if (/^\d+$/.test(val)) {
+      const n = Number(val);
+      if (Number.isFinite(n) && n >= 60) {
+        return formatIntegerSecondsForLocale(n, loc);
+      }
+    }
+    switch (loc) {
+      case "en-US":
+        return `${val}s`;
+      case "ko-KR":
+        return `${val}초`;
+      default:
+        return `${val} 秒`;
+    }
   }
   return s;
 }
@@ -1104,6 +1509,9 @@ const COMFY_WS_NODE_OR_PHASE_LABELS = new Set<string>([
   "AI 超分模型加载",
   "AI 2x 细节超分",
   "目标分辨率精调",
+  "torch.compile 算子加速",
+  "原始人像参考图（锁脸）",
+  "原始人像参考潜变量",
 ]);
 
 const UNHANDLED_PROGRESS_TAIL_RE =
@@ -1228,6 +1636,7 @@ const PATTERN_RULES: PatternRule[] = [
       const status = TASK_STATE_LABELS[rawStatus]?.[loc] ?? rawStatus;
       let rest = (m[3] || "").trim();
       let pctPrefix = "";
+      let elapsedPrefix = "";
       const pctMatch = rest.match(/^·\s*(\d+%)(?:\s*·\s*(.*))?$/s);
       if (pctMatch) {
         pctPrefix = ` · ${pctMatch[1]}`;
@@ -1235,11 +1644,27 @@ const PATTERN_RULES: PatternRule[] = [
       } else if (rest.startsWith("·")) {
         rest = rest.slice(1).trim();
       }
+      const elapsedMatch = rest.match(
+        /^(?:·\s*)?耗时\s+([^·]+?)(?:\s*·\s*(.*))?$/s,
+      );
+      if (elapsedMatch) {
+        const dur = translateZhDuration(elapsedMatch[1]!, loc);
+        const durPart = {
+          "zh-CN": `耗时 ${dur}`,
+          "en-US": `took ${dur}`,
+          "zh-TW": `耗時 ${dur}`,
+          "zh-HK": `耗時 ${dur}`,
+          "ja-JP": `所要 ${dur}`,
+          "ko-KR": `소요 ${dur}`,
+        }[loc];
+        elapsedPrefix = ` · ${durPart}`;
+        rest = (elapsedMatch[2] || "").trim();
+      }
       const tailText = rest
         ? ` · ${translateTaskTail(rest, loc, rawStatus)}`
         : "";
       const colon = loc === "zh-TW" || loc === "zh-HK" ? "：" : ": ";
-      return `${kind}${colon}${status}${pctPrefix}${tailText}`;
+      return `${kind}${colon}${status}${pctPrefix}${elapsedPrefix}${tailText}`;
     },
   },
   {
@@ -3896,65 +4321,97 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^工作流执行完成，已保存 (\d+) 个作品到远端 GPU$/,
+    re: /^工作流执行完成，未产生可保存的输出文件（耗时 ([^）]+)）$/,
     format: (m, loc) => {
-      const n = m[1];
+      const dur = translateZhDuration(m[1]!, loc);
       switch (loc) {
         case "en-US":
-          return `Workflow completed; saved ${n} output(s) to remote GPU`;
+          return `Workflow completed with no savable output files (took ${dur})`;
         case "zh-TW":
-          return `工作流程執行完成，已儲存 ${n} 個作品至遠端 GPU`;
+          return `工作流程執行完成，未產生可儲存的輸出檔案（耗時 ${dur}）`;
         case "zh-HK":
-          return `工作流執行完成，已儲存 ${n} 個作品到遠端 GPU`;
+          return `工作流執行完成，未產生可儲存的輸出檔案（耗時 ${dur}）`;
         case "ja-JP":
-          return `ワークフロー完了。${n} 件の出力をリモート GPU に保存しました`;
+          return `ワークフロー完了（保存可能な出力ファイルなし・所要 ${dur}）`;
         case "ko-KR":
-          return `워크플로 실행 완료, 원격 GPU에 결과물 ${n}개 저장됨`;
+          return `워크플로 실행 완료, 저장 가능한 출력 파일 없음 (소요 ${dur})`;
         default:
           return m[0];
       }
     },
   },
   {
-    re: /^(.+?) · 排队中（第 (\d+) 位）· 已用 (\d+) 秒$/,
+    re: /^工作流执行完成，已保存 (\d+) 个作品到远端 GPU(?:（耗时 ([^）]+)）)?$/,
+    format: (m, loc) => {
+      const n = m[1];
+      const rawDur = m[2];
+      const dur = rawDur ? translateZhDuration(rawDur, loc) : "";
+      switch (loc) {
+        case "en-US":
+          return dur
+            ? `Workflow completed; saved ${n} output(s) to remote GPU (took ${dur})`
+            : `Workflow completed; saved ${n} output(s) to remote GPU`;
+        case "zh-TW":
+          return dur
+            ? `工作流程執行完成，已儲存 ${n} 個作品至遠端 GPU（耗時 ${dur}）`
+            : `工作流程執行完成，已儲存 ${n} 個作品至遠端 GPU`;
+        case "zh-HK":
+          return dur
+            ? `工作流執行完成，已儲存 ${n} 個作品到遠端 GPU（耗時 ${dur}）`
+            : `工作流執行完成，已儲存 ${n} 個作品到遠端 GPU`;
+        case "ja-JP":
+          return dur
+            ? `ワークフロー完了。${n} 件の出力をリモート GPU に保存しました（所要 ${dur}）`
+            : `ワークフロー完了。${n} 件の出力をリモート GPU に保存しました`;
+        case "ko-KR":
+          return dur
+            ? `워크플로 실행 완료, 원격 GPU에 결과물 ${n}개 저장됨 (소요 ${dur})`
+            : `워크플로 실행 완료, 원격 GPU에 결과물 ${n}개 저장됨`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 排队中（第 (\d+) 位）· 已用 (.+)$/,
     format: (m, loc) => {
       const name = translateInner(m[1]!, loc);
       const pos = m[2]!;
-      const sec = m[3]!;
+      const dur = translateZhDuration(m[3]!, loc);
       switch (loc) {
         case "en-US":
-          return `${name} · Queued (#${pos}) · ${sec}s elapsed`;
+          return `${name} · Queued (#${pos}) · ${dur} elapsed`;
         case "zh-TW":
-          return `${name} · 排隊中（第 ${pos} 位）· 已用 ${sec} 秒`;
+          return `${name} · 排隊中（第 ${pos} 位）· 已用 ${dur}`;
         case "zh-HK":
-          return `${name} · 排隊中（第 ${pos} 位）· 已用 ${sec} 秒`;
+          return `${name} · 排隊中（第 ${pos} 位）· 已用 ${dur}`;
         case "ja-JP":
-          return `${name} · キュー待機中（${pos} 番目）· ${sec} 秒経過`;
+          return `${name} · キュー待機中（${pos} 番目）· ${dur}経過`;
         case "ko-KR":
-          return `${name} · 대기 중 (${pos}번째) · ${sec}초 경과`;
+          return `${name} · 대기 중 (${pos}번째) · ${dur} 경과`;
         default:
-          return m[0];
+          return `${name} · 排队中（第 ${pos} 位）· 已用 ${dur}`;
       }
     },
   },
   {
-    re: /^(.+?) · 远端 GPU 执行中 · 已用 (\d+) 秒$/,
+    re: /^(.+?) · 远端 GPU 执行中 · 已用 (.+)$/,
     format: (m, loc) => {
       const name = translateInner(m[1]!, loc);
-      const sec = m[2]!;
+      const dur = translateZhDuration(m[2]!, loc);
       switch (loc) {
         case "en-US":
-          return `${name} · Running on remote GPU · ${sec}s elapsed`;
+          return `${name} · Running on remote GPU · ${dur} elapsed`;
         case "zh-TW":
-          return `${name} · 遠端 GPU 執行中 · 已用 ${sec} 秒`;
+          return `${name} · 遠端 GPU 執行中 · 已用 ${dur}`;
         case "zh-HK":
-          return `${name} · 遠端 GPU 執行中 · 已用 ${sec} 秒`;
+          return `${name} · 遠端 GPU 執行中 · 已用 ${dur}`;
         case "ja-JP":
-          return `${name} · リモート GPU で実行中 · ${sec} 秒経過`;
+          return `${name} · リモート GPU で実行中 · ${dur}経過`;
         case "ko-KR":
-          return `${name} · 원격 GPU에서 실행 중 · ${sec}초 경과`;
+          return `${name} · 원격 GPU에서 실행 중 · ${dur} 경과`;
         default:
-          return m[0];
+          return `${name} · 远端 GPU 执行中 · 已用 ${dur}`;
       }
     },
   },
@@ -8413,21 +8870,429 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(.+?) · 数字人长视频生成完成（共 (\d+) 段，([\d.]+) 秒，(\d+)[×x](\d+)）$/,
+    re: /^(.+?) · 第 (\d+)\/(\d+) 段 渲染完成（耗时 ([^）]+)）$/,
     format: (m, loc) => {
       const wfName = translateInner(m[1]!, loc);
-      const [, , segs, dur, w, h] = m;
+      const seg = formatSegmentLabel(m[2]!, m[3]!, loc);
+      const dur = translateZhDuration(m[4]!, loc);
       switch (loc) {
         case "en-US":
-          return `${wfName} · Digital human video completed (${segs} segment(s), ${dur}s, ${w}x${h})`;
+          return `${wfName} · ${seg} rendered (took ${dur})`;
         case "zh-TW":
-          return `${wfName} · 數位人長影片產生完成（共 ${segs} 段，${dur} 秒，${w}×${h}）`;
+          return `${wfName} · ${seg} 算圖完成（耗時 ${dur}）`;
         case "zh-HK":
-          return `${wfName} · 數碼人長影片生成完成（共 ${segs} 段，${dur} 秒，${w}×${h}）`;
+          return `${wfName} · ${seg} 渲染完成（耗時 ${dur}）`;
         case "ja-JP":
-          return `${wfName} · デジタルヒューマン長尺動画の生成が完了しました（計 ${segs} セグメント、${dur} 秒、${w}×${h}）`;
+          return `${wfName} · ${seg} レンダリング完了（所要 ${dur}）`;
         case "ko-KR":
-          return `${wfName} · 디지털 휴먼 장편 영상 생성 완료 (총 ${segs}개 구간, ${dur}초, ${w}x${h})`;
+          return `${wfName} · ${seg} 렌더링 완료 (소요 ${dur})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 数字人长视频生成完成（共 (\d+) 段，([\d.]+) 秒，(\d+)[×x](\d+)(?:，总耗时 ([^）]+))?）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const [, , segs, dur, w, h, rawTotal] = m;
+      const totalDur = rawTotal ? translateZhDuration(rawTotal, loc) : "";
+      switch (loc) {
+        case "en-US":
+          return totalDur
+            ? `${wfName} · Digital human video completed (${segs} segment(s), ${dur}s, ${w}x${h}, total ${totalDur})`
+            : `${wfName} · Digital human video completed (${segs} segment(s), ${dur}s, ${w}x${h})`;
+        case "zh-TW":
+          return totalDur
+            ? `${wfName} · 數位人長影片產生完成（共 ${segs} 段，${dur} 秒，${w}×${h}，總耗時 ${totalDur}）`
+            : `${wfName} · 數位人長影片產生完成（共 ${segs} 段，${dur} 秒，${w}×${h}）`;
+        case "zh-HK":
+          return totalDur
+            ? `${wfName} · 數碼人長影片生成完成（共 ${segs} 段，${dur} 秒，${w}×${h}，總耗時 ${totalDur}）`
+            : `${wfName} · 數碼人長影片生成完成（共 ${segs} 段，${dur} 秒，${w}×${h}）`;
+        case "ja-JP":
+          return totalDur
+            ? `${wfName} · デジタルヒューマン長尺動画の生成が完了しました（計 ${segs} セグメント、${dur} 秒、${w}×${h}、総所要 ${totalDur}）`
+            : `${wfName} · デジタルヒューマン長尺動画の生成が完了しました（計 ${segs} セグメント、${dur} 秒、${w}×${h}）`;
+        case "ko-KR":
+          return totalDur
+            ? `${wfName} · 디지털 휴먼 장편 영상 생성 완료 (총 ${segs}개 구간, ${dur}초, ${w}x${h}, 총 소요 ${totalDur})`
+            : `${wfName} · 디지털 휴먼 장편 영상 생성 완료 (총 ${segs}개 구간, ${dur}초, ${w}x${h})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === LongCat remote GPU acceleration stack, SageAttention cache & built-in voice reference logs ===
+  {
+    re: /^已启用 LongCat 远端加速栈：注意力=([^，]+)，量化=([^，]+)，显存常驻=(是|否)，torch\.compile=(开|关)$/,
+    format: (m, loc) => {
+      const attn = translateLongCatAccelToken(m[1]!, loc);
+      const quant = translateLongCatAccelToken(m[2]!, loc);
+      const resident = m[3] === "是";
+      const compile = m[4] === "开";
+      switch (loc) {
+        case "en-US":
+          return `Enabled LongCat remote acceleration stack: attention=${attn}, quantization=${quant}, resident VRAM=${resident ? "yes" : "no"}, torch.compile=${compile ? "on" : "off"}`;
+        case "zh-TW":
+          return `已啟用 LongCat 遠端加速堆疊：注意力=${attn}，量化=${quant}，顯示記憶體常駐=${resident ? "是" : "否"}，torch.compile=${compile ? "開" : "關"}`;
+        case "zh-HK":
+          return `已啟用 LongCat 遠端加速棧：注意力=${attn}，量化=${quant}，顯存常駐=${resident ? "是" : "否"}，torch.compile=${compile ? "開" : "關"}`;
+        case "ja-JP":
+          return `LongCat リモート高速化スタックを有効化しました: Attention=${attn}、量子化=${quant}、VRAM 常駐=${resident ? "有効" : "無効"}、torch.compile=${compile ? "オン" : "オフ"}`;
+        case "ko-KR":
+          return `LongCat 원격 가속 스택 활성화됨: 어텐션=${attn}, 양자화=${quant}, VRAM 상주=${resident ? "예" : "아니요"}, torch.compile=${compile ? "켜짐" : "꺼짐"}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已缓存的 SageAttention ([23]) 加速包（([^）]+)）$/,
+    format: (m, loc) => {
+      const ver = m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing cached SageAttention ${ver} acceleration package (${detail})`;
+        case "zh-TW":
+          return `重複使用已快取的 SageAttention ${ver} 加速套件（${detail}）`;
+        case "zh-HK":
+          return `複用已快取的 SageAttention ${ver} 加速套件（${detail}）`;
+        case "ja-JP":
+          return `キャッシュ済みの SageAttention ${ver} 高速化パッケージを再利用しています（${detail}）`;
+        case "ko-KR":
+          return `캐시된 SageAttention ${ver} 가속 패키지를 재사용하는 중 (${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在为 (?:(Blackwell) )?(sm_\d+) 构建 SageAttention ([23]) 加速包（首次构建后将缓存复用）$/,
+    format: (m, loc) => {
+      const arch = m[1] ? `${m[1]} ${m[2]}` : m[2]!;
+      const ver = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Building SageAttention ${ver} acceleration package for ${arch} (cached for reuse after first build)`;
+        case "zh-TW":
+          return `正在為 ${arch} 建置 SageAttention ${ver} 加速套件（首次建置後將快取重複使用）`;
+        case "zh-HK":
+          return `正在為 ${arch} 構建 SageAttention ${ver} 加速套件（首次構建後將快取複用）`;
+        case "ja-JP":
+          return `${arch} 向けに SageAttention ${ver} 高速化パッケージをビルド中（初回ビルド後はキャッシュして再利用します）`;
+        case "ko-KR":
+          return `${arch}용 SageAttention ${ver} 가속 패키지를 빌드하는 중 (최초 빌드 후 캐시 재사용)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^构建 SageAttention ([23]) 加速包 · (sm_\d+)$/,
+    format: (m, loc) => {
+      const ver = m[1]!;
+      const sm = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Building SageAttention ${ver} package · ${sm}`;
+        case "zh-TW":
+          return `建置 SageAttention ${ver} 加速套件 · ${sm}`;
+        case "zh-HK":
+          return `構建 SageAttention ${ver} 加速套件 · ${sm}`;
+        case "ja-JP":
+          return `SageAttention ${ver} 高速化パッケージをビルド中 · ${sm}`;
+        case "ko-KR":
+          return `SageAttention ${ver} 가속 패키지 빌드 중 · ${sm}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^SageAttention ([23]) 加速包构建并安装完成（(sm_\d+)）$/,
+    format: (m, loc) => {
+      const ver = m[1]!;
+      const sm = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `SageAttention ${ver} acceleration package built and installed (${sm})`;
+        case "zh-TW":
+          return `SageAttention ${ver} 加速套件建置並安裝完成（${sm}）`;
+        case "zh-HK":
+          return `SageAttention ${ver} 加速套件構建並安裝完成（${sm}）`;
+        case "ja-JP":
+          return `SageAttention ${ver} 高速化パッケージのビルドとインストールが完了しました（${sm}）`;
+        case "ko-KR":
+          return `SageAttention ${ver} 가속 패키지 빌드 및 설치 완료 (${sm})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前 GPU 计算能力为 (sm_\d+)（低于 sm_80），跳过 SageAttention 加速包安装$/,
+    format: (m, loc) => {
+      const sm = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `GPU compute capability is ${sm} (below sm_80); skipping SageAttention installation`;
+        case "zh-TW":
+          return `目前 GPU 運算能力為 ${sm}（低於 sm_80），略過 SageAttention 加速套件安裝`;
+        case "zh-HK":
+          return `目前 GPU 計算能力為 ${sm}（低於 sm_80），跳過 SageAttention 加速套件安裝`;
+        case "ja-JP":
+          return `現在の GPU コンピュート機能は ${sm}（sm_80 未満）のため、SageAttention のインストールをスキップします`;
+        case "ko-KR":
+          return `현재 GPU 연산 능력이 ${sm}(sm_80 미만)이므로 SageAttention 가속 패키지 설치를 건너뜁니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未检测到满足 (?:(Blackwell) )?(sm_\d+) 要求的 nvcc（需要 CUDA >= ([\d.]+)），跳过 SageAttention ([23]) 源码构建$/,
+    format: (m, loc) => {
+      const arch = m[1] ? `${m[1]} ${m[2]}` : m[2]!;
+      const cuda = m[3]!;
+      const ver = m[4]!;
+      switch (loc) {
+        case "en-US":
+          return `nvcc meeting ${arch} requirements not found (requires CUDA >= ${cuda}); skipping SageAttention ${ver} source build`;
+        case "zh-TW":
+          return `未偵測到符合 ${arch} 需求的 nvcc（需要 CUDA >= ${cuda}），略過 SageAttention ${ver} 原始碼建置`;
+        case "zh-HK":
+          return `未檢測到滿足 ${arch} 要求的 nvcc（需要 CUDA >= ${cuda}），跳過 SageAttention ${ver} 源碼構建`;
+        case "ja-JP":
+          return `${arch} の要件を満たす nvcc が見つからないため（CUDA >= ${cuda} が必要）、SageAttention ${ver} のソースビルドをスキップします`;
+        case "ko-KR":
+          return `${arch} 요구 사항을 충족하는 nvcc가 감지되지 않아(CUDA >= ${cuda} 필요) SageAttention ${ver} 소스 빌드를 건너뜁니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前 PyTorch ([^\s]+) 低于 2\.8，跳过 SageAttention 3 源码构建（已启用 SageAttention 2）$/,
+    format: (m, loc) => {
+      const ver = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Current PyTorch ${ver} is below 2.8; skipping SageAttention 3 source build (SageAttention 2 enabled)`;
+        case "zh-TW":
+          return `目前 PyTorch ${ver} 低於 2.8，略過 SageAttention 3 原始碼建置（已啟用 SageAttention 2）`;
+        case "zh-HK":
+          return `目前 PyTorch ${ver} 低於 2.8，跳過 SageAttention 3 源碼構建（已啟用 SageAttention 2）`;
+        case "ja-JP":
+          return `現在の PyTorch ${ver} は 2.8 未満のため SageAttention 3 のソースビルドをスキップします（SageAttention 2 を有効化済み）`;
+        case "ko-KR":
+          return `현재 PyTorch ${ver} 버전이 2.8 미만이어서 SageAttention 3 소스 빌드를 건너뜁니다 (SageAttention 2 활성화됨)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^缺少 VoxCPM2 引擎配置，无法生成内置女声参考样本：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Missing VoxCPM2 engine configuration; cannot generate built-in female voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `缺少 VoxCPM2 引擎設定，無法產生內建女聲參考樣本：${voice}`;
+        case "zh-HK":
+          return `缺少 VoxCPM2 引擎配置，無法生成內置女聲參考樣本：${voice}`;
+        case "ja-JP":
+          return `VoxCPM2 エンジン設定が不足しているため、組み込み女性ボイスの参照サンプルを生成できません: ${voice}`;
+        case "ko-KR":
+          return `VoxCPM2 엔진 설정이 없어 기본 제공 여성 음색 참조 샘플을 생성할 수 없습니다: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^内置女声参考样本生成失败：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate built-in female voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `內建女聲參考樣本產生失敗：${voice}`;
+        case "zh-HK":
+          return `內置女聲參考樣本生成失敗：${voice}`;
+        case "ja-JP":
+          return `組み込み女性ボイスの参照サンプル生成に失敗しました: ${voice}`;
+        case "ko-KR":
+          return `기본 제공 여성 음색 참조 샘플 생성에 실패했습니다: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^准备 SageAttention 算子时出现非致命异常，将自动使用当前可用注意力实现：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Non-fatal error preparing SageAttention kernels; using currently available attention implementation: ${detail}`;
+        case "zh-TW":
+          return `準備 SageAttention 算子時發生非致命例外，將自動使用目前可用的注意力實作：${detail}`;
+        case "zh-HK":
+          return `準備 SageAttention 算子時出現非致命異常，將自動使用目前可用的注意力實作：${detail}`;
+        case "ja-JP":
+          return `SageAttention カーネルの準備中に非致命的なエラーが発生しました。現在利用可能な Attention 実装を使用します: ${detail}`;
+        case "ko-KR":
+          return `SageAttention 커널 준비 중 치명적이지 않은 예외가 발생해 현재 사용 가능한 어텐션 구현을 사용합니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 加速算子执行异常（(.+?)），已自动(.+)并重试$/s,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      const err = translateInner(m[3]!, loc);
+      const reason = translateInner(m[4]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${seg} accelerated kernel failed (${err}); automatically ${reason} and retrying`;
+        case "zh-TW":
+          return `${seg} 加速算子執行異常（${err}），已自動${reason}並重試`;
+        case "zh-HK":
+          return `${seg} 加速算子執行異常（${err}），已自動${reason}並重試`;
+        case "ja-JP":
+          return `${seg} の高速化カーネルでエラーが発生しました（${err}）。自動的に${reason}して再試行します`;
+        case "ko-KR":
+          return `${seg} 가속 커널 실행 오류 (${err}); 자동으로 ${reason} 후 재시도합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 检测到远端 ComfyUI 已退出，正在重启引擎后继续回退重试$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${seg} detected that remote ComfyUI exited; restarting engine before fallback retry`;
+        case "zh-TW":
+          return `${seg} 偵測到遠端 ComfyUI 已結束，正在重新啟動引擎後繼續回退重試`;
+        case "zh-HK":
+          return `${seg} 檢測到遠端 ComfyUI 已退出，正在重啟引擎後繼續回退重試`;
+        case "ja-JP":
+          return `${seg} でリモート ComfyUI の終了を検出しました。エンジンを再起動してからフォールバック再試行を続行します`;
+        case "ko-KR":
+          return `${seg}에서 원격 ComfyUI 종료를 감지했습니다. 엔진을 재시작한 후 폴백 재시도를 계속합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在为远端 GPU（([^）]+)）编译 SageAttention ([23]) 加速包（首次需 1[～~-]3 分钟，完成后自动缓存复用）$/,
+    format: (m, loc) => {
+      const gpu = translateInner(m[1]!, loc);
+      const ver = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Compiling SageAttention ${ver} acceleration package for remote GPU (${gpu}) (1-3 min on first run; cached automatically for reuse)`;
+        case "zh-TW":
+          return `正在為遠端 GPU（${gpu}）編譯 SageAttention ${ver} 加速套件（首次需 1～3 分鐘，完成後自動快取重複使用）`;
+        case "zh-HK":
+          return `正在為遠端 GPU（${gpu}）編譯 SageAttention ${ver} 加速套件（首次需 1～3 分鐘，完成後自動快取複用）`;
+        case "ja-JP":
+          return `リモート GPU（${gpu}）向けに SageAttention ${ver} 高速化パッケージをコンパイル中（初回は 1〜3 分かかり、完了後は自動キャッシュして再利用します）`;
+        case "ko-KR":
+          return `원격 GPU (${gpu})용 SageAttention ${ver} 가속 패키지 컴파일 중 (최초 1-3분 소요, 완료 후 자동 캐시 재사용)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^SageAttention 加速包构建或安装跳过，将自动回退：(.+)$/s,
+    format: (m, loc) => {
+      const reason = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Skipped building or installing SageAttention acceleration package; falling back automatically: ${reason}`;
+        case "zh-TW":
+          return `已略過建置或安裝 SageAttention 加速套件，將自動回退：${reason}`;
+        case "zh-HK":
+          return `已跳過構建或安裝 SageAttention 加速套件，將自動回退：${reason}`;
+        case "ja-JP":
+          return `SageAttention 高速化パッケージのビルドまたはインストールをスキップしました。自動的にフォールバックします: ${reason}`;
+        case "ko-KR":
+          return `SageAttention 가속 패키지 빌드 또는 설치를 건너뛰어 자동으로 폴백합니다: ${reason}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^LongCat 加速算子执行异常，自动回退至([^：]+)：(.+)$/s,
+    format: (m, loc) => {
+      const target = translateLongCatFallbackTarget(m[1]!, loc);
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `LongCat accelerated kernel failed; automatically falling back to ${target}: ${detail}`;
+        case "zh-TW":
+          return `LongCat 加速算子執行異常，自動回退至 ${target}：${detail}`;
+        case "zh-HK":
+          return `LongCat 加速算子執行異常，自動回退至 ${target}：${detail}`;
+        case "ja-JP":
+          return `LongCat 高速化カーネルの実行エラーが発生したため、${target} に自動フォールバックします: ${detail}`;
+        case "ko-KR":
+          return `LongCat 가속 커널 실행 오류가 발생하여 ${target}(으)로 자동 폴백합니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已缓存的内置女声参考样本：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing cached built-in female voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `重複使用已快取的內建女聲參考樣本：${voice}`;
+        case "zh-HK":
+          return `複用已快取的內置女聲參考樣本：${voice}`;
+        case "ja-JP":
+          return `キャッシュ済みの組み込み女性音声リファレンスサンプルを再利用しています: ${voice}`;
+        case "ko-KR":
+          return `캐시된 기본 제공 여성 음색 참조 샘플을 재사용하는 중: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在生成并缓存内置女声参考样本：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Generating and caching built-in female voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `正在產生並快取內建女聲參考樣本：${voice}`;
+        case "zh-HK":
+          return `正在生成並快取內置女聲參考樣本：${voice}`;
+        case "ja-JP":
+          return `組み込み女性音声リファレンスサンプルを生成してキャッシュしています: ${voice}`;
+        case "ko-KR":
+          return `기본 제공 여성 음색 참조 샘플을 생성하고 캐시하는 중: ${voice}`;
         default:
           return m[0];
       }
@@ -8888,6 +9753,311 @@ const PATTERN_RULES: PatternRule[] = [
       const wfName = translateInner(m[1]!, loc);
       const nodeOrPhase = translateInner(m[2]!, loc);
       return `${wfName} · ${nodeOrPhase}`;
+    },
+  },
+  {
+    re: /^已导出加密迁移文件（(\d+) 项模块）$/,
+    format: (m, loc) => {
+      const count = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Exported encrypted migration archive (${count} modules)`;
+        case "zh-TW":
+          return `已加密匯出遷移檔案（${count} 項模組）`;
+        case "zh-HK":
+          return `已加密匯出遷移檔案（${count} 項模組）`;
+        case "ja-JP":
+          return `暗号化移行ファイルをエクスポートしました（${count} モジュール）`;
+        case "ko-KR":
+          return `암호화된 마이그레이션 파일을 내보냈습니다 (${count}개 모듈)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已导入迁移配置（(.+)）$/,
+    format: (m, loc) => {
+      const rawList = m[1]!;
+      const modMap: Record<string, ColabOneLocaleTable> = {
+        "Google 账号与云盘认证": {
+          "zh-CN": "Google 账号与云盘认证",
+          "en-US": "Google Account & Drive Auth",
+          "zh-TW": "Google 帳號與雲端硬碟認證",
+          "zh-HK": "Google 帳號與雲端硬碟認證",
+          "ja-JP": "Google アカウントとドライブ認証",
+          "ko-KR": "Google 계정 및 드라이브 인증",
+        },
+        第三方密钥与公网隧道: {
+          "zh-CN": "第三方密钥与公网隧道",
+          "en-US": "Third-Party Keys & Tunnels",
+          "zh-TW": "第三方金鑰與公網隧道",
+          "zh-HK": "第三方金鑰與公網隧道",
+          "ja-JP": "外部キーと公開トンネル",
+          "ko-KR": "외부 키 및 공개 터널",
+        },
+        软件与外观设置: {
+          "zh-CN": "软件与外观设置",
+          "en-US": "App & Appearance Settings",
+          "zh-TW": "軟體與外觀設定",
+          "zh-HK": "軟件與外觀設定",
+          "ja-JP": "アプリ・外観設定",
+          "ko-KR": "앱 및 화면 설정",
+        },
+        模型库与自定义工作流: {
+          "zh-CN": "模型库与自定义工作流",
+          "en-US": "Model Library & Workflows",
+          "zh-TW": "模型庫與自訂工作流程",
+          "zh-HK": "模型庫與自訂工作流",
+          "ja-JP": "モデルライブラリとワークフロー",
+          "ko-KR": "모델 라이브러리 및 워크플로",
+        },
+        "CU 算力消耗历史": {
+          "zh-CN": "CU 算力消耗历史",
+          "en-US": "CU Usage History",
+          "zh-TW": "CU 算力消耗歷史",
+          "zh-HK": "CU 算力消耗歷史",
+          "ja-JP": "CU 使用履歴",
+          "ko-KR": "CU 사용 기록",
+        },
+        "ComfyUI 文本草稿": {
+          "zh-CN": "ComfyUI 文本草稿",
+          "en-US": "ComfyUI Text Drafts",
+          "zh-TW": "ComfyUI 文字草稿",
+          "zh-HK": "ComfyUI 文字草稿",
+          "ja-JP": "ComfyUI テキスト下書き",
+          "ko-KR": "ComfyUI 텍스트 초안",
+        },
+      };
+      const sep = loc === "en-US" || loc === "ko-KR" ? ", " : "、";
+      const items = rawList
+        .split("、")
+        .map((part) => modMap[part.trim()]?.[loc] || part.trim())
+        .join(sep);
+      switch (loc) {
+        case "en-US":
+          return `Imported migration configuration (${items})`;
+        case "zh-TW":
+          return `已匯入遷移設定（${items}）`;
+        case "zh-HK":
+          return `已匯入遷移配置（${items}）`;
+        case "ja-JP":
+          return `移行設定をインポートしました（${items}）`;
+        case "ko-KR":
+          return `마이그레이션 구성을 가져왔습니다 (${items})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的迁移模块：(.+)$/,
+    format: (m, loc) => {
+      const mod = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported migration module: ${mod}`;
+        case "zh-TW":
+          return `不支援的遷移模組：${mod}`;
+        case "zh-HK":
+          return `不支援的遷移模組：${mod}`;
+        case "ja-JP":
+          return `サポートされていない移行モジュールです: ${mod}`;
+        case "ko-KR":
+          return `지원되지 않는 마이그레이션 모듈입니다: ${mod}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^迁移文件中的\s*(Hugging Face Token|分配代理地址|自定义模型配置|模型 API 别名|自定义工作流|工作流草稿)\s*无效：(.+)$/,
+    format: (m, loc) => {
+      const targetMap: Record<string, ColabOneLocaleTable> = {
+        "Hugging Face Token": {
+          "zh-CN": "Hugging Face Token",
+          "en-US": "Hugging Face token",
+          "zh-TW": "Hugging Face Token",
+          "zh-HK": "Hugging Face Token",
+          "ja-JP": "Hugging Face トークン",
+          "ko-KR": "Hugging Face 토큰",
+        },
+        分配代理地址: {
+          "zh-CN": "分配代理地址",
+          "en-US": "allocation proxy URL",
+          "zh-TW": "分配代理位址",
+          "zh-HK": "分配代理地址",
+          "ja-JP": "割り当てプロキシ URL",
+          "ko-KR": "할당 프록시 URL",
+        },
+        自定义模型配置: {
+          "zh-CN": "自定义模型配置",
+          "en-US": "custom model configuration",
+          "zh-TW": "自訂模型設定",
+          "zh-HK": "自訂模型配置",
+          "ja-JP": "カスタムモデル設定",
+          "ko-KR": "사용자 지정 모델 설정",
+        },
+        "模型 API 别名": {
+          "zh-CN": "模型 API 别名",
+          "en-US": "model API alias",
+          "zh-TW": "模型 API 別名",
+          "zh-HK": "模型 API 別名",
+          "ja-JP": "モデル API エイリアス",
+          "ko-KR": "모델 API 별칭",
+        },
+        自定义工作流: {
+          "zh-CN": "自定义工作流",
+          "en-US": "custom workflow",
+          "zh-TW": "自訂工作流程",
+          "zh-HK": "自訂工作流",
+          "ja-JP": "カスタムワークフロー",
+          "ko-KR": "사용자 지정 워크플로",
+        },
+        工作流草稿: {
+          "zh-CN": "工作流草稿",
+          "en-US": "workflow draft",
+          "zh-TW": "工作流程草稿",
+          "zh-HK": "工作流草稿",
+          "ja-JP": "ワークフロー下書き",
+          "ko-KR": "워크플로 초안",
+        },
+      };
+      const label = targetMap[m[1]!]?.[loc] || m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label} in migration archive: ${detail}`;
+        case "zh-TW":
+          return `遷移檔案中的${label}無效：${detail}`;
+        case "zh-HK":
+          return `遷移檔案中的${label}無效：${detail}`;
+        case "ja-JP":
+          return `移行ファイル内の${label}が無効です: ${detail}`;
+        case "ko-KR":
+          return `마이그레이션 파일의 ${label}이(가) 올바르지 않습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^写入\s*(Google 登录凭据|Google 账号资料|Google 云盘项目配置|Hugging Face Token|分配代理配置|对外 API 配置|ComfyUI 画布配置|软件设置|模型库配置|自定义工作流|ComfyUI 草稿|CU 算力消耗历史)\s*失败：(.+)$/,
+    format: (m, loc) => {
+      const targetMap: Record<string, ColabOneLocaleTable> = {
+        "Google 登录凭据": {
+          "zh-CN": "Google 登录凭据",
+          "en-US": "Google login credentials",
+          "zh-TW": "Google 登入憑證",
+          "zh-HK": "Google 登入憑證",
+          "ja-JP": "Google ログイン認証情報",
+          "ko-KR": "Google 로그인 자격 증명",
+        },
+        "Google 账号资料": {
+          "zh-CN": "Google 账号资料",
+          "en-US": "Google account profile",
+          "zh-TW": "Google 帳號資料",
+          "zh-HK": "Google 帳號資料",
+          "ja-JP": "Google アカウント情報",
+          "ko-KR": "Google 계정 프로필",
+        },
+        "Google 云盘项目配置": {
+          "zh-CN": "Google 云盘项目配置",
+          "en-US": "Google Drive quota project",
+          "zh-TW": "Google 雲端硬碟專案設定",
+          "zh-HK": "Google 雲端硬碟專案配置",
+          "ja-JP": "Google ドライブのクォータプロジェクト設定",
+          "ko-KR": "Google 드라이브 할당 프로젝트 설정",
+        },
+        "Hugging Face Token": {
+          "zh-CN": "Hugging Face Token",
+          "en-US": "Hugging Face token",
+          "zh-TW": "Hugging Face Token",
+          "zh-HK": "Hugging Face Token",
+          "ja-JP": "Hugging Face トークン",
+          "ko-KR": "Hugging Face 토큰",
+        },
+        分配代理配置: {
+          "zh-CN": "分配代理配置",
+          "en-US": "allocation proxy settings",
+          "zh-TW": "分配代理設定",
+          "zh-HK": "分配代理配置",
+          "ja-JP": "割り当てプロキシ設定",
+          "ko-KR": "할당 프록시 설정",
+        },
+        "对外 API 配置": {
+          "zh-CN": "对外 API 配置",
+          "en-US": "Public API settings",
+          "zh-TW": "對外 API 設定",
+          "zh-HK": "對外 API 配置",
+          "ja-JP": "外部 API 設定",
+          "ko-KR": "외부 API 설정",
+        },
+        "ComfyUI 画布配置": {
+          "zh-CN": "ComfyUI 画布配置",
+          "en-US": "ComfyUI Canvas settings",
+          "zh-TW": "ComfyUI 畫布設定",
+          "zh-HK": "ComfyUI 畫布配置",
+          "ja-JP": "ComfyUI キャンバス設定",
+          "ko-KR": "ComfyUI 캔버스 설정",
+        },
+        软件设置: {
+          "zh-CN": "软件设置",
+          "en-US": "app settings",
+          "zh-TW": "軟體設定",
+          "zh-HK": "軟件設定",
+          "ja-JP": "アプリ設定",
+          "ko-KR": "앱 설정",
+        },
+        模型库配置: {
+          "zh-CN": "模型库配置",
+          "en-US": "model library",
+          "zh-TW": "模型庫設定",
+          "zh-HK": "模型庫配置",
+          "ja-JP": "モデルライブラリ設定",
+          "ko-KR": "모델 라이브러리 설정",
+        },
+        自定义工作流: {
+          "zh-CN": "自定义工作流",
+          "en-US": "custom workflows",
+          "zh-TW": "自訂工作流程",
+          "zh-HK": "自訂工作流",
+          "ja-JP": "カスタムワークフロー",
+          "ko-KR": "사용자 지정 워크플로",
+        },
+        "ComfyUI 草稿": {
+          "zh-CN": "ComfyUI 草稿",
+          "en-US": "ComfyUI drafts",
+          "zh-TW": "ComfyUI 草稿",
+          "zh-HK": "ComfyUI 草稿",
+          "ja-JP": "ComfyUI 下書き",
+          "ko-KR": "ComfyUI 초안",
+        },
+        "CU 算力消耗历史": {
+          "zh-CN": "CU 算力消耗历史",
+          "en-US": "CU usage history",
+          "zh-TW": "CU 算力消耗歷史",
+          "zh-HK": "CU 算力消耗歷史",
+          "ja-JP": "CU 使用履歴",
+          "ko-KR": "CU 사용 기록",
+        },
+      };
+      const label = targetMap[m[1]!]?.[loc] || m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to write ${label}: ${detail}`;
+        case "zh-TW":
+          return `寫入${label}失敗：${detail}`;
+        case "zh-HK":
+          return `寫入${label}失敗：${detail}`;
+        case "ja-JP":
+          return `${label}の書き込みに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `${label} 저장에 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
     },
   },
 ];

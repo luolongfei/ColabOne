@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import ast
 from bisect import bisect_left
+from collections.abc import Callable
 from contextlib import nullcontext
 import hashlib
 import importlib.metadata
+import importlib.util
 import inspect
 import io
 import json
@@ -22,6 +24,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -77,6 +80,17 @@ PACK_PATCH_VERSION = 2
 
 DEFAULT_DOWNLOAD_THREADS = 16
 PREFLIGHT_DISK_HEADROOM_BYTES = 4 * 1024**3
+
+SAGEATTN_REPO_URL = "https://github.com/thu-ml/SageAttention.git"
+SAGEATTN_COMMIT = "d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5"
+_BLACKWELL_COMPUTE_CAPABILITIES = frozenset({(10, 0), (12, 0), (12, 1)})
+_STRIPPED_SUBPROCESS_ENV_KEYS = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+_CACHE_KEY_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+_VERSION_PREFIX_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
+_NVCC_RELEASE_RE = re.compile(r"release\s+(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)
+_NVCC_V_RE = re.compile(r"\bV(\d+\.\d+(?:\.\d+)?)")
+_NVCC_NUM_RE = re.compile(r"\b(\d+\.\d+(?:\.\d+)?)\b")
+_TORCH_CU_TAG_RE = re.compile(r"\+cu(\d{2})(\d)\b", re.IGNORECASE)
 
 _WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 _COMMIT_SHA_RE = re.compile(r"^[a-fA-F0-9]{40}$")
@@ -747,6 +761,474 @@ def compute_pack_content_signature(workflow_template: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _sanitized_subprocess_env(
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _STRIPPED_SUBPROCESS_ENV_KEYS
+    }
+    if extra_env:
+        for k, v in extra_env.items():
+            if k not in _STRIPPED_SUBPROCESS_ENV_KEYS and v is not None:
+                env[str(k)] = str(v)
+    return env
+
+
+def _is_cancelled_exception(exc: BaseException) -> bool:
+    return any(
+        cls.__name__ == "ColabOneCancelledError" for cls in type(exc).__mro__
+    )
+
+
+def _safe_nonneg_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(0, parsed)
+
+
+def _parse_version_tuple(raw: Any) -> tuple[int, ...]:
+    if not isinstance(raw, str):
+        raw = str(raw or "")
+    match = _VERSION_PREFIX_RE.match(raw)
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _parse_nvcc_version(output: str) -> str:
+    text = str(output or "")
+    if not text.strip():
+        return ""
+    for pattern in (_NVCC_RELEASE_RE, _NVCC_V_RE, _NVCC_NUM_RE):
+        match = pattern.search(text)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _probe_nvcc_version() -> str:
+    nvcc_bin = shutil.which("nvcc")
+    if not nvcc_bin:
+        return ""
+    try:
+        res = subprocess.run(
+            [nvcc_bin, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=_sanitized_subprocess_env(),
+        )
+        if res.returncode != 0:
+            return ""
+        return _parse_nvcc_version(res.stdout or res.stderr or "")
+    except Exception:
+        return ""
+
+
+def _cuda_version_from_torch_tag(torch_version: str) -> str:
+    match = _TORCH_CU_TAG_RE.search(str(torch_version or ""))
+    if not match:
+        return ""
+    return f"{int(match.group(1))}.{int(match.group(2))}"
+
+
+def _probe_nvidia_smi_gpu_caps() -> tuple[str, int, int, int]:
+    """Query GPU name, VRAM (MiB), and compute capability via nvidia-smi without importing torch."""
+    smi_bin = shutil.which("nvidia-smi")
+    if not smi_bin:
+        return ("", 0, 0, 0)
+    try:
+        res = subprocess.run(
+            [
+                smi_bin,
+                "--query-gpu=name,memory.total,compute_cap",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=_sanitized_subprocess_env(),
+        )
+        if res.returncode != 0:
+            return ("", 0, 0, 0)
+        first = next(
+            (ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()), ""
+        )
+        if not first:
+            return ("", 0, 0, 0)
+        parts = [p.strip() for p in first.split(",")]
+        if len(parts) < 3:
+            return ("", 0, 0, 0)
+        cc_raw = parts[-1]
+        vram_raw = parts[-2]
+        name = ", ".join(parts[:-2]).strip()
+        vram_mib = _safe_nonneg_int(vram_raw)
+        cc_tuple = _parse_version_tuple(cc_raw)
+        cc_major = cc_tuple[0] if len(cc_tuple) >= 1 else 0
+        cc_minor = cc_tuple[1] if len(cc_tuple) >= 2 else 0
+        return (name, vram_mib, cc_major, cc_minor)
+    except Exception:
+        return ("", 0, 0, 0)
+
+
+def _has_module_spec(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+def _min_nvcc_for_sage2(cc_major: int, cc_minor: int) -> tuple[int, int]:
+    cc = (cc_major, cc_minor)
+    if cc >= (10, 0):
+        return (12, 8)
+    if cc == (9, 0):
+        return (12, 3)
+    if cc == (8, 9):
+        return (12, 4)
+    if cc >= (8, 0):
+        return (12, 0)
+    return (99, 0)
+
+
+def _sanitize_cache_key(raw: str) -> str:
+    cleaned = _CACHE_KEY_UNSAFE_RE.sub("_", str(raw or ""))
+    cleaned = re.sub(r"\.{2,}", ".", cleaned).strip("._-")
+    if not cleaned or cleaned in (".", ".."):
+        return "default"
+    return cleaned[:160]
+
+
+def _wheel_version_from_filename(filename: str) -> str:
+    stem = filename[:-4] if filename.lower().endswith(".whl") else filename
+    parts = stem.split("-")
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
+
+
+def _detect_total_ram_gib() -> float:
+    """Return total host RAM in GiB (0.0 if unavailable) for safe NVCC build concurrency."""
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+        if isinstance(page_size, int) and isinstance(phys_pages, int) and page_size > 0 and phys_pages > 0:
+            return (page_size * phys_pages) / float(1024**3)
+    except (AttributeError, ValueError, OSError):
+        pass
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return int(parts[1]) / float(1024**2)
+    except (OSError, ValueError):
+        pass
+    return 0.0
+
+
+def _sageattention_build_env(cc_major: int, cc_minor: int) -> dict[str, str]:
+    """Build NVCC/CUDA extension env with MAX_JOBS scaled to host RAM to prevent OOM-kills."""
+    cpus = max(1, os.cpu_count() or 4)
+    ram_gib = _detect_total_ram_gib()
+    if ram_gib > 0.0 and ram_gib < 32.0:
+        max_jobs = str(min(4, cpus))
+    elif ram_gib > 0.0 and ram_gib < 64.0:
+        max_jobs = str(min(6, cpus))
+    else:
+        max_jobs = str(min(12, cpus))
+    return {
+        "TORCH_CUDA_ARCH_LIST": f"{cc_major}.{cc_minor}",
+        "EXT_PARALLEL": "4",
+        "NVCC_APPEND_FLAGS": "--threads 8",
+        "MAX_JOBS": max_jobs,
+    }
+
+
+def _find_cached_wheel(
+    cache_dir: Path,
+    *,
+    dist_prefixes: tuple[str, ...],
+    min_major: int | None = None,
+    reject_symlinks: bool = True,
+    allow_empty: bool = False,
+) -> Path | None:
+    if cache_dir.is_symlink():
+        if reject_symlinks:
+            raise ValueError(f"加速包缓存目录不能是符号链接：{cache_dir.name}")
+        return None
+    if not cache_dir.is_dir():
+        return None
+    try:
+        entries = sorted(cache_dir.iterdir(), key=lambda p: p.name, reverse=True)
+    except OSError:
+        return None
+    for entry in entries:
+        lower_name = entry.name.lower()
+        if entry.name.startswith(".") or not lower_name.endswith(".whl"):
+            continue
+        dist_part, sep, _ = lower_name.partition("-")
+        if not sep or dist_part not in dist_prefixes:
+            continue
+        if min_major is not None:
+            ver_tuple = _parse_version_tuple(_wheel_version_from_filename(entry.name))
+            if not ver_tuple or ver_tuple[0] < min_major:
+                continue
+        if entry.is_symlink():
+            if reject_symlinks:
+                raise ValueError(f"加速包缓存文件不能是符号链接：{entry.name}")
+            continue
+        if not entry.is_file():
+            continue
+        if not allow_empty:
+            try:
+                if entry.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+        return entry
+    return None
+
+
+def _copy_wheel_atomic(src: Path, dst: Path) -> Path:
+    if src.is_symlink() or not src.is_file():
+        raise ValueError(f"加速包源文件不合法：{src.name}")
+    if dst.parent.is_symlink():
+        raise ValueError(f"加速包目标目录不能是符号链接：{dst.parent.name}")
+    if dst.is_symlink():
+        raise ValueError(f"加速包目标文件不能是符号链接：{dst.name}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.parent / f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with src.open("rb") as reader, tmp.open("wb") as writer:
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            writer.flush()
+            try:
+                os.fsync(writer.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, dst)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        if dst.is_symlink():
+            raise ValueError(f"加速包目标文件不能是符号链接：{dst.name}")
+        with src.open("rb") as reader, dst.open("wb") as writer:
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            writer.flush()
+            try:
+                os.fsync(writer.fileno())
+            except OSError:
+                pass
+    finally:
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink(missing_ok=True)
+    return dst
+
+
+def _run_command(
+    args: list[str],
+    task,
+    log: Path,
+    *,
+    timeout: int = 1200,
+    cwd: Path | str | None = None,
+    stopping=None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Cancelable process group runner with sanitized environment overrides."""
+    from server import comfyui as _comfyui_mod
+
+    if log.is_symlink():
+        raise ValueError(f"运行日志文件不能是符号链接：{log.name}")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    check_fn = getattr(task, "check", None) if task is not None else None
+    note_fn = getattr(task, "note", None) if task is not None else None
+    with log.open("wb") as out:
+        proc = subprocess.Popen(
+            args,
+            cwd=cwd,
+            env=_sanitized_subprocess_env(env),
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    end, noted = time.monotonic() + timeout, 0.0
+    try:
+        while proc.poll() is None:
+            if callable(check_fn):
+                check_fn()
+            if isinstance(stopping, threading.Event) and stopping.is_set():
+                from server.runtime import ColabOneCancelledError
+
+                raise ColabOneCancelledError("实例正在停止，已取消远端加速包准备")
+            if time.monotonic() > end:
+                raise RuntimeError("远端加速包准备超时，请查看运行日志")
+            if time.monotonic() - noted > 5:
+                noted = time.monotonic()
+                tail = log.read_text(encoding="utf-8", errors="replace")[
+                    -1000:
+                ].splitlines()
+                if tail and callable(note_fn):
+                    note_fn(tail[-1][:250])
+            time.sleep(0.25)
+        if proc.returncode:
+            raise RuntimeError(
+                "远端命令执行失败："
+                + log.read_text(encoding="utf-8", errors="replace")[-600:]
+            )
+    finally:
+        _comfyui_mod._terminate_process_group(proc)
+
+
+def probe_gpu_acceleration_capabilities(
+    gpu_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Probe remote GPU architecture and optional kernel acceleration libraries.
+
+    Safe to call on CPU-only or offline environments where ``torch``, ``triton``,
+    ``nvcc``, or CUDA are absent. Avoids cold-importing ``torch`` (which would
+    pin ~300-500 MiB of CUDA context VRAM inside the control server) by querying
+    ``nvidia-smi`` and ``importlib.metadata`` whenever ``torch`` is not already
+    loaded in ``sys.modules``. Explicitly treats PyPI ``sageattention 1.x``
+    (such as ``1.0.6``) as unavailable because only SageAttention >= 2 is valid.
+    """
+    info = gpu_info if isinstance(gpu_info, dict) else {}
+
+    # Reuse already-loaded torch (e.g. worker or test mock) without cold-importing CUDA.
+    torch_mod = sys.modules.get("torch")
+
+    cuda_available = False
+    if torch_mod is not None:
+        try:
+            cuda_ns = getattr(torch_mod, "cuda", None)
+            is_avail = getattr(cuda_ns, "is_available", None)
+            cuda_available = bool(is_avail()) if callable(is_avail) else False
+        except Exception:
+            cuda_available = False
+
+    raw_gpu_name = str(info.get("gpu_name") or info.get("name") or "").strip()
+    gpu_name = "" if raw_gpu_name == "GPU 信息不可用" else raw_gpu_name
+
+    vram_mib = 0
+    has_explicit_vram = False
+    if "vram_mib" in info and info["vram_mib"] is not None:
+        vram_mib = _safe_nonneg_int(info["vram_mib"])
+        has_explicit_vram = True
+    elif "total_mib" in info and info["total_mib"] is not None:
+        vram_mib = _safe_nonneg_int(info["total_mib"])
+        has_explicit_vram = vram_mib > 0
+
+    if cuda_available and torch_mod is not None and (not gpu_name or not has_explicit_vram):
+        try:
+            props = torch_mod.cuda.get_device_properties(0)
+            if not gpu_name:
+                gpu_name = str(getattr(props, "name", "") or "").strip()
+            if not has_explicit_vram:
+                total_mem = _safe_nonneg_int(getattr(props, "total_memory", 0))
+                if total_mem > 0:
+                    vram_mib = total_mem // (1024 * 1024)
+                    has_explicit_vram = True
+        except Exception:
+            pass
+
+    has_explicit_cc = "cc_major" in info and info["cc_major"] is not None
+    if has_explicit_cc:
+        cc_major = _safe_nonneg_int(info["cc_major"])
+        cc_minor = _safe_nonneg_int(info.get("cc_minor", 0))
+    elif cuda_available and torch_mod is not None:
+        try:
+            cap = torch_mod.cuda.get_device_capability(0)
+            cc_major = _safe_nonneg_int(cap[0])
+            cc_minor = _safe_nonneg_int(cap[1])
+        except Exception:
+            cc_major, cc_minor = 0, 0
+    else:
+        cc_major, cc_minor = 0, 0
+
+    if (not has_explicit_cc and cc_major == 0) or not gpu_name or not has_explicit_vram:
+        smi_name, smi_vram, smi_major, smi_minor = _probe_nvidia_smi_gpu_caps()
+        if not gpu_name and smi_name:
+            gpu_name = smi_name
+        if not has_explicit_vram and smi_vram > 0:
+            vram_mib = smi_vram
+        if not has_explicit_cc and cc_major == 0 and smi_major > 0:
+            cc_major, cc_minor = smi_major, smi_minor
+
+    torch_version = str(info.get("torch_version") or "").strip()
+    cuda_version = str(info.get("cuda_version") or "").strip()
+    if torch_mod is not None:
+        if not torch_version:
+            torch_version = str(getattr(torch_mod, "__version__", "") or "").strip()
+        if not cuda_version:
+            ver_ns = getattr(torch_mod, "version", None)
+            cuda_version = str(getattr(ver_ns, "cuda", "") or "").strip()
+    if not torch_version:
+        try:
+            torch_version = str(importlib.metadata.version("torch") or "").strip()
+        except Exception:
+            torch_version = ""
+
+    nvcc_version = str(info.get("nvcc_version") or "").strip()
+    if not nvcc_version:
+        nvcc_version = _probe_nvcc_version()
+
+    if not cuda_version:
+        cuda_version = _cuda_version_from_torch_tag(torch_version) or nvcc_version
+
+    triton_available = _has_module_spec("triton")
+    torch_ver_tuple = _parse_version_tuple(torch_version)
+    torch_compile_supported = bool(
+        triton_available and len(torch_ver_tuple) >= 2 and torch_ver_tuple[:2] >= (2, 7)
+    )
+    fp8_fast_supported = (cc_major, cc_minor) >= (8, 9)
+
+    sageattn_version = ""
+    try:
+        sageattn_version = str(importlib.metadata.version("sageattention") or "").strip()
+    except Exception:
+        sageattn_version = ""
+    sage_ver_tuple = _parse_version_tuple(sageattn_version)
+    sageattn_available = bool(
+        _has_module_spec("sageattention")
+        and bool(sage_ver_tuple)
+        and sage_ver_tuple[0] >= 2
+    )
+
+    sageattn3_available = bool(
+        _has_module_spec("sageattn3")
+        and (cc_major, cc_minor) in _BLACKWELL_COMPUTE_CAPABILITIES
+    )
+    flash_attn_2_available = _has_module_spec("flash_attn")
+
+    return {
+        "gpu_name": gpu_name,
+        "vram_mib": vram_mib,
+        "cc_major": cc_major,
+        "cc_minor": cc_minor,
+        "torch_version": torch_version,
+        "cuda_version": cuda_version,
+        "nvcc_version": nvcc_version,
+        "triton_available": triton_available,
+        "torch_compile_supported": torch_compile_supported,
+        "fp8_fast_supported": fp8_fast_supported,
+        "sageattn_version": sageattn_version,
+        "sageattn_available": sageattn_available,
+        "sageattn3_available": sageattn3_available,
+        "flash_attn_2_available": flash_attn_2_available,
+    }
+
+
 class ColabOneComfyPackManager:
     """Manages isolated ComfyUI custom-node packs and verified model weights."""
 
@@ -784,6 +1266,11 @@ class ColabOneComfyPackManager:
     def active_pack_id(self, value: str) -> None:
         with self.lock:
             self._active_pack_id = str(value or "")
+
+    def clear_pending_pip_restart(self) -> None:
+        """Clear pending pip-restart flag after caller restarts ComfyUI."""
+        with self.lock:
+            self._pending_pip_restart = False
 
     def _managed_manifest_path(self) -> Path:
         return self.install_dir / "custom_nodes" / ".colabone-managed-nodes.json"
@@ -1083,49 +1570,701 @@ class ColabOneComfyPackManager:
         *,
         timeout: int = 1200,
         cwd: Path | str | None = None,
+        env: dict[str, str] | None = None,
+        run_cmd_fn: Callable[..., Any] | None = None,
     ) -> None:
         stopping = getattr(self.runtime, "stopping", None)
-        if self.run_cmd_fn is None:
-            from server import comfyui as _comfyui_mod
+        fn = run_cmd_fn if run_cmd_fn is not None else self.run_cmd_fn
+        if fn is None:
+            if env is not None:
+                _run_command(
+                    args,
+                    task,
+                    log,
+                    timeout=timeout,
+                    cwd=cwd,
+                    stopping=stopping,
+                    env=env,
+                )
+            else:
+                from server import comfyui as _comfyui_mod
 
-            _comfyui_mod._run_command(
-                args, task, log, timeout=timeout, cwd=cwd, stopping=stopping
-            )
+                _comfyui_mod._run_command(
+                    args, task, log, timeout=timeout, cwd=cwd, stopping=stopping
+                )
             return
 
+        sanitized_env = _sanitized_subprocess_env(env) if env is not None else None
         try:
-            sig = inspect.signature(self.run_cmd_fn)
-            params = list(sig.parameters.values())
-            has_var_pos = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
-            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
-            pos_params = [
-                p
-                for p in params
-                if p.kind
-                in (
-                    inspect.Parameter.POSITIONAL_ONLY,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                )
-            ]
-            param_names = {p.name for p in params}
-            kwargs: dict[str, Any] = {}
-            if has_var_kw or "timeout" in param_names:
-                kwargs["timeout"] = timeout
-            if has_var_kw or "cwd" in param_names:
-                kwargs["cwd"] = cwd
-            if has_var_kw or "stopping" in param_names:
-                kwargs["stopping"] = stopping
-
-            if has_var_pos or len(pos_params) >= 3:
-                self.run_cmd_fn(args, task, log, **kwargs)
-            elif len(pos_params) == 2:
-                self.run_cmd_fn(args, task, **kwargs)
-            elif len(pos_params) == 1:
-                self.run_cmd_fn(args, **kwargs)
-            else:
-                self.run_cmd_fn(args, task, log)
+            sig = inspect.signature(fn)
         except (TypeError, ValueError):
-            self.run_cmd_fn(args, task, log)
+            fn(args, task, log)
+            return
+
+        params = list(sig.parameters.values())
+        has_var_pos = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+        pos_params = [
+            p
+            for p in params
+            if p.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        param_names = {p.name for p in params}
+        kwargs: dict[str, Any] = {}
+        if has_var_kw or "timeout" in param_names:
+            kwargs["timeout"] = timeout
+        if has_var_kw or "cwd" in param_names:
+            kwargs["cwd"] = cwd
+        if has_var_kw or "stopping" in param_names:
+            kwargs["stopping"] = stopping
+        if sanitized_env is not None and (has_var_kw or "env" in param_names):
+            kwargs["env"] = sanitized_env
+
+        if has_var_pos or len(pos_params) >= 3:
+            fn(args, task, log, **kwargs)
+        elif len(pos_params) == 2:
+            fn(args, task, **kwargs)
+        elif len(pos_params) == 1:
+            fn(args, **kwargs)
+        else:
+            fn(args, task, log)
+
+    def _resolve_drive_wheel_cache_root(self) -> Path | None:
+        drive = getattr(self.runtime, "drive", None)
+        if drive is None:
+            return None
+        if getattr(drive, "mode", "") != "colab_drivefs":
+            return None
+        ws_fn = getattr(drive, "_drivefs_workspace_dir", None)
+        if not callable(ws_fn):
+            return None
+        try:
+            ws_dir = Path(ws_fn())
+            if ws_dir.is_symlink() or not ws_dir.is_dir():
+                return None
+            cache_root = ws_dir / "wheel-cache"
+            if cache_root.is_symlink():
+                return None
+            if cache_root.exists() and not cache_root.is_dir():
+                return None
+            return cache_root
+        except OSError:
+            return None
+
+    def _try_pull_wheel_from_drive(
+        self,
+        *,
+        cache_key: str,
+        local_cache_root: Path,
+        local_cache_dir: Path,
+        dist_prefixes: tuple[str, ...],
+        min_major: int | None = None,
+        allow_empty: bool = False,
+    ) -> Path | None:
+        try:
+            drive_root = self._resolve_drive_wheel_cache_root()
+            if drive_root is None:
+                return None
+            drive_cache_dir = drive_root / cache_key
+            drive_wheel = _find_cached_wheel(
+                drive_cache_dir,
+                dist_prefixes=dist_prefixes,
+                min_major=min_major,
+                reject_symlinks=False,
+                allow_empty=allow_empty,
+            )
+            if drive_wheel is None:
+                return None
+            wheel_name = drive_wheel.name
+            if (
+                not wheel_name
+                or wheel_name.startswith(".")
+                or "/" in wheel_name
+                or "\\" in wheel_name
+                or ".." in wheel_name
+            ):
+                return None
+            _ensure_dir(local_cache_root, "加速包缓存根目录")
+            _ensure_dir(local_cache_dir, "加速包缓存目录")
+            return _copy_wheel_atomic(drive_wheel, local_cache_dir / wheel_name)
+        except Exception as exc:
+            if _is_cancelled_exception(exc):
+                raise
+            return None
+
+    def _try_mirror_wheel_to_drive(
+        self,
+        *,
+        cache_key: str,
+        wheel_path: Path,
+    ) -> bool:
+        try:
+            if wheel_path.is_symlink() or not wheel_path.is_file():
+                return False
+            drive_root = self._resolve_drive_wheel_cache_root()
+            if drive_root is None:
+                return False
+            _ensure_dir(drive_root, "云盘加速包缓存根目录")
+            drive_cache_dir = drive_root / cache_key
+            _ensure_dir(drive_cache_dir, "云盘加速包缓存目录")
+            drive_dst = drive_cache_dir / wheel_path.name
+            if drive_dst.is_symlink():
+                return False
+            if drive_dst.is_file():
+                try:
+                    if drive_dst.stat().st_size == wheel_path.stat().st_size:
+                        return True
+                except OSError:
+                    pass
+            _copy_wheel_atomic(wheel_path, drive_dst)
+            return True
+        except Exception as exc:
+            if _is_cancelled_exception(exc):
+                raise
+            return False
+
+    def _checkout_sageattention_source(
+        self,
+        task,
+        src_dir: Path,
+        build_log: Path,
+        *,
+        run_cmd_fn: Callable[..., Any] | None = None,
+    ) -> None:
+        effective_runner = run_cmd_fn if run_cmd_fn is not None else self.run_cmd_fn
+        if effective_runner is None and not shutil.which("git"):
+            raise RuntimeError("此远端缺少 Git，无法拉取 SageAttention 源码")
+        build_root = src_dir.parent
+        _ensure_dir(build_root, "加速包构建目录")
+        if src_dir.is_symlink():
+            raise ValueError("SageAttention 源码目录不能是符号链接")
+        git_dir = src_dir / ".git"
+        if git_dir.is_symlink():
+            raise ValueError("SageAttention .git 目录不能是符号链接")
+        if git_dir.exists() and not git_dir.is_dir():
+            shutil.rmtree(src_dir, ignore_errors=True)
+        _ensure_dir(src_dir, "SageAttention 源码目录")
+
+        if git_dir.is_dir():
+            for lock_file in git_dir.rglob("*.lock"):
+                try:
+                    lock_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                self._invoke_run_cmd(
+                    [
+                        "git",
+                        "-C",
+                        str(src_dir),
+                        "remote",
+                        "set-url",
+                        "origin",
+                        SAGEATTN_REPO_URL,
+                    ],
+                    task,
+                    build_log,
+                    env={},
+                    run_cmd_fn=run_cmd_fn,
+                )
+            except RuntimeError as exc:
+                if _is_cancelled_exception(exc):
+                    raise
+                self._invoke_run_cmd(
+                    [
+                        "git",
+                        "-C",
+                        str(src_dir),
+                        "remote",
+                        "add",
+                        "origin",
+                        SAGEATTN_REPO_URL,
+                    ],
+                    task,
+                    build_log,
+                    env={},
+                    run_cmd_fn=run_cmd_fn,
+                )
+        else:
+            self._invoke_run_cmd(
+                ["git", "init", str(src_dir)],
+                task,
+                build_log,
+                env={},
+                run_cmd_fn=run_cmd_fn,
+            )
+            self._invoke_run_cmd(
+                [
+                    "git",
+                    "-C",
+                    str(src_dir),
+                    "remote",
+                    "add",
+                    "origin",
+                    SAGEATTN_REPO_URL,
+                ],
+                task,
+                build_log,
+                env={},
+                run_cmd_fn=run_cmd_fn,
+            )
+
+        self._invoke_run_cmd(
+            [
+                "git",
+                "-C",
+                str(src_dir),
+                "fetch",
+                "--depth",
+                "1",
+                "origin",
+                SAGEATTN_COMMIT,
+            ],
+            task,
+            build_log,
+            env={},
+            run_cmd_fn=run_cmd_fn,
+        )
+        self._invoke_run_cmd(
+            [
+                "git",
+                "-C",
+                str(src_dir),
+                "checkout",
+                "--force",
+                "--detach",
+                SAGEATTN_COMMIT,
+            ],
+            task,
+            build_log,
+            env={},
+            run_cmd_fn=run_cmd_fn,
+        )
+        self._invoke_run_cmd(
+            ["git", "-C", str(src_dir), "clean", "-fdx"],
+            task,
+            build_log,
+            env={},
+            run_cmd_fn=run_cmd_fn,
+        )
+
+    def ensure_sageattention_wheels(
+        self,
+        task,
+        *,
+        gpu_caps: dict[str, Any] | None = None,
+        allow_sage3: bool = True,
+        run_cmd_fn: Callable[..., Any] | None = None,
+    ) -> dict[str, Any]:
+        """Ensure SageAttention 2 (and SageAttention 3 on Blackwell) wheels are ready.
+
+        Checks local and optional Colab DriveFS wheel caches before falling back to
+        a pinned source build. Never raises on build/install/cache errors (except
+        task cancellation), logging a warning so workflows fall back cleanly.
+        """
+
+        def _check_task() -> None:
+            if task is not None and callable(getattr(task, "check", None)):
+                task.check()
+
+        def _note(message: str, level: str = "info") -> None:
+            note_fn = getattr(task, "note", None) if task is not None else None
+            if not callable(note_fn):
+                return
+            if level == "info":
+                note_fn(message)
+                return
+            try:
+                note_fn(message, level=level)
+            except TypeError:
+                note_fn(message, level)
+
+        _check_task()
+        if gpu_caps is None:
+            gpu_fn = getattr(self.runtime, "gpu_info", None)
+            raw_gpu = (gpu_fn() if callable(gpu_fn) else None) or None
+            caps = probe_gpu_acceleration_capabilities(raw_gpu)
+        else:
+            caps = dict(gpu_caps)
+
+        cc_major = _safe_nonneg_int(caps.get("cc_major", 0))
+        cc_minor = _safe_nonneg_int(caps.get("cc_minor", 0))
+        cc_tuple = (cc_major, cc_minor)
+        caps["installed_any"] = False
+
+        if cc_major < 8:
+            _note(
+                f"当前 GPU 计算能力为 sm_{cc_major}{cc_minor}（低于 sm_80），跳过 SageAttention 加速包安装"
+            )
+            return caps
+
+        need_sage2 = not bool(caps.get("sageattn_available"))
+        is_blackwell = cc_tuple in _BLACKWELL_COMPUTE_CAPABILITIES
+        need_sage3 = bool(
+            allow_sage3 and is_blackwell and not bool(caps.get("sageattn3_available"))
+        )
+
+        if not need_sage2 and not need_sage3:
+            return caps
+
+        effective_runner = run_cmd_fn if run_cmd_fn is not None else self.run_cmd_fn
+        allow_empty_wheel = effective_runner is not None
+        nvcc_version = str(caps.get("nvcc_version") or "").strip()
+        nvcc_tuple = _parse_version_tuple(nvcc_version)
+        nvcc_present = len(nvcc_tuple) >= 2 and (
+            effective_runner is not None or bool(shutil.which("nvcc"))
+        )
+
+        py_tag = f"{sys.version_info.major}{sys.version_info.minor}"
+        torch_tag = str(caps.get("torch_version") or "").strip() or "unknown"
+        cu_tag = nvcc_version or str(caps.get("cuda_version") or "").strip() or "unknown"
+        cache_key = _sanitize_cache_key(
+            f"sageattention-{SAGEATTN_COMMIT[:10]}-py{py_tag}-torch{torch_tag}-cu{cu_tag}-sm{cc_major}{cc_minor}"
+        )
+
+        runtime_root = getattr(self.runtime, "root", None)
+        base_root = (
+            Path(runtime_root)
+            if isinstance(runtime_root, (str, os.PathLike))
+            else self.root
+        )
+        local_cache_root = base_root / "wheel-cache"
+        local_cache_dir = local_cache_root / cache_key
+        build_src_dir = base_root / "wheel-build" / "SageAttention"
+        build_log = base_root / "comfyui-sageattention-build.log"
+
+        build_env = _sageattention_build_env(cc_major, cc_minor)
+        sage3_dist_prefixes = (
+            "sageattn3",
+            "sageattention3",
+            "sageattention3_blackwell",
+        )
+
+        installed_any = False
+        source_checked_out = False
+
+        def _build_wheel_into_cache(
+            src_path: Path,
+            *,
+            dist_prefixes: tuple[str, ...],
+            min_major: int | None,
+            label: str,
+        ) -> Path:
+            """Build a wheel inside an isolated staging dir and atomically promote into local_cache_dir."""
+            _ensure_dir(local_cache_root, "加速包缓存根目录")
+            _ensure_dir(local_cache_dir, "加速包缓存目录")
+            if effective_runner is not None:
+                self._invoke_run_cmd(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "wheel",
+                        "--no-input",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "--no-deps",
+                        "--wheel-dir",
+                        str(local_cache_dir),
+                        str(src_path),
+                    ],
+                    task,
+                    build_log,
+                    env=build_env,
+                    run_cmd_fn=run_cmd_fn,
+                )
+                built = _find_cached_wheel(
+                    local_cache_dir,
+                    dist_prefixes=dist_prefixes,
+                    min_major=min_major,
+                    reject_symlinks=True,
+                    allow_empty=True,
+                )
+                if built is None:
+                    raise RuntimeError(f"未在构建目录中找到生成的 {label} wheel 文件")
+                return built
+
+            stage_parent = base_root / "wheel-build"
+            _ensure_dir(stage_parent, "加速包构建目录")
+            stage_dir = stage_parent / f"stage-{uuid.uuid4().hex[:10]}"
+            stage_dir.mkdir(parents=True, exist_ok=False)
+            try:
+                self._invoke_run_cmd(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "wheel",
+                        "--no-input",
+                        "--disable-pip-version-check",
+                        "--no-build-isolation",
+                        "--no-deps",
+                        "--wheel-dir",
+                        str(stage_dir),
+                        str(src_path),
+                    ],
+                    task,
+                    build_log,
+                    env=build_env,
+                    run_cmd_fn=run_cmd_fn,
+                )
+                staged_wheel = _find_cached_wheel(
+                    stage_dir,
+                    dist_prefixes=dist_prefixes,
+                    min_major=min_major,
+                    reject_symlinks=True,
+                    allow_empty=False,
+                )
+                if staged_wheel is None:
+                    raise RuntimeError(f"未在构建目录中找到生成的 {label} wheel 文件")
+                return _copy_wheel_atomic(
+                    staged_wheel, local_cache_dir / staged_wheel.name
+                )
+            finally:
+                shutil.rmtree(stage_dir, ignore_errors=True)
+
+        def _ensure_source_checked_out() -> None:
+            nonlocal source_checked_out
+            if source_checked_out:
+                return
+            _check_task()
+            self._checkout_sageattention_source(
+                task,
+                build_src_dir,
+                build_log,
+                run_cmd_fn=run_cmd_fn,
+            )
+            source_checked_out = True
+
+        def _install_wheel(wheel_path: Path) -> None:
+            _check_task()
+            if wheel_path.is_symlink() or not wheel_path.is_file():
+                raise ValueError(f"加速包 wheel 文件不能是符号链接：{wheel_path.name}")
+            self._invoke_run_cmd(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-input",
+                    "--disable-pip-version-check",
+                    "--no-deps",
+                    "--force-reinstall",
+                    str(wheel_path),
+                ],
+                task,
+                build_log,
+                env={},
+                run_cmd_fn=run_cmd_fn,
+            )
+            importlib.invalidate_caches()
+
+        def _refresh_sage2_state(wheel_path: Path) -> None:
+            if effective_runner is not None:
+                caps["sageattn_available"] = True
+                ver = _wheel_version_from_filename(wheel_path.name)
+                if ver:
+                    caps["sageattn_version"] = ver
+                return
+            live_ver = ""
+            try:
+                live_ver = str(
+                    importlib.metadata.version("sageattention") or ""
+                ).strip()
+            except Exception:
+                live_ver = ""
+            live_tuple = _parse_version_tuple(live_ver)
+            caps["sageattn_version"] = live_ver
+            caps["sageattn_available"] = bool(
+                _has_module_spec("sageattention")
+                and bool(live_tuple)
+                and live_tuple[0] >= 2
+            )
+
+        def _refresh_sage3_state() -> None:
+            if effective_runner is not None:
+                caps["sageattn3_available"] = True
+                return
+            caps["sageattn3_available"] = bool(
+                _has_module_spec("sageattn3") and is_blackwell
+            )
+
+        try:
+            if local_cache_root.is_symlink():
+                raise ValueError("加速包缓存根目录不能是符号链接")
+            if local_cache_dir.is_symlink():
+                raise ValueError("加速包缓存目录不能是符号链接")
+
+            if need_sage2:
+                _check_task()
+                try:
+                    wheel_path = _find_cached_wheel(
+                        local_cache_dir,
+                        dist_prefixes=("sageattention",),
+                        min_major=2,
+                        reject_symlinks=True,
+                        allow_empty=allow_empty_wheel,
+                    )
+                    if wheel_path is None:
+                        wheel_path = self._try_pull_wheel_from_drive(
+                            cache_key=cache_key,
+                            local_cache_root=local_cache_root,
+                            local_cache_dir=local_cache_dir,
+                            dist_prefixes=("sageattention",),
+                            min_major=2,
+                            allow_empty=allow_empty_wheel,
+                        )
+
+                    if wheel_path is not None:
+                        _note(
+                            f"复用已缓存的 SageAttention 2 加速包（sm_{cc_major}{cc_minor}）"
+                        )
+                        _install_wheel(wheel_path)
+                        self._try_mirror_wheel_to_drive(
+                            cache_key=cache_key, wheel_path=wheel_path
+                        )
+                        _refresh_sage2_state(wheel_path)
+                        installed_any = True
+                    else:
+                        min_nvcc = _min_nvcc_for_sage2(cc_major, cc_minor)
+                        if not nvcc_present or nvcc_tuple[:2] < min_nvcc:
+                            _note(
+                                f"未检测到满足 sm_{cc_major}{cc_minor} 要求的 nvcc"
+                                f"（需要 CUDA >= {min_nvcc[0]}.{min_nvcc[1]}），跳过 SageAttention 2 源码构建"
+                            )
+                        else:
+                            _ensure_dir(local_cache_root, "加速包缓存根目录")
+                            _ensure_dir(local_cache_dir, "加速包缓存目录")
+                            _set_task_attr(
+                                task,
+                                message=f"构建 SageAttention 2 加速包 · sm_{cc_major}{cc_minor}",
+                            )
+                            _note(
+                                f"正在为 sm_{cc_major}{cc_minor} 构建 SageAttention 2 加速包（首次构建后将缓存复用）"
+                            )
+                            _ensure_source_checked_out()
+                            _check_task()
+                            built_wheel = _build_wheel_into_cache(
+                                build_src_dir,
+                                dist_prefixes=("sageattention",),
+                                min_major=2,
+                                label="SageAttention 2",
+                            )
+                            _install_wheel(built_wheel)
+                            self._try_mirror_wheel_to_drive(
+                                cache_key=cache_key, wheel_path=built_wheel
+                            )
+                            _refresh_sage2_state(built_wheel)
+                            installed_any = True
+                            _note(
+                                f"SageAttention 2 加速包构建并安装完成（sm_{cc_major}{cc_minor}）"
+                            )
+                except Exception as exc:
+                    if _is_cancelled_exception(exc):
+                        raise
+                    _note(
+                        f"SageAttention 加速包构建或安装跳过，将自动回退：{exc}",
+                        level="warning",
+                    )
+
+            if need_sage3 and bool(caps.get("sageattn_available")):
+                _check_task()
+                try:
+                    torch_tuple = _parse_version_tuple(caps.get("torch_version") or "")
+                    sage3_wheel = _find_cached_wheel(
+                        local_cache_dir,
+                        dist_prefixes=sage3_dist_prefixes,
+                        min_major=None,
+                        reject_symlinks=True,
+                        allow_empty=allow_empty_wheel,
+                    )
+                    if sage3_wheel is None:
+                        sage3_wheel = self._try_pull_wheel_from_drive(
+                            cache_key=cache_key,
+                            local_cache_root=local_cache_root,
+                            local_cache_dir=local_cache_dir,
+                            dist_prefixes=sage3_dist_prefixes,
+                            min_major=None,
+                            allow_empty=allow_empty_wheel,
+                        )
+
+                    if sage3_wheel is not None:
+                        _note(
+                            f"复用已缓存的 SageAttention 3 加速包（sm_{cc_major}{cc_minor}）"
+                        )
+                        _install_wheel(sage3_wheel)
+                        self._try_mirror_wheel_to_drive(
+                            cache_key=cache_key, wheel_path=sage3_wheel
+                        )
+                        _refresh_sage3_state()
+                        installed_any = True
+                    elif not nvcc_present or nvcc_tuple[:2] < (12, 8):
+                        _note(
+                            f"未检测到满足 Blackwell sm_{cc_major}{cc_minor} 要求的 nvcc"
+                            "（需要 CUDA >= 12.8），跳过 SageAttention 3 源码构建"
+                        )
+                    elif len(torch_tuple) >= 2 and torch_tuple[:2] < (2, 8):
+                        _note(
+                            f"当前 PyTorch {caps.get('torch_version')} 低于 2.8，跳过 SageAttention 3 源码构建（已启用 SageAttention 2）"
+                        )
+                    else:
+                        _ensure_dir(local_cache_root, "加速包缓存根目录")
+                        _ensure_dir(local_cache_dir, "加速包缓存目录")
+                        _set_task_attr(
+                            task,
+                            message=f"构建 SageAttention 3 加速包 · sm_{cc_major}{cc_minor}",
+                        )
+                        _note(
+                            f"正在为 Blackwell sm_{cc_major}{cc_minor} 构建 SageAttention 3 加速包（首次构建后将缓存复用）"
+                        )
+                        _ensure_source_checked_out()
+                        sage3_src_dir = build_src_dir / "sageattention3_blackwell"
+                        if sage3_src_dir.is_symlink():
+                            raise ValueError("SageAttention 3 源码目录不能是符号链接")
+                        if effective_runner is None and not sage3_src_dir.is_dir():
+                            raise RuntimeError(
+                                "SageAttention 仓库中未找到 sageattention3_blackwell 子目录"
+                            )
+                        _check_task()
+                        built_sage3 = _build_wheel_into_cache(
+                            sage3_src_dir,
+                            dist_prefixes=sage3_dist_prefixes,
+                            min_major=None,
+                            label="SageAttention 3",
+                        )
+                        _install_wheel(built_sage3)
+                        self._try_mirror_wheel_to_drive(
+                            cache_key=cache_key, wheel_path=built_sage3
+                        )
+                        _refresh_sage3_state()
+                        installed_any = True
+                        _note(
+                            f"SageAttention 3 加速包构建并安装完成（sm_{cc_major}{cc_minor}）"
+                        )
+                except Exception as exc:
+                    if _is_cancelled_exception(exc):
+                        raise
+                    _note(
+                        f"SageAttention 加速包构建或安装跳过，将自动回退：{exc}",
+                        level="warning",
+                    )
+        except Exception as exc:
+            if _is_cancelled_exception(exc):
+                raise
+            _note(
+                f"SageAttention 加速包构建或安装跳过，将自动回退：{exc}",
+                level="warning",
+            )
+
+        if installed_any:
+            with self.lock:
+                self._pending_pip_restart = True
+        caps["installed_any"] = installed_any
+        return caps
 
     def _prepare_pack_checkout(
         self,

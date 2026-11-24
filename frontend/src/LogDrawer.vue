@@ -9,7 +9,7 @@ import {
   Spin as ASpin,
   Tag as ATag,
 } from "ant-design-vue";
-import { PhCopy, PhSpeedometer, PhTrash } from "@phosphor-icons/vue";
+import { PhClock, PhCopy, PhSpeedometer, PhTrash } from "@phosphor-icons/vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import type { ColabOnePrivacyContext } from "./colabOnePrivacy";
@@ -34,6 +34,7 @@ const props = defineProps<{
     completionTokens?: number | null;
     estimated?: boolean;
   } | null;
+  activeElapsed?: string;
 }>();
 
 const LOG_SKELETON_ROWS = [
@@ -193,15 +194,29 @@ onUnmounted(() => {
       <div class="co-log-status">
         <div class="co-log-status-head">
           <span class="co-eyebrow">{{ t("logs.currentStatus") }}</span>
-          <ATag
-            v-if="liveSpeedLabel"
-            color="blue"
-            :bordered="false"
-            class="co-log-live-speed co-mono"
+          <div
+            v-if="liveSpeedLabel || activeElapsed"
+            class="co-log-status-tags"
           >
-            <PhSpeedometer :size="12" />
-            <span>{{ liveSpeedLabel }}</span>
-          </ATag>
+            <ATag
+              v-if="activeElapsed"
+              :bordered="false"
+              class="co-log-live-elapsed co-mono"
+              data-testid="log-drawer-elapsed"
+            >
+              <PhClock :size="12" aria-hidden="true" />
+              <span>{{ t("task.elapsedLive", { duration: activeElapsed }) }}</span>
+            </ATag>
+            <ATag
+              v-if="liveSpeedLabel"
+              color="blue"
+              :bordered="false"
+              class="co-log-live-speed co-mono"
+            >
+              <PhSpeedometer :size="12" />
+              <span>{{ liveSpeedLabel }}</span>
+            </ATag>
+          </div>
         </div>
         <p class="co-log-status-text">
           <template v-if="loading && !logs.length">
@@ -469,11 +484,29 @@ onUnmounted(() => {
   color: var(--co-muted);
 }
 
-.co-log-live-speed {
+.co-log-status-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.co-log-live-speed,
+.co-log-live-elapsed {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 18px;
   padding-inline: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.co-log-live-elapsed {
+  color: var(--co-secondary-text);
+  background: var(--co-subtle);
 }
 
 .co-log-status-text {

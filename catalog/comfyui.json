@@ -29,7 +29,54 @@
         "huggingface-hub"
       ],
       "source_repo": "https://github.com/OpenBMB/VoxCPM.git",
-      "source_commit": "300e4260b509066151d623dc9c0aa922cf82232b"
+      "source_commit": "300e4260b509066151d623dc9c0aa922cf82232b",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "seed": 202605
+        }
+      ]
     },
     {
       "id": "qwen3_tts",
@@ -55,7 +102,54 @@
         "huggingface-hub"
       ],
       "source_repo": "https://github.com/QwenLM/Qwen3-TTS.git",
-      "source_commit": "022e286b98fbec7e1e916cb940cdf532cd9f488e"
+      "source_commit": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "26岁年轻知性女性主播，清澈温润的现代标准普通话，吐字清晰圆润，棚录近麦高保真质感，语速自然流畅，专业沉稳且富有亲和力。",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "22岁甜美活泼的年轻女生，嗓音清亮灵动略带笑意，元气自然不腻耳，咬字轻快清晰，节奏明快富有感染力。",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "25岁温柔治愈系年轻女声，声线柔和细腻、气息温暖舒缓，语调轻柔自然，像深夜电台好友娓娓道来，耐听且有安全感。",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "30岁成熟干练的职场女性，中低音区醇厚清亮，吐字干净利落，逻辑停顿清晰，语气温和而坚定，极富专业说服力。",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "28岁专业新闻女播音员，胸腔共鸣饱满大气，标准普通话字正腔圆，重音与停连考究，沉稳大方且自然流畅。",
+          "seed": 202605
+        }
+      ]
     },
     {
       "id": "fish_s2_pro",
@@ -80,7 +174,54 @@
         "huggingface-hub"
       ],
       "source_repo": "https://github.com/fishaudio/fish-speech.git",
-      "source_commit": "0f8a12e8a651062fdee9c33a894bdccd3a8513f1"
+      "source_commit": "0f8a12e8a651062fdee9c33a894bdccd3a8513f1",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "seed": 202605
+        }
+      ]
     },
     {
       "id": "indextts2",
@@ -107,7 +248,54 @@
         "einops"
       ],
       "source_repo": "https://github.com/index-tts/index-tts.git",
-      "source_commit": "d9e41aac89fd00b3d71497fddb287b7f24613712"
+      "source_commit": "d9e41aac89fd00b3d71497fddb287b7f24613712",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "seed": 202605
+        }
+      ]
     }
   ],
   "templates": [
@@ -307,7 +495,7 @@
           "inputs": {
             "model_name": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
             "precision": "bf16",
-            "positive_prompt": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+            "positive_prompt": "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, making expressive, natural hand gestures and open-palm movements to emphasize points while talking, lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background",
             "negative_prompt": "bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
             "quantization": "fp8_e4m3fn",
             "use_disk_cache": true,
@@ -606,6 +794,39 @@
           "option_labels": {}
         },
         {
+          "key": "pipeline.voice_preset",
+          "label": "内置女声音色",
+          "node_id": "pipeline",
+          "input_name": "voice_preset",
+          "field_type": "select",
+          "default": "shen_zhiyi",
+          "options": [
+            "shen_zhiyi",
+            "lin_xiaoman",
+            "su_wanqing",
+            "gu_qinglan",
+            "lu_mingwei",
+            "custom"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "为所有远端配音引擎内置 5 位好听的中文女声；若上传了参考音色音频，将优先克隆所传音色。",
+          "group": "basic",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {
+            "shen_zhiyi": "沈知意 · 知性女主播（清澈温润 · 默认推荐）",
+            "lin_xiaoman": "林小满 · 甜美活力（清亮灵动 · 种草口播）",
+            "su_wanqing": "苏晚晴 · 温柔治愈（柔和细腻 · 故事解说）",
+            "gu_qinglan": "顾清岚 · 干练职场（醇厚沉稳 · 商业科技）",
+            "lu_mingwei": "陆明薇 · 播音气质（字正腔圆 · 资讯讲解）",
+            "custom": "自定义音色（使用下方参考音色或文本捏声线）"
+          }
+        },
+        {
           "key": "2.audio",
           "label": "驱动音频文件",
           "node_id": "2",
@@ -635,7 +856,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "上传 5～15 秒清晰人声即可克隆该音色；留空则使用默认自然音色（选用 IndexTTS-2 时必须上传）。",
+          "description": "上传 5～15 秒清晰人声即可克隆该音色（优先级高于内置女声）；留空则自动使用上方所选内置女声（IndexTTS-2 仅在选用「自定义音色」时必须上传）。",
           "group": "basic",
           "required": false,
           "visible_when": {
@@ -801,7 +1022,7 @@
           "node_id": "5",
           "input_name": "positive_prompt",
           "field_type": "textarea",
-          "default": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+          "default": "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, making expressive, natural hand gestures and open-palm movements to emphasize points while talking, lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background",
           "options": [],
           "min_value": null,
           "max_value": null,
@@ -894,7 +1115,7 @@
     {
       "id": "digital-human-longcat",
       "name": "口播数字人 · 旗舰高清版",
-      "description": "输入人像照片与口播文稿（或音频），原生 720p 渲染输出面部细节更细腻的高清有声视频（MP4）。",
+      "description": "输入人像照片与口播文稿（或音频），默认采用官方 480p 极速扩散 + AI 2x 细节超分与全栈 GPU 加速，并支持一键切换原生 720p 极致细节。",
       "source": "builtin",
       "min_vram_mib": 49152,
       "min_disk_mib": 56320,
@@ -997,12 +1218,12 @@
           "fish_s2_pro",
           "indextts2"
         ],
-        "max_segment_seconds": 6.0,
+        "max_segment_seconds": 3.7,
         "tail_frame_offset_seconds": 0.08,
         "output_fps": 25,
         "target_width": 1280,
         "target_height": 720,
-        "upscale_mode": "lanczos",
+        "upscale_mode": "ai_2x",
         "audio_node_key": "2.audio",
         "image_node_key": "1.image",
         "prompt_node_key": "5.positive_prompt",
@@ -1042,8 +1263,8 @@
               "1",
               0
             ],
-            "width": 1280,
-            "height": 768,
+            "width": 832,
+            "height": 480,
             "upscale_method": "lanczos",
             "keep_proportion": "crop",
             "pad_color": "0, 0, 0",
@@ -1071,8 +1292,8 @@
           "inputs": {
             "model_name": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
             "precision": "bf16",
-            "positive_prompt": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
-            "negative_prompt": "bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
+            "positive_prompt": "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, making expressive, natural hand gestures and open-palm movements to emphasize points while talking, lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background",
+            "negative_prompt": "bright tones, overexposed, static, stiff posture, frozen hands, motionless arms, robotic movement, unnatural mouth, blurred details, subtitles, style, works, paintings, images, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
             "quantization": "fp8_e4m3fn",
             "use_disk_cache": true,
             "device": "gpu"
@@ -1129,7 +1350,7 @@
             "normalize_loudness": false,
             "num_frames": 93,
             "fps": 25.0,
-            "audio_scale": 1.0,
+            "audio_scale": 1.15,
             "audio_cfg_scale": 1.0,
             "multi_audio_type": "para"
           }
@@ -1192,7 +1413,7 @@
           },
           "inputs": {
             "lora": "LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors",
-            "strength": 0.9,
+            "strength": 1.0,
             "low_mem_load": false,
             "merge_loras": true
           }
@@ -1222,8 +1443,8 @@
           },
           "inputs": {
             "scheduler": "longcat_distill_euler",
-            "steps": 12,
-            "shift": 12.0,
+            "steps": 8,
+            "shift": 7.0,
             "start_step": 0,
             "end_step": -1,
             "enhance_hf": false
@@ -1341,6 +1562,39 @@
           "option_labels": {}
         },
         {
+          "key": "pipeline.voice_preset",
+          "label": "内置女声音色",
+          "node_id": "pipeline",
+          "input_name": "voice_preset",
+          "field_type": "select",
+          "default": "shen_zhiyi",
+          "options": [
+            "shen_zhiyi",
+            "lin_xiaoman",
+            "su_wanqing",
+            "gu_qinglan",
+            "lu_mingwei",
+            "custom"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "为所有远端配音引擎内置 5 位好听的中文女声；若上传了参考音色音频，将优先克隆所传音色。",
+          "group": "basic",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {
+            "shen_zhiyi": "沈知意 · 知性女主播（清澈温润 · 默认推荐）",
+            "lin_xiaoman": "林小满 · 甜美活力（清亮灵动 · 种草口播）",
+            "su_wanqing": "苏晚晴 · 温柔治愈（柔和细腻 · 故事解说）",
+            "gu_qinglan": "顾清岚 · 干练职场（醇厚沉稳 · 商业科技）",
+            "lu_mingwei": "陆明薇 · 播音气质（字正腔圆 · 资讯讲解）",
+            "custom": "自定义音色（使用下方参考音色或文本捏声线）"
+          }
+        },
+        {
           "key": "2.audio",
           "label": "驱动音频文件",
           "node_id": "2",
@@ -1370,7 +1624,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "上传 5～15 秒清晰人声即可克隆该音色；留空则使用默认自然音色（选用 IndexTTS-2 时必须上传）。",
+          "description": "上传 5～15 秒清晰人声即可克隆该音色（优先级高于内置女声）；留空则自动使用上方所选内置女声（IndexTTS-2 仅在选用「自定义音色」时必须上传）。",
           "group": "basic",
           "required": false,
           "visible_when": {
@@ -1536,7 +1790,7 @@
           "node_id": "5",
           "input_name": "positive_prompt",
           "field_type": "textarea",
-          "default": "A clear studio portrait of a speaker talking naturally to the camera with expressive facial movements, gentle head motion, natural blinking, sharp focus, soft studio lighting, stable background",
+          "default": "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, making expressive, natural hand gestures and open-palm movements to emphasize points while talking, lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background",
           "options": [],
           "min_value": null,
           "max_value": null,
@@ -1548,27 +1802,75 @@
           "option_labels": {}
         },
         {
+          "key": "pipeline.render_quality",
+          "label": "渲染清晰度与速度模式",
+          "node_id": "pipeline",
+          "input_name": "render_quality",
+          "field_type": "select",
+          "default": "balanced_480p_ai2x",
+          "options": [
+            "balanced_480p_ai2x",
+            "native_720p"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "默认采用美团与 Kijai 官方 480p（832×480）扩散叠加 AI 2x 细节超分，速度提升数倍且保留精准口型；切至原生 720p 可追求极限单帧纹理。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {
+            "balanced_480p_ai2x": "官方 480p 极速扩散 + AI 2x 细节超分（默认推荐 · 极快）",
+            "native_720p": "原生 720p 极致细节（1280×768 扩散 · 细节上限但较慢）"
+          }
+        },
+        {
+          "key": "pipeline.acceleration_profile",
+          "label": "远端 GPU 加速栈",
+          "node_id": "pipeline",
+          "input_name": "acceleration_profile",
+          "field_type": "select",
+          "default": "max",
+          "options": [
+            "max",
+            "balanced",
+            "compat"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "自动按远端 GPU 架构启用最强算子组合，并将 SageAttention 编译产物缓存至云盘复用；任一项不兼容时自动安全回退。",
+          "group": "advanced",
+          "required": false,
+          "visible_when": null,
+          "option_labels": {
+            "max": "极致全栈加速（SageAttention 2/3 + FP8 Fast + 常驻显存 + torch.compile · 推荐）",
+            "balanced": "高速稳健（SageAttention + FP8 Fast + 常驻显存，跳过编译预热）",
+            "compat": "兼容保底（原生 BF16 + SDPA，关闭底层算子加速）"
+          }
+        },
+        {
           "key": "pipeline.upscale_mode",
           "label": "画质超分模式",
           "node_id": "pipeline",
           "input_name": "upscale_mode",
           "field_type": "select",
-          "default": "lanczos",
+          "default": "ai_2x",
           "options": [
-            "lanczos",
             "ai_2x",
+            "lanczos",
             "none"
           ],
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "LongCat-Avatar 原生以 720p 级画质渲染，默认使用 Lanczos 精准适配所选 16:9/9:16 分辨率；如需 1080p 细节增强可选 AI 2x 超分。",
+          "description": "默认配合 480p 扩散开启 2xNomosUni AI 细节超分输出高清 720p/1080p；若切至原生 720p 扩散，可选 Lanczos 精准适配画幅。",
           "group": "advanced",
           "required": false,
           "visible_when": null,
           "option_labels": {
-            "lanczos": "Lanczos 高质量适配（默认推荐 · 精准输出所选画幅）",
-            "ai_2x": "AI 2x 细节超分（2xNomosUni SPAN · 1080p 增强）",
+            "ai_2x": "AI 2x 细节超分（2xNomosUni SPAN · 推荐高清）",
+            "lanczos": "Lanczos 高质量适配（精准输出所选画幅）",
             "none": "原生渲染尺寸输出（不缩放，保留原生画幅）"
           }
         },
@@ -1578,12 +1880,12 @@
           "node_id": "pipeline",
           "input_name": "max_segment_seconds",
           "field_type": "number",
-          "default": 6,
+          "default": 3.7,
           "options": [],
-          "min_value": 3,
-          "max_value": 9,
-          "step": 1,
-          "description": "LongCat-Avatar 1.5 单次扩散窗口上限为 256 帧（25fps），默认 6 秒自动分段并尾帧接力渲染，兼顾口型连贯与显存安全。",
+          "min_value": 3.0,
+          "max_value": 9.0,
+          "step": 0.1,
+          "description": "LongCat-Avatar 1.5 原生黄金窗口为 93 帧（约 3.7 秒 @ 25fps），默认 3.7 秒可避开二次方注意力耗时激增，并自动接入原图参考锁脸防漂移。",
           "group": "advanced",
           "required": false,
           "visible_when": null,
@@ -1595,12 +1897,12 @@
           "node_id": "14",
           "input_name": "steps",
           "field_type": "integer",
-          "default": 12,
+          "default": 8,
           "options": [],
-          "min_value": 6,
-          "max_value": 30,
+          "min_value": 4,
+          "max_value": 20,
           "step": 1,
-          "description": "配合 LongCat DMD 蒸馏 LoRA 推荐 12 步，步数越高单帧皮肤与口型细节越丰富。",
+          "description": "配合 LongCat-Avatar 1.5 DMD 蒸馏 LoRA 官方推荐 8 步，兼顾极速采样与精准口型细节（可按需在 6～12 步微调）。",
           "group": "advanced",
           "required": false,
           "visible_when": null,

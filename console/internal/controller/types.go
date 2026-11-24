@@ -496,6 +496,12 @@ type AuthClient interface {
 	BuildRcloneConf(ctx context.Context, quotaProject string) (string, error)
 }
 
+// AuthStateResetter is an optional interface implemented by AuthClient adapters
+// that support clearing cached in-memory login/quota state after account import.
+type AuthStateResetter interface {
+	ResetAccountState()
+}
+
 // ProviderClient manages Colab runtime allocation, kernel RPCs, heartbeats, Drive, and telemetry observation.
 type ProviderClient interface {
 	Account(ctx context.Context) (map[string]any, error)

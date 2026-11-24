@@ -34,9 +34,11 @@ export const jaJPMessages: ColabOneMessages = {
   "common.submitting": "送信中…",
   "common.secondsShort": "{value} 秒",
   "common.minutes": "{value} 分",
+  "common.minutesSeconds": "{minutes} 分 {seconds} 秒",
   "common.hours": "{value} 時間",
   "common.hoursMinutes": "{hours} 時間 {minutes} 分",
   "common.hoursMinutesShort": "{hours}時間{minutes}分",
+  "common.hoursMinutesSeconds": "{hours} 時間 {minutes} 分 {seconds} 秒",
   "common.daysHours": "{days} 日 {hours} 時間",
   "common.approxDaysHours": "約 {days} 日 {hours} 時間",
   "common.approxHoursMinutes": "約 {hours} 時間 {minutes} 分",
@@ -153,6 +155,8 @@ export const jaJPMessages: ColabOneMessages = {
   "task.kindComfyRun": "ComfyUI ワークフロー実行中",
   "task.gpuReadyIdle": "GPU 準備完了・待機中",
   "task.gpuWaitingStart": "リモート GPU の起動待ち",
+  "task.elapsedLive": "経過 {duration}",
+  "task.elapsedTotal": "所要 {duration}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/時",
@@ -1230,6 +1234,8 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.noticeCancelRequested": "実行中のタスクの中止を要求しました。",
   "comfy.noticeRunSubmitted":
     "ワークフロー「{name}」をリモートキューへ送信しました（実行中は自動解放を一時停止）。",
+  "comfy.noticeRunCompleted": "ワークフロー「{name}」が完了しました · 所要 {duration}",
+  "comfy.noticeRunCompletedNoDuration": "ワークフロー「{name}」が完了しました。",
   "comfy.noticeExported": "出力作品をローカルへ保存しました。",
   "comfy.noticeExportedDrive": "出力作品を Google ドライブへ保存しました: {path}",
   "comfy.noticeExportedDriveExists": "この作品はすでに Google ドライブに保存されています: {path}",
@@ -1380,13 +1386,13 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.errEmptyFile":
     "選択したファイルは空（0 B）です。有効なファイルを選択してください。",
   "comfy.indextts2RefRequiredHint":
-    "選択中の IndexTTS-2 エンジンには参照音声ファイルのアップロードが必須です",
+    "IndexTTS-2 で「カスタム音声」を選んだ場合は参照音声ファイルのアップロードが必須です",
   "comfy.runBlockedBusy":
     "別のタスクまたは操作を実行中です。しばらくお待ちください",
   "comfy.runBlockedUploading":
     "素材をアップロード中です。完了までお待ちください",
   "comfy.defaultVisualPrompt":
-    "鮮明なスタジオのポートレート映像。カメラに向かって自然に話す話者、豊かな表情、穏やかな頭の動き、自然なまばたき、シャープなピント、柔らかなスタジオ照明、安定した背景",
+    "固定カメラのミディアムショット。話し手がカメラに向かって温かく自然に語りかけ、話の要点を強調する豊かな手振りや手のひらの動きを交えながら、生き生きとした表情、自然な眉の動きやうなずき、肩の自然なリズム、自然なまばたき、音声に精密に同期した口の動きを見せる。柔らかなスタジオ照明、シャープなピント、安定した背景。",
   "comfy.placeholderScriptText":
     "例：みなさんこんにちは、本日のご紹介へようこそ！これから AI を使って自然で滑らかなトーク動画を簡単に作る方法をご案内します。",
   "comfy.placeholderVoiceRefText":
@@ -1676,6 +1682,92 @@ export const jaJPMessages: ColabOneMessages = {
   "close.rememberHint": "「設定 → デスクトップと情報」からいつでも変更できます。",
   "close.confirmQuitBtn": "直接終了",
   "close.confirmBackgroundBtn": "バックグラウンドで実行",
+
+  // One-Click Migration (Export / Import)
+  "settings.sectionMigration": "データと移行",
+  "settings.migrationTitle": "ワンクリック移行（インポート / エクスポート）",
+  "settings.migrationEncryptedTag": "暗号化保護",
+  "settings.migrationDesc":
+    "Google ログイン状態、保存済みキー、すべての設定、モデルライブラリ、カスタムワークフローを暗号化された .colabone ファイルに書き出します。新しい PC にインポートすれば再ログイン不要でそのまま復元できます。",
+  "settings.migrationExportBtn": "移行ファイルをエクスポート",
+  "settings.migrationImportBtn": "移行ファイルをインポート",
+
+  "migration.homeImportBtn": "移行ファイルをインポート",
+  "migration.exportModalTitle": "移行ファイルをエクスポート",
+  "migration.exportModalDesc":
+    "パッケージ化するデータモジュールを選択し、移行パスワードを設定してください。機密認証情報はローカルで暗号化され、Windows・macOS 間の移行に対応しています。",
+  "migration.importDecryptModalTitle": "移行ファイルのロック解除",
+  "migration.importPreviewModalTitle": "インポート内容の確認",
+  "migration.selectModulesLabel": "エクスポートするモジュール",
+  "migration.selectAllBtn": "すべて選択（フル移行）",
+  "migration.selectConfigOnlyBtn": "設定とワークフローのみ（認証情報を除く）",
+  "migration.moduleAccountTitle": "Google アカウントとドライブ認証",
+  "migration.moduleAccountDesc":
+    "自動更新対応 OAuth 認証情報、プロフィール、ヘッドレス Google ドライブ割り当てプロジェクトを含みます。",
+  "migration.moduleCredentialsTitle": "外部キーと公開トンネル設定",
+  "migration.moduleCredentialsDesc":
+    "Hugging Face Token、GPU 割り当てプロキシ、外部 API・ComfyUI キャンバスの固定ドメインと Tunnel Token を含みます。",
+  "migration.moduleSettingsTitle": "アプリ・外観のすべての設定",
+  "migration.moduleSettingsDesc":
+    "既定 GPU、アイドル解放、ダウンロード並列数、自動ドライブ、テーマ、言語、プライバシー保護、終了動作、更新設定を含みます。",
+  "migration.moduleLibraryTitle": "モデルライブラリとカスタムワークフロー",
+  "migration.moduleLibraryDesc":
+    "よく使うモデル、カスタムモデル、API エイリアス、保存済みリポジトリ、カスタム ComfyUI ワークフローを含みます。",
+  "migration.moduleCuUsageTitle": "CU コンピュート使用履歴",
+  "migration.moduleCuUsageDesc":
+    "ローカルに記録された 30 分単位の CU 消費推移と残高履歴統計を含みます。",
+  "migration.moduleDraftsTitle": "ComfyUI テキスト下書き",
+  "migration.moduleDraftsDesc":
+    "未送信のプロンプトや数値パラメータ下書きのみを含み、大容量の画像・音声ファイルは除外して軽量に保ちます。",
+  "migration.moduleNotIncluded": "未収録",
+  "migration.summarySignedIn": "ログイン済み",
+  "migration.summaryNotSignedIn": "未ログイン",
+  "migration.summaryDriveReady": "ドライブ自動連携可",
+  "migration.summaryConfiguredCount": "{count} 件設定済み",
+  "migration.summaryEmpty": "データなし",
+  "migration.summaryIdleMinutes": "アイドル {minutes} 分",
+  "migration.summaryThreads": "{count} スレッド",
+  "migration.summaryCustomModels": "カスタムモデル {count} 件",
+  "migration.summaryCommonRepos": "保存リポジトリ {count} 件",
+  "migration.summaryCustomWorkflows": "ワークフロー {count} 件",
+  "migration.summaryCuDays": "{days} 日分",
+  "migration.summaryDraftsCount": "下書き {count} 件",
+  "migration.exportPasswordTitle": "移行パスワードを設定（必須）",
+  "migration.exportPasswordDesc":
+    "Argon2id + AES-256-GCM で必ず暗号化されます。{min} 文字以上で入力し、紛失しないよう保管してください（復元不可）。",
+  "migration.exportPasswordPlaceholder": "移行パスワードを入力（6 文字以上）",
+  "migration.exportPasswordConfirmPlaceholder": "確認のためパスワードを再入力",
+  "migration.passwordTooShort": "パスワードは空白以外の {min} 文字以上で入力してください",
+  "migration.passwordTooLong": "パスワードが長すぎます。短くして再試行してください",
+  "migration.passwordMismatch": "2 つのパスワードが一致しません",
+  "migration.exportConfirmBtn": "保存先を選んでエクスポート",
+  "migration.exportingBtn": "暗号化して書き出し中…",
+  "migration.exportSuccessToast": "暗号化移行ファイルを書き出しました: {filename}",
+  "migration.encryptedArchiveBadge": "ColabOne 暗号化移行ファイル",
+  "migration.changeFileBtn": "ファイルを変更",
+  "migration.importPasswordTitle": "移行パスワードを入力",
+  "migration.importPasswordDesc":
+    "エクスポート時に設定したパスワードを入力してください。復号後に概要を確認してからこの PC に反映します。",
+  "migration.importPasswordPlaceholder": "移行パスワードを入力",
+  "migration.decryptContinueBtn": "復号して概要を確認",
+  "migration.decryptingBtn": "復号・検証中…",
+  "migration.metaSourceOS": "出力元 OS",
+  "migration.activeInstancesAccountBlocked":
+    "現在稼働中の GPU インスタンスがあるため、「Google アカウントとドライブ認証」のチェックを外しました。アカウントを切り替えるには先にインスタンスを解放するか、このまま他のモジュールのみインポートしてください。",
+  "migration.closeBehaviorFallbackNotice":
+    "現在の環境ではシステムトレイへの最小化が利用できないため、終了動作は自動的に「直接終了」へフォールバックされます。",
+  "migration.importModulesTitle": "インポートするモジュールを選択",
+  "migration.importModulesHint": "上書き不要な項目のチェックを外せます",
+  "migration.overwriteWarningTitle": "選択したモジュールのローカルデータが上書きされます",
+  "migration.overwriteWarningDesc":
+    "ファイルに含まれ、かつ上で選択されたモジュールのみが上書きされます。未選択・未収録の項目は維持され、再起動不要で即座に反映されます。",
+  "migration.overwriteWarningDescWithAccount":
+    "インポート後すぐに反映され、Google アカウントとインスタンス状態が自動同期されます（再起動不要）。同一アカウントで複数 PC から利用できますが、同じ稼働中 GPU を同時に操作しないようご注意ください。",
+  "migration.applyConfirmBtn": "上書きしてインポート（{count} 件）",
+  "migration.importingBtn": "インポートして反映中…",
+  "migration.importSuccessToast": "{count} 件の設定モジュールをインポートし、即座に反映しました",
+  "migration.importSuccessWithAccountToast":
+    "移行データをインポートしました（{email}）。設定を反映しアカウント状態を同期中です",
 
   // Location
   "location.tooltipWithZone": "インスタンス所在地: {full} ({zone})",

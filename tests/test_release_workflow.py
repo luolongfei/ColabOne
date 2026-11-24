@@ -63,14 +63,43 @@ def test_release_workflow_triggers_only_on_version_tags_and_manual_dispatch():
     assert "gh release edit" in workflow
     assert "MYGO_UPDATER_PRIVATE_KEY" in workflow
     assert "tools/release_update_manifest.py" in workflow
+    assert "--release-body-output" in workflow
+    assert "ColabOne-${RELEASE_VERSION}-windows-x64-setup.exe" in workflow
+    assert "ColabOne-${RELEASE_VERSION}-macos-arm64.dmg" in workflow
+    assert ".zip" not in workflow
     assert "group: release-${{ inputs.tag || github.ref_name }}" in workflow
     assert "format('refs/tags/{0}', inputs.tag)" in workflow
     assert "%(contents:subject)" in workflow
 
     ci_workflow = _read(".github/workflows/ci.yml")
     assert "MYGO_UPDATER_PRIVATE_KEY" in ci_workflow
+    assert "dist/ColabOne-*-setup.exe" in ci_workflow
+    assert "dist/ColabOne-*.dmg" in ci_workflow
+    assert "dist/ColabOne-*.zip" not in ci_workflow
     assert "dist/update-*.json" in ci_workflow
     assert "dist/colabone-*.tar.gz" in ci_workflow
+
+
+def test_installer_filenames_stay_in_sync_across_packaging_manifest_and_release_skill():
+    import importlib.util
+    from tools.package import colabone_installer_filename
+    from tools.release_update_manifest import colabone_render_github_release_body
+
+    actions_path = ROOT / ".agents/skills/colabone-release/scripts/github_actions.py"
+    spec = importlib.util.spec_from_file_location("colabone_actions_contract", actions_path)
+    assert spec is not None and spec.loader is not None
+    actions_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(actions_mod)
+
+    for version in ("0.1.9", "0.2.0-rc.1"):
+        win_name = colabone_installer_filename(version, "windows", "amd64")
+        mac_name = colabone_installer_filename(version, "darwin", "arm64")
+        expected = actions_mod.colabone_expected_release_assets(f"v{version}")
+        assert win_name in expected
+        assert mac_name in expected
+        body = colabone_render_github_release_body("", version)
+        assert f"/releases/download/v{version}/{win_name}" in body
+        assert f"/releases/download/v{version}/{mac_name}" in body
 
 
 def test_release_update_manifest_validates_and_injects_bilingual_notes(tmp_path: Path):

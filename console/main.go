@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/luolongfei/ColabOne/console/internal/migration"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
 	"log"
 	"mime"
@@ -70,6 +71,13 @@ type ColabOneDesktop struct {
 	hideMainFn           func()
 	quitAppFn            func()
 	emitCloseReqFn       func(*mygo.Window, ColabOneCloseRequest) error
+
+	migrationMu           sync.Mutex
+	migrationPendingFile  *colabOnePendingMigrationFile
+	migrationPreview      *colabOneMigrationPreviewSession
+	migrationSaveDialogFn func(context.Context, string) (string, error)
+	migrationOpenDialogFn func(context.Context) (string, error)
+	migrationKDFParams    *migration.ColabOneMigrationKDFParams
 }
 
 func (d *ColabOneDesktop) invalidateSplash() {
@@ -211,7 +219,9 @@ func (d *ColabOneDesktop) SetAppearance(value string) error {
 	if value != "system" && value != "light" && value != "dark" {
 		return errors.New(colabOneT("err.unsupportedAppearance"))
 	}
-	mygo.Theme.SetSource(mygo.ThemeSource(value))
+	if mygo.App.IsReady() {
+		mygo.Theme.SetSource(mygo.ThemeSource(value))
+	}
 	if d.appearanceStore != nil {
 		d.appearanceMu.Lock()
 		ch := d.appearanceSave
@@ -563,6 +573,7 @@ func main() {
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		d.cancelStartup()
+		d.clearMigrationSessions()
 		d.closeUpdater()
 		d.destroyTray()
 		d.flushAppearance()

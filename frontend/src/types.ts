@@ -37,6 +37,8 @@ export interface TaskStatus {
   message: string;
   error: string;
   created_at?: number;
+  finished_at?: number | null;
+  elapsed_seconds?: number | null;
   logs?: {
     seq: number;
     time: number;
@@ -63,6 +65,16 @@ export interface ColabOneComfyNodePatch {
   kind: "wav2vec2_hidden_states_hook";
 }
 export type ComfyNodePatch = ColabOneComfyNodePatch;
+export interface ColabOneComfyTtsVoicePreset {
+  id: string;
+  name: string;
+  gender: "female" | "male" | "neutral";
+  style?: string;
+  description?: string;
+  prompt?: string;
+  seed?: number;
+}
+export type ComfyTtsVoicePreset = ColabOneComfyTtsVoicePreset;
 export interface ColabOneComfyTtsEngineSpec {
   id: string;
   name: string;
@@ -83,6 +95,7 @@ export interface ColabOneComfyTtsEngineSpec {
   pip_packages?: string[];
   source_repo?: string;
   source_commit?: string;
+  voice_presets?: ColabOneComfyTtsVoicePreset[];
 }
 export type ComfyTtsEngineSpec = ColabOneComfyTtsEngineSpec;
 export interface ColabOneComfyPipelineSpec {

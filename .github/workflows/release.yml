@@ -143,7 +143,8 @@ jobs:
         run: |
           set -euo pipefail
           notes_file="${RUNNER_TEMP}/release-notes.md"
-          rm -f "${notes_file}"
+          release_body_file="${RUNNER_TEMP}/github-release-body.md"
+          rm -f "${notes_file}" "${release_body_file}"
           if [[ "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" == "tag" ]]; then
             tag_subject="$(git for-each-ref --format='%(contents:subject)' "refs/tags/${RELEASE_TAG}")"
             tag_body="$(git for-each-ref --format='%(contents:body)' "refs/tags/${RELEASE_TAG}")"
@@ -155,7 +156,13 @@ jobs:
               printf '%s\n' "${tag_body}" > "${notes_file}"
             fi
           fi
-          manifest_args=(--dist dist --version "${RELEASE_VERSION}")
+          manifest_args=(
+            --dist dist
+            --version "${RELEASE_VERSION}"
+            --tag "${RELEASE_TAG}"
+            --repo "${GITHUB_REPOSITORY}"
+            --release-body-output "${release_body_file}"
+          )
           if [[ -f "${notes_file}" ]]; then
             manifest_args+=(--notes-file "${notes_file}")
           fi
@@ -167,16 +174,18 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          zips=(dist/ColabOne-"${RELEASE_VERSION}"-*.zip)
-          if (( ${#zips[@]} < 2 )); then
-            echo "::error title=Missing release packages::Expected both Windows and macOS zip archives for ${RELEASE_VERSION}."
+          win_installer="dist/ColabOne-${RELEASE_VERSION}-windows-x64-setup.exe"
+          mac_installer="dist/ColabOne-${RELEASE_VERSION}-macos-arm64.dmg"
+          if [[ ! -s "${win_installer}" || ! -s "${mac_installer}" ]]; then
+            echo "::error title=Missing release installers::Expected both Windows (.exe) and macOS (.dmg) installers for ${RELEASE_VERSION}."
             ls -la dist
             exit 1
           fi
           (
             cd dist
             files=(
-              ColabOne-"${RELEASE_VERSION}"-*.zip
+              ColabOne-"${RELEASE_VERSION}"-*-setup.exe
+              ColabOne-"${RELEASE_VERSION}"-*.dmg
               colabone-"${RELEASE_VERSION}"-*.tar.gz
               colabone-*-to-"${RELEASE_VERSION}"-*.delta
               update-*.json
@@ -195,12 +204,17 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           primary_assets=(
-            dist/ColabOne-"${RELEASE_VERSION}"-*.zip
+            dist/ColabOne-"${RELEASE_VERSION}"-*-setup.exe
+            dist/ColabOne-"${RELEASE_VERSION}"-*.dmg
             dist/colabone-"${RELEASE_VERSION}"-*.tar.gz
             dist/colabone-*-to-"${RELEASE_VERSION}"-*.delta
             dist/SHA256SUMS.txt
           )
           manifest_assets=(dist/update-*.json)
+          release_body_file="${RUNNER_TEMP}/github-release-body.md"
+          if [[ ! -f "${release_body_file}" && -f "${RUNNER_TEMP}/release-notes.md" ]]; then
+            release_body_file="${RUNNER_TEMP}/release-notes.md"
+          fi
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             # Upload binaries/deltas before manifests so clients never observe a manifest referencing missing files.
@@ -209,6 +223,9 @@ jobs:
             gh release upload "${RELEASE_TAG}" --clobber "${manifest_assets[@]}"
             if [[ "${is_draft}" == "true" ]]; then
               edit_args=(--draft=false)
+              if [[ -f "${release_body_file}" ]]; then
+                edit_args+=(--notes-file "${release_body_file}")
+              fi
               if [[ "${IS_PRERELEASE}" == "true" ]]; then
                 edit_args+=(--prerelease)
               else
@@ -224,9 +241,8 @@ jobs:
             create_args+=(--prerelease)
           fi
 
-          notes_file="${RUNNER_TEMP}/release-notes.md"
-          if [[ -f "${notes_file}" ]]; then
-            create_args+=(--notes-file "${notes_file}")
+          if [[ -f "${release_body_file}" ]]; then
+            create_args+=(--notes-file "${release_body_file}")
           else
             create_args+=(--generate-notes)
           fi

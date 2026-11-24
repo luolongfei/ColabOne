@@ -132,17 +132,17 @@ def _sample_release(tag: str = "v0.1.1", **changes):
         "assets": [
             {
                 "id": 1,
-                "name": f"ColabOne-{version}-windows-x64.zip",
+                "name": f"ColabOne-{version}-windows-x64-setup.exe",
                 "size": 1024,
                 "state": "uploaded",
-                "browser_download_url": f"https://example.invalid/ColabOne-{version}-windows-x64.zip",
+                "browser_download_url": f"https://example.invalid/ColabOne-{version}-windows-x64-setup.exe",
             },
             {
                 "id": 2,
-                "name": f"ColabOne-{version}-macos-arm64.zip",
+                "name": f"ColabOne-{version}-macos-arm64.dmg",
                 "size": 2048,
                 "state": "uploaded",
-                "browser_download_url": f"https://example.invalid/ColabOne-{version}-macos-arm64.zip",
+                "browser_download_url": f"https://example.invalid/ColabOne-{version}-macos-arm64.dmg",
             },
             {
                 "id": 3,
@@ -1084,7 +1084,7 @@ class GitHubActionsClientTests(unittest.TestCase):
         with patch.object(self.client, "json", return_value=missing_mac):
             result = ACTIONS.colabone_inspect_release(self.client, "v0.1.1")
         self.assertFalse(result["assets_complete"])
-        self.assertEqual(result["missing_assets"], ["ColabOne-0.1.1-macos-arm64.zip"])
+        self.assertEqual(result["missing_assets"], ["ColabOne-0.1.1-macos-arm64.dmg"])
 
         empty_asset = _sample_release("v0.1.1")
         empty_asset["assets"][-1]["size"] = 0

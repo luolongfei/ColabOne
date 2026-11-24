@@ -1640,6 +1640,11 @@ func TestComfyTtsEngineSpecValidation(t *testing.T) {
 			t.Fatalf("pip_packages should be JSON array [], got %#v", rawPip)
 		}
 	}
+	if rawPresets, exists := wire["voice_presets"]; !exists {
+		t.Fatalf("voice_presets missing from marshaled tts engine")
+	} else if arr, ok := rawPresets.([]any); !ok || len(arr) != 0 {
+		t.Fatalf("default voice_presets should marshal as empty JSON array [], got %#v", rawPresets)
+	}
 
 	// 2. Non-commercial engine preserves commercial_ok=false, license_notice, explicit supports_voice_clone=false, pip trimming, source_repo/source_commit.
 	var nonCommercial ColabOneComfyTtsEngineSpec
@@ -1893,9 +1898,10 @@ func TestComfyPipelineSpecValidation(t *testing.T) {
 		t.Fatalf("unexpected longcat_avatar pipeline wire: %#v", lcWire)
 	}
 
-	// Boundary values accepted.
+	// Boundary values accepted (including 3.0s lower bound and LongCat-Avatar 3.7s golden window).
 	for _, tc := range []map[string]any{
-		{"max_segment_seconds": 5.0, "tail_frame_offset_seconds": 0.0, "output_fps": 1, "target_width": 64, "target_height": 64},
+		{"max_segment_seconds": 3.0, "tail_frame_offset_seconds": 0.0, "output_fps": 1, "target_width": 64, "target_height": 64},
+		{"max_segment_seconds": 3.7, "tail_frame_offset_seconds": 0.08, "output_fps": 25, "target_width": 1280, "target_height": 720},
 		{"max_segment_seconds": 300.0, "tail_frame_offset_seconds": 1.0, "output_fps": 60, "target_width": 4096, "target_height": 4096},
 	} {
 		var bSpec ColabOneComfyPipelineSpec
@@ -1916,7 +1922,8 @@ func TestComfyPipelineSpecValidation(t *testing.T) {
 		{"unknownKind", map[string]any{"kind": "realtime_stream"}},
 		{"unknownBackend", map[string]any{"video_backend": "sora_v2"}},
 		{"unknownUpscaleMode", map[string]any{"upscale_mode": "esrgan_4x"}},
-		{"maxSegTooSmall", map[string]any{"max_segment_seconds": 4.9}},
+		{"maxSegTooSmall", map[string]any{"max_segment_seconds": 2.9}},
+		{"maxSegExplicitZero", map[string]any{"max_segment_seconds": 0.0}},
 		{"maxSegTooLarge", map[string]any{"max_segment_seconds": 300.1}},
 		{"maxSegNegative", map[string]any{"max_segment_seconds": -5.0}},
 		{"tailOffsetNegative", map[string]any{"tail_frame_offset_seconds": -0.01}},
@@ -1939,6 +1946,32 @@ func TestComfyPipelineSpecValidation(t *testing.T) {
 				t.Fatalf("%s: expected validation error", tc.name)
 			}
 		})
+	}
+
+	// Exact error message parity for max_segment_seconds [3.0, 300.0] bounds.
+	const wantSegErr = "分段时长必须在 3.0 到 300.0 秒之间"
+	for _, raw := range []string{
+		`{"max_segment_seconds":0}`,
+		`{"max_segment_seconds":2.9}`,
+		`{"max_segment_seconds":300.1}`,
+		`{"max_segment_seconds":-1.0}`,
+	} {
+		var p ColabOneComfyPipelineSpec
+		if err := unmarshalAndValidateSchema(raw, &p); err == nil || err.Error() != wantSegErr {
+			t.Fatalf("pipeline payload %s: err = %v, want %q", raw, err, wantSegErr)
+		}
+	}
+	for _, badVal := range []float64{2.9, 300.1, -3.0, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		p := ColabOneComfyPipelineSpec{MaxSegmentSeconds: badVal}
+		if err := p.Validate(); err == nil || err.Error() != wantSegErr {
+			t.Fatalf("direct MaxSegmentSeconds=%v: err = %v, want %q", badVal, err, wantSegErr)
+		}
+	}
+	for _, goodVal := range []float64{3.0, 3.7, 45.0, 300.0} {
+		p := ColabOneComfyPipelineSpec{MaxSegmentSeconds: goodVal}
+		if err := p.Validate(); err != nil {
+			t.Fatalf("direct MaxSegmentSeconds=%v should pass, got %v", goodVal, err)
+		}
 	}
 
 	// All 9 *_node_key fields reject invalid node_id.input_name keys.
@@ -2984,5 +3017,252 @@ func TestRound2ExtractFieldsInvalidNodeIDsAndIntegralFloatCoercion(t *testing.T)
 	cfgVal, ok := inputs["cfg"].(float64)
 	if !ok || cfgVal != 8.0 {
 		t.Fatalf("6.cfg = %#v (%T), want float64(8.0)", inputs["cfg"], inputs["cfg"])
+	}
+}
+
+func TestComfyTtsVoicePresetValidation(t *testing.T) {
+	revA := strings.Repeat("a", 40)
+
+	// 1. Minimal valid preset populates defaults (gender="female", seed=42), trims name, and round-trips cleanly.
+	var minimal ColabOneComfyTtsVoicePreset
+	if err := unmarshalAndValidateSchema(`{"id":"shen_zhiyi","name":"  知性女主播 · 沈知意  "}`, &minimal); err != nil {
+		t.Fatalf("minimal voice preset failed: %v", err)
+	}
+	if minimal.ID != "shen_zhiyi" || minimal.Name != "知性女主播 · 沈知意" {
+		t.Fatalf("unexpected id/name: %+v", minimal)
+	}
+	if minimal.Gender != "female" {
+		t.Fatalf("default gender = %q, want female", minimal.Gender)
+	}
+	if minimal.Seed != 42 {
+		t.Fatalf("default seed = %d, want 42", minimal.Seed)
+	}
+	if minimal.Style != "" || minimal.Description != "" || minimal.Prompt != "" {
+		t.Fatalf("unexpected non-empty optional strings: %+v", minimal)
+	}
+
+	minWire := marshalJSONMap(t, &minimal)
+	if minWire["id"] != "shen_zhiyi" || minWire["name"] != "知性女主播 · 沈知意" || minWire["gender"] != "female" || minWire["seed"] != float64(42) {
+		t.Fatalf("unexpected minimal voice preset wire: %#v", minWire)
+	}
+	var roundTripped ColabOneComfyTtsVoicePreset
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, &minimal), &roundTripped); err != nil {
+		t.Fatalf("round-trip minimal voice preset failed: %v", err)
+	}
+	if !reflect.DeepEqual(roundTripped, minimal) {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", roundTripped, minimal)
+	}
+
+	// 2. All allowed genders and explicit boundary seeds (0 and 2147483647) accepted and preserved.
+	for _, tc := range []struct {
+		gender string
+		seed   int
+	}{
+		{"female", 0},
+		{"male", 202601},
+		{"neutral", 2147483647},
+	} {
+		var p ColabOneComfyTtsVoicePreset
+		raw := mustMarshalJSON(t, map[string]any{
+			"id":          "voice_" + tc.gender,
+			"name":        "Voice " + tc.gender,
+			"gender":      tc.gender,
+			"style":       "播音风格",
+			"description": "清晰自然的中文人声",
+			"prompt":      "Clear warm articulate studio voice",
+			"seed":        tc.seed,
+		})
+		if err := unmarshalAndValidateSchema(raw, &p); err != nil {
+			t.Fatalf("valid preset gender=%s seed=%d failed: %v", tc.gender, tc.seed, err)
+		}
+		if p.Gender != tc.gender || p.Seed != tc.seed {
+			t.Fatalf("preset gender/seed not preserved: got (%q, %d), want (%q, %d)", p.Gender, p.Seed, tc.gender, tc.seed)
+		}
+	}
+
+	// 3. Exact max-length boundaries (id=64, name=80 runes, style=80 runes, description=240 runes, prompt=600 runes) accepted.
+	var maxPreset ColabOneComfyTtsVoicePreset
+	maxRaw := mustMarshalJSON(t, map[string]any{
+		"id":          strings.Repeat("a", 64),
+		"name":        strings.Repeat("名", 80),
+		"gender":      "female",
+		"style":       strings.Repeat("风", 80),
+		"description": strings.Repeat("描", 240),
+		"prompt":      strings.Repeat("提", 600),
+		"seed":        2147483647,
+	})
+	if err := unmarshalAndValidateSchema(maxRaw, &maxPreset); err != nil {
+		t.Fatalf("max boundary voice preset failed: %v", err)
+	}
+
+	// 4. Direct Go struct defaults: empty Gender -> "female", Seed 0 stays 0.
+	direct := ColabOneComfyTtsVoicePreset{
+		ID:   "direct-voice_1",
+		Name: "Direct Voice",
+	}
+	if err := direct.Validate(); err != nil {
+		t.Fatalf("direct voice preset Validate failed: %v", err)
+	}
+	if direct.Gender != "female" || direct.Seed != 0 {
+		t.Fatalf("direct voice preset defaults = (%q, %d), want (female, 0)", direct.Gender, direct.Seed)
+	}
+
+	// 5. Invalid voice preset field values rejected.
+	basePreset := func() map[string]any {
+		return map[string]any{
+			"id":     "shen_zhiyi",
+			"name":   "知性女主播 · 沈知意",
+			"gender": "female",
+			"seed":   202601,
+		}
+	}
+	badPresetCases := []struct {
+		name   string
+		mutate func(m map[string]any)
+	}{
+		{"emptyID", func(m map[string]any) { m["id"] = "" }},
+		{"overlongID", func(m map[string]any) { m["id"] = strings.Repeat("a", 65) }},
+		{"traversalID", func(m map[string]any) { m["id"] = "../evil" }},
+		{"spaceID", func(m map[string]any) { m["id"] = "bad id" }},
+		{"dotID", func(m map[string]any) { m["id"] = "bad.id" }},
+		{"unicodeID", func(m map[string]any) { m["id"] = "沈知意" }},
+		{"emptyName", func(m map[string]any) { m["name"] = "" }},
+		{"blankName", func(m map[string]any) { m["name"] = "   " }},
+		{"overlongName", func(m map[string]any) { m["name"] = strings.Repeat("名", 81) }},
+		{"emptyGender", func(m map[string]any) { m["gender"] = "" }},
+		{"invalidGender", func(m map[string]any) { m["gender"] = "robot" }},
+		{"uppercaseGender", func(m map[string]any) { m["gender"] = "FEMALE" }},
+		{"overlongStyle", func(m map[string]any) { m["style"] = strings.Repeat("风", 81) }},
+		{"overlongDescription", func(m map[string]any) { m["description"] = strings.Repeat("描", 241) }},
+		{"overlongPrompt", func(m map[string]any) { m["prompt"] = strings.Repeat("提", 601) }},
+		{"negativeSeed", func(m map[string]any) { m["seed"] = -1 }},
+		{"seedTooLarge", func(m map[string]any) { m["seed"] = 2147483648 }},
+		{"floatSeed", func(m map[string]any) { m["seed"] = 42.5 }},
+		{"stringSeed", func(m map[string]any) { m["seed"] = "42" }},
+		{"unknownField", func(m map[string]any) { m["extra"] = true }},
+	}
+	for _, tc := range badPresetCases {
+		t.Run("preset/"+tc.name, func(t *testing.T) {
+			m := basePreset()
+			tc.mutate(m)
+			var p ColabOneComfyTtsVoicePreset
+			if err := unmarshalAndValidateSchema(mustMarshalJSON(t, m), &p); err == nil {
+				t.Fatalf("preset/%s: expected validation error", tc.name)
+			}
+		})
+	}
+
+	// 6. Strict JSON decoding: unknown fields, wrong-case keys, NaN/Inf/overflow, nulls, and trailing garbage rejected.
+	for _, raw := range []string{
+		`null`,
+		`{"id":"v1","name":"V1","extra":1}`,
+		`{"ID":"v1","name":"V1"}`,
+		`{"id":"v1","name":"V1","Gender":"male"}`,
+		`{"id":"v1","name":"V1","Seed":7}`,
+		`{"id":null,"name":"V1"}`,
+		`{"id":"v1","name":null}`,
+		`{"id":"v1","name":"V1","gender":null}`,
+		`{"id":"v1","name":"V1","style":null}`,
+		`{"id":"v1","name":"V1","description":null}`,
+		`{"id":"v1","name":"V1","prompt":null}`,
+		`{"id":"v1","name":"V1","seed":null}`,
+		`{"id":"v1","name":"V1","seed":NaN}`,
+		`{"id":"v1","name":"V1","seed":Infinity}`,
+		`{"id":"v1","name":"V1","seed":-Infinity}`,
+		`{"id":"v1","name":"V1","seed":1e9999}`,
+		`{"id":"v1","name":"V1"} {"extra":true}`,
+	} {
+		var p ColabOneComfyTtsVoicePreset
+		if err := unmarshalAndValidateSchema(raw, &p); err == nil {
+			t.Fatalf("strict JSON preset payload %s should fail", raw)
+		}
+	}
+
+	// 7. ColabOneComfyTtsEngineSpec integration with VoicePresets: 5 canonical presets round-trip, 24 accepted, 25 rejected.
+	makeEngineWithPresets := func(presets any) map[string]any {
+		return map[string]any{
+			"id":            "voxcpm2",
+			"name":          "VoxCPM2",
+			"repo":          "openbmb/VoxCPM2",
+			"revision":      revA,
+			"voice_presets": presets,
+		}
+	}
+
+	canonicalFive := []map[string]any{
+		{"id": "shen_zhiyi", "name": "知性女主播 · 沈知意", "gender": "female", "style": "知性主播", "seed": 202601, "prompt": "A 26-year-old Chinese female host"},
+		{"id": "lin_xiaoman", "name": "甜美活力 · 林小满", "gender": "female", "style": "甜美活力", "seed": 202602, "prompt": "A 22-year-old Chinese young woman"},
+		{"id": "su_wanqing", "name": "温柔治愈 · 苏晚晴", "gender": "female", "style": "温柔治愈", "seed": 202603, "prompt": "A 25-year-old Chinese young woman"},
+		{"id": "gu_qinglan", "name": "干练职场 · 顾清岚", "gender": "female", "style": "干练御姐", "seed": 202604, "prompt": "A 30-year-old mature Chinese professional woman"},
+		{"id": "lu_mingwei", "name": "播音气质 · 陆明薇", "gender": "female", "style": "新闻播音", "seed": 202605, "prompt": "A 28-year-old professional Chinese female broadcast news anchor"},
+	}
+	var engWithFive ColabOneComfyTtsEngineSpec
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, makeEngineWithPresets(canonicalFive)), &engWithFive); err != nil {
+		t.Fatalf("engine with 5 canonical voice presets failed: %v", err)
+	}
+	if len(engWithFive.VoicePresets) != 5 || engWithFive.VoicePresets[0].ID != "shen_zhiyi" || engWithFive.VoicePresets[4].Seed != 202605 {
+		t.Fatalf("unexpected voice presets decoded: %+v", engWithFive.VoicePresets)
+	}
+	var engRoundTrip ColabOneComfyTtsEngineSpec
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, &engWithFive), &engRoundTrip); err != nil {
+		t.Fatalf("engine with voice presets round-trip failed: %v", err)
+	}
+	if !reflect.DeepEqual(engRoundTrip, engWithFive) {
+		t.Fatalf("engine round-trip mismatch:\ngot:  %+v\nwant: %+v", engRoundTrip, engWithFive)
+	}
+
+	// Exact 24 voice presets accepted; 25 rejected.
+	presets24 := make([]map[string]any, 24)
+	for i := range presets24 {
+		presets24[i] = map[string]any{
+			"id":   fmt.Sprintf("voice_%02d", i),
+			"name": fmt.Sprintf("Voice %02d", i),
+			"seed": 100 + i,
+		}
+	}
+	var eng24 ColabOneComfyTtsEngineSpec
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, makeEngineWithPresets(presets24)), &eng24); err != nil {
+		t.Fatalf("engine with 24 voice presets should pass: %v", err)
+	}
+	if len(eng24.VoicePresets) != 24 || eng24.VoicePresets[0].Gender != "female" {
+		t.Fatalf("unexpected 24-preset result: len=%d first=%+v", len(eng24.VoicePresets), eng24.VoicePresets[0])
+	}
+
+	presets25 := append(append([]map[string]any{}, presets24...), map[string]any{
+		"id":   "voice_24",
+		"name": "Voice 24",
+	})
+	var eng25 ColabOneComfyTtsEngineSpec
+	if err := unmarshalAndValidateSchema(mustMarshalJSON(t, makeEngineWithPresets(presets25)), &eng25); err == nil || !strings.Contains(err.Error(), "24") {
+		t.Fatalf("engine with 25 voice presets should fail with 24-limit error, got %v", err)
+	}
+
+	// Direct Go struct Validate() normalizes nil VoicePresets to non-nil empty slice.
+	directEng := ColabOneComfyTtsEngineSpec{
+		ID:       "voxcpm2",
+		Name:     "VoxCPM2",
+		Repo:     "openbmb/VoxCPM2",
+		Revision: revA,
+	}
+	if err := directEng.Validate(); err != nil {
+		t.Fatalf("direct engine Validate failed: %v", err)
+	}
+	if directEng.VoicePresets == nil || len(directEng.VoicePresets) != 0 {
+		t.Fatalf("direct engine VoicePresets = %#v, want non-nil empty slice", directEng.VoicePresets)
+	}
+
+	// Null voice_presets, [null] element, invalid nested preset, and unknown fields rejected on engine.
+	for _, raw := range []string{
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","voice_presets":null}`,
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","voice_presets":[null]}`,
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","voice_presets":[{"id":"v1","name":"V1","gender":"invalid"}]}`,
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","voice_presets":[{"id":"v1","name":"V1","seed":-5}]}`,
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","voice_presets":[{"id":"v1","name":"V1","unknown_key":1}]}`,
+		`{"id":"voxcpm2","name":"VoxCPM2","repo":"openbmb/VoxCPM2","revision":"` + revA + `","VoicePresets":[]}`,
+	} {
+		var eng ColabOneComfyTtsEngineSpec
+		if err := unmarshalAndValidateSchema(raw, &eng); err == nil {
+			t.Fatalf("invalid engine voice_presets payload %s should fail", raw)
+		}
 	}
 }

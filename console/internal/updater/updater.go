@@ -989,6 +989,55 @@ func (u *ColabOneUpdater) SkipVersion(version string) (ColabOneUpdateState, erro
 	return st, nil
 }
 
+// Preferences returns a thread-safe copy of the persisted updater preferences.
+func (u *ColabOneUpdater) Preferences() ColabOneUpdatePreferences {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.prefs
+}
+
+// ApplyImportedPreferences replaces portable updater preferences from a
+// migration archive and broadcasts the updated state immediately.
+func (u *ColabOneUpdater) ApplyImportedPreferences(autoCheck, includePrerelease bool, skippedVersion string) (ColabOneUpdateState, bool, error) {
+	normSkipped := NormalizeVersion(skippedVersion)
+	u.mu.Lock()
+	channelChanged := u.prefs.IncludePrerelease != includePrerelease
+	u.prefs.AutoCheck = autoCheck
+	u.prefs.IncludePrerelease = includePrerelease
+	u.prefs.SkippedVersion = normSkipped
+	u.state.AutoCheck = autoCheck
+	u.state.IncludePrerelease = includePrerelease
+	u.state.SkippedVersion = normSkipped
+	var cancelCheck context.CancelFunc
+	if channelChanged {
+		u.channelGen++
+		cancelCheck = u.checkCancel
+	}
+	if normSkipped != "" && u.state.Status == StatusAvailable && CompareVersions(u.state.AvailableVersion, normSkipped) == 0 && !u.installInFlight {
+		u.pending = nil
+		u.state.Status = StatusUpToDate
+		u.state.AvailableVersion = ""
+		u.state.IsPrerelease = false
+		u.state.ReleaseDate = ""
+		u.state.ReleaseURL = ReleaseTagURL(u.repo, "")
+		u.state.NotesRaw = ""
+		u.state.NotesZh = ""
+		u.state.NotesEn = ""
+	}
+	st := u.state
+	u.mu.Unlock()
+
+	if u.backend != nil {
+		u.backend.SetPrereleases(includePrerelease)
+	}
+	if cancelCheck != nil {
+		cancelCheck()
+	}
+	u.savePreferences()
+	u.emit(st)
+	return st, channelChanged, nil
+}
+
 // SetPreferences updates auto-check and prerelease preferences immediately.
 // If includePrerelease changes while a check is in flight, the stale check is
 // cancelled and retried automatically on the new channel.

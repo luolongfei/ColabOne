@@ -39,6 +39,7 @@ from common.comfyui import (
     WorkflowRunRequest,
     WorkflowTemplate,
     apply_workflow_overrides,
+    format_colabone_duration_zh,
 )
 from common.files import atomic_json
 from server.comfy_proxy import ColabOneComfyCanvasGateway
@@ -1987,11 +1988,16 @@ class ColabOneComfyManager:
                             with task_lock if task_lock is not None else nullcontext():
                                 saved_outputs = list(task.outputs)
                                 task.progress = 1
+                            elapsed_text = format_colabone_duration_zh(
+                                elapsed, subsecond=True
+                            )
                             if not output_items:
-                                task.note("工作流执行完成，未产生可保存的输出文件")
+                                task.note(
+                                    f"工作流执行完成，未产生可保存的输出文件（耗时 {elapsed_text}）"
+                                )
                             else:
                                 task.note(
-                                    f"工作流执行完成，已保存 {len(saved_outputs)} 个作品到远端 GPU"
+                                    f"工作流执行完成，已保存 {len(saved_outputs)} 个作品到远端 GPU（耗时 {elapsed_text}）"
                                 )
                             return saved_outputs
                         with task_lock if task_lock is not None else nullcontext():
@@ -2075,8 +2081,9 @@ class ColabOneComfyManager:
                         ws_active = ws_is_connected and ws_state["active"]
 
                     if phase == "queued":
+                        elapsed_label = format_colabone_duration_zh(elapsed)
                         queued_msg = (
-                            f"{prefix}{wf['name']} · 排队中（第 {pending_pos} 位）· 已用 {int(elapsed)} 秒"
+                            f"{prefix}{wf['name']} · 排队中（第 {pending_pos} 位）· 已用 {elapsed_label}"
                         )
                         with task_lock if task_lock is not None else nullcontext():
                             task.message = queued_msg
@@ -2087,8 +2094,9 @@ class ColabOneComfyManager:
                             task.note(queued_msg)
                             last_phase, last_note = phase, time.monotonic()
                     elif not ws_active:
+                        elapsed_label = format_colabone_duration_zh(elapsed)
                         run_msg = (
-                            f"{prefix}{wf['name']} · 远端 GPU 执行中 · 已用 {int(elapsed)} 秒"
+                            f"{prefix}{wf['name']} · 远端 GPU 执行中 · 已用 {elapsed_label}"
                         )
                         heuristic = lo + span * 0.92 * (
                             1.0 - 1.0 / (1.0 + elapsed / 30.0)

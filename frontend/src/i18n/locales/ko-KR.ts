@@ -34,9 +34,11 @@ export const koKRMessages: ColabOneMessages = {
   "common.submitting": "요청 중…",
   "common.secondsShort": "{value}초",
   "common.minutes": "{value}분",
+  "common.minutesSeconds": "{minutes}분 {seconds}초",
   "common.hours": "{value}시간",
   "common.hoursMinutes": "{hours}시간 {minutes}분",
   "common.hoursMinutesShort": "{hours}시간 {minutes}분",
+  "common.hoursMinutesSeconds": "{hours}시간 {minutes}분 {seconds}초",
   "common.daysHours": "{days}일 {hours}시간",
   "common.approxDaysHours": "약 {days}일 {hours}시간",
   "common.approxHoursMinutes": "약 {hours}시간 {minutes}분",
@@ -153,6 +155,8 @@ export const koKRMessages: ColabOneMessages = {
   "task.kindComfyRun": "ComfyUI 워크플로 실행 중",
   "task.gpuReadyIdle": "GPU 준비 완료 · 대기 중",
   "task.gpuWaitingStart": "원격 GPU 시작 대기 중",
+  "task.elapsedLive": "경과 {duration}",
+  "task.elapsedTotal": "소요 {duration}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/시간",
@@ -1227,6 +1231,8 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.noticeCancelRequested": "현재 작업 취소를 요청했습니다.",
   "comfy.noticeRunSubmitted":
     "워크플로 '{name}'을(를) 원격 대기열에 등록했습니다(실행 중 유휴 해제 일시 정지).",
+  "comfy.noticeRunCompleted": "워크플로 '{name}' 완료 · 총 소요 {duration}",
+  "comfy.noticeRunCompletedNoDuration": "워크플로 '{name}'이(가) 완료되었습니다.",
   "comfy.noticeExported": "결과물을 로컬로 내보냈습니다.",
   "comfy.noticeExportedDrive": "결과물을 Google 드라이브로 저장했습니다: {path}",
   "comfy.noticeExportedDriveExists": "이미 Google 드라이브에 저장된 결과물입니다: {path}",
@@ -1377,13 +1383,13 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.errEmptyFile":
     "선택한 파일이 비어 있습니다(0 B). 유효한 파일을 선택하세요.",
   "comfy.indextts2RefRequiredHint":
-    "선택한 IndexTTS-2 엔진은 참조 음성 오디오 업로드가 필수입니다",
+    "IndexTTS-2에서 '사용자 지정 음색'을 선택한 경우 참조 음성 오디오 업로드가 필수입니다",
   "comfy.runBlockedBusy":
     "다른 작업이나 동작이 실행 중입니다. 잠시만 기다려 주세요",
   "comfy.runBlockedUploading":
     "미디어가 업로드 중입니다. 완료될 때까지 기다려 주세요",
   "comfy.defaultVisualPrompt":
-    "선명한 스튜디오 인물 샷, 카메라를 향해 자연스럽게 말하는 진행자, 생동감 있는 얼굴 표정, 부드러운 머리 움직임, 자연스러운 눈 깜빡임, 또렷한 초점, 부드러운 스튜디오 조명, 안정적인 배경",
+    "고정 카메라 미디엄 샷. 진행자가 카메라를 향해 따뜻하고 자연스럽게 말하며, 핵심을 강조하는 자연스럽고 풍부한 손동작과 손짓을 곁들입니다. 생동감 있는 표정, 자연스러운 눈썹 움직임과 고개 끄덕임, 어깨의 자연스러운 리듬, 자연스러운 눈 깜빡임, 음성에 정밀하게 맞춘 입 모양, 부드러운 스튜디오 조명, 선명한 초점, 안정적인 배경.",
   "comfy.placeholderScriptText":
     "예시: 안녕하세요, 오늘의 소개에 오신 것을 환영합니다! 지금부터 AI로 자연스럽고 매끄러운 스피치 영상을 손쉽게 만드는 방법을 알려드릴게요.",
   "comfy.placeholderVoiceRefText":
@@ -1673,6 +1679,92 @@ export const koKRMessages: ColabOneMessages = {
   "close.rememberHint": "'설정 → 데스크톱 및 정보'에서 언제든지 변경할 수 있습니다.",
   "close.confirmQuitBtn": "바로 종료",
   "close.confirmBackgroundBtn": "백그라운드 실행",
+
+  // One-Click Migration (Export / Import)
+  "settings.sectionMigration": "데이터 및 마이그레이션",
+  "settings.migrationTitle": "원클릭 마이그레이션 (가져오기 / 내보내기)",
+  "settings.migrationEncryptedTag": "암호화 보호",
+  "settings.migrationDesc":
+    "현재 Google 로그인 상태, 저장된 키, 모든 설정, 모델 라이브러리, 사용자 지정 워크플로를 암호화된 .colabone 파일로 내보냅니다. 새 PC에서 가져오면 다시 로그인하지 않고 동일한 환경으로 바로 복원됩니다.",
+  "settings.migrationExportBtn": "마이그레이션 파일 내보내기",
+  "settings.migrationImportBtn": "마이그레이션 파일 가져오기",
+
+  "migration.homeImportBtn": "마이그레이션 파일 가져오기",
+  "migration.exportModalTitle": "마이그레이션 파일 내보내기",
+  "migration.exportModalDesc":
+    "포함할 데이터 모듈을 선택하고 마이그레이션 비밀번호를 설정하세요. 모든 민감한 자격 증명은 로컬에서 암호화되며 Windows와 macOS 간 이전을 지원합니다.",
+  "migration.importDecryptModalTitle": "마이그레이션 파일 잠금 해제",
+  "migration.importPreviewModalTitle": "마이그레이션 가져오기 확인",
+  "migration.selectModulesLabel": "내보낼 모듈 선택",
+  "migration.selectAllBtn": "전체 선택 (전체 이전)",
+  "migration.selectConfigOnlyBtn": "설정 및 워크플로만 (계정/키 제외)",
+  "migration.moduleAccountTitle": "Google 계정 및 드라이브 인증",
+  "migration.moduleAccountDesc":
+    "자동 갱신 OAuth 자격 증명, 프로필 정보, 팝업 없는 Google 드라이브 할당량 프로젝트를 포함하여 재로그인 없이 사용할 수 있습니다.",
+  "migration.moduleCredentialsTitle": "외부 키 및 공개 터널 설정",
+  "migration.moduleCredentialsDesc":
+    "Hugging Face Token, GPU 할당 프록시, 외부 API 및 ComfyUI 캔버스의 고정 도메인과 Tunnel Token을 포함합니다.",
+  "migration.moduleSettingsTitle": "모든 앱 및 화면 설정",
+  "migration.moduleSettingsDesc":
+    "기본 GPU, 유휴 해제, 다운로드 스레드, 자동 드라이브, 테마, 언어, 프라이버시 기본값, 닫기 동작 및 업데이트 설정을 포함합니다.",
+  "migration.moduleLibraryTitle": "모델 라이브러리 및 사용자 지정 워크플로",
+  "migration.moduleLibraryDesc":
+    "자주 쓰는 모델, 사용자 지정 모델, API 별칭, 저장된 리포지토리, 사용자 지정 ComfyUI 워크플로 템플릿을 포함합니다.",
+  "migration.moduleCuUsageTitle": "CU 컴퓨팅 사용 기록",
+  "migration.moduleCuUsageDesc":
+    "로컬에 기록된 30분 단위 CU 소비 추이와 잔액 기록 통계를 포함합니다.",
+  "migration.moduleDraftsTitle": "ComfyUI 텍스트 초안",
+  "migration.moduleDraftsDesc":
+    "제출되지 않은 프롬프트와 숫자 매개변수 초안만 포함하며, 대용량 로컬 이미지/오디오 파일은 제외해 가볍게 유지합니다.",
+  "migration.moduleNotIncluded": "미포함",
+  "migration.summarySignedIn": "로그인됨",
+  "migration.summaryNotSignedIn": "로그인 안 됨",
+  "migration.summaryDriveReady": "드라이브 자동 연동 준비됨",
+  "migration.summaryConfiguredCount": "{count}개 설정됨",
+  "migration.summaryEmpty": "데이터 없음",
+  "migration.summaryIdleMinutes": "유휴 {minutes}분",
+  "migration.summaryThreads": "{count} 스레드",
+  "migration.summaryCustomModels": "사용자 지정 모델 {count}개",
+  "migration.summaryCommonRepos": "저장 리포지토리 {count}개",
+  "migration.summaryCustomWorkflows": "워크플로 {count}개",
+  "migration.summaryCuDays": "{days}일 기록",
+  "migration.summaryDraftsCount": "초안 {count}개",
+  "migration.exportPasswordTitle": "마이그레이션 비밀번호 설정 (필수)",
+  "migration.exportPasswordDesc":
+    "Argon2id + AES-256-GCM으로 항상 암호화됩니다. 최소 {min}자 이상 입력하고 분실하지 않도록 보관하세요 (복구 불가).",
+  "migration.exportPasswordPlaceholder": "마이그레이션 비밀번호 입력 (6자 이상)",
+  "migration.exportPasswordConfirmPlaceholder": "확인을 위해 비밀번호 다시 입력",
+  "migration.passwordTooShort": "비밀번호는 공백 제외 최소 {min}자 이상이어야 합니다",
+  "migration.passwordTooLong": "비밀번호가 너무 깁니다. 더 짧게 입력해 주세요",
+  "migration.passwordMismatch": "입력한 비밀번호가 일치하지 않습니다",
+  "migration.exportConfirmBtn": "저장 위치 선택 및 내보내기",
+  "migration.exportingBtn": "암호화하여 내보내는 중…",
+  "migration.exportSuccessToast": "암호화된 마이그레이션 파일을 내보냈습니다: {filename}",
+  "migration.encryptedArchiveBadge": "ColabOne 암호화 마이그레이션 파일",
+  "migration.changeFileBtn": "파일 변경",
+  "migration.importPasswordTitle": "마이그레이션 비밀번호 입력",
+  "migration.importPasswordDesc":
+    "내보낼 때 설정한 마이그레이션 비밀번호를 입력하세요. 복호화 후 요약을 확인한 뒤 이 PC에 적용합니다.",
+  "migration.importPasswordPlaceholder": "마이그레이션 비밀번호 입력",
+  "migration.decryptContinueBtn": "복호화 및 요약 보기",
+  "migration.decryptingBtn": "복호화 및 검증 중…",
+  "migration.metaSourceOS": "원본 OS",
+  "migration.activeInstancesAccountBlocked":
+    "현재 실행 중인 GPU 인스턴스가 있어 'Google 계정 및 드라이브 인증' 선택이 해제되었습니다. 계정을 전환하려면 먼저 인스턴스를 해제하거나, 이 상태로 다른 모듈만 가져오세요.",
+  "migration.closeBehaviorFallbackNotice":
+    "현재 환경에서는 시스템 트레이 백그라운드 실행이 지원되지 않아 창 닫기 동작이 자동으로 '바로 종료'로 전환됩니다.",
+  "migration.importModulesTitle": "가져올 모듈 선택",
+  "migration.importModulesHint": "덮어쓰지 않을 항목은 선택 해제할 수 있습니다",
+  "migration.overwriteWarningTitle": "선택한 모듈의 로컬 데이터가 덮어쓰기됩니다",
+  "migration.overwriteWarningDesc":
+    "파일에 포함되고 위에서 선택된 모듈만 덮어쓰기됩니다. 선택 해제되거나 미포함된 모듈은 그대로 유지되며, 재시작 없이 즉시 적용됩니다.",
+  "migration.overwriteWarningDescWithAccount":
+    "가져오기 후 재시작 없이 즉시 적용되며 Google 계정 및 인스턴스 상태가 자동 동기화됩니다. 같은 계정으로 여러 PC에 로그인할 수 있지만, 동일한 실행 중 GPU를 동시에 조작하지 않는 것을 권장합니다.",
+  "migration.applyConfirmBtn": "덮어쓰고 가져오기 ({count}개)",
+  "migration.importingBtn": "가져와 적용하는 중…",
+  "migration.importSuccessToast": "{count}개 설정 모듈을 가져와 즉시 적용했습니다",
+  "migration.importSuccessWithAccountToast":
+    "마이그레이션 가져오기 완료 ({email}). 설정이 즉시 적용되었으며 계정 상태를 동기화 중입니다",
 
   // Location
   "location.tooltipWithZone": "인스턴스 위치: {full} ({zone})",

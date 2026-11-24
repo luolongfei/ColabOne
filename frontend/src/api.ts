@@ -4,6 +4,21 @@ import {
   type ColabOneCloseBehaviorState,
   type ColabOneCloseRequest,
   type ColabOneLogDrawerState,
+  type ColabOneMigrationAccountSummary,
+  type ColabOneMigrationApplyRequest,
+  type ColabOneMigrationApplyResult,
+  type ColabOneMigrationCUUsageSummary,
+  type ColabOneMigrationCredentialsSummary,
+  type ColabOneMigrationDraftsSummary,
+  type ColabOneMigrationExportRequest,
+  type ColabOneMigrationExportResult,
+  type ColabOneMigrationExportSummary,
+  type ColabOneMigrationLibrarySummary,
+  type ColabOneMigrationModuleSummary,
+  type ColabOneMigrationPickResult,
+  type ColabOneMigrationPreview,
+  type ColabOneMigrationSettingsSummary,
+  type ColabOneMigrationUIPrefs,
   type ColabOneUpdateState,
 } from "./colabOneBridge";
 import type { ColabOneSnapshot } from "./types";
@@ -11,6 +26,21 @@ import type { ColabOneSnapshot } from "./types";
 export type {
   ColabOneCloseBehaviorState,
   ColabOneCloseRequest,
+  ColabOneMigrationAccountSummary,
+  ColabOneMigrationApplyRequest,
+  ColabOneMigrationApplyResult,
+  ColabOneMigrationCUUsageSummary,
+  ColabOneMigrationCredentialsSummary,
+  ColabOneMigrationDraftsSummary,
+  ColabOneMigrationExportRequest,
+  ColabOneMigrationExportResult,
+  ColabOneMigrationExportSummary,
+  ColabOneMigrationLibrarySummary,
+  ColabOneMigrationModuleSummary,
+  ColabOneMigrationPickResult,
+  ColabOneMigrationPreview,
+  ColabOneMigrationSettingsSummary,
+  ColabOneMigrationUIPrefs,
   ColabOneUpdateState,
 };
 
@@ -42,6 +72,29 @@ export const colabOneOpenComfyCanvas = (target: "window" | "browser") =>
   ColabOneDesktop.openComfyCanvas(target);
 export const colabOneSetLocale = (value: string) =>
   ColabOneDesktop.setLocale(value);
+
+export const colabOneGetMigrationExportSummary = (
+  uiPrefs: ColabOneMigrationUIPrefs | null,
+) => ColabOneDesktop.getMigrationExportSummary(uiPrefs);
+
+export const colabOneExportMigrationFile = (
+  req: ColabOneMigrationExportRequest,
+) => ColabOneDesktop.exportMigrationFile(req);
+
+export const colabOnePickMigrationFile = () =>
+  ColabOneDesktop.pickMigrationFile();
+
+export const colabOneDecryptMigrationPreview = (
+  fileToken: string,
+  password: string,
+) => ColabOneDesktop.decryptMigrationPreview(fileToken, password);
+
+export const colabOneApplyMigrationPreview = (
+  req: ColabOneMigrationApplyRequest,
+) => ColabOneDesktop.applyMigrationPreview(req);
+
+export const colabOneCancelMigrationSession = (sessionID = "") =>
+  ColabOneDesktop.cancelMigrationSession(sessionID);
 
 export async function colabOneGetLogDrawerState(): Promise<ColabOneLogDrawerState> {
   try {
