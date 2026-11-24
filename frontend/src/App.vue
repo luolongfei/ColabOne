@@ -1102,7 +1102,11 @@ function interaction(event?: Event) {
 
 function handleGlobalKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
-    if (closeModalOpen.value || updateModalOpen.value) {
+    if (closeModalOpen.value) {
+      return;
+    }
+    if (updateModalOpen.value) {
+      handleUpdatePopoverOpenChange(false);
       return;
     }
     if (showRelease.value && !busy.value) {
@@ -2738,9 +2742,18 @@ async function handleOpenReleasePage(url?: string) {
   );
 }
 
-function handleBrandVersionClick() {
-  markUpdateVersionSeen();
-  updateModalOpen.value = true;
+function handleUpdatePopoverOpenChange(next: boolean) {
+  if (!next && updateState.value.status === "installing") {
+    return;
+  }
+  if (next) {
+    markUpdateVersionSeen();
+  }
+  updateModalOpen.value = next;
+}
+
+function openUpdatePopover() {
+  handleUpdatePopoverOpenChange(true);
 }
 
 const closeBehaviorState = ref<ColabOneCloseBehaviorState>({
@@ -3011,39 +3024,67 @@ onUnmounted(() => {
                 ></span>
                 <span class="co-brand-text">ColabOne</span>
               </button>
-              <ColabOneTooltip :title="navVersionTooltip" placement="bottom">
-                <button
-                  type="button"
-                  class="co-brand-version"
-                  :class="{
-                    'is-update-unread': showNavUpdateDot,
-                    'is-update-ready':
-                      updateState.status === 'ready_to_restart',
-                    'is-update-downloading':
-                      updateState.status === 'downloading' ||
-                      updateState.status === 'installing',
-                  }"
-                  data-testid="nav-version-btn"
-                  :aria-label="navVersionTooltip"
-                  @click="handleBrandVersionClick"
-                >
-                  <span class="co-brand-version-text">{{ appVersionLabel }}</span>
-                  <span
-                    v-if="showNavUpdatePill"
-                    class="co-nav-update-pill"
-                    data-testid="nav-update-pill"
+              <ColabOneUpdateModal
+                :open="updateModalOpen"
+                :update-state="updateState"
+                :checking="isCheckingUpdate"
+                :has-active-runtime="
+                  state.runtime.state === 'ready' ||
+                  state.runtime.state === 'starting'
+                "
+                :has-active-operation="Boolean(state.operation)"
+                @update:open="handleUpdatePopoverOpenChange"
+                @check="handleCheckForUpdate(true)"
+                @install="handleStartUpdateInstall"
+                @cancel="handleCancelUpdateInstall"
+                @relaunch="handleRelaunchForUpdate"
+                @skip="handleSkipUpdateVersion"
+                @open-release-page="handleOpenReleasePage"
+              >
+                <span class="co-brand-version-anchor">
+                  <ColabOneTooltip
+                    :title="navVersionTooltip"
+                    :disabled="updateModalOpen"
+                    placement="bottom"
                   >
-                    <span class="co-nav-update-dot" aria-hidden="true" />
-                    <span>{{ navUpdateBadgeLabel }}</span>
-                  </span>
-                  <span
-                    v-if="showNavUpdateDot"
-                    class="co-brand-version-dot"
-                    data-testid="nav-update-dot"
-                    aria-hidden="true"
-                  />
-                </button>
-              </ColabOneTooltip>
+                    <button
+                      type="button"
+                      class="co-brand-version"
+                      :class="{
+                        'is-open': updateModalOpen,
+                        'is-update-unread': showNavUpdateDot,
+                        'is-update-ready':
+                          updateState.status === 'ready_to_restart',
+                        'is-update-downloading':
+                          updateState.status === 'downloading' ||
+                          updateState.status === 'installing',
+                      }"
+                      :aria-expanded="updateModalOpen"
+                      aria-haspopup="dialog"
+                      data-testid="nav-version-btn"
+                      :aria-label="navVersionTooltip"
+                    >
+                      <span class="co-brand-version-text">{{
+                        appVersionLabel
+                      }}</span>
+                      <span
+                        v-if="showNavUpdatePill"
+                        class="co-nav-update-pill"
+                        data-testid="nav-update-pill"
+                      >
+                        <span class="co-nav-update-dot" aria-hidden="true" />
+                        <span>{{ navUpdateBadgeLabel }}</span>
+                      </span>
+                      <span
+                        v-if="showNavUpdateDot"
+                        class="co-brand-version-dot"
+                        data-testid="nav-update-dot"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </ColabOneTooltip>
+                </span>
+              </ColabOneUpdateModal>
             </div>
 
             <div class="co-nav-center">
@@ -5365,7 +5406,7 @@ onUnmounted(() => {
                               v-if="updateState.status === 'ready_to_restart'"
                               type="primary"
                               data-testid="settings-update-restart-btn"
-                              @click="updateModalOpen = true"
+                              @click.stop="openUpdatePopover"
                             >
                               {{ t("update.btnRestartNow") }}
                             </AButton>
@@ -5376,7 +5417,7 @@ onUnmounted(() => {
                               "
                               type="primary"
                               data-testid="settings-update-view-btn"
-                              @click="updateModalOpen = true"
+                              @click.stop="openUpdatePopover"
                             >
                               {{ t("update.btnViewUpdate") }}
                             </AButton>
@@ -5386,7 +5427,7 @@ onUnmounted(() => {
                               <AButton
                                 type="primary"
                                 data-testid="settings-update-now-btn"
-                                @click="updateModalOpen = true"
+                                @click.stop="openUpdatePopover"
                               >
                                 {{ t("update.btnUpdateNow") }}
                               </AButton>
@@ -5923,24 +5964,6 @@ onUnmounted(() => {
         </div>
       </AModal>
 
-      <!-- Modal: In-App Desktop Software Update -->
-      <ColabOneUpdateModal
-        :open="updateModalOpen"
-        :update-state="updateState"
-        :checking="isCheckingUpdate"
-        :has-active-runtime="
-          state.runtime.state === 'ready' || state.runtime.state === 'starting'
-        "
-        :has-active-operation="Boolean(state.operation)"
-        @update:open="updateModalOpen = $event"
-        @check="handleCheckForUpdate(true)"
-        @install="handleStartUpdateInstall"
-        @cancel="handleCancelUpdateInstall"
-        @relaunch="handleRelaunchForUpdate"
-        @skip="handleSkipUpdateVersion"
-        @open-release-page="handleOpenReleasePage"
-      />
-
       <!-- Modal: Main Window Close Behavior Prompt -->
       <ColabOneCloseModal
         :open="closeModalOpen"
@@ -6062,6 +6085,12 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
+.co-brand-version-anchor {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
 .co-brand-version {
   position: relative;
   display: inline-flex;
@@ -6091,7 +6120,8 @@ onUnmounted(() => {
     transform 0.12s ease;
 }
 
-.co-brand-version:hover {
+.co-brand-version:hover,
+.co-brand-version.is-open {
   background: var(--co-hover);
   border-color: var(--co-border);
   color: var(--co-text);
@@ -6767,7 +6797,7 @@ onUnmounted(() => {
 }
 
 @container co-navbar (max-width: 680px) {
-  .co-brand-version {
+  .co-brand-version:not(.is-open) {
     display: none;
   }
 }

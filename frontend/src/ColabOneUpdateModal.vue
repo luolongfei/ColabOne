@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import {
   Alert as AAlert,
   Button as AButton,
-  Modal as AModal,
+  Popover as APopover,
   Progress as AProgress,
   Space as ASpace,
   Tag as ATag,
@@ -16,6 +16,7 @@ import {
   PhInfo,
   PhSparkle,
   PhWarningCircle,
+  PhX,
 } from "@phosphor-icons/vue";
 import { colabOneLocaleCode, t, type ColabOneMessageKey } from "./i18n";
 import type { ColabOneUpdateState } from "./colabOneBridge";
@@ -109,6 +110,12 @@ const isActionableStatus = computed(
     isInstalling.value ||
     isReadyToRestart.value,
 );
+
+const panelSizeClass = computed(() => {
+  if (isActionableStatus.value) return "is-rich";
+  if (isError.value) return "is-error";
+  return "is-compact";
+});
 
 const currentVersion = computed(() =>
   cleanVersion(props.updateState.current_version, COLABONE_APP_VERSION),
@@ -251,10 +258,6 @@ const resolvedErrorDetail = computed(() => {
   return detail;
 });
 
-const modalWrapProps = {
-  "data-testid": "update-modal",
-};
-
 function handleOpenChange(next: boolean) {
   if (!next && isInstalling.value) {
     return;
@@ -262,7 +265,7 @@ function handleOpenChange(next: boolean) {
   emit("update:open", next);
 }
 
-function closeModal() {
+function closePopover() {
   handleOpenChange(false);
 }
 
@@ -277,295 +280,380 @@ function handleOpenReleasePage() {
 </script>
 
 <template>
-  <AModal
+  <APopover
     :open="props.open"
-    :width="560"
-    :closable="!isInstalling"
-    :mask-closable="!isInstalling"
-    :keyboard="!isInstalling"
-    :footer="null"
-    :wrap-props="modalWrapProps"
-    wrap-class-name="co-update-modal-wrap"
-    centered
+    :trigger="['click']"
+    placement="bottomLeft"
+    :arrow="true"
+    :destroy-tooltip-on-hide="true"
+    overlay-class-name="co-update-popover"
+    :overlay-inner-style="{ padding: '0' }"
     @update:open="handleOpenChange"
   >
-    <template #title>
-      <div class="co-update-title">
-        <span
-          class="co-update-title-icon"
-          :class="`is-${titleTone}`"
-          aria-hidden="true"
-        >
-          <PhCheckCircle
-            v-if="isReadyToRestart || isUpToDate"
-            :size="18"
-            weight="fill"
-          />
-          <PhWarningCircle v-else-if="isError" :size="18" weight="fill" />
-          <PhDownloadSimple
-            v-else-if="isDownloading || isInstalling"
-            :size="18"
-            weight="bold"
-          />
-          <PhSparkle v-else-if="isAvailable" :size="18" weight="fill" />
-          <PhInfo v-else :size="18" weight="fill" />
-        </span>
-        <span class="co-update-title-text">{{ modalTitle }}</span>
-      </div>
-    </template>
+    <slot />
 
-    <div class="co-update-modal-body">
-      <!-- Version transition header -->
-      <div v-if="showVersionHeader" class="co-update-version-bar">
-        <ASpace :size="8" wrap class="co-update-version-left">
-          <span class="co-update-version-transition co-mono">
-            {{
-              t("update.modalVersionTransition", {
-                current: currentVersion,
-                target: targetVersion,
-              })
-            }}
-          </span>
-          <ATag v-if="props.updateState.is_prerelease" color="warning">
-            {{ t("update.modalPrereleaseTag") }}
-          </ATag>
-        </ASpace>
-        <span v-if="formattedReleaseDate" class="co-update-release-date">
-          {{ t("update.modalPublishedAt", { date: formattedReleaseDate }) }}
-        </span>
-      </div>
-
-      <!-- Ready to restart confirmation -->
-      <AAlert
-        v-if="isReadyToRestart"
-        type="success"
-        show-icon
-        :message="
-          t('update.modalReadyHint', {
-            version: targetVersion || currentVersion,
-          })
-        "
-      />
-
-      <!-- Domain context alerts -->
-      <AAlert
-        v-if="isActionableStatus && props.hasActiveOperation"
-        type="warning"
-        show-icon
-        :message="t('update.modalActiveOpWarning')"
-      />
-      <AAlert
-        v-else-if="isActionableStatus && props.hasActiveRuntime"
-        type="info"
-        show-icon
-        :message="t('update.modalActiveGpuNotice')"
-      />
-
-      <AAlert
-        v-if="isReadOnlyAvailable"
-        type="warning"
-        show-icon
-        :message="t('update.modalReadOnlyWarning')"
-      />
-      <AAlert
-        v-else-if="isManifestMissingAvailable"
-        type="info"
-        show-icon
-        :message="t('update.modalManifestMissingWarning')"
-      />
-
-      <AAlert
-        v-if="isDevBuild"
-        type="info"
-        show-icon
-        :message="t('update.modalDevBuildNotice')"
-      />
-
-      <!-- Download / Install progress -->
+    <template #content>
       <div
-        v-if="isDownloading || isInstalling"
-        class="co-update-progress-card"
-        role="status"
-        aria-live="polite"
+        class="co-update-panel"
+        :class="panelSizeClass"
+        role="dialog"
+        :aria-label="modalTitle"
+        data-testid="update-modal"
       >
-        <div class="co-update-progress-label">
-          {{
-            isInstalling
-              ? t("update.modalInstallingHint")
-              : t("update.modalDownloadingHint")
-          }}
-        </div>
-        <AProgress
-          :percent="progressPercent"
-          :status="isInstalling ? 'active' : 'normal'"
-          :stroke-width="8"
-        />
-        <div
-          v-if="progressBytesLabel || progressSpeedLabel"
-          class="co-update-progress-meta co-mono"
-        >
-          <span>{{ progressBytesLabel }}</span>
-          <span v-if="progressSpeedLabel" class="co-update-progress-speed">
-            {{ progressSpeedLabel }}
-          </span>
-        </div>
-      </div>
-
-      <!-- Release notes card (safe structured blocks, plain text interpolation only) -->
-      <section v-if="isActionableStatus" class="co-update-notes-card">
-        <div class="co-update-notes-header">
-          <span class="co-update-notes-heading">
-            {{ t("update.modalNotesHeading") }}
-          </span>
-          <AButton
-            v-if="isBilingualNotes"
-            type="link"
-            size="small"
-            class="co-update-notes-toggle"
-            @click="showFullNotes = !showFullNotes"
-          >
-            {{
-              showFullNotes
-                ? t("update.modalToggleLocalNotes")
-                : t("update.modalToggleFullNotes")
-            }}
-          </AButton>
-        </div>
-
-        <div class="co-update-notes-body" data-testid="update-notes-body">
-          <template v-if="renderedNoteBlocks.length > 0">
-            <template v-for="(block, idx) in renderedNoteBlocks" :key="idx">
-              <h4
-                v-if="block.kind === 'heading'"
-                class="co-update-note-heading"
-              >
-                <template
-                  v-for="(seg, segIdx) in block.segments"
-                  :key="segIdx"
-                >
-                  <code v-if="seg.code" class="co-update-inline-code">{{
-                    seg.text
-                  }}</code>
-                  <span v-else>{{ seg.text }}</span>
-                </template>
-              </h4>
-
-              <div
-                v-else-if="block.kind === 'item'"
-                class="co-update-note-item"
-              >
-                <span class="co-update-note-bullet" aria-hidden="true" />
-                <span class="co-update-note-text">
-                  <template
-                    v-for="(seg, segIdx) in block.segments"
-                    :key="segIdx"
-                  >
-                    <code v-if="seg.code" class="co-update-inline-code">{{
-                      seg.text
-                    }}</code>
-                    <span v-else>{{ seg.text }}</span>
-                  </template>
-                </span>
-              </div>
-
-              <p v-else class="co-update-note-paragraph">
-                <template
-                  v-for="(seg, segIdx) in block.segments"
-                  :key="segIdx"
-                >
-                  <code v-if="seg.code" class="co-update-inline-code">{{
-                    seg.text
-                  }}</code>
-                  <span v-else>{{ seg.text }}</span>
-                </template>
-              </p>
-            </template>
-          </template>
-          <p v-else class="co-update-notes-empty">
-            {{ t("update.modalNotesEmpty") }}
-          </p>
-        </div>
-      </section>
-
-      <!-- Up-to-date block -->
-      <div
-        v-else-if="isUpToDate"
-        class="co-update-status-card is-success"
-        role="status"
-      >
-        <PhCheckCircle
-          :size="20"
-          weight="fill"
-          class="co-update-status-icon is-success"
-          aria-hidden="true"
-        />
-        <span class="co-update-status-text">
-          {{ t("update.modalUpToDateDesc", { version: currentVersion }) }}
-        </span>
-      </div>
-
-      <!-- Error block -->
-      <AAlert
-        v-else-if="isError"
-        type="error"
-        show-icon
-        :message="resolvedErrorMessage"
-      >
-        <template v-if="resolvedErrorDetail" #description>
-          <div class="co-update-error-detail" data-testid="update-error-detail">
-            <span class="co-update-error-detail-label">
-              {{ t("update.errDetailLabel") }}
+        <!-- Compact anchored header -->
+        <div class="co-update-header">
+          <div class="co-update-title">
+            <span
+              class="co-update-title-icon"
+              :class="`is-${titleTone}`"
+              aria-hidden="true"
+            >
+              <PhCheckCircle
+                v-if="isReadyToRestart || isUpToDate"
+                :size="15"
+                weight="fill"
+              />
+              <PhWarningCircle v-else-if="isError" :size="15" weight="fill" />
+              <PhDownloadSimple
+                v-else-if="isDownloading || isInstalling"
+                :size="15"
+                weight="bold"
+              />
+              <PhSparkle v-else-if="isAvailable" :size="15" weight="fill" />
+              <PhInfo v-else :size="15" weight="fill" />
             </span>
-            <code class="co-update-error-detail-code co-mono">{{
-              resolvedErrorDetail
-            }}</code>
+            <span class="co-update-title-text">{{ modalTitle }}</span>
           </div>
-        </template>
-      </AAlert>
-
-      <!-- Checking block -->
-      <div
-        v-else-if="isChecking"
-        class="co-update-status-card"
-        role="status"
-        aria-live="polite"
-      >
-        <PhArrowClockwise
-          :size="18"
-          class="co-update-status-icon is-spin"
-          aria-hidden="true"
-        />
-        <span class="co-update-status-text">{{ t("update.btnChecking") }}</span>
-        <ATag class="co-mono">v{{ currentVersion }}</ATag>
-      </div>
-
-      <!-- Idle / disabled version context -->
-      <div v-else class="co-update-status-card">
-        <PhInfo
-          :size="18"
-          weight="fill"
-          class="co-update-status-icon is-info"
-          aria-hidden="true"
-        />
-        <div class="co-update-status-meta">
-          <ASpace :size="8" wrap>
-            <span class="co-update-status-version co-mono">
-              ColabOne v{{ currentVersion }}
-            </span>
-            <ATag v-if="isDevBuild">{{ t("update.statusDevBuild") }}</ATag>
-          </ASpace>
-          <span v-if="!isDevBuild" class="co-update-status-sub">
-            {{ lastCheckedText }}
-          </span>
+          <button
+            v-if="!isInstalling"
+            type="button"
+            class="co-update-close-btn"
+            :aria-label="t('common.close')"
+            data-testid="update-close-btn"
+            @click="closePopover"
+          >
+            <PhX :size="14" weight="bold" aria-hidden="true" />
+          </button>
         </div>
-      </div>
 
-      <!-- Tailored state-driven footer -->
-      <div class="co-update-footer">
-        <!-- Available + can self-update -->
-        <template v-if="isAvailable && props.updateState.can_self_update">
-          <div class="co-update-footer-left">
-            <ASpace :size="4" wrap>
+        <div class="co-update-body">
+          <!-- Version transition header -->
+          <div v-if="showVersionHeader" class="co-update-version-bar">
+            <ASpace :size="6" wrap class="co-update-version-left">
+              <span class="co-update-version-transition co-mono">
+                {{
+                  t("update.modalVersionTransition", {
+                    current: currentVersion,
+                    target: targetVersion,
+                  })
+                }}
+              </span>
+              <ATag v-if="props.updateState.is_prerelease" color="warning">
+                {{ t("update.modalPrereleaseTag") }}
+              </ATag>
+            </ASpace>
+            <span v-if="formattedReleaseDate" class="co-update-release-date">
+              {{ t("update.modalPublishedAt", { date: formattedReleaseDate }) }}
+            </span>
+          </div>
+
+          <!-- Ready to restart confirmation -->
+          <AAlert
+            v-if="isReadyToRestart"
+            type="success"
+            show-icon
+            class="co-update-alert"
+            :message="
+              t('update.modalReadyHint', {
+                version: targetVersion || currentVersion,
+              })
+            "
+          />
+
+          <!-- Domain context alerts -->
+          <AAlert
+            v-if="isActionableStatus && props.hasActiveOperation"
+            type="warning"
+            show-icon
+            class="co-update-alert"
+            :message="t('update.modalActiveOpWarning')"
+          />
+          <AAlert
+            v-else-if="isActionableStatus && props.hasActiveRuntime"
+            type="info"
+            show-icon
+            class="co-update-alert"
+            :message="t('update.modalActiveGpuNotice')"
+          />
+
+          <AAlert
+            v-if="isReadOnlyAvailable"
+            type="warning"
+            show-icon
+            class="co-update-alert"
+            :message="t('update.modalReadOnlyWarning')"
+          />
+          <AAlert
+            v-else-if="isManifestMissingAvailable"
+            type="info"
+            show-icon
+            class="co-update-alert"
+            :message="t('update.modalManifestMissingWarning')"
+          />
+
+          <AAlert
+            v-if="isDevBuild"
+            type="info"
+            show-icon
+            class="co-update-alert"
+            :message="t('update.modalDevBuildNotice')"
+          />
+
+          <!-- Download / Install progress -->
+          <div
+            v-if="isDownloading || isInstalling"
+            class="co-update-progress-card"
+            role="status"
+            aria-live="polite"
+          >
+            <div class="co-update-progress-label">
+              {{
+                isInstalling
+                  ? t("update.modalInstallingHint")
+                  : t("update.modalDownloadingHint")
+              }}
+            </div>
+            <AProgress
+              :percent="progressPercent"
+              :status="isInstalling ? 'active' : 'normal'"
+              :stroke-width="7"
+              size="small"
+            />
+            <div
+              v-if="progressBytesLabel || progressSpeedLabel"
+              class="co-update-progress-meta co-mono"
+            >
+              <span>{{ progressBytesLabel }}</span>
+              <span v-if="progressSpeedLabel" class="co-update-progress-speed">
+                {{ progressSpeedLabel }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Release notes card (safe structured blocks, plain text interpolation only) -->
+          <section v-if="isActionableStatus" class="co-update-notes-card">
+            <div class="co-update-notes-header">
+              <span class="co-update-notes-heading">
+                {{ t("update.modalNotesHeading") }}
+              </span>
+              <AButton
+                v-if="isBilingualNotes"
+                type="link"
+                size="small"
+                class="co-update-notes-toggle"
+                @click="showFullNotes = !showFullNotes"
+              >
+                {{
+                  showFullNotes
+                    ? t("update.modalToggleLocalNotes")
+                    : t("update.modalToggleFullNotes")
+                }}
+              </AButton>
+            </div>
+
+            <div class="co-update-notes-body" data-testid="update-notes-body">
+              <template v-if="renderedNoteBlocks.length > 0">
+                <template v-for="(block, idx) in renderedNoteBlocks" :key="idx">
+                  <h4
+                    v-if="block.kind === 'heading'"
+                    class="co-update-note-heading"
+                  >
+                    <template
+                      v-for="(seg, segIdx) in block.segments"
+                      :key="segIdx"
+                    >
+                      <code v-if="seg.code" class="co-update-inline-code">{{
+                        seg.text
+                      }}</code>
+                      <span v-else>{{ seg.text }}</span>
+                    </template>
+                  </h4>
+
+                  <div
+                    v-else-if="block.kind === 'item'"
+                    class="co-update-note-item"
+                  >
+                    <span class="co-update-note-bullet" aria-hidden="true" />
+                    <span class="co-update-note-text">
+                      <template
+                        v-for="(seg, segIdx) in block.segments"
+                        :key="segIdx"
+                      >
+                        <code v-if="seg.code" class="co-update-inline-code">{{
+                          seg.text
+                        }}</code>
+                        <span v-else>{{ seg.text }}</span>
+                      </template>
+                    </span>
+                  </div>
+
+                  <p v-else class="co-update-note-paragraph">
+                    <template
+                      v-for="(seg, segIdx) in block.segments"
+                      :key="segIdx"
+                    >
+                      <code v-if="seg.code" class="co-update-inline-code">{{
+                        seg.text
+                      }}</code>
+                      <span v-else>{{ seg.text }}</span>
+                    </template>
+                  </p>
+                </template>
+              </template>
+              <p v-else class="co-update-notes-empty">
+                {{ t("update.modalNotesEmpty") }}
+              </p>
+            </div>
+          </section>
+
+          <!-- Up-to-date block -->
+          <div
+            v-else-if="isUpToDate"
+            class="co-update-status-card is-success"
+            role="status"
+          >
+            <PhCheckCircle
+              :size="17"
+              weight="fill"
+              class="co-update-status-icon is-success"
+              aria-hidden="true"
+            />
+            <div class="co-update-status-meta">
+              <span class="co-update-status-text">
+                {{ t("update.modalUpToDateDesc", { version: currentVersion }) }}
+              </span>
+              <span class="co-update-status-sub">
+                {{ lastCheckedText }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Error block -->
+          <AAlert
+            v-else-if="isError"
+            type="error"
+            show-icon
+            class="co-update-alert"
+            :message="resolvedErrorMessage"
+          >
+            <template v-if="resolvedErrorDetail" #description>
+              <div
+                class="co-update-error-detail"
+                data-testid="update-error-detail"
+              >
+                <span class="co-update-error-detail-label">
+                  {{ t("update.errDetailLabel") }}
+                </span>
+                <code class="co-update-error-detail-code co-mono">{{
+                  resolvedErrorDetail
+                }}</code>
+              </div>
+            </template>
+          </AAlert>
+
+          <!-- Checking block -->
+          <div
+            v-else-if="isChecking"
+            class="co-update-status-card"
+            role="status"
+            aria-live="polite"
+          >
+            <PhArrowClockwise
+              :size="16"
+              class="co-update-status-icon is-spin"
+              aria-hidden="true"
+            />
+            <span class="co-update-status-text">{{
+              t("update.btnChecking")
+            }}</span>
+            <ATag class="co-mono">v{{ currentVersion }}</ATag>
+          </div>
+
+          <!-- Idle / disabled version context -->
+          <div v-else class="co-update-status-card">
+            <PhInfo
+              :size="16"
+              weight="fill"
+              class="co-update-status-icon is-info"
+              aria-hidden="true"
+            />
+            <div class="co-update-status-meta">
+              <ASpace :size="6" wrap>
+                <span class="co-update-status-version co-mono">
+                  ColabOne v{{ currentVersion }}
+                </span>
+                <ATag v-if="isDevBuild">{{ t("update.statusDevBuild") }}</ATag>
+              </ASpace>
+              <span v-if="!isDevBuild" class="co-update-status-sub">
+                {{ lastCheckedText }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Compact tailored state-driven footer -->
+        <div class="co-update-footer">
+          <!-- Available + can self-update -->
+          <template v-if="isAvailable && props.updateState.can_self_update">
+            <div class="co-update-footer-left">
+              <ASpace :size="2" wrap>
+                <AButton
+                  type="text"
+                  size="small"
+                  class="co-update-subtle-btn"
+                  :disabled="!targetVersion"
+                  data-testid="update-skip-btn"
+                  @click="handleSkip"
+                >
+                  {{ t("update.btnSkipVersion") }}
+                </AButton>
+                <AButton
+                  type="link"
+                  size="small"
+                  class="co-update-link-btn"
+                  data-testid="update-manual-btn"
+                  @click="handleOpenReleasePage"
+                >
+                  <template #icon>
+                    <PhArrowSquareOut :size="13" />
+                  </template>
+                  {{ t("update.btnOpenReleases") }}
+                </AButton>
+              </ASpace>
+            </div>
+            <div class="co-update-footer-right">
+              <ASpace :size="6" wrap>
+                <AButton size="small" @click="closePopover">
+                  {{ t("update.btnRemindLater") }}
+                </AButton>
+                <AButton
+                  type="primary"
+                  size="small"
+                  data-testid="update-install-btn"
+                  @click="emit('install')"
+                >
+                  <template #icon>
+                    <PhDownloadSimple :size="14" />
+                  </template>
+                  {{ t("update.btnUpdateNow") }}
+                </AButton>
+              </ASpace>
+            </div>
+          </template>
+
+          <!-- Available + read-only / manifest-missing -->
+          <template v-else-if="isAvailable">
+            <div class="co-update-footer-left">
               <AButton
                 type="text"
                 size="small"
@@ -576,10 +664,108 @@ function handleOpenReleasePage() {
               >
                 {{ t("update.btnSkipVersion") }}
               </AButton>
+            </div>
+            <div class="co-update-footer-right">
+              <ASpace :size="6" wrap>
+                <AButton size="small" @click="closePopover">
+                  {{ t("update.btnRemindLater") }}
+                </AButton>
+                <AButton
+                  type="primary"
+                  size="small"
+                  data-testid="update-manual-btn"
+                  @click="handleOpenReleasePage"
+                >
+                  <template #icon>
+                    <PhArrowSquareOut :size="14" />
+                  </template>
+                  {{ t("update.btnOpenReleases") }}
+                </AButton>
+              </ASpace>
+            </div>
+          </template>
+
+          <!-- Downloading -->
+          <template v-else-if="isDownloading">
+            <div class="co-update-footer-right">
               <AButton
+                danger
+                size="small"
+                data-testid="update-cancel-btn"
+                @click="emit('cancel')"
+              >
+                {{ t("update.btnCancelDownload") }}
+              </AButton>
+            </div>
+          </template>
+
+          <!-- Installing -->
+          <template v-else-if="isInstalling">
+            <div class="co-update-footer-right">
+              <AButton type="primary" size="small" loading disabled>
+                {{ t("update.statusInstalling") }}
+              </AButton>
+            </div>
+          </template>
+
+          <!-- Ready to restart -->
+          <template v-else-if="isReadyToRestart">
+            <div class="co-update-footer-right">
+              <ASpace :size="6" wrap>
+                <AButton size="small" @click="closePopover">
+                  {{ t("update.btnRestartLater") }}
+                </AButton>
+                <AButton
+                  type="primary"
+                  size="small"
+                  :disabled="props.hasActiveOperation"
+                  data-testid="update-relaunch-btn"
+                  @click="emit('relaunch')"
+                >
+                  <template #icon>
+                    <PhArrowClockwise :size="14" />
+                  </template>
+                  {{ t("update.btnRestartNow") }}
+                </AButton>
+              </ASpace>
+            </div>
+          </template>
+
+          <!-- Error -->
+          <template v-else-if="isError">
+            <div class="co-update-footer-left">
+              <AButton
+                v-if="!isSignatureError"
                 type="link"
                 size="small"
                 class="co-update-link-btn"
+                data-testid="update-manual-btn"
+                @click="handleOpenReleasePage"
+              >
+                <template #icon>
+                  <PhArrowSquareOut :size="13" />
+                </template>
+                {{ t("update.btnOpenReleases") }}
+              </AButton>
+              <AButton
+                v-else
+                type="text"
+                size="small"
+                class="co-update-subtle-btn"
+                :loading="isChecking"
+                @click="emit('check')"
+              >
+                <template v-if="!isChecking" #icon>
+                  <PhArrowClockwise :size="13" />
+                </template>
+                {{ t("update.btnRetry") }}
+              </AButton>
+            </div>
+            <div class="co-update-footer-right">
+              <AButton
+                v-if="isSignatureError"
+                type="primary"
+                size="small"
                 data-testid="update-manual-btn"
                 @click="handleOpenReleasePage"
               >
@@ -588,211 +774,92 @@ function handleOpenReleasePage() {
                 </template>
                 {{ t("update.btnOpenReleases") }}
               </AButton>
-            </ASpace>
-          </div>
-          <div class="co-update-footer-right">
-            <ASpace :size="8" wrap>
-              <AButton @click="closeModal">
-                {{ t("update.btnRemindLater") }}
-              </AButton>
-              <AButton
-                type="primary"
-                data-testid="update-install-btn"
-                @click="emit('install')"
-              >
-                <template #icon>
-                  <PhDownloadSimple :size="15" />
-                </template>
-                {{ t("update.btnUpdateNow") }}
-              </AButton>
-            </ASpace>
-          </div>
-        </template>
-
-        <!-- Available + read-only / cannot self-update -->
-        <template v-else-if="isAvailable">
-          <div class="co-update-footer-left">
-            <AButton
-              type="text"
-              size="small"
-              class="co-update-subtle-btn"
-              :disabled="!targetVersion"
-              data-testid="update-skip-btn"
-              @click="handleSkip"
-            >
-              {{ t("update.btnSkipVersion") }}
-            </AButton>
-          </div>
-          <div class="co-update-footer-right">
-            <ASpace :size="8" wrap>
-              <AButton @click="closeModal">
-                {{ t("update.btnRemindLater") }}
-              </AButton>
-              <AButton
-                type="primary"
-                data-testid="update-manual-btn"
-                @click="handleOpenReleasePage"
-              >
-                <template #icon>
-                  <PhArrowSquareOut :size="15" />
-                </template>
-                {{ t("update.btnOpenReleases") }}
-              </AButton>
-            </ASpace>
-          </div>
-        </template>
-
-        <!-- Downloading -->
-        <template v-else-if="isDownloading">
-          <div class="co-update-footer-right">
-            <AButton
-              danger
-              data-testid="update-cancel-btn"
-              @click="emit('cancel')"
-            >
-              {{ t("update.btnCancelDownload") }}
-            </AButton>
-          </div>
-        </template>
-
-        <!-- Installing -->
-        <template v-else-if="isInstalling">
-          <div class="co-update-footer-right">
-            <AButton type="primary" loading disabled>
-              {{ t("update.statusInstalling") }}
-            </AButton>
-          </div>
-        </template>
-
-        <!-- Ready to restart -->
-        <template v-else-if="isReadyToRestart">
-          <div class="co-update-footer-right">
-            <ASpace :size="8" wrap>
-              <AButton @click="closeModal">
-                {{ t("update.btnRestartLater") }}
-              </AButton>
-              <AButton
-                type="primary"
-                :disabled="props.hasActiveOperation"
-                data-testid="update-relaunch-btn"
-                @click="emit('relaunch')"
-              >
-                <template #icon>
-                  <PhArrowClockwise :size="15" />
-                </template>
-                {{ t("update.btnRestartNow") }}
-              </AButton>
-            </ASpace>
-          </div>
-        </template>
-
-        <!-- Error -->
-        <template v-else-if="isError">
-          <div class="co-update-footer-left">
-            <AButton
-              v-if="!isSignatureError"
-              type="link"
-              size="small"
-              class="co-update-link-btn"
-              data-testid="update-manual-btn"
-              @click="handleOpenReleasePage"
-            >
-              <template #icon>
-                <PhArrowSquareOut :size="14" />
-              </template>
-              {{ t("update.btnOpenReleases") }}
-            </AButton>
-            <AButton
-              v-else
-              type="text"
-              size="small"
-              class="co-update-subtle-btn"
-              :loading="isChecking"
-              @click="emit('check')"
-            >
-              <template v-if="!isChecking" #icon>
-                <PhArrowClockwise :size="14" />
-              </template>
-              {{ t("update.btnRetry") }}
-            </AButton>
-          </div>
-          <div class="co-update-footer-right">
-            <ASpace :size="8" wrap>
-              <AButton @click="closeModal">
-                {{ t("common.close") }}
-              </AButton>
-              <AButton
-                v-if="isSignatureError"
-                type="primary"
-                data-testid="update-manual-btn"
-                @click="handleOpenReleasePage"
-              >
-                <template #icon>
-                  <PhArrowSquareOut :size="15" />
-                </template>
-                {{ t("update.btnOpenReleases") }}
-              </AButton>
               <AButton
                 v-else
                 type="primary"
+                size="small"
                 :loading="isChecking"
                 @click="emit('check')"
               >
                 <template v-if="!isChecking" #icon>
-                  <PhArrowClockwise :size="15" />
+                  <PhArrowClockwise :size="14" />
                 </template>
                 {{ t("update.btnRetry") }}
               </AButton>
-            </ASpace>
-          </div>
-        </template>
+            </div>
+          </template>
 
-        <!-- Up-to-date / idle / checking / disabled -->
-        <template v-else>
-          <div class="co-update-footer-left">
-            <AButton
-              type="link"
-              size="small"
-              class="co-update-link-btn"
-              data-testid="update-manual-btn"
-              @click="handleOpenReleasePage"
-            >
-              <template #icon>
-                <PhArrowSquareOut :size="14" />
-              </template>
-              {{ t("update.btnOpenReleases") }}
-            </AButton>
-          </div>
-          <div class="co-update-footer-right">
-            <ASpace :size="8" wrap>
-              <AButton @click="closeModal">
-                {{ t("common.close") }}
+          <!-- Up-to-date / idle / checking / disabled -->
+          <template v-else>
+            <div class="co-update-footer-left">
+              <AButton
+                type="link"
+                size="small"
+                class="co-update-link-btn"
+                data-testid="update-manual-btn"
+                @click="handleOpenReleasePage"
+              >
+                <template #icon>
+                  <PhArrowSquareOut :size="13" />
+                </template>
+                {{ t("update.btnOpenReleases") }}
               </AButton>
+            </div>
+            <div class="co-update-footer-right">
               <AButton
                 v-if="!isDevBuild"
                 type="primary"
+                size="small"
                 :loading="isChecking"
                 :disabled="isChecking"
                 @click="emit('check')"
               >
                 <template v-if="!isChecking" #icon>
-                  <PhArrowClockwise :size="15" />
+                  <PhArrowClockwise :size="14" />
                 </template>
                 {{ t("update.btnCheck") }}
               </AButton>
-            </ASpace>
-          </div>
-        </template>
+            </div>
+          </template>
+        </div>
       </div>
-    </div>
-  </AModal>
+    </template>
+  </APopover>
 </template>
 
 <style scoped>
+.co-update-panel {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 24px);
+  color: var(--co-text);
+}
+
+.co-update-panel.is-compact {
+  width: 332px;
+}
+
+.co-update-panel.is-error {
+  width: 368px;
+}
+
+.co-update-panel.is-rich {
+  width: 404px;
+}
+
+.co-update-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 12px 9px 14px;
+  border-bottom: 1px solid var(--co-border-secondary);
+}
+
 .co-update-title {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -800,9 +867,9 @@ function handleOpenReleasePage() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   flex-shrink: 0;
 }
 
@@ -827,26 +894,59 @@ function handleOpenReleasePage() {
 }
 
 .co-update-title-text {
-  font-size: 16px;
+  font-size: 13.5px;
   font-weight: 600;
   line-height: 1.3;
   color: var(--co-text);
 }
 
-.co-update-modal-body {
+.co-update-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--co-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.co-update-close-btn:hover {
+  background: var(--co-soft-hover);
+  color: var(--co-text);
+}
+
+.co-update-close-btn:focus-visible {
+  outline: 2px solid var(--co-focus);
+  outline-offset: 1px;
+}
+
+.co-update-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding-top: 6px;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.co-update-alert :deep(.ant-alert-message) {
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 
 .co-update-version-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding: 10px 14px;
+  padding: 8px 11px;
   border-radius: var(--co-radius-md);
   border: 1px solid var(--co-border-secondary);
   background: var(--co-subtle);
@@ -857,14 +957,14 @@ function handleOpenReleasePage() {
 }
 
 .co-update-version-transition {
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--co-text);
   letter-spacing: -0.01em;
 }
 
 .co-update-release-date {
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: var(--co-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -872,17 +972,17 @@ function handleOpenReleasePage() {
 .co-update-progress-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 13px 15px;
+  gap: 5px;
+  padding: 10px 12px;
   border-radius: var(--co-radius-md);
   border: 1px solid var(--co-border-secondary);
   background: var(--co-subtle);
 }
 
 .co-update-progress-label {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  line-height: 1.45;
+  line-height: 1.4;
   color: var(--co-text);
 }
 
@@ -890,8 +990,8 @@ function handleOpenReleasePage() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
+  gap: 10px;
+  font-size: 11.5px;
   color: var(--co-muted);
 }
 
@@ -913,14 +1013,14 @@ function handleOpenReleasePage() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 9px 14px;
+  gap: 8px;
+  padding: 7px 11px;
   border-bottom: 1px solid var(--co-border-secondary);
   background: var(--co-surface);
 }
 
 .co-update-notes-heading {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--co-text);
 }
@@ -928,19 +1028,19 @@ function handleOpenReleasePage() {
 .co-update-notes-toggle {
   height: auto;
   padding: 0 2px;
-  font-size: 12.5px;
+  font-size: 11.5px;
 }
 
 .co-update-notes-body {
-  max-height: 240px;
+  max-height: 192px;
   overflow-y: auto;
-  padding: 12px 14px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   color: var(--co-secondary-text);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12.5px;
+  line-height: 1.55;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
 }
@@ -954,10 +1054,10 @@ function handleOpenReleasePage() {
 }
 
 .co-update-note-heading {
-  margin: 4px 0 0;
-  font-size: 13.5px;
+  margin: 3px 0 0;
+  font-size: 12.5px;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.4;
   color: var(--co-text);
 }
 
@@ -968,14 +1068,14 @@ function handleOpenReleasePage() {
 .co-update-note-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
 }
 
 .co-update-note-bullet {
-  width: 5px;
-  height: 5px;
-  margin-top: 8px;
+  width: 4.5px;
+  height: 4.5px;
+  margin-top: 7.5px;
   border-radius: 50%;
   background: var(--co-accent);
   flex-shrink: 0;
@@ -996,14 +1096,14 @@ function handleOpenReleasePage() {
 
 .co-update-inline-code {
   display: inline;
-  padding: 1px 5px;
+  padding: 0.5px 4px;
   margin-inline: 1px;
-  border-radius: 5px;
+  border-radius: 4px;
   border: 1px solid var(--co-border);
   background: var(--co-surface);
   color: var(--co-text);
   font-family: var(--co-font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.4;
 }
 
@@ -1015,20 +1115,20 @@ function handleOpenReleasePage() {
 }
 
 .co-update-error-detail-label {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--co-secondary-text);
 }
 
 .co-update-error-detail-code {
   display: block;
-  padding: 6px 8px;
+  padding: 5px 7px;
   border-radius: 6px;
   border: 1px solid var(--co-danger-border);
   background: var(--co-surface);
   color: var(--co-text);
   font-family: var(--co-font-mono);
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1.45;
   overflow-wrap: anywhere;
   user-select: text;
@@ -1036,16 +1136,16 @@ function handleOpenReleasePage() {
 
 .co-update-notes-empty {
   margin: 0;
-  padding: 8px 0;
+  padding: 4px 0;
   color: var(--co-muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .co-update-status-card {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
   border-radius: var(--co-radius-md);
   border: 1px solid var(--co-border-secondary);
   background: var(--co-subtle);
@@ -1058,6 +1158,7 @@ function handleOpenReleasePage() {
 }
 
 .co-update-status-icon {
+  margin-top: 1px;
   flex-shrink: 0;
 }
 
@@ -1077,26 +1178,27 @@ function handleOpenReleasePage() {
 .co-update-status-text {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.45;
   color: var(--co-text);
 }
 
 .co-update-status-meta {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .co-update-status-version {
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--co-text);
 }
 
 .co-update-status-sub {
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: var(--co-muted);
 }
 
@@ -1104,9 +1206,9 @@ function handleOpenReleasePage() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding-top: 12px;
+  padding: 9px 14px 10px;
   border-top: 1px solid var(--co-border-secondary);
 }
 
@@ -1126,7 +1228,9 @@ function handleOpenReleasePage() {
 }
 
 .co-update-subtle-btn {
+  padding-inline: 5px;
   color: var(--co-muted);
+  font-size: 12px;
 }
 
 .co-update-subtle-btn:hover:not(:disabled) {
@@ -1134,7 +1238,8 @@ function handleOpenReleasePage() {
 }
 
 .co-update-link-btn {
-  padding-inline: 6px;
+  padding-inline: 4px;
+  font-size: 12px;
 }
 
 @keyframes co-update-spin {
@@ -1152,7 +1257,37 @@ function handleOpenReleasePage() {
   }
 }
 
-/* Dark theme refinements */
+/* Anchored popover chrome (light & dark) */
+:global(.co-update-popover) {
+  z-index: 1050;
+}
+
+:global(.co-update-popover .ant-popover-inner) {
+  border-radius: 14px;
+  border: 1px solid var(--co-border);
+  background: var(--co-surface);
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.14),
+    0 2px 8px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+:global(.co-update-popover .ant-popover-arrow::before) {
+  background: var(--co-surface);
+}
+
+:global(:root[data-theme="dark"] .co-update-popover .ant-popover-inner) {
+  border-color: var(--co-border);
+  background: var(--co-elevated) !important;
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.54),
+    0 3px 10px rgba(0, 0, 0, 0.34);
+}
+
+:global(:root[data-theme="dark"] .co-update-popover .ant-popover-arrow::before) {
+  background: var(--co-elevated);
+}
+
 :global(:root[data-theme="dark"] .co-update-version-bar),
 :global(:root[data-theme="dark"] .co-update-progress-card),
 :global(:root[data-theme="dark"] .co-update-notes-card),
@@ -1182,31 +1317,5 @@ function handleOpenReleasePage() {
 
 :global(:root[data-theme="dark"] .co-update-notes-body:hover::-webkit-scrollbar-thumb) {
   background: rgba(255, 255, 255, 0.38);
-}
-
-:global(:root[data-theme="dark"] .co-update-title-icon.is-neutral) {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--co-secondary-text);
-}
-
-:global(:root[data-theme="dark"] .co-update-footer) {
-  border-top-color: var(--co-border);
-}
-
-@media (max-width: 520px) {
-  .co-update-footer {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .co-update-footer-left,
-  .co-update-footer-right {
-    margin-inline-start: 0;
-    justify-content: flex-end;
-  }
-
-  .co-update-footer-left {
-    justify-content: flex-start;
-  }
 }
 </style>

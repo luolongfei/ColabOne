@@ -6002,6 +6002,20 @@ test("auto-update surfaces navbar badge, renders bilingual release notes safely,
   await expect(versionDot).toHaveCount(0);
   const modal = page.getByTestId("update-modal");
   await expect(modal).toBeVisible();
+  // Anchored compact popover under the version badge (no full-page dimmed modal backdrop).
+  await expect(page.locator(".ant-modal-mask")).toHaveCount(0);
+  const [btnBox, popBox] = await Promise.all([
+    versionBtn.boundingBox(),
+    modal.boundingBox(),
+  ]);
+  expect(btnBox).not.toBeNull();
+  expect(popBox).not.toBeNull();
+  if (btnBox && popBox) {
+    expect(popBox.width).toBeLessThanOrEqual(420);
+    expect(popBox.y).toBeGreaterThanOrEqual(btnBox.y + btnBox.height - 2);
+    expect(popBox.y - (btnBox.y + btnBox.height)).toBeLessThan(28);
+    expect(Math.abs(popBox.x - btnBox.x)).toBeLessThan(48);
+  }
   await expect(modal).toContainText("v0.1.6 → v0.1.7");
 
   // Chinese notes render by default; attempted script tag renders as literal text with zero XSS.
@@ -6067,7 +6081,13 @@ test("auto-update surfaces navbar badge, renders bilingual release notes safely,
     { method: "prefs", autoCheck: false, includePrerelease: true },
   ]);
 
-  // Reopen update modal, install update, verify ready_to_restart + active operation guard + relaunch.
+  // Clicking the Settings action button opens the anchored popover, and Escape dismisses it cleanly.
+  await updateRow.getByTestId("settings-update-now-btn").click();
+  await expect(modal).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+
+  // Reopen update popover from version badge, install update, verify ready_to_restart + active operation guard + relaunch.
   await versionBtn.click();
   await expect(modal).toBeVisible();
 
