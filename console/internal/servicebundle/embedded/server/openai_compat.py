@@ -31,6 +31,10 @@ _CLOUD_ONLY_TOOL_TYPES = frozenset(
     }
 )
 
+COMPACTED_SUMMARY_HEADER = "[Compacted earlier conversation summary]"
+COMPACTED_SUMMARY_FOOTER = "[End of compacted summary]"
+_COMPACTED_CONTINUATION_NOTE = "Continue the conversation from the compacted summary above."
+
 COMPACTION_SYSTEM_PROMPT = (
     "You are a precise conversation context compactor for an autonomous coding assistant (Codex). "
     "Produce a concise, high-signal continuation handoff summary of the conversation so the assistant "
@@ -40,7 +44,8 @@ COMPACTION_SYSTEM_PROMPT = (
     "2. Concrete progress already made, files created/modified, key symbols/functions, and verified command/test results.\n"
     "3. Important technical facts, decisions, configurations, and error messages discovered.\n"
     "4. Remaining tasks, open questions, and the exact next step.\n"
-    "Be factual and compact. Do not invent facts or repeat verbose raw tool output verbatim."
+    "Be factual and compact. Do not invent facts or repeat verbose raw tool output verbatim. "
+    "Output only the handoff summary directly without chain-of-thought preamble."
 )
 
 
@@ -1034,6 +1039,96 @@ def extract_anchor_user_item(items: list[dict[str, Any]], max_chars: int = 1200)
     return None
 
 
+def chunk_grouped_transcript_blocks_by_tokens(
+    grouped_blocks: list[tuple[int, str]],
+    token_budget: int,
+    *,
+    max_chunks: int = 6,
+) -> list[tuple[str, int | None]]:
+    """Pack ``(group_index, block)`` pairs into chunks bounded by ``token_budget``.
+
+    Keeps atomic groups intact inside one chunk whenever a single group fits within
+    ``token_budget``. Returns ``(chunk_text, end_group_index)`` pairs where
+    ``end_group_index`` is non-``None`` **only** when the chunk ends cleanly on a
+    complete group boundary with an unbroken prefix from the beginning (never mid-group
+    and never after middle chunks were dropped by ``max_chunks``).
+    """
+    if not grouped_blocks:
+        return []
+    budget = max(128, int(token_budget))
+    chunk_limit = max(2, int(max_chunks))
+
+    # Group consecutive blocks sharing the same group_index so multi-block tool groups
+    # are kept atomic whenever possible and mid-group splits are detected accurately.
+    atomic_groups: list[tuple[int, list[str]]] = []
+    for grp_idx, raw_block in grouped_blocks:
+        block = raw_block
+        if estimate_tokens(block) > budget:
+            block = clip_text_to_token_budget(
+                block,
+                budget,
+                marker_template="\n[... truncated {omitted} chars ...]\n",
+            )
+        if atomic_groups and atomic_groups[-1][0] == grp_idx:
+            atomic_groups[-1][1].append(block)
+        else:
+            atomic_groups.append((grp_idx, [block]))
+
+    chunks: list[tuple[str, int | None]] = []
+    current: list[str] = []
+    current_toks = 0
+    current_end_idx: int | None = None
+
+    for grp_idx, grp_blocks in atomic_groups:
+        block_toks_list = [estimate_tokens(b) for b in grp_blocks]
+        grp_total_toks = sum(block_toks_list) + 2 * max(0, len(grp_blocks) - 1)
+
+        if grp_total_toks <= budget:
+            sep_toks = 2 if current else 0
+            if current and current_toks + sep_toks + grp_total_toks > budget:
+                chunks.append(("\n\n".join(current), current_end_idx))
+                current = list(grp_blocks)
+                current_toks = grp_total_toks
+                current_end_idx = grp_idx
+            else:
+                current.extend(grp_blocks)
+                current_toks += sep_toks + grp_total_toks
+                current_end_idx = grp_idx
+        else:
+            # Flush any completed prior groups cleanly before splitting this oversized group.
+            if current:
+                chunks.append(("\n\n".join(current), current_end_idx))
+                current = []
+                current_toks = 0
+                current_end_idx = None
+            for b_pos, (block, b_toks) in enumerate(zip(grp_blocks, block_toks_list)):
+                sep_toks = 2 if current else 0
+                if current and current_toks + sep_toks + b_toks > budget:
+                    # Flushing mid-group: remaining blocks of grp_idx have not been included yet,
+                    # so this chunk MUST NOT publish a cacheable checkpoint index.
+                    chunks.append(("\n\n".join(current), None))
+                    current = [block]
+                    current_toks = b_toks
+                else:
+                    current.append(block)
+                    current_toks += sep_toks + b_toks
+                if b_pos == len(grp_blocks) - 1:
+                    current_end_idx = grp_idx
+                else:
+                    current_end_idx = None
+
+    if current:
+        chunks.append(("\n\n".join(current), current_end_idx))
+
+    if len(chunks) > chunk_limit:
+        # Keep earliest context + most recent (chunk_limit - 1) chunks so compaction finishes fast.
+        # Chunk 0 retains its end_group_index ONLY if it ended cleanly on a complete group boundary;
+        # trailing chunks after dropped middle chunks never represent an unbroken prefix.
+        kept_tail = [(text, None) for text, _ in chunks[-(chunk_limit - 1) :]]
+        chunks = [chunks[0], *kept_tail]
+    return chunks
+
+
 def chunk_transcript_blocks_by_tokens(
     blocks: list[str],
     token_budget: int,
@@ -1041,35 +1136,14 @@ def chunk_transcript_blocks_by_tokens(
     max_chunks: int = 6,
 ) -> list[str]:
     """Pack rendered transcript blocks into chunks bounded by CJK-aware token_budget."""
-    if not blocks:
-        return []
-    budget = max(128, int(token_budget))
-    chunks: list[str] = []
-    current: list[str] = []
-    current_toks = 0
-    for block in blocks:
-        block_toks = estimate_tokens(block)
-        if block_toks > budget:
-            block = clip_text_to_token_budget(
-                block,
-                budget,
-                marker_template="\n[... truncated {omitted} chars ...]\n",
-            )
-            block_toks = estimate_tokens(block)
-        sep_toks = 2 if current else 0
-        if current and current_toks + sep_toks + block_toks > budget:
-            chunks.append("\n\n".join(current))
-            current = [block]
-            current_toks = block_toks
-        else:
-            current.append(block)
-            current_toks += sep_toks + block_toks
-    if current:
-        chunks.append("\n\n".join(current))
-    if len(chunks) > max_chunks:
-        # Keep earliest context + most recent (max_chunks - 1) chunks so compaction finishes fast.
-        chunks = [chunks[0]] + chunks[-(max_chunks - 1) :]
-    return chunks
+    return [
+        text
+        for text, _ in chunk_grouped_transcript_blocks_by_tokens(
+            list(enumerate(blocks)),
+            token_budget,
+            max_chunks=max_chunks,
+        )
+    ]
 
 
 def chunk_transcript_blocks(blocks: list[str], char_budget: int) -> list[str]:
@@ -1295,16 +1369,30 @@ def split_groups_for_summary(
     groups: list[list[dict[str, Any]]],
     tools: list[dict[str, Any]] | None,
     target_tokens: int,
+    *,
+    summary_reserve: int | None = None,
+    recent_ratio: float = 0.40,
 ) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
-    """Split non-system turn groups into (older_to_summarize, recent_to_keep_verbatim)."""
+    """Split non-system turn groups into (older_to_summarize, recent_to_keep_verbatim).
+
+    Targets a low-water mark (``recent_ratio`` of non-summary headroom) so subsequent
+    turns can append under a pinned summary checkpoint up to ``target_tokens`` without
+    re-triggering LLM summarization on every turn.
+    """
     if len(groups) <= 1:
         return [], list(groups)
 
     tools_and_sys = estimate_messages_tokens(
         [leading_system] if leading_system else [], tools
     )
-    # Leave room for the generated summary (~1000-1500 tokens) + framing.
-    recent_budget = max(256, int(max(512, target_tokens - tools_and_sys) * 0.45))
+    avail = max(512, target_tokens - tools_and_sys)
+    if summary_reserve is None:
+        effective_summary_reserve = min(1536, max(256, int(avail * 0.15)))
+    else:
+        effective_summary_reserve = max(0, int(summary_reserve))
+    non_summary_avail = max(256, avail - effective_summary_reserve)
+    clamped_ratio = max(0.15, min(0.75, float(recent_ratio)))
+    recent_budget = max(256, int(non_summary_avail * clamped_ratio))
 
     kept: list[list[dict[str, Any]]] = []
     kept_tokens = 0
@@ -1325,45 +1413,121 @@ def split_groups_for_summary(
     return groups[:split_at], kept
 
 
+def _format_compacted_summary_block(summary_text: str) -> str:
+    # Neutralize any literal occurrences of our framing markers inside the LLM summary
+    # (e.g. when the user is editing this codebase) so extraction never splits mid-summary.
+    body = (
+        summary_text.strip()
+        .replace(COMPACTED_SUMMARY_HEADER, "(Compacted earlier conversation summary)")
+        .replace(COMPACTED_SUMMARY_FOOTER, "(End of compacted summary)")
+    )
+    return f"{COMPACTED_SUMMARY_HEADER}\n{body}\n{COMPACTED_SUMMARY_FOOTER}"
+
+
+def _extract_sticky_summary_block(text: str) -> tuple[str | None, str]:
+    """Split a leading compacted summary block from any appended user message text."""
+    stripped = (text or "").strip()
+    if not stripped.startswith(COMPACTED_SUMMARY_HEADER):
+        return None, stripped
+    # Require the closing footer on its own line boundary so mid-line quotes never split early.
+    line_marker = f"\n{COMPACTED_SUMMARY_FOOTER}"
+    search_from = len(COMPACTED_SUMMARY_HEADER)
+    while True:
+        idx = stripped.find(line_marker, search_from)
+        if idx < 0:
+            break
+        end = idx + len(line_marker)
+        if end == len(stripped) or stripped[end] in ("\n", "\r"):
+            return stripped[:end].strip(), stripped[end:].strip()
+        search_from = end
+    return stripped, ""
+
+
+def _clip_sticky_summary_block(summary_block: str, max_tokens: int) -> str:
+    """Clip a sticky summary block while preserving its header/footer framing whenever budget permits."""
+    if estimate_tokens(summary_block) <= max_tokens:
+        return summary_block
+    body = summary_block
+    if body.startswith(COMPACTED_SUMMARY_HEADER):
+        body = body[len(COMPACTED_SUMMARY_HEADER) :].strip()
+    if body.endswith(COMPACTED_SUMMARY_FOOTER):
+        body = body[: -len(COMPACTED_SUMMARY_FOOTER)].strip()
+    framing_toks = estimate_tokens(f"{COMPACTED_SUMMARY_HEADER}\n\n{COMPACTED_SUMMARY_FOOTER}")
+    inner_budget = max_tokens - framing_toks
+    if inner_budget >= 24 and body:
+        clipped_inner = clip_text_to_token_budget(
+            body,
+            inner_budget,
+            marker_template="\n[... truncated {omitted} chars to fit context window ...]\n",
+        )
+        wrapped = _format_compacted_summary_block(clipped_inner)
+        if estimate_tokens(wrapped) <= max_tokens:
+            return wrapped
+    return clip_text_to_token_budget(
+        summary_block,
+        max_tokens,
+        marker_template="\n[... truncated {omitted} chars to fit context window ...]\n",
+    )
+
+
+def _attach_summary_block_to_tail(
+    summary_block: str,
+    tail_msgs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach ``summary_block`` as the leading user context with strict Jinja-safe role order."""
+    out = list(tail_msgs)
+    if not out:
+        out.append(
+            {
+                "role": "user",
+                "content": f"{summary_block}\n\nContinue with the task based on the compacted summary above.",
+            }
+        )
+    elif out[0].get("role") == "user" and "tool_calls" not in out[0]:
+        raw_first = out[0].get("content")
+        first_content = raw_first.strip() if isinstance(raw_first, str) else ""
+        merged_content = (
+            f"{summary_block}\n\n{first_content}" if first_content else summary_block
+        )
+        out[0] = {**out[0], "content": merged_content}
+    else:
+        # Strict templates (Gemma/Mistral/Qwen) require a user turn after system before assistant/tool turns.
+        out.insert(
+            0,
+            {
+                "role": "user",
+                "content": f"{summary_block}\n\n{_COMPACTED_CONTINUATION_NOTE}",
+            },
+        )
+    return out
+
+
 def assemble_compacted_chat_messages(
     leading_system: dict[str, Any] | None,
     summary_text: str,
     recent_groups: list[list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    """Combine system prompt + rolling summary + recent turn groups with Jinja-safe role order."""
-    summary_block = f"[Compacted earlier conversation summary]\n{summary_text.strip()}"
+    """Combine immutable system prompt + rolling summary + recent groups with Jinja-safe role order.
+
+    Keeps ``leading_system`` untouched in ``messages[0]`` so templates that render tool
+    definitions immediately after the system message (e.g. Qwen3 ``# Tools``) retain an
+    immutable KV/recurrent prefix across re-compactions.
+    """
+    summary_block = _format_compacted_summary_block(summary_text)
     msgs: list[dict[str, Any]] = []
-    if leading_system and (leading_system.get("content") or "").strip():
+    if leading_system and isinstance(leading_system.get("content"), str) and leading_system["content"].strip():
         msgs.append(
             {
                 "role": "system",
-                "content": f"{leading_system['content'].strip()}\n\n{summary_block}",
+                "content": leading_system["content"].strip(),
             }
         )
-    else:
-        msgs.append({"role": "system", "content": summary_block})
 
     tail_msgs: list[dict[str, Any]] = []
     for group in recent_groups:
         tail_msgs.extend(group)
 
-    if not tail_msgs:
-        tail_msgs.append(
-            {
-                "role": "user",
-                "content": "Continue with the task based on the compacted summary above.",
-            }
-        )
-    elif tail_msgs[0].get("role") != "user":
-        # Strict templates (Gemma/Mistral/Qwen) require a user turn after system before assistant/tool turns.
-        tail_msgs.insert(
-            0,
-            {
-                "role": "user",
-                "content": "Continue the conversation from the compacted summary above.",
-            },
-        )
-    msgs.extend(tail_msgs)
+    msgs.extend(_attach_summary_block_to_tail(summary_block, tail_msgs))
     return _normalize_role_sequence(msgs)
 
 
@@ -1379,31 +1543,65 @@ def truncate_messages_to_budget(
     leading_system, groups = group_chat_messages(messages)
     changed = False
 
-    def rebuild(sys_msg: dict[str, Any] | None, gs: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    # Preserve any leading compacted summary block across Stage 3a group dropping so a huge
+    # newest tool output never causes Stage 3a to erase the rolling conversation summary.
+    sticky_summary: str | None = None
+    if (
+        groups
+        and len(groups[0]) == 1
+        and groups[0][0].get("role") == "user"
+        and "tool_calls" not in groups[0][0]
+        and isinstance(groups[0][0].get("content"), str)
+    ):
+        extracted_summary, remainder = _extract_sticky_summary_block(groups[0][0]["content"])
+        if extracted_summary:
+            if remainder and remainder != _COMPACTED_CONTINUATION_NOTE:
+                sticky_summary = extracted_summary
+                groups = [[{**groups[0][0], "content": remainder}], *groups[1:]]
+            elif len(groups) > 1:
+                sticky_summary = extracted_summary
+                groups = groups[1:]
+
+    def rebuild(
+        sys_msg: dict[str, Any] | None,
+        gs: list[list[dict[str, Any]]],
+        summary_blk: str | None = None,
+    ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         if sys_msg is not None:
             out.append(sys_msg)
+        tail: list[dict[str, Any]] = []
         for g in gs:
-            out.extend(g)
-        return _normalize_role_sequence(out)
-
-    # 3a. Drop earliest remaining groups while keeping at least the newest group.
-    while len(groups) > 1:
-        candidate = rebuild(leading_system, groups)
-        if estimate_messages_tokens(candidate, tools) <= target_tokens:
-            return candidate, changed
-        groups = groups[1:]
-        changed = True
-        if groups and groups[0] and groups[0][0].get("role") != "user":
-            groups[0] = [
+            tail.extend(g)
+        if summary_blk:
+            tail = _attach_summary_block_to_tail(summary_blk, tail)
+        elif tail and tail[0].get("role") != "user":
+            tail.insert(
+                0,
                 {
                     "role": "user",
                     "content": "Continue based on the context above.",
                 },
-                *groups[0],
-            ]
+            )
+        out.extend(tail)
+        return _normalize_role_sequence(out)
 
-    # 3b. Fit remaining messages (and clip system prompt if it alone exceeds 40% of available budget).
+    # 3a. Drop earliest remaining groups while keeping sticky_summary and at least the newest group.
+    while len(groups) > 1:
+        candidate = rebuild(leading_system, groups, sticky_summary)
+        if estimate_messages_tokens(candidate, tools) <= target_tokens:
+            return candidate, (changed or candidate != messages)
+        groups = groups[1:]
+        changed = True
+
+    # Re-check immediately after dropping down to the final remaining group so we do not
+    # fall into Stage 3b and needlessly clip an immutable leading_system or sticky_summary.
+    if changed:
+        candidate = rebuild(leading_system, groups, sticky_summary)
+        if estimate_messages_tokens(candidate, tools) <= target_tokens:
+            return candidate, True
+
+    # 3b. Fit remaining messages (and clip system prompt / sticky summary proportionally if needed).
     tools_toks = estimate_messages_tokens([], tools)
     avail_for_msgs = max(128, target_tokens - tools_toks)
     if leading_system and isinstance(leading_system.get("content"), str):
@@ -1421,6 +1619,13 @@ def truncate_messages_to_budget(
 
     sys_toks = estimate_messages_tokens([leading_system] if leading_system else [], None)
     body_budget = max(96, avail_for_msgs - sys_toks)
+
+    if sticky_summary:
+        sum_cap = max(64, int(body_budget * 0.35))
+        if estimate_tokens(sticky_summary) > sum_cap:
+            sticky_summary = _clip_sticky_summary_block(sticky_summary, sum_cap)
+            changed = True
+        body_budget = max(64, body_budget - estimate_tokens(sticky_summary) - 16)
 
     flat_tail = [msg for g in groups for msg in g]
     if flat_tail:
@@ -1451,7 +1656,7 @@ def truncate_messages_to_budget(
             clipped_tail.append(new_msg)
         groups = [clipped_tail]
 
-    final_msgs = rebuild(leading_system, groups)
+    final_msgs = rebuild(leading_system, groups, sticky_summary)
     # 3c. Final tight pass on the largest message content or tool_call arguments if framing still pushed over.
     max_passes = min(32, max(8, len(final_msgs) * 2))
     for _ in range(max_passes):

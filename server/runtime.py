@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -859,6 +860,11 @@ class ColabOneRuntime:
         except (ValueError, IndexError):
             return default_ctx
 
+    def host_memory_mib(self) -> int:
+        info = ColabOneResourceSampler.memory_info()
+        avail = int(info.get("available_bytes") or 0)
+        return avail // (1024 * 1024)
+
     def _build_llama_load_plans(
         self, engine: Path, m: ModelSpec, model_path: Path, gpu: dict
     ) -> tuple[bool, list[tuple[str, list[str]]]]:
@@ -874,11 +880,18 @@ class ColabOneRuntime:
           dense layers across VRAM and Host RAM.
         - MLA architectures (DeepSeek / GLM-5 / Kimi) reject asymmetric K/V
           cache types (`type_k != type_v`).
+        - Hybrid recurrent/SWA models (e.g. Qwen3.8-Flash-Next Gated DeltaNet)
+          benefit from finer context checkpoints (`--checkpoint-min-step` scaled
+          to cover the full context within 32 checkpoints) and larger host RAM
+          prompt cache (`--cache-ram 16384` only when available RAM headroom
+          *after* CPU-offloaded weights is >= 48 GiB). High-VRAM hybrid MoE runs
+          also use `-ub 1024` on Plan 1 to halve CPU-resident expert scans.
         """
         model_bytes = sum(f.size for f in m.files)
         model_mib = model_bytes / (1024 * 1024)
         gpu_total_mib = int(gpu.get("total_mib") or 0)
         gpu_free_mib = max(0, gpu_total_mib - int(gpu.get("used_mib") or 0))
+        host_avail_mib = self.host_memory_mib()
         needs_hybrid = bool(m.cpu_moe_layers) or (
             model_mib > 0 and (model_mib * 1.08 + 1024) > gpu_free_mib
         )
@@ -907,6 +920,42 @@ class ColabOneRuntime:
                 "gemma4",
             )
         )
+        # Exclude random hf-<16-hex> custom import IDs from architecture token matching so
+        # hex substrings like "a3b" or "a6b" never falsely classify dense models as MoE.
+        arch_parts = [
+            m.name,
+            m.description,
+            *(f.repo for f in m.files),
+            *(f.path for f in m.files),
+        ]
+        if not m.id.lower().startswith("hf-"):
+            arch_parts.insert(0, m.id)
+        arch_text = " ".join(arch_parts).lower()
+        is_moe_arch = (
+            bool(m.cpu_moe_layers)
+            or bool(re.search(r"(?:^|[^a-z0-9])(moe|a\d+b)(?:[^a-z0-9]|$)", arch_text))
+            or any(
+                tok in arch_text
+                for tok in (
+                    "flash-next",
+                    "flash_next",
+                    "qwen3-next",
+                    "qwen3_next",
+                    "qwen3.8",
+                    "mixtral",
+                    "deepseek-v3",
+                    "deepseek_v3",
+                    "deepseek-v4",
+                    "deepseek_v4",
+                    "deepseek4",
+                    "glm-4.5",
+                    "glm-5",
+                    "glm5",
+                    "kimi-k2",
+                    "kimi_k2",
+                )
+            )
+        )
         # Reserve headroom for CUDA 12.8 / cuBLAS / Blackwell runtime workspace.
         if gpu_total_mib >= 75000:
             primary_margin_mib, wide_margin_mib = 2048, 4096
@@ -914,6 +963,43 @@ class ColabOneRuntime:
             primary_margin_mib, wide_margin_mib = 1536, 2560
         else:
             primary_margin_mib, wide_margin_mib = 1024, 1536
+
+        # Size host RAM prompt cache strictly from headroom remaining AFTER estimated
+        # CPU-offloaded model weights so lazy cache growth never triggers mid-session OOM.
+        est_cpu_model_mib = max(0, int(model_mib - gpu_free_mib * 0.90))
+        ram_headroom_mib = (
+            host_avail_mib - est_cpu_model_mib if host_avail_mib > 0 else 0
+        )
+        if ram_headroom_mib >= 48 * 1024:
+            tuned_cache_ram_mib: int | None = 16384
+        elif needs_hybrid and host_avail_mib > 0 and ram_headroom_mib < 16 * 1024:
+            tuned_cache_ram_mib = 4096
+        else:
+            tuned_cache_ram_mib = None
+
+        # Keep checkpoints fine enough to capture static system+tool prefixes while covering
+        # the full context window within llama-server's default 32 checkpoints; avoid extra
+        # checkpoint churn when host RAM headroom is tight.
+        def compute_checkpoint_step(ctx: int) -> int | None:
+            if ctx < 8192:
+                return None
+            if host_avail_mib > 0 and ram_headroom_mib < 16 * 1024:
+                return None
+            return max(2048, ctx // 32)
+
+        # Halve CPU MoE expert weight scans during prefill on 80-96 GiB hybrid MoE runs
+        # only (dense models get minimal PP gain from -ub 1024 while paying extra VRAM scratch
+        # that would cause --fit on to spill extra layers to CPU).
+        primary_ubatch_size = (
+            1024
+            if (
+                needs_hybrid
+                and is_moe_arch
+                and gpu_total_mib >= 75000
+                and m.context_length >= 8192
+            )
+            else None
+        )
 
         def make_fit_cmd(
             *,
@@ -923,6 +1009,10 @@ class ColabOneRuntime:
             flash_attn: str | None = "on",
             kv_unified: bool = True,
             fit_target_mib: int | None = primary_margin_mib,
+            batch_size: int | None = None,
+            ubatch_size: int | None = None,
+            cache_ram_mib: int | None = tuned_cache_ram_mib,
+            use_checkpoint_tuning: bool = True,
         ) -> list[str]:
             cmd = [
                 str(engine),
@@ -949,6 +1039,15 @@ class ColabOneRuntime:
                 cmd.extend(["--cache-type-k", kv_k, "--cache-type-v", kv_v])
             if kv_unified:
                 cmd.append("--kv-unified")
+            if batch_size and ubatch_size:
+                cmd.extend(
+                    ["--batch-size", str(batch_size), "--ubatch-size", str(ubatch_size)]
+                )
+            if cache_ram_mib:
+                cmd.extend(["--cache-ram", str(cache_ram_mib)])
+            cms = compute_checkpoint_step(ctx_size) if use_checkpoint_tuning else None
+            if cms:
+                cmd.extend(["--checkpoint-min-step", str(cms)])
             cmd.extend(["--parallel", "1", "--jinja"])
             return cmd
 
@@ -962,7 +1061,17 @@ class ColabOneRuntime:
             primary_label = "GPU 显存 + 系统内存智能混合装配（--fit on · KV q8_0）"
         else:
             primary_label = "全量 GPU 驻留（FlashAttn · --fit on · KV q8_0）"
-        plans.append((primary_label, make_fit_cmd(kv_k="q8_0", kv_v="q8_0")))
+        plans.append(
+            (
+                primary_label,
+                make_fit_cmd(
+                    kv_k="q8_0",
+                    kv_v="q8_0",
+                    batch_size=2048 if primary_ubatch_size else None,
+                    ubatch_size=primary_ubatch_size,
+                ),
+            )
+        )
 
         # Scenario 2: Tight-VRAM KV compression + wider CUDA workspace margin.
         # Skip asymmetric KV on MLA models where llama.cpp requires type_k == type_v.
@@ -989,7 +1098,7 @@ class ColabOneRuntime:
         )
 
         # Scenario 3: Architecture-compatible native f16 KV + auto FlashAttn with
-        # --fit on (for head dimensions not divisible by 32 or models rejecting forced FA).
+        # --fit on (full-context compatibility plan omitting optional cache/checkpoint tuning).
         plans.append(
             (
                 "GPU + 内存标准 KV 兼容装配（--fit on · KV f16）",
@@ -998,6 +1107,8 @@ class ColabOneRuntime:
                     kv_v=None,
                     flash_attn="auto",
                     fit_target_mib=wide_margin_mib,
+                    cache_ram_mib=None,
+                    use_checkpoint_tuning=False,
                 ),
             )
         )
@@ -1013,6 +1124,8 @@ class ColabOneRuntime:
                         kv_k="q4_0",
                         kv_v="q4_0",
                         fit_target_mib=wide_margin_mib,
+                        cache_ram_mib=None,
+                        use_checkpoint_tuning=False,
                     ),
                 )
             )
@@ -1040,10 +1153,13 @@ class ColabOneRuntime:
                 "auto",
                 "--n-cpu-moe",
                 str(m.cpu_moe_layers),
-                "--parallel",
-                "1",
-                "--jinja",
             ]
+            if tuned_cache_ram_mib:
+                manual_moe_cmd.extend(["--cache-ram", str(tuned_cache_ram_mib)])
+            manual_cms = compute_checkpoint_step(m.context_length)
+            if manual_cms:
+                manual_moe_cmd.extend(["--checkpoint-min-step", str(manual_cms)])
+            manual_moe_cmd.extend(["--parallel", "1", "--jinja"])
             plans.append(
                 (
                     f"GPU + 内存 MoE 手动卸载回退（--fit off · {m.cpu_moe_layers} 层专家内存卸载）",
@@ -1051,9 +1167,9 @@ class ColabOneRuntime:
                 )
             )
 
-        # Scenario 6: Minimal compatibility mode (omits KV quant / FA / unified-KV
-        # while retaining --n-gpu-layers auto + --fit on and bounded 4K ctx so even
-        # models rejecting quantized KV with large requested contexts can load).
+        # Scenario 6: Minimal compatibility mode (omits KV quant / FA / unified-KV /
+        # cache tuning while retaining --n-gpu-layers auto + --fit on and bounded 4K ctx
+        # so even models rejecting optional tuning flags can load).
         compat_ctx = min(m.context_length, 4096)
         plans.append(
             (
@@ -1065,6 +1181,8 @@ class ColabOneRuntime:
                     flash_attn=None,
                     kv_unified=False,
                     fit_target_mib=None,
+                    cache_ram_mib=None,
+                    use_checkpoint_tuning=False,
                 ),
             )
         )

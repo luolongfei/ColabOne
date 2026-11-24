@@ -770,3 +770,142 @@ def test_list_models_reports_cached_bytes_for_partial_and_sharded_models(runtime
     runtime.delete(sharded.id)
     assert entry()["downloaded"] is False
     assert entry()["cached_bytes"] == 0
+
+
+def test_llama_load_plans_tune_ubatch_cache_ram_and_checkpoints_safely(
+    runtime, monkeypatch
+):
+    qwen_big = ModelSpec(
+        id="qwen38-flash-next-q8",
+        name="Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+        description="Q8_0 hybrid PLE + MoE",
+        min_vram_mib=0,
+        context_length=32768,
+        files=[
+            {
+                "repo": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF",
+                "revision": "c" * 40,
+                "path": "unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+                "size": 175 * 1024**3,
+                "sha256": hashlib.sha256(b"q8").hexdigest(),
+                "role": "model",
+            }
+        ],
+    )
+    gpu_96g = {"name": "NVIDIA RTX PRO 6000 Blackwell", "total_mib": 97894, "used_mib": 512}
+
+    # High-RAM (180 GiB) + High-VRAM (96 GiB) hybrid MoE run:
+    # - est_cpu_model ~= 89 GiB -> headroom ~= 91 GiB >= 48 GiB -> --cache-ram 16384.
+    # - Plan 1 raises ubatch to 1024 (halving CPU MoE scans) and sets --checkpoint-min-step 2048.
+    # - Plan 2 fallback drops --ubatch-size back to default 512 while retaining checkpoints.
+    # - Plan 3 (full-context KV f16 compat) & Plan 6 omit optional cache/checkpoint/ubatch tuning.
+    monkeypatch.setattr(runtime, "host_memory_mib", lambda: 180 * 1024)
+    needs_hybrid, plans_hi = runtime._build_llama_load_plans(
+        runtime.root / "llama-server",
+        qwen_big,
+        runtime.models_dir / qwen_big.id / qwen_big.files[0].path,
+        gpu_96g,
+    )
+    assert needs_hybrid is True
+    plan1_cmd = plans_hi[0][1]
+    assert plan1_cmd[plan1_cmd.index("--batch-size") + 1] == "2048"
+    assert plan1_cmd[plan1_cmd.index("--ubatch-size") + 1] == "1024"
+    assert plan1_cmd[plan1_cmd.index("--cache-ram") + 1] == "16384"
+    assert plan1_cmd[plan1_cmd.index("--checkpoint-min-step") + 1] == "2048"
+
+    plan2_cmd = plans_hi[1][1]
+    assert "--ubatch-size" not in plan2_cmd
+    assert plan2_cmd[plan2_cmd.index("--cache-ram") + 1] == "16384"
+    assert plan2_cmd[plan2_cmd.index("--checkpoint-min-step") + 1] == "2048"
+
+    f16_compat_cmd = next(cmd for lbl, cmd in plans_hi if "KV f16" in lbl)
+    assert "--ubatch-size" not in f16_compat_cmd
+    assert "--cache-ram" not in f16_compat_cmd
+    assert "--checkpoint-min-step" not in f16_compat_cmd
+
+    compat_cmd = plans_hi[-1][1]
+    assert "--ubatch-size" not in compat_cmd
+    assert "--cache-ram" not in compat_cmd
+    assert "--checkpoint-min-step" not in compat_cmd
+
+    # 128K context scales --checkpoint-min-step to 4096 so 32 checkpoints cover the full 128K span.
+    qwen_128k = qwen_big.model_copy(update={"context_length": 131072})
+    _, plans_128k = runtime._build_llama_load_plans(
+        runtime.root / "llama-server",
+        qwen_128k,
+        runtime.models_dir / qwen_big.id / qwen_big.files[0].path,
+        gpu_96g,
+    )
+    assert plans_128k[0][1][plans_128k[0][1].index("--checkpoint-min-step") + 1] == "4096"
+
+    # Dense oversized model on 96 GiB GPU — even with a random hf-<hex> ID containing "a3b"
+    # or from the dense Gemma-4 / Qwen3.5 families — must NOT enable --ubatch-size 1024.
+    for dense_id, dense_name, dense_path in [
+        ("hf-82b42fca3b001234", "Llama-120B-Dense-Q8", "Llama-120B-Dense-Q8_0.gguf"),
+        ("hf-1122334455667788", "Gemma-4-31B-Dense-Q8", "gemma-4-31b-it-Q8_0.gguf"),
+        ("hf-9988776655443322", "Qwen3.5-72B-Dense-Q8", "Qwen3.5-72B-Q8_0.gguf"),
+    ]:
+        dense_big = ModelSpec(
+            id=dense_id,
+            name=dense_name,
+            description="Dense Q8_0 model",
+            min_vram_mib=0,
+            context_length=32768,
+            files=[
+                {
+                    "repo": f"org/{dense_name}-GGUF",
+                    "revision": "d" * 40,
+                    "path": dense_path,
+                    "size": 120 * 1024**3,
+                    "sha256": hashlib.sha256(dense_id.encode()).hexdigest(),
+                    "role": "model",
+                }
+            ],
+        )
+        _, plans_dense = runtime._build_llama_load_plans(
+            runtime.root / "llama-server",
+            dense_big,
+            runtime.models_dir / dense_big.id / dense_big.files[0].path,
+            gpu_96g,
+        )
+        assert "--ubatch-size" not in plans_dense[0][1], f"{dense_name} should not get MoE ubatch"
+
+    # Explicit active-parameter MoE naming (e.g. A4B / A10B / A17B) DOES enable --ubatch-size 1024.
+    gemma_moe = ModelSpec(
+        id="hf-deadbeef00112233",
+        name="Qwen3.5-122B-A10B-Q8",
+        description="122B-A10B MoE",
+        min_vram_mib=0,
+        context_length=32768,
+        files=[
+            {
+                "repo": "org/Qwen3.5-122B-A10B-GGUF",
+                "revision": "e" * 40,
+                "path": "Qwen3.5-122B-A10B-Q8_0.gguf",
+                "size": 125 * 1024**3,
+                "sha256": hashlib.sha256(b"a10b").hexdigest(),
+                "role": "model",
+            }
+        ],
+    )
+    _, plans_a10b = runtime._build_llama_load_plans(
+        runtime.root / "llama-server",
+        gemma_moe,
+        runtime.models_dir / gemma_moe.id / gemma_moe.files[0].path,
+        gpu_96g,
+    )
+    assert plans_a10b[0][1][plans_a10b[0][1].index("--ubatch-size") + 1] == "1024"
+
+    # Tight RAM headroom after subtracting CPU-offloaded weights (128 GiB RAM, 40 GiB A100, 175 GiB model ->
+    # est_cpu ~= 139 GiB -> negative headroom): must cap --cache-ram 4096 and omit --checkpoint-min-step.
+    monkeypatch.setattr(runtime, "host_memory_mib", lambda: 128 * 1024)
+    gpu_40g = {"name": "NVIDIA A100-SXM4-40GB", "total_mib": 40960, "used_mib": 256}
+    _, plans_tight_ram = runtime._build_llama_load_plans(
+        runtime.root / "llama-server",
+        qwen_big,
+        runtime.models_dir / qwen_big.id / qwen_big.files[0].path,
+        gpu_40g,
+    )
+    assert plans_tight_ram[0][1][plans_tight_ram[0][1].index("--cache-ram") + 1] == "4096"
+    assert "--checkpoint-min-step" not in plans_tight_ram[0][1]
+    assert "--ubatch-size" not in plans_tight_ram[0][1]

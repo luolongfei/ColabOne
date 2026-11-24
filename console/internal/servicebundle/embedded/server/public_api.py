@@ -34,6 +34,7 @@ from server.openai_compat import (
     assemble_compacted_chat_messages,
     build_compaction_response,
     chat_completion_to_response,
+    chunk_grouped_transcript_blocks_by_tokens,
     chunk_transcript_blocks_by_tokens,
     clip_text_to_token_budget,
     encode_compaction_content,
@@ -56,8 +57,10 @@ from server.tunnel import ColabOneTunnel
 
 MAX_STORED_RESPONSES = 64
 MAX_REQUEST_HISTORY = 50
-MAX_COMPACTION_CACHE = 32
+MAX_COMPACTION_CACHE = 64
 MAX_COMPACTION_CACHE_BYTES = 2 * 1024 * 1024
+_MIN_TOKEN_SCALE = 0.78
+_MAX_TOKEN_SCALE = 2.5
 _ENDPOINT_BY_KIND = {
     "chat": "/v1/chat/completions",
     "responses": "/v1/responses",
@@ -347,7 +350,7 @@ def _extract_timings(obj: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, Any] = {}
-    for key in ("predicted_n", "prompt_n"):
+    for key in ("predicted_n", "prompt_n", "cache_n"):
         v = _nonneg_int(raw.get(key))
         if v is not None:
             out[key] = v
@@ -356,6 +359,30 @@ def _extract_timings(obj: Any) -> dict[str, Any]:
         if v is not None:
             out[key] = v
     return out
+
+
+def _authoritative_prompt_tokens(
+    usage_prompt_tokens: int | None,
+    timings: dict[str, Any] | None,
+) -> tuple[int | None, bool]:
+    """Return ``(prompt_tokens, allow_downward_calibration)``.
+
+    ``usage.prompt_tokens`` (and ``timings.cache_n + timings.prompt_n`` when both are
+    reported) reflects the full prompt length and is safe for bidirectional calibration.
+    Bare ``timings.prompt_n`` excludes KV-cached prefix tokens, so it may only protect
+    upward and must never drag calibration below 1.0.
+    """
+    usage_prompt = _nonneg_int(usage_prompt_tokens)
+    if usage_prompt is not None:
+        return usage_prompt, True
+    if isinstance(timings, dict):
+        prompt_n = _nonneg_int(timings.get("prompt_n"))
+        cache_n = _nonneg_int(timings.get("cache_n"))
+        if prompt_n is not None and cache_n is not None:
+            return cache_n + prompt_n, True
+        if prompt_n is not None:
+            return prompt_n, False
+    return None, False
 
 
 def _extract_usage(obj: Any) -> tuple[int | None, int | None]:
@@ -1035,6 +1062,10 @@ class ColabOnePublicGateway:
                 break
         return bytes(buf[:limit])
 
+    def _has_compaction_cache(self) -> bool:
+        with self.lock:
+            return bool(self.compaction_cache)
+
     def _compaction_cache_get(self, key: str) -> str | None:
         with self.lock:
             val = self.compaction_cache.get(key)
@@ -1072,27 +1103,64 @@ class ColabOnePublicGateway:
         cal_key: str,
         est_tokens: int | None,
         real_prompt_tokens: int | None,
+        *,
+        allow_downward: bool = True,
     ) -> float:
         if (
             not isinstance(est_tokens, int)
+            or isinstance(est_tokens, bool)
             or not isinstance(real_prompt_tokens, int)
+            or isinstance(real_prompt_tokens, bool)
             or est_tokens < 256
             or real_prompt_tokens < 256
         ):
             return self._get_token_scale(cal_key)
-        observed = max(1.0, min(2.5, real_prompt_tokens / est_tokens))
+        raw_ratio = real_prompt_tokens / est_tokens
+        if not allow_downward:
+            # Non-authoritative lower-bound sources (bare timings.prompt_n excluding cache_n,
+            # or non-Jinja /tokenize cold probes) may ONLY push scale upward; they must never
+            # erode an existing >1.0 calibration or snap a learned <1.0 calibration back to 1.0.
+            upward_obs = min(_MAX_TOKEN_SCALE, raw_ratio)
+            with self.lock:
+                prev = self._token_scale_by_model.get(cal_key)
+                if prev is None:
+                    updated = round(max(1.0, upward_obs), 4)
+                    if len(self._token_scale_by_model) >= 16:
+                        self._token_scale_by_model.pop(next(iter(self._token_scale_by_model)))
+                    self._token_scale_by_model[cal_key] = updated
+                    return updated
+                if upward_obs > prev:
+                    updated = round(upward_obs, 4)
+                    self._token_scale_by_model[cal_key] = updated
+                    return updated
+                return float(prev)
+
+        # Authoritative full-prompt observation: ignore sub-1.0 samples from short turns
+        # (< 1024 est tokens) or implausible outliers (< 0.50x) without overwriting a
+        # previously learned scale.
+        if raw_ratio < 1.0 and (est_tokens < 1024 or raw_ratio < 0.50):
+            return self._get_token_scale(cal_key)
+
+        adjusted = min(1.0, raw_ratio * 1.03) if raw_ratio < 1.0 else raw_ratio
+        observed = max(_MIN_TOKEN_SCALE, min(_MAX_TOKEN_SCALE, adjusted))
         with self.lock:
             prev = self._token_scale_by_model.get(cal_key)
             if prev is None:
-                updated = observed
+                # Jump immediately upward on underestimation; relax smoothly downward from 1.0
+                # so a single unusually sparse turn cannot under-calibrate a dense follow-up.
+                updated = (
+                    observed
+                    if observed >= 1.0
+                    else max(_MIN_TOKEN_SCALE, 1.0 * 0.70 + observed * 0.30)
+                )
                 if len(self._token_scale_by_model) >= 16:
                     self._token_scale_by_model.pop(next(iter(self._token_scale_by_model)))
             elif observed >= prev:
                 # Jump upward immediately on underestimation so the very next turn is protected.
                 updated = observed
             else:
-                # Relax gently downward so a single dense turn doesn't permanently over-penalize.
-                updated = max(1.0, prev * 0.85 + observed * 0.15)
+                # Relax smoothly downward toward the real tokenizer ratio.
+                updated = max(_MIN_TOKEN_SCALE, prev * 0.70 + observed * 0.30)
             updated = round(updated, 4)
             self._token_scale_by_model[cal_key] = updated
             return updated
@@ -1243,8 +1311,15 @@ class ColabOnePublicGateway:
         ctx_tokens: int | None = None,
         max_output_tokens: int | None = None,
         keepalive_cb=None,
+        grouped_blocks: list[tuple[int, str]] | None = None,
+        on_checkpoint=None,
+        status_out: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, int], dict[str, Any]]:
-        if not blocks:
+        if not blocks and not grouped_blocks:
+            if status_out is not None:
+                status_out["all_chunks_clean"] = True
+                status_out["had_clean_update"] = False
+                status_out["last_clean_checkpoint"] = None
             return (
                 prior_summary.strip() or "No prior conversation history.",
                 {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -1265,7 +1340,7 @@ class ColabOnePublicGateway:
                 + trimmed_inst
             )
 
-        summary_max_tokens = min(1536, max(128, effective_ctx // 6))
+        summary_max_tokens = min(1024, max(128, effective_ctx // 6))
         if isinstance(max_output_tokens, int) and max_output_tokens >= 128:
             summary_max_tokens = min(summary_max_tokens, max_output_tokens)
         running_summary_cap = min(1024, max(128, effective_ctx // 8))
@@ -1274,7 +1349,17 @@ class ColabOnePublicGateway:
         )
         avail_tokens = max(128, effective_ctx - reserved_tokens)
         chunk_token_budget = max(128, int(avail_tokens * 0.85))
-        chunks = chunk_transcript_blocks_by_tokens(blocks, chunk_token_budget)
+        if grouped_blocks is not None:
+            chunk_pairs = chunk_grouped_transcript_blocks_by_tokens(
+                grouped_blocks, chunk_token_budget
+            )
+        else:
+            chunk_pairs = [
+                (chunk_text, None)
+                for chunk_text in chunk_transcript_blocks_by_tokens(
+                    blocks, chunk_token_budget
+                )
+            ]
 
         running_summary = prior_summary.strip()
         total_in = 0
@@ -1283,8 +1368,13 @@ class ColabOnePublicGateway:
         pred_ms = 0.0
         prompt_n = 0
         prompt_ms = 0.0
+        use_optional_hints = True
+        clean_prefix = True
+        all_chunks_clean = True
+        had_clean_update = False
+        last_clean_checkpoint: int | None = None
 
-        for idx, chunk_text in enumerate(chunks):
+        for idx, (chunk_text, checkpoint_idx) in enumerate(chunk_pairs):
             task.check()
             if keepalive_cb is not None:
                 await keepalive_cb()
@@ -1297,7 +1387,8 @@ class ColabOnePublicGateway:
             cur_max_tokens = summary_max_tokens
             resp_json: dict[str, Any] | None = None
             user_prompt = ""
-            for shrink_attempt in range(3):
+            shrink_attempts = 0
+            while True:
                 if not cur_running:
                     user_prompt = (
                         "Compact the following conversation history into a concise continuation handoff summary:\n\n"
@@ -1309,7 +1400,7 @@ class ColabOnePublicGateway:
                         f"[RUNNING_SUMMARY]\n{cur_running}\n\n"
                         f"[NEXT_HISTORY_SEGMENT]\n{cur_chunk}"
                     )
-                compact_payload = {
+                compact_payload: dict[str, Any] = {
                     "model": model_id,
                     "messages": [
                         {"role": "system", "content": sys_prompt},
@@ -1319,6 +1410,12 @@ class ColabOnePublicGateway:
                     "temperature": 0.2,
                     "max_tokens": cur_max_tokens,
                 }
+                if use_optional_hints:
+                    # Disable chain-of-thought on internal compaction calls and avoid
+                    # polluting llama-server's host RAM prompt cache with one-off summaries.
+                    compact_payload["reasoning_effort"] = "none"
+                    compact_payload["chat_template_kwargs"] = {"enable_thinking": False}
+                    compact_payload["cache_prompt"] = False
                 try:
                     resp_json = await self._post_chat_json(
                         http,
@@ -1329,8 +1426,16 @@ class ColabOnePublicGateway:
                     )
                     break
                 except ColabOneEngineError as exc:
-                    if exc.error_code != "context_length_exceeded" or shrink_attempt >= 2:
+                    if exc.error_code != "context_length_exceeded":
+                        # If a custom GGUF template or future engine rejects optional hints,
+                        # fall back cleanly to the minimal OpenAI chat payload once.
+                        if use_optional_hints and exc.status_code in (400, 422, 502):
+                            use_optional_hints = False
+                            continue
                         raise
+                    if shrink_attempts >= 2:
+                        raise
+                    shrink_attempts += 1
                     # Self-heal if CJK/special tokens or smaller real n_ctx caused a chunk to overflow.
                     if (
                         isinstance(exc.context_length, int)
@@ -1359,9 +1464,25 @@ class ColabOnePublicGateway:
             choices = resp_json.get("choices") or []
             msg = (choices[0] or {}).get("message") or {} if choices else {}
             content = msg.get("content")
-            if not isinstance(content, str) or not content.strip():
-                content = msg.get("reasoning_content") or msg.get("reasoning") or ""
-            running_summary = str(content).strip() or running_summary
+            if isinstance(content, str) and content.strip():
+                running_summary = content.strip()
+                had_clean_update = True
+                if clean_prefix and checkpoint_idx is not None:
+                    last_clean_checkpoint = checkpoint_idx
+                    if on_checkpoint is not None:
+                        on_checkpoint(checkpoint_idx, running_summary)
+            else:
+                # Model returned no clean summary content (e.g. exhausted tokens inside <think>).
+                # Stop publishing checkpoints so we never poison compaction_cache with skipped turns.
+                clean_prefix = False
+                all_chunks_clean = False
+                if not running_summary:
+                    fallback = msg.get("reasoning_content") or msg.get("reasoning") or ""
+                    if isinstance(fallback, str) and fallback.strip():
+                        running_summary = clip_text_to_token_budget(
+                            fallback.strip(),
+                            min(cur_max_tokens, running_summary_cap),
+                        )
 
             raw_usage = resp_json.get("usage") or {}
             in_tok = raw_usage.get("prompt_tokens")
@@ -1383,6 +1504,11 @@ class ColabOnePublicGateway:
 
         if not running_summary:
             running_summary = "Prior conversation compacted."
+            all_chunks_clean = False
+        if status_out is not None:
+            status_out["all_chunks_clean"] = all_chunks_clean
+            status_out["had_clean_update"] = had_clean_update
+            status_out["last_clean_checkpoint"] = last_clean_checkpoint
         agg_timings: dict[str, Any] = {}
         if pred_n > 0 and pred_ms > 0:
             agg_timings["predicted_n"] = pred_n
@@ -1434,8 +1560,10 @@ class ColabOnePublicGateway:
         instructions: str | None = None,
         force: bool = False,
         keepalive_cb=None,
+        allow_cache: bool = True,
     ) -> dict[str, Any]:
         """Three-stage automatic context compactor:
+        0. Monotonic pinned-checkpoint hysteresis hold (zero GPU overhead, ~99% KV cache hit).
         1. Fast pruning of bulky older tool outputs/arguments (zero GPU overhead).
         2. Rolling semantic summary of older turns with incremental prefix cache.
         3. Extreme single-turn / tail safety clamp so messages always fit inside ctx_tokens.
@@ -1453,6 +1581,65 @@ class ColabOnePublicGateway:
                 "extra_usage": None,
             }
 
+        leading_system, groups = group_chat_messages(raw_msgs)
+        sys_hint = instructions
+        if not sys_hint and leading_system and isinstance(leading_system.get("content"), str):
+            sys_hint = leading_system["content"]
+        # Hash BOTH explicit instructions and merged leading_system content (which may contain
+        # project-specific leading developer messages) so distinct sessions never collide.
+        leading_sys_text = (
+            leading_system["content"].strip()
+            if leading_system and isinstance(leading_system.get("content"), str)
+            else ""
+        )
+        sys_key_material = f"{(instructions or '').strip()}\n---\n{leading_sys_text}"
+        sys_hash = hashlib.sha256(sys_key_material.encode("utf-8")).hexdigest()[:16]
+
+        all_chain_hashes: list[str] = []
+        pinned_idx = -1
+        pinned_summary = ""
+
+        def ensure_chain_hashes() -> None:
+            nonlocal pinned_idx, pinned_summary
+            if all_chain_hashes or len(groups) <= 1:
+                return
+            running_hash = hashlib.sha256(
+                f"{model_id}:{ctx_tokens}:{sys_hash}".encode("utf-8")
+            ).hexdigest()
+            for grp in groups[:-1]:
+                running_hash = hashlib.sha256(
+                    f"{running_hash}:{hash_message_group(grp)}".encode("utf-8")
+                ).hexdigest()
+                all_chain_hashes.append(running_hash)
+            if allow_cache:
+                for i in range(len(all_chain_hashes) - 1, -1, -1):
+                    hit = self._compaction_cache_get(all_chain_hashes[i])
+                    if hit is not None:
+                        pinned_idx = i
+                        pinned_summary = hit
+                        break
+
+        # Stage 0: Monotonic pinned-checkpoint hysteresis hold BEFORE Stage 1 pruning.
+        # If a conversation is already running under a cached summary checkpoint, hold it
+        # monotonically while it fits so Stage 1 never bounces back to raw pruned turns and
+        # destroys llama-server's KV prefix cache.
+        if allow_cache and len(groups) > 1 and self._has_compaction_cache():
+            ensure_chain_hashes()
+            if pinned_idx >= 0 and pinned_summary:
+                pinned_msgs = assemble_compacted_chat_messages(
+                    leading_system, pinned_summary, groups[pinned_idx + 1 :]
+                )
+                pinned_tokens = estimate_messages_tokens(pinned_msgs, tools)
+                if pinned_tokens <= target_input_budget and pinned_tokens < orig_tokens:
+                    return {
+                        "compacted": True,
+                        "stage": "summary",
+                        "original_tokens": orig_tokens,
+                        "compacted_tokens": pinned_tokens,
+                        "messages": pinned_msgs,
+                        "extra_usage": None,
+                    }
+
         # Stage 1: fast tool output & argument pruning on older turns.
         pruned_msgs, pruned_changed = prune_older_tool_outputs(
             raw_msgs, tools, target_input_budget
@@ -1468,99 +1655,233 @@ class ColabOnePublicGateway:
                 "extra_usage": None,
             }
 
-        # Stage 2: rolling semantic summary of older atomic turn groups + incremental prefix cache.
-        leading_system, groups = group_chat_messages(raw_msgs)
-        older_groups, recent_groups = split_groups_for_summary(
-            leading_system, groups, tools, target_input_budget
-        )
+        # Stage 2: rolling semantic summary of older atomic turn groups + hysteresis reset.
         candidate_msgs = pruned_msgs if pruned_changed else raw_msgs
         extra_usage: dict[str, int] | None = None
         had_summary = False
 
-        older_tokens = (
-            estimate_messages_tokens([m for grp in older_groups for m in grp], None)
-            if older_groups
-            else 0
-        )
-        # Only invoke LLM summarization when older turns are substantial enough to benefit from compression.
-        if older_groups and older_tokens > 320:
-            sys_hint = instructions
-            if not sys_hint and leading_system and isinstance(leading_system.get("content"), str):
-                sys_hint = leading_system["content"]
-            sys_hash = hashlib.sha256((sys_hint or "").encode("utf-8")).hexdigest()[:16]
-            # Build cumulative prefix chain hashes so stateless clients reusing an oversized prefix
-            # hit cached summaries or only summarize newly appended turns incrementally.
-            chain_hashes: list[str] = []
-            running_hash = hashlib.sha256(
-                f"{model_id}:{ctx_tokens}:{sys_hash}".encode("utf-8")
-            ).hexdigest()
-            for grp in older_groups:
-                running_hash = hashlib.sha256(
-                    f"{running_hash}:{hash_message_group(grp)}".encode("utf-8")
-                ).hexdigest()
-                chain_hashes.append(running_hash)
-
-            cached_idx = -1
-            prior_summary = ""
-            for i in range(len(chain_hashes) - 1, -1, -1):
-                hit = self._compaction_cache_get(chain_hashes[i])
-                if hit is not None:
-                    cached_idx = i
-                    prior_summary = hit
-                    break
-
-            summary_out_cap = min(1536, max(192, older_tokens // 2))
-            if cached_idx == len(chain_hashes) - 1 and prior_summary:
-                summary_text = prior_summary
-            else:
-                delta_groups = older_groups[cached_idx + 1 :]
-                delta_msgs = [m for grp in delta_groups for m in grp]
-                blocks = render_chat_messages_for_compaction(delta_msgs)
-                summary_text, extra_usage, _ = await self._run_compaction_blocks(
-                    http,
-                    task,
-                    model_id,
-                    blocks,
-                    sys_hint,
-                    prior_summary=prior_summary,
-                    ctx_tokens=ctx_tokens,
-                    max_output_tokens=summary_out_cap,
-                    keepalive_cb=keepalive_cb,
-                )
-                self._compaction_cache_put(chain_hashes[-1], summary_text)
-
-            summarized_msgs = assemble_compacted_chat_messages(
-                leading_system, summary_text, recent_groups
+        if len(groups) > 1:
+            ensure_chain_hashes()
+            # Hysteresis reset (or cold start): split back down to the low-water mark so the next
+            # sequence of turns enjoys a wide append-only runway before compaction fires again.
+            summary_reserve = (
+                max(256, estimate_tokens(pinned_summary) + 64)
+                if pinned_summary
+                else None
             )
-            sum_tokens = estimate_messages_tokens(summarized_msgs, tools)
-            if sum_tokens < orig_tokens:
-                had_summary = True
-                candidate_msgs = summarized_msgs
-                if sum_tokens <= target_input_budget:
-                    return {
-                        "compacted": True,
-                        "stage": "summary",
-                        "original_tokens": orig_tokens,
-                        "compacted_tokens": sum_tokens,
-                        "messages": summarized_msgs,
-                        "extra_usage": extra_usage,
-                    }
-                # Before dropping entire recent turns in Stage 3, prune bulky tool outputs inside recent_groups.
-                pruned_sum_msgs, pruned_sum_changed = prune_older_tool_outputs(
-                    summarized_msgs, tools, target_input_budget
-                )
-                if pruned_sum_changed:
-                    pruned_sum_tokens = estimate_messages_tokens(pruned_sum_msgs, tools)
-                    candidate_msgs = pruned_sum_msgs
-                    if pruned_sum_tokens <= target_input_budget:
+            older_groups, recent_groups = split_groups_for_summary(
+                leading_system,
+                groups,
+                tools,
+                target_input_budget,
+                summary_reserve=summary_reserve,
+            )
+            split_at = len(older_groups)
+            # Never step backward past an existing pinned checkpoint (would discard cache and trigger
+            # a full cold re-summarization). If split_at <= pinned_idx + 1, advance smoothly past
+            # pinned_idx + 1 only as far as needed to satisfy target_input_budget while keeping as
+            # many recent turns verbatim as fit.
+            if pinned_idx >= 0 and split_at <= pinned_idx + 1:
+                tail_start = pinned_idx + 1
+                if len(groups) - tail_start >= 2:
+                    tools_and_sys = estimate_messages_tokens(
+                        [leading_system] if leading_system else [], tools
+                    )
+                    base_toks = tools_and_sys + (summary_reserve or 512)
+                    chosen_split = len(groups) - 1
+                    for cand_split in range(tail_start + 1, len(groups)):
+                        cand_tail_toks = estimate_messages_tokens(
+                            [m for grp in groups[cand_split:] for m in grp], None
+                        )
+                        if base_toks + cand_tail_toks <= target_input_budget:
+                            chosen_split = cand_split
+                            break
+                    split_at = chosen_split
+                else:
+                    split_at = tail_start
+                older_groups = groups[:split_at]
+                recent_groups = groups[split_at:]
+
+            older_tokens = (
+                estimate_messages_tokens([m for grp in older_groups for m in grp], None)
+                if older_groups
+                else 0
+            )
+            # Only invoke LLM summarization when older turns are substantial enough to benefit from compression.
+            if older_groups and older_tokens > 320:
+                chain_hashes = all_chain_hashes[:split_at]
+                cached_idx = -1
+                prior_summary = ""
+                if allow_cache:
+                    for i in range(len(chain_hashes) - 1, -1, -1):
+                        hit = self._compaction_cache_get(chain_hashes[i])
+                        if hit is not None:
+                            cached_idx = i
+                            prior_summary = hit
+                            break
+
+                summary_text = ""
+                should_cache_final = False
+                skip_stage2_summary = False
+                if cached_idx == len(chain_hashes) - 1 and prior_summary:
+                    summary_text = prior_summary
+                else:
+                    delta_groups = older_groups[cached_idx + 1 :]
+                    grouped_blocks: list[tuple[int, str]] = []
+                    delta_tokens = 0
+                    for offset, grp in enumerate(delta_groups):
+                        grp_idx = cached_idx + 1 + offset
+                        delta_tokens += estimate_messages_tokens(grp, None)
+                        for blk in render_chat_messages_for_compaction(grp):
+                            grouped_blocks.append((grp_idx, blk))
+
+                    # Only skip an incremental LLM round-trip for a tiny delta (<= 256 tokens)
+                    # when fast tool-output pruning on prior_summary + full tail already fits
+                    # target_input_budget with ZERO dropped turns. Otherwise summarize delta_groups
+                    # so concise instructions in delta_groups are never silently dropped by Stage 3a.
+                    shortcut_pruned_msgs: list[dict[str, Any]] | None = None
+                    if prior_summary and delta_tokens <= 256:
+                        candidate_tail_msgs = assemble_compacted_chat_messages(
+                            leading_system, prior_summary, groups[cached_idx + 1 :]
+                        )
+                        pruned_cand, pruned_cand_changed = prune_older_tool_outputs(
+                            candidate_tail_msgs, tools, target_input_budget
+                        )
+                        if (
+                            pruned_cand_changed
+                            and estimate_messages_tokens(pruned_cand, tools) <= target_input_budget
+                        ):
+                            shortcut_pruned_msgs = pruned_cand
+
+                    if shortcut_pruned_msgs is not None:
                         return {
                             "compacted": True,
                             "stage": "summary",
                             "original_tokens": orig_tokens,
-                            "compacted_tokens": pruned_sum_tokens,
-                            "messages": pruned_sum_msgs,
-                            "extra_usage": extra_usage,
+                            "compacted_tokens": estimate_messages_tokens(shortcut_pruned_msgs, tools),
+                            "messages": shortcut_pruned_msgs,
+                            "extra_usage": None,
                         }
+
+                    if prior_summary:
+                        prior_toks = estimate_tokens(prior_summary)
+                        summary_out_cap = min(
+                            1024,
+                            max(256, prior_toks + min(384, max(128, delta_tokens // 3))),
+                        )
+                        if delta_tokens > 0:
+                            summary_out_cap = min(
+                                summary_out_cap,
+                                max(256, prior_toks + max(0, delta_tokens - 128)),
+                            )
+                    else:
+                        summary_out_cap = min(1024, max(192, older_tokens // 2))
+
+                    # Request slightly tighter real BPE output cap when cap is at ceiling so
+                    # normal high-vocab (e.g. Qwen3 ~0.84x) summaries stay under heuristic clip.
+                    request_max_tokens = (
+                        min(896, summary_out_cap)
+                        if summary_out_cap >= 960
+                        else summary_out_cap
+                    )
+                    hard_clip_limit = summary_out_cap
+
+                    # Cumulative token count for each older_groups prefix so intermediate checkpoints
+                    # are only cached when they provide genuine net compression over that prefix.
+                    prefix_tokens_by_idx: list[int] = []
+                    cum_prefix_toks = 0
+                    for grp in older_groups:
+                        cum_prefix_toks += estimate_messages_tokens(grp, None)
+                        prefix_tokens_by_idx.append(cum_prefix_toks)
+
+                    def bound_summary(text: str) -> str:
+                        if estimate_tokens(text) > hard_clip_limit:
+                            return clip_text_to_token_budget(text, hard_clip_limit)
+                        return text
+
+                    def cache_intermediate(grp_idx: int, partial_summary: str) -> None:
+                        # Cache strict intermediate checkpoints immediately when they strictly
+                        # compress the covered prefix; the final checkpoint chain_hashes[-1]
+                        # is cached only after all_clean and net-savings checks pass below.
+                        if allow_cache and 0 <= grp_idx < len(chain_hashes) - 1:
+                            bounded = bound_summary(partial_summary)
+                            prefix_toks = prefix_tokens_by_idx[grp_idx]
+                            if prefix_toks > 320 and estimate_tokens(bounded) < prefix_toks:
+                                self._compaction_cache_put(chain_hashes[grp_idx], bounded)
+
+                    compact_status: dict[str, Any] = {}
+                    summary_text, extra_usage, _ = await self._run_compaction_blocks(
+                        http,
+                        task,
+                        model_id,
+                        [blk for _, blk in grouped_blocks],
+                        sys_hint,
+                        prior_summary=prior_summary,
+                        ctx_tokens=ctx_tokens,
+                        max_output_tokens=request_max_tokens,
+                        keepalive_cb=keepalive_cb,
+                        grouped_blocks=grouped_blocks,
+                        on_checkpoint=cache_intermediate,
+                        status_out=compact_status,
+                    )
+                    all_clean = bool(compact_status.get("all_chunks_clean"))
+                    had_clean_update = bool(compact_status.get("had_clean_update"))
+                    last_clean_ckpt = compact_status.get("last_clean_checkpoint")
+                    if not prior_summary and not had_clean_update:
+                        # Cold-start compaction produced zero clean summaries (only boilerplate or
+                        # raw CoT fallback): fall through to Stage 3 truncation on raw/pruned turns
+                        # instead of replacing the entire history with empty boilerplate.
+                        skip_stage2_summary = True
+                    elif not all_clean:
+                        # Partial failure: preserve every unsummarized group after the last clean
+                        # checkpoint (or prior_summary's cached_idx) so no turns are silently dropped.
+                        if isinstance(last_clean_ckpt, int) and last_clean_ckpt > cached_idx:
+                            summary_text = bound_summary(summary_text)
+                            recent_groups = groups[last_clean_ckpt + 1 :]
+                        elif prior_summary:
+                            summary_text = prior_summary
+                            recent_groups = groups[cached_idx + 1 :]
+                        else:
+                            skip_stage2_summary = True
+                    else:
+                        summary_text = bound_summary(summary_text)
+                        should_cache_final = allow_cache
+
+                if not skip_stage2_summary:
+                    summarized_msgs = assemble_compacted_chat_messages(
+                        leading_system, summary_text, recent_groups
+                    )
+                    sum_tokens = estimate_messages_tokens(summarized_msgs, tools)
+                    if sum_tokens < orig_tokens:
+                        if should_cache_final:
+                            self._compaction_cache_put(chain_hashes[-1], summary_text)
+                        had_summary = True
+                        candidate_msgs = summarized_msgs
+                        if sum_tokens <= target_input_budget:
+                            return {
+                                "compacted": True,
+                                "stage": "summary",
+                                "original_tokens": orig_tokens,
+                                "compacted_tokens": sum_tokens,
+                                "messages": summarized_msgs,
+                                "extra_usage": extra_usage,
+                            }
+                        # Before dropping entire recent turns in Stage 3, prune bulky tool outputs inside recent_groups.
+                        pruned_sum_msgs, pruned_sum_changed = prune_older_tool_outputs(
+                            summarized_msgs, tools, target_input_budget
+                        )
+                        if pruned_sum_changed:
+                            pruned_sum_tokens = estimate_messages_tokens(pruned_sum_msgs, tools)
+                            candidate_msgs = pruned_sum_msgs
+                            if pruned_sum_tokens <= target_input_budget:
+                                return {
+                                    "compacted": True,
+                                    "stage": "summary",
+                                    "original_tokens": orig_tokens,
+                                    "compacted_tokens": pruned_sum_tokens,
+                                    "messages": pruned_sum_msgs,
+                                    "extra_usage": extra_usage,
+                                }
 
         # Stage 3: extreme clamp for oversized single messages / system prompts / final tool outputs.
         clamped_msgs, clamped_changed = truncate_messages_to_budget(
@@ -1651,11 +1972,15 @@ class ColabOnePublicGateway:
                                 task.check()
                                 if probed is not None:
                                     self._observe_real_prompt_tokens(
-                                        cal_key, cur_est_prompt, probed
+                                        cal_key,
+                                        cur_est_prompt,
+                                        probed,
+                                        allow_downward=False,
                                     )
 
                             scale = self._get_token_scale(cal_key)
                             calibrated_prompt = int(math.ceil(cur_est_prompt * scale))
+                            chat_auto_compacted = False
 
                             async def send_keepalive():
                                 if stream:
@@ -1675,6 +2000,7 @@ class ColabOnePublicGateway:
                                 if comp_res["compacted"]:
                                     upstream_payload["messages"] = comp_res["messages"]
                                     cur_est_prompt = comp_res["compacted_tokens"]
+                                    chat_auto_compacted = True
                                     self._record_compaction_metric(
                                         slot,
                                         original_tokens=max(
@@ -1741,10 +2067,12 @@ class ColabOnePublicGateway:
                                                     target_input_budget=tight_budget,
                                                     force=True,
                                                     keepalive_cb=send_keepalive,
+                                                    allow_cache=not chat_auto_compacted,
                                                 )
                                                 if comp_res["compacted"]:
                                                     upstream_payload["messages"] = comp_res["messages"]
                                                     cur_est_prompt = comp_res["compacted_tokens"]
+                                                    chat_auto_compacted = True
                                                     new_scale = self._get_token_scale(cal_key)
                                                     self._record_compaction_metric(
                                                         slot,
@@ -1817,14 +2145,18 @@ class ColabOnePublicGateway:
                                         if not finished:
                                             raise RuntimeError("推理连接提前中断")
                                     break
-                                real_in = acc.get("prompt_tokens")
-                                if real_in is None:
-                                    real_in = acc.get("timings", {}).get("prompt_n")
+                                real_in, allow_downward = _authoritative_prompt_tokens(
+                                    acc.get("prompt_tokens"),
+                                    acc.get("timings"),
+                                )
                                 real_out = acc.get("completion_tokens")
                                 if real_out is None:
                                     real_out = acc.get("timings", {}).get("predicted_n")
                                 self._observe_real_prompt_tokens(
-                                    cal_key, cur_est_prompt, real_in
+                                    cal_key,
+                                    cur_est_prompt,
+                                    real_in,
+                                    allow_downward=allow_downward,
                                 )
                                 if _is_context_exhausted_length_stop(
                                     acc.get("finish_reason"),
@@ -1885,11 +2217,13 @@ class ColabOnePublicGateway:
                                             ctx_tokens=real_ctx,
                                             target_input_budget=tight_budget,
                                             force=True,
+                                            allow_cache=not chat_auto_compacted,
                                         )
                                         if not comp_res["compacted"]:
                                             raise
                                         upstream_payload["messages"] = comp_res["messages"]
                                         cur_est_prompt = comp_res["compacted_tokens"]
+                                        chat_auto_compacted = True
                                         new_scale = self._get_token_scale(cal_key)
                                         self._record_compaction_metric(
                                             slot,
@@ -1916,14 +2250,18 @@ class ColabOnePublicGateway:
                                         )
                                     else:
                                         raise
-                                real_in, real_out = _extract_usage(result_json)
+                                usage_in, real_out = _extract_usage(result_json)
                                 res_timings = _extract_timings(result_json)
-                                if real_in is None:
-                                    real_in = res_timings.get("prompt_n")
+                                real_in, allow_downward = _authoritative_prompt_tokens(
+                                    usage_in, res_timings
+                                )
                                 if real_out is None:
                                     real_out = res_timings.get("predicted_n")
                                 self._observe_real_prompt_tokens(
-                                    cal_key, cur_est_prompt, real_in
+                                    cal_key,
+                                    cur_est_prompt,
+                                    real_in,
+                                    allow_downward=allow_downward,
                                 )
                                 if _is_context_exhausted_length_stop(
                                     _extract_choice_finish_reason(result_json),
@@ -1958,10 +2296,12 @@ class ColabOnePublicGateway:
                                             ctx_tokens=effective_ctx,
                                             target_input_budget=est_retry_target,
                                             force=True,
+                                            allow_cache=not chat_auto_compacted,
                                         )
                                         if comp_res["compacted"]:
                                             upstream_payload["messages"] = comp_res["messages"]
                                             cur_est_prompt = comp_res["compacted_tokens"]
+                                            chat_auto_compacted = True
                                             self._record_compaction_metric(
                                                 slot,
                                                 original_tokens=max(
@@ -1986,13 +2326,18 @@ class ColabOnePublicGateway:
                                                 default_ctx=effective_ctx,
                                                 error_param="messages",
                                             )
-                                            retry_in, _ = _extract_usage(result_json)
-                                            if retry_in is None:
-                                                retry_in = _extract_timings(result_json).get(
-                                                    "prompt_n"
+                                            retry_usage_in, _ = _extract_usage(result_json)
+                                            retry_in, retry_allow_down = (
+                                                _authoritative_prompt_tokens(
+                                                    retry_usage_in,
+                                                    _extract_timings(result_json),
                                                 )
+                                            )
                                             self._observe_real_prompt_tokens(
-                                                cal_key, cur_est_prompt, retry_in
+                                                cal_key,
+                                                cur_est_prompt,
+                                                retry_in,
+                                                allow_downward=retry_allow_down,
                                             )
                                 if (
                                     isinstance(result_json, dict)
@@ -2216,7 +2561,12 @@ class ColabOnePublicGateway:
                                 )
                                 task.check()
                                 if probed is not None:
-                                    self._observe_real_prompt_tokens(cal_key, est_in, probed)
+                                    self._observe_real_prompt_tokens(
+                                        cal_key,
+                                        est_in,
+                                        probed,
+                                        allow_downward=False,
+                                    )
 
                             scale = self._get_token_scale(cal_key)
                             calibrated_est_in = int(math.ceil(est_in * scale))
@@ -2319,6 +2669,7 @@ class ColabOnePublicGateway:
                                                     instructions=spec["instructions"],
                                                     force=True,
                                                     keepalive_cb=send_keepalive,
+                                                    allow_cache=not gateway_auto_compacted,
                                                 )
                                                 if comp_res["compacted"]:
                                                     chat_payload["messages"] = comp_res["messages"]
@@ -2370,16 +2721,22 @@ class ColabOnePublicGateway:
                                         if not finished:
                                             raise RuntimeError("推理连接提前中断")
                                     break
-                                raw_in, raw_out = _extract_usage(
+                                usage_in, raw_out = _extract_usage(
                                     {"usage": translator.raw_usage}
                                     if isinstance(translator.raw_usage, dict)
                                     else {}
                                 )
-                                if raw_in is None:
-                                    raw_in = acc.get("timings", {}).get("prompt_n")
+                                raw_in, allow_downward = _authoritative_prompt_tokens(
+                                    usage_in, acc.get("timings")
+                                )
                                 if raw_out is None:
                                     raw_out = acc.get("timings", {}).get("predicted_n")
-                                self._observe_real_prompt_tokens(cal_key, est_in, raw_in)
+                                self._observe_real_prompt_tokens(
+                                    cal_key,
+                                    est_in,
+                                    raw_in,
+                                    allow_downward=allow_downward,
+                                )
                                 if _is_context_exhausted_length_stop(
                                     translator.finish_reason,
                                     raw_in,
@@ -2464,6 +2821,7 @@ class ColabOnePublicGateway:
                                             target_input_budget=tight_budget,
                                             instructions=spec["instructions"],
                                             force=True,
+                                            allow_cache=not gateway_auto_compacted,
                                         )
                                         if not comp_res["compacted"]:
                                             raise
@@ -2489,13 +2847,19 @@ class ColabOnePublicGateway:
                                         )
                                     else:
                                         raise
-                                real_in, real_out = _extract_usage(chat_json)
+                                usage_in, real_out = _extract_usage(chat_json)
                                 chat_timings = _extract_timings(chat_json)
-                                if real_in is None:
-                                    real_in = chat_timings.get("prompt_n")
+                                real_in, allow_downward = _authoritative_prompt_tokens(
+                                    usage_in, chat_timings
+                                )
                                 if real_out is None:
                                     real_out = chat_timings.get("predicted_n")
-                                self._observe_real_prompt_tokens(cal_key, est_in, real_in)
+                                self._observe_real_prompt_tokens(
+                                    cal_key,
+                                    est_in,
+                                    real_in,
+                                    allow_downward=allow_downward,
+                                )
                                 if _is_context_exhausted_length_stop(
                                     _extract_choice_finish_reason(chat_json),
                                     real_in,
@@ -2530,6 +2894,7 @@ class ColabOnePublicGateway:
                                             target_input_budget=est_retry_target,
                                             instructions=spec["instructions"],
                                             force=True,
+                                            allow_cache=not gateway_auto_compacted,
                                         )
                                         if comp_res["compacted"]:
                                             chat_payload["messages"] = comp_res["messages"]
@@ -2558,13 +2923,18 @@ class ColabOnePublicGateway:
                                                 default_ctx=effective_ctx,
                                                 error_param="input",
                                             )
-                                            retry_in, _ = _extract_usage(chat_json)
-                                            if retry_in is None:
-                                                retry_in = _extract_timings(chat_json).get(
-                                                    "prompt_n"
+                                            retry_usage_in, _ = _extract_usage(chat_json)
+                                            retry_in, retry_allow_down = (
+                                                _authoritative_prompt_tokens(
+                                                    retry_usage_in,
+                                                    _extract_timings(chat_json),
                                                 )
+                                            )
                                             self._observe_real_prompt_tokens(
-                                                cal_key, est_in, retry_in
+                                                cal_key,
+                                                est_in,
+                                                retry_in,
+                                                allow_downward=retry_allow_down,
                                             )
                                 fallback_in_disp = int(
                                     math.ceil(est_in * self._get_token_scale(cal_key))

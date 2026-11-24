@@ -2104,3 +2104,741 @@ def test_gateway_recovers_from_kv_cache_exhaustion_length_stop(gateway):
         assert capped_data["status"] == "incomplete"
         assert capped_data["incomplete_details"] == {"reason": "max_output_tokens"}
         assert gateway._get_output_reserve_boost(cal_key) == prev_boost
+
+
+def test_compaction_hysteresis_immutable_system_non_thinking_and_downward_calibration(
+    gateway,
+):
+    from server.openai_compat import estimate_messages_tokens
+
+    gateway.runtime.active_options = {"context_length": 16384}
+    summary_calls: list[dict] = []
+    main_calls: list[dict] = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            summary_calls.append(body)
+            is_update = any(
+                "[RUNNING_SUMMARY]" in (m.get("content") or "")
+                for m in body.get("messages") or []
+            )
+            content = (
+                "Updated concise handoff summary after rolling delta."
+                if is_update
+                else "Initial concise handoff summary of older history."
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": content}}],
+                    "usage": {"prompt_tokens": 1200, "completion_tokens": 45, "total_tokens": 1245},
+                },
+            )
+        main_calls.append(body)
+        est = estimate_messages_tokens(body.get("messages") or [], body.get("tools"))
+        # Simulate Qwen3 151K BPE where real tokens are ~0.84x the conservative heuristic.
+        real_in = int(est * 0.84)
+        sse = (
+            'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'
+            f'data: {{"choices":[],"usage":{{"prompt_tokens":{real_in},"completion_tokens":6,"total_tokens":{real_in + 6}}}}}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=sse)
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+
+    static_instructions = "You are Codex. " + ("rule_clause " * 400)
+    static_tools = [
+        {
+            "type": "function",
+            "name": "exec_command",
+            "description": "Run shell commands " + ("schema_detail " * 250),
+            "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+        }
+    ]
+    # Build an oversized conversation history (~18K est tokens > 16K ctx).
+    history: list[dict] = []
+    for idx in range(22):
+        history.append({"role": "user", "content": f"Step {idx}: inspect module_{idx} " + ("x" * 900)})
+        history.append({"role": "assistant", "content": f"Checked module_{idx}: " + ("y" * 900)})
+    history.append({"role": "user", "content": "Start turn 1"})
+
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        # Turn 1: cold start -> triggers compaction once, disables thinking, avoids prompt-cache pollution,
+        # and keeps messages[0] (system prompt) 100% immutable so Qwen3 # Tools prefix is preserved.
+        r1 = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": static_instructions,
+                "tools": static_tools,
+                "input": history,
+                "stream": True,
+            },
+            headers=AUTH,
+        )
+        assert r1.status_code == 200, r1.text
+        assert len(summary_calls) >= 1
+        assert len(main_calls) == 1
+        for sc in summary_calls:
+            assert sc["reasoning_effort"] == "none"
+            assert sc["chat_template_kwargs"] == {"enable_thinking": False}
+            assert sc["cache_prompt"] is False
+            assert sc["max_tokens"] <= 1024
+        turn1_msgs = main_calls[0]["messages"]
+        assert turn1_msgs[0] == {"role": "system", "content": static_instructions.strip()}
+        assert "Compacted earlier conversation summary" not in turn1_msgs[0]["content"]
+        assert turn1_msgs[1]["role"] == "user"
+        assert "Compacted earlier conversation summary" in turn1_msgs[1]["content"]
+
+        # Turns 2..7: strictly APPEND new turns (simulating real Codex loop).
+        # Pinned-checkpoint hysteresis must hold with ZERO new summarization calls
+        # AND keep the entire compacted prefix byte-identical for ~99% KV cache hit!
+        prev_summary_count = len(summary_calls)
+        turn1_prefix_len = len(turn1_msgs)
+        for step in range(2, 8):
+            history.append({"role": "assistant", "content": f"Reply {step - 1}: " + ("ok " * 60)})
+            history.append({"role": "user", "content": f"Follow-up {step}: " + ("details " * 60)})
+            resp = client.post(
+                "/v1/responses",
+                json={
+                    "model": "test-model",
+                    "instructions": static_instructions,
+                    "tools": static_tools,
+                    "input": history,
+                    "stream": True,
+                },
+                headers=AUTH,
+            )
+            assert resp.status_code == 200, resp.text
+            assert len(summary_calls) == prev_summary_count, (
+                f"Turn {step} unexpectedly re-triggered compaction inside hysteresis runway"
+            )
+            cur_msgs = main_calls[-1]["messages"]
+            assert cur_msgs[:turn1_prefix_len] == turn1_msgs
+
+        # Downward bidirectional calibration should have relaxed scale below 1.0 toward ~0.865
+        # (respecting the 0.78 safety floor) after observing 0.84x real tokens across turns.
+        cal_key = gateway._calibration_key("test-model", 16384)
+        learned_scale = gateway._get_token_scale(cal_key)
+        assert 0.78 <= learned_scale < 0.95
+
+        # Push appended turns across the high-water mark -> triggers ONE incremental update
+        # (with [RUNNING_SUMMARY]) while still keeping messages[0] byte-identical.
+        for extra in range(12):
+            history.append({"role": "assistant", "content": f"Big reply {extra}: " + ("log_line " * 260)})
+            history.append({"role": "user", "content": f"Big ask {extra}: " + ("context " * 260)})
+        r_over = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": static_instructions,
+                "tools": static_tools,
+                "input": history,
+                "stream": True,
+            },
+            headers=AUTH,
+        )
+        assert r_over.status_code == 200, r_over.text
+        assert len(summary_calls) > prev_summary_count
+        assert any(
+            "[RUNNING_SUMMARY]" in (m.get("content") or "")
+            for m in summary_calls[-1]["messages"]
+        )
+        assert main_calls[-1]["messages"][0] == {"role": "system", "content": static_instructions.strip()}
+
+        # Immediately following turn after reset must once again hit the new pinned checkpoint (0 summary calls).
+        after_reset_count = len(summary_calls)
+        history.append({"role": "assistant", "content": "Short ack"})
+        history.append({"role": "user", "content": "One more small check"})
+        r_post = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": static_instructions,
+                "tools": static_tools,
+                "input": history,
+                "stream": True,
+            },
+            headers=AUTH,
+        )
+        assert r_post.status_code == 200, r_post.text
+        assert len(summary_calls) == after_reset_count
+
+
+def test_compaction_guards_thinking_leak_bloat_and_caches_intermediate_chunks(gateway):
+    from server.openai_compat import (
+        COMPACTED_SUMMARY_HEADER,
+        assemble_compacted_chat_messages,
+        chunk_grouped_transcript_blocks_by_tokens,
+        estimate_messages_tokens,
+        estimate_tokens,
+        truncate_messages_to_budget,
+    )
+
+    # 1) Multi-block atomic tool group split mid-group MUST emit end_group_index=None
+    #    (even before max_chunks truncation), and max_chunks=1 must not duplicate chunks.
+    split_blocks = [
+        (0, "short user turn"),
+        *[(1, f"[TOOL_OUTPUT_{i}] " + ("data " * 120)) for i in range(6)],
+        (2, "final user turn"),
+    ]
+    split_chunks = chunk_grouped_transcript_blocks_by_tokens(split_blocks, 350, max_chunks=6)
+    assert len(split_chunks) >= 3
+    # Chunk 0 contains complete group 0 only -> clean boundary 0.
+    assert split_chunks[0][1] == 0
+    # Intermediate chunks ending mid-group 1 must emit None, never partial group 1.
+    assert split_chunks[1][1] is None
+    # When chunk 0 itself ends mid-group and max_chunks drops middle chunks, chunk 0 stays None.
+    giant_first_group = [(0, f"[BLOCK_{i}] " + ("z" * 1200)) for i in range(8)]
+    truncated_chunks = chunk_grouped_transcript_blocks_by_tokens(
+        giant_first_group, 400, max_chunks=2
+    )
+    assert len(truncated_chunks) == 2
+    assert truncated_chunks[0][1] is None
+    assert truncated_chunks[1][1] is None
+    # max_chunks=1 clamps safely to >= 2 instead of slicing [-0:].
+    min_chunks = chunk_grouped_transcript_blocks_by_tokens(giant_first_group, 400, max_chunks=1)
+    assert len(min_chunks) == 2
+
+    # 2) Stage 3a truncate_messages_to_budget MUST preserve the compacted summary block
+    #    when the newest group is a giant [assistant(tool_calls), tool(huge_output)] pair.
+    compacted_with_huge_tail = assemble_compacted_chat_messages(
+        {"role": "system", "content": "You are Codex."},
+        "Critical summary: fixed auth token refresh in login.py.",
+        [
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_big",
+                            "type": "function",
+                            "function": {"name": "exec", "arguments": '{"cmd":"cat big.log"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_big", "content": "log line\n" * 4000},
+            ]
+        ],
+    )
+    clamped_msgs, clamped_changed = truncate_messages_to_budget(
+        compacted_with_huge_tail, None, 900
+    )
+    assert clamped_changed is True
+    assert estimate_messages_tokens(clamped_msgs, None) <= 900
+    assert clamped_msgs[0] == {"role": "system", "content": "You are Codex."}
+    assert any(
+        COMPACTED_SUMMARY_HEADER in (m.get("content") or "")
+        and "fixed auth token refresh" in (m.get("content") or "")
+        for m in clamped_msgs
+    )
+
+    # 3) Clean multi-chunk cold compaction caches intermediate chunk checkpoints AND final checkpoint;
+    #    a chunk returning empty content (thinking-only) stops checkpoint publishing so later hashes
+    #    are NEVER poisoned with a stale summary.
+    gateway.runtime.active_options = {"context_length": 4096}
+    chunk_num = 0
+
+    def empty_chunk2_upstream(request):
+        nonlocal chunk_num
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            chunk_num += 1
+            if chunk_num == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [{"message": {"role": "assistant", "content": "Clean chunk 1 summary."}}],
+                        "usage": {"prompt_tokens": 1100, "completion_tokens": 20, "total_tokens": 1120},
+                    },
+                )
+            # Chunk 2 simulates a model that ignored enable_thinking=False and returned only reasoning_content.
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "reasoning_content": "Internal monologue that must NOT overwrite clean summary...",
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1100, "completion_tokens": 40, "total_tokens": 1140},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Done"}}],
+                "usage": {"prompt_tokens": 900, "completion_tokens": 5, "total_tokens": 905},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(empty_chunk2_upstream)
+    history = [
+        {"role": "user", "content": "Turn 1: " + ("alpha " * 900)},
+        {"role": "assistant", "content": "Reply 1: " + ("beta " * 900)},
+        {"role": "user", "content": "Turn 2: " + ("gamma " * 900)},
+        {"role": "assistant", "content": "Reply 2: " + ("delta " * 900)},
+        {"role": "user", "content": "Latest question"},
+    ]
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        resp = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": history, "stream": False},
+            headers=AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        assert chunk_num >= 2
+        # Only Chunk 1's clean checkpoint was cached; Chunk 2's failed hash was NOT poisoned!
+        assert len(gateway.compaction_cache) == 1
+        cached_values = list(gateway.compaction_cache.values())
+        assert all("Internal monologue" not in val for val in cached_values)
+        assert cached_values == ["Clean chunk 1 summary."]
+
+    # 4) Clean multi-chunk compaction caches BOTH intermediate and final checkpoints,
+    #    and strips optional hints cleanly if upstream returns HTTP 400 on chat_template_kwargs.
+    gateway.compaction_cache.clear()
+    seen_hint_retry = False
+    clean_chunks = 0
+
+    def clean_multi_upstream(request):
+        nonlocal seen_hint_retry, clean_chunks
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            if not seen_hint_retry and "chat_template_kwargs" in body:
+                seen_hint_retry = True
+                return httpx.Response(
+                    400,
+                    json={"error": {"message": "unsupported chat_template_kwargs"}},
+                )
+            clean_chunks += 1
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": f"Clean summary chunk {clean_chunks}."}}],
+                    "usage": {"prompt_tokens": 1100, "completion_tokens": 20, "total_tokens": 1120},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Done"}}],
+                "usage": {"prompt_tokens": 900, "completion_tokens": 5, "total_tokens": 905},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(clean_multi_upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        resp_clean = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": history, "stream": False},
+            headers=AUTH,
+        )
+        assert resp_clean.status_code == 200, resp_clean.text
+        assert seen_hint_retry is True
+        assert clean_chunks >= 2
+        assert len(gateway.compaction_cache) >= 2
+
+    # 5) Bloated incremental summary is clamped so incremental compaction never causes net growth.
+    gateway.compaction_cache.clear()
+    bloat_calls = 0
+
+    def bloat_upstream(request):
+        nonlocal bloat_calls
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            bloat_calls += 1
+            if bloat_calls == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [{"message": {"role": "assistant", "content": "Short initial summary."}}],
+                        "usage": {"prompt_tokens": 1000, "completion_tokens": 10, "total_tokens": 1010},
+                    },
+                )
+            # Return an absurdly verbose summary (~3000 est tokens) for a moderate incremental delta.
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": "verbose_bloat " * 1200}}],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 1500, "total_tokens": 2500},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 800, "completion_tokens": 5, "total_tokens": 805},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(bloat_upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        r_a = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": history, "stream": False},
+            headers=AUTH,
+        )
+        assert r_a.status_code == 200, r_a.text
+        # Append enough turns to cross high-water mark and trigger incremental update with bloated reply.
+        extended = [
+            *history,
+            {"role": "assistant", "content": "Extra 1: " + ("work " * 700)},
+            {"role": "user", "content": "Extra 2: " + ("more " * 700)},
+            {"role": "assistant", "content": "Extra 3: " + ("done " * 700)},
+            {"role": "user", "content": "Final check"},
+        ]
+        r_b = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": extended, "stream": False},
+            headers=AUTH,
+        )
+        assert r_b.status_code == 200, r_b.text
+        for cached_val in gateway.compaction_cache.values():
+            assert estimate_tokens(cached_val) <= 1024
+
+
+def test_calibration_safety_and_stage0_pinned_hold_prevents_stage1_pingpong(gateway):
+    from server.public_api import _authoritative_prompt_tokens
+
+    # 1) Authoritative prompt token helper: bare timings.prompt_n must disallow downward calibration,
+    #    while usage.prompt_tokens and cache_n + prompt_n allow downward calibration (and bool is rejected).
+    assert _authoritative_prompt_tokens(17000, {"prompt_n": 300}) == (17000, True)
+    assert _authoritative_prompt_tokens(None, {"cache_n": 16700, "prompt_n": 300}) == (17000, True)
+    assert _authoritative_prompt_tokens(None, {"prompt_n": 300}) == (300, False)
+    assert _authoritative_prompt_tokens(True, None) == (None, False)
+
+    cal_key = gateway._calibration_key("cal-test-model", 32768)
+    # Bare prompt_n (allow_downward=False) or tiny prompts (<1024) or <0.50 outliers never push scale < 1.0.
+    assert gateway._observe_real_prompt_tokens(cal_key, 15000, 300, allow_downward=False) == 1.0
+    assert gateway._observe_real_prompt_tokens(cal_key, 500, 400, allow_downward=True) == 1.0
+    assert gateway._observe_real_prompt_tokens(cal_key, 15000, 2000, allow_downward=True) == 1.0
+    # Monotonic near 1.0: raw_ratio=0.99 must NOT jump above 1.0.
+    assert gateway._observe_real_prompt_tokens(cal_key, 10000, 9900, allow_downward=True) == 1.0
+    # Authoritative 0.84x observations on large prompts smoothly relax below 1.0 toward ~0.865.
+    for _ in range(8):
+        s = gateway._observe_real_prompt_tokens(cal_key, 20000, 16800, allow_downward=True)
+    assert 0.85 <= s <= 0.90
+    # Once converged < 1.0, short turns (<1024), bare timings.prompt_n, or <0.50 outliers must NOT snap back to 1.0.
+    assert gateway._observe_real_prompt_tokens(cal_key, 400, 336, allow_downward=True) == s
+    assert gateway._observe_real_prompt_tokens(cal_key, 20000, 300, allow_downward=False) == s
+    assert gateway._observe_real_prompt_tokens(cal_key, 20000, 1000, allow_downward=True) == s
+    # Once learned > 1.0 on a dense tokenizer, repeated bare timings.prompt_n (lower bound) must NEVER erode it!
+    dense_key = gateway._calibration_key("dense-test-model", 32768)
+    assert gateway._observe_real_prompt_tokens(dense_key, 10000, 14500, allow_downward=True) == 1.45
+    for _ in range(5):
+        assert gateway._observe_real_prompt_tokens(dense_key, 10000, 300, allow_downward=False) == 1.45
+        assert gateway._observe_real_prompt_tokens(dense_key, 10000, 11000, allow_downward=False) == 1.45
+
+    # 2) Stage 0 monotonic pinned-checkpoint hold beats Stage 1 prune AND sys_hash isolates
+    #    sessions with identical instructions but different leading developer prompts.
+    gateway.runtime.active_options = {"context_length": 4096}
+    compact_calls = 0
+    seen_main_msgs: list[list[dict]] = []
+
+    def upstream(request):
+        nonlocal compact_calls
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            compact_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": f"Summary #{compact_calls}."}}],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 12, "total_tokens": 1012},
+                },
+            )
+        seen_main_msgs.append(body["messages"])
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1200, "completion_tokens": 5, "total_tokens": 1205},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    # Turn 1 puts the bulky tool output in the NEWEST group so Stage 1 cannot prune it
+    # (keep_recent protects groups[-1]) -> Stage 2 creates a pinned summary checkpoint.
+    # Older turns total ~1200 tokens; bulky newest tool output is ~1500 tokens -> total ~2750
+    # vs 4K budget (~3114), so make older turns ~1900 tokens (total ~3450 > 3114, while
+    # summary + bulky newest tool output = ~1550 <= 3114).
+    pingpong_turn1 = [
+        {"role": "developer", "content": "Project A strict rules."},
+        {"role": "user", "content": "Older 1: " + ("a" * 3300)},
+        {"role": "assistant", "content": "Older 2: " + ("b" * 3300)},
+        {
+            "type": "function_call",
+            "call_id": "c_mid",
+            "name": "exec",
+            "arguments": '{"cmd":"ls"}',
+        },
+        {"type": "function_call_output", "call_id": "c_mid", "output": "entry " * 850},
+    ]
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        r_p1 = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": "Shared Codex base.",
+                "input": pingpong_turn1,
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert r_p1.status_code == 200, r_p1.text
+        assert compact_calls == 1
+        assert gateway.snapshot()["recent_requests"][0]["compaction_stage"] == "summary"
+
+        # Turn 2 appends small follow-up turns so c_mid slides into Stage 1's prunable prefix.
+        # Stage 1 *would* now fit by pruning c_mid (1900 + 160 + 40 < 3114), which would blow away
+        # the active KV prefix! Stage 0 pinned-checkpoint hold must win monotonically (stage="summary",
+        # 0 extra LLM calls, identical compacted prefix).
+        pingpong_turn2 = [
+            *pingpong_turn1,
+            {"role": "user", "content": "Check entries"},
+            {"role": "assistant", "content": "Looks good"},
+            {"role": "user", "content": "Proceed"},
+        ]
+        r_p2 = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": "Shared Codex base.",
+                "input": pingpong_turn2,
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert r_p2.status_code == 200, r_p2.text
+        assert compact_calls == 1
+        assert gateway.snapshot()["recent_requests"][0]["compaction_stage"] == "summary"
+        assert seen_main_msgs[1][: len(seen_main_msgs[0])] == seen_main_msgs[0]
+
+        # Different leading developer prompt with SAME base instructions must NOT reuse Project A's summary!
+        project_b_items = [
+            {"role": "developer", "content": "Project B totally different rules."},
+            *pingpong_turn1[1:],
+        ]
+        r_b = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "instructions": "Shared Codex base.",
+                "input": project_b_items,
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert r_b.status_code == 200, r_b.text
+        assert compact_calls == 2
+
+
+def test_stage3a_preserves_system_and_literal_markers_and_cold_failure_avoids_boilerplate(
+    gateway,
+):
+    from server.openai_compat import (
+        COMPACTED_SUMMARY_FOOTER,
+        COMPACTED_SUMMARY_HEADER,
+        _clip_sticky_summary_block,
+        _extract_sticky_summary_block,
+        assemble_compacted_chat_messages,
+        estimate_messages_tokens,
+        truncate_messages_to_budget,
+    )
+
+    # 1) Literal footer text quoted inside a summary never causes premature split,
+    #    and clipping sticky summary preserves its header/footer framing.
+    quoted_summary = (
+        f"Fixed parsing of {COMPACTED_SUMMARY_FOOTER} marker in openai_compat.py."
+    )
+    assembled = assemble_compacted_chat_messages(
+        {"role": "system", "content": "Immutable system prompt. " + ("rule " * 600)},
+        quoted_summary,
+        [[{"role": "user", "content": "Run tests now."}]],
+    )
+    ext_sum, ext_rem = _extract_sticky_summary_block(assembled[1]["content"])
+    assert ext_sum is not None
+    assert "openai_compat.py" in ext_sum
+    assert ext_rem == "Run tests now."
+
+    clipped_blk = _clip_sticky_summary_block(
+        f"{COMPACTED_SUMMARY_HEADER}\n" + ("important fact " * 200) + f"\n{COMPACTED_SUMMARY_FOOTER}",
+        90,
+    )
+    assert clipped_blk.startswith(COMPACTED_SUMMARY_HEADER)
+    assert clipped_blk.endswith(COMPACTED_SUMMARY_FOOTER)
+
+    # 2) Stage 3a re-checks budget when dropping from 2 -> 1 groups so leading_system stays
+    #    100% untouched (preserving immutable KV cache prefix) once the remaining group fits.
+    long_sys = "Immutable system prompt. " + ("policy_clause " * 250)  # ~1000 est tokens
+    msgs_two_groups = assemble_compacted_chat_messages(
+        {"role": "system", "content": long_sys},
+        "Summary of older turns.",
+        [
+            [{"role": "user", "content": "Droppable older turn " + ("z" * 5000)}],
+            [{"role": "user", "content": "Latest short question"}],
+        ],
+    )
+    clamped, changed = truncate_messages_to_budget(msgs_two_groups, None, 2000)
+    assert changed is True
+    assert estimate_messages_tokens(clamped, None) <= 2000
+    assert clamped[0]["content"] == long_sys.strip()
+    assert COMPACTED_SUMMARY_HEADER in clamped[1]["content"]
+    assert "Latest short question" in clamped[1]["content"]
+
+    # 3) Cold-start compaction returning empty content (0 clean chunks) falls back to Stage 3
+    #    truncation instead of replacing the entire history with "Prior conversation compacted.".
+    gateway.runtime.active_options = {"context_length": 4096}
+    seen_main: list[list[dict]] = []
+
+    def empty_compact_upstream(request):
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": ""}}],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 0, "total_tokens": 1000},
+                },
+            )
+        seen_main.append(body["messages"])
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Recovered"}}],
+                "usage": {"prompt_tokens": 1100, "completion_tokens": 5, "total_tokens": 1105},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(empty_compact_upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        r = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [
+                    {"role": "user", "content": "Old turn 1 " + ("a" * 5000)},
+                    {"role": "assistant", "content": "Old reply 1 " + ("b" * 5000)},
+                    {"role": "user", "content": "Keep this latest request intact"},
+                ],
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert r.status_code == 200, r.text
+        assert len(gateway.compaction_cache) == 0
+        assert all(
+            "Prior conversation compacted." not in (m.get("content") or "")
+            for m in seen_main[0]
+        )
+        assert any(
+            "Keep this latest request intact" in (m.get("content") or "")
+            for m in seen_main[0]
+        )
+
+    # 4) Concise incremental delta (<= 256 tokens) is NOT silently dropped by Stage 3a when
+    #    pruning cannot fit — it is summarized into the updated checkpoint instead.
+    gateway.compaction_cache.clear()
+    seen_main.clear()
+    sum_calls = 0
+
+    def delta_preserve_upstream(request):
+        nonlocal sum_calls
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            or "Update the running continuation summary" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            sum_calls += 1
+            joined = "\n".join(str(m.get("content") or "") for m in body["messages"])
+            summary = (
+                "Summary including PostgreSQL requirement."
+                if "PostgreSQL" in joined
+                else "Initial summary."
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": summary}}],
+                    "usage": {"prompt_tokens": 1000, "completion_tokens": 20, "total_tokens": 1020},
+                },
+            )
+        seen_main.append(body["messages"])
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"prompt_tokens": 1500, "completion_tokens": 5, "total_tokens": 1505},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(delta_preserve_upstream)
+    base_turns = [
+        {"role": "user", "content": "Old 1: " + ("x" * 4000)},
+        {"role": "assistant", "content": "Old 2: " + ("y" * 4000)},
+        {"role": "user", "content": "CRITICAL: Use PostgreSQL, NEVER SQLite!"},
+    ]
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        r1 = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": base_turns, "stream": False},
+            headers=AUTH,
+        )
+        assert r1.status_code == 200, r1.text
+        prev_calls = sum_calls
+        # Next turn adds a huge newest message pushing total over budget while the PostgreSQL turn
+        # is a tiny <=256-token delta -> must summarize it instead of dropping it in Stage 3a!
+        r2 = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [
+                    *base_turns,
+                    {"role": "assistant", "content": "Giant analysis " + ("w" * 10000)},
+                ],
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert r2.status_code == 200, r2.text
+        assert sum_calls > prev_calls
+        assert any("PostgreSQL" in (m.get("content") or "") for m in seen_main[-1])
