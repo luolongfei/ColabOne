@@ -176,6 +176,7 @@ async function mock(page: any, ready = false, path = "/") {
       const logDrawerCalls: any[] = [];
       const nativeLocales: string[] = [];
       const localeCommands: any[] = [];
+      const billingUsageCalls: any[] = [];
       const savedSecrets: { apiTunnelToken: string; canvasTunnelToken: string; hfToken: string } = {
         apiTunnelToken: "",
         canvasTunnelToken: "",
@@ -189,6 +190,7 @@ async function mock(page: any, ready = false, path = "/") {
       (window as any).__logDrawerCalls = logDrawerCalls;
       (window as any).__nativeLocales = nativeLocales;
       (window as any).__localeCommands = localeCommands;
+      (window as any).__billingUsageCalls = billingUsageCalls;
       (window as any).mygo = {
         call: async (method: string, ...args: any[]) => {
           const request = args[0];
@@ -244,6 +246,89 @@ async function mock(page: any, ready = false, path = "/") {
               return JSON.stringify({
                 locale: request.payload?.locale || "zh-CN",
                 persisted: !!request.payload?.persist,
+              });
+            }
+            if (request.action === "billing.usage") {
+              billingUsageCalls.push(request.payload || {});
+              const loggedIn = !!(state.account?.logged_in || state.setup?.colab);
+              const start = Number(request.payload?.start || Math.floor(Date.now() / 1000) - 86400);
+              const end = Number(request.payload?.end || Math.floor(Date.now() / 1000));
+              if (!loggedIn) {
+                return JSON.stringify({
+                  logged_in: false,
+                  bucket_seconds: 1800,
+                  retention_days: 365,
+                  start,
+                  end,
+                  available_dates: [],
+                  active_dates: [],
+                  buckets: [],
+                });
+              }
+              const customFn = (window as any).__onBillingUsage;
+              if (typeof customFn === "function") {
+                return JSON.stringify(customFn(request.payload || {}, state));
+              }
+              const nowSec = Math.floor(Date.now() / 1000);
+              const alignedNow = nowSec - (nowSec % 1800);
+              const allBuckets: any[] = Array.isArray((window as any).__billingUsageBuckets)
+                ? (window as any).__billingUsageBuckets
+                : [
+                    {
+                      ts: alignedNow - 7200,
+                      duration: 1800,
+                      consumed: 0.98,
+                      topup: 0,
+                      balance_start: 102.48,
+                      balance_end: 101.5,
+                      has_balance: true,
+                      rate_avg: 1.96,
+                      rate_max: 1.96,
+                      active_seconds: 1800,
+                      max_instances: 1,
+                      samples: 60,
+                      estimated: false,
+                    },
+                    {
+                      ts: alignedNow - 3600,
+                      duration: 1800,
+                      consumed: 1.5,
+                      topup: 0,
+                      balance_start: 101.5,
+                      balance_end: 100.0,
+                      has_balance: true,
+                      rate_avg: 3.0,
+                      rate_max: 3.5,
+                      active_seconds: 1800,
+                      max_instances: 1,
+                      samples: 60,
+                      estimated: false,
+                    },
+                  ];
+              const fmtDate = (sec: number) => {
+                const d = new Date(sec * 1000);
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+              };
+              const availDates = Array.from(new Set(allBuckets.map((b) => fmtDate(b.ts)))).sort();
+              const activeDates = Array.from(
+                new Set(allBuckets.filter((b) => b.consumed > 0).map((b) => fmtDate(b.ts))),
+              ).sort();
+              const filtered = allBuckets.filter((b) => b.ts + (b.duration || 1800) > start && b.ts < end);
+              const prior = allBuckets.filter((b) => b.ts + (b.duration || 1800) <= start && b.has_balance);
+              const initialBalance = prior.length ? prior[prior.length - 1].balance_end : 102.48;
+              return JSON.stringify({
+                logged_in: true,
+                bucket_seconds: 1800,
+                retention_days: 365,
+                start,
+                end,
+                current_balance: state.account?.balance ?? 100,
+                current_rate: state.account?.rate ?? 0,
+                checked_at: state.account?.checked_at ?? nowSec,
+                initial_balance: initialBalance,
+                available_dates: availDates,
+                active_dates: activeDates,
+                buckets: filtered,
               });
             }
             calls.push(request);
@@ -800,7 +885,7 @@ test("disconnected client exposes 4-item navigation, opens model drawer from API
   await expect(
     page.getByRole("button", { name: "去启动 GPU" }),
   ).toBeVisible();
-  await expect(page.getByText("还没有可用的工作流")).toBeVisible();
+  await expect(page.getByText("空空如也").first()).toBeVisible();
   await navItem(page, "设置").click();
   await expect(
     page.getByRole("heading", { name: "Google 云盘", exact: true }),
@@ -1168,7 +1253,7 @@ test("activity sidebar follows progress across pages and can filter clear and co
   await expect(panel).toContainText("连接中断，请重试");
   await expect(panel).not.toContainText("已恢复本机保存");
   await panel.getByRole("button", { name: "清空日志", exact: true }).click();
-  await expect(panel).toContainText("暂无错误");
+  await expect(panel).toContainText("空空如也");
   await expect(panel.locator(".co-log-drawer-header")).toHaveCount(0);
   await page.getByRole("button", { name: "收起运行日志", exact: true }).click();
   await expect(panel).toBeHidden();
@@ -1328,7 +1413,7 @@ test("standalone log window route (?view=logs) renders full-bleed log viewer wit
   await panel.getByRole("button", { name: "复制日志", exact: true }).click();
   await expect(page.locator(".co-toast")).toContainText("已复制");
   await panel.getByRole("button", { name: "清空日志", exact: true }).click();
-  await expect(panel).toContainText("暂无运行日志，开始操作后将在此实时显示");
+  await expect(panel).toContainText("空空如也，开始操作后将在此实时显示");
   await page.screenshot({
     path: fileURLToPath(
       new URL("../../work/standalone-log-window.png", import.meta.url),
@@ -5482,4 +5567,117 @@ test("status badge dots stay vertically centered without phantom empty-text gap 
   expect(enApiStatus!.dotDeltaY!).toBeLessThanOrEqual(0.5);
   expect(enApiStatus!.emptyTextDisplay).toBe("none");
   expect(enApiStatus!.textBoxTrim).toBe("trim-both");
+});
+
+test("CU consumption trend chart defaults to live 24h, supports calendar date selection, current time return, range drill-down, metric switching, and hover tooltip", async ({
+  page,
+}) => {
+  await mock(page, true);
+  const cuCard = page.locator(".co-cu-usage-card");
+  await expect(cuCard).toBeVisible();
+  await expect(cuCard).toContainText("计算单元消耗走势");
+  await expect(cuCard.locator(".co-cu-window-tag")).toContainText("近 24 小时");
+  // Default mock has 0.98 + 1.50 = 2.48 CU consumed across the last 24h
+  await expect(cuCard.locator(".co-cu-kpi-strip")).toContainText("2.48");
+
+  // Quick-jump icon on BillingCard scrolls to and highlights the CU chart
+  await page.locator(".co-bc-trend-btn").click();
+  await expect(cuCard).toHaveClass(/is-highlighted/);
+
+  // Hovering on the chart shows tooltip and causes zero horizontal overflow
+  const stage = cuCard.locator(".co-cu-plot-stage");
+  await stage.scrollIntoViewIfNeeded();
+  await stage.hover({ position: { x: 420, y: 100 } });
+  await expect(cuCard.locator(".co-cu-tooltip")).toBeVisible();
+  await expect(cuCard.locator(".co-cu-tooltip")).toContainText("本时段消耗");
+  const overflowOnHover = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflowOnHover).toBe(0);
+  await cuCard.locator(".co-cu-title").hover();
+
+  // Switch metrics: 消耗量 -> 消耗速率 -> 余额走势 -> 消耗量
+  const metricSeg = cuCard.locator('.ant-segmented[aria-label="切换统计指标"]');
+  await segmentedItem(metricSeg, "消耗速率").click();
+  await expect(cuCard.locator(".co-cu-rate-stroke")).toBeVisible();
+  await segmentedItem(metricSeg, "余额走势").click();
+  await expect(cuCard.locator(".co-cu-balance-stroke").first()).toBeVisible();
+  await segmentedItem(metricSeg, "消耗量").click();
+  await expect(cuCard.locator('.co-cu-bar:not([height="0"])').first()).toBeVisible();
+  await expect(cuCard.locator(".co-cu-trend-stroke")).toBeVisible();
+
+  // Open date picker popover, pick yesterday's date, then jump back to current time
+  await cuCard.getByTestId("cu-date-trigger").click();
+  const cal = page.locator(".co-cu-calendar");
+  await expect(cal).toBeVisible();
+  const yesterday = await page.evaluate(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const yBtn = cal.locator(`button[data-date="${yesterday}"]`);
+  if ((await yBtn.count()) > 0) {
+    await yBtn.click();
+  } else {
+    // Yesterday was in previous month
+    await cal.locator('button[aria-label="上个月"]').click();
+    await cal.locator(`button[data-date="${yesterday}"]`).click();
+  }
+  await expect(cuCard.locator(".co-cu-window-tag")).toContainText(yesterday);
+  await expect(cuCard.getByTestId("cu-now-btn")).toContainText("回到当前");
+
+  // Jump back to live current time (last 24h) and ensure only a single billing.usage RPC is sent (no duplicate fetch)
+  const callsBeforeJump = await page.evaluate(
+    () => (window as any).__billingUsageCalls.length,
+  );
+  await cuCard.getByTestId("cu-now-btn").click();
+  await expect(cuCard.locator(".co-cu-window-tag")).toContainText("近 24 小时");
+  await expect(cuCard.getByTestId("cu-now-btn")).toContainText("当前时间");
+  const { callsAfterJump, lastPayload } = await page.evaluate(() => {
+    const arr = (window as any).__billingUsageCalls as any[];
+    return { callsAfterJump: arr.length, lastPayload: arr[arr.length - 1] };
+  });
+  expect(callsAfterJump - callsBeforeJump).toBe(1);
+  expect(typeof lastPayload?.timezone).toBe("string");
+  expect((lastPayload?.timezone || "").length).toBeGreaterThan(0);
+
+  // Switch to Last 7d and verify 7 bars render cleanly
+  const rangeSeg = cuCard.locator('.ant-segmented[aria-label="切换时间范围"]');
+  await segmentedItem(rangeSeg, "近 7 天").click();
+  await expect(cuCard.locator(".co-cu-bar")).toHaveCount(7);
+
+  // Clicking today's bar drills down into that calendar day's hourly breakdown
+  const stageBox7d = (await stage.boundingBox())!;
+  await stage.click({
+    position: {
+      x: Math.max(80, Math.round(stageBox7d.width - 36)),
+      y: Math.round(stageBox7d.height * 0.5),
+    },
+  });
+  await expect(cuCard.locator(".co-cu-window-tag")).toContainText("全天");
+  expect(await cuCard.locator(".co-cu-bar").count()).toBeGreaterThanOrEqual(23);
+
+  // Return to live 24h and verify dark mode + narrow-viewport tooltip containment + zero overflow
+  await cuCard.getByTestId("cu-now-btn").click();
+  await page.locator("header .co-nav-right button").nth(1).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  const overflowDark = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflowDark).toBe(0);
+
+  await page.setViewportSize({ width: 420, height: 820 });
+  await stage.scrollIntoViewIfNeeded();
+  const narrowBox = (await stage.boundingBox())!;
+  await stage.hover({
+    position: {
+      x: Math.round(narrowBox.width * 0.52),
+      y: Math.round(narrowBox.height * 0.5),
+    },
+  });
+  const tipBox = (await cuCard.locator(".co-cu-tooltip").boundingBox())!;
+  expect(tipBox.x).toBeGreaterThanOrEqual(narrowBox.x - 1);
+  expect(tipBox.x + tipBox.width).toBeLessThanOrEqual(
+    narrowBox.x + narrowBox.width + 1,
+  );
 });

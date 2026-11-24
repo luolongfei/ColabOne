@@ -49,13 +49,32 @@ export const COLABONE_MESSAGES: Record<ColabOneLocale, ColabOneMessages> = {
   "ko-KR": koKRMessages,
 };
 
+function withColabOneEmptyLocale(
+  base: AntdLocale,
+  emptyText: string,
+): AntdLocale {
+  return {
+    ...base,
+    Empty: {
+      ...(base.Empty ?? {}),
+      description: emptyText,
+    },
+    Table: base.Table
+      ? {
+          ...base.Table,
+          emptyText,
+        }
+      : base.Table,
+  };
+}
+
 export const COLABONE_ANTD_LOCALES: Record<ColabOneLocale, AntdLocale> = {
-  "zh-CN": zhCNAntd,
-  "en-US": enUSAntd,
-  "zh-TW": zhTWAntd,
-  "zh-HK": zhHKAntd,
-  "ja-JP": jaJPAntd,
-  "ko-KR": koKRAntd,
+  "zh-CN": withColabOneEmptyLocale(zhCNAntd, zhCNMessages["common.emptyData"]),
+  "en-US": withColabOneEmptyLocale(enUSAntd, enUSMessages["common.emptyData"]),
+  "zh-TW": withColabOneEmptyLocale(zhTWAntd, zhTWMessages["common.emptyData"]),
+  "zh-HK": withColabOneEmptyLocale(zhHKAntd, zhHKMessages["common.emptyData"]),
+  "ja-JP": withColabOneEmptyLocale(jaJPAntd, jaJPMessages["common.emptyData"]),
+  "ko-KR": withColabOneEmptyLocale(koKRAntd, koKRMessages["common.emptyData"]),
 };
 
 export function normalizeColabOneLocale(

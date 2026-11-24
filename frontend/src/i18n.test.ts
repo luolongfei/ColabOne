@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  COLABONE_ANTD_LOCALES,
   COLABONE_LOCALE_LIST,
   COLABONE_LOCALE_MAP,
   COLABONE_MESSAGES,
@@ -118,6 +119,47 @@ describe("ColabOne i18n catalog integrity", () => {
     expect(COLABONE_MESSAGES["zh-HK"]["settings.shortcutsTitle"]).toContain(
       "開始選單",
     );
+  });
+
+  it("uses unified playful empty-data copy ('空空如也' and localized equivalents) across Ant Design and app empty states", () => {
+    const emptyKeys: ColabOneMessageKey[] = [
+      "common.emptyData",
+      "cuUsage.kpiPeriodConsumedSubEmpty",
+      "cuUsage.kpiPeakSubEmpty",
+      "cuUsage.emptyNoDataDay",
+      "cuUsage.emptyCollectingHint",
+      "device.releaseEmpty",
+      "api.speedEmpty",
+      "api.reqReadyEmpty",
+      "models.emptySearch",
+      "models.emptyMine",
+      "models.hubEmpty",
+      "models.pickerNoGguf",
+      "comfy.emptyWorkflows",
+      "comfy.emptyOutputs",
+      "logs.emptyError",
+      "logs.emptyAll",
+    ];
+    const expectedStemByLocale: Record<ColabOneLocale, string> = {
+      "zh-CN": "空空如也",
+      "zh-TW": "空空如也",
+      "zh-HK": "空空如也",
+      "en-US": "All empty here",
+      "ja-JP": "空っぽ",
+      "ko-KR": "텅 비었어요",
+    };
+
+    for (const locale of ALL_LOCALES) {
+      const expected = COLABONE_MESSAGES[locale]["common.emptyData"];
+      expect(COLABONE_ANTD_LOCALES[locale].Empty?.description).toBe(expected);
+      expect(COLABONE_ANTD_LOCALES[locale].Table?.emptyText).toBe(expected);
+      for (const key of emptyKeys) {
+        expect(
+          COLABONE_MESSAGES[locale][key],
+          `${locale}[${key}] should express unified empty-data copy`,
+        ).toContain(expectedStemByLocale[locale]);
+      }
+    }
   });
 });
 

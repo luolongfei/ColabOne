@@ -51,6 +51,56 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		return map[string]any{"ok": true, "locale": rawLocale, "persisted": persist}, nil
 
+	case "billing.usage":
+		c.mu.Lock()
+		acct := deepCopyMap(asMap(c.data["account"]))
+		c.mu.Unlock()
+		colabCreds, _ := c.vault.Get("colab")
+		loggedIn := asBool(acct["logged_in"]) || asBool(colabCreds)
+
+		accountEmail := asTrimmedString(acct["email"])
+		if accountEmail == "" && loggedIn {
+			if profVal, ok := c.vault.Get("google_profile"); ok {
+				accountEmail = asTrimmedString(asMap(profVal)["email"])
+			}
+		}
+
+		var startSec, endSec int64
+		if v, ok := asInt64(payload["start"]); ok {
+			startSec = v
+		}
+		if v, ok := asInt64(payload["end"]); ok {
+			endSec = v
+		}
+		timezone := asTrimmedString(payload["timezone"])
+		var utcOffsetPtr *int
+		if rawOff, exists := payload["utc_offset_seconds"]; exists && rawOff != nil {
+			if off, ok := asInt(rawOff); ok {
+				utcOffsetPtr = &off
+			}
+		}
+
+		var curBalPtr, curRatePtr *float64
+		if bal, ok := asFloat(acct["balance"]); ok {
+			curBalPtr = &bal
+		}
+		if rate, ok := asFloat(acct["rate"]); ok {
+			curRatePtr = &rate
+		}
+		checkedAt, _ := asFloat(acct["checked_at"])
+
+		return c.cuUsage.Query(ColabOneCUUsageQuery{
+			AccountEmail:   accountEmail,
+			LoggedIn:       loggedIn,
+			CurrentBalance: curBalPtr,
+			CurrentRate:    curRatePtr,
+			CheckedAt:      checkedAt,
+			Start:          startSec,
+			End:            endSec,
+			Timezone:       timezone,
+			UTCOffsetSec:   utcOffsetPtr,
+		}), nil
+
 	case "account.refresh":
 		if c.provider == nil {
 			return nil, errors.New("Provider 未配置")
@@ -797,6 +847,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			c.lastAuth = 0
 			c.remoteWorkflowVersions = make(map[string]float64)
 			c.mu.Unlock()
+			if c.cuUsage != nil {
+				c.cuUsage.ResetActiveAccount()
+			}
 			c.resetMonitorToAuto(true, true)
 			c.Update(map[string]any{
 				"models":        c.Presets(),
@@ -823,6 +876,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			c.mu.Lock()
 			c.lastAuth = 0
 			c.mu.Unlock()
+			if c.cuUsage != nil {
+				c.cuUsage.ResetActiveAccount()
+			}
 			c.resetMonitorToAuto(true, true)
 			return map[string]any{"ok": true}, nil
 		}
@@ -835,6 +891,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			c.lastAuth = 0
 			c.remoteWorkflowVersions = make(map[string]float64)
 			c.mu.Unlock()
+			if c.cuUsage != nil {
+				c.cuUsage.ResetActiveAccount()
+			}
 			c.resetMonitorToAuto(true, true)
 			c.Update(map[string]any{
 				"models":        c.Presets(),

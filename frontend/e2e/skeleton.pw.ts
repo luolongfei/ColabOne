@@ -158,6 +158,18 @@ async function setupControlledMock(
             if (action === "account.refresh") {
               return JSON.stringify({ ok: true });
             }
+            if (action === "billing.usage") {
+              return JSON.stringify({
+                logged_in: Boolean(state.account?.logged_in || state.setup?.colab),
+                bucket_seconds: 1800,
+                retention_days: 365,
+                start: request?.payload?.start ?? 0,
+                end: request?.payload?.end ?? 0,
+                available_dates: [],
+                active_dates: [],
+                buckets: [],
+              });
+            }
             if (action === "monitor.select") {
               state.monitor = {
                 ...(state.monitor || {}),

@@ -21,6 +21,7 @@ import { colabOneBillingSkeletonState } from "./skeletonState";
 import type { RuntimeStatus, ColabOneSnapshot } from "./types";
 import {
   PhArrowsClockwise,
+  PhChartLineUp,
   PhClock,
   PhCoins,
   PhLightning,
@@ -49,6 +50,7 @@ const emit = defineEmits<{
   touch: [];
   changeIdleMinutes: [minutes: number];
   openSettings: [];
+  viewUsageTrend: [];
 }>();
 
 const activeRuntimeId = computed(() =>
@@ -355,6 +357,20 @@ function onIdleMinutesChange(event: Event) {
           <span class="co-sr-only">{{ statusSubtitle }}</span>
         </span>
         <span v-else class="co-bc-sync-caption co-sk-reveal">{{ statusSubtitle }}</span>
+        <ColabOneTooltip :title="t('billing.cardViewTrendTooltip')" placement="top">
+          <AButton
+            size="small"
+            type="text"
+            class="co-bc-refresh-btn co-bc-trend-btn"
+            :aria-label="t('billing.cardViewTrendTooltip')"
+            :disabled="loading"
+            @click="emit('viewUsageTrend')"
+          >
+            <template #icon>
+              <PhChartLineUp :size="15" />
+            </template>
+          </AButton>
+        </ColabOneTooltip>
         <ColabOneTooltip :title="t('billing.cardRefreshTooltip')" placement="top">
           <AButton
             size="small"

@@ -88,6 +88,7 @@ import {
 } from "./i18n";
 import BillingBar from "./BillingBar.vue";
 import BillingCard from "./BillingCard.vue";
+import CuUsageChart from "./CuUsageChart.vue";
 import LanguageSwitcher from "./LanguageSwitcher.vue";
 import LogDrawer from "./LogDrawer.vue";
 import ResourceMonitor from "./ResourceMonitor.vue";
@@ -573,6 +574,28 @@ const nav = computed(() => [
 ]);
 
 const modelsDrawerOpen = ref(false);
+const cuUsageHighlighted = ref(false);
+let cuUsageHighlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scrollToCuUsage() {
+  if (cuUsageHighlightTimer !== null) {
+    clearTimeout(cuUsageHighlightTimer);
+    cuUsageHighlightTimer = null;
+  }
+  const section = document.getElementById("co-cu-usage-section");
+  const prefersReducedMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  section?.scrollIntoView({
+    behavior: prefersReducedMotion ? "auto" : "smooth",
+    block: "nearest",
+  });
+  cuUsageHighlighted.value = true;
+  cuUsageHighlightTimer = setTimeout(() => {
+    cuUsageHighlighted.value = false;
+    cuUsageHighlightTimer = null;
+  }, 1600);
+}
 const contentRef = ref<ComponentPublicInstance | HTMLElement | null>(null);
 const scrollController = createColabOneScrollController();
 const settingsTopSaveSlotRef = ref<HTMLElement | null>(null);
@@ -2389,6 +2412,10 @@ onUnmounted(() => {
   }
   pendingAsyncPanelRetryTimers.clear();
   clearConfirmDriveTimer();
+  if (cuUsageHighlightTimer !== null) {
+    clearTimeout(cuUsageHighlightTimer);
+    cuUsageHighlightTimer = null;
+  }
   scrollController.cancel();
   settingsTopSaveObserver?.disconnect();
   settingsTopSaveObserver = null;
@@ -3408,6 +3435,7 @@ onUnmounted(() => {
                   @refresh-account="refreshAccount"
                   @touch="interaction()"
                   @change-idle-minutes="changeIdleMinutes"
+                  @view-usage-trend="scrollToCuUsage"
                   @open-settings="
                     !busy && !state.operation
                       ? beginLogin()
@@ -3442,6 +3470,27 @@ onUnmounted(() => {
                   @select-instance="selectMonitorInstance"
                   @toggle-pause="toggleMonitorPause"
                   @retry-monitor="retryMonitor"
+                />
+              </section>
+
+              <!-- Compute Unit (CU) Consumption Trend Chart -->
+              <section
+                id="co-cu-usage-section"
+                class="co-cu-usage-wrap"
+                :aria-label="t('cuUsage.sectionAria')"
+              >
+                <CuUsageChart
+                  :account="state.account"
+                  :setup-colab="state.setup.colab"
+                  :loading="!snapshotLoaded"
+                  :ipc-disconnected="ipcDisconnected"
+                  :now-ms="clockNow"
+                  :highlighted="cuUsageHighlighted"
+                  @open-settings="
+                    !busy && !state.operation
+                      ? beginLogin()
+                      : selectPage('settings')
+                  "
                 />
               </section>
 

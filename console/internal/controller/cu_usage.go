@@ -1,0 +1,1003 @@
+package controller
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	colabOneCUUsageSchemaVersion    = 1
+	colabOneCUBucketSeconds         = 1800 // 30-minute UTC buckets align cleanly with all timezones including :30 offsets
+	colabOneCURetentionDays         = 365
+	colabOneCUMaxBucketsPerAccount  = 20000
+	colabOneCUOnlineGapMaxSec       = 900.0   // 15 minutes
+	colabOneCUOfflineProrateMaxSec  = 86400.0 // 24 hours
+	colabOneCUFlushMinIntervalSec   = 60.0
+	colabOneCUEpsilon               = 1e-6
+	colabOneCUMaxQueryRangeSeconds  = 366 * 86400
+	colabOneCUUsageFilename         = "cu_usage.json"
+	colabOneCUDefaultAccountKey     = "default"
+	colabOneCUMigrateDefaultMaxGapS = 600.0
+)
+
+// ColabOneCUUsageBucket stores aggregated CU consumption and balance telemetry
+// for one 30-minute UTC window [TS, TS+1800).
+type ColabOneCUUsageBucket struct {
+	TS           int64   `json:"ts"`
+	Consumed     float64 `json:"consumed"`
+	Topup        float64 `json:"topup,omitempty"`
+	BalanceStart float64 `json:"balance_start,omitempty"`
+	BalanceEnd   float64 `json:"balance_end,omitempty"`
+	HasBalance   bool    `json:"has_balance,omitempty"`
+	RateSum      float64 `json:"rate_sum,omitempty"`
+	RateSec      float64 `json:"rate_sec,omitempty"`
+	RateMax      float64 `json:"rate_max,omitempty"`
+	ActiveSec    float64 `json:"active_sec,omitempty"`
+	MaxInstances int     `json:"max_instances,omitempty"`
+	Samples      int     `json:"samples"`
+	Estimated    bool    `json:"estimated,omitempty"`
+}
+
+// ColabOneCUUsageAnchor remembers the last observed account poll so consecutive
+// balance deltas and active durations can be computed accurately across restarts.
+type ColabOneCUUsageAnchor struct {
+	TS          float64 `json:"ts"`
+	Balance     float64 `json:"balance"`
+	HasBalance  bool    `json:"has_balance"`
+	Rate        float64 `json:"rate"`
+	Assignments int     `json:"assignments"`
+}
+
+// ColabOneCUUsageAccountData holds the persisted history and latest anchor for one Google account.
+type ColabOneCUUsageAccountData struct {
+	LastAnchor *ColabOneCUUsageAnchor          `json:"last_anchor,omitempty"`
+	Buckets    map[int64]*ColabOneCUUsageBucket `json:"buckets"`
+}
+
+// ColabOneCUUsageQuery configures a read query against ColabOneCUUsageStore.
+type ColabOneCUUsageQuery struct {
+	AccountEmail   string
+	LoggedIn       bool
+	CurrentBalance *float64
+	CurrentRate    *float64
+	CheckedAt      float64
+	Start          int64
+	End            int64
+	Timezone       string
+	UTCOffsetSec   *int
+}
+
+type colabOneCUUsageDiskFile struct {
+	Version          int                                    `json:"version"`
+	BucketSeconds    int                                    `json:"bucket_seconds"`
+	LastAccountKey   string                                 `json:"last_account_key,omitempty"`
+	Accounts         map[string]*colabOneCUUsageDiskAccount `json:"accounts"`
+}
+
+type colabOneCUUsageDiskAccount struct {
+	LastAnchor *ColabOneCUUsageAnchor  `json:"last_anchor,omitempty"`
+	Buckets    []ColabOneCUUsageBucket `json:"buckets"`
+}
+
+// ColabOneCUUsageStore persists per-account Compute Unit (CU) consumption history
+// locally in the controller config directory. It uses its own mutex hierarchy
+// (persistMu -> mu) independent of ColabOneController locks.
+type ColabOneCUUsageStore struct {
+	path  string
+	nowFn func() float64
+
+	persistMu        sync.Mutex
+	mu               sync.Mutex
+	accounts         map[string]*ColabOneCUUsageAccountData
+	activeAccountKey string
+	dirty            bool
+	lastSavedAt      float64
+}
+
+// NewColabOneCUUsageStore initializes a CU usage store backed by <configDir>/cu_usage.json.
+func NewColabOneCUUsageStore(configDir string, nowFn func() float64) *ColabOneCUUsageStore {
+	if nowFn == nil {
+		nowFn = nowUnixFloat
+	}
+	path := ""
+	if trimmed := strings.TrimSpace(configDir); trimmed != "" {
+		path = filepath.Join(trimmed, colabOneCUUsageFilename)
+	}
+	s := &ColabOneCUUsageStore{
+		path:     path,
+		nowFn:    nowFn,
+		accounts: make(map[string]*ColabOneCUUsageAccountData),
+	}
+	s.load()
+	return s
+}
+
+func colabOneCUAccountKey(email string) string {
+	norm := strings.ToLower(strings.TrimSpace(email))
+	if norm == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(norm))
+	return "acct:" + hex.EncodeToString(sum[:])[:16]
+}
+
+func colabOneCUBucketStart(ts float64) int64 {
+	sec := int64(math.Floor(ts))
+	rem := sec % colabOneCUBucketSeconds
+	if rem < 0 {
+		rem += colabOneCUBucketSeconds
+	}
+	return sec - rem
+}
+
+func colabOneRoundCU(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	r := math.Round(v*10000) / 10000
+	if math.Abs(r) < colabOneCUEpsilon {
+		return 0
+	}
+	return r
+}
+
+func colabOneCleanFloat(v float64) (float64, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
+}
+
+func (s *ColabOneCUUsageStore) load() {
+	if s.path == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.path)
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+		return
+	}
+	var disk colabOneCUUsageDiskFile
+	if decodeJSONWithNumbers(raw, &disk) != nil || disk.Accounts == nil {
+		// Preserve corrupt file on disk instead of silently clobbering it on the next Flush().
+		corruptPath := s.path + ".corrupt"
+		if os.Rename(s.path, corruptPath) != nil {
+			_ = os.WriteFile(corruptPath, raw, 0o600)
+		}
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeAccountKey = strings.TrimSpace(disk.LastAccountKey)
+	for key, diskAcct := range disk.Accounts {
+		if strings.TrimSpace(key) == "" || diskAcct == nil {
+			continue
+		}
+		acct := &ColabOneCUUsageAccountData{
+			Buckets: make(map[int64]*ColabOneCUUsageBucket, len(diskAcct.Buckets)),
+		}
+		if diskAcct.LastAnchor != nil && diskAcct.LastAnchor.TS > 0 {
+			if _, ok := colabOneCleanFloat(diskAcct.LastAnchor.TS); ok {
+				anchor := *diskAcct.LastAnchor
+				if b, ok := colabOneCleanFloat(anchor.Balance); ok && b >= 0 {
+					anchor.Balance = b
+				} else {
+					anchor.Balance = 0
+					anchor.HasBalance = false
+				}
+				if r, ok := colabOneCleanFloat(anchor.Rate); ok && r >= 0 {
+					anchor.Rate = r
+				} else {
+					anchor.Rate = 0
+				}
+				if anchor.Assignments < 0 {
+					anchor.Assignments = 0
+				}
+				acct.LastAnchor = &anchor
+			}
+		}
+		for _, b := range diskAcct.Buckets {
+			if b.TS <= 0 {
+				continue
+			}
+			aligned := colabOneCUBucketStart(float64(b.TS))
+			cp := b
+			cp.TS = aligned
+			if cp.Consumed < 0 || math.IsNaN(cp.Consumed) || math.IsInf(cp.Consumed, 0) {
+				cp.Consumed = 0
+			}
+			if cp.Topup < 0 || math.IsNaN(cp.Topup) || math.IsInf(cp.Topup, 0) {
+				cp.Topup = 0
+			}
+			if cp.RateSum < 0 || math.IsNaN(cp.RateSum) || math.IsInf(cp.RateSum, 0) {
+				cp.RateSum = 0
+			}
+			if cp.RateSec < 0 || math.IsNaN(cp.RateSec) || math.IsInf(cp.RateSec, 0) {
+				cp.RateSec = 0
+			}
+			if cp.RateMax < 0 || math.IsNaN(cp.RateMax) || math.IsInf(cp.RateMax, 0) {
+				cp.RateMax = 0
+			}
+			if cp.ActiveSec < 0 || math.IsNaN(cp.ActiveSec) || math.IsInf(cp.ActiveSec, 0) {
+				cp.ActiveSec = 0
+			}
+			if cp.MaxInstances < 0 {
+				cp.MaxInstances = 0
+			}
+			if cp.Samples < 0 {
+				cp.Samples = 0
+			}
+			if cp.HasBalance {
+				if bs, ok := colabOneCleanFloat(cp.BalanceStart); ok && bs >= 0 {
+					cp.BalanceStart = bs
+				} else {
+					cp.HasBalance = false
+				}
+				if be, ok := colabOneCleanFloat(cp.BalanceEnd); ok && be >= 0 {
+					cp.BalanceEnd = be
+				} else {
+					cp.HasBalance = false
+				}
+			}
+			acct.Buckets[aligned] = &cp
+		}
+		s.accounts[key] = acct
+	}
+}
+
+// ResetActiveAccount clears the active account binding on re-login so the next
+// account poll resolves cleanly to the newly signed-in account.
+func (s *ColabOneCUUsageStore) ResetActiveAccount() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.activeAccountKey = ""
+	s.mu.Unlock()
+}
+
+// RecordAccount extracts CU telemetry from a controller account snapshot map
+// and records it when the user is signed in.
+func (s *ColabOneCUUsageStore) RecordAccount(account map[string]any) {
+	if s == nil || account == nil {
+		return
+	}
+	if !asBool(account["logged_in"]) {
+		return
+	}
+	bal, hasBal := asFloat(account["balance"])
+	if hasBal {
+		if clean, ok := colabOneCleanFloat(bal); ok && clean >= 0 {
+			bal = clean
+		} else {
+			bal = 0
+			hasBal = false
+		}
+	}
+	rate, hasRate := asFloat(account["rate"])
+	if hasRate {
+		if clean, ok := colabOneCleanFloat(rate); ok && clean >= 0 {
+			rate = clean
+		} else {
+			rate = 0
+		}
+	}
+	if !hasBal && !hasRate {
+		return
+	}
+	ts, hasTS := asFloat(account["checked_at"])
+	if !hasTS || ts <= 0 || math.IsNaN(ts) || math.IsInf(ts, 0) {
+		ts = s.nowFn()
+	}
+	assignments, _ := asInt(account["assignments"])
+	if assignments < 0 {
+		assignments = 0
+	}
+	email := asTrimmedString(account["email"])
+	s.RecordSample(email, ts, bal, hasBal, rate, assignments)
+}
+
+// RecordSample records a single observed account balance/rate sample into the store.
+func (s *ColabOneCUUsageStore) RecordSample(
+	email string,
+	ts float64,
+	balance float64,
+	hasBalance bool,
+	rate float64,
+	assignments int,
+) {
+	if s == nil {
+		return
+	}
+	cleanTS, ok := colabOneCleanFloat(ts)
+	if !ok || cleanTS <= 0 {
+		return
+	}
+	if hasBalance {
+		if b, ok := colabOneCleanFloat(balance); ok && b >= 0 {
+			balance = b
+		} else {
+			balance = 0
+			hasBalance = false
+		}
+	}
+	if r, ok := colabOneCleanFloat(rate); ok && r >= 0 {
+		rate = r
+	} else {
+		rate = 0
+	}
+	if assignments < 0 {
+		assignments = 0
+	}
+
+	shouldFlush := false
+
+	s.mu.Lock()
+	accountKey := s.resolveAccountKeyLocked(email, cleanTS)
+	acct := s.ensureAccountLocked(accountKey)
+
+	finalBucketTS := colabOneCUBucketStart(cleanTS)
+	_, hadFinalBucket := acct.Buckets[finalBucketTS]
+	consumedTotal := 0.0
+	topupTotal := 0.0
+	changed := false
+
+	prev := acct.LastAnchor
+	switch {
+	case prev == nil || prev.TS <= 0:
+		b := s.ensureBucketLocked(acct, finalBucketTS)
+		b.Samples++
+		if hasBalance {
+			if !b.HasBalance {
+				b.BalanceStart = balance
+				b.HasBalance = true
+			}
+			b.BalanceEnd = balance
+		}
+		if rate > b.RateMax {
+			b.RateMax = rate
+		}
+		if assignments > b.MaxInstances {
+			b.MaxInstances = assignments
+		}
+		acct.LastAnchor = &ColabOneCUUsageAnchor{
+			TS:          cleanTS,
+			Balance:     balance,
+			HasBalance:  hasBalance,
+			Rate:        rate,
+			Assignments: assignments,
+		}
+		changed = true
+
+	case cleanTS < prev.TS:
+		// Out-of-order or backwards clock jump: do not corrupt existing buckets.
+		s.mu.Unlock()
+		return
+
+	case cleanTS == prev.TS:
+		sameBal := hasBalance == prev.HasBalance && (!hasBalance || math.Abs(balance-prev.Balance) <= colabOneCUEpsilon)
+		sameRate := math.Abs(rate-prev.Rate) <= colabOneCUEpsilon
+		if sameBal && sameRate && assignments == prev.Assignments {
+			s.mu.Unlock()
+			return
+		}
+		b := s.ensureBucketLocked(acct, finalBucketTS)
+		if hasBalance && prev.HasBalance {
+			diff := prev.Balance - balance
+			if diff > colabOneCUEpsilon {
+				b.Consumed += diff
+				consumedTotal = diff
+			} else if diff < -colabOneCUEpsilon {
+				b.Topup += -diff
+				topupTotal = -diff
+			}
+			if !b.HasBalance {
+				b.BalanceStart = prev.Balance
+				b.HasBalance = true
+			}
+			b.BalanceEnd = balance
+		} else if hasBalance {
+			if !b.HasBalance {
+				b.BalanceStart = balance
+				b.HasBalance = true
+			}
+			b.BalanceEnd = balance
+		}
+		if rate > b.RateMax {
+			b.RateMax = rate
+		}
+		if assignments > b.MaxInstances {
+			b.MaxInstances = assignments
+		}
+		b.Samples++
+		acct.LastAnchor = &ColabOneCUUsageAnchor{
+			TS:          cleanTS,
+			Balance:     balance,
+			HasBalance:  hasBalance,
+			Rate:        rate,
+			Assignments: assignments,
+		}
+		changed = true
+
+	default:
+		dt := cleanTS - prev.TS
+		maxInst := assignments
+		if prev.Assignments > maxInst {
+			maxInst = prev.Assignments
+		}
+
+		if dt <= colabOneCUOnlineGapMaxSec {
+			hasDiff := hasBalance && prev.HasBalance
+			diff := 0.0
+			if hasDiff {
+				diff = prev.Balance - balance
+			}
+
+			activeSec := 0.0
+			rateForInterval := 0.0
+			intervalMaxRate := 0.0
+			intervalMaxInst := 0
+
+			switch {
+			case prev.Rate > 0 && rate > 0:
+				activeSec = dt
+				rateForInterval = (prev.Rate + rate) / 2.0
+				intervalMaxRate = math.Max(prev.Rate, rate)
+				intervalMaxInst = maxInst
+			case prev.Rate > 0 || rate > 0:
+				transRate := rate
+				transInst := assignments
+				if prev.Rate > 0 {
+					transRate = prev.Rate
+					transInst = prev.Assignments
+				}
+				if hasDiff && diff > colabOneCUEpsilon && transRate > 0 {
+					estSec := diff / transRate * 3600.0
+					if estSec > dt {
+						estSec = dt
+					}
+					if estSec > 0 {
+						activeSec = estSec
+						rateForInterval = transRate
+						intervalMaxRate = transRate
+						intervalMaxInst = transInst
+					}
+				} else if dt <= 120.0 {
+					// Normal poll cadence across start/stop boundary: attribute midpoint active duration.
+					activeSec = dt * 0.5
+					rateForInterval = transRate
+					intervalMaxRate = transRate
+					intervalMaxInst = transInst
+				}
+			}
+
+			if hasDiff {
+				if diff > colabOneCUEpsilon {
+					consumedTotal = diff
+				} else if diff < -colabOneCUEpsilon {
+					estBurn := 0.0
+					if rateForInterval > 0 && activeSec > 0 {
+						estBurn = rateForInterval * activeSec / 3600.0
+					}
+					consumedTotal = estBurn
+					topupTotal = (-diff) + estBurn
+				}
+			}
+			s.distributeIntervalLocked(
+				acct,
+				prev.TS,
+				cleanTS,
+				consumedTotal,
+				activeSec,
+				rateForInterval,
+				intervalMaxRate,
+				intervalMaxInst,
+				prev.Balance,
+				balance,
+				hasDiff && topupTotal == 0,
+				false,
+			)
+			finalB := s.ensureBucketLocked(acct, finalBucketTS)
+			if topupTotal > colabOneCUEpsilon {
+				finalB.Topup += topupTotal
+			}
+			if hasBalance {
+				if !finalB.HasBalance {
+					finalB.BalanceStart = balance
+					finalB.HasBalance = true
+				}
+				finalB.BalanceEnd = balance
+			}
+			if rate > finalB.RateMax {
+				finalB.RateMax = rate
+			}
+			if assignments > finalB.MaxInstances {
+				finalB.MaxInstances = assignments
+			}
+			finalB.Samples++
+			changed = true
+		} else if dt <= colabOneCUOfflineProrateMaxSec {
+			if hasBalance && prev.HasBalance {
+				diff := prev.Balance - balance
+				if diff > colabOneCUEpsilon {
+					consumedTotal = diff
+					offlineActive := 0.0
+					offlineRate := 0.0
+					offlineMaxRate := 0.0
+					offlineMaxInst := 0
+					if prev.Rate > 0 && rate > 0 {
+						offlineActive = dt
+						offlineRate = (prev.Rate + rate) / 2.0
+						offlineMaxRate = math.Max(prev.Rate, rate)
+						offlineMaxInst = maxInst
+					}
+					s.distributeIntervalLocked(
+						acct,
+						prev.TS,
+						cleanTS,
+						consumedTotal,
+						offlineActive,
+						offlineRate,
+						offlineMaxRate,
+						offlineMaxInst,
+						prev.Balance,
+						balance,
+						true,
+						true,
+					)
+				} else if diff < -colabOneCUEpsilon {
+					topupTotal = -diff
+				}
+			}
+			finalB := s.ensureBucketLocked(acct, finalBucketTS)
+			if topupTotal > colabOneCUEpsilon {
+				finalB.Topup += topupTotal
+			}
+			if hasBalance {
+				if !finalB.HasBalance {
+					finalB.BalanceStart = balance
+					finalB.HasBalance = true
+				}
+				finalB.BalanceEnd = balance
+			}
+			if rate > finalB.RateMax {
+				finalB.RateMax = rate
+			}
+			if assignments > finalB.MaxInstances {
+				finalB.MaxInstances = assignments
+			}
+			finalB.Samples++
+			changed = true
+		} else {
+			// Offline longer than 24h: start fresh baseline at cleanTS without distorting today's trend.
+			finalB := s.ensureBucketLocked(acct, finalBucketTS)
+			if hasBalance {
+				if !finalB.HasBalance {
+					finalB.BalanceStart = balance
+					finalB.HasBalance = true
+				}
+				finalB.BalanceEnd = balance
+			}
+			if rate > finalB.RateMax {
+				finalB.RateMax = rate
+			}
+			if assignments > finalB.MaxInstances {
+				finalB.MaxInstances = assignments
+			}
+			finalB.Samples++
+			changed = true
+		}
+
+		acct.LastAnchor = &ColabOneCUUsageAnchor{
+			TS:          cleanTS,
+			Balance:     balance,
+			HasBalance:  hasBalance,
+			Rate:        rate,
+			Assignments: assignments,
+		}
+	}
+
+	if changed {
+		s.pruneAccountLocked(acct, int64(math.Floor(cleanTS)))
+		s.dirty = true
+		nowSec := s.nowFn()
+		if !hadFinalBucket || consumedTotal > colabOneCUEpsilon || topupTotal > colabOneCUEpsilon ||
+			s.lastSavedAt == 0 || (nowSec-s.lastSavedAt) >= colabOneCUFlushMinIntervalSec {
+			shouldFlush = true
+		}
+	}
+	s.mu.Unlock()
+
+	if shouldFlush {
+		_ = s.Flush()
+	}
+}
+
+func (s *ColabOneCUUsageStore) resolveAccountKeyLocked(
+	email string,
+	ts float64,
+) string {
+	hashed := colabOneCUAccountKey(email)
+	if hashed != "" {
+		// If early boot recorded a recent sample under "default" before Profile() resolved email,
+		// seamlessly migrate that session into the hashed account bucket if it doesn't exist yet.
+		if s.activeAccountKey == colabOneCUDefaultAccountKey {
+			if defAcct, hasDef := s.accounts[colabOneCUDefaultAccountKey]; hasDef && defAcct != nil {
+				if _, exists := s.accounts[hashed]; !exists && defAcct.LastAnchor != nil &&
+					math.Abs(ts-defAcct.LastAnchor.TS) <= colabOneCUMigrateDefaultMaxGapS {
+					s.accounts[hashed] = defAcct
+					delete(s.accounts, colabOneCUDefaultAccountKey)
+				}
+			}
+		}
+		s.activeAccountKey = hashed
+		return hashed
+	}
+	if s.activeAccountKey != "" {
+		return s.activeAccountKey
+	}
+	s.activeAccountKey = colabOneCUDefaultAccountKey
+	return colabOneCUDefaultAccountKey
+}
+
+func (s *ColabOneCUUsageStore) ensureAccountLocked(key string) *ColabOneCUUsageAccountData {
+	acct, ok := s.accounts[key]
+	if !ok || acct == nil {
+		acct = &ColabOneCUUsageAccountData{
+			Buckets: make(map[int64]*ColabOneCUUsageBucket),
+		}
+		s.accounts[key] = acct
+	}
+	if acct.Buckets == nil {
+		acct.Buckets = make(map[int64]*ColabOneCUUsageBucket)
+	}
+	return acct
+}
+
+func (s *ColabOneCUUsageStore) ensureBucketLocked(acct *ColabOneCUUsageAccountData, bucketTS int64) *ColabOneCUUsageBucket {
+	b, ok := acct.Buckets[bucketTS]
+	if !ok || b == nil {
+		b = &ColabOneCUUsageBucket{TS: bucketTS}
+		acct.Buckets[bucketTS] = b
+	}
+	return b
+}
+
+func (s *ColabOneCUUsageStore) distributeIntervalLocked(
+	acct *ColabOneCUUsageAccountData,
+	startTS, endTS float64,
+	consumed, activeSec, rateForInterval, maxRate float64,
+	maxInst int,
+	startBal, endBal float64,
+	interpolateBal bool,
+	estimated bool,
+) {
+	totalDur := endTS - startTS
+	if totalDur <= 0 {
+		return
+	}
+	cur := startTS
+	for cur < endTS {
+		bStart := colabOneCUBucketStart(cur)
+		bEnd := float64(bStart + colabOneCUBucketSeconds)
+		segEnd := math.Min(endTS, bEnd)
+		segDur := segEnd - cur
+		if segDur <= 0 {
+			break
+		}
+		frac := segDur / totalDur
+		b := s.ensureBucketLocked(acct, bStart)
+		if consumed > colabOneCUEpsilon {
+			b.Consumed += consumed * frac
+		}
+		segActive := 0.0
+		if activeSec > 0 {
+			segActive = activeSec * frac
+			b.ActiveSec += segActive
+			if b.ActiveSec > colabOneCUBucketSeconds {
+				b.ActiveSec = colabOneCUBucketSeconds
+			}
+		}
+		if rateForInterval > 0 && segActive > 0 {
+			b.RateSum += rateForInterval * segActive
+			b.RateSec += segActive
+		}
+		if maxRate > b.RateMax {
+			b.RateMax = maxRate
+		}
+		if maxInst > b.MaxInstances {
+			b.MaxInstances = maxInst
+		}
+		if estimated && consumed > colabOneCUEpsilon {
+			b.Estimated = true
+		}
+		if interpolateBal {
+			t0 := (cur - startTS) / totalDur
+			t1 := (segEnd - startTS) / totalDur
+			segStartBal := startBal + (endBal-startBal)*t0
+			segEndBal := startBal + (endBal-startBal)*t1
+			if !b.HasBalance {
+				b.BalanceStart = segStartBal
+				b.HasBalance = true
+			}
+			b.BalanceEnd = segEndBal
+		}
+		cur = segEnd
+	}
+}
+
+func (s *ColabOneCUUsageStore) pruneAccountLocked(acct *ColabOneCUUsageAccountData, nowSec int64) {
+	if acct == nil || len(acct.Buckets) == 0 {
+		return
+	}
+	cutoff := nowSec - int64(colabOneCURetentionDays)*86400
+	for ts := range acct.Buckets {
+		if ts+colabOneCUBucketSeconds < cutoff {
+			delete(acct.Buckets, ts)
+		}
+	}
+	if len(acct.Buckets) <= colabOneCUMaxBucketsPerAccount {
+		return
+	}
+	keys := make([]int64, 0, len(acct.Buckets))
+	for ts := range acct.Buckets {
+		keys = append(keys, ts)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	drop := len(keys) - colabOneCUMaxBucketsPerAccount
+	for i := 0; i < drop; i++ {
+		delete(acct.Buckets, keys[i])
+	}
+}
+
+// Flush persists dirty in-memory CU usage history to disk atomically.
+func (s *ColabOneCUUsageStore) Flush() error {
+	if s == nil || s.path == "" {
+		return nil
+	}
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+
+	s.mu.Lock()
+	if !s.dirty {
+		s.mu.Unlock()
+		return nil
+	}
+	disk := colabOneCUUsageDiskFile{
+		Version:        colabOneCUUsageSchemaVersion,
+		BucketSeconds:  colabOneCUBucketSeconds,
+		LastAccountKey: s.activeAccountKey,
+		Accounts:       make(map[string]*colabOneCUUsageDiskAccount, len(s.accounts)),
+	}
+	for key, acct := range s.accounts {
+		if acct == nil {
+			continue
+		}
+		keys := make([]int64, 0, len(acct.Buckets))
+		for ts := range acct.Buckets {
+			keys = append(keys, ts)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		list := make([]ColabOneCUUsageBucket, 0, len(keys))
+		for _, ts := range keys {
+			b := acct.Buckets[ts]
+			if b == nil {
+				continue
+			}
+			cp := *b
+			cp.Consumed = colabOneRoundCU(cp.Consumed)
+			cp.Topup = colabOneRoundCU(cp.Topup)
+			cp.RateSum = colabOneRoundCU(cp.RateSum)
+			cp.RateSec = math.Round(cp.RateSec*10) / 10
+			cp.RateMax = colabOneRoundCU(cp.RateMax)
+			cp.ActiveSec = math.Round(cp.ActiveSec*10) / 10
+			if cp.HasBalance {
+				cp.BalanceStart = colabOneRoundCU(cp.BalanceStart)
+				cp.BalanceEnd = colabOneRoundCU(cp.BalanceEnd)
+			}
+			list = append(list, cp)
+		}
+		var anchorCopy *ColabOneCUUsageAnchor
+		if acct.LastAnchor != nil {
+			ac := *acct.LastAnchor
+			anchorCopy = &ac
+		}
+		disk.Accounts[key] = &colabOneCUUsageDiskAccount{
+			LastAnchor: anchorCopy,
+			Buckets:    list,
+		}
+	}
+	s.dirty = false
+	s.lastSavedAt = s.nowFn()
+	s.mu.Unlock()
+
+	if err := AtomicJSON(s.path, disk); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// Query returns CU usage buckets within [req.Start, req.End) along with metadata
+// and local calendar dates that contain recorded usage.
+func (s *ColabOneCUUsageStore) Query(req ColabOneCUUsageQuery) map[string]any {
+	nowFn := nowUnixFloat
+	if s != nil && s.nowFn != nil {
+		nowFn = s.nowFn
+	}
+	nowSec := int64(math.Floor(nowFn()))
+	end := req.End
+	if end <= 0 {
+		end = nowSec
+	}
+	start := req.Start
+	if start <= 0 || start >= end {
+		start = end - 24*3600
+	}
+	if end-start > colabOneCUMaxQueryRangeSeconds {
+		start = end - colabOneCUMaxQueryRangeSeconds
+	}
+
+	loc := time.Local
+	if tz := strings.TrimSpace(req.Timezone); tz != "" {
+		if loaded, err := time.LoadLocation(tz); err == nil && loaded != nil {
+			loc = loaded
+		} else if req.UTCOffsetSec != nil {
+			off := *req.UTCOffsetSec
+			if off >= -14*3600 && off <= 14*3600 {
+				loc = time.FixedZone("", off)
+			}
+		}
+	} else if req.UTCOffsetSec != nil {
+		off := *req.UTCOffsetSec
+		if off >= -14*3600 && off <= 14*3600 {
+			loc = time.FixedZone("", off)
+		}
+	}
+
+	out := map[string]any{
+		"logged_in":       req.LoggedIn,
+		"bucket_seconds":  colabOneCUBucketSeconds,
+		"retention_days":  colabOneCURetentionDays,
+		"start":           start,
+		"end":             end,
+		"checked_at":      req.CheckedAt,
+		"earliest_ts":     int64(0),
+		"latest_ts":       int64(0),
+		"available_dates": []string{},
+		"active_dates":    []string{},
+		"buckets":         []map[string]any{},
+	}
+	if req.CurrentBalance != nil {
+		if b, ok := colabOneCleanFloat(*req.CurrentBalance); ok {
+			out["current_balance"] = colabOneRoundCU(b)
+		}
+	}
+	if req.CurrentRate != nil {
+		if r, ok := colabOneCleanFloat(*req.CurrentRate); ok {
+			out["current_rate"] = colabOneRoundCU(r)
+		}
+	}
+
+	if s == nil || !req.LoggedIn {
+		return out
+	}
+
+	s.mu.Lock()
+	accountKey := colabOneCUAccountKey(req.AccountEmail)
+	if accountKey == "" {
+		accountKey = s.activeAccountKey
+	}
+	if accountKey == "" {
+		accountKey = colabOneCUDefaultAccountKey
+	}
+	acct := s.accounts[accountKey]
+	if acct == nil || len(acct.Buckets) == 0 {
+		s.mu.Unlock()
+		return out
+	}
+
+	keys := make([]int64, 0, len(acct.Buckets))
+	for ts := range acct.Buckets {
+		keys = append(keys, ts)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+
+	var earliestTS, latestTS int64
+	var initialBalance *float64
+	availDateSet := make(map[string]bool)
+	activeDateSet := make(map[string]bool)
+	resultBuckets := make([]map[string]any, 0)
+
+	for _, ts := range keys {
+		b := acct.Buckets[ts]
+		if b == nil {
+			continue
+		}
+		if earliestTS == 0 || ts < earliestTS {
+			earliestTS = ts
+		}
+		if ts > latestTS {
+			latestTS = ts
+		}
+		startDate := time.Unix(ts, 0).In(loc).Format("2006-01-02")
+		endDate := time.Unix(ts+colabOneCUBucketSeconds-1, 0).In(loc).Format("2006-01-02")
+		if b.Samples > 0 || b.Consumed > colabOneCUEpsilon || b.Topup > colabOneCUEpsilon || b.HasBalance {
+			availDateSet[startDate] = true
+			if endDate != startDate {
+				availDateSet[endDate] = true
+			}
+		}
+		if b.Consumed > colabOneCUEpsilon {
+			activeDateSet[startDate] = true
+			if endDate != startDate {
+				activeDateSet[endDate] = true
+			}
+		}
+
+		// Track last known balance before the queried window so the balance curve starts smoothly.
+		if ts+colabOneCUBucketSeconds <= start && b.HasBalance {
+			val := colabOneRoundCU(b.BalanceEnd)
+			initialBalance = &val
+		}
+
+		if ts+colabOneCUBucketSeconds > start && ts < end {
+			rateAvg := 0.0
+			if b.RateSec > 0 {
+				rateAvg = b.RateSum / b.RateSec
+			} else if b.RateMax > 0 && b.Samples > 0 {
+				rateAvg = b.RateMax
+			}
+			item := map[string]any{
+				"ts":             b.TS,
+				"duration":       colabOneCUBucketSeconds,
+				"consumed":       colabOneRoundCU(b.Consumed),
+				"topup":          colabOneRoundCU(b.Topup),
+				"has_balance":    b.HasBalance,
+				"rate_avg":       colabOneRoundCU(rateAvg),
+				"rate_max":       colabOneRoundCU(b.RateMax),
+				"active_seconds": math.Round(b.ActiveSec*10) / 10,
+				"max_instances":  b.MaxInstances,
+				"samples":        b.Samples,
+				"estimated":      b.Estimated,
+			}
+			if b.HasBalance {
+				item["balance_start"] = colabOneRoundCU(b.BalanceStart)
+				item["balance_end"] = colabOneRoundCU(b.BalanceEnd)
+			}
+			resultBuckets = append(resultBuckets, item)
+		}
+	}
+	s.mu.Unlock()
+
+	availDates := make([]string, 0, len(availDateSet))
+	for d := range availDateSet {
+		availDates = append(availDates, d)
+	}
+	sort.Strings(availDates)
+
+	activeDates := make([]string, 0, len(activeDateSet))
+	for d := range activeDateSet {
+		activeDates = append(activeDates, d)
+	}
+	sort.Strings(activeDates)
+
+	out["earliest_ts"] = earliestTS
+	out["latest_ts"] = latestTS
+	out["available_dates"] = availDates
+	out["active_dates"] = activeDates
+	out["buckets"] = resultBuckets
+	if initialBalance != nil {
+		out["initial_balance"] = *initialBalance
+	}
+	return out
+}

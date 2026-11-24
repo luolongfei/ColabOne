@@ -112,6 +112,8 @@ type ColabOneController struct {
 	monitorGen           uint64
 	externalObservations map[string]map[string]any
 
+	cuUsage *ColabOneCUUsageStore
+
 	rootCtx    context.Context
 	cancelRoot context.CancelFunc
 	spawnMu    sync.Mutex
@@ -243,6 +245,7 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 	c.loadSettings()
 	c.loadLibrary()
 	c.loadWorkflows()
+	c.cuUsage = NewColabOneCUUsageStore(configDir, nil)
 
 	c.data = map[string]any{
 		"runtime":         map[string]any{"state": "stopped"},
@@ -301,6 +304,9 @@ func (c *ColabOneController) Close() {
 		c.cancelRoot()
 		c.closeExternalObserver("", true)
 		c.wg.Wait()
+		if c.cuUsage != nil {
+			_ = c.cuUsage.Flush()
+		}
 		if closer, ok := c.provider.(ProviderCloser); ok {
 			closer.Close()
 		} else {
@@ -1003,6 +1009,22 @@ func (c *ColabOneController) Update(values map[string]any) {
 	c.mu.Lock()
 	c.updateWithSessionsLocked(values, sessions, activeEP)
 	c.mu.Unlock()
+	if c.cuUsage != nil {
+		if acctVal, hasAcct := values["account"]; hasAcct {
+			if acctMap := asMap(acctVal); acctMap != nil {
+				if asBool(acctMap["logged_in"]) && asTrimmedString(acctMap["email"]) == "" && c.vault != nil {
+					if profVal, ok := c.vault.Get("google_profile"); ok {
+						if profEmail := asTrimmedString(asMap(profVal)["email"]); profEmail != "" {
+							acctCopy := deepCopyMap(acctMap)
+							acctCopy["email"] = profEmail
+							acctMap = acctCopy
+						}
+					}
+				}
+				c.cuUsage.RecordAccount(acctMap)
+			}
+		}
+	}
 }
 
 func (c *ColabOneController) updateLocked(values map[string]any) {

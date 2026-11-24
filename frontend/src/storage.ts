@@ -3,4 +3,5 @@ export const COLABONE_STORAGE_KEYS = {
   locale: "colabone.locale",
   logsWidth: "colabone.logs.width",
   monitorLayout: "colabone.monitor.layout",
+  cuUsageMetric: "colabone.cu_usage.metric",
 } as const;

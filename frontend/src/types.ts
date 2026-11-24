@@ -312,6 +312,39 @@ export interface MonitorSnapshot {
   drive_free_bytes?: number | null;
   options: MonitorOption[];
 }
+export interface ColabOneCuUsageBucket {
+  ts: number;
+  duration: number;
+  consumed: number;
+  topup: number;
+  balance_start?: number;
+  balance_end?: number;
+  has_balance: boolean;
+  rate_avg: number;
+  rate_max: number;
+  active_seconds: number;
+  max_instances: number;
+  samples: number;
+  estimated: boolean;
+}
+
+export interface ColabOneCuUsageResponse {
+  logged_in: boolean;
+  bucket_seconds: number;
+  retention_days: number;
+  start: number;
+  end: number;
+  current_balance?: number;
+  current_rate?: number;
+  checked_at?: number;
+  initial_balance?: number;
+  earliest_ts?: number;
+  latest_ts?: number;
+  available_dates: string[];
+  active_dates: string[];
+  buckets: ColabOneCuUsageBucket[];
+}
+
 export interface ActivityEntry {
   id: number;
   time: number;
