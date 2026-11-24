@@ -107,18 +107,25 @@ func runColabOneSelfTest() error {
 }
 
 // newColabOneWiredController wires all pure-Go ColabOne packages into a live
-// in-process ColabOneController. Pass nil vaultStore to use the default OS
-// keychain / Windows Credential Manager (with automatic legacy keyring migration).
+// in-process ColabOneController. Pass nil vaultStore to use the default local
+// encrypted vault.enc file in configDir (with silent Windows Credential Manager
+// migration when running against the default production config directory).
 func newColabOneWiredController(root, configDir string, vaultStore *vault.ColabOneVault, background bool) *controller.ColabOneController {
 	if root == "" {
 		root = colabOneRootDir()
 	}
+	defaultCfgDir := controller.DefaultConfigDir()
 	activityDir := strings.TrimSpace(configDir)
+	isDefaultDir := activityDir == "" || filepath.Clean(activityDir) == filepath.Clean(defaultCfgDir)
 	if activityDir == "" {
-		activityDir = controller.DefaultConfigDir()
+		activityDir = defaultCfgDir
 	}
 	if vaultStore == nil {
-		vaultStore = vault.NewDefaultColabOneVault()
+		if isDefaultDir {
+			vaultStore = vault.NewFileVaultWithLegacyMigration(activityDir)
+		} else {
+			vaultStore = vault.NewFileVault(activityDir)
+		}
 	}
 
 	bundle := servicebundle.ResolveBundle(root)

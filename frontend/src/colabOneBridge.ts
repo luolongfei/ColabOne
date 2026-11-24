@@ -218,8 +218,9 @@ export interface ColabOneUpdateState {
 export const ColabOneDesktop = {
   /**
    * ApplyMigrationPreview atomically applies user-selected modules from the
-   * decrypted preview session across controller stores, OS credential vault, and
-   * native desktop settings, then immediately wipes the cached preview from memory.
+   * decrypted preview session across controller stores, local encrypted credential
+   * vault (vault.enc), and native desktop settings, then immediately wipes the
+   * cached preview from memory.
    */
   applyMigrationPreview: bind<[ColabOneMigrationApplyRequest], ColabOneMigrationApplyResult>("ColabOneDesktop.ApplyMigrationPreview", (req: ColabOneMigrationApplyRequest) => [req]),
   /**

@@ -119,7 +119,7 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 			}
 		}
 		// Single-flight leader: construct the controller without holding b.mu so
-		// OS keychain prompts (mygo.Secrets.Get) cannot block OnWillQuit close().
+		// local vault or disk I/O during startup cannot block OnWillQuit close().
 		b.starting = true
 		done := make(chan struct{})
 		b.startDone = done

@@ -39,11 +39,11 @@ type winCredential struct {
 }
 
 // colabOneReadLegacySecret checks Windows Credential Manager for credentials
-// written by the legacy Python keyring backend (WinVaultKeyring):
-//  1. TargetName = service (e.g. "ColabOne") with UserName == key (newest value)
-//  2. TargetName = key + "@" + service (e.g. "colab@ColabOne") fallback
-//
-// CredentialBlob is decoded from UTF-16LE (or UTF-8 fallback) into UTF-8 JSON bytes.
+// written by prior ColabOne releases so Windows upgrades migrate silently into
+// vault.enc without requiring re-login:
+//  1. Prior pure-Go MyGo target `service + "/" + key` (reassembling chunks if needed)
+//  2. Legacy Python keyring TargetName = service (with UserName == key)
+//  3. Legacy Python keyring TargetName = key + "@" + service fallback
 func colabOneReadLegacySecret(service, key string) ([]byte, bool, error) {
 	if procLegacyCredReadW.Find() != nil || procLegacyCredFree.Find() != nil {
 		return nil, false, nil

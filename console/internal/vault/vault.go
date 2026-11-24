@@ -1,6 +1,6 @@
-// Package vault implements ColabOne's secure OS credential vault backed by
-// mygo.Secrets, with transparent chunking for secrets larger than
-// mygo.MaxSecretSize and seamless Windows legacy keyring migration.
+// Package vault implements ColabOne's local encrypted credential vault
+// (0600 AES-256-GCM vault.enc in the user config directory) with transparent
+// Windows legacy Credential Manager migration and optional chunked backends.
 package vault
 
 import (
@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,40 +148,70 @@ type colabOneChunkManifest struct {
 type colabOneLegacyReaderFunc func(service, key string) ([]byte, bool, error)
 type colabOneLegacyDeleterFunc func(service, key string) error
 
-// ColabOneVault stores JSON-serialized credentials in an OS credential store
-// with an in-memory cache, transparent chunking for secrets > 2400 bytes, and
-// optional legacy Windows keyring migration.
+// ColabOneVault stores JSON-serialized credentials in a pluggable secret backend
+// (local encrypted vault.enc by default) with an in-memory cache, optional
+// chunking for size-limited backends, and seamless Windows Credential Manager migration.
 type ColabOneVault struct {
-	mu            sync.RWMutex
-	service       string
-	backend       ColabOneSecretBackend
-	cache         map[string][]byte
-	chunkMeta     map[string]colabOneChunkManifest
-	legacyReader  colabOneLegacyReaderFunc
-	legacyDeleter colabOneLegacyDeleterFunc
+	mu              sync.RWMutex
+	service         string
+	backend         ColabOneSecretBackend
+	disableChunking bool
+	cache           map[string][]byte
+	chunkMeta       map[string]colabOneChunkManifest
+	legacyReader    colabOneLegacyReaderFunc
+	legacyDeleter   colabOneLegacyDeleterFunc
 }
 
 // NewColabOneVault creates a ColabOneVault using the provided secret backend.
-// If backend is nil, it falls back to NewColabOneMyGoSecretBackend(ColabOneVaultService).
+// If backend is nil, it falls back to NewColabOneFileSecretBackend("", ColabOneVaultService).
 func NewColabOneVault(backend ColabOneSecretBackend) *ColabOneVault {
+	disableChunking := false
 	if backend == nil {
-		backend = NewColabOneMyGoSecretBackend(ColabOneVaultService)
+		backend = NewColabOneFileSecretBackend("", ColabOneVaultService)
+		disableChunking = true
+	} else if _, isFile := backend.(*ColabOneFileSecretBackend); isFile {
+		disableChunking = true
 	}
 	return &ColabOneVault{
-		service:   ColabOneVaultService,
-		backend:   backend,
-		cache:     make(map[string][]byte),
-		chunkMeta: make(map[string]colabOneChunkManifest),
+		service:         ColabOneVaultService,
+		backend:         backend,
+		disableChunking: disableChunking,
+		cache:           make(map[string][]byte),
+		chunkMeta:       make(map[string]colabOneChunkManifest),
 	}
 }
 
-// NewDefaultColabOneVault creates the production ColabOneVault backed by
-// mygo.Secrets.Service("ColabOne") with Windows legacy Python keyring migration.
-func NewDefaultColabOneVault() *ColabOneVault {
-	v := NewColabOneVault(NewColabOneMyGoSecretBackend(ColabOneVaultService))
+// NewFileVault creates an isolated ColabOneVault backed by configDir/vault.enc
+// (0600 AES-256-GCM encrypted) without reading host Windows Credential Manager.
+func NewFileVault(configDir string) *ColabOneVault {
+	dir := strings.TrimSpace(configDir)
+	if dir == "" {
+		dir = colabOneDefaultVaultDir()
+	}
+	return NewColabOneVault(
+		NewColabOneFileSecretBackend(filepath.Join(dir, ColabOneVaultFilename), ColabOneVaultService),
+	)
+}
+
+// NewFileVaultWithLegacyMigration creates a ColabOneVault backed by
+// configDir/vault.enc with silent Windows Credential Manager migration
+// (no-op on macOS and Linux so OS keychain prompts are never triggered).
+func NewFileVaultWithLegacyMigration(configDir string) *ColabOneVault {
+	v := NewFileVault(configDir)
 	v.legacyReader = colabOneReadLegacySecret
 	v.legacyDeleter = colabOneDeleteLegacySecret
 	return v
+}
+
+// NewDefaultColabOneVault creates the production ColabOneVault backed by the
+// local encrypted vault.enc file in the user's ColabOne configuration directory
+// (with silent Windows Credential Manager migration and zero macOS keychain calls).
+func NewDefaultColabOneVault(configDir ...string) *ColabOneVault {
+	dir := ""
+	if len(configDir) > 0 {
+		dir = configDir[0]
+	}
+	return NewFileVaultWithLegacyMigration(dir)
 }
 
 // NewMemoryVault creates an isolated in-memory ColabOneVault for offline unit tests.
@@ -416,7 +447,7 @@ func (v *ColabOneVault) existingChunkManifestLocked(name string) colabOneChunkMa
 }
 
 func (v *ColabOneVault) writeBackendLocked(name string, encoded []byte, prev colabOneChunkManifest) (colabOneChunkManifest, error) {
-	if len(encoded) <= colabOneVaultChunkSize {
+	if v.disableChunking || len(encoded) <= colabOneVaultChunkSize {
 		if err := v.backend.Set(name, encoded); err != nil {
 			return prev, err
 		}
@@ -640,18 +671,38 @@ func decodeLegacyWinBlob(blob []byte) ([]byte, error) {
 	return nil, fmt.Errorf("colabone vault: invalid legacy credential encoding (%d bytes)", len(blob))
 }
 
-// colabOneResolveLegacyWinCredential implements Python keyring's WinVaultKeyring
-// lookup order: TargetName = service (requiring UserName == key) FIRST — because
-// WinVaultKeyring.set_password writes the newest credential to bare service and
-// moves the previous credential to key + "@" + service — and only falls back to
-// TargetName = key + "@" + service if bare service is absent or belongs to
-// another key.
+// colabOneResolveLegacyWinCredential checks prior Windows Credential Manager
+// entries in newest-to-oldest order so Windows upgrades migrate silently into
+// vault.enc without requiring re-login:
+//  1. Prior pure-Go MyGo target `service + "/" + key` (reassembling chunks if needed)
+//  2. Legacy Python keyring bare target `service` (requiring UserName == key)
+//  3. Legacy Python keyring fallback target `key + "@" + service`
 func colabOneResolveLegacyWinCredential(
 	service, key string,
 	readTarget func(target string) (blob []byte, userName string, ok bool, err error),
 ) ([]byte, bool, error) {
 	if service == "" || key == "" || readTarget == nil {
 		return nil, false, nil
+	}
+	mygoTarget := service + "/" + key
+	if blob, _, ok, err := readTarget(mygoTarget); err == nil && ok && len(blob) > 0 {
+		if manifest, isChunked := parseChunkManifest(blob); isChunked {
+			buf := make([]byte, 0, manifest.Chunks*colabOneVaultChunkSize)
+			complete := true
+			for i := 0; i < manifest.Chunks; i++ {
+				part, _, partOK, partErr := readTarget(service + "/" + colabOneChunkKey(key, manifest.Gen, i))
+				if partErr != nil || !partOK {
+					complete = false
+					break
+				}
+				buf = append(buf, part...)
+			}
+			if complete && len(buf) > 0 {
+				return buf, true, nil
+			}
+		} else {
+			return cloneBytes(blob), true, nil
+		}
 	}
 	if blob, userName, ok, err := readTarget(service); err == nil && ok && userName == key && len(blob) > 0 {
 		if utf8Bytes, decErr := decodeLegacyWinBlob(blob); decErr == nil && len(utf8Bytes) > 0 {
@@ -674,6 +725,17 @@ func colabOneRemoveLegacyWinCredential(
 	if service == "" || key == "" || deleteTarget == nil {
 		return nil
 	}
+	mygoTarget := service + "/" + key
+	if readTarget != nil {
+		if blob, _, ok, err := readTarget(mygoTarget); err == nil && ok && len(blob) > 0 {
+			if manifest, isChunked := parseChunkManifest(blob); isChunked {
+				for i := 0; i < manifest.Chunks; i++ {
+					_ = deleteTarget(service + "/" + colabOneChunkKey(key, manifest.Gen, i))
+				}
+			}
+		}
+	}
+	_ = deleteTarget(mygoTarget)
 	_ = deleteTarget(key + "@" + service)
 	if readTarget != nil {
 		if _, userName, ok, err := readTarget(service); err == nil && ok && userName == key {

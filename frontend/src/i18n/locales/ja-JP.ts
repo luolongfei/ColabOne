@@ -450,7 +450,7 @@ export const jaJPMessages: ColabOneMessages = {
   "device.subtitle": "オンデマンドでリモート GPU を起動し、課金残高とハードウェア負荷をリアルタイムに把握します。",
   "device.connectTitle": "Google アカウントを連携",
   "device.connectDesc":
-    "一度認可するだけでオンデマンドに GPU を起動できます。認証情報は OS のキーチェーン／資格情報マネージャーに安全に保管されます。",
+    "一度認可するだけでオンデマンドに GPU を起動できます。認証情報はローカルの暗号化ボールトに安全に保管されます。",
   "device.signInGoogle": "Google でログイン",
   "device.moreSettings": "詳細設定",
   "device.fallbackGpuName": "Colab リモート GPU",
@@ -633,7 +633,7 @@ export const jaJPMessages: ColabOneMessages = {
   "api.unloadedToast": "VRAM からモデルをアンロードしました",
   "api.startingNotice": "リモートで API サービスを起動中。公開 URL の検証後に接続先が表示されます。",
   "api.readyNotice": "外部 API サービスを開始しました。",
-  "api.savedConfigNotice": "固定ドメイントンネル設定を OS 資格情報ストアに保存しました。",
+  "api.savedConfigNotice": "固定ドメイントンネル設定をローカルの暗号化ボールトに保存しました。",
   "api.tunnelTokenExtractedToast": "Tunnel Token を自動抽出しました",
   "api.rotatedKeyNotice":
     "API キーを再生成しました。サービスを再開し、クライアント側のキーも更新してください。",
@@ -686,7 +686,7 @@ export const jaJPMessages: ColabOneMessages = {
   "api.copyAutoAliasTooltip": "固定エイリアス colabone/auto をコピー",
   "api.modelIdLegacyHintPrefix": "リモートサービス更新待ち: 現在は旧 ID を使用中ですが、更新後に自動で",
   "api.modelIdLegacyHintSuffix": "へ切り替わります（再ダウンロード不要）。",
-  "api.credentialsFootPrefix": "キーは OS の資格情報ストアに保存されます。呼び出しには",
+  "api.credentialsFootPrefix": "キーはローカルの暗号化ボールトに保存されます。呼び出しには",
   "api.credentialsFootSuffix": " を使用し、信頼できるアプリ・メンバーのみと共有してください。",
   "api.examplesCardTitle": "呼び出し例と統計",
   "api.sseStreamTag": "SSE ストリーム",
@@ -1303,7 +1303,7 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.driveExportNowBtn": "今すぐドライブへ保存",
   "comfy.driveRetryExportBtn": "ドライブ保存を再試行",
   "comfy.noticeStartingCanvas": "ネイティブキャンバス用トンネルを開始しています。検証完了後に開けます。",
-  "comfy.noticeSavedCanvasConfig": "ネイティブキャンバスのトンネル設定を OS 資格情報ストアに保存しました。",
+  "comfy.noticeSavedCanvasConfig": "ネイティブキャンバスのトンネル設定をローカルの暗号化ボールトに保存しました。",
   "comfy.noticeStoppedCanvas": "ネイティブキャンバスの安全トンネルを停止しました。",
   "comfy.noticeCopiedAuthLink": "認証リンクをコピーしました（アクセストークンを含むため共有しないでください）。",
   "comfy.errReadLocalFile": "ローカルファイルの読み込みに失敗しました",
@@ -1502,7 +1502,7 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.assignProxyNeedUrlFirst": "有効にする前にプロキシアドレスを入力してください",
   "settings.assignProxyEnabledToast": "GPU 割り当て専用プロキシを有効にしました",
   "settings.assignProxyDisabledToast": "GPU 割り当て専用プロキシを無効にしました",
-  "settings.assignProxySavedToast": "GPU 割り当て専用プロキシを保存して有効にしました（OS キーチェーンに保存）",
+  "settings.assignProxySavedToast": "GPU 割り当て専用プロキシを保存して有効にしました（ローカル暗号化保存）",
   "settings.assignProxyClearedToast": "GPU 割り当て専用プロキシを削除しました",
   "settings.assignProxyTestOkToast": "割り当てプロキシの接続テストに成功しました（{ms} ms・TLS 検証のみ）",
   "settings.appearanceCardTitle": "外観テーマと表示言語",
@@ -1554,7 +1554,7 @@ export const jaJPMessages: ColabOneMessages = {
     "スタートメニューに追加しました。起動後にタスクバーアイコンを右クリックしてピン留めできます",
   "settings.aboutTitle": "このアプリとオープンソースライセンス",
   "settings.aboutDesc":
-    "ColabOne · リモート GGUF 外部 API & ComfyUI ワークフロー · 認証情報は OS 資格情報ストアで保護",
+    "ColabOne · リモート GGUF 外部 API & ComfyUI ワークフロー · 認証情報はローカルの暗号化ボールトで保護",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "実行ログ · ColabOne",

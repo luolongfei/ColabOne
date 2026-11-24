@@ -454,7 +454,7 @@ export const enUSMessages: ColabOneMessages = {
   "device.subtitle": "Launch remote Colab GPUs on demand and track live billing and hardware load.",
   "device.connectTitle": "Connect Your Google Account",
   "device.connectDesc":
-    "Authorize once to spin up remote GPUs on demand. Credentials stay encrypted in your OS keychain.",
+    "Authorize once to spin up remote GPUs on demand. Credentials stay encrypted in your local vault.",
   "device.signInGoogle": "Sign in with Google",
   "device.moreSettings": "More Settings",
   "device.fallbackGpuName": "Colab Remote GPU",
@@ -637,7 +637,7 @@ export const enUSMessages: ColabOneMessages = {
   "api.startingNotice":
     "Starting remote API service; your public endpoint will appear once verified.",
   "api.readyNotice": "Public API service is live.",
-  "api.savedConfigNotice": "Custom domain tunnel configuration saved to OS keychain.",
+  "api.savedConfigNotice": "Custom domain tunnel configuration saved to local encrypted vault.",
   "api.tunnelTokenExtractedToast": "Tunnel Token auto-extracted",
   "api.rotatedKeyNotice":
     "API key rotated. Restart the service and update your clients with the new key.",
@@ -690,7 +690,7 @@ export const enUSMessages: ColabOneMessages = {
   "api.copyAutoAliasTooltip": "Copy fixed alias colabone/auto",
   "api.modelIdLegacyHintPrefix": "Remote service update pending: still using legacy ID until updated, then switches to",
   "api.modelIdLegacyHintSuffix": " (no re-download required).",
-  "api.credentialsFootPrefix": "Stored securely in your OS credential store. Authenticate with",
+  "api.credentialsFootPrefix": "Stored securely in your local encrypted vault. Authenticate with",
   "api.credentialsFootSuffix": " and share only with trusted apps or teammates.",
   "api.examplesCardTitle": "Code Examples & Telemetry",
   "api.sseStreamTag": "SSE Stream",
@@ -1187,7 +1187,7 @@ export const enUSMessages: ColabOneMessages = {
     "Run the full ComfyUI node editor on your remote GPU via token-authenticated Cloudflare Tunnel. Idle release pauses while active.",
   "comfy.canvasConfigTitle": "Custom Domain & Tunnel",
   "comfy.canvasConfigDesc":
-    "Bind a fixed HTTPS hostname via Cloudflare Named Tunnel for automatic single-click authentication. Credentials stay in your Cloudflare account and OS keychain.",
+    "Bind a fixed HTTPS hostname via Cloudflare Named Tunnel for automatic single-click authentication. Credentials stay in your Cloudflare account and local encrypted vault.",
   "comfy.canvasDomainLabel": "Canvas Domain",
   "comfy.canvasTokenEmptyPlaceholder": "Paste Cloudflare install command or Tunnel Token",
   "comfy.canvasGuideStep1": "Create a Cloudflared Tunnel in Cloudflare Zero Trust.",
@@ -1315,7 +1315,7 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.driveRetryExportBtn": "Retry Drive Export",
   "comfy.noticeStartingCanvas":
     "Starting fixed-domain tunnel for Native Canvas; it will open once verified.",
-  "comfy.noticeSavedCanvasConfig": "Native Canvas tunnel config saved to OS keychain.",
+  "comfy.noticeSavedCanvasConfig": "Native Canvas tunnel config saved to local encrypted vault.",
   "comfy.noticeStoppedCanvas": "Native Canvas tunnel stopped.",
   "comfy.noticeCopiedAuthLink":
     "Authenticated link copied (contains access token — do not share).",
@@ -1513,7 +1513,7 @@ export const enUSMessages: ColabOneMessages = {
   "settings.assignProxyNeedUrlFirst": "Enter a proxy URL before enabling",
   "settings.assignProxyEnabledToast": "GPU allocation proxy enabled (allocation requests only)",
   "settings.assignProxyDisabledToast": "GPU allocation proxy disabled",
-  "settings.assignProxySavedToast": "GPU allocation proxy saved and enabled (stored in OS keychain)",
+  "settings.assignProxySavedToast": "GPU allocation proxy saved and enabled (stored in local encrypted vault)",
   "settings.assignProxyClearedToast": "GPU allocation proxy cleared",
   "settings.assignProxyTestOkToast": "Allocation proxy reachable ({ms} ms · unauthenticated TLS check)",
   "settings.appearanceCardTitle": "Appearance & Language",
@@ -1567,7 +1567,7 @@ export const enUSMessages: ColabOneMessages = {
     "Added to Start Menu — right-click the taskbar icon while open to pin",
   "settings.aboutTitle": "About & Licenses",
   "settings.aboutDesc":
-    "ColabOne · Remote GGUF Public API & ComfyUI Workflows · Credentials stored in OS keychain",
+    "ColabOne · Remote GGUF Public API & ComfyUI Workflows · Credentials stored in local encrypted vault",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "Logs · ColabOne",

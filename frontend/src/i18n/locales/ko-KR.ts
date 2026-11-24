@@ -450,7 +450,7 @@ export const koKRMessages: ColabOneMessages = {
   "device.subtitle": "필요할 때 원격 Colab GPU를 실행하고 잔액 소모와 하드웨어 부하를 실시간으로 확인하세요.",
   "device.connectTitle": "Google 계정 연결",
   "device.connectDesc":
-    "한 번만 로그인해 두면 원격 GPU를 즉시 시작할 수 있습니다. 자격 증명은 OS 보안 저장소에 안전하게 보관됩니다.",
+    "한 번만 로그인해 두면 원격 GPU를 즉시 시작할 수 있습니다. 자격 증명은 로컬 암호화 보관함에 안전하게 보관됩니다.",
   "device.signInGoogle": "Google 로그인",
   "device.moreSettings": "설정 더보기",
   "device.fallbackGpuName": "Colab 원격 GPU",
@@ -632,7 +632,7 @@ export const koKRMessages: ColabOneMessages = {
   "api.unloadedToast": "현재 VRAM에서 모델을 언로드했습니다",
   "api.startingNotice": "원격 API 서비스를 시작하고 있습니다. 퍼블릭 도메인 검증 후 주소가 표시됩니다.",
   "api.readyNotice": "외부 API 서비스가 켜졌습니다.",
-  "api.savedConfigNotice": "고정 도메인 터널 설정을 OS 자격 증명 저장소에 저장했습니다.",
+  "api.savedConfigNotice": "고정 도메인 터널 설정을 로컬 암호화 보관함에 저장했습니다.",
   "api.tunnelTokenExtractedToast": "Tunnel Token이 자동 추출되었습니다",
   "api.rotatedKeyNotice": "API 키가 재발급되었습니다. 서비스를 다시 켜고 클라이언트 키도 업데이트하세요.",
   "api.connectionCardTitle": "고정 도메인 및 터널 설정",
@@ -684,7 +684,7 @@ export const koKRMessages: ColabOneMessages = {
   "api.copyAutoAliasTooltip": "고정 별칭 colabone/auto 복사",
   "api.modelIdLegacyHintPrefix": "원격 서비스 업데이트 대기 중: 현재는 이전 ID를 사용하며 업데이트 후 자동으로",
   "api.modelIdLegacyHintSuffix": "(으)로 전환됩니다 (재다운로드 불필요).",
-  "api.credentialsFootPrefix": "키는 OS 보안 저장소에 보관됩니다. 호출 시",
+  "api.credentialsFootPrefix": "키는 로컬 암호화 보관함에 보관됩니다. 호출 시",
   "api.credentialsFootSuffix": " 헤더를 사용하며 신뢰할 수 있는 앱이나 팀원에게만 공유하세요.",
   "api.examplesCardTitle": "호출 예제 및 통계",
   "api.sseStreamTag": "SSE 스트림",
@@ -1300,7 +1300,7 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.driveExportNowBtn": "지금 드라이브로 저장",
   "comfy.driveRetryExportBtn": "드라이브 저장 다시 시도",
   "comfy.noticeStartingCanvas": "네이티브 캔버스 고정 도메인 터널을 시작 중입니다. 검증 후 열 수 있습니다.",
-  "comfy.noticeSavedCanvasConfig": "네이티브 캔버스 터널 설정을 OS 자격 증명 저장소에 저장했습니다.",
+  "comfy.noticeSavedCanvasConfig": "네이티브 캔버스 터널 설정을 로컬 암호화 보관함에 저장했습니다.",
   "comfy.noticeStoppedCanvas": "네이티브 캔버스 보안 터널을 중지했습니다.",
   "comfy.noticeCopiedAuthLink": "인증 링크가 복사되었습니다(액세스 토큰이 포함되어 있으니 공유하지 마세요).",
   "comfy.errReadLocalFile": "로컬 파일을 읽지 못했습니다",
@@ -1499,7 +1499,7 @@ export const koKRMessages: ColabOneMessages = {
   "settings.assignProxyNeedUrlFirst": "활성화하기 전에 프록시 주소를 입력하세요",
   "settings.assignProxyEnabledToast": "GPU 할당 전용 프록시가 활성화되었습니다",
   "settings.assignProxyDisabledToast": "GPU 할당 전용 프록시가 비활성화되었습니다",
-  "settings.assignProxySavedToast": "GPU 할당 전용 프록시를 저장하고 활성화했습니다 (OS 키체인 보관)",
+  "settings.assignProxySavedToast": "GPU 할당 전용 프록시를 저장하고 활성화했습니다 (로컬 암호화 보관)",
   "settings.assignProxyClearedToast": "GPU 할당 전용 프록시를 삭제했습니다",
   "settings.assignProxyTestOkToast": "할당 프록시 연결 테스트 성공 ({ms} ms · 비인증 TLS 검증)",
   "settings.appearanceCardTitle": "화면 테마 및 표시 언어",
@@ -1551,7 +1551,7 @@ export const koKRMessages: ColabOneMessages = {
     "시작 메뉴에 추가했습니다. 실행 후 작업 표시줄 아이콘을 우클릭해 고정할 수 있습니다",
   "settings.aboutTitle": "정보 및 오픈소스 라이선스",
   "settings.aboutDesc":
-    "ColabOne · 원격 GGUF 외부 API & ComfyUI 워크플로 · 자격 증명은 OS 보안 저장소에 보관",
+    "ColabOne · 원격 GGUF 외부 API & ComfyUI 워크플로 · 자격 증명은 로컬 암호화 보관함에 보관",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "실행 로그 · ColabOne",

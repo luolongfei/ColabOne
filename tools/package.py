@@ -67,10 +67,12 @@ def audit(root):
                 "settings.json",
                 "token.json",
                 "credentials.json",
+                "vault.enc",
                 ".cloudflared-token",
                 ".env",
             }
-            or path.suffix == ".gguf"
+            or path.name.startswith("vault.enc.")
+            or path.suffix in (".gguf", ".colabone")
         ):
             raise RuntimeError("Private state found in package: " + path.name)
         if path.name.startswith("update-") and path.suffix == ".json":

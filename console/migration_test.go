@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -329,5 +331,163 @@ func TestColabOneDesktopMigrationFileAndConcurrencySafety(t *testing.T) {
 	d.migrationMu.Unlock()
 	if !stillPresent {
 		t.Fatal("CancelMigrationSession should not clear an in-flight applying preview session")
+	}
+}
+
+func TestColabOneDesktopMigrationWithEncryptedFileVault(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	kdf := migration.ColabOneMigrationKDFParams{Time: 1, MemoryKiB: 8 * 1024, Threads: 1}
+
+	newFileVaultDesktop := func(cfgDir string) *ColabOneDesktop {
+		appStore := newColabOneAppearanceStore(func() (string, error) {
+			return filepath.Join(cfgDir, colabOneAppearanceFileName), nil
+		})
+		bridge := &colabOneBridge{
+			factory: func() *controller.ColabOneController {
+				// nil vaultStore exercises default local encrypted vault.enc wiring!
+				return newColabOneWiredController(colabOneRootDir(), cfgDir, nil, false)
+			},
+		}
+		d := &ColabOneDesktop{
+			bridge:             bridge,
+			appearanceStore:    appStore,
+			canBackgroundFn:    func() bool { return true },
+			migrationKDFParams: &kdf,
+		}
+		d.initCloseBehavior(func() (string, error) {
+			return filepath.Join(cfgDir, colabOneCloseBehaviorFileName), nil
+		})
+		d.initUpdater(cfgDir, &stubDesktopUpdateBackend{current: "0.1.10", canSelf: true})
+		t.Cleanup(func() {
+			d.clearMigrationSessions()
+			d.closeUpdater()
+			d.bridge.close()
+		})
+		return d
+	}
+
+	// Populate source local encrypted vault.enc directly (simulating prior signed-in state on disk).
+	srcVault := vault.NewFileVault(srcDir)
+	if err := srcVault.Set("colab", map[string]any{
+		"token":         "ya29.filevault-migration-token",
+		"refresh_token": "1//0g-filevault-refresh",
+		"client_id":     "764086051850-filevault.apps.googleusercontent.com",
+		"scopes":        []string{"openid", "https://www.googleapis.com/auth/drive.file"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcVault.Set("google_profile", map[string]string{
+		"email": "filevault@example.com",
+		"sub":   "sub-filevault",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcVault.Set("cloud_project", "colabone-drive-filevault1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcVault.Set("hf", "hf_FileVaultMigrationSecret987654321"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcVault.Set("assign_proxy", "http://127.0.0.1:7890"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcVault.Set("public_api", map[string]any{
+		"mode":         "named",
+		"domain":       "api.filevault.dev",
+		"tunnel_token": "eyJhIjoiYWNjb3VudC0xMjM0NTYiLCJ0IjoidHVubmVsLTEyMzQ1NiIsInMiOiJzZWNyZXQtMTIzNDU2In0=",
+		"api_key":      "co_fileVaultKey0123456789abcdefghijklmnopqrstuvwxyz",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcVault.Set("comfyui_canvas", map[string]any{
+		"mode":         "named",
+		"domain":       "canvas.filevault.dev",
+		"tunnel_token": "eyJhIjoiYWNjb3VudC02NTQzMjEiLCJ0IjoidHVubmVsLTY1NDMyMSIsInMiOiJzZWNyZXQtNjU0MzIxIn0=",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Export encrypted .colabone archive from source desktop (reads from srcDir/vault.enc).
+	src := newFileVaultDesktop(srcDir)
+	archivePath := filepath.Join(t.TempDir(), "filevault-backup.colabone")
+	src.migrationSaveDialogFn = func(context.Context, string) (string, error) {
+		return archivePath, nil
+	}
+	expRes, err := src.ExportMigrationFile(context.Background(), ColabOneMigrationExportRequest{
+		Modules:  []string{migration.ModuleAccount, migration.ModuleCredentials, migration.ModuleSettings},
+		Password: "FileVaultBackup#2026",
+	})
+	if err != nil || expRes.Cancelled {
+		t.Fatalf("ExportMigrationFile failed: res=%+v err=%v", expRes, err)
+	}
+
+	// Import .colabone archive onto clean target desktop (persists into dstDir/vault.enc).
+	dst := newFileVaultDesktop(dstDir)
+	dst.migrationOpenDialogFn = func(context.Context) (string, error) {
+		return archivePath, nil
+	}
+	pick, err := dst.PickMigrationFile(context.Background())
+	if err != nil || pick.Cancelled {
+		t.Fatalf("PickMigrationFile failed: res=%+v err=%v", pick, err)
+	}
+	preview, err := dst.DecryptMigrationPreview(context.Background(), pick.FileToken, "FileVaultBackup#2026")
+	if err != nil {
+		t.Fatalf("DecryptMigrationPreview failed: %v", err)
+	}
+	applyRes, err := dst.ApplyMigrationPreview(context.Background(), ColabOneMigrationApplyRequest{
+		PreviewID: preview.PreviewID,
+		Modules:   []string{migration.ModuleAccount, migration.ModuleCredentials, migration.ModuleSettings},
+	})
+	if err != nil {
+		t.Fatalf("ApplyMigrationPreview failed: %v", err)
+	}
+	if !applyRes.AccountImported || applyRes.AccountEmail != "filevault@example.com" {
+		t.Fatalf("unexpected apply result: %+v", applyRes)
+	}
+
+	// Verify dstDir/vault.enc exists on disk, has 0600 permissions, contains zero plaintext secrets,
+	// and cold-reloads every migrated account & credential entry cleanly across restart.
+	dstVaultPath := filepath.Join(dstDir, vault.ColabOneVaultFilename)
+	info, err := os.Stat(dstVaultPath)
+	if err != nil {
+		t.Fatalf("expected target vault.enc on disk: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("target vault.enc mode = %o, want 0600", info.Mode().Perm())
+	}
+	rawDisk, err := os.ReadFile(dstVaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{
+		"ya29.filevault-migration-token",
+		"1//0g-filevault-refresh",
+		"hf_FileVaultMigrationSecret987654321",
+		"co_fileVaultKey0123456789abcdefghijklmnopqrstuvwxyz",
+	} {
+		if bytes.Contains(rawDisk, []byte(secret)) {
+			t.Fatalf("target vault.enc leaked plaintext secret %q", secret)
+		}
+	}
+
+	reloaded := vault.NewFileVault(dstDir)
+	if got := reloaded.GetMap("colab"); got == nil || got["refresh_token"] != "1//0g-filevault-refresh" {
+		t.Fatalf("cold reload colab = %#v", got)
+	}
+	if got := reloaded.GetString("cloud_project", ""); got != "colabone-drive-filevault1" {
+		t.Fatalf("cold reload cloud_project = %q", got)
+	}
+	if got := reloaded.GetString("hf", ""); got != "hf_FileVaultMigrationSecret987654321" {
+		t.Fatalf("cold reload hf = %q", got)
+	}
+	if got := reloaded.GetString("assign_proxy", ""); got != "http://127.0.0.1:7890" {
+		t.Fatalf("cold reload assign_proxy = %q", got)
+	}
+	if got := reloaded.GetMap("public_api"); got == nil || got["domain"] != "https://api.filevault.dev" {
+		t.Fatalf("cold reload public_api = %#v", got)
+	}
+	if got := reloaded.GetMap("comfyui_canvas"); got == nil || got["domain"] != "https://canvas.filevault.dev" {
+		t.Fatalf("cold reload comfyui_canvas = %#v", got)
 	}
 }

@@ -268,11 +268,12 @@ def test_package_audit_rejects_private_state_and_credentials(tmp_path):
     _make_clean_pure_go_stage(stage)
     package_mod.audit(stage)
 
-    settings = stage / "settings.json"
-    settings.write_text("{}", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="Private state"):
-        package_mod.audit(stage)
-    settings.unlink()
+    for private_name in ("settings.json", "vault.enc", "vault.enc.corrupt.1234", "backup.colabone"):
+        private_file = stage / private_name
+        private_file.write_text("{}", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="Private state"):
+            package_mod.audit(stage)
+        private_file.unlink()
 
     notes = stage / "notes.txt"
     notes.write_text("hf_" + "A" * 35, encoding="utf-8")

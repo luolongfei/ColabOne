@@ -362,6 +362,10 @@ def test_cli_exit_codes_for_invalid_and_missing_files(tmp_path: Path, capsys):
     assert b"\r\n" not in release_body_file.read_bytes()
     assert "https://github.com/example/ColabOne/releases/download/v0.1.7/ColabOne-0.1.7-windows-x64-setup.exe" in body
     assert "https://github.com/example/ColabOne/releases/download/v0.1.7/ColabOne-0.1.7-macos-arm64.dmg" in body
+    assert "xattr -dr com.apple.quarantine /Applications/ColabOne.app" in body
+    assert "隐私与安全性" in body
+    assert "Privacy & Security" in body
+    assert "More info → Run anyway" in body
     assert body.index("## 中文") < body.index("## 下载安装") < body.index("\n---\n") < body.index("## English") < body.index("## Downloads")
 
 
