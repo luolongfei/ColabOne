@@ -7448,6 +7448,25 @@ test("settings page customizes GPU allocation max attempts with 20 default and 1
   await expect(attemptsInput).toBeVisible();
   await expect(attemptsInput).toHaveValue("20");
 
+  // Nearest-edge scroll (e.g. keyboard focus / Tab) must keep lower Settings inputs clear of the floating save bar
+  await attemptsInput.evaluate((el) =>
+    el.scrollIntoView({ block: "nearest" }),
+  );
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const inputRect = document
+          .querySelector("#settings-assign-max-attempts")
+          ?.getBoundingClientRect();
+        const barRect = document
+          .querySelector(".co-settings-floating-bar")
+          ?.getBoundingClientRect();
+        if (!inputRect) return false;
+        return !barRect || inputRect.bottom <= barRect.top;
+      }),
+    )
+    .toBe(true);
+
   // Enter custom value (32) and commit with Enter -> triggers settings.save immediately
   await attemptsInput.click();
   await attemptsInput.fill("32");
@@ -7462,9 +7481,11 @@ test("settings page customizes GPU allocation max attempts with 20 default and 1
     .toContain(32);
   await expect(attemptsInput).toHaveValue("32");
 
-  // Click step-up button -> increments to 33 and persists immediately
+  // Hover input to reveal stepper controls and click step-up without bypassing occlusion checks
+  await attemptsInput.hover();
   const stepUp = page.locator(".co-sr-attempts-input .ant-input-number-handler-up");
-  await stepUp.click({ force: true });
+  await expect(stepUp).toBeVisible();
+  await stepUp.click();
   await expect
     .poll(async () => {
       const calls = await page.evaluate(() => (window as any).__calls);

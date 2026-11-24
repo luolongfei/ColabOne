@@ -2060,7 +2060,9 @@ function onAssignMaxAttemptsStep(raw: unknown) {
   const next = normalizeAssignMaxAttempts(raw);
   if (next === null) return;
   assignMaxAttemptsDraft.value = next;
-  void changeAssignMaxAttempts(next);
+  if (next !== form.value.assign_max_attempts) {
+    void changeAssignMaxAttempts(next);
+  }
 }
 
 function commitAssignMaxAttempts() {
@@ -2101,9 +2103,10 @@ async function changeAssignMaxAttempts(rawAttempts: unknown) {
   queuedAssignMaxAttempts = attempts;
   beginPendingSetting(["assign_max_attempts"]);
   let synced = false;
+  let lastSucceeded: number | null = null;
   try {
     while (!stopped && queuedAssignMaxAttempts !== null) {
-      let lastSucceeded: number | null = null;
+      let batchSucceeded: number | null = null;
       while (!stopped && queuedAssignMaxAttempts !== null) {
         const next = queuedAssignMaxAttempts;
         queuedAssignMaxAttempts = null;
@@ -2112,9 +2115,11 @@ async function changeAssignMaxAttempts(rawAttempts: unknown) {
           await colabOneCommand("settings.save", { assign_max_attempts: next });
           settled = next;
           lastSucceeded = next;
+          batchSucceeded = next;
           clearActionErrors();
         } catch (e) {
           lastSucceeded = null;
+          batchSucceeded = null;
           if (queuedAssignMaxAttempts === null) {
             if (form.value.assign_max_attempts === next) {
               form.value.assign_max_attempts = settled;
@@ -2132,9 +2137,9 @@ async function changeAssignMaxAttempts(rawAttempts: unknown) {
           }
         }
       }
-      if (!stopped && lastSucceeded !== null) {
+      if (!stopped && batchSucceeded !== null) {
         notify(
-          t("device.toastAssignMaxAttemptsSet", { count: lastSucceeded }),
+          t("device.toastAssignMaxAttemptsSet", { count: batchSucceeded }),
           "success",
           "setting-assign-max-attempts",
         );
@@ -4189,7 +4194,11 @@ onUnmounted(() => {
 
         <!-- Scrollable Workspace Content Stage -->
         <div class="co-content-stage">
-        <ALayoutContent ref="contentRef" class="co-content">
+        <ALayoutContent
+          ref="contentRef"
+          class="co-content"
+          :class="{ 'is-settings-page': page === 'settings' }"
+        >
           <!-- STAGE 1: Remote Device -->
           <main
             v-if="page === 'device'"
@@ -7560,6 +7569,10 @@ onUnmounted(() => {
   background: var(--co-canvas);
   display: flex;
   flex-direction: column;
+}
+
+.co-content.is-settings-page {
+  scroll-padding-bottom: 96px;
 }
 
 .co-page-shell {
