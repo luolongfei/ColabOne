@@ -32,7 +32,7 @@ const (
 	colabClientAgent     = "colab-cli"
 	defaultTimeout       = 240 * time.Second
 	minTimeout           = 15 * time.Second
-	defaultPollInterval  = 2500 * time.Millisecond
+	defaultPollInterval  = 1200 * time.Millisecond
 	minPollInterval      = 50 * time.Millisecond
 	colabRequestTimeout  = 15 * time.Second
 	maxResponseBodyBytes = 4 << 20 // 4 MiB defensive cap
@@ -46,26 +46,28 @@ type AuthorizedHTTPClient interface {
 
 // ColabOneDriveMountOptions configures a ColabOneDriveMount helper.
 type ColabOneDriveMountOptions struct {
-	Client       AuthorizedHTTPClient
-	Endpoint     string
-	OnAuthURL    func(string)
-	OnLog        func(msg, source, level string)
-	OnHint       func(string)
-	AccountEmail string
-	Timeout      time.Duration
-	PollInterval time.Duration
+	Client          AuthorizedHTTPClient
+	Endpoint        string
+	OnAuthURL       func(string)
+	OnAuthConfirmed func(interactive bool)
+	OnLog           func(msg, source, level string)
+	OnHint          func(string)
+	AccountEmail    string
+	Timeout         time.Duration
+	PollInterval    time.Duration
 }
 
 // ColabOneDriveMount handles `dfs_ephemeral` credentials propagation for `google.colab.drive.mount`.
 type ColabOneDriveMount struct {
-	client       AuthorizedHTTPClient
-	endpoint     string
-	onAuthURL    func(string)
-	onLog        func(msg, source, level string)
-	onHint       func(string)
-	accountEmail string
-	timeout      time.Duration
-	pollInterval time.Duration
+	client          AuthorizedHTTPClient
+	endpoint        string
+	onAuthURL       func(string)
+	onAuthConfirmed func(interactive bool)
+	onLog           func(msg, source, level string)
+	onHint          func(string)
+	accountEmail    string
+	timeout         time.Duration
+	pollInterval    time.Duration
 
 	mu          sync.Mutex
 	cancelled   bool
@@ -100,17 +102,18 @@ func NewColabOneDriveMount(opts ColabOneDriveMountOptions) *ColabOneDriveMount {
 	}
 
 	return &ColabOneDriveMount{
-		client:       opts.Client,
-		endpoint:     opts.Endpoint,
-		onAuthURL:    opts.OnAuthURL,
-		onLog:        opts.OnLog,
-		onHint:       opts.OnHint,
-		accountEmail: strings.TrimSpace(opts.AccountEmail),
-		timeout:      timeout,
-		pollInterval: pollInterval,
-		notifyCh:     make(chan struct{}, 1),
-		abortCh:      make(chan struct{}),
-		now:          time.Now,
+		client:          opts.Client,
+		endpoint:        opts.Endpoint,
+		onAuthURL:       opts.OnAuthURL,
+		onAuthConfirmed: opts.OnAuthConfirmed,
+		onLog:           opts.OnLog,
+		onHint:          opts.OnHint,
+		accountEmail:    strings.TrimSpace(opts.AccountEmail),
+		timeout:         timeout,
+		pollInterval:    pollInterval,
+		notifyCh:        make(chan struct{}, 1),
+		abortCh:         make(chan struct{}),
+		now:             time.Now,
 	}
 }
 
@@ -242,6 +245,13 @@ func (m *ColabOneDriveMount) emitHint(text string) {
 		return
 	}
 	m.onHint(text)
+}
+
+func (m *ColabOneDriveMount) emitAuthConfirmed(ctx context.Context, interactive bool) {
+	if m.onAuthConfirmed == nil || m.isAborted(ctx) {
+		return
+	}
+	m.onAuthConfirmed(interactive)
 }
 
 func (m *ColabOneDriveMount) endpointURL(dryrun bool) string {
@@ -832,6 +842,7 @@ func (m *ColabOneDriveMount) Propagate(ctx context.Context) (bool, error) {
 			}
 			if isPropagationSuccess(status, resData) {
 				m.emitLog("云盘凭据已同步至远端实例，正在完成 DriveFS 挂载", "云盘", "info")
+				m.emitAuthConfirmed(ctx, false)
 				return true, nil
 			}
 			maybeURI, err := validateConsentURL(stringField(resData, "unauthorized_redirect_uri"))
@@ -922,6 +933,7 @@ func (m *ColabOneDriveMount) Propagate(ctx context.Context) (bool, error) {
 		if isPropagationSuccess(status, resData) {
 			m.emitHint("")
 			m.emitLog("云盘凭据已同步至远端实例，正在完成 DriveFS 挂载", "云盘", "info")
+			m.emitAuthConfirmed(ctx, true)
 			return true, nil
 		}
 

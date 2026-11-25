@@ -689,13 +689,14 @@ func newWireDriveMounterAdapter(client provider.ColabClient, endpoint string, op
 		}
 	}
 	dm := drivemount.NewColabOneDriveMount(drivemount.ColabOneDriveMountOptions{
-		Client:       client,
-		Endpoint:     endpoint,
-		OnAuthURL:    opts.OnAuthURL,
-		OnLog:        onLog,
-		OnHint:       opts.OnHint,
-		AccountEmail: opts.AccountEmail,
-		Timeout:      opts.Timeout,
+		Client:          client,
+		Endpoint:        endpoint,
+		OnAuthURL:       opts.OnAuthURL,
+		OnAuthConfirmed: opts.OnAuthConfirmed,
+		OnLog:           onLog,
+		OnHint:          opts.OnHint,
+		AccountEmail:    opts.AccountEmail,
+		Timeout:         opts.Timeout,
 	})
 	adapter := &wireDriveMounterAdapter{
 		dm:     dm,
@@ -980,13 +981,14 @@ func (w *wireControllerProviderAdapter) MountColabDriveFS(ctx context.Context, o
 		onLog = func(msg, source, level string) { opts.OnLog(msg, source, level) }
 	}
 	return w.p.MountColabDriveFS(ctx, opts.Endpoint, provider.DriveMountOptions{
-		OnAuthURL:    opts.OnAuthURL,
-		OnLog:        onLog,
-		CancelCh:     bridgeCancelEvent(opts.CancelEvent, done, &bridgeWG),
-		ConfirmCh:    bridgeRepeatEvent(opts.ConfirmEvent, done, &bridgeWG),
-		ProbeCh:      bridgeRepeatEvent(opts.ProbeEvent, done, &bridgeWG),
-		OnHint:       opts.OnHint,
-		AccountEmail: opts.AccountEmail,
+		OnAuthURL:       opts.OnAuthURL,
+		OnAuthConfirmed: opts.OnAuthConfirmed,
+		OnLog:           onLog,
+		CancelCh:        bridgeCancelEvent(opts.CancelEvent, done, &bridgeWG),
+		ConfirmCh:       bridgeRepeatEvent(opts.ConfirmEvent, done, &bridgeWG),
+		ProbeCh:         bridgeRepeatEvent(opts.ProbeEvent, done, &bridgeWG),
+		OnHint:          opts.OnHint,
+		AccountEmail:    opts.AccountEmail,
 	})
 }
 

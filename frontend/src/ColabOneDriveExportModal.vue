@@ -22,6 +22,32 @@ export function isColabOneDriveConnectOperation(
   if (op.kind && op.kind !== "drive_connect") return false;
   return /挂载\s*Google\s*云盘|DriveFS/i.test(op.title || "");
 }
+
+export type ColabOneDriveConnectStage =
+  | ""
+  | "checking"
+  | "waiting_auth"
+  | "mounting"
+  | "initializing";
+
+export function getColabOneDriveConnectStage(
+  op: ColabOneOperation | null | undefined,
+): ColabOneDriveConnectStage {
+  if (!isColabOneDriveConnectOperation(op)) return "";
+  const raw = String(op?.stage || "").trim();
+  if (
+    raw === "checking" ||
+    raw === "waiting_auth" ||
+    raw === "mounting" ||
+    raw === "initializing"
+  ) {
+    return raw;
+  }
+  const title = String(op?.title || "");
+  if (/授权已确认|初始化\s*rclone/i.test(title)) return "mounting";
+  if (/初始化\s*ColabOne_Drive/i.test(title)) return "initializing";
+  return "checking";
+}
 </script>
 
 <script setup lang="ts">
@@ -104,17 +130,52 @@ const driveConnected = computed(() => Boolean(props.state.setup.drive));
 const driveConnectOpActive = computed(() =>
   isColabOneDriveConnectOperation(props.state.operation),
 );
+const driveConnectStage = computed(() =>
+  getColabOneDriveConnectStage(props.state.operation),
+);
+const driveConnectMode = computed(() =>
+  driveConnectOpActive.value ? String(props.state.operation?.mode || "").trim() : "",
+);
+const driveAuthInteractiveConfirmed = computed(
+  () =>
+    driveConnectOpActive.value &&
+    Boolean(props.state.operation?.interactive),
+);
+const driveCancelling = computed(
+  () =>
+    driveConnectOpActive.value &&
+    Boolean(props.state.operation?.cancelling),
+);
+const canCancelDriveMount = computed(
+  () =>
+    driveConnectOpActive.value &&
+    !driveCancelling.value &&
+    driveConnectStage.value !== "initializing" &&
+    driveConnectMode.value !== "rclone",
+);
 const waitingBrowserAuth = computed(
   () =>
     gpuReady.value &&
     !driveConnected.value &&
+    !driveCancelling.value &&
     Boolean(props.state.auth_url) &&
     driveConnectOpActive.value,
+);
+const mountingDriveAfterAuth = computed(
+  () =>
+    !driveConnected.value &&
+    !waitingBrowserAuth.value &&
+    !driveCancelling.value &&
+    driveConnectOpActive.value &&
+    (driveConnectStage.value === "mounting" ||
+      driveConnectStage.value === "initializing"),
 );
 const isConnectingDrive = computed(
   () =>
     !driveConnected.value &&
     !waitingBrowserAuth.value &&
+    !mountingDriveAfterAuth.value &&
+    !driveCancelling.value &&
     (props.connecting || driveConnectOpActive.value),
 );
 const canClose = computed(() => !props.exporting);
@@ -140,8 +201,22 @@ const statusBadge = computed(() => {
   if (props.exporting) {
     return { color: "processing" as const, label: t("comfy.driveModalTagExporting") };
   }
+  if (driveCancelling.value) {
+    return { color: "default" as const, label: t("comfy.driveModalTagCancelling") };
+  }
   if (waitingBrowserAuth.value) {
     return { color: "warning" as const, label: t("comfy.driveModalTagWaitingAuth") };
+  }
+  if (mountingDriveAfterAuth.value) {
+    return {
+      color: "processing" as const,
+      label: driveAuthInteractiveConfirmed.value
+        ? t("comfy.driveModalTagMounting")
+        : t("comfy.driveModalTagMountingDirect"),
+    };
+  }
+  if (isConnectingDrive.value) {
+    return { color: "processing" as const, label: t("comfy.driveModalTagConnecting") };
   }
   if (driveConnected.value) {
     return { color: "success" as const, label: t("comfy.driveModalTagConnected") };
@@ -150,6 +225,33 @@ const statusBadge = computed(() => {
     return { color: "processing" as const, label: t("comfy.driveModalTagHeadlessReady") };
   }
   return { color: "default" as const, label: t("comfy.driveModalTagNotConnected") };
+});
+
+const mountingCardTitle = computed(() => {
+  if (driveConnectStage.value === "initializing") {
+    return t("comfy.driveModalInitializingTitle");
+  }
+  if (driveConnectMode.value === "rclone" && props.state.operation?.title) {
+    return tb(props.state.operation.title);
+  }
+  if (driveAuthInteractiveConfirmed.value) {
+    return t("comfy.driveModalMountingTitle");
+  }
+  return t("comfy.driveModalMountingDirectTitle");
+});
+
+const mountingCardDesc = computed(() => {
+  if (driveConnectMode.value === "rclone") {
+    return t("comfy.driveModalMountingRcloneDesc");
+  }
+  if (driveAuthInteractiveConfirmed.value) {
+    return props.targetOutput
+      ? t("comfy.driveModalMountingExportDesc")
+      : t("comfy.driveModalMountingDesc");
+  }
+  return props.targetOutput
+    ? t("comfy.driveModalMountingDirectExportDesc")
+    : t("comfy.driveModalMountingDirectDesc");
 });
 
 function formatFreeSpace(bytes?: number | null): string {
@@ -328,6 +430,35 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
             />
           </template>
         </AAlert>
+      </div>
+
+      <!-- STATE 3a: Cancelling Drive Mount -->
+      <div
+        v-else-if="driveCancelling"
+        class="co-drive-state-card"
+        role="status"
+        aria-busy="true"
+      >
+        <div class="co-drive-state-head">
+          <ASpin size="small" />
+          <strong>{{ t("comfy.driveModalCancellingTitle") }}</strong>
+        </div>
+      </div>
+
+      <!-- STATE 3b: Mounting DriveFS / rclone / Initializing Workspace -->
+      <div
+        v-else-if="mountingDriveAfterAuth"
+        class="co-drive-state-card is-active"
+        role="status"
+        aria-busy="true"
+      >
+        <div class="co-drive-state-head">
+          <ASpin size="small" />
+          <strong>{{ mountingCardTitle }}</strong>
+        </div>
+        <p class="co-drive-state-desc">
+          {{ mountingCardDesc }}
+        </p>
       </div>
 
       <!-- STATE 4: Connecting Drive -->
@@ -537,6 +668,27 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
             @click="emit('confirm-auth')"
           >
             {{ t("device.driveConfirmAuthorized") }}
+          </AButton>
+        </template>
+
+        <template v-else-if="driveCancelling">
+          <AButton @click="requestClose">
+            {{ t("common.close") }}
+          </AButton>
+          <AButton loading disabled>
+            {{ t("comfy.driveModalCancellingBtn") }}
+          </AButton>
+        </template>
+
+        <template v-else-if="mountingDriveAfterAuth">
+          <AButton v-if="canCancelDriveMount" @click="emit('cancel-auth')">
+            {{ t("device.driveCancelMount") }}
+          </AButton>
+          <AButton @click="requestClose">
+            {{ t("comfy.driveModalBackgroundBtn") }}
+          </AButton>
+          <AButton type="primary" loading>
+            {{ t("comfy.driveModalMountingBtn") }}
           </AButton>
         </template>
 

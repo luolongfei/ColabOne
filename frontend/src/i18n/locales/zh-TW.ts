@@ -500,6 +500,8 @@ export const zhTWMessages: ColabOneMessages = {
   "device.mountDriveNow": "立即掛載雲端硬碟",
   "device.driveWaitingBrowserConfirm":
     "請在瀏覽器中勾選全部雲端硬碟權限並點擊允許；完成後回到用戶端將自動繼續掛載，或點擊「我已完成授權」立即核驗。",
+  "device.driveMountingAfterAuth":
+    "瀏覽器授權已確認，正在遠端掛載 Google 雲端硬碟（通常需要 15–40 秒，模型高速下載期間會稍慢），完成後將自動生效。",
   "device.driveConfirmAuthorized": "我已完成授權",
   "device.driveReopenAuth": "重新開啟授權頁",
   "device.driveCancelMount": "取消掛載",
@@ -1113,6 +1115,7 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.outputsDriveWaitingPill": "待確認雲端硬碟授權",
   "comfy.outputsDriveConfigureNow": "設定雲端硬碟",
   "comfy.outputsDriveContinueAuth": "檢視授權進度",
+  "comfy.outputsDriveViewProgress": "檢視進度",
   "comfy.driveOpenGoogleDrive": "開啟 Google 雲端硬碟",
   "comfy.driveOpenGoogleDriveShort": "開啟雲端硬碟",
   "comfy.loadingOutput": "正在讀取遠端作品…",
@@ -1207,6 +1210,10 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.driveModalTagExported": "已匯出",
   "comfy.driveModalTagExporting": "正在匯出",
   "comfy.driveModalTagWaitingAuth": "等待瀏覽器授權",
+  "comfy.driveModalTagConnecting": "正在連線",
+  "comfy.driveModalTagMounting": "授權已確認 · 掛載中",
+  "comfy.driveModalTagMountingDirect": "正在掛載",
+  "comfy.driveModalTagCancelling": "正在取消",
   "comfy.driveModalTagConnected": "已連線",
   "comfy.driveModalTagHeadlessReady": "免彈窗就緒",
   "comfy.driveModalTagNotConnected": "未設定",
@@ -1227,8 +1234,25 @@ export const zhTWMessages: ColabOneMessages = {
     "返回本視窗點選下方「我已完成授權」（切回視窗時也會自動偵測）即可完成連線",
   "comfy.driveModalConnectingTitle": "正在連線並掛載 Google 雲端硬碟…",
   "comfy.driveModalConnectingDesc":
-    "若瀏覽器彈出 Google 授權頁面，請登入相同帳戶並點選允許。",
+    "正在檢查雲端硬碟掛載方式與授權狀態；如需確認權限，將自動在瀏覽器中開啟 Google 授權頁面。",
   "comfy.driveModalConnectingBtn": "正在連線…",
+  "comfy.driveModalMountingTitle": "授權已確認，正在遠端掛載 Google 雲端硬碟…",
+  "comfy.driveModalMountingDirectTitle": "正在遠端掛載 Google 雲端硬碟…",
+  "comfy.driveModalInitializingTitle": "雲端硬碟已掛載，正在初始化 ColabOne_Drive 工作區…",
+  "comfy.driveModalMountingDesc":
+    "Google 雲端硬碟授權已生效，遠端執行個體正在啟動 DriveFS 並完成目錄掛載，通常需要 15–40 秒（若正在高速下載模型會稍慢）。你可以點選「背景繼續」關閉此視窗，掛載會在背景自動完成。",
+  "comfy.driveModalMountingExportDesc":
+    "Google 雲端硬碟授權已生效，遠端執行個體正在啟動 DriveFS 並完成目錄掛載，通常需要 15–40 秒（若正在高速下載模型會稍慢）。保持此視窗開啟，掛載完成後將自動開始匯出作品；也可先點選「背景繼續」讓掛載在背景完成。",
+  "comfy.driveModalMountingDirectDesc":
+    "遠端執行個體正在啟動 DriveFS 並完成目錄掛載，通常需要 15–40 秒（若正在高速下載模型會稍慢）。你可以點選「背景繼續」關閉此視窗，掛載會在背景自動完成。",
+  "comfy.driveModalMountingDirectExportDesc":
+    "遠端執行個體正在啟動 DriveFS 並完成目錄掛載，通常需要 15–40 秒（若正在高速下載模型會稍慢）。保持此視窗開啟，掛載完成後將自動開始匯出作品；也可先點選「背景繼續」讓掛載在背景完成。",
+  "comfy.driveModalMountingRcloneDesc":
+    "正在使用無感憑證掛載 Google 雲端硬碟，通常幾秒即可就緒。你可以點選「背景繼續」關閉此視窗，完成後將自動生效。",
+  "comfy.driveModalMountingBtn": "正在遠端掛載…",
+  "comfy.driveModalBackgroundBtn": "背景繼續",
+  "comfy.driveModalCancellingTitle": "正在取消 Google 雲端硬碟掛載…",
+  "comfy.driveModalCancellingBtn": "正在取消…",
   "comfy.driveModalUpgradeTitle": "需要熱更新遠端服務以啟用作品直傳",
   "comfy.driveModalUpgradeDesc":
     "Google 雲端硬碟已連線成功！目前遠端服務為舊版本，點選下方按鈕熱更新後即可直接將作品匯出至 outputs 目錄（不會釋放 GPU，已產生的作品會完整保留）。",

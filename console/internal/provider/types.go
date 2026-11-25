@@ -280,14 +280,15 @@ type RetryStateFn func(state map[string]any)
 
 // DriveMountOptions configures Google Colab native DriveFS (`dfs_ephemeral`) mounting.
 type DriveMountOptions struct {
-	OnAuthURL    func(url string)
-	OnLog        LogFn
-	CancelCh     <-chan struct{}
-	ConfirmCh    <-chan struct{}
-	ProbeCh      <-chan struct{}
-	OnHint       func(hint string)
-	AccountEmail string
-	Timeout      time.Duration
+	OnAuthURL       func(url string)
+	OnAuthConfirmed func(interactive bool)
+	OnLog           LogFn
+	CancelCh        <-chan struct{}
+	ConfirmCh       <-chan struct{}
+	ProbeCh         <-chan struct{}
+	OnHint          func(hint string)
+	AccountEmail    string
+	Timeout         time.Duration
 }
 
 // DriveMounter handles Colab credentials-propagation for native DriveFS mounting.

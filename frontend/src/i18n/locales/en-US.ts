@@ -515,6 +515,8 @@ export const enUSMessages: ColabOneMessages = {
   "device.mountDriveNow": "Mount Drive",
   "device.driveWaitingBrowserConfirm":
     "Check all Drive permissions and click Allow in your browser, then return here or click \"I've Authorized\" to finish mounting.",
+  "device.driveMountingAfterAuth":
+    "Browser authorization confirmed — mounting Google Drive on the remote VM (usually 15–40 seconds, or longer during heavy model downloads). It will activate automatically once ready.",
   "device.driveConfirmAuthorized": "I've Authorized",
   "device.driveReopenAuth": "Reopen Consent Page",
   "device.driveCancelMount": "Cancel",
@@ -1152,6 +1154,7 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.outputsDriveWaitingPill": "Authorize Drive",
   "comfy.outputsDriveConfigureNow": "Set Up Drive",
   "comfy.outputsDriveContinueAuth": "View Auth Progress",
+  "comfy.outputsDriveViewProgress": "View Progress",
   "comfy.driveOpenGoogleDrive": "Open Google Drive",
   "comfy.driveOpenGoogleDriveShort": "Open Drive",
   "comfy.loadingOutput": "Loading remote output…",
@@ -1251,6 +1254,10 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.driveModalTagExported": "Exported",
   "comfy.driveModalTagExporting": "Exporting",
   "comfy.driveModalTagWaitingAuth": "Awaiting Browser Auth",
+  "comfy.driveModalTagConnecting": "Connecting",
+  "comfy.driveModalTagMounting": "Authorized · Mounting",
+  "comfy.driveModalTagMountingDirect": "Mounting",
+  "comfy.driveModalTagCancelling": "Cancelling",
   "comfy.driveModalTagConnected": "Connected",
   "comfy.driveModalTagHeadlessReady": "Zero-Prompt Ready",
   "comfy.driveModalTagNotConnected": "Not Connected",
@@ -1271,8 +1278,25 @@ export const enUSMessages: ColabOneMessages = {
     "Return here and click \"I've Authorized\" (auto-detected when you switch back) to finish connecting",
   "comfy.driveModalConnectingTitle": "Connecting and mounting Google Drive…",
   "comfy.driveModalConnectingDesc":
-    "If a Google authorization tab opens in your browser, select the same account and click Allow.",
+    "Checking Drive mount mode and authorization; if browser confirmation is needed, Google's consent page will open automatically.",
   "comfy.driveModalConnectingBtn": "Connecting…",
+  "comfy.driveModalMountingTitle": "Authorization confirmed — mounting Google Drive…",
+  "comfy.driveModalMountingDirectTitle": "Mounting Google Drive on remote VM…",
+  "comfy.driveModalInitializingTitle": "Drive mounted — initializing ColabOne_Drive workspace…",
+  "comfy.driveModalMountingDesc":
+    "Google Drive authorization succeeded. The remote VM is starting DriveFS and mounting your folder, which usually takes 15–40 seconds (longer during heavy model downloads). You can click \"Continue in Background\" to close this window while mounting finishes automatically.",
+  "comfy.driveModalMountingExportDesc":
+    "Google Drive authorization succeeded. The remote VM is starting DriveFS and mounting your folder (usually 15–40 seconds, or longer during heavy model downloads). Keep this window open to export automatically once mounted, or click \"Continue in Background\" to let mounting finish.",
+  "comfy.driveModalMountingDirectDesc":
+    "The remote VM is starting DriveFS and mounting your folder, which usually takes 15–40 seconds (longer during heavy model downloads). You can click \"Continue in Background\" to close this window while mounting finishes automatically.",
+  "comfy.driveModalMountingDirectExportDesc":
+    "The remote VM is starting DriveFS and mounting your folder (usually 15–40 seconds, or longer during heavy model downloads). Keep this window open to export automatically once mounted, or click \"Continue in Background\" to let mounting finish.",
+  "comfy.driveModalMountingRcloneDesc":
+    "Mounting Google Drive with your zero-prompt credentials; this usually finishes within a few seconds. You can click \"Continue in Background\" to close this window.",
+  "comfy.driveModalMountingBtn": "Mounting…",
+  "comfy.driveModalBackgroundBtn": "Continue in Background",
+  "comfy.driveModalCancellingTitle": "Cancelling Google Drive mount…",
+  "comfy.driveModalCancellingBtn": "Cancelling…",
   "comfy.driveModalUpgradeTitle": "Hot-update remote service to enable direct Drive export",
   "comfy.driveModalUpgradeDesc":
     "Google Drive is connected! Your remote service is an older revision — hot-update once to enable direct export to outputs (your GPU stays running and all generated outputs are preserved).",

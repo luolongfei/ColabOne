@@ -4710,6 +4710,22 @@ onUnmounted(() => {
                           t("device.driveWaitingBrowserConfirm")
                         }}</template>
                       </template>
+                      <template
+                        v-else-if="
+                          !state.setup.drive &&
+                          state.operation?.kind === 'drive_connect' &&
+                          (state.operation?.stage === 'mounting' ||
+                            state.operation?.stage === 'initializing')
+                        "
+                      >
+                        {{
+                          state.operation?.interactive
+                            ? t("device.driveMountingAfterAuth")
+                            : state.operation?.title
+                              ? tb(state.operation.title)
+                              : t("comfy.driveModalMountingDirectTitle")
+                        }}
+                      </template>
                       <template v-else-if="state.setup.drive">
                         <ColabOnePrivacyText
                           v-if="state.runtime.drive?.error"
@@ -4763,6 +4779,25 @@ onUnmounted(() => {
                         >
                           {{ t("device.driveReopenAuth") }}
                         </AButton>
+                        <AButton
+                          size="small"
+                          :disabled="busy"
+                          @click="act('drive.cancel')"
+                        >
+                          {{ t("device.driveCancelMount") }}
+                        </AButton>
+                      </ASpace>
+                    </template>
+                    <template
+                      v-else-if="
+                        !state.setup.drive &&
+                        state.operation?.kind === 'drive_connect' &&
+                        state.operation?.stage === 'mounting' &&
+                        state.operation?.mode !== 'rclone' &&
+                        !state.operation?.cancelling
+                      "
+                    >
+                      <ASpace :size="6" wrap>
                         <AButton
                           size="small"
                           :disabled="busy"
@@ -5503,7 +5538,16 @@ onUnmounted(() => {
                               {{ t("device.driveReopenAuth") }}
                             </AButton>
                             <AButton
-                              v-if="ready && state.auth_url && state.operation && !state.setup.drive"
+                              v-if="
+                                ready &&
+                                state.operation &&
+                                !state.setup.drive &&
+                                !state.operation.cancelling &&
+                                (Boolean(state.auth_url) ||
+                                  (state.operation.kind === 'drive_connect' &&
+                                    state.operation.stage === 'mounting' &&
+                                    state.operation.mode !== 'rclone'))
+                              "
                               :disabled="busy"
                               @click="act('drive.cancel')"
                             >

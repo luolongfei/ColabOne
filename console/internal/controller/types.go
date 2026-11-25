@@ -456,14 +456,15 @@ type ColabOneStartOptions struct {
 
 // ColabOneDriveMountOptions configures Colab native DriveFS mounting.
 type ColabOneDriveMountOptions struct {
-	Endpoint     string
-	AccountEmail string
-	OnAuthURL    func(url string)
-	OnHint       func(hint string)
-	OnLog        LogFunc
-	CancelEvent  *ColabOneEvent
-	ConfirmEvent *ColabOneEvent
-	ProbeEvent   *ColabOneEvent
+	Endpoint        string
+	AccountEmail    string
+	OnAuthURL       func(url string)
+	OnAuthConfirmed func(interactive bool)
+	OnHint          func(hint string)
+	OnLog           LogFunc
+	CancelEvent     *ColabOneEvent
+	ConfirmEvent    *ColabOneEvent
+	ProbeEvent      *ColabOneEvent
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +634,7 @@ type ColabOneControllerConfig struct {
 	Shortcuts          ShortcutManager
 	ServiceBundler     ServiceBundler
 	Location           LocationInferer
+	OnFocusWindow      func()
 	MonitorInterval    time.Duration
 	ObserverInterval   time.Duration
 	CanvasWaitInterval time.Duration

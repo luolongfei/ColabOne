@@ -57,9 +57,10 @@ type ColabOneController struct {
 	comfy       ComfyValidator
 	publicAPI   PublicAPIValidator
 	assignProxy AssignProxyHelper
-	shortcuts   ShortcutManager
-	bundler     ServiceBundler
-	location    LocationInferer
+	shortcuts     ShortcutManager
+	bundler       ServiceBundler
+	location      LocationInferer
+	onFocusWindow func()
 
 	monitorInterval    time.Duration
 	observerInterval   time.Duration
@@ -217,6 +218,7 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		shortcuts:              cfg.Shortcuts,
 		bundler:                bundler,
 		location:               cfg.Location,
+		onFocusWindow:          cfg.OnFocusWindow,
 		monitorInterval:        monInterval,
 		observerInterval:       obsInterval,
 		canvasWaitInterval:     canvasWait,
@@ -2196,6 +2198,23 @@ func isQuotaProjectError(err error) bool {
 	return false
 }
 
+// SetFocusWindowHandler registers an optional desktop UI callback invoked to
+// bring the main window back to the foreground after interactive browser auth.
+func (c *ColabOneController) SetFocusWindowHandler(fn func()) {
+	c.mu.Lock()
+	c.onFocusWindow = fn
+	c.mu.Unlock()
+}
+
+func (c *ColabOneController) focusWindow() {
+	c.mu.Lock()
+	fn := c.onFocusWindow
+	c.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
 func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly bool) (map[string]any, error) {
 	if c.provider == nil {
 		return nil, nil
@@ -2211,9 +2230,12 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 	c.driveProbe.Clear()
 	c.Update(map[string]any{
 		"operation": map[string]any{
-			"title":   "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
-			"running": true,
-			"kind":    "drive_connect",
+			"title":       "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
+			"running":     true,
+			"kind":        "drive_connect",
+			"stage":       "checking",
+			"mode":        "colab_drivefs",
+			"interactive": false,
 		},
 		"auth_url":        "",
 		"drive_auth_hint": "",
@@ -2229,9 +2251,55 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 		c.mu.Unlock()
 	}
 
+	var interactiveAuth atomic.Bool
 	mountRes, err := c.provider.MountColabDriveFS(ctx, ColabOneDriveMountOptions{
 		AccountEmail: accountEmail,
-		OnAuthURL:    func(u string) { c.Update(map[string]any{"auth_url": u}) },
+		OnAuthURL: func(u string) {
+			if u != "" {
+				if c.driveCancel.IsSet() || (ctx != nil && ctx.Err() != nil) {
+					return
+				}
+				interactiveAuth.Store(true)
+				c.Update(map[string]any{
+					"auth_url": u,
+					"operation": map[string]any{
+						"title":       "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
+						"running":     true,
+						"kind":        "drive_connect",
+						"stage":       "waiting_auth",
+						"mode":        "colab_drivefs",
+						"interactive": true,
+					},
+				})
+				return
+			}
+			c.Update(map[string]any{"auth_url": ""})
+		},
+		OnAuthConfirmed: func(interactive bool) {
+			if c.driveCancel.IsSet() || (ctx != nil && ctx.Err() != nil) {
+				return
+			}
+			interactiveAuth.Store(interactive)
+			title := "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)"
+			if interactive {
+				title = "授权已确认，正在远端挂载 Google 云盘 (ColabOne_Drive)"
+			}
+			c.Update(map[string]any{
+				"operation": map[string]any{
+					"title":       title,
+					"running":     true,
+					"kind":        "drive_connect",
+					"stage":       "mounting",
+					"mode":        "colab_drivefs",
+					"interactive": interactive,
+				},
+				"auth_url":        "",
+				"drive_auth_hint": "",
+			})
+			if interactive && !silentOnly {
+				c.focusWindow()
+			}
+		},
 		OnHint:       func(h string) { c.Update(map[string]any{"drive_auth_hint": h}) },
 		OnLog:        c.logFunc(),
 		CancelEvent:  c.driveCancel,
@@ -2245,9 +2313,24 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 		}
 		return nil, err
 	}
+	if c.driveCancel.IsSet() {
+		return nil, &ColabOneOperationCancelled{Message: "已取消 Google 云盘挂载", Source: "云盘"}
+	}
 	if mountRes == nil {
 		return nil, nil
 	}
+	c.Update(map[string]any{
+		"operation": map[string]any{
+			"title":       "正在初始化 ColabOne_Drive 工作区并恢复持久化数据",
+			"running":     true,
+			"kind":        "drive_connect",
+			"stage":       "initializing",
+			"mode":        "colab_drivefs",
+			"interactive": interactiveAuth.Load(),
+		},
+		"auth_url":        "",
+		"drive_auth_hint": "",
+	})
 	c.log("正在初始化 ColabOne_Drive 工作区并恢复持久化数据", "云盘", "info")
 	res, err := c.remoteLong(ctx, "POST", "drive/connect", nil, 180*time.Second)
 	if err != nil {
@@ -2269,6 +2352,16 @@ func (c *ColabOneController) ConnectDrive(ctx context.Context) (map[string]any, 
 		err := c.provider.UploadDriveConfig(ctx, rcloneConf, "")
 		var info map[string]any
 		if err == nil {
+			c.Update(map[string]any{
+				"operation": map[string]any{
+					"title":       "正在远端初始化 rclone 并挂载 ColabOne_Drive",
+					"running":     true,
+					"kind":        "drive_connect",
+					"stage":       "mounting",
+					"mode":        "rclone",
+					"interactive": false,
+				},
+			})
 			c.log("正在远端初始化 rclone 并挂载 ColabOne_Drive", "云盘", "info")
 			var raw any
 			raw, err = c.remoteLong(ctx, "POST", "drive/connect", nil, 180*time.Second)

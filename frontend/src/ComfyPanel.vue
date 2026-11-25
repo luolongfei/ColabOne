@@ -20,6 +20,7 @@ import {
 } from "ant-design-vue";
 import ColabOneDriveExportModal, {
   formatColabOneDrivePath,
+  getColabOneDriveConnectStage,
   isColabOneDriveConnectOperation,
   type ColabOneDriveExportResult,
 } from "./ColabOneDriveExportModal.vue";
@@ -4584,9 +4585,17 @@ const driveWaitingBrowserAuth = computed(
   () =>
     gpuReady.value &&
     !props.state.setup.drive &&
+    !props.state.operation?.cancelling &&
     Boolean(props.state.auth_url) &&
     isColabOneDriveConnectOperation(props.state.operation),
 );
+const driveMountingInProgress = computed(() => {
+  if (!gpuReady.value || props.state.setup.drive || driveWaitingBrowserAuth.value) {
+    return false;
+  }
+  const stage = getColabOneDriveConnectStage(props.state.operation);
+  return stage === "mounting" || stage === "initializing";
+});
 const needsUpgradeForDriveExport = computed(() => {
   const caps = props.state.runtime.capabilities;
   return Boolean(
@@ -7334,6 +7343,20 @@ onUnmounted(() => {
           <template #icon><PhCloud :size="14" weight="duotone" /></template>
           {{ t("comfy.outputsDriveWaitingPill") }}
         </AButton>
+        <AButton
+          v-else-if="driveMountingInProgress"
+          size="small"
+          loading
+          class="co-comfy-outputs-drive-pill is-active"
+          data-testid="comfy-outputs-drive-pill"
+          @click="openDriveSetupModal(null, false)"
+        >
+          {{
+            state.operation?.cancelling
+              ? t("comfy.driveModalCancellingBtn")
+              : t("comfy.driveModalMountingBtn")
+          }}
+        </AButton>
         <ColabOneTooltip
           v-else-if="state.setup.drive"
           :title="
@@ -7386,6 +7409,7 @@ onUnmounted(() => {
           :class="{
             'is-connected': state.setup.drive,
             'is-waiting': driveWaitingBrowserAuth,
+            'is-active': driveMountingInProgress,
           }"
           data-testid="comfy-outputs-storage-bar"
         >
@@ -7407,9 +7431,17 @@ onUnmounted(() => {
             {{
               driveWaitingBrowserAuth
                 ? t("comfy.driveWaitingHint")
-                : state.setup.drive
-                  ? t("comfy.drivePersistHint")
-                  : t("comfy.localExportHint")
+                : driveMountingInProgress
+                  ? state.operation?.cancelling
+                    ? t("comfy.driveModalCancellingTitle")
+                    : state.operation?.interactive
+                      ? t("device.driveMountingAfterAuth")
+                      : state.operation?.title
+                        ? tb(state.operation.title)
+                        : t("comfy.driveModalMountingDirectTitle")
+                  : state.setup.drive
+                    ? t("comfy.drivePersistHint")
+                    : t("comfy.localExportHint")
             }}
           </span>
           <AButton
@@ -7432,7 +7464,9 @@ onUnmounted(() => {
             {{
               driveWaitingBrowserAuth
                 ? t("comfy.outputsDriveContinueAuth")
-                : t("comfy.outputsDriveConfigureNow")
+                : driveMountingInProgress
+                  ? t("comfy.outputsDriveViewProgress")
+                  : t("comfy.outputsDriveConfigureNow")
             }}
           </AButton>
         </div>
@@ -9347,6 +9381,12 @@ onUnmounted(() => {
   border-color: var(--co-warning-border);
 }
 
+.co-comfy-outputs-drive-pill.is-active {
+  color: var(--co-accent);
+  background: var(--co-selected);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
 .co-comfy-outputs-storage-bar {
   display: flex;
   align-items: center;
@@ -9371,6 +9411,12 @@ onUnmounted(() => {
   background: var(--co-warning-bg);
   border-color: var(--co-warning-border);
   color: var(--co-warning-text);
+}
+
+.co-comfy-outputs-storage-bar.is-active {
+  background: var(--co-selected);
+  border-color: rgba(59, 130, 246, 0.28);
+  color: var(--co-text);
 }
 
 .co-comfy-outputs-storage-icon {

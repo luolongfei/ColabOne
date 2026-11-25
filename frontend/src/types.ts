@@ -500,6 +500,9 @@ export interface ColabOneOperation {
   title: string;
   running: boolean;
   kind?: string;
+  stage?: string;
+  mode?: string;
+  interactive?: boolean;
   cancellable?: boolean;
   cancelling?: boolean;
   waiting_retry?: boolean;

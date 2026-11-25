@@ -499,6 +499,8 @@ export const zhCNMessages = {
   "device.mountDriveNow": "立即挂载云盘",
   "device.driveWaitingBrowserConfirm":
     "请在浏览器中勾选全部云盘权限并点击允许；完成后回到客户端将自动继续挂载，或点击「我已完成授权」立即核验。",
+  "device.driveMountingAfterAuth":
+    "浏览器授权已确认，正在远端挂载 Google 云盘（通常需要 15–40 秒，模型高速下载期间会稍慢），完成后将自动生效。",
   "device.driveConfirmAuthorized": "我已完成授权",
   "device.driveReopenAuth": "重新打开授权页",
   "device.driveCancelMount": "取消挂载",
@@ -1114,6 +1116,7 @@ export const zhCNMessages = {
   "comfy.outputsDriveWaitingPill": "待确认云盘授权",
   "comfy.outputsDriveConfigureNow": "配置云盘",
   "comfy.outputsDriveContinueAuth": "查看授权进度",
+  "comfy.outputsDriveViewProgress": "查看进度",
   "comfy.driveOpenGoogleDrive": "打开 Google 云盘",
   "comfy.driveOpenGoogleDriveShort": "打开云盘",
   "comfy.loadingOutput": "正在读取远端作品…",
@@ -1208,6 +1211,10 @@ export const zhCNMessages = {
   "comfy.driveModalTagExported": "已导出",
   "comfy.driveModalTagExporting": "正在导出",
   "comfy.driveModalTagWaitingAuth": "等待浏览器授权",
+  "comfy.driveModalTagConnecting": "正在连接",
+  "comfy.driveModalTagMounting": "授权已确认 · 挂载中",
+  "comfy.driveModalTagMountingDirect": "正在挂载",
+  "comfy.driveModalTagCancelling": "正在取消",
   "comfy.driveModalTagConnected": "已连接",
   "comfy.driveModalTagHeadlessReady": "免弹窗就绪",
   "comfy.driveModalTagNotConnected": "未配置",
@@ -1228,8 +1235,25 @@ export const zhCNMessages = {
     "返回本窗口点击下方「我已完成授权」（切回窗口时也会自动检测）即可完成连接",
   "comfy.driveModalConnectingTitle": "正在连接并挂载 Google 云盘…",
   "comfy.driveModalConnectingDesc":
-    "如浏览器弹出 Google 授权页面，请登录同一账号并点击允许。",
+    "正在检查云盘挂载方式与授权状态；如需确认权限，将自动在浏览器中打开 Google 授权页面。",
   "comfy.driveModalConnectingBtn": "正在连接…",
+  "comfy.driveModalMountingTitle": "授权已确认，正在远端挂载 Google 云盘…",
+  "comfy.driveModalMountingDirectTitle": "正在远端挂载 Google 云盘…",
+  "comfy.driveModalInitializingTitle": "云盘已挂载，正在初始化 ColabOne_Drive 工作区…",
+  "comfy.driveModalMountingDesc":
+    "Google 云盘授权已生效，远端实例正在启动 DriveFS 并完成目录挂载，通常需要 15–40 秒（若正在高速下载模型会稍慢）。你可以点击「后台继续」关闭此窗口，挂载会在后台自动完成。",
+  "comfy.driveModalMountingExportDesc":
+    "Google 云盘授权已生效，远端实例正在启动 DriveFS 并完成目录挂载，通常需要 15–40 秒（若正在高速下载模型会稍慢）。保持此窗口打开，挂载完成后将自动开始导出作品；也可先点击「后台继续」让挂载在后台完成。",
+  "comfy.driveModalMountingDirectDesc":
+    "远端实例正在启动 DriveFS 并完成目录挂载，通常需要 15–40 秒（若正在高速下载模型会稍慢）。你可以点击「后台继续」关闭此窗口，挂载会在后台自动完成。",
+  "comfy.driveModalMountingDirectExportDesc":
+    "远端实例正在启动 DriveFS 并完成目录挂载，通常需要 15–40 秒（若正在高速下载模型会稍慢）。保持此窗口打开，挂载完成后将自动开始导出作品；也可先点击「后台继续」让挂载在后台完成。",
+  "comfy.driveModalMountingRcloneDesc":
+    "正在使用无感凭据挂载 Google 云盘，通常几秒即可就绪。你可以点击「后台继续」关闭此窗口，完成后将自动生效。",
+  "comfy.driveModalMountingBtn": "正在远端挂载…",
+  "comfy.driveModalBackgroundBtn": "后台继续",
+  "comfy.driveModalCancellingTitle": "正在取消 Google 云盘挂载…",
+  "comfy.driveModalCancellingBtn": "正在取消…",
   "comfy.driveModalUpgradeTitle": "需要热更新远端服务以启用作品直传",
   "comfy.driveModalUpgradeDesc":
     "Google 云盘已连接成功！当前远端服务为旧版本，点击下方按钮热更新后即可直接将作品导出至 outputs 目录（不会释放 GPU，已生成的作品会完整保留）。",

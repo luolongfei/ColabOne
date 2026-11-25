@@ -74,8 +74,8 @@ func TestColabOneDriveMountConstantsAndDefaults(t *testing.T) {
 	if m.timeout != 240*time.Second {
 		t.Fatalf("expected default timeout 240s, got %v", m.timeout)
 	}
-	if m.pollInterval != 2500*time.Millisecond {
-		t.Fatalf("expected default pollInterval 2.5s, got %v", m.pollInterval)
+	if m.pollInterval != 1200*time.Millisecond {
+		t.Fatalf("expected default pollInterval 1.2s, got %v", m.pollInterval)
 	}
 	if m.accountEmail != "alice@example.com" {
 		t.Fatalf("expected trimmed email, got %q", m.accountEmail)
@@ -1652,6 +1652,110 @@ func TestPropagatePhase2CancelSuppressesOnAuthURL(t *testing.T) {
 		}
 		if phase2LogCount.Load() != 0 {
 			t.Fatalf("expected 0 Phase-2 logs when canceled before Phase 2, got %d", phase2LogCount.Load())
+		}
+	})
+}
+
+func TestPropagateOnAuthConfirmedInteractiveAndFastPath(t *testing.T) {
+	// 1) Phase 1b (already authorized fast path): OnAuthConfirmed(false).
+	t.Run("FastPathNonInteractive", func(t *testing.T) {
+		var confirmed []bool
+		m := NewColabOneDriveMount(ColabOneDriveMountOptions{
+			Client: &funcAuthorizedClient{
+				domain: "https://colab.research.google.com",
+				do: func(ctx context.Context, req *http.Request) (*http.Response, error) {
+					if req.Method == http.MethodGet {
+						return makeResponse(http.StatusOK, `{"token":"xsrf-fast"}`), nil
+					}
+					return makeResponse(http.StatusOK, `{"success":true}`), nil
+				},
+			},
+			Endpoint:     "ep-fast",
+			PollInterval: 50 * time.Millisecond,
+			OnAuthConfirmed: func(interactive bool) {
+				confirmed = append(confirmed, interactive)
+			},
+		})
+		ok, err := m.Propagate(context.Background())
+		if !ok || err != nil {
+			t.Fatalf("expected fast path success, got ok=%v err=%v", ok, err)
+		}
+		if len(confirmed) != 1 || confirmed[0] != false {
+			t.Fatalf("expected OnAuthConfirmed(false) once, got %v", confirmed)
+		}
+	})
+
+	// 2) Phase 2 (browser consent path): OnAuthConfirmed(true).
+	t.Run("BrowserConsentInteractive", func(t *testing.T) {
+		var confirmed []bool
+		var authURLs []string
+		postCalls := 0
+		m := NewColabOneDriveMount(ColabOneDriveMountOptions{
+			Client: &funcAuthorizedClient{
+				domain: "https://colab.research.google.com",
+				do: func(ctx context.Context, req *http.Request) (*http.Response, error) {
+					if req.Method == http.MethodGet {
+						return makeResponse(http.StatusOK, `{"token":"xsrf-p2"}`), nil
+					}
+					postCalls++
+					if postCalls == 1 {
+						body, _ := json.Marshal(map[string]any{
+							"success":                   false,
+							"unauthorized_redirect_uri": testConsentURI,
+						})
+						return makeResponse(http.StatusOK, string(body)), nil
+					}
+					return makeResponse(http.StatusOK, `{"success":true}`), nil
+				},
+			},
+			Endpoint:     "ep-interactive",
+			PollInterval: 50 * time.Millisecond,
+			OnAuthURL: func(u string) {
+				authURLs = append(authURLs, u)
+			},
+			OnAuthConfirmed: func(interactive bool) {
+				confirmed = append(confirmed, interactive)
+			},
+		})
+		ok, err := m.Propagate(context.Background())
+		if !ok || err != nil {
+			t.Fatalf("expected interactive propagation success, got ok=%v err=%v", ok, err)
+		}
+		if len(confirmed) != 1 || confirmed[0] != true {
+			t.Fatalf("expected OnAuthConfirmed(true) once, got %v", confirmed)
+		}
+		if len(authURLs) < 2 || authURLs[0] != testConsentURI || authURLs[len(authURLs)-1] != "" {
+			t.Fatalf("unexpected OnAuthURL sequence: %#v", authURLs)
+		}
+	})
+
+	// 3) Cancelled during propagation must NOT invoke OnAuthConfirmed.
+	t.Run("CancelledSkipsOnAuthConfirmed", func(t *testing.T) {
+		var confirmed atomic.Int32
+		var m *ColabOneDriveMount
+		m = NewColabOneDriveMount(ColabOneDriveMountOptions{
+			Client: &funcAuthorizedClient{
+				domain: "https://colab.research.google.com",
+				do: func(ctx context.Context, req *http.Request) (*http.Response, error) {
+					if req.Method == http.MethodGet {
+						return makeResponse(http.StatusOK, `{"token":"xsrf-cancel"}`), nil
+					}
+					m.SignalCancel()
+					return makeResponse(http.StatusOK, `{"success":true}`), nil
+				},
+			},
+			Endpoint:     "ep-cancel-confirm",
+			PollInterval: 50 * time.Millisecond,
+			OnAuthConfirmed: func(interactive bool) {
+				confirmed.Add(1)
+			},
+		})
+		ok, err := m.Propagate(context.Background())
+		if ok || err == nil || !strings.Contains(err.Error(), "已取消 Google 云盘挂载") {
+			t.Fatalf("expected cancel error, got ok=%v err=%v", ok, err)
+		}
+		if confirmed.Load() != 0 {
+			t.Fatalf("expected 0 OnAuthConfirmed calls after cancel, got %d", confirmed.Load())
 		}
 	})
 }

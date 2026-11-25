@@ -512,6 +512,8 @@ export const jaJPMessages: ColabOneMessages = {
   "device.mountDriveNow": "ドライブをマウント",
   "device.driveWaitingBrowserConfirm":
     "ブラウザでドライブ権限をすべて選択して「許可」をクリックしてください。完了後に戻ると自動続行します（「認可を完了しました」で即時確認も可能）。",
+  "device.driveMountingAfterAuth":
+    "ブラウザ認証を確認しました。リモート VM で Google ドライブをマウントしています（通常 15–40 秒、高速ダウンロード中はやや長くなります）。完了すると自動で有効になります。",
   "device.driveConfirmAuthorized": "認可を完了しました",
   "device.driveReopenAuth": "認可ページを再度開く",
   "device.driveCancelMount": "マウントをキャンセル",
@@ -1141,6 +1143,7 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.outputsDriveWaitingPill": "ドライブ認証待ち",
   "comfy.outputsDriveConfigureNow": "ドライブ設定",
   "comfy.outputsDriveContinueAuth": "認証状況を確認",
+  "comfy.outputsDriveViewProgress": "進捗を確認",
   "comfy.driveOpenGoogleDrive": "Google ドライブを開く",
   "comfy.driveOpenGoogleDriveShort": "ドライブを開く",
   "comfy.loadingOutput": "リモート作品を読み込み中…",
@@ -1240,6 +1243,10 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.driveModalTagExported": "保存済み",
   "comfy.driveModalTagExporting": "保存中",
   "comfy.driveModalTagWaitingAuth": "ブラウザ認証待ち",
+  "comfy.driveModalTagConnecting": "接続中",
+  "comfy.driveModalTagMounting": "認証済み · マウント中",
+  "comfy.driveModalTagMountingDirect": "マウント中",
+  "comfy.driveModalTagCancelling": "キャンセル中",
   "comfy.driveModalTagConnected": "接続済み",
   "comfy.driveModalTagHeadlessReady": "自動接続可",
   "comfy.driveModalTagNotConnected": "未設定",
@@ -1260,8 +1267,25 @@ export const jaJPMessages: ColabOneMessages = {
     "この画面に戻って下の「認証完了を確認」をクリックすると（ウィンドウ復帰時にも自動検知）接続が完了します",
   "comfy.driveModalConnectingTitle": "Google ドライブへ接続・マウント中…",
   "comfy.driveModalConnectingDesc":
-    "ブラウザに Google 認証ページが開いた場合は、同じアカウントで許可してください。",
+    "Google ドライブのマウント方式と認証状態を確認しています。許可が必要な場合はブラウザで Google 認証ページが自動で開きます。",
   "comfy.driveModalConnectingBtn": "接続中…",
+  "comfy.driveModalMountingTitle": "認証を確認しました。リモートで Google ドライブをマウント中…",
+  "comfy.driveModalMountingDirectTitle": "リモートで Google ドライブをマウント中…",
+  "comfy.driveModalInitializingTitle": "ドライブをマウントしました。ColabOne_Drive ワークスペースを初期化中…",
+  "comfy.driveModalMountingDesc":
+    "Google ドライブの認証が完了しました。リモートインスタンスで DriveFS を起動しマウントしています（通常 15–40 秒、モデル高速ダウンロード中はやや長くなります）。「バックグラウンドで続行」で閉じても自動で完了します。",
+  "comfy.driveModalMountingExportDesc":
+    "Google ドライブの認証が完了しました。リモートインスタンスで DriveFS を起動しマウントしています（通常 15–40 秒、モデル高速ダウンロード中はやや長くなります）。この画面を開いたままにすると完了後に自動保存され、「バックグラウンドで続行」で閉じることもできます。",
+  "comfy.driveModalMountingDirectDesc":
+    "リモートインスタンスで DriveFS を起動しマウントしています（通常 15–40 秒、モデル高速ダウンロード中はやや長くなります）。「バックグラウンドで続行」で閉じても自動で完了します。",
+  "comfy.driveModalMountingDirectExportDesc":
+    "リモートインスタンスで DriveFS を起動しマウントしています（通常 15–40 秒、モデル高速ダウンロード中はやや長くなります）。この画面を開いたままにすると完了後に自動保存され、「バックグラウンドで続行」で閉じることもできます。",
+  "comfy.driveModalMountingRcloneDesc":
+    "自動認証情報で Google ドライブをマウントしています（通常数秒で完了します）。「バックグラウンドで続行」で閉じても自動で有効になります。",
+  "comfy.driveModalMountingBtn": "マウント中…",
+  "comfy.driveModalBackgroundBtn": "バックグラウンドで続行",
+  "comfy.driveModalCancellingTitle": "Google ドライブのマウントをキャンセル中…",
+  "comfy.driveModalCancellingBtn": "キャンセル中…",
   "comfy.driveModalUpgradeTitle": "直接保存を有効にするためリモートサービスのホットアップデートが必要です",
   "comfy.driveModalUpgradeDesc":
     "Google ドライブの接続は完了しました。リモートサービスをホットアップデートすると outputs フォルダへ直接保存できます（GPU は解放されず、生成済み作品も保持されます）。",

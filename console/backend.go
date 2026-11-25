@@ -33,14 +33,15 @@ func newColabOneBridgeClosedError() error {
 // colabOneBridge hosts the in-process pure-Go ColabOneController, replacing the
 // legacy Python subprocess pipe with zero-IPC direct Go calls.
 type colabOneBridge struct {
-	mu        sync.Mutex
-	ctrl      *controller.ColabOneController
-	factory   func() *controller.ColabOneController
-	closeCtrl func(*controller.ColabOneController)
-	starting  bool
-	startDone chan struct{}
-	closedCh  chan struct{}
-	closed    bool
+	mu            sync.Mutex
+	ctrl          *controller.ColabOneController
+	factory       func() *controller.ColabOneController
+	closeCtrl     func(*controller.ColabOneController)
+	onFocusWindow func()
+	starting      bool
+	startDone     chan struct{}
+	closedCh      chan struct{}
+	closed        bool
 }
 
 func colabOneMethodTimeout(method string) time.Duration {
@@ -127,6 +128,7 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 		done := make(chan struct{})
 		b.startDone = done
 		factory := b.factory
+		onFocusWindow := b.onFocusWindow
 		b.mu.Unlock()
 
 		var ctrl *controller.ColabOneController
@@ -147,6 +149,9 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 				ctrl = factory()
 			} else {
 				ctrl = newColabOneWiredController("", "", nil, true)
+			}
+			if ctrl != nil && onFocusWindow != nil {
+				ctrl.SetFocusWindowHandler(onFocusWindow)
 			}
 			finished = true
 		}()

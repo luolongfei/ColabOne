@@ -4091,7 +4091,9 @@ func (p *ColabOneProvider) MountColabDriveFS(ctx context.Context, endpoint strin
 			rt.Abort()
 			stopMountHelper()
 			cancelExec()
-			_ = rt.Stop(context.Background(), true)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+			_ = rt.Stop(stopCtx, true)
+			stopCancel()
 		}()
 		if p.closed.Load() {
 			execErr = ErrProviderClosed

@@ -3795,6 +3795,14 @@ export const EXACT_MESSAGES: Record<string, ColabOneLocaleTable> = {
     "Colab ネイティブ DriveFS で Google ドライブをマウント中 (ColabOne_Drive)",
     "Colab 네이티브 DriveFS로 Google 드라이브 마운트 중 (ColabOne_Drive)",
   ),
+  "授权已确认，正在远端挂载 Google 云盘 (ColabOne_Drive)": row(
+    "授权已确认，正在远端挂载 Google 云盘 (ColabOne_Drive)",
+    "Authorization confirmed; mounting Google Drive on remote GPU (ColabOne_Drive)",
+    "授權已確認，正在遠端掛載 Google 雲端硬碟 (ColabOne_Drive)",
+    "授權已確認，正在遠端掛載 Google 雲端硬碟 (ColabOne_Drive)",
+    "認証を確認しました。リモート GPU で Google ドライブをマウント中 (ColabOne_Drive)",
+    "승인이 확인되었습니다. 원격 GPU에 Google 드라이브를 마운트 중 (ColabOne_Drive)",
+  ),
   "请在浏览器中点击允许，以确认当前实例挂载 Google 云盘（仅本实例确认一次）": row(
     "请在浏览器中点击允许，以确认当前实例挂载 Google 云盘（仅本实例确认一次）",
     "Click Allow in your browser to authorize Google Drive on this instance (once per instance)",

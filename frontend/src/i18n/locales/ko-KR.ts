@@ -511,6 +511,8 @@ export const koKRMessages: ColabOneMessages = {
   "device.mountDriveNow": "드라이브 마운트",
   "device.driveWaitingBrowserConfirm":
     "브라우저에서 모든 드라이브 권한을 선택하고 허용을 클릭하세요. 완료 후 앱으로 돌아오면 자동으로 계속되며, '승인을 완료했습니다'로 즉시 확인할 수 있습니다.",
+  "device.driveMountingAfterAuth":
+    "브라우저 승인이 확인되었습니다. 원격 VM에서 Google 드라이브를 마운트 중이며(보통 15–40초, 고속 다운로드 중에는 다소 지연) 완료되면 자동으로 활성화됩니다.",
   "device.driveConfirmAuthorized": "승인을 완료했습니다",
   "device.driveReopenAuth": "승인 페이지 다시 열기",
   "device.driveCancelMount": "마운트 취소",
@@ -1138,6 +1140,7 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.outputsDriveWaitingPill": "드라이브 인증 대기",
   "comfy.outputsDriveConfigureNow": "드라이브 설정",
   "comfy.outputsDriveContinueAuth": "인증 상태 보기",
+  "comfy.outputsDriveViewProgress": "진행 상태 보기",
   "comfy.driveOpenGoogleDrive": "Google 드라이브 열기",
   "comfy.driveOpenGoogleDriveShort": "드라이브 열기",
   "comfy.loadingOutput": "원격 결과물 불러오는 중…",
@@ -1237,6 +1240,10 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.driveModalTagExported": "저장됨",
   "comfy.driveModalTagExporting": "저장 중",
   "comfy.driveModalTagWaitingAuth": "브라우저 인증 대기",
+  "comfy.driveModalTagConnecting": "연결 중",
+  "comfy.driveModalTagMounting": "승인 완료 · 마운트 중",
+  "comfy.driveModalTagMountingDirect": "마운트 중",
+  "comfy.driveModalTagCancelling": "취소 중",
   "comfy.driveModalTagConnected": "연결됨",
   "comfy.driveModalTagHeadlessReady": "자동 연결 가능",
   "comfy.driveModalTagNotConnected": "미설정",
@@ -1257,8 +1264,25 @@ export const koKRMessages: ColabOneMessages = {
     "이 창으로 돌아와 아래 '인증 완료 확인'을 클릭하면(창 복귀 시 자동 감지) 연결이 완료됩니다",
   "comfy.driveModalConnectingTitle": "Google 드라이브 연결 및 마운트 중…",
   "comfy.driveModalConnectingDesc":
-    "브라우저에 Google 권한 페이지가 열리면 동일한 계정으로 허용해 주세요.",
+    "Google 드라이브 마운트 방식과 승인 상태를 확인 중입니다. 권한 확인이 필요하면 브라우저에서 Google 승인 페이지가 자동으로 열립니다.",
   "comfy.driveModalConnectingBtn": "연결 중…",
+  "comfy.driveModalMountingTitle": "승인이 확인되었습니다. 원격에서 Google 드라이브를 마운트하는 중…",
+  "comfy.driveModalMountingDirectTitle": "원격에서 Google 드라이브를 마운트하는 중…",
+  "comfy.driveModalInitializingTitle": "드라이브 마운트 완료 — ColabOne_Drive 작업 공간을 초기화하는 중…",
+  "comfy.driveModalMountingDesc":
+    "Google 드라이브 승인이 완료되었습니다. 원격 인스턴스에서 DriveFS를 시작해 마운트 중이며 보통 15–40초 걸립니다(고속 모델 다운로드 중에는 조금 더 걸릴 수 있습니다). '백그라운드에서 계속'으로 창을 닫아도 자동으로 완료됩니다.",
+  "comfy.driveModalMountingExportDesc":
+    "Google 드라이브 승인이 완료되었습니다. 원격 인스턴스에서 DriveFS를 시작해 마운트 중입니다(보통 15–40초, 고속 모델 다운로드 중에는 다소 지연). 창을 열어두면 마운트 완료 후 자동으로 내보내며, '백그라운드에서 계속'으로 닫아도 됩니다.",
+  "comfy.driveModalMountingDirectDesc":
+    "원격 인스턴스에서 DriveFS를 시작해 마운트 중이며 보통 15–40초 걸립니다(고속 모델 다운로드 중에는 조금 더 걸릴 수 있습니다). '백그라운드에서 계속'으로 창을 닫아도 자동으로 완료됩니다.",
+  "comfy.driveModalMountingDirectExportDesc":
+    "원격 인스턴스에서 DriveFS를 시작해 마운트 중입니다(보통 15–40초, 고속 모델 다운로드 중에는 다소 지연). 창을 열어두면 마운트 완료 후 자동으로 내보내며, '백그라운드에서 계속'으로 닫아도 됩니다.",
+  "comfy.driveModalMountingRcloneDesc":
+    "무인 자격 증명으로 Google 드라이브를 마운트하고 있습니다(보통 몇 초 내에 완료됩니다). '백그라운드에서 계속'으로 창을 닫아도 자동으로 적용됩니다.",
+  "comfy.driveModalMountingBtn": "마운트 중…",
+  "comfy.driveModalBackgroundBtn": "백그라운드에서 계속",
+  "comfy.driveModalCancellingTitle": "Google 드라이브 마운트 취소 중…",
+  "comfy.driveModalCancellingBtn": "취소 중…",
   "comfy.driveModalUpgradeTitle": "직접 저장을 사용하려면 원격 서비스 핫 업데이트가 필요합니다",
   "comfy.driveModalUpgradeDesc":
     "Google 드라이브 연결이 완료되었습니다. 원격 서비스를 핫 업데이트하면 outputs 폴더로 바로 내보낼 수 있습니다(GPU는 해제되지 않으며 생성된 결과물도 유지됩니다).",

@@ -188,6 +188,29 @@ func revealColabOneWindow(w *mygo.Window) {
 	w.Focus()
 }
 
+func (d *ColabOneDesktop) focusMainWindow() {
+	if !mygo.App.IsReady() || d.appQuitting.Load() {
+		return
+	}
+	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() {
+			return
+		}
+		if d.showMain != nil {
+			d.showMain()
+		}
+		d.splashMu.Lock()
+		splashActive := d.startup != nil && d.startup.IsActive()
+		d.splashMu.Unlock()
+		if splashActive {
+			return
+		}
+		if mainWin := d.mainWindow(); mainWin != nil && !mainWin.IsDestroyed() {
+			bringColabOneWindowToFront(mainWin)
+		}
+	})
+}
+
 func (d *ColabOneDesktop) buildTrayMenu() *mygo.Menu {
 	return mygo.NewMenu([]*mygo.MenuItem{
 		{Label: colabOneT("tray.open"), Click: func(*mygo.MenuItem, *mygo.Window) {
@@ -363,11 +386,13 @@ func main() {
 	appearanceStore := newColabOneAppearanceStore(defaultColabOneAppearancePath)
 	mygo.App.SetWindowStateStore(winStore)
 	d := &ColabOneDesktop{
-		bridge:          &colabOneBridge{},
 		winStore:        winStore,
 		appearanceStore: appearanceStore,
 		appearanceSave:  make(chan string, 1),
 		appearanceDone:  make(chan struct{}),
+	}
+	d.bridge = &colabOneBridge{
+		onFocusWindow: d.focusMainWindow,
 	}
 	d.initCloseBehavior(nil)
 	d.initUpdater(colabOneConfigDir(), nil)

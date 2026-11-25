@@ -2097,6 +2097,194 @@ func TestDriveDualModeHeadlessFallbackSetupAndCancel(t *testing.T) {
 	}
 }
 
+func TestConnectColabDriveFSStageTransitionsAndFocusWindow(t *testing.T) {
+	h := newTestHarness(t, false)
+	h.auth.requiresQuota = true
+	h.auth.ensureQuotaFn = func(ctx context.Context, forceRefresh bool, onLog LogFunc) (string, string, error) {
+		return "", "gcp_tos_required", nil
+	}
+
+	var focusCalls int
+	h.ctrl.SetFocusWindowHandler(func() {
+		focusCalls++
+	})
+
+	var stages []string
+	var sawAuthURLAtWait bool
+	var sawAuthURLClearedAtMount bool
+	var sawHintClearedAtMount bool
+	var sawInitializingAtRPC bool
+
+	h.provider.mountDriveFSFn = func(ctx context.Context, opts ColabOneDriveMountOptions) (map[string]any, error) {
+		if op := asMap(h.ctrl.Snapshot()["operation"]); op != nil {
+			stages = append(stages, asString(op["stage"]))
+		}
+		if opts.OnAuthURL != nil {
+			opts.OnAuthURL("https://accounts.google.com/o/oauth2/v2/auth?test=1")
+		}
+		snapWait := h.ctrl.Snapshot()
+		sawAuthURLAtWait = asString(snapWait["auth_url"]) != ""
+		if op := asMap(snapWait["operation"]); op != nil {
+			stages = append(stages, asString(op["stage"]))
+		}
+		if opts.OnHint != nil {
+			opts.OnHint("pending hint")
+		}
+		if opts.OnAuthConfirmed != nil {
+			opts.OnAuthConfirmed(true)
+		}
+		snapMount := h.ctrl.Snapshot()
+		sawAuthURLClearedAtMount = asString(snapMount["auth_url"]) == ""
+		sawHintClearedAtMount = asString(snapMount["drive_auth_hint"]) == ""
+		if op := asMap(snapMount["operation"]); op != nil {
+			stages = append(stages, asString(op["stage"]))
+		}
+		// Simulate deferred OnAuthURL("") cleanup after OnAuthConfirmed: must not regress stage.
+		if opts.OnAuthURL != nil {
+			opts.OnAuthURL("")
+		}
+		if op := asMap(h.ctrl.Snapshot()["operation"]); op == nil || asString(op["stage"]) != "mounting" {
+			t.Errorf("OnAuthURL(\"\") must not overwrite mounting stage, got %#v", op)
+		}
+		return map[string]any{"ok": true, "mode": "colab_drivefs"}, nil
+	}
+	h.provider.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if path == "drive/connect" {
+			if op := asMap(h.ctrl.Snapshot()["operation"]); op != nil && asString(op["stage"]) == "initializing" {
+				sawInitializingAtRPC = true
+				stages = append(stages, "initializing")
+			}
+			return map[string]any{"connected": true, "mode": "colab_drivefs"}, nil
+		}
+		if path == "snapshot" {
+			return map[string]any{
+				"runtime": map[string]any{
+					"state":        "ready",
+					"id":           "ep-1",
+					"protocol":     7,
+					"idle_minutes": 30,
+					"drive":        map[string]any{"connected": true, "mode": "colab_drivefs"},
+				},
+				"models": []any{},
+			}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+
+	info, err := h.ctrl.ConnectDrive(context.Background())
+	if err != nil || info["mode"] != "colab_drivefs" {
+		t.Fatalf("ConnectDrive failed: info=%#v err=%v", info, err)
+	}
+	wantStages := []string{"checking", "waiting_auth", "mounting", "initializing"}
+	if len(stages) != len(wantStages) {
+		t.Fatalf("unexpected stage transitions: got %v, want %v", stages, wantStages)
+	}
+	for i := range wantStages {
+		if stages[i] != wantStages[i] {
+			t.Fatalf("stage[%d] = %q, want %q (all=%v)", i, stages[i], wantStages[i], stages)
+		}
+	}
+	if !sawAuthURLAtWait || !sawAuthURLClearedAtMount || !sawHintClearedAtMount || !sawInitializingAtRPC {
+		t.Fatalf("unexpected transition flags: waitURL=%v clearedURL=%v clearedHint=%v initRPC=%v",
+			sawAuthURLAtWait, sawAuthURLClearedAtMount, sawHintClearedAtMount, sawInitializingAtRPC)
+	}
+	if focusCalls != 1 {
+		t.Fatalf("expected interactive DriveFS auth confirmation to focus window once, got %d", focusCalls)
+	}
+
+	// Non-interactive (already-authorized fast path) must NOT steal window focus or claim browser auth.
+	focusCalls = 0
+	var fastPathTitle string
+	var fastPathInteractive any
+	var fastPathMode string
+	h.provider.mountDriveFSFn = func(ctx context.Context, opts ColabOneDriveMountOptions) (map[string]any, error) {
+		if opts.OnAuthConfirmed != nil {
+			opts.OnAuthConfirmed(false)
+		}
+		if op := asMap(h.ctrl.Snapshot()["operation"]); op != nil {
+			fastPathTitle = asString(op["title"])
+			fastPathInteractive = op["interactive"]
+			fastPathMode = asString(op["mode"])
+		}
+		return map[string]any{"ok": true, "mode": "colab_drivefs"}, nil
+	}
+	if _, err := h.ctrl.ConnectDrive(context.Background()); err != nil {
+		t.Fatalf("non-interactive ConnectDrive failed: %v", err)
+	}
+	if focusCalls != 0 {
+		t.Fatalf("non-interactive auth confirmation must not focus window, got %d calls", focusCalls)
+	}
+	if fastPathMode != "colab_drivefs" || fastPathInteractive != false || strings.Contains(fastPathTitle, "授权已确认") {
+		t.Fatalf("unexpected non-interactive mount metadata: mode=%q interactive=%#v title=%q", fastPathMode, fastPathInteractive, fastPathTitle)
+	}
+
+	// drive.cancel marks active drive_connect operation as cancelling and prevents POST drive/connect.
+	driveConnectRPCCalls := 0
+	h.provider.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if path == "drive/connect" {
+			driveConnectRPCCalls++
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	h.provider.mountDriveFSFn = func(ctx context.Context, opts ColabOneDriveMountOptions) (map[string]any, error) {
+		_, _ = h.ctrl.Command(context.Background(), "drive.cancel", nil)
+		if op := asMap(h.ctrl.Snapshot()["operation"]); op == nil || !asBool(op["cancelling"]) {
+			t.Errorf("expected drive.cancel to mark drive_connect operation cancelling=true, got %#v", op)
+		}
+		// Late OnAuthConfirmed after cancel must be ignored and must not focus window.
+		if opts.OnAuthConfirmed != nil {
+			opts.OnAuthConfirmed(true)
+		}
+		return map[string]any{"ok": true, "mode": "colab_drivefs"}, nil
+	}
+	if _, err := h.ctrl.ConnectDrive(context.Background()); err == nil {
+		t.Fatal("expected cancelled ConnectDrive error")
+	} else {
+		var cancelled *ColabOneOperationCancelled
+		if !errors.As(err, &cancelled) {
+			t.Fatalf("expected ColabOneOperationCancelled, got %T (%v)", err, err)
+		}
+	}
+	if driveConnectRPCCalls != 0 {
+		t.Fatalf("cancelled mount must not call POST drive/connect, got %d calls", driveConnectRPCCalls)
+	}
+	if focusCalls != 0 {
+		t.Fatalf("late OnAuthConfirmed after cancel must not focus window, got %d calls", focusCalls)
+	}
+
+	// Headless rclone sets mode="rclone", interactive=false, stage="mounting".
+	var rcloneMode string
+	var rcloneStage string
+	var rcloneInteractive any
+	h.auth.ensureQuotaFn = func(ctx context.Context, forceRefresh bool, onLog LogFunc) (string, string, error) {
+		return "colabone-drive-proj", "reused_existing_project", nil
+	}
+	h.auth.buildRcloneFn = func(ctx context.Context, quotaProject string) (string, error) {
+		return "[colabone_gdrive]\ntype = drive\n", nil
+	}
+	h.provider.uploadDriveFn = func(ctx context.Context, rcloneConf, endpoint string) error { return nil }
+	h.provider.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if path == "drive/connect" {
+			if op := asMap(h.ctrl.Snapshot()["operation"]); op != nil {
+				rcloneMode = asString(op["mode"])
+				rcloneStage = asString(op["stage"])
+				rcloneInteractive = op["interactive"]
+			}
+			return map[string]any{"connected": true, "mode": "mount"}, nil
+		}
+		if path == "snapshot" {
+			return map[string]any{"runtime": map[string]any{"state": "ready", "id": "ep-1", "protocol": 7, "idle_minutes": 30}, "models": []any{}}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	if info, err := h.ctrl.ConnectDrive(context.Background()); err != nil || info["mode"] != "mount" {
+		t.Fatalf("headless rclone ConnectDrive failed: info=%#v err=%v", info, err)
+	}
+	if rcloneMode != "rclone" || rcloneStage != "mounting" || rcloneInteractive != false {
+		t.Fatalf("unexpected rclone operation metadata: mode=%q stage=%q interactive=%#v", rcloneMode, rcloneStage, rcloneInteractive)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 7. Start boot telemetry, retry, cancel & rollback
 // ---------------------------------------------------------------------------

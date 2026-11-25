@@ -1368,7 +1368,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return c.asyncOperation("挂载 Google 云盘 (ColabOne_Drive)", func() error {
 			_, err := c.ConnectDrive(c.rootCtx)
 			return err
-		}, map[string]any{"kind": "drive_connect"}, nil)
+		}, map[string]any{"kind": "drive_connect", "stage": "checking"}, nil)
 
 	case "drive.setup_headless":
 		return c.asyncOperation("检测并开启云盘免弹窗模式", func() error {
@@ -1387,7 +1387,16 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 
 	case "drive.cancel":
 		c.driveCancel.Set()
-		c.Update(map[string]any{"auth_url": "", "drive_auth_hint": ""})
+		c.mu.Lock()
+		patch := map[string]any{"auth_url": "", "drive_auth_hint": ""}
+		if op := asMap(c.data["operation"]); op != nil && asString(op["kind"]) == "drive_connect" {
+			nextOp := deepCopyMap(op)
+			nextOp["cancelling"] = true
+			patch["operation"] = nextOp
+		}
+		pendingLogs := c.updateLocked(patch)
+		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 		c.log("已请求取消 Google 云盘挂载", "云盘", "info")
 		return map[string]any{"ok": true}, nil
 

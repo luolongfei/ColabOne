@@ -695,6 +695,7 @@ describe("ColabOne reactive translations across helpers", () => {
       "新服务未就绪，已恢复旧服务；模型文件与运行配置保持不变（日志：stderr tail）",
       "该模型属于图片/视频生成类（ComfyUI 专用），无法在「对外 API」文本引擎中装载，请前往 ComfyUI 工作区使用",
       "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
+      "授权已确认，正在远端挂载 Google 云盘 (ColabOne_Drive)",
       "模型 API ID 必须为字符串",
       "模型 API ID 不能为空",
       "colabone/auto 为系统保留别名，请使用其他模型 ID",
