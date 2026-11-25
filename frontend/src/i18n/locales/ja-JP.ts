@@ -479,12 +479,6 @@ export const jaJPMessages: ColabOneMessages = {
   "device.cancellingAllocation": "キャンセル中…",
   "device.cancelAllocationTooltip":
     "現在の割り当てまたは起動を中止します。すでに割り当てられたインスタンスは自動的に解放されます",
-  "device.retryNow": "今すぐ再試行",
-  "device.retryingNow": "リクエスト中…",
-  "device.retryAllocationNowTooltip":
-    "待機カウントダウンをスキップし、直ちに Google へ割り当てを再リクエストします",
-  "device.retryAllocationRequestingTooltip":
-    "Google へ割り当てをリクエスト中です。応答後に手動で即座に再試行できます",
   "device.waitingRetryCapacity":
     "Google の計算リソースが逼迫中 · {seconds} 秒後に {gpu} の割り当てを自動再試行（{next}/{total} 回目）",
   "device.waitingRetryCapacitySoon":
@@ -498,7 +492,6 @@ export const jaJPMessages: ColabOneMessages = {
   "device.waitingRetryNetworkSoon":
     "割り当てリクエストに失敗 · まもなく {gpu} を再試行（{next}/{total} 回目）",
   "device.toastAllocationCancelled": "GPU の割り当てをキャンセルしました",
-  "device.toastRetryTriggered": "待機をスキップして今すぐ再試行します",
   "device.idlePaused": "タスク実行中 · 自動解放一時停止中",
   "device.idleCountdownRemaining": "残り",
   "device.idleCountdownSuffix": "で自動解放",

@@ -326,8 +326,8 @@ func (e *ColabOneEvent) Chan() <-chan struct{} {
 }
 
 // Consume blocks until the event is set (or done is closed), atomically
-// resetting the event back to unset so repeatable pulses (such as manual
-// retry-now or DriveFS confirm/probe clicks) are delivered cleanly on every
+// resetting the event back to unset so repeatable pulses (such as
+// DriveFS confirm/probe clicks) are delivered cleanly on every
 // trigger without busy-polling.
 func (e *ColabOneEvent) Consume(done <-chan struct{}) bool {
 	for {
@@ -452,7 +452,6 @@ type ColabOneStartOptions struct {
 	OnTelemetry  func(endpoint string, location map[string]any, sample map[string]any)
 	OnRetryState func(info map[string]any)
 	CancelEvent  *ColabOneEvent
-	RetryEvent   *ColabOneEvent
 }
 
 // ColabOneDriveMountOptions configures Colab native DriveFS mounting.

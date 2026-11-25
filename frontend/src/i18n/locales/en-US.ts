@@ -483,12 +483,6 @@ export const enUSMessages: ColabOneMessages = {
   "device.cancellingAllocation": "Cancelling…",
   "device.cancelAllocationTooltip":
     "Stop the current allocation or startup; any newly allocated instance is released automatically",
-  "device.retryNow": "Retry Now",
-  "device.retryingNow": "Requesting…",
-  "device.retryAllocationNowTooltip":
-    "Skip the wait countdown and request GPU allocation from Google immediately",
-  "device.retryAllocationRequestingTooltip":
-    "Allocation request is in flight; manual retry becomes available after this response",
   "device.waitingRetryCapacity":
     "Google GPU capacity is tight; retrying {gpu} in {seconds}s (attempt {next}/{total})",
   "device.waitingRetryCapacitySoon":
@@ -502,7 +496,6 @@ export const enUSMessages: ColabOneMessages = {
   "device.waitingRetryNetworkSoon":
     "Allocation attempt did not succeed; retrying {gpu} now (attempt {next}/{total})",
   "device.toastAllocationCancelled": "GPU allocation cancelled",
-  "device.toastRetryTriggered": "Skipped wait; retrying allocation now",
   "device.idlePaused": "Busy · Auto-Release Paused",
   "device.idleCountdownRemaining": "Auto-release in",
   "device.idleCountdownSuffix": "",

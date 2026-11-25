@@ -479,12 +479,6 @@ export const koKRMessages: ColabOneMessages = {
   "device.cancellingAllocation": "취소 중…",
   "device.cancelAllocationTooltip":
     "현재 할당 또는 시작을 중지합니다. 이미 할당된 인스턴스는 자동으로 해제되어 잔여 과금이 발생하지 않습니다",
-  "device.retryNow": "지금 다시 시도",
-  "device.retryingNow": "요청 중…",
-  "device.retryAllocationNowTooltip":
-    "대기 카운트다운을 건너뛰고 즉시 Google에 할당을 다시 요청합니다",
-  "device.retryAllocationRequestingTooltip":
-    "Google에 할당을 요청 중입니다. 응답 후 수동으로 즉시 재시도할 수 있습니다",
   "device.waitingRetryCapacity":
     "Google 연산 리소스 부족 · {seconds}초 후 {gpu} 할당 자동 재시도 ({next}/{total}회 시도)",
   "device.waitingRetryCapacitySoon":
@@ -498,7 +492,6 @@ export const koKRMessages: ColabOneMessages = {
   "device.waitingRetryNetworkSoon":
     "할당 요청 실패 · 곧 {gpu} 재시도 ({next}/{total}회 시도)",
   "device.toastAllocationCancelled": "GPU 할당이 취소되었습니다",
-  "device.toastRetryTriggered": "대기를 건너뛰고 즉시 다시 시도합니다",
   "device.idlePaused": "작업 중 · 자동 해제 일시 정지",
   "device.idleCountdownRemaining": "자동 해제까지",
   "device.idleCountdownSuffix": "남음",

@@ -1320,8 +1320,7 @@ func TestAssignRetryDelaysScheduleAndCustomMaxAttempts(t *testing.T) {
 	}
 }
 
-func TestAllocateRetryNowSkipsBackoffWaitAndLogs(t *testing.T) {
-	retryCh := make(chan struct{}, 1)
+func TestAllocateEmitsBackoffWaitingRetryStateAndRecovers(t *testing.T) {
 	cancelCh := make(chan struct{})
 	postCalls := 0
 
@@ -1332,8 +1331,8 @@ func TestAllocateRetryNowSkipsBackoffWaitAndLogs(t *testing.T) {
 				return nil, &ColabRequestError{StatusCode: 503}
 			}
 			return &Assignment{
-				Endpoint:         "gpu-g4-manual-retry-ok",
-				RuntimeProxyInfo: makeProxyInfo("gpu-g4-manual-retry-ok"),
+				Endpoint:         "gpu-g4-backoff-retry-ok",
+				RuntimeProxyInfo: makeProxyInfo("gpu-g4-backoff-retry-ok"),
 			}, nil
 		},
 	}
@@ -1341,57 +1340,34 @@ func TestAllocateRetryNowSkipsBackoffWaitAndLogs(t *testing.T) {
 	p := NewColabOneProvider(ColabOneProviderConfig{
 		Vault:             newMemoryVault(),
 		ClientFactory:     func(string) (ColabClient, error) { return client, nil },
-		AssignRetryDelays: []time.Duration{30 * time.Second, 30 * time.Second},
+		AssignRetryDelays: []time.Duration{20 * time.Millisecond, 40 * time.Millisecond},
 	})
 
 	var retryStates []map[string]any
-	var logs []string
-	started := time.Now()
 	sess, err := p.Allocate(context.Background(), "G4", AllocateOptions{
-		OnLog:    func(msg, src, lvl string) { logs = append(logs, msg) },
 		CancelCh: cancelCh,
-		RetryCh:  retryCh,
 		OnRetryState: func(info map[string]any) {
 			retryStates = append(retryStates, cloneMap(info))
-			if boolVal(info["waiting_retry"]) {
-				select {
-				case retryCh <- struct{}{}:
-				default:
-				}
-			}
 		},
 	})
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Allocate failed: %v", err)
 	}
-	if sess.Endpoint != "gpu-g4-manual-retry-ok" || postCalls != 2 {
+	if sess.Endpoint != "gpu-g4-backoff-retry-ok" || postCalls != 2 {
 		t.Fatalf("unexpected retry result: ep=%s postCalls=%d", sess.Endpoint, postCalls)
-	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("manual retry took too long: %v", elapsed)
 	}
 	sawWaiting := false
 	for _, st := range retryStates {
-		if boolVal(st["waiting_retry"]) && boolVal(st["retryable"]) {
+		if boolVal(st["waiting_retry"]) && floatVal(st["retry_at"]) > 0 && st["retry_kind"] == "capacity" && intVal(st["next_attempt"]) == 2 && intVal(st["total_attempts"]) == 3 {
 			sawWaiting = true
 		}
 	}
 	if !sawWaiting {
-		t.Fatalf("expected waiting_retry state: %#v", retryStates)
+		t.Fatalf("expected waiting_retry backoff state: %#v", retryStates)
 	}
 	last := retryStates[len(retryStates)-1]
 	if boolVal(last["waiting_retry"]) || intVal(last["attempt"]) != 2 {
 		t.Fatalf("unexpected final retry state: %#v", last)
-	}
-	foundManualLog := false
-	for _, l := range logs {
-		if strings.Contains(l, "已手动触发立即重试，跳过等待立即尝试分配 G4（第 2/3 次）") {
-			foundManualLog = true
-		}
-	}
-	if !foundManualLog {
-		t.Fatalf("expected manual retry log, got %v", logs)
 	}
 }
 

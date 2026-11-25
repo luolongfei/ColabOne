@@ -3488,26 +3488,6 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^已手动触发立即重试，跳过等待立即尝试分配 (\S+)（第 (\d+)\/(\d+) 次）$/,
-    format: (m, loc) => {
-      const [, gpu, cur, total] = m;
-      switch (loc) {
-        case "en-US":
-          return `Manual retry triggered; skipping wait to allocate ${gpu} now (attempt ${cur}/${total})`;
-        case "zh-TW":
-          return `已手動觸發立即重試，略過等待立即嘗試分配 ${gpu}（第 ${cur}/${total} 次）`;
-        case "zh-HK":
-          return `已手動觸發立即重試，跳過等待立即嘗試分配 ${gpu}（第 ${cur}/${total} 次）`;
-        case "ja-JP":
-          return `手動再試行を実行しました。待機をスキップして ${gpu} の割り当てを即時試行します（${cur}/${total} 回目）`;
-        case "ko-KR":
-          return `수동 재시도가 요청되어 대기를 건너뛰고 ${gpu} 할당을 즉시 시도합니다 (${cur}/${total}회 시도)`;
-        default:
-          return m[0];
-      }
-    },
-  },
-  {
     re: /^启动已取消，正在释放刚分配的实例：(.+)$/,
     format: (m, loc) => {
       const ep = m[1];

@@ -913,7 +913,6 @@ func (w *wireControllerProviderAdapter) Start(ctx context.Context, gpu string, n
 		OnTelemetry:  opts.OnTelemetry,
 		OnLog:        onLog,
 		CancelCh:     bridgeCancelEvent(opts.CancelEvent, done, &bridgeWG),
-		RetryCh:      bridgeRepeatEvent(opts.RetryEvent, done, &bridgeWG),
 		OnRetryState: opts.OnRetryState,
 		AssignProxy:  opts.AssignProxy,
 		MaxAttempts:  opts.MaxAttempts,

@@ -1147,67 +1147,30 @@ func isCancelled(ctx context.Context, cancelCh <-chan struct{}) bool {
 	return false
 }
 
-func drainRetryCh(ch <-chan struct{}) <-chan struct{} {
-	if ch == nil {
-		return nil
-	}
-	for {
-		select {
-		case _, ok := <-ch:
-			if !ok {
-				return nil
-			}
-		default:
-			return ch
-		}
-	}
-}
-
-// waitForRetry waits up to delay, waking immediately on cancellation or manual retry signal.
-// Returns "cancel", "retry", or "timeout", along with the (possibly nilled if closed) retry channel.
+// waitForRetry waits up to delay, waking immediately on cancellation.
+// Returns "cancel" or "timeout".
 func (p *ColabOneProvider) waitForRetry(
 	ctx context.Context,
 	delay time.Duration,
 	cancelCh <-chan struct{},
-	retryCh <-chan struct{},
-) (string, <-chan struct{}) {
+) string {
 	if delay <= 0 {
 		if isCancelled(ctx, cancelCh) {
-			return "cancel", retryCh
+			return "cancel"
 		}
-		if retryCh != nil {
-			select {
-			case _, ok := <-retryCh:
-				if !ok {
-					return "retry", nil
-				}
-				return "retry", retryCh
-			default:
-			}
-		}
-		return "timeout", retryCh
+		return "timeout"
 	}
 	if isCancelled(ctx, cancelCh) {
-		return "cancel", retryCh
-	}
-	if retryCh != nil {
-		select {
-		case _, ok := <-retryCh:
-			if !ok {
-				return "retry", nil
-			}
-			return "retry", retryCh
-		default:
-		}
+		return "cancel"
 	}
 
-	// Allow deterministic SleepFn tests; fast-path direct call when no cancel/retry select is needed.
+	// Allow deterministic SleepFn tests; fast-path direct call when no cancel select is needed.
 	if p.sleepFn != nil {
-		if cancelCh == nil && retryCh == nil && ctx.Done() == nil {
+		if cancelCh == nil && ctx.Done() == nil {
 			if err := p.sleepFn(ctx, delay); errors.Is(err, context.Canceled) {
-				return "cancel", retryCh
+				return "cancel"
 			}
-			return "timeout", retryCh
+			return "timeout"
 		}
 		sleepCtx, cancelSleep := context.WithCancel(ctx)
 		defer cancelSleep()
@@ -1219,26 +1182,19 @@ func (p *ColabOneProvider) waitForRetry(
 		case <-cancelCh:
 			cancelSleep()
 			<-doneCh
-			return "cancel", retryCh
+			return "cancel"
 		case <-ctx.Done():
 			cancelSleep()
 			<-doneCh
 			if errors.Is(ctx.Err(), context.Canceled) {
-				return "cancel", retryCh
+				return "cancel"
 			}
-			return "timeout", retryCh
-		case _, ok := <-retryCh:
-			cancelSleep()
-			<-doneCh
-			if !ok {
-				return "retry", nil
-			}
-			return "retry", retryCh
+			return "timeout"
 		case err := <-doneCh:
 			if isCancelled(ctx, cancelCh) || errors.Is(err, context.Canceled) {
-				return "cancel", retryCh
+				return "cancel"
 			}
-			return "timeout", retryCh
+			return "timeout"
 		}
 	}
 
@@ -1246,19 +1202,14 @@ func (p *ColabOneProvider) waitForRetry(
 	defer timer.Stop()
 	select {
 	case <-cancelCh:
-		return "cancel", retryCh
+		return "cancel"
 	case <-ctx.Done():
 		if errors.Is(ctx.Err(), context.Canceled) {
-			return "cancel", retryCh
+			return "cancel"
 		}
-		return "timeout", retryCh
-	case _, ok := <-retryCh:
-		if !ok {
-			return "retry", nil
-		}
-		return "retry", retryCh
+		return "timeout"
 	case <-timer.C:
-		return "timeout", retryCh
+		return "timeout"
 	}
 }
 
@@ -1332,7 +1283,6 @@ func (p *ColabOneProvider) assignRuntime(
 	consecutivePoolBusy := 0
 	poolBusyHintEmitted := false
 	lastRetryKind := ""
-	retryCh := opts.RetryCh
 
 	for attempt := 0; attempt < totalAttempts; attempt++ {
 		if isCancelled(ctx, opts.CancelCh) {
@@ -1341,17 +1291,14 @@ func (p *ColabOneProvider) assignRuntime(
 		if ctx != nil && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		retryCh = drainRetryCh(retryCh)
 		if opts.OnRetryState != nil {
 			opts.OnRetryState(map[string]any{
 				"waiting_retry":  false,
-				"retryable":      false,
 				"retry_at":       0.0,
 				"attempt":        attempt + 1,
 				"next_attempt":   attempt + 1,
 				"total_attempts": totalAttempts,
 				"retry_kind":     lastRetryKind,
-				"has_retried":    attempt > 0,
 				"gpu":            accel,
 			})
 		}
@@ -1420,7 +1367,7 @@ func (p *ColabOneProvider) assignRuntime(
 			// proxy timeout or a connection drop after the VM was already assigned,
 			// adopt it instead of orphaning it.
 			if hasPositiveDelay(delays) {
-				outcome, _ := p.waitForRetry(ctx, 2*time.Second, opts.CancelCh, nil)
+				outcome := p.waitForRetry(ctx, 2*time.Second, opts.CancelCh)
 				if outcome == "cancel" {
 					return nil, ErrAllocationCancelled
 				}
@@ -1501,36 +1448,23 @@ func (p *ColabOneProvider) assignRuntime(
 		xsrfToken = ""
 
 		if delay > 0 {
-			retryCh = drainRetryCh(retryCh)
 			if opts.OnRetryState != nil && !isCancelled(ctx, opts.CancelCh) {
 				opts.OnRetryState(map[string]any{
 					"waiting_retry":  true,
-					"retryable":      true,
 					"retry_at":       unixFloat(p.now().Add(delay)),
 					"attempt":        attempt + 1,
 					"next_attempt":   nextAttempt,
 					"total_attempts": totalAttempts,
 					"retry_kind":     lastRetryKind,
-					"has_retried":    true,
 					"gpu":            accel,
 				})
 			}
-			var outcome string
-			outcome, retryCh = p.waitForRetry(ctx, delay, opts.CancelCh, retryCh)
+			outcome := p.waitForRetry(ctx, delay, opts.CancelCh)
 			if outcome == "cancel" {
 				return nil, ErrAllocationCancelled
 			}
 			if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
-			}
-			if outcome == "retry" {
-				retryCh = drainRetryCh(retryCh)
-				emitLog(
-					opts.OnLog,
-					fmt.Sprintf("已手动触发立即重试，跳过等待立即尝试分配 %s（第 %d/%d 次）", accel, nextAttempt, totalAttempts),
-					"GPU",
-					"info",
-				)
 			}
 		}
 	}
@@ -2669,7 +2603,7 @@ func (p *ColabOneProvider) Ready(ctx context.Context, session *ColabOneSessionSt
 				"info",
 			)
 		}
-		outcome, _ := p.waitForRetry(ctx, p.readyPollInterval, cancelCh, nil)
+		outcome := p.waitForRetry(ctx, p.readyPollInterval, cancelCh)
 		if outcome == "cancel" {
 			return ErrStartCancelled
 		}
@@ -2909,7 +2843,6 @@ func (p *ColabOneProvider) Start(
 		OnLog:        opts.OnLog,
 		OnStage:      notify,
 		CancelCh:     opts.CancelCh,
-		RetryCh:      opts.RetryCh,
 		OnRetryState: opts.OnRetryState,
 		AssignProxy:  strings.TrimSpace(opts.AssignProxy),
 		MaxAttempts:  opts.MaxAttempts,
@@ -2923,9 +2856,7 @@ func (p *ColabOneProvider) Start(
 	if opts.OnRetryState != nil {
 		opts.OnRetryState(map[string]any{
 			"waiting_retry": false,
-			"retryable":     false,
 			"retry_at":      0.0,
-			"has_retried":   false,
 			"allocated":     true,
 			"gpu":           strings.ToUpper(gpu),
 		})

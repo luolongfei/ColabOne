@@ -473,7 +473,6 @@ type AllocateOptions struct {
 	OnLog        LogFn
 	OnStage      StageFn
 	CancelCh     <-chan struct{}
-	RetryCh      <-chan struct{}
 	OnRetryState RetryStateFn
 	AssignProxy  string
 	MaxAttempts  int
@@ -486,7 +485,6 @@ type StartOptions struct {
 	OnTelemetry  TelemetryFn
 	OnLog        LogFn
 	CancelCh     <-chan struct{}
-	RetryCh      <-chan struct{}
 	OnRetryState RetryStateFn
 	AssignProxy  string
 	MaxAttempts  int

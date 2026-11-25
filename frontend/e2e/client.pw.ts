@@ -834,28 +834,6 @@ async function mock(page: any, ready = false, path = "/") {
             if (action === "api.key") {
               return JSON.stringify({ key: "sk-test-privacy-key-999" });
             }
-            if (action === "runtime.start.retry") {
-              if (
-                state.operation?.kind === "runtime_start" &&
-                state.operation?.waiting_retry &&
-                !state.operation?.cancelling
-              ) {
-                const next = Number(state.operation.next_attempt || 2);
-                const total = Number(state.operation.total_attempts || 10);
-                const gpu = state.operation.gpu || state.settings.gpu || "G4";
-                state.operation = {
-                  ...state.operation,
-                  title: `Google 算力紧张，正在排队分配 ${gpu}（第 ${next}/${total} 次）`,
-                  waiting_retry: false,
-                  retryable: false,
-                  retry_at: 0,
-                  attempt: next,
-                  has_retried: true,
-                };
-                return JSON.stringify({ ok: true, triggered: true });
-              }
-              return JSON.stringify({ ok: true, triggered: false });
-            }
             if (action === "runtime.start.cancel") {
               if (
                 state.operation?.kind === "runtime_start" &&
@@ -867,7 +845,6 @@ async function mock(page: any, ready = false, path = "/") {
                     title: "正在取消 GPU 分配",
                     cancellable: false,
                     cancelling: true,
-                    retryable: false,
                     waiting_retry: false,
                     retry_at: 0,
                   };
@@ -7034,12 +7011,12 @@ test("secret inputs auto-extract tokens on paste and reveal saved secrets on eye
   await expect(hfInput).toHaveValue("");
 });
 
-test("allocation banner and device card provide cancel and retry-now controls during congested startup", async ({
+test("allocation banner and device card show backoff countdown and cancel control without retry-now during congested startup", async ({
   page,
 }) => {
   await mock(page, false);
 
-  // 1) Initial allocation attempt: Cancel button visible & enabled in both banner and device card; Retry Now hidden until backoff
+  // 1) Initial allocation attempt: Cancel button visible & enabled in both banner and device card; no Retry Now button
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.setup.colab = true;
@@ -7051,10 +7028,8 @@ test("allocation banner and device card provide cancel and retry-now controls du
       kind: "runtime_start",
       cancellable: true,
       cancelling: false,
-      retryable: false,
       waiting_retry: false,
       retry_at: 0,
-      has_retried: false,
       gpu: "G4",
     };
   });
@@ -7068,8 +7043,9 @@ test("allocation banner and device card provide cancel and retry-now controls du
   await expect(cardCancel).toBeVisible();
   await expect(cardCancel).toBeEnabled();
   await expect(opBanner.locator(".co-op-retry-btn")).toHaveCount(0);
+  await expect(page.locator(".co-device-retry-btn")).toHaveCount(0);
 
-  // 2) Capacity congestion enters retry countdown: countdown text + enabled Retry Now + enabled Cancel appear
+  // 2) Capacity congestion enters automatic backoff countdown: countdown text + enabled Cancel appear, still no Retry Now button
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.operation = {
@@ -7078,40 +7054,30 @@ test("allocation banner and device card provide cancel and retry-now controls du
       kind: "runtime_start",
       cancellable: true,
       cancelling: false,
-      retryable: true,
       waiting_retry: true,
       retry_at: Date.now() / 1000 + 25,
       attempt: 8,
       next_attempt: 9,
       total_attempts: 10,
       retry_kind: "capacity",
-      has_retried: true,
       gpu: "G4",
     };
   });
 
   await expect(opBanner).toContainText(/Google 算力紧张，\d+ 秒后自动重试分配 G4（第 9\/10 次）/);
-  const bannerRetry = opBanner.locator(".co-op-retry-btn");
-  const cardRetry = page.locator(".co-device-retry-btn");
-  await expect(bannerRetry).toBeVisible();
-  await expect(bannerRetry).toBeEnabled();
-  await expect(bannerRetry).toContainText("立即重试");
-  await expect(cardRetry).toBeVisible();
-  await expect(cardRetry).toBeEnabled();
-
-  // Banner actions stay reachable even when switched to another tab
-  await navItem(page, "对外 API").click();
-  await expect(bannerRetry).toBeVisible();
+  await expect(opBanner.locator(".co-op-retry-btn")).toHaveCount(0);
+  await expect(page.locator(".co-device-retry-btn")).toHaveCount(0);
   await expect(bannerCancel).toBeVisible();
-
-  // 3) Click Retry Now -> triggers runtime.start.retry and switches to requesting state (button disabled/loading while request is in flight)
-  await bannerRetry.click();
-  await expect(opBanner).toContainText("Google 算力紧张，正在排队分配 G4（第 9/10 次）");
-  await expect(bannerRetry).toBeDisabled();
-  await expect(bannerRetry).toContainText("正在请求…");
   await expect(bannerCancel).toBeEnabled();
+  await expect(cardCancel).toBeVisible();
+  await expect(cardCancel).toBeEnabled();
 
-  // 4) Click Cancel while in-flight (deferred completion) -> immediately displays cancelling state, then returns cleanly to stopped
+  // Banner cancel stays reachable even when switched to another tab
+  await navItem(page, "对外 API").click();
+  await expect(bannerCancel).toBeVisible();
+  await expect(opBanner.locator(".co-op-retry-btn")).toHaveCount(0);
+
+  // 3) Click Cancel while in-flight (deferred completion): immediately displays cancelling state, then returns cleanly to stopped
   await navItem(page, "远端设备").click();
   await page.evaluate(() => {
     (window as any).__deferStartCancel = true;
@@ -7137,7 +7103,7 @@ test("allocation banner and device card provide cancel and retry-now controls du
   const actions = await page.evaluate(() =>
     ((window as any).__calls || []).map((c: any) => c.action),
   );
-  expect(actions).toContain("runtime.start.retry");
+  expect(actions).not.toContain("runtime.start.retry");
   expect(actions).toContain("runtime.start.cancel");
 });
 

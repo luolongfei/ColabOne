@@ -188,7 +188,6 @@ func TestMethodTimeoutsAllowLongGPUAllocation(t *testing.T) {
 	}
 	for _, fastMethod := range []string{
 		"runtime.start.cancel",
-		"runtime.start.retry",
 		"settings.assign_proxy",
 		"settings.assign_proxy.test",
 		"comfyui.draft.get",

@@ -2102,13 +2102,14 @@ func TestDriveDualModeHeadlessFallbackSetupAndCancel(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartBootTelemetryRetryCancelAndRollback(t *testing.T) {
-	// Case A: Boot telemetry & manual retry trigger during backoff wait.
+	// Case A: Boot telemetry & backoff waiting state reporting during congested allocation.
 	h := newTestHarness(t, false)
 	h.ctrl.mu.Lock()
 	h.ctrl.settings["auto_drive"] = false
 	h.ctrl.mu.Unlock()
 
 	var seenBootTelemetry bool
+	proceedRetry := make(chan struct{})
 	h.provider.startFn = func(ctx context.Context, gpu string, notify func(string), opts ColabOneStartOptions) (map[string]any, error) {
 		if opts.MaxAttempts != 35 {
 			t.Errorf("expected custom assign_max_attempts=35 forwarded to provider.Start, got %d", opts.MaxAttempts)
@@ -2116,16 +2117,18 @@ func TestStartBootTelemetryRetryCancelAndRollback(t *testing.T) {
 		notify("等待重试分配 " + gpu)
 		opts.OnRetryState(map[string]any{
 			"waiting_retry":  true,
-			"retryable":      true,
 			"retry_at":       nowUnixFloat() + 30.0,
 			"next_attempt":   2,
 			"total_attempts": 3,
+			"retry_kind":     "capacity",
 			"gpu":            gpu,
 		})
-		if !opts.RetryEvent.Wait(2 * time.Second) {
-			return nil, errors.New("retry signal not received")
+		select {
+		case <-proceedRetry:
+		case <-time.After(2 * time.Second):
+			return nil, errors.New("backoff progression not signalled")
 		}
-		opts.OnRetryState(map[string]any{"waiting_retry": false, "retryable": false, "allocated": true})
+		opts.OnRetryState(map[string]any{"waiting_retry": false, "allocated": true})
 		opts.OnTelemetry(
 			"gpu-t4-ass1-boot",
 			map[string]any{"country": "IN", "country_name": "印度"},
@@ -2151,10 +2154,7 @@ func TestStartBootTelemetryRetryCancelAndRollback(t *testing.T) {
 	waitUntil(t, 2*time.Second, func() bool {
 		return asBool(asMap(h.ctrl.Snapshot()["operation"])["waiting_retry"])
 	})
-	retryRes, err := h.ctrl.Command(context.Background(), "runtime.start.retry", nil)
-	if err != nil || asMap(retryRes)["triggered"] != true {
-		t.Fatalf("expected runtime.start.retry triggered=true, got %v %#v", err, retryRes)
-	}
+	close(proceedRetry)
 	waitIdle(t, h.ctrl)
 	if !seenBootTelemetry || h.ctrl.Snapshot()["error"] != "" {
 		t.Fatalf("boot telemetry=%v err=%q", seenBootTelemetry, h.ctrl.Snapshot()["error"])

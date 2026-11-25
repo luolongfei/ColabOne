@@ -502,14 +502,12 @@ export interface ColabOneOperation {
   kind?: string;
   cancellable?: boolean;
   cancelling?: boolean;
-  retryable?: boolean;
   waiting_retry?: boolean;
   retry_at?: number;
   attempt?: number;
   next_attempt?: number;
   total_attempts?: number;
   retry_kind?: "capacity" | "server_busy" | "network" | string;
-  has_retried?: boolean;
   allocated?: boolean;
   gpu?: string;
 }

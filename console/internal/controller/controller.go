@@ -104,7 +104,6 @@ type ColabOneController struct {
 
 	stop         *ColabOneEvent
 	startCancel  *ColabOneEvent
-	startRetry   *ColabOneEvent
 	driveCancel  *ColabOneEvent
 	driveConfirm *ColabOneEvent
 	driveProbe   *ColabOneEvent
@@ -237,7 +236,6 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		upgradeAttempted:       make(map[string]bool),
 		stop:                   NewColabOneEvent(),
 		startCancel:            NewColabOneEvent(),
-		startRetry:             NewColabOneEvent(),
 		driveCancel:            NewColabOneEvent(),
 		driveConfirm:           NewColabOneEvent(),
 		driveProbe:             NewColabOneEvent(),
@@ -304,7 +302,6 @@ func (c *ColabOneController) Close() {
 
 		c.stop.Set()
 		c.startCancel.Set()
-		c.startRetry.Set()
 		c.driveCancel.Set()
 		c.driveConfirm.Set()
 		c.driveProbe.Set()
@@ -2422,7 +2419,6 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 
 	defer func() {
 		c.startCancel.Clear()
-		c.startRetry.Clear()
 	}()
 
 	baseStartOpLocked := func(title string, hasTitle bool) map[string]any {
@@ -2440,10 +2436,8 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		setDefault("gpu", targetGPU)
 		setDefault("cancellable", true)
 		setDefault("cancelling", false)
-		setDefault("retryable", false)
 		setDefault("waiting_retry", false)
 		setDefault("retry_at", 0.0)
-		setDefault("has_retried", false)
 		setDefault("allocated", false)
 		op["running"] = true
 		if hasTitle {
@@ -2472,7 +2466,6 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		if c.startCancel.IsSet() {
 			op["cancellable"] = false
 			op["cancelling"] = true
-			op["retryable"] = false
 			op["waiting_retry"] = false
 			op["retry_at"] = 0.0
 			if strings.Contains(message, "取消") {
@@ -2515,7 +2508,6 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		if c.startCancel.IsSet() || asBool(op["cancelling"]) {
 			op["cancellable"] = false
 			op["cancelling"] = true
-			op["retryable"] = false
 			op["waiting_retry"] = false
 			op["retry_at"] = 0.0
 			if asBool(info["allocated"]) {
@@ -2528,13 +2520,11 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		}
 		for _, k := range []string{
 			"waiting_retry",
-			"retryable",
 			"retry_at",
 			"attempt",
 			"next_attempt",
 			"total_attempts",
 			"retry_kind",
-			"has_retried",
 			"allocated",
 			"gpu",
 		} {
@@ -2725,7 +2715,6 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		OnTelemetry:  onBootTelemetry,
 		OnRetryState: onRetryState,
 		CancelEvent:  c.startCancel,
-		RetryEvent:   c.startRetry,
 	}); err != nil {
 		return rollback(err)
 	}
@@ -2770,10 +2759,8 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 	if prevOp := asMap(c.data["operation"]); prevOp != nil && asString(prevOp["kind"]) == "runtime_start" {
 		doneOp := deepCopyMap(prevOp)
 		doneOp["cancellable"] = false
-		doneOp["retryable"] = false
 		doneOp["waiting_retry"] = false
 		doneOp["retry_at"] = 0.0
-		doneOp["has_retried"] = false
 		startDoneLogs = c.updateLocked(map[string]any{"operation": doneOp})
 	}
 	c.mu.Unlock()

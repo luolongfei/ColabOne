@@ -468,12 +468,6 @@ export const zhTWMessages: ColabOneMessages = {
   "device.cancellingAllocation": "正在取消…",
   "device.cancelAllocationTooltip":
     "停止目前的分配或啟動流程；若已分配執行個體將自動釋放，不會產生殘留計費",
-  "device.retryNow": "立即重試",
-  "device.retryingNow": "正在請求…",
-  "device.retryAllocationNowTooltip":
-    "略過等待倒數，立即向 Google 重新發起分配請求",
-  "device.retryAllocationRequestingTooltip":
-    "正在向 Google 請求分配，等待本次回應後可手動立即重試",
   "device.waitingRetryCapacity":
     "Google 算力緊張，{seconds} 秒後自動重試分配 {gpu}（第 {next}/{total} 次）",
   "device.waitingRetryCapacitySoon":
@@ -487,7 +481,6 @@ export const zhTWMessages: ColabOneMessages = {
   "device.waitingRetryNetworkSoon":
     "分配請求未成功，即將重試分配 {gpu}（第 {next}/{total} 次）",
   "device.toastAllocationCancelled": "已取消 GPU 分配",
-  "device.toastRetryTriggered": "已略過等待，立即重試分配",
   "device.idlePaused": "工作執行中 · 自動釋放已暫停",
   "device.idleCountdownRemaining": "剩餘",
   "device.idleCountdownSuffix": "自動釋放",

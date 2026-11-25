@@ -466,12 +466,6 @@ export const zhCNMessages = {
   "device.cancellingAllocation": "正在取消…",
   "device.cancelAllocationTooltip":
     "停止当前分配或启动流程；若已分配实例将自动释放，不会产生残留计费",
-  "device.retryNow": "立即重试",
-  "device.retryingNow": "正在请求…",
-  "device.retryAllocationNowTooltip":
-    "跳过等待倒计时，立即向 Google 重新发起分配请求",
-  "device.retryAllocationRequestingTooltip":
-    "正在向 Google 请求分配，等待本次响应后可手动立即重试",
   "device.waitingRetryCapacity":
     "Google 算力紧张，{seconds} 秒后自动重试分配 {gpu}（第 {next}/{total} 次）",
   "device.waitingRetryCapacitySoon":
@@ -485,7 +479,6 @@ export const zhCNMessages = {
   "device.waitingRetryNetworkSoon":
     "分配请求未成功，即将重试分配 {gpu}（第 {next}/{total} 次）",
   "device.toastAllocationCancelled": "已取消 GPU 分配",
-  "device.toastRetryTriggered": "已跳过等待，立即重试分配",
   "device.idlePaused": "任务运行中 · 自动释放已暂停",
   "device.idleCountdownRemaining": "剩余",
   "device.idleCountdownSuffix": "自动释放",

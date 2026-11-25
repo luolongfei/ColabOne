@@ -1757,7 +1757,6 @@ const confirmingDriveAuth = ref(false);
 let lastDriveProbeAt = 0;
 
 const cancellingStart = ref(false);
-const retryingStart = ref(false);
 const startCancelPendingToast = ref(false);
 
 const isStartOperationActive = computed(
@@ -1780,23 +1779,6 @@ const showStartCancelButton = computed(
     (Boolean(state.value.operation?.cancellable) ||
       Boolean(state.value.operation?.cancelling) ||
       cancellingStart.value),
-);
-const canRetryStartNow = computed(
-  () =>
-    isStartOperationActive.value &&
-    Boolean(state.value.operation?.waiting_retry) &&
-    !isStartCancelling.value &&
-    !retryingStart.value,
-);
-const showStartRetryButton = computed(
-  () =>
-    isStartOperationActive.value &&
-    !isStartCancelling.value &&
-    (Boolean(state.value.operation?.waiting_retry) ||
-      Boolean(state.value.operation?.has_retried)),
-);
-const showStartOperationActions = computed(
-  () => showStartRetryButton.value || showStartCancelButton.value,
 );
 
 const startRetryRemainingSeconds = computed<number | null>(() => {
@@ -1900,26 +1882,6 @@ async function cancelStart() {
   }
 }
 
-async function retryStartNow() {
-  if (!canRetryStartNow.value) return;
-  retryingStart.value = true;
-  try {
-    const res = await colabOneCommand("runtime.start.retry", {});
-    if (res?.triggered) {
-      notify(
-        t("device.toastRetryTriggered"),
-        "info",
-        "runtime-start-retry-now",
-      );
-    }
-    await syncSnapshot().catch(() => {});
-  } catch (e) {
-    showError(e);
-  } finally {
-    retryingStart.value = false;
-  }
-}
-
 function clearConfirmDriveTimer() {
   confirmingDriveAuth.value = false;
 }
@@ -1964,7 +1926,6 @@ watch(
     if (!op) {
       clearConfirmDriveTimer();
       cancellingStart.value = false;
-      retryingStart.value = false;
       if (startCancelPendingToast.value) {
         startCancelPendingToast.value = false;
         if (!state.value.error) {
@@ -4261,44 +4222,9 @@ onUnmounted(() => {
                   }}</span>
                 </span>
               </template>
-              <template v-if="showStartOperationActions" #action>
+              <template v-if="showStartCancelButton" #action>
                 <ASpace :size="8" class="co-op-actions">
                   <ColabOneTooltip
-                    v-if="showStartRetryButton"
-                    :title="
-                      canRetryStartNow
-                        ? t('device.retryAllocationNowTooltip')
-                        : t('device.retryAllocationRequestingTooltip')
-                    "
-                    placement="bottomRight"
-                  >
-                    <span
-                      class="co-op-action-wrap"
-                      :class="{ 'is-disabled': !canRetryStartNow }"
-                    >
-                      <AButton
-                        size="small"
-                        class="co-op-retry-btn"
-                        :loading="retryingStart || !canRetryStartNow"
-                        :disabled="!canRetryStartNow"
-                        @click="retryStartNow"
-                      >
-                        <template
-                          v-if="canRetryStartNow && !retryingStart"
-                          #icon
-                        >
-                          <PhArrowsClockwise :size="13" />
-                        </template>
-                        {{
-                          canRetryStartNow
-                            ? t("device.retryNow")
-                            : t("device.retryingNow")
-                        }}
-                      </AButton>
-                    </span>
-                  </ColabOneTooltip>
-                  <ColabOneTooltip
-                    v-if="showStartCancelButton"
                     :title="t('device.cancelAllocationTooltip')"
                     placement="bottomRight"
                   >
@@ -4630,43 +4556,10 @@ onUnmounted(() => {
                       v-if="
                         isStartOperationActive &&
                         state.runtime.state === 'starting' &&
-                        showStartOperationActions
+                        showStartCancelButton
                       "
                     >
                       <ColabOneTooltip
-                        v-if="showStartRetryButton"
-                        :title="
-                          canRetryStartNow
-                            ? t('device.retryAllocationNowTooltip')
-                            : t('device.retryAllocationRequestingTooltip')
-                        "
-                      >
-                        <span
-                          class="co-op-action-wrap"
-                          :class="{ 'is-disabled': !canRetryStartNow }"
-                        >
-                          <AButton
-                            class="co-device-retry-btn"
-                            :loading="retryingStart || !canRetryStartNow"
-                            :disabled="!canRetryStartNow"
-                            @click="retryStartNow"
-                          >
-                            <template
-                              v-if="canRetryStartNow && !retryingStart"
-                              #icon
-                            >
-                              <PhArrowsClockwise :size="14" />
-                            </template>
-                            {{
-                              canRetryStartNow
-                                ? t("device.retryNow")
-                                : t("device.retryingNow")
-                            }}
-                          </AButton>
-                        </span>
-                      </ColabOneTooltip>
-                      <ColabOneTooltip
-                        v-if="showStartCancelButton"
                         :title="t('device.cancelAllocationTooltip')"
                       >
                         <AButton
@@ -7663,13 +7556,11 @@ onUnmounted(() => {
   row-gap: 8px;
 }
 
-.co-upgrade-action-wrap,
-.co-op-action-wrap {
+.co-upgrade-action-wrap {
   display: inline-flex;
 }
 
-.co-upgrade-action-wrap.is-disabled,
-.co-op-action-wrap.is-disabled {
+.co-upgrade-action-wrap.is-disabled {
   cursor: not-allowed;
 }
 

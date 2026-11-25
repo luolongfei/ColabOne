@@ -1417,16 +1417,13 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				"kind":          "runtime_start",
 				"cancellable":   true,
 				"cancelling":    false,
-				"retryable":     false,
 				"waiting_retry": false,
 				"retry_at":      0.0,
-				"has_retried":   false,
 				"allocated":     false,
 				"gpu":           targetGPU,
 			},
 			func() error {
 				c.startCancel.Clear()
-				c.startRetry.Clear()
 				return nil
 			},
 		)
@@ -1446,7 +1443,6 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		nextOp["title"] = cancelTitle
 		nextOp["cancellable"] = false
 		nextOp["cancelling"] = true
-		nextOp["retryable"] = false
 		nextOp["waiting_retry"] = false
 		nextOp["retry_at"] = 0.0
 		c.startCancel.Set()
@@ -1455,27 +1451,6 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		c.flushActivityLogs(pendingLogs)
 		c.log("已请求取消 GPU 分配", "GPU", "info")
 		return map[string]any{"ok": true, "cancelled": true}, nil
-
-	case "runtime.start.retry":
-		c.mu.Lock()
-		op := asMap(c.data["operation"])
-		if op == nil ||
-			asString(op["kind"]) != "runtime_start" ||
-			!asBool(op["waiting_retry"]) ||
-			asBool(op["cancelling"]) ||
-			c.startCancel.IsSet() {
-			c.mu.Unlock()
-			return map[string]any{"ok": true, "triggered": false}, nil
-		}
-		nextOp := deepCopyMap(op)
-		nextOp["waiting_retry"] = false
-		nextOp["retryable"] = false
-		nextOp["retry_at"] = 0.0
-		c.startRetry.Set()
-		pendingLogs := c.updateLocked(map[string]any{"operation": nextOp})
-		c.mu.Unlock()
-		c.flushActivityLogs(pendingLogs)
-		return map[string]any{"ok": true, "triggered": true}, nil
 
 	case "runtime.release":
 		targetEP := asString(payload["endpoint"])
