@@ -1592,11 +1592,16 @@ export const enUSMessages: ColabOneMessages = {
   // App Self-Update
   "update.navUpdateBadge": "Update",
   "update.navRestartBadge": "Restart",
+  "update.navRollbackBadge": "Rollback",
   "update.navDownloadingBadge": "Updating {percent}%",
+  "update.navRollingBackBadge": "Rolling back {percent}%",
   "update.navVersionTooltipAvailable": "New version v{version} available — click to view update",
   "update.navVersionTooltipRestart": "Version v{version} is ready — click to restart and update",
+  "update.navVersionTooltipRollbackRestart": "Rollback version v{version} is ready — click to restart and roll back",
   "update.navVersionTooltipDownloading": "Downloading ColabOne v{version} ({percent}%)",
+  "update.navVersionTooltipRollbackDownloading": "Downloading rollback ColabOne v{version} ({percent}%)",
   "update.navVersionTooltipDefault": "ColabOne {version} · Click to check for updates",
+  "update.popoverHeader": "Current Version",
   "update.settingsTitle": "App Updates",
   "update.settingsDesc":
     "Check for and install Ed25519-verified stable or prerelease builds directly from GitHub Releases, with incremental binary patch support.",
@@ -1612,16 +1617,21 @@ export const enUSMessages: ColabOneMessages = {
   "update.lastCheckedNever": "Not checked yet",
   "update.lastCheckedAt": "Last checked: {time}",
   "update.btnCheck": "Check for Updates",
+  "update.btnCheckAgain": "Check Again",
   "update.btnChecking": "Checking…",
   "update.btnUpdateNow": "Update Now",
   "update.btnViewUpdate": "View Update",
   "update.btnRestartNow": "Restart to Update",
+  "update.btnRestartRollback": "Restart to Roll Back",
   "update.btnRestartLater": "Restart Later",
   "update.btnCancelDownload": "Cancel Download",
   "update.btnSkipVersion": "Skip This Version",
   "update.btnRemindLater": "Remind Me Later",
   "update.btnRetry": "Retry",
   "update.btnOpenReleases": "Download on GitHub",
+  "update.btnViewReleases": "View Releases",
+  "update.btnRollbackTo": "Roll Back to v{version}",
+  "update.btnDownloadVersion": "Download v{version} on GitHub",
   "update.prefAutoCheckLabel": "Automatically check on launch",
   "update.prefAutoCheckDesc":
     "Silently checks for updates on startup and every 6 hours; you always choose when to install.",
@@ -1630,9 +1640,16 @@ export const enUSMessages: ColabOneMessages = {
     "Try preview builds (such as rc / beta) early; turning this off returns to the stable channel on the next newer stable release.",
   "update.modalTitleAvailable": "Update Available",
   "update.modalTitleReady": "Update Ready",
+  "update.modalTitleRollbackReady": "Rollback Ready",
   "update.modalTitleUpToDate": "You're Up to Date",
   "update.modalTitleError": "Update Check Failed",
+  "update.modalTitleRollbackError": "Rollback Failed",
   "update.modalTitleDisabled": "Software Update",
+  "update.heroAvailable": "New version v{version} available",
+  "update.heroDownloading": "Downloading v{version}…",
+  "update.heroInstalling": "Installing v{version}…",
+  "update.heroDownloadingRollback": "Downloading rollback v{version}…",
+  "update.heroInstallingRollback": "Rolling back to v{version}…",
   "update.modalPrereleaseTag": "Prerelease",
   "update.modalVersionTransition": "v{current} → v{target}",
   "update.modalPublishedAt": "Released {date}",
@@ -1655,9 +1672,22 @@ export const enUSMessages: ColabOneMessages = {
     "Downloading signed update package (with incremental diff patch support)…",
   "update.modalInstallingHint":
     "Verifying Ed25519 signature and applying update — please do not close the app…",
+  "update.modalRollbackDownloadingHint":
+    "Downloading signed historical release package…",
+  "update.modalRollbackInstallingHint":
+    "Verifying Ed25519 signature and restoring files — please do not close the app…",
   "update.modalReadyHint":
     "ColabOne v{version} is verified and ready. Restart the app to switch to the new version.",
+  "update.modalRollbackReadyHint":
+    "ColabOne v{version} is verified and ready. Restart the app to roll back to this version.",
   "update.modalUpToDateDesc": "You are running ColabOne v{version}, the latest available version.",
+  "update.rollbackTitle": "Version Rollback",
+  "update.rollbackSubtitle": "Choose a version to roll back to (last {count} releases)",
+  "update.rollbackLoading": "Loading previous releases…",
+  "update.rollbackEmpty": "No earlier releases available for rollback",
+  "update.rollbackLoadError": "Failed to load previous releases. Try again later.",
+  "update.rollbackManualHint":
+    "One-click rollback is unavailable for this release (read-only install or no signed package for this platform). Download it from GitHub instead.",
   "update.errProxy":
     "Failed to connect through your system proxy. Verify that your proxy is running and configured properly, or download manually from GitHub Releases.",
   "update.errTimeout":

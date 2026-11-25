@@ -1,0 +1,651 @@
+package updater
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func buildTestTarGz(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for name, content := range files {
+		data := []byte(content)
+		hdr := &tar.Header{
+			Name:     name,
+			Mode:     0o755,
+			Size:     int64(len(data)),
+			Typeflag: tar.TypeReg,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write tar header %q: %v", name, err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatalf("write tar body %q: %v", name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestListRollbackReleasesFiltersSortsCapsAndChecksManifest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/test/repo/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"tag_name":"v0.2.25","draft":false,"prerelease":false,"published_at":"2026-11-24T00:00:00Z","assets":[{"name":"update-windows-amd64.json"}]},
+			{"tag_name":"v0.2.24","draft":false,"prerelease":false,"published_at":"2026-11-22T00:00:00Z","assets":[{"name":"update-windows-amd64.json"}]},
+			{"tag_name":"v0.2.23-rc.1","draft":false,"prerelease":true,"published_at":"2026-11-19T00:00:00Z","assets":[{"name":"update-windows-amd64.json"}]},
+			{"tag_name":"v0.2.22","draft":false,"prerelease":false,"published_at":"2026-11-17T00:00:00Z","assets":[{"name":"update-windows-amd64.json"}]},
+			{"tag_name":"v0.2.23","draft":false,"prerelease":false,"published_at":"2026-11-18T00:00:00Z","assets":[{"name":"update-windows-amd64.json"}]},
+			{"tag_name":"v0.2.21","draft":false,"prerelease":false,"published_at":"2026-11-11T00:00:00Z","assets":[{"name":"ColabOne-0.2.21-setup.exe"}]},
+			{"tag_name":"v0.2.20","draft":false,"prerelease":false,"published_at":"2026-11-05T00:00:00Z","assets":[{"name":"update-windows-amd64.json"}]},
+			{"tag_name":"v0.2.19","draft":true,"prerelease":false,"published_at":"2026-11-01T00:00:00Z","assets":[{"name":"update-windows-amd64.json"}]}
+		]`))
+	}))
+	defer srv.Close()
+
+	checker := &ColabOneReadOnlyFeedChecker{
+		Repo:       "test/repo",
+		Target:     "windows-amd64",
+		GitHubBase: srv.URL,
+		APIBase:    srv.URL,
+		Client:     srv.Client(),
+	}
+
+	got, err := checker.ListRollbackReleases(context.Background(), false, "0.2.24", true, 3)
+	if err != nil {
+		t.Fatalf("ListRollbackReleases failed: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3 (%+v)", len(got), got)
+	}
+	if got[0].Version != "0.2.23" || !got[0].CanRollback || got[0].ReleaseDate != "2026-11-18T00:00:00Z" {
+		t.Fatalf("unexpected got[0]: %+v", got[0])
+	}
+	if got[1].Version != "0.2.22" || !got[1].CanRollback {
+		t.Fatalf("unexpected got[1]: %+v", got[1])
+	}
+	if got[2].Version != "0.2.21" || got[2].CanRollback {
+		t.Fatalf("expected v0.2.21 without manifest to have CanRollback=false: %+v", got[2])
+	}
+
+	// Read-only install disables one-click rollback even when manifest exists.
+	roGot, err := checker.ListRollbackReleases(context.Background(), false, "0.2.24", false, 3)
+	if err != nil {
+		t.Fatalf("ListRollbackReleases read-only failed: %v", err)
+	}
+	for _, item := range roGot {
+		if item.CanRollback {
+			t.Fatalf("expected CanRollback=false on read-only install: %+v", item)
+		}
+	}
+
+	// Including prereleases exposes v0.2.23-rc.1 in proper SemVer order.
+	preGot, err := checker.ListRollbackReleases(context.Background(), true, "0.2.24", true, 3)
+	if err != nil {
+		t.Fatalf("ListRollbackReleases prerelease failed: %v", err)
+	}
+	if len(preGot) != 3 || preGot[0].Version != "0.2.23" || preGot[1].Version != "0.2.23-rc.1" || !preGot[1].IsPrerelease {
+		t.Fatalf("unexpected prerelease order: %+v", preGot)
+	}
+}
+
+func TestListRollbackReleasesFallsBackToManifestPreviousOnRateLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/test/repo/releases":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+		case "/test/repo/releases/latest/download/update-windows-amd64.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"version": "0.1.13",
+				"url": "https://example.invalid/0.1.13.tar.gz",
+				"size": 100,
+				"signature": "sig",
+				"previous": [
+					{"version":"0.1.12","url":"https://example.invalid/0.1.12.tar.gz","size":90,"signature":"sig12"},
+					{"version":"0.1.11","url":"https://example.invalid/0.1.11.tar.gz","size":80,"signature":"sig11"}
+				]
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	checker := &ColabOneReadOnlyFeedChecker{
+		Repo:       "test/repo",
+		Target:     "windows-amd64",
+		GitHubBase: srv.URL,
+		APIBase:    srv.URL,
+		Client:     srv.Client(),
+	}
+
+	got, err := checker.ListRollbackReleases(context.Background(), false, "0.1.13", true, 3)
+	if err != nil {
+		t.Fatalf("expected fallback to succeed on rate limit: %v", err)
+	}
+	if len(got) != 2 || got[0].Version != "0.1.12" || !got[0].CanRollback || got[1].Version != "0.1.11" {
+		t.Fatalf("unexpected fallback rollback list: %+v", got)
+	}
+}
+
+func TestRollbackInstallerVerifiesEd25519SignatureAndSwapsFiles(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	archiveBytes := buildTestTarGz(t, map[string]string{
+		"ColabOne.exe": "binary-v0.1.12",
+		"README.md":    "readme-v0.1.12",
+	})
+	sum := sha256.Sum256(archiveBytes)
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, sum[:]))
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/test/repo/releases/download/v0.1.12/update-windows-amd64.json":
+			_ = json.NewEncoder(w).Encode(ColabOneSignedManifest{
+				Version:   "0.1.12",
+				Date:      "2026-11-23T00:00:00Z",
+				URL:       srv.URL + "/downloads/colabone-0.1.12.tar.gz",
+				Size:      int64(len(archiveBytes)),
+				Signature: sig,
+			})
+		case "/downloads/colabone-0.1.12.tar.gz":
+			_, _ = w.Write(archiveBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	parent := t.TempDir()
+	installDir := filepath.Join(parent, "ColabOne")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "ColabOne.exe"), []byte("binary-v0.1.13"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "obsolete.dat"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "user-portable.txt"), []byte("keep-me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, colabOneMyGoFileList), []byte("ColabOne.exe\nobsolete.dat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installer := &ColabOneRollbackInstaller{
+		Repo:       "test/repo",
+		Target:     "windows-amd64",
+		PublicKey:  base64.StdEncoding.EncodeToString(pub),
+		GitHubBase: srv.URL,
+		Client:     srv.Client(),
+		TargetDir:  installDir,
+		StartExe:   filepath.Join(installDir, "ColabOne.exe"),
+		PlatformOS: "linux",
+	}
+
+	handle, err := installer.PrepareRollback(context.Background(), "0.1.12")
+	if err != nil {
+		t.Fatalf("PrepareRollback failed: %v", err)
+	}
+	var lastDownloaded, lastTotal int64
+	if err := handle.Install(context.Background(), func(downloaded, total int64) {
+		lastDownloaded = downloaded
+		lastTotal = total
+	}); err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+	if lastDownloaded != int64(len(archiveBytes)) || lastTotal != int64(len(archiveBytes)) {
+		t.Fatalf("progress = (%d, %d), want (%d, %d)", lastDownloaded, lastTotal, len(archiveBytes), len(archiveBytes))
+	}
+
+	gotBin, err := os.ReadFile(filepath.Join(installDir, "ColabOne.exe"))
+	if err != nil || string(gotBin) != "binary-v0.1.12" {
+		t.Fatalf("ColabOne.exe = %q, err=%v", string(gotBin), err)
+	}
+	gotReadme, err := os.ReadFile(filepath.Join(installDir, "README.md"))
+	if err != nil || string(gotReadme) != "readme-v0.1.12" {
+		t.Fatalf("README.md = %q, err=%v", string(gotReadme), err)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "obsolete.dat")); !os.IsNotExist(err) {
+		t.Fatalf("expected obsolete.dat to be removed, err=%v", err)
+	}
+	gotUser, err := os.ReadFile(filepath.Join(installDir, "user-portable.txt"))
+	if err != nil || string(gotUser) != "keep-me" {
+		t.Fatalf("expected untracked user file to survive rollback: %q, err=%v", string(gotUser), err)
+	}
+}
+
+func TestRollbackInstallerRejectsTamperedSignatureAndPathTraversal(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goodArchive := buildTestTarGz(t, map[string]string{"ColabOne.exe": "good"})
+	evilArchive := buildTestTarGz(t, map[string]string{"../escape.txt": "pwned"})
+	evilSum := sha256.Sum256(evilArchive)
+	evilSig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, evilSum[:]))
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/test/repo/releases/download/v0.1.11/update-windows-amd64.json":
+			_ = json.NewEncoder(w).Encode(ColabOneSignedManifest{
+				Version:   "0.1.11",
+				URL:       srv.URL + "/good.tar.gz",
+				Size:      int64(len(goodArchive)),
+				Signature: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, ed25519.SignatureSize)),
+			})
+		case "/test/repo/releases/download/v0.1.10/update-windows-amd64.json":
+			_ = json.NewEncoder(w).Encode(ColabOneSignedManifest{
+				Version:   "0.1.10",
+				URL:       srv.URL + "/evil.tar.gz",
+				Size:      int64(len(evilArchive)),
+				Signature: evilSig,
+			})
+		case "/test/repo/releases/download/v0.1.9/update-windows-amd64.json":
+			_ = json.NewEncoder(w).Encode(ColabOneSignedManifest{
+				Version:   "0.1.8", // mismatch!
+				URL:       srv.URL + "/good.tar.gz",
+				Size:      int64(len(goodArchive)),
+				Signature: evilSig,
+			})
+		case "/good.tar.gz":
+			_, _ = w.Write(goodArchive)
+		case "/evil.tar.gz":
+			_, _ = w.Write(evilArchive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	parent := t.TempDir()
+	installDir := filepath.Join(parent, "ColabOne")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "ColabOne.exe"), []byte("orig"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	installer := &ColabOneRollbackInstaller{
+		Repo:       "test/repo",
+		Target:     "windows-amd64",
+		PublicKey:  base64.StdEncoding.EncodeToString(pub),
+		GitHubBase: srv.URL,
+		Client:     srv.Client(),
+		TargetDir:  installDir,
+		StartExe:   filepath.Join(installDir, "ColabOne.exe"),
+		PlatformOS: "linux",
+	}
+
+	// 1. Bad signature must fail with ErrCodeSignature.
+	hBadSig, err := installer.PrepareRollback(context.Background(), "0.1.11")
+	if err != nil {
+		t.Fatalf("PrepareRollback 0.1.11: %v", err)
+	}
+	if err := hBadSig.Install(context.Background(), nil); err == nil {
+		t.Fatal("expected tampered signature to fail")
+	} else if code, _ := ClassifyUpdateError(err); code != ErrCodeSignature {
+		t.Fatalf("error code = %q, want %q (err=%v)", code, ErrCodeSignature, err)
+	}
+
+	// 2. Path traversal in archive must be rejected.
+	hEvil, err := installer.PrepareRollback(context.Background(), "0.1.10")
+	if err != nil {
+		t.Fatalf("PrepareRollback 0.1.10: %v", err)
+	}
+	if err := hEvil.Install(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "invalid path") {
+		t.Fatalf("expected invalid path error, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(parent, "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("escape.txt should not have been created")
+	}
+
+	// 3. Manifest version mismatch must be rejected during PrepareRollback.
+	if _, err := installer.PrepareRollback(context.Background(), "0.1.9"); err == nil {
+		t.Fatal("expected version mismatch manifest to fail")
+	}
+
+	// Original file untouched.
+	gotBin, _ := os.ReadFile(filepath.Join(installDir, "ColabOne.exe"))
+	if string(gotBin) != "orig" {
+		t.Fatalf("original binary modified: %q", string(gotBin))
+	}
+}
+
+type fakeRollbackBackend struct {
+	mu                sync.Mutex
+	current           string
+	canSelf           bool
+	listCalls         int
+	versions          []ColabOneRollbackVersion
+	prepareFn         func(ctx context.Context, version string) (ColabOneUpdateInstallable, error)
+	relaunchedNormal  bool
+	relaunchedMacRoll bool
+}
+
+func (b *fakeRollbackBackend) CurrentVersion() string { return b.current }
+func (b *fakeRollbackBackend) IsDevBuild() bool       { return false }
+func (b *fakeRollbackBackend) CanSelfUpdate() bool    { return b.canSelf }
+func (b *fakeRollbackBackend) SetPrereleases(bool)    {}
+func (b *fakeRollbackBackend) CheckSelfUpdate(context.Context) (ColabOneUpdateInstallable, error) {
+	return nil, nil
+}
+func (b *fakeRollbackBackend) CheckReadOnly(context.Context, bool) (*ColabOneReadOnlyRelease, error) {
+	return nil, nil
+}
+func (b *fakeRollbackBackend) Relaunch() error {
+	b.mu.Lock()
+	b.relaunchedNormal = true
+	b.mu.Unlock()
+	return nil
+}
+func (b *fakeRollbackBackend) ListRollbackVersions(context.Context, bool, string, bool, int) ([]ColabOneRollbackVersion, error) {
+	b.mu.Lock()
+	b.listCalls++
+	out := make([]ColabOneRollbackVersion, len(b.versions))
+	copy(out, b.versions)
+	b.mu.Unlock()
+	return out, nil
+}
+func (b *fakeRollbackBackend) PrepareRollback(ctx context.Context, version string) (ColabOneUpdateInstallable, error) {
+	if b.prepareFn != nil {
+		return b.prepareFn(ctx, version)
+	}
+	return &fakeInstallable{version: version}, nil
+}
+func (b *fakeRollbackBackend) RelaunchRollback() (bool, error) {
+	b.mu.Lock()
+	b.relaunchedMacRoll = true
+	b.mu.Unlock()
+	return true, nil
+}
+
+type blockingInstallable struct {
+	version string
+	started chan struct{}
+}
+
+func (b *blockingInstallable) Version() string { return b.version }
+func (b *blockingInstallable) Notes() string   { return "" }
+func (b *blockingInstallable) Date() time.Time { return time.Time{} }
+func (b *blockingInstallable) Install(ctx context.Context, progress func(downloaded, total int64)) error {
+	if progress != nil {
+		progress(10, 100)
+	}
+	close(b.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestColabOneUpdaterRollbackLifecycleCacheAndCancelRestore(t *testing.T) {
+	started := make(chan struct{})
+	cancelFirst := true
+	backend := &fakeRollbackBackend{
+		current: "0.1.13",
+		canSelf: true,
+		versions: []ColabOneRollbackVersion{
+			{Version: "0.1.12", Tag: "v0.1.12", ReleaseDate: "2026-11-23T00:00:00Z", CanRollback: true},
+			{Version: "0.1.11", Tag: "v0.1.11", ReleaseDate: "2026-11-22T00:00:00Z", CanRollback: true},
+		},
+	}
+	backend.prepareFn = func(_ context.Context, version string) (ColabOneUpdateInstallable, error) {
+		if cancelFirst {
+			cancelFirst = false
+			return &blockingInstallable{version: version, started: started}, nil
+		}
+		return &fakeInstallable{version: version}, nil
+	}
+
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	u := NewColabOneUpdater(ColabOneUpdaterConfig{
+		Backend:   backend,
+		ConfigDir: t.TempDir(),
+		Now:       func() time.Time { return now },
+	})
+	defer u.Close()
+
+	// Seed state as up_to_date.
+	if st, err := u.Check(context.Background(), true); err != nil || st.Status != StatusUpToDate {
+		t.Fatalf("Check: st=%+v err=%v", st, err)
+	}
+
+	// ListRollbackVersions caches results until forceRefresh or TTL expiry.
+	list1, err := u.ListRollbackVersions(context.Background(), false)
+	if err != nil || len(list1) != 2 {
+		t.Fatalf("list1=%+v err=%v", list1, err)
+	}
+	list2, err := u.ListRollbackVersions(context.Background(), false)
+	if err != nil || len(list2) != 2 || backend.listCalls != 1 {
+		t.Fatalf("expected cached list, calls=%d", backend.listCalls)
+	}
+	if _, err := u.ListRollbackVersions(context.Background(), true); err != nil || backend.listCalls != 2 {
+		t.Fatalf("expected forceRefresh to re-fetch, calls=%d err=%v", backend.listCalls, err)
+	}
+
+	// Reject version >= current.
+	if _, err := u.StartRollback("0.1.13"); err == nil {
+		t.Fatal("expected rollback to current version to be rejected")
+	}
+	if _, err := u.StartRollback("0.1.14"); err == nil {
+		t.Fatal("expected rollback to newer version to be rejected")
+	}
+
+	// Start rollback, then cancel mid-download -> restores cleanly to up_to_date (not available!).
+	if st, err := u.StartRollback("0.1.12"); err != nil || st.Status != StatusDownloading || !st.IsRollback {
+		t.Fatalf("StartRollback: st=%+v err=%v", st, err)
+	}
+	<-started
+	canceledSt := u.CancelInstall()
+	if canceledSt.Status != StatusUpToDate || canceledSt.IsRollback || canceledSt.AvailableVersion != "" {
+		t.Fatalf("expected cancel during rollback to restore up_to_date cleanly, got: %+v", canceledSt)
+	}
+
+	// Second rollback succeeds and transitions to ready_to_restart with IsRollback=true.
+	if _, err := u.StartRollback("0.1.12"); err != nil {
+		t.Fatalf("second StartRollback failed: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if u.State().Status == StatusReadyToRestart {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ready := u.State()
+	if ready.Status != StatusReadyToRestart || !ready.IsRollback || ready.AvailableVersion != "0.1.12" {
+		t.Fatalf("unexpected ready rollback state: %+v", ready)
+	}
+	if err := u.Relaunch(); err != nil {
+		t.Fatalf("Relaunch rollback failed: %v", err)
+	}
+	if !backend.relaunchedMacRoll {
+		t.Fatal("expected RelaunchRollback hook to be invoked for rollback restart")
+	}
+}
+
+func TestRollbackStrictSemVerBackslashSymlinkEscapeRetryStallAndChannelReset(t *testing.T) {
+	// 1. Strict SemVer validation rejects path/query injection strings.
+	for _, bad := range []string{"", "0.1.12/../evil", "0.1.12?x=1", "0.1.12#frag", "v01.2.3", "not-a-version"} {
+		if IsValidSemVer(bad) {
+			t.Fatalf("expected IsValidSemVer(%q) = false", bad)
+		}
+	}
+	for _, good := range []string{"0.1.12", "v0.2.23", "1.0.0-rc.1", "v2.3.4-beta.2"} {
+		if !IsValidSemVer(good) {
+			t.Fatalf("expected IsValidSemVer(%q) = true", good)
+		}
+	}
+
+	// 2. Archive extraction rejects Windows-style backslash traversal and escaping symlinks.
+	backslashTar := buildTestTarGz(t, map[string]string{`sub\..\..\escape.exe`: "bad"})
+	if err := extractColabOneSignedArchive(bytes.NewReader(backslashTar), t.TempDir()); err == nil {
+		t.Fatal("expected backslash traversal entry to be rejected")
+	}
+
+	var symBuf bytes.Buffer
+	gz := gzip.NewWriter(&symBuf)
+	tw := tar.NewWriter(gz)
+	_ = tw.WriteHeader(&tar.Header{Name: "escape", Typeflag: tar.TypeSymlink, Linkname: ".."})
+	_ = tw.Close()
+	_ = gz.Close()
+	if err := extractColabOneSignedArchive(bytes.NewReader(symBuf.Bytes()), t.TempDir()); err == nil {
+		t.Fatal("expected escaping symlink to be rejected")
+	}
+
+	// 3. Transient HTTP 503 retries succeed; stalled download aborts with ErrCodeTimeout.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveBytes := buildTestTarGz(t, map[string]string{"ColabOne.exe": "v0.1.11"})
+	sum := sha256.Sum256(archiveBytes)
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, sum[:]))
+
+	var attempts int
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/test/repo/releases/download/v0.1.11/update-windows-amd64.json":
+			attempts++
+			if attempts == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(ColabOneSignedManifest{
+				Version:   "0.1.11",
+				URL:       srv.URL + "/ok.tar.gz",
+				Size:      int64(len(archiveBytes)),
+				Signature: sig,
+			})
+		case "/ok.tar.gz":
+			_, _ = w.Write(archiveBytes)
+		case "/test/repo/releases/download/v0.1.10/update-windows-amd64.json":
+			_ = json.NewEncoder(w).Encode(ColabOneSignedManifest{
+				Version:   "0.1.10",
+				URL:       srv.URL + "/stall.tar.gz",
+				Size:      int64(len(archiveBytes)),
+				Signature: sig,
+			})
+		case "/stall.tar.gz":
+			w.WriteHeader(http.StatusOK)
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	installDir := filepath.Join(t.TempDir(), "ColabOne")
+	_ = os.MkdirAll(installDir, 0o755)
+	installer := &ColabOneRollbackInstaller{
+		Repo:         "test/repo",
+		Target:       "windows-amd64",
+		PublicKey:    base64.StdEncoding.EncodeToString(pub),
+		GitHubBase:   srv.URL,
+		Client:       srv.Client(),
+		TargetDir:    installDir,
+		StartExe:     filepath.Join(installDir, "ColabOne.exe"),
+		PlatformOS:   "linux",
+		StallTimeout: 80 * time.Millisecond,
+		RetryDelays:  []time.Duration{5 * time.Millisecond},
+	}
+
+	hRetry, err := installer.PrepareRollback(context.Background(), "0.1.11")
+	if err != nil || attempts != 2 {
+		t.Fatalf("expected transient 503 retry to succeed on attempt 2: attempts=%d err=%v", attempts, err)
+	}
+	if err := hRetry.Install(context.Background(), nil); err != nil {
+		t.Fatalf("Install after retry failed: %v", err)
+	}
+
+	hStall, err := installer.PrepareRollback(context.Background(), "0.1.10")
+	if err != nil {
+		t.Fatalf("PrepareRollback stall: %v", err)
+	}
+	if err := hStall.Install(context.Background(), nil); err == nil {
+		t.Fatal("expected stalled download to fail")
+	} else if code, _ := ClassifyUpdateError(err); code != ErrCodeTimeout {
+		t.Fatalf("expected stalled download to classify as %q, got %q (err=%v)", ErrCodeTimeout, code, err)
+	}
+
+	// 4. Channel toggle clears cached RollbackVersions, and cancelling a rollback
+	// started from StatusError restores cleanly to StatusUpToDate (never empty error).
+	started := make(chan struct{})
+	rbBackend := &fakeRollbackBackend{
+		current: "0.1.13",
+		canSelf: true,
+		versions: []ColabOneRollbackVersion{
+			{Version: "0.1.12", Tag: "v0.1.12", CanRollback: true},
+		},
+		prepareFn: func(_ context.Context, version string) (ColabOneUpdateInstallable, error) {
+			return &blockingInstallable{version: version, started: started}, nil
+		},
+	}
+	u := NewColabOneUpdater(ColabOneUpdaterConfig{
+		Backend:   rbBackend,
+		ConfigDir: t.TempDir(),
+	})
+	defer u.Close()
+
+	if list, err := u.ListRollbackVersions(context.Background(), false); err != nil || len(list) != 1 {
+		t.Fatalf("ListRollbackVersions: %+v err=%v", list, err)
+	}
+	stPref, changed, err := u.SetPreferences(true, true)
+	if err != nil || !changed || len(stPref.RollbackVersions) != 0 {
+		t.Fatalf("expected channel toggle to clear RollbackVersions: changed=%v st=%+v err=%v", changed, stPref, err)
+	}
+
+	// Put updater into StatusError before starting rollback, then cancel rollback.
+	u.mu.Lock()
+	u.state.Status = StatusError
+	u.state.ErrorCode = ErrCodeNetwork
+	u.state.ErrorMessage = "dial tcp failed"
+	u.mu.Unlock()
+
+	if _, err := u.StartRollback("0.1.12"); err != nil {
+		t.Fatalf("StartRollback from StatusError failed: %v", err)
+	}
+	<-started
+	restored := u.CancelInstall()
+	if restored.Status != StatusUpToDate || restored.IsRollback || restored.AvailableVersion != "" || restored.ErrorCode != "" {
+		t.Fatalf("expected cancel after error state to restore clean up_to_date, got: %+v", restored)
+	}
+}

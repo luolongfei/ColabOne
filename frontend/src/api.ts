@@ -19,6 +19,7 @@ import {
   type ColabOneMigrationPreview,
   type ColabOneMigrationSettingsSummary,
   type ColabOneMigrationUIPrefs,
+  type ColabOneRollbackVersion,
   type ColabOneUpdateState,
 } from "./colabOneBridge";
 import type { ColabOneSnapshot } from "./types";
@@ -41,6 +42,7 @@ export type {
   ColabOneMigrationPreview,
   ColabOneMigrationSettingsSummary,
   ColabOneMigrationUIPrefs,
+  ColabOneRollbackVersion,
   ColabOneUpdateState,
 };
 
@@ -139,6 +141,7 @@ function fallbackColabOneUpdateState(): ColabOneUpdateState {
     current_version: "",
     available_version: "",
     is_prerelease: false,
+    is_rollback: false,
     release_date: "",
     release_url: "https://github.com/luolongfei/ColabOne/releases",
     notes_raw: "",
@@ -156,6 +159,7 @@ function fallbackColabOneUpdateState(): ColabOneUpdateState {
     last_checked_at: 0,
     error_code: "",
     error_message: "",
+    rollback_versions: [],
   };
 }
 
@@ -179,6 +183,19 @@ export async function colabOneCheckForUpdate(
 
 export async function colabOneStartUpdateInstall(): Promise<ColabOneUpdateState> {
   return ColabOneDesktop.startUpdateInstall();
+}
+
+export async function colabOneListRollbackVersions(
+  forceRefresh = false,
+): Promise<ColabOneRollbackVersion[]> {
+  const res = await ColabOneDesktop.listRollbackVersions(forceRefresh);
+  return Array.isArray(res) ? res : [];
+}
+
+export async function colabOneStartUpdateRollback(
+  version: string,
+): Promise<ColabOneUpdateState> {
+  return ColabOneDesktop.startUpdateRollback(version);
 }
 
 export async function colabOneCancelUpdateInstall(): Promise<ColabOneUpdateState> {

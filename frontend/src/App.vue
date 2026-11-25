@@ -148,6 +148,7 @@ import {
   colabOneGetCloseBehavior,
   colabOneGetLogDrawerState,
   colabOneGetUpdateState,
+  colabOneListRollbackVersions,
   colabOneOnCloseBehavior,
   colabOneOnCloseRequest,
   colabOneOnUpdateOpen,
@@ -168,6 +169,7 @@ import {
   colabOneSkipUpdateVersion,
   colabOneSnapshotRaw,
   colabOneStartUpdateInstall,
+  colabOneStartUpdateRollback,
   colabOneWriteClipboard,
   normalizeColabOneCloseAction,
   normalizeColabOneCloseBehavior,
@@ -176,6 +178,7 @@ import {
   type ColabOneMigrationExportSummary,
   type ColabOneMigrationPickResult,
   type ColabOneMigrationPreview,
+  type ColabOneRollbackVersion,
   type ColabOneUpdateState,
 } from "./api";
 import {
@@ -188,9 +191,11 @@ import {
   createColabOneUpdateState,
   hasColabOneActiveUpdatePill,
   hasColabOneUnreadUpdateDot,
+  normalizeColabOneRollbackVersions,
   normalizeColabOneUpdateState,
   normalizeColabOneUpdateVersion,
   readColabOneSeenUpdateVersion,
+  shouldColabOneAutoCheckOnPopoverOpen,
   writeColabOneSeenUpdateVersion,
 } from "./colabOneUpdater";
 import {
@@ -423,6 +428,11 @@ const updateState = ref<ColabOneUpdateState>(createColabOneUpdateState());
 const updateModalOpen = ref(false);
 const checkingUpdate = ref(false);
 const savingUpdatePrefs = ref(false);
+const rollbackVersions = ref<ColabOneRollbackVersion[]>([]);
+const loadingRollbackVersions = ref(false);
+const rollbackVersionsLoaded = ref(false);
+const rollbackVersionsError = ref("");
+const startingRollback = ref(false);
 const seenUpdateVersion = ref<string>(readColabOneSeenUpdateVersion());
 let unsubUpdateState: (() => void) | null = null;
 let unsubUpdateOpen: (() => void) | null = null;
@@ -2882,8 +2892,18 @@ function applyUpdateState(
   if (fromPush) {
     lastUpdatePushAt = Date.now();
   }
+  const prevIncludePre = updateState.value.include_prerelease;
   const normalized = normalizeColabOneUpdateState(raw);
   updateState.value = normalized;
+  if (normalized.include_prerelease !== prevIncludePre) {
+    rollbackVersions.value = normalized.rollback_versions;
+    rollbackVersionsLoaded.value = normalized.rollback_versions.length > 0;
+    rollbackVersionsError.value = "";
+  } else if (normalized.rollback_versions.length > 0) {
+    rollbackVersions.value = normalized.rollback_versions;
+    rollbackVersionsLoaded.value = true;
+    rollbackVersionsError.value = "";
+  }
   const inFlight =
     normalized.status === "downloading" || normalized.status === "installing";
   if (inFlight) {
@@ -2950,15 +2970,25 @@ watch(
 const navVersionTooltip = computed(() => {
   const st = updateState.value;
   if (st.status === "ready_to_restart") {
-    return t("update.navVersionTooltipRestart", {
-      version: st.available_version || COLABONE_APP_VERSION,
-    });
+    return t(
+      st.is_rollback
+        ? "update.navVersionTooltipRollbackRestart"
+        : "update.navVersionTooltipRestart",
+      {
+        version: st.available_version || COLABONE_APP_VERSION,
+      },
+    );
   }
   if (st.status === "downloading" || st.status === "installing") {
-    return t("update.navVersionTooltipDownloading", {
-      version: st.available_version || COLABONE_APP_VERSION,
-      percent: Math.round(st.progress_percent),
-    });
+    return t(
+      st.is_rollback
+        ? "update.navVersionTooltipRollbackDownloading"
+        : "update.navVersionTooltipDownloading",
+      {
+        version: st.available_version || COLABONE_APP_VERSION,
+        percent: Math.round(st.progress_percent),
+      },
+    );
   }
   if (st.status === "available" && st.available_version) {
     return t("update.navVersionTooltipAvailable", {
@@ -2972,12 +3002,19 @@ const navUpdateBadgeLabel = computed(() => {
   const st = updateState.value;
   if (!showNavUpdatePill.value) return "";
   if (st.status === "ready_to_restart") {
-    return t("update.navRestartBadge");
+    return t(
+      st.is_rollback ? "update.navRollbackBadge" : "update.navRestartBadge",
+    );
   }
   if (st.status === "downloading" || st.status === "installing") {
-    return t("update.navDownloadingBadge", {
-      percent: Math.round(st.progress_percent),
-    });
+    return t(
+      st.is_rollback
+        ? "update.navRollingBackBadge"
+        : "update.navDownloadingBadge",
+      {
+        percent: Math.round(st.progress_percent),
+      },
+    );
   }
   return t("update.navUpdateBadge");
 });
@@ -3114,6 +3151,45 @@ async function handleStartUpdateInstall() {
   }
 }
 
+async function handleLoadRollbackVersions(forceRefresh = false) {
+  if (loadingRollbackVersions.value) return;
+  if (!forceRefresh && rollbackVersionsLoaded.value) return;
+  loadingRollbackVersions.value = true;
+  rollbackVersionsError.value = "";
+  try {
+    const list = await colabOneListRollbackVersions(forceRefresh);
+    if (stopped) return;
+    rollbackVersions.value = normalizeColabOneRollbackVersions(list);
+    rollbackVersionsLoaded.value = true;
+  } catch (e) {
+    if (stopped) return;
+    rollbackVersionsError.value =
+      normalizeErrorKey(e) || t("update.rollbackLoadError");
+  } finally {
+    loadingRollbackVersions.value = false;
+  }
+}
+
+async function handleStartUpdateRollback(version: string) {
+  const targetVersion = normalizeColabOneUpdateVersion(version);
+  if (!targetVersion || startingRollback.value) return;
+  startingRollback.value = true;
+  try {
+    const next = await colabOneStartUpdateRollback(targetVersion);
+    if (!stopped) applyUpdateState(next);
+  } catch (e) {
+    try {
+      const latest = await colabOneGetUpdateState();
+      if (!stopped) applyUpdateState(latest);
+    } catch {
+      // Ignore secondary state refresh error.
+    }
+    if (!stopped) showError(e);
+  } finally {
+    startingRollback.value = false;
+  }
+}
+
 async function handleCancelUpdateInstall() {
   try {
     const next = await colabOneCancelUpdateInstall();
@@ -3165,6 +3241,11 @@ async function handleToggleUpdatePref(
   savingUpdatePrefs.value = true;
   try {
     const next = await colabOneSetUpdatePreferences(nextAuto, nextPre);
+    if (field === "include_prerelease") {
+      rollbackVersionsLoaded.value = false;
+      rollbackVersions.value = [];
+      rollbackVersionsError.value = "";
+    }
     applyUpdateState(next);
     notify(t("update.toastPrefsSaved"), "success", "update-prefs-saved");
   } catch (e) {
@@ -3184,10 +3265,21 @@ function handleUpdatePopoverOpenChange(next: boolean) {
   if (!next && updateState.value.status === "installing") {
     return;
   }
+  const wasOpen = updateModalOpen.value;
   if (next) {
     markUpdateVersionSeen();
   }
   updateModalOpen.value = next;
+  if (
+    next &&
+    !wasOpen &&
+    shouldColabOneAutoCheckOnPopoverOpen(
+      updateState.value,
+      isCheckingUpdate.value,
+    )
+  ) {
+    void handleCheckForUpdate(false);
+  }
 }
 
 function openUpdatePopover() {
@@ -3750,14 +3842,21 @@ onUnmounted(() => {
                 :open="updateModalOpen"
                 :update-state="updateState"
                 :checking="isCheckingUpdate"
+                :rollback-versions="rollbackVersions"
+                :loading-rollback="loadingRollbackVersions"
+                :rollback-loaded="rollbackVersionsLoaded"
+                :rollback-error="rollbackVersionsError"
+                :starting-rollback="startingRollback"
                 :has-active-runtime="
                   state.runtime.state === 'ready' ||
                   state.runtime.state === 'starting'
                 "
                 :has-active-operation="Boolean(state.operation)"
                 @update:open="handleUpdatePopoverOpenChange"
-                @check="handleCheckForUpdate(true)"
+                @check="handleCheckForUpdate(false)"
                 @install="handleStartUpdateInstall"
+                @load-rollback="handleLoadRollbackVersions"
+                @rollback="handleStartUpdateRollback"
                 @cancel="handleCancelUpdateInstall"
                 @relaunch="handleRelaunchForUpdate"
                 @skip="handleSkipUpdateVersion"
@@ -6348,7 +6447,11 @@ onUnmounted(() => {
                               data-testid="settings-update-restart-btn"
                               @click.stop="openUpdatePopover"
                             >
-                              {{ t("update.btnRestartNow") }}
+                              {{
+                                updateState.is_rollback
+                                  ? t("update.btnRestartRollback")
+                                  : t("update.btnRestartNow")
+                              }}
                             </AButton>
                             <AButton
                               v-else-if="

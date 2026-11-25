@@ -183,6 +183,7 @@ async function mock(page: any, ready = false, path = "/") {
         current_version: "0.1.6",
         available_version: "",
         is_prerelease: false,
+        is_rollback: false,
         release_date: "",
         release_url: "https://github.com/luolongfei/ColabOne/releases",
         notes_raw: "",
@@ -200,10 +201,16 @@ async function mock(page: any, ready = false, path = "/") {
         last_checked_at: 0,
         error_code: "",
         error_message: "",
+        rollback_versions: [],
       };
       const updateState: any = (window as any).__initialUpdateState
         ? { ...defaultUpdateState, ...(window as any).__initialUpdateState }
         : { ...defaultUpdateState };
+      const rollbackVersions: any[] = Array.isArray(
+        (window as any).__initialRollbackVersions,
+      )
+        ? [...(window as any).__initialRollbackVersions]
+        : [];
       const updateCalls: any[] = [];
       const defaultCloseBehaviorState = {
         behavior: "ask",
@@ -521,6 +528,8 @@ async function mock(page: any, ready = false, path = "/") {
             method === "ColabOneDesktop.GetUpdateState" ||
             method === "ColabOneDesktop.CheckForUpdate" ||
             method === "ColabOneDesktop.StartUpdateInstall" ||
+            method === "ColabOneDesktop.ListRollbackVersions" ||
+            method === "ColabOneDesktop.StartUpdateRollback" ||
             method === "ColabOneDesktop.CancelUpdateInstall" ||
             method === "ColabOneDesktop.SkipUpdateVersion" ||
             method === "ColabOneDesktop.SetUpdatePreferences" ||
@@ -530,6 +539,13 @@ async function mock(page: any, ready = false, path = "/") {
               updateCalls.push({ method: "check", manual: args[0] });
             } else if (method === "ColabOneDesktop.StartUpdateInstall") {
               updateCalls.push({ method: "install" });
+            } else if (method === "ColabOneDesktop.ListRollbackVersions") {
+              updateCalls.push({
+                method: "listRollback",
+                forceRefresh: Boolean(args[0]),
+              });
+            } else if (method === "ColabOneDesktop.StartUpdateRollback") {
+              updateCalls.push({ method: "rollback", version: args[0] });
             } else if (method === "ColabOneDesktop.CancelUpdateInstall") {
               updateCalls.push({ method: "cancel" });
             } else if (method === "ColabOneDesktop.SkipUpdateVersion") {
@@ -556,6 +572,17 @@ async function mock(page: any, ready = false, path = "/") {
             if (method === "ColabOneDesktop.GetUpdateState") {
               return { ...updateState };
             }
+            if (method === "ColabOneDesktop.ListRollbackVersions") {
+              if (
+                typeof (window as any).__onListRollbackVersions === "function"
+              ) {
+                return await (window as any).__onListRollbackVersions(
+                  Boolean(args[0]),
+                  rollbackVersions,
+                );
+              }
+              return rollbackVersions.map((item) => ({ ...item }));
+            }
             if (method === "ColabOneDesktop.CheckForUpdate") {
               if (typeof (window as any).__onCheckForUpdate === "function") {
                 return await (window as any).__onCheckForUpdate(
@@ -570,13 +597,38 @@ async function mock(page: any, ready = false, path = "/") {
                 return await (window as any).__onStartUpdateInstall(updateState);
               }
               updateState.status = "ready_to_restart";
+              updateState.is_rollback = false;
+              updateState.progress_percent = 100;
+              const next = { ...updateState };
+              (window as any).__emitMyGoEvent("colabone-update", next);
+              return next;
+            }
+            if (method === "ColabOneDesktop.StartUpdateRollback") {
+              if (
+                typeof (window as any).__onStartUpdateRollback === "function"
+              ) {
+                return await (window as any).__onStartUpdateRollback(
+                  args[0],
+                  updateState,
+                );
+              }
+              updateState.status = "ready_to_restart";
+              updateState.is_rollback = true;
+              updateState.available_version = String(args[0] ?? "");
+              updateState.release_url = `https://github.com/luolongfei/ColabOne/releases/tag/v${updateState.available_version}`;
               updateState.progress_percent = 100;
               const next = { ...updateState };
               (window as any).__emitMyGoEvent("colabone-update", next);
               return next;
             }
             if (method === "ColabOneDesktop.CancelUpdateInstall") {
-              updateState.status = "available";
+              if (updateState.is_rollback) {
+                updateState.status = "up_to_date";
+                updateState.is_rollback = false;
+                updateState.available_version = "";
+              } else {
+                updateState.status = "available";
+              }
               updateState.progress_percent = 0;
               const next = { ...updateState };
               (window as any).__emitMyGoEvent("colabone-update", next);
@@ -7003,6 +7055,250 @@ test("auto-update read-only fallback opens GitHub Releases and skip version supp
   await expect(versionDot).toBeVisible();
   await versionBtn.click();
   await expect(versionDot).toHaveCount(0);
+});
+
+test("clicking navbar version badge immediately auto-checks for updates and switches footer action to check again", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    (window as any).__initialUpdateState = {
+      status: "up_to_date",
+      current_version: "0.1.6",
+      available_version: "",
+      can_self_update: true,
+      disabled_reason: "",
+      auto_check: true,
+      include_prerelease: false,
+      last_checked_at: Math.floor(Date.now() / 1000) - 3600,
+    };
+    const pendingResolvers: Array<() => void> = [];
+    (window as any).__resolveNextUpdateCheck = () => {
+      const fn = pendingResolvers.shift();
+      if (fn) fn();
+    };
+    (window as any).__onCheckForUpdate = (
+      _manual: boolean,
+      updateState: any,
+    ) =>
+      new Promise((resolve) => {
+        pendingResolvers.push(() => {
+          updateState.status = "up_to_date";
+          updateState.last_checked_at = Math.floor(Date.now() / 1000);
+          const next = { ...updateState };
+          (window as any).__emitMyGoEvent("colabone-update", next);
+          resolve(next);
+        });
+      });
+  });
+
+  await mock(page, false);
+
+  const versionBtn = page.getByTestId("nav-version-btn");
+  await expect(versionBtn).toBeVisible();
+
+  await versionBtn.click();
+  const modal = page.getByTestId("update-modal");
+  await expect(modal).toBeVisible();
+
+  // Immediately triggers an update check and shows checking state without flashing stale up-to-date state.
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__updateCalls.filter((c: any) => c.method === "check"),
+      ),
+    )
+    .toEqual([{ method: "check", manual: true }]);
+  await expect(modal.getByTestId("update-checking-status")).toBeVisible();
+  const checkBtn = modal.getByTestId("update-check-btn");
+  await expect(checkBtn).toBeDisabled();
+  await expect(checkBtn).toHaveAttribute("aria-label", /正在检查/);
+
+  // Once the check finishes as up-to-date, the minimalist hero displays "已是最新版本" and "查看发布",
+  // and the top-right refresh button becomes enabled for checking again.
+  await page.evaluate(() => (window as any).__resolveNextUpdateCheck());
+  await expect(modal).toContainText("当前版本");
+  await expect(modal).toContainText("v0.1.6");
+  await expect(modal).toContainText("已是最新版本");
+  await expect(modal.getByTestId("update-releases-link")).toContainText(
+    "查看发布",
+  );
+  await expect(checkBtn).toBeEnabled();
+  await expect(checkBtn).toHaveAttribute("aria-label", "再次检测");
+
+  // Clicking the refresh icon triggers another check and returns cleanly when finished.
+  await checkBtn.click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__updateCalls.filter((c: any) => c.method === "check")
+            .length,
+      ),
+    )
+    .toBe(2);
+  await expect(modal.getByTestId("update-checking-status")).toBeVisible();
+  await expect(checkBtn).toBeDisabled();
+
+  await page.evaluate(() => (window as any).__resolveNextUpdateCheck());
+  await expect(modal).toContainText("已是最新版本");
+  await expect(checkBtn).toBeEnabled();
+  await expect(checkBtn).toHaveAttribute("aria-label", "再次检测");
+
+  // Closing the popover while a check is still in flight keeps it closed if the result is up-to-date.
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+  await versionBtn.click();
+  await expect(modal).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__updateCalls.filter((c: any) => c.method === "check")
+            .length,
+      ),
+    )
+    .toBe(3);
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+  await page.evaluate(() => (window as any).__resolveNextUpdateCheck());
+  await expect(modal).toBeHidden();
+});
+
+test("version rollback expands recent 3 releases, handles signed downgrade, manual fallback, and cancel restore", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    (window as any).__initialUpdateState = {
+      status: "up_to_date",
+      current_version: "0.2.24",
+      available_version: "",
+      can_self_update: true,
+      disabled_reason: "",
+      auto_check: true,
+      include_prerelease: false,
+      last_checked_at: Math.floor(Date.now() / 1000) - 60,
+    };
+    (window as any).__initialRollbackVersions = [
+      {
+        version: "0.2.23",
+        tag: "v0.2.23",
+        release_date: "2026-11-18T00:00:00Z",
+        release_url:
+          "https://github.com/luolongfei/ColabOne/releases/tag/v0.2.23",
+        is_prerelease: false,
+        can_rollback: true,
+      },
+      {
+        version: "0.2.22",
+        tag: "v0.2.22",
+        release_date: "2026-11-17T00:00:00Z",
+        release_url:
+          "https://github.com/luolongfei/ColabOne/releases/tag/v0.2.22",
+        is_prerelease: false,
+        can_rollback: true,
+      },
+      {
+        version: "0.2.21",
+        tag: "v0.2.21",
+        release_date: "2026-11-11T00:00:00Z",
+        release_url:
+          "https://github.com/luolongfei/ColabOne/releases/tag/v0.2.21",
+        is_prerelease: false,
+        can_rollback: false,
+      },
+    ];
+    let rollbackCalls = 0;
+    (window as any).__onStartUpdateRollback = (
+      version: string,
+      updateState: any,
+    ) => {
+      rollbackCalls += 1;
+      if (rollbackCalls === 1) {
+        updateState.status = "downloading";
+        updateState.is_rollback = true;
+        updateState.available_version = version;
+        updateState.progress_percent = 35;
+        updateState.downloaded_bytes = 3_500_000;
+        updateState.total_bytes = 10_000_000;
+        updateState.speed_bps = 1_500_000;
+        const next = { ...updateState };
+        (window as any).__emitMyGoEvent("colabone-update", next);
+        return next;
+      }
+      updateState.status = "ready_to_restart";
+      updateState.is_rollback = true;
+      updateState.available_version = version;
+      updateState.progress_percent = 100;
+      const next = { ...updateState };
+      (window as any).__emitMyGoEvent("colabone-update", next);
+      return next;
+    };
+  });
+
+  await mock(page, false);
+
+  const versionBtn = page.getByTestId("nav-version-btn");
+  await versionBtn.click();
+  const modal = page.getByTestId("update-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("v0.2.24");
+  await expect(modal).toContainText("已是最新版本");
+
+  // Expand collapsible "版本回退" panel and verify the 3 historical releases & dates.
+  const rollbackToggle = modal.getByTestId("update-rollback-toggle");
+  await expect(rollbackToggle).toBeVisible();
+  await rollbackToggle.click();
+
+  const rollbackPanel = modal.getByTestId("update-rollback-panel");
+  await expect(rollbackPanel).toBeVisible();
+  await expect(rollbackPanel).toContainText("选择要回退到的版本（近 3 个版本）");
+
+  const opt23 = rollbackPanel.getByTestId("update-rollback-option-0.2.23");
+  const opt22 = rollbackPanel.getByTestId("update-rollback-option-0.2.22");
+  const opt21 = rollbackPanel.getByTestId("update-rollback-option-0.2.21");
+  await expect(opt23).toContainText("v0.2.23");
+  await expect(opt23).toContainText("2026/11/18");
+  await expect(opt22).toContainText("2026/11/17");
+  await expect(opt21).toContainText("2026/11/11");
+
+  // Selecting an unsigned / non-self-rollbackable version offers manual GitHub download.
+  await opt21.click();
+  await expect(opt21).toHaveAttribute("aria-checked", "true");
+  const manualRollbackBtn = rollbackPanel.getByTestId(
+    "update-rollback-manual-btn",
+  );
+  await expect(manualRollbackBtn).toContainText("前往 GitHub 下载 v0.2.21");
+  await manualRollbackBtn.click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__openedUrls))
+    .toEqual(["https://github.com/luolongfei/ColabOne/releases/tag/v0.2.21"]);
+
+  // Selecting a signed version starts rollback download; cancelling restores cleanly to up-to-date.
+  await opt23.click();
+  const confirmBtn = rollbackPanel.getByTestId("update-rollback-confirm-btn");
+  await expect(confirmBtn).toContainText("回退至 v0.2.23");
+  await confirmBtn.click();
+
+  await expect(modal).toContainText("正在下载回退版本 v0.2.23");
+  await expect(versionBtn).toContainText("回退中 35%");
+  await modal.getByTestId("update-cancel-btn").click();
+  await expect(modal).toContainText("已是最新版本");
+  await expect(modal.getByTestId("update-rollback-toggle")).toBeVisible();
+
+  // Triggering rollback again completes to ready_to_restart with rollback restart CTA.
+  await opt23.click();
+  await rollbackPanel.getByTestId("update-rollback-confirm-btn").click();
+  await expect(modal).toContainText("回退已就绪");
+  await expect(modal).toContainText("重启客户端后即可回退到此版本");
+  await expect(versionBtn).toContainText("重启回退");
+
+  const relaunchBtn = modal.getByTestId("update-relaunch-btn");
+  await expect(relaunchBtn).toContainText("立即重启完成回退");
+  await relaunchBtn.click();
+
+  const calls = await page.evaluate(() => (window as any).__updateCalls);
+  expect(calls).toContainEqual({ method: "rollback", version: "0.2.23" });
+  expect(calls).toContainEqual({ method: "relaunch" });
 });
 
 test("close window prompt defaults to quit, supports remember choice, and syncs with Settings", async ({

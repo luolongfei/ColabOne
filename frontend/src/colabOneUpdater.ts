@@ -1,7 +1,10 @@
-import type { ColabOneUpdateState } from "./colabOneBridge";
+import type {
+  ColabOneRollbackVersion,
+  ColabOneUpdateState,
+} from "./colabOneBridge";
 import { COLABONE_APP_VERSION } from "./colabOneVersion";
 
-export type { ColabOneUpdateState };
+export type { ColabOneRollbackVersion, ColabOneUpdateState };
 
 export const COLABONE_RELEASES_URL =
   "https://github.com/luolongfei/ColabOne/releases";
@@ -56,6 +59,61 @@ function stripMarkdownBold(text: string): string {
   return text.replace(/\*\*(.+?)\*\*/g, "$1");
 }
 
+export function normalizeColabOneRollbackVersions(
+  raw: ReadonlyArray<Partial<ColabOneRollbackVersion>> | null | undefined,
+): ColabOneRollbackVersion[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: ColabOneRollbackVersion[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const version = normalizeColabOneUpdateVersion(item.version);
+    if (!version || seen.has(version)) {
+      continue;
+    }
+    seen.add(version);
+    const tag =
+      typeof item.tag === "string" && item.tag.trim()
+        ? item.tag.trim()
+        : `v${version}`;
+    const releaseUrl =
+      typeof item.release_url === "string" && item.release_url.trim()
+        ? item.release_url.trim()
+        : `${COLABONE_RELEASES_URL}/tag/v${version}`;
+    out.push({
+      version,
+      tag,
+      release_date:
+        typeof item.release_date === "string" ? item.release_date.trim() : "",
+      release_url: releaseUrl,
+      is_prerelease: Boolean(item.is_prerelease),
+      can_rollback: Boolean(item.can_rollback),
+    });
+  }
+  return out;
+}
+
+export function formatColabOneRollbackDate(
+  raw: string | null | undefined,
+): string {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  const year = parsed.getUTCFullYear();
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getUTCDate()).padStart(2, "0");
+  return `${year}/${month}/${day}`;
+}
+
 export function createColabOneUpdateState(
   currentVersion = COLABONE_APP_VERSION,
 ): ColabOneUpdateState {
@@ -68,6 +126,7 @@ export function createColabOneUpdateState(
     current_version: resolvedVersion,
     available_version: "",
     is_prerelease: false,
+    is_rollback: false,
     release_date: "",
     release_url: COLABONE_RELEASES_URL,
     notes_raw: "",
@@ -85,6 +144,7 @@ export function createColabOneUpdateState(
     last_checked_at: 0,
     error_code: "",
     error_message: "",
+    rollback_versions: [],
   };
 }
 
@@ -112,6 +172,10 @@ export function normalizeColabOneUpdateState(
       typeof raw.is_prerelease === "boolean"
         ? raw.is_prerelease
         : base.is_prerelease,
+    is_rollback:
+      typeof raw.is_rollback === "boolean"
+        ? raw.is_rollback
+        : base.is_rollback,
     release_date:
       typeof raw.release_date === "string"
         ? raw.release_date
@@ -153,6 +217,7 @@ export function normalizeColabOneUpdateState(
       typeof raw.error_message === "string"
         ? raw.error_message
         : base.error_message,
+    rollback_versions: normalizeColabOneRollbackVersions(raw.rollback_versions),
   };
 }
 
@@ -385,5 +450,25 @@ export function hasColabOneVisibleUpdateBadge(
       return true;
     default:
       return false;
+  }
+}
+
+export function shouldColabOneAutoCheckOnPopoverOpen(
+  state: ColabOneUpdateState,
+  checking = false,
+): boolean {
+  if (checking) {
+    return false;
+  }
+  switch (state.status) {
+    case "available":
+    case "downloading":
+    case "installing":
+    case "ready_to_restart":
+    case "checking":
+    case "disabled":
+      return false;
+    default:
+      return true;
   }
 }

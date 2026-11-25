@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,9 @@ import (
 	"github.com/egoist/mygo/netproxy"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
 )
+
+//go:embed mygo.json
+var colabOneEmbeddedMyGoManifest []byte
 
 // ColabOneUpdateEvent pushes real-time self-update state and download progress
 // changes from Go to open desktop pages.
@@ -37,27 +41,67 @@ func (a *mygoInstallableAdapter) Install(ctx context.Context, progress func(down
 }
 
 type mygoUpdateBackend struct {
-	repo       string
-	readOnly   *updater.ColabOneReadOnlyFeedChecker
+	repo        string
+	readOnly    *updater.ColabOneReadOnlyFeedChecker
+	rollback    *updater.ColabOneRollbackInstaller
 	fallbackVer string
 }
 
+type colabOneMyGoManifestMeta struct {
+	Version string `json:"version"`
+	Updates struct {
+		PublicKey string `json:"publicKey"`
+		GitHub    string `json:"github"`
+	} `json:"updates"`
+}
+
+func readEmbeddedMyGoManifestMeta() colabOneMyGoManifestMeta {
+	var meta colabOneMyGoManifestMeta
+	_ = json.Unmarshal(colabOneEmbeddedMyGoManifest, &meta)
+	meta.Version = updater.NormalizeVersion(meta.Version)
+	meta.Updates.PublicKey = strings.TrimSpace(meta.Updates.PublicKey)
+	meta.Updates.GitHub = strings.Trim(strings.TrimSpace(meta.Updates.GitHub), "/")
+	if meta.Version == "" {
+		meta.Version = readFallbackManifestVersion()
+	}
+	return meta
+}
+
 func newMyGoUpdateBackend() *mygoUpdateBackend {
+	meta := readEmbeddedMyGoManifestMeta()
+	repo := meta.Updates.GitHub
+	if repo == "" {
+		repo = updater.COLABONE_GITHUB_REPO
+	}
 	tr := netproxy.Transport().Clone()
 	tr.ResponseHeaderTimeout = 20 * time.Second
-	client := &http.Client{
+	metaClient := &http.Client{
 		Transport: tr,
 		Timeout:   30 * time.Second,
 	}
+	downloadTr := netproxy.Transport().Clone()
+	downloadTr.ResponseHeaderTimeout = 30 * time.Second
+	downloadClient := &http.Client{
+		Transport: downloadTr,
+	}
 	b := &mygoUpdateBackend{
-		repo:        updater.COLABONE_GITHUB_REPO,
-		fallbackVer: readFallbackManifestVersion(),
+		repo:        repo,
+		fallbackVer: meta.Version,
 	}
 	b.readOnly = &updater.ColabOneReadOnlyFeedChecker{
-		Repo:           updater.COLABONE_GITHUB_REPO,
+		Repo:           repo,
 		Target:         updater.TargetPlatform(),
-		Client:         client,
+		Client:         metaClient,
 		CurrentVersion: b.CurrentVersion,
+	}
+	b.rollback = &updater.ColabOneRollbackInstaller{
+		Repo:      repo,
+		Target:    updater.TargetPlatform(),
+		PublicKey: meta.Updates.PublicKey,
+		Client:    downloadClient,
+		OnMacOSQuit: func() {
+			mygo.App.Quit()
+		},
 	}
 	return b
 }
@@ -119,6 +163,24 @@ func (b *mygoUpdateBackend) CheckReleaseMetadata(ctx context.Context, includePre
 	return b.readOnly.CheckMetadata(ctx, includePrerelease)
 }
 
+func (b *mygoUpdateBackend) ListRollbackVersions(
+	ctx context.Context,
+	includePrerelease bool,
+	currentVersion string,
+	canSelfUpdate bool,
+	maxCount int,
+) ([]updater.ColabOneRollbackVersion, error) {
+	return b.readOnly.ListRollbackReleases(ctx, includePrerelease, currentVersion, canSelfUpdate, maxCount)
+}
+
+func (b *mygoUpdateBackend) PrepareRollback(ctx context.Context, targetVersion string) (updater.ColabOneUpdateInstallable, error) {
+	return b.rollback.PrepareRollback(ctx, targetVersion)
+}
+
+func (b *mygoUpdateBackend) RelaunchRollback() (bool, error) {
+	return b.rollback.RelaunchRollback()
+}
+
 func (b *mygoUpdateBackend) Relaunch() error {
 	mygo.App.Relaunch()
 	return nil
@@ -138,7 +200,7 @@ func (d *ColabOneDesktop) initUpdater(cfgDir string, backend updater.ColabOneUpd
 			if mygo.App.IsReady() {
 				ColabOneUpdateEvent.Broadcast(st)
 			}
-			sig := st.Status + "|" + st.AvailableVersion
+			sig := fmt.Sprintf("%s|%s|%t", st.Status, st.AvailableVersion, st.IsRollback)
 			traySigMu.Lock()
 			changed := sig != lastTraySig
 			if changed {
@@ -175,6 +237,9 @@ func (d *ColabOneDesktop) trayUpdateLabel() string {
 	switch st.Status {
 	case updater.StatusReadyToRestart:
 		if st.AvailableVersion != "" {
+			if st.IsRollback {
+				return fmt.Sprintf(colabOneT("tray.restartToRollback"), st.AvailableVersion)
+			}
 			return fmt.Sprintf(colabOneT("tray.restartToUpdate"), st.AvailableVersion)
 		}
 	case updater.StatusAvailable:
@@ -227,13 +292,38 @@ func (d *ColabOneDesktop) refreshTrayMenu() {
 func (d *ColabOneDesktop) GetUpdateState() updater.ColabOneUpdateState {
 	if d.updater == nil {
 		return updater.ColabOneUpdateState{
-			Status:         updater.StatusDisabled,
-			DisabledReason: updater.DisabledReasonDevBuild,
-			ReleaseURL:     updater.COLABONE_RELEASES_URL,
-			AutoCheck:      true,
+			Status:           updater.StatusDisabled,
+			DisabledReason:   updater.DisabledReasonDevBuild,
+			ReleaseURL:       updater.COLABONE_RELEASES_URL,
+			AutoCheck:        true,
+			RollbackVersions: []updater.ColabOneRollbackVersion{},
 		}
 	}
 	return d.updater.State()
+}
+
+// ListRollbackVersions queries recent older GitHub Releases available for version rollback.
+func (d *ColabOneDesktop) ListRollbackVersions(ctx context.Context, forceRefresh bool) ([]updater.ColabOneRollbackVersion, error) {
+	if d.updater == nil {
+		return []updater.ColabOneRollbackVersion{}, nil
+	}
+	versions, err := d.updater.ListRollbackVersions(ctx, forceRefresh)
+	if err != nil {
+		_, detail := updater.ClassifyUpdateError(err)
+		if strings.TrimSpace(detail) != "" {
+			return []updater.ColabOneRollbackVersion{}, errors.New(detail)
+		}
+		return []updater.ColabOneRollbackVersion{}, err
+	}
+	return versions, nil
+}
+
+// StartUpdateRollback downloads, verifies (Ed25519), and installs an older release for rollback.
+func (d *ColabOneDesktop) StartUpdateRollback(version string) (updater.ColabOneUpdateState, error) {
+	if d.updater == nil {
+		return d.GetUpdateState(), errors.New("更新服务未初始化")
+	}
+	return d.updater.StartRollback(version)
 }
 
 // CheckForUpdate queries GitHub Releases for a newer version of ColabOne.

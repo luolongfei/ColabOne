@@ -188,12 +188,23 @@ export interface ColabOneMigrationUIPrefs {
   logs_width?: number;
 }
 
+/** ColabOneRollbackVersion describes a recent older release available for rollback. */
+export interface ColabOneRollbackVersion {
+  version: string;
+  tag: string;
+  release_date: string;
+  release_url: string;
+  is_prerelease: boolean;
+  can_rollback: boolean;
+}
+
 /** ColabOneUpdateState is the JSON-serializable state snapshot rendered by the UI. */
 export interface ColabOneUpdateState {
   status: string;
   current_version: string;
   available_version: string;
   is_prerelease: boolean;
+  is_rollback: boolean;
   release_date: string;
   release_url: string;
   notes_raw: string;
@@ -211,6 +222,7 @@ export interface ColabOneUpdateState {
   last_checked_at: number;
   error_code: string;
   error_message: string;
+  rollback_versions: ColabOneRollbackVersion[];
 }
 
 // ---- Services ----
@@ -264,6 +276,8 @@ export const ColabOneDesktop = {
   getMigrationExportSummary: bind<[ColabOneMigrationUIPrefs | null], ColabOneMigrationExportSummary>("ColabOneDesktop.GetMigrationExportSummary", (uiPrefs: ColabOneMigrationUIPrefs | null) => [uiPrefs]),
   /** GetUpdateState returns the current desktop self-update status, progress, and preferences. */
   getUpdateState: bind<[], ColabOneUpdateState>("ColabOneDesktop.GetUpdateState", () => []),
+  /** ListRollbackVersions queries recent older GitHub Releases available for version rollback. */
+  listRollbackVersions: bind<[boolean], ColabOneRollbackVersion[]>("ColabOneDesktop.ListRollbackVersions", (forceRefresh: boolean) => [forceRefresh]),
   /**
    * OpenComfyCanvas opens the authenticated ComfyUI canvas either in a reusable
    * native desktop window or the system browser. The URL is always fetched from
@@ -309,6 +323,8 @@ export const ColabOneDesktop = {
   snapshot: bind<[], string>("ColabOneDesktop.Snapshot", () => []),
   /** StartUpdateInstall downloads, verifies (Ed25519), and installs the discovered update. */
   startUpdateInstall: bind<[], ColabOneUpdateState>("ColabOneDesktop.StartUpdateInstall", () => []),
+  /** StartUpdateRollback downloads, verifies (Ed25519), and installs an older release for rollback. */
+  startUpdateRollback: bind<[string], ColabOneUpdateState>("ColabOneDesktop.StartUpdateRollback", (version: string) => [version]),
   systemAppearance: bind<[], string>("ColabOneDesktop.SystemAppearance", () => []),
   writeClipboard: bind<[string], void>("ColabOneDesktop.WriteClipboard", (value: string) => [value]),
 } as const;

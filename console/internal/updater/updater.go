@@ -28,6 +28,8 @@ const (
 	COLABONE_UPDATE_INITIAL_DELAY    = 10 * time.Second
 	COLABONE_UPDATE_CHECK_INTERVAL   = 6 * time.Hour
 	COLABONE_UPDATE_PROGRESS_MIN_GAP = 120 * time.Millisecond
+	COLABONE_ROLLBACK_MAX_VERSIONS   = 3
+	COLABONE_ROLLBACK_CACHE_TTL      = 5 * time.Minute
 
 	colabOneCancelWaitTimeout   = 250 * time.Millisecond
 	colabOneWinRenameAttempts   = 12
@@ -77,29 +79,41 @@ const (
 // ErrNoReleasePublished indicates the repository currently has no published release.
 var ErrNoReleasePublished = errors.New("no release is published")
 
+// ColabOneRollbackVersion describes a recent older release available for rollback.
+type ColabOneRollbackVersion struct {
+	Version      string `json:"version"`
+	Tag          string `json:"tag"`
+	ReleaseDate  string `json:"release_date"`
+	ReleaseURL   string `json:"release_url"`
+	IsPrerelease bool   `json:"is_prerelease"`
+	CanRollback  bool   `json:"can_rollback"`
+}
+
 // ColabOneUpdateState is the JSON-serializable state snapshot rendered by the UI.
 type ColabOneUpdateState struct {
-	Status            string  `json:"status"`
-	CurrentVersion    string  `json:"current_version"`
-	AvailableVersion  string  `json:"available_version"`
-	IsPrerelease      bool    `json:"is_prerelease"`
-	ReleaseDate       string  `json:"release_date"`
-	ReleaseURL        string  `json:"release_url"`
-	NotesRaw          string  `json:"notes_raw"`
-	NotesZh           string  `json:"notes_zh"`
-	NotesEn           string  `json:"notes_en"`
-	DownloadedBytes   int64   `json:"downloaded_bytes"`
-	TotalBytes        int64   `json:"total_bytes"`
-	ProgressPercent   float64 `json:"progress_percent"`
-	SpeedBytesPerSec  float64 `json:"speed_bps"`
-	CanSelfUpdate     bool    `json:"can_self_update"`
-	DisabledReason    string  `json:"disabled_reason"`
-	AutoCheck         bool    `json:"auto_check"`
-	IncludePrerelease bool    `json:"include_prerelease"`
-	SkippedVersion    string  `json:"skipped_version"`
-	LastCheckedAt     int64   `json:"last_checked_at"`
-	ErrorCode         string  `json:"error_code"`
-	ErrorMessage      string  `json:"error_message"`
+	Status            string                    `json:"status"`
+	CurrentVersion    string                    `json:"current_version"`
+	AvailableVersion  string                    `json:"available_version"`
+	IsPrerelease      bool                      `json:"is_prerelease"`
+	IsRollback        bool                      `json:"is_rollback"`
+	ReleaseDate       string                    `json:"release_date"`
+	ReleaseURL        string                    `json:"release_url"`
+	NotesRaw          string                    `json:"notes_raw"`
+	NotesZh           string                    `json:"notes_zh"`
+	NotesEn           string                    `json:"notes_en"`
+	DownloadedBytes   int64                     `json:"downloaded_bytes"`
+	TotalBytes        int64                     `json:"total_bytes"`
+	ProgressPercent   float64                   `json:"progress_percent"`
+	SpeedBytesPerSec  float64                   `json:"speed_bps"`
+	CanSelfUpdate     bool                      `json:"can_self_update"`
+	DisabledReason    string                    `json:"disabled_reason"`
+	AutoCheck         bool                      `json:"auto_check"`
+	IncludePrerelease bool                      `json:"include_prerelease"`
+	SkippedVersion    string                    `json:"skipped_version"`
+	LastCheckedAt     int64                     `json:"last_checked_at"`
+	ErrorCode         string                    `json:"error_code"`
+	ErrorMessage      string                    `json:"error_message"`
+	RollbackVersions  []ColabOneRollbackVersion `json:"rollback_versions"`
 }
 
 // ColabOneUpdatePreferences persists user updater choices in <configDir>/updater.json.
@@ -151,6 +165,15 @@ type colabOneReleaseMetadataBackend interface {
 	CheckReleaseMetadata(ctx context.Context, includePrerelease bool) (*ColabOneReadOnlyRelease, error)
 }
 
+// colabOneRollbackBackend is an optional extension implemented by backends
+// that support discovering recent older releases and installing Ed25519-signed
+// historical release archives for version rollback.
+type colabOneRollbackBackend interface {
+	ListRollbackVersions(ctx context.Context, includePrerelease bool, currentVersion string, canSelfUpdate bool, maxCount int) ([]ColabOneRollbackVersion, error)
+	PrepareRollback(ctx context.Context, targetVersion string) (ColabOneUpdateInstallable, error)
+	RelaunchRollback() (bool, error)
+}
+
 // ColabOneUpdaterConfig configures a ColabOneUpdater instance.
 type ColabOneUpdaterConfig struct {
 	Backend       ColabOneUpdateBackend
@@ -194,6 +217,9 @@ type ColabOneUpdater struct {
 	installInFlight bool
 	installCancel   context.CancelFunc
 	installDone     chan struct{}
+	rollbackCached  bool
+	rollbackCacheAt time.Time
+	rollbackCacheKey string
 	bgStarted       bool
 	closed          bool
 
@@ -278,14 +304,26 @@ func (u *ColabOneUpdater) initStateLocked() {
 		IncludePrerelease: u.prefs.IncludePrerelease,
 		SkippedVersion:    u.prefs.SkippedVersion,
 		LastCheckedAt:     u.prefs.LastCheckedAt,
+		RollbackVersions:  []ColabOneRollbackVersion{},
 	}
+}
+
+func cloneColabOneUpdateState(st ColabOneUpdateState) ColabOneUpdateState {
+	if len(st.RollbackVersions) == 0 {
+		st.RollbackVersions = []ColabOneRollbackVersion{}
+	} else {
+		cp := make([]ColabOneRollbackVersion, len(st.RollbackVersions))
+		copy(cp, st.RollbackVersions)
+		st.RollbackVersions = cp
+	}
+	return st
 }
 
 // State returns a thread-safe snapshot of the current update state.
 func (u *ColabOneUpdater) State() ColabOneUpdateState {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.state
+	return cloneColabOneUpdateState(u.state)
 }
 
 // StartBackground launches the delayed startup check and periodic re-check loop.
@@ -493,6 +531,13 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 		}
 		emitChecking := manual && u.state.Status != StatusChecking
 		if manual {
+			if u.state.IsRollback {
+				u.state.IsRollback = false
+				u.state.AvailableVersion = ""
+				u.state.IsPrerelease = false
+				u.state.ReleaseDate = ""
+				u.state.ReleaseURL = ReleaseTagURL(u.repo, "")
+			}
 			u.state.Status = StatusChecking
 			u.state.ErrorCode = ErrCodeNone
 			u.state.ErrorMessage = ""
@@ -665,6 +710,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 		if !hasNewer {
 			u.pending = nil
 			u.state.Status = StatusUpToDate
+			u.state.IsRollback = false
 			u.state.CanSelfUpdate = canSelf
 			u.state.DisabledReason = baseDisabledReason
 			u.state.AvailableVersion = ""
@@ -674,7 +720,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			u.state.NotesRaw = ""
 			u.state.NotesZh = ""
 			u.state.NotesEn = ""
-			st := u.state
+			st := cloneColabOneUpdateState(u.state)
 			u.mu.Unlock()
 			close(doneCh)
 			u.savePreferences()
@@ -689,6 +735,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			// Honor user's "Skip This Version" choice for silent background checks.
 			u.pending = nil
 			u.state.Status = StatusUpToDate
+			u.state.IsRollback = false
 			u.state.CanSelfUpdate = canSelf
 			u.state.DisabledReason = baseDisabledReason
 			u.state.AvailableVersion = ""
@@ -698,7 +745,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			u.state.NotesRaw = ""
 			u.state.NotesZh = ""
 			u.state.NotesEn = ""
-			st := u.state
+			st := cloneColabOneUpdateState(u.state)
 			u.mu.Unlock()
 			close(doneCh)
 			u.savePreferences()
@@ -714,6 +761,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 
 		u.pending = installable
 		u.state.Status = StatusAvailable
+		u.state.IsRollback = false
 		u.state.CanSelfUpdate = effectiveCanSelf
 		u.state.DisabledReason = effectiveDisabledReason
 		u.state.AvailableVersion = foundVersion
@@ -723,7 +771,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 		u.state.NotesRaw = parsedNotes.Raw
 		u.state.NotesZh = parsedNotes.Zh
 		u.state.NotesEn = parsedNotes.En
-		st := u.state
+		st := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 
 		close(doneCh)
@@ -732,6 +780,161 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 		u.log("发现 ColabOne 新版本 v"+foundVersion, "更新", "info")
 		return st, nil
 	}
+}
+
+// ListRollbackVersions discovers up to COLABONE_ROLLBACK_MAX_VERSIONS recent
+// published releases older than the running version. Results are cached for
+// COLABONE_ROLLBACK_CACHE_TTL unless forceRefresh is true.
+func (u *ColabOneUpdater) ListRollbackVersions(ctx context.Context, forceRefresh bool) ([]ColabOneRollbackVersion, error) {
+	if ctx == nil {
+		ctx = u.rootCtx
+	}
+	if u.backend == nil || u.backend.IsDevBuild() {
+		return []ColabOneRollbackVersion{}, nil
+	}
+	rbBackend, ok := u.backend.(colabOneRollbackBackend)
+	if !ok {
+		return []ColabOneRollbackVersion{}, nil
+	}
+
+	u.mu.Lock()
+	if u.closed {
+		u.mu.Unlock()
+		return []ColabOneRollbackVersion{}, context.Canceled
+	}
+	startGen := u.channelGen
+	includePre := u.prefs.IncludePrerelease
+	current := NormalizeVersion(u.backend.CurrentVersion())
+	canSelf := u.backend.CanSelfUpdate()
+	cacheKey := fmt.Sprintf("%s|%t|%t", current, includePre, canSelf)
+	if !forceRefresh && u.rollbackCached && u.rollbackCacheKey == cacheKey && u.nowFn().Sub(u.rollbackCacheAt) < COLABONE_ROLLBACK_CACHE_TTL {
+		out := make([]ColabOneRollbackVersion, len(u.state.RollbackVersions))
+		copy(out, u.state.RollbackVersions)
+		u.mu.Unlock()
+		return out, nil
+	}
+	u.mu.Unlock()
+
+	reqCtx, reqCancel := context.WithCancel(u.rootCtx)
+	stopForward := context.AfterFunc(ctx, reqCancel)
+	versions, err := rbBackend.ListRollbackVersions(reqCtx, includePre, current, canSelf, COLABONE_ROLLBACK_MAX_VERSIONS)
+	stopForward()
+	reqCancel()
+	if err != nil {
+		return nil, err
+	}
+	if versions == nil {
+		versions = []ColabOneRollbackVersion{}
+	}
+
+	u.mu.Lock()
+	if !u.closed && u.channelGen == startGen {
+		cp := make([]ColabOneRollbackVersion, len(versions))
+		copy(cp, versions)
+		u.state.RollbackVersions = cp
+		u.rollbackCached = true
+		u.rollbackCacheAt = u.nowFn()
+		u.rollbackCacheKey = cacheKey
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		u.emit(st)
+		return versions, nil
+	}
+	u.mu.Unlock()
+	return versions, nil
+}
+
+// StartRollback asynchronously fetches the signed manifest for an older version,
+// verifies its Ed25519 signature, replaces the local app files, and transitions
+// to StatusReadyToRestart with IsRollback=true.
+func (u *ColabOneUpdater) StartRollback(version string) (ColabOneUpdateState, error) {
+	norm := NormalizeVersion(version)
+	if !IsValidSemVer(norm) {
+		return u.State(), errors.New("回退版本号格式无效")
+	}
+	if u.backend == nil || u.backend.IsDevBuild() {
+		return u.State(), errors.New("当前为开发构建，无法执行版本回退")
+	}
+	rbBackend, ok := u.backend.(colabOneRollbackBackend)
+	if !ok {
+		return u.State(), errors.New("当前更新后端不支持版本回退")
+	}
+
+	u.mu.Lock()
+	if u.closed {
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		return st, errors.New("更新服务已关闭")
+	}
+	if u.installInFlight {
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		return st, nil
+	}
+	if u.state.Status == StatusReadyToRestart {
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		return st, nil
+	}
+	current := NormalizeVersion(u.backend.CurrentVersion())
+	if current != "" && CompareVersions(norm, current) >= 0 {
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		return st, errors.New("只能回退到低于当前版本的历史版本")
+	}
+	canSelf := u.backend.CanSelfUpdate()
+	if !canSelf {
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		return st, errors.New("当前安装目录缺少写入权限，无法自动回退，请前往 GitHub Releases 手动下载")
+	}
+
+	prevState := cloneColabOneUpdateState(u.state)
+	installCtx, cancel := context.WithCancel(u.rootCtx)
+	doneCh := make(chan struct{})
+	u.installGen++
+	u.installCancel = cancel
+	u.installDone = doneCh
+	u.installInFlight = true
+	checkCancel := u.checkCancel
+
+	u.state.Status = StatusDownloading
+	u.state.CurrentVersion = current
+	u.state.AvailableVersion = norm
+	u.state.IsPrerelease = IsPrereleaseVersion(norm)
+	u.state.IsRollback = true
+	u.state.CanSelfUpdate = canSelf
+	u.state.DisabledReason = DisabledReasonNone
+	u.state.ReleaseURL = ReleaseTagURL(u.repo, norm)
+	u.state.DownloadedBytes = 0
+	u.state.TotalBytes = 0
+	u.state.ProgressPercent = 0
+	u.state.SpeedBytesPerSec = 0
+	u.state.ErrorCode = ErrCodeNone
+	u.state.ErrorMessage = ""
+	startSnap := cloneColabOneUpdateState(u.state)
+	u.wg.Add(1)
+	u.mu.Unlock()
+
+	if checkCancel != nil {
+		checkCancel()
+	}
+
+	u.emit(startSnap)
+	u.log("开始下载 ColabOne v"+norm+" 回退安装包…", "更新", "info")
+
+	go func() {
+		defer u.wg.Done()
+		defer close(doneCh)
+		pending, prepErr := rbBackend.PrepareRollback(installCtx, norm)
+		if prepErr != nil {
+			u.finishInstallError(installCtx, cancel, norm, true, prevState, prepErr)
+			return
+		}
+		u.runInstall(installCtx, cancel, pending, norm, true, prevState)
+	}()
+
+	return startSnap, nil
 }
 
 // StartInstall asynchronously downloads, verifies (Ed25519), and applies the
@@ -760,6 +963,7 @@ func (u *ColabOneUpdater) StartInstall() (ColabOneUpdateState, error) {
 		return st, errors.New("当前无可自动安装的更新版本")
 	}
 
+	prevState := cloneColabOneUpdateState(u.state)
 	installCtx, cancel := context.WithCancel(u.rootCtx)
 	doneCh := make(chan struct{})
 	u.installGen++
@@ -770,13 +974,14 @@ func (u *ColabOneUpdater) StartInstall() (ColabOneUpdateState, error) {
 	pending := u.pending
 	targetVersion := u.state.AvailableVersion
 	u.state.Status = StatusDownloading
+	u.state.IsRollback = false
 	u.state.DownloadedBytes = 0
 	u.state.TotalBytes = 0
 	u.state.ProgressPercent = 0
 	u.state.SpeedBytesPerSec = 0
 	u.state.ErrorCode = ErrCodeNone
 	u.state.ErrorMessage = ""
-	startSnap := u.state
+	startSnap := cloneColabOneUpdateState(u.state)
 	u.wg.Add(1)
 	u.mu.Unlock()
 
@@ -790,10 +995,92 @@ func (u *ColabOneUpdater) StartInstall() (ColabOneUpdateState, error) {
 	go func() {
 		defer u.wg.Done()
 		defer close(doneCh)
-		u.runInstall(installCtx, cancel, pending, targetVersion)
+		u.runInstall(installCtx, cancel, pending, targetVersion, false, prevState)
 	}()
 
 	return startSnap, nil
+}
+
+func (u *ColabOneUpdater) finishInstallError(
+	installCtx context.Context,
+	cancel context.CancelFunc,
+	targetVersion string,
+	isRollback bool,
+	prevState ColabOneUpdateState,
+	err error,
+) {
+	defer cancel()
+
+	u.mu.Lock()
+	u.installInFlight = false
+	u.installCancel = nil
+	u.installDone = nil
+
+	if errors.Is(err, context.Canceled) || installCtx.Err() != nil {
+		if isRollback {
+			restoreStatus := prevState.Status
+			if restoreStatus == "" ||
+				restoreStatus == StatusChecking ||
+				restoreStatus == StatusDownloading ||
+				restoreStatus == StatusInstalling ||
+				restoreStatus == StatusError ||
+				(restoreStatus == StatusAvailable && strings.TrimSpace(prevState.AvailableVersion) == "") {
+				restoreStatus = StatusUpToDate
+			}
+			u.state.Status = restoreStatus
+			u.state.IsRollback = false
+			if restoreStatus == StatusAvailable {
+				u.state.AvailableVersion = prevState.AvailableVersion
+				u.state.IsPrerelease = prevState.IsPrerelease
+				u.state.ReleaseDate = prevState.ReleaseDate
+				u.state.ReleaseURL = prevState.ReleaseURL
+				u.state.NotesRaw = prevState.NotesRaw
+				u.state.NotesZh = prevState.NotesZh
+				u.state.NotesEn = prevState.NotesEn
+			} else {
+				u.state.AvailableVersion = ""
+				u.state.IsPrerelease = false
+				u.state.ReleaseDate = ""
+				u.state.ReleaseURL = ReleaseTagURL(u.repo, "")
+				u.state.NotesRaw = ""
+				u.state.NotesZh = ""
+				u.state.NotesEn = ""
+			}
+		} else {
+			u.state.Status = StatusAvailable
+			u.state.IsRollback = false
+		}
+		u.state.DownloadedBytes = 0
+		u.state.TotalBytes = 0
+		u.state.ProgressPercent = 0
+		u.state.SpeedBytesPerSec = 0
+		u.state.ErrorCode = ErrCodeNone
+		u.state.ErrorMessage = ""
+		snap := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		u.emit(snap)
+		if isRollback {
+			u.log("已取消下载 ColabOne v"+targetVersion+" 回退包", "更新", "info")
+		} else {
+			u.log("已取消下载 ColabOne v"+targetVersion+" 更新", "更新", "info")
+		}
+		return
+	}
+
+	code, detail := ClassifyUpdateError(err)
+	u.state.Status = StatusError
+	u.state.IsRollback = isRollback
+	u.state.SpeedBytesPerSec = 0
+	u.state.ErrorCode = code
+	u.state.ErrorMessage = detail
+	snap := cloneColabOneUpdateState(u.state)
+	u.mu.Unlock()
+	u.emit(snap)
+	if isRollback {
+		u.log(formatUpdateErrorLog("回退 ColabOne 至 v"+targetVersion+" 失败", code, detail), "更新", "error")
+	} else {
+		u.log(formatUpdateErrorLog("安装 ColabOne v"+targetVersion+" 更新失败", code, detail), "更新", "error")
+	}
 }
 
 func (u *ColabOneUpdater) runInstall(
@@ -801,6 +1088,8 @@ func (u *ColabOneUpdater) runInstall(
 	cancel context.CancelFunc,
 	pending ColabOneUpdateInstallable,
 	targetVersion string,
+	isRollback bool,
+	prevState ColabOneUpdateState,
 ) {
 	defer cancel()
 
@@ -881,40 +1170,17 @@ func (u *ColabOneUpdater) runInstall(
 	}
 
 	err := pending.Install(installCtx, onProgress)
+	if err != nil {
+		u.finishInstallError(installCtx, cancel, targetVersion, isRollback, prevState, err)
+		return
+	}
 
 	u.mu.Lock()
 	u.installInFlight = false
 	u.installCancel = nil
 	u.installDone = nil
-
-	if err != nil {
-		if errors.Is(err, context.Canceled) || installCtx.Err() != nil {
-			u.state.Status = StatusAvailable
-			u.state.DownloadedBytes = 0
-			u.state.TotalBytes = 0
-			u.state.ProgressPercent = 0
-			u.state.SpeedBytesPerSec = 0
-			u.state.ErrorCode = ErrCodeNone
-			u.state.ErrorMessage = ""
-			snap := u.state
-			u.mu.Unlock()
-			u.emit(snap)
-			u.log("已取消下载 ColabOne v"+targetVersion+" 更新", "更新", "info")
-			return
-		}
-		code, detail := ClassifyUpdateError(err)
-		u.state.Status = StatusError
-		u.state.SpeedBytesPerSec = 0
-		u.state.ErrorCode = code
-		u.state.ErrorMessage = detail
-		snap := u.state
-		u.mu.Unlock()
-		u.emit(snap)
-		u.log(formatUpdateErrorLog("安装 ColabOne v"+targetVersion+" 更新失败", code, detail), "更新", "error")
-		return
-	}
-
 	u.state.Status = StatusReadyToRestart
+	u.state.IsRollback = isRollback
 	if u.state.TotalBytes > 0 {
 		u.state.DownloadedBytes = u.state.TotalBytes
 	}
@@ -922,11 +1188,15 @@ func (u *ColabOneUpdater) runInstall(
 	u.state.SpeedBytesPerSec = 0
 	u.state.ErrorCode = ErrCodeNone
 	u.state.ErrorMessage = ""
-	snap := u.state
+	snap := cloneColabOneUpdateState(u.state)
 	u.mu.Unlock()
 
 	u.emit(snap)
-	u.log("ColabOne v"+targetVersion+" 更新已就绪，重启客户端后生效", "更新", "info")
+	if isRollback {
+		u.log("ColabOne v"+targetVersion+" 回退版本已就绪，重启客户端后生效", "更新", "info")
+	} else {
+		u.log("ColabOne v"+targetVersion+" 更新已就绪，重启客户端后生效", "更新", "info")
+	}
 }
 
 // CancelInstall aborts an in-progress update download and waits briefly for the
@@ -1012,6 +1282,9 @@ func (u *ColabOneUpdater) ApplyImportedPreferences(autoCheck, includePrerelease 
 	if channelChanged {
 		u.channelGen++
 		cancelCheck = u.checkCancel
+		u.rollbackCached = false
+		u.rollbackCacheKey = ""
+		u.state.RollbackVersions = []ColabOneRollbackVersion{}
 	}
 	if normSkipped != "" && u.state.Status == StatusAvailable && CompareVersions(u.state.AvailableVersion, normSkipped) == 0 && !u.installInFlight {
 		u.pending = nil
@@ -1052,6 +1325,9 @@ func (u *ColabOneUpdater) SetPreferences(autoCheck, includePrerelease bool) (Col
 	if channelChanged {
 		u.channelGen++
 		cancelCheck = u.checkCancel
+		u.rollbackCached = false
+		u.rollbackCacheKey = ""
+		u.state.RollbackVersions = []ColabOneRollbackVersion{}
 	}
 	st := u.state
 	u.mu.Unlock()
@@ -1067,11 +1343,12 @@ func (u *ColabOneUpdater) SetPreferences(autoCheck, includePrerelease bool) (Col
 	return st, channelChanged, nil
 }
 
-// Relaunch triggers application restart once an update has been staged/replaced.
+// Relaunch triggers application restart once an update or rollback has been staged/replaced.
 func (u *ColabOneUpdater) Relaunch() error {
 	u.mu.Lock()
 	ready := u.state.Status == StatusReadyToRestart
 	targetVersion := u.state.AvailableVersion
+	isRollback := u.state.IsRollback
 	u.mu.Unlock()
 
 	if !ready {
@@ -1080,13 +1357,26 @@ func (u *ColabOneUpdater) Relaunch() error {
 	if u.backend == nil {
 		return errors.New("更新后端未初始化")
 	}
-	u.log("正在重启 ColabOne 以切换到 v"+targetVersion+"…", "更新", "info")
+	if isRollback {
+		u.log("正在重启 ColabOne 以回退至 v"+targetVersion+"…", "更新", "info")
+		if rbBackend, ok := u.backend.(colabOneRollbackBackend); ok {
+			handled, err := rbBackend.RelaunchRollback()
+			if err != nil {
+				return err
+			}
+			if handled {
+				return nil
+			}
+		}
+	} else {
+		u.log("正在重启 ColabOne 以切换到 v"+targetVersion+"…", "更新", "info")
+	}
 	return u.backend.Relaunch()
 }
 
 func (u *ColabOneUpdater) emit(st ColabOneUpdateState) {
 	if u.onStateChange != nil {
-		u.onStateChange(st)
+		u.onStateChange(cloneColabOneUpdateState(st))
 	}
 }
 

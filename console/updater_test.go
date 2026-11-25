@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -44,6 +46,26 @@ func (b *stubDesktopUpdateBackend) CheckSelfUpdate(context.Context) (updater.Col
 }
 func (b *stubDesktopUpdateBackend) CheckReadOnly(context.Context, bool) (*updater.ColabOneReadOnlyRelease, error) {
 	return nil, nil
+}
+func (b *stubDesktopUpdateBackend) ListRollbackVersions(context.Context, bool, string, bool, int) ([]updater.ColabOneRollbackVersion, error) {
+	return []updater.ColabOneRollbackVersion{
+		{
+			Version:     "0.1.5",
+			Tag:         "v0.1.5",
+			ReleaseDate: "2026-11-20T00:00:00Z",
+			ReleaseURL:  "https://github.com/luolongfei/ColabOne/releases/tag/v0.1.5",
+			CanRollback: true,
+		},
+	}, nil
+}
+func (b *stubDesktopUpdateBackend) PrepareRollback(_ context.Context, version string) (updater.ColabOneUpdateInstallable, error) {
+	return &stubDesktopInstallable{
+		version: version,
+		date:    time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC),
+	}, nil
+}
+func (b *stubDesktopUpdateBackend) RelaunchRollback() (bool, error) {
+	return false, nil
 }
 func (b *stubDesktopUpdateBackend) Relaunch() error {
 	b.relaunched = true
@@ -101,5 +123,49 @@ func TestColabOneDesktopUpdaterMethodsAndTrayLabels(t *testing.T) {
 	}
 	if !backend.relaunched {
 		t.Fatal("expected backend Relaunch to be invoked")
+	}
+}
+
+func TestColabOneDesktopEmbeddedKeyAndRollbackRPCs(t *testing.T) {
+	prevLocale := colabOneGetLocale()
+	t.Cleanup(func() { colabOneSetLocaleState(prevLocale) })
+	colabOneSetLocaleState(colabOneLocaleZhCN)
+
+	meta := readEmbeddedMyGoManifestMeta()
+	decoded, err := base64.StdEncoding.DecodeString(meta.Updates.PublicKey)
+	if err != nil || len(decoded) != ed25519.PublicKeySize {
+		t.Fatalf("embedded mygo.json publicKey invalid: %q (err=%v)", meta.Updates.PublicKey, err)
+	}
+
+	backend := &stubDesktopUpdateBackend{current: "0.1.6", canSelf: true}
+	d := &ColabOneDesktop{bridge: &colabOneBridge{}}
+	d.initUpdater(t.TempDir(), backend)
+	defer d.closeUpdater()
+
+	list, err := d.ListRollbackVersions(context.Background(), false)
+	if err != nil || len(list) != 1 || list[0].Version != "0.1.5" {
+		t.Fatalf("ListRollbackVersions = %+v, err=%v", list, err)
+	}
+
+	if _, err := d.StartUpdateRollback("0.1.5"); err != nil {
+		t.Fatalf("StartUpdateRollback failed: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.GetUpdateState().Status == updater.StatusReadyToRestart {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	st := d.GetUpdateState()
+	if st.Status != updater.StatusReadyToRestart || !st.IsRollback || st.AvailableVersion != "0.1.5" {
+		t.Fatalf("unexpected rollback state: %+v", st)
+	}
+	if label := d.trayUpdateLabel(); label != "重启以回退至 v0.1.5" {
+		t.Fatalf("zh rollback tray label = %q", label)
+	}
+	colabOneSetLocaleState(colabOneLocaleEnUS)
+	if label := d.trayUpdateLabel(); label != "Restart to Roll Back to v0.1.5" {
+		t.Fatalf("en rollback tray label = %q", label)
 	}
 }

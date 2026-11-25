@@ -4,17 +4,20 @@ import {
   COLABONE_RELEASES_URL,
   COLABONE_UPDATE_SEEN_VERSION_STORAGE_KEY,
   createColabOneUpdateState,
+  formatColabOneRollbackDate,
   formatColabOneUpdateBytes,
   formatColabOneUpdateSpeed,
   hasColabOneActiveUpdatePill,
   hasColabOneBilingualNotes,
   hasColabOneUnreadUpdateDot,
   hasColabOneVisibleUpdateBadge,
+  normalizeColabOneRollbackVersions,
   normalizeColabOneUpdateState,
   normalizeColabOneUpdateVersion,
   parseColabOneReleaseNotes,
   resolveColabOneUpdateErrorKey,
   selectColabOneUpdateNotes,
+  shouldColabOneAutoCheckOnPopoverOpen,
   splitColabOneInlineCode,
   type ColabOneNoteBlock,
   type ColabOneNoteInline,
@@ -33,6 +36,7 @@ describe("colabOneUpdater", () => {
         current_version: COLABONE_APP_VERSION,
         available_version: "",
         is_prerelease: false,
+        is_rollback: false,
         release_date: "",
         release_url: COLABONE_RELEASES_URL,
         notes_raw: "",
@@ -50,6 +54,7 @@ describe("colabOneUpdater", () => {
         last_checked_at: 0,
         error_code: "",
         error_message: "",
+        rollback_versions: [],
       });
     });
 
@@ -101,6 +106,7 @@ describe("colabOneUpdater", () => {
         current_version: "0.1.6",
         available_version: "0.1.7",
         is_prerelease: true,
+        is_rollback: false,
         release_date: "2026-11-24T00:00:00Z",
         release_url: COLABONE_RELEASES_URL,
         notes_raw: "",
@@ -118,6 +124,7 @@ describe("colabOneUpdater", () => {
         last_checked_at: 1_760_000_000,
         error_code: "",
         error_message: "",
+        rollback_versions: [],
       });
     });
 
@@ -586,6 +593,104 @@ describe("colabOneUpdater", () => {
           normalizeColabOneUpdateState({ status: "up_to_date" }),
         ),
       ).toBe(false);
+    });
+  });
+
+  describe("shouldColabOneAutoCheckOnPopoverOpen", () => {
+    it("auto-checks when opening popover in idle, up_to_date, or error state", () => {
+      for (const status of ["idle", "up_to_date", "error"]) {
+        expect(
+          shouldColabOneAutoCheckOnPopoverOpen(
+            normalizeColabOneUpdateState({ status }),
+          ),
+        ).toBe(true);
+      }
+    });
+
+    it("skips auto-check when already checking, disabled, or an update is active/actionable", () => {
+      for (const status of [
+        "available",
+        "downloading",
+        "installing",
+        "ready_to_restart",
+        "checking",
+        "disabled",
+      ]) {
+        expect(
+          shouldColabOneAutoCheckOnPopoverOpen(
+            normalizeColabOneUpdateState({
+              status,
+              available_version: "0.1.7",
+            }),
+          ),
+        ).toBe(false);
+      }
+
+      expect(
+        shouldColabOneAutoCheckOnPopoverOpen(
+          normalizeColabOneUpdateState({ status: "up_to_date" }),
+          true,
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe("rollback version normalization and date formatting", () => {
+    it("normalizes, deduplicates, and fills fallback tag/release URLs for rollback entries", () => {
+      expect(normalizeColabOneRollbackVersions(null)).toEqual([]);
+      expect(
+        normalizeColabOneRollbackVersions([
+          {
+            version: "v0.2.23",
+            release_date: "2026-11-18T12:00:00Z",
+            can_rollback: true,
+          },
+          {
+            version: "0.2.23",
+            release_date: "2026-11-18T12:00:00Z",
+            can_rollback: false,
+          },
+          {
+            version: " 0.2.22 ",
+            tag: "v0.2.22",
+            release_date: "2026-11-17T00:00:00Z",
+            release_url:
+              "https://github.com/luolongfei/ColabOne/releases/tag/v0.2.22",
+            is_prerelease: true,
+            can_rollback: false,
+          },
+          { version: "  " },
+        ]),
+      ).toEqual([
+        {
+          version: "0.2.23",
+          tag: "v0.2.23",
+          release_date: "2026-11-18T12:00:00Z",
+          release_url: `${COLABONE_RELEASES_URL}/tag/v0.2.23`,
+          is_prerelease: false,
+          can_rollback: true,
+        },
+        {
+          version: "0.2.22",
+          tag: "v0.2.22",
+          release_date: "2026-11-17T00:00:00Z",
+          release_url: `${COLABONE_RELEASES_URL}/tag/v0.2.22`,
+          is_prerelease: true,
+          can_rollback: false,
+        },
+      ]);
+    });
+
+    it("formats ISO release dates deterministically as YYYY/MM/DD in UTC", () => {
+      expect(formatColabOneRollbackDate("2026-11-18T00:00:00Z")).toBe(
+        "2026/11/18",
+      );
+      expect(formatColabOneRollbackDate("2026-01-05T23:59:59Z")).toBe(
+        "2026/01/05",
+      );
+      expect(formatColabOneRollbackDate("")).toBe("");
+      expect(formatColabOneRollbackDate("not-a-date")).toBe("");
+      expect(formatColabOneRollbackDate(undefined)).toBe("");
     });
   });
 });
