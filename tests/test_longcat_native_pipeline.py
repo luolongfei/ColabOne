@@ -1774,14 +1774,46 @@ def _install_stub_ffmpeg_and_ffprobe(bin_dir: Path, audit_log: Path) -> tuple[Pa
 
     ffmpeg_script = bin_dir / "_stub_ffmpeg.py"
     ffmpeg_script.write_text(
-        f"""import json, re, struct, sys, wave
+        f"""import json, os, re, struct, sys, time, wave
 from pathlib import Path
 
 AUDIT = Path({str(audit_log)!r})
 args = sys.argv[1:]
 AUDIT.parent.mkdir(parents=True, exist_ok=True)
-with AUDIT.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({{"tool": "ffmpeg", "argv": args}}, ensure_ascii=False) + "\\n")
+
+def _append_audit(payload):
+    line = (json.dumps(payload, ensure_ascii=False) + "\\n").encode("utf-8")
+    lock_path = AUDIT.with_name(AUDIT.name + ".lock")
+    with lock_path.open("a+b") as lock_fh:
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    lock_fh.seek(0)
+                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.01)
+            try:
+                with AUDIT.open("ab") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    fh.write(line)
+                    fh.flush()
+            finally:
+                lock_fh.seek(0)
+                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            try:
+                with AUDIT.open("ab") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    fh.write(line)
+                    fh.flush()
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+_append_audit({{"tool": "ffmpeg", "argv": args}})
 
 if "-h" in args:
     sys.stdout.write("ffmpeg stub\\n  -fps_mode mode\\n")
@@ -1862,14 +1894,46 @@ sys.exit(0)
 
     ffprobe_script = bin_dir / "_stub_ffprobe.py"
     ffprobe_script.write_text(
-        f"""import json, sys
+        f"""import json, os, sys, time
 from pathlib import Path
 
 AUDIT = Path({str(audit_log)!r})
 args = sys.argv[1:]
 AUDIT.parent.mkdir(parents=True, exist_ok=True)
-with AUDIT.open("a", encoding="utf-8") as fh:
-    fh.write(json.dumps({{"tool": "ffprobe", "argv": args}}, ensure_ascii=False) + "\\n")
+
+def _append_audit(payload):
+    line = (json.dumps(payload, ensure_ascii=False) + "\\n").encode("utf-8")
+    lock_path = AUDIT.with_name(AUDIT.name + ".lock")
+    with lock_path.open("a+b") as lock_fh:
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    lock_fh.seek(0)
+                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.01)
+            try:
+                with AUDIT.open("ab") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    fh.write(line)
+                    fh.flush()
+            finally:
+                lock_fh.seek(0)
+                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            try:
+                with AUDIT.open("ab") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    fh.write(line)
+                    fh.flush()
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+_append_audit({{"tool": "ffprobe", "argv": args}})
 
 target = Path(args[-1])
 raw = target.read_bytes()
