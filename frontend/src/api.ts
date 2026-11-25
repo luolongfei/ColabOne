@@ -57,11 +57,11 @@ export async function colabOneSnapshot(): Promise<ColabOneSnapshot> {
   return JSON.parse(await colabOneSnapshotRaw());
 }
 
-export async function colabOneCommand(
+export async function colabOneCommand<T = any>(
   action: string,
   payload: Record<string, unknown> = {},
-): Promise<any> {
-  return JSON.parse(await ColabOneDesktop.command({ action, payload }));
+): Promise<T> {
+  return JSON.parse(await ColabOneDesktop.command({ action, payload })) as T;
 }
 
 export const colabOneOpenURL = (url: string) => ColabOneDesktop.openURL(url);
@@ -219,10 +219,16 @@ export async function colabOneRelaunchForUpdate(): Promise<void> {
   return ColabOneDesktop.relaunchForUpdate();
 }
 
+function hasMyGoEventBridge(): boolean {
+  return (
+    typeof (globalThis as { mygo?: { on?: unknown } }).mygo?.on === "function"
+  );
+}
+
 export function colabOneOnUpdateState(
   listener: (state: ColabOneUpdateState) => void,
 ): () => void {
-  if (typeof (globalThis as any).mygo?.on !== "function") {
+  if (!hasMyGoEventBridge()) {
     return () => {};
   }
   try {
@@ -234,7 +240,7 @@ export function colabOneOnUpdateState(
 }
 
 export function colabOneOnUpdateOpen(listener: () => void): () => void {
-  if (typeof (globalThis as any).mygo?.on !== "function") {
+  if (!hasMyGoEventBridge()) {
     return () => {};
   }
   try {
@@ -314,7 +320,7 @@ export async function colabOneResolveCloseRequest(
 export function colabOneOnCloseRequest(
   listener: (req: ColabOneCloseRequest) => void,
 ): () => void {
-  if (typeof (globalThis as any).mygo?.on !== "function") {
+  if (!hasMyGoEventBridge()) {
     return () => {};
   }
   try {
@@ -334,7 +340,7 @@ export function colabOneOnCloseRequest(
 export function colabOneOnCloseBehavior(
   listener: (state: ColabOneCloseBehaviorState) => void,
 ): () => void {
-  if (typeof (globalThis as any).mygo?.on !== "function") {
+  if (!hasMyGoEventBridge()) {
     return () => {};
   }
   try {

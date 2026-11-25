@@ -559,3 +559,50 @@ func TestSameColabCredentialIdentity(t *testing.T) {
 		t.Fatal("expected nil current creds (logout) to fail credential identity match")
 	}
 }
+
+func TestControllerMigrationWritesWorkflowsJSONAsTopLevelArray(t *testing.T) {
+	dir := t.TempDir()
+	vault := NewColabOneMemoryVault()
+	c := NewColabOneController(ColabOneControllerConfig{
+		ConfigDir: dir,
+		Vault:     vault,
+	})
+	defer c.Close()
+
+	payload := &migration.ColabOneMigrationPayload{
+		SchemaVersion:   migration.COLABONE_MIGRATION_SCHEMA_VERSION,
+		IncludedModules: []string{migration.ModuleLibraryWorkflows},
+		LibraryWorkflows: &migration.ColabOneMigrationLibraryWorkflowsData{
+			Library: map[string]any{
+				"default_common_version": COLABONE_DEFAULT_COMMON_VERSION,
+				"common_ids":             []string{},
+			},
+			Workflows: []map[string]any{
+				{
+					"id":          "custom-array-wf",
+					"name":        "Array Format WF",
+					"category":    "image",
+					"source":      "custom",
+					"api_prompt":  map[string]any{"1": map[string]any{"class_type": "SaveImage", "inputs": map[string]any{}}},
+					"input_specs": []any{},
+				},
+			},
+		},
+	}
+
+	if _, err := c.ApplyMigrationPayload(context.Background(), payload, []string{migration.ModuleLibraryWorkflows}); err != nil {
+		t.Fatalf("ApplyMigrationPayload failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "workflows.json"))
+	if err != nil {
+		t.Fatalf("read workflows.json: %v", err)
+	}
+	var arr []map[string]any
+	if err := decodeJSONWithNumbers(raw, &arr); err != nil {
+		t.Fatalf("workflows.json must be a top-level JSON array matching saveWorkflows(): err=%v raw=%s", err, string(raw))
+	}
+	if len(arr) != 1 || asString(arr[0]["id"]) != "custom-array-wf" {
+		t.Fatalf("unexpected workflows.json contents: %#v", arr)
+	}
+}

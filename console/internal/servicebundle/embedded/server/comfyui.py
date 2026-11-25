@@ -66,14 +66,17 @@ COMFY_MODEL_SUBDIRS = (
 _WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 _ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _PROMPT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
-_STRIPPED_SUBPROCESS_ENV_KEYS = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+_SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset(
+    {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN"}
+)
+_STRIPPED_SUBPROCESS_ENV_KEYS = _SENSITIVE_SUBPROCESS_ENV_KEYS
 
 
 def _sanitized_subprocess_env() -> dict[str, str]:
     return {
         k: v
         for k, v in os.environ.items()
-        if k not in _STRIPPED_SUBPROCESS_ENV_KEYS
+        if k not in _SENSITIVE_SUBPROCESS_ENV_KEYS
     }
 
 
@@ -100,6 +103,30 @@ def _ensure_dir(path: Path, label: str) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _normalize_16bit_grayscale(img: Any, fallback_transparency: Any = None) -> Any:
+    """Scale 16-bit integer grayscale ('I;16*' / 'I') by 1/256 into 8-bit 'L' or 'RGBA' (preserving tRNS)."""
+    from PIL import Image, ImageChops
+
+    mode = str(getattr(img, "mode", "") or "")
+    if not (mode == "I" or mode.startswith("I;16")):
+        return img
+    info = getattr(img, "info", None)
+    trns = (
+        info.get("transparency")
+        if isinstance(info, dict) and "transparency" in info
+        else fallback_transparency
+    )
+    as_i = img if mode == "I" else img.convert("I")
+    l8 = as_i.point(lambda v: v * (1.0 / 256.0)).convert("L")
+    if isinstance(trns, int) and not isinstance(trns, bool):
+        gt = as_i.point(lambda v: v - trns).convert("L")
+        lt = as_i.point(lambda v: trns - v).convert("L")
+        diff_l = ImageChops.lighter(gt, lt)
+        alpha = diff_l.point([0] + [255] * 255)
+        return Image.merge("RGBA", (l8, l8, l8, alpha))
+    return l8
+
+
 def _normalize_image_bytes(raw: bytes) -> bytes:
     from PIL import Image, ImageOps
 
@@ -110,7 +137,11 @@ def _normalize_image_bytes(raw: bytes) -> bytes:
             if src.width * src.height > MAX_IMAGE_PIXELS:
                 raise ValueError("输入图片最多 1600 万像素")
             src.load()
+            orig_trns = src.info.get("transparency")
             normalized = ImageOps.exif_transpose(src)
+            normalized = _normalize_16bit_grayscale(
+                normalized, fallback_transparency=orig_trns
+            )
             has_alpha = (
                 "A" in normalized.getbands()
                 or normalized.mode in ("RGBA", "LA", "PA")
@@ -732,7 +763,10 @@ def _run_command(
     args, task, log: Path, timeout: int = 1200, cwd=None, stopping=None
 ) -> None:
     """Cancelable process group; subprocesses cannot outlive their task."""
+    log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
+    if log.is_symlink():
+        raise ValueError("日志文件不能是符号链接")
     with log.open("wb") as out:
         proc = subprocess.Popen(
             args,
@@ -743,6 +777,28 @@ def _run_command(
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
+
+    task_lock = getattr(task, "lock", None)
+    has_cancel_hook = hasattr(task, "cancel_hook")
+    prev_hook = None
+    cancel_hook = None
+    term_lock = threading.Lock()
+    if has_cancel_hook:
+        with task_lock if task_lock is not None else nullcontext():
+            prev_hook = task.cancel_hook
+
+            def _cancel_cmd() -> None:
+                with term_lock:
+                    _terminate_process_group(proc, timeout=2.0)
+                if callable(prev_hook):
+                    try:
+                        prev_hook()
+                    except Exception:
+                        pass
+
+            cancel_hook = _cancel_cmd
+            task.cancel_hook = cancel_hook
+
     end, noted = time.monotonic() + timeout, 0.0
     try:
         while proc.poll() is None:
@@ -762,12 +818,20 @@ def _run_command(
                     task.note(tail[-1][:250])
             time.sleep(0.25)
         if proc.returncode:
+            task.check()
             raise RuntimeError(
                 "远端 ComfyUI 准备失败："
                 + log.read_text(encoding="utf-8", errors="replace")[-600:]
             )
     finally:
-        _terminate_process_group(proc)
+        try:
+            with term_lock:
+                _terminate_process_group(proc)
+        finally:
+            if has_cancel_hook:
+                with task_lock if task_lock is not None else nullcontext():
+                    if task.cancel_hook is cancel_hook:
+                        task.cancel_hook = prev_hook
 
 
 def _load_catalog(catalog_dir: Path | None) -> ComfyCatalog:
@@ -872,7 +936,11 @@ from server.comfy_packs import (
     _req_package_name,
 )
 from server.comfy_ws import ColabOneComfyWsMonitor
-from server.digital_human import ColabOneDigitalHumanRunner
+from server.digital_human import (
+    ColabOneDigitalHumanRunner,
+    parse_target_resolution,
+    resolve_longcat_native_preset,
+)
 from server.tts_engines import ColabOneRemoteTtsRunner
 
 
@@ -894,6 +962,7 @@ class ColabOneComfyManager:
         self._queue_cache: tuple[int, int] = (0, 0)
         self._queue_checked_at: float = -10.0
         self._loaded_pack_signature: str = ""
+        self._native_active_pack_id: str = ""
         self._history_poll_interval: float = 0.5
 
         self.store = ColabOneComfyWorkflowStore(
@@ -919,6 +988,7 @@ class ColabOneComfyManager:
             for e in (getattr(self.catalog, "tts_engines", None) or [])
         }
         self.tts = ColabOneRemoteTtsRunner(runtime, engines_by_id)
+        self.avatar_engines: Any = None
         self.digital_human = ColabOneDigitalHumanRunner(self, self.tts)
 
     def is_installed(self) -> bool:
@@ -989,6 +1059,11 @@ class ColabOneComfyManager:
                 return (0, 0)
             return self._queue_cache
 
+    def mark_native_pack_ready(self, pack_id: str) -> None:
+        clean_id = str(pack_id or "").strip()
+        with self.lock:
+            self._native_active_pack_id = clean_id
+
     def status(self) -> dict:
         with self.lock:
             if self.proc is not None and self.proc.poll() is not None:
@@ -1006,6 +1081,7 @@ class ColabOneComfyManager:
             error = self.error
             last_checked = self._queue_checked_at
             cached = self._queue_cache
+            native_active_pack = self._native_active_pack_id
 
         if running:
             now = time.monotonic()
@@ -1020,6 +1096,18 @@ class ColabOneComfyManager:
         else:
             q_run, q_pend = 0, 0
 
+        cached_tts_engines: list[str] = []
+        cached_fn = getattr(getattr(self, "tts", None), "cached_engine_ids", None)
+        if callable(cached_fn):
+            try:
+                raw_cached = cached_fn()
+                if isinstance(raw_cached, (list, tuple, set, frozenset)):
+                    cached_tts_engines = [
+                        str(eid).strip() for eid in raw_cached if str(eid).strip()
+                    ]
+            except Exception:
+                cached_tts_engines = []
+
         return {
             "installed": self.is_installed(),
             "running": running,
@@ -1029,7 +1117,8 @@ class ColabOneComfyManager:
             "queue_running": q_run,
             "queue_pending": q_pend,
             "error": error,
-            "active_pack": self.packs.active_pack_id,
+            "active_pack": native_active_pack or self.packs.active_pack_id,
+            "cached_tts_engines": cached_tts_engines,
             "canvas": self.canvas.snapshot(),
         }
 
@@ -1190,6 +1279,8 @@ class ColabOneComfyManager:
                     self.base_url + "/system_stats", timeout=2
                 )
                 if _response_ok(resp):
+                    with self.lock:
+                        self._native_active_pack_id = ""
                     return
             except (requests.RequestException, OSError):
                 pass
@@ -1319,6 +1410,7 @@ class ColabOneComfyManager:
                             self._queue_cache = (0, 0)
                             self._queue_checked_at = -10.0
                             self._loaded_pack_signature = launch_pack_sig
+                            self._native_active_pack_id = ""
                         task.note(
                             f"远端 ComfyUI 引擎已就绪（耗时 {time.monotonic() - start_t:.1f} 秒）"
                         )
@@ -1370,6 +1462,7 @@ class ColabOneComfyManager:
                     self._queue_cache = (0, 0)
                     self._queue_checked_at = -10.0
                     self._loaded_pack_signature = ""
+                    self._native_active_pack_id = ""
 
     def free_memory(self, unload_models: bool = True) -> dict:
         if not self.is_running():
@@ -1432,8 +1525,105 @@ class ColabOneComfyManager:
         wf: dict,
         hf_token: str = "",
         progress_range: tuple[float, float] | None = None,
+        overrides: dict[str, Any] | None = None,
     ) -> None:
         task.check()
+        pipeline = wf.get("pipeline")
+        pipeline_kind = (
+            str(pipeline.get("kind") or "").strip().lower()
+            if isinstance(pipeline, dict)
+            else ""
+        )
+        video_backend = (
+            str(pipeline.get("video_backend") or "").strip().lower()
+            if isinstance(pipeline, dict)
+            else ""
+        )
+        if pipeline_kind == "digital_human" and video_backend == "longcat_avatar_native":
+            avatar_engines = self.digital_human.get_avatar_engines()
+            preset_overrides: dict[str, Any] = (
+                dict(overrides) if isinstance(overrides, dict) else {}
+            )
+            raw_ov_upscale = preset_overrides.get("pipeline.upscale_mode")
+            raw_plain_upscale = preset_overrides.get("upscale_mode")
+            if (
+                (raw_ov_upscale is None or str(raw_ov_upscale).strip() == "")
+                and (raw_plain_upscale is None or str(raw_plain_upscale).strip() == "")
+            ):
+                tmpl_upscale = (
+                    str(pipeline.get("upscale_mode") or "").strip()
+                    if isinstance(pipeline, dict)
+                    else ""
+                )
+                preset_overrides["pipeline.upscale_mode"] = tmpl_upscale or "auto"
+            default_tw = int(
+                (pipeline.get("target_width") if isinstance(pipeline, dict) else None)
+                or 1920
+            )
+            default_th = int(
+                (pipeline.get("target_height") if isinstance(pipeline, dict) else None)
+                or 1080
+            )
+            res_spec = preset_overrides.get(
+                "pipeline.target_resolution"
+            ) or preset_overrides.get("target_resolution")
+            target_w, target_h = parse_target_resolution(
+                str(res_spec) if res_spec else "",
+                default=(default_tw, default_th),
+            )
+            preset = resolve_longcat_native_preset(
+                preset_overrides,
+                target_w=target_w,
+                target_h=target_h,
+            )
+            check_fn = getattr(avatar_engines, "check_preflight", None)
+            if callable(check_fn):
+                pf_kwargs: dict[str, Any] = {
+                    "min_vram_mib": int(wf.get("min_vram_mib") or 49152),
+                    "min_disk_mib": int(wf.get("min_disk_mib") or 73728),
+                    "upscale_mode": preset["upscale_engine"],
+                }
+                try:
+                    pf_sig = inspect.signature(check_fn)
+                    if "sampling_mode" in pf_sig.parameters:
+                        pf_kwargs["sampling_mode"] = preset["sampling_mode"]
+                    if "vocal_separation" in pf_sig.parameters:
+                        pf_kwargs["vocal_separation"] = preset["vocal_separation"]
+                except (TypeError, ValueError):
+                    pass
+                check_fn(**pf_kwargs)
+            upscale_engine = str(preset.get("upscale_engine") or "none").strip().lower()
+            native_progress_range = progress_range
+            vsr_progress_range = progress_range
+            if progress_range is not None and upscale_engine != "none":
+                lo, hi = progress_range
+                mid = lo + 0.72 * (hi - lo)
+                native_progress_range = (lo, mid)
+                vsr_progress_range = (mid, hi)
+            ensure_native_fn = getattr(avatar_engines, "ensure_longcat16_ready", None)
+            if callable(ensure_native_fn):
+                native_kwargs: dict[str, Any] = {
+                    "hf_token": hf_token,
+                    "sampling_mode": preset["sampling_mode"],
+                    "vocal_separation": preset["vocal_separation"],
+                }
+                if native_progress_range is not None:
+                    native_kwargs["progress_range"] = native_progress_range
+                ensure_native_fn(task, **native_kwargs)
+            ensure_vsr_fn = getattr(avatar_engines, "ensure_vsr_ready", None)
+            if upscale_engine != "none" and callable(ensure_vsr_fn):
+                vsr_kwargs: dict[str, Any] = {
+                    "engine": upscale_engine,
+                    "hf_token": hf_token,
+                }
+                if vsr_progress_range is not None:
+                    vsr_kwargs["progress_range"] = vsr_progress_range
+                ensure_vsr_fn(task, **vsr_kwargs)
+            wf_id = str(wf.get("id") or "").strip()
+            if wf_id:
+                self.mark_native_pack_ready(wf_id)
+            task.check()
+            return
         has_pack_requirements = bool(
             wf.get("custom_nodes")
             or wf.get("pip_packages")
@@ -1459,6 +1649,8 @@ class ColabOneComfyManager:
                 except (TypeError, ValueError):
                     ensure_kwargs["progress_range"] = progress_range
             needs_restart = self.packs.ensure_pack(task, wf, **ensure_kwargs)
+            with self.lock:
+                self._native_active_pack_id = ""
             current_pack_sig = str(
                 getattr(self.packs, "active_pack_signature", "") or ""
             )
@@ -2161,38 +2353,65 @@ class ColabOneComfyManager:
                     pass
 
     def run_workflow(self, task, request: WorkflowRunRequest) -> list[dict]:
-        req = (
-            request
-            if isinstance(request, WorkflowRunRequest)
-            else WorkflowRunRequest.model_validate(request)
+        from server.runtime import ColabOneCancelledError, _scrub_secret_text
+
+        raw_token = (
+            request.get("hf_token", "")
+            if isinstance(request, dict) and isinstance(request.get("hf_token"), str)
+            else str(getattr(request, "hf_token", "") or "")
         )
-        wf = self.store.get_workflow(req.workflow_id)
-        resolved_inputs: list[tuple[str, str, Path]] = []
-        for field_key, input_id in (req.inputs or {}).items():
-            fname, fpath = self.store.input_file(input_id)
-            resolved_inputs.append((field_key, fname, fpath))
+        try:
+            req = (
+                request
+                if isinstance(request, WorkflowRunRequest)
+                else WorkflowRunRequest.model_validate(request)
+            )
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, raw_token)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
 
-        if (wf.get("pipeline") or {}).get("kind") == "digital_human":
-            return self.digital_human.run(task, wf, req, resolved_inputs)
+        hf_token = str(getattr(req, "hf_token", "") or "")
+        try:
+            wf = self.store.get_workflow(req.workflow_id)
+            resolved_inputs: list[tuple[str, str, Path]] = []
+            for field_key, input_id in (req.inputs or {}).items():
+                fname, fpath = self.store.input_file(input_id)
+                resolved_inputs.append((field_key, fname, fpath))
 
-        self.ensure_template_ready(
-            task, wf, hf_token=getattr(req, "hf_token", "") or ""
-        )
-        task.check()
+            if (wf.get("pipeline") or {}).get("kind") == "digital_human":
+                return self.digital_human.run(task, wf, req, resolved_inputs)
 
-        media_map: dict[str, str] = {}
-        if resolved_inputs:
-            task.note(f"正在向 ComfyUI 上传 {len(resolved_inputs)} 个输入素材")
-        for field_key, fname, fpath in resolved_inputs:
+            self.ensure_template_ready(task, wf, hf_token=hf_token)
             task.check()
-            media_map[field_key] = self._upload_input_file(fname, fpath)
 
-        prompt_payload = apply_workflow_overrides(
-            wf["workflow"], req.overrides, media_map
-        )
-        return self._execute_single_prompt(
-            task, wf, prompt_payload, save_to_store=True
-        )
+            media_map: dict[str, str] = {}
+            if resolved_inputs:
+                task.note(f"正在向 ComfyUI 上传 {len(resolved_inputs)} 个输入素材")
+            for field_key, fname, fpath in resolved_inputs:
+                task.check()
+                media_map[field_key] = self._upload_input_file(fname, fpath)
+
+            prompt_payload = apply_workflow_overrides(
+                wf["workflow"], req.overrides, media_map
+            )
+            return self._execute_single_prompt(
+                task, wf, prompt_payload, save_to_store=True
+            )
+        except ColabOneCancelledError:
+            raise
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, raw_token, hf_token)
+            if scrubbed != raw_msg:
+                if isinstance(exc, ValueError):
+                    raise ValueError(scrubbed) from None
+                if isinstance(exc, KeyError):
+                    raise KeyError(scrubbed) from None
+                raise RuntimeError(scrubbed) from None
+            raise
 
     def _resolve_preview_audio_input(
         self, asset_id: str, label: str

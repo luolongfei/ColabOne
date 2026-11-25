@@ -288,7 +288,7 @@ def test_real_catalog_validates_digital_human_templates_and_tts_engines():
 
     for tid, expected_backend in (
         ("digital-human-infinitetalk", "infinitetalk"),
-        ("digital-human-longcat", "longcat_avatar"),
+        ("digital-human-longcat", "longcat_avatar_native"),
     ):
         tmpl = templates_by_id[tid]
         assert tmpl.source == "builtin"
@@ -296,14 +296,23 @@ def test_real_catalog_validates_digital_human_templates_and_tts_engines():
         assert tmpl.pipeline.kind == "digital_human"
         assert tmpl.pipeline.video_backend == expected_backend
         assert tmpl.min_vram_mib > 0
-        assert tmpl.custom_nodes, f"{tid} must pin custom_nodes"
-        for node in tmpl.custom_nodes:
-            assert _HEX_40_RE.fullmatch(node.commit), f"unpinned commit on {node.name}"
-        assert tmpl.models, f"{tid} must pin models"
-        for model in tmpl.models:
-            assert _HEX_40_RE.fullmatch(model.revision), f"unpinned revision on {model.path}"
-            assert _HEX_64_RE.fullmatch(model.sha256), f"invalid sha256 on {model.path}"
-            assert model.size > 0
+        if expected_backend == "longcat_avatar_native":
+            assert tmpl.commercial_ok is False
+            assert tmpl.license_notice.strip() != ""
+            assert tmpl.custom_nodes == []
+            assert tmpl.models == []
+            assert tmpl.node_patches == []
+            assert tmpl.node_count == 2
+            assert set(tmpl.workflow.keys()) == {"1", "2"}
+        else:
+            assert tmpl.custom_nodes, f"{tid} must pin custom_nodes"
+            for node in tmpl.custom_nodes:
+                assert _HEX_40_RE.fullmatch(node.commit), f"unpinned commit on {node.name}"
+            assert tmpl.models, f"{tid} must pin models"
+            for model in tmpl.models:
+                assert _HEX_40_RE.fullmatch(model.revision), f"unpinned revision on {model.path}"
+                assert _HEX_64_RE.fullmatch(model.sha256), f"invalid sha256 on {model.path}"
+                assert model.size > 0
         assert tmpl.fields, f"{tid} must define user-facing fields"
         field_keys = {f.key for f in tmpl.fields}
         for required_key in (
@@ -1906,64 +1915,53 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
     )
     tts_by_id = {e.id: e for e in catalog.tts_engines}
 
-    # Verify LongCat-Avatar 1.5 + Extreme Optimization catalog contract.
+    # Verify upgraded LongCat-Video-Avatar 1.6 native flagship catalog contract
+    # alongside InfiniteTalk ComfyUI catalog contract.
     canonical_gesture_prompt = (
         "Static medium shot of an engaging presenter speaking warmly and naturally to the camera, "
         "making expressive, natural hand gestures and open-palm movements to emphasize points while talking, "
         "lively facial expressions, subtle eyebrow raises, natural head tilts, shoulder rhythm, "
         "natural blinking, clear lip articulation synced with speech, soft studio lighting, sharp focus, stable background"
     )
-    assert longcat.workflow["3"]["inputs"]["width"] == 832
-    assert longcat.workflow["3"]["inputs"]["height"] == 480
-    assert longcat.workflow["5"]["inputs"]["positive_prompt"] == canonical_gesture_prompt
-    assert "hand gestures" in longcat.workflow["5"]["inputs"]["positive_prompt"]
-    assert "frozen hands" in longcat.workflow["5"]["inputs"]["negative_prompt"]
     assert infinitetalk.workflow["5"]["inputs"]["positive_prompt"] == canonical_gesture_prompt
-    assert longcat.workflow["8"]["class_type"] == "WhisperModelLoader"
-    assert (
-        longcat.workflow["8"]["inputs"]["model"]
-        == "whisper_large_v3_encoder_fp16.safetensors"
-    )
-    assert longcat.workflow["9"]["class_type"] == "LongCatAvatarWhisperEmbeds"
-    assert longcat.workflow["9"]["inputs"]["fps"] == 25.0
-    assert longcat.workflow["9"]["inputs"]["num_frames"] == 93
-    assert longcat.workflow["9"]["inputs"]["audio_scale"] == pytest.approx(1.15)
-    assert longcat.workflow["9"]["inputs"]["normalize_loudness"] is False
-    assert longcat.workflow["12"]["inputs"]["strength"] == pytest.approx(1.0)
-    assert longcat.workflow["12"]["inputs"]["merge_loras"] is True
-    assert longcat.workflow["14"]["inputs"]["scheduler"] == "longcat_distill_euler"
-    assert longcat.workflow["14"]["inputs"]["steps"] == 8
-    assert longcat.workflow["14"]["inputs"]["shift"] == pytest.approx(7.0)
-    assert longcat.workflow["16"]["inputs"]["enable_vae_tiling"] is True
-    model_targets = {
-        f"{m.target_dir}/{PurePosixPath(m.path).name}" for m in longcat.models
-    }
-    assert "audio_encoders/whisper_large_v3_encoder_fp16.safetensors" in model_targets
+    assert infinitetalk.workflow["14"]["inputs"]["colormatch"] == "disabled"
+    assert infinitetalk.workflow["15"]["inputs"]["steps"] == 8
+    assert infinitetalk.workflow["15"]["inputs"]["shift"] == pytest.approx(8.0)
+    assert infinitetalk.commercial_ok is True
+    assert infinitetalk.license == "Apache-2.0 / CC-BY-4.0 / GPL-3.0"
+    assert infinitetalk.pipeline is not None
+    assert infinitetalk.pipeline.default_tts_engine == "moss_tts_v1_5"
+
+    assert longcat.commercial_ok is False
+    assert longcat.license == "MIT / Apache-2.0"
+    assert longcat.license_notice.strip() != ""
+    assert longcat.min_vram_mib == 49152
+    assert longcat.min_disk_mib == 79872
+    assert longcat.custom_nodes == []
+    assert longcat.models == []
+    assert longcat.node_patches == []
+    assert longcat.node_count == 2
+    assert set(longcat.workflow.keys()) == {"1", "2"}
+    assert longcat.workflow["1"]["class_type"] == "LoadImage"
+    assert longcat.workflow["2"]["class_type"] == "LoadAudio"
     assert longcat.pipeline is not None
-    assert longcat.pipeline.video_backend == "longcat_avatar"
+    assert longcat.pipeline.video_backend == "longcat_avatar_native"
+    assert longcat.pipeline.default_tts_engine == "fish_drama3"
     assert longcat.pipeline.output_fps == 25
-    assert longcat.pipeline.max_segment_seconds == pytest.approx(3.7)
-    assert longcat.pipeline.upscale_mode == "ai_2x"
+    assert longcat.pipeline.max_segment_seconds == pytest.approx(3.72)
+    assert longcat.pipeline.upscale_mode == "auto"
 
     longcat_fields = {f.key: f for f in longcat.fields}
     infinitetalk_fields = {f.key: f for f in infinitetalk.fields}
-    assert longcat_fields["pipeline.upscale_mode"].default == "ai_2x"
-    assert longcat_fields["pipeline.max_segment_seconds"].default == pytest.approx(3.7)
-    assert longcat_fields["pipeline.max_segment_seconds"].min_value == pytest.approx(3.0)
-    assert longcat_fields["14.steps"].default == 8
-    assert longcat_fields["14.steps"].min_value == 4
-    assert longcat_fields["5.positive_prompt"].default == canonical_gesture_prompt
+    assert longcat_fields["pipeline.tts_engine"].default == "fish_drama3"
+    assert infinitetalk_fields["pipeline.tts_engine"].default == "moss_tts_v1_5"
+    assert longcat_fields["pipeline.quality_preset"].default == "cinema_flagship"
+    assert longcat_fields["pipeline.framing_style"].default == "half_body_gestures"
+    assert longcat_fields["pipeline.upscale_mode"].default == "auto"
+    assert longcat_fields["pipeline.target_resolution"].default == "1920x1080"
     assert infinitetalk_fields["5.positive_prompt"].default == canonical_gesture_prompt
-
-    render_quality_field = longcat_fields["pipeline.render_quality"]
-    assert render_quality_field.group == "advanced"
-    assert render_quality_field.default == "balanced_480p_ai2x"
-    assert render_quality_field.options == ["balanced_480p_ai2x", "native_720p"]
-
-    accel_field = longcat_fields["pipeline.acceleration_profile"]
-    assert accel_field.group == "advanced"
-    assert accel_field.default == "max"
-    assert accel_field.options == ["max", "balanced", "compat"]
+    assert infinitetalk_fields["15.steps"].default == 8
+    assert "推荐 8 步" in infinitetalk_fields["15.steps"].description
 
     expected_female_voice_ids = [
         "shen_zhiyi",
@@ -2008,18 +2006,15 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
     qwen_official = [p for p in tts_by_id["qwen3_tts"].voice_presets if p.speaker_id]
     assert len(qwen_official) == 9
 
-    assert len(longcat.node_patches) == 1
-    assert longcat.node_patches[0].node_name == "ComfyUI-WanVideoWrapper"
-    assert longcat.node_patches[0].kind == "wav2vec2_hidden_states_hook"
-    assert compute_pack_content_signature(
-        longcat.model_dump()
-    ) == compute_pack_content_signature(infinitetalk.model_dump())
+    assert len(infinitetalk.node_patches) == 1
+    assert infinitetalk.node_patches[0].node_name == "ComfyUI-WanVideoWrapper"
+    assert infinitetalk.node_patches[0].kind == "wav2vec2_hidden_states_hook"
+    assert compute_pack_content_signature(infinitetalk.model_dump())
     assert infinitetalk.workflow["9"]["inputs"]["normalize_loudness"] is False
     assert infinitetalk.pipeline is not None
     assert infinitetalk.pipeline.max_segment_seconds == 20.0
     assert tts_by_id["fish_s2_pro"].min_vram_mib == 20480
     assert tts_by_id["indextts2"].sample_rate == 22050
-    assert "CC-BY-4.0" in longcat.license
     assert LONGCAT_MAX_FRAMES == 253
 
     # Verify digital_human.py enforces LongCat num_frames <= 253 even when caller
@@ -2139,9 +2134,10 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
         inputs={"1.image": "a" * 32, "2.audio": "b" * 32},
     )
     task = ColabOneTask("comfyui_run", "digital-human-longcat")
+    legacy_longcat_template = _sample_longcat_template()
     outputs = runner.run(
         task,
-        longcat.model_dump(),
+        legacy_longcat_template,
         req,
         [("1.image", "lc_portrait.png", portrait), ("2.audio", "longcat_16s.wav", long_wav)],
     )
@@ -4121,7 +4117,6 @@ def test_opt_probe_gpu_acceleration_capabilities_rejects_sageattn_v1_accepts_v2(
     import shutil
     import subprocess
     import sys
-    from types import SimpleNamespace
     import types
 
     from server.comfy_packs import probe_gpu_acceleration_capabilities
@@ -5442,7 +5437,7 @@ def test_opt_audit_regressions_nvidia_smi_probe_dynamic_compile_ffmpeg_cfr_and_p
     from pydantic import ValidationError
 
     from common.comfyui import ComfyTtsVoicePreset, WorkflowRunRequest
-    from server import comfy_packs, digital_human
+    from server import comfy_packs
     from server.comfy_packs import ColabOneComfyPackManager, probe_gpu_acceleration_capabilities
     from server.digital_human import (
         ColabOneDigitalHumanRunner,
@@ -5521,7 +5516,7 @@ def test_opt_audit_regressions_nvidia_smi_probe_dynamic_compile_ffmpeg_cfr_and_p
     )
     longcat_wf = next(t for t in real_cat.templates if t.id == "digital-human-longcat").model_dump()
     patched_wf, summary = apply_longcat_acceleration(
-        longcat_wf["workflow"],
+        _sample_longcat_workflow(),
         profile="max",
         gpu_caps={
             "vram_mib": 98304,

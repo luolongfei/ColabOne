@@ -833,6 +833,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 		sessions = c.vaultSessions()
 		sessionsFresh = true
 		if !c.opBusy.Load() && c.opGen.Load() == sessionsOpGen {
+			var pendingLogs []pendingActivityLog
 			c.mu.Lock()
 			if !c.opBusy.Load() && c.opGen.Load() == sessionsOpGen {
 				for ep := range c.instanceStates {
@@ -849,7 +850,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					rtState := asString(asMap(c.data["runtime"])["state"])
 					if rtState == "ready" || rtState == "disconnected" {
 						c.remoteWorkflowVersions = make(map[string]float64)
-						c.updateLocked(map[string]any{
+						pendingLogs = c.updateLocked(map[string]any{
 							"runtime":       map[string]any{"state": "stopped"},
 							"models":        c.Presets(),
 							"workflows":     c.mergeWorkflowsLocked(nil),
@@ -860,6 +861,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				}
 			}
 			c.mu.Unlock()
+			c.flushActivityLogs(pendingLogs)
 		}
 	}
 
@@ -908,13 +910,14 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				remainingSessions := c.vaultSessions()
 				if len(remainingSessions) == 0 {
 					if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
+						var pendingLogs []pendingActivityLog
 						c.mu.Lock()
 						if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
 							c.lastHeartbeat = 0
 							clear(c.instanceStates)
 							clear(c.upgradeAttempted)
 							c.remoteWorkflowVersions = make(map[string]float64)
-							c.updateLocked(map[string]any{
+							pendingLogs = c.updateLocked(map[string]any{
 								"runtime":       map[string]any{"state": "stopped"},
 								"models":        c.Presets(),
 								"workflows":     c.mergeWorkflowsLocked(nil),
@@ -923,6 +926,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 							})
 						}
 						c.mu.Unlock()
+						c.flushActivityLogs(pendingLogs)
 					}
 					aborted = true
 				} else {
@@ -1038,9 +1042,10 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				curSessions := c.vaultSessions()
 				if ep == c.activeEndpointFrom(curSessions) {
 					if _, owned := curSessions[ep]; owned {
+						var pendingLogs []pendingActivityLog
 						c.mu.Lock()
 						if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
-							c.updateWithSessionsLocked(map[string]any{
+							pendingLogs = c.updateWithSessionsLocked(map[string]any{
 								"runtime": map[string]any{
 									"state": "disconnected",
 									"id":    ep,
@@ -1048,6 +1053,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 							}, curSessions, ep)
 						}
 						c.mu.Unlock()
+						c.flushActivityLogs(pendingLogs)
 					}
 				}
 			}
@@ -1182,11 +1188,13 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 	}
 
 	if !hadConnError && !c.isShuttingDown(ctx) {
+		var pendingLogs []pendingActivityLog
 		c.mu.Lock()
 		if strings.HasPrefix(asString(c.data["error"]), "连接检查失败：") {
-			c.updateLocked(map[string]any{"error": ""})
+			pendingLogs = c.updateLocked(map[string]any{"error": ""})
 		}
 		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 	}
 }
 

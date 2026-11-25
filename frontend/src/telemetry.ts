@@ -383,6 +383,7 @@ export class ColabOneTelemetryTracker {
         hasTelemetryData);
 
     const serverHistory = runtime.resources?.history;
+    const safeNow = Number.isFinite(nowSec) ? nowSec : Date.now() / 1000;
     let activePoints: ResourceHistoryPoint[];
 
     if (serverHistory && serverHistory.length > 0) {
@@ -407,12 +408,14 @@ export class ColabOneTelemetryTracker {
         const latestT = this.history[this.history.length - 1]?.t ?? 0;
         if (Number.isFinite(latestT) && latestT > this.lastServerTime) {
           this.lastServerTime = latestT;
+          this.lastSampleTime = safeNow;
           this.sampleTick += 1;
+        } else if (this.lastSampleTime === 0) {
+          this.lastSampleTime = safeNow;
         }
       }
       activePoints = this.history;
     } else {
-      const safeNow = Number.isFinite(nowSec) ? nowSec : Date.now() / 1000;
       const hasAnyTelemetry = Boolean(
         online || gpu || runtime.resources || runtime.disk_free !== undefined,
       );
@@ -421,8 +424,12 @@ export class ColabOneTelemetryTracker {
         (this.history.length === 0 ||
           safeNow - this.lastSampleTime >= MIN_CLIENT_SAMPLE_INTERVAL_SEC)
       ) {
+        const lastHistoryT = this.history.at(-1)?.t ?? 0;
+        const clampedT = Number.isFinite(lastHistoryT)
+          ? Math.max(safeNow, lastHistoryT)
+          : safeNow;
         const point: ResourceHistoryPoint = {
-          t: safeNow,
+          t: clampedT,
           vram_pct: vramPercent,
           ram_pct: ramPercent,
           disk_pct: diskPercent,

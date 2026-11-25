@@ -1031,8 +1031,9 @@ func (c *ColabOneController) Update(values map[string]any) {
 		activeEP = c.activeEndpointFrom(sessions)
 	}
 	c.mu.Lock()
-	c.updateWithSessionsLocked(values, sessions, activeEP)
+	pendingLogs := c.updateWithSessionsLocked(values, sessions, activeEP)
 	c.mu.Unlock()
+	c.flushActivityLogs(pendingLogs)
 	if c.cuUsage != nil {
 		if acctVal, hasAcct := values["account"]; hasAcct {
 			if acctMap := asMap(acctVal); acctMap != nil {
@@ -1051,22 +1052,43 @@ func (c *ColabOneController) Update(values map[string]any) {
 	}
 }
 
-func (c *ColabOneController) updateLocked(values map[string]any) {
-	c.updateWithSessionsLocked(values, nil, "")
+type pendingActivityLog struct {
+	message string
+	source  string
+	level   string
 }
 
-func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, sessions map[string]map[string]any, activeEP string) {
+func (c *ColabOneController) flushActivityLogs(entries []pendingActivityLog) {
+	for _, entry := range entries {
+		c.log(entry.message, entry.source, entry.level)
+	}
+}
+
+func (c *ColabOneController) updateLocked(values map[string]any) []pendingActivityLog {
+	return c.updateWithSessionsLocked(values, nil, "")
+}
+
+func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, sessions map[string]map[string]any, activeEP string) []pendingActivityLog {
+	var pendingLogs []pendingActivityLog
+	queueLog := func(message, source, level string) {
+		pendingLogs = append(pendingLogs, pendingActivityLog{
+			message: message,
+			source:  source,
+			level:   level,
+		})
+	}
+
 	if op, ok := values["operation"].(map[string]any); ok && op != nil {
 		prevOp := asMap(c.data["operation"])
 		prevTitle := asString(prevOp["title"])
 		nextTitle := asString(op["title"])
 		if nextTitle != "" && nextTitle != prevTitle {
-			c.log(nextTitle, "客户端", "info")
+			queueLog(nextTitle, "客户端", "info")
 		}
 	}
 
 	if errVal, ok := values["error"].(string); ok && errVal != "" && errVal != asString(c.data["error"]) {
-		c.log(errVal, "客户端", "error")
+		queueLog(errVal, "客户端", "error")
 	}
 
 	if rt, ok := values["runtime"].(map[string]any); ok && len(rt) > 0 {
@@ -1109,7 +1131,7 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 					if lvl == "" {
 						lvl = "info"
 					}
-					c.log(asString(entry["message"]), item.tag, lvl)
+					queueLog(asString(entry["message"]), item.tag, lvl)
 				}
 			}
 		}
@@ -1124,7 +1146,7 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 		prevState := asString(previous["state"])
 		if newState != prevState {
 			if lbl, ok := stateLabels[newState]; ok {
-				c.log(lbl, "GPU", "info")
+				queueLog(lbl, "GPU", "info")
 			}
 		}
 
@@ -1170,7 +1192,7 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 					if lvl == "" {
 						lvl = "info"
 					}
-					c.log(asString(entry["message"]), "远端", lvl)
+					queueLog(asString(entry["message"]), "远端", lvl)
 					cursor = seq
 				}
 			}
@@ -1219,7 +1241,7 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 			if tState == "failed" {
 				lvl = "error"
 			}
-			c.log(kindLabel+"："+statusLabel+detail, "远端", lvl)
+			queueLog(kindLabel+"："+statusLabel+detail, "远端", lvl)
 		}
 
 		prevIdle := asMap(previous["idle"])
@@ -1229,7 +1251,7 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 				remFloat = 60
 			}
 			remSec := int(math.Round(remFloat))
-			c.log(
+			queueLog(
 				fmt.Sprintf("空闲自动释放倒计时剩余 %d 秒；继续操作可重置倒计时", remSec),
 				"GPU",
 				"warning",
@@ -1264,6 +1286,7 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 	if cacheDirty {
 		c.saveActiveToCacheWithSessionsLocked(sessions, activeEP)
 	}
+	return pendingLogs
 }
 
 func (c *ColabOneController) asyncOperation(title string, fn func() error, meta map[string]any, onStart func() error) (map[string]any, error) {
@@ -2041,9 +2064,10 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 	_, curOwned := curSessions[target]
 	curStillOwned := (!hadSessions && len(curSessions) == 0) || (target != "" && curOwned)
 
+	var pendingLogs []pendingActivityLog
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if background && (c.opBusy.Load() || c.opGen.Load() != startOpGen) {
+		c.mu.Unlock()
 		return state, nil
 	}
 	if target != "" && curStillOwned {
@@ -2063,7 +2087,7 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 		(endpoint == "" || endpoint == activeEP) &&
 		(effective == "" || activeEP == "" || effective == activeEP) {
 		c.remoteWorkflowVersions = remoteVersions
-		c.updateWithSessionsLocked(map[string]any{
+		pendingLogs = c.updateWithSessionsLocked(map[string]any{
 			"runtime":       rt,
 			"models":        models,
 			"workflows":     mergedWorkflows,
@@ -2071,6 +2095,8 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 			"comfy_outputs": comfyOutputs,
 		}, curSessions, activeEP)
 	}
+	c.mu.Unlock()
+	c.flushActivityLogs(pendingLogs)
 	return state, nil
 }
 
@@ -2430,15 +2456,16 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		activeEP := c.activeEndpoint()
 		remotes := c.vaultRemotes()
 		c.mu.Lock()
-		defer c.mu.Unlock()
 		current := deepCopyMap(asMap(c.data["runtime"]))
 		if current == nil {
 			current = map[string]any{}
 		}
 		if asString(current["state"]) == "ready" {
-			c.updateLocked(map[string]any{
+			pendingLogs := c.updateLocked(map[string]any{
 				"operation": map[string]any{"title": message, "running": true},
 			})
+			c.mu.Unlock()
+			c.flushActivityLogs(pendingLogs)
 			return
 		}
 		op := baseStartOpLocked("", false)
@@ -2466,10 +2493,12 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 				}
 			}
 		}
-		c.updateLocked(map[string]any{
+		pendingLogs := c.updateLocked(map[string]any{
 			"runtime":   nextRT,
 			"operation": op,
 		})
+		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 	}
 
 	onRetryState := func(info map[string]any) {
@@ -2477,9 +2506,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			return
 		}
 		c.mu.Lock()
-		defer c.mu.Unlock()
 		prev := asMap(c.data["operation"])
 		if prev == nil || asString(prev["kind"]) != "runtime_start" {
+			c.mu.Unlock()
 			return
 		}
 		op := deepCopyMap(prev)
@@ -2492,7 +2521,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			if asBool(info["allocated"]) {
 				op["allocated"] = true
 			}
-			c.updateLocked(map[string]any{"operation": op})
+			pendingLogs := c.updateLocked(map[string]any{"operation": op})
+			c.mu.Unlock()
+			c.flushActivityLogs(pendingLogs)
 			return
 		}
 		for _, k := range []string{
@@ -2511,7 +2542,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 				op[k] = v
 			}
 		}
-		c.updateLocked(map[string]any{"operation": op})
+		pendingLogs := c.updateLocked(map[string]any{"operation": op})
+		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 	}
 
 	onBootTelemetry := func(endpoint string, location map[string]any, sample map[string]any) {
@@ -2519,9 +2552,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			return
 		}
 		c.mu.Lock()
-		defer c.mu.Unlock()
 		current := deepCopyMap(asMap(c.data["runtime"]))
 		if asString(current["state"]) != "starting" {
+			c.mu.Unlock()
 			return
 		}
 		nextRT := deepCopyMap(current)
@@ -2541,7 +2574,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 				nextRT["disk_free"] = freeBytes
 			}
 		}
-		c.updateLocked(map[string]any{"runtime": nextRT})
+		pendingLogs := c.updateLocked(map[string]any{"runtime": nextRT})
+		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 	}
 
 	rollback := func(origErr error) error {
@@ -2592,7 +2627,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			if remainingActive == "" {
 				c.mu.Lock()
 				c.remoteWorkflowVersions = make(map[string]float64)
-				c.updateLocked(map[string]any{
+				pendingLogs := c.updateLocked(map[string]any{
 					"runtime":       map[string]any{"state": "stopped"},
 					"models":        c.Presets(),
 					"workflows":     c.mergeWorkflowsLocked(nil),
@@ -2600,6 +2635,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 					"comfy_outputs": []any{},
 				})
 				c.mu.Unlock()
+				c.flushActivityLogs(pendingLogs)
 			} else {
 				c.Update(map[string]any{"runtime": map[string]any{"state": "disconnected", "id": remainingActive}})
 			}
@@ -2725,6 +2761,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		}
 	}
 
+	var startDoneLogs []pendingActivityLog
 	c.mu.Lock()
 	if c.startCancel.IsSet() {
 		c.mu.Unlock()
@@ -2737,9 +2774,10 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		doneOp["waiting_retry"] = false
 		doneOp["retry_at"] = 0.0
 		doneOp["has_retried"] = false
-		c.updateLocked(map[string]any{"operation": doneOp})
+		startDoneLogs = c.updateLocked(map[string]any{"operation": doneOp})
 	}
 	c.mu.Unlock()
+	c.flushActivityLogs(startDoneLogs)
 
 	c.mu.Lock()
 	liveIdleMin, _ := asInt(c.settings["idle_minutes"])
@@ -2873,7 +2911,7 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 	} else {
 		c.mu.Lock()
 		c.remoteWorkflowVersions = make(map[string]float64)
-		c.updateLocked(map[string]any{
+		pendingLogs := c.updateLocked(map[string]any{
 			"runtime":       map[string]any{"state": "stopped"},
 			"models":        c.Presets(),
 			"workflows":     c.mergeWorkflowsLocked(nil),
@@ -2881,6 +2919,7 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 			"comfy_outputs": []any{},
 		})
 		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 	}
 
 	if c.provider != nil {
@@ -3045,7 +3084,7 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 			if len(remainingSessions) == 0 || nextActive == "" {
 				c.mu.Lock()
 				c.remoteWorkflowVersions = make(map[string]float64)
-				c.updateLocked(map[string]any{
+				pendingLogs := c.updateLocked(map[string]any{
 					"runtime":       map[string]any{"state": "stopped"},
 					"models":        c.Presets(),
 					"workflows":     c.mergeWorkflowsLocked(nil),
@@ -3053,6 +3092,7 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 					"comfy_outputs": []any{},
 				})
 				c.mu.Unlock()
+				c.flushActivityLogs(pendingLogs)
 			} else {
 				c.activateCached(nextActive)
 			}

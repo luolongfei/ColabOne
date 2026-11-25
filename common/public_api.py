@@ -60,7 +60,7 @@ def public_origin(value):
 
 
 class ColabOnePublicConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     mode: Literal["named"] = "named"
     domain: str = Field(default="", max_length=300)
     tunnel_token: str = Field(default="", max_length=8000, repr=False)

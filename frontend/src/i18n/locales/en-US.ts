@@ -1399,7 +1399,7 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.errImportInvalidInputKey": "Node \"{id}\" contains an empty input key",
   "comfy.errEmptyFile": "Selected file is empty (0 B). Please choose a valid file.",
   "comfy.indextts2RefRequiredHint":
-    "IndexTTS-2 requires a reference voice audio file when Custom Voice is selected",
+    "IndexTTS-2.5 requires a reference voice audio file when Custom Voice is selected",
   "comfy.runBlockedBusy": "Another task or operation is currently running",
   "comfy.runBlockedUploading": "Media is still uploading",
   "comfy.defaultVisualPrompt":
@@ -1471,7 +1471,18 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "Long-Video",
   "comfy.videoEngineInfiniteTalkSummary": "Faster & steadier for multi-minute narration",
   "comfy.videoEngineLongCatTitle": "Flagship HD",
-  "comfy.videoEngineLongCatSummary": "Higher detail ceiling, native 720p & GPU acceleration",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 native 720p + SeedVR2 7B / FlashVSR+ upscaling (non-commercial)",
+  "comfy.qualityPresetCinema": "Cinema Flagship",
+  "comfy.qualityPresetBalanced": "Balanced HD",
+  "comfy.qualityPresetLongform": "Long-Form Steady",
+  "comfy.nativeRunActiveDesc":
+    'Running native engine task "{name}" · {policy}; outputs save automatically to the gallery.',
+  "comfy.preflightNativeDiskFootprint":
+    "First run will automatically set up the remote native engine and weights (~{size} disk space required).",
+  "comfy.recommendedDisk": "Disk {disk}",
+  "comfy.samplingModeShortCfg": "{steps}-step CFG",
+  "comfy.samplingModeShortLora": "8-step Dual LoRA",
+  "comfy.videoEngineVramShortSr": "Insufficient GPU VRAM",
 
   // Settings Page
   "settings.title": "Settings",

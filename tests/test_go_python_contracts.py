@@ -228,6 +228,7 @@ def test_server_app_boots_offline_with_protocol_7_and_auth_contract(tmp_path, mo
             "comfyui_hf_token",
             "comfyui_drive_export",
             "comfyui_tts_preview",
+            "comfyui_longcat_native",
         ]
         assert status["state"] == "ready"
         assert status["idle_minutes"] == 30

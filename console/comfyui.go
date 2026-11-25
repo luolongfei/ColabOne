@@ -18,13 +18,13 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo"
 	"github.com/luolongfei/ColabOne/console/internal/activity"
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 )
 
 const (
@@ -214,17 +214,12 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 	if err = out.Close(); err != nil {
 		return "", err
 	}
-	var renameErr error
-	for range 4 {
-		renameErr = os.Rename(tmpPath, path)
-		if renameErr == nil {
-			keepTmp = true
-			return path, nil
-		}
-		time.Sleep(15 * time.Millisecond)
+	if renameErr := fsutil.RenameReplace(tmpPath, path); renameErr != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("%s%w", colabOneT("err.outputSaveFailedPrefix"), renameErr)
 	}
-	_ = os.Remove(tmpPath)
-	return "", fmt.Errorf("%s%w", colabOneT("err.outputSaveFailedPrefix"), renameErr)
+	keepTmp = true
+	return path, nil
 }
 
 func validateColabOneCanvasURL(raw string) (*url.URL, error) {

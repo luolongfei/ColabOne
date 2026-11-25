@@ -139,7 +139,11 @@ export interface ColabOneVoicePreviewMeta {
 }
 export interface ColabOneComfyPipelineSpec {
   kind: "comfy_standard" | "digital_human";
-  video_backend?: "infinitetalk" | "longcat_avatar" | "custom";
+  video_backend?:
+    | "infinitetalk"
+    | "longcat_avatar"
+    | "longcat_avatar_native"
+    | "custom";
   default_tts_engine?: string;
   supported_tts_engines?: string[];
   max_segment_seconds?: number;
@@ -147,7 +151,14 @@ export interface ColabOneComfyPipelineSpec {
   output_fps?: number;
   target_width?: number;
   target_height?: number;
-  upscale_mode?: "none" | "ai_2x" | "lanczos";
+  upscale_mode?:
+    | "none"
+    | "ai_2x"
+    | "lanczos"
+    | "auto"
+    | "seedvr2_7b"
+    | "seedvr2_7b_sharp"
+    | "flashvsr_plus";
   audio_node_key?: string;
   image_node_key?: string;
   prompt_node_key?: string;
@@ -259,6 +270,7 @@ export interface ComfyStatus {
   port?: number;
   tag?: string;
   active_pack?: string;
+  cached_tts_engines?: string[];
   queue_running: number;
   queue_pending: number;
   error: string;

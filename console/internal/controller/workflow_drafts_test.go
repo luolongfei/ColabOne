@@ -526,7 +526,8 @@ func TestWorkflowDraftValidationRejections(t *testing.T) {
 		name string
 		val  any
 	}{
-		{"tooLongString", strings.Repeat("a", 200001)},
+		{"tooLongStringASCII", strings.Repeat("a", 200001)},
+		{"tooLongStringCJK", strings.Repeat("汉", 200001)},
 		{"nan", math.NaN()},
 		{"posInf", math.Inf(1)},
 		{"negInf", math.Inf(-1)},
@@ -539,7 +540,36 @@ func TestWorkflowDraftValidationRejections(t *testing.T) {
 			"fields":      map[string]any{"1.val": tc.val},
 		}); err == nil {
 			t.Errorf("draft.save accepted invalid field value %s", tc.name)
+		} else if strings.HasPrefix(tc.name, "tooLongString") && err.Error() != "草稿文本字段超过 200000 个字符上限" {
+			t.Errorf("%s: got error %q, want %q", tc.name, err.Error(), "草稿文本字段超过 200000 个字符上限")
 		}
+	}
+
+	// Rune-based string cap: >66,667 CJK characters (>200,000 UTF-8 bytes) up to 200,000 runes must be accepted
+	// consistently across both comfyui.draft.save and migration draft validation.
+	cjk70k := strings.Repeat("汉", 70000) // 210,000 UTF-8 bytes, 70,000 runes
+	if _, err := ctrl.Command(ctx, "comfyui.draft.save", map[string]any{
+		"workflow_id": "wf-cjk-runes",
+		"fields":      map[string]any{"pipeline.script_text": cjk70k},
+	}); err != nil {
+		t.Fatalf("draft.save rejected 70,000-rune CJK string (210,000 bytes): %v", err)
+	}
+	cjk200k := strings.Repeat("字", 200000) // 600,000 UTF-8 bytes, exact 200,000-rune boundary
+	if _, err := ctrl.Command(ctx, "comfyui.draft.save", map[string]any{
+		"workflow_id": "wf-cjk-boundary",
+		"fields":      map[string]any{"pipeline.script_text": cjk200k},
+	}); err != nil {
+		t.Fatalf("draft.save rejected 200,000-rune CJK boundary string: %v", err)
+	}
+	if validated, err := validateMigrationWorkflowDrafts(map[string]any{
+		"version": 1,
+		"drafts": map[string]any{
+			"wf-cjk-runes": map[string]any{
+				"fields": map[string]any{"pipeline.script_text": cjk70k},
+			},
+		},
+	}); err != nil || validated["wf-cjk-runes"] == nil {
+		t.Fatalf("validateMigrationWorkflowDrafts rejected 70,000-rune CJK string: err=%v validated=%#v", err, validated)
 	}
 
 	// Mismatched kind/extension & unsupported extensions & unsafe filenames.
@@ -894,11 +924,47 @@ func TestWorkflowDraftStartupOrphanGCAndCorruptResilience(t *testing.T) {
 	if len(asMap(mustJSONRoundTripMap(t, allRes)["drafts"])) != 0 {
 		t.Fatalf("expected empty drafts after corrupt drafts.json, got %#v", allRes)
 	}
-	if raw, err := os.ReadFile(corruptDraftsPath); err != nil || string(raw) != "{corrupt-json" {
-		t.Fatalf("expected corrupt drafts.json preserved untouched, raw=%q err=%v", string(raw), err)
+	corruptBackupPath := corruptDraftsPath + ".corrupt"
+	if raw, err := os.ReadFile(corruptBackupPath); err != nil || string(raw) != "{corrupt-json" {
+		t.Fatalf("expected corrupt drafts.json backed up to drafts.json.corrupt, raw=%q err=%v", string(raw), err)
+	}
+	// A subsequent save must succeed and must NOT destroy drafts.json.corrupt.
+	if _, err := corruptCtrl.Command(ctx, "comfyui.draft.save", map[string]any{
+		"workflow_id": "wf-after-corrupt",
+		"fields":      map[string]any{"1.text": "fresh"},
+	}); err != nil {
+		t.Fatalf("draft.save after corrupt backup failed: %v", err)
+	}
+	if raw, err := os.ReadFile(corruptBackupPath); err != nil || string(raw) != "{corrupt-json" {
+		t.Fatalf("drafts.json.corrupt was clobbered after subsequent save: raw=%q err=%v", string(raw), err)
 	}
 	if _, err := os.Stat(preservedMedia); err != nil {
 		t.Fatalf("expected media file preserved when drafts.json is corrupt, err=%v", err)
+	}
+
+	// 3. Oversized (>32 MiB) drafts.json is skipped cleanly without reading into memory.
+	bigCfg := t.TempDir()
+	bigDir := filepath.Join(bigCfg, "comfyui-drafts")
+	if err := os.MkdirAll(bigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bigPath := filepath.Join(bigDir, "drafts.json")
+	bigFile, err := os.OpenFile(bigPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bigFile.Truncate(colabOneMaxWorkflowDraftsFileBytes + 1); err != nil {
+		_ = bigFile.Close()
+		t.Fatal(err)
+	}
+	_ = bigFile.Close()
+	bigCtrl := newDraftTestController(t, bigCfg, realComfyTestAdapter{})
+	bigRes, err := bigCtrl.Command(ctx, "comfyui.draft.get", map[string]any{})
+	if err != nil {
+		t.Fatalf("draft.get after oversized drafts.json failed: %v", err)
+	}
+	if len(asMap(mustJSONRoundTripMap(t, bigRes)["drafts"])) != 0 {
+		t.Fatalf("expected empty drafts after oversized drafts.json, got %#v", bigRes)
 	}
 }
 

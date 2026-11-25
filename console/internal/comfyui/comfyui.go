@@ -33,6 +33,8 @@ const (
 	MaxAudioInputBytes = 64 * 1024 * 1024
 	// MaxWorkflowNestingDepth is the maximum JSON container nesting depth allowed in a workflow.
 	MaxWorkflowNestingDepth = 32
+	// MaxOverrideStringRunes is the maximum rune count allowed for a single string override value.
+	MaxOverrideStringRunes = 200000
 
 	maxWorkflowNodes         = 500
 	maxAutoFields            = 32
@@ -150,15 +152,20 @@ var (
 	}
 
 	allowedVideoBackends = map[string]bool{
-		"infinitetalk":   true,
-		"longcat_avatar": true,
-		"custom":         true,
+		"infinitetalk":          true,
+		"longcat_avatar":        true,
+		"longcat_avatar_native": true,
+		"custom":                true,
 	}
 
 	allowedUpscaleModes = map[string]bool{
-		"none":    true,
-		"ai_2x":   true,
-		"lanczos": true,
+		"none":             true,
+		"ai_2x":            true,
+		"lanczos":          true,
+		"auto":             true,
+		"seedvr2_7b":       true,
+		"seedvr2_7b_sharp": true,
+		"flashvsr_plus":    true,
 	}
 
 	allowedVoicePresetGenders = map[string]bool{
@@ -1377,6 +1384,9 @@ func (s *ColabOneComfyTtsEngineSpec) Validate() error {
 	if s.SourceCommit != "" && !commitSHARe.MatchString(s.SourceCommit) {
 		return errors.New("source_commit 必须为 40 位十六进制 SHA")
 	}
+	if s.SourceRepo != "" && s.SourceCommit == "" {
+		return errors.New("设置 source_repo 时必须提供 40 位十六进制 source_commit")
+	}
 
 	if len(s.VoicePresets) > maxVoicePresetsPerEngine {
 		return errors.New("内置音色预设数量不能超过 24 个")
@@ -1551,6 +1561,9 @@ func (p *ColabOneComfyPipelineSpec) Validate() error {
 	}
 	if !allowedVideoBackends[p.VideoBackend] {
 		return errors.New("视频生成后端不合法")
+	}
+	if p.VideoBackend == "longcat_avatar_native" && p.Kind != "digital_human" {
+		return errors.New("video_backend 为 longcat_avatar_native 时流水线类型必须为 digital_human")
 	}
 	if p.DefaultTtsEngine != "" && !workflowIDRe.MatchString(p.DefaultTtsEngine) {
 		return fmt.Errorf("非法的 TTS 引擎 ID: %q", p.DefaultTtsEngine)
@@ -1754,6 +1767,15 @@ func (f *ColabOneWorkflowField) Validate() error {
 	if f.Step != nil && !isFiniteFloat64(*f.Step) {
 		return fmt.Errorf("字段 %s 包含非法浮点值", f.Key)
 	}
+	if f.Step != nil && *f.Step <= 0 {
+		return errors.New("step 必须大于 0")
+	}
+	if len(f.Options) > 128 {
+		return errors.New("选项数量不能超过 128 个")
+	}
+	if len(f.OptionLabels) > 128 {
+		return errors.New("选项标签数量不能超过 128 个")
+	}
 	if utf8.RuneCountInString(f.Description) > 400 {
 		return errors.New("字段描述长度不能超过 400")
 	}
@@ -1761,6 +1783,9 @@ func (f *ColabOneWorkflowField) Validate() error {
 		return errors.New("字段分组名称长度不能超过 64")
 	}
 	if f.VisibleWhen != nil {
+		if len(f.VisibleWhen) > 16 {
+			return errors.New("visible_when 条件数量不能超过 16 个")
+		}
 		keys := make([]string, 0, len(f.VisibleWhen))
 		for k := range f.VisibleWhen {
 			keys = append(keys, k)
@@ -1770,8 +1795,12 @@ func (f *ColabOneWorkflowField) Validate() error {
 			if _, _, err := validateFieldKey(k); err != nil {
 				return err
 			}
-			switch f.VisibleWhen[k].(type) {
-			case string, bool:
+			switch cond := f.VisibleWhen[k].(type) {
+			case string:
+				if utf8.RuneCountInString(cond) > 160 {
+					return fmt.Errorf("visible_when 条件 %s 的字符串值长度不能超过 160", k)
+				}
+			case bool:
 			default:
 				return fmt.Errorf("visible_when 条件 %s 的值必须为字符串或布尔值", k)
 			}
@@ -1789,6 +1818,36 @@ func (f *ColabOneWorkflowField) Validate() error {
 	}
 	if f.MinValue != nil && f.MaxValue != nil && *f.MinValue > *f.MaxValue {
 		return errors.New("min_value 不能大于 max_value")
+	}
+	if f.Default != nil {
+		switch f.FieldType {
+		case "integer":
+			if !isIntValue(f.Default) {
+				return fmt.Errorf("整数字段 %s 的默认值必须为整数", f.Key)
+			}
+		case "number":
+			if _, _, _, okNum := extractNumericValue(f.Default); !okNum {
+				return fmt.Errorf("数值字段 %s 的默认值必须为数字", f.Key)
+			}
+		case "boolean":
+			if _, okBool := f.Default.(bool); !okBool {
+				return fmt.Errorf("布尔字段 %s 的默认值必须为布尔值", f.Key)
+			}
+		}
+	}
+	if f.FieldType == "select" && len(f.Options) > 0 {
+		if defStr, ok := f.Default.(string); ok && defStr != "" {
+			found := false
+			for _, opt := range f.Options {
+				if opt == defStr {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("下拉字段 %s 的默认值不在 options 列表中", f.Key)
+			}
+		}
 	}
 	if f.Options == nil {
 		f.Options = []string{}
@@ -2030,9 +2089,26 @@ func (t *ColabOneWorkflowTemplate) Validate() error {
 	if len(t.Fields) > 64 {
 		return errors.New("字段数量不能超过 64 个")
 	}
+	fieldKeys := make(map[string]struct{}, len(t.Fields))
 	for i := range t.Fields {
 		if err := t.Fields[i].Validate(); err != nil {
 			return err
+		}
+		fieldKeys[t.Fields[i].Key] = struct{}{}
+	}
+	for _, f := range t.Fields {
+		if len(f.VisibleWhen) == 0 {
+			continue
+		}
+		condKeys := make([]string, 0, len(f.VisibleWhen))
+		for k := range f.VisibleWhen {
+			condKeys = append(condKeys, k)
+		}
+		sort.Strings(condKeys)
+		for _, k := range condKeys {
+			if _, ok := fieldKeys[k]; !ok {
+				return fmt.Errorf("字段 %s 的 visible_when 引用了不存在的字段: %s", f.Key, k)
+			}
 		}
 	}
 	if t.NodeCount < 0 {
@@ -2146,7 +2222,11 @@ func (r *ColabOneWorkflowRunRequest) Validate() error {
 			}
 			val := r.Overrides[key]
 			switch v := val.(type) {
-			case string, bool:
+			case string:
+				if utf8.RuneCountInString(v) > MaxOverrideStringRunes {
+					return fmt.Errorf("字段 %s 的文本长度不能超过 %d 个字符", key, MaxOverrideStringRunes)
+				}
+			case bool:
 			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			case float32:
 				if !isFiniteFloat64(float64(v)) {
@@ -3012,6 +3092,9 @@ func ApplyWorkflowOverrides(
 			val := overrides[key]
 			switch v := val.(type) {
 			case bool:
+				if _, isBool := existing.(bool); !isBool {
+					return nil, fmt.Errorf("字段 %s 不接受布尔值覆盖", key)
+				}
 				inputs[inputName] = v
 			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 				inputs[inputName] = v

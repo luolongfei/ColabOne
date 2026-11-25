@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 )
 
 func repoRootPath(t *testing.T) string {
@@ -611,17 +613,17 @@ func TestColabOneRenameReplaceWindowsRetry(t *testing.T) {
 		t.Fatalf("mkdir existing-dir: %v", err)
 	}
 
-	sharingErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: colabOneWinErrSharingViolation}
-	accessErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: colabOneWinErrAccessDenied}
-	lockErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: colabOneWinErrLockViolation}
-	notFoundErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: colabOneWinErrFileNotFound}
+	sharingErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: fsutil.WinErrSharingViolation}
+	accessErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: fsutil.WinErrAccessDenied}
+	lockErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: fsutil.WinErrLockViolation}
+	notFoundErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: fsutil.WinErrFileNotFound}
 	diskFullErr := &os.LinkError{Op: "rename", Old: "tmp", New: filePath, Err: syscall.Errno(112)}
 
 	t.Run("non-windows does not retry", func(t *testing.T) {
 		calls := 0
 		sleeps := 0
 		statCalls := 0
-		err := colabOneRenameReplaceWith(
+		err := fsutil.RenameReplaceWith(
 			"tmp",
 			filePath,
 			false,
@@ -647,7 +649,7 @@ func TestColabOneRenameReplaceWindowsRetry(t *testing.T) {
 		calls := 0
 		sleeps := 0
 		statCalls := 0
-		err := colabOneRenameReplaceWith(
+		err := fsutil.RenameReplaceWith(
 			"tmp",
 			filePath,
 			true,
@@ -673,7 +675,7 @@ func TestColabOneRenameReplaceWindowsRetry(t *testing.T) {
 		transientSeq := []error{sharingErr, accessErr, lockErr, notFoundErr, fs.ErrPermission}
 		calls := 0
 		var delays []time.Duration
-		err := colabOneRenameReplaceWith(
+		err := fsutil.RenameReplaceWith(
 			"tmp",
 			filePath,
 			true,
@@ -697,19 +699,19 @@ func TestColabOneRenameReplaceWindowsRetry(t *testing.T) {
 		if len(delays) != len(transientSeq) {
 			t.Fatalf("sleep count=%d, want %d", len(delays), len(transientSeq))
 		}
-		maxExpected := colabOneWindowsRenameMaxDelay + colabOneWindowsRenameBaseDelay
+		maxExpected := fsutil.WindowsRenameMaxDelay + fsutil.WindowsRenameBaseDelay
 		for i, d := range delays {
-			if d < colabOneWindowsRenameBaseDelay || d >= maxExpected {
-				t.Fatalf("delay[%d]=%v out of bounded range [%v, %v)", i, d, colabOneWindowsRenameBaseDelay, maxExpected)
+			if d < fsutil.WindowsRenameBaseDelay || d >= maxExpected {
+				t.Fatalf("delay[%d]=%v out of bounded range [%v, %v)", i, d, fsutil.WindowsRenameBaseDelay, maxExpected)
 			}
 		}
 	})
 
 	t.Run("windows fails fast when target is existing directory", func(t *testing.T) {
-		dirAccessErr := &os.LinkError{Op: "rename", Old: "tmp", New: dirPath, Err: colabOneWinErrAccessDenied}
+		dirAccessErr := &os.LinkError{Op: "rename", Old: "tmp", New: dirPath, Err: fsutil.WinErrAccessDenied}
 		calls := 0
 		sleeps := 0
-		err := colabOneRenameReplaceWith(
+		err := fsutil.RenameReplaceWith(
 			"tmp",
 			dirPath,
 			true,
@@ -731,7 +733,7 @@ func TestColabOneRenameReplaceWindowsRetry(t *testing.T) {
 	t.Run("windows fails fast on non-transient error", func(t *testing.T) {
 		calls := 0
 		sleeps := 0
-		err := colabOneRenameReplaceWith(
+		err := fsutil.RenameReplaceWith(
 			"tmp",
 			filePath,
 			true,
@@ -753,7 +755,7 @@ func TestColabOneRenameReplaceWindowsRetry(t *testing.T) {
 	t.Run("windows stops after bounded retries on persistent sharing violation", func(t *testing.T) {
 		calls := 0
 		sleeps := 0
-		err := colabOneRenameReplaceWith(
+		err := fsutil.RenameReplaceWith(
 			"tmp",
 			filePath,
 			true,
@@ -767,18 +769,18 @@ func TestColabOneRenameReplaceWindowsRetry(t *testing.T) {
 		if !errors.Is(err, sharingErr) {
 			t.Fatalf("got err=%v, want %v", err, sharingErr)
 		}
-		if calls != colabOneWindowsRenameMaxAttempts {
-			t.Fatalf("calls=%d, want %d", calls, colabOneWindowsRenameMaxAttempts)
+		if calls != fsutil.WindowsRenameMaxAttempts {
+			t.Fatalf("calls=%d, want %d", calls, fsutil.WindowsRenameMaxAttempts)
 		}
-		if sleeps != colabOneWindowsRenameMaxAttempts-1 {
-			t.Fatalf("sleeps=%d, want %d", sleeps, colabOneWindowsRenameMaxAttempts-1)
+		if sleeps != fsutil.WindowsRenameMaxAttempts-1 {
+			t.Fatalf("sleeps=%d, want %d", sleeps, fsutil.WindowsRenameMaxAttempts-1)
 		}
 	})
 }
 
 func TestReadFileWithWindowsRetry(t *testing.T) {
-	sharingErr := &fs.PathError{Op: "open", Path: "concurrent.json", Err: colabOneWinErrSharingViolation}
-	accessErr := &fs.PathError{Op: "open", Path: "concurrent.json", Err: colabOneWinErrAccessDenied}
+	sharingErr := &fs.PathError{Op: "open", Path: "concurrent.json", Err: fsutil.WinErrSharingViolation}
+	accessErr := &fs.PathError{Op: "open", Path: "concurrent.json", Err: fsutil.WinErrAccessDenied}
 	invalidErr := &fs.PathError{Op: "open", Path: "concurrent.json", Err: fs.ErrInvalid}
 
 	t.Run("non-windows does not retry", func(t *testing.T) {
@@ -867,8 +869,8 @@ func TestReadFileWithWindowsRetry(t *testing.T) {
 		if !errors.Is(err, sharingErr) {
 			t.Fatalf("got err=%v, want %v", err, sharingErr)
 		}
-		if calls != colabOneWindowsRenameMaxAttempts || sleeps != colabOneWindowsRenameMaxAttempts-1 {
-			t.Fatalf("calls=%d sleeps=%d, want %d/%d", calls, sleeps, colabOneWindowsRenameMaxAttempts, colabOneWindowsRenameMaxAttempts-1)
+		if calls != fsutil.WindowsRenameMaxAttempts || sleeps != fsutil.WindowsRenameMaxAttempts-1 {
+			t.Fatalf("calls=%d sleeps=%d, want %d/%d", calls, sleeps, fsutil.WindowsRenameMaxAttempts, fsutil.WindowsRenameMaxAttempts-1)
 		}
 	})
 }
@@ -887,11 +889,11 @@ func readFileWithWindowsRetryImpl(
 	if err == nil || !isWindows {
 		return raw, err
 	}
-	for attempt := 1; attempt < colabOneWindowsRenameMaxAttempts; attempt++ {
-		if !colabOneIsTransientWindowsFileErr(err) {
+	for attempt := 1; attempt < fsutil.WindowsRenameMaxAttempts; attempt++ {
+		if !fsutil.IsTransientWindowsFileErr(err) {
 			return nil, err
 		}
-		sleepFn(colabOneWindowsRetryDelay(attempt))
+		sleepFn(fsutil.WindowsRetryDelay(attempt))
 		raw, err = readFn(path)
 		if err == nil {
 			return raw, nil

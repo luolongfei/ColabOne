@@ -518,7 +518,7 @@ function onMediaDrop(event: DragEvent) {
       class="co-comfy-media-field"
     >
       <div class="co-comfy-field-label-row">
-        <span>
+        <span :id="`${inputId}-label`">
           {{ displayedLabel }}
           <span
             v-if="isRequired"
@@ -547,6 +547,7 @@ function onMediaDrop(event: DragEvent) {
           :id="inputId"
           class="co-visually-hidden"
           type="file"
+          :aria-labelledby="`${inputId}-label`"
           :accept="
             field.field_type === 'audio'
               ? '.wav,.mp3,.flac,.ogg,.m4a'

@@ -1354,7 +1354,7 @@ export const zhCNMessages = {
   "comfy.errImportInvalidInputKey": "节点「{id}」包含空白输入键名",
   "comfy.errEmptyFile": "所选文件为空（0 B），请重新选择有效素材",
   "comfy.indextts2RefRequiredHint":
-    "IndexTTS-2 选择「自定义音色」时必须上传参考音色音频",
+    "IndexTTS-2.5 选择「自定义音色」时必须上传参考音色音频",
   "comfy.runBlockedBusy": "当前有正在执行的任务或操作，请稍候",
   "comfy.runBlockedUploading": "素材正在上传中，请稍候完成",
   "comfy.defaultVisualPrompt":
@@ -1426,7 +1426,18 @@ export const zhCNMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "长视频稳健",
   "comfy.videoEngineInfiniteTalkSummary": "多分钟连续口播更稳、速度更快",
   "comfy.videoEngineLongCatTitle": "旗舰高清",
-  "comfy.videoEngineLongCatSummary": "画质上限更高，支持原生 720p 与全栈加速",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 原生 720p + SeedVR2 7B / FlashVSR+ 超分（仅非商用）",
+  "comfy.qualityPresetCinema": "电影级旗舰",
+  "comfy.qualityPresetBalanced": "高质均衡",
+  "comfy.qualityPresetLongform": "长视频稳态",
+  "comfy.nativeRunActiveDesc":
+    "正在执行原生引擎任务「{name}」· {policy}，完成后自动保存至作品画廊",
+  "comfy.preflightNativeDiskFootprint":
+    "首次运行将自动准备远端原生引擎与权重（预计需预留约 {size} 磁盘空间）",
+  "comfy.recommendedDisk": "推荐磁盘 {disk}",
+  "comfy.samplingModeShortCfg": "{steps} 步 CFG",
+  "comfy.samplingModeShortLora": "8 步双 LoRA",
+  "comfy.videoEngineVramShortSr": "当前 GPU 显存不足",
 
   // Settings Page
   "settings.title": "设置",

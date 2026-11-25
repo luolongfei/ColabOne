@@ -63,6 +63,10 @@ const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_WORKFLOW_NODES = 500;
 const MAX_CLASS_TYPE_LENGTH = 160;
 const NODE_ID_RE = /^[a-zA-Z0-9_:-]{1,80}$/;
+export const COLABONE_VOICE_PRESET_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const RESOLUTION_DIM_RE = /^(\d+)[xX](\d+)$/;
+const PORTRAIT_RESOLUTION_FALLBACKS = ["1080x1920", "720x1280"] as const;
+const LANDSCAPE_RESOLUTION_FALLBACKS = ["1920x1080", "1280x720"] as const;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const STRICT_PUBLIC_HOST_RE =
   /^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+)(?::([0-9]{1,5}))?$/;
@@ -103,6 +107,11 @@ function normalizeZero(num: number): number {
   return num === 0 ? 0 : num;
 }
 
+function canonicalizeColabOneVoicePreset(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.toLowerCase() === "custom" ? "custom" : trimmed;
+}
+
 function parseBooleanValue(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") {
     return value;
@@ -138,6 +147,39 @@ function parseFiniteNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+export function clampColabOneNumericFieldValue(
+  num: number,
+  field: Pick<WorkflowField, "field_type" | "min_value" | "max_value">,
+): number {
+  if (!Number.isFinite(num)) {
+    return num;
+  }
+  const isInt = field.field_type === "integer";
+  let value = isInt ? normalizeZero(Math.round(num)) : normalizeZero(num);
+  const minBound =
+    typeof field.min_value === "number" && Number.isFinite(field.min_value)
+      ? isInt
+        ? normalizeZero(Math.ceil(field.min_value))
+        : normalizeZero(field.min_value)
+      : undefined;
+  const maxBound =
+    typeof field.max_value === "number" && Number.isFinite(field.max_value)
+      ? isInt
+        ? normalizeZero(Math.floor(field.max_value))
+        : normalizeZero(field.max_value)
+      : undefined;
+  if (minBound !== undefined && maxBound !== undefined && minBound > maxBound) {
+    return value;
+  }
+  if (minBound !== undefined && value < minBound) {
+    value = minBound;
+  }
+  if (maxBound !== undefined && value > maxBound) {
+    value = maxBound;
+  }
+  return normalizeZero(value);
+}
+
 function resolveNumericFieldValue(value: unknown, field: WorkflowField): number {
   const resolved =
     parseFiniteNumber(value) ??
@@ -145,9 +187,7 @@ function resolveNumericFieldValue(value: unknown, field: WorkflowField): number 
     (typeof field.min_value === "number" && Number.isFinite(field.min_value)
       ? field.min_value
       : 0);
-  return field.field_type === "integer"
-    ? normalizeZero(Math.round(resolved))
-    : normalizeZero(resolved);
+  return clampColabOneNumericFieldValue(resolved, field);
 }
 
 export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
@@ -331,13 +371,17 @@ export function remapColabOnePresetPromptFieldsForLocale(
 }
 
 export function resolveColabOneWorkflowFieldPlaceholder(
-  field: WorkflowField,
+  field: WorkflowField | undefined | null,
   locale?: ColabOneLocale,
 ): string {
+  if (!field) {
+    return "";
+  }
   if (field.field_type !== "text" && field.field_type !== "textarea") {
     return "";
   }
-  switch (field.key) {
+  const key = typeof field.key === "string" ? field.key.trim() : "";
+  switch (key) {
     case "pipeline.script_text":
       return t("comfy.placeholderScriptText", undefined, locale);
     case "pipeline.voice_ref_text":
@@ -347,7 +391,10 @@ export function resolveColabOneWorkflowFieldPlaceholder(
     case "pipeline.emotion_prompt":
       return t("comfy.placeholderEmotionPrompt", undefined, locale);
     case "5.positive_prompt":
+    case "pipeline.positive_prompt":
       return t("comfy.placeholderVisualPrompt", undefined, locale);
+    case "pipeline.negative_prompt":
+      return t("comfy.placeholderNegativePrompt", undefined, locale);
     default:
       break;
   }
@@ -362,7 +409,9 @@ export function resolveColabOneWorkflowFieldPlaceholder(
     combined.includes("negative") ||
     combined.includes("反向") ||
     combined.includes("负向") ||
-    combined.includes("負向")
+    combined.includes("負向") ||
+    combined.includes("ネガティブ") ||
+    combined.includes("네거티브")
   ) {
     return t("comfy.placeholderNegativePrompt", undefined, locale);
   }
@@ -371,7 +420,11 @@ export function resolveColabOneWorkflowFieldPlaceholder(
     combined.includes("positive") ||
     combined.includes("正向") ||
     combined.includes("提示词") ||
-    combined.includes("提示詞")
+    combined.includes("提示詞") ||
+    combined.includes("ポジティブ") ||
+    combined.includes("プロンプト") ||
+    combined.includes("포지티브") ||
+    combined.includes("프롬프트")
   ) {
     return t("comfy.placeholderGenericPrompt", undefined, locale);
   }
@@ -395,7 +448,7 @@ export function buildColabOneWorkflowOverrides(
   const pendingUploadKeys = opts?.pendingUploadKeys;
 
   for (const field of candidateFields) {
-    if (!isWorkflowFieldVisible(field, values)) {
+    if (!isColabOneWorkflowFieldVisible(wf, field, values)) {
       continue;
     }
 
@@ -434,24 +487,56 @@ export function buildColabOneWorkflowOverrides(
     ) {
       overrides[field.key] = resolveNumericFieldValue(rawValue, field);
     } else if (field.field_type === "select") {
-      const trimmed =
-        rawValue !== undefined && rawValue !== null
-          ? String(rawValue).trim()
-          : "";
-      if (trimmed !== "") {
-        overrides[field.key] = trimmed;
+      const validSelectRaw =
+        typeof rawValue === "string" ||
+        (typeof rawValue === "number" && Number.isFinite(rawValue));
+      const trimmed = validSelectRaw ? String(rawValue).trim() : "";
+      const isDynamicVoicePreset = field.key === "pipeline.voice_preset";
+      let candidate = trimmed;
+      if (field.key === "pipeline.audio_source" && candidate !== "") {
+        if (Array.isArray(field.options) && field.options.length > 0) {
+          const matchedOption = field.options.find(
+            (opt) => opt.trim().toLowerCase() === candidate.toLowerCase(),
+          );
+          if (matchedOption !== undefined) {
+            candidate = matchedOption;
+          }
+        } else {
+          candidate = candidate.toLowerCase();
+        }
+      }
+      const isAllowedOption =
+        candidate !== "" &&
+        (isDynamicVoicePreset
+          ? COLABONE_VOICE_PRESET_ID_RE.test(candidate)
+          : !(
+              Array.isArray(field.options) &&
+              field.options.length > 0 &&
+              !field.options.includes(candidate)
+            ));
+      if (isAllowedOption) {
+        overrides[field.key] = isDynamicVoicePreset
+          ? canonicalizeColabOneVoicePreset(candidate)
+          : candidate;
       } else {
         const defaultStr =
           field.default !== undefined && field.default !== null
             ? String(field.default).trim()
             : "";
-        overrides[field.key] = defaultStr || field.options?.[0] || "";
+        const fallback = defaultStr || field.options?.[0] || "";
+        overrides[field.key] = isDynamicVoicePreset
+          ? canonicalizeColabOneVoicePreset(fallback)
+          : fallback;
       }
     } else {
-      overrides[field.key] =
-        rawValue !== undefined && rawValue !== null
-          ? String(rawValue).trim()
-          : "";
+      if (typeof rawValue === "string") {
+        overrides[field.key] = rawValue.trim();
+      } else if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+        overrides[field.key] = String(normalizeZero(rawValue));
+      } else {
+        overrides[field.key] =
+          typeof field.default === "string" ? field.default.trim() : "";
+      }
     }
   }
 
@@ -697,7 +782,16 @@ export function isWorkflowFieldVisible(
     return false;
   }
   for (const [key, expected] of entries) {
-    if (!Object.prototype.hasOwnProperty.call(values, key)) {
+    if (key === "pipeline.audio_source") {
+      if (
+        typeof expected !== "string" ||
+        resolveColabOneAudioSource(values) !== expected.trim().toLowerCase()
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (!hasOwn(values, key)) {
       return false;
     }
     const actual = values[key];
@@ -710,6 +804,51 @@ export function isWorkflowFieldVisible(
     }
   }
   return true;
+}
+
+export function isColabOneWorkflowFieldVisible(
+  wf: WorkflowTemplate | undefined | null,
+  field: WorkflowField,
+  values: Record<string, string | number | boolean>,
+): boolean {
+  if (!isWorkflowFieldVisible(field, values)) {
+    return false;
+  }
+  const videoBackend = String(wf?.pipeline?.video_backend || "")
+    .trim()
+    .toLowerCase();
+  if (videoBackend === "longcat_avatar_native") {
+    const samplingMode = resolveColabOneLongCatNativeSamplingMode(values);
+    if (samplingMode === "non_distill_cfg") {
+      if (
+        field.key === "pipeline.mix_steps" ||
+        field.key === "pipeline.mix_alpha"
+      ) {
+        return false;
+      }
+    } else if (samplingMode === "distill_lora_mix") {
+      if (
+        field.key === "pipeline.audio_guidance_scale" ||
+        field.key === "pipeline.text_guidance_scale" ||
+        field.key === "pipeline.num_inference_steps"
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+export function resolveColabOneAudioSource(
+  values?: Record<string, string | number | boolean> | null,
+): string {
+  const rawAudioSource = hasOwn(values, "pipeline.audio_source")
+    ? values?.["pipeline.audio_source"]
+    : undefined;
+  if (typeof rawAudioSource !== "string") {
+    return "tts";
+  }
+  return rawAudioSource.trim().toLowerCase() || "tts";
 }
 
 const CANONICAL_WORKFLOW_FIELD_GROUPS = [
@@ -807,7 +946,7 @@ export function resolveSelectedTtsEngine(
   if (!engines || engines.length === 0) {
     return undefined;
   }
-  if (String(values?.["pipeline.audio_source"] ?? "tts").trim() !== "tts") {
+  if (resolveColabOneAudioSource(values) !== "tts") {
     return undefined;
   }
   const rawSelected = hasOwn(values, "pipeline.tts_engine")
@@ -1002,7 +1141,7 @@ export function resolveColabOneSelectedVoicePreset(
   if (typeof value !== "string") {
     return undefined;
   }
-  const normalized = value.trim();
+  const normalized = canonicalizeColabOneVoicePreset(value);
   if (!normalized || normalized === "custom") {
     return undefined;
   }
@@ -1021,7 +1160,10 @@ export function isColabOneVoicePresetSupportedByEngine(
   field: WorkflowField | undefined,
   engine?: ColabOneComfyTtsEngineSpec,
 ): boolean {
-  const normalized = typeof presetId === "string" ? presetId.trim() : "";
+  const normalized =
+    typeof presetId === "string"
+      ? canonicalizeColabOneVoicePreset(presetId)
+      : "";
   if (!normalized) {
     return false;
   }
@@ -1048,7 +1190,9 @@ export function resolveColabOneFallbackVoicePreset(
     return "shen_zhiyi";
   }
   const fieldDefault =
-    typeof field?.default === "string" ? field.default.trim() : "";
+    typeof field?.default === "string"
+      ? canonicalizeColabOneVoicePreset(field.default)
+      : "";
   if (
     fieldDefault &&
     isColabOneVoicePresetSupportedByEngine(fieldDefault, field, engine)
@@ -1173,8 +1317,8 @@ export function isColabOneTtsEngineNonCommercial(
   }
   return (
     engine.commercial_ok === false ||
-    (engine.commercial_ok === undefined &&
-      NON_COMMERCIAL_TTS_ENGINE_IDS.has((engine.id || "").trim()))
+    (engine.commercial_ok == null &&
+      NON_COMMERCIAL_TTS_ENGINE_IDS.has((engine.id || "").trim().toLowerCase()))
   );
 }
 
@@ -1182,7 +1326,13 @@ export function hasNonCommercialNotice(
   wf: WorkflowTemplate | undefined,
   selectedTts: ColabOneComfyTtsEngineSpec | undefined,
 ): NonCommercialNotice | null {
-  const wfRestricted = wf?.commercial_ok === false;
+  const wfRestricted = Boolean(
+    wf &&
+      (wf.commercial_ok === false ||
+        (wf.commercial_ok == null &&
+          String(wf.pipeline?.video_backend || "").trim().toLowerCase() ===
+            "longcat_avatar_native")),
+  );
   const ttsRestricted = isColabOneTtsEngineNonCommercial(selectedTts);
   if (!wfRestricted && !ttsRestricted) {
     return null;
@@ -1191,7 +1341,7 @@ export function hasNonCommercialNotice(
   if (wfRestricted && wf) {
     items.push({
       kind: "workflow",
-      name: (wf.name || "").trim() || wf.id || "",
+      name: (wf.name || "").trim() || (wf.id || "").trim(),
       license: (wf.license || "").trim(),
       notice: (wf.license_notice || "").trim(),
     });
@@ -1199,7 +1349,7 @@ export function hasNonCommercialNotice(
   if (ttsRestricted && selectedTts) {
     items.push({
       kind: "tts",
-      name: (selectedTts.name || "").trim() || selectedTts.id || "",
+      name: (selectedTts.name || "").trim() || (selectedTts.id || "").trim(),
       license: (selectedTts.license || "").trim(),
       notice: (selectedTts.license_notice || "").trim(),
     });
@@ -1241,10 +1391,7 @@ export function isColabOneVoiceRefRequired(
   if (!wf || wf.pipeline?.kind !== "digital_human") {
     return false;
   }
-  const rawAudioSource = hasOwn(values, "pipeline.audio_source")
-    ? values["pipeline.audio_source"]
-    : undefined;
-  if (String(rawAudioSource ?? "tts").trim() !== "tts") {
+  if (resolveColabOneAudioSource(values) !== "tts") {
     return false;
   }
   const rawTtsEngine = hasOwn(values, "pipeline.tts_engine")
@@ -1270,10 +1417,10 @@ export function isColabOneVoiceRefRequired(
     rawVoicePreset !== undefined &&
     rawVoicePreset !== null &&
     String(rawVoicePreset).trim() !== ""
-      ? String(rawVoicePreset).trim()
+      ? canonicalizeColabOneVoicePreset(String(rawVoicePreset))
       : voicePresetField.default !== undefined &&
           voicePresetField.default !== null
-        ? String(voicePresetField.default).trim()
+        ? canonicalizeColabOneVoicePreset(String(voicePresetField.default))
         : "";
   return resolvedVoicePreset === "custom";
 }
@@ -1287,10 +1434,7 @@ export function isColabOneVoiceRefTextRequired(
   if (!wf || wf.pipeline?.kind !== "digital_human") {
     return false;
   }
-  const rawAudioSource = hasOwn(values, "pipeline.audio_source")
-    ? values["pipeline.audio_source"]
-    : undefined;
-  if (String(rawAudioSource ?? "tts").trim() !== "tts") {
+  if (resolveColabOneAudioSource(values) !== "tts") {
     return false;
   }
   const uploadedId = hasOwn(uploadedInputIds, "pipeline.voice_ref_audio")
@@ -1353,7 +1497,7 @@ export function missingRequiredWorkflowFields(
     if (!isRequired) {
       continue;
     }
-    if (!isWorkflowFieldVisible(field, values)) {
+    if (!isColabOneWorkflowFieldVisible(wf, field, values)) {
       continue;
     }
     if (field.field_type === "image" || field.field_type === "audio") {
@@ -1408,7 +1552,59 @@ export const COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS: ReadonlySet<string> =
     "pipeline.acceleration_profile",
     "14.steps",
     "15.steps",
+    "pipeline.quality_preset",
+    "pipeline.framing_style",
+    "pipeline.sampling_mode",
+    "pipeline.audio_guidance_scale",
+    "pipeline.text_guidance_scale",
+    "pipeline.num_inference_steps",
+    "pipeline.mix_steps",
+    "pipeline.mix_alpha",
+    "pipeline.vocal_separation",
+    "pipeline.ref_img_index",
+    "pipeline.seed",
+    "pipeline.crf",
+    "pipeline.positive_prompt",
+    "pipeline.negative_prompt",
   ]);
+
+export type ColabOneLongCatNativeSamplingMode =
+  | "non_distill_cfg"
+  | "distill_lora_mix";
+
+const LONGCAT_NATIVE_DISTILL_QUALITY_PRESETS: ReadonlySet<string> = new Set([
+  "balanced_hd",
+  "longform_fast",
+]);
+
+export function resolveColabOneLongCatNativeSamplingMode(
+  values?: Record<string, string | number | boolean> | null,
+): ColabOneLongCatNativeSamplingMode {
+  const rawSamplingMode = hasOwn(values, "pipeline.sampling_mode")
+    ? values?.["pipeline.sampling_mode"]
+    : undefined;
+  const samplingMode =
+    typeof rawSamplingMode === "string"
+      ? rawSamplingMode.trim().toLowerCase()
+      : "";
+  if (
+    samplingMode === "non_distill_cfg" ||
+    samplingMode === "distill_lora_mix"
+  ) {
+    return samplingMode;
+  }
+  const rawQualityPreset = hasOwn(values, "pipeline.quality_preset")
+    ? values?.["pipeline.quality_preset"]
+    : undefined;
+  const qualityPreset =
+    typeof rawQualityPreset === "string"
+      ? rawQualityPreset.trim().toLowerCase()
+      : "";
+  if (LONGCAT_NATIVE_DISTILL_QUALITY_PRESETS.has(qualityPreset)) {
+    return "distill_lora_mix";
+  }
+  return "non_distill_cfg";
+}
 
 export interface ColabOneStudioWorkflowEntry {
   key: string;
@@ -1567,19 +1763,28 @@ export function resolveColabOneRecommendedDigitalHumanWorkflowId(
   if (list.length === 0) {
     return "";
   }
+  const normalizedId = (wf: WorkflowTemplate): string =>
+    typeof wf.id === "string" ? wf.id.trim() : "";
   if (list.length === 1) {
-    return list[0].id;
+    return normalizedId(list[0]);
   }
+  const normalizedBackend = (wf: WorkflowTemplate): string =>
+    String(wf.pipeline?.video_backend || "")
+      .trim()
+      .toLowerCase();
 
-  const flagship = list.find(
-    (wf) =>
-      wf.pipeline?.video_backend === "longcat_avatar" ||
-      wf.id === "digital-human-longcat",
-  );
+  const flagship = list.find((wf) => {
+    const backend = normalizedBackend(wf);
+    return (
+      backend === "longcat_avatar_native" ||
+      backend === "longcat_avatar" ||
+      normalizedId(wf) === "digital-human-longcat"
+    );
+  });
   const longVideo = list.find(
     (wf) =>
-      wf.pipeline?.video_backend === "infinitetalk" ||
-      wf.id === "digital-human-infinitetalk",
+      normalizedBackend(wf) === "infinitetalk" ||
+      normalizedId(wf) === "digital-human-infinitetalk",
   );
   const { vramMib } = resolveColabOneDigitalHumanGpuContext(
     runtime,
@@ -1593,18 +1798,19 @@ export function resolveColabOneRecommendedDigitalHumanWorkflowId(
       ? flagship.min_vram_mib
       : 49152;
   if (flagship && vramMib >= flagshipMinVramMib) {
-    return flagship.id;
+    return normalizedId(flagship);
   }
   if (longVideo) {
-    return longVideo.id;
+    return normalizedId(longVideo);
   }
   if (flagship) {
-    const alternate = list.find((wf) => wf.id !== flagship.id);
+    const flagshipId = normalizedId(flagship);
+    const alternate = list.find((wf) => normalizedId(wf) !== flagshipId);
     if (alternate) {
-      return alternate.id;
+      return normalizedId(alternate);
     }
   }
-  return list[0].id;
+  return normalizedId(list[0]);
 }
 
 function resolveColabOneLocalStorage(storage?: Storage | null): Storage | null {
@@ -1683,6 +1889,37 @@ export function resolveColabOneInitialDigitalHumanWorkflowId(
   };
 }
 
+function resolveOrientationFallbackResolution(
+  candidate: string,
+  options: readonly string[],
+): string | undefined {
+  const match = RESOLUTION_DIM_RE.exec(candidate);
+  if (!match) {
+    return undefined;
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    width === height
+  ) {
+    return undefined;
+  }
+  const preferred =
+    height > width
+      ? PORTRAIT_RESOLUTION_FALLBACKS
+      : LANDSCAPE_RESOLUTION_FALLBACKS;
+  for (const fallback of preferred) {
+    if (options.includes(fallback)) {
+      return fallback;
+    }
+  }
+  return undefined;
+}
+
 export function transferColabOneDigitalHumanFields(
   sourceWf: WorkflowTemplate | undefined,
   targetWf: WorkflowTemplate | undefined,
@@ -1740,17 +1977,54 @@ export function transferColabOneDigitalHumanFields(
       if (!candidate) {
         continue;
       }
+      if (
+        (targetField.key === "pipeline.target_resolution" ||
+          targetField.key === "pipeline.tts_engine") &&
+        sourceField
+      ) {
+        const sourceDefault =
+          sourceField.default !== undefined && sourceField.default !== null
+            ? String(sourceField.default).trim()
+            : "";
+        const targetDefault =
+          targetField.default !== undefined && targetField.default !== null
+            ? String(targetField.default).trim()
+            : "";
+        if (
+          sourceDefault &&
+          targetDefault &&
+          sourceDefault !== targetDefault &&
+          candidate === sourceDefault
+        ) {
+          continue;
+        }
+      }
       // `pipeline.voice_preset` dynamically accepts engine-specific official
       // speaker IDs (e.g. Qwen3-TTS `qwen_*`) outside the static template options;
       // callers reconcile against the active TTS engine via `reconcileVoicePresetForEngine`.
       const allowsDynamicSelectOptions =
         targetField.key === "pipeline.voice_preset";
+      if (allowsDynamicSelectOptions) {
+        if (!COLABONE_VOICE_PRESET_ID_RE.test(candidate)) {
+          continue;
+        }
+        next[targetField.key] = canonicalizeColabOneVoicePreset(candidate);
+        continue;
+      }
       if (
-        !allowsDynamicSelectOptions &&
         Array.isArray(targetField.options) &&
         targetField.options.length > 0 &&
         !targetField.options.includes(candidate)
       ) {
+        if (targetField.key === "pipeline.target_resolution") {
+          const orientationFallback = resolveOrientationFallbackResolution(
+            candidate,
+            targetField.options,
+          );
+          if (orientationFallback) {
+            next[targetField.key] = orientationFallback;
+          }
+        }
         continue;
       }
       next[targetField.key] = candidate;
@@ -1783,31 +2057,10 @@ export function transferColabOneDigitalHumanFields(
       if (parsed === undefined) {
         continue;
       }
-      let value =
-        targetField.field_type === "integer"
-          ? normalizeZero(Math.round(parsed))
-          : normalizeZero(parsed);
-      if (
-        typeof targetField.min_value === "number" &&
-        Number.isFinite(targetField.min_value) &&
-        value < targetField.min_value
-      ) {
-        value =
-          targetField.field_type === "integer"
-            ? normalizeZero(Math.ceil(targetField.min_value))
-            : normalizeZero(targetField.min_value);
-      }
-      if (
-        typeof targetField.max_value === "number" &&
-        Number.isFinite(targetField.max_value) &&
-        value > targetField.max_value
-      ) {
-        value =
-          targetField.field_type === "integer"
-            ? normalizeZero(Math.floor(targetField.max_value))
-            : normalizeZero(targetField.max_value);
-      }
-      next[targetField.key] = value;
+      next[targetField.key] = clampColabOneNumericFieldValue(
+        parsed,
+        targetField,
+      );
       continue;
     }
 
@@ -1817,7 +2070,6 @@ export function transferColabOneDigitalHumanFields(
     ) {
       if (
         typeof raw !== "string" &&
-        typeof raw !== "boolean" &&
         !(typeof raw === "number" && Number.isFinite(raw))
       ) {
         continue;

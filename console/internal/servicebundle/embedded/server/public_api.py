@@ -651,7 +651,26 @@ class ColabOnePublicGateway:
             time.sleep(0.05)
 
     def start(self, value):
-        config = ColabOnePublicConfig.model_validate(value)
+        from pydantic import ValidationError
+        from server.runtime import _scrub_secret_text
+
+        raw_secrets: list[str] = []
+        if isinstance(value, dict):
+            for key in ("api_key", "tunnel_token"):
+                secret_val = value.get(key)
+                if isinstance(secret_val, str) and secret_val:
+                    raw_secrets.append(secret_val)
+        elif hasattr(value, "api_key") or hasattr(value, "tunnel_token"):
+            for key in ("api_key", "tunnel_token"):
+                secret_val = getattr(value, key, "")
+                if isinstance(secret_val, str) and secret_val:
+                    raw_secrets.append(secret_val)
+        try:
+            config = ColabOnePublicConfig.model_validate(value)
+        except ValidationError as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            raise ValueError(scrubbed) from None
         with self.control_lock:
             if self.enabled or (self.tunnel.thread and self.tunnel.thread.is_alive()):
                 raise ValueError("请先关闭当前 API 服务，再更换配置")

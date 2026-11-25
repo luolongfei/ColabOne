@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import array
 import base64
+import collections
 import copy
 import hashlib
 import importlib.metadata
@@ -22,16 +23,20 @@ import os
 import re
 import shutil
 import signal
+import site
+import stat
 import struct
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import textwrap
 import threading
 import time
 import wave
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -89,7 +94,32 @@ _TTS_MODEL_WEIGHT_EXTS = frozenset(
     {".safetensors", ".pth", ".bin", ".onnx", ".pt", ".ckpt"}
 )
 _BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9_-]{8,}")
+_HF_TOKEN_RE = re.compile(
+    r"\bhf_(?!(?:download|cache|hub|home|transfer|endpoint|xet)(?:_|\b))[A-Za-z0-9_-]{8,}\b"
+)
+_TTS_SENSITIVE_ENV_KEYS = frozenset(
+    {
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_API_TOKEN",
+    }
+)
+_TTS_SETUP_STRIP_ENV_KEYS = frozenset(
+    {
+        "PIP_USER",
+        "PIP_TARGET",
+        "PIP_PREFIX",
+        "PIP_CONSTRAINT",
+        "PIP_REQUIRE_VIRTUALENV",
+        "PYTHONUSERBASE",
+        "PYTHONPATH",
+        "PYTHONNOUSERSITE",
+    }
+)
+_MAX_TTS_LOG_FILE_BYTES = 5 * 1024 * 1024  # 5 MiB truncation threshold
+_MAX_TTS_STREAM_LINE_BYTES = 65536  # 64 KiB cap per streamed stdout/stderr line
+_VOXCPM2_BOOTSTRAP_DISK_MIB = 6144  # ~6 GiB uncached VoxCPM2 preset anchor budget
 
 _ENGINE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 _REPO_SLUG_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
@@ -628,6 +658,8 @@ def resolve_colabone_voice_preset(
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
+    if path.is_symlink():
+        raise ValueError(f"目标文件不能是符号链接：{path.name}")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix=".save-", suffix=".tmp", dir=str(path.parent))
     try:
@@ -2472,6 +2504,251 @@ def _read_log_tail(log_path: Path, max_bytes: int = 4096) -> str:
         return ""
 
 
+def _sanitized_tts_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    blocked = _TTS_SENSITIVE_ENV_KEYS | _TTS_SETUP_STRIP_ENV_KEYS
+    env = {k: v for k, v in os.environ.items() if k not in blocked}
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _cancelled_error_cls() -> type[BaseException]:
+    try:
+        from server.runtime import ColabOneCancelledError
+
+        return ColabOneCancelledError
+    except ImportError:
+        return RuntimeError
+
+
+def _is_cancelled_error(exc: BaseException) -> bool:
+    cls = _cancelled_error_cls()
+    if cls is not RuntimeError and isinstance(exc, cls):
+        return True
+    return type(exc).__name__ == "ColabOneCancelledError"
+
+
+def _check_tts_cancel(task: Any, stopping: threading.Event | None = None) -> None:
+    check_fn = getattr(task, "check", None)
+    if callable(check_fn):
+        check_fn()
+    if isinstance(stopping, threading.Event) and stopping.is_set():
+        raise _cancelled_error_cls()("实例正在停止，已取消远端 TTS 任务")
+
+
+def _collect_parent_venv_site_packages() -> list[str]:
+    """Return site-packages directories of the host virtualenv when sys.prefix != sys.base_prefix."""
+    try:
+        prefix = Path(sys.prefix).resolve()
+        base_prefix = Path(sys.base_prefix).resolve()
+    except OSError:
+        return []
+    if prefix == base_prefix:
+        return []
+
+    base_site_set: set[Path] = set()
+    try:
+        for p in site.getsitepackages([sys.base_prefix]):
+            try:
+                base_site_set.add(Path(p).resolve())
+            except OSError:
+                continue
+    except Exception:
+        pass
+
+    raw_dirs: list[str] = []
+    try:
+        raw_dirs.extend(site.getsitepackages([sys.prefix]))
+    except Exception:
+        pass
+    try:
+        paths = sysconfig.get_paths()
+        for key in ("purelib", "platlib"):
+            val = paths.get(key)
+            if val:
+                raw_dirs.append(val)
+    except Exception:
+        pass
+
+    candidates: list[str] = []
+    seen: set[Path] = set()
+    for raw in raw_dirs:
+        if not raw or any(ch in raw for ch in ("\r", "\n", "\x00")):
+            continue
+        p = Path(raw)
+        try:
+            if p.is_symlink() or not p.is_dir():
+                continue
+            rp = p.resolve()
+        except OSError:
+            continue
+        if rp in seen or rp in base_site_set:
+            continue
+        if not rp.is_relative_to(prefix):
+            continue
+        seen.add(rp)
+        candidates.append(str(rp))
+    return candidates
+
+
+def _find_venv_site_packages_dir(venv_dir: Path) -> Path | None:
+    """Locate the site-packages directory inside `venv_dir`, if present on disk."""
+    candidates: list[Path] = [
+        venv_dir
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages",
+        venv_dir
+        / "lib64"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages",
+        venv_dir / "Lib" / "site-packages",
+    ]
+    lib_dir = venv_dir / "lib"
+    if lib_dir.is_dir() and not lib_dir.is_symlink():
+        try:
+            for child in sorted(lib_dir.iterdir()):
+                if (
+                    child.name.startswith("python")
+                    and child.is_dir()
+                    and not child.is_symlink()
+                ):
+                    candidates.append(child / "site-packages")
+        except OSError:
+            pass
+    for cand in candidates:
+        try:
+            if not cand.is_symlink() and cand.is_dir():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _ensure_parent_venv_pth(venv_dir: Path) -> Path | None:
+    """Write a .pth file into child venv site-packages so parent-venv PyTorch stays visible."""
+    parent_sites = _collect_parent_venv_site_packages()
+    if not parent_sites:
+        return None
+    child_site = _find_venv_site_packages_dir(venv_dir)
+    if child_site is None:
+        return None
+    pth_path = child_site / "_colabone_parent_venv.pth"
+    if pth_path.is_symlink():
+        raise ValueError("TTS 虚拟环境继承路径文件不能是符号链接")
+    content = "\n".join(parent_sites) + "\n"
+    try:
+        if pth_path.is_file() and pth_path.read_text(encoding="utf-8") == content:
+            return pth_path
+    except OSError:
+        pass
+    _atomic_write_text(pth_path, content)
+    return pth_path
+
+
+def _open_secure_tts_log_file(
+    log_path: Path,
+    *,
+    append: bool = False,
+    max_bytes: int = _MAX_TTS_LOG_FILE_BYTES,
+) -> Any:
+    """Open `log_path` with 0o600 permissions (no symlinks), truncating if > max_bytes."""
+    if log_path.parent.is_symlink():
+        raise ValueError("TTS 日志目录不能是符号链接")
+    if log_path.is_symlink():
+        raise ValueError("TTS 日志文件路径不能是符号链接")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    truncate = not append
+    if append:
+        try:
+            st = log_path.lstat()
+            if stat.S_ISLNK(st.st_mode):
+                raise ValueError("TTS 日志文件路径不能是符号链接")
+            if st.st_size > max_bytes:
+                truncate = True
+        except FileNotFoundError:
+            truncate = True
+
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if truncate else os.O_APPEND)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(log_path), flags, 0o600)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            try:
+                os.chmod(log_path, 0o600)
+            except OSError:
+                pass
+        return os.fdopen(fd, "wb")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def _iter_tts_pipe_lines(
+    stream: Any, *, max_line_bytes: int = _MAX_TTS_STREAM_LINE_BYTES
+) -> Iterator[str]:
+    """Yield decoded text lines split on CR or LF with a hard per-line byte cap."""
+    buf = bytearray()
+    pending_lf = False
+    while True:
+        chunk = stream.read(4096)
+        if not chunk:
+            break
+        if pending_lf:
+            pending_lf = False
+            if chunk.startswith(b"\n"):
+                chunk = chunk[1:]
+                if not chunk:
+                    continue
+        buf.extend(chunk)
+        while buf:
+            nl_idx = buf.find(b"\n")
+            cr_idx = buf.find(b"\r")
+            if nl_idx >= 0 and cr_idx >= 0:
+                split_idx = min(nl_idx, cr_idx)
+            elif nl_idx >= 0:
+                split_idx = nl_idx
+            elif cr_idx >= 0:
+                split_idx = cr_idx
+            else:
+                split_idx = -1
+
+            if split_idx < 0:
+                if len(buf) >= max_line_bytes:
+                    raw = bytes(buf[:max_line_bytes])
+                    del buf[:max_line_bytes]
+                    yield raw.decode("utf-8", errors="replace")
+                    continue
+                break
+
+            if split_idx > max_line_bytes:
+                raw = bytes(buf[:max_line_bytes])
+                del buf[:max_line_bytes]
+                yield raw.decode("utf-8", errors="replace")
+                continue
+
+            raw = bytes(buf[:split_idx])
+            delim = buf[split_idx]
+            consume_end = split_idx + 1
+            if delim == 13:  # b"\r"
+                if split_idx + 1 < len(buf):
+                    if buf[split_idx + 1] == 10:  # b"\r\n"
+                        consume_end = split_idx + 2
+                else:
+                    pending_lf = True
+            del buf[:consume_end]
+            yield raw.decode("utf-8", errors="replace")
+    if buf:
+        yield bytes(buf).decode("utf-8", errors="replace")
+
+
 def _run_tts_subprocess(
     args: Sequence[str],
     task: Any,
@@ -2484,29 +2761,44 @@ def _run_tts_subprocess(
     secret_to_scrub: str = "",
     append_log: bool = False,
 ) -> None:
-    """Run a cancelable subprocess in its own process group so VRAM is freed on exit."""
-    if log.is_symlink():
-        raise ValueError("TTS 日志文件路径不能是符号链接")
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("ab" if append_log else "wb") as out:
+    """Run a cancelable subprocess in its own process group with 0o600 live-scrubbed logs."""
+    _check_tts_cancel(task, stopping)
+    log_fh = _open_secure_tts_log_file(log, append=append_log)
+    try:
         proc = subprocess.Popen(
             list(args),
             cwd=str(cwd) if cwd is not None else None,
             env=env,
-            stdout=out,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            bufsize=0,
         )
+    except BaseException:
+        try:
+            log_fh.close()
+        except OSError:
+            pass
+        raise
 
     has_cancel_hook = task is not None and hasattr(task, "cancel_hook")
     task_lock = getattr(task, "lock", None) if has_cancel_hook else None
     prev_cancel_hook = None
     term_lock = threading.Lock()
+    pgrp_cleaned = False
+    tail_lock = threading.Lock()
+    tail_lines: collections.deque[str] = collections.deque(maxlen=80)
+
+    def _cleanup_pgrp(grace: float = 4.0) -> None:
+        nonlocal pgrp_cleaned
+        with term_lock:
+            if not pgrp_cleaned:
+                pgrp_cleaned = True
+                _terminate_process_group(proc, timeout=grace)
 
     def _cancel_proc() -> None:
-        with term_lock:
-            _terminate_process_group(proc, timeout=2.0)
+        _cleanup_pgrp(grace=2.0)
         if callable(prev_cancel_hook):
             try:
                 prev_cancel_hook()
@@ -2514,77 +2806,71 @@ def _run_tts_subprocess(
                 pass
 
     if has_cancel_hook:
-        if task_lock is not None:
-            with task_lock:
-                prev_cancel_hook = getattr(task, "cancel_hook", None)
-                task.cancel_hook = _cancel_proc
-        else:
+        with task_lock if task_lock is not None else nullcontext():
             prev_cancel_hook = getattr(task, "cancel_hook", None)
             task.cancel_hook = _cancel_proc
 
-    end = time.monotonic() + timeout
+    def _reader_loop() -> None:
+        try:
+            assert proc.stdout is not None
+            with log_fh:
+                for raw_line in _iter_tts_pipe_lines(proc.stdout):
+                    scrubbed = _scrub_secret(raw_line, secret_to_scrub)
+                    log_fh.write((scrubbed + "\n").encode("utf-8", errors="replace"))
+                    log_fh.flush()
+                    stripped = scrubbed.strip()
+                    if stripped:
+                        with tail_lock:
+                            tail_lines.append(stripped)
+        except OSError:
+            pass
+        finally:
+            try:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            except OSError:
+                pass
+
+    reader = threading.Thread(
+        target=_reader_loop,
+        name=f"colabone-tts-cmd-{proc.pid}",
+        daemon=True,
+    )
+    reader.start()
+
+    end = time.monotonic() + max(1, int(timeout))
     noted = 0.0
+    last_noted_line = ""
     try:
         while proc.poll() is None:
-            check_fn = getattr(task, "check", None)
-            if callable(check_fn):
-                check_fn()
-            if isinstance(stopping, threading.Event) and stopping.is_set():
-                from server.runtime import ColabOneCancelledError
-
-                raise ColabOneCancelledError("实例正在停止，已取消远端 TTS 任务")
+            _check_tts_cancel(task, stopping)
             if time.monotonic() > end:
                 raise RuntimeError("远端 TTS 执行超时，请查看运行日志")
             if time.monotonic() - noted > 5.0:
                 noted = time.monotonic()
-                scrubbed_tail = _scrub_secret(_read_log_tail(log, 4096), secret_to_scrub)
-                tail_lines = scrubbed_tail[-1000:].splitlines()
-                if tail_lines:
-                    line = tail_lines[-1][:250]
-                    _safe_task_note(task, line)
+                with tail_lock:
+                    latest = tail_lines[-1] if tail_lines else ""
+                if latest and latest != last_noted_line:
+                    last_noted_line = latest
+                    _safe_task_note(task, latest[:250])
             time.sleep(0.25)
-        check_fn = getattr(task, "check", None)
-        if callable(check_fn):
-            check_fn()
-        if isinstance(stopping, threading.Event) and stopping.is_set():
-            from server.runtime import ColabOneCancelledError
 
-            raise ColabOneCancelledError("实例正在停止，已取消远端 TTS 任务")
+        reader.join(timeout=2.0)
+        _check_tts_cancel(task, stopping)
         if proc.returncode:
-            scrubbed_tail = _scrub_secret(_read_log_tail(log, 4096), secret_to_scrub)
-            tail = scrubbed_tail[-800:]
+            with tail_lock:
+                tail = "\n".join(tail_lines)[-800:]
+            if not tail:
+                tail = _scrub_secret(_read_log_tail(log, 4096), secret_to_scrub)[-800:]
             raise RuntimeError(f"远端 TTS 执行失败（退出码 {proc.returncode}）：{tail}")
     finally:
         try:
-            with term_lock:
-                _terminate_process_group(proc)
+            _cleanup_pgrp(grace=5.0)
+            reader.join(timeout=2.0)
         finally:
-            try:
-                if secret_to_scrub:
-                    try:
-                        if log.is_file() and not log.is_symlink():
-                            log_size = log.stat().st_size
-                            if 0 < log_size <= 2 * 1024 * 1024:
-                                raw_log = log.read_text(
-                                    encoding="utf-8", errors="replace"
-                                )
-                                scrubbed_log = _scrub_secret(raw_log, secret_to_scrub)
-                                if scrubbed_log != raw_log:
-                                    _atomic_write_text(log, scrubbed_log)
-                            elif log_size > 2 * 1024 * 1024:
-                                tail_text = _scrub_secret(
-                                    _read_log_tail(log, 256 * 1024), secret_to_scrub
-                                )
-                                _atomic_write_text(log, tail_text)
-                    except OSError:
-                        pass
-            finally:
-                if has_cancel_hook:
-                    if task_lock is not None:
-                        with task_lock:
-                            if getattr(task, "cancel_hook", None) is _cancel_proc:
-                                task.cancel_hook = prev_cancel_hook
-                    elif getattr(task, "cancel_hook", None) is _cancel_proc:
+            if has_cancel_hook:
+                with task_lock if task_lock is not None else nullcontext():
+                    if getattr(task, "cancel_hook", None) is _cancel_proc:
                         task.cancel_hook = prev_cancel_hook
 
 
@@ -2925,7 +3211,9 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
                 kwargs["token"] = token
             if "cache_dir" in sig.parameters and cache_dir:
                 kwargs["cache_dir"] = cache_dir
-            if "revision" in kwargs or not revision:
+            if ("revision" in kwargs or not revision) and (
+                "cache_dir" in kwargs or not cache_dir
+            ):
                 return voxcpm.VoxCPM.from_pretrained(repo, **kwargs)
         except TypeError:
             pass
@@ -4293,15 +4581,92 @@ class ColabOneRemoteTtsRunner:
             return False
         return True
 
+    def cached_engine_ids(self) -> list[str]:
+        """Return sorted TTS engine IDs whose weights/env are already cached locally (read-only)."""
+        if self.engines_dir.is_symlink() or not self.engines_dir.is_dir():
+            return []
+        cached: list[str] = []
+        for eid, spec in self.engines_by_id.items():
+            try:
+                repo = str(spec.get("repo") or "").strip()
+                if repo:
+                    if self._has_engine_model_cache(spec):
+                        cached.append(eid)
+                else:
+                    env_dir = self.engines_dir / eid
+                    marker = env_dir / ".ready.json"
+                    if (
+                        not env_dir.is_symlink()
+                        and not marker.is_symlink()
+                        and marker.is_file()
+                        and _find_venv_python_on_disk(env_dir / ".venv") is not None
+                    ):
+                        cached.append(eid)
+            except OSError:
+                continue
+        return sorted(cached)
+
+    def _estimate_preset_bootstrap_disk_mib(
+        self,
+        engine: dict[str, Any],
+        *,
+        ref_audio_path: Path | str | None = None,
+        voice_preset: str = "",
+        preset: dict[str, Any] | None = None,
+    ) -> int:
+        """Return uncached VoxCPM2 disk budget (MiB) if engine requires preset anchor synthesis."""
+        eid = str(engine.get("id") or "").strip()
+        if eid not in _REF_AUDIO_PRESET_ENGINES:
+            return 0
+        if ref_audio_path is not None and str(ref_audio_path).strip():
+            return 0
+        target_preset = preset
+        if target_preset is None:
+            raw_preset = str(voice_preset or "").strip()
+            if raw_preset.lower() == "custom":
+                return 0
+            target_preset = resolve_colabone_voice_preset(
+                engine, raw_preset or DEFAULT_COLABONE_VOICE_PRESET
+            )
+        if target_preset is None:
+            return 0
+        if self._is_preset_reference_cached(target_preset):
+            return 0
+        vox_spec = self.engines_by_id.get("voxcpm2")
+        if vox_spec is not None:
+            if self._has_engine_model_cache(vox_spec):
+                return 0
+            vox_mib = int(vox_spec.get("min_disk_mib") or 0)
+            return vox_mib if vox_mib > 0 else _VOXCPM2_BOOTSTRAP_DISK_MIB
+        return _VOXCPM2_BOOTSTRAP_DISK_MIB
+
     def check_disk(
-        self, engine: dict[str, Any], *, allow_unavailable: bool = False
+        self,
+        engine: dict[str, Any],
+        *,
+        allow_unavailable: bool = False,
+        ref_audio_path: Path | str | None = None,
+        voice_preset: str = "",
+        preset: dict[str, Any] | None = None,
     ) -> None:
         if self.engines_dir.is_symlink():
             raise ValueError("TTS 引擎目录不能是符号链接")
-        min_disk_mib = int(engine.get("min_disk_mib") or 0)
-        if min_disk_mib <= 0 or allow_unavailable:
+        if allow_unavailable:
             return
-        if self._has_engine_model_cache(engine):
+        min_disk_mib = max(0, int(engine.get("min_disk_mib") or 0))
+        engine_needed_mib = (
+            0
+            if (min_disk_mib <= 0 or self._has_engine_model_cache(engine))
+            else min_disk_mib
+        )
+        bootstrap_needed_mib = self._estimate_preset_bootstrap_disk_mib(
+            engine,
+            ref_audio_path=ref_audio_path,
+            voice_preset=voice_preset,
+            preset=preset,
+        )
+        required_mib = engine_needed_mib + bootstrap_needed_mib
+        if required_mib <= 0:
             return
         label = str(engine.get("name") or engine.get("id") or "TTS 引擎")
         usage_path = Path("/")
@@ -4313,17 +4678,66 @@ class ColabOneRemoteTtsRunner:
             free_bytes = int(shutil.disk_usage(usage_path).free)
         except OSError:
             raise RuntimeError(
-                f"无法检测远端磁盘空间，{label} 需要至少 {min_disk_mib} MiB 可用磁盘空间"
+                f"无法检测远端磁盘空间，{label} 需要至少 {required_mib} MiB 可用磁盘空间"
             )
-        required_bytes = min_disk_mib * 1024 * 1024
+        required_bytes = required_mib * 1024 * 1024
         if free_bytes < required_bytes:
             free_mib = free_bytes // (1024 * 1024)
-            req_gib = min_disk_mib / 1024.0
+            req_gib = required_mib / 1024.0
             free_gib = free_bytes / (1024.0**3)
-            raise RuntimeError(
-                f"远端磁盘空间不足：TTS 引擎 {label} 至少需要 {req_gib:.1f} GiB"
-                f"（{min_disk_mib} MiB）可用空间，当前仅剩 {free_gib:.1f} GiB（{free_mib} MiB）"
+            extra_note = (
+                "（含首次内置音色锚点 VoxCPM2 缓存）"
+                if bootstrap_needed_mib > 0
+                else ""
             )
+            raise RuntimeError(
+                f"远端磁盘空间不足：TTS 引擎 {label}{extra_note} 至少需要 {req_gib:.1f} GiB"
+                f"（{required_mib} MiB）可用空间，当前仅剩 {free_gib:.1f} GiB（{free_mib} MiB）"
+            )
+
+    def _require_venv_python(self, venv_dir: Path, *, label: str) -> Path:
+        found = _find_venv_python_on_disk(venv_dir)
+        if found is not None:
+            return found
+        if self.run_cmd_fn is not None:
+            return _resolve_venv_python(venv_dir)
+        raise RuntimeError(
+            f"{label} 隔离虚拟环境缺少 Python 可执行文件，拒绝回退到宿主环境：{venv_dir}"
+        )
+
+    @staticmethod
+    def _verify_git_checkout_head(
+        source_dir: Path,
+        expected_commit: str,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> bool:
+        """Verify an existing Git checkout has intact HEAD matching `expected_commit`."""
+        git_dir = source_dir / ".git"
+        if source_dir.is_symlink() or git_dir.is_symlink() or not git_dir.is_dir():
+            return False
+        try:
+            has_worktree = any(p.name != ".git" for p in source_dir.iterdir())
+        except OSError:
+            return False
+        if not has_worktree:
+            return False
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(source_dir), "rev-parse", "--verify", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return (
+            res.returncode == 0
+            and res.stdout.strip().lower() == expected_commit.strip().lower()
+        )
 
     @staticmethod
     def _needs_source_checkout(engine: dict[str, Any]) -> bool:
@@ -4438,6 +4852,7 @@ class ColabOneRemoteTtsRunner:
         with self._get_env_lock(engine_id):
             if marker_path.is_symlink():
                 raise ValueError("TTS 就绪标记文件不能是符号链接")
+            sub_env = _sanitized_tts_env()
             venv_present = (
                 (
                     (venv_dir / "pyvenv.cfg").is_file()
@@ -4449,17 +4864,29 @@ class ColabOneRemoteTtsRunner:
             if marker_path.is_file():
                 try:
                     cached = json.loads(marker_path.read_text(encoding="utf-8"))
+                    source_ok = (
+                        not needs_source
+                        or (
+                            source_dir.is_dir()
+                            and not source_dir.is_symlink()
+                            and (
+                                self.run_cmd_fn is not None
+                                or self._verify_git_checkout_head(
+                                    source_dir, source_commit, env=sub_env
+                                )
+                            )
+                        )
+                    )
                     if (
                         isinstance(cached, dict)
                         and all(
                             cached.get(k) == v for k, v in expected_fingerprint.items()
                         )
                         and venv_present
-                        and (
-                            not needs_source
-                            or (source_dir.is_dir() and not source_dir.is_symlink())
-                        )
+                        and source_ok
                     ):
+                        _ensure_parent_venv_pth(venv_dir)
+                        self._require_venv_python(venv_dir, label=engine_name)
                         _safe_task_note(
                             task, f"复用已就绪的远端 TTS 引擎环境：{engine_name}"
                         )
@@ -4472,13 +4899,10 @@ class ColabOneRemoteTtsRunner:
                 except OSError:
                     pass
 
+            _check_tts_cancel(task, getattr(self.runtime, "stopping", None))
             log_path = env_dir / "setup.log"
             if log_path.is_symlink():
                 raise ValueError("TTS 安装日志路径不能是符号链接")
-            # Strictly isolate HF credentials from venv/pip/git subprocesses.
-            sub_env = dict(os.environ)
-            sub_env.pop("HF_TOKEN", None)
-            sub_env.pop("HUGGING_FACE_HUB_TOKEN", None)
 
             if marker_mismatch and (self.run_cmd_fn is None or venv_dir.exists()):
                 if venv_dir.exists():
@@ -4512,17 +4936,36 @@ class ColabOneRemoteTtsRunner:
                         secret_to_scrub=hf_token,
                         append_log=True,
                     )
+                    _ensure_parent_venv_pth(venv_dir)
                     venv_python_on_disk = _find_venv_python_on_disk(venv_dir)
                     if venv_python_on_disk is not None:
-                        self._invoke_command(
-                            [str(venv_python_on_disk), "-m", "pip", "--version"],
-                            task,
-                            log_path,
-                            timeout=120,
-                            env=sub_env,
-                            secret_to_scrub=hf_token,
-                            append_log=True,
-                        )
+                        try:
+                            self._invoke_command(
+                                [str(venv_python_on_disk), "-m", "pip", "--version"],
+                                task,
+                                log_path,
+                                timeout=120,
+                                env=sub_env,
+                                secret_to_scrub=hf_token,
+                                append_log=True,
+                            )
+                        except RuntimeError as exc:
+                            if _is_cancelled_error(exc):
+                                raise
+                            self._invoke_command(
+                                [
+                                    str(venv_python_on_disk),
+                                    "-m",
+                                    "ensurepip",
+                                    "--upgrade",
+                                ],
+                                task,
+                                log_path,
+                                timeout=180,
+                                env=sub_env,
+                                secret_to_scrub=hf_token,
+                                append_log=True,
+                            )
                     elif self.run_cmd_fn is None:
                         raise RuntimeError(
                             f"远端 TTS 引擎虚拟环境创建不完整，缺少 Python 可执行文件：{venv_dir}"
@@ -4530,8 +4973,10 @@ class ColabOneRemoteTtsRunner:
                 except BaseException:
                     shutil.rmtree(venv_dir, ignore_errors=True)
                     raise
+            else:
+                _ensure_parent_venv_pth(venv_dir)
 
-            venv_python = str(_resolve_venv_python(venv_dir))
+            venv_python = str(self._require_venv_python(venv_dir, label=engine_name))
             constraints_path = _write_torch_constraints_file(
                 env_dir / ".colabone-torch-constraints.txt",
                 torch_constraints,
@@ -4546,30 +4991,74 @@ class ColabOneRemoteTtsRunner:
                 if source_dir.is_symlink():
                     raise ValueError("TTS 源码目录不能是符号链接")
                 git_dir = source_dir / ".git"
-                if git_dir.exists() and not git_dir.is_dir():
-                    shutil.rmtree(source_dir, ignore_errors=True)
-                source_dir.mkdir(parents=True, exist_ok=True)
-                msg = f"正在拉取远端 TTS 引擎源码：{engine_name}@{source_commit[:10]}"
-                _safe_task_update(task, message=msg)
-                _safe_task_note(task, msg)
-                if git_dir.is_dir():
-                    for lock_file in git_dir.rglob("*.lock"):
+                if git_dir.is_symlink():
+                    raise ValueError("TTS Git 元数据目录不能是符号链接")
+
+                def _checkout_source_once(*, fresh: bool) -> None:
+                    if fresh and source_dir.exists():
+                        if source_dir.is_symlink():
+                            raise ValueError("TTS 源码目录不能是符号链接")
+                        if source_dir.is_dir():
+                            shutil.rmtree(source_dir, ignore_errors=True)
+                        else:
+                            source_dir.unlink(missing_ok=True)
+                    if source_dir.is_symlink():
+                        raise ValueError("TTS 源码目录不能是符号链接")
+                    if git_dir.is_symlink():
+                        raise ValueError("TTS Git 元数据目录不能是符号链接")
+                    if git_dir.exists() and not git_dir.is_dir():
+                        shutil.rmtree(source_dir, ignore_errors=True)
+                    source_dir.mkdir(parents=True, exist_ok=True)
+                    if git_dir.is_dir():
+                        for lock_file in git_dir.rglob("*.lock"):
+                            try:
+                                if not lock_file.is_symlink():
+                                    lock_file.unlink(missing_ok=True)
+                            except OSError:
+                                pass
                         try:
-                            lock_file.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                    try:
+                            self._invoke_command(
+                                [
+                                    "git",
+                                    "-C",
+                                    str(source_dir),
+                                    "remote",
+                                    "set-url",
+                                    "--",
+                                    "origin",
+                                    repo_url,
+                                ],
+                                task,
+                                log_path,
+                                timeout=300,
+                                env=sub_env,
+                                secret_to_scrub=hf_token,
+                                append_log=True,
+                            )
+                        except RuntimeError as exc:
+                            if _is_cancelled_error(exc):
+                                raise
+                            self._invoke_command(
+                                [
+                                    "git",
+                                    "-C",
+                                    str(source_dir),
+                                    "remote",
+                                    "add",
+                                    "--",
+                                    "origin",
+                                    repo_url,
+                                ],
+                                task,
+                                log_path,
+                                timeout=300,
+                                env=sub_env,
+                                secret_to_scrub=hf_token,
+                                append_log=True,
+                            )
+                    else:
                         self._invoke_command(
-                            [
-                                "git",
-                                "-C",
-                                str(source_dir),
-                                "remote",
-                                "set-url",
-                                "--",
-                                "origin",
-                                repo_url,
-                            ],
+                            ["git", "init", "--", str(source_dir)],
                             task,
                             log_path,
                             timeout=300,
@@ -4577,7 +5066,6 @@ class ColabOneRemoteTtsRunner:
                             secret_to_scrub=hf_token,
                             append_log=True,
                         )
-                    except RuntimeError:
                         self._invoke_command(
                             [
                                 "git",
@@ -4596,9 +5084,36 @@ class ColabOneRemoteTtsRunner:
                             secret_to_scrub=hf_token,
                             append_log=True,
                         )
-                else:
+
                     self._invoke_command(
-                        ["git", "init", "--", str(source_dir)],
+                        [
+                            "git",
+                            "-C",
+                            str(source_dir),
+                            "fetch",
+                            "--depth",
+                            "1",
+                            "--",
+                            "origin",
+                            source_commit,
+                        ],
+                        task,
+                        log_path,
+                        timeout=600,
+                        env=sub_env,
+                        secret_to_scrub=hf_token,
+                        append_log=True,
+                    )
+                    self._invoke_command(
+                        [
+                            "git",
+                            "-C",
+                            str(source_dir),
+                            "checkout",
+                            "--force",
+                            "--detach",
+                            source_commit,
+                        ],
                         task,
                         log_path,
                         timeout=300,
@@ -4611,11 +5126,8 @@ class ColabOneRemoteTtsRunner:
                             "git",
                             "-C",
                             str(source_dir),
-                            "remote",
-                            "add",
-                            "--",
-                            "origin",
-                            repo_url,
+                            "clean",
+                            "-ffdx",
                         ],
                         task,
                         log_path,
@@ -4624,58 +5136,36 @@ class ColabOneRemoteTtsRunner:
                         secret_to_scrub=hf_token,
                         append_log=True,
                     )
+                    if self.run_cmd_fn is None and not self._verify_git_checkout_head(
+                        source_dir, source_commit, env=sub_env
+                    ):
+                        raise RuntimeError(
+                            f"{engine_name} 源码检出校验失败，HEAD 与目标提交 {source_commit[:10]} 不一致"
+                        )
 
-                self._invoke_command(
-                    [
-                        "git",
-                        "-C",
-                        str(source_dir),
-                        "fetch",
-                        "--depth",
-                        "1",
-                        "--",
-                        "origin",
-                        source_commit,
-                    ],
-                    task,
-                    log_path,
-                    timeout=600,
-                    env=sub_env,
-                    secret_to_scrub=hf_token,
-                    append_log=True,
-                )
-                self._invoke_command(
-                    [
-                        "git",
-                        "-C",
-                        str(source_dir),
-                        "checkout",
-                        "--force",
-                        "--detach",
-                        source_commit,
-                    ],
-                    task,
-                    log_path,
-                    timeout=300,
-                    env=sub_env,
-                    secret_to_scrub=hf_token,
-                    append_log=True,
-                )
-                self._invoke_command(
-                    [
-                        "git",
-                        "-C",
-                        str(source_dir),
-                        "clean",
-                        "-fdx",
-                    ],
-                    task,
-                    log_path,
-                    timeout=300,
-                    env=sub_env,
-                    secret_to_scrub=hf_token,
-                    append_log=True,
-                )
+                msg = f"正在拉取远端 TTS 引擎源码：{engine_name}@{source_commit[:10]}"
+                _safe_task_update(task, message=msg)
+                _safe_task_note(task, msg)
+
+                had_existing_source = False
+                try:
+                    had_existing_source = source_dir.exists() and (
+                        not source_dir.is_dir() or any(source_dir.iterdir())
+                    )
+                except OSError:
+                    had_existing_source = source_dir.exists()
+                try:
+                    _checkout_source_once(fresh=False)
+                except Exception as exc:
+                    if _is_cancelled_error(exc) or not had_existing_source:
+                        raise
+                    _check_tts_cancel(task, getattr(self.runtime, "stopping", None))
+                    _safe_task_note(
+                        task,
+                        f"{engine_name} 现有 Git 仓库异常，正在清空并重新检出：{str(exc)[:240]}",
+                        level="warning",
+                    )
+                    _checkout_source_once(fresh=True)
 
                 req_file = source_dir / req_filename
                 req_specs: list[str] = []
@@ -4752,9 +5242,7 @@ class ColabOneRemoteTtsRunner:
             raise RuntimeError(
                 f"远端缺少 ffmpeg，无法将参考音频转换为标准 WAV 格式：{src_path.name}"
             )
-        ffmpeg_env = dict(os.environ)
-        ffmpeg_env.pop("HF_TOKEN", None)
-        ffmpeg_env.pop("HUGGING_FACE_HUB_TOKEN", None)
+        ffmpeg_env = _sanitized_tts_env()
         _safe_task_note(
             task,
             f"正在将参考音频转码为标准 {sr} Hz 单声道 PCM16 WAV：{src_path.name}",
@@ -4991,7 +5479,9 @@ class ColabOneRemoteTtsRunner:
                         generated_wav = Path(segment_wavs[0][1])
                 else:
                     env_dir = self.ensure_engine_env(task, vox_engine, hf_token="")
-                    worker_python = str(_resolve_venv_python(env_dir / ".venv"))
+                    worker_python = str(
+                        self._require_venv_python(env_dir / ".venv", label="VoxCPM2")
+                    )
                     source_dir = env_dir / "source"
                     if source_dir.is_symlink():
                         raise ValueError("TTS 源码目录不能是符号链接")
@@ -5013,14 +5503,17 @@ class ColabOneRemoteTtsRunner:
                     )
                     atomic_json(config_path, anchor_config)
 
-                    worker_env = dict(os.environ)
-                    worker_env["PYTHONUNBUFFERED"] = "1"
+                    hf_cache_dir = str(self.engines_dir / "_hf_cache")
+                    worker_env = _sanitized_tts_env(
+                        {
+                            "PYTHONUNBUFFERED": "1",
+                            "HF_HUB_CACHE": hf_cache_dir,
+                            "HUGGINGFACE_HUB_CACHE": hf_cache_dir,
+                        }
+                    )
                     if hf_token:
                         worker_env["HF_TOKEN"] = hf_token
                         worker_env["HUGGING_FACE_HUB_TOKEN"] = hf_token
-                    else:
-                        worker_env.pop("HF_TOKEN", None)
-                        worker_env.pop("HUGGING_FACE_HUB_TOKEN", None)
 
                     self._invoke_command(
                         [worker_python, str(worker_path), "--config", str(config_path)],
@@ -5843,7 +6336,13 @@ class ColabOneRemoteTtsRunner:
             _safe_task_note(task, msg, level="warning")
 
         self.check_vram(engine, allow_unavailable=(self.synth_fn is not None))
-        self.check_disk(engine, allow_unavailable=(self.synth_fn is not None))
+        self.check_disk(
+            engine,
+            allow_unavailable=(self.synth_fn is not None),
+            ref_audio_path=resolved_ref_audio,
+            voice_preset=str(voice_preset or ""),
+            preset=resolved_preset,
+        )
 
         work_root = Path(work_dir)
         if work_root.is_symlink():
@@ -5919,7 +6418,10 @@ class ColabOneRemoteTtsRunner:
                     )
                     if not was_cached_before:
                         self.check_disk(
-                            engine, allow_unavailable=(self.synth_fn is not None)
+                            engine,
+                            allow_unavailable=(self.synth_fn is not None),
+                            ref_audio_path=resolved_ref_audio,
+                            preset=resolved_preset,
                         )
 
         if resolved_ref_audio is None:
@@ -5999,7 +6501,9 @@ class ColabOneRemoteTtsRunner:
             )
         else:
             env_dir = self.ensure_engine_env(task, engine, hf_token="")
-            worker_python = str(_resolve_venv_python(env_dir / ".venv"))
+            worker_python = str(
+                self._require_venv_python(env_dir / ".venv", label=engine_name)
+            )
             source_dir = env_dir / "source"
             if source_dir.is_symlink():
                 raise ValueError("TTS 源码目录不能是符号链接")
@@ -6022,14 +6526,17 @@ class ColabOneRemoteTtsRunner:
             atomic_json(config_path, base_config)
 
             # Pass HF_TOKEN strictly via worker subprocess environment (never CLI args, config JSON, or pip/git).
-            worker_env = dict(os.environ)
-            worker_env["PYTHONUNBUFFERED"] = "1"
+            hf_cache_dir = str(self.engines_dir / "_hf_cache")
+            worker_env = _sanitized_tts_env(
+                {
+                    "PYTHONUNBUFFERED": "1",
+                    "HF_HUB_CACHE": hf_cache_dir,
+                    "HUGGINGFACE_HUB_CACHE": hf_cache_dir,
+                }
+            )
             if hf_token:
                 worker_env["HF_TOKEN"] = hf_token
                 worker_env["HUGGING_FACE_HUB_TOKEN"] = hf_token
-            else:
-                worker_env.pop("HF_TOKEN", None)
-                worker_env.pop("HUGGING_FACE_HUB_TOKEN", None)
 
             self._invoke_command(
                 [worker_python, str(worker_path), "--config", str(config_path)],

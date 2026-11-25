@@ -1389,7 +1389,7 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.errEmptyFile":
     "選択したファイルは空（0 B）です。有効なファイルを選択してください。",
   "comfy.indextts2RefRequiredHint":
-    "IndexTTS-2 で「カスタム音声」を選んだ場合は参照音声ファイルのアップロードが必須です",
+    "IndexTTS-2.5 で「カスタム音声」を選んだ場合は参照音声ファイルのアップロードが必須です",
   "comfy.runBlockedBusy":
     "別のタスクまたは操作を実行中です。しばらくお待ちください",
   "comfy.runBlockedUploading":
@@ -1463,7 +1463,18 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "長尺安定",
   "comfy.videoEngineInfiniteTalkSummary": "数分の連続トークが安定・高速",
   "comfy.videoEngineLongCatTitle": "フラッグシップ HD",
-  "comfy.videoEngineLongCatSummary": "より高精細な描写、ネイティブ 720p・GPU 高速化対応",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 ネイティブ 720p + SeedVR2 7B / FlashVSR+ 超解像（非商用限定）",
+  "comfy.qualityPresetCinema": "シネマ・フラッグシップ",
+  "comfy.qualityPresetBalanced": "高画質バランス",
+  "comfy.qualityPresetLongform": "長尺安定",
+  "comfy.nativeRunActiveDesc":
+    "ネイティブエンジンタスク「{name}」を実行中・{policy}、完了後にギャラリーへ自動保存されます",
+  "comfy.preflightNativeDiskFootprint":
+    "初回実行時にリモートネイティブエンジンとモデル重みを自動準備します（約 {size} のディスク空き容量が必要）",
+  "comfy.recommendedDisk": "推奨ディスク {disk}",
+  "comfy.samplingModeShortCfg": "{steps} ステップ CFG",
+  "comfy.samplingModeShortLora": "8 ステップ Dual LoRA",
+  "comfy.videoEngineVramShortSr": "現在の GPU VRAM が不足しています",
 
   // Settings Page
   "settings.title": "設定",

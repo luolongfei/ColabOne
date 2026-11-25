@@ -16,11 +16,46 @@ import (
 )
 
 const (
-	colabOneTtsPreviewUpgradeHint = "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试"
-	colabOneTtsPreviewChunkBytes  = 512 * 1024
-	colabOneMaxTtsPreviewBytes    = 16 * 1024 * 1024
-	colabOneMaxTtsPreviewChunks   = 256
+	colabOneTtsPreviewUpgradeHint    = "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试"
+	colabOneLongCatNativeUpgradeHint = "当前远端实例服务版本较旧，暂不支持原生 LongCat-Video-Avatar 1.6 管线，请先点击「热更新服务」或重新启动 GPU 实例"
+	colabOneTtsPreviewChunkBytes     = 512 * 1024
+	colabOneMaxTtsPreviewBytes       = 16 * 1024 * 1024
+	colabOneMaxTtsPreviewChunks      = 256
 )
+
+func (c *ColabOneController) builtinTemplateVideoBackend(workflowID string) string {
+	if workflowID == "" {
+		return ""
+	}
+	for _, wf := range c.builtinWorkflows() {
+		if asString(wf["id"]) != workflowID {
+			continue
+		}
+		if pipe := asMap(wf["pipeline"]); pipe != nil {
+			return asString(pipe["video_backend"])
+		}
+		return ""
+	}
+	return ""
+}
+
+func (c *ColabOneController) readyRemoteLacksCapability(capability string) bool {
+	if capability == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rt := asMap(c.data["runtime"])
+	if rt == nil || asString(rt["state"]) != "ready" {
+		return false
+	}
+	for _, item := range asAnySlice(rt["capabilities"]) {
+		if asString(item) == capability {
+			return false
+		}
+	}
+	return true
+}
 
 func (c *ColabOneController) remoteExplicitlyLacksCapability(capability string) bool {
 	if capability == "" {
@@ -669,6 +704,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			return nil, err
 		}
 		wfID := asString(req["workflow_id"])
+		if c.builtinTemplateVideoBackend(wfID) == "longcat_avatar_native" && c.readyRemoteLacksCapability("comfyui_longcat_native") {
+			return nil, errors.New(colabOneLongCatNativeUpgradeHint)
+		}
 		if err := c.ensureRemoteWorkflow(ctx, wfID); err != nil {
 			return nil, err
 		}
@@ -1412,8 +1450,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		nextOp["waiting_retry"] = false
 		nextOp["retry_at"] = 0.0
 		c.startCancel.Set()
-		c.updateLocked(map[string]any{"operation": nextOp})
+		pendingLogs := c.updateLocked(map[string]any{"operation": nextOp})
 		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 		c.log("已请求取消 GPU 分配", "GPU", "info")
 		return map[string]any{"ok": true, "cancelled": true}, nil
 
@@ -1433,8 +1472,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		nextOp["retryable"] = false
 		nextOp["retry_at"] = 0.0
 		c.startRetry.Set()
-		c.updateLocked(map[string]any{"operation": nextOp})
+		pendingLogs := c.updateLocked(map[string]any{"operation": nextOp})
 		c.mu.Unlock()
+		c.flushActivityLogs(pendingLogs)
 		return map[string]any{"ok": true, "triggered": true}, nil
 
 	case "runtime.release":

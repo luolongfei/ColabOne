@@ -781,4 +781,108 @@ describe("Copy & VRAM edge-case consistency", () => {
     expect(imageIds).toContain("FLUX");
     expect(imageIds).toContain("MOSS-Image");
   });
+
+  it("formats live B200, H200, V100, and G4 GPU display names without mislabeling B200 or H200 as G4", () => {
+    const b200 = resolveColabOneGpuTarget(
+      "CURRENT",
+      {
+        state: "ready",
+        gpu: { name: "NVIDIA B200", total_mib: 184320, used_mib: 1024 },
+      },
+      "G4",
+    );
+    expect(b200.shortLabel).toBe("B200 180G");
+    expect(b200.shortLabel).not.toContain("G4");
+
+    const h200 = resolveColabOneGpuTarget(
+      "CURRENT",
+      {
+        state: "ready",
+        gpu: { name: "NVIDIA H200 SXM", total_mib: 144384, used_mib: 1024 },
+      },
+      "G4",
+    );
+    expect(h200.shortLabel).toBe("H200 141G");
+    expect(h200.shortLabel).not.toContain("G4");
+
+    const v100 = resolveColabOneGpuTarget(
+      "CURRENT",
+      {
+        state: "ready",
+        gpu: { name: "Tesla V100-SXM2-16GB", total_mib: 16384, used_mib: 512 },
+      },
+      "T4",
+    );
+    expect(v100.shortLabel).toBe("V100 16G");
+
+    const g4 = resolveColabOneGpuTarget(
+      "CURRENT",
+      {
+        state: "ready",
+        gpu: {
+          name: "NVIDIA RTX PRO 6000 Blackwell",
+          total_mib: 98304,
+          used_mib: 1024,
+        },
+      },
+      "G4",
+    );
+    expect(g4.shortLabel).toBe("G4 96G");
+  });
+
+  it("avoids hardcoded 96G overflow copy when evaluating VRAM overflow on a live B200 180 GB GPU", () => {
+    const liveB200 = resolveColabOneGpuTarget(
+      "CURRENT",
+      {
+        state: "ready",
+        gpu: { name: "NVIDIA B200", total_mib: 184320, used_mib: 1024 },
+        resources: {
+          memory: {
+            total_bytes: 200 * 1024 ** 3,
+            used_bytes: 10 * 1024 ** 3,
+            available_bytes: 190 * 1024 ** 3,
+            percent: 5,
+          },
+        },
+      },
+      "G4",
+    );
+    expect(liveB200.vramGb).toBe(180);
+
+    // 200 GiB model exceeds live B200 180 GB VRAM in both comfyOnly and LLM heavy-hybrid modes
+    const hugeComfyFit = evaluateColabOneVramFit(200 * 1024, liveB200, true);
+    expect(hugeComfyFit.selectable).toBe(false);
+    expect(hugeComfyFit.detail).not.toMatch(/96\s*G/i);
+    expect(hugeComfyFit.detail).toContain("180");
+
+    const hugeLlmFit = evaluateColabOneVramFit(400 * 1024, liveB200, false);
+    expect(hugeLlmFit.status).toBe("heavy_hybrid");
+    expect(hugeLlmFit.requiresHybrid).toBe(true);
+    expect(hugeLlmFit.detail).not.toMatch(/96\s*G/i);
+    expect(hugeLlmFit.detail).toContain("180");
+  });
+
+  it("excludes VRAM-overflowing comfyOnly files from fullVramPool, clears recommended when unselectable, and suggests a larger GPU", () => {
+    const t4 = resolveColabOneGpuTarget("T4", undefined, "T4");
+    const comfyOverflowFiles = [
+      makeFile("Wan2_1_14B_fp8.safetensors", 17, "FP8"),
+      makeFile("Wan2_1_14B_bf16.safetensors", 28, "BF16"),
+    ];
+
+    const plan = planColabOneVersionOptions(
+      comfyOverflowFiles,
+      t4,
+      4096,
+      "",
+      undefined,
+      true,
+    );
+    expect(plan.diskFittingCount).toBe(2);
+    expect(plan.fullVramCount).toBe(0);
+    expect(plan.hybridCount).toBe(0);
+    expect(plan.all.every((o) => !o.fit.selectable)).toBe(true);
+    expect(plan.all.every((o) => !o.recommended)).toBe(true);
+    expect(plan.suggestedGpuId).not.toBeNull();
+    expect(plan.suggestedGpuId).not.toBe("T4");
+  });
 });

@@ -11,24 +11,26 @@ from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, Header, HTTPException, Query
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from common.comfyui import (
     ComfyCanvasConfig,
     ComfyTtsPreviewRequest,
     WorkflowImportRequest,
     WorkflowRunRequest,
+    validate_colabone_hf_token,
 )
 from common.files import atomic_json
 from common.models import ModelSpec
 from common.public_api import ColabOnePublicConfig
-from server.runtime import ColabOneRuntime, ColabOneConflictError
+from server.runtime import ColabOneRuntime, ColabOneConflictError, _scrub_secret_text
 
 
 class ColabOneDownloadRequest(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
     hf_token: str = Field(default="", max_length=512, repr=False)
     threads: Literal[16, 32] = 16
     load: bool = False
@@ -38,12 +40,7 @@ class ColabOneDownloadRequest(BaseModel):
     @field_validator("hf_token")
     @classmethod
     def valid_hf_token(cls, value: str) -> str:
-        if any(c in ("\r", "\n") or ord(c) < 32 or ord(c) == 127 for c in value):
-            raise ValueError("hf_token 包含非法空白或控制字符")
-        token = value.strip()
-        if any(c.isspace() for c in token):
-            raise ValueError("hf_token 包含非法空白或控制字符")
-        return token
+        return validate_colabone_hf_token(value)
 
 
 class ColabOneConfigureRequest(BaseModel):
@@ -113,7 +110,15 @@ def create_colabone_app(runtime, token, background=False):
             await asyncio.to_thread(runtime.public_api.shutdown)
         finally:
             try:
-                await asyncio.to_thread(runtime.comfy.stop_server)
+                def _stop_comfy() -> None:
+                    comfy_lock = getattr(runtime, "_comfy_lifecycle_lock", None)
+                    if comfy_lock is not None:
+                        with comfy_lock:
+                            runtime.comfy.stop_server()
+                    else:
+                        runtime.comfy.stop_server()
+
+                await asyncio.to_thread(_stop_comfy)
             finally:
                 def _flush_drive_and_stop_engine() -> None:
                     try:
@@ -145,13 +150,15 @@ def create_colabone_app(runtime, token, background=False):
         lifespan=lifespan,
     )
 
+    config_file_lock = threading.Lock()
+
     def authorize(authorization: str = Header(default="")):
         if not hmac.compare_digest(authorization, "Bearer " + token):
             raise HTTPException(401, "Unauthorized")
 
     @app.exception_handler(ColabOneConflictError)
     async def conflict(_, exc):
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return JSONResponse(status_code=409, content={"detail": _scrub_secret_text(str(exc))})
 
     @app.exception_handler(KeyError)
     async def missing(_, exc):
@@ -159,7 +166,7 @@ def create_colabone_app(runtime, token, background=False):
 
     @app.exception_handler(ValueError)
     async def invalid(_, exc):
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return JSONResponse(status_code=400, content={"detail": _scrub_secret_text(str(exc))})
 
     @app.exception_handler(RequestValidationError)
     async def request_invalid(_, _exc):
@@ -167,7 +174,9 @@ def create_colabone_app(runtime, token, background=False):
 
     @app.exception_handler(RuntimeError)
     async def runtime_error(_, exc):
-        return JSONResponse(status_code=502, content={"detail": str(exc)[:300]})
+        return JSONResponse(
+            status_code=502, content={"detail": _scrub_secret_text(str(exc))[:300]}
+        )
 
     @app.get("/health")
     def health():
@@ -206,16 +215,21 @@ def create_colabone_app(runtime, token, background=False):
         cfg_env = os.environ.get("COLABONE_REMOTE_CONFIG", "")
         if cfg_env:
             cfg_path = Path(cfg_env)
-            try:
-                if cfg_path.is_file():
-                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
-                    if isinstance(data, dict):
-                        data["idle_minutes"] = body.idle_minutes
-                        data["idle_countdown_seconds"] = body.idle_countdown_seconds
-                        data["deadline"] = body.deadline
-                        atomic_json(cfg_path, data)
-            except (OSError, ValueError):
-                pass
+            with config_file_lock:
+                with runtime.lock:
+                    idle_minutes = runtime.idle_minutes
+                    idle_countdown_seconds = runtime.idle_countdown_seconds
+                    deadline = runtime.deadline
+                try:
+                    if not cfg_path.is_symlink() and cfg_path.is_file():
+                        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                        if isinstance(data, dict):
+                            data["idle_minutes"] = idle_minutes
+                            data["idle_countdown_seconds"] = idle_countdown_seconds
+                            data["deadline"] = deadline
+                            atomic_json(cfg_path, data)
+                except (OSError, ValueError):
+                    pass
         return {"ok": True}
 
     @app.post("/api/v1/activity", dependencies=auth)
@@ -369,15 +383,17 @@ def create_colabone_app(runtime, token, background=False):
             return {"events": task.events[max(0, after) :], "state": task.state}
 
     @app.get("/api/v1/tasks/{task_id}/events", dependencies=auth)
-    def events(task_id: str, after: int = 0):
+    async def events(task_id: str, request: Request, after: int = 0):
         with runtime.lock:
             task = runtime.tasks.get(task_id)
         if task is None:
             raise KeyError(task_id)
 
-        def stream():
+        async def stream():
             cursor = max(0, after)
             while True:
+                if runtime.stopping.is_set() or await request.is_disconnected():
+                    break
                 with task.lock:
                     batch = task.events[cursor:]
                     total = len(task.events)
@@ -387,8 +403,10 @@ def create_colabone_app(runtime, token, background=False):
                     yield f"id: {cursor}\nevent: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 if state != "running" and cursor >= total:
                     break
+                if runtime.stopping.is_set() or await request.is_disconnected():
+                    break
                 yield ": heartbeat\n\n"
-                time.sleep(0.15)
+                await asyncio.sleep(0.15)
 
         return StreamingResponse(
             stream(),
@@ -410,14 +428,40 @@ def create_colabone_app(runtime, token, background=False):
         try:
             return runtime.prepare_release()
         except Exception as exc:
-            raise HTTPException(409, str(exc)[:300]) from None
+            raise HTTPException(409, _scrub_secret_text(str(exc))[:300]) from None
 
     return app
 
 
-if __name__ == "__main__":
+def create_colabone_uvicorn_server(
+    runtime,
+    app,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 7860,
+    timeout_graceful_shutdown: int = 5,
+):
     import uvicorn
 
+    uvicorn_config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        access_log=False,
+        timeout_graceful_shutdown=timeout_graceful_shutdown,
+    )
+
+    class ColabOneUvicornServer(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            stopping = getattr(runtime, "stopping", None)
+            if stopping is not None and hasattr(stopping, "set"):
+                stopping.set()
+            return super().handle_exit(sig, frame)
+
+    return ColabOneUvicornServer(uvicorn_config)
+
+
+if __name__ == "__main__":
     config = json.loads(
         Path(os.environ["COLABONE_REMOTE_CONFIG"]).read_text(encoding="utf-8")
     )
@@ -429,9 +473,5 @@ if __name__ == "__main__":
         runtime.idle_minutes = int(config["idle_minutes"])
     if config.get("idle_countdown_seconds"):
         runtime.idle_countdown_seconds = int(config["idle_countdown_seconds"])
-    uvicorn.run(
-        create_colabone_app(runtime, config["token"], background=True),
-        host="127.0.0.1",
-        port=7860,
-        access_log=False,
-    )
+    app = create_colabone_app(runtime, config["token"], background=True)
+    create_colabone_uvicorn_server(runtime, app).run()

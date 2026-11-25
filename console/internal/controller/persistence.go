@@ -7,93 +7,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	mathrand "math/rand/v2"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 )
 
-const (
-	colabOneWindowsRenameMaxAttempts = 20
-	colabOneWindowsRenameBaseDelay   = 5 * time.Millisecond
-	colabOneWindowsRenameMaxDelay    = 50 * time.Millisecond
-
-	colabOneWinErrFileNotFound     syscall.Errno = 2
-	colabOneWinErrAccessDenied     syscall.Errno = 5
-	colabOneWinErrSharingViolation syscall.Errno = 32
-	colabOneWinErrLockViolation    syscall.Errno = 33
-)
-
-func colabOneIsTransientWindowsFileErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, fs.ErrPermission) {
-		return true
-	}
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
-		switch errno {
-		case colabOneWinErrFileNotFound,
-			colabOneWinErrAccessDenied,
-			colabOneWinErrSharingViolation,
-			colabOneWinErrLockViolation:
-			return true
-		}
-	}
-	return false
-}
-
-func colabOneWindowsRetryDelay(attempt int) time.Duration {
-	delay := min(time.Duration(attempt)*colabOneWindowsRenameBaseDelay, colabOneWindowsRenameMaxDelay)
-	return delay + time.Duration(mathrand.Int64N(int64(colabOneWindowsRenameBaseDelay)))
-}
-
-// colabOneRenameReplace renames src onto dst, retrying transient Windows file-sharing
-// errors (such as concurrent reads or AV scanning) with bounded jittered backoff.
-// When dst is an existing directory, it fails fast.
+// colabOneRenameReplace renames src onto dst with Windows-resilient bounded jittered retry.
 func colabOneRenameReplace(src, dst string) error {
-	return colabOneRenameReplaceWith(
-		src,
-		dst,
-		runtime.GOOS == "windows",
-		os.Rename,
-		os.Stat,
-		time.Sleep,
-	)
-}
-
-func colabOneRenameReplaceWith(
-	src, dst string,
-	isWindows bool,
-	renameFn func(oldpath, newpath string) error,
-	statFn func(name string) (os.FileInfo, error),
-	sleepFn func(time.Duration),
-) error {
-	err := renameFn(src, dst)
-	if err == nil || !isWindows {
-		return err
-	}
-	for attempt := 1; attempt < colabOneWindowsRenameMaxAttempts; attempt++ {
-		if info, statErr := statFn(dst); statErr == nil && info.IsDir() {
-			return err
-		}
-		if !colabOneIsTransientWindowsFileErr(err) {
-			return err
-		}
-		sleepFn(colabOneWindowsRetryDelay(attempt))
-		err = renameFn(src, dst)
-		if err == nil {
-			return nil
-		}
-	}
-	return err
+	return fsutil.RenameReplace(src, dst)
 }
 
 func decodeJSONWithNumbers(raw []byte, dst any) error {

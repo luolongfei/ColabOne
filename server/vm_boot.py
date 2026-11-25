@@ -26,6 +26,7 @@ def colabone_boot():
     emit_log("远端引导脚本已启动，正在读取启动配置")
     config_path = Path("/content/colabone-boot.json")
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    os.chmod(config_path, 0o600)
     # Require the runtime release endpoint before dependency installation or networking.
     addr = os.environ.get("TBE_RUNTIME_ADDR", "")
     if not addr:
@@ -33,41 +34,46 @@ def colabone_boot():
             "Colab runtime release endpoint unavailable; refusing unprotected startup"
         )
     emit_log("已校验 Colab 运行时释放保护接口")
-    if config.get("deadline", 0) > 0:
-        guard = (
-            "import json,time,urllib.request\n"
-            "from pathlib import Path\n"
-            "cfg_path=Path(%r)\n"
-            "fallback_deadline=%r\n"
-            "unassign_url=%r\n"
-            "while True:\n"
-            " dl=fallback_deadline\n"
-            " try:\n"
-            "  d=json.loads(cfg_path.read_text(encoding='utf-8')).get('deadline')\n"
-            "  if d is not None: dl=float(d)\n"
-            " except Exception:\n"
-            "  pass\n"
-            " if dl<=0:\n"
-            "  time.sleep(30)\n"
-            "  continue\n"
-            " rem=(dl+40)-time.time()\n"
-            " if rem<=0:\n"
-            "  break\n"
-            " time.sleep(min(30,rem))\n"
-            "while True:\n"
-            " try:\n"
-            "  urllib.request.build_opener(urllib.request.ProxyHandler({})).open(urllib.request.Request(unassign_url,data=b'',method='POST'),timeout=15)\n"
-            "  break\n"
-            " except Exception: time.sleep(5)\n"
-        ) % (str(config_path), float(config["deadline"]), "http://" + addr + "/unassign")
-        subprocess.Popen(
-            [sys.executable, "-c", guard],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        emit_log("已启动远端自动释放保护守护进程")
+    guard = (
+        "import json,time,urllib.request\n"
+        "from pathlib import Path\n"
+        "cfg_path=Path(%r)\n"
+        "fallback_deadline=%r\n"
+        "unassign_url=%r\n"
+        "while True:\n"
+        " dl=fallback_deadline\n"
+        " try:\n"
+        "  d=json.loads(cfg_path.read_text(encoding='utf-8')).get('deadline')\n"
+        "  if d is not None:\n"
+        "   dl=float(d)\n"
+        "   fallback_deadline=dl\n"
+        " except Exception:\n"
+        "  pass\n"
+        " if dl<=0:\n"
+        "  time.sleep(30)\n"
+        "  continue\n"
+        " rem=(dl+40)-time.time()\n"
+        " if rem<=0:\n"
+        "  break\n"
+        " time.sleep(min(30,rem))\n"
+        "while True:\n"
+        " try:\n"
+        "  urllib.request.build_opener(urllib.request.ProxyHandler({})).open(urllib.request.Request(unassign_url,data=b'',method='POST'),timeout=15)\n"
+        "  break\n"
+        " except Exception: time.sleep(5)\n"
+    ) % (
+        str(config_path),
+        float(config.get("deadline", 0) or 0),
+        "http://" + addr + "/unassign",
+    )
+    subprocess.Popen(
+        [sys.executable, "-c", guard],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    emit_log("已启动远端自动释放保护守护进程")
     emit_log("正在解压管理服务程序包")
     shutil.rmtree("/content/colabone", ignore_errors=True)
     with zipfile.ZipFile("/content/colabone.zip") as archive:
@@ -146,8 +152,6 @@ def colabone_boot():
                 "远端服务依赖安装失败" + (f"：{tail}" if tail else "")
             )
         emit_log(f"远端服务依赖已就绪（耗时 {time.monotonic() - pip_started:.1f} 秒）")
-        config_path.write_text(json.dumps(config))
-        config_path.chmod(0o600)
         rc_stage = Path("/content/.colabone_rclone.conf")
         if rc_stage.exists():
             emit_log("正在部署 Google 云盘 rclone 凭据", source="云盘")
@@ -165,7 +169,19 @@ def colabone_boot():
             PYTHONUNBUFFERED="1",
         )
         emit_log("正在启动远端管理服务进程 (127.0.0.1:7860)", stage="启动远端管理服务")
-        with open("/content/colabone-server.log", "w") as log:
+        log_fd = os.open(
+            "/content/colabone-server.log",
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(log_fd, 0o600)
+            log_file = os.fdopen(log_fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(log_fd)
+            raise
+        with log_file as log:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "server.app"],
                 cwd="/content/colabone",

@@ -588,6 +588,230 @@ const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "SageAttention 3 ソースディレクトリ",
     "ko-KR": "SageAttention 3 소스 디렉터리",
   },
+  编译缓存目录: {
+    "zh-CN": "编译缓存目录",
+    "en-US": "Compile cache directory",
+    "zh-TW": "編譯快取目錄",
+    "zh-HK": "編譯快取目錄",
+    "ja-JP": "コンパイルキャッシュディレクトリ",
+    "ko-KR": "컴파일 캐시 디렉터리",
+  },
+  "Triton 编译缓存目录": {
+    "zh-CN": "Triton 编译缓存目录",
+    "en-US": "Triton compile cache directory",
+    "zh-TW": "Triton 編譯快取目錄",
+    "zh-HK": "Triton 編譯快取目錄",
+    "ja-JP": "Triton コンパイルキャッシュディレクトリ",
+    "ko-KR": "Triton 컴파일 캐시 디렉터리",
+  },
+  数字人引擎根目录: {
+    "zh-CN": "数字人引擎根目录",
+    "en-US": "Digital human engine root directory",
+    "zh-TW": "數位人引擎根目錄",
+    "zh-HK": "數碼人引擎根目錄",
+    "ja-JP": "デジタルヒューマンエンジンルートディレクトリ",
+    "ko-KR": "디지털 휴먼 엔진 루트 디렉터리",
+  },
+  数字人权重目录: {
+    "zh-CN": "数字人权重目录",
+    "en-US": "Digital human weights directory",
+    "zh-TW": "數位人權重目錄",
+    "zh-HK": "數碼人權重目錄",
+    "ja-JP": "デジタルヒューマン重みディレクトリ",
+    "ko-KR": "디지털 휴먼 가중치 디렉터리",
+  },
+  数字人源码目录: {
+    "zh-CN": "数字人源码目录",
+    "en-US": "Digital human source directory",
+    "zh-TW": "數位人原始碼目錄",
+    "zh-HK": "數碼人源碼目錄",
+    "ja-JP": "デジタルヒューマンソースディレクトリ",
+    "ko-KR": "디지털 휴먼 소스 디렉터리",
+  },
+  运行日志文件: {
+    "zh-CN": "运行日志文件",
+    "en-US": "Runtime log file",
+    "zh-TW": "執行日誌檔案",
+    "zh-HK": "運行日誌檔案",
+    "ja-JP": "実行ログファイル",
+    "ko-KR": "실행 로그 파일",
+  },
+  "Stage 2 工作目录": {
+    "zh-CN": "Stage 2 工作目录",
+    "en-US": "Stage 2 working directory",
+    "zh-TW": "Stage 2 工作目錄",
+    "zh-HK": "Stage 2 工作目錄",
+    "ja-JP": "Stage 2 作業ディレクトリ",
+    "ko-KR": "Stage 2 작업 디렉터리",
+  },
+  "Stage 2 输出清单": {
+    "zh-CN": "Stage 2 输出清单",
+    "en-US": "Stage 2 output manifest",
+    "zh-TW": "Stage 2 輸出清單",
+    "zh-HK": "Stage 2 輸出清單",
+    "ja-JP": "Stage 2 出力マニフェスト",
+    "ko-KR": "Stage 2 출력 매니페스트",
+  },
+  "Stage 2 配置文件": {
+    "zh-CN": "Stage 2 配置文件",
+    "en-US": "Stage 2 config file",
+    "zh-TW": "Stage 2 設定檔",
+    "zh-HK": "Stage 2 配置檔",
+    "ja-JP": "Stage 2 設定ファイル",
+    "ko-KR": "Stage 2 설정 파일",
+  },
+  "Stage 3 超分工作目录": {
+    "zh-CN": "Stage 3 超分工作目录",
+    "en-US": "Stage 3 upscaling working directory",
+    "zh-TW": "Stage 3 超解析工作目錄",
+    "zh-HK": "Stage 3 超分工作目錄",
+    "ja-JP": "Stage 3 超解像作業ディレクトリ",
+    "ko-KR": "Stage 3 업스케일 작업 디렉터리",
+  },
+  "Stage 3 超分输出清单": {
+    "zh-CN": "Stage 3 超分输出清单",
+    "en-US": "Stage 3 upscaling output manifest",
+    "zh-TW": "Stage 3 超解析輸出清單",
+    "zh-HK": "Stage 3 超分輸出清單",
+    "ja-JP": "Stage 3 超解像出力マニフェスト",
+    "ko-KR": "Stage 3 업스케일 출력 매니페스트",
+  },
+  "Stage 3 超分配置文件": {
+    "zh-CN": "Stage 3 超分配置文件",
+    "en-US": "Stage 3 upscaling config file",
+    "zh-TW": "Stage 3 超解析設定檔",
+    "zh-HK": "Stage 3 超分配置檔",
+    "ja-JP": "Stage 3 超解像設定ファイル",
+    "ko-KR": "Stage 3 업스케일 설정 파일",
+  },
+  "Stage 2 输出视频": {
+    "zh-CN": "Stage 2 输出视频",
+    "en-US": "Stage 2 output video",
+    "zh-TW": "Stage 2 輸出影片",
+    "zh-HK": "Stage 2 輸出影片",
+    "ja-JP": "Stage 2 出力動画",
+    "ko-KR": "Stage 2 출력 영상",
+  },
+  "Stage 3 超分输出视频": {
+    "zh-CN": "Stage 3 超分输出视频",
+    "en-US": "Stage 3 upscaled output video",
+    "zh-TW": "Stage 3 超解析輸出影片",
+    "zh-HK": "Stage 3 超分輸出影片",
+    "ja-JP": "Stage 3 超解像出力動画",
+    "ko-KR": "Stage 3 업스케일 출력 영상",
+  },
+  分段输出文件: {
+    "zh-CN": "分段输出文件",
+    "en-US": "Segment output file",
+    "zh-TW": "分段輸出檔案",
+    "zh-HK": "分段輸出檔案",
+    "ja-JP": "セグメント出力ファイル",
+    "ko-KR": "세그먼트 출력 파일",
+  },
+  分段视频缓存文件: {
+    "zh-CN": "分段视频缓存文件",
+    "en-US": "Segment video cache file",
+    "zh-TW": "分段影片快取檔案",
+    "zh-HK": "分段影片快取檔案",
+    "ja-JP": "セグメント動画キャッシュファイル",
+    "ko-KR": "세그먼트 영상 캐시 파일",
+  },
+  工作目录: {
+    "zh-CN": "工作目录",
+    "en-US": "Working directory",
+    "zh-TW": "工作目錄",
+    "zh-HK": "工作目錄",
+    "ja-JP": "作業ディレクトリ",
+    "ko-KR": "작업 디렉터리",
+  },
+  虚拟环境继承路径文件: {
+    "zh-CN": "虚拟环境继承路径文件",
+    "en-US": "Virtual environment inherited path file",
+    "zh-TW": "虛擬環境繼承路徑檔案",
+    "zh-HK": "虛擬環境繼承路徑檔案",
+    "ja-JP": "仮想環境継承パスファイル",
+    "ko-KR": "가상 환경 상속 경로 파일",
+  },
+  运行日志目录: {
+    "zh-CN": "运行日志目录",
+    "en-US": "Runtime log directory",
+    "zh-TW": "執行日誌目錄",
+    "zh-HK": "運行日誌目錄",
+    "ja-JP": "実行ログディレクトリ",
+    "ko-KR": "실행 로그 디렉터리",
+  },
+  数字人运行日志目录: {
+    "zh-CN": "数字人运行日志目录",
+    "en-US": "Digital human runtime log directory",
+    "zh-TW": "數位人執行日誌目錄",
+    "zh-HK": "數碼人運行日誌目錄",
+    "ja-JP": "デジタルヒューマン実行ログディレクトリ",
+    "ko-KR": "디지털 휴먼 실행 로그 디렉터리",
+  },
+  "Drive 缓存目录": {
+    "zh-CN": "Drive 缓存目录",
+    "en-US": "Drive cache directory",
+    "zh-TW": "Drive 快取目錄",
+    "zh-HK": "Drive 快取目錄",
+    "ja-JP": "Drive キャッシュディレクトリ",
+    "ko-KR": "Drive 캐시 디렉터리",
+  },
+  "Drive 权重目录": {
+    "zh-CN": "Drive 权重目录",
+    "en-US": "Drive weights directory",
+    "zh-TW": "Drive 權重目錄",
+    "zh-HK": "Drive 權重目錄",
+    "ja-JP": "Drive モデル重みディレクトリ",
+    "ko-KR": "Drive 가중치 디렉터리",
+  },
+  加速包缓存文件: {
+    "zh-CN": "加速包缓存文件",
+    "en-US": "Accelerator package cache file",
+    "zh-TW": "加速套件快取檔案",
+    "zh-HK": "加速包快取檔案",
+    "ja-JP": "高速化パッケージキャッシュファイル",
+    "ko-KR": "가속 패키지 캐시 파일",
+  },
+  加速包目标目录: {
+    "zh-CN": "加速包目标目录",
+    "en-US": "Accelerator package target directory",
+    "zh-TW": "加速套件目標目錄",
+    "zh-HK": "加速包目標目錄",
+    "ja-JP": "高速化パッケージ対象ディレクトリ",
+    "ko-KR": "가속 패키지 대상 디렉터리",
+  },
+  加速包目标文件: {
+    "zh-CN": "加速包目标文件",
+    "en-US": "Accelerator package target file",
+    "zh-TW": "加速套件目標檔案",
+    "zh-HK": "加速包目標檔案",
+    "ja-JP": "高速化パッケージ対象ファイル",
+    "ko-KR": "가속 패키지 대상 파일",
+  },
+  "加速包 wheel 文件": {
+    "zh-CN": "加速包 wheel 文件",
+    "en-US": "Accelerator package wheel file",
+    "zh-TW": "加速套件 wheel 檔案",
+    "zh-HK": "加速包 wheel 檔案",
+    "ja-JP": "高速化パッケージ wheel ファイル",
+    "ko-KR": "가속 패키지 wheel 파일",
+  },
+  下载临时文件: {
+    "zh-CN": "下载临时文件",
+    "en-US": "Download temporary file",
+    "zh-TW": "下載暫存檔案",
+    "zh-HK": "下載臨時檔案",
+    "ja-JP": "ダウンロード一時ファイル",
+    "ko-KR": "다운로드 임시 파일",
+  },
+  下载元数据文件: {
+    "zh-CN": "下载元数据文件",
+    "en-US": "Download metadata file",
+    "zh-TW": "下載中繼資料檔案",
+    "zh-HK": "下載元數據檔案",
+    "ja-JP": "ダウンロードメタデータファイル",
+    "ko-KR": "다운로드 메타데이터 파일",
+  },
 };
 
 const COMFY_FIELD_SUFFIX_LABELS: Record<string, ColabOneLocaleTable> = {
@@ -708,6 +932,27 @@ const COMFY_FIELD_SUFFIX_LABELS: Record<string, ColabOneLocaleTable> = {
 function translateSymlinkDirLabel(raw: string, loc: ColabOneLocale): string {
   const s = raw.trim();
   if (SYMLINK_DIR_LABELS[s]) return SYMLINK_DIR_LABELS[s][loc];
+  if (s.endsWith("路径") && s.length > 2) {
+    const baseKey = s.slice(0, -2).trim();
+    if (SYMLINK_DIR_LABELS[baseKey]) {
+      const baseLabel = SYMLINK_DIR_LABELS[baseKey][loc];
+      const zhSep = /[A-Za-z0-9]$/.test(baseLabel) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${baseLabel} path`;
+        case "zh-TW":
+          return `${baseLabel}${zhSep}路徑`;
+        case "zh-HK":
+          return `${baseLabel}${zhSep}路徑`;
+        case "ja-JP":
+          return `${baseLabel} パス`;
+        case "ko-KR":
+          return `${baseLabel} 경로`;
+        default:
+          return s;
+      }
+    }
+  }
   const sub = s.match(/^ComfyUI 模型子目录 (.+)$/);
   if (sub) {
     const dir = sub[1];
@@ -767,7 +1012,138 @@ function translateSymlinkDirLabel(raw: string, loc: ColabOneLocale): string {
     const base = SYMLINK_DIR_LABELS[`TTS ${ttsSub[1]}`]?.[loc] ?? `TTS ${ttsSub[1]}`;
     return `${base} ${ttsSub[2]}`;
   }
-  return s;
+  const weightSubdir = s.match(/^(本地权重目录|Drive 权重目录)（([^）]+)）$/);
+  if (weightSubdir) {
+    const base = weightSubdir[1]!;
+    const sub = weightSubdir[2]!;
+    if (base === "本地权重目录") {
+      switch (loc) {
+        case "en-US":
+          return `Local weights directory (${sub})`;
+        case "zh-TW":
+          return `本機權重目錄（${sub}）`;
+        case "zh-HK":
+          return `本地權重目錄（${sub}）`;
+        case "ja-JP":
+          return `ローカルモデル重みディレクトリ（${sub}）`;
+        case "ko-KR":
+          return `로컬 가중치 디렉터리 (${sub})`;
+        default:
+          return s;
+      }
+    }
+    switch (loc) {
+      case "en-US":
+        return `Drive weights directory (${sub})`;
+      case "zh-TW":
+        return `Drive 權重目錄（${sub}）`;
+      case "zh-HK":
+        return `Drive 權重目錄（${sub}）`;
+      case "ja-JP":
+        return `Drive モデル重みディレクトリ（${sub}）`;
+      case "ko-KR":
+        return `Drive 가중치 디렉터리 (${sub})`;
+      default:
+        return s;
+    }
+  }
+  const dynamicSuffix = s.match(
+    /^(.+?)\s*(源码目录|源码就绪标记|Git 元数据目录|虚拟环境目录|环境就绪标记|权重目录|权重标记|日志文件|输出清单|输出视频)$/,
+  );
+  if (dynamicSuffix) {
+    const prefix = translateInner(dynamicSuffix[1]!.trim(), loc);
+    const suffixKey = dynamicSuffix[2]!;
+    const suffixTable: Record<string, ColabOneLocaleTable> = {
+      源码目录: {
+        "zh-CN": "源码目录",
+        "en-US": "source directory",
+        "zh-TW": "原始碼目錄",
+        "zh-HK": "源碼目錄",
+        "ja-JP": "ソースディレクトリ",
+        "ko-KR": "소스 디렉터리",
+      },
+      源码就绪标记: {
+        "zh-CN": "源码就绪标记",
+        "en-US": "source ready marker",
+        "zh-TW": "原始碼就緒標記",
+        "zh-HK": "源碼就緒標記",
+        "ja-JP": "ソース準備完了マーカー",
+        "ko-KR": "소스 준비 완료 마커",
+      },
+      "Git 元数据目录": {
+        "zh-CN": "Git 元数据目录",
+        "en-US": "Git metadata directory",
+        "zh-TW": "Git 中繼資料目錄",
+        "zh-HK": "Git 元數據目錄",
+        "ja-JP": "Git メタデータディレクトリ",
+        "ko-KR": "Git 메타데이터 디렉터리",
+      },
+      虚拟环境目录: {
+        "zh-CN": "虚拟环境目录",
+        "en-US": "virtual environment directory",
+        "zh-TW": "虛擬環境目錄",
+        "zh-HK": "虛擬環境目錄",
+        "ja-JP": "仮想環境ディレクトリ",
+        "ko-KR": "가상 환경 디렉터리",
+      },
+      环境就绪标记: {
+        "zh-CN": "环境就绪标记",
+        "en-US": "environment ready marker",
+        "zh-TW": "環境就緒標記",
+        "zh-HK": "環境就緒標記",
+        "ja-JP": "環境準備完了マーカー",
+        "ko-KR": "환경 준비 완료 마커",
+      },
+      权重目录: {
+        "zh-CN": "权重目录",
+        "en-US": "weights directory",
+        "zh-TW": "權重目錄",
+        "zh-HK": "權重目錄",
+        "ja-JP": "モデル重みディレクトリ",
+        "ko-KR": "가중치 디렉터리",
+      },
+      权重标记: {
+        "zh-CN": "权重标记",
+        "en-US": "weights marker",
+        "zh-TW": "權重標記",
+        "zh-HK": "權重標記",
+        "ja-JP": "モデル重みマーカー",
+        "ko-KR": "가중치 마커",
+      },
+      日志文件: {
+        "zh-CN": "日志文件",
+        "en-US": "log file",
+        "zh-TW": "日誌檔案",
+        "zh-HK": "日誌檔案",
+        "ja-JP": "ログファイル",
+        "ko-KR": "로그 파일",
+      },
+      输出清单: {
+        "zh-CN": "输出清单",
+        "en-US": "output manifest",
+        "zh-TW": "輸出清單",
+        "zh-HK": "輸出清單",
+        "ja-JP": "出力マニフェスト",
+        "ko-KR": "출력 매니フェスト",
+      },
+      输出视频: {
+        "zh-CN": "输出视频",
+        "en-US": "output video",
+        "zh-TW": "輸出影片",
+        "zh-HK": "輸出影片",
+        "ja-JP": "出力動画",
+        "ko-KR": "출력 영상",
+      },
+    };
+    const suffix = suffixTable[suffixKey]?.[loc] ?? suffixKey;
+    if (loc === "zh-CN") return s;
+    if (loc === "zh-TW" || loc === "zh-HK") {
+      const zhSep = /[A-Za-z0-9]$/.test(prefix) ? " " : "";
+      return `${prefix}${zhSep}${suffix}`;
+    }
+    return `${prefix} ${suffix}`;
+  }
+  return translateInner(s, loc);
 }
 
 function formatSegmentLabel(
@@ -1598,6 +1974,7 @@ function countHanChars(text: string): number {
 const COMFY_WORKFLOW_NAMES = new Set<string>([
   "口播数字人 · 长视频推荐版",
   "口播数字人 · 旗舰高清版",
+  "口播数字人 · 96GB 电影级旗舰版",
   "口播数字人 · InfiniteTalk 长视频版（配 AI 2x 超分）",
   "口播数字人 · LongCat-Avatar 旗舰高清版（原生 720p）",
 ]);
@@ -1640,6 +2017,25 @@ const COMFY_WS_NODE_OR_PHASE_LABELS = new Set<string>([
   "torch.compile 算子加速",
   "原始人像参考图（锁脸）",
   "原始人像参考潜变量",
+  "正在准备远端原生 LongCat 1.6 环境与权重",
+  "正在执行 Kim_Vocal_2 前置人声分离",
+  "正在执行原生 720p LongCat 1.6 渲染",
+  "正在准备远端全画幅超分环境与权重",
+  "正在清理上一阶段显存以加载全画幅超分模型",
+  "正在执行全画幅时空扩散超分",
+  "正在执行终稿电影级封装与 48 kHz 高保真音画合流",
+  "正在准备 LongCat-Video-Avatar 1.6 原生运行环境",
+  "LongCat-Video-Avatar 1.6 原生环境与权重已就绪",
+  "正在启动 LongCat-Video-Avatar 1.6 原生渲染进程",
+  "正在启动远端扩散视频超分进程",
+  "正在释放远端 ComfyUI 显存以独占 96GB 跑原生旗舰引擎",
+  "正在加载纯 BF16 LongCat-Video-Avatar 1.6 模型权重",
+  "正在加载 BF16 Avatar 1.6 DiT 主模型",
+  "正在配置 torch.compile 无损算子编译",
+  "正在提取全局 Whisper-Large-v3 音频特征",
+  "正在封装无损 FFV1 中间视频并写入输出清单",
+  "正在将 SeedVR2 超分帧封装为无损 FFV1 中间视频",
+  "正在将 FlashVSR+ 超分帧封装为无损 FFV1 中间视频",
 ]);
 
 const UNHANDLED_PROGRESS_TAIL_RE =
@@ -3886,6 +4282,26 @@ const PATTERN_RULES: PatternRule[] = [
 
   // === server/comfyui.py ===
   {
+    re: /^第 (\d+)\/(\d+) 段 返回的分段视频路径不能是符号链接$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${seg} returned a segment video path that cannot be a symbolic link`;
+        case "zh-TW":
+          return `${seg} 回傳的分段影片路徑不可為符號連結`;
+        case "zh-HK":
+          return `${seg} 返回的分段影片路徑不能是符號連結`;
+        case "ja-JP":
+          return `${seg} が返したセグメント動画パスにシンボリックリンクは使用できません`;
+        case "ko-KR":
+          return `${seg}에서 반환된 세그먼트 영상 경로는 심볼릭 링크일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^(.+?)\s*不能是符号链接$/,
     format: (m, loc) => {
       const label = translateSymlinkDirLabel(m[1]!, loc);
@@ -3956,6 +4372,28 @@ const PATTERN_RULES: PatternRule[] = [
           return `${label}にシンボリックリンクは使用できません: ${name}`;
         case "ko-KR":
           return `${label}은(는) 심볼릭 링크일 수 없습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*不能是符号链接：(.+)$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!, loc);
+      const path = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} cannot be a symbolic link: ${path}`;
+        case "zh-TW":
+          return `${label}${zhSep}不可為符號連結：${path}`;
+        case "zh-HK":
+          return `${label}${zhSep}不能是符號連結：${path}`;
+        case "ja-JP":
+          return `${label} にシンボリックリンクは使用できません: ${path}`;
+        case "ko-KR":
+          return `${label}은(는) 심볼릭 링크일 수 없습니다: ${path}`;
         default:
           return m[0];
       }
@@ -8826,6 +9264,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^音频预处理完成，总时长 ([\d.]+) 秒$/,
+    format: (m, loc) => {
+      const dur = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Audio preprocessing completed (${dur}s total)`;
+        case "zh-TW":
+          return `音訊前處理完成，總時長 ${dur} 秒`;
+        case "zh-HK":
+          return `音訊預處理完成，總時長 ${dur} 秒`;
+        case "ja-JP":
+          return `音声前処理が完了しました（合計 ${dur} 秒）`;
+        case "ko-KR":
+          return `오디오 전처리 완료 (총 ${dur}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^不支持的音频来源模式：(.+)$/,
     format: (m, loc) => {
       const mode = m[1]!;
@@ -9046,6 +9504,1515 @@ const PATTERN_RULES: PatternRule[] = [
           return totalDur
             ? `${wfName} · 디지털 휴먼 장편 영상 생성 완료 (총 ${segs}개 구간, ${dur}초, ${w}x${h}, 총 소요 ${totalDur})`
             : `${wfName} · 디지털 휴먼 장편 영상 생성 완료 (총 ${segs}개 구간, ${dur}초, ${w}x${h})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === LongCat 1.6 Native Flagship Stage 1-4 worker progress rules ===
+  {
+    re: /^正在准备远端原生 LongCat 1\.6 环境与权重（(.+?)）$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Preparing remote native LongCat 1.6 environment and weights (${detail})`;
+        case "zh-TW":
+          return `正在準備遠端原生 LongCat 1.6 環境與權重（${detail}）`;
+        case "zh-HK":
+          return `正在準備遠端原生 LongCat 1.6 環境與權重（${detail}）`;
+        case "ja-JP":
+          return `リモートネイティブ LongCat 1.6 環境とモデル重みを準備中（${detail}）`;
+        case "ko-KR":
+          return `원격 네이티브 LongCat 1.6 환경 및 가중치 준비 중 (${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在执行原生 720p LongCat 1\.6 渲染（(.+?)）$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Rendering native 720p LongCat 1.6 video (${detail})`;
+        case "zh-TW":
+          return `正在執行原生 720p LongCat 1.6 算繪（${detail}）`;
+        case "zh-HK":
+          return `正在執行原生 720p LongCat 1.6 渲染（${detail}）`;
+        case "ja-JP":
+          return `ネイティブ 720p LongCat 1.6 動画をレンダリング中（${detail}）`;
+        case "ko-KR":
+          return `네이티브 720p LongCat 1.6 영상 렌더링 중 (${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在执行全画幅时空扩散超分（(.+?)）$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Running full-frame spatiotemporal diffusion upscaling (${detail})`;
+        case "zh-TW":
+          return `正在執行全畫幅時空擴散超解析（${detail}）`;
+        case "zh-HK":
+          return `正在執行全畫幅時空擴散超分（${detail}）`;
+        case "ja-JP":
+          return `全画面時空間拡散超解像を実行中（${detail}）`;
+        case "ko-KR":
+          return `풀프레임 시공간 확산 업스케일 실행 중 (${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在准备远端全画幅超分环境与权重（(.+?)）$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Preparing remote full-frame super-resolution environment and weights (${detail})`;
+        case "zh-TW":
+          return `正在準備遠端全畫幅超解析環境與權重（${detail}）`;
+        case "zh-HK":
+          return `正在準備遠端全畫幅超分環境與權重（${detail}）`;
+        case "ja-JP":
+          return `リモート全画面超解像環境とモデル重みを準備中（${detail}）`;
+        case "ko-KR":
+          return `원격 풀프레임 초해상도 환경 및 가중치 준비 중 (${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在准备 (.+?) 扩散超分环境$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Preparing ${label} diffusion super-resolution environment`;
+        case "zh-TW":
+          return `正在準備 ${label} 擴散超解析環境`;
+        case "zh-HK":
+          return `正在準備 ${label} 擴散超分環境`;
+        case "ja-JP":
+          return `${label} 拡散超解像環境を準備中`;
+        case "ko-KR":
+          return `${label} 확산 초해상도 환경 준비 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 扩散超分环境与权重已就绪$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} diffusion super-resolution environment and weights ready`;
+        case "zh-TW":
+          return `${label} 擴散超解析環境與權重已就緒`;
+        case "zh-HK":
+          return `${label} 擴散超分環境與權重已就緒`;
+        case "ja-JP":
+          return `${label} 拡散超解像環境とモデル重みの準備が完了しました`;
+        case "ko-KR":
+          return `${label} 확산 초해상도 환경 및 가중치 준비 완료`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已检出的远端源码：(.+?)@([0-9a-f]+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const rev = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Reusing checked-out remote source: ${label}@${rev}`;
+        case "zh-TW":
+          return `重複使用已檢出的遠端原始碼：${label}@${rev}`;
+        case "zh-HK":
+          return `複用已檢出的遠端源碼：${label}@${rev}`;
+        case "ja-JP":
+          return `チェックアウト済みのリモートソースを再利用中: ${label}@${rev}`;
+        case "ko-KR":
+          return `체크아웃된 원격 소스 재사용 중: ${label}@${rev}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在检出\s*(.+?)\s*固定版本源码：([0-9a-f]+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const rev = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Checking out pinned ${label} source: ${rev}`;
+        case "zh-TW":
+          return `正在檢出 ${label} 固定版本原始碼：${rev}`;
+        case "zh-HK":
+          return `正在檢出 ${label} 固定版本源碼：${rev}`;
+        case "ja-JP":
+          return `${label} の固定バージョンソースをチェックアウト中: ${rev}`;
+        case "ko-KR":
+          return `${label} 고정 버전 소스 체크아웃 중: ${rev}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已就绪的隔离环境：(.+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing ready isolated environment: ${label}`;
+        case "zh-TW":
+          return `重複使用已就緒的隔離環境：${label}`;
+        case "zh-HK":
+          return `複用已就緒的隔離環境：${label}`;
+        case "ja-JP":
+          return `準備済みの隔離環境を再利用中: ${label}`;
+        case "ko-KR":
+          return `준비된 격리 환경 재사용 중: ${label}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在创建隔离虚拟环境：(.+?)（保留宿主 PyTorch）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Creating isolated virtual environment: ${label} (preserving host PyTorch)`;
+        case "zh-TW":
+          return `正在建立隔離虛擬環境：${label}（保留宿主 PyTorch）`;
+        case "zh-HK":
+          return `正在建立隔離虛擬環境：${label}（保留宿主 PyTorch）`;
+        case "ja-JP":
+          return `隔離仮想環境を作成中: ${label}（ホストの PyTorch を保持）`;
+        case "ko-KR":
+          return `격리 가상 환경 생성 중: ${label} (호스트 PyTorch 유지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装\s*(.+?)\s*运行依赖（共 (\d+) 个包，保留现有 PyTorch）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const count = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Installing ${label} runtime dependencies (${count} packages, preserving existing PyTorch)`;
+        case "zh-TW":
+          return `正在安裝 ${label} 執行相依套件（共 ${count} 個套件，保留現有 PyTorch）`;
+        case "zh-HK":
+          return `正在安裝 ${label} 運行依賴（共 ${count} 個套件，保留現有 PyTorch）`;
+        case "ja-JP":
+          return `${label} の実行依存パッケージをインストール中（計 ${count} 個、既存 PyTorch を保持）`;
+        case "ko-KR":
+          return `${label} 실행 종속성 설치 중 (총 ${count}개 패키지, 기존 PyTorch 유지)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*隔离环境已就绪$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} isolated environment ready`;
+        case "zh-TW":
+          return `${label} 隔離環境已就緒`;
+        case "zh-HK":
+          return `${label} 隔離環境已就緒`;
+        case "ja-JP":
+          return `${label} 隔離環境の準備が完了しました`;
+        case "ko-KR":
+          return `${label} 격리 환경 준비 완료`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已缓存的模型权重：(.+?)（(.+?)）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const repo = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Reusing cached model weights: ${label} (${repo})`;
+        case "zh-TW":
+          return `重複使用已快取的模型權重：${label}（${repo}）`;
+        case "zh-HK":
+          return `複用已快取的模型權重：${label}（${repo}）`;
+        case "ja-JP":
+          return `キャッシュ済みモデル重みを再利用中: ${label}（${repo}）`;
+        case "ko-KR":
+          return `캐시된 모델 가중치 재사용 중: ${label} (${repo})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在下载模型权重：(.+?)（(.+?)@([0-9a-f]+)）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const repo = m[2]!;
+      const rev = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Downloading model weights: ${label} (${repo}@${rev})`;
+        case "zh-TW":
+          return `正在下載模型權重：${label}（${repo}@${rev}）`;
+        case "zh-HK":
+          return `正在下載模型權重：${label}（${repo}@${rev}）`;
+        case "ja-JP":
+          return `モデル重みをダウンロード中: ${label}（${repo}@${rev}）`;
+        case "ko-KR":
+          return `모델 가중치 다운로드 중: ${label} (${repo}@${rev})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*模型权重准备完成$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} model weights ready`;
+        case "zh-TW":
+          return `${label} 模型權重準備完成`;
+        case "zh-HK":
+          return `${label} 模型權重準備完成`;
+        case "ja-JP":
+          return `${label} モデル重みの準備が完了しました`;
+        case "ko-KR":
+          return `${label} 모델 가중치 준비 완료`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未检测到可用远端 GPU，LongCat-Video-Avatar 1\.6 原生管线至少需要 ([\d.]+) GiB（(\d+) MiB）显存$/,
+    format: (m, loc) => {
+      const [, gib, mib] = m;
+      switch (loc) {
+        case "en-US":
+          return `No usable remote GPU detected; LongCat-Video-Avatar 1.6 native pipeline requires at least ${gib} GiB (${mib} MiB) VRAM`;
+        case "zh-TW":
+          return `未偵測到可用遠端 GPU，LongCat-Video-Avatar 1.6 原生管線至少需要 ${gib} GiB（${mib} MiB）VRAM`;
+        case "zh-HK":
+          return `未檢測到可用遠端 GPU，LongCat-Video-Avatar 1.6 原生管線至少需要 ${gib} GiB（${mib} MiB）顯存`;
+        case "ja-JP":
+          return `利用可能なリモート GPU が検出されません。LongCat-Video-Avatar 1.6 ネイティブパイプラインには最低 ${gib} GiB（${mib} MiB）の VRAM が必要です`;
+        case "ko-KR":
+          return `사용 가능한 원격 GPU가 감지되지 않았습니다. LongCat-Video-Avatar 1.6 네이티브 파이프라인에는 최소 ${gib} GiB (${mib} MiB) VRAM이 필요합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 GPU 显存不足：当前 (.+?) 仅 ([\d.]+) GiB（(\d+) MiB），LongCat-Video-Avatar 1\.6 原生管线至少需要 ([\d.]+) GiB（(\d+) MiB）显存$/,
+    format: (m, loc) => {
+      const [, gpu, curGib, curMib, reqGib, reqMib] = m;
+      const gpuName = translateInner(gpu!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote GPU VRAM: current ${gpuName} has only ${curGib} GiB (${curMib} MiB); LongCat-Video-Avatar 1.6 native pipeline requires at least ${reqGib} GiB (${reqMib} MiB)`;
+        case "zh-TW":
+          return `遠端 GPU VRAM 不足：目前 ${gpuName} 僅 ${curGib} GiB（${curMib} MiB），LongCat-Video-Avatar 1.6 原生管線至少需要 ${reqGib} GiB（${reqMib} MiB）VRAM`;
+        case "zh-HK":
+          return `遠端 GPU 顯存不足：目前 ${gpuName} 僅 ${curGib} GiB（${curMib} MiB），LongCat-Video-Avatar 1.6 原生管線至少需要 ${reqGib} GiB（${reqMib} MiB）顯存`;
+        case "ja-JP":
+          return `リモート GPU の VRAM 不足: 現在の ${gpuName} は ${curGib} GiB（${curMib} MiB）のみで、LongCat-Video-Avatar 1.6 ネイティブパイプラインには最低 ${reqGib} GiB（${reqMib} MiB）必要です`;
+        case "ko-KR":
+          return `원격 GPU VRAM 부족: 현재 ${gpuName}에는 ${curGib} GiB (${curMib} MiB)만 있으며, LongCat-Video-Avatar 1.6 네이티브 파이프라인은 최소 ${reqGib} GiB (${reqMib} MiB) VRAM이 필요합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端工作区磁盘空间不足：权重已缓存(或将写入 Drive)?，但生成与临时转码仍需至少 ([\d.]+) GiB（(\d+) MiB）可用空间，当前仅剩 ([\d.]+) GiB（(\d+) MiB）$/,
+    format: (m, loc) => {
+      const hasDrive = Boolean(m[1]);
+      const reqGib = m[2]!;
+      const reqMib = m[3]!;
+      const freeGib = m[4]!;
+      const freeMib = m[5]!;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote workspace disk space: weights are cached${hasDrive ? " or will be written to Drive" : ""}, but rendering and temp transcoding still require at least ${reqGib} GiB (${reqMib} MiB) free (${freeGib} GiB / ${freeMib} MiB remaining)`;
+        case "zh-TW":
+          return `遠端工作區磁碟空間不足：權重已快取${hasDrive ? "或將寫入 Drive" : ""}，但產生與暫存轉碼仍需至少 ${reqGib} GiB（${reqMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "zh-HK":
+          return `遠端工作區磁碟空間不足：權重已快取${hasDrive ? "或將寫入 Drive" : ""}，但生成與臨時轉碼仍需至少 ${reqGib} GiB（${reqMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "ja-JP":
+          return `リモート作業領域のディスク空き容量が不足しています: 重みはキャッシュ済み${hasDrive ? "または Drive へ保存されます" : ""}が、生成と一時変換に最低 ${reqGib} GiB（${reqMib} MiB）必要です（現在の空き ${freeGib} GiB / ${freeMib} MiB）`;
+        case "ko-KR":
+          return `원격 워크스페이스 디스크 공간 부족: 가중치는 캐시되어 있${hasDrive ? "거나 Drive에 기록되" : ""}지만 생성 및 임시 변환에 최소 ${reqGib} GiB (${reqMib} MiB) 여유 공간이 필요합니다 (현재 ${freeGib} GiB / ${freeMib} MiB 남음)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端磁盘空间不足：LongCat-Video-Avatar 1\.6 原生管线与超分模型至少需要 ([\d.]+) GiB（(\d+) MiB）可用空间，当前仅剩 ([\d.]+) GiB（(\d+) MiB）$/,
+    format: (m, loc) => {
+      const [, reqGib, reqMib, freeGib, freeMib] = m;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote disk space: LongCat-Video-Avatar 1.6 native pipeline and upscaling models require at least ${reqGib} GiB (${reqMib} MiB) free (${freeGib} GiB / ${freeMib} MiB remaining)`;
+        case "zh-TW":
+          return `遠端磁碟空間不足：LongCat-Video-Avatar 1.6 原生管線與超解析模型至少需要 ${reqGib} GiB（${reqMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "zh-HK":
+          return `遠端磁碟空間不足：LongCat-Video-Avatar 1.6 原生管線與超分模型至少需要 ${reqGib} GiB（${reqMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "ja-JP":
+          return `リモートディスクの空き容量が不足しています: LongCat-Video-Avatar 1.6 ネイティブパイプラインと超解像モデルには最低 ${reqGib} GiB（${reqMib} MiB）必要です（現在の空き ${freeGib} GiB / ${freeMib} MiB）`;
+        case "ko-KR":
+          return `원격 디스크 공간 부족: LongCat-Video-Avatar 1.6 네이티브 파이프라인 및 업스케일 모델에는 최소 ${reqGib} GiB (${reqMib} MiB) 여유 공간이 필요합니다 (현재 ${freeGib} GiB / ${freeMib} MiB 남음)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的远端扩散超分引擎：(.+?)（仅支持 seedvr2_7b_sharp、seedvr2_7b、flashvsr_plus(、none、auto)?）$/,
+    format: (m, loc) => {
+      const engine = m[1]!;
+      const hasNoneAuto = Boolean(m[2]);
+      switch (loc) {
+        case "en-US":
+          return `Unsupported remote diffusion super-resolution engine: ${engine} (only seedvr2_7b_sharp, seedvr2_7b${hasNoneAuto ? ", flashvsr_plus, none, and auto" : ", and flashvsr_plus"} are supported)`;
+        case "zh-TW":
+          return `不支援的遠端擴散超解析引擎：${engine}（僅支援 seedvr2_7b_sharp、seedvr2_7b、flashvsr_plus${hasNoneAuto ? "、none、auto" : ""}）`;
+        case "zh-HK":
+          return `不支援的遠端擴散超分引擎：${engine}（僅支援 seedvr2_7b_sharp、seedvr2_7b、flashvsr_plus${hasNoneAuto ? "、none、auto" : ""}）`;
+        case "ja-JP":
+          return `サポートされていないリモート拡散超解像エンジンです: ${engine}（seedvr2_7b_sharp・seedvr2_7b・flashvsr_plus${hasNoneAuto ? "・none・auto" : ""} のみ対応）`;
+        case "ko-KR":
+          return `지원하지 않는 원격 확산 초해상도 엔진입니다: ${engine} (seedvr2_7b_sharp, seedvr2_7b, flashvsr_plus${hasNoneAuto ? ", none, auto" : ""}만 지원)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === Real _run_longcat_native_pipeline progress & error rules (server/digital_human.py) ===
+  {
+    re: /^停止远端 ComfyUI 时出现非致命提示：(.+)$/s,
+    format: (m, loc) => {
+      const exc = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Non-fatal notice while stopping remote ComfyUI: ${exc}`;
+        case "zh-TW":
+          return `停止遠端 ComfyUI 時出現非致命提示：${exc}`;
+        case "zh-HK":
+          return `停止遠端 ComfyUI 時出現非致命提示：${exc}`;
+        case "ja-JP":
+          return `リモート ComfyUI 停止時の非致命的な通知: ${exc}`;
+        case "ko-KR":
+          return `원격 ComfyUI 중지 중 치명적이지 않은 알림: ${exc}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在准备 LongCat-Video-Avatar 1\.6 原生旗舰环境与权重：(.+)$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Preparing LongCat-Video-Avatar 1.6 native flagship environment and weights: ${wfName}`;
+        case "zh-TW":
+          return `正在準備 LongCat-Video-Avatar 1.6 原生旗艦環境與權重：${wfName}`;
+        case "zh-HK":
+          return `正在準備 LongCat-Video-Avatar 1.6 原生旗艦環境與權重：${wfName}`;
+        case "ja-JP":
+          return `LongCat-Video-Avatar 1.6 ネイティブフラッグシップ環境とモデル重みを準備中: ${wfName}`;
+        case "ko-KR":
+          return `LongCat-Video-Avatar 1.6 네이티브 플래그십 환경 및 가중치 준비 중: ${wfName}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 正在使用 LongCat 1\.6 原生引擎渲染 720p 主画面（(\d+)×(\d+)，(\d+) 帧，([^）]+)）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const w = m[2]!;
+      const h = m[3]!;
+      const frames = m[4]!;
+      const mode = translateInner(m[5]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${wfName} · Rendering 720p base video with LongCat 1.6 native engine (${w}x${h}, ${frames} frames, ${mode})`;
+        case "zh-TW":
+          return `${wfName} · 正在使用 LongCat 1.6 原生引擎算繪 720p 主畫面（${w}×${h}，${frames} 影格，${mode}）`;
+        case "zh-HK":
+          return `${wfName} · 正在使用 LongCat 1.6 原生引擎渲染 720p 主畫面（${w}×${h}，${frames} 幀，${mode}）`;
+        case "ja-JP":
+          return `${wfName} · LongCat 1.6 ネイティブエンジンで 720p 本映像をレンダリング中（${w}×${h}、${frames} フレーム、${mode}）`;
+        case "ko-KR":
+          return `${wfName} · LongCat 1.6 네이티브 엔진으로 720p 기본 영상 렌더링 중 (${w}x${h}, ${frames}프레임, ${mode})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · LongCat 1\.6 原生 720p 主画面生成完成（耗时 ([^）]+)）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const dur = translateZhDuration(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${wfName} · LongCat 1.6 native 720p base video completed (${dur})`;
+        case "zh-TW":
+          return `${wfName} · LongCat 1.6 原生 720p 主畫面產生完成（耗時 ${dur}）`;
+        case "zh-HK":
+          return `${wfName} · LongCat 1.6 原生 720p 主畫面生成完成（耗時 ${dur}）`;
+        case "ja-JP":
+          return `${wfName} · LongCat 1.6 ネイティブ 720p 本映像の生成が完了しました（所要 ${dur}）`;
+        case "ko-KR":
+          return `${wfName} · LongCat 1.6 네이티브 720p 기본 영상 생성 완료 (소요 ${dur})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在准备视频扩散超分引擎与权重：(.+)$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Preparing video diffusion super-resolution engine and weights: ${engine}`;
+        case "zh-TW":
+          return `正在準備影片擴散超解析引擎與權重：${engine}`;
+        case "zh-HK":
+          return `正在準備影片擴散超分引擎與權重：${engine}`;
+        case "ja-JP":
+          return `動画拡散超解像エンジンとモデル重みを準備中: ${engine}`;
+        case "ko-KR":
+          return `영상 확산 초해상도 엔진 및 가중치 준비 중: ${engine}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 正在执行 ([^）]+?) 视频扩散超分（(\d+)×(\d+)）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const engine = translateInner(m[2]!, loc);
+      const w = m[3]!;
+      const h = m[4]!;
+      switch (loc) {
+        case "en-US":
+          return `${wfName} · Running ${engine} video diffusion upscaling (${w}x${h})`;
+        case "zh-TW":
+          return `${wfName} · 正在執行 ${engine} 影片擴散超解析（${w}×${h}）`;
+        case "zh-HK":
+          return `${wfName} · 正在執行 ${engine} 影片擴散超分（${w}×${h}）`;
+        case "ja-JP":
+          return `${wfName} · ${engine} 動画拡散超解像を実行中（${w}×${h}）`;
+        case "ko-KR":
+          return `${wfName} · ${engine} 영상 확산 업스케일 실행 중 (${w}x${h})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^视频扩散超分失败（([^）]+)）：未产出有效的无损超分视频$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Video diffusion upscaling failed (${engine}): no valid lossless upscaled video produced`;
+        case "zh-TW":
+          return `影片擴散超解析失敗（${engine}）：未產出有效的無損超解析影片`;
+        case "zh-HK":
+          return `影片擴散超分失敗（${engine}）：未產出有效的無損超分影片`;
+        case "ja-JP":
+          return `動画拡散超解像に失敗しました（${engine}）: 有効な可逆超解像動画が生成されませんでした`;
+        case "ko-KR":
+          return `영상 확산 업스케일 실패 (${engine}): 유효한 무손실 업스케일 영상이 생성되지 않았습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · ([^·]+?) 视频扩散超分完成（耗时 ([^）]+)）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const engine = translateInner(m[2]!, loc);
+      const dur = translateZhDuration(m[3]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${wfName} · ${engine} video diffusion upscaling completed (${dur})`;
+        case "zh-TW":
+          return `${wfName} · ${engine} 影片擴散超解析完成（耗時 ${dur}）`;
+        case "zh-HK":
+          return `${wfName} · ${engine} 影片擴散超分完成（耗時 ${dur}）`;
+        case "ja-JP":
+          return `${wfName} · ${engine} 動画拡散超解像が完了しました（所要 ${dur}）`;
+        case "ko-KR":
+          return `${wfName} · ${engine} 영상 확산 업스케일 완료 (소요 ${dur})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在进行单次母版封装（CRF (\d+) · (\d+)×(\d+) · 48 kHz AAC 256k）$/,
+    format: (m, loc) => {
+      const [, crf, w, h] = m;
+      switch (loc) {
+        case "en-US":
+          return `Running single-pass master encode (CRF ${crf} · ${w}x${h} · 48 kHz AAC 256k)`;
+        case "zh-TW":
+          return `正在進行單次母帶封裝（CRF ${crf} · ${w}×${h} · 48 kHz AAC 256k）`;
+        case "zh-HK":
+          return `正在進行單次母版封裝（CRF ${crf} · ${w}×${h} · 48 kHz AAC 256k）`;
+        case "ja-JP":
+          return `シングルパスマスターエンコードを実行中（CRF ${crf}・${w}×${h}・48 kHz AAC 256k）`;
+        case "ko-KR":
+          return `단일 패스 마스터 인코딩 진행 중 (CRF ${crf} · ${w}x${h} · 48 kHz AAC 256k)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) · 原生旗舰数字人生成完成（LongCat 1\.6( \+ [^，]+)?，([\d.]+) 秒，(\d+)×(\d+)，总耗时 ([^）]+)）$/,
+    format: (m, loc) => {
+      const wfName = translateInner(m[1]!, loc);
+      const vsrNote = m[2] ?? "";
+      const sec = m[3]!;
+      const w = m[4]!;
+      const h = m[5]!;
+      const dur = translateZhDuration(m[6]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${wfName} · Native flagship digital human completed (LongCat 1.6${vsrNote}, ${sec}s, ${w}x${h}, total ${dur})`;
+        case "zh-TW":
+          return `${wfName} · 原生旗艦數位人產生完成（LongCat 1.6${vsrNote}，${sec} 秒，${w}×${h}，總耗時 ${dur}）`;
+        case "zh-HK":
+          return `${wfName} · 原生旗艦數碼人生成完成（LongCat 1.6${vsrNote}，${sec} 秒，${w}×${h}，總耗時 ${dur}）`;
+        case "ja-JP":
+          return `${wfName} · ネイティブフラッグシップ・デジタルヒューマンの生成が完了しました（LongCat 1.6${vsrNote}、${sec} 秒、${w}×${h}、合計 ${dur}）`;
+        case "ko-KR":
+          return `${wfName} · 네이티브 플래그십 디지털 휴먼 생성 완료 (LongCat 1.6${vsrNote}, ${sec}초, ${w}x${h}, 총 소요 ${dur})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === Standardized worker progress rules (avatar_worker_longcat16.py & vsr_worker_diffusion.py) ===
+  {
+    re: /^正在初始化 LongCat-Video-Avatar 1\.6（([^，]+)，共 (\d+) 段）$/,
+    format: (m, loc) => {
+      const mode = translateInner(m[1]!, loc);
+      const n = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Initializing LongCat-Video-Avatar 1.6 (${mode}, ${n} segments)`;
+        case "zh-TW":
+          return `正在初始化 LongCat-Video-Avatar 1.6（${mode}，共 ${n} 段）`;
+        case "zh-HK":
+          return `正在初始化 LongCat-Video-Avatar 1.6（${mode}，共 ${n} 段）`;
+        case "ja-JP":
+          return `LongCat-Video-Avatar 1.6 を初期化中（${mode}、計 ${n} セグメント）`;
+        case "ko-KR":
+          return `LongCat-Video-Avatar 1.6 초기화 중 (${mode}, 총 ${n}개 세그먼트)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在准备音频特征（前置人声分离：(开启|关闭)）$/,
+    format: (m, loc) => {
+      const on = m[1] === "开启";
+      switch (loc) {
+        case "en-US":
+          return `Preparing audio features (vocal separation: ${on ? "on" : "off"})`;
+        case "zh-TW":
+          return `正在準備音訊特徵（前置人聲分離：${on ? "開啟" : "關閉"}）`;
+        case "zh-HK":
+          return `正在準備音訊特徵（前置人聲分離：${on ? "開啟" : "關閉"}）`;
+        case "ja-JP":
+          return `音声特徴を準備中（前処理ボーカル分離: ${on ? "オン" : "オフ"}）`;
+        case "ko-KR":
+          return `오디오 특징 준비 중 (전처리 보컬 분리: ${on ? "켜짐" : "꺼짐"})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在渲染第 (\d+)\/(\d+) 段（首段 AI2V）$/,
+    format: (m, loc) => {
+      const [, i, n] = m;
+      switch (loc) {
+        case "en-US":
+          return `Rendering segment ${i}/${n} (initial AI2V)`;
+        case "zh-TW":
+          return `正在算繪第 ${i}/${n} 段（首段 AI2V）`;
+        case "zh-HK":
+          return `正在渲染第 ${i}/${n} 段（首段 AI2V）`;
+        case "ja-JP":
+          return `セグメント ${i}/${n} をレンダリング中（初回 AI2V）`;
+        case "ko-KR":
+          return `세그먼트 ${i}/${n} 렌더링 중 (초기 AI2V)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在渲染第 (\d+)\/(\d+) 段（13 帧连续续写）$/,
+    format: (m, loc) => {
+      const [, i, n] = m;
+      switch (loc) {
+        case "en-US":
+          return `Rendering segment ${i}/${n} (13-frame continuous continuation)`;
+        case "zh-TW":
+          return `正在算繪第 ${i}/${n} 段（13 影格連續續寫）`;
+        case "zh-HK":
+          return `正在渲染第 ${i}/${n} 段（13 幀連續續寫）`;
+        case "ja-JP":
+          return `セグメント ${i}/${n} をレンダリング中（13 フレーム連続延長）`;
+        case "ko-KR":
+          return `세그먼트 ${i}/${n} 렌더링 중 (13프레임 연속 이어쓰기)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已完成第 (\d+)\/(\d+) 段（累计 (\d+)\/(\d+) 帧）$/,
+    format: (m, loc) => {
+      const [, i, n, written, total] = m;
+      switch (loc) {
+        case "en-US":
+          return `Completed segment ${i}/${n} (${written}/${total} frames written)`;
+        case "zh-TW":
+          return `已完成第 ${i}/${n} 段（累計 ${written}/${total} 影格）`;
+        case "zh-HK":
+          return `已完成第 ${i}/${n} 段（累計 ${written}/${total} 幀）`;
+        case "ja-JP":
+          return `セグメント ${i}/${n} が完了しました（累計 ${written}/${total} フレーム）`;
+        case "ko-KR":
+          return `세그먼트 ${i}/${n} 완료 (누적 ${written}/${total}프레임)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^LongCat-Video-Avatar 1\.6 渲染完成（共 (\d+) 帧，耗时 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const [, n, s] = m;
+      switch (loc) {
+        case "en-US":
+          return `LongCat-Video-Avatar 1.6 rendering completed (${n} frames, ${s}s)`;
+        case "zh-TW":
+          return `LongCat-Video-Avatar 1.6 算繪完成（共 ${n} 影格，耗時 ${s} 秒）`;
+        case "zh-HK":
+          return `LongCat-Video-Avatar 1.6 渲染完成（共 ${n} 幀，耗時 ${s} 秒）`;
+        case "ja-JP":
+          return `LongCat-Video-Avatar 1.6 のレンダリングが完了しました（計 ${n} フレーム、所要 ${s} 秒）`;
+        case "ko-KR":
+          return `LongCat-Video-Avatar 1.6 렌더링 완료 (총 ${n}프레임, 소요 ${s}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在启动 (.+?) 超分（短边 (\d+)px，批次 (\d+)，共 (\d+) 批）$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      const px = m[2]!;
+      const b = m[3]!;
+      const c = m[4]!;
+      switch (loc) {
+        case "en-US":
+          return `Starting ${engine} upscaling (short side ${px}px, batch ${b}, ${c} batches)`;
+        case "zh-TW":
+          return `正在啟動 ${engine} 超解析（短邊 ${px}px，批次 ${b}，共 ${c} 批）`;
+        case "zh-HK":
+          return `正在啟動 ${engine} 超分（短邊 ${px}px，批次 ${b}，共 ${c} 批）`;
+        case "ja-JP":
+          return `${engine} 超解像を開始中（短辺 ${px}px、バッチ ${b}、計 ${c} バッチ）`;
+        case "ko-KR":
+          return `${engine} 업스케일 시작 중 (단변 ${px}px, 배치 ${b}, 총 ${c}배치)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在执行 SeedVR2 时空扩散超分（([^）]+)）$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Running SeedVR2 spatiotemporal diffusion upscaling (${engine})`;
+        case "zh-TW":
+          return `正在執行 SeedVR2 時空擴散超解析（${engine}）`;
+        case "zh-HK":
+          return `正在執行 SeedVR2 時空擴散超分（${engine}）`;
+        case "ja-JP":
+          return `SeedVR2 時空間拡散超解像を実行中（${engine}）`;
+        case "ko-KR":
+          return `SeedVR2 시공간 확산 업스케일 실행 중 (${engine})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在加载 FlashVSR\+ v1\.1 流式扩散模型（(\d+)×(\d+)）$/,
+    format: (m, loc) => {
+      const [, w, h] = m;
+      switch (loc) {
+        case "en-US":
+          return `Loading FlashVSR+ v1.1 streaming diffusion model (${w}x${h})`;
+        case "zh-TW":
+          return `正在載入 FlashVSR+ v1.1 串流擴散模型（${w}×${h}）`;
+        case "zh-HK":
+          return `正在載入 FlashVSR+ v1.1 串流擴散模型（${w}×${h}）`;
+        case "ja-JP":
+          return `FlashVSR+ v1.1 ストリーミング拡散モデルを読み込み中（${w}×${h}）`;
+        case "ko-KR":
+          return `FlashVSR+ v1.1 스트리밍 확산 모델 로드 중 (${w}x${h})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在执行 FlashVSR\+ v1\.1 流式扩散超分（第 (\d+)\/(\d+) 段）$/,
+    format: (m, loc) => {
+      const [, i, n] = m;
+      switch (loc) {
+        case "en-US":
+          return `Running FlashVSR+ v1.1 streaming diffusion upscaling (segment ${i}/${n})`;
+        case "zh-TW":
+          return `正在執行 FlashVSR+ v1.1 串流擴散超解析（第 ${i}/${n} 段）`;
+        case "zh-HK":
+          return `正在執行 FlashVSR+ v1.1 串流擴散超分（第 ${i}/${n} 段）`;
+        case "ja-JP":
+          return `FlashVSR+ v1.1 ストリーミング拡散超解像を実行中（セグメント ${i}/${n}）`;
+        case "ko-KR":
+          return `FlashVSR+ v1.1 스트리밍 확산 업스케일 실행 중 (세그먼트 ${i}/${n})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已完成 (.+?) 视频扩散超分（共 (\d+) 帧，耗时 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      const n = m[2]!;
+      const s = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Completed ${engine} video diffusion upscaling (${n} frames, ${s}s)`;
+        case "zh-TW":
+          return `已完成 ${engine} 影片擴散超解析（共 ${n} 影格，耗時 ${s} 秒）`;
+        case "zh-HK":
+          return `已完成 ${engine} 影片擴散超分（共 ${n} 幀，耗時 ${s} 秒）`;
+        case "ja-JP":
+          return `${engine} 動画拡散超解像が完了しました（計 ${n} フレーム、所要 ${s} 秒）`;
+        case "ko-KR":
+          return `${engine} 영상 확산 업스케일 완료 (총 ${n}프레임, 소요 ${s}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === server/avatar_engines.py error & diagnostic rules ===
+  {
+    re: /^无法检测远端磁盘可用空间（(.+?)），LongCat-Video-Avatar 1\.6 至少需要 ([\d.]+) GiB 可用磁盘空间$/s,
+    format: (m, loc) => {
+      const exc = translateInner(m[1]!, loc);
+      const gib = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Unable to check remote free disk space (${exc}); LongCat-Video-Avatar 1.6 requires at least ${gib} GiB free disk space`;
+        case "zh-TW":
+          return `無法偵測遠端磁碟可用空間（${exc}），LongCat-Video-Avatar 1.6 至少需要 ${gib} GiB 可用磁碟空間`;
+        case "zh-HK":
+          return `無法檢測遠端磁碟可用空間（${exc}），LongCat-Video-Avatar 1.6 至少需要 ${gib} GiB 可用磁碟空間`;
+        case "ja-JP":
+          return `リモートディスクの空き容量を確認できません（${exc}）。LongCat-Video-Avatar 1.6 には最低 ${gib} GiB の空き容量が必要です`;
+        case "ko-KR":
+          return `원격 디스크 여유 공간을 확인할 수 없습니다 (${exc}). LongCat-Video-Avatar 1.6에는 최소 ${gib} GiB의 디스크 여유 공간이 필요합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*长时间无输出与进度更新（超过 (\d+) 秒），进程疑似卡死，请查看运行日志$/,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const sec = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} produced no output or progress updates for over ${sec}s (process may be stalled); check the runtime log`;
+        case "zh-TW":
+          return `${stage}${zhSep}長時間無輸出與進度更新（超過 ${sec} 秒），程序疑似卡死，請查看執行日誌`;
+        case "zh-HK":
+          return `${stage}${zhSep}長時間無輸出與進度更新（超過 ${sec} 秒），進程疑似卡死，請查看運行日誌`;
+        case "ja-JP":
+          return `${stage} で ${sec} 秒以上出力や進捗更新がありません（プロセスが停止している可能性があります）。実行ログを確認してください`;
+        case "ko-KR":
+          return `${stage}에서 ${sec}초 이상 출력 및 진행 업데이트가 없어 프로세스가 멈춘 것으로 보입니다. 실행 로그를 확인하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*进程退出超时，请查看运行日志$/,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} process exit timed out; check the runtime log`;
+        case "zh-TW":
+          return `${stage}${zhSep}程序結束逾時，請查看執行日誌`;
+        case "zh-HK":
+          return `${stage}${zhSep}進程退出逾時，請查看運行日誌`;
+        case "ja-JP":
+          return `${stage} プロセスの終了がタイムアウトしました。実行ログを確認してください`;
+        case "ko-KR":
+          return `${stage} 프로세스 종료 시간이 초과되었습니다. 실행 로그를 확인하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*执行超时，请查看运行日志$/,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} execution timed out; check the runtime log`;
+        case "zh-TW":
+          return `${stage}${zhSep}執行逾時，請查看執行日誌`;
+        case "zh-HK":
+          return `${stage}${zhSep}執行逾時，請查看運行日誌`;
+        case "ja-JP":
+          return `${stage} の実行がタイムアウトしました。実行ログを確認してください`;
+        case "ko-KR":
+          return `${stage} 실행 시간이 초과되었습니다. 실행 로그를 확인하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*执行失败（退出码 (-?\d+)）：(.*)$/s,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const code = m[2]!;
+      const tailRaw = (m[3] ?? "").trim();
+      const tail = tailRaw ? translateInner(tailRaw, loc) : "";
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} failed (exit code ${code})${tail ? `: ${tail}` : ""}`;
+        case "zh-TW":
+          return `${stage}${zhSep}執行失敗（結束代碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "zh-HK":
+          return `${stage}${zhSep}執行失敗（退出碼 ${code}）${tail ? `：${tail}` : ""}`;
+        case "ja-JP":
+          return `${stage} の実行に失敗しました（終了コード ${code}）${tail ? `: ${tail}` : ""}`;
+        case "ko-KR":
+          return `${stage} 실행 실패 (종료 코드 ${code})${tail ? `: ${tail}` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*源码提交哈希必须为完整 40 位十六进制 SHA：(.+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const commit = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} source commit hash must be a full 40-character hexadecimal SHA: ${commit}`;
+        case "zh-TW":
+          return `${label}${zhSep}原始碼提交雜湊必須為完整 40 位十六進位 SHA：${commit}`;
+        case "zh-HK":
+          return `${label}${zhSep}源碼提交哈希必須為完整 40 位十六進制 SHA：${commit}`;
+        case "ja-JP":
+          return `${label} のソースコミットハッシュは完全な 40 桁の 16 進 SHA である必要があります: ${commit}`;
+        case "ko-KR":
+          return `${label} 소스 커밋 해시는 전체 40자리 16진수 SHA여야 합니다: ${commit}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端缺少 Git，无法拉取\s*(.+?)\s*源码$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      switch (loc) {
+        case "en-US":
+          return `Git is not installed on the remote instance; cannot fetch ${label} source`;
+        case "zh-TW":
+          return `遠端缺少 Git，無法拉取 ${label} 原始碼`;
+        case "zh-HK":
+          return `遠端缺少 Git，無法拉取 ${label} 源碼`;
+        case "ja-JP":
+          return `リモート環境に Git がないため、${label} のソースを取得できません`;
+        case "ko-KR":
+          return `원격 환경에 Git이 없어 ${label} 소스를 가져올 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*源码检出校验失败，HEAD 与目标提交 ([0-9a-f]+) 不一致或关键文件缺失$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const commit = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} source checkout verification failed: HEAD does not match target commit ${commit} or required files are missing`;
+        case "zh-TW":
+          return `${label}${zhSep}原始碼檢出驗證失敗，HEAD 與目標提交 ${commit} 不一致或關鍵檔案遺失`;
+        case "zh-HK":
+          return `${label}${zhSep}源碼檢出校驗失敗，HEAD 與目標提交 ${commit} 不一致或關鍵檔案缺失`;
+        case "ja-JP":
+          return `${label} のソースチェックアウト検証に失敗しました。HEAD が対象コミット ${commit} と一致しないか重要ファイルが不足しています`;
+        case "ko-KR":
+          return `${label} 소스 체크아웃 검증 실패: HEAD가 대상 커밋 ${commit}과 일치하지 않거나 필수 파일이 누락되었습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*现有 Git 仓库异常，正在清空并重新检出：(.*)$/s,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const err = translateInner(m[2]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `Existing ${label} Git repository is corrupted; clearing and re-checking out: ${err}`;
+        case "zh-TW":
+          return `${label}${zhSep}現有 Git 存放庫異常，正在清空並重新檢出：${err}`;
+        case "zh-HK":
+          return `${label}${zhSep}現有 Git 倉庫異常，正在清空並重新檢出：${err}`;
+        case "ja-JP":
+          return `既存の ${label} Git リポジトリに異常があるため、初期化して再チェックアウトしています: ${err}`;
+        case "ko-KR":
+          return `기존 ${label} Git 저장소에 이상이 있어 초기화 후 다시 체크아웃하는 중: ${err}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*隔离虚拟环境缺少 Python 可执行文件，拒绝回退到宿主环境：(.+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const dir = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} isolated virtual environment is missing the Python executable; refusing to fall back to the host environment: ${dir}`;
+        case "zh-TW":
+          return `${label}${zhSep}隔離虛擬環境缺少 Python 執行檔，拒絕退回至宿主環境：${dir}`;
+        case "zh-HK":
+          return `${label}${zhSep}隔離虛擬環境缺少 Python 可執行檔，拒絕回退至宿主環境：${dir}`;
+        case "ja-JP":
+          return `${label} の隔離仮想環境に Python 実行ファイルがないため、ホスト環境へのフォールバックを拒否しました: ${dir}`;
+        case "ko-KR":
+          return `${label} 격리 가상 환경에 Python 실행 파일이 없어 호스트 환경으로 폴백하지 않았습니다: ${dir}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*虚拟环境创建不完整，缺少 Python 可执行文件：(.+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const dir = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} virtual environment creation incomplete; Python executable missing: ${dir}`;
+        case "zh-TW":
+          return `${label}${zhSep}虛擬環境建立不完整，缺少 Python 執行檔：${dir}`;
+        case "zh-HK":
+          return `${label}${zhSep}虛擬環境建立不完整，缺少 Python 可執行檔：${dir}`;
+        case "ja-JP":
+          return `${label} の仮想環境作成が不完全です。Python 実行ファイルが見つかりません: ${dir}`;
+        case "ko-KR":
+          return `${label} 가상 환경 생성이 완료되지 않아 Python 실행 파일이 누락되었습니다: ${dir}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^可选依赖（(.+?)）安装失败，已跳过，(.+?) 将使用原始音频继续运行：(.*)$/s,
+    format: (m, loc) => {
+      const pkgs = m[1]!;
+      const label = translateInner(m[2]!.trim(), loc);
+      const err = translateInner(m[3]!.trim(), loc);
+      switch (loc) {
+        case "en-US":
+          return `Optional dependency (${pkgs}) installation failed and was skipped; ${label} will continue with the original audio: ${err}`;
+        case "zh-TW":
+          return `選用相依套件（${pkgs}）安裝失敗，已略過，${label} 將使用原始音訊繼續執行：${err}`;
+        case "zh-HK":
+          return `可選依賴（${pkgs}）安裝失敗，已跳過，${label} 將使用原始音訊繼續運行：${err}`;
+        case "ja-JP":
+          return `任意依存パッケージ（${pkgs}）のインストールに失敗したためスキップしました。${label} は元の音声のまま続行します: ${err}`;
+        case "ko-KR":
+          return `선택 종속성(${pkgs}) 설치에 실패해 건너뛰었으며, ${label}은(는) 원본 오디오로 계속 실행됩니다: ${err}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^缺少 huggingface_hub，无法下载(?:\s*(.+?)\s*)?模型权重(?:：(.+))?$/,
+    format: (m, loc) => {
+      const label = m[1] ? translateInner(m[1].trim(), loc) : "";
+      const repo = m[2] ?? "";
+      switch (loc) {
+        case "en-US":
+          return `Missing huggingface_hub; cannot download${label ? ` ${label}` : ""} model weights${repo ? `: ${repo}` : ""}`;
+        case "zh-TW":
+          return `缺少 huggingface_hub，無法下載${label ? ` ${label} ` : ""}模型權重${repo ? `：${repo}` : ""}`;
+        case "zh-HK":
+          return `缺少 huggingface_hub，無法下載${label ? ` ${label} ` : ""}模型權重${repo ? `：${repo}` : ""}`;
+        case "ja-JP":
+          return `huggingface_hub が見つからないため${label ? ` ${label} の` : ""}モデル重みをダウンロードできません${repo ? `: ${repo}` : ""}`;
+        case "ko-KR":
+          return `huggingface_hub가 없어${label ? ` ${label}` : ""} 모델 가중치를 다운로드할 수 없습니다${repo ? `: ${repo}` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^下载\s*(.+?)\s*模型权重失败（([^）]+)）：(.*)$/s,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const repo = m[2]!;
+      const err = translateInner(m[3]!.trim(), loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to download ${label} model weights (${repo}): ${err}`;
+        case "zh-TW":
+          return `下載 ${label} 模型權重失敗（${repo}）：${err}`;
+        case "zh-HK":
+          return `下載 ${label} 模型權重失敗（${repo}）：${err}`;
+        case "ja-JP":
+          return `${label} モデル重みのダウンロードに失敗しました（${repo}）: ${err}`;
+        case "ko-KR":
+          return `${label} 모델 가중치 다운로드 실패 (${repo}): ${err}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*模型权重下载不完整，缺少必需权重文件：(.+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const dir = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} model weight download incomplete; required weight files missing: ${dir}`;
+        case "zh-TW":
+          return `${label}${zhSep}模型權重下載不完整，缺少必要權重檔案：${dir}`;
+        case "zh-HK":
+          return `${label}${zhSep}模型權重下載不完整，缺少必需權重檔案：${dir}`;
+        case "ja-JP":
+          return `${label} モデル重みのダウンロードが不完全です。必要な重みファイルが見つかりません: ${dir}`;
+        case "ko-KR":
+          return `${label} 모델 가중치 다운로드가 불완전하여 필수 가중치 파일이 누락되었습니다: ${dir}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*执行完成但未生成有效输出清单：(.+)$/,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const path = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} finished without producing a valid output manifest: ${path}`;
+        case "zh-TW":
+          return `${stage}${zhSep}執行完成但未產生有效輸出清單：${path}`;
+        case "zh-HK":
+          return `${stage}${zhSep}執行完成但未生成有效輸出清單：${path}`;
+        case "ja-JP":
+          return `${stage} の実行は完了しましたが、有効な出力マニフェストが生成されませんでした: ${path}`;
+        case "ko-KR":
+          return `${stage} 실행은 완료되었으나 유효한 출력 매니페스트가 생성되지 않았습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*输出清单解析失败：(.*)$/s,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const err = translateInner(m[2]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `Failed to parse ${stage} output manifest: ${err}`;
+        case "zh-TW":
+          return `${stage}${zhSep}輸出清單解析失敗：${err}`;
+        case "zh-HK":
+          return `${stage}${zhSep}輸出清單解析失敗：${err}`;
+        case "ja-JP":
+          return `${stage} の出力マニフェスト解析に失敗しました: ${err}`;
+        case "ko-KR":
+          return `${stage} 출력 매니페스트 파싱 실패: ${err}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*输出清单格式无效或为空$/,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} output manifest is invalid or empty`;
+        case "zh-TW":
+          return `${stage}${zhSep}輸出清單格式無效或為空`;
+        case "zh-HK":
+          return `${stage}${zhSep}輸出清單格式無效或為空`;
+        case "ja-JP":
+          return `${stage} の出力マニフェスト形式が無効か空です`;
+        case "ko-KR":
+          return `${stage} 출력 매니페스트 형식이 유효하지 않거나 비어 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*输出清单缺少有效的输出视频路径（output_video_path）$/,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} output manifest is missing a valid output video path (output_video_path)`;
+        case "zh-TW":
+          return `${stage}${zhSep}輸出清單缺少有效的輸出影片路徑（output_video_path）`;
+        case "zh-HK":
+          return `${stage}${zhSep}輸出清單缺少有效的輸出影片路徑（output_video_path）`;
+        case "ja-JP":
+          return `${stage} の出力マニフェストに有効な出力動画パス（output_video_path）がありません`;
+        case "ko-KR":
+          return `${stage} 출력 매니페스트에 유효한 출력 영상 경로(output_video_path)가 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*返回错误：(.*)$/s,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const err = translateInner(m[2]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} returned an error: ${err}`;
+        case "zh-TW":
+          return `${stage}${zhSep}回傳錯誤：${err}`;
+        case "zh-HK":
+          return `${stage}${zhSep}返回錯誤：${err}`;
+        case "ja-JP":
+          return `${stage} がエラーを返しました: ${err}`;
+        case "ko-KR":
+          return `${stage}에서 오류가 반환되었습니다: ${err}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*声明的输出视频不存在或为空：(.+)$/,
+    format: (m, loc) => {
+      const stage = translateInner(m[1]!.trim(), loc);
+      const path = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `Output video declared by ${stage} does not exist or is empty: ${path}`;
+        case "zh-TW":
+          return `${stage}${zhSep}宣告的輸出影片不存在或為空：${path}`;
+        case "zh-HK":
+          return `${stage}${zhSep}聲明的輸出影片不存在或為空：${path}`;
+        case "ja-JP":
+          return `${stage} が宣言した出力動画が存在しないか空です: ${path}`;
+        case "ko-KR":
+          return `${stage}에서 선언한 출력 영상이 존재하지 않거나 비어 있습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*路径不合法：(.+)$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!.trim(), loc);
+      const path = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label} path: ${path}`;
+        case "zh-TW":
+          return `${label}${zhSep}路徑不合法：${path}`;
+        case "zh-HK":
+          return `${label}${zhSep}路徑不合法：${path}`;
+        case "ja-JP":
+          return `${label} のパスが不正です: ${path}`;
+        case "ko-KR":
+          return `${label} 경로가 올바르지 않습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*路径不能包含符号链接：(.+)$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!.trim(), loc);
+      const path = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} path cannot contain symbolic links: ${path}`;
+        case "zh-TW":
+          return `${label}${zhSep}路徑不可包含符號連結：${path}`;
+        case "zh-HK":
+          return `${label}${zhSep}路徑不能包含符號連結：${path}`;
+        case "ja-JP":
+          return `${label} のパスにシンボリックリンクを含めることはできません: ${path}`;
+        case "ko-KR":
+          return `${label} 경로에는 심볼릭 링크를 포함할 수 없습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*必须位于工作目录内：(.+)$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!.trim(), loc);
+      const path = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} must be located inside the working directory: ${path}`;
+        case "zh-TW":
+          return `${label}${zhSep}必須位於工作目錄內：${path}`;
+        case "zh-HK":
+          return `${label}${zhSep}必須位於工作目錄內：${path}`;
+        case "ja-JP":
+          return `${label} は作業ディレクトリ内にある必要があります: ${path}`;
+        case "ko-KR":
+          return `${label}은(는) 작업 디렉터리 내부에 있어야 합니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*不能指向工作目录本身：(.+)$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!.trim(), loc);
+      const path = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} cannot point to the working directory itself: ${path}`;
+        case "zh-TW":
+          return `${label}${zhSep}不可指向工作目錄本身：${path}`;
+        case "zh-HK":
+          return `${label}${zhSep}不能指向工作目錄本身：${path}`;
+        case "ja-JP":
+          return `${label} に作業ディレクトリ自体は指定できません: ${path}`;
+        case "ko-KR":
+          return `${label}은(는) 작업 디렉터리 자체를 가리킬 수 없습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*权重下载$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} weights download`;
+        case "zh-TW":
+          return `${label}${zhSep}權重下載`;
+        case "zh-HK":
+          return `${label}${zhSep}權重下載`;
+        case "ja-JP":
+          return `${label} モデル重みダウンロード`;
+        case "ko-KR":
+          return `${label} 가중치 다운로드`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === Path validation & pre-existing digital_human.py segment safety errors ===
+  {
+    re: /^(.+?)不能包含换行符或空字符$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} cannot contain newlines or null characters`;
+        case "zh-TW":
+          return `${label}${zhSep}不可包含換行符號或空字元`;
+        case "zh-HK":
+          return `${label}${zhSep}不能包含換行符或空字元`;
+        case "ja-JP":
+          return `${label} に改行やヌル文字を含めることはできません`;
+        case "ko-KR":
+          return `${label}에는 줄바꿈이나 널 문자를 포함할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 视频文件无效或为符号链接$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${seg} video file is invalid or a symbolic link`;
+        case "zh-TW":
+          return `${seg} 影片檔案無效或為符號連結`;
+        case "zh-HK":
+          return `${seg} 影片檔案無效或為符號連結`;
+        case "ja-JP":
+          return `${seg} の動画ファイルが無効かシンボリックリンクです`;
+        case "ko-KR":
+          return `${seg} 영상 파일이 유효하지 않거나 심볼릭 링크입니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 返回的分段视频路径无效或为符号链接$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${seg} returned an invalid or symbolic-link segment video path`;
+        case "zh-TW":
+          return `${seg} 回傳的分段影片路徑無效或為符號連結`;
+        case "zh-HK":
+          return `${seg} 返回的分段影片路徑無效或為符號連結`;
+        case "ja-JP":
+          return `${seg} が返したセグメント動画パスが無効かシンボリックリンクです`;
+        case "ko-KR":
+          return `${seg}에서 반환된 세그먼트 영상 경로가 유효하지 않거나 심볼릭 링크입니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 段 分段视频路径安全校验失败$/,
+    format: (m, loc) => {
+      const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${seg} segment video path failed safety validation`;
+        case "zh-TW":
+          return `${seg} 分段影片路徑安全驗證失敗`;
+        case "zh-HK":
+          return `${seg} 分段影片路徑安全校驗失敗`;
+        case "ja-JP":
+          return `${seg} のセグメント動画パス安全性検証に失敗しました`;
+        case "ko-KR":
+          return `${seg} 세그먼트 영상 경로 보안 검증에 실패했습니다`;
         default:
           return m[0];
       }
@@ -10242,6 +12209,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^正在将参考音频转码为标准 (\d+) Hz 单声道 PCM16 WAV：(.+)$/,
+    format: (m, loc) => {
+      const [, hz, name] = m;
+      switch (loc) {
+        case "en-US":
+          return `Transcoding reference audio to standard ${hz} Hz mono PCM16 WAV: ${name}`;
+        case "zh-TW":
+          return `正在將參考音訊轉碼為標準 ${hz} Hz 單聲道 PCM16 WAV：${name}`;
+        case "zh-HK":
+          return `正在將參考音訊轉碼為標準 ${hz} Hz 單聲道 PCM16 WAV：${name}`;
+        case "ja-JP":
+          return `参照音声を標準 ${hz} Hz モノラル PCM16 WAV に変換中: ${name}`;
+        case "ko-KR":
+          return `참조 오디오를 표준 ${hz} Hz 모노 PCM16 WAV로 변환 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^参考音频转码失败，未生成输出文件：(.+)$/,
     format: (m, loc) => {
       const path = m[1]!;
@@ -10256,6 +12243,26 @@ const PATTERN_RULES: PatternRule[] = [
           return `参照音声の変換に失敗し、出力ファイルが生成されませんでした: ${path}`;
         case "ko-KR":
           return `참조 오디오 변환에 실패하여 출력 파일이 생성되지 않았습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^参考音频转码失败，未生成有效的单声道 PCM16 WAV：(.+)$/,
+    format: (m, loc) => {
+      const path = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Reference audio transcoding failed; no valid mono PCM16 WAV was created: ${path}`;
+        case "zh-TW":
+          return `參考音訊轉碼失敗，未產生有效的單聲道 PCM16 WAV：${path}`;
+        case "zh-HK":
+          return `參考音訊轉碼失敗，未生成有效的單聲道 PCM16 WAV：${path}`;
+        case "ja-JP":
+          return `参照音声の変換に失敗し、有効なモノラル PCM16 WAV が生成されませんでした: ${path}`;
+        case "ko-KR":
+          return `참조 오디오 변환에 실패하여 유효한 모노 PCM16 WAV가 생성되지 않았습니다: ${path}`;
         default:
           return m[0];
       }
@@ -10457,6 +12464,404 @@ const PATTERN_RULES: PatternRule[] = [
           return `ワークフローテンプレート ${tmplId} が未定義の TTS エンジンを参照しています: ${engineId}`;
         case "ko-KR":
           return `워크플로 템플릿 ${tmplId}이(가) 정의되지 않은 TTS 엔진을 참조합니다: ${engineId}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+
+  // === Worker-file containment, validation, TTS/accel/context, updater & proxy rules ===
+  {
+    re: /^(.+?)工作目录安全校验失败$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!.trim(), loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} working directory safety validation failed`;
+        case "zh-TW":
+          return `${label}${zhSep}工作目錄安全驗證失敗`;
+        case "zh-HK":
+          return `${label}${zhSep}工作目錄安全校驗失敗`;
+        case "ja-JP":
+          return `${label} の作業ディレクトリ安全性検証に失敗しました`;
+        case "ko-KR":
+          return `${label} 작업 디렉터리 보안 검증에 실패했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)路径超出工作目录安全范围$/,
+    format: (m, loc) => {
+      const raw = m[1]!.trim();
+      const baseRaw =
+        raw.endsWith("路径") && raw.length > 2 ? raw.slice(0, -2) : raw;
+      const label = translateSymlinkDirLabel(baseRaw, loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} path is outside the working directory safety boundary`;
+        case "zh-TW":
+          return `${label}${zhSep}路徑超出工作目錄安全範圍`;
+        case "zh-HK":
+          return `${label}${zhSep}路徑超出工作目錄安全範圍`;
+        case "ja-JP":
+          return `${label} のパスが作業ディレクトリの安全範囲外です`;
+        case "ko-KR":
+          return `${label} 경로가 작업 디렉터리 안전 범위를 벗어났습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)路径包含符号链接，安全校验失败$/,
+    format: (m, loc) => {
+      const raw = m[1]!.trim();
+      const baseRaw =
+        raw.endsWith("路径") && raw.length > 2 ? raw.slice(0, -2) : raw;
+      const label = translateSymlinkDirLabel(baseRaw, loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} path contains a symbolic link; safety validation failed`;
+        case "zh-TW":
+          return `${label}${zhSep}路徑包含符號連結，安全驗證失敗`;
+        case "zh-HK":
+          return `${label}${zhSep}路徑包含符號連結，安全校驗失敗`;
+        case "ja-JP":
+          return `${label} のパスにシンボリックリンクが含まれているため安全性検証に失敗しました`;
+        case "ko-KR":
+          return `${label} 경로에 심볼릭 링크가 포함되어 보안 검증에 실패했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)路径安全校验失败$/,
+    format: (m, loc) => {
+      const raw = m[1]!.trim();
+      const baseRaw =
+        raw.endsWith("路径") && raw.length > 2 ? raw.slice(0, -2) : raw;
+      const label = translateSymlinkDirLabel(baseRaw, loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} path failed safety validation`;
+        case "zh-TW":
+          return `${label}${zhSep}路徑安全驗證失敗`;
+        case "zh-HK":
+          return `${label}${zhSep}路徑安全校驗失敗`;
+        case "ja-JP":
+          return `${label} のパス安全性検証に失敗しました`;
+        case "ko-KR":
+          return `${label} 경로 보안 검증에 실패했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^下拉字段 (.+?) 的默认值不在 options 列表中$/,
+    format: (m, loc) => {
+      const field = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Default value of select field ${field} is not in the options list`;
+        case "zh-TW":
+          return `下拉欄位 ${field} 的預設值不在 options 清單中`;
+        case "zh-HK":
+          return `下拉欄位 ${field} 的預設值不在 options 列表中`;
+        case "ja-JP":
+          return `セレクトフィールド ${field} のデフォルト値が options リストに含まれていません`;
+        case "ko-KR":
+          return `선택 필드 ${field}의 기본값이 options 목록에 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^字段 (.+?) 的文本长度不能超过 (\d+) 个字符$/,
+    format: (m, loc) => {
+      const [, field, limit] = m;
+      switch (loc) {
+        case "en-US":
+          return `Text length of field ${field} cannot exceed ${limit} characters`;
+        case "zh-TW":
+          return `欄位 ${field} 的文字長度不可超過 ${limit} 個字元`;
+        case "zh-HK":
+          return `欄位 ${field} 的文字長度不能超過 ${limit} 個字元`;
+        case "ja-JP":
+          return `フィールド ${field} のテキスト長は ${limit} 文字を超えられません`;
+        case "ko-KR":
+          return `필드 ${field}의 텍스트 길이는 ${limit}자를 초과할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法的 GitHub 仓库地址：(.+)$/,
+    format: (m, loc) => {
+      const url = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid GitHub repository URL: ${url}`;
+        case "zh-TW":
+          return `無效的 GitHub 儲存庫網址：${url}`;
+        case "zh-HK":
+          return `無效的 GitHub 倉庫地址：${url}`;
+        case "ja-JP":
+          return `無効な GitHub リポジトリ URL です: ${url}`;
+        case "ko-KR":
+          return `유효하지 않은 GitHub 저장소 주소입니다: ${url}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^TTS 引擎源码仓库仅允许使用 https:\/\/github\.com\/<owner>\/<repo> 地址：(.+)$/,
+    format: (m, loc) => {
+      const url = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `TTS engine source repository must use an https://github.com/<owner>/<repo> URL: ${url}`;
+        case "zh-TW":
+          return `TTS 引擎原始碼儲存庫僅允許使用 https://github.com/<owner>/<repo> 網址：${url}`;
+        case "zh-HK":
+          return `TTS 引擎源碼倉庫僅允許使用 https://github.com/<owner>/<repo> 地址：${url}`;
+        case "ja-JP":
+          return `TTS エンジンのソースリポジトリには https://github.com/<owner>/<repo> 形式の URL のみ指定できます: ${url}`;
+        case "ko-KR":
+          return `TTS 엔진 소스 저장소는 https://github.com/<owner>/<repo> 형식의 주소만 허용됩니다: ${url}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Ming-3\.0-TTS 未生成参考锚点音频：(.+)$/,
+    format: (m, loc) => {
+      const detail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Ming-3.0-TTS did not generate reference anchor audio: ${detail}`;
+        case "zh-TW":
+          return `Ming-3.0-TTS 未產生參考錨點音訊：${detail}`;
+        case "zh-HK":
+          return `Ming-3.0-TTS 未生成參考錨點音訊：${detail}`;
+        case "ja-JP":
+          return `Ming-3.0-TTS が参照アンカー音声を生成しませんでした: ${detail}`;
+        case "ko-KR":
+          return `Ming-3.0-TTS가 참조 앵커 오디오를 생성하지 않았습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^加速包源文件不合法：(.+)$/,
+    format: (m, loc) => {
+      const detail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid accelerator package source file: ${detail}`;
+        case "zh-TW":
+          return `加速套件來源檔案無效：${detail}`;
+        case "zh-HK":
+          return `加速包來源檔案不合法：${detail}`;
+        case "ja-JP":
+          return `高速化パッケージのソースファイルが無効です: ${detail}`;
+        case "ko-KR":
+          return `가속 패키지 소스 파일이 올바르지 않습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端命令执行失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote command execution failed: ${detail}`;
+        case "zh-TW":
+          return `遠端命令執行失敗：${detail}`;
+        case "zh-HK":
+          return `遠端命令執行失敗：${detail}`;
+        case "ja-JP":
+          return `リモートコマンドの実行に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `원격 명령 실행에 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的模型文件扩展名：(.+)$/,
+    format: (m, loc) => {
+      const ext = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported model file extension: ${ext}`;
+        case "zh-TW":
+          return `不支援的模型副檔名：${ext}`;
+        case "zh-HK":
+          return `不支援的模型檔案副檔名：${ext}`;
+        case "ja-JP":
+          return `未対応のモデルファイル拡張子です: ${ext}`;
+        case "ko-KR":
+          return `지원하지 않는 모델 파일 확장자입니다: ${ext}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^检测到生成阶段耗尽上下文上限（(\d+) tokens），已自动提高后续请求预留输出空间（\+(\d+) tokens）$/,
+    format: (m, loc) => {
+      const [, ctxTokens, extraTokens] = m;
+      switch (loc) {
+        case "en-US":
+          return `Detected generation hitting the context limit (${ctxTokens} tokens); automatically increased reserved output budget for subsequent requests (+${extraTokens} tokens)`;
+        case "zh-TW":
+          return `偵測到產生階段耗盡內容上限（${ctxTokens} tokens），已自動提高後續請求預留輸出空間（+${extraTokens} tokens）`;
+        case "zh-HK":
+          return `檢測到生成階段耗盡上下文上限（${ctxTokens} tokens），已自動提高後續請求預留輸出空間（+${extraTokens} tokens）`;
+        case "ja-JP":
+          return `生成フェーズでコンテキスト上限（${ctxTokens} tokens）に達したため、以降のレスポンス予約出力枠を自動で拡張しました（+${extraTokens} tokens）`;
+        case "ko-KR":
+          return `생성 단계에서 컨텍스트 상한(${ctxTokens} tokens) 소진이 감지되어 이후 요청의 출력 예약 공간을 자동으로 늘렸습니다 (+${extraTokens} tokens)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^ColabOne (v[\w.-]+) 更新已就绪，重启客户端后生效$/,
+    format: (m, loc) => {
+      const ver = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `ColabOne ${ver} update is ready and will take effect after restarting the client`;
+        case "zh-TW":
+          return `ColabOne ${ver} 更新已就緒，重新啟動用戶端後生效`;
+        case "zh-HK":
+          return `ColabOne ${ver} 更新已就緒，重啟用戶端後生效`;
+        case "ja-JP":
+          return `ColabOne ${ver} のアップデート準備が完了しました。クライアント再起動後に適用されます`;
+        case "ko-KR":
+          return `ColabOne ${ver} 업데이트가 준비되었습니다. 클라이언트를 재시작하면 적용됩니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(后台)?检查客户端更新失败（([^）]+)）：(.+)$/s,
+    format: (m, loc) => {
+      const isBackground = Boolean(m[1]);
+      const reason = translateInner(m[2]!, loc);
+      const detail = translateInner(m[3]!, loc);
+      switch (loc) {
+        case "en-US":
+          return isBackground
+            ? `Background client update check failed (${reason}): ${detail}`
+            : `Client update check failed (${reason}): ${detail}`;
+        case "zh-TW":
+          return isBackground
+            ? `背景檢查用戶端更新失敗（${reason}）：${detail}`
+            : `檢查用戶端更新失敗（${reason}）：${detail}`;
+        case "zh-HK":
+          return isBackground
+            ? `後台檢查用戶端更新失敗（${reason}）：${detail}`
+            : `檢查用戶端更新失敗（${reason}）：${detail}`;
+        case "ja-JP":
+          return isBackground
+            ? `バックグラウンドでのクライアント更新確認に失敗しました（${reason}）: ${detail}`
+            : `クライアント更新の確認に失敗しました（${reason}）: ${detail}`;
+        case "ko-KR":
+          return isBackground
+            ? `백그라운드 클라이언트 업데이트 확인에 실패했습니다 (${reason}): ${detail}`
+            : `클라이언트 업데이트 확인에 실패했습니다 (${reason}): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(后台)?检查客户端更新失败：(.+)$/s,
+    format: (m, loc) => {
+      const isBackground = Boolean(m[1]);
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return isBackground
+            ? `Background client update check failed: ${detail}`
+            : `Client update check failed: ${detail}`;
+        case "zh-TW":
+          return isBackground
+            ? `背景檢查用戶端更新失敗：${detail}`
+            : `檢查用戶端更新失敗：${detail}`;
+        case "zh-HK":
+          return isBackground
+            ? `後台檢查用戶端更新失敗：${detail}`
+            : `檢查用戶端更新失敗：${detail}`;
+        case "ja-JP":
+          return isBackground
+            ? `バックグラウンドでのクライアント更新確認に失敗しました: ${detail}`
+            : `クライアント更新の確認に失敗しました: ${detail}`;
+        case "ko-KR":
+          return isBackground
+            ? `백그라운드 클라이언트 업데이트 확인에 실패했습니다: ${detail}`
+            : `클라이언트 업데이트 확인에 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^SOCKS5 代理连接失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `SOCKS5 proxy connection failed: ${detail}`;
+        case "zh-TW":
+          return `SOCKS5 代理連線失敗：${detail}`;
+        case "zh-HK":
+          return `SOCKS5 代理連線失敗：${detail}`;
+        case "ja-JP":
+          return `SOCKS5 プロキシへの接続に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `SOCKS5 프록시 연결에 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^代理拒绝连接 \(HTTP (\d+)\)$/,
+    format: (m, loc) => {
+      const code = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Proxy refused connection (HTTP ${code})`;
+        case "zh-TW":
+          return `代理拒絕連線 (HTTP ${code})`;
+        case "zh-HK":
+          return `代理拒絕連線 (HTTP ${code})`;
+        case "ja-JP":
+          return `プロキシが接続を拒否しました (HTTP ${code})`;
+        case "ko-KR":
+          return `프록시가 연결을 거부했습니다 (HTTP ${code})`;
         default:
           return m[0];
       }
@@ -10816,6 +13221,108 @@ const PATTERN_RULES: PatternRule[] = [
           return `${label}の書き込みに失敗しました: ${detail}`;
         case "ko-KR":
           return `${label} 저장에 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^终稿体积 ([\d.]+) MiB 超过 (\d+) MiB 上限，正在按目标视频码率 (\d+) kbps 自动重编码一次以保留本次渲染成果$/,
+    format: (m, loc) => {
+      const [, size, limit, kbps] = m;
+      switch (loc) {
+        case "en-US":
+          return `Final video size (${size} MiB) exceeds the ${limit} MiB limit; automatically re-encoding once at ${kbps} kbps target video bitrate to preserve this render`;
+        case "zh-TW":
+          return `終稿大小 ${size} MiB 超過 ${limit} MiB 上限，正在依目標影片位元率 ${kbps} kbps 自動重新編碼一次以保留本次算繪成果`;
+        case "zh-HK":
+          return `終稿體積 ${size} MiB 超過 ${limit} MiB 上限，正在按目標影片碼率 ${kbps} kbps 自動重新編碼一次以保留本次渲染成果`;
+        case "ja-JP":
+          return `最終出力サイズ（${size} MiB）が上限の ${limit} MiB を超えたため、レンダリング結果を保持するため目標映像ビットレート ${kbps} kbps で自動再エンコードしています`;
+        case "ko-KR":
+          return `최종 영상 크기(${size} MiB)가 ${limit} MiB 상한을 초과하여 이번 렌더링 결과를 유지하기 위해 목표 비디오 비트레이트 ${kbps} kbps로 1회 자동 재인코딩하는 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端磁盘空间不足：TTS 引擎 (.+?)（约 ([\d.]+) GiB）与 LongCat-Video-Avatar 1\.6 原生管线（约 ([\d.]+) GiB）合计至少需要 ([\d.]+) GiB（(\d+) MiB）可用空间，当前仅剩 ([\d.]+) GiB（(\d+) MiB）$/,
+    format: (m, loc) => {
+      const ttsLabel = translateInner(m[1]!, loc);
+      const [, , ttsGib, nativeGib, combinedGib, combinedMib, freeGib, freeMib] = m;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote disk space: TTS engine ${ttsLabel} (~${ttsGib} GiB) and LongCat-Video-Avatar 1.6 native pipeline (~${nativeGib} GiB) require at least ${combinedGib} GiB (${combinedMib} MiB) free in total, but only ${freeGib} GiB (${freeMib} MiB) remains`;
+        case "zh-TW":
+          return `遠端磁碟空間不足：TTS 引擎 ${ttsLabel}（約 ${ttsGib} GiB）與 LongCat-Video-Avatar 1.6 原生管線（約 ${nativeGib} GiB）合計至少需要 ${combinedGib} GiB（${combinedMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "zh-HK":
+          return `遠端磁碟空間不足：TTS 引擎 ${ttsLabel}（約 ${ttsGib} GiB）與 LongCat-Video-Avatar 1.6 原生管線（約 ${nativeGib} GiB）合計至少需要 ${combinedGib} GiB（${combinedMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "ja-JP":
+          return `リモートのディスク空き容量不足: TTS エンジン ${ttsLabel}（約 ${ttsGib} GiB）と LongCat-Video-Avatar 1.6 ネイティブパイプライン（約 ${nativeGib} GiB）で合計少なくとも ${combinedGib} GiB（${combinedMib} MiB）の空き容量が必要ですが、残り ${freeGib} GiB（${freeMib} MiB）しかありません`;
+        case "ko-KR":
+          return `원격 디스크 공간 부족: TTS 엔진 ${ttsLabel}(약 ${ttsGib} GiB)과 LongCat-Video-Avatar 1.6 네이티브 파이프라인(약 ${nativeGib} GiB) 실행에 합계 최소 ${combinedGib} GiB(${combinedMib} MiB)의 여유 공간이 필요하지만 현재 ${freeGib} GiB(${freeMib} MiB)만 남아 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端磁盘空间不足：LongCat-Video-Avatar 1\.6 原生管线与所选采样\/人声模式至少需要 ([\d.]+) GiB（(\d+) MiB）可用空间，当前仅剩 ([\d.]+) GiB（(\d+) MiB）$/,
+    format: (m, loc) => {
+      const [, reqGib, reqMib, freeGib, freeMib] = m;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote disk space: LongCat-Video-Avatar 1.6 native pipeline with the selected sampling and vocal separation modes requires at least ${reqGib} GiB (${reqMib} MiB) free, but only ${freeGib} GiB (${freeMib} MiB) remains`;
+        case "zh-TW":
+          return `遠端磁碟空間不足：LongCat-Video-Avatar 1.6 原生管線與所選取樣/人聲模式至少需要 ${reqGib} GiB（${reqMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "zh-HK":
+          return `遠端磁碟空間不足：LongCat-Video-Avatar 1.6 原生管線與所選採樣/人聲模式至少需要 ${reqGib} GiB（${reqMib} MiB）可用空間，目前僅剩 ${freeGib} GiB（${freeMib} MiB）`;
+        case "ja-JP":
+          return `リモートのディスク空き容量不足: 選択したサンプリングおよびボーカル分離モードでの LongCat-Video-Avatar 1.6 ネイティブパイプラインには少なくとも ${reqGib} GiB（${reqMib} MiB）の空き容量が必要ですが、残り ${freeGib} GiB（${freeMib} MiB）しかありません`;
+        case "ko-KR":
+          return `원격 디스크 공간 부족: 선택한 샘플링 및 보컬 분리 모드의 LongCat-Video-Avatar 1.6 네이티브 파이프라인에는 최소 ${reqGib} GiB(${reqMib} MiB)의 여유 공간이 필요하지만 현재 ${freeGib} GiB(${freeMib} MiB)만 남아 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^配音完成后无法检测远端磁盘空间（(.+)），LongCat-Video-Avatar 1\.6 至少需要 ([\d.]+) GiB 可用磁盘空间$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      const reqGib = m[2];
+      switch (loc) {
+        case "en-US":
+          return `Unable to check remote disk space after voice synthesis (${detail}); LongCat-Video-Avatar 1.6 requires at least ${reqGib} GiB of free disk space`;
+        case "zh-TW":
+          return `配音完成後無法偵測遠端磁碟空間（${detail}），LongCat-Video-Avatar 1.6 至少需要 ${reqGib} GiB 可用磁碟空間`;
+        case "zh-HK":
+          return `配音完成後無法檢測遠端磁碟空間（${detail}），LongCat-Video-Avatar 1.6 至少需要 ${reqGib} GiB 可用磁碟空間`;
+        case "ja-JP":
+          return `音声合成後にリモートのディスク空き容量を確認できませんでした（${detail}）。LongCat-Video-Avatar 1.6 には少なくとも ${reqGib} GiB の空きディスク容量が必要です`;
+        case "ko-KR":
+          return `음성 합성 후 원격 디스크 여유 공간을 확인할 수 없습니다 (${detail}). LongCat-Video-Avatar 1.6에는 최소 ${reqGib} GiB의 여유 디스크 공간이 필요합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端磁盘空间不足：配音完成后仅剩 ([\d.]+) GiB（(\d+) MiB），不足以继续运行 LongCat-Video-Avatar 1\.6 原生管线（至少需要 ([\d.]+) GiB \/ (\d+) MiB）$/,
+    format: (m, loc) => {
+      const [, freeGib, freeMib, reqGib, reqMib] = m;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote disk space: only ${freeGib} GiB (${freeMib} MiB) remains after voice synthesis, which is not enough to continue LongCat-Video-Avatar 1.6 native pipeline (at least ${reqGib} GiB / ${reqMib} MiB required)`;
+        case "zh-TW":
+          return `遠端磁碟空間不足：配音完成後僅剩 ${freeGib} GiB（${freeMib} MiB），不足以繼續執行 LongCat-Video-Avatar 1.6 原生管線（至少需要 ${reqGib} GiB / ${reqMib} MiB）`;
+        case "zh-HK":
+          return `遠端磁碟空間不足：配音完成後僅剩 ${freeGib} GiB（${freeMib} MiB），不足以繼續運行 LongCat-Video-Avatar 1.6 原生管線（至少需要 ${reqGib} GiB / ${reqMib} MiB）`;
+        case "ja-JP":
+          return `リモートのディスク空き容量不足: 音声合成後の残り容量は ${freeGib} GiB（${freeMib} MiB）のみで、LongCat-Video-Avatar 1.6 ネイティブパイプラインを続行できません（少なくとも ${reqGib} GiB / ${reqMib} MiB 必要）`;
+        case "ko-KR":
+          return `원격 디스크 공간 부족: 음성 합성 후 남은 공간이 ${freeGib} GiB(${freeMib} MiB)뿐이어서 LongCat-Video-Avatar 1.6 네이티브 파이프라인을 계속 실행할 수 없습니다 (최소 ${reqGib} GiB / ${reqMib} MiB 필요)`;
         default:
           return m[0];
       }

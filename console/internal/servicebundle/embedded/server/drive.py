@@ -150,6 +150,31 @@ def parse_rclone_quota_project(config_path: Path) -> str:
     return ""
 
 
+_OAUTH_BEARER_RE = re.compile(r"(?i)\bBearer\s+[^\s'\"`,;}\]]+")
+_OAUTH_ACCESS_TOKEN_RE = re.compile(r"\bya29\.[A-Za-z0-9._-]+")
+_OAUTH_REFRESH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])1//[A-Za-z0-9._-]+")
+_OAUTH_CLIENT_SECRET_RE = re.compile(r"\bGOCSPX-[A-Za-z0-9._-]+")
+_OAUTH_QUOTED_KV_RE = re.compile(
+    r'(?i)(["\']?(?:client_secret|refresh_token|access_token)["\']?\s*[:=]\s*["\'])([^"\']+)(["\'])'
+)
+_OAUTH_PLAIN_KV_RE = re.compile(
+    r"(?i)\b(client_secret|refresh_token|access_token)\s*=\s*([^\s&'\"`,;}\]]+)"
+)
+
+
+def _redact_oauth_secrets(text: str) -> str:
+    result = str(text or "")
+    if not result:
+        return ""
+    result = _OAUTH_BEARER_RE.sub("Bearer ***", result)
+    result = _OAUTH_QUOTED_KV_RE.sub(r"\1***\3", result)
+    result = _OAUTH_PLAIN_KV_RE.sub(r"\1=***", result)
+    result = _OAUTH_ACCESS_TOKEN_RE.sub("***", result)
+    result = _OAUTH_REFRESH_TOKEN_RE.sub("***", result)
+    result = _OAUTH_CLIENT_SECRET_RE.sub("***", result)
+    return result
+
+
 def format_rclone_error(stderr: str) -> str:
     """Extract an actionable error summary from multi-line rclone/Google API stderr."""
     raw = (stderr or "").strip()
@@ -174,6 +199,7 @@ def format_rclone_error(stderr: str) -> str:
         chosen = next((ln for ln in reversed(lines) if len(ln) > 4 and not ln.startswith((",", "]", "}", "{"))), lines[-1])
     chosen = re.sub(r"^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+", "", chosen)
     chosen = re.sub(r"^(?:CRITICAL|ERROR)\s*:\s*", "", chosen)
+    chosen = _redact_oauth_secrets(chosen)
     return "Google 云盘连接失败：" + chosen[:180]
 
 
@@ -553,7 +579,19 @@ class ColabOneDrive:
                 self._terminate_mount_proc()
                 self.mount_root.mkdir(parents=True, exist_ok=True)
                 log_path = self.root / "rclone-mount.log"
-                with log_path.open("wb") as log_out:
+                log_fd = os.open(
+                    log_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                try:
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(log_fd, 0o600)
+                    log_stream = os.fdopen(log_fd, "wb")
+                except BaseException:
+                    os.close(log_fd)
+                    raise
+                with log_stream as log_out:
                     self.mount_proc = subprocess.Popen(
                         self._rclone_cmd(
                             binary,

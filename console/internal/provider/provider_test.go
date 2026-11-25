@@ -5983,6 +5983,7 @@ func TestClearPerSlotClearingDekkerGuardAndAbortedWSNotTransient(t *testing.T) {
 		releaseUpload := make(chan struct{})
 		var factoryCalls atomic.Int32
 
+		var deletedPath atomic.Value
 		contents := &fakeContents{
 			uploadFn: func(ctx context.Context, baseURL, proxyToken, remotePath string, data []byte, timeout time.Duration) error {
 				close(uploadEntered)
@@ -5990,7 +5991,7 @@ func TestClearPerSlotClearingDekkerGuardAndAbortedWSNotTransient(t *testing.T) {
 				return nil
 			},
 			deleteFn: func(ctx context.Context, baseURL, proxyToken, remotePath string) error {
-				t.Errorf("DeleteFile must not stall cleared slot, called with %q", remotePath)
+				deletedPath.Store(remotePath)
 				return nil
 			},
 		}
@@ -6047,7 +6048,17 @@ func TestClearPerSlotClearingDekkerGuardAndAbortedWSNotTransient(t *testing.T) {
 			t.Fatal("expected slot.clearing to be set immediately upon detach")
 		}
 
-		// Release upload; executeLocked must observe slot.clearing and unwind immediately.
+		// Because Phase-1 upload is unlocked, Clear completes immediately BEFORE upload finishes.
+		select {
+		case err := <-clearDone:
+			if err != nil {
+				t.Fatalf("Clear failed: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Clear stalled waiting for unlocked Phase-1 upload")
+		}
+
+		// Release upload; RPC must observe detached slot, clean up the ephemeral RPC file outside slot.mu, and unwind immediately.
 		started := time.Now()
 		close(releaseUpload)
 
@@ -6059,14 +6070,6 @@ func TestClearPerSlotClearingDekkerGuardAndAbortedWSNotTransient(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("RPC stalled after Clear during upload")
 		}
-		select {
-		case err := <-clearDone:
-			if err != nil {
-				t.Fatalf("Clear failed: %v", err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("Clear stalled waiting for pre-exec RPC")
-		}
 		if time.Since(started) > 1500*time.Millisecond {
 			t.Fatalf("pre-exec unwind took too long: %v", time.Since(started))
 		}
@@ -6075,6 +6078,10 @@ func TestClearPerSlotClearingDekkerGuardAndAbortedWSNotTransient(t *testing.T) {
 		}
 		if slot.getRuntime() != nil {
 			t.Fatal("expected cleared slot runtime to be nil")
+		}
+		gotDel, _ := deletedPath.Load().(string)
+		if !strings.HasPrefix(gotDel, "content/colabone-rpc-") {
+			t.Fatalf("expected ephemeral RPC file cleaned up after Clear during upload, got %q", gotDel)
 		}
 	})
 
@@ -6218,6 +6225,215 @@ func TestClearPerSlotClearingDekkerGuardAndAbortedWSNotTransient(t *testing.T) {
 		}
 		if execAttempts.Load() != 1 {
 			t.Fatalf("expected idempotent GET RPC NOT to retry on ErrKernelAborted, got %d attempts", execAttempts.Load())
+		}
+	})
+}
+
+func TestRPCPhase2FailurePathsCleanUpEphemeralFile(t *testing.T) {
+	t.Run("SlotReplacedWhileWaitingForLockCleansUpOutsideSlotMu", func(t *testing.T) {
+		vault := newMemoryVault()
+		exp := time.Now().Add(time.Hour)
+		uploadEntered := make(chan struct{})
+		releaseUpload := make(chan struct{})
+		var p *ColabOneProvider
+		var replacementSlot *kernelSlot
+		var deleteUnlocked atomic.Bool
+
+		contents := &fakeContents{
+			uploadFn: func(ctx context.Context, baseURL, proxyToken, remotePath string, data []byte, timeout time.Duration) error {
+				close(uploadEntered)
+				<-releaseUpload
+				return nil
+			},
+			deleteFn: func(ctx context.Context, baseURL, proxyToken, remotePath string) error {
+				if replacementSlot != nil && replacementSlot.mu.TryLock() {
+					deleteUnlocked.Store(true)
+					replacementSlot.mu.Unlock()
+				}
+				return nil
+			},
+		}
+		p = NewColabOneProvider(ColabOneProviderConfig{
+			Vault:    vault,
+			Contents: contents,
+		})
+		_ = p.SaveSession(&ColabOneSessionState{
+			Endpoint:       "ep-replaced",
+			Token:          "tok-orig",
+			URL:            "https://replaced.invalid",
+			TokenExpiresAt: &exp,
+		}, true)
+
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := p.RPC(context.Background(), "POST", "comfyui/run", map[string]any{"workflow_id": "wf1"}, "ep-replaced", 30*time.Second)
+			errCh <- err
+		}()
+
+		<-uploadEntered
+		p.kernelMu.Lock()
+		originSlot := p.kernels["ep-replaced"]
+		p.kernelMu.Unlock()
+		if originSlot == nil {
+			t.Fatal("expected originSlot to be registered")
+		}
+
+		// Hold originSlot.mu so RPC passes isSlotDetached and blocks inside lockKernelSlot.
+		originSlot.mu.Lock()
+		close(releaseUpload)
+		time.Sleep(15 * time.Millisecond)
+
+		// Evict originSlot and install a replacement slot in p.kernels before releasing originSlot.mu.
+		replacementSlot = &kernelSlot{}
+		p.kernelMu.Lock()
+		originSlot.evicted = true
+		p.kernels["ep-replaced"] = replacementSlot
+		p.kernelMu.Unlock()
+		originSlot.mu.Unlock()
+
+		select {
+		case err := <-errCh:
+			if err == nil || !strings.Contains(err.Error(), "请先启动远端 GPU") {
+				t.Fatalf("expected missing GPU error on slot replacement, got %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("RPC timed out after slot replacement")
+		}
+		contents.mu.Lock()
+		uploads := append([]uploadRecord(nil), contents.uploads...)
+		deletes := append([]string(nil), contents.deletes...)
+		contents.mu.Unlock()
+		if len(uploads) != 1 || len(deletes) != 1 || uploads[0].remotePath != deletes[0] {
+			t.Fatalf("expected ephemeral RPC file cleaned up on slot replacement: uploads=%#v deletes=%#v", uploads, deletes)
+		}
+		if !deleteUnlocked.Load() {
+			t.Fatal("expected DeleteFile to run outside slot.mu")
+		}
+	})
+
+	t.Run("SessionNilInPhase2FallsBackToPrevSessionOutsideSlotMu", func(t *testing.T) {
+		vault := newMemoryVault()
+		exp := time.Now().Add(time.Hour)
+		var p *ColabOneProvider
+		var deleteToken string
+		var deleteUnlocked atomic.Bool
+
+		contents := &fakeContents{
+			uploadFn: func(ctx context.Context, baseURL, proxyToken, remotePath string, data []byte, timeout time.Duration) error {
+				// Remove session from vault while leaving kernel slot intact so Phase 2 p.session(ctx, false) returns nil.
+				_ = vault.Delete("runtime_session:ep-sess-nil")
+				_ = vault.Delete("runtime_session_ids")
+				_ = vault.Delete("runtime_session")
+				_ = vault.Delete("active_endpoint")
+				return nil
+			},
+			deleteFn: func(ctx context.Context, baseURL, proxyToken, remotePath string) error {
+				deleteToken = proxyToken
+				p.kernelMu.Lock()
+				s := p.kernels["ep-sess-nil"]
+				p.kernelMu.Unlock()
+				if s != nil && s.mu.TryLock() {
+					deleteUnlocked.Store(true)
+					s.mu.Unlock()
+				}
+				return nil
+			},
+		}
+		p = NewColabOneProvider(ColabOneProviderConfig{
+			Vault:    vault,
+			Contents: contents,
+		})
+		_ = p.SaveSession(&ColabOneSessionState{
+			Endpoint:       "ep-sess-nil",
+			Token:          "tok-prev",
+			URL:            "https://sess-nil.invalid",
+			TokenExpiresAt: &exp,
+		}, true)
+
+		_, err := p.RPC(context.Background(), "POST", "comfyui/run", map[string]any{"workflow_id": "wf1"}, "ep-sess-nil", 30*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "请先启动远端 GPU") {
+			t.Fatalf("expected missing GPU error when session vanished, got %v", err)
+		}
+		contents.mu.Lock()
+		uploads := append([]uploadRecord(nil), contents.uploads...)
+		deletes := append([]string(nil), contents.deletes...)
+		contents.mu.Unlock()
+		if len(uploads) != 1 || len(deletes) != 1 || uploads[0].remotePath != deletes[0] {
+			t.Fatalf("expected ephemeral RPC file cleaned up on nil session: uploads=%#v deletes=%#v", uploads, deletes)
+		}
+		if deleteToken != "tok-prev" {
+			t.Fatalf("expected cleanup fallback to prevSession token %q, got %q", "tok-prev", deleteToken)
+		}
+		if !deleteUnlocked.Load() {
+			t.Fatal("expected DeleteFile to run outside slot.mu")
+		}
+	})
+
+	t.Run("ProxyTokenRefreshFailureInPhase2CleansUpOutsideSlotMu", func(t *testing.T) {
+		vault := newMemoryVault()
+		baseNow := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+		var nowMu sync.Mutex
+		curNow := baseNow
+		exp := baseNow.Add(10 * time.Minute)
+		var p *ColabOneProvider
+		var deleteToken string
+		var deleteUnlocked atomic.Bool
+
+		contents := &fakeContents{
+			uploadFn: func(ctx context.Context, baseURL, proxyToken, remotePath string, data []byte, timeout time.Duration) error {
+				// Advance clock so Phase 2 sees token expiring within 60s and triggers p.session(ctx, true).
+				nowMu.Lock()
+				curNow = exp.Add(-30 * time.Second)
+				nowMu.Unlock()
+				return nil
+			},
+			deleteFn: func(ctx context.Context, baseURL, proxyToken, remotePath string) error {
+				deleteToken = proxyToken
+				p.kernelMu.Lock()
+				s := p.kernels["ep-refresh-fail"]
+				p.kernelMu.Unlock()
+				if s != nil && s.mu.TryLock() {
+					deleteUnlocked.Store(true)
+					s.mu.Unlock()
+				}
+				return nil
+			},
+		}
+		p = NewColabOneProvider(ColabOneProviderConfig{
+			Vault:    vault,
+			Contents: contents,
+			NowFn: func() time.Time {
+				nowMu.Lock()
+				defer nowMu.Unlock()
+				return curNow
+			},
+			ClientFactory: func(string) (ColabClient, error) {
+				return nil, errors.New("proxy refresh unavailable")
+			},
+		})
+		_ = p.SaveSession(&ColabOneSessionState{
+			Endpoint:       "ep-refresh-fail",
+			Token:          "tok-before-refresh",
+			URL:            "https://refresh-fail.invalid",
+			TokenExpiresAt: &exp,
+		}, true)
+
+		_, err := p.RPC(context.Background(), "POST", "comfyui/run", map[string]any{"workflow_id": "wf1"}, "ep-refresh-fail", 30*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "proxy refresh unavailable") {
+			t.Fatalf("expected proxy refresh error, got %v", err)
+		}
+		contents.mu.Lock()
+		uploads := append([]uploadRecord(nil), contents.uploads...)
+		deletes := append([]string(nil), contents.deletes...)
+		contents.mu.Unlock()
+		if len(uploads) != 1 || len(deletes) != 1 || uploads[0].remotePath != deletes[0] {
+			t.Fatalf("expected ephemeral RPC file cleaned up on proxy refresh failure: uploads=%#v deletes=%#v", uploads, deletes)
+		}
+		if deleteToken != "tok-before-refresh" {
+			t.Fatalf("expected cleanup fallback to prevSession token %q, got %q", "tok-before-refresh", deleteToken)
+		}
+		if !deleteUnlocked.Load() {
+			t.Fatal("expected DeleteFile to run outside slot.mu")
 		}
 	})
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -732,4 +733,183 @@ func TestComfyUITtsPreviewHardeningRegressions(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestComfyUIRunLongCatNativeCapabilityGuard(t *testing.T) {
+	ctx := context.Background()
+	revA := strings.Repeat("a", 40)
+	comfyRaw, err := json.Marshal(map[string]any{
+		"repo":       "https://github.com/Comfy-Org/ComfyUI.git",
+		"tag":        "v0.46.0",
+		"commit":     revA,
+		"port":       8188,
+		"proxy_port": 8189,
+		"tts_engines": []map[string]any{
+			{
+				"id":       "moss_tts_v1_5",
+				"name":     "MOSS-TTS",
+				"repo":     "OpenMOSS-Team/MOSS-TTS",
+				"revision": revA,
+			},
+		},
+		"templates": []map[string]any{
+			{
+				"id":          "digital-human-longcat",
+				"name":        "LongCat 1.6 Native",
+				"description": "native pipeline",
+				"source":      "builtin",
+				"pipeline": map[string]any{
+					"kind":                  "digital_human",
+					"video_backend":         "longcat_avatar_native",
+					"default_tts_engine":    "moss_tts_v1_5",
+					"supported_tts_engines": []string{"moss_tts_v1_5"},
+				},
+				"workflow": map[string]any{
+					"1": map[string]any{"class_type": "CLIPTextEncode", "inputs": map[string]any{"text": "hi"}},
+				},
+			},
+			{
+				"id":          "digital-human-infinitetalk",
+				"name":        "InfiniteTalk",
+				"description": "comfy pipeline",
+				"source":      "builtin",
+				"pipeline": map[string]any{
+					"kind":                  "digital_human",
+					"video_backend":         "infinitetalk",
+					"default_tts_engine":    "moss_tts_v1_5",
+					"supported_tts_engines": []string{"moss_tts_v1_5"},
+				},
+				"workflow": map[string]any{
+					"1": map[string]any{"class_type": "CLIPTextEncode", "inputs": map[string]any{"text": "hi"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal catalog: %v", err)
+	}
+
+	bundler := defaultMockBundler()
+	bundler.comfyJSON = comfyRaw
+
+	cfgDir := t.TempDir()
+	vault := NewColabOneMemoryVault()
+	prov := newMockProvider(vault)
+	ctrl := NewColabOneController(ColabOneControllerConfig{
+		Root:           cfgDir,
+		ConfigDir:      cfgDir,
+		Background:     false,
+		Vault:          vault,
+		Auth:           newMockAuth(),
+		Provider:       prov,
+		Models:         &mockModels{},
+		Hub:            &mockHub{},
+		Comfy:          realComfyTestAdapter{},
+		PublicAPI:      mockPublicAPI{},
+		AssignProxy:    &mockAssignProxy{},
+		Shortcuts:      &mockShortcuts{},
+		ServiceBundler: bundler,
+		Location:       mockLocation{},
+	})
+	t.Cleanup(func() { ctrl.Close() })
+
+	var runCalls int
+	prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if path == "comfyui/run" {
+			runCalls++
+			return map[string]any{"id": "task-1", "state": "running"}, nil
+		}
+		if path == "snapshot" {
+			return map[string]any{
+				"runtime": map[string]any{
+					"state":        "ready",
+					"id":           "ep-1",
+					"protocol":     7,
+					"capabilities": []any{"public_api", "comfyui", "comfyui_hf_token", "comfyui_tts_preview", "comfyui_longcat_native"},
+					"tasks":        []any{},
+				},
+				"models":        []any{},
+				"workflows":     []any{},
+				"comfy_outputs": []any{},
+			}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+
+	// 1. Legacy ready remote without comfyui_longcat_native (both explicit legacy list and omitted capabilities)
+	// must reject digital-human-longcat BEFORE sending any RPC, while still allowing digital-human-infinitetalk.
+	for _, tc := range []struct {
+		name string
+		caps any
+	}{
+		{"legacy_caps_list", []string{"public_api", "comfyui", "comfyui_hf_token", "comfyui_tts_preview"}},
+		{"omitted_caps", nil},
+	} {
+		rt := map[string]any{"state": "ready", "id": "ep-1", "protocol": 7}
+		if tc.caps != nil {
+			rt["capabilities"] = tc.caps
+		}
+		ctrl.Update(map[string]any{"runtime": rt})
+
+		before := runCalls
+		_, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+			"overrides":   map[string]any{},
+			"inputs":      map[string]any{},
+		})
+		if err == nil || err.Error() != colabOneLongCatNativeUpgradeHint {
+			t.Fatalf("%s: expected upgrade hint %q, got %v", tc.name, colabOneLongCatNativeUpgradeHint, err)
+		}
+		if runCalls != before {
+			t.Fatalf("%s: expected 0 remote comfyui/run calls when blocked, got %d", tc.name, runCalls-before)
+		}
+
+		// Non-native built-in template must still run cleanly.
+		if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-infinitetalk",
+			"overrides":   map[string]any{},
+			"inputs":      map[string]any{},
+		}); err != nil {
+			t.Fatalf("%s: non-native infinitetalk should run without comfyui_longcat_native, got %v", tc.name, err)
+		}
+	}
+
+	// 2. Upgraded ready remote advertising comfyui_longcat_native succeeds.
+	ctrl.Update(map[string]any{
+		"runtime": map[string]any{
+			"state":        "ready",
+			"id":           "ep-1",
+			"protocol":     7,
+			"capabilities": []string{"public_api", "comfyui", "comfyui_hf_token", "comfyui_longcat_native"},
+		},
+	})
+	beforeNative := runCalls
+	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
+		"workflow_id": "digital-human-longcat",
+		"overrides":   map[string]any{},
+		"inputs":      map[string]any{},
+	}); err != nil {
+		t.Fatalf("native longcat with comfyui_longcat_native capability failed: %v", err)
+	}
+	if runCalls != beforeNative+1 {
+		t.Fatalf("expected 1 remote comfyui/run call, got %d", runCalls-beforeNative)
+	}
+
+	// 3. Non-ready runtime state does not emit the upgrade hint.
+	ctrl.Update(map[string]any{
+		"runtime": map[string]any{
+			"state":        "stopped",
+			"capabilities": []string{"public_api", "comfyui"},
+		},
+	})
+	prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		return nil, errors.New("请先启动远端 GPU")
+	}
+	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
+		"workflow_id": "digital-human-longcat",
+		"overrides":   map[string]any{},
+		"inputs":      map[string]any{},
+	}); err == nil || err.Error() == colabOneLongCatNativeUpgradeHint || err.Error() != "请先启动远端 GPU" {
+		t.Fatalf("stopped runtime should return start-GPU error rather than upgrade hint, got %v", err)
+	}
 }

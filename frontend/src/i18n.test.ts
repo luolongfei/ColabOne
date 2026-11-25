@@ -1816,14 +1816,31 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     );
     expect(new Set(defaultVisualPrompts).size).toBe(ALL_LOCALES.length);
     for (const tpl of comfyCatalog.templates) {
-      const posField = tpl.fields.find((f) => f.key === "5.positive_prompt");
-      expect(posField, `${tpl.id} must have 5.positive_prompt`).toBeTruthy();
-      expect(posField?.default).toBe(
-        COLABONE_MESSAGES["en-US"]["comfy.defaultVisualPrompt"],
-      );
-      expect(posField?.description).toBe(
-        "描述主播说话时的神态、头部微动、光线与镜头风格（支持中英文等多语种自然描述）。",
-      );
+      if (
+        tpl.id === "digital-human-longcat" ||
+        tpl.pipeline?.video_backend === "longcat_avatar_native"
+      ) {
+        const posField = tpl.fields.find(
+          (f) => f.key === "pipeline.positive_prompt",
+        );
+        expect(
+          posField,
+          `${tpl.id} must have pipeline.positive_prompt`,
+        ).toBeTruthy();
+        expect(posField?.default).toBe("");
+        expect(posField?.description).toBe(
+          "留空则按上方「动作与景别风格」自动生成最佳提示词；填写后将覆盖默认提示词。",
+        );
+      } else {
+        const posField = tpl.fields.find((f) => f.key === "5.positive_prompt");
+        expect(posField, `${tpl.id} must have 5.positive_prompt`).toBeTruthy();
+        expect(posField?.default).toBe(
+          COLABONE_MESSAGES["en-US"]["comfy.defaultVisualPrompt"],
+        );
+        expect(posField?.description).toBe(
+          "描述主播说话时的神态、头部微动、光线与镜头风格（支持中英文等多语种自然描述）。",
+        );
+      }
     }
 
     // Updated multilingual prompt description and draft backend messages translate cleanly across all 6 locales
@@ -2422,6 +2439,574 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
         cat["comfy.videoEngineLongCatTitle"].includes(recTag),
         `${loc} LongCat title must not duplicate recommended badge "${recTag}"`,
       ).toBe(false);
+    }
+  });
+
+  it("translates LongCat 1.6 96GB native catalog strings, non-commercial notice, quality presets, and Stage 1-4 progress messages across all 6 locales", () => {
+    const HAN_RE = /[\u3400-\u9fff]/;
+    const FULLWIDTH_PUNCT_RE = /[（）「」，。：；“”《》【】、～]/;
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|全棧/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const LEAKED_ZH_CN_IN_JA_RE =
+      /正在准备|正在执行|正在清理|仅限非商用|画质与渲染|超分引擎|口播数字人|显存|远端|请先/;
+
+    // 1. UI message keys: qualityPresetCinema/Balanced/Longform & updated videoEngineLongCatSummary
+    const longCatNativeUiKeys = [
+      "comfy.qualityPresetCinema",
+      "comfy.qualityPresetBalanced",
+      "comfy.qualityPresetLongform",
+      "comfy.videoEngineLongCatSummary",
+    ] as const satisfies readonly ColabOneMessageKey[];
+
+    for (const key of longCatNativeUiKeys) {
+      const seenValues = new Set<string>();
+      for (const loc of ALL_LOCALES) {
+        const val = COLABONE_MESSAGES[loc][key];
+        expect(val.trim().length, `empty ${loc}[${key}]`).toBeGreaterThan(0);
+        seenValues.add(val);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            HAN_RE.test(val),
+            `Han leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+          expect(
+            FULLWIDTH_PUNCT_RE.test(val),
+            `fullwidth punctuation leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+        }
+        if (loc === "ja-JP") {
+          expect(
+            val,
+            `Simplified Chinese leak in ja-JP[${key}]: "${val}"`,
+          ).not.toMatch(LEAKED_ZH_CN_IN_JA_RE);
+          expect(val, `ja-JP[${key}] must differ from zh-CN`).not.toBe(
+            COLABONE_MESSAGES["zh-CN"][key],
+          );
+        }
+        if (loc === "zh-TW") {
+          expect(val, `forbidden zh-TW term in ${key}: "${val}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(
+            val,
+            `spoken Cantonese leak in zh-HK[${key}]: "${val}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
+        }
+      }
+      expect(
+        seenValues.size,
+        `${key} should have distinct localized values`,
+      ).toBeGreaterThanOrEqual(4);
+    }
+
+    expect(COLABONE_MESSAGES["en-US"]["comfy.qualityPresetCinema"]).toBe(
+      "Cinema Flagship",
+    );
+    expect(COLABONE_MESSAGES["en-US"]["comfy.qualityPresetBalanced"]).toBe(
+      "Balanced HD",
+    );
+    expect(COLABONE_MESSAGES["en-US"]["comfy.qualityPresetLongform"]).toBe(
+      "Long-Form Steady",
+    );
+    expect(COLABONE_MESSAGES["ja-JP"]["comfy.qualityPresetCinema"]).toBe(
+      "シネマ・フラッグシップ",
+    );
+    expect(COLABONE_MESSAGES["ko-KR"]["comfy.qualityPresetCinema"]).toBe(
+      "시네마 플래그십",
+    );
+
+    // 2. Collect every user-facing string directly from catalog/comfyui.json digital-human-longcat
+    const longCatTemplate = comfyCatalog.templates.find(
+      (tpl) => tpl.id === "digital-human-longcat",
+    );
+    expect(longCatTemplate).toBeTruthy();
+    expect(longCatTemplate?.commercial_ok).toBe(false);
+    expect(longCatTemplate?.pipeline?.video_backend).toBe(
+      "longcat_avatar_native",
+    );
+
+    const longCatCatalogStrings: string[] = [];
+    if (longCatTemplate) {
+      for (const s of [
+        longCatTemplate.name,
+        longCatTemplate.description,
+        longCatTemplate.license,
+        longCatTemplate.license_notice,
+      ]) {
+        if (typeof s === "string" && s.trim()) {
+          longCatCatalogStrings.push(s);
+        }
+      }
+      for (const field of longCatTemplate.fields) {
+        if (field.label?.trim()) longCatCatalogStrings.push(field.label);
+        if (field.description?.trim()) {
+          longCatCatalogStrings.push(field.description);
+        }
+        for (const optLabel of Object.values(field.option_labels || {})) {
+          if (typeof optLabel === "string" && optLabel.trim()) {
+            longCatCatalogStrings.push(optLabel);
+          }
+        }
+      }
+    }
+    expect(longCatCatalogStrings.length).toBeGreaterThanOrEqual(60);
+
+    // 3. Stage 1-4 backend worker progress, preflight errors, and symlink safety messages
+    const stage1To4Messages = [
+      // Stage 1: native runtime env, source checkout, venv, weights, vocal separation
+      "正在准备远端原生 LongCat 1.6 环境与权重",
+      "正在准备远端原生 LongCat 1.6 环境与权重（复用已检出的远端源码：LongCat-Video@abcdef1234）",
+      "正在准备 LongCat-Video-Avatar 1.6 原生运行环境",
+      "LongCat-Video-Avatar 1.6 原生环境与权重已就绪",
+      "正在检出远端数字人引擎固定版本源码：abcdef1234",
+      "复用已就绪的隔离环境：远端数字人引擎",
+      "正在创建隔离虚拟环境：远端数字人引擎（保留宿主 PyTorch）",
+      "正在安装远端数字人引擎运行依赖（共 12 个包，保留现有 PyTorch）",
+      "远端数字人引擎隔离环境已就绪",
+      "复用已缓存的模型权重：LongCat-Video 基础编码器与 VAE（meituan-longcat/LongCat-Video）",
+      "正在下载模型权重：LongCat-Video 基础编码器与 VAE（meituan-longcat/LongCat-Video@abcdef1234）",
+      "LongCat-Video 基础编码器与 VAE模型权重准备完成",
+      "正在执行 Kim_Vocal_2 前置人声分离",
+      // Stage 2: native 720p rendering
+      "正在启动 LongCat-Video-Avatar 1.6 原生渲染进程",
+      "正在执行原生 720p LongCat 1.6 渲染",
+      "正在执行原生 720p LongCat 1.6 渲染（正在启动 LongCat-Video-Avatar 1.6 原生渲染进程）",
+      "ComfyUI 工作流：进行中 · 40% · 口播数字人 · 96GB 电影级旗舰版 · 正在执行原生 720p LongCat 1.6 渲染",
+      // Stage 3: VRAM release + SeedVR2 7B / FlashVSR+ diffusion super-resolution
+      "正在准备远端全画幅超分环境与权重",
+      "正在准备远端全画幅超分环境与权重（正在准备 SeedVR2 7B Sharp 扩散超分环境）",
+      "SeedVR2 7B Sharp 扩散超分环境与权重已就绪",
+      "正在清理上一阶段显存以加载全画幅超分模型",
+      "正在启动远端扩散视频超分进程",
+      "正在执行全画幅时空扩散超分",
+      "正在执行全画幅时空扩散超分（正在启动远端扩散视频超分进程）",
+      "ComfyUI 工作流：进行中 · 75% · 口播数字人 · 96GB 电影级旗舰版 · 正在执行全画幅时空扩散超分",
+      // Stage 4: final cinema-grade muxing + cancellation
+      "正在执行终稿电影级封装与 48 kHz 高保真音画合流",
+      "ComfyUI 工作流：进行中 · 95% · 口播数字人 · 96GB 电影级旗舰版 · 正在执行终稿电影级封装与 48 kHz 高保真音画合流",
+      "实例正在停止，已取消远端数字人任务",
+      // Preflight VRAM/disk/engine errors & symlink safety labels
+      "未检测到可用远端 GPU，LongCat-Video-Avatar 1.6 原生管线至少需要 48.0 GiB（49152 MiB）显存",
+      "远端 GPU 显存不足：当前 NVIDIA L4 仅 24.0 GiB（24576 MiB），LongCat-Video-Avatar 1.6 原生管线至少需要 48.0 GiB（49152 MiB）显存",
+      "远端工作区磁盘空间不足：权重已缓存，但生成与临时转码仍需至少 12.0 GiB（12288 MiB）可用空间，当前仅剩 4.5 GiB（4608 MiB）",
+      "远端磁盘空间不足：LongCat-Video-Avatar 1.6 原生管线与超分模型至少需要 72.0 GiB（73728 MiB）可用空间，当前仅剩 20.0 GiB（20480 MiB）",
+      "不支持的远端扩散超分引擎：legacy_2x（仅支持 seedvr2_7b_sharp、seedvr2_7b、flashvsr_plus）",
+      "编译缓存目录不能是符号链接",
+      "Triton 编译缓存目录不能是符号链接",
+      "数字人引擎根目录不能是符号链接",
+      "数字人权重目录不能是符号链接",
+      "数字人源码目录不能是符号链接",
+      "Stage 2 工作目录不能是符号链接",
+      "Stage 3 超分工作目录不能是符号链接",
+      // 4. Real emitted backend messages from server/digital_human.py (_run_longcat_native_pipeline & validators)
+      "正在释放远端 ComfyUI 显存以独占 96GB 跑原生旗舰引擎",
+      "停止远端 ComfyUI 时出现非致命提示：socket closed",
+      "正在准备 LongCat-Video-Avatar 1.6 原生旗舰环境与权重：口播数字人 · 96GB 电影级旗舰版",
+      "口播数字人 · 96GB 电影级旗舰版 · 正在使用 LongCat 1.6 原生引擎渲染 720p 主画面（1280×720，240 帧，non_distill_cfg）",
+      "LongCat-Video-Avatar 1.6 渲染失败：未产出有效的 720p 无损中间视频",
+      "口播数字人 · 96GB 电影级旗舰版 · LongCat 1.6 原生 720p 主画面生成完成（耗时 2 分 15 秒）",
+      "正在准备视频扩散超分引擎与权重：seedvr2_7b_sharp",
+      "口播数字人 · 96GB 电影级旗舰版 · 正在执行 seedvr2_7b_sharp 视频扩散超分（1920×1080）",
+      "视频扩散超分失败（seedvr2_7b_sharp）：未产出有效的无损超分视频",
+      "口播数字人 · 96GB 电影级旗舰版 · seedvr2_7b_sharp 视频扩散超分完成（耗时 1 分 05 秒）",
+      "正在进行单次母版封装（CRF 16 · 1920×1080 · 48 kHz AAC 256k）",
+      "口播数字人 · 96GB 电影级旗舰版 · 原生旗舰数字人生成完成（LongCat 1.6 + seedvr2_7b_sharp，15.0 秒，1920×1080，总耗时 3 分 40 秒）",
+      "口播数字人 · 96GB 电影级旗舰版 · 原生旗舰数字人生成完成（LongCat 1.6，15.0 秒，1280×720，总耗时 2 分 10 秒）",
+      "非蒸馏采样步数 参数格式无效：不能为布尔值",
+      "非蒸馏采样步数 必须为有限数值",
+      "非蒸馏采样步数 参数格式无效：'abc'",
+      "音频引导强度 参数格式无效：不能为布尔值",
+      "文本引导强度 必须为有限数值",
+      "双 LoRA 前段步数 参数格式无效：不能为布尔值",
+      "双 LoRA 混合权重 必须为有限数值",
+      "身份参考帧索引 参数格式无效：不能为布尔值",
+      "终稿编码质量 CRF 必须为有限数值",
+      "终稿编码质量 CRF 参数格式无效：'bad'",
+      "随机种子 参数格式无效：不能为布尔值",
+      "Stage 2 视频路径不能包含换行符或空字符",
+      "Stage 2 输出视频路径不能包含换行符或空字符",
+      "Stage 3 超分视频路径不能包含换行符或空字符",
+      "Stage 3 超分输出路径不能包含换行符或空字符",
+      "最终输出视频路径不能包含换行符或空字符",
+      "主音频路径不能包含换行符或空字符",
+      "不支持的 PCM 采样位深：3 字节",
+      // 5. Real emitted backend messages from server/avatar_engines.py (dynamic symlink paths, weights, git/checkout, timeouts, manifests, path containment)
+      "不支持的远端扩散超分引擎：'legacy_2x'（仅支持 seedvr2_7b_sharp、seedvr2_7b、flashvsr_plus）",
+      "不支持的远端扩散超分引擎：'legacy_2x'（仅支持 seedvr2_7b_sharp、seedvr2_7b、flashvsr_plus、none、auto）",
+      "目标文件不能是符号链接：stage2.mkv",
+      "数字人引擎根目录不能是符号链接：/content/avatar_engines",
+      "数字人权重目录不能是符号链接：/content/avatar_engines/weights",
+      "本地权重目录（longcat_video）不能是符号链接：/content/avatar_engines/weights/longcat_video",
+      "Drive 缓存目录不能是符号链接：/content/drive/MyDrive/ColabOne_Drive/avatar_engines",
+      "Drive 权重目录不能是符号链接：/content/drive/MyDrive/ColabOne_Drive/avatar_engines/weights",
+      "Drive 权重目录（seedvr2_7b）不能是符号链接：/content/drive/MyDrive/ColabOne_Drive/avatar_engines/weights/seedvr2_7b",
+      "编译缓存目录不能是符号链接：/content/avatar_engines/inductor_cache",
+      "Triton 编译缓存目录不能是符号链接：/content/avatar_engines/triton_cache",
+      "Stage 2 工作目录不能是符号链接：/tmp/work/s2",
+      "Stage 2 配置文件不能是符号链接：/tmp/work/s2/config.json",
+      "Stage 3 超分工作目录不能是符号链接：/tmp/work/s3",
+      "Stage 3 超分配置文件不能是符号链接：/tmp/work/s3/config.json",
+      "虚拟环境继承路径文件不能是符号链接：/content/venv/site.pth",
+      "运行日志目录不能是符号链接：/content/logs",
+      "运行日志文件不能是符号链接：/content/logs/run.log",
+      "数字人源码目录不能是符号链接：/content/repos",
+      "数字人运行日志目录不能是符号链接：/content/logs",
+      "LongCat-Video 源码目录不能是符号链接：/content/repos/longcat",
+      "LongCat-Video Git 元数据目录不能是符号链接：/content/repos/longcat/.git",
+      "LongCat-Video 源码就绪标记不能是符号链接：/content/repos/longcat/.ready",
+      "LongCat-Video 虚拟环境目录不能是符号链接：/content/venvs/longcat",
+      "LongCat-Video 环境就绪标记不能是符号链接：/content/venvs/longcat/.ready",
+      "LongCat-Video 权重目录不能是符号链接：/content/weights/longcat",
+      "LongCat-Video 权重标记不能是符号链接：/content/weights/longcat/.ready",
+      "LongCat-Video 日志文件不能是符号链接：/content/logs/longcat.log",
+      "Stage 2 输出视频 路径不合法：'/etc/passwd'",
+      "Stage 2 输出视频 路径不能包含符号链接：/tmp/work/link",
+      "Stage 2 输出视频 必须位于工作目录内：/etc/passwd",
+      "Stage 2 输出视频 不能指向工作目录本身：/tmp/work",
+      "LongCat-Video 隔离虚拟环境缺少 Python 可执行文件，拒绝回退到宿主环境：/content/venvs/longcat",
+      "无法检测远端磁盘可用空间（permission denied），LongCat-Video-Avatar 1.6 至少需要 72.0 GiB 可用磁盘空间",
+      "远端工作区磁盘空间不足：权重已缓存或将写入 Drive，但生成与临时转码仍需至少 12.0 GiB（12288 MiB）可用空间，当前仅剩 4.5 GiB（4608 MiB）",
+      "LongCat-Video 源码提交哈希必须为完整 40 位十六进制 SHA：'abc123'",
+      "远端缺少 Git，无法拉取 LongCat-Video 源码",
+      "LongCat-Video 源码检出校验失败，HEAD 与目标提交 abcdef1234 不一致或关键文件缺失",
+      "LongCat-Video 现有 Git 仓库异常，正在清空并重新检出：corrupt index",
+      "LongCat-Video 虚拟环境创建不完整，缺少 Python 可执行文件：/content/venvs/longcat",
+      "可选依赖（audio-separator）安装失败，已跳过，LongCat-Video 将使用原始音频继续运行：network error",
+      "缺少 huggingface_hub，无法下载模型权重",
+      "下载 LongCat-Video 模型权重失败（meituan-longcat/LongCat-Video）：HTTP 502",
+      "LongCat-Video 模型权重下载不完整，缺少必需权重文件：/content/weights/longcat",
+      "LongCat-Video-Avatar 1.6 原生渲染 执行超时，请查看运行日志",
+      "LongCat-Video-Avatar 1.6 原生渲染 长时间无输出与进度更新（超过 1800 秒），进程疑似卡死，请查看运行日志",
+      "LongCat-Video-Avatar 1.6 原生渲染 进程退出超时，请查看运行日志",
+      "LongCat-Video-Avatar 1.6 原生渲染 执行失败（退出码 1）：CUDA OOM",
+      "LongCat-Video-Avatar 1.6 原生渲染 执行完成但未生成有效输出清单：/tmp/s2/manifest.json",
+      "LongCat-Video-Avatar 1.6 原生渲染 输出清单解析失败：Expecting value",
+      "LongCat-Video-Avatar 1.6 原生渲染 输出清单格式无效或为空",
+      "LongCat-Video-Avatar 1.6 原生渲染 返回错误：missing tensor",
+      "LongCat-Video-Avatar 1.6 原生渲染 声明的输出视频不存在或为空：/tmp/s2/out.mkv",
+      "LongCat-Video-Avatar 1.6 原生渲染 输出清单缺少有效的输出视频路径（output_video_path）",
+      // 6. All 11 standardized Chinese progress strings from server/avatar_worker_longcat16.py
+      "正在初始化 LongCat-Video-Avatar 1.6（non_distill_cfg，共 6 段）",
+      "正在初始化 LongCat-Video-Avatar 1.6（distill_lora_mix，共 3 段）",
+      "正在准备音频特征（前置人声分离：开启）",
+      "正在准备音频特征（前置人声分离：关闭）",
+      "正在加载纯 BF16 LongCat-Video-Avatar 1.6 模型权重",
+      "正在加载 BF16 Avatar 1.6 DiT 主模型",
+      "正在配置 torch.compile 无损算子编译",
+      "正在提取全局 Whisper-Large-v3 音频特征",
+      "正在渲染第 1/6 段（首段 AI2V）",
+      "已完成第 1/6 段（累计 93/512 帧）",
+      "正在渲染第 2/6 段（13 帧连续续写）",
+      "正在封装无损 FFV1 中间视频并写入输出清单",
+      "LongCat-Video-Avatar 1.6 渲染完成（共 512 帧，耗时 84.3 秒）",
+      // 7. All 7 standardized Chinese progress strings from server/vsr_worker_diffusion.py
+      "正在启动 seedvr2_7b_sharp 超分（短边 1080px，批次 41，共 13 批）",
+      "正在启动 flashvsr_plus 超分（短边 1080px，批次 32，共 16 批）",
+      "正在执行 SeedVR2 时空扩散超分（seedvr2_7b_sharp）",
+      "正在执行 SeedVR2 时空扩散超分（seedvr2_7b）",
+      "正在将 SeedVR2 超分帧封装为无损 FFV1 中间视频",
+      "正在加载 FlashVSR+ v1.1 流式扩散模型（1920×1080）",
+      "正在执行 FlashVSR+ v1.1 流式扩散超分（第 3/12 段）",
+      "正在将 FlashVSR+ 超分帧封装为无损 FFV1 中间视频",
+      "已完成 seedvr2_7b_sharp 视频扩散超分（共 512 帧，耗时 42.5 秒）",
+      "已完成 flashvsr_plus 视频扩散超分（共 512 帧，耗时 18.2 秒）",
+    ];
+
+    expect(longCatTemplate?.license).toBe("MIT / Apache-2.0");
+
+    const allLongCatNativeSamples = [
+      ...new Set([...longCatCatalogStrings, ...stage1To4Messages]),
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of allLongCatNativeSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        const requiresTranslation = CJK_OR_FULLWIDTH_RE.test(sample);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(
+          out.trim().length,
+          `empty translation for ${loc}: ${sample}`,
+        ).toBeGreaterThan(0);
+
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}": "${out}"`,
+          ).toBe(false);
+          if (requiresTranslation) {
+            expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+          } else {
+            expect(out, `${loc} pure-ASCII pass-through for "${sample}"`).toBe(
+              sample,
+            );
+          }
+        }
+        if (loc === "ja-JP") {
+          if (requiresTranslation) {
+            expect(out, `ja-JP must translate "${sample}"`).not.toBe(sample);
+          } else {
+            expect(out, `ja-JP pure-ASCII pass-through for "${sample}"`).toBe(
+              sample,
+            );
+          }
+          expect(
+            out,
+            `Simplified Chinese leak in ja-JP for "${sample}": "${out}"`,
+          ).not.toMatch(LEAKED_ZH_CN_IN_JA_RE);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            out,
+            `forbidden zh-TW term for "${sample}": "${out}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            out,
+            `spoken Cantonese leak in zh-HK for "${sample}": "${out}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
+        }
+      }
+    }
+
+    // Spot-check key multi-locale translations & locale quality expectations
+    expect(
+      translateColabOneBackendText("口播数字人 · 96GB 电影级旗舰版", "en-US"),
+    ).toBe("Talking Avatar · 96GB Cinema Flagship");
+    expect(
+      translateColabOneBackendText(
+        "本旗舰数字人集成方案（LongCat-Video-Avatar 1.6 + SeedVR2 7B + FlashVSR+ 及内置旗舰 TTS）仅限个人学习、研究与非商用演示，严禁用于任何商业用途。",
+        "en-US",
+      ),
+    ).toContain("strictly for personal study, research, and non-commercial");
+    expect(
+      translateColabOneBackendText(
+        "正在执行原生 720p LongCat 1.6 渲染",
+        "ja-JP",
+      ),
+    ).toBe("ネイティブ 720p LongCat 1.6 動画をレンダリング中");
+    expect(
+      translateColabOneBackendText(
+        "正在执行全画幅时空扩散超分",
+        "ko-KR",
+      ),
+    ).toBe("풀프레임 시공간 확산 업스케일 실행 중");
+    expect(
+      translateColabOneBackendText(
+        "正在执行终稿电影级封装与 48 kHz 高保真音画合流",
+        "en-US",
+      ),
+    ).toBe("Running final cinema-grade muxing with 48 kHz high-fidelity audio");
+
+    // Locale quality assertions: ja-JP 2K labels and zh-TW terminology
+    expect(
+      translateColabOneBackendText("横屏超清 2K（16:9 · 极致细腻）", "ja-JP"),
+    ).toContain("超高精細ディテール");
+    expect(
+      translateColabOneBackendText("竖屏超清 2K（9:16 · 极致细腻）", "ja-JP"),
+    ).toContain("超高精細ディテール");
+    expect(t("comfy.qualityPresetBalanced", undefined, "zh-TW")).toBe(
+      "高畫質均衡",
+    );
+    expect(
+      translateColabOneBackendText(
+        "高质均衡（8 步 DMD+OPSD 双 LoRA + SeedVR2 7B · 约 4～6 分钟/分钟片）",
+        "zh-TW",
+      ),
+    ).toContain("高畫質均衡");
+    expect(
+      translateColabOneBackendText(
+        "8 步 DMD+OPSD 双 LoRA 混合蒸馏（高质高速兼顾）",
+        "zh-TW",
+      ),
+    ).toContain("畫質與速度兼顧");
+
+    // Verify the 7 additional real emitted server/digital_human.py native pipeline messages across all 6 locales
+    const extraDigitalHumanMessages = [
+      "正在停止远端 ComfyUI 以释放完整显存供配音与原生旗舰引擎使用",
+      "正在预处理上传音频（48 kHz 无损直通，保留立体声与原始动态）",
+      "终稿体积 612.4 MiB 超过 512 MiB 上限，正在按目标视频码率 18500 kbps 自动重编码一次以保留本次渲染成果",
+      "远端磁盘空间不足：TTS 引擎 Qwen3-TTS 1.7B（约 8.0 GiB）与 LongCat-Video-Avatar 1.6 原生管线（约 72.0 GiB）合计至少需要 80.0 GiB（81920 MiB）可用空间，当前仅剩 40.5 GiB（41472 MiB）",
+      "远端磁盘空间不足：LongCat-Video-Avatar 1.6 原生管线与所选采样/人声模式至少需要 72.0 GiB（73728 MiB）可用空间，当前仅剩 30.0 GiB（30720 MiB）",
+      "配音完成后无法检测远端磁盘空间（OSError: disk offline），LongCat-Video-Avatar 1.6 至少需要 72.0 GiB 可用磁盘空间",
+      "远端磁盘空间不足：配音完成后仅剩 28.5 GiB（29184 MiB），不足以继续运行 LongCat-Video-Avatar 1.6 原生管线（至少需要 72.0 GiB / 73728 MiB）",
+    ];
+    for (const sample of extraDigitalHumanMessages) {
+      for (const loc of ALL_LOCALES) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(out.length, `${loc}: ${sample}`).toBeGreaterThan(0);
+        if (loc !== "zh-CN") {
+          expect(out, `${loc} must translate ${sample}`).not.toBe(sample);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `${loc} leaked CJK/fullwidth in "${out}"`,
+          ).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("translates all Round-2 backend, Go controller, worker-containment, symlink, updater/SOCKS5, zh-TW script, and IndexTTS-2.5 messages cleanly across all 6 locales", () => {
+    const CJK_OR_FULLWIDTH_RE =
+      /[\u3000-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;
+    const LEAKED_ZH_CN_IN_JA_RE =
+      /正在|远端|显存|请先|失败|符号链接|不支持|校验|文件|目录|草稿/;
+    const FORBIDDEN_ZH_TW_RE =
+      /视频|音频|默认|渲染|显存|文件|脚本|缓存|符号链接|路径|校验/;
+    const STRICT_CANTONESE_RE = /[咗喺嘅啲冇睇唔]/;
+
+    const round2Messages = [
+      // Audio preprocessing & 24000 Hz mono PCM16 WAV transcoding
+      "音频预处理完成，总时长 12.5 秒",
+      "正在将参考音频转码为标准 24000 Hz 单声道 PCM16 WAV：voice_ref.mp3",
+      "参考音频转码失败，未生成输出文件：/tmp/out.wav",
+      "参考音频转码失败，未生成有效的单声道 PCM16 WAV：/tmp/out.wav",
+      // Remote TTS venv incomplete
+      "远端 TTS 引擎虚拟环境创建不完整，缺少 Python 可执行文件：/content/venv",
+      // Worker-file containment & segment safety errors
+      "Stage 2 工作目录安全校验失败",
+      "Stage 2 输出视频路径超出工作目录安全范围",
+      "Stage 2 输出视频路径包含符号链接，安全校验失败",
+      "Stage 2 输出视频路径安全校验失败",
+      "输出文件路径不合法",
+      "没有可拼接的视频分段",
+      "分段输出文件路径无效或为符号链接",
+      "分段输出文件路径安全校验失败",
+      "save_pcm_wav 缺少输出路径或音频数据",
+      // common/comfyui.py & backend validation errors
+      "video_backend 为 longcat_avatar_native 时流水线类型必须为 digital_human",
+      "visible_when 必须为对象",
+      "step 必须大于 0",
+      "选项数量不能超过 128 个",
+      "选项标签数量不能超过 128 个",
+      "hf_token 必须为字符串",
+      "下拉字段 pipeline.mode 的默认值不在 options 列表中",
+      "字段 pipeline.script_text 的文本长度不能超过 10000 个字符",
+      "非法的 GitHub 仓库地址：http://evil.example/repo",
+      "TTS 引擎源码仓库仅允许使用 https://github.com/<owner>/<repo> 地址：https://gitlab.com/a/b",
+      "Ming-3.0-TTS 未生成参考锚点音频：anchor.wav",
+      "加速包源文件不合法：bad.whl",
+      "远端命令执行失败：exit status 1",
+      "不支持的模型文件扩展名：.bin",
+      "检测到生成阶段耗尽上下文上限（8192 tokens），已自动提高后续请求预留输出空间（+512 tokens）",
+      // comfyui_longcat_native upgrade hint & Go rune draft cap error
+      "当前远端实例服务版本较旧，暂不支持原生 LongCat-Video-Avatar 1.6 管线，请先点击「热更新服务」或重新启动 GPU 实例",
+      "草稿文本字段超过 200000 个字符上限",
+      // All 6 new SYMLINK_DIR_LABELS
+      "加速包缓存文件不能是符号链接：/tmp/accel.whl",
+      "加速包目标目录不能是符号链接：/tmp/accel_dir",
+      "加速包目标文件不能是符号链接：/tmp/accel_target",
+      "加速包 wheel 文件不能是符号链接：/tmp/sage.whl",
+      "下载临时文件不能是符号链接：/tmp/model.part",
+      "下载元数据文件不能是符号链接：/tmp/model.meta.json",
+      // Updater & SOCKS5 proxy errors (exact & dynamic)
+      "请求失败",
+      "更新服务未初始化",
+      "正在检查 ColabOne 客户端更新…",
+      "SOCKS5 代理目标连接被拒绝",
+      "连接 SOCKS5 代理超时",
+      "连接或下载超时",
+      "HTTPS/TLS 证书校验失败",
+      "网络连接失败",
+      "未找到当前平台的更新清单",
+      "GitHub 访问频率受限",
+      "更新补丁签名校验未通过（可能已被篡改或损坏）",
+      "安装目录缺少写入权限",
+      "ColabOne v0.2.30 更新已就绪，重启客户端后生效",
+      "检查客户端更新失败（网络连接失败）：dial timeout",
+      "后台检查客户端更新失败（GitHub 访问频率受限）：403",
+      "检查客户端更新失败：unexpected EOF",
+      "后台检查客户端更新失败：context canceled",
+      "SOCKS5 代理连接失败：auth failed",
+      "代理拒绝连接 (HTTP 407)",
+      // IndexTTS-2.5 messages
+      "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
+      "情绪参考音频（IndexTTS-2.5 专属，可选）",
+      "IndexTTS-2.5 推理失败：CUDA OOM",
+      "IndexTTS-2.5 未返回第 1 段音频",
+      "IndexTTS-2.5 未生成第 2 段音频：/tmp/seg2.wav",
+    ];
+
+    for (const sample of round2Messages) {
+      for (const loc of ALL_LOCALES) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(out.length, `${loc}: ${sample}`).toBeGreaterThan(0);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+        } else {
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}": "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "ja-JP") {
+          expect(
+            out,
+            `Simplified Chinese leak in ja-JP for "${sample}": "${out}"`,
+          ).not.toMatch(LEAKED_ZH_CN_IN_JA_RE);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            out,
+            `forbidden zh-TW term for "${sample}": "${out}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            out,
+            `spoken Cantonese leak in zh-HK for "${sample}": "${out}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
+        }
+      }
+    }
+
+    // Spot-check zh-TW "指令碼" terminology for scripts
+    expect(
+      translateColabOneBackendText(
+        "TTS 工作脚本路径不能是符号链接：/tmp/worker.py",
+        "zh-TW",
+      ),
+    ).toContain("指令碼");
+    expect(
+      translateColabOneBackendText("不支持的 TTS 引擎脚本：bad_engine", "zh-TW"),
+    ).toBe("不支援的 TTS 引擎指令碼：bad_engine");
+    expect(
+      translateColabOneBackendText(
+        "文件上传完成，开始在远端内核执行引导脚本",
+        "zh-TW",
+      ),
+    ).toContain("啟動指令碼");
+    expect(
+      translateColabOneBackendText(
+        "更新包上传完成，开始在远端执行热更新脚本",
+        "zh-TW",
+      ),
+    ).toContain("熱更新指令碼");
+
+    // Spot-check IndexTTS-2.5 label preservation across all 6 locales
+    for (const loc of ALL_LOCALES) {
+      expect(
+        translateColabOneBackendText(
+          "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
+          loc,
+        ),
+      ).toContain("IndexTTS-2.5");
+      expect(
+        translateColabOneBackendText("IndexTTS-2.5 推理失败：CUDA OOM", loc),
+      ).toContain("IndexTTS-2.5");
     }
   });
 });

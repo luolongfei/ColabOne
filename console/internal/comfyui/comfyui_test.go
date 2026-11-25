@@ -2005,6 +2005,148 @@ func TestComfyPipelineSpecValidation(t *testing.T) {
 	}
 }
 
+func TestComfyPipelineSpecLongCatNativeAndUpscaleModes(t *testing.T) {
+	// 1. Validate video_backend="longcat_avatar_native" with 2K (2560x1440) and portrait 2K (1440x2560) dimensions.
+	for _, tc := range []struct {
+		name   string
+		width  int
+		height int
+		mode   string
+	}{
+		{"landscape2KAuto", 2560, 1440, "auto"},
+		{"landscape2KSeedVR2", 2560, 1440, "seedvr2_7b"},
+		{"landscape2KSeedVR2Sharp", 2560, 1440, "seedvr2_7b_sharp"},
+		{"portrait2KFlashVSRPlus", 1440, 2560, "flashvsr_plus"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var spec ColabOneComfyPipelineSpec
+			raw := mustMarshalJSON(t, map[string]any{
+				"kind":                      "digital_human",
+				"video_backend":             "longcat_avatar_native",
+				"default_tts_engine":        "voxcpm2",
+				"supported_tts_engines":     []string{"voxcpm2", "qwen3_tts"},
+				"max_segment_seconds":       45.0,
+				"tail_frame_offset_seconds": 0.08,
+				"output_fps":                25,
+				"target_width":              tc.width,
+				"target_height":             tc.height,
+				"upscale_mode":              tc.mode,
+				"audio_node_key":            "2.audio",
+				"image_node_key":            "1.image",
+			})
+			if err := unmarshalAndValidateSchema(raw, &spec); err != nil {
+				t.Fatalf("%s: expected valid longcat_avatar_native pipeline, got %v", tc.name, err)
+			}
+			if spec.VideoBackend != "longcat_avatar_native" {
+				t.Fatalf("%s: VideoBackend = %q, want longcat_avatar_native", tc.name, spec.VideoBackend)
+			}
+			if spec.UpscaleMode != tc.mode {
+				t.Fatalf("%s: UpscaleMode = %q, want %q", tc.name, spec.UpscaleMode, tc.mode)
+			}
+			if spec.TargetWidth != tc.width || spec.TargetHeight != tc.height {
+				t.Fatalf("%s: target dimensions = %dx%d, want %dx%d", tc.name, spec.TargetWidth, spec.TargetHeight, tc.width, tc.height)
+			}
+
+			// Round-trip wire parity check.
+			var roundTripped ColabOneComfyPipelineSpec
+			if err := unmarshalAndValidateSchema(mustMarshalJSON(t, &spec), &roundTripped); err != nil {
+				t.Fatalf("%s: round-trip failed: %v", tc.name, err)
+			}
+			if !reflect.DeepEqual(roundTripped, spec) {
+				t.Fatalf("%s: round-trip mismatch:\ngot:  %+v\nwant: %+v", tc.name, roundTripped, spec)
+			}
+		})
+	}
+
+	// 2. Verify all allowed upscale_mode values pass direct Validate() and JSON unmarshal.
+	for _, mode := range []string{
+		"none",
+		"ai_2x",
+		"lanczos",
+		"auto",
+		"seedvr2_7b",
+		"seedvr2_7b_sharp",
+		"flashvsr_plus",
+	} {
+		direct := ColabOneComfyPipelineSpec{
+			Kind:         "digital_human",
+			VideoBackend: "longcat_avatar_native",
+			TargetWidth:  2560,
+			TargetHeight: 1440,
+			UpscaleMode:  mode,
+		}
+		if err := direct.Validate(); err != nil {
+			t.Fatalf("direct Validate() upscale_mode=%q failed: %v", mode, err)
+		}
+		var fromJSON ColabOneComfyPipelineSpec
+		raw := mustMarshalJSON(t, map[string]any{
+			"kind":          "digital_human",
+			"video_backend": "longcat_avatar_native",
+			"target_width":  2560,
+			"target_height": 1440,
+			"upscale_mode":  mode,
+		})
+		if err := unmarshalAndValidateSchema(raw, &fromJSON); err != nil {
+			t.Fatalf("JSON Validate() upscale_mode=%q failed: %v", mode, err)
+		}
+		if fromJSON.UpscaleMode != mode {
+			t.Fatalf("JSON UpscaleMode = %q, want %q", fromJSON.UpscaleMode, mode)
+		}
+	}
+
+	// 3. Builtin workflow template carrying longcat_avatar_native + seedvr2_7b + 2560x1440 validates cleanly.
+	tmpl := ColabOneWorkflowTemplate{
+		ID:       "digital-human-longcat-native-flagship",
+		Name:     "LongCat-Video-Avatar 1.6 Native Flagship",
+		Source:   "builtin",
+		Workflow: sampleAPIWorkflow(),
+		Pipeline: &ColabOneComfyPipelineSpec{
+			Kind:         "digital_human",
+			VideoBackend: "longcat_avatar_native",
+			TargetWidth:  2560,
+			TargetHeight: 1440,
+			UpscaleMode:  "seedvr2_7b",
+		},
+	}
+	if err := tmpl.Validate(); err != nil {
+		t.Fatalf("builtin template with longcat_avatar_native failed: %v", err)
+	}
+
+	// 4. Reject invalid video_backend values with exact error message.
+	const wantBackendErr = "视频生成后端不合法"
+	for _, badBackend := range []string{
+		"",
+		"longcat_native",
+		"longcat_avatar_v2",
+		"LONGCAT_AVATAR_NATIVE",
+		"unknown_backend",
+	} {
+		var p ColabOneComfyPipelineSpec
+		raw := mustMarshalJSON(t, map[string]any{"video_backend": badBackend})
+		if err := unmarshalAndValidateSchema(raw, &p); err == nil || err.Error() != wantBackendErr {
+			t.Fatalf("invalid video_backend=%q: err = %v, want %q", badBackend, err, wantBackendErr)
+		}
+	}
+
+	// 5. Reject invalid upscale_mode values with exact error message.
+	const wantUpscaleErr = "超分模式不合法"
+	for _, badMode := range []string{
+		"",
+		"seedvr2",
+		"seedvr2_14b",
+		"flashvsr",
+		"SEEDVR2_7B",
+		"AUTO",
+		"esrgan_4x",
+	} {
+		var p ColabOneComfyPipelineSpec
+		raw := mustMarshalJSON(t, map[string]any{"upscale_mode": badMode})
+		if err := unmarshalAndValidateSchema(raw, &p); err == nil || err.Error() != wantUpscaleErr {
+			t.Fatalf("invalid upscale_mode=%q: err = %v, want %q", badMode, err, wantUpscaleErr)
+		}
+	}
+}
+
 func TestWorkflowFieldExtendedSchemaValidation(t *testing.T) {
 	// 1. Valid extended field with description, group, required, visible_when (string + bool), and option_labels.
 	var extField ColabOneWorkflowField
@@ -3265,4 +3407,374 @@ func TestComfyTtsVoicePresetValidation(t *testing.T) {
 			t.Fatalf("invalid engine voice_presets payload %s should fail", raw)
 		}
 	}
+}
+
+func TestComfyParityLongCatKindOverrideLimitFieldRulesAndRealCatalog(t *testing.T) {
+	// 1. kind="comfy_standard" (explicit or defaulted) + video_backend="longcat_avatar_native" must be rejected.
+	const wantLongCatKindErr = "video_backend 为 longcat_avatar_native 时流水线类型必须为 digital_human"
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"explicitStandard", `{"kind":"comfy_standard","video_backend":"longcat_avatar_native"}`},
+		{"omittedKindDefaultsStandard", `{"video_backend":"longcat_avatar_native"}`},
+	} {
+		t.Run("longcatKind/"+tc.name, func(t *testing.T) {
+			var p ColabOneComfyPipelineSpec
+			if err := unmarshalAndValidateSchema(tc.raw, &p); err == nil || err.Error() != wantLongCatKindErr {
+				t.Fatalf("%s: err = %v, want %q", tc.name, err, wantLongCatKindErr)
+			}
+		})
+	}
+	directBadPipe := ColabOneComfyPipelineSpec{
+		Kind:         "comfy_standard",
+		VideoBackend: "longcat_avatar_native",
+	}
+	if err := directBadPipe.Validate(); err == nil || err.Error() != wantLongCatKindErr {
+		t.Fatalf("direct Validate() comfy_standard + longcat_avatar_native: err = %v, want %q", err, wantLongCatKindErr)
+	}
+
+	// 2. WorkflowRunRequest.overrides enforces MaxOverrideStringRunes (200,000 runes).
+	exactRunes := strings.Repeat("文", MaxOverrideStringRunes)
+	okReq := ColabOneWorkflowRunRequest{
+		WorkflowID: "digital-human-longcat",
+		Overrides:  map[string]any{"pipeline.script_text": exactRunes},
+	}
+	if err := okReq.Validate(); err != nil {
+		t.Fatalf("exact %d-rune override string should pass, got %v", MaxOverrideStringRunes, err)
+	}
+	for _, tc := range []struct {
+		name string
+		val  string
+	}{
+		{"asciiOver", strings.Repeat("a", MaxOverrideStringRunes+1)},
+		{"cjkOver", strings.Repeat("文", MaxOverrideStringRunes+1)},
+	} {
+		t.Run("overrideLen/"+tc.name, func(t *testing.T) {
+			overReq := ColabOneWorkflowRunRequest{
+				WorkflowID: "digital-human-longcat",
+				Overrides:  map[string]any{"pipeline.script_text": tc.val},
+			}
+			if err := overReq.Validate(); err == nil || !strings.Contains(err.Error(), "200000") {
+				t.Fatalf("direct Validate(%s): err = %v, want 200000-char limit error", tc.name, err)
+			}
+			var decoded ColabOneWorkflowRunRequest
+			raw := mustMarshalJSON(t, map[string]any{
+				"workflow_id": "digital-human-longcat",
+				"overrides":   map[string]any{"pipeline.script_text": tc.val},
+			})
+			if err := unmarshalAndValidateSchema(raw, &decoded); err == nil || !strings.Contains(err.Error(), "200000") {
+				t.Fatalf("unmarshal+Validate(%s): err = %v, want 200000-char limit error", tc.name, err)
+			}
+		})
+	}
+
+	// 3. ColabOneWorkflowField enforces step > 0, options <= 128, option_labels <= 128, and select default in options.
+	for _, badStep := range []float64{0, -0.5, -1} {
+		f := ColabOneWorkflowField{
+			Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number",
+			Step: floatPtr(badStep),
+		}
+		if err := f.Validate(); err == nil || err.Error() != "step 必须大于 0" {
+			t.Fatalf("step=%v: err = %v, want %q", badStep, err, "step 必须大于 0")
+		}
+	}
+	opts128 := make([]string, 128)
+	labels128 := make(map[string]string, 128)
+	for i := 0; i < 128; i++ {
+		k := fmt.Sprintf("opt_%d", i)
+		opts128[i] = k
+		labels128[k] = "Label " + k
+	}
+	boundarySelect := ColabOneWorkflowField{
+		Key: "1.mode", Label: "Mode", NodeID: "1", InputName: "mode", FieldType: "select",
+		Default: "opt_0", Options: opts128, OptionLabels: labels128,
+	}
+	if err := boundarySelect.Validate(); err != nil {
+		t.Fatalf("128 options/option_labels select field should pass: %v", err)
+	}
+
+	tooManyOpts := append(append([]string{}, opts128...), "opt_128")
+	if err := (&ColabOneWorkflowField{
+		Key: "1.mode", Label: "Mode", NodeID: "1", InputName: "mode", FieldType: "select",
+		Default: "opt_0", Options: tooManyOpts,
+	}).Validate(); err == nil || !strings.Contains(err.Error(), "128") {
+		t.Fatalf("129 options should fail validation, got %v", err)
+	}
+
+	tooManyLabels := make(map[string]string, 129)
+	for k, v := range labels128 {
+		tooManyLabels[k] = v
+	}
+	tooManyLabels["opt_128"] = "Label opt_128"
+	if err := (&ColabOneWorkflowField{
+		Key: "1.mode", Label: "Mode", NodeID: "1", InputName: "mode", FieldType: "select",
+		Default: "opt_0", Options: opts128, OptionLabels: tooManyLabels,
+	}).Validate(); err == nil || !strings.Contains(err.Error(), "128") {
+		t.Fatalf("129 option_labels should fail validation, got %v", err)
+	}
+
+	badSelectDefault := ColabOneWorkflowField{
+		Key: "1.mode", Label: "Mode", NodeID: "1", InputName: "mode", FieldType: "select",
+		Default: "missing_opt", Options: []string{"fast", "quality"},
+	}
+	if err := badSelectDefault.Validate(); err == nil || !strings.Contains(err.Error(), "options") {
+		t.Fatalf("select default outside options should fail, got %v", err)
+	}
+	emptyDefaultSelect := ColabOneWorkflowField{
+		Key: "1.mode", Label: "Mode", NodeID: "1", InputName: "mode", FieldType: "select",
+		Default: "", Options: []string{"fast", "quality"},
+	}
+	if err := emptyDefaultSelect.Validate(); err != nil {
+		t.Fatalf("select field with empty default should pass: %v", err)
+	}
+
+	// 4. Real catalog/comfyui.json digital-human-longcat & digital-human-infinitetalk strict validation.
+	catalogPath := filepath.Join("..", "..", "..", "catalog", "comfyui.json")
+	rawCatalog, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("read catalog/comfyui.json: %v", err)
+	}
+	var catalog ColabOneComfyCatalog
+	if err := unmarshalAndValidateSchema(string(rawCatalog), &catalog); err != nil {
+		t.Fatalf("strict unmarshal+validate catalog/comfyui.json: %v", err)
+	}
+	byID := make(map[string]ColabOneWorkflowTemplate, len(catalog.Templates))
+	for _, tpl := range catalog.Templates {
+		byID[tpl.ID] = tpl
+	}
+	longcat, ok := byID["digital-human-longcat"]
+	if !ok {
+		t.Fatalf("catalog/comfyui.json missing digital-human-longcat template")
+	}
+	if longcat.Pipeline == nil {
+		t.Fatalf("digital-human-longcat missing pipeline spec")
+	}
+	if longcat.Pipeline.Kind != "digital_human" {
+		t.Fatalf("digital-human-longcat pipeline.kind = %q, want digital_human", longcat.Pipeline.Kind)
+	}
+	if longcat.Pipeline.VideoBackend != "longcat_avatar_native" {
+		t.Fatalf("digital-human-longcat pipeline.video_backend = %q, want longcat_avatar_native", longcat.Pipeline.VideoBackend)
+	}
+	if longcat.Pipeline.UpscaleMode != "auto" {
+		t.Fatalf("digital-human-longcat pipeline.upscale_mode = %q, want auto", longcat.Pipeline.UpscaleMode)
+	}
+	if longcat.CommercialOK {
+		t.Fatalf("digital-human-longcat commercial_ok = true, want false")
+	}
+	if strings.TrimSpace(longcat.LicenseNotice) == "" {
+		t.Fatalf("digital-human-longcat license_notice must be non-empty")
+	}
+	if longcat.License != "MIT / Apache-2.0" {
+		t.Fatalf("digital-human-longcat license = %q, want %q", longcat.License, "MIT / Apache-2.0")
+	}
+	if longcat.MinDiskMib != 79872 {
+		t.Fatalf("digital-human-longcat min_disk_mib = %d, want 79872", longcat.MinDiskMib)
+	}
+
+	inf, ok := byID["digital-human-infinitetalk"]
+	if !ok {
+		t.Fatalf("catalog/comfyui.json missing digital-human-infinitetalk template")
+	}
+	foundSteps := false
+	for _, f := range inf.Fields {
+		if f.Key == "15.steps" {
+			foundSteps = true
+			if !strings.Contains(f.Description, "推荐 8 步") {
+				t.Fatalf("digital-human-infinitetalk 15.steps description = %q, want to contain %q", f.Description, "推荐 8 步")
+			}
+		}
+	}
+	if !foundSteps {
+		t.Fatalf("digital-human-infinitetalk missing 15.steps field")
+	}
+	if inf.License != "Apache-2.0 / CC-BY-4.0 / GPL-3.0" {
+		t.Fatalf("digital-human-infinitetalk license = %q, want %q", inf.License, "Apache-2.0 / CC-BY-4.0 / GPL-3.0")
+	}
+	if inf.Pipeline == nil || inf.Pipeline.DefaultTtsEngine != "moss_tts_v1_5" {
+		t.Fatalf("digital-human-infinitetalk default_tts_engine = %+v, want moss_tts_v1_5", inf.Pipeline)
+	}
+}
+
+func TestRound2ComfySchemaHardeningParity(t *testing.T) {
+	revA := strings.Repeat("a", 40)
+	revB := strings.Repeat("b", 40)
+
+	// 1. ComfyTtsEngineSpec: source_repo requires 40-hex source_commit.
+	t.Run("tts_engine_source_repo_requires_source_commit", func(t *testing.T) {
+		var noCommit ColabOneComfyTtsEngineSpec
+		rawNoCommit := mustMarshalJSON(t, map[string]any{
+			"id":          "test_tts",
+			"name":        "Test TTS",
+			"repo":        "owner/repo",
+			"revision":    revA,
+			"source_repo": "https://github.com/owner/repo.git",
+		})
+		if err := unmarshalAndValidateSchema(rawNoCommit, &noCommit); err == nil || !strings.Contains(err.Error(), "source_commit") {
+			t.Fatalf("source_repo without source_commit should fail, got %v", err)
+		}
+
+		var emptyCommit ColabOneComfyTtsEngineSpec
+		rawEmptyCommit := mustMarshalJSON(t, map[string]any{
+			"id":            "test_tts",
+			"name":          "Test TTS",
+			"repo":          "owner/repo",
+			"revision":      revA,
+			"source_repo":   "owner/repo",
+			"source_commit": "",
+		})
+		if err := unmarshalAndValidateSchema(rawEmptyCommit, &emptyCommit); err == nil || !strings.Contains(err.Error(), "source_commit") {
+			t.Fatalf("source_repo with empty source_commit should fail, got %v", err)
+		}
+
+		var withCommit ColabOneComfyTtsEngineSpec
+		rawWithCommit := mustMarshalJSON(t, map[string]any{
+			"id":            "test_tts",
+			"name":          "Test TTS",
+			"repo":          "owner/repo",
+			"revision":      revA,
+			"source_repo":   "owner/repo",
+			"source_commit": revB,
+		})
+		if err := unmarshalAndValidateSchema(rawWithCommit, &withCommit); err != nil {
+			t.Fatalf("source_repo with 40-hex source_commit should pass, got %v", err)
+		}
+	})
+
+	// 2. WorkflowField: visible_when <= 16 entries, string values <= 160 runes.
+	t.Run("workflow_field_visible_when_caps", func(t *testing.T) {
+		vw16 := make(map[string]any, 16)
+		for i := 0; i < 16; i++ {
+			vw16[fmt.Sprintf("pipeline.k%d", i)] = strings.Repeat("值", 160)
+		}
+		validField := ColabOneWorkflowField{
+			Key: "1.prompt", Label: "Prompt", NodeID: "1", InputName: "prompt",
+			FieldType: "textarea", VisibleWhen: vw16,
+		}
+		if err := validField.Validate(); err != nil {
+			t.Fatalf("16 visible_when entries with 160-rune values should pass, got %v", err)
+		}
+
+		vw17 := make(map[string]any, 17)
+		for k, v := range vw16 {
+			vw17[k] = v
+		}
+		vw17["pipeline.k16"] = "ok"
+		if err := (&ColabOneWorkflowField{
+			Key: "1.prompt", Label: "Prompt", NodeID: "1", InputName: "prompt",
+			FieldType: "textarea", VisibleWhen: vw17,
+		}).Validate(); err == nil || !strings.Contains(err.Error(), "16") {
+			t.Fatalf("17 visible_when entries should fail, got %v", err)
+		}
+
+		if err := (&ColabOneWorkflowField{
+			Key: "1.prompt", Label: "Prompt", NodeID: "1", InputName: "prompt",
+			FieldType: "textarea", VisibleWhen: map[string]any{"pipeline.mode": strings.Repeat("值", 161)},
+		}).Validate(); err == nil || !strings.Contains(err.Error(), "160") {
+			t.Fatalf("161-rune visible_when string value should fail, got %v", err)
+		}
+	})
+
+	// 3. WorkflowField: default type compatibility against field_type.
+	t.Run("workflow_field_default_type_compatibility", func(t *testing.T) {
+		goodCases := []ColabOneWorkflowField{
+			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: 20},
+			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: float64(20)},
+			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: json.Number("20")},
+			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: nil},
+			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: 7.5},
+			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: 7},
+			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: json.Number("7.5")},
+			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: nil},
+			{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: true},
+			{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: false},
+			{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: nil},
+		}
+		for i, f := range goodCases {
+			if err := f.Validate(); err != nil {
+				t.Fatalf("goodCases[%d] (%s default=%#v) failed: %v", i, f.FieldType, f.Default, err)
+			}
+		}
+
+		badCases := []struct {
+			name  string
+			field ColabOneWorkflowField
+		}{
+			{"intStringNonInt", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: "abc"}},
+			{"intStringDigits", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: "20"}},
+			{"intFloatFractional", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: 2.5}},
+			{"intBool", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: true}},
+			{"numberStringNonNum", ColabOneWorkflowField{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: "abc"}},
+			{"numberStringDigits", ColabOneWorkflowField{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: "7.5"}},
+			{"numberBool", ColabOneWorkflowField{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: false}},
+			{"boolString", ColabOneWorkflowField{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: "true"}},
+			{"boolInt", ColabOneWorkflowField{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: 1}},
+			{"boolFloat", ColabOneWorkflowField{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: 0.0}},
+		}
+		for _, tc := range badCases {
+			f := tc.field
+			if err := f.Validate(); err == nil {
+				t.Fatalf("%s: expected default type incompatibility error", tc.name)
+			}
+		}
+	})
+
+	// 4. WorkflowTemplate: every visible_when key must exist in Fields.
+	t.Run("workflow_template_visible_when_keys_must_exist_in_fields", func(t *testing.T) {
+		wf := sampleAPIWorkflow()
+		validTpl := ColabOneWorkflowTemplate{
+			ID:       "wf-vw-ok",
+			Name:     "Valid VW",
+			Source:   "custom",
+			Workflow: wf,
+			Fields: []ColabOneWorkflowField{
+				{Key: "1.mode", Label: "Mode", NodeID: "1", InputName: "mode", FieldType: "select", Default: "a", Options: []string{"a", "b"}},
+				{Key: "1.extra", Label: "Extra", NodeID: "1", InputName: "extra", FieldType: "text", VisibleWhen: map[string]any{"1.mode": "b"}},
+			},
+		}
+		if err := validTpl.Validate(); err != nil {
+			t.Fatalf("template with valid visible_when reference should pass, got %v", err)
+		}
+
+		badTpl := ColabOneWorkflowTemplate{
+			ID:       "wf-vw-missing",
+			Name:     "Missing VW",
+			Source:   "custom",
+			Workflow: wf,
+			Fields: []ColabOneWorkflowField{
+				{Key: "1.extra", Label: "Extra", NodeID: "1", InputName: "extra", FieldType: "text", VisibleWhen: map[string]any{"1.nonexistent": "b"}},
+			},
+		}
+		if err := badTpl.Validate(); err == nil || !strings.Contains(err.Error(), "1.nonexistent") {
+			t.Fatalf("template referencing missing visible_when key should fail, got %v", err)
+		}
+	})
+
+	// 5. ApplyWorkflowOverrides: reject bool targeting non-bool existing inputs.
+	t.Run("apply_workflow_overrides_rejects_bool_on_non_bool", func(t *testing.T) {
+		wf := map[string]any{
+			"1": map[string]any{
+				"class_type": "TestNode",
+				"inputs": map[string]any{
+					"flag":  false,
+					"steps": 20,
+					"cfg":   7.5,
+					"text":  "hello",
+					"seed":  json.Number("42"),
+				},
+			},
+		}
+		applied, err := ApplyWorkflowOverrides(wf, map[string]any{"1.flag": true}, nil)
+		if err != nil {
+			t.Fatalf("bool override on bool input should pass, got %v", err)
+		}
+		if applied["1"].(map[string]any)["inputs"].(map[string]any)["flag"] != true {
+			t.Fatalf("bool override did not apply")
+		}
+		for _, targetKey := range []string{"1.steps", "1.cfg", "1.text", "1.seed"} {
+			if _, err := ApplyWorkflowOverrides(wf, map[string]any{targetKey: true}, nil); err == nil {
+				t.Fatalf("bool override on non-bool input %s should fail", targetKey)
+			}
+		}
+	})
 }

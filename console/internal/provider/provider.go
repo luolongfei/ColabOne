@@ -3483,49 +3483,89 @@ func (p *ColabOneProvider) RPC(
 			}
 			requestPath = "/content/" + remoteName
 		}
+		prevSession := session
+		cleanupRemote := func(sess *ColabOneSessionState) {
+			if remoteRel == "" || p.closed.Load() {
+				return
+			}
+			targetSess := sess
+			if targetSess == nil {
+				targetSess = prevSession
+			}
+			if targetSess == nil {
+				return
+			}
+			delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			stopDelWatch := p.cancelOnClose(delCancel)
+			p.deleteRemoteFile(delCtx, targetSess, remoteRel)
+			stopDelWatch()
+			delCancel()
+		}
 
 		if p.closed.Load() {
 			return nil, ErrProviderClosed
 		}
 		if p.isSlotDetached(targetEP, originSlot) {
+			cleanupRemote(session)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
 			return nil, errors.New("请先启动远端 GPU")
 		}
 
 		// Phase 2 (locked): acquire slot.mu ONLY around kernel execution & state.
 		slot, lockErr := p.lockKernelSlot(targetEP)
 		if lockErr != nil {
-			if remoteRel != "" && !p.closed.Load() && !p.isSlotDetached(targetEP, originSlot) {
-				delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
-				stopDelWatch := p.cancelOnClose(delCancel)
-				p.deleteRemoteFile(delCtx, session, remoteRel)
-				stopDelWatch()
-				delCancel()
+			cleanupRemote(session)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
 			}
 			return nil, lockErr
 		}
 		if slot != originSlot || slot.evicted || slot.clearing.Load() {
 			slot.mu.Unlock()
+			cleanupRemote(session)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
 			return nil, errors.New("请先启动远端 GPU")
 		}
 
 		latestSess, sessErr := p.session(ctx, false, targetEP, false, slot)
 		if sessErr != nil {
 			slot.mu.Unlock()
+			cleanupRemote(latestSess)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
 			return nil, sessErr
 		}
 		if latestSess == nil {
 			slot.mu.Unlock()
+			cleanupRemote(nil)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
 			return nil, errors.New("请先启动远端 GPU")
 		}
 		session = latestSess
 		if session.TokenExpiresAt == nil || !session.TokenExpiresAt.After(p.now().Add(60*time.Second)) {
+			prevSession = session
 			session, err = p.session(ctx, true, session.Endpoint, true, slot)
 			if err != nil {
 				slot.mu.Unlock()
+				cleanupRemote(session)
+				if p.closed.Load() {
+					return nil, ErrProviderClosed
+				}
 				return nil, err
 			}
 			if session == nil {
 				slot.mu.Unlock()
+				cleanupRemote(nil)
+				if p.closed.Load() {
+					return nil, ErrProviderClosed
+				}
 				return nil, errors.New("请先启动远端 GPU")
 			}
 		}
@@ -3542,29 +3582,34 @@ func (p *ColabOneProvider) RPC(
 			}
 			if slot.evicted || slot.clearing.Load() {
 				slot.mu.Unlock()
-				return nil, errors.New("请先启动远端 GPU")
-			}
-			if remoteRel != "" {
-				delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
-				stopDelWatch := p.cancelOnClose(delCancel)
-				p.deleteRemoteFile(delCtx, session, remoteRel)
-				stopDelWatch()
-				delCancel()
+				cleanupRemote(session)
 				if p.closed.Load() {
-					slot.mu.Unlock()
 					return nil, ErrProviderClosed
 				}
+				return nil, errors.New("请先启动远端 GPU")
 			}
 			status := httpStatusCode(execErr)
-			if idempotent && attempt == 0 && !slot.evicted && !slot.clearing.Load() && (isTransientWSError(execErr) || status == 401 || status == 403) {
+			shouldRetry := idempotent && attempt == 0 && !slot.evicted && !slot.clearing.Load() && (isTransientWSError(execErr) || status == 401 || status == 403)
+			delSess := session
+			if shouldRetry {
 				p.closeKernelSlotLocked(slot)
 				if status == 401 || status == 403 {
-					_, _ = p.session(ctx, true, session.Endpoint, true, slot)
+					if refreshedSess, refreshErr := p.session(ctx, true, session.Endpoint, true, slot); refreshErr == nil && refreshedSess != nil {
+						delSess = refreshedSess
+					}
 				}
 				slot.mu.Unlock()
+				cleanupRemote(delSess)
+				if p.closed.Load() {
+					return nil, ErrProviderClosed
+				}
 				continue
 			}
 			slot.mu.Unlock()
+			cleanupRemote(delSess)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
 			return nil, execErr
 		}
 

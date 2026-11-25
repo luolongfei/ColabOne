@@ -1352,7 +1352,7 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.errImportInvalidInputKey": "節點「{id}」包含空白輸入鍵名",
   "comfy.errEmptyFile": "所選檔案為空（0 B），請重新選擇有效素材",
   "comfy.indextts2RefRequiredHint":
-    "IndexTTS-2 選擇「自訂音色」時必須上傳參考音色音訊",
+    "IndexTTS-2.5 選擇「自訂音色」時必須上傳參考音色音訊",
   "comfy.runBlockedBusy": "目前有正在執行的任務或操作，請稍候",
   "comfy.runBlockedUploading": "素材正在上傳中，請稍候完成",
   "comfy.defaultVisualPrompt":
@@ -1424,7 +1424,18 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "長影片穩健",
   "comfy.videoEngineInfiniteTalkSummary": "多分鐘連續口播更穩、速度更快",
   "comfy.videoEngineLongCatTitle": "旗艦高清",
-  "comfy.videoEngineLongCatSummary": "畫質上限更高，支援原生 720p 與全棧加速",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 原生 720p + SeedVR2 7B / FlashVSR+ 超分（僅非商用）",
+  "comfy.qualityPresetCinema": "電影級旗艦",
+  "comfy.qualityPresetBalanced": "高質均衡",
+  "comfy.qualityPresetLongform": "長影片穩態",
+  "comfy.nativeRunActiveDesc":
+    "正在執行原生引擎任務「{name}」· {policy}，完成後自動儲存至作品畫廊",
+  "comfy.preflightNativeDiskFootprint":
+    "首次執行將自動準備遠端原生引擎與權重（預計需預留約 {size} 磁碟空間）",
+  "comfy.recommendedDisk": "推薦磁碟 {disk}",
+  "comfy.samplingModeShortCfg": "{steps} 步 CFG",
+  "comfy.samplingModeShortLora": "8 步雙 LoRA",
+  "comfy.videoEngineVramShortSr": "目前 GPU 顯存不足",
 
   // Settings Page
   "settings.title": "設定",

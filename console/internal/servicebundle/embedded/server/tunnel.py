@@ -70,12 +70,45 @@ def ensure_binary(root, catalog, cancel, note):
             partial.unlink(missing_ok=True)
 
 
+_NAT64_PREFIXES = (
+    ipaddress.IPv6Network("64:ff9b::/96"),
+    ipaddress.IPv6Network("64:ff9b:1::/48"),
+)
+
+
+def _is_public_ip(raw_addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(raw_addr)
+    except ValueError:
+        return False
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    if isinstance(ip, ipaddress.IPv6Address):
+        if any(ip in prefix for prefix in _NAT64_PREFIXES):
+            return False
+        sixtofour = getattr(ip, "sixtofour", None)
+        if sixtofour is not None and not _is_public_ip(str(sixtofour)):
+            return False
+        if getattr(ip, "teredo", None) is not None:
+            return False
+    if (
+        not ip.is_global
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
+        return False
+    return True
+
+
 def public_addresses(origin):
     host = urlsplit(origin).hostname
+    if not host:
+        raise ValueError("域名必须解析到公网地址")
     addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    if not addresses or any(
-        not ipaddress.ip_address(a[4][0]).is_global for a in addresses
-    ):
+    if not addresses or any(not _is_public_ip(a[4][0]) for a in addresses):
         raise ValueError("域名必须解析到公网地址")
 
 

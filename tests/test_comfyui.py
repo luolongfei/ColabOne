@@ -878,6 +878,7 @@ def test_comfy_run_route_uploads_inputs_saves_output_and_snapshot_hides_canvas_t
             "comfyui_hf_token",
             "comfyui_drive_export",
             "comfyui_tts_preview",
+            "comfyui_longcat_native",
         ]
         assert snap["runtime"]["comfyui"]["running"] is True
         assert any(w["id"] == "wf-e2e" for w in snap["workflows"])

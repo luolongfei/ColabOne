@@ -45,9 +45,11 @@ if TYPE_CHECKING:
 
 _RES_SPEC_RE = re.compile(r"^\s*(\d+)\s*[xX×*]\s*(\d+)\s*$")
 
-# Standard broadcast 1080p dimensions (1080 is divisible by 8, not 16) are
-# preserved verbatim so Full HD target output is never distorted to 1072/1088.
-_EXACT_STANDARD_RESOLUTIONS = frozenset({(1920, 1080), (1080, 1920)})
+# Standard broadcast 1080p and 2K/QHD dimensions (1080 is divisible by 8, not 16)
+# are preserved verbatim so Full HD / 2K target output is never distorted or snapped down.
+_EXACT_STANDARD_RESOLUTIONS = frozenset(
+    {(1920, 1080), (1080, 1920), (2560, 1440), (1440, 2560)}
+)
 
 _VIDEO_EXTENSIONS = frozenset({".mp4", ".webm", ".mkv", ".mov", ".gif"})
 _NON_VIDEO_EXTENSIONS = frozenset(
@@ -79,7 +81,9 @@ LONGCAT_MAX_SEGMENT_SECONDS = 9.5
 # peak host RAM stays safely inside Colab's 51–83 GB budget without OOM.
 AI_UPSCALE_MAX_SEGMENT_SECONDS = 20.0
 _STALE_WORK_DIR_MAX_AGE_SECONDS = 24 * 3600
-_SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset({"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"})
+_SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset(
+    {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN"}
+)
 _FFMPEG_CFR_CACHE_LOCK = threading.Lock()
 _FFMPEG_CFR_CACHE: dict[str, tuple[str, str]] = {}
 
@@ -196,9 +200,9 @@ def _clamp_multiple_of_16(value: int, minimum: int = 256, maximum: int = 4096) -
 def parse_target_resolution(
     spec: str, default: tuple[int, int] = (1280, 720)
 ) -> tuple[int, int]:
-    """Parse a resolution string like '1280x720' or '1080x1920'.
+    """Parse a resolution string like '1280x720', '1920x1080', or '2560x1440'.
 
-    Preserves exact standard 1080p dimensions, clamps all other parsed
+    Preserves exact standard 1080p and 2K/QHD dimensions, clamps all other parsed
     dimensions to multiples of 16 within 256..4096, and guarantees even
     positive dimensions even for the default fallback.
     """
@@ -228,6 +232,13 @@ def compute_base_dimensions(
     """Compute native diffusion base (width, height) for a video backend."""
     portrait = int(target_h) > int(target_w)
     backend = str(video_backend or "").strip().lower()
+    if backend == "longcat_avatar_native":
+        tw = max(1, int(target_w))
+        th = max(1, int(target_h))
+        ratio = tw / float(th)
+        if 0.85 <= ratio <= 1.18:
+            return (960, 960)
+        return (768, 1280) if portrait else (1280, 768)
     if backend == "longcat_avatar":
         rq = str(render_quality or "").strip().lower()
         if rq == "native_720p" and max(int(target_w), int(target_h)) >= 1280:
@@ -236,6 +247,318 @@ def compute_base_dimensions(
         return (480, 832) if portrait else (832, 480)
     # "infinitetalk" (Wan2.1 480p sweet spot) and fallback "custom".
     return (480, 832) if portrait else (832, 480)
+
+
+COLABONE_LONGCAT_NATIVE_FRAMING_PROMPTS: dict[str, str] = {
+    "half_body_gestures": (
+        "Cinematic static medium half-body shot of an engaging presenter speaking "
+        "warmly and naturally directly to the camera, natural synchronized lip "
+        "articulation with clean crisp teeth when smiling or speaking, lively "
+        "authentic facial micro-expressions, gentle eyebrow raises, natural eye "
+        "contact and blinking, expressive natural open-palm hand gestures and "
+        "anatomically accurate five-fingered hand movements emphasizing key points "
+        "without finger distortion, relaxed shoulder rhythm and subtle head nods, "
+        "steady locked tripod camera, soft studio key lighting, crisp skin and "
+        "fabric texture, clean stable background, photorealistic broadcast quality"
+    ),
+    "closeup_presenter": (
+        "Cinematic static close-up chest-and-shoulders shot of a poised presenter "
+        "speaking clearly and warmly directly to the camera, ultra-precise natural "
+        "lip articulation and jaw motion synced with speech, clean crisp natural "
+        "teeth when smiling or speaking, expressive authentic eye contact, subtle "
+        "eyebrow nuances, natural blinking and micro-nods, calm composed posture "
+        "with subtle shoulder breathing and occasional natural hand accents near "
+        "the lower frame with anatomically accurate fingers, steady locked camera, "
+        "flattering soft studio lighting, fine realistic skin pores and hair "
+        "detail, clean softly blurred stable background, photorealistic cinema quality"
+    ),
+    "full_body_dynamic": (
+        "Cinematic static wide full-body shot of a charismatic presenter standing "
+        "naturally and speaking directly to the camera, clear natural lip "
+        "articulation with crisp natural teeth when smiling or speaking, lively "
+        "expressive facial expressions, energetic yet fluid natural hand gestures "
+        "and open-palm arm movements with anatomically accurate fingers and zero "
+        "hand distortion, balanced natural posture shifts, subtle weight transfer "
+        "and organic upper-body rhythm, steady locked tripod camera with consistent "
+        "framing, even cinematic studio lighting, sharp focus on subject, clean "
+        "stable background, photorealistic production quality"
+    ),
+}
+
+COLABONE_LONGCAT_NATIVE_DEFAULT_NEGATIVE_PROMPT = (
+    "blurry, out of focus, low resolution, low quality, worst quality, JPEG "
+    "artifacts, compression noise, overexposed, harsh blown-out highlights, "
+    "flat muddy gray, static frozen face, stiff robotic posture, motionless "
+    "arms, unnatural lip sync, warped mouth, smeared or missing teeth, deformed "
+    "teeth, extra fingers, missing fingers, fused fingers, mutated hands, "
+    "poorly drawn hands, extra limbs, disfigured anatomy, flickering skin "
+    "texture, identity drift, plastic waxy skin, camera shake, sudden zoom, "
+    "flickering background, subtitles, watermark, text overlay, logo"
+)
+
+_LONGCAT_NATIVE_QUALITY_PRESETS: dict[str, dict[str, Any]] = {
+    "cinema_flagship": {
+        "sampling_mode": "non_distill_cfg",
+        "upscale_engine": "seedvr2_7b_sharp",
+        "num_inference_steps": 50,
+        "audio_guidance_scale": 4.0,
+        "text_guidance_scale": 4.0,
+        "mix_steps": 0,
+        "mix_alpha": 0.0,
+    },
+    "balanced_hd": {
+        "sampling_mode": "distill_lora_mix",
+        "upscale_engine": "seedvr2_7b",
+        "num_inference_steps": 8,
+        "audio_guidance_scale": 1.0,
+        "text_guidance_scale": 1.0,
+        "mix_steps": 4,
+        "mix_alpha": 1.0,
+    },
+    "longform_fast": {
+        "sampling_mode": "distill_lora_mix",
+        "upscale_engine": "flashvsr_plus",
+        "num_inference_steps": 8,
+        "audio_guidance_scale": 1.0,
+        "text_guidance_scale": 1.0,
+        "mix_steps": 4,
+        "mix_alpha": 1.0,
+    },
+}
+
+_LONGCAT_NATIVE_VSR_ENGINES = frozenset(
+    {"seedvr2_7b_sharp", "seedvr2_7b", "flashvsr_plus"}
+)
+
+
+def _parse_int_override(raw: Any, default: int, label: str) -> int:
+    """Safely parse an integer override, rejecting booleans, non-finite, and malformed values."""
+    if raw is None:
+        return int(default)
+    if isinstance(raw, bool):
+        raise ValueError(f"{label} 参数格式无效：不能为布尔值")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return int(default)
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                fval = float(text)
+            except ValueError as exc:
+                raise ValueError(f"{label} 参数格式无效：{raw!r}") from exc
+            if not math.isfinite(fval):
+                raise ValueError(f"{label} 必须为有限数值")
+            return int(round(fval))
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if not math.isfinite(raw):
+            raise ValueError(f"{label} 必须为有限数值")
+        return int(round(raw))
+    raise ValueError(f"{label} 参数格式无效：{raw!r}")
+
+
+def resolve_longcat_native_preset(
+    overrides: dict[str, Any] | None,
+    *,
+    target_w: int,
+    target_h: int,
+) -> dict[str, Any]:
+    """Normalize LongCat-Video-Avatar 1.6 native flagship quality/framing/VSR configuration."""
+    ov: dict[str, Any] = dict(overrides) if isinstance(overrides, dict) else {}
+
+    def _get(name: str) -> Any:
+        prefixed = f"pipeline.{name}"
+        if prefixed in ov and ov[prefixed] is not None:
+            return ov[prefixed]
+        if name in ov and ov[name] is not None:
+            return ov[name]
+        return None
+
+    norm_target_w = _ensure_even_dimension(int(target_w))
+    norm_target_h = _ensure_even_dimension(int(target_h))
+    base_w, base_h = compute_base_dimensions(
+        "longcat_avatar_native", norm_target_w, norm_target_h
+    )
+
+    quality_preset = str(_get("quality_preset") or "cinema_flagship").strip().lower()
+    if quality_preset not in _LONGCAT_NATIVE_QUALITY_PRESETS:
+        quality_preset = "cinema_flagship"
+    defaults = _LONGCAT_NATIVE_QUALITY_PRESETS[quality_preset]
+
+    framing_style = str(_get("framing_style") or "half_body_gestures").strip().lower()
+    if framing_style not in COLABONE_LONGCAT_NATIVE_FRAMING_PROMPTS:
+        framing_style = "half_body_gestures"
+
+    raw_upscale_mode = str(_get("upscale_mode") or "auto").strip().lower()
+    if raw_upscale_mode == "none":
+        upscale_mode = "none"
+        upscale_engine = "none"
+        if base_w < norm_target_w or base_h < norm_target_h:
+            if base_w == base_h:
+                norm_target_w, norm_target_h = (960, 960)
+            elif base_h > base_w:
+                norm_target_w, norm_target_h = (720, 1280)
+            else:
+                norm_target_w, norm_target_h = (1280, 720)
+    elif raw_upscale_mode == "lanczos":
+        upscale_mode = "lanczos"
+        upscale_engine = "none"
+    elif raw_upscale_mode in _LONGCAT_NATIVE_VSR_ENGINES:
+        upscale_mode = raw_upscale_mode
+        upscale_engine = raw_upscale_mode
+    else:
+        upscale_mode = "auto"
+        if base_w >= norm_target_w and base_h >= norm_target_h:
+            upscale_engine = "none"
+        else:
+            upscale_engine = str(defaults["upscale_engine"])
+
+    raw_sampling_mode = str(_get("sampling_mode") or "auto").strip().lower()
+    if raw_sampling_mode in ("non_distill_cfg", "distill_lora_mix"):
+        sampling_mode = raw_sampling_mode
+    else:
+        sampling_mode = str(defaults["sampling_mode"])
+
+    if sampling_mode == "distill_lora_mix":
+        num_inference_steps = 8
+        audio_guidance_scale = 1.0
+        text_guidance_scale = 1.0
+        default_mix_steps = (
+            int(defaults["mix_steps"])
+            if defaults["sampling_mode"] == "distill_lora_mix"
+            else 4
+        )
+        default_mix_alpha = (
+            float(defaults["mix_alpha"])
+            if defaults["sampling_mode"] == "distill_lora_mix"
+            else 1.0
+        )
+        mix_steps = max(
+            0,
+            min(
+                8,
+                _parse_int_override(
+                    _get("mix_steps"), default_mix_steps, "双 LoRA 前段步数"
+                ),
+            ),
+        )
+        mix_alpha = max(
+            0.0,
+            min(
+                1.0,
+                _parse_float_override(
+                    _get("mix_alpha"), default_mix_alpha, "双 LoRA 混合权重"
+                ),
+            ),
+        )
+    else:
+        default_steps = (
+            int(defaults["num_inference_steps"])
+            if defaults["sampling_mode"] == "non_distill_cfg"
+            else 50
+        )
+        default_audio_cfg = (
+            float(defaults["audio_guidance_scale"])
+            if defaults["sampling_mode"] == "non_distill_cfg"
+            else 4.0
+        )
+        default_text_cfg = (
+            float(defaults["text_guidance_scale"])
+            if defaults["sampling_mode"] == "non_distill_cfg"
+            else 4.0
+        )
+        num_inference_steps = max(
+            8,
+            min(
+                60,
+                _parse_int_override(
+                    _get("num_inference_steps"), default_steps, "非蒸馏采样步数"
+                ),
+            ),
+        )
+        audio_guidance_scale = max(
+            1.0,
+            min(
+                7.0,
+                _parse_float_override(
+                    _get("audio_guidance_scale"), default_audio_cfg, "音频引导强度"
+                ),
+            ),
+        )
+        text_guidance_scale = max(
+            1.0,
+            min(
+                7.0,
+                _parse_float_override(
+                    _get("text_guidance_scale"), default_text_cfg, "文本引导强度"
+                ),
+            ),
+        )
+        mix_steps = 0
+        mix_alpha = 0.0
+
+    vocal_separation = str(_get("vocal_separation") or "auto").strip().lower()
+    if vocal_separation not in ("auto", "always", "never"):
+        vocal_separation = "auto"
+
+    ref_img_index = max(
+        0,
+        min(
+            30,
+            _parse_int_override(_get("ref_img_index"), 10, "身份参考帧索引"),
+        ),
+    )
+    seed = max(
+        0,
+        min(
+            2147483647,
+            _parse_int_override(_get("seed"), 42, "随机种子"),
+        ),
+    )
+    crf = max(
+        12,
+        min(
+            24,
+            _parse_int_override(_get("crf"), 16, "终稿编码质量 CRF"),
+        ),
+    )
+
+    raw_positive = _get("positive_prompt")
+    positive_prompt = (
+        str(raw_positive).strip() if raw_positive is not None else ""
+    ) or COLABONE_LONGCAT_NATIVE_FRAMING_PROMPTS[framing_style]
+
+    raw_negative = _get("negative_prompt")
+    negative_prompt = (
+        str(raw_negative).strip() if raw_negative is not None else ""
+    ) or COLABONE_LONGCAT_NATIVE_DEFAULT_NEGATIVE_PROMPT
+
+    return {
+        "quality_preset": quality_preset,
+        "framing_style": framing_style,
+        "upscale_mode": upscale_mode,
+        "upscale_engine": upscale_engine,
+        "sampling_mode": sampling_mode,
+        "num_inference_steps": num_inference_steps,
+        "audio_guidance_scale": audio_guidance_scale,
+        "text_guidance_scale": text_guidance_scale,
+        "mix_steps": mix_steps,
+        "mix_alpha": mix_alpha,
+        "vocal_separation": vocal_separation,
+        "ref_img_index": ref_img_index,
+        "seed": seed,
+        "crf": crf,
+        "positive_prompt": positive_prompt,
+        "negative_prompt": negative_prompt,
+        "base_width": base_w,
+        "base_height": base_h,
+        "target_width": norm_target_w,
+        "target_height": norm_target_h,
+        "resolution": "720p",
+    }
 
 
 def align_wan_frames(frame_count: int, minimum: int = 17) -> int:
@@ -488,6 +811,30 @@ def plan_audio_segments(
     return segments
 
 
+def _normalize_16bit_grayscale(img: Any, fallback_transparency: Any = None) -> Any:
+    """Scale 16-bit integer grayscale ('I;16*' / 'I') by 1/256 into 8-bit 'L' or 'RGBA' (preserving tRNS)."""
+    from PIL import Image, ImageChops
+
+    mode = str(getattr(img, "mode", "") or "")
+    if not (mode == "I" or mode.startswith("I;16")):
+        return img
+    info = getattr(img, "info", None)
+    trns = (
+        info.get("transparency")
+        if isinstance(info, dict) and "transparency" in info
+        else fallback_transparency
+    )
+    as_i = img if mode == "I" else img.convert("I")
+    l8 = as_i.point(lambda v: v * (1.0 / 256.0)).convert("L")
+    if isinstance(trns, int) and not isinstance(trns, bool):
+        gt = as_i.point(lambda v: v - trns).convert("L")
+        lt = as_i.point(lambda v: trns - v).convert("L")
+        diff_l = ImageChops.lighter(gt, lt)
+        alpha = diff_l.point([0] + [255] * 255)
+        return Image.merge("RGBA", (l8, l8, l8, alpha))
+    return l8
+
+
 def prepare_anchor_image(
     src_path: Path, dst_path: Path, width: int, height: int
 ) -> Path:
@@ -503,8 +850,21 @@ def prepare_anchor_image(
     resampling = getattr(Image, "Resampling", Image).LANCZOS
     with Image.open(src) as img:
         img.load()
+        orig_trns = img.info.get("transparency")
         oriented = ImageOps.exif_transpose(img)
-        if oriented.mode != "RGB":
+        oriented = _normalize_16bit_grayscale(
+            oriented, fallback_transparency=orig_trns
+        )
+        has_alpha = (
+            "A" in oriented.getbands()
+            or oriented.mode in ("RGBA", "LA", "PA")
+            or "transparency" in oriented.info
+        )
+        if has_alpha:
+            rgba = oriented.convert("RGBA")
+            backdrop = Image.new("RGBA", rgba.size, (245, 245, 245, 255))
+            oriented = Image.alpha_composite(backdrop, rgba).convert("RGB")
+        elif oriented.mode != "RGB":
             oriented = oriented.convert("RGB")
         fitted = ImageOps.fit(
             oriented,
@@ -882,14 +1242,26 @@ def build_concat_filter_script(
 
 def _is_readable_pcm_wav(path: Path) -> bool:
     try:
+        file_size = Path(path).stat().st_size
         with wave.open(str(path), "rb") as wf:
-            return (
+            nchannels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            nframes = wf.getnframes()
+            if not (
                 wf.getcomptype() == "NONE"
-                and wf.getsampwidth() in (1, 2, 3, 4)
-                and wf.getframerate() > 0
-                and wf.getnframes() > 0
-            )
-    except (OSError, wave.Error, EOFError):
+                and nchannels > 0
+                and sampwidth in (1, 2, 3, 4)
+                and framerate > 0
+                and nframes > 0
+            ):
+                return False
+            frame_bytes = nchannels * sampwidth
+            if file_size < 44 + nframes * frame_bytes:
+                return False
+            wf.setpos(nframes - 1)
+            return len(wf.readframes(1)) == frame_bytes
+    except (OSError, wave.Error, EOFError, ValueError):
         return False
 
 
@@ -1076,14 +1448,37 @@ def _response_ok(resp: Any) -> bool:
     return bool(getattr(resp, "ok", True))
 
 
+def _pg_has_members(pgid: int) -> bool:
+    """Return True if any process still exists in POSIX process group `pgid`."""
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> None:
     """Terminate proc and always kill any lingering process-group members, even if leader exited."""
     pid = getattr(proc, "pid", None)
-    has_killpg = isinstance(pid, int) and pid > 0 and hasattr(os, "killpg")
+    own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+    can_killpg = (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid > 0
+        and hasattr(os, "killpg")
+        and pid != own_pgrp
+    )
     leader_alive = proc.poll() is None
 
+    if not leader_alive and not can_killpg:
+        return
+
     used_pg = False
-    if has_killpg:
+    if can_killpg:
         try:
             os.killpg(pid, signal.SIGTERM)
             used_pg = True
@@ -1096,25 +1491,25 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
         except OSError:
             pass
 
+    deadline = time.monotonic() + max(0.0, float(timeout))
     if leader_alive:
         try:
-            proc.wait(timeout=timeout)
-            leader_alive = False
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             pass
 
-    if has_killpg:
-        if used_pg and not leader_alive:
+    if used_pg:
+        while True:
+            proc.poll()
+            if not _pg_has_members(pid) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        if _pg_has_members(pid):
             try:
-                os.killpg(pid, 0)
-                time.sleep(0.05)
+                os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
-                return
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    elif leader_alive:
+                pass
+    elif proc.poll() is None:
         try:
             proc.kill()
         except OSError:
@@ -1122,7 +1517,7 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
 
     if proc.poll() is None:
         try:
-            proc.wait(timeout=timeout)
+            proc.wait(timeout=max(0.5, float(timeout)))
         except subprocess.TimeoutExpired:
             pass
 
@@ -1152,12 +1547,14 @@ def _run_ffmpeg_command(
     has_cancel_hook = hasattr(task, "cancel_hook")
     prev_hook = None
     cancel_hook = None
+    term_lock = threading.Lock()
     if has_cancel_hook:
         with task_lock if task_lock is not None else nullcontext():
             prev_hook = task.cancel_hook
 
             def _cancel_ffmpeg() -> None:
-                _terminate_process_group(proc, timeout=2.0)
+                with term_lock:
+                    _terminate_process_group(proc, timeout=2.0)
                 if callable(prev_hook):
                     try:
                         prev_hook()
@@ -1185,11 +1582,289 @@ def _run_ffmpeg_command(
                 tail = log.read_text(encoding="utf-8", errors="replace")[-600:]
             raise RuntimeError(f"音视频处理失败（退出码 {proc.returncode}）：{tail}")
     finally:
-        if has_cancel_hook:
-            with task_lock if task_lock is not None else nullcontext():
-                if task.cancel_hook is cancel_hook:
-                    task.cancel_hook = prev_hook
-        _terminate_process_group(proc)
+        try:
+            with term_lock:
+                _terminate_process_group(proc)
+        finally:
+            if has_cancel_hook:
+                with task_lock if task_lock is not None else nullcontext():
+                    if task.cancel_hook is cancel_hook:
+                        task.cancel_hook = prev_hook
+
+
+def _existing_disk_ancestor(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return Path("/")
+
+
+def _resolve_contained_worker_file(
+    work_dir: Path,
+    candidate: Path,
+    *,
+    label: str,
+    missing_message: str,
+) -> Path:
+    """Enforce strict _safe_contained_file containment on worker-returned files inside work_dir."""
+    path_label = label if label.endswith("路径") else f"{label}路径"
+    cand = _validate_safe_path(candidate, path_label)
+    if work_dir.is_symlink() or not work_dir.is_dir():
+        raise RuntimeError(f"{label}工作目录安全校验失败")
+
+    work_resolved = work_dir.resolve()
+    rel: Path | None = None
+    try:
+        rel = cand.relative_to(work_dir)
+    except ValueError:
+        try:
+            rel = cand.relative_to(work_resolved)
+        except ValueError:
+            rel = None
+
+    if rel is None and not cand.is_absolute():
+        norm_cand = Path(str(cand).replace("\\", "/"))
+        if (
+            not norm_cand.is_absolute()
+            and norm_cand.parts
+            and not any(p == ".." for p in norm_cand.parts)
+        ):
+            rel = norm_cand
+
+    if cand.is_absolute() and cand.is_symlink():
+        raise RuntimeError(f"{path_label}不能是符号链接")
+
+    if rel is None or not rel.parts or any(p == ".." for p in rel.parts):
+        raise RuntimeError(f"{path_label}超出工作目录安全范围")
+
+    cur_raw = work_dir
+    for part in rel.parts:
+        cur_raw = cur_raw / part
+        if cur_raw.is_symlink():
+            raise RuntimeError(f"{path_label}包含符号链接，安全校验失败")
+
+    if not cur_raw.is_file() or cur_raw.stat().st_size <= 0:
+        raise RuntimeError(missing_message)
+
+    safe = _safe_contained_file(work_dir, *rel.parts)
+    if safe is None:
+        safe = _safe_contained_file(work_resolved, *rel.parts)
+    if safe is None or safe.stat().st_size <= 0:
+        raise RuntimeError(f"{path_label}安全校验失败")
+    return safe
+
+
+def _unlink_contained_file(work_dir: Path, target: Path) -> None:
+    """Safely unlink target only if strictly contained within work_dir (resolving work_dir consistently)."""
+    if work_dir.is_symlink() or not work_dir.is_dir():
+        return
+    work_resolved = work_dir.resolve()
+    rel: Path | None = None
+    try:
+        rel = target.relative_to(work_dir)
+    except ValueError:
+        try:
+            rel = target.relative_to(work_resolved)
+        except ValueError:
+            rel = None
+    if rel is None or not rel.parts or any(p == ".." for p in rel.parts):
+        return
+    safe = _safe_contained_file(work_dir, *rel.parts)
+    if safe is None:
+        safe = _safe_contained_file(work_resolved, *rel.parts)
+    if safe is not None:
+        try:
+            safe.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _call_avatar_check_preflight(
+    check_preflight_fn: Callable[..., Any],
+    *,
+    min_vram_mib: int,
+    min_disk_mib: int,
+    upscale_mode: str,
+    sampling_mode: str,
+    vocal_separation: str,
+) -> dict[str, Any] | None:
+    pf_kwargs: dict[str, Any] = {
+        "min_vram_mib": min_vram_mib,
+        "min_disk_mib": min_disk_mib,
+        "upscale_mode": upscale_mode,
+    }
+    try:
+        pf_sig = inspect.signature(check_preflight_fn)
+        if "sampling_mode" in pf_sig.parameters:
+            pf_kwargs["sampling_mode"] = sampling_mode
+        if "vocal_separation" in pf_sig.parameters:
+            pf_kwargs["vocal_separation"] = vocal_separation
+    except (TypeError, ValueError):
+        pass
+    res = check_preflight_fn(**pf_kwargs)
+    return dict(res) if isinstance(res, dict) else None
+
+
+_PRESET_ANCHOR_TTS_ENGINES = frozenset(
+    {"fish_drama3", "moss_tts_v1_5", "fish_s2_pro", "indextts2"}
+)
+_VOXCPM2_DEFAULT_DISK_MIB = 6144
+
+
+def _estimate_uncached_tts_disk_mib(
+    tts_runner: Any,
+    engine_spec: dict[str, Any],
+    *,
+    allow_unavailable: bool,
+    ref_audio_path: Path | None = None,
+    voice_preset: str = "",
+) -> int:
+    if tts_runner is None or allow_unavailable:
+        return 0
+    total_mib = 0
+    has_cache_fn = getattr(tts_runner, "_has_engine_model_cache", None)
+    min_disk_mib = max(0, int(engine_spec.get("min_disk_mib") or 0))
+    if min_disk_mib > 0:
+        primary_cached = False
+        if callable(has_cache_fn):
+            try:
+                primary_cached = has_cache_fn(engine_spec) is True
+            except Exception:
+                primary_cached = False
+        if not primary_cached:
+            total_mib += min_disk_mib
+
+    engine_id = str(engine_spec.get("id") or "").strip()
+    if (
+        engine_id in _PRESET_ANCHOR_TTS_ENGINES
+        and ref_audio_path is None
+        and str(voice_preset or "").strip().lower() != "custom"
+    ):
+        preset_cached = False
+        is_preset_cached_fn = getattr(
+            tts_runner, "_is_preset_reference_cached", None
+        )
+        if callable(is_preset_cached_fn):
+            try:
+                from server.tts_engines import resolve_colabone_voice_preset
+
+                resolved_preset = resolve_colabone_voice_preset(
+                    engine_spec, voice_preset
+                )
+                if isinstance(resolved_preset, dict):
+                    preset_cached = is_preset_cached_fn(resolved_preset) is True
+            except Exception:
+                preset_cached = False
+        if not preset_cached:
+            vox_spec: dict[str, Any] | None = None
+            engines_by_id = getattr(tts_runner, "engines_by_id", None)
+            if isinstance(engines_by_id, dict) and isinstance(
+                engines_by_id.get("voxcpm2"), dict
+            ):
+                vox_spec = engines_by_id["voxcpm2"]
+            else:
+                get_engine_fn = getattr(tts_runner, "get_engine", None)
+                if callable(get_engine_fn):
+                    try:
+                        candidate = get_engine_fn("voxcpm2")
+                        if isinstance(candidate, dict):
+                            vox_spec = candidate
+                    except Exception:
+                        vox_spec = None
+            vox_cached = False
+            if callable(has_cache_fn) and isinstance(vox_spec, dict):
+                try:
+                    vox_cached = has_cache_fn(vox_spec) is True
+                except Exception:
+                    vox_cached = False
+            if not vox_cached:
+                vox_mib = (
+                    max(0, int(vox_spec.get("min_disk_mib") or 0))
+                    if isinstance(vox_spec, dict)
+                    else 0
+                )
+                total_mib += vox_mib or _VOXCPM2_DEFAULT_DISK_MIB
+
+    return total_mib
+
+
+def _estimate_uncached_native_disk_mib(
+    avatar_engines: Any,
+    preset: dict[str, Any],
+    preflight_info: dict[str, Any] | None,
+) -> int:
+    """Estimate remaining Stage 2/3 disk requirement in MiB (accounting for sampling/vocal deltas)."""
+    if not isinstance(preflight_info, dict):
+        return 0
+    raw_req = preflight_info.get("required_disk_mib")
+    if raw_req is None or isinstance(raw_req, bool):
+        return 0
+    try:
+        req_mib = max(0, int(raw_req))
+    except (TypeError, ValueError):
+        return 0
+
+    check_fn = getattr(avatar_engines, "check_preflight", None)
+    handles_patterns = False
+    if callable(check_fn):
+        try:
+            sig = inspect.signature(check_fn)
+            handles_patterns = (
+                "sampling_mode" in sig.parameters
+                and "vocal_separation" in sig.parameters
+            )
+        except (TypeError, ValueError):
+            handles_patterns = False
+
+    if not handles_patterns and bool(preflight_info.get("all_weights_cached")):
+        valid_fn = getattr(avatar_engines, "_weights_marker_valid", None)
+        weights_dir = getattr(avatar_engines, "weights_dir", None)
+        if callable(valid_fn) and isinstance(weights_dir, (str, os.PathLike)):
+            try:
+                from server.avatar_engines import (
+                    COLABONE_LONGCAT16_AVATAR_HF_REPO,
+                    COLABONE_LONGCAT16_AVATAR_HF_REV,
+                )
+
+                candidates = [Path(weights_dir) / "longcat16_avatar"]
+                drive_fn = getattr(avatar_engines, "_resolve_drive_cache_root", None)
+                if callable(drive_fn):
+                    drive_root = drive_fn()
+                    if drive_root is not None:
+                        candidates.append(
+                            Path(drive_root) / "weights" / "longcat16_avatar"
+                        )
+
+                def _has_patterns(pats: list[str]) -> bool:
+                    return any(
+                        valid_fn(
+                            cand,
+                            repo_id=COLABONE_LONGCAT16_AVATAR_HF_REPO,
+                            revision=COLABONE_LONGCAT16_AVATAR_HF_REV,
+                            required_patterns=pats,
+                        )
+                        for cand in candidates
+                    )
+
+                sampling_mode = str(
+                    preset.get("sampling_mode") or "non_distill_cfg"
+                ).strip().lower()
+                vocal_sep = str(
+                    preset.get("vocal_separation") or "auto"
+                ).strip().lower()
+                if sampling_mode in ("distill_lora_mix", "auto") and not _has_patterns(
+                    ["loraA/**", "loraB/**"]
+                ):
+                    req_mib += 2560
+                if vocal_sep != "never" and not _has_patterns(["vocal_separator/**"]):
+                    req_mib += 256
+            except Exception:
+                pass
+
+    return req_mib
 
 
 def _node_default_value(workflow: dict[str, Any], field_key: str) -> Any:
@@ -1378,22 +2053,68 @@ def _read_wav_mono_np(path: Path, np_mod: Any) -> tuple[Any, int]:
 
 
 class ColabOneDigitalHumanRunner:
-    """End-to-end long-video digital human pipeline runner for remote ComfyUI."""
+    """End-to-end long-video digital human pipeline runner for remote ComfyUI and native engines."""
 
     def __init__(
         self,
         manager,
         tts_runner: ColabOneRemoteTtsRunner | None,
         run_cmd_fn: Callable[..., Any] | None = None,
+        avatar_engines: Any = None,
     ):
         self.manager = manager
         self.tts_runner = tts_runner
         self._run_cmd_fn = run_cmd_fn
+        self._avatar_engines = avatar_engines
         runtime_root = getattr(getattr(self.manager, "runtime", None), "root", None)
         if isinstance(runtime_root, (str, os.PathLike)):
             raw_root = os.fspath(runtime_root)
             if not any(ch in raw_root for ch in ("\r", "\n", "\x00")):
                 _prune_stale_work_dirs(Path(raw_root) / "comfyui-work")
+
+    def get_avatar_engines(self) -> Any:
+        """Lazily obtain or instantiate ColabOneAvatarEngineManager."""
+        if self._avatar_engines is not None:
+            return self._avatar_engines
+        mgr_engines = getattr(self.manager, "avatar_engines", None)
+        if mgr_engines is not None:
+            self._avatar_engines = mgr_engines
+            return mgr_engines
+
+        from server.avatar_engines import ColabOneAvatarEngineManager
+
+        runtime = getattr(self.manager, "runtime", None)
+        drive = getattr(runtime, "drive", None)
+        runtime_root = getattr(runtime, "root", None)
+        if isinstance(runtime_root, (str, os.PathLike)):
+            base_dir = Path(runtime_root)
+        else:
+            models_dir = getattr(self.manager, "models_dir", None)
+            if isinstance(models_dir, (str, os.PathLike)):
+                base_dir = Path(models_dir).parent
+            else:
+                base_dir = Path(tempfile.gettempdir()) / "colabone-remote"
+        gpu_info_fn = getattr(runtime, "gpu_info", None)
+        engines = ColabOneAvatarEngineManager(
+            base_dir,
+            runtime=runtime,
+            drive=drive,
+            run_cmd_fn=self._run_cmd_fn,
+            gpu_info_fn=gpu_info_fn if callable(gpu_info_fn) else None,
+        )
+        self._avatar_engines = engines
+        if (
+            self.manager is not None
+            and getattr(self.manager, "avatar_engines", None) is None
+        ):
+            try:
+                self.manager.avatar_engines = engines
+            except Exception:
+                pass
+        return engines
+
+    def _get_avatar_engines(self) -> Any:
+        return self.get_avatar_engines()
 
     def _ffmpeg_binary(self) -> str:
         found = shutil.which("ffmpeg")
@@ -1810,9 +2531,15 @@ class ColabOneDigitalHumanRunner:
                 pass
 
     def _prepare_uploaded_audio(
-        self, task, audio_src_path: Path, work_dir: Path
+        self,
+        task,
+        audio_src_path: Path,
+        work_dir: Path,
+        *,
+        preserve_stereo_dynamics: bool = False,
+        detect_silence: bool = True,
     ) -> tuple[Path, float, list[float]]:
-        """Uniformly decode/resample uploaded audio to 48 kHz mono PCM16 WAV and normalize to -23 LUFS."""
+        """Decode/resample uploaded audio to 48 kHz PCM16 WAV (normalizing legacy mono or preserving native stereo dynamics)."""
         from server.tts_engines import (
             _normalize_audio_loudness_np,
             _resample_audio_np,
@@ -1826,8 +2553,85 @@ class ColabOneDigitalHumanRunner:
         work_dir = _validate_safe_path(work_dir, "工作目录")
         work_dir.mkdir(parents=True, exist_ok=True)
         master_wav = work_dir / "master_audio.wav"
+        is_pcm_wav = _is_readable_pcm_wav(audio_src_path)
+
+        if preserve_stereo_dynamics:
+            needs_ffmpeg = True
+            wav_channels = 0
+            if is_pcm_wav:
+                with wave.open(str(audio_src_path), "rb") as wf:
+                    wav_channels = wf.getnchannels()
+                    if (
+                        wav_channels in (1, 2)
+                        and wf.getframerate() == 48000
+                        and wf.getsampwidth() == 2
+                        and wf.getnframes() > 0
+                    ):
+                        needs_ffmpeg = False
+
+            if not needs_ffmpeg:
+                shutil.copyfile(audio_src_path, master_wav)
+            else:
+                ffmpeg_bin = self._ffmpeg_binary()
+                decoded_wav = work_dir / "uploaded_decoded.wav"
+                decode_cmd = [
+                    ffmpeg_bin,
+                    "-y",
+                    "-v",
+                    "error",
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-i",
+                    str(audio_src_path),
+                    "-vn",
+                    "-sn",
+                    "-dn",
+                    "-map",
+                    "0:a:0",
+                ]
+                if is_pcm_wav and wav_channels > 0:
+                    decode_cmd.extend(["-ac", "1" if wav_channels == 1 else "2"])
+                else:
+                    decode_cmd.extend(["-af", "aformat=channel_layouts=mono|stereo"])
+                decode_cmd.extend(
+                    [
+                        "-ar",
+                        "48000",
+                        "-c:a",
+                        "pcm_s16le",
+                        str(decoded_wav),
+                    ]
+                )
+                self._invoke_run_cmd(
+                    decode_cmd,
+                    task,
+                    work_dir / "ffmpeg_audio_decode.log",
+                    timeout=300,
+                )
+                if (
+                    decoded_wav.is_file()
+                    and decoded_wav.stat().st_size > 0
+                    and _is_readable_pcm_wav(decoded_wav)
+                ):
+                    os.replace(decoded_wav, master_wav)
+                elif self._run_cmd_fn is not None and is_pcm_wav:
+                    # Offline test spy recorded ffmpeg decode without writing decoded_wav.
+                    shutil.copyfile(audio_src_path, master_wav)
+                else:
+                    raise RuntimeError("音频格式转换失败：ffmpeg 未产出 WAV 文件")
+
+            duration = _wav_duration_seconds(master_wav)
+            if duration <= 0.0:
+                raise ValueError("输入音频文件为空")
+            valleys = (
+                detect_pcm_silence_valleys(master_wav)
+                if detect_silence and _is_readable_pcm_wav(master_wav)
+                else []
+            )
+            return (master_wav, duration, valleys)
+
         needs_ffmpeg = True
-        if _is_readable_pcm_wav(audio_src_path):
+        if is_pcm_wav:
             with wave.open(str(audio_src_path), "rb") as wf:
                 if (
                     wf.getnchannels() == 1
@@ -1850,6 +2654,11 @@ class ColabOneDigitalHumanRunner:
                     "file,pipe",
                     "-i",
                     str(audio_src_path),
+                    "-vn",
+                    "-sn",
+                    "-dn",
+                    "-map",
+                    "0:a:0",
                     "-ac",
                     "1",
                     "-ar",
@@ -1864,7 +2673,7 @@ class ColabOneDigitalHumanRunner:
             )
             if decoded_wav.is_file() and decoded_wav.stat().st_size > 0:
                 source_for_norm = decoded_wav
-            elif self._run_cmd_fn is not None and _is_readable_pcm_wav(audio_src_path):
+            elif self._run_cmd_fn is not None and is_pcm_wav:
                 # Offline test spy recorded ffmpeg decode without writing decoded_wav.
                 source_for_norm = audio_src_path
             else:
@@ -1909,7 +2718,7 @@ class ColabOneDigitalHumanRunner:
 
         valleys = (
             detect_pcm_silence_valleys(master_wav)
-            if _is_readable_pcm_wav(master_wav)
+            if detect_silence and _is_readable_pcm_wav(master_wav)
             else []
         )
         return (master_wav, duration, valleys)
@@ -2085,6 +2894,628 @@ class ColabOneDigitalHumanRunner:
             "flash_attn_2_available": False,
         }
 
+    def _run_longcat_native_pipeline(
+        self,
+        *,
+        task,
+        wf: dict[str, Any],
+        wf_name: str,
+        preset: dict[str, Any],
+        anchor_prepared_path: Path,
+        master_audio_path: Path,
+        duration: float,
+        output_fps: int,
+        master_sample_rate: int,
+        audio_source: str,
+        hf_token: str,
+        work_dir: Path,
+        ffmpeg_bin: str,
+        started: float,
+        safe_task_tag: str,
+        preflight_checked: bool = False,
+        preflight_info: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Execute Stage 2 (LongCat 1.6 native 720p) + Stage 3 (SeedVR2/FlashVSR+) + Stage 4 master encode."""
+        from server.runtime import ColabOneCancelledError, _scrub_secret_text
+
+        task.check()
+        avatar_engines = self.get_avatar_engines()
+
+        resolved_preflight: dict[str, Any] = (
+            dict(preflight_info) if isinstance(preflight_info, dict) else {}
+        )
+        if not preflight_checked:
+            check_preflight_fn = getattr(avatar_engines, "check_preflight", None)
+            if callable(check_preflight_fn):
+                res_pf = _call_avatar_check_preflight(
+                    check_preflight_fn,
+                    min_vram_mib=int(wf.get("min_vram_mib") or 49152),
+                    min_disk_mib=int(wf.get("min_disk_mib") or 73728),
+                    upscale_mode=preset["upscale_engine"],
+                    sampling_mode=preset["sampling_mode"],
+                    vocal_separation=preset["vocal_separation"],
+                )
+                if isinstance(res_pf, dict):
+                    resolved_preflight = res_pf
+
+        # Ensure full GPU exclusivity for Stage 2 + Stage 3 (never start ComfyUI).
+        runtime = getattr(self.manager, "runtime", None)
+        if getattr(runtime, "loaded", None) and callable(
+            getattr(runtime, "_stop_engine", None)
+        ):
+            task.note("正在卸载当前对话模型以释放显存")
+            runtime._stop_engine()
+
+        is_running_fn = getattr(self.manager, "is_running", None)
+        stop_server_fn = getattr(self.manager, "stop_server", None)
+        if callable(is_running_fn) and callable(stop_server_fn):
+            try:
+                comfy_running = is_running_fn() is True
+            except Exception:
+                comfy_running = False
+            if comfy_running:
+                task.note("正在释放远端 ComfyUI 显存以独占 96GB 跑原生旗舰引擎")
+                try:
+                    stop_server_fn()
+                except ColabOneCancelledError:
+                    raise
+                except Exception as exc:
+                    scrubbed_err = _scrub_secret_text(
+                        str(exc) or type(exc).__name__, hf_token
+                    )
+                    task.note(
+                        f"停止远端 ComfyUI 时出现非致命提示：{scrubbed_err}",
+                        level="warning",
+                    )
+
+        base_w = int(preset["base_width"])
+        base_h = int(preset["base_height"])
+        target_w = int(preset["target_width"])
+        target_h = int(preset["target_height"])
+        out_w, out_h = target_w, target_h
+        upscale_engine = str(preset["upscale_engine"] or "none").strip().lower()
+        exact_frames = max(
+            1, int(math.ceil(float(duration) * float(output_fps) - 1e-6))
+        )
+
+        intermediate_mkvs: list[Path] = []
+        try:
+            # --------------------------------------------------------------
+            # Stage 2A — Ensure LongCat-Video-Avatar 1.6 Native Ready (18%..30%)
+            # --------------------------------------------------------------
+            task.check()
+            env_msg = f"正在准备 LongCat-Video-Avatar 1.6 原生旗舰环境与权重：{wf_name}"
+            _update_task(task, message=env_msg)
+            task.note(env_msg)
+            longcat_paths = avatar_engines.ensure_longcat16_ready(
+                task,
+                hf_token=hf_token,
+                sampling_mode=preset["sampling_mode"],
+                vocal_separation=preset["vocal_separation"],
+                progress_range=(0.18, 0.30),
+            )
+            wf_id = str(wf.get("id") or "").strip()
+            mark_ready_fn = getattr(self.manager, "mark_native_pack_ready", None)
+            if wf_id and callable(mark_ready_fn):
+                mark_ready_fn(wf_id)
+
+            # --------------------------------------------------------------
+            # Stage 2B — Execute LongCat-Video-Avatar 1.6 Native 720p (30%..72%)
+            # --------------------------------------------------------------
+            task.check()
+            stage2_mkv_path = _validate_safe_path(
+                work_dir / "stage2_720p.mkv", "Stage 2 视频路径"
+            )
+            intermediate_mkvs.append(stage2_mkv_path)
+            stage2_msg = (
+                f"{wf_name} · 正在使用 LongCat 1.6 原生引擎渲染 720p 主画面"
+                f"（{base_w}×{base_h}，{exact_frames} 帧，{preset['sampling_mode']}）"
+            )
+            _update_task(task, progress=0.30, message=stage2_msg)
+            task.note(stage2_msg)
+
+            longcat_config: dict[str, Any] = {
+                "image_path": str(anchor_prepared_path),
+                "audio_path": str(master_audio_path),
+                "speakers": [{"id": "person1", "audio_path": str(master_audio_path)}],
+                "is_tts_audio": bool(audio_source == "tts"),
+                "output_video_path": str(stage2_mkv_path),
+                "output_manifest_path": str(
+                    work_dir / "stage2_longcat16_manifest.json"
+                ),
+                "resolution": str(preset.get("resolution") or "720p"),
+                "width": base_w,
+                "height": base_h,
+                "fps": int(output_fps),
+                "exact_frames": exact_frames,
+                "num_frames": 93,
+                "num_cond_frames": 13,
+                "sampling_mode": preset["sampling_mode"],
+                "num_inference_steps": int(preset["num_inference_steps"]),
+                "audio_guidance_scale": float(preset["audio_guidance_scale"]),
+                "text_guidance_scale": float(preset["text_guidance_scale"]),
+                "mix_steps": int(preset["mix_steps"]),
+                "mix_alpha": float(preset["mix_alpha"]),
+                "vocal_separation": preset["vocal_separation"],
+                "ref_img_index": int(preset["ref_img_index"]),
+                "seed": int(preset["seed"]),
+                "prompt": preset["positive_prompt"],
+                "negative_prompt": preset["negative_prompt"],
+                "ffmpeg_bin": ffmpeg_bin,
+            }
+            if isinstance(longcat_paths, dict):
+                if longcat_paths.get("repo_dir"):
+                    longcat_config["longcat_repo_dir"] = str(longcat_paths["repo_dir"])
+                if longcat_paths.get("avatar_dir"):
+                    longcat_config["avatar_checkpoint_dir"] = str(
+                        longcat_paths["avatar_dir"]
+                    )
+                if longcat_paths.get("base_dir"):
+                    longcat_config["base_video_dir"] = str(longcat_paths["base_dir"])
+                if longcat_paths.get("compile_cache_dir"):
+                    longcat_config["compile_cache_dir"] = str(
+                        longcat_paths["compile_cache_dir"]
+                    )
+
+            stage2_started = time.monotonic()
+            stage2_result = avatar_engines.run_longcat16(
+                task,
+                config=longcat_config,
+                runtime_paths=longcat_paths,
+                work_dir=work_dir,
+                progress_range=(0.30, 0.72),
+            )
+            stage2_candidate = stage2_mkv_path
+            actual_s2_w, actual_s2_h = base_w, base_h
+            if isinstance(stage2_result, dict):
+                raw_s2_out = (
+                    stage2_result.get("output_video_path")
+                    or stage2_result.get("output_path")
+                    or stage2_result.get("video_path")
+                )
+                if raw_s2_out:
+                    stage2_candidate = _validate_safe_path(
+                        Path(str(raw_s2_out)), "Stage 2 输出视频路径"
+                    )
+                try:
+                    s2_w = int(stage2_result.get("width") or 0)
+                    s2_h = int(stage2_result.get("height") or 0)
+                    if s2_w > 0 and s2_h > 0:
+                        actual_s2_w, actual_s2_h = s2_w, s2_h
+                except (TypeError, ValueError):
+                    pass
+
+            stage2_video_path = _resolve_contained_worker_file(
+                work_dir,
+                stage2_candidate,
+                label="Stage 2 输出视频",
+                missing_message="LongCat-Video-Avatar 1.6 渲染失败：未产出有效的 720p 无损中间视频",
+            )
+            if stage2_video_path != stage2_mkv_path:
+                intermediate_mkvs.append(stage2_video_path)
+            _update_task(task, progress=0.72)
+            stage2_elapsed = max(0.0, time.monotonic() - stage2_started)
+            task.note(
+                f"{wf_name} · LongCat 1.6 原生 720p 主画面生成完成"
+                f"（耗时 {format_colabone_duration_zh(stage2_elapsed, subsecond=True)}）"
+            )
+
+            # --------------------------------------------------------------
+            # Stage 3 — Diffusion Video Super-Resolution (72%..94%)
+            # --------------------------------------------------------------
+            video_src_path = stage2_video_path
+            actual_src_w, actual_src_h = actual_s2_w, actual_s2_h
+            stage3_video_path: Path | None = None
+            if upscale_engine != "none":
+                task.check()
+                vsr_prep_msg = f"正在准备视频扩散超分引擎与权重：{upscale_engine}"
+                _update_task(task, progress=0.72, message=vsr_prep_msg)
+                task.note(vsr_prep_msg)
+                vsr_paths = avatar_engines.ensure_vsr_ready(
+                    task,
+                    engine=upscale_engine,
+                    hf_token=hf_token,
+                    progress_range=(0.72, 0.78),
+                )
+
+                task.check()
+                stage3_mkv_path = _validate_safe_path(
+                    work_dir / "stage3_upscaled.mkv", "Stage 3 超分视频路径"
+                )
+                intermediate_mkvs.append(stage3_mkv_path)
+                vsr_run_msg = (
+                    f"{wf_name} · 正在执行 {upscale_engine} 视频扩散超分"
+                    f"（{target_w}×{target_h}）"
+                )
+                _update_task(task, progress=0.78, message=vsr_run_msg)
+                task.note(vsr_run_msg)
+
+                vsr_config: dict[str, Any] = {
+                    "engine": upscale_engine,
+                    "work_dir": str(work_dir),
+                    "input_video_path": str(stage2_video_path),
+                    "output_video_path": str(stage3_mkv_path),
+                    "output_manifest_path": str(
+                        work_dir / "stage3_vsr_manifest.json"
+                    ),
+                    "source_width": actual_s2_w,
+                    "source_height": actual_s2_h,
+                    "target_width": target_w,
+                    "target_height": target_h,
+                    "fps": int(output_fps),
+                    "exact_frames": exact_frames,
+                    "seed": int(preset["seed"]),
+                    "color_correction": "lab",
+                    "ffmpeg_bin": ffmpeg_bin,
+                }
+                if isinstance(vsr_paths, dict):
+                    if vsr_paths.get("repo_dir"):
+                        vsr_config["repo_dir"] = str(vsr_paths["repo_dir"])
+                    if vsr_paths.get("weights_dir"):
+                        vsr_config["weights_dir"] = str(vsr_paths["weights_dir"])
+                    if vsr_paths.get("python"):
+                        vsr_config["python_bin"] = str(vsr_paths["python"])
+                pf_vram = int(resolved_preflight.get("total_mib") or 0)
+                if pf_vram > 0:
+                    vsr_config["vram_mib"] = pf_vram
+
+                stage3_started = time.monotonic()
+                stage3_result = avatar_engines.run_diffusion_vsr(
+                    task,
+                    config=vsr_config,
+                    runtime_paths=vsr_paths,
+                    work_dir=work_dir,
+                    progress_range=(0.78, 0.94),
+                )
+                stage3_candidate = stage3_mkv_path
+                actual_s3_w, actual_s3_h = target_w, target_h
+                if isinstance(stage3_result, dict):
+                    raw_s3_out = (
+                        stage3_result.get("output_video_path")
+                        or stage3_result.get("output_path")
+                        or stage3_result.get("video_path")
+                    )
+                    if raw_s3_out:
+                        stage3_candidate = _validate_safe_path(
+                            Path(str(raw_s3_out)), "Stage 3 超分输出视频路径"
+                        )
+                    try:
+                        raw_s3_w = (
+                            stage3_result.get("width")
+                            or stage3_result.get("target_width")
+                            or 0
+                        )
+                        raw_s3_h = (
+                            stage3_result.get("height")
+                            or stage3_result.get("target_height")
+                            or 0
+                        )
+                        if not isinstance(raw_s3_w, bool) and not isinstance(
+                            raw_s3_h, bool
+                        ):
+                            s3_w = int(raw_s3_w)
+                            s3_h = int(raw_s3_h)
+                            if s3_w > 0 and s3_h > 0:
+                                actual_s3_w, actual_s3_h = s3_w, s3_h
+                    except (TypeError, ValueError):
+                        pass
+
+                stage3_video_path = _resolve_contained_worker_file(
+                    work_dir,
+                    stage3_candidate,
+                    label="Stage 3 超分输出视频",
+                    missing_message=f"视频扩散超分失败（{upscale_engine}）：未产出有效的无损超分视频",
+                )
+                if stage3_video_path != stage3_mkv_path:
+                    intermediate_mkvs.append(stage3_video_path)
+                video_src_path = stage3_video_path
+                actual_src_w, actual_src_h = actual_s3_w, actual_s3_h
+                _update_task(task, progress=0.94)
+                stage3_elapsed = max(0.0, time.monotonic() - stage3_started)
+                task.note(
+                    f"{wf_name} · {upscale_engine} 视频扩散超分完成"
+                    f"（耗时 {format_colabone_duration_zh(stage3_elapsed, subsecond=True)}）"
+                )
+                if stage2_video_path.resolve() != stage3_video_path.resolve():
+                    _unlink_contained_file(work_dir, stage2_video_path)
+
+            # --------------------------------------------------------------
+            # Stage 4 — Single-Pass Master Encode & Output Registration (94%..100%)
+            # --------------------------------------------------------------
+            task.check()
+            stage4_msg = (
+                f"正在进行单次母版封装（CRF {int(preset['crf'])} · {out_w}×{out_h} · 48 kHz AAC 256k）"
+            )
+            _update_task(task, progress=0.95, message=stage4_msg)
+            task.note(stage4_msg)
+
+            final_mp4_path = _validate_safe_path(
+                work_dir / "final_output.mp4", "最终输出视频路径"
+            )
+            cfr_args = (
+                ["-fps_mode", "cfr"]
+                if self._run_cmd_fn is not None
+                else _resolve_ffmpeg_cfr_args(ffmpeg_bin)
+            )
+            if actual_src_w != out_w or actual_src_h != out_h:
+                if (
+                    actual_src_w >= out_w
+                    and actual_src_h >= out_h
+                    and (actual_src_w == out_w or actual_src_h == out_h)
+                ):
+                    vf_filter = (
+                        f"crop={out_w}:{out_h},"
+                        "scale=out_color_matrix=bt709:out_range=tv,setsar=1"
+                    )
+                else:
+                    vf_filter = (
+                        f"scale={out_w}:{out_h}:"
+                        "force_original_aspect_ratio=increase:flags=lanczos:"
+                        "out_color_matrix=bt709:out_range=tv,"
+                        f"crop={out_w}:{out_h},setsar=1"
+                    )
+            else:
+                vf_filter = "scale=out_color_matrix=bt709:out_range=tv,setsar=1"
+
+            def _build_stage4_cmd(
+                video_rate_args: list[str], audio_kbps: int = 256
+            ) -> list[str]:
+                return [
+                    ffmpeg_bin,
+                    "-y",
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-i",
+                    str(video_src_path),
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-i",
+                    str(master_audio_path),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-vf",
+                    vf_filter,
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "medium",
+                    *video_rate_args,
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-colorspace",
+                    "bt709",
+                    "-color_primaries",
+                    "bt709",
+                    "-color_trc",
+                    "bt709",
+                    "-color_range",
+                    "tv",
+                    *cfr_args,
+                    "-r",
+                    str(int(output_fps)),
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    f"{int(audio_kbps)}k",
+                    "-ar",
+                    str(max(48000, int(master_sample_rate))),
+                    "-movflags",
+                    "+faststart",
+                    "-shortest",
+                    str(final_mp4_path),
+                ]
+
+            final_cmd = _build_stage4_cmd(["-crf", str(int(preset["crf"]))])
+            self._invoke_run_cmd(
+                final_cmd,
+                task,
+                work_dir / "ffmpeg_native_final.log",
+                timeout=1800,
+                cwd=work_dir,
+            )
+
+            # Auto-reencode if master MP4 exceeds MAX_OUTPUT_BYTES (512 MiB) so GPU work is preserved.
+            if (
+                final_mp4_path.is_file()
+                and final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES
+            ):
+                task.check()
+                oversized_bytes = final_mp4_path.stat().st_size
+                eff_dur = max(1.0, float(duration))
+                audio_kbps = 256
+                for candidate_audio_kbps in (256, 192, 128, 96):
+                    audio_kbps = candidate_audio_kbps
+                    est_audio_bytes = int(
+                        math.ceil((candidate_audio_kbps * 1000 / 8.0) * eff_dur)
+                    )
+                    if est_audio_bytes <= int(MAX_OUTPUT_BYTES * 0.20):
+                        break
+                audio_bytes = int(math.ceil((audio_kbps * 1000 / 8.0) * eff_dur))
+                hard_ceiling_video_kbps = int(
+                    ((MAX_OUTPUT_BYTES * 0.96 - audio_bytes) * 8) / eff_dur / 1000
+                )
+                if hard_ceiling_video_kbps < 80:
+                    raise RuntimeError(
+                        f"终稿视频时长过长（{eff_dur:.1f} 秒，当前体积 {oversized_bytes / (1024**2):.1f} MiB），"
+                        f"即使音频降至 {audio_kbps} kbps，视频物理码率上限仅 {max(0, hard_ceiling_video_kbps)} kbps，"
+                        f"无法在 {MAX_OUTPUT_BYTES // (1024**2)} MiB 上限内保证可用画质；请缩短播报时长或分段导出"
+                    )
+                target_bytes = int(MAX_OUTPUT_BYTES * 0.88)
+                raw_target_kbps = int(
+                    ((target_bytes - audio_bytes) * 8) / eff_dur / 1000
+                )
+                target_video_kbps = min(
+                    hard_ceiling_video_kbps, max(80, raw_target_kbps)
+                )
+                maxrate_kbps = min(
+                    hard_ceiling_video_kbps,
+                    max(target_video_kbps, int(round(target_video_kbps * 1.08))),
+                )
+                bufsize_kbps = max(
+                    maxrate_kbps, int(round(target_video_kbps * 1.5))
+                )
+                reencode_msg = (
+                    f"终稿体积 {oversized_bytes / (1024**2):.1f} MiB 超过 "
+                    f"{MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，正在按目标视频码率 "
+                    f"{target_video_kbps} kbps（音频 {audio_kbps}k）自动重编码以保留本次渲染成果"
+                )
+                _update_task(task, progress=0.96, message=reencode_msg)
+                task.note(reencode_msg, level="warning")
+                if final_mp4_path.resolve() != video_src_path.resolve():
+                    final_mp4_path.unlink(missing_ok=True)
+                reencode_cmd = _build_stage4_cmd(
+                    [
+                        "-b:v",
+                        f"{target_video_kbps}k",
+                        "-maxrate",
+                        f"{maxrate_kbps}k",
+                        "-bufsize",
+                        f"{bufsize_kbps}k",
+                    ],
+                    audio_kbps=audio_kbps,
+                )
+                self._invoke_run_cmd(
+                    reencode_cmd,
+                    task,
+                    work_dir / "ffmpeg_native_reencode.log",
+                    timeout=1800,
+                    cwd=work_dir,
+                )
+
+                # Before unlinking lossless Stage 3/2 MKV, verify pass 1 fit within budget;
+                # if still oversized, run one stricter 2nd pass while video_src_path is intact.
+                if (
+                    final_mp4_path.is_file()
+                    and final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES
+                ):
+                    task.check()
+                    actual_size = final_mp4_path.stat().st_size
+                    pass2_audio_kbps = min(audio_kbps, 128)
+                    pass2_audio_bytes = int(
+                        math.ceil((pass2_audio_kbps * 1000 / 8.0) * eff_dur)
+                    )
+                    pass2_hard_ceiling = int(
+                        ((MAX_OUTPUT_BYTES * 0.96 - pass2_audio_bytes) * 8)
+                        / eff_dur
+                        / 1000
+                    )
+                    if pass2_hard_ceiling < 80:
+                        raise RuntimeError(
+                            f"终稿重编码后体积仍为 {actual_size / (1024**2):.1f} MiB（时长 {eff_dur:.1f} 秒），"
+                            f"超过 {MAX_OUTPUT_BYTES // (1024**2)} MiB 上限且无可用视频码率余量继续压缩；"
+                            "请缩短播报时长或分段导出"
+                        )
+                    scaled_kbps = int(
+                        target_video_kbps
+                        * ((MAX_OUTPUT_BYTES * 0.88) / float(actual_size))
+                    )
+                    pass2_target_kbps = min(
+                        pass2_hard_ceiling, max(80, scaled_kbps)
+                    )
+                    pass2_msg = (
+                        f"首次重编码后终稿体积仍为 {actual_size / (1024**2):.1f} MiB，超过 "
+                        f"{MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，正在按更严格码率 "
+                        f"{pass2_target_kbps} kbps（音频 {pass2_audio_kbps}k）执行二次重编码"
+                    )
+                    _update_task(task, progress=0.965, message=pass2_msg)
+                    task.note(pass2_msg, level="warning")
+                    if final_mp4_path.resolve() != video_src_path.resolve():
+                        final_mp4_path.unlink(missing_ok=True)
+                    reencode_cmd_2 = _build_stage4_cmd(
+                        [
+                            "-b:v",
+                            f"{pass2_target_kbps}k",
+                            "-maxrate",
+                            f"{pass2_target_kbps}k",
+                            "-bufsize",
+                            f"{pass2_target_kbps}k",
+                        ],
+                        audio_kbps=pass2_audio_kbps,
+                    )
+                    self._invoke_run_cmd(
+                        reencode_cmd_2,
+                        task,
+                        work_dir / "ffmpeg_native_reencode_pass2.log",
+                        timeout=1800,
+                        cwd=work_dir,
+                    )
+
+                if (
+                    final_mp4_path.is_file()
+                    and final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES
+                ):
+                    final_oversized = final_mp4_path.stat().st_size
+                    raise RuntimeError(
+                        f"终稿视频经二次自动重编码后体积仍为 {final_oversized / (1024**2):.1f} MiB"
+                        f"（时长 {eff_dur:.1f} 秒），超过 {MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，无法保存；"
+                        "请缩短播报时长或降低目标分辨率后重试"
+                    )
+
+            if final_mp4_path.is_file() and final_mp4_path.stat().st_size > 0:
+                if final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES:
+                    raise RuntimeError(
+                        f"终稿视频体积为 {final_mp4_path.stat().st_size / (1024**2):.1f} MiB"
+                        f"（时长 {max(1.0, float(duration)):.1f} 秒），超过 "
+                        f"{MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，无法保存"
+                    )
+                output_src_path = final_mp4_path
+            elif (
+                self._run_cmd_fn is not None
+                and video_src_path.is_file()
+                and video_src_path.stat().st_size > 0
+            ):
+                # Offline test fallback when mocked run_cmd_fn only records commands.
+                output_src_path = video_src_path
+            else:
+                raise RuntimeError("最终视频合成失败：ffmpeg 未产出有效 MP4 文件")
+
+            # Free multi-GB Stage 3 (or Stage 2) lossless MKV only after final MP4 is verified <= MAX_OUTPUT_BYTES.
+            if stage3_video_path is not None and (
+                output_src_path.resolve() != stage3_video_path.resolve()
+            ):
+                _unlink_contained_file(work_dir, stage3_video_path)
+            if output_src_path.resolve() != video_src_path.resolve():
+                _unlink_contained_file(work_dir, video_src_path)
+
+            task.check()
+            _update_task(task, progress=0.97)
+            elapsed = max(0.0, time.monotonic() - started)
+            out_filename = f"{wf['id']}_{out_w}x{out_h}_{int(time.time())}.mp4"
+            native_prompt_id = f"longcat16-native-{safe_task_tag}"
+            save_file_fn = getattr(self.manager.store, "save_output_file", None)
+            if callable(save_file_fn):
+                record = save_file_fn(
+                    output_src_path,
+                    workflow_id=wf["id"],
+                    workflow_name=wf_name,
+                    filename=out_filename,
+                    elapsed=elapsed,
+                    prompt_id=native_prompt_id,
+                )
+            else:
+                record = self.manager.store.save_output(
+                    raw=output_src_path.read_bytes(),
+                    workflow_id=wf["id"],
+                    workflow_name=wf_name,
+                    filename=out_filename,
+                    elapsed=elapsed,
+                    prompt_id=native_prompt_id,
+                )
+            elapsed_label = format_colabone_duration_zh(elapsed, subsecond=True)
+            vsr_note = f" + {upscale_engine}" if upscale_engine != "none" else ""
+            done_msg = (
+                f"{wf_name} · 原生旗舰数字人生成完成"
+                f"（LongCat 1.6{vsr_note}，{duration:.1f} 秒，{out_w}×{out_h}，总耗时 {elapsed_label}）"
+            )
+            _update_task(task, progress=1, message=done_msg, append_output=record)
+            task.note(done_msg)
+            return [record]
+        finally:
+            for mkv_path in intermediate_mkvs:
+                _unlink_contained_file(work_dir, mkv_path)
+
     def run(
         self,
         task,
@@ -2093,7 +3524,7 @@ class ColabOneDigitalHumanRunner:
         resolved_inputs: list[tuple[str, str, Path]],
     ) -> list[dict[str, Any]]:
         """Execute the full 4-stage remote digital human pipeline."""
-        from server.runtime import ColabOneCancelledError
+        from server.runtime import ColabOneCancelledError, _scrub_secret_text
 
         started = time.monotonic()
         task.check()
@@ -2101,7 +3532,10 @@ class ColabOneDigitalHumanRunner:
         pipeline = wf.get("pipeline")
         if not isinstance(pipeline, dict):
             raise ValueError("工作流缺少 digital_human 流水线配置")
-        if not isinstance(wf.get("workflow"), dict) or not wf["workflow"]:
+        video_backend = str(pipeline.get("video_backend") or "custom").strip().lower()
+        if video_backend != "longcat_avatar_native" and (
+            not isinstance(wf.get("workflow"), dict) or not wf["workflow"]
+        ):
             raise ValueError("工作流缺少有效节点配置")
 
         overrides: dict[str, Any] = dict(getattr(req, "overrides", None) or {})
@@ -2112,7 +3546,6 @@ class ColabOneDigitalHumanRunner:
             for field_key, fname, fpath in (resolved_inputs or [])
         }
 
-        video_backend = str(pipeline.get("video_backend") or "custom").strip().lower()
         supported_tts_engines = [
             str(eid).strip()
             for eid in (pipeline.get("supported_tts_engines") or [])
@@ -2138,8 +3571,14 @@ class ColabOneDigitalHumanRunner:
             ),
         )
         output_fps = max(1, min(60, int(pipeline.get("output_fps") or 25)))
-        default_target_w = int(pipeline.get("target_width") or 1280)
-        default_target_h = int(pipeline.get("target_height") or 720)
+        default_target_w = int(
+            pipeline.get("target_width")
+            or (1920 if video_backend == "longcat_avatar_native" else 1280)
+        )
+        default_target_h = int(
+            pipeline.get("target_height")
+            or (1080 if video_backend == "longcat_avatar_native" else 720)
+        )
         default_upscale_mode = str(pipeline.get("upscale_mode") or "none")
 
         audio_node_key = str(pipeline.get("audio_node_key") or "").strip()
@@ -2173,6 +3612,10 @@ class ColabOneDigitalHumanRunner:
         )
 
         anchor_entry = inputs_by_key.get(effective_image_key)
+        if anchor_entry is None and video_backend == "longcat_avatar_native":
+            anchor_entry = inputs_by_key.get("1.image") or inputs_by_key.get(
+                "pipeline.anchor_image"
+            )
         if anchor_entry is None or not anchor_entry[1].is_file():
             raise ValueError("请先上传主播参考人像图片")
         _, anchor_src_path = anchor_entry
@@ -2202,43 +3645,66 @@ class ColabOneDigitalHumanRunner:
             str(res_spec) if res_spec else "",
             default=(default_target_w, default_target_h),
         )
-        if video_backend == "longcat_avatar":
-            base_w, base_h = compute_base_dimensions(
-                video_backend, target_w, target_h, render_quality=render_quality
+        native_preset: dict[str, Any] | None = None
+        if video_backend == "longcat_avatar_native":
+            preset_overrides = dict(overrides)
+            raw_ov_upscale = preset_overrides.get("pipeline.upscale_mode")
+            raw_plain_upscale = preset_overrides.get("upscale_mode")
+            tmpl_upscale = str(pipeline.get("upscale_mode") or "").strip()
+            if (
+                (raw_ov_upscale is None or str(raw_ov_upscale).strip() == "")
+                and (raw_plain_upscale is None or str(raw_plain_upscale).strip() == "")
+                and tmpl_upscale
+            ):
+                preset_overrides["pipeline.upscale_mode"] = tmpl_upscale
+            native_preset = resolve_longcat_native_preset(
+                preset_overrides, target_w=target_w, target_h=target_h
             )
+            base_w = int(native_preset["base_width"])
+            base_h = int(native_preset["base_height"])
+            upscale_mode = str(native_preset["upscale_mode"])
+            out_w = int(native_preset["target_width"])
+            out_h = int(native_preset["target_height"])
         else:
-            base_w, base_h = compute_base_dimensions(video_backend, target_w, target_h)
-
-        explicit_upscale = overrides.get("pipeline.upscale_mode")
-        has_explicit_upscale = (
-            "pipeline.upscale_mode" in overrides
-            and explicit_upscale is not None
-            and str(explicit_upscale).strip() != ""
-        )
-        if (
-            video_backend == "longcat_avatar"
-            and render_quality == "native_720p"
-            and not has_explicit_upscale
-        ):
-            upscale_mode = "lanczos"
-        else:
-            upscale_mode = str(
-                explicit_upscale or default_upscale_mode or "none"
-            ).strip().lower()
-        if upscale_mode not in ("none", "ai_2x", "lanczos"):
-            upscale_mode = "none"
-
-        # H1: When upscale_mode == "none" and native (base_w, base_h) already covers
-        # (target_w, target_h) (e.g. LongCat 1280x768 -> 1280x720 or 768x1280 -> 720x1280),
-        # crop cleanly to exact (target_w, target_h) without upscaling. Only preserve native
-        # (base_w, base_h) when native is smaller than target.
-        if upscale_mode == "none":
-            if base_w >= target_w and base_h >= target_h:
-                out_w, out_h = target_w, target_h
+            if video_backend == "longcat_avatar":
+                base_w, base_h = compute_base_dimensions(
+                    video_backend, target_w, target_h, render_quality=render_quality
+                )
             else:
-                out_w, out_h = base_w, base_h
-        else:
-            out_w, out_h = target_w, target_h
+                base_w, base_h = compute_base_dimensions(
+                    video_backend, target_w, target_h
+                )
+
+            explicit_upscale = overrides.get("pipeline.upscale_mode")
+            has_explicit_upscale = (
+                "pipeline.upscale_mode" in overrides
+                and explicit_upscale is not None
+                and str(explicit_upscale).strip() != ""
+            )
+            if (
+                video_backend == "longcat_avatar"
+                and render_quality == "native_720p"
+                and not has_explicit_upscale
+            ):
+                upscale_mode = "lanczos"
+            else:
+                upscale_mode = str(
+                    explicit_upscale or default_upscale_mode or "none"
+                ).strip().lower()
+            if upscale_mode not in ("none", "ai_2x", "lanczos"):
+                upscale_mode = "none"
+
+            # H1: When upscale_mode == "none" and native (base_w, base_h) already covers
+            # (target_w, target_h) (e.g. LongCat 1280x768 to 1280x720 or 768x1280 to 720x1280),
+            # crop cleanly to exact (target_w, target_h) without upscaling. Only preserve native
+            # (base_w, base_h) when native is smaller than target.
+            if upscale_mode == "none":
+                if base_w >= target_w and base_h >= target_h:
+                    out_w, out_h = target_w, target_h
+                else:
+                    out_w, out_h = base_w, base_h
+            else:
+                out_w, out_h = target_w, target_h
 
         max_segment_sec = _parse_float_override(
             overrides.get("pipeline.max_segment_seconds"),
@@ -2253,7 +3719,7 @@ class ColabOneDigitalHumanRunner:
                 max(3.0, (LONGCAT_MAX_FRAMES - 8) / float(output_fps)),
             )
             max_segment_sec = max(3.0, min(longcat_cap, max_segment_sec))
-        else:
+        elif video_backend != "longcat_avatar_native":
             max_segment_sec = max(5.0, min(300.0, max_segment_sec))
         if upscale_mode == "ai_2x":
             ai_cap = min(
@@ -2387,6 +3853,10 @@ class ColabOneDigitalHumanRunner:
             pause_seconds = max(0.0, min(1.5, pause_seconds))
         else:
             audio_entry = inputs_by_key.get(effective_audio_key)
+            if audio_entry is None and video_backend == "longcat_avatar_native":
+                audio_entry = inputs_by_key.get("2.audio") or inputs_by_key.get(
+                    "pipeline.drive_audio"
+                )
             if audio_entry is None or not audio_entry[1].is_file():
                 raise ValueError("请先上传驱动音频文件")
             _, audio_src_path = audio_entry
@@ -2396,7 +3866,10 @@ class ColabOneDigitalHumanRunner:
         if seed_node_key:
             raw_seed = overrides.get(seed_node_key)
             if raw_seed is None:
-                raw_seed = _node_default_value(wf["workflow"], seed_node_key)
+                raw_seed = _node_default_value(
+                    wf.get("workflow") if isinstance(wf.get("workflow"), dict) else {},
+                    seed_node_key,
+                )
             if raw_seed is not None and not isinstance(raw_seed, bool):
                 try:
                     if isinstance(raw_seed, float) and not math.isfinite(raw_seed):
@@ -2409,10 +3882,32 @@ class ColabOneDigitalHumanRunner:
         # Verify ffmpeg availability and GPU/disk preflight before touching GPU state or TTS.
         ffmpeg_bin = self._ffmpeg_binary()
         packs = getattr(self.manager, "packs", None)
-        if packs is not None and callable(getattr(packs, "check_preflight", None)):
+        avatar_engines: Any = None
+        native_preflight_info: dict[str, Any] | None = None
+        if video_backend == "longcat_avatar_native":
+            assert native_preset is not None
+            avatar_engines = self.get_avatar_engines()
+            check_preflight_fn = getattr(avatar_engines, "check_preflight", None)
+            if callable(check_preflight_fn):
+                res_pf = _call_avatar_check_preflight(
+                    check_preflight_fn,
+                    min_vram_mib=int(wf.get("min_vram_mib") or 49152),
+                    min_disk_mib=int(wf.get("min_disk_mib") or 73728),
+                    upscale_mode=native_preset["upscale_engine"],
+                    sampling_mode=native_preset["sampling_mode"],
+                    vocal_separation=native_preset["vocal_separation"],
+                )
+                if isinstance(res_pf, dict):
+                    native_preflight_info = res_pf
+        elif packs is not None and callable(getattr(packs, "check_preflight", None)):
             packs.check_preflight(wf)
+
+        tts_allow_unavailable = (
+            getattr(self.tts_runner, "synth_fn", None) is not None
+            if self.tts_runner is not None
+            else True
+        )
         if audio_source == "tts" and self.tts_runner is not None:
-            allow_unavailable = getattr(self.tts_runner, "synth_fn", None) is not None
             for preflight_attr in ("check_vram", "check_disk"):
                 preflight_fn = getattr(self.tts_runner, preflight_attr, None)
                 if not callable(preflight_fn):
@@ -2432,7 +3927,7 @@ class ColabOneDigitalHumanRunner:
                         p.kind == inspect.Parameter.VAR_KEYWORD
                         for p in preflight_sig.parameters.values()
                     ):
-                        preflight_kwargs["allow_unavailable"] = allow_unavailable
+                        preflight_kwargs["allow_unavailable"] = tts_allow_unavailable
                 except (TypeError, ValueError):
                     pass
                 preflight_fn(engine_spec, **preflight_kwargs)
@@ -2446,6 +3941,71 @@ class ColabOneDigitalHumanRunner:
             else Path(tempfile.gettempdir()),
             "运行目录",
         )
+
+        # Combined Stage 1 TTS + Stage 2/3 disk preflight for longcat_avatar_native.
+        native_required_disk_mib = 0
+        if video_backend == "longcat_avatar_native":
+            assert native_preset is not None
+            native_required_disk_mib = _estimate_uncached_native_disk_mib(
+                avatar_engines, native_preset, native_preflight_info
+            )
+            uncached_tts_mib = (
+                _estimate_uncached_tts_disk_mib(
+                    self.tts_runner,
+                    engine_spec,
+                    allow_unavailable=tts_allow_unavailable,
+                    ref_audio_path=ref_audio_path,
+                    voice_preset=voice_preset,
+                )
+                if audio_source == "tts"
+                else 0
+            )
+            combined_disk_mib = uncached_tts_mib + native_required_disk_mib
+            if native_required_disk_mib > 0 and combined_disk_mib > 0:
+                free_disk_mib: int | None = None
+                if (
+                    isinstance(native_preflight_info, dict)
+                    and native_preflight_info.get("free_disk_mib") is not None
+                    and not isinstance(native_preflight_info.get("free_disk_mib"), bool)
+                ):
+                    try:
+                        free_disk_mib = max(
+                            0, int(native_preflight_info["free_disk_mib"])
+                        )
+                    except (TypeError, ValueError):
+                        free_disk_mib = None
+                if free_disk_mib is None:
+                    disk_probe_root = getattr(avatar_engines, "root_dir", None)
+                    usage_path = _existing_disk_ancestor(
+                        Path(disk_probe_root)
+                        if isinstance(disk_probe_root, (str, os.PathLike))
+                        else runtime_root
+                    )
+                    try:
+                        free_disk_mib = int(shutil.disk_usage(usage_path).free) // (
+                            1024 * 1024
+                        )
+                    except OSError:
+                        free_disk_mib = None
+                if free_disk_mib is not None and free_disk_mib < combined_disk_mib:
+                    if uncached_tts_mib > 0:
+                        tts_label = str(
+                            engine_spec.get("name")
+                            or engine_spec.get("id")
+                            or tts_engine
+                        )
+                        raise RuntimeError(
+                            f"远端磁盘空间不足：TTS 引擎 {tts_label}（约 {uncached_tts_mib / 1024.0:.1f} GiB）"
+                            f"与 LongCat-Video-Avatar 1.6 原生管线（约 {native_required_disk_mib / 1024.0:.1f} GiB）"
+                            f"合计至少需要 {combined_disk_mib / 1024.0:.1f} GiB（{combined_disk_mib} MiB）可用空间，"
+                            f"当前仅剩 {free_disk_mib / 1024.0:.1f} GiB（{free_disk_mib} MiB）"
+                        )
+                    raise RuntimeError(
+                        f"远端磁盘空间不足：LongCat-Video-Avatar 1.6 原生管线与所选采样/人声模式"
+                        f"至少需要 {native_required_disk_mib / 1024.0:.1f} GiB（{native_required_disk_mib} MiB）可用空间，"
+                        f"当前仅剩 {free_disk_mib / 1024.0:.1f} GiB（{free_disk_mib} MiB）"
+                    )
+
         work_parent = runtime_root / "comfyui-work"
         work_parent.mkdir(parents=True, exist_ok=True)
         _prune_stale_work_dirs(work_parent)
@@ -2474,7 +4034,7 @@ class ColabOneDigitalHumanRunner:
 
             if audio_source == "tts":
                 assert self.tts_runner is not None
-                # Unload any active LLM and free ComfyUI VRAM before TTS GPU pass.
+                # Unload any active LLM and release ComfyUI VRAM before TTS GPU pass.
                 runtime = getattr(self.manager, "runtime", None)
                 if getattr(runtime, "loaded", None) and callable(
                     getattr(runtime, "_stop_engine", None)
@@ -2483,16 +4043,40 @@ class ColabOneDigitalHumanRunner:
                     runtime._stop_engine()
 
                 if callable(getattr(self.manager, "is_running", None)) and self.manager.is_running():
-                    free_msg = "正在释放 ComfyUI 显存以启动远端配音引擎"
-                    _update_task(task, message=free_msg)
-                    task.note(free_msg)
-                    try:
-                        self.manager.free_memory(unload_models=True)
-                    except Exception as exc:
-                        task.note(
-                            f"释放 ComfyUI 显存时出现非致命提示：{exc}",
-                            level="warning",
-                        )
+                    if video_backend == "longcat_avatar_native" and callable(
+                        getattr(self.manager, "stop_server", None)
+                    ):
+                        stop_msg = "正在停止远端 ComfyUI 以释放完整显存供配音与原生旗舰引擎使用"
+                        _update_task(task, message=stop_msg)
+                        task.note(stop_msg)
+                        try:
+                            self.manager.stop_server()
+                        except ColabOneCancelledError:
+                            raise
+                        except Exception as exc:
+                            scrubbed_err = _scrub_secret_text(
+                                str(exc) or type(exc).__name__, hf_token
+                            )
+                            task.note(
+                                f"停止远端 ComfyUI 时出现非致命提示：{scrubbed_err}",
+                                level="warning",
+                            )
+                    else:
+                        free_msg = "正在释放 ComfyUI 显存以启动远端配音引擎"
+                        _update_task(task, message=free_msg)
+                        task.note(free_msg)
+                        try:
+                            self.manager.free_memory(unload_models=True)
+                        except ColabOneCancelledError:
+                            raise
+                        except Exception as exc:
+                            scrubbed_err = _scrub_secret_text(
+                                str(exc) or type(exc).__name__, hf_token
+                            )
+                            task.note(
+                                f"释放 ComfyUI 显存时出现非致命提示：{scrubbed_err}",
+                                level="warning",
+                            )
 
                 task.check()
                 tts_dir = work_dir / "tts"
@@ -2540,49 +4124,117 @@ class ColabOneDigitalHumanRunner:
                 if duration <= 0.0 and _is_readable_pcm_wav(master_audio_path):
                     duration = _wav_duration_seconds(master_audio_path)
 
-                # Prefer exact pause midpoints recorded in manifest["silence_valleys"]
-                # directly when non-empty; only scan PCM WAV when manifest valleys are absent.
-                manifest_valleys = _extract_valid_timestamps(
-                    manifest.get("silence_valleys")
-                    if isinstance(manifest, dict)
-                    else None,
-                    duration,
-                )
-                if manifest_valleys:
-                    valleys = manifest_valleys
-                elif _is_readable_pcm_wav(master_audio_path):
-                    valleys = detect_pcm_silence_valleys(master_audio_path)
+                if video_backend != "longcat_avatar_native":
+                    # Prefer exact pause midpoints recorded in manifest["silence_valleys"]
+                    # directly when non-empty; only scan PCM WAV when manifest valleys are absent.
+                    manifest_valleys = _extract_valid_timestamps(
+                        manifest.get("silence_valleys")
+                        if isinstance(manifest, dict)
+                        else None,
+                        duration,
+                    )
+                    if manifest_valleys:
+                        valleys = manifest_valleys
+                    elif _is_readable_pcm_wav(master_audio_path):
+                        valleys = detect_pcm_silence_valleys(master_audio_path)
                 _update_task(task, progress=0.18)
                 task.note(f"远端配音完成，音频总时长 {duration:.1f} 秒")
             else:
                 assert audio_src_path is not None
-                audio_msg = "正在预处理上传音频（48 kHz / -23 LUFS）"
+                is_native_backend = video_backend == "longcat_avatar_native"
+                audio_msg = (
+                    "正在预处理上传音频（48 kHz 无损直通，保留立体声与原始动态）"
+                    if is_native_backend
+                    else "正在预处理上传音频（48 kHz / -23 LUFS）"
+                )
                 _update_task(task, progress=0.06, message=audio_msg)
                 task.note(audio_msg)
                 master_audio_path, duration, valleys = self._prepare_uploaded_audio(
-                    task, audio_src_path, work_dir
+                    task,
+                    audio_src_path,
+                    work_dir,
+                    preserve_stereo_dynamics=is_native_backend,
+                    detect_silence=not is_native_backend,
                 )
                 _update_task(task, progress=0.18)
-                task.note(
-                    f"音频预处理完成，总时长 {duration:.1f} 秒，检测到 {len(valleys)} 处自然换气静音点"
-                )
+                if is_native_backend:
+                    task.note(f"音频预处理完成，总时长 {duration:.1f} 秒")
+                else:
+                    task.note(
+                        f"音频预处理完成，总时长 {duration:.1f} 秒，检测到 {len(valleys)} 处自然换气静音点"
+                    )
 
-            if duration <= 0.0:
+            if not math.isfinite(duration) or duration <= 0.0:
                 raise ValueError("驱动音频时长为 0，无法生成数字人视频")
+            if duration < 0.1:
+                raise ValueError("音频时长过短，至少需要 0.1 秒")
             master_audio_path = _validate_safe_path(master_audio_path, "主音频路径")
+
+            # Re-verify remaining disk headroom after Stage 1 TTS before Stage 2 starts.
+            if (
+                video_backend == "longcat_avatar_native"
+                and audio_source == "tts"
+                and native_required_disk_mib > 0
+            ):
+                disk_probe_root = getattr(avatar_engines, "root_dir", None)
+                usage_path = _existing_disk_ancestor(
+                    Path(disk_probe_root)
+                    if isinstance(disk_probe_root, (str, os.PathLike))
+                    else work_dir
+                )
+                try:
+                    post_free_bytes = int(shutil.disk_usage(usage_path).free)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"配音完成后无法检测远端磁盘空间（{exc}），LongCat-Video-Avatar 1.6 至少需要 "
+                        f"{native_required_disk_mib / 1024.0:.1f} GiB 可用磁盘空间"
+                    ) from None
+                if post_free_bytes < native_required_disk_mib * 1024 * 1024:
+                    post_free_mib = post_free_bytes // (1024 * 1024)
+                    raise RuntimeError(
+                        f"远端磁盘空间不足：配音完成后仅剩 {post_free_bytes / (1024.0**3):.1f} GiB"
+                        f"（{post_free_mib} MiB），不足以继续运行 LongCat-Video-Avatar 1.6 原生管线"
+                        f"（至少需要 {native_required_disk_mib / 1024.0:.1f} GiB / {native_required_disk_mib} MiB）"
+                    )
 
             # ------------------------------------------------------------------
             # Stage 2 — Pack & Anchor Preparation (18%..32% progress)
             # ------------------------------------------------------------------
             task.check()
+            wf_name = str(wf.get("name") or wf.get("id") or "数字人工作流")
             anchor_msg = f"正在预处理主播参考图（{base_w}×{base_h}）"
-            _update_task(task, progress=0.20, message=anchor_msg)
+            _update_task(
+                task,
+                progress=0.18 if video_backend == "longcat_avatar_native" else 0.20,
+                message=anchor_msg,
+            )
             task.note(anchor_msg)
             anchor_prepared_path = work_dir / "anchor_prepared.png"
             prepare_anchor_image(anchor_src_path, anchor_prepared_path, base_w, base_h)
 
+            if video_backend == "longcat_avatar_native":
+                assert native_preset is not None
+                return self._run_longcat_native_pipeline(
+                    task=task,
+                    wf=wf,
+                    wf_name=wf_name,
+                    preset=native_preset,
+                    anchor_prepared_path=anchor_prepared_path,
+                    master_audio_path=master_audio_path,
+                    duration=duration,
+                    output_fps=output_fps,
+                    master_sample_rate=master_sample_rate,
+                    audio_source=audio_source,
+                    hf_token=hf_token,
+                    work_dir=work_dir,
+                    ffmpeg_bin=ffmpeg_bin,
+                    started=started,
+                    safe_task_tag=safe_task_tag,
+                    preflight_checked=True,
+                    preflight_info=native_preflight_info,
+                )
+
             task.check()
-            wf_name = str(wf.get("name") or wf.get("id") or "数字人工作流")
             env_msg = f"正在准备远端视频环境与模型权重：{wf_name}"
             _update_task(task, progress=0.22, message=env_msg)
             task.note(env_msg)

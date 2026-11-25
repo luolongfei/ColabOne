@@ -9,7 +9,15 @@ import re
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from common.public_api import (
     public_origin as _normalize_domain,
@@ -21,6 +29,7 @@ MAX_WORKFLOW_NESTING_DEPTH = 32
 MAX_OUTPUT_BYTES = 512 * 1024 * 1024  # 512 MiB
 MAX_IMAGE_INPUT_BYTES = 16 * 1024 * 1024  # 16 MiB
 MAX_AUDIO_INPUT_BYTES = 64 * 1024 * 1024  # 64 MiB
+MAX_OVERRIDE_STRING_LENGTH = 200_000
 
 ALLOWED_OUTPUT_MIME: dict[str, tuple[Literal["image", "video", "audio"], str]] = {
     "png": ("image", "image/png"),
@@ -354,6 +363,8 @@ class ComfyTtsEngineSpec(BaseModel):
             raise ValueError(
                 "设置 custom_voice_repo 时必须提供 40 位十六进制 custom_voice_revision"
             )
+        if self.source_repo and not self.source_commit:
+            raise ValueError("设置 source_repo 时必须提供 40 位十六进制 source_commit")
         seen_presets: set[str] = set()
         for preset in self.voice_presets:
             if preset.id in seen_presets:
@@ -365,7 +376,9 @@ class ComfyTtsEngineSpec(BaseModel):
 class ComfyPipelineSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     kind: Literal["comfy_standard", "digital_human"] = "comfy_standard"
-    video_backend: Literal["infinitetalk", "longcat_avatar", "custom"] = "custom"
+    video_backend: Literal[
+        "infinitetalk", "longcat_avatar", "longcat_avatar_native", "custom"
+    ] = "custom"
     default_tts_engine: str = Field(
         default="voxcpm2", max_length=80, pattern=r"^(?:[a-zA-Z0-9_-]{1,80})?$"
     )
@@ -375,7 +388,15 @@ class ComfyPipelineSpec(BaseModel):
     output_fps: int = Field(default=25, ge=1, le=60)
     target_width: int = Field(default=1280, ge=64, le=4096)
     target_height: int = Field(default=720, ge=64, le=4096)
-    upscale_mode: Literal["none", "ai_2x", "lanczos"] = "none"
+    upscale_mode: Literal[
+        "none",
+        "ai_2x",
+        "lanczos",
+        "auto",
+        "seedvr2_7b",
+        "seedvr2_7b_sharp",
+        "flashvsr_plus",
+    ] = "none"
     audio_node_key: str = Field(default="", max_length=160)
     image_node_key: str = Field(default="", max_length=160)
     prompt_node_key: str = Field(default="", max_length=160)
@@ -412,6 +433,17 @@ class ComfyPipelineSpec(BaseModel):
         _validate_field_key(value)
         return value
 
+    @model_validator(mode="after")
+    def consistent_pipeline(self):
+        if (
+            self.video_backend == "longcat_avatar_native"
+            and self.kind != "digital_human"
+        ):
+            raise ValueError(
+                "video_backend 为 longcat_avatar_native 时流水线类型必须为 digital_human"
+            )
+        return self
+
 
 class WorkflowField(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -430,25 +462,33 @@ class WorkflowField(BaseModel):
         "audio",
     ]
     default: str | int | float | bool | None = None
-    options: list[str] = Field(default_factory=list)
+    options: list[str] = Field(default_factory=list, max_length=128)
     min_value: float | None = None
     max_value: float | None = None
     step: float | None = None
     description: str = Field(default="", max_length=400)
     group: str = Field(default="", max_length=64)
     required: bool = False
-    visible_when: dict[str, str | bool] | None = None
-    option_labels: dict[str, str] = Field(default_factory=dict)
+    visible_when: dict[str, StrictStr | StrictBool] | None = None
+    option_labels: dict[str, str] = Field(default_factory=dict, max_length=128)
 
-    @field_validator("visible_when")
+    @field_validator("visible_when", mode="before")
     @classmethod
     def valid_visible_when(
-        cls, value: dict[str, str | bool] | None
+        cls, value: Any
     ) -> dict[str, str | bool] | None:
         if value is None:
             return None
-        for key in value:
+        if not isinstance(value, dict):
+            raise ValueError("visible_when 必须为对象")
+        if len(value) > 16:
+            raise ValueError("visible_when 条件数量不能超过 16 个")
+        for key, cond in value.items():
             _validate_field_key(key)
+            if not isinstance(cond, (str, bool)):
+                raise ValueError(f"visible_when 条件 {key} 的值必须为字符串或布尔值")
+            if isinstance(cond, str) and len(cond) > 160:
+                raise ValueError(f"visible_when 条件 {key} 的字符串值长度不能超过 160")
         return value
 
     @model_validator(mode="after")
@@ -465,6 +505,50 @@ class WorkflowField(BaseModel):
             and self.min_value > self.max_value
         ):
             raise ValueError("min_value 不能大于 max_value")
+        if self.step is not None and self.step <= 0:
+            raise ValueError("step 必须大于 0")
+        if len(self.options) > 128:
+            raise ValueError("选项数量不能超过 128 个")
+        if len(self.option_labels) > 128:
+            raise ValueError("选项标签数量不能超过 128 个")
+        if self.default is not None:
+            if self.field_type == "boolean":
+                if not isinstance(self.default, bool):
+                    raise ValueError(f"布尔字段 {self.key} 的默认值必须为布尔值")
+            elif self.field_type == "integer":
+                if isinstance(self.default, bool):
+                    raise ValueError(f"整数字段 {self.key} 的默认值不能为布尔值")
+                if isinstance(self.default, float):
+                    if not math.isfinite(self.default) or not self.default.is_integer():
+                        raise ValueError(f"整数字段 {self.key} 的默认值必须为整数")
+                elif isinstance(self.default, str):
+                    if not re.fullmatch(r"[+-]?\d+", self.default.strip()):
+                        raise ValueError(f"整数字段 {self.key} 的默认值必须为整数")
+                elif not isinstance(self.default, int):
+                    raise ValueError(f"整数字段 {self.key} 的默认值必须为整数")
+            elif self.field_type == "number":
+                if isinstance(self.default, bool):
+                    raise ValueError(f"数值字段 {self.key} 的默认值不能为布尔值")
+                if isinstance(self.default, str):
+                    try:
+                        parsed_num = float(self.default.strip())
+                    except ValueError:
+                        raise ValueError(f"数值字段 {self.key} 的默认值必须为数字") from None
+                    if not math.isfinite(parsed_num):
+                        raise ValueError(f"数值字段 {self.key} 的默认值必须为有限数字")
+                elif isinstance(self.default, (int, float)):
+                    if not math.isfinite(float(self.default)):
+                        raise ValueError(f"数值字段 {self.key} 的默认值必须为有限数字")
+                else:
+                    raise ValueError(f"数值字段 {self.key} 的默认值必须为数字")
+        if (
+            self.field_type == "select"
+            and self.options
+            and isinstance(self.default, str)
+            and self.default != ""
+            and self.default not in self.options
+        ):
+            raise ValueError(f"下拉字段 {self.key} 的默认值不在 options 列表中")
         return self
 
 
@@ -788,6 +872,9 @@ def apply_workflow_overrides(
                 continue
             inputs, input_name = target
             if isinstance(value, bool):
+                existing = inputs[input_name]
+                if not isinstance(existing, bool):
+                    raise ValueError(f"字段 {key} 不接受布尔值覆盖")
                 inputs[input_name] = value
             elif isinstance(value, int):
                 inputs[input_name] = value
@@ -882,6 +969,14 @@ class WorkflowTemplate(BaseModel):
         self.node_count = len(self.workflow)
         if not self.fields:
             self.fields = extract_workflow_fields(self.workflow)
+        field_keys = {field.key for field in self.fields}
+        for field in self.fields:
+            if field.visible_when:
+                for ref_key in field.visible_when:
+                    if ref_key not in field_keys:
+                        raise ValueError(
+                            f"字段 {field.key} 的 visible_when 引用了未声明的字段: {ref_key!r}"
+                        )
         return self
 
 
@@ -906,7 +1001,11 @@ class WorkflowImportRequest(BaseModel):
         return validate_comfy_api_workflow(value)
 
 
-def _validate_hf_token(value: str) -> str:
+def validate_colabone_hf_token(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("hf_token 必须为字符串")
+    if len(value) > 512:
+        raise ValueError("hf_token 长度不能超过 512")
     if any(
         ord(c) < 32 or ord(c) == 127 or 0x80 <= ord(c) <= 0x9F
         for c in value
@@ -915,11 +1014,18 @@ def _validate_hf_token(value: str) -> str:
     token = value.strip(" ")
     if any(c.isspace() for c in token):
         raise ValueError("hf_token 包含非法空白或控制字符")
+    if len(token) > 512:
+        raise ValueError("hf_token 长度不能超过 512")
     return token
 
 
+_validate_hf_token = validate_colabone_hf_token
+
+
 class WorkflowRunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, hide_input_in_errors=True
+    )
     workflow_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     overrides: dict[str, str | int | float | bool] = Field(default_factory=dict)
     inputs: dict[str, str] = Field(default_factory=dict)
@@ -928,7 +1034,7 @@ class WorkflowRunRequest(BaseModel):
     @field_validator("hf_token")
     @classmethod
     def valid_hf_token(cls, value: str) -> str:
-        return _validate_hf_token(value)
+        return validate_colabone_hf_token(value)
 
     @field_validator("overrides")
     @classmethod
@@ -937,8 +1043,12 @@ class WorkflowRunRequest(BaseModel):
     ) -> dict[str, str | int | float | bool]:
         if len(value) > 128:
             raise ValueError("参数覆盖项数量不能超过 128 个")
-        for key in value:
+        for key, item in value.items():
             _validate_field_key(key)
+            if isinstance(item, str) and len(item) > MAX_OVERRIDE_STRING_LENGTH:
+                raise ValueError(
+                    f"字段 {key} 的文本长度不能超过 {MAX_OVERRIDE_STRING_LENGTH} 个字符"
+                )
         return value
 
     @field_validator("inputs")
@@ -954,7 +1064,9 @@ class WorkflowRunRequest(BaseModel):
 
 
 class ComfyTtsPreviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, hide_input_in_errors=True
+    )
     engine_id: str = Field(
         min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]{1,80}$"
     )
@@ -976,7 +1088,7 @@ class ComfyTtsPreviewRequest(BaseModel):
     @field_validator("hf_token")
     @classmethod
     def valid_hf_token(cls, value: str) -> str:
-        return _validate_hf_token(value)
+        return validate_colabone_hf_token(value)
 
 
 class WorkflowOutputRecord(BaseModel):
@@ -1018,7 +1130,7 @@ class WorkflowOutputRecord(BaseModel):
 
 
 class ComfyCanvasConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     mode: Literal["named"] = "named"
     domain: str = Field(default="", max_length=300)
     tunnel_token: str = Field(default="", max_length=8000, repr=False)

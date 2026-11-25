@@ -1019,7 +1019,24 @@ class ColabOneComfyCanvasGateway:
             proxy.stop()
 
     def start(self, config: dict | None = None) -> dict:
-        parsed = _validate_canvas_config(config)
+        from pydantic import ValidationError
+        from server.runtime import _scrub_secret_text
+
+        raw_secrets: list[str] = []
+        if isinstance(config, dict):
+            tok = config.get("tunnel_token")
+            if isinstance(tok, str) and tok:
+                raw_secrets.append(tok)
+        elif hasattr(config, "tunnel_token"):
+            tok = getattr(config, "tunnel_token", "")
+            if isinstance(tok, str) and tok:
+                raw_secrets.append(tok)
+        try:
+            parsed = _validate_canvas_config(config)
+        except ValidationError as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            raise ValueError(scrubbed) from None
         with self.control_lock:
             if self.enabled:
                 raise ValueError("请先关闭当前画布通道，再更换配置")

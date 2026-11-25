@@ -28,6 +28,7 @@ from common.comfyui import (
     WorkflowOutputRecord,
     WorkflowRunRequest,
     WorkflowTemplate,
+    validate_colabone_hf_token,
 )
 from common.files import atomic_json, colabone_service_revision
 from common.location import infer_location_from_endpoint, probe_vm_location
@@ -52,6 +53,11 @@ _UNSET = object()
 
 _BEARER_SECRET_RE = re.compile(r"(?i)\bBearer\s+[^\s'\"`,;}\]]+")
 _HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9_-]{4,}\b")
+_COLABONE_API_KEY_RE = re.compile(r"\bco_[A-Za-z0-9_-]{20,}")
+_JWT_TOKEN_RE = re.compile(r"eyJ[A-Za-z0-9_+/=-]{20,}(?:\.[A-Za-z0-9_+/=-]+)*")
+_GOOGLE_ACCESS_TOKEN_RE = re.compile(r"\bya29\.[A-Za-z0-9._-]+")
+_GOOGLE_REFRESH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])1//[A-Za-z0-9._-]+")
+_GOOGLE_CLIENT_SECRET_RE = re.compile(r"\bGOCSPX-[A-Za-z0-9._-]+")
 _HF_NON_SECRET_IDENTIFIERS = frozenset(
     {
         "hf_token",
@@ -66,16 +72,11 @@ _HF_NON_SECRET_IDENTIFIERS = frozenset(
 
 
 def _validate_hf_token(token: str) -> str:
-    if not token:
+    if token is None or token == "":
         return ""
     if not isinstance(token, str):
         raise ValueError("hf_token 格式不合法")
-    if any(c in ("\r", "\n") or ord(c) < 32 or ord(c) == 127 for c in token):
-        raise ValueError("hf_token 包含非法空白或控制字符")
-    clean = token.strip()
-    if any(c.isspace() for c in clean):
-        raise ValueError("hf_token 包含非法空白或控制字符")
-    return clean
+    return validate_colabone_hf_token(token)
 
 
 def _scrub_hf_match(match: re.Match[str]) -> str:
@@ -104,6 +105,11 @@ def _scrub_secret_text(text: str, *secrets: str) -> str:
             result = result.replace(cand, "***")
     result = _BEARER_SECRET_RE.sub("Bearer ***", result)
     result = _HF_TOKEN_RE.sub(_scrub_hf_match, result)
+    result = _COLABONE_API_KEY_RE.sub("***", result)
+    result = _JWT_TOKEN_RE.sub("***", result)
+    result = _GOOGLE_ACCESS_TOKEN_RE.sub("***", result)
+    result = _GOOGLE_REFRESH_TOKEN_RE.sub("***", result)
+    result = _GOOGLE_CLIENT_SECRET_RE.sub("***", result)
     return result
 
 
@@ -265,6 +271,7 @@ class ColabOneRuntime:
         self.models_dir = root / "models"
         self.models_dir.mkdir(exist_ok=True)
         self.lock = _TrackedRLock()
+        self._engine_lifecycle_lock = threading.RLock()
         self._comfy_lifecycle_lock = threading.Lock()
         self.sync_lock = threading.Lock()
         self.release_lock = threading.Lock()
@@ -467,6 +474,7 @@ class ColabOneRuntime:
                 "comfyui_hf_token",
                 "comfyui_drive_export",
                 "comfyui_tts_preview",
+                "comfyui_longcat_native",
             ],
             "comfyui": comfy_status,
             "active_engine": "llama"
@@ -839,6 +847,8 @@ class ColabOneRuntime:
         atomic_json(directory / "verified.json", receipt)
 
     def _download_single(self, url, headers, partial, file, task, done):
+        if partial.is_symlink():
+            raise ValueError("下载临时文件不能是符号链接")
         offset = partial.stat().st_size if partial.exists() else 0
         if offset > file.size:
             partial.unlink()
@@ -850,94 +860,141 @@ class ColabOneRuntime:
         if offset == file.size:
             return
         max_attempts = 3
-        for attempt in range(max_attempts):
-            task.check()
-            req_headers = dict(headers)
-            req_headers["Accept-Encoding"] = "identity"
-            if offset:
-                req_headers["Range"] = f"bytes={offset}-"
-            stats.active = 1
-            try:
-                with self.http.get(
-                    url, headers=req_headers, stream=True, timeout=(10, 30)
-                ) as response:
-                    if response.status_code == 416 and offset > 0:
-                        stats.resumed = max(0, stats.resumed - offset)
-                        partial.unlink(missing_ok=True)
-                        offset = 0
-                        stats.downloaded = done
-                        continue
-                    response.raise_for_status()
-                    if offset and response.status_code != 206:
-                        stats.resumed = max(0, stats.resumed - offset)
-                        offset = 0
-                    if response.status_code == 206:
-                        cr = response.headers.get("Content-Range", "").strip()
-                        if not cr.startswith(f"bytes {offset}-") or (
-                            "/" in cr and not cr.endswith(f"/{file.size}")
-                        ):
-                            raise RuntimeError("下载范围响应不匹配，请重试")
-                    with partial.open("ab" if offset else "wb") as stream:
-                        for block in response.iter_content(1024**2):
+        active_lock = threading.Lock()
+        active_response = [None]
+
+        def _cancel_active_response():
+            with active_lock:
+                resp = active_response[0]
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+        task_lock = getattr(task, "lock", None)
+        if task_lock is not None:
+            with task_lock:
+                prev_cancel_hook = getattr(task, "cancel_hook", None)
+                task.cancel_hook = _cancel_active_response
+        else:
+            prev_cancel_hook = getattr(task, "cancel_hook", None)
+            task.cancel_hook = _cancel_active_response
+        try:
+            for attempt in range(max_attempts):
+                task.check()
+                if partial.is_symlink():
+                    raise ValueError("下载临时文件不能是符号链接")
+                req_headers = dict(headers)
+                req_headers["Accept-Encoding"] = "identity"
+                if offset:
+                    req_headers["Range"] = f"bytes={offset}-"
+                stats.active = 1
+                try:
+                    with self.http.get(
+                        url, headers=req_headers, stream=True, timeout=(10, 30)
+                    ) as response:
+                        with active_lock:
+                            active_response[0] = response
+                        if task.cancel.is_set():
+                            _cancel_active_response()
                             task.check()
-                            if not block:
-                                continue
-                            if offset + len(block) > file.size:
-                                raise RuntimeError("远端文件大于清单声明的大小")
-                            stream.write(block)
-                            offset += len(block)
-                            stats.wire(len(block))
-                            stats.downloaded = done + offset
-                            task.update(progress=(done + offset) / stats.total)
-                            now = time.monotonic()
-                            if now - stats.last_report >= 5:
-                                stats.last_report = now
-                                view = stats.snapshot()
-                                task.note(
-                                    f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
-                                )
-                return
-            except requests.HTTPError as exc:
-                status_code = getattr(getattr(exc, "response", None), "status_code", None)
-                if (
-                    status_code not in (429, 500, 502, 503, 504)
-                    or attempt + 1 >= max_attempts
-                ):
-                    if status_code in (401, 403):
-                        raise RuntimeError(
-                            f"单连接下载鉴权失败（HTTP {status_code}），请在设置中检查 Hugging Face Token"
-                        ) from None
-                    raise RuntimeError(
-                        f"单连接下载失败（HTTP {status_code or type(exc).__name__}）"
-                    ) from None
-                task.note(
-                    f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（HTTP {status_code}）",
-                    "warning",
-                )
-                if task.cancel.wait(2**attempt):
+                        if response.status_code == 416 and offset > 0:
+                            stats.resumed = max(0, stats.resumed - offset)
+                            partial.unlink(missing_ok=True)
+                            offset = 0
+                            stats.downloaded = done
+                            continue
+                        response.raise_for_status()
+                        if offset and response.status_code != 206:
+                            stats.resumed = max(0, stats.resumed - offset)
+                            offset = 0
+                        if response.status_code == 206:
+                            cr = response.headers.get("Content-Range", "").strip()
+                            if not cr.startswith(f"bytes {offset}-") or (
+                                "/" in cr and not cr.endswith(f"/{file.size}")
+                            ):
+                                raise RuntimeError("下载范围响应不匹配，请重试")
+                        if partial.is_symlink():
+                            raise ValueError("下载临时文件不能是符号链接")
+                        with partial.open("ab" if offset else "wb") as stream:
+                            for block in response.iter_content(1024**2):
+                                task.check()
+                                if not block:
+                                    continue
+                                if offset + len(block) > file.size:
+                                    raise RuntimeError("远端文件大于清单声明的大小")
+                                stream.write(block)
+                                offset += len(block)
+                                stats.wire(len(block))
+                                stats.downloaded = done + offset
+                                task.update(progress=(done + offset) / stats.total)
+                                now = time.monotonic()
+                                if now - stats.last_report >= 5:
+                                    stats.last_report = now
+                                    view = stats.snapshot()
+                                    task.note(
+                                        f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
+                                    )
+                    return
+                except requests.HTTPError as exc:
                     task.check()
-            except requests.RequestException as exc:
-                if (
-                    isinstance(
-                        exc,
-                        (
-                            requests.exceptions.InvalidHeader,
-                            requests.exceptions.InvalidURL,
-                        ),
+                    status_code = getattr(
+                        getattr(exc, "response", None), "status_code", None
                     )
-                    or attempt + 1 >= max_attempts
-                ):
-                    raise RuntimeError(
-                        f"单连接下载失败（{type(exc).__name__}）"
-                    ) from None
-                task.note(
-                    f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（{type(exc).__name__}）",
-                    "warning",
-                )
-                if task.cancel.wait(2**attempt):
+                    if (
+                        status_code not in (429, 500, 502, 503, 504)
+                        or attempt + 1 >= max_attempts
+                    ):
+                        if status_code in (401, 403):
+                            raise RuntimeError(
+                                f"单连接下载鉴权失败（HTTP {status_code}），请在设置中检查 Hugging Face Token"
+                            ) from None
+                        raise RuntimeError(
+                            f"单连接下载失败（HTTP {status_code or type(exc).__name__}）"
+                        ) from None
+                    task.note(
+                        f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（HTTP {status_code}）",
+                        "warning",
+                    )
+                    if task.cancel.wait(2**attempt):
+                        task.check()
+                except requests.RequestException as exc:
                     task.check()
-            finally:
-                stats.active = 0
+                    if (
+                        isinstance(
+                            exc,
+                            (
+                                requests.exceptions.InvalidHeader,
+                                requests.exceptions.InvalidURL,
+                            ),
+                        )
+                        or attempt + 1 >= max_attempts
+                    ):
+                        raise RuntimeError(
+                            f"单连接下载失败（{type(exc).__name__}）"
+                        ) from None
+                    task.note(
+                        f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（{type(exc).__name__}）",
+                        "warning",
+                    )
+                    if task.cancel.wait(2**attempt):
+                        task.check()
+                except Exception:
+                    if task.cancel.is_set():
+                        task.check()
+                    raise
+                finally:
+                    with active_lock:
+                        active_response[0] = None
+                    stats.active = 0
+        finally:
+            if task_lock is not None:
+                with task_lock:
+                    if getattr(task, "cancel_hook", None) is _cancel_active_response:
+                        task.cancel_hook = prev_cancel_hook
+            elif getattr(task, "cancel_hook", None) is _cancel_active_response:
+                task.cancel_hook = prev_cancel_hook
 
     @staticmethod
     def sha256(path, task=None):
@@ -1681,14 +1738,19 @@ class ColabOneRuntime:
             )
         return ""
 
-    @synchronized
     def _start_engine(self, task, args, **kwargs):
-        task.check()
-        if self.quiescing or self.stopping.is_set():
-            raise ColabOneCancelledError("实例正在停止，已取消模型加载")
-        self._stop_engine()
-        self.proc = subprocess.Popen(args, **kwargs)
-        return self.proc
+        with self._engine_lifecycle_lock:
+            with self.lock:
+                task.check()
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneCancelledError("实例正在停止，已取消模型加载")
+            self._stop_engine()
+            with self.lock:
+                task.check()
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneCancelledError("实例正在停止，已取消模型加载")
+                self.proc = subprocess.Popen(args, **kwargs)
+                return self.proc
 
     @synchronized
     def _engine_ready(self, task, proc, model_id, options=None):
@@ -1699,10 +1761,12 @@ class ColabOneRuntime:
             raise RuntimeError("推理进程已退出，模型未加载成功，请查看运行日志")
         self.loaded, self.active_options = model_id, options or {}
 
-    @synchronized
     def _stop_engine(self):
-        proc = self.proc
-        try:
+        with self._engine_lifecycle_lock:
+            with self.lock:
+                proc = self.proc
+                self.proc, self.loaded = None, None
+                self.active_options = {}
             if proc:
                 if proc.poll() is None:
                     proc.terminate()
@@ -1714,17 +1778,15 @@ class ColabOneRuntime:
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
-        finally:
-            self.proc, self.loaded = None, None
-            self.active_options = {}
 
     def unload(self):
         self._refresh_comfy_queue_if_needed()
-        with self.lock:
-            if self.busy():
-                raise ColabOneConflictError("请先停止当前任务")
+        with self._engine_lifecycle_lock:
+            with self.lock:
+                if self.busy():
+                    raise ColabOneConflictError("请先停止当前任务")
+                comfy_running = self.comfy.is_running()
             self._stop_engine()
-            comfy_running = self.comfy.is_running()
         if comfy_running:
             self.comfy.free_memory(unload_models=True)
         with self.lock:
@@ -1739,12 +1801,19 @@ class ColabOneRuntime:
                 )
 
     def stop_comfyui(self):
+        def _is_task_running(task) -> bool:
+            t_lock = getattr(task, "lock", None)
+            if t_lock is not None:
+                with t_lock:
+                    return task.state == "running"
+            return task.state == "running"
+
         with self._comfy_lifecycle_lock:
             with self.lock:
                 comfy_tasks = [
                     t
                     for t in self.tasks.values()
-                    if t.state == "running"
+                    if _is_task_running(t)
                     and t.kind in ("comfyui_start", "comfyui_run", "comfyui_tts_preview")
                 ]
             for t in comfy_tasks:
@@ -1754,12 +1823,14 @@ class ColabOneRuntime:
                     pass
             self.comfy.stop_server()
             deadline = time.monotonic() + 10
-            while any(t.state == "running" for t in comfy_tasks):
+            while any(_is_task_running(t) for t in comfy_tasks):
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.05)
             if comfy_tasks and self.comfy.is_running():
                 self.comfy.stop_server()
+            if any(_is_task_running(t) for t in comfy_tasks):
+                raise ColabOneConflictError("ComfyUI 任务仍在停止，请稍后重试")
             with self.lock:
                 self.last_active = time.time()
 
@@ -1783,11 +1854,18 @@ class ColabOneRuntime:
             and isinstance(request_data.get("hf_token"), str)
             else ""
         )
-        req = (
-            request_data
-            if isinstance(request_data, WorkflowRunRequest)
-            else WorkflowRunRequest.model_validate(request_data)
-        )
+        try:
+            req = (
+                request_data
+                if isinstance(request_data, WorkflowRunRequest)
+                else WorkflowRunRequest.model_validate(request_data)
+            )
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, raw_token_secret)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
         with self._comfy_lifecycle_lock:
             self._refresh_comfy_queue_if_needed()
             with self.lock:
@@ -2147,6 +2225,11 @@ class ColabOneRuntime:
                     return {"ok": True}
                 self.quiescing = True
                 tasks = list(self.tasks.values())
+
+            def _stop_comfy_serialized():
+                with self._comfy_lifecycle_lock:
+                    self.comfy.stop_server()
+
             if auto:
                 for step in (
                     self.public_api.stop,
@@ -2155,7 +2238,7 @@ class ColabOneRuntime:
                         for task in tasks
                         if task.state == "running"
                     ],
-                    self.comfy.stop_server,
+                    _stop_comfy_serialized,
                 ):
                     try:
                         step()
@@ -2166,7 +2249,7 @@ class ColabOneRuntime:
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.1)
-                for step in (self.comfy.stop_server, self._stop_engine):
+                for step in (_stop_comfy_serialized, self._stop_engine):
                     try:
                         step()
                     except Exception:
@@ -2193,13 +2276,13 @@ class ColabOneRuntime:
                 for task in tasks:
                     if task.state == "running":
                         task.request_cancel()
-                self.comfy.stop_server()
+                _stop_comfy_serialized()
                 deadline = time.monotonic() + 15
                 while any(t.state == "running" for t in tasks):
                     if time.monotonic() >= deadline:
                         raise RuntimeError("任务仍在停止，请稍后重试释放")
                     time.sleep(0.1)
-                self.comfy.stop_server()
+                _stop_comfy_serialized()
                 self._stop_engine()
                 with self.sync_lock:
                     if self.drive.available():

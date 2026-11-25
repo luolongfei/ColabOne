@@ -1272,15 +1272,26 @@ def test_catalog_ordered_engines_defaults_and_schema_parity():
                 f"{eid}/{vp.id} prompt should be Chinese"
             )
 
-    # Both digital-human templates default to fish_drama3 and list all 8 engines in order.
+    # Digital-human templates list all 8 engines in canonical order, with
+    # InfiniteTalk defaulting to commercial Apache-2.0 moss_tts_v1_5 and
+    # LongCat 1.6 defaulting to flagship fish_drama3.
     tpl_by_id = {tpl.id: tpl for tpl in catalog.templates}
-    for tid in ("digital-human-infinitetalk", "digital-human-longcat"):
+    expected_defaults = {
+        "digital-human-infinitetalk": "moss_tts_v1_5",
+        "digital-human-longcat": "fish_drama3",
+    }
+    assert tpl_by_id["digital-human-infinitetalk"].commercial_ok is True
+    assert (
+        tpl_by_id["digital-human-infinitetalk"].license
+        == "Apache-2.0 / CC-BY-4.0 / GPL-3.0"
+    )
+    for tid, expected_default in expected_defaults.items():
         tpl = tpl_by_id[tid]
         assert tpl.pipeline is not None
-        assert tpl.pipeline.default_tts_engine == "fish_drama3"
+        assert tpl.pipeline.default_tts_engine == expected_default
         assert tpl.pipeline.supported_tts_engines == list(EXPECTED_FLAGSHIP_ENGINE_IDS)
         tts_field = next(f for f in tpl.fields if f.key == "pipeline.tts_engine")
-        assert tts_field.default == "fish_drama3"
+        assert tts_field.default == expected_default
         assert tts_field.options == list(EXPECTED_FLAGSHIP_ENGINE_IDS)
 
     # Duplicate voice_presets[].id rejected in schema.

@@ -1767,6 +1767,17 @@ func TestSafeMessageLinearTimeNoQuadraticDoS(t *testing.T) {
 		},
 	}
 
+	perRequiredLimit := 200 * time.Millisecond
+	totalRequiredLimit := 500 * time.Millisecond
+	perExtraLimit := 250 * time.Millisecond
+	if testing.CoverMode() != "" {
+		// Coverage instrumentation adds counter increments inside hot byte-scanning
+		// loops, inflating wall-clock runtime while keeping O(N) scaling intact.
+		perRequiredLimit = 1500 * time.Millisecond
+		totalRequiredLimit = 4 * time.Second
+		perExtraLimit = 1500 * time.Millisecond
+	}
+
 	startRequired := time.Now()
 	for _, tc := range requiredInputs {
 		start := time.Now()
@@ -1776,12 +1787,12 @@ func TestSafeMessageLinearTimeNoQuadraticDoS(t *testing.T) {
 		if utf8.RuneCountInString(got) > maxMessageRunes {
 			t.Fatalf("%s: output exceeded maxMessageRunes: %d", tc.name, utf8.RuneCountInString(got))
 		}
-		if elapsed > 200*time.Millisecond {
-			t.Errorf("%s: took %v (> 200ms), expected strictly linear O(N) performance", tc.name, elapsed)
+		if elapsed > perRequiredLimit {
+			t.Errorf("%s: took %v (> %v), expected strictly linear O(N) performance", tc.name, elapsed, perRequiredLimit)
 		}
 	}
-	if totalReq := time.Since(startRequired); totalReq > 500*time.Millisecond {
-		t.Errorf("total elapsed for the four 20,000-rep inputs was %v (> 500ms)", totalReq)
+	if totalReq := time.Since(startRequired); totalReq > totalRequiredLimit {
+		t.Errorf("total elapsed for the four 20,000-rep inputs was %v (> %v)", totalReq, totalRequiredLimit)
 	}
 
 	for _, tc := range extraInputs {
@@ -1792,8 +1803,8 @@ func TestSafeMessageLinearTimeNoQuadraticDoS(t *testing.T) {
 		if utf8.RuneCountInString(got) > maxMessageRunes {
 			t.Fatalf("%s: output exceeded maxMessageRunes: %d", tc.name, utf8.RuneCountInString(got))
 		}
-		if elapsed > 250*time.Millisecond {
-			t.Errorf("%s: took %v (> 250ms), expected strictly linear O(N) performance", tc.name, elapsed)
+		if elapsed > perExtraLimit {
+			t.Errorf("%s: took %v (> %v), expected strictly linear O(N) performance", tc.name, elapsed, perExtraLimit)
 		}
 	}
 }

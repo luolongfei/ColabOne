@@ -483,6 +483,83 @@ describe("ColabOneTelemetryTracker state normalization & history tracking", () =
     );
     expect(emptyStarting.online).toBe(false);
   });
+
+  it("keeps timestamps monotonic when resources.history disappears mid-session while server clock is ahead", () => {
+    const tracker = new ColabOneTelemetryTracker();
+    const baseRuntime: RuntimeStatus = {
+      id: "vm-mono-1",
+      state: "ready",
+      gpu: {
+        name: "NVIDIA L4",
+        total_mib: 24576,
+        used_mib: 4096,
+        util_percent: 30,
+      },
+      resources: {
+        cpu: { percent: 25, cores: 8 },
+        memory: {
+          total_bytes: 32 * GB,
+          used_bytes: 8 * GB,
+          available_bytes: 24 * GB,
+          percent: 25,
+        },
+        disk: {
+          total_bytes: 200 * GB,
+          used_bytes: 40 * GB,
+          free_bytes: 160 * GB,
+          percent: 20,
+        },
+        gpu: {
+          name: "NVIDIA L4",
+          total_mib: 24576,
+          used_mib: 4096,
+          util_percent: 30,
+        },
+        history: [
+          {
+            t: 1998,
+            vram_pct: 16,
+            gpu_util: 25,
+            ram_pct: 24,
+            cpu_pct: 20,
+            disk_pct: 20,
+          },
+          {
+            t: 2000,
+            vram_pct: 16.7,
+            gpu_util: 30,
+            ram_pct: 25,
+            cpu_pct: 25,
+            disk_pct: 20,
+          },
+        ],
+      },
+    };
+
+    tracker.pushSnapshot(baseRuntime, 1995);
+    expect(tracker.history.map((p) => p.t)).toEqual([1998, 2000]);
+
+    // Server stops emitting resources.history mid-session while client clock (1995, 1997) trails server t=2000
+    const withoutHistory: RuntimeStatus = {
+      ...baseRuntime,
+      resources: {
+        ...baseRuntime.resources,
+        cpu: { percent: 40, cores: 8 },
+        history: undefined,
+      },
+    };
+    tracker.pushSnapshot(withoutHistory, 1995);
+    tracker.pushSnapshot(withoutHistory, 1997);
+    tracker.pushSnapshot(withoutHistory, 2002);
+
+    expect(tracker.history.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < tracker.history.length; i += 1) {
+      expect(tracker.history[i]!.t).toBeGreaterThanOrEqual(
+        tracker.history[i - 1]!.t,
+      );
+    }
+    expect(tracker.history[tracker.history.length - 1]!.t).toBe(2002);
+  });
 });
 
 describe("multi-instance monitor fallback & labels", () => {

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/luolongfei/ColabOne/console/internal/comfyui"
 )
 
 const (
@@ -24,11 +26,13 @@ const (
 	colabOneWorkflowDraftsFileName      = "drafts.json"
 	colabOneWorkflowDraftsMediaDirName  = "media"
 
-	colabOneMaxWorkflowDraftFields           = 128
-	colabOneMaxWorkflowDraftFieldStringBytes = 200000
-	colabOneMaxWorkflowDraftFilenameRunes    = 180
-	colabOneMaxWorkflowDraftImageBytes       = 16 * 1024 * 1024
-	colabOneMaxWorkflowDraftAudioBytes       = 64 * 1024 * 1024
+	colabOneMaxWorkflowDraftFields              = 128
+	colabOneMaxWorkflowDraftFieldStringRunes    = comfyui.MaxOverrideStringRunes
+	colabOneMaxWorkflowDraftFieldStringMaxBytes = colabOneMaxWorkflowDraftFieldStringRunes * utf8.UTFMax // 800000
+	colabOneMaxWorkflowDraftsFileBytes          = 32 * 1024 * 1024                                         // 32 MiB
+	colabOneMaxWorkflowDraftFilenameRunes       = 180
+	colabOneMaxWorkflowDraftImageBytes          = 16 * 1024 * 1024
+	colabOneMaxWorkflowDraftAudioBytes          = 64 * 1024 * 1024
 )
 
 var (
@@ -151,8 +155,8 @@ func validateWorkflowDraftFieldValue(v any) (any, bool, error) {
 	case nil:
 		return nil, false, nil
 	case string:
-		if len(x) > colabOneMaxWorkflowDraftFieldStringBytes {
-			return nil, false, errors.New("草稿文本字段超过 200000 字节上限")
+		if len(x) > colabOneMaxWorkflowDraftFieldStringMaxBytes || utf8.RuneCountInString(x) > colabOneMaxWorkflowDraftFieldStringRunes {
+			return nil, false, errors.New("草稿文本字段超过 200000 个字符上限")
 		}
 		return x, true, nil
 	case bool:
@@ -641,25 +645,65 @@ func (c *ColabOneController) loadWorkflowDrafts() {
 
 	draftsPath := c.workflowDraftsFilePath()
 	draftsFileExists := false
+	var draftsFileInfo os.FileInfo
 	if fileInfo, statErr := os.Lstat(draftsPath); statErr == nil {
 		if fileInfo.Mode()&os.ModeSymlink != 0 || !fileInfo.Mode().IsRegular() {
 			return
 		}
+		draftsFileInfo = fileInfo
 		draftsFileExists = true
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return
+	}
+
+	backupCorruptDrafts := func(raw []byte) {
+		corruptPath := draftsPath + ".corrupt"
+		if info, err := os.Lstat(corruptPath); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+				return
+			}
+		}
+		if colabOneRenameReplace(draftsPath, corruptPath) != nil && len(raw) > 0 {
+			_ = os.WriteFile(corruptPath, raw, 0o600)
+		}
 	}
 
 	loaded := make(map[string]*ColabOneWorkflowDraft)
 	reconciled := false
 
 	if draftsFileExists {
-		rawBytes, readErr := os.ReadFile(draftsPath)
+		if draftsFileInfo.Size() > colabOneMaxWorkflowDraftsFileBytes {
+			if c.activity != nil {
+				c.log("读取本地 ComfyUI 草稿配置失败，已保留原文件未覆盖", "ComfyUI", "warning")
+			}
+			return
+		}
+		f, openErr := os.Open(draftsPath)
+		if openErr != nil {
+			return
+		}
+		fInfo, fStatErr := f.Stat()
+		if fStatErr != nil || !fInfo.Mode().IsRegular() || !os.SameFile(draftsFileInfo, fInfo) || fInfo.Size() > colabOneMaxWorkflowDraftsFileBytes {
+			_ = f.Close()
+			if fStatErr == nil && fInfo.Size() > colabOneMaxWorkflowDraftsFileBytes && c.activity != nil {
+				c.log("读取本地 ComfyUI 草稿配置失败，已保留原文件未覆盖", "ComfyUI", "warning")
+			}
+			return
+		}
+		rawBytes, readErr := io.ReadAll(io.LimitReader(f, colabOneMaxWorkflowDraftsFileBytes+1))
+		_ = f.Close()
 		if readErr != nil {
+			return
+		}
+		if int64(len(rawBytes)) > colabOneMaxWorkflowDraftsFileBytes {
+			if c.activity != nil {
+				c.log("读取本地 ComfyUI 草稿配置失败，已保留原文件未覆盖", "ComfyUI", "warning")
+			}
 			return
 		}
 		var rawObj map[string]any
 		if decodeJSONWithNumbers(rawBytes, &rawObj) != nil || rawObj == nil {
+			backupCorruptDrafts(rawBytes)
 			if c.activity != nil {
 				c.log("读取本地 ComfyUI 草稿配置失败，已保留原文件未覆盖", "ComfyUI", "warning")
 			}
@@ -670,6 +714,7 @@ func (c *ColabOneController) loadWorkflowDrafts() {
 		if rawVal, hasDrafts := rawObj["drafts"]; hasDrafts {
 			m := asMap(rawVal)
 			if m == nil {
+				backupCorruptDrafts(rawBytes)
 				if c.activity != nil {
 					c.log("读取本地 ComfyUI 草稿配置失败，已保留原文件未覆盖", "ComfyUI", "warning")
 				}

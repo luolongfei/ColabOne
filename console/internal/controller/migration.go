@@ -520,7 +520,7 @@ func (c *ColabOneController) ApplyMigrationPayload(
 				list = append(list, deepCopyMap(wf))
 			}
 			c.mu.Unlock()
-			_ = AtomicJSON(filepath.Join(c.directory, "workflows.json"), map[string]any{"workflows": list})
+			_ = AtomicJSON(filepath.Join(c.directory, "workflows.json"), list)
 		}
 		if wroteLibrary && prevLib != nil {
 			c.mu.Lock()
@@ -593,7 +593,7 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		}
 		c.mu.Unlock()
 
-		if err := AtomicJSON(filepath.Join(c.directory, "workflows.json"), map[string]any{"workflows": wfList}); err != nil {
+		if err := AtomicJSON(filepath.Join(c.directory, "workflows.json"), wfList); err != nil {
 			c.mu.Lock()
 			c.customWorkflows = prevLib.customWorkflows
 			c.remoteWorkflowVersions = prevLib.remoteWorkflowVersions

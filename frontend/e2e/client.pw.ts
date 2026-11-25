@@ -1244,6 +1244,33 @@ async function mock(page: any, ready = false, path = "/") {
               );
               return JSON.stringify({ ok: true });
             }
+            if (action === "comfyui.draft.get") {
+              const wfId = String(payload?.workflow_id || "");
+              const drafts = ((window as any).__drafts ||= {});
+              return JSON.stringify({
+                ok: true,
+                draft: wfId && drafts[wfId] ? drafts[wfId] : null,
+              });
+            }
+            if (action === "comfyui.draft.save") {
+              const wfId = String(payload?.workflow_id || "");
+              const drafts = ((window as any).__drafts ||= {});
+              const prev = wfId && drafts[wfId] ? drafts[wfId] : null;
+              const saved = {
+                workflow_id: wfId,
+                fields: { ...(payload?.fields || {}) },
+                media: prev?.media ? { ...prev.media } : {},
+                updated_at: Date.now() / 1000,
+              };
+              if (wfId) drafts[wfId] = saved;
+              return JSON.stringify({ ok: true, draft: saved });
+            }
+            if (action === "comfyui.draft.clear") {
+              const wfId = String(payload?.workflow_id || "");
+              const drafts = ((window as any).__drafts ||= {});
+              if (wfId) delete drafts[wfId];
+              return JSON.stringify({ ok: true });
+            }
             if (action === "comfyui.output.export_drive") {
               const target = (state.comfy_outputs || []).find(
                 (o: any) => o.id === payload?.id,
@@ -1291,7 +1318,7 @@ async function mock(page: any, ready = false, path = "/") {
 function navItem(page: any, name: string) {
   return page
     .locator(".co-navbar nav")
-    .getByRole("menuitem", { name, exact: true });
+    .getByRole("button", { name, exact: true });
 }
 
 function antSelect(scope: any, label: string) {
@@ -1369,17 +1396,17 @@ test("disconnected client exposes 4-item navigation, opens model drawer from API
 }) => {
   await mock(page);
   const nav = page.locator(".co-navbar nav");
-  await expect(nav.getByRole("menuitem")).toHaveText([
+  await expect(nav.getByRole("button")).toHaveText([
     "远端设备",
     "对外 API",
     "ComfyUI",
     "设置",
   ]);
   await expect(
-    nav.getByRole("menuitem", { name: "模型", exact: true }),
+    nav.getByRole("button", { name: "模型", exact: true }),
   ).toHaveCount(0);
   await expect(
-    nav.getByRole("menuitem", { name: "使用", exact: true }),
+    nav.getByRole("button", { name: "使用", exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "启动 GPU", exact: true }),
@@ -2850,10 +2877,11 @@ test("ComfyUI built-in digital human unified entry shows beginner essentials fir
   await expect(infiniteTalkOpt).toContainText("长视频稳健");
   await expect(infiniteTalkOpt).toContainText("InfiniteTalk");
   await expect(infiniteTalkOpt).toContainText("40 GB+");
-  await expect(infiniteTalkOpt).toContainText("推荐");
+  // On T4 (15 GB < 40 GB min_vram_mib), auto-selection suppresses the "推荐" badge.
+  await expect(infiniteTalkOpt).not.toContainText("推荐");
   await expect(longCatOpt).toHaveAttribute("aria-checked", "false");
   await expect(longCatOpt).toContainText("旗舰高清");
-  await expect(longCatOpt).toContainText("LongCat-Avatar");
+  await expect(longCatOpt).toContainText("LongCat 1.6");
   await expect(longCatOpt).toContainText("48 GB+");
 
   // Beginner-essential basic fields are visible by default; Advanced Settings starts collapsed.
@@ -2872,11 +2900,17 @@ test("ComfyUI built-in digital human unified entry shows beginner essentials fir
     paramDrawer.locator("#comfy-field-pipeline_max_segment_seconds"),
   ).toBeHidden();
 
-  // Default flagship TTS engine (Fish Audio Drama 3) surfaces the non-commercial license alert;
-  // switching to Fish Speech S2-Pro updates the alert to name Fish Speech S2-Pro.
+  // Default InfiniteTalk TTS engine (MOSS-TTS v1.5, Apache-2.0) shows commercial badge and only the suite disclaimer
+  // (no active-model non-commercial warning line); switching to Fish Speech S2-Pro adds the active-model warning line.
+  await expect(paramDrawer.locator(".co-comfy-tts-strip")).toContainText(
+    "可商用开源",
+  );
   const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
   await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert).toContainText("Fish Audio Drama 3");
+  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
+    1,
+  );
+  await expect(licenseAlert).not.toContainText("MOSS-TTS v1.5");
 
   const ttsSelect = paramDrawer.locator(
     ".ant-select:has(#comfy-field-pipeline_tts_engine)",
@@ -2884,12 +2918,17 @@ test("ComfyUI built-in digital human unified entry shows beginner essentials fir
   await expect(ttsSelect).toBeVisible();
   await chooseAntOption(page, ttsSelect, /Fish Speech S2-Pro/);
   await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert).toContainText("Fish Speech S2-Pro");
+  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
+    2,
+  );
+  await expect(
+    licenseAlert.locator(".co-comfy-license-alert-line").first(),
+  ).toContainText("Fish Speech S2-Pro");
 
   // Expanding and collapsing Advanced Settings reveals engine-tuned defaults while preserving the license alert.
   await advancedToggle.click();
   await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
-  await expect(paramDrawer.locator("#comfy-field-15_steps")).toHaveValue("6");
+  await expect(paramDrawer.locator("#comfy-field-15_steps")).toHaveValue("8");
   await expect(
     paramDrawer.locator("#comfy-field-pipeline_max_segment_seconds"),
   ).toHaveValue("20");
@@ -2998,10 +3037,13 @@ test("ComfyUI built-in digital human unified entry translates cleanly to Japanes
   );
   await expect(infiniteTalkOpt).toHaveAttribute("aria-checked", "true");
   await expect(infiniteTalkOpt).toContainText("長尺安定");
-  await expect(infiniteTalkOpt).toContainText("おすすめ");
+  // On T4 (15 GB < 40 GB min_vram_mib), the recommended pill is suppressed.
+  await expect(infiniteTalkOpt).not.toContainText("おすすめ");
   await expect(longCatOpt).toHaveAttribute("aria-checked", "false");
   await expect(longCatOpt).toContainText("フラッグシップ HD");
-  await expect(longCatOpt).toContainText("ネイティブ 720p・GPU 高速化対応");
+  await expect(longCatOpt).toContainText(
+    "LongCat 1.6 ネイティブ 720p + SeedVR2 7B / FlashVSR+ 超解像（非商用限定）",
+  );
 
   const drawerIoRows = paramDrawer.locator(
     ".co-comfy-beginner-guide-io .co-comfy-beginner-guide-io-row",
@@ -3034,18 +3076,18 @@ test("ComfyUI built-in digital human unified entry translates cleanly to Japanes
   );
   await expect(preflightWarning).toBeVisible();
   await expect(preflightWarning).toContainText("GPU VRAM が不足しています");
-  await expect(preflightWarning).toContainText("45 GB");
+  await expect(preflightWarning).toContainText("40 GB");
   await expect(preflightWarning).toContainText("15 GB");
 
-  // Default TTS engine name & description render in Japanese.
+  // Default TTS engine name & description (MOSS-TTS v1.5) render in Japanese.
   await expect(
     paramDrawer.locator(".co-comfy-tts-strip-name"),
   ).toHaveText(
-    "Fish Audio Drama 3（35B MoE・44.1kHz・96G フラッグシップ・非商用限定）",
+    "MOSS-TTS v1.5（8B・31 言語長文フラッグシップ）",
   );
   await expect(
     paramDrawer.locator(".co-comfy-tts-strip-desc"),
-  ).toContainText("フラッグシップ音声モデル");
+  ).toContainText("長文音声モデル");
 
   // Switching to LongCat updates the preflight VRAM warning to 48 GB in Japanese.
   await longCatOpt.click();
@@ -3129,13 +3171,13 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
     paramDrawer.getByTestId("comfy-engine-option-digital-human-infinitetalk"),
   ).toHaveAttribute("aria-checked", "true");
 
-  // 1. Preflight VRAM warning banner on T4 (15 GB) with InfiniteTalk + default Drama 3 TTS (45 GB required).
+  // 1. Preflight VRAM warning banner on T4 (15 GB) with InfiniteTalk + default MOSS-TTS v1.5 (40 GB required).
   const preflightWarning = paramDrawer.locator(
     ".co-comfy-preflight-strip.is-warning",
   );
   await expect(preflightWarning).toBeVisible();
   await expect(preflightWarning).toContainText(
-    "当前 GPU 显存不足（需 45 GB，当前 15 GB）",
+    "当前 GPU 显存不足（需 40 GB，当前 15 GB）",
   );
 
   // 2. Escape coordination with LogDrawer: first Escape closes ONLY Parameter Drawer while keeping LogDrawer open.
@@ -3217,11 +3259,11 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
     0,
   );
 
-  // Switching to custom voice enforces required voice_ref_audio on IndexTTS-2 and blocks run.
+  // Switching to custom voice enforces required voice_ref_audio on IndexTTS-2.5 and blocks run.
   await chooseAntOption(page, voicePresetSelect, /自定义音色/);
   await expect(
     paramDrawer.locator(".co-comfy-field-required-hint"),
-  ).toContainText("IndexTTS-2 选择「自定义音色」时必须上传参考音色音频");
+  ).toContainText("IndexTTS-2.5 选择「自定义音色」时必须上传参考音色音频");
 
   await paramDrawer.locator(".co-comfy-drawer-run-btn").click();
 
@@ -3256,7 +3298,7 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
   });
 });
 
-test("ComfyUI LongCat-Avatar flagship engine auto-selects on G4 96 GB, exposes built-in voices, optimized 8-step/3.7s/gesture defaults, and auto-syncs upscale mode with render quality", async ({
+test("ComfyUI LongCat 1.6 native flagship engine auto-selects on G4 96 GB, exposes built-in voices, 96GB quality/framing/upscale defaults, non-commercial notice, and conditional sampling controls", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -3309,7 +3351,7 @@ test("ComfyUI LongCat-Avatar flagship engine auto-selects on G4 96 GB, exposes b
     paramDrawer.locator(".co-comfy-drawer-title-text"),
   ).toHaveText("口播数字人");
 
-  // On G4 (96 GB >= 48 GB), opening the unified card auto-selects LongCat-Avatar flagship engine.
+  // On G4 (96 GB >= 48 GB), opening the unified card auto-selects LongCat 1.6 flagship engine.
   const longCatOpt = paramDrawer.getByTestId(
     "comfy-engine-option-digital-human-longcat",
   );
@@ -3318,6 +3360,7 @@ test("ComfyUI LongCat-Avatar flagship engine auto-selects on G4 96 GB, exposes b
   );
   await expect(longCatOpt).toHaveAttribute("aria-checked", "true");
   await expect(longCatOpt).toContainText("推荐");
+  await expect(longCatOpt).toContainText("LongCat 1.6");
   await expect(infiniteTalkOpt).toHaveAttribute("aria-checked", "false");
 
   // 1. Basic params display the built-in voice selector with all 5 named female voices + custom.
@@ -3364,63 +3407,109 @@ test("ComfyUI LongCat-Avatar flagship engine auto-selects on G4 96 GB, exposes b
     .click();
   await expect(voicePresetSelect).toContainText("苏晚晴 · 温柔治愈");
 
-  // Advanced controls stay collapsed until expanded.
-  await expect(
-    paramDrawer.locator("#comfy-field-pipeline_render_quality"),
-  ).toBeHidden();
-  await expect(
-    paramDrawer.locator("#comfy-field-pipeline_acceleration_profile"),
-  ).toBeHidden();
-
-  // 2. Expand Advanced Settings and verify optimized LongCat defaults (8 steps, 3.7s, gesture-rich prompt,
-  //    render quality, and GPU acceleration stack).
-  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
-  await advancedToggle.click();
-  await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
-
-  await expect(paramDrawer).toContainText("渲染清晰度与速度模式");
-  await expect(paramDrawer).toContainText("远端 GPU 加速栈");
-
-  const renderQualitySelect = paramDrawer.locator(
-    ".ant-select:has(#comfy-field-pipeline_render_quality)",
+  // 2. Basic flagship controls show 96GB native defaults (cinema_flagship, half_body_gestures, auto, 1920x1080).
+  const qualityPresetSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_quality_preset)",
   );
-  const accelSelect = paramDrawer.locator(
-    ".ant-select:has(#comfy-field-pipeline_acceleration_profile)",
+  const framingStyleSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_framing_style)",
   );
   const upscaleSelect = paramDrawer.locator(
     ".ant-select:has(#comfy-field-pipeline_upscale_mode)",
   );
-
-  await expect(renderQualitySelect).toBeVisible();
-  await expect(renderQualitySelect).toContainText(
-    "官方 480p 极速扩散 + AI 2x 细节超分",
+  const resolutionSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_target_resolution)",
   );
-  await expect(accelSelect).toBeVisible();
-  await expect(accelSelect).toContainText("极致全栈加速");
+
+  await expect(qualityPresetSelect).toBeVisible();
+  await expect(qualityPresetSelect).toContainText("电影级旗舰");
+  await expect(framingStyleSelect).toBeVisible();
+  await expect(framingStyleSelect).toContainText("半身自然手势");
   await expect(upscaleSelect).toBeVisible();
-  await expect(upscaleSelect).toContainText("AI 2x 细节超分");
+  await expect(upscaleSelect).toContainText("自动匹配");
+  await expect(resolutionSelect).toBeVisible();
+  await expect(resolutionSelect).toContainText("横屏全高清 1080p");
 
-  await expect(paramDrawer.locator("#comfy-field-14_steps")).toHaveValue("8");
+  // Non-commercial workflow notice stays visible in both TTS mode and uploaded audio mode.
+  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
+  await expect(licenseAlert).toBeVisible();
+  await expect(licenseAlert).toContainText("口播数字人 · 96GB 电影级旗舰版");
+
+  const audioModeBtn = paramDrawer.locator(
+    '.co-comfy-segmented button[role="radio"]',
+    { hasText: "上传现成音频" },
+  );
+  const ttsModeBtn = paramDrawer.locator(
+    '.co-comfy-segmented button[role="radio"]',
+    { hasText: "输入文稿（AI 自动配音）" },
+  );
+  await audioModeBtn.click();
+  await expect(licenseAlert).toBeVisible();
+  await expect(licenseAlert).toContainText("口播数字人 · 96GB 电影级旗舰版");
+  await ttsModeBtn.click();
+
+  // Advanced controls stay collapsed until expanded.
   await expect(
-    paramDrawer.locator("#comfy-field-pipeline_max_segment_seconds"),
-  ).toHaveValue("3.7");
-  await expect(paramDrawer.locator("#comfy-field-5_positive_prompt")).toHaveValue(
-    /手势/,
-  );
-  await expect(paramDrawer.locator("#comfy-field-5_positive_prompt")).toHaveValue(
-    /口型与语音精准贴合/,
-  );
+    paramDrawer.locator("#comfy-field-pipeline_sampling_mode"),
+  ).toBeHidden();
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_num_inference_steps"),
+  ).toBeHidden();
 
-  // 3. Toggling render quality auto-syncs upscale_mode between AI 2x (480p) and Lanczos (native 720p).
-  await chooseAntOption(page, renderQualitySelect, /原生 720p 极致细节/);
-  await expect(upscaleSelect).toContainText("Lanczos 高质量适配");
+  // 3. Expand Advanced Settings and verify Cinema Flagship non-distilled defaults (50 steps, Audio CFG 4, CRF 16)
+  //    and conditional visibility of Dual-LoRA controls when switching quality_preset to balanced_hd.
+  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
+  await advancedToggle.click();
+  await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
 
-  await chooseAntOption(
-    page,
-    renderQualitySelect,
-    /官方 480p 极速扩散 \+ AI 2x 细节超分/,
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_audio_guidance_scale"),
+  ).toHaveValue("4.0");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_text_guidance_scale"),
+  ).toHaveValue("4.0");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_num_inference_steps"),
+  ).toHaveValue("50");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_ref_img_index"),
+  ).toHaveValue("10");
+  await expect(paramDrawer.locator("#comfy-field-pipeline_crf")).toHaveValue(
+    "16",
   );
-  await expect(upscaleSelect).toContainText("AI 2x 细节超分");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_positive_prompt"),
+  ).toHaveValue("");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_mix_steps"),
+  ).toHaveCount(0);
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_mix_alpha"),
+  ).toHaveCount(0);
+
+  // Switching quality_preset to balanced_hd reveals Dual-LoRA mix controls and hides non-distilled CFG controls.
+  await chooseAntOption(page, qualityPresetSelect, /高质均衡/);
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_mix_steps"),
+  ).toHaveValue("4");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_mix_alpha"),
+  ).toHaveValue("1.00");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_audio_guidance_scale"),
+  ).toHaveCount(0);
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_num_inference_steps"),
+  ).toHaveCount(0);
+
+  // Switching back to cinema_flagship restores non-distilled CFG controls.
+  await chooseAntOption(page, qualityPresetSelect, /电影级旗舰/);
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_num_inference_steps"),
+  ).toHaveValue("50");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_mix_steps"),
+  ).toHaveCount(0);
 });
 
 test("ComfyUI unified digital human card preserves common inputs across engine switch, resets engine-specific fields, and remembers manual choice across reload", async ({
@@ -3530,7 +3619,7 @@ test("ComfyUI unified digital human card preserves common inputs across engine s
   await expect(longCatOpt).toHaveAttribute("aria-checked", "true");
   await expect(longCatOpt).toBeFocused();
 
-  // 3. Fill common inputs (portrait, script, voice preset, seed) and LongCat-specific render_quality = native_720p.
+  // 3. Fill common inputs (portrait, script, voice preset, target resolution, pause) and LongCat 1.6 native-specific controls.
   const sampleScript =
     "大家好，这是一段用于双引擎切换无损迁移回归验证的口播文稿。";
   await paramDrawer.locator("#comfy-field-1_image").setInputFiles({
@@ -3551,26 +3640,39 @@ test("ComfyUI unified digital human card preserves common inputs across engine s
   await chooseAntOption(page, voicePresetSelect, /林小满 · 甜美活力/);
   await expect(voicePresetSelect).toContainText("林小满 · 甜美活力");
 
-  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
-  await advancedToggle.click();
-  await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
+  const resolutionSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_target_resolution)",
+  );
+  await chooseAntOption(page, resolutionSelect, /竖屏全高清 1080p/);
+  await expect(resolutionSelect).toContainText("竖屏全高清 1080p");
 
-  const seedInput = paramDrawer.locator("#comfy-field-15_seed");
-  await seedInput.click();
-  await seedInput.fill("777");
-  await seedInput.blur();
-  await expect(seedInput).toHaveValue("777");
-
-  const renderQualitySelect = paramDrawer.locator(
-    ".ant-select:has(#comfy-field-pipeline_render_quality)",
+  const qualityPresetSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_quality_preset)",
   );
   const upscaleSelect = paramDrawer.locator(
     ".ant-select:has(#comfy-field-pipeline_upscale_mode)",
   );
-  await chooseAntOption(page, renderQualitySelect, /原生 720p 极致细节/);
-  await expect(upscaleSelect).toContainText("Lanczos 高质量适配");
+  await chooseAntOption(page, qualityPresetSelect, /高质均衡/);
+  await chooseAntOption(page, upscaleSelect, /SeedVR2 7B Sharp/);
+  await expect(upscaleSelect).toContainText("SeedVR2 7B Sharp");
 
-  // 4. Switch to InfiniteTalk: common inputs stay intact while engine-specific fields reset cleanly.
+  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
+  await advancedToggle.click();
+  await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
+
+  const pauseInput = paramDrawer.locator("#comfy-field-pipeline_pause_seconds");
+  await pauseInput.click();
+  await pauseInput.fill("0.42");
+  await pauseInput.blur();
+  await expect(pauseInput).toHaveValue("0.42");
+
+  const nativeSeedInput = paramDrawer.locator("#comfy-field-pipeline_seed");
+  await nativeSeedInput.click();
+  await nativeSeedInput.fill("777");
+  await nativeSeedInput.blur();
+  await expect(nativeSeedInput).toHaveValue("777");
+
+  // 4. Switch to InfiniteTalk: common inputs stay intact while engine-specific fields and incompatible upscale reset cleanly.
   await infiniteTalkOpt.click();
   await expect(infiniteTalkOpt).toHaveAttribute("aria-checked", "true");
   await expect(longCatOpt).toHaveAttribute("aria-checked", "false");
@@ -3584,20 +3686,27 @@ test("ComfyUI unified digital human card preserves common inputs across engine s
   await expect(paramDrawer).toContainText("presenter.png");
   await expect(scriptInput).toHaveValue(sampleScript);
   await expect(voicePresetSelect).toContainText("林小满 · 甜美活力");
-  await expect(paramDrawer.locator("#comfy-field-15_seed")).toHaveValue("777");
+  await expect(resolutionSelect).toContainText("1080p");
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_pause_seconds"),
+  ).toHaveValue("0.42");
 
   // Cleanly reset engine-specific advanced fields & updated preflight download size:
-  await expect(paramDrawer.locator("#comfy-field-15_steps")).toHaveValue("6");
+  await expect(paramDrawer.locator("#comfy-field-15_steps")).toHaveValue("8");
+  await expect(paramDrawer.locator("#comfy-field-15_seed")).toHaveValue("42");
   await expect(
     paramDrawer.locator("#comfy-field-pipeline_max_segment_seconds"),
   ).toHaveValue("20");
   await expect(upscaleSelect).toContainText("AI 2x");
-  await expect(upscaleSelect).not.toContainText("Lanczos");
+  await expect(upscaleSelect).not.toContainText("SeedVR2");
   await expect(
-    paramDrawer.locator("#comfy-field-pipeline_render_quality"),
+    paramDrawer.locator("#comfy-field-pipeline_quality_preset"),
   ).toHaveCount(0);
   await expect(
-    paramDrawer.locator("#comfy-field-pipeline_acceleration_profile"),
+    paramDrawer.locator("#comfy-field-pipeline_framing_style"),
+  ).toHaveCount(0);
+  await expect(
+    paramDrawer.locator("#comfy-field-pipeline_seed"),
   ).toHaveCount(0);
   await expect(paramDrawer.locator(".co-comfy-preflight-strip")).toContainText(
     "26.6 GB",
@@ -3658,6 +3767,180 @@ test("ComfyUI unified digital human card preserves common inputs across engine s
   expect(submittedRunCalls).toHaveLength(1);
   expect(submittedRunCalls[0]?.payload?.workflow_id).toBe(
     "digital-human-infinitetalk",
+  );
+});
+
+test("ComfyUI fresh-VM longcat_avatar_native runs directly while ComfyUI is stopped, shows processing status, prompts start for InfiniteTalk, and renders deduplicated license and disk footprint", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+    s.runtime.active_engine = "none";
+    s.runtime.comfyui = {
+      ...(s.runtime.comfyui || {}),
+      installed: false,
+      running: false,
+      state: "stopped",
+      active_pack: "",
+      queue_running: 0,
+      queue_pending: 0,
+    };
+    s.runtime.gpu = {
+      name: "NVIDIA RTX PRO 6000 Blackwell",
+      total_mib: 98304,
+      used_mib: 1024,
+    };
+    s.runtime.resources = {
+      ...(s.runtime.resources || {}),
+      gpu: {
+        ...(s.runtime.resources?.gpu || {}),
+        name: "NVIDIA RTX PRO 6000 Blackwell",
+        total_mib: 98304,
+        used_mib: 1024,
+      },
+      disk: {
+        total_bytes: 235 * 1024 ** 3,
+        used_bytes: 40 * 1024 ** 3,
+        free_bytes: 195 * 1024 ** 3,
+        percent: 17.0,
+      },
+    };
+  }, comfyCatalog);
+
+  await navItem(page, "ComfyUI").click();
+  await expect(
+    page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
+  ).toBeVisible();
+
+  // Top Engine Status card starts in stopped state on a fresh GPU VM before any task is submitted.
+  const engineCard = page.locator(".co-comfy-engine-card");
+  await expect(engineCard.locator(".co-comfy-status-tag")).toContainText(
+    "未启动",
+  );
+
+  // Workflow list uses role="list" / role="listitem" and deduplicates combined card license tokens.
+  const workflowList = page.locator('.co-comfy-workflow-list[role="list"]');
+  await expect(workflowList).toBeVisible();
+  const cards = workflowList.locator('.co-comfy-workflow-item[role="listitem"]');
+  await expect(cards).toHaveCount(1);
+
+  const unifiedCard = cards.first();
+  const cardSpecs = unifiedCard.locator(".co-comfy-wf-spec-text");
+  await expect(cardSpecs).toContainText(
+    "Apache-2.0 / CC-BY-4.0 / GPL-3.0 / MIT",
+  );
+  const cardSpecsText = (await cardSpecs.textContent()) || "";
+  expect(cardSpecsText.match(/Apache-2\.0/g)).toHaveLength(1);
+  await expect(
+    unifiedCard.locator(".co-comfy-noncommercial-pill"),
+  ).toContainText("仅限非商用/研究");
+
+  // Open the unified card: G4 96 GB auto-selects digital-human-longcat (longcat_avatar_native).
+  await unifiedCard.click();
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+
+  const longCatOpt = paramDrawer.getByTestId(
+    "comfy-engine-option-digital-human-longcat",
+  );
+  const infiniteTalkOpt = paramDrawer.getByTestId(
+    "comfy-engine-option-digital-human-infinitetalk",
+  );
+  await expect(longCatOpt).toHaveAttribute("aria-checked", "true");
+
+  // Native preflight disk footprint strip, non-commercial notice banner, and deduplicated license pill render cleanly.
+  const preflightInfo = paramDrawer.locator(".co-comfy-preflight-strip.is-info");
+  await expect(preflightInfo).toBeVisible();
+  await expect(preflightInfo).toContainText("78.0 GB");
+
+  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
+  await expect(licenseAlert).toBeVisible();
+  await expect(licenseAlert).toContainText("口播数字人 · 96GB 电影级旗舰版");
+
+  const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
+  await advancedToggle.click();
+  await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
+  const specsStrip = paramDrawer.locator(".co-comfy-specs-pills");
+  await expect(specsStrip).toContainText("推荐磁盘 ~78 GB");
+  await expect(specsStrip).toContainText("MIT / Apache-2.0 · 仅限非商用/研究");
+  await expect(specsStrip).not.toContainText("（仅限非商用）");
+
+  // While ComfyUI is stopped on a fresh GPU VM, LongCat 1.6 native shows Run directly (NOT "Start ComfyUI first").
+  const runBtn = paramDrawer.locator(".co-comfy-drawer-run-btn");
+  await expect(runBtn).toBeEnabled();
+  await expect(runBtn).toHaveText(/运行工作流/);
+  await expect(runBtn).not.toContainText("先启动 ComfyUI");
+
+  // Switching to InfiniteTalk while ComfyUI is stopped still prompts to start ComfyUI first.
+  await infiniteTalkOpt.click();
+  await expect(infiniteTalkOpt).toHaveAttribute("aria-checked", "true");
+  await expect(runBtn).toContainText("先启动 ComfyUI 引擎");
+
+  // Switch back to LongCat 1.6 native, provide portrait + script, and submit directly without comfyui.start.
+  await longCatOpt.click();
+  await expect(longCatOpt).toHaveAttribute("aria-checked", "true");
+  await expect(runBtn).toHaveText(/运行工作流/);
+
+  await paramDrawer.locator("#comfy-field-1_image").setInputFiles({
+    name: "native_host.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    ]),
+  });
+  await expect(paramDrawer).toContainText("native_host.png");
+  await paramDrawer
+    .locator("#comfy-field-pipeline_script_text")
+    .fill("原生旗舰引擎免启动 ComfyUI 直接提交验证。");
+
+  await runBtn.click();
+  await expect(paramDrawer).toBeHidden();
+
+  const recordedCalls = await page.evaluate(() => (window as any).__calls || []);
+  const startCalls = recordedCalls.filter((c: any) => c.action === "comfyui.start");
+  const runCalls = recordedCalls.filter((c: any) => c.action === "comfyui.run");
+  expect(startCalls).toHaveLength(0);
+  expect(runCalls).toHaveLength(1);
+  expect(runCalls[0]?.payload?.workflow_id).toBe("digital-human-longcat");
+
+  // While comfyRunTask is active and ComfyUI stays stopped, top Engine Status card shows active processing status instead of "未启动".
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    s.runtime.tasks = [
+      {
+        id: "task-comfy-run",
+        kind: "comfyui_run",
+        state: "running",
+        model_id: "digital-human-longcat",
+        progress: 0.42,
+        message: "正在执行原生 720p LongCat 1.6 渲染",
+        created_at: now,
+        updated_at: now,
+      },
+    ];
+  });
+
+  const statusTag = engineCard.locator(".co-comfy-status-tag");
+  await expect(statusTag).toContainText("队列运行中");
+  await expect(statusTag).not.toContainText("未启动");
+  await expect(
+    statusTag.locator(".ant-badge-status-processing"),
+  ).toBeVisible();
+  await expect(engineCard.locator(".co-comfy-engine-sub")).toContainText(
+    "正在执行原生引擎任务「口播数字人 · 96GB 电影级旗舰版」",
   );
 });
 
@@ -8787,4 +9070,384 @@ test("one-click encrypted migration supports selective export, unauthenticated q
     .locator("input[type='checkbox']");
   await expect(accountCheckbox).toBeDisabled();
   await expect(accountCheckbox).not.toBeChecked();
+});
+
+test("A100 40 GB VM recommends InfiniteTalk with commercial MOSS-TTS v1.5, checks combined fresh-VM disk preflight with cached_tts_engines, and dynamically adds Fish Drama 3 non-commercial notice", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+    s.runtime.active_engine = "comfyui";
+    s.runtime.drive = {
+      connected: false,
+      mode: "none",
+      remote_folder: "ColabOne_Drive",
+    };
+    s.runtime.disk_free = 60 * 1024 ** 3;
+    s.runtime.gpu = {
+      name: "NVIDIA A100-SXM4-40GB",
+      total_mib: 40960,
+      used_mib: 1024,
+    };
+    s.runtime.comfyui = {
+      ...(s.runtime.comfyui || {}),
+      installed: true,
+      running: true,
+      state: "ready",
+      active_pack: "",
+      cached_tts_engines: [],
+    };
+    s.runtime.resources = {
+      ...(s.runtime.resources || {}),
+      gpu: {
+        ...(s.runtime.resources?.gpu || {}),
+        name: "NVIDIA A100-SXM4-40GB",
+        total_mib: 40960,
+        used_mib: 1024,
+      },
+      disk: {
+        total_bytes: 120 * 1024 ** 3,
+        used_bytes: 60 * 1024 ** 3,
+        free_bytes: 60 * 1024 ** 3,
+        percent: 50.0,
+      },
+    };
+  }, comfyCatalog);
+
+  await navItem(page, "ComfyUI").click();
+  const unifiedCard = page
+    .locator(
+      '.co-comfy-workflow-list .co-comfy-workflow-item[data-workflow-entry-key="colabone-digital-human-group"]',
+    )
+    .first();
+  await expect(unifiedCard).toBeVisible();
+  await unifiedCard.click();
+
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+
+  // On A100 40 GB (>= 40 GB InfiniteTalk, < 48 GB LongCat 1.6), InfiniteTalk is auto-selected WITH "推荐" badge.
+  const infiniteTalkOpt = paramDrawer.getByTestId(
+    "comfy-engine-option-digital-human-infinitetalk",
+  );
+  const longCatOpt = paramDrawer.getByTestId(
+    "comfy-engine-option-digital-human-longcat",
+  );
+  await expect(infiniteTalkOpt).toHaveAttribute("aria-checked", "true");
+  await expect(infiniteTalkOpt).toContainText("推荐");
+  await expect(longCatOpt).toHaveAttribute("aria-checked", "false");
+  await expect(longCatOpt).not.toContainText("推荐");
+
+  // Default MOSS-TTS v1.5 (20 GB VRAM, Apache-2.0) fits A100 40 GB with zero VRAM warning
+  // and commercial badge (only the generic suite disclaimer line, no active-model non-commercial line).
+  const ttsStrip = paramDrawer.locator(".co-comfy-tts-strip");
+  await expect(ttsStrip).toContainText("MOSS-TTS v1.5");
+  await expect(ttsStrip).toContainText("可商用开源");
+  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
+  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
+    1,
+  );
+  await expect(licenseAlert).not.toContainText("MOSS-TTS v1.5");
+
+  // Combined fresh-VM disk preflight sums wfDisk (45 GB) + uncached MOSS-TTS v1.5 (28 GB) = 73 GB > 60 GB.
+  const preflightWarnings = paramDrawer.locator(
+    ".co-comfy-preflight-strip.is-warning",
+  );
+  await expect(preflightWarnings).toHaveCount(1);
+  await expect(preflightWarnings.first()).toContainText("远端可用磁盘不足");
+  await expect(preflightWarnings.first()).toContainText("73 GB");
+  await expect(preflightWarnings.first()).toContainText("60 GB");
+  await expect(infiniteTalkOpt).not.toContainText("当前 GPU 显存不足");
+  await expect(preflightWarnings.first()).not.toContainText("当前 GPU 显存不足");
+
+  // Marking moss_tts_v1_5 as cached drops required disk to 45 GB <= 60 GB -> zero warnings!
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.comfyui = {
+      ...s.runtime.comfyui,
+      cached_tts_engines: ["moss_tts_v1_5"],
+    };
+  });
+  await expect(preflightWarnings).toHaveCount(0);
+
+  // Dynamically switching TTS to Fish Audio Drama 3 surfaces the active-model non-commercial notice,
+  // flips TTS badge to non-commercial, and raises both 45 GB VRAM and 93 GB combined disk warnings.
+  const ttsSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_tts_engine)",
+  );
+  await chooseAntOption(page, ttsSelect, /Fish Audio Drama 3/);
+  await expect(ttsStrip).toContainText("Fish Audio Drama 3");
+  await expect(ttsStrip).toContainText("仅限非商用/研究");
+  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
+    2,
+  );
+  await expect(
+    licenseAlert.locator(".co-comfy-license-alert-line").first(),
+  ).toContainText("Fish Audio Drama 3");
+  await expect(preflightWarnings).toHaveCount(2);
+  await expect(paramDrawer).toContainText(
+    "当前 GPU 显存不足（需 45 GB，当前 40 GB）",
+  );
+  await expect(paramDrawer).toContainText("93 GB");
+});
+
+test("peeking at InfiniteTalk after configuring LongCat 1.6 engine-specific settings preserves LongCat settings when switching back", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+    s.runtime.active_engine = "comfyui";
+    s.runtime.comfyui.running = true;
+    s.runtime.comfyui.state = "ready";
+    s.runtime.gpu = {
+      name: "NVIDIA RTX PRO 6000 Blackwell",
+      total_mib: 98304,
+      used_mib: 1024,
+    };
+    if (s.runtime.resources?.gpu) {
+      s.runtime.resources.gpu = {
+        ...s.runtime.resources.gpu,
+        name: "NVIDIA RTX PRO 6000 Blackwell",
+        total_mib: 98304,
+        used_mib: 1024,
+      };
+    }
+  }, comfyCatalog);
+
+  await navItem(page, "ComfyUI").click();
+  await page
+    .locator(
+      '.co-comfy-workflow-list .co-comfy-workflow-item[data-workflow-entry-key="colabone-digital-human-group"]',
+    )
+    .first()
+    .click();
+
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+
+  const longCatOpt = paramDrawer.getByTestId(
+    "comfy-engine-option-digital-human-longcat",
+  );
+  const infiniteTalkOpt = paramDrawer.getByTestId(
+    "comfy-engine-option-digital-human-infinitetalk",
+  );
+  await expect(longCatOpt).toHaveAttribute("aria-checked", "true");
+
+  // Configure LongCat 1.6 engine-specific settings only (quality_preset & framing_style).
+  const qualityPresetSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_quality_preset)",
+  );
+  const framingStyleSelect = paramDrawer.locator(
+    ".ant-select:has(#comfy-field-pipeline_framing_style)",
+  );
+  await chooseAntOption(page, qualityPresetSelect, /高质均衡/);
+  await chooseAntOption(page, framingStyleSelect, /近景胸像口播/);
+  await expect(qualityPresetSelect).toContainText("高质均衡");
+  await expect(framingStyleSelect).toContainText("近景胸像口播");
+
+  // Peek at InfiniteTalk without editing anything, then switch back to LongCat 1.6.
+  await infiniteTalkOpt.click();
+  await expect(infiniteTalkOpt).toHaveAttribute("aria-checked", "true");
+  await longCatOpt.click();
+  await expect(longCatOpt).toHaveAttribute("aria-checked", "true");
+
+  // LongCat 1.6 engine-specific settings must remain intact rather than resetting to defaults.
+  await expect(qualityPresetSelect).toContainText("高质均衡");
+  await expect(framingStyleSelect).toContainText("近景胸像口播");
+});
+
+test("mid-run task.cancel on native LongCat 1.6 run updates App.vue nav live dot, Devices status, and recovers UI cleanly while ComfyUI stays stopped", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const comfyCatalog = JSON.parse(
+    fs.readFileSync(
+      fileURLToPath(new URL("../../catalog/comfyui.json", import.meta.url)),
+      "utf8",
+    ),
+  );
+  await mock(page, true);
+  await page.evaluate((cat: any) => {
+    const s = (window as any).__state;
+    s.workflows = cat.templates;
+    s.tts_engines = cat.tts_engines;
+    s.runtime.active_engine = null;
+    s.runtime.loaded_model = undefined;
+    s.runtime.comfyui = {
+      ...(s.runtime.comfyui || {}),
+      installed: false,
+      running: false,
+      state: "stopped",
+      active_pack: "",
+      queue_running: 0,
+      queue_pending: 0,
+    };
+    s.runtime.gpu = {
+      name: "NVIDIA RTX PRO 6000 Blackwell",
+      total_mib: 98304,
+      used_mib: 1024,
+    };
+    s.runtime.resources = {
+      ...(s.runtime.resources || {}),
+      gpu: {
+        ...(s.runtime.resources?.gpu || {}),
+        name: "NVIDIA RTX PRO 6000 Blackwell",
+        total_mib: 98304,
+        used_mib: 1024,
+      },
+      disk: {
+        total_bytes: 235 * 1024 ** 3,
+        used_bytes: 40 * 1024 ** 3,
+        free_bytes: 195 * 1024 ** 3,
+        percent: 17.0,
+      },
+    };
+  }, comfyCatalog);
+
+  // Before native run starts: ComfyUI nav item has no live dot and Devices does not report ComfyUI running.
+  const comfyNavBtn = navItem(page, "ComfyUI");
+  const devicePage = page.locator(".co-device-page");
+  await expect(comfyNavBtn.locator(".co-nav-live-dot")).toHaveCount(0);
+  await expect(devicePage).not.toContainText("ComfyUI 工作流引擎运行中");
+
+  // Submit a native LongCat 1.6 workflow run while ComfyUI server remains stopped.
+  await comfyNavBtn.click();
+  await page
+    .locator(
+      '.co-comfy-workflow-list .co-comfy-workflow-item[data-workflow-entry-key="colabone-digital-human-group"]',
+    )
+    .first()
+    .click();
+  const paramDrawer = page.locator(
+    ".co-comfy-param-drawer-root .ant-drawer-content",
+  );
+  await expect(paramDrawer).toBeVisible();
+  await paramDrawer.locator("#comfy-field-1_image").setInputFiles({
+    name: "native_cancel.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    ]),
+  });
+  await paramDrawer
+    .locator("#comfy-field-pipeline_script_text")
+    .fill("原生任务运行中取消恢复验证。");
+  await paramDrawer.locator(".co-comfy-drawer-run-btn").click();
+  await expect(paramDrawer).toBeHidden();
+
+  // Push running native comfyui_run task while runtime.comfyui.running stays false.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    s.runtime.comfyui.running = false;
+    s.runtime.comfyui.state = "stopped";
+    s.runtime.tasks = [
+      {
+        id: "task-comfy-run",
+        kind: "comfyui_run",
+        state: "running",
+        model_id: "digital-human-longcat",
+        progress: 0.35,
+        message: "正在执行原生 720p LongCat 1.6 渲染",
+        created_at: now,
+        updated_at: now,
+      },
+    ];
+  });
+
+  // 1. Navbar ComfyUI button displays live dot while ComfyUI server is stopped.
+  await expect(comfyNavBtn.locator(".co-nav-live-dot")).toHaveCount(1);
+
+  // 2. ComfyUI Engine Status card shows active processing status and Cancel Task button.
+  const engineCard = page.locator(".co-comfy-engine-card");
+  await expect(engineCard.locator(".co-comfy-status-tag")).toContainText(
+    "队列运行中",
+  );
+  const cancelBtn = engineCard.getByRole("button", { name: "取消任务" });
+  await expect(cancelBtn).toBeVisible();
+
+  // 3. Devices page reflects comfyRuntimeBusy status and offers "前往 ComfyUI" shortcut.
+  await navItem(page, "远端设备").click();
+  await expect(devicePage).toContainText("ComfyUI 工作流引擎运行中");
+  const goToComfyBtn = page.getByRole("button", { name: "前往 ComfyUI" });
+  await expect(goToComfyBtn).toBeVisible();
+  await goToComfyBtn.click();
+  await expect(engineCard).toBeVisible();
+
+  // 4. Mid-run cancel emits task.cancel with { id: "task-comfy-run" }.
+  await cancelBtn.click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        ((window as any).__calls || []).filter(
+          (c: any) => c.action === "task.cancel",
+        ),
+      ),
+    )
+    .toEqual([{ action: "task.cancel", payload: { id: "task-comfy-run" } }]);
+
+  // 5. Simulate task transition to cancelled -> clean UI recovery across ComfyUI, navbar, and Devices.
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    s.runtime.tasks = [
+      {
+        id: "task-comfy-run",
+        kind: "comfyui_run",
+        state: "cancelled",
+        model_id: "digital-human-longcat",
+        progress: 0.35,
+        message: "已取消",
+        created_at: now - 10,
+        updated_at: now,
+      },
+    ];
+  });
+
+  await expect(engineCard.locator(".co-comfy-status-tag")).toContainText(
+    "未启动",
+  );
+  await expect(cancelBtn).toHaveCount(0);
+  await expect(comfyNavBtn.locator(".co-nav-live-dot")).toHaveCount(0);
+
+  await navItem(page, "远端设备").click();
+  await expect(devicePage).not.toContainText("ComfyUI 工作流引擎运行中");
+
+  // Re-opening Parameter Drawer confirms Run button is re-enabled and no Cancel Task button lingers.
+  await comfyNavBtn.click();
+  await page
+    .locator(
+      '.co-comfy-workflow-list .co-comfy-workflow-item[data-workflow-entry-key="colabone-digital-human-group"]',
+    )
+    .first()
+    .click();
+  await expect(paramDrawer).toBeVisible();
+  await expect(paramDrawer.locator(".co-comfy-drawer-run-btn")).toBeEnabled();
+  await expect(
+    paramDrawer.getByRole("button", { name: "取消任务" }),
+  ).toHaveCount(0);
 });

@@ -68,10 +68,31 @@ func TestComfyCatalogEightFlagshipTtsEnginesAndPresets(t *testing.T) {
 	if byID["moss_tts_v1_5"].AuxRepo != "OpenMOSS-Team/MOSS-Audio-Tokenizer" || !commitSHARe.MatchString(byID["moss_tts_v1_5"].AuxRevision) {
 		t.Fatalf("moss_tts_v1_5 missing pinned aux_repo/aux_revision: %+v", byID["moss_tts_v1_5"])
 	}
+	expectedDefaultTts := map[string]string{
+		"digital-human-infinitetalk": "moss_tts_v1_5",
+		"digital-human-longcat":      "fish_drama3",
+	}
 	for _, tpl := range catalog.Templates {
-		if tpl.ID == "digital-human-infinitetalk" || tpl.ID == "digital-human-longcat" {
-			if tpl.Pipeline == nil || tpl.Pipeline.DefaultTtsEngine != "fish_drama3" {
-				t.Fatalf("template %q default_tts_engine = %+v, want fish_drama3", tpl.ID, tpl.Pipeline)
+		if wantTts, ok := expectedDefaultTts[tpl.ID]; ok {
+			if tpl.Pipeline == nil || tpl.Pipeline.DefaultTtsEngine != wantTts {
+				t.Fatalf("template %q default_tts_engine = %+v, want %q", tpl.ID, tpl.Pipeline, wantTts)
+			}
+		}
+		if tpl.ID == "digital-human-infinitetalk" {
+			if tpl.License != "Apache-2.0 / CC-BY-4.0 / GPL-3.0" {
+				t.Fatalf("digital-human-infinitetalk license = %q, want %q", tpl.License, "Apache-2.0 / CC-BY-4.0 / GPL-3.0")
+			}
+		}
+		if tpl.Pipeline != nil && tpl.Pipeline.Kind == "digital_human" && tpl.Pipeline.DefaultTtsEngine != "" {
+			tts, exists := byID[tpl.Pipeline.DefaultTtsEngine]
+			if !exists {
+				t.Fatalf("digital-human template %q references unknown default_tts_engine %q", tpl.ID, tpl.Pipeline.DefaultTtsEngine)
+			}
+			if tts.MinVRAMMib > tpl.MinVRAMMib {
+				t.Fatalf("digital-human template %q default_tts_engine %q requires %d MiB VRAM > template min_vram_mib %d", tpl.ID, tts.ID, tts.MinVRAMMib, tpl.MinVRAMMib)
+			}
+			if tpl.CommercialOK && !tts.CommercialOK {
+				t.Fatalf("commercial digital-human template %q must not default to non-commercial TTS engine %q", tpl.ID, tts.ID)
 			}
 		}
 	}

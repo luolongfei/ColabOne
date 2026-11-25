@@ -596,7 +596,18 @@ export function aggregateColabOneCuSeries(
         : round4(acc.fallbackRateMax);
     let rateMax = round4(acc.rateMax);
 
-    if (slot.isCurrent && liveRate !== null) {
+    const liveCheckedFresh =
+      typeof response?.checked_at === "number" &&
+      Number.isFinite(response.checked_at) &&
+      response.checked_at >= slot.startSec;
+    const canApplyLiveRate =
+      Boolean(response?.logged_in) &&
+      (typeof response?.checked_at !== "number" ||
+        !Number.isFinite(response.checked_at) ||
+        response.checked_at <= 0 ||
+        liveCheckedFresh);
+
+    if (slot.isCurrent && liveRate !== null && canApplyLiveRate) {
       if (liveRate > rateMax) {
         rateMax = liveRate;
       }
@@ -608,10 +619,6 @@ export function aggregateColabOneCuSeries(
     let balanceStart = acc.balanceStart !== null ? round4(acc.balanceStart) : null;
     let balanceEnd = acc.balanceEnd !== null ? round4(acc.balanceEnd) : null;
     let observedBalance = balanceEnd !== null;
-    const liveCheckedFresh =
-      typeof response?.checked_at === "number" &&
-      Number.isFinite(response.checked_at) &&
-      response.checked_at >= slot.startSec;
 
     if (observedBalance) {
       if (balanceStart === null) {

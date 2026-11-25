@@ -107,19 +107,35 @@ def replace_tree(source, target, **kwargs):
     installed = False
     try:
         shutil.copytree(source, staged, symlinks=True, **kwargs)
-        if target.exists():
+        if target.exists() or target.is_symlink():
             target.rename(previous)
         try:
             staged.rename(target)
             installed = True
         except BaseException:
-            if previous.exists():
+            if previous.exists() or previous.is_symlink():
                 previous.rename(target)
             raise
     finally:
         # If rollback itself fails, retain the previous tree for recovery.
-        if installed or not previous.exists():
+        if installed or not (previous.exists() or previous.is_symlink()):
             shutil.rmtree(tmp)
+
+
+def replace_file(source: Path, target: Path) -> None:
+    """Atomically stage and replace a single file in target.parent."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        shutil.copy2(source, tmp_path)
+        os.replace(tmp_path, target)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _find_built_app(platform_dir: Path, goos: str | None = None) -> Path:
@@ -232,7 +248,7 @@ def install(root, check_only=False, build_installer=False):
     if app.is_dir():
         replace_tree(app, installed_app)
     else:
-        shutil.copy2(app, installed_app)
+        replace_file(app, installed_app)
     mygo_files = platform_dir / ".mygo-files"
     if goos != "darwin" and mygo_files.is_file():
         shutil.copy2(mygo_files, target / ".mygo-files")

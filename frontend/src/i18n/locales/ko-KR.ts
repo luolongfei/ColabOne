@@ -1386,7 +1386,7 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.errEmptyFile":
     "선택한 파일이 비어 있습니다(0 B). 유효한 파일을 선택하세요.",
   "comfy.indextts2RefRequiredHint":
-    "IndexTTS-2에서 '사용자 지정 음색'을 선택한 경우 참조 음성 오디오 업로드가 필수입니다",
+    "IndexTTS-2.5에서 '사용자 지정 음색'을 선택한 경우 참조 음성 오디오 업로드가 필수입니다",
   "comfy.runBlockedBusy":
     "다른 작업이나 동작이 실행 중입니다. 잠시만 기다려 주세요",
   "comfy.runBlockedUploading":
@@ -1460,7 +1460,18 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "장편 영상",
   "comfy.videoEngineInfiniteTalkSummary": "수 분 이상 연속 발화에 안정적이고 빠름",
   "comfy.videoEngineLongCatTitle": "플래그십 HD",
-  "comfy.videoEngineLongCatSummary": "더 높은 화질, 네이티브 720p 및 풀스택 GPU 가속 지원",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 네이티브 720p + SeedVR2 7B / FlashVSR+ 업스케일 (비상업 전용)",
+  "comfy.qualityPresetCinema": "시네마 플래그십",
+  "comfy.qualityPresetBalanced": "고화질 밸런스",
+  "comfy.qualityPresetLongform": "장편 안정",
+  "comfy.nativeRunActiveDesc":
+    "네이티브 엔진 작업 '{name}' 실행 중 · {policy}, 완료 후 작품 갤러리에 자동 저장됩니다",
+  "comfy.preflightNativeDiskFootprint":
+    "첫 실행 시 원격 네이티브 엔진과 모델 가중치를 자동으로 준비합니다 (약 {size} 디스크 여유 공간 필요)",
+  "comfy.recommendedDisk": "권장 디스크 {disk}",
+  "comfy.samplingModeShortCfg": "{steps}스텝 CFG",
+  "comfy.samplingModeShortLora": "8스텝 듀얼 LoRA",
+  "comfy.videoEngineVramShortSr": "현재 GPU VRAM 부족",
 
   // Settings Page
   "settings.title": "설정",

@@ -525,13 +525,20 @@ export function formatColabOneFileSize(bytes: number): string {
 
 function liveGpuDisplayName(rawName: string, vramGb: number): string {
   const upper = (rawName || "").toUpperCase();
-  if (/PRO\s*6000|RTX\s*6000|BLACKWELL|\bG4\b/.test(upper) || vramGb >= 90) {
-    return `G4 ${vramGb}G`;
-  }
+  if (/\bB200\b/.test(upper)) return `B200 ${vramGb}G`;
+  if (/\bH200\b/.test(upper)) return `H200 ${vramGb}G`;
+  if (/PRO\s*6000|RTX\s*6000|\bG4\b/.test(upper)) return `G4 ${vramGb}G`;
   if (/H100/.test(upper)) return `H100 ${vramGb}G`;
   if (/A100/.test(upper)) return `A100 ${vramGb}G`;
+  if (/\bV100\b/.test(upper)) return `V100 ${vramGb}G`;
   if (/\bL4\b/.test(upper)) return `L4 ${vramGb}G`;
   if (/\bT4\b/.test(upper)) return `T4 ${vramGb}G`;
+  if (
+    (/BLACKWELL/.test(upper) && vramGb <= 104) ||
+    (vramGb >= 90 && vramGb <= 104)
+  ) {
+    return `G4 ${vramGb}G`;
+  }
   const trimmed = rawName.replace(/^NVIDIA\s+/i, "").trim();
   return trimmed ? `${trimmed} ${vramGb}G` : `${vramGb}G GPU`;
 }
@@ -560,13 +567,17 @@ export function estimateColabOneDiskGb(weightBytes: number): number {
 export function mapSettingsGpuToTargetId(
   settingsGpu?: string | null,
 ): ColabOneGpuTargetId {
-  switch ((settingsGpu || "").toUpperCase()) {
+  switch ((settingsGpu || "").trim().toUpperCase()) {
     case "G4":
       return "G4";
     case "H100":
       return "H100";
     case "A100":
       return "A100_80";
+    case "A100_80":
+      return "A100_80";
+    case "A100_40":
+      return "A100_40";
     case "L4":
       return "L4";
     case "T4":
@@ -819,6 +830,10 @@ export function evaluateColabOneVramFit(
 
   const rawOverflowGb = estimatedVramGb - targetGpu.vramGb;
   const overflowGb = rawOverflowGb > 0.1 ? Math.max(0.5, rawOverflowGb) : 0;
+  const overflowMinGpuLabel =
+    minGpu.id === "OVER_96G" && targetGpu.vramGb > 96
+      ? `> ${targetGpu.vramGb} GB`
+      : minGpu.label;
 
   if (comfyOnly) {
     return {
@@ -829,14 +844,14 @@ export function evaluateColabOneVramFit(
       overflowGb,
       label: t("models.compatOverflowLabel"),
       detail:
-        minGpu.id === "OVER_96G"
+        minGpu.id === "OVER_96G" && targetGpu.vramGb <= 96
           ? t("models.compatOverflowDetail96", {
               gb: formatColabOneGb(estimatedVramGb),
             })
           : t("models.compatOverflowDetail", {
               gb: formatColabOneGb(estimatedVramGb),
               gpu: targetGpu.shortLabel,
-              minGpu: minGpu.label,
+              minGpu: overflowMinGpuLabel,
             }),
       selectable: false,
       requiresHybrid: false,
@@ -879,7 +894,7 @@ export function evaluateColabOneVramFit(
     detail: t("models.compatHeavyHybridDetail", {
       gb: formatColabOneGb(estimatedVramGb),
       gpu: targetGpu.shortLabel,
-      minGpu: minGpu.label,
+      minGpu: overflowMinGpuLabel,
     }),
     selectable: true,
     requiresHybrid: true,
@@ -1225,10 +1240,22 @@ export function planColabOneVersionOptions(
       return a.file.size - b.file.size;
     });
     recommended = sortedForRec[0];
-    if (recommended && !recommended.disk.exceedsVm) {
+    if (
+      recommended &&
+      !recommended.disk.exceedsVm &&
+      recommended.fit.selectable
+    ) {
       recommended.recommended = true;
     }
   }
+
+  const isFullVram = (o: ColabOneVersionOption) =>
+    !o.disabled &&
+    !o.fit.requiresHybrid &&
+    (!comfyOnly ||
+      o.fit.status === "comfortable" ||
+      o.fit.status === "tight" ||
+      o.fit.status === "unrestricted");
 
   // Order all options cleanly:
   // 1. Recommended
@@ -1277,9 +1304,7 @@ export function planColabOneVersionOptions(
       (o) => !o.disabled && !o.disk.exceedsVm,
     );
     const activeOrdered = diskOkOrdered.length ? diskOkOrdered : ordered;
-    const fullVramPool = activeOrdered.filter(
-      (o) => !o.disabled && !o.fit.requiresHybrid,
-    );
+    const fullVramPool = activeOrdered.filter(isFullVram);
     const hybridPool = activeOrdered.filter(
       (o) => !o.disabled && o.fit.requiresHybrid,
     );
@@ -1315,14 +1340,7 @@ export function planColabOneVersionOptions(
   }
 
   const fullVramCount = ordered.filter(
-    (o) =>
-      !o.disabled &&
-      !o.disk.exceedsVm &&
-      !o.fit.requiresHybrid &&
-      (!comfyOnly ||
-        o.fit.status === "comfortable" ||
-        o.fit.status === "tight" ||
-        o.fit.status === "unrestricted"),
+    (o) => !o.disk.exceedsVm && isFullVram(o),
   ).length;
   const hybridCount = ordered.filter(
     (o) => !o.disabled && !o.disk.exceedsVm && o.fit.requiresHybrid,
@@ -1347,13 +1365,18 @@ export function planColabOneVersionOptions(
   ).length;
 
   // Suggest larger GPU for pure-VRAM running when all versions require hybrid offloading
+  // or overflow VRAM in ComfyUI-only mode
   let suggestedGpuId: Exclude<ColabOneGpuTargetId, "CURRENT" | "ALL"> | null =
     null;
   let suggestedGpuLabel = "";
   const smallestSupported = evaluated
     .filter((o) => o.file.supported && o.file.size > 0)
     .sort((a, b) => a.file.size - b.file.size)[0];
-  if (fullVramCount === 0 && hybridCount > 0 && smallestSupported) {
+  if (
+    fullVramCount === 0 &&
+    (hybridCount > 0 || (comfyOnly && diskFittingCount > 0)) &&
+    smallestSupported
+  ) {
     if (smallestSupported.fit.minGpu.id !== "OVER_96G") {
       const candId = smallestSupported.fit.minGpu.id;
       const candTarget = COLABONE_STATIC_GPU_TARGETS.find(

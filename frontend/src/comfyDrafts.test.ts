@@ -263,14 +263,320 @@ describe("mergeColabOneWorkflowDraftFields", () => {
     expect(merged2["8.cfg"]).toBe(1.5);
     expect(merged2["8.enhance"]).toBe(false);
 
-    // Negative zero normalized to +0
+    // Negative zero normalized to +0, while min_value bounds still clamp rounded integers
+    const fieldsWithZeroMin = [
+      ...fields,
+      makeField({
+        key: "8.seed",
+        field_type: "integer",
+        default: 42,
+        min_value: 0,
+      }),
+    ];
     const mergedNegZero = mergeColabOneWorkflowDraftFields(
-      fields,
-      { "8.steps": -0.1, "8.cfg": -0 },
+      fieldsWithZeroMin,
+      { "8.steps": -0.1, "8.seed": -0.1, "8.cfg": -0 },
       "en-US",
     );
-    expect(Object.is(mergedNegZero["8.steps"], 0)).toBe(true);
+    expect(mergedNegZero["8.steps"]).toBe(1);
+    expect(Object.is(mergedNegZero["8.seed"], 0)).toBe(true);
     expect(Object.is(mergedNegZero["8.cfg"], 0)).toBe(true);
+  });
+
+  it("normalizes '1'/'0' and case-insensitive boolean strings cleanly while rejecting invalid booleans", () => {
+    const boolFields: WorkflowField[] = [
+      makeField({ key: "b.true_one", field_type: "boolean", default: false }),
+      makeField({ key: "b.false_zero", field_type: "boolean", default: true }),
+      makeField({ key: "b.trimmed_true", field_type: "boolean", default: false }),
+      makeField({ key: "b.trimmed_false", field_type: "boolean", default: true }),
+      makeField({ key: "b.invalid_str", field_type: "boolean", default: true }),
+      makeField({ key: "b.invalid_num", field_type: "boolean", default: true }),
+    ];
+
+    const merged = mergeColabOneWorkflowDraftFields(
+      boolFields,
+      {
+        "b.true_one": "1",
+        "b.false_zero": "0",
+        "b.trimmed_true": "  TRUE  ",
+        "b.trimmed_false": "  False ",
+        "b.invalid_str": "2",
+        "b.invalid_num": 0 as unknown as boolean,
+      },
+      "en-US",
+    );
+
+    expect(merged["b.true_one"]).toBe(true);
+    expect(merged["b.false_zero"]).toBe(false);
+    expect(merged["b.trimmed_true"]).toBe(true);
+    expect(merged["b.trimmed_false"]).toBe(false);
+    expect(merged["b.invalid_str"]).toBe(true);
+    expect(merged["b.invalid_num"]).toBe(true);
+  });
+
+  it("sanitizes corrupted LongCat 1.6 drafts with NaN, booleans, out-of-range numbers, and unknown selects", () => {
+    const longCat16Fields: WorkflowField[] = [
+      makeField({
+        key: "pipeline.quality_preset",
+        field_type: "select",
+        default: "cinema_flagship",
+        options: ["cinema_flagship", "balanced_hd", "longform_fast"],
+      }),
+      makeField({
+        key: "pipeline.framing_style",
+        field_type: "select",
+        default: "half_body_gestures",
+        options: ["half_body_gestures", "closeup_presenter", "full_body_dynamic"],
+      }),
+      makeField({
+        key: "pipeline.upscale_mode",
+        field_type: "select",
+        default: "auto",
+        options: ["auto", "seedvr2_7b_sharp", "seedvr2_7b", "flashvsr_plus", "none"],
+      }),
+      makeField({
+        key: "pipeline.target_resolution",
+        field_type: "select",
+        default: "1920x1080",
+        options: ["1920x1080", "1080x1920", "2560x1440", "1440x2560", "1280x720", "720x1280"],
+      }),
+      makeField({
+        key: "pipeline.sampling_mode",
+        field_type: "select",
+        default: "auto",
+        options: ["auto", "non_distill_cfg", "distill_lora_mix"],
+      }),
+      makeField({
+        key: "pipeline.voice_preset",
+        field_type: "select",
+        default: "shen_zhiyi",
+        options: ["shen_zhiyi", "lin_xiaoman", "custom"],
+      }),
+      makeField({
+        key: "pipeline.num_inference_steps",
+        field_type: "integer",
+        default: 50,
+        min_value: 8,
+        max_value: 60,
+      }),
+      makeField({
+        key: "pipeline.audio_guidance_scale",
+        field_type: "number",
+        default: 4.0,
+        min_value: 1.0,
+        max_value: 7.0,
+      }),
+      makeField({
+        key: "pipeline.text_guidance_scale",
+        field_type: "number",
+        default: 4.0,
+        min_value: 1.0,
+        max_value: 7.0,
+      }),
+      makeField({
+        key: "pipeline.mix_steps",
+        field_type: "integer",
+        default: 4,
+        min_value: 0,
+        max_value: 8,
+      }),
+      makeField({
+        key: "pipeline.mix_alpha",
+        field_type: "number",
+        default: 1.0,
+        min_value: 0.0,
+        max_value: 1.0,
+      }),
+      makeField({
+        key: "pipeline.ref_img_index",
+        field_type: "integer",
+        default: 10,
+        min_value: 0,
+        max_value: 30,
+      }),
+      makeField({
+        key: "pipeline.seed",
+        field_type: "integer",
+        default: 42,
+        min_value: 0,
+        max_value: 2147483647,
+      }),
+      makeField({
+        key: "pipeline.crf",
+        field_type: "integer",
+        default: 16,
+        min_value: 12,
+        max_value: 24,
+      }),
+    ];
+
+    // Corrupted NaN, boolean, and unknown select values fall back cleanly to defaults
+    const corrupted = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.quality_preset": "ultra_8k_invalid",
+        "pipeline.framing_style": true as unknown as string,
+        "pipeline.upscale_mode": Number.NaN as unknown as string,
+        "pipeline.target_resolution": "4096x2160",
+        "pipeline.sampling_mode": "turbo_fast",
+        "pipeline.voice_preset": "../bad preset!",
+        "pipeline.num_inference_steps": Number.NaN,
+        "pipeline.audio_guidance_scale": true as unknown as number,
+        "pipeline.text_guidance_scale": Number.POSITIVE_INFINITY,
+        "pipeline.mix_steps": false as unknown as number,
+        "pipeline.mix_alpha": "not-a-number" as unknown as number,
+        "pipeline.ref_img_index": Number.NEGATIVE_INFINITY,
+        "pipeline.seed": true as unknown as number,
+        "pipeline.crf": Number.NaN,
+      },
+      "zh-CN",
+    );
+
+    expect(corrupted["pipeline.quality_preset"]).toBe("cinema_flagship");
+    expect(corrupted["pipeline.framing_style"]).toBe("half_body_gestures");
+    expect(corrupted["pipeline.upscale_mode"]).toBe("auto");
+    expect(corrupted["pipeline.target_resolution"]).toBe("1920x1080");
+    expect(corrupted["pipeline.sampling_mode"]).toBe("auto");
+    expect(corrupted["pipeline.voice_preset"]).toBe("shen_zhiyi");
+    expect(corrupted["pipeline.num_inference_steps"]).toBe(50);
+    expect(corrupted["pipeline.audio_guidance_scale"]).toBe(4.0);
+    expect(corrupted["pipeline.text_guidance_scale"]).toBe(4.0);
+    expect(corrupted["pipeline.mix_steps"]).toBe(4);
+    expect(corrupted["pipeline.mix_alpha"]).toBe(1.0);
+    expect(corrupted["pipeline.ref_img_index"]).toBe(10);
+    expect(corrupted["pipeline.seed"]).toBe(42);
+    expect(corrupted["pipeline.crf"]).toBe(16);
+
+    // Out-of-range numeric values clamp to field min/max, while valid dynamic voice_preset IDs are preserved
+    const clampedHigh = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.quality_preset": "balanced_hd",
+        "pipeline.voice_preset": "qwen_vivian",
+        "pipeline.num_inference_steps": 999,
+        "pipeline.audio_guidance_scale": 12.5,
+        "pipeline.text_guidance_scale": 0.1,
+        "pipeline.mix_steps": 25,
+        "pipeline.mix_alpha": 2.5,
+        "pipeline.ref_img_index": 99,
+        "pipeline.seed": -5,
+        "pipeline.crf": 5,
+      },
+      "zh-CN",
+    );
+    expect(clampedHigh["pipeline.quality_preset"]).toBe("balanced_hd");
+    expect(clampedHigh["pipeline.voice_preset"]).toBe("qwen_vivian");
+    expect(clampedHigh["pipeline.num_inference_steps"]).toBe(60);
+    expect(clampedHigh["pipeline.audio_guidance_scale"]).toBe(7.0);
+    expect(clampedHigh["pipeline.text_guidance_scale"]).toBe(1.0);
+    expect(clampedHigh["pipeline.mix_steps"]).toBe(8);
+    expect(clampedHigh["pipeline.mix_alpha"]).toBe(1.0);
+    expect(clampedHigh["pipeline.ref_img_index"]).toBe(30);
+    expect(clampedHigh["pipeline.seed"]).toBe(0);
+    expect(clampedHigh["pipeline.crf"]).toBe(12);
+
+    const clampedLow = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.voice_preset": "x".repeat(65),
+        "pipeline.num_inference_steps": 2,
+        "pipeline.mix_steps": -3,
+        "pipeline.mix_alpha": -0.2,
+        "pipeline.ref_img_index": -1,
+        "pipeline.crf": 40,
+      },
+      "zh-CN",
+    );
+    expect(clampedLow["pipeline.voice_preset"]).toBe("shen_zhiyi");
+    expect(clampedLow["pipeline.num_inference_steps"]).toBe(8);
+    expect(clampedLow["pipeline.mix_steps"]).toBe(0);
+    expect(clampedLow["pipeline.mix_alpha"]).toBe(0.0);
+    expect(clampedLow["pipeline.ref_img_index"]).toBe(0);
+    expect(clampedLow["pipeline.crf"]).toBe(24);
+  });
+
+  it("detects and migrates partial legacy LongCat 1.5 drafts across every legacy indicator without false positives on partial 1.6 drafts", () => {
+    const longCat16Fields: WorkflowField[] = [
+      makeField({
+        key: "pipeline.script_text",
+        field_type: "textarea",
+        default: "",
+      }),
+      makeField({
+        key: "pipeline.quality_preset",
+        field_type: "select",
+        default: "cinema_flagship",
+        options: ["cinema_flagship", "balanced_hd", "longform_fast"],
+      }),
+      makeField({
+        key: "pipeline.upscale_mode",
+        field_type: "select",
+        default: "auto",
+        options: ["auto", "seedvr2_7b_sharp", "seedvr2_7b", "flashvsr_plus", "none"],
+      }),
+      makeField({
+        key: "pipeline.target_resolution",
+        field_type: "select",
+        default: "1920x1080",
+        options: ["1920x1080", "1080x1920", "2560x1440", "1440x2560", "1280x720", "720x1280"],
+      }),
+    ];
+
+    // Each individual legacy 1.5 indicator key (without a non-empty quality_preset) triggers 1280x720 upgrade to 1920x1080
+    const legacyIndicators: Array<{ label: string; extra: Record<string, string | number | boolean> }> = [
+      { label: "pipeline.render_quality", extra: { "pipeline.render_quality": "balanced_480p_ai2x" } },
+      { label: "pipeline.acceleration_profile", extra: { "pipeline.acceleration_profile": "max" } },
+      { label: "14.steps", extra: { "14.steps": 8 } },
+      { label: "pipeline.max_segment_seconds", extra: { "pipeline.max_segment_seconds": 3.7 } },
+      { label: "5.positive_prompt", extra: { "5.positive_prompt": "legacy studio prompt" } },
+      { label: "15.seed", extra: { "15.seed": 123 } },
+      { label: "pipeline.upscale_mode=ai_2x", extra: { "pipeline.upscale_mode": "ai_2x" } },
+      { label: "pipeline.upscale_mode=lanczos", extra: { "pipeline.upscale_mode": "lanczos" } },
+    ];
+
+    for (const tc of legacyIndicators) {
+      const migrated = mergeColabOneWorkflowDraftFields(
+        longCat16Fields,
+        {
+          "pipeline.script_text": `legacy via ${tc.label}`,
+          "pipeline.target_resolution": "1280x720",
+          ...tc.extra,
+        },
+        "zh-CN",
+      );
+      expect(migrated["pipeline.target_resolution"], tc.label).toBe("1920x1080");
+      expect(migrated["pipeline.upscale_mode"], tc.label).toBe("auto");
+      expect(migrated["pipeline.script_text"], tc.label).toBe(`legacy via ${tc.label}`);
+    }
+
+    // Whitespace-only pipeline.quality_preset still treats a draft with legacy keys as legacy 1.5
+    const whitespaceQualityPreset = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.quality_preset": "   ",
+        "15.seed": 88,
+        "pipeline.upscale_mode": "none",
+        "pipeline.target_resolution": "1280x720",
+      },
+      "zh-CN",
+    );
+    expect(whitespaceQualityPreset["pipeline.quality_preset"]).toBe("cinema_flagship");
+    expect(whitespaceQualityPreset["pipeline.upscale_mode"]).toBe("auto");
+    expect(whitespaceQualityPreset["pipeline.target_resolution"]).toBe("1920x1080");
+
+    // Partial 1.6 draft containing no legacy 1.5 keys must NOT mis-trigger migration
+    const partial16Draft = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.script_text": "partial 1.6 without quality_preset",
+        "pipeline.upscale_mode": "none",
+        "pipeline.target_resolution": "1280x720",
+      },
+      "zh-CN",
+    );
+    expect(partial16Draft["pipeline.upscale_mode"]).toBe("none");
+    expect(partial16Draft["pipeline.target_resolution"]).toBe("1280x720");
+    expect(partial16Draft["pipeline.quality_preset"]).toBe("cinema_flagship");
   });
 });
 
@@ -460,6 +766,271 @@ describe("hasColabOneDraftContent", () => {
     expect(postUpgrade["pipeline.upscale_mode"]).toBe("none");
     expect(postUpgrade["pipeline.max_segment_seconds"]).toBe(9);
     expect(postUpgrade["14.steps"]).toBe(12);
+  });
+
+  it("migrates LongCat 1.5 drafts forward to LongCat 1.6 native while preserving shared media/TTS fields, explicit non-720p resolution, and fresh 1.6 drafts", () => {
+    const longCat16Fields: WorkflowField[] = [
+      makeField({
+        key: "1.image",
+        field_type: "image",
+        default: "",
+      }),
+      makeField({
+        key: "2.audio",
+        field_type: "audio",
+        default: "",
+      }),
+      makeField({
+        key: "pipeline.audio_source",
+        field_type: "select",
+        default: "tts",
+        options: ["tts", "audio"],
+      }),
+      makeField({
+        key: "pipeline.script_text",
+        field_type: "textarea",
+        default: "",
+      }),
+      makeField({
+        key: "pipeline.tts_engine",
+        field_type: "select",
+        default: "fish_drama3",
+        options: ["fish_drama3", "moss_tts_v1_5", "voxcpm2", "qwen3_tts"],
+      }),
+      makeField({
+        key: "pipeline.voice_preset",
+        field_type: "select",
+        default: "shen_zhiyi",
+        options: ["shen_zhiyi", "lin_xiaoman", "su_wanqing", "custom"],
+      }),
+      makeField({
+        key: "pipeline.voice_ref_audio",
+        field_type: "audio",
+        default: "",
+      }),
+      makeField({
+        key: "pipeline.pause_seconds",
+        field_type: "number",
+        default: 0.28,
+      }),
+      makeField({
+        key: "pipeline.quality_preset",
+        field_type: "select",
+        default: "cinema_flagship",
+        options: ["cinema_flagship", "balanced_hd", "longform_fast"],
+      }),
+      makeField({
+        key: "pipeline.framing_style",
+        field_type: "select",
+        default: "half_body_gestures",
+        options: ["half_body_gestures", "closeup_presenter", "full_body_dynamic"],
+      }),
+      makeField({
+        key: "pipeline.upscale_mode",
+        field_type: "select",
+        default: "auto",
+        options: ["auto", "seedvr2_7b_sharp", "seedvr2_7b", "flashvsr_plus", "none"],
+      }),
+      makeField({
+        key: "pipeline.target_resolution",
+        field_type: "select",
+        default: "1920x1080",
+        options: [
+          "1920x1080",
+          "1080x1920",
+          "2560x1440",
+          "1440x2560",
+          "1280x720",
+          "720x1280",
+        ],
+      }),
+      makeField({
+        key: "pipeline.sampling_mode",
+        field_type: "select",
+        default: "auto",
+        options: ["auto", "non_distill_cfg", "distill_lora_mix"],
+      }),
+      makeField({
+        key: "pipeline.num_inference_steps",
+        field_type: "integer",
+        default: 50,
+      }),
+      makeField({
+        key: "pipeline.seed",
+        field_type: "integer",
+        default: 42,
+      }),
+      makeField({
+        key: "pipeline.crf",
+        field_type: "integer",
+        default: 16,
+      }),
+      makeField({
+        key: "pipeline.positive_prompt",
+        field_type: "textarea",
+        default: "",
+      }),
+      makeField({
+        key: "pipeline.negative_prompt",
+        field_type: "textarea",
+        default: "",
+      }),
+    ];
+
+    const validMedia: Record<string, ColabOneWorkflowDraftMediaMeta> = {
+      "1.image": {
+        id: "1".repeat(32),
+        filename: "presenter_halfbody.png",
+        kind: "image",
+        mime: "image/png",
+        size: 2048,
+        sha256: "a".repeat(64),
+        updated_at: 1700000100,
+      },
+      "pipeline.voice_ref_audio": {
+        id: "2".repeat(32),
+        filename: "host_clone.wav",
+        kind: "audio",
+        mime: "audio/wav",
+        size: 4096,
+        sha256: "b".repeat(64),
+        updated_at: 1700000100,
+      },
+    };
+
+    // 1. LongCat 1.5 draft (balanced_480p_ai2x + ai_2x + default 1280x720) migrates forward cleanly
+    const migratedFrom15Ai2x = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "1.image": "stale-ghost.png",
+        "pipeline.audio_source": "tts",
+        "pipeline.script_text": "保留我的 1.5 口播文稿内容",
+        "pipeline.tts_engine": "qwen3_tts",
+        "pipeline.voice_preset": "qwen_vivian",
+        "pipeline.pause_seconds": 0.4,
+        "pipeline.render_quality": "balanced_480p_ai2x",
+        "pipeline.acceleration_profile": "max",
+        "pipeline.upscale_mode": "ai_2x",
+        "pipeline.target_resolution": "1280x720",
+        "pipeline.max_segment_seconds": 3.7,
+        "14.steps": 8,
+        "15.seed": 999,
+      },
+      "zh-CN",
+      validMedia,
+    );
+    expect("pipeline.render_quality" in migratedFrom15Ai2x).toBe(false);
+    expect("pipeline.acceleration_profile" in migratedFrom15Ai2x).toBe(false);
+    expect("pipeline.max_segment_seconds" in migratedFrom15Ai2x).toBe(false);
+    expect("14.steps" in migratedFrom15Ai2x).toBe(false);
+    expect("15.seed" in migratedFrom15Ai2x).toBe(false);
+    expect(migratedFrom15Ai2x["pipeline.quality_preset"]).toBe("cinema_flagship");
+    expect(migratedFrom15Ai2x["pipeline.framing_style"]).toBe("half_body_gestures");
+    expect(migratedFrom15Ai2x["pipeline.upscale_mode"]).toBe("auto");
+    expect(migratedFrom15Ai2x["pipeline.target_resolution"]).toBe("1920x1080");
+    expect(migratedFrom15Ai2x["pipeline.sampling_mode"]).toBe("auto");
+    expect(migratedFrom15Ai2x["pipeline.num_inference_steps"]).toBe(50);
+    expect(migratedFrom15Ai2x["pipeline.seed"]).toBe(42);
+    expect(migratedFrom15Ai2x["pipeline.crf"]).toBe(16);
+    expect(migratedFrom15Ai2x["1.image"]).toBe("presenter_halfbody.png");
+    expect(migratedFrom15Ai2x["pipeline.voice_ref_audio"]).toBe("host_clone.wav");
+    expect(migratedFrom15Ai2x["pipeline.script_text"]).toBe("保留我的 1.5 口播文稿内容");
+    expect(migratedFrom15Ai2x["pipeline.tts_engine"]).toBe("qwen3_tts");
+    expect(migratedFrom15Ai2x["pipeline.voice_preset"]).toBe("qwen_vivian");
+    expect(migratedFrom15Ai2x["pipeline.pause_seconds"]).toBe(0.4);
+
+    // 2. LongCat 1.5 native_720p draft with lanczos + explicit 1080x1920 resets lanczos to auto while preserving 1080x1920
+    const migratedFrom15Lanczos = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.script_text": "竖屏口播保留 1080x1920",
+        "pipeline.render_quality": "native_720p",
+        "pipeline.acceleration_profile": "balanced",
+        "pipeline.upscale_mode": "lanczos",
+        "pipeline.target_resolution": "1080x1920",
+      },
+      "zh-CN",
+    );
+    expect("pipeline.render_quality" in migratedFrom15Lanczos).toBe(false);
+    expect("pipeline.acceleration_profile" in migratedFrom15Lanczos).toBe(false);
+    expect(migratedFrom15Lanczos["pipeline.upscale_mode"]).toBe("auto");
+    expect(migratedFrom15Lanczos["pipeline.target_resolution"]).toBe("1080x1920");
+    expect(migratedFrom15Lanczos["pipeline.script_text"]).toBe("竖屏口播保留 1080x1920");
+
+    // 2b. LongCat 1.5 post-optimization draft with explicit upscale_mode "none" preserves "none"
+    const migratedFrom15ExplicitNone = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.render_quality": "native_720p",
+        "pipeline.upscale_mode": "none",
+        "pipeline.target_resolution": "720x1280",
+      },
+      "zh-CN",
+    );
+    expect(migratedFrom15ExplicitNone["pipeline.upscale_mode"]).toBe("none");
+    expect(migratedFrom15ExplicitNone["pipeline.target_resolution"]).toBe("720x1280");
+
+    // 3. Pre-optimization LongCat draft (only legacy 14.steps/max_segment_seconds, no render_quality) migrating straight to 1.6 upgrades legacy "none" and "1280x720"
+    const migratedFromPreOptTo16 = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.script_text": "极早期草稿迁移",
+        "pipeline.upscale_mode": "none",
+        "pipeline.target_resolution": "1280x720",
+        "pipeline.max_segment_seconds": 9,
+        "14.steps": 12,
+      },
+      "zh-CN",
+    );
+    expect(migratedFromPreOptTo16["pipeline.upscale_mode"]).toBe("auto");
+    expect(migratedFromPreOptTo16["pipeline.target_resolution"]).toBe("1920x1080");
+    expect(migratedFromPreOptTo16["pipeline.script_text"]).toBe("极早期草稿迁移");
+
+    // 4. Fresh LongCat 1.6 draft (with pipeline.quality_preset) is preserved verbatim, including explicit 1280x720 and none
+    const fresh16Draft = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.audio_source": "audio",
+        "pipeline.quality_preset": "balanced_hd",
+        "pipeline.framing_style": "closeup_presenter",
+        "pipeline.upscale_mode": "flashvsr_plus",
+        "pipeline.target_resolution": "1280x720",
+        "pipeline.sampling_mode": "distill_lora_mix",
+        "pipeline.num_inference_steps": 35,
+        "pipeline.seed": 202606,
+        "pipeline.crf": 14,
+        "pipeline.positive_prompt": "Custom cinema rim light",
+        "pipeline.negative_prompt": "extra fingers, blurry teeth",
+      },
+      "en-US",
+      validMedia,
+    );
+    expect(fresh16Draft["pipeline.audio_source"]).toBe("audio");
+    expect(fresh16Draft["pipeline.quality_preset"]).toBe("balanced_hd");
+    expect(fresh16Draft["pipeline.framing_style"]).toBe("closeup_presenter");
+    expect(fresh16Draft["pipeline.upscale_mode"]).toBe("flashvsr_plus");
+    expect(fresh16Draft["pipeline.target_resolution"]).toBe("1280x720");
+    expect(fresh16Draft["pipeline.sampling_mode"]).toBe("distill_lora_mix");
+    expect(fresh16Draft["pipeline.num_inference_steps"]).toBe(35);
+    expect(fresh16Draft["pipeline.seed"]).toBe(202606);
+    expect(fresh16Draft["pipeline.crf"]).toBe(14);
+    expect(fresh16Draft["pipeline.positive_prompt"]).toBe("Custom cinema rim light");
+    expect(fresh16Draft["pipeline.negative_prompt"]).toBe("extra fingers, blurry teeth");
+    expect(fresh16Draft["1.image"]).toBe("presenter_halfbody.png");
+
+    // Fresh 1.6 draft with explicit upscale_mode "none" is also preserved verbatim
+    const fresh16DraftNone = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.quality_preset": "longform_fast",
+        "pipeline.upscale_mode": "none",
+        "pipeline.target_resolution": "1280x720",
+      },
+      "en-US",
+    );
+    expect(fresh16DraftNone["pipeline.quality_preset"]).toBe("longform_fast");
+    expect(fresh16DraftNone["pipeline.upscale_mode"]).toBe("none");
+    expect(fresh16DraftNone["pipeline.target_resolution"]).toBe("1280x720");
   });
 });
 
@@ -913,5 +1484,330 @@ describe("createColabOneWorkflowDraftClient", () => {
     });
     await Promise.all([savePromise, clearPromise]);
     expect(calls).toEqual(["comfyui.draft.save", "comfyui.draft.clear"]);
+  });
+
+  it("preserves fractional float updated_at timestamps across RPC and localStorage while sanitizing non-finite values", async () => {
+    const storage = createMemoryStorage();
+    const floatTs = 1_700_000_123.75;
+    const mediaFloatTs = 1_700_000_456.25;
+
+    const invoke = vi.fn(async (action: string, payload?: Record<string, unknown>) => {
+      if (action === "comfyui.draft.save") {
+        return {
+          ok: true,
+          draft: {
+            workflow_id: payload?.workflow_id,
+            fields: payload?.fields ?? {},
+            media: {},
+            updated_at: floatTs,
+          },
+        };
+      }
+      if (action === "comfyui.draft.get") {
+        if (payload?.workflow_id === "wf-bad-ts") {
+          return {
+            draft: {
+              workflow_id: "wf-bad-ts",
+              fields: { "pipeline.script_text": "bad ts" },
+              media: {},
+              updated_at: "not-a-number",
+            },
+          };
+        }
+        return {
+          draft: {
+            workflow_id: payload?.workflow_id,
+            fields: { "pipeline.script_text": "float ts" },
+            media: {
+              "1.image": {
+                id: "a".repeat(32),
+                filename: "host.png",
+                kind: "image",
+                mime: "image/png",
+                size: 128,
+                sha256: "b".repeat(64),
+                updated_at: mediaFloatTs,
+              },
+            },
+            updated_at: floatTs,
+          },
+        };
+      }
+      return { ok: true };
+    });
+
+    const client = createColabOneWorkflowDraftClient(invoke, storage);
+    const saved = await client.saveColabOneWorkflowDraft("wf-float", {
+      "pipeline.script_text": "float ts",
+    });
+    expect(saved?.updated_at).toBe(floatTs);
+
+    const loaded = await client.loadColabOneWorkflowDraft("wf-float");
+    expect(loaded?.updated_at).toBe(floatTs);
+    expect(loaded?.media["1.image"]?.updated_at).toBe(mediaFloatTs);
+
+    const badTsLoaded = await client.loadColabOneWorkflowDraft("wf-bad-ts");
+    expect(badTsLoaded?.updated_at).toBe(0);
+
+    // Offline localStorage mirror also preserves fractional updated_at values
+    storage.setItem(
+      COLABONE_STORAGE_KEYS.comfyDrafts,
+      JSON.stringify({
+        "wf-local-float": {
+          workflow_id: "wf-local-float",
+          fields: { "pipeline.script_text": "local float" },
+          updated_at: 1_700_000_999.5,
+        },
+        "wf-local-bad": {
+          workflow_id: "wf-local-bad",
+          fields: { "pipeline.script_text": "local bad" },
+          updated_at: null,
+        },
+      }),
+    );
+    const offlineClient = createColabOneWorkflowDraftClient(
+      vi.fn(async () => {
+        throw new Error("desktop bridge unavailable");
+      }),
+      storage,
+      { allowLocalFallback: true },
+    );
+    const localFloat = await offlineClient.loadColabOneWorkflowDraft("wf-local-float");
+    expect(localFloat?.updated_at).toBe(1_700_000_999.5);
+    const localBad = await offlineClient.loadColabOneWorkflowDraft("wf-local-bad");
+    expect(localBad?.updated_at).toBe(0);
+  });
+
+  it("drains chained writes queued while a previous write is in-flight before loadColabOneWorkflowDraft reads", async () => {
+    const firstWriteGate = createDeferred<Record<string, unknown>>();
+    const secondWriteGate = createDeferred<Record<string, unknown>>();
+    const events: string[] = [];
+    let saveIndex = 0;
+
+    const invoke = vi.fn(async (action: string, payload?: Record<string, unknown>) => {
+      if (action === "comfyui.draft.save") {
+        saveIndex += 1;
+        const idx = saveIndex;
+        events.push(`save-${idx}:start`);
+        const result =
+          idx === 1 ? await firstWriteGate.promise : await secondWriteGate.promise;
+        events.push(`save-${idx}:done`);
+        return result;
+      }
+      if (action === "comfyui.draft.get") {
+        events.push("get");
+        return {
+          draft: {
+            workflow_id: payload?.workflow_id,
+            fields: { "pipeline.script_text": "second write persisted" },
+            media: {},
+            updated_at: 1_700_000_200,
+          },
+        };
+      }
+      return { ok: true };
+    });
+
+    const client = createColabOneWorkflowDraftClient(invoke, createMemoryStorage());
+
+    // Start write 1 (in-flight) and immediately chain write 2 onto the same workflow queue.
+    const write1 = client.saveColabOneWorkflowDraft("wf-chain", {
+      "pipeline.script_text": "first write",
+    });
+    const write2 = client.saveColabOneWorkflowDraft("wf-chain", {
+      "pipeline.script_text": "second write persisted",
+    });
+
+    // Trigger load while write 1 is still pending and write 2 is chained behind it.
+    const loadPromise = client.loadColabOneWorkflowDraft("wf-chain");
+    await Promise.resolve();
+    expect(events).toEqual(["save-1:start"]);
+
+    // Resolve write 1; write 2 starts immediately and load must STILL wait for write 2.
+    firstWriteGate.resolve({
+      ok: true,
+      draft: {
+        workflow_id: "wf-chain",
+        fields: { "pipeline.script_text": "first write" },
+        media: {},
+        updated_at: 1_700_000_100,
+      },
+    });
+    await write1;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toEqual(["save-1:start", "save-1:done", "save-2:start"]);
+
+    // Only after write 2 settles may comfyui.draft.get execute.
+    secondWriteGate.resolve({
+      ok: true,
+      draft: {
+        workflow_id: "wf-chain",
+        fields: { "pipeline.script_text": "second write persisted" },
+        media: {},
+        updated_at: 1_700_000_200,
+      },
+    });
+    await write2;
+    const loaded = await loadPromise;
+    expect(events).toEqual([
+      "save-1:start",
+      "save-1:done",
+      "save-2:start",
+      "save-2:done",
+      "get",
+    ]);
+    expect(loaded?.fields["pipeline.script_text"]).toBe("second write persisted");
+  });
+
+  it("rejects __proto__, constructor, and prototype keys across localStorage reads, RPC normalization, and save sanitization", async () => {
+    const storage = createMemoryStorage();
+    // Inject raw JSON containing forbidden prototype-pollution keys at both map and field levels.
+    storage.setItem(
+      COLABONE_STORAGE_KEYS.comfyDrafts,
+      '{"__proto__":{"workflow_id":"__proto__","fields":{"polluted":"yes"},"updated_at":10},' +
+        '"constructor":{"workflow_id":"constructor","fields":{"polluted":"yes"},"updated_at":10},' +
+        '"prototype":{"workflow_id":"prototype","fields":{"polluted":"yes"},"updated_at":10},' +
+        '"wf-safe":{"workflow_id":"wf-safe","fields":{"__proto__":"bad","constructor":"bad","prototype":"bad","pipeline.script_text":"clean"},"updated_at":42}}',
+    );
+
+    const offlineClient = createColabOneWorkflowDraftClient(
+      vi.fn(async () => {
+        throw new Error("desktop bridge unavailable");
+      }),
+      storage,
+      { allowLocalFallback: true },
+    );
+
+    expect(await offlineClient.loadColabOneWorkflowDraft("__proto__")).toBeNull();
+    expect(await offlineClient.loadColabOneWorkflowDraft("constructor")).toBeNull();
+    expect(await offlineClient.loadColabOneWorkflowDraft("prototype")).toBeNull();
+
+    const safeLocal = await offlineClient.loadColabOneWorkflowDraft("wf-safe");
+    expect(safeLocal).not.toBeNull();
+    expect(Object.keys(safeLocal!.fields)).toEqual(["pipeline.script_text"]);
+    expect(safeLocal!.fields["pipeline.script_text"]).toBe("clean");
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    // RPC normalization strips forbidden keys from fields and media maps.
+    let capturedSavePayload: Record<string, unknown> | undefined;
+    const rpcInvoke = vi.fn(async (action: string, payload?: Record<string, unknown>) => {
+      if (action === "comfyui.draft.get") {
+        return JSON.parse(
+          '{"draft":{"workflow_id":"wf-rpc","updated_at":99,' +
+            '"fields":{"__proto__":"bad","constructor":"bad","prototype":"bad","ok_key":"ok_val"},' +
+            '"media":{"__proto__":{"id":"' +
+            "a".repeat(32) +
+            '","filename":"evil.png","kind":"image","mime":"image/png","size":10,"sha256":"' +
+            "b".repeat(64) +
+            '","updated_at":1},' +
+            '"constructor":{"id":"' +
+            "c".repeat(32) +
+            '","filename":"evil2.png","kind":"image","mime":"image/png","size":10,"sha256":"' +
+            "d".repeat(64) +
+            '","updated_at":1},' +
+            '"prototype":{"id":"' +
+            "e".repeat(32) +
+            '","filename":"evil3.png","kind":"image","mime":"image/png","size":10,"sha256":"' +
+            "f".repeat(64) +
+            '","updated_at":1},' +
+            '"1.image":{"id":"' +
+            "1".repeat(32) +
+            '","filename":"host.png","kind":"image","mime":"image/png","size":64,"sha256":"' +
+            "2".repeat(64) +
+            '","updated_at":5}}}}',
+        );
+      }
+      if (action === "comfyui.draft.save") {
+        capturedSavePayload = payload;
+        return {
+          ok: true,
+          draft: {
+            workflow_id: payload?.workflow_id,
+            fields: payload?.fields ?? {},
+            media: {},
+            updated_at: 100,
+          },
+        };
+      }
+      return { ok: true };
+    });
+
+    const rpcClient = createColabOneWorkflowDraftClient(rpcInvoke, createMemoryStorage());
+    const normalized = await rpcClient.loadColabOneWorkflowDraft("wf-rpc");
+    expect(normalized).not.toBeNull();
+    expect(Object.keys(normalized!.fields)).toEqual(["ok_key"]);
+    expect(Object.keys(normalized!.media)).toEqual(["1.image"]);
+
+    // sanitizePrimitiveRecord inside saveColabOneWorkflowDraft strips forbidden own keys.
+    const dirtyFields = JSON.parse(
+      '{"__proto__":"evil","constructor":"evil","prototype":"evil","pipeline.script_text":"safe text"}',
+    ) as Record<string, string | number | boolean>;
+    await rpcClient.saveColabOneWorkflowDraft("wf-save", dirtyFields);
+    const savedFields = (capturedSavePayload?.fields ?? {}) as Record<string, unknown>;
+    expect(Object.keys(savedFields)).toEqual(["pipeline.script_text"]);
+    expect(savedFields["pipeline.script_text"]).toBe("safe text");
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it("canonicalizes case-insensitive CUSTOM voice preset and preserves explicit legacy 1.5 native_720p none 1280x720", () => {
+    const longCat16Fields: WorkflowField[] = [
+      makeField({
+        key: "pipeline.voice_preset",
+        field_type: "select",
+        default: "shen_zhiyi",
+        options: ["shen_zhiyi", "custom"],
+      }),
+      makeField({
+        key: "pipeline.quality_preset",
+        field_type: "select",
+        default: "cinema_flagship",
+        options: ["cinema_flagship", "balanced_hd", "longform_fast"],
+      }),
+      makeField({
+        key: "pipeline.upscale_mode",
+        field_type: "select",
+        default: "auto",
+        options: ["auto", "seedvr2_7b_sharp", "seedvr2_7b", "flashvsr_plus", "none"],
+      }),
+      makeField({
+        key: "pipeline.target_resolution",
+        field_type: "select",
+        default: "1920x1080",
+        options: [
+          "1920x1080",
+          "1080x1920",
+          "2560x1440",
+          "1440x2560",
+          "1280x720",
+          "720x1280",
+        ],
+      }),
+    ];
+
+    // Case-insensitive CUSTOM voice preset canonicalizes to lowercase "custom"
+    const customMerged = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.voice_preset": " CUSTOM ",
+      },
+      "zh-CN",
+    );
+    expect(customMerged["pipeline.voice_preset"]).toBe("custom");
+
+    // Legacy 1.5 draft explicitly set to native_720p + none + 1280x720 preserves both "none" and "1280x720"
+    const legacy15Merged = mergeColabOneWorkflowDraftFields(
+      longCat16Fields,
+      {
+        "pipeline.render_quality": "native_720p",
+        "pipeline.upscale_mode": "none",
+        "pipeline.target_resolution": "1280x720",
+        "pipeline.voice_preset": "Custom",
+      },
+      "zh-CN",
+    );
+    expect(legacy15Merged["pipeline.upscale_mode"]).toBe("none");
+    expect(legacy15Merged["pipeline.target_resolution"]).toBe("1280x720");
+    expect(legacy15Merged["pipeline.voice_preset"]).toBe("custom");
   });
 });

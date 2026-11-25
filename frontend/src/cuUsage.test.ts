@@ -396,4 +396,71 @@ describe("ColabOne CU series aggregation and chart layout", () => {
       );
     }
   });
+
+  it("does not inject current_rate into the current slot when logged_in is false or checked_at is stale", () => {
+    const nowMs = new Date(2026, 10, 23, 10, 25, 0, 0).getTime();
+    const todayWin = resolveColabOneCuUsageWindow({
+      mode: "day",
+      selectedDateKey: "2026-11-23",
+      nowMs,
+    });
+    const currentSlot = todayWin.slots[10]!;
+    expect(currentSlot.isCurrent).toBe(true);
+
+    const baseBucket = {
+      ts: currentSlot.startSec,
+      duration: 1800,
+      consumed: 0.4,
+      topup: 0,
+      balance_start: 100.0,
+      balance_end: 99.6,
+      has_balance: true,
+      rate_avg: 1.2,
+      rate_max: 1.5,
+      active_seconds: 600,
+      max_instances: 1,
+      samples: 5,
+      estimated: false,
+    };
+
+    // 1) logged_in: false must ignore current_rate & current_balance even with fresh checked_at
+    const loggedOutResp: ColabOneCuUsageResponse = {
+      logged_in: false,
+      bucket_seconds: 1800,
+      retention_days: 365,
+      start: todayWin.queryStartSec,
+      end: todayWin.queryEndSec,
+      current_balance: 50.0,
+      current_rate: 9.9,
+      checked_at: Math.floor(nowMs / 1000),
+      available_dates: ["2026-11-23"],
+      active_dates: ["2026-11-23"],
+      buckets: [baseBucket],
+    };
+    const loggedOut = aggregateColabOneCuSeries(todayWin, loggedOutResp, nowMs);
+    expect(loggedOut.points[10].rateMax).toBeCloseTo(1.5, 4);
+    expect(loggedOut.points[10].rateAvg).toBeCloseTo(1.2, 4);
+    expect(loggedOut.points[10].balanceEnd).toBeCloseTo(99.6, 4);
+
+    // 2) Stale checked_at (< currentSlot.startSec) must NOT inject current_rate
+    const staleResp: ColabOneCuUsageResponse = {
+      ...loggedOutResp,
+      logged_in: true,
+      checked_at: currentSlot.startSec - 120,
+    };
+    const stale = aggregateColabOneCuSeries(todayWin, staleResp, nowMs);
+    expect(stale.points[10].rateMax).toBeCloseTo(1.5, 4);
+    expect(stale.points[10].rateAvg).toBeCloseTo(1.2, 4);
+    expect(stale.points[10].balanceEnd).toBeCloseTo(99.6, 4);
+
+    // 3) Control: logged_in: true with fresh checked_at applies current_rate & current_balance
+    const freshResp: ColabOneCuUsageResponse = {
+      ...loggedOutResp,
+      logged_in: true,
+      checked_at: currentSlot.startSec + 300,
+    };
+    const fresh = aggregateColabOneCuSeries(todayWin, freshResp, nowMs);
+    expect(fresh.points[10].rateMax).toBeCloseTo(9.9, 4);
+    expect(fresh.points[10].balanceEnd).toBeCloseTo(50.0, 4);
+  });
 });

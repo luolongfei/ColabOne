@@ -463,6 +463,7 @@ let clearingStateError: {
 const shownFailedTaskIds = new Set<string>();
 const observedRunningComfyTaskIds = new Set<string>();
 const shownCompletedComfyTaskIds = new Set<string>();
+let hasSeededInitialTasks = false;
 
 function normalizeErrorKey(raw: unknown): string {
   return stripColabOneErrorPrefixes(raw);
@@ -644,8 +645,21 @@ watch(
 );
 
 watch(
-  () => state.value.runtime.tasks,
-  (tasks) => {
+  () => [state.value.runtime.tasks, snapshotLoaded.value] as const,
+  ([tasks, loaded]) => {
+    if (!loaded) return;
+    if (!hasSeededInitialTasks) {
+      hasSeededInitialTasks = true;
+      for (const item of tasks || []) {
+        if (item.kind === "comfyui_run" && item.state === "running") {
+          observedRunningComfyTaskIds.add(item.id);
+        }
+        if (item.state === "failed") {
+          shownFailedTaskIds.add(item.id);
+        }
+      }
+      return;
+    }
     if (!tasks?.length) return;
     for (const item of tasks) {
       if (item.kind !== "comfyui_run") continue;
@@ -1086,16 +1100,34 @@ const activeVramModel = computed(() =>
         (m) => m.loaded || m.id === state.value.runtime.loaded_model,
       ),
 );
+const hasActiveComfyTask = computed(
+  () =>
+    state.value.runtime.state !== "stopped" &&
+    Boolean(
+      state.value.runtime.tasks?.some(
+        (item) =>
+          item.state === "running" &&
+          (item.kind === "comfyui_start" ||
+            item.kind === "comfyui_run" ||
+            item.kind === "comfyui_tts_preview" ||
+            item.kind === "comfyui"),
+      ),
+    ),
+);
+const comfyRuntimeBusy = computed(
+  () =>
+    Boolean(state.value.runtime.comfyui?.running) || hasActiveComfyTask.value,
+);
 
 function isNavLive(id: string): boolean {
   if (id === "device") return ready.value;
   if (id === "api") return state.value.runtime.public_api?.state === "ready";
-  if (id === "comfyui") return !!state.value.runtime.comfyui?.running;
+  if (id === "comfyui") return comfyRuntimeBusy.value;
   return false;
 }
 function navDotColor(id: string): string {
-  if (id === "comfyui") return "#3b82f6";
-  return "#10b981";
+  if (id === "comfyui") return "var(--co-accent)";
+  return "var(--co-success)";
 }
 
 const downloadThreadOptions = computed(() => [
@@ -3915,13 +3947,11 @@ onUnmounted(() => {
               <nav
                 class="co-nav-pill-track"
                 :aria-label="t('nav.mainAria')"
-                role="menubar"
               >
                 <button
                   v-for="(item, idx) in nav"
                   :key="item.id"
                   type="button"
-                  role="menuitem"
                   class="co-nav-pill-item"
                   :class="{ 'is-active': page === item.id }"
                   :aria-current="page === item.id ? 'page' : undefined"
@@ -4037,7 +4067,9 @@ onUnmounted(() => {
                     logsOpen ? t('nav.logsCollapseAria') : t('nav.logsExpandAria')
                   "
                   :aria-expanded="logsOpen"
-                  aria-controls="activity-panel"
+                  :aria-controls="
+                    logWindowStandalone ? undefined : 'activity-panel'
+                  "
                   @click="setLogsOpen(!logsOpen)"
                 >
                   <PhTerminalWindow :size="16" aria-hidden="true" />
@@ -4474,7 +4506,7 @@ onUnmounted(() => {
                           {{ t("device.goToApi") }}
                         </AButton>
                       </template>
-                      <template v-else-if="ready && state.runtime.comfyui?.running">
+                      <template v-else-if="ready && comfyRuntimeBusy">
                         <code v-if="state.runtime.id" class="co-runtime-id">{{
                           state.runtime.id
                         }}</code>
@@ -5110,7 +5142,7 @@ onUnmounted(() => {
                       v-for="inst in accountInstances"
                       :key="inst.id"
                       class="co-instance-row co-instance-card"
-                      :class="{ active: inst.active && inst.managed }"
+                      :class="{ 'is-active': inst.active && inst.managed }"
                     >
                       <div class="co-instance-main">
                         <div class="co-instance-tags">
@@ -6863,7 +6895,7 @@ onUnmounted(() => {
                 :key="instance.id"
                 class="co-release-item"
                 :class="{
-                  selected: selectedReleaseIds.includes(instance.id),
+                  'is-selected': selectedReleaseIds.includes(instance.id),
                 }"
               >
                 <ACheckbox
@@ -8217,7 +8249,7 @@ onUnmounted(() => {
   transition: border-color 0.16s ease, background-color 0.16s ease;
 }
 
-.co-instance-row.active {
+.co-instance-row.is-active {
   border-color: rgba(59, 130, 246, 0.45);
   background: var(--co-selected);
 }
@@ -9014,7 +9046,7 @@ onUnmounted(() => {
   transition: border-color 0.16s ease, background-color 0.16s ease;
 }
 
-.co-release-item.selected {
+.co-release-item.is-selected {
   border-color: var(--co-danger-border);
   background: var(--co-danger-bg);
 }

@@ -1,5 +1,7 @@
 import { colabOneCommand } from "./api";
 import {
+  COLABONE_VOICE_PRESET_ID_RE,
+  clampColabOneNumericFieldValue,
   defaultFieldValues,
   isColabOnePresetVisualPrompt,
 } from "./comfyui";
@@ -98,6 +100,10 @@ function isPrimitiveFieldValue(
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function isForbiddenObjectKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
 function sanitizePrimitiveRecord(
   record: unknown,
 ): Record<string, string | number | boolean> {
@@ -106,7 +112,7 @@ function sanitizePrimitiveRecord(
     return sanitized;
   }
   for (const [key, value] of Object.entries(record)) {
-    if (!key) continue;
+    if (!key || isForbiddenObjectKey(key)) continue;
     if (typeof value === "string" || typeof value === "boolean") {
       sanitized[key] = value;
     } else if (typeof value === "number" && Number.isFinite(value)) {
@@ -200,6 +206,7 @@ function normalizeDraft(
   const media: Record<string, ColabOneWorkflowDraftMediaMeta> = {};
   if (isPlainRecord(raw.media)) {
     for (const [key, val] of Object.entries(raw.media)) {
+      if (!key || isForbiddenObjectKey(key)) continue;
       const normalized = normalizeMediaMeta(val);
       if (normalized) {
         media[key] = normalized;
@@ -235,7 +242,7 @@ function readLocalDraftMap(
     }
     const result: Record<string, StoredLocalDraftRecord> = {};
     for (const [wfId, entry] of Object.entries(parsed)) {
-      if (!wfId || !isPlainRecord(entry)) {
+      if (!wfId || isForbiddenObjectKey(wfId) || !isPlainRecord(entry)) {
         continue;
       }
       result[wfId] = {
@@ -306,7 +313,7 @@ function writeLocalDraft(
     media: {},
     updated_at: updatedAt,
   };
-  if (storage) {
+  if (storage && !isForbiddenObjectKey(workflowId)) {
     const map = readLocalDraftMap(storage);
     map[workflowId] = {
       workflow_id: workflowId,
@@ -348,6 +355,11 @@ const COLABONE_LEGACY_LONGCAT_DEFAULTS: Record<string, string | number> = {
   "14.steps": 12,
 };
 
+const COLABONE_LEGACY_LONGCAT_15_UPSCALE_MODES: ReadonlySet<string> = new Set([
+  "ai_2x",
+  "lanczos",
+]);
+
 function isLegacyLongCatDefaultValue(fieldKey: string, raw: unknown): boolean {
   if (!hasOwn(COLABONE_LEGACY_LONGCAT_DEFAULTS, fieldKey)) {
     return false;
@@ -372,11 +384,50 @@ export function mergeColabOneWorkflowDraftFields(
   validMedia?: Record<string, ColabOneWorkflowDraftMediaMeta>,
 ): Record<string, string | number | boolean> {
   const merged = defaultFieldValues(fields, locale);
+  const hasDraftFields =
+    isPlainRecord(draftFields) && Object.keys(draftFields).length > 0;
+  const targetHasRenderQuality = (fields || []).some(
+    (field) => field.key === "pipeline.render_quality",
+  );
+  const targetHasQualityPreset = (fields || []).some(
+    (field) => field.key === "pipeline.quality_preset",
+  );
   const isPreOptimizationLongCatDraft =
-    isPlainRecord(draftFields) &&
-    Object.keys(draftFields).length > 0 &&
-    (fields || []).some((field) => field.key === "pipeline.render_quality") &&
+    hasDraftFields &&
+    targetHasRenderQuality &&
     !hasOwn(draftFields, "pipeline.render_quality");
+  const rawDraftQualityPreset = hasOwn(draftFields, "pipeline.quality_preset")
+    ? draftFields?.["pipeline.quality_preset"]
+    : undefined;
+  const hasQualityPresetInDraft =
+    typeof rawDraftQualityPreset === "string" &&
+    rawDraftQualityPreset.trim().length > 0;
+  const rawDraftUpscaleMode = hasOwn(draftFields, "pipeline.upscale_mode")
+    ? draftFields?.["pipeline.upscale_mode"]
+    : undefined;
+  const rawDraftUpscaleModeStr =
+    typeof rawDraftUpscaleMode === "string" ? rawDraftUpscaleMode.trim() : "";
+  const hasLegacyLongCat15UpscaleMode =
+    COLABONE_LEGACY_LONGCAT_15_UPSCALE_MODES.has(rawDraftUpscaleModeStr);
+  const isLegacyLongCat15Draft =
+    hasDraftFields &&
+    targetHasQualityPreset &&
+    !hasQualityPresetInDraft &&
+    (hasOwn(draftFields, "pipeline.render_quality") ||
+      hasOwn(draftFields, "pipeline.acceleration_profile") ||
+      hasOwn(draftFields, "14.steps") ||
+      hasOwn(draftFields, "pipeline.max_segment_seconds") ||
+      hasOwn(draftFields, "5.positive_prompt") ||
+      hasOwn(draftFields, "15.seed") ||
+      hasLegacyLongCat15UpscaleMode);
+  const isPreOptimizationIntoLongCat16Draft =
+    isLegacyLongCat15Draft &&
+    !hasOwn(draftFields, "pipeline.render_quality") &&
+    !hasOwn(draftFields, "pipeline.acceleration_profile");
+  const preservesExplicitLongCat15None =
+    isLegacyLongCat15Draft &&
+    rawDraftUpscaleModeStr === "none" &&
+    !isPreOptimizationIntoLongCat16Draft;
 
   for (const field of fields || []) {
     if (field.field_type === "image" || field.field_type === "audio") {
@@ -404,15 +455,71 @@ export function mergeColabOneWorkflowDraftFields(
     ) {
       continue;
     }
+    if (isLegacyLongCat15Draft) {
+      const rawStr = typeof raw === "string" ? raw.trim() : "";
+      if (
+        field.key === "pipeline.target_resolution" &&
+        rawStr === "1280x720" &&
+        !preservesExplicitLongCat15None
+      ) {
+        continue;
+      }
+      if (field.key === "pipeline.upscale_mode") {
+        const hasExplicitOptions =
+          Array.isArray(field.options) && field.options.length > 0;
+        if (
+          COLABONE_LEGACY_LONGCAT_15_UPSCALE_MODES.has(rawStr) &&
+          (!hasExplicitOptions || !field.options!.includes(rawStr))
+        ) {
+          continue;
+        }
+        if (isPreOptimizationIntoLongCat16Draft && rawStr === "none") {
+          continue;
+        }
+      }
+    }
+
+    if (field.field_type === "select") {
+      if (
+        typeof raw !== "string" &&
+        !(typeof raw === "number" && Number.isFinite(raw))
+      ) {
+        continue;
+      }
+      const candidate = String(raw).trim();
+      if (!candidate) {
+        continue;
+      }
+      // `pipeline.voice_preset` dynamically accepts engine-specific official
+      // speaker IDs (e.g. Qwen3-TTS `qwen_*`) outside the static template options.
+      const allowsDynamicSelectOptions = field.key === "pipeline.voice_preset";
+      if (allowsDynamicSelectOptions) {
+        if (!COLABONE_VOICE_PRESET_ID_RE.test(candidate)) {
+          continue;
+        }
+        merged[field.key] =
+          candidate.toLowerCase() === "custom" ? "custom" : candidate;
+        continue;
+      }
+      if (
+        Array.isArray(field.options) &&
+        field.options.length > 0 &&
+        !field.options.includes(candidate)
+      ) {
+        continue;
+      }
+      merged[field.key] = candidate;
+      continue;
+    }
 
     if (field.field_type === "boolean") {
       if (typeof raw === "boolean") {
         merged[field.key] = raw;
       } else if (typeof raw === "string") {
         const normalized = raw.trim().toLowerCase();
-        if (normalized === "true") {
+        if (normalized === "true" || normalized === "1") {
           merged[field.key] = true;
-        } else if (normalized === "false") {
+        } else if (normalized === "false" || normalized === "0") {
           merged[field.key] = false;
         }
       }
@@ -432,27 +539,23 @@ export function mergeColabOneWorkflowDraftFields(
         num = Number.isFinite(parsed) ? parsed : undefined;
       }
       if (num !== undefined) {
-        merged[field.key] =
-          field.field_type === "integer"
-            ? normalizeZero(Math.round(num))
-            : normalizeZero(num);
+        merged[field.key] = clampColabOneNumericFieldValue(num, field);
       }
       continue;
     }
 
     if (field.field_type === "text" || field.field_type === "textarea") {
-      if (!isPrimitiveFieldValue(raw)) {
+      if (typeof raw !== "string") {
         continue;
       }
-      const str = String(raw);
       if (
         typeof field.default === "string" &&
         isColabOnePresetVisualPrompt(field.default) &&
-        isColabOnePresetVisualPrompt(str)
+        isColabOnePresetVisualPrompt(raw)
       ) {
         merged[field.key] = t("comfy.defaultVisualPrompt", undefined, locale);
       } else {
-        merged[field.key] = str;
+        merged[field.key] = raw;
       }
       continue;
     }
@@ -582,9 +685,15 @@ export function createColabOneWorkflowDraftClient(
   }
 
   async function waitForPendingWrites(workflowId: string): Promise<void> {
-    const pending = writeQueues.get(workflowId);
-    if (pending) {
+    while (true) {
+      const pending = writeQueues.get(workflowId);
+      if (!pending) {
+        return;
+      }
       await pending;
+      if (writeQueues.get(workflowId) === pending) {
+        return;
+      }
     }
   }
 
@@ -620,7 +729,7 @@ export function createColabOneWorkflowDraftClient(
     }
     const safeFields = sanitizePrimitiveRecord(fields);
     return enqueueWrite(wfId, async () => {
-      const now = Math.floor(Date.now() / 1000);
+      const now = Date.now() / 1000;
       try {
         const res = await invoker("comfyui.draft.save", {
           workflow_id: wfId,
