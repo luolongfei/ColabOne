@@ -487,7 +487,7 @@ def test_longcat16_ffv1_cmd_progress_and_speakers(capsys, tmp_path):
     out_mkv = tmp_path / "stage2_720p.mkv"
     cmd = build_lossless_ffv1_writer_cmd("/usr/bin/ffmpeg", 1280, 768, 25, out_mkv)
     assert cmd[0] == "/usr/bin/ffmpeg"
-    assert "-protocol_whitelist" in cmd and cmd[cmd.index("-protocol_whitelist") + 1] == "file,pipe"
+    assert "-protocol_whitelist" in cmd and cmd[cmd.index("-protocol_whitelist") + 1] == "file,pipe,fd"
     assert "-f" in cmd and cmd[cmd.index("-f") + 1] == "rawvideo"
     pix_fmt_values = [cmd[idx + 1] for idx, tok in enumerate(cmd) if tok == "-pix_fmt"]
     assert pix_fmt_values == ["rgb24", "bgr0"]
@@ -769,7 +769,7 @@ def test_vsr_seedvr2_batch_alignment_chunk_plan_cli_and_cover_crop(tmp_path):
         )
 
     # Lossless cover-crop command (PNG sequence & video input):
-    # -protocol_whitelist file,pipe, setsar=1 BEFORE scale, and -pix_fmt bgr0.
+    # -protocol_whitelist file,pipe,fd, setsar=1 BEFORE scale, and -pix_fmt bgr0.
     out_mkv = tmp_path / "stage3_upscaled.mkv"
     png_cmd = build_cover_crop_lossless_cmd(
         "/usr/bin/ffmpeg",
@@ -781,7 +781,7 @@ def test_vsr_seedvr2_batch_alignment_chunk_plan_cli_and_cover_crop(tmp_path):
         exact_frames=100,
         is_png_sequence=True,
     )
-    assert "-protocol_whitelist" in png_cmd and png_cmd[png_cmd.index("-protocol_whitelist") + 1] == "file,pipe"
+    assert "-protocol_whitelist" in png_cmd and png_cmd[png_cmd.index("-protocol_whitelist") + 1] == "file,pipe,fd"
     assert "-framerate" in png_cmd and png_cmd[png_cmd.index("-framerate") + 1] == "25"
     assert "-frames:v" in png_cmd and png_cmd[png_cmd.index("-frames:v") + 1] == "100"
     assert (
@@ -814,7 +814,7 @@ def test_vsr_seedvr2_batch_alignment_chunk_plan_cli_and_cover_crop(tmp_path):
         exact_frames=50,
         is_png_sequence=False,
     )
-    assert "-protocol_whitelist" in vid_cmd and vid_cmd[vid_cmd.index("-protocol_whitelist") + 1] == "file,pipe"
+    assert "-protocol_whitelist" in vid_cmd and vid_cmd[vid_cmd.index("-protocol_whitelist") + 1] == "file,pipe,fd"
     assert (
         vid_cmd[vid_cmd.index("-vf") + 1]
         == "setsar=1,scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setpts=N/(25*TB)"
@@ -6373,5 +6373,359 @@ def test_r2_schema_validators_and_catalog_vram_commercial_invariants():
     assert inf.pipeline is not None and inf.pipeline.default_tts_engine == "moss_tts_v1_5"
     lc = templates_by_id["digital-human-longcat"]
     assert lc.pipeline is not None and lc.pipeline.default_tts_engine == "fish_drama3"
+
+
+def test_longcat16_default_eager_step_progress_kv_cache_and_streaming_stall_guards(
+    tmp_path, monkeypatch, capsys
+):
+    """Verify LongCat 1.6 eager default, per-step progress hook, kv_seqlen cache, TF/JAX block, and stall abort."""
+    import subprocess
+    import textwrap
+
+    from server import avatar_worker_longcat16 as lc_worker
+    from server import vsr_worker_diffusion as vsr_worker
+
+    # 1. Per-step progress hook wraps pipe.progress_bar and emits COLABONE_PROGRESS per step.
+    class _MiniBar:
+        def __init__(self, total=None):
+            self.total = total
+            self.updated = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def update(self, n=1):
+            self.updated += n
+
+    class _MiniPipe:
+        def progress_bar(self, iterable=None, total=None, **kw):
+            return _MiniBar(total=total)
+
+    pipe = _MiniPipe()
+    orig_bound = pipe.progress_bar
+    capsys.readouterr()
+    with lc_worker._hook_pipe_step_progress(
+        pipe,
+        seg_index=0,
+        num_segments=4,
+        seg_label="首段 AI2V",
+        total_steps_hint=4,
+        frames_written=0,
+        exact_frames=200,
+    ):
+        with pipe.progress_bar(total=4) as bar:
+            for _ in range(4):
+                bar.update()
+    # Instance override must be cleanly removed after context exits.
+    assert "progress_bar" not in pipe.__dict__
+    assert pipe.progress_bar == orig_bound
+
+    out_lines = [
+        ln
+        for ln in capsys.readouterr().out.splitlines()
+        if ln.startswith(lc_worker.COLABONE_PROGRESS_PREFIX)
+    ]
+    assert len(out_lines) == 4
+    parsed_steps = [
+        json.loads(ln[len(lc_worker.COLABONE_PROGRESS_PREFIX) :]) for ln in out_lines
+    ]
+    assert [p["step"] for p in parsed_steps] == [1, 2, 3, 4]
+    assert [p["total_steps"] for p in parsed_steps] == [4, 4, 4, 4]
+    assert parsed_steps[0]["progress"] < parsed_steps[-1]["progress"]
+    assert "第 4/4 步" in parsed_steps[-1]["message"]
+
+    # 2. Both LongCat 1.6 and VSR workers block poisoned host tensorflow/jax imports cleanly.
+    poison_dir = tmp_path / "poison_tf_jax"
+    poison_dir.mkdir()
+    (poison_dir / "tensorflow.py").write_text(
+        "raise AttributeError(\"module 'numpy.dtypes' has no attribute 'StringDType'\")\n",
+        encoding="utf-8",
+    )
+    (poison_dir / "jax.py").write_text(
+        "raise AttributeError(\"module 'numpy.dtypes' has no attribute 'StringDType'\")\n",
+        encoding="utf-8",
+    )
+    probe_script = tmp_path / "probe_avatar_vsr.py"
+    probe_script.write_text(
+        textwrap.dedent(
+            """\
+            import importlib.util, json, os, sys
+            from server import avatar_worker_longcat16 as lc
+            from server import vsr_worker_diffusion as vsr
+
+            lc._disable_non_torch_backends()
+            vsr._disable_non_torch_backends()
+            out = {}
+            for m in ("tensorflow", "jax", "flax", "keras", "tf_keras", "jaxlib"):
+                out[m] = {
+                    "in_sys_modules": m in sys.modules,
+                    "found": importlib.util.find_spec(m) is not None,
+                }
+            print(json.dumps({"use_tf": os.environ.get("USE_TF"), "mods": out}))
+            """
+        ),
+        encoding="utf-8",
+    )
+    probe_env = dict(os.environ)
+    probe_env["PYTHONPATH"] = f"{poison_dir}{os.pathsep}{Path(__file__).resolve().parents[1]}"
+    res = subprocess.run(
+        [sys.executable, str(probe_script)],
+        capture_output=True,
+        text=True,
+        env=probe_env,
+        timeout=30,
+        check=True,
+    )
+    probe_data = json.loads(res.stdout.strip().splitlines()[-1])
+    assert probe_data["use_tf"] == "0"
+    for m, info in probe_data["mods"].items():
+        assert info["in_sys_modules"] is False, f"{m} must not pollute sys.modules (breaks einops)"
+        assert info["found"] is False
+
+    # 3. _handle_worker_output_line surfaces warnings + fallback tqdm with segment interpolation,
+    #    and _run_streaming_worker aborts when progress freezes even if non-progress noise continues.
+    mgr = ColabOneAvatarEngineManager(tmp_path / "remote_stall")
+    task_diag = ColabOneTask("comfyui_run", "diag-test")
+    pstate: dict[str, Any] = {
+        "seen_structured": False,
+        "last_structured_at": 0.0,
+        "last_tqdm_at": 0.0,
+        "last_tqdm_step": (-1, -1),
+        "last_diag": "",
+        "terminal_error_at": None,
+        "terminal_error_msg": "",
+    }
+    holder = [""]
+    assert mgr._handle_worker_output_line(
+        'COLABONE_PROGRESS:{"stage":"generate","progress":0.30,"message":"正在渲染第 1/4 段","segment":1,"total_segments":4}',
+        task_diag,
+        progress_range=(0.30, 0.72),
+        last_msg_holder=holder,
+        stage_label="LongCat 1.6",
+        progress_state=pstate,
+    ) is True
+    pstate["last_structured_at"] = 0.0  # simulate > 3s elapsed since structured line
+    assert mgr._handle_worker_output_line(
+        " 50%|█████     | 25/50 [01:00<01:00, 2.40s/it]",
+        task_diag,
+        progress_range=(0.30, 0.72),
+        last_msg_holder=holder,
+        stage_label="LongCat 1.6",
+        progress_state=pstate,
+    ) is True
+    assert "第 25/50 步" in task_diag.message
+    assert task_diag.progress > 0.43
+
+    # Once structured native step progress is received, fallback tqdm must NOT overwrite message,
+    # and duplicate identical COLABONE_PROGRESS heartbeats must NOT count as forward progress.
+    step_line = (
+        'COLABONE_PROGRESS:{"stage":"generate","progress":0.45,'
+        '"message":"正在渲染第 1/4 段（首段 AI2V · 第 26/50 步）","segment":1,"total_segments":4,"step":26,"total_steps":50}'
+    )
+    assert mgr._handle_worker_output_line(
+        step_line,
+        task_diag,
+        progress_range=(0.30, 0.72),
+        last_msg_holder=holder,
+        stage_label="LongCat 1.6",
+        progress_state=pstate,
+    ) is True
+    assert mgr._handle_worker_output_line(
+        step_line,
+        task_diag,
+        progress_range=(0.30, 0.72),
+        last_msg_holder=holder,
+        stage_label="LongCat 1.6",
+        progress_state=pstate,
+    ) is False
+    pstate["last_structured_at"] = 0.0
+    mgr._handle_worker_output_line(
+        " 54%|█████▍    | 27/50 [01:04<00:55, 2.40s/it]",
+        task_diag,
+        progress_range=(0.30, 0.72),
+        last_msg_holder=holder,
+        stage_label="LongCat 1.6",
+        progress_state=pstate,
+    )
+    assert "首段 AI2V · 第 26/50 步" in task_diag.message
+
+    assert mgr._handle_worker_output_line(
+        "[colabone-longcat16] WARNING: fallback notice",
+        task_diag,
+        progress_range=(0.30, 0.72),
+        last_msg_holder=holder,
+        stage_label="LongCat 1.6",
+        progress_state=pstate,
+    ) is False
+    assert any(
+        "fallback notice" in str(entry.get("text") or entry.get("message") or entry.get("msg") or "")
+        for entry in task_diag.logs
+    )
+
+    # Real subprocess stall test: emits one COLABONE_PROGRESS then spams chatter without progress.
+    work_stall = tmp_path / "stall_work"
+    work_stall.mkdir()
+    chatter_script = (
+        "import time\n"
+        "print('COLABONE_PROGRESS:{\"progress\":0.3,\"message\":\"stuck\"}', flush=True)\n"
+        "for _ in range(30):\n"
+        "    print('harmless chatter line', flush=True)\n"
+        "    time.sleep(0.2)\n"
+    )
+    task_stall = ColabOneTask("comfyui_run", "progress-stall")
+    with pytest.raises(RuntimeError, match="长时间无进度推进"):
+        mgr._run_streaming_worker(
+            [sys.executable, "-c", chatter_script],
+            task_stall,
+            work_dir=work_stall,
+            log_path=work_stall / "stall.log",
+            env=dict(os.environ),
+            progress_range=(0.30, 0.72),
+            timeout=15,
+            stage_label="Stall Test",
+            inactivity_timeout=1,
+        )
+
+
+def test_longcat16_module_tqdm_hook_and_sdpa_contiguity_backend(monkeypatch, capsys):
+    """Verify module-level Denoising tqdm hook and contiguous SDPA backend dispatch + fallback."""
+    import contextlib
+    import types
+
+    from server import avatar_worker_longcat16 as lc_worker
+
+    # 1. Module-level tqdm(..., desc="Denoising") hook (upstream LongCatVideoAvatarPipeline pattern).
+    mod_name = "_colabone_fake_longcat_pipe_mod"
+    fake_mod = types.ModuleType(mod_name)
+
+    class _FakeTqdmBar:
+        def __init__(self, total=None, desc=None):
+            self.total = total
+            self.desc = desc
+            self.updates = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def update(self, n=1):
+            self.updates += int(n)
+
+    def _orig_tqdm(*args, **kwargs):
+        return _FakeTqdmBar(total=kwargs.get("total"), desc=kwargs.get("desc"))
+
+    fake_mod.tqdm = _orig_tqdm  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, mod_name, fake_mod)
+
+    class _UpstreamStylePipe:
+        pass
+
+    _UpstreamStylePipe.__module__ = mod_name
+    pipe = _UpstreamStylePipe()
+    capsys.readouterr()
+    with lc_worker._hook_pipe_step_progress(
+        pipe,
+        seg_index=1,
+        num_segments=8,
+        seg_label="13 帧连续续写",
+        total_steps_hint=8,
+        frames_written=93,
+        exact_frames=621,
+    ):
+        with fake_mod.tqdm(total=8, desc="Denoising") as pbar:
+            pbar.update()
+            pbar.update()
+    assert fake_mod.tqdm is _orig_tqdm
+    out_lines = [
+        ln
+        for ln in capsys.readouterr().out.splitlines()
+        if ln.startswith(COLABONE_PROGRESS_PREFIX)
+    ]
+    assert len(out_lines) == 2
+    ev2 = parse_colabone_progress_line(out_lines[-1])
+    assert ev2 is not None
+    assert ev2["segment"] == 2
+    assert ev2["step"] == 2
+    assert ev2["total_steps"] == 8
+    assert "step_seconds" in ev2
+    assert "第 2/8 步" in ev2["message"]
+
+    # 2. _install_sdpa_attention_fallback ensures Q/K/V contiguity and falls back if preferred kernel fails.
+    class _FakeTensor:
+        def __init__(self, contiguous=False, device="cuda:0", dtype="bf16"):
+            self._contiguous = contiguous
+            self.device = device
+            self.dtype = dtype
+
+        def is_contiguous(self):
+            return self._contiguous
+
+        def contiguous(self):
+            return _FakeTensor(contiguous=True, device=self.device, dtype=self.dtype)
+
+        def to(self, dtype):
+            return _FakeTensor(contiguous=self._contiguous, device=self.device, dtype=dtype)
+
+    sdpa_calls: list[tuple[bool, bool, bool, str]] = []
+    active_kernel = ["default"]
+
+    @contextlib.contextmanager
+    def _fake_sdpa_kernel(backends):
+        prev = active_kernel[0]
+        active_kernel[0] = str(backends[0])
+        try:
+            yield
+        finally:
+            active_kernel[0] = prev
+
+    def _fake_sdpa(q, k, v, dropout_p=0.0, scale=None):
+        sdpa_calls.append((q.is_contiguous(), k.is_contiguous(), v.is_contiguous(), active_kernel[0]))
+        if active_kernel[0] == "cudnn_fail":
+            raise RuntimeError("unsupported shape")
+        return q
+
+    fake_torch = types.SimpleNamespace(
+        nn=types.SimpleNamespace(
+            functional=types.SimpleNamespace(scaled_dot_product_attention=_fake_sdpa),
+            attention=types.SimpleNamespace(sdpa_kernel=_fake_sdpa_kernel),
+        )
+    )
+    fake_einops = types.ModuleType("einops")
+    fake_einops.rearrange = lambda x, *a, **kw: x  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "einops", fake_einops)
+
+    class _FakeAttn:
+        scale = 0.125
+
+        def _process_attn(self, q, k, v, shape):
+            raise RuntimeError("unpatched")
+
+    dit_ok = types.SimpleNamespace(blocks=[types.SimpleNamespace(attn=_FakeAttn())])
+    lc_worker._install_sdpa_attention_fallback(dit_ok, fake_torch, preferred_backend="cudnn_ok")
+    dit_ok.blocks[0].attn._process_attn(
+        _FakeTensor(contiguous=False),
+        _FakeTensor(contiguous=False),
+        _FakeTensor(contiguous=False),
+        (24, 48, 80),
+    )
+    assert sdpa_calls[-1] == (True, True, True, "cudnn_ok")
+
+    dit_fb = types.SimpleNamespace(blocks=[types.SimpleNamespace(attn=_FakeAttn())])
+    lc_worker._install_sdpa_attention_fallback(dit_fb, fake_torch, preferred_backend="cudnn_fail")
+    dit_fb.blocks[0].attn._process_attn(
+        _FakeTensor(contiguous=False),
+        _FakeTensor(contiguous=False),
+        _FakeTensor(contiguous=False),
+        (24, 48, 80),
+    )
+    assert sdpa_calls[-2] == (True, True, True, "cudnn_fail")
+    assert sdpa_calls[-1] == (True, True, True, "default")
+
+
 
 

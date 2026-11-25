@@ -450,14 +450,7 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
             pass
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(
-            description="ColabOne Ming-3.0-TTS remote worker"
-        )
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
-
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    def _run_ming_request(cfg: dict, state: dict, fallback_work_dir: Path) -> None:
         token = _hf_token()
         source_dir = (cfg.get("source_dir") or "").strip()
         if source_dir and source_dir not in sys.path:
@@ -498,45 +491,48 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
             importlib.util.find_spec("inflect")
         )
 
-        print(
-            f"[colabone-tts] ming_3_tts repo={repo} device={device} "
-            f"text_normalization={has_pynini} protocol={ming_task_protocol is not None}",
-            flush=True,
-        )
-
-        local_dir = snapshot_download(
-            repo_id=repo,
-            revision=revision or None,
-            cache_dir=cache_dir or None,
-            token=token,
-        )
-
-        init_kwargs = {
-            "device": device,
-            "text_normalization": has_pynini,
-        }
-        try:
-            from_pre_sig = inspect.signature(MingTinyTTS.from_pretrained)
-            from_pre_params = from_pre_sig.parameters
-            from_pre_has_var_kw = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD
-                for p in from_pre_params.values()
+        cache_key = (repo, revision, cache_dir, device)
+        tts = state.get("tts") if state.get("key") == cache_key else None
+        if tts is None:
+            _release_warm_state(state)
+            print(
+                f"[colabone-tts] ming_3_tts repo={repo} device={device} "
+                f"text_normalization={has_pynini} protocol={ming_task_protocol is not None}",
+                flush=True,
             )
-            if not from_pre_has_var_kw:
-                init_kwargs = {
-                    k: v for k, v in init_kwargs.items() if k in from_pre_params
-                }
-        except (TypeError, ValueError):
-            pass
 
-        try:
-            tts = MingTinyTTS.from_pretrained(local_dir, **init_kwargs)
-        except (ImportError, OSError):
-            if init_kwargs.get("text_normalization"):
-                init_kwargs["text_normalization"] = False
+            local_dir = _resolve_hf_snapshot(
+                snapshot_download, repo, revision, cache_dir, token
+            )
+
+            init_kwargs = {
+                "device": device,
+                "text_normalization": has_pynini,
+            }
+            try:
+                from_pre_sig = inspect.signature(MingTinyTTS.from_pretrained)
+                from_pre_params = from_pre_sig.parameters
+                from_pre_has_var_kw = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in from_pre_params.values()
+                )
+                if not from_pre_has_var_kw:
+                    init_kwargs = {
+                        k: v for k, v in init_kwargs.items() if k in from_pre_params
+                    }
+            except (TypeError, ValueError):
+                pass
+
+            try:
                 tts = MingTinyTTS.from_pretrained(local_dir, **init_kwargs)
-            else:
-                raise
+            except (ImportError, OSError):
+                if init_kwargs.get("text_normalization"):
+                    init_kwargs["text_normalization"] = False
+                    tts = MingTinyTTS.from_pretrained(local_dir, **init_kwargs)
+                else:
+                    raise
+            state["key"] = cache_key
+            state["tts"] = tts
 
         valid_seed = (
             voice_seed
@@ -563,11 +559,7 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
         active_ref_text = ref_text
         total = len(segments)
         cfg_work_dir = (cfg.get("work_dir") or "").strip()
-        work_dir = (
-            Path(cfg_work_dir)
-            if cfg_work_dir
-            else Path(args.config).resolve().parent
-        )
+        work_dir = Path(cfg_work_dir) if cfg_work_dir else fallback_work_dir
 
         if _needs_ming_reference_anchor(
             segments, active_ref_audio, voice_prompt, emotion_prompt
@@ -651,6 +643,27 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
                     flush=True,
                 )
             print(f"[colabone-tts] ming_3_tts segment {idx + 1}/{total} done", flush=True)
+
+
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(
+            description="ColabOne Ming-3.0-TTS remote worker"
+        )
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        state: dict = {}
+        if args.daemon:
+            _run_daemon_loop(
+                lambda cfg: _run_ming_request(cfg, state, Path.cwd())
+            )
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg_path = Path(args.config).resolve()
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        _run_ming_request(cfg, state, cfg_path.parent)
 
 
     if __name__ == "__main__":

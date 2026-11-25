@@ -10,7 +10,9 @@ import {
   missingRequiredWorkflowFields,
   resolveColabOneFallbackVoicePreset,
   resolveColabOneSelectedVoicePreset,
+  resolveColabOneSiblingVoicePresetsForPrefetch,
   resolveColabOneVoicePresetGroups,
+  resolveColabOneVoicePresetPrefetchGroupIds,
   resolveColabOneVoicePreviewDefaultText,
   resolveNonCommercialNotice,
   verifyAndDecodeColabOneBase64AudioUrl,
@@ -353,6 +355,52 @@ describe("resolveColabOneSelectedVoicePreset and resolveColabOneVoicePreviewDefa
         customOnlyEngine,
       ),
     ).toBe("alt_voice_1");
+  });
+});
+
+describe("resolveColabOneVoicePresetPrefetchGroupIds and resolveColabOneSiblingVoicePresetsForPrefetch", () => {
+  const qwen3Engine = makeTtsEngine({
+    id: "qwen3_tts",
+    supports_custom_speakers: true,
+    voice_presets: [
+      makeVoicePreset({ id: "shen_zhiyi", name: "沈知意", gender: "female" }),
+      makeVoicePreset({ id: "lin_xiaoman", name: "林小满", gender: "female" }),
+      makeVoicePreset({ id: "gu_qinglan", name: "顾清岚", gender: "female" }),
+      makeVoicePreset({ id: "chen_jingzhou", name: "陈景舟", gender: "male" }),
+      makeVoicePreset({ id: "qwen_vivian", name: "Vivian", gender: "female", speaker_id: "Vivian" }),
+      makeVoicePreset({ id: "qwen_serena", name: "Serena", gender: "female", speaker_id: "Serena" }),
+      makeVoicePreset({ id: "qwen_ryan", name: "Ryan", gender: "male", speaker_id: "Ryan" }),
+    ],
+  });
+  const field = makeVoiceField({
+    options: ["shen_zhiyi", "lin_xiaoman", "gu_qinglan", "chen_jingzhou", "qwen_vivian", "qwen_serena", "qwen_ryan", "custom"],
+  });
+
+  it("scopes prefetch to curated built-in group and rotates starting right after the active voice", () => {
+    expect(
+      resolveColabOneVoicePresetPrefetchGroupIds("gu_qinglan", field, qwen3Engine),
+    ).toEqual(["shen_zhiyi", "lin_xiaoman", "gu_qinglan", "chen_jingzhou"]);
+    expect(
+      resolveColabOneSiblingVoicePresetsForPrefetch("gu_qinglan", field, qwen3Engine),
+    ).toEqual(["chen_jingzhou", "shen_zhiyi", "lin_xiaoman"]);
+  });
+
+  it("scopes prefetch to official native speaker group when an official speaker is active", () => {
+    expect(
+      resolveColabOneVoicePresetPrefetchGroupIds("qwen_serena", field, qwen3Engine),
+    ).toEqual(["qwen_vivian", "qwen_serena", "qwen_ryan"]);
+    expect(
+      resolveColabOneSiblingVoicePresetsForPrefetch("qwen_serena", field, qwen3Engine),
+    ).toEqual(["qwen_ryan", "qwen_vivian"]);
+  });
+
+  it("returns empty prefetch list for custom voice preset", () => {
+    expect(
+      resolveColabOneVoicePresetPrefetchGroupIds("custom", field, qwen3Engine),
+    ).toEqual([]);
+    expect(
+      resolveColabOneSiblingVoicePresetsForPrefetch("custom", field, qwen3Engine),
+    ).toEqual([]);
   });
 });
 

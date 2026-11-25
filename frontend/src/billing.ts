@@ -1,7 +1,10 @@
+import { formatColabOneDuration } from "./colabOneDuration";
 import { t, tb } from "./i18n";
 import type { ColabOneSnapshot } from "./types";
 
 export const COLABONE_DEFAULT_IDLE_MINUTES = 30;
+export const COLABONE_RUN_LIVE_INTERP_CAP_SEC = 90;
+export const COLABONE_RUN_STALE_OFFLINE_SEC = 900;
 
 export interface IdleReleaseOption {
   value: number;
@@ -210,6 +213,296 @@ export function describeColabOneBilling(
     rateText,
     balanceText,
     endurance,
+  };
+}
+
+export type ColabOneRunPhase =
+  | "logged_out"
+  | "idle_empty"
+  | "running"
+  | "completed";
+
+export interface ColabOneRunConsumptionOverview {
+  phase: ColabOneRunPhase;
+  active: boolean;
+  hasRecord: boolean;
+  consumed: number;
+  confirmedConsumed: number;
+  liveProjection: number;
+  consumedValueText: string;
+  consumedText: string;
+  elapsedSeconds: number | null;
+  durationText: string;
+  avgRate: number | null;
+  currentRate: number;
+  peakRate: number;
+  topup: number;
+  startBalance?: number;
+  endBalance?: number;
+  startedAt?: number;
+  endedAt?: number;
+  maxInstances: number;
+  syncingRate: boolean;
+  interpolating: boolean;
+  balanceDepleted: boolean;
+}
+
+function finiteNonNeg(value: number | null | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function finitePositive(value: number | null | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * Computes real-time compute unit (CU) consumption for the current continuous
+ * billing run (or the most recently completed run while idle).
+ *
+ * Confirmed balance deltas from Google Colab are combined with bounded live
+ * rate projection between 30-second account polls so the readout updates
+ * smoothly without running away during network outages or exceeding balance.
+ */
+export function describeColabOneRunConsumption(
+  account: ColabOneSnapshot["account"],
+  options?: {
+    setupColab?: boolean;
+    runtimeState?: string;
+    runtimeId?: string;
+    nowMs?: number;
+  },
+): ColabOneRunConsumptionOverview {
+  const loggedIn = Boolean(options?.setupColab || account.logged_in);
+  if (!loggedIn) {
+    return {
+      phase: "logged_out",
+      active: false,
+      hasRecord: false,
+      consumed: 0,
+      confirmedConsumed: 0,
+      liveProjection: 0,
+      consumedValueText: "--",
+      consumedText: "-- CU",
+      elapsedSeconds: null,
+      durationText: "",
+      avgRate: null,
+      currentRate: 0,
+      peakRate: 0,
+      topup: 0,
+      maxInstances: 0,
+      syncingRate: false,
+      interpolating: false,
+      balanceDepleted: false,
+    };
+  }
+
+  const nowMs =
+    typeof options?.nowMs === "number" && Number.isFinite(options.nowMs)
+      ? options.nowMs
+      : Date.now();
+  const nowSec = nowMs / 1000;
+  const liveAccountRate = finitePositive(account.rate) ?? 0;
+  const currentBalance = finiteNonNeg(account.balance);
+  const hasFiniteBalance = currentBalance !== undefined;
+  const runtimeActive = Boolean(
+    options?.runtimeState &&
+      options.runtimeState !== "stopped" &&
+      options.runtimeId,
+  );
+  const instanceCount =
+    account.assignments !== undefined
+      ? Math.max(0, Math.floor(account.assignments))
+      : runtimeActive
+        ? 1
+        : 0;
+  const accountRunning = liveAccountRate > 0 || instanceCount > 0;
+
+  const rawRun = account.current_run;
+  const run =
+    rawRun && finitePositive(rawRun.started_at) !== undefined ? rawRun : null;
+
+  const runAnchorTs = run
+    ? (finitePositive(run.last_sample_at) ??
+      finitePositive(account.checked_at) ??
+      run.started_at)
+    : 0;
+  const accountCheckedAt = finitePositive(account.checked_at);
+  const accountConfirmedIdle = Boolean(
+    run &&
+      run.active &&
+      account.logged_in &&
+      accountCheckedAt !== undefined &&
+      accountCheckedAt >= runAnchorTs &&
+      !accountRunning,
+  );
+  const staleOfflineActiveRun = Boolean(
+    run &&
+      run.active &&
+      !account.logged_in &&
+      !accountRunning &&
+      nowSec - runAnchorTs > COLABONE_RUN_STALE_OFFLINE_SEC,
+  );
+
+  if (run && run.active && !accountConfirmedIdle && !staleOfflineActiveRun) {
+    const confirmed = finiteNonNeg(run.consumed) ?? 0;
+    const unsettled = finiteNonNeg(run.unsettled) ?? 0;
+    const effectiveRate =
+      liveAccountRate > 0 ? liveAccountRate : (finitePositive(run.last_rate) ?? 0);
+    const syncingRate = effectiveRate <= 0;
+    const balanceDepleted =
+      hasFiniteBalance && currentBalance <= 1e-6 && effectiveRate > 0;
+
+    const sinceAnchorSec = Math.max(0, nowSec - runAnchorTs);
+    const canProjectLive =
+      effectiveRate > 0 &&
+      !balanceDepleted &&
+      (account.logged_in || liveAccountRate > 0) &&
+      sinceAnchorSec <= COLABONE_RUN_STALE_OFFLINE_SEC;
+
+    let liveProjection = 0;
+    if (canProjectLive) {
+      const gapSec = Math.min(COLABONE_RUN_LIVE_INTERP_CAP_SEC, sinceAnchorSec);
+      const rawProj = unsettled + (effectiveRate * gapSec) / 3600;
+      liveProjection = hasFiniteBalance
+        ? Math.min(rawProj, currentBalance)
+        : rawProj;
+    }
+
+    const consumed = confirmed + liveProjection;
+    const elapsedSeconds = Math.max(0, nowSec - run.started_at);
+    const avgRate =
+      elapsedSeconds >= 60 && consumed > 1e-6
+        ? consumed / (elapsedSeconds / 3600)
+        : null;
+    const startBalance = finiteNonNeg(run.start_balance);
+    const endBalance = hasFiniteBalance
+      ? currentBalance
+      : finiteNonNeg(run.end_balance);
+    const peakRate = Math.max(finiteNonNeg(run.peak_rate) ?? 0, effectiveRate);
+    const maxInstances = Math.max(
+      Math.max(0, Math.floor(run.max_instances ?? 0)),
+      instanceCount,
+    );
+
+    return {
+      phase: "running",
+      active: true,
+      hasRecord: true,
+      consumed,
+      confirmedConsumed: confirmed,
+      liveProjection,
+      consumedValueText: consumed.toFixed(2),
+      consumedText: `${consumed.toFixed(2)} CU`,
+      elapsedSeconds,
+      durationText: formatColabOneDuration(elapsedSeconds, {
+        precision: "integer",
+      }),
+      avgRate,
+      currentRate: effectiveRate,
+      peakRate,
+      topup: finiteNonNeg(run.topup) ?? 0,
+      startBalance,
+      endBalance,
+      startedAt: run.started_at,
+      maxInstances,
+      syncingRate,
+      interpolating: liveProjection > 1e-6,
+      balanceDepleted,
+    };
+  }
+
+  if (accountRunning) {
+    const balanceDepleted =
+      hasFiniteBalance && currentBalance <= 1e-6 && liveAccountRate > 0;
+    return {
+      phase: "running",
+      active: true,
+      hasRecord: false,
+      consumed: 0,
+      confirmedConsumed: 0,
+      liveProjection: 0,
+      consumedValueText: "0.00",
+      consumedText: "0.00 CU",
+      elapsedSeconds: null,
+      durationText: "",
+      avgRate: null,
+      currentRate: liveAccountRate,
+      peakRate: liveAccountRate,
+      topup: 0,
+      startBalance: currentBalance,
+      endBalance: currentBalance,
+      maxInstances: instanceCount,
+      syncingRate: liveAccountRate <= 0,
+      interpolating: false,
+      balanceDepleted,
+    };
+  }
+
+  if (run) {
+    const confirmed = finiteNonNeg(run.consumed) ?? 0;
+    const endedAt =
+      finitePositive(run.ended_at) ??
+      finitePositive(run.last_sample_at) ??
+      run.started_at;
+    const elapsedSeconds = Math.max(0, endedAt - run.started_at);
+    const avgRate =
+      elapsedSeconds >= 60 && confirmed > 1e-6
+        ? confirmed / (elapsedSeconds / 3600)
+        : null;
+
+    return {
+      phase: "completed",
+      active: false,
+      hasRecord: true,
+      consumed: confirmed,
+      confirmedConsumed: confirmed,
+      liveProjection: 0,
+      consumedValueText: confirmed.toFixed(2),
+      consumedText: `${confirmed.toFixed(2)} CU`,
+      elapsedSeconds,
+      durationText: formatColabOneDuration(elapsedSeconds, {
+        precision: "integer",
+      }),
+      avgRate,
+      currentRate: 0,
+      peakRate: finiteNonNeg(run.peak_rate) ?? 0,
+      topup: finiteNonNeg(run.topup) ?? 0,
+      startBalance: finiteNonNeg(run.start_balance),
+      endBalance: finiteNonNeg(run.end_balance),
+      startedAt: run.started_at,
+      endedAt,
+      maxInstances: Math.max(0, Math.floor(run.max_instances ?? 0)),
+      syncingRate: false,
+      interpolating: false,
+      balanceDepleted: false,
+    };
+  }
+
+  return {
+    phase: "idle_empty",
+    active: false,
+    hasRecord: false,
+    consumed: 0,
+    confirmedConsumed: 0,
+    liveProjection: 0,
+    consumedValueText: "0.00",
+    consumedText: "0.00 CU",
+    elapsedSeconds: null,
+    durationText: "",
+    avgRate: null,
+    currentRate: 0,
+    peakRate: 0,
+    topup: 0,
+    maxInstances: 0,
+    syncingRate: false,
+    interpolating: false,
+    balanceDepleted: false,
   };
 }
 

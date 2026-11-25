@@ -17,6 +17,8 @@ export interface ColabOneBillingSkeletonState {
   endurance: boolean;
   /** Active instances KPI skeleton. */
   instances: boolean;
+  /** Current/last run consumption footer strip skeleton. */
+  run: boolean;
   /** Whether any billing field is currently loading. */
   any: boolean;
 }
@@ -74,6 +76,7 @@ export function colabOneBillingSkeletonState(
   const rate = initial || refreshing || pendingRate;
   const endurance = initial || refreshing || pendingEndurance;
   const instances = initial || refreshing || pendingInstances;
+  const run = initial || refreshing || hydratingAccount;
   const status = initial;
   const caption = initial || refreshing || hydratingAccount;
   const capsule = initial || refreshing || hydratingAccount;
@@ -84,7 +87,8 @@ export function colabOneBillingSkeletonState(
     balance ||
     rate ||
     endurance ||
-    instances;
+    instances ||
+    run;
 
   return {
     initial,
@@ -95,6 +99,7 @@ export function colabOneBillingSkeletonState(
     rate,
     endurance,
     instances,
+    run,
     any,
   };
 }

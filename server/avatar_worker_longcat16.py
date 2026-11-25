@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import datetime
 import gc
 import json
@@ -458,7 +459,7 @@ def build_lossless_ffv1_writer_cmd(
         bin_path,
         "-y",
         "-protocol_whitelist",
-        "file,pipe",
+        "file,pipe,fd",
         "-f",
         "rawvideo",
         "-vcodec",
@@ -727,7 +728,7 @@ def _load_audio_mono_16k(
         "-loglevel",
         "error",
         "-protocol_whitelist",
-        "file,pipe",
+        "file,pipe,fd",
         "-i",
         safe_audio,
         "-ac",
@@ -779,31 +780,176 @@ def _resample_audio_if_needed(
         return np.asarray(resampled, dtype=np.float32).reshape(-1), int(target_sr)
 
 
-def _install_sdpa_attention_fallback(dit: Any, torch_mod: Any) -> None:
+def _select_fastest_sdpa_backend(
+    torch_mod: Any,
+    device: Any,
+) -> tuple[Any, str]:
+    """Benchmark lossless BF16 CUDA SDPA backends and return (SDPBackend | None, label).
+
+    On Blackwell (sm_120) and Hopper (sm_90), PyTorch's cuDNN 9 FMHA backend can be
+    substantially faster than CUTLASS mem-efficient SDPA when inputs are contiguous.
+    Probes only mathematically equivalent fused BF16 backends (never MATH) in < 50 ms.
+    """
+    if not _is_cuda_device(device):
+        return None, "default"
+    cuda_mod = getattr(torch_mod, "cuda", None)
+    if cuda_mod is None or not callable(getattr(cuda_mod, "is_available", None)):
+        return None, "default"
+    try:
+        if not cuda_mod.is_available():
+            return None, "default"
+    except Exception:
+        return None, "default"
+
+    # Enable lossless fused CUDA SDPA backends and TF32 for auxiliary FP32 ops.
+    backends_cuda = getattr(getattr(torch_mod, "backends", None), "cuda", None)
+    backends_cudnn = getattr(getattr(torch_mod, "backends", None), "cudnn", None)
+    for obj, attr, val in (
+        (backends_cuda, "enable_cudnn_sdp", True),
+        (backends_cuda, "enable_flash_sdp", True),
+        (backends_cuda, "enable_mem_efficient_sdp", True),
+    ):
+        fn = getattr(obj, attr, None)
+        if callable(fn):
+            try:
+                fn(val)
+            except Exception:
+                pass
+    try:
+        if backends_cuda is not None and hasattr(backends_cuda, "matmul"):
+            backends_cuda.matmul.allow_tf32 = True
+        if backends_cudnn is not None and hasattr(backends_cudnn, "allow_tf32"):
+            backends_cudnn.allow_tf32 = True
+    except Exception:
+        pass
+
+    nn_attn = getattr(getattr(torch_mod, "nn", None), "attention", None)
+    sdpa_kernel_fn = getattr(nn_attn, "sdpa_kernel", None)
+    sdp_backend_enum = getattr(nn_attn, "SDPBackend", None)
+    f_mod = getattr(getattr(torch_mod, "nn", None), "functional", None)
+    if not (
+        callable(sdpa_kernel_fn)
+        and sdp_backend_enum is not None
+        and f_mod is not None
+        and callable(getattr(f_mod, "scaled_dot_product_attention", None))
+    ):
+        return None, "default"
+
+    candidates: list[tuple[str, Any]] = []
+    for label, enum_attr in (
+        ("cudnn", "CUDNN_ATTENTION"),
+        ("flash", "FLASH_ATTENTION"),
+        ("efficient", "EFFICIENT_ATTENTION"),
+    ):
+        member = getattr(sdp_backend_enum, enum_attr, None)
+        if member is not None:
+            candidates.append((label, member))
+    if not candidates:
+        return None, "default"
+
+    results: list[tuple[float, str, Any]] = []
+    timings_desc: list[str] = []
+    try:
+        with torch_mod.no_grad():
+            # LongCat 1.6 DiT head shape: num_heads=32, head_dim=128, pure BF16.
+            q = torch_mod.randn((1, 32, 4096, 128), dtype=torch_mod.bfloat16, device=device)
+            k = torch_mod.randn((1, 32, 4096, 128), dtype=torch_mod.bfloat16, device=device)
+            v = torch_mod.randn((1, 32, 4096, 128), dtype=torch_mod.bfloat16, device=device)
+            scale = 128**-0.5
+            for label, backend_member in candidates:
+                try:
+                    with sdpa_kernel_fn([backend_member]):
+                        # 1 warmup + 3 timed passes.
+                        f_mod.scaled_dot_product_attention(q, k, v, dropout_p=0.0, scale=scale)
+                        cuda_mod.synchronize(device)
+                        t0 = time.perf_counter()
+                        for _ in range(3):
+                            f_mod.scaled_dot_product_attention(
+                                q, k, v, dropout_p=0.0, scale=scale
+                            )
+                        cuda_mod.synchronize(device)
+                        ms = (time.perf_counter() - t0) * 1000.0 / 3.0
+                    results.append((ms, label, backend_member))
+                    timings_desc.append(f"{label}={ms:.2f}ms")
+                except Exception:
+                    timings_desc.append(f"{label}=unavailable")
+            del q, k, v
+    except Exception:
+        return None, "default"
+
+    if not results:
+        return None, "default"
+
+    results.sort(key=lambda item: item[0])
+    best_ms, best_label, best_member = results[0]
+    print(
+        f"[colabone-longcat16] INFO: SDPA BF16 benchmark ({', '.join(timings_desc)}); "
+        f"selected {best_label} ({best_ms:.2f}ms)",
+        file=sys.stderr,
+        flush=True,
+    )
+    return best_member, best_label
+
+
+def _install_sdpa_attention_fallback(
+    dit: Any,
+    torch_mod: Any,
+    *,
+    preferred_backend: Any = None,
+) -> None:
     """Patch SDPA fallback onto LongCat attention modules when FA3/FA2 are both disabled.
 
     Upstream LongCat Attention._process_attn raises RuntimeError when FA3, FA2, and
     xFormers are all False, and SingleStreamAttention._process_cross_attn leaves the
     output unassigned. Installing PyTorch F.scaled_dot_product_attention guarantees
-    pure BF16 SDPA execution without xFormers or quantized attention kernels.
+    pure BF16 SDPA execution without xFormers or quantized attention kernels, while
+    ensuring Q/K/V contiguity so cuDNN / Flash SDPA kernels engage cleanly on
+    Blackwell / Hopper GPUs.
     """
     from einops import rearrange  # type: ignore[import-not-found]
 
     f_mod = torch_mod.nn.functional
+    nn_attn = getattr(getattr(torch_mod, "nn", None), "attention", None)
+    sdpa_kernel_fn = (
+        getattr(nn_attn, "sdpa_kernel", None) if preferred_backend is not None else None
+    )
+    if not callable(sdpa_kernel_fn):
+        sdpa_kernel_fn = None
+
+    def _run_sdpa(q_t: Any, k_t: Any, v_t: Any, *, scale: Any) -> Any:
+        if q_t.dtype != v_t.dtype:
+            q_t = q_t.to(v_t.dtype)
+        if k_t.dtype != v_t.dtype:
+            k_t = k_t.to(v_t.dtype)
+        if hasattr(q_t, "is_contiguous") and not q_t.is_contiguous():
+            q_t = q_t.contiguous()
+        if hasattr(k_t, "is_contiguous") and not k_t.is_contiguous():
+            k_t = k_t.contiguous()
+        if hasattr(v_t, "is_contiguous") and not v_t.is_contiguous():
+            v_t = v_t.contiguous()
+        if sdpa_kernel_fn is not None and _is_cuda_device(getattr(q_t, "device", None)):
+            try:
+                with sdpa_kernel_fn([preferred_backend]):
+                    return f_mod.scaled_dot_product_attention(
+                        q_t,
+                        k_t,
+                        v_t,
+                        dropout_p=0.0,
+                        scale=scale,
+                    )
+            except RuntimeError:
+                pass
+        return f_mod.scaled_dot_product_attention(
+            q_t,
+            k_t,
+            v_t,
+            dropout_p=0.0,
+            scale=scale,
+        )
 
     def _sdpa_process_attn(self_attn: Any, q: Any, k: Any, v: Any, shape: Any) -> Any:
         _ = shape
-        if q.dtype != v.dtype:
-            q = q.to(v.dtype)
-        if k.dtype != v.dtype:
-            k = k.to(v.dtype)
-        return f_mod.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            dropout_p=0.0,
-            scale=self_attn.scale,
-        )
+        return _run_sdpa(q, k, v, scale=self_attn.scale)
 
     def _sdpa_audio_cross_attn(
         self_mod: Any,
@@ -897,21 +1043,13 @@ def _install_sdpa_attention_fallback(dit: Any, torch_mod: Any) -> None:
             encoder_k = self_mod.rope_1d(encoder_k, encoder_pos)
             encoder_k = rearrange(encoder_k, "B H (N_t S) C -> (B N_t) H S C", N_t=n_t)
 
-        if q.dtype != encoder_v.dtype:
-            q = q.to(encoder_v.dtype)
-        if encoder_k.dtype != encoder_v.dtype:
-            encoder_k = encoder_k.to(encoder_v.dtype)
-        attn_out = f_mod.scaled_dot_product_attention(
-            q,
-            encoder_k,
-            encoder_v,
-            dropout_p=0.0,
-            scale=self_mod.scale,
-        )
+        attn_out = _run_sdpa(q, encoder_k, encoder_v, scale=self_mod.scale)
         attn_out = attn_out.transpose(1, 2).reshape(batch_nt, seq_len, hidden)
         attn_out = self_mod.proj_drop(self_mod.proj(attn_out))
         attn_out = rearrange(attn_out, "(B N_t) S C -> B (N_t S) C", N_t=n_t)
         return attn_out.to(out_dtype)
+
+    kv_seqlen_cache_tls = threading.local()
 
     def _sdpa_multihead_cross_process(
         self_mod: Any,
@@ -939,23 +1077,29 @@ def _install_sdpa_attention_fallback(dit: Any, torch_mod: Any) -> None:
             k_all, v_all = kv.unbind(0)
             if getattr(self_mod, "k_norm", None) is not None:
                 k_all = self_mod.k_norm(k_all)
-            if q_all.dtype != v_all.dtype:
-                q_all = q_all.to(v_all.dtype)
-            if k_all.dtype != v_all.dtype:
-                k_all = k_all.to(v_all.dtype)
-            out = f_mod.scaled_dot_product_attention(
-                q_all,
-                k_all,
-                v_all,
-                dropout_p=0.0,
-                scale=scale,
-            )
+            out = _run_sdpa(q_all, k_all, v_all, scale=scale)
         else:
-            raw_lens = kv_seqlen.tolist() if hasattr(kv_seqlen, "tolist") else kv_seqlen
-            if isinstance(raw_lens, int) and not isinstance(raw_lens, bool):
-                seq_lens = [int(raw_lens)] * batch_size
+            dynamo_mod = getattr(torch_mod, "_dynamo", None)
+            is_dynamo_compiling = bool(
+                dynamo_mod is not None
+                and callable(getattr(dynamo_mod, "is_compiling", None))
+                and dynamo_mod.is_compiling()
+            )
+            seq_lens_cache = (
+                None if is_dynamo_compiling else getattr(kv_seqlen_cache_tls, "cache", None)
+            )
+            cache_key = (id(kv_seqlen), batch_size) if seq_lens_cache is not None else None
+            cached_entry = seq_lens_cache.get(cache_key) if cache_key is not None else None
+            if cached_entry is not None and cached_entry[0] is kv_seqlen:
+                seq_lens = cached_entry[1]
             else:
-                seq_lens = [int(s) for s in raw_lens]
+                raw_lens = kv_seqlen.tolist() if hasattr(kv_seqlen, "tolist") else kv_seqlen
+                if isinstance(raw_lens, int) and not isinstance(raw_lens, bool):
+                    seq_lens = [int(raw_lens)] * batch_size
+                else:
+                    seq_lens = [int(s) for s in raw_lens]
+                if cache_key is not None:
+                    seq_lens_cache[cache_key] = (kv_seqlen, seq_lens)
             if len(seq_lens) != batch_size:
                 raise ValueError(
                     f"kv_seqlen length ({len(seq_lens)}) does not match batch size ({batch_size})"
@@ -1005,11 +1149,10 @@ def _install_sdpa_attention_fallback(dit: Any, torch_mod: Any) -> None:
                         )
                         continue
                     outputs.append(
-                        f_mod.scaled_dot_product_attention(
+                        _run_sdpa(
                             q_all[b_idx : b_idx + 1],
                             k_all[b_idx : b_idx + 1, :, :seq_k, :],
                             v_all[b_idx : b_idx + 1, :, :seq_k, :],
-                            dropout_p=0.0,
                             scale=scale,
                         )
                     )
@@ -1045,11 +1188,10 @@ def _install_sdpa_attention_fallback(dit: Any, torch_mod: Any) -> None:
                     v_slice = v_all[:, :, offset : offset + seq_k, :]
                     offset += seq_k
                     outputs.append(
-                        f_mod.scaled_dot_product_attention(
+                        _run_sdpa(
                             q_all[b_idx : b_idx + 1],
                             k_slice,
                             v_slice,
-                            dropout_p=0.0,
                             scale=scale,
                         )
                     )
@@ -1078,6 +1220,21 @@ def _install_sdpa_attention_fallback(dit: Any, torch_mod: Any) -> None:
                 _sdpa_multihead_cross_process,
                 cross_mod,
             )
+
+    orig_dit_forward = getattr(dit, "forward", None)
+    if callable(orig_dit_forward) and not getattr(
+        orig_dit_forward, "_colabone_kv_cache_wrapped", False
+    ):
+        def _wrapped_dit_forward(*args: Any, **kwargs: Any) -> Any:
+            prev_cache = getattr(kv_seqlen_cache_tls, "cache", None)
+            kv_seqlen_cache_tls.cache = {}
+            try:
+                return orig_dit_forward(*args, **kwargs)
+            finally:
+                kv_seqlen_cache_tls.cache = prev_cache
+
+        _wrapped_dit_forward._colabone_kv_cache_wrapped = True  # type: ignore[attr-defined]
+        dit.forward = _wrapped_dit_forward
 
 
 def _is_torch_compile_runtime_error(exc: BaseException) -> bool:
@@ -1421,8 +1578,29 @@ def run_longcat16_generation(cfg: dict[str, Any]) -> dict[str, Any]:
     vocal_sep_mode = str(cfg.get("vocal_separation") or "auto").strip().lower()
     is_tts_audio = bool(cfg.get("is_tts_audio", False))
     run_vocal_sep = should_run_vocal_separation(vocal_sep_mode, is_tts_audio)
-    compile_dit = bool(True if cfg.get("compile_dit") is None else cfg.get("compile_dit"))
-    compile_vae = bool(True if cfg.get("compile_vae") is None else cfg.get("compile_vae"))
+    # Default torch.compile OFF unless explicitly requested: compiling 48 separate DiT blocks
+    # with dynamic=False on ephemeral Colab VMs (especially SDPA/Blackwell SM120) can stall
+    # 15-35+ minutes on step 1 and recompile again on AVC continuation segments.
+    compile_dit_raw = cfg.get("compile_dit")
+    compile_vae_raw = cfg.get("compile_vae")
+    compile_dit = (
+        compile_dit_raw
+        if isinstance(compile_dit_raw, bool)
+        else (
+            str(compile_dit_raw).strip().lower() in ("1", "true", "yes", "on")
+            if compile_dit_raw is not None
+            else False
+        )
+    )
+    compile_vae = (
+        compile_vae_raw
+        if isinstance(compile_vae_raw, bool)
+        else (
+            str(compile_vae_raw).strip().lower() in ("1", "true", "yes", "on")
+            if compile_vae_raw is not None
+            else False
+        )
+    )
     compile_cache_dir = str(cfg.get("compile_cache_dir") or "").strip()
     attention_backend = str(cfg.get("attention_backend") or "auto").strip().lower()
     if attention_backend not in _VALID_ATTENTION_BACKENDS:
@@ -1834,8 +2012,23 @@ def run_longcat16_generation(cfg: dict[str, Any]) -> dict[str, Any]:
                 if hasattr(attn_submod, "enable_xformers"):
                     attn_submod.enable_xformers = False
 
+        sdpa_backend_label = "none"
         if not attn_flags["enable_flashattn3"] and not attn_flags["enable_flashattn2"]:
-            _install_sdpa_attention_fallback(dit, torch)
+            preferred_sdpa_backend, sdpa_backend_label = _select_fastest_sdpa_backend(
+                torch, device
+            )
+            _install_sdpa_attention_fallback(
+                dit,
+                torch,
+                preferred_backend=preferred_sdpa_backend,
+            )
+            emit_colabone_progress(
+                "load_models",
+                0.18,
+                f"已就绪 BF16 Avatar 1.6 DiT（注意力后端：sdpa/{sdpa_backend_label}）",
+                attention_backend=resolved_attn_name,
+                sdpa_backend=sdpa_backend_label,
+            )
 
         # Whisper-Large-v3 audio encoder (Avatar v1.5/v1.6 architecture).
         # Run global audio embedding BEFORE moving DiT/VAE/UMT5 onto CUDA.
@@ -2069,7 +2262,11 @@ def run_longcat16_generation(cfg: dict[str, Any]) -> dict[str, Any]:
         emit_colabone_progress(
             "generate",
             0.30,
-            f"正在渲染第 {seg_num}/{num_segments} 段（首段 AI2V）",
+            (
+                f"正在渲染第 {seg_num}/{num_segments} 段（首段 AI2V · 首次算子编译中，请稍候）"
+                if compiled_any
+                else f"正在渲染第 {seg_num}/{num_segments} 段（首段 AI2V）"
+            ),
             segment=seg_num,
             total_segments=num_segments,
             frames_written=0,
@@ -2077,20 +2274,29 @@ def run_longcat16_generation(cfg: dict[str, Any]) -> dict[str, Any]:
         )
 
         def _run_segment_0() -> Any:
-            return pipe.generate_ai2v(
-                image=anchor_image,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                resolution=resolution,
-                num_frames=num_frames,
-                num_inference_steps=sampling["num_inference_steps"],
-                text_guidance_scale=sampling["text_guidance_scale"],
-                audio_guidance_scale=sampling["audio_guidance_scale"],
-                output_type="both",
-                generator=generator,
-                audio_emb=audio_emb_0,
-                use_distill=sampling["use_distill"],
-            )
+            with _hook_pipe_step_progress(
+                pipe,
+                seg_index=0,
+                num_segments=num_segments,
+                seg_label="首段 AI2V",
+                total_steps_hint=int(sampling["num_inference_steps"]),
+                frames_written=0,
+                exact_frames=exact_frames,
+            ):
+                return pipe.generate_ai2v(
+                    image=anchor_image,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    resolution=resolution,
+                    num_frames=num_frames,
+                    num_inference_steps=sampling["num_inference_steps"],
+                    text_guidance_scale=sampling["text_guidance_scale"],
+                    audio_guidance_scale=sampling["audio_guidance_scale"],
+                    output_type="both",
+                    generator=generator,
+                    audio_emb=audio_emb_0,
+                    use_distill=sampling["use_distill"],
+                )
 
         compile_retry_err: str | None = None
         output_tuple: Any = None
@@ -2195,29 +2401,38 @@ def run_longcat16_generation(cfg: dict[str, Any]) -> dict[str, Any]:
             audio_emb_seg = _slice_audio_emb(seg["start_frame"])
 
             def _run_segment_avc() -> Any:
-                return pipe.generate_avc(
-                    video=current_video,
-                    video_latent=latent,
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    height=actual_height,
-                    width=actual_width,
-                    num_frames=num_frames,
-                    num_cond_frames=num_cond_frames,
-                    num_inference_steps=sampling["num_inference_steps"],
-                    text_guidance_scale=sampling["text_guidance_scale"],
-                    audio_guidance_scale=sampling["audio_guidance_scale"],
-                    generator=generator,
-                    output_type="both",
-                    use_kv_cache=sampling["use_kv_cache"],
-                    offload_kv_cache=False,
-                    enhance_hf=sampling["enhance_hf"],
-                    audio_emb=audio_emb_seg,
-                    ref_latent=ref_latent,
-                    ref_img_index=ref_img_index,
-                    mask_frame_range=mask_frame_range,
-                    use_distill=sampling["use_distill"],
-                )
+                with _hook_pipe_step_progress(
+                    pipe,
+                    seg_index=int(seg["segment_index"]),
+                    num_segments=num_segments,
+                    seg_label="13 帧连续续写",
+                    total_steps_hint=int(sampling["num_inference_steps"]),
+                    frames_written=ffmpeg_writer.frames_written,
+                    exact_frames=exact_frames,
+                ):
+                    return pipe.generate_avc(
+                        video=current_video,
+                        video_latent=latent,
+                        prompt=prompt,
+                        negative_prompt=negative_prompt,
+                        height=actual_height,
+                        width=actual_width,
+                        num_frames=num_frames,
+                        num_cond_frames=num_cond_frames,
+                        num_inference_steps=sampling["num_inference_steps"],
+                        text_guidance_scale=sampling["text_guidance_scale"],
+                        audio_guidance_scale=sampling["audio_guidance_scale"],
+                        generator=generator,
+                        output_type="both",
+                        use_kv_cache=sampling["use_kv_cache"],
+                        offload_kv_cache=False,
+                        enhance_hf=sampling["enhance_hf"],
+                        audio_emb=audio_emb_seg,
+                        ref_latent=ref_latent,
+                        ref_img_index=ref_img_index,
+                        mask_frame_range=mask_frame_range,
+                        use_distill=sampling["use_distill"],
+                    )
 
             seg_gen_state = generator.get_state()
             compile_retry_err = None
@@ -2327,6 +2542,7 @@ def run_longcat16_generation(cfg: dict[str, Any]) -> dict[str, Any]:
             "speakers": speakers,
             "speakers_count": len(speakers),
             "attention_backend": resolved_attn_name,
+            "sdpa_backend": sdpa_backend_label,
             "elapsed_seconds": elapsed_seconds,
             "peak_vram_mib": peak_vram_mib,
         }
@@ -2392,6 +2608,222 @@ def run_longcat16_generation(cfg: dict[str, Any]) -> dict[str, Any]:
                 pass
 
 
+class _ColabOneStepProgressBarProxy:
+    """Wrap a diffusers/tqdm progress bar to emit live per-step COLABONE_PROGRESS updates."""
+
+    def __init__(self, inner: Any, *, total_steps: int, on_step: Any) -> None:
+        self._inner = inner
+        self._total_steps = max(1, int(total_steps))
+        self._on_step = on_step
+        self._current = 0
+
+    def __enter__(self) -> "_ColabOneStepProgressBarProxy":
+        enter_fn = getattr(self._inner, "__enter__", None)
+        if callable(enter_fn):
+            enter_fn()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        exit_fn = getattr(self._inner, "__exit__", None)
+        if callable(exit_fn):
+            return exit_fn(exc_type, exc, tb)
+        return False
+
+    def __iter__(self) -> Any:
+        for item in self._inner:
+            yield item
+            self._current += 1
+            self._on_step(self._current, self._total_steps)
+
+    def update(self, n: int = 1) -> Any:
+        step_inc = max(1, int(n)) if isinstance(n, (int, float)) else 1
+        self._current += step_inc
+        self._on_step(self._current, self._total_steps)
+        update_fn = getattr(self._inner, "update", None)
+        if callable(update_fn):
+            return update_fn(n)
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+@contextlib.contextmanager
+def _hook_pipe_step_progress(
+    pipe: Any,
+    *,
+    seg_index: int,
+    num_segments: int,
+    seg_label: str,
+    total_steps_hint: int,
+    frames_written: int,
+    exact_frames: int,
+) -> Any:
+    orig_progress_bar = getattr(pipe, "progress_bar", None)
+    has_pipe_bar = callable(orig_progress_bar)
+    pipe_mod = sys.modules.get(getattr(type(pipe), "__module__", ""))
+    orig_mod_tqdm = getattr(pipe_mod, "tqdm", None) if pipe_mod is not None else None
+    has_mod_tqdm = (
+        pipe_mod is not None
+        and callable(orig_mod_tqdm)
+        and getattr(pipe_mod, "__name__", "") not in ("builtins", "unittest.mock")
+    )
+    if not has_pipe_bar and not has_mod_tqdm:
+        yield
+        return
+
+    had_instance_attr = "progress_bar" in getattr(pipe, "__dict__", {})
+    seg_num = seg_index + 1
+    last_emitted_step = 0
+    last_step_ts = time.monotonic()
+
+    def _on_step(step: int, total: int) -> None:
+        nonlocal last_emitted_step, last_step_ts
+        bounded_total = max(1, int(total))
+        bounded_step = min(bounded_total, max(1, int(step)))
+        if bounded_step <= last_emitted_step:
+            return
+        now_ts = time.monotonic()
+        step_delta = max(0.0, now_ts - last_step_ts)
+        step_count_delta = max(1, bounded_step - last_emitted_step)
+        sec_per_step = round(step_delta / float(step_count_delta), 2)
+        last_step_ts = now_ts
+        last_emitted_step = bounded_step
+        frac_in_seg = float(bounded_step) / float(bounded_total)
+        overall = 0.30 + 0.65 * (
+            (float(seg_index) + 0.96 * frac_in_seg) / float(max(1, num_segments))
+        )
+        emit_colabone_progress(
+            "generate",
+            overall,
+            (
+                f"正在渲染第 {seg_num}/{num_segments} 段"
+                f"（{seg_label} · 第 {bounded_step}/{bounded_total} 步，{sec_per_step:.1f} 秒/步）"
+            ),
+            segment=seg_num,
+            total_segments=num_segments,
+            step=bounded_step,
+            total_steps=bounded_total,
+            step_seconds=sec_per_step,
+            frames_written=frames_written,
+            exact_frames=exact_frames,
+        )
+
+    def _resolve_total(iterable: Any, total: Any) -> int:
+        resolved_total = max(1, int(total_steps_hint))
+        if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+            return total
+        if iterable is not None:
+            try:
+                ln = len(iterable)
+                if ln > 0:
+                    return ln
+            except TypeError:
+                pass
+        return resolved_total
+
+    def _wrapped_progress_bar(
+        iterable: Any = None, total: int | None = None, **kwargs: Any
+    ) -> Any:
+        inner = orig_progress_bar(iterable=iterable, total=total, **kwargs)
+        return _ColabOneStepProgressBarProxy(
+            inner,
+            total_steps=_resolve_total(iterable, total),
+            on_step=_on_step,
+        )
+
+    def _wrapped_mod_tqdm(*args: Any, **kwargs: Any) -> Any:
+        inner = orig_mod_tqdm(*args, **kwargs)
+        desc = str(kwargs.get("desc") or "").strip().lower()
+        iterable = args[0] if args else kwargs.get("iterable")
+        total = kwargs.get("total")
+        is_denoising = (
+            "denois" in desc
+            or (
+                not desc
+                and isinstance(total, int)
+                and not isinstance(total, bool)
+                and total == int(total_steps_hint)
+            )
+        )
+        if not is_denoising:
+            return inner
+        return _ColabOneStepProgressBarProxy(
+            inner,
+            total_steps=_resolve_total(iterable, total),
+            on_step=_on_step,
+        )
+
+    if has_pipe_bar:
+        pipe.progress_bar = _wrapped_progress_bar
+    if has_mod_tqdm:
+        setattr(pipe_mod, "tqdm", _wrapped_mod_tqdm)
+    try:
+        yield
+    finally:
+        if has_mod_tqdm:
+            try:
+                setattr(pipe_mod, "tqdm", orig_mod_tqdm)
+            except Exception:
+                pass
+        if has_pipe_bar:
+            if had_instance_attr:
+                pipe.progress_bar = orig_progress_bar
+            else:
+                try:
+                    delattr(pipe, "progress_bar")
+                except AttributeError:
+                    pipe.progress_bar = orig_progress_bar
+
+
+_NON_TORCH_BLOCKED_MODULES = frozenset(
+    {"tensorflow", "tf_keras", "keras", "jax", "jaxlib", "flax"}
+)
+
+
+class _ColabOneNonTorchMetaPathFilter:
+    _colabone_non_torch_filter = True
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        if str(fullname).partition(".")[0] in _NON_TORCH_BLOCKED_MODULES:
+            return None
+        find_fn = getattr(self._inner, "find_spec", None)
+        if callable(find_fn):
+            return find_fn(fullname, path, target)
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _disable_non_torch_backends() -> None:
+    """Force PyTorch-only mode and hide Colab host TensorFlow/JAX/Flax without polluting sys.modules."""
+    for env_key, env_val in (
+        ("USE_TORCH", "1"),
+        ("USE_TF", "0"),
+        ("USE_FLAX", "0"),
+        ("USE_JAX", "0"),
+        ("TRANSFORMERS_NO_TF", "1"),
+        ("TRANSFORMERS_NO_FLAX", "1"),
+        ("TRANSFORMERS_NO_JAX", "1"),
+        ("DISABLE_TENSORFLOW", "1"),
+        ("TF_CPP_MIN_LOG_LEVEL", "3"),
+    ):
+        os.environ.setdefault(env_key, env_val)
+    for mod_name in _NON_TORCH_BLOCKED_MODULES:
+        if sys.modules.get(mod_name) is None:
+            sys.modules.pop(mod_name, None)
+    sys.meta_path[:] = [
+        f
+        if getattr(f, "_colabone_non_torch_filter", False)
+        else _ColabOneNonTorchMetaPathFilter(f)
+        for f in sys.meta_path
+    ]
+
+
 def _try_write_error_manifest(
     manifest_path_raw: Any,
     error_message: str,
@@ -2415,6 +2847,7 @@ def _try_write_error_manifest(
 
 def main(argv: list[str] | None = None) -> int:
     _ensure_utf8_stdio()
+    _disable_non_torch_backends()
     parser = argparse.ArgumentParser(
         description="ColabOne Meituan LongCat-Video-Avatar 1.6 remote GPU worker"
     )

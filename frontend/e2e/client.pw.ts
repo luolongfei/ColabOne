@@ -9460,3 +9460,129 @@ test("mid-run task.cancel on native LongCat 1.6 run updates App.vue nav live dot
     paramDrawer.getByRole("button", { name: "取消任务" }),
   ).toHaveCount(0);
 });
+
+test("BillingCard and BillingBar display real-time current-run CU consumption and preserve last-run totals after stop", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mock(page, true);
+
+  // 1. Active continuous run appears in BillingCard bottom strip and top BillingBar
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    s.account = {
+      ...s.account,
+      logged_in: true,
+      balance: 95.48,
+      rate: 3.6,
+      assignments: 1,
+      checked_at: now - 30,
+      current_run: {
+        active: true,
+        started_at: now - 7500, // 2h 5m ago
+        start_balance: 100.0,
+        end_balance: 95.48,
+        consumed: 4.52,
+        unsettled: 0.0,
+        last_sample_at: now - 30,
+        last_rate: 3.6,
+        peak_rate: 3.6,
+        max_instances: 1,
+        samples: 250,
+      },
+    };
+  });
+
+  const runInline = page.getByTestId("billing-run-inline");
+  const runConsumed = page.getByTestId("billing-run-consumed");
+  const barRun = page.getByTestId("billing-bar-run");
+
+  await expect(runInline).toBeVisible();
+  await expect(runInline).toContainText("本次消耗");
+  // 4.52 confirmed + ~0.03 live projection (30s @ 3.6 CU/h) = 4.55 CU
+  await expect(runConsumed).toContainText("4.55 CU");
+  await expect(barRun).toBeVisible();
+  await expect(barRun).toContainText("本次");
+  await expect(barRun).toContainText("4.55 CU");
+
+  // 2. Hovering BillingCard inline run line opens breakdown tooltip with live duration
+  await runInline.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(
+    "本次持续运行明细",
+  );
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("2 小时 5 分");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("4.52 CU");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("100.00 CU");
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // 3. Hovering BillingBar shows current run rows in tooltip
+  await page.locator(".co-billing-strip").hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("本次消耗");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("持续时长");
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // 4. Switching to API tab keeps top BillingBar run readout visible
+  await navItem(page, "对外 API").click();
+  await expect(barRun).toBeVisible();
+  await expect(barRun).toContainText("4.55 CU");
+
+  // 4b. Narrow viewport collapses inline top-bar run pill cleanly while preserving tooltip rows
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await expect(barRun).toBeHidden();
+  await page.locator(".co-billing-strip").hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("本次消耗");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("4.55 CU");
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // 5. Stopping instances transitions to preserved Last Run inline readout on BillingCard and hides top-bar badge
+  await navItem(page, "远端设备").click();
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    const now = Date.now() / 1000;
+    s.runtime.state = "stopped";
+    s.runtime.id = undefined;
+    s.account = {
+      ...s.account,
+      logged_in: true,
+      balance: 95.44,
+      rate: 0,
+      assignments: 0,
+      checked_at: now,
+      current_run: {
+        active: false,
+        started_at: now - 7500,
+        ended_at: now - 300, // exactly 2h total
+        start_balance: 100.0,
+        end_balance: 95.44,
+        consumed: 4.56,
+        last_sample_at: now,
+        peak_rate: 3.6,
+        max_instances: 1,
+        samples: 251,
+      },
+    };
+  });
+
+  await expect(runInline).toContainText("上次消耗");
+  await expect(runConsumed).toContainText("4.56 CU");
+  await expect(barRun).toHaveCount(0);
+
+  // Hovering inline Last Run line shows frozen duration (2 小时) in tooltip
+  await runInline.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("上次运行明细");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("2 小时");
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  // Hovering top BillingBar while idle still shows Last Run summary in tooltip
+  await page.locator(".co-billing-strip").hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("上次消耗");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("4.56 CU");
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+});

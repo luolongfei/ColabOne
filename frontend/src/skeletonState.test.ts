@@ -20,6 +20,7 @@ describe("colabOneBillingSkeletonState", () => {
       rate: true,
       endurance: true,
       instances: true,
+      run: true,
       any: true,
     });
   });
@@ -36,6 +37,7 @@ describe("colabOneBillingSkeletonState", () => {
     expect(sk.rate).toBe(false);
     expect(sk.endurance).toBe(false);
     expect(sk.instances).toBe(false);
+    expect(sk.run).toBe(false);
   });
 
   it("shows hydration skeletons when Google login is saved locally before first account() poll finishes", () => {
@@ -51,6 +53,7 @@ describe("colabOneBillingSkeletonState", () => {
     expect(sk.rate).toBe(true);
     expect(sk.endurance).toBe(true);
     expect(sk.instances).toBe(true);
+    expect(sk.run).toBe(true);
     expect(sk.status).toBe(false);
   });
 
@@ -107,6 +110,7 @@ describe("colabOneBillingSkeletonState", () => {
     expect(sk.rate).toBe(true);
     expect(sk.endurance).toBe(true);
     expect(sk.instances).toBe(true);
+    expect(sk.run).toBe(true);
     expect(sk.caption).toBe(true);
     expect(sk.status).toBe(false);
   });

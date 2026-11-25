@@ -221,12 +221,7 @@ FISH_DRAMA3_WORKER_BODY: str = textwrap.dedent(
             pass
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(description="ColabOne Fish Audio Drama 3 remote worker")
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
-
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    def _run_drama3_request(cfg: dict, state: dict) -> None:
         token = _hf_token()
         source_dir = (cfg.get("source_dir") or "").strip()
         if source_dir and source_dir not in sys.path:
@@ -368,165 +363,166 @@ FISH_DRAMA3_WORKER_BODY: str = textwrap.dedent(
         if has_valid_seed:
             _seed_drama3_generators(voice_seed)
 
-        dtype_label = (
-            "bf16"
-            if dtype == torch.bfloat16
-            else ("fp16" if dtype == torch.float16 else "fp32")
-        )
-        print(
-            f"[colabone-tts] fish_drama3 repo={repo} dtype={dtype_label} vram_mib={vram_mib}",
-            flush=True,
-        )
-
-        local_dir = Path(
-            snapshot_download(
-                repo_id=repo,
-                revision=revision or None,
-                cache_dir=cache_dir or None,
-                token=token,
+        cache_key = (repo, revision, cache_dir)
+        engine = state.get("engine") if state.get("key") == cache_key else None
+        if engine is None:
+            _release_warm_state(state)
+            dtype_label = (
+                "bf16"
+                if dtype == torch.bfloat16
+                else ("fp16" if dtype == torch.float16 else "fp32")
             )
-        )
-        decoder_ckpt = _find_decoder_checkpoint(local_dir)
-
-        codec_device = device
-        resolved_all_devices = [codec_device]
-        if callable(resolve_drama3_devices):
-            try:
-                dev_sig = inspect.signature(resolve_drama3_devices)
-                dev_params = list(dev_sig.parameters.values())
-                dev_kw = {}
-                for p in dev_params:
-                    if p.name == "device":
-                        dev_kw["device"] = device
-                    elif p.name in ("checkpoint_path", "model_path", "model_dir"):
-                        dev_kw[p.name] = str(local_dir)
-                if dev_kw:
-                    resolved_devs = resolve_drama3_devices(**dev_kw)
-                elif not dev_params or all(
-                    p.default is not inspect.Parameter.empty
-                    or p.kind
-                    in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-                    for p in dev_params
-                ):
-                    resolved_devs = resolve_drama3_devices()
-                else:
-                    resolved_devs = resolve_drama3_devices(device)
-                codec_device, resolved_all_devices = _normalize_drama3_devices(
-                    resolved_devs, device
-                )
-            except Exception as exc:
-                codec_device = device
-                resolved_all_devices = [codec_device]
-                print(
-                    f"[drama3] resolve_drama3_devices fallback: {exc}",
-                    flush=True,
-                )
-
-        if callable(resolve_drama3_dtype):
-            try:
-                dt_sig = inspect.signature(resolve_drama3_dtype)
-                dt_params = list(dt_sig.parameters.values())
-                dt_kw = {}
-                for p in dt_params:
-                    if p.name in ("precision", "dtype", "torch_dtype"):
-                        dt_kw[p.name] = dtype
-                    elif p.name == "devices":
-                        dt_kw["devices"] = resolved_all_devices
-                    elif p.name == "device":
-                        dt_kw["device"] = device
-                    elif p.name in ("checkpoint_path", "model_path", "model_dir"):
-                        dt_kw[p.name] = str(local_dir)
-                if dt_kw:
-                    resolved_dt = resolve_drama3_dtype(**dt_kw)
-                elif not dt_params or all(
-                    p.default is not inspect.Parameter.empty
-                    or p.kind
-                    in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-                    for p in dt_params
-                ):
-                    resolved_dt = resolve_drama3_dtype()
-                else:
-                    resolved_dt = resolve_drama3_dtype(dtype)
-                if resolved_dt is not None:
-                    dtype = resolved_dt
-            except Exception as exc:
-                print(
-                    f"[drama3] resolve_drama3_dtype fallback: {exc}",
-                    flush=True,
-                )
-
-        # Drama 3 (35B MoE) does not support torch.compile; ALWAYS keep compile=False.
-        llama_sig = inspect.signature(launch_thread_safe_queue)
-        llama_params = llama_sig.parameters
-        llama_has_var_kw = any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in llama_params.values()
-        )
-        llama_kwargs = {
-            "checkpoint_path": str(local_dir),
-            "device": device,
-            "precision": dtype,
-            "compile": False,
-        }
-        if not llama_has_var_kw:
-            llama_kwargs = {k: v for k, v in llama_kwargs.items() if k in llama_params}
-        llama_queue = launch_thread_safe_queue(**llama_kwargs)
-
-        # Upstream Drama 3 loads its codec with load_codec_model(codec_checkpoint_path, device, precision)
-        # so weight norm is folded in fp32 before casting to model precision; fall back to load_decoder_model.
-        if callable(load_codec_model):
-            codec_sig = inspect.signature(load_codec_model)
-            codec_params = codec_sig.parameters
-            codec_has_var_kw = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in codec_params.values()
+            print(
+                f"[colabone-tts] fish_drama3 repo={repo} dtype={dtype_label} vram_mib={vram_mib}",
+                flush=True,
             )
-            codec_kwargs = {}
-            if "codec_checkpoint_path" in codec_params:
-                codec_kwargs["codec_checkpoint_path"] = str(decoder_ckpt)
-            elif "checkpoint_path" in codec_params:
-                codec_kwargs["checkpoint_path"] = str(decoder_ckpt)
-            elif codec_has_var_kw:
-                codec_kwargs["codec_checkpoint_path"] = str(decoder_ckpt)
-            if "device" in codec_params or codec_has_var_kw:
-                codec_kwargs["device"] = codec_device
-            if "precision" in codec_params or codec_has_var_kw:
-                codec_kwargs["precision"] = dtype
-            decoder_model = load_codec_model(**codec_kwargs)
-        elif callable(load_decoder_model):
-            dec_sig = inspect.signature(load_decoder_model)
-            dec_params = dec_sig.parameters
-            dec_has_var_kw = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in dec_params.values()
+
+            local_dir = Path(
+                _resolve_hf_snapshot(snapshot_download, repo, revision, cache_dir, token)
             )
-            dec_kwargs = {
-                "config_name": "modded_dac_vq",
-                "checkpoint_path": str(decoder_ckpt),
-                "device": codec_device,
+            decoder_ckpt = _find_decoder_checkpoint(local_dir)
+
+            codec_device = device
+            resolved_all_devices = [codec_device]
+            if callable(resolve_drama3_devices):
+                try:
+                    dev_sig = inspect.signature(resolve_drama3_devices)
+                    dev_params = list(dev_sig.parameters.values())
+                    dev_kw = {}
+                    for p in dev_params:
+                        if p.name == "device":
+                            dev_kw["device"] = device
+                        elif p.name in ("checkpoint_path", "model_path", "model_dir"):
+                            dev_kw[p.name] = str(local_dir)
+                    if dev_kw:
+                        resolved_devs = resolve_drama3_devices(**dev_kw)
+                    elif not dev_params or all(
+                        p.default is not inspect.Parameter.empty
+                        or p.kind
+                        in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                        for p in dev_params
+                    ):
+                        resolved_devs = resolve_drama3_devices()
+                    else:
+                        resolved_devs = resolve_drama3_devices(device)
+                    codec_device, resolved_all_devices = _normalize_drama3_devices(
+                        resolved_devs, device
+                    )
+                except Exception as exc:
+                    codec_device = device
+                    resolved_all_devices = [codec_device]
+                    print(
+                        f"[drama3] resolve_drama3_devices fallback: {exc}",
+                        flush=True,
+                    )
+
+            if callable(resolve_drama3_dtype):
+                try:
+                    dt_sig = inspect.signature(resolve_drama3_dtype)
+                    dt_params = list(dt_sig.parameters.values())
+                    dt_kw = {}
+                    for p in dt_params:
+                        if p.name in ("precision", "dtype", "torch_dtype"):
+                            dt_kw[p.name] = dtype
+                        elif p.name == "devices":
+                            dt_kw["devices"] = resolved_all_devices
+                        elif p.name == "device":
+                            dt_kw["device"] = device
+                        elif p.name in ("checkpoint_path", "model_path", "model_dir"):
+                            dt_kw[p.name] = str(local_dir)
+                    if dt_kw:
+                        resolved_dt = resolve_drama3_dtype(**dt_kw)
+                    elif not dt_params or all(
+                        p.default is not inspect.Parameter.empty
+                        or p.kind
+                        in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                        for p in dt_params
+                    ):
+                        resolved_dt = resolve_drama3_dtype()
+                    else:
+                        resolved_dt = resolve_drama3_dtype(dtype)
+                    if resolved_dt is not None:
+                        dtype = resolved_dt
+                except Exception as exc:
+                    print(
+                        f"[drama3] resolve_drama3_dtype fallback: {exc}",
+                        flush=True,
+                    )
+
+            # Drama 3 (35B MoE) does not support torch.compile; ALWAYS keep compile=False.
+            llama_sig = inspect.signature(launch_thread_safe_queue)
+            llama_params = llama_sig.parameters
+            llama_has_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in llama_params.values()
+            )
+            llama_kwargs = {
+                "checkpoint_path": str(local_dir),
+                "device": device,
+                "precision": dtype,
+                "compile": False,
             }
-            if not dec_has_var_kw:
-                dec_kwargs = {k: v for k, v in dec_kwargs.items() if k in dec_params}
-            decoder_model = load_decoder_model(**dec_kwargs)
-        else:
-            raise ImportError(
-                "未找到 Fish Audio Drama 3 解码器加载接口（load_codec_model / load_model）"
-            )
+            if not llama_has_var_kw:
+                llama_kwargs = {k: v for k, v in llama_kwargs.items() if k in llama_params}
+            llama_queue = launch_thread_safe_queue(**llama_kwargs)
 
-        engine_sig = inspect.signature(TTSInferenceEngine.__init__)
-        engine_params = engine_sig.parameters
-        engine_has_var_kw = any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in engine_params.values()
-        )
-        engine_kwargs = {
-            "llama_queue": llama_queue,
-            "decoder_model": decoder_model,
-            "precision": dtype,
-            "compile": False,
-            "model_family": "drama3",
-        }
-        if not engine_has_var_kw:
-            engine_kwargs = {k: v for k, v in engine_kwargs.items() if k in engine_params}
-        engine = TTSInferenceEngine(**engine_kwargs)
-        # Bypass torchaudio.load (torchcodec on PyTorch >= 2.9) using soundfile + scipy/torchaudio.functional.
-        engine.load_audio = _load_audio_soundfile
+            # Upstream Drama 3 loads its codec with load_codec_model(codec_checkpoint_path, device, precision)
+            # so weight norm is folded in fp32 before casting to model precision; fall back to load_decoder_model.
+            if callable(load_codec_model):
+                codec_sig = inspect.signature(load_codec_model)
+                codec_params = codec_sig.parameters
+                codec_has_var_kw = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in codec_params.values()
+                )
+                codec_kwargs = {}
+                if "codec_checkpoint_path" in codec_params:
+                    codec_kwargs["codec_checkpoint_path"] = str(decoder_ckpt)
+                elif "checkpoint_path" in codec_params:
+                    codec_kwargs["checkpoint_path"] = str(decoder_ckpt)
+                elif codec_has_var_kw:
+                    codec_kwargs["codec_checkpoint_path"] = str(decoder_ckpt)
+                if "device" in codec_params or codec_has_var_kw:
+                    codec_kwargs["device"] = codec_device
+                if "precision" in codec_params or codec_has_var_kw:
+                    codec_kwargs["precision"] = dtype
+                decoder_model = load_codec_model(**codec_kwargs)
+            elif callable(load_decoder_model):
+                dec_sig = inspect.signature(load_decoder_model)
+                dec_params = dec_sig.parameters
+                dec_has_var_kw = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in dec_params.values()
+                )
+                dec_kwargs = {
+                    "config_name": "modded_dac_vq",
+                    "checkpoint_path": str(decoder_ckpt),
+                    "device": codec_device,
+                }
+                if not dec_has_var_kw:
+                    dec_kwargs = {k: v for k, v in dec_kwargs.items() if k in dec_params}
+                decoder_model = load_decoder_model(**dec_kwargs)
+            else:
+                raise ImportError(
+                    "未找到 Fish Audio Drama 3 解码器加载接口（load_codec_model / load_model）"
+                )
+
+            engine_sig = inspect.signature(TTSInferenceEngine.__init__)
+            engine_params = engine_sig.parameters
+            engine_has_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in engine_params.values()
+            )
+            engine_kwargs = {
+                "llama_queue": llama_queue,
+                "decoder_model": decoder_model,
+                "precision": dtype,
+                "compile": False,
+                "model_family": "drama3",
+            }
+            if not engine_has_var_kw:
+                engine_kwargs = {k: v for k, v in engine_kwargs.items() if k in engine_params}
+            engine = TTSInferenceEngine(**engine_kwargs)
+            # Bypass torchaudio.load (torchcodec on PyTorch >= 2.9) using soundfile + scipy/torchaudio.functional.
+            engine.load_audio = _load_audio_soundfile
+            state["key"] = cache_key
+            state["engine"] = engine
 
         references = []
         if ref_audio_path:
@@ -599,6 +595,22 @@ FISH_DRAMA3_WORKER_BODY: str = textwrap.dedent(
                     flush=True,
                 )
             print(f"[colabone-tts] fish_drama3 segment {idx + 1}/{total} done", flush=True)
+
+
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(description="ColabOne Fish Audio Drama 3 remote worker")
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        state: dict = {}
+        if args.daemon:
+            _run_daemon_loop(lambda cfg: _run_drama3_request(cfg, state))
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        _run_drama3_request(cfg, state)
 
 
     if __name__ == "__main__":

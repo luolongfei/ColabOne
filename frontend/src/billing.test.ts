@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   COLABONE_DEFAULT_IDLE_MINUTES,
   COLABONE_IDLE_RELEASE_OPTIONS,
+  COLABONE_RUN_LIVE_INTERP_CAP_SEC,
   describeColabOneBilling,
+  describeColabOneRunConsumption,
   formatCountdownClock,
   formatIdlePolicyLabel,
   formatRemainingBalanceTime,
@@ -320,5 +322,199 @@ describe("isTransientIpcError & friendlyErrorMessage", () => {
     expect(friendlyErrorMessage("")).toBe("");
     expect(friendlyErrorMessage("   ")).toBe("");
     expect(friendlyErrorMessage("Error:   ")).toBe("");
+  });
+});
+
+describe("describeColabOneRunConsumption", () => {
+  it("reports logged_out when unauthenticated and idle_empty when signed in without run history", () => {
+    const out = describeColabOneRunConsumption(
+      { logged_in: false },
+      { setupColab: false, nowMs: 1_000_000 },
+    );
+    expect(out.phase).toBe("logged_out");
+    expect(out.active).toBe(false);
+    expect(out.consumedValueText).toBe("--");
+    expect(out.consumedText).toBe("-- CU");
+
+    const idle = describeColabOneRunConsumption(
+      { logged_in: true, balance: 100, rate: 0, assignments: 0, checked_at: 1000 },
+      { setupColab: true, nowMs: 1_010_000 },
+    );
+    expect(idle.phase).toBe("idle_empty");
+    expect(idle.active).toBe(false);
+    expect(idle.consumed).toBe(0);
+    expect(idle.consumedText).toBe("0.00 CU");
+  });
+
+  it("smoothly interpolates live consumption between polls, honors unsettled bridge, and caps runaway projection", () => {
+    const account: ColabOneSnapshot["account"] = {
+      logged_in: true,
+      balance: 98.5,
+      rate: 3.6, // 0.001 CU/sec
+      assignments: 1,
+      checked_at: 2000,
+      current_run: {
+        active: true,
+        started_at: 1000,
+        start_balance: 99.5,
+        end_balance: 98.5,
+        consumed: 1.0,
+        unsettled: 0.02,
+        last_sample_at: 2000,
+        last_rate: 3.6,
+        peak_rate: 3.6,
+        max_instances: 1,
+        samples: 30,
+      },
+    };
+
+    // 30s after last poll: 1.0 confirmed + 0.02 unsettled + (3.6 * 30 / 3600 = 0.03) = 1.05 CU
+    const at30s = describeColabOneRunConsumption(account, {
+      setupColab: true,
+      runtimeState: "ready",
+      runtimeId: "gpu-1",
+      nowMs: 2_030_000,
+    });
+    expect(at30s.phase).toBe("running");
+    expect(at30s.active).toBe(true);
+    expect(at30s.confirmedConsumed).toBeCloseTo(1.0, 6);
+    expect(at30s.liveProjection).toBeCloseTo(0.05, 6);
+    expect(at30s.consumed).toBeCloseTo(1.05, 6);
+    expect(at30s.consumedText).toBe("1.05 CU");
+    expect(at30s.elapsedSeconds).toBe(1030);
+    expect(at30s.durationText).toContain("17 分 10 秒");
+    expect(at30s.interpolating).toBe(true);
+    expect(at30s.avgRate).not.toBeNull();
+
+    // 600s stale gap must cap live interpolation at COLABONE_RUN_LIVE_INTERP_CAP_SEC (90s)
+    const stale = describeColabOneRunConsumption(account, {
+      setupColab: true,
+      nowMs: 2_600_000,
+    });
+    const expectedMaxProj = 0.02 + (3.6 * COLABONE_RUN_LIVE_INTERP_CAP_SEC) / 3600;
+    expect(stale.liveProjection).toBeCloseTo(expectedMaxProj, 6);
+  });
+
+  it("never extrapolates beyond remaining paid balance when balance is depleted", () => {
+    const depleted: ColabOneSnapshot["account"] = {
+      logged_in: true,
+      balance: 0,
+      rate: 3.6,
+      assignments: 1,
+      checked_at: 2000,
+      current_run: {
+        active: true,
+        started_at: 1000,
+        consumed: 2.5,
+        unsettled: 0.05,
+        last_sample_at: 2000,
+        last_rate: 3.6,
+      },
+    };
+    const res = describeColabOneRunConsumption(depleted, {
+      setupColab: true,
+      nowMs: 2_045_000,
+    });
+    expect(res.liveProjection).toBe(0);
+    expect(res.consumed).toBe(2.5);
+    expect(res.consumedText).toBe("2.50 CU");
+    expect(res.balanceDepleted).toBe(true);
+  });
+
+  it("freezes stale offline persisted active runs and honors fresh idle polls instead of fabricating live burn", () => {
+    const staleOffline: ColabOneSnapshot["account"] = {
+      logged_in: false,
+      current_run: {
+        active: true,
+        started_at: 1000,
+        last_sample_at: 4600,
+        last_rate: 2.0,
+        consumed: 2.0,
+        unsettled: 0.05,
+      },
+    };
+    // Reopened 2 hours later while offline (setupColab=true, logged_in=false, no checked_at)
+    const offlineRes = describeColabOneRunConsumption(staleOffline, {
+      setupColab: true,
+      runtimeState: "stopped",
+      nowMs: 11_800_000,
+    });
+    expect(offlineRes.phase).toBe("completed");
+    expect(offlineRes.active).toBe(false);
+    expect(offlineRes.liveProjection).toBe(0);
+    expect(offlineRes.consumed).toBe(2.0);
+    expect(offlineRes.elapsedSeconds).toBe(3600);
+
+    // Fresh account poll confirms idle after last_sample_at even if current_run.active was briefly true
+    const confirmedIdle = describeColabOneRunConsumption(
+      {
+        logged_in: true,
+        balance: 98.0,
+        rate: 0,
+        assignments: 0,
+        checked_at: 4650,
+        current_run: {
+          active: true,
+          started_at: 1000,
+          last_sample_at: 4600,
+          last_rate: 2.0,
+          consumed: 2.0,
+          unsettled: 0.04,
+        },
+      },
+      { setupColab: true, runtimeState: "stopped", nowMs: 4_660_000 },
+    );
+    expect(confirmedIdle.phase).toBe("completed");
+    expect(confirmedIdle.active).toBe(false);
+    expect(confirmedIdle.liveProjection).toBe(0);
+    expect(confirmedIdle.consumed).toBe(2.0);
+  });
+
+  it("preserves completed last-run totals with frozen duration once idle", () => {
+    const completed: ColabOneSnapshot["account"] = {
+      logged_in: true,
+      balance: 95.48,
+      rate: 0,
+      assignments: 0,
+      checked_at: 9000,
+      current_run: {
+        active: false,
+        started_at: 1000,
+        ended_at: 8200, // exactly 2 hours
+        start_balance: 100.0,
+        end_balance: 95.48,
+        consumed: 4.52,
+        topup: 0,
+        last_sample_at: 8200,
+        peak_rate: 2.5,
+        max_instances: 1,
+        samples: 240,
+      },
+    };
+    const res = describeColabOneRunConsumption(completed, {
+      setupColab: true,
+      nowMs: 12_000_000,
+    });
+    expect(res.phase).toBe("completed");
+    expect(res.active).toBe(false);
+    expect(res.hasRecord).toBe(true);
+    expect(res.consumed).toBe(4.52);
+    expect(res.consumedText).toBe("4.52 CU");
+    expect(res.elapsedSeconds).toBe(7200);
+    expect(res.durationText).toBe("2 小时");
+    expect(res.avgRate).toBeCloseTo(2.26, 4);
+    expect(res.interpolating).toBe(false);
+  });
+
+  it("handles active instance gracefully when current_run is not yet present", () => {
+    const fallback = describeColabOneRunConsumption(
+      { logged_in: true, balance: 50, rate: 0, assignments: 1, checked_at: 1000 },
+      { setupColab: true, runtimeState: "ready", runtimeId: "gpu-1", nowMs: 1_010_000 },
+    );
+    expect(fallback.phase).toBe("running");
+    expect(fallback.active).toBe(true);
+    expect(fallback.hasRecord).toBe(false);
+    expect(fallback.syncingRate).toBe(true);
+    expect(fallback.consumedText).toBe("0.00 CU");
   });
 });

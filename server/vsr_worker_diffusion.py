@@ -26,6 +26,7 @@ import math
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -161,7 +162,7 @@ _COLABONE_FFV1_CODEC_ARGS: tuple[str, ...] = (
 
 _COLABONE_FFMPEG_PROTOCOL_ARGS: tuple[str, ...] = (
     "-protocol_whitelist",
-    "file,pipe",
+    "file,pipe,fd",
 )
 
 _SENSITIVE_SUBPROCESS_ENV_KEYS: frozenset[str] = frozenset(
@@ -1253,12 +1254,22 @@ def _run_monitored_subprocess(
     progress_message: str,
     progress_tracker: ColabOneSeedVR2ProgressTracker | None = None,
     env_extra: dict[str, str] | None = None,
+    stall_timeout_seconds: float = 900.0,
 ) -> list[str]:
     """Run a child process in the worker's process group and stream progress."""
     env = _sanitized_subprocess_env(
         {
             "PYTHONUNBUFFERED": "1",
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            "USE_TORCH": "1",
+            "USE_TF": "0",
+            "USE_FLAX": "0",
+            "USE_JAX": "0",
+            "TRANSFORMERS_NO_TF": "1",
+            "TRANSFORMERS_NO_FLAX": "1",
+            "TRANSFORMERS_NO_JAX": "1",
+            "DISABLE_TENSORFLOW": "1",
+            "TF_CPP_MIN_LOG_LEVEL": "3",
             **(env_extra or {}),
         }
     )
@@ -1274,15 +1285,39 @@ def _run_monitored_subprocess(
     tail_lines: deque[str] = deque(maxlen=80)
     last_emit_ts = 0.0
     last_ratio = -1.0
+    last_output_ts = time.monotonic()
+    proc_exited_at: float | None = None
+    effective_stall = max(0.0, float(stall_timeout_seconds))
 
     try:
         assert proc.stdout is not None
         stdout_fd = proc.stdout.fileno()
         buf = bytearray()
+        use_select = os.name == "posix"
         while True:
+            if use_select:
+                try:
+                    ready, _, _ = select.select([stdout_fd], [], [], 0.5)
+                except (OSError, TypeError, ValueError):
+                    use_select = False
+                    ready = [stdout_fd]
+                if not ready:
+                    now_idle = time.monotonic()
+                    if proc.poll() is not None:
+                        if proc_exited_at is None:
+                            proc_exited_at = now_idle
+                        elif (now_idle - proc_exited_at) >= 2.0:
+                            break
+                    elif effective_stall > 0 and (now_idle - last_output_ts) > effective_stall:
+                        guard.terminate_child(proc, grace_seconds=1.5)
+                        raise RuntimeError(
+                            f"{engine} subprocess produced no output for {int(effective_stall)}s and appears stalled."
+                        )
+                    continue
             chunk = os.read(stdout_fd, 4096)
             if not chunk:
                 break
+            last_output_ts = time.monotonic()
             for byte in chunk:
                 if byte in (10, 13):  # LF or CR
                     if buf:
@@ -1318,7 +1353,15 @@ def _run_monitored_subprocess(
             if line:
                 tail_lines.append(line)
 
-        rc = proc.wait()
+        try:
+            rc = proc.wait(timeout=30.0)
+        except subprocess.TimeoutExpired:
+            guard.terminate_child(proc, grace_seconds=2.0)
+            tail_preview = "\n".join(list(tail_lines)[-20:])
+            raise RuntimeError(
+                f"{engine} subprocess closed output stream but failed to exit within 30s.\n"
+                f"Output tail:\n{tail_preview}"
+            ) from None
         if rc != 0:
             tail_preview = "\n".join(list(tail_lines)[-20:])
             raise RuntimeError(
@@ -2809,8 +2852,57 @@ def run_diffusion_vsr(cfg: dict[str, Any]) -> dict[str, Any]:
                     pass
 
 
+_NON_TORCH_BLOCKED_MODULES = frozenset(
+    {"tensorflow", "tf_keras", "keras", "jax", "jaxlib", "flax"}
+)
+
+
+class _ColabOneNonTorchMetaPathFilter:
+    _colabone_non_torch_filter = True
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        if str(fullname).partition(".")[0] in _NON_TORCH_BLOCKED_MODULES:
+            return None
+        find_fn = getattr(self._inner, "find_spec", None)
+        if callable(find_fn):
+            return find_fn(fullname, path, target)
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _disable_non_torch_backends() -> None:
+    """Force PyTorch-only mode and hide Colab host TensorFlow/JAX/Flax without polluting sys.modules."""
+    for env_key, env_val in (
+        ("USE_TORCH", "1"),
+        ("USE_TF", "0"),
+        ("USE_FLAX", "0"),
+        ("USE_JAX", "0"),
+        ("TRANSFORMERS_NO_TF", "1"),
+        ("TRANSFORMERS_NO_FLAX", "1"),
+        ("TRANSFORMERS_NO_JAX", "1"),
+        ("DISABLE_TENSORFLOW", "1"),
+        ("TF_CPP_MIN_LOG_LEVEL", "3"),
+    ):
+        os.environ.setdefault(env_key, env_val)
+    for mod_name in _NON_TORCH_BLOCKED_MODULES:
+        if sys.modules.get(mod_name) is None:
+            sys.modules.pop(mod_name, None)
+    sys.meta_path[:] = [
+        f
+        if getattr(f, "_colabone_non_torch_filter", False)
+        else _ColabOneNonTorchMetaPathFilter(f)
+        for f in sys.meta_path
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     _ensure_utf8_stdio()
+    _disable_non_torch_backends()
     parser = argparse.ArgumentParser(
         description="ColabOne standalone diffusion VSR worker (SeedVR2 7B / FlashVSR+)"
     )

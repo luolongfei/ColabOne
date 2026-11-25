@@ -1198,10 +1198,40 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 	}
 }
 
+func (c *ColabOneController) effectiveMonitorWait() time.Duration {
+	wait := c.monitorInterval
+	if wait <= 0 {
+		wait = 2 * time.Second
+	}
+	c.mu.Lock()
+	rt := asMap(c.data["runtime"])
+	c.mu.Unlock()
+	if rt == nil {
+		return wait
+	}
+	for _, rawTask := range asAnySlice(rt["tasks"]) {
+		t := asMap(rawTask)
+		if t != nil && asString(t["state"]) == "running" && asString(t["kind"]) == "comfyui_tts_preview" {
+			if fast := 350 * time.Millisecond; fast < wait {
+				return fast
+			}
+			return wait
+		}
+	}
+	if comfy := asMap(rt["comfyui"]); comfy != nil {
+		if pf := asMap(comfy["tts_preview_prefetch"]); pf != nil && asBool(pf["active"]) {
+			if fast := 700 * time.Millisecond; fast < wait {
+				return fast
+			}
+		}
+	}
+	return wait
+}
+
 func (c *ColabOneController) runMonitorLoop() {
 	for !c.stop.IsSet() {
 		c.MonitorOnce(c.rootCtx)
-		if c.stop.Wait(c.monitorInterval) {
+		if c.stop.Wait(c.effectiveMonitorWait()) {
 			return
 		}
 	}

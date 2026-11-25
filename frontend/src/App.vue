@@ -460,7 +460,7 @@ let clearingStateError: {
 const shownFailedTaskIds = new Set<string>();
 const observedRunningComfyTaskIds = new Set<string>();
 const shownCompletedComfyTaskIds = new Set<string>();
-let hasSeededInitialTasks = false;
+const seededRuntimeTaskIds = new Set<string>();
 
 function normalizeErrorKey(raw: unknown): string {
   return stripColabOneErrorPrefixes(raw);
@@ -642,11 +642,33 @@ watch(
 );
 
 watch(
-  () => [state.value.runtime.tasks, snapshotLoaded.value] as const,
-  ([tasks, loaded]) => {
+  () =>
+    [
+      state.value.runtime.tasks,
+      state.value.runtime.id,
+      state.value.runtime.state,
+      snapshotLoaded.value,
+    ] as const,
+  ([tasks, runtimeId, runtimeState, loaded]) => {
     if (!loaded) return;
-    if (!hasSeededInitialTasks) {
-      hasSeededInitialTasks = true;
+    const rtId = String(runtimeId ?? "").trim();
+    if (!rtId) {
+      for (const item of tasks || []) {
+        if (item.kind === "comfyui_run" && item.state === "running") {
+          observedRunningComfyTaskIds.add(item.id);
+        }
+        if (item.state === "failed") {
+          shownFailedTaskIds.add(item.id);
+        }
+      }
+      return;
+    }
+    if (!seededRuntimeTaskIds.has(rtId)) {
+      const hasTasks = Boolean(tasks && tasks.length > 0);
+      if (runtimeState !== "ready" && !hasTasks) {
+        return;
+      }
+      seededRuntimeTaskIds.add(rtId);
       for (const item of tasks || []) {
         if (item.kind === "comfyui_run" && item.state === "running") {
           observedRunningComfyTaskIds.add(item.id);

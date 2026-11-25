@@ -9,6 +9,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luolongfei/ColabOne/console/internal/comfyui"
 )
@@ -911,5 +912,183 @@ func TestComfyUIRunLongCatNativeCapabilityGuard(t *testing.T) {
 		"inputs":      map[string]any{},
 	}); err == nil || err.Error() == colabOneLongCatNativeUpgradeHint || err.Error() != "请先启动远端 GPU" {
 		t.Fatalf("stopped runtime should return start-GPU error rather than upgrade hint, got %v", err)
+	}
+}
+
+func TestComfyUITtsPreviewLocalDiskCachePrefetchAndFastPoll(t *testing.T) {
+	ctx := context.Background()
+	cfgDir := t.TempDir()
+	readyCap := map[string]any{
+		"state":        "ready",
+		"id":           "ep-1",
+		"protocol":     7,
+		"capabilities": []string{"public_api", "comfyui", "comfyui_hf_token", "comfyui_tts_preview"},
+	}
+
+	makeCtrl := func(prov *mockProvider) *ColabOneController {
+		v := NewColabOneMemoryVault()
+		_ = v.Set("colab_sessions", map[string]any{"ep-1": map[string]any{"endpoint": "ep-1"}})
+		_ = v.Set("active_endpoint", "ep-1")
+		c := NewColabOneController(ColabOneControllerConfig{
+			ConfigDir:      cfgDir,
+			Vault:          v,
+			Provider:       prov,
+			Comfy:          &mockComfy{},
+			ServiceBundler: defaultMockBundler(),
+			Location:       mockLocation{},
+		})
+		t.Cleanup(func() { c.Close() })
+		c.Update(map[string]any{
+			"runtime": readyCap,
+			"tts_engines": []map[string]any{
+				{
+					"id":                    "qwen3_tts",
+					"repo":                  "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+					"revision":              strings.Repeat("a", 40),
+					"aux_repo":              "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+					"aux_revision":          strings.Repeat("b", 40),
+					"custom_voice_repo":     "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+					"custom_voice_revision": strings.Repeat("c", 40),
+					"sample_rate":           24000,
+					"voice_presets": []map[string]any{
+						{"id": "shen_zhiyi", "name": "沈知意", "prompt": "female host", "seed": 202601, "preview_text": "你好我是沈知意"},
+						{"id": "gu_qinglan", "name": "顾清岚", "prompt": "exec woman", "seed": 202604, "preview_text": "你好我是顾清岚"},
+					},
+				},
+			},
+		})
+		return c
+	}
+
+	wavPayload := []byte("RIFF0000WAVEfmt local-cache-test-audio-bytes")
+	wavSum := sha256.Sum256(wavPayload)
+	wavSHA := hex.EncodeToString(wavSum[:])
+	pid1 := strings.Repeat("d", 32)
+
+	prov1 := &mockProvider{}
+	prov1.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if method == "POST" && path == "comfyui/tts-preview" {
+			return map[string]any{
+				"cached":           true,
+				"preview_id":       pid1,
+				"engine_id":        "qwen3_tts",
+				"voice_preset":     "shen_zhiyi",
+				"text":             "你好我是沈知意",
+				"sample_rate":      24000,
+				"duration_seconds": 1.2,
+				"mime":             "audio/wav",
+				"size":             len(wavPayload),
+				"sha256":           wavSHA,
+				"data":             base64.StdEncoding.EncodeToString(wavPayload),
+			}, nil
+		}
+		return map[string]any{"runtime": readyCap}, nil
+	}
+	ctrl1 := makeCtrl(prov1)
+
+	// 1. Remote inline cached preview persists automatically into local disk cache.
+	if _, err := ctrl1.Command(ctx, "comfyui.tts.preview", map[string]any{
+		"engine_id":    "qwen3_tts",
+		"voice_preset": "shen_zhiyi",
+		"preview_text": "你好我是沈知意",
+	}); err != nil {
+		t.Fatalf("initial preview failed: %v", err)
+	}
+
+	// 2. Restart a brand-new controller on the same ConfigDir with NO remote RPCs -> local disk cache hits!
+	var remoteCalls int
+	prov2 := &mockProvider{}
+	prov2.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		remoteCalls++
+		if method == "POST" && path == "comfyui/tts-preview/prefetch" {
+			m := asMap(body)
+			items := asAnySlice(m["items"])
+			if len(items) != 1 || asString(asMap(items[0])["voice_preset"]) != "gu_qinglan" {
+				t.Fatalf("expected prefetch to filter out locally cached shen_zhiyi and only send gu_qinglan, got %#v", items)
+			}
+			return map[string]any{
+				"active":      true,
+				"state":       "running",
+				"engine_id":   "qwen3_tts",
+				"total":       1,
+				"completed":   0,
+				"ready_items": []any{},
+			}, nil
+		}
+		if method == "POST" && path == "comfyui/tts-preview/prefetch/cancel" {
+			return map[string]any{"active": false, "state": "cancelled"}, nil
+		}
+		return map[string]any{"runtime": readyCap}, nil
+	}
+	ctrl2 := makeCtrl(prov2)
+
+	lookupRaw, err := ctrl2.Command(ctx, "comfyui.tts.preview.cache.lookup", map[string]any{
+		"engine_id": "qwen3_tts",
+		"items": []any{
+			map[string]any{"voice_preset": "shen_zhiyi"},
+			map[string]any{"voice_preset": "gu_qinglan"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("cache.lookup failed: %v", err)
+	}
+	lookupItems := asMapSlice(asMap(lookupRaw)["items"])
+	if len(lookupItems) != 2 || !asBool(lookupItems[0]["cached"]) || asBool(lookupItems[1]["cached"]) {
+		t.Fatalf("unexpected cache.lookup statuses: %#v", lookupItems)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("cache.lookup must be 100%% offline, got %d remote calls", remoteCalls)
+	}
+
+	readRaw, err := ctrl2.Command(ctx, "comfyui.tts.preview.cache.read", map[string]any{
+		"engine_id":    "qwen3_tts",
+		"voice_preset": "shen_zhiyi",
+	})
+	if err != nil {
+		t.Fatalf("cache.read failed: %v", err)
+	}
+	readMap := asMap(readRaw)
+	if !asBool(readMap["cached"]) || !asBool(readMap["local_cached"]) {
+		t.Fatalf("expected local disk cache hit across restart, got %#v", readMap)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(asString(readMap["data"]))
+	if err != nil || string(decoded) != string(wavPayload) {
+		t.Fatalf("local cached payload mismatch: %q err=%v", string(decoded), err)
+	}
+
+	// 3. Prefetch filters out shen_zhiyi (locally cached) and only dispatches gu_qinglan to remote.
+	if _, err := ctrl2.Command(ctx, "comfyui.tts.preview.prefetch", map[string]any{
+		"engine_id": "qwen3_tts",
+		"items": []any{
+			map[string]any{"voice_preset": "shen_zhiyi"},
+			map[string]any{"voice_preset": "gu_qinglan"},
+		},
+	}); err != nil {
+		t.Fatalf("prefetch failed: %v", err)
+	}
+
+	if _, err := ctrl2.Command(ctx, "comfyui.tts.preview.prefetch.cancel", map[string]any{}); err != nil {
+		t.Fatalf("prefetch.cancel failed: %v", err)
+	}
+
+	// 4. effectiveMonitorWait accelerates polling during active tts preview or prefetch.
+	ctrl2.Update(map[string]any{
+		"runtime": map[string]any{
+			"state": "ready",
+			"tasks": []any{map[string]any{"id": "t1", "kind": "comfyui_tts_preview", "state": "running"}},
+		},
+	})
+	if wait := ctrl2.effectiveMonitorWait(); wait > 400*time.Millisecond {
+		t.Fatalf("expected accelerated preview monitor wait <= 400ms, got %v", wait)
+	}
+	ctrl2.Update(map[string]any{
+		"runtime": map[string]any{
+			"state":   "ready",
+			"tasks":   []any{},
+			"comfyui": map[string]any{"tts_preview_prefetch": map[string]any{"active": true}},
+		},
+	})
+	if wait := ctrl2.effectiveMonitorWait(); wait > 800*time.Millisecond {
+		t.Fatalf("expected accelerated prefetch monitor wait <= 800ms, got %v", wait)
 	}
 }

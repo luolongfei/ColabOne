@@ -4106,7 +4106,11 @@ class ColabOneDigitalHumanRunner:
                         synth_kwargs["voice_preset"] = voice_preset
                 except (TypeError, ValueError):
                     pass
+                if callable(getattr(self.tts_runner, "cancel_preview_prefetch", None)):
+                    self.tts_runner.cancel_preview_prefetch(wait=True, timeout=2.0)
                 tts_result = self.tts_runner.synthesize(task, **synth_kwargs)
+                if callable(getattr(self.tts_runner, "release_warm_worker", None)):
+                    self.tts_runner.release_warm_worker("digital_human_video_phase")
                 master_audio_path = Path(tts_result["audio_path"])
                 raw_manifest = tts_result.get("manifest")
                 manifest = raw_manifest if isinstance(raw_manifest, dict) else None
@@ -4718,6 +4722,26 @@ class ColabOneDigitalHumanRunner:
                             if (
                                 isinstance(stopping, threading.Event)
                                 and stopping.is_set()
+                            ):
+                                raise
+
+                            # Fail fast on non-acceleration fatal errors instead of blindly
+                            # restarting/retrying ComfyUI through 3-4 acceleration tiers.
+                            err_lower = str(exc or "").lower()
+                            if any(
+                                marker in err_lower
+                                for marker in (
+                                    "拒绝了工作流",
+                                    "工作流节点校验失败",
+                                    "未返回有效任务编号",
+                                    "超过 60 分钟",
+                                    "可能已在画布中被取消",
+                                    "查询 comfyui 任务进度连续失败",
+                                    "no space left on device",
+                                    "磁盘空间不足",
+                                    "filenotfounderror",
+                                    "modulenotfounderror",
+                                )
                             ):
                                 raise
 

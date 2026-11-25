@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from common.comfyui import (
     ComfyCanvasConfig,
+    ComfyTtsPreviewPrefetchRequest,
     ComfyTtsPreviewRequest,
     WorkflowImportRequest,
     WorkflowRunRequest,
@@ -317,6 +318,14 @@ def create_colabone_app(runtime, token, background=False):
     @app.post("/api/v1/comfyui/tts-preview", dependencies=auth)
     def comfyui_tts_preview(body: ComfyTtsPreviewRequest):
         return runtime.preview_comfyui_tts(body.model_dump())
+
+    @app.post("/api/v1/comfyui/tts-preview/prefetch", dependencies=auth)
+    def comfyui_tts_preview_prefetch(body: ComfyTtsPreviewPrefetchRequest):
+        return runtime.prefetch_comfyui_tts_previews(body.model_dump())
+
+    @app.post("/api/v1/comfyui/tts-preview/prefetch/cancel", dependencies=auth)
+    def comfyui_tts_preview_prefetch_cancel():
+        return runtime.cancel_comfyui_tts_preview_prefetch()
 
     @app.get("/api/v1/comfyui/tts-previews/{preview_id}", dependencies=auth)
     def comfyui_tts_preview_get(

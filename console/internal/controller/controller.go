@@ -119,6 +119,11 @@ type ColabOneController struct {
 
 	cuUsage *ColabOneCUUsageStore
 
+	ttsPreviewCacheMu     sync.Mutex
+	ttsPreviewIndex       *colabOneLocalTtsPreviewIndex
+	pendingTtsPreviewReqs map[string]map[string]any
+	pendingTtsPrefetchCtx map[string]map[string]any
+
 	rootCtx    context.Context
 	cancelRoot context.CancelFunc
 	spawnMu    sync.Mutex
@@ -878,16 +883,28 @@ func (c *ColabOneController) Snapshot() map[string]any {
 		account = map[string]any{"logged_in": false}
 		value["account"] = account
 	}
+	acctCopy := deepCopyMap(account)
 	enriched := make([]map[string]any, 0)
 	if instVal, exists := account["instances"]; (exists && instVal != nil) || len(sessions) > 0 {
 		enriched = c.enrichInstancesWith(account, sessions, remotes, activeEP)
-		acctCopy := deepCopyMap(account)
 		acctCopy["instances"] = enriched
 		if _, hasAssign := acctCopy["assignments"]; !hasAssign && len(enriched) > 0 {
 			acctCopy["assignments"] = len(enriched)
 		}
-		value["account"] = acctCopy
 	}
+	colabCreds, _ := c.vault.Get("colab")
+	if c.cuUsage != nil && (asBool(acctCopy["logged_in"]) || asBool(colabCreds)) {
+		email := asTrimmedString(acctCopy["email"])
+		if email == "" && c.vault != nil {
+			if profVal, ok := c.vault.Get("google_profile"); ok {
+				email = asTrimmedString(asMap(profVal)["email"])
+			}
+		}
+		if runSnap := c.cuUsage.CurrentRunSnapshot(email); runSnap != nil {
+			acctCopy["current_run"] = runSnap
+		}
+	}
+	value["account"] = acctCopy
 
 	value["active_endpoint"] = activeEP
 	value["monitor"] = c.buildMonitorSnapshot(enriched, rt, decoratedModels, activeEP)
@@ -980,7 +997,6 @@ func (c *ColabOneController) Snapshot() map[string]any {
 	if c.shortcuts != nil {
 		shortcuts = c.shortcuts.Status(c.shortcutSandbox)
 	}
-	colabCreds, _ := c.vault.Get("colab")
 	colabCredsMap := asMap(colabCreds)
 	hfVal, _ := c.vault.Get("hf")
 	driveMode := asString(driveInfo["mode"])
@@ -2799,7 +2815,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 	if c.provider == nil {
 		return rollback(errors.New("Provider 未配置"))
 	}
-	if _, err := c.provider.Start(ctx, targetGPU, notify, ColabOneStartOptions{
+	remoteInfo, err := c.provider.Start(ctx, targetGPU, notify, ColabOneStartOptions{
 		CreateNew:    createNew,
 		RcloneConf:   rcloneConf,
 		AssignProxy:  activeAssignProxy,
@@ -2808,7 +2824,8 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		OnTelemetry:  onBootTelemetry,
 		OnRetryState: onRetryState,
 		CancelEvent:  c.startCancel,
-	}); err != nil {
+	})
+	if err != nil {
 		return rollback(err)
 	}
 	if c.startCancel.IsSet() {
@@ -2880,6 +2897,29 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		if err := c.RefreshRemote(ctx, ""); err != nil {
 			return rollback(err)
 		}
+	}
+
+	// Start has passed the point of no return (no rollback beyond this point);
+	// anchor the continuous run start timestamp and verified pre-start balance now.
+	if c.cuUsage != nil {
+		startedAt, hasStarted := asFloat(remoteInfo["started_at"])
+		if !hasStarted || startedAt <= 0 {
+			startedAt = nowUnixFloat()
+		}
+		startBal, hasStartBalNum := asFloat(remoteInfo["start_balance"])
+		hasStartBal := asBool(remoteInfo["has_start_balance"]) && hasStartBalNum
+		email := ""
+		c.mu.Lock()
+		if acctMap := asMap(c.data["account"]); acctMap != nil {
+			email = asTrimmedString(acctMap["email"])
+		}
+		c.mu.Unlock()
+		if email == "" && c.vault != nil {
+			if profVal, ok := c.vault.Get("google_profile"); ok {
+				email = asTrimmedString(asMap(profVal)["email"])
+			}
+		}
+		c.cuUsage.BeginRun(email, startedAt, startBal, hasStartBal)
 	}
 
 	if rcloneConf != "" {

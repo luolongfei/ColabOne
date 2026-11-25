@@ -66,7 +66,12 @@ const props = defineProps<{
   voicePreviewPlayToken?: number;
   voicePreviewMeta?: ColabOneVoicePreviewMeta | null;
   voicePreviewRemoteReady?: boolean;
+  voicePreviewCanOfflinePlay?: boolean;
   voicePreviewDisabled?: boolean;
+  readyVoicePresetIds?: string[];
+  voicePreviewPrefetchActive?: boolean;
+  voicePreviewPrefetchDone?: number;
+  voicePreviewPrefetchTotal?: number;
 }>();
 
 const emit = defineEmits<{
@@ -77,6 +82,7 @@ const emit = defineEmits<{
   "update:voice-preview-text": [string];
   "voice-preview-reset": [];
   "voice-preview-play": [];
+  "voice-preview-prefetch-cancel": [];
 }>();
 
 const isDragging = ref(false);
@@ -168,6 +174,14 @@ const allVoicePresetOptionIds = computed(() => {
   }
   return ids;
 });
+
+const readyVoicePresetSet = computed(
+  () => new Set(props.readyVoicePresetIds || []),
+);
+
+function isVoicePresetReady(presetId: string): boolean {
+  return Boolean(presetId && presetId !== "custom" && readyVoicePresetSet.value.has(presetId));
+}
 
 function voiceGroupLabel(key: ColabOneVoicePresetGroupKey): string {
   switch (key) {
@@ -717,7 +731,15 @@ function onMediaDrop(event: DragEvent) {
               :label="tb(opt.label)"
               :data-co-full-title="tb(opt.label)"
             >
-              {{ tb(opt.label) }}
+              <span class="co-comfy-voice-opt-row">
+                <span class="co-comfy-voice-opt-label">{{ tb(opt.label) }}</span>
+                <span
+                  v-if="isVoicePresetReady(opt.id)"
+                  class="co-comfy-voice-ready-pill"
+                >
+                  {{ t("comfy.voicePreviewReadyTag") }}
+                </span>
+              </span>
             </ASelectOption>
           </ASelectOptGroup>
         </template>
@@ -983,7 +1005,7 @@ function onMediaDrop(event: DragEvent) {
         class="co-comfy-voice-preview-btn"
         :loading="voicePreviewBusy"
         :disabled="
-          !voicePreviewRemoteReady ||
+          (!voicePreviewRemoteReady && !voicePreviewCanOfflinePlay) ||
           voicePreviewBusy ||
           disabled ||
           voicePreviewDisabled
@@ -1024,6 +1046,48 @@ function onMediaDrop(event: DragEvent) {
         class="co-comfy-voice-preview-ready"
       >
         {{ t("comfy.voicePreviewReady") }}
+      </span>
+    </div>
+
+    <div
+      v-if="
+        voicePreviewPrefetchActive &&
+        (voicePreviewPrefetchTotal ?? 0) > 1
+      "
+      class="co-comfy-voice-preview-prefetch"
+      role="status"
+    >
+      <span class="co-comfy-voice-preview-prefetch-dot" aria-hidden="true" />
+      <span class="co-comfy-voice-preview-prefetch-text">
+        {{
+          t("comfy.voicePreviewPrefetchRunning", {
+            done: voicePreviewPrefetchDone ?? 0,
+            total: voicePreviewPrefetchTotal ?? 0,
+          })
+        }}
+      </span>
+      <AButton
+        type="link"
+        size="small"
+        class="co-comfy-voice-preview-prefetch-cancel"
+        @click="emit('voice-preview-prefetch-cancel')"
+      >
+        {{ t("comfy.voicePreviewPrefetchCancel") }}
+      </AButton>
+    </div>
+    <div
+      v-else-if="
+        (voicePreviewPrefetchTotal ?? 0) > 1 &&
+        (voicePreviewPrefetchDone ?? 0) >= (voicePreviewPrefetchTotal ?? 0)
+      "
+      class="co-comfy-voice-preview-prefetch is-done"
+    >
+      <span class="co-comfy-voice-preview-prefetch-text">
+        {{
+          t("comfy.voicePreviewPrefetchDone", {
+            total: voicePreviewPrefetchTotal ?? 0,
+          })
+        }}
       </span>
     </div>
 
@@ -1095,7 +1159,14 @@ function onMediaDrop(event: DragEvent) {
           }}
         </ATag>
         <ATag
-          v-if="voicePreviewMeta.cached"
+          v-if="voicePreviewMeta.localCached"
+          color="success"
+          class="co-comfy-meta-tag"
+        >
+          {{ t("comfy.voicePreviewLocalCachedTag") }}
+        </ATag>
+        <ATag
+          v-else-if="voicePreviewMeta.cached"
           color="success"
           class="co-comfy-meta-tag"
         >
@@ -1468,6 +1539,83 @@ function onMediaDrop(event: DragEvent) {
   font-size: 12px;
   font-weight: 550;
   color: var(--co-success-text);
+}
+
+.co-comfy-voice-preview-prefetch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: var(--co-surface);
+  border: 1px dashed var(--co-border-secondary);
+  font-size: 12px;
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-voice-preview-prefetch.is-done {
+  border-style: solid;
+  color: var(--co-success-text);
+}
+
+.co-comfy-voice-preview-prefetch-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--co-primary, #1677ff);
+  flex-shrink: 0;
+  animation: co-voice-prefetch-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes co-voice-prefetch-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.co-comfy-voice-preview-prefetch-text {
+  line-height: 1.4;
+}
+
+.co-comfy-voice-preview-prefetch-cancel {
+  height: auto;
+  padding: 0 2px;
+  margin-left: auto;
+  font-size: 12px;
+}
+
+:global(.co-comfy-voice-opt-row) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+:global(.co-comfy-voice-opt-label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:global(.co-comfy-voice-ready-pill) {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 550;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--co-success-text, #16a34a);
+  background: var(--co-success-bg, rgba(22, 163, 74, 0.12));
+  border: 1px solid var(--co-success-border, rgba(22, 163, 74, 0.28));
 }
 
 .co-comfy-voice-preview-hint {

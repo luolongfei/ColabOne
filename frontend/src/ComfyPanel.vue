@@ -130,6 +130,8 @@ import {
   resolveColabOneInitialDigitalHumanWorkflowId,
   resolveColabOneLongCatNativeSamplingMode,
   resolveColabOneSelectedVoicePreset,
+  resolveColabOneSiblingVoicePresetsForPrefetch,
+  resolveColabOneVoicePresetPrefetchGroupIds,
   resolveColabOneVoicePreviewDefaultText,
   resolveSelectedTtsEngine,
   transferColabOneDigitalHumanFields,
@@ -1454,10 +1456,16 @@ interface VoicePreviewCacheEntry {
   meta: ColabOneVoicePreviewMeta;
 }
 
-const VOICE_PREVIEW_CACHE_MAX_ENTRIES = 16;
+const VOICE_PREVIEW_CACHE_MAX_ENTRIES = 64;
 const voicePreviewCache = new Map<string, VoicePreviewCacheEntry>();
 const detachedVoicePreviewTaskIds = new Set<string>();
 const detachedVoicePreviewVersion = ref(0);
+const readyVoicePresetMap = ref<Record<string, string>>({});
+const readyVoicePresetIds = computed(() =>
+  Object.keys(readyVoicePresetMap.value),
+);
+const voicePreviewPrefetchStarting = ref(false);
+const voicePreviewPrefetchLocalCancelled = ref(false);
 const voicePreviewText = ref("");
 const voicePreviewTextCustomEdited = ref(false);
 const voicePreviewFetchingAsset = ref(false);
@@ -1476,6 +1484,20 @@ const voicePreviewMeta = ref<ColabOneVoicePreviewMeta | null>(null);
 const voicePreviewPlayToken = ref(0);
 let voicePreviewReqGen = 0;
 let voicePreviewEphemeralSeq = 0;
+let voicePreviewLookupGen = 0;
+let pendingAutoPlayVoicePresetId = "";
+const activePrefetchJobId = ref("");
+const activePrefetchJobScopeKey = ref("");
+const prefetchPulledPreviewIds = new Set<string>();
+const prefetchPullQueue: Array<{
+  presetId: string;
+  previewId: string;
+  scopeKey: string;
+  engineName: string;
+  voiceLabel: string;
+  sampleRate?: number;
+}> = [];
+let prefetchPullDraining = false;
 
 const selectedVoicePresetId = computed(
   () =>
@@ -1491,6 +1513,109 @@ const selectedVoicePreset = computed(() =>
 const voicePreviewDefaultText = computed(() =>
   resolveColabOneVoicePreviewDefaultText(selectedVoicePreset.value),
 );
+
+const hasUploadedVoicePreviewRefAudio = computed(() => {
+  const wf = selectedWorkflow.value;
+  const hasVoiceRef = Boolean(
+    uploadedInputIds.value["pipeline.voice_ref_audio"] ||
+      pendingUploads.value["pipeline.voice_ref_audio"] ||
+      draftMediaMeta.value["pipeline.voice_ref_audio"],
+  );
+  const emoField = wf?.fields.find(
+    (f) => f.key === "pipeline.emotion_ref_audio",
+  );
+  const emoVisible = Boolean(
+    emoField && isWorkflowFieldVisible(emoField, fieldValues.value),
+  );
+  const hasEmoRef =
+    emoVisible &&
+    Boolean(
+      uploadedInputIds.value["pipeline.emotion_ref_audio"] ||
+        pendingUploads.value["pipeline.emotion_ref_audio"] ||
+        draftMediaMeta.value["pipeline.emotion_ref_audio"],
+    );
+  return hasVoiceRef || hasEmoRef;
+});
+
+const currentVoicePrefetchScopeKey = computed(() => {
+  const wf = selectedWorkflow.value;
+  const engine = selectedTtsEngine.value;
+  if (!wf || !engine || !isTtsAudioSource.value) return "";
+  const voicePromptVisible = engine.supports_voice_design !== false;
+  const emotionPromptVisible =
+    engine.id !== "moss_tts_v1_5" && engine.id !== "voxcpm2";
+  return JSON.stringify([
+    wf.id,
+    engine.id,
+    voicePreviewTextCustomEdited.value ? voicePreviewText.value.trim() : "",
+    voicePromptVisible
+      ? String(fieldValues.value["pipeline.voice_prompt"] ?? "").trim()
+      : "",
+    emotionPromptVisible
+      ? String(fieldValues.value["pipeline.emotion_prompt"] ?? "").trim()
+      : "",
+    hasUploadedVoicePreviewRefAudio.value ? "ref" : "",
+  ]);
+});
+
+const activeVoicePrefetchGroupIds = computed(() => {
+  if (hasUploadedVoicePreviewRefAudio.value) return [];
+  const wf = selectedWorkflow.value;
+  const engine = selectedTtsEngine.value;
+  if (!wf || !engine || !isTtsAudioSource.value) return [];
+  const voiceField = wf.fields.find((f) => f.key === "pipeline.voice_preset");
+  return resolveColabOneVoicePresetPrefetchGroupIds(
+    selectedVoicePresetId.value,
+    voiceField,
+    engine,
+  );
+});
+
+const voicePreviewPrefetchTotal = computed(
+  () => activeVoicePrefetchGroupIds.value.length,
+);
+
+const voicePreviewPrefetchDone = computed(() => {
+  const ready = readyVoicePresetMap.value;
+  let count = 0;
+  for (const pid of activeVoicePrefetchGroupIds.value) {
+    if (ready[pid]) count += 1;
+  }
+  return count;
+});
+
+const voicePreviewPrefetchActive = computed(() => {
+  if (
+    voicePreviewPrefetchLocalCancelled.value ||
+    hasUploadedVoicePreviewRefAudio.value
+  ) {
+    return false;
+  }
+  const engine = selectedTtsEngine.value;
+  const scopeKey = currentVoicePrefetchScopeKey.value;
+  if (!engine || !isTtsAudioSource.value || !scopeKey) return false;
+  if (voicePreviewPrefetchStarting.value) return true;
+  const remotePf = props.state.runtime.comfyui?.tts_preview_prefetch;
+  if (!remotePf?.active || remotePf.engine_id !== engine.id) return false;
+  if (activePrefetchJobScopeKey.value && activePrefetchJobScopeKey.value !== scopeKey) {
+    return false;
+  }
+  if (
+    activePrefetchJobId.value &&
+    remotePf.job_id &&
+    remotePf.job_id !== activePrefetchJobId.value
+  ) {
+    return false;
+  }
+  return true;
+});
+
+const voicePreviewCanOfflinePlay = computed(() => {
+  if (hasUploadedVoicePreviewRefAudio.value) return false;
+  const presetId = selectedVoicePresetId.value;
+  if (!presetId || presetId === "custom") return false;
+  return Boolean(readyVoicePresetMap.value[presetId]);
+});
 const activeVoicePreviewTask = computed(() => {
   void detachedVoicePreviewVersion.value;
   const tasks = props.state.runtime.tasks || [];
@@ -1732,6 +1857,7 @@ async function applyVoicePreviewAudio(
     sampleRate?: number;
     durationSeconds?: number;
     cached: boolean;
+    localCached?: boolean;
     engineName: string;
     voiceLabel: string;
   },
@@ -1742,6 +1868,7 @@ async function applyVoicePreviewAudio(
     sampleRate: info.sampleRate ?? existing?.meta.sampleRate,
     durationSeconds: info.durationSeconds ?? existing?.meta.durationSeconds,
     cached: info.cached,
+    localCached: info.localCached ?? existing?.meta.localCached,
     engineName: info.engineName || existing?.meta.engineName,
     voiceLabel: info.voiceLabel || existing?.meta.voiceLabel,
   };
@@ -1757,7 +1884,8 @@ async function applyVoicePreviewAudio(
     if (
       disposed ||
       reqGen !== voicePreviewReqGen ||
-      props.state.runtime.id !== targetRuntimeId
+      (targetRuntimeId !== undefined &&
+        props.state.runtime.id !== targetRuntimeId)
     ) {
       URL.revokeObjectURL(url);
       return false;
@@ -1772,6 +1900,442 @@ async function applyVoicePreviewAudio(
   voicePreviewMeta.value = nextMeta;
   loadedVoicePreviewSignature.value = contextKey;
   return true;
+}
+
+function markVoicePresetReadyInCurrentScope(
+  presetId: string,
+  previewId: string,
+  expectedScopeKey?: string,
+) {
+  const pid = String(presetId || "").trim();
+  const prevId = String(previewId || "").trim();
+  if (!pid || pid === "custom" || !prevId) return;
+  if (expectedScopeKey && currentVoicePrefetchScopeKey.value !== expectedScopeKey) {
+    return;
+  }
+  if (readyVoicePresetMap.value[pid] === prevId) return;
+  readyVoicePresetMap.value = {
+    ...readyVoicePresetMap.value,
+    [pid]: prevId,
+  };
+}
+
+function buildVoicePreviewPromptsForEngine(engine: ComfyTtsEngineSpec) {
+  const voicePromptVisible = engine.supports_voice_design !== false;
+  const emotionPromptVisible =
+    engine.id !== "moss_tts_v1_5" && engine.id !== "voxcpm2";
+  return {
+    voicePrompt: voicePromptVisible
+      ? String(fieldValues.value["pipeline.voice_prompt"] ?? "").trim()
+      : "",
+    emotionPrompt: emotionPromptVisible
+      ? String(fieldValues.value["pipeline.emotion_prompt"] ?? "").trim()
+      : "",
+  };
+}
+
+async function refreshLocalReadyVoicePresets() {
+  const wf = selectedWorkflow.value;
+  const engine = selectedTtsEngine.value;
+  const scopeKey = currentVoicePrefetchScopeKey.value;
+  if (
+    !wf ||
+    !engine ||
+    !isTtsAudioSource.value ||
+    hasUploadedVoicePreviewRefAudio.value ||
+    !scopeKey
+  ) {
+    readyVoicePresetMap.value = {};
+    return;
+  }
+  const presets = (engine.voice_presets || []).filter(
+    (p) => p?.id && p.id !== "custom",
+  );
+  if (!presets.length) {
+    readyVoicePresetMap.value = {};
+    return;
+  }
+  const { voicePrompt, emotionPrompt } =
+    buildVoicePreviewPromptsForEngine(engine);
+  const customText = voicePreviewTextCustomEdited.value
+    ? voicePreviewText.value.trim()
+    : "";
+  const items = presets.map((p) => ({
+    voice_preset: p.id,
+    preview_text: customText,
+    voice_prompt: voicePrompt,
+    emotion_prompt: emotionPrompt,
+  }));
+  const gen = ++voicePreviewLookupGen;
+  try {
+    const res = (await colabOneCommand("comfyui.tts.preview.cache.lookup", {
+      engine_id: engine.id,
+      items,
+    })) as {
+      items?: Array<{
+        voice_preset?: string;
+        preview_id?: string;
+        cached?: boolean;
+      }>;
+    } | null;
+    if (
+      disposed ||
+      gen !== voicePreviewLookupGen ||
+      currentVoicePrefetchScopeKey.value !== scopeKey
+    ) {
+      return;
+    }
+    const nextMap: Record<string, string> = {};
+    for (const entry of res?.items || []) {
+      const vp = String(entry?.voice_preset || "").trim();
+      const pid = String(entry?.preview_id || "").trim();
+      if (vp && pid && entry?.cached) {
+        nextMap[vp] = pid;
+      }
+    }
+    // Preserve remote-ready entries ONLY when they belong to the active prefetch job for this exact scope.
+    const remotePf = props.state.runtime.comfyui?.tts_preview_prefetch;
+    const remoteMatchesScope =
+      Boolean(remotePf && remotePf.engine_id === engine.id) &&
+      activePrefetchJobScopeKey.value === scopeKey &&
+      (!activePrefetchJobId.value ||
+        !remotePf?.job_id ||
+        remotePf.job_id === activePrefetchJobId.value);
+    if (remoteMatchesScope && remotePf) {
+      for (const item of remotePf.ready_items || []) {
+        const vp = String(item?.voice_preset || "").trim();
+        const pid = String(item?.preview_id || "").trim();
+        if (vp && pid && !nextMap[vp]) {
+          nextMap[vp] = pid;
+        }
+      }
+    }
+    readyVoicePresetMap.value = nextMap;
+  } catch {
+    // Offline/unsupported lookup is non-fatal.
+  }
+}
+
+async function drainPrefetchPullQueue() {
+  if (prefetchPullDraining) return;
+  prefetchPullDraining = true;
+  try {
+    while (prefetchPullQueue.length > 0 && !disposed) {
+      const next = prefetchPullQueue.shift();
+      if (!next) continue;
+      if (next.scopeKey !== currentVoicePrefetchScopeKey.value) {
+        continue;
+      }
+      if (voicePreviewCache.has(next.previewId)) {
+        continue;
+      }
+      if (!gpuReady.value) {
+        break;
+      }
+      try {
+        const asset = (await colabOneCommand("comfyui.tts.preview.asset", {
+          preview_id: next.previewId,
+        })) as Partial<ColabOneTtsPreviewResult> | null;
+        if (
+          disposed ||
+          next.scopeKey !== currentVoicePrefetchScopeKey.value ||
+          !asset ||
+          typeof asset.data !== "string" ||
+          !asset.data.trim()
+        ) {
+          continue;
+        }
+        if (voicePreviewCache.has(next.previewId)) {
+          continue;
+        }
+        const url = await verifyAndDecodeColabOneBase64AudioUrl(
+          asset.data,
+          asset.mime || "audio/wav",
+          asset.sha256,
+        );
+        if (disposed || next.scopeKey !== currentVoicePrefetchScopeKey.value) {
+          URL.revokeObjectURL(url);
+          continue;
+        }
+        voicePreviewCache.delete(next.previewId);
+        voicePreviewCache.set(next.previewId, {
+          url,
+          meta: {
+            sampleRate: asset.sample_rate ?? next.sampleRate,
+            durationSeconds: asset.duration_seconds,
+            cached: true,
+            localCached: true,
+            engineName: next.engineName,
+            voiceLabel: next.voiceLabel,
+          },
+        });
+        evictVoicePreviewCache(url);
+      } catch {
+        // Non-fatal; asset can still be fetched on demand when clicked.
+      }
+    }
+  } finally {
+    prefetchPullDraining = false;
+  }
+}
+
+function enqueuePrefetchAssetPull(
+  presetId: string,
+  previewId: string,
+  scopeKey: string,
+) {
+  if (
+    !previewId ||
+    voicePreviewCache.has(previewId) ||
+    prefetchPulledPreviewIds.has(previewId)
+  ) {
+    return;
+  }
+  const engine = selectedTtsEngine.value;
+  const wf = selectedWorkflow.value;
+  if (!engine || !wf) return;
+  const preset = resolveColabOneSelectedVoicePreset(presetId, engine);
+  const voiceField = wf.fields.find((f) => f.key === "pipeline.voice_preset");
+  const voiceLabel =
+    preset?.name || voiceField?.option_labels?.[presetId] || presetId;
+  prefetchPulledPreviewIds.add(previewId);
+  prefetchPullQueue.push({
+    presetId,
+    previewId,
+    scopeKey,
+    engineName: engine.name || engine.id,
+    voiceLabel,
+    sampleRate: engine.sample_rate,
+  });
+  void drainPrefetchPullQueue();
+}
+
+function cancelVoicePreviewPrefetch() {
+  voicePreviewPrefetchLocalCancelled.value = true;
+  voicePreviewPrefetchStarting.value = false;
+  activePrefetchJobId.value = "";
+  activePrefetchJobScopeKey.value = "";
+  prefetchPullQueue.length = 0;
+  if (!gpuReady.value) return;
+  void colabOneCommand("comfyui.tts.preview.prefetch.cancel", {}).catch(
+    () => {},
+  );
+}
+
+async function kickoffSiblingVoicePrefetch(activePresetId: string) {
+  if (
+    disposed ||
+    !gpuReady.value ||
+    !paramDrawerOpen.value ||
+    hasUploadedVoicePreviewRefAudio.value ||
+    props.state.operation ||
+    hasBlockingNonPreviewTask.value
+  ) {
+    return;
+  }
+  const wf = selectedWorkflow.value;
+  const engine = selectedTtsEngine.value;
+  const scopeKey = currentVoicePrefetchScopeKey.value;
+  if (!wf || !engine || !isTtsAudioSource.value || !scopeKey) return;
+  if (!activePresetId || activePresetId === "custom") return;
+
+  const voiceField = wf.fields.find((f) => f.key === "pipeline.voice_preset");
+  const siblingIds = resolveColabOneSiblingVoicePresetsForPrefetch(
+    activePresetId,
+    voiceField,
+    engine,
+  );
+  const missingIds = siblingIds.filter((id) => !readyVoicePresetMap.value[id]);
+  if (missingIds.length === 0) return;
+
+  const { voicePrompt, emotionPrompt } =
+    buildVoicePreviewPromptsForEngine(engine);
+  const customText = voicePreviewTextCustomEdited.value
+    ? voicePreviewText.value.trim()
+    : "";
+  const items = missingIds.map((id) => ({
+    voice_preset: id,
+    preview_text: customText,
+    voice_prompt: voicePrompt,
+    emotion_prompt: emotionPrompt,
+  }));
+
+  voicePreviewPrefetchLocalCancelled.value = false;
+  voicePreviewPrefetchStarting.value = true;
+  activePrefetchJobScopeKey.value = scopeKey;
+  activePrefetchJobId.value = "";
+  try {
+    const res = (await colabOneCommand("comfyui.tts.preview.prefetch", {
+      engine_id: engine.id,
+      items,
+    })) as {
+      active?: boolean;
+      job_id?: string;
+      ready_items?: Array<{ voice_preset?: string; preview_id?: string }>;
+    } | null;
+    if (disposed || currentVoicePrefetchScopeKey.value !== scopeKey) return;
+    const returnedJobId =
+      typeof res?.job_id === "string" ? res.job_id.trim() : "";
+    if (returnedJobId) {
+      activePrefetchJobId.value = returnedJobId;
+      activePrefetchJobScopeKey.value = scopeKey;
+    }
+    for (const item of res?.ready_items || []) {
+      const vp = String(item?.voice_preset || "").trim();
+      const pid = String(item?.preview_id || "").trim();
+      if (vp && pid) {
+        markVoicePresetReadyInCurrentScope(vp, pid, scopeKey);
+        enqueuePrefetchAssetPull(vp, pid, scopeKey);
+      }
+    }
+    if (res?.active) {
+      emit("sync");
+    }
+  } catch {
+    // Background prefetch failures never disrupt foreground playback.
+  } finally {
+    voicePreviewPrefetchStarting.value = false;
+  }
+}
+
+async function tryPlayLocalOrCachedVoicePreview(
+  presetId: string,
+  opts: { autoPlay: boolean; triggerPrefetch: boolean },
+): Promise<boolean> {
+  if (hasUploadedVoicePreviewRefAudio.value || !presetId || presetId === "custom") {
+    return false;
+  }
+  const wf = selectedWorkflow.value;
+  const engine = selectedTtsEngine.value;
+  if (!wf || !engine) return false;
+  const scopeKey = currentVoicePrefetchScopeKey.value;
+  const knownPreviewId = readyVoicePresetMap.value[presetId] || "";
+  const engineName = engine.name || engine.id;
+  const voiceField = wf.fields.find((f) => f.key === "pipeline.voice_preset");
+  const preset = resolveColabOneSelectedVoicePreset(presetId, engine);
+  const voiceLabel =
+    preset?.name || voiceField?.option_labels?.[presetId] || presetId;
+  const previewText =
+    (voicePreviewTextCustomEdited.value && voicePreviewText.value.trim()) ||
+    resolveColabOneVoicePreviewDefaultText(preset);
+  const { voicePrompt, emotionPrompt } =
+    buildVoicePreviewPromptsForEngine(engine);
+  const contextKey = computeVoicePreviewSignature({
+    workflowId: wf.id,
+    engineId: engine.id,
+    voicePresetId: presetId,
+    previewText,
+    voicePrompt,
+    emotionPrompt,
+    refText: String(fieldValues.value["pipeline.voice_ref_text"] ?? "").trim(),
+    refAudioMarker: "",
+    emotionRefMarker: "",
+  });
+
+  // L1: instant in-memory Blob URL cache (0 ms).
+  if (knownPreviewId) {
+    const existing = voicePreviewCache.get(knownPreviewId);
+    if (existing) {
+      voicePreviewCache.delete(knownPreviewId);
+      voicePreviewCache.set(knownPreviewId, existing);
+      voicePreviewError.value = "";
+      voicePreviewAudioUrl.value = existing.url;
+      voicePreviewMeta.value = {
+        ...existing.meta,
+        cached: true,
+        engineName,
+        voiceLabel,
+      };
+      loadedVoicePreviewSignature.value = contextKey;
+      if (opts.autoPlay) {
+        markVoicePreviewReadyAndPlay();
+      }
+      if (opts.triggerPrefetch) {
+        void kickoffSiblingVoicePrefetch(presetId);
+      }
+      return true;
+    }
+  }
+
+  // L2: local desktop persistent disk cache (~1-2 ms, works offline!).
+  const reqGen = ++voicePreviewReqGen;
+  try {
+    const localRes = (await colabOneCommand("comfyui.tts.preview.cache.read", {
+      preview_id: knownPreviewId,
+      engine_id: engine.id,
+      voice_preset: presetId,
+      preview_text: voicePreviewTextCustomEdited.value ? previewText : "",
+      voice_prompt: voicePrompt,
+      emotion_prompt: emotionPrompt,
+    })) as Partial<ColabOneTtsPreviewResult> | null;
+    if (
+      disposed ||
+      reqGen !== voicePreviewReqGen ||
+      currentVoicePrefetchScopeKey.value !== scopeKey
+    ) {
+      return false;
+    }
+    if (
+      localRes?.cached &&
+      typeof localRes.data === "string" &&
+      localRes.data.trim()
+    ) {
+      const pid = String(localRes.preview_id || knownPreviewId || "").trim();
+      const applied = await applyVoicePreviewAudio(
+        pid,
+        localRes.data,
+        reqGen,
+        undefined,
+        contextKey,
+        {
+          mime: localRes.mime,
+          sha256: localRes.sha256,
+          sampleRate: localRes.sample_rate ?? engine.sample_rate,
+          durationSeconds: localRes.duration_seconds,
+          cached: true,
+          localCached: true,
+          engineName,
+          voiceLabel,
+        },
+      );
+      if (applied) {
+        if (pid) {
+          markVoicePresetReadyInCurrentScope(presetId, pid, scopeKey);
+        }
+        if (opts.autoPlay) {
+          markVoicePreviewReadyAndPlay();
+        }
+        if (opts.triggerPrefetch) {
+          void kickoffSiblingVoicePrefetch(presetId);
+        }
+        return true;
+      }
+    }
+  } catch {
+    // Fall through to remote fetch if local disk read failed.
+  }
+
+  // L3: remote prefetched asset is ready on remote disk; fetch once and auto-play.
+  if (knownPreviewId && gpuReady.value && reqGen === voicePreviewReqGen) {
+    activeVoicePreviewEngineName.value = engineName;
+    activeVoicePreviewVoiceLabel.value = voiceLabel;
+    activeVoicePreviewSampleRate.value = engine.sample_rate;
+    activeVoicePreviewId.value = knownPreviewId;
+    activeVoicePreviewContextKey.value = contextKey;
+    activeVoicePreviewRuntimeId.value = props.state.runtime.id;
+    await fetchVoicePreviewAsset(
+      knownPreviewId,
+      reqGen,
+      props.state.runtime.id,
+      contextKey,
+      true,
+      presetId,
+      scopeKey,
+    );
+    return Boolean(voicePreviewAudioUrl.value);
+  }
+
+  return false;
 }
 
 function markVoicePreviewReadyAndPlay() {
@@ -1796,7 +2360,11 @@ async function fetchVoicePreviewAsset(
   targetRuntimeId: string | undefined,
   contextKey: string,
   wasCached: boolean,
+  presetId?: string,
+  scopeKey?: string,
 ) {
+  const effectivePresetId = presetId || selectedVoicePresetId.value;
+  const effectiveScopeKey = scopeKey || currentVoicePrefetchScopeKey.value;
   const existing = voicePreviewCache.get(previewId);
   if (existing) {
     voicePreviewCache.delete(previewId);
@@ -1808,7 +2376,13 @@ async function fetchVoicePreviewAsset(
       cached: true,
     };
     loadedVoicePreviewSignature.value = contextKey;
+    markVoicePresetReadyInCurrentScope(
+      effectivePresetId,
+      previewId,
+      effectiveScopeKey,
+    );
     markVoicePreviewReadyAndPlay();
+    void kickoffSiblingVoicePrefetch(effectivePresetId);
     return;
   }
 
@@ -1844,7 +2418,13 @@ async function fetchVoicePreviewAsset(
       },
     );
     if (applied) {
+      markVoicePresetReadyInCurrentScope(
+        effectivePresetId,
+        previewId,
+        effectiveScopeKey,
+      );
       markVoicePreviewReadyAndPlay();
+      void kickoffSiblingVoicePrefetch(effectivePresetId);
     }
   } catch (e) {
     if (!disposed && reqGen === voicePreviewReqGen) {
@@ -2082,18 +2662,35 @@ async function triggerVoicePreview() {
   ) {
     voicePreviewError.value = "";
     markVoicePreviewReadyAndPlay();
-    return;
-  }
-  if (!gpuReady.value) {
-    return;
-  }
-  if (props.state.operation || hasBlockingNonPreviewTask.value) {
-    voicePreviewError.value = t("comfy.runBlockedBusy");
+    void kickoffSiblingVoicePrefetch(selectedVoicePresetId.value);
     return;
   }
   const wf = selectedWorkflow.value;
   const engine = selectedTtsEngine.value;
   if (!wf || !engine) {
+    return;
+  }
+
+  // Try L1 in-memory cache or L2 local desktop disk cache first (0-2 ms, works even offline!).
+  if (
+    !hasUploadedVoicePreviewRefAudio.value &&
+    selectedVoicePresetId.value &&
+    selectedVoicePresetId.value !== "custom"
+  ) {
+    const localHit = await tryPlayLocalOrCachedVoicePreview(
+      selectedVoicePresetId.value,
+      { autoPlay: true, triggerPrefetch: true },
+    );
+    if (localHit) {
+      return;
+    }
+  }
+
+  if (!gpuReady.value) {
+    return;
+  }
+  if (props.state.operation || hasBlockingNonPreviewTask.value) {
+    voicePreviewError.value = t("comfy.runBlockedBusy");
     return;
   }
 
@@ -2281,6 +2878,7 @@ async function triggerVoicePreview() {
 
     const previewId =
       typeof res?.preview_id === "string" ? res.preview_id.trim() : "";
+    const targetScopeKey = currentVoicePrefetchScopeKey.value;
 
     if (res?.cached && typeof res.data === "string" && res.data.trim()) {
       const applied = await applyVoicePreviewAudio(
@@ -2295,12 +2893,23 @@ async function triggerVoicePreview() {
           sampleRate: res.sample_rate ?? engine.sample_rate,
           durationSeconds: res.duration_seconds,
           cached: true,
+          localCached: Boolean(res.local_cached),
           engineName,
           voiceLabel,
         },
       );
       if (applied) {
+        if (!refAudioInputId && !emotionRefInputId && previewId) {
+          markVoicePresetReadyInCurrentScope(
+            voicePresetId,
+            previewId,
+            targetScopeKey,
+          );
+        }
         markVoicePreviewReadyAndPlay();
+        if (!refAudioInputId && !emotionRefInputId) {
+          void kickoffSiblingVoicePrefetch(voicePresetId);
+        }
       }
       return;
     }
@@ -2317,7 +2926,17 @@ async function triggerVoicePreview() {
           cached: true,
         };
         loadedVoicePreviewSignature.value = contextKey;
+        if (!refAudioInputId && !emotionRefInputId) {
+          markVoicePresetReadyInCurrentScope(
+            voicePresetId,
+            previewId,
+            targetScopeKey,
+          );
+        }
         markVoicePreviewReadyAndPlay();
+        if (!refAudioInputId && !emotionRefInputId) {
+          void kickoffSiblingVoicePrefetch(voicePresetId);
+        }
         return;
       }
       activeVoicePreviewId.value = previewId;
@@ -2327,6 +2946,8 @@ async function triggerVoicePreview() {
         targetRuntimeId,
         contextKey,
         true,
+        voicePresetId,
+        targetScopeKey,
       );
       return;
     }
@@ -2350,6 +2971,8 @@ async function triggerVoicePreview() {
           targetRuntimeId,
           contextKey,
           false,
+          voicePresetId,
+          targetScopeKey,
         );
       } else if (res?.task?.state === "cancelled") {
         activeVoicePreviewTaskId.value = "";
@@ -2387,12 +3010,23 @@ async function triggerVoicePreview() {
           sampleRate: res.sample_rate ?? engine.sample_rate,
           durationSeconds: res.duration_seconds,
           cached: Boolean(res.cached),
+          localCached: Boolean(res.local_cached),
           engineName,
           voiceLabel,
         },
       );
       if (applied) {
+        if (!refAudioInputId && !emotionRefInputId && previewId) {
+          markVoicePresetReadyInCurrentScope(
+            voicePresetId,
+            previewId,
+            targetScopeKey,
+          );
+        }
         markVoicePreviewReadyAndPlay();
+        if (!refAudioInputId && !emotionRefInputId) {
+          void kickoffSiblingVoicePrefetch(voicePresetId);
+        }
       }
       return;
     }
@@ -2430,6 +3064,21 @@ watch(selectedVoicePresetId, (nextId, prevId) => {
     voicePreviewTextCustomEdited.value = false;
   }
   detachActiveVoicePreviewRequest();
+  const shouldAutoPlay =
+    Boolean(pendingAutoPlayVoicePresetId) &&
+    pendingAutoPlayVoicePresetId === nextId &&
+    paramDrawerOpen.value &&
+    activeTab.value === "studio" &&
+    isTtsAudioSource.value &&
+    !hasUploadedVoicePreviewRefAudio.value &&
+    nextId !== "custom";
+  pendingAutoPlayVoicePresetId = "";
+  if (shouldAutoPlay && readyVoicePresetMap.value[nextId]) {
+    void tryPlayLocalOrCachedVoicePreview(nextId, {
+      autoPlay: true,
+      triggerPrefetch: true,
+    });
+  }
 });
 
 watch(
@@ -2441,6 +3090,7 @@ watch(
     }
     if (prevId && nextId !== prevId) {
       detachActiveVoicePreviewRequest();
+      cancelVoicePreviewPrefetch();
     }
   },
 );
@@ -2450,8 +3100,70 @@ watch(
   (nextSource, prevSource) => {
     if (prevSource !== undefined && nextSource !== prevSource) {
       detachActiveVoicePreviewRequest();
+      if (nextSource !== "tts") {
+        cancelVoicePreviewPrefetch();
+      }
     }
   },
+);
+
+watch(
+  [currentVoicePrefetchScopeKey, paramDrawerOpen],
+  ([scopeKey, open], prev) => {
+    const prevScopeKey = prev?.[0] || "";
+    prefetchPullQueue.length = 0;
+    if (prevScopeKey && prevScopeKey !== scopeKey) {
+      const remotePf = props.state.runtime.comfyui?.tts_preview_prefetch;
+      if (
+        activePrefetchJobScopeKey.value === prevScopeKey ||
+        remotePf?.active
+      ) {
+        cancelVoicePreviewPrefetch();
+      } else {
+        activePrefetchJobId.value = "";
+        activePrefetchJobScopeKey.value = "";
+      }
+    }
+    if (!open || !scopeKey) {
+      return;
+    }
+    voicePreviewPrefetchLocalCancelled.value = false;
+    void refreshLocalReadyVoicePresets();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.state.runtime.comfyui?.tts_preview_prefetch,
+  (pf) => {
+    if (!pf || !paramDrawerOpen.value || hasUploadedVoicePreviewRefAudio.value) {
+      return;
+    }
+    const engine = selectedTtsEngine.value;
+    const scopeKey = currentVoicePrefetchScopeKey.value;
+    if (!engine || !scopeKey || pf.engine_id !== engine.id) return;
+    if (activePrefetchJobScopeKey.value !== scopeKey) return;
+    if (
+      activePrefetchJobId.value &&
+      pf.job_id &&
+      pf.job_id !== activePrefetchJobId.value
+    ) {
+      return;
+    }
+    if (!pf.active) {
+      voicePreviewPrefetchStarting.value = false;
+    }
+    for (const item of pf.ready_items || []) {
+      const vp = String(item?.voice_preset || "").trim();
+      const pid = String(item?.preview_id || "").trim();
+      if (!vp || !pid) continue;
+      markVoicePresetReadyInCurrentScope(vp, pid, scopeKey);
+      if (gpuReady.value) {
+        enqueuePrefetchAssetPull(vp, pid, scopeKey);
+      }
+    }
+  },
+  { deep: true },
 );
 
 watch(
@@ -2659,6 +3371,9 @@ function onFieldValueUpdate(
   val: string | number | boolean,
 ) {
   ++draftRestoreGen;
+  if (field.key === "pipeline.voice_preset") {
+    pendingAutoPlayVoicePresetId = String(val ?? "").trim();
+  }
   fieldValues.value[field.key] = val;
   const wf = selectedWorkflow.value;
   const isLongCatWorkflow =
@@ -2692,6 +3407,25 @@ function onFieldValueUpdate(
       supportsOption("ai_2x")
     ) {
       fieldValues.value["pipeline.upscale_mode"] = "ai_2x";
+    }
+  }
+  const isLongCatNativeWorkflow =
+    wf?.pipeline?.video_backend === "longcat_avatar_native";
+  if (field.key === "pipeline.quality_preset" && isLongCatNativeWorkflow) {
+    const samplingField = wf?.fields.find(
+      (f) => f.key === "pipeline.sampling_mode",
+    );
+    if (
+      samplingField &&
+      (!samplingField.options?.length || samplingField.options.includes("auto"))
+    ) {
+      fieldValues.value["pipeline.sampling_mode"] = "auto";
+    }
+    if (
+      upscaleField &&
+      (!upscaleField.options?.length || upscaleField.options.includes("auto"))
+    ) {
+      fieldValues.value["pipeline.upscale_mode"] = "auto";
     }
   }
   if (field.key === "pipeline.tts_engine") {
@@ -4359,6 +5093,7 @@ async function runWorkflow() {
   if (!selectedWorkflow.value) {
     return;
   }
+  cancelVoicePreviewPrefetch();
 
   const wf = selectedWorkflow.value;
   const missing = missingRequiredWorkflowFields(
@@ -5561,6 +6296,7 @@ watch(
 watch(paramDrawerOpen, (open) => {
   if (!open) {
     pauseParamDrawerMedia();
+    cancelVoicePreviewPrefetch();
     flushDraftSave();
   }
 });
@@ -6996,7 +7732,12 @@ onUnmounted(() => {
                 :voice-preview-play-token="voicePreviewPlayToken"
                 :voice-preview-meta="voicePreviewMeta"
                 :voice-preview-remote-ready="voicePreviewRemoteReady"
+                :voice-preview-can-offline-play="voicePreviewCanOfflinePlay"
                 :voice-preview-disabled="hasUploadingField || !selectedTtsEngine"
+                :ready-voice-preset-ids="readyVoicePresetIds"
+                :voice-preview-prefetch-active="voicePreviewPrefetchActive"
+                :voice-preview-prefetch-done="voicePreviewPrefetchDone"
+                :voice-preview-prefetch-total="voicePreviewPrefetchTotal"
                 @update:value="(val) => onFieldValueUpdate(field, val)"
                 @field-blur="onFieldBlur"
                 @media-select="handleMediaFile"
@@ -7004,6 +7745,7 @@ onUnmounted(() => {
                 @update:voice-preview-text="onVoicePreviewTextUpdate"
                 @voice-preview-reset="onVoicePreviewReset"
                 @voice-preview-play="triggerVoicePreview"
+                @voice-preview-prefetch-cancel="cancelVoicePreviewPrefetch"
               />
             </div>
 
@@ -7091,9 +7833,14 @@ onUnmounted(() => {
                     :voice-preview-play-token="voicePreviewPlayToken"
                     :voice-preview-meta="voicePreviewMeta"
                     :voice-preview-remote-ready="voicePreviewRemoteReady"
+                    :voice-preview-can-offline-play="voicePreviewCanOfflinePlay"
                     :voice-preview-disabled="
                       hasUploadingField || !selectedTtsEngine
                     "
+                    :ready-voice-preset-ids="readyVoicePresetIds"
+                    :voice-preview-prefetch-active="voicePreviewPrefetchActive"
+                    :voice-preview-prefetch-done="voicePreviewPrefetchDone"
+                    :voice-preview-prefetch-total="voicePreviewPrefetchTotal"
                     @update:value="(val) => onFieldValueUpdate(field, val)"
                     @field-blur="onFieldBlur"
                     @media-select="handleMediaFile"
@@ -7101,6 +7848,7 @@ onUnmounted(() => {
                     @update:voice-preview-text="onVoicePreviewTextUpdate"
                     @voice-preview-reset="onVoicePreviewReset"
                     @voice-preview-play="triggerVoicePreview"
+                    @voice-preview-prefetch-cancel="cancelVoicePreviewPrefetch"
                   />
                 </div>
 

@@ -118,6 +118,7 @@ export interface ColabOneComfyTtsPreviewRequest {
 }
 export interface ColabOneTtsPreviewResult {
   cached: boolean;
+  local_cached?: boolean;
   preview_id: string;
   engine_id: string;
   voice_preset: string;
@@ -130,10 +131,26 @@ export interface ColabOneTtsPreviewResult {
   data?: string;
   task?: TaskStatus;
 }
+export interface ColabOneTtsPreviewPrefetchReadyItem {
+  voice_preset: string;
+  preview_id: string;
+  local_cached?: boolean;
+}
+export interface ColabOneTtsPreviewPrefetchStatus {
+  active: boolean;
+  job_id?: string;
+  engine_id: string;
+  state: string;
+  total: number;
+  completed: number;
+  failed: number;
+  ready_items: ColabOneTtsPreviewPrefetchReadyItem[];
+}
 export interface ColabOneVoicePreviewMeta {
   sampleRate?: number;
   durationSeconds?: number;
   cached?: boolean;
+  localCached?: boolean;
   engineName?: string;
   voiceLabel?: string;
 }
@@ -271,6 +288,7 @@ export interface ComfyStatus {
   tag?: string;
   active_pack?: string;
   cached_tts_engines?: string[];
+  tts_preview_prefetch?: ColabOneTtsPreviewPrefetchStatus | null;
   queue_running: number;
   queue_pending: number;
   error: string;
@@ -472,6 +490,22 @@ export interface ColabOneCuUsageBucket {
   estimated: boolean;
 }
 
+export interface ColabOneCuRunSummary {
+  active: boolean;
+  started_at: number;
+  ended_at?: number;
+  start_balance?: number;
+  end_balance?: number;
+  consumed: number;
+  unsettled?: number;
+  topup?: number;
+  last_sample_at?: number;
+  last_rate?: number;
+  peak_rate?: number;
+  max_instances?: number;
+  samples?: number;
+}
+
 export interface ColabOneCuUsageResponse {
   logged_in: boolean;
   bucket_seconds: number;
@@ -549,6 +583,7 @@ export interface ColabOneSnapshot {
     assignments?: number;
     instances?: AccountInstance[];
     checked_at?: number;
+    current_run?: ColabOneCuRunSummary | null;
   };
   operation: null | ColabOneOperation;
   error: string;

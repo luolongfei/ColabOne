@@ -34,6 +34,7 @@ from common.comfyui import (
     MAX_IMAGE_INPUT_BYTES,
     MAX_OUTPUT_BYTES,
     ComfyCatalog,
+    ComfyTtsPreviewPrefetchRequest,
     ComfyTtsPreviewRequest,
     WorkflowImportRequest,
     WorkflowOutputRecord,
@@ -1108,6 +1109,16 @@ class ColabOneComfyManager:
             except Exception:
                 cached_tts_engines = []
 
+        tts_preview_prefetch: dict | None = None
+        prefetch_fn = getattr(getattr(self, "tts", None), "prefetch_status", None)
+        if callable(prefetch_fn):
+            try:
+                raw_pf = prefetch_fn()
+                if isinstance(raw_pf, dict):
+                    tts_preview_prefetch = raw_pf
+            except Exception:
+                tts_preview_prefetch = None
+
         return {
             "installed": self.is_installed(),
             "running": running,
@@ -1119,6 +1130,7 @@ class ColabOneComfyManager:
             "error": error,
             "active_pack": native_active_pack or self.packs.active_pack_id,
             "cached_tts_engines": cached_tts_engines,
+            "tts_preview_prefetch": tts_preview_prefetch,
             "canvas": self.canvas.snapshot(),
         }
 
@@ -1341,11 +1353,24 @@ class ColabOneComfyManager:
             task.note(f"已生成模型路径配置，正在启动远端 ComfyUI（端口 {self.port}）")
             launch_pack_sig = str(getattr(self.packs, "active_pack_signature", "") or "")
             cwd = str(self.install_dir) if self.install_dir.is_dir() else None
+            comfy_env = _sanitized_subprocess_env()
+            for env_k, env_v in (
+                ("USE_TORCH", "1"),
+                ("USE_TF", "0"),
+                ("USE_FLAX", "0"),
+                ("USE_JAX", "0"),
+                ("TRANSFORMERS_NO_TF", "1"),
+                ("TRANSFORMERS_NO_FLAX", "1"),
+                ("TRANSFORMERS_NO_JAX", "1"),
+                ("DISABLE_TENSORFLOW", "1"),
+                ("TF_CPP_MIN_LOG_LEVEL", "3"),
+            ):
+                comfy_env.setdefault(env_k, env_v)
             with log.open("wb") as out:
                 proc = subprocess.Popen(
                     args,
                     cwd=cwd,
-                    env=_sanitized_subprocess_env(),
+                    env=comfy_env,
                     stdout=out,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -1439,13 +1464,20 @@ class ColabOneComfyManager:
                     self.error = ""
                 else:
                     self.state = "error"
-                    self.error = (str(exc) or type(exc).__name__)[:500]
+                    raw_err = str(exc) or type(exc).__name__
+                    self.error = (
+                        f"{raw_err[:140]} ... {raw_err[-355:]}"
+                        if len(raw_err) > 500
+                        else raw_err
+                    )
                 self._queue_cache = (0, 0)
                 self._queue_checked_at = -10.0
                 self._loaded_pack_signature = ""
             raise
 
     def stop_server(self) -> None:
+        if callable(getattr(self.tts, "cancel_prefetch_and_release_warm_worker", None)):
+            self.tts.cancel_prefetch_and_release_warm_worker("comfy_stop_server")
         try:
             self.canvas.stop()
         finally:
@@ -1464,7 +1496,13 @@ class ColabOneComfyManager:
                     self._loaded_pack_signature = ""
                     self._native_active_pack_id = ""
 
-    def free_memory(self, unload_models: bool = True) -> dict:
+    def free_memory(
+        self, unload_models: bool = True, *, release_tts_warm: bool = True
+    ) -> dict:
+        if unload_models and release_tts_warm and callable(
+            getattr(self.tts, "cancel_prefetch_and_release_warm_worker", None)
+        ):
+            self.tts.cancel_prefetch_and_release_warm_worker("comfy_free_memory")
         if not self.is_running():
             return {"ok": True, "running": False}
         resp = self.runtime.http.post(
@@ -1809,6 +1847,7 @@ class ColabOneComfyManager:
             "last_note_at": 0.0,
             "done": False,
             "error": "",
+            "error_at": None,
         }
         cancel_state: dict[str, Any] = {
             "prompt_id": "",
@@ -1882,6 +1921,8 @@ class ColabOneComfyManager:
         def _on_ws_error(err: Any = None) -> None:
             with ws_lock:
                 ws_state["error"] = str(err) if err else "工作流执行出错"
+                if ws_state.get("error_at") is None:
+                    ws_state["error_at"] = time.monotonic()
             ws_wakeup.set()
 
         def _on_ws_done(_event: Any = None) -> None:
@@ -2242,6 +2283,31 @@ class ColabOneComfyManager:
                     except (requests.RequestException, OSError, ValueError):
                         pass
 
+                    with ws_lock:
+                        ws_err_now = str(ws_state["error"] or "")
+                        ws_err_at = ws_state.get("error_at")
+                    if ws_err_now and (
+                        (queue_checked and not in_queue)
+                        or (ws_err_at is not None and (time.monotonic() - float(ws_err_at)) >= 2.0)
+                    ):
+                        # One immediate /history check in case richer error details just landed.
+                        try:
+                            final_hist = self.runtime.http.get(
+                                f"{self.base_url}/history/{prompt_id}",
+                                timeout=10,
+                            )
+                            if _response_ok(final_hist) and prompt_id in (
+                                final_hist.json() or {}
+                            ):
+                                continue
+                        except (requests.RequestException, OSError, ValueError):
+                            pass
+                        if in_queue:
+                            with ws_lock:
+                                cancel_state["interrupted"] = True
+                            self._cancel_prompt(prompt_id)
+                        raise RuntimeError("ComfyUI 执行失败：" + ws_err_now)
+
                     if queue_checked:
                         if in_queue:
                             missing_polls = 0
@@ -2503,7 +2569,7 @@ class ColabOneComfyManager:
         )
         engine_spec = validation["engine"]
         engine_name = str(engine_spec.get("name") or engine_id)
-        sample_rate = max(48000, int(engine_spec.get("sample_rate") or 48000))
+        sample_rate = max(8000, int(engine_spec.get("sample_rate") or 24000))
         effective_voice_preset = str(validation["effective_voice_preset"] or "")
         return {
             "preview_id": preview_id,
@@ -2634,13 +2700,13 @@ class ColabOneComfyManager:
             if callable(check_fn):
                 check_fn()
 
-        if self.is_running():
+        if self.is_running() and self._needs_comfy_vram_free_for_tts(engine_spec):
             free_msg = "正在释放 ComfyUI 显存以启动音色试听"
             with task_lock if task_lock is not None else nullcontext():
                 task.message = free_msg
             _note(free_msg)
             try:
-                self.free_memory(unload_models=True)
+                self.free_memory(unload_models=True, release_tts_warm=False)
             except Exception as exc:
                 scrubbed_free = _scrub_secret_text(
                     str(exc) or type(exc).__name__, raw_token_secret, hf_token
@@ -2707,3 +2773,65 @@ class ColabOneComfyManager:
             _note("音色试听音频已就绪")
 
         return preview
+
+    def _needs_comfy_vram_free_for_tts(self, engine_spec: dict) -> bool:
+        gpu_fn = getattr(self.runtime, "gpu_info", None)
+        if not callable(gpu_fn):
+            return True
+        try:
+            gpu = gpu_fn() or {}
+            total_mib = int(gpu.get("total_mib") or 0)
+            used_mib = int(gpu.get("used_mib") or 0)
+        except Exception:
+            return True
+        if total_mib <= 0 or used_mib < 0:
+            return True
+        free_mib = max(0, total_mib - used_mib)
+        needed_mib = max(int(engine_spec.get("min_vram_mib") or 8192), 4096) + 2048
+        return free_mib < needed_mib
+
+    def prefetch_tts_previews(self, req: ComfyTtsPreviewPrefetchRequest | dict) -> dict:
+        from server.runtime import _scrub_secret_text
+
+        raw_token_secret = (
+            req.get("hf_token", "")
+            if isinstance(req, dict) and isinstance(req.get("hf_token"), str)
+            else ""
+        )
+        hf_token = ""
+        try:
+            req_model = (
+                req
+                if isinstance(req, ComfyTtsPreviewPrefetchRequest)
+                else ComfyTtsPreviewPrefetchRequest.model_validate(req)
+            )
+            hf_token = str(getattr(req_model, "hf_token", "") or "").strip()
+            engine_spec = self.tts.get_engine(req_model.engine_id)
+            items = [it.model_dump() for it in req_model.items]
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, raw_token_secret, hf_token)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
+
+        def _ensure_vram() -> None:
+            if getattr(self.runtime, "loaded", None) and callable(
+                getattr(self.runtime, "_stop_engine", None)
+            ):
+                self.runtime._stop_engine()
+            if self.is_running() and self._needs_comfy_vram_free_for_tts(engine_spec):
+                try:
+                    self.free_memory(unload_models=True, release_tts_warm=False)
+                except Exception:
+                    pass
+
+        return self.tts.start_preview_prefetch(
+            engine_id=req_model.engine_id,
+            items=items,
+            hf_token=hf_token,
+            ensure_vram_fn=_ensure_vram,
+        )
+
+    def cancel_tts_preview_prefetch(self) -> dict:
+        return self.tts.cancel_preview_prefetch(wait=False)

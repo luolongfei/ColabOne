@@ -2112,4 +2112,525 @@ def test_r2_hf_cache_sharded_index_custom_voice_lru_corrupt_meta_and_api_edges(t
         os.chmod(locked_dir, 0o755)
 
 
+# ---------------------------------------------------------------------------
+# 12. Warm TTS Daemon, Single-Segment Native-SR Preview & Batch Prefetch Tests
+# ---------------------------------------------------------------------------
+
+
+def test_preview_single_segment_packing_and_native_sample_rate(tmp_path, monkeypatch):
+    from server.tts_engines import COLABONE_TTS_VOICE_PRESETS, ColabOneRemoteTtsRunner
+
+    monkeypatch.setattr(
+        "shutil.disk_usage",
+        lambda _p: _DiskUsage(200 * 1024**3, 20 * 1024**3, 180 * 1024**3),
+    )
+
+    rt = _make_mock_runtime(tmp_path, total_mib=98304)
+    call_log: list[dict] = []
+    runner = ColabOneRemoteTtsRunner(
+        rt,
+        sample_eight_tts_engines_by_id(),
+        synth_fn=_make_offline_synth_fn(call_log, duration_sec=0.35),
+    )
+
+    # gu_qinglan default preview_text is 68 chars across 3 sentences (< 180 max_segment_chars).
+    # synthesize_preview must keep it as 1 single segment AND preserve qwen3_tts native 24 kHz WAV!
+    res = runner.synthesize_preview(
+        ColabOneTask("comfyui_tts_preview", "qwen3_tts"),
+        engine_id="qwen3_tts",
+        voice_preset="gu_qinglan",
+        preview_text=COLABONE_TTS_VOICE_PRESETS["gu_qinglan"]["preview_text"],
+    )
+    assert len(call_log) == 1
+    assert len(call_log[0]["segments"]) == 1
+    assert res["sample_rate"] == 24000
+    wav_bytes = base64.b64decode(res["data"])
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        assert wf.getframerate() == 24000
+        assert wf.getnchannels() == 1
+        assert wf.getsampwidth() == 2
+
+
+def test_warm_tts_worker_daemon_persists_pid_and_handles_batch(tmp_path):
+    import os
+    import textwrap
+    from server.tts_engines import ColabOneWarmTtsWorker, _WORKER_COMMON_HEADER
+
+    # Build a tiny real offline Python daemon reusing _WORKER_COMMON_HEADER._run_daemon_loop.
+    mock_body = textwrap.dedent(
+        """\
+
+        _CALL_COUNT = 0
+
+        def _handle_one(cfg: dict) -> None:
+            global _CALL_COUNT
+            _CALL_COUNT += 1
+            for seg in cfg.get("segments") or []:
+                out_wav = str(seg["output_wav"])
+                _write_pcm16_wav(out_wav, [0.1, -0.1, 0.2, -0.2] * 200, int(cfg.get("sample_rate") or 24000))
+            print(f"[mock-warm] pid={os.getpid()} count={_CALL_COUNT}", flush=True)
+
+        def _handle_batch(configs: list[dict]) -> list[dict]:
+            out = []
+            for idx, cfg in enumerate(configs):
+                _handle_one(cfg)
+                out.append({"index": idx, "ok": True})
+            return out
+
+        def main() -> None:
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--daemon", action="store_true")
+            args = parser.parse_args()
+            if args.daemon:
+                _run_daemon_loop(_handle_one, _handle_batch)
+
+        if __name__ == "__main__":
+            main()
+        """
+    )
+
+    worker = ColabOneWarmTtsWorker(
+        engine_id="qwen3_tts",
+        worker_python=sys.executable,
+        worker_script=_WORKER_COMMON_HEADER + mock_body,
+        work_dir=tmp_path / "warm_dir",
+        env=dict(os.environ),
+    )
+    try:
+        worker.start(timeout=15.0)
+        assert worker.is_alive()
+        pid_first = worker.proc.pid if worker.proc is not None else -1
+        assert pid_first > 0
+
+        w1 = tmp_path / "out1.wav"
+        w2 = tmp_path / "out2.wav"
+        w3 = tmp_path / "out3.wav"
+        log_path = tmp_path / "warm.log"
+
+        resp1 = worker.call(
+            {
+                "op": "synthesize",
+                "config": {"sample_rate": 24000, "segments": [{"index": 0, "text": "hi", "output_wav": str(w1)}]},
+            },
+            timeout=15.0,
+            log_path=log_path,
+        )
+        assert resp1["ok"] is True
+        assert w1.is_file() and w1.stat().st_size > 44
+
+        resp2 = worker.call(
+            {
+                "op": "synthesize_batch",
+                "items": [
+                    {"sample_rate": 24000, "segments": [{"index": 0, "text": "a", "output_wav": str(w2)}]},
+                    {"sample_rate": 24000, "segments": [{"index": 0, "text": "b", "output_wav": str(w3)}]},
+                ],
+            },
+            timeout=15.0,
+            log_path=log_path,
+        )
+        assert resp2["ok"] is True
+        assert len(resp2["results"]) == 2
+        assert all(item["ok"] for item in resp2["results"])
+        assert w2.is_file() and w3.is_file()
+        # Same persistent PID across both calls -> zero cold restart.
+        assert worker.proc is not None and worker.proc.pid == pid_first
+    finally:
+        worker.close()
+    assert worker.is_alive() is False
+
+
+def test_fastapi_tts_preview_prefetch_smart_vram_and_cancel(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(
+        "shutil.disk_usage",
+        lambda _p: _DiskUsage(200 * 1024**3, 20 * 1024**3, 180 * 1024**3),
+    )
+
+    rt = ColabOneRuntime(tmp_path / "remote", ROOT / "catalog")
+    # Simulate 96 GB GPU with 80 GB free VRAM -> ComfyUI free_memory should NOT be called unnecessarily.
+    monkeypatch.setattr(
+        rt,
+        "gpu_info",
+        lambda: {"name": "NVIDIA RTX PRO 6000 Blackwell", "total_mib": 98304, "used_mib": 16384},
+    )
+    free_calls: list[int] = []
+    monkeypatch.setattr(rt.comfy, "is_running", lambda: True)
+    monkeypatch.setattr(rt.comfy, "free_memory", lambda **kw: free_calls.append(1) or {"ok": True})
+
+    synth_calls: list[dict] = []
+    rt.comfy.tts.synth_fn = _make_offline_synth_fn(synth_calls, duration_sec=0.25)
+
+    token = "prefetch-api-control-token-32char"
+    auth = {"Authorization": "Bearer " + token}
+    app = create_colabone_app(rt, token, background=False)
+
+    with TestClient(app) as client:
+        # Auth enforcement.
+        assert (
+            client.post(
+                "/api/v1/comfyui/tts-preview/prefetch",
+                json={"engine_id": "qwen3_tts", "items": [{"voice_preset": "shen_zhiyi"}]},
+            ).status_code
+            == 401
+        )
+        # Strict validation rejects empty items & unknown fields.
+        assert (
+            client.post(
+                "/api/v1/comfyui/tts-preview/prefetch",
+                json={"engine_id": "qwen3_tts", "items": []},
+                headers=auth,
+            ).status_code
+            == 422
+        )
+
+        # Trigger background prefetch for 3 built-in presets.
+        pf_resp = client.post(
+            "/api/v1/comfyui/tts-preview/prefetch",
+            json={
+                "engine_id": "qwen3_tts",
+                "items": [
+                    {"voice_preset": "shen_zhiyi"},
+                    {"voice_preset": "lin_xiaoman"},
+                    {"voice_preset": "gu_qinglan"},
+                ],
+            },
+            headers=auth,
+        )
+        assert pf_resp.status_code == 200
+        pf_body = pf_resp.json()
+        assert pf_body["engine_id"] == "qwen3_tts"
+        assert pf_body["total"] == 3
+
+        # Wait up to 5s for background prefetch to complete all 3 presets.
+        deadline = time.monotonic() + 5.0
+        final_pf = pf_body
+        while time.monotonic() < deadline:
+            status_body = client.get("/api/v1/status", headers=auth).json()
+            final_pf = status_body["comfyui"]["tts_preview_prefetch"]
+            if final_pf["state"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(0.05)
+
+        assert final_pf["state"] == "completed"
+        assert final_pf["completed"] == 3
+        assert len(final_pf["ready_items"]) == 3
+        # Plentiful free VRAM (80 GiB) -> ComfyUI free_memory was NOT called!
+        assert free_calls == []
+
+        # Subsequent foreground preview of gu_qinglan is an instant cache hit (0 extra synth calls!).
+        count_before = len(synth_calls)
+        hit = client.post(
+            "/api/v1/comfyui/tts-preview",
+            json={"engine_id": "qwen3_tts", "voice_preset": "gu_qinglan"},
+            headers=auth,
+        )
+        assert hit.status_code == 200
+        hit_body = hit.json()
+        assert hit_body["cached"] is True
+        assert hit_body["sample_rate"] == 24000
+        assert len(synth_calls) == count_before
+
+        # Cancel endpoint works cleanly even when idle/completed.
+        cancel_resp = client.post(
+            "/api/v1/comfyui/tts-preview/prefetch/cancel",
+            headers=auth,
+        )
+        assert cancel_resp.status_code == 200
+        assert cancel_resp.json()["active"] is False
+
+
+def test_tts_workers_block_non_torch_backends_and_preserve_error_tail(tmp_path):
+    """All PyTorch TTS workers must block Colab TF/JAX leaks and keep the final exception line."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    from server.tts_engines import (
+        SUPPORTED_TTS_ENGINE_IDS,
+        _build_tts_worker_env,
+        _summarize_subprocess_error_tail,
+    )
+
+    rt = _make_mock_runtime(tmp_path)
+    runner = ColabOneRemoteTtsRunner(rt, sample_eight_tts_engines_by_id())
+
+    env = _build_tts_worker_env(str(tmp_path / "_hf_cache"))
+    for key, expected in (
+        ("USE_TORCH", "1"),
+        ("USE_TF", "0"),
+        ("USE_FLAX", "0"),
+        ("USE_JAX", "0"),
+        ("TRANSFORMERS_NO_TF", "1"),
+        ("TRANSFORMERS_NO_FLAX", "1"),
+        ("TRANSFORMERS_NO_JAX", "1"),
+        ("DISABLE_TENSORFLOW", "1"),
+    ):
+        assert env.get(key) == expected
+
+    for eid in SUPPORTED_TTS_ENGINE_IDS:
+        script = runner.build_worker_script(eid)
+        assert "_disable_non_torch_backends()" in script
+        assert "_NON_TORCH_BLOCKED_MODULES" in script
+
+    # Real subprocess proof: even with a broken system tensorflow/jax on PYTHONPATH that would raise
+    # AttributeError (NumPy 1.26.4 vs NumPy 2.x StringDType), _disable_non_torch_backends blocks it cleanly.
+    poison_dir = tmp_path / "poison_site"
+    poison_dir.mkdir()
+    (poison_dir / "tensorflow.py").write_text(
+        "raise AttributeError(\"module 'numpy.dtypes' has no attribute 'StringDType'\")\n",
+        encoding="utf-8",
+    )
+    (poison_dir / "jax.py").write_text(
+        "raise AttributeError(\"module 'numpy.dtypes' has no attribute 'StringDType'\")\n",
+        encoding="utf-8",
+    )
+    ming_script_path = tmp_path / "worker_ming_guard.py"
+    ming_script_path.write_text(
+        runner.build_worker_script("ming_3_tts"), encoding="utf-8"
+    )
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        textwrap.dedent(
+            """\
+            import importlib.util
+            import json
+            import os
+            import runpy
+            import sys
+
+            ns = {}
+            code = open(sys.argv[1], encoding="utf-8").read()
+            exec(compile(code, sys.argv[1], "exec"), ns)
+            ns["_disable_non_torch_backends"]()
+
+            results = {}
+            for name in ("tensorflow", "jax", "flax", "keras", "tf_keras", "jaxlib"):
+                spec = importlib.util.find_spec(name)
+                try:
+                    __import__(name)
+                    imported = "ok"
+                except ModuleNotFoundError:
+                    imported = "ModuleNotFoundError"
+                except Exception as exc:
+                    imported = f"{type(exc).__name__}:{exc}"
+                results[name] = {
+                    "in_sys_modules": name in sys.modules,
+                    "spec": spec is not None,
+                    "import": imported,
+                }
+            print(json.dumps({"use_tf": os.environ.get("USE_TF"), "mods": results}))
+            """
+        ),
+        encoding="utf-8",
+    )
+    proc_env = dict(os.environ)
+    proc_env["PYTHONPATH"] = str(poison_dir)
+    proc = subprocess.run(
+        [sys.executable, str(probe), str(ming_script_path)],
+        capture_output=True,
+        text=True,
+        env=proc_env,
+        timeout=30,
+        check=True,
+    )
+    parsed = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert parsed["use_tf"] == "0"
+    for name in ("tensorflow", "jax", "flax", "keras", "tf_keras", "jaxlib"):
+        assert parsed["mods"][name]["in_sys_modules"] is False
+        assert parsed["mods"][name]["spec"] is False
+        assert parsed["mods"][name]["import"] == "ModuleNotFoundError"
+
+    # Error tail helper always preserves the final exception line within runtime's 500-char limit.
+    long_tb = [
+        "Traceback (most recent call last):",
+        *[
+            f'  File "/usr/local/lib/python3.13/dist-packages/pkg_{i}/module_{i}.py", line {10 + i}, in <module>'
+            for i in range(25)
+        ],
+        "AttributeError: module 'numpy.dtypes' has no attribute 'StringDType'. Did you mean: 'StrDType'?",
+    ]
+    tail = _summarize_subprocess_error_tail(long_tb, max_chars=440)
+    assert len(tail) <= 440
+    assert tail.endswith(
+        "AttributeError: module 'numpy.dtypes' has no attribute 'StringDType'. Did you mean: 'StrDType'?"
+    )
+
+
+def test_warm_tts_inference_error_fails_fast_and_prefetch_aborts_on_fatal_error(
+    tmp_path, monkeypatch
+):
+    """Unrecoverable warm-daemon inference errors fail fast without cold retry, and prefetch aborts early."""
+    import threading
+    import time
+
+    from server.tts_engines import (
+        ColabOneRemoteTtsRunner,
+        _ColabOneWarmWorkerTransportError,
+    )
+
+    rt = _make_mock_runtime(tmp_path)
+    engines = sample_eight_tts_engines_by_id()
+    runner = ColabOneRemoteTtsRunner(rt, engines)
+
+    # Prepare a fake ready engine env so synthesize() reaches the warm worker call path.
+    env_dir = runner.engines_dir / "qwen3_tts"
+    venv_py = env_dir / ".venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True, exist_ok=True)
+    venv_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "ensure_engine_env", lambda task, eng, hf_token="": env_dir)
+    monkeypatch.setattr(runner, "check_vram", lambda *a, **kw: None)
+    monkeypatch.setattr(runner, "check_disk", lambda *a, **kw: None)
+
+    oneshot_invocations: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "_invoke_command",
+        lambda args, *a, **kw: oneshot_invocations.append(list(args)),
+    )
+
+    released_reasons: list[str] = []
+    orig_release = runner.release_warm_worker
+
+    def _spy_release(reason: str = "") -> None:
+        released_reasons.append(reason)
+        orig_release(reason=reason)
+
+    monkeypatch.setattr(runner, "release_warm_worker", _spy_release)
+
+    # 1. Clean daemon application error (CUDA OOM) raises RuntimeError and must NOT spawn cold retry!
+    class _FakeOomWarmWorker:
+        def call(self, payload, **kw):
+            raise RuntimeError("CUDA out of memory while allocating tensor")
+
+    monkeypatch.setattr(
+        runner, "_ensure_warm_worker_locked", lambda task, eng, hf_token="": _FakeOomWarmWorker()
+    )
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        runner.synthesize(
+            None,
+            engine_id="qwen3_tts",
+            script_text="测试立即中止。",
+            voice_preset="qwen_vivian",
+            work_dir=tmp_path / "work_oom",
+            prefer_warm=True,
+        )
+    assert oneshot_invocations == []
+    assert "cuda_fatal_error" in released_reasons
+
+    # 2. Genuine transport death (_ColabOneWarmWorkerTransportError) DOES fall back to one-shot.
+    class _FakeBrokenPipeWorker:
+        def call(self, payload, **kw):
+            raise _ColabOneWarmWorkerTransportError("broken pipe")
+
+    monkeypatch.setattr(
+        runner,
+        "_ensure_warm_worker_locked",
+        lambda task, eng, hf_token="": _FakeBrokenPipeWorker(),
+    )
+
+    def _fake_oneshot_write_wav(args, *a, **kw):
+        import wave
+
+        oneshot_invocations.append(list(args))
+        cfg_path = Path(args[args.index("--config") + 1])
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        for seg in cfg["segments"]:
+            out_p = Path(seg["output_wav"])
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(out_p), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(b"\x01\x00" * 4800)
+
+    monkeypatch.setattr(runner, "_invoke_command", _fake_oneshot_write_wav)
+    res_fb = runner.synthesize(
+        None,
+        engine_id="qwen3_tts",
+        script_text="断连回退测试。",
+        voice_preset="qwen_vivian",
+        work_dir=tmp_path / "work_fb",
+        prefer_warm=True,
+    )
+    assert len(oneshot_invocations) == 1
+    assert Path(res_fb["audio_path"]).is_file()
+
+    # 3. Background prefetch aborts immediately on fatal engine error instead of retrying all presets.
+    prefetch_calls: list[str] = []
+
+    def _failing_preview(task, *, voice_preset="", **kw):
+        prefetch_calls.append(str(voice_preset))
+        raise RuntimeError("AttributeError: module 'numpy.dtypes' has no attribute 'StringDType'")
+
+    rt.quiescing = False
+    rt.tasks = {}
+    runner_pf = ColabOneRemoteTtsRunner(rt, engines)
+    monkeypatch.setattr(runner_pf, "check_vram", lambda *a, **kw: None)
+    monkeypatch.setattr(runner_pf, "check_disk", lambda *a, **kw: None)
+    monkeypatch.setattr(runner_pf, "_should_use_warm_worker", lambda: False)
+    monkeypatch.setattr(runner_pf, "synthesize_preview", _failing_preview)
+
+    runner_pf.start_preview_prefetch(
+        engine_id="ming_3_tts",
+        items=[
+            {"voice_preset": "shen_zhiyi"},
+            {"voice_preset": "lin_xiaoman"},
+            {"voice_preset": "gu_qinglan"},
+        ],
+    )
+    deadline = time.monotonic() + 5.0
+    st = runner_pf.prefetch_status()
+    while st["active"] and time.monotonic() < deadline:
+        time.sleep(0.05)
+        st = runner_pf.prefetch_status()
+
+    assert st["active"] is False
+    assert st["state"] == "failed"
+    assert st["failed"] == 1
+    assert len(prefetch_calls) == 1
+
+    # 4. Warm idle eviction timer rescheduling must never self-deadlock on _warm_lock,
+    #    and all 7 non-Qwen warm workers evict previous VRAM state on cache-key change.
+    runner_idle = ColabOneRemoteTtsRunner(rt, engines)
+    runner_idle._warm_idle_seconds = 0.05
+
+    class _FakeLiveWarm:
+        def __init__(self):
+            self.last_used = time.monotonic() + 60.0
+            self.closed = False
+
+        def is_alive(self):
+            return not self.closed
+
+        def close(self):
+            self.closed = True
+
+    fake_live = _FakeLiveWarm()
+    runner_idle._warm_worker = fake_live
+    runner_idle._schedule_warm_idle_timer()
+    time.sleep(0.15)
+    # Must not deadlock when acquiring _warm_lock or releasing the worker!
+    runner_idle.release_warm_worker("test_cleanup")
+    assert fake_live.closed is True
+
+    for eid in (
+        "voxcpm2",
+        "fish_s2_pro",
+        "indextts2",
+        "fish_drama3",
+        "moss_tts_v1_5",
+        "breeze_tts2",
+        "ming_3_tts",
+    ):
+        script_src = runner_idle.build_worker_script(eid)
+        assert "_release_warm_state(state)" in script_src
+
+
+
+
+
+
 

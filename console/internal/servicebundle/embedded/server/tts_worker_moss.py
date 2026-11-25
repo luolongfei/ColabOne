@@ -250,28 +250,23 @@ MOSS_TTS_V1_5_WORKER_BODY: str = textwrap.dedent(
         return None
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(
-            description="ColabOne MOSS-TTS-v1.5 remote TTS worker"
-        )
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
-
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    def _ensure_moss_loaded(cfg: dict, state: dict):
         token = _hf_token()
         repo = cfg["repo"]
         revision = cfg.get("revision") or ""
         aux_repo = (cfg.get("aux_repo") or "").strip()
         aux_revision = (cfg.get("aux_revision") or "").strip()
         cache_dir = cfg.get("cache_dir") or ""
-        ref_audio_path = (cfg.get("ref_audio_path") or "").strip()
-        voice_seed = cfg.get("voice_seed")
-        segments = cfg.get("segments") or []
         default_sr = int(cfg.get("sample_rate") or 24000)
 
         if cache_dir:
             os.environ["HF_HUB_CACHE"] = cache_dir
             os.environ["HUGGINGFACE_HUB_CACHE"] = cache_dir
+
+        cache_key = (repo, revision, aux_repo, aux_revision, cache_dir)
+        if state.get("key") == cache_key and state.get("bundle") is not None:
+            return state["bundle"]
+        _release_warm_state(state)
 
         import importlib.util
         import torch
@@ -333,20 +328,14 @@ MOSS_TTS_V1_5_WORKER_BODY: str = textwrap.dedent(
             flush=True,
         )
 
-        local_dir = snapshot_download(
-            repo_id=repo,
-            revision=revision or None,
-            cache_dir=cache_dir or None,
-            token=token,
+        local_dir = _resolve_hf_snapshot(
+            snapshot_download, repo, revision, cache_dir, token
         )
 
         local_codec_dir = None
         if aux_repo:
-            local_codec_dir = snapshot_download(
-                repo_id=aux_repo,
-                revision=aux_revision or None,
-                cache_dir=cache_dir or None,
-                token=token,
+            local_codec_dir = _resolve_hf_snapshot(
+                snapshot_download, aux_repo, aux_revision, cache_dir, token
             )
 
         if local_codec_dir:
@@ -379,7 +368,6 @@ MOSS_TTS_V1_5_WORKER_BODY: str = textwrap.dedent(
             processor.audio_tokenizer = audio_tokenizer.to(codec_target_device)
 
         model = _load_moss_model(AutoModel, local_dir, attn_impl, dtype, device)
-        _seed_moss_generators(voice_seed)
 
         try:
             build_msg_sig = inspect.signature(processor.build_user_message)
@@ -397,6 +385,36 @@ MOSS_TTS_V1_5_WORKER_BODY: str = textwrap.dedent(
             or getattr(getattr(processor, "model_config", None), "sample_rate", 0)
             or default_sr
         )
+        bundle = {
+            "torch": torch,
+            "device": device,
+            "vram_bytes": vram_bytes,
+            "processor": processor,
+            "model": model,
+            "build_msg_params": build_msg_params,
+            "build_msg_has_var_kw": build_msg_has_var_kw,
+            "sr": sr,
+        }
+        state["key"] = cache_key
+        state["bundle"] = bundle
+        return bundle
+
+
+    def _run_moss_request(cfg: dict, state: dict) -> None:
+        bundle = _ensure_moss_loaded(cfg, state)
+        torch = bundle["torch"]
+        device = bundle["device"]
+        processor = bundle["processor"]
+        model = bundle["model"]
+        build_msg_params = bundle["build_msg_params"]
+        build_msg_has_var_kw = bundle["build_msg_has_var_kw"]
+        sr = bundle["sr"]
+
+        ref_audio_path = (cfg.get("ref_audio_path") or "").strip()
+        voice_seed = cfg.get("voice_seed")
+        segments = cfg.get("segments") or []
+
+        _seed_moss_generators(voice_seed)
 
         active_ref_audio = ref_audio_path
         active_ref_item = (
@@ -459,6 +477,24 @@ MOSS_TTS_V1_5_WORKER_BODY: str = textwrap.dedent(
                     flush=True,
                 )
             print(f"[colabone-tts] moss_tts_v1_5 segment {idx + 1}/{total} done", flush=True)
+
+
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(
+            description="ColabOne MOSS-TTS-v1.5 remote TTS worker"
+        )
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        state: dict = {}
+        if args.daemon:
+            _run_daemon_loop(lambda cfg: _run_moss_request(cfg, state))
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        _run_moss_request(cfg, state)
 
 
     if __name__ == "__main__":

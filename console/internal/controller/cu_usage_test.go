@@ -472,3 +472,218 @@ func TestColabOneCUUsageStoreDSTAwareTimezoneDatesAndColdStartProfile(t *testing
 		t.Fatalf("expected 0.25 CU on cold-start query, got %.4f", c)
 	}
 }
+
+func TestColabOneCUUsageStoreCurrentRunLifecycleAndSettlement(t *testing.T) {
+	dir := t.TempDir()
+	base := 1763856000.0
+	store := NewColabOneCUUsageStore(dir, func() float64 { return base + 600 })
+
+	// 1) Initial idle sample -> no current run yet.
+	store.RecordSample("alice@example.com", base, 100.00, true, 0.0, 0)
+	if snap := store.CurrentRunSnapshot("alice@example.com"); snap != nil {
+		t.Fatalf("expected nil current_run when idle with no prior runs, got %v", snap)
+	}
+
+	// 2) BeginRun right at GPU allocation (base+10), capturing pre-start balance 100.00.
+	store.BeginRun("alice@example.com", base+10, 0, false)
+	snap := store.CurrentRunSnapshot("alice@example.com")
+	if snap == nil || !asBool(snap["active"]) {
+		t.Fatalf("expected active current_run after BeginRun, got %v", snap)
+	}
+	if sb, _ := asFloat(snap["start_balance"]); !almostEqualCU(sb, 100.00, 1e-4) {
+		t.Fatalf("expected start_balance 100.00, got %.4f", sb)
+	}
+
+	// An older in-flight idle poll timestamped BEFORE BeginRun must NOT close the new run.
+	store.RecordSample("alice@example.com", base+5, 100.00, true, 0.0, 0)
+	if snap2 := store.CurrentRunSnapshot("alice@example.com"); snap2 == nil || !asBool(snap2["active"]) {
+		t.Fatalf("pre-allocation idle sample must not close newly started run: %v", snap2)
+	}
+
+	// 3) First active poll (base+40): rate=3.60 CU/hr, Google balance hasn't ticked yet (still 100.00).
+	// Unsettled bridge should cover (base+40 - base+10) = 30s -> 0.03 CU without jumping back to 0.
+	store.RecordSample("alice@example.com", base+40, 100.00, true, 3.60, 1)
+	snap = store.CurrentRunSnapshot("alice@example.com")
+	if !asBool(snap["active"]) {
+		t.Fatalf("expected run still active")
+	}
+	if c, _ := asFloat(snap["consumed"]); !almostEqualCU(c, 0.0, 1e-4) {
+		t.Fatalf("expected confirmed consumed 0.0 before Google ticks balance, got %.4f", c)
+	}
+	if u, _ := asFloat(snap["unsettled"]); !almostEqualCU(u, 0.03, 1e-3) {
+		t.Fatalf("expected unsettled bridge ~0.03 CU for 30s @ 3.60 CU/h, got %.4f", u)
+	}
+
+	// Calling BeginRun while already active (e.g. adding a 2nd GPU) must NOT reset the run.
+	store.BeginRun("alice@example.com", base+50, 99.95, true)
+	if st, _ := asFloat(store.CurrentRunSnapshot("alice@example.com")["started_at"]); !almostEqualCU(st, base+10, 1e-4) {
+		t.Fatalf("BeginRun must preserve active run started_at, got %.2f", st)
+	}
+
+	// 4) Next poll (base+70): Google ticks balance down to 99.94 (-0.06 CU) with 2 instances @ 7.20 CU/hr.
+	// Confirmed becomes 0.06 and unsettled resets cleanly to 0.
+	store.RecordSample("alice@example.com", base+70, 99.94, true, 7.20, 2)
+	snap = store.CurrentRunSnapshot("alice@example.com")
+	if c, _ := asFloat(snap["consumed"]); !almostEqualCU(c, 0.06, 1e-4) {
+		t.Fatalf("expected confirmed consumed 0.06 CU, got %.4f", c)
+	}
+	if u, _ := asFloat(snap["unsettled"]); !almostEqualCU(u, 0.0, 1e-4) {
+		t.Fatalf("expected unsettled reset to 0 after balance drop, got %.4f", u)
+	}
+	if mi, _ := asInt(snap["max_instances"]); mi != 2 {
+		t.Fatalf("expected max_instances=2, got %d", mi)
+	}
+	if pr, _ := asFloat(snap["peak_rate"]); !almostEqualCU(pr, 7.20, 1e-4) {
+		t.Fatalf("expected peak_rate=7.20, got %.4f", pr)
+	}
+
+	// 5) Mid-run top-up (+100 CU) at base+130 (60s @ 7.20 CU/hr -> 0.12 CU burned, net balance 199.82).
+	store.RecordSample("alice@example.com", base+130, 199.82, true, 7.20, 2)
+	snap = store.CurrentRunSnapshot("alice@example.com")
+	if c, _ := asFloat(snap["consumed"]); !almostEqualCU(c, 0.18, 1e-3) {
+		t.Fatalf("expected confirmed consumed ~0.18 CU across top-up, got %.4f", c)
+	}
+	if tp, _ := asFloat(snap["topup"]); !almostEqualCU(tp, 100.0, 1e-2) {
+		t.Fatalf("expected topup ~100.0 CU, got %.4f", tp)
+	}
+
+	// 6) Reload from disk mid-run -> active run must survive client restart intact!
+	if err := store.Flush(); err != nil {
+		t.Fatalf("flush failed: %v", err)
+	}
+	reloaded := NewColabOneCUUsageStore(dir, func() float64 { return base + 600 })
+	rSnap := reloaded.CurrentRunSnapshot("alice@example.com")
+	if rSnap == nil || !asBool(rSnap["active"]) {
+		t.Fatalf("expected active run persisted across reload, got %v", rSnap)
+	}
+	if c, _ := asFloat(rSnap["consumed"]); !almostEqualCU(c, 0.18, 1e-3) {
+		t.Fatalf("expected reloaded consumed 0.18 CU, got %.4f", c)
+	}
+
+	// 7) Stop all instances at base+190 (balance drops 0.12 CU to 199.70, rate=0, assignments=0).
+	reloaded.RecordSample("alice@example.com", base+190, 199.70, true, 0.0, 0)
+	doneSnap := reloaded.CurrentRunSnapshot("alice@example.com")
+	if doneSnap == nil || asBool(doneSnap["active"]) {
+		t.Fatalf("expected completed (active=false) run preserved after stop, got %v", doneSnap)
+	}
+	if c, _ := asFloat(doneSnap["consumed"]); !almostEqualCU(c, 0.30, 1e-3) {
+		t.Fatalf("expected final consumed 0.30 CU, got %.4f", c)
+	}
+	if ended, _ := asFloat(doneSnap["ended_at"]); !almostEqualCU(ended, base+190, 1e-4) {
+		t.Fatalf("expected ended_at %.0f, got %.2f", base+190, ended)
+	}
+
+	// 8) Delayed Google settlement 30s after stop (balance drops final 0.02 CU to 199.68).
+	reloaded.RecordSample("alice@example.com", base+220, 199.68, true, 0.0, 0)
+	settledSnap := reloaded.CurrentRunSnapshot("alice@example.com")
+	if c, _ := asFloat(settledSnap["consumed"]); !almostEqualCU(c, 0.32, 1e-3) {
+		t.Fatalf("expected trailing settlement folded into completed run (0.32 CU), got %.4f", c)
+	}
+
+	// 9) Unrelated balance drop 10 minutes later (>5m window) must NOT alter the completed run.
+	reloaded.RecordSample("alice@example.com", base+900, 199.50, true, 0.0, 0)
+	unchangedSnap := reloaded.CurrentRunSnapshot("alice@example.com")
+	if c, _ := asFloat(unchangedSnap["consumed"]); !almostEqualCU(c, 0.32, 1e-3) {
+		t.Fatalf("expected late idle drop outside 5m window ignored (0.32 CU), got %.4f", c)
+	}
+
+	// 10) Starting a brand-new run later resets cleanly to 0 for the new run.
+	reloaded.RecordSample("alice@example.com", base+1200, 199.50, true, 1.96, 1)
+	nextSnap := reloaded.CurrentRunSnapshot("alice@example.com")
+	if !asBool(nextSnap["active"]) {
+		t.Fatalf("expected new active run")
+	}
+	if c, _ := asFloat(nextSnap["consumed"]); !almostEqualCU(c, 0.0, 1e-4) {
+		t.Fatalf("expected fresh run starting at 0.00 CU, got %.4f", c)
+	}
+
+	// 11) Account isolation: another user never sees Alice's current_run.
+	if bobSnap := reloaded.CurrentRunSnapshot("bob@example.com"); bobSnap != nil {
+		t.Fatalf("expected nil current_run for bob, got %v", bobSnap)
+	}
+}
+
+func TestControllerSnapshotExposesCurrentRunOnlyWhenSignedIn(t *testing.T) {
+	h := newTestHarness(t, false)
+	base := 1763856000.0
+
+	// Signed out -> no current_run exposed.
+	snapOut := h.ctrl.Snapshot()
+	if _, hasRun := asMap(snapOut["account"])["current_run"]; hasRun {
+		t.Fatalf("expected no current_run when signed out")
+	}
+
+	// Signed in with two active polls -> account.current_run exposed in Snapshot().
+	h.ctrl.Update(map[string]any{
+		"account": map[string]any{
+			"logged_in":   true,
+			"email":       "runner@example.com",
+			"balance":     80.00,
+			"rate":        2.40,
+			"assignments": 1,
+			"checked_at":  base,
+		},
+	})
+	h.ctrl.Update(map[string]any{
+		"account": map[string]any{
+			"logged_in":   true,
+			"email":       "runner@example.com",
+			"balance":     79.60,
+			"rate":        2.40,
+			"assignments": 1,
+			"checked_at":  base + 600,
+		},
+	})
+
+	snapIn := h.ctrl.Snapshot()
+	runMap := asMap(asMap(snapIn["account"])["current_run"])
+	if runMap == nil || !asBool(runMap["active"]) {
+		t.Fatalf("expected active account.current_run in Snapshot(), got %v", snapIn["account"])
+	}
+	if c, _ := asFloat(runMap["consumed"]); !almostEqualCU(c, 0.40, 1e-4) {
+		t.Fatalf("expected 0.40 CU consumed in Snapshot(), got %.4f", c)
+	}
+}
+
+func TestColabOneCUUsageStoreBeginRunIgnoresPreRunOfflineDropAndColdStartBridges(t *testing.T) {
+	dir := t.TempDir()
+	base := 1763856000.0
+	store := NewColabOneCUUsageStore(dir, func() float64 { return base + 2000 })
+
+	// 1) Idle anchor at base (100.00 CU), then 20-minute sleep during which an external notebook spent 1.00 CU.
+	// User wakes laptop and starts GPU at base+1200 with verified pre-start balance 99.00 CU.
+	store.RecordSample("sleep@example.com", base, 100.00, true, 0.0, 0)
+	store.BeginRun("sleep@example.com", base+1200, 99.00, true)
+	store.RecordSample("sleep@example.com", base+1230, 98.97, true, 3.60, 1)
+
+	snap := store.CurrentRunSnapshot("sleep@example.com")
+	if snap == nil || !asBool(snap["active"]) {
+		t.Fatalf("expected active run after wake start, got %v", snap)
+	}
+	if c, _ := asFloat(snap["consumed"]); !almostEqualCU(c, 0.03, 1e-4) {
+		t.Fatalf("expected 0.03 CU for new run (not 1.03 CU including pre-run offline drop), got %.4f", c)
+	}
+	if sb, _ := asFloat(snap["start_balance"]); !almostEqualCU(sb, 99.00, 1e-4) {
+		t.Fatalf("expected start_balance 99.00, got %.4f", sb)
+	}
+
+	// 2) Same 20-minute stale anchor without verified start_balance -> cleanly anchors to current balance (0.00 CU).
+	store.RecordSample("nobal@example.com", base, 100.00, true, 0.0, 0)
+	store.BeginRun("nobal@example.com", base+1200, 0, false)
+	store.RecordSample("nobal@example.com", base+1230, 98.50, true, 3.60, 1)
+	snapNoBal := store.CurrentRunSnapshot("nobal@example.com")
+	if c, _ := asFloat(snapNoBal["consumed"]); !almostEqualCU(c, 0.0, 1e-4) {
+		t.Fatalf("expected 0.00 CU when stale anchor predates BeginRun without start_balance, got %.4f", c)
+	}
+	if sb, _ := asFloat(snapNoBal["start_balance"]); !almostEqualCU(sb, 98.50, 1e-4) {
+		t.Fatalf("expected start_balance anchored at 98.50, got %.4f", sb)
+	}
+
+	// 3) Brand-new cold install (no prior anchor): BeginRun at base+10, first active sample at base+40 with unchanged balance -> bridges 30s.
+	store.BeginRun("cold@example.com", base+10, 50.00, true)
+	store.RecordSample("cold@example.com", base+40, 50.00, true, 3.60, 1)
+	snapCold := store.CurrentRunSnapshot("cold@example.com")
+	if u, _ := asFloat(snapCold["unsettled"]); !almostEqualCU(u, 0.03, 1e-3) {
+		t.Fatalf("expected 0.03 CU unsettled bridge on cold install first sample, got %.4f", u)
+	}
+}

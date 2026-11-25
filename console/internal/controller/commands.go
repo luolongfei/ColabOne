@@ -784,13 +784,173 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			}
 			return nil, err
 		}
-		if !asBool(asMap(res)["cached"]) {
+		resMap := asMap(res)
+		if asBool(resMap["cached"]) {
+			if rawB64 := asString(resMap["data"]); rawB64 != "" {
+				if decoded, decErr := base64.StdEncoding.DecodeString(rawB64); decErr == nil && len(decoded) > 0 {
+					c.saveLocalTtsPreview(req, resMap, decoded)
+				}
+			}
+		} else {
+			c.rememberPendingTtsPreviewReq(asString(resMap["preview_id"]), req)
 			if err := c.RefreshRemote(ctx, ""); err != nil {
 				c.log("远端已受理 TTS 音色试听任务，但刷新状态失败（将自动重试）："+errTypeName(err), "ComfyUI", "warning")
 				return res, nil
 			}
 			c.log("远端已受理 TTS 音色试听任务", "ComfyUI", "info")
 		}
+		return res, nil
+
+	case "comfyui.tts.preview.cache.lookup":
+		engineID := strings.TrimSpace(asString(payload["engine_id"]))
+		if engineID == "" {
+			return map[string]any{"items": []map[string]any{}}, nil
+		}
+		rawItems := asAnySlice(payload["items"])
+		cleanItems := make([]map[string]any, 0, len(rawItems))
+		for _, raw := range rawItems {
+			if len(cleanItems) >= 24 {
+				break
+			}
+			if m := asMap(raw); m != nil {
+				cleanItems = append(cleanItems, m)
+			}
+		}
+		return map[string]any{
+			"engine_id": engineID,
+			"items":     c.lookupLocalTtsPreviewBatch(engineID, cleanItems),
+		}, nil
+
+	case "comfyui.tts.preview.cache.read":
+		return c.readLocalTtsPreview(payload)
+
+	case "comfyui.tts.preview.prefetch":
+		engineID := strings.TrimSpace(asString(payload["engine_id"]))
+		if engineID == "" {
+			return nil, errors.New("TTS 引擎 ID 不合法")
+		}
+		rawItems := asAnySlice(payload["items"])
+		if len(rawItems) == 0 {
+			return map[string]any{
+				"active":      false,
+				"state":       "idle",
+				"engine_id":   engineID,
+				"total":       0,
+				"completed":   0,
+				"failed":      0,
+				"ready_items": []map[string]any{},
+			}, nil
+		}
+		cleanItems := make([]map[string]any, 0, len(rawItems))
+		for _, raw := range rawItems {
+			if len(cleanItems) >= 24 {
+				break
+			}
+			m := asMap(raw)
+			if m == nil {
+				continue
+			}
+			vp := strings.TrimSpace(asString(m["voice_preset"]))
+			if vp == "" || strings.EqualFold(vp, "custom") {
+				continue
+			}
+			cleanItems = append(cleanItems, map[string]any{
+				"voice_preset":   vp,
+				"preview_text":   strings.TrimSpace(asString(m["preview_text"])),
+				"voice_prompt":   strings.TrimSpace(asString(m["voice_prompt"])),
+				"emotion_prompt": strings.TrimSpace(asString(m["emotion_prompt"])),
+			})
+		}
+		if len(cleanItems) == 0 {
+			return map[string]any{
+				"active":      false,
+				"state":       "idle",
+				"engine_id":   engineID,
+				"total":       0,
+				"completed":   0,
+				"failed":      0,
+				"ready_items": []map[string]any{},
+			}, nil
+		}
+
+		localStatuses := c.lookupLocalTtsPreviewBatch(engineID, cleanItems)
+		localReady := make([]map[string]any, 0)
+		remotePending := make([]map[string]any, 0, len(cleanItems))
+		for idx, st := range localStatuses {
+			if asBool(st["cached"]) {
+				localReady = append(localReady, map[string]any{
+					"voice_preset": asString(st["voice_preset"]),
+					"preview_id":   asString(st["preview_id"]),
+					"local_cached": true,
+				})
+			} else if idx < len(cleanItems) {
+				remotePending = append(remotePending, cleanItems[idx])
+			}
+		}
+		if len(remotePending) == 0 {
+			return map[string]any{
+				"active":      false,
+				"state":       "completed",
+				"engine_id":   engineID,
+				"total":       len(cleanItems),
+				"completed":   len(localReady),
+				"failed":      0,
+				"ready_items": localReady,
+			}, nil
+		}
+		if c.remoteExplicitlyLacksCapability("comfyui_tts_preview") {
+			return map[string]any{
+				"active":      false,
+				"state":       "unsupported",
+				"engine_id":   engineID,
+				"total":       len(cleanItems),
+				"completed":   len(localReady),
+				"failed":      0,
+				"ready_items": localReady,
+			}, nil
+		}
+
+		reqBody := map[string]any{
+			"engine_id": engineID,
+			"items":     remotePending,
+		}
+		if c.hasRemoteCapability("comfyui_hf_token") || c.hasRemoteCapability("comfyui_tts_preview") {
+			if v, ok := c.vault.Get("hf"); ok {
+				if s, ok := v.(string); ok {
+					if cleaned, tokErr := validateCleanHFToken(s); tokErr == nil && cleaned != "" {
+						reqBody["hf_token"] = cleaned
+					}
+				}
+			}
+		}
+		c.rememberPendingTtsPrefetchContext(engineID, remotePending)
+		res, err := c.remote(ctx, "POST", "comfyui/tts-preview/prefetch", reqBody, "", 30*time.Second)
+		if err != nil {
+			if isMissingRemoteRoute404(err) {
+				return map[string]any{
+					"active":      false,
+					"state":       "unsupported",
+					"engine_id":   engineID,
+					"total":       len(cleanItems),
+					"completed":   len(localReady),
+					"failed":      0,
+					"ready_items": localReady,
+				}, nil
+			}
+			return nil, err
+		}
+		_ = c.RefreshRemote(ctx, "")
+		return res, nil
+
+	case "comfyui.tts.preview.prefetch.cancel":
+		res, err := c.remote(ctx, "POST", "comfyui/tts-preview/prefetch/cancel", nil, "", 15*time.Second)
+		if err != nil {
+			if isMissingRemoteRoute404(err) {
+				return map[string]any{"active": false, "state": "cancelled"}, nil
+			}
+			return map[string]any{"active": false, "state": "cancelled"}, nil
+		}
+		_ = c.RefreshRemote(ctx, "")
 		return res, nil
 
 	case "comfyui.tts.preview.asset":
@@ -934,6 +1094,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				out[k] = val
 			}
 		}
+		pendingReq := c.consumePendingTtsPreviewReq(previewID)
+		c.saveLocalTtsPreview(pendingReq, out, buf.Bytes())
 		out["data"] = base64.StdEncoding.EncodeToString(buf.Bytes())
 		out["size"] = buf.Len()
 		return out, nil

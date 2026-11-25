@@ -5730,6 +5730,111 @@ def test_opt_audit_regressions_nvidia_smi_probe_dynamic_compile_ffmpeg_cfr_and_p
             assert "_sanitize_voxcpm_prompt" in script
 
 
+def test_comfyui_ws_execution_error_aborts_immediately_and_env_blocks_tf(
+    runtime, tmp_path, monkeypatch
+):
+    """ComfyUI aborts immediately on WS execution_error (no 10-poll delay) and launches with PyTorch-only env."""
+    import time
+
+    from server import comfyui as comfyui_mod
+    from server.comfyui import ColabOneComfyManager
+    from server.runtime import ColabOneTask
+
+    mgr = ColabOneComfyManager(runtime)
+    mgr.state = "ready"
+
+    class _FakeResp:
+        def __init__(self, status_code: int, payload: Any):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class _FakeHttp:
+        def post(self, url, json=None, timeout=30):
+            if url.endswith("/prompt"):
+                return _FakeResp(200, {"prompt_id": "pid-err-fast-1"})
+            return _FakeResp(200, {})
+
+        def get(self, url, timeout=15):
+            if "/history/" in url:
+                return _FakeResp(200, {})
+            if url.endswith("/queue"):
+                return _FakeResp(200, {"queue_running": [], "queue_pending": []})
+            return _FakeResp(200, {})
+
+    runtime.http = _FakeHttp()
+
+    class _ImmediateErrorWsMonitor:
+        def __init__(self, host, port, client_id, *, on_error=None, **kw):
+            self._on_error = on_error
+            self.connected = True
+
+        def start(self):
+            return True
+
+        def set_prompt_id(self, pid):
+            if callable(self._on_error):
+                self._on_error("WanVideoSampler: CUDA out of memory")
+
+        def stop(self):
+            self.connected = False
+
+    monkeypatch.setattr(comfyui_mod, "ColabOneComfyWsMonitor", _ImmediateErrorWsMonitor)
+    task = ColabOneTask("comfyui_run", "ws-fast-abort")
+    wf = {"id": "wf-err", "name": "Fast Abort WF"}
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        mgr._execute_single_prompt(
+            task,
+            wf,
+            {"1": {"class_type": "WanVideoSampler", "inputs": {}}},
+        )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 3.0, f"Expected immediate WS error abort, took {elapsed:.2f}s"
+
+    # Also verify start_server passes USE_TF=0 / USE_JAX=0 / TRANSFORMERS_NO_TF=1.
+    captured_env: dict[str, str] = {}
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+    def _fake_popen(args, *, env=None, **kw):
+        captured_env.update(env or {})
+        return _FakeProc()
+
+    mgr2 = ColabOneComfyManager(runtime)
+    mgr2.install_dir.mkdir(parents=True, exist_ok=True)
+    (mgr2.install_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(runtime, "gpu_info", lambda: {"total_mib": 16000})
+    monkeypatch.setattr(comfyui_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(mgr2, "prepare", lambda task: None)
+    runtime.http = type(
+        "_ReadyHttp",
+        (),
+        {"get": lambda self, url, timeout=2: _FakeResp(200, {"system": {}})},
+    )()
+    mgr2.start_server(ColabOneTask("comfyui_start", "env-check"))
+    for k, expected in (
+        ("USE_TORCH", "1"),
+        ("USE_TF", "0"),
+        ("USE_FLAX", "0"),
+        ("USE_JAX", "0"),
+        ("TRANSFORMERS_NO_TF", "1"),
+        ("TRANSFORMERS_NO_FLAX", "1"),
+        ("TRANSFORMERS_NO_JAX", "1"),
+        ("DISABLE_TENSORFLOW", "1"),
+    ):
+        assert captured_env.get(k) == expected
+
+
+
 
 
 

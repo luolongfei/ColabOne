@@ -1028,7 +1028,7 @@ export interface ColabOneVoicePresetGroup {
 }
 
 export function resolveColabOneVoicePresetGroups(
-  field: WorkflowField,
+  field: WorkflowField | undefined,
   engine?: ColabOneComfyTtsEngineSpec,
 ): ColabOneVoicePresetGroup[] {
   const buckets: Record<
@@ -1214,6 +1214,69 @@ export function resolveColabOneVoicePreviewDefaultText(
   const custom =
     typeof preset?.preview_text === "string" ? preset.preview_text.trim() : "";
   return custom || COLABONE_DEFAULT_VOICE_PREVIEW_TEXT;
+}
+
+/**
+ * Return all built-in voice preset IDs belonging to the same logical group as
+ * `activePresetId` (official native speakers stay in their own group; curated
+ * female/male/neutral presets share the curated group).
+ */
+export function resolveColabOneVoicePresetPrefetchGroupIds(
+  activePresetId: string,
+  field: WorkflowField | undefined,
+  engine?: ColabOneComfyTtsEngineSpec,
+): string[] {
+  const normalized =
+    typeof activePresetId === "string"
+      ? canonicalizeColabOneVoicePreset(activePresetId)
+      : "";
+  if (!normalized || normalized === "custom") {
+    return [];
+  }
+  const groups = resolveColabOneVoicePresetGroups(field, engine);
+  const officialGroup = groups.find((g) => g.key === "official");
+  const officialIds = (officialGroup?.options || [])
+    .map((o) => o.id)
+    .filter((id) => id && id !== "custom");
+  if (officialIds.includes(normalized)) {
+    return officialIds;
+  }
+  const curatedIds: string[] = [];
+  for (const g of groups) {
+    if (g.key === "official" || g.key === "custom") continue;
+    for (const opt of g.options) {
+      if (opt.id && opt.id !== "custom" && !curatedIds.includes(opt.id)) {
+        curatedIds.push(opt.id);
+      }
+    }
+  }
+  return curatedIds.includes(normalized) ? curatedIds : [];
+}
+
+/**
+ * Return sibling preset IDs (excluding `activePresetId`) in the same logical
+ * voice group, rotated to start immediately after `activePresetId` so the next
+ * voices down the dropdown are prefetched first.
+ */
+export function resolveColabOneSiblingVoicePresetsForPrefetch(
+  activePresetId: string,
+  field: WorkflowField | undefined,
+  engine?: ColabOneComfyTtsEngineSpec,
+): string[] {
+  const normalized =
+    typeof activePresetId === "string"
+      ? canonicalizeColabOneVoicePreset(activePresetId)
+      : "";
+  const groupIds = resolveColabOneVoicePresetPrefetchGroupIds(
+    normalized,
+    field,
+    engine,
+  );
+  const idx = groupIds.indexOf(normalized);
+  if (idx < 0 || groupIds.length <= 1) {
+    return [];
+  }
+  return [...groupIds.slice(idx + 1), ...groupIds.slice(0, idx)];
 }
 
 function decodeColabOneBase64AudioPayload(

@@ -2871,15 +2871,18 @@ func (p *ColabOneProvider) Start(
 	if err != nil {
 		return rollback(err)
 	}
+	_, hasBeforeBal := before["balance"]
+	hasStartBalance := boolVal(before["logged_in"]) && hasBeforeBal
 	remote := map[string]any{
-		"endpoint":      session.Endpoint,
-		"token":         remoteToken,
-		"transport":     "colab",
-		"started_at":    started,
-		"deadline":      0,
-		"start_balance": sanitizeFloat(floatVal(before["balance"])),
-		"rate":          rate,
-		"gpu":           strings.ToUpper(gpu),
+		"endpoint":          session.Endpoint,
+		"token":             remoteToken,
+		"transport":         "colab",
+		"started_at":        started,
+		"deadline":          0,
+		"start_balance":     sanitizeFloat(floatVal(before["balance"])),
+		"has_start_balance": hasStartBalance,
+		"rate":              rate,
+		"gpu":               strings.ToUpper(gpu),
 	}
 	initialLoc := p.inferLocationFromEndpoint(session.Endpoint, session.URL)
 	if len(initialLoc) > 0 {

@@ -1091,6 +1091,34 @@ class ComfyTtsPreviewRequest(BaseModel):
         return validate_colabone_hf_token(value)
 
 
+class ComfyTtsPreviewPrefetchItem(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, hide_input_in_errors=True
+    )
+    voice_preset: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]{1,64}$"
+    )
+    preview_text: str = Field(default="", max_length=600)
+    voice_prompt: str = Field(default="", max_length=600)
+    emotion_prompt: str = Field(default="", max_length=240)
+
+
+class ComfyTtsPreviewPrefetchRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, hide_input_in_errors=True
+    )
+    engine_id: str = Field(
+        min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]{1,80}$"
+    )
+    items: list[ComfyTtsPreviewPrefetchItem] = Field(min_length=1, max_length=24)
+    hf_token: str = Field(default="", max_length=512, repr=False)
+
+    @field_validator("hf_token")
+    @classmethod
+    def valid_hf_token(cls, value: str) -> str:
+        return validate_colabone_hf_token(value)
+
+
 class WorkflowOutputRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     id: str = Field(pattern=r"^[a-f0-9]{32}$")

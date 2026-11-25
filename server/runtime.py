@@ -24,6 +24,7 @@ from urllib.parse import quote
 import requests
 
 from common.comfyui import (
+    ComfyTtsPreviewPrefetchRequest,
     ComfyTtsPreviewRequest,
     WorkflowOutputRecord,
     WorkflowRunRequest,
@@ -644,7 +645,11 @@ class ColabOneRuntime:
                 final_state = "cancelled"
             except Exception as exc:
                 final_state = "failed"
-                final_error = _scrub_secret_text(str(exc) or type(exc).__name__)[:500]
+                raw_err = _scrub_secret_text(str(exc) or type(exc).__name__)
+                if len(raw_err) > 500:
+                    final_error = f"{raw_err[:140]} ... {raw_err[-355:]}"
+                else:
+                    final_error = raw_err
             finally:
                 with self.lock:
                     self.last_active = time.time()
@@ -1473,6 +1478,10 @@ class ColabOneRuntime:
         return needs_hybrid, plans
 
     def _load(self, task, m):
+        if callable(
+            getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+        ):
+            self.comfy.tts.cancel_prefetch_and_release_warm_worker("llm_load")
         if self.comfy.is_running():
             task.note("正在停止 ComfyUI 服务以释放显存")
         self.comfy.stop_server()
@@ -1787,6 +1796,10 @@ class ColabOneRuntime:
                     raise ColabOneConflictError("请先停止当前任务")
                 comfy_running = self.comfy.is_running()
             self._stop_engine()
+        if callable(
+            getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+        ):
+            self.comfy.tts.cancel_prefetch_and_release_warm_worker("runtime_unload")
         if comfy_running:
             self.comfy.free_memory(unload_models=True)
         with self.lock:
@@ -1794,6 +1807,10 @@ class ColabOneRuntime:
 
     def start_comfyui(self):
         with self._comfy_lifecycle_lock:
+            if callable(
+                getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+            ):
+                self.comfy.tts.cancel_prefetch_and_release_warm_worker("comfyui_run")
             self._refresh_comfy_queue_if_needed()
             with self.lock:
                 return self.submit(
@@ -1836,6 +1853,10 @@ class ColabOneRuntime:
 
     def free_comfyui(self):
         with self._comfy_lifecycle_lock:
+            if callable(
+                getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+            ):
+                self.comfy.tts.cancel_prefetch_and_release_warm_worker("comfyui_run")
             self._refresh_comfy_queue_if_needed()
             with self.lock:
                 if self.quiescing or self.stopping.is_set():
@@ -1867,6 +1888,10 @@ class ColabOneRuntime:
                 raise ValueError(scrubbed) from None
             raise
         with self._comfy_lifecycle_lock:
+            if callable(
+                getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+            ):
+                self.comfy.tts.cancel_prefetch_and_release_warm_worker("comfyui_run")
             self._refresh_comfy_queue_if_needed()
             with self.lock:
                 if hasattr(self.comfy.store, "get_workflow"):
@@ -2007,6 +2032,36 @@ class ColabOneRuntime:
             "text": resolved["resolved_text"],
             "task": task,
         }
+
+    def prefetch_comfyui_tts_previews(
+        self, request_data: dict | ComfyTtsPreviewPrefetchRequest
+    ) -> dict:
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+            non_preview_busy = any(
+                t.state == "running" and t.kind != "comfyui_tts_preview"
+                for t in self.tasks.values()
+            )
+            if non_preview_busy:
+                return {
+                    "active": False,
+                    "job_id": "",
+                    "engine_id": str(
+                        request_data.get("engine_id", "")
+                        if isinstance(request_data, dict)
+                        else getattr(request_data, "engine_id", "")
+                    ),
+                    "state": "skipped_busy",
+                    "total": 0,
+                    "completed": 0,
+                    "failed": 0,
+                    "ready_items": [],
+                }
+        return self.comfy.prefetch_tts_previews(request_data)
+
+    def cancel_comfyui_tts_preview_prefetch(self) -> dict:
+        return self.comfy.cancel_tts_preview_prefetch()
 
     def delete(self, model_id):
         self._refresh_comfy_queue_if_needed()

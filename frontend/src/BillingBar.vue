@@ -10,13 +10,14 @@ import {
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   describeColabOneBilling,
+  describeColabOneRunConsumption,
   formatCountdownClock,
   formatIdlePolicyLabel,
 } from "./billing";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import { colabOneBillingSkeletonState } from "./skeletonState";
 import type { RuntimeStatus, ColabOneSnapshot } from "./types";
-import { PhLightning, PhClock, PhCoins } from "@phosphor-icons/vue";
+import { PhLightning, PhClock, PhCoins, PhFlame } from "@phosphor-icons/vue";
 
 const props = defineProps<{
   account: ColabOneSnapshot["account"];
@@ -58,6 +59,15 @@ const skeleton = computed(() =>
 
 const overview = computed(() =>
   describeColabOneBilling(props.account, effectiveRuntimeId.value, props.nowMs),
+);
+
+const runOverview = computed(() =>
+  describeColabOneRunConsumption(props.account, {
+    setupColab: effectiveSetupColab.value,
+    runtimeState: props.runtimeState,
+    runtimeId: effectiveRuntimeId.value,
+    nowMs: props.nowMs,
+  }),
 );
 
 const showIdle = computed(
@@ -230,6 +240,28 @@ const billingAriaLabel = computed(() => {
             <span>{{ t("billing.barEstimatedAvailable") }}</span>
             <b>{{ overview.endurance.text }}</b>
           </div>
+          <template v-if="runOverview.active">
+            <div class="co-billing-tip-divider" aria-hidden="true" />
+            <div class="co-billing-tip-row">
+              <span>{{ t("billing.barRunConsumed") }}</span>
+              <b>{{ runOverview.consumedText }}</b>
+            </div>
+            <div v-if="runOverview.durationText" class="co-billing-tip-row">
+              <span>{{ t("billing.barRunDuration") }}</span>
+              <b>{{ runOverview.durationText }}</b>
+            </div>
+          </template>
+          <template v-else-if="runOverview.phase === 'completed'">
+            <div class="co-billing-tip-divider" aria-hidden="true" />
+            <div class="co-billing-tip-row">
+              <span>{{ t("billing.barLastRunConsumed") }}</span>
+              <b>{{ runOverview.consumedText }}</b>
+            </div>
+            <div v-if="runOverview.durationText" class="co-billing-tip-row">
+              <span>{{ t("billing.barLastRunDuration") }}</span>
+              <b>{{ runOverview.durationText }}</b>
+            </div>
+          </template>
           <div v-if="isStaleData" class="co-billing-tip-stale">
             {{ t("billing.barStaleHint") }}
           </div>
@@ -305,6 +337,30 @@ const billingAriaLabel = computed(() => {
               <b>{{ overview.balanceText }}</b></span
             >
           </span>
+
+          <template v-if="runOverview.active && !skeleton.balance && !skeleton.rate && !skeleton.run">
+            <ADivider
+              type="vertical"
+              class="co-strip-divider co-billing-run-divider"
+              aria-hidden="true"
+            />
+            <span
+              class="co-billing-metric co-billing-run"
+              :class="{ 'is-active': overview.active }"
+              data-testid="billing-bar-run"
+            >
+              <PhFlame
+                class="co-run-flame-icon"
+                :size="12"
+                :weight="overview.active ? 'fill' : 'duotone'"
+                aria-hidden="true"
+              />
+              <span
+                >{{ t("billing.barRunPrefix") }}
+                <b>{{ runOverview.consumedText }}</b></span
+              >
+            </span>
+          </template>
 
           <span v-if="skeleton.endurance" class="co-endurance-sk">
             <ColabOneSkeleton variant="pill" :width="52" :height="20" :delay="160" />
@@ -535,6 +591,29 @@ const billingAriaLabel = computed(() => {
   flex-shrink: 0;
 }
 
+.co-billing-run {
+  gap: 3px;
+  color: var(--co-muted);
+}
+
+.co-billing-run b {
+  color: var(--co-text);
+  font-weight: 600;
+}
+
+.co-billing-run.is-active b {
+  color: var(--co-warning-text);
+}
+
+.co-run-flame-icon {
+  color: var(--co-muted);
+  flex-shrink: 0;
+}
+
+.co-billing-run.is-active .co-run-flame-icon {
+  color: var(--co-warning-text);
+}
+
 .co-endurance-tag {
   margin: 0;
   height: 22px;
@@ -605,10 +684,21 @@ const billingAriaLabel = computed(() => {
   opacity: 0.78;
 }
 
+.co-billing-tip-divider {
+  margin: 2px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
 .co-billing-tip-stale {
   margin-top: 2px;
   color: #fbbf24;
   font-size: 12px;
+}
+
+@media (max-width: 1240px) {
+  .co-run-flame-icon {
+    display: none;
+  }
 }
 
 @media (max-width: 1180px) {
@@ -634,6 +724,13 @@ const billingAriaLabel = computed(() => {
   }
 
   .co-coins-icon {
+    display: none;
+  }
+}
+
+@media (max-width: 1080px) {
+  .co-billing-run-divider,
+  .co-billing-run {
     display: none;
   }
 }

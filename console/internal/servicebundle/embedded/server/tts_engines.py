@@ -20,6 +20,7 @@ import inspect
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import signal
@@ -33,6 +34,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import uuid
 import wave
 from contextlib import nullcontext
 from pathlib import Path
@@ -2504,12 +2506,68 @@ def _read_log_tail(log_path: Path, max_bytes: int = 4096) -> str:
         return ""
 
 
+_PYTORCH_ONLY_WORKER_ENV: dict[str, str] = {
+    "USE_TORCH": "1",
+    "USE_TF": "0",
+    "USE_FLAX": "0",
+    "USE_JAX": "0",
+    "TRANSFORMERS_NO_TF": "1",
+    "TRANSFORMERS_NO_FLAX": "1",
+    "TRANSFORMERS_NO_JAX": "1",
+    "DISABLE_TENSORFLOW": "1",
+    "TF_CPP_MIN_LOG_LEVEL": "3",
+}
+
+
 def _sanitized_tts_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     blocked = _TTS_SENSITIVE_ENV_KEYS | _TTS_SETUP_STRIP_ENV_KEYS
     env = {k: v for k, v in os.environ.items() if k not in blocked}
     if extra:
         env.update(extra)
     return env
+
+
+def _build_tts_worker_env(hf_cache_dir: str, hf_token: str = "") -> dict[str, str]:
+    """Build a sanitized PyTorch-only worker environment blocking Colab TF/JAX leaks."""
+    extra = {
+        **_PYTORCH_ONLY_WORKER_ENV,
+        "PYTHONUNBUFFERED": "1",
+        "HF_HUB_CACHE": hf_cache_dir,
+        "HUGGINGFACE_HUB_CACHE": hf_cache_dir,
+    }
+    worker_env = _sanitized_tts_env(extra)
+    token = str(hf_token or "").strip()
+    if token:
+        worker_env["HF_TOKEN"] = token
+        worker_env["HUGGING_FACE_HUB_TOKEN"] = token
+    return worker_env
+
+
+def _summarize_subprocess_error_tail(
+    lines: Sequence[str],
+    fallback_text: str = "",
+    *,
+    max_chars: int = 800,
+) -> str:
+    """Keep complete trailing lines (always including the final exception line) within max_chars."""
+    cleaned = [str(line).strip() for line in lines if str(line).strip()]
+    if not cleaned and fallback_text:
+        cleaned = [ln.strip() for ln in str(fallback_text).splitlines() if ln.strip()]
+    if not cleaned:
+        return ""
+    budget = max(80, int(max_chars))
+    kept: list[str] = []
+    used = 0
+    for line in reversed(cleaned):
+        sep = 1 if kept else 0
+        if kept and used + sep + len(line) > budget:
+            break
+        if not kept and len(line) > budget:
+            return line[-budget:]
+        kept.append(line)
+        used += sep + len(line)
+    kept.reverse()
+    return "\n".join(kept)
 
 
 def _cancelled_error_cls() -> type[BaseException]:
@@ -2859,9 +2917,13 @@ def _run_tts_subprocess(
         _check_tts_cancel(task, stopping)
         if proc.returncode:
             with tail_lock:
-                tail = "\n".join(tail_lines)[-800:]
-            if not tail:
-                tail = _scrub_secret(_read_log_tail(log, 4096), secret_to_scrub)[-800:]
+                captured = list(tail_lines)
+            fallback = (
+                ""
+                if captured
+                else _scrub_secret(_read_log_tail(log, 4096), secret_to_scrub)
+            )
+            tail = _summarize_subprocess_error_tail(captured, fallback, max_chars=800)
             raise RuntimeError(f"远端 TTS 执行失败（退出码 {proc.returncode}）：{tail}")
     finally:
         try:
@@ -2979,6 +3041,86 @@ _WORKER_COMMON_HEADER = textwrap.dedent(
             or os.environ.get("HUGGING_FACE_HUB_TOKEN")
             or None
         )
+
+
+    _NON_TORCH_BLOCKED_MODULES = frozenset(
+        {
+            "tensorflow",
+            "tf_keras",
+            "keras",
+            "jax",
+            "jaxlib",
+            "flax",
+        }
+    )
+
+
+    class _ColabOneNonTorchMetaPathFilter:
+        _colabone_non_torch_filter = True
+
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def find_spec(self, fullname, path=None, target=None):
+            if str(fullname).partition(".")[0] in _NON_TORCH_BLOCKED_MODULES:
+                return None
+            find_fn = getattr(self._inner, "find_spec", None)
+            if callable(find_fn):
+                return find_fn(fullname, path, target)
+            return None
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+
+    def _disable_non_torch_backends() -> None:
+        \"\"\"Prevent Colab host TensorFlow/JAX/Flax from leaking into PyTorch-only TTS workers.
+
+        Wraps sys.meta_path finders (instead of setting sys.modules[mod] = None) so libraries
+        like einops that probe `if 'tensorflow' in sys.modules:` do NOT treat TensorFlow as
+        loaded and crash trying to import it.
+        \"\"\"
+        for _k, _v in (
+            ("USE_TORCH", "1"),
+            ("USE_TF", "0"),
+            ("USE_FLAX", "0"),
+            ("USE_JAX", "0"),
+            ("TRANSFORMERS_NO_TF", "1"),
+            ("TRANSFORMERS_NO_FLAX", "1"),
+            ("TRANSFORMERS_NO_JAX", "1"),
+            ("DISABLE_TENSORFLOW", "1"),
+            ("TF_CPP_MIN_LOG_LEVEL", "3"),
+        ):
+            os.environ.setdefault(_k, _v)
+        for _mod_name in _NON_TORCH_BLOCKED_MODULES:
+            if sys.modules.get(_mod_name) is None:
+                sys.modules.pop(_mod_name, None)
+        sys.meta_path[:] = [
+            f
+            if getattr(f, "_colabone_non_torch_filter", False)
+            else _ColabOneNonTorchMetaPathFilter(f)
+            for f in sys.meta_path
+        ]
+
+
+    def _release_warm_state(state: dict) -> None:
+        \"\"\"Evict any previously cached model/bundle in `state` before loading a different key.\"\"\"
+        if not state:
+            return
+        state.clear()
+        try:
+            import gc as _gc
+
+            _gc.collect()
+        except Exception:
+            pass
+        try:
+            import torch as _torch
+
+            if getattr(_torch, "cuda", None) is not None and _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
     def _to_mono_list(audio) -> list[float]:
@@ -3186,6 +3328,172 @@ _WORKER_COMMON_HEADER = textwrap.dedent(
 
         _safe_ta_load._colabone_sf_load_patched = True  # type: ignore[attr-defined]
         _ta.load = _safe_ta_load
+
+
+    _COLABONE_DAEMON_RESP_PREFIX = "__COLABONE_DAEMON_RESP__:"
+
+
+    def _resolve_hf_snapshot(
+        snapshot_download_fn,
+        repo: str,
+        revision: str,
+        cache_dir: str,
+        token: str | None,
+    ) -> str:
+        \"\"\"Resolve cached Hugging Face snapshot offline first; fall back to Hub download on miss.\"\"\"
+        try:
+            return snapshot_download_fn(
+                repo_id=repo,
+                revision=revision or None,
+                cache_dir=cache_dir or None,
+                token=token,
+                local_files_only=True,
+            )
+        except Exception:
+            return snapshot_download_fn(
+                repo_id=repo,
+                revision=revision or None,
+                cache_dir=cache_dir or None,
+                token=token,
+            )
+
+
+    def _emit_daemon_resp(payload: dict) -> None:
+        line = _COLABONE_DAEMON_RESP_PREFIX + json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        )
+        sys.stdout.write("\\n" + line + "\\n")
+        sys.stdout.flush()
+
+
+    def _format_daemon_exc(exc: BaseException) -> str:
+        msg = str(exc).strip()
+        if isinstance(exc, (RuntimeError, ValueError)) and msg:
+            return msg
+        name = type(exc).__name__
+        if not msg:
+            return name
+        return msg if msg.startswith(f"{name}:") else f"{name}: {msg}"
+
+
+    def _run_daemon_loop(handle_config_fn, handle_batch_fn=None) -> None:
+        _emit_daemon_resp({"event": "ready", "ok": True})
+        for raw_line in sys.stdin:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                req = json.loads(line)
+            except Exception as exc:
+                _emit_daemon_resp({"ok": False, "error": f"invalid request json: {exc}"})
+                continue
+            if not isinstance(req, dict):
+                _emit_daemon_resp({"ok": False, "error": "request must be a JSON object"})
+                continue
+            op = str(req.get("op") or "").strip()
+            req_id = str(req.get("id") or "")
+            if op == "ping":
+                _emit_daemon_resp({"id": req_id, "op": "ping", "ok": True})
+                continue
+            if op == "shutdown":
+                _emit_daemon_resp({"id": req_id, "op": "shutdown", "ok": True})
+                break
+            if op == "synthesize":
+                try:
+                    cfg_path = str(req.get("config_path") or "").strip()
+                    if cfg_path:
+                        cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+                    else:
+                        cfg = req.get("config")
+                    if not isinstance(cfg, dict):
+                        raise ValueError("synthesize config must be an object")
+                    handle_config_fn(cfg)
+                    _emit_daemon_resp({"id": req_id, "op": "synthesize", "ok": True})
+                except Exception as exc:
+                    _emit_daemon_resp(
+                        {
+                            "id": req_id,
+                            "op": "synthesize",
+                            "ok": False,
+                            "error": _format_daemon_exc(exc),
+                        }
+                    )
+                continue
+            if op == "synthesize_batch":
+                raw_items = req.get("items")
+                if not isinstance(raw_items, list):
+                    _emit_daemon_resp(
+                        {
+                            "id": req_id,
+                            "op": "synthesize_batch",
+                            "ok": False,
+                            "error": "items must be a list",
+                        }
+                    )
+                    continue
+                configs: list[dict] = []
+                load_errors: dict[int, str] = {}
+                for idx, item in enumerate(raw_items):
+                    try:
+                        if isinstance(item, dict) and item.get("config_path"):
+                            cfg = json.loads(
+                                Path(str(item["config_path"])).read_text(encoding="utf-8")
+                            )
+                        elif isinstance(item, dict) and isinstance(item.get("config"), dict):
+                            cfg = item["config"]
+                        elif isinstance(item, dict):
+                            cfg = item
+                        else:
+                            raise ValueError("batch item must be an object")
+                        if not isinstance(cfg, dict):
+                            raise ValueError("batch item config must be an object")
+                        configs.append(cfg)
+                    except Exception as exc:
+                        configs.append({})
+                        load_errors[idx] = _format_daemon_exc(exc)
+                try:
+                    if callable(handle_batch_fn) and not load_errors:
+                        results = handle_batch_fn(configs)
+                    else:
+                        results = []
+                        for idx, cfg in enumerate(configs):
+                            if idx in load_errors:
+                                results.append(
+                                    {"index": idx, "ok": False, "error": load_errors[idx]}
+                                )
+                                continue
+                            try:
+                                handle_config_fn(cfg)
+                                results.append({"index": idx, "ok": True})
+                            except Exception as exc:
+                                results.append(
+                                    {
+                                        "index": idx,
+                                        "ok": False,
+                                        "error": _format_daemon_exc(exc),
+                                    }
+                                )
+                    _emit_daemon_resp(
+                        {
+                            "id": req_id,
+                            "op": "synthesize_batch",
+                            "ok": True,
+                            "results": results,
+                        }
+                    )
+                except Exception as exc:
+                    _emit_daemon_resp(
+                        {
+                            "id": req_id,
+                            "op": "synthesize_batch",
+                            "ok": False,
+                            "error": _format_daemon_exc(exc),
+                        }
+                    )
+                continue
+            _emit_daemon_resp(
+                {"id": req_id, "op": op, "ok": False, "error": f"unsupported op: {op}"}
+            )
     """
 )
 
@@ -3203,36 +3511,13 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
         if "optimize" in sig.parameters:
             base_kwargs["optimize"] = False
 
-        try:
-            kwargs = dict(base_kwargs)
-            if "revision" in sig.parameters and revision:
-                kwargs["revision"] = revision
-            if "token" in sig.parameters and token:
-                kwargs["token"] = token
-            if "cache_dir" in sig.parameters and cache_dir:
-                kwargs["cache_dir"] = cache_dir
-            if ("revision" in kwargs or not revision) and (
-                "cache_dir" in kwargs or not cache_dir
-            ):
-                return voxcpm.VoxCPM.from_pretrained(repo, **kwargs)
-        except TypeError:
-            pass
-
-        local_dir = snapshot_download(
-            repo_id=repo,
-            revision=revision or None,
-            cache_dir=cache_dir or None,
-            token=token,
+        local_dir = _resolve_hf_snapshot(
+            snapshot_download, repo, revision, cache_dir, token
         )
         return voxcpm.VoxCPM.from_pretrained(local_dir, **base_kwargs)
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(description="ColabOne VoxCPM2 remote TTS worker")
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
-
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    def _run_voxcpm_request(cfg: dict, state: dict) -> None:
         _patch_torchaudio_load_soundfile()
         token = _hf_token()
         repo = cfg["repo"]
@@ -3249,7 +3534,13 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
         )
         segments = cfg.get("segments") or []
 
-        model = _load_voxcpm_model(repo, revision, cache_dir, token)
+        cache_key = (repo, revision, cache_dir)
+        model = state.get("model") if state.get("key") == cache_key else None
+        if model is None:
+            _release_warm_state(state)
+            model = _load_voxcpm_model(repo, revision, cache_dir, token)
+            state["key"] = cache_key
+            state["model"] = model
         sample_rate = int(
             getattr(getattr(model, "tts_model", None), "sample_rate", None)
             or getattr(model, "sample_rate", None)
@@ -3391,6 +3682,22 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
             print(f"[colabone-tts] voxcpm2 segment {idx + 1}/{total} done", flush=True)
 
 
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(description="ColabOne VoxCPM2 remote TTS worker")
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        state: dict = {}
+        if args.daemon:
+            _run_daemon_loop(lambda cfg: _run_voxcpm_request(cfg, state))
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        _run_voxcpm_request(cfg, state)
+
+
     if __name__ == "__main__":
         main()
     """
@@ -3399,7 +3706,23 @@ _VOXCPM2_WORKER_BODY = textwrap.dedent(
 _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
     """\
 
+    def _qwen3_cuda_vram_mib() -> int:
+        try:
+            import torch
+
+            if torch.cuda.is_available() and callable(
+                getattr(torch.cuda, "get_device_properties", None)
+            ):
+                return int(
+                    torch.cuda.get_device_properties(0).total_memory // (1024 * 1024)
+                )
+        except Exception:
+            pass
+        return 0
+
+
     def _load_qwen3_model(repo: str, revision: str, cache_dir: str, token: str | None):
+        import importlib.util
         import torch
         from huggingface_hub import snapshot_download
         import qwen_tts
@@ -3412,48 +3735,91 @@ _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
             else (torch.float16 if use_cuda else torch.float32)
         )
 
-        local_dir = snapshot_download(
-            repo_id=repo,
-            revision=revision or None,
-            cache_dir=cache_dir or None,
-            token=token,
+        local_dir = _resolve_hf_snapshot(
+            snapshot_download, repo, revision, cache_dir, token
         )
-        try:
-            return qwen_tts.Qwen3TTSModel.from_pretrained(
-                local_dir,
-                device_map=device_map,
-                dtype=dtype,
-            )
-        except TypeError:
-            return qwen_tts.Qwen3TTSModel.from_pretrained(
-                local_dir,
-                device_map=device_map,
-                torch_dtype=dtype,
-            )
+        attn_candidates: list[str | None] = []
+        if use_cuda:
+            if importlib.util.find_spec("flash_attn") is not None:
+                attn_candidates.append("flash_attention_2")
+            attn_candidates.append("sdpa")
+        attn_candidates.append(None)
+
+        last_exc: Exception | None = None
+        for attn_impl in attn_candidates:
+            extra_kw = {"attn_implementation": attn_impl} if attn_impl else {}
+            try:
+                return qwen_tts.Qwen3TTSModel.from_pretrained(
+                    local_dir,
+                    device_map=device_map,
+                    dtype=dtype,
+                    **extra_kw,
+                )
+            except TypeError as exc:
+                last_exc = exc
+                try:
+                    return qwen_tts.Qwen3TTSModel.from_pretrained(
+                        local_dir,
+                        device_map=device_map,
+                        torch_dtype=dtype,
+                        **extra_kw,
+                    )
+                except (TypeError, ValueError) as exc2:
+                    last_exc = exc2
+                    if attn_impl is not None:
+                        continue
+                    raise
+            except (ValueError, ImportError, RuntimeError) as exc:
+                last_exc = exc
+                if attn_impl is not None:
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        return qwen_tts.Qwen3TTSModel.from_pretrained(
+            local_dir,
+            device_map=device_map,
+            dtype=dtype,
+        )
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(description="ColabOne Qwen3-TTS remote worker")
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
+    def _seed_qwen3_generators(voice_seed) -> None:
+        if isinstance(voice_seed, int) and not isinstance(voice_seed, bool) and voice_seed >= 0:
+            try:
+                import random as _py_random
 
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
-        _patch_torchaudio_load_soundfile()
-        token = _hf_token()
+                _py_random.seed(voice_seed)
+            except Exception:
+                pass
+            try:
+                import numpy as _np
+
+                _np.random.seed(voice_seed % (2**32))
+            except Exception:
+                pass
+            try:
+                import torch
+
+                torch.manual_seed(voice_seed)
+                cuda_mod = getattr(torch, "cuda", None)
+                if cuda_mod is not None and callable(getattr(cuda_mod, "manual_seed_all", None)):
+                    cuda_mod.manual_seed_all(voice_seed)
+            except Exception:
+                pass
+
+
+    def _resolve_qwen3_mode(cfg: dict) -> dict:
         repo = (cfg.get("repo") or "").strip()
         revision = cfg.get("revision") or ""
         aux_repo = (cfg.get("aux_repo") or "").strip()
         aux_revision = (cfg.get("aux_revision") or "").strip()
         custom_voice_repo = (cfg.get("custom_voice_repo") or "").strip()
         custom_voice_revision = (cfg.get("custom_voice_revision") or "").strip()
-        cache_dir = cfg.get("cache_dir") or ""
         ref_audio_path = (cfg.get("ref_audio_path") or "").strip()
         ref_text = (cfg.get("ref_text") or "").strip()
         voice_prompt = (cfg.get("voice_prompt") or "").strip()
         emotion_prompt = (cfg.get("emotion_prompt") or "").strip()
         speaker_id = (cfg.get("speaker_id") or "").strip()
-        voice_seed = cfg.get("voice_seed")
-        segments = cfg.get("segments") or []
 
         # Mode A: CustomVoice native speaker; Mode B: VoiceDesign; Mode C: Base zero-shot clone.
         use_custom_voice = (
@@ -3491,176 +3857,356 @@ _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
             selected_rev = revision
             effective_instruct = voice_prompt
 
-        print(
-            f"[colabone-tts] qwen3_tts mode={mode_label} repo={selected_repo}"
-            + (f" speaker={speaker_id}" if use_custom_voice else ""),
-            flush=True,
-        )
-        model = _load_qwen3_model(selected_repo, selected_rev, cache_dir, token)
+        return {
+            "mode_label": mode_label,
+            "use_custom_voice": use_custom_voice,
+            "use_voice_design": use_voice_design,
+            "selected_repo": selected_repo,
+            "selected_rev": selected_rev,
+            "effective_instruct": effective_instruct,
+            "repo": repo,
+            "revision": revision,
+            "aux_repo": aux_repo,
+            "aux_revision": aux_revision,
+            "ref_audio_path": ref_audio_path,
+            "ref_text": ref_text,
+            "speaker_id": speaker_id,
+        }
 
-        cv_params = None
-        cv_has_var_kw = True
-        if use_custom_voice:
-            gen_cv_fn = getattr(model, "generate_custom_voice", None)
-            if not callable(gen_cv_fn):
-                raise RuntimeError("Qwen3-TTS 当前模型不支持 generate_custom_voice 接口")
-            try:
-                cv_sig = inspect.signature(gen_cv_fn)
-                cv_params = cv_sig.parameters
-                cv_has_var_kw = any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD
-                    for p in cv_params.values()
-                )
-            except (TypeError, ValueError):
-                cv_params = None
-                cv_has_var_kw = True
 
-        clone_prompt = None
-        if (
-            not use_custom_voice
-            and not use_voice_design
-            and ref_audio_path
-            and hasattr(model, "create_voice_clone_prompt")
-        ):
-            clone_prompt = model.create_voice_clone_prompt(
-                ref_audio=ref_audio_path,
-                ref_text=ref_text or None,
-                x_vector_only_mode=(not bool(ref_text)),
-            )
+    class _Qwen3WorkerSession:
+        def __init__(self) -> None:
+            self.models: dict[tuple[str, str, str], object] = {}
+            self.order: list[tuple[str, str, str]] = []
+            vram_mib = _qwen3_cuda_vram_mib()
+            self.max_models = 2 if vram_mib >= 20480 else 1
 
-        if isinstance(voice_seed, int) and not isinstance(voice_seed, bool) and voice_seed >= 0:
-            try:
-                import random as _py_random
-
-                _py_random.seed(voice_seed)
-            except Exception:
-                pass
-            try:
-                import numpy as _np
-
-                _np.random.seed(voice_seed % (2**32))
-            except Exception:
-                pass
-            try:
-                import torch
-
-                torch.manual_seed(voice_seed)
-                cuda_mod = getattr(torch, "cuda", None)
-                if cuda_mod is not None and callable(getattr(cuda_mod, "manual_seed_all", None)):
-                    cuda_mod.manual_seed_all(voice_seed)
-            except Exception:
-                pass
-
-        total = len(segments)
-        default_sr = int(cfg.get("sample_rate") or 24000)
-        start_idx = 0
-
-        # Lock speaker timbre across multi-sentence voice_design runs by generating segment 0 with
-        # VoiceDesign, then transitioning to the Base model with a voice_clone_prompt from segment 0.
-        # Mode A (CustomVoice) already has a fixed native speaker, so no handoff is needed.
-        if use_voice_design and total > 1 and repo:
-            import torch
-
-            seg0 = segments[0]
-            seg0_text = str(seg0["text"])
-            seg0_out = str(seg0["output_wav"])
-            wavs0, sr0 = model.generate_voice_design(
-                text=seg0_text,
-                language="Auto",
-                instruct=effective_instruct,
-            )
-            wav0 = wavs0[0] if isinstance(wavs0, (list, tuple)) else wavs0
-            seg0_sr = int(sr0 or default_sr)
-            _write_pcm16_wav(seg0_out, wav0, seg0_sr)
-            print(f"[colabone-tts] qwen3_tts segment 1/{total} done", flush=True)
-            start_idx = 1
-
-            base_model = None
-            try:
-                print(
-                    f"[colabone-tts] qwen3_tts locking speaker timbre via base repo={repo}",
-                    flush=True,
-                )
+        def _evict_key(self, key: tuple[str, str, str]) -> None:
+            model = self.models.pop(key, None)
+            if key in self.order:
+                self.order.remove(key)
+            if model is not None:
                 del model
-                model = None
                 gc.collect()
-                if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
-                base_model = _load_qwen3_model(repo, revision, cache_dir, token)
                 try:
-                    import numpy as np
+                    import torch
 
-                    seg0_ref_audio = (
-                        np.asarray(_to_mono_list(wav0), dtype=np.float32),
-                        seg0_sr,
-                    )
-                except ImportError:
-                    seg0_ref_audio = seg0_out
-
-                if hasattr(base_model, "create_voice_clone_prompt"):
-                    clone_prompt = base_model.create_voice_clone_prompt(
-                        ref_audio=seg0_ref_audio,
-                        ref_text=seg0_text,
-                        x_vector_only_mode=False,
-                    )
-                model = base_model
-                use_voice_design = False
-                ref_audio_path = seg0_out
-                ref_text = seg0_text
-            except Exception as exc:
-                print(
-                    f"[colabone-tts] qwen3_tts timbre lock fallback to voice_design: {exc}",
-                    flush=True,
-                )
-                if base_model is not None:
-                    del base_model
-                    gc.collect()
                     if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                if model is None:
-                    model = _load_qwen3_model(aux_repo, aux_revision, cache_dir, token)
-                use_voice_design = True
-                clone_prompt = None
+                except Exception:
+                    pass
 
-        for idx in range(start_idx, total):
-            seg = segments[idx]
-            seg_text = str(seg["text"])
-            out_wav = str(seg["output_wav"])
+        def get_model(
+            self, repo: str, revision: str, cache_dir: str, token: str | None
+        ):
+            key = (repo, revision, cache_dir)
+            if key in self.models:
+                if key in self.order:
+                    self.order.remove(key)
+                self.order.append(key)
+                return self.models[key]
+            while len(self.order) >= self.max_models and self.order:
+                oldest = self.order[0]
+                self._evict_key(oldest)
+            model = _load_qwen3_model(repo, revision, cache_dir, token)
+            self.models[key] = model
+            self.order.append(key)
+            return model
+
+        def run_one(self, cfg: dict) -> None:
+            _patch_torchaudio_load_soundfile()
+            token = _hf_token()
+            cache_dir = cfg.get("cache_dir") or ""
+            voice_seed = cfg.get("voice_seed")
+            segments = cfg.get("segments") or []
+            info = _resolve_qwen3_mode(cfg)
+            use_custom_voice = info["use_custom_voice"]
+            use_voice_design = info["use_voice_design"]
+            mode_label = info["mode_label"]
+            selected_repo = info["selected_repo"]
+            selected_rev = info["selected_rev"]
+            effective_instruct = info["effective_instruct"]
+            repo = info["repo"]
+            revision = info["revision"]
+            aux_repo = info["aux_repo"]
+            aux_revision = info["aux_revision"]
+            ref_audio_path = info["ref_audio_path"]
+            ref_text = info["ref_text"]
+            speaker_id = info["speaker_id"]
+
+            print(
+                f"[colabone-tts] qwen3_tts mode={mode_label} repo={selected_repo}"
+                + (f" speaker={speaker_id}" if use_custom_voice else ""),
+                flush=True,
+            )
+            model = self.get_model(selected_repo, selected_rev, cache_dir, token)
+
+            cv_params = None
+            cv_has_var_kw = True
             if use_custom_voice:
-                cv_kwargs = {
-                    "text": seg_text,
-                    "language": "Auto",
-                    "speaker": speaker_id,
-                    "instruct": effective_instruct or None,
-                }
-                if cv_params is not None and not cv_has_var_kw:
-                    cv_kwargs = {k: v for k, v in cv_kwargs.items() if k in cv_params}
-                wavs, sr = model.generate_custom_voice(**cv_kwargs)
-            elif use_voice_design:
-                wavs, sr = model.generate_voice_design(
-                    text=seg_text,
-                    language="Auto",
-                    instruct=effective_instruct,
-                )
-            elif clone_prompt is not None:
-                wavs, sr = model.generate_voice_clone(
-                    text=seg_text,
-                    language="Auto",
-                    voice_clone_prompt=clone_prompt,
-                )
-            else:
-                wavs, sr = model.generate_voice_clone(
-                    text=seg_text,
-                    language="Auto",
-                    ref_audio=ref_audio_path or None,
+                gen_cv_fn = getattr(model, "generate_custom_voice", None)
+                if not callable(gen_cv_fn):
+                    raise RuntimeError("Qwen3-TTS 当前模型不支持 generate_custom_voice 接口")
+                try:
+                    cv_sig = inspect.signature(gen_cv_fn)
+                    cv_params = cv_sig.parameters
+                    cv_has_var_kw = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in cv_params.values()
+                    )
+                except (TypeError, ValueError):
+                    cv_params = None
+                    cv_has_var_kw = True
+
+            clone_prompt = None
+            if (
+                not use_custom_voice
+                and not use_voice_design
+                and ref_audio_path
+                and hasattr(model, "create_voice_clone_prompt")
+            ):
+                clone_prompt = model.create_voice_clone_prompt(
+                    ref_audio=ref_audio_path,
                     ref_text=ref_text or None,
                     x_vector_only_mode=(not bool(ref_text)),
                 )
 
-            wav = wavs[0] if isinstance(wavs, (list, tuple)) else wavs
-            _write_pcm16_wav(out_wav, wav, int(sr or default_sr))
-            print(f"[colabone-tts] qwen3_tts segment {idx + 1}/{total} done", flush=True)
+            _seed_qwen3_generators(voice_seed)
+
+            total = len(segments)
+            default_sr = int(cfg.get("sample_rate") or 24000)
+            start_idx = 0
+
+            # Lock speaker timbre across multi-sentence voice_design runs by generating segment 0 with
+            # VoiceDesign, then transitioning to the Base model with a voice_clone_prompt from segment 0.
+            # Mode A (CustomVoice) already has a fixed native speaker, so no handoff is needed.
+            if use_voice_design and total > 1 and repo:
+                import torch
+
+                seg0 = segments[0]
+                seg0_text = str(seg0["text"])
+                seg0_out = str(seg0["output_wav"])
+                wavs0, sr0 = model.generate_voice_design(
+                    text=seg0_text,
+                    language="Auto",
+                    instruct=effective_instruct,
+                )
+                wav0 = wavs0[0] if isinstance(wavs0, (list, tuple)) else wavs0
+                seg0_sr = int(sr0 or default_sr)
+                _write_pcm16_wav(seg0_out, wav0, seg0_sr)
+                print(f"[colabone-tts] qwen3_tts segment 1/{total} done", flush=True)
+                start_idx = 1
+
+                base_model = None
+                try:
+                    print(
+                        f"[colabone-tts] qwen3_tts locking speaker timbre via base repo={repo}",
+                        flush=True,
+                    )
+                    if self.max_models <= 1:
+                        self._evict_key((selected_repo, selected_rev, cache_dir))
+                    model = None
+                    base_model = self.get_model(repo, revision, cache_dir, token)
+                    try:
+                        import numpy as np
+
+                        seg0_ref_audio = (
+                            np.asarray(_to_mono_list(wav0), dtype=np.float32),
+                            seg0_sr,
+                        )
+                    except ImportError:
+                        seg0_ref_audio = seg0_out
+
+                    if hasattr(base_model, "create_voice_clone_prompt"):
+                        clone_prompt = base_model.create_voice_clone_prompt(
+                            ref_audio=seg0_ref_audio,
+                            ref_text=seg0_text,
+                            x_vector_only_mode=False,
+                        )
+                    model = base_model
+                    use_voice_design = False
+                    ref_audio_path = seg0_out
+                    ref_text = seg0_text
+                except Exception as exc:
+                    print(
+                        f"[colabone-tts] qwen3_tts timbre lock fallback to voice_design: {exc}",
+                        flush=True,
+                    )
+                    if base_model is not None:
+                        self._evict_key((repo, revision, cache_dir))
+                    model = self.get_model(aux_repo, aux_revision, cache_dir, token)
+                    use_voice_design = True
+                    clone_prompt = None
+
+            for idx in range(start_idx, total):
+                seg = segments[idx]
+                seg_text = str(seg["text"])
+                out_wav = str(seg["output_wav"])
+                if use_custom_voice:
+                    cv_kwargs = {
+                        "text": seg_text,
+                        "language": "Auto",
+                        "speaker": speaker_id,
+                        "instruct": effective_instruct or None,
+                    }
+                    if cv_params is not None and not cv_has_var_kw:
+                        cv_kwargs = {k: v for k, v in cv_kwargs.items() if k in cv_params}
+                    wavs, sr = model.generate_custom_voice(**cv_kwargs)
+                elif use_voice_design:
+                    wavs, sr = model.generate_voice_design(
+                        text=seg_text,
+                        language="Auto",
+                        instruct=effective_instruct,
+                    )
+                elif clone_prompt is not None:
+                    wavs, sr = model.generate_voice_clone(
+                        text=seg_text,
+                        language="Auto",
+                        voice_clone_prompt=clone_prompt,
+                    )
+                else:
+                    wavs, sr = model.generate_voice_clone(
+                        text=seg_text,
+                        language="Auto",
+                        ref_audio=ref_audio_path or None,
+                        ref_text=ref_text or None,
+                        x_vector_only_mode=(not bool(ref_text)),
+                    )
+
+                wav = wavs[0] if isinstance(wavs, (list, tuple)) else wavs
+                _write_pcm16_wav(out_wav, wav, int(sr or default_sr))
+                print(f"[colabone-tts] qwen3_tts segment {idx + 1}/{total} done", flush=True)
+
+        def run_batch(self, configs: list[dict]) -> list[dict]:
+            _patch_torchaudio_load_soundfile()
+            token = _hf_token()
+            results: list[dict | None] = [None] * len(configs)
+            grouped: dict[tuple[str, str, str, str], list[tuple[int, dict, dict]]] = {}
+            fallback_indices: list[int] = []
+
+            for idx, cfg in enumerate(configs):
+                try:
+                    info = _resolve_qwen3_mode(cfg)
+                    segs = cfg.get("segments") or []
+                    if (
+                        len(segs) == 1
+                        and info["mode_label"] in ("voice_design", "custom_voice")
+                    ):
+                        gkey = (
+                            info["mode_label"],
+                            info["selected_repo"],
+                            info["selected_rev"],
+                            cfg.get("cache_dir") or "",
+                        )
+                        grouped.setdefault(gkey, []).append((idx, cfg, info))
+                    else:
+                        fallback_indices.append(idx)
+                except Exception as exc:
+                    results[idx] = {
+                        "index": idx,
+                        "ok": False,
+                        "error": str(exc) or type(exc).__name__,
+                    }
+
+            for (mode_label, sel_repo, sel_rev, cache_dir), entries in grouped.items():
+                if len(entries) <= 1:
+                    for idx, _, _ in entries:
+                        fallback_indices.append(idx)
+                    continue
+                try:
+                    model = self.get_model(sel_repo, sel_rev, cache_dir, token)
+                    first_seed = entries[0][1].get("voice_seed")
+                    _seed_qwen3_generators(first_seed)
+                    texts = [str(e[1]["segments"][0]["text"]) for e in entries]
+                    langs = ["Auto"] * len(entries)
+                    default_sr = int(entries[0][1].get("sample_rate") or 24000)
+
+                    if mode_label == "voice_design":
+                        instructs = [e[2]["effective_instruct"] for e in entries]
+                        print(
+                            f"[colabone-tts] qwen3_tts batch voice_design size={len(entries)}",
+                            flush=True,
+                        )
+                        wavs, sr = model.generate_voice_design(
+                            text=texts,
+                            language=langs,
+                            instruct=instructs,
+                        )
+                    else:
+                        gen_cv_fn = getattr(model, "generate_custom_voice", None)
+                        if not callable(gen_cv_fn):
+                            raise RuntimeError(
+                                "Qwen3-TTS 当前模型不支持 generate_custom_voice 接口"
+                            )
+                        speakers = [e[2]["speaker_id"] for e in entries]
+                        instructs = [e[2]["effective_instruct"] for e in entries]
+                        cv_kwargs = {
+                            "text": texts,
+                            "language": langs,
+                            "speaker": speakers,
+                        }
+                        if any(instructs):
+                            cv_kwargs["instruct"] = [inst or "" for inst in instructs]
+                        print(
+                            f"[colabone-tts] qwen3_tts batch custom_voice size={len(entries)}",
+                            flush=True,
+                        )
+                        wavs, sr = gen_cv_fn(**cv_kwargs)
+
+                    if not isinstance(wavs, (list, tuple)) or len(wavs) != len(entries):
+                        raise RuntimeError("Qwen3-TTS batch returned unexpected audio count")
+
+                    out_sr = int(sr or default_sr)
+                    for (idx, cfg, _), wav in zip(entries, wavs):
+                        out_wav = str(cfg["segments"][0]["output_wav"])
+                        _write_pcm16_wav(out_wav, wav, out_sr)
+                        results[idx] = {"index": idx, "ok": True}
+                    print(
+                        f"[colabone-tts] qwen3_tts batch {mode_label} done ({len(entries)} items)",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[colabone-tts] qwen3_tts batch {mode_label} fallback to sequential: {exc}",
+                        flush=True,
+                    )
+                    for idx, _, _ in entries:
+                        if results[idx] is None:
+                            fallback_indices.append(idx)
+
+            for idx in fallback_indices:
+                if results[idx] is not None:
+                    continue
+                try:
+                    self.run_one(configs[idx])
+                    results[idx] = {"index": idx, "ok": True}
+                except Exception as exc:
+                    results[idx] = {
+                        "index": idx,
+                        "ok": False,
+                        "error": str(exc) or type(exc).__name__,
+                    }
+
+            return [
+                r if r is not None else {"index": i, "ok": False, "error": "no result"}
+                for i, r in enumerate(results)
+            ]
+
+
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(description="ColabOne Qwen3-TTS remote worker")
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        session = _Qwen3WorkerSession()
+        if args.daemon:
+            _run_daemon_loop(session.run_one, session.run_batch)
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        session.run_one(cfg)
 
 
     if __name__ == "__main__":
@@ -3810,12 +4356,7 @@ _FISH_S2_PRO_WORKER_BODY = textwrap.dedent(
             pass
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(description="ColabOne Fish Speech S2 Pro remote worker")
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
-
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    def _run_fish_s2_request(cfg: dict, state: dict) -> None:
         token = _hf_token()
         source_dir = (cfg.get("source_dir") or "").strip()
         if source_dir and source_dir not in sys.path:
@@ -3847,66 +4388,67 @@ _FISH_S2_PRO_WORKER_BODY = textwrap.dedent(
         if has_valid_seed:
             _seed_fish_s2_generators(voice_seed)
 
-        use_cuda = torch.cuda.is_available()
-        device = "cuda" if use_cuda else "cpu"
-        dtype = (
-            torch.bfloat16
-            if (use_cuda and torch.cuda.is_bf16_supported())
-            else (torch.float16 if use_cuda else torch.float32)
-        )
-        dtype_label = (
-            "bf16"
-            if dtype == torch.bfloat16
-            else ("fp16" if dtype == torch.float16 else "fp32")
-        )
-        vram_mib = (
-            int(torch.cuda.get_device_properties(0).total_memory // (1024 * 1024))
-            if use_cuda
-            else 0
-        )
-
-        print(
-            f"[colabone-tts] fish_s2_pro repo={repo} dtype={dtype_label} vram_mib={vram_mib}",
-            flush=True,
-        )
-
-        local_dir = Path(
-            snapshot_download(
-                repo_id=repo,
-                revision=revision or None,
-                cache_dir=cache_dir or None,
-                token=token,
+        cache_key = (repo, revision, cache_dir)
+        engine = state.get("engine") if state.get("key") == cache_key else None
+        if engine is None:
+            _release_warm_state(state)
+            use_cuda = torch.cuda.is_available()
+            device = "cuda" if use_cuda else "cpu"
+            dtype = (
+                torch.bfloat16
+                if (use_cuda and torch.cuda.is_bf16_supported())
+                else (torch.float16 if use_cuda else torch.float32)
             )
-        )
-        decoder_ckpt = _find_decoder_checkpoint(local_dir)
+            dtype_label = (
+                "bf16"
+                if dtype == torch.bfloat16
+                else ("fp16" if dtype == torch.float16 else "fp32")
+            )
+            vram_mib = (
+                int(torch.cuda.get_device_properties(0).total_memory // (1024 * 1024))
+                if use_cuda
+                else 0
+            )
 
-        llama_sig = inspect.signature(launch_thread_safe_queue)
-        llama_kwargs = {
-            "checkpoint_path": str(local_dir),
-            "device": device,
-            "precision": dtype,
-            "compile": False,
-        }
-        llama_kwargs = {k: v for k, v in llama_kwargs.items() if k in llama_sig.parameters}
-        llama_queue = launch_thread_safe_queue(**llama_kwargs)
+            print(
+                f"[colabone-tts] fish_s2_pro repo={repo} dtype={dtype_label} vram_mib={vram_mib}",
+                flush=True,
+            )
 
-        dec_sig = inspect.signature(load_decoder_model)
-        dec_kwargs = {
-            "config_name": "modded_dac_vq",
-            "checkpoint_path": str(decoder_ckpt),
-            "device": device,
-        }
-        dec_kwargs = {k: v for k, v in dec_kwargs.items() if k in dec_sig.parameters}
-        decoder_model = load_decoder_model(**dec_kwargs)
+            local_dir = Path(
+                _resolve_hf_snapshot(snapshot_download, repo, revision, cache_dir, token)
+            )
+            decoder_ckpt = _find_decoder_checkpoint(local_dir)
 
-        engine = TTSInferenceEngine(
-            llama_queue=llama_queue,
-            decoder_model=decoder_model,
-            precision=dtype,
-            compile=False,
-        )
-        # Bypass torchaudio.load (torchcodec on PyTorch >= 2.9) using soundfile + scipy/torchaudio.functional.
-        engine.load_audio = _load_audio_soundfile
+            llama_sig = inspect.signature(launch_thread_safe_queue)
+            llama_kwargs = {
+                "checkpoint_path": str(local_dir),
+                "device": device,
+                "precision": dtype,
+                "compile": False,
+            }
+            llama_kwargs = {k: v for k, v in llama_kwargs.items() if k in llama_sig.parameters}
+            llama_queue = launch_thread_safe_queue(**llama_kwargs)
+
+            dec_sig = inspect.signature(load_decoder_model)
+            dec_kwargs = {
+                "config_name": "modded_dac_vq",
+                "checkpoint_path": str(decoder_ckpt),
+                "device": device,
+            }
+            dec_kwargs = {k: v for k, v in dec_kwargs.items() if k in dec_sig.parameters}
+            decoder_model = load_decoder_model(**dec_kwargs)
+
+            engine = TTSInferenceEngine(
+                llama_queue=llama_queue,
+                decoder_model=decoder_model,
+                precision=dtype,
+                compile=False,
+            )
+            # Bypass torchaudio.load (torchcodec on PyTorch >= 2.9) using soundfile + scipy/torchaudio.functional.
+            engine.load_audio = _load_audio_soundfile
+            state["key"] = cache_key
+            state["engine"] = engine
 
         references = []
         if ref_audio_path:
@@ -3975,6 +4517,22 @@ _FISH_S2_PRO_WORKER_BODY = textwrap.dedent(
                     flush=True,
                 )
             print(f"[colabone-tts] fish_s2_pro segment {idx + 1}/{total} done", flush=True)
+
+
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(description="ColabOne Fish Speech S2 Pro remote worker")
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        state: dict = {}
+        if args.daemon:
+            _run_daemon_loop(lambda cfg: _run_fish_s2_request(cfg, state))
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        _run_fish_s2_request(cfg, state)
 
 
     if __name__ == "__main__":
@@ -4211,12 +4769,7 @@ _INDEXTTS2_WORKER_BODY = textwrap.dedent(
             pass
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(description="ColabOne IndexTTS2 remote worker")
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
-
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    def _run_indextts2_request(cfg: dict, state: dict) -> None:
         token = _hf_token()
         source_dir = (cfg.get("source_dir") or "").strip()
         if source_dir and source_dir not in sys.path:
@@ -4254,37 +4807,38 @@ _INDEXTTS2_WORKER_BODY = textwrap.dedent(
         if not ref_audio_path:
             raise ValueError("IndexTTS2 需要提供音色参考音频（ref_audio_path）")
 
-        model_dir = Path(
-            snapshot_download(
-                repo_id=repo,
-                revision=revision or None,
-                cache_dir=cache_dir or None,
-                token=token,
+        cache_key = (repo, revision, cache_dir, bool(emotion_prompt and not emotion_ref_path))
+        tts = state.get("tts") if state.get("key") == cache_key else None
+        if tts is None:
+            _release_warm_state(state)
+            model_dir = Path(
+                _resolve_hf_snapshot(snapshot_download, repo, revision, cache_dir, token)
             )
-        )
-        cfg_path = model_dir / "config.yaml"
-        if not cfg_path.is_file():
-            raise FileNotFoundError(f"在 {model_dir} 中未找到 IndexTTS2 配置文件 config.yaml")
+            cfg_path = model_dir / "config.yaml"
+            if not cfg_path.is_file():
+                raise FileNotFoundError(f"在 {model_dir} 中未找到 IndexTTS2 配置文件 config.yaml")
 
-        use_cuda = bool(getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
-        use_bf16 = bool(
-            use_cuda
-            and callable(getattr(torch.cuda, "is_bf16_supported", None))
-            and torch.cuda.is_bf16_supported()
-        )
-        init_sig = inspect.signature(IndexTTSClass.__init__)
-        supports_bf16_arg = "use_bf16" in init_sig.parameters
-        init_kwargs = {
-            "cfg_path": str(cfg_path),
-            "model_dir": str(model_dir),
-            "use_fp16": use_cuda and not (use_bf16 and supports_bf16_arg),
-            "use_bf16": use_bf16,
-            "use_cuda_kernel": False,
-            "use_deepspeed": False,
-            "use_qwen_emo": bool(emotion_prompt and not emotion_ref_path),
-        }
-        init_kwargs = {k: v for k, v in init_kwargs.items() if k in init_sig.parameters}
-        tts = IndexTTSClass(**init_kwargs)
+            use_cuda = bool(getattr(torch, "cuda", None) is not None and torch.cuda.is_available())
+            use_bf16 = bool(
+                use_cuda
+                and callable(getattr(torch.cuda, "is_bf16_supported", None))
+                and torch.cuda.is_bf16_supported()
+            )
+            init_sig = inspect.signature(IndexTTSClass.__init__)
+            supports_bf16_arg = "use_bf16" in init_sig.parameters
+            init_kwargs = {
+                "cfg_path": str(cfg_path),
+                "model_dir": str(model_dir),
+                "use_fp16": use_cuda and not (use_bf16 and supports_bf16_arg),
+                "use_bf16": use_bf16,
+                "use_cuda_kernel": False,
+                "use_deepspeed": False,
+                "use_qwen_emo": bool(emotion_prompt and not emotion_ref_path),
+            }
+            init_kwargs = {k: v for k, v in init_kwargs.items() if k in init_sig.parameters}
+            tts = IndexTTSClass(**init_kwargs)
+            state["key"] = cache_key
+            state["tts"] = tts
 
         infer_sig = inspect.signature(tts.infer)
         infer_params = infer_sig.parameters
@@ -4329,6 +4883,22 @@ _INDEXTTS2_WORKER_BODY = textwrap.dedent(
             print(f"[colabone-tts] indextts2 segment {idx + 1}/{total} done", flush=True)
 
 
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(description="ColabOne IndexTTS2 remote worker")
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        state: dict = {}
+        if args.daemon:
+            _run_daemon_loop(lambda cfg: _run_indextts2_request(cfg, state))
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        _run_indextts2_request(cfg, state)
+
+
     if __name__ == "__main__":
         main()
     """
@@ -4347,8 +4917,349 @@ _WORKER_BODIES: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# 5. Remote GPU Multi-Engine TTS Runner
+# 5. Remote GPU Multi-Engine TTS Runner & Warm Worker Pool
 # ---------------------------------------------------------------------------
+
+_COLABONE_DAEMON_RESP_PREFIX = "__COLABONE_DAEMON_RESP__:"
+_COLABONE_WARM_WORKER_IDLE_SECONDS = 300.0
+_BATCH_CAPABLE_PREVIEW_ENGINES = frozenset({"qwen3_tts"})
+
+_WARM_CUDA_FATAL_TOKENS = (
+    "cuda out of memory",
+    "out of memory",
+    "cuda error",
+    "device-side assert",
+    "cublas",
+    "cudnn",
+    "illegal memory access",
+)
+
+_FATAL_PREFETCH_ERROR_TOKENS = (
+    "cuda out of memory",
+    "out of memory",
+    "cuda error",
+    "device-side assert",
+    "modulenotfounderror",
+    "importerror",
+    "attributeerror",
+    "filenotfounderror",
+    "no space left on device",
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "gated repo",
+    "显存不足",
+    "磁盘空间不足",
+    "隔离虚拟环境缺少",
+    "未检测到可用远端 gpu",
+    "启动失败",
+    "提前退出",
+    "退出码",
+)
+
+
+class _ColabOneWarmWorkerTransportError(RuntimeError):
+    """Raised when the warm TTS daemon process crashes, disconnects, or fails startup."""
+
+
+def _is_warm_worker_cuda_fatal_error(err: Any) -> bool:
+    text = str(err or "").lower()
+    return any(tok in text for tok in _WARM_CUDA_FATAL_TOKENS)
+
+
+def _is_fatal_prefetch_error(err: Any) -> bool:
+    text = str(err or "").lower()
+    return any(tok in text for tok in _FATAL_PREFETCH_ERROR_TOKENS)
+
+
+class ColabOneWarmTtsWorker:
+    """Persistent resident TTS subprocess keeping weights hot in GPU VRAM across requests."""
+
+    def __init__(
+        self,
+        *,
+        engine_id: str,
+        worker_python: str,
+        worker_script: str,
+        work_dir: Path,
+        env: dict[str, str],
+        has_hf_token: bool = False,
+        secret_to_scrub: str = "",
+        stopping: threading.Event | None = None,
+    ) -> None:
+        self.engine_id = engine_id
+        self.worker_python = worker_python
+        self.worker_script = worker_script
+        self.work_dir = Path(work_dir)
+        self.env = dict(env)
+        self.has_hf_token = bool(has_hf_token)
+        self.secret_to_scrub = str(secret_to_scrub or "")
+        self.stopping = stopping
+        self.proc: subprocess.Popen | None = None
+        self._line_queue: queue.Queue[str | None] = queue.Queue()
+        self._reader_thread: threading.Thread | None = None
+        self._closed = False
+        self._lock = threading.Lock()
+        self.last_used = time.monotonic()
+
+    def is_alive(self) -> bool:
+        proc = self.proc
+        return (not self._closed) and proc is not None and proc.poll() is None
+
+    def start(self, *, timeout: float = 45.0) -> None:
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        script_path = self.work_dir / f"warm_worker_{self.engine_id}.py"
+        if script_path.is_symlink():
+            raise ValueError("TTS 常驻工作脚本路径不能是符号链接")
+        script_path.write_text(self.worker_script, encoding="utf-8")
+
+        popen_kwargs: dict[str, Any] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "cwd": str(self.work_dir),
+            "env": self.env,
+            "bufsize": 0,
+        }
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        self.proc = subprocess.Popen(
+            [self.worker_python, str(script_path), "--daemon"],
+            **popen_kwargs,
+        )
+
+        def _reader() -> None:
+            proc = self.proc
+            if proc is None or proc.stdout is None:
+                self._line_queue.put(None)
+                return
+            try:
+                for raw_line in _iter_tts_pipe_lines(proc.stdout):
+                    text = (
+                        raw_line.decode("utf-8", errors="replace")
+                        if isinstance(raw_line, (bytes, bytearray))
+                        else str(raw_line)
+                    ).rstrip("\r\n")
+                    self._line_queue.put(text)
+            except Exception:
+                pass
+            finally:
+                self._line_queue.put(None)
+
+        self._reader_thread = threading.Thread(
+            target=_reader,
+            name=f"colabone-tts-warm-{self.engine_id}",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+        startup_lines: collections.deque[str] = collections.deque(maxlen=25)
+        deadline = time.monotonic() + max(5.0, float(timeout))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise _ColabOneWarmWorkerTransportError(
+                    f"远端常驻 TTS 进程启动超时（{self.engine_id}）"
+                )
+            try:
+                line = self._line_queue.get(timeout=min(0.25, remaining))
+            except queue.Empty:
+                if not self.is_alive():
+                    self.close()
+                    tail = _summarize_subprocess_error_tail(
+                        list(startup_lines), max_chars=420
+                    )
+                    detail = f"：{tail}" if tail else ""
+                    raise _ColabOneWarmWorkerTransportError(
+                        f"远端常驻 TTS 进程提前退出（{self.engine_id}）{detail}"
+                    )
+                continue
+            if line is None:
+                self.close()
+                tail = _summarize_subprocess_error_tail(
+                    list(startup_lines), max_chars=420
+                )
+                detail = f"：{tail}" if tail else ""
+                raise _ColabOneWarmWorkerTransportError(
+                    f"远端常驻 TTS 进程在就绪前退出（{self.engine_id}）{detail}"
+                )
+            if line.startswith(_COLABONE_DAEMON_RESP_PREFIX):
+                try:
+                    msg = json.loads(line[len(_COLABONE_DAEMON_RESP_PREFIX) :])
+                except ValueError:
+                    continue
+                if isinstance(msg, dict) and msg.get("event") == "ready":
+                    self.last_used = time.monotonic()
+                    return
+            elif line:
+                startup_lines.append(_scrub_secret(line, self.secret_to_scrub))
+
+    def call(
+        self,
+        payload: dict[str, Any],
+        *,
+        task: Any = None,
+        cancel_event: threading.Event | None = None,
+        timeout: float = 600.0,
+        log_path: Path | None = None,
+        secret_to_scrub: str = "",
+    ) -> dict[str, Any]:
+        if not self.is_alive() or self.proc is None or self.proc.stdin is None:
+            raise _ColabOneWarmWorkerTransportError(
+                f"远端常驻 TTS 进程未运行（{self.engine_id}）"
+            )
+
+        req_id = uuid.uuid4().hex[:12]
+        wire = dict(payload)
+        wire["id"] = req_id
+        encoded = (
+            json.dumps(wire, ensure_ascii=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+
+        scrub_secret = str(secret_to_scrub or self.secret_to_scrub or "")
+        recent_lines: collections.deque[str] = collections.deque(maxlen=40)
+        log_stream = None
+        if log_path is not None:
+            try:
+                log_stream = _open_secure_tts_log_file(log_path, append=True)
+            except OSError:
+                log_stream = None
+
+        cancel_cls = _cancelled_error_cls()
+        prev_cancel_hook = None
+        hook_installed = False
+        if task is not None and hasattr(task, "lock") and hasattr(task, "cancel_hook"):
+            def _cancel_warm() -> None:
+                self.close()
+
+            with task.lock:
+                prev_cancel_hook = task.cancel_hook
+                task.cancel_hook = _cancel_warm
+                hook_installed = True
+
+        try:
+            self.proc.stdin.write(encoded)
+            self.proc.stdin.flush()
+
+            deadline = time.monotonic() + max(5.0, float(timeout))
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    self.close()
+                    raise cancel_cls("操作已取消")
+                if self.stopping is not None and self.stopping.is_set():
+                    self.close()
+                    raise cancel_cls("操作已取消")
+                check_fn = getattr(task, "check", None)
+                if callable(check_fn):
+                    try:
+                        check_fn()
+                    except BaseException:
+                        self.close()
+                        raise
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.close()
+                    raise RuntimeError(f"远端 TTS 常驻合成超时（{self.engine_id}）")
+
+                try:
+                    line = self._line_queue.get(timeout=min(0.15, remaining))
+                except queue.Empty:
+                    if not self.is_alive():
+                        self.close()
+                        tail = _summarize_subprocess_error_tail(
+                            list(recent_lines), max_chars=420
+                        )
+                        detail = f"：{tail}" if tail else ""
+                        raise _ColabOneWarmWorkerTransportError(
+                            f"远端 TTS 常驻进程意外退出（{self.engine_id}）{detail}"
+                        )
+                    continue
+
+                if line is None:
+                    self.close()
+                    tail = _summarize_subprocess_error_tail(
+                        list(recent_lines), max_chars=420
+                    )
+                    detail = f"：{tail}" if tail else ""
+                    raise _ColabOneWarmWorkerTransportError(
+                        f"远端 TTS 常驻进程意外结束（{self.engine_id}）{detail}"
+                    )
+
+                if line.startswith(_COLABONE_DAEMON_RESP_PREFIX):
+                    raw_json = line[len(_COLABONE_DAEMON_RESP_PREFIX) :]
+                    try:
+                        resp = json.loads(raw_json)
+                    except ValueError:
+                        continue
+                    if not isinstance(resp, dict):
+                        continue
+                    if resp.get("id") and resp.get("id") != req_id:
+                        continue
+                    self.last_used = time.monotonic()
+                    if not resp.get("ok"):
+                        err_msg = _scrub_secret(
+                            str(resp.get("error") or "TTS 合成失败"), scrub_secret
+                        )
+                        raise RuntimeError(err_msg)
+                    return resp
+
+                cleaned = _scrub_secret(line, scrub_secret)
+                recent_lines.append(cleaned)
+                if log_stream is not None:
+                    try:
+                        log_stream.write((cleaned + "\n").encode("utf-8", errors="replace"))
+                        log_stream.flush()
+                    except OSError:
+                        pass
+        except (BrokenPipeError, OSError):
+            self.close()
+            raise _ColabOneWarmWorkerTransportError(
+                f"远端 TTS 常驻进程通道已断开（{self.engine_id}）"
+            ) from None
+        finally:
+            if hook_installed and task is not None:
+                with task.lock:
+                    if getattr(task, "cancel_hook", None) is _cancel_warm:
+                        task.cancel_hook = prev_cancel_hook
+            if log_stream is not None:
+                try:
+                    log_stream.close()
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            proc = self.proc
+            self.proc = None
+        if proc is not None:
+            try:
+                if proc.stdin is not None and not proc.stdin.closed and proc.poll() is None:
+                    try:
+                        proc.stdin.write(b'{"op":"shutdown"}\n')
+                        proc.stdin.flush()
+                    except OSError:
+                        pass
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                _terminate_process_group(proc, timeout=3.0)
+            except Exception:
+                _terminate_process_group(proc, timeout=3.0)
+        if self._reader_thread is not None and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=1.0)
+        shutil.rmtree(self.work_dir, ignore_errors=True)
 
 
 def _file_sha256(path: Path) -> str:
@@ -4381,6 +5292,19 @@ class ColabOneRemoteTtsRunner:
         self._locks_guard = threading.Lock()
         self._preset_locks: dict[str, threading.Lock] = {}
         self._env_locks: dict[str, threading.Lock] = {}
+
+        # Warm daemon worker & background preview prefetcher state.
+        self._warm_lock = threading.RLock()
+        self._warm_exec_lock = threading.RLock()
+        self._warm_worker: ColabOneWarmTtsWorker | None = None
+        self._warm_idle_timer: threading.Timer | None = None
+        self._warm_idle_seconds = _COLABONE_WARM_WORKER_IDLE_SECONDS
+        self._foreground_waiting = threading.Event()
+        self._foreground_done = threading.Condition(threading.Lock())
+        self._prefetch_lock = threading.RLock()
+        self._prefetch_job: dict[str, Any] | None = None
+        self._prefetch_cancel: threading.Event | None = None
+        self._prefetch_thread: threading.Thread | None = None
 
         normalized: dict[str, dict[str, Any]] = {}
         for eid, spec in (engines_by_id or {}).items():
@@ -5488,42 +6412,61 @@ class ColabOneRemoteTtsRunner:
                     if source_dir.is_dir():
                         anchor_config["source_dir"] = str(source_dir)
 
-                    worker_path = tmp_work / "worker_voxcpm2.py"
-                    config_path = tmp_work / "config_voxcpm2.json"
                     log_path = tmp_work / "preset_voxcpm2.log"
-                    if (
-                        worker_path.is_symlink()
-                        or config_path.is_symlink()
-                        or log_path.is_symlink()
-                    ):
+                    if log_path.is_symlink():
                         raise ValueError("内置音色生成临时路径不能是符号链接")
 
-                    worker_path.write_text(
-                        self.build_worker_script("voxcpm2"), encoding="utf-8"
-                    )
-                    atomic_json(config_path, anchor_config)
+                    used_warm_anchor = False
+                    if self._should_use_warm_worker():
+                        try:
+                            with self._warm_exec_lock:
+                                worker = self._ensure_warm_worker_locked(
+                                    task, vox_engine, hf_token=hf_token
+                                )
+                                worker.call(
+                                    {"op": "synthesize", "config": anchor_config},
+                                    task=task,
+                                    timeout=1800.0,
+                                    log_path=log_path,
+                                    secret_to_scrub=hf_token,
+                                )
+                                self._schedule_warm_idle_timer()
+                            used_warm_anchor = raw_anchor_wav.is_file()
+                        except _ColabOneWarmWorkerTransportError:
+                            self.release_warm_worker("anchor_fallback_oneshot")
+                            used_warm_anchor = False
+                        except Exception as exc:
+                            if _is_cancelled_error(exc):
+                                raise
+                            if _is_warm_worker_cuda_fatal_error(exc):
+                                self.release_warm_worker("anchor_cuda_fatal")
+                            raise
 
-                    hf_cache_dir = str(self.engines_dir / "_hf_cache")
-                    worker_env = _sanitized_tts_env(
-                        {
-                            "PYTHONUNBUFFERED": "1",
-                            "HF_HUB_CACHE": hf_cache_dir,
-                            "HUGGINGFACE_HUB_CACHE": hf_cache_dir,
-                        }
-                    )
-                    if hf_token:
-                        worker_env["HF_TOKEN"] = hf_token
-                        worker_env["HUGGING_FACE_HUB_TOKEN"] = hf_token
+                    if not used_warm_anchor:
+                        worker_path = tmp_work / "worker_voxcpm2.py"
+                        config_path = tmp_work / "config_voxcpm2.json"
+                        if worker_path.is_symlink() or config_path.is_symlink():
+                            raise ValueError("内置音色生成临时路径不能是符号链接")
 
-                    self._invoke_command(
-                        [worker_python, str(worker_path), "--config", str(config_path)],
-                        task,
-                        log_path,
-                        timeout=1800,
-                        cwd=tmp_work,
-                        env=worker_env,
-                        secret_to_scrub=hf_token,
-                    )
+                        worker_path.write_text(
+                            self.build_worker_script("voxcpm2"), encoding="utf-8"
+                        )
+                        atomic_json(config_path, anchor_config)
+
+                        hf_cache_dir = str(self.engines_dir / "_hf_cache")
+                        worker_env = _build_tts_worker_env(
+                            hf_cache_dir, hf_token=hf_token
+                        )
+
+                        self._invoke_command(
+                            [worker_python, str(worker_path), "--config", str(config_path)],
+                            task,
+                            log_path,
+                            timeout=1800,
+                            cwd=tmp_work,
+                            env=worker_env,
+                            secret_to_scrub=hf_token,
+                        )
 
                 if not generated_wav.is_file() or generated_wav.stat().st_size <= 0:
                     raise RuntimeError(f"内置音色参考样本生成失败：{preset_name}")
@@ -5842,6 +6785,10 @@ class ColabOneRemoteTtsRunner:
             "size": len(raw),
             "sha256": sha256,
         }
+        if "voice_prompt" in meta:
+            payload["voice_prompt"] = str(meta.get("voice_prompt") or "")
+        if "emotion_prompt" in meta:
+            payload["emotion_prompt"] = str(meta.get("emotion_prompt") or "")
         if max_inline_bytes is None or len(raw) <= max_inline_bytes:
             payload["data"] = base64.b64encode(raw).decode("ascii")
         return payload
@@ -5870,7 +6817,7 @@ class ColabOneRemoteTtsRunner:
             except OSError:
                 pass
         chunk = raw[offset : offset + capped_length]
-        return {
+        chunk_payload: dict[str, Any] = {
             "cached": True,
             "preview_id": pid,
             "engine_id": str(meta.get("engine_id") or ""),
@@ -5886,6 +6833,11 @@ class ColabOneRemoteTtsRunner:
             "has_more": (offset + len(chunk)) < len(raw),
             "data": base64.b64encode(chunk).decode("ascii"),
         }
+        if "voice_prompt" in meta:
+            chunk_payload["voice_prompt"] = str(meta.get("voice_prompt") or "")
+        if "emotion_prompt" in meta:
+            chunk_payload["emotion_prompt"] = str(meta.get("emotion_prompt") or "")
+        return chunk_payload
 
     def _prune_preview_cache_locked(self, *, keep_pid: str = "") -> None:
         """Evict orphaned preview artifacts and oldest-mtime cached previews above LRU bounds."""
@@ -5972,6 +6924,841 @@ class ColabOneRemoteTtsRunner:
             total_bytes -= entry_bytes
             remaining -= 1
 
+    # -----------------------------------------------------------------------
+    # Warm TTS Worker Pool & Background Batch Preview Prefetcher
+    # -----------------------------------------------------------------------
+
+    def _should_use_warm_worker(self) -> bool:
+        return self.synth_fn is None and self.run_cmd_fn is None
+
+    def _cancel_warm_idle_timer_locked(self) -> None:
+        timer = self._warm_idle_timer
+        self._warm_idle_timer = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+    def _schedule_warm_idle_timer(self) -> None:
+        idle_sec = float(self._warm_idle_seconds or 0.0)
+        if idle_sec <= 0.0:
+            return
+        with self._warm_lock:
+            self._cancel_warm_idle_timer_locked()
+            worker = self._warm_worker
+            if worker is None or not worker.is_alive():
+                return
+
+            def _evict_if_idle() -> None:
+                if not self._warm_exec_lock.acquire(blocking=False):
+                    # Worker is currently busy; reschedule after another window.
+                    self._schedule_warm_idle_timer()
+                    return
+                need_reschedule = False
+                cur_to_close: ColabOneWarmTtsWorker | None = None
+                try:
+                    with self._warm_lock:
+                        cur = self._warm_worker
+                        if cur is None or not cur.is_alive():
+                            self._warm_worker = None
+                            return
+                        if (time.monotonic() - cur.last_used) < (idle_sec * 0.9):
+                            need_reschedule = True
+                        else:
+                            self._warm_worker = None
+                            self._cancel_warm_idle_timer_locked()
+                            cur_to_close = cur
+                    if cur_to_close is not None:
+                        cur_to_close.close()
+                finally:
+                    self._warm_exec_lock.release()
+                if need_reschedule:
+                    self._schedule_warm_idle_timer()
+
+            timer = threading.Timer(idle_sec, _evict_if_idle)
+            timer.daemon = True
+            self._warm_idle_timer = timer
+            timer.start()
+
+    def release_warm_worker(self, reason: str = "") -> None:
+        """Immediately shut down any resident warm TTS worker to return 100% of GPU VRAM."""
+        with self._warm_lock:
+            self._cancel_warm_idle_timer_locked()
+            worker = self._warm_worker
+            self._warm_worker = None
+        if worker is not None:
+            try:
+                worker.close()
+            except Exception:
+                pass
+
+    def cancel_preview_prefetch(
+        self, *, wait: bool = False, timeout: float = 2.0
+    ) -> dict[str, Any]:
+        """Cancel any active background voice preview prefetch job."""
+        thread_to_join: threading.Thread | None = None
+        with self._prefetch_lock:
+            ev = self._prefetch_cancel
+            if ev is not None:
+                ev.set()
+            job = self._prefetch_job
+            if job is not None and job.get("state") == "running":
+                job["state"] = "cancelled"
+                job["finished_at"] = time.time()
+            thread_to_join = self._prefetch_thread
+        if wait and thread_to_join is not None and thread_to_join.is_alive():
+            if thread_to_join is not threading.current_thread():
+                thread_to_join.join(timeout=max(0.1, float(timeout)))
+        return self.prefetch_status()
+
+    def cancel_prefetch_and_release_warm_worker(self, reason: str = "") -> None:
+        """Cancel background preview prefetch and free any resident warm TTS worker VRAM."""
+        self.cancel_preview_prefetch(wait=False)
+        self.release_warm_worker(reason=reason)
+        with self._prefetch_lock:
+            thread_to_join = self._prefetch_thread
+        if (
+            thread_to_join is not None
+            and thread_to_join.is_alive()
+            and thread_to_join is not threading.current_thread()
+        ):
+            thread_to_join.join(timeout=2.0)
+
+    def prefetch_status(self) -> dict[str, Any]:
+        """Return a lightweight JSON-safe snapshot of the latest background prefetch job."""
+        with self._prefetch_lock:
+            job = self._prefetch_job
+            if job is None:
+                return {
+                    "active": False,
+                    "job_id": "",
+                    "engine_id": "",
+                    "state": "idle",
+                    "total": 0,
+                    "completed": 0,
+                    "failed": 0,
+                    "ready_items": [],
+                }
+            items = list(job.get("items") or [])
+            ready_items = [
+                {
+                    "voice_preset": str(it["voice_preset"]),
+                    "preview_id": str(it["preview_id"]),
+                }
+                for it in items
+                if it.get("status") == "ready"
+            ]
+            completed = len(ready_items)
+            failed = sum(1 for it in items if it.get("status") == "failed")
+            state = str(job.get("state") or "idle")
+            return {
+                "active": state == "running",
+                "job_id": str(job.get("job_id") or ""),
+                "engine_id": str(job.get("engine_id") or ""),
+                "state": state,
+                "total": len(items),
+                "completed": completed,
+                "failed": failed,
+                "ready_items": ready_items,
+            }
+
+    def _ensure_warm_worker_locked(
+        self, task: Any, engine: dict[str, Any], *, hf_token: str = ""
+    ) -> ColabOneWarmTtsWorker:
+        """Return a live warm daemon worker for `engine` (caller must hold `_warm_exec_lock`)."""
+        engine_id = str(engine["id"])
+        engine_name = str(engine.get("name") or engine_id)
+        want_token = bool(str(hf_token or "").strip())
+
+        with self._warm_lock:
+            existing = self._warm_worker
+        if (
+            existing is not None
+            and existing.is_alive()
+            and existing.engine_id == engine_id
+            and (not want_token or existing.has_hf_token)
+        ):
+            existing.last_used = time.monotonic()
+            self._schedule_warm_idle_timer()
+            return existing
+
+        # Evict any previous warm worker before spawning a new one so VRAM is never doubled.
+        self.release_warm_worker(reason=f"switch_to_{engine_id}")
+
+        env_dir = self.ensure_engine_env(task, engine, hf_token="")
+        worker_python = str(
+            self._require_venv_python(env_dir / ".venv", label=engine_name)
+        )
+        hf_cache_dir = str(self.engines_dir / "_hf_cache")
+        worker_env = _build_tts_worker_env(hf_cache_dir, hf_token=hf_token)
+
+        warm_root = self.engines_dir / "_warm_workers"
+        if warm_root.is_symlink():
+            raise ValueError("TTS 常驻工作目录不能是符号链接")
+        warm_root.mkdir(parents=True, exist_ok=True)
+        worker_work_dir = Path(
+            tempfile.mkdtemp(prefix=f".warm-{engine_id}-", dir=str(warm_root))
+        )
+        worker = ColabOneWarmTtsWorker(
+            engine_id=engine_id,
+            worker_python=worker_python,
+            worker_script=self.build_worker_script(engine_id),
+            work_dir=worker_work_dir,
+            env=worker_env,
+            has_hf_token=want_token,
+            secret_to_scrub=hf_token,
+            stopping=getattr(self.runtime, "stopping", None),
+        )
+        worker.start()
+        with self._warm_lock:
+            self._warm_worker = worker
+        self._schedule_warm_idle_timer()
+        return worker
+
+    def _recommended_preview_batch_size(self, engine_id: str) -> int:
+        if engine_id not in _BATCH_CAPABLE_PREVIEW_ENGINES:
+            return 1
+        gpu_fn = getattr(self.runtime, "gpu_info", None)
+        total_mib = 0
+        if callable(gpu_fn):
+            try:
+                gpu = gpu_fn() or {}
+                total_mib = int(gpu.get("total_mib") or 0)
+            except Exception:
+                total_mib = 0
+        if total_mib >= 40960:
+            return 4
+        if total_mib >= 20480:
+            return 3
+        return 2
+
+    def _persist_preview_wav(
+        self,
+        *,
+        target_pid: str,
+        engine: dict[str, Any],
+        effective_preset_id: str,
+        resolved_text: str,
+        master_wav: Path,
+        sample_rate: int,
+        duration_seconds: float,
+        voice_prompt: str = "",
+        emotion_prompt: str = "",
+        include_data: bool = True,
+    ) -> dict[str, Any]:
+        if not master_wav.is_file() or master_wav.stat().st_size <= 0:
+            raise RuntimeError("音色试听音频合成失败：未生成有效 WAV 文件")
+        if master_wav.stat().st_size > MAX_PREVIEW_AUDIO_BYTES:
+            raise ValueError("音色试听音频超过最大体积限制（16 MiB）")
+
+        wav_bytes = master_wav.read_bytes()
+        if not wav_bytes:
+            raise RuntimeError("音色试听音频合成失败：未生成有效 WAV 文件")
+        if len(wav_bytes) > MAX_PREVIEW_AUDIO_BYTES:
+            raise ValueError("音色试听音频超过最大体积限制（16 MiB）")
+        wav_size = len(wav_bytes)
+        wav_sha256 = hashlib.sha256(wav_bytes).hexdigest()
+        sr = int(sample_rate) if int(sample_rate or 0) > 0 else int(engine.get("sample_rate") or 24000)
+        dur = (
+            round(float(duration_seconds), 4)
+            if (math.isfinite(float(duration_seconds)) and float(duration_seconds) >= 0.0)
+            else 0.0
+        )
+        resolved_engine_id = str(engine["id"])
+        clean_vp = str(voice_prompt or "").strip()
+        clean_ep = str(emotion_prompt or "").strip()
+        meta = {
+            "preview_id": target_pid,
+            "engine_id": resolved_engine_id,
+            "voice_preset": effective_preset_id,
+            "text": resolved_text,
+            "voice_prompt": clean_vp,
+            "emotion_prompt": clean_ep,
+            "sample_rate": sr,
+            "duration_seconds": dur,
+            "mime": "audio/wav",
+            "size": wav_size,
+            "sha256": wav_sha256,
+            "created_at": time.time(),
+        }
+        wav_path = self.previews_dir / f"{target_pid}.wav"
+        meta_path = self.previews_dir / f"{target_pid}.json"
+        tmp_wav_target: Path | None = None
+        try:
+            with self._preview_lock:
+                if wav_path.is_symlink() or meta_path.is_symlink():
+                    raise ValueError("音色试听缓存文件不能是符号链接")
+                fd, tmp_wav_str = tempfile.mkstemp(
+                    prefix=f".{target_pid[:8]}-",
+                    suffix=".wav.tmp",
+                    dir=str(self.previews_dir),
+                )
+                tmp_wav_target = Path(tmp_wav_str)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(wav_bytes)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(tmp_wav_target, wav_path)
+                tmp_wav_target = None
+                atomic_json(meta_path, meta)
+                self._prune_preview_cache_locked(keep_pid=target_pid)
+        finally:
+            if tmp_wav_target is not None and tmp_wav_target.exists():
+                try:
+                    tmp_wav_target.unlink()
+                except OSError:
+                    pass
+
+        payload: dict[str, Any] = {
+            "cached": True,
+            "preview_id": target_pid,
+            "engine_id": resolved_engine_id,
+            "voice_preset": effective_preset_id,
+            "text": resolved_text,
+            "voice_prompt": clean_vp,
+            "emotion_prompt": clean_ep,
+            "sample_rate": sr,
+            "duration_seconds": dur,
+            "mime": "audio/wav",
+            "size": wav_size,
+            "sha256": wav_sha256,
+        }
+        if include_data:
+            payload["data"] = base64.b64encode(wav_bytes).decode("ascii")
+        return payload
+
+    def start_preview_prefetch(
+        self,
+        *,
+        engine_id: str,
+        items: Sequence[dict[str, Any]],
+        hf_token: str = "",
+        ensure_vram_fn: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Start a low-priority, preemptible background batch prefetch for built-in voice presets."""
+        hf_token = str(hf_token or "").strip()
+        engine = self.get_engine(engine_id)
+        eid = str(engine["id"])
+
+        prepared: list[dict[str, Any]] = []
+        seen_pids: set[str] = set()
+        for raw_item in items:
+            if not isinstance(raw_item, dict):
+                continue
+            preset_id = str(raw_item.get("voice_preset") or "").strip()
+            if not preset_id or preset_id.lower() == "custom":
+                continue
+            resolved_preset = resolve_colabone_voice_preset(engine, preset_id)
+            if resolved_preset is None:
+                continue
+            p_text = str(raw_item.get("preview_text") or "").strip()
+            v_prompt = str(raw_item.get("voice_prompt") or "").strip()
+            e_prompt = str(raw_item.get("emotion_prompt") or "").strip()
+            pid, resolved_text = self.compute_preview_id(
+                eid,
+                voice_preset=preset_id,
+                preview_text=p_text,
+                voice_prompt=v_prompt,
+                emotion_prompt=e_prompt,
+            )
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            # Validate inputs cleanly upfront; skip invalid items rather than failing whole batch.
+            try:
+                self.validate_tts_synthesis_inputs(
+                    eid,
+                    script_text=resolved_text,
+                    voice_preset=preset_id,
+                    voice_prompt=v_prompt,
+                    emotion_prompt=e_prompt,
+                    allow_legacy_empty_indextts_check=(self.synth_fn is not None),
+                )
+            except ValueError:
+                continue
+            already = self.get_cached_preview(pid, max_inline_bytes=0) is not None
+            prepared.append(
+                {
+                    "voice_preset": str(resolved_preset["id"]),
+                    "preset": resolved_preset,
+                    "preview_id": pid,
+                    "preview_text": resolved_text,
+                    "voice_prompt": v_prompt,
+                    "emotion_prompt": e_prompt,
+                    "status": "ready" if already else "pending",
+                }
+            )
+
+        if not prepared:
+            return {
+                "active": False,
+                "job_id": "",
+                "engine_id": eid,
+                "state": "idle",
+                "total": 0,
+                "completed": 0,
+                "failed": 0,
+                "ready_items": [],
+            }
+
+        pending_exists = any(it["status"] == "pending" for it in prepared)
+        job_id = uuid.uuid4().hex[:16]
+        cancel_ev = threading.Event()
+
+        with self._prefetch_lock:
+            prev_ev = self._prefetch_cancel
+            if prev_ev is not None:
+                prev_ev.set()
+            prev_job = self._prefetch_job
+            if prev_job is not None and prev_job.get("state") == "running":
+                prev_job["state"] = "cancelled"
+                prev_job["finished_at"] = time.time()
+
+            job: dict[str, Any] = {
+                "job_id": job_id,
+                "engine_id": eid,
+                "state": "running" if pending_exists else "completed",
+                "items": prepared,
+                "created_at": time.time(),
+                "finished_at": None if pending_exists else time.time(),
+            }
+            self._prefetch_job = job
+            self._prefetch_cancel = cancel_ev
+
+            if not pending_exists:
+                self._prefetch_thread = None
+                return self.prefetch_status()
+
+            thread = threading.Thread(
+                target=self._run_prefetch_job,
+                args=(job, engine, hf_token, cancel_ev, ensure_vram_fn),
+                name=f"colabone-tts-prefetch-{job_id[:8]}",
+                daemon=True,
+            )
+            self._prefetch_thread = thread
+            thread.start()
+
+        return self.prefetch_status()
+
+    def _prefetch_should_stop(self, cancel_ev: threading.Event) -> bool:
+        if cancel_ev.is_set():
+            return True
+        stopping = getattr(self.runtime, "stopping", None)
+        if stopping is not None and stopping.is_set():
+            return True
+        if getattr(self.runtime, "quiescing", False):
+            return True
+        # Yield cleanly if a heavy non-preview task (e.g. ComfyUI run or LLM load) started.
+        tasks = getattr(self.runtime, "tasks", None)
+        if isinstance(tasks, dict):
+            for t in list(tasks.values()):
+                if getattr(t, "state", "") == "running" and getattr(t, "kind", "") != "comfyui_tts_preview":
+                    return True
+        return False
+
+    def _wait_if_foreground_waiting(self, cancel_ev: threading.Event) -> bool:
+        while self._foreground_waiting.is_set():
+            if self._prefetch_should_stop(cancel_ev):
+                return False
+            with self._foreground_done:
+                if self._foreground_waiting.is_set():
+                    self._foreground_done.wait(timeout=0.2)
+        return not self._prefetch_should_stop(cancel_ev)
+
+    def _run_prefetch_job(
+        self,
+        job: dict[str, Any],
+        engine: dict[str, Any],
+        hf_token: str,
+        cancel_ev: threading.Event,
+        ensure_vram_fn: Callable[[], None] | None,
+    ) -> None:
+        eid = str(engine["id"])
+        native_sr = max(8000, int(engine.get("sample_rate") or 24000))
+        raw_mc = int(engine.get("max_segment_chars") or 0)
+        max_segment_chars = raw_mc if raw_mc > 0 else 120
+        batch_size = self._recommended_preview_batch_size(eid)
+
+        class _PrefetchTask:
+            def __init__(self, ev: threading.Event, stopping: Any) -> None:
+                self._ev = ev
+                self._stopping = stopping
+                self.cancel = ev
+
+            def check(self) -> None:
+                if self._ev.is_set() or (
+                    self._stopping is not None and self._stopping.is_set()
+                ):
+                    raise _cancelled_error_cls()("操作已取消")
+
+            def note(self, _msg: str, level: str = "info") -> None:
+                return None
+
+            def update(self, **_kw: Any) -> None:
+                return None
+
+        bg_task = _PrefetchTask(cancel_ev, getattr(self.runtime, "stopping", None))
+
+        try:
+            if not self._wait_if_foreground_waiting(cancel_ev):
+                return
+
+            self.check_vram(engine, allow_unavailable=(self.synth_fn is not None))
+            self.check_disk(engine, allow_unavailable=(self.synth_fn is not None))
+            if callable(ensure_vram_fn):
+                ensure_vram_fn()
+
+            if self.engines_dir.is_symlink():
+                raise ValueError("TTS 引擎目录不能是符号链接")
+            self.engines_dir.mkdir(parents=True, exist_ok=True)
+            if self.previews_dir.is_symlink():
+                raise ValueError("音色试听缓存目录不能是符号链接")
+            self.previews_dir.mkdir(parents=True, exist_ok=True)
+
+            # For ref-audio-based engines, warm up any missing VoxCPM2 anchors in one pass
+            # before loading the target engine so we never ping-pong between two models.
+            if eid in _REF_AUDIO_PRESET_ENGINES and self._should_use_warm_worker():
+                for item in list(job["items"]):
+                    if not self._wait_if_foreground_waiting(cancel_ev):
+                        return
+                    if item.get("status") != "pending":
+                        continue
+                    preset = item["preset"]
+                    if not self._is_preset_reference_cached(preset):
+                        self._ensure_preset_reference_audio(
+                            bg_task, preset, hf_token=hf_token
+                        )
+
+            items_list: list[dict[str, Any]] = job["items"]
+            cursor = 0
+            consecutive_failures = 0
+
+            def _abort_prefetch_job(reason: str) -> None:
+                clean_reason = _scrub_secret(reason or "远端预生成失败", hf_token)[:300]
+                with self._prefetch_lock:
+                    for pending_it in items_list:
+                        if pending_it.get("status") == "pending":
+                            pending_it["status"] = "cancelled"
+                    if job.get("state") == "running":
+                        job["state"] = "failed"
+                        job["error"] = clean_reason
+                        job["finished_at"] = time.time()
+
+            while cursor < len(items_list):
+                if not self._wait_if_foreground_waiting(cancel_ev):
+                    return
+
+                # Collect next micro-batch of still-pending uncached items.
+                chunk: list[dict[str, Any]] = []
+                while cursor < len(items_list) and len(chunk) < batch_size:
+                    item = items_list[cursor]
+                    cursor += 1
+                    if item.get("status") != "pending":
+                        continue
+                    if (
+                        self.get_cached_preview(item["preview_id"], max_inline_bytes=0)
+                        is not None
+                    ):
+                        with self._prefetch_lock:
+                            item["status"] = "ready"
+                        continue
+                    chunk.append(item)
+
+                if not chunk:
+                    continue
+
+                if (
+                    len(chunk) > 1
+                    and eid in _BATCH_CAPABLE_PREVIEW_ENGINES
+                    and self._should_use_warm_worker()
+                ):
+                    batch_err = self._synthesize_prefetch_batch_chunk(
+                        bg_task=bg_task,
+                        engine=engine,
+                        chunk=chunk,
+                        hf_token=hf_token,
+                        cancel_ev=cancel_ev,
+                        max_segment_chars=max_segment_chars,
+                        native_sr=native_sr,
+                    )
+                    if batch_err:
+                        consecutive_failures += 1
+                        if _is_fatal_prefetch_error(batch_err) or consecutive_failures >= 2:
+                            _abort_prefetch_job(batch_err)
+                            return
+                    else:
+                        consecutive_failures = 0
+                    continue
+
+                for item in chunk:
+                    if not self._wait_if_foreground_waiting(cancel_ev):
+                        return
+                    if (
+                        self.get_cached_preview(item["preview_id"], max_inline_bytes=0)
+                        is not None
+                    ):
+                        with self._prefetch_lock:
+                            item["status"] = "ready"
+                        continue
+                    try:
+                        self.synthesize_preview(
+                            bg_task,
+                            engine_id=eid,
+                            voice_preset=item["voice_preset"],
+                            preview_text=item["preview_text"],
+                            voice_prompt=item["voice_prompt"],
+                            emotion_prompt=item["emotion_prompt"],
+                            hf_token=hf_token,
+                            preview_id=item["preview_id"],
+                            _is_background_prefetch=True,
+                        )
+                        consecutive_failures = 0
+                        with self._prefetch_lock:
+                            item["status"] = "ready"
+                    except Exception as exc:
+                        if _is_cancelled_error(exc) or self._prefetch_should_stop(
+                            cancel_ev
+                        ):
+                            return
+                        err_msg = _scrub_secret(
+                            str(exc) or type(exc).__name__, hf_token
+                        )[:300]
+                        with self._prefetch_lock:
+                            item["status"] = "failed"
+                            item["error"] = err_msg
+                        consecutive_failures += 1
+                        if _is_fatal_prefetch_error(err_msg) or consecutive_failures >= 2:
+                            _abort_prefetch_job(err_msg)
+                            return
+        except Exception as exc:
+            if _is_cancelled_error(exc) or self._prefetch_should_stop(cancel_ev):
+                return
+            with self._prefetch_lock:
+                for pending_it in list(job.get("items") or []):
+                    if pending_it.get("status") == "pending":
+                        pending_it["status"] = "cancelled"
+                if job.get("state") == "running":
+                    job["state"] = "failed"
+                    job["error"] = _scrub_secret(
+                        str(exc) or type(exc).__name__, hf_token
+                    )[:300]
+                    job["finished_at"] = time.time()
+            return
+        finally:
+            with self._prefetch_lock:
+                if job.get("state") == "running":
+                    if cancel_ev.is_set() or self._prefetch_should_stop(cancel_ev):
+                        job["state"] = "cancelled"
+                    else:
+                        ready_cnt = sum(
+                            1 for it in (job.get("items") or []) if it.get("status") == "ready"
+                        )
+                        failed_items = [
+                            it
+                            for it in (job.get("items") or [])
+                            if it.get("status") == "failed"
+                        ]
+                        if ready_cnt == 0 and failed_items:
+                            job["state"] = "failed"
+                            if not job.get("error"):
+                                job["error"] = str(failed_items[0].get("error") or "预生成失败")
+                        else:
+                            job["state"] = "completed"
+                    job["finished_at"] = time.time()
+
+    def _synthesize_prefetch_batch_chunk(
+        self,
+        *,
+        bg_task: Any,
+        engine: dict[str, Any],
+        chunk: list[dict[str, Any]],
+        hf_token: str,
+        cancel_ev: threading.Event,
+        max_segment_chars: int,
+        native_sr: int,
+    ) -> str:
+        eid = str(engine["id"])
+        tmp_work = Path(
+            tempfile.mkdtemp(prefix=f".prefetch-{eid}-", dir=str(self.previews_dir))
+        )
+        try:
+            env_dir = self.ensure_engine_env(bg_task, engine, hf_token="")
+            source_dir = env_dir / "source"
+            source_dir_str = (
+                str(source_dir)
+                if (source_dir.is_dir() and not source_dir.is_symlink())
+                else ""
+            )
+
+            configs: list[dict[str, Any]] = []
+            seg_lists: list[list[tuple[str, Path]]] = []
+            for idx, item in enumerate(chunk):
+                item_dir = tmp_work / f"item_{idx:02d}"
+                item_dir.mkdir(parents=True, exist_ok=True)
+                segs = split_colabone_tts_script(
+                    item["preview_text"], max_chars=max_segment_chars
+                )
+                if len(segs) > 1:
+                    packed = segs[0]
+                    for frag in segs[1:]:
+                        packed = _join_fragments(packed, frag)
+                    if len(packed) <= max_segment_chars:
+                        segs = [packed]
+                seg_entries = [
+                    {
+                        "index": s_idx,
+                        "text": s_txt,
+                        "output_wav": str(item_dir / f"seg_{s_idx:04d}.wav"),
+                    }
+                    for s_idx, s_txt in enumerate(segs)
+                ]
+                seg_lists.append(
+                    [(str(se["text"]), Path(se["output_wav"])) for se in seg_entries]
+                )
+
+                preset = item["preset"]
+                preset_id = str(preset["id"])
+                preset_seed = int(preset["seed"])
+                user_vp = str(item.get("voice_prompt") or "").strip()
+                speaker_id = (
+                    str(preset.get("speaker_id") or "").strip()
+                    if eid == "qwen3_tts"
+                    else ""
+                )
+                preset_prompt = str(
+                    preset.get("prompt")
+                    or (
+                        preset.get("qwen_instruct")
+                        if eid in ("qwen3_tts", "ming_3_tts", "breeze_tts2")
+                        else preset.get("voxcpm_prompt")
+                    )
+                    or ""
+                ).strip()
+                if speaker_id:
+                    eff_vp = user_vp
+                elif not user_vp and preset_prompt:
+                    eff_vp = preset_prompt
+                else:
+                    eff_vp = user_vp
+
+                configs.append(
+                    {
+                        "engine_id": eid,
+                        "repo": str(engine.get("repo") or ""),
+                        "revision": str(engine.get("revision") or ""),
+                        "aux_repo": str(engine.get("aux_repo") or ""),
+                        "aux_revision": str(engine.get("aux_revision") or ""),
+                        "custom_voice_repo": str(engine.get("custom_voice_repo") or ""),
+                        "custom_voice_revision": str(
+                            engine.get("custom_voice_revision") or ""
+                        ),
+                        "source_dir": source_dir_str,
+                        "cache_dir": str(self.engines_dir / "_hf_cache"),
+                        "sample_rate": native_sr,
+                        "segments": seg_entries,
+                        "ref_audio_path": "",
+                        "ref_text": "",
+                        "voice_prompt": eff_vp,
+                        "voice_preset": preset_id,
+                        "voice_seed": preset_seed,
+                        "speaker_id": speaker_id,
+                        "emotion_ref_path": "",
+                        "emotion_prompt": str(item.get("emotion_prompt") or ""),
+                    }
+                )
+
+            with self._warm_exec_lock:
+                if self._prefetch_should_stop(cancel_ev):
+                    return
+                worker = self._ensure_warm_worker_locked(
+                    bg_task, engine, hf_token=hf_token
+                )
+                resp = worker.call(
+                    {"op": "synthesize_batch", "items": configs},
+                    task=bg_task,
+                    cancel_event=cancel_ev,
+                    timeout=900.0,
+                    log_path=tmp_work / f"prefetch_{eid}.log",
+                    secret_to_scrub=hf_token,
+                )
+                self._schedule_warm_idle_timer()
+
+            results = resp.get("results") if isinstance(resp, dict) else None
+            if not isinstance(results, list):
+                results = [{"index": i, "ok": True} for i in range(len(chunk))]
+
+            batch_first_err = ""
+            batch_any_ready = False
+            for idx, item in enumerate(chunk):
+                res_entry = (
+                    results[idx]
+                    if idx < len(results) and isinstance(results[idx], dict)
+                    else {"ok": False, "error": "missing batch result"}
+                )
+                if not res_entry.get("ok"):
+                    item_err = _scrub_secret(
+                        str(res_entry.get("error") or "批量试听合成失败"), hf_token
+                    )[:300]
+                    if not batch_first_err:
+                        batch_first_err = item_err
+                    with self._prefetch_lock:
+                        item["status"] = "failed"
+                        item["error"] = item_err
+                    continue
+                seg_wavs = seg_lists[idx]
+                if not all(p.is_file() for _, p in seg_wavs):
+                    if not batch_first_err:
+                        batch_first_err = "批量试听未生成有效音频片段"
+                    with self._prefetch_lock:
+                        item["status"] = "failed"
+                        item["error"] = "批量试听未生成有效音频片段"
+                    continue
+                master_wav = tmp_work / f"master_{idx:02d}.wav"
+                manifest_path = tmp_work / f"manifest_{idx:02d}.json"
+                manifest = assemble_colabone_tts_master(
+                    seg_wavs,
+                    out_wav=master_wav,
+                    manifest_path=manifest_path,
+                    pause_seconds=0.18,
+                    target_sr=native_sr,
+                    target_lufs=-23.0,
+                )
+                self._persist_preview_wav(
+                    target_pid=item["preview_id"],
+                    engine=engine,
+                    effective_preset_id=item["voice_preset"],
+                    resolved_text=item["preview_text"],
+                    master_wav=master_wav,
+                    sample_rate=int(manifest["sample_rate"]),
+                    duration_seconds=float(manifest["duration"]),
+                    voice_prompt=str(item.get("voice_prompt") or ""),
+                    emotion_prompt=str(item.get("emotion_prompt") or ""),
+                    include_data=False,
+                )
+                batch_any_ready = True
+                with self._prefetch_lock:
+                    item["status"] = "ready"
+            if batch_first_err and _is_warm_worker_cuda_fatal_error(batch_first_err):
+                self.release_warm_worker("prefetch_batch_cuda_fatal")
+            return "" if batch_any_ready else batch_first_err
+        except Exception as exc:
+            if _is_cancelled_error(exc) or self._prefetch_should_stop(cancel_ev):
+                return ""
+            if _is_warm_worker_cuda_fatal_error(exc) or isinstance(
+                exc, _ColabOneWarmWorkerTransportError
+            ):
+                self.release_warm_worker("prefetch_batch_error")
+            err_msg = _scrub_secret(str(exc) or type(exc).__name__, hf_token)[:300]
+            with self._prefetch_lock:
+                for item in chunk:
+                    if item.get("status") == "pending":
+                        item["status"] = "failed"
+                        item["error"] = err_msg
+            return err_msg
+        finally:
+            shutil.rmtree(tmp_work, ignore_errors=True)
+
     def synthesize_preview(
         self,
         task: Any,
@@ -5986,6 +7773,7 @@ class ColabOneRemoteTtsRunner:
         emotion_ref_path: Path | None = None,
         hf_token: str = "",
         preview_id: str = "",
+        _is_background_prefetch: bool = False,
     ) -> dict[str, Any]:
         """Synthesize or reuse a cached voice audition WAV clip for the selected TTS engine."""
         hf_token = str(hf_token or "").strip()
@@ -6061,34 +7849,48 @@ class ColabOneRemoteTtsRunner:
             if (resolved_ref is not None or resolved_preset is None)
             else str(resolved_preset["id"])
         )
+        native_preview_sr = max(8000, int(engine.get("sample_rate") or 24000))
 
         tmp_work = Path(
             tempfile.mkdtemp(
                 prefix=f".preview-{target_pid[:8]}-", dir=str(self.previews_dir)
             )
         )
-        tmp_wav_target: Path | None = None
+        foreground_marked = False
         try:
-            synth_result = self.synthesize(
-                task,
-                engine_id=engine_id,
-                script_text=resolved_text,
-                work_dir=tmp_work,
-                ref_audio_path=resolved_ref,
-                ref_text=ref_text,
-                voice_prompt=voice_prompt,
-                emotion_ref_path=resolved_emo,
-                emotion_prompt=emotion_prompt,
-                pause_seconds=0.18,
-                hf_token=hf_token,
-                voice_preset=effective_synth_preset,
-            )
-            master_wav = Path(synth_result["audio_path"])
-            if not master_wav.is_file() or master_wav.stat().st_size <= 0:
-                raise RuntimeError("音色试听音频合成失败：未生成有效 WAV 文件")
-            if master_wav.stat().st_size > MAX_PREVIEW_AUDIO_BYTES:
-                raise ValueError("音色试听音频超过最大体积限制（16 MiB）")
+            if not _is_background_prefetch:
+                self._foreground_waiting.set()
+                foreground_marked = True
 
+            with self._warm_exec_lock:
+                # Re-check cache after acquiring lock in case background prefetch just finished it!
+                cached_after_wait = self.get_cached_preview(target_pid)
+                if cached_after_wait is not None:
+                    _safe_task_note(
+                        task, f"复用已缓存的音色试听样本：{target_pid[:10]}"
+                    )
+                    return cached_after_wait
+
+                synth_result = self.synthesize(
+                    task,
+                    engine_id=engine_id,
+                    script_text=resolved_text,
+                    work_dir=tmp_work,
+                    ref_audio_path=resolved_ref,
+                    ref_text=ref_text,
+                    voice_prompt=voice_prompt,
+                    emotion_ref_path=resolved_emo,
+                    emotion_prompt=emotion_prompt,
+                    pause_seconds=0.18,
+                    hf_token=hf_token,
+                    voice_preset=effective_synth_preset,
+                    target_sr=native_preview_sr,
+                    single_segment_if_fit=True,
+                    prefer_warm=True,
+                    _warm_lock_held=True,
+                )
+
+            master_wav = Path(synth_result["audio_path"])
             effective_preset_id = (
                 ""
                 if resolved_ref is not None
@@ -6098,73 +7900,25 @@ class ColabOneRemoteTtsRunner:
                     else norm_raw_preset
                 )
             )
-            wav_bytes = master_wav.read_bytes()
-            if not wav_bytes:
-                raise RuntimeError("音色试听音频合成失败：未生成有效 WAV 文件")
-            if len(wav_bytes) > MAX_PREVIEW_AUDIO_BYTES:
-                raise ValueError("音色试听音频超过最大体积限制（16 MiB）")
-            wav_size = len(wav_bytes)
-            wav_sha256 = hashlib.sha256(wav_bytes).hexdigest()
-            raw_sr = int(synth_result.get("sample_rate") or 48000)
-            sample_rate = raw_sr if raw_sr > 0 else 48000
+            raw_sr = int(synth_result.get("sample_rate") or native_preview_sr)
             raw_dur = float(synth_result.get("duration") or 0.0)
-            duration_seconds = (
-                round(raw_dur, 4)
-                if (math.isfinite(raw_dur) and raw_dur >= 0.0)
-                else 0.0
+            return self._persist_preview_wav(
+                target_pid=target_pid,
+                engine=engine,
+                effective_preset_id=effective_preset_id,
+                resolved_text=resolved_text,
+                master_wav=master_wav,
+                sample_rate=raw_sr,
+                duration_seconds=raw_dur,
+                voice_prompt=voice_prompt,
+                emotion_prompt=emotion_prompt,
+                include_data=(not _is_background_prefetch),
             )
-            resolved_engine_id = str(synth_result.get("engine_id") or engine["id"])
-            meta = {
-                "preview_id": target_pid,
-                "engine_id": resolved_engine_id,
-                "voice_preset": effective_preset_id,
-                "text": resolved_text,
-                "sample_rate": sample_rate,
-                "duration_seconds": duration_seconds,
-                "mime": "audio/wav",
-                "size": wav_size,
-                "sha256": wav_sha256,
-                "created_at": time.time(),
-            }
-
-            with self._preview_lock:
-                if wav_path.is_symlink() or meta_path.is_symlink():
-                    raise ValueError("音色试听缓存文件不能是符号链接")
-                fd, tmp_wav_str = tempfile.mkstemp(
-                    prefix=f".{target_pid[:8]}-",
-                    suffix=".wav.tmp",
-                    dir=str(self.previews_dir),
-                )
-                tmp_wav_target = Path(tmp_wav_str)
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(wav_bytes)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(tmp_wav_target, wav_path)
-                tmp_wav_target = None
-                atomic_json(meta_path, meta)
-                self._prune_preview_cache_locked(keep_pid=target_pid)
-                result_payload = {
-                    "cached": True,
-                    "preview_id": target_pid,
-                    "engine_id": resolved_engine_id,
-                    "voice_preset": effective_preset_id,
-                    "text": resolved_text,
-                    "sample_rate": sample_rate,
-                    "duration_seconds": duration_seconds,
-                    "mime": "audio/wav",
-                    "size": wav_size,
-                    "sha256": wav_sha256,
-                    "data": base64.b64encode(wav_bytes).decode("ascii"),
-                }
-
-            return result_payload
         finally:
-            if tmp_wav_target is not None and tmp_wav_target.exists():
-                try:
-                    tmp_wav_target.unlink()
-                except OSError:
-                    pass
+            if foreground_marked:
+                self._foreground_waiting.clear()
+                with self._foreground_done:
+                    self._foreground_done.notify_all()
             shutil.rmtree(tmp_work, ignore_errors=True)
 
     def validate_tts_synthesis_inputs(
@@ -6288,8 +8042,11 @@ class ColabOneRemoteTtsRunner:
         hf_token: str = "",
         voice_preset: str = "",
         target_sr: int | None = None,
+        single_segment_if_fit: bool = False,
+        prefer_warm: bool = False,
+        _warm_lock_held: bool = False,
     ) -> dict[str, Any]:
-        """Run remote GPU TTS synthesis in an isolated subprocess and assemble master WAV."""
+        """Run remote GPU TTS synthesis in an isolated or warm daemon subprocess and assemble master WAV."""
         hf_token = str(hf_token or "").strip()
         check_fn = getattr(task, "check", None)
         if callable(check_fn):
@@ -6315,6 +8072,12 @@ class ColabOneRemoteTtsRunner:
         raw_mc = int(engine.get("max_segment_chars") or 0)
         max_segment_chars = raw_mc if raw_mc > 0 else 120
         segments = split_colabone_tts_script(script_text, max_chars=max_segment_chars)
+        if single_segment_if_fit and len(segments) > 1:
+            packed = segments[0]
+            for frag in segments[1:]:
+                packed = _join_fragments(packed, frag)
+            if len(packed) <= max_segment_chars:
+                segments = [packed]
         if not segments:
             raise ValueError("配音脚本文本不能为空")
 
@@ -6510,43 +8273,72 @@ class ColabOneRemoteTtsRunner:
             if source_dir.is_dir():
                 base_config["source_dir"] = str(source_dir)
 
-            worker_path = work_root / f"worker_{engine['id']}.py"
-            config_path = work_root / f"config_{engine['id']}.json"
             log_path = work_root / f"tts_{engine['id']}.log"
-            if worker_path.is_symlink():
-                raise ValueError("TTS 工作脚本路径不能是符号链接")
-            if config_path.is_symlink():
-                raise ValueError("TTS 配置文件路径不能是符号链接")
             if log_path.is_symlink():
                 raise ValueError("TTS 日志文件路径不能是符号链接")
 
-            worker_path.write_text(
-                self.build_worker_script(engine["id"]), encoding="utf-8"
-            )
-            atomic_json(config_path, base_config)
+            used_warm = False
+            if prefer_warm and self._should_use_warm_worker():
+                lock_ctx = nullcontext() if _warm_lock_held else self._warm_exec_lock
+                try:
+                    with lock_ctx:
+                        worker = self._ensure_warm_worker_locked(
+                            task, engine, hf_token=hf_token
+                        )
+                        worker.call(
+                            {"op": "synthesize", "config": base_config},
+                            task=task,
+                            timeout=1800.0,
+                            log_path=log_path,
+                            secret_to_scrub=hf_token,
+                        )
+                        self._schedule_warm_idle_timer()
+                    used_warm = True
+                except _ColabOneWarmWorkerTransportError:
+                    # Only fall back to a cold one-shot subprocess when the daemon transport/process died.
+                    self.release_warm_worker(reason="fallback_oneshot")
+                    if not all(Path(s["output_wav"]).is_file() for s in seg_entries):
+                        _safe_task_note(
+                            task,
+                            f"常驻 TTS 进程通道中断，自动回退至独立子进程重试：{engine_name}",
+                            level="warning",
+                        )
+                        used_warm = False
+                    else:
+                        used_warm = True
+                except Exception as exc:
+                    if _is_cancelled_error(exc):
+                        raise
+                    if _is_warm_worker_cuda_fatal_error(exc):
+                        self.release_warm_worker(reason="cuda_fatal_error")
+                    raise
 
-            # Pass HF_TOKEN strictly via worker subprocess environment (never CLI args, config JSON, or pip/git).
-            hf_cache_dir = str(self.engines_dir / "_hf_cache")
-            worker_env = _sanitized_tts_env(
-                {
-                    "PYTHONUNBUFFERED": "1",
-                    "HF_HUB_CACHE": hf_cache_dir,
-                    "HUGGINGFACE_HUB_CACHE": hf_cache_dir,
-                }
-            )
-            if hf_token:
-                worker_env["HF_TOKEN"] = hf_token
-                worker_env["HUGGING_FACE_HUB_TOKEN"] = hf_token
+            if not used_warm:
+                worker_path = work_root / f"worker_{engine['id']}.py"
+                config_path = work_root / f"config_{engine['id']}.json"
+                if worker_path.is_symlink():
+                    raise ValueError("TTS 工作脚本路径不能是符号链接")
+                if config_path.is_symlink():
+                    raise ValueError("TTS 配置文件路径不能是符号链接")
 
-            self._invoke_command(
-                [worker_python, str(worker_path), "--config", str(config_path)],
-                task,
-                log_path,
-                timeout=1800,
-                cwd=work_root,
-                env=worker_env,
-                secret_to_scrub=hf_token,
-            )
+                worker_path.write_text(
+                    self.build_worker_script(engine["id"]), encoding="utf-8"
+                )
+                atomic_json(config_path, base_config)
+
+                # Pass HF_TOKEN strictly via worker subprocess environment (never CLI args, config JSON, or pip/git).
+                hf_cache_dir = str(self.engines_dir / "_hf_cache")
+                worker_env = _build_tts_worker_env(hf_cache_dir, hf_token=hf_token)
+
+                self._invoke_command(
+                    [worker_python, str(worker_path), "--config", str(config_path)],
+                    task,
+                    log_path,
+                    timeout=1800,
+                    cwd=work_root,
+                    env=worker_env,
+                    secret_to_scrub=hf_token,
+                )
             segment_wavs = [
                 (str(seg["text"]), Path(seg["output_wav"])) for seg in seg_entries
             ]

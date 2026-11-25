@@ -133,7 +133,29 @@ _SHARD_INDEX_SUFFIXES = (".safetensors.index.json", ".bin.index.json")
 
 _MAX_LOG_FILE_BYTES = 5 * 1024 * 1024  # 5 MiB truncation threshold
 _MAX_STREAM_LINE_BYTES = 65536  # 64 KiB cap per streamed stdout/stderr line
-_DEFAULT_WORKER_INACTIVITY_TIMEOUT_S = 1800  # 30 min silence watchdog
+_DEFAULT_WORKER_INACTIVITY_TIMEOUT_S = 900  # 15 min silence / no-progress watchdog
+_TQDM_STEP_PROGRESS_RE = re.compile(r"(?:^|\|\s*)(\d{1,4})/(\d{1,4})\s*\[")
+_TERMINAL_WORKER_ERROR_MARKERS = (
+    "[colabone-longcat16] ERROR:",
+    "ColabOne diffusion VSR worker failed:",
+)
+_WORKER_DIAG_ERROR_MARKERS = (
+    "[colabone-longcat16] ERROR:",
+    "ColabOne diffusion VSR worker failed:",
+    "CUDA out of memory",
+    "OutOfMemoryError:",
+    "RuntimeError:",
+    "AssertionError:",
+    "AttributeError:",
+    "ModuleNotFoundError:",
+    "ImportError:",
+    "FileNotFoundError:",
+    "ValueError:",
+)
+_WORKER_DIAG_WARNING_MARKERS = (
+    "[colabone-longcat16] WARNING:",
+    "[colabone-vsr] WARNING:",
+)
 
 _AVATAR_WEIGHT_EXTS = frozenset(
     {".safetensors", ".bin", ".onnx", ".ckpt", ".pth", ".pt"}
@@ -408,6 +430,32 @@ def _sanitized_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     if extra:
         env.update(extra)
     return env
+
+
+def _summarize_error_tail(
+    lines: Sequence[str],
+    fallback_text: str = "",
+    *,
+    max_chars: int = 800,
+) -> str:
+    cleaned = [str(line).strip() for line in lines if str(line).strip()]
+    if not cleaned and fallback_text:
+        cleaned = [ln.strip() for ln in str(fallback_text).splitlines() if ln.strip()]
+    if not cleaned:
+        return ""
+    budget = max(80, int(max_chars))
+    kept: list[str] = []
+    used = 0
+    for line in reversed(cleaned):
+        sep = 1 if kept else 0
+        if kept and used + sep + len(line) > budget:
+            break
+        if not kept and len(line) > budget:
+            return line[-budget:]
+        kept.append(line)
+        used += sep + len(line)
+    kept.reverse()
+    return "\n".join(kept)
 
 
 def _normalize_opencv_package_spec(spec: str) -> str:
@@ -2162,11 +2210,13 @@ class ColabOneAvatarEngineManager:
             _check_cancel(task, stopping)
             if proc.returncode:
                 with tail_lock:
-                    tail_text = "\n".join(tail_lines)[-800:]
-                if not tail_text:
-                    tail_text = _scrub_secret(
-                        _read_log_tail(log_path, 4096), secret_to_scrub
-                    )[-800:]
+                    captured = list(tail_lines)
+                fallback = (
+                    ""
+                    if captured
+                    else _scrub_secret(_read_log_tail(log_path, 4096), secret_to_scrub)
+                )
+                tail_text = _summarize_error_tail(captured, fallback, max_chars=800)
                 raise RuntimeError(
                     f"{stage_label} 执行失败（退出码 {proc.returncode}）：{tail_text}"
                 )
@@ -3130,36 +3180,189 @@ class ColabOneAvatarEngineManager:
         *,
         progress_range: tuple[float, float],
         last_msg_holder: list[str],
-    ) -> None:
+        stage_label: str = "",
+        progress_state: dict[str, Any] | None = None,
+    ) -> bool:
         segments = raw_line.split("\r") if "\r" in raw_line else [raw_line]
+        saw_progress = False
+        now = time.monotonic()
         for seg in segments:
             payload = parse_colabone_progress_line(seg)
-            if payload is None:
-                continue
-            frac = _extract_progress_fraction(payload)
-            mapped = (
-                _interp_progress(progress_range, frac) if frac is not None else None
-            )
-            raw_msg = (
-                payload.get("message")
-                or payload.get("detail")
-                or payload.get("status")
-                or ""
-            )
-            msg = str(raw_msg).strip() if raw_msg else ""
-            if mapped is not None or msg:
-                _update_task_state(
-                    task,
-                    progress=mapped,
-                    message=msg or None,
-                    monotonic=True,
+            if payload is not None:
+                frac = _extract_progress_fraction(payload)
+                mapped = (
+                    _interp_progress(progress_range, frac) if frac is not None else None
                 )
-            if msg and msg != last_msg_holder[0]:
-                last_msg_holder[0] = msg
-                level = str(payload.get("level") or "info").strip().lower()
-                if level not in ("info", "warning", "error"):
-                    level = "info"
-                _safe_task_note(task, msg, level=level)
+                raw_msg = (
+                    payload.get("message")
+                    or payload.get("detail")
+                    or payload.get("status")
+                    or ""
+                )
+                msg = str(raw_msg).strip() if raw_msg else ""
+                stage_val = str(payload.get("stage") or "").strip().lower()
+                step_val = payload.get("step")
+                seg_val = payload.get("segment")
+                tot_seg_val = payload.get("total_segments")
+                if progress_state is not None:
+                    sig = (
+                        round(frac, 5) if frac is not None else None,
+                        msg,
+                        step_val if isinstance(step_val, int) and not isinstance(step_val, bool) else None,
+                        seg_val if isinstance(seg_val, int) and not isinstance(seg_val, bool) else None,
+                    )
+                    if sig != progress_state.get("last_structured_sig"):
+                        saw_progress = True
+                        progress_state["last_structured_sig"] = sig
+                    progress_state["seen_structured"] = True
+                    progress_state["last_structured_at"] = now
+                    if (
+                        isinstance(step_val, int)
+                        and not isinstance(step_val, bool)
+                        and step_val > 0
+                    ):
+                        progress_state["seen_step_progress"] = True
+                    if stage_val and stage_val != "generate":
+                        progress_state.pop("segment", None)
+                        progress_state.pop("total_segments", None)
+                    elif (
+                        isinstance(seg_val, int)
+                        and not isinstance(seg_val, bool)
+                        and isinstance(tot_seg_val, int)
+                        and not isinstance(tot_seg_val, bool)
+                        and 1 <= seg_val <= tot_seg_val
+                    ):
+                        progress_state["segment"] = seg_val
+                        progress_state["total_segments"] = tot_seg_val
+                else:
+                    saw_progress = True
+                if mapped is not None or msg:
+                    _update_task_state(
+                        task,
+                        progress=mapped,
+                        message=msg or None,
+                        monotonic=True,
+                    )
+                if msg and msg != last_msg_holder[0]:
+                    last_msg_holder[0] = msg
+                    level = str(payload.get("level") or "info").strip().lower()
+                    if level not in ("info", "warning", "error"):
+                        level = "info"
+                    _safe_task_note(task, msg, level=level)
+                continue
+
+            cleaned = seg.strip()
+            if not cleaned:
+                continue
+
+            # Fallback tqdm denoising/inference step progress when structured step hook is absent.
+            tqdm_match = _TQDM_STEP_PROGRESS_RE.search(cleaned)
+            if tqdm_match is not None:
+                try:
+                    step_cur = int(tqdm_match.group(1))
+                    step_tot = int(tqdm_match.group(2))
+                except ValueError:
+                    step_cur, step_tot = 0, 0
+                if 1 <= step_cur <= step_tot <= 5000:
+                    prev_step = (
+                        progress_state.get("last_tqdm_step")
+                        if progress_state is not None
+                        else None
+                    )
+                    if prev_step != (step_cur, step_tot):
+                        saw_progress = True
+                    has_native_steps = bool(
+                        progress_state is not None
+                        and progress_state.get("seen_step_progress")
+                    )
+                    last_struct = (
+                        float(progress_state.get("last_structured_at") or 0.0)
+                        if progress_state is not None
+                        else 0.0
+                    )
+                    last_tqdm_at = (
+                        float(progress_state.get("last_tqdm_at") or 0.0)
+                        if progress_state is not None
+                        else 0.0
+                    )
+                    if (
+                        not has_native_steps
+                        and (now - last_struct) >= 5.0
+                        and (prev_step != (step_cur, step_tot) or (now - last_tqdm_at) >= 2.0)
+                    ):
+                        if progress_state is not None:
+                            progress_state["last_tqdm_step"] = (step_cur, step_tot)
+                            progress_state["last_tqdm_at"] = now
+                        mapped_tqdm: float | None = None
+                        seg_cur = (
+                            progress_state.get("segment")
+                            if progress_state is not None
+                            else None
+                        )
+                        seg_tot = (
+                            progress_state.get("total_segments")
+                            if progress_state is not None
+                            else None
+                        )
+                        if (
+                            isinstance(seg_cur, int)
+                            and isinstance(seg_tot, int)
+                            and 1 <= seg_cur <= seg_tot
+                        ):
+                            seg_frac = 0.30 + 0.65 * (
+                                (float(seg_cur - 1) + 0.96 * (float(step_cur) / float(step_tot)))
+                                / float(seg_tot)
+                            )
+                            mapped_tqdm = _interp_progress(progress_range, seg_frac)
+                            step_msg = (
+                                f"正在渲染第 {seg_cur}/{seg_tot} 段（第 {step_cur}/{step_tot} 步）"
+                            )
+                        else:
+                            label = stage_label or "远端渲染"
+                            step_msg = f"{label} · 推理进度 {step_cur}/{step_tot}"
+                        _update_task_state(
+                            task,
+                            progress=mapped_tqdm,
+                            message=step_msg,
+                            monotonic=True,
+                        )
+                    continue
+
+            # Detect worker terminal error banners or diagnostic warnings/errors so they surface live.
+            if any(marker in cleaned for marker in _TERMINAL_WORKER_ERROR_MARKERS):
+                if progress_state is not None and progress_state.get("terminal_error_at") is None:
+                    progress_state["terminal_error_at"] = now
+                    progress_state["terminal_error_msg"] = cleaned[:400]
+                last_diag = (
+                    str(progress_state.get("last_diag") or "")
+                    if progress_state is not None
+                    else ""
+                )
+                if cleaned != last_diag:
+                    if progress_state is not None:
+                        progress_state["last_diag"] = cleaned
+                    _safe_task_note(task, cleaned[:300], level="error")
+                continue
+
+            is_err_diag = any(marker in cleaned for marker in _WORKER_DIAG_ERROR_MARKERS)
+            is_warn_diag = (not is_err_diag) and any(
+                marker in cleaned for marker in _WORKER_DIAG_WARNING_MARKERS
+            )
+            if is_err_diag or is_warn_diag:
+                last_diag = (
+                    str(progress_state.get("last_diag") or "")
+                    if progress_state is not None
+                    else ""
+                )
+                if cleaned != last_diag:
+                    if progress_state is not None:
+                        progress_state["last_diag"] = cleaned
+                    _safe_task_note(
+                        task,
+                        cleaned[:300],
+                        level="error" if is_err_diag else "warning",
+                    )
+        return saw_progress
 
     def _run_streaming_worker(
         self,
@@ -3316,6 +3519,16 @@ class ColabOneAvatarEngineManager:
         now_start = time.monotonic()
         deadline = now_start + effective_timeout
         last_activity = now_start
+        last_progress_activity = now_start
+        progress_state: dict[str, Any] = {
+            "seen_structured": False,
+            "last_structured_at": 0.0,
+            "last_tqdm_at": 0.0,
+            "last_tqdm_step": (-1, -1),
+            "last_diag": "",
+            "terminal_error_at": None,
+            "terminal_error_msg": "",
+        }
         proc_exited_at: float | None = None
         pipe_drain_grace_s = 2.0
         pipe_drain_timed_out = False
@@ -3326,9 +3539,23 @@ class ColabOneAvatarEngineManager:
                 now = time.monotonic()
                 if now > deadline:
                     raise RuntimeError(f"{stage_label} 执行超时，请查看运行日志")
-                if effective_inactivity > 0 and (now - last_activity) > effective_inactivity:
+                if effective_inactivity > 0:
+                    if (now - last_activity) > effective_inactivity:
+                        raise RuntimeError(
+                            f"{stage_label} 长时间无输出与进度更新（超过 {effective_inactivity} 秒），进程疑似卡死，请查看运行日志"
+                        )
+                    if (
+                        progress_state["seen_structured"]
+                        and (now - last_progress_activity) > effective_inactivity
+                    ):
+                        raise RuntimeError(
+                            f"{stage_label} 长时间无进度推进（超过 {effective_inactivity} 秒），进程疑似卡死，请查看运行日志"
+                        )
+                term_err_at = progress_state.get("terminal_error_at")
+                if term_err_at is not None and (now - float(term_err_at)) >= 15.0:
+                    err_detail = str(progress_state.get("terminal_error_msg") or "子进程退出挂起")
                     raise RuntimeError(
-                        f"{stage_label} 长时间无输出与进度更新（超过 {effective_inactivity} 秒），进程疑似卡死，请查看运行日志"
+                        f"{stage_label} 执行失败且子进程清理超时：{err_detail}"
                     )
                 if proc.poll() is not None:
                     if proc_exited_at is None:
@@ -3352,13 +3579,17 @@ class ColabOneAvatarEngineManager:
 
                 if item is _EOF_SENTINEL:
                     break
-                last_activity = time.monotonic()
-                self._handle_worker_output_line(
+                if item:
+                    last_activity = time.monotonic()
+                if self._handle_worker_output_line(
                     item,
                     task,
                     progress_range=progress_range,
                     last_msg_holder=last_msg_holder,
-                )
+                    stage_label=stage_label,
+                    progress_state=progress_state,
+                ):
+                    last_progress_activity = time.monotonic()
                 drained = 0
                 while drained < 64:
                     try:
@@ -3369,13 +3600,17 @@ class ColabOneAvatarEngineManager:
                     if more is _EOF_SENTINEL:
                         eof_seen = True
                         break
-                    last_activity = time.monotonic()
-                    self._handle_worker_output_line(
+                    if more:
+                        last_activity = time.monotonic()
+                    if self._handle_worker_output_line(
                         more,
                         task,
                         progress_range=progress_range,
                         last_msg_holder=last_msg_holder,
-                    )
+                        stage_label=stage_label,
+                        progress_state=progress_state,
+                    ):
+                        last_progress_activity = time.monotonic()
 
             while proc.poll() is None:
                 _check_cancel(task, stopping)
@@ -3394,9 +3629,13 @@ class ColabOneAvatarEngineManager:
             _check_cancel(task, stopping)
             if proc.returncode:
                 with tail_lock:
-                    tail_text = "\n".join(tail_lines)[-800:]
-                if not tail_text:
-                    tail_text = _scrub_secret(_read_log_tail(log_path, 4096), "")[-800:]
+                    captured = list(tail_lines)
+                fallback = (
+                    ""
+                    if captured
+                    else _scrub_secret(_read_log_tail(log_path, 4096), "")
+                )
+                tail_text = _summarize_error_tail(captured, fallback, max_chars=800)
                 raise RuntimeError(
                     f"{stage_label} 执行失败（退出码 {proc.returncode}）：{tail_text}"
                 )
@@ -3467,6 +3706,15 @@ class ColabOneAvatarEngineManager:
             "PYTHONUNBUFFERED": "1",
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
+            "USE_TORCH": "1",
+            "USE_TF": "0",
+            "USE_FLAX": "0",
+            "USE_JAX": "0",
+            "TRANSFORMERS_NO_TF": "1",
+            "TRANSFORMERS_NO_FLAX": "1",
+            "TRANSFORMERS_NO_JAX": "1",
+            "DISABLE_TENSORFLOW": "1",
+            "TF_CPP_MIN_LOG_LEVEL": "3",
         }
         if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
             extra_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

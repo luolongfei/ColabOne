@@ -393,12 +393,7 @@ BREEZE_TTS2_WORKER_BODY: str = textwrap.dedent(
             set_all_seeds_fn(norm_seed)
 
 
-    def main() -> None:
-        parser = argparse.ArgumentParser(description="ColabOne Breeze TTS 2 remote worker")
-        parser.add_argument("--config", required=True)
-        args = parser.parse_args()
-
-        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    def _run_breeze_request(cfg: dict, state: dict) -> None:
         token = _hf_token()
         source_dir = (cfg.get("source_dir") or "").strip()
         if source_dir and source_dir not in sys.path:
@@ -470,81 +465,84 @@ BREEZE_TTS2_WORKER_BODY: str = textwrap.dedent(
             active_instruction = _combine_breeze_instructions(voice_prompt, emotion_prompt)
             initial_mode = "voice_design" if active_instruction else "tts_plain"
 
-        print(
-            f"[colabone-tts] breeze_tts2 mode={initial_mode} repo={repo} device={device} vram_mib={vram_mib}",
-            flush=True,
-        )
-
-        local_dir = Path(
-            snapshot_download(
-                repo_id=repo,
-                revision=revision or None,
-                cache_dir=cache_dir or None,
-                token=token,
-            )
-        )
-
-        load_kwargs = {
-            "device": device,
-            "attn_implementation": "eager",
-        }
-        try:
-            load_sig = inspect.signature(load_runtime)
-            load_params = load_sig.parameters
-            load_has_var_kw = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in load_params.values()
-            )
-            if not load_has_var_kw:
-                load_kwargs = {k: v for k, v in load_kwargs.items() if k in load_params}
-        except (TypeError, ValueError):
-            pass
-
-        tokenizer, model, audio_tokenizer = load_runtime(local_dir, **load_kwargs)
-
-        pre_ampere_fp16 = _is_pre_ampere_cuda(torch, use_cuda)
-        if pre_ampere_fp16 and hasattr(model, "to"):
-            model = _cast_breeze_model_for_pre_ampere(model, device, torch)
+        cache_key = (repo, revision, cache_dir, str(device))
+        cached = state.get("bundle") if state.get("key") == cache_key else None
+        if cached is None:
+            _release_warm_state(state)
             print(
-                "[colabone-tts] breeze_tts2 pre-Ampere CUDA GPU detected; "
-                "cast model to float16 with FP32 RoPE inv_freq and text_encoder",
+                f"[colabone-tts] breeze_tts2 mode={initial_mode} repo={repo} device={device} vram_mib={vram_mib}",
                 flush=True,
             )
-
-        update_generation_config_for_breeze(model)
-
-        # Keep fast_all=False (eager non-CUDA-graph path) for broad Colab GPU compatibility.
-        stream_cfg_kwargs = {
-            "max_new_tokens": 1500,
-            "max_seq_len": 2048,
-            "fast_all": False,
-            "repetition_penalty": 1.1,
-        }
-        try:
-            cfg_sig = inspect.signature(FastStreamingConfig)
-            cfg_params = cfg_sig.parameters
-            cfg_has_var_kw = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in cfg_params.values()
+            local_dir = Path(
+                _resolve_hf_snapshot(snapshot_download, repo, revision, cache_dir, token)
             )
-            if not cfg_has_var_kw:
-                stream_cfg_kwargs = {
-                    k: v for k, v in stream_cfg_kwargs.items() if k in cfg_params
-                }
-        except (TypeError, ValueError):
-            pass
-        stream_cfg = FastStreamingConfig(**stream_cfg_kwargs)
 
-        rt_kwargs = {"tokenizer": tokenizer}
-        try:
-            rt_sig = inspect.signature(FastBreezeStreamingRuntime.__init__)
-            rt_params = rt_sig.parameters
-            rt_has_var_kw = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in rt_params.values()
-            )
-            if not rt_has_var_kw:
-                rt_kwargs = {k: v for k, v in rt_kwargs.items() if k in rt_params}
-        except (TypeError, ValueError):
-            pass
-        runtime = FastBreezeStreamingRuntime(model, audio_tokenizer, stream_cfg, **rt_kwargs)
+            load_kwargs = {
+                "device": device,
+                "attn_implementation": "eager",
+            }
+            try:
+                load_sig = inspect.signature(load_runtime)
+                load_params = load_sig.parameters
+                load_has_var_kw = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in load_params.values()
+                )
+                if not load_has_var_kw:
+                    load_kwargs = {k: v for k, v in load_kwargs.items() if k in load_params}
+            except (TypeError, ValueError):
+                pass
+
+            tokenizer, model, audio_tokenizer = load_runtime(local_dir, **load_kwargs)
+
+            pre_ampere_fp16 = _is_pre_ampere_cuda(torch, use_cuda)
+            if pre_ampere_fp16 and hasattr(model, "to"):
+                model = _cast_breeze_model_for_pre_ampere(model, device, torch)
+                print(
+                    "[colabone-tts] breeze_tts2 pre-Ampere CUDA GPU detected; "
+                    "cast model to float16 with FP32 RoPE inv_freq and text_encoder",
+                    flush=True,
+                )
+
+            update_generation_config_for_breeze(model)
+
+            # Keep fast_all=False (eager non-CUDA-graph path) for broad Colab GPU compatibility.
+            stream_cfg_kwargs = {
+                "max_new_tokens": 1500,
+                "max_seq_len": 2048,
+                "fast_all": False,
+                "repetition_penalty": 1.1,
+            }
+            try:
+                cfg_sig = inspect.signature(FastStreamingConfig)
+                cfg_params = cfg_sig.parameters
+                cfg_has_var_kw = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in cfg_params.values()
+                )
+                if not cfg_has_var_kw:
+                    stream_cfg_kwargs = {
+                        k: v for k, v in stream_cfg_kwargs.items() if k in cfg_params
+                    }
+            except (TypeError, ValueError):
+                pass
+            stream_cfg = FastStreamingConfig(**stream_cfg_kwargs)
+
+            rt_kwargs = {"tokenizer": tokenizer}
+            try:
+                rt_sig = inspect.signature(FastBreezeStreamingRuntime.__init__)
+                rt_params = rt_sig.parameters
+                rt_has_var_kw = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in rt_params.values()
+                )
+                if not rt_has_var_kw:
+                    rt_kwargs = {k: v for k, v in rt_kwargs.items() if k in rt_params}
+            except (TypeError, ValueError):
+                pass
+            runtime = FastBreezeStreamingRuntime(model, audio_tokenizer, stream_cfg, **rt_kwargs)
+            cached = (tokenizer, model, audio_tokenizer, runtime)
+            state["key"] = cache_key
+            state["bundle"] = cached
+        else:
+            tokenizer, model, audio_tokenizer, runtime = cached
 
         sample_rate = int(
             getattr(runtime, "sample_rate", None)
@@ -660,6 +658,22 @@ BREEZE_TTS2_WORKER_BODY: str = textwrap.dedent(
                     )
 
             print(f"[colabone-tts] breeze_tts2 segment {idx + 1}/{total} done", flush=True)
+
+
+    def main() -> None:
+        _disable_non_torch_backends()
+        parser = argparse.ArgumentParser(description="ColabOne Breeze TTS 2 remote worker")
+        parser.add_argument("--config", default="")
+        parser.add_argument("--daemon", action="store_true")
+        args = parser.parse_args()
+        state: dict = {}
+        if args.daemon:
+            _run_daemon_loop(lambda cfg: _run_breeze_request(cfg, state))
+            return
+        if not args.config:
+            parser.error("--config is required unless --daemon is set")
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        _run_breeze_request(cfg, state)
 
 
     if __name__ == "__main__":
