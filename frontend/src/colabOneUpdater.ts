@@ -9,9 +9,6 @@ export type { ColabOneRollbackVersion, ColabOneUpdateState };
 export const COLABONE_RELEASES_URL =
   "https://github.com/luolongfei/ColabOne/releases";
 
-export const COLABONE_UPDATE_SEEN_VERSION_STORAGE_KEY =
-  "colabone.update.seenVersion";
-
 export interface ColabOneNoteBlock {
   kind: "heading" | "item" | "paragraph";
   text: string;
@@ -383,40 +380,8 @@ export function normalizeColabOneUpdateVersion(
     .replace(/^[vV]+/, "");
 }
 
-export function readColabOneSeenUpdateVersion(): string {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) {
-      return "";
-    }
-    return normalizeColabOneUpdateVersion(
-      window.localStorage.getItem(COLABONE_UPDATE_SEEN_VERSION_STORAGE_KEY),
-    );
-  } catch {
-    return "";
-  }
-}
-
-export function writeColabOneSeenUpdateVersion(version: string): string {
-  const normalized = normalizeColabOneUpdateVersion(version);
-  if (!normalized) {
-    return "";
-  }
-  try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      window.localStorage.setItem(
-        COLABONE_UPDATE_SEEN_VERSION_STORAGE_KEY,
-        normalized,
-      );
-    }
-  } catch {
-    // Ignore storage quota / privacy mode errors.
-  }
-  return normalized;
-}
-
-export function hasColabOneUnreadUpdateDot(
+export function hasColabOneAvailableUpdateDot(
   state: ColabOneUpdateState,
-  seenVersion: string | null | undefined,
 ): boolean {
   if (state.status !== "available") {
     return false;
@@ -425,7 +390,11 @@ export function hasColabOneUnreadUpdateDot(
   if (!available) {
     return false;
   }
-  return available !== normalizeColabOneUpdateVersion(seenVersion);
+  const skipped = normalizeColabOneUpdateVersion(state.skipped_version);
+  if (skipped && available === skipped) {
+    return false;
+  }
+  return true;
 }
 
 export function hasColabOneActiveUpdatePill(

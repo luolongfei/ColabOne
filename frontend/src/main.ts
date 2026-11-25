@@ -1,6 +1,9 @@
 import { createApp } from "vue";
 import "ant-design-vue/dist/reset.css";
 import "./style.css";
+import { installColabOneWindowFocusGuard } from "./colabOneFocusGuard";
+
+const windowFocusGuard = installColabOneWindowFocusGuard();
 
 // ColabOne auto-hiding 4px capsule scrollbar activator.
 const scrollTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
@@ -130,6 +133,7 @@ async function colabOneLoadRootWithRetry() {
 void colabOneLoadRootWithRetry()
   .then(({ default: Root }) => {
     createApp(Root).mount("#app");
+    windowFocusGuard.onMounted();
   })
   .catch((err) => {
     console.error("[ColabOne] Failed to bootstrap root view:", err);

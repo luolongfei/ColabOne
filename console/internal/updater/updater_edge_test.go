@@ -58,6 +58,58 @@ func waitForUpdateStatus(t *testing.T, events <-chan ColabOneUpdateState, want s
 }
 
 func TestStartBackgroundAutoCheckAndCleanClose(t *testing.T) {
+	t.Run("default_initial_delay_checks_early_on_startup", func(t *testing.T) {
+		if COLABONE_UPDATE_INITIAL_DELAY != 1*time.Second {
+			t.Fatalf("COLABONE_UPDATE_INITIAL_DELAY = %v, want 1s", COLABONE_UPDATE_INITIAL_DELAY)
+		}
+	})
+
+	t.Run("manual_check_before_initial_delay_skips_duplicate_startup_check", func(t *testing.T) {
+		var checks atomic.Int32
+		secondCheck := make(chan struct{})
+		var secondOnce sync.Once
+
+		backend := &fakeBackend{
+			current: "0.1.6",
+			canSelf: true,
+			checkSelfFn: func(ctx context.Context) (ColabOneUpdateInstallable, error) {
+				if checks.Add(1) >= 2 {
+					secondOnce.Do(func() { close(secondCheck) })
+				}
+				return &fakeInstallable{version: "0.1.7", notes: "notes"}, nil
+			},
+		}
+
+		u := NewColabOneUpdater(ColabOneUpdaterConfig{
+			Backend:       backend,
+			ConfigDir:     t.TempDir(),
+			InitialDelay:  40 * time.Millisecond,
+			CheckInterval: 160 * time.Millisecond,
+		})
+		defer u.Close()
+
+		u.StartBackground()
+		if _, err := u.Check(context.Background(), true); err != nil {
+			t.Fatalf("manual Check failed: %v", err)
+		}
+		if got := checks.Load(); got != 1 {
+			t.Fatalf("expected 1 check after manual Check, got %d", got)
+		}
+
+		// Wait past InitialDelay (40ms) but well before the first periodic CheckInterval (40ms + 160ms = 200ms).
+		time.Sleep(90 * time.Millisecond)
+		if got := checks.Load(); got != 1 {
+			t.Fatalf("expected startup timer to skip duplicate check after manual Check, got %d checks", got)
+		}
+
+		// Periodic CheckInterval tick must still run normally.
+		select {
+		case <-secondCheck:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("expected periodic check after CheckInterval, got %d checks", checks.Load())
+		}
+	})
+
 	t.Run("auto_check_enabled_fires_and_stops_on_close", func(t *testing.T) {
 		var checks atomic.Int32
 		twoChecks := make(chan struct{})

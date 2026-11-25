@@ -190,13 +190,11 @@ import {
   COLABONE_RELEASES_URL,
   createColabOneUpdateState,
   hasColabOneActiveUpdatePill,
-  hasColabOneUnreadUpdateDot,
+  hasColabOneAvailableUpdateDot,
   normalizeColabOneRollbackVersions,
   normalizeColabOneUpdateState,
   normalizeColabOneUpdateVersion,
-  readColabOneSeenUpdateVersion,
   shouldColabOneAutoCheckOnPopoverOpen,
-  writeColabOneSeenUpdateVersion,
 } from "./colabOneUpdater";
 import {
   COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
@@ -433,7 +431,6 @@ const loadingRollbackVersions = ref(false);
 const rollbackVersionsLoaded = ref(false);
 const rollbackVersionsError = ref("");
 const startingRollback = ref(false);
-const seenUpdateVersion = ref<string>(readColabOneSeenUpdateVersion());
 let unsubUpdateState: (() => void) | null = null;
 let unsubUpdateOpen: (() => void) | null = null;
 let updateProgressPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -2934,33 +2931,11 @@ const isCheckingUpdate = computed(
 );
 
 const showNavUpdateDot = computed(() =>
-  hasColabOneUnreadUpdateDot(updateState.value, seenUpdateVersion.value),
+  hasColabOneAvailableUpdateDot(updateState.value),
 );
 
 const showNavUpdatePill = computed(() =>
   hasColabOneActiveUpdatePill(updateState.value),
-);
-
-function markUpdateVersionSeen(version?: string) {
-  const normalized = normalizeColabOneUpdateVersion(
-    version ?? updateState.value.available_version,
-  );
-  if (!normalized) return;
-  seenUpdateVersion.value = normalized;
-  writeColabOneSeenUpdateVersion(normalized);
-}
-
-watch(
-  [
-    updateModalOpen,
-    () => updateState.value.status,
-    () => updateState.value.available_version,
-  ],
-  ([isOpen, status, availableVersion]) => {
-    if (isOpen && status === "available" && availableVersion) {
-      markUpdateVersionSeen(availableVersion);
-    }
-  },
 );
 
 const navVersionTooltip = computed(() => {
@@ -3262,9 +3237,6 @@ function handleUpdatePopoverOpenChange(next: boolean) {
     return;
   }
   const wasOpen = updateModalOpen.value;
-  if (next) {
-    markUpdateVersionSeen();
-  }
   updateModalOpen.value = next;
   if (
     next &&
@@ -3869,7 +3841,7 @@ onUnmounted(() => {
                       class="co-brand-version"
                       :class="{
                         'is-open': updateModalOpen,
-                        'is-update-unread': showNavUpdateDot,
+                        'is-update-available': showNavUpdateDot,
                         'is-update-ready':
                           updateState.status === 'ready_to_restart',
                         'is-update-downloading':

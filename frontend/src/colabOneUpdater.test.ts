@@ -2,14 +2,13 @@ import { describe, expect, it } from "vitest";
 import { COLABONE_APP_VERSION } from "./colabOneVersion";
 import {
   COLABONE_RELEASES_URL,
-  COLABONE_UPDATE_SEEN_VERSION_STORAGE_KEY,
   createColabOneUpdateState,
   formatColabOneRollbackDate,
   formatColabOneUpdateBytes,
   formatColabOneUpdateSpeed,
   hasColabOneActiveUpdatePill,
+  hasColabOneAvailableUpdateDot,
   hasColabOneBilingualNotes,
-  hasColabOneUnreadUpdateDot,
   hasColabOneVisibleUpdateBadge,
   normalizeColabOneRollbackVersions,
   normalizeColabOneUpdateState,
@@ -513,11 +512,8 @@ describe("colabOneUpdater", () => {
     });
   });
 
-  describe("hasColabOneUnreadUpdateDot and hasColabOneActiveUpdatePill", () => {
-    it("shows the unread red dot only for unseen available versions and clears once seen", () => {
-      expect(COLABONE_UPDATE_SEEN_VERSION_STORAGE_KEY).toBe(
-        "colabone.update.seenVersion",
-      );
+  describe("hasColabOneAvailableUpdateDot and hasColabOneActiveUpdatePill", () => {
+    it("shows the red dot for any unskipped available version until updated or skipped", () => {
       expect(normalizeColabOneUpdateVersion("  v0.1.7 ")).toBe("0.1.7");
       expect(normalizeColabOneUpdateVersion("V1.2.3-rc.1")).toBe("1.2.3-rc.1");
 
@@ -525,22 +521,47 @@ describe("colabOneUpdater", () => {
         status: "available",
         available_version: "0.1.7",
       });
-      expect(hasColabOneUnreadUpdateDot(available, "")).toBe(true);
-      expect(hasColabOneUnreadUpdateDot(available, "0.1.6")).toBe(true);
-      expect(hasColabOneUnreadUpdateDot(available, "0.1.7")).toBe(false);
-      expect(hasColabOneUnreadUpdateDot(available, "v0.1.7")).toBe(false);
+      expect(hasColabOneAvailableUpdateDot(available)).toBe(true);
+      expect(
+        hasColabOneAvailableUpdateDot(
+          normalizeColabOneUpdateState({
+            status: "available",
+            available_version: "0.1.7",
+            skipped_version: "0.1.6",
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        hasColabOneAvailableUpdateDot(
+          normalizeColabOneUpdateState({
+            status: "available",
+            available_version: "0.1.7",
+            skipped_version: "0.1.7",
+          }),
+        ),
+      ).toBe(false);
+      expect(
+        hasColabOneAvailableUpdateDot(
+          normalizeColabOneUpdateState({
+            status: "available",
+            available_version: "0.1.7",
+            skipped_version: "v0.1.7",
+          }),
+        ),
+      ).toBe(false);
 
       const newer = normalizeColabOneUpdateState({
         status: "available",
         available_version: "0.1.8",
+        skipped_version: "0.1.7",
       });
-      expect(hasColabOneUnreadUpdateDot(newer, "0.1.7")).toBe(true);
+      expect(hasColabOneAvailableUpdateDot(newer)).toBe(true);
 
       const blankVersion = normalizeColabOneUpdateState({
         status: "available",
         available_version: "   ",
       });
-      expect(hasColabOneUnreadUpdateDot(blankVersion, "")).toBe(false);
+      expect(hasColabOneAvailableUpdateDot(blankVersion)).toBe(false);
 
       for (const status of [
         "idle",
@@ -553,12 +574,11 @@ describe("colabOneUpdater", () => {
         "error",
       ]) {
         expect(
-          hasColabOneUnreadUpdateDot(
+          hasColabOneAvailableUpdateDot(
             normalizeColabOneUpdateState({
               status,
               available_version: "0.1.7",
             }),
-            "",
           ),
         ).toBe(false);
       }

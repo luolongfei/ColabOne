@@ -6666,6 +6666,39 @@ test("top-left brand displays app version badge beside ColabOne and adapts acros
   ).toBe(0);
 });
 
+test("window activation auto-focus on top-left brand button is cleared while real Tab navigation keeps focus ring", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await mock(page, true);
+
+  const brand = page.locator(".co-brand");
+  await expect(brand).toBeVisible();
+
+  // Simulate macOS WKWebView activating the window and auto-focusing the first tabbable button without user input.
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+    const el = document.querySelector<HTMLButtonElement>(".co-brand");
+    el?.focus();
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.activeElement?.className ?? ""),
+    )
+    .not.toContain("co-brand");
+
+  // Genuine user Tab navigation must immediately focus .co-brand and trigger its :focus-visible ring.
+  await page.keyboard.press("Tab");
+  await expect(brand).toBeFocused();
+  expect(
+    await page.evaluate(
+      () => Boolean(document.querySelector(".co-brand:focus-visible")),
+    ),
+  ).toBe(true);
+});
+
 test("model drawer disk warning compares free disk against remaining download bytes", async ({
   page,
 }) => {
@@ -7518,8 +7551,8 @@ test("auto-update surfaces navbar badge, renders bilingual release notes safely,
   await expect(page.getByTestId("nav-update-pill")).toHaveCount(0);
 
   await versionBtn.click();
-  // Clicking the version badge immediately clears the red dot regardless of whether the user updates.
-  await expect(versionDot).toHaveCount(0);
+  // Opening the update popover must keep the red dot visible while the update remains uninstalled.
+  await expect(versionDot).toBeVisible();
   const modal = page.getByTestId("update-modal");
   await expect(modal).toBeVisible();
   // Anchored compact popover under the version badge (no full-page dimmed modal backdrop).
@@ -7569,17 +7602,10 @@ test("auto-update surfaces navbar badge, renders bilingual release notes safely,
   // Active GPU notice reassures the user that restarting the desktop client keeps the remote GPU alive.
   await expect(modal).toContainText("不会停止正在运行的远端 GPU");
 
-  // Dismiss modal without updating: red dot must stay removed and seen version persisted.
+  // Dismiss modal without updating: red dot must remain visible until updated or skipped.
   await modal.getByRole("button", { name: "稍后提醒" }).click();
   await expect(modal).toBeHidden();
-  await expect(versionDot).toHaveCount(0);
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.localStorage.getItem("colabone.update.seenVersion"),
-      ),
-    )
-    .toBe("0.1.7");
+  await expect(versionDot).toBeVisible();
 
   await navItem(page, "设置").click();
   const updateRow = page.getByTestId("settings-update-row");
@@ -7628,6 +7654,7 @@ test("auto-update surfaces navbar badge, renders bilingual release notes safely,
   await expect(relaunchBtn).toBeVisible();
   await expect(relaunchBtn).toBeEnabled();
   await expect(modal).toContainText("更新已就绪");
+  await expect(versionDot).toHaveCount(0);
   await expect(versionBtn).toContainText("重启更新");
 
   // Active local operation disables relaunch and warns the user until it finishes.
@@ -7697,7 +7724,7 @@ test("auto-update read-only fallback opens GitHub Releases and skip version supp
   await expect(versionDot).toBeVisible();
 
   await versionBtn.click();
-  await expect(versionDot).toHaveCount(0);
+  await expect(versionDot).toBeVisible();
   const modal = page.getByTestId("update-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("当前安装目录缺少写入权限");
@@ -7728,12 +7755,28 @@ test("auto-update read-only fallback opens GitHub Releases and skip version supp
   await expect(page.getByTestId("nav-update-pill")).toHaveCount(0);
   await expect(versionBtn).not.toContainText("重启更新");
 
-  // A subsequent newer release brings the unread red dot back until clicked again.
+  // Manually viewing a skipped version must not bring the red dot back.
+  await page.evaluate(() => {
+    (window as any).__emitMyGoEvent("colabone-update", {
+      status: "available",
+      current_version: "0.1.6",
+      available_version: "0.1.7",
+      skipped_version: "0.1.7",
+      can_self_update: false,
+      disabled_reason: "read_only_install",
+      auto_check: true,
+      include_prerelease: false,
+    });
+  });
+  await expect(versionDot).toHaveCount(0);
+
+  // A subsequent newer release brings the red dot back and keeps it visible until updated or skipped.
   await page.evaluate(() => {
     (window as any).__emitMyGoEvent("colabone-update", {
       status: "available",
       current_version: "0.1.6",
       available_version: "0.1.8",
+      skipped_version: "0.1.7",
       can_self_update: true,
       auto_check: true,
       include_prerelease: false,
@@ -7741,7 +7784,7 @@ test("auto-update read-only fallback opens GitHub Releases and skip version supp
   });
   await expect(versionDot).toBeVisible();
   await versionBtn.click();
-  await expect(versionDot).toHaveCount(0);
+  await expect(versionDot).toBeVisible();
 });
 
 test("clicking navbar version badge immediately auto-checks for updates and switches footer action to check again", async ({

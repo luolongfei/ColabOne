@@ -25,7 +25,7 @@ const (
 	COLABONE_RELEASES_URL     = "https://github.com/luolongfei/ColabOne/releases"
 	COLABONE_UPDATE_PREF_FILE = "updater.json"
 
-	COLABONE_UPDATE_INITIAL_DELAY    = 10 * time.Second
+	COLABONE_UPDATE_INITIAL_DELAY    = 1 * time.Second
 	COLABONE_UPDATE_CHECK_INTERVAL   = 6 * time.Hour
 	COLABONE_UPDATE_PROGRESS_MIN_GAP = 120 * time.Millisecond
 	COLABONE_ROLLBACK_MAX_VERSIONS   = 3
@@ -217,11 +217,12 @@ type ColabOneUpdater struct {
 	installInFlight bool
 	installCancel   context.CancelFunc
 	installDone     chan struct{}
-	rollbackCached  bool
-	rollbackCacheAt time.Time
+	rollbackCached   bool
+	rollbackCacheAt  time.Time
 	rollbackCacheKey string
-	bgStarted       bool
-	closed          bool
+	sessionChecked   bool
+	bgStarted        bool
+	closed           bool
 
 	rootCtx    context.Context
 	cancelRoot context.CancelFunc
@@ -374,7 +375,7 @@ func (u *ColabOneUpdater) backgroundLoop() {
 	case <-initTimer.C:
 	}
 
-	u.maybeAutoCheck()
+	u.maybeAutoCheck(true)
 
 	ticker := time.NewTicker(u.checkInterval)
 	defer ticker.Stop()
@@ -383,17 +384,18 @@ func (u *ColabOneUpdater) backgroundLoop() {
 		case <-u.rootCtx.Done():
 			return
 		case <-ticker.C:
-			u.maybeAutoCheck()
+			u.maybeAutoCheck(false)
 		}
 	}
 }
 
-func (u *ColabOneUpdater) maybeAutoCheck() {
+func (u *ColabOneUpdater) maybeAutoCheck(initial bool) {
 	u.mu.Lock()
 	auto := u.prefs.AutoCheck
+	skipInitial := initial && u.sessionChecked
 	busy := u.closed || u.checkInFlight || u.installInFlight || u.state.Status == StatusReadyToRestart
 	u.mu.Unlock()
-	if !auto || busy {
+	if !auto || busy || skipInitial {
 		return
 	}
 	_, _ = u.Check(u.rootCtx, false)
@@ -697,6 +699,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			return st, checkErr
 		}
 
+		u.sessionChecked = true
 		u.prefs.LastCheckedAt = nowSec
 		u.state.LastCheckedAt = nowSec
 		u.state.ErrorCode = ErrCodeNone
@@ -1282,6 +1285,7 @@ func (u *ColabOneUpdater) ApplyImportedPreferences(autoCheck, includePrerelease 
 	if channelChanged {
 		u.channelGen++
 		cancelCheck = u.checkCancel
+		u.sessionChecked = false
 		u.rollbackCached = false
 		u.rollbackCacheKey = ""
 		u.state.RollbackVersions = []ColabOneRollbackVersion{}
@@ -1325,6 +1329,7 @@ func (u *ColabOneUpdater) SetPreferences(autoCheck, includePrerelease bool) (Col
 	if channelChanged {
 		u.channelGen++
 		cancelCheck = u.checkCancel
+		u.sessionChecked = false
 		u.rollbackCached = false
 		u.rollbackCacheKey = ""
 		u.state.RollbackVersions = []ColabOneRollbackVersion{}
