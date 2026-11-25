@@ -91,6 +91,7 @@ import { colabOneLocaleCode, t, tb } from "./i18n";
 import {
   clearColabOneWorkflowDraft,
   colabOneBase64ToBlob,
+  createColabOneDraftStatusController,
   deleteColabOneWorkflowDraftMedia,
   hasColabOneDraftContent,
   loadColabOneWorkflowDraft,
@@ -101,6 +102,7 @@ import {
   saveColabOneWorkflowDraftMedia,
   type ColabOneWorkflowDraft,
   type ColabOneWorkflowDraftMediaMeta,
+  type ColabOneWorkflowDraftStatus,
 } from "./comfyDrafts";
 import {
   COLABONE_DIGITAL_HUMAN_GROUP_KEY,
@@ -565,7 +567,16 @@ let disposed = false;
 const DRAFT_SAVE_DEBOUNCE_MS = 350;
 const draftMediaMeta = ref<Record<string, ColabOneWorkflowDraftMediaMeta>>({});
 const draftMediaSourceIds = ref<Record<string, string>>({});
-const draftStatus = ref<"idle" | "saving" | "saved" | "restored">("idle");
+const draftStatus = ref<ColabOneWorkflowDraftStatus>("idle");
+const draftStatusController = createColabOneDraftStatusController({
+  onStatusChange: (status) => {
+    draftStatus.value = status;
+  },
+  isVisible: () => paramDrawerOpen.value && Boolean(selectedWorkflow.value),
+});
+function setDraftStatus(next: ColabOneWorkflowDraftStatus) {
+  draftStatusController.setStatus(next);
+}
 const draftStatusLabel = computed(() => {
   if (draftStatus.value === "saving") return t("comfy.draftSavingBadge");
   if (draftStatus.value === "saved") return t("comfy.draftSavedBadge");
@@ -2522,7 +2533,7 @@ function flushDraftSave(
     !opts?.silent &&
     selectedWorkflowId.value === targetWorkflowId
   ) {
-    draftStatus.value = "saving";
+    setDraftStatus("saving");
   }
 
   const performSave = async () => {
@@ -2600,9 +2611,9 @@ function flushDraftSave(
       return;
     }
     if (saved) {
-      draftStatus.value = "saved";
-    } else if (draftStatus.value === "saving") {
-      draftStatus.value = "idle";
+      setDraftStatus("saved");
+    } else {
+      draftStatusController.clearIfSaving();
     }
   };
 
@@ -2619,9 +2630,7 @@ function flushDraftSave(
     ) {
       return;
     }
-    if (draftStatus.value === "saving") {
-      draftStatus.value = "idle";
-    }
+    draftStatusController.clearIfSaving();
     reportError(
       t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
     );
@@ -3002,7 +3011,7 @@ async function restoreWorkflowDraft(
       colabOneLocaleCode.value,
     )
   ) {
-    draftStatus.value = "restored";
+    setDraftStatus("restored");
   }
 
   for (const fieldKey of mediaKeys) {
@@ -3037,7 +3046,7 @@ function resetWorkflowEditorState(
   ++draftSaveGen;
   cancelDraftSaveTimer();
   draftDirty = false;
-  draftStatus.value = "idle";
+  setDraftStatus("idle");
   draftMediaMeta.value = {};
   draftMediaSourceIds.value = {};
   if (!opts?.preserveAdvanced) {
@@ -3293,7 +3302,7 @@ function switchDigitalHumanEngine(targetWorkflowId: string) {
     colabOneLocaleCode.value,
   );
   if (!hasTransferredContent) {
-    draftStatus.value = "idle";
+    setDraftStatus("idle");
     return;
   }
 
@@ -3335,7 +3344,7 @@ function switchDigitalHumanEngine(targetWorkflowId: string) {
       key,
       epoch: bumpDraftMediaEpoch(targetWfId, key),
     }));
-  draftStatus.value = "saving";
+  setDraftStatus("saving");
 
   // If an image media field was restored on `prevWf` and switched before its
   // thumbnail finished hydrating, re-hydrate preview cleanly on `nextWf`.
@@ -3473,9 +3482,9 @@ function switchDigitalHumanEngine(targetWorkflowId: string) {
       selectedWorkflowId.value === targetWfId
     ) {
       if (savedFieldsOk && hasTransferredContent) {
-        draftStatus.value = "saved";
-      } else if (draftStatus.value === "saving") {
-        draftStatus.value = "idle";
+        setDraftStatus("saved");
+      } else {
+        draftStatusController.clearIfSaving();
       }
     }
   });
@@ -3690,7 +3699,7 @@ function resetFields() {
   ++draftSaveGen;
   cancelDraftSaveTimer();
   draftDirty = false;
-  draftStatus.value = "idle";
+  setDraftStatus("idle");
   draftMediaMeta.value = {};
   draftMediaSourceIds.value = {};
   for (const k of Object.keys(uploadGen)) {
@@ -3895,7 +3904,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       delete uploadedInputIds.value[field.key];
       fieldValues.value[field.key] = effectiveFilename;
       uploadedNames.value[field.key] = effectiveFilename;
-      draftStatus.value = "saved";
+      setDraftStatus("saved");
       draftDirty = true;
       flushDraftSave(targetWf);
     }
@@ -4258,7 +4267,7 @@ async function deleteWorkflow(target: WorkflowTemplate) {
       ++draftSaveGen;
       cancelDraftSaveTimer();
       draftDirty = false;
-      draftStatus.value = "idle";
+      setDraftStatus("idle");
       draftMediaMeta.value = {};
       draftMediaSourceIds.value = {};
     }
@@ -5533,6 +5542,13 @@ watch(colabOneLocaleCode, (nextLocale) => {
   }
 });
 
+watch(
+  () => paramDrawerOpen.value && Boolean(selectedWorkflow.value),
+  (visible) => {
+    draftStatusController.onVisibilityChange(visible);
+  },
+);
+
 watch(paramDrawerOpen, (open) => {
   if (!open) {
     pauseParamDrawerMedia();
@@ -5560,6 +5576,7 @@ onMounted(() => {
 onUnmounted(() => {
   flushDraftSave(undefined, { silent: true });
   cancelDraftSaveTimer();
+  draftStatusController.dispose();
   if (fallbackClockTimer !== null) {
     clearInterval(fallbackClockTimer);
     fallbackClockTimer = null;
@@ -7215,20 +7232,17 @@ onUnmounted(() => {
             </AButton>
           </ASpace>
           <div class="co-comfy-param-drawer-footer-right">
-            <span
-              v-if="draftStatusLabel"
-              class="co-comfy-draft-status"
-              :class="`is-${draftStatus}`"
-              role="status"
-              aria-live="polite"
-            >
-              <PhCheck
-                v-if="draftStatus === 'saved' || draftStatus === 'restored'"
-                :size="13"
-                aria-hidden="true"
-              />
-              <span>{{ draftStatusLabel }}</span>
-            </span>
+            <Transition name="co-draft-status-fade">
+              <span
+                v-if="draftStatusLabel"
+                class="co-comfy-draft-status"
+                :class="`is-${draftStatus}`"
+                role="status"
+                aria-live="polite"
+              >
+                {{ draftStatusLabel }}
+              </span>
+            </Transition>
             <ColabOneTooltip :title="runButtonDisabledTooltip">
               <AButton
                 type="primary"
@@ -8996,7 +9010,10 @@ onUnmounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .co-comfy-workflow-item,
   .co-comfy-engine-option,
-  .co-comfy-engine-radio-dot {
+  .co-comfy-engine-radio-dot,
+  .co-comfy-draft-status,
+  .co-draft-status-fade-enter-active,
+  .co-draft-status-fade-leave-active {
     transition: none;
   }
 
@@ -9250,34 +9267,44 @@ onUnmounted(() => {
 }
 
 .co-comfy-draft-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border-radius: 9999px;
+  display: inline-block;
   font-size: 12px;
-  line-height: 1.35;
+  font-weight: 500;
+  line-height: 1.4;
   color: var(--co-muted);
-  background: var(--co-subtle);
-  border: 1px solid var(--co-border-secondary);
   white-space: nowrap;
-  max-width: 190px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: none;
   transition:
-    color 0.16s ease,
-    background-color 0.16s ease,
-    border-color 0.16s ease;
+    color 0.18s ease,
+    opacity 0.28s ease;
+}
+
+.co-comfy-draft-status.is-saving {
+  color: var(--co-muted);
 }
 
 .co-comfy-draft-status.is-saved {
   color: var(--co-success-text);
-  background: var(--co-success-bg);
-  border-color: var(--co-success-border);
 }
 
 .co-comfy-draft-status.is-restored {
-  color: var(--co-secondary-text);
+  color: var(--co-accent-strong);
+}
+
+.co-draft-status-fade-enter-active {
+  transition: opacity 0.18s ease;
+}
+
+.co-draft-status-fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.co-draft-status-fade-enter-from,
+.co-draft-status-fade-leave-to {
+  opacity: 0;
 }
 
 .co-comfy-drawer-run-btn {

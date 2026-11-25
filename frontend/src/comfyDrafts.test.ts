@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  COLABONE_DRAFT_STATUS_VISIBLE_MS,
   colabOneBase64ToBlob,
+  createColabOneDraftStatusController,
   createColabOneWorkflowDraftClient,
   hasColabOneDraftContent,
   mergeColabOneWorkflowDraftFields,
@@ -8,6 +10,7 @@ import {
   type ColabOneWorkflowDraft,
   type ColabOneWorkflowDraftMediaMeta,
   type ColabOneWorkflowDraftMediaPayload,
+  type ColabOneWorkflowDraftStatus,
 } from "./comfyDrafts";
 import { COLABONE_CANONICAL_VISUAL_PROMPT } from "./comfyui";
 import { t } from "./i18n";
@@ -1809,5 +1812,122 @@ describe("createColabOneWorkflowDraftClient", () => {
     expect(legacy15Merged["pipeline.upscale_mode"]).toBe("none");
     expect(legacy15Merged["pipeline.target_resolution"]).toBe("1280x720");
     expect(legacy15Merged["pipeline.voice_preset"]).toBe("custom");
+  });
+});
+
+describe("createColabOneDraftStatusController", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("auto-hides saved status after visibleMs and keeps saving status active until settled", () => {
+    vi.useFakeTimers();
+    const history: ColabOneWorkflowDraftStatus[] = [];
+    const controller = createColabOneDraftStatusController({
+      onStatusChange: (status) => history.push(status),
+    });
+
+    controller.setStatus("saving");
+    vi.advanceTimersByTime(COLABONE_DRAFT_STATUS_VISIBLE_MS * 3);
+    expect(controller.getStatus()).toBe("saving");
+    expect(history).toEqual(["saving"]);
+
+    controller.setStatus("saved");
+    expect(controller.getStatus()).toBe("saved");
+    vi.advanceTimersByTime(COLABONE_DRAFT_STATUS_VISIBLE_MS - 1);
+    expect(controller.getStatus()).toBe("saved");
+
+    vi.advanceTimersByTime(1);
+    expect(controller.getStatus()).toBe("idle");
+    expect(history).toEqual(["saving", "saved", "idle"]);
+
+    controller.dispose();
+  });
+
+  it("resets the auto-hide countdown when subsequent saves occur before expiry", () => {
+    vi.useFakeTimers();
+    let current: ColabOneWorkflowDraftStatus = "idle";
+    const controller = createColabOneDraftStatusController({
+      onStatusChange: (status) => {
+        current = status;
+      },
+      visibleMs: 3000,
+    });
+
+    controller.setStatus("saved");
+    vi.advanceTimersByTime(2000);
+    expect(current).toBe("saved");
+
+    controller.setStatus("saving");
+    vi.advanceTimersByTime(2000);
+    expect(current).toBe("saving");
+
+    controller.setStatus("saved");
+    vi.advanceTimersByTime(2999);
+    expect(current).toBe("saved");
+    vi.advanceTimersByTime(1);
+    expect(current).toBe("idle");
+
+    controller.dispose();
+  });
+
+  it("defers auto-hiding restored status set while hidden until drawer becomes visible", () => {
+    vi.useFakeTimers();
+    let visible = false;
+    const history: ColabOneWorkflowDraftStatus[] = [];
+    const controller = createColabOneDraftStatusController({
+      onStatusChange: (status) => history.push(status),
+      isVisible: () => visible,
+      visibleMs: 3000,
+    });
+
+    controller.setStatus("restored");
+    vi.advanceTimersByTime(10_000);
+    expect(controller.getStatus()).toBe("restored");
+
+    visible = true;
+    controller.onVisibilityChange(true);
+    vi.advanceTimersByTime(2999);
+    expect(controller.getStatus()).toBe("restored");
+
+    vi.advanceTimersByTime(1);
+    expect(controller.getStatus()).toBe("idle");
+    expect(history).toEqual(["restored", "idle"]);
+
+    // Subsequent re-opens never revive an already dismissed restored indicator
+    visible = false;
+    controller.onVisibilityChange(false);
+    visible = true;
+    controller.onVisibilityChange(true);
+    expect(controller.getStatus()).toBe("idle");
+    expect(history).toEqual(["restored", "idle"]);
+
+    controller.dispose();
+  });
+
+  it("auto-hides restored status immediately when already visible and honors clearIfSaving and dispose", () => {
+    vi.useFakeTimers();
+    const history: ColabOneWorkflowDraftStatus[] = [];
+    const controller = createColabOneDraftStatusController({
+      onStatusChange: (status) => history.push(status),
+      isVisible: () => true,
+      visibleMs: 2500,
+    });
+
+    controller.setStatus("restored");
+    controller.clearIfSaving();
+    expect(controller.getStatus()).toBe("restored");
+
+    vi.advanceTimersByTime(2500);
+    expect(controller.getStatus()).toBe("idle");
+
+    controller.setStatus("saving");
+    controller.clearIfSaving();
+    expect(controller.getStatus()).toBe("idle");
+
+    controller.setStatus("saved");
+    controller.dispose();
+    vi.advanceTimersByTime(5000);
+    expect(history).toEqual(["restored", "idle", "saving", "idle", "saved"]);
   });
 });

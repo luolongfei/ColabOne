@@ -7,7 +7,6 @@ import {
   Select as ASelect,
   SelectOptGroup as ASelectOptGroup,
   SelectOption as ASelectOption,
-  Space as ASpace,
   Switch as ASwitch,
   Tag as ATag,
   Textarea as ATextarea,
@@ -22,6 +21,7 @@ import {
   PhWaveform,
 } from "@phosphor-icons/vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
+import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   formatColabOneDiskGiB,
   formatColabOneVramGiB,
@@ -614,7 +614,7 @@ function onMediaDrop(event: DragEvent) {
         v-if="uploadedName || hasPendingUpload || hasDraftMedia"
         class="co-comfy-media-status"
       >
-        <ASpace :size="6" wrap>
+        <div class="co-comfy-media-status-tags">
           <ATag v-if="hasPendingUpload" color="warning">
             {{ t("comfy.pendingUpload") }}
           </ATag>
@@ -627,14 +627,19 @@ function onMediaDrop(event: DragEvent) {
           <ATag v-if="hasDraftMedia" color="blue">
             {{ t("comfy.draftLocalMediaTag") }}
           </ATag>
-          <ATag v-if="uploadedName" class="co-comfy-filename-pill">
-            {{ uploadedName }}
-          </ATag>
-        </ASpace>
+          <ColabOneTooltip v-if="uploadedName" :title="uploadedName">
+            <ATag class="co-comfy-filename-pill">
+              <span class="co-comfy-filename-pill-text">{{
+                uploadedName
+              }}</span>
+            </ATag>
+          </ColabOneTooltip>
+        </div>
         <AButton
           type="link"
           size="small"
           danger
+          class="co-comfy-media-clear-btn"
           :disabled="!!uploading || !!disabled"
           @click="emit('media-clear', field)"
         >
@@ -1545,6 +1550,7 @@ function onMediaDrop(event: DragEvent) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .co-comfy-media-dropzone {
@@ -1635,13 +1641,38 @@ function onMediaDrop(event: DragEvent) {
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+
+.co-comfy-media-status-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .co-comfy-filename-pill {
-  max-width: 220px;
+  max-width: min(240px, 100%);
+  min-width: 0;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.co-comfy-filename-pill-text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.4;
+  text-box-trim: normal !important;
+}
+
+.co-comfy-media-clear-btn {
+  flex-shrink: 0;
 }
 </style>
 

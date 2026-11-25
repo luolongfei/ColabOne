@@ -880,3 +880,103 @@ export const deleteColabOneWorkflowDraftMedia =
   defaultColabOneWorkflowDraftClient.deleteColabOneWorkflowDraftMedia;
 export const clearColabOneWorkflowDraft =
   defaultColabOneWorkflowDraftClient.clearColabOneWorkflowDraft;
+
+export type ColabOneWorkflowDraftStatus =
+  | "idle"
+  | "saving"
+  | "saved"
+  | "restored";
+
+export const COLABONE_DRAFT_STATUS_VISIBLE_MS = 3000;
+
+export interface ColabOneDraftStatusControllerOptions {
+  onStatusChange: (status: ColabOneWorkflowDraftStatus) => void;
+  isVisible?: () => boolean;
+  visibleMs?: number;
+}
+
+export interface ColabOneDraftStatusController {
+  getStatus(): ColabOneWorkflowDraftStatus;
+  setStatus(next: ColabOneWorkflowDraftStatus): void;
+  clearIfSaving(): void;
+  onVisibilityChange(visible: boolean): void;
+  dispose(): void;
+}
+
+export function createColabOneDraftStatusController(
+  options: ColabOneDraftStatusControllerOptions,
+): ColabOneDraftStatusController {
+  const visibleMs =
+    typeof options.visibleMs === "number" &&
+    Number.isFinite(options.visibleMs) &&
+    options.visibleMs > 0
+      ? options.visibleMs
+      : COLABONE_DRAFT_STATUS_VISIBLE_MS;
+  const isVisible = options.isVisible ?? (() => true);
+  let current: ColabOneWorkflowDraftStatus = "idle";
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  function cancelHideTimer() {
+    if (hideTimer !== null) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
+  function scheduleAutoHide() {
+    cancelHideTimer();
+    hideTimer = setTimeout(() => {
+      hideTimer = null;
+      if (disposed) {
+        return;
+      }
+      if (current === "saved" || current === "restored") {
+        current = "idle";
+        options.onStatusChange("idle");
+      }
+    }, visibleMs);
+  }
+
+  function setStatus(next: ColabOneWorkflowDraftStatus) {
+    if (disposed) {
+      return;
+    }
+    cancelHideTimer();
+    current = next;
+    options.onStatusChange(next);
+    if (next === "saved") {
+      scheduleAutoHide();
+    } else if (next === "restored" && isVisible()) {
+      scheduleAutoHide();
+    }
+  }
+
+  function clearIfSaving() {
+    if (current === "saving") {
+      setStatus("idle");
+    }
+  }
+
+  function onVisibilityChange(visible: boolean) {
+    if (disposed) {
+      return;
+    }
+    if (visible && current === "restored" && hideTimer === null) {
+      scheduleAutoHide();
+    }
+  }
+
+  function dispose() {
+    disposed = true;
+    cancelHideTimer();
+  }
+
+  return {
+    getStatus: () => current,
+    setStatus,
+    clearIfSaving,
+    onVisibilityChange,
+    dispose,
+  };
+}
