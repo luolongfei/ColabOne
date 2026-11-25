@@ -7,4 +7,5 @@ export const COLABONE_STORAGE_KEYS = {
   privacyMaskDefault: "colabone.privacy.default",
   privacyMaskSession: "colabone.privacy.session",
   comfyDrafts: "colabone.comfy.drafts",
+  comfyDigitalHumanEngine: "colabone.comfy.digital_human.engine",
 } as const;

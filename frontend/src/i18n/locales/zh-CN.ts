@@ -1066,6 +1066,7 @@ export const zhCNMessages = {
   "comfy.tabCanvas": "原生画布",
   "comfy.canvasActiveAria": "画布已开启",
   "comfy.studioWorkflowCount": "{count} 个工作流",
+  "comfy.studioWorkflowCountOne": "{count} 个工作流",
   "comfy.studioCountShort": "{count} 个",
   "comfy.studioDesc":
     "自动解析 ComfyUI API JSON 为简洁表单，在远端 GPU 一键运行并归档图片、视频与音频输出。",
@@ -1414,6 +1415,18 @@ export const zhCNMessages = {
   "comfy.voiceSourcePreset": "内置精选",
   "comfy.voiceSourceCustom": "自定义",
   "comfy.taskKindTtsPreview": "音色试听",
+  "comfy.digitalHumanUnifiedName": "口播数字人",
+  "comfy.digitalHumanUnifiedDesc":
+    "输入人像照片与口播文稿（或音频），自动生成口型自然的高清有声视频（MP4）；支持在长视频稳健与旗舰高清双引擎间按需切换。",
+  "comfy.digitalHumanEngineCountSpec": "{count} 款引擎可选",
+  "comfy.videoEngineLabel": "视频生成引擎",
+  "comfy.videoEngineGpuAutoHint": "按当前 {gpu} 自动推荐",
+  "comfy.videoEngineRecommendedTag": "推荐",
+  "comfy.videoEngineReadyTag": "已就绪",
+  "comfy.videoEngineInfiniteTalkTitle": "长视频稳健",
+  "comfy.videoEngineInfiniteTalkSummary": "多分钟连续口播更稳、速度更快",
+  "comfy.videoEngineLongCatTitle": "旗舰高清",
+  "comfy.videoEngineLongCatSummary": "画质上限更高，支持原生 720p 与全栈加速",
 
   // Settings Page
   "settings.title": "设置",

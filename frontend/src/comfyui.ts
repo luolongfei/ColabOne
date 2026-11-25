@@ -1,8 +1,15 @@
 import { colabOneCommand } from "./api";
 import { COLABONE_LOCALE_LIST, t, type ColabOneLocale } from "./i18n";
+import {
+  hasLiveRuntimeGpu,
+  resolveColabOneDefaultGpuTarget,
+  resolveColabOneGpuTarget,
+} from "./modelCompatibility";
+import { COLABONE_STORAGE_KEYS } from "./storage";
 import type {
   ColabOneComfyTtsEngineSpec,
   ColabOneComfyTtsVoicePreset,
+  RuntimeStatus,
   WorkflowField,
   WorkflowOutput,
   WorkflowTemplate,
@@ -1390,4 +1397,460 @@ export function missingRequiredWorkflowFields(
     }
   }
   return missing;
+}
+
+export const COLABONE_DIGITAL_HUMAN_GROUP_KEY = "colabone-digital-human-group";
+
+export const COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS: ReadonlySet<string> =
+  new Set<string>([
+    "pipeline.max_segment_seconds",
+    "pipeline.render_quality",
+    "pipeline.acceleration_profile",
+    "14.steps",
+    "15.steps",
+  ]);
+
+export interface ColabOneStudioWorkflowEntry {
+  key: string;
+  isGroup: boolean;
+  workflows: WorkflowTemplate[];
+  primary: WorkflowTemplate;
+}
+
+export interface ColabOneDigitalHumanGpuContext {
+  vramMib: number;
+  shortLabel: string;
+  isLive: boolean;
+}
+
+export interface ColabOneDigitalHumanSelection {
+  workflowId: string;
+  recommendedWorkflowId: string;
+  fromUserPreference: boolean;
+}
+
+export function isColabOneBuiltinDigitalHumanWorkflow(
+  wf?: WorkflowTemplate | null,
+): boolean {
+  return Boolean(
+    wf && wf.source === "builtin" && wf.pipeline?.kind === "digital_human",
+  );
+}
+
+const COLABONE_LIVE_RUNTIME_GPU_STATES: ReadonlySet<string> = new Set([
+  "ready",
+  "running",
+  "starting",
+  "connecting",
+]);
+
+export function buildColabOneStudioWorkflowEntries(
+  workflows: readonly WorkflowTemplate[] | undefined | null,
+): ColabOneStudioWorkflowEntry[] {
+  const list = Array.isArray(workflows) ? workflows : [];
+  if (list.length === 0) {
+    return [];
+  }
+
+  const builtinDigitalHumans: WorkflowTemplate[] = [];
+  const seenBuiltinIds = new Set<string>();
+  for (const wf of list) {
+    if (isColabOneBuiltinDigitalHumanWorkflow(wf) && !seenBuiltinIds.has(wf.id)) {
+      seenBuiltinIds.add(wf.id);
+      builtinDigitalHumans.push(wf);
+    }
+  }
+  if (builtinDigitalHumans.length < 2) {
+    return list.map((wf) => ({
+      key: wf.id,
+      isGroup: false,
+      workflows: [wf],
+      primary: wf,
+    }));
+  }
+
+  const entries: ColabOneStudioWorkflowEntry[] = [];
+  let groupInserted = false;
+  for (const wf of list) {
+    if (isColabOneBuiltinDigitalHumanWorkflow(wf)) {
+      if (!groupInserted) {
+        entries.push({
+          key: COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+          isGroup: true,
+          workflows: builtinDigitalHumans,
+          primary: builtinDigitalHumans[0],
+        });
+        groupInserted = true;
+      }
+      continue;
+    }
+    const entryKey =
+      wf.id === COLABONE_DIGITAL_HUMAN_GROUP_KEY ? `custom:${wf.id}` : wf.id;
+    entries.push({
+      key: entryKey,
+      isGroup: false,
+      workflows: [wf],
+      primary: wf,
+    });
+  }
+  return entries;
+}
+
+export function resolveColabOneDigitalHumanGpuContext(
+  runtime?: RuntimeStatus | null,
+  settingsGpu?: string | null,
+): ColabOneDigitalHumanGpuContext {
+  const normalizedSettingsGpu =
+    typeof settingsGpu === "string" ? settingsGpu.trim() : settingsGpu;
+  const runtimeState =
+    typeof runtime?.state === "string" ? runtime.state.trim().toLowerCase() : "";
+  if (runtime && COLABONE_LIVE_RUNTIME_GPU_STATES.has(runtimeState)) {
+    const primaryGpu = runtime.gpu;
+    if (
+      primaryGpu &&
+      typeof primaryGpu.total_mib === "number" &&
+      Number.isFinite(primaryGpu.total_mib) &&
+      primaryGpu.total_mib > 0 &&
+      hasLiveRuntimeGpu(runtime)
+    ) {
+      const target = resolveColabOneGpuTarget(
+        "CURRENT",
+        runtime,
+        normalizedSettingsGpu,
+      );
+      return {
+        vramMib: target.vramMib,
+        shortLabel: target.shortLabel,
+        isLive: true,
+      };
+    }
+    const resourceGpu = runtime.resources?.gpu;
+    if (
+      resourceGpu &&
+      typeof resourceGpu.total_mib === "number" &&
+      Number.isFinite(resourceGpu.total_mib) &&
+      resourceGpu.total_mib > 0
+    ) {
+      const syntheticRuntime: RuntimeStatus = {
+        ...runtime,
+        gpu: resourceGpu,
+      };
+      const target = resolveColabOneGpuTarget(
+        "CURRENT",
+        syntheticRuntime,
+        normalizedSettingsGpu,
+      );
+      return {
+        vramMib: target.vramMib,
+        shortLabel: target.shortLabel,
+        isLive: true,
+      };
+    }
+  }
+  const targetId = resolveColabOneDefaultGpuTarget(null, normalizedSettingsGpu);
+  const target = resolveColabOneGpuTarget(targetId, null, normalizedSettingsGpu);
+  return {
+    vramMib: target.vramMib,
+    shortLabel: target.shortLabel,
+    isLive: false,
+  };
+}
+
+export function resolveColabOneRecommendedDigitalHumanWorkflowId(
+  digitalHumanWorkflows: readonly WorkflowTemplate[] | undefined | null,
+  runtime?: RuntimeStatus | null,
+  settingsGpu?: string | null,
+): string {
+  const list = (
+    Array.isArray(digitalHumanWorkflows) ? digitalHumanWorkflows : []
+  ).filter((wf) => isColabOneBuiltinDigitalHumanWorkflow(wf));
+  if (list.length === 0) {
+    return "";
+  }
+  if (list.length === 1) {
+    return list[0].id;
+  }
+
+  const flagship = list.find(
+    (wf) =>
+      wf.pipeline?.video_backend === "longcat_avatar" ||
+      wf.id === "digital-human-longcat",
+  );
+  const longVideo = list.find(
+    (wf) =>
+      wf.pipeline?.video_backend === "infinitetalk" ||
+      wf.id === "digital-human-infinitetalk",
+  );
+  const { vramMib } = resolveColabOneDigitalHumanGpuContext(
+    runtime,
+    settingsGpu,
+  );
+  const flagshipMinVramMib =
+    flagship &&
+    typeof flagship.min_vram_mib === "number" &&
+    Number.isFinite(flagship.min_vram_mib) &&
+    flagship.min_vram_mib > 0
+      ? flagship.min_vram_mib
+      : 49152;
+  if (flagship && vramMib >= flagshipMinVramMib) {
+    return flagship.id;
+  }
+  if (longVideo) {
+    return longVideo.id;
+  }
+  if (flagship) {
+    const alternate = list.find((wf) => wf.id !== flagship.id);
+    if (alternate) {
+      return alternate.id;
+    }
+  }
+  return list[0].id;
+}
+
+function resolveColabOneLocalStorage(storage?: Storage | null): Storage | null {
+  if (storage !== undefined) {
+    return storage;
+  }
+  try {
+    return typeof window !== "undefined" ? (window.localStorage ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readColabOnePreferredDigitalHumanEngine(
+  storage?: Storage | null,
+): string {
+  const target = resolveColabOneLocalStorage(storage);
+  if (!target) {
+    return "";
+  }
+  try {
+    const raw = target.getItem(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine);
+    return typeof raw === "string" ? raw.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeColabOnePreferredDigitalHumanEngine(
+  workflowId: string,
+  storage?: Storage | null,
+): void {
+  const target = resolveColabOneLocalStorage(storage);
+  if (!target) {
+    return;
+  }
+  const trimmed = typeof workflowId === "string" ? workflowId.trim() : "";
+  try {
+    if (!trimmed) {
+      target.removeItem(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine);
+      return;
+    }
+    target.setItem(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine, trimmed);
+  } catch {
+    // Ignore storage quota or restricted storage errors.
+  }
+}
+
+export function resolveColabOneInitialDigitalHumanWorkflowId(
+  digitalHumanWorkflows: readonly WorkflowTemplate[] | undefined | null,
+  runtime?: RuntimeStatus | null,
+  settingsGpu?: string | null,
+  preferredWorkflowId?: string | null,
+): ColabOneDigitalHumanSelection {
+  const list = (
+    Array.isArray(digitalHumanWorkflows) ? digitalHumanWorkflows : []
+  ).filter((wf) => isColabOneBuiltinDigitalHumanWorkflow(wf));
+  const recommendedWorkflowId = resolveColabOneRecommendedDigitalHumanWorkflowId(
+    list,
+    runtime,
+    settingsGpu,
+  );
+  const trimmed =
+    typeof preferredWorkflowId === "string" ? preferredWorkflowId.trim() : "";
+  if (trimmed && list.some((wf) => wf.id === trimmed)) {
+    return {
+      workflowId: trimmed,
+      recommendedWorkflowId,
+      fromUserPreference: true,
+    };
+  }
+  return {
+    workflowId: recommendedWorkflowId,
+    recommendedWorkflowId,
+    fromUserPreference: false,
+  };
+}
+
+export function transferColabOneDigitalHumanFields(
+  sourceWf: WorkflowTemplate | undefined,
+  targetWf: WorkflowTemplate | undefined,
+  currentValues: Record<string, string | number | boolean>,
+  locale?: ColabOneLocale,
+): Record<string, string | number | boolean> {
+  if (!targetWf) {
+    return {};
+  }
+  const next = defaultFieldValues(targetWf.fields || [], locale);
+  const sourceFields = new Map<string, WorkflowField>();
+  for (const field of sourceWf?.fields || []) {
+    sourceFields.set(field.key, field);
+  }
+  const sourceSupportsRenderQuality =
+    !sourceWf || sourceFields.has("pipeline.render_quality");
+  const wasAutoSyncedNative720pLanczos =
+    sourceSupportsRenderQuality &&
+    hasOwn(currentValues, "pipeline.render_quality") &&
+    hasOwn(currentValues, "pipeline.upscale_mode") &&
+    String(currentValues["pipeline.render_quality"] ?? "").trim() ===
+      "native_720p" &&
+    String(currentValues["pipeline.upscale_mode"] ?? "").trim() === "lanczos";
+
+  for (const targetField of targetWf.fields || []) {
+    if (COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has(targetField.key)) {
+      continue;
+    }
+    if (
+      wasAutoSyncedNative720pLanczos &&
+      targetField.key === "pipeline.upscale_mode"
+    ) {
+      continue;
+    }
+    if (!hasOwn(currentValues, targetField.key)) {
+      continue;
+    }
+    const raw: unknown = currentValues[targetField.key];
+    if (raw === undefined || raw === null) {
+      continue;
+    }
+    const sourceField = sourceFields.get(targetField.key);
+    if (sourceField && sourceField.field_type !== targetField.field_type) {
+      continue;
+    }
+
+    if (targetField.field_type === "select") {
+      if (
+        typeof raw !== "string" &&
+        !(typeof raw === "number" && Number.isFinite(raw))
+      ) {
+        continue;
+      }
+      const candidate = String(raw).trim();
+      if (!candidate) {
+        continue;
+      }
+      // `pipeline.voice_preset` dynamically accepts engine-specific official
+      // speaker IDs (e.g. Qwen3-TTS `qwen_*`) outside the static template options;
+      // callers reconcile against the active TTS engine via `reconcileVoicePresetForEngine`.
+      const allowsDynamicSelectOptions =
+        targetField.key === "pipeline.voice_preset";
+      if (
+        !allowsDynamicSelectOptions &&
+        Array.isArray(targetField.options) &&
+        targetField.options.length > 0 &&
+        !targetField.options.includes(candidate)
+      ) {
+        continue;
+      }
+      next[targetField.key] = candidate;
+      continue;
+    }
+
+    if (targetField.field_type === "boolean") {
+      if (typeof raw === "boolean") {
+        next[targetField.key] = raw;
+      } else if (typeof raw === "string") {
+        const normalized = raw.trim().toLowerCase();
+        if (normalized === "true" || normalized === "1") {
+          next[targetField.key] = true;
+        } else if (normalized === "false" || normalized === "0") {
+          next[targetField.key] = false;
+        }
+      }
+      continue;
+    }
+
+    if (
+      targetField.field_type === "integer" ||
+      targetField.field_type === "number"
+    ) {
+      if (typeof raw === "string" && raw.trim() === "") {
+        next[targetField.key] = "";
+        continue;
+      }
+      const parsed = parseFiniteNumber(raw);
+      if (parsed === undefined) {
+        continue;
+      }
+      let value =
+        targetField.field_type === "integer"
+          ? normalizeZero(Math.round(parsed))
+          : normalizeZero(parsed);
+      if (
+        typeof targetField.min_value === "number" &&
+        Number.isFinite(targetField.min_value) &&
+        value < targetField.min_value
+      ) {
+        value =
+          targetField.field_type === "integer"
+            ? normalizeZero(Math.ceil(targetField.min_value))
+            : normalizeZero(targetField.min_value);
+      }
+      if (
+        typeof targetField.max_value === "number" &&
+        Number.isFinite(targetField.max_value) &&
+        value > targetField.max_value
+      ) {
+        value =
+          targetField.field_type === "integer"
+            ? normalizeZero(Math.floor(targetField.max_value))
+            : normalizeZero(targetField.max_value);
+      }
+      next[targetField.key] = value;
+      continue;
+    }
+
+    if (
+      targetField.field_type === "text" ||
+      targetField.field_type === "textarea"
+    ) {
+      if (
+        typeof raw !== "string" &&
+        typeof raw !== "boolean" &&
+        !(typeof raw === "number" && Number.isFinite(raw))
+      ) {
+        continue;
+      }
+      const str = String(raw);
+      if (
+        typeof targetField.default === "string" &&
+        isColabOnePresetVisualPrompt(targetField.default) &&
+        isColabOnePresetVisualPrompt(str)
+      ) {
+        next[targetField.key] = t("comfy.defaultVisualPrompt", undefined, locale);
+      } else {
+        next[targetField.key] = str;
+      }
+      continue;
+    }
+
+    if (
+      targetField.field_type === "image" ||
+      targetField.field_type === "audio"
+    ) {
+      if (typeof raw === "string") {
+        next[targetField.key] = raw;
+      }
+      continue;
+    }
+
+    if (typeof raw === "string" || typeof raw === "boolean") {
+      next[targetField.key] = raw;
+    } else if (typeof raw === "number" && Number.isFinite(raw)) {
+      next[targetField.key] = normalizeZero(raw);
+    }
+  }
+
+  return next;
 }

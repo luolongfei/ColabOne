@@ -1092,6 +1092,7 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.tabCanvas": "ネイティブキャンバス",
   "comfy.canvasActiveAria": "キャンバス公開中",
   "comfy.studioWorkflowCount": "{count} 件のワークフロー",
+  "comfy.studioWorkflowCountOne": "{count} 件のワークフロー",
   "comfy.studioCountShort": "{count} 件",
   "comfy.studioDesc":
     "ComfyUI API JSON から操作フォームを自動生成し、画像・動画・音声出力をまとめて管理できます。",
@@ -1451,6 +1452,18 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.voiceSourcePreset": "組み込み厳選",
   "comfy.voiceSourceCustom": "カスタム",
   "comfy.taskKindTtsPreview": "ボイス試聴",
+  "comfy.digitalHumanUnifiedName": "トーキング・デジタルヒューマン",
+  "comfy.digitalHumanUnifiedDesc":
+    "人物写真と台本（または音声）を入力して自然なリップシンクの高画質動画 (MP4) を自動生成。長尺安定・フラッグシップ HD の 2 エンジンを用途に応じて切り替えられます。",
+  "comfy.digitalHumanEngineCountSpec": "{count} 種類のエンジン",
+  "comfy.videoEngineLabel": "動画生成エンジン",
+  "comfy.videoEngineGpuAutoHint": "{gpu} に合わせて自動推奨",
+  "comfy.videoEngineRecommendedTag": "おすすめ",
+  "comfy.videoEngineReadyTag": "準備完了",
+  "comfy.videoEngineInfiniteTalkTitle": "長尺安定",
+  "comfy.videoEngineInfiniteTalkSummary": "数分の連続トークが安定・高速",
+  "comfy.videoEngineLongCatTitle": "フラッグシップ HD",
+  "comfy.videoEngineLongCatSummary": "より高精細な描写、ネイティブ 720p・GPU 高速化対応",
 
   // Settings Page
   "settings.title": "設定",

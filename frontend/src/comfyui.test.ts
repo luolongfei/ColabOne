@@ -2,13 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CANVAS_FORMAT_ERROR,
   COLABONE_CANONICAL_VISUAL_PROMPT,
+  COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS,
+  COLABONE_DIGITAL_HUMAN_GROUP_KEY,
   COLABONE_LEGACY_VISUAL_PROMPTS,
+  buildColabOneStudioWorkflowEntries,
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
   extractPublicHost,
   formatOutputSize,
   groupWorkflowFields,
   hasNonCommercialNotice,
+  isColabOneBuiltinDigitalHumanWorkflow,
   isColabOnePresetVisualPrompt,
   isColabOneVoiceRefRequired,
   isWorkflowFieldVisible,
@@ -16,13 +20,20 @@ import {
   outputBlobURL,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  readColabOnePreferredDigitalHumanEngine,
   remapColabOnePresetPromptFieldsForLocale,
+  resolveColabOneDigitalHumanGpuContext,
+  resolveColabOneInitialDigitalHumanWorkflowId,
+  resolveColabOneRecommendedDigitalHumanWorkflowId,
   resolveColabOneWorkflowFieldDefault,
   resolveColabOneWorkflowFieldPlaceholder,
   resolveSelectedTtsEngine,
+  transferColabOneDigitalHumanFields,
   workflowModelsTotalBytes,
+  writeColabOnePreferredDigitalHumanEngine,
 } from "./comfyui";
 import { COLABONE_LOCALE_LIST, t, type ColabOneLocale } from "./i18n";
+import { COLABONE_STORAGE_KEYS } from "./storage";
 import type {
   ColabOneComfyNodePatch,
   ColabOneComfyPipelineSpec,
@@ -32,6 +43,7 @@ import type {
   ComfyPipelineSpec,
   ComfyTtsEngineSpec,
   ComfyTtsVoicePreset,
+  RuntimeStatus,
   TaskStatus,
   WorkflowField,
   WorkflowOutput,
@@ -2638,5 +2650,1634 @@ describe("localized workflow defaults, preset visual prompt, and placeholders", 
         ).toBe("");
       }
     }
+  });
+});
+
+describe("unified digital human workflow helpers", () => {
+  function makeSharedDigitalHumanFields(): WorkflowField[] {
+    return [
+      makeField({
+        key: "1.image",
+        label: "主播人像照片",
+        field_type: "image",
+        default: "",
+        group: "basic",
+        required: true,
+      }),
+      makeField({
+        key: "pipeline.audio_source",
+        label: "配音方式",
+        field_type: "select",
+        default: "tts",
+        options: ["tts", "audio"],
+        group: "basic",
+        required: true,
+      }),
+      makeField({
+        key: "pipeline.script_text",
+        label: "口播文稿",
+        field_type: "textarea",
+        default: "",
+        group: "basic",
+        required: true,
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "pipeline.tts_engine",
+        label: "远端 TTS 语音引擎",
+        field_type: "select",
+        default: "fish_drama3",
+        options: [
+          "fish_drama3",
+          "moss_tts_v1_5",
+          "breeze_tts2",
+          "ming_3_tts",
+          "voxcpm2",
+          "qwen3_tts",
+          "indextts2",
+          "fish_s2_pro",
+        ],
+        group: "basic",
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "pipeline.voice_preset",
+        label: "内置音色与试听",
+        field_type: "select",
+        default: "shen_zhiyi",
+        options: [
+          "shen_zhiyi",
+          "lin_xiaoman",
+          "su_wanqing",
+          "gu_qinglan",
+          "lu_mingwei",
+          "chen_jingzhou",
+          "lin_chenxu",
+          "zhou_moyan",
+          "gu_zhengyuan",
+          "su_hechuan",
+          "custom",
+        ],
+        group: "basic",
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "2.audio",
+        label: "驱动音频文件",
+        field_type: "audio",
+        default: "",
+        group: "basic",
+        required: true,
+        visible_when: { "pipeline.audio_source": "audio" },
+      }),
+      makeField({
+        key: "pipeline.voice_ref_audio",
+        label: "参考音色（可选）",
+        field_type: "audio",
+        default: "",
+        group: "basic",
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "pipeline.target_resolution",
+        label: "输出画幅与清晰度",
+        field_type: "select",
+        default: "1280x720",
+        options: ["1280x720", "720x1280", "1920x1080", "1080x1920"],
+        group: "basic",
+      }),
+      makeField({
+        key: "pipeline.voice_ref_text",
+        label: "参考音色对应文字（可选）",
+        field_type: "text",
+        default: "",
+        group: "advanced",
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "pipeline.voice_prompt",
+        label: "声线与风格描述",
+        field_type: "text",
+        default: "",
+        group: "advanced",
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "pipeline.emotion_ref_audio",
+        label: "情绪参考音频",
+        field_type: "audio",
+        default: "",
+        group: "advanced",
+        visible_when: {
+          "pipeline.audio_source": "tts",
+          "pipeline.tts_engine": "indextts2",
+        },
+      }),
+      makeField({
+        key: "pipeline.emotion_prompt",
+        label: "情绪提示词",
+        field_type: "text",
+        default: "",
+        group: "advanced",
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "pipeline.pause_seconds",
+        label: "句间自然停顿（秒）",
+        field_type: "number",
+        default: 0.28,
+        min_value: 0,
+        max_value: 1.5,
+        step: 0.02,
+        group: "advanced",
+        visible_when: { "pipeline.audio_source": "tts" },
+      }),
+      makeField({
+        key: "5.positive_prompt",
+        label: "画面与动作风格提示词",
+        field_type: "textarea",
+        default: COLABONE_CANONICAL_VISUAL_PROMPT,
+        group: "advanced",
+      }),
+    ];
+  }
+
+  function makeInfiniteTalkWorkflow(
+    overrides: Partial<WorkflowTemplate> = {},
+  ): WorkflowTemplate {
+    return makeWorkflow({
+      id: "digital-human-infinitetalk",
+      name: "口播数字人 · 长视频推荐版",
+      source: "builtin",
+      min_vram_mib: 40960,
+      recommended_gpu: "G4 96 GB / A100 80 GB",
+      pipeline: {
+        kind: "digital_human",
+        video_backend: "infinitetalk",
+        default_tts_engine: "fish_drama3",
+        max_segment_seconds: 20,
+        upscale_mode: "ai_2x",
+        steps_node_key: "15.steps",
+        seed_node_key: "15.seed",
+      },
+      fields: [
+        ...makeSharedDigitalHumanFields(),
+        makeField({
+          key: "pipeline.upscale_mode",
+          label: "画质超分模式",
+          field_type: "select",
+          default: "ai_2x",
+          options: ["ai_2x", "lanczos", "none"],
+          group: "advanced",
+        }),
+        makeField({
+          key: "pipeline.max_segment_seconds",
+          label: "单段最大时长（秒）",
+          field_type: "number",
+          default: 20,
+          min_value: 10,
+          max_value: 45,
+          step: 5,
+          group: "advanced",
+        }),
+        makeField({
+          key: "15.steps",
+          label: "采样步数（LightX2V 蒸馏）",
+          field_type: "integer",
+          default: 6,
+          min_value: 4,
+          max_value: 20,
+          step: 1,
+          group: "advanced",
+        }),
+        makeField({
+          key: "15.seed",
+          label: "随机种子",
+          field_type: "integer",
+          default: 42,
+          min_value: 0,
+          max_value: 2147483647,
+          step: 1,
+          group: "advanced",
+        }),
+      ],
+      ...overrides,
+    });
+  }
+
+  function makeLongCatWorkflow(
+    overrides: Partial<WorkflowTemplate> = {},
+  ): WorkflowTemplate {
+    return makeWorkflow({
+      id: "digital-human-longcat",
+      name: "口播数字人 · 旗舰高清版",
+      source: "builtin",
+      min_vram_mib: 49152,
+      recommended_gpu: "G4 96 GB / A100 80 GB / H100 80 GB",
+      pipeline: {
+        kind: "digital_human",
+        video_backend: "longcat_avatar",
+        default_tts_engine: "fish_drama3",
+        max_segment_seconds: 3.7,
+        upscale_mode: "ai_2x",
+        steps_node_key: "14.steps",
+        seed_node_key: "15.seed",
+      },
+      fields: [
+        ...makeSharedDigitalHumanFields(),
+        makeField({
+          key: "pipeline.render_quality",
+          label: "渲染清晰度与速度模式",
+          field_type: "select",
+          default: "balanced_480p_ai2x",
+          options: ["balanced_480p_ai2x", "native_720p"],
+          group: "advanced",
+        }),
+        makeField({
+          key: "pipeline.acceleration_profile",
+          label: "远端 GPU 加速栈",
+          field_type: "select",
+          default: "max",
+          options: ["max", "balanced", "compat"],
+          group: "advanced",
+        }),
+        makeField({
+          key: "pipeline.upscale_mode",
+          label: "画质超分模式",
+          field_type: "select",
+          default: "ai_2x",
+          options: ["ai_2x", "lanczos", "none"],
+          group: "advanced",
+        }),
+        makeField({
+          key: "pipeline.max_segment_seconds",
+          label: "单段最大时长（秒）",
+          field_type: "number",
+          default: 3.7,
+          min_value: 3.0,
+          max_value: 9.0,
+          step: 0.1,
+          group: "advanced",
+        }),
+        makeField({
+          key: "14.steps",
+          label: "采样步数（LongCat DMD 蒸馏）",
+          field_type: "integer",
+          default: 8,
+          min_value: 4,
+          max_value: 20,
+          step: 1,
+          group: "advanced",
+        }),
+        makeField({
+          key: "15.seed",
+          label: "随机种子",
+          field_type: "integer",
+          default: 42,
+          min_value: 0,
+          max_value: 2147483647,
+          step: 1,
+          group: "advanced",
+        }),
+      ],
+      ...overrides,
+    });
+  }
+
+  function makeMockStorage(initial: Record<string, string> = {}): Storage {
+    const store = new Map<string, string>(Object.entries(initial));
+    return {
+      get length() {
+        return store.size;
+      },
+      clear() {
+        store.clear();
+      },
+      getItem(key: string) {
+        return store.has(key) ? (store.get(key) ?? null) : null;
+      },
+      key(index: number) {
+        return Array.from(store.keys())[index] ?? null;
+      },
+      removeItem(key: string) {
+        store.delete(key);
+      },
+      setItem(key: string, value: string) {
+        store.set(key, String(value));
+      },
+    };
+  }
+
+  function makeThrowingStorage(): Storage {
+    const fail = (): never => {
+      throw new Error("storage unavailable");
+    };
+    return {
+      get length() {
+        return 0;
+      },
+      clear: fail,
+      getItem: fail,
+      key: () => null,
+      removeItem: fail,
+      setItem: fail,
+    };
+  }
+
+  describe("constants and isColabOneBuiltinDigitalHumanWorkflow", () => {
+    it("exports canonical group key and engine-specific field key set", () => {
+      expect(COLABONE_DIGITAL_HUMAN_GROUP_KEY).toBe(
+        "colabone-digital-human-group",
+      );
+      expect(COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.size).toBe(5);
+      expect(
+        COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has(
+          "pipeline.max_segment_seconds",
+        ),
+      ).toBe(true);
+      expect(
+        COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has(
+          "pipeline.render_quality",
+        ),
+      ).toBe(true);
+      expect(
+        COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has(
+          "pipeline.acceleration_profile",
+        ),
+      ).toBe(true);
+      expect(COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has("14.steps")).toBe(
+        true,
+      );
+      expect(COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has("15.steps")).toBe(
+        true,
+      );
+      expect(COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has("1.image")).toBe(
+        false,
+      );
+      expect(COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has("15.seed")).toBe(
+        false,
+      );
+      expect(
+        COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS.has(
+          "pipeline.upscale_mode",
+        ),
+      ).toBe(false);
+    });
+
+    it("matches only builtin workflows whose pipeline.kind is digital_human", () => {
+      expect(
+        isColabOneBuiltinDigitalHumanWorkflow(makeInfiniteTalkWorkflow()),
+      ).toBe(true);
+      expect(
+        isColabOneBuiltinDigitalHumanWorkflow(makeLongCatWorkflow()),
+      ).toBe(true);
+      expect(
+        isColabOneBuiltinDigitalHumanWorkflow(
+          makeInfiniteTalkWorkflow({ source: "custom", id: "custom-dh" }),
+        ),
+      ).toBe(false);
+      expect(
+        isColabOneBuiltinDigitalHumanWorkflow(
+          makeWorkflow({
+            id: "builtin-std",
+            source: "builtin",
+            pipeline: { kind: "comfy_standard" },
+          }),
+        ),
+      ).toBe(false);
+      expect(
+        isColabOneBuiltinDigitalHumanWorkflow(
+          makeWorkflow({
+            id: "builtin-none",
+            source: "builtin",
+            pipeline: null,
+          }),
+        ),
+      ).toBe(false);
+      expect(isColabOneBuiltinDigitalHumanWorkflow(undefined)).toBe(false);
+      expect(isColabOneBuiltinDigitalHumanWorkflow(null)).toBe(false);
+    });
+  });
+
+  describe("buildColabOneStudioWorkflowEntries", () => {
+    it("returns an empty array for empty, undefined, or null workflow lists", () => {
+      expect(buildColabOneStudioWorkflowEntries([])).toEqual([]);
+      expect(buildColabOneStudioWorkflowEntries(undefined)).toEqual([]);
+      expect(buildColabOneStudioWorkflowEntries(null)).toEqual([]);
+    });
+
+    it("merges builtin digital human workflows into one grouped entry while preserving custom workflows in relative order", () => {
+      const customBefore = makeWorkflow({
+        id: "custom-before",
+        name: "Custom Portrait",
+        source: "custom",
+        pipeline: { kind: "comfy_standard" },
+      });
+      const infiniteTalk = makeInfiniteTalkWorkflow();
+      const customDigitalHuman = makeWorkflow({
+        id: "custom-digital-human",
+        name: "Custom Digital Human",
+        source: "custom",
+        pipeline: {
+          kind: "digital_human",
+          video_backend: "custom",
+        },
+      });
+      const longCat = makeLongCatWorkflow();
+      const builtinStandard = makeWorkflow({
+        id: "builtin-image-gen",
+        name: "Builtin Standard",
+        source: "builtin",
+        pipeline: { kind: "comfy_standard" },
+      });
+      const customAfter = makeWorkflow({
+        id: "custom-after",
+        name: "Custom Video",
+        source: "custom",
+        pipeline: null,
+      });
+
+      const entries = buildColabOneStudioWorkflowEntries([
+        customBefore,
+        infiniteTalk,
+        customDigitalHuman,
+        longCat,
+        builtinStandard,
+        customAfter,
+      ]);
+
+      expect(entries.map((entry) => entry.key)).toEqual([
+        "custom-before",
+        COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+        "custom-digital-human",
+        "builtin-image-gen",
+        "custom-after",
+      ]);
+
+      expect(entries[0]).toEqual({
+        key: "custom-before",
+        isGroup: false,
+        workflows: [customBefore],
+        primary: customBefore,
+      });
+      expect(entries[1]).toEqual({
+        key: COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+        isGroup: true,
+        workflows: [infiniteTalk, longCat],
+        primary: infiniteTalk,
+      });
+      expect(entries[2]).toEqual({
+        key: "custom-digital-human",
+        isGroup: false,
+        workflows: [customDigitalHuman],
+        primary: customDigitalHuman,
+      });
+      expect(entries[3]).toEqual({
+        key: "builtin-image-gen",
+        isGroup: false,
+        workflows: [builtinStandard],
+        primary: builtinStandard,
+      });
+      expect(entries[4]).toEqual({
+        key: "custom-after",
+        isGroup: false,
+        workflows: [customAfter],
+        primary: customAfter,
+      });
+    });
+
+    it("leaves a single built-in digital human workflow ungrouped for backward compatibility", () => {
+      const infiniteTalk = makeInfiniteTalkWorkflow();
+      const customDigitalHuman = makeWorkflow({
+        id: "custom-dh-only",
+        source: "custom",
+        pipeline: { kind: "digital_human", video_backend: "custom" },
+      });
+      const customOther = makeWorkflow({
+        id: "custom-other",
+        source: "custom",
+        pipeline: null,
+      });
+
+      const entries = buildColabOneStudioWorkflowEntries([
+        infiniteTalk,
+        customDigitalHuman,
+        customOther,
+      ]);
+
+      expect(entries).toEqual([
+        {
+          key: "digital-human-infinitetalk",
+          isGroup: false,
+          workflows: [infiniteTalk],
+          primary: infiniteTalk,
+        },
+        {
+          key: "custom-dh-only",
+          isGroup: false,
+          workflows: [customDigitalHuman],
+          primary: customDigitalHuman,
+        },
+        {
+          key: "custom-other",
+          isGroup: false,
+          workflows: [customOther],
+          primary: customOther,
+        },
+      ]);
+
+      const longCatOnly = makeLongCatWorkflow();
+      expect(buildColabOneStudioWorkflowEntries([longCatOnly])).toEqual([
+        {
+          key: "digital-human-longcat",
+          isGroup: false,
+          workflows: [longCatOnly],
+          primary: longCatOnly,
+        },
+      ]);
+    });
+
+    it("deduplicates duplicate built-in digital human IDs and namespaces colliding custom workflow IDs", () => {
+      const infiniteTalkA = makeInfiniteTalkWorkflow();
+      const infiniteTalkDup = makeInfiniteTalkWorkflow();
+      const dupEntries = buildColabOneStudioWorkflowEntries([
+        infiniteTalkA,
+        infiniteTalkDup,
+      ]);
+      expect(dupEntries).toHaveLength(2);
+      expect(dupEntries.every((entry) => entry.isGroup === false)).toBe(true);
+
+      const longCat = makeLongCatWorkflow();
+      const collidingCustom = makeWorkflow({
+        id: COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+        name: "Custom Colliding ID",
+        source: "custom",
+        pipeline: null,
+      });
+      const mixedEntries = buildColabOneStudioWorkflowEntries([
+        infiniteTalkA,
+        longCat,
+        collidingCustom,
+      ]);
+      expect(mixedEntries.map((entry) => entry.key)).toEqual([
+        COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+        `custom:${COLABONE_DIGITAL_HUMAN_GROUP_KEY}`,
+      ]);
+      expect(mixedEntries[0].isGroup).toBe(true);
+      expect(mixedEntries[0].workflows.map((wf) => wf.id)).toEqual([
+        "digital-human-infinitetalk",
+        "digital-human-longcat",
+      ]);
+      expect(mixedEntries[1].isGroup).toBe(false);
+      expect(mixedEntries[1].primary).toBe(collidingCustom);
+    });
+  });
+
+  describe("resolveColabOneDigitalHumanGpuContext and resolveColabOneRecommendedDigitalHumanWorkflowId", () => {
+    const pair = [makeInfiniteTalkWorkflow(), makeLongCatWorkflow()];
+    const reversedPair = [makeLongCatWorkflow(), makeInfiniteTalkWorkflow()];
+
+    it("recommends LongCat for live GPUs with at least 48 GB VRAM (G4 96 GB, H100/A100 80 GB, exact 48 GB)", () => {
+      const cases: Array<{
+        label: string;
+        runtime: RuntimeStatus;
+        expectedMib: number;
+      }> = [
+        {
+          label: "live G4 96 GB",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "NVIDIA RTX PRO 6000 Blackwell",
+              total_mib: 98304,
+              used_mib: 512,
+            },
+          },
+          expectedMib: 98304,
+        },
+        {
+          label: "live H100 80 GB",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "NVIDIA H100 80GB HBM3",
+              total_mib: 81920,
+              used_mib: 1024,
+            },
+          },
+          expectedMib: 81920,
+        },
+        {
+          label: "live A100 80 GB",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "NVIDIA A100-SXM4-80GB",
+              total_mib: 81920,
+              used_mib: 1024,
+            },
+          },
+          expectedMib: 81920,
+        },
+        {
+          label: "live exact 48 GB boundary",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "NVIDIA L40S",
+              total_mib: 49152,
+              used_mib: 0,
+            },
+          },
+          expectedMib: 49152,
+        },
+      ];
+
+      for (const tc of cases) {
+        const ctx = resolveColabOneDigitalHumanGpuContext(tc.runtime, "T4");
+        expect(ctx.isLive, tc.label).toBe(true);
+        expect(ctx.vramMib, tc.label).toBe(tc.expectedMib);
+        expect(ctx.shortLabel.trim().length, tc.label).toBeGreaterThan(0);
+
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            pair,
+            tc.runtime,
+            "T4",
+          ),
+          tc.label,
+        ).toBe("digital-human-longcat");
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            reversedPair,
+            tc.runtime,
+            "T4",
+          ),
+          `${tc.label} (reversed order)`,
+        ).toBe("digital-human-longcat");
+      }
+    });
+
+    it("recommends InfiniteTalk for live GPUs below 48 GB VRAM (A100 40 GB, L4 24 GB, T4 15 GB, and 49151 MiB)", () => {
+      const cases: Array<{
+        label: string;
+        runtime: RuntimeStatus;
+        expectedMib: number;
+      }> = [
+        {
+          label: "live just below 48 GB",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "NVIDIA L40S",
+              total_mib: 49151,
+              used_mib: 0,
+            },
+          },
+          expectedMib: 49151,
+        },
+        {
+          label: "live A100 40 GB",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "NVIDIA A100-SXM4-40GB",
+              total_mib: 40960,
+              used_mib: 512,
+            },
+          },
+          expectedMib: 40960,
+        },
+        {
+          label: "live L4 24 GB",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "NVIDIA L4",
+              total_mib: 24576,
+              used_mib: 256,
+            },
+          },
+          expectedMib: 24576,
+        },
+        {
+          label: "live T4 15 GB",
+          runtime: {
+            state: "ready",
+            gpu: {
+              name: "Tesla T4",
+              total_mib: 15360,
+              used_mib: 128,
+            },
+          },
+          expectedMib: 15360,
+        },
+      ];
+
+      for (const tc of cases) {
+        const ctx = resolveColabOneDigitalHumanGpuContext(tc.runtime, "G4");
+        expect(ctx.isLive, tc.label).toBe(true);
+        expect(ctx.vramMib, tc.label).toBe(tc.expectedMib);
+        expect(ctx.shortLabel.trim().length, tc.label).toBeGreaterThan(0);
+
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            pair,
+            tc.runtime,
+            "G4",
+          ),
+          tc.label,
+        ).toBe("digital-human-infinitetalk");
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            reversedPair,
+            tc.runtime,
+            "G4",
+          ),
+          `${tc.label} (reversed order)`,
+        ).toBe("digital-human-infinitetalk");
+      }
+    });
+
+    it("reads live VRAM from runtime.resources.gpu.total_mib when runtime.gpu is absent or empty", () => {
+      const resourcesHighRuntime: RuntimeStatus = {
+        state: "ready",
+        resources: {
+          gpu: {
+            name: "NVIDIA RTX PRO 6000 Blackwell",
+            total_mib: 98304,
+            used_mib: 2048,
+          },
+        },
+      };
+      const highCtx = resolveColabOneDigitalHumanGpuContext(
+        resourcesHighRuntime,
+        "T4",
+      );
+      expect(highCtx.isLive).toBe(true);
+      expect(highCtx.vramMib).toBe(98304);
+      expect(highCtx.shortLabel.trim().length).toBeGreaterThan(0);
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          pair,
+          resourcesHighRuntime,
+          "T4",
+        ),
+      ).toBe("digital-human-longcat");
+
+      const resourcesLowRuntime: RuntimeStatus = {
+        state: "ready",
+        resources: {
+          gpu: {
+            name: "NVIDIA L4",
+            total_mib: 24576,
+            used_mib: 1024,
+          },
+        },
+      };
+      const lowCtx = resolveColabOneDigitalHumanGpuContext(
+        resourcesLowRuntime,
+        "G4",
+      );
+      expect(lowCtx.isLive).toBe(true);
+      expect(lowCtx.vramMib).toBe(24576);
+      expect(lowCtx.shortLabel.trim().length).toBeGreaterThan(0);
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          pair,
+          resourcesLowRuntime,
+          "G4",
+        ),
+      ).toBe("digital-human-infinitetalk");
+
+      const zeroPrimaryRuntime: RuntimeStatus = {
+        state: "ready",
+        gpu: {
+          name: "",
+          total_mib: 0,
+          used_mib: 0,
+        },
+        resources: {
+          gpu: {
+            name: "NVIDIA H100 80GB HBM3",
+            total_mib: 81920,
+            used_mib: 0,
+          },
+        },
+      };
+      const fallbackCtx = resolveColabOneDigitalHumanGpuContext(
+        zeroPrimaryRuntime,
+        "L4",
+      );
+      expect(fallbackCtx.isLive).toBe(true);
+      expect(fallbackCtx.vramMib).toBe(81920);
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          pair,
+          zeroPrimaryRuntime,
+          "L4",
+        ),
+      ).toBe("digital-human-longcat");
+    });
+
+    it("falls back to settingsGpu tier when runtime is stopped and ignores stale stopped GPU data", () => {
+      const stoppedRuntime: RuntimeStatus = { state: "stopped" };
+      const stoppedWithStaleT4: RuntimeStatus = {
+        state: "stopped",
+        gpu: {
+          name: "Tesla T4",
+          total_mib: 15360,
+          used_mib: 0,
+        },
+      };
+
+      for (const highTier of ["G4", "H100", "A100"] as const) {
+        const ctx = resolveColabOneDigitalHumanGpuContext(
+          stoppedRuntime,
+          highTier,
+        );
+        expect(ctx.isLive, highTier).toBe(false);
+        expect(ctx.vramMib, highTier).toBeGreaterThanOrEqual(49152);
+        expect(ctx.shortLabel, highTier).toContain(highTier);
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            pair,
+            stoppedRuntime,
+            highTier,
+          ),
+          highTier,
+        ).toBe("digital-human-longcat");
+      }
+
+      expect(
+        resolveColabOneDigitalHumanGpuContext(stoppedWithStaleT4, "G4").isLive,
+      ).toBe(false);
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          pair,
+          stoppedWithStaleT4,
+          "G4",
+        ),
+      ).toBe("digital-human-longcat");
+
+      for (const lowTier of ["L4", "T4"] as const) {
+        const ctx = resolveColabOneDigitalHumanGpuContext(
+          stoppedRuntime,
+          lowTier,
+        );
+        expect(ctx.isLive, lowTier).toBe(false);
+        expect(ctx.vramMib, lowTier).toBeLessThan(49152);
+        expect(ctx.shortLabel, lowTier).toContain(lowTier);
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            pair,
+            stoppedRuntime,
+            lowTier,
+          ),
+          lowTier,
+        ).toBe("digital-human-infinitetalk");
+      }
+    });
+
+    it("handles empty and single-workflow lists cleanly", () => {
+      const stoppedRuntime: RuntimeStatus = { state: "stopped" };
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          [],
+          stoppedRuntime,
+          "G4",
+        ),
+      ).toBe("");
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          undefined,
+          stoppedRuntime,
+          "G4",
+        ),
+      ).toBe("");
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          [makeInfiniteTalkWorkflow()],
+          stoppedRuntime,
+          "G4",
+        ),
+      ).toBe("digital-human-infinitetalk");
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          [makeLongCatWorkflow()],
+          stoppedRuntime,
+          "T4",
+        ),
+      ).toBe("digital-human-longcat");
+    });
+
+    it("ignores stale GPU data in non-live states, rejects non-finite VRAM, trims settingsGpu, and handles starting state", () => {
+      for (const nonLiveState of [
+        "disconnected",
+        "failed",
+        "releasing",
+      ] as const) {
+        const staleRuntime: RuntimeStatus = {
+          state: nonLiveState,
+          gpu: {
+            name: "Tesla T4",
+            total_mib: 15360,
+            used_mib: 0,
+          },
+          resources: {
+            gpu: {
+              name: "Tesla T4",
+              total_mib: 15360,
+              used_mib: 0,
+            },
+          },
+        };
+        const ctx = resolveColabOneDigitalHumanGpuContext(staleRuntime, "G4");
+        expect(ctx.isLive, nonLiveState).toBe(false);
+        expect(ctx.vramMib, nonLiveState).toBeGreaterThanOrEqual(49152);
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            pair,
+            staleRuntime,
+            "G4",
+          ),
+          nonLiveState,
+        ).toBe("digital-human-longcat");
+      }
+
+      // Starting runtime with live GPU uses live telemetry; without GPU falls back to settingsGpu.
+      const startingWithGpu: RuntimeStatus = {
+        state: "starting",
+        gpu: {
+          name: "NVIDIA RTX PRO 6000 Blackwell",
+          total_mib: 98304,
+          used_mib: 0,
+        },
+      };
+      expect(
+        resolveColabOneDigitalHumanGpuContext(startingWithGpu, "T4"),
+      ).toMatchObject({
+        isLive: true,
+        vramMib: 98304,
+      });
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          pair,
+          startingWithGpu,
+          "T4",
+        ),
+      ).toBe("digital-human-longcat");
+
+      const startingWithoutGpu: RuntimeStatus = { state: "starting" };
+      expect(
+        resolveColabOneDigitalHumanGpuContext(startingWithoutGpu, "T4"),
+      ).toMatchObject({
+        isLive: false,
+      });
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          pair,
+          startingWithoutGpu,
+          "T4",
+        ),
+      ).toBe("digital-human-infinitetalk");
+
+      // Non-finite or negative VRAM is rejected cleanly and falls back to settingsGpu.
+      for (const badTotalMib of [Number.POSITIVE_INFINITY, -1024, Number.NaN]) {
+        const badVramRuntime: RuntimeStatus = {
+          state: "ready",
+          gpu: {
+            name: "Broken GPU",
+            total_mib: badTotalMib,
+            used_mib: 0,
+          },
+        };
+        const ctx = resolveColabOneDigitalHumanGpuContext(badVramRuntime, "T4");
+        expect(ctx.isLive, String(badTotalMib)).toBe(false);
+        expect(ctx.vramMib, String(badTotalMib)).toBeLessThan(49152);
+        expect(
+          resolveColabOneRecommendedDigitalHumanWorkflowId(
+            pair,
+            badVramRuntime,
+            "T4",
+          ),
+          String(badTotalMib),
+        ).toBe("digital-human-infinitetalk");
+      }
+
+      // Whitespace-padded settingsGpu resolves accurately instead of falling back to G4.
+      const paddedCtx = resolveColabOneDigitalHumanGpuContext(
+        { state: "stopped" },
+        "  T4  ",
+      );
+      expect(paddedCtx.isLive).toBe(false);
+      expect(paddedCtx.vramMib).toBeLessThan(49152);
+      expect(paddedCtx.shortLabel).toContain("T4");
+      expect(
+        resolveColabOneRecommendedDigitalHumanWorkflowId(
+          pair,
+          { state: "stopped" },
+          "  T4  ",
+        ),
+      ).toBe("digital-human-infinitetalk");
+    });
+  });
+
+  describe("preferred digital human engine persistence and initial selection", () => {
+    const pair = [makeInfiniteTalkWorkflow(), makeLongCatWorkflow()];
+
+    it("reads, writes, trims, clears, and handles storage failures under colabone.comfy.digital_human.engine", () => {
+      expect(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine).toBe(
+        "colabone.comfy.digital_human.engine",
+      );
+
+      const storage = makeMockStorage();
+      expect(readColabOnePreferredDigitalHumanEngine(storage)).toBe("");
+
+      writeColabOnePreferredDigitalHumanEngine(
+        "digital-human-infinitetalk",
+        storage,
+      );
+      expect(storage.getItem("colabone.comfy.digital_human.engine")).toBe(
+        "digital-human-infinitetalk",
+      );
+      expect(readColabOnePreferredDigitalHumanEngine(storage)).toBe(
+        "digital-human-infinitetalk",
+      );
+
+      writeColabOnePreferredDigitalHumanEngine(
+        "  digital-human-longcat  ",
+        storage,
+      );
+      expect(storage.getItem("colabone.comfy.digital_human.engine")).toBe(
+        "digital-human-longcat",
+      );
+      expect(readColabOnePreferredDigitalHumanEngine(storage)).toBe(
+        "digital-human-longcat",
+      );
+
+      // Clearing with "" or whitespace removes the key
+      const removeSpy = vi.spyOn(storage, "removeItem");
+      writeColabOnePreferredDigitalHumanEngine("", storage);
+      expect(removeSpy).toHaveBeenCalledWith(
+        "colabone.comfy.digital_human.engine",
+      );
+      expect(storage.getItem("colabone.comfy.digital_human.engine")).toBeNull();
+      expect(readColabOnePreferredDigitalHumanEngine(storage)).toBe("");
+
+      writeColabOnePreferredDigitalHumanEngine("digital-human-longcat", storage);
+      writeColabOnePreferredDigitalHumanEngine("   ", storage);
+      expect(storage.getItem("colabone.comfy.digital_human.engine")).toBeNull();
+
+      // Trims pre-seeded whitespace-padded raw storage values on read
+      storage.setItem(
+        "colabone.comfy.digital_human.engine",
+        "  digital-human-infinitetalk  ",
+      );
+      expect(readColabOnePreferredDigitalHumanEngine(storage)).toBe(
+        "digital-human-infinitetalk",
+      );
+
+      // Handles throwing storage and null storage gracefully
+      const throwingStorage = makeThrowingStorage();
+      expect(() =>
+        writeColabOnePreferredDigitalHumanEngine(
+          "digital-human-longcat",
+          throwingStorage,
+        ),
+      ).not.toThrow();
+      expect(() =>
+        writeColabOnePreferredDigitalHumanEngine("", throwingStorage),
+      ).not.toThrow();
+      expect(readColabOnePreferredDigitalHumanEngine(throwingStorage)).toBe("");
+      expect(() =>
+        writeColabOnePreferredDigitalHumanEngine("digital-human-longcat", null),
+      ).not.toThrow();
+      expect(readColabOnePreferredDigitalHumanEngine(null)).toBe("");
+    });
+
+    it("falls back to GPU auto-recommendation with fromUserPreference false when preference is empty or invalid", () => {
+      const liveG4: RuntimeStatus = {
+        state: "ready",
+        gpu: {
+          name: "NVIDIA RTX PRO 6000 Blackwell",
+          total_mib: 98304,
+          used_mib: 0,
+        },
+      };
+      const liveT4: RuntimeStatus = {
+        state: "ready",
+        gpu: {
+          name: "Tesla T4",
+          total_mib: 15360,
+          used_mib: 0,
+        },
+      };
+
+      for (const missingPref of [undefined, null, "", "   ", "unknown-engine"]) {
+        expect(
+          resolveColabOneInitialDigitalHumanWorkflowId(
+            pair,
+            liveG4,
+            "T4",
+            missingPref,
+          ),
+        ).toEqual({
+          workflowId: "digital-human-longcat",
+          recommendedWorkflowId: "digital-human-longcat",
+          fromUserPreference: false,
+        });
+
+        expect(
+          resolveColabOneInitialDigitalHumanWorkflowId(
+            pair,
+            liveT4,
+            "G4",
+            missingPref,
+          ),
+        ).toEqual({
+          workflowId: "digital-human-infinitetalk",
+          recommendedWorkflowId: "digital-human-infinitetalk",
+          fromUserPreference: false,
+        });
+      }
+
+      expect(
+        resolveColabOneInitialDigitalHumanWorkflowId(
+          [],
+          liveG4,
+          "G4",
+          "digital-human-longcat",
+        ),
+      ).toEqual({
+        workflowId: "",
+        recommendedWorkflowId: "",
+        fromUserPreference: false,
+      });
+
+      // Custom digital human workflow IDs are never accepted as a built-in engine preference
+      const customDh = makeInfiniteTalkWorkflow({
+        source: "custom",
+        id: "custom-digital-human",
+      });
+      expect(
+        resolveColabOneInitialDigitalHumanWorkflowId(
+          [...pair, customDh],
+          liveG4,
+          "G4",
+          "custom-digital-human",
+        ),
+      ).toEqual({
+        workflowId: "digital-human-longcat",
+        recommendedWorkflowId: "digital-human-longcat",
+        fromUserPreference: false,
+      });
+    });
+
+    it("respects a valid user preference while still reporting accurate GPU recommendedWorkflowId", () => {
+      const liveG4: RuntimeStatus = {
+        state: "ready",
+        gpu: {
+          name: "NVIDIA RTX PRO 6000 Blackwell",
+          total_mib: 98304,
+          used_mib: 0,
+        },
+      };
+      const liveT4: RuntimeStatus = {
+        state: "ready",
+        gpu: {
+          name: "Tesla T4",
+          total_mib: 15360,
+          used_mib: 0,
+        },
+      };
+
+      // User manually chose InfiniteTalk on G4 96 GB
+      expect(
+        resolveColabOneInitialDigitalHumanWorkflowId(
+          pair,
+          liveG4,
+          "G4",
+          "digital-human-infinitetalk",
+        ),
+      ).toEqual({
+        workflowId: "digital-human-infinitetalk",
+        recommendedWorkflowId: "digital-human-longcat",
+        fromUserPreference: true,
+      });
+
+      // User manually chose LongCat on T4 15 GB
+      expect(
+        resolveColabOneInitialDigitalHumanWorkflowId(
+          pair,
+          liveT4,
+          "T4",
+          "digital-human-longcat",
+        ),
+      ).toEqual({
+        workflowId: "digital-human-longcat",
+        recommendedWorkflowId: "digital-human-infinitetalk",
+        fromUserPreference: true,
+      });
+
+      // Trims whitespace around valid preference and works on stopped runtime
+      expect(
+        resolveColabOneInitialDigitalHumanWorkflowId(
+          pair,
+          { state: "stopped" },
+          "L4",
+          "  digital-human-longcat  ",
+        ),
+      ).toEqual({
+        workflowId: "digital-human-longcat",
+        recommendedWorkflowId: "digital-human-infinitetalk",
+        fromUserPreference: true,
+      });
+
+      // Matches recommendation and still marks fromUserPreference true
+      expect(
+        resolveColabOneInitialDigitalHumanWorkflowId(
+          pair,
+          liveG4,
+          "G4",
+          "digital-human-longcat",
+        ),
+      ).toEqual({
+        workflowId: "digital-human-longcat",
+        recommendedWorkflowId: "digital-human-longcat",
+        fromUserPreference: true,
+      });
+    });
+  });
+
+  describe("transferColabOneDigitalHumanFields", () => {
+    const infiniteTalk = makeInfiniteTalkWorkflow();
+    const longCat = makeLongCatWorkflow();
+
+    it("carries shared fields from InfiniteTalk to LongCat and resets LongCat engine-specific parameters", () => {
+      const currentValues: Record<string, string | number | boolean> = {
+        "1.image": "presenter_front.png",
+        "2.audio": "narration_track.wav",
+        "pipeline.audio_source": "tts",
+        "pipeline.script_text": "Welcome to today's product launch livestream.",
+        "pipeline.tts_engine": "qwen3_tts",
+        "pipeline.voice_preset": "lin_xiaoman",
+        "pipeline.voice_ref_audio": "speaker_sample.wav",
+        "pipeline.voice_ref_text": "Exact reference transcript sentence.",
+        "pipeline.voice_prompt": "Bright and confident studio host voice",
+        "pipeline.emotion_ref_audio": "excited_ref.wav",
+        "pipeline.emotion_prompt": "Upbeat, warm, and natural",
+        "pipeline.pause_seconds": 0.44,
+        "pipeline.target_resolution": "720x1280",
+        "5.positive_prompt": "Custom warm cinema lighting with soft bokeh",
+        "15.seed": 987654,
+        "pipeline.upscale_mode": "ai_2x",
+        "pipeline.max_segment_seconds": 35,
+        "15.steps": 12,
+      };
+      const snapshot = { ...currentValues };
+
+      const transferred = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        currentValues,
+        "zh-CN",
+      );
+
+      // Shared fields carried over verbatim
+      expect(transferred["1.image"]).toBe("presenter_front.png");
+      expect(transferred["2.audio"]).toBe("narration_track.wav");
+      expect(transferred["pipeline.audio_source"]).toBe("tts");
+      expect(transferred["pipeline.script_text"]).toBe(
+        "Welcome to today's product launch livestream.",
+      );
+      expect(transferred["pipeline.tts_engine"]).toBe("qwen3_tts");
+      expect(transferred["pipeline.voice_preset"]).toBe("lin_xiaoman");
+      expect(transferred["pipeline.voice_ref_audio"]).toBe("speaker_sample.wav");
+      expect(transferred["pipeline.voice_ref_text"]).toBe(
+        "Exact reference transcript sentence.",
+      );
+      expect(transferred["pipeline.voice_prompt"]).toBe(
+        "Bright and confident studio host voice",
+      );
+      expect(transferred["pipeline.emotion_ref_audio"]).toBe("excited_ref.wav");
+      expect(transferred["pipeline.emotion_prompt"]).toBe(
+        "Upbeat, warm, and natural",
+      );
+      expect(transferred["pipeline.pause_seconds"]).toBe(0.44);
+      expect(transferred["pipeline.target_resolution"]).toBe("720x1280");
+      expect(transferred["5.positive_prompt"]).toBe(
+        "Custom warm cinema lighting with soft bokeh",
+      );
+      expect(transferred["15.seed"]).toBe(987654);
+      expect(transferred["pipeline.upscale_mode"]).toBe("ai_2x");
+
+      // Engine-specific keys reset to LongCat defaults and 15.steps omitted
+      expect(transferred["pipeline.max_segment_seconds"]).toBe(3.7);
+      expect(transferred["14.steps"]).toBe(8);
+      expect(transferred["pipeline.render_quality"]).toBe("balanced_480p_ai2x");
+      expect(transferred["pipeline.acceleration_profile"]).toBe("max");
+      expect("15.steps" in transferred).toBe(false);
+
+      // Does not mutate source input record
+      expect(currentValues).toEqual(snapshot);
+    });
+
+    it("normalizes preset visual prompts to target locale while preserving custom prompts during transfer", () => {
+      const fromCanonical = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "5.positive_prompt": COLABONE_CANONICAL_VISUAL_PROMPT,
+          "pipeline.script_text": "hello",
+        },
+        "ja-JP",
+      );
+      expect(fromCanonical["5.positive_prompt"]).toBe(
+        t("comfy.defaultVisualPrompt", undefined, "ja-JP"),
+      );
+
+      const fromOtherLocalePreset = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "5.positive_prompt": t(
+            "comfy.defaultVisualPrompt",
+            undefined,
+            "zh-CN",
+          ),
+        },
+        "en-US",
+      );
+      expect(fromOtherLocalePreset["5.positive_prompt"]).toBe(
+        t("comfy.defaultVisualPrompt", undefined, "en-US"),
+      );
+
+      const legacyPrompt = Array.from(COLABONE_LEGACY_VISUAL_PROMPTS)[0];
+      const fromLegacyPreset = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "5.positive_prompt": legacyPrompt,
+        },
+        "ko-KR",
+      );
+      expect(fromLegacyPreset["5.positive_prompt"]).toBe(
+        t("comfy.defaultVisualPrompt", undefined, "ko-KR"),
+      );
+    });
+
+    it("resets native_720p auto-synced lanczos upscale_mode back to ai_2x when switching from LongCat to InfiniteTalk", () => {
+      const transferred = transferColabOneDigitalHumanFields(
+        longCat,
+        infiniteTalk,
+        {
+          "1.image": "studio_host.png",
+          "2.audio": "voice.wav",
+          "pipeline.audio_source": "tts",
+          "pipeline.script_text": "LongCat native 720p narration script.",
+          "pipeline.tts_engine": "voxcpm2",
+          "pipeline.voice_preset": "chen_jingzhou",
+          "pipeline.voice_ref_audio": "ref_male.wav",
+          "pipeline.voice_ref_text": "Reference line",
+          "pipeline.voice_prompt": "Deep calm baritone",
+          "pipeline.emotion_prompt": "Serious documentary tone",
+          "pipeline.pause_seconds": 0.36,
+          "pipeline.target_resolution": "1920x1080",
+          "5.positive_prompt": "Documentary broadcast look, crisp lighting",
+          "15.seed": 202605,
+          "pipeline.render_quality": "native_720p",
+          "pipeline.acceleration_profile": "balanced",
+          "pipeline.upscale_mode": "lanczos",
+          "pipeline.max_segment_seconds": 5.5,
+          "14.steps": 12,
+        },
+        "en-US",
+      );
+
+      // Common fields carried over
+      expect(transferred["1.image"]).toBe("studio_host.png");
+      expect(transferred["2.audio"]).toBe("voice.wav");
+      expect(transferred["pipeline.audio_source"]).toBe("tts");
+      expect(transferred["pipeline.script_text"]).toBe(
+        "LongCat native 720p narration script.",
+      );
+      expect(transferred["pipeline.tts_engine"]).toBe("voxcpm2");
+      expect(transferred["pipeline.voice_preset"]).toBe("chen_jingzhou");
+      expect(transferred["pipeline.voice_ref_audio"]).toBe("ref_male.wav");
+      expect(transferred["pipeline.voice_ref_text"]).toBe("Reference line");
+      expect(transferred["pipeline.voice_prompt"]).toBe("Deep calm baritone");
+      expect(transferred["pipeline.emotion_prompt"]).toBe(
+        "Serious documentary tone",
+      );
+      expect(transferred["pipeline.pause_seconds"]).toBe(0.36);
+      expect(transferred["pipeline.target_resolution"]).toBe("1920x1080");
+      expect(transferred["5.positive_prompt"]).toBe(
+        "Documentary broadcast look, crisp lighting",
+      );
+      expect(transferred["15.seed"]).toBe(202605);
+
+      // Engine-specific parameters reset to InfiniteTalk defaults and auto-synced lanczos cleared
+      expect(transferred["pipeline.max_segment_seconds"]).toBe(20);
+      expect(transferred["15.steps"]).toBe(6);
+      expect(transferred["pipeline.upscale_mode"]).toBe("ai_2x");
+      expect("14.steps" in transferred).toBe(false);
+      expect("pipeline.render_quality" in transferred).toBe(false);
+      expect("pipeline.acceleration_profile" in transferred).toBe(false);
+    });
+
+    it("preserves explicit upscale_mode choices when switching from LongCat balanced_480p_ai2x to InfiniteTalk", () => {
+      const withNone = transferColabOneDigitalHumanFields(
+        longCat,
+        infiniteTalk,
+        {
+          "1.image": "host.png",
+          "pipeline.audio_source": "tts",
+          "pipeline.script_text": "Explicit none upscale check.",
+          "pipeline.render_quality": "balanced_480p_ai2x",
+          "pipeline.upscale_mode": "none",
+          "pipeline.max_segment_seconds": 4.2,
+          "14.steps": 10,
+          "15.seed": 77,
+        },
+        "zh-CN",
+      );
+
+      expect(withNone["pipeline.upscale_mode"]).toBe("none");
+      expect(withNone["pipeline.max_segment_seconds"]).toBe(20);
+      expect(withNone["15.steps"]).toBe(6);
+      expect(withNone["15.seed"]).toBe(77);
+
+      const withExplicitLanczos = transferColabOneDigitalHumanFields(
+        longCat,
+        infiniteTalk,
+        {
+          "pipeline.render_quality": "balanced_480p_ai2x",
+          "pipeline.upscale_mode": "lanczos",
+        },
+        "zh-CN",
+      );
+      expect(withExplicitLanczos["pipeline.upscale_mode"]).toBe("lanczos");
+    });
+
+    it("validates select options, clamps numeric bounds, and handles undefined workflows safely", () => {
+      const sanitized = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "pipeline.target_resolution": "9999x9999",
+          "pipeline.pause_seconds": 9.5,
+          "15.seed": -12,
+        },
+        "zh-CN",
+      );
+      expect(sanitized["pipeline.target_resolution"]).toBe("1280x720");
+      expect(sanitized["pipeline.pause_seconds"]).toBe(1.5);
+      expect(sanitized["15.seed"]).toBe(0);
+
+      expect(
+        transferColabOneDigitalHumanFields(
+          infiniteTalk,
+          undefined,
+          { "1.image": "host.png" },
+          "zh-CN",
+        ),
+      ).toEqual({});
+      expect(
+        transferColabOneDigitalHumanFields(undefined, longCat, {}, "zh-CN"),
+      ).toEqual(defaultFieldValues(longCat.fields, "zh-CN"));
+    });
+
+    it("preserves dynamic Qwen3-TTS official speaker presets and uploaded audio mode across engine switches", () => {
+      const toLongCat = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "pipeline.audio_source": "audio",
+          "2.audio": "pre_recorded_host.wav",
+          "pipeline.tts_engine": "qwen3_tts",
+          "pipeline.voice_preset": "qwen_vivian",
+        },
+        "zh-CN",
+      );
+      expect(toLongCat["pipeline.audio_source"]).toBe("audio");
+      expect(toLongCat["2.audio"]).toBe("pre_recorded_host.wav");
+      expect(toLongCat["pipeline.tts_engine"]).toBe("qwen3_tts");
+      expect(toLongCat["pipeline.voice_preset"]).toBe("qwen_vivian");
+
+      const backToInfiniteTalk = transferColabOneDigitalHumanFields(
+        longCat,
+        infiniteTalk,
+        {
+          "pipeline.audio_source": "audio",
+          "2.audio": "pre_recorded_host.wav",
+          "pipeline.tts_engine": "qwen3_tts",
+          "pipeline.voice_preset": "qwen_vivian",
+        },
+        "zh-CN",
+      );
+      expect(backToInfiniteTalk["pipeline.audio_source"]).toBe("audio");
+      expect(backToInfiniteTalk["2.audio"]).toBe("pre_recorded_host.wav");
+      expect(backToInfiniteTalk["pipeline.tts_engine"]).toBe("qwen3_tts");
+      expect(backToInfiniteTalk["pipeline.voice_preset"]).toBe("qwen_vivian");
+    });
+
+    it("preserves InfiniteTalk upscale_mode with stale native_720p and validates booleans, empty numbers, negative zero, mismatched field types, and non-string media", () => {
+      // InfiniteTalk does not own pipeline.render_quality, so stale native_720p must not discard explicit lanczos/none.
+      const keepLanczos = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "pipeline.render_quality": "native_720p",
+          "pipeline.upscale_mode": "lanczos",
+        },
+        "zh-CN",
+      );
+      expect(keepLanczos["pipeline.upscale_mode"]).toBe("lanczos");
+      expect(keepLanczos["pipeline.render_quality"]).toBe("balanced_480p_ai2x");
+
+      const keepNone = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "pipeline.upscale_mode": "none",
+        },
+        "zh-CN",
+      );
+      expect(keepNone["pipeline.upscale_mode"]).toBe("none");
+
+      // Non-string image/audio values fall back to target defaults.
+      const badMedia = transferColabOneDigitalHumanFields(
+        infiniteTalk,
+        longCat,
+        {
+          "1.image": true as unknown as string,
+          "2.audio": 42 as unknown as string,
+          "pipeline.pause_seconds": "",
+          "15.seed": -0.1,
+        },
+        "zh-CN",
+      );
+      expect(badMedia["1.image"]).toBe("");
+      expect(badMedia["2.audio"]).toBe("");
+      expect(badMedia["pipeline.pause_seconds"]).toBe("");
+      expect(Object.is(badMedia["15.seed"], 0)).toBe(true);
+
+      // Synthetic workflow fields covering boolean parsing, -0 normalization, and mismatched field types.
+      const customSource = makeWorkflow({
+        id: "synthetic-src",
+        source: "builtin",
+        pipeline: { kind: "digital_human", video_backend: "infinitetalk" },
+        fields: [
+          { key: "flag.bool", node_id: "flag", input_name: "bool", label: "Bool", field_type: "boolean", default: false },
+          { key: "flag.str_true", node_id: "flag", input_name: "str_true", label: "StrTrue", field_type: "boolean", default: false },
+          { key: "flag.str_one", node_id: "flag", input_name: "str_one", label: "StrOne", field_type: "boolean", default: false },
+          { key: "flag.str_false", node_id: "flag", input_name: "str_false", label: "StrFalse", field_type: "boolean", default: true },
+          { key: "flag.str_zero", node_id: "flag", input_name: "str_zero", label: "StrZero", field_type: "boolean", default: true },
+          { key: "flag.invalid", node_id: "flag", input_name: "invalid", label: "Invalid", field_type: "boolean", default: true },
+          { key: "num.negzero", node_id: "num", input_name: "negzero", label: "NegZero", field_type: "number", default: 1 },
+          { key: "mismatch.field", node_id: "mismatch", input_name: "field", label: "Mismatch", field_type: "text", default: "a" },
+        ],
+      });
+      const customTarget = makeWorkflow({
+        id: "synthetic-dst",
+        source: "builtin",
+        pipeline: { kind: "digital_human", video_backend: "longcat_avatar" },
+        fields: [
+          { key: "flag.bool", node_id: "flag", input_name: "bool", label: "Bool", field_type: "boolean", default: false },
+          { key: "flag.str_true", node_id: "flag", input_name: "str_true", label: "StrTrue", field_type: "boolean", default: false },
+          { key: "flag.str_one", node_id: "flag", input_name: "str_one", label: "StrOne", field_type: "boolean", default: false },
+          { key: "flag.str_false", node_id: "flag", input_name: "str_false", label: "StrFalse", field_type: "boolean", default: true },
+          { key: "flag.str_zero", node_id: "flag", input_name: "str_zero", label: "StrZero", field_type: "boolean", default: true },
+          { key: "flag.invalid", node_id: "flag", input_name: "invalid", label: "Invalid", field_type: "boolean", default: true },
+          { key: "num.negzero", node_id: "num", input_name: "negzero", label: "NegZero", field_type: "number", default: 1 },
+          { key: "mismatch.field", node_id: "mismatch", input_name: "field", label: "Mismatch", field_type: "integer", default: 9 },
+        ],
+      });
+
+      const edgeTransferred = transferColabOneDigitalHumanFields(
+        customSource,
+        customTarget,
+        {
+          "flag.bool": true,
+          "flag.str_true": "true",
+          "flag.str_one": "1",
+          "flag.str_false": "false",
+          "flag.str_zero": "0",
+          "flag.invalid": "maybe",
+          "num.negzero": -0,
+          "mismatch.field": "42",
+        },
+        "zh-CN",
+      );
+      expect(edgeTransferred["flag.bool"]).toBe(true);
+      expect(edgeTransferred["flag.str_true"]).toBe(true);
+      expect(edgeTransferred["flag.str_one"]).toBe(true);
+      expect(edgeTransferred["flag.str_false"]).toBe(false);
+      expect(edgeTransferred["flag.str_zero"]).toBe(false);
+      expect(edgeTransferred["flag.invalid"]).toBe(true);
+      expect(Object.is(edgeTransferred["num.negzero"], 0)).toBe(true);
+      expect(edgeTransferred["mismatch.field"]).toBe(9);
+    });
   });
 });

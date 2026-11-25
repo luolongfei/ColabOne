@@ -1102,6 +1102,7 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.tabCanvas": "Native Canvas",
   "comfy.canvasActiveAria": "Canvas active",
   "comfy.studioWorkflowCount": "{count} workflows",
+  "comfy.studioWorkflowCountOne": "{count} workflow",
   "comfy.studioCountShort": "{count}",
   "comfy.studioDesc":
     "Automatically turns ComfyUI API JSON into clean parameter forms and archives generated images, videos, and audio.",
@@ -1459,6 +1460,18 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.voiceSourcePreset": "Built-in Curated",
   "comfy.voiceSourceCustom": "Custom",
   "comfy.taskKindTtsPreview": "Voice Preview",
+  "comfy.digitalHumanUnifiedName": "Talking Digital Human",
+  "comfy.digitalHumanUnifiedDesc":
+    "Provide a portrait photo and script (or audio) to generate natural lip-synced HD talking videos (MP4), with switchable Long-Video and Flagship HD engines.",
+  "comfy.digitalHumanEngineCountSpec": "{count} engines",
+  "comfy.videoEngineLabel": "Video Generation Engine",
+  "comfy.videoEngineGpuAutoHint": "Recommended for {gpu}",
+  "comfy.videoEngineRecommendedTag": "Recommended",
+  "comfy.videoEngineReadyTag": "Ready",
+  "comfy.videoEngineInfiniteTalkTitle": "Long-Video",
+  "comfy.videoEngineInfiniteTalkSummary": "Faster & steadier for multi-minute narration",
+  "comfy.videoEngineLongCatTitle": "Flagship HD",
+  "comfy.videoEngineLongCatSummary": "Higher detail ceiling, native 720p & GPU acceleration",
 
   // Settings Page
   "settings.title": "Settings",

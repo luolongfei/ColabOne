@@ -1090,6 +1090,7 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.tabCanvas": "네이티브 캔버스",
   "comfy.canvasActiveAria": "캔버스 실행 중",
   "comfy.studioWorkflowCount": "워크플로 {count}개",
+  "comfy.studioWorkflowCountOne": "워크플로 {count}개",
   "comfy.studioCountShort": "{count}개",
   "comfy.studioDesc":
     "ComfyUI API JSON을 간편한 입력 폼으로 자동 변환해 실행하고 이미지·비디오·오디오 결과물을 보관합니다.",
@@ -1448,6 +1449,18 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.voiceSourcePreset": "기본 엄선",
   "comfy.voiceSourceCustom": "사용자 지정",
   "comfy.taskKindTtsPreview": "음색 미리듣기",
+  "comfy.digitalHumanUnifiedName": "토킹 디지털 휴먼",
+  "comfy.digitalHumanUnifiedDesc":
+    "인물 사진과 대본(또는 오디오)을 입력해 자연스러운 립싱크 고화질 음성 영상(MP4)을 자동 생성하며, 장편 영상 및 플래그십 HD 듀얼 엔진을 자유롭게 전환할 수 있습니다.",
+  "comfy.digitalHumanEngineCountSpec": "엔진 {count}종 지원",
+  "comfy.videoEngineLabel": "영상 생성 엔진",
+  "comfy.videoEngineGpuAutoHint": "현재 {gpu} 기준 자동 추천",
+  "comfy.videoEngineRecommendedTag": "추천",
+  "comfy.videoEngineReadyTag": "준비됨",
+  "comfy.videoEngineInfiniteTalkTitle": "장편 영상",
+  "comfy.videoEngineInfiniteTalkSummary": "수 분 이상 연속 발화에 안정적이고 빠름",
+  "comfy.videoEngineLongCatTitle": "플래그십 HD",
+  "comfy.videoEngineLongCatSummary": "더 높은 화질, 네이티브 720p 및 풀스택 GPU 가속 지원",
 
   // Settings Page
   "settings.title": "설정",

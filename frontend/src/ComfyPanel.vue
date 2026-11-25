@@ -99,14 +99,18 @@ import {
   sanitizeColabOneDraftFieldsForSave,
   saveColabOneWorkflowDraft,
   saveColabOneWorkflowDraftMedia,
+  type ColabOneWorkflowDraft,
   type ColabOneWorkflowDraftMediaMeta,
 } from "./comfyDrafts";
 import {
+  COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+  buildColabOneStudioWorkflowEntries,
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
   extractPublicHost,
   formatOutputSize,
   hasNonCommercialNotice,
+  isColabOneBuiltinDigitalHumanWorkflow,
   isColabOneVoicePresetSupportedByEngine,
   isColabOneVoiceRefRequired,
   isColabOneVoiceRefTextRequired,
@@ -115,13 +119,19 @@ import {
   outputBlobURL,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  readColabOnePreferredDigitalHumanEngine,
   remapColabOnePresetPromptFieldsForLocale,
+  resolveColabOneDigitalHumanGpuContext,
   resolveColabOneFallbackVoicePreset,
+  resolveColabOneInitialDigitalHumanWorkflowId,
   resolveColabOneSelectedVoicePreset,
   resolveColabOneVoicePreviewDefaultText,
   resolveSelectedTtsEngine,
+  transferColabOneDigitalHumanFields,
   verifyAndDecodeColabOneBase64AudioUrl,
   workflowModelsTotalBytes,
+  writeColabOnePreferredDigitalHumanEngine,
+  type ColabOneStudioWorkflowEntry,
 } from "./comfyui";
 import {
   computeColabOneModelDrawerWidth,
@@ -452,6 +462,41 @@ const pendingWorkflowId = ref("");
 const selectedWorkflow = computed(() =>
   workflows.value.find((w) => w.id === selectedWorkflowId.value),
 );
+const studioEntries = computed(() =>
+  buildColabOneStudioWorkflowEntries(workflows.value),
+);
+const builtinDigitalHumanGroup = computed(
+  () => studioEntries.value.find((entry) => entry.isGroup) ?? null,
+);
+const activeDigitalHumanGroup = computed(() =>
+  builtinDigitalHumanGroup.value &&
+  selectedWorkflow.value &&
+  builtinDigitalHumanGroup.value.workflows.some(
+    (w) => w.id === selectedWorkflow.value!.id,
+  )
+    ? builtinDigitalHumanGroup.value
+    : null,
+);
+const preferredDigitalHumanEngineId = ref<string>(
+  readColabOnePreferredDigitalHumanEngine(),
+);
+const digitalHumanGpuContext = computed(() =>
+  resolveColabOneDigitalHumanGpuContext(
+    props.state.runtime,
+    props.state.settings?.gpu,
+  ),
+);
+const digitalHumanSelection = computed(() =>
+  resolveColabOneInitialDigitalHumanWorkflowId(
+    builtinDigitalHumanGroup.value?.workflows,
+    props.state.runtime,
+    props.state.settings?.gpu,
+    preferredDigitalHumanEngineId.value,
+  ),
+);
+const recommendedDigitalHumanWorkflowId = computed(
+  () => digitalHumanSelection.value.recommendedWorkflowId,
+);
 const fieldValues = ref<Record<string, string | number | boolean>>({});
 
 const paramDrawerOpen = ref(false);
@@ -520,6 +565,7 @@ let disposed = false;
 // Real-time workflow draft persistence state
 const DRAFT_SAVE_DEBOUNCE_MS = 350;
 const draftMediaMeta = ref<Record<string, ColabOneWorkflowDraftMediaMeta>>({});
+const draftMediaSourceIds = ref<Record<string, string>>({});
 const draftStatus = ref<"idle" | "saving" | "saved" | "restored">("idle");
 const draftStatusLabel = computed(() => {
   if (draftStatus.value === "saving") return t("comfy.draftSavingBadge");
@@ -535,6 +581,50 @@ let draftLoadGen = 0;
 let draftRestoreGen = 0;
 let draftSaveGen = 0;
 let draftRestoring = false;
+const draftFieldMutationEpochs: Record<string, number> = {};
+const draftMediaMutationEpochs: Record<string, number> = {};
+let digitalHumanPersistChain: Promise<unknown> = Promise.resolve();
+
+function bumpDraftFieldEpoch(wfId: string): number {
+  const next = (draftFieldMutationEpochs[wfId] ?? 0) + 1;
+  draftFieldMutationEpochs[wfId] = next;
+  return next;
+}
+
+function getDraftFieldEpoch(wfId: string): number {
+  return draftFieldMutationEpochs[wfId] ?? 0;
+}
+
+function draftMediaEpochKey(wfId: string, fieldKey: string): string {
+  return `${wfId}::${fieldKey}`;
+}
+
+function bumpDraftMediaEpoch(wfId: string, fieldKey: string): number {
+  const key = draftMediaEpochKey(wfId, fieldKey);
+  const next = (draftMediaMutationEpochs[key] ?? 0) + 1;
+  draftMediaMutationEpochs[key] = next;
+  return next;
+}
+
+function getDraftMediaEpoch(wfId: string, fieldKey: string): number {
+  return draftMediaMutationEpochs[draftMediaEpochKey(wfId, fieldKey)] ?? 0;
+}
+
+function enqueueDigitalHumanPersist<T>(task: () => Promise<T>): Promise<T> {
+  const run = digitalHumanPersistChain.then(task, task);
+  digitalHumanPersistChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function resolveDraftMediaWorkflowId(
+  fieldKey: string,
+  fallbackWfId: string,
+): string {
+  return draftMediaSourceIds.value[fieldKey] || fallbackWfId;
+}
 
 const isDigitalHumanWorkflow = computed(
   () => selectedWorkflow.value?.pipeline?.kind === "digital_human",
@@ -880,6 +970,115 @@ function formatWorkflowCardSpecs(wf: WorkflowTemplate): string {
     parts.push(t("comfy.fieldCount", { count: wf.fields.length }));
   }
   return parts.join(" · ");
+}
+
+function formatStudioEntrySpecs(entry: ColabOneStudioWorkflowEntry): string {
+  if (!entry.isGroup) {
+    return formatWorkflowCardSpecs(entry.primary);
+  }
+  const parts: string[] = [];
+  const vramGbs = entry.workflows
+    .map((w) =>
+      w.min_vram_mib > 0 ? Math.max(1, Math.round(w.min_vram_mib / 1024)) : 0,
+    )
+    .filter((gb) => gb > 0);
+  if (vramGbs.length > 0) {
+    const minGb = Math.min(...vramGbs);
+    const maxGb = Math.max(...vramGbs);
+    parts.push(minGb === maxGb ? `${minGb} GB+` : `${minGb}–${maxGb} GB+`);
+  }
+  parts.push(
+    t("comfy.digitalHumanEngineCountSpec", { count: entry.workflows.length }),
+  );
+  if (entry.workflows.every((w) => w.commercial_ok !== false)) {
+    parts.push(t("comfy.licenseCommercialOk"));
+  } else {
+    const licenses = Array.from(
+      new Set(
+        entry.workflows
+          .map((w) => (w.license ? tb(w.license) : ""))
+          .filter(Boolean),
+      ),
+    );
+    if (licenses.length > 0) {
+      parts.push(licenses.join(" / "));
+    }
+  }
+  return parts.join(" · ");
+}
+
+function isDigitalHumanEngineVramShort(engineWf: WorkflowTemplate): boolean {
+  const gpuVramMib = digitalHumanGpuContext.value.vramMib;
+  return Boolean(
+    engineWf.min_vram_mib > 0 &&
+      gpuVramMib > 0 &&
+      gpuVramMib < engineWf.min_vram_mib,
+  );
+}
+
+function formatDigitalHumanEngineTitle(engineWf: WorkflowTemplate): string {
+  const backend = engineWf.pipeline?.video_backend;
+  if (
+    backend === "infinitetalk" ||
+    engineWf.id === "digital-human-infinitetalk"
+  ) {
+    return t("comfy.videoEngineInfiniteTalkTitle");
+  }
+  if (
+    backend === "longcat_avatar" ||
+    engineWf.id === "digital-human-longcat"
+  ) {
+    return t("comfy.videoEngineLongCatTitle");
+  }
+  return tb(engineWf.name);
+}
+
+function formatDigitalHumanEngineSummary(engineWf: WorkflowTemplate): string {
+  const backend = engineWf.pipeline?.video_backend;
+  if (
+    backend === "infinitetalk" ||
+    engineWf.id === "digital-human-infinitetalk"
+  ) {
+    return t("comfy.videoEngineInfiniteTalkSummary");
+  }
+  if (
+    backend === "longcat_avatar" ||
+    engineWf.id === "digital-human-longcat"
+  ) {
+    return t("comfy.videoEngineLongCatSummary");
+  }
+  return tb(engineWf.description || engineWf.name);
+}
+
+function formatDigitalHumanEngineSpecParts(
+  engineWf: WorkflowTemplate,
+): { text: string; isVram: boolean }[] {
+  const parts: { text: string; isVram: boolean }[] = [];
+  const backend = engineWf.pipeline?.video_backend;
+  if (
+    backend === "infinitetalk" ||
+    engineWf.id === "digital-human-infinitetalk"
+  ) {
+    parts.push({ text: "InfiniteTalk", isVram: false });
+  } else if (
+    backend === "longcat_avatar" ||
+    engineWf.id === "digital-human-longcat"
+  ) {
+    parts.push({ text: "LongCat-Avatar", isVram: false });
+  } else if (backend && backend !== "custom") {
+    parts.push({ text: backend, isVram: false });
+  }
+  if (engineWf.min_vram_mib > 0) {
+    parts.push({
+      text: `${Math.max(1, Math.round(engineWf.min_vram_mib / 1024))} GB+`,
+      isVram: true,
+    });
+  }
+  const totalBytes = workflowModelsTotalBytes(engineWf);
+  if (totalBytes > 0) {
+    parts.push({ text: formatComfyByteSize(totalBytes), isVram: false });
+  }
+  return parts;
 }
 
 function formatFieldNodeMeta(field: WorkflowField): string {
@@ -1413,13 +1612,14 @@ async function ensureVoicePreviewInputUploaded(
     selectedWorkflowId.value !== targetWorkflowId;
 
   if (!pendingUploads.value[fieldKey] && draftMediaMeta.value[fieldKey]) {
+    const draftMediaWfId = resolveDraftMediaWorkflowId(
+      fieldKey,
+      targetWorkflowId,
+    );
     let payload = null;
     let draftReadErr: unknown = null;
     try {
-      payload = await readColabOneWorkflowDraftMedia(
-        targetWorkflowId,
-        fieldKey,
-      );
+      payload = await readColabOneWorkflowDraftMedia(draftMediaWfId, fieldKey);
     } catch (readErr) {
       draftReadErr = readErr;
       payload = null;
@@ -1437,9 +1637,16 @@ async function ensureVoicePreviewInputUploaded(
       const nextMeta = { ...draftMediaMeta.value };
       delete nextMeta[fieldKey];
       draftMediaMeta.value = nextMeta;
-      void deleteColabOneWorkflowDraftMedia(targetWorkflowId, fieldKey).catch(
+      delete draftMediaSourceIds.value[fieldKey];
+      void deleteColabOneWorkflowDraftMedia(draftMediaWfId, fieldKey).catch(
         () => {},
       );
+      if (draftMediaWfId !== targetWorkflowId) {
+        void deleteColabOneWorkflowDraftMedia(
+          targetWorkflowId,
+          fieldKey,
+        ).catch(() => {});
+      }
       revokeLocalPreview(fieldKey);
       delete uploadedNames.value[fieldKey];
       const field = selectedWorkflow.value?.fields.find(
@@ -2020,8 +2227,38 @@ function flushDraftSave(
   const targetWorkflowId = wf.id;
   const loadGen = draftLoadGen;
   const saveGen = ++draftSaveGen;
+  const fieldEpoch = bumpDraftFieldEpoch(targetWorkflowId);
   const snapshot = { ...fieldValues.value };
   const sanitized = sanitizeColabOneDraftFieldsForSave(wf.fields, snapshot);
+  const isBuiltinDh = isColabOneBuiltinDigitalHumanWorkflow(wf);
+
+  // If this digital human draft adopted media from a sibling workflow on restore,
+  // materialize those files onto `targetWorkflowId` alongside the text save so a
+  // newer `updated_at` on `targetWorkflowId` never orphans cross-sibling media.
+  const crossSiblingMediaToMaterialize: {
+    key: string;
+    epoch: number;
+    mediaGen: number;
+    pending?: PendingUpload;
+    sourceId: string;
+  }[] = [];
+  if (isBuiltinDh && selectedWorkflowId.value === targetWorkflowId) {
+    for (const [key, meta] of Object.entries(draftMediaMeta.value)) {
+      const sourceId = draftMediaSourceIds.value[key];
+      if (!meta || !sourceId || sourceId === targetWorkflowId) {
+        continue;
+      }
+      const pending = pendingUploads.value[key];
+      crossSiblingMediaToMaterialize.push({
+        key,
+        epoch: bumpDraftMediaEpoch(targetWorkflowId, key),
+        mediaGen: uploadGen[key] ?? 0,
+        pending: pending?.data ? { ...pending } : undefined,
+        sourceId,
+      });
+    }
+  }
+
   if (
     !disposed &&
     !opts?.silent &&
@@ -2029,39 +2266,108 @@ function flushDraftSave(
   ) {
     draftStatus.value = "saving";
   }
-  void saveColabOneWorkflowDraft(targetWorkflowId, sanitized)
-    .then((saved) => {
-      if (
-        disposed ||
-        loadGen !== draftLoadGen ||
-        saveGen !== draftSaveGen ||
-        selectedWorkflowId.value !== targetWorkflowId
-      ) {
-        return;
+
+  const performSave = async () => {
+    if (getDraftFieldEpoch(targetWorkflowId) !== fieldEpoch) {
+      return;
+    }
+    const saved = await saveColabOneWorkflowDraft(targetWorkflowId, sanitized);
+    for (const item of crossSiblingMediaToMaterialize) {
+      if (getDraftMediaEpoch(targetWorkflowId, item.key) !== item.epoch) {
+        continue;
       }
-      if (saved) {
-        draftStatus.value = "saved";
-      } else if (draftStatus.value === "saving") {
-        draftStatus.value = "idle";
+      try {
+        let mediaToSave: {
+          filename: string;
+          kind: "image" | "audio";
+          data: string;
+        } | null = null;
+        if (item.pending?.data) {
+          mediaToSave = {
+            filename: item.pending.filename,
+            kind: item.pending.kind,
+            data: item.pending.data,
+          };
+        } else {
+          const payload = await readColabOneWorkflowDraftMedia(
+            item.sourceId,
+            item.key,
+          );
+          if (
+            getDraftMediaEpoch(targetWorkflowId, item.key) !== item.epoch ||
+            !payload?.data
+          ) {
+            continue;
+          }
+          mediaToSave = {
+            filename: payload.filename,
+            kind: payload.kind,
+            data: payload.data,
+          };
+        }
+        if (getDraftMediaEpoch(targetWorkflowId, item.key) !== item.epoch) {
+          continue;
+        }
+        const savedMeta = await saveColabOneWorkflowDraftMedia(
+          targetWorkflowId,
+          item.key,
+          mediaToSave,
+        );
+        if (
+          !disposed &&
+          loadGen === draftLoadGen &&
+          selectedWorkflowId.value === targetWorkflowId &&
+          (uploadGen[item.key] ?? 0) === item.mediaGen &&
+          savedMeta
+        ) {
+          draftMediaMeta.value = {
+            ...draftMediaMeta.value,
+            [item.key]: savedMeta,
+          };
+          draftMediaSourceIds.value = {
+            ...draftMediaSourceIds.value,
+            [item.key]: targetWorkflowId,
+          };
+        }
+      } catch {
+        // Retain original source workflow ID on transient failure.
       }
-    })
-    .catch((err) => {
-      if (
-        disposed ||
-        opts?.silent ||
-        loadGen !== draftLoadGen ||
-        saveGen !== draftSaveGen ||
-        selectedWorkflowId.value !== targetWorkflowId
-      ) {
-        return;
-      }
-      if (draftStatus.value === "saving") {
-        draftStatus.value = "idle";
-      }
-      reportError(
-        t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
-      );
-    });
+    }
+    if (
+      disposed ||
+      loadGen !== draftLoadGen ||
+      saveGen !== draftSaveGen ||
+      selectedWorkflowId.value !== targetWorkflowId
+    ) {
+      return;
+    }
+    if (saved) {
+      draftStatus.value = "saved";
+    } else if (draftStatus.value === "saving") {
+      draftStatus.value = "idle";
+    }
+  };
+
+  const runPromise = isBuiltinDh
+    ? enqueueDigitalHumanPersist(performSave)
+    : performSave();
+  void runPromise.catch((err) => {
+    if (
+      disposed ||
+      opts?.silent ||
+      loadGen !== draftLoadGen ||
+      saveGen !== draftSaveGen ||
+      selectedWorkflowId.value !== targetWorkflowId
+    ) {
+      return;
+    }
+    if (draftStatus.value === "saving") {
+      draftStatus.value = "idle";
+    }
+    reportError(
+      t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
+    );
+  });
 }
 
 function scheduleDraftSave(immediate: boolean) {
@@ -2150,6 +2456,30 @@ function onFieldBlur(_field: WorkflowField) {
   flushDraftSave();
 }
 
+function extractValidDraftMedia(
+  targetWf: WorkflowTemplate,
+  rawMedia: Record<string, ColabOneWorkflowDraftMediaMeta> | undefined,
+): Record<string, ColabOneWorkflowDraftMediaMeta> {
+  const mediaFieldMap = new Map(
+    targetWf.fields
+      .filter((f) => f.field_type === "image" || f.field_type === "audio")
+      .map((f) => [f.key, f]),
+  );
+  const validMedia: Record<string, ColabOneWorkflowDraftMediaMeta> = {};
+  for (const [key, meta] of Object.entries(rawMedia || {})) {
+    const field = mediaFieldMap.get(key);
+    if (!field) continue;
+    if (
+      (field.field_type === "image" && meta.kind !== "image") ||
+      (field.field_type === "audio" && meta.kind !== "audio")
+    ) {
+      continue;
+    }
+    validMedia[key] = meta;
+  }
+  return validMedia;
+}
+
 async function hydrateDraftMediaField(
   wf: WorkflowTemplate,
   fieldKey: string,
@@ -2157,9 +2487,10 @@ async function hydrateDraftMediaField(
   options?: { keepPreview?: boolean },
 ) {
   const mediaGen = uploadGen[fieldKey] ?? 0;
+  const sourceWfId = resolveDraftMediaWorkflowId(fieldKey, wf.id);
   let payload = null;
   try {
-    payload = await readColabOneWorkflowDraftMedia(wf.id, fieldKey);
+    payload = await readColabOneWorkflowDraftMedia(sourceWfId, fieldKey);
   } catch {
     payload = null;
   }
@@ -2206,7 +2537,11 @@ async function hydrateDraftMediaField(
     const nextMeta = { ...draftMediaMeta.value };
     delete nextMeta[fieldKey];
     draftMediaMeta.value = nextMeta;
-    void deleteColabOneWorkflowDraftMedia(wf.id, fieldKey).catch(() => {});
+    delete draftMediaSourceIds.value[fieldKey];
+    void deleteColabOneWorkflowDraftMedia(sourceWfId, fieldKey).catch(() => {});
+    if (sourceWfId !== wf.id) {
+      void deleteColabOneWorkflowDraftMedia(wf.id, fieldKey).catch(() => {});
+    }
   }
   delete pendingUploads.value[fieldKey];
   if (!uploadedInputIds.value[fieldKey]) {
@@ -2225,22 +2560,103 @@ async function restoreWorkflowDraft(
   loadGen: number,
   restoreGen: number,
 ) {
-  let draft = null;
-  try {
-    draft = await loadColabOneWorkflowDraft(wf.id);
-  } catch {
-    return;
+  let chosenDraft: ColabOneWorkflowDraft | null = null;
+  let sourceWf: WorkflowTemplate = wf;
+  const siblings =
+    isColabOneBuiltinDigitalHumanWorkflow(wf) &&
+    builtinDigitalHumanGroup.value &&
+    builtinDigitalHumanGroup.value.workflows.length >= 2
+      ? builtinDigitalHumanGroup.value.workflows
+      : null;
+
+  if (siblings) {
+    await digitalHumanPersistChain.catch(() => {});
+    if (
+      disposed ||
+      loadGen !== draftLoadGen ||
+      restoreGen !== draftRestoreGen ||
+      selectedWorkflowId.value !== wf.id
+    ) {
+      return;
+    }
+    const loaded = await Promise.all(
+      siblings.map(async (sibling) => ({
+        wf: sibling,
+        draft: await loadColabOneWorkflowDraft(sibling.id).catch(() => null),
+      })),
+    );
+    if (
+      disposed ||
+      loadGen !== draftLoadGen ||
+      restoreGen !== draftRestoreGen ||
+      selectedWorkflowId.value !== wf.id
+    ) {
+      return;
+    }
+    // Sort ALL non-null sibling drafts by updated_at FIRST so a newer cleared
+    // draft on one engine is respected instead of resurrecting an older sibling.
+    const existing = loaded
+      .filter(
+        (item): item is { wf: WorkflowTemplate; draft: ColabOneWorkflowDraft } =>
+          Boolean(item.draft),
+      )
+      .sort((a, b) => {
+        const diff = (b.draft.updated_at || 0) - (a.draft.updated_at || 0);
+        if (diff !== 0) return diff;
+        if (a.wf.id === wf.id && b.wf.id !== wf.id) return -1;
+        if (b.wf.id === wf.id && a.wf.id !== wf.id) return 1;
+        return 0;
+      });
+    if (existing.length === 0) {
+      return;
+    }
+    const freshest = existing[0];
+    const freshestValidMedia = extractValidDraftMedia(
+      freshest.wf,
+      freshest.draft.media,
+    );
+    const freshestMediaKeys = Object.keys(freshestValidMedia);
+    const freshestMerged = remapColabOnePresetPromptFieldsForLocale(
+      freshest.wf.fields,
+      mergeColabOneWorkflowDraftFields(
+        freshest.wf.fields,
+        freshest.draft.fields,
+        colabOneLocaleCode.value,
+        freshestValidMedia,
+      ),
+      colabOneLocaleCode.value,
+    );
+    if (
+      freshestMediaKeys.length === 0 &&
+      !hasColabOneDraftContent(
+        freshest.wf.fields,
+        freshestMerged,
+        freshestMediaKeys,
+        colabOneLocaleCode.value,
+      )
+    ) {
+      return;
+    }
+    chosenDraft = freshest.draft;
+    sourceWf = freshest.wf;
+  } else {
+    try {
+      chosenDraft = await loadColabOneWorkflowDraft(wf.id);
+    } catch {
+      return;
+    }
+    if (
+      disposed ||
+      loadGen !== draftLoadGen ||
+      restoreGen !== draftRestoreGen ||
+      selectedWorkflowId.value !== wf.id
+    ) {
+      return;
+    }
   }
+
   if (
-    disposed ||
-    loadGen !== draftLoadGen ||
-    restoreGen !== draftRestoreGen ||
-    selectedWorkflowId.value !== wf.id
-  ) {
-    return;
-  }
-  if (
-    !draft ||
+    !chosenDraft ||
     draftDirty ||
     hasUploadingField.value ||
     Object.keys(pendingUploads.value).length > 0 ||
@@ -2250,34 +2666,55 @@ async function restoreWorkflowDraft(
     return;
   }
 
-  const mediaFieldMap = new Map(
-    wf.fields
-      .filter((f) => f.field_type === "image" || f.field_type === "audio")
-      .map((f) => [f.key, f]),
-  );
-  const validMedia: Record<string, ColabOneWorkflowDraftMediaMeta> = {};
-  for (const [key, meta] of Object.entries(draft.media || {})) {
-    const field = mediaFieldMap.get(key);
-    if (!field) continue;
-    if (
-      (field.field_type === "image" && meta.kind !== "image") ||
-      (field.field_type === "audio" && meta.kind !== "audio")
-    ) {
-      continue;
+  const validMedia = extractValidDraftMedia(wf, chosenDraft.media);
+  const nextDraftMediaSourceIds: Record<string, string> = {};
+  let mergedFields: Record<string, string | number | boolean>;
+
+  if (sourceWf.id !== wf.id) {
+    const sourceValidMedia = extractValidDraftMedia(sourceWf, chosenDraft.media);
+    const mergedSourceFields = remapColabOnePresetPromptFieldsForLocale(
+      sourceWf.fields,
+      mergeColabOneWorkflowDraftFields(
+        sourceWf.fields,
+        chosenDraft.fields,
+        colabOneLocaleCode.value,
+        sourceValidMedia,
+      ),
+      colabOneLocaleCode.value,
+    );
+    mergedFields = transferColabOneDigitalHumanFields(
+      sourceWf,
+      wf,
+      mergedSourceFields,
+      colabOneLocaleCode.value,
+    );
+    for (const field of wf.fields) {
+      if (
+        (field.field_type === "image" || field.field_type === "audio") &&
+        !validMedia[field.key]
+      ) {
+        mergedFields[field.key] =
+          field.default !== undefined && field.default !== null
+            ? String(field.default)
+            : "";
+      }
     }
-    validMedia[key] = meta;
+    for (const key of Object.keys(validMedia)) {
+      nextDraftMediaSourceIds[key] = sourceWf.id;
+    }
+  } else {
+    mergedFields = remapColabOnePresetPromptFieldsForLocale(
+      wf.fields,
+      mergeColabOneWorkflowDraftFields(
+        wf.fields,
+        chosenDraft.fields,
+        colabOneLocaleCode.value,
+        validMedia,
+      ),
+      colabOneLocaleCode.value,
+    );
   }
 
-  const mergedFields = remapColabOnePresetPromptFieldsForLocale(
-    wf.fields,
-    mergeColabOneWorkflowDraftFields(
-      wf.fields,
-      draft.fields,
-      colabOneLocaleCode.value,
-      validMedia,
-    ),
-    colabOneLocaleCode.value,
-  );
   const nextUploadedNames: Record<string, string> = {};
   for (const [key, meta] of Object.entries(validMedia)) {
     nextUploadedNames[key] = meta.filename;
@@ -2288,6 +2725,7 @@ async function restoreWorkflowDraft(
   try {
     fieldValues.value = mergedFields;
     draftMediaMeta.value = validMedia;
+    draftMediaSourceIds.value = nextDraftMediaSourceIds;
     uploadedNames.value = nextUploadedNames;
     if (selectedTtsEngine.value) {
       reconcileVoicePresetForEngine(selectedTtsEngine.value);
@@ -2331,6 +2769,42 @@ const runButtonDisabledTooltip = computed(() => {
   return "";
 });
 
+function resetWorkflowEditorState(
+  wf: WorkflowTemplate | undefined,
+  opts?: { preserveAdvanced?: boolean },
+) {
+  const loadGen = ++draftLoadGen;
+  const restoreGen = ++draftRestoreGen;
+  ++draftSaveGen;
+  cancelDraftSaveTimer();
+  draftDirty = false;
+  draftStatus.value = "idle";
+  draftMediaMeta.value = {};
+  draftMediaSourceIds.value = {};
+  if (!opts?.preserveAdvanced) {
+    advancedExpanded.value = false;
+  }
+  for (const k of Object.keys(uploadGen)) {
+    uploadGen[k] = (uploadGen[k] ?? 0) + 1;
+  }
+  uploadingFields.value = {};
+  activeDraftWorkflow = wf;
+  draftWorkflowId = wf?.id || "";
+  fieldValues.value = wf
+    ? defaultFieldValues(wf.fields, colabOneLocaleCode.value)
+    : {};
+  pendingUploads.value = {};
+  uploadedInputIds.value = {};
+  uploadedNames.value = {};
+  revokeAllLocalPreviews();
+  voicePreviewTextCustomEdited.value = false;
+  voicePreviewText.value = voicePreviewDefaultText.value;
+  detachActiveVoicePreviewRequest();
+  if (wf) {
+    void restoreWorkflowDraft(wf, loadGen, restoreGen);
+  }
+}
+
 function selectWorkflow(id: string) {
   if (submittingRun.value || hasUploadingField.value) return;
   pendingWorkflowId.value = "";
@@ -2342,6 +2816,444 @@ function openWorkflowDrawer(id: string) {
   selectWorkflow(id);
   outputsDrawerOpen.value = false;
   paramDrawerOpen.value = true;
+}
+
+function openStudioEntryDrawer(entry: ColabOneStudioWorkflowEntry) {
+  if (submittingRun.value || hasUploadingField.value) return;
+  const targetId = entry.isGroup
+    ? digitalHumanSelection.value.workflowId || entry.primary.id
+    : entry.primary.id;
+  openWorkflowDrawer(targetId);
+}
+
+function switchDigitalHumanEngine(targetWorkflowId: string) {
+  if (submittingRun.value || hasUploadingField.value) return;
+  const groupWfs = activeDigitalHumanGroup.value?.workflows || [];
+  const nextWf = groupWfs.find((w) => w.id === targetWorkflowId);
+  if (!nextWf) return;
+  if (targetWorkflowId === selectedWorkflowId.value) return;
+
+  preferredDigitalHumanEngineId.value = targetWorkflowId;
+  writeColabOnePreferredDigitalHumanEngine(targetWorkflowId);
+
+  const prevWf = selectedWorkflow.value;
+  if (!prevWf) {
+    pendingWorkflowId.value = "";
+    selectedWorkflowId.value = nextWf.id;
+    resetWorkflowEditorState(nextWf, { preserveAdvanced: true });
+    return;
+  }
+
+  const currentMediaKeys = Array.from(
+    new Set<string>([
+      ...Object.keys(pendingUploads.value),
+      ...Object.keys(uploadedInputIds.value),
+      ...Object.keys(draftMediaMeta.value),
+    ]),
+  );
+  const hasCurrentContent =
+    currentMediaKeys.length > 0 ||
+    hasColabOneDraftContent(
+      prevWf.fields,
+      fieldValues.value,
+      currentMediaKeys,
+      colabOneLocaleCode.value,
+    );
+
+  if (!hasCurrentContent) {
+    pendingWorkflowId.value = "";
+    selectedWorkflowId.value = nextWf.id;
+    resetWorkflowEditorState(nextWf, { preserveAdvanced: true });
+    return;
+  }
+
+  const nextValues = transferColabOneDigitalHumanFields(
+    prevWf,
+    nextWf,
+    fieldValues.value,
+    colabOneLocaleCode.value,
+  );
+  const nextMediaFieldMap = new Map(
+    nextWf.fields
+      .filter((f) => f.field_type === "image" || f.field_type === "audio")
+      .map((f) => [f.key, f]),
+  );
+  const prevMediaFieldMap = new Map(
+    prevWf.fields
+      .filter((f) => f.field_type === "image" || f.field_type === "audio")
+      .map((f) => [f.key, f]),
+  );
+  const isCompatibleMediaKey = (key: string, kind?: "image" | "audio") => {
+    const nextField = nextMediaFieldMap.get(key);
+    if (!nextField) return false;
+    const resolvedKind =
+      kind ??
+      (prevMediaFieldMap.get(key)?.field_type === "audio"
+        ? "audio"
+        : prevMediaFieldMap.get(key)?.field_type === "image"
+          ? "image"
+          : undefined);
+    if (resolvedKind && nextField.field_type !== resolvedKind) {
+      return false;
+    }
+    return true;
+  };
+
+  const nextPendingUploads: Record<string, PendingUpload> = {};
+  for (const [key, item] of Object.entries(pendingUploads.value)) {
+    if (isCompatibleMediaKey(key, item.kind)) {
+      nextPendingUploads[key] = item;
+    }
+  }
+
+  const nextUploadedInputIds: Record<string, string> = {};
+  for (const [key, assetId] of Object.entries(uploadedInputIds.value)) {
+    if (isCompatibleMediaKey(key)) {
+      nextUploadedInputIds[key] = assetId;
+    }
+  }
+
+  const nextUploadedNames: Record<string, string> = {};
+  for (const [key, name] of Object.entries(uploadedNames.value)) {
+    if (isCompatibleMediaKey(key)) {
+      nextUploadedNames[key] = name;
+    }
+  }
+
+  const nextLocalPreviews: Record<string, string> = {};
+  const droppedPreviewUrls: string[] = [];
+  for (const [key, url] of Object.entries(localPreviews.value)) {
+    if (isCompatibleMediaKey(key, "image")) {
+      nextLocalPreviews[key] = url;
+    } else if (url) {
+      droppedPreviewUrls.push(url);
+    }
+  }
+  if (droppedPreviewUrls.length > 0) {
+    revokeBlobUrlsDeferred(droppedPreviewUrls);
+  }
+
+  const nextDraftMediaMeta: Record<string, ColabOneWorkflowDraftMediaMeta> = {};
+  const nextDraftMediaSourceIds: Record<string, string> = {};
+  for (const [key, meta] of Object.entries(draftMediaMeta.value)) {
+    if (isCompatibleMediaKey(key, meta.kind)) {
+      nextDraftMediaMeta[key] = meta;
+      nextDraftMediaSourceIds[key] =
+        draftMediaSourceIds.value[key] || prevWf.id;
+    }
+  }
+
+  for (const [key, field] of nextMediaFieldMap.entries()) {
+    if (
+      nextUploadedInputIds[key] ||
+      nextPendingUploads[key] ||
+      nextDraftMediaMeta[key]
+    ) {
+      const carriedName =
+        nextUploadedNames[key] ||
+        nextPendingUploads[key]?.filename ||
+        nextDraftMediaMeta[key]?.filename ||
+        "";
+      if (carriedName && !String(nextValues[key] ?? "").trim()) {
+        nextValues[key] = carriedName;
+      }
+    } else {
+      nextValues[key] =
+        field.default !== undefined && field.default !== null
+          ? String(field.default)
+          : "";
+    }
+  }
+
+  const loadGen = ++draftLoadGen;
+  ++draftRestoreGen;
+  const saveGen = ++draftSaveGen;
+  cancelDraftSaveTimer();
+  draftDirty = false;
+  for (const k of Object.keys(uploadGen)) {
+    uploadGen[k] = (uploadGen[k] ?? 0) + 1;
+  }
+  const mediaGens: Record<string, number> = {};
+  for (const key of nextMediaFieldMap.keys()) {
+    mediaGens[key] = uploadGen[key] ?? 0;
+  }
+  uploadingFields.value = {};
+
+  pendingWorkflowId.value = "";
+  activeDraftWorkflow = nextWf;
+  draftWorkflowId = nextWf.id;
+  selectedWorkflowId.value = nextWf.id;
+  pendingUploads.value = nextPendingUploads;
+  uploadedInputIds.value = nextUploadedInputIds;
+  uploadedNames.value = nextUploadedNames;
+  localPreviews.value = nextLocalPreviews;
+  draftMediaMeta.value = nextDraftMediaMeta;
+  draftMediaSourceIds.value = nextDraftMediaSourceIds;
+
+  draftRestoring = true;
+  try {
+    fieldValues.value = nextValues;
+    const nextTtsEngine = resolveSelectedTtsEngine(
+      nextWf,
+      fieldValues.value,
+      ttsEngines.value,
+    );
+    if (nextTtsEngine) {
+      reconcileVoicePresetForEngine(nextTtsEngine);
+    }
+  } finally {
+    draftRestoring = false;
+  }
+
+  if (
+    activeVoicePreviewTaskId.value ||
+    voicePreviewSubmitting.value ||
+    voicePreviewFetchingAsset.value
+  ) {
+    detachActiveVoicePreviewRequest();
+  }
+
+  const targetWfId = nextWf.id;
+  const fieldsEpoch = bumpDraftFieldEpoch(targetWfId);
+  const fieldsToSave = sanitizeColabOneDraftFieldsForSave(nextWf.fields, {
+    ...fieldValues.value,
+  });
+  const carriedMediaEntries: {
+    key: string;
+    epoch: number;
+    pending?: PendingUpload;
+    sourceId?: string;
+    alreadyPersistedOnTarget: boolean;
+  }[] = [];
+  const carriedMediaKeySet = new Set<string>();
+  for (const key of nextMediaFieldMap.keys()) {
+    const sourceId = nextDraftMediaSourceIds[key] || prevWf.id;
+    const alreadyOnTarget =
+      Boolean(nextDraftMediaMeta[key]) && sourceId === targetWfId;
+    if (nextPendingUploads[key]?.data) {
+      carriedMediaKeySet.add(key);
+      carriedMediaEntries.push({
+        key,
+        epoch: bumpDraftMediaEpoch(targetWfId, key),
+        pending: { ...nextPendingUploads[key] },
+        sourceId,
+        alreadyPersistedOnTarget: alreadyOnTarget,
+      });
+    } else if (nextDraftMediaMeta[key]) {
+      carriedMediaKeySet.add(key);
+      carriedMediaEntries.push({
+        key,
+        epoch: bumpDraftMediaEpoch(targetWfId, key),
+        sourceId,
+        alreadyPersistedOnTarget: alreadyOnTarget,
+      });
+    }
+  }
+  const staleMediaEntries = Array.from(nextMediaFieldMap.keys())
+    .filter((key) => !carriedMediaKeySet.has(key))
+    .map((key) => ({
+      key,
+      epoch: bumpDraftMediaEpoch(targetWfId, key),
+    }));
+  const hasTransferredContent = hasColabOneDraftContent(
+    nextWf.fields,
+    fieldValues.value,
+    Array.from(carriedMediaKeySet),
+    colabOneLocaleCode.value,
+  );
+  draftStatus.value = hasTransferredContent ? "saving" : "idle";
+
+  // If an image media field was restored on `prevWf` and switched before its
+  // thumbnail finished hydrating, re-hydrate preview cleanly on `nextWf`.
+  for (const key of carriedMediaKeySet) {
+    const meta = nextDraftMediaMeta[key];
+    if (meta?.kind === "image" && !nextLocalPreviews[key]) {
+      void hydrateDraftMediaField(nextWf, key, loadGen, { keepPreview: true });
+    }
+  }
+
+  void enqueueDigitalHumanPersist(async () => {
+    let savedFieldsOk = false;
+    if (getDraftFieldEpoch(targetWfId) === fieldsEpoch) {
+      try {
+        const saved = await saveColabOneWorkflowDraft(targetWfId, fieldsToSave);
+        savedFieldsOk = Boolean(saved);
+      } catch {
+        savedFieldsOk = false;
+      }
+    }
+
+    for (const stale of staleMediaEntries) {
+      if (getDraftMediaEpoch(targetWfId, stale.key) !== stale.epoch) {
+        continue;
+      }
+      await deleteColabOneWorkflowDraftMedia(targetWfId, stale.key).catch(
+        () => {},
+      );
+    }
+
+    for (const item of carriedMediaEntries) {
+      if (
+        item.alreadyPersistedOnTarget ||
+        getDraftMediaEpoch(targetWfId, item.key) !== item.epoch
+      ) {
+        continue;
+      }
+      try {
+        let mediaToSave: {
+          filename: string;
+          kind: "image" | "audio";
+          data: string;
+          mime?: string;
+        } | null = null;
+        if (item.pending?.data) {
+          mediaToSave = {
+            filename: item.pending.filename,
+            kind: item.pending.kind,
+            data: item.pending.data,
+          };
+        } else if (item.sourceId && item.sourceId !== targetWfId) {
+          const payload = await readColabOneWorkflowDraftMedia(
+            item.sourceId,
+            item.key,
+          );
+          if (getDraftMediaEpoch(targetWfId, item.key) !== item.epoch) {
+            continue;
+          }
+          if (payload && payload.data) {
+            mediaToSave = {
+              filename: payload.filename,
+              kind: payload.kind,
+              data: payload.data,
+              mime: payload.mime,
+            };
+          }
+        }
+        if (
+          !mediaToSave ||
+          getDraftMediaEpoch(targetWfId, item.key) !== item.epoch
+        ) {
+          continue;
+        }
+        const savedMeta = await saveColabOneWorkflowDraftMedia(
+          targetWfId,
+          item.key,
+          {
+            filename: mediaToSave.filename,
+            kind: mediaToSave.kind,
+            data: mediaToSave.data,
+          },
+        );
+        if (
+          disposed ||
+          loadGen !== draftLoadGen ||
+          selectedWorkflowId.value !== targetWfId ||
+          (uploadGen[item.key] ?? 0) !== mediaGens[item.key]
+        ) {
+          continue;
+        }
+        if (savedMeta) {
+          draftMediaMeta.value = {
+            ...draftMediaMeta.value,
+            [item.key]: savedMeta,
+          };
+          draftMediaSourceIds.value = {
+            ...draftMediaSourceIds.value,
+            [item.key]: targetWfId,
+          };
+          if (
+            mediaToSave.kind === "image" &&
+            !localPreviews.value[item.key]
+          ) {
+            try {
+              const blob = colabOneBase64ToBlob(
+                mediaToSave.data,
+                savedMeta.mime || mediaToSave.mime || "image/png",
+              );
+              localPreviews.value[item.key] = URL.createObjectURL(blob);
+            } catch {
+              // Ignore preview decode failures.
+            }
+          }
+          if (
+            !uploadedInputIds.value[item.key] &&
+            !pendingUploads.value[item.key]
+          ) {
+            pendingUploads.value[item.key] = {
+              filename: savedMeta.filename,
+              data: mediaToSave.data,
+              kind: savedMeta.kind,
+            };
+          }
+        }
+      } catch {
+        // Keep draftMediaSourceIds pointing to the original source workflow ID
+        // so subsequent reads continue working without data loss.
+      }
+    }
+
+    if (
+      !disposed &&
+      loadGen === draftLoadGen &&
+      saveGen === draftSaveGen &&
+      selectedWorkflowId.value === targetWfId
+    ) {
+      if (savedFieldsOk && hasTransferredContent) {
+        draftStatus.value = "saved";
+      } else if (draftStatus.value === "saving") {
+        draftStatus.value = "idle";
+      }
+    }
+  });
+}
+
+function onDigitalHumanEngineKeydown(
+  event: KeyboardEvent,
+  currentIdx: number,
+) {
+  if (
+    submittingRun.value ||
+    hasUploadingField.value ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey
+  ) {
+    return;
+  }
+  const list = activeDigitalHumanGroup.value?.workflows;
+  if (!list || list.length < 2) return;
+  let nextIdx = -1;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    nextIdx = (currentIdx + 1) % list.length;
+  } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    nextIdx = (currentIdx - 1 + list.length) % list.length;
+  } else if (event.key === "Home") {
+    nextIdx = 0;
+  } else if (event.key === "End") {
+    nextIdx = list.length - 1;
+  } else {
+    return;
+  }
+  event.preventDefault();
+  const nextWf = list[nextIdx];
+  if (!nextWf) return;
+  switchDigitalHumanEngine(nextWf.id);
+  const currentTarget = event.currentTarget as HTMLElement | null;
+  const groupEl = currentTarget?.closest('[role="radiogroup"]');
+  void nextTick(() => {
+    if (
+      disposed ||
+      !paramDrawerOpen.value ||
+      selectedWorkflowId.value !== nextWf.id
+    ) {
+      return;
+    }
+    const nextBtn = Array.from(
+      groupEl?.querySelectorAll<HTMLButtonElement>('button[role="radio"]') ?? [],
+    ).find((btn) => btn.dataset.engineId === nextWf.id);
+    nextBtn?.focus();
+  });
 }
 
 function closeParamDrawer() {
@@ -2389,15 +3301,43 @@ watch(
       return;
     }
     if (!list.some((w) => w.id === selectedWorkflowId.value)) {
-      selectedWorkflowId.value = list[0].id;
+      if (
+        builtinDigitalHumanGroup.value &&
+        isColabOneBuiltinDigitalHumanWorkflow(list[0])
+      ) {
+        selectedWorkflowId.value =
+          digitalHumanSelection.value.workflowId || list[0].id;
+      } else {
+        selectedWorkflowId.value = list[0].id;
+      }
     }
   },
   { immediate: true },
 );
 
 watch(
+  () => digitalHumanSelection.value.workflowId,
+  (nextWorkflowId) => {
+    if (
+      nextWorkflowId &&
+      !digitalHumanSelection.value.fromUserPreference &&
+      !paramDrawerOpen.value &&
+      activeDigitalHumanGroup.value &&
+      selectedWorkflowId.value !== nextWorkflowId &&
+      !submittingRun.value &&
+      !hasUploadingField.value
+    ) {
+      selectedWorkflowId.value = nextWorkflowId;
+    }
+  },
+);
+
+watch(
   () => selectedWorkflow.value?.id,
   (newId, oldId) => {
+    if (newId && draftWorkflowId === newId && activeDraftWorkflow?.id === newId) {
+      return;
+    }
     if (oldId && oldId !== newId && draftDirty && draftWorkflowId === oldId) {
       const prevWf =
         workflows.value.find((w) => w.id === oldId) ??
@@ -2406,34 +3346,9 @@ watch(
         flushDraftSave(prevWf);
       }
     }
-    const loadGen = ++draftLoadGen;
-    const restoreGen = ++draftRestoreGen;
-    ++draftSaveGen;
-    cancelDraftSaveTimer();
-    draftDirty = false;
-    draftStatus.value = "idle";
-    draftMediaMeta.value = {};
-    advancedExpanded.value = false;
-    for (const k of Object.keys(uploadGen)) {
-      uploadGen[k] = (uploadGen[k] ?? 0) + 1;
-    }
-    uploadingFields.value = {};
-    const wf = selectedWorkflow.value;
-    activeDraftWorkflow = wf;
-    draftWorkflowId = wf?.id || "";
-    fieldValues.value = wf
-      ? defaultFieldValues(wf.fields, colabOneLocaleCode.value)
-      : {};
-    pendingUploads.value = {};
-    uploadedInputIds.value = {};
-    uploadedNames.value = {};
-    revokeAllLocalPreviews();
-    voicePreviewTextCustomEdited.value = false;
-    voicePreviewText.value = voicePreviewDefaultText.value;
-    detachActiveVoicePreviewRequest();
-    if (wf) {
-      void restoreWorkflowDraft(wf, loadGen, restoreGen);
-    }
+    resetWorkflowEditorState(selectedWorkflow.value, {
+      preserveAdvanced: false,
+    });
   },
   { immediate: true },
 );
@@ -2503,6 +3418,7 @@ function resetFields() {
   draftDirty = false;
   draftStatus.value = "idle";
   draftMediaMeta.value = {};
+  draftMediaSourceIds.value = {};
   for (const k of Object.keys(uploadGen)) {
     uploadGen[k] = (uploadGen[k] ?? 0) + 1;
   }
@@ -2515,7 +3431,36 @@ function resetFields() {
   voicePreviewTextCustomEdited.value = false;
   voicePreviewText.value = voicePreviewDefaultText.value;
   detachActiveVoicePreviewRequest();
-  void clearColabOneWorkflowDraft(wf.id).catch((err) => {
+  bumpDraftFieldEpoch(wf.id);
+  for (const field of wf.fields) {
+    if (field.field_type === "image" || field.field_type === "audio") {
+      bumpDraftMediaEpoch(wf.id, field.key);
+    }
+  }
+  const siblingIds: string[] = [];
+  if (activeDigitalHumanGroup.value) {
+    for (const sibling of activeDigitalHumanGroup.value.workflows) {
+      if (sibling.id !== wf.id) {
+        siblingIds.push(sibling.id);
+        bumpDraftFieldEpoch(sibling.id);
+        for (const field of sibling.fields) {
+          if (field.field_type === "image" || field.field_type === "audio") {
+            bumpDraftMediaEpoch(sibling.id, field.key);
+          }
+        }
+      }
+    }
+  }
+  const clearTask = async () => {
+    for (const siblingId of siblingIds) {
+      await clearColabOneWorkflowDraft(siblingId).catch(() => {});
+    }
+    await clearColabOneWorkflowDraft(wf.id);
+  };
+  const clearPromise = isColabOneBuiltinDigitalHumanWorkflow(wf)
+    ? enqueueDigitalHumanPersist(clearTask)
+    : clearTask();
+  void clearPromise.catch((err) => {
     if (!disposed && selectedWorkflowId.value === wf.id) {
       reportError(
         t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
@@ -2603,6 +3548,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
     let savedDraftMeta: ColabOneWorkflowDraftMediaMeta | null = null;
     let draftSaveErr: unknown = null;
     if (targetWorkflowId) {
+      bumpDraftMediaEpoch(targetWorkflowId, field.key);
       try {
         savedDraftMeta = await saveColabOneWorkflowDraftMedia(
           targetWorkflowId,
@@ -2629,6 +3575,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
         ...draftMediaMeta.value,
         [field.key]: savedDraftMeta,
       };
+      delete draftMediaSourceIds.value[field.key];
       revokeLocalPreview(field.key);
       if (nextPreviewUrl) {
         localPreviews.value[field.key] = nextPreviewUrl;
@@ -2671,6 +3618,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
         const nextMeta = { ...draftMediaMeta.value };
         delete nextMeta[field.key];
         draftMediaMeta.value = nextMeta;
+        delete draftMediaSourceIds.value[field.key];
         if (targetWorkflowId) {
           void deleteColabOneWorkflowDraftMedia(
             targetWorkflowId,
@@ -2713,6 +3661,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
           const nextMeta = { ...draftMediaMeta.value };
           delete nextMeta[field.key];
           draftMediaMeta.value = nextMeta;
+          delete draftMediaSourceIds.value[field.key];
           if (targetWorkflowId) {
             void deleteColabOneWorkflowDraftMedia(
               targetWorkflowId,
@@ -2781,6 +3730,8 @@ function clearMediaField(field: WorkflowField) {
   delete uploadedInputIds.value[field.key];
   delete uploadedNames.value[field.key];
   revokeLocalPreview(field.key);
+  const prevSourceWfId = draftMediaSourceIds.value[field.key];
+  delete draftMediaSourceIds.value[field.key];
   if (draftMediaMeta.value[field.key]) {
     const nextMeta = { ...draftMediaMeta.value };
     delete nextMeta[field.key];
@@ -2793,18 +3744,59 @@ function clearMediaField(field: WorkflowField) {
   const wf = selectedWorkflow.value;
   const wfId = wf?.id || draftWorkflowId;
   if (wfId) {
+    bumpDraftMediaEpoch(wfId, field.key);
     const loadGen = draftLoadGen;
-    void deleteColabOneWorkflowDraftMedia(wfId, field.key).catch((err) => {
-      if (
-        !disposed &&
-        loadGen === draftLoadGen &&
-        selectedWorkflowId.value === wfId
-      ) {
-        reportError(
-          t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
+    const extraDeleteIds = new Set<string>();
+    if (prevSourceWfId && prevSourceWfId !== wfId) {
+      extraDeleteIds.add(prevSourceWfId);
+    }
+    if (activeDigitalHumanGroup.value) {
+      for (const sibling of activeDigitalHumanGroup.value.workflows) {
+        if (sibling.id !== wfId) {
+          extraDeleteIds.add(sibling.id);
+        }
+      }
+    }
+    for (const extraId of extraDeleteIds) {
+      bumpDraftMediaEpoch(extraId, field.key);
+    }
+    if (wf && isColabOneBuiltinDigitalHumanWorkflow(wf)) {
+      void enqueueDigitalHumanPersist(async () => {
+        for (const extraId of extraDeleteIds) {
+          await deleteColabOneWorkflowDraftMedia(extraId, field.key).catch(
+            () => {},
+          );
+        }
+        await deleteColabOneWorkflowDraftMedia(wfId, field.key);
+      }).catch((err) => {
+        if (
+          !disposed &&
+          loadGen === draftLoadGen &&
+          selectedWorkflowId.value === wfId
+        ) {
+          reportError(
+            t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
+          );
+        }
+      });
+    } else {
+      void deleteColabOneWorkflowDraftMedia(wfId, field.key).catch((err) => {
+        if (
+          !disposed &&
+          loadGen === draftLoadGen &&
+          selectedWorkflowId.value === wfId
+        ) {
+          reportError(
+            t("comfy.errSaveDraft", { detail: formatDraftErrorDetail(err) }),
+          );
+        }
+      });
+      for (const extraId of extraDeleteIds) {
+        void deleteColabOneWorkflowDraftMedia(extraId, field.key).catch(
+          () => {},
         );
       }
-    });
+    }
     draftDirty = true;
     flushDraftSave(wf);
   }
@@ -2930,6 +3922,13 @@ async function deleteWorkflow(target: WorkflowTemplate) {
       draftDirty = false;
       draftStatus.value = "idle";
       draftMediaMeta.value = {};
+      draftMediaSourceIds.value = {};
+    }
+    bumpDraftFieldEpoch(target.id);
+    for (const field of target.fields || []) {
+      if (field.field_type === "image" || field.field_type === "audio") {
+        bumpDraftMediaEpoch(target.id, field.key);
+      }
     }
     void clearColabOneWorkflowDraft(target.id).catch(() => {});
     if (selectedWorkflowId.value === target.id) {
@@ -3067,10 +4066,11 @@ async function runWorkflow() {
       ) {
         continue;
       }
+      const sourceWfId = resolveDraftMediaWorkflowId(key, targetWorkflowId);
       let payload = null;
       let draftReadErr: unknown = null;
       try {
-        payload = await readColabOneWorkflowDraftMedia(targetWorkflowId, key);
+        payload = await readColabOneWorkflowDraftMedia(sourceWfId, key);
       } catch (readErr) {
         draftReadErr = readErr;
         payload = null;
@@ -3092,9 +4092,13 @@ async function runWorkflow() {
         const nextMeta = { ...draftMediaMeta.value };
         delete nextMeta[key];
         draftMediaMeta.value = nextMeta;
-        void deleteColabOneWorkflowDraftMedia(targetWorkflowId, key).catch(
-          () => {},
-        );
+        delete draftMediaSourceIds.value[key];
+        void deleteColabOneWorkflowDraftMedia(sourceWfId, key).catch(() => {});
+        if (sourceWfId !== targetWorkflowId) {
+          void deleteColabOneWorkflowDraftMedia(targetWorkflowId, key).catch(
+            () => {},
+          );
+        }
         revokeLocalPreview(key);
         delete uploadedNames.value[key];
         const field = wf.fields.find((f) => f.key === key);
@@ -4497,8 +5501,8 @@ onUnmounted(() => {
               <PhSlidersHorizontal :size="16" />
               <span>{{ t("comfy.tabStudio") }}</span>
               <ABadge
-                v-if="workflows.length"
-                :count="workflows.length"
+                v-if="studioEntries.length"
+                :count="studioEntries.length"
                 class="co-comfy-tab-badge"
               />
             </span>
@@ -4519,7 +5523,13 @@ onUnmounted(() => {
                     inline
                   />
                   <ATag v-else class="co-comfy-count-tag co-sk-reveal">
-                    {{ t("comfy.studioWorkflowCount", { count: workflows.length }) }}
+                    {{
+                      studioEntries.length === 1
+                        ? t("comfy.studioWorkflowCountOne", { count: 1 })
+                        : t("comfy.studioWorkflowCount", {
+                            count: studioEntries.length,
+                          })
+                    }}
                   </ATag>
                 </div>
                 <p>{{ t("comfy.studioDesc") }}</p>
@@ -4565,11 +5575,7 @@ onUnmounted(() => {
               aria-busy="true"
             >
               <span class="co-sr-only">{{ t("common.loading") }}</span>
-              <div
-                v-for="idx in 2"
-                :key="idx"
-                class="co-comfy-workflow-item co-comfy-wf-skeleton"
-              >
+              <div class="co-comfy-workflow-item co-comfy-wf-skeleton">
                 <div class="co-comfy-wf-card-head">
                   <ColabOneSkeleton
                     :width="40"
@@ -4577,38 +5583,37 @@ onUnmounted(() => {
                     :radius="11"
                     variant="rect"
                     tone="subtle"
-                    :delay="(idx - 1) * 75"
                   />
                   <div class="co-comfy-wf-card-heading">
                     <ColabOneSkeleton
-                      :width="idx === 1 ? '60%' : '52%'"
+                      width="60%"
                       :height="16"
                       variant="text"
-                      :delay="(idx - 1) * 75 + 35"
+                      :delay="35"
                     />
                     <ColabOneSkeleton
                       :width="42"
                       :height="20"
                       variant="tag"
                       tone="subtle"
-                      :delay="(idx - 1) * 75 + 65"
+                      :delay="65"
                     />
                   </div>
                 </div>
                 <div class="co-comfy-wf-sk-desc">
                   <ColabOneSkeleton
-                    :width="idx === 1 ? '92%' : '86%'"
+                    width="92%"
                     :height="13"
                     variant="text"
                     tone="subtle"
-                    :delay="(idx - 1) * 75 + 90"
+                    :delay="90"
                   />
                   <ColabOneSkeleton
-                    :width="idx === 1 ? '68%' : '62%'"
+                    width="68%"
                     :height="13"
                     variant="text"
                     tone="subtle"
-                    :delay="(idx - 1) * 75 + 115"
+                    :delay="115"
                   />
                 </div>
                 <div class="co-comfy-wf-card-footer">
@@ -4617,14 +5622,14 @@ onUnmounted(() => {
                     :height="13"
                     variant="text"
                     tone="subtle"
-                    :delay="(idx - 1) * 75 + 140"
+                    :delay="140"
                   />
                   <ColabOneSkeleton
                     :width="76"
                     :height="14"
                     variant="text"
                     tone="subtle"
-                    :delay="(idx - 1) * 75 + 165"
+                    :delay="165"
                   />
                 </div>
               </div>
@@ -4670,29 +5675,39 @@ onUnmounted(() => {
               :aria-label="t('comfy.selectWorkflowAria')"
             >
               <div
-                v-for="wf in workflows"
-                :key="wf.id"
+                v-for="entry in studioEntries"
+                :key="entry.key"
                 role="option"
                 tabindex="0"
                 class="co-comfy-workflow-item"
                 :class="{
-                  'is-selected': wf.id === selectedWorkflowId && paramDrawerOpen,
+                  'is-selected':
+                    paramDrawerOpen &&
+                    entry.workflows.some((w) => w.id === selectedWorkflowId),
                   'is-disabled': submittingRun || hasUploadingField,
                 }"
-                :aria-selected="wf.id === selectedWorkflowId"
+                :data-workflow-entry-key="
+                  entry.isGroup ? COLABONE_DIGITAL_HUMAN_GROUP_KEY : entry.key
+                "
+                :aria-selected="
+                  entry.workflows.some((w) => w.id === selectedWorkflowId)
+                "
                 :aria-disabled="submittingRun || hasUploadingField"
-                @click="openWorkflowDrawer(wf.id)"
-                @keydown.enter.prevent="openWorkflowDrawer(wf.id)"
-                @keydown.space.prevent="openWorkflowDrawer(wf.id)"
+                @click="openStudioEntryDrawer(entry)"
+                @keydown.enter.prevent="openStudioEntryDrawer(entry)"
+                @keydown.space.prevent="openStudioEntryDrawer(entry)"
               >
                 <div class="co-comfy-wf-card-head">
                   <div
                     class="co-comfy-wf-emblem"
-                    :class="{ 'is-pipeline': wf.pipeline?.kind === 'digital_human' }"
+                    :class="{
+                      'is-pipeline':
+                        entry.primary.pipeline?.kind === 'digital_human',
+                    }"
                     aria-hidden="true"
                   >
                     <PhVideoCamera
-                      v-if="wf.pipeline?.kind === 'digital_human'"
+                      v-if="entry.primary.pipeline?.kind === 'digital_human'"
                       :size="20"
                       weight="duotone"
                     />
@@ -4700,14 +5715,22 @@ onUnmounted(() => {
                   </div>
 
                   <div class="co-comfy-wf-card-heading">
-                    <strong class="co-comfy-wf-card-title">{{ tb(wf.name) }}</strong>
+                    <strong class="co-comfy-wf-card-title">{{
+                      entry.isGroup
+                        ? t("comfy.digitalHumanUnifiedName")
+                        : tb(entry.primary.name)
+                    }}</strong>
                     <ATag
-                      :color="wf.source === 'builtin' ? 'blue' : 'default'"
+                      :color="
+                        entry.isGroup || entry.primary.source === 'builtin'
+                          ? 'blue'
+                          : 'default'
+                      "
                       :bordered="false"
                       class="co-comfy-source-tag"
                     >
                       {{
-                        wf.source === "builtin"
+                        entry.isGroup || entry.primary.source === "builtin"
                           ? t("comfy.sourceBuiltin")
                           : t("comfy.sourceCustom")
                       }}
@@ -4715,13 +5738,17 @@ onUnmounted(() => {
                   </div>
 
                   <div
-                    v-if="wf.source === 'custom'"
+                    v-if="!entry.isGroup && entry.primary.source === 'custom'"
                     class="co-comfy-wf-actions"
                     @click.stop
                     @keydown.stop
                   >
                     <APopconfirm
-                      :title="t('comfy.deleteWorkflowTitle', { name: tb(wf.name) })"
+                      :title="
+                        t('comfy.deleteWorkflowTitle', {
+                          name: tb(entry.primary.name),
+                        })
+                      "
                       :description="t('comfy.deleteWorkflowDesc')"
                       :ok-text="t('common.confirmDelete')"
                       :cancel-text="t('common.cancel')"
@@ -4731,18 +5758,22 @@ onUnmounted(() => {
                       @open-change="
                         (open) => {
                           if (open) {
-                            deleteConfirmWorkflowId = wf.id;
-                          } else if (deleteConfirmWorkflowId === wf.id) {
+                            deleteConfirmWorkflowId = entry.primary.id;
+                          } else if (
+                            deleteConfirmWorkflowId === entry.primary.id
+                          ) {
                             deleteConfirmWorkflowId = '';
                           }
                         }
                       "
-                      @confirm="deleteWorkflow(wf)"
+                      @confirm="deleteWorkflow(entry.primary)"
                     >
                       <span class="co-popconfirm-anchor">
                         <ColabOneTooltip
                           :title="t('comfy.deleteWorkflowTooltip')"
-                          :disabled="deleteConfirmWorkflowId === wf.id"
+                          :disabled="
+                            deleteConfirmWorkflowId === entry.primary.id
+                          "
                         >
                           <AButton
                             type="text"
@@ -4763,14 +5794,18 @@ onUnmounted(() => {
                 </div>
 
                 <p
-                  v-if="wf.description"
+                  v-if="entry.isGroup || entry.primary.description"
                   class="co-comfy-workflow-desc"
                 >
-                  {{ tb(wf.description) }}
+                  {{
+                    entry.isGroup
+                      ? t("comfy.digitalHumanUnifiedDesc")
+                      : tb(entry.primary.description)
+                  }}
                 </p>
 
                 <div
-                  v-if="wf.pipeline?.kind === 'digital_human'"
+                  v-if="entry.primary.pipeline?.kind === 'digital_human'"
                   class="co-comfy-wf-io-strip"
                 >
                   <div class="co-comfy-wf-io-row">
@@ -4784,14 +5819,21 @@ onUnmounted(() => {
                 <div class="co-comfy-wf-card-footer">
                   <div class="co-comfy-wf-specs">
                     <span class="co-comfy-wf-spec-text">
-                      {{ formatWorkflowCardSpecs(wf) }}
+                      {{ formatStudioEntrySpecs(entry) }}
                     </span>
                     <ColabOneTooltip
-                      v-if="wf.commercial_ok === false"
+                      v-if="
+                        entry.workflows.some((w) => w.commercial_ok === false)
+                      "
                       :title="
-                        wf.license_notice
-                          ? tb(wf.license_notice)
-                          : t('comfy.licenseNonCommercial')
+                        entry.workflows
+                          .filter((w) => w.commercial_ok === false)
+                          .map((w) =>
+                            w.license_notice
+                              ? tb(w.license_notice)
+                              : t('comfy.licenseNonCommercial'),
+                          )
+                          .join(' ') || t('comfy.licenseNonCommercial')
                       "
                     >
                       <ATag
@@ -5306,7 +6348,11 @@ onUnmounted(() => {
             <PhTreeStructure v-else :size="16" weight="duotone" />
           </span>
           <span class="co-comfy-drawer-title-text">
-            {{ tb(selectedWorkflow.name) }}
+            {{
+              activeDigitalHumanGroup
+                ? t("comfy.digitalHumanUnifiedName")
+                : tb(selectedWorkflow.name)
+            }}
           </span>
           <ATag
             :color="selectedWorkflow.source === 'builtin' ? 'blue' : 'default'"
@@ -5362,6 +6408,119 @@ onUnmounted(() => {
         >
           {{ tb(selectedWorkflow.description) }}
         </p>
+
+        <!-- Dual-Option Video Engine Switcher (Built-in Digital Human) -->
+        <div
+          v-if="
+            activeDigitalHumanGroup &&
+            activeDigitalHumanGroup.workflows.length >= 2
+          "
+          class="co-comfy-engine-switcher"
+          data-testid="comfy-digital-human-engine-switcher"
+        >
+          <div class="co-comfy-engine-switcher-head">
+            <span
+              id="co-comfy-engine-switcher-label"
+              class="co-comfy-engine-switcher-label"
+            >
+              {{ t("comfy.videoEngineLabel") }}
+            </span>
+            <span
+              v-if="digitalHumanGpuContext.shortLabel"
+              id="co-comfy-engine-switcher-hint"
+              class="co-comfy-engine-gpu-hint"
+            >
+              {{
+                t("comfy.videoEngineGpuAutoHint", {
+                  gpu: digitalHumanGpuContext.shortLabel,
+                })
+              }}
+            </span>
+          </div>
+          <div
+            class="co-comfy-engine-options"
+            role="radiogroup"
+            aria-labelledby="co-comfy-engine-switcher-label"
+            :aria-describedby="
+              digitalHumanGpuContext.shortLabel
+                ? 'co-comfy-engine-switcher-hint'
+                : undefined
+            "
+            :aria-disabled="submittingRun || hasUploadingField || undefined"
+          >
+            <button
+              v-for="(engineWf, engineIdx) in activeDigitalHumanGroup.workflows"
+              :key="engineWf.id"
+              type="button"
+              role="radio"
+              class="co-comfy-engine-option"
+              :class="{
+                'is-selected': engineWf.id === selectedWorkflowId,
+                'is-recommended':
+                  engineWf.id === recommendedDigitalHumanWorkflowId,
+                'is-vram-short': isDigitalHumanEngineVramShort(engineWf),
+              }"
+              :tabindex="
+                engineWf.id === selectedWorkflowId ||
+                (!activeDigitalHumanGroup.workflows.some(
+                  (w) => w.id === selectedWorkflowId,
+                ) &&
+                  engineIdx === 0)
+                  ? 0
+                  : -1
+              "
+              :aria-checked="engineWf.id === selectedWorkflowId"
+              :data-engine-id="engineWf.id"
+              :data-testid="'comfy-engine-option-' + engineWf.id"
+              :disabled="submittingRun || hasUploadingField"
+              @click="switchDigitalHumanEngine(engineWf.id)"
+              @keydown="onDigitalHumanEngineKeydown($event, engineIdx)"
+            >
+              <span class="co-comfy-engine-option-head">
+                <span class="co-comfy-engine-option-title-group">
+                  <strong class="co-comfy-engine-option-title">
+                    {{ formatDigitalHumanEngineTitle(engineWf) }}
+                  </strong>
+                  <span
+                    v-if="engineWf.id === recommendedDigitalHumanWorkflowId"
+                    class="co-comfy-engine-badge is-recommended"
+                  >
+                    {{ t("comfy.videoEngineRecommendedTag") }}
+                  </span>
+                  <span
+                    v-if="gpuReady && comfy?.active_pack === engineWf.id"
+                    class="co-comfy-engine-badge is-ready"
+                  >
+                    {{ t("comfy.videoEngineReadyTag") }}
+                  </span>
+                </span>
+                <PhCheckCircle
+                  v-if="engineWf.id === selectedWorkflowId"
+                  :size="17"
+                  weight="fill"
+                  class="co-comfy-engine-check-icon"
+                  aria-hidden="true"
+                />
+                <span
+                  v-else
+                  class="co-comfy-engine-radio-dot"
+                  aria-hidden="true"
+                />
+              </span>
+              <span class="co-comfy-engine-option-desc">
+                {{ formatDigitalHumanEngineSummary(engineWf) }}
+              </span>
+              <span class="co-comfy-engine-option-spec co-comfy-mono">
+                <template
+                  v-for="(part, idx) in formatDigitalHumanEngineSpecParts(engineWf)"
+                  :key="idx"
+                ><template v-if="idx > 0"> · </template><span
+                    :class="{ 'co-comfy-engine-spec-vram': part.isVram }"
+                  >{{ part.text }}</span></template>
+              </span>
+            </button>
+          </div>
+        </div>
 
         <!-- Minimalist Preflight & Pack Readiness Strip -->
         <div
@@ -6924,21 +8083,23 @@ onUnmounted(() => {
     transform 0.16s ease;
 }
 
-.co-comfy-workflow-item:hover {
+.co-comfy-workflow-item:hover:not(.is-disabled) {
   border-color: var(--co-accent);
   box-shadow: var(--co-card-shadow-hover);
   transform: translateY(-1px);
 }
 
-.co-comfy-workflow-item:focus-visible {
-  outline: none;
-  border-color: var(--co-accent);
-  box-shadow: 0 0 0 3px var(--co-focus-ring);
-}
-
 .co-comfy-workflow-item.is-selected {
   border-color: var(--co-accent);
   box-shadow: 0 0 0 2px var(--co-focus-ring);
+}
+
+.co-comfy-workflow-item:focus-visible,
+.co-comfy-workflow-item.is-selected:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  border-color: var(--co-focus);
+  box-shadow: 0 0 0 3px var(--co-focus-ring);
 }
 
 .co-comfy-workflow-item.is-disabled {
@@ -7209,6 +8370,216 @@ onUnmounted(() => {
   font-size: 13px;
   line-height: 1.6;
   color: var(--co-secondary-text);
+}
+
+/* Dual-Option Video Engine Switcher (Built-in Digital Human) */
+.co-comfy-engine-switcher {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.co-comfy-engine-switcher-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.co-comfy-engine-switcher-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--co-text);
+}
+
+.co-comfy-engine-gpu-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--co-muted);
+}
+
+.co-comfy-engine-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+@container (max-width: 435px) {
+  .co-comfy-engine-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.co-comfy-engine-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 11px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+  color: var(--co-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.co-comfy-engine-option:hover:not(:disabled):not(.is-selected) {
+  border-color: var(--co-accent);
+  background: var(--co-soft-hover);
+}
+
+.co-comfy-engine-option.is-selected {
+  border-color: var(--co-accent);
+  background: var(--co-selected);
+  box-shadow: 0 0 0 1px var(--co-accent);
+}
+
+:root[data-theme="dark"] .co-comfy-engine-option.is-selected {
+  box-shadow: 0 0 0 1px var(--co-focus-ring);
+}
+
+.co-comfy-engine-option:focus-visible,
+.co-comfy-engine-option.is-selected:focus-visible,
+:root[data-theme="dark"] .co-comfy-engine-option.is-selected:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  border-color: var(--co-focus);
+  box-shadow:
+    0 0 0 1px var(--co-accent),
+    0 0 0 4px var(--co-focus-ring);
+}
+
+.co-comfy-engine-option:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.co-comfy-engine-option-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.co-comfy-engine-option-title-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.co-comfy-engine-option-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--co-text);
+  overflow-wrap: anywhere;
+}
+
+.co-comfy-engine-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.co-comfy-engine-badge.is-recommended {
+  background: var(--co-selected);
+  color: var(--co-accent-strong);
+  border: 1px solid var(--co-focus-ring);
+}
+
+.co-comfy-engine-option.is-selected .co-comfy-engine-badge.is-recommended {
+  background: var(--co-surface);
+}
+
+.co-comfy-engine-badge.is-ready {
+  background: var(--co-success-bg);
+  color: var(--co-success-text);
+  border: 1px solid var(--co-success-border);
+}
+
+.co-comfy-engine-check-icon {
+  color: var(--co-accent);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+:root[data-theme="dark"] .co-comfy-engine-check-icon {
+  color: var(--co-accent-strong);
+}
+
+.co-comfy-engine-radio-dot {
+  width: 15px;
+  height: 15px;
+  border-radius: 9999px;
+  border: 1.5px solid var(--co-input-border);
+  background: transparent;
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: border-color 0.16s ease;
+}
+
+.co-comfy-engine-option:hover:not(:disabled) .co-comfy-engine-radio-dot {
+  border-color: var(--co-accent);
+}
+
+.co-comfy-engine-option-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--co-secondary-text);
+  overflow-wrap: anywhere;
+}
+
+.co-comfy-engine-option-spec {
+  margin-top: auto;
+  padding-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--co-muted);
+  overflow-wrap: anywhere;
+}
+
+.co-comfy-engine-option.is-selected .co-comfy-engine-option-spec {
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-engine-option.is-vram-short .co-comfy-engine-spec-vram {
+  color: var(--co-warning-text);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-comfy-workflow-item,
+  .co-comfy-engine-option,
+  .co-comfy-engine-radio-dot {
+    transition: none;
+  }
+
+  .co-comfy-workflow-item:hover:not(.is-disabled) {
+    transform: none;
+  }
 }
 
 /* Minimalist Preflight & Pack Readiness Strip */

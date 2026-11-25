@@ -1065,6 +1065,7 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.tabCanvas": "原生畫布",
   "comfy.canvasActiveAria": "畫布已開啟",
   "comfy.studioWorkflowCount": "{count} 個工作流",
+  "comfy.studioWorkflowCountOne": "{count} 個工作流",
   "comfy.studioCountShort": "{count} 個",
   "comfy.studioDesc":
     "自動解析 ComfyUI API JSON 為簡潔表單，在遠端 GPU 一鍵執行並歸檔圖片、影片與音訊輸出。",
@@ -1412,6 +1413,18 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.voiceSourcePreset": "內置精選",
   "comfy.voiceSourceCustom": "自訂",
   "comfy.taskKindTtsPreview": "聲線試聽",
+  "comfy.digitalHumanUnifiedName": "口播數碼人",
+  "comfy.digitalHumanUnifiedDesc":
+    "輸入人像相片與口播文稿（或音訊），自動生成口型自然的高清有聲影片（MP4）；支援在長影片穩健與旗艦高清雙引擎間按需要切換。",
+  "comfy.digitalHumanEngineCountSpec": "{count} 款引擎可選",
+  "comfy.videoEngineLabel": "影片生成引擎",
+  "comfy.videoEngineGpuAutoHint": "按目前 {gpu} 自動推薦",
+  "comfy.videoEngineRecommendedTag": "推薦",
+  "comfy.videoEngineReadyTag": "已就緒",
+  "comfy.videoEngineInfiniteTalkTitle": "長影片穩健",
+  "comfy.videoEngineInfiniteTalkSummary": "多分鐘連續口播更穩、速度更快",
+  "comfy.videoEngineLongCatTitle": "旗艦高清",
+  "comfy.videoEngineLongCatSummary": "畫質上限更高，支援原生 720p 與全棧加速",
 
   // Settings Page
   "settings.title": "設定",

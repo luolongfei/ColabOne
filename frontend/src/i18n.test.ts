@@ -2318,4 +2318,110 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       }
     }
   });
+
+  it("localizes unified digital human studio card, engine switcher, and singular workflow count across all 6 locales", () => {
+    const HAN_RE = /[\u3400-\u9fff]/;
+    const FULLWIDTH_PUNCT_RE = /[（）「」，。：；“”《》【】、～]/;
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|全棧/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+
+    const unifiedKeys = [
+      "comfy.studioWorkflowCountOne",
+      "comfy.digitalHumanUnifiedName",
+      "comfy.digitalHumanUnifiedDesc",
+      "comfy.digitalHumanEngineCountSpec",
+      "comfy.videoEngineLabel",
+      "comfy.videoEngineGpuAutoHint",
+      "comfy.videoEngineRecommendedTag",
+      "comfy.videoEngineReadyTag",
+      "comfy.videoEngineInfiniteTalkTitle",
+      "comfy.videoEngineInfiniteTalkSummary",
+      "comfy.videoEngineLongCatTitle",
+      "comfy.videoEngineLongCatSummary",
+    ] as const satisfies readonly ColabOneMessageKey[];
+
+    // Singular vs plural studio workflow counts across locales
+    expect(t("comfy.studioWorkflowCountOne", { count: 1 }, "en-US")).toBe(
+      "1 workflow",
+    );
+    expect(t("comfy.studioWorkflowCount", { count: 2 }, "en-US")).toBe(
+      "2 workflows",
+    );
+    expect(t("comfy.studioWorkflowCountOne", { count: 1 }, "zh-CN")).toBe(
+      "1 个工作流",
+    );
+    expect(t("comfy.studioWorkflowCountOne", { count: 1 }, "zh-TW")).toBe(
+      "1 個工作流程",
+    );
+    expect(t("comfy.studioWorkflowCountOne", { count: 1 }, "zh-HK")).toBe(
+      "1 個工作流",
+    );
+    expect(t("comfy.studioWorkflowCountOne", { count: 1 }, "ja-JP")).toBe(
+      "1 件のワークフロー",
+    );
+    expect(t("comfy.studioWorkflowCountOne", { count: 1 }, "ko-KR")).toBe(
+      "워크플로 1개",
+    );
+
+    for (const loc of ALL_LOCALES) {
+      const cat = COLABONE_MESSAGES[loc];
+      for (const key of unifiedKeys) {
+        const val = cat[key];
+        expect(val.trim().length, `${loc}[${key}] must be non-empty`).toBeGreaterThan(
+          0,
+        );
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            HAN_RE.test(val),
+            `Han leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+          expect(
+            FULLWIDTH_PUNCT_RE.test(val),
+            `fullwidth punctuation leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            val,
+            `forbidden zh-TW term in ${key}: "${val}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            val,
+            `spoken Cantonese leak in zh-HK[${key}]: "${val}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
+        }
+      }
+
+      // Placeholder interpolation checks
+      const engineCountText = t(
+        "comfy.digitalHumanEngineCountSpec",
+        { count: 2 },
+        loc,
+      );
+      expect(engineCountText, `${loc} engine count spec`).toContain("2");
+      expect(engineCountText, `${loc} engine count unresolved`).not.toContain("{");
+
+      const gpuAutoHintText = t(
+        "comfy.videoEngineGpuAutoHint",
+        { gpu: "G4 96G" },
+        loc,
+      );
+      expect(gpuAutoHintText, `${loc} GPU auto hint`).toContain("G4 96G");
+      expect(gpuAutoHintText, `${loc} GPU auto hint unresolved`).not.toContain("{");
+
+      // Engine titles must not embed the dynamic "Recommended" badge text
+      const recTag = cat["comfy.videoEngineRecommendedTag"];
+      expect(
+        cat["comfy.videoEngineInfiniteTalkTitle"].includes(recTag),
+        `${loc} InfiniteTalk title must not duplicate recommended badge "${recTag}"`,
+      ).toBe(false);
+      expect(
+        cat["comfy.videoEngineLongCatTitle"].includes(recTag),
+        `${loc} LongCat title must not duplicate recommended badge "${recTag}"`,
+      ).toBe(false);
+    }
+  });
 });
