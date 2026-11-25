@@ -195,7 +195,7 @@ def _remove_legacy_stage_dirs(target: Path) -> None:
             stale.unlink()
 
 
-def check():
+def check(with_e2e: bool = False):
     run(
         [
             sys.executable,
@@ -215,12 +215,18 @@ def check():
     run([sys.executable, "-m", "pytest", "-q", "tests"])
     run(["npm.cmd" if os.name == "nt" else "npm", "test"], ROOT / "frontend")
     run(["go", "run", ".", "--self-test"], ROOT / "console")
+    if with_e2e:
+        run(
+            ["npx.cmd" if os.name == "nt" else "npx", "playwright", "test"],
+            ROOT / "frontend",
+            timeout=600,
+        )
 
 
-def install(root, check_only=False, build_installer=False):
+def install(root, check_only=False, build_installer=False, with_e2e=False):
     paths = bundle.ColabOneInstallPaths(root)
     if check_only:
-        check()
+        check(with_e2e=with_e2e)
         return paths.target_install
     sync_service_bundle(ROOT)
     goos = _host_goos()
@@ -272,12 +278,22 @@ def main():
     parser.add_argument("--root", required=True, help="Isolated installation root")
     parser.add_argument("--check", action="store_true")
     parser.add_argument(
+        "--with-e2e",
+        action="store_true",
+        help="Also run frontend Playwright UI regression tests during --check",
+    )
+    parser.add_argument(
         "--installer",
         action="store_true",
         help="Build the native platform installer (.exe on Windows, .dmg on macOS)",
     )
     args = parser.parse_args()
-    install(args.root, args.check, build_installer=args.installer)
+    install(
+        args.root,
+        args.check,
+        build_installer=args.installer,
+        with_e2e=args.with_e2e,
+    )
 
 
 if __name__ == "__main__":

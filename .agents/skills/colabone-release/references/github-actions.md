@@ -30,13 +30,41 @@ SSH 密钥不是 GitHub REST API Token；使用 SSH remote 时需提供前三种
 
 | 操作 | 细粒度 Token 仓库权限 |
 | --- | --- |
-| 查询工作流运行、任务、下载日志 | Actions: Read |
+| 查询工作流运行、任务、下载日志、预检状态 | Actions: Read |
 | 查询 GitHub Release 及附件 | Contents: Read |
-| 重跑失败任务 | Actions: Read and write |
+| 触发 `ci.yml` 双平台预检、重跑失败任务 | Actions: Read and write |
 
-发布前应先执行一次只读查询核实读权限；只读查询成功不代表具备写权限，不要用重跑来试探写权限。遇到 HTTP 401/403/404 时保留完整状态码、响应头和响应体并一次向用户说明需检查的权限与网页操作链接（用户也可直接在 GitHub 页面点击 **Re-run failed jobs**）。
+发布前应先执行一次只读查询核实读权限；只读查询成功不代表具备写权限，不要用重跑来试探写权限。遇到 HTTP 401/403/404 时保留完整状态码、响应头和响应体并一次向用户说明需检查的权限与网页操作链接（用户也可直接在 GitHub 页面触发 `ci.yml` 或点击 **Re-run failed jobs**）。
 
 > `gh run watch` 不兼容部分细粒度 PAT；轮询时优先采用周期性 REST 查询，不要求用户放宽 Token 权限。
+
+## 发版前双平台预检（`ci.yml`）
+
+在修改版本号或创建任何 `v*` 标签之前，先将功能/修复提交推送到 `origin/main`，并触发 `ci.yml` 验证 `windows-latest` 与 `macos-latest`（完整覆盖离线测试、Playwright UI 回归及原生打包自检）：
+
+```bash
+PREFLIGHT_SHA=$(git rev-parse HEAD)
+SCRIPT=.agents/skills/colabone-release/scripts/github_actions.py
+
+# 1. 触发 ci.yml 预检（若同 SHA 已有全绿或运行中记录则幂等跳过，加 --force 可强制重跑）
+python3 "$SCRIPT" dispatch --workflow ci.yml --ref main --sha "$PREFLIGHT_SHA" < /dev/null
+
+# 2. 轮询预检运行列表与双平台任务状态
+python3 "$SCRIPT" list --workflow ci.yml --branch main --event workflow_dispatch --sha "$PREFLIGHT_SHA" < /dev/null
+python3 "$SCRIPT" preflight-status --branch main --sha "$PREFLIGHT_SHA" < /dev/null
+
+# 3. 确认 windows-latest 与 macos-latest 均已完成且成功（未就绪时退出码为 1）
+python3 "$SCRIPT" preflight-status --branch main --sha "$PREFLIGHT_SHA" --require-green < /dev/null
+
+# 如预检遇到外部网络抖动失败，可在核实日志后对预检运行执行一次失败任务重跑：
+python3 "$SCRIPT" rerun-failed --run-id "$RUN_ID" \
+  --workflow ci.yml --branch main --event workflow_dispatch \
+  --sha "$PREFLIGHT_SHA" --attempt "$ATTEMPT" < /dev/null
+```
+
+- `dispatch` 会将 `inputs.ref` 精确锁定为 40 位 `$PREFLIGHT_SHA`，防止后续推入 `main` 的新提交干扰本次预检
+- 若传了 `--created-after "<dispatched_at>"`，`list` 与 `preflight-status` 仅匹配本次触发之后创建的运行
+- 只有在 `preflight-status --require-green` 返回 `ready: true`（`windows-latest` 与 `macos-latest` 均为 `success`）之后，才运行 `prepare_release.py` 并打正式 `v*` 标签
 
 ## 定位运行、读取日志与验收 Release
 

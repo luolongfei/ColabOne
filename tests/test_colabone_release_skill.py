@@ -202,6 +202,10 @@ class SkillPackageTests(unittest.TestCase):
             "## Bug Fixes",
             "--added-zh",
             "--added-en",
+            "--with-e2e",
+            "dispatch --workflow ci.yml",
+            "preflight-status",
+            "--require-green",
         ):
             self.assertIn(token, skill_md)
         self.assertNotIn("## 中文", skill_md)
@@ -1171,7 +1175,11 @@ def _local_api(responses):
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            requests.append((self.command, self.path, self.headers.get("Authorization")))
+            length = int(self.headers.get("Content-Length") or "0")
+            body_bytes = self.rfile.read(length) if length > 0 else b""
+            requests.append(
+                (self.command, self.path, self.headers.get("Authorization"), body_bytes)
+            )
             status, body = next(pending, (500, b"Unexpected request"))
             self.send_response(status)
             self.send_header("Content-Length", str(len(body)))
@@ -1209,11 +1217,17 @@ class GitHubActionsHTTPContractTests(unittest.TestCase):
         self.assertEqual(
             requests,
             [
-                ("GET", "/repos/owner/repo/actions/runs/12", "Bearer fixture-token"),
+                (
+                    "GET",
+                    "/repos/owner/repo/actions/runs/12",
+                    "Bearer fixture-token",
+                    b"",
+                ),
                 (
                     "POST",
                     "/repos/owner/repo/actions/runs/12/rerun-failed-jobs",
                     "Bearer fixture-token",
+                    b"",
                 ),
             ],
         )
@@ -1230,6 +1244,7 @@ class GitHubActionsHTTPContractTests(unittest.TestCase):
                     "GET",
                     "/repos/owner/repo/releases/tags/v0.1.1",
                     "Bearer fixture-token",
+                    b"",
                 )
             ],
         )
@@ -1244,7 +1259,202 @@ class GitHubActionsHTTPContractTests(unittest.TestCase):
                 )
         self.assertEqual(error.exception.details["status"], 403)
         self.assertEqual(error.exception.details["response"], body.decode())
-        self.assertEqual([method for method, _, _ in requests], ["GET", "POST"])
+        self.assertEqual([method for method, _, _, _ in requests], ["GET", "POST"])
+
+    def test_preflight_dispatch_and_status_http_contracts(self) -> None:
+        sha = "c" * 40
+        ci_run = _sample_run(
+            id=55,
+            run_attempt=1,
+            path=".github/workflows/ci.yml",
+            event="workflow_dispatch",
+            head_branch="main",
+            head_sha=sha,
+            status="completed",
+            conclusion="success",
+            created_at="2026-11-25T10:00:00Z",
+        )
+        green_jobs = {
+            "jobs": [
+                {
+                    "id": 101,
+                    "name": "check (windows-latest)",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "steps": [],
+                },
+                {
+                    "id": 102,
+                    "name": "check (macos-latest)",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "steps": [],
+                },
+            ]
+        }
+
+        # 1. No prior run -> dispatches ci.yml on main pinned to exact SHA via inputs.ref
+        with _local_api(
+            [
+                (200, json.dumps({"workflow_runs": []}).encode()),
+                (204, b""),
+            ]
+        ) as (client, requests):
+            res = ACTIONS.colabone_dispatch_ci(
+                client, workflow="ci.yml", ref="main", sha=sha
+            )
+        self.assertTrue(res["dispatched"])
+        self.assertFalse(res["already_passed"])
+        self.assertEqual(res["ref"], "main")
+        self.assertEqual(res["sha"], sha)
+        self.assertRegex(res["dispatched_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(requests[1][0], "POST")
+        self.assertEqual(
+            requests[1][1], "/repos/owner/repo/actions/workflows/ci.yml/dispatches"
+        )
+        self.assertEqual(
+            json.loads(requests[1][3].decode("utf-8")),
+            {"ref": "main", "inputs": {"ref": sha}},
+        )
+
+        # 2. Already passed on both platforms -> dispatch skips idempotently
+        with _local_api(
+            [
+                (200, json.dumps({"workflow_runs": [ci_run]}).encode()),
+                (200, json.dumps(ci_run).encode()),
+                (200, json.dumps(green_jobs).encode()),
+            ]
+        ) as (client, requests):
+            res = ACTIONS.colabone_dispatch_ci(
+                client, workflow="ci.yml", ref="main", sha=sha
+            )
+        self.assertFalse(res["dispatched"])
+        self.assertTrue(res["already_passed"])
+        self.assertEqual(
+            res["platforms"],
+            {"windows-latest": "success", "macos-latest": "success"},
+        )
+        self.assertEqual([m for m, _, _, _ in requests], ["GET", "GET", "GET"])
+
+        # 3. Already running -> dispatch skips without duplicate run
+        active_run = {**ci_run, "status": "in_progress", "conclusion": None}
+        active_jobs = {
+            "jobs": [
+                {
+                    "id": 101,
+                    "name": "check (windows-latest)",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "steps": [],
+                }
+            ]
+        }
+        with _local_api(
+            [
+                (200, json.dumps({"workflow_runs": [active_run]}).encode()),
+                (200, json.dumps(active_run).encode()),
+                (200, json.dumps(active_jobs).encode()),
+            ]
+        ) as (client, requests):
+            res = ACTIONS.colabone_dispatch_ci(
+                client, workflow="ci.yml", ref="main", sha=sha
+            )
+        self.assertFalse(res["dispatched"])
+        self.assertTrue(res["already_running"])
+        self.assertEqual([m for m, _, _, _ in requests], ["GET", "GET", "GET"])
+
+        # 4. --force dispatches even without checking prior runs
+        with _local_api([(204, b"")]) as (client, requests):
+            res = ACTIONS.colabone_dispatch_ci(
+                client, workflow="ci.yml", ref="main", sha=sha, force=True
+            )
+        self.assertTrue(res["dispatched"])
+        self.assertEqual([m for m, _, _, _ in requests], ["POST"])
+
+        # 5. preflight-status fails if only one platform succeeded (missing macos-latest)
+        partial_jobs = {
+            "jobs": [
+                {
+                    "id": 101,
+                    "name": "check (windows-latest)",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "steps": [],
+                }
+            ]
+        }
+        with _local_api(
+            [
+                (200, json.dumps({"workflow_runs": [ci_run]}).encode()),
+                (200, json.dumps(ci_run).encode()),
+                (200, json.dumps(partial_jobs).encode()),
+            ]
+        ) as (client, _requests):
+            status = ACTIONS.colabone_preflight_status(
+                client, workflow="ci.yml", branch="main", sha=sha
+            )
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["platforms"]["windows-latest"], "success")
+        self.assertEqual(status["platforms"]["macos-latest"], "missing")
+
+        # 6. CLI preflight-status --require-green returns 0 when ready and 1 when not ready
+        with patch.object(
+            ACTIONS, "colabone_run_command", return_value="https://github.com/owner/repo"
+        ), patch.object(
+            ACTIONS, "colabone_resolve_credential", return_value="token"
+        ), patch.object(
+            ACTIONS,
+            "colabone_preflight_status",
+            return_value={"ready": True, "state": "ready"},
+        ):
+            self.assertEqual(
+                ACTIONS.main(
+                    ["preflight-status", "--branch", "main", "--sha", sha, "--require-green"]
+                ),
+                0,
+            )
+
+        with patch.object(
+            ACTIONS, "colabone_run_command", return_value="https://github.com/owner/repo"
+        ), patch.object(
+            ACTIONS, "colabone_resolve_credential", return_value="token"
+        ), patch.object(
+            ACTIONS,
+            "colabone_preflight_status",
+            return_value={"ready": False, "state": "missing"},
+        ):
+            self.assertEqual(
+                ACTIONS.main(
+                    ["preflight-status", "--branch", "main", "--sha", sha, "--require-green"]
+                ),
+                1,
+            )
+
+        # 7. CLI list/rerun-failed accept --branch with workflow_dispatch default event
+        older = {**ci_run, "id": 54, "created_at": "2026-11-25T09:50:00Z"}
+        with _local_api(
+            [(200, json.dumps({"workflow_runs": [older, ci_run]}).encode())]
+        ) as (client, _requests):
+            filtered = ACTIONS.colabone_list_runs(
+                client,
+                workflow="ci.yml",
+                ref_name="main",
+                sha=sha,
+                event="workflow_dispatch",
+                created_after="2026-11-25T09:55:00Z",
+            )
+        self.assertEqual([item["id"] for item in filtered], [55])
+
+        failed_ci = {**ci_run, "conclusion": "failure"}
+        with _local_api(
+            [(200, json.dumps(failed_ci).encode()), (201, b"Created")]
+        ) as (client, requests):
+            retried = ACTIONS.colabone_rerun_failed(
+                client, 55, "ci.yml", "main", sha, 1, event="workflow_dispatch"
+            )
+        self.assertTrue(retried["accepted"])
+        self.assertEqual([m for m, _, _, _ in requests], ["GET", "POST"])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import http.client
 import json
 import os
@@ -22,7 +23,15 @@ _SEMVER_PRERELEASE = (
     r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?"
 )
 COLABONE_RELEASE_TAG_RE = re.compile(rf"^v({_SEMVER_CORE}{_SEMVER_PRERELEASE})$")
+COLABONE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+COLABONE_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+COLABONE_ISO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 COLABONE_WORKFLOW_CHOICES = ("release.yml", "ci.yml")
+COLABONE_EVENT_CHOICES = ("push", "workflow_dispatch")
+COLABONE_PREFLIGHT_PLATFORMS = ("windows-latest", "macos-latest")
+COLABONE_ACTIVE_RUN_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "requested", "pending"}
+)
 
 
 class ColabOneActionsError(Exception):
@@ -123,16 +132,28 @@ class ColabOneActionsClient:
         self.token = token
         self.opener = urllib.request.build_opener(_NoRedirectHandler)
 
-    def request(self, path: str, *, method: str = "GET"):
+    def request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        json_body: dict | None = None,
+    ):
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "ColabOne-release",
+        }
+        payload = None
+        if json_body is not None:
+            payload = json.dumps(json_body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
             self.base + path,
+            data=payload,
             method=method,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "ColabOne-release",
-            },
+            headers=headers,
         )
         try:
             try:
@@ -253,14 +274,211 @@ def colabone_read_run(
     return run
 
 
-def colabone_run_matches(run: dict, workflow: str, tag: str, sha: str) -> bool:
+def colabone_validate_branch_name(branch: str) -> str:
+    if (
+        not branch
+        or not COLABONE_BRANCH_RE.fullmatch(branch)
+        or branch.startswith(("-", "/"))
+        or branch.endswith("/")
+        or ".." in branch
+        or "//" in branch
+    ):
+        raise ColabOneActionsError("invalid_branch_name", branch=branch)
+    return branch
+
+
+def colabone_run_matches(
+    run: dict,
+    workflow: str,
+    tag: str,
+    sha: str,
+    event: str = "push",
+) -> bool:
     return (
         isinstance(run.get("path"), str)
         and run["path"].split("@")[0] == f".github/workflows/{workflow}"
-        and run.get("event") == "push"
+        and run.get("event") == event
         and run.get("head_branch") == tag
         and run.get("head_sha") == sha
     )
+
+
+def colabone_list_runs(
+    client: ColabOneActionsClient,
+    *,
+    workflow: str,
+    ref_name: str,
+    sha: str,
+    event: str = "push",
+    created_after: str | None = None,
+) -> list[dict]:
+    runs = client.pages(
+        f"actions/workflows/{workflow}/runs",
+        "workflow_runs",
+        head_sha=sha,
+        branch=ref_name,
+        event=event,
+    )
+    matched = [
+        run
+        for run in runs
+        if colabone_run_matches(run, workflow, ref_name, sha, event=event)
+        and (
+            created_after is None
+            or (
+                isinstance(run.get("created_at"), str)
+                and run["created_at"] >= created_after
+            )
+        )
+    ]
+    matched.sort(
+        key=lambda item: (str(item.get("created_at") or ""), int(item.get("id") or 0)),
+        reverse=True,
+    )
+    return matched
+
+
+def _colabone_extract_preflight_platforms(jobs: list[dict]) -> dict[str, str]:
+    platforms: dict[str, str] = {}
+    for platform in COLABONE_PREFLIGHT_PLATFORMS:
+        expected_suffix = f"check ({platform})"
+        matched_job = next(
+            (
+                job
+                for job in jobs
+                if isinstance(job.get("name"), str)
+                and (
+                    job["name"] == expected_suffix
+                    or job["name"].endswith(f"/ {expected_suffix}")
+                )
+            ),
+            None,
+        )
+        if matched_job is None:
+            platforms[platform] = "missing"
+        elif matched_job.get("status") == "completed":
+            platforms[platform] = str(matched_job.get("conclusion") or "unknown")
+        else:
+            platforms[platform] = str(matched_job.get("status") or "pending")
+    return platforms
+
+
+def colabone_preflight_status(
+    client: ColabOneActionsClient,
+    *,
+    workflow: str = "ci.yml",
+    branch: str = "main",
+    sha: str,
+    created_after: str | None = None,
+) -> dict:
+    colabone_validate_branch_name(branch)
+    runs = colabone_list_runs(
+        client,
+        workflow=workflow,
+        ref_name=branch,
+        sha=sha,
+        event="workflow_dispatch",
+        created_after=created_after,
+    )
+    if not runs:
+        return {
+            "ready": False,
+            "state": "missing",
+            "workflow": workflow,
+            "branch": branch,
+            "sha": sha,
+            "run": None,
+            "platforms": {platform: "missing" for platform in COLABONE_PREFLIGHT_PLATFORMS},
+            "jobs": [],
+        }
+    latest = colabone_show_run(client, int(runs[0]["id"]))
+    platforms = _colabone_extract_preflight_platforms(latest.get("jobs", []))
+    all_platforms_green = all(
+        platforms.get(platform) == "success"
+        for platform in COLABONE_PREFLIGHT_PLATFORMS
+    )
+    ready = (
+        latest.get("status") == "completed"
+        and latest.get("conclusion") == "success"
+        and all_platforms_green
+    )
+    if ready:
+        state = "ready"
+    elif latest.get("status") in COLABONE_ACTIVE_RUN_STATUSES:
+        state = "in_progress"
+    else:
+        state = "failed"
+    return {
+        "ready": ready,
+        "state": state,
+        "workflow": workflow,
+        "branch": branch,
+        "sha": sha,
+        "run": colabone_summarize_run(latest),
+        "platforms": platforms,
+        "jobs": latest.get("jobs", []),
+    }
+
+
+def colabone_dispatch_ci(
+    client: ColabOneActionsClient,
+    *,
+    workflow: str = "ci.yml",
+    ref: str = "main",
+    sha: str,
+    force: bool = False,
+) -> dict:
+    colabone_validate_branch_name(ref)
+    if not force:
+        existing = colabone_preflight_status(
+            client, workflow=workflow, branch=ref, sha=sha
+        )
+        if existing["ready"]:
+            return {
+                "dispatched": False,
+                "already_passed": True,
+                "already_running": False,
+                "workflow": workflow,
+                "ref": ref,
+                "sha": sha,
+                "run": existing["run"],
+                "platforms": existing["platforms"],
+            }
+        if existing["state"] == "in_progress":
+            return {
+                "dispatched": False,
+                "already_passed": False,
+                "already_running": True,
+                "workflow": workflow,
+                "ref": ref,
+                "sha": sha,
+                "run": existing["run"],
+                "platforms": existing["platforms"],
+            }
+    dispatched_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=5)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    status, _, raw = client.request(
+        f"actions/workflows/{workflow}/dispatches",
+        method="POST",
+        json_body={"ref": ref, "inputs": {"ref": sha}},
+    )
+    if status != 204:
+        raise ColabOneActionsError(
+            "unexpected_status",
+            status=status,
+            endpoint=f"actions/workflows/{workflow}/dispatches",
+            response=raw.decode("utf-8", errors="replace"),
+        )
+    return {
+        "dispatched": True,
+        "already_passed": False,
+        "already_running": False,
+        "workflow": workflow,
+        "ref": ref,
+        "sha": sha,
+        "dispatched_at": dispatched_at,
+    }
 
 
 def colabone_summarize_run(run: dict) -> dict:
@@ -323,10 +541,12 @@ def colabone_rerun_failed(
     tag: str,
     sha: str,
     attempt: int,
+    *,
+    event: str = "push",
 ) -> dict:
     path = f"actions/runs/{run_id}"
     before = colabone_read_run(client, run_id)
-    if not colabone_run_matches(before, workflow, tag, sha):
+    if not colabone_run_matches(before, workflow, tag, sha, event=event):
         raise ColabOneActionsError(
             "run_identity_mismatch", run=colabone_summarize_run(before)
         )
@@ -364,7 +584,7 @@ def colabone_rerun_failed(
                 query_error=query_error.details,
             ) from error
         if current["run_attempt"] > attempt and colabone_run_matches(
-            current, workflow, tag, sha
+            current, workflow, tag, sha, event=event
         ):
             return {
                 "accepted": True,
@@ -454,7 +674,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo-root", type=Path, default=Path(__file__).resolve().parents[4]
     )
     commands = result.add_subparsers(dest="operation", required=True)
-    for operation in ("list", "show", "logs", "rerun-failed", "release"):
+    for operation in (
+        "list",
+        "show",
+        "logs",
+        "rerun-failed",
+        "release",
+        "dispatch",
+        "preflight-status",
+    ):
         sub = commands.add_parser(operation)
         if operation in {"list", "rerun-failed"}:
             sub.add_argument(
@@ -462,8 +690,13 @@ def build_parser() -> argparse.ArgumentParser:
                 default="release.yml",
                 choices=COLABONE_WORKFLOW_CHOICES,
             )
-            sub.add_argument("--tag", required=True)
+            ref_group = sub.add_mutually_exclusive_group(required=True)
+            ref_group.add_argument("--tag")
+            ref_group.add_argument("--branch")
             sub.add_argument("--sha", required=True)
+            sub.add_argument("--event", choices=COLABONE_EVENT_CHOICES, default=None)
+        if operation == "list":
+            sub.add_argument("--created-after", default=None)
         if operation in {"show", "rerun-failed"}:
             sub.add_argument("--run-id", required=True, type=_positive)
             sub.add_argument(
@@ -477,6 +710,17 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--output", type=Path, required=True)
         if operation == "release":
             sub.add_argument("--tag", required=True)
+        if operation == "dispatch":
+            sub.add_argument("--workflow", default="ci.yml", choices=("ci.yml",))
+            sub.add_argument("--ref", default="main")
+            sub.add_argument("--sha", required=True)
+            sub.add_argument("--force", action="store_true")
+        if operation == "preflight-status":
+            sub.add_argument("--workflow", default="ci.yml", choices=("ci.yml",))
+            sub.add_argument("--branch", default="main")
+            sub.add_argument("--sha", required=True)
+            sub.add_argument("--created-after", default=None)
+            sub.add_argument("--require-green", action="store_true")
     return result
 
 
@@ -486,11 +730,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.operation == "logs" and bool(args.run_id) != bool(args.attempt):
         arguments.error("run logs require --attempt; job logs do not accept --attempt")
     if args.operation in {"list", "rerun-failed"}:
-        if not COLABONE_RELEASE_TAG_RE.fullmatch(args.tag) or not re.fullmatch(
-            r"[0-9a-f]{40}", args.sha
-        ):
+        if not COLABONE_SHA_RE.fullmatch(args.sha):
+            arguments.error("provide a full 40-char commit SHA")
+        if args.tag is not None and not COLABONE_RELEASE_TAG_RE.fullmatch(args.tag):
             arguments.error(
                 "provide a vMAJOR.MINOR.PATCH[-prerelease] tag and full 40-char commit SHA"
+            )
+        if args.branch is not None:
+            try:
+                colabone_validate_branch_name(args.branch)
+            except ColabOneActionsError:
+                arguments.error(f"invalid branch name: {args.branch}")
+    if args.operation in {"dispatch", "preflight-status"}:
+        if not COLABONE_SHA_RE.fullmatch(args.sha):
+            arguments.error("provide a full 40-char commit SHA")
+        ref_value = args.ref if args.operation == "dispatch" else args.branch
+        try:
+            colabone_validate_branch_name(ref_value)
+        except ColabOneActionsError:
+            arguments.error(f"invalid branch name: {ref_value}")
+    if args.operation in {"list", "preflight-status"} and args.created_after:
+        if not COLABONE_ISO_UTC_RE.fullmatch(args.created_after):
+            arguments.error(
+                "created-after must be a UTC ISO-8601 timestamp like 2026-11-25T09:00:00Z"
             )
     if args.operation == "release" and not COLABONE_RELEASE_TAG_RE.fullmatch(args.tag):
         arguments.error("provide a vMAJOR.MINOR.PATCH[-prerelease] tag")
@@ -504,20 +766,21 @@ def main(argv: list[str] | None = None) -> int:
             repo, colabone_resolve_credential(args.repo_root, remote, host)
         )
         if args.operation == "list":
-            runs = client.pages(
-                f"actions/workflows/{args.workflow}/runs",
-                "workflow_runs",
-                head_sha=args.sha,
-                branch=args.tag,
-                event="push",
+            ref_name = args.tag if args.tag is not None else args.branch
+            event = (
+                args.event
+                if args.event is not None
+                else ("push" if args.tag is not None else "workflow_dispatch")
             )
-            data = {
-                "runs": [
-                    colabone_summarize_run(run)
-                    for run in runs
-                    if colabone_run_matches(run, args.workflow, args.tag, args.sha)
-                ]
-            }
+            runs = colabone_list_runs(
+                client,
+                workflow=args.workflow,
+                ref_name=ref_name,
+                sha=args.sha,
+                event=event,
+                created_after=args.created_after,
+            )
+            data = {"runs": [colabone_summarize_run(run) for run in runs]}
         elif args.operation == "show":
             data = colabone_show_run(client, args.run_id, args.attempt)
         elif args.operation == "logs":
@@ -529,9 +792,39 @@ def main(argv: list[str] | None = None) -> int:
             data = client.download(path, args.output)
         elif args.operation == "release":
             data = colabone_inspect_release(client, args.tag)
+        elif args.operation == "dispatch":
+            data = colabone_dispatch_ci(
+                client,
+                workflow=args.workflow,
+                ref=args.ref,
+                sha=args.sha,
+                force=args.force,
+            )
+        elif args.operation == "preflight-status":
+            data = colabone_preflight_status(
+                client,
+                workflow=args.workflow,
+                branch=args.branch,
+                sha=args.sha,
+                created_after=args.created_after,
+            )
+            if args.require_green and not data["ready"]:
+                raise ColabOneActionsError("preflight_not_ready", **data)
         else:
+            ref_name = args.tag if args.tag is not None else args.branch
+            event = (
+                args.event
+                if args.event is not None
+                else ("push" if args.tag is not None else "workflow_dispatch")
+            )
             data = colabone_rerun_failed(
-                client, args.run_id, args.workflow, args.tag, args.sha, args.attempt
+                client,
+                args.run_id,
+                args.workflow,
+                ref_name,
+                args.sha,
+                args.attempt,
+                event=event,
             )
         # Standard ASCII JSON escapes preserve Unicode on non-UTF-8 output pipes.
         print(json.dumps(data))

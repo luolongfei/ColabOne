@@ -1,6 +1,12 @@
 name: CI
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref or commit SHA to build and verify"
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       ref:

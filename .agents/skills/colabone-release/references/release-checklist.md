@@ -8,12 +8,12 @@
 - `frontend/package.json`：前端包清单，`version` 字段与 `console/mygo.json` 保持同步
 - `frontend/package-lock.json`：npm 锁文件，顶层 `version` 与 `packages[""].version` 均与 `console/mygo.json` 保持同步
 - `tools/release_version.py`：CI 与本地共用的版本清单校验/更新工具（`--check`、`--tag`、`--set`）
-- `tools/install.py`：离线检查入口（`python3 tools/install.py --root <tmp> --check`），依次执行 Python 字节码编译、只读嵌入式远端服务包一致性校验（`check_service_bundle`，不做写入同步；更新远端源码后需手动运行 `python3 tools/sync_service_bundle.py`）、`mygo generate` 绑定一致性校验、前端构建、`go vet`、`go test`、`pytest tests`、`vitest` 与纯 Go `go run . --self-test`
+- `tools/install.py`：离线检查入口（`python3 tools/install.py --root <tmp> --check`），依次执行 Python 字节码编译、只读嵌入式远端服务包一致性校验（`check_service_bundle`，不做写入同步；更新远端源码后需手动运行 `python3 tools/sync_service_bundle.py`）、`mygo generate` 绑定一致性校验、前端构建、`go vet`、`go test`、`pytest tests`、`vitest` 与纯 Go `go run . --self-test`；传入 `--with-e2e` 时会追加执行前端 `npx playwright test` UI 回归测试
 - `tools/package.py`：原生安装包构建与敏感信息审计脚本，在 CI 中分别产出 `ColabOne-<version>-windows-x64-setup.exe` 与 `ColabOne-<version>-macos-arm64.dmg`（以及 MyGo 签名自动更新产物）
-- `.github/workflows/ci.yml`：仅响应 `workflow_call` 与 `workflow_dispatch`，在 `windows-latest` 和 `macos-latest` 上运行离线检查、Playwright UI 回归测试并上传安装包与更新包 artifact
+- `.github/workflows/ci.yml`：仅响应 `workflow_dispatch`（支持可选 `inputs.ref` 锁定精确提交 SHA）与 `workflow_call`，在 `windows-latest` 和 `macos-latest` 上运行离线检查、Playwright UI 回归测试并上传安装包与更新包 artifact
 - `.github/workflows/release.yml`：响应 `v*` 标签推送与手动 `workflow_dispatch`；依次校验标签与提交、校验三处源码版本、调用 `ci.yml` 构建双平台原生安装包与更新包、生成带下载指引的 Release 说明与 `SHA256SUMS.txt` 并创建/更新 GitHub Release
 - `.agents/skills/colabone-release/scripts/prepare_release.py`：发布准备脚本，默认将最后一位（patch）`+1`，原子更新三处版本清单并输出中英双语（上方中文区块、下方英文区块）附注标签发布说明
-- `.agents/skills/colabone-release/scripts/github_actions.py`：GitHub Actions 查询、日志下载、安全重跑失败任务与 GitHub Release 产物验收脚本
+- `.agents/skills/colabone-release/scripts/github_actions.py`：GitHub Actions 双平台预检触发（`dispatch`）、预检状态门禁（`preflight-status`）、查询、日志下载、安全重跑失败任务与 GitHub Release 产物验收脚本
 - `tests/test_release_workflow.py` 与 `tests/test_colabone_release_skill.py`：覆盖版本脚本、CI/Release 工作流契约、发布准备脚本及 Actions 客户端的离线单元测试
 
 ## 版本行为
@@ -29,7 +29,7 @@
 
 `prepare_release.py` 会先在同目录写出临时文件并 `fsync`，替换前备份原文件；任意一步失败时按逆序自动回滚已替换文件。若极端情况下回滚本身失败，报错信息会列出受影响文件及保留的备份副本路径：先解除文件占用或权限问题，用备份还原并运行 `python3 tools/release_version.py --check` 确认一致后，再重新执行发布准备。
 
-## 离线验证命令
+## 打标签前预检与离线验证命令
 
 WSL2/Linux 环境下请始终设置 `PATH`、`LD_LIBRARY_PATH` 并重定向 `< /dev/null`：
 
@@ -37,6 +37,18 @@ WSL2/Linux 环境下请始终设置 `PATH`、`LD_LIBRARY_PATH` 并重定向 `< /
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/sysroot/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
 
+# 1. 打标签前：先对 main 上的功能/修复代码跑本地离线检查 + Playwright UI 回归
+python3 tools/install.py --root "$(mktemp -d)" --check --with-e2e < /dev/null
+git push origin main < /dev/null
+
+# 2. 打标签前：触发并等待 Windows + macOS 双平台 ci.yml 预检全绿
+PREFLIGHT_SHA=$(git rev-parse HEAD)
+python3 .agents/skills/colabone-release/scripts/github_actions.py dispatch \
+  --workflow ci.yml --ref main --sha "$PREFLIGHT_SHA" < /dev/null
+python3 .agents/skills/colabone-release/scripts/github_actions.py preflight-status \
+  --branch main --sha "$PREFLIGHT_SHA" --require-green < /dev/null
+
+# 3. 预检全绿并运行 prepare_release.py 后：核对版本清单与 diff
 python3 tools/release_version.py --tag "v$VERSION" < /dev/null
 python3 tools/install.py --root "$(mktemp -d)" --check < /dev/null
 git diff -- console/mygo.json frontend/package.json frontend/package-lock.json

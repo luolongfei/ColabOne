@@ -42,6 +42,10 @@ def test_ci_workflow_does_not_trigger_on_branch_pushes_or_pull_requests():
     assert "branches:" not in on_block
     assert "pull_request:" not in on_block
     assert "ref: ${{ inputs.ref || github.sha }}" in workflow
+    # Both workflow_dispatch and workflow_call must expose inputs.ref so pre-tag
+    # preflight runs on main pin checkout to the exact validated commit SHA.
+    assert on_block.count("inputs:") == 2
+    assert on_block.count("ref:") == 2
 
 
 def test_release_workflow_triggers_only_on_version_tags_and_manual_dispatch():

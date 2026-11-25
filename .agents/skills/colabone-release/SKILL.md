@@ -1,10 +1,12 @@
 ---
 name: colabone-release
 description: >-
-  Prepare, verify, tag, publish, or resume ColabOne releases, including
-  automatic patch (+1) version bumping, manifest synchronization, bilingual
-  (Chinese + English) annotated release notes, GitHub Actions tracking,
-  failed-job recovery, and GitHub Release artifact verification.
+  Prepare, preflight on Windows/macOS CI, verify, tag, publish, or resume
+  ColabOne releases, including local Playwright regression checks, pre-tag
+  ci.yml dual-platform verification, automatic patch (+1) version bumping,
+  manifest synchronization, bilingual (Chinese + English) annotated release
+  notes, GitHub Actions tracking, failed-job recovery, and GitHub Release
+  artifact verification.
 ---
 
 # ColabOne Release
@@ -21,7 +23,7 @@ description: >-
 
 ## 新发布与继续发布
 
-- **新版本发布**：按下方完整流程准备版本清单、离线验证、提交、创建附注标签、推送并验收
+- **新版本发布**：先在 `main` 上完成代码提交、本地离线检查（含 Playwright UI 回归）与双平台 `ci.yml` 预检，确认 `windows-latest` 与 `macos-latest` 全绿后，再递增版本清单、创建附注标签并推送发布；避免把正式 `v*` 标签当作首次双平台测试导致浪费版本号
 - **继续已有发布**：复用原标签与提交 SHA，不递增版本，不重新运行准备脚本、不重复提交、不强制覆盖或移动已推送的标签
 - 推送标签前、推送标签后以及查询或恢复已有发布时，先读取 [references/github-actions.md](references/github-actions.md)
 - 发布前使用只读请求检查 GitHub Actions 访问能力；Git 可推送不代表 Actions API 可读写，不要通过重跑探测写权限
@@ -43,10 +45,24 @@ description: >-
    - 同步远端标签：`git fetch --tags --prune origin`
    - 检查分支、工作区与最近标签：`git branch --show-current`、`git status --short`、`git tag --list 'v*' --sort=-v:refname | head -n 10`
    - 校验三处版本清单当前一致：`python3 tools/release_version.py --check`
-   - 查看自上次发布以来的提交以归纳用户可见变更：`git log <latest_tag>..HEAD --oneline`（首次发版时查看最近提交记录）
    - 检查工作区全部未提交改动；不要将无关改动混入发布提交，**禁止**执行 `git add .` 或 `git add -A`
+   - 若存在待发布的功能/修复改动，先按常规提交单独提交到 `main`（此时不改版本号）
+   - 查看自上次发布以来的提交以归纳用户可见变更：`git log <latest_tag>..HEAD --oneline`（首次发版时查看最近提交记录）
    - 按 [references/github-actions.md](references/github-actions.md) 做一次只读 Actions 权限探测
-2. **准备发布版本与中英双语发布说明**
+2. **发版前门禁：本地 Playwright 回归 + 双平台 `ci.yml` 预检（打标签前必过）**
+   - 在本地先运行完整离线检查；凡是自上次发布以来修改过 `frontend/` 或跨平台代码，加上 `--with-e2e` 一并运行本地 Playwright UI 回归测试：
+     `python3 tools/install.py --root "$(mktemp -d)" --check --with-e2e < /dev/null`
+   - 先将功能/修复提交推送到远端主分支（此时仍不修改版本号、不创建 `v*` 标签）：
+     `git push origin main`
+   - 记录当前 `PREFLIGHT_SHA=$(git rev-parse HEAD)`，使用 `scripts/github_actions.py` 对 `main` 触发双平台 `ci.yml` 预检（包含 `windows-latest` 与 `macos-latest` 的离线检查、Playwright UI 回归、原生安装包构建与自检）：
+     `python3 .agents/skills/colabone-release/scripts/github_actions.py dispatch --workflow ci.yml --ref main --sha "$PREFLIGHT_SHA" < /dev/null`
+     - 该命令具备幂等性：若 `$PREFLIGHT_SHA` 已有双平台全绿的 `ci.yml` 预检记录会返回 `already_passed: true`，不重复消耗 CI 分钟数；若已在运行则返回 `already_running: true`
+   - 轮询 `ci.yml` 运行直至完成，并用以下命令确认双平台均已变绿：
+     `python3 .agents/skills/colabone-release/scripts/github_actions.py preflight-status --branch main --sha "$PREFLIGHT_SHA" --require-green < /dev/null`
+   - 若双平台预检暴露任何 Windows/macOS 或 UI 回归问题，直接读取失败日志在 `main` 上修复、推送并重新预检——此阶段未创建任何 `v*` 标签，不会浪费版本号
+   - 若因 Token 仅具备只读权限而无法通过 API 触发 `workflow_dispatch`，向用户提供 `ci.yml` 手动触发网页链接（传入 `ref=$PREFLIGHT_SHA`），待手动触发通过后再继续，切勿跳过预检直接打正式标签
+3. **准备发布版本与中英双语发布说明**
+   - 确认双平台 `ci.yml` 预检对当前 `HEAD` 已返回 `ready: true` 后，再修改版本清单
    - 可先加 `--dry-run` 预览解析出的目标版本、更新文件列表与中英双语发布说明，确认无误后再正式写入
    - 运行 `scripts/prepare_release.py`，**必须同时传入成对的中英文发布说明条目**：
      - 中文区块（上方）：`--added-zh` / `--changed-zh` / `--fixed-zh`（兼容 `--added` / `--changed` / `--fixed` 别名）
@@ -54,14 +70,14 @@ description: >-
      - 未指定版本时省略 `--version`（默认最后一位 `+1`）
    - 脚本会强校验双语完整性：任一有内容的分类都必须同时提供数量一致的中文与英文条目，否则拒绝写入；确认通过后原子更新 `console/mygo.json`、`frontend/package.json`、`frontend/package-lock.json`（含 `packages[""].version`），并生成附注标签用的中英双语发布说明文件（写入失败自动回滚）
    - 发布说明面向用户，简洁描述可见功能、体验改进或问题修复，不直接照搬内部实现细节或重构流水账；英文区块应使用自然地道的英文准确表达对应变更（避免生硬直译），便于国际用户直接阅读
-3. **运行离线验证与发版前审查**
+4. **运行版本清单校验与发版前审查**
    - 使用与 CI 完全一致的校验器核对目标标签：`python3 tools/release_version.py --tag "v$VERSION"`
-   - 运行完整离线检查套件（确保所有 Go、Python、前端构建与单测全部离线通过）：
+   - 运行离线检查套件验证版本清单同步后的前端构建与单测：
      `python3 tools/install.py --root "$(mktemp -d)" --check < /dev/null`
-   - 核对 diff，确认三处版本文件仅包含预期版本变更：
+   - 核对 diff，确认三处版本文件仅包含预期版本变更（无任何业务代码变动，确保与已通过双平台预检的代码完全一致）：
      `git diff -- console/mygo.json frontend/package.json frontend/package-lock.json`
    - 详细检查项见 [references/release-checklist.md](references/release-checklist.md)
-4. **提交、创建附注标签并推送**
+5. **提交、创建附注标签并推送**
    - 仅暂存受版本清单管理的文件：
      `git add console/mygo.json frontend/package.json frontend/package-lock.json`
    - 提交说明格式固定为：`chore: release X.Y.Z`
@@ -70,13 +86,13 @@ description: >-
    - 核对标签指向提交及标签内容，再先推分支、后推标签：
      `git push origin main`
      `git push origin "vX.Y.Z"`
-   - 注意：推送 `main` 不会触发 `ci.yml` 或 `release.yml`；推送 `v*` 标签后才会触发 `.github/workflows/release.yml`（需配置仓库 Secret `MYGO_UPDATER_PRIVATE_KEY` 用于签名 MyGo 自动更新包与增量补丁；工作流会先校验标签与源码版本，再调用 `ci.yml` 构建并测试双平台原生安装包 `.exe`/`.dmg` 与自动更新包，将附注标签的中英双语发布说明自动注入 `update-*.json` 并在 GitHub Release 正文附加直链下载指引，生成 `SHA256SUMS.txt`，最后先以草稿模式上传产物并原子发布 GitHub Release）
-5. **跟进 GitHub Actions 并验收 GitHub Release**
+   - 注意：推送 `main` 不会自动触发 `ci.yml` 或 `release.yml`；推送 `v*` 标签后才会触发 `.github/workflows/release.yml`（需配置仓库 Secret `MYGO_UPDATER_PRIVATE_KEY` 用于签名 MyGo 自动更新包与增量补丁；工作流会先校验标签与源码版本，再调用 `ci.yml` 构建并测试双平台原生安装包 `.exe`/`.dmg` 与自动更新包，将附注标签的中英双语发布说明自动注入 `update-*.json` 并在 GitHub Release 正文附加直链下载指引，生成 `SHA256SUMS.txt`，最后先以草稿模式上传产物并原子发布 GitHub Release）
+6. **跟进 GitHub Actions 并验收 GitHub Release**
    - 按 workflow（`release.yml`）、`push` 事件、标签和提交 SHA 精确匹配本次运行，不拿仓库最新运行代替本次运行
    - 持续跟踪运行与各任务状态（`Validate release metadata`、`check (windows-latest)`、`check (macos-latest)`、`Publish GitHub Release`）
    - 若任务失败，读取对应尝试的失败日志并先定位根因：
      - 若属外部环境/网络抖动等非源码原因且已确认恢复，允许对已授权的同标签同 SHA 自动执行一次 `rerun-failed`；同因再次失败则停止重跑并报告阻塞
-     - 若属源码或测试缺陷，不能靠重跑旧标签解决，应修复代码后按新版本流程发布下一版本（严禁删除或强制移动已推送标签）
+     - 若属源码或测试缺陷，不能靠重跑旧标签解决，应先在 `main` 上修复并通过双平台 `ci.yml` 预检后，再按新版本流程发布下一版本（严禁删除或强制移动已推送标签）
    - 工作流完成后，使用 `gh release view "v$VERSION"` 或 `scripts/github_actions.py release --tag "v$VERSION"` 核实 GitHub Release 已创建且非草稿、预发布标记正确、中英双语发布说明（上方中文、下方英文）已完整写入，且 7 个必选附件齐全且非空：
      - `ColabOne-<version>-windows-x64-setup.exe`
      - `ColabOne-<version>-macos-arm64.dmg`
@@ -128,6 +144,15 @@ ColabOne vX.Y.Z
 在仓库根目录执行（WSL2/Linux shell 建议先设置 `PATH` 与 `LD_LIBRARY_PATH` 并重定向 `< /dev/null`）：
 
 ```bash
+# 0. 发版前门禁：本地离线检查 + Playwright UI 回归，推送 main 后跑双平台 ci.yml 预检
+python3 tools/install.py --root "$(mktemp -d)" --check --with-e2e < /dev/null
+git push origin main < /dev/null
+PREFLIGHT_SHA=$(git rev-parse HEAD)
+python3 .agents/skills/colabone-release/scripts/github_actions.py dispatch \
+  --workflow ci.yml --ref main --sha "$PREFLIGHT_SHA" < /dev/null
+python3 .agents/skills/colabone-release/scripts/github_actions.py preflight-status \
+  --branch main --sha "$PREFLIGHT_SHA" --require-green < /dev/null
+
 # 1. 预览下一版本（默认最后一位 +1，不改文件）
 python3 .agents/skills/colabone-release/scripts/prepare_release.py \
   --dry-run \
