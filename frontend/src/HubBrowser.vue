@@ -13,7 +13,6 @@ import {
 } from "ant-design-vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import {
-  PhArrowRight,
   PhArrowSquareOut,
   PhCaretDown,
   PhCaretRight,
@@ -815,7 +814,6 @@ onUnmounted(() => {
         @click="emit('goComfyui')"
       >
         {{ t("models.hubGoComfy") }}
-        <PhArrowRight :size="13" />
       </AButton>
     </div>
 

@@ -6,6 +6,598 @@
   "proxy_port": 8189,
   "tts_engines": [
     {
+      "id": "fish_drama3",
+      "name": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰 · 仅非商用）",
+      "description": "Fish Audio 新一代 35B MoE（3B 激活）旗舰语音大模型，开源听感天花板，44.1 kHz 广播级音质，支持长文稿上下文演绎、自然语言导演控制与内联情绪标签；仅限非商用研究使用。",
+      "repo": "fishaudio/drama-3",
+      "revision": "78e5ab79e49aa9a25abe8799eff2c4d73a1c3216",
+      "aux_repo": "",
+      "aux_revision": "",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
+      "license": "Fish Audio Community License v1.0",
+      "commercial_ok": false,
+      "license_notice": "仅限个人学习与非商业研究使用；严禁对外提供托管 TTS API 服务，商用须另行获取 Fish Audio 商业授权。",
+      "min_vram_mib": 46080,
+      "min_disk_mib": 49152,
+      "sample_rate": 44100,
+      "max_segment_chars": 320,
+      "supports_voice_clone": true,
+      "supports_voice_design": false,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": true,
+      "supports_custom_speakers": false,
+      "pip_packages": [
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub"
+      ],
+      "source_repo": "https://github.com/fishaudio/fish-speech.git",
+      "source_commit": "0f8a12e8a651062fdee9c33a894bdccd3a8513f1",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
+          "seed": 202605
+        },
+        {
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "A 34-year-old mature Chinese male keynote speaker, deep resonant warm baritone studio voice, steady composed cadence, authoritative trustworthy executive narration",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
+        },
+        {
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "A 24-year-old Chinese young male tech host, crisp bright energetic voice, clean natural diction, engaging upbeat conversational studio delivery",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
+        },
+        {
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "A 27-year-old gentle scholarly Chinese male narrator, warm refined soft-spoken voice, lyrical unhurried phrasing, intimate poetic studio audiobook tone",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
+        },
+        {
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "A 36-year-old professional Chinese male broadcast news anchor, rich sonorous authoritative baritone, impeccable standard Mandarin articulation, crisp formal studio broadcast cadence",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "A 45-year-old seasoned Chinese male documentary narrator, deep husky textured low baritone, cinematic unhurried gravitas, evocative storytelling with warm aged resonance",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
+        }
+      ]
+    },
+    {
+      "id": "moss_tts_v1_5",
+      "name": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰）",
+      "description": "OpenMOSS 开源 8B（Qwen3-8B 底座）工业级长篇语音大模型，31 语种高稳定克隆，原生支持 [pause X.Ys] 精确停顿与标点韵律控制，Apache-2.0 可商用。",
+      "repo": "OpenMOSS-Team/MOSS-TTS-v1.5",
+      "revision": "cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
+      "aux_repo": "OpenMOSS-Team/MOSS-Audio-Tokenizer",
+      "aux_revision": "3cd226ba2947efa357ef453bcad111b6eafba782",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
+      "license": "Apache-2.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "min_vram_mib": 20480,
+      "min_disk_mib": 28672,
+      "sample_rate": 24000,
+      "max_segment_chars": 360,
+      "supports_voice_clone": true,
+      "supports_voice_design": false,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": true,
+      "supports_custom_speakers": false,
+      "pip_packages": [
+        "transformers==5.0.0",
+        "accelerate",
+        "safetensors",
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub",
+        "einops",
+        "tiktoken",
+        "librosa",
+        "scipy",
+        "pyyaml",
+        "orjson",
+        "tqdm"
+      ],
+      "source_repo": "https://github.com/OpenMOSS/MOSS-TTS.git",
+      "source_commit": "934d6826b084c46a0d033402174d5f8ac4ed2519",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
+          "seed": 202605
+        },
+        {
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "A 34-year-old mature Chinese male keynote speaker, deep resonant warm baritone studio voice, steady composed cadence, authoritative trustworthy executive narration",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
+        },
+        {
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "A 24-year-old Chinese young male tech host, crisp bright energetic voice, clean natural diction, engaging upbeat conversational studio delivery",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
+        },
+        {
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "A 27-year-old gentle scholarly Chinese male narrator, warm refined soft-spoken voice, lyrical unhurried phrasing, intimate poetic studio audiobook tone",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
+        },
+        {
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "A 36-year-old professional Chinese male broadcast news anchor, rich sonorous authoritative baritone, impeccable standard Mandarin articulation, crisp formal studio broadcast cadence",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "A 45-year-old seasoned Chinese male documentary narrator, deep husky textured low baritone, cinematic unhurried gravitas, evocative storytelling with warm aged resonance",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
+        }
+      ]
+    },
+    {
+      "id": "breeze_tts2",
+      "name": "Breeze TTS 2（3B+ · 中英双语情绪导演 · 仅非商用）",
+      "description": "BreezeBlue 开源 3B+ 中英双语顶级表现力模型，支持文本捏声线、零样本克隆与克隆后自然语言语气调控（Voice Direction），支持中文 [笑]/[叹气]/[咳嗽] 副语言事件；权重仅限非商业研究。",
+      "repo": "BreezeBlue/Breeze-TTS-2",
+      "revision": "3e28c5151381a722f1d8661b4118c298caa77aa4",
+      "aux_repo": "",
+      "aux_revision": "",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
+      "license": "BreezeBlue Research & Non-Commercial License",
+      "commercial_ok": false,
+      "license_notice": "Breeze TTS 2 权重、衍生模型及自托管输出音频均仅限学术研究与非商业用途使用。",
+      "min_vram_mib": 12288,
+      "min_disk_mib": 12288,
+      "sample_rate": 24000,
+      "max_segment_chars": 160,
+      "supports_voice_clone": true,
+      "supports_voice_design": true,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": true,
+      "supports_custom_speakers": false,
+      "pip_packages": [
+        "qwen-tts",
+        "transformers",
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub"
+      ],
+      "source_repo": "https://github.com/breezeblue-ai/breeze-tts.git",
+      "source_commit": "a43d19e718b322e1cb3b2aa66f6d37d7945f4b21",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "26岁年轻知性女性主播，清澈温润的现代标准普通话，吐字清晰圆润，棚录近麦高保真质感，语速自然流畅，专业沉稳且富有亲和力。",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "22岁甜美活泼的年轻女生，嗓音清亮灵动略带笑意，元气自然不腻耳，咬字轻快清晰，节奏明快富有感染力。",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "25岁温柔治愈系年轻女声，声线柔和细腻、气息温暖舒缓，语调轻柔自然，像深夜电台好友娓娓道来，耐听且有安全感。",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "30岁成熟干练的职场女性，中低音区醇厚清亮，吐字干净利落，逻辑停顿清晰，语气温和而坚定，极富专业说服力。",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "28岁专业新闻女播音员，胸腔共鸣饱满大气，标准普通话字正腔圆，重音与停连考究，沉稳大方且自然流畅。",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
+          "seed": 202605
+        },
+        {
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "34岁沉稳儒雅的成熟男性主讲人，低沉富有磁性的男中音，棚录近麦浑厚通透，语速稳健从容，重音清晰有力，兼具商业洞察力与信赖感。",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
+        },
+        {
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "24岁阳光清爽的青年科技男主播，嗓音清澈明朗富有朝气，吐字干净利落，语调自然生动不刻意，非常适合数码开箱与产品深度体验口播。",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
+        },
+        {
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "27岁温润雅致的书卷气青年男声，声音清朗柔和、气息舒展从容，语调抑扬有致而克制，自带人文与散文朗读的静谧画面感。",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
+        },
+        {
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "36岁资深专业男性新闻播音员，声音浑厚铿锵、共鸣饱满端正，标准普通话字正腔圆，断句精准有力，兼具庄重权威感与广播级清晰度。",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "45岁历经沧桑的深沉纪录片男旁白，声线低沉厚重略带岁月沙哑质感，气息沉稳悠长，充满电影级叙事张力与历史厚重感。",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
+        }
+      ]
+    },
+    {
+      "id": "ming_3_tts",
+      "name": "Ming-3.0-TTS Tiny（7.9B MoE · 44.1kHz · 方言与副语言）",
+      "description": "蚂蚁 inclusionAI 开源 7.9B MoE（1.3B 激活）44.1 kHz 多语种大模型，支持普通话、英语、粤语、四川话及日韩欧语种，内置 14 种副语言情绪标签与零样本克隆/文本捏声线。",
+      "repo": "inclusionAI/Ming-3.0-tts-tiny",
+      "revision": "4eda056fd56d6e368514b6f0aac6271f6e486f6c",
+      "aux_repo": "",
+      "aux_revision": "",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
+      "license": "MIT",
+      "commercial_ok": true,
+      "license_notice": "",
+      "min_vram_mib": 18432,
+      "min_disk_mib": 22528,
+      "sample_rate": 44100,
+      "max_segment_chars": 300,
+      "supports_voice_clone": true,
+      "supports_voice_design": true,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": true,
+      "supports_custom_speakers": false,
+      "pip_packages": [
+        "transformers==4.46.3",
+        "tokenizers==0.20.3",
+        "safetensors",
+        "accelerate",
+        "huggingface-hub",
+        "soundfile",
+        "scipy",
+        "onnxruntime",
+        "einops",
+        "einx",
+        "loguru",
+        "x-transformers",
+        "fla-core",
+        "inflect",
+        "pyloudnorm"
+      ],
+      "source_repo": "https://github.com/inclusionAI/Ming-3.0-tts.git",
+      "source_commit": "c88c023ea6ccc08fd1e7a1d289cb6246c21deff1",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "26岁年轻知性女性主播，清澈温润的现代标准普通话，吐字清晰圆润，棚录近麦高保真质感，语速自然流畅，专业沉稳且富有亲和力。",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "22岁甜美活泼的年轻女生，嗓音清亮灵动略带笑意，元气自然不腻耳，咬字轻快清晰，节奏明快富有感染力。",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "25岁温柔治愈系年轻女声，声线柔和细腻、气息温暖舒缓，语调轻柔自然，像深夜电台好友娓娓道来，耐听且有安全感。",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "30岁成熟干练的职场女性，中低音区醇厚清亮，吐字干净利落，逻辑停顿清晰，语气温和而坚定，极富专业说服力。",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "28岁专业新闻女播音员，胸腔共鸣饱满大气，标准普通话字正腔圆，重音与停连考究，沉稳大方且自然流畅。",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
+          "seed": 202605
+        },
+        {
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "34岁沉稳儒雅的成熟男性主讲人，低沉富有磁性的男中音，棚录近麦浑厚通透，语速稳健从容，重音清晰有力，兼具商业洞察力与信赖感。",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
+        },
+        {
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "24岁阳光清爽的青年科技男主播，嗓音清澈明朗富有朝气，吐字干净利落，语调自然生动不刻意，非常适合数码开箱与产品深度体验口播。",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
+        },
+        {
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "27岁温润雅致的书卷气青年男声，声音清朗柔和、气息舒展从容，语调抑扬有致而克制，自带人文与散文朗读的静谧画面感。",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
+        },
+        {
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "36岁资深专业男性新闻播音员，声音浑厚铿锵、共鸣饱满端正，标准普通话字正腔圆，断句精准有力，兼具庄重权威感与广播级清晰度。",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "45岁历经沧桑的深沉纪录片男旁白，声线低沉厚重略带岁月沙哑质感，气息沉稳悠长，充满电影级叙事张力与历史厚重感。",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
+        }
+      ]
+    },
+    {
       "id": "voxcpm2",
       "name": "VoxCPM2（OpenBMB · 48kHz 商用推荐）",
       "description": "面壁智能开源 48 kHz 高保真语音合成与零样本声音克隆引擎，支持文本捏声线与中英混读，Apache-2.0 可商用。",
@@ -13,15 +605,20 @@
       "revision": "7936080b41163874f38610f46f438e2c0757f9fd",
       "aux_repo": "",
       "aux_revision": "",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
       "license": "Apache-2.0",
       "commercial_ok": true,
       "license_notice": "",
       "min_vram_mib": 8192,
+      "min_disk_mib": 6144,
       "sample_rate": 48000,
+      "max_segment_chars": 180,
       "supports_voice_clone": true,
       "supports_voice_design": true,
       "supports_emotion_ref": false,
       "supports_inline_tags": false,
+      "supports_custom_speakers": false,
       "pip_packages": [
         "voxcpm",
         "soundfile",
@@ -38,6 +635,8 @@
           "style": "知性主播",
           "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
           "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
           "seed": 202601
         },
         {
@@ -47,6 +646,8 @@
           "style": "甜美活力",
           "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
           "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
           "seed": 202602
         },
         {
@@ -56,6 +657,8 @@
           "style": "温柔治愈",
           "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
           "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
           "seed": 202603
         },
         {
@@ -65,6 +668,8 @@
           "style": "干练御姐",
           "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
           "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
           "seed": 202604
         },
         {
@@ -74,27 +679,89 @@
           "style": "新闻播音",
           "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
           "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
           "seed": 202605
+        },
+        {
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "A 34-year-old mature Chinese male keynote speaker, deep resonant warm baritone studio voice, steady composed cadence, authoritative trustworthy executive narration",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
+        },
+        {
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "A 24-year-old Chinese young male tech host, crisp bright energetic voice, clean natural diction, engaging upbeat conversational studio delivery",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
+        },
+        {
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "A 27-year-old gentle scholarly Chinese male narrator, warm refined soft-spoken voice, lyrical unhurried phrasing, intimate poetic studio audiobook tone",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
+        },
+        {
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "A 36-year-old professional Chinese male broadcast news anchor, rich sonorous authoritative baritone, impeccable standard Mandarin articulation, crisp formal studio broadcast cadence",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "A 45-year-old seasoned Chinese male documentary narrator, deep husky textured low baritone, cinematic unhurried gravitas, evocative storytelling with warm aged resonance",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
         }
       ]
     },
     {
       "id": "qwen3_tts",
-      "name": "Qwen3-TTS 1.7B（通义千问 · 多语种商用）",
-      "description": "阿里通义开源 1.7B 语音大模型，支持零样本音色克隆与独立 VoiceDesign 文本捏声线，中英日韩多语种自然口播，Apache-2.0 可商用。",
+      "name": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆）",
+      "description": "阿里通义开源 1.7B 语音大模型，支持官方 9 位原生 CustomVoice 说话人、零样本音色克隆与独立 VoiceDesign 文本捏声线，中英日韩多语种自然口播，Apache-2.0 可商用。",
       "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
       "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
       "aux_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
       "aux_revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+      "custom_voice_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+      "custom_voice_revision": "0c0e3051f131929182e2c023b9537f8b1c68adfe",
       "license": "Apache-2.0",
       "commercial_ok": true,
       "license_notice": "",
       "min_vram_mib": 8192,
+      "min_disk_mib": 15360,
       "sample_rate": 24000,
+      "max_segment_chars": 180,
       "supports_voice_clone": true,
       "supports_voice_design": true,
       "supports_emotion_ref": false,
       "supports_inline_tags": false,
+      "supports_custom_speakers": true,
       "pip_packages": [
         "qwen-tts",
         "soundfile",
@@ -111,6 +778,8 @@
           "style": "知性主播",
           "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
           "prompt": "26岁年轻知性女性主播，清澈温润的现代标准普通话，吐字清晰圆润，棚录近麦高保真质感，语速自然流畅，专业沉稳且富有亲和力。",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
           "seed": 202601
         },
         {
@@ -120,6 +789,8 @@
           "style": "甜美活力",
           "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
           "prompt": "22岁甜美活泼的年轻女生，嗓音清亮灵动略带笑意，元气自然不腻耳，咬字轻快清晰，节奏明快富有感染力。",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
           "seed": 202602
         },
         {
@@ -129,6 +800,8 @@
           "style": "温柔治愈",
           "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
           "prompt": "25岁温柔治愈系年轻女声，声线柔和细腻、气息温暖舒缓，语调轻柔自然，像深夜电台好友娓娓道来，耐听且有安全感。",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
           "seed": 202603
         },
         {
@@ -138,6 +811,8 @@
           "style": "干练御姐",
           "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
           "prompt": "30岁成熟干练的职场女性，中低音区醇厚清亮，吐字干净利落，逻辑停顿清晰，语气温和而坚定，极富专业说服力。",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
           "seed": 202604
         },
         {
@@ -147,99 +822,188 @@
           "style": "新闻播音",
           "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
           "prompt": "28岁专业新闻女播音员，胸腔共鸣饱满大气，标准普通话字正腔圆，重音与停连考究，沉稳大方且自然流畅。",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
           "seed": 202605
-        }
-      ]
-    },
-    {
-      "id": "fish_s2_pro",
-      "name": "Fish Speech S2-Pro（情绪标签 · 仅非商用）",
-      "description": "支持情绪与副语言内联标签的高表现力 44.1 kHz 语音合成模型，适合拟人化表达；模型权重仅限个人学习与非商业研究。",
-      "repo": "fishaudio/s2-pro",
-      "revision": "1de9996b6be38b745688de084d87a5633f714e4e",
-      "aux_repo": "",
-      "aux_revision": "",
-      "license": "Fish Audio Research License",
-      "commercial_ok": false,
-      "license_notice": "仅限个人学习与非商业研究使用；如需商业使用须另行向 Fish Audio 获取商业授权。",
-      "min_vram_mib": 20480,
-      "sample_rate": 44100,
-      "supports_voice_clone": true,
-      "supports_voice_design": false,
-      "supports_emotion_ref": false,
-      "supports_inline_tags": true,
-      "pip_packages": [
-        "soundfile",
-        "pyloudnorm",
-        "huggingface-hub"
-      ],
-      "source_repo": "https://github.com/fishaudio/fish-speech.git",
-      "source_commit": "0f8a12e8a651062fdee9c33a894bdccd3a8513f1",
-      "voice_presets": [
-        {
-          "id": "shen_zhiyi",
-          "name": "知性女主播 · 沈知意",
-          "gender": "female",
-          "style": "知性主播",
-          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
-          "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
-          "seed": 202601
         },
         {
-          "id": "lin_xiaoman",
-          "name": "甜美活力 · 林小满",
-          "gender": "female",
-          "style": "甜美活力",
-          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
-          "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
-          "seed": 202602
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "34岁沉稳儒雅的成熟男性主讲人，低沉富有磁性的男中音，棚录近麦浑厚通透，语速稳健从容，重音清晰有力，兼具商业洞察力与信赖感。",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
         },
         {
-          "id": "su_wanqing",
-          "name": "温柔治愈 · 苏晚晴",
-          "gender": "female",
-          "style": "温柔治愈",
-          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
-          "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
-          "seed": 202603
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "24岁阳光清爽的青年科技男主播，嗓音清澈明朗富有朝气，吐字干净利落，语调自然生动不刻意，非常适合数码开箱与产品深度体验口播。",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
         },
         {
-          "id": "gu_qinglan",
-          "name": "干练职场 · 顾清岚",
-          "gender": "female",
-          "style": "干练御姐",
-          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
-          "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
-          "seed": 202604
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "27岁温润雅致的书卷气青年男声，声音清朗柔和、气息舒展从容，语调抑扬有致而克制，自带人文与散文朗读的静谧画面感。",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
         },
         {
-          "id": "lu_mingwei",
-          "name": "播音气质 · 陆明薇",
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "36岁资深专业男性新闻播音员，声音浑厚铿锵、共鸣饱满端正，标准普通话字正腔圆，断句精准有力，兼具庄重权威感与广播级清晰度。",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "45岁历经沧桑的深沉纪录片男旁白，声线低沉厚重略带岁月沙哑质感，气息沉稳悠长，充满电影级叙事张力与历史厚重感。",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
+        },
+        {
+          "id": "qwen_vivian",
+          "name": "Qwen 官方 · Vivian（明快锐气女声）",
           "gender": "female",
-          "style": "新闻播音",
-          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
-          "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
-          "seed": 202605
+          "style": "官方原生 · 中文",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Vivian），明亮干脆、略带个性锐气的年轻女声，中文表达灵动自然。",
+          "prompt": "语气自然明快，略带自信俏皮的现代年轻女声表达。",
+          "preview_text": "你好，我是 Vivian。比起循规蹈矩地复述答案，我更喜欢用鲜活的观点和利落的节奏，把每一个灵感讲出让人眼前一亮的火花。",
+          "speaker_id": "Vivian",
+          "seed": 202611
+        },
+        {
+          "id": "qwen_serena",
+          "name": "Qwen 官方 · Serena（温婉柔和女声）",
+          "gender": "female",
+          "style": "官方原生 · 中文",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Serena），温润柔美、亲切舒缓的年轻女声，适合陪伴式口播与情感讲述。",
+          "prompt": "温柔柔和、娓娓道来的温暖女声，语调自然舒缓。",
+          "preview_text": "你好，我是 Serena。愿这段轻柔的声音，能像午后洒在书页上的一缕暖阳，陪你放慢脚步，在细水长流的日常里听见心底的宁静。",
+          "speaker_id": "Serena",
+          "seed": 202612
+        },
+        {
+          "id": "qwen_uncle_fu",
+          "name": "Qwen 官方 · Uncle_Fu（醇厚低沉大叔）",
+          "gender": "male",
+          "style": "官方原生 · 中文",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Uncle_Fu），浑厚醇和、沉稳老练的中年低音男声，富有阅历感与温度。",
+          "prompt": "低沉醇厚、不疾不徐的成熟男声，富有阅历与沉稳感染力。",
+          "preview_text": "你好，我是傅叔。走过半生风雨才会明白，真正经得起推敲的道理，从来不需要高声喧哗；沏一壶热茶，咱们慢慢把这事儿聊透。",
+          "speaker_id": "Uncle_Fu",
+          "seed": 202613
+        },
+        {
+          "id": "qwen_dylan",
+          "name": "Qwen 官方 · Dylan（京味青年男声）",
+          "gender": "male",
+          "style": "官方原生 · 北京话",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Dylan），清亮爽朗、自带自然北京胡同腔的青年男声，轻松接地气。",
+          "prompt": "清爽松弛、自然带京味儿的青年男声，口语感真实流畅。",
+          "preview_text": "嘿，您好！我是 Dylan。秋天的北京天儿最清亮，胡同口儿飘着糖炒栗子的香，咱今儿个不整虚的，就坐一块儿把这新鲜事儿给您唠明白！",
+          "speaker_id": "Dylan",
+          "seed": 202614
+        },
+        {
+          "id": "qwen_eric",
+          "name": "Qwen 官方 · Eric（川渝爽朗男声）",
+          "gender": "male",
+          "style": "官方原生 · 四川话",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Eric），活泼亮堂、略带沙哑磁性的成都青年男声，松弛鲜活富于烟火气。",
+          "prompt": "活泼自然、带着成都烟火气与些许沙哑亮度的爽朗男声。",
+          "preview_text": "哈喽大家好，我是 Eric！成都这边的茶馆头最安逸，泡一杯盖碗茶，摆两句龙门阵，今天带大家看看巴适得很的新鲜玩法，绝对让你眼前一亮！",
+          "speaker_id": "Eric",
+          "seed": 202615
+        },
+        {
+          "id": "qwen_ryan",
+          "name": "Qwen 官方 · Ryan（节奏感英文男声）",
+          "gender": "male",
+          "style": "官方原生 · English",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Ryan），富有动感与演讲张力的英文男声，节奏利落，适合国际产品发布与英文口播。",
+          "prompt": "Dynamic confident English male presenter with crisp articulation and energetic rhythm.",
+          "preview_text": "Hello everyone, I'm Ryan. Great storytelling lives in the rhythm between ideas—sharp, fearless, and alive. Let's dive right in and build something truly unforgettable today.",
+          "speaker_id": "Ryan",
+          "seed": 202616
+        },
+        {
+          "id": "qwen_aiden",
+          "name": "Qwen 官方 · Aiden（阳光美式男声）",
+          "gender": "male",
+          "style": "官方原生 · English",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Aiden），清朗温暖、中音区通透的阳光美式青年男声，亲切自然。",
+          "prompt": "Warm sunny American male voice with clear midrange clarity and friendly conversational pacing.",
+          "preview_text": "Hey there, I'm Aiden. There's something electric about a crisp morning when a fresh idea clicks into place. Grab a coffee, settle in, and let's walk through this together.",
+          "speaker_id": "Aiden",
+          "seed": 202617
+        },
+        {
+          "id": "qwen_ono_anna",
+          "name": "Qwen 官方 · Ono_Anna（灵动日语女声）",
+          "gender": "female",
+          "style": "官方原生 · 日本語",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Ono_Anna），轻盈灵动、活泼清脆的日语女声，表现力丰富。",
+          "prompt": "明るく軽やかで親しみやすい日本語の女性ボイス。",
+          "preview_text": "こんにちは、小野アンナです。澄んだ朝の光みたいに、軽やかで心が弾む言葉をお届けします。今日はどんな素敵な発見が待っているのか、一緒に確かめましょうね！",
+          "speaker_id": "Ono_Anna",
+          "seed": 202618
+        },
+        {
+          "id": "qwen_sohee",
+          "name": "Qwen 官方 · Sohee（情感韩语女声）",
+          "gender": "female",
+          "style": "官方原生 · 한국어",
+          "description": "Qwen3-TTS-CustomVoice 官方原生音色（Sohee），温暖细腻、情感充沛的韩语女声，自然真挚富于感染力。",
+          "prompt": "따뜻하고 감정이 풍부한 자연스러운 한국어 여성 목소리.",
+          "preview_text": "안녕하세요, 소희입니다. 진심이 담긴 목소리는 말 너머의 온도까지 전해준다고 믿어요. 오늘의 이야기가 여러분의 하루에 잔잔한 울림이 되길 바랄게요.",
+          "speaker_id": "Sohee",
+          "seed": 202619
         }
       ]
     },
     {
       "id": "indextts2",
-      "name": "IndexTTS-2（情绪分离控制 · 仅非商用）",
-      "description": "支持音色参考与独立情绪参考音频分离控制的自回归语音引擎，可精细调节语气与情绪表现；权重仅限个人学习与非商业研究。",
-      "repo": "IndexTeam/IndexTTS-2",
-      "revision": "740dcaff396282ffb241903d150ac011cd4b1ede",
+      "name": "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
+      "description": "B站 IndexTeam 开源 2.5 代工业级零样本克隆引擎，相比 2.0 提速 2.28 倍并引入 GRPO 发音强化，支持独立情绪音频迁移、原生语速调控与 <字|PINYIN> 精准纠音；仅限非商业研究。",
+      "repo": "IndexTeam/IndexTTS-2.5",
+      "revision": "c39ce5ba981572cb187443877ff559dfb246ce63",
       "aux_repo": "",
       "aux_revision": "",
-      "license": "IndexTTS Research / Non-Commercial",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
+      "license": "Bilibili Model Use License Agreement",
       "commercial_ok": false,
-      "license_notice": "仅限个人学习与非商业研究使用；商用前请核查 IndexTeam 上游权重许可协议。",
-      "min_vram_mib": 10240,
+      "license_notice": "仅限个人学习与非商业研究使用；商用前须核查并获取 Bilibili / IndexTeam 上游商业授权。",
+      "min_vram_mib": 8192,
+      "min_disk_mib": 15360,
       "sample_rate": 22050,
+      "max_segment_chars": 180,
       "supports_voice_clone": true,
       "supports_voice_design": false,
       "supports_emotion_ref": true,
-      "supports_inline_tags": false,
+      "supports_inline_tags": true,
+      "supports_custom_speakers": false,
       "pip_packages": [
         "soundfile",
         "pyloudnorm",
@@ -257,6 +1021,8 @@
           "style": "知性主播",
           "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
           "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
           "seed": 202601
         },
         {
@@ -266,6 +1032,8 @@
           "style": "甜美活力",
           "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
           "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
           "seed": 202602
         },
         {
@@ -275,6 +1043,8 @@
           "style": "温柔治愈",
           "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
           "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
           "seed": 202603
         },
         {
@@ -284,6 +1054,8 @@
           "style": "干练御姐",
           "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
           "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
           "seed": 202604
         },
         {
@@ -293,7 +1065,206 @@
           "style": "新闻播音",
           "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
           "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
           "seed": 202605
+        },
+        {
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "A 34-year-old mature Chinese male keynote speaker, deep resonant warm baritone studio voice, steady composed cadence, authoritative trustworthy executive narration",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
+        },
+        {
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "A 24-year-old Chinese young male tech host, crisp bright energetic voice, clean natural diction, engaging upbeat conversational studio delivery",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
+        },
+        {
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "A 27-year-old gentle scholarly Chinese male narrator, warm refined soft-spoken voice, lyrical unhurried phrasing, intimate poetic studio audiobook tone",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
+        },
+        {
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "A 36-year-old professional Chinese male broadcast news anchor, rich sonorous authoritative baritone, impeccable standard Mandarin articulation, crisp formal studio broadcast cadence",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "A 45-year-old seasoned Chinese male documentary narrator, deep husky textured low baritone, cinematic unhurried gravitas, evocative storytelling with warm aged resonance",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
+        }
+      ]
+    },
+    {
+      "id": "fish_s2_pro",
+      "name": "Fish Speech S2-Pro（情绪标签 · 仅非商用）",
+      "description": "支持情绪与副语言内联标签的高表现力 44.1 kHz 语音合成模型，适合拟人化表达；模型权重仅限个人学习与非商业研究。",
+      "repo": "fishaudio/s2-pro",
+      "revision": "1de9996b6be38b745688de084d87a5633f714e4e",
+      "aux_repo": "",
+      "aux_revision": "",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
+      "license": "Fish Audio Research License",
+      "commercial_ok": false,
+      "license_notice": "仅限个人学习与非商业研究使用；如需商业使用须另行向 Fish Audio 获取商业授权。",
+      "min_vram_mib": 20480,
+      "min_disk_mib": 16384,
+      "sample_rate": 44100,
+      "max_segment_chars": 150,
+      "supports_voice_clone": true,
+      "supports_voice_design": false,
+      "supports_emotion_ref": false,
+      "supports_inline_tags": true,
+      "supports_custom_speakers": false,
+      "pip_packages": [
+        "soundfile",
+        "pyloudnorm",
+        "huggingface-hub"
+      ],
+      "source_repo": "https://github.com/fishaudio/fish-speech.git",
+      "source_commit": "0f8a12e8a651062fdee9c33a894bdccd3a8513f1",
+      "voice_presets": [
+        {
+          "id": "shen_zhiyi",
+          "name": "知性女主播 · 沈知意",
+          "gender": "female",
+          "style": "知性主播",
+          "description": "清澈温润、自然流畅的棚录知性女声，适合知识科普、品牌介绍与通用口播（默认推荐）。",
+          "prompt": "A 26-year-old Chinese female host, clear warm articulate studio microphone voice, natural smooth pacing, friendly confident professional tone",
+          "preview_text": "大家好，我是沈知意。真正打动人心的讲述，不在于声嘶力竭，而在于把复杂的世界说得清澈而温暖。今天，让我们从最细微的灵感出发，一起看见未来的轮廓。",
+          "speaker_id": "",
+          "seed": 202601
+        },
+        {
+          "id": "lin_xiaoman",
+          "name": "甜美活力 · 林小满",
+          "gender": "female",
+          "style": "甜美活力",
+          "description": "清亮灵动略带笑意的元气女声，节奏明快富有感染力，适合种草口播与短视频带货。",
+          "prompt": "A 22-year-old Chinese young woman, bright sweet lively voice with a gentle smile, clear crisp articulation, cheerful energetic natural rhythm",
+          "preview_text": "嗨，我是林小满！刚拆开这份春日限定惊喜，我就忍不住想第一时间分享给你——每一个细节都闪着轻快的光，准备好了吗？我们现在就一起出发吧！",
+          "speaker_id": "",
+          "seed": 202602
+        },
+        {
+          "id": "su_wanqing",
+          "name": "温柔治愈 · 苏晚晴",
+          "gender": "female",
+          "style": "温柔治愈",
+          "description": "柔和细腻、气息温暖舒缓的治愈系女声，适合故事解说、情感电台与深度陪伴口播。",
+          "prompt": "A 25-year-old Chinese young woman, soft gentle healing radio voice, warm delicate breathy tone, calm unhurried soothing studio narration",
+          "preview_text": "晚安，我是苏晚晴。窗外的风轻轻掠过树梢，喧嚣的城市也渐渐慢了下来。如果今天有些疲惫，不妨给自己留出几分钟，听一段温柔的故事，把心安放在此刻。",
+          "speaker_id": "",
+          "seed": 202603
+        },
+        {
+          "id": "gu_qinglan",
+          "name": "干练职场 · 顾清岚",
+          "gender": "female",
+          "style": "干练御姐",
+          "description": "醇厚沉稳、吐字干净利落的职场女声，富有说服力，适合商业分析、科技测评与课程讲解。",
+          "prompt": "A 30-year-old mature Chinese professional woman, rich poised warm mid-low voice, crisp decisive articulation, persuasive confident executive tone",
+          "preview_text": "你好，我是顾清岚。在高速变化的行业周期里，真正拉开差距的从来不是盲目追风，而是看清底层逻辑后的果断落子。接下来三分钟，我们直击核心结论。",
+          "speaker_id": "",
+          "seed": 202604
+        },
+        {
+          "id": "lu_mingwei",
+          "name": "播音气质 · 陆明薇",
+          "gender": "female",
+          "style": "新闻播音",
+          "description": "共鸣饱满、字正腔圆的专业女播音员声线，沉稳大气，适合资讯播报与正式专题讲解。",
+          "prompt": "A 28-year-old professional Chinese female broadcast news anchor, resonant polished studio voice, crisp standard Mandarin diction, steady authoritative warm cadence",
+          "preview_text": "各位观众大家好，我是陆明薇。从实验室的前沿突破，到千家万户的日常变迁，每一次技术跃迁都在书写时代的新注脚。下面为您带来本期专题深度观察。",
+          "speaker_id": "",
+          "seed": 202605
+        },
+        {
+          "id": "chen_jingzhou",
+          "name": "沉稳男主讲 · 陈景舟",
+          "gender": "male",
+          "style": "沉稳商业",
+          "description": "低沉磁性、节奏稳健的成熟男主讲声线，富有厚度与可信度，适合商业洞察、金融解读与品牌发布。",
+          "prompt": "A 34-year-old mature Chinese male keynote speaker, deep resonant warm baritone studio voice, steady composed cadence, authoritative trustworthy executive narration",
+          "preview_text": "大家好，我是陈景舟。长期主义的魅力，在于时间终会奖励那些坚持做难而正确之事的人。今天，我们一同拆解表象之下的长期价值与增长飞轮。",
+          "speaker_id": "",
+          "seed": 202606
+        },
+        {
+          "id": "lin_chenxu",
+          "name": "阳光青年 · 林晨煦",
+          "gender": "male",
+          "style": "科技测评",
+          "description": "清爽明朗、自然有活力的青年男声，逻辑利落不油腻，适合数码评测、产品开箱与泛科技口播。",
+          "prompt": "A 24-year-old Chinese young male tech host, crisp bright energetic voice, clean natural diction, engaging upbeat conversational studio delivery",
+          "preview_text": "哈喽各位，我是林晨煦！上手实测了整整七天，这台新设备最让我惊喜的并不是冰冷的参数表，而是点亮屏幕那一刻丝滑到上头的真实手感，咱们直接看实测！",
+          "speaker_id": "",
+          "seed": 202607
+        },
+        {
+          "id": "zhou_moyan",
+          "name": "温柔书生 · 周墨言",
+          "gender": "male",
+          "style": "散文朗读",
+          "description": "清润雅致、气息绵长的书卷气男声，娓娓道来富于画面感，适合文学朗读、历史人文与文化随笔。",
+          "prompt": "A 27-year-old gentle scholarly Chinese male narrator, warm refined soft-spoken voice, lyrical unhurried phrasing, intimate poetic studio audiobook tone",
+          "preview_text": "见字如晤，我是周墨言。江南的春雨总落得极轻，打湿青石巷陌，也润开了案头半卷旧书。翻过岁月的折痕，文字仍在静谧处替我们留住山河与故人。",
+          "speaker_id": "",
+          "seed": 202608
+        },
+        {
+          "id": "gu_zhengyuan",
+          "name": "新闻男播音 · 顾正远",
+          "gender": "male",
+          "style": "权威播报",
+          "description": "声如洪钟、端庄正气的专业男播音员声线，字正腔圆气场十足，适合时政资讯、官方公告与大型专题片。",
+          "prompt": "A 36-year-old professional Chinese male broadcast news anchor, rich sonorous authoritative baritone, impeccable standard Mandarin articulation, crisp formal studio broadcast cadence",
+          "preview_text": "观众朋友们好，我是顾正远。立足当下、放眼全局，每一组扎实的数据背后，都是无数建设者笃行不怠的身影。接下来，请看本台发回的最新深度报道。",
+          "speaker_id": "",
+          "seed": 202609
+        },
+        {
+          "id": "su_hechuan",
+          "name": "沧桑讲述者 · 苏鹤川",
+          "gender": "male",
+          "style": "纪录片旁白",
+          "description": "略带质感沙哑、深沉厚重的叙事男声，饱含时间沉淀与电影史诗感，适合纪录片旁白、悬疑故事与人物传记。",
+          "prompt": "A 45-year-old seasoned Chinese male documentary narrator, deep husky textured low baritone, cinematic unhurried gravitas, evocative storytelling with warm aged resonance",
+          "preview_text": "我是苏鹤川。当戈壁的最后一缕夕阳沉入地平线，风沙掩埋了昔日的驼铃，却掩不住刻在岩壁上的千年回响。有些故事，只有走过漫长黑夜的人，才真正听得懂。",
+          "speaker_id": "",
+          "seed": 202610
         }
       ]
     }
@@ -414,12 +1385,16 @@
       "pipeline": {
         "kind": "digital_human",
         "video_backend": "infinitetalk",
-        "default_tts_engine": "voxcpm2",
+        "default_tts_engine": "fish_drama3",
         "supported_tts_engines": [
+          "fish_drama3",
+          "moss_tts_v1_5",
+          "breeze_tts2",
+          "ming_3_tts",
           "voxcpm2",
           "qwen3_tts",
-          "fish_s2_pro",
-          "indextts2"
+          "indextts2",
+          "fish_s2_pro"
         ],
         "max_segment_seconds": 20.0,
         "tail_frame_offset_seconds": 0.08,
@@ -794,8 +1769,45 @@
           "option_labels": {}
         },
         {
+          "key": "pipeline.tts_engine",
+          "label": "远端 TTS 语音引擎",
+          "node_id": "pipeline",
+          "input_name": "tts_engine",
+          "field_type": "select",
+          "default": "fish_drama3",
+          "options": [
+            "fish_drama3",
+            "moss_tts_v1_5",
+            "breeze_tts2",
+            "ming_3_tts",
+            "voxcpm2",
+            "qwen3_tts",
+            "indextts2",
+            "fish_s2_pro"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "在远端 Colab GPU 独立子进程合成高保真口播音频，完成后立即释放显存再启动视频生成。",
+          "group": "basic",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {
+            "fish_drama3": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰 · 仅非商用）",
+            "moss_tts_v1_5": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰 · Apache-2.0）",
+            "breeze_tts2": "Breeze TTS 2（3B+ · 中英双语情绪导演 · 仅非商用）",
+            "ming_3_tts": "Ming-3.0-TTS Tiny（7.9B MoE · 44.1kHz · 方言与副语言 · MIT）",
+            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
+            "qwen3_tts": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆 · Apache-2.0）",
+            "indextts2": "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
+            "fish_s2_pro": "Fish Speech S2-Pro（44.1kHz · 情绪内联标签 · 仅非商用）"
+          }
+        },
+        {
           "key": "pipeline.voice_preset",
-          "label": "内置女声音色",
+          "label": "内置音色与试听",
           "node_id": "pipeline",
           "input_name": "voice_preset",
           "field_type": "select",
@@ -806,23 +1818,33 @@
             "su_wanqing",
             "gu_qinglan",
             "lu_mingwei",
+            "chen_jingzhou",
+            "lin_chenxu",
+            "zhou_moyan",
+            "gu_zhengyuan",
+            "su_hechuan",
             "custom"
           ],
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "为所有远端配音引擎内置 5 位好听的中文女声；若上传了参考音色音频，将优先克隆所传音色。",
+          "description": "内置 10 位精选男女声音色（切换至 Qwen3-TTS 额外提供 9 位官方原生音色），支持一键试听短文；若上传了参考音色音频，将优先克隆所传音色。",
           "group": "basic",
           "required": false,
           "visible_when": {
             "pipeline.audio_source": "tts"
           },
           "option_labels": {
-            "shen_zhiyi": "沈知意 · 知性女主播（清澈温润 · 默认推荐）",
-            "lin_xiaoman": "林小满 · 甜美活力（清亮灵动 · 种草口播）",
-            "su_wanqing": "苏晚晴 · 温柔治愈（柔和细腻 · 故事解说）",
-            "gu_qinglan": "顾清岚 · 干练职场（醇厚沉稳 · 商业科技）",
-            "lu_mingwei": "陆明薇 · 播音气质（字正腔圆 · 资讯讲解）",
+            "shen_zhiyi": "沈知意 · 知性女主播（女声 · 清澈温润 · 默认推荐）",
+            "lin_xiaoman": "林小满 · 甜美活力（女声 · 清亮灵动 · 种草口播）",
+            "su_wanqing": "苏晚晴 · 温柔治愈（女声 · 柔和细腻 · 故事解说）",
+            "gu_qinglan": "顾清岚 · 干练职场（女声 · 醇厚沉稳 · 商业科技）",
+            "lu_mingwei": "陆明薇 · 播音气质（女声 · 字正腔圆 · 资讯讲解）",
+            "chen_jingzhou": "陈景舟 · 沉稳男主讲（男声 · 沉稳商业 · 品牌主讲）",
+            "lin_chenxu": "林晨煦 · 阳光青年（男声 · 科技测评 · 清爽活力）",
+            "zhou_moyan": "周墨言 · 温柔书生（男声 · 散文朗读 · 温润雅致）",
+            "gu_zhengyuan": "顾正远 · 新闻男播音（男声 · 权威播报 · 字正腔圆）",
+            "su_hechuan": "苏鹤川 · 沧桑讲述者（男声 · 纪录片旁白 · 深沉厚重）",
             "custom": "自定义音色（使用下方参考音色或文本捏声线）"
           }
         },
@@ -856,7 +1878,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "上传 5～15 秒清晰人声即可克隆该音色（优先级高于内置女声）；留空则自动使用上方所选内置女声（IndexTTS-2 仅在选用「自定义音色」时必须上传）。",
+          "description": "上传 5～15 秒清晰人声即可克隆该音色（优先级高于内置音色）；留空则自动使用上方所选内置音色（仅在选用「自定义音色」且未填写文本捏声线时需上传）。",
           "group": "basic",
           "required": false,
           "visible_when": {
@@ -892,35 +1914,6 @@
           }
         },
         {
-          "key": "pipeline.tts_engine",
-          "label": "远端 TTS 语音引擎",
-          "node_id": "pipeline",
-          "input_name": "tts_engine",
-          "field_type": "select",
-          "default": "voxcpm2",
-          "options": [
-            "voxcpm2",
-            "qwen3_tts",
-            "fish_s2_pro",
-            "indextts2"
-          ],
-          "min_value": null,
-          "max_value": null,
-          "step": null,
-          "description": "在远端 Colab GPU 独立子进程合成高保真口播音频，完成后立即释放显存再启动视频生成。",
-          "group": "advanced",
-          "required": false,
-          "visible_when": {
-            "pipeline.audio_source": "tts"
-          },
-          "option_labels": {
-            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
-            "qwen3_tts": "Qwen3-TTS 1.7B（多语种 · 克隆/捏声线 · Apache-2.0 可商用）",
-            "fish_s2_pro": "Fish Speech S2-Pro（情绪内联标签 · 仅非商用）",
-            "indextts2": "IndexTTS-2（独立情绪音频控制 · 仅非商用）"
-          }
-        },
-        {
           "key": "pipeline.voice_ref_text",
           "label": "参考音色对应文字（可选）",
           "node_id": "pipeline",
@@ -950,7 +1943,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "通过自然语言描述期望音色与风格（适用于 VoxCPM2 / Qwen3-TTS，例如：沉稳男声、清亮女主播）。",
+          "description": "通过自然语言描述期望音色与风格（适用于 Breeze TTS 2 / Ming-3.0-TTS / VoxCPM2 / Qwen3-TTS，例如：沉稳男声、清亮女主播）。",
           "group": "advanced",
           "required": false,
           "visible_when": {
@@ -960,7 +1953,7 @@
         },
         {
           "key": "pipeline.emotion_ref_audio",
-          "label": "情绪参考音频（IndexTTS-2 专属，可选）",
+          "label": "情绪参考音频（IndexTTS-2.5 专属，可选）",
           "node_id": "pipeline",
           "input_name": "emotion_ref_audio",
           "field_type": "audio",
@@ -989,7 +1982,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "适用于 IndexTTS-2 情绪描述或 Fish S2 语气提示（如专业沉稳、轻松愉快）。",
+          "description": "控制朗读语气、情感、方言或表演风格（支持 Fish Drama 3 / Breeze TTS 2 / Ming-3.0-TTS / Qwen3-TTS / IndexTTS-2.5 / Fish S2-Pro）。",
           "group": "advanced",
           "required": false,
           "visible_when": {
@@ -1211,12 +2204,16 @@
       "pipeline": {
         "kind": "digital_human",
         "video_backend": "longcat_avatar",
-        "default_tts_engine": "voxcpm2",
+        "default_tts_engine": "fish_drama3",
         "supported_tts_engines": [
+          "fish_drama3",
+          "moss_tts_v1_5",
+          "breeze_tts2",
+          "ming_3_tts",
           "voxcpm2",
           "qwen3_tts",
-          "fish_s2_pro",
-          "indextts2"
+          "indextts2",
+          "fish_s2_pro"
         ],
         "max_segment_seconds": 3.7,
         "tail_frame_offset_seconds": 0.08,
@@ -1562,8 +2559,45 @@
           "option_labels": {}
         },
         {
+          "key": "pipeline.tts_engine",
+          "label": "远端 TTS 语音引擎",
+          "node_id": "pipeline",
+          "input_name": "tts_engine",
+          "field_type": "select",
+          "default": "fish_drama3",
+          "options": [
+            "fish_drama3",
+            "moss_tts_v1_5",
+            "breeze_tts2",
+            "ming_3_tts",
+            "voxcpm2",
+            "qwen3_tts",
+            "indextts2",
+            "fish_s2_pro"
+          ],
+          "min_value": null,
+          "max_value": null,
+          "step": null,
+          "description": "在远端 Colab GPU 独立子进程合成高保真口播音频，完成后立即释放显存再启动视频生成。",
+          "group": "basic",
+          "required": false,
+          "visible_when": {
+            "pipeline.audio_source": "tts"
+          },
+          "option_labels": {
+            "fish_drama3": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰 · 仅非商用）",
+            "moss_tts_v1_5": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰 · Apache-2.0）",
+            "breeze_tts2": "Breeze TTS 2（3B+ · 中英双语情绪导演 · 仅非商用）",
+            "ming_3_tts": "Ming-3.0-TTS Tiny（7.9B MoE · 44.1kHz · 方言与副语言 · MIT）",
+            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
+            "qwen3_tts": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆 · Apache-2.0）",
+            "indextts2": "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
+            "fish_s2_pro": "Fish Speech S2-Pro（44.1kHz · 情绪内联标签 · 仅非商用）"
+          }
+        },
+        {
           "key": "pipeline.voice_preset",
-          "label": "内置女声音色",
+          "label": "内置音色与试听",
           "node_id": "pipeline",
           "input_name": "voice_preset",
           "field_type": "select",
@@ -1574,23 +2608,33 @@
             "su_wanqing",
             "gu_qinglan",
             "lu_mingwei",
+            "chen_jingzhou",
+            "lin_chenxu",
+            "zhou_moyan",
+            "gu_zhengyuan",
+            "su_hechuan",
             "custom"
           ],
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "为所有远端配音引擎内置 5 位好听的中文女声；若上传了参考音色音频，将优先克隆所传音色。",
+          "description": "内置 10 位精选男女声音色（切换至 Qwen3-TTS 额外提供 9 位官方原生音色），支持一键试听短文；若上传了参考音色音频，将优先克隆所传音色。",
           "group": "basic",
           "required": false,
           "visible_when": {
             "pipeline.audio_source": "tts"
           },
           "option_labels": {
-            "shen_zhiyi": "沈知意 · 知性女主播（清澈温润 · 默认推荐）",
-            "lin_xiaoman": "林小满 · 甜美活力（清亮灵动 · 种草口播）",
-            "su_wanqing": "苏晚晴 · 温柔治愈（柔和细腻 · 故事解说）",
-            "gu_qinglan": "顾清岚 · 干练职场（醇厚沉稳 · 商业科技）",
-            "lu_mingwei": "陆明薇 · 播音气质（字正腔圆 · 资讯讲解）",
+            "shen_zhiyi": "沈知意 · 知性女主播（女声 · 清澈温润 · 默认推荐）",
+            "lin_xiaoman": "林小满 · 甜美活力（女声 · 清亮灵动 · 种草口播）",
+            "su_wanqing": "苏晚晴 · 温柔治愈（女声 · 柔和细腻 · 故事解说）",
+            "gu_qinglan": "顾清岚 · 干练职场（女声 · 醇厚沉稳 · 商业科技）",
+            "lu_mingwei": "陆明薇 · 播音气质（女声 · 字正腔圆 · 资讯讲解）",
+            "chen_jingzhou": "陈景舟 · 沉稳男主讲（男声 · 沉稳商业 · 品牌主讲）",
+            "lin_chenxu": "林晨煦 · 阳光青年（男声 · 科技测评 · 清爽活力）",
+            "zhou_moyan": "周墨言 · 温柔书生（男声 · 散文朗读 · 温润雅致）",
+            "gu_zhengyuan": "顾正远 · 新闻男播音（男声 · 权威播报 · 字正腔圆）",
+            "su_hechuan": "苏鹤川 · 沧桑讲述者（男声 · 纪录片旁白 · 深沉厚重）",
             "custom": "自定义音色（使用下方参考音色或文本捏声线）"
           }
         },
@@ -1624,7 +2668,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "上传 5～15 秒清晰人声即可克隆该音色（优先级高于内置女声）；留空则自动使用上方所选内置女声（IndexTTS-2 仅在选用「自定义音色」时必须上传）。",
+          "description": "上传 5～15 秒清晰人声即可克隆该音色（优先级高于内置音色）；留空则自动使用上方所选内置音色（仅在选用「自定义音色」且未填写文本捏声线时需上传）。",
           "group": "basic",
           "required": false,
           "visible_when": {
@@ -1660,35 +2704,6 @@
           }
         },
         {
-          "key": "pipeline.tts_engine",
-          "label": "远端 TTS 语音引擎",
-          "node_id": "pipeline",
-          "input_name": "tts_engine",
-          "field_type": "select",
-          "default": "voxcpm2",
-          "options": [
-            "voxcpm2",
-            "qwen3_tts",
-            "fish_s2_pro",
-            "indextts2"
-          ],
-          "min_value": null,
-          "max_value": null,
-          "step": null,
-          "description": "在远端 Colab GPU 独立子进程合成高保真口播音频，完成后立即释放显存再启动视频生成。",
-          "group": "advanced",
-          "required": false,
-          "visible_when": {
-            "pipeline.audio_source": "tts"
-          },
-          "option_labels": {
-            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
-            "qwen3_tts": "Qwen3-TTS 1.7B（多语种 · 克隆/捏声线 · Apache-2.0 可商用）",
-            "fish_s2_pro": "Fish Speech S2-Pro（情绪内联标签 · 仅非商用）",
-            "indextts2": "IndexTTS-2（独立情绪音频控制 · 仅非商用）"
-          }
-        },
-        {
           "key": "pipeline.voice_ref_text",
           "label": "参考音色对应文字（可选）",
           "node_id": "pipeline",
@@ -1718,7 +2733,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "通过自然语言描述期望音色与风格（适用于 VoxCPM2 / Qwen3-TTS，例如：沉稳男声、清亮女主播）。",
+          "description": "通过自然语言描述期望音色与风格（适用于 Breeze TTS 2 / Ming-3.0-TTS / VoxCPM2 / Qwen3-TTS，例如：沉稳男声、清亮女主播）。",
           "group": "advanced",
           "required": false,
           "visible_when": {
@@ -1728,7 +2743,7 @@
         },
         {
           "key": "pipeline.emotion_ref_audio",
-          "label": "情绪参考音频（IndexTTS-2 专属，可选）",
+          "label": "情绪参考音频（IndexTTS-2.5 专属，可选）",
           "node_id": "pipeline",
           "input_name": "emotion_ref_audio",
           "field_type": "audio",
@@ -1757,7 +2772,7 @@
           "min_value": null,
           "max_value": null,
           "step": null,
-          "description": "适用于 IndexTTS-2 情绪描述或 Fish S2 语气提示（如专业沉稳、轻松愉快）。",
+          "description": "控制朗读语气、情感、方言或表演风格（支持 Fish Drama 3 / Breeze TTS 2 / Ming-3.0-TTS / Qwen3-TTS / IndexTTS-2.5 / Fish S2-Pro）。",
           "group": "advanced",
           "required": false,
           "visible_when": {

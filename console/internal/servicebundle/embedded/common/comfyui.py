@@ -258,6 +258,8 @@ class ComfyTtsVoicePreset(BaseModel):
     style: str = Field(default="", max_length=80)
     description: str = Field(default="", max_length=240)
     prompt: str = Field(default="", max_length=600)
+    preview_text: str = Field(default="", max_length=400)
+    speaker_id: str = Field(default="", max_length=64, pattern=r"^(?:[a-zA-Z0-9_-]{1,64})?$")
     seed: int = Field(default=42, ge=0, le=2147483647)
 
     @field_validator("name")
@@ -278,15 +280,20 @@ class ComfyTtsEngineSpec(BaseModel):
     revision: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
     aux_repo: str = Field(default="", max_length=300)
     aux_revision: str = Field(default="", pattern=r"^(?:[a-fA-F0-9]{40})?$")
+    custom_voice_repo: str = Field(default="", max_length=300)
+    custom_voice_revision: str = Field(default="", pattern=r"^(?:[a-fA-F0-9]{40})?$")
     license: str = Field(default="Apache-2.0", min_length=1, max_length=160)
     commercial_ok: bool = True
     license_notice: str = Field(default="", max_length=600)
     min_vram_mib: int = Field(default=0, ge=0)
+    min_disk_mib: int = Field(default=0, ge=0)
     sample_rate: int = Field(default=48000, ge=8000, le=96000)
+    max_segment_chars: int = Field(default=120, ge=40, le=1000)
     supports_voice_clone: bool = True
     supports_voice_design: bool = False
     supports_emotion_ref: bool = False
     supports_inline_tags: bool = False
+    supports_custom_speakers: bool = False
     pip_packages: list[str] = Field(default_factory=list, max_length=64)
     source_repo: str = Field(default="", max_length=300)
     source_commit: str = Field(default="", pattern=r"^(?:[a-fA-F0-9]{40})?$")
@@ -320,6 +327,13 @@ class ComfyTtsEngineSpec(BaseModel):
             return ""
         return _validate_owner_repo(value, "需要 Hugging Face 的 owner/repository")
 
+    @field_validator("custom_voice_repo")
+    @classmethod
+    def valid_custom_voice_repo(cls, value: str) -> str:
+        if not value:
+            return ""
+        return _validate_owner_repo(value, "需要 Hugging Face 的 owner/repository")
+
     @field_validator("pip_packages")
     @classmethod
     def safe_pip_packages(cls, value: list[str]) -> list[str]:
@@ -336,6 +350,15 @@ class ComfyTtsEngineSpec(BaseModel):
     def consistent_aux(self):
         if self.aux_repo and not self.aux_revision:
             raise ValueError("设置 aux_repo 时必须提供 40 位十六进制 aux_revision")
+        if self.custom_voice_repo and not self.custom_voice_revision:
+            raise ValueError(
+                "设置 custom_voice_repo 时必须提供 40 位十六进制 custom_voice_revision"
+            )
+        seen_presets: set[str] = set()
+        for preset in self.voice_presets:
+            if preset.id in seen_presets:
+                raise ValueError(f"内置音色 ID 重复：{preset.id}")
+            seen_presets.add(preset.id)
         return self
 
 
@@ -883,6 +906,18 @@ class WorkflowImportRequest(BaseModel):
         return validate_comfy_api_workflow(value)
 
 
+def _validate_hf_token(value: str) -> str:
+    if any(
+        ord(c) < 32 or ord(c) == 127 or 0x80 <= ord(c) <= 0x9F
+        for c in value
+    ):
+        raise ValueError("hf_token 包含非法空白或控制字符")
+    token = value.strip(" ")
+    if any(c.isspace() for c in token):
+        raise ValueError("hf_token 包含非法空白或控制字符")
+    return token
+
+
 class WorkflowRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     workflow_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
@@ -893,12 +928,7 @@ class WorkflowRunRequest(BaseModel):
     @field_validator("hf_token")
     @classmethod
     def valid_hf_token(cls, value: str) -> str:
-        if any(c in ("\r", "\n") or ord(c) < 32 or ord(c) == 127 for c in value):
-            raise ValueError("hf_token 包含非法空白或控制字符")
-        token = value.strip()
-        if any(c.isspace() for c in token):
-            raise ValueError("hf_token 包含非法空白或控制字符")
-        return token
+        return _validate_hf_token(value)
 
     @field_validator("overrides")
     @classmethod
@@ -921,6 +951,32 @@ class WorkflowRunRequest(BaseModel):
             if not isinstance(asset_id, str) or not _ASSET_ID_RE.fullmatch(asset_id):
                 raise ValueError(f"非法素材 ID: {asset_id!r}")
         return value
+
+
+class ComfyTtsPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    engine_id: str = Field(
+        min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]{1,80}$"
+    )
+    voice_preset: str = Field(
+        default="", max_length=64, pattern=r"^(?:[a-zA-Z0-9_-]{1,64})?$"
+    )
+    preview_text: str = Field(default="", max_length=600)
+    voice_prompt: str = Field(default="", max_length=600)
+    emotion_prompt: str = Field(default="", max_length=240)
+    ref_audio_input_id: str = Field(
+        default="", max_length=64, pattern=r"^(?:[a-f0-9]{32})?$"
+    )
+    ref_text: str = Field(default="", max_length=600)
+    emotion_ref_input_id: str = Field(
+        default="", max_length=64, pattern=r"^(?:[a-f0-9]{32})?$"
+    )
+    hf_token: str = Field(default="", max_length=512, repr=False)
+
+    @field_validator("hf_token")
+    @classmethod
+    def valid_hf_token(cls, value: str) -> str:
+        return _validate_hf_token(value)
 
 
 class WorkflowOutputRecord(BaseModel):

@@ -72,6 +72,8 @@ export interface ColabOneComfyTtsVoicePreset {
   style?: string;
   description?: string;
   prompt?: string;
+  preview_text?: string;
+  speaker_id?: string;
   seed?: number;
 }
 export type ComfyTtsVoicePreset = ColabOneComfyTtsVoicePreset;
@@ -83,21 +85,58 @@ export interface ColabOneComfyTtsEngineSpec {
   revision: string;
   aux_repo?: string;
   aux_revision?: string;
+  custom_voice_repo?: string;
+  custom_voice_revision?: string;
   license: string;
   commercial_ok: boolean;
   license_notice: string;
   min_vram_mib: number;
+  min_disk_mib?: number;
   sample_rate: number;
+  max_segment_chars?: number;
   supports_voice_clone: boolean;
   supports_voice_design: boolean;
   supports_emotion_ref: boolean;
   supports_inline_tags: boolean;
+  supports_custom_speakers?: boolean;
   pip_packages?: string[];
   source_repo?: string;
   source_commit?: string;
   voice_presets?: ColabOneComfyTtsVoicePreset[];
 }
 export type ComfyTtsEngineSpec = ColabOneComfyTtsEngineSpec;
+export interface ColabOneComfyTtsPreviewRequest {
+  engine_id: string;
+  voice_preset?: string;
+  preview_text?: string;
+  voice_prompt?: string;
+  emotion_prompt?: string;
+  ref_audio_input_id?: string;
+  ref_text?: string;
+  emotion_ref_input_id?: string;
+  hf_token?: string;
+}
+export interface ColabOneTtsPreviewResult {
+  cached: boolean;
+  preview_id: string;
+  engine_id: string;
+  voice_preset: string;
+  text: string;
+  sample_rate?: number;
+  duration_seconds?: number;
+  mime?: string;
+  size?: number;
+  sha256?: string;
+  data?: string;
+  task?: TaskStatus;
+}
+export interface ColabOneVoicePreviewMeta {
+  sampleRate?: number;
+  durationSeconds?: number;
+  cached?: boolean;
+  engineName?: string;
+  voiceLabel?: string;
+}
 export interface ColabOneComfyPipelineSpec {
   kind: "comfy_standard" | "digital_human";
   video_backend?: "infinitetalk" | "longcat_avatar" | "custom";

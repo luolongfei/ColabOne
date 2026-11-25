@@ -10,6 +10,7 @@ flowchart LR
   API --> PublicAPI["Public OpenAI gateway (:7861)"]
   PublicAPI --> CF1[Cloudflared tunnel]
   API --> Comfy["ComfyUI v0.46.0 (:8188)"]
+  API --> TTS["Isolated Remote TTS Workers (server/tts_engines.py & server/tts_worker_*.py, 8 engines)"]
   ComfyProxy["Authenticated Canvas Proxy (:8189)"] --> Comfy
   ComfyProxy --> CF2[Cloudflared tunnel]
   API -->|headless rclone mount + verified copy| Drive[My Drive / ColabOne_Drive]
@@ -32,7 +33,7 @@ Authenticated Colab kernel executions proxy control requests to port `7860`; POS
 
 ## Models and tasks
 
-The desktop app organizes sidebar navigation into four views (**Devices → Public API → ComfyUI → Settings**). Legacy built-in desktop chat, image, and video pages and single-model `stable-diffusion.cpp` (`Z-Image Turbo`, `Wan2.2 5B`) creative recipes have been retired.
+The desktop app organizes sidebar navigation into four views (**Devices**, **Public API**, **ComfyUI**, **Settings**). Legacy built-in desktop chat, image, and video pages and single-model `stable-diffusion.cpp` (`Z-Image Turbo`, `Wan2.2 5B`) creative recipes have been retired.
 
 Single-model GGUF selection is integrated directly into **Public API** via the right-side **Select Model** slide-over drawer (`ModelDrawer.vue`; validated identically by the Go desktop controller and remote `common/models.py`, accepting only `.gguf` `model`/`shard` manifests) across a streamlined 2-tab layout—**My Models** and **Community**—with inline per-card remote download and VRAM status badges, unifying model discovery, saved model management, runtime parameters, and VRAM lifecycle directly within the API workflow. Starter repositories (`huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF`, `huihui-ai/Huihui-DeepSeek-V4.1-Flash-1017-abliterated-GGUF`, `JonathanColetti/Qwen3.8-27B-Uncensored`) are seeded once into `library.json`, and users can bookmark community repositories or models (**Save to My Models**) or remove them (**Remove from My Models**) even offline before starting a GPU. The Hugging Face API resolves commit revisions, file sizes, and SHA-256 metadata; importing never downloads weight bytes to the desktop. Download jobs fetch directly into the remote cache, resume `.part` files, reject invalid `Content-Range` responses or mismatched hashes, and atomically publish verified files—optionally chaining directly into a remote GPU VRAM load (`load=true`, **Download & Load**) with inline context length (`8K`–`128K`) and temperature settings. Multiple cached models are retained; loading, unloading, and quick switching never remove them. Explicit deletion is blocked while a model is loaded or part of an active task.
 
@@ -72,7 +73,7 @@ The Go desktop Hugging Face metadata client (parity-tested with `common/hub.py`)
 
 `server/download.py` adapts upstream's 64 MiB range / thread-pool approach. The pool is bounded to 16 or 32 workers per file (default 16). Completed ranges are fsynced before writing atomic resume metadata; sparse preallocation never counts as completed bytes. Cancellation retains completed ranges, legacy sequential partials can resume, ignored `Range` responses fall back to a single connection, and malformed ranges cannot publish data. SHA-256 verification gates the final atomic rename. A rolling wire-byte window reports transfer rate, bytes, active connections, and ETA; resumed bytes do not inflate the reported rate.
 
-Protocol `7` advertises `capabilities: ["public_api", "comfyui"]` alongside live `resources` telemetry and the unified idle auto-release policy. Older live services can update in place (`server/vm_update.py`) only when no running task, loaded model, or active engine (including ComfyUI) is present, preserving `/content/colabone-data`, the control token, and the active idle auto-release configuration. A failed new service launch (failing to reach protocol `>= 7`) automatically restores the previous code.
+Protocol `7` advertises `capabilities: ["public_api", "comfyui", "comfyui_hf_token", "comfyui_drive_export", "comfyui_tts_preview"]` alongside live `resources` telemetry and the unified idle auto-release policy. Older live services can update in place (`server/vm_update.py`) only when no running task, loaded model, or active engine (including ComfyUI) is present, preserving `/content/colabone-data`, the control token, and the active idle auto-release configuration. A failed new service launch (failing to reach protocol `>= 7`) automatically restores the previous code.
 
 ## Public inference and Cloudflare (LLM OpenAI API)
 
@@ -99,3 +100,56 @@ Protocol `7` integrates **ComfyUI** by Comfy-Org (GPL-3.0), pinned to tag `v0.46
 3. **VRAM mutual exclusion & idle protection**:
    - `llama-server` (`8081`) and `ComfyUI` (`8188`) never share GPU VRAM simultaneously; starting ComfyUI unloads any loaded LLM (and vice versa) while retaining cached weights on remote disk.
    - Active ComfyUI execution queues, pack/model downloads, and authenticated Native Canvas proxy HTTP/WebSocket traffic pause the idle auto-release countdown (default 30 min). Stopping ComfyUI or releasing the runtime tears down the canvas tunnel, proxy (`8189`), and ComfyUI process (`8188`) cleanly before flushing `ColabOne_Drive`.
+
+## Remote 8-engine flagship TTS & digital human pipeline
+
+ColabOne extends ComfyUI Workflow Studio with a remote-only **8-engine flagship open-weights TTS subsystem** designed for 96 GB `G4` (RTX PRO 6000) and 80 GB `A100` runtimes (while also supporting lighter-VRAM engines on smaller GPUs). All engine weights, isolated Python environments, and synthesis execution reside exclusively on the remote Colab VM — zero local weights or local Python runtime are installed on the desktop.
+
+### Supported 8-engine matrix & compliance boundary
+
+Declared in `catalog/comfyui.json` (`tts_engines`) and validated by `common/comfyui.py` (`ComfyTtsEngineSpec`):
+- **Fish Audio Drama 3** (`fish_drama3`): 35B MoE / 3B active, 44.1 kHz, `>= 45 GiB` VRAM (`min_vram_mib: 46080`; 48 GB-class Ada/Hopper GPU for FP8, or ~72 GiB BF16 on A100 80GB), `>= 48 GiB` disk (`min_disk_mib: 49152`), **Fish Audio Community License v1.0** (`commercial_ok: false`, **Non-Commercial / Research Only**, no hosted TTS API).
+- **MOSS-TTS v1.5** (`moss_tts_v1_5`): 8B, 24 kHz, 31 languages, inline `[pause X.Ys]` timing tags, `>= 20 GiB` VRAM (`min_vram_mib: 20480`), `>= 28 GiB` disk (`min_disk_mib: 28672`), **Apache-2.0** (`commercial_ok: true`).
+- **Breeze TTS 2** (`breeze_tts2`): 3B+, 24 kHz, CN/EN bilingual Voice Design / Clone / Direction & paralinguistic tags (`[笑]` / `[叹气]`), `>= 12 GiB` VRAM (`min_vram_mib: 12288`), `>= 12 GiB` disk (`min_disk_mib: 12288`), **BreezeBlue Research & Non-Commercial License** (`commercial_ok: false`, **Non-Commercial / Research Only**).
+- **Ming-3.0-TTS Tiny** (`ming_3_tts`): 7.9B MoE / 1.3B active, 44.1 kHz, Chinese dialects + 14 paralinguistic tags, `>= 18 GiB` VRAM (`min_vram_mib: 18432`), `>= 22 GiB` disk (`min_disk_mib: 22528`), **MIT** (`commercial_ok: true`).
+- **VoxCPM2** (`voxcpm2`): 2B, 48 kHz studio continuous diffusion, Voice Clone & Voice Design, `>= 8 GiB` VRAM (`min_vram_mib: 8192`), `>= 6 GiB` disk (`min_disk_mib: 6144`), **Apache-2.0** (`commercial_ok: true`).
+- **Qwen3-TTS 1.7B** (`qwen3_tts`): 24 kHz, Base + VoiceDesign + CustomVoice (9 official native speakers via `qwen_*` presets), `>= 8 GiB` VRAM (`min_vram_mib: 8192`), `>= 15 GiB` disk (`min_disk_mib: 15360`), **Apache-2.0** (`commercial_ok: true`).
+- **IndexTTS-2.5** (`indextts2`): 22.05 kHz, disentangled emotion reference audio + GRPO alignment + Pinyin pronunciation override, `>= 8 GiB` VRAM (`min_vram_mib: 8192`), `>= 15 GiB` disk (`min_disk_mib: 15360`), **Bilibili Model Use License Agreement** (`commercial_ok: false`, **Non-Commercial / Research Only**).
+- **Fish Speech S2-Pro** (`fish_s2_pro`): 4B, 44.1 kHz, expressive inline emotion & paralinguistic tags, `>= 20 GiB` VRAM (`min_vram_mib: 20480`), `>= 16 GiB` disk (`min_disk_mib: 16384`), **Fish Audio Research License** (`commercial_ok: false`, **Non-Commercial / Research Only**).
+
+Because the integrated digital-human flagship TTS lineup includes non-commercial / research-only weights (`Fish Audio Drama 3`, `Breeze TTS 2`, `IndexTTS-2.5`, `Fish Speech S2-Pro`), the bundled digital-human flagship TTS pipeline is strictly restricted to personal study, experimentation, and non-commercial research — never commercial deployment or hosted TTS service resale.
+
+### Isolated remote TTS worker subprocesses (`server/tts_engines.py` & `server/tts_worker_*.py`)
+
+Rather than importing heterogeneous speech-synthesis toolkits into the FastAPI control server (`127.0.0.1:7860`) or ComfyUI (`127.0.0.1:8188`), `server/tts_engines.py` (`ColabOneRemoteTtsRunner`) dispatches synthesis to isolated remote TTS worker subprocesses (using built-in worker entrypoints in `server/tts_engines.py` and dedicated engine worker scripts `server/tts_worker_*.py` — `server/tts_worker_drama3.py`, `server/tts_worker_moss.py`, `server/tts_worker_breeze.py`, `server/tts_worker_ming.py` — synced into `console/internal/servicebundle/embedded/server/`):
+- **Dependency & environment isolation**: Each engine family resolves its own pinned packages/source checkout on the remote VM while reusing the Colab runtime's preinstalled CUDA PyTorch stack without polluting the core control service or ComfyUI custom-node packages.
+- **Controlled subprocess contract**: Workers receive a validated JSON job specification (engine spec, segmented utterances, voice/speaker parameters, reference audio paths, output directory) with sanitized environment variables (no shell interpolation, transient `HF_TOKEN` scoped strictly to gated weight fetches), emit structured progress logs, and support cooperative cancellation via process-group signals.
+- **Guaranteed CUDA memory release**: When a worker process exits after writing its segment WAVs, the OS and CUDA driver reclaim 100% of GPU VRAM immediately with zero lingering allocator fragmentation.
+
+### VRAM + disk preflight guard
+
+Both TTS voice-audition previews and full digital-human pipelines run fail-fast VRAM and disk preflight **before** unloading `llama-server`, freeing ComfyUI VRAM, provisioning an engine environment, fetching model shards, or launching a worker:
+- **GPU VRAM preflight**: Compares live `nvidia-smi` GPU capacity against the engine's declared `min_vram_mib` (e.g., enforcing `>= 45 GiB / 46,080 MiB` for `Fish Audio Drama 3` — targeting 48 GB-class Ada/Hopper FP8 GPUs or ~72 GiB BF16 on A100 80GB — while letting `VoxCPM2`, `Qwen3-TTS 1.7B`, and `IndexTTS-2.5` run on `>= 8 GiB` tiers).
+- **Ephemeral disk preflight**: `check_disk()` verifies available free bytes on the remote Colab disk directly against the engine's declared `min_disk_mib` (ComfyUI workflow pack disk headroom is checked separately by `ComfyPackManager`), failing early with actionable diagnostics instead of exhausting disk or hitting CUDA OOM mid-run.
+
+### Serial full-VRAM handoff to digital human video synthesis
+
+End-to-end digital-human workflows (`server/digital_human.py`, e.g., `InfiniteTalk` and `LongCat Avatar`, defaulting to `"fish_drama3"`) enforce fail-fast preflight followed by strict single-owner GPU VRAM scheduling across stages:
+1. **Stage 0 (Preflight, then release competing engines)**: Run VRAM (`min_vram_mib`) and disk (`check_disk()` against `min_disk_mib`) preflight before touching resident workloads. Once preflight passes, stop `llama-server` (`8081`) if loaded and call ComfyUI's `/free` endpoint (unloading resident diffusion/video checkpoints) so the entire GPU VRAM budget (up to 96 GB on `G4`) is available.
+2. **Stage 1 (Full-VRAM TTS synthesis)**: Launch an isolated remote TTS worker subprocess (`server/tts_engines.py` and `server/tts_worker_*.py`) to synthesize all script segments, then perform silence trimming, resampling, loudness normalization, soft limiting, and seamless master WAV assembly (e.g., 48 kHz studio WAV). Wait for worker termination so GPU VRAM returns to baseline.
+3. **Stage 2 (Full-VRAM ComfyUI video synthesis)**: Hand full GPU VRAM back to `ComfyUI` (`8188`) for silence-valley audio chunking, portrait anchor preparation, multi-segment tail-frame relay video generation, optional in-graph AI 2x super-resolution, and final CFR FFmpeg concatenation + master audio muxing.
+
+### Dynamic per-engine script segmentation
+
+`server/tts_engines.py` segments long oral-broadcast scripts dynamically based on each engine's native context window, prosody stability budget, and inline tag syntax:
+- Splits on CJK (`。！？；，、：`) and Latin sentence/clause boundaries while respecting English abbreviations (`Mr.`, `e.g.`, etc.) and merging undersized trailing fragments.
+- Preserves engine-specific inline directives atomically without splitting inside square-bracket `[...]` or angle-bracket directives (`<|speaker:N|>`, `<字|PINYIN>`, `<tag>`) — including MOSS-TTS `[pause X.Ys]`, Breeze TTS 2 `[笑]` / `[叹气]`, Ming-3.0-TTS 14 paralinguistic tags, Fish Speech / Drama 3 expressive tags, and IndexTTS-2.5 Pinyin pronunciation overrides.
+- Applies consistent per-segment silence trimming, 3 ms symmetric edge fade-in/fade-out with explicit silence pause insertion (rather than overlapping cross-fade), sample-rate conversion, and LUFS loudness normalization so multi-segment narrations maintain uniform timbre and pacing.
+
+### Built-in voice library & cached remote voice audition pipeline
+
+- **Voice catalog**: Ships **10 curated built-in Chinese female & male voices** (each with deterministic seeds and engine-adapted voice prompts/anchors) alongside **9 official Qwen3-TTS CustomVoice native speakers** (addressed via `qwen_*` preset IDs), each paired with a tailored short prose audition passage.
+- **Cached remote audition flow**: When the user clicks audition in Workflow Studio, the frontend invokes `comfyui.tts.preview`, which calls `POST /api/v1/comfyui/tts-preview` on the remote control service (`127.0.0.1:7860`). The remote service computes a deterministic cache key from the normalized engine ID, voice preset / official speaker, voice mode, custom design prompt or reference audio digest, style/emotion options, and audition text.
+  - On a **cache hit**, the remote service immediately returns the cached preview metadata (`cached: true`, `preview_id`, `duration_seconds`, `sample_rate`, `size`, `sha256`, `mime`) without invoking the GPU. Inline base64 WAV `data` is included for clips `<= 512 KiB` and omitted for clips `> 512 KiB`; on an oversized (`> 512 KiB`) cache hit, `comfyui.tts.preview` returns the metadata-only `cached: true` payload (without inline `data`), and the desktop frontend then invokes `comfyui.tts.preview.asset` as the second step to fetch the WAV in bounded `<= 512 KiB` chunks via `GET /api/v1/comfyui/tts-previews/{preview_id}?offset=...&length=...`.
+  - On a **cache miss**, the service returns HTTP `200` with an async cancellable `comfyui_tts_preview` background task (`cached: false`, returning `preview_id`, `sample_rate`, and `task`), pauses the idle auto-release countdown, runs VRAM/disk preflight **before** unloading `llama-server` and freeing ComfyUI VRAM, executes an isolated remote TTS worker subprocess (`server/tts_engines.py` and `server/tts_worker_*.py`) for the short prose passage, and atomically caches the mastered WAV preview under the remote preview cache directory. Worker or preflight failures surface via `task.state == "failed"` and `task.error`.
+- **Verified desktop playback**: For oversized (`> 512 KiB`) cache hits or after a `comfyui_tts_preview` task reaches `completed`, the frontend invokes `comfyui.tts.preview.asset`, and the Go controller retrieves and reassembles the cached WAV in bounded `<= 512 KiB` chunks from `GET /api/v1/comfyui/tts-previews/{preview_id}?offset=...&length=...` while verifying byte `size` and `sha256`; the desktop frontend (`verifyAndDecodeColabOneBase64AudioUrl` in `frontend/src/comfyui.ts`) also verifies the full SHA-256 digest in memory before creating a `Blob` object URL and playing the WAV directly in the UI with zero local synthesis runtime.

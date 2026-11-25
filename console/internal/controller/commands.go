@@ -1,13 +1,71 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/comfyui"
 )
+
+const (
+	colabOneTtsPreviewUpgradeHint = "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试"
+	colabOneTtsPreviewChunkBytes  = 512 * 1024
+	colabOneMaxTtsPreviewBytes    = 16 * 1024 * 1024
+	colabOneMaxTtsPreviewChunks   = 256
+)
+
+func (c *ColabOneController) remoteExplicitlyLacksCapability(capability string) bool {
+	if capability == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rt := asMap(c.data["runtime"])
+	if rt == nil || asString(rt["state"]) != "ready" {
+		return false
+	}
+	caps := asAnySlice(rt["capabilities"])
+	if len(caps) == 0 {
+		return false
+	}
+	for _, item := range caps {
+		if asString(item) == capability {
+			return false
+		}
+	}
+	return true
+}
+
+func isMissingRemoteRoute404(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(msg)
+	if strings.Contains(msg, "不存在") ||
+		strings.Contains(msg, "Colab request failed") ||
+		strings.Contains(lower, "kernel") ||
+		strings.Contains(lower, "proxy") {
+		return false
+	}
+	return strings.EqualFold(msg, "not found") ||
+		msg == "远端服务返回 HTTP 404" ||
+		(httpStatusCode(err) == 404 && !strings.Contains(msg, "Colab request failed"))
+}
+
+// ComfyTtsPreviewValidator is an optional interface that ComfyValidator implementations
+// may satisfy to validate TTS voice preview requests before making a remote RPC.
+type ComfyTtsPreviewValidator interface {
+	ValidateTtsPreviewRequest(raw map[string]any) (map[string]any, error)
+}
 
 // Command dispatches a desktop RPC action and sanitizes the result for JSON transport.
 func (c *ColabOneController) Command(ctx context.Context, action string, payload map[string]any) (any, error) {
@@ -573,17 +631,22 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		explicitTok := ""
 		if rawTok, hasTok := reqCopy["hf_token"]; hasTok {
-			if tokStr, ok := rawTok.(string); ok {
-				cleaned, err := validateCleanHFToken(tokStr)
-				if err != nil {
-					return nil, err
-				}
-				if cleaned == "" {
-					delete(reqCopy, "hf_token")
-				} else {
-					explicitTok = cleaned
-					reqCopy["hf_token"] = cleaned
-				}
+			if rawTok == nil {
+				return nil, errors.New("字段 hf_token 不能为空值")
+			}
+			tokStr, ok := rawTok.(string)
+			if !ok {
+				return nil, errors.New("hf_token 格式不合法")
+			}
+			cleaned, err := validateCleanHFToken(tokStr)
+			if err != nil {
+				return nil, err
+			}
+			if cleaned == "" {
+				delete(reqCopy, "hf_token")
+			} else {
+				explicitTok = cleaned
+				reqCopy["hf_token"] = cleaned
 			}
 		}
 		if explicitTok == "" {
@@ -620,6 +683,222 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		c.log("远端已受理 ComfyUI 工作流任务", "ComfyUI", "info")
 		return res, nil
+
+	case "comfyui.tts.preview":
+		if c.remoteExplicitlyLacksCapability("comfyui_tts_preview") {
+			return nil, errors.New(colabOneTtsPreviewUpgradeHint)
+		}
+		reqCopy := deepCopyMap(payload)
+		if reqCopy == nil {
+			reqCopy = map[string]any{}
+		}
+		explicitTok := ""
+		if rawTok, hasTok := reqCopy["hf_token"]; hasTok {
+			if rawTok == nil {
+				return nil, errors.New("字段 hf_token 不能为空值")
+			}
+			tokStr, ok := rawTok.(string)
+			if !ok {
+				return nil, errors.New("hf_token 格式不合法")
+			}
+			cleaned, err := validateCleanHFToken(tokStr)
+			if err != nil {
+				return nil, err
+			}
+			if cleaned == "" {
+				delete(reqCopy, "hf_token")
+			} else {
+				explicitTok = cleaned
+				reqCopy["hf_token"] = cleaned
+			}
+		}
+		if explicitTok == "" {
+			if _, hasTok := reqCopy["hf_token"]; !hasTok && (c.hasRemoteCapability("comfyui_hf_token") || c.hasRemoteCapability("comfyui_tts_preview")) {
+				if v, ok := c.vault.Get("hf"); ok {
+					if s, ok := v.(string); ok {
+						cleaned, err := validateCleanHFToken(s)
+						if err != nil {
+							return nil, err
+						}
+						if cleaned != "" {
+							reqCopy["hf_token"] = cleaned
+						}
+					}
+				}
+			}
+		}
+		var req map[string]any
+		var err error
+		if previewValidator, ok := c.comfy.(ComfyTtsPreviewValidator); ok {
+			req, err = previewValidator.ValidateTtsPreviewRequest(reqCopy)
+		} else {
+			req, err = comfyui.ValidateTtsPreviewRequest(reqCopy)
+		}
+		if err != nil {
+			return nil, err
+		}
+		engineID := asString(req["engine_id"])
+		c.log("请求合成 TTS 音色试听："+engineID, "ComfyUI", "info")
+		res, err := c.remote(ctx, "POST", "comfyui/tts-preview", req, "", 120*time.Second)
+		if err != nil {
+			if !c.hasRemoteCapability("comfyui_tts_preview") && isMissingRemoteRoute404(err) {
+				return nil, errors.New(colabOneTtsPreviewUpgradeHint)
+			}
+			return nil, err
+		}
+		if !asBool(asMap(res)["cached"]) {
+			if err := c.RefreshRemote(ctx, ""); err != nil {
+				c.log("远端已受理 TTS 音色试听任务，但刷新状态失败（将自动重试）："+errTypeName(err), "ComfyUI", "warning")
+				return res, nil
+			}
+			c.log("远端已受理 TTS 音色试听任务", "ComfyUI", "info")
+		}
+		return res, nil
+
+	case "comfyui.tts.preview.asset":
+		previewID := asString(payload["preview_id"])
+		if previewID == "" {
+			previewID = asString(payload["id"])
+		}
+		if !reHex32ID.MatchString(previewID) {
+			return nil, errors.New("试听音频编号不合法")
+		}
+		if c.remoteExplicitlyLacksCapability("comfyui_tts_preview") {
+			return nil, errors.New(colabOneTtsPreviewUpgradeHint)
+		}
+		var buf bytes.Buffer
+		var resultMeta map[string]any
+		expectedSize := 0
+		expectedSHA := ""
+		offset := 0
+		completed := false
+		for iter := 0; iter < colabOneMaxTtsPreviewChunks; iter++ {
+			reqOffset := offset
+			chunkPath := fmt.Sprintf("comfyui/tts-previews/%s?offset=%d&length=%d", previewID, reqOffset, colabOneTtsPreviewChunkBytes)
+			rawChunk, err := c.remote(ctx, "GET", chunkPath, nil, "", 60*time.Second)
+			if err != nil {
+				if iter == 0 && !c.hasRemoteCapability("comfyui_tts_preview") && isMissingRemoteRoute404(err) {
+					return nil, errors.New(colabOneTtsPreviewUpgradeHint)
+				}
+				return nil, err
+			}
+			chunkMap := asMap(rawChunk)
+			if chunkMap == nil {
+				return nil, errors.New("试听音频响应格式不合法")
+			}
+			if resultMeta == nil {
+				resultMeta = deepCopyMap(chunkMap)
+				if rawSize, hasSize := chunkMap["size"]; hasSize {
+					if totalSize, ok := asInt(rawSize); ok {
+						if totalSize < 0 {
+							return nil, errors.New("试听音频传输不完整，请重试")
+						}
+						if totalSize > colabOneMaxTtsPreviewBytes {
+							return nil, errors.New("试听音频体积超过 16 MiB 上限")
+						}
+						expectedSize = totalSize
+					}
+				}
+				if rawSHA, hasSHA := chunkMap["sha256"]; hasSHA {
+					expectedSHA = strings.ToLower(strings.TrimSpace(asString(rawSHA)))
+				}
+			} else {
+				if rawSize, hasSize := chunkMap["size"]; hasSize && expectedSize > 0 {
+					if sz, ok := asInt(rawSize); !ok || sz != expectedSize {
+						return nil, errors.New("试听音频缓存已变更，请重试")
+					}
+				}
+				if rawSHA, hasSHA := chunkMap["sha256"]; hasSHA && expectedSHA != "" {
+					if strings.ToLower(strings.TrimSpace(asString(rawSHA))) != expectedSHA {
+						return nil, errors.New("试听音频缓存已变更，请重试")
+					}
+				}
+			}
+			if rawOff, hasOff := chunkMap["offset"]; hasOff {
+				if gotOff, ok := asInt(rawOff); !ok || gotOff != reqOffset {
+					return nil, errors.New("试听音频传输不完整，请重试")
+				}
+			}
+			rawB64 := asString(chunkMap["data"])
+			var decoded []byte
+			if rawB64 != "" {
+				var decErr error
+				decoded, decErr = base64.StdEncoding.DecodeString(rawB64)
+				if decErr != nil {
+					return nil, errors.New("试听音频数据解码失败")
+				}
+			}
+			chunkSize := len(decoded)
+			if rawCS, hasCS := chunkMap["chunk_size"]; hasCS {
+				cs, ok := asInt(rawCS)
+				if !ok || cs != len(decoded) {
+					return nil, errors.New("试听音频传输不完整，请重试")
+				}
+				chunkSize = cs
+			}
+			if buf.Len()+len(decoded) > colabOneMaxTtsPreviewBytes {
+				return nil, errors.New("试听音频体积超过 16 MiB 上限")
+			}
+			if len(decoded) > 0 {
+				buf.Write(decoded)
+				offset += len(decoded)
+			}
+			hasMore := asBool(chunkMap["has_more"])
+			if !hasMore || (expectedSize > 0 && buf.Len() >= expectedSize) {
+				completed = true
+				break
+			}
+			if chunkSize <= 0 || len(decoded) == 0 {
+				if buf.Len() == 0 {
+					return nil, errors.New("试听音频数据为空")
+				}
+				return nil, errors.New("试听音频传输不完整，请重试")
+			}
+		}
+		if !completed {
+			return nil, errors.New("试听音频分片读取次数超出上限")
+		}
+		if buf.Len() == 0 {
+			return nil, errors.New("试听音频数据为空")
+		}
+		if expectedSize > 0 && buf.Len() != expectedSize {
+			return nil, errors.New("试听音频传输不完整，请重试")
+		}
+		if expectedSHA != "" {
+			sum := sha256.Sum256(buf.Bytes())
+			actualSHA := hex.EncodeToString(sum[:])
+			if actualSHA != expectedSHA {
+				return nil, errors.New("试听音频数据校验失败，请重试")
+			}
+		}
+		out := make(map[string]any, len(resultMeta)+1)
+		for _, k := range []string{
+			"preview_id",
+			"cached",
+			"engine_id",
+			"voice_preset",
+			"text",
+			"sample_rate",
+			"duration_seconds",
+			"mime",
+			"size",
+			"sha256",
+		} {
+			if val, ok := resultMeta[k]; ok {
+				out[k] = val
+			}
+		}
+		for k, val := range resultMeta {
+			if k == "data" || k == "offset" || k == "chunk_size" || k == "has_more" {
+				continue
+			}
+			if _, exists := out[k]; !exists {
+				out[k] = val
+			}
+		}
+		out["data"] = base64.StdEncoding.EncodeToString(buf.Bytes())
+		out["size"] = buf.Len()
+		return out, nil
 
 	case "comfyui.output.asset", "comfyui.output.delete", "comfyui.output.export_drive":
 		identity := asString(payload["id"])

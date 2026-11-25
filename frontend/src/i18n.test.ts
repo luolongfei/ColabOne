@@ -163,6 +163,42 @@ describe("ColabOne i18n catalog integrity", () => {
       }
     }
   });
+
+  it("forbids right-arrow symbols across all locale strings and exact backend messages and keeps digital human input/output split", () => {
+    const RIGHT_ARROW_RE = new RegExp(
+      "[\\u2192\\u219d\\u21a0\\u21a3\\u21a6\\u21aa\\u21ac\\u21b3\\u21c0\\u21c1\\u21c9\\u21d2\\u21db\\u21dd\\u21e2\\u21e5\\u21e8\\u21f6\\u21f8\\u21fb\\u21fe\\u2794\\u2799-\\u279e\\u27a0-\\u27a4\\u27f6\\u27f9\\u27fc\\u27fe\\u27ff\\u2b95]|" +
+        "&ra" +
+        "rr;|&#85" +
+        "94;|&#x21" +
+        "92;",
+      "i",
+    );
+
+    for (const loc of ALL_LOCALES) {
+      const table = COLABONE_MESSAGES[loc];
+      expect(table["comfy.ioInputDigitalHuman"]).toBeTruthy();
+      expect(table["comfy.ioOutputDigitalHuman"]).toBeTruthy();
+      for (const [key, value] of Object.entries(table)) {
+        expect(
+          RIGHT_ARROW_RE.test(value),
+          `forbidden right-arrow symbol in ${loc}["${key}"]: ${value}`,
+        ).toBe(false);
+      }
+    }
+
+    for (const [src, row] of Object.entries(EXACT_MESSAGES)) {
+      expect(
+        RIGHT_ARROW_RE.test(src),
+        `forbidden right-arrow symbol in EXACT_MESSAGES key: ${src}`,
+      ).toBe(false);
+      for (const [loc, value] of Object.entries(row)) {
+        expect(
+          RIGHT_ARROW_RE.test(value),
+          `forbidden right-arrow symbol in EXACT_MESSAGES["${src}"][${loc}]: ${value}`,
+        ).toBe(false);
+      }
+    }
+  });
 });
 
 describe("ColabOne locale detection & manual-override priority", () => {
@@ -431,7 +467,7 @@ describe("ColabOne reactive translations across helpers", () => {
       "正在等待公网域名路由生效并完成鉴权探测（已耗时 10 秒）",
       "复用远端已校验的 Cloudflared 2025.4.0",
       "API 请求 #12 完成 · ≈42.5 tokens/s · 输出 256 tokens · 首字 320ms · 耗时 6.12s",
-      "API 请求 #12 完成 · 54.2 tokens/s · 输出 256 tokens · 自动压缩 210528→12480 tokens · 首字 320ms · 耗时 6.12s",
+      "API 请求 #12 完成 · 54.2 tokens/s · 输出 256 tokens · 自动压缩 210528 至 12480 tokens · 首字 320ms · 耗时 6.12s",
       "API 请求 #14 上下文超限（约 210528 / 65536 tokens），已自动压缩为约 12480 tokens",
       "API 请求上下文超限（约 210528 / 65536 tokens），已自动压缩为约 12480 tokens",
       "输入上下文过长（210528 tokens），超过当前模型上下文上限（65536 tokens）",
@@ -2202,6 +2238,82 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
           expect(out, `spoken Cantonese leak in zh-HK for "${sample}" -> "${out}"`).not.toMatch(
             STRICT_CANTONESE_RE,
           );
+        }
+      }
+    }
+  });
+
+  it("translates Round-2 voice preview, Breeze/Drama 3 TTS, symlink labels, and voiceGroupNeutral across all 6 locales", () => {
+    const HAN_RE = /[\u3400-\u9fff]/;
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+
+    // 1. comfy.voiceGroupNeutral across all 6 locales
+    expect(COLABONE_MESSAGES["zh-CN"]["comfy.voiceGroupNeutral"]).toBe("内置中性 / 通用音色");
+    expect(COLABONE_MESSAGES["en-US"]["comfy.voiceGroupNeutral"]).toBe("Built-in Neutral Voices");
+    expect(COLABONE_MESSAGES["zh-TW"]["comfy.voiceGroupNeutral"]).toBe("內建中性／通用音色");
+    expect(COLABONE_MESSAGES["zh-HK"]["comfy.voiceGroupNeutral"]).toBe("內置中性／通用音色");
+    expect(COLABONE_MESSAGES["ja-JP"]["comfy.voiceGroupNeutral"]).toBe("内蔵ニュートラル音声");
+    expect(COLABONE_MESSAGES["ko-KR"]["comfy.voiceGroupNeutral"]).toBe("내장 중성 보이스");
+
+    // 2. 14 exact strings, 2 dynamic patterns, and 3 symlink labels
+    const r2Samples = [
+      // 14 exact strings
+      "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试",
+      "复用已缓存的音色试听音频",
+      "试听音频响应格式不合法",
+      "试听音频体积超过 16 MiB 上限",
+      "试听音频数据解码失败",
+      "试听音频分片读取次数超出上限",
+      "试听音频读取范围不合法",
+      "试听音频分片偏移量必须为非负整数",
+      "试听音频分片长度必须为正整数",
+      "试听音频缓存已变更，请重试",
+      "试听音频数据为空",
+      "试听音频传输不完整，请重试",
+      "试听音频数据校验失败，请重试",
+      "Breeze TTS 2 需要 NVIDIA CUDA GPU 才能运行",
+      // 2 dynamic patterns
+      "复用已缓存的音色试听音频（时长 4.2 秒）",
+      "Fish Audio Drama 3 至少需要 48 GB 显存（当前 24.0 GB），请切换至 G4 96 GB / A100 80 GB 运行时，或改用 MOSS-TTS v1.5 / VoxCPM2",
+      // 3 symlink strings
+      "TTS 就绪标记文件不能是符号链接",
+      "音色参考音频不能是符号链接",
+      "情绪参考音频不能是符号链接",
+    ];
+
+    const nonZhCnLocales: ColabOneLocale[] = [
+      "en-US",
+      "zh-TW",
+      "zh-HK",
+      "ja-JP",
+      "ko-KR",
+    ];
+
+    for (const loc of nonZhCnLocales) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of r2Samples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            HAN_RE.test(out),
+            `Han character leak in ${loc} for "${sample}": "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(
+            out,
+            `forbidden zh-TW term in "${sample}": "${out}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            out,
+            `spoken Cantonese leak in zh-HK for "${sample}": "${out}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
         }
       }
     }

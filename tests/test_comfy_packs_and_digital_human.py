@@ -1965,13 +1965,21 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
     assert accel_field.default == "max"
     assert accel_field.options == ["max", "balanced", "compat"]
 
-    expected_voice_ids = [
+    expected_female_voice_ids = [
         "shen_zhiyi",
         "lin_xiaoman",
         "su_wanqing",
         "gu_qinglan",
         "lu_mingwei",
     ]
+    expected_male_voice_ids = [
+        "chen_jingzhou",
+        "lin_chenxu",
+        "zhou_moyan",
+        "gu_zhengyuan",
+        "su_hechuan",
+    ]
+    expected_voice_ids = [*expected_female_voice_ids, *expected_male_voice_ids]
     for tmpl_fields in (longcat_fields, infinitetalk_fields):
         vp_field = tmpl_fields["pipeline.voice_preset"]
         assert vp_field.group == "basic"
@@ -1979,18 +1987,26 @@ def test_longcat_avatar_15_catalog_and_pipeline_frame_cap(
         assert vp_field.visible_when == {"pipeline.audio_source": "tts"}
         assert vp_field.options == [*expected_voice_ids, "custom"]
 
-    for eid in ("voxcpm2", "qwen3_tts", "fish_s2_pro", "indextts2"):
+    for eid in (
+        "fish_drama3",
+        "moss_tts_v1_5",
+        "breeze_tts2",
+        "ming_3_tts",
+        "voxcpm2",
+        "qwen3_tts",
+        "indextts2",
+        "fish_s2_pro",
+    ):
         eng = tts_by_id[eid]
-        assert [p.id for p in eng.voice_presets] == expected_voice_ids
-        assert all(p.gender == "female" for p in eng.voice_presets)
-        assert [p.seed for p in eng.voice_presets] == [
-            202601,
-            202602,
-            202603,
-            202604,
-            202605,
-        ]
+        universal = [p for p in eng.voice_presets if not p.speaker_id]
+        assert [p.id for p in universal] == expected_voice_ids
+        assert [p.gender for p in universal[:5]] == ["female"] * 5
+        assert [p.gender for p in universal[5:]] == ["male"] * 5
+        assert [p.seed for p in universal] == list(range(202601, 202611))
         assert all(p.name.strip() != "" for p in eng.voice_presets)
+        assert all(p.preview_text.strip() != "" for p in eng.voice_presets)
+    qwen_official = [p for p in tts_by_id["qwen3_tts"].voice_presets if p.speaker_id]
+    assert len(qwen_official) == 9
 
     assert len(longcat.node_patches) == 1
     assert longcat.node_patches[0].node_name == "ComfyUI-WanVideoWrapper"
@@ -2955,12 +2971,30 @@ def test_fastapi_comfyui_tts_engines_route(tmp_path):
     assert resp.status_code == 200
     engines = resp.json()
     assert isinstance(engines, list)
-    assert len(engines) == 4
+    assert len(engines) == 8
     by_id = {e["id"]: e for e in engines}
-    assert set(by_id.keys()) == {"voxcpm2", "qwen3_tts", "fish_s2_pro", "indextts2"}
+    assert set(by_id.keys()) == {
+        "fish_drama3",
+        "moss_tts_v1_5",
+        "breeze_tts2",
+        "ming_3_tts",
+        "voxcpm2",
+        "qwen3_tts",
+        "fish_s2_pro",
+        "indextts2",
+    }
+    assert by_id["fish_drama3"]["commercial_ok"] is False
+    assert by_id["fish_drama3"]["min_vram_mib"] >= 46080
+    assert by_id["fish_drama3"]["sample_rate"] == 44100
+    assert by_id["moss_tts_v1_5"]["commercial_ok"] is True
+    assert by_id["breeze_tts2"]["commercial_ok"] is False
+    assert by_id["breeze_tts2"]["supports_voice_design"] is True
+    assert by_id["ming_3_tts"]["commercial_ok"] is True
+    assert by_id["ming_3_tts"]["sample_rate"] == 44100
     assert by_id["voxcpm2"]["commercial_ok"] is True
     assert by_id["voxcpm2"]["sample_rate"] == 48000
     assert by_id["qwen3_tts"]["commercial_ok"] is True
+    assert by_id["qwen3_tts"]["supports_custom_speakers"] is True
     assert by_id["fish_s2_pro"]["commercial_ok"] is False
     assert by_id["fish_s2_pro"]["supports_inline_tags"] is True
     assert by_id["indextts2"]["commercial_ok"] is False
@@ -5333,6 +5367,12 @@ def test_opt_builtin_named_female_voices_across_all_four_tts_engines(
         )
         (presets_cache_dir / f"{preset_id}.txt").write_text(
             COLABONE_VOICE_PRESET_ANCHOR_TEXT, encoding="utf-8"
+        )
+        preset_spec = resolve_colabone_voice_preset(engines_by_id["indextts2"], preset_id)
+        assert preset_spec is not None
+        _, _, _, expected_meta = runner._preset_anchor_fingerprint(preset_spec)
+        (presets_cache_dir / f"{preset_id}.meta.json").write_text(
+            json.dumps(expected_meta, ensure_ascii=False), encoding="utf-8"
         )
 
     res_idx_preset = runner.synthesize(

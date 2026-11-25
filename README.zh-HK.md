@@ -37,20 +37,20 @@ ColabOne 為 **macOS（Apple Silicon）** 及 **Windows（x64）** 提供流暢�
 
 ## 🚀 快速上手
 
-ColabOne 採用四個側邊欄分頁設計：**遠端裝置 → 對外 API → ComfyUI → 設定**，並於右側配備可滑出展開的**執行日誌**面板。
+ColabOne 採用四個側邊欄分頁設計：**遠端裝置**、**對外 API**、**ComfyUI** 及**設定**，並於右側配備可滑出展開的**執行日誌**面板。
 
 1. **下載並安裝**
    從 [Releases](https://github.com/luolongfei/ColabOne/releases) 下載對應平台的安裝程式（或[從源碼構建](#-從源碼構建)）：Windows 雙擊執行 `.exe` 安裝程式（安裝至目前用戶目錄，無需管理員權限），macOS 打開 `.dmg` 磁碟映像並將 `ColabOne.app` 拖入**應用程式**。ColabOne 是完全自包含的純 Go 單一執行檔應用程式，無需本地 Python 執行環境，亦無需保留同層的 `runtime/` 或 `site-packages/` 資料夾。於 Windows 平台，亦可隨時於**設定**內管理開始選單及桌面捷徑，無需管理員權限。
-   - *首次開啟提示（開源構建未購買商業簽署，僅需操作一次）*：**macOS** 若提示「未開啟／無法驗證」，點擊**完成** → 開啟**系統設定 → 私隱與安全性** → 底部點擊**強制打開**，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/ColabOne.app`；**Windows** 若出現 SmartScreen 提示，點擊**其他資訊 → 仍要執行**。
+   - *首次開啟提示（開源構建未購買商業簽署，僅需操作一次）*：**macOS** 若提示「未開啟／無法驗證」，點擊**完成**，開啟**系統設定 / 私隱與安全性**，底部點擊**強制打開**，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/ColabOne.app`；**Windows** 若出現 SmartScreen 提示，點擊**其他資訊 / 仍要執行**。
 
 2. **登入 Google 帳戶**
-   前往**設定** → **登入 Google**，在瀏覽器完成帳戶授權後，ColabOne 會自動完成登入。如果瀏覽器顯示授權頁內容而未自動跳轉，可展開手動貼上區域並點擊**貼上並完成登入**。登入憑證會加密儲存在本地設定目錄的 `vault.enc`（`0600` 權限 + AES-256-GCM）中，不觸發系統鑰匙圈彈窗，重啟程式會自動恢復並續期。
+   前往**設定 / 登入 Google**，在瀏覽器完成帳戶授權後，ColabOne 會自動完成登入。如果瀏覽器顯示授權頁內容而未自動跳轉，可展開手動貼上區域並點擊**貼上並完成登入**。登入憑證會加密儲存在本地設定目錄的 `vault.enc`（`0600` 權限 + AES-256-GCM）中，不觸發系統鑰匙圈彈窗，重啟程式會自動恢復並續期。
 
 3. **啟動 GPU**
    打開**遠端裝置**，選擇 GPU 型號（預設為 `G4`）及閒置自動釋放時長（預設 **30 分鐘**），再點擊**啟動 GPU**。實例就緒後，頂部狀態欄及概覽卡片會即時顯示計費續航、實例位置、硬件監控曲線圖及 Google 雲端硬碟掛載狀態。
 
 4. **架設大語言模型或執行 ComfyUI**
-   - **文字 API**：打開**對外 API** → **選擇模型**，從**我的**（已預置可編輯的入門 Hugging Face 倉庫）挑選 GGUF 模型，或在**社群**搜尋。點擊**下載並載入**即可在遠端下載並校驗模型分片再載入至 `llama-server`，隨後設定你的 Cloudflare Named Tunnel 並開啟 API 服務。
+   - **文字 API**：打開**對外 API / 選擇模型**，從**我的**（已預置可編輯的入門 Hugging Face 倉庫）挑選 GGUF 模型，或在**社群**搜尋。點擊**下載並載入**即可在遠端下載並校驗模型分片再載入至 `llama-server`，隨後設定你的 Cloudflare Named Tunnel 並開啟 API 服務。
    - **視覺與多模態工作流**：打開 **ComfyUI**，在**工作流工坊**匯入工作流，或在**原生畫布**開啟完整節點編輯器。
 
 5. **完成後釋放實例**
@@ -105,11 +105,38 @@ ColabOne 只會將 **ComfyUI `v0.46.0`** 部署於遠端 Colab GPU（`127.0.0.1:
   - 支援線上預覽並透過系統原生儲存對話框匯出經 SHA-256 校驗的圖片、影片與音訊輸出作品；工作流（`/workflows/**`）及輸出作品（`/comfyui-outputs/**`）會自動同步至 `ColabOne_Drive`。
   - 透過 `catalog/comfyui.json` 以宣告式管理遠端模型與工作流套件（純數據清單，鎖定版本修訂並附帶 SHA-256 校驗）。
 - **原生畫布**
-  - 在固定域名 Cloudflare Named Tunnel 後方運行具獨立令牌認證的 HTTP + WebSocket 反向代理（`127.0.0.1:8189` → `8188`）。
+  - 在固定域名 Cloudflare Named Tunnel 後方運行具獨立令牌認證的 HTTP + WebSocket 反向代理（`127.0.0.1:8189` 轉發至 `8188`）。
   - 每次工作階段均以隨機令牌換取限定作用域的 `HttpOnly` Cookie，可直接於獨立的 **ComfyUI 原生畫布** 桌面視窗或系統瀏覽器中開啟。
 - **嚴格顯存互斥**
   - `llama-server`（`8081`）與 `ComfyUI`（`8188`）絕不會同時佔用 GPU 顯存。切換引擎時會自動卸載目前運行中的服務，同時完整保留遠端磁碟上的模型緩存。
   - 執行中的 ComfyUI 隊列及原生畫布操作會自動暫停閒置自動釋放倒數。
+
+## 🎙️ 數碼人口播與 96 GB 旗艦開源 TTS 引擎矩陣
+
+內置的 ComfyUI 數碼人口播工作流已整合 **8 款旗艦開源 TTS 引擎矩陣**，全部只於遠端 Colab GPU 上隔離運行（專為 96 GB `G4` RTX PRO 6000 及 80 GB `A100` 旗艦規格優化，輕量級引擎亦兼容中小顯存實例）。每個引擎均於隔離的遠端 TTS Worker 子進程內執行（`server/tts_engines.py` / `server/tts_worker_*.py`），內建顯存與磁碟空間前置檢查、按引擎動態分段，以及與 ComfyUI 數碼人影片合成之間的串行全顯存接力移交機制。
+
+### 🧠 96 GB 旗艦開源 TTS 引擎矩陣
+
+| 引擎 | 架構／取樣率與核心特性 | 顯存／磁碟需求與上游授權 |
+|---|---|---|
+| **Fish Audio Drama 3** | 35B MoE（啟用 3B），44.1 kHz，旗艦級高表現力語音合成 | `>= 45 GiB` 顯存（48 GB 級 Ada/Hopper FP8 GPU；A100 80GB BF16 約 72 GiB） · `>= 48 GiB` 磁碟 · Fish Audio Community License v1.0（**僅限非商用／研究**，禁止託管 TTS API） |
+| **MOSS-TTS v1.5** | 8B，24 kHz，支援 31 種語言及內聯 `[pause X.Ys]` 停頓控制標籤 | `>= 20 GiB` 顯存 · `>= 28 GiB` 磁碟 · Apache-2.0 |
+| **Breeze TTS 2** | 3B+，24 kHz，中英雙語 Voice Design／聲音克隆／風格指導及副語言標籤（`[笑]`／`[叹气]`） | `>= 12 GiB` 顯存 · `>= 12 GiB` 磁碟 · BreezeBlue Research & Non-Commercial License（**僅限非商用／研究**） |
+| **Ming-3.0-TTS Tiny** | 7.9B MoE（啟用 1.3B），44.1 kHz，多方言 + 14 種副語言標籤 | `>= 18 GiB` 顯存 · `>= 22 GiB` 磁碟 · MIT |
+| **VoxCPM2** | 2B，48 kHz 錄音室級連續擴散語音合成，支援聲音克隆與文字捏聲線 | `>= 8 GiB` 顯存 · `>= 6 GiB` 磁碟 · Apache-2.0 |
+| **Qwen3-TTS 1.7B** | 24 kHz，Base + VoiceDesign + CustomVoice（**9 位官方原生說話人**），多語種支援 | `>= 8 GiB` 顯存 · `>= 15 GiB` 磁碟 · Apache-2.0 |
+| **IndexTTS-2.5** | 22.05 kHz，情緒參考音解耦控制 + GRPO 對齊 + 拼音讀音強制覆蓋 | `>= 8 GiB` 顯存 · `>= 15 GiB` 磁碟 · Bilibili Model Use License Agreement（**僅限非商用／研究**） |
+| **Fish Speech S2-Pro** | 4B，44.1 kHz，支援高表現力情緒與副語言內聯標籤 | `>= 20 GiB` 顯存 · `>= 16 GiB` 磁碟 · Fish Audio Research License（**僅限非商用／研究**） |
+
+### 🎧 內置音色庫與一鍵短文試聽
+
+- **精選音色陣容**：內置 **10 位精選中文女聲與男聲** 及 **9 位 Qwen3-TTS CustomVoice 官方原生說話人**。
+- **一鍵遠端 GPU 即時試聽與緩存**：每位內置音色及官方說話人均配對專屬口播試聽短文，可於 ComfyUI 工作流工坊一鍵觸發遠端 GPU 即時合成試聽，並透過遠端磁碟緩存快速重播，確認聲音效果後再執行完整數碼人影片渲染。
+
+> [!IMPORTANT]
+> **非商用及研究用途合規聲明**
+>
+> 整合的數碼人旗艦 TTS 引擎陣容包含研究／非商業授權的開源權重模型 —— 包括 **Fish Audio Drama 3**（Fish Audio Community License v1.0，禁止商業用途及託管 TTS API 服務）、**Breeze TTS 2**（BreezeBlue Research & Non-Commercial License）、**IndexTTS-2.5**（Bilibili Model Use License Agreement）及 **Fish Speech S2-Pro**（Fish Audio Research License）。因此，**本專案整合的數碼人旗艦 TTS 流水線嚴格僅供個人學習、技術實驗與非商業研究使用 —— 嚴禁作商業用途或託管 TTS 服務轉售。** 所有 TTS 權重均只在需要時下載至你的遠端 Colab 執行環境，並須遵守各自上游授權條款（詳見 [NOTICE](NOTICE)）。
 
 ## 🔒 儲存、計費與安全
 
@@ -190,4 +217,4 @@ npm --prefix frontend run build
 
 ## 📜 開源授權
 
-ColabOne 採用 **GNU General Public License v3.0**（[LICENSE](LICENSE)）開源授權，以配合遠端整合的 [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`，GPL-3.0）。所有上游開源授權與版權聲明均完整保留於 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)。
+ColabOne 採用 **GNU General Public License v3.0**（[LICENSE](LICENSE)）開源授權，以配合遠端整合的 [ComfyUI](https://github.com/Comfy-Org/ComfyUI)（`v0.46.0`，GPL-3.0）。所有上游開源授權與版權聲明均完整保留於 [NOTICE](NOTICE) 及 [third_party/SOURCES.md](third_party/SOURCES.md)。遠端按需下載的數碼人旗艦 TTS 權重須受各自上游授權條款約束，當中包含僅限非商用／研究授權模型（`Fish Audio Drama 3`、`Breeze TTS 2`、`IndexTTS-2.5`、`Fish Speech S2-Pro`），整合的數碼人旗艦 TTS 流水線僅供個人學習、實驗及非商業研究用途。

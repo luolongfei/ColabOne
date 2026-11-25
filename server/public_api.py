@@ -506,7 +506,7 @@ def _format_request_finish_log(rec: dict[str, Any]) -> str:
                 and after_in > 0
                 and orig_in > after_in
             ):
-                parts.append(f"自动压缩 {orig_in}→{after_in} tokens")
+                parts.append(f"自动压缩 {orig_in} 至 {after_in} tokens")
         ttft = rec.get("ttft_ms")
         if isinstance(ttft, int) and ttft >= 0:
             parts.append(f"首字 {_format_duration_label(ttft)}")

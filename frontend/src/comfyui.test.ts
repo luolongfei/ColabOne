@@ -1874,8 +1874,42 @@ describe("missingRequiredWorkflowFields", () => {
       ).toEqual([]);
     }
 
-    // Non-indextts2 engines do NOT require voice_ref_audio even under "custom"
-    for (const engineId of ["voxcpm2", "qwen3_tts", "fish_s2_pro"]) {
+    // Other clone-only engines (fish_drama3, moss_tts_v1_5, fish_s2_pro) also require voice_ref_audio under "custom"
+    for (const engineId of ["fish_drama3", "moss_tts_v1_5", "fish_s2_pro"]) {
+      const customVals = {
+        "pipeline.audio_source": "tts",
+        "pipeline.tts_engine": engineId,
+        "pipeline.voice_preset": "custom",
+        "pipeline.script_text": "hello world",
+        "8.steps": 8,
+      };
+      expect(isColabOneVoiceRefRequired(presetWf, customVals)).toBe(true);
+      expect(
+        missingRequiredWorkflowFields(
+          presetWf,
+          customVals,
+          { "1.image": "img_01" },
+          {},
+        ).map((f) => f.key),
+      ).toEqual(["pipeline.voice_ref_audio"]);
+
+      const presetVals = {
+        ...customVals,
+        "pipeline.voice_preset": "shen_zhiyi",
+      };
+      expect(isColabOneVoiceRefRequired(presetWf, presetVals)).toBe(false);
+      expect(
+        missingRequiredWorkflowFields(
+          presetWf,
+          presetVals,
+          { "1.image": "img_01" },
+          {},
+        ),
+      ).toEqual([]);
+    }
+
+    // Voice-design engines do NOT require voice_ref_audio even under "custom"
+    for (const engineId of ["voxcpm2", "qwen3_tts", "breeze_tts2", "ming_3_tts"]) {
       const vals = {
         "pipeline.audio_source": "tts",
         "pipeline.tts_engine": engineId,

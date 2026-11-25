@@ -59,6 +59,9 @@ func colabOneMethodTimeout(method string) time.Duration {
 		"drive.connect", "auth.colab.auto", "comfyui.input.upload", "comfyui.output.asset",
 		"comfyui.output.export_drive", "comfyui.draft.media.save", "comfyui.draft.media.read":
 		return 300 * time.Second
+	case "comfyui.tts.preview", "comfyui.tts.preview.asset":
+		// 120s preview RPC + RefreshRemote headroom, or multi-chunk WAV asset assembly.
+		return 150 * time.Second
 	default:
 		return 120 * time.Second
 	}

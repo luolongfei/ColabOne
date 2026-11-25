@@ -54,18 +54,18 @@ def colabone_render_github_release_body(
     zh_block = "\n".join(
         [
             "## 下载安装",
-            f"- **Windows (x64)**：[{win_name}]({win_url})（双击安装，无需管理员权限；若系统提示未知发布者，点「更多信息 → 仍要运行」）",
+            f"- **Windows (x64)**：[{win_name}]({win_url})（双击安装，无需管理员权限；若系统提示未知发布者，点「更多信息 / 仍要运行」）",
             f"- **macOS (Apple Silicon)**：[{mac_name}]({mac_url})（打开后拖入「应用程序」）",
-            "  - **macOS 首次打开提示“未打开 / 无法验证”**：点「完成」→ 打开「系统设置 → 隐私与安全性」→ 底部点「仍要打开」，或在终端运行 `xattr -dr com.apple.quarantine /Applications/ColabOne.app`（开源构建未购买商业签名，操作一次即可）。",
+            "  - **macOS 首次打开提示“未打开 / 无法验证”**：点「完成」，打开「系统设置 / 隐私与安全性」，底部点「仍要打开」，或在终端运行 `xattr -dr com.apple.quarantine /Applications/ColabOne.app`（开源构建未购买商业签名，操作一次即可）。",
             "- 其余 `.tar.gz`、`.delta`、`update-*.json` 为应用内自动更新专用文件，无需手动下载。",
         ]
     )
     en_block = "\n".join(
         [
             "## Downloads",
-            f"- **Windows (x64)**: [{win_name}]({win_url}) (no admin required; if SmartScreen prompts, click **More info → Run anyway**)",
+            f"- **Windows (x64)**: [{win_name}]({win_url}) (no admin required; if SmartScreen prompts, click **More info / Run anyway**)",
             f"- **macOS (Apple Silicon)**: [{mac_name}]({mac_url}) (open and drag to **Applications**)",
-            '  - **macOS first-launch warning ("Not Opened" / cannot verify)**: click **Done** → open **System Settings → Privacy & Security** → click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/ColabOne.app` (unsigned open-source build; one-time step).',
+            '  - **macOS first-launch warning ("Not Opened" / cannot verify)**: click **Done**, open **System Settings / Privacy & Security**, then click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/ColabOne.app` (unsigned open-source build; one-time step).',
             "- `.tar.gz`, `.delta`, and `update-*.json` files are for in-app auto-updates only — no manual download needed.",
         ]
     )

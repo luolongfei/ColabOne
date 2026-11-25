@@ -20,7 +20,6 @@ import {
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
-  PhArrowRight,
   PhCaretDown,
   PhCaretRight,
   PhCheck,
@@ -922,7 +921,6 @@ onUnmounted(() => {
           @click="goDevice"
         >
           {{ gpuStarting ? t("api.viewGpuProgress") : t("api.goStartGpu") }}
-          <PhArrowRight :size="13" />
         </AButton>
       </div>
 

@@ -365,7 +365,7 @@ def test_cli_exit_codes_for_invalid_and_missing_files(tmp_path: Path, capsys):
     assert "xattr -dr com.apple.quarantine /Applications/ColabOne.app" in body
     assert "隐私与安全性" in body
     assert "Privacy & Security" in body
-    assert "More info → Run anyway" in body
+    assert "More info / Run anyway" in body
     assert body.index("## 中文") < body.index("## 下载安装") < body.index("\n---\n") < body.index("## English") < body.index("## Downloads")
 
 

@@ -1143,6 +1143,7 @@ var (
 	_ controller.ComfyValidator            = wireComfyAdapter{}
 	_ controller.ComfyCatalogValidator     = wireComfyAdapter{}
 	_ controller.ComfyInputUploadValidator = wireComfyAdapter{}
+	_ controller.ComfyTtsPreviewValidator  = wireComfyAdapter{}
 )
 
 func (wireComfyAdapter) ValidateCatalogBundle(raw map[string]any) (controller.ComfyCatalogBundle, error) {
@@ -1189,6 +1190,10 @@ func (w wireComfyAdapter) ValidateCatalog(raw map[string]any) ([]map[string]any,
 
 func (wireComfyAdapter) ValidateInputUpload(filename, dataB64 string) error {
 	return comfyui.ValidateComfyInputUpload(filename, dataB64)
+}
+
+func (wireComfyAdapter) ValidateTtsPreviewRequest(raw map[string]any) (map[string]any, error) {
+	return comfyui.ValidateTtsPreviewRequest(raw)
 }
 
 func (wireComfyAdapter) ValidateWorkflowTemplate(raw map[string]any) (map[string]any, error) {

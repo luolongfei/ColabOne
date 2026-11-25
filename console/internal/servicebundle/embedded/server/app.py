@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from common.comfyui import (
     ComfyCanvasConfig,
+    ComfyTtsPreviewRequest,
     WorkflowImportRequest,
     WorkflowRunRequest,
 )
@@ -298,6 +299,22 @@ def create_colabone_app(runtime, token, background=False):
     @app.get("/api/v1/comfyui/tts-engines", dependencies=auth)
     def comfyui_tts_engines():
         return runtime.comfy.list_tts_engines()
+
+    @app.post("/api/v1/comfyui/tts-preview", dependencies=auth)
+    def comfyui_tts_preview(body: ComfyTtsPreviewRequest):
+        return runtime.preview_comfyui_tts(body.model_dump())
+
+    @app.get("/api/v1/comfyui/tts-previews/{preview_id}", dependencies=auth)
+    def comfyui_tts_preview_get(
+        preview_id: str,
+        offset: int = Query(default=0, ge=0),
+        length: int = Query(default=0, ge=0, le=512 * 1024),
+    ):
+        with runtime.lock:
+            if runtime.quiescing or runtime.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+            runtime.touch()
+        return runtime.comfy.get_tts_preview(preview_id, offset=offset, length=length)
 
     @app.get("/api/v1/comfyui/workflows", dependencies=auth)
     def comfyui_workflows():

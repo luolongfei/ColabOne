@@ -1069,6 +1069,7 @@ const currentActivity = computed(() =>
           public_compact: t("task.publicCompact"),
           comfyui_start: t("task.comfyStart"),
           comfyui_run: t("task.comfyRun"),
+          comfyui_tts_preview: t("comfy.voicePreviewTitle"),
         }[task.value.kind] || t("task.runningGeneric")
       : ready.value
         ? t("task.gpuReadyIdle")
@@ -1200,6 +1201,7 @@ const taskKindLabel = (kind?: string) =>
       public_compact: t("task.kindPublicCompact"),
       comfyui_start: t("task.kindComfyStart"),
       comfyui_run: t("task.kindComfyRun"),
+      comfyui_tts_preview: t("comfy.voicePreviewTitle"),
     }[kind]) ||
   "";
 const taskBarTitle = (kind: string) =>
@@ -1211,6 +1213,7 @@ const taskBarTitle = (kind: string) =>
     public_compact: t("task.publicCompact"),
     comfyui_start: t("task.comfyStart"),
     comfyui_run: t("task.comfyRun"),
+    comfyui_tts_preview: t("comfy.voicePreviewTitle"),
   })[kind] || t("task.executingGeneric");
 
 const GPU_SPECS = computed(
@@ -6683,7 +6686,8 @@ onUnmounted(() => {
                   v-if="
                     dockTask.kind === 'download' ||
                     dockTask.kind === 'comfyui_start' ||
-                    dockTask.kind === 'comfyui_run'
+                    dockTask.kind === 'comfyui_run' ||
+                    dockTask.kind === 'comfyui_tts_preview'
                   "
                   :percent="Math.round((dockTask.progress || 0) * 100)"
                   size="small"

@@ -2113,8 +2113,16 @@ class ColabOneDigitalHumanRunner:
         }
 
         video_backend = str(pipeline.get("video_backend") or "custom").strip().lower()
-        default_tts_engine = str(pipeline.get("default_tts_engine") or "voxcpm2").strip()
-        supported_tts_engines = list(pipeline.get("supported_tts_engines") or [])
+        supported_tts_engines = [
+            str(eid).strip()
+            for eid in (pipeline.get("supported_tts_engines") or [])
+            if str(eid).strip()
+        ]
+        default_tts_engine = str(
+            pipeline.get("default_tts_engine")
+            or (supported_tts_engines[0] if supported_tts_engines else "")
+            or "voxcpm2"
+        ).strip()
         default_max_seg = _parse_float_override(
             pipeline.get("max_segment_seconds"), 45.0, "模板单段最大时长"
         )
@@ -2257,6 +2265,7 @@ class ColabOneDigitalHumanRunner:
         # Validate mode-specific inputs before unloading any model or running TTS.
         script_text = ""
         tts_engine = ""
+        engine_spec: dict[str, Any] = {}
         ref_audio_path: Path | None = None
         ref_text = ""
         voice_prompt = ""
@@ -2280,42 +2289,96 @@ class ColabOneDigitalHumanRunner:
                 raise ValueError(f"当前模板不支持所选语音引擎：{tts_engine}")
             if self.tts_runner is None:
                 raise RuntimeError("远端 TTS 配音引擎尚未初始化")
+            engine_spec = {"id": tts_engine}
             get_engine_fn = getattr(self.tts_runner, "get_engine", None)
             if callable(get_engine_fn):
-                get_engine_fn(tts_engine)
+                fetched_spec = get_engine_fn(tts_engine)
+                if isinstance(fetched_spec, dict):
+                    engine_spec = fetched_spec
 
             voice_ref_entry = inputs_by_key.get("pipeline.voice_ref_audio")
             ref_audio_path = voice_ref_entry[1] if voice_ref_entry else None
-            if tts_engine == "indextts2" and (
-                ref_audio_path is None or not ref_audio_path.is_file()
-            ):
-                if voice_preset.lower() == "custom":
-                    raise ValueError(
-                        "IndexTTS2 在自定义音色模式下需要上传音色参考音频才能进行语音合成"
-                    )
-                if voice_preset:
-                    from server.tts_engines import resolve_colabone_voice_preset
-
-                    engine_spec = (
-                        get_engine_fn(tts_engine)
-                        if callable(get_engine_fn)
-                        else {"id": tts_engine}
-                    )
-                    if resolve_colabone_voice_preset(engine_spec, voice_preset) is None:
-                        raise ValueError("IndexTTS2 需要上传音色参考音频才能进行语音合成")
-            if ref_audio_path is not None and not ref_audio_path.is_file():
-                raise ValueError("音色参考音频文件不存在")
-
             emotion_ref_entry = inputs_by_key.get("pipeline.emotion_ref_audio")
             emotion_ref_path = emotion_ref_entry[1] if emotion_ref_entry else None
-            if emotion_ref_path is not None and not emotion_ref_path.is_file():
-                raise ValueError("情绪参考音频文件不存在")
-
             ref_text = str(overrides.get("pipeline.voice_ref_text") or "").strip()
             voice_prompt = str(overrides.get("pipeline.voice_prompt") or "").strip()
             emotion_prompt = str(
                 overrides.get("pipeline.emotion_prompt") or ""
             ).strip()
+
+            validate_fn = getattr(
+                self.tts_runner, "validate_tts_synthesis_inputs", None
+            )
+            if callable(validate_fn):
+                validate_kwargs: dict[str, Any] = {
+                    "engine_id": tts_engine,
+                    "script_text": script_text,
+                    "voice_preset": voice_preset,
+                    "ref_audio_path": ref_audio_path,
+                    "ref_text": ref_text,
+                    "voice_prompt": voice_prompt,
+                    "emotion_prompt": emotion_prompt,
+                    "emotion_ref_path": emotion_ref_path,
+                }
+                try:
+                    validate_sig = inspect.signature(validate_fn)
+                    allow_legacy_param = validate_sig.parameters.get(
+                        "allow_legacy_empty_indextts_check"
+                    )
+                    if (
+                        allow_legacy_param is not None
+                        and allow_legacy_param.kind
+                        in (
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            inspect.Parameter.KEYWORD_ONLY,
+                        )
+                    ) or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in validate_sig.parameters.values()
+                    ):
+                        validate_kwargs["allow_legacy_empty_indextts_check"] = (
+                            getattr(self.tts_runner, "synth_fn", None) is not None
+                        )
+                except (TypeError, ValueError):
+                    pass
+                validation = validate_fn(**validate_kwargs)
+                if isinstance(validation, dict) and isinstance(
+                    validation.get("engine"), dict
+                ):
+                    engine_spec = validation["engine"]
+            else:
+                if tts_engine == "indextts2" and (
+                    ref_audio_path is None or not ref_audio_path.is_file()
+                ):
+                    if voice_preset.lower() == "custom":
+                        raise ValueError(
+                            "IndexTTS2 在自定义音色模式下需要上传音色参考音频才能进行语音合成"
+                        )
+                    if voice_preset:
+                        from server.tts_engines import resolve_colabone_voice_preset
+
+                        if (
+                            resolve_colabone_voice_preset(engine_spec, voice_preset)
+                            is None
+                        ):
+                            raise ValueError("IndexTTS2 需要上传音色参考音频才能进行语音合成")
+                if ref_audio_path is not None and (
+                    ref_audio_path.is_symlink() or not ref_audio_path.is_file()
+                ):
+                    raise ValueError("音色参考音频文件不存在")
+                if emotion_ref_path is not None and (
+                    emotion_ref_path.is_symlink() or not emotion_ref_path.is_file()
+                ):
+                    raise ValueError("情绪参考音频文件不存在")
+                if (
+                    tts_engine == "breeze_tts2"
+                    and ref_audio_path is not None
+                    and not ref_text
+                ):
+                    raise ValueError(
+                        "Breeze TTS 2 克隆参考音色时必须同时填写「参考音色对应文字」"
+                    )
+
             pause_seconds = _parse_float_override(
                 overrides.get("pipeline.pause_seconds"),
                 0.28,
@@ -2348,6 +2411,31 @@ class ColabOneDigitalHumanRunner:
         packs = getattr(self.manager, "packs", None)
         if packs is not None and callable(getattr(packs, "check_preflight", None)):
             packs.check_preflight(wf)
+        if audio_source == "tts" and self.tts_runner is not None:
+            allow_unavailable = getattr(self.tts_runner, "synth_fn", None) is not None
+            for preflight_attr in ("check_vram", "check_disk"):
+                preflight_fn = getattr(self.tts_runner, preflight_attr, None)
+                if not callable(preflight_fn):
+                    continue
+                preflight_kwargs: dict[str, Any] = {}
+                try:
+                    preflight_sig = inspect.signature(preflight_fn)
+                    allow_param = preflight_sig.parameters.get("allow_unavailable")
+                    if (
+                        allow_param is not None
+                        and allow_param.kind
+                        in (
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            inspect.Parameter.KEYWORD_ONLY,
+                        )
+                    ) or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in preflight_sig.parameters.values()
+                    ):
+                        preflight_kwargs["allow_unavailable"] = allow_unavailable
+                except (TypeError, ValueError):
+                    pass
+                preflight_fn(engine_spec, **preflight_kwargs)
 
         runtime_root_raw = getattr(
             getattr(self.manager, "runtime", None), "root", tempfile.gettempdir()
@@ -2382,6 +2470,7 @@ class ColabOneDigitalHumanRunner:
             _update_task(task, progress=0.02)
             manifest: dict[str, Any] | None = None
             valleys: list[float] = []
+            master_sample_rate = 48000
 
             if audio_source == "tts":
                 assert self.tts_runner is not None
@@ -2437,6 +2526,16 @@ class ColabOneDigitalHumanRunner:
                 master_audio_path = Path(tts_result["audio_path"])
                 raw_manifest = tts_result.get("manifest")
                 manifest = raw_manifest if isinstance(raw_manifest, dict) else None
+                raw_sr = int(
+                    tts_result.get("sample_rate")
+                    or (manifest.get("sample_rate") if isinstance(manifest, dict) else 0)
+                    or 0
+                )
+                if raw_sr <= 0 and _is_readable_pcm_wav(master_audio_path):
+                    with wave.open(str(master_audio_path), "rb") as _wf_sr:
+                        raw_sr = int(_wf_sr.getframerate() or 0)
+                if raw_sr > 0:
+                    master_sample_rate = max(48000, raw_sr)
                 duration = float(tts_result.get("duration") or 0.0)
                 if duration <= 0.0 and _is_readable_pcm_wav(master_audio_path):
                     duration = _wav_duration_seconds(master_audio_path)
@@ -2746,7 +2845,7 @@ class ColabOneDigitalHumanRunner:
                     ffmpeg_slice_cmd.extend(
                         [
                             "-ar",
-                            "48000",
+                            str(max(48000, master_sample_rate)),
                             "-c:a",
                             "pcm_s16le",
                             str(seg_audio_path),
@@ -3160,7 +3259,7 @@ class ColabOneDigitalHumanRunner:
                 "-b:a",
                 "192k",
                 "-ar",
-                "48000",
+                str(max(48000, master_sample_rate)),
                 "-movflags",
                 "+faststart",
                 "-shortest",

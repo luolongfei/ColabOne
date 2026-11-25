@@ -1438,7 +1438,10 @@ onBeforeUnmount(() => {
               <b class="co-cu-mono">{{
                 hoveredPoint.balanceStart !== null &&
                 Math.abs(hoveredPoint.balanceStart - hoveredPoint.balanceEnd) >= 0.01
-                  ? `${hoveredPoint.balanceStart.toFixed(2)} → ${hoveredPoint.balanceEnd.toFixed(2)} CU`
+                  ? t("cuUsage.tooltipBalanceRange", {
+                      start: hoveredPoint.balanceStart.toFixed(2),
+                      end: hoveredPoint.balanceEnd.toFixed(2),
+                    })
                   : `${hoveredPoint.balanceEnd.toFixed(2)} CU`
               }}</b>
             </div>

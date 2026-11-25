@@ -11,7 +11,6 @@ import {
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
-  PhArrowRight,
   PhArrowSquareOut,
   PhCaretDown,
   PhCaretUp,
@@ -397,7 +396,6 @@ function savedTag(filename: string): string {
         <AButton type="primary" size="small" @click="emit('goComfyui')">
           <template #icon><PhFlowArrow :size="14" /></template>
           {{ t("models.pickerGoComfyWorkspace") }}
-          <PhArrowRight :size="13" />
         </AButton>
         <AButton
           type="link"

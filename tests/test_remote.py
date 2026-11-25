@@ -87,6 +87,7 @@ def test_status_and_snapshot_report_protocol_7_and_comfyui_capabilities(
             "comfyui",
             "comfyui_hf_token",
             "comfyui_drive_export",
+            "comfyui_tts_preview",
         ]
         assert "comfyui" in st
         assert st["active_engine"] is None

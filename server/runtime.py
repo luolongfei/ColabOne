@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from urllib.parse import quote
 import requests
 
 from common.comfyui import (
+    ComfyTtsPreviewRequest,
     WorkflowOutputRecord,
     WorkflowRunRequest,
     WorkflowTemplate,
@@ -464,6 +466,7 @@ class ColabOneRuntime:
                 "comfyui",
                 "comfyui_hf_token",
                 "comfyui_drive_export",
+                "comfyui_tts_preview",
             ],
             "comfyui": comfy_status,
             "active_engine": "llama"
@@ -1742,7 +1745,7 @@ class ColabOneRuntime:
                     t
                     for t in self.tasks.values()
                     if t.state == "running"
-                    and t.kind in ("comfyui_start", "comfyui_run")
+                    and t.kind in ("comfyui_start", "comfyui_run", "comfyui_tts_preview")
                 ]
             for t in comfy_tasks:
                 try:
@@ -1818,6 +1821,114 @@ class ColabOneRuntime:
                     req.workflow_id,
                     _execute,
                 )
+
+    def preview_comfyui_tts(
+        self, request_data: dict | ComfyTtsPreviewRequest
+    ) -> dict:
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+
+        raw_token_secret = (
+            request_data.get("hf_token", "")
+            if isinstance(request_data, dict)
+            and isinstance(request_data.get("hf_token"), str)
+            else ""
+        )
+        token_secret = ""
+        try:
+            req = (
+                request_data
+                if isinstance(request_data, ComfyTtsPreviewRequest)
+                else ComfyTtsPreviewRequest.model_validate(request_data)
+            )
+            token_secret = getattr(req, "hf_token", "") or ""
+            resolved = self.comfy._resolve_preview_inputs(req)
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, raw_token_secret, token_secret)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
+
+        def _finalize_cache_hit(cached_item: dict) -> dict:
+            with self.lock:
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneConflictError("实例正在准备释放")
+                self.touch()
+            if int(cached_item.get("size") or 0) > 512 * 1024:
+                trimmed = dict(cached_item)
+                trimmed.pop("data", None)
+                return trimmed
+            return cached_item
+
+        def _lookup_cached_preview(preview_id: str) -> dict | None:
+            getter = self.comfy.tts.get_cached_preview
+            accepts_max_inline = False
+            try:
+                sig = inspect.signature(getter)
+                param = sig.parameters.get("max_inline_bytes")
+                accepts_max_inline = (
+                    param is not None
+                    and param.kind
+                    in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                ) or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()
+                )
+            except (TypeError, ValueError):
+                accepts_max_inline = False
+            if accepts_max_inline:
+                return getter(preview_id, max_inline_bytes=512 * 1024)
+            return getter(preview_id)
+
+        cached = _lookup_cached_preview(resolved["preview_id"])
+        if cached is not None:
+            return _finalize_cache_hit(cached)
+
+        with self._comfy_lifecycle_lock:
+            self._refresh_comfy_queue_if_needed()
+            cached = _lookup_cached_preview(resolved["preview_id"])
+            if cached is not None:
+                return _finalize_cache_hit(cached)
+            with self.lock:
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneConflictError("实例正在准备释放")
+                if self.busy():
+                    raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+
+                def _execute(task):
+                    try:
+                        return self.comfy.run_tts_preview(task, req)
+                    except ColabOneCancelledError:
+                        raise
+                    except Exception as exc:
+                        raw_msg = str(exc) or type(exc).__name__
+                        scrubbed = _scrub_secret_text(
+                            raw_msg, raw_token_secret, token_secret
+                        )
+                        if scrubbed != raw_msg:
+                            raise RuntimeError(scrubbed) from None
+                        raise
+
+                task = self.submit(
+                    "comfyui_tts_preview",
+                    resolved["engine_id"],
+                    _execute,
+                )
+
+        return {
+            "cached": False,
+            "preview_id": resolved["preview_id"],
+            "engine_id": resolved["engine_id"],
+            "voice_preset": resolved["effective_voice_preset"],
+            "sample_rate": resolved["sample_rate"],
+            "text": resolved["resolved_text"],
+            "task": task,
+        }
 
     def delete(self, model_id):
         self._refresh_comfy_queue_if_needed()

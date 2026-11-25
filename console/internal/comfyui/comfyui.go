@@ -443,7 +443,13 @@ func validateSafePipPackages(pkgs []string) ([]string, error) {
 	return cleaned, nil
 }
 
-func validateCleanHFToken(raw string) (string, error) {
+// ValidateCleanHFToken validates and trims an optional Hugging Face token,
+// enforcing the 512-rune length cap before scanning runes so error priority
+// matches server-side Pydantic validation.
+func ValidateCleanHFToken(raw string) (string, error) {
+	if utf8.RuneCountInString(raw) > 512 {
+		return "", errors.New("hf_token 长度不能超过 512")
+	}
 	for _, ch := range raw {
 		if ch == '\r' || ch == '\n' || ch < 0x20 || ch == 0x7f || unicode.IsControl(ch) {
 			return "", errors.New("hf_token 包含非法空白或控制字符")
@@ -455,10 +461,14 @@ func validateCleanHFToken(raw string) (string, error) {
 			return "", errors.New("hf_token 包含非法空白或控制字符")
 		}
 	}
-	if utf8.RuneCountInString(raw) > 512 || utf8.RuneCountInString(trimmed) > 512 {
+	if utf8.RuneCountInString(trimmed) > 512 {
 		return "", errors.New("hf_token 长度不能超过 512")
 	}
 	return trimmed, nil
+}
+
+func validateCleanHFToken(raw string) (string, error) {
+	return ValidateCleanHFToken(raw)
 }
 
 func validateOwnerRepo(value, message string) (string, error) {
@@ -1016,6 +1026,8 @@ type ColabOneComfyTtsVoicePreset struct {
 	Style       string `json:"style"`
 	Description string `json:"description"`
 	Prompt      string `json:"prompt"`
+	PreviewText string `json:"preview_text"`
+	SpeakerID   string `json:"speaker_id"`
 	Seed        int    `json:"seed"`
 }
 
@@ -1029,6 +1041,8 @@ func (p *ColabOneComfyTtsVoicePreset) UnmarshalJSON(data []byte) error {
 		Style       string  `json:"style"`
 		Description string  `json:"description"`
 		Prompt      string  `json:"prompt"`
+		PreviewText string  `json:"preview_text"`
+		SpeakerID   string  `json:"speaker_id"`
 		Seed        *int    `json:"seed"`
 	}
 	if err := decodeStrictJSONObject(data, &raw); err != nil {
@@ -1052,6 +1066,8 @@ func (p *ColabOneComfyTtsVoicePreset) UnmarshalJSON(data []byte) error {
 		Style:       raw.Style,
 		Description: raw.Description,
 		Prompt:      raw.Prompt,
+		PreviewText: raw.PreviewText,
+		SpeakerID:   raw.SpeakerID,
 		Seed:        seed,
 	}
 	return nil
@@ -1086,6 +1102,12 @@ func (p *ColabOneComfyTtsVoicePreset) Validate() error {
 	if utf8.RuneCountInString(p.Prompt) > 600 {
 		return errors.New("内置音色提示词长度不能超过 600")
 	}
+	if utf8.RuneCountInString(p.PreviewText) > 400 {
+		return errors.New("内置音色试听文本长度不能超过 400")
+	}
+	if p.SpeakerID != "" && !voicePresetIDRe.MatchString(p.SpeakerID) {
+		return errors.New("内置音色说话人 ID 不合法")
+	}
 	if p.Seed < 0 || p.Seed > maxVoicePresetSeed {
 		return errors.New("内置音色随机种子必须在 0 到 2147483647 之间")
 	}
@@ -1094,52 +1116,63 @@ func (p *ColabOneComfyTtsVoicePreset) Validate() error {
 
 // ColabOneComfyTtsEngineSpec declares a pinned remote GPU TTS engine for digital-human pipelines.
 type ColabOneComfyTtsEngineSpec struct {
-	ID                  string                        `json:"id"`
-	Name                string                        `json:"name"`
-	Description         string                        `json:"description"`
-	Repo                string                        `json:"repo"`
-	Revision            string                        `json:"revision"`
-	AuxRepo             string                        `json:"aux_repo"`
-	AuxRevision         string                        `json:"aux_revision"`
-	License             string                        `json:"license"`
-	CommercialOK        bool                          `json:"commercial_ok"`
-	LicenseNotice       string                        `json:"license_notice"`
-	MinVRAMMib          int                           `json:"min_vram_mib"`
-	SampleRate          int                           `json:"sample_rate"`
-	SupportsVoiceClone  bool                          `json:"supports_voice_clone"`
-	SupportsVoiceDesign bool                          `json:"supports_voice_design"`
-	SupportsEmotionRef  bool                          `json:"supports_emotion_ref"`
-	SupportsInlineTags  bool                          `json:"supports_inline_tags"`
-	PipPackages         []string                      `json:"pip_packages"`
-	SourceRepo          string                        `json:"source_repo"`
-	SourceCommit        string                        `json:"source_commit"`
-	VoicePresets        []ColabOneComfyTtsVoicePreset `json:"voice_presets"`
+	ID                     string                        `json:"id"`
+	Name                   string                        `json:"name"`
+	Description            string                        `json:"description"`
+	Repo                   string                        `json:"repo"`
+	Revision               string                        `json:"revision"`
+	AuxRepo                string                        `json:"aux_repo"`
+	AuxRevision            string                        `json:"aux_revision"`
+	CustomVoiceRepo        string                        `json:"custom_voice_repo"`
+	CustomVoiceRevision    string                        `json:"custom_voice_revision"`
+	License                string                        `json:"license"`
+	CommercialOK           bool                          `json:"commercial_ok"`
+	LicenseNotice          string                        `json:"license_notice"`
+	MinVRAMMib             int                           `json:"min_vram_mib"`
+	MinDiskMib             int                           `json:"min_disk_mib"`
+	SampleRate             int                           `json:"sample_rate"`
+	MaxSegmentChars        int                           `json:"max_segment_chars"`
+	SupportsVoiceClone     bool                          `json:"supports_voice_clone"`
+	SupportsVoiceDesign    bool                          `json:"supports_voice_design"`
+	SupportsCustomSpeakers bool                          `json:"supports_custom_speakers"`
+	SupportsEmotionRef     bool                          `json:"supports_emotion_ref"`
+	SupportsInlineTags     bool                          `json:"supports_inline_tags"`
+	PipPackages            []string                      `json:"pip_packages"`
+	SourceRepo             string                        `json:"source_repo"`
+	SourceCommit           string                        `json:"source_commit"`
+	VoicePresets           []ColabOneComfyTtsVoicePreset `json:"voice_presets"`
 }
 
 // UnmarshalJSON decodes a ColabOneComfyTtsEngineSpec with unknown fields forbidden and
-// Pydantic-parity defaults for license, commercial_ok, sample_rate, supports_voice_clone, and voice_presets.
+// Pydantic-parity defaults for license, commercial_ok, sample_rate, max_segment_chars,
+// supports_voice_clone, and voice_presets.
 func (s *ColabOneComfyTtsEngineSpec) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID                  string                        `json:"id"`
-		Name                string                        `json:"name"`
-		Description         string                        `json:"description"`
-		Repo                string                        `json:"repo"`
-		Revision            string                        `json:"revision"`
-		AuxRepo             string                        `json:"aux_repo"`
-		AuxRevision         string                        `json:"aux_revision"`
-		License             *string                       `json:"license"`
-		CommercialOK        *bool                         `json:"commercial_ok"`
-		LicenseNotice       string                        `json:"license_notice"`
-		MinVRAMMib          int                           `json:"min_vram_mib"`
-		SampleRate          *int                          `json:"sample_rate"`
-		SupportsVoiceClone  *bool                         `json:"supports_voice_clone"`
-		SupportsVoiceDesign bool                          `json:"supports_voice_design"`
-		SupportsEmotionRef  bool                          `json:"supports_emotion_ref"`
-		SupportsInlineTags  bool                          `json:"supports_inline_tags"`
-		PipPackages         []*string                     `json:"pip_packages"`
-		SourceRepo          string                        `json:"source_repo"`
-		SourceCommit        string                        `json:"source_commit"`
-		VoicePresets        []ColabOneComfyTtsVoicePreset `json:"voice_presets"`
+		ID                     string                        `json:"id"`
+		Name                   string                        `json:"name"`
+		Description            string                        `json:"description"`
+		Repo                   string                        `json:"repo"`
+		Revision               string                        `json:"revision"`
+		AuxRepo                string                        `json:"aux_repo"`
+		AuxRevision            string                        `json:"aux_revision"`
+		CustomVoiceRepo        string                        `json:"custom_voice_repo"`
+		CustomVoiceRevision    string                        `json:"custom_voice_revision"`
+		License                *string                       `json:"license"`
+		CommercialOK           *bool                         `json:"commercial_ok"`
+		LicenseNotice          string                        `json:"license_notice"`
+		MinVRAMMib             int                           `json:"min_vram_mib"`
+		MinDiskMib             int                           `json:"min_disk_mib"`
+		SampleRate             *int                          `json:"sample_rate"`
+		MaxSegmentChars        *int                          `json:"max_segment_chars"`
+		SupportsVoiceClone     *bool                         `json:"supports_voice_clone"`
+		SupportsVoiceDesign    bool                          `json:"supports_voice_design"`
+		SupportsCustomSpeakers bool                          `json:"supports_custom_speakers"`
+		SupportsEmotionRef     bool                          `json:"supports_emotion_ref"`
+		SupportsInlineTags     bool                          `json:"supports_inline_tags"`
+		PipPackages            []*string                     `json:"pip_packages"`
+		SourceRepo             string                        `json:"source_repo"`
+		SourceCommit           string                        `json:"source_commit"`
+		VoicePresets           []ColabOneComfyTtsVoicePreset `json:"voice_presets"`
 	}
 	if err := decodeStrictJSONObject(data, &raw); err != nil {
 		return err
@@ -1162,6 +1195,13 @@ func (s *ColabOneComfyTtsEngineSpec) UnmarshalJSON(data []byte) error {
 		}
 		sampleRate = *raw.SampleRate
 	}
+	maxSegmentChars := 120
+	if raw.MaxSegmentChars != nil {
+		if *raw.MaxSegmentChars == 0 {
+			return errors.New("单段最大字数必须在 40 到 1000 之间")
+		}
+		maxSegmentChars = *raw.MaxSegmentChars
+	}
 	supportsVoiceClone := true
 	if raw.SupportsVoiceClone != nil {
 		supportsVoiceClone = *raw.SupportsVoiceClone
@@ -1178,26 +1218,31 @@ func (s *ColabOneComfyTtsEngineSpec) UnmarshalJSON(data []byte) error {
 		voicePresets = []ColabOneComfyTtsVoicePreset{}
 	}
 	*s = ColabOneComfyTtsEngineSpec{
-		ID:                  raw.ID,
-		Name:                raw.Name,
-		Description:         raw.Description,
-		Repo:                raw.Repo,
-		Revision:            raw.Revision,
-		AuxRepo:             raw.AuxRepo,
-		AuxRevision:         raw.AuxRevision,
-		License:             license,
-		CommercialOK:        commercialOK,
-		LicenseNotice:       raw.LicenseNotice,
-		MinVRAMMib:          raw.MinVRAMMib,
-		SampleRate:          sampleRate,
-		SupportsVoiceClone:  supportsVoiceClone,
-		SupportsVoiceDesign: raw.SupportsVoiceDesign,
-		SupportsEmotionRef:  raw.SupportsEmotionRef,
-		SupportsInlineTags:  raw.SupportsInlineTags,
-		PipPackages:         pipPackages,
-		SourceRepo:          raw.SourceRepo,
-		SourceCommit:        raw.SourceCommit,
-		VoicePresets:        voicePresets,
+		ID:                     raw.ID,
+		Name:                   raw.Name,
+		Description:            raw.Description,
+		Repo:                   raw.Repo,
+		Revision:               raw.Revision,
+		AuxRepo:                raw.AuxRepo,
+		AuxRevision:            raw.AuxRevision,
+		CustomVoiceRepo:        raw.CustomVoiceRepo,
+		CustomVoiceRevision:    raw.CustomVoiceRevision,
+		License:                license,
+		CommercialOK:           commercialOK,
+		LicenseNotice:          raw.LicenseNotice,
+		MinVRAMMib:             raw.MinVRAMMib,
+		MinDiskMib:             raw.MinDiskMib,
+		SampleRate:             sampleRate,
+		MaxSegmentChars:        maxSegmentChars,
+		SupportsVoiceClone:     supportsVoiceClone,
+		SupportsVoiceDesign:    raw.SupportsVoiceDesign,
+		SupportsCustomSpeakers: raw.SupportsCustomSpeakers,
+		SupportsEmotionRef:     raw.SupportsEmotionRef,
+		SupportsInlineTags:     raw.SupportsInlineTags,
+		PipPackages:            pipPackages,
+		SourceRepo:             raw.SourceRepo,
+		SourceCommit:           raw.SourceCommit,
+		VoicePresets:           voicePresets,
 	}
 	return nil
 }
@@ -1256,6 +1301,26 @@ func (s *ColabOneComfyTtsEngineSpec) Validate() error {
 		return errors.New("设置 aux_repo 时必须提供 40 位十六进制 aux_revision")
 	}
 
+	if s.CustomVoiceRepo != "" {
+		if utf8.RuneCountInString(s.CustomVoiceRepo) > 300 {
+			return errors.New("需要 Hugging Face 的 owner/repository")
+		}
+		customVoiceRepo, err := validateOwnerRepo(s.CustomVoiceRepo, "需要 Hugging Face 的 owner/repository")
+		if err != nil {
+			return err
+		}
+		if utf8.RuneCountInString(customVoiceRepo) > 300 {
+			return errors.New("需要 Hugging Face 的 owner/repository")
+		}
+		s.CustomVoiceRepo = customVoiceRepo
+	}
+	if s.CustomVoiceRevision != "" && !commitSHARe.MatchString(s.CustomVoiceRevision) {
+		return errors.New("custom_voice_revision 必须为 40 位十六进制 SHA")
+	}
+	if s.CustomVoiceRepo != "" && s.CustomVoiceRevision == "" {
+		return errors.New("设置 custom_voice_repo 时必须提供 40 位十六进制 custom_voice_revision")
+	}
+
 	if s.License == "" {
 		s.License = "Apache-2.0"
 	}
@@ -1274,11 +1339,20 @@ func (s *ColabOneComfyTtsEngineSpec) Validate() error {
 	if s.MinVRAMMib < 0 {
 		return errors.New("最低显存需求不能为负数")
 	}
+	if s.MinDiskMib < 0 {
+		return errors.New("最低磁盘空间需求不能为负数")
+	}
 	if s.SampleRate == 0 {
 		s.SampleRate = 48000
 	}
 	if s.SampleRate < 8000 || s.SampleRate > 96000 {
 		return errors.New("TTS 采样率必须在 8000 到 96000 之间")
+	}
+	if s.MaxSegmentChars == 0 {
+		s.MaxSegmentChars = 120
+	}
+	if s.MaxSegmentChars < 40 || s.MaxSegmentChars > 1000 {
+		return errors.New("单段最大字数必须在 40 到 1000 之间")
 	}
 
 	cleanedPip, err := validateSafePipPackages(s.PipPackages)
@@ -1307,10 +1381,16 @@ func (s *ColabOneComfyTtsEngineSpec) Validate() error {
 	if len(s.VoicePresets) > maxVoicePresetsPerEngine {
 		return errors.New("内置音色预设数量不能超过 24 个")
 	}
+	seenPresetIDs := make(map[string]struct{}, len(s.VoicePresets))
 	for i := range s.VoicePresets {
 		if err := s.VoicePresets[i].Validate(); err != nil {
 			return err
 		}
+		presetID := s.VoicePresets[i].ID
+		if _, dup := seenPresetIDs[presetID]; dup {
+			return fmt.Errorf("内置音色 ID 重复：%s", presetID)
+		}
+		seenPresetIDs[presetID] = struct{}{}
 	}
 	if s.VoicePresets == nil {
 		s.VoicePresets = []ColabOneComfyTtsVoicePreset{}
@@ -2113,6 +2193,107 @@ func (r *ColabOneWorkflowRunRequest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ColabOneComfyTtsPreviewRequest represents a request to synthesize a short TTS voice preview.
+type ColabOneComfyTtsPreviewRequest struct {
+	EngineID          string `json:"engine_id"`
+	VoicePreset       string `json:"voice_preset"`
+	PreviewText       string `json:"preview_text"`
+	VoicePrompt       string `json:"voice_prompt"`
+	EmotionPrompt     string `json:"emotion_prompt"`
+	RefAudioInputID   string `json:"ref_audio_input_id"`
+	RefText           string `json:"ref_text"`
+	EmotionRefInputID string `json:"emotion_ref_input_id"`
+	HFToken           string `json:"hf_token,omitempty"`
+}
+
+// String redacts HFToken so logging a ColabOneComfyTtsPreviewRequest never leaks credentials.
+func (r ColabOneComfyTtsPreviewRequest) String() string {
+	return fmt.Sprintf(
+		"ColabOneComfyTtsPreviewRequest{EngineID:%q, VoicePreset:%q, PreviewText:%q, VoicePrompt:%q, EmotionPrompt:%q, RefAudioInputID:%q, RefText:%q, EmotionRefInputID:%q, HFToken:[redacted]}",
+		r.EngineID, r.VoicePreset, r.PreviewText, r.VoicePrompt, r.EmotionPrompt, r.RefAudioInputID, r.RefText, r.EmotionRefInputID,
+	)
+}
+
+// GoString redacts HFToken when formatted with %#v.
+func (r ColabOneComfyTtsPreviewRequest) GoString() string {
+	return r.String()
+}
+
+// UnmarshalJSON decodes a ColabOneComfyTtsPreviewRequest with unknown fields and nulls forbidden.
+func (r *ColabOneComfyTtsPreviewRequest) UnmarshalJSON(data []byte) error {
+	type alias ColabOneComfyTtsPreviewRequest
+	var aux alias
+	if err := decodeStrictJSONObject(data, &aux); err != nil {
+		return err
+	}
+	*r = ColabOneComfyTtsPreviewRequest(aux)
+	return nil
+}
+
+// Validate normalizes and validates a ColabOneComfyTtsPreviewRequest.
+func (r *ColabOneComfyTtsPreviewRequest) Validate() error {
+	if !workflowIDRe.MatchString(r.EngineID) {
+		return errors.New("TTS 引擎 ID 不合法")
+	}
+	if r.VoicePreset != "" && !voicePresetIDRe.MatchString(r.VoicePreset) {
+		return errors.New("内置音色 ID 不合法")
+	}
+	if utf8.RuneCountInString(r.PreviewText) > 600 {
+		return errors.New("试听文本长度不能超过 600")
+	}
+	if utf8.RuneCountInString(r.VoicePrompt) > 600 {
+		return errors.New("音色描述长度不能超过 600")
+	}
+	if utf8.RuneCountInString(r.EmotionPrompt) > 240 {
+		return errors.New("情绪描述长度不能超过 240")
+	}
+	if r.RefAudioInputID != "" && !assetIDRe.MatchString(r.RefAudioInputID) {
+		return fmt.Errorf("非法参考音频素材 ID: %q", r.RefAudioInputID)
+	}
+	if utf8.RuneCountInString(r.RefText) > 600 {
+		return errors.New("参考音频文本长度不能超过 600")
+	}
+	if r.EmotionRefInputID != "" && !assetIDRe.MatchString(r.EmotionRefInputID) {
+		return fmt.Errorf("非法情绪参考素材 ID: %q", r.EmotionRefInputID)
+	}
+	cleanedTok, err := validateCleanHFToken(r.HFToken)
+	if err != nil {
+		return err
+	}
+	r.HFToken = cleanedTok
+	return nil
+}
+
+// ValidateTtsPreviewRequest validates and normalizes a raw JSON-like map into a
+// canonical TTS voice preview request payload matching ColabOneComfyTtsPreviewRequest.
+func ValidateTtsPreviewRequest(raw map[string]any) (map[string]any, error) {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var req ColabOneComfyTtsPreviewRequest
+	if err := json.Unmarshal(b, &req); err != nil {
+		return nil, err
+	}
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"engine_id":            req.EngineID,
+		"voice_preset":         req.VoicePreset,
+		"preview_text":         req.PreviewText,
+		"voice_prompt":         req.VoicePrompt,
+		"emotion_prompt":       req.EmotionPrompt,
+		"ref_audio_input_id":   req.RefAudioInputID,
+		"ref_text":             req.RefText,
+		"emotion_ref_input_id": req.EmotionRefInputID,
+	}
+	if req.HFToken != "" {
+		out["hf_token"] = req.HFToken
+	}
+	return out, nil
 }
 
 // ColabOneWorkflowOutputRecord describes a persisted output artifact generated by ComfyUI.

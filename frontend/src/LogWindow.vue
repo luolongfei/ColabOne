@@ -99,6 +99,7 @@ const currentActivity = computed(() => {
       public_compact: t("task.publicCompact"),
       comfyui_start: t("task.comfyStart"),
       comfyui_run: t("task.comfyRun"),
+      comfyui_tts_preview: t("comfy.voicePreviewTitle"),
     };
     return taskLabels[task.value.kind] || t("task.runningGeneric");
   }

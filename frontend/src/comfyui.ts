@@ -2,6 +2,7 @@ import { colabOneCommand } from "./api";
 import { COLABONE_LOCALE_LIST, t, type ColabOneLocale } from "./i18n";
 import type {
   ColabOneComfyTtsEngineSpec,
+  ColabOneComfyTtsVoicePreset,
   WorkflowField,
   WorkflowOutput,
   WorkflowTemplate,
@@ -838,12 +839,344 @@ export function workflowModelsTotalBytes(
   return total;
 }
 
+const ALLOWED_AUDIO_PREVIEW_MIMES = new Set([
+  "audio/wav",
+  "audio/mpeg",
+  "audio/flac",
+]);
+
+const NON_COMMERCIAL_TTS_ENGINE_IDS = new Set([
+  "fish_drama3",
+  "breeze_tts2",
+  "indextts2",
+  "fish_s2_pro",
+]);
+
+const FALLBACK_MALE_VOICE_PRESET_IDS = new Set([
+  "chen_jingzhou",
+  "lin_chenxu",
+  "zhou_moyan",
+  "gu_zhengyuan",
+  "su_hechuan",
+]);
+
+export const COLABONE_DEFAULT_VOICE_PREVIEW_TEXT =
+  "大家好，欢迎来到今天的节目。我们将用清晰自然的声音，为您娓娓道来每一个精彩细节，希望这段分享能带给您轻松愉快的收听体验。";
+
+export type ColabOneVoicePresetGroupKey =
+  | "female"
+  | "male"
+  | "neutral"
+  | "official"
+  | "custom";
+
+export interface ColabOneVoicePresetOption {
+  id: string;
+  label: string;
+  preset?: ColabOneComfyTtsVoicePreset;
+}
+
+export interface ColabOneVoicePresetGroup {
+  key: ColabOneVoicePresetGroupKey;
+  options: ColabOneVoicePresetOption[];
+}
+
+export function resolveColabOneVoicePresetGroups(
+  field: WorkflowField,
+  engine?: ColabOneComfyTtsEngineSpec,
+): ColabOneVoicePresetGroup[] {
+  const buckets: Record<
+    ColabOneVoicePresetGroupKey,
+    ColabOneVoicePresetOption[]
+  > = {
+    female: [],
+    male: [],
+    neutral: [],
+    official: [],
+    custom: [],
+  };
+  const seen = new Set<string>();
+  const optionLabels = field?.option_labels || {};
+  const fieldOptions = Array.isArray(field?.options) ? field.options : [];
+  const enginePresets = Array.isArray(engine?.voice_presets)
+    ? engine.voice_presets
+    : [];
+
+  const resolveLabel = (
+    id: string,
+    preset?: ColabOneComfyTtsVoicePreset,
+  ): string => {
+    const mapped =
+      typeof optionLabels[id] === "string" ? optionLabels[id].trim() : "";
+    if (mapped) return mapped;
+    const presetName =
+      typeof preset?.name === "string" ? preset.name.trim() : "";
+    if (presetName) return presetName;
+    return id;
+  };
+
+  if (enginePresets.length > 0) {
+    for (const preset of enginePresets) {
+      const id = typeof preset?.id === "string" ? preset.id.trim() : "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const item: ColabOneVoicePresetOption = {
+        id,
+        label: resolveLabel(id, preset),
+        preset,
+      };
+      if (id === "custom") {
+        buckets.custom.push(item);
+      } else if (
+        typeof preset.speaker_id === "string" &&
+        preset.speaker_id.trim().length > 0
+      ) {
+        buckets.official.push(item);
+      } else if (preset.gender === "male") {
+        buckets.male.push(item);
+      } else if (preset.gender === "female") {
+        buckets.female.push(item);
+      } else if (preset.gender === "neutral") {
+        buckets.neutral.push(item);
+      } else if (FALLBACK_MALE_VOICE_PRESET_IDS.has(id)) {
+        buckets.male.push(item);
+      } else {
+        buckets.neutral.push(item);
+      }
+    }
+    for (const rawOpt of fieldOptions) {
+      const id = typeof rawOpt === "string" ? rawOpt.trim() : "";
+      if (id === "custom" && !seen.has(id)) {
+        seen.add(id);
+        buckets.custom.push({
+          id,
+          label: resolveLabel(id),
+        });
+      }
+    }
+  } else {
+    for (const rawOpt of fieldOptions) {
+      const id = typeof rawOpt === "string" ? rawOpt.trim() : "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const label = resolveLabel(id);
+      if (id === "custom") {
+        buckets.custom.push({ id, label });
+      } else if (id.startsWith("qwen_")) {
+        buckets.official.push({ id, label });
+      } else if (FALLBACK_MALE_VOICE_PRESET_IDS.has(id)) {
+        buckets.male.push({ id, label });
+      } else {
+        buckets.female.push({ id, label });
+      }
+    }
+  }
+
+  const order: ColabOneVoicePresetGroupKey[] = [
+    "female",
+    "male",
+    "neutral",
+    "official",
+    "custom",
+  ];
+  const result: ColabOneVoicePresetGroup[] = [];
+  for (const key of order) {
+    if (buckets[key].length > 0) {
+      result.push({ key, options: buckets[key] });
+    }
+  }
+  return result;
+}
+
+export function resolveColabOneSelectedVoicePreset(
+  value: string,
+  engine?: ColabOneComfyTtsEngineSpec,
+): ColabOneComfyTtsVoicePreset | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized === "custom") {
+    return undefined;
+  }
+  const presets = engine?.voice_presets;
+  if (!Array.isArray(presets) || presets.length === 0) {
+    return undefined;
+  }
+  return presets.find(
+    (preset) =>
+      typeof preset?.id === "string" && preset.id.trim() === normalized,
+  );
+}
+
+export function isColabOneVoicePresetSupportedByEngine(
+  presetId: string,
+  field: WorkflowField | undefined,
+  engine?: ColabOneComfyTtsEngineSpec,
+): boolean {
+  const normalized = typeof presetId === "string" ? presetId.trim() : "";
+  if (!normalized) {
+    return false;
+  }
+  if (normalized === "custom") {
+    return true;
+  }
+  if (Array.isArray(engine?.voice_presets) && engine.voice_presets.length > 0) {
+    return engine.voice_presets.some(
+      (preset) =>
+        typeof preset?.id === "string" && preset.id.trim() === normalized,
+    );
+  }
+  if (Array.isArray(field?.options) && field.options.length > 0) {
+    return field.options.includes(normalized);
+  }
+  return false;
+}
+
+export function resolveColabOneFallbackVoicePreset(
+  field: WorkflowField | undefined,
+  engine?: ColabOneComfyTtsEngineSpec,
+): string {
+  if (isColabOneVoicePresetSupportedByEngine("shen_zhiyi", field, engine)) {
+    return "shen_zhiyi";
+  }
+  const fieldDefault =
+    typeof field?.default === "string" ? field.default.trim() : "";
+  if (
+    fieldDefault &&
+    isColabOneVoicePresetSupportedByEngine(fieldDefault, field, engine)
+  ) {
+    return fieldDefault;
+  }
+  const firstPreset = engine?.voice_presets?.find(
+    (preset) => typeof preset?.id === "string" && preset.id.trim().length > 0,
+  );
+  if (firstPreset) {
+    return firstPreset.id.trim();
+  }
+  return "shen_zhiyi";
+}
+
+export function resolveColabOneVoicePreviewDefaultText(
+  preset?: ColabOneComfyTtsVoicePreset,
+): string {
+  const custom =
+    typeof preset?.preview_text === "string" ? preset.preview_text.trim() : "";
+  return custom || COLABONE_DEFAULT_VOICE_PREVIEW_TEXT;
+}
+
+function decodeColabOneBase64AudioPayload(
+  base64Data: string,
+  mime = "audio/wav",
+): { buffer: Uint8Array<ArrayBuffer>; mime: string } {
+  const normalizedMime = String(mime || "audio/wav")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (!ALLOWED_AUDIO_PREVIEW_MIMES.has(normalizedMime)) {
+    throw new Error(t("comfy.errUnsupportedPreview"));
+  }
+  const raw = typeof base64Data === "string" ? base64Data.trim() : "";
+  if (!raw) {
+    throw new Error(t("comfy.errInvalidOutputTransfer"));
+  }
+  const cleaned = raw.replace(/\s+/g, "");
+  const decoded = decodeBase64(cleaned);
+  if (!decoded.byteLength) {
+    throw new Error(t("comfy.errInvalidOutputTransfer"));
+  }
+  const buffer = new Uint8Array(new ArrayBuffer(decoded.byteLength));
+  buffer.set(decoded);
+  return { buffer, mime: normalizedMime };
+}
+
+export function decodeColabOneBase64AudioUrl(
+  base64Data: string,
+  mime = "audio/wav",
+): string {
+  const { buffer, mime: normalizedMime } = decodeColabOneBase64AudioPayload(
+    base64Data,
+    mime,
+  );
+  const blob = new Blob([buffer], { type: normalizedMime });
+  return URL.createObjectURL(blob);
+}
+
+export async function verifyAndDecodeColabOneBase64AudioUrl(
+  base64Data: string,
+  mime = "audio/wav",
+  expectedSha256?: string,
+): Promise<string> {
+  const { buffer, mime: normalizedMime } = decodeColabOneBase64AudioPayload(
+    base64Data,
+    mime,
+  );
+  if (expectedSha256 !== undefined && expectedSha256 !== null) {
+    if (typeof expectedSha256 !== "string") {
+      throw new Error(t("comfy.errInvalidOutputTransfer"));
+    }
+  }
+  const expected =
+    typeof expectedSha256 === "string"
+      ? expectedSha256.trim().toLowerCase()
+      : "";
+  if (expected) {
+    if (!SHA256_HEX_RE.test(expected)) {
+      throw new Error(t("comfy.errInvalidOutputTransfer"));
+    }
+    if (!globalThis.crypto?.subtle?.digest) {
+      throw new Error(t("comfy.errOutputChecksum"));
+    }
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
+    const actual = Array.from(new Uint8Array(digest), (n) =>
+      n.toString(16).padStart(2, "0"),
+    ).join("");
+    if (actual !== expected) {
+      throw new Error(t("comfy.errInvalidOutputTransfer"));
+    }
+  }
+  const blob = new Blob([buffer], { type: normalizedMime });
+  return URL.createObjectURL(blob);
+}
+
+function formatColabOneMiBAsGiB(mib: number): string {
+  if (!Number.isFinite(mib) || mib <= 0) {
+    return "0 GB";
+  }
+  const gib = mib / 1024;
+  const formatted = Number.isInteger(gib)
+    ? String(gib)
+    : gib.toFixed(1).replace(/\.0$/, "");
+  return `${formatted} GB`;
+}
+
+export function formatColabOneVramGiB(mib: number): string {
+  return formatColabOneMiBAsGiB(mib);
+}
+
+export function formatColabOneDiskGiB(mib: number): string {
+  return formatColabOneMiBAsGiB(mib);
+}
+
+export function isColabOneTtsEngineNonCommercial(
+  engine?: ColabOneComfyTtsEngineSpec,
+): boolean {
+  if (!engine) {
+    return false;
+  }
+  return (
+    engine.commercial_ok === false ||
+    (engine.commercial_ok === undefined &&
+      NON_COMMERCIAL_TTS_ENGINE_IDS.has((engine.id || "").trim()))
+  );
+}
+
 export function hasNonCommercialNotice(
   wf: WorkflowTemplate | undefined,
   selectedTts: ColabOneComfyTtsEngineSpec | undefined,
 ): NonCommercialNotice | null {
   const wfRestricted = wf?.commercial_ok === false;
-  const ttsRestricted = selectedTts?.commercial_ok === false;
+  const ttsRestricted = isColabOneTtsEngineNonCommercial(selectedTts);
   if (!wfRestricted && !ttsRestricted) {
     return null;
   }
@@ -885,6 +1218,15 @@ export function hasNonCommercialNotice(
   };
 }
 
+export const resolveNonCommercialNotice = hasNonCommercialNotice;
+
+export const CLONE_ONLY_TTS_ENGINE_IDS: ReadonlySet<string> = new Set<string>([
+  "fish_drama3",
+  "moss_tts_v1_5",
+  "fish_s2_pro",
+  "indextts2",
+]);
+
 export function isColabOneVoiceRefRequired(
   wf: WorkflowTemplate | undefined,
   values: Record<string, string | number | boolean> = {},
@@ -905,14 +1247,14 @@ export function isColabOneVoiceRefRequired(
     typeof rawTtsEngine === "string" && rawTtsEngine.trim()
       ? rawTtsEngine.trim()
       : (wf.pipeline.default_tts_engine || "").trim();
-  if (resolvedTtsEngineId !== "indextts2") {
-    return false;
-  }
   const voicePresetField = (wf.fields || []).find(
     (field) => field.key === "pipeline.voice_preset",
   );
   if (!voicePresetField) {
-    return true;
+    return resolvedTtsEngineId === "indextts2";
+  }
+  if (!CLONE_ONLY_TTS_ENGINE_IDS.has(resolvedTtsEngineId)) {
+    return false;
   }
   const rawVoicePreset = hasOwn(values, "pipeline.voice_preset")
     ? values["pipeline.voice_preset"]
@@ -929,6 +1271,54 @@ export function isColabOneVoiceRefRequired(
   return resolvedVoicePreset === "custom";
 }
 
+export function isColabOneVoiceRefTextRequired(
+  wf: WorkflowTemplate | undefined,
+  values: Record<string, string | number | boolean> = {},
+  uploadedInputIds: Record<string, string> = {},
+  pendingUploads: Record<string, unknown> = {},
+): boolean {
+  if (!wf || wf.pipeline?.kind !== "digital_human") {
+    return false;
+  }
+  const rawAudioSource = hasOwn(values, "pipeline.audio_source")
+    ? values["pipeline.audio_source"]
+    : undefined;
+  if (String(rawAudioSource ?? "tts").trim() !== "tts") {
+    return false;
+  }
+  const uploadedId = hasOwn(uploadedInputIds, "pipeline.voice_ref_audio")
+    ? uploadedInputIds["pipeline.voice_ref_audio"]
+    : undefined;
+  const hasUploaded =
+    typeof uploadedId === "string" && uploadedId.trim().length > 0;
+  const hasPending =
+    hasOwn(pendingUploads, "pipeline.voice_ref_audio") &&
+    Boolean(pendingUploads["pipeline.voice_ref_audio"]);
+  if (!hasUploaded && !hasPending) {
+    return false;
+  }
+  const rawTtsEngine = hasOwn(values, "pipeline.tts_engine")
+    ? values["pipeline.tts_engine"]
+    : undefined;
+  const resolvedTtsEngineId =
+    typeof rawTtsEngine === "string" && rawTtsEngine.trim()
+      ? rawTtsEngine.trim()
+      : (wf.pipeline.default_tts_engine || "").trim();
+  if (
+    resolvedTtsEngineId === "breeze_tts2" ||
+    resolvedTtsEngineId === "fish_drama3"
+  ) {
+    return true;
+  }
+  if (resolvedTtsEngineId === "ming_3_tts") {
+    const rawEmotionPrompt = hasOwn(values, "pipeline.emotion_prompt")
+      ? values["pipeline.emotion_prompt"]
+      : undefined;
+    return String(rawEmotionPrompt ?? "").trim().length === 0;
+  }
+  return false;
+}
+
 export function missingRequiredWorkflowFields(
   wf: WorkflowTemplate | undefined,
   values: Record<string, string | number | boolean>,
@@ -940,12 +1330,19 @@ export function missingRequiredWorkflowFields(
   }
 
   const requiresVoiceRefAudio = isColabOneVoiceRefRequired(wf, values);
+  const requiresVoiceRefText = isColabOneVoiceRefTextRequired(
+    wf,
+    values,
+    uploadedInputIds,
+    pendingUploads,
+  );
 
   const missing: WorkflowField[] = [];
   for (const field of wf.fields) {
     const isRequired =
       Boolean(field.required) ||
-      (requiresVoiceRefAudio && field.key === "pipeline.voice_ref_audio");
+      (requiresVoiceRefAudio && field.key === "pipeline.voice_ref_audio") ||
+      (requiresVoiceRefText && field.key === "pipeline.voice_ref_text");
     if (!isRequired) {
       continue;
     }

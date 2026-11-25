@@ -13,8 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
-	"unicode/utf8"
+
+	"github.com/luolongfei/ColabOne/console/internal/comfyui"
 )
 
 type taskActivitySig struct {
@@ -1129,16 +1129,17 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 		}
 
 		taskKindLabels := map[string]string{
-			"download":         "模型下载",
-			"load":             "模型加载",
-			"public_chat":      "外部 API 对话",
-			"public_responses": "外部 API Responses",
-			"public_compact":   "外部 API 上下文压缩",
-			"comfy_start":      "ComfyUI 启动",
-			"comfy_run":        "ComfyUI 工作流",
-			"comfyui":          "ComfyUI 任务",
-			"comfyui_start":    "ComfyUI 启动",
-			"comfyui_run":      "ComfyUI 工作流",
+			"download":            "模型下载",
+			"load":                "模型加载",
+			"public_chat":         "外部 API 对话",
+			"public_responses":    "外部 API Responses",
+			"public_compact":      "外部 API 上下文压缩",
+			"comfy_start":         "ComfyUI 启动",
+			"comfy_run":           "ComfyUI 工作流",
+			"comfyui":             "ComfyUI 任务",
+			"comfyui_start":       "ComfyUI 启动",
+			"comfyui_run":         "ComfyUI 工作流",
+			"comfyui_tts_preview": "音色试听",
 		}
 		taskStatusLabels := map[string]string{
 			"running":   "进行中",
@@ -1434,9 +1435,9 @@ func (c *ColabOneController) hasRemoteCapability(capability string) bool {
 		return false
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	rt := asMap(c.data["runtime"])
-	c.mu.Unlock()
-	if rt == nil {
+	if rt == nil || asString(rt["state"]) != "ready" {
 		return false
 	}
 	for _, item := range asAnySlice(rt["capabilities"]) {
@@ -1448,21 +1449,7 @@ func (c *ColabOneController) hasRemoteCapability(capability string) bool {
 }
 
 func validateCleanHFToken(raw string) (string, error) {
-	for _, ch := range raw {
-		if ch == '\r' || ch == '\n' || ch < 0x20 || ch == 0x7f || unicode.IsControl(ch) {
-			return "", errors.New("hf_token 包含非法空白或控制字符")
-		}
-	}
-	trimmed := strings.Trim(raw, " ")
-	for _, ch := range trimmed {
-		if unicode.IsSpace(ch) {
-			return "", errors.New("hf_token 包含非法空白或控制字符")
-		}
-	}
-	if utf8.RuneCountInString(trimmed) > 512 {
-		return "", errors.New("hf_token 长度不能超过 512")
-	}
-	return trimmed, nil
+	return comfyui.ValidateCleanHFToken(raw)
 }
 
 func (c *ColabOneController) syncRemoteAPIIDOverrides(ctx context.Context, endpoint string, background bool) {
@@ -2271,7 +2258,7 @@ func (c *ColabOneController) ConnectDrive(ctx context.Context) (map[string]any, 
 		if err == nil {
 			c.syncRemoteAPIIDOverrides(ctx, "", false)
 			if asString(info["mode"]) == "mount" {
-				c.log("已通过 Google OAuth 自动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)", "云盘", "info")
+				c.log("已通过 Google OAuth 自动挂载云盘 (/content/drive/MyDrive/ColabOne_Drive)", "云盘", "info")
 			} else {
 				c.log("已通过 Google OAuth 连接云盘持久化目录 (ColabOne_Drive)", "云盘", "info")
 			}
@@ -2304,7 +2291,7 @@ func (c *ColabOneController) ConnectDrive(ctx context.Context) (map[string]any, 
 		return nil, err
 	}
 	c.syncRemoteAPIIDOverrides(ctx, "", false)
-	c.log("已通过 Google Colab 原生 DriveFS 挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)", "云盘", "info")
+	c.log("已通过 Google Colab 原生 DriveFS 挂载云盘 (/content/drive/MyDrive/ColabOne_Drive)", "云盘", "info")
 	return info, nil
 }
 
@@ -2793,7 +2780,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		} else {
 			info := asMap(rawInfo)
 			if asString(info["mode"]) == "mount" {
-				c.log("已自动挂载 Google 云盘 (/content/drive/MyDrive → ColabOne_Drive)", "云盘", "info")
+				c.log("已自动挂载 Google 云盘 (/content/drive/MyDrive/ColabOne_Drive)", "云盘", "info")
 			} else {
 				c.log("已自动连接 Google 云盘持久化目录 (ColabOne_Drive)", "云盘", "info")
 			}
@@ -2809,7 +2796,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		} else if info != nil && asBool(info["connected"]) {
 			_ = c.RefreshRemote(ctx, "")
 			c.syncRemoteAPIIDOverrides(ctx, "", false)
-			c.log("已通过 Google Colab 原生 DriveFS 自动挂载云盘 (/content/drive/MyDrive → ColabOne_Drive)", "云盘", "info")
+			c.log("已通过 Google Colab 原生 DriveFS 自动挂载云盘 (/content/drive/MyDrive/ColabOne_Drive)", "云盘", "info")
 		} else {
 			c.log("点击「立即挂载云盘」即可在浏览器一键确认 Colab 原生云盘挂载 (ColabOne_Drive)", "云盘", "info")
 		}

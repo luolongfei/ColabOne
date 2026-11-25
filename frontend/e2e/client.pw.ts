@@ -2866,6 +2866,21 @@ test("ComfyUI built-in digital human workflows translate cleanly to Japanese acr
   ).toContainText("人物写真と台本（または音声）を入力");
   await expect(infiniteTalkCard).not.toContainText("口播数字人");
   await expect(infiniteTalkCard).not.toContainText("输入人像照片");
+  const cardIoRows = infiniteTalkCard.locator(
+    ".co-comfy-wf-io-strip .co-comfy-wf-io-row",
+  );
+  await expect(cardIoRows).toHaveCount(2);
+  await expect(cardIoRows.nth(0)).toContainText("入力：人物写真 + 原稿または音声");
+  await expect(cardIoRows.nth(1)).toContainText("出力：高画質音声付き動画 (MP4)");
+  const [cardInputBox, cardOutputBox] = await Promise.all([
+    cardIoRows.nth(0).boundingBox(),
+    cardIoRows.nth(1).boundingBox(),
+  ]);
+  expect(cardInputBox).not.toBeNull();
+  expect(cardOutputBox).not.toBeNull();
+  expect(cardOutputBox!.y).toBeGreaterThanOrEqual(
+    cardInputBox!.y + cardInputBox!.height - 1,
+  );
 
   const longCatCard = cards.nth(1);
   await expect(longCatCard.locator(".co-comfy-wf-card-title")).toHaveText(
@@ -2890,9 +2905,21 @@ test("ComfyUI built-in digital human workflows translate cleanly to Japanese acr
   await expect(
     paramDrawer.locator(".co-comfy-drawer-title-text"),
   ).toHaveText("デジタルヒューマン・長尺おすすめ版");
-  await expect(
-    paramDrawer.locator(".co-comfy-beginner-guide"),
-  ).toContainText("入力：人物写真 + 原稿または音声");
+  const drawerIoRows = paramDrawer.locator(
+    ".co-comfy-beginner-guide-io .co-comfy-beginner-guide-io-row",
+  );
+  await expect(drawerIoRows).toHaveCount(2);
+  await expect(drawerIoRows.nth(0)).toContainText("入力：人物写真 + 原稿または音声");
+  await expect(drawerIoRows.nth(1)).toContainText("出力：高画質音声付き動画 (MP4)");
+  const [drawerInputBox, drawerOutputBox] = await Promise.all([
+    drawerIoRows.nth(0).boundingBox(),
+    drawerIoRows.nth(1).boundingBox(),
+  ]);
+  expect(drawerInputBox).not.toBeNull();
+  expect(drawerOutputBox).not.toBeNull();
+  expect(drawerOutputBox!.y).toBeGreaterThanOrEqual(
+    drawerInputBox!.y + drawerInputBox!.height - 1,
+  );
   await expect(
     paramDrawer.locator(".co-comfy-field-desc").first(),
   ).toContainText("正面または上半身");
@@ -3867,7 +3894,7 @@ test("simplified 2-tab model library exposes only 我的 and 社区 and displays
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
 
-  // Also verify "去选择模型 →" shortcut from 远端设备 jumps to 对外 API with the drawer open.
+  // Also verify "去选择模型" shortcut from 远端设备 jumps to 对外 API with the drawer open.
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.runtime.loaded_model = undefined;
@@ -6858,7 +6885,7 @@ test("auto-update surfaces navbar badge, renders bilingual release notes safely,
       closeBelow: true,
       leftAligned: true,
     });
-  await expect(modal).toContainText("v0.1.6 → v0.1.7");
+  await expect(modal).toContainText("v0.1.6 至 v0.1.7");
 
   // Chinese notes render by default; attempted script tag renders as literal text with zero XSS.
   const notesBody = modal.getByTestId("update-notes-body");
@@ -7372,7 +7399,7 @@ test("close window prompt defaults to quit, supports remember choice, and syncs 
     .poll(() => page.evaluate(() => (window as any).__closeBehaviorCalls))
     .toEqual([{ method: "resolve", action: "background", remember: true }]);
 
-  // Open Settings → Desktop & About: close behavior segmented control reflects remembered "后台运行".
+  // Open Settings / Desktop & About: close behavior segmented control reflects remembered "后台运行".
   await navItem(page, "设置").click();
   const row = page.getByTestId("settings-close-behavior-row");
   await row.scrollIntoViewIfNeeded();
@@ -8299,7 +8326,7 @@ test("one-click encrypted migration supports selective export, unauthenticated q
   await expect(homeImportBtn).toBeHidden();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
-  // 2. Settings → Data & Migration → Export modal with module presets and password checks.
+  // 2. Settings / Data & Migration / Export modal with module presets and password checks.
   await navItem(page, "设置").click();
   const migRow = page.getByTestId("settings-migration-row");
   await expect(migRow).toBeVisible();

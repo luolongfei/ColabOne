@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -226,6 +227,7 @@ def test_server_app_boots_offline_with_protocol_7_and_auth_contract(tmp_path, mo
             "comfyui",
             "comfyui_hf_token",
             "comfyui_drive_export",
+            "comfyui_tts_preview",
         ]
         assert status["state"] == "ready"
         assert status["idle_minutes"] == 30
@@ -443,6 +445,78 @@ def test_docs_contain_no_vpn_mentions():
                 )
     assert not offenders, "Unexpected VPN mention(s) in documentation:\n" + "\n".join(
         offenders
+    )
+
+
+def test_project_forbids_right_arrow_symbols_and_icons():
+    forbidden_re = re.compile(
+        "["
+        "\u2192\u219d\u21a0\u21a3\u21a6\u21aa\u21ac\u21b3"
+        "\u21c0\u21c1\u21c9\u21d2\u21db\u21dd\u21e2\u21e5\u21e8"
+        "\u21f6\u21f8\u21fb\u21fe"
+        "\u2794\u2799-\u279e\u27a0-\u27a4\u27f6\u27f9\u27fc\u27fe\u27ff\u2b95"
+        "]"
+        "|&ra" "rr;|&#85" "94;|&#x21" "92;"
+        "|\\bPhArrow" "Right\\b",
+        re.IGNORECASE,
+    )
+    skip_dirs = {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        "work",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "test-results",
+        "playwright-report",
+        "third_party",
+    }
+    text_suffixes = {
+        ".py",
+        ".go",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".vue",
+        ".css",
+        ".html",
+        ".json",
+        ".md",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".sh",
+        ".ps1",
+        ".txt",
+        ".in",
+    }
+    offenders: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
+        base = Path(dirpath)
+        for filename in sorted(filenames):
+            if filename == "package-lock.json":
+                continue
+            path = base / filename
+            if path.suffix.lower() not in text_suffixes and path.name not in {"NOTICE", "LICENSE"}:
+                continue
+            rel = path.relative_to(ROOT)
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for lineno, line in enumerate(content.splitlines(), start=1):
+                if forbidden_re.search(line):
+                    offenders.append(f"{rel.as_posix()}:{lineno}: {line.strip()[:160]}")
+    assert not offenders, (
+        "Forbidden right-arrow symbol(s) or right-arrow icon(s) found:\n"
+        + "\n".join(offenders)
     )
 
 

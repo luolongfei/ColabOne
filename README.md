@@ -37,20 +37,20 @@ Your computer only runs a single pure Go native desktop binary (`ColabOne.app` /
 
 ## 🚀 Quick Start
 
-ColabOne is organized around four sidebar views: **Devices → Public API → ComfyUI → Settings**, plus a slide-over **Logs** drawer on the right.
+ColabOne is organized around four sidebar views: **Devices**, **Public API**, **ComfyUI**, and **Settings**, plus a slide-over **Logs** drawer on the right.
 
 1. **Download & Install**
    Download the native installer for your platform from [Releases](https://github.com/luolongfei/ColabOne/releases) (or [build from source](#-building-from-source)): run the `.exe` setup installer on Windows (per-user install, no admin rights required) or open the `.dmg` disk image on macOS and drag `ColabOne.app` into **Applications**. ColabOne is a self-contained pure Go single-binary app — no local Python runtime or sibling `runtime/`/`site-packages/` folders are required. On Windows, you can also manage Start Menu and Desktop shortcuts from **Settings** without admin rights.
-   - *First-launch note (unsigned open-source build, one-time step)*: on **macOS**, if Gatekeeper blocks opening, click **Done** → **System Settings → Privacy & Security → Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/ColabOne.app`; on **Windows**, if SmartScreen prompts, click **More info → Run anyway**.
+   - *First-launch note (unsigned open-source build, one-time step)*: on **macOS**, if Gatekeeper blocks opening, click **Done**, open **System Settings / Privacy & Security**, then click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/ColabOne.app`; on **Windows**, if SmartScreen prompts, click **More info / Run anyway**.
 
 2. **Sign In with Google**
-   Go to **Settings** → **Sign in with Google**, authorize your account in the browser, and ColabOne will complete login automatically. If your browser displays an authorization page instead of redirecting, expand the manual paste section and click **Paste & Sign In**. Credentials stay encrypted in your local `vault.enc` (`0600` AES-256-GCM) without triggering OS keychain prompts, and auto-renew across restarts.
+   Go to **Settings / Sign in with Google**, authorize your account in the browser, and ColabOne will complete login automatically. If your browser displays an authorization page instead of redirecting, expand the manual paste section and click **Paste & Sign In**. Credentials stay encrypted in your local `vault.enc` (`0600` AES-256-GCM) without triggering OS keychain prompts, and auto-renew across restarts.
 
 3. **Launch a GPU**
    Open **Devices**, select a GPU tier (defaults to `G4`) and idle auto-release timeout (default **30 min**), and click **Start GPU**. Once ready, the top bar and overview card display live billing endurance, instance location, hardware telemetry charts, and Google Drive mount status.
 
 4. **Serve an LLM or Run ComfyUI**
-   - **Text API**: Open **Public API** → **Select Model** to pick a GGUF model from **My Models** (pre-seeded with editable starter Hugging Face repos) or search under **Community**. Click **Download & Load** to fetch verified shards remotely and load them into `llama-server`, then configure your Cloudflare Named Tunnel and start the API.
+   - **Text API**: Open **Public API / Select Model** to pick a GGUF model from **My Models** (pre-seeded with editable starter Hugging Face repos) or search under **Community**. Click **Download & Load** to fetch verified shards remotely and load them into `llama-server`, then configure your Cloudflare Named Tunnel and start the API.
    - **Visual & Multimodal Workflows**: Open **ComfyUI** to import a workflow in **Workflow Studio** or launch the full node editor in **Native Canvas**.
 
 5. **Release When Finished**
@@ -105,11 +105,38 @@ ColabOne deploys **ComfyUI `v0.46.0`** exclusively on the remote Colab GPU (`127
   - Preview and export SHA-256-verified image, video, and audio outputs via native save dialogs; workflows (`/workflows/**`) and outputs (`/comfyui-outputs/**`) sync automatically to `ColabOne_Drive`.
   - Manage remote model and workflow packs declaratively through `catalog/comfyui.json` (data-only manifests with pinned revisions and SHA-256 checks).
 - **Native Canvas**
-  - Runs a token-authenticated HTTP + WebSocket reverse proxy (`127.0.0.1:8189` → `8188`) behind your fixed-domain Cloudflare Named Tunnel.
+  - Runs a token-authenticated HTTP + WebSocket reverse proxy (`127.0.0.1:8189` to `8188`) behind your fixed-domain Cloudflare Named Tunnel.
   - Exchanges a random per-session token for a scoped `HttpOnly` cookie and opens directly in a dedicated **ComfyUI Native Canvas** app window or your system browser.
 - **Strict VRAM Mutual Exclusion**
   - `llama-server` (`8081`) and `ComfyUI` (`8188`) never occupy GPU VRAM at the same time. Switching automatically unloads the active engine while retaining cached weights on remote disk.
   - Active ComfyUI queues and Native Canvas requests automatically pause the idle auto-release countdown.
+
+## 🎙️ Digital Human & 96 GB Flagship Open-Weights TTS
+
+Built-in ComfyUI digital-human oral-broadcast workflows pair remote video synthesis with an **8-engine flagship open-weights TTS matrix** running exclusively on the remote Colab GPU (tailored for 96 GB `G4` RTX PRO 6000 and 80 GB `A100` instances, with lower-VRAM engines also supported on smaller GPUs). Each engine executes inside an isolated remote TTS worker subprocess (`server/tts_engines.py` / `server/tts_worker_*.py`) with VRAM and disk preflight checks, dynamic per-engine script segmentation, and serial full-VRAM handoff into ComfyUI digital-human rendering.
+
+### 🧠 96 GB Flagship Open-Weights TTS Engine Matrix
+
+| Engine | Architecture / Sample Rate & Capabilities | VRAM / Disk & Upstream License |
+|---|---|---|
+| **Fish Audio Drama 3** | 35B MoE (3B active), 44.1 kHz, flagship multi-style expressive synthesis | `>= 45 GiB` VRAM (48 GB-class Ada/Hopper FP8 GPU; ~72 GiB BF16 on A100 80GB) · `>= 48 GiB` Disk · Fish Audio Community License v1.0 (**Non-Commercial / Research Only**, no hosted TTS API) |
+| **MOSS-TTS v1.5** | 8B, 24 kHz, 31 languages, inline `[pause X.Ys]` timing tags | `>= 20 GiB` VRAM · `>= 28 GiB` Disk · Apache-2.0 |
+| **Breeze TTS 2** | 3B+, 24 kHz, CN/EN bilingual Voice Design / Clone / Direction & paralinguistic tags (`[笑]` / `[叹气]`) | `>= 12 GiB` VRAM · `>= 12 GiB` Disk · BreezeBlue Research & Non-Commercial License (**Non-Commercial / Research Only**) |
+| **Ming-3.0-TTS Tiny** | 7.9B MoE (1.3B active), 44.1 kHz, Chinese dialects + 14 paralinguistic tags | `>= 18 GiB` VRAM · `>= 22 GiB` Disk · MIT |
+| **VoxCPM2** | 2B, 48 kHz studio continuous diffusion, Voice Clone & Voice Design | `>= 8 GiB` VRAM · `>= 6 GiB` Disk · Apache-2.0 |
+| **Qwen3-TTS 1.7B** | 24 kHz, Base + VoiceDesign + CustomVoice (**9 official speakers**), multilingual | `>= 8 GiB` VRAM · `>= 15 GiB` Disk · Apache-2.0 |
+| **IndexTTS-2.5** | 22.05 kHz, disentangled emotion reference + GRPO + Pinyin pronunciation override | `>= 8 GiB` VRAM · `>= 15 GiB` Disk · Bilibili Model Use License Agreement (**Non-Commercial / Research Only**) |
+| **Fish Speech S2-Pro** | 4B, 44.1 kHz, expressive inline emotion & paralinguistic tags | `>= 20 GiB` VRAM · `>= 16 GiB` Disk · Fish Audio Research License (**Non-Commercial / Research Only**) |
+
+### 🎧 Built-in Voice Library & One-Click Prose Audition
+
+- **Curated Voice Catalog**: Includes **10 curated built-in Chinese female & male voices** plus **9 official Qwen3-TTS CustomVoice native speakers**.
+- **One-Click Remote GPU Audition**: Every built-in voice and official speaker is paired with a tailored short prose passage. Click to synthesize and play back real-time audio directly from the remote Colab GPU with content-addressed caching on the VM so repeat auditions return instantly before committing to a full digital-human render.
+
+> [!IMPORTANT]
+> **Non-Commercial & Research-Only Disclaimer**
+>
+> The integrated digital-human flagship TTS lineup incorporates non-commercial / research-only open-weight models — specifically **Fish Audio Drama 3** (Fish Audio Community License v1.0, prohibiting commercial use and hosted TTS API services), **Breeze TTS 2** (BreezeBlue Research & Non-Commercial License), **IndexTTS-2.5** (Bilibili Model Use License Agreement), and **Fish Speech S2-Pro** (Fish Audio Research License). Accordingly, **the bundled digital-human flagship TTS pipeline is strictly for personal study, experimentation, and non-commercial research — NOT for commercial use or hosted TTS service resale.** All TTS weights are downloaded on demand solely onto your remote Colab runtime and remain governed by their respective upstream licenses (see [NOTICE](NOTICE)).
 
 ## 🔒 Storage, Billing & Security
 
@@ -190,4 +217,4 @@ Heartfelt thanks as well to the open-source projects below — ColabOne simply w
 
 ## 📜 License
 
-ColabOne is licensed under the **GNU General Public License v3.0** ([LICENSE](LICENSE)) to align with remote-integrated [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0). All upstream license and copyright notices are preserved in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md).
+ColabOne is licensed under the **GNU General Public License v3.0** ([LICENSE](LICENSE)) to align with remote-integrated [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0). All upstream license and copyright notices are preserved in [NOTICE](NOTICE) and [third_party/SOURCES.md](third_party/SOURCES.md). Remote-fetched flagship digital-human TTS weights remain governed by their respective upstream licenses, including non-commercial / research-only terms (`Fish Audio Drama 3`, `Breeze TTS 2`, `IndexTTS-2.5`, `Fish Speech S2-Pro`) — the bundled digital-human flagship TTS pipeline is strictly for personal study, experimentation, and non-commercial research.

@@ -37,20 +37,20 @@ ColabOne은 **macOS (Apple Silicon)** 및 **Windows (x64)** 환경에서 빠른 
 
 ## 🚀 빠른 시작
 
-ColabOne은 **원격 기기 → 외부 API → ComfyUI → 설정**의 4개 사이드바 화면과 우측 슬라이드 오버 **실행 로그** 패널로 구성되어 있습니다.
+ColabOne은 **원격 기기**, **외부 API**, **ComfyUI**, **설정**의 4개 사이드바 화면과 우측 슬라이드 오버 **실행 로그** 패널로 구성되어 있습니다.
 
 1. **다운로드 및 설치**
    [Releases](https://github.com/luolongfei/ColabOne/releases)에서 플랫폼에 맞는 설치 파일을 다운로드합니다(또는 [소스에서 직접 빌드](#-소스에서-빌드하기)). Windows에서는 `.exe` 설치 프로그램을 실행하고(사용자 단위 설치, 관리자 권한 불필요), macOS에서는 `.dmg` 디스크 이미지를 열어 `ColabOne.app`을 **응용 프로그램** 폴더로 드래그하세요. ColabOne은 완전히 독립 실행되는 순수 Go 단일 바이너리 앱이므로 로컬 Python 런타임이나 동일 경로의 `runtime/`·`site-packages/` 폴더가 필요하지 않습니다. Windows에서는 관리자 권한 없이 **설정**에서도 시작 메뉴 및 바탕 화면 바로 가기를 관리할 수 있습니다.
-   - *최초 실행 안내(미서명 오픈소스 빌드, 최초 1회)*: **macOS**에서 보안 경고가 표시되면 **완료** → **시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기**를 클릭하거나 터미널에서 `xattr -dr com.apple.quarantine /Applications/ColabOne.app`을 실행하세요. **Windows**에서 SmartScreen이 표시되면 **추가 정보 → 실행**을 클릭하세요.
+   - *최초 실행 안내(미서명 오픈소스 빌드, 최초 1회)*: **macOS**에서 보안 경고가 표시되면 **완료**를 누른 뒤 **시스템 설정 / 개인정보 보호 및 보안 / 확인 없이 열기**를 클릭하거나 터미널에서 `xattr -dr com.apple.quarantine /Applications/ColabOne.app`을 실행하세요. **Windows**에서 SmartScreen이 표시되면 **추가 정보 / 실행**을 클릭하세요.
 
 2. **Google 계정 로그인**
-   **설정** → **Google 로그인**으로 이동해 브라우저에서 계정을 승인하면 ColabOne이 자동으로 로그인을 완료합니다. 브라우저가 자동으로 리디렉션되지 않고 인증 페이지를 표시하는 경우, 직접 붙여넣기 섹션을 펼치고 **붙여넣고 로그인 완료**를 클릭하세요. 자격 증명은 로컬 설정 디렉터리의 `vault.enc`(`0600` 권한 · AES-256-GCM)에 암호화되어 저장되며 OS 키체인 팝업 없이 재시작 시에도 자동으로 복원·갱신됩니다.
+   **설정 / Google 로그인**으로 이동해 브라우저에서 계정을 승인하면 ColabOne이 자동으로 로그인을 완료합니다. 브라우저가 자동으로 리디렉션되지 않고 인증 페이지를 표시하는 경우, 직접 붙여넣기 섹션을 펼치고 **붙여넣고 로그인 완료**를 클릭하세요. 자격 증명은 로컬 설정 디렉터리의 `vault.enc`(`0600` 권한 · AES-256-GCM)에 암호화되어 저장되며 OS 키체인 팝업 없이 재시작 시에도 자동으로 복원·갱신됩니다.
 
 3. **GPU 시작**
    **원격 기기**에서 GPU 모델(기본값 `G4`)과 유휴 자동 해제 시간(기본값 **30분**)을 선택한 뒤 **GPU 시작**을 클릭합니다. 준비가 완료되면 상단 바와 요약 카드에 실시간 과금 기준 예상 가동 시간, 인스턴스 위치, 하드웨어 텔레메트리 차트 및 Google 드라이브 마운트 상태가 표시됩니다.
 
 4. **LLM 서빙 또는 ComfyUI 실행**
-   - **텍스트 API**: **외부 API** → **모델 선택**을 열어 **내 모델** (편집 가능한 기본 Hugging Face 저장소 사전 등록)에서 GGUF 모델을 선택하거나 **커뮤니티**에서 검색합니다. **다운로드 및 로드**를 클릭하면 원격에서 검증된 분할 파일을 받아 `llama-server`에 로드하며, 이후 Cloudflare Named Tunnel을 설정해 API 서비스를 시작할 수 있습니다.
+   - **텍스트 API**: **외부 API / 모델 선택**을 열어 **내 모델** (편집 가능한 기본 Hugging Face 저장소 사전 등록)에서 GGUF 모델을 선택하거나 **커뮤니티**에서 검색합니다. **다운로드 및 로드**를 클릭하면 원격에서 검증된 분할 파일을 받아 `llama-server`에 로드하며, 이후 Cloudflare Named Tunnel을 설정해 API 서비스를 시작할 수 있습니다.
    - **이미지·비디오·멀티모달 워크플로**: **ComfyUI**에서 **워크플로 스튜디오**로 워크플로를 가져오거나 **네이티브 캔버스**에서 전체 노드 편집기를 실행합니다.
 
 5. **사용 종료 후 리소스 해제**
@@ -105,11 +105,38 @@ ColabOne은 원격 Colab GPU(`127.0.0.1:8188`)에만 **ComfyUI `v0.46.0`** 버�
   - SHA-256으로 검증된 이미지·비디오·오디오 결과물을 미리 보고 네이티브 저장 대화상자로 로컬에 내보낼 수 있으며, 워크플로(`/workflows/**`)와 결과물(`/comfyui-outputs/**`)은 `ColabOne_Drive`에 자동 동기화됩니다.
   - `catalog/comfyui.json`(고정 리비전과 SHA-256 검증을 포함한 순수 데이터 매니페스트)을 통해 원격 모델 및 워크플로 팩을 선언적으로 관리할 수 있습니다.
 - **네이티브 캔버스**
-  - 고정 도메인 Cloudflare Named Tunnel 뒤에서 토큰 인증 기반 HTTP + WebSocket 리버스 프록시(`127.0.0.1:8189` → `8188`)를 실행합니다.
+  - 고정 도메인 Cloudflare Named Tunnel 뒤에서 토큰 인증 기반 HTTP + WebSocket 리버스 프록시(`127.0.0.1:8189`에서 `8188`로 전달)를 실행합니다.
   - 세션별 무작위 토큰을 범위가 제한된 `HttpOnly` 쿠키로 교환해 전용 **ComfyUI 네이티브 캔버스** 앱 창이나 시스템 브라우저에서 바로 열 수 있습니다.
 - **엄격한 VRAM 상호 배제**
   - `llama-server`(`8081`)와 `ComfyUI`(`8188`)는 GPU VRAM을 동시에 점유하지 않습니다. 엔진을 전환하면 원격 디스크의 캐시된 가중치는 유지한 채 현재 활성 엔진을 자동으로 언로드합니다.
   - 진행 중인 ComfyUI 대기열 작업과 네이티브 캔버스 요청은 유휴 자동 해제 카운트다운을 자동으로 일시 정지합니다.
+
+## 🎙️ 디지털 휴먼 & 96 GB 플래그십 오픈 웨이트 TTS
+
+내장 ComfyUI 디지털 휴먼 구술 영상 워크플로는 오직 원격 Colab GPU에서만 동작하는 **8종 플래그십 오픈 웨이트 TTS 엔진 매트릭스**를 통합합니다(96 GB `G4` RTX PRO 6000 및 80 GB `A100` 환경에 최적화되어 있으며, 경량 엔진은 중소형 VRAM GPU에서도 실행 가능). 각 엔진은 격리된 원격 TTS 워커 서브프로세스(`server/tts_engines.py` / `server/tts_worker_*.py`)에서 실행되며 VRAM 및 디스크 사전 점검, 엔진별 동적 문장 분할, 그리고 ComfyUI 디지털 휴먼 영상 합성으로의 직렬 전체 VRAM 인계를 수행합니다.
+
+### 🧠 96 GB 플래그십 오픈 웨이트 TTS 엔진 매트릭스
+
+| 엔진 | 아키텍처 / 샘플레이트 및 핵심 기능 | VRAM / 디스크 요구 사항 및 업스트림 라이선스 |
+|---|---|---|
+| **Fish Audio Drama 3** | 35B MoE(활성 3B), 44.1 kHz, 플래그십 고표현력 음성 합성 | `>= 45 GiB` VRAM(48 GB급 Ada/Hopper FP8 GPU; A100 80GB BF16 약 72 GiB) · `>= 48 GiB` 디스크 · Fish Audio Community License v1.0 (**비상업적 / 연구 전용**, 호스팅 TTS API 금지) |
+| **MOSS-TTS v1.5** | 8B, 24 kHz, 31개 언어 지원, 인라인 `[pause X.Ys]` 휴지 제어 태그 | `>= 20 GiB` VRAM · `>= 28 GiB` 디스크 · Apache-2.0 |
+| **Breeze TTS 2** | 3B+, 24 kHz, 중/영 이중언어 Voice Design / 클론 / 디렉션 및 비언어 태그(`[笑]` / `[叹气]`) | `>= 12 GiB` VRAM · `>= 12 GiB` 디스크 · BreezeBlue Research & Non-Commercial License (**비상업적 / 연구 전용**) |
+| **Ming-3.0-TTS Tiny** | 7.9B MoE(활성 1.3B), 44.1 kHz, 중국어 방언 + 14종 비언어 태그 | `>= 18 GiB` VRAM · `>= 22 GiB` 디스크 · MIT |
+| **VoxCPM2** | 2B, 48 kHz 스튜디오급 연속 확산 음성 합성, 보이스 클론 & Voice Design | `>= 8 GiB` VRAM · `>= 6 GiB` 디스크 · Apache-2.0 |
+| **Qwen3-TTS 1.7B** | 24 kHz, Base + VoiceDesign + CustomVoice(**공식 화자 9명**), 다국어 지원 | `>= 8 GiB` VRAM · `>= 15 GiB` 디스크 · Apache-2.0 |
+| **IndexTTS-2.5** | 22.05 kHz, 감정 참조 오디오 분리 제어 + GRPO + 병음(Pinyin) 발음 강제 지정 | `>= 8 GiB` VRAM · `>= 15 GiB` 디스크 · Bilibili Model Use License Agreement (**비상업적 / 연구 전용**) |
+| **Fish Speech S2-Pro** | 4B, 44.1 kHz, 고표현력 인라인 감정·비언어 태그 | `>= 20 GiB` VRAM · `>= 16 GiB` 디스크 · Fish Audio Research License (**비상업적 / 연구 전용**) |
+
+### 🎧 내장 보이스 라이브러리 및 원클릭 단문 미리듣기
+
+- **엄선된 보이스 카탈로그**: **엄선된 중국어 여성·남성 내장 보이스 10종**과 **Qwen3-TTS CustomVoice 공식 네이티브 화자 9명**을 기본 제공합니다.
+- **원클릭 원격 GPU 실시간 미리듣기 & 캐싱**: 모든 내장 보이스와 공식 화자에는 음색에 맞춘 전용 단문 대사가 페어링되어 있어 ComfyUI 워크플로 스튜디오에서 원클릭으로 원격 GPU 실시간 합성·재생을 확인할 수 있으며, 원격 디스크 캐시로 반복 미리듣기를 즉시 재생한 뒤 전체 디지털 휴먼 렌더링을 시작할 수 있습니다.
+
+> [!IMPORTANT]
+> **비상업적 및 연구 전용 고지**
+>
+> 통합된 디지털 휴먼 플래그십 TTS 라인업에는 연구/비상업적 오픈 웨이트 모델인 **Fish Audio Drama 3**(Fish Audio Community License v1.0, 상업적 이용 및 호스팅 TTS API 제공 금지), **Breeze TTS 2**(BreezeBlue Research & Non-Commercial License), **IndexTTS-2.5**(Bilibili Model Use License Agreement), **Fish Speech S2-Pro**(Fish Audio Research License)가 포함되어 있습니다. 따라서 **번들 통합된 디지털 휴먼 플래그십 TTS 파이프라인은 오직 개인 학습, 실험 및 비상업적 연구 목적에만 엄격히 제한되며, 상업적 이용이나 호스팅 TTS 서비스 재판매를 절대 금지합니다.** 모든 TTS 가중치는 필요 시 원격 Colab 런타임으로만 다운로드되며 각 업스트림 라이선스 조건을 따릅니다(자세한 내용은 [NOTICE](NOTICE) 참고).
 
 ## 🔒 저장소, 과금 및 보안
 
@@ -190,4 +217,4 @@ ColabOne을 함께 만들고 개선해 주신 모든 분들께 감사드립니�
 
 ## 📜 라이선스
 
-ColabOne은 원격 연동되는 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0)에 맞추어 **GNU General Public License v3.0** ([LICENSE](LICENSE)) 라이선스로 배포됩니다. 모든 업스트림 라이선스 및 저작권 고지는 [NOTICE](NOTICE)와 [third_party/SOURCES.md](third_party/SOURCES.md)에 보존되어 있습니다.
+ColabOne은 원격 연동되는 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) (`v0.46.0`, GPL-3.0)에 맞추어 **GNU General Public License v3.0** ([LICENSE](LICENSE)) 라이선스로 배포됩니다. 모든 업스트림 라이선스 및 저작권 고지는 [NOTICE](NOTICE)와 [third_party/SOURCES.md](third_party/SOURCES.md)에 보존되어 있습니다. 원격 Colab 런타임으로 온디맨드 다운로드되는 디지털 휴먼 플래그십 TTS 모델 가중치는 비상업적/연구 전용 모델(`Fish Audio Drama 3`, `Breeze TTS 2`, `IndexTTS-2.5`, `Fish Speech S2-Pro`)을 포함해 각 업스트림 라이선스를 따르며, 번들 통합된 디지털 휴먼 플래그십 TTS 파이프라인은 개인 학습·실험 및 비상업적 연구 목적에만 엄격히 제한됩니다.

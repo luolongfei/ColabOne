@@ -32,7 +32,6 @@ import { colabOneExtractTunnelToken } from "./colabOneSecretToken";
 import type { ColabOneToastKind } from "./colabOneToast";
 import {
   PhArrowCounterClockwise,
-  PhArrowRight,
   PhArrowsClockwise,
   PhArrowSquareOut,
   PhCheck,
@@ -686,7 +685,6 @@ onUnmounted(() => {
             >
               <template #icon><PhHardDrives :size="15" /></template>
               {{ gpuStarting ? t("api.viewGpuProgress") : t("api.goStartGpu") }}
-              <PhArrowRight :size="14" />
             </AButton>
           </template>
         </ASpace>
@@ -857,7 +855,6 @@ onUnmounted(() => {
                   ? t("api.browseModels")
                   : t("api.chooseModel")
             }}
-            <PhArrowRight :size="13" />
           </AButton>
         </ASpace>
       </div>

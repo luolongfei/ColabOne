@@ -78,6 +78,14 @@ const TASK_KIND_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "ComfyUI タスク",
     "ko-KR": "ComfyUI 작업",
   },
+  音色试听: {
+    "zh-CN": "音色试听",
+    "en-US": "Voice preview",
+    "zh-TW": "音色試聽",
+    "zh-HK": "聲線試聽",
+    "ja-JP": "ボイス試聴",
+    "ko-KR": "음색 미리듣기",
+  },
   远端任务: {
     "zh-CN": "远端任务",
     "en-US": "Remote task",
@@ -292,6 +300,70 @@ const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "TTS ソース依存関係ファイル",
     "ko-KR": "TTS 소스 종속성 파일",
   },
+  "TTS 安装日志路径": {
+    "zh-CN": "TTS 安装日志路径",
+    "en-US": "TTS install log path",
+    "zh-TW": "TTS 安裝日誌路徑",
+    "zh-HK": "TTS 安裝日誌路徑",
+    "ja-JP": "TTS インストールログパス",
+    "ko-KR": "TTS 설치 로그 경로",
+  },
+  "TTS 依赖清单文件": {
+    "zh-CN": "TTS 依赖清单文件",
+    "en-US": "TTS dependencies manifest file",
+    "zh-TW": "TTS 相依套件清單檔案",
+    "zh-HK": "TTS 依賴清單檔案",
+    "ja-JP": "TTS 依存関係マニフェストファイル",
+    "ko-KR": "TTS 종속성 매니페스트 파일",
+  },
+  "TTS 工作脚本路径": {
+    "zh-CN": "TTS 工作脚本路径",
+    "en-US": "TTS worker script path",
+    "zh-TW": "TTS 工作指令碼路徑",
+    "zh-HK": "TTS 工作腳本路徑",
+    "ja-JP": "TTS ワーカースクリプトパス",
+    "ko-KR": "TTS 워커 스크립트 경로",
+  },
+  "TTS 配置文件路径": {
+    "zh-CN": "TTS 配置文件路径",
+    "en-US": "TTS config file path",
+    "zh-TW": "TTS 設定檔路徑",
+    "zh-HK": "TTS 配置檔路徑",
+    "ja-JP": "TTS 設定ファイルパス",
+    "ko-KR": "TTS 설정 파일 경로",
+  },
+  "TTS 日志文件路径": {
+    "zh-CN": "TTS 日志文件路径",
+    "en-US": "TTS log file path",
+    "zh-TW": "TTS 日誌檔案路徑",
+    "zh-HK": "TTS 日誌檔案路徑",
+    "ja-JP": "TTS ログファイルパス",
+    "ko-KR": "TTS 로그 파일 경로",
+  },
+  "TTS 就绪标记文件": {
+    "zh-CN": "TTS 就绪标记文件",
+    "en-US": "TTS readiness marker file",
+    "zh-TW": "TTS 就緒標記檔案",
+    "zh-HK": "TTS 就緒標記檔案",
+    "ja-JP": "TTS 準備完了マーカーファイル",
+    "ko-KR": "TTS 준비 완료 마커 파일",
+  },
+  音色参考音频: {
+    "zh-CN": "音色参考音频",
+    "en-US": "Voice reference audio",
+    "zh-TW": "音色參考音訊",
+    "zh-HK": "聲線參考音訊",
+    "ja-JP": "ボイス参照音声",
+    "ko-KR": "음색 참조 오디오",
+  },
+  情绪参考音频: {
+    "zh-CN": "情绪参考音频",
+    "en-US": "Emotion reference audio",
+    "zh-TW": "情緒參考音訊",
+    "zh-HK": "情緒參考音訊",
+    "ja-JP": "感情参照音声",
+    "ko-KR": "감정 참조 오디오",
+  },
   参考音频转码目标: {
     "zh-CN": "参考音频转码目标",
     "en-US": "Reference audio transcode target",
@@ -395,6 +467,62 @@ const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
     "zh-HK": "內置女聲生成臨時路徑",
     "ja-JP": "組み込み女性ボイス生成の一時パス",
     "ko-KR": "기본 제공 여성 음색 임시 경로",
+  },
+  内置音色缓存目录: {
+    "zh-CN": "内置音色缓存目录",
+    "en-US": "Built-in voice cache directory",
+    "zh-TW": "內建音色快取目錄",
+    "zh-HK": "內置聲線快取目錄",
+    "ja-JP": "組み込みボイスキャッシュディレクトリ",
+    "ko-KR": "기본 제공 음색 캐시 디렉터리",
+  },
+  内置音色缓存文件: {
+    "zh-CN": "内置音色缓存文件",
+    "en-US": "Built-in voice cache file",
+    "zh-TW": "內建音色快取檔案",
+    "zh-HK": "內置聲線快取檔案",
+    "ja-JP": "組み込みボイスキャッシュファイル",
+    "ko-KR": "기본 제공 음색 캐시 파일",
+  },
+  内置音色生成临时路径: {
+    "zh-CN": "内置音色生成临时路径",
+    "en-US": "Built-in voice temp path",
+    "zh-TW": "內建音色產生暫存路徑",
+    "zh-HK": "內置聲線生成臨時路徑",
+    "ja-JP": "組み込みボイス生成の一時パス",
+    "ko-KR": "기본 제공 음색 임시 경로",
+  },
+  音色试听缓存目录: {
+    "zh-CN": "音色试听缓存目录",
+    "en-US": "Voice preview cache directory",
+    "zh-TW": "音色試聽快取目錄",
+    "zh-HK": "聲線試聽快取目錄",
+    "ja-JP": "ボイス試聴キャッシュディレクトリ",
+    "ko-KR": "음색 미리듣기 캐시 디렉터리",
+  },
+  音色试听缓存文件: {
+    "zh-CN": "音色试听缓存文件",
+    "en-US": "Voice preview cache file",
+    "zh-TW": "音色試聽快取檔案",
+    "zh-HK": "聲線試聽快取檔案",
+    "ja-JP": "ボイス試聴キャッシュファイル",
+    "ko-KR": "음색 미리듣기 캐시 파일",
+  },
+  试听音频缓存目录: {
+    "zh-CN": "试听音频缓存目录",
+    "en-US": "Preview audio cache directory",
+    "zh-TW": "試聽音訊快取目錄",
+    "zh-HK": "試聽音訊快取目錄",
+    "ja-JP": "試聴音声キャッシュディレクトリ",
+    "ko-KR": "미리듣기 오디오 캐시 디렉터리",
+  },
+  试听音频缓存文件: {
+    "zh-CN": "试听音频缓存文件",
+    "en-US": "Preview audio cache file",
+    "zh-TW": "試聽音訊快取檔案",
+    "zh-HK": "試聽音訊快取檔案",
+    "ja-JP": "試聴音声キャッシュファイル",
+    "ko-KR": "미리듣기 오디오 캐시 파일",
   },
   加速包缓存根目录: {
     "zh-CN": "加速包缓存根目录",
@@ -1124,16 +1252,16 @@ function translateApiFinishPart(part: string, loc: ColabOneLocale): string {
       "ko-KR": `출력 ${n} tokens`,
     }[loc];
   }
-  const compMatch = s.match(/^自动压缩 (\d+)→(\d+) tokens$/);
+  const compMatch = s.match(/^自动压缩 (\d+) 至 (\d+) tokens$/);
   if (compMatch) {
     const [, before, after] = compMatch;
     return {
       "zh-CN": s,
-      "en-US": `auto-compacted ${before}→${after} tokens`,
-      "zh-TW": `自動壓縮 ${before}→${after} tokens`,
-      "zh-HK": `自動壓縮 ${before}→${after} tokens`,
-      "ja-JP": `自動圧縮 ${before}→${after} tokens`,
-      "ko-KR": `자동 압축 ${before}→${after} tokens`,
+      "en-US": `auto-compacted ${before} to ${after} tokens`,
+      "zh-TW": `自動壓縮 ${before} 至 ${after} tokens`,
+      "zh-HK": `自動壓縮 ${before} 至 ${after} tokens`,
+      "ja-JP": `自動圧縮 ${before}〜${after} tokens`,
+      "ko-KR": `자동 압축 ${before}~${after} tokens`,
     }[loc];
   }
   const ttftMatch = s.match(/^首字 (.+)$/);
@@ -1629,7 +1757,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模型下载|模型加载|外部 API 对话|外部 API Responses|外部 API 上下文压缩|ComfyUI 启动|ComfyUI 工作流|ComfyUI 任务|远端任务)：(进行中|已完成|失败|已取消)(.*)$/s,
+    re: /^(模型下载|模型加载|外部 API 对话|外部 API Responses|外部 API 上下文压缩|ComfyUI 启动|ComfyUI 工作流|ComfyUI 任务|音色试听|远端任务)：(进行中|已完成|失败|已取消)(.*)$/s,
     format: (m, loc) => {
       const kind = TASK_KIND_LABELS[m[1]!]?.[loc] ?? m[1]!;
       const rawStatus = m[2]!;
@@ -5240,7 +5368,7 @@ const PATTERN_RULES: PatternRule[] = [
       const [, name, count, gib, threads] = m;
       switch (loc) {
         case "en-US":
-          return `Preparing to download ${name}: ${count} file(s), ${gib} GiB total, ${threads} threads -> remote GPU disk`;
+          return `Preparing to download ${name}: ${count} file(s), ${gib} GiB total, ${threads} threads (target: remote GPU disk)`;
         case "zh-TW":
           return `準備下載 ${name}：${count} 個檔案，共 ${gib} GiB，${threads} 執行緒，目標為遠端 GPU 磁碟`;
         case "zh-HK":
@@ -9293,6 +9421,639 @@ const PATTERN_RULES: PatternRule[] = [
           return `組み込み女性音声リファレンスサンプルを生成してキャッシュしています: ${voice}`;
         case "ko-KR":
           return `기본 제공 여성 음색 참조 샘플을 생성하고 캐시하는 중: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已缓存的内置音色参考样本：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing cached built-in voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `重複使用已快取的內建音色參考樣本：${voice}`;
+        case "zh-HK":
+          return `複用已快取的內置聲線參考樣本：${voice}`;
+        case "ja-JP":
+          return `キャッシュ済みの組み込みボイスリファレンスサンプルを再利用しています: ${voice}`;
+        case "ko-KR":
+          return `캐시된 기본 제공 음색 참조 샘플을 재사용하는 중: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在生成并缓存内置音色参考样本：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Generating and caching built-in voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `正在產生並快取內建音色參考樣本：${voice}`;
+        case "zh-HK":
+          return `正在生成並快取內置聲線參考樣本：${voice}`;
+        case "ja-JP":
+          return `組み込みボイスリファレンスサンプルを生成してキャッシュしています: ${voice}`;
+        case "ko-KR":
+          return `기본 제공 음색 참조 샘플을 생성하고 캐시하는 중: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^缺少 VoxCPM2 引擎配置，无法生成内置音色参考样本：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Missing VoxCPM2 engine configuration; cannot generate built-in voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `缺少 VoxCPM2 引擎設定，無法產生內建音色參考樣本：${voice}`;
+        case "zh-HK":
+          return `缺少 VoxCPM2 引擎配置，無法生成內置聲線參考樣本：${voice}`;
+        case "ja-JP":
+          return `VoxCPM2 エンジン設定が不足しているため、組み込みボイスの参照サンプルを生成できません: ${voice}`;
+        case "ko-KR":
+          return `VoxCPM2 엔진 설정이 없어 기본 제공 음색 참조 샘플을 생성할 수 없습니다: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^内置音色参考样本生成失败：(.+)$/,
+    format: (m, loc) => {
+      const voice = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate built-in voice reference sample: ${voice}`;
+        case "zh-TW":
+          return `內建音色參考樣本產生失敗：${voice}`;
+        case "zh-HK":
+          return `內置聲線參考樣本生成失敗：${voice}`;
+        case "ja-JP":
+          return `組み込みボイスの参照サンプル生成に失敗しました: ${voice}`;
+        case "ko-KR":
+          return `기본 제공 음색 참조 샘플 생성에 실패했습니다: ${voice}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已缓存的(?:试听音频|音色试听(?:样本)?)：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing cached voice preview: ${detail}`;
+        case "zh-TW":
+          return `重複使用已快取的音色試聽：${detail}`;
+        case "zh-HK":
+          return `複用已快取的聲線試聽：${detail}`;
+        case "ja-JP":
+          return `キャッシュ済みのボイス試聴を再利用しています: ${detail}`;
+        case "ko-KR":
+          return `캐시된 음색 미리듣기를 재사용하는 중: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在合成音色试听：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Synthesizing voice preview: ${detail}`;
+        case "zh-TW":
+          return `正在合成音色試聽：${detail}`;
+        case "zh-HK":
+          return `正在合成聲線試聽：${detail}`;
+        case "ja-JP":
+          return `ボイス試聴を合成中: ${detail}`;
+        case "ko-KR":
+          return `음색 미리듣기 합성 중: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音色试听合成完成：(.+?)（总时长 ([\d.]+) 秒，(\d+) Hz）$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const dur = m[2]!;
+      const sr = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Voice preview synthesis completed: ${name} (duration ${dur}s, ${sr} Hz)`;
+        case "zh-TW":
+          return `音色試聽合成完成：${name}（總時長 ${dur} 秒，${sr} Hz）`;
+        case "zh-HK":
+          return `聲線試聽合成完成：${name}（總時長 ${dur} 秒，${sr} Hz）`;
+        case "ja-JP":
+          return `ボイス試聴の合成が完了しました: ${name}（合計 ${dur} 秒、${sr} Hz）`;
+        case "ko-KR":
+          return `음색 미리듣기 합성 완료: ${name} (총 길이 ${dur}초, ${sr} Hz)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音色试听失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Voice preview failed: ${detail}`;
+        case "zh-TW":
+          return `音色試聽失敗：${detail}`;
+        case "zh-HK":
+          return `聲線試聽失敗：${detail}`;
+        case "ja-JP":
+          return `ボイス試聴に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `음색 미리듣기 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^试听音频不存在：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Preview audio not found: ${id}`;
+        case "zh-TW":
+          return `試聽音訊不存在：${id}`;
+        case "zh-HK":
+          return `試聽音訊不存在：${id}`;
+        case "ja-JP":
+          return `試聴音声が見つかりません: ${id}`;
+        case "ko-KR":
+          return `미리듣기 오디오를 찾을 수 없습니다: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未知的内置音色：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unknown built-in voice preset: ${id}`;
+        case "zh-TW":
+          return `未知的內建音色：${id}`;
+        case "zh-HK":
+          return `未知的內置聲線：${id}`;
+        case "ja-JP":
+          return `不明な組み込みボイスプリセット: ${id}`;
+        case "ko-KR":
+          return `알 수 없는 기본 제공 음색 프리셋: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前 TTS 引擎不支持官方固定音色：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Current TTS engine does not support official fixed speaker: ${id}`;
+        case "zh-TW":
+          return `目前 TTS 引擎不支援官方固定音色：${id}`;
+        case "zh-HK":
+          return `目前 TTS 引擎不支援官方固定聲線：${id}`;
+        case "ja-JP":
+          return `現在の TTS エンジンは公式固定話者に対応していません: ${id}`;
+        case "ko-KR":
+          return `현재 TTS 엔진은 공식 기본 화자를 지원하지 않습니다: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^请求合成 TTS 音色试听：(.+)$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Requesting TTS voice preview synthesis: ${engine}`;
+        case "zh-TW":
+          return `要求合成 TTS 音色試聽：${engine}`;
+        case "zh-HK":
+          return `請求合成 TTS 聲線試聽：${engine}`;
+        case "ja-JP":
+          return `TTS ボイス試聴の合成をリクエスト中: ${engine}`;
+        case "ko-KR":
+          return `TTS 음색 미리듣기 합성 요청 중: ${engine}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端已受理 TTS 音色试听任务，但刷新状态失败（将自动重试）：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote accepted the TTS voice preview task, but status refresh failed (will retry automatically): ${detail}`;
+        case "zh-TW":
+          return `遠端已受理 TTS 音色試聽任務，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "zh-HK":
+          return `遠端已受理 TTS 聲線試聽任務，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "ja-JP":
+          return `リモートで TTS ボイス試聴タスクを受け付けましたが、状態の更新に失敗しました（自動再試行します）: ${detail}`;
+        case "ko-KR":
+          return `원격에서 TTS 음색 미리듣기 작업을 수락했지만 상태 새로고침에 실패했습니다(자동 재시도 예정): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法的内置音色预设编号：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid built-in voice preset ID: ${id}`;
+        case "zh-TW":
+          return `無效的內建音色預設編號：${id}`;
+        case "zh-HK":
+          return `無效的內置聲線預設編號：${id}`;
+        case "ja-JP":
+          return `無効な組み込みボイスプリセット ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 기본 제공 음색 프리셋 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法的试听音频编号：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid preview audio ID: ${id}`;
+        case "zh-TW":
+          return `無效的試聽音訊編號：${id}`;
+        case "zh-HK":
+          return `無效的試聽音訊編號：${id}`;
+        case "ja-JP":
+          return `無効な試聴音声 ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 미리듣기 오디오 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前 TTS 引擎不支持该内置音色：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Current TTS engine does not support this built-in voice preset: ${id}`;
+        case "zh-TW":
+          return `目前 TTS 引擎不支援此內建音色：${id}`;
+        case "zh-HK":
+          return `目前 TTS 引擎不支援該內置聲線：${id}`;
+        case "ja-JP":
+          return `現在の TTS エンジンはこの組み込みボイスに対応していません: ${id}`;
+        case "ko-KR":
+          return `현재 TTS 엔진은 이 기본 제공 음색을 지원하지 않습니다: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 在自定义音色模式下需要上传音色参考音频才能进行语音合成$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${engine} requires uploading reference voice audio in Custom Voice mode before speech synthesis`;
+        case "zh-TW":
+          return `${engine} 在自訂音色模式下需要上傳音色參考音訊才能進行語音合成`;
+        case "zh-HK":
+          return `${engine} 在自訂聲線模式下需要上傳參考聲線音訊才能進行語音合成`;
+        case "ja-JP":
+          return `${engine} のカスタム音声モードでは、音声合成を行う前に参照音声のアップロードが必要です`;
+        case "ko-KR":
+          return `${engine}은(는) 사용자 지정 음색 모드에서 음성을 합성하려면 참조 음성 오디오를 업로드해야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^内置音色 ID 重复：(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Duplicate built-in voice preset ID: ${id}`;
+        case "zh-TW":
+          return `內建音色 ID 重複：${id}`;
+        case "zh-HK":
+          return `內置聲線 ID 重複：${id}`;
+        case "ja-JP":
+          return `組み込みボイス ID が重複しています: ${id}`;
+        case "ko-KR":
+          return `중복된 기본 제공 음색 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(Fish Audio Drama 3|MOSS-TTS[- ]v1\.5|Breeze TTS 2|Ming-3\.0-TTS(?: Tiny)?|IndexTTS-2\.5) 推理失败：(.+)$/s,
+    format: (m, loc) => {
+      const engine = m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${engine} inference failed: ${detail}`;
+        case "zh-TW":
+          return `${engine} 推論失敗：${detail}`;
+        case "zh-HK":
+          return `${engine} 推理失敗：${detail}`;
+        case "ja-JP":
+          return `${engine} の推論に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `${engine} 추론 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(Fish Audio Drama 3|MOSS-TTS[- ]v1\.5|Breeze TTS 2|Ming-3\.0-TTS(?: Tiny)?|IndexTTS-2\.5) 未返回第 (\d+) 段音频$/,
+    format: (m, loc) => {
+      const engine = m[1]!;
+      const idx = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${engine} did not return audio segment ${idx}`;
+        case "zh-TW":
+          return `${engine} 未回傳第 ${idx} 段音訊`;
+        case "zh-HK":
+          return `${engine} 未返回第 ${idx} 段音訊`;
+        case "ja-JP":
+          return `${engine} から第 ${idx} セグメント音声が返されませんでした`;
+        case "ko-KR":
+          return `${engine}이(가) ${idx}번째 오디오 구간을 반환하지 않았습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(Fish Audio Drama 3|MOSS-TTS[- ]v1\.5|Breeze TTS 2|Ming-3\.0-TTS(?: Tiny)?|IndexTTS-2\.5) 未生成第 (\d+) 段音频：(.+)$/,
+    format: (m, loc) => {
+      const engine = m[1]!;
+      const idx = m[2]!;
+      const path = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `${engine} did not produce audio segment ${idx}: ${path}`;
+        case "zh-TW":
+          return `${engine} 未產生第 ${idx} 段音訊：${path}`;
+        case "zh-HK":
+          return `${engine} 未生成第 ${idx} 段音訊：${path}`;
+        case "ja-JP":
+          return `${engine} が第 ${idx} セグメント音声を生成しませんでした: ${path}`;
+        case "ko-KR":
+          return `${engine}이(가) ${idx}번째 오디오 구간을 생성하지 못했습니다: ${path}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^在 (.+?) 中未找到 Fish Audio Drama 3 解码器权重文件$/,
+    format: (m, loc) => {
+      const dir = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Fish Audio Drama 3 decoder checkpoint was not found in ${dir}`;
+        case "zh-TW":
+          return `在 ${dir} 中找不到 Fish Audio Drama 3 解碼器權重檔案`;
+        case "zh-HK":
+          return `在 ${dir} 中未找到 Fish Audio Drama 3 解碼器權重檔案`;
+        case "ja-JP":
+          return `${dir} に Fish Audio Drama 3 デコーダーの重みファイルが見つかりません`;
+        case "ko-KR":
+          return `${dir}에서 Fish Audio Drama 3 디코더 가중치 파일을 찾을 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法参考音频素材 ID[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid reference audio asset ID: ${id}`;
+        case "zh-TW":
+          return `無效的參考音訊素材 ID：${id}`;
+        case "zh-HK":
+          return `無效的參考音訊素材 ID：${id}`;
+        case "ja-JP":
+          return `無効な参照音声素材 ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 참조 오디오 에셋 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法情绪参考素材 ID[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid emotion reference asset ID: ${id}`;
+        case "zh-TW":
+          return `無效的情緒參考素材 ID：${id}`;
+        case "zh-HK":
+          return `無效的情緒參考素材 ID：${id}`;
+        case "ja-JP":
+          return `無効な感情参照素材 ID: ${id}`;
+        case "ko-KR":
+          return `유효하지 않은 감정 참조 에셋 ID: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在合成音色试听音频（(.+?)）$/,
+    format: (m, loc) => {
+      const engine = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Synthesizing voice preview audio (${engine})`;
+        case "zh-TW":
+          return `正在合成音色試聽音訊（${engine}）`;
+        case "zh-HK":
+          return `正在合成聲線試聽音訊（${engine}）`;
+        case "ja-JP":
+          return `ボイス試聴音声を合成中（${engine}）`;
+        case "ko-KR":
+          return `음색 미리듣기 오디오 합성 중 (${engine})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音色试听音频已就绪（时长 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const dur = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Voice preview audio ready (${dur}s)`;
+        case "zh-TW":
+          return `音色試聽音訊已就緒（時長 ${dur} 秒）`;
+        case "zh-HK":
+          return `聲線試聽音訊已就緒（時長 ${dur} 秒）`;
+        case "ja-JP":
+          return `ボイス試聴音声の準備ができました（長さ ${dur} 秒）`;
+        case "ko-KR":
+          return `음색 미리듣기 오디오 준비 완료 (${dur}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已缓存的音色试听音频（时长 ([\d.]+) 秒）$/,
+    format: (m, loc) => {
+      const dur = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Reusing cached voice preview audio (${dur}s)`;
+        case "zh-TW":
+          return `重複使用已快取的音色試聽音訊（時長 ${dur} 秒）`;
+        case "zh-HK":
+          return `複用已快取的聲線試聽音訊（時長 ${dur} 秒）`;
+        case "ja-JP":
+          return `キャッシュ済みのボイス試聴音声を再利用（長さ ${dur} 秒）`;
+        case "ko-KR":
+          return `캐시된 음색 미리듣기 오디오 재사용 (${dur}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Fish Audio Drama 3 至少需要 48 GB 显存（当前 ([\d.]+) GB），请切换至 G4 96 GB \/ A100 80 GB 运行时，或改用 MOSS-TTS v1\.5 \/ VoxCPM2$/,
+    format: (m, loc) => {
+      const vram = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Fish Audio Drama 3 requires at least 48 GB VRAM (current: ${vram} GB). Switch to a G4 96 GB / A100 80 GB runtime, or use MOSS-TTS v1.5 / VoxCPM2 instead`;
+        case "zh-TW":
+          return `Fish Audio Drama 3 至少需要 48 GB VRAM（目前 ${vram} GB），請切換至 G4 96 GB / A100 80 GB 執行階段，或改用 MOSS-TTS v1.5 / VoxCPM2`;
+        case "zh-HK":
+          return `Fish Audio Drama 3 至少需要 48 GB 顯存（目前 ${vram} GB），請切換至 G4 96 GB / A100 80 GB 運行時，或改用 MOSS-TTS v1.5 / VoxCPM2`;
+        case "ja-JP":
+          return `Fish Audio Drama 3 には少なくとも 48 GB の VRAM が必要です（現在 ${vram} GB）。G4 96 GB / A100 80 GB ランタイムに切り替えるか、MOSS-TTS v1.5 / VoxCPM2 をご利用ください`;
+        case "ko-KR":
+          return `Fish Audio Drama 3에는 최소 48 GB의 VRAM이 필요합니다 (현재 ${vram} GB). G4 96 GB / A100 80 GB 런타임으로 전환하거나 MOSS-TTS v1.5 / VoxCPM2를 사용해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端磁盘空间不足：TTS 引擎 (.+?) 至少需要 ([\d.]+) GiB（(\d+) MiB）可用空间，当前仅剩 ([\d.]+) GiB（(\d+) MiB）$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const req = m[2]!;
+      const reqMib = m[3]!;
+      const avail = m[4]!;
+      const availMib = m[5]!;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient remote disk space: TTS engine ${name} requires at least ${req} GiB (${reqMib} MiB) free, but only ${avail} GiB (${availMib} MiB) is available`;
+        case "zh-TW":
+          return `遠端磁碟空間不足：TTS 引擎 ${name} 至少需要 ${req} GiB（${reqMib} MiB）可用空間，目前僅剩 ${avail} GiB（${availMib} MiB）`;
+        case "zh-HK":
+          return `遠端磁碟空間不足：TTS 引擎 ${name} 至少需要 ${req} GiB（${reqMib} MiB）可用空間，目前僅餘 ${avail} GiB（${availMib} MiB）`;
+        case "ja-JP":
+          return `リモートディスク容量不足：TTS エンジン ${name} には少なくとも ${req} GiB（${reqMib} MiB）の空き容量が必要ですが、残り ${avail} GiB（${availMib} MiB）のみです`;
+        case "ko-KR":
+          return `원격 디스크 공간 부족: TTS 엔진 ${name}에는 최소 ${req} GiB(${reqMib} MiB)의 여유 공간이 필요하지만 현재 ${avail} GiB(${availMib} MiB)만 남아 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^无法检测远端磁盘空间，(.+?) 需要至少 (\d+) MiB 可用磁盘空间$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const reqMib = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Unable to detect remote disk space; ${name} requires at least ${reqMib} MiB free disk space`;
+        case "zh-TW":
+          return `無法偵測遠端磁碟空間，${name} 需要至少 ${reqMib} MiB 可用磁碟空間`;
+        case "zh-HK":
+          return `無法偵測遠端磁碟空間，${name} 需要至少 ${reqMib} MiB 可用磁碟空間`;
+        case "ja-JP":
+          return `リモートディスク容量を検出できません。${name} には少なくとも ${reqMib} MiB の空きディスク容量が必要です`;
+        case "ko-KR":
+          return `원격 디스크 공간을 감지할 수 없습니다. ${name}에는 최소 ${reqMib} MiB의 여유 디스크 공간이 필요합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端 TTS 引擎 (.+?) 至少需要 ([\d.]+) GiB 可用磁盘，当前仅剩 ([\d.]+) GiB$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const req = m[2]!;
+      const avail = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Remote TTS engine ${name} requires at least ${req} GiB free disk space, but only ${avail} GiB is available`;
+        case "zh-TW":
+          return `遠端 TTS 引擎 ${name} 至少需要 ${req} GiB 可用磁碟空間，目前僅剩 ${avail} GiB`;
+        case "zh-HK":
+          return `遠端 TTS 引擎 ${name} 至少需要 ${req} GiB 可用磁碟空間，目前僅餘 ${avail} GiB`;
+        case "ja-JP":
+          return `リモート TTS エンジン ${name} には少なくとも ${req} GiB の空きディスクが必要ですが、残り ${avail} GiB のみです`;
+        case "ko-KR":
+          return `원격 TTS 엔진 ${name}에는 최소 ${req} GiB의 여유 디스크 공간이 필요하지만 현재 ${avail} GiB만 남아 있습니다`;
         default:
           return m[0];
       }

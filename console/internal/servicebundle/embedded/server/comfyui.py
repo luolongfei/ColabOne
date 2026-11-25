@@ -34,6 +34,7 @@ from common.comfyui import (
     MAX_IMAGE_INPUT_BYTES,
     MAX_OUTPUT_BYTES,
     ComfyCatalog,
+    ComfyTtsPreviewRequest,
     WorkflowImportRequest,
     WorkflowOutputRecord,
     WorkflowRunRequest,
@@ -47,6 +48,7 @@ from server.comfy_proxy import ColabOneComfyCanvasGateway
 MAX_TOTAL_INPUT_BYTES = 512 * 1024 * 1024  # 512 MiB
 MAX_IMAGE_PIXELS = 16_777_216  # 16M pixels (4096 x 4096)
 IMAGE_INPUT_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp"})
+AUDIO_INPUT_EXTENSIONS = frozenset(ALLOWED_INPUT_EXTENSIONS - IMAGE_INPUT_EXTENSIONS)
 TORCH_SKIP_PACKAGES = frozenset({"torch", "torchvision", "torchaudio", "xformers"})
 COMFY_MODEL_SUBDIRS = (
     "checkpoints",
@@ -2191,3 +2193,298 @@ class ColabOneComfyManager:
         return self._execute_single_prompt(
             task, wf, prompt_payload, save_to_store=True
         )
+
+    def _resolve_preview_audio_input(
+        self, asset_id: str, label: str
+    ) -> tuple[Path | None, str]:
+        ident = str(asset_id or "").strip()
+        if not ident:
+            return None, ""
+        if not _ASSET_ID_RE.fullmatch(ident):
+            raise ValueError(f"{label}编号不合法")
+
+        path: Path | None = None
+        resolve_fn = getattr(self.store, "resolve_input_path", None)
+        if callable(resolve_fn):
+            resolved_raw = resolve_fn(ident)
+            path = Path(resolved_raw) if resolved_raw is not None else None
+        elif callable(getattr(self.store, "input_file", None)):
+            _, path = self.store.input_file(ident)
+        else:
+            store_lock = getattr(self.store, "lock", None)
+            inputs_dir = getattr(self.store, "inputs_dir", None)
+            with store_lock if store_lock is not None else nullcontext():
+                entry = (getattr(self.store, "inputs_index", None) or {}).get(ident)
+                if isinstance(entry, dict) and entry.get("path"):
+                    candidate = Path(entry["path"])
+                    if inputs_dir is None or candidate.parent == Path(inputs_dir):
+                        path = candidate
+
+        if path is None or path.is_symlink() or not path.is_file():
+            raise ValueError(f"{label}文件不存在或已失效，请重新上传")
+        ext = path.suffix.lstrip(".").lower()
+        if not ext or ext not in AUDIO_INPUT_EXTENSIONS:
+            raise ValueError(f"{label}必须为音频文件")
+
+        hasher = hashlib.sha256()
+        try:
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    hasher.update(chunk)
+        except OSError:
+            raise ValueError(f"{label}文件不存在或已失效，请重新上传") from None
+        return path, hasher.hexdigest()
+
+    def _resolve_preview_inputs(self, req: ComfyTtsPreviewRequest | dict) -> dict:
+        validated = (
+            req
+            if isinstance(req, ComfyTtsPreviewRequest)
+            else ComfyTtsPreviewRequest.model_validate(req)
+        )
+        engine_id = str(validated.engine_id or "").strip()
+        if not engine_id or engine_id not in self.tts.engines_by_id:
+            raise ValueError(
+                f"未知的远端 TTS 引擎：{engine_id or validated.engine_id!r}"
+            )
+
+        voice_preset = str(validated.voice_preset or "").strip()
+        preview_text = str(validated.preview_text or "").strip()
+        voice_prompt = str(validated.voice_prompt or "").strip()
+        emotion_prompt = str(validated.emotion_prompt or "").strip()
+        ref_audio_input_id = str(validated.ref_audio_input_id or "").strip()
+        ref_text = str(validated.ref_text or "").strip()
+        emotion_ref_input_id = str(validated.emotion_ref_input_id or "").strip()
+
+        ref_audio_path, ref_audio_sha256 = self._resolve_preview_audio_input(
+            ref_audio_input_id, "音色参考音频"
+        )
+        emotion_ref_path, emotion_ref_sha256 = self._resolve_preview_audio_input(
+            emotion_ref_input_id, "情绪参考音频"
+        )
+
+        preview_id, resolved_text = self.tts.compute_preview_id(
+            engine_id,
+            voice_preset=voice_preset,
+            preview_text=preview_text,
+            voice_prompt=voice_prompt,
+            emotion_prompt=emotion_prompt,
+            ref_audio_sha256=ref_audio_sha256,
+            ref_text=ref_text,
+            emotion_ref_sha256=emotion_ref_sha256,
+        )
+        validation = self.tts.validate_tts_synthesis_inputs(
+            engine_id=engine_id,
+            script_text=resolved_text,
+            voice_preset=voice_preset,
+            ref_audio_path=ref_audio_path,
+            ref_text=ref_text,
+            voice_prompt=voice_prompt,
+            emotion_prompt=emotion_prompt,
+            emotion_ref_path=emotion_ref_path,
+        )
+        engine_spec = validation["engine"]
+        engine_name = str(engine_spec.get("name") or engine_id)
+        sample_rate = max(48000, int(engine_spec.get("sample_rate") or 48000))
+        effective_voice_preset = str(validation["effective_voice_preset"] or "")
+        return {
+            "preview_id": preview_id,
+            "resolved_text": resolved_text,
+            "engine_id": engine_id,
+            "engine_name": engine_name,
+            "sample_rate": sample_rate,
+            "voice_preset": voice_preset,
+            "effective_voice_preset": effective_voice_preset,
+            "preview_text": preview_text,
+            "voice_prompt": voice_prompt,
+            "emotion_prompt": emotion_prompt,
+            "ref_audio_input_id": ref_audio_input_id,
+            "ref_audio_path": ref_audio_path,
+            "ref_audio_sha256": ref_audio_sha256,
+            "ref_text": ref_text,
+            "emotion_ref_input_id": emotion_ref_input_id,
+            "emotion_ref_path": emotion_ref_path,
+            "emotion_ref_sha256": emotion_ref_sha256,
+        }
+
+    def get_tts_preview(
+        self, preview_id: str, offset: int = 0, length: int = 0
+    ) -> dict:
+        if not isinstance(preview_id, str) or not _ASSET_ID_RE.fullmatch(preview_id):
+            raise ValueError("试听音频编号不合法")
+        if (
+            isinstance(offset, bool)
+            or isinstance(length, bool)
+            or not isinstance(offset, int)
+            or not isinstance(length, int)
+            or offset < 0
+            or length < 0
+            or length > 512 * 1024
+        ):
+            raise ValueError("试听音频读取范围不合法")
+        if offset > 0 or length > 0:
+            preview = self.tts.get_cached_preview_chunk(
+                preview_id, offset=offset, length=length or 512 * 1024
+            )
+        else:
+            preview = self.tts.get_cached_preview(preview_id)
+        if preview is None:
+            raise KeyError(preview_id)
+        return preview
+
+    def run_tts_preview(self, task, req: ComfyTtsPreviewRequest | dict) -> dict:
+        from server.runtime import ColabOneCancelledError, _scrub_secret_text
+
+        check_fn = getattr(task, "check", None)
+        if callable(check_fn):
+            check_fn()
+
+        raw_token_secret = (
+            req.get("hf_token", "")
+            if isinstance(req, dict) and isinstance(req.get("hf_token"), str)
+            else ""
+        )
+        hf_token = ""
+        try:
+            req_model = (
+                req
+                if isinstance(req, ComfyTtsPreviewRequest)
+                else ComfyTtsPreviewRequest.model_validate(req)
+            )
+            hf_token = str(getattr(req_model, "hf_token", "") or "").strip()
+            resolved = self._resolve_preview_inputs(req_model)
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, raw_token_secret, hf_token)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
+
+        if callable(check_fn):
+            check_fn()
+
+        task_lock = getattr(task, "lock", None)
+        note_fn = getattr(task, "note", None)
+
+        def _note(message: str, level: str = "info") -> None:
+            if not callable(note_fn):
+                return
+            if level == "info":
+                note_fn(message)
+            else:
+                try:
+                    note_fn(message, level=level)
+                except TypeError:
+                    note_fn(message)
+
+        cached = self.tts.get_cached_preview(resolved["preview_id"])
+        if cached is not None:
+            with task_lock if task_lock is not None else nullcontext():
+                task.progress = 1.0
+                task.message = "音色试听音频已就绪"
+            duration = (
+                cached.get("duration_seconds")
+                if isinstance(cached, dict)
+                and cached.get("duration_seconds") is not None
+                else (cached.get("duration") if isinstance(cached, dict) else None)
+            )
+            if (
+                isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and duration > 0
+            ):
+                _note(
+                    f"复用已缓存的音色试听音频（时长 {float(duration):.1f} 秒）"
+                )
+            else:
+                _note("复用已缓存的音色试听音频")
+            return cached
+
+        engine_spec = self.tts.get_engine(resolved["engine_id"])
+        allow_unavailable = self.tts.synth_fn is not None
+        self.tts.check_vram(engine_spec, allow_unavailable=allow_unavailable)
+        self.tts.check_disk(engine_spec, allow_unavailable=allow_unavailable)
+
+        if callable(check_fn):
+            check_fn()
+
+        if getattr(self.runtime, "loaded", None) and callable(
+            getattr(self.runtime, "_stop_engine", None)
+        ):
+            _note("正在卸载当前对话模型以释放显存")
+            self.runtime._stop_engine()
+            if callable(check_fn):
+                check_fn()
+
+        if self.is_running():
+            free_msg = "正在释放 ComfyUI 显存以启动音色试听"
+            with task_lock if task_lock is not None else nullcontext():
+                task.message = free_msg
+            _note(free_msg)
+            try:
+                self.free_memory(unload_models=True)
+            except Exception as exc:
+                scrubbed_free = _scrub_secret_text(
+                    str(exc) or type(exc).__name__, raw_token_secret, hf_token
+                )
+                _note(
+                    f"释放 ComfyUI 显存时出现非致命提示：{scrubbed_free}",
+                    level="warning",
+                )
+            if callable(check_fn):
+                check_fn()
+
+        engine_display = resolved.get("engine_name") or resolved["engine_id"]
+        synth_msg = f"正在合成音色试听音频（{engine_display}）"
+        with task_lock if task_lock is not None else nullcontext():
+            if getattr(task, "progress", 0) < 0.05:
+                task.progress = 0.05
+            task.message = synth_msg
+        _note(synth_msg)
+
+        try:
+            preview = self.tts.synthesize_preview(
+                task,
+                engine_id=resolved["engine_id"],
+                voice_preset=resolved["voice_preset"],
+                preview_text=resolved["resolved_text"] or resolved["preview_text"],
+                voice_prompt=resolved["voice_prompt"],
+                emotion_prompt=resolved["emotion_prompt"],
+                ref_audio_path=resolved["ref_audio_path"],
+                ref_text=resolved["ref_text"],
+                emotion_ref_path=resolved["emotion_ref_path"],
+                hf_token=hf_token,
+                preview_id=resolved["preview_id"],
+            )
+        except ColabOneCancelledError:
+            raise
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, raw_token_secret, hf_token)
+            if scrubbed != raw_msg:
+                if isinstance(exc, ValueError):
+                    raise ValueError(scrubbed) from None
+                raise RuntimeError(scrubbed) from None
+            raise
+
+        if callable(check_fn):
+            check_fn()
+
+        with task_lock if task_lock is not None else nullcontext():
+            task.progress = 1.0
+            task.message = "音色试听音频已就绪"
+
+        duration = (
+            preview.get("duration_seconds")
+            if isinstance(preview, dict) and preview.get("duration_seconds") is not None
+            else (preview.get("duration") if isinstance(preview, dict) else None)
+        )
+        if (
+            isinstance(duration, (int, float))
+            and not isinstance(duration, bool)
+            and duration > 0
+        ):
+            _note(f"音色试听音频已就绪（时长 {float(duration):.1f} 秒）")
+        else:
+            _note("音色试听音频已就绪")
+
+        return preview

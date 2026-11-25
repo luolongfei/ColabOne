@@ -13,5 +13,6 @@
   - Environment variables, protocol markers, and top-level brand constants use `COLABONE_*` (storage keys `colabone.*`, cookies `colabone_*`).
   - Frontend CSS classes and CSS custom properties use `co-*` and `--co-*` (preserving `ant-*` for Ant Design Vue and `is-*` state modifiers).
   - Never carry third-party reference app names (e.g. `Antigravity-Manager`, `Windows Task Manager`, or legacy `COLAB_YOGA_*` env vars) into ColabOne code, comments, or tests; keep upstream attribution strictly in `LICENSE`, `NOTICE`, `third_party/`, and legal headers.
+  - Never use right-pointing arrow glyphs (e.g. U+2192 or similar Unicode right-arrow symbols, or HTML right-arrow entities) or the Phosphor right-arrow icon anywhere in UI copy, templates, logs, docs, or tests (enforced by `tests/test_go_python_contracts.py`).
 - Changes land through a pull request with green macOS and Windows CI.
 - Agent and local MCP execution are out of scope for v0.1.
