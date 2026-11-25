@@ -133,8 +133,15 @@ def _load_real_comfy_catalog() -> ComfyCatalog:
 
 
 def _create_python_wrapper(wrapper_path: Path, target_script: Path) -> Path:
-    """Create a portable executable POSIX wrapper invoking target_script with sys.executable."""
+    """Create a cross-platform executable wrapper invoking target_script with sys.executable."""
     wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        cmd_path = wrapper_path.with_suffix(".cmd")
+        cmd_path.write_text(
+            f'@echo off\r\n"{sys.executable}" "{target_script}" %*\r\n',
+            encoding="utf-8",
+        )
+        return cmd_path
     wrapper_path.write_text(
         f'#!/bin/sh\nexec "{sys.executable}" "{target_script}" "$@"\n',
         encoding="utf-8",
@@ -630,7 +637,7 @@ def test_vsr_seedvr2_batch_alignment_chunk_plan_cli_and_cover_crop(tmp_path):
         exact_frames=100,
     )
     assert cmd_96g[:3] == [
-        "/opt/seedvr2_venv/bin/python",
+        str(Path("/opt/seedvr2_venv/bin/python")),
         str((repo / "inference_cli.py").resolve()),
         str(in_mkv.resolve()),
     ]
@@ -2701,17 +2708,31 @@ def test_real_cross_module_wiring_runner_manager_workers_flashvsr_and_vram_order
     )
 
     # _build_worker_env securely strips ambient PYTHONPATH; inject stubs["fake_site"]
-    # via a tiny executable Python wrapper acting as the isolated venv interpreter.
-    fake_site_python = tmp_path / "bin" / "fake_venv_python"
-    fake_site_python.parent.mkdir(parents=True, exist_ok=True)
-    fake_site_python.write_text(
-        f'#!/bin/sh\nexport PYTHONPATH="{stubs["fake_site"]}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
-        f'exec "{sys.executable}" "$@"\n',
-        encoding="utf-8",
-    )
-    fake_site_python.chmod(
-        fake_site_python.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    )
+    # via a cross-platform executable Python wrapper acting as the isolated venv interpreter.
+    if sys.platform == "win32":
+        fake_site_python = tmp_path / "bin" / "fake_venv_python.cmd"
+        fake_site_python.parent.mkdir(parents=True, exist_ok=True)
+        fake_site_python.write_text(
+            f'@echo off\r\n'
+            f'if defined PYTHONPATH (\r\n'
+            f'  set "PYTHONPATH={stubs["fake_site"]};%PYTHONPATH%"\r\n'
+            f') else (\r\n'
+            f'  set "PYTHONPATH={stubs["fake_site"]}"\r\n'
+            f')\r\n'
+            f'"{sys.executable}" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        fake_site_python = tmp_path / "bin" / "fake_venv_python"
+        fake_site_python.parent.mkdir(parents=True, exist_ok=True)
+        fake_site_python.write_text(
+            f'#!/bin/sh\nexport PYTHONPATH="{stubs["fake_site"]}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+            f'exec "{sys.executable}" "$@"\n',
+            encoding="utf-8",
+        )
+        fake_site_python.chmod(
+            fake_site_python.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        )
 
     # Create concrete weights directories for LongCat 1.6 (with LoRAs + Kim_Vocal_2) and FlashVSR+.
     mgr = ColabOneAvatarEngineManager(
@@ -4884,7 +4905,11 @@ def test_r2_vsr_sigterm_reaps_live_child_and_tearing_down_suppresses_reentrant_s
     assert guard.terminated_signal == int(signal.SIGINT)
     assert not tdir.exists()
 
-    # Part B: Real subprocess SIGTERM reaps live SeedVR2 child before worker exits.
+    # Part B: Real POSIX subprocess SIGTERM reaps live SeedVR2 child before worker exits.
+    # (Windows TerminateProcess terminates immediately without running Python SIGTERM handlers.)
+    if os.name != "posix":
+        return
+
     work_dir = tmp_path / "vsr_sigterm_work"
     work_dir.mkdir(parents=True, exist_ok=True)
     repo_dir = tmp_path / "seedvr2_hang_repo"
@@ -5343,6 +5368,10 @@ def test_r2_vsr_flashvsr_linear_crossfade_exact_frames_and_crop_before_float32(
     assert sum(written_batches) == 160
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX process-group cleanup (os.killpg) applies to Linux Colab runtime",
+)
 def test_r2_avatar_manager_unconditional_pgrp_cleanup_and_2s_pipe_drain_deadline(tmp_path):
     """_run_streaming_worker enforces 2s pipe-drain deadline when an orphan child holds stdout
     and unconditionally runs _terminate_process_group in finally to reap any orphan children."""

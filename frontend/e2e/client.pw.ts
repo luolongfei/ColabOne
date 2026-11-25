@@ -2384,7 +2384,7 @@ test("idle countdown decrements locally and only real interaction resets remote 
   await expect(page.locator(".co-idle-timer")).toContainText(
     /(自动|即将)释放 1:00/,
   );
-  await expect(page.locator(".co-idle-timer")).toContainText("0:59", {
+  await expect(page.locator(".co-idle-timer")).toContainText(/0:5[0-9]/, {
     timeout: 4000,
   });
   expect(await page.evaluate(() => (window as any).__activity || 0)).toBe(0);

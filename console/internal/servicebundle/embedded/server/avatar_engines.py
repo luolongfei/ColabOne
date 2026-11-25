@@ -3465,6 +3465,8 @@ class ColabOneAvatarEngineManager:
     def _build_worker_env(self, runtime_paths: dict[str, Path]) -> dict[str, str]:
         extra_env: dict[str, str] = {
             "PYTHONUNBUFFERED": "1",
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
         }
         if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
             extra_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

@@ -470,6 +470,17 @@ def atomic_write_json(path: str | Path, payload: dict[str, Any]) -> None:
                 pass
 
 
+def _ensure_utf8_stdio() -> None:
+    """Reconfigure stdout/stderr to UTF-8 so Chinese progress JSON never fails on cp1252."""
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def emit_colabone_progress(
     stage: str,
     progress: float,
@@ -477,6 +488,7 @@ def emit_colabone_progress(
     **extra: Any,
 ) -> None:
     """Emit a single-line ``COLABONE_PROGRESS:<json>`` record to stdout."""
+    _ensure_utf8_stdio()
     clamped = round(max(0.0, min(1.0, float(progress))), 4)
     payload: dict[str, Any] = {
         "stage": str(stage),
@@ -486,8 +498,13 @@ def emit_colabone_progress(
     if extra:
         payload.update(extra)
     line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    sys.stdout.write(f"{COLABONE_PROGRESS_PREFIX}{line}\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(f"{COLABONE_PROGRESS_PREFIX}{line}\n")
+        sys.stdout.flush()
+    except UnicodeEncodeError:
+        ascii_line = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        sys.stdout.write(f"{COLABONE_PROGRESS_PREFIX}{ascii_line}\n")
+        sys.stdout.flush()
 
 
 def resolve_vsr_model_files(engine: str, weights_dir: str | Path) -> dict[str, Path]:
@@ -2793,6 +2810,7 @@ def run_diffusion_vsr(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="ColabOne standalone diffusion VSR worker (SeedVR2 7B / FlashVSR+)"
     )

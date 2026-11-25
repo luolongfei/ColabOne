@@ -486,6 +486,17 @@ def build_lossless_ffv1_writer_cmd(
     ]
 
 
+def _ensure_utf8_stdio() -> None:
+    """Reconfigure stdout/stderr to UTF-8 so Chinese progress JSON never fails on cp1252."""
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def emit_colabone_progress(
     stage: str,
     progress: float,
@@ -493,6 +504,7 @@ def emit_colabone_progress(
     **extra: Any,
 ) -> None:
     """Emit a flushed COLABONE_PROGRESS JSON event line to stdout."""
+    _ensure_utf8_stdio()
     clamped = round(_clamp_float(float(progress), 0.0, 1.0), 4)
     payload: dict[str, Any] = dict(extra)
     payload["stage"] = str(stage)
@@ -503,7 +515,15 @@ def emit_colabone_progress(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        ascii_line = COLABONE_PROGRESS_PREFIX + json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        print(ascii_line, flush=True)
 
 
 def normalize_longcat16_speakers(
@@ -2394,6 +2414,7 @@ def _try_write_error_manifest(
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="ColabOne Meituan LongCat-Video-Avatar 1.6 remote GPU worker"
     )

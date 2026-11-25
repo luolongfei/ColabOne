@@ -304,7 +304,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.locator(".co-billing-card .co-bc-sk-val")).toHaveCount(4);
 
     // Settings email shows inline skeleton while hydrating
-    await page.getByRole("menuitem", { name: "设置" }).click();
+    await page.locator(".co-nav-pill-track").getByRole("button", { name: "设置" }).click();
     await expect(page.locator(".co-settings-email-sk")).toBeVisible();
 
     // 3. Background account fetch resolves with real email & billing metrics
@@ -337,7 +337,7 @@ for (const theme of ["light", "dark"] as const) {
       "alice@colabone.dev",
     );
 
-    await page.getByRole("menuitem", { name: "远端设备" }).click();
+    await page.locator(".co-nav-pill-track").getByRole("button", { name: "远端设备" }).click();
     await expect(page.locator(".co-billing-card .co-bc-sk-val")).toHaveCount(0);
     await expect(page.locator(".co-billing-card")).toContainText("1842.50");
     await expect(page.locator(".co-billing-card")).toContainText("1.96");
@@ -361,7 +361,7 @@ for (const theme of ["light", "dark"] as const) {
     });
     await expect(page.locator(".co-billing-strip.is-loading")).toHaveCount(0);
     await expect(page.locator(".co-billing-card .co-bc-sk-val")).toHaveCount(0);
-    await page.getByRole("menuitem", { name: "设置" }).click();
+    await page.locator(".co-nav-pill-track").getByRole("button", { name: "设置" }).click();
     await expect(page.locator(".co-settings-email-sk")).toHaveCount(0);
 
     expect(errors).toEqual([]);
@@ -505,7 +505,7 @@ test("async feature surfaces show targeted skeletons during Hub search, Version 
   await page.getByRole("dialog").getByRole("button", { name: /取\s*消/ }).click();
 
   // 2. API page: Base URL connecting shimmer, pending TTFT shimmer, API Key reveal shimmer
-  await page.getByRole("menuitem", { name: "对外 API" }).click();
+  await page.locator(".co-nav-pill-track").getByRole("button", { name: "对外 API" }).click();
   await expect(page.locator(".co-api-code-sk")).toHaveCount(1);
   await expect(page.locator(".co-api-tps-pending")).toBeVisible();
 
@@ -551,7 +551,7 @@ test("async feature surfaces show targeted skeletons during Hub search, Version 
 
   // 4. ComfyUI page: live generating artwork skeleton + preview loading skeleton (in Outputs drawer) + Canvas connecting skeleton
   await page.evaluate(() => (window as any).__armGate("comfyui.output.asset"));
-  await page.getByRole("menuitem", { name: "ComfyUI" }).click();
+  await page.locator(".co-nav-pill-track").getByRole("button", { name: "ComfyUI" }).click();
   await page.locator(".co-comfy-outputs-trigger").click();
   const outputsDrawer = page.locator(
     ".co-comfy-outputs-drawer-root .ant-drawer-content",
@@ -675,7 +675,7 @@ test("starting instance detail skeleton, multi-instance cards, and monitor row s
     snapshot: startingSnap,
   });
 
-  await expect(page.locator(".co-instance-row.active .co-instance-detail-sk")).toBeVisible();
+  await expect(page.locator(".co-instance-row.is-active .co-instance-detail-sk")).toBeVisible();
 
   const offsets = await page.evaluate(() => {
     const midY = (el: Element | null) => {
@@ -684,7 +684,7 @@ test("starting instance detail skeleton, multi-instance cards, and monitor row s
       return r.top + r.height / 2;
     };
 
-    const detail = document.querySelector(".co-instance-row.active .co-instance-detail");
+    const detail = document.querySelector(".co-instance-row.is-active .co-instance-detail");
     const detailFirst = detail?.firstElementChild ?? null;
     const detailSk = detail?.querySelector(".co-instance-detail-sk .co-skeleton") ?? null;
     const detailLast = detail?.lastElementChild ?? null;
