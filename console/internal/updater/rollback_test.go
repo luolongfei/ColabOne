@@ -746,6 +746,19 @@ func TestExtractArchiveRejectsSymlinkChainEscapeAndSymlinkOverwrite(t *testing.T
 	if err := extractColabOneSignedArchive(bytes.NewReader(validFramework), validDir); err != nil {
 		t.Fatalf("expected valid internal framework symlinks to succeed, got: %v", err)
 	}
+
+	// 5. Cross-platform Readlink normalization allows Windows relative backslashes while rejecting drive/UNC/absolute targets.
+	if got, err := normalizeReadlinkTarget(`Versions\Current\Foo`, true); err != nil || got != "Versions/Current/Foo" {
+		t.Fatalf("normalizeReadlinkTarget windows relative = (%q, %v), want (Versions/Current/Foo, nil)", got, err)
+	}
+	for _, bad := range []string{`\\server\share\x`, `\Windows\System32`, `C:\Windows\System32`, `C:foo`, `/etc/passwd`, ""} {
+		if _, err := normalizeReadlinkTarget(bad, true); err == nil {
+			t.Fatalf("expected windows normalizeReadlinkTarget(%q) to fail", bad)
+		}
+	}
+	if _, err := normalizeReadlinkTarget(`Versions\Current\Foo`, false); err == nil {
+		t.Fatal("expected non-windows normalizeReadlinkTarget to reject backslash target")
+	}
 }
 
 func TestValidateUpdateURLAndCheckRedirectHardening(t *testing.T) {

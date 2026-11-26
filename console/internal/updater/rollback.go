@@ -912,7 +912,7 @@ func extractColabOneSignedArchive(r io.Reader, dir string) error {
 			} else if !errors.Is(statErr, fs.ErrNotExist) {
 				return statErr
 			}
-			if err := root.Symlink(hdr.Linkname, name); err != nil {
+			if err := root.Symlink(filepath.FromSlash(hdr.Linkname), name); err != nil {
 				return err
 			}
 			symlinks = append(symlinks, name)
@@ -960,13 +960,34 @@ func ensureRootParentDirs(root *os.Root, relPath string) error {
 	return nil
 }
 
+func normalizeReadlinkTarget(raw string, isWindows bool) (string, error) {
+	if raw == "" || filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
+		return "", errors.New("invalid symlink target")
+	}
+	if !isWindows && strings.Contains(raw, "\\") {
+		return "", errors.New("invalid symlink target")
+	}
+	slashed := raw
+	if isWindows {
+		slashed = strings.ReplaceAll(raw, "\\", "/")
+	}
+	if path.IsAbs(slashed) || strings.HasPrefix(slashed, "//") {
+		return "", errors.New("invalid symlink target")
+	}
+	if len(slashed) >= 2 && slashed[1] == ':' && ((slashed[0] >= 'a' && slashed[0] <= 'z') || (slashed[0] >= 'A' && slashed[0] <= 'Z')) {
+		return "", errors.New("invalid symlink target")
+	}
+	return slashed, nil
+}
+
 func verifyRootSymlinkChain(root *os.Root, symPath string) error {
-	linkTarget, err := root.Readlink(symPath)
+	rawTarget, err := root.Readlink(symPath)
 	if err != nil {
 		return err
 	}
-	if linkTarget == "" || strings.Contains(linkTarget, "\\") || path.IsAbs(linkTarget) {
-		return errors.New("invalid symlink target")
+	linkTarget, err := normalizeReadlinkTarget(rawTarget, runtime.GOOS == "windows")
+	if err != nil {
+		return err
 	}
 
 	var stack []string
@@ -1001,11 +1022,12 @@ func verifyRootSymlinkChain(root *os.Root, symPath string) error {
 				if hops > colabOneMaxSymlinkHops {
 					return errors.New("symlink chain exceeds maximum depth")
 				}
-				nextTarget, readErr := root.Readlink(candidate)
+				rawNext, readErr := root.Readlink(candidate)
 				if readErr != nil {
 					return readErr
 				}
-				if nextTarget == "" || strings.Contains(nextTarget, "\\") || path.IsAbs(nextTarget) {
+				nextTarget, normErr := normalizeReadlinkTarget(rawNext, runtime.GOOS == "windows")
+				if normErr != nil {
 					return errors.New("invalid nested symlink target")
 				}
 				// Resolve nextTarget relative to the directory containing candidate.
