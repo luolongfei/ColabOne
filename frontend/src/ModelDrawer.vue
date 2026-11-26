@@ -1675,6 +1675,8 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* Slim Active Model Strip */
@@ -1689,6 +1691,9 @@ onUnmounted(() => {
   border: 1px solid var(--co-success-border);
   background: var(--co-success-bg);
   color: var(--co-text);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-active-bar-info {
@@ -1704,6 +1709,7 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--co-text);
+  overflow-wrap: anywhere;
 }
 
 .co-active-bar-spec {
@@ -1861,6 +1867,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-model-row {
@@ -1872,6 +1880,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease,
@@ -1946,6 +1957,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-model-name {
@@ -2123,7 +2136,12 @@ onUnmounted(() => {
 
   .co-model-actions {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .co-only-runnable-check {
+    white-space: normal;
   }
 }
 </style>

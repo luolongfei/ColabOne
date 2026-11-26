@@ -841,6 +841,8 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
   justify-content: center;
   gap: 5px;
   min-height: 22px;
+  max-width: 100%;
+  box-sizing: border-box;
   margin-inline-end: 0;
   padding: 0 10px;
   border-radius: var(--co-radius-pill);
@@ -848,6 +850,53 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
   font-weight: 500;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
+}
+
+/* Guard drawers & modals against long badges/tags overflowing container bounds */
+.ant-drawer .ant-drawer-content,
+.ant-drawer .ant-drawer-wrapper-body {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.ant-drawer .ant-drawer-body {
+  min-width: 0;
+  overflow-x: hidden !important;
+}
+
+.ant-drawer .ant-space,
+.ant-modal .ant-space {
+  max-width: 100%;
+}
+
+.ant-drawer .ant-space-item,
+.ant-modal .ant-space-item {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ant-drawer .ant-tag:where(:not(.co-comfy-filename-pill)),
+.ant-modal .ant-tag,
+.co-log-drawer .ant-tag {
+  max-width: 100%;
+  height: auto;
+  min-height: 22px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  border-radius: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: left;
+}
+
+.ant-drawer .ant-tag:where(:not(.co-comfy-filename-pill)) > span:not(.ant-badge),
+.ant-modal .ant-tag > span:not(.ant-badge),
+.co-log-drawer .ant-tag > span:not(.ant-badge) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .ant-tag > .ant-badge {

@@ -145,6 +145,21 @@ const isStaleData = computed(
   () => overview.value.loggedIn && overview.value.stale,
 );
 
+const isCompactMobile = ref(false);
+let compactMobileMql: MediaQueryList | null = null;
+const onCompactMobileChange = (event: MediaQueryListEvent) => {
+  isCompactMobile.value = event.matches;
+};
+if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+  compactMobileMql = window.matchMedia("(max-width: 680px)");
+  isCompactMobile.value = compactMobileMql.matches;
+  if (typeof compactMobileMql.addEventListener === "function") {
+    compactMobileMql.addEventListener("change", onCompactMobileChange);
+  } else if (typeof compactMobileMql.addListener === "function") {
+    compactMobileMql.addListener(onCompactMobileChange);
+  }
+}
+
 const enduranceLabel = computed(() => {
   const { active, endurance } = overview.value;
   if (!active) {
@@ -153,10 +168,32 @@ const enduranceLabel = computed(() => {
   if (endurance.hours === 0) {
     return t("billing.enduranceExhaustedBar");
   }
+  if (isCompactMobile.value) {
+    return endurance.shortText;
+  }
   if (endurance.hours !== null && endurance.hours > 0) {
     return t("billing.enduranceAvailableApprox", { text: endurance.text });
   }
   return endurance.text;
+});
+
+const idleButtonLabel = computed(() => {
+  if (isCompactMobile.value) {
+    if (isIdleActive.value) {
+      return t("billing.barIdlePausedShort");
+    }
+    if (isImminentRelease.value) {
+      return t("billing.barIdleImminentShort", { clock: countdownClock.value });
+    }
+    return t("billing.barIdleCountdownShort", { clock: countdownClock.value });
+  }
+  if (isIdleActive.value) {
+    return t("billing.barIdlePaused");
+  }
+  if (isImminentRelease.value) {
+    return t("billing.barIdleImminent", { clock: countdownClock.value });
+  }
+  return t("billing.barIdleCountdown", { clock: countdownClock.value });
 });
 
 const billingAriaLabel = computed(() => {
@@ -218,6 +255,14 @@ watch(
 
 onUnmounted(() => {
   stopTicker();
+  if (compactMobileMql) {
+    if (typeof compactMobileMql.removeEventListener === "function") {
+      compactMobileMql.removeEventListener("change", onCompactMobileChange);
+    } else if (typeof compactMobileMql.removeListener === "function") {
+      compactMobileMql.removeListener(onCompactMobileChange);
+    }
+    compactMobileMql = null;
+  }
 });
 </script>
 
@@ -246,13 +291,7 @@ onUnmounted(() => {
             :class="['co-idle-icon', { 'co-clock-pulse': isImminentRelease }]"
             aria-hidden="true"
           />
-          <span v-if="isIdleActive">{{ t("billing.barIdlePaused") }}</span>
-          <span v-else-if="isImminentRelease">{{
-            t("billing.barIdleImminent", { clock: countdownClock })
-          }}</span>
-          <span v-else>{{
-            t("billing.barIdleCountdown", { clock: countdownClock })
-          }}</span>
+          <span>{{ idleButtonLabel }}</span>
         </span>
       </AButton>
     </ColabOneTooltip>
@@ -937,58 +976,90 @@ onUnmounted(() => {
 
 @media (max-width: 680px) {
   .co-billing-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 5px;
-    width: 100%;
-    flex-shrink: 1;
+    display: contents;
   }
 
   .co-billing-bar .co-idle-timer {
-    height: 26px;
-    padding: 0 8px;
-    font-size: 11.5px;
+    grid-column: 2 / 3;
+    grid-row: 1;
+    justify-self: end;
+    height: 22px;
+    min-height: 22px;
+    padding: 0 7px;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .co-idle-timer-inner {
+    gap: 4px;
   }
 
   .co-billing-bar .co-billing-strip {
-    height: auto;
-    min-height: 26px;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
     max-width: 100%;
-    padding: 3px 8px;
-    border-radius: 10px;
-    white-space: normal;
-    flex: 1 1 auto;
-    flex-shrink: 1;
+    box-sizing: border-box;
+    height: 26px;
+    min-height: 26px;
+    padding: 0 6px 0 4px;
+    border-radius: 9999px;
+    white-space: nowrap;
+    overflow: hidden;
   }
 
   .co-billing-strip-inner {
-    flex-wrap: wrap;
-    row-gap: 4px;
-    column-gap: 6px;
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 6px;
     width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .co-billing-strip-inner::-webkit-scrollbar {
+    display: none;
   }
 
   .co-billing-bar .co-billing-pill,
   .co-endurance-tag {
-    height: 20px;
-    padding: 0 7px;
-    font-size: 11.5px;
+    height: 19px;
+    min-height: 19px;
+    padding: 0 6px;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .co-billing-pill.active .co-billing-dot-badge {
+    display: none;
+  }
+
+  .co-endurance-tag,
+  .co-endurance-sk,
+  .co-billing-strip-sk > :nth-last-child(2) {
+    margin-left: auto;
   }
 
   .co-billing-rate,
   .co-billing-balance {
-    font-size: 11.5px;
+    font-size: 11px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .co-billing-rate-ticker,
   .co-billing-rate-slide {
-    height: 20px;
-    line-height: 20px;
+    height: 19px;
+    line-height: 19px;
   }
 
   .co-strip-divider {
-    display: none;
+    height: 10px;
+    margin: 0 -1px;
   }
 }
 

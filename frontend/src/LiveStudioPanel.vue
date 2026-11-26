@@ -4281,4 +4281,10 @@ onUnmounted(() => {
   object-fit: cover;
   border: 1px solid var(--co-border);
 }
+
+@media (max-width: 680px) {
+  .co-live-stage {
+    min-height: 280px;
+  }
+}
 </style>

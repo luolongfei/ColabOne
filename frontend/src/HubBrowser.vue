@@ -1351,6 +1351,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-hub-search-bar {
@@ -1413,6 +1416,8 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 3px 10px;
   border-radius: 9999px;
   border: 1px solid var(--co-border-secondary);
@@ -1420,6 +1425,9 @@ onUnmounted(() => {
   color: var(--co-secondary-text);
   font-size: 12px;
   line-height: 1.45;
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
   cursor: pointer;
   transition:
     border-color 0.14s ease,
@@ -1464,9 +1472,10 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  flex: 1;
-  min-width: 200px;
+  flex: 1 1 180px;
+  min-width: 0;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .co-comfy-banner-icon {
@@ -1516,6 +1525,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-hub-repo {
@@ -1524,6 +1535,9 @@ onUnmounted(() => {
   border: 1px solid var(--co-border-secondary);
   background: var(--co-surface);
   color: var(--co-text);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease,
@@ -1676,6 +1690,7 @@ onUnmounted(() => {
 
   .co-hub-repo-actions {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-end;
   }
 }

@@ -1287,6 +1287,9 @@ function onMediaDrop(event: DragEvent) {
   border-radius: 11px;
   background: var(--co-subpill-track);
   border: 1px solid var(--co-border-secondary);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-comfy-segmented-option {
@@ -1302,6 +1305,8 @@ function onMediaDrop(event: DragEvent) {
   line-height: 1.3;
   cursor: pointer;
   text-align: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
   transition:
     background-color 0.16s ease,
     color 0.16s ease,
@@ -1341,6 +1346,8 @@ function onMediaDrop(event: DragEvent) {
   background: var(--co-subtle);
   border: 1px solid var(--co-border-secondary);
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-comfy-tts-strip.is-non-commercial {
@@ -1354,13 +1361,16 @@ function onMediaDrop(event: DragEvent) {
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-comfy-tts-strip-title {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
 }
 
@@ -1386,6 +1396,8 @@ function onMediaDrop(event: DragEvent) {
   font-size: 13px;
   font-weight: 600;
   color: var(--co-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .co-comfy-tts-strip-desc {
@@ -1401,6 +1413,8 @@ function onMediaDrop(event: DragEvent) {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-comfy-tts-strip-notice {
@@ -1437,6 +1451,8 @@ function onMediaDrop(event: DragEvent) {
   background: var(--co-subtle);
   border: 1px solid var(--co-border-secondary);
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-comfy-voice-preview-head {
@@ -1445,6 +1461,8 @@ function onMediaDrop(event: DragEvent) {
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-comfy-voice-preview-heading {
@@ -1470,10 +1488,12 @@ function onMediaDrop(event: DragEvent) {
 }
 
 .co-comfy-voice-preview-badges {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-comfy-voice-preview-badges :deep(.ant-tag),
@@ -1653,10 +1673,14 @@ function onMediaDrop(event: DragEvent) {
   border-radius: 9px;
   background: var(--co-surface);
   border: 1px solid var(--co-border-secondary);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-comfy-voice-preview-audio {
   width: 100%;
+  max-width: 100%;
   height: 36px;
   display: block;
 }
@@ -1666,6 +1690,8 @@ function onMediaDrop(event: DragEvent) {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Boolean Switch */

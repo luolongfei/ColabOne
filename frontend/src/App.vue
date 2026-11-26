@@ -9909,49 +9909,77 @@ onUnmounted(() => {
     font-weight: 650;
   }
 
-  /* Status Bar: clean left-aligned 2-row stack on mobile with zero right-edge clipping */
+  /* Status Bar: ultra-compact 2-row grid on mobile (Row 1: status/GPU/region + idle pill; Row 2: full-width single-line billing capsule) */
   .co-status-bar-inner {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 5px;
-    padding: 6px var(--co-container-pad) 6px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 5px 6px;
+    padding: 5px var(--co-container-pad) 6px;
     min-height: 0;
     height: auto;
   }
 
   .co-topbar-left {
+    grid-column: 1 / 2;
+    grid-row: 1;
     flex: none;
     width: 100%;
-    flex-wrap: wrap;
-    overflow: visible;
-    gap: 5px 6px;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    gap: 5px;
+  }
+
+  .co-topbar-left::-webkit-scrollbar {
+    display: none;
+  }
+
+  .co-status-bar-inner:not(:has(.co-idle-timer)) .co-topbar-left {
+    grid-column: 1 / -1;
+  }
+
+  .co-runtime-tag,
+  .co-location-tag {
+    min-height: 21px;
+    padding: 0 7px;
+    font-size: 11px;
+    line-height: 19px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .co-gpu-name {
+    flex: 0 1 auto;
+    min-width: 52px;
     max-width: 100%;
-    font-size: 12.5px;
-  }
-
-  .co-model-chip {
-    max-width: 100%;
-    height: 22px;
     font-size: 12px;
   }
 
+  .co-model-chip {
+    flex-shrink: 0;
+    max-width: 118px;
+    height: 21px;
+    padding-inline: 7px !important;
+    font-size: 11px;
+  }
+
   .co-model-chip-text {
-    max-width: min(160px, 44vw);
+    max-width: 92px;
   }
 
   .co-instance-select {
-    min-width: 0;
-    max-width: 100%;
-    width: 100%;
+    flex-shrink: 0;
+    min-width: 116px;
+    max-width: 164px;
+    width: auto;
   }
 
   .co-topbar-right {
-    margin-left: 0;
-    width: 100%;
-    min-width: 0;
+    display: contents;
   }
 
   /* Banners & Page Shell mobile padding */
@@ -9998,7 +10026,18 @@ onUnmounted(() => {
   .co-callout-copy,
   .co-about-copy {
     min-width: 0;
-    flex: 1 1 200px;
+    max-width: 100%;
+    flex: 1 1 180px;
+  }
+
+  .co-device-subtitle,
+  .co-runtime-id,
+  .co-sr-main,
+  .co-sr-info,
+  .co-sr-title-line {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   .co-device-head {

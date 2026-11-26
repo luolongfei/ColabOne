@@ -192,8 +192,11 @@ export const jaJPMessages: ColabOneMessages = {
   "billing.barIdleCountdownTooltip":
     "{policy} 以上操作・タスクがないと自動解放されます。クリックでタイマーをリセット",
   "billing.barIdlePaused": "タスク実行中 · 自動解放一時停止",
+  "billing.barIdlePausedShort": "解放停止",
   "billing.barIdleImminent": "まもなく解放 {clock} · 延長",
+  "billing.barIdleImminentShort": "{clock} 延長",
   "billing.barIdleCountdown": "自動解放まで {clock}",
+  "billing.barIdleCountdownShort": "待機 {clock}",
   "billing.barIdleCountdownAria": "自動解放まで {clock}、クリックでリセット",
   "billing.barStatusInstances": "{status}（稼働中: {count} 台）",
   "billing.barBurnRate": "消費レート",
@@ -655,6 +658,8 @@ export const jaJPMessages: ColabOneMessages = {
   "api.readyNotice": "外部 API サービスを開始しました。",
   "api.savedConfigNotice": "固定ドメイントンネル設定をローカルの暗号化ボールトに保存しました。",
   "api.tunnelTokenExtractedToast": "Tunnel Token を自動抽出しました",
+  "api.tunnelTokenCopiedToast": "Tunnel Token をコピーしました",
+  "api.copyTunnelTokenTooltip": "Tunnel Token をコピー",
   "api.rotatedKeyNotice":
     "API キーを再生成しました。サービスを再開し、クライアント側のキーも更新してください。",
   "api.connectionCardTitle": "固定ドメインとトンネル設定",

@@ -289,6 +289,9 @@ function setTemp(raw: unknown) {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   transition:
     border-color 0.14s ease,
     background-color 0.14s ease,
@@ -308,7 +311,9 @@ function setTemp(raw: unknown) {
 .co-preset-card-top {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
 }
 
 .co-preset-name {
@@ -416,6 +421,12 @@ function setTemp(raw: unknown) {
 }
 
 @media (max-width: 480px) {
+  .co-param-name-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
   .co-preset-grid {
     grid-template-columns: 1fr;
   }

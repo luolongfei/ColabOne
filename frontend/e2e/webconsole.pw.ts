@@ -396,6 +396,10 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
   await page.getByRole("tab", { name: /原生画布/ }).click();
   await expect(page.getByRole("button", { name: "在新标签页打开画布" })).toBeVisible();
   await expect(page.getByRole("button", { name: "在应用窗口中打开" })).toHaveCount(0);
+  // Web mode cannot reveal or copy host-saved Tunnel Tokens (can_reveal_host_secrets: false)
+  await expect(page.locator(".co-comfy-canvas-grid .co-secret-copy-btn")).toBeDisabled();
+  await page.getByRole("button", { name: "对外 API" }).click();
+  await expect(page.locator(".co-api-connection .co-secret-copy-btn")).toBeDisabled();
 
   // Trigger 401 session expiration and confirm ONLY the session expired banner appears (no duplicate error banner)
   expireSession = true;
@@ -1133,4 +1137,314 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
   await expect(reopenBtn).toBeVisible();
   await page.setViewportSize({ width: 1024, height: 780 });
   await expect(page.locator(".co-drive-mobile-more-popover")).toBeHidden();
+});
+
+test("mobile iPhone viewports keep running status bar in 2 compact rows and prevent long drawer badges from causing horizontal overflow", async ({
+  page,
+}) => {
+  const longSpecsWorkflow = {
+    id: "digital-human-infinitetalk",
+    name: "口播数字人 · 长视频推荐版",
+    description: "内置口播数字人工作流",
+    source: "builtin",
+    min_vram_mib: 24576,
+    recommended_gpu: "G4 96 GB / H100 80 GB / A100 80 GB",
+    license: "Apache-2.0 / CC-BY-4.0 / GPL-3.0",
+    non_commercial: true,
+    models: [
+      { name: "m1.safetensors", size_bytes: 18 * 1024 ** 3 },
+      { name: "m2.safetensors", size_bytes: 10 * 1024 ** 3 },
+    ],
+    custom_nodes: ["node-a", "node-b"],
+    fields: [
+      {
+        key: "pipeline.audio_source",
+        label: "音频来源",
+        type: "select",
+        default: "tts",
+        options: [
+          { value: "tts", label: "文字转语音 (TTS)" },
+          { value: "upload", label: "上传音频" },
+        ],
+      },
+      {
+        key: "pipeline.tts_engine",
+        label: "语音引擎",
+        type: "select",
+        default: "breeze_tts2",
+        options: [
+          {
+            value: "breeze_tts2",
+            label: "Breeze TTS 2（3B+ · 中英双语情绪导演 · 仅非商用）",
+          },
+        ],
+      },
+      {
+        key: "prompt",
+        label: "口播文案",
+        type: "textarea",
+        default: "你好，欢迎体验 ColabOne。",
+        required: true,
+      },
+    ],
+  };
+
+  const ttsEngineLongLicense = {
+    id: "breeze_tts2",
+    name: "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰 · 仅非商用）",
+    description: "超长引擎徽标与协议测试",
+    sample_rate: 44100,
+    min_vram_mib: 24576,
+    min_disk_mib: 32768,
+    license: "BreezeBlue Research & Non-Commercial License",
+    non_commercial: true,
+    supports_voice_clone: true,
+    supports_voice_design: true,
+    supports_emotion_ref: true,
+  };
+
+  const oversizedModel = {
+    id: "qwen3-super-long-model",
+    name: "Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-Super-Long-Display-Name",
+    repo: "unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF",
+    filename:
+      "Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00004.gguf",
+    size: 135 * 1024 ** 3,
+    downloaded: false,
+    loaded: false,
+    common: true,
+    description: "用于验证超长徽标与模型名称在手机端抽屉内不溢出容器",
+  };
+
+  let idlePhase: "counting" | "active" = "counting";
+  const buildSnapshot = () => ({
+    ...makeBaseSnapshot(true),
+    workflows: [longSpecsWorkflow],
+    tts_engines: [ttsEngineLongLicense],
+    models: [oversizedModel],
+    account: {
+      logged_in: true,
+      email: "mobile@example.com",
+      balance: 1918.27,
+      rate: 4.82,
+      assignments: 1,
+      checked_at: Date.now() / 1000,
+    },
+    runtime: {
+      ...makeBaseSnapshot(true).runtime,
+      gpu: {
+        name: "NVIDIA RTX PRO 6000 Blackwell",
+        total_mib: 98304,
+        used_mib: 4200,
+      },
+      location: {
+        country: "US",
+        country_name: "United States",
+        region: "Ohio",
+        zone: "us-east4-a",
+      },
+      idle: {
+        phase: idlePhase,
+        remaining_seconds: 1452,
+        timeout_seconds: 1800,
+        countdown_seconds: 60,
+        server_time: Math.floor(Date.now() / 1000),
+      },
+    },
+  });
+
+  await page.route("**/api/web/capabilities", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runtime: "web",
+        version: "0.1.23",
+        can_open_native_canvas_window: false,
+        can_standalone_log_window: false,
+        can_manage_web_console: false,
+        can_manage_close_behavior: false,
+        can_manage_shortcuts: false,
+        can_self_update: false,
+        can_migrate: false,
+        can_reveal_host_secrets: false,
+        can_loopback_oauth: false,
+        can_download_output: true,
+      }),
+    });
+  });
+
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { ETag: `"iphone-polish-${idlePhase}"` },
+      body: JSON.stringify(buildSnapshot()),
+    });
+  });
+
+  await page.route("**/api/command", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+
+  await page.route("**/api/telemetry**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ samples: [] }),
+    });
+  });
+
+  for (const vp of [
+    { width: 375, height: 812 },
+    { width: 440, height: 956 },
+  ]) {
+    idlePhase = "counting";
+    await page.setViewportSize(vp);
+    await page.goto("/");
+
+    // 1. Running-instance status bar stays strictly 2 compact rows (Row 1: status/GPU/region + idle pill; Row 2: single-line billing capsule)
+    await expect(page.locator(".co-idle-timer")).toBeVisible();
+    await expect(page.locator(".co-billing-strip")).toBeVisible();
+    await expect(page.locator(".co-location-chip")).toBeVisible();
+
+    const measureStatusBar = () =>
+      page.evaluate(() => {
+        const bar = document.querySelector(".co-status-bar")?.getBoundingClientRect();
+        const rt = document.querySelector(".co-runtime-tag")?.getBoundingClientRect();
+        const gpu = document.querySelector(".co-gpu-name")?.getBoundingClientRect();
+        const loc = document.querySelector(".co-location-chip")?.getBoundingClientRect();
+        const idle = document.querySelector(".co-idle-timer")?.getBoundingClientRect();
+        const strip = document.querySelector(".co-billing-strip")?.getBoundingClientRect();
+        const pill = document.querySelector(".co-billing-pill")?.getBoundingClientRect();
+        const rate = document.querySelector(".co-billing-rate")?.getBoundingClientRect();
+        const bal = document.querySelector(".co-billing-balance")?.getBoundingClientRect();
+        const end = document.querySelector(".co-endurance-tag")?.getBoundingClientRect();
+        if (!bar || !rt || !gpu || !loc || !idle || !strip || !pill || !rate || !bal || !end) {
+          return null;
+        }
+        return {
+          barHeight: Math.round(bar.height),
+          row1Aligned:
+            Math.abs(rt.top - idle.top) <= 6 &&
+            Math.abs(rt.top - loc.top) <= 6 &&
+            loc.left - gpu.right <= 12 &&
+            loc.right <= idle.left + 1 &&
+            idle.right <= window.innerWidth + 1,
+          stripBelowRow1: strip.top >= rt.bottom - 1,
+          stripHeight: Math.round(strip.height),
+          stripRightOk: strip.right <= window.innerWidth + 1,
+          row2SingleLine:
+            Math.abs(pill.top - rate.top) <= 4 &&
+            Math.abs(pill.top - bal.top) <= 4 &&
+            Math.abs(pill.top - end.top) <= 4,
+          docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+        };
+      });
+
+    const countingBar = await measureStatusBar();
+    expect(countingBar).not.toBeNull();
+    expect(countingBar!.barHeight).toBeLessThanOrEqual(74);
+    expect(countingBar!.row1Aligned).toBe(true);
+    expect(countingBar!.stripBelowRow1).toBe(true);
+    expect(countingBar!.stripHeight).toBeLessThanOrEqual(30);
+    expect(countingBar!.stripRightOk).toBe(true);
+    expect(countingBar!.row2SingleLine).toBe(true);
+    expect(countingBar!.docOverflow).toBeLessThanOrEqual(0);
+
+    // Also verify active/busy paused idle state stays 2 compact rows without line explosion
+    idlePhase = "active";
+    await page.reload();
+    await expect(page.locator(".co-idle-timer")).toContainText("暂停释放");
+    const busyBar = await measureStatusBar();
+    expect(busyBar).not.toBeNull();
+    expect(busyBar!.barHeight).toBeLessThanOrEqual(74);
+    expect(busyBar!.row1Aligned).toBe(true);
+    expect(busyBar!.row2SingleLine).toBe(true);
+    expect(busyBar!.docOverflow).toBeLessThanOrEqual(0);
+
+    // 2. ComfyUI Param Drawer with ultra-long TTS license & workflow GPU/license tags: zero horizontal overflow
+    const bottomNav = page.getByTestId("mobile-bottom-nav");
+    await bottomNav.getByRole("button", { name: "ComfyUI" }).click();
+    await page.locator(".co-comfy-wf-card-trigger").first().click();
+    await expect(page.locator(".co-comfy-param-drawer-body")).toBeVisible();
+    await page.locator(".co-comfy-advanced-toggle").click();
+    await expect(page.locator(".co-comfy-specs-box")).toBeVisible();
+
+    const comfyDrawerCheck = await page.evaluate(() => {
+      const body = document.querySelector(
+        ".co-comfy-param-drawer-root .ant-drawer-body",
+      ) as HTMLElement | null;
+      if (!body) return null;
+      const bodyRect = body.getBoundingClientRect();
+      const sourceTag = document.querySelector(
+        ".co-comfy-param-drawer-root .co-comfy-source-tag",
+      );
+      const sourceTagHeight = sourceTag
+        ? Math.round(sourceTag.getBoundingClientRect().height)
+        : 0;
+      const tags = Array.from(body.querySelectorAll(".ant-tag"));
+      const overflowingTags = tags
+        .map((el) => ({
+          text: (el.textContent || "").trim(),
+          rightDelta: Math.round(el.getBoundingClientRect().right - bodyRect.right),
+        }))
+        .filter((item) => item.rightDelta > 1);
+      return {
+        docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+        bodyOverflow: body.scrollWidth - body.clientWidth,
+        sourceTagHeight,
+        tagCount: tags.length,
+        overflowingTags,
+      };
+    });
+    expect(comfyDrawerCheck).not.toBeNull();
+    expect(comfyDrawerCheck!.sourceTagHeight).toBeLessThanOrEqual(26);
+    expect(comfyDrawerCheck!.tagCount).toBeGreaterThanOrEqual(4);
+    expect(comfyDrawerCheck!.docOverflow).toBeLessThanOrEqual(0);
+    expect(comfyDrawerCheck!.bodyOverflow).toBeLessThanOrEqual(0);
+    expect(comfyDrawerCheck!.overflowingTags).toEqual([]);
+    await page.locator(".co-comfy-param-drawer-root .ant-drawer-close").click();
+
+    // 3. ModelDrawer with ultra-long model name & fit/disk badges: zero horizontal overflow
+    await bottomNav.getByRole("button", { name: "对外 API" }).click();
+    await page
+      .locator(".co-api-model-slot")
+      .getByRole("button", { name: /选择模型|切换模型/ })
+      .click();
+    await expect(
+      page.locator(".co-model-drawer-root .ant-drawer-body"),
+    ).toBeVisible();
+
+    const modelDrawerCheck = await page.evaluate(() => {
+      const body = document.querySelector(
+        ".co-model-drawer-root .ant-drawer-body",
+      ) as HTMLElement | null;
+      if (!body) return null;
+      const bodyRect = body.getBoundingClientRect();
+      const tags = Array.from(body.querySelectorAll(".ant-tag"));
+      const overflowingTags = tags
+        .map((el) => ({
+          text: (el.textContent || "").trim(),
+          rightDelta: Math.round(el.getBoundingClientRect().right - bodyRect.right),
+        }))
+        .filter((item) => item.rightDelta > 1);
+      return {
+        docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+        bodyOverflow: body.scrollWidth - body.clientWidth,
+        tagCount: tags.length,
+        overflowingTags,
+      };
+    });
+    expect(modelDrawerCheck).not.toBeNull();
+    expect(modelDrawerCheck!.tagCount).toBeGreaterThanOrEqual(1);
+    expect(modelDrawerCheck!.docOverflow).toBeLessThanOrEqual(0);
+    expect(modelDrawerCheck!.bodyOverflow).toBeLessThanOrEqual(0);
+    expect(modelDrawerCheck!.overflowingTags).toEqual([]);
+    await page.locator(".co-model-drawer-root .ant-drawer-close").click();
+  }
 });

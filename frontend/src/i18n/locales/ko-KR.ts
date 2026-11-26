@@ -192,8 +192,11 @@ export const koKRMessages: ColabOneMessages = {
   "billing.barIdleCountdownTooltip":
     "{policy} 동안 활동이나 작업이 없으면 자동 해제됩니다. 클릭해 타이머를 초기화할 수 있습니다",
   "billing.barIdlePaused": "작업 중 · 자동 해제 일시 정지",
+  "billing.barIdlePausedShort": "해제 정지",
   "billing.barIdleImminent": "곧 해제 {clock} · 연장",
+  "billing.barIdleImminentShort": "{clock} 연장",
   "billing.barIdleCountdown": "유휴 해제 {clock}",
+  "billing.barIdleCountdownShort": "유휴 {clock}",
   "billing.barIdleCountdownAria": "유휴 해제까지 {clock}, 클릭해 타이머 초기화",
   "billing.barStatusInstances": "{status} (실행 중: {count}대)",
   "billing.barBurnRate": "소모 속도",
@@ -654,6 +657,8 @@ export const koKRMessages: ColabOneMessages = {
   "api.readyNotice": "외부 API 서비스가 켜졌습니다.",
   "api.savedConfigNotice": "고정 도메인 터널 설정을 로컬 암호화 보관함에 저장했습니다.",
   "api.tunnelTokenExtractedToast": "Tunnel Token이 자동 추출되었습니다",
+  "api.tunnelTokenCopiedToast": "Tunnel Token을 복사했습니다",
+  "api.copyTunnelTokenTooltip": "Tunnel Token 복사",
   "api.rotatedKeyNotice": "API 키가 재발급되었습니다. 서비스를 다시 켜고 클라이언트 키도 업데이트하세요.",
   "api.connectionCardTitle": "고정 도메인 및 터널 설정",
   "api.connectionCardDesc":

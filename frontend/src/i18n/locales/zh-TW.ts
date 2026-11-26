@@ -188,8 +188,11 @@ export const zhTWMessages: ColabOneMessages = {
   "billing.barIdleCountdownTooltip":
     "超過 {policy} 無操作或工作將自動釋放遠端資源；點擊可重設倒數",
   "billing.barIdlePaused": "工作執行中 · 暫停自動釋放",
+  "billing.barIdlePausedShort": "暫停釋放",
   "billing.barIdleImminent": "即將釋放 {clock} · 點擊續期",
+  "billing.barIdleImminentShort": "{clock} 續期",
   "billing.barIdleCountdown": "閒置釋放 {clock}",
+  "billing.barIdleCountdownShort": "閒置 {clock}",
   "billing.barIdleCountdownAria": "閒置釋放 {clock}，點擊重設倒數",
   "billing.barStatusInstances": "{status}（執行中：{count} 台）",
   "billing.barBurnRate": "消耗速率",
@@ -640,6 +643,8 @@ export const zhTWMessages: ColabOneMessages = {
   "api.readyNotice": "對外 API 服務已開啟。",
   "api.savedConfigNotice": "固定網域通道設定已儲存至本機加密憑證庫。",
   "api.tunnelTokenExtractedToast": "已自動擷取 Tunnel Token",
+  "api.tunnelTokenCopiedToast": "已複製 Tunnel Token",
+  "api.copyTunnelTokenTooltip": "複製 Tunnel Token",
   "api.rotatedKeyNotice": "API 金鑰已更換，請重新開啟服務並於呼叫端同步更新金鑰。",
   "api.connectionCardTitle": "固定網域與通道設定",
   "api.connectionCardDesc":

@@ -7047,6 +7047,184 @@ test("secret inputs auto-extract tokens on paste and reveal saved secrets on eye
   await expect(hfInput).toHaveValue("");
 });
 
+test("tunnel token inputs provide copy icon buttons with checkmark feedback, auto-revert, and toast across Public API and ComfyUI Canvas", async ({
+  page,
+}) => {
+  await mock(page, true);
+  const apiToken = Buffer.from(
+    JSON.stringify({ a: "acc-copy-1", t: "tun-copy-1", s: "sec-copy-1" }),
+  ).toString("base64");
+  const canvasToken = Buffer.from(
+    JSON.stringify({ a: "acc-copy-2", t: "tun-copy-2", s: "sec-copy-2" }),
+  ).toString("base64");
+
+  // 1) Public API Tunnel Token copy button
+  await navItem(page, "对外 API").click();
+  const apiTunnelInput = page.locator("#api-tunnel");
+  const apiCopyBtn = page.locator(".co-api-connection .co-secret-copy-btn");
+  await expect(apiCopyBtn).toBeVisible();
+  await expect(apiCopyBtn).toHaveAttribute("aria-label", "复制 Tunnel Token");
+  await expect(apiCopyBtn).toBeDisabled();
+
+  // Paste install command -> auto-extract -> copy draft while input remains masked
+  await page.getByLabel("API 域名", { exact: true }).fill("api.example.com");
+  await apiTunnelInput.evaluate((el, text) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    el.dispatchEvent(
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }, `sudo cloudflared service install ${apiToken}`);
+  await expect(apiTunnelInput).toHaveValue(apiToken);
+  await expect(apiCopyBtn).toBeEnabled();
+
+  await apiCopyBtn.click();
+  expect(await page.evaluate(() => (window as any).__clipboard)).toBe(apiToken);
+  await expect(apiCopyBtn).toHaveAttribute("data-copied", "true");
+  await expect(apiCopyBtn.locator(".co-secret-copy-check")).toHaveCount(1);
+  await expect(apiTunnelInput).toHaveAttribute("type", "password");
+  await expect(page.locator(".co-toast-host")).toContainText(
+    "已复制 Tunnel Token",
+  );
+  // Editing the input immediately clears stale copied checkmark state
+  await apiTunnelInput.fill(`${apiToken}X`);
+  await expect(apiCopyBtn).not.toHaveAttribute("data-copied", "true");
+  await apiTunnelInput.fill(apiToken);
+  await apiCopyBtn.click();
+  await expect(apiCopyBtn).toHaveAttribute("data-copied", "true");
+  // Checkmark automatically reverts back to copy icon after ~1.8s
+  await expect(apiCopyBtn).not.toHaveAttribute("data-copied", "true", {
+    timeout: 3500,
+  });
+  await expect(apiCopyBtn.locator(".co-secret-copy-check")).toHaveCount(0);
+
+  // Save config -> input clears -> copy button fetches saved token without revealing input
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect(apiTunnelInput).toHaveValue("");
+  await expect(apiCopyBtn).toBeEnabled();
+  await page.evaluate(() => {
+    (window as any).__clipboard = "";
+  });
+  await apiCopyBtn.click();
+  expect(await page.evaluate(() => (window as any).__clipboard)).toBe(apiToken);
+  await expect(apiCopyBtn).toHaveAttribute("data-copied", "true");
+  await expect(apiTunnelInput).toHaveValue("");
+  await expect(apiTunnelInput).toHaveAttribute("type", "password");
+  await expect(apiCopyBtn).not.toHaveAttribute("data-copied", "true", {
+    timeout: 3500,
+  });
+
+  // Even while Public API is running (input locked/disabled), copy button stays enabled
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.public_api = {
+      state: "ready",
+      enabled: true,
+      mode: "named",
+      url: "https://api.example.com",
+      error: "",
+      streaming: true,
+      checked_at: Date.now() / 1000,
+      requests: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+      last_request: 0,
+    };
+    (window as any).__clipboard = "";
+  });
+  await expect(apiTunnelInput).toBeDisabled();
+  await expect(apiCopyBtn).toBeEnabled();
+  await apiCopyBtn.click();
+  expect(await page.evaluate(() => (window as any).__clipboard)).toBe(apiToken);
+  await expect(apiCopyBtn).toHaveAttribute("data-copied", "true");
+  await expect(apiTunnelInput).toBeDisabled();
+
+  // 2) ComfyUI Native Canvas Tunnel Token copy button
+  await navItem(page, "ComfyUI").click();
+  await page
+    .locator(".co-comfy-tabs .ant-tabs-tab", { hasText: "原生画布" })
+    .click();
+  const canvasTokenInput = page.locator("#comfy-canvas-token");
+  const canvasCopyBtn = page.locator(
+    ".co-comfy-canvas-grid .co-secret-copy-btn",
+  );
+  await expect(canvasCopyBtn).toBeVisible();
+  await expect(canvasCopyBtn).toHaveAttribute("aria-label", "复制 Tunnel Token");
+  await expect(canvasCopyBtn).toBeDisabled();
+
+  await page.locator("#comfy-canvas-domain").fill("comfy.example.com");
+  await canvasTokenInput.evaluate((el, text) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    el.dispatchEvent(
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }, `docker run cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${canvasToken}`);
+  await expect(canvasTokenInput).toHaveValue(canvasToken);
+  await expect(canvasCopyBtn).toBeEnabled();
+
+  await page.evaluate(() => {
+    (window as any).__clipboard = "";
+  });
+  await canvasCopyBtn.click();
+  expect(await page.evaluate(() => (window as any).__clipboard)).toBe(
+    canvasToken,
+  );
+  await expect(canvasCopyBtn).toHaveAttribute("data-copied", "true");
+  await expect(canvasCopyBtn.locator(".co-secret-copy-check")).toHaveCount(1);
+  await expect(page.locator(".co-toast-host")).toContainText(
+    "已复制 Tunnel Token",
+  );
+
+  // Save config and copy saved token while ComfyUI Canvas is running (input disabled)
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect(canvasTokenInput).toHaveValue("");
+  await expect(canvasCopyBtn).not.toHaveAttribute("data-copied", "true", {
+    timeout: 3500,
+  });
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.comfyui = {
+      ...(s.runtime.comfyui || {}),
+      installed: true,
+      running: true,
+      state: "ready",
+      canvas: {
+        state: "ready",
+        enabled: true,
+        mode: "named",
+        url: "https://comfy.example.com",
+        error: "",
+        checked_at: Date.now() / 1000,
+      },
+    };
+    (window as any).__clipboard = "";
+  });
+  await expect(canvasTokenInput).toBeDisabled();
+  await expect(canvasCopyBtn).toBeEnabled();
+  await canvasCopyBtn.click();
+  expect(await page.evaluate(() => (window as any).__clipboard)).toBe(
+    canvasToken,
+  );
+  await expect(canvasCopyBtn).toHaveAttribute("data-copied", "true");
+  await expect(canvasCopyBtn).not.toHaveAttribute("data-copied", "true", {
+    timeout: 3500,
+  });
+
+  // 3) Non-tunnel secret inputs (e.g. HF Token) do not render an extra copy icon button
+  await navItem(page, "设置").click();
+  await expect(page.locator(".co-hf-row .co-secret-copy-btn")).toHaveCount(0);
+});
+
 test("allocation banner and device card show backoff countdown and cancel control without retry-now during congested startup", async ({
   page,
 }) => {

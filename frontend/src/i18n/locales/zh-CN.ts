@@ -186,8 +186,11 @@ export const zhCNMessages = {
   "billing.barIdleCountdownTooltip":
     "超过 {policy} 无操作或任务将自动释放远端资源；点击可重置倒计时",
   "billing.barIdlePaused": "任务运行中 · 暂停自动释放",
+  "billing.barIdlePausedShort": "暂停释放",
   "billing.barIdleImminent": "即将释放 {clock} · 点击续期",
+  "billing.barIdleImminentShort": "{clock} 续期",
   "billing.barIdleCountdown": "空闲释放 {clock}",
+  "billing.barIdleCountdownShort": "空闲 {clock}",
   "billing.barIdleCountdownAria": "空闲释放 {clock}，点击重置倒计时",
   "billing.barStatusInstances": "{status}（运行实例：{count} 台）",
   "billing.barBurnRate": "消耗速率",
@@ -639,6 +642,8 @@ export const zhCNMessages = {
   "api.readyNotice": "对外 API 服务已开启。",
   "api.savedConfigNotice": "固定域名隧道配置已保存到本地加密凭据库。",
   "api.tunnelTokenExtractedToast": "已自动提取 Tunnel Token",
+  "api.tunnelTokenCopiedToast": "已复制 Tunnel Token",
+  "api.copyTunnelTokenTooltip": "复制 Tunnel Token",
   "api.rotatedKeyNotice": "API Key 已更换，请重新开启服务并在调用方同步更新密钥。",
   "api.connectionCardTitle": "固定域名与隧道配置",
   "api.connectionCardDesc":

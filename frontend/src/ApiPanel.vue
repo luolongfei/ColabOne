@@ -449,6 +449,10 @@ function onTunnelTokenExtracted() {
   emit("notify", t("api.tunnelTokenExtractedToast"), "success");
 }
 
+function onTunnelTokenCopied() {
+  emit("notify", t("api.tunnelTokenCopiedToast"), "success");
+}
+
 watch(
   () => [model.value?.id, isLegacyRemoteModelId.value, ready.value] as const,
   ([, legacy, isReady], prev) => {
@@ -960,7 +964,10 @@ onUnmounted(() => {
                     : undefined
                 "
                 :extract-secret="colabOneExtractTunnelToken"
+                :copyable="true"
+                :copy-label="t('api.copyTunnelTokenTooltip')"
                 @extracted="onTunnelTokenExtracted"
+                @copied="onTunnelTokenCopied"
                 @error="emit('error', $event)"
               />
             </div>

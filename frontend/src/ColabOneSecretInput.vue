@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { Input as AInput } from "ant-design-vue";
-import { PhEye, PhEyeSlash, PhSpinnerGap } from "@phosphor-icons/vue";
+import { Button as AButton, Input as AInput } from "ant-design-vue";
+import {
+  PhCheck,
+  PhCopy,
+  PhEye,
+  PhEyeSlash,
+  PhSpinnerGap,
+} from "@phosphor-icons/vue";
+import { colabOneWriteClipboard, isColabOneDesktopRuntime } from "./api";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import { colabOnePrivacyActive } from "./colabOnePrivacy";
 import { t } from "./i18n";
@@ -27,6 +34,9 @@ const props = withDefaults(
     ariaLabel?: string;
     loadSaved?: () => Promise<string>;
     extractSecret?: ColabOneSecretExtractor;
+    copyable?: boolean;
+    copyLabel?: string;
+    copiedDurationMs?: number;
   }>(),
   {
     id: undefined,
@@ -38,12 +48,16 @@ const props = withDefaults(
     ariaLabel: undefined,
     loadSaved: undefined,
     extractSecret: undefined,
+    copyable: false,
+    copyLabel: "",
+    copiedDurationMs: 1800,
   },
 );
 
 const emit = defineEmits<{
   "update:value": [string];
   extracted: [string];
+  copied: [];
   error: [string];
 }>();
 
@@ -55,7 +69,11 @@ const visible = ref(false);
 const showingSaved = ref(false);
 const revealedSaved = ref("");
 const loadingSaved = ref(false);
+const copyingSaved = ref(false);
+const copied = ref(false);
 let revealSeq = 0;
+let copySeq = 0;
+let copyTimer: ReturnType<typeof setTimeout> | undefined;
 let unmounted = false;
 
 function resolveNativeInput(): HTMLInputElement | null {
@@ -97,6 +115,147 @@ const toggleLabel = computed(() => {
   }
   return t("common.showSecret");
 });
+
+const hasCopyableSecret = computed(() => {
+  if (props.value.trim()) return true;
+  if (showingSaved.value && revealedSaved.value.trim()) return true;
+  if (props.hasSaved && props.loadSaved) return true;
+  return false;
+});
+
+const copyDisabled = computed(
+  () => copyingSaved.value || !hasCopyableSecret.value,
+);
+
+const copyBaseLabel = computed(() => props.copyLabel || t("common.copy"));
+
+const copyTooltipTitle = computed(() =>
+  copied.value ? t("common.copied") : copyBaseLabel.value,
+);
+
+function clearCopyTimer() {
+  if (copyTimer !== undefined) {
+    clearTimeout(copyTimer);
+    copyTimer = undefined;
+  }
+}
+
+function resetCopiedState() {
+  copySeq += 1;
+  copyingSaved.value = false;
+  copied.value = false;
+  clearCopyTimer();
+}
+
+async function writeSecretToClipboard(text: string): Promise<boolean> {
+  if (isColabOneDesktopRuntime()) {
+    try {
+      await colabOneWriteClipboard(text);
+      await navigator.clipboard?.writeText(text).catch(() => {});
+      return true;
+    } catch {
+      // Fall through to browser clipboard APIs if desktop bridge is unavailable.
+    }
+  }
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to legacy execCommand fallback for non-HTTPS LAN web contexts.
+  }
+  if (
+    typeof document !== "undefined" &&
+    typeof document.execCommand === "function"
+  ) {
+    const previousActive =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.setAttribute("aria-hidden", "true");
+    textarea.style.position = "fixed";
+    textarea.style.top = "0";
+    textarea.style.left = "0";
+    textarea.style.width = "1px";
+    textarea.style.height = "1px";
+    textarea.style.padding = "0";
+    textarea.style.border = "0";
+    textarea.style.opacity = "0";
+    textarea.style.fontSize = "16px";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    try {
+      textarea.focus({ preventScroll: true });
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+      return document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      document.body.removeChild(textarea);
+      if (previousActive && previousActive.isConnected) {
+        previousActive.focus({ preventScroll: true });
+      }
+    }
+  }
+  return false;
+}
+
+async function copySecret() {
+  if (!props.copyable || copyDisabled.value) return;
+  const seq = ++copySeq;
+
+  let text = props.value.trim();
+  if (!text && showingSaved.value) {
+    text = revealedSaved.value.trim();
+  }
+
+  if (!text && props.hasSaved && props.loadSaved) {
+    copyingSaved.value = true;
+    try {
+      const saved = await props.loadSaved();
+      if (unmounted || seq !== copySeq) return;
+      text = typeof saved === "string" ? saved.trim() : "";
+    } catch (err) {
+      if (!unmounted && seq === copySeq) {
+        emit("error", String(err));
+      }
+      return;
+    } finally {
+      if (seq === copySeq) {
+        copyingSaved.value = false;
+      }
+    }
+  }
+
+  if (!text) {
+    if (!unmounted && seq === copySeq) {
+      emit("error", t("common.copyFailed"));
+    }
+    return;
+  }
+
+  const ok = await writeSecretToClipboard(text);
+  if (unmounted || seq !== copySeq) return;
+  if (!ok) {
+    emit("error", t("common.copyFailed"));
+    return;
+  }
+
+  copied.value = true;
+  clearCopyTimer();
+  copyTimer = setTimeout(() => {
+    if (!unmounted && seq === copySeq) {
+      copied.value = false;
+      copyTimer = undefined;
+    }
+  }, Math.max(400, props.copiedDurationMs));
+  emit("copied");
+}
 
 function hide() {
   revealSeq += 1;
@@ -226,14 +385,31 @@ watch(
     if (prev && !next) {
       hide();
     }
+    if (next !== prev && (copied.value || copyingSaved.value)) {
+      resetCopiedState();
+    }
+  },
+);
+
+watch(
+  () => props.copyable,
+  (copyable) => {
+    if (!copyable) {
+      resetCopiedState();
+    }
   },
 );
 
 watch(
   () => props.hasSaved,
   (hasSaved) => {
-    if (!hasSaved && showingSaved.value) {
-      hide();
+    if (!hasSaved) {
+      if (showingSaved.value) {
+        hide();
+      }
+      if (!props.value.trim() && (copied.value || copyingSaved.value)) {
+        resetCopiedState();
+      }
     }
   },
 );
@@ -248,8 +424,15 @@ watch(
   { immediate: true },
 );
 
+watch(hasCopyableSecret, (available) => {
+  if (!available && (copied.value || copyingSaved.value)) {
+    resetCopiedState();
+  }
+});
+
 onBeforeUnmount(() => {
   unmounted = true;
+  resetCopiedState();
   hide();
 });
 
@@ -257,58 +440,167 @@ defineExpose({ hide });
 </script>
 
 <template>
-  <AInput
-    ref="inputCompRef"
-    :id="props.id"
-    :value="displayValue"
-    :type="visible ? 'text' : 'password'"
-    :disabled="props.disabled && !isLockedReveal"
-    :readonly="isLockedReveal"
-    :placeholder="effectivePlaceholder"
-    :autocomplete="props.autocomplete"
-    :aria-label="props.ariaLabel"
-    spellcheck="false"
-    class="co-secret-input"
-    :class="{
-      'is-revealed': visible && !!displayValue,
-      'is-locked-reveal': isLockedReveal,
-    }"
-    @update:value="onUpdateValue"
-    @paste="onPaste"
-  >
-    <template #suffix>
-      <ColabOneTooltip
-        :title="toggleLabel"
-        :disabled="toggleDisabled && !privacyLocked"
-      >
-        <span class="co-secret-toggle-wrap">
-          <button
-            type="button"
-            class="co-secret-toggle"
-            :class="{ 'is-active': visible }"
-            :disabled="toggleDisabled"
-            :aria-label="toggleLabel"
-            :aria-pressed="visible"
-            @mousedown.prevent
-            @mouseup.prevent
-            @click.stop="toggleVisibility"
-          >
+  <div class="co-secret-field" :class="{ 'is-copyable': props.copyable }">
+    <AInput
+      ref="inputCompRef"
+      :id="props.id"
+      :value="displayValue"
+      :type="visible ? 'text' : 'password'"
+      :disabled="props.disabled && !isLockedReveal"
+      :readonly="isLockedReveal"
+      :placeholder="effectivePlaceholder"
+      :autocomplete="props.autocomplete"
+      :aria-label="props.ariaLabel"
+      spellcheck="false"
+      class="co-secret-input"
+      :class="{
+        'is-revealed': visible && !!displayValue,
+        'is-locked-reveal': isLockedReveal,
+      }"
+      @update:value="onUpdateValue"
+      @paste="onPaste"
+    >
+      <template #suffix>
+        <ColabOneTooltip
+          :title="toggleLabel"
+          :disabled="toggleDisabled && !privacyLocked"
+        >
+          <span class="co-secret-toggle-wrap">
+            <button
+              type="button"
+              class="co-secret-toggle"
+              :class="{ 'is-active': visible }"
+              :disabled="toggleDisabled"
+              :aria-label="toggleLabel"
+              :aria-pressed="visible"
+              @mousedown.prevent
+              @mouseup.prevent
+              @click.stop="toggleVisibility"
+            >
+              <PhSpinnerGap
+                v-if="loadingSaved"
+                :size="15"
+                class="co-secret-spin"
+                aria-hidden="true"
+              />
+              <PhEye v-else-if="visible" :size="15" aria-hidden="true" />
+              <PhEyeSlash v-else :size="15" aria-hidden="true" />
+            </button>
+          </span>
+        </ColabOneTooltip>
+      </template>
+    </AInput>
+    <ColabOneTooltip
+      v-if="props.copyable"
+      :title="copyTooltipTitle"
+      :disabled="copyDisabled && !copied"
+    >
+      <span class="co-secret-copy-wrap">
+        <AButton
+          type="default"
+          html-type="button"
+          class="co-secret-copy-btn"
+          :class="{ 'is-copied': copied }"
+          :disabled="copyDisabled"
+          :aria-label="copyBaseLabel"
+          :data-copied="copied ? 'true' : undefined"
+          @click="copySecret"
+        >
+          <template #icon>
             <PhSpinnerGap
-              v-if="loadingSaved"
+              v-if="copyingSaved"
               :size="15"
               class="co-secret-spin"
               aria-hidden="true"
             />
-            <PhEye v-else-if="visible" :size="15" aria-hidden="true" />
-            <PhEyeSlash v-else :size="15" aria-hidden="true" />
-          </button>
-        </span>
-      </ColabOneTooltip>
-    </template>
-  </AInput>
+            <PhCheck
+              v-else-if="copied"
+              :size="15"
+              weight="bold"
+              class="co-secret-copy-check"
+              aria-hidden="true"
+            />
+            <PhCopy v-else :size="15" aria-hidden="true" />
+          </template>
+        </AButton>
+      </span>
+    </ColabOneTooltip>
+  </div>
 </template>
 
 <style scoped>
+.co-secret-field {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.co-secret-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.co-secret-copy-wrap {
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+
+.co-secret-copy-btn {
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  height: auto;
+  padding: 0;
+  color: var(--co-secondary-text);
+}
+
+.co-secret-copy-btn:hover:not(:disabled) {
+  color: var(--co-text);
+}
+
+.co-secret-copy-btn.ant-btn.ant-btn-default.is-copied:not(:disabled),
+.co-secret-copy-btn.ant-btn.ant-btn-default.is-copied:hover:not(:disabled),
+:global(:root[data-theme="dark"])
+  .co-secret-copy-btn.ant-btn.ant-btn-default.is-copied:not(:disabled),
+:global(:root[data-theme="dark"])
+  .co-secret-copy-btn.ant-btn.ant-btn-default.is-copied:hover:not(:disabled) {
+  color: var(--co-success-text);
+  background: var(--co-success-bg);
+  border-color: var(--co-success-border);
+}
+
+.co-secret-copy-check {
+  animation: co-secret-check-pop 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes co-secret-check-pop {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 768px) {
+  .co-secret-copy-btn {
+    width: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-secret-copy-check {
+    animation: none;
+  }
+}
+
 .co-secret-input.is-revealed :deep(input) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 13px;

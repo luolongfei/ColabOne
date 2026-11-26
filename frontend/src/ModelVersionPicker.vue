@@ -1093,6 +1093,9 @@ async function openRepoHome() {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-vp-skeleton {
@@ -1208,11 +1211,17 @@ async function openRepoHome() {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-version-card {
   appearance: none;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
   text-align: left;
   padding: 10px 12px;
   border-radius: 10px;
@@ -1273,6 +1282,8 @@ async function openRepoHome() {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-vc-radio {
@@ -1347,12 +1358,15 @@ async function openRepoHome() {
   gap: 2px;
   padding-left: 22px;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-vc-desc {
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--co-muted);
+  overflow-wrap: anywhere;
 }
 
 .co-vc-desc.is-warn {
@@ -1368,6 +1382,9 @@ async function openRepoHome() {
 }
 
 .co-vc-file {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--co-muted);
@@ -1375,6 +1392,13 @@ async function openRepoHome() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 560px) {
+  .co-vc-metrics,
+  .co-vc-bottom {
+    padding-left: 0;
+  }
 }
 
 .co-vp-expand-row {

@@ -6671,6 +6671,10 @@ function onCanvasTokenExtracted() {
   emit("notify", t("api.tunnelTokenExtractedToast"), "success");
 }
 
+function onCanvasTokenCopied() {
+  emit("notify", t("api.tunnelTokenCopiedToast"), "success");
+}
+
 async function stopCanvas() {
   await actEngine("comfyui.canvas.stop", {}, "comfy.noticeStoppedCanvas");
 }
@@ -7809,7 +7813,10 @@ onUnmounted(() => {
                           : undefined
                       "
                       :extract-secret="colabOneExtractTunnelToken"
+                      :copyable="true"
+                      :copy-label="t('api.copyTunnelTokenTooltip')"
                       @extracted="onCanvasTokenExtracted"
+                      @copied="onCanvasTokenCopied"
                       @error="reportError($event)"
                     />
                   </div>
@@ -10398,6 +10405,7 @@ onUnmounted(() => {
   min-height: 20px;
   padding: 0 8px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .co-comfy-wf-actions {
@@ -10557,12 +10565,19 @@ onUnmounted(() => {
 }
 
 .co-comfy-drawer-title-text {
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 15px;
   font-weight: 600;
   color: var(--co-text);
+}
+
+.co-comfy-drawer-title :deep(.ant-tag) {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .co-comfy-reset-btn {
@@ -10742,12 +10757,15 @@ onUnmounted(() => {
 .co-comfy-engine-badge {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 1px 6px;
   border-radius: 9999px;
   font-size: 11px;
   font-weight: 550;
   line-height: 1.45;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .co-comfy-engine-badge.is-recommended {
@@ -10916,6 +10934,9 @@ onUnmounted(() => {
   border: 1px solid var(--co-border-secondary);
   background: var(--co-subtle);
   overflow: hidden;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   transition:
     border-color 0.16s ease,
     background-color 0.16s ease;
@@ -10928,6 +10949,8 @@ onUnmounted(() => {
 
 .co-comfy-advanced-toggle {
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10957,6 +10980,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
   flex: 1;
 }
 
@@ -10981,7 +11005,10 @@ onUnmounted(() => {
   padding: 2px 9px;
   border-radius: 9999px;
   font-variant-numeric: tabular-nums;
+  min-width: 0;
+  flex: 0 1 auto;
   max-width: 100%;
+  box-sizing: border-box;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -11002,6 +11029,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-comfy-advanced-grid {
@@ -11009,6 +11039,7 @@ onUnmounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   align-items: start;
+  min-width: 0;
 }
 
 .co-comfy-advanced-grid :deep(.is-wide) {
@@ -11021,6 +11052,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-comfy-specs-title {
@@ -11034,6 +11067,8 @@ onUnmounted(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-comfy-form-divider {
@@ -11433,6 +11468,7 @@ onUnmounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(min(276px, 100%), 1fr));
   gap: 14px;
   align-items: stretch;
+  min-width: 0;
 }
 
 .co-comfy-output-item {
@@ -11440,6 +11476,8 @@ onUnmounted(() => {
   border: 1px solid var(--co-border-secondary);
   background: var(--co-surface);
   overflow: hidden;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
@@ -11711,6 +11749,7 @@ onUnmounted(() => {
 .co-comfy-output-title-row :deep(.ant-tag) {
   margin-inline-end: 0;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .co-comfy-output-filename {

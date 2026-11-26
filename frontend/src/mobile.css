@@ -51,15 +51,58 @@
   /* Tighter card edge gutters maximize readable width on 360px-440px phones */
   .ant-card {
     border-radius: 14px;
+    max-width: 100%;
+    overflow-x: clip;
   }
 
   .ant-card:not(.ant-card-small) > .ant-card-head {
     min-height: 46px;
-    padding: 0 14px;
+    padding: 6px 14px;
+  }
+
+  .ant-card > .ant-card-head .ant-card-head-wrapper {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .ant-card > .ant-card-head .ant-card-head-title {
+    min-width: 0;
   }
 
   .ant-card:not(.ant-card-small) > .ant-card-body {
     padding: 14px;
+    min-width: 0;
+  }
+
+  /* Prevent any long badge/tag on mobile pages from bursting out of cards or drawers.
+     Use :where(...) so specificity stays (0,1,1): above Ant Design's (0,1,0) default,
+     while letting scoped component single-line pill rules override cleanly. */
+  body .ant-tag:where(:not(.co-runtime-tag):not(.co-location-tag):not(.co-billing-pill):not(.co-endurance-tag):not(.co-web-mode-badge):not(.co-comfy-filename-pill)) {
+    max-width: 100%;
+    height: auto;
+    min-height: 22px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    border-radius: 11px;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-align: left;
+  }
+
+  body .ant-tag:where(:not(.co-runtime-tag):not(.co-location-tag):not(.co-billing-pill):not(.co-endurance-tag):not(.co-web-mode-badge):not(.co-comfy-filename-pill)) > span:not(.ant-badge) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ant-space {
+    max-width: 100%;
+  }
+
+  .ant-space-item {
+    min-width: 0;
+    max-width: 100%;
   }
 
   .ant-card-small > .ant-card-head {
@@ -148,10 +191,33 @@
 
   .ant-drawer .ant-drawer-header {
     padding: 12px 14px !important;
+    gap: 8px;
+  }
+
+  .ant-drawer .ant-drawer-header-title {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .ant-drawer .ant-drawer-title {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .ant-drawer .ant-drawer-extra {
+    min-width: 0;
+    max-width: 56%;
+    flex-shrink: 1;
+  }
+
+  .ant-drawer .ant-drawer-extra .ant-space {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .ant-drawer .ant-drawer-body {
     padding: 12px 14px calc(20px + var(--co-safe-bottom)) !important;
+    overflow-x: hidden !important;
   }
 
   .ant-drawer .ant-drawer-wrapper-body:has(> .ant-drawer-footer) .ant-drawer-body {

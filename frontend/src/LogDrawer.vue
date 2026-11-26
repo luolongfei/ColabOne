@@ -503,14 +503,19 @@ onUnmounted(() => {
   border: 1px solid var(--co-border-secondary);
   box-shadow: var(--co-card-shadow);
   flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .co-log-status-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   margin-bottom: 4px;
+  min-width: 0;
 }
 
 .co-eyebrow {
@@ -526,6 +531,8 @@ onUnmounted(() => {
   gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-log-live-speed,
@@ -553,6 +560,8 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--co-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .co-log-toolbar {
@@ -608,10 +617,12 @@ onUnmounted(() => {
 .co-log-entry-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 4px;
   font-size: 12px;
   color: var(--co-muted);
+  min-width: 0;
 }
 
 .co-log-src {

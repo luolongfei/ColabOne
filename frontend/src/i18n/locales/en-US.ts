@@ -192,8 +192,11 @@ export const enUSMessages: ColabOneMessages = {
   "billing.barIdleCountdownTooltip":
     "Auto-releases after {policy} of inactivity; click to reset timer",
   "billing.barIdlePaused": "Busy · Auto-release paused",
+  "billing.barIdlePausedShort": "Paused",
   "billing.barIdleImminent": "Releasing in {clock} · Extend",
+  "billing.barIdleImminentShort": "Extend {clock}",
   "billing.barIdleCountdown": "Idle {clock}",
+  "billing.barIdleCountdownShort": "Idle {clock}",
   "billing.barIdleCountdownAria": "Idle auto-release in {clock}; click to reset timer",
   "billing.barStatusInstances": "{status} (Running: {count})",
   "billing.barBurnRate": "Burn Rate",
@@ -659,6 +662,8 @@ export const enUSMessages: ColabOneMessages = {
   "api.readyNotice": "Public API service is live.",
   "api.savedConfigNotice": "Custom domain tunnel configuration saved to local encrypted vault.",
   "api.tunnelTokenExtractedToast": "Tunnel Token auto-extracted",
+  "api.tunnelTokenCopiedToast": "Tunnel Token copied",
+  "api.copyTunnelTokenTooltip": "Copy Tunnel Token",
   "api.rotatedKeyNotice":
     "API key rotated. Restart the service and update your clients with the new key.",
   "api.connectionCardTitle": "Custom Domain & Tunnel",
