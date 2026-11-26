@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import contextlib
 import gc
+import importlib.metadata
+import importlib.util
+import inspect
 import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
 import select
 import shutil
@@ -42,6 +47,8 @@ __all__ = [
     "COLABONE_VSR_ENGINE_FILES",
     "COLABONE_VSR_HIGH_VRAM_THRESHOLD_MIB",
     "COLABONE_VSR_LOW_VRAM_THRESHOLD_MIB",
+    "COLABONE_VSR_SEEDVR2_ATTENTION_MODES",
+    "COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS",
     "ColabOneProcessGuard",
     "ColabOneSeedVR2ProgressTracker",
     "align_seedvr2_batch_size",
@@ -58,6 +65,8 @@ __all__ = [
     "emit_colabone_progress",
     "parse_cli_help_flags",
     "parse_vsr_progress_line",
+    "resolve_seedvr2_attention_mode",
+    "resolve_seedvr2_optimal_batch_size",
     "resolve_vsr_model_files",
     "run_diffusion_vsr",
 ]
@@ -86,22 +95,38 @@ COLABONE_VSR_SEEDVR2_ENGINES: frozenset[str] = frozenset(
     {"seedvr2_7b_sharp", "seedvr2_7b"}
 )
 COLABONE_VSR_COLOR_CORRECTION_MODES: tuple[str, ...] = ("lab", "wavelet", "none")
+COLABONE_VSR_SEEDVR2_ATTENTION_MODES: tuple[str, ...] = (
+    "sdpa",
+    "flash_attn_2",
+    "flash_attn_3",
+    "sageattn_2",
+    "sageattn_3",
+)
+COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS: tuple[str, ...] = ("png", "mp4")
 
 # VRAM thresholds (MiB):
-# - >= 65536 MiB (64+ GB, e.g. 80 GB A100 / 96 GB RTX PRO 6000): full FP16/BF16,
-#   zero block swap, zero VAE tiling for maximum speed and spatial coherence.
-# - 0 < vram_mib <= 49152 MiB (<= 48 GB, e.g. L40S / A6000): enable conservative
-#   block swap + tiled VAE + CPU offload for SeedVR2 so 48 GB and smaller GPUs
-#   complete safely without CUDA OOM.
+# - >= 80000 MiB (80-96 GB, e.g. G4 96 GB Blackwell / H100 80 GB / A100 80 GB):
+#   larger temporal batch sizes (65 @ <=1152p, 49 @ >1152p), 528-frame single-pass
+#   streaming threshold, full GPU residency with zero CPU offload.
+# - >= 65536 MiB (64+ GB): full FP16/BF16, zero block swap, zero VAE tiling,
+#   GPU-resident intermediate latents (--tensor_offload_device none) and GPU-resident
+#   cached weights during streaming chunks (--dit_offload_device cuda:0).
+# - 0 < vram_mib <= 49152 MiB (<= 48 GB, e.g. L40S / A6000 / A100 40 GB): enable
+#   conservative block swap + tiled VAE + CPU offload for SeedVR2 so 48 GB and
+#   smaller GPUs complete safely without CUDA OOM.
+COLABONE_VSR_ULTRA_VRAM_THRESHOLD_MIB: int = 80000
 COLABONE_VSR_HIGH_VRAM_THRESHOLD_MIB: int = 65536
 COLABONE_VSR_LOW_VRAM_THRESHOLD_MIB: int = 49152
 _SEEDVR2_LOW_VRAM_BLOCKS_TO_SWAP: int = 16
 _SEEDVR2_STREAMING_FRAME_THRESHOLD: int = 264
 _SEEDVR2_MAX_CHUNK_SIZE: int = 264
+_SEEDVR2_HIGH_VRAM_STREAMING_FRAME_THRESHOLD: int = 528
+_SEEDVR2_HIGH_VRAM_MAX_CHUNK_SIZE: int = 528
 
 _FLASHVSR_SINGLE_PASS_THRESHOLD: int = 140
 _FLASHVSR_CHUNK_FRAMES: int = 120
 _FLASHVSR_CHUNK_OVERLAP: int = 8
+_FLASHVSR_EMPTY_CACHE_MIN_FREE_BYTES: int = 12 * 1024 * 1024 * 1024
 
 # Verified CLI flags from pinned numz/ComfyUI-SeedVR2_VideoUpscaler @ 4490bd1f.
 # Using this static verified map avoids spawning `inference_cli.py --help`,
@@ -140,6 +165,14 @@ _SEEDVR2_PINNED_4490BD1F_FLAGS: dict[str, bool] = {
     "--vae_decode_tile_overlap": True,
     "--tile_debug": True,
     "--attention_mode": True,
+    "--compile_dit": False,
+    "--compile_vae": False,
+    "--compile_backend": True,
+    "--compile_mode": True,
+    "--compile_fullgraph": False,
+    "--compile_dynamic": False,
+    "--compile_dynamo_cache_size_limit": True,
+    "--compile_dynamo_recompile_limit": True,
     "--cache_dit": False,
     "--cache_vae": False,
     "--debug": False,
@@ -419,6 +452,9 @@ def _release_cuda_memory() -> None:
     if cuda is None:
         return
     try:
+        is_init_fn = getattr(cuda, "is_initialized", None)
+        if callable(is_init_fn) and not is_init_fn():
+            return
         if callable(getattr(cuda, "is_available", None)) and cuda.is_available():
             if callable(getattr(cuda, "synchronize", None)):
                 cuda.synchronize()
@@ -443,6 +479,495 @@ def _detect_gpu_vram_mib() -> int:
         total_bytes = int(getattr(props, "total_memory", 0) or 0)
         return total_bytes // (1024 * 1024)
     except Exception:
+        return 0
+
+
+def _parse_torch_major_minor(version_str: str) -> tuple[int, int]:
+    raw = str(version_str or "").strip().split("+", 1)[0]
+    match = re.match(r"^(\d+)\.(\d+)", raw)
+    if not match:
+        return (0, 0)
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _parse_major_version(version_str: str) -> int:
+    raw = str(version_str or "").strip()
+    match = re.match(r"^(\d+)", raw)
+    return int(match.group(1)) if match else 0
+
+
+_VSR_ACCEL_CAPS_PROBE_CODE = (
+    "import importlib.metadata, importlib.util, json, re\n"
+    "def has(name):\n"
+    "    try:\n"
+    "        return importlib.util.find_spec(name) is not None\n"
+    "    except Exception:\n"
+    "        return False\n"
+    "def has_sage2():\n"
+    "    if not has('sageattention'):\n"
+    "        return False\n"
+    "    try:\n"
+    "        sv = str(importlib.metadata.version('sageattention') or '').strip()\n"
+    "    except Exception:\n"
+    "        return False\n"
+    "    m = re.match(r'^(\\d+)', sv)\n"
+    "    return bool(m and int(m.group(1)) >= 2)\n"
+    "try:\n"
+    "    tv = str(importlib.metadata.version('torch') or '')\n"
+    "except Exception:\n"
+    "    tv = ''\n"
+    "print(json.dumps({\n"
+    "    'torch_version': tv,\n"
+    "    'has_sage3': has('sageattn3'),\n"
+    "    'has_sage2': has_sage2(),\n"
+    "    'has_fa3': has('flash_attn_interface'),\n"
+    "    'has_fa2': has('flash_attn') and has('flash_attn_2_cuda'),\n"
+    "    'has_triton': has('triton'),\n"
+    "}))\n"
+)
+
+
+def _probe_nvidia_smi_compute_cap() -> tuple[bool, int, int]:
+    """Query CUDA compute capability via ``nvidia-smi`` without initializing a CUDA context."""
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    gpu_idx: int | None = 0
+    uuid_tok: str | None = None
+    if cvd is not None:
+        cvd_clean = cvd.strip()
+        if not cvd_clean or cvd_clean in ("-1", "NoDevFiles"):
+            return (False, 0, 0)
+        first_tok = cvd.split(",", 1)[0].strip()
+        if (
+            not first_tok
+            or first_tok.startswith("-")
+            or first_tok == "NoDevFiles"
+            or any(ch in first_tok for ch in ("\r", "\n", "\x00"))
+        ):
+            return (False, 0, 0)
+        if first_tok.isascii() and first_tok.isdigit():
+            gpu_idx = int(first_tok)
+        else:
+            gpu_idx = None
+            uuid_tok = first_tok
+
+    cmd = (
+        [
+            "nvidia-smi",
+            "-i",
+            uuid_tok,
+            "--query-gpu=compute_cap",
+            "--format=csv,noheader",
+        ]
+        if uuid_tok is not None
+        else [
+            "nvidia-smi",
+            "--query-gpu=compute_cap",
+            "--format=csv,noheader",
+        ]
+    )
+    try:
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=_sanitized_subprocess_env(),
+        )
+    except Exception:
+        return (False, 0, 0)
+    if res.returncode != 0 or not (res.stdout or "").strip():
+        return (False, 0, 0)
+    parsed: list[tuple[int, int]] = []
+    for raw_line in res.stdout.splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^(\d+)\.(\d+)$", line)
+        if match:
+            parsed.append((max(0, int(match.group(1))), max(0, int(match.group(2)))))
+    if not parsed:
+        return (False, 0, 0)
+    if uuid_tok is not None:
+        maj, minor = parsed[0]
+        return (True, maj, minor) if maj > 0 else (False, 0, 0)
+    assert gpu_idx is not None
+    if gpu_idx < 0 or gpu_idx >= len(parsed):
+        return (False, 0, 0)
+    maj, minor = parsed[gpu_idx]
+    return (True, maj, minor) if maj > 0 else (False, 0, 0)
+
+
+def _has_module_spec(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+def _has_sageattention_v2_local() -> bool:
+    if not _has_module_spec("sageattention"):
+        return False
+    try:
+        ver_str = str(importlib.metadata.version("sageattention") or "").strip()
+    except Exception:
+        return False
+    return _parse_major_version(ver_str) >= 2
+
+
+def _probe_local_python_accel_packages() -> dict[str, Any]:
+    """Probe torch version and accel packages in-process using metadata/find_spec (no torch import)."""
+    torch_version = ""
+    try:
+        torch_version = str(importlib.metadata.version("torch") or "")
+    except Exception:
+        torch_mod = sys.modules.get("torch")
+        if torch_mod is not None:
+            torch_version = str(getattr(torch_mod, "__version__", "") or "")
+    return {
+        "torch_version": torch_version,
+        "has_sage3": _has_module_spec("sageattn3"),
+        "has_sage2": _has_sageattention_v2_local(),
+        "has_fa3": _has_module_spec("flash_attn_interface"),
+        "has_fa2": _has_module_spec("flash_attn")
+        and _has_module_spec("flash_attn_2_cuda"),
+        "has_triton": _has_module_spec("triton"),
+    }
+
+
+def _probe_external_python_accel_packages(python_path: Path) -> dict[str, Any]:
+    """Probe torch version and accel packages in ``python_path`` without importing torch."""
+    defaults: dict[str, Any] = {
+        "torch_version": "",
+        "has_sage3": False,
+        "has_sage2": False,
+        "has_fa3": False,
+        "has_fa2": False,
+        "has_triton": False,
+    }
+    try:
+        res = subprocess.run(
+            [str(python_path), "-c", _VSR_ACCEL_CAPS_PROBE_CODE],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=_sanitized_subprocess_env(),
+        )
+    except Exception:
+        return defaults
+    if res.returncode != 0 or not (res.stdout or "").strip():
+        return defaults
+    lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+    for candidate in (lines[-1], res.stdout.strip()):
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return {
+                    "torch_version": str(parsed.get("torch_version") or ""),
+                    "has_sage3": bool(parsed.get("has_sage3")),
+                    "has_sage2": bool(parsed.get("has_sage2")),
+                    "has_fa3": bool(parsed.get("has_fa3")),
+                    "has_fa2": bool(parsed.get("has_fa2")),
+                    "has_triton": bool(parsed.get("has_triton")),
+                }
+        except Exception:
+            continue
+    return defaults
+
+
+def _probe_vsr_gpu_accel_caps(python_bin: str | None = None) -> dict[str, Any]:
+    """Probe CUDA compute capability, attention kernels, Triton, and compile support with zero CUDA context."""
+    caps: dict[str, Any] = {
+        "cuda_available": False,
+        "major": 0,
+        "minor": 0,
+        "has_sage3": False,
+        "has_sage2": False,
+        "has_fa3": False,
+        "has_fa2": False,
+        "has_triton": False,
+        "torch_version": "",
+        "torch_ge_25": False,
+        "can_compile": False,
+    }
+
+    cuda_available, major, minor = _probe_nvidia_smi_compute_cap()
+    caps["cuda_available"] = cuda_available
+    caps["major"] = major
+    caps["minor"] = minor
+
+    pkg_caps: dict[str, Any] = {
+        "torch_version": "",
+        "has_sage3": False,
+        "has_sage2": False,
+        "has_fa3": False,
+        "has_fa2": False,
+        "has_triton": False,
+    }
+    py_raw = str(python_bin or "").strip()
+    if not py_raw:
+        pkg_caps = _probe_local_python_accel_packages()
+    else:
+        try:
+            candidate = Path(py_raw)
+            if not candidate.is_file():
+                resolved_which = shutil.which(py_raw)
+                if resolved_which:
+                    candidate = Path(resolved_which)
+            try:
+                same_exec = (
+                    candidate.parent.resolve() == Path(sys.executable).parent.resolve()
+                    and candidate.resolve() == Path(sys.executable).resolve()
+                )
+            except OSError:
+                same_exec = str(candidate) == str(sys.executable)
+            if same_exec:
+                pkg_caps = _probe_local_python_accel_packages()
+            elif candidate.is_file() and os.access(candidate, os.X_OK):
+                pkg_caps = _probe_external_python_accel_packages(candidate)
+        except OSError:
+            pass
+
+    ver_str = str(pkg_caps.get("torch_version") or "")
+    caps["torch_version"] = ver_str
+    caps["torch_ge_25"] = _parse_torch_major_minor(ver_str) >= (2, 5)
+    caps["has_sage3"] = bool(pkg_caps.get("has_sage3"))
+    caps["has_sage2"] = bool(pkg_caps.get("has_sage2"))
+    caps["has_fa3"] = bool(pkg_caps.get("has_fa3"))
+    caps["has_fa2"] = bool(pkg_caps.get("has_fa2"))
+    caps["has_triton"] = bool(pkg_caps.get("has_triton"))
+    caps["can_compile"] = bool(
+        caps["cuda_available"]
+        and caps["major"] >= 8
+        and caps["has_triton"]
+        and caps["torch_ge_25"]
+    )
+    return caps
+
+
+def _has_warm_inductor_cache(cache_dir: str | Path | None = None) -> bool:
+    """Return True if ``cache_dir`` contains non-empty compiled Inductor files (ignoring ``triton/``)."""
+    if cache_dir is None:
+        raw = str(os.environ.get("TORCHINDUCTOR_CACHE_DIR") or "").strip()
+    else:
+        raw = str(cache_dir).strip()
+    if not raw:
+        return False
+    root = Path(raw)
+    try:
+        if not root.is_dir():
+            return False
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d.lower() != "triton" and not d.startswith(".")
+            ]
+            base = Path(dirpath)
+            for fname in filenames:
+                if fname.startswith("."):
+                    continue
+                fpath = base / fname
+                try:
+                    if fpath.is_file() and fpath.stat().st_size > 0:
+                        return True
+                except OSError:
+                    continue
+        return False
+    except OSError:
+        return False
+
+
+def _parse_optional_auto_bool(value: Any, label: str) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        norm = value.strip().lower()
+        if norm in ("", "auto"):
+            return None
+        if norm in ("1", "true", "yes", "on"):
+            return True
+        if norm in ("0", "false", "no", "off"):
+            return False
+    raise ValueError(
+        f"{label} must be a bool, 'auto', or null, got {value!r}"
+    )
+
+
+def _callable_accepts_kwarg(fn: Any, name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == name and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+def _is_ffmpeg_available_for_seedvr2(ffmpeg_bin: str) -> tuple[bool, str | None]:
+    """Check whether an executable ``ffmpeg`` binary is available for SeedVR2."""
+    raw = str(ffmpeg_bin or "").strip()
+    if raw:
+        try:
+            ff_path = Path(raw)
+            if (
+                ff_path.is_file()
+                and ff_path.name.lower() in ("ffmpeg", "ffmpeg.exe")
+                and os.access(ff_path, os.X_OK)
+            ):
+                parent_str = (
+                    str(ff_path.parent)
+                    if ff_path.is_absolute()
+                    else str(ff_path.parent.resolve())
+                )
+                return (True, parent_str)
+            if ff_path.parent != Path("."):
+                for cand_name in ("ffmpeg", "ffmpeg.exe"):
+                    sibling = ff_path.parent / cand_name
+                    if sibling.is_file() and os.access(sibling, os.X_OK):
+                        parent_str = (
+                            str(sibling.parent)
+                            if sibling.is_absolute()
+                            else str(sibling.parent.resolve())
+                        )
+                        return (True, parent_str)
+        except OSError:
+            pass
+    which_ff = shutil.which("ffmpeg")
+    if which_ff:
+        try:
+            if os.access(which_ff, os.X_OK):
+                return (True, None)
+        except OSError:
+            pass
+    return (False, None)
+
+
+_CUDA_OOM_ERROR_MARKERS: tuple[str, ...] = (
+    "cuda out of memory",
+    "out of memory",
+    "cudaerrormemoryallocation",
+    "cublas_status_alloc_failed",
+    "cudnn_status_alloc_failed",
+)
+
+_FFMPEG_WRITER_ERROR_MARKERS: tuple[str, ...] = (
+    "broken pipe",
+    "brokenpipe",
+    "videowriter",
+    "cannot create video writer",
+    "libx264",
+    "mp4 corrupt",
+    "mp4 truncated",
+    "mp4 missing",
+)
+
+_FFMPEG_WRITER_CONTEXT_ERROR_TOKENS: tuple[str, ...] = (
+    "error",
+    "fail",
+    "pipe",
+    "write",
+    "not found",
+    "exited",
+    "truncat",
+    "corrupt",
+    "missing",
+    "cannot",
+    "unable",
+    "no such file",
+)
+
+
+def _extract_subprocess_output_tail(err_text: str) -> str:
+    """Extract subprocess output text, stripping any ``Command:`` line before error classification."""
+    text = str(err_text or "")
+    match = re.search(r"output\s+tail\s*:", text, re.IGNORECASE)
+    if match is not None:
+        return text[match.end() :].strip()
+    filtered_lines = [
+        line
+        for line in text.splitlines()
+        if not line.lstrip().lower().startswith("command:")
+    ]
+    return "\n".join(filtered_lines).strip()
+
+
+def _is_cuda_oom_error(output_tail: str) -> bool:
+    """Return True when subprocess output indicates a CUDA / GPU out-of-memory error."""
+    lower = _extract_subprocess_output_tail(output_tail).lower()
+    if not lower:
+        return False
+    return any(tok in lower for tok in _CUDA_OOM_ERROR_MARKERS)
+
+
+def _is_ffmpeg_writer_error(output_tail: str) -> bool:
+    """Return True when subprocess output indicates an FFmpeg/video-writer or MP4 truncation failure."""
+    lower = _extract_subprocess_output_tail(output_tail).lower()
+    if not lower:
+        return False
+    if any(tok in lower for tok in _FFMPEG_WRITER_ERROR_MARKERS):
+        return True
+    if ("ffmpeg" in lower or "video_backend" in lower) and any(
+        tok in lower for tok in _FFMPEG_WRITER_CONTEXT_ERROR_TOKENS
+    ):
+        return True
+    if "mp4" in lower and any(
+        tok in lower
+        for tok in (
+            "truncat",
+            "corrupt",
+            "frame count",
+            "fewer frame",
+            "missing frame",
+            "incomplete",
+        )
+    ):
+        return True
+    return False
+
+
+def _next_seedvr2_oom_batch_size(cur_batch: int) -> int:
+    """Step down a SeedVR2 temporal ``4k+1`` batch size after CUDA OOM (65 to 33 to 17 to 9 to 5)."""
+    cur = int(cur_batch)
+    if cur > 33:
+        return 33
+    if cur > 17:
+        return 17
+    if cur > 9:
+        return 9
+    return 5
+
+
+def _read_host_available_ram_mib() -> int:
+    """Read host MemAvailable in MiB from /proc/meminfo (0 if unavailable)."""
+    try:
+        meminfo = Path("/proc/meminfo")
+        if not meminfo.is_file():
+            return 0
+        mem_avail_kib = 0
+        mem_free_kib = 0
+        for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("MemAvailable:"):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    mem_avail_kib = int(parts[1])
+                    break
+            elif line.startswith("MemFree:"):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    mem_free_kib = int(parts[1])
+        kib = mem_avail_kib if mem_avail_kib > 0 else mem_free_kib
+        return kib // 1024
+    except OSError:
         return 0
 
 
@@ -653,16 +1178,228 @@ def align_seedvr2_batch_size(batch_size: int, total_frames: int) -> int:
     return ((clamped - 1) // 4) * 4 + 1
 
 
+def resolve_seedvr2_optimal_batch_size(
+    vram_mib: int,
+    resolution_short_side: int,
+    requested_batch_size: Any = None,
+) -> int:
+    """Choose a VRAM- and resolution-aware SeedVR2 temporal batch size.
+
+    - Explicit positive integers are honored verbatim.
+    - ``None`` or ``"auto"`` selects:
+      - ``>= 90000 MiB`` (G4 96 GB): ``65`` for ``<= 1152`` (1080p), ``49`` for
+        ``<= 1536`` (2K/1440p), ``17`` for ``> 1536`` (4K).
+      - ``>= 80000 MiB`` (H100 / A100 80 GB): ``65`` for ``<= 1152``, ``33`` for
+        ``<= 1536``, ``13`` for ``> 1536``.
+      - ``>= 65536 MiB`` (64+ GB): ``49`` for ``<= 1152``, ``33`` for ``<= 1536``,
+        ``13`` for ``> 1536``.
+      - Otherwise: ``33`` for ``<= 1536``, ``13`` for ``> 1536``.
+    """
+    vram = _validate_non_negative_int(
+        vram_mib if vram_mib is not None else 0, "vram_mib"
+    )
+    short_side = _validate_positive_int(resolution_short_side, "resolution_short_side")
+
+    if requested_batch_size is not None:
+        if isinstance(requested_batch_size, str):
+            norm = requested_batch_size.strip().lower()
+            if norm not in ("", "auto"):
+                return _validate_positive_int(requested_batch_size, "batch_size")
+        else:
+            return _validate_positive_int(requested_batch_size, "batch_size")
+
+    if vram >= 90000:
+        if short_side <= 1152:
+            return 65
+        if short_side <= 1536:
+            return 49
+        return 17
+    if vram >= COLABONE_VSR_ULTRA_VRAM_THRESHOLD_MIB:
+        if short_side <= 1152:
+            return 65
+        if short_side <= 1536:
+            return 33
+        return 13
+    if vram >= COLABONE_VSR_HIGH_VRAM_THRESHOLD_MIB:
+        if short_side <= 1152:
+            return 49
+        if short_side <= 1536:
+            return 33
+        return 13
+    return 33 if short_side <= 1536 else 13
+
+
+def resolve_seedvr2_attention_mode(
+    requested_mode: str = "auto",
+    *,
+    major: int = 0,
+    minor: int = 0,
+    has_sage3: bool = False,
+    has_sage2: bool = False,
+    has_fa3: bool = False,
+    has_fa2: bool = False,
+) -> str:
+    """Resolve the best supported SeedVR2 attention backend for the target GPU.
+
+    Priority in ``"auto"`` mode:
+    - Blackwell workstation/consumer (``major >= 12``, ``sm_120``):
+      ``sageattn_3`` (only when both ``has_sage3`` and ``has_sage2`` are True,
+      since SeedVR2 7B shifted windows fall back to ``sageattn_2``), then
+      ``sageattn_2``, ``flash_attn_2``, ``sdpa``.
+    - Datacenter Blackwell (``major == 10``, ``sm_100``): never ``sageattn_3``;
+      ``sageattn_2``, ``flash_attn_3``, ``flash_attn_2``, ``sdpa``.
+    - Hopper (``major == 9``): ``sageattn_2``, ``flash_attn_3``, ``flash_attn_2``, ``sdpa``.
+    - Ampere/Ada (``major == 8``): ``sageattn_2``, ``flash_attn_2``, ``sdpa``.
+    - Older or unavailable: ``sdpa``.
+    """
+    raw = str(requested_mode if requested_mode is not None else "auto").strip().lower()
+    if raw in ("", "auto"):
+        maj = _validate_non_negative_int(major, "major")
+        _validate_non_negative_int(minor, "minor")
+        if maj >= 12:
+            if has_sage3 and has_sage2:
+                return "sageattn_3"
+            if has_sage2:
+                return "sageattn_2"
+            if has_fa2:
+                return "flash_attn_2"
+            return "sdpa"
+        if maj in (9, 10):
+            if has_sage2:
+                return "sageattn_2"
+            if has_fa3:
+                return "flash_attn_3"
+            if has_fa2:
+                return "flash_attn_2"
+            return "sdpa"
+        if maj == 8:
+            if has_sage2:
+                return "sageattn_2"
+            if has_fa2:
+                return "flash_attn_2"
+            return "sdpa"
+        return "sdpa"
+
+    if raw in COLABONE_VSR_SEEDVR2_ATTENTION_MODES:
+        return raw
+
+    raise ValueError(
+        f"Unsupported SeedVR2 attention_mode: {requested_mode!r}. "
+        f"Expected 'auto' or one of: {', '.join(COLABONE_VSR_SEEDVR2_ATTENTION_MODES)}"
+    )
+
+
+def _seedvr2_attention_fallback_chain(
+    primary_mode: str,
+    *,
+    major: int = 0,
+    has_sage2: bool = False,
+    has_fa3: bool = False,
+    has_fa2: bool = False,
+) -> list[str]:
+    """Return ordered fallback attention modes to try after ``primary_mode`` fails."""
+    mode = str(primary_mode or "sdpa").strip().lower()
+    candidates: list[str] = []
+    if mode == "sageattn_3":
+        if has_sage2:
+            candidates.append("sageattn_2")
+        if has_fa2:
+            candidates.append("flash_attn_2")
+        candidates.append("sdpa")
+    elif mode == "sageattn_2":
+        if major in (9, 10) and has_fa3:
+            candidates.append("flash_attn_3")
+        if has_fa2:
+            candidates.append("flash_attn_2")
+        candidates.append("sdpa")
+    elif mode == "flash_attn_3":
+        if has_fa2:
+            candidates.append("flash_attn_2")
+        candidates.append("sdpa")
+    elif mode == "flash_attn_2":
+        candidates.append("sdpa")
+
+    deduped: list[str] = []
+    for item in candidates:
+        if item != mode and item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
 def compute_seedvr2_streaming_chunk_size(
     exact_frames: int,
-    aligned_batch: int,
+    batch_size: int,
+    *,
+    vram_mib: int = 0,
+    resolution_short_side: int = 0,
+    available_ram_mib: int | None = None,
 ) -> int:
-    """Return a memory-safe SeedVR2 ``--chunk_size`` for long videos, or 0 for single pass."""
+    """Return a memory-safe SeedVR2 ``--chunk_size`` for long videos, or 0 for single pass.
+
+    - When ``resolution_short_side == 0`` (legacy/backward-compatible mode):
+      - Default (``vram_mib < 65536`` or unknown ``0``): single pass up to 264 frames,
+        otherwise chunks bounded at 264 frames.
+      - High VRAM (``vram_mib >= 65536``): single pass up to 528 frames, otherwise
+        batch-aligned chunks bounded at 528 frames.
+    - When ``resolution_short_side > 0``: bounds chunk length using both estimated
+      output frame pixel volume vs host ``MemAvailable`` (keeping working set
+      ``5.25 * frames * pixels * 3 * 2 <= 35%`` of available host RAM) and
+      resolution-tier caps, aligned to a multiple of ``batch_size`` (``>= batch_size``).
+    """
     total = _validate_non_negative_int(exact_frames, "exact_frames")
-    batch = _validate_positive_int(aligned_batch, "aligned_batch")
-    if total <= _SEEDVR2_STREAMING_FRAME_THRESHOLD:
+    batch = _validate_positive_int(batch_size, "batch_size")
+    vram = _validate_non_negative_int(
+        vram_mib if vram_mib is not None else 0, "vram_mib"
+    )
+    short_side = _validate_non_negative_int(
+        resolution_short_side if resolution_short_side is not None else 0,
+        "resolution_short_side",
+    )
+
+    if short_side <= 0:
+        if vram >= COLABONE_VSR_HIGH_VRAM_THRESHOLD_MIB:
+            if total <= _SEEDVR2_HIGH_VRAM_STREAMING_FRAME_THRESHOLD:
+                return 0
+            if batch >= _SEEDVR2_HIGH_VRAM_MAX_CHUNK_SIZE:
+                return _SEEDVR2_HIGH_VRAM_MAX_CHUNK_SIZE
+            multiples = max(1, _SEEDVR2_HIGH_VRAM_MAX_CHUNK_SIZE // batch)
+            return min(_SEEDVR2_HIGH_VRAM_MAX_CHUNK_SIZE, batch * multiples)
+
+        if total <= _SEEDVR2_STREAMING_FRAME_THRESHOLD:
+            return 0
+        return min(_SEEDVR2_MAX_CHUNK_SIZE, max(batch, batch * 8))
+
+    avail_mib = (
+        _validate_non_negative_int(available_ram_mib, "available_ram_mib")
+        if available_ram_mib is not None
+        else _read_host_available_ram_mib()
+    )
+    base_cap = (
+        _SEEDVR2_HIGH_VRAM_MAX_CHUNK_SIZE
+        if vram >= COLABONE_VSR_HIGH_VRAM_THRESHOLD_MIB
+        else _SEEDVR2_MAX_CHUNK_SIZE
+    )
+    if short_side <= 1152:
+        res_cap = min(base_cap, 528)
+    elif short_side <= 1536:
+        res_cap = base_cap if avail_mib >= 120000 else min(base_cap, 264)
+    else:
+        res_cap = base_cap if avail_mib >= 180000 else min(base_cap, 132)
+
+    max_chunk = res_cap
+    if avail_mib > 0:
+        est_w = round(short_side * 16 / 9)
+        pixels = max(1, est_w * short_side)
+        bytes_per_frame = 5.25 * pixels * 3 * 2
+        ram_budget_bytes = 0.35 * (avail_mib * 1024 * 1024)
+        ram_cap = int(ram_budget_bytes // bytes_per_frame)
+        max_chunk = min(res_cap, ram_cap)
+
+    max_chunk = max(batch, max_chunk)
+    if total <= max_chunk:
         return 0
-    return min(_SEEDVR2_MAX_CHUNK_SIZE, max(batch, batch * 8))
+    multiples = max(1, max_chunk // batch)
+    return batch * multiples
 
 
 def compute_seedvr2_chunk_plan(
@@ -862,6 +1599,11 @@ def build_seedvr2_cli_command(
     exact_frames: int = 0,
     chunk_size: int = 0,
     supported_flags: dict[str, bool] | set[str] | frozenset[str] | None = None,
+    attention_mode: str = "",
+    compile_dit: bool = False,
+    compile_vae: bool = False,
+    compile_dynamic: bool = True,
+    output_format: str = "png",
 ) -> list[str]:
     """Build exact CLI command for ``numz/ComfyUI-SeedVR2_VideoUpscaler/inference_cli.py``.
 
@@ -869,13 +1611,19 @@ def build_seedvr2_cli_command(
       ``inference_cli.py --help``.
     - Uses resolved absolute paths so leading-dash relative paths cannot be
       misinterpreted as CLI options.
-    - ``vram_mib > 49152`` (or ``0`` when unknown): zero block swap and zero VAE tiling.
-    - ``0 < vram_mib <= 49152``: enables ``--blocks_to_swap 16 --vae_encode_tiled
-      --vae_decode_tiled --dit_offload_device cpu --vae_offload_device cpu``.
+    - High VRAM (``vram_mib >= 65536``): zero block swap, zero VAE tiling,
+      ``--tensor_offload_device none`` so intermediate latents stay in VRAM, and
+      always pins ``--dit_offload_device cuda:0 --vae_offload_device cuda:0``
+      (even when ``chunk_size == 0``) so SeedVR2's ``cleanup_dit``/``cleanup_vae``
+      never copies weights to CPU RAM before freeing or between streaming chunks.
+    - Low VRAM (``0 < vram_mib <= 49152``): enables ``--blocks_to_swap 16
+      --vae_encode_tiled --vae_decode_tiled --dit_offload_device cpu
+      --vae_offload_device cpu``.
     - ``exact_frames > 0``: appends ``--load_cap <exact_frames>``.
     - ``chunk_size > 0``: appends ``--chunk_size <chunk_size> --cache_dit
-      --cache_vae --dit_offload_device cpu --vae_offload_device cpu`` without
-      duplicating offload flags.
+      --cache_vae`` with GPU-resident offload on high VRAM or CPU offload below
+      high VRAM, without duplicating offload flags.
+    - ``output_format == "mp4"``: appends ``--output_format mp4 --video_backend ffmpeg``.
     """
     engine_key = str(engine or "").strip().lower()
     if engine_key not in COLABONE_VSR_SEEDVR2_ENGINES:
@@ -888,6 +1636,20 @@ def build_seedvr2_cli_command(
         raise ValueError(
             f"Unsupported color_correction: {color_correction!r}. "
             f"Expected one of: {', '.join(COLABONE_VSR_COLOR_CORRECTION_MODES)}"
+        )
+
+    out_fmt = str(output_format or "png").strip().lower()
+    if out_fmt not in COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS:
+        raise ValueError(
+            f"Unsupported SeedVR2 output_format: {output_format!r}. "
+            f"Expected one of: {', '.join(COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS)}"
+        )
+
+    attn_raw = str(attention_mode or "").strip().lower()
+    if attn_raw and attn_raw not in COLABONE_VSR_SEEDVR2_ATTENTION_MODES:
+        raise ValueError(
+            f"Unsupported SeedVR2 attention_mode: {attention_mode!r}. "
+            f"Expected one of: {', '.join(COLABONE_VSR_SEEDVR2_ATTENTION_MODES)}"
         )
 
     py_raw = (
@@ -986,15 +1748,48 @@ def build_seedvr2_cli_command(
 
     fmt_flag, _ = _pick_supported_flag(flag_map, ("--output_format", "--format"))
     if fmt_flag:
-        cmd.extend([fmt_flag, "png"])
+        cmd.extend([fmt_flag, out_fmt])
+    if out_fmt == "mp4":
+        vb_flag, _ = _pick_supported_flag(flag_map, ("--video_backend",))
+        if vb_flag:
+            cmd.extend([vb_flag, "ffmpeg"])
 
     if frames_cap > 0:
         load_cap_flag, _ = _pick_supported_flag(flag_map, ("--load_cap",))
         if load_cap_flag:
             cmd.extend([load_cap_flag, str(frames_cap)])
 
-    need_dit_offload = False
-    need_vae_offload = False
+    if attn_raw:
+        attn_flag, _ = _pick_supported_flag(flag_map, ("--attention_mode",))
+        if attn_flag:
+            cmd.extend([attn_flag, attn_raw])
+
+    use_compile_dit = bool(compile_dit)
+    use_compile_vae = bool(compile_vae)
+    if use_compile_dit:
+        cdit_flag, _ = _pick_supported_flag(flag_map, ("--compile_dit",))
+        if cdit_flag:
+            cmd.append(cdit_flag)
+    if use_compile_vae:
+        cvae_flag, _ = _pick_supported_flag(flag_map, ("--compile_vae",))
+        if cvae_flag:
+            cmd.append(cvae_flag)
+    if use_compile_dit or use_compile_vae:
+        cb_flag, _ = _pick_supported_flag(flag_map, ("--compile_backend",))
+        if cb_flag:
+            cmd.extend([cb_flag, "inductor"])
+        cm_flag, _ = _pick_supported_flag(flag_map, ("--compile_mode",))
+        if cm_flag:
+            cmd.extend([cm_flag, "default"])
+        if compile_dynamic:
+            cdyn_flag, _ = _pick_supported_flag(flag_map, ("--compile_dynamic",))
+            if cdyn_flag:
+                cmd.append(cdyn_flag)
+
+    is_high_vram = vram >= COLABONE_VSR_HIGH_VRAM_THRESHOLD_MIB
+    is_low_vram = 0 < vram <= COLABONE_VSR_LOW_VRAM_THRESHOLD_MIB
+    dit_offload_target: str | None = None
+    vae_offload_target: str | None = None
 
     if chunk_val > 0:
         chunk_flag, _ = _pick_supported_flag(flag_map, ("--chunk_size",))
@@ -1006,10 +1801,23 @@ def build_seedvr2_cli_command(
         cache_vae_flag, _ = _pick_supported_flag(flag_map, ("--cache_vae",))
         if cache_vae_flag:
             cmd.append(cache_vae_flag)
-        need_dit_offload = True
-        need_vae_offload = True
+        if not is_high_vram:
+            dit_offload_target = "cpu"
+            vae_offload_target = "cpu"
 
-    if 0 < vram <= COLABONE_VSR_LOW_VRAM_THRESHOLD_MIB:
+    if is_high_vram:
+        # Always pin offload targets to cuda:0 (even when chunk_size == 0) so
+        # SeedVR2's cleanup_dit/cleanup_vae never copies 15.5 GB to CPU RAM
+        # before freeing and keeps models GPU-resident across streaming chunks.
+        dit_offload_target = "cuda:0"
+        vae_offload_target = "cuda:0"
+        tensor_offload_flag, _ = _pick_supported_flag(
+            flag_map, ("--tensor_offload_device",)
+        )
+        if tensor_offload_flag:
+            cmd.extend([tensor_offload_flag, "none"])
+
+    if is_low_vram:
         swap_flag, _ = _pick_supported_flag(flag_map, ("--blocks_to_swap",))
         if swap_flag:
             cmd.extend([swap_flag, str(_SEEDVR2_LOW_VRAM_BLOCKS_TO_SWAP)])
@@ -1022,18 +1830,18 @@ def build_seedvr2_cli_command(
         if dec_tile_flag:
             cmd.append(dec_tile_flag)
 
-        need_dit_offload = True
-        need_vae_offload = True
+        dit_offload_target = "cpu"
+        vae_offload_target = "cpu"
 
-    if need_dit_offload:
+    if dit_offload_target:
         dit_offload_flag, _ = _pick_supported_flag(flag_map, ("--dit_offload_device",))
         if dit_offload_flag:
-            cmd.extend([dit_offload_flag, "cpu"])
+            cmd.extend([dit_offload_flag, dit_offload_target])
 
-    if need_vae_offload:
+    if vae_offload_target:
         vae_offload_flag, _ = _pick_supported_flag(flag_map, ("--vae_offload_device",))
         if vae_offload_flag:
-            cmd.extend([vae_offload_flag, "cpu"])
+            cmd.extend([vae_offload_flag, vae_offload_target])
 
     return cmd
 
@@ -1183,11 +1991,31 @@ def _resolve_ffprobe_bin(ffmpeg_bin: str) -> str:
     )
     ff_path = _validate_safe_path(ff_raw, "ffmpeg_bin")
     if ff_path.parent != Path("."):
-        sibling_name = ff_path.name.replace("ffmpeg", "ffprobe")
+        sibling_name = re.sub(
+            r"ffmpeg", "ffprobe", ff_path.name, count=1, flags=re.IGNORECASE
+        )
         sibling = ff_path.with_name(sibling_name)
-        if sibling.is_file():
+        if sibling != ff_path and sibling.is_file():
             return str(sibling)
+        for fallback_name in ("ffprobe", "ffprobe.exe"):
+            fallback_sibling = ff_path.parent / fallback_name
+            if fallback_sibling != ff_path and fallback_sibling.is_file():
+                return str(fallback_sibling)
     return "ffprobe"
+
+
+def _is_ffprobe_available(ffmpeg_bin: str) -> bool:
+    ffprobe_bin = _resolve_ffprobe_bin(ffmpeg_bin)
+    has_sep = (os.sep in ffprobe_bin) or (
+        bool(os.altsep) and (os.altsep in ffprobe_bin)
+    )
+    if has_sep:
+        try:
+            ffp_path = Path(ffprobe_bin)
+            return ffp_path.is_file() and os.access(ffp_path, os.X_OK)
+        except OSError:
+            return False
+    return bool(shutil.which(ffprobe_bin))
 
 
 def _probe_video_metadata(ffmpeg_bin: str, video_path: Path) -> dict[str, int]:
@@ -1421,6 +2249,33 @@ def _is_contained_regular_file(path: Path, root_resolved: Path) -> bool:
         return False
 
 
+def _find_seedvr2_output_video(output_dir: Path) -> Path | None:
+    """Locate a non-empty SeedVR2 video file inside ``output_dir`` or as a sibling."""
+    resolved_root = output_dir.resolve()
+    video_candidates = sorted(
+        (
+            p
+            for p in output_dir.rglob("*")
+            if _is_contained_regular_file(p, resolved_root)
+            and p.suffix.lower() in _VIDEO_SUFFIXES
+            and p.stat().st_size > 0
+        ),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not video_candidates:
+        parent_resolved = output_dir.parent.resolve()
+        for suffix in (".mp4", ".mkv", ".mov"):
+            sibling = output_dir.with_suffix(suffix)
+            if (
+                _is_contained_regular_file(sibling, parent_resolved)
+                and sibling.stat().st_size > 0
+            ):
+                video_candidates.append(sibling)
+                break
+    return video_candidates[0] if video_candidates else None
+
+
 def _collect_png_sequence_or_video(
     output_dir: Path,
     seq_dir: Path,
@@ -1459,25 +2314,9 @@ def _collect_png_sequence_or_video(
                 shutil.copy2(src, dst)
         return (seq_dir / "frame_%06d.png", True)
 
-    video_candidates = sorted(
-        (
-            p
-            for p in output_dir.rglob("*")
-            if _is_contained_regular_file(p, resolved_root)
-            and p.suffix.lower() in _VIDEO_SUFFIXES
-        ),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not video_candidates:
-        parent_resolved = output_dir.parent.resolve()
-        for suffix in (".mp4", ".mkv", ".mov"):
-            sibling = output_dir.with_suffix(suffix)
-            if _is_contained_regular_file(sibling, parent_resolved):
-                video_candidates.append(sibling)
-                break
-    if video_candidates:
-        return (video_candidates[0], False)
+    video_candidate = _find_seedvr2_output_video(output_dir)
+    if video_candidate is not None:
+        return (video_candidate, False)
 
     raise RuntimeError(
         f"SeedVR2 completed but produced neither PNG frames nor video under {output_dir}"
@@ -1567,6 +2406,43 @@ def _prepare_seedvr2_input_video(
     return compat_mp4
 
 
+def _build_seedvr2_retry_plan(
+    *,
+    attention_mode: str,
+    compile_dit: bool,
+    compile_vae: bool,
+    output_format: str,
+    accel_caps: dict[str, Any],
+) -> list[tuple[str, bool, bool, str, str]]:
+    """Build ordered SeedVR2 execution attempts with compile and attention step-downs."""
+    raw_attempts: list[tuple[str, bool, bool, str, str]] = [
+        (attention_mode, compile_dit, compile_vae, output_format, "primary")
+    ]
+    if compile_dit or compile_vae:
+        raw_attempts.append(
+            (attention_mode, False, False, output_format, "disable_compile")
+        )
+    for fb_attn in _seedvr2_attention_fallback_chain(
+        attention_mode,
+        major=int(accel_caps.get("major") or 0),
+        has_sage2=bool(accel_caps.get("has_sage2")),
+        has_fa3=bool(accel_caps.get("has_fa3")),
+        has_fa2=bool(accel_caps.get("has_fa2")),
+    ):
+        raw_attempts.append(
+            (fb_attn, False, False, output_format, f"fallback_attention_{fb_attn}")
+        )
+
+    plan: list[tuple[str, bool, bool, str, str]] = []
+    seen: set[tuple[str, bool, bool, str]] = set()
+    for item in raw_attempts:
+        key = item[:4]
+        if key not in seen:
+            seen.add(key)
+            plan.append(item)
+    return plan
+
+
 def _run_seedvr2_engine(
     *,
     engine: str,
@@ -1582,12 +2458,17 @@ def _run_seedvr2_engine(
     fps: int,
     exact_frames: int,
     seed: int,
-    batch_size: int,
+    batch_size: int | str | None,
     temporal_overlap: int,
     color_correction: str,
     vram_mib: int,
     ffmpeg_bin: str,
     guard: ColabOneProcessGuard,
+    attention_mode: str = "auto",
+    compile_dit: bool | str | None = None,
+    compile_vae: bool | str | None = None,
+    compile_dynamic: bool | str | None = None,
+    output_format: str = "auto",
 ) -> dict[str, Any]:
     inference_cli = repo_dir / "inference_cli.py"
     if not inference_cli.is_file():
@@ -1598,12 +2479,18 @@ def _run_seedvr2_engine(
     resolution_short_side = compute_upscale_short_side(
         source_width, source_height, target_width, target_height
     )
-    aligned_batch = align_seedvr2_batch_size(batch_size, exact_frames)
+    resolved_batch = resolve_seedvr2_optimal_batch_size(
+        vram_mib, resolution_short_side, batch_size
+    )
+    aligned_batch = align_seedvr2_batch_size(resolved_batch, exact_frames)
     chunk_plan = compute_seedvr2_chunk_plan(
         exact_frames, aligned_batch, temporal_overlap
     )
     streaming_chunk_size = compute_seedvr2_streaming_chunk_size(
-        exact_frames, aligned_batch
+        exact_frames,
+        aligned_batch,
+        vram_mib=vram_mib,
+        resolution_short_side=resolution_short_side,
     )
     expected_stream_chunks = (
         (exact_frames + streaming_chunk_size - 1) // streaming_chunk_size
@@ -1611,23 +2498,119 @@ def _run_seedvr2_engine(
         else 1
     )
 
+    accel_caps = (
+        _probe_vsr_gpu_accel_caps(python_bin=python_bin)
+        if _callable_accepts_kwarg(_probe_vsr_gpu_accel_caps, "python_bin")
+        else _probe_vsr_gpu_accel_caps()
+    )
+    primary_attention = resolve_seedvr2_attention_mode(
+        attention_mode,
+        major=int(accel_caps.get("major") or 0),
+        minor=int(accel_caps.get("minor") or 0),
+        has_sage3=bool(accel_caps.get("has_sage3")),
+        has_sage2=bool(accel_caps.get("has_sage2")),
+        has_fa3=bool(accel_caps.get("has_fa3")),
+        has_fa2=bool(accel_caps.get("has_fa2")),
+    )
+
+    raw_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    seedvr2_inductor_dir: Path | None = None
+    has_inductor_env = raw_inductor_dir is not None and (
+        bool(str(raw_inductor_dir).strip())
+        or any(ch in str(raw_inductor_dir) for ch in ("\r", "\n", "\x00"))
+    )
+    warm_inductor_cache = False
+    if has_inductor_env:
+        validated_inductor_dir = _validate_safe_path(
+            raw_inductor_dir, "TORCHINDUCTOR_CACHE_DIR"
+        )
+        base_cache_path = Path(os.path.abspath(str(validated_inductor_dir).strip()))
+        _reject_symlink(base_cache_path, "TORCHINDUCTOR_CACHE_DIR")
+        candidate_inductor_dir = (
+            base_cache_path
+            if base_cache_path.name.lower() == "seedvr2"
+            else base_cache_path / "seedvr2"
+        )
+        _reject_symlink(candidate_inductor_dir, "seedvr2_inductor_dir")
+        warm_inductor_cache = _has_warm_inductor_cache(candidate_inductor_dir)
+        try:
+            candidate_inductor_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            seedvr2_inductor_dir = None
+        else:
+            seedvr2_inductor_dir = candidate_inductor_dir
+
+    can_compile = bool(accel_caps.get("can_compile"))
+    is_high_vram = vram_mib >= COLABONE_VSR_HIGH_VRAM_THRESHOLD_MIB
+    auto_compile_dit = bool(
+        can_compile
+        and is_high_vram
+        and (
+            len(chunk_plan) >= 8
+            or (
+                len(chunk_plan) >= 4
+                and (
+                    warm_inductor_cache
+                    if has_inductor_env
+                    else _has_warm_inductor_cache(None)
+                )
+            )
+        )
+    )
+    req_compile_dit = _parse_optional_auto_bool(compile_dit, "compile_dit")
+    req_compile_vae = _parse_optional_auto_bool(compile_vae, "compile_vae")
+    req_compile_dynamic = _parse_optional_auto_bool(compile_dynamic, "compile_dynamic")
+    primary_compile_dit = (
+        bool(req_compile_dit and can_compile)
+        if req_compile_dit is not None
+        else auto_compile_dit
+    )
+    primary_compile_vae = (
+        bool(req_compile_vae and can_compile)
+        if req_compile_vae is not None
+        else False
+    )
+    effective_compile_dynamic = (
+        True if req_compile_dynamic is None else bool(req_compile_dynamic)
+    )
+
+    out_fmt_raw = str(output_format if output_format is not None else "auto").strip().lower()
+    if out_fmt_raw in ("", "auto"):
+        # Default to lossless PNG to preserve bit-exact RGB24 without SeedVR2's
+        # untagged BT.601 yuv420p chroma subsampling or color-matrix shift.
+        primary_output_format = "png"
+    elif out_fmt_raw in COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS:
+        primary_output_format = out_fmt_raw
+    else:
+        raise ValueError(
+            f"Unsupported SeedVR2 output_format: {output_format!r}. "
+            f"Expected 'auto' or one of: {', '.join(COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS)}"
+        )
+
+    ffmpeg_extra_dir: str | None = None
+    if primary_output_format == "mp4":
+        _ffmpeg_ok, ffmpeg_extra_dir = _is_ffmpeg_available_for_seedvr2(ffmpeg_bin)
+
     emit_colabone_progress(
         "prepare",
         0.05,
         (
             f"正在启动 {engine} 超分（短边 {resolution_short_side}px，"
-            f"批次 {aligned_batch}，共 {len(chunk_plan)} 批）"
+            f"批次 {aligned_batch}，共 {len(chunk_plan)} 批，"
+            f"注意力 {primary_attention}）"
         ),
         engine=engine,
         resolution_short_side=resolution_short_side,
         batch_size=aligned_batch,
         chunks=len(chunk_plan),
         vram_mib=vram_mib,
+        attention_mode=primary_attention,
+        compile_dit=primary_compile_dit,
+        compile_vae=primary_compile_vae,
+        output_format=primary_output_format,
     )
 
     tmp_dir = guard.create_temp_dir(prefix="colabone_seedvr2_")
-    png_out_dir = tmp_dir / "png_frames"
-    png_out_dir.mkdir(parents=True, exist_ok=True)
     seq_dir = tmp_dir / "seq"
 
     seedvr2_input_path = _prepare_seedvr2_input_video(
@@ -1639,42 +2622,255 @@ def _run_seedvr2_engine(
         guard=guard,
     )
 
-    cli_cmd = build_seedvr2_cli_command(
-        python_bin,
-        repo_dir,
-        weights_dir,
-        seedvr2_input_path,
-        png_out_dir,
-        engine=engine,
-        resolution_short_side=resolution_short_side,
-        batch_size=aligned_batch,
-        temporal_overlap=temporal_overlap,
-        color_correction=color_correction,
-        seed=seed,
-        vram_mib=vram_mib,
-        exact_frames=exact_frames,
-        chunk_size=streaming_chunk_size,
+    retry_plan = _build_seedvr2_retry_plan(
+        attention_mode=primary_attention,
+        compile_dit=primary_compile_dit,
+        compile_vae=primary_compile_vae,
+        output_format=primary_output_format,
+        accel_caps=accel_caps,
     )
+    fallback_history: list[str] = []
+    cur_batch_size = aligned_batch
+    cur_vram_mib = vram_mib
+    cur_chunk_size = streaming_chunk_size
+    cur_chunk_plan = chunk_plan
+    cur_expected_stream_chunks = expected_stream_chunks
+    effective_attention = primary_attention
+    effective_compile_dit = primary_compile_dit
+    effective_compile_vae = primary_compile_vae
+    effective_output_format = primary_output_format
+    winning_out_dir: Path | None = None
+    tried_png_fallback = primary_output_format == "png"
+    oom_stepdowns = 0
+    max_oom_stepdowns = 4
 
-    upscale_msg = f"正在执行 SeedVR2 时空扩散超分（{engine}）"
-    emit_colabone_progress(
-        "upscale",
-        0.10,
-        upscale_msg,
-        engine=engine,
-    )
-    tracker = ColabOneSeedVR2ProgressTracker(total_chunks=expected_stream_chunks)
-    _run_monitored_subprocess(
-        cli_cmd,
-        cwd=repo_dir,
-        guard=guard,
-        engine=engine,
-        stage="upscale",
-        progress_start=0.10,
-        progress_end=0.86,
-        progress_message=upscale_msg,
-        progress_tracker=tracker,
-    )
+    attempt_idx = 0
+    while attempt_idx < len(retry_plan):
+        (
+            cur_attention,
+            cur_compile_dit,
+            cur_compile_vae,
+            cur_output_format,
+            attempt_tag,
+        ) = retry_plan[attempt_idx]
+        attempt_out_dir = tmp_dir / f"seedvr2_out_{attempt_idx}"
+        attempt_out_dir.mkdir(parents=True, exist_ok=True)
+
+        cli_cmd = build_seedvr2_cli_command(
+            python_bin,
+            repo_dir,
+            weights_dir,
+            seedvr2_input_path,
+            attempt_out_dir,
+            engine=engine,
+            resolution_short_side=resolution_short_side,
+            batch_size=cur_batch_size,
+            temporal_overlap=temporal_overlap,
+            color_correction=color_correction,
+            seed=seed,
+            vram_mib=cur_vram_mib,
+            exact_frames=exact_frames,
+            chunk_size=cur_chunk_size,
+            attention_mode=cur_attention,
+            compile_dit=cur_compile_dit,
+            compile_vae=cur_compile_vae,
+            compile_dynamic=effective_compile_dynamic,
+            output_format=cur_output_format,
+        )
+
+        attempt_env_extra: dict[str, str] = {}
+        if seedvr2_inductor_dir is not None:
+            attempt_env_extra["TORCHINDUCTOR_CACHE_DIR"] = str(seedvr2_inductor_dir)
+        if cur_output_format == "mp4" and ffmpeg_extra_dir:
+            base_path = os.environ.get("PATH", "")
+            attempt_env_extra["PATH"] = (
+                f"{ffmpeg_extra_dir}{os.pathsep}{base_path}"
+                if base_path
+                else ffmpeg_extra_dir
+            )
+
+        upscale_msg = f"正在执行 SeedVR2 时空扩散超分（{engine}）"
+        if attempt_idx > 0:
+            upscale_msg = (
+                f"正在执行 SeedVR2 时空扩散超分（{engine}，回退模式："
+                f"attention={cur_attention}，compile={cur_compile_dit or cur_compile_vae}，"
+                f"batch={cur_batch_size}，format={cur_output_format}）"
+            )
+        emit_colabone_progress(
+            "upscale",
+            0.10,
+            upscale_msg,
+            engine=engine,
+            attention_mode=cur_attention,
+            compile_dit=cur_compile_dit,
+            compile_vae=cur_compile_vae,
+            batch_size=cur_batch_size,
+            output_format=cur_output_format,
+        )
+        tracker = ColabOneSeedVR2ProgressTracker(
+            total_chunks=cur_expected_stream_chunks
+        )
+        try:
+            _run_monitored_subprocess(
+                cli_cmd,
+                cwd=repo_dir,
+                guard=guard,
+                engine=engine,
+                stage="upscale",
+                progress_start=0.10,
+                progress_end=0.86,
+                progress_message=upscale_msg,
+                progress_tracker=tracker,
+                env_extra=attempt_env_extra or None,
+            )
+            if cur_output_format == "mp4":
+                mp4_candidate = _find_seedvr2_output_video(attempt_out_dir)
+                if mp4_candidate is None:
+                    resolved_attempt_root = attempt_out_dir.resolve()
+                    has_pngs = any(
+                        _is_contained_regular_file(p, resolved_attempt_root)
+                        for p in attempt_out_dir.rglob("*.png")
+                    )
+                    if not has_pngs:
+                        raise RuntimeError(
+                            "Output tail:\nffmpeg video_backend MP4 missing or empty"
+                        )
+                elif _is_ffprobe_available(ffmpeg_bin):
+                    probed_mp4 = _probe_video_metadata(ffmpeg_bin, mp4_candidate)
+                    probed_frames = int(probed_mp4.get("frames") or 0)
+                    if probed_frames <= 0 or probed_frames < exact_frames:
+                        raise RuntimeError(
+                            f"Output tail:\nffmpeg video_backend MP4 corrupt or truncated "
+                            f"({probed_frames}/{exact_frames} frames)"
+                        )
+            effective_attention = cur_attention
+            effective_compile_dit = cur_compile_dit
+            effective_compile_vae = cur_compile_vae
+            effective_output_format = cur_output_format
+            winning_out_dir = attempt_out_dir
+            break
+        except RuntimeError as exc:
+            failed_batch_size = cur_batch_size
+            failed_vram_mib = cur_vram_mib
+            output_tail = _extract_subprocess_output_tail(str(exc))
+            is_oom = _is_cuda_oom_error(output_tail)
+            is_ffmpeg_err = (not is_oom) and _is_ffmpeg_writer_error(output_tail)
+
+            if is_ffmpeg_err and cur_output_format == "mp4" and not tried_png_fallback:
+                tried_png_fallback = True
+                png_attempt = (
+                    cur_attention,
+                    cur_compile_dit,
+                    cur_compile_vae,
+                    "png",
+                    "fallback_output_png",
+                )
+                retry_plan.insert(attempt_idx + 1, png_attempt)
+                seen_keys = {png_attempt[:4]}
+                updated_tail: list[tuple[str, bool, bool, str, str]] = []
+                for tail_item in retry_plan[attempt_idx + 2 :]:
+                    converted = (
+                        tail_item[0],
+                        tail_item[1],
+                        tail_item[2],
+                        "png",
+                        tail_item[4],
+                    )
+                    if converted[:4] not in seen_keys:
+                        seen_keys.add(converted[:4])
+                        updated_tail.append(converted)
+                retry_plan[attempt_idx + 2 :] = updated_tail
+            elif is_oom and oom_stepdowns < max_oom_stepdowns:
+                was_small_batch = cur_batch_size <= 17
+                next_batch = align_seedvr2_batch_size(
+                    _next_seedvr2_oom_batch_size(cur_batch_size), exact_frames
+                )
+                next_vram_mib = cur_vram_mib
+                next_compile_dit = False
+                next_compile_vae = False
+                if was_small_batch:
+                    next_vram_mib = (
+                        min(cur_vram_mib, COLABONE_VSR_LOW_VRAM_THRESHOLD_MIB)
+                        if cur_vram_mib > 0
+                        else COLABONE_VSR_LOW_VRAM_THRESHOLD_MIB
+                    )
+                changed = (
+                    next_batch < cur_batch_size
+                    or next_vram_mib != cur_vram_mib
+                    or next_compile_dit != cur_compile_dit
+                    or next_compile_vae != cur_compile_vae
+                )
+                if changed:
+                    oom_stepdowns += 1
+                    cur_batch_size = next_batch
+                    cur_vram_mib = next_vram_mib
+                    cur_chunk_plan = compute_seedvr2_chunk_plan(
+                        exact_frames, cur_batch_size, temporal_overlap
+                    )
+                    cur_chunk_size = compute_seedvr2_streaming_chunk_size(
+                        exact_frames,
+                        cur_batch_size,
+                        vram_mib=cur_vram_mib,
+                        resolution_short_side=resolution_short_side,
+                    )
+                    cur_expected_stream_chunks = (
+                        (exact_frames + cur_chunk_size - 1) // cur_chunk_size
+                        if cur_chunk_size > 0
+                        else 1
+                    )
+                    oom_tag = (
+                        f"oom_stepdown_b{cur_batch_size}_low_vram"
+                        if was_small_batch
+                        else f"oom_stepdown_b{cur_batch_size}"
+                    )
+                    oom_attempt = (
+                        cur_attention,
+                        next_compile_dit,
+                        next_compile_vae,
+                        cur_output_format,
+                        oom_tag,
+                    )
+                    retry_plan.insert(attempt_idx + 1, oom_attempt)
+                    if (
+                        next_compile_dit != cur_compile_dit
+                        or next_compile_vae != cur_compile_vae
+                        or was_small_batch
+                    ):
+                        retry_plan[attempt_idx + 2 :] = [
+                            item
+                            for item in retry_plan[attempt_idx + 2 :]
+                            if item[:4] != oom_attempt[:4]
+                        ]
+
+            if attempt_idx + 1 >= len(retry_plan):
+                raise
+
+            next_attempt = retry_plan[attempt_idx + 1]
+            reason = (
+                f"{attempt_tag} failed "
+                f"(attention={cur_attention}, compile_dit={cur_compile_dit}, "
+                f"compile_vae={cur_compile_vae}, batch_size={failed_batch_size}, "
+                f"vram_mib={failed_vram_mib}, output_format={cur_output_format}); "
+                f"retrying with {next_attempt[4]} "
+                f"(attention={next_attempt[0]}, compile_dit={next_attempt[1]}, "
+                f"compile_vae={next_attempt[2]}, batch_size={cur_batch_size}, "
+                f"vram_mib={cur_vram_mib}, output_format={next_attempt[3]})"
+            )
+            fallback_history.append(reason)
+            sys.stderr.write(f"[colabone-vsr] WARNING: {reason}\n")
+            sys.stderr.flush()
+            shutil.rmtree(attempt_out_dir, ignore_errors=True)
+            for sibling_suffix in (".mp4", ".mkv", ".mov"):
+                sibling_vid = attempt_out_dir.with_suffix(sibling_suffix)
+                if sibling_vid.is_file():
+                    try:
+                        sibling_vid.unlink()
+                    except OSError:
+                        pass
+            _release_cuda_memory()
+            attempt_idx += 1
+
+    assert winning_out_dir is not None
 
     emit_colabone_progress(
         "encode",
@@ -1683,7 +2879,7 @@ def _run_seedvr2_engine(
         engine=engine,
     )
     input_spec, is_png_seq = _collect_png_sequence_or_video(
-        png_out_dir, seq_dir, exact_frames
+        winning_out_dir, seq_dir, exact_frames
     )
 
     temp_output = output_video_path.with_name(
@@ -1714,9 +2910,14 @@ def _run_seedvr2_engine(
 
     return {
         "resolution_short_side": resolution_short_side,
-        "batch_size": aligned_batch,
-        "chunks": len(chunk_plan),
-        "streaming_chunk_size": streaming_chunk_size,
+        "batch_size": cur_batch_size,
+        "chunks": len(cur_chunk_plan),
+        "streaming_chunk_size": cur_chunk_size,
+        "attention_mode": effective_attention,
+        "compile_dit": effective_compile_dit,
+        "compile_vae": effective_compile_vae,
+        "output_format": effective_output_format,
+        "accel_fallbacks": fallback_history,
     }
 
 
@@ -1889,10 +3090,12 @@ class _ColabOneRgb24FrameReader:
 
 
 class _ColabOneFfv1CoverCropWriter:
-    """Streams uint8 RGB24 ``(T, H, W, 3)`` chunks directly into lossless FFV1 MKV.
+    """Streams uint8 RGB24 ``(T, H, W, 3)`` chunks asynchronously into lossless FFV1 MKV.
 
-    Redirects FFmpeg stderr to a temporary log file inside ``work_dir`` so
-    stderr buffers can never deadlock against stdin writes.
+    Uses a bounded background queue (``maxsize=1``) so FFmpeg FFV1 compression
+    overlaps with the next GPU diffusion chunk while host RAM stays strictly
+    bounded. Redirects FFmpeg stderr to a temporary log file inside ``work_dir``
+    so stderr buffers can never deadlock against stdin writes.
     """
 
     def __init__(
@@ -1918,6 +3121,14 @@ class _ColabOneFfv1CoverCropWriter:
         self._last_frame_bytes: bytes | None = None
         self._closed = False
         self._committed = False
+
+        self._write_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
+        self._sentinel = object()
+        self._bg_error: BaseException | None = None
+        self._bg_error_lock = threading.Lock()
+        self._stderr_lock = threading.Lock()
+        self._abort_event = threading.Event()
+        self._writer_thread: threading.Thread | None = None
 
         self._temp_output = output_video_path.with_name(
             f".{output_video_path.name}.{os.getpid()}.tmp.mkv"
@@ -1966,27 +3177,88 @@ class _ColabOneFfv1CoverCropWriter:
                 env=_sanitized_subprocess_env(),
             )
             self._guard.register_child(self._proc)
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop,
+                name="colabone-ffv1-writer",
+                daemon=True,
+            )
+            self._writer_thread.start()
         except BaseException:
-            if self._proc is not None and self._proc.poll() is None:
-                self._guard.terminate_child(self._proc, grace_seconds=1.5)
+            self._abort_event.set()
+            if self._proc is not None:
+                if self._proc.stdin is not None:
+                    try:
+                        self._proc.stdin.close()
+                    except Exception:
+                        pass
+                if self._proc.poll() is None:
+                    self._guard.terminate_child(self._proc, grace_seconds=1.5)
                 self._guard.unregister_child(self._proc)
             self._close_stderr()
             raise
 
     def _close_stderr(self) -> None:
-        if self._stderr_fh is not None:
+        with self._stderr_lock:
+            fh = self._stderr_fh
+            self._stderr_fh = None
+        if fh is not None:
             try:
-                self._stderr_fh.close()
+                fh.close()
             except Exception:
                 pass
-            self._stderr_fh = None
+
+    def _raise_if_bg_error(self) -> None:
+        with self._bg_error_lock:
+            err = self._bg_error
+        if err is not None:
+            raise err
+
+    def _drain_queue_nowait(self) -> None:
+        while True:
+            try:
+                self._write_queue.get_nowait()
+                self._write_queue.task_done()
+            except queue.Empty:
+                break
+
+    def _writer_loop(self) -> None:
+        try:
+            while True:
+                try:
+                    item = self._write_queue.get(timeout=0.25)
+                except queue.Empty:
+                    if self._abort_event.is_set():
+                        return
+                    continue
+                try:
+                    if item is self._sentinel:
+                        return
+                    if self._abort_event.is_set():
+                        continue
+                    self._write_frames_sync(item)
+                finally:
+                    self._write_queue.task_done()
+        except BaseException as exc:
+            if self._abort_event.is_set() and isinstance(
+                exc, (BrokenPipeError, OSError, ValueError, RuntimeError)
+            ):
+                self._drain_queue_nowait()
+                return
+            with self._bg_error_lock:
+                if self._bg_error is None:
+                    self._bg_error = exc
+            self._abort_event.set()
+            self._drain_queue_nowait()
 
     def _write_raw_frame(self, frame_bytes: bytes) -> None:
-        if self._proc is None or self._proc.stdin is None:
+        proc = self._proc
+        if proc is None or proc.stdin is None:
             raise RuntimeError("FFV1 writer stdin is closed")
         try:
-            self._proc.stdin.write(frame_bytes)
-        except (BrokenPipeError, OSError) as exc:
+            proc.stdin.write(frame_bytes)
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            if self._abort_event.is_set():
+                raise
             rc = self._wait_for_exit_on_error()
             err_tail = _read_stderr_tail(self._stderr_path)
             raise RuntimeError(
@@ -2014,11 +3286,28 @@ class _ColabOneFfv1CoverCropWriter:
         self._close_stderr()
         return rc
 
+    def _write_frames_sync(self, arr: Any) -> None:
+        import numpy as np  # type: ignore[import-not-found]
+
+        remaining = self._exact_frames - self._frames_written
+        if remaining <= 0 or arr.shape[0] <= 0:
+            return
+
+        count = min(int(arr.shape[0]), remaining)
+        for idx in range(count):
+            if self._abort_event.is_set():
+                return
+            frame_bytes = np.ascontiguousarray(arr[idx]).tobytes()
+            self._write_raw_frame(frame_bytes)
+            self._last_frame_bytes = frame_bytes
+            self._frames_written += 1
+
     def write_frames(self, frames_uint8: Any) -> None:
         import numpy as np  # type: ignore[import-not-found]
 
         if self._closed:
             raise RuntimeError("FFV1 writer is already closed")
+        self._raise_if_bg_error()
         arr = np.asarray(frames_uint8, dtype=np.uint8)
         if arr.ndim != 4 or arr.shape[3] != 3:
             raise RuntimeError(
@@ -2029,27 +3318,74 @@ class _ColabOneFfv1CoverCropWriter:
                 f"Frame chunk spatial shape {arr.shape[2]}x{arr.shape[1]} "
                 f"does not match writer {self._in_w}x{self._in_h}"
             )
-
-        remaining = self._exact_frames - self._frames_written
-        if remaining <= 0 or arr.shape[0] <= 0:
+        if arr.shape[0] <= 0:
             return
 
-        count = min(int(arr.shape[0]), remaining)
-        for idx in range(count):
-            frame_bytes = np.ascontiguousarray(arr[idx]).tobytes()
-            self._write_raw_frame(frame_bytes)
-            self._last_frame_bytes = frame_bytes
-            self._frames_written += 1
+        payload = arr.copy() if hasattr(arr, "copy") else arr
+        while True:
+            self._raise_if_bg_error()
+            if self._abort_event.is_set():
+                self._raise_if_bg_error()
+                raise RuntimeError("FFV1 writer background worker stopped")
+            try:
+                self._write_queue.put(payload, timeout=0.25)
+            except queue.Full:
+                continue
+            self._raise_if_bg_error()
+            if self._abort_event.is_set():
+                self._raise_if_bg_error()
+                raise RuntimeError("FFV1 writer background worker stopped")
+            return
 
     def finalize(self) -> None:
         if self._closed:
             return
-        if self._frames_written <= 0 or self._last_frame_bytes is None:
+        try:
+            self._raise_if_bg_error()
+            thread = self._writer_thread
+            deadline = time.monotonic() + 300.0
+            if thread is not None and thread.is_alive():
+                sentinel_enqueued = False
+                while thread.is_alive() and not sentinel_enqueued:
+                    self._raise_if_bg_error()
+                    if self._abort_event.is_set():
+                        self._raise_if_bg_error()
+                        raise RuntimeError("FFV1 writer background worker stopped")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            "FFV1 background writer timed out during finalize"
+                        )
+                    try:
+                        self._write_queue.put(
+                            self._sentinel, timeout=min(0.25, remaining)
+                        )
+                        sentinel_enqueued = True
+                    except queue.Full:
+                        continue
+
+                while thread.is_alive():
+                    self._raise_if_bg_error()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            "FFV1 background writer timed out during finalize"
+                        )
+                    thread.join(timeout=min(0.25, remaining))
+
+            if thread is not None and thread.is_alive():
+                raise TimeoutError("FFV1 background writer timed out during finalize")
+            self._writer_thread = None
+            self._raise_if_bg_error()
+
+            if self._frames_written <= 0 or self._last_frame_bytes is None:
+                raise RuntimeError("FlashVSR+ produced zero output frames")
+            while self._frames_written < self._exact_frames:
+                self._write_raw_frame(self._last_frame_bytes)
+                self._frames_written += 1
+        except BaseException:
             self.abort()
-            raise RuntimeError("FlashVSR+ produced zero output frames")
-        while self._frames_written < self._exact_frames:
-            self._write_raw_frame(self._last_frame_bytes)
-            self._frames_written += 1
+            raise
 
         self._closed = True
         proc = self._proc
@@ -2092,12 +3428,31 @@ class _ColabOneFfv1CoverCropWriter:
                 pass
 
     def abort(self) -> None:
+        self._abort_event.set()
         if self._closed:
             return
         self._closed = True
         proc = self._proc
-        self._proc = None
+        thread = self._writer_thread
         try:
+            # 1. Terminate/kill FFmpeg FIRST so any blocked stdin.write() in the
+            #    writer thread unblocks immediately with BrokenPipeError.
+            if proc is not None and proc.poll() is None:
+                self._guard.terminate_child(proc, grace_seconds=2.0)
+
+            # 2. Drain queue and join writer thread BEFORE closing proc.stdin or stderr.
+            self._drain_queue_nowait()
+            try:
+                self._write_queue.put_nowait(self._sentinel)
+            except queue.Full:
+                pass
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=10.0)
+            self._writer_thread = None
+        finally:
+            self._proc = None
+            # 3. Only close proc.stdin, close stderr, and unlink temp files AFTER
+            #    the writer thread has been joined.
             if proc is not None:
                 if proc.stdin is not None:
                     try:
@@ -2105,13 +3460,9 @@ class _ColabOneFfv1CoverCropWriter:
                     except Exception:
                         pass
                 if proc.poll() is None:
-                    self._guard.terminate_child(proc, grace_seconds=2.0)
-        finally:
-            self._close_stderr()
-            if proc is not None:
-                if proc.poll() is None:
                     self._guard.terminate_child(proc, grace_seconds=1.5)
                 self._guard.unregister_child(proc)
+            self._close_stderr()
             if self._temp_output.exists():
                 try:
                     self._temp_output.unlink()
@@ -2253,6 +3604,179 @@ def _normalize_flashvsr_tensor_output(
     return t.contiguous().numpy()
 
 
+def _configure_flashvsr_cuda_perf(torch_mod: Any) -> None:
+    """Enable cuDNN autotune and TF32 matmul/conv fast-paths on CUDA GPUs."""
+    try:
+        backends = getattr(torch_mod, "backends", None)
+        if backends is not None:
+            cudnn = getattr(backends, "cudnn", None)
+            if cudnn is not None:
+                try:
+                    cudnn.benchmark = True
+                except Exception:
+                    pass
+                try:
+                    cudnn.allow_tf32 = True
+                except Exception:
+                    pass
+            cuda_backend = getattr(backends, "cuda", None)
+            if cuda_backend is not None:
+                matmul = getattr(cuda_backend, "matmul", None)
+                if matmul is not None:
+                    try:
+                        matmul.allow_tf32 = True
+                    except Exception:
+                        pass
+        set_prec = getattr(torch_mod, "set_float32_matmul_precision", None)
+        if callable(set_prec):
+            set_prec("high")
+    except Exception:
+        pass
+
+
+def _build_flashvsr_lq_tensor(
+    chunk_np: Any,
+    *,
+    torch_mod: Any,
+    np_mod: Any,
+    f_mod: Any,
+    device: str,
+    source_height: int,
+    source_width: int,
+    cover_h: int,
+    cover_w: int,
+    pad_h: int,
+    pad_w: int,
+) -> Any:
+    """Build ``[1, 3, T, pad_h, pad_w]`` CPU float32 tensor in ``[-1, 1]``.
+
+    Runs bicubic resize and replicate padding on CUDA in 16-frame slices when
+    available (keeping peak GPU VRAM below ~1 GB even at 4K while avoiding
+    slow multi-second CPU bicubic loops), writing directly into a pre-allocated
+    normal CPU float32 tensor for FlashVSR+ StreamRunner's chunked GPU transfer.
+    """
+    needs_resize = cover_h != source_height or cover_w != source_width
+    needs_pad = pad_h > cover_h or pad_w > cover_w
+
+    if str(device).startswith("cuda") and (needs_resize or needs_pad):
+        _GPU_SLICE = 16
+        total_frames = int(chunk_np.shape[0])
+        lq_video: Any = None
+        gpu_slice: Any = None
+        cpu_slice: Any = None
+        no_grad_factory = getattr(torch_mod, "no_grad", None)
+        try:
+            # Pre-allocate outside torch.inference_mode() so the returned tensor
+            # is a normal CPU float32 tensor rather than an inference tensor.
+            lq_video = torch_mod.empty(
+                (1, 3, total_frames, pad_h, pad_w),
+                dtype=torch_mod.float32,
+                device="cpu",
+            )
+            for start in range(0, total_frames, _GPU_SLICE):
+                end = min(start + _GPU_SLICE, total_frames)
+                with torch_mod.inference_mode():
+                    gpu_slice = (
+                        torch_mod.from_numpy(
+                            np_mod.ascontiguousarray(chunk_np[start:end])
+                        )
+                        .to(device=device, non_blocking=True)
+                        .permute(0, 3, 1, 2)
+                        .to(dtype=torch_mod.float32)
+                        .div_(127.5)
+                        .sub_(1.0)
+                    )
+                    if needs_resize:
+                        gpu_slice = f_mod.interpolate(
+                            gpu_slice,
+                            size=(cover_h, cover_w),
+                            mode="bicubic",
+                            align_corners=False,
+                        ).clamp_(-1.0, 1.0)
+                    if needs_pad:
+                        gpu_slice = f_mod.pad(
+                            gpu_slice,
+                            (0, pad_w - cover_w, 0, pad_h - cover_h),
+                            mode="replicate",
+                        )
+                    cpu_slice = gpu_slice.permute(1, 0, 2, 3).cpu()
+                    del gpu_slice
+                    gpu_slice = None
+                copy_ctx = (
+                    no_grad_factory()
+                    if callable(no_grad_factory)
+                    else contextlib.nullcontext()
+                )
+                with copy_ctx:
+                    lq_video[0, :, start:end, :, :].copy_(cpu_slice)
+                del cpu_slice
+                cpu_slice = None
+            return lq_video
+        except Exception:
+            del lq_video, gpu_slice, cpu_slice
+            cuda = getattr(torch_mod, "cuda", None)
+            if cuda is not None:
+                empty_cache = getattr(cuda, "empty_cache", None)
+                if callable(empty_cache):
+                    try:
+                        empty_cache()
+                    except Exception:
+                        pass
+
+    tensor_tchw = (
+        torch_mod.from_numpy(np_mod.ascontiguousarray(chunk_np))
+        .permute(0, 3, 1, 2)
+        .to(dtype=torch_mod.float32)
+        .div_(127.5)
+        .sub_(1.0)
+    )
+    if needs_resize:
+        tensor_tchw = f_mod.interpolate(
+            tensor_tchw,
+            size=(cover_h, cover_w),
+            mode="bicubic",
+            align_corners=False,
+        ).clamp_(-1.0, 1.0)
+    if needs_pad:
+        tensor_tchw = f_mod.pad(
+            tensor_tchw,
+            (0, pad_w - cover_w, 0, pad_h - cover_h),
+            mode="replicate",
+        )
+    lq_video = tensor_tchw.permute(1, 0, 2, 3).unsqueeze(0).contiguous()
+    del tensor_tchw
+    return lq_video
+
+
+def _maybe_clear_flashvsr_cuda_cache(torch_mod: Any, device: str) -> None:
+    """Skip expensive per-chunk empty_cache() stalls when free VRAM exceeds 12 GiB."""
+    if not str(device).startswith("cuda"):
+        return
+    cuda = getattr(torch_mod, "cuda", None)
+    if cuda is None or not callable(getattr(cuda, "is_available", None)):
+        return
+    try:
+        if not cuda.is_available():
+            return
+    except Exception:
+        return
+
+    mem_get_info = getattr(cuda, "mem_get_info", None)
+    if callable(mem_get_info):
+        try:
+            free_bytes, _total_bytes = mem_get_info(device)
+            if int(free_bytes) > _FLASHVSR_EMPTY_CACHE_MIN_FREE_BYTES:
+                return
+        except Exception:
+            pass
+    try:
+        empty_cache = getattr(cuda, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+    except Exception:
+        pass
+
+
 def _run_flashvsr_python_pipeline(
     *,
     repo_dir: Path,
@@ -2319,16 +3843,39 @@ def _run_flashvsr_python_pipeline(
     )
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    if device.startswith("cuda"):
+        _configure_flashvsr_cuda_perf(torch)
+
     decode_every: int | str = (
         8 if (0 < vram_mib < COLABONE_VSR_LOW_VRAM_THRESHOLD_MIB) else "auto"
     )
-    stream_cfg = stream_config_for_mode(
-        "v1",
-        device=device,
-        seed=seed,
-        decode_every=decode_every,
-        color_correction=(color_correction != "none"),
+    desired_cache_offload_mode = (
+        "never"
+        if (
+            vram_mib >= COLABONE_VSR_ULTRA_VRAM_THRESHOLD_MIB
+            and (pad_w * pad_h) <= (2560 * 1536)
+        )
+        else "auto"
     )
+    stream_cfg_kwargs: dict[str, Any] = {
+        "device": device,
+        "seed": seed,
+        "decode_every": decode_every,
+        "color_correction": (color_correction != "none"),
+    }
+    if _callable_accepts_kwarg(stream_config_for_mode, "cache_offload_mode"):
+        stream_cfg_kwargs["cache_offload_mode"] = desired_cache_offload_mode
+        effective_cache_offload_mode = desired_cache_offload_mode
+    else:
+        effective_cache_offload_mode = "auto"
+    stream_cfg = stream_config_for_mode("v1", **stream_cfg_kwargs)
+
+    selected_attn = str(
+        getattr(stream_cfg, "attn_kernel", None)
+        or (stream_cfg.get("attn_kernel") if isinstance(stream_cfg, dict) else None)
+        or "auto"
+    )
+
     dit_path = model_files["diffusion_pytorch_model_streaming_dmd.safetensors"]
     lq_proj_path = model_files["LQ_proj_in.ckpt"]
     tcdecoder_path = model_files["TCDecoder.ckpt"]
@@ -2402,30 +3949,20 @@ def _run_flashvsr_python_pipeline(
 
             chunk_np = np.stack(window_frames[:chunk_len], axis=0)
 
-            # Build [1, 3, T, pad_h, pad_w] strictly on CPU in float32 [-1.0, 1.0].
-            # FlashVSR_Plus StreamRunner transfers 4-frame clips to CUDA on demand.
-            tensor_tchw = (
-                torch.from_numpy(np.ascontiguousarray(chunk_np))
-                .permute(0, 3, 1, 2)
-                .to(dtype=torch.float32)
-                .div_(127.5)
-                .sub_(1.0)
+            lq_video = _build_flashvsr_lq_tensor(
+                chunk_np,
+                torch_mod=torch,
+                np_mod=np,
+                f_mod=F,
+                device=device,
+                source_height=source_height,
+                source_width=source_width,
+                cover_h=cover_h,
+                cover_w=cover_w,
+                pad_h=pad_h,
+                pad_w=pad_w,
             )
-            if cover_h != source_height or cover_w != source_width:
-                tensor_tchw = F.interpolate(
-                    tensor_tchw,
-                    size=(cover_h, cover_w),
-                    mode="bicubic",
-                    align_corners=False,
-                ).clamp_(-1.0, 1.0)
-            if pad_h > cover_h or pad_w > cover_w:
-                tensor_tchw = F.pad(
-                    tensor_tchw,
-                    (0, pad_w - cover_w, 0, pad_h - cover_h),
-                    mode="replicate",
-                )
-            lq_video = tensor_tchw.permute(1, 0, 2, 3).unsqueeze(0).contiguous()
-            del chunk_np, tensor_tchw
+            del chunk_np
 
             chunk_progress = 0.20 + 0.65 * ((chunk_idx - 1) / max(1, total_chunks))
             emit_colabone_progress(
@@ -2486,8 +4023,7 @@ def _run_flashvsr_python_pipeline(
                 prev_tail_frames = out_u8[body_end:].copy()
 
             del lq_video, request, result, out_u8
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            _maybe_clear_flashvsr_cuda_cache(torch, device)
 
         prev_tail_frames = None
         reader_ok = True
@@ -2519,6 +4055,11 @@ def _run_flashvsr_python_pipeline(
         "pad_height": pad_h,
         "chunks": total_chunks,
         "execution_mode": "pipeline",
+        "attention_mode": selected_attn,
+        "compile_dit": False,
+        "compile_vae": False,
+        "output_format": "mkv",
+        "cache_offload_mode": effective_cache_offload_mode,
     }
 
 
@@ -2638,9 +4179,43 @@ def run_diffusion_vsr(cfg: dict[str, Any]) -> dict[str, Any]:
     seed = 42 if raw_seed is None else _validate_non_negative_int(raw_seed, "seed")
 
     raw_batch = cfg.get("batch_size")
-    batch_size = (
-        33 if raw_batch is None else _validate_positive_int(raw_batch, "batch_size")
+    batch_size: int | None
+    if raw_batch is None or (
+        isinstance(raw_batch, str) and raw_batch.strip().lower() in ("", "auto")
+    ):
+        batch_size = None
+    else:
+        batch_size = _validate_positive_int(raw_batch, "batch_size")
+
+    raw_attention = cfg.get("attention_mode")
+    attention_mode = str(raw_attention if raw_attention is not None else "auto").strip().lower()
+    if attention_mode not in ("", "auto", *COLABONE_VSR_SEEDVR2_ATTENTION_MODES):
+        raise ValueError(
+            f"Unsupported SeedVR2 attention_mode: {raw_attention!r}. "
+            f"Expected 'auto' or one of: {', '.join(COLABONE_VSR_SEEDVR2_ATTENTION_MODES)}"
+        )
+    if not attention_mode:
+        attention_mode = "auto"
+
+    compile_dit = _parse_optional_auto_bool(cfg.get("compile_dit"), "compile_dit")
+    compile_vae = _parse_optional_auto_bool(cfg.get("compile_vae"), "compile_vae")
+    compile_dynamic = _parse_optional_auto_bool(
+        cfg.get("compile_dynamic"), "compile_dynamic"
     )
+
+    raw_output_format = cfg.get("output_format")
+    output_format = (
+        str(raw_output_format if raw_output_format is not None else "auto")
+        .strip()
+        .lower()
+    )
+    if output_format not in ("", "auto", *COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS):
+        raise ValueError(
+            f"Unsupported SeedVR2 output_format: {raw_output_format!r}. "
+            f"Expected 'auto' or one of: {', '.join(COLABONE_VSR_SEEDVR2_OUTPUT_FORMATS)}"
+        )
+    if not output_format:
+        output_format = "auto"
 
     raw_overlap = cfg.get("temporal_overlap")
     temporal_overlap = (
@@ -2759,6 +4334,11 @@ def run_diffusion_vsr(cfg: dict[str, Any]) -> dict[str, Any]:
                 vram_mib=vram_mib,
                 ffmpeg_bin=ffmpeg_bin,
                 guard=guard,
+                attention_mode=attention_mode,
+                compile_dit=compile_dit,
+                compile_vae=compile_vae,
+                compile_dynamic=compile_dynamic,
+                output_format=output_format,
             )
         else:
             extra_meta = _run_flashvsr_engine(

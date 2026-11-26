@@ -5580,7 +5580,7 @@ def test_opt_audit_regressions_nvidia_smi_probe_dynamic_compile_ffmpeg_cfr_and_p
         gpu_caps={
             "cc_major": 12,
             "cc_minor": 0,
-            "torch_version": "2.8.0+cu128",
+            "torch_version": "2.8.0",
             "cuda_version": "12.8",
             "nvcc_version": "12.8",
             "sageattn_available": False,
@@ -5832,6 +5832,501 @@ def test_comfyui_ws_execution_error_aborts_immediately_and_env_blocks_tf(
         ("DISABLE_TENSORFLOW", "1"),
     ):
         assert captured_env.get(k) == expected
+
+
+def test_infinitetalk_acceleration_shared_wheels_nvenc_and_native_passthrough(
+    tmp_path: Path, monkeypatch
+):
+    """Verify InfiniteTalk GPU acceleration across G4/H100/A100/L4/compat, 4-tier fallback, shared wheels, and NVENC."""
+    import shutil
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    from common.comfyui import WorkflowRunRequest
+    from server import comfy_packs, digital_human
+    from server.comfy_packs import (
+        ensure_sageattention_wheels_shared,
+        probe_gpu_acceleration_capabilities,
+    )
+    from server.digital_human import (
+        ColabOneDigitalHumanRunner,
+        _FFMPEG_NVENC_CACHE,
+        _build_h264_encode_args,
+        _probe_ffmpeg_nvenc_h264,
+        apply_infinitetalk_acceleration,
+    )
+    from server.runtime import ColabOneTask
+
+    # 1. probe_gpu_acceleration_capabilities exposes flash_attn_3_available alongside existing keys.
+    caps_probe = probe_gpu_acceleration_capabilities({"name": "H100", "total_mib": 81920})
+    assert "flash_attn_3_available" in caps_probe
+    assert isinstance(caps_probe["flash_attn_3_available"], bool)
+
+    # 2. ensure_sageattention_wheels_shared installs cached wheel without instantiating ComfyUI.
+    rt_root = tmp_path / "shared_rt"
+    py_tag = f"{sys.version_info.major}{sys.version_info.minor}"
+    cache_dir = (
+        rt_root
+        / "wheel-cache"
+        / comfy_packs._sanitize_cache_key(
+            f"sageattention-{comfy_packs.SAGEATTN_COMMIT[:10]}-py{py_tag}-torch2.8.0-cu12.8-sm120"
+        )
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / f"sageattention-2.2.0-cp{py_tag}-cp{py_tag}-linux_x86_64.whl").write_bytes(b"s2")
+    (cache_dir / f"sageattention3_blackwell-1.0.0-cp{py_tag}-cp{py_tag}-linux_x86_64.whl").write_bytes(b"s3")
+    installed_args: list[list[str]] = []
+    shared_res = ensure_sageattention_wheels_shared(
+        ColabOneTask("comfyui_run", "shared-wheel"),
+        base_root=rt_root,
+        gpu_caps={
+            "cc_major": 12,
+            "cc_minor": 0,
+            "torch_version": "2.8.0",
+            "cuda_version": "12.8",
+            "nvcc_version": "12.8",
+            "sageattn_available": False,
+            "sageattn3_available": False,
+        },
+        allow_sage3=True,
+        run_cmd_fn=lambda args, task, log, **kw: installed_args.append(list(args)),
+    )
+    assert shared_res["installed_any"] is True
+    assert shared_res["sageattn_available"] is True
+    assert shared_res["sageattn3_available"] is True
+    assert len(installed_args) == 2
+
+    # 3. apply_infinitetalk_acceleration on real digital-human-infinitetalk template across GPU tiers.
+    real_cat = ComfyCatalog.model_validate(
+        json.loads((Path(__file__).resolve().parents[1] / "catalog" / "comfyui.json").read_text(encoding="utf-8"))
+    )
+    inf_wf = next(t for t in real_cat.templates if t.id == "digital-human-infinitetalk").model_dump()
+    base_graph = inf_wf["workflow"]
+
+    # G4 96GB Blackwell (sm_120) with unmerged LightX2V LoRA (catalog default):
+    # - Prefers compile-safe sageattn (v2 custom_op) over unwrapped sageattn_3
+    # - Preserves fp8_e4m3fn_scaled (never *_fast with unmerged LoRA!)
+    # - Resident VRAM (>= 48000 MiB) patches WanVideoImageToVideoMultiTalk tiled_vae & force_offload
+    # - Keeps WanVideoClipVisionEncode.force_offload=True and WanVideoSampler.batched_cfg=False
+    wf_g4, sum_g4 = apply_infinitetalk_acceleration(
+        base_graph,
+        profile="max",
+        gpu_caps={
+            "vram_mib": 98304,
+            "cc_major": 12,
+            "cc_minor": 0,
+            "fp8_fast_supported": True,
+            "torch_compile_supported": True,
+            "sageattn_available": True,
+            "sageattn3_available": True,
+        },
+    )
+    assert sum_g4["attention_mode"] == "sageattn"
+    assert sum_g4["quantization"] == "fp8_e4m3fn_scaled"
+    assert sum_g4["resident_vram"] is True
+    assert sum_g4["vae_tiling"] is False
+    assert sum_g4["torch_compile"] is True
+    assert sum_g4["resize_device"] == "gpu"
+    assert sum_g4["batched_cfg"] is False
+    assert wf_g4["colabone_torch_compile"]["inputs"]["allow_unmerged_lora_compile"] is True
+    assert wf_g4["colabone_torch_compile"]["inputs"]["dynamic"] is True
+    loader_g4 = next(n for n in wf_g4.values() if n.get("class_type") == "WanVideoModelLoader")
+    assert loader_g4["inputs"]["load_device"] == "main_device"
+    assert loader_g4["inputs"]["quantization"] == "fp8_e4m3fn_scaled"
+    assert loader_g4["inputs"]["attention_mode"] == "sageattn"
+    assert loader_g4["inputs"]["compile_args"] == ["colabone_torch_compile", 0]
+    sampler_g4 = next(n for n in wf_g4.values() if n.get("class_type") == "WanVideoSampler")
+    assert sampler_g4["inputs"]["force_offload"] is False
+    assert sampler_g4["inputs"]["batched_cfg"] is False
+    mt_i2v_g4 = next(n for n in wf_g4.values() if n.get("class_type") == "WanVideoImageToVideoMultiTalk")
+    assert mt_i2v_g4["inputs"]["tiled_vae"] is False
+    assert mt_i2v_g4["inputs"]["force_offload"] is False
+    clip_g4 = next(n for n in wf_g4.values() if n.get("class_type") == "WanVideoClipVisionEncode")
+    assert clip_g4["inputs"]["force_offload"] is True
+    decode_g4 = next(n for n in wf_g4.values() if n.get("class_type") == "WanVideoDecode")
+    assert decode_g4["inputs"]["enable_vae_tiling"] is False
+    resize_nodes = [n for n in wf_g4.values() if n.get("class_type") == "ImageResizeKJv2"]
+    assert resize_nodes and all(n["inputs"]["device"] == "gpu" for n in resize_nodes)
+
+    # Without unmerged LoRA, fp8_e4m3fn_scaled DOES upgrade to fp8_e4m3fn_scaled_fast on sm_89+.
+    wf_no_lora = json.loads(json.dumps(base_graph))
+    for n in wf_no_lora.values():
+        if n.get("class_type") == "WanVideoModelLoader":
+            n["inputs"].pop("lora", None)
+    _, sum_no_lora = apply_infinitetalk_acceleration(
+        wf_no_lora,
+        profile="max",
+        gpu_caps={"vram_mib": 98304, "cc_major": 12, "fp8_fast_supported": True, "sageattn_available": True},
+    )
+    assert sum_no_lora["quantization"] == "fp8_e4m3fn_scaled_fast"
+
+    # When sageattention (v2) is absent, InfiniteTalk MUST NOT select sageattn_3 (crashes WanVideoModelLoader@a7439db3).
+    _, sum_s3_only = apply_infinitetalk_acceleration(
+        base_graph,
+        profile="max",
+        gpu_caps={
+            "vram_mib": 98304,
+            "cc_major": 12,
+            "fp8_fast_supported": True,
+            "torch_compile_supported": True,
+            "sageattn_available": False,
+            "flash_attn_2_available": False,
+            "sageattn3_available": True,
+        },
+    )
+    assert sum_s3_only["attention_mode"] == "sdpa"
+
+    # Transitive downstream WanVideoSetLoRAs (behind an intermediate model wrapper) still prevents *_fast!
+    wf_trans_lora = json.loads(json.dumps(wf_no_lora))
+    loader_id = next(nid for nid, n in wf_trans_lora.items() if n.get("class_type") == "WanVideoModelLoader")
+    wf_trans_lora["901"] = {"class_type": "WanVideoSetBlockSwap", "inputs": {"model": [loader_id, 0]}}
+    wf_trans_lora["902"] = {"class_type": "WanVideoSetLoRAs", "inputs": {"model": ["901", 0], "lora": ["12", 0]}}
+    _, sum_trans_lora = apply_infinitetalk_acceleration(
+        wf_trans_lora,
+        profile="max",
+        gpu_caps={"vram_mib": 98304, "cc_major": 12, "fp8_fast_supported": True, "sageattn_available": True},
+    )
+    assert sum_trans_lora["quantization"] == "fp8_e4m3fn_scaled"
+
+    # .gguf models stay disabled and non-scaled compat quantization never injects fp8_e4m3fn_scaled.
+    wf_gguf = {"1": {"class_type": "WanVideoModelLoader", "inputs": {"model": "wan.gguf", "quantization": "disabled"}}}
+    _, sum_gguf = apply_infinitetalk_acceleration(
+        wf_gguf, profile="max", gpu_caps={"vram_mib": 98304, "fp8_fast_supported": True, "sageattn_available": True}
+    )
+    assert sum_gguf["quantization"] == "disabled"
+    wf_nonscaled = {"1": {"class_type": "WanVideoModelLoader", "inputs": {"model": "wan_bf16.safetensors", "quantization": ""}}}
+    _, sum_nonscaled = apply_infinitetalk_acceleration(
+        wf_nonscaled, profile="compat", gpu_caps={"vram_mib": 98304}
+    )
+    assert sum_nonscaled["quantization"] == "disabled"
+
+    # Multi-loader A100 split-brain guard: if Loader 2 is e4m3fn on sm_80, torch_compile stays False.
+    wf_multi_a100 = {
+        "1": {"class_type": "WanVideoModelLoader", "inputs": {"model": "wan_bf16.safetensors", "quantization": "disabled"}},
+        "2": {"class_type": "WanVideoModelLoader", "inputs": {"model": "wan_fp8_scaled.safetensors", "quantization": "fp8_e4m3fn_scaled"}},
+    }
+    _, sum_multi_a100 = apply_infinitetalk_acceleration(
+        wf_multi_a100,
+        profile="max",
+        gpu_caps={"vram_mib": 81920, "cc_major": 8, "fp8_fast_supported": False, "torch_compile_supported": True, "sageattn_available": True},
+    )
+    assert sum_multi_a100["torch_compile"] is False
+
+    # Empty 22-byte ZIP wheel is rejected by _find_cached_wheel(allow_empty=False).
+    import zipfile
+
+    empty_zip_dir = tmp_path / "empty_zip_whl"
+    empty_zip_dir.mkdir()
+    with zipfile.ZipFile(empty_zip_dir / "sageattention-2.2.0-cp312-cp312-linux_x86_64.whl", "w"):
+        pass
+    assert comfy_packs._find_cached_wheel(empty_zip_dir, dist_prefixes=("sageattention",), min_major=2, allow_empty=False) is None
+
+    # Even when cfg > 1.0 on high VRAM, batched_cfg stays False (WanVideoWrapper MultiTalk incompatibility).
+    wf_cfg_gt1 = json.loads(json.dumps(base_graph))
+    for n in wf_cfg_gt1.values():
+        if n.get("class_type") == "WanVideoSampler":
+            n["inputs"]["cfg"] = 3.5
+    wf_g4_cfg, sum_g4_cfg = apply_infinitetalk_acceleration(
+        wf_cfg_gt1,
+        profile="max",
+        gpu_caps={"vram_mib": 98304, "fp8_fast_supported": True, "sageattn_available": True},
+    )
+    assert sum_g4_cfg["batched_cfg"] is False
+    assert next(n for n in wf_g4_cfg.values() if n.get("class_type") == "WanVideoSampler")["inputs"]["batched_cfg"] is False
+
+    # H100 80GB (sm_90): sageattn (v2) + fp8_e4m3fn_scaled (unmerged LoRA) + resident_vram.
+    _, sum_h100 = apply_infinitetalk_acceleration(
+        base_graph,
+        profile="max",
+        gpu_caps={
+            "vram_mib": 81920,
+            "cc_major": 9,
+            "cc_minor": 0,
+            "fp8_fast_supported": True,
+            "torch_compile_supported": True,
+            "sageattn_available": True,
+            "sageattn3_available": False,
+        },
+    )
+    assert sum_h100["attention_mode"] == "sageattn"
+    assert sum_h100["quantization"] == "fp8_e4m3fn_scaled"
+    assert sum_h100["resident_vram"] is True
+
+    # A100 80GB stays resident (>= 48000 MiB), while A100 40GB enables offload + tiled_vae for OOM safety!
+    _, sum_a100_80 = apply_infinitetalk_acceleration(
+        base_graph,
+        profile="max",
+        gpu_caps={
+            "vram_mib": 81920,
+            "cc_major": 8,
+            "cc_minor": 0,
+            "fp8_fast_supported": False,
+            "torch_compile_supported": True,
+            "sageattn_available": True,
+        },
+    )
+    assert sum_a100_80["quantization"] == "fp8_e4m3fn_scaled"
+    assert sum_a100_80["attention_mode"] == "sageattn"
+    assert sum_a100_80["resident_vram"] is True
+
+    wf_a100_40, sum_a100_40 = apply_infinitetalk_acceleration(
+        base_graph,
+        profile="max",
+        gpu_caps={
+            "vram_mib": 40960,
+            "cc_major": 8,
+            "cc_minor": 0,
+            "fp8_fast_supported": False,
+            "torch_compile_supported": True,
+            "sageattn_available": True,
+        },
+    )
+    assert sum_a100_40["resident_vram"] is False
+    assert sum_a100_40["vae_tiling"] is True
+    mt_i2v_40 = next(n for n in wf_a100_40.values() if n.get("class_type") == "WanVideoImageToVideoMultiTalk")
+    assert mt_i2v_40["inputs"]["tiled_vae"] is True
+    assert mt_i2v_40["inputs"]["force_offload"] is True
+
+    # L4 24GB (sm_89): preserves fp8_e4m3fn_scaled + offload + tiled_vae on WanVideoImageToVideoMultiTalk.
+    wf_l4, sum_l4 = apply_infinitetalk_acceleration(
+        base_graph,
+        profile="balanced",
+        gpu_caps={
+            "vram_mib": 24576,
+            "cc_major": 8,
+            "cc_minor": 9,
+            "fp8_fast_supported": True,
+            "sageattn_available": True,
+        },
+    )
+    assert sum_l4["quantization"] == "fp8_e4m3fn_scaled"
+    assert sum_l4["resident_vram"] is False
+    assert sum_l4["vae_tiling"] is True
+    assert next(n for n in wf_l4.values() if n.get("class_type") == "WanVideoSampler")["inputs"]["force_offload"] is True
+    assert next(n for n in wf_l4.values() if n.get("class_type") == "WanVideoImageToVideoMultiTalk")["inputs"]["tiled_vae"] is True
+
+    # Compat profile: SDPA + fp8_e4m3fn_scaled + offload_device + CPU resize + no compile node.
+    wf_compat, sum_compat = apply_infinitetalk_acceleration(
+        base_graph,
+        profile="compat",
+        gpu_caps={"vram_mib": 98304, "fp8_fast_supported": True, "sageattn3_available": True, "torch_compile_supported": True},
+    )
+    assert sum_compat["attention_mode"] == "sdpa"
+    assert sum_compat["quantization"] == "fp8_e4m3fn_scaled"
+    assert sum_compat["resident_vram"] is False
+    assert sum_compat["torch_compile"] is False
+    assert sum_compat["resize_device"] == "cpu"
+    assert "colabone_torch_compile" not in wf_compat
+
+    # 4. InfiniteTalk 4-tier fallback cascade in ColabOneDigitalHumanRunner.run():
+    #    max(compile+sage2+resident) -> balanced(sage2+resident) -> balanced(sage2+offload) -> compat(sdpa+offload).
+    attempt_snapshots: list[tuple[str, bool, bool]] = []
+    from PIL import Image
+
+    anchor_png = tmp_path / "inf_anchor.png"
+    Image.new("RGB", (64, 64), (120, 140, 160)).save(anchor_png)
+    wav_path = tmp_path / "inf_audio.wav"
+    with wave.open(str(wav_path), "wb") as wf_w:
+        wf_w.setnchannels(1)
+        wf_w.setsampwidth(2)
+        wf_w.setframerate(48000)
+        wf_w.writeframes(b"\x10\x00" * 48000 * 2)
+
+    seg_mp4_bytes = b"\x00\x00\x00\x18ftypmp42inf-seg-ok"
+
+    def _fake_exec_prompt(task, wf, prompt_payload, **kw):
+        loader = next(n for n in prompt_payload.values() if n.get("class_type") == "WanVideoModelLoader")
+        sampler = next(n for n in prompt_payload.values() if n.get("class_type") == "WanVideoSampler")
+        attn = str(loader["inputs"].get("attention_mode") or "")
+        resident = not bool(sampler["inputs"].get("force_offload", True))
+        compiled = "colabone_torch_compile" in prompt_payload
+        attempt_snapshots.append((attn, resident, compiled))
+        if compiled:
+            raise RuntimeError("inductor compile failed")
+        if resident:
+            raise RuntimeError("CUDA out of memory")
+        if attn == "sageattn":
+            raise RuntimeError("sageattn2 runtime failure")
+        return ("pid-ok", [{"filename": "seg.mp4", "raw": seg_mp4_bytes}])
+
+    fake_store = SimpleNamespace(
+        save_output=lambda raw, **kw: {"filename": kw["filename"], "size": len(raw)},
+    )
+    fake_rt = SimpleNamespace(
+        root=tmp_path / "rt_inf_fb",
+        loaded=None,
+        stopping=threading.Event(),
+        gpu_info=lambda: {"name": "RTX PRO 6000 Blackwell", "total_mib": 98304},
+    )
+    restart_events: list[str] = []
+    seen_allow_sage3: list[bool] = []
+    fake_packs = SimpleNamespace(
+        ensure_sageattention_wheels=lambda task, **kw: (
+            seen_allow_sage3.append(bool(kw.get("allow_sage3"))),
+            {
+                "installed_any": False,
+                "sageattn_available": True,
+                "sageattn3_available": True,
+            },
+        )[1],
+        needs_pip_restart=lambda: True,
+        clear_pending_pip_restart=lambda: restart_events.append("cleared"),
+    )
+    fake_mgr = SimpleNamespace(
+        runtime=fake_rt,
+        packs=fake_packs,
+        store=fake_store,
+        models_dir=tmp_path / "models_inf",
+        is_running=lambda: True,
+        stop_server=lambda: restart_events.append("stopped"),
+        start_server=lambda task: restart_events.append("started"),
+        free_memory=lambda unload_models=True: None,
+        _upload_input_file=lambda fname, fpath: fname,
+        _execute_single_prompt=_fake_exec_prompt,
+    )
+    monkeypatch.setattr(
+        comfy_packs,
+        "probe_gpu_acceleration_capabilities",
+        lambda info: {
+            "gpu_name": "RTX PRO 6000 Blackwell",
+            "vram_mib": 98304,
+            "cc_major": 12,
+            "cc_minor": 0,
+            "torch_version": "2.8.0+cu128",
+            "cuda_version": "12.8",
+            "nvcc_version": "12.8",
+            "triton_available": True,
+            "torch_compile_supported": True,
+            "fp8_fast_supported": True,
+            "sageattn_version": "2.2.0",
+            "sageattn_available": True,
+            "sageattn3_available": True,
+            "flash_attn_2_available": False,
+            "flash_attn_3_available": False,
+        },
+    )
+    inf_runner = ColabOneDigitalHumanRunner(
+        fake_mgr,
+        None,
+        run_cmd_fn=lambda args, task, log, **kw: Path(args[-1]).write_bytes(seg_mp4_bytes)
+        if args and str(args[-1]).endswith(".mp4")
+        else None,
+    )
+    outs = inf_runner.run(
+        ColabOneTask("comfyui_run", "inf-4tier"),
+        inf_wf,
+        WorkflowRunRequest(
+            workflow_id="digital-human-infinitetalk",
+            overrides={
+                "pipeline.audio_source": "audio",
+                "pipeline.upscale_mode": "lanczos",
+                "pipeline.target_resolution": "1280x720",
+            },
+            inputs={"1.image": "a" * 32, "2.audio": "b" * 32},
+        ),
+        [("1.image", "anchor.png", anchor_png), ("2.audio", "audio.wav", wav_path)],
+    )
+    assert len(outs) == 1
+    assert seen_allow_sage3 == [False]  # InfiniteTalk never compiles unused sageattention3_blackwell!
+    assert restart_events == ["stopped", "started", "cleared"]
+    assert attempt_snapshots == [
+        ("sageattn", True, True),
+        ("sageattn", True, False),
+        ("sageattn", False, False),
+        ("sdpa", False, False),
+    ]
+
+    # 5. _probe_ffmpeg_nvenc_h264 (s=256x256 >= 145px min width + full Stage 4 flags) + CQ+2 + AQ + cache invalidation.
+    _FFMPEG_NVENC_CACHE.clear()
+    probed_nvenc_cmds: list[list[str]] = []
+    with monkeypatch.context() as mp:
+        def _run_nvenc_ok(cmd, *a, **k):
+            probed_nvenc_cmds.append(list(cmd))
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=" V..... h264_nvenc NVIDIA NVENC H.264 encoder", stderr=""
+            )
+
+        mp.setattr(subprocess, "run", _run_nvenc_ok)
+        assert _probe_ffmpeg_nvenc_h264("/fake/ffmpeg-nvenc-ok") is True
+    assert any("s=256x256" in " ".join(c) and "-spatial-aq" in c and "bt709" in c for c in probed_nvenc_cmds)
+
+    with monkeypatch.context() as mp:
+        def _run_nvenc_fail_live(cmd, *a, **k):
+            if "-encoders" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="h264_nvenc", stderr="")
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="No NVENC capable devices found")
+
+        mp.setattr(subprocess, "run", _run_nvenc_fail_live)
+        assert _probe_ffmpeg_nvenc_h264("/fake/ffmpeg-nvenc-no-hw") is False
+    _FFMPEG_NVENC_CACHE.clear()
+
+    nv_args = _build_h264_encode_args(16, preset="medium", use_nvenc=True)
+    assert nv_args[:2] == ["-c:v", "h264_nvenc"]
+    assert "-cq" in nv_args and nv_args[nv_args.index("-cq") + 1] == "18"  # crf+2 parity
+    assert "-spatial-aq" in nv_args and "-temporal-aq" in nv_args
+
+    # Bitrate retry override keeps -spatial-aq and -temporal-aq on NVENC too.
+    br_nv_args = _build_h264_encode_args(16, preset="medium", use_nvenc=True, rate_args=["-b:v", "10M"])
+    assert br_nv_args[:2] == ["-c:v", "h264_nvenc"]
+    assert "-b:v" in br_nv_args and "10M" in br_nv_args
+    assert "-spatial-aq" in br_nv_args and "-temporal-aq" in br_nv_args
+    br_cpu_args = _build_h264_encode_args(16, preset="medium", use_nvenc=False, rate_args=["-b:v", "10M"])
+    assert br_cpu_args[:2] == ["-c:v", "libx264"]
+    assert "-b:v" in br_cpu_args and "10M" in br_cpu_args
+
+    # Live NVENC runtime failure during Stage 4 concat falls back to libx264 AND invalidates cache.
+    nvenc_stage4_cmds: list[list[str]] = []
+
+    def _fake_ffmpeg_cmd(args, task, log, **kw):
+        nvenc_stage4_cmds.append(list(args))
+        if "h264_nvenc" in args:
+            raise RuntimeError("h264_nvenc init failed")
+        Path(args[-1]).write_bytes(seg_mp4_bytes)
+
+    _FFMPEG_NVENC_CACHE["/usr/bin/ffmpeg"] = True
+    with monkeypatch.context() as mp:
+        mp.setattr(digital_human, "_probe_ffmpeg_nvenc_h264", lambda b: True)
+        mp.setattr(digital_human, "_resolve_ffmpeg_cfr_args", lambda b: ["-fps_mode", "cfr"])
+        mp.setattr(digital_human, "_run_ffmpeg_command", _fake_ffmpeg_cmd)
+        mp.setattr(shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+
+        fake_mgr_nv = SimpleNamespace(
+            runtime=fake_rt,
+            packs=None,
+            store=fake_store,
+            models_dir=tmp_path / "models_nv",
+            is_running=lambda: True,
+            _upload_input_file=lambda fname, fpath: fname,
+            _execute_single_prompt=lambda task, wf, p, **kw: (
+                "pid-nv",
+                [{"filename": "seg.mp4", "raw": seg_mp4_bytes}],
+            ),
+        )
+        nv_runner = ColabOneDigitalHumanRunner(fake_mgr_nv, None, run_cmd_fn=None)
+        nv_task = ColabOneTask("comfyui_run", "nvenc-fallback")
+        nv_outs = nv_runner.run(
+            nv_task,
+            inf_wf,
+            WorkflowRunRequest(
+                workflow_id="digital-human-infinitetalk",
+                overrides={
+                    "pipeline.audio_source": "audio",
+                    "pipeline.upscale_mode": "lanczos",
+                    "pipeline.target_resolution": "1280x720",
+                },
+                inputs={"1.image": "a" * 32, "2.audio": "b" * 32},
+            ),
+            [("1.image", "anchor.png", anchor_png), ("2.audio", "audio.wav", wav_path)],
+        )
+        assert len(nv_outs) == 1
+        assert len(nvenc_stage4_cmds) == 2
+        assert "h264_nvenc" in nvenc_stage4_cmds[0]
+        assert "libx264" in nvenc_stage4_cmds[1]
+        assert _FFMPEG_NVENC_CACHE.get("/usr/bin/ffmpeg") is False
+        assert any("已自动回退至 libx264" in str(e.get("message", "")) for e in nv_task.logs)
+    _FFMPEG_NVENC_CACHE.clear()
+
 
 
 

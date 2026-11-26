@@ -113,6 +113,45 @@ _SENSITIVE_CONFIG_KEYS = frozenset(
         "authorization",
     }
 )
+_HF_TRANSFER_INCOMPATIBLE_ENV_KEYS = frozenset(
+    {
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "requests_ca_bundle",
+        "ssl_cert_file",
+        "curl_ca_bundle",
+    }
+)
+_HF_TRANSFER_ACTIVE_MARKER = "COLABONE_HF_TRANSFER_ACTIVE=1"
+_HF_NON_RETRYABLE_STATUS_RE = re.compile(
+    r"(?:"
+    r"(?:http(?:\s+error|\s+status)?|status(?:\s+code)?|client\s+error)\s*[:=(]?\s*(?:401|403|404)\b"
+    r"|\b(?:401|403|404)\s+(?:client\s+error|unauthorized|forbidden|not\s+found)\b"
+    r"|\b(?:401|403|404)\b[^\n]{0,24}\b(?:unauthorized|forbidden|not\s+found)\b"
+    r")",
+    re.IGNORECASE,
+)
+_HF_EXIT_CODE_2_RE = re.compile(r"退出码\s*2\b")
+_HF_NON_RETRYABLE_MARKERS = (
+    "缺少 huggingface_hub",
+    "no module named 'huggingface_hub'",
+    'no module named "huggingface_hub"',
+    "执行超时",
+    "timeoutexpired",
+    "gatedrepoerror",
+    "repositorynotfounderror",
+    "revisionnotfounderror",
+    "entrynotfounderror",
+    "no space left on device",
+    "enospc",
+    "errno 28",
+    "disk quota exceeded",
+    "edquot",
+    "errno 122",
+    "cannot access gated repo",
+    "invalid credentials",
+)
 
 _WORKSPACE_HEADROOM_MIB = 6144  # ~6 GiB workspace headroom on repeated cached runs
 _HIGH_VRAM_96G_THRESHOLD_MIB = 80000
@@ -582,6 +621,203 @@ def _ensure_parent_venv_pth(venv_dir: Path) -> Path | None:
         pass
     _atomic_write_text(pth_path, content)
     return pth_path
+
+
+def _has_hf_transfer_incompatible_env(env: dict[str, str]) -> bool:
+    for key, val in env.items():
+        if key.lower() in _HF_TRANSFER_INCOMPATIBLE_ENV_KEYS and str(val or "").strip():
+            return True
+    return False
+
+
+def _is_non_retryable_hf_download_error(err_text: str) -> bool:
+    text = str(err_text or "")
+    if not text:
+        return False
+    lower = text.lower()
+    if any(marker in lower for marker in _HF_NON_RETRYABLE_MARKERS):
+        return True
+    if _HF_EXIT_CODE_2_RE.search(text):
+        return True
+    if _HF_NON_RETRYABLE_STATUS_RE.search(text):
+        return True
+    return False
+
+
+def _read_log_attempt_head_tail(
+    log_path: Path, start_offset: int, *, window_bytes: int = 65536
+) -> tuple[str, str]:
+    try:
+        if log_path.is_symlink() or not log_path.is_file():
+            return "", ""
+        cur_size = log_path.stat().st_size
+        pos = start_offset if 0 <= start_offset <= cur_size else 0
+        if pos >= cur_size:
+            return "", ""
+        with log_path.open("rb") as fh:
+            fh.seek(pos)
+            head_raw = fh.read(window_bytes)
+            if cur_size - pos > window_bytes:
+                tail_pos = max(pos + window_bytes, cur_size - window_bytes)
+                fh.seek(tail_pos)
+                tail_raw = fh.read(cur_size - tail_pos)
+            else:
+                tail_raw = head_raw
+        return (
+            head_raw.decode("utf-8", errors="replace"),
+            tail_raw.decode("utf-8", errors="replace"),
+        )
+    except OSError:
+        return "", ""
+
+
+def _find_all_venv_site_packages_dirs(venv_dir: Path) -> list[Path]:
+    """Locate all non-symlink site-packages directories directly inside `venv_dir`."""
+    if venv_dir.is_symlink() or not venv_dir.is_dir():
+        return []
+    try:
+        venv_resolved = venv_dir.resolve()
+    except OSError:
+        return []
+    candidates: list[Path] = []
+    for lib_name in ("lib", "lib64"):
+        lib_dir = venv_dir / lib_name
+        try:
+            if lib_dir.is_symlink() or not lib_dir.is_dir():
+                continue
+            for child in sorted(lib_dir.iterdir()):
+                if (
+                    child.name.startswith("python")
+                    and not child.is_symlink()
+                    and child.is_dir()
+                ):
+                    sp = child / "site-packages"
+                    if not sp.is_symlink() and sp.is_dir():
+                        candidates.append(sp)
+        except OSError:
+            continue
+    win_lib = venv_dir / "Lib"
+    try:
+        if not win_lib.is_symlink() and win_lib.is_dir():
+            win_sp = win_lib / "site-packages"
+            if not win_sp.is_symlink() and win_sp.is_dir():
+                candidates.append(win_sp)
+    except OSError:
+        pass
+    result: list[Path] = []
+    seen: set[Path] = set()
+    for sp in candidates:
+        try:
+            rp = sp.resolve()
+        except OSError:
+            continue
+        if rp in seen or not rp.is_relative_to(venv_resolved):
+            continue
+        seen.add(rp)
+        result.append(sp)
+    return result
+
+
+def _parse_dist_info_version(info_path: Path) -> str:
+    """Extract package Version from .dist-info/METADATA or .egg-info/PKG-INFO or filename."""
+    meta_candidates: list[Path] = []
+    if info_path.is_dir():
+        meta_candidates.extend([info_path / "METADATA", info_path / "PKG-INFO"])
+    elif info_path.is_file():
+        meta_candidates.append(info_path)
+    for meta in meta_candidates:
+        try:
+            if meta.is_symlink() or not meta.is_file():
+                continue
+            for line in meta.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not line.strip():
+                    break
+                if line.lower().startswith("version:"):
+                    val = line.split(":", 1)[1].strip()
+                    if val:
+                        return val
+        except OSError:
+            continue
+    stem = info_path.name
+    for suffix in (".dist-info", ".egg-info"):
+        if stem.lower().endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    parts = stem.split("-", 1)
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
+def _prune_shadowing_sageattention(venv_dir: Path, caps: dict[str, Any]) -> None:
+    """Remove shadowing PyPI sageattention (< 2.0) in child venv when host provides SageAttention 2+."""
+    if not isinstance(caps, dict) or not bool(caps.get("sageattn_available")):
+        return
+    for site_dir in _find_all_venv_site_packages_dirs(venv_dir):
+        try:
+            site_resolved = site_dir.resolve()
+            entries = list(site_dir.iterdir())
+        except OSError:
+            continue
+        shadow_infos: list[Path] = []
+        has_v2_plus = False
+        for entry in entries:
+            lower_name = entry.name.lower()
+            if not (
+                lower_name.startswith("sageattention-")
+                and (
+                    lower_name.endswith(".dist-info")
+                    or lower_name.endswith(".egg-info")
+                )
+            ):
+                continue
+            if entry.is_symlink():
+                continue
+            ver_str = _parse_dist_info_version(entry)
+            ver_match = re.match(r"^\s*v?(\d+)", ver_str)
+            if not ver_match:
+                continue
+            if int(ver_match.group(1)) >= 2:
+                has_v2_plus = True
+            else:
+                shadow_infos.append(entry)
+        if not shadow_infos:
+            continue
+        for info_entry in shadow_infos:
+            try:
+                if info_entry.is_symlink():
+                    continue
+                if not info_entry.resolve().is_relative_to(site_resolved):
+                    continue
+                if info_entry.is_dir():
+                    shutil.rmtree(info_entry, ignore_errors=True)
+                elif info_entry.is_file():
+                    info_entry.unlink(missing_ok=True)
+            except OSError:
+                continue
+        if has_v2_plus:
+            continue
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            lower_name = entry.name.lower()
+            is_pkg_target = (
+                lower_name == "sageattention"
+                or lower_name == "sageattention.py"
+                or (
+                    lower_name.startswith("sageattention.")
+                    and lower_name.endswith((".so", ".pyd"))
+                )
+            )
+            if not is_pkg_target:
+                continue
+            try:
+                if not entry.resolve().is_relative_to(site_resolved):
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                elif entry.is_file():
+                    entry.unlink(missing_ok=True)
+            except OSError:
+                continue
 
 
 def _normalize_progress_range(progress_range: tuple[float, float]) -> tuple[float, float]:
@@ -1246,6 +1482,7 @@ class ColabOneAvatarEngineManager:
         run_cmd_fn: Callable[..., Any] | None = None,
         download_fn: Callable[..., Any] | None = None,
         gpu_info_fn: Callable[[], dict[str, Any]] | None = None,
+        accel_wheels_fn: Callable[..., Any] | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.root_dir = self.base_dir / "avatar_native"
@@ -1262,6 +1499,8 @@ class ColabOneAvatarEngineManager:
         self._run_cmd_fn = run_cmd_fn
         self._download_fn = download_fn
         self._gpu_info_fn = gpu_info_fn
+        self._accel_wheels_fn = accel_wheels_fn
+        self._last_gpu_caps: dict[str, Any] = {}
 
         self._locks_guard = threading.Lock()
         self._env_locks: dict[str, threading.Lock] = {}
@@ -1736,6 +1975,94 @@ class ColabOneAvatarEngineManager:
             "free_mib": free_mib,
         }
 
+    def _resolve_wheel_cache_base_root(self) -> Path:
+        """Resolve the shared runtime root holding `wheel-cache/` (shared with ComfyUI)."""
+        runtime_root = getattr(self.runtime, "root", None)
+        if isinstance(runtime_root, (str, os.PathLike)) and str(runtime_root).strip():
+            rt_path = Path(runtime_root)
+            if rt_path.is_symlink():
+                raise ValueError(f"远端运行根目录不能是符号链接：{rt_path}")
+            return rt_path
+        parent = self.root_dir.parent
+        if parent.is_symlink():
+            raise ValueError(f"加速包缓存根目录不能是符号链接：{parent}")
+        if self.base_dir.is_symlink():
+            raise ValueError(f"加速包缓存根目录不能是符号链接：{self.base_dir}")
+        return parent
+
+    def ensure_gpu_acceleration_wheels(
+        self,
+        task: Any,
+        *,
+        allow_sage3: bool = True,
+        gpu_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Probe GPU capabilities and ensure shared SageAttention 2/3 wheels are installed.
+
+        Reuses the same local NVMe and Google Drive wheel cache as ComfyUI via
+        ``server.comfy_packs.ensure_sageattention_wheels_shared`` so wheels built
+        once are inherited across ComfyUI, LongCat 1.6, SeedVR2, and FlashVSR+.
+        Best-effort and never fatal (except task cancellation).
+        """
+        _check_cancel(task, self._stopping_event())
+        if self._accel_wheels_fn is None and self._run_cmd_fn is not None:
+            return {}
+        from server import comfy_packs
+
+        raw_gpu = dict(gpu_info) if isinstance(gpu_info, dict) else self.probe_gpu_info()
+        caps = comfy_packs.probe_gpu_acceleration_capabilities(raw_gpu)
+        self._last_gpu_caps = dict(caps)
+
+        cc_major = _safe_nonneg_int(caps.get("cc_major"), 0)
+        cc_minor = _safe_nonneg_int(caps.get("cc_minor"), 0)
+        need_sage2 = not bool(caps.get("sageattn_available"))
+        need_sage3 = bool(
+            allow_sage3
+            and comfy_packs.is_blackwell_cc(cc_major, cc_minor)
+            and not bool(caps.get("sageattn3_available"))
+        )
+        if cc_major < 8 or (not need_sage2 and not need_sage3):
+            return caps
+
+        wheel_base_root = self._resolve_wheel_cache_base_root()
+        try:
+            if self._accel_wheels_fn is not None:
+                updated = _call_with_compatible_kwargs(
+                    self._accel_wheels_fn,
+                    (task,),
+                    {
+                        "gpu_caps": dict(caps),
+                        "allow_sage3": allow_sage3,
+                        "base_root": wheel_base_root,
+                        "runtime": self.runtime,
+                        "drive": self.drive,
+                        "stopping": self._stopping_event(),
+                    },
+                )
+            else:
+                updated = comfy_packs.ensure_sageattention_wheels_shared(
+                    task,
+                    base_root=wheel_base_root,
+                    runtime=self.runtime,
+                    drive=self.drive,
+                    gpu_caps=caps,
+                    allow_sage3=allow_sage3,
+                    stopping=self._stopping_event(),
+                )
+            if isinstance(updated, dict):
+                caps = {**caps, **updated}
+        except Exception as exc:
+            if _is_cancelled_error(exc):
+                raise
+            _safe_task_note(
+                task,
+                f"SageAttention 加速包准备跳过，将自动回退：{str(exc)[:300]}",
+                level="warning",
+            )
+
+        self._last_gpu_caps = dict(caps)
+        return caps
+
     def _is_component_cached(
         self,
         subdir: str,
@@ -2201,7 +2528,11 @@ class ColabOneAvatarEngineManager:
                     last_noted = time.monotonic()
                     with tail_lock:
                         latest = tail_lines[-1] if tail_lines else ""
-                    if latest and latest != last_noted_line:
+                    if (
+                        latest
+                        and latest != last_noted_line
+                        and latest != _HF_TRANSFER_ACTIVE_MARKER
+                    ):
                         last_noted_line = latest
                         _safe_task_note(task, latest[:250])
                 time.sleep(0.2)
@@ -2838,15 +3169,42 @@ class ColabOneAvatarEngineManager:
                         "HF_HUB_DISABLE_TELEMETRY": "1",
                     }
                 )
+                incompat_proxy_or_ca = _has_hf_transfer_incompatible_env(dl_env)
+                if incompat_proxy_or_ca and "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
+                    dl_env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
                 if token_clean:
                     dl_env["HF_TOKEN"] = token_clean
                 dl_script = (
                     "import json, os, sys\n"
+                    "_incompat = any(\n"
+                    "    k.lower() in ('http_proxy', 'https_proxy', 'all_proxy', 'requests_ca_bundle', 'ssl_cert_file', 'curl_ca_bundle')\n"
+                    "    and str(v or '').strip()\n"
+                    "    for k, v in os.environ.items()\n"
+                    ")\n"
+                    "try:\n"
+                    "    import hf_transfer  # noqa: F401\n"
+                    "    _has_hf_transfer = True\n"
+                    "except Exception:\n"
+                    "    _has_hf_transfer = False\n"
+                    "if not _has_hf_transfer:\n"
+                    "    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'\n"
+                    "elif _incompat:\n"
+                    "    os.environ.setdefault('HF_HUB_ENABLE_HF_TRANSFER', '0')\n"
+                    "else:\n"
+                    "    os.environ.setdefault('HF_HUB_ENABLE_HF_TRANSFER', '1')\n"
+                    "_raw_hft = str(os.environ.get('HF_HUB_ENABLE_HF_TRANSFER') or '').strip().lower()\n"
+                    "if _has_hf_transfer and _raw_hft in ('1', 'true', 'yes', 'on'):\n"
+                    "    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'\n"
+                    "else:\n"
+                    "    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'\n"
                     "try:\n"
                     "    from huggingface_hub import snapshot_download\n"
                     "except ImportError:\n"
                     "    sys.stderr.write('缺少 huggingface_hub，无法下载模型权重\\n')\n"
                     "    sys.exit(2)\n"
+                    "if _has_hf_transfer and os.environ.get('HF_HUB_ENABLE_HF_TRANSFER') == '1':\n"
+                    "    sys.stderr.write('COLABONE_HF_TRANSFER_ACTIVE=1\\n')\n"
+                    "    sys.stderr.flush()\n"
                     "cfg = json.loads(sys.argv[1])\n"
                     "snapshot_download(\n"
                     "    repo_id=cfg['repo_id'],\n"
@@ -2867,17 +3225,82 @@ class ColabOneAvatarEngineManager:
                 )
                 self.logs_dir.mkdir(parents=True, exist_ok=True)
                 dl_log = self.logs_dir / f"hf_download_{local_dir.name}.log"
-                self._run_plain_subprocess(
-                    [str(dl_python), "-c", dl_script, payload_json],
-                    task,
-                    dl_log,
-                    timeout=3600,
-                    env=dl_env,
-                    stopping=self._stopping_event(),
-                    secret_to_scrub=token_clean,
-                    append_log=True,
-                    stage_label=f"{label} 权重下载",
+                dl_cmd = [str(dl_python), "-c", dl_script, payload_json]
+                raw_hf_transfer_env = dl_env.get("HF_HUB_ENABLE_HF_TRANSFER")
+                hf_transfer_disabled = (
+                    "HF_HUB_ENABLE_HF_TRANSFER" in dl_env
+                    and (
+                        not str(raw_hf_transfer_env or "").strip()
+                        or str(raw_hf_transfer_env or "").strip().lower()
+                        in ("0", "false", "no", "off")
+                    )
                 )
+                try:
+                    dl_log_size = (
+                        int(dl_log.stat().st_size)
+                        if (not dl_log.is_symlink() and dl_log.is_file())
+                        else 0
+                    )
+                    dl_log_offset = (
+                        0 if dl_log_size > _MAX_LOG_FILE_BYTES else dl_log_size
+                    )
+                except OSError:
+                    dl_log_offset = 0
+                try:
+                    self._run_plain_subprocess(
+                        dl_cmd,
+                        task,
+                        dl_log,
+                        timeout=3600,
+                        env=dl_env,
+                        stopping=self._stopping_event(),
+                        secret_to_scrub=token_clean,
+                        append_log=True,
+                        stage_label=f"{label} 权重下载",
+                    )
+                except Exception as dl_exc:
+                    if _is_cancelled_error(dl_exc) or hf_transfer_disabled:
+                        raise
+                    attempt_head, attempt_tail = _read_log_attempt_head_tail(
+                        dl_log, dl_log_offset
+                    )
+                    attempt_had_hf_transfer = (
+                        any(
+                            ln.strip() == _HF_TRANSFER_ACTIVE_MARKER
+                            for ln in attempt_head.splitlines()
+                        )
+                        or any(
+                            ln.strip() == _HF_TRANSFER_ACTIVE_MARKER
+                            for ln in attempt_tail.splitlines()
+                        )
+                        or (_HF_TRANSFER_ACTIVE_MARKER in str(dl_exc))
+                    )
+                    if (
+                        not attempt_had_hf_transfer
+                        or _is_non_retryable_hf_download_error(
+                            f"{dl_exc}\n{attempt_tail}"
+                        )
+                    ):
+                        raise
+                    _check_cancel(task, self._stopping_event())
+                    _safe_task_note(
+                        task,
+                        f"{label} 权重加速下载失败，自动关闭 hf_transfer 并回退标准下载重试一次",
+                        level="warning",
+                    )
+                    retry_env = dict(dl_env)
+                    retry_env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+                    self._run_plain_subprocess(
+                        dl_cmd,
+                        task,
+                        dl_log,
+                        timeout=3600,
+                        env=retry_env,
+                        stopping=self._stopping_event(),
+                        secret_to_scrub=token_clean,
+                        append_log=True,
+                        stage_label=f"{label} 权重下载",
+                    )
         except Exception as exc:
             if _is_cancelled_error(exc):
                 raise
@@ -2981,6 +3404,12 @@ class ColabOneAvatarEngineManager:
                 label="LongCat-Video-Avatar 1.6",
                 additive=False,
             )
+            gpu_caps: dict[str, Any] = {}
+            if self._run_cmd_fn is None or self._accel_wheels_fn is not None:
+                gpu_caps = self.ensure_gpu_acceleration_wheels(task)
+            if self._run_cmd_fn is None:
+                _prune_shadowing_sageattention(self.longcat16_venv_dir, gpu_caps)
+            _ensure_parent_venv_pth(self.longcat16_venv_dir)
             _update_task_state(task, progress=_interp_progress(progress_range, 0.40))
 
             norm_sampling = str(sampling_mode or "non_distill_cfg").strip().lower()
@@ -3140,6 +3569,12 @@ class ColabOneAvatarEngineManager:
                 label=label,
                 additive=False,
             )
+            gpu_caps: dict[str, Any] = {}
+            if self._run_cmd_fn is None or self._accel_wheels_fn is not None:
+                gpu_caps = self.ensure_gpu_acceleration_wheels(task)
+            if self._run_cmd_fn is None:
+                _prune_shadowing_sageattention(venv_dir, gpu_caps)
+            _ensure_parent_venv_pth(venv_dir)
             _update_task_state(task, progress=_interp_progress(progress_range, 0.55))
 
             weights_dir = self._resolve_weights_dir(
@@ -3718,6 +4153,13 @@ class ColabOneAvatarEngineManager:
         }
         if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
             extra_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        for env_key, default_val in (
+            ("CUDA_MODULE_LOADING", "LAZY"),
+            ("TORCHINDUCTOR_FX_GRAPH_CACHE", "1"),
+            ("TORCH_CUDNN_V8_API_ENABLED", "1"),
+        ):
+            if env_key not in os.environ:
+                extra_env[env_key] = default_val
 
         compile_p = self._sanitize_compile_cache_dir(
             runtime_paths.get("compile_cache_dir")

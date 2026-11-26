@@ -412,37 +412,117 @@ def test_longcat16_vocal_separation_and_sampling_params():
 
 
 def test_longcat16_attention_flags_and_rejects_quantized_sageattention():
-    # Hopper (sm_90): prefers FA3, then FA2, then SDPA.
+    def _flags(*, fa3=False, fa2=False, sage3=False, sage2=False):
+        return {
+            "enable_flashattn3": fa3,
+            "enable_flashattn2": fa2,
+            "enable_sageattn3": sage3,
+            "enable_sageattn2": sage2,
+        }
+
+    # Blackwell (sm_120 / sm_100): auto prefers Sage3, then Sage2, then FA2, then SDPA (never FA3).
+    for arch in ((12, 0), (10, 0)):
+        assert resolve_longcat16_attention_flags(
+            "auto",
+            major=arch[0],
+            minor=arch[1],
+            has_fa3=True,
+            has_fa2=True,
+            has_sage3=True,
+            has_sage2=True,
+        ) == _flags(sage3=True)
+        assert resolve_longcat16_attention_flags(
+            "auto",
+            major=arch[0],
+            minor=arch[1],
+            has_fa3=True,
+            has_fa2=True,
+            has_sage3=False,
+            has_sage2=True,
+        ) == _flags(sage2=True)
+        assert resolve_longcat16_attention_flags(
+            "auto",
+            major=arch[0],
+            minor=arch[1],
+            has_fa3=True,
+            has_fa2=True,
+            has_sage3=False,
+            has_sage2=False,
+        ) == _flags(fa2=True)
+        assert resolve_longcat16_attention_flags(
+            "auto",
+            major=arch[0],
+            minor=arch[1],
+            has_fa3=True,
+            has_fa2=False,
+            has_sage3=False,
+            has_sage2=False,
+        ) == _flags()
+
+    # Hopper (sm_90): auto prefers Sage2, then FA3, then FA2, then SDPA (never Sage3).
     assert resolve_longcat16_attention_flags(
-        "auto", major=9, minor=0, has_fa3=True, has_fa2=True
-    ) == {"enable_flashattn3": True, "enable_flashattn2": False}
+        "auto", major=9, minor=0, has_fa3=True, has_fa2=True, has_sage3=True, has_sage2=True
+    ) == _flags(sage2=True)
+    assert resolve_longcat16_attention_flags(
+        "auto", major=9, minor=0, has_fa3=True, has_fa2=True, has_sage3=True, has_sage2=False
+    ) == _flags(fa3=True)
     assert resolve_longcat16_attention_flags(
         "auto", major=9, minor=0, has_fa3=False, has_fa2=True
-    ) == {"enable_flashattn3": False, "enable_flashattn2": True}
+    ) == _flags(fa2=True)
     assert resolve_longcat16_attention_flags(
         "auto", major=9, minor=0, has_fa3=False, has_fa2=False
-    ) == {"enable_flashattn3": False, "enable_flashattn2": False}
+    ) == _flags()
 
-    # Blackwell (sm_120 / sm_100) and Ada (sm_89): prefer FA2, never FA3 in auto.
-    for arch in ((12, 0), (10, 0), (8, 9), (8, 0)):
+    # Ada (sm_89) and Ampere (sm_80): auto prefers Sage2, then FA2, then SDPA (never Sage3/FA3).
+    for arch in ((8, 9), (8, 0)):
         assert resolve_longcat16_attention_flags(
-            "auto", major=arch[0], minor=arch[1], has_fa3=True, has_fa2=True
-        ) == {"enable_flashattn3": False, "enable_flashattn2": True}
+            "auto",
+            major=arch[0],
+            minor=arch[1],
+            has_fa3=True,
+            has_fa2=True,
+            has_sage3=True,
+            has_sage2=True,
+        ) == _flags(sage2=True)
+        assert resolve_longcat16_attention_flags(
+            "auto",
+            major=arch[0],
+            minor=arch[1],
+            has_fa3=True,
+            has_fa2=True,
+            has_sage3=True,
+            has_sage2=False,
+        ) == _flags(fa2=True)
         assert resolve_longcat16_attention_flags(
             "auto", major=arch[0], minor=arch[1], has_fa3=True, has_fa2=False
-        ) == {"enable_flashattn3": False, "enable_flashattn2": False}
+        ) == _flags()
 
     # Explicit backends and architecture guards:
-    # - FA3 is strictly Hopper-only (major in (0, 9)): non-Hopper GPUs (sm_80+/sm_100/sm_120)
-    #   degrade cleanly to FA2 when available, else SDPA.
-    # - FA2 requires Ampere+ (major == 0 or major >= 8): Turing (sm_75) and Volta (sm_70)
-    #   always force SDPA even when has_fa3/has_fa2 are True.
+    # - sageattn_3 is strictly Blackwell-only (major in (0, >=10)); degrades to sage2/fa3/fa2/sdpa.
+    # - FA3 is strictly Hopper-only (major in (0, 9)): non-Hopper GPUs degrade cleanly to FA2/SDPA.
+    # - FA2/Sage2 require Ampere+ (major == 0 or major >= 8): Turing (sm_75) and Volta (sm_70)
+    #   always force SDPA even when all backends are marked available.
+    assert resolve_longcat16_attention_flags(
+        "sageattn_3", major=12, minor=0, has_sage3=True, has_sage2=True
+    ) == _flags(sage3=True)
+    assert resolve_longcat16_attention_flags(
+        "sageattn_3", major=9, minor=0, has_sage3=True, has_sage2=True, has_fa3=True
+    ) == _flags(sage2=True)
+    assert resolve_longcat16_attention_flags(
+        "sageattn_3", major=9, minor=0, has_sage3=True, has_sage2=False, has_fa3=True
+    ) == _flags(fa3=True)
+    assert resolve_longcat16_attention_flags(
+        "sageattn_2", major=8, minor=0, has_sage2=True, has_fa2=True
+    ) == _flags(sage2=True)
+    assert resolve_longcat16_attention_flags(
+        "sageattn_2", major=8, minor=0, has_sage2=False, has_fa2=True
+    ) == _flags(fa2=True)
     assert resolve_longcat16_attention_flags(
         "flash_attn_3", major=9, minor=0, has_fa3=True, has_fa2=True
-    ) == {"enable_flashattn3": True, "enable_flashattn2": False}
+    ) == _flags(fa3=True)
     assert resolve_longcat16_attention_flags(
         "flash_attn_3", major=0, minor=0, has_fa3=True, has_fa2=True
-    ) == {"enable_flashattn3": True, "enable_flashattn2": False}
+    ) == _flags(fa3=True)
     for non_hopper in ((12, 0), (10, 0), (8, 9), (8, 0)):
         assert resolve_longcat16_attention_flags(
             "flash_attn_3",
@@ -450,35 +530,37 @@ def test_longcat16_attention_flags_and_rejects_quantized_sageattention():
             minor=non_hopper[1],
             has_fa3=True,
             has_fa2=True,
-        ) == {"enable_flashattn3": False, "enable_flashattn2": True}
+        ) == _flags(fa2=True)
         assert resolve_longcat16_attention_flags(
             "flash_attn_3",
             major=non_hopper[0],
             minor=non_hopper[1],
             has_fa3=True,
             has_fa2=False,
-        ) == {"enable_flashattn3": False, "enable_flashattn2": False}
+        ) == _flags()
     for legacy_arch in ((7, 5), (7, 0)):
-        for mode in ("auto", "flash_attn_3", "flash_attn_2", "sdpa"):
+        for mode in ("auto", "sageattn_3", "sageattn_2", "flash_attn_3", "flash_attn_2", "sdpa"):
             assert resolve_longcat16_attention_flags(
                 mode,
                 major=legacy_arch[0],
                 minor=legacy_arch[1],
                 has_fa3=True,
                 has_fa2=True,
-            ) == {"enable_flashattn3": False, "enable_flashattn2": False}
+                has_sage3=True,
+                has_sage2=True,
+            ) == _flags()
     assert resolve_longcat16_attention_flags(
         "flash_attn_3", major=9, has_fa3=False, has_fa2=True
-    ) == {"enable_flashattn3": False, "enable_flashattn2": True}
+    ) == _flags(fa2=True)
     assert resolve_longcat16_attention_flags(
         "flash_attn_2", major=9, has_fa3=True, has_fa2=False
-    ) == {"enable_flashattn3": False, "enable_flashattn2": False}
+    ) == _flags()
     assert resolve_longcat16_attention_flags(
-        "sdpa", major=9, has_fa3=True, has_fa2=True
-    ) == {"enable_flashattn3": False, "enable_flashattn2": False}
+        "sdpa", major=9, has_fa3=True, has_fa2=True, has_sage3=True, has_sage2=True
+    ) == _flags()
 
-    # Quantized SageAttention and unsupported backends are strictly rejected.
-    for forbidden in ("sageattn", "sageattn_3", "sageattention", "xformers", "fp8_attn"):
+    # Ambiguous or unsupported attention backend strings remain strictly rejected.
+    for forbidden in ("sageattn", "sageattention", "xformers", "fp8_attn"):
         with pytest.raises(ValueError):
             resolve_longcat16_attention_flags(forbidden, major=12, has_fa2=True)
 
@@ -654,8 +736,10 @@ def test_vsr_seedvr2_batch_alignment_chunk_plan_cli_and_cover_crop(tmp_path):
     assert "--blocks_to_swap" not in cmd_96g
     assert "--vae_encode_tiled" not in cmd_96g
     assert "--vae_decode_tiled" not in cmd_96g
-    assert "--dit_offload_device" not in cmd_96g
-    assert "--vae_offload_device" not in cmd_96g
+    assert cmd_96g[cmd_96g.index("--tensor_offload_device") + 1] == "none"
+    assert cmd_96g[cmd_96g.index("--dit_offload_device") + 1] == "cuda:0"
+    assert cmd_96g[cmd_96g.index("--vae_offload_device") + 1] == "cuda:0"
+    assert "cpu" not in cmd_96g
     assert "--chunk_size" not in cmd_96g
 
     # Low VRAM (< 48 GB) enables block swap + tiled VAE + CPU offload.
@@ -730,7 +814,7 @@ def test_vsr_seedvr2_batch_alignment_chunk_plan_cli_and_cover_crop(tmp_path):
     assert cmd_48g[cmd_48g.index("--dit_offload_device") + 1] == "cpu"
     assert cmd_48g[cmd_48g.index("--vae_offload_device") + 1] == "cpu"
 
-    # Above 48 GB (> 49152 MiB, e.g. 64 GB / 96 GB GPUs) stays completely swap-free.
+    # Above 48 GB (> 49152 MiB, e.g. 64 GB / 96 GB GPUs) stays completely swap-free & GPU-resident.
     for high_vram in (65536, 98304):
         cmd_hi = build_seedvr2_cli_command(
             "/opt/seedvr2_venv/bin/python",
@@ -749,8 +833,10 @@ def test_vsr_seedvr2_batch_alignment_chunk_plan_cli_and_cover_crop(tmp_path):
         assert "--blocks_to_swap" not in cmd_hi
         assert "--vae_encode_tiled" not in cmd_hi
         assert "--vae_decode_tiled" not in cmd_hi
-        assert "--dit_offload_device" not in cmd_hi
-        assert "--vae_offload_device" not in cmd_hi
+        assert cmd_hi[cmd_hi.index("--tensor_offload_device") + 1] == "none"
+        assert cmd_hi[cmd_hi.index("--dit_offload_device") + 1] == "cuda:0"
+        assert cmd_hi[cmd_hi.index("--vae_offload_device") + 1] == "cuda:0"
+        assert "cpu" not in cmd_hi
 
     with pytest.raises(ValueError):
         build_seedvr2_cli_command(
@@ -6725,6 +6811,1182 @@ def test_longcat16_module_tqdm_hook_and_sdpa_contiguity_backend(monkeypatch, cap
     )
     assert sdpa_calls[-2] == (True, True, True, "cudnn_fail")
     assert sdpa_calls[-1] == (True, True, True, "default")
+
+
+def test_longcat16_gpu_accel_sage_fp8_lora_swap_batched_cfg_and_async_pipe(
+    tmp_path, monkeypatch
+):
+    """Comprehensive offline verification of LongCat 1.6 GPU acceleration stack."""
+    import contextlib
+    import types
+
+    from server import avatar_worker_longcat16 as lc_worker
+
+    # 1. _install_accelerated_attention: Sage3 K-clone protection + short-seq & runtime fallbacks.
+    class _SimTensor:
+        def __init__(self, shape, value=1.0, device="cuda:0", dtype="bfloat16", finite=True):
+            self.shape = tuple(shape)
+            self.val = float(value)
+            self.device = device
+            self.dtype = dtype
+            self._finite = finite
+
+        def size(self, dim=None):
+            return self.shape if dim is None else self.shape[dim]
+
+        def is_contiguous(self):
+            return True
+
+        def contiguous(self):
+            return self
+
+        def to(self, *args, **kwargs):
+            dt = kwargs.get("dtype", args[0] if args else self.dtype)
+            return _SimTensor(self.shape, self.val, self.device, dt, self._finite)
+
+        def clone(self):
+            return _SimTensor(self.shape, self.val, self.device, self.dtype, self._finite)
+
+        def isfinite(self):
+            return types.SimpleNamespace(all=lambda: self._finite)
+
+    calls: list[str] = []
+    sage3_pbm_seen: list[bool] = []
+    sage3_fail = {"flag": False}
+    sage2_fail = {"flag": False}
+
+    def _fake_sage3(q, k, v, is_causal=False, per_block_mean=True):
+        assert is_causal is False
+        sage3_pbm_seen.append(bool(per_block_mean))
+        # Simulate upstream sageattn3_blackwell in-place k -= k.mean() mutation.
+        k.val -= 999.0
+        calls.append("sage3")
+        if sage3_fail["flag"]:
+            raise RuntimeError("sage3 kernel unsupported")
+        return _SimTensor(q.shape, value=3.0)
+
+    def _fake_sage2(q, k, v, tensor_layout="HND", is_causal=False, sm_scale=None):
+        assert tensor_layout == "HND" and is_causal is False
+        calls.append("sage2")
+        if sage2_fail["flag"]:
+            raise RuntimeError("sage2 kernel failed")
+        return _SimTensor(q.shape, value=2.0)
+
+    def _fake_sdpa(q, k, v, dropout_p=0.0, scale=None):
+        calls.append("sdpa")
+        return _SimTensor(q.shape, value=1.0)
+
+    fake_sage3_mod = types.ModuleType("sageattn3")
+    fake_sage3_mod.sageattn3_blackwell = _fake_sage3  # type: ignore[attr-defined]
+    fake_sage2_mod = types.ModuleType("sageattention")
+    fake_sage2_mod.__version__ = "2.2.0"  # type: ignore[attr-defined]
+    fake_sage2_mod.sageattn = _fake_sage2  # type: ignore[attr-defined]
+    fake_einops = types.ModuleType("einops")
+    fake_einops.rearrange = lambda x, *a, **kw: x  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sageattn3", fake_sage3_mod)
+    monkeypatch.setitem(sys.modules, "sageattention", fake_sage2_mod)
+    monkeypatch.setitem(sys.modules, "einops", fake_einops)
+
+    fake_torch_attn = types.SimpleNamespace(
+        nn=types.SimpleNamespace(
+            functional=types.SimpleNamespace(scaled_dot_product_attention=_fake_sdpa),
+            attention=types.SimpleNamespace(
+                sdpa_kernel=lambda b: contextlib.nullcontext()
+            ),
+        ),
+        isfinite=lambda t: t.isfinite(),
+    )
+
+    class _SelfAttn:
+        scale = 0.125
+
+        def _process_attn(self, q, k, v, shape):
+            raise RuntimeError("should be patched")
+
+    dit_attn = types.SimpleNamespace(blocks=[types.SimpleNamespace(attn=_SelfAttn())])
+    attn_state = lc_worker._install_accelerated_attention(
+        dit_attn, fake_torch_attn, use_sage3=True, use_sage2=True
+    )
+    assert attn_state["use_sage3"] is True and attn_state["use_sage2"] is True
+
+    # Small self-attn (S=256, D=128): uses Sage3 with per_block_mean=True and preserves K unmodified.
+    k_cache = _SimTensor((1, 4, 256, 128), value=42.0)
+    out = dit_attn.blocks[0].attn._process_attn(
+        _SimTensor((1, 4, 256, 128)), k_cache, _SimTensor((1, 4, 256, 128)), None
+    )
+    assert out.val == 3.0
+    assert k_cache.val == 42.0  # K clone protected KV cache from in-place mean-subtraction!
+    assert calls[-1] == "sage3"
+    assert sage3_pbm_seen[-1] is True
+
+    # LongCat 720p B=3 self-attn (QL=88320, KL=92160, H=32): MUST set per_block_mean=False
+    # to avoid 36.6 GB delta_s OOM and LayoutDS int32_t TMA stride overflow!
+    out_720p = dit_attn.blocks[0].attn._process_attn(
+        _SimTensor((3, 32, 88320, 128)),
+        _SimTensor((3, 32, 92160, 128)),
+        _SimTensor((3, 32, 92160, 128)),
+        None,
+    )
+    assert out_720p.val == 3.0
+    assert sage3_pbm_seen[-1] is False
+
+    # Short sequence (S=64 < 256): bypasses Sage3 cleanly and uses Sage2 HND.
+    out_short = dit_attn.blocks[0].attn._process_attn(
+        _SimTensor((1, 4, 64, 128)),
+        _SimTensor((1, 4, 64, 128)),
+        _SimTensor((1, 4, 64, 128)),
+        None,
+    )
+    assert out_short.val == 2.0 and calls[-1] == "sage2"
+
+    # Sage3 runtime failure disables Sage3 permanently and falls through to Sage2.
+    sage3_fail["flag"] = True
+    out_fb2 = dit_attn.blocks[0].attn._process_attn(
+        _SimTensor((1, 4, 256, 128)), k_cache, _SimTensor((1, 4, 256, 128)), None
+    )
+    assert out_fb2.val == 2.0 and attn_state["use_sage3"] is False
+
+    # Sage2 runtime failure disables Sage2 and falls through to BF16 SDPA.
+    sage2_fail["flag"] = True
+    out_fb_sdpa = dit_attn.blocks[0].attn._process_attn(
+        _SimTensor((1, 4, 256, 128)), k_cache, _SimTensor((1, 4, 256, 128)), None
+    )
+    assert out_fb_sdpa.val == 1.0 and attn_state["use_sage2"] is False
+
+    # SageAttention v1.x is strictly rejected by _smoke_test_sage2_module.
+    fake_sage1_mod = types.SimpleNamespace(__version__="1.0.6", sageattn=_fake_sage2)
+    assert lc_worker._smoke_test_sage2_module(fake_sage1_mod, device=None) is False
+    assert lc_worker._smoke_test_sage2_module(fake_sage2_mod, device=None) is True
+
+    # 2. _torch_gc_if_low_vram: skips empty_cache when free VRAM >= threshold, runs when below.
+    gc_calls = {"empty": 0}
+
+    def _make_gc_torch(free_gib: float):
+        return types.SimpleNamespace(
+            cuda=types.SimpleNamespace(
+                is_available=lambda: True,
+                mem_get_info=lambda dev: (int(free_gib * 1024**3), int(96 * 1024**3)),
+                empty_cache=lambda: gc_calls.__setitem__("empty", gc_calls["empty"] + 1),
+                ipc_collect=lambda: None,
+            )
+        )
+
+    assert lc_worker._torch_gc_if_low_vram(_make_gc_torch(32.0), "cuda:0") is False
+    assert gc_calls["empty"] == 0
+    assert lc_worker._torch_gc_if_low_vram(_make_gc_torch(8.0), "cuda:0") is True
+    assert gc_calls["empty"] == 1
+
+    # 3. _ColabOneFfv1PipeWriter async bounded queue + broken pipe error propagation (pure stdlib, no numpy).
+    class _StubNumpy:
+        uint8 = "uint8"
+        float32 = "float32"
+
+        class _Arr:
+            def __init__(self, buf: bytes, shape: tuple[int, ...]):
+                self._buf = buf
+                self.shape = shape
+                self.ndim = len(shape)
+                self.dtype = "uint8"
+
+            def __getitem__(self, idx):
+                if isinstance(idx, int):
+                    stride = 1
+                    for d in self.shape[1:]:
+                        stride *= d
+                    return _StubNumpy._Arr(
+                        self._buf[idx * stride : (idx + 1) * stride], self.shape[1:]
+                    )
+                raise TypeError(idx)
+
+            def tobytes(self):
+                return self._buf
+
+            def astype(self, dt, copy=True):
+                return self
+
+        @staticmethod
+        def asarray(x):
+            return x
+
+        @staticmethod
+        def ascontiguousarray(x):
+            return memoryview(x._buf)
+
+        @staticmethod
+        def linspace(start, stop, num, dtype=None, endpoint=True):
+            if num <= 1:
+                return [float(start)]
+            step = (stop - start) / float(num - 1 if endpoint else num)
+            return [float(start + step * i) for i in range(num)]
+
+    monkeypatch.setitem(sys.modules, "numpy", _StubNumpy)
+
+    audit_log = tmp_path / "ffv1_audit.jsonl"
+    ff_bin, _ = _install_stub_ffmpeg_and_ffprobe(tmp_path / "ff_bin", audit_log)
+    out_mkv = tmp_path / "async_out.mkv"
+    writer = lc_worker._ColabOneFfv1PipeWriter(
+        ffmpeg_bin=str(ff_bin), width=16, height=16, fps=25, output_path=out_mkv
+    )
+    frames = _StubNumpy._Arr(b"\x00" * (3 * 16 * 16 * 3), (3, 16, 16, 3))
+    writer.write_frames(frames)
+    writer.close()
+    assert writer.frames_written == 3
+    assert out_mkv.is_file()
+
+    # Broken writer (ffmpeg exits immediately with error) must propagate cleanly on write/close.
+    bad_script = tmp_path / "_bad_ff.py"
+    bad_script.write_text("import sys; sys.stderr.write('boom\\n'); sys.exit(2)\n")
+    bad_ff = _create_python_wrapper(tmp_path / "bad_ffmpeg", bad_script)
+    bad_writer = lc_worker._ColabOneFfv1PipeWriter(
+        ffmpeg_bin=str(bad_ff), width=16, height=16, fps=25, output_path=tmp_path / "bad.mkv"
+    )
+    with pytest.raises(RuntimeError):
+        for _ in range(4):
+            bad_writer.write_frames(_StubNumpy._Arr(b"\x00" * (2 * 16 * 16 * 3), (2, 16, 16, 3)))
+        bad_writer.close()
+    bad_writer.abort()
+
+    # 4. Real-math pure-Python tensor simulation for ColabOneFp8Linear, zero-drift fast LoRA mix
+    #    + dual FP8 FFN, and bit-exact 3-way batched CFG fusion (zero external ML deps).
+    def _prod(shape: tuple[int, ...]) -> int:
+        p = 1
+        for d in shape:
+            p *= int(d)
+        return p
+
+    def _mat_mul_2d(a: list[float], r: int, k: int, b: list[float], c: int) -> list[float]:
+        out = [0.0] * (r * c)
+        for i in range(r):
+            a_off = i * k
+            o_off = i * c
+            for j in range(c):
+                s = 0.0
+                for p in range(k):
+                    s += a[a_off + p] * b[p * c + j]
+                out[o_off + j] = s
+        return out
+
+    class _PyTensor:
+        def __init__(self, flat: list[float], shape: tuple[int, ...], dtype: str = "float32", device: str = "cpu"):
+            self._flat = [float(v) for v in flat]
+            self.shape = tuple(int(d) for d in shape)
+            self.dtype = dtype
+            self.device = device
+            self._ptr_id = id(self._flat)
+
+        @classmethod
+        def full(cls, shape: tuple[int, ...], fill: float, dtype: str = "float32"):
+            return cls([float(fill)] * _prod(shape), shape, dtype=dtype)
+
+        @property
+        def ndim(self):
+            return len(self.shape)
+
+        @property
+        def data(self):
+            return self
+
+        def data_ptr(self):
+            return self._ptr_id
+
+        def numel(self):
+            return len(self._flat)
+
+        def element_size(self):
+            return 2 if self.dtype in ("bfloat16", "float16") else 4
+
+        def detach(self):
+            return self
+
+        def clone(self):
+            return _PyTensor(list(self._flat), self.shape, self.dtype, self.device)
+
+        def copy_(self, other):
+            self._flat[:] = other._flat
+            return self
+
+        def contiguous(self):
+            return self
+
+        def is_contiguous(self):
+            return True
+
+        def t(self):
+            r, c = self.shape
+            out = [0.0] * (r * c)
+            for i in range(r):
+                for j in range(c):
+                    out[j * r + i] = self._flat[i * c + j]
+            return _PyTensor(out, (c, r), self.dtype, self.device)
+
+        def reshape(self, *s):
+            if len(s) == 1 and isinstance(s[0], tuple):
+                s = s[0]
+            dims = list(s)
+            if -1 in dims:
+                idx = dims.index(-1)
+                known = 1
+                for i, d in enumerate(dims):
+                    if i != idx:
+                        known *= int(d)
+                dims[idx] = len(self._flat) // max(1, known)
+            return _PyTensor(list(self._flat), tuple(int(d) for d in dims), self.dtype, self.device)
+
+        def to(self, *args, **kwargs):
+            dt = kwargs.get("dtype", self.dtype)
+            dev = kwargs.get("device", self.device)
+            if args and isinstance(args[0], str):
+                dt = args[0]
+            return _PyTensor(list(self._flat), self.shape, dt, dev)
+
+        def abs(self):
+            return _PyTensor([abs(v) for v in self._flat], self.shape, self.dtype, self.device)
+
+        def amax(self):
+            return _PyTensor([max(self._flat)], (1,), "float32", self.device)
+
+        def clamp(self, min=None, max=None):
+            res = []
+            for v in self._flat:
+                if min is not None and v < float(min):
+                    v = float(min)
+                if max is not None and v > float(max):
+                    v = float(max)
+                res.append(v)
+            return _PyTensor(res, self.shape, self.dtype, self.device)
+
+        def item(self):
+            return float(self._flat[0])
+
+        def mean_val(self):
+            return sum(self._flat) / max(1, len(self._flat))
+
+        def expand(self, *s):
+            return _PyTensor([self._flat[0]] * _prod(s), tuple(s), self.dtype, self.device)
+
+        def unsqueeze(self, dim):
+            d = dim if dim >= 0 else len(self.shape) + 1 + dim
+            ns = list(self.shape)
+            ns.insert(d, 1)
+            return _PyTensor(list(self._flat), tuple(ns), self.dtype, self.device)
+
+        def repeat(self, *reps):
+            assert len(reps) == 2 and self.ndim == 2
+            r0, r1 = int(reps[0]), int(reps[1])
+            rows, cols = self.shape
+            out = []
+            for _ in range(r0):
+                for i in range(rows):
+                    row = self._flat[i * cols : (i + 1) * cols]
+                    out.extend(row * r1)
+            return _PyTensor(out, (rows * r0, cols * r1), self.dtype, self.device)
+
+        def chunk(self, n, dim=0):
+            assert dim == 0
+            c0 = self.shape[0] // n
+            stride = _prod(self.shape[1:])
+            return tuple(
+                _PyTensor(
+                    self._flat[i * c0 * stride : (i + 1) * c0 * stride],
+                    (c0, *self.shape[1:]),
+                    self.dtype,
+                    self.device,
+                )
+                for i in range(n)
+            )
+
+        def _slice_dim0(self, idx):
+            stride = _prod(self.shape[1:])
+            if isinstance(idx, int):
+                if idx < 0:
+                    idx += self.shape[0]
+                return _PyTensor(self._flat[idx * stride : (idx + 1) * stride], self.shape[1:], self.dtype, self.device)
+            if isinstance(idx, slice):
+                s_i, e_i, step = idx.indices(self.shape[0])
+                assert step == 1
+                return _PyTensor(
+                    self._flat[s_i * stride : e_i * stride],
+                    (max(0, e_i - s_i), *self.shape[1:]),
+                    self.dtype,
+                    self.device,
+                )
+            raise TypeError(idx)
+
+        def __getitem__(self, idx):
+            if isinstance(idx, tuple):
+                # Support [:, :1] on 2D and [:, :, 1:] on 5D (B=1) for batched CFG tests.
+                if len(idx) == 3 and self.ndim == 5 and self.shape[0] == 1:
+                    _, _, t_sl = idx
+                    c, t, h, w = self.shape[1:]
+                    t_s, t_e, _ = t_sl.indices(t)
+                    out = []
+                    hw = h * w
+                    for ci in range(c):
+                        for ti in range(t_s, t_e):
+                            off = (ci * t + ti) * hw
+                            out.extend(self._flat[off : off + hw])
+                    return _PyTensor(out, (1, c, t_e - t_s, h, w), self.dtype, self.device)
+                return self
+            return self._slice_dim0(idx)
+
+        def __setitem__(self, idx, val):
+            if isinstance(idx, tuple) and len(idx) == 2 and self.ndim == 2:
+                _, col_sl = idx
+                r, c = self.shape
+                c_s, c_e, _ = col_sl.indices(c)
+                v_num = float(val) if isinstance(val, (int, float)) else val._flat[0]
+                for i in range(r):
+                    for j in range(c_s, c_e):
+                        self._flat[i * c + j] = v_num
+                return
+            if isinstance(idx, tuple) and len(idx) == 3 and self.ndim == 5 and self.shape[0] == 1:
+                _, _, t_sl = idx
+                c, t, h, w = self.shape[1:]
+                t_s, t_e, _ = t_sl.indices(t)
+                hw = h * w
+                src_i = 0
+                for ci in range(c):
+                    for ti in range(t_s, t_e):
+                        off = (ci * t + ti) * hw
+                        self._flat[off : off + hw] = val._flat[src_i : src_i + hw]
+                        src_i += hw
+                return
+            raise TypeError(idx)
+
+        def _binop(self, other, op):
+            if isinstance(other, _PyTensor):
+                if len(other._flat) == 1:
+                    ov = other._flat[0]
+                    return _PyTensor([op(a, ov) for a in self._flat], self.shape, self.dtype, self.device)
+                if len(self._flat) == 1:
+                    sv = self._flat[0]
+                    return _PyTensor([op(sv, b) for b in other._flat], other.shape, self.dtype, self.device)
+                return _PyTensor([op(a, b) for a, b in zip(self._flat, other._flat)], self.shape, self.dtype, self.device)
+            ov = float(other)
+            return _PyTensor([op(a, ov) for a in self._flat], self.shape, self.dtype, self.device)
+
+        def __add__(self, other):
+            return self._binop(other, lambda a, b: a + b)
+
+        def __radd__(self, other):
+            return self.__add__(other)
+
+        def __sub__(self, other):
+            return self._binop(other, lambda a, b: a - b)
+
+        def __mul__(self, other):
+            return self._binop(other, lambda a, b: a * b)
+
+        def __rmul__(self, other):
+            return self.__mul__(other)
+
+        def __truediv__(self, other):
+            return self._binop(other, lambda a, b: a / b)
+
+        def __rtruediv__(self, other):
+            ov = float(other)
+            return _PyTensor([ov / a for a in self._flat], self.shape, self.dtype, self.device)
+
+        def __neg__(self):
+            return _PyTensor([-a for a in self._flat], self.shape, self.dtype, self.device)
+
+    class _MiniModule:
+        def __init__(self):
+            self._buffers = {}
+
+        def register_buffer(self, name, tensor):
+            self._buffers[name] = tensor
+            setattr(self, name, tensor)
+
+        def __call__(self, *a, **k):
+            return self.forward(*a, **k)
+
+    class Linear(_MiniModule):
+        def __init__(self, w_t: _PyTensor, bias_t: _PyTensor | None = None):
+            super().__init__()
+            self.weight = w_t
+            self.out_features, self.in_features = w_t.shape
+            self.bias = bias_t
+
+    scaled_mm_return_tuple = {"flag": True}
+
+    def _fake_scaled_mm(a, b, scale_a, scale_b, bias=None, out_dtype="bfloat16", use_fast_accum=True):
+        assert a.shape[0] % 16 == 0 and a.shape[1] % 16 == 0 and b.shape[1] % 16 == 0
+        raw = _mat_mul_2d(a._flat, a.shape[0], a.shape[1], b._flat, b.shape[1])
+        sc = scale_a.item() * scale_b.item()
+        out = [v * sc for v in raw]
+        if bias is not None:
+            cols = b.shape[1]
+            for i in range(a.shape[0]):
+                for j in range(cols):
+                    out[i * cols + j] += bias._flat[j]
+        t = _PyTensor(out, (a.shape[0], b.shape[1]), dtype=out_dtype)
+        return (t, _PyTensor([1.0], (1,))) if scaled_mm_return_tuple["flag"] else t
+
+    def _fake_pad(t, pad):
+        left, right, top, bottom = pad
+        assert left == 0 and right == 0 and top == 0
+        cols = t.shape[1]
+        return _PyTensor(t._flat + [0.0] * (bottom * cols), (t.shape[0] + bottom, cols), t.dtype, t.device)
+
+    def _fake_cat(ts, dim=0):
+        assert dim == 0
+        flat = []
+        tot0 = 0
+        for t in ts:
+            flat.extend(t._flat)
+            tot0 += t.shape[0]
+        return _PyTensor(flat, (tot0, *ts[0].shape[1:]), ts[0].dtype, ts[0].device)
+
+    fake_torch_math = types.SimpleNamespace(
+        bfloat16="bfloat16",
+        float16="float16",
+        float32="float32",
+        float8_e4m3fn="float8_e4m3fn",
+        no_grad=contextlib.nullcontext,
+        nn=types.SimpleNamespace(
+            Module=_MiniModule,
+            Linear=Linear,
+            functional=types.SimpleNamespace(pad=_fake_pad),
+        ),
+        _scaled_mm=_fake_scaled_mm,
+        mm=lambda a, b: _PyTensor(_mat_mul_2d(a._flat, a.shape[0], a.shape[1], b._flat, b.shape[1]), (a.shape[0], b.shape[1]), "float32"),
+        cat=_fake_cat,
+        chunk=lambda t, n, dim=0: t.chunk(n, dim=dim),
+        zeros_like=lambda t: _PyTensor([0.0] * len(t._flat), t.shape, t.dtype),
+        zeros=lambda shape, device=None: _PyTensor.full(shape if isinstance(shape, tuple) else (shape,), 0.0),
+        tensor=lambda v, device=None: _PyTensor([float(v)], (1,)),
+    )
+
+    # 4a. ColabOneFp8Linear: handles tuple & plain returns + M%16 padding + bias.
+    w_lin = _PyTensor([((i * 7 + j * 3) % 11 - 5) * 0.1 for i in range(16) for j in range(16)], (16, 16), dtype="bfloat16")
+    b_lin = _PyTensor.full((16,), 1.0, dtype="bfloat16")
+    lin = Linear(w_lin, bias_t=b_lin)
+    fp8_cls = lc_worker._get_colabone_fp8_linear_class(fake_torch_math)
+    fp8_lin = fp8_cls(lin)
+    x_unaligned = _PyTensor([((i % 9) - 4) * 0.2 for i in range(2 * 5 * 16)], (2, 5, 16), dtype="bfloat16")
+    y_tuple = fp8_lin(x_unaligned)
+    assert y_tuple.shape == (2, 5, 16)
+    expected_2d = _mat_mul_2d(x_unaligned._flat, 10, 16, w_lin.t()._flat, 16)
+    expected_flat = [v + 1.0 for v in expected_2d]
+    assert all(abs(a - b) < 1e-4 for a, b in zip(y_tuple._flat, expected_flat))
+    scaled_mm_return_tuple["flag"] = False
+    y_plain = fp8_lin(x_unaligned)
+    assert all(abs(a - b) < 1e-4 for a, b in zip(y_plain._flat, expected_flat))
+
+    # 4b. Fast LoRA mix weight swap (regular + LoRAUPParallel) + zero-drift + dual-weight FP8 FFN!
+    blocks = [
+        types.SimpleNamespace(
+            ffn=types.SimpleNamespace(
+                w1=Linear(_PyTensor.full((16, 16), 1.0, dtype="bfloat16")),
+                w3=Linear(_PyTensor.full((16, 16), 2.0, dtype="bfloat16")),
+            ),
+            attn=types.SimpleNamespace(
+                qkv=Linear(_PyTensor.full((16, 16), 0.5, dtype="bfloat16")),
+            ),
+        )
+        for _ in range(48)
+    ]
+    dit_mix = types.SimpleNamespace(blocks=blocks)
+
+    def _get_mod(name: str):
+        cur = dit_mix
+        for part in name.split("."):
+            cur = cur[int(part)] if part.isdigit() else getattr(cur, part)
+        return cur
+
+    dit_mix._get_module_by_name = _get_mod
+
+    # Build fake safetensors state dicts: block 6 ffn.w1 (regular LoRA) + block 6 attn.qkv (LoRAUPParallel).
+    dmd_sd = {
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___ffn___lorahyphen___w1.lora_down.weight": _PyTensor.full((4, 16), 0.25),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___ffn___lorahyphen___w1.lora_up.weight": _PyTensor.full((16, 4), 0.5),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___attn___lorahyphen___qkv.lora_down.weight": _PyTensor.full((4, 16), 0.1),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___attn___lorahyphen___qkv.lora_up.blocks.0.weight": _PyTensor.full((8, 2), 0.5),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___attn___lorahyphen___qkv.lora_up.blocks.1.weight": _PyTensor.full((8, 2), 1.0),
+    }
+    opsd_sd = {
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___ffn___lorahyphen___w1.lora_down.weight": _PyTensor.full((4, 16), 0.5),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___ffn___lorahyphen___w1.lora_up.weight": _PyTensor.full((16, 4), 1.0),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___attn___lorahyphen___qkv.lora_down.weight": _PyTensor.full((4, 16), 0.2),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___attn___lorahyphen___qkv.lora_up.blocks.0.weight": _PyTensor.full((8, 2), 1.0),
+        "lora___lorahyphen___blocks___lorahyphen___6___lorahyphen___attn___lorahyphen___qkv.lora_up.blocks.1.weight": _PyTensor.full((8, 2), 2.0),
+    }
+    fake_st = types.ModuleType("safetensors")
+    fake_st_torch = types.ModuleType("safetensors.torch")
+    fake_st_torch.load_file = lambda path, device="cpu": dmd_sd if "dmd" in str(path) else opsd_sd  # type: ignore[attr-defined]
+    fake_st.torch = fake_st_torch  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "safetensors", fake_st)
+    monkeypatch.setitem(sys.modules, "safetensors.torch", fake_st_torch)
+
+    swapped_names = lc_worker._install_fast_lora_mix_weight_swap(
+        dit_mix, "dmd.safetensors", "opsd.safetensors", 1.0, 4, fake_torch_math
+    )
+    assert swapped_names == {"blocks.6.ffn.w1", "blocks.6.attn.qkv"}
+
+    # Check early weight values (alpha=1.0 -> base + d_dmd; default alpha_scale = 64/128 = 0.5).
+    qkv_early_expected = list(blocks[6].attn.qkv.weight._flat)
+    qkv_ptr = blocks[6].attn.qkv.weight.data_ptr()
+    assert all(abs(v - (0.5 + 0.5 * (2 * 0.5 * 0.1))) < 1e-5 for v in qkv_early_expected[: 8 * 16])
+    assert all(abs(v - (0.5 + 0.5 * (2 * 1.0 * 0.1))) < 1e-5 for v in qkv_early_expected[8 * 16 :])
+
+    # A100 (sm_80) must skip FP8 FFN; Blackwell (sm_120) must upgrade calibrated blocks INCLUDING dual-swap block 6 ffn.w1!
+    assert lc_worker._enable_longcat16_fp8_ffn(
+        dit_mix, fake_torch_math, "cuda:0", major=8, minor=0, fp8_ffn_opt="auto", skip_module_names=swapped_names
+    ) is False
+    monkeypatch.setattr(lc_worker, "_benchmark_torch_fp8_scaled_mm", lambda t, d: True)
+    assert lc_worker._enable_longcat16_fp8_ffn(
+        dit_mix, fake_torch_math, "cuda:0", major=12, minor=0, fp8_ffn_opt="auto", skip_module_names=swapped_names
+    ) is True
+    assert isinstance(blocks[6].ffn.w1, fp8_cls)
+    assert blocks[6].ffn.w1.weight_fp8_other is not None  # Dual-weight FP8 swap attached!
+    assert not isinstance(blocks[0].ffn.w1, fp8_cls)  # Block 0 kept pure BF16 per calibration!
+
+    w1_fp8_ptr = blocks[6].ffn.w1.weight_fp8.data_ptr()
+    x_probe = _PyTensor.full((1, 16), 1.0, dtype="bfloat16")
+    y_w1_early = list(blocks[6].ffn.w1(x_probe)._flat)
+    # Early w1 = 1.0 + 0.5 * (4 * 0.5 * 0.25) = 1.25 -> dot with ones(16) = 20.0.
+    assert all(abs(v - 20.0) < 1e-4 for v in y_w1_early)
+
+    # Transition across 10 full segment cycles: verify exact late weights, zero drift, invariant pointers!
+    for _ in range(10):
+        dit_mix.set_lora_mix_step(4)
+        y_w1_late = blocks[6].ffn.w1(x_probe)._flat
+        # Late w1 = 1.0 + 0.5 * (4 * 1.0 * 0.5) = 2.0 -> dot with ones(16) = 32.0.
+        assert all(abs(v - 32.0) < 1e-4 for v in y_w1_late)
+        assert all(abs(v - (0.5 + 0.5 * (2 * 2.0 * 0.2))) < 1e-5 for v in blocks[6].attn.qkv.weight._flat[8 * 16 :])
+        dit_mix.set_lora_mix_step(0)
+        assert all(abs(a - b) < 1e-5 for a, b in zip(blocks[6].ffn.w1(x_probe)._flat, y_w1_early))
+        assert blocks[6].attn.qkv.weight._flat == qkv_early_expected
+    assert blocks[6].attn.qkv.weight.data_ptr() == qkv_ptr
+    assert blocks[6].ffn.w1.weight_fp8.data_ptr() == w1_fp8_ptr
+
+    # 4c. _install_batched_cfg_runner: bit-exact batch=3 single DiT pass per step + OOM fallback.
+    fake_cp_mod = types.ModuleType("longcat_video.context_parallel")
+    fake_cp_mod.context_parallel_util = types.SimpleNamespace(get_cp_size=lambda: 1)  # type: ignore[attr-defined]
+    fake_pipe_mod = types.ModuleType("longcat_video.pipeline_longcat_video_avatar")
+    fake_pipe_mod.retrieve_latents = lambda enc, gen, sample_mode="argmax": enc  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "longcat_video.context_parallel", fake_cp_mod)
+    monkeypatch.setitem(sys.modules, "longcat_video.pipeline_longcat_video_avatar", fake_pipe_mod)
+
+    dit_batches_seen: list[int] = []
+    oom_next = {"flag": False}
+
+    class _FakeDiT:
+        dtype = "bfloat16"
+        cp_split_hw = None
+        config = types.SimpleNamespace(in_channels=16)
+
+        def __call__(self, *, hidden_states, encoder_hidden_states, audio_embs, **kw):
+            dit_batches_seen.append(int(hidden_states.shape[0]))
+            if oom_next["flag"]:
+                raise RuntimeError("CUDA out of memory")
+            out_flat: list[float] = []
+            for b in range(hidden_states.shape[0]):
+                h_b = hidden_states[b]
+                p_val = encoder_hidden_states[b].mean_val()
+                a_val = audio_embs[b].mean_val()
+                out_flat.extend(v * 0.5 + p_val * 2.0 + a_val * 3.0 for v in h_b._flat)
+            return _PyTensor(out_flat, hidden_states.shape, "float32")
+
+    class _FakeSched:
+        order = 1
+
+        def set_timesteps(self, steps, sigmas=None, device=None):
+            self.timesteps = [_PyTensor([1000.0 - 100.0 * i], (1,)) for i in range(steps)]
+
+        def step(self, noise_pred, t, latents, return_dict=False):
+            return (latents + noise_pred,)
+
+    upstream_fallback_calls = {"ai2v": 0}
+
+    class _FakeAvatarPipe:
+        device = "cuda:0"
+        interrupt = False
+        vae_scale_factor_spatial = 8
+        vae_scale_factor_temporal = 4
+        dit = _FakeDiT()
+        scheduler = _FakeSched()
+        vae = types.SimpleNamespace(dtype="bfloat16", encode=lambda v: _PyTensor.full((1, 16, 4, 2, 2), 1.0))
+        video_processor = types.SimpleNamespace(
+            preprocess=lambda img, **k: _PyTensor.full((1, 3, 2, 2), 1.0),
+            preprocess_video=lambda vid, **k: _PyTensor.full((1, 3, 13, 2, 2), 1.0),
+            postprocess_video=lambda v: v,
+        )
+
+        def generate_ai2v(self, **kw):
+            upstream_fallback_calls["ai2v"] += 1
+            return "upstream_ai2v_result"
+
+        def generate_avc(self, **kw):
+            return "upstream_avc_result"
+
+        def encode_prompt(self, **kw):
+            return (
+                _PyTensor.full((1, 4, 8), 5.0),
+                _PyTensor.full((1, 4), 1.0),
+                _PyTensor.full((1, 4, 8), 1.0),
+                _PyTensor.full((1, 4), 1.0),
+            )
+
+        def get_timesteps_sigmas(self, steps, use_distill=False):
+            return [1.0] * steps
+
+        def prepare_latents(self, **kw):
+            return _PyTensor.full((1, 16, 3, 2, 2), 0.0, dtype="float32")
+
+        def check_inputs(self, *a, **k):
+            pass
+
+        def get_condition_shape(self, img, res, scale_factor_spatial=16):
+            return (64, 80)
+
+        def normalize_latents(self, x):
+            return x
+
+        def denormalize_latents(self, x):
+            return x
+
+        def _decode_video_latents(self, x):
+            return x
+
+        def _cache_clean_latents(self, *a, **k):
+            pass
+
+        def _get_kv_cache_dict(self):
+            return {}
+
+    pipe_cfg = _FakeAvatarPipe()
+    cfg_state = lc_worker._install_batched_cfg_runner(pipe_cfg, fake_torch_math)
+    assert cfg_state is not None and cfg_state["active"] is True
+
+    audio_e = _PyTensor.full((1, 9, 5, 8), 2.0)
+    res_lat = pipe_cfg.generate_ai2v(
+        image="img",
+        prompt="pos",
+        negative_prompt="neg",
+        num_frames=9,
+        num_inference_steps=2,
+        text_guidance_scale=4.0,
+        audio_guidance_scale=3.0,
+        output_type="latent",
+        audio_emb=audio_e,
+    )
+    # Exactly 1 DiT call with batch=3 per denoising step!
+    assert dit_batches_seen == [3, 3]
+    # Check exact CFG math on step 0: uncond = 2.0, uncond_text = 8.0, cond = 16.0
+    # cfg = 2 + 4*(16-8) + 3*(8-2) = 52; negated = -52; step 1: lat=-52 -> uncond=-24, uncond_text=-18, cond=-10 -> cfg=26 -> neg=-26 -> final=-78.
+    assert all(abs(v - (-78.0)) < 1e-5 for v in res_lat[:, :, 1:]._flat)
+
+    # On CUDA OOM, batched CFG restores upstream generate_ai2v and retries cleanly.
+    oom_next["flag"] = True
+    fb_res = pipe_cfg.generate_ai2v(
+        image="img",
+        prompt="pos",
+        negative_prompt="neg",
+        num_frames=9,
+        num_inference_steps=2,
+        text_guidance_scale=4.0,
+        audio_guidance_scale=3.0,
+        output_type="latent",
+        audio_emb=audio_e,
+    )
+    assert fb_res == "upstream_ai2v_result"
+    assert cfg_state["active"] is False
+    assert upstream_fallback_calls["ai2v"] == 1
+
+
+def test_vsr_gpu_accel_seedvr2_high_vram_retry_and_flashvsr_optimizations(
+    tmp_path, monkeypatch
+):
+    """Verify SeedVR2 high-VRAM GPU-resident offload, optimal batch, compile/attn/OOM/MP4 retry cascade, and FlashVSR+ opts."""
+    from server import vsr_worker_diffusion as vsr_worker
+
+    # 1. VRAM- & resolution-aware optimal SeedVR2 batch sizing (4k+1 aligned, 4K OOM-safe).
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(98304, 1152, "auto") == 65
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(98304, 1536, "auto") == 49
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(98304, 2160, "auto") == 17
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(81920, 1152, "auto") == 65
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(81920, 1536, "auto") == 33
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(81920, 2160, "auto") == 13
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(65536, 1152, "auto") == 49
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(65536, 1536, "auto") == 33
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(49152, 1152, "auto") == 33
+    assert vsr_worker.resolve_seedvr2_optimal_batch_size(98304, 1152, 21) == 21
+
+    # 2. VRAM-, resolution-, and host-RAM-aware streaming chunk threshold.
+    assert vsr_worker.compute_seedvr2_streaming_chunk_size(400, 65, vram_mib=98304) == 0
+    assert vsr_worker.compute_seedvr2_streaming_chunk_size(529, 65, vram_mib=98304) == 520
+    assert vsr_worker.compute_seedvr2_streaming_chunk_size(400, 33, vram_mib=24576) == 264
+    assert vsr_worker.compute_seedvr2_streaming_chunk_size(400, 33) == 264
+    # 2K on an 83 GiB host VM caps chunk size well below 528 to prevent host RAM OOM-killer.
+    chunk_2k = vsr_worker.compute_seedvr2_streaming_chunk_size(
+        400, 33, vram_mib=81920, resolution_short_side=1536, available_ram_mib=65536
+    )
+    assert 33 <= chunk_2k <= 264
+
+    # 3. SeedVR2 attention mode resolution across GPU generations (sm_120 requires has_sage2; sm_100 never picks sage3).
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=12, has_sage3=True, has_sage2=True, has_fa2=True
+    ) == "sageattn_3"
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=12, has_sage3=True, has_sage2=False, has_fa2=True
+    ) == "flash_attn_2"
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=12, has_sage3=False, has_sage2=True, has_fa2=True
+    ) == "sageattn_2"
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=10, has_sage3=True, has_sage2=False, has_fa3=True
+    ) == "flash_attn_3"
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=9, has_sage3=True, has_sage2=True, has_fa3=True
+    ) == "sageattn_2"
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=9, has_sage2=False, has_fa3=True, has_fa2=True
+    ) == "flash_attn_3"
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=8, has_sage2=True, has_fa2=True
+    ) == "sageattn_2"
+    assert vsr_worker.resolve_seedvr2_attention_mode(
+        "auto", major=7, has_sage3=True, has_sage2=True, has_fa3=True, has_fa2=True
+    ) == "sdpa"
+
+    # 4. Warm Inductor cache detector ignores empty triton/ subdir and requires real compiled artifacts.
+    cold_cache = tmp_path / "inductor_cold"
+    (cold_cache / "triton").mkdir(parents=True)
+    assert vsr_worker._has_warm_inductor_cache(cold_cache) is False
+    (cold_cache / "fx_graph.bin").write_bytes(b"compiled")
+    assert vsr_worker._has_warm_inductor_cache(cold_cache) is True
+
+    # 5. Subprocess error classifier strips Command: line so --video_backend ffmpeg never triggers false FFmpeg fallback on OOM.
+    oom_err = (
+        "SeedVR2 failed (code 1)\n"
+        "Command: python inference_cli.py --output_format mp4 --video_backend ffmpeg\n"
+        "Output tail:\ntorch.OutOfMemoryError: CUDA out of memory."
+    )
+    tail = vsr_worker._extract_subprocess_output_tail(oom_err)
+    assert vsr_worker._is_cuda_oom_error(tail) is True
+    assert vsr_worker._is_ffmpeg_writer_error(tail) is False
+
+    # 6. SeedVR2 CLI command on 96GB: GPU-resident cuda:0 offload, --tensor_offload_device none, compile/attn/mp4 flags.
+    repo = tmp_path / "seedvr2"
+    weights = tmp_path / "weights"
+    in_mkv = tmp_path / "in.mkv"
+    out_dir = tmp_path / "out"
+    cmd_96g = build_seedvr2_cli_command(
+        "/opt/py",
+        repo,
+        weights,
+        in_mkv,
+        out_dir,
+        engine="seedvr2_7b_sharp",
+        resolution_short_side=1152,
+        batch_size=65,
+        temporal_overlap=4,
+        color_correction="lab",
+        seed=42,
+        vram_mib=98304,
+        exact_frames=600,
+        chunk_size=520,
+        attention_mode="sageattn_3",
+        compile_dit=True,
+        compile_vae=True,
+        compile_dynamic=True,
+        output_format="mp4",
+    )
+    assert cmd_96g[cmd_96g.index("--tensor_offload_device") + 1] == "none"
+    assert cmd_96g[cmd_96g.index("--dit_offload_device") + 1] == "cuda:0"
+    assert cmd_96g[cmd_96g.index("--vae_offload_device") + 1] == "cuda:0"
+    assert "cpu" not in cmd_96g
+    assert cmd_96g[cmd_96g.index("--attention_mode") + 1] == "sageattn_3"
+    assert "--compile_dit" in cmd_96g
+    assert "--compile_vae" in cmd_96g
+    assert cmd_96g[cmd_96g.index("--compile_backend") + 1] == "inductor"
+    assert "--compile_dynamic" in cmd_96g
+    assert cmd_96g[cmd_96g.index("--output_format") + 1] == "mp4"
+    assert cmd_96g[cmd_96g.index("--video_backend") + 1] == "ffmpeg"
+
+    # 7. SeedVR2 step-down retry cascade + immediate MP4->PNG fallback (preserving working attention/compile) + OOM batch step-down.
+    plan = vsr_worker._build_seedvr2_retry_plan(
+        attention_mode="sageattn_3",
+        compile_dit=True,
+        compile_vae=True,
+        output_format="png",
+        accel_caps={"major": 12, "has_sage3": True, "has_sage2": True, "has_fa3": False, "has_fa2": False},
+    )
+    assert [p[4] for p in plan] == [
+        "primary",
+        "disable_compile",
+        "fallback_attention_sageattn_2",
+        "fallback_attention_sdpa",
+    ]
+
+    (repo / "inference_cli.py").parent.mkdir(parents=True, exist_ok=True)
+    (repo / "inference_cli.py").write_text("# stub\n", encoding="utf-8")
+    in_mkv.write_bytes(b"fake-mkv")
+    seen_cmds: list[list[str]] = []
+
+    def _fake_monitored_mp4_fb(cmd, **kw):
+        seen_cmds.append(list(cmd))
+        fmt = cmd[cmd.index("--output_format") + 1] if "--output_format" in cmd else "png"
+        if fmt == "mp4":
+            raise RuntimeError("Output tail:\nffmpeg video_backend pipe failed")
+        o_dir = Path(cmd[cmd.index("--output") + 1])
+        o_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(5):
+            (o_dir / f"frame_{idx:06d}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    monkeypatch.setattr(
+        vsr_worker,
+        "_probe_vsr_gpu_accel_caps",
+        lambda python_bin=None: {
+            "cuda_available": True,
+            "major": 12,
+            "minor": 0,
+            "has_sage3": True,
+            "has_sage2": True,
+            "has_fa3": False,
+            "has_fa2": False,
+            "has_triton": True,
+            "torch_version": "2.8.0",
+            "torch_ge_25": True,
+            "can_compile": True,
+        },
+    )
+    monkeypatch.setattr(vsr_worker, "_prepare_seedvr2_input_video", lambda p, **kw: p)
+    monkeypatch.setattr(vsr_worker, "_run_monitored_subprocess", _fake_monitored_mp4_fb)
+    monkeypatch.setattr(vsr_worker, "_resolve_ffmpeg_fps_mode_flag", lambda b: "-fps_mode")
+    monkeypatch.setattr(
+        vsr_worker,
+        "_run_ffmpeg_command",
+        lambda cmd, guard: Path(cmd[-1]).write_bytes(b"COLABONE_FAKE_MKV"),
+    )
+
+    guard = vsr_worker.ColabOneProcessGuard(base_dir=tmp_path)
+    out_mkv = tmp_path / "seedvr2_mp4_fb.mkv"
+    try:
+        res_mp4 = vsr_worker._run_seedvr2_engine(
+            engine="seedvr2_7b_sharp",
+            python_bin="/opt/py",
+            repo_dir=repo,
+            weights_dir=weights,
+            input_video_path=in_mkv,
+            output_video_path=out_mkv,
+            source_width=1280,
+            source_height=768,
+            target_width=1920,
+            target_height=1080,
+            fps=25,
+            exact_frames=5,
+            batch_size="auto",
+            temporal_overlap=4,
+            color_correction="lab",
+            seed=42,
+            vram_mib=98304,
+            ffmpeg_bin="ffmpeg",
+            guard=guard,
+            attention_mode="auto",
+            compile_dit=True,
+            compile_vae=False,
+            output_format="mp4",
+        )
+    finally:
+        guard.cleanup_all()
+
+    # Explicit MP4 writer error MUST immediately switch to PNG while keeping sageattn_3 + compile_dit=True (2 attempts, not 5!).
+    assert len(seen_cmds) == 2
+    assert res_mp4["attention_mode"] == "sageattn_3"
+    assert res_mp4["compile_dit"] is True
+    assert res_mp4["output_format"] == "png"
+    assert out_mkv.is_file()
+
+    # CUDA OOM step-down immediately shrinks batch_size (65 -> 33) while preserving attention mode.
+    oom_batches: list[int] = []
+
+    def _fake_monitored_oom(cmd, **kw):
+        bs = int(cmd[cmd.index("--batch_size") + 1])
+        oom_batches.append(bs)
+        if bs > 33:
+            raise RuntimeError("Output tail:\ntorch.OutOfMemoryError: CUDA out of memory")
+        o_dir = Path(cmd[cmd.index("--output") + 1])
+        o_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(70):
+            (o_dir / f"frame_{idx:06d}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    monkeypatch.setattr(vsr_worker, "_run_monitored_subprocess", _fake_monitored_oom)
+    guard_oom = vsr_worker.ColabOneProcessGuard(base_dir=tmp_path)
+    out_mkv_oom = tmp_path / "seedvr2_oom.mkv"
+    try:
+        res_oom = vsr_worker._run_seedvr2_engine(
+            engine="seedvr2_7b_sharp",
+            python_bin="/opt/py",
+            repo_dir=repo,
+            weights_dir=weights,
+            input_video_path=in_mkv,
+            output_video_path=out_mkv_oom,
+            source_width=1280,
+            source_height=768,
+            target_width=1920,
+            target_height=1080,
+            fps=25,
+            exact_frames=70,
+            batch_size="auto",
+            temporal_overlap=4,
+            color_correction="lab",
+            seed=42,
+            vram_mib=98304,
+            ffmpeg_bin="ffmpeg",
+            guard=guard_oom,
+            attention_mode="auto",
+            compile_dit=False,
+            compile_vae=False,
+            output_format="auto",
+        )
+    finally:
+        guard_oom.cleanup_all()
+
+    assert oom_batches == [65, 33]
+    assert res_oom["batch_size"] == 33
+    assert res_oom["attention_mode"] == "sageattn_3"
+    assert res_oom["output_format"] == "png"
+
+
+def test_avatar_engines_shared_wheels_and_worker_env(tmp_path, monkeypatch):
+    """Verify ColabOneAvatarEngineManager GPU wheel hook, non-fatal fallback, cancel propagation, worker env, and LongCat review fixes."""
+    from server import avatar_engines as ae_mod
+    from server import avatar_worker_longcat16 as lc_worker
+    from server import comfy_packs, tts_engines
+
+    # 1. sageattention & sageattn3 are excluded from child venv installs to prevent 1.x shadowing.
+    assert "sageattention" in tts_engines.TORCH_SKIP_PACKAGES
+    assert "sageattn3" in tts_engines.TORCH_SKIP_PACKAGES
+
+    # 2. comfy_packs strips all 4 HF token keys plus PIP_USER/PIP_REQUIRE_VIRTUALENV/PYTHONPATH.
+    for key in (
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_API_TOKEN",
+        "PIP_USER",
+        "PIP_REQUIRE_VIRTUALENV",
+        "PYTHONPATH",
+    ):
+        assert key in comfy_packs._STRIPPED_SUBPROCESS_ENV_KEYS
+
+    # 3. Corrupt/non-ZIP wheel files are rejected by _find_cached_wheel(allow_empty=False).
+    corrupt_dir = tmp_path / "corrupt_wheels"
+    corrupt_dir.mkdir()
+    (corrupt_dir / "sageattention-2.2.0-cp312-cp312-linux_x86_64.whl").write_bytes(b"not-a-zip")
+    assert comfy_packs._find_cached_wheel(corrupt_dir, dist_prefixes=("sageattention",), min_major=2, allow_empty=False) is None
+
+    # 4. _is_torch_compile_runtime_error handles chained exceptions (never misclassifies OOM; catches GuardOnDataDependentSymNode).
+    assert lc_worker._is_torch_compile_runtime_error(RuntimeError("CUDA out of memory")) is False
+    assert lc_worker._is_torch_compile_runtime_error(MemoryError("oom")) is False
+    assert lc_worker._is_torch_compile_runtime_error(RuntimeError("torch._inductor BackendCompilerFailed")) is True
+    try:
+        try:
+            raise MemoryError("CUDA out of memory")
+        except MemoryError as inner_oom:
+            raise RuntimeError("BackendCompilerFailed wrapper") from inner_oom
+    except RuntimeError as wrapped_oom:
+        assert lc_worker._is_torch_compile_runtime_error(wrapped_oom) is False
+    try:
+        try:
+            raise RuntimeError("GuardOnDataDependentSymNode: cannot evaluate u0")
+        except RuntimeError as inner_sym:
+            raise RuntimeError("outer generic failure") from inner_sym
+    except RuntimeError as wrapped_sym:
+        assert lc_worker._is_torch_compile_runtime_error(wrapped_sym) is True
+
+    # 4b. Verify server/avatar_worker_longcat16.py never passes both mode= and options= to compile().
+    import ast as _ast
+
+    lc_src = (ROOT / "server" / "avatar_worker_longcat16.py").read_text(encoding="utf-8")
+    for node in _ast.walk(_ast.parse(lc_src)):
+        if isinstance(node, _ast.Call):
+            fn_name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            if fn_name in ("compile", "block_compile_fn"):
+                kw_names = {kw.arg for kw in node.keywords if kw.arg}
+                assert not ({"mode", "options"} <= kw_names), (
+                    f"{fn_name} must never pass both mode= and options= simultaneously (PyTorch RuntimeError)"
+                )
+
+    # 4c. _is_ffmpeg_writer_error ignores benign config echo without error keywords.
+    from server import vsr_worker_diffusion as vsr_worker
+
+    assert vsr_worker._is_ffmpeg_writer_error("INFO: video_backend: ffmpeg initialized") is False
+    assert vsr_worker._is_ffmpeg_writer_error("ERROR: ffmpeg video_backend pipe failed") is True
+
+    # 5. ColabOneAvatarEngineManager GPU wheel hook, non-fatal fallback, cancel propagation.
+    monkeypatch.setattr(
+        comfy_packs,
+        "probe_gpu_acceleration_capabilities",
+        lambda raw: {
+            "gpu_name": "RTX PRO 6000 Blackwell",
+            "vram_mib": 98304,
+            "cc_major": 12,
+            "cc_minor": 0,
+            "torch_version": "2.8.0+cu128",
+            "cuda_version": "12.8",
+            "nvcc_version": "12.8",
+            "triton_available": True,
+            "torch_compile_supported": True,
+            "fp8_fast_supported": True,
+            "sageattn_version": "",
+            "sageattn_available": False,
+            "sageattn3_available": False,
+            "flash_attn_2_available": False,
+            "flash_attn_3_available": False,
+        },
+    )
+
+    wheel_calls: list[dict[str, Any]] = []
+
+    def _ok_wheels(task, **kw):
+        wheel_calls.append(dict(kw))
+        return {"installed_any": True, "sageattn_available": True, "sageattn3_available": True}
+
+    mgr = ColabOneAvatarEngineManager(
+        tmp_path / "remote",
+        gpu_info_fn=lambda: {"name": "RTX PRO 6000 Blackwell", "total_mib": 98304},
+        accel_wheels_fn=_ok_wheels,
+    )
+    task = ColabOneTask("comfyui_run", "wheels-ok")
+    res = mgr.ensure_gpu_acceleration_wheels(task)
+    assert res["installed_any"] is True
+    assert res["sageattn3_available"] is True
+    assert len(wheel_calls) == 1
+
+    # Non-fatal failure degrades cleanly without raising.
+    def _boom_wheels(task, **kw):
+        raise RuntimeError("nvcc missing")
+
+    mgr_boom = ColabOneAvatarEngineManager(
+        tmp_path / "remote_boom",
+        accel_wheels_fn=_boom_wheels,
+    )
+    res_boom = mgr_boom.ensure_gpu_acceleration_wheels(ColabOneTask("comfyui_run", "wheels-fail"))
+    assert res_boom.get("installed_any", False) is False
+
+    # Cancellation MUST propagate.
+    def _cancel_wheels(task, **kw):
+        raise ColabOneCancelledError("cancelled")
+
+    mgr_cancel = ColabOneAvatarEngineManager(
+        tmp_path / "remote_cancel",
+        accel_wheels_fn=_cancel_wheels,
+    )
+    with pytest.raises(ColabOneCancelledError):
+        mgr_cancel.ensure_gpu_acceleration_wheels(ColabOneTask("comfyui_run", "wheels-cancel"))
+
+    # Worker env includes safe CUDA/FX Inductor cache vars (without unstable AUTOGRAD_CACHE).
+    worker_env = mgr._build_worker_env({"compile_cache_dir": tmp_path / "cache_a"})
+    assert worker_env["CUDA_MODULE_LOADING"] == "LAZY"
+    assert worker_env["TORCHINDUCTOR_FX_GRAPH_CACHE"] == "1"
+    assert "TORCHINDUCTOR_AUTOGRAD_CACHE" not in worker_env
+    assert worker_env["TORCH_CUDNN_V8_API_ENABLED"] == "1"
+    _ = ae_mod
+
 
 
 

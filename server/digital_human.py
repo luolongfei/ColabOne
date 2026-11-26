@@ -86,6 +86,8 @@ _SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset(
 )
 _FFMPEG_CFR_CACHE_LOCK = threading.Lock()
 _FFMPEG_CFR_CACHE: dict[str, tuple[str, str]] = {}
+_FFMPEG_NVENC_CACHE_LOCK = threading.Lock()
+_FFMPEG_NVENC_CACHE: dict[str, bool] = {}
 
 
 def _resolve_ffmpeg_cfr_args(ffmpeg_bin: str) -> list[str]:
@@ -116,6 +118,134 @@ def _resolve_ffmpeg_cfr_args(ffmpeg_bin: str) -> list[str]:
     with _FFMPEG_CFR_CACHE_LOCK:
         _FFMPEG_CFR_CACHE[key] = chosen
     return list(chosen)
+
+
+def _mark_ffmpeg_nvenc_unavailable(ffmpeg_bin: str) -> None:
+    """Mark h264_nvenc unavailable for this ffmpeg binary after a runtime failure."""
+    key = str(ffmpeg_bin or "").strip() or "ffmpeg"
+    with _FFMPEG_NVENC_CACHE_LOCK:
+        _FFMPEG_NVENC_CACHE[key] = False
+
+
+def _probe_ffmpeg_nvenc_h264(ffmpeg_bin: str) -> bool:
+    """Return True if ffmpeg advertises h264_nvenc AND a live 256x256 GPU NVENC encode succeeds."""
+    key = str(ffmpeg_bin or "").strip() or "ffmpeg"
+    with _FFMPEG_NVENC_CACHE_LOCK:
+        cached = _FFMPEG_NVENC_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    supported = False
+    try:
+        env = _sanitized_subprocess_env()
+        with tempfile.TemporaryDirectory(prefix="colabone-nvenc-probe-") as probe_dir:
+            enc_res = subprocess.run(
+                [key, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                cwd=probe_dir,
+                env=env,
+            )
+            enc_text = (enc_res.stdout or "") + "\n" + (enc_res.stderr or "")
+            if enc_res.returncode == 0 and "h264_nvenc" in enc_text:
+                test_res = subprocess.run(
+                    [
+                        key,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "color=c=black:s=256x256:d=0.2:r=25",
+                        "-frames:v",
+                        "5",
+                        "-pix_fmt",
+                        "yuv420p",
+                        *_build_h264_encode_args(18, use_nvenc=True),
+                        "-colorspace",
+                        "bt709",
+                        "-color_primaries",
+                        "bt709",
+                        "-color_trc",
+                        "bt709",
+                        "-color_range",
+                        "tv",
+                        "-f",
+                        "null",
+                        "-",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    cwd=probe_dir,
+                    env=env,
+                )
+                supported = test_res.returncode == 0
+    except Exception:
+        supported = False
+
+    with _FFMPEG_NVENC_CACHE_LOCK:
+        _FFMPEG_NVENC_CACHE[key] = supported
+    return supported
+
+
+def _build_h264_encode_args(
+    crf: int,
+    *,
+    preset: str = "medium",
+    use_nvenc: bool = False,
+    rate_args: list[str] | None = None,
+) -> list[str]:
+    """Build FFmpeg H.264 encoder CLI args for GPU NVENC or CPU libx264."""
+    if use_nvenc:
+        if rate_args:
+            return [
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p6",
+                "-tune",
+                "hq",
+                "-rc",
+                "vbr",
+                *rate_args,
+                "-spatial-aq",
+                "1",
+                "-temporal-aq",
+                "1",
+            ]
+        nvenc_cq = max(1, min(28, int(crf) + 2))
+        return [
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p6",
+            "-tune",
+            "hq",
+            "-rc",
+            "vbr",
+            "-cq",
+            str(nvenc_cq),
+            "-b:v",
+            "0",
+            "-spatial-aq",
+            "1",
+            "-temporal-aq",
+            "1",
+        ]
+    return [
+        "-c:v",
+        "libx264",
+        "-preset",
+        str(preset),
+        *(list(rate_args) if rate_args else ["-crf", str(int(crf))]),
+    ]
 
 
 def _sanitize_task_tag(raw_tag: Any, *, allow_empty: bool = False) -> str:
@@ -1127,6 +1257,321 @@ def apply_longcat_acceleration(
         "vae_tiling": vae_tiling,
         "torch_compile": torch_compile,
         "rms_norm_function": rms_norm_function,
+    }
+    return (result, summary)
+
+
+def _resolve_infinitetalk_quantization(
+    existing_quant: str,
+    model_name: str,
+    *,
+    profile: str,
+    fp8_fast_supported: bool,
+) -> str:
+    """Resolve WanVideoWrapper quantization safely without ever stripping _scaled from scaled FP8 models."""
+    q = str(existing_quant or "").strip().lower()
+    m = str(model_name or "").strip().lower()
+    if m.endswith(".gguf"):
+        return "disabled"
+    norm_profile = str(profile or "").strip().lower()
+    is_scaled = ("scaled" in q) or ("scaled" in m)
+    is_e5m2 = ("e5m2" in q) or ("e5m2" in m)
+    is_fp8_e4 = (
+        ("e4m3fn" in q)
+        or ("e4m3fn" in m)
+        or ("fp8" in q and not is_e5m2)
+        or ("fp8" in m and not is_e5m2)
+    )
+    if norm_profile == "compat":
+        if is_scaled:
+            return "fp8_e5m2_scaled" if is_e5m2 else "fp8_e4m3fn_scaled"
+        if q.endswith("_fast"):
+            return q[: -len("_fast")] or "disabled"
+        return q or "disabled"
+
+    if is_scaled:
+        if is_e5m2:
+            return "fp8_e5m2_scaled"
+        return "fp8_e4m3fn_scaled_fast" if fp8_fast_supported else "fp8_e4m3fn_scaled"
+    if is_fp8_e4:
+        return "fp8_e4m3fn_fast" if fp8_fast_supported else "fp8_e4m3fn"
+    if q in ("", "disabled"):
+        return "fp8_e4m3fn_fast" if fp8_fast_supported else "disabled"
+    if not fp8_fast_supported and q.endswith("_fast"):
+        return q[: -len("_fast")] or "disabled"
+    return q
+
+
+def _loader_has_unmerged_lora(
+    workflow: dict[str, Any],
+    loader_id: str,
+    loader_node: dict[str, Any],
+) -> bool:
+    """Return True if a WanVideoModelLoader has any connected unmerged LoRA.
+
+    Pinned ComfyUI-WanVideoWrapper raises NotImplementedError whenever ``fast`` quantization
+    is combined with an unmerged LoRA, and setting ``merge_loras=True`` on scaled FP8 models
+    corrupts per-tensor ``scale_weight`` calibration. Treats explicit ``merge_loras=False``
+    (or omitted ``merge_loras`` on ``WanVideoLoraSelect*`` with scaled FP8, or unresolved/non-bool
+    values) as unmerged, and treats any transitively reachable downstream ``WanVideoSetLoRAs``
+    node with a linked/non-empty ``lora`` input as unmerged (since ``WanVideoSetLoRAs`` never
+    merges LoRAs).
+    """
+    if not isinstance(workflow, dict) or not isinstance(loader_node, dict):
+        return False
+    loader_inputs = loader_node.get("inputs")
+    if not isinstance(loader_inputs, dict):
+        return False
+
+    loader_q = str(loader_inputs.get("quantization") or "").strip().lower()
+    loader_m = str(loader_inputs.get("model") or "").strip().lower()
+    loader_is_scaled = ("scaled" in loader_q) or ("scaled" in loader_m)
+
+    loader_id_str = str(loader_id).strip()
+    if loader_id_str:
+        downstream_by_model: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for nid, node in workflow.items():
+            if not isinstance(node, dict):
+                continue
+            n_inputs = node.get("inputs")
+            if not isinstance(n_inputs, dict):
+                continue
+            m_ref = n_inputs.get("model")
+            if (
+                isinstance(m_ref, (list, tuple))
+                and m_ref
+                and str(m_ref[0]).strip()
+            ):
+                src_id = str(m_ref[0]).strip()
+                nid_str = str(nid).strip()
+                downstream_by_model.setdefault(src_id, []).append((nid_str, node))
+
+        model_queue: list[str] = [loader_id_str]
+        visited_models: set[str] = {loader_id_str}
+        while model_queue:
+            cur_model_id = model_queue.pop(0)
+            for dst_id, dst_node in downstream_by_model.get(cur_model_id, ()):
+                if dst_node.get("class_type") == "WanVideoSetLoRAs":
+                    dst_inputs = dst_node.get("inputs") or {}
+                    set_lora_ref = dst_inputs.get("lora")
+                    has_set_lora = (
+                        (
+                            isinstance(set_lora_ref, (list, tuple))
+                            and bool(set_lora_ref)
+                            and bool(str(set_lora_ref[0]).strip())
+                        )
+                        or (isinstance(set_lora_ref, str) and bool(set_lora_ref.strip()))
+                        or (
+                            set_lora_ref is not None
+                            and not isinstance(set_lora_ref, (list, tuple, str, bool))
+                        )
+                    )
+                    if has_set_lora:
+                        return True
+                if dst_id and dst_id not in visited_models:
+                    visited_models.add(dst_id)
+                    model_queue.append(dst_id)
+
+    queue: list[str] = []
+    lora_ref = loader_inputs.get("lora")
+    if isinstance(lora_ref, (list, tuple)) and lora_ref and str(lora_ref[0]).strip():
+        queue.append(str(lora_ref[0]).strip())
+
+    visited: set[str] = set()
+    while queue:
+        cur_id = queue.pop(0)
+        if cur_id in visited:
+            continue
+        visited.add(cur_id)
+        cur_node = workflow.get(cur_id)
+        if cur_node is None and cur_id.isdigit():
+            cur_node = workflow.get(int(cur_id))
+        if not isinstance(cur_node, dict):
+            return True
+        cls = str(cur_node.get("class_type") or "")
+        cur_inputs = cur_node.get("inputs")
+        if not isinstance(cur_inputs, dict):
+            return True
+
+        if "merge_loras" in cur_inputs:
+            raw_merge = cur_inputs.get("merge_loras")
+            if not isinstance(raw_merge, bool) or not raw_merge:
+                return True
+        else:
+            if loader_is_scaled or not cls.startswith("WanVideoLoraSelect"):
+                return True
+
+        prev_ref = cur_inputs.get("prev_lora")
+        if isinstance(prev_ref, (list, tuple)) and prev_ref and str(prev_ref[0]).strip():
+            queue.append(str(prev_ref[0]).strip())
+
+    return False
+
+
+def apply_infinitetalk_acceleration(
+    workflow: dict[str, Any],
+    *,
+    profile: str = "max",
+    gpu_caps: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Deep-copy an InfiniteTalk ComfyUI workflow and apply GPU-aware acceleration settings.
+
+    Preserves scaled FP8 calibration (never upgrades to ``*_fast`` when an unmerged LoRA is
+    wired), uses compile-safe ``sageattn`` (v2 custom_op) -> ``flash_attn_2`` -> ``sdpa``
+    (never ``sageattn_3``), keeps ``batched_cfg=False``, keeps 14B weights resident on
+    >= 48 GB GPUs, and is idempotent across fallback step-downs
+    (``max`` -> ``balanced`` -> ``compat``).
+    """
+    result = copy.deepcopy(workflow)
+    norm_profile = str(profile or "").strip().lower()
+    if norm_profile not in ("max", "balanced", "compat"):
+        norm_profile = "max"
+
+    caps = dict(gpu_caps) if isinstance(gpu_caps, dict) else {}
+    try:
+        raw_vram = caps.get("vram_mib")
+        vram_mib = (
+            int(raw_vram)
+            if raw_vram is not None and not isinstance(raw_vram, bool)
+            else 0
+        )
+    except (TypeError, ValueError):
+        vram_mib = 0
+
+    fp8_fast_supported = bool(caps.get("fp8_fast_supported"))
+
+    # Collect all WanVideoModelLoader nodes up front and compute per-loader quantization /
+    # FP8-e4m3fn / unmerged-LoRA state once so multi-loader workflows never split-brain.
+    loader_infos: list[tuple[Any, str, bool, bool]] = []
+    loader_quant_by_id: dict[Any, str] = {}
+    if isinstance(result, dict):
+        for nid, node in result.items():
+            if (
+                isinstance(node, dict)
+                and node.get("class_type") == "WanVideoModelLoader"
+                and isinstance(node.get("inputs"), dict)
+            ):
+                node_inputs = node["inputs"]
+                raw_quant = str(node_inputs.get("quantization") or "")
+                raw_model = str(node_inputs.get("model") or "")
+                has_unmerged_lora = _loader_has_unmerged_lora(result, str(nid), node)
+                allow_fp8_fast = (
+                    fp8_fast_supported
+                    and norm_profile != "compat"
+                    and not has_unmerged_lora
+                )
+                node_quant = _resolve_infinitetalk_quantization(
+                    raw_quant,
+                    raw_model,
+                    profile=norm_profile,
+                    fp8_fast_supported=allow_fp8_fast,
+                )
+                is_e4m3fn = (not raw_model.lower().endswith(".gguf")) and (
+                    ("e4m3fn" in node_quant) or ("e4m3fn" in raw_model.lower())
+                )
+                loader_infos.append((nid, node_quant, is_e4m3fn, has_unmerged_lora))
+                loader_quant_by_id[nid] = node_quant
+
+    has_model_loader = bool(loader_infos)
+    loader_quants = [info[1] for info in loader_infos]
+    quantization = loader_quants[0] if loader_quants else "disabled"
+    any_e4m3fn_model = any(info[2] for info in loader_infos)
+    any_fp8_fast = any(q.endswith("_fast") for q in loader_quants)
+
+    if norm_profile == "compat":
+        attention_mode = "sdpa"
+        resident_vram = False
+        vae_tiling = True
+        torch_compile = False
+        rms_norm_function = "default"
+        resize_device = "cpu"
+    else:
+        # WanVideoWrapper wraps sageattn (v2) in a torch custom_op (compile-safe, INT8 QK +
+        # FP16 PV safe for 32-token audio cross-attn). Never select sageattn_3 here:
+        # WanVideoModelLoader@a7439db3 unconditionally imports ``from sageattention import
+        # sageattn`` for any ``"sage" in attention_mode`` and crashes when v2 is absent,
+        # and sageattn_3 is unwrapped / FP4-quantizes audio cross-attn.
+        if bool(caps.get("sageattn_available")):
+            attention_mode = "sageattn"
+        elif bool(caps.get("flash_attn_2_available")):
+            attention_mode = "flash_attn_2"
+        else:
+            attention_mode = "sdpa"
+
+        resident_vram = vram_mib >= 48000
+        vae_tiling = not resident_vram
+        e4m3fn_compile_ok = (not any_e4m3fn_model) or fp8_fast_supported
+        torch_compile = (
+            has_model_loader
+            and norm_profile == "max"
+            and bool(caps.get("torch_compile_supported"))
+            and e4m3fn_compile_ok
+        )
+        rms_norm_function = "default" if torch_compile else "pytorch"
+        resize_device = "gpu" if vram_mib > 0 else "cpu"
+
+    if isinstance(result, dict):
+        for nid, node in list(result.items()):
+            if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+                continue
+            cls = node.get("class_type")
+            inputs = node["inputs"]
+            if cls == "WanVideoModelLoader":
+                inputs["attention_mode"] = attention_mode
+                inputs["quantization"] = loader_quant_by_id.get(nid, quantization)
+                inputs["load_device"] = (
+                    "main_device" if resident_vram else "offload_device"
+                )
+                inputs["rms_norm_function"] = rms_norm_function
+                if torch_compile:
+                    inputs["compile_args"] = ["colabone_torch_compile", 0]
+                else:
+                    inputs.pop("compile_args", None)
+            elif cls == "WanVideoSampler":
+                inputs["force_offload"] = not resident_vram
+                inputs["batched_cfg"] = False
+                if norm_profile != "compat":
+                    inputs["rope_function"] = "comfy"
+            elif cls == "WanVideoImageToVideoMultiTalk":
+                inputs["tiled_vae"] = vae_tiling
+                inputs["force_offload"] = not resident_vram
+            elif cls == "WanVideoClipVisionEncode":
+                inputs["force_offload"] = True
+            elif cls == "WanVideoDecode":
+                inputs["enable_vae_tiling"] = vae_tiling
+            elif cls == "ImageResizeKJv2":
+                inputs["device"] = resize_device
+
+        if torch_compile and has_model_loader:
+            result["colabone_torch_compile"] = {
+                "class_type": "WanVideoTorchCompileSettings",
+                "_meta": {"title": "torch.compile 算子加速"},
+                "inputs": {
+                    "backend": "inductor",
+                    "fullgraph": False,
+                    "mode": "default",
+                    "dynamic": True,
+                    "dynamo_cache_size_limit": 64,
+                    "compile_transformer_blocks_only": True,
+                    "dynamo_recompile_limit": 128,
+                    "force_parameter_static_shapes": False,
+                    "allow_unmerged_lora_compile": True,
+                },
+            }
+        else:
+            result.pop("colabone_torch_compile", None)
+
+    summary = {
+        "profile": norm_profile,
+        "attention_mode": attention_mode,
+        "quantization": quantization,
+        "any_fp8_fast": any_fp8_fast,
+        "resident_vram": resident_vram,
+        "vae_tiling": vae_tiling,
+        "torch_compile": torch_compile,
+        "rms_norm_function": rms_norm_function,
+        "batched_cfg": False,
+        "resize_device": resize_device,
     }
     return (result, summary)
 
@@ -2999,6 +3444,17 @@ class ColabOneDigitalHumanRunner:
             if wf_id and callable(mark_ready_fn):
                 mark_ready_fn(wf_id)
 
+            try:
+                raw_total_vram = resolved_preflight.get("total_mib")
+                total_vram_mib = (
+                    int(raw_total_vram)
+                    if raw_total_vram is not None
+                    and not isinstance(raw_total_vram, bool)
+                    else 0
+                )
+            except (TypeError, ValueError):
+                total_vram_mib = 0
+
             # --------------------------------------------------------------
             # Stage 2B — Execute LongCat-Video-Avatar 1.6 Native 720p (30%..72%)
             # --------------------------------------------------------------
@@ -3042,7 +3498,14 @@ class ColabOneDigitalHumanRunner:
                 "prompt": preset["positive_prompt"],
                 "negative_prompt": preset["negative_prompt"],
                 "ffmpeg_bin": ffmpeg_bin,
+                "attention_backend": "auto",
+                "compile_dit": "auto",
+                "compile_vae": False,
+                "fp8_ffn": "auto",
+                "batched_cfg": "auto",
             }
+            if total_vram_mib > 0:
+                longcat_config["vram_mib"] = total_vram_mib
             if isinstance(longcat_paths, dict):
                 if longcat_paths.get("repo_dir"):
                     longcat_config["longcat_repo_dir"] = str(longcat_paths["repo_dir"])
@@ -3099,6 +3562,44 @@ class ColabOneDigitalHumanRunner:
                 f"{wf_name} · LongCat 1.6 原生 720p 主画面生成完成"
                 f"（耗时 {format_colabone_duration_zh(stage2_elapsed, subsecond=True)}）"
             )
+            if isinstance(stage2_result, dict):
+                accel_parts: list[str] = []
+                attn_used = str(stage2_result.get("attention_backend") or "").strip()
+                if attn_used:
+                    accel_parts.append(f"注意力={attn_used}")
+                fp8_raw = stage2_result.get("fp8_ffn")
+                if fp8_raw is None:
+                    fp8_raw = stage2_result.get("fp8_ffn_enabled")
+                if fp8_raw is not None:
+                    accel_parts.append(
+                        f"FP8 FFN={'开' if fp8_raw else '关'}"
+                        if isinstance(fp8_raw, bool)
+                        else f"FP8 FFN={fp8_raw}"
+                    )
+                bcfg_raw = stage2_result.get("batched_cfg")
+                if bcfg_raw is None:
+                    bcfg_raw = stage2_result.get("batched_cfg_enabled")
+                if bcfg_raw is not None:
+                    accel_parts.append(
+                        f"Batched CFG={'开' if bcfg_raw else '关'}"
+                        if isinstance(bcfg_raw, bool)
+                        else f"Batched CFG={bcfg_raw}"
+                    )
+                comp_raw = stage2_result.get("compile_dit")
+                if comp_raw is None:
+                    comp_raw = stage2_result.get("regional_compile")
+                if comp_raw is None:
+                    comp_raw = stage2_result.get("compile_dit_enabled")
+                if comp_raw is not None:
+                    accel_parts.append(
+                        f"Regional Compile={'开' if comp_raw else '关'}"
+                        if isinstance(comp_raw, bool)
+                        else f"Regional Compile={comp_raw}"
+                    )
+                if accel_parts:
+                    task.note(
+                        f"{wf_name} · LongCat 1.6 原生加速栈：{'，'.join(accel_parts)}"
+                    )
 
             # --------------------------------------------------------------
             # Stage 3 — Diffusion Video Super-Resolution (72%..94%)
@@ -3147,6 +3648,11 @@ class ColabOneDigitalHumanRunner:
                     "seed": int(preset["seed"]),
                     "color_correction": "lab",
                     "ffmpeg_bin": ffmpeg_bin,
+                    "attention_mode": "auto",
+                    "compile_dit": "auto",
+                    "compile_vae": "auto",
+                    "output_format": "auto",
+                    "batch_size": "auto",
                 }
                 if isinstance(vsr_paths, dict):
                     if vsr_paths.get("repo_dir"):
@@ -3155,7 +3661,7 @@ class ColabOneDigitalHumanRunner:
                         vsr_config["weights_dir"] = str(vsr_paths["weights_dir"])
                     if vsr_paths.get("python"):
                         vsr_config["python_bin"] = str(vsr_paths["python"])
-                pf_vram = int(resolved_preflight.get("total_mib") or 0)
+                pf_vram = total_vram_mib
                 if pf_vram > 0:
                     vsr_config["vram_mib"] = pf_vram
 
@@ -3257,9 +3763,24 @@ class ColabOneDigitalHumanRunner:
             else:
                 vf_filter = "scale=out_color_matrix=bt709:out_range=tv,setsar=1"
 
+            use_nvenc = (
+                self._run_cmd_fn is None and _probe_ffmpeg_nvenc_h264(ffmpeg_bin)
+            )
+            if use_nvenc:
+                task.note("已启用 GPU NVENC 硬件编码（h264_nvenc · p6 hq）加速母版封装")
+
             def _build_stage4_cmd(
-                video_rate_args: list[str], audio_kbps: int = 256
+                video_rate_args: list[str] | None,
+                audio_kbps: int = 256,
+                *,
+                encode_nvenc: bool = False,
             ) -> list[str]:
+                encode_args = _build_h264_encode_args(
+                    int(preset["crf"]),
+                    preset="medium",
+                    use_nvenc=encode_nvenc,
+                    rate_args=video_rate_args,
+                )
                 return [
                     ffmpeg_bin,
                     "-y",
@@ -3277,11 +3798,7 @@ class ColabOneDigitalHumanRunner:
                     "1:a:0",
                     "-vf",
                     vf_filter,
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "medium",
-                    *video_rate_args,
+                    *encode_args,
                     "-pix_fmt",
                     "yuv420p",
                     "-colorspace",
@@ -3307,13 +3824,67 @@ class ColabOneDigitalHumanRunner:
                     str(final_mp4_path),
                 ]
 
-            final_cmd = _build_stage4_cmd(["-crf", str(int(preset["crf"]))])
-            self._invoke_run_cmd(
-                final_cmd,
-                task,
-                work_dir / "ffmpeg_native_final.log",
-                timeout=1800,
-                cwd=work_dir,
+            def _run_stage4_encode(
+                video_rate_args: list[str] | None,
+                *,
+                log_path: Path,
+                audio_kbps: int = 256,
+            ) -> None:
+                nonlocal use_nvenc
+                cmd = _build_stage4_cmd(
+                    video_rate_args,
+                    audio_kbps=audio_kbps,
+                    encode_nvenc=use_nvenc,
+                )
+                if not use_nvenc:
+                    self._invoke_run_cmd(
+                        cmd, task, log_path, timeout=1800, cwd=work_dir
+                    )
+                    return
+                try:
+                    self._invoke_run_cmd(
+                        cmd, task, log_path, timeout=1800, cwd=work_dir
+                    )
+                except ColabOneCancelledError:
+                    raise
+                except RuntimeError as exc:
+                    task.check()
+                    stopping = getattr(
+                        getattr(self.manager, "runtime", None), "stopping", None
+                    )
+                    if isinstance(stopping, threading.Event) and stopping.is_set():
+                        raise
+                    err_lower = str(exc or "").lower()
+                    if any(
+                        marker in err_lower
+                        for marker in (
+                            "超时",
+                            "timed out",
+                            "no space left on device",
+                            "磁盘空间不足",
+                        )
+                    ):
+                        raise
+                    use_nvenc = False
+                    _mark_ffmpeg_nvenc_unavailable(ffmpeg_bin)
+                    task.note(
+                        f"GPU NVENC 硬件编码失败（{exc}），已自动回退至 libx264 软件编码重试",
+                        level="warning",
+                    )
+                    if final_mp4_path.resolve() != video_src_path.resolve():
+                        final_mp4_path.unlink(missing_ok=True)
+                    fallback_cmd = _build_stage4_cmd(
+                        video_rate_args,
+                        audio_kbps=audio_kbps,
+                        encode_nvenc=False,
+                    )
+                    self._invoke_run_cmd(
+                        fallback_cmd, task, log_path, timeout=1800, cwd=work_dir
+                    )
+
+            _run_stage4_encode(
+                None,
+                log_path=work_dir / "ffmpeg_native_final.log",
             )
 
             # Auto-reencode if master MP4 exceeds MAX_OUTPUT_BYTES (512 MiB) so GPU work is preserved.
@@ -3365,7 +3936,7 @@ class ColabOneDigitalHumanRunner:
                 task.note(reencode_msg, level="warning")
                 if final_mp4_path.resolve() != video_src_path.resolve():
                     final_mp4_path.unlink(missing_ok=True)
-                reencode_cmd = _build_stage4_cmd(
+                _run_stage4_encode(
                     [
                         "-b:v",
                         f"{target_video_kbps}k",
@@ -3375,13 +3946,7 @@ class ColabOneDigitalHumanRunner:
                         f"{bufsize_kbps}k",
                     ],
                     audio_kbps=audio_kbps,
-                )
-                self._invoke_run_cmd(
-                    reencode_cmd,
-                    task,
-                    work_dir / "ffmpeg_native_reencode.log",
-                    timeout=1800,
-                    cwd=work_dir,
+                    log_path=work_dir / "ffmpeg_native_reencode.log",
                 )
 
                 # Before unlinking lossless Stage 3/2 MKV, verify pass 1 fit within budget;
@@ -3423,7 +3988,7 @@ class ColabOneDigitalHumanRunner:
                     task.note(pass2_msg, level="warning")
                     if final_mp4_path.resolve() != video_src_path.resolve():
                         final_mp4_path.unlink(missing_ok=True)
-                    reencode_cmd_2 = _build_stage4_cmd(
+                    _run_stage4_encode(
                         [
                             "-b:v",
                             f"{pass2_target_kbps}k",
@@ -3433,13 +3998,7 @@ class ColabOneDigitalHumanRunner:
                             f"{pass2_target_kbps}k",
                         ],
                         audio_kbps=pass2_audio_kbps,
-                    )
-                    self._invoke_run_cmd(
-                        reencode_cmd_2,
-                        task,
-                        work_dir / "ffmpeg_native_reencode_pass2.log",
-                        timeout=1800,
-                        cwd=work_dir,
+                        log_path=work_dir / "ffmpeg_native_reencode_pass2.log",
                     )
 
                 if (
@@ -4260,7 +4819,16 @@ class ColabOneDigitalHumanRunner:
 
             active_accel_profile = accel_profile
             longcat_gpu_caps: dict[str, Any] = {}
-            if video_backend == "longcat_avatar" and active_accel_profile != "compat":
+            uses_comfy_accel = video_backend in ("longcat_avatar", "infinitetalk")
+            comfy_accel_fn = (
+                apply_infinitetalk_acceleration
+                if video_backend == "infinitetalk"
+                else apply_longcat_acceleration
+            )
+            comfy_accel_label = (
+                "InfiniteTalk" if video_backend == "infinitetalk" else "LongCat"
+            )
+            if uses_comfy_accel and active_accel_profile != "compat":
                 task.check()
                 longcat_gpu_caps = self._probe_longcat_gpu_caps()
                 ensure_sage_fn = (
@@ -4273,6 +4841,7 @@ class ColabOneDigitalHumanRunner:
                     and getattr(ensure_sage_fn, "__qualname__", "")
                     == "ColabOneComfyPackManager.ensure_sageattention_wheels"
                 )
+                installed_any = False
                 if callable(ensure_sage_fn) and (
                     self._run_cmd_fn is None or not is_real_unpatched_sage
                 ):
@@ -4288,40 +4857,21 @@ class ColabOneDigitalHumanRunner:
                                 sage_kwargs["gpu_caps"] = longcat_gpu_caps
                             if has_sage_var_kw or "allow_sage3" in sage_sig.parameters:
                                 sage_kwargs["allow_sage3"] = (
-                                    active_accel_profile == "max"
+                                    video_backend == "longcat_avatar"
+                                    and active_accel_profile == "max"
                                 )
                         except (TypeError, ValueError):
                             sage_kwargs = {
                                 "gpu_caps": longcat_gpu_caps,
-                                "allow_sage3": active_accel_profile == "max",
+                                "allow_sage3": (
+                                    video_backend == "longcat_avatar"
+                                    and active_accel_profile == "max"
+                                ),
                             }
                         updated_caps = ensure_sage_fn(task, **sage_kwargs)
                         if isinstance(updated_caps, dict):
                             installed_any = bool(updated_caps.get("installed_any"))
                             longcat_gpu_caps = {**longcat_gpu_caps, **updated_caps}
-                            if installed_any:
-                                is_running_fn = getattr(
-                                    self.manager, "is_running", None
-                                )
-                                stop_fn = getattr(self.manager, "stop_server", None)
-                                start_fn = getattr(self.manager, "start_server", None)
-                                if (
-                                    callable(is_running_fn)
-                                    and is_running_fn()
-                                    and callable(stop_fn)
-                                    and callable(start_fn)
-                                ):
-                                    task.note(
-                                        "已安装 SageAttention 加速算子，正在重启远端 ComfyUI 引擎以加载新内核"
-                                    )
-                                    stop_fn()
-                                    task.check()
-                                    start_fn(task)
-                                    clear_restart_fn = getattr(
-                                        packs, "clear_pending_pip_restart", None
-                                    )
-                                    if callable(clear_restart_fn):
-                                        clear_restart_fn()
                     except ColabOneCancelledError:
                         raise
                     except Exception as exc:
@@ -4330,13 +4880,56 @@ class ColabOneDigitalHumanRunner:
                             level="warning",
                         )
 
-                _, stage2_accel_summary = apply_longcat_acceleration(
+                needs_restart_fn = (
+                    getattr(packs, "needs_pip_restart", None)
+                    if packs is not None
+                    else None
+                )
+                pending_pip_restart = False
+                if callable(needs_restart_fn):
+                    try:
+                        pending_pip_restart = bool(needs_restart_fn())
+                    except Exception:
+                        pending_pip_restart = False
+                if installed_any or pending_pip_restart:
+                    try:
+                        is_running_fn = getattr(
+                            self.manager, "is_running", None
+                        )
+                        stop_fn = getattr(self.manager, "stop_server", None)
+                        start_fn = getattr(self.manager, "start_server", None)
+                        if (
+                            callable(is_running_fn)
+                            and is_running_fn()
+                            and callable(stop_fn)
+                            and callable(start_fn)
+                        ):
+                            task.note(
+                                "已安装 SageAttention 加速算子，正在重启远端 ComfyUI 引擎以加载新内核"
+                            )
+                            stop_fn()
+                            task.check()
+                            start_fn(task)
+                            clear_restart_fn = getattr(
+                                packs, "clear_pending_pip_restart", None
+                            )
+                            if callable(clear_restart_fn):
+                                clear_restart_fn()
+                    except ColabOneCancelledError:
+                        raise
+                    except Exception as exc:
+                        task.note(
+                            f"重启远端 ComfyUI 以加载加速算子时出现非致命异常，将继续使用当前进程：{exc}",
+                            level="warning",
+                        )
+
+                _, stage2_accel_summary = comfy_accel_fn(
                     wf["workflow"],
                     profile=active_accel_profile,
                     gpu_caps=longcat_gpu_caps,
                 )
                 task.note(
-                    f"已启用 LongCat 远端加速栈：注意力={stage2_accel_summary['attention_mode']}，"
+                    f"已启用 {comfy_accel_label} 远端加速栈：注意力={stage2_accel_summary['attention_mode']}，"
                     f"量化={stage2_accel_summary['quantization']}，"
                     f"显存常驻={'是' if stage2_accel_summary['resident_vram'] else '否'}，"
                     f"torch.compile={'开' if stage2_accel_summary['torch_compile'] else '关'}"
@@ -4687,12 +5280,12 @@ class ColabOneDigitalHumanRunner:
                 except (TypeError, ValueError):
                     exec_kwargs["save_to_store"] = False
 
-                if video_backend == "longcat_avatar":
+                if uses_comfy_accel:
                     base_prompt_payload = prompt_payload
                     attempted_accel_keys: set[tuple[Any, ...]] = set()
                     while True:
                         task.check()
-                        prompt_payload, accel_summary = apply_longcat_acceleration(
+                        prompt_payload, accel_summary = comfy_accel_fn(
                             base_prompt_payload,
                             profile=active_accel_profile,
                             gpu_caps=longcat_gpu_caps,
@@ -4701,8 +5294,13 @@ class ColabOneDigitalHumanRunner:
                             accel_summary["profile"],
                             accel_summary["attention_mode"],
                             accel_summary["quantization"],
+                            accel_summary.get("any_fp8_fast"),
                             accel_summary["resident_vram"],
                             accel_summary["torch_compile"],
+                            accel_summary.get("vae_tiling"),
+                            accel_summary.get("batched_cfg"),
+                            accel_summary.get("resize_device"),
+                            accel_summary.get("rms_norm_function"),
                         )
                         attempted_accel_keys.add(accel_key)
                         try:
@@ -4748,29 +5346,78 @@ class ColabOneDigitalHumanRunner:
                             next_profile = active_accel_profile
                             next_caps = dict(longcat_gpu_caps)
                             fallback_reason = ""
+                            can_step_offload = False
+                            if video_backend == "infinitetalk":
+                                has_fp8_fast = bool(
+                                    accel_summary.get("any_fp8_fast")
+                                ) or str(accel_summary["quantization"]).endswith(
+                                    "_fast"
+                                )
+                                can_step_offload = (
+                                    accel_summary["profile"] != "compat"
+                                    and accel_summary["attention_mode"] != "sdpa"
+                                    and (
+                                        bool(accel_summary["resident_vram"])
+                                        or has_fp8_fast
+                                    )
+                                )
+                                can_step_compat = (
+                                    accel_summary["profile"] != "compat"
+                                    and (
+                                        accel_summary["attention_mode"] != "sdpa"
+                                        or has_fp8_fast
+                                        or bool(accel_summary["resident_vram"])
+                                        or accel_summary.get("resize_device") == "gpu"
+                                        or accel_summary.get("rms_norm_function")
+                                        != "default"
+                                    )
+                                )
+                                compat_reason = (
+                                    "回退至兼容保底模式（SDPA + Scaled FP8 + 常规显存卸载）"
+                                )
+                            else:
+                                can_step_compat = (
+                                    accel_summary["attention_mode"] != "sdpa"
+                                    or accel_summary["quantization"] != "disabled"
+                                    or bool(accel_summary["resident_vram"])
+                                )
+                                compat_reason = (
+                                    "回退至兼容保底模式（SDPA + BF16 + 常规显存卸载）"
+                                )
+
                             if accel_summary["torch_compile"]:
                                 next_profile = "balanced"
                                 fallback_reason = (
                                     "关闭 torch.compile 编译加速（回退至高速稳健模式）"
                                 )
                             elif accel_summary["attention_mode"] == "sageattn_3":
+                                if video_backend == "infinitetalk":
+                                    next_profile = "balanced"
                                 next_caps["sageattn3_available"] = False
                                 fallback_reason = (
                                     "关闭 SageAttention 3（回退至 SageAttention 2）"
                                 )
-                            elif (
-                                accel_summary["attention_mode"] != "sdpa"
-                                or accel_summary["quantization"] != "disabled"
-                                or accel_summary["resident_vram"]
-                            ):
-                                next_profile = "compat"
+                            elif video_backend == "infinitetalk" and can_step_offload:
+                                next_profile = "balanced"
+                                next_caps["vram_mib"] = 0
+                                next_caps["fp8_fast_supported"] = False
+                                attn_mode = str(accel_summary["attention_mode"] or "")
+                                if attn_mode == "sageattn":
+                                    attn_label = "SageAttention 2"
+                                elif attn_mode == "flash_attn_2":
+                                    attn_label = "FlashAttention 2"
+                                else:
+                                    attn_label = attn_mode or "当前注意力"
                                 fallback_reason = (
-                                    "回退至兼容保底模式（SDPA + BF16 + 常规显存卸载）"
+                                    f"关闭显存常驻与 FP8 加速并启用 VAE 分块卸载（保留 {attn_label} 加速）"
                                 )
+                            elif can_step_compat:
+                                next_profile = "compat"
+                                fallback_reason = compat_reason
                             else:
                                 raise
 
-                            _, preview_next = apply_longcat_acceleration(
+                            _, preview_next = comfy_accel_fn(
                                 base_prompt_payload,
                                 profile=next_profile,
                                 gpu_caps=next_caps,
@@ -4779,8 +5426,13 @@ class ColabOneDigitalHumanRunner:
                                 preview_next["profile"],
                                 preview_next["attention_mode"],
                                 preview_next["quantization"],
+                                preview_next.get("any_fp8_fast"),
                                 preview_next["resident_vram"],
                                 preview_next["torch_compile"],
+                                preview_next.get("vae_tiling"),
+                                preview_next.get("batched_cfg"),
+                                preview_next.get("resize_device"),
+                                preview_next.get("rms_norm_function"),
                             )
                             if next_key in attempted_accel_keys:
                                 raise
@@ -4909,45 +5561,97 @@ class ColabOneDigitalHumanRunner:
                 if self._run_cmd_fn is not None
                 else _resolve_ffmpeg_cfr_args(ffmpeg_bin)
             )
-            final_cmd = [
-                ffmpeg_bin,
-                "-y",
-                *input_args,
-                "-filter_complex_script",
-                str(filter_script_path),
-                "-map",
-                "[vout]",
-                "-map",
-                f"{len(segment_mp4s)}:a:0",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "18",
-                "-pix_fmt",
-                "yuv420p",
-                *cfr_args,
-                "-r",
-                str(output_fps),
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ar",
-                str(max(48000, master_sample_rate)),
-                "-movflags",
-                "+faststart",
-                "-shortest",
-                str(final_mp4_path),
-            ]
-            self._invoke_run_cmd(
-                final_cmd,
-                task,
-                work_dir / "ffmpeg_final.log",
-                timeout=1800,
-                cwd=work_dir,
+            use_nvenc = (
+                self._run_cmd_fn is None and _probe_ffmpeg_nvenc_h264(ffmpeg_bin)
             )
+            if use_nvenc:
+                task.note("已启用 GPU NVENC 硬件编码（h264_nvenc · p6 hq）加速终稿拼接封装")
+
+            def _build_concat_final_cmd(*, encode_nvenc: bool) -> list[str]:
+                encode_args = _build_h264_encode_args(
+                    18, preset="fast", use_nvenc=encode_nvenc
+                )
+                return [
+                    ffmpeg_bin,
+                    "-y",
+                    *input_args,
+                    "-filter_complex_script",
+                    str(filter_script_path),
+                    "-map",
+                    "[vout]",
+                    "-map",
+                    f"{len(segment_mp4s)}:a:0",
+                    *encode_args,
+                    "-pix_fmt",
+                    "yuv420p",
+                    *cfr_args,
+                    "-r",
+                    str(output_fps),
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-ar",
+                    str(max(48000, master_sample_rate)),
+                    "-movflags",
+                    "+faststart",
+                    "-shortest",
+                    str(final_mp4_path),
+                ]
+
+            final_log_path = work_dir / "ffmpeg_final.log"
+            final_cmd = _build_concat_final_cmd(encode_nvenc=use_nvenc)
+            if not use_nvenc:
+                self._invoke_run_cmd(
+                    final_cmd,
+                    task,
+                    final_log_path,
+                    timeout=1800,
+                    cwd=work_dir,
+                )
+            else:
+                try:
+                    self._invoke_run_cmd(
+                        final_cmd,
+                        task,
+                        final_log_path,
+                        timeout=1800,
+                        cwd=work_dir,
+                    )
+                except ColabOneCancelledError:
+                    raise
+                except RuntimeError as exc:
+                    task.check()
+                    stopping = getattr(
+                        getattr(self.manager, "runtime", None), "stopping", None
+                    )
+                    if isinstance(stopping, threading.Event) and stopping.is_set():
+                        raise
+                    err_lower = str(exc or "").lower()
+                    if any(
+                        marker in err_lower
+                        for marker in (
+                            "超时",
+                            "timed out",
+                            "no space left on device",
+                            "磁盘空间不足",
+                        )
+                    ):
+                        raise
+                    use_nvenc = False
+                    _mark_ffmpeg_nvenc_unavailable(ffmpeg_bin)
+                    task.note(
+                        f"GPU NVENC 硬件编码失败（{exc}），已自动回退至 libx264 软件编码重试",
+                        level="warning",
+                    )
+                    final_mp4_path.unlink(missing_ok=True)
+                    self._invoke_run_cmd(
+                        _build_concat_final_cmd(encode_nvenc=False),
+                        task,
+                        final_log_path,
+                        timeout=1800,
+                        cwd=work_dir,
+                    )
 
             if final_mp4_path.is_file() and final_mp4_path.stat().st_size > 0:
                 output_src_path = final_mp4_path

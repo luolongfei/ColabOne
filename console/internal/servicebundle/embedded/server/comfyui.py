@@ -1352,6 +1352,7 @@ class ColabOneComfyManager:
             task.message = "正在启动远端 ComfyUI 引擎"
             task.note(f"已生成模型路径配置，正在启动远端 ComfyUI（端口 {self.port}）")
             launch_pack_sig = str(getattr(self.packs, "active_pack_signature", "") or "")
+            launch_sage_gen = comfy_packs._current_sageattn_install_generation()
             cwd = str(self.install_dir) if self.install_dir.is_dir() else None
             comfy_env = _sanitized_subprocess_env()
             for env_k, env_v in (
@@ -1436,6 +1437,23 @@ class ColabOneComfyManager:
                             self._queue_checked_at = -10.0
                             self._loaded_pack_signature = launch_pack_sig
                             self._native_active_pack_id = ""
+                        clear_restart_fn = getattr(
+                            getattr(self, "packs", None),
+                            "clear_pending_pip_restart",
+                            None,
+                        )
+                        if callable(clear_restart_fn):
+                            try:
+                                clear_sig = inspect.signature(clear_restart_fn)
+                                if "generation" in clear_sig.parameters or any(
+                                    p.kind == inspect.Parameter.VAR_KEYWORD
+                                    for p in clear_sig.parameters.values()
+                                ):
+                                    clear_restart_fn(generation=launch_sage_gen)
+                                else:
+                                    clear_restart_fn()
+                            except (TypeError, ValueError):
+                                clear_restart_fn()
                         task.note(
                             f"远端 ComfyUI 引擎已就绪（耗时 {time.monotonic() - start_t:.1f} 秒）"
                         )

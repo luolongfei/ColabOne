@@ -52,7 +52,16 @@ from server.tts_worker_ming import MING_3_TTS_WORKER_BODY
 from server.tts_worker_moss import MOSS_TTS_V1_5_WORKER_BODY
 
 TORCH_SKIP_PACKAGES = frozenset(
-    {"torch", "torchvision", "torchaudio", "xformers", "triton", "flash-attn"}
+    {
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "xformers",
+        "triton",
+        "flash-attn",
+        "sageattention",
+        "sageattn3",
+    }
 )
 _UNBUILDABLE_SKIP_PACKAGES = frozenset({"pyaudio"})
 _PIP_SKIP_PACKAGES = TORCH_SKIP_PACKAGES | _UNBUILDABLE_SKIP_PACKAGES
