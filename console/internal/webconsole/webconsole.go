@@ -56,13 +56,17 @@ const (
 	SessionCookieName = "colabone_web_session"
 	// VaultPasscodeKey is the vault entry key storing the web console passcode.
 	VaultPasscodeKey = "web_console_passcode"
+	// VaultSessionsKey is the vault entry key storing persisted web console session digests.
+	VaultSessionsKey = "web_console_sessions"
 	// ConfigFilename is the JSON configuration file persisted in ConfigDir.
 	ConfigFilename = "web-console.json"
 
-	// LoginTicketTTL is the lifetime of a single-use login ticket.
+	// LoginTicketTTL is the lifetime of a short-lived browser unlock ticket.
 	LoginTicketTTL = 60 * time.Second
-	// SessionTTL is the lifetime of an authenticated web console session.
-	SessionTTL = 7 * 24 * time.Hour
+	// SessionTTL is the sliding lifetime of an authenticated web console session
+	// (400 days matches the RFC 6265bis browser cookie Max-Age ceiling and is
+	// automatically renewed on active visits so users stay signed in across restarts).
+	SessionTTL = 400 * 24 * time.Hour
 
 	// ClientHeaderName is the custom anti-CSRF header required on mutating web API calls.
 	ClientHeaderName = "X-ColabOne-Client"
@@ -87,6 +91,8 @@ const (
 	passcodeMinRunes          = 8
 	passcodeMaxRunes          = 128
 	maxPublicOriginRunes      = 300
+	sessionRenewalInterval    = 24 * time.Hour
+	persistedSessionsVersion  = 1
 )
 
 // VaultStore abstracts encrypted credential persistence for the web console passcode.
@@ -180,9 +186,23 @@ type ColabOneWebConsoleOptions struct {
 }
 
 type colabOneWebSession struct {
-	createdAt time.Time
-	lastSeen  time.Time
-	expiresAt time.Time
+	createdAt         time.Time
+	lastSeen          time.Time
+	expiresAt         time.Time
+	cookieRefreshedAt time.Time
+}
+
+type colabOnePersistedWebSession struct {
+	DigestHex string `json:"d"`
+	CreatedAt int64  `json:"c"`
+	LastSeen  int64  `json:"l"`
+	ExpiresAt int64  `json:"e"`
+}
+
+type colabOnePersistedWebSessionStore struct {
+	Version      int                           `json:"v"`
+	PasscodeHash string                        `json:"p"`
+	Sessions     []colabOnePersistedWebSession `json:"s"`
 }
 
 type colabOneWebTicket struct {
@@ -206,11 +226,13 @@ type colabOneWebMediaChunk struct {
 type ColabOneWebConsole struct {
 	opts ColabOneWebConsoleOptions
 
-	opMu sync.Mutex // serializes StartIfEnabled, Update, Passcode, SetPasscode, Close
-	mu   sync.RWMutex
+	opMu      sync.Mutex // serializes StartIfEnabled, Update, Passcode, SetPasscode, Close
+	persistMu sync.Mutex // serializes persisted session snapshots written to Vault
+	mu        sync.RWMutex
 
 	cfg           ColabOneWebConsoleConfig
 	running       bool
+	closed        bool
 	listenAddr    string
 	srv           *http.Server
 	listeners     []net.Listener
@@ -314,6 +336,9 @@ func NewColabOneWebConsole(opts ColabOneWebConsoleOptions) *ColabOneWebConsole {
 		if found, err := opts.Vault.GetJSON(VaultPasscodeKey, &stored); err == nil && found && strings.TrimSpace(stored) != "" {
 			w.passcode = stored
 			w.passcodeReady = true
+			if w.cfg.Enabled {
+				w.loadPersistedSessions(stored)
+			}
 		}
 	}
 	return w
@@ -595,11 +620,15 @@ func (w *ColabOneWebConsole) updateOpLocked(req ColabOneWebConsoleUpdateRequest)
 		w.listeners = nil
 		w.srvDone = nil
 		w.lastError = ""
-		if wasRunning {
+		clearSessions := wasRunning || oldCfg.Enabled
+		if clearSessions {
 			clear(w.sessions)
 			clear(w.tickets)
 		}
 		w.mu.Unlock()
+		if clearSessions {
+			w.persistSessions()
+		}
 		if wasRunning {
 			w.logActivity("已关闭网页控制台服务", "info")
 		}
@@ -804,7 +833,11 @@ func (w *ColabOneWebConsole) ensurePasscodeOpLocked() (string, bool, error) {
 			w.mu.Lock()
 			w.passcode = stored
 			w.passcodeReady = true
+			shouldLoadSessions := w.cfg.Enabled && len(w.sessions) == 0 && !w.closed
 			w.mu.Unlock()
+			if shouldLoadSessions {
+				w.loadPersistedSessions(stored)
+			}
 			return stored, false, nil
 		}
 	}
@@ -867,6 +900,7 @@ func (w *ColabOneWebConsole) setPasscodeOpLocked(raw string) (ColabOneWebConsole
 	clear(w.sessions)
 	clear(w.tickets)
 	w.mu.Unlock()
+	w.persistSessions()
 
 	if regenerated {
 		w.logActivity("已重置网页控制台随机访问口令并注销全部远程会话", "info")
@@ -926,12 +960,14 @@ func (w *ColabOneWebConsole) CreateLoginTicket(singleUse bool) (ColabOneWebConso
 	}, nil
 }
 
-// RevokeSessions clears all active browser sessions and pending login tickets.
+// RevokeSessions clears all active browser sessions and pending login tickets,
+// including persisted sessions in the credential vault.
 func (w *ColabOneWebConsole) RevokeSessions() ColabOneWebConsoleState {
 	w.mu.Lock()
 	clear(w.sessions)
 	clear(w.tickets)
 	w.mu.Unlock()
+	w.persistSessions()
 
 	w.logActivity("已注销全部网页控制台在线会话", "info")
 	state := w.State()
@@ -939,8 +975,9 @@ func (w *ColabOneWebConsole) RevokeSessions() ColabOneWebConsoleState {
 	return state
 }
 
-// Close gracefully stops the HTTP server and clears in-memory sessions and tickets
-// without modifying persisted configuration.
+// Close gracefully stops the HTTP server and clears in-memory state without
+// modifying persisted configuration or persisted browser sessions, so signed-in
+// browsers remain authenticated across desktop app restarts.
 func (w *ColabOneWebConsole) Close() {
 	w.opMu.Lock()
 	w.mu.Lock()
@@ -952,10 +989,17 @@ func (w *ColabOneWebConsole) Close() {
 	w.srvDone = nil
 	w.running = false
 	w.listenAddr = ""
+	w.mu.Unlock()
+	shutdownHTTPServer(srv, listeners, done)
+	// Hold persistMu while marking closed and clearing w.sessions so any
+	// straggling handler cannot overwrite VaultSessionsKey with an empty set.
+	w.persistMu.Lock()
+	w.mu.Lock()
+	w.closed = true
 	clear(w.sessions)
 	clear(w.tickets)
 	w.mu.Unlock()
-	shutdownHTTPServer(srv, listeners, done)
+	w.persistMu.Unlock()
 	w.opMu.Unlock()
 }
 
@@ -1331,7 +1375,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 			errCode := r.URL.Query().Get("err")
-			if errCode == "" && w.authenticateRequest(r) {
+			if errCode == "" && w.authenticateRequest(rw, r) {
 				rw.Header().Set("Cache-Control", "no-store")
 				http.Redirect(rw, r, "/", http.StatusFound)
 				return
@@ -1369,7 +1413,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 			writeMethodNotAllowed(rw, "GET")
 			return
 		}
-		if !w.authenticateRequest(r) {
+		if !w.authenticateRequest(rw, r) {
 			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
 			return
 		}
@@ -1381,7 +1425,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 			writeMethodNotAllowed(rw, "GET")
 			return
 		}
-		if !w.authenticateRequest(r) {
+		if !w.authenticateRequest(rw, r) {
 			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
 			return
 		}
@@ -1393,7 +1437,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 			writeMethodNotAllowed(rw, "POST")
 			return
 		}
-		if !w.authenticateRequest(r) {
+		if !w.authenticateRequest(rw, r) {
 			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
 			return
 		}
@@ -1409,7 +1453,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 			writeMethodNotAllowed(rw, "GET, HEAD")
 			return
 		}
-		if !w.authenticateRequest(r) {
+		if !w.authenticateRequest(rw, r) {
 			writeHeadAwareJSONError(rw, r, http.StatusUnauthorized, "未登录或会话已过期")
 			return
 		}
@@ -1418,7 +1462,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 		return
 
 	case reqPath == "/api" || strings.HasPrefix(reqPath, "/api/"):
-		if !w.authenticateRequest(r) {
+		if !w.authenticateRequest(rw, r) {
 			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
 			return
 		}
@@ -1431,7 +1475,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 		writeMethodNotAllowed(rw, "GET, HEAD")
 		return
 	}
-	if !w.authenticateRequest(r) {
+	if !w.authenticateRequest(rw, r) {
 		if shouldRedirectToLogin(r) {
 			rw.Header().Set("Cache-Control", "no-store")
 			http.Redirect(rw, r, "/_colabone_web/login", http.StatusFound)
@@ -1724,7 +1768,8 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 		return
 	}
 
-	matched := expected != "" && subtle.ConstantTimeCompare([]byte(body.Passcode), []byte(expected)) == 1
+	submittedPasscode := strings.TrimSpace(body.Passcode)
+	matched := expected != "" && subtle.ConstantTimeCompare([]byte(submittedPasscode), []byte(expected)) == 1
 	if !matched {
 		w.mu.Lock()
 		w.recordLoginFailureLocked(ip, now)
@@ -1743,6 +1788,7 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 	delete(w.loginFailures, ip)
 	w.storeSessionLocked(token, now)
 	w.mu.Unlock()
+	w.persistSessions()
 
 	setSessionCookie(rw, r, token, now)
 	w.emitStateChange(w.State())
@@ -1830,7 +1876,7 @@ func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Reques
 
 	// If this browser already holds a valid session cookie, redirect directly
 	// without minting a duplicate session entry.
-	if w.authenticateRequest(r) {
+	if w.authenticateRequest(rw, r) {
 		http.Redirect(rw, r, "/", http.StatusFound)
 		return
 	}
@@ -1845,6 +1891,7 @@ func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Reques
 	w.mu.Lock()
 	w.storeSessionLocked(token, now)
 	w.mu.Unlock()
+	w.persistSessions()
 
 	setSessionCookie(rw, r, token, now)
 	w.emitStateChange(w.State())
@@ -1870,6 +1917,7 @@ func (w *ColabOneWebConsole) handleLogout(rw http.ResponseWriter, r *http.Reques
 
 	clearSessionCookie(rw, r)
 	if removed {
+		w.persistSessions()
 		w.emitStateChange(w.State())
 	}
 	writeJSON(rw, http.StatusOK, map[string]bool{"ok": true})
@@ -2266,7 +2314,125 @@ func shouldRedirectToLogin(r *http.Request) bool {
 
 // --- Session, ticket, and rate-limiter helpers ---
 
-func (w *ColabOneWebConsole) authenticateRequest(r *http.Request) bool {
+func hashPasscodeFingerprint(passcode string) string {
+	if passcode == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("colabone:web_session_bind:v1:" + passcode))
+	return hex.EncodeToString(sum[:])
+}
+
+func (w *ColabOneWebConsole) loadPersistedSessions(passcode string) {
+	if w.opts.Vault == nil || passcode == "" {
+		return
+	}
+	var store colabOnePersistedWebSessionStore
+	found, err := w.opts.Vault.GetJSON(VaultSessionsKey, &store)
+	if err != nil || !found {
+		return
+	}
+	if store.Version != persistedSessionsVersion {
+		return
+	}
+	expectedHash := hashPasscodeFingerprint(passcode)
+	if subtle.ConstantTimeCompare([]byte(store.PasscodeHash), []byte(expectedHash)) != 1 {
+		return
+	}
+	now := w.now()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.passcode != passcode {
+		return
+	}
+	for _, rec := range store.Sessions {
+		if rec.ExpiresAt <= 0 {
+			continue
+		}
+		expiresAt := time.Unix(rec.ExpiresAt, 0)
+		if !now.Before(expiresAt) {
+			continue
+		}
+		rawDigest, err := hex.DecodeString(strings.TrimSpace(rec.DigestHex))
+		if err != nil || len(rawDigest) != 32 {
+			continue
+		}
+		var digest [32]byte
+		copy(digest[:], rawDigest)
+
+		createdAt := now
+		if rec.CreatedAt > 0 {
+			createdAt = time.Unix(rec.CreatedAt, 0)
+		}
+		lastSeen := createdAt
+		if rec.LastSeen > 0 {
+			lastSeen = time.Unix(rec.LastSeen, 0)
+		}
+		for len(w.sessions) >= maxActiveSessions {
+			evictOldestSessionLocked(w.sessions)
+		}
+		w.sessions[digest] = colabOneWebSession{
+			createdAt:         createdAt,
+			lastSeen:          lastSeen,
+			expiresAt:         expiresAt,
+			cookieRefreshedAt: lastSeen,
+		}
+	}
+}
+
+func (w *ColabOneWebConsole) persistSessions() {
+	if w.opts.Vault == nil {
+		return
+	}
+	w.persistMu.Lock()
+	defer w.persistMu.Unlock()
+
+	now := w.now()
+	w.mu.RLock()
+	if w.closed {
+		w.mu.RUnlock()
+		return
+	}
+	passcode := w.passcode
+	entries := make([]colabOnePersistedWebSession, 0, len(w.sessions))
+	for digest, s := range w.sessions {
+		if !now.Before(s.expiresAt) {
+			continue
+		}
+		entries = append(entries, colabOnePersistedWebSession{
+			DigestHex: hex.EncodeToString(digest[:]),
+			CreatedAt: s.createdAt.Unix(),
+			LastSeen:  s.lastSeen.Unix(),
+			ExpiresAt: s.expiresAt.Unix(),
+		})
+	}
+	w.mu.RUnlock()
+
+	if passcode == "" || len(entries) == 0 {
+		if err := w.opts.Vault.Delete(VaultSessionsKey); err != nil {
+			w.logActivity(fmt.Sprintf("清理网页控制台持久化会话失败：%s", err.Error()), "warn")
+		}
+		return
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].LastSeen != entries[j].LastSeen {
+			return entries[i].LastSeen < entries[j].LastSeen
+		}
+		return entries[i].DigestHex < entries[j].DigestHex
+	})
+
+	store := colabOnePersistedWebSessionStore{
+		Version:      persistedSessionsVersion,
+		PasscodeHash: hashPasscodeFingerprint(passcode),
+		Sessions:     entries,
+	}
+	if err := w.opts.Vault.Set(VaultSessionsKey, store); err != nil {
+		w.logActivity(fmt.Sprintf("保存网页控制台持久化会话失败：%s", err.Error()), "warn")
+	}
+}
+
+func (w *ColabOneWebConsole) authenticateRequest(rw http.ResponseWriter, r *http.Request) bool {
 	c, err := r.Cookie(SessionCookieName)
 	if err != nil || c.Value == "" {
 		return false
@@ -2275,18 +2441,33 @@ func (w *ColabOneWebConsole) authenticateRequest(r *http.Request) bool {
 	now := w.now()
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	s, ok := w.sessions[digest]
 	if !ok {
+		w.mu.Unlock()
 		return false
 	}
 	if !now.Before(s.expiresAt) {
 		delete(w.sessions, digest)
+		w.mu.Unlock()
+		w.persistSessions()
+		w.emitStateChange(w.State())
 		return false
 	}
 	s.lastSeen = now
+	s.expiresAt = now.Add(SessionTTL)
+	needsRefresh := now.Sub(s.cookieRefreshedAt) >= sessionRenewalInterval
+	if needsRefresh {
+		s.cookieRefreshedAt = now
+	}
 	w.sessions[digest] = s
+	w.mu.Unlock()
+
+	if needsRefresh {
+		if rw != nil {
+			setSessionCookie(rw, r, c.Value, now)
+		}
+		w.persistSessions()
+	}
 	return true
 }
 
@@ -2297,9 +2478,10 @@ func (w *ColabOneWebConsole) storeSessionLocked(rawToken string, now time.Time) 
 	}
 	digest := sha256.Sum256([]byte(rawToken))
 	w.sessions[digest] = colabOneWebSession{
-		createdAt: now,
-		lastSeen:  now,
-		expiresAt: now.Add(SessionTTL),
+		createdAt:         now,
+		lastSeen:          now,
+		expiresAt:         now.Add(SessionTTL),
+		cookieRefreshedAt: now,
 	}
 }
 

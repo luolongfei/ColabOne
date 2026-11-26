@@ -184,3 +184,86 @@ func TestColabOneDesktopWebConsoleEndToEnd(t *testing.T) {
 		t.Fatalf("expected no tray web console items while stopped, got %d", len(items))
 	}
 }
+
+func TestColabOneDesktopWebConsoleSessionSurvivesRestartWithFileVault(t *testing.T) {
+	dir := t.TempDir()
+	fakeDist := fstest.MapFS{
+		"index.html": {Data: []byte("<!doctype html><html><body>ColabOne Web OK</body></html>")},
+	}
+
+	makeDesktop := func() (*ColabOneDesktop, *vault.ColabOneVault) {
+		v := vault.NewFileVault(dir)
+		d := &ColabOneDesktop{
+			bridge: &colabOneBridge{
+				vault: v,
+				factory: func() *controller.ColabOneController {
+					return newColabOneWiredController("", dir, v, false)
+				},
+			},
+		}
+		d.initWebConsoleWithFS(dir, v, func() fs.FS { return fakeDist })
+		return d, v
+	}
+
+	d1, _ := makeDesktop()
+	enabled := true
+	var started webconsole.ColabOneWebConsoleState
+	var startErr error
+	for port := 43260; port < 43280; port++ {
+		p := port
+		started, startErr = d1.UpdateWebConsole(webconsole.ColabOneWebConsoleUpdateRequest{
+			Enabled: &enabled,
+			Port:    &p,
+		})
+		if startErr == nil {
+			break
+		}
+	}
+	if startErr != nil || !started.Running {
+		t.Fatalf("start d1 web console failed: running=%v err=%v", started.Running, startErr)
+	}
+
+	ticket, err := d1.CreateWebConsoleLoginTicket(false)
+	if err != nil {
+		t.Fatalf("create ticket failed: %v", err)
+	}
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	resp, err := client.Get(ticket.URL)
+	if err != nil {
+		t.Fatalf("redeem ticket failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after redeem, got %d", resp.StatusCode)
+	}
+
+	// Simulate full desktop app exit and cold restart with a fresh FileVault reader.
+	d1.closeWebConsole()
+	d1.bridge.close()
+
+	d2, _ := makeDesktop()
+	t.Cleanup(func() {
+		d2.closeWebConsole()
+		d2.bridge.close()
+	})
+	if err := d2.startWebConsoleIfEnabled(); err != nil {
+		t.Fatalf("startWebConsoleIfEnabled after restart failed: %v", err)
+	}
+	st2 := d2.GetWebConsoleState()
+	if !st2.Running || st2.ActiveSessions != 1 {
+		t.Fatalf("expected running with 1 persisted session after restart, got %+v", st2)
+	}
+
+	// The exact same browser cookie jar authenticates without logging in again.
+	snapReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, st2.LocalURL+"/api/snapshot", nil)
+	snapReq.Header.Set(webconsole.ClientHeaderName, webconsole.ClientHeaderValue)
+	snapResp, err := client.Do(snapReq)
+	if err != nil {
+		t.Fatalf("GET /api/snapshot after restart failed: %v", err)
+	}
+	_ = snapResp.Body.Close()
+	if snapResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after restart with existing cookie, got %d", snapResp.StatusCode)
+	}
+}

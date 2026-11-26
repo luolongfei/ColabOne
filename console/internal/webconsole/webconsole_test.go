@@ -904,14 +904,211 @@ func TestLoginPageRateLimitingCookiesTicketsAndLogout(t *testing.T) {
 		t.Fatalf("expected logout to expire %s cookie", SessionCookieName)
 	}
 
-	// 5. Session expires after SessionTTL (7 days)
+	// 5. Idle session expires after SessionTTL (400 days without renewal)
 	clk.Advance(SessionTTL + time.Second)
 	expSessReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/web/capabilities", nil)
 	expSessReq.AddCookie(httpsCookie)
 	expSessRec := httptest.NewRecorder()
 	wc.Handler().ServeHTTP(expSessRec, expSessReq)
 	if expSessRec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected session expired after 7 days (401), got %d", expSessRec.Code)
+		t.Fatalf("expected idle session expired after SessionTTL (401), got %d", expSessRec.Code)
+	}
+}
+
+func TestPersistedSessionsSurviveRestartSlidingRenewalAndRevocation(t *testing.T) {
+	dir := t.TempDir()
+	vault := newMemoryVault()
+	clk := newFakeClock(time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC))
+
+	newInstance := func() *ColabOneWebConsole {
+		return NewColabOneWebConsole(ColabOneWebConsoleOptions{
+			ConfigDir: dir,
+			Vault:     vault,
+			Now:       clk.Now,
+			CallBridge: func(ctx context.Context, method string, payload map[string]any) (string, error) {
+				return `{"ok":true}`, nil
+			},
+		})
+	}
+
+	wc1 := newInstance()
+	port := reserveFreePort(t)
+	if _, err := wc1.Update(ColabOneWebConsoleUpdateRequest{
+		Enabled: boolPtr(true),
+		Port:    intPtr(port),
+	}); err != nil {
+		t.Fatalf("enable wc1 failed: %v", err)
+	}
+	passcode, err := wc1.Passcode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Session 1 via passcode login (including trimmed whitespace around pasted passcode)
+	cookie1 := loginForCookie(t, wc1.Handler(), fmt.Sprintf("127.0.0.1:%d", port), "  "+passcode+"\n", nil)
+	if cookie1.MaxAge != int(SessionTTL.Seconds()) {
+		t.Fatalf("expected long-lived cookie MaxAge=%d, got %d", int(SessionTTL.Seconds()), cookie1.MaxAge)
+	}
+
+	// Session 2 via quick login ticket
+	ticket, err := wc1.CreateLoginTicket(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(ticket.LocalURL)
+	redeemReq := httptest.NewRequest(http.MethodGet, u.RequestURI(), nil)
+	redeemReq.Host = u.Host
+	redeemRec := httptest.NewRecorder()
+	wc1.Handler().ServeHTTP(redeemRec, redeemReq)
+	if redeemRec.Code != http.StatusFound || len(redeemRec.Result().Cookies()) == 0 {
+		t.Fatalf("redeem expected 302 with session cookie, got %d", redeemRec.Code)
+	}
+	cookie2 := redeemRec.Result().Cookies()[0]
+
+	if got := wc1.State().ActiveSessions; got != 2 {
+		t.Fatalf("expected 2 active sessions before restart, got %d", got)
+	}
+
+	// Simulate app shutdown and restart: Close() must NOT wipe persisted sessions
+	wc1.Close()
+
+	wc2 := newInstance()
+	defer wc2.Close()
+	if got := wc2.State().ActiveSessions; got != 2 {
+		t.Fatalf("expected 2 persisted sessions restored on restart, got %d", got)
+	}
+	if err := wc2.StartIfEnabled(); err != nil {
+		t.Fatalf("StartIfEnabled after restart failed: %v", err)
+	}
+
+	// Both cookies authenticate immediately after restart without re-login
+	for idx, c := range []*http.Cookie{cookie1, cookie2} {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/snapshot", nil)
+		req.AddCookie(c)
+		rec := httptest.NewRecorder()
+		wc2.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("cookie%d expected 200 after restart, got %d", idx+1, rec.Code)
+		}
+		if len(rec.Result().Cookies()) != 0 {
+			t.Fatalf("cookie%d should not emit redundant Set-Cookie within renewal interval", idx+1)
+		}
+	}
+
+	// Sliding renewal: advance 200 days, use cookie1 -> renews cookie + persisted expiry
+	clk.Advance(200 * 24 * time.Hour)
+	renewReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/web/capabilities", nil)
+	renewReq.AddCookie(cookie1)
+	renewRec := httptest.NewRecorder()
+	wc2.Handler().ServeHTTP(renewRec, renewReq)
+	if renewRec.Code != http.StatusOK {
+		t.Fatalf("cookie1 after 200d expected 200, got %d", renewRec.Code)
+	}
+	var refreshedCookie *http.Cookie
+	for _, c := range renewRec.Result().Cookies() {
+		if c.Name == SessionCookieName {
+			refreshedCookie = c
+		}
+	}
+	if refreshedCookie == nil || refreshedCookie.Value != cookie1.Value || refreshedCookie.MaxAge != int(SessionTTL.Seconds()) {
+		t.Fatalf("expected refreshed session cookie after 200d, got %+v", refreshedCookie)
+	}
+
+	// Advance another 250 days (450d total > 400d SessionTTL) and restart again:
+	// cookie1 stayed active so it survives; idle cookie2 expires.
+	clk.Advance(250 * 24 * time.Hour)
+	wc2.Close()
+
+	wc3 := newInstance()
+	defer wc3.Close()
+	if got := wc3.State().ActiveSessions; got != 1 {
+		t.Fatalf("expected only renewed cookie1 to survive 450d across restart, got %d", got)
+	}
+	req1 := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/web/capabilities", nil)
+	req1.AddCookie(cookie1)
+	rec1 := httptest.NewRecorder()
+	wc3.Handler().ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("renewed cookie1 expected 200 at 450d after restart, got %d", rec1.Code)
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/web/capabilities", nil)
+	req2.AddCookie(cookie2)
+	rec2 := httptest.NewRecorder()
+	wc3.Handler().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("idle cookie2 expected 401 at 450d, got %d", rec2.Code)
+	}
+
+	// Explicit logout removes session from vault across restarts
+	logoutReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/_colabone_web/logout", nil)
+	logoutReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	logoutReq.AddCookie(cookie1)
+	logoutRec := httptest.NewRecorder()
+	wc3.Handler().ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout expected 200, got %d", logoutRec.Code)
+	}
+	wc3.Close()
+
+	wc4 := newInstance()
+	defer wc4.Close()
+	if got := wc4.State().ActiveSessions; got != 0 {
+		t.Fatalf("expected 0 sessions after logout + restart, got %d", got)
+	}
+
+	// RevokeSessions clears persisted sessions across restarts
+	cRevoke := loginForCookie(t, wc4.Handler(), fmt.Sprintf("127.0.0.1:%d", port), passcode, nil)
+	wc4.RevokeSessions()
+	wc4.Close()
+
+	wc5 := newInstance()
+	defer wc5.Close()
+	if wc5.State().ActiveSessions != 0 {
+		t.Fatalf("expected 0 sessions after RevokeSessions + restart")
+	}
+	rRevoked := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/web/capabilities", nil)
+	rRevoked.AddCookie(cRevoke)
+	wRevoked := httptest.NewRecorder()
+	wc5.Handler().ServeHTTP(wRevoked, rRevoked)
+	if wRevoked.Code != http.StatusUnauthorized {
+		t.Fatalf("expected revoked session to remain 401 after restart, got %d", wRevoked.Code)
+	}
+
+	// Out-of-band passcode replacement in vault invalidates previously persisted sessions
+	_ = loginForCookie(t, wc5.Handler(), fmt.Sprintf("127.0.0.1:%d", port), passcode, nil)
+	// Calling persistSessions() after Close() must NEVER wipe VaultSessionsKey
+	wc5.Close()
+	wc5.persistSessions()
+	wc5Check := newInstance()
+	if wc5Check.State().ActiveSessions != 1 {
+		wc5Check.Close()
+		t.Fatalf("expected post-Close persistSessions() to preserve vault sessions, got %d", wc5Check.State().ActiveSessions)
+	}
+	// Explicitly disabling Web Console clears persisted sessions across restarts
+	if _, err := wc5Check.Update(ColabOneWebConsoleUpdateRequest{Enabled: boolPtr(false)}); err != nil {
+		wc5Check.Close()
+		t.Fatalf("disable wc5Check failed: %v", err)
+	}
+	wc5Check.Close()
+	wcDisabled := newInstance()
+	if wcDisabled.State().ActiveSessions != 0 {
+		wcDisabled.Close()
+		t.Fatalf("expected 0 sessions after disable + restart, got %d", wcDisabled.State().ActiveSessions)
+	}
+	// Re-enable, create a session, replace passcode out-of-band, and confirm rejection
+	if _, err := wcDisabled.Update(ColabOneWebConsoleUpdateRequest{Enabled: boolPtr(true), Port: intPtr(port)}); err != nil {
+		wcDisabled.Close()
+		t.Fatalf("re-enable failed: %v", err)
+	}
+	_ = loginForCookie(t, wcDisabled.Handler(), fmt.Sprintf("127.0.0.1:%d", port), passcode, nil)
+	wcDisabled.Close()
+	if err := vault.Set(VaultPasscodeKey, "brand_new_out_of_band_passcode"); err != nil {
+		t.Fatal(err)
+	}
+	wc6 := newInstance()
+	defer wc6.Close()
+	if wc6.State().ActiveSessions != 0 {
+		t.Fatalf("expected mismatched passcode fingerprint to reject stale persisted sessions, got %d", wc6.State().ActiveSessions)
 	}
 }
 

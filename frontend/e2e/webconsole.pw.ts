@@ -269,6 +269,18 @@ test("desktop Settings Remote Web Console card toggles on default port 3232, gen
     )
     .toContain("http://127.0.0.1:3232/_colabone_web/redeem?ticket=abc123");
 
+  // Quick copy passcode button in the top live block copies the raw passcode directly
+  const quickCopyPasscodeBtn = page.getByTestId(
+    "settings-web-console-quick-copy-passcode-btn",
+  );
+  await expect(quickCopyPasscodeBtn).toBeVisible();
+  await quickCopyPasscodeBtn.click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).__webConsoleCopied.slice()),
+    )
+    .toContain("co_web_test_passcode_123456");
+
   // Optional single-use toggle switches to single-use mode (singleUse = true)
   await page.getByTestId("settings-web-console-ticket-single-use").click();
   await expect(page.getByTestId("settings-web-console-ticket-hint")).toContainText(

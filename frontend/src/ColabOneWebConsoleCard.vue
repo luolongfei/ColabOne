@@ -20,6 +20,7 @@ import {
   PhEye,
   PhEyeSlash,
   PhGlobe,
+  PhKey,
   PhLinkSimple,
   PhSignOut,
   PhWifiHigh,
@@ -512,27 +513,40 @@ function copyQuickCommand() {
 
         <div class="co-webconsole-quick-actions">
           <div class="co-webconsole-btn-row">
+            <div class="co-webconsole-ticket-group">
+              <AButton
+                type="primary"
+                size="small"
+                :loading="props.ticketBusy"
+                :disabled="props.saving"
+                data-testid="settings-web-console-ticket-btn"
+                @click="emit('createTicket', ticketSingleUse)"
+              >
+                <template #icon>
+                  <PhLinkSimple :size="14" />
+                </template>
+                {{ t("webConsole.copyTicketBtn") }}
+              </AButton>
+              <ACheckbox
+                v-model:checked="ticketSingleUse"
+                :disabled="props.saving || props.ticketBusy"
+                class="co-webconsole-single-use-check"
+                data-testid="settings-web-console-ticket-single-use"
+              >
+                {{ t("webConsole.ticketSingleUseLabel") }}
+              </ACheckbox>
+            </div>
             <AButton
-              type="primary"
               size="small"
-              :loading="props.ticketBusy"
-              :disabled="props.saving"
-              data-testid="settings-web-console-ticket-btn"
-              @click="emit('createTicket', ticketSingleUse)"
+              :disabled="!props.state.has_passcode || props.passcodeBusy || props.saving"
+              data-testid="settings-web-console-quick-copy-passcode-btn"
+              @click="emit('copyPasscode')"
             >
               <template #icon>
-                <PhLinkSimple :size="14" />
+                <PhKey :size="14" />
               </template>
-              {{ t("webConsole.copyTicketBtn") }}
+              {{ t("webConsole.copyPasscodeBtn") }}
             </AButton>
-            <ACheckbox
-              v-model:checked="ticketSingleUse"
-              :disabled="props.saving || props.ticketBusy"
-              class="co-webconsole-single-use-check"
-              data-testid="settings-web-console-ticket-single-use"
-            >
-              {{ t("webConsole.ticketSingleUseLabel") }}
-            </ACheckbox>
             <AButton
               v-if="props.state.active_sessions > 0"
               size="small"
@@ -991,7 +1005,14 @@ function copyQuickCommand() {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 12px;
+}
+
+.co-webconsole-ticket-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .co-webconsole-single-use-check {
