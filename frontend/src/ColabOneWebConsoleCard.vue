@@ -8,7 +8,6 @@ import {
   Input as AInput,
   InputNumber as AInputNumber,
   Segmented as ASegmented,
-  Space as ASpace,
   Switch as ASwitch,
   Tag as ATag,
 } from "ant-design-vue";
@@ -483,7 +482,7 @@ function copyQuickCommand() {
         </div>
 
         <div class="co-webconsole-quick-actions">
-          <ASpace :size="8" wrap>
+          <div class="co-webconsole-btn-row">
             <AButton
               type="primary"
               size="small"
@@ -511,8 +510,11 @@ function copyQuickCommand() {
               </template>
               {{ t("webConsole.revokeSessionsBtn") }}
             </AButton>
-          </ASpace>
-          <span class="co-webconsole-hint">
+          </div>
+          <span
+            class="co-webconsole-hint"
+            data-testid="settings-web-console-ticket-hint"
+          >
             {{
               props.state.public_origin
                 ? t("webConsole.copyTicketPublicHint")
@@ -699,7 +701,7 @@ function copyQuickCommand() {
           </AButton>
         </div>
 
-        <ASpace :size="8" wrap>
+        <div class="co-webconsole-btn-row">
           <AButton
             size="small"
             :disabled="!props.state.has_passcode || props.passcodeBusy"
@@ -723,7 +725,7 @@ function copyQuickCommand() {
             </template>
             {{ t("webConsole.rotatePasscodeBtn") }}
           </AButton>
-        </ASpace>
+        </div>
       </div>
 
       <!-- Cloudflared Setup Guide -->
@@ -940,7 +942,15 @@ function copyQuickCommand() {
 .co-webconsole-quick-actions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.co-webconsole-btn-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .co-webconsole-section {

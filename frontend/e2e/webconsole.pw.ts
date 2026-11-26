@@ -238,6 +238,19 @@ test("desktop Settings Remote Web Console card toggles on default port 3232, gen
   await expect(card).toContainText("http://127.0.0.1:3232");
   await expect(card).toContainText("2 个在线会话");
 
+  // Verify ticket button and hint text have comfortable vertical separation (no ASpace negative-margin collapse)
+  const ticketBtnBox = await page
+    .getByTestId("settings-web-console-ticket-btn")
+    .boundingBox();
+  const ticketHintBox = await page
+    .getByTestId("settings-web-console-ticket-hint")
+    .boundingBox();
+  expect(ticketBtnBox).not.toBeNull();
+  expect(ticketHintBox).not.toBeNull();
+  expect(
+    ticketHintBox!.y - (ticketBtnBox!.y + ticketBtnBox!.height),
+  ).toBeGreaterThanOrEqual(8);
+
   // Copy one-time login link
   await page.getByTestId("settings-web-console-ticket-btn").click();
   await expect
