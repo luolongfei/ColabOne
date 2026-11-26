@@ -3205,6 +3205,10 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       "正在生成动作片段 (2/6): Wave",
       "主播动作包构建完成（共 6 个动作）",
       "驱动动作不存在: dance_missing",
+      "检测免费 Drive 配额项目列表失败（HTTP 403 · PERMISSION_DENIED）",
+      "自动创建免费 Drive 配额项目 (colabone-drive-2090a4cd4c) 失败（HTTP 403 · PERMISSION_DENIED）",
+      "等待免费 Drive 配额项目 (colabone-drive-2090a4cd4c) 创建完成失败（operation timed out）",
+      "未能为免费 Drive 配额项目 (colabone-drive-2090a4cd4c) 启用 Drive API（HTTP 403 · PERMISSION_DENIED/SERVICE_DISABLED；无配额头回退：HTTP 403 · SERVICE_DISABLED）",
     ];
     for (const loc of ALL_LOCALES) {
       setColabOneLocale(loc, { persist: false, syncNative: false });

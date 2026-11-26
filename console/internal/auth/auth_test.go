@@ -1417,6 +1417,402 @@ func TestEnsureDriveQuotaProjectToSExistingAnd409Retry(t *testing.T) {
 			t.Fatalf("listCalls = %d, want 2", listCalls.Load())
 		}
 	})
+
+	t.Run("falls back without X-Goog-User-Project when Service Usage is disabled on new project", func(t *testing.T) {
+		var withQuotaEnableCalls atomic.Int32
+		var noQuotaEnableCalls atomic.Int32
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(`{"projects":[{"projectId":"colabone-drive-2090a4cd4c","lifecycleState":"ACTIVE"}]}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/colabone-drive-2090a4cd4c/services/drive.googleapis.com":
+				if r.Header.Get("X-Goog-User-Project") != "" {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project colabone-drive-2090a4cd4c before or it is disabled.","details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"serviceusage.googleapis.com"}}]}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"state":"DISABLED"}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects/colabone-drive-2090a4cd4c/services/drive.googleapis.com:enable":
+				bodyBytes, _ := io.ReadAll(r.Body)
+				if strings.TrimSpace(string(bodyBytes)) != "{}" {
+					t.Errorf("expected {} JSON body on :enable POST, got %q", string(bodyBytes))
+				}
+				if r.Header.Get("X-Goog-User-Project") != "" {
+					withQuotaEnableCalls.Add(1)
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project colabone-drive-2090a4cd4c before or it is disabled.","details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"serviceusage.googleapis.com"}}]}}`))
+					return
+				}
+				noQuotaEnableCalls.Add(1)
+				_, _ = w.Write([]byte(`{"done":true}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		vault := makeADCVault("user-su-disabled")
+		auth := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		pid, reason := auth.EnsureDriveQuotaProject(context.Background(), nil, true)
+		if pid != "colabone-drive-2090a4cd4c" || reason != "reused_colabone_project" {
+			t.Fatalf("got (%q, %q), want (\"colabone-drive-2090a4cd4c\", \"reused_colabone_project\")", pid, reason)
+		}
+		if withQuotaEnableCalls.Load() != 1 {
+			t.Fatalf("withQuotaEnableCalls = %d, want 1 (immediate bailout on SERVICE_DISABLED)", withQuotaEnableCalls.Load())
+		}
+		if noQuotaEnableCalls.Load() != 1 {
+			t.Fatalf("noQuotaEnableCalls = %d, want 1", noQuotaEnableCalls.Load())
+		}
+	})
+
+	t.Run("bootstraps cloudapis.googleapis.com and retries propagation before enabling Drive API", func(t *testing.T) {
+		var cloudAPIsEnabled atomic.Bool
+		var postBootstrapAttempts atomic.Int32
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(`{"projects":[{"projectId":"colabone-drive-boot123456","lifecycleState":"ACTIVE"}]}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/colabone-drive-boot123456/services/drive.googleapis.com":
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project colabone-drive-boot123456 before or it is disabled."}}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects/colabone-drive-boot123456/services/cloudapis.googleapis.com:enable":
+				cloudAPIsEnabled.Store(true)
+				_, _ = w.Write([]byte(`{"done":true}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects/colabone-drive-boot123456/services/drive.googleapis.com:enable":
+				if !cloudAPIsEnabled.Load() {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project colabone-drive-boot123456 before or it is disabled.","details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"serviceusage.googleapis.com"}}]}}`))
+					return
+				}
+				// Simulate 2 propagation-delay 403 SERVICE_DISABLED responses AFTER
+				// cloudapis.googleapis.com succeeded before Service Control catches up.
+				if postBootstrapAttempts.Add(1) <= 2 {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project colabone-drive-boot123456 before or it is disabled.","details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"serviceusage.googleapis.com"}}]}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"done":true}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		vault := makeADCVault("user-bootstrap")
+		auth := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		pid, reason := auth.EnsureDriveQuotaProject(context.Background(), nil, true)
+		if pid != "colabone-drive-boot123456" || reason != "reused_colabone_project" {
+			t.Fatalf("got (%q, %q), want (\"colabone-drive-boot123456\", \"reused_colabone_project\")", pid, reason)
+		}
+		if !cloudAPIsEnabled.Load() {
+			t.Fatal("expected cloudapis.googleapis.com bootstrap call")
+		}
+		if postBootstrapAttempts.Load() != 3 {
+			t.Fatalf("postBootstrapAttempts = %d, want 3 (must retry SERVICE_DISABLED after bootstrap)", postBootstrapAttempts.Load())
+		}
+	})
+
+	t.Run("existing own colabone-drive project enable failure logs sanitized diagnostics without creating duplicate project", func(t *testing.T) {
+		ownPID := COLABONE_QUOTA_PROJECT_PREFIX + shortSHA256Hex("colabone-drive:user-no-dup", 10)
+		var createCalls atomic.Int32
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"projects":[{"projectId":%q,"lifecycleState":"ACTIVE"}]}`, ownPID)))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects":
+				createCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"done":true}`))
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/services/drive.googleapis.com"):
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project %s before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/serviceusage.googleapis.com/overview?project=%s then retry."}}`, ownPID, ownPID)))
+			case r.Method == http.MethodPost && strings.Contains(r.URL.Path, ":enable"):
+				w.WriteHeader(http.StatusForbidden)
+				if r.Header.Get("X-Goog-User-Project") != "" {
+					_, _ = w.Write([]byte(fmt.Sprintf(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project %s before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/serviceusage.googleapis.com/overview?project=%s then retry. ya29.fake-token-leak","details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"serviceusage.googleapis.com"}}]}}`, ownPID, ownPID)))
+				} else {
+					_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project 764086051850 before or it is disabled.","details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"serviceusage.googleapis.com"}}]}}`))
+				}
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		vault := makeADCVault("user-no-dup")
+		auth := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		var logs []string
+		pid, reason := auth.EnsureDriveQuotaProject(context.Background(), func(msg, source, level string) {
+			logs = append(logs, level+":"+source+":"+msg)
+		}, true)
+		if pid != "" || reason != "gcp_project_unavailable" {
+			t.Fatalf("got (%q, %q), want (\"\", \"gcp_project_unavailable\")", pid, reason)
+		}
+		if createCalls.Load() != 0 {
+			t.Fatalf("must not create duplicate project when own colabone-drive-* already exists; createCalls = %d", createCalls.Load())
+		}
+		if len(logs) != 1 {
+			t.Fatalf("expected 1 diagnostic warning log, got %v", logs)
+		}
+		diag := logs[0]
+		wantPrefix := fmt.Sprintf("warning:云盘:未能为免费 Drive 配额项目 (%s) 启用 Drive API", ownPID)
+		if !strings.Contains(diag, wantPrefix) {
+			t.Fatalf("unexpected diagnostic log prefix: %q", diag)
+		}
+		if !strings.Contains(diag, "PERMISSION_DENIED/SERVICE_DISABLED") || !strings.Contains(diag, "764086051850") {
+			t.Fatalf("diagnostic log missing structured GCP error detail: %q", diag)
+		}
+		if strings.Contains(diag, "https://") {
+			t.Fatalf("diagnostic log must strip console URLs: %q", diag)
+		}
+		if strings.Contains(diag, "ya29.fake-token-leak") {
+			t.Fatalf("diagnostic log must redact OAuth tokens: %q", diag)
+		}
+		if strings.Count(diag, ownPID) != 1 {
+			t.Fatalf("project ID should appear only once (inside masked slot): %q", diag)
+		}
+	})
+
+	t.Run("shared unrelated colabone-drive project failure does not block creating own project", func(t *testing.T) {
+		ownPID := COLABONE_QUOTA_PROJECT_PREFIX + shortSHA256Hex("colabone-drive:user-team", 10)
+		var createCalls atomic.Int32
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(`{"projects":[{"projectId":"colabone-drive-colleague1","lifecycleState":"ACTIVE"}]}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/colabone-drive-colleague1/services/drive.googleapis.com":
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"The caller does not have permission"}}`))
+			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/projects/colabone-drive-colleague1/"):
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"The caller does not have permission"}}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects":
+				createCalls.Add(1)
+				_, _ = w.Write([]byte(`{"done":true}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects/"+ownPID+"/services/drive.googleapis.com:enable":
+				_, _ = w.Write([]byte(`{"done":true}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		vault := makeADCVault("user-team")
+		auth := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		pid, reason := auth.EnsureDriveQuotaProject(context.Background(), nil, true)
+		if pid != ownPID || reason != "created_colabone_project" {
+			t.Fatalf("got (%q, %q), want (%q, \"created_colabone_project\")", pid, reason, ownPID)
+		}
+		if createCalls.Load() != 1 {
+			t.Fatalf("createCalls = %d, want 1", createCalls.Load())
+		}
+	})
+
+	t.Run("transient 503 during enableDriveAPI returns network_error without negative caching and IAM 403 avoids redundant GET fallback", func(t *testing.T) {
+		ownPID := COLABONE_QUOTA_PROJECT_PREFIX + shortSHA256Hex("colabone-drive:user-503-en", 10)
+		var otherGetCalls atomic.Int32
+		var enable503Calls atomic.Int32
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"projects":[{"projectId":%q,"lifecycleState":"ACTIVE"},{"projectId":"viewer-only-proj","lifecycleState":"ACTIVE"}]}`, ownPID)))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/viewer-only-proj/services/drive.googleapis.com":
+				otherGetCalls.Add(1)
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"The caller does not have permission"}}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/"+ownPID+"/services/drive.googleapis.com":
+				_, _ = w.Write([]byte(`{"state":"DISABLED"}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects/"+ownPID+"/services/drive.googleapis.com:enable":
+				enable503Calls.Add(1)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"code":503,"status":"UNAVAILABLE","message":"backend unavailable"}}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		vault := makeADCVault("user-503-en")
+		auth := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		pid1, reason1 := auth.EnsureDriveQuotaProject(context.Background(), nil, false)
+		pid2, reason2 := auth.EnsureDriveQuotaProject(context.Background(), nil, false)
+		if pid1 != "" || reason1 != "network_error" || pid2 != "" || reason2 != "network_error" {
+			t.Fatalf("got (%q,%q) and (%q,%q), want network_error", pid1, reason1, pid2, reason2)
+		}
+		if otherGetCalls.Load() != 2 {
+			t.Fatalf("viewer-only IAM 403 should not trigger redundant GET fallback; otherGetCalls = %d, want 2 (1 per invocation)", otherGetCalls.Load())
+		}
+		if enable503Calls.Load() != 6 {
+			t.Fatalf("enable503Calls = %d, want 6 (3 retries x 2 uncached calls)", enable503Calls.Load())
+		}
+	})
+
+	t.Run("account switch mid-flight during enableDriveAPI suppresses stale diagnostic log", func(t *testing.T) {
+		ownPID := COLABONE_QUOTA_PROJECT_PREFIX + shortSHA256Hex("colabone-drive:sub-stale-diag", 10)
+		vault := makeADCVault("sub-stale-diag")
+		var auth *ColabOneAuth
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"projects":[{"projectId":%q,"lifecycleState":"ACTIVE"}]}`, ownPID)))
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/services/drive.googleapis.com"):
+				_, _ = w.Write([]byte(`{"state":"DISABLED"}`))
+			case r.Method == http.MethodPost && strings.Contains(r.URL.Path, ":enable"):
+				// Simulate account invalidation mid-flight before enableDriveAPI finishes.
+				auth.InvalidateDriveQuotaProject()
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Service Usage API has not been used in project before or it is disabled.","details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"serviceusage.googleapis.com"}}]}}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		auth = NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		var logs []string
+		pid, reason := auth.EnsureDriveQuotaProject(context.Background(), func(msg, source, level string) {
+			logs = append(logs, msg)
+		}, true)
+		if pid != "" || reason != "account_changed" {
+			t.Fatalf("got (%q, %q), want (\"\", \"account_changed\")", pid, reason)
+		}
+		if len(logs) != 0 {
+			t.Fatalf("stale request after account switch/invalidation must not emit diagnostic logs, got %v", logs)
+		}
+	})
+
+	t.Run("transient 503 during driveAPIEnabled check returns network_error without creating new project", func(t *testing.T) {
+		var createCalls atomic.Int32
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(`{"projects":[{"projectId":"existing-user-proj","lifecycleState":"ACTIVE"}]}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/existing-user-proj/services/drive.googleapis.com":
+				w.WriteHeader(http.StatusServiceUnavailable)
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects":
+				createCalls.Add(1)
+				_, _ = w.Write([]byte(`{"done":true}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		vault := makeADCVault("user-get-503")
+		auth := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		pid, reason := auth.EnsureDriveQuotaProject(context.Background(), nil, true)
+		if pid != "" || reason != "network_error" {
+			t.Fatalf("got (%q, %q), want (\"\", \"network_error\")", pid, reason)
+		}
+		if createCalls.Load() != 0 {
+			t.Fatalf("transient 503 during driveAPIEnabled must not fall through to project creation; createCalls = %d", createCalls.Load())
+		}
+	})
+
+	t.Run("LRO op.Error logs gRPC error code without misleading HTTP 200", func(t *testing.T) {
+		apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(`{}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects":
+				_, _ = w.Write([]byte(`{"name":"operations/create_denied.1"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/operations/create_denied.1":
+				_, _ = w.Write([]byte(`{"done":true,"error":{"code":7,"message":"Project creation denied by org policy"}}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer apiSrv.Close()
+
+		vault := makeADCVault("user-lro-err")
+		auth := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(apiSrv.URL),
+			WithServiceUsageBaseURL(apiSrv.URL),
+			WithHTTPClient(apiSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		var logs []string
+		pid, reason := auth.EnsureDriveQuotaProject(context.Background(), func(msg, source, level string) {
+			logs = append(logs, level+":"+msg)
+		}, true)
+		if pid != "" || reason != "gcp_project_unavailable" {
+			t.Fatalf("got (%q, %q), want (\"\", \"gcp_project_unavailable\")", pid, reason)
+		}
+		found := false
+		for _, entry := range logs {
+			if strings.HasPrefix(entry, "warning:等待免费 Drive 配额项目 (") {
+				found = true
+				if strings.Contains(entry, "HTTP 200") {
+					t.Fatalf("LRO op.Error must not log misleading HTTP 200: %q", entry)
+				}
+				if !strings.Contains(entry, "code 7 · Project creation denied by org policy") {
+					t.Fatalf("LRO op.Error log missing gRPC code/message: %q", entry)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expected poll_project diagnostic warning log, got %v", logs)
+		}
+	})
 }
 
 func TestColabLoginDirectPasteAndFinishErrors(t *testing.T) {

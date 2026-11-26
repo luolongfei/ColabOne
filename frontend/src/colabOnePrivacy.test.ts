@@ -181,6 +181,11 @@ describe("ColabOne privacy text and URL segmentation", () => {
         kept: ["已确认免弹窗云盘配额项目", "后续所有实例免弹窗自动挂载"],
       },
       {
+        input: "未能为免费 Drive 配额项目 (colabone-drive-2090a4cd4c) 启用 Drive API（HTTP 403 · PERMISSION_DENIED/SERVICE_DISABLED）",
+        forbidden: ["colabone-drive-2090a4cd4c"],
+        kept: ["未能为免费 Drive 配额项目", "HTTP 403"],
+      },
+      {
         input: "Verified zero-prompt Drive quota project (my-gcp-proj-42); future instances will mount automatically",
         forbidden: ["my-gcp-proj-42"],
         kept: ["Verified zero-prompt Drive quota project"],

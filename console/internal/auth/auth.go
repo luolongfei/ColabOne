@@ -133,6 +133,8 @@ var OAuthCallbackTexts = map[string]OAuthCallbackText{
 var (
 	authCodeRE     = regexp.MustCompile(`4/[A-Za-z0-9_./+\-]{20,}`)
 	gcpProjectIDRE = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
+	gcpURLRE       = regexp.MustCompile(`https?://\S+`)
+	gcpSecretRE    = regexp.MustCompile(`(?i)\b(?:bearer\s+\S+|ya29\.[A-Za-z0-9._\-]+|1//[A-Za-z0-9._\-]+)`)
 )
 
 // VaultStore abstracts encrypted credential storage (OS keyring or in-memory
@@ -1213,6 +1215,9 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 		if !a.setQuotaNegativeCache(startEpoch, initialSub, reason) {
 			return "", "account_changed"
 		}
+		if reason != "gcp_tos_required" {
+			a.logQuotaFailure(onLog, "list_projects", "", status, body, 0, nil)
+		}
 		return "", reason
 	}
 
@@ -1236,6 +1241,7 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 	}
 
 	// 1) Reuse an existing ColabOne-owned free quota project first.
+	failedColabOne := make(map[string]quotaEnableResult)
 	for _, pid := range activeProjects {
 		if !strings.HasPrefix(pid, COLABONE_QUOTA_PROJECT_PREFIX) {
 			continue
@@ -1248,9 +1254,16 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 			if quotaStale() {
 				return "", "account_changed"
 			}
-			enabled, err = a.enableDriveAPI(ctx, token, pid)
+			res, err := a.enableDriveAPI(ctx, token, pid, quotaStale)
+			if errors.Is(err, errQuotaStale) {
+				return "", "account_changed"
+			}
 			if err != nil {
 				return "", "network_error"
+			}
+			enabled = res.enabled
+			if !enabled {
+				failedColabOne[pid] = res
 			}
 		}
 		if enabled {
@@ -1306,6 +1319,32 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 		COLABONE_QUOTA_PROJECT_PREFIX + shortSHA256Hex("colabone-drive:"+sub, 10),
 		COLABONE_QUOTA_PROJECT_PREFIX + shortSHA256Hex("colabone-drive:v2:"+sub, 10),
 	}
+
+	// If one of THIS account's own deterministic colabone-drive-* projects already
+	// exists in activeProjects but Drive API could not be enabled on it in Step 1,
+	// do not create a second duplicate project; surface the failure cleanly.
+	for _, ownCand := range candidates {
+		failRes, exists := failedColabOne[ownCand]
+		if !exists {
+			continue
+		}
+		if failRes.transient {
+			if quotaStale() {
+				return "", "account_changed"
+			}
+			a.logQuotaFailure(onLog, "enable_drive_api", ownCand, failRes.status, failRes.body, failRes.fallbackStatus, failRes.fallbackBody)
+			return "", "network_error"
+		}
+		reason := classifyEnableFailureReason(failRes)
+		if !a.setQuotaNegativeCache(startEpoch, initialSub, reason) {
+			return "", "account_changed"
+		}
+		if reason != "gcp_tos_required" {
+			a.logQuotaFailure(onLog, "enable_drive_api", ownCand, failRes.status, failRes.body, failRes.fallbackStatus, failRes.fallbackBody)
+		}
+		return "", reason
+	}
+
 	emitAuthLog(onLog, "正在检测或初始化免费 Google Drive API 配额项目（仅首次检测）", "云盘", "info")
 
 	pid := candidates[0]
@@ -1342,6 +1381,9 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 		if !a.setQuotaNegativeCache(startEpoch, initialSub, reason) {
 			return "", "account_changed"
 		}
+		if reason != "gcp_tos_required" {
+			a.logQuotaFailure(onLog, "create_project", pid, createStatus, createBody, 0, nil)
+		}
 		return "", reason
 	}
 
@@ -1351,8 +1393,14 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 			return "", "network_error"
 		}
 	}
+	var lastPollStatus int
+	var lastPollBody []byte
+	const maxProjectCreatePolls = 20
 	deadline := a.now().Add(25 * time.Second)
-	for !op.Done && op.Name != "" && a.now().Before(deadline) {
+	for polls := 0; !op.Done && op.Name != "" && polls < maxProjectCreatePolls && a.now().Before(deadline); polls++ {
+		if quotaStale() {
+			return "", "account_changed"
+		}
 		if err := a.sleep(ctx, 1500*time.Millisecond); err != nil {
 			return "", "network_error"
 		}
@@ -1368,7 +1416,12 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 		if err != nil {
 			return "", "network_error"
 		}
+		lastPollStatus = pollStatus
+		lastPollBody = pollBody
 		if pollStatus != http.StatusOK {
+			if isTransientQuotaHTTPStatus(pollStatus) {
+				continue
+			}
 			break
 		}
 		var nextOp gcpOperation
@@ -1381,10 +1434,34 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 	}
 
 	if len(op.Error) > 0 || !op.Done {
-		errJSON, _ := json.Marshal(op.Error)
-		reason := classifyGCPErrorReason(string(errJSON))
+		if len(op.Error) == 0 && (lastPollStatus == 0 || lastPollStatus == http.StatusOK || isTransientQuotaHTTPStatus(lastPollStatus)) {
+			if quotaStale() {
+				return "", "account_changed"
+			}
+			failBody := lastPollBody
+			failStatus := lastPollStatus
+			if lastPollStatus == 0 || lastPollStatus == http.StatusOK {
+				failStatus = 0
+				failBody = []byte("operation timed out")
+			}
+			a.logQuotaFailure(onLog, "poll_project", pid, failStatus, failBody, 0, nil)
+			return "", "network_error"
+		}
+		var failStatus int
+		var failBody []byte
+		if len(op.Error) > 0 {
+			failStatus = 0
+			failBody, _ = json.Marshal(op.Error)
+		} else {
+			failStatus = lastPollStatus
+			failBody = lastPollBody
+		}
+		reason := classifyGCPErrorReason(string(failBody))
 		if !a.setQuotaNegativeCache(startEpoch, initialSub, reason) {
 			return "", "account_changed"
+		}
+		if reason != "gcp_tos_required" {
+			a.logQuotaFailure(onLog, "poll_project", pid, failStatus, failBody, 0, nil)
 		}
 		return "", reason
 	}
@@ -1392,11 +1469,14 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 	if quotaStale() {
 		return "", "account_changed"
 	}
-	enabled, err := a.enableDriveAPI(ctx, token, pid)
+	enableRes, err := a.enableDriveAPI(ctx, token, pid, quotaStale)
+	if errors.Is(err, errQuotaStale) {
+		return "", "account_changed"
+	}
 	if err != nil {
 		return "", "network_error"
 	}
-	if enabled {
+	if enableRes.enabled {
 		resPID, resReason := persistProject(pid, "created_colabone_project")
 		if resPID != "" {
 			emitAuthLog(
@@ -1408,11 +1488,41 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 		}
 		return resPID, resReason
 	}
+	if enableRes.transient {
+		if quotaStale() {
+			return "", "account_changed"
+		}
+		a.logQuotaFailure(onLog, "enable_drive_api", pid, enableRes.status, enableRes.body, enableRes.fallbackStatus, enableRes.fallbackBody)
+		return "", "network_error"
+	}
 
-	if !a.setQuotaNegativeCache(startEpoch, initialSub, "gcp_project_unavailable") {
+	reason := classifyEnableFailureReason(enableRes)
+	if !a.setQuotaNegativeCache(startEpoch, initialSub, reason) {
 		return "", "account_changed"
 	}
-	return "", "gcp_project_unavailable"
+	if reason != "gcp_tos_required" {
+		a.logQuotaFailure(onLog, "enable_drive_api", pid, enableRes.status, enableRes.body, enableRes.fallbackStatus, enableRes.fallbackBody)
+	}
+	return "", reason
+}
+
+var errQuotaStale = errors.New("quota check superseded by account change")
+
+type quotaEnableResult struct {
+	enabled        bool
+	transient      bool
+	status         int
+	body           []byte
+	fallbackStatus int
+	fallbackBody   []byte
+}
+
+func classifyEnableFailureReason(res quotaEnableResult) string {
+	reason := classifyGCPErrorReason(string(res.body))
+	if reason == "gcp_project_unavailable" && len(res.fallbackBody) > 0 {
+		reason = classifyGCPErrorReason(string(res.fallbackBody))
+	}
+	return reason
 }
 
 func (a *ColabOneAuth) isQuotaStaleLocked(startEpoch uint64, initialSub string) bool {
@@ -1446,12 +1556,29 @@ func (a *ColabOneAuth) setQuotaNegativeCache(startEpoch uint64, initialSub, reas
 }
 
 func (a *ColabOneAuth) driveAPIEnabled(ctx context.Context, accessToken, projectID string) (bool, error) {
-	endpoint := fmt.Sprintf("%s/v1/projects/%s/services/drive.googleapis.com", a.serviceUsageBaseURL, projectID)
+	return a.serviceEnabled(ctx, accessToken, projectID, "drive.googleapis.com")
+}
+
+func (a *ColabOneAuth) serviceEnabled(ctx context.Context, accessToken, projectID, serviceName string) (bool, error) {
+	endpoint := fmt.Sprintf("%s/v1/projects/%s/services/%s", a.serviceUsageBaseURL, projectID, serviceName)
 	status, body, err := a.doBearerJSON(ctx, http.MethodGet, endpoint, accessToken, projectID, nil, 10*time.Second)
 	if err != nil {
 		return false, err
 	}
+	if status == http.StatusForbidden && (isServiceUsageDisabledBody(body) || len(bytes.TrimSpace(body)) == 0) {
+		// Newly REST-created projects have serviceusage.googleapis.com disabled by
+		// default, so sending X-Goog-User-Project: projectID returns 403 SERVICE_DISABLED.
+		// Retry the read-only service check without X-Goog-User-Project, while skipping
+		// redundant calls when 403 is an unrelated IAM permission denial.
+		status, body, err = a.doBearerJSON(ctx, http.MethodGet, endpoint, accessToken, "", nil, 10*time.Second)
+		if err != nil {
+			return false, err
+		}
+	}
 	if status != http.StatusOK {
+		if isTransientQuotaHTTPStatus(status) {
+			return false, fmt.Errorf("transient service usage HTTP %d", status)
+		}
 		return false, nil
 	}
 	var payload struct {
@@ -1465,75 +1592,217 @@ func (a *ColabOneAuth) driveAPIEnabled(ctx context.Context, accessToken, project
 	return strings.ToUpper(payload.State) == "ENABLED", nil
 }
 
-func (a *ColabOneAuth) enableDriveAPI(ctx context.Context, accessToken, projectID string) (bool, error) {
-	endpoint := fmt.Sprintf("%s/v1/projects/%s/services/drive.googleapis.com:enable", a.serviceUsageBaseURL, projectID)
+func (a *ColabOneAuth) enableProjectService(
+	ctx context.Context,
+	accessToken string,
+	projectID string,
+	serviceName string,
+	quotaHeader string,
+	maxAttempts int,
+	bailOnServiceUsageDisabled bool,
+	quotaStale func() bool,
+) (quotaEnableResult, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	endpoint := fmt.Sprintf("%s/v1/projects/%s/services/%s:enable", a.serviceUsageBaseURL, projectID, serviceName)
 	var status int
 	var body []byte
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		status, body, err = a.doBearerJSON(ctx, http.MethodPost, endpoint, accessToken, projectID, nil, 20*time.Second)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if quotaStale != nil && quotaStale() {
+			return quotaEnableResult{}, errQuotaStale
+		}
+		status, body, err = a.doBearerJSON(ctx, http.MethodPost, endpoint, accessToken, quotaHeader, map[string]any{}, 20*time.Second)
 		if err != nil {
-			return false, err
+			return quotaEnableResult{}, err
 		}
 		if status == http.StatusOK {
 			break
 		}
-		// Freshly created GCP projects can take a couple seconds to propagate to Service Usage.
+		// Before bootstrapping, bail out immediately on Service Usage SERVICE_DISABLED so
+		// the caller can switch headers or bootstrap baseline APIs instead of wasting retries.
+		if bailOnServiceUsageDisabled && status == http.StatusForbidden && quotaHeader != "" && isServiceUsageDisabledBody(body) {
+			return quotaEnableResult{status: status, body: body}, nil
+		}
+		// Freshly created or freshly bootstrapped GCP projects can take several seconds to
+		// propagate across Service Usage edges; also retry transient 429/5xx statuses.
 		if (status == http.StatusForbidden || status == http.StatusNotFound ||
-			status == http.StatusInternalServerError || status == http.StatusServiceUnavailable) && attempt < 2 {
+			isTransientQuotaHTTPStatus(status)) && attempt+1 < maxAttempts {
 			if serr := a.sleep(ctx, 2*time.Second); serr != nil {
-				return false, serr
+				return quotaEnableResult{}, serr
 			}
 			continue
 		}
-		return false, nil
+		return quotaEnableResult{
+			transient: isTransientQuotaHTTPStatus(status),
+			status:    status,
+			body:      body,
+		}, nil
 	}
 	if status != http.StatusOK {
-		return false, nil
+		return quotaEnableResult{
+			transient: isTransientQuotaHTTPStatus(status),
+			status:    status,
+			body:      body,
+		}, nil
 	}
 
 	var op gcpOperation
 	if len(bytes.TrimSpace(body)) > 0 {
 		if err := json.Unmarshal(body, &op); err != nil {
-			return false, err
+			return quotaEnableResult{}, err
 		}
 	}
+	var lastPollStatus int
+	var lastPollBody []byte
+	const maxEnablePolls = 25
 	deadline := a.now().Add(30 * time.Second)
-	for !op.Done && op.Name != "" && a.now().Before(deadline) {
+	for polls := 0; !op.Done && op.Name != "" && polls < maxEnablePolls && a.now().Before(deadline); polls++ {
+		if quotaStale != nil && quotaStale() {
+			return quotaEnableResult{}, errQuotaStale
+		}
 		if serr := a.sleep(ctx, 1200*time.Millisecond); serr != nil {
-			return false, serr
+			return quotaEnableResult{}, serr
 		}
 		pollStatus, pollBody, err := a.doBearerJSON(
 			ctx,
 			http.MethodGet,
 			a.serviceUsageBaseURL+"/v1/"+op.Name,
 			accessToken,
-			projectID,
+			quotaHeader,
 			nil,
 			12*time.Second,
 		)
 		if err != nil {
-			return false, err
+			return quotaEnableResult{}, err
 		}
+		lastPollStatus = pollStatus
+		lastPollBody = pollBody
 		if pollStatus != http.StatusOK {
+			if isTransientQuotaHTTPStatus(pollStatus) {
+				continue
+			}
 			break
 		}
 		var nextOp gcpOperation
 		if len(bytes.TrimSpace(pollBody)) > 0 {
 			if err := json.Unmarshal(pollBody, &nextOp); err != nil {
-				return false, err
+				return quotaEnableResult{}, err
 			}
 		}
 		op = nextOp
 	}
 
 	if len(op.Error) > 0 {
-		return false, nil
+		errJSON, _ := json.Marshal(op.Error)
+		return quotaEnableResult{status: 0, body: errJSON}, nil
 	}
 	if op.Done {
-		return true, nil
+		return quotaEnableResult{enabled: true, status: http.StatusOK}, nil
 	}
-	return a.driveAPIEnabled(ctx, accessToken, projectID)
+	if quotaStale != nil && quotaStale() {
+		return quotaEnableResult{}, errQuotaStale
+	}
+	enabled, err := a.serviceEnabled(ctx, accessToken, projectID, serviceName)
+	if err != nil {
+		return quotaEnableResult{}, err
+	}
+	if enabled {
+		return quotaEnableResult{enabled: true, status: http.StatusOK}, nil
+	}
+	if lastPollStatus != 0 && lastPollStatus != http.StatusOK {
+		return quotaEnableResult{
+			transient: isTransientQuotaHTTPStatus(lastPollStatus),
+			status:    lastPollStatus,
+			body:      lastPollBody,
+		}, nil
+	}
+	return quotaEnableResult{
+		transient: true,
+		status:    0,
+		body:      []byte("enable operation timed out"),
+	}, nil
+}
+
+func (a *ColabOneAuth) enableDriveAPI(
+	ctx context.Context,
+	accessToken string,
+	projectID string,
+	quotaStale func() bool,
+) (quotaEnableResult, error) {
+	// 1) Primary attempt with X-Goog-User-Project: projectID (works when Service Usage is active).
+	res, err := a.enableProjectService(ctx, accessToken, projectID, "drive.googleapis.com", projectID, 3, true, quotaStale)
+	if err != nil || res.enabled || res.transient {
+		return res, err
+	}
+	if res.status != http.StatusForbidden && res.status != http.StatusNotFound && res.status != http.StatusBadRequest {
+		return res, nil
+	}
+
+	// 2) Fallback without X-Goog-User-Project for bare REST-created projects where
+	//    serviceusage.googleapis.com is not yet enabled on projectID.
+	fbRes, fbErr := a.enableProjectService(ctx, accessToken, projectID, "drive.googleapis.com", "", 1, false, quotaStale)
+	if fbErr != nil {
+		return quotaEnableResult{}, fbErr
+	}
+	if fbRes.enabled {
+		return fbRes, nil
+	}
+	res.fallbackStatus = fbRes.status
+	res.fallbackBody = fbRes.body
+	anyTransient := fbRes.transient
+
+	// 3) Bootstrap baseline APIs via cloudapis.googleapis.com (matching gcloud projects
+	//    create --enable-cloud-apis) or serviceusage.googleapis.com itself, then re-enable Drive API.
+	bootstrapped := false
+	for _, bootstrapSvc := range []string{"cloudapis.googleapis.com", "serviceusage.googleapis.com"} {
+		for _, qp := range []string{"", projectID} {
+			bRes, bErr := a.enableProjectService(ctx, accessToken, projectID, bootstrapSvc, qp, 1, false, quotaStale)
+			if bErr != nil {
+				return quotaEnableResult{}, bErr
+			}
+			if bRes.enabled {
+				bootstrapped = true
+				break
+			}
+			if bRes.transient {
+				anyTransient = true
+			}
+		}
+		if bootstrapped {
+			break
+		}
+	}
+	if bootstrapped {
+		// Allow propagation retries even if initial responses still report Service Usage
+		// disabled while the freshly enabled baseline APIs propagate across GCP edges.
+		postRes, postErr := a.enableProjectService(ctx, accessToken, projectID, "drive.googleapis.com", projectID, 4, false, quotaStale)
+		if postErr != nil || postRes.enabled {
+			return postRes, postErr
+		}
+		if postRes.transient {
+			return postRes, nil
+		}
+		postFBRes, postFBErr := a.enableProjectService(ctx, accessToken, projectID, "drive.googleapis.com", "", 1, false, quotaStale)
+		if postFBErr != nil {
+			return quotaEnableResult{}, postFBErr
+		}
+		if postFBRes.enabled {
+			return postFBRes, nil
+		}
+		postRes.fallbackStatus = postFBRes.status
+		postRes.fallbackBody = postFBRes.body
+		if postFBRes.transient {
+			postRes.transient = true
+		}
+		return postRes, nil
+	}
+
+	if anyTransient {
+		res.transient = true
+	}
+	return res, nil
 }
 
 func (a *ColabOneAuth) doBearerJSON(
@@ -2258,6 +2527,149 @@ func classifyGCPErrorReason(body string) string {
 		return "gcp_tos_required"
 	}
 	return "gcp_project_unavailable"
+}
+
+func isServiceUsageDisabledBody(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	if !strings.Contains(lower, "serviceusage.googleapis.com") && !strings.Contains(lower, "service usage api") {
+		return false
+	}
+	return strings.Contains(lower, "service_disabled") ||
+		strings.Contains(lower, "accessnotconfigured") ||
+		strings.Contains(lower, "has not been used in project") ||
+		strings.Contains(lower, "is disabled")
+}
+
+func sanitizeGCPDiagText(raw, projectID string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	s = gcpURLRE.ReplaceAllString(s, "")
+	s = gcpSecretRE.ReplaceAllString(s, "[REDACTED]")
+	if projectID != "" {
+		s = strings.ReplaceAll(s, projectID, "[project]")
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) > 160 {
+		s = strings.TrimSpace(string(runes[:160])) + "..."
+	}
+	return s
+}
+
+func summarizeGCPError(httpStatus int, body []byte, projectID string) string {
+	type gcpErrorPayload struct {
+		Code    int    `json:"code"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Details []struct {
+			Reason   string            `json:"reason"`
+			Metadata map[string]string `json:"metadata"`
+		} `json:"details"`
+		Errors []struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	var wrapper struct {
+		Error *gcpErrorPayload `json:"error"`
+	}
+	var flat gcpErrorPayload
+	var errObj *gcpErrorPayload
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		if json.Unmarshal(trimmed, &wrapper) == nil && wrapper.Error != nil {
+			errObj = wrapper.Error
+		} else if json.Unmarshal(trimmed, &flat) == nil && (flat.Message != "" || flat.Status != "" || flat.Code != 0) {
+			errObj = &flat
+		}
+	}
+
+	parts := make([]string, 0, 4)
+	if httpStatus > 0 {
+		parts = append(parts, fmt.Sprintf("HTTP %d", httpStatus))
+	}
+	if errObj != nil {
+		codeTag := strings.TrimSpace(errObj.Status)
+		reasonTag := ""
+		svcTag := ""
+		for _, d := range errObj.Details {
+			if reasonTag == "" && strings.TrimSpace(d.Reason) != "" {
+				reasonTag = strings.TrimSpace(d.Reason)
+			}
+			if svcTag == "" && d.Metadata != nil && strings.TrimSpace(d.Metadata["service"]) != "" {
+				svcTag = strings.TrimSpace(d.Metadata["service"])
+			}
+		}
+		if reasonTag == "" {
+			for _, e := range errObj.Errors {
+				if strings.TrimSpace(e.Reason) != "" {
+					reasonTag = strings.TrimSpace(e.Reason)
+					break
+				}
+			}
+		}
+		switch {
+		case codeTag != "" && reasonTag != "" && !strings.EqualFold(codeTag, reasonTag):
+			parts = append(parts, codeTag+"/"+reasonTag)
+		case codeTag != "":
+			parts = append(parts, codeTag)
+		case reasonTag != "":
+			parts = append(parts, reasonTag)
+		case httpStatus == 0 && errObj.Code != 0:
+			parts = append(parts, fmt.Sprintf("code %d", errObj.Code))
+		}
+		if svcTag != "" {
+			parts = append(parts, svcTag)
+		}
+		if msg := sanitizeGCPDiagText(errObj.Message, projectID); msg != "" {
+			parts = append(parts, msg)
+		}
+	} else if len(trimmed) > 0 && trimmed[0] != '<' {
+		if msg := sanitizeGCPDiagText(string(trimmed), projectID); msg != "" {
+			parts = append(parts, msg)
+		}
+	}
+	if len(parts) == 0 {
+		return "unknown error"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (a *ColabOneAuth) logQuotaFailure(
+	onLog func(msg, source, level string),
+	stage string,
+	projectID string,
+	status int,
+	body []byte,
+	fallbackStatus int,
+	fallbackBody []byte,
+) {
+	if onLog == nil {
+		return
+	}
+	detail := summarizeGCPError(status, body, projectID)
+	if fallbackStatus > 0 || len(bytes.TrimSpace(fallbackBody)) > 0 {
+		fbDetail := summarizeGCPError(fallbackStatus, fallbackBody, projectID)
+		if fbDetail != "" && fbDetail != detail {
+			detail = detail + "；无配额头回退：" + fbDetail
+		}
+	}
+	var msg string
+	switch stage {
+	case "list_projects":
+		msg = fmt.Sprintf("检测免费 Drive 配额项目列表失败（%s）", detail)
+	case "create_project":
+		msg = fmt.Sprintf("自动创建免费 Drive 配额项目 (%s) 失败（%s）", projectID, detail)
+	case "poll_project":
+		msg = fmt.Sprintf("等待免费 Drive 配额项目 (%s) 创建完成失败（%s）", projectID, detail)
+	case "enable_drive_api":
+		msg = fmt.Sprintf("未能为免费 Drive 配额项目 (%s) 启用 Drive API（%s）", projectID, detail)
+	default:
+		return
+	}
+	emitAuthLog(onLog, msg, "云盘", "warning")
 }
 
 func shortSHA256Hex(input string, n int) string {

@@ -5505,6 +5505,105 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^检测免费 Drive 配额项目列表失败（(.+)）$/,
+    format: (m, loc) => {
+      const detail = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Failed to list free Drive quota projects (${detail})`;
+        case "zh-TW":
+          return `偵測免費 Drive 配額專案清單失敗（${detail}）`;
+        case "zh-HK":
+          return `檢測免費 Drive 配額項目列表失敗（${detail}）`;
+        case "ja-JP":
+          return `無料の Drive クォータプロジェクト一覧の取得に失敗しました（${detail}）`;
+        case "ko-KR":
+          return `무료 Drive 할당량 프로젝트 목록 확인 실패(${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自动创建免费 Drive 配额项目 \(([^)]+)\) 失败（(.+)）$/,
+    format: (m, loc) => {
+      const pid = m[1]!;
+      const detail = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Failed to auto-create free Drive quota project (${pid}) (${detail})`;
+        case "zh-TW":
+          return `自動建立免費 Drive 配額專案 (${pid}) 失敗（${detail}）`;
+        case "zh-HK":
+          return `自動建立免費 Drive 配額項目 (${pid}) 失敗（${detail}）`;
+        case "ja-JP":
+          return `無料の Drive クォータプロジェクト (${pid}) の自動作成に失敗しました（${detail}）`;
+        case "ko-KR":
+          return `무료 Drive 할당량 프로젝트(${pid}) 자동 생성 실패(${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^等待免费 Drive 配额项目 \(([^)]+)\) 创建完成失败（(.+)）$/,
+    format: (m, loc) => {
+      const pid = m[1]!;
+      const detail = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Failed while waiting for free Drive quota project (${pid}) creation (${detail})`;
+        case "zh-TW":
+          return `等待免費 Drive 配額專案 (${pid}) 建立完成失敗（${detail}）`;
+        case "zh-HK":
+          return `等待免費 Drive 配額項目 (${pid}) 建立完成失敗（${detail}）`;
+        case "ja-JP":
+          return `無料の Drive クォータプロジェクト (${pid}) の作成完了待機に失敗しました（${detail}）`;
+        case "ko-KR":
+          return `무료 Drive 할당량 프로젝트(${pid}) 생성 완료 대기 실패(${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未能为免费 Drive 配额项目 \(([^)]+)\) 启用 Drive API（(.+)）$/,
+    format: (m, loc) => {
+      const pid = m[1]!;
+      const rawDetail = m[2]!;
+      const detail = (() => {
+        switch (loc) {
+          case "en-US":
+            return rawDetail.replaceAll("；无配额头回退：", "; without quota header: ");
+          case "zh-TW":
+            return rawDetail.replaceAll("；无配额头回退：", "；無配額標頭回退：");
+          case "zh-HK":
+            return rawDetail.replaceAll("；无配额头回退：", "；無配額標頭回退：");
+          case "ja-JP":
+            return rawDetail.replaceAll("；无配额头回退：", "；クォータヘッダーなし再試行: ");
+          case "ko-KR":
+            return rawDetail.replaceAll("；无配额头回退：", "; 할당량 헤더 없이 재시도: ");
+          default:
+            return rawDetail;
+        }
+      })();
+      switch (loc) {
+        case "en-US":
+          return `Could not enable Drive API for free Drive quota project (${pid}) (${detail})`;
+        case "zh-TW":
+          return `未能為免費 Drive 配額專案 (${pid}) 啟用 Drive API（${detail}）`;
+        case "zh-HK":
+          return `未能為免費 Drive 配額項目 (${pid}) 啟用 Drive API（${detail}）`;
+        case "ja-JP":
+          return `無料の Drive クォータプロジェクト (${pid}) で Drive API を有効化できませんでした（${detail}）`;
+        case "ko-KR":
+          return `무료 Drive 할당량 프로젝트(${pid})에서 Drive API를 활성화하지 못했습니다(${detail})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^Google Colab 原生云盘挂载连接中断，请重试：(.+)$/,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
