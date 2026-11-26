@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "./i18n";
 import {
   Badge as ABadge,
@@ -9,6 +9,7 @@ import {
 } from "ant-design-vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
+  COLABONE_BILLING_TICKER_INTERVAL_MS,
   describeColabOneBilling,
   describeColabOneRunConsumption,
   formatCountdownClock,
@@ -17,7 +18,13 @@ import {
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import { colabOneBillingSkeletonState } from "./skeletonState";
 import type { RuntimeStatus, ColabOneSnapshot } from "./types";
-import { PhLightning, PhClock, PhCoins, PhFlame } from "@phosphor-icons/vue";
+import {
+  PhLightning,
+  PhClock,
+  PhCoins,
+  PhFlame,
+  PhTimer,
+} from "@phosphor-icons/vue";
 
 const props = defineProps<{
   account: ColabOneSnapshot["account"];
@@ -161,6 +168,56 @@ const billingAriaLabel = computed(() => {
     endurance: enduranceLabel.value,
     count: o.instanceCount,
   });
+});
+
+const canRotateRateDuration = computed(
+  () =>
+    !skeleton.value.rate &&
+    runOverview.value.active &&
+    Boolean(runOverview.value.compactDurationText),
+);
+
+const activeTickerSlide = ref<"rate" | "duration">("rate");
+const tickerHasTransitioned = ref(false);
+let tickerTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopTicker() {
+  if (tickerTimer !== null) {
+    clearInterval(tickerTimer);
+    tickerTimer = null;
+  }
+}
+
+function startTicker() {
+  stopTicker();
+  tickerTimer = setInterval(() => {
+    if (typeof document !== "undefined" && document.hidden) {
+      return;
+    }
+    tickerHasTransitioned.value = true;
+    activeTickerSlide.value =
+      activeTickerSlide.value === "rate" ? "duration" : "rate";
+  }, COLABONE_BILLING_TICKER_INTERVAL_MS);
+}
+
+watch(
+  canRotateRateDuration,
+  (enabled) => {
+    if (enabled) {
+      activeTickerSlide.value = "rate";
+      tickerHasTransitioned.value = false;
+      startTicker();
+    } else {
+      stopTicker();
+      activeTickerSlide.value = "rate";
+      tickerHasTransitioned.value = false;
+    }
+  },
+  { immediate: true },
+);
+
+onUnmounted(() => {
+  stopTicker();
 });
 </script>
 
@@ -310,11 +367,72 @@ const billingAriaLabel = computed(() => {
             <span>{{ overview.statusText }}</span>
           </ATag>
 
-          <span class="co-billing-metric co-billing-rate">
+          <span
+            class="co-billing-metric co-billing-rate"
+            :class="{ 'is-rotating': canRotateRateDuration }"
+          >
             <template v-if="skeleton.rate">
               <ColabOneSkeleton variant="text" :width="56" :height="12" inline />
               <span class="co-sr-only">{{ overview.rateText }}</span>
             </template>
+            <span
+              v-else-if="canRotateRateDuration"
+              class="co-billing-rate-ticker"
+              data-testid="billing-bar-rate-ticker"
+              data-rotating="true"
+              :data-active-slide="activeTickerSlide"
+            >
+              <span
+                :class="[
+                  'co-billing-rate-slide co-billing-rate-slide-rate',
+                  {
+                    'is-current': activeTickerSlide === 'rate',
+                    'is-entering':
+                      tickerHasTransitioned && activeTickerSlide === 'rate',
+                    'is-leaving':
+                      tickerHasTransitioned && activeTickerSlide !== 'rate',
+                    'is-standby':
+                      !tickerHasTransitioned && activeTickerSlide !== 'rate',
+                  },
+                ]"
+                data-testid="billing-bar-rate-slide"
+                :data-active="activeTickerSlide === 'rate' ? 'true' : 'false'"
+                :aria-hidden="activeTickerSlide !== 'rate' ? 'true' : undefined"
+                >{{ overview.rateText }}</span
+              >
+              <span
+                :class="[
+                  'co-billing-rate-slide co-billing-rate-slide-duration',
+                  {
+                    'is-current': activeTickerSlide === 'duration',
+                    'is-entering':
+                      tickerHasTransitioned && activeTickerSlide === 'duration',
+                    'is-leaving':
+                      tickerHasTransitioned && activeTickerSlide !== 'duration',
+                    'is-standby':
+                      !tickerHasTransitioned && activeTickerSlide !== 'duration',
+                  },
+                ]"
+                data-testid="billing-bar-duration-slide"
+                :data-active="
+                  activeTickerSlide === 'duration' ? 'true' : 'false'
+                "
+                :aria-hidden="
+                  activeTickerSlide !== 'duration' ? 'true' : undefined
+                "
+              >
+                <PhTimer
+                  class="co-run-timer-icon"
+                  :size="12"
+                  weight="duotone"
+                  aria-hidden="true"
+                />
+                <span class="co-billing-duration-prefix">{{
+                  t("billing.barRunDurationPrefix")
+                }}</span>
+                <b>{{ runOverview.compactDurationText }}</b>
+              </span>
+            </span>
             <template v-else>{{ overview.rateText }}</template>
           </span>
 
@@ -569,6 +687,87 @@ const billingAriaLabel = computed(() => {
   font-weight: 600;
 }
 
+.co-billing-rate-ticker {
+  position: relative;
+  display: inline-grid;
+  align-items: center;
+  height: 22px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.co-billing-rate-slide {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 22px;
+  line-height: 22px;
+  white-space: nowrap;
+  will-change: transform, opacity;
+}
+
+.co-billing-rate-slide.is-current {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.co-billing-rate-slide.is-standby {
+  transform: translateY(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.co-billing-rate-slide.is-entering {
+  animation: co-billing-ticker-in 0.38s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.co-billing-rate-slide.is-leaving {
+  pointer-events: none;
+  animation: co-billing-ticker-out 0.38s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes co-billing-ticker-in {
+  0% {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes co-billing-ticker-out {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+}
+
+.co-billing-rate-slide-duration {
+  color: var(--co-muted);
+  font-weight: 500;
+}
+
+.co-billing-rate-slide-duration .co-run-timer-icon,
+.co-billing-rate-slide-duration b {
+  color: var(--co-success-text);
+}
+
+.co-billing-rate-slide-duration b {
+  font-weight: 600;
+}
+
+.co-run-timer-icon {
+  flex-shrink: 0;
+}
+
 .co-strip-divider {
   margin: 0;
   height: 13px;
@@ -696,7 +895,8 @@ const billingAriaLabel = computed(() => {
 }
 
 @media (max-width: 1240px) {
-  .co-run-flame-icon {
+  .co-run-flame-icon,
+  .co-run-timer-icon {
     display: none;
   }
 }
@@ -781,6 +981,12 @@ const billingAriaLabel = computed(() => {
     font-size: 11.5px;
   }
 
+  .co-billing-rate-ticker,
+  .co-billing-rate-slide {
+    height: 20px;
+    line-height: 20px;
+  }
+
   .co-strip-divider {
     display: none;
   }
@@ -788,8 +994,15 @@ const billingAriaLabel = computed(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .co-billing-pulse,
-  .co-clock-pulse {
+  .co-clock-pulse,
+  .co-billing-rate-slide.is-entering,
+  .co-billing-rate-slide.is-leaving {
     animation: none;
+  }
+
+  .co-billing-rate-slide.is-leaving {
+    transform: translateY(-100%);
+    opacity: 0;
   }
 }
 </style>

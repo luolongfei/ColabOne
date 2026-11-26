@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  COLABONE_BILLING_TICKER_INTERVAL_MS,
   COLABONE_DEFAULT_IDLE_MINUTES,
   COLABONE_IDLE_RELEASE_OPTIONS,
   COLABONE_RUN_LIVE_INTERP_CAP_SEC,
   describeColabOneBilling,
   describeColabOneRunConsumption,
+  formatColabOneCompactRunDuration,
+  formatColabOneRunClock,
   formatCountdownClock,
   formatIdlePolicyLabel,
   formatRemainingBalanceTime,
@@ -516,5 +519,53 @@ describe("describeColabOneRunConsumption", () => {
     expect(fallback.hasRecord).toBe(false);
     expect(fallback.syncingRate).toBe(true);
     expect(fallback.consumedText).toBe("0.00 CU");
+  });
+});
+
+describe("COLABONE_BILLING_TICKER_INTERVAL_MS, formatColabOneCompactRunDuration & formatColabOneRunClock", () => {
+  it("rotates the topbar billing ticker every 3 seconds", () => {
+    expect(COLABONE_BILLING_TICKER_INTERVAL_MS).toBe(3000);
+  });
+
+  it("formats compact topbar run durations with zero-padded sub-units for stable ticker width", () => {
+    expect(formatColabOneCompactRunDuration(0, "zh-CN")).toBe("0 秒");
+    expect(formatColabOneCompactRunDuration(42.9, "zh-CN")).toBe("42 秒");
+    expect(formatColabOneCompactRunDuration(60, "zh-CN")).toBe("1 分 00 秒");
+    expect(formatColabOneCompactRunDuration(754, "zh-CN")).toBe("12 分 34 秒");
+    expect(formatColabOneCompactRunDuration(7500, "zh-CN")).toBe("2 小时 05 分");
+    expect(formatColabOneCompactRunDuration(7503, "zh-CN")).toBe("2 小时 05 分");
+    expect(formatColabOneCompactRunDuration(93600, "zh-CN")).toBe("1 天 2 小时");
+
+    expect(formatColabOneCompactRunDuration(65, "en-US")).toBe("1m 05s");
+    expect(formatColabOneCompactRunDuration(7503, "en-US")).toBe("2h 05m");
+    expect(formatColabOneCompactRunDuration(93600, "en-US")).toBe("1d 2h");
+
+    expect(formatColabOneCompactRunDuration(null)).toBe("");
+    expect(formatColabOneCompactRunDuration(undefined)).toBe("");
+    expect(formatColabOneCompactRunDuration(Number.NaN)).toBe("");
+  });
+
+  it("formats same-day timestamps as HH:MM:SS and prior-day timestamps with date + time", () => {
+    const now = new Date(2026, 10, 25, 14, 30, 0).getTime();
+    const sameDayMidnight = new Date(2026, 10, 25, 0, 5, 9).getTime() / 1000;
+    const sameDayAfternoon = new Date(2026, 10, 25, 13, 45, 7).getTime() / 1000;
+    const prevDay = new Date(2026, 10, 24, 22, 15, 0).getTime() / 1000;
+
+    expect(formatColabOneRunClock(sameDayMidnight, now, "zh-CN")).toBe(
+      "00:05:09",
+    );
+    expect(formatColabOneRunClock(sameDayAfternoon, now, "zh-CN")).toBe(
+      "13:45:07",
+    );
+    const prevFormatted = formatColabOneRunClock(prevDay, now, "zh-CN");
+    expect(prevFormatted).toContain("11");
+    expect(prevFormatted).toContain("24");
+    expect(prevFormatted).toContain("22:15");
+
+    expect(formatColabOneRunClock(undefined, now)).toBe("");
+    expect(formatColabOneRunClock(null, now)).toBe("");
+    expect(formatColabOneRunClock(0, now)).toBe("");
+    expect(formatColabOneRunClock(-10, now)).toBe("");
+    expect(formatColabOneRunClock(Number.NaN, now)).toBe("");
   });
 });

@@ -1,10 +1,11 @@
 import { formatColabOneDuration } from "./colabOneDuration";
-import { t, tb } from "./i18n";
+import { colabOneLocaleCode, t, tb, type ColabOneLocale } from "./i18n";
 import type { ColabOneSnapshot } from "./types";
 
 export const COLABONE_DEFAULT_IDLE_MINUTES = 30;
 export const COLABONE_RUN_LIVE_INTERP_CAP_SEC = 90;
 export const COLABONE_RUN_STALE_OFFLINE_SEC = 900;
+export const COLABONE_BILLING_TICKER_INTERVAL_MS = 3000;
 
 export interface IdleReleaseOption {
   value: number;
@@ -233,6 +234,7 @@ export interface ColabOneRunConsumptionOverview {
   consumedText: string;
   elapsedSeconds: number | null;
   durationText: string;
+  compactDurationText: string;
   avgRate: number | null;
   currentRate: number;
   peakRate: number;
@@ -291,6 +293,7 @@ export function describeColabOneRunConsumption(
       consumedText: "-- CU",
       elapsedSeconds: null,
       durationText: "",
+      compactDurationText: "",
       avgRate: null,
       currentRate: 0,
       peakRate: 0,
@@ -403,6 +406,7 @@ export function describeColabOneRunConsumption(
       durationText: formatColabOneDuration(elapsedSeconds, {
         precision: "integer",
       }),
+      compactDurationText: formatColabOneCompactRunDuration(elapsedSeconds),
       avgRate,
       currentRate: effectiveRate,
       peakRate,
@@ -431,6 +435,7 @@ export function describeColabOneRunConsumption(
       consumedText: "0.00 CU",
       elapsedSeconds: null,
       durationText: "",
+      compactDurationText: "",
       avgRate: null,
       currentRate: liveAccountRate,
       peakRate: liveAccountRate,
@@ -469,6 +474,7 @@ export function describeColabOneRunConsumption(
       durationText: formatColabOneDuration(elapsedSeconds, {
         precision: "integer",
       }),
+      compactDurationText: formatColabOneCompactRunDuration(elapsedSeconds),
       avgRate,
       currentRate: 0,
       peakRate: finiteNonNeg(run.peak_rate) ?? 0,
@@ -495,6 +501,7 @@ export function describeColabOneRunConsumption(
     consumedText: "0.00 CU",
     elapsedSeconds: null,
     durationText: "",
+    compactDurationText: "",
     avgRate: null,
     currentRate: 0,
     peakRate: 0,
@@ -504,6 +511,78 @@ export function describeColabOneRunConsumption(
     interpolating: false,
     balanceDepleted: false,
   };
+}
+
+export function formatColabOneCompactRunDuration(
+  seconds: number | null | undefined,
+  locale?: ColabOneLocale,
+): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) {
+    return "";
+  }
+  const totalSeconds = Math.floor(Math.max(0, seconds));
+  if (totalSeconds < 60) {
+    return t("common.secondsShort", { value: totalSeconds }, locale);
+  }
+  if (totalSeconds < 3600) {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return t(
+      "common.minutesSeconds",
+      { minutes: mins, seconds: String(secs).padStart(2, "0") },
+      locale,
+    );
+  }
+  if (totalSeconds < 86400) {
+    const hours = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    return t(
+      "common.hoursMinutesShort",
+      { hours, minutes: String(mins).padStart(2, "0") },
+      locale,
+    );
+  }
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  return t("common.daysHours", { days, hours }, locale);
+}
+
+export function formatColabOneRunClock(
+  epochSeconds: number | null | undefined,
+  nowMs: number = Date.now(),
+  locale: string = colabOneLocaleCode.value,
+): string {
+  if (
+    typeof epochSeconds !== "number" ||
+    !Number.isFinite(epochSeconds) ||
+    epochSeconds <= 0
+  ) {
+    return "";
+  }
+  const date = new Date(epochSeconds * 1000);
+  if (!Number.isFinite(date.getTime())) {
+    return "";
+  }
+  const refDate = Number.isFinite(nowMs) ? new Date(nowMs) : new Date();
+  const sameDay =
+    date.getFullYear() === refDate.getFullYear() &&
+    date.getMonth() === refDate.getMonth() &&
+    date.getDate() === refDate.getDate();
+  if (sameDay) {
+    return date.toLocaleTimeString(locale, {
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+  return date.toLocaleString(locale, {
+    hourCycle: "h23",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export function formatIdlePolicyLabel(minutes?: number): string {

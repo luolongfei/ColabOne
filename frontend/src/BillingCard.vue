@@ -19,6 +19,7 @@ import {
   COLABONE_IDLE_RELEASE_OPTIONS,
   describeColabOneBilling,
   describeColabOneRunConsumption,
+  formatColabOneRunClock,
   formatCountdownClock,
   formatIdlePolicyLabel,
 } from "./billing";
@@ -97,6 +98,33 @@ const runAriaLabel = computed(() =>
     title: runInlineLabel.value,
     consumed: runOverview.value.consumedText,
   }),
+);
+
+const showInlineRunDuration = computed(
+  () => showInlineRunLine.value && Boolean(runOverview.value.durationText),
+);
+
+const runDurationInlineLabel = computed(() =>
+  runOverview.value.phase === "completed"
+    ? t("billing.barLastRunDuration")
+    : t("billing.cardRunDuration"),
+);
+
+const runDurationAriaLabel = computed(() =>
+  t("billing.runDurationAria", {
+    title: runDurationInlineLabel.value,
+    duration: runOverview.value.durationText,
+  }),
+);
+
+const runStartedAtText = computed(() =>
+  formatColabOneRunClock(runOverview.value.startedAt, props.nowMs),
+);
+
+const runEndedAtText = computed(() =>
+  runOverview.value.phase === "completed"
+    ? formatColabOneRunClock(runOverview.value.endedAt, props.nowMs)
+    : "",
 );
 
 const skeleton = computed(() =>
@@ -707,6 +735,70 @@ function onIdleMinutesChange(event: Event) {
             :class="['co-metric-sub co-sk-reveal', `co-sub-${enduranceTone}`]"
             :title="enduranceSubtitle"
           >{{ enduranceSubtitle }}</small>
+          <ColabOneTooltip
+            v-if="showInlineRunDuration && !skeleton.run"
+            :disabled="!showRunTooltip"
+            placement="bottom"
+          >
+            <template #title>
+              <div v-if="showRunTooltip" class="co-bc-run-tip">
+                <div class="co-bc-run-tip-title">
+                  {{
+                    runOverview.phase === "running"
+                      ? t("billing.runTipTitleCurrent")
+                      : t("billing.runTipTitleLast")
+                  }}
+                </div>
+                <div v-if="runStartedAtText" class="co-bc-run-tip-row">
+                  <span>{{ t("billing.runTipStartedAt") }}</span>
+                  <b>{{ runStartedAtText }}</b>
+                </div>
+                <div v-if="runEndedAtText" class="co-bc-run-tip-row">
+                  <span>{{ t("billing.runTipEndedAt") }}</span>
+                  <b>{{ runEndedAtText }}</b>
+                </div>
+                <div class="co-bc-run-tip-row">
+                  <span>{{
+                    runOverview.phase === "running"
+                      ? t("billing.barRunDuration")
+                      : t("billing.barLastRunDuration")
+                  }}</span>
+                  <b>{{ runOverview.durationText }}</b>
+                </div>
+                <div class="co-bc-run-tip-row">
+                  <span>{{ runInlineLabel }}</span>
+                  <b>{{ runOverview.consumedText }}</b>
+                </div>
+                <div v-if="runOverview.avgRate !== null" class="co-bc-run-tip-row">
+                  <span>{{ t("billing.runTipAvgRate") }}</span>
+                  <b>{{
+                    t("billing.rateValue", {
+                      rate: runOverview.avgRate.toFixed(2),
+                    })
+                  }}</b>
+                </div>
+              </div>
+            </template>
+
+            <div
+              class="co-bc-run-inline co-bc-run-duration-inline co-sk-reveal"
+              data-testid="billing-run-duration-inline"
+              :aria-label="runDurationAriaLabel"
+            >
+              <span class="co-bc-run-inline-label">{{
+                runDurationInlineLabel
+              }}</span>
+              <span
+                class="co-bc-run-inline-val"
+                :class="{
+                  'is-duration-active': runOverview.phase === 'running',
+                  'is-completed': runOverview.phase === 'completed',
+                }"
+                data-testid="billing-run-duration"
+                >{{ runOverview.durationText }}</span
+              >
+            </div>
+          </ColabOneTooltip>
         </template>
       </div>
 
@@ -1212,7 +1304,7 @@ function onIdleMinutesChange(event: Event) {
   color: var(--co-warning-text);
 }
 
-/* Compact Inline Current/Last Run CU Readout Inside Burn Rate Cell */
+/* Compact Inline Current/Last Run CU & Duration Readouts */
 .co-bc-run-inline {
   margin-top: 4px;
   display: inline-flex;
@@ -1224,6 +1316,11 @@ function onIdleMinutesChange(event: Event) {
   cursor: default;
   max-width: 100%;
   white-space: nowrap;
+}
+
+.co-bc-run-duration-inline {
+  flex-wrap: wrap;
+  row-gap: 0;
 }
 
 .co-bc-run-inline-label {
@@ -1239,6 +1336,10 @@ function onIdleMinutesChange(event: Event) {
 
 .co-bc-run-inline-val.is-active {
   color: var(--co-warning-text);
+}
+
+.co-bc-run-inline-val.is-duration-active {
+  color: var(--co-success-text);
 }
 
 .co-bc-run-inline-val.is-syncing {

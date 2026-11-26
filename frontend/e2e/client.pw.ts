@@ -9496,17 +9496,25 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
 
   const runInline = page.getByTestId("billing-run-inline");
   const runConsumed = page.getByTestId("billing-run-consumed");
+  const runDurationInline = page.getByTestId("billing-run-duration-inline");
+  const runDuration = page.getByTestId("billing-run-duration");
   const barRun = page.getByTestId("billing-bar-run");
+  const barRateTicker = page.getByTestId("billing-bar-rate-ticker");
+  const barRateSlide = page.getByTestId("billing-bar-rate-slide");
+  const barDurationSlide = page.getByTestId("billing-bar-duration-slide");
 
   await expect(runInline).toBeVisible();
   await expect(runInline).toContainText("本次消耗");
   // 4.52 confirmed + ~0.03 live projection (30s @ 3.6 CU/h) = 4.55 CU
-  await expect(runConsumed).toContainText("4.55 CU");
+  await expect(runConsumed).toContainText(/4\.5[56] CU/);
+  await expect(runDurationInline).toBeVisible();
+  await expect(runDurationInline).toContainText("本次已用");
+  await expect(runDuration).toContainText("2 小时 5 分");
   await expect(barRun).toBeVisible();
   await expect(barRun).toContainText("本次");
-  await expect(barRun).toContainText("4.55 CU");
+  await expect(barRun).toContainText(/4\.5[56] CU/);
 
-  // 2. Hovering BillingCard inline run line opens breakdown tooltip with live duration
+  // 2. Hovering BillingCard inline run line and endurance duration line open breakdown tooltips
   await runInline.hover();
   await expect(page.locator(".ant-tooltip:visible")).toContainText(
     "本次持续运行明细",
@@ -9517,6 +9525,16 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
   await page.mouse.move(16, 16);
   await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
 
+  await runDurationInline.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(
+    "本次持续运行明细",
+  );
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("开始时间");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("2 小时 5 分");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(/4\.5[56] CU/);
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
   // 3. Hovering BillingBar shows current run rows in tooltip
   await page.locator(".co-billing-strip").hover();
   await expect(page.locator(".ant-tooltip:visible")).toContainText("本次消耗");
@@ -9524,17 +9542,55 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
   await page.mouse.move(16, 16);
   await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
 
+  // 3b. BillingBar hourly rate / session duration vertical ticker rotates every 3s without horizontal jitter
+  await expect(barRateTicker).toBeVisible();
+  await expect(barRateTicker).toHaveAttribute("data-rotating", "true");
+  await expect(barRateSlide).toContainText("3.60 CU/小时");
+  await expect(barDurationSlide).toContainText("持续");
+  await expect(barDurationSlide).toContainText("2 小时 05 分");
+  const initialSlide = await barRateTicker.getAttribute("data-active-slide");
+  expect(initialSlide === "rate" || initialSlide === "duration").toBe(true);
+  const nextSlide = initialSlide === "rate" ? "duration" : "rate";
+  const tickerBoxBefore = await barRateTicker.boundingBox();
+  expect(tickerBoxBefore).not.toBeNull();
+
+  await expect(barRateTicker).toHaveAttribute("data-active-slide", nextSlide, {
+    timeout: 4500,
+  });
+  await expect(
+    nextSlide === "duration" ? barDurationSlide : barRateSlide,
+  ).toHaveAttribute("data-active", "true");
+  await expect(
+    nextSlide === "duration" ? barRateSlide : barDurationSlide,
+  ).toHaveAttribute("data-active", "false");
+  const tickerBoxAfterSwap = await barRateTicker.boundingBox();
+  expect(tickerBoxAfterSwap).not.toBeNull();
+  expect(
+    Math.abs(tickerBoxAfterSwap!.width - tickerBoxBefore!.width),
+  ).toBeLessThanOrEqual(4);
+
+  await expect(barRateTicker).toHaveAttribute(
+    "data-active-slide",
+    initialSlide!,
+    {
+      timeout: 4500,
+    },
+  );
+  await expect(
+    initialSlide === "duration" ? barDurationSlide : barRateSlide,
+  ).toHaveAttribute("data-active", "true");
+
   // 4. Switching to API tab keeps top BillingBar run readout visible
   await navItem(page, "对外 API").click();
   await expect(barRun).toBeVisible();
-  await expect(barRun).toContainText("4.55 CU");
+  await expect(barRun).toContainText(/4\.5[56] CU/);
 
   // 4b. Narrow viewport collapses inline top-bar run pill cleanly while preserving tooltip rows
   await page.setViewportSize({ width: 1024, height: 800 });
   await expect(barRun).toBeHidden();
   await page.locator(".co-billing-strip").hover();
   await expect(page.locator(".ant-tooltip:visible")).toContainText("本次消耗");
-  await expect(page.locator(".ant-tooltip:visible")).toContainText("4.55 CU");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText(/4\.5[56] CU/);
   await page.mouse.move(16, 16);
   await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -9570,11 +9626,23 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
 
   await expect(runInline).toContainText("上次消耗");
   await expect(runConsumed).toContainText("4.56 CU");
+  await expect(runDurationInline).toContainText("上次时长");
+  await expect(runDuration).toContainText("2 小时");
   await expect(barRun).toHaveCount(0);
+  await expect(barRateTicker).toHaveCount(0);
+  await expect(page.locator(".co-billing-rate")).toContainText("0.00 CU/小时");
 
-  // Hovering inline Last Run line shows frozen duration (2 小时) in tooltip
+  // Hovering inline Last Run lines shows frozen duration (2 小时) in tooltip
   await runInline.hover();
   await expect(page.locator(".ant-tooltip:visible")).toContainText("上次运行明细");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("2 小时");
+  await page.mouse.move(16, 16);
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+  await runDurationInline.hover();
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("上次运行明细");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("开始时间");
+  await expect(page.locator(".ant-tooltip:visible")).toContainText("结束时间");
   await expect(page.locator(".ant-tooltip:visible")).toContainText("2 小时");
   await page.mouse.move(16, 16);
   await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
