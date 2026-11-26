@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -122,6 +123,10 @@ type ColabOneDriveOutputRecord struct {
 	SHA256               string  `json:"sha256,omitempty"`
 	CreatedAt            float64 `json:"created_at"`
 	Elapsed              float64 `json:"elapsed"`
+	CUConsumed           float64 `json:"cu_consumed,omitempty"`
+	CURate               float64 `json:"cu_rate,omitempty"`
+	GPUName              string  `json:"gpu_name,omitempty"`
+	CUEstimated          bool    `json:"cu_estimated,omitempty"`
 	PromptID             string  `json:"prompt_id,omitempty"`
 	DriveSynced          bool    `json:"drive_synced"`
 	DriveExported        bool    `json:"drive_exported,omitempty"`
@@ -171,7 +176,7 @@ func (r *ColabOneDriveOutputRecord) toOutputMap(storage string, canDirectRead bo
 		return nil
 	}
 	fileID := r.preferredDriveFileID()
-	previewable := storage == "runtime" || (canDirectRead && fileID != "")
+	previewable := storage == "runtime" || (canDirectRead && (fileID != "" || (r.DriveSynced && r.DriveMode != "colab_drivefs")))
 	out := map[string]any{
 		"id":                r.ID,
 		"workflow_id":       r.WorkflowID,
@@ -187,6 +192,18 @@ func (r *ColabOneDriveOutputRecord) toOutputMap(storage string, canDirectRead bo
 		"drive_synced":      r.DriveSynced,
 		"drive_exported":    r.DriveExported,
 		"drive_previewable": previewable,
+	}
+	if r.CUConsumed > 0 {
+		out["cu_consumed"] = colabOneRoundCU(r.CUConsumed)
+		if r.CURate > 0 {
+			out["cu_rate"] = colabOneRoundCU(r.CURate)
+		}
+		if r.GPUName != "" {
+			out["gpu_name"] = r.GPUName
+		}
+		if r.CUEstimated {
+			out["cu_estimated"] = true
+		}
 	}
 	if r.SHA256 != "" {
 		out["sha256"] = r.SHA256
@@ -438,6 +455,16 @@ func driveOutputRecordFromMap(raw map[string]any) *ColabOneDriveOutputRecord {
 	size, _ := asInt64(raw["size"])
 	createdAt, _ := asFloat(raw["created_at"])
 	elapsed, _ := asFloat(raw["elapsed"])
+	cuConsumed, _ := asFloat(raw["cu_consumed"])
+	if cuConsumed < 0 {
+		cuConsumed = 0
+	}
+	cuRate, _ := asFloat(raw["cu_rate"])
+	if cuRate < 0 {
+		cuRate = 0
+	}
+	gpuName := strings.TrimSpace(asString(raw["gpu_name"]))
+	cuEstimated := asBool(raw["cu_estimated"])
 	fname := strings.TrimSpace(asString(raw["filename"]))
 	if fname == "" {
 		fname = id + "." + ext
@@ -454,6 +481,10 @@ func driveOutputRecordFromMap(raw map[string]any) *ColabOneDriveOutputRecord {
 		SHA256:       sanitizeDriveSHA256(asString(raw["sha256"])),
 		CreatedAt:    createdAt,
 		Elapsed:      elapsed,
+		CUConsumed:   colabOneRoundCU(cuConsumed),
+		CURate:       colabOneRoundCU(cuRate),
+		GPUName:      gpuName,
+		CUEstimated:  cuEstimated,
 		PromptID:     strings.TrimSpace(asString(raw["prompt_id"])),
 		DriveSynced:  true,
 	}
@@ -489,6 +520,23 @@ func mergeDriveOutputRecord(dst, src *ColabOneDriveOutputRecord) bool {
 	}
 	if src.Elapsed > 0 && dst.Elapsed == 0 {
 		dst.Elapsed = src.Elapsed
+		changed = true
+	}
+	if src.CUConsumed > 0 && (dst.CUConsumed <= 0 || (dst.CUEstimated && !src.CUEstimated)) {
+		upgradingFromEst := dst.CUEstimated && !src.CUEstimated
+		dst.CUConsumed = colabOneRoundCU(src.CUConsumed)
+		dst.CUEstimated = src.CUEstimated
+		if upgradingFromEst && src.CURate > 0 {
+			dst.CURate = colabOneRoundCU(src.CURate)
+		}
+		changed = true
+	}
+	if src.CURate > 0 && dst.CURate <= 0 {
+		dst.CURate = colabOneRoundCU(src.CURate)
+		changed = true
+	}
+	if dst.GPUName == "" && src.GPUName != "" {
+		dst.GPUName = src.GPUName
 		changed = true
 	}
 	setStr(&dst.PromptID, src.PromptID)
@@ -539,11 +587,124 @@ func pruneDriveOutputsBucketLocked(bucket map[string]*ColabOneDriveOutputRecord)
 	}
 }
 
+type colabOneOutputBillingContext struct {
+	Email        string
+	Rate         float64
+	Assignments  int
+	GPUName      string
+	RTReady      bool
+	RTStartedAt  float64
+	RunStartedAt float64
+	Now          float64
+}
+
+func (c *ColabOneController) currentOutputBillingContext(rt map[string]any) colabOneOutputBillingContext {
+	c.mu.Lock()
+	acct := asMap(c.data["account"])
+	email := strings.ToLower(strings.TrimSpace(asString(acct["email"])))
+	rate, _ := asFloat(acct["rate"])
+	assignments, _ := asInt(acct["assignments"])
+	c.mu.Unlock()
+
+	if email == "" && c.vault != nil {
+		if profVal, ok := c.vault.Get("google_profile"); ok {
+			if prof := asMap(profVal); prof != nil {
+				email = strings.ToLower(strings.TrimSpace(asString(prof["email"])))
+			}
+		}
+	}
+	if rate < 0 {
+		rate = 0
+	}
+	if assignments < 0 {
+		assignments = 0
+	}
+	gpuName := ""
+	rtReady := false
+	rtStartedAt := 0.0
+	if rt != nil {
+		rtReady = asString(rt["state"]) == "ready"
+		if gpuMap := asMap(rt["gpu"]); gpuMap != nil {
+			gpuName = strings.TrimSpace(asString(gpuMap["name"]))
+		}
+		if st, ok := asFloat(rt["started_at"]); ok && st > 0 {
+			rtStartedAt = st
+		}
+	}
+	runStartedAt := 0.0
+	if c.cuUsage != nil {
+		runStartedAt = c.cuUsage.ActiveRunStartedAt(email)
+	}
+	return colabOneOutputBillingContext{
+		Email:        email,
+		Rate:         rate,
+		Assignments:  assignments,
+		GPUName:      gpuName,
+		RTReady:      rtReady,
+		RTStartedAt:  rtStartedAt,
+		RunStartedAt: runStartedAt,
+		Now:          nowUnixFloat(),
+	}
+}
+
+func (c *ColabOneController) resolveOutputCU(
+	bctx colabOneOutputBillingContext,
+	createdAt, elapsed float64,
+	isLiveRuntimeOutput bool,
+) (cu float64, rate float64, gpuName string, estimated bool, ok bool) {
+	if elapsed <= 0 {
+		return 0, 0, "", false, false
+	}
+	// Only attribute the currently attached GPU name or live account burn rate to outputs
+	// produced during the current runtime session — never to older outputs restored from Drive workspace.
+	// Prefer the remote VM's authoritative started_at when available; fall back to cuUsage's active
+	// run start (with 5 min tolerance for billing API startup lag) or recent-window check.
+	isFromCurrentSession := false
+	if isLiveRuntimeOutput && bctx.RTReady && createdAt > 0 {
+		switch {
+		case bctx.RTStartedAt > 0:
+			isFromCurrentSession = createdAt >= bctx.RTStartedAt-120.0
+		case bctx.RunStartedAt > 0:
+			isFromCurrentSession = createdAt >= bctx.RunStartedAt-300.0
+		default:
+			now := bctx.Now
+			if now <= 0 {
+				now = nowUnixFloat()
+			}
+			isFromCurrentSession = math.Abs(now-createdAt) <= elapsed+600.0
+		}
+	}
+	if c.cuUsage != nil && createdAt > 0 {
+		startTS := createdAt - elapsed
+		if estCU, avgRate, estFlag, found := c.cuUsage.EstimateWindowCU(bctx.Email, startTS, createdAt); found && estCU > 0 {
+			gn := ""
+			if isFromCurrentSession {
+				gn = bctx.GPUName
+			}
+			return estCU, avgRate, gn, estFlag, true
+		}
+	}
+	if isFromCurrentSession && bctx.Rate > colabOneCUEpsilon {
+		effRate := bctx.Rate
+		est := false
+		if bctx.Assignments > 1 {
+			effRate = bctx.Rate / float64(bctx.Assignments)
+			est = true
+		}
+		calcCU := colabOneRoundCU(effRate * elapsed / 3600.0)
+		if calcCU > 0 {
+			return calcCU, colabOneRoundCU(effRate), bctx.GPUName, est, true
+		}
+	}
+	return 0, 0, "", false, false
+}
+
 func (c *ColabOneController) recordSyncedRemoteOutputs(rt map[string]any, rawOutputs []any) {
 	driveMap := asMap(rt["drive"])
 	if driveMap == nil || !asBool(driveMap["connected"]) {
 		return
 	}
+	bctx := c.currentOutputBillingContext(rt)
 	remoteFolder := strings.TrimSpace(asString(driveMap["remote_folder"]))
 	if remoteFolder == "" {
 		remoteFolder = colabOneDriveFolderName
@@ -566,6 +727,26 @@ func (c *ColabOneController) recordSyncedRemoteOutputs(rt map[string]any, rawOut
 	}
 
 	now := nowUnixFloat()
+	// Pre-compute CU attribution outside c.mu (cuUsage has its own mutex hierarchy).
+	parsedRecords := make([]*ColabOneDriveOutputRecord, 0, len(rawOutputs))
+	for _, rawItem := range rawOutputs {
+		rec := driveOutputRecordFromMap(asMap(rawItem))
+		if rec == nil {
+			continue
+		}
+		if rec.CUConsumed <= 0 && rec.Elapsed > 0 {
+			if cu, rate, gn, est, ok := c.resolveOutputCU(bctx, rec.CreatedAt, rec.Elapsed, true); ok {
+				rec.CUConsumed = cu
+				rec.CURate = rate
+				if gn != "" {
+					rec.GPUName = gn
+				}
+				rec.CUEstimated = est
+			}
+		}
+		parsedRecords = append(parsedRecords, rec)
+	}
+
 	c.mu.Lock()
 	acctKey := c.currentDriveAccountKeyLocked()
 	if acctKey == "" {
@@ -581,11 +762,7 @@ func (c *ColabOneController) recordSyncedRemoteOutputs(rt map[string]any, rawOut
 		c.driveOutputs[acctKey] = bucket
 	}
 	changed := false
-	for _, rawItem := range rawOutputs {
-		rec := driveOutputRecordFromMap(asMap(rawItem))
-		if rec == nil {
-			continue
-		}
+	for _, rec := range parsedRecords {
 		rec.DriveSynced = true
 		rec.DriveMode = driveMode
 		rec.DriveFolder = remoteFolder + "/" + colabOneDriveWorkspaceSubdir + "/" + colabOneDriveComfyOutputsSubdir
@@ -637,11 +814,7 @@ func (c *ColabOneController) recordExportedDriveOutput(identity string, exportRe
 	now := nowUnixFloat()
 
 	c.mu.Lock()
-	acctKey := c.currentDriveAccountKeyLocked()
-	if acctKey == "" {
-		c.mu.Unlock()
-		return
-	}
+	rtSnap := deepCopyMap(asMap(c.data["runtime"]))
 	var liveRec *ColabOneDriveOutputRecord
 	for _, rawItem := range asAnySlice(c.data["comfy_outputs"]) {
 		m := asMap(rawItem)
@@ -649,6 +822,26 @@ func (c *ColabOneController) recordExportedDriveOutput(identity string, exportRe
 			liveRec = driveOutputRecordFromMap(m)
 			break
 		}
+	}
+	c.mu.Unlock()
+
+	if liveRec != nil && liveRec.CUConsumed <= 0 && liveRec.Elapsed > 0 {
+		bctx := c.currentOutputBillingContext(rtSnap)
+		if cu, rate, gn, est, ok := c.resolveOutputCU(bctx, liveRec.CreatedAt, liveRec.Elapsed, true); ok {
+			liveRec.CUConsumed = cu
+			liveRec.CURate = rate
+			if gn != "" {
+				liveRec.GPUName = gn
+			}
+			liveRec.CUEstimated = est
+		}
+	}
+
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	if acctKey == "" {
+		c.mu.Unlock()
+		return
 	}
 	if c.driveOutputs == nil {
 		c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
@@ -780,16 +973,60 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 
 	rtState := asString(rt["state"])
 	driveConnected := asBool(asMap(rt["drive"])["connected"])
+	bctx := c.currentOutputBillingContext(rt)
 
-	// When a remote GPU is ready, return live outputs (enriched with Drive linkage metadata)
+	applyOutputCU := func(m map[string]any, rec *ColabOneDriveOutputRecord, isLive bool) {
+		if m == nil {
+			return
+		}
+		if existingCU, ok := asFloat(m["cu_consumed"]); ok && existingCU > 0 {
+			return
+		}
+		if rec != nil && rec.CUConsumed > 0 {
+			m["cu_consumed"] = colabOneRoundCU(rec.CUConsumed)
+			if rec.CURate > 0 {
+				m["cu_rate"] = colabOneRoundCU(rec.CURate)
+			}
+			if rec.GPUName != "" {
+				m["gpu_name"] = rec.GPUName
+			}
+			if rec.CUEstimated {
+				m["cu_estimated"] = true
+			}
+			return
+		}
+		createdAt, _ := asFloat(m["created_at"])
+		elapsed, _ := asFloat(m["elapsed"])
+		if cu, rate, gn, est, ok := c.resolveOutputCU(bctx, createdAt, elapsed, isLive); ok {
+			m["cu_consumed"] = cu
+			if rate > 0 {
+				m["cu_rate"] = rate
+			}
+			if gn != "" {
+				m["gpu_name"] = gn
+			}
+			if est {
+				m["cu_estimated"] = true
+			}
+		}
+	}
+
+	sortOutputMaps := func(items []any) {
+		sort.SliceStable(items, func(i, j int) bool {
+			mi := asMap(items[i])
+			mj := asMap(items[j])
+			ci, _ := asFloat(mi["created_at"])
+			cj, _ := asFloat(mj["created_at"])
+			if ci != cj {
+				return ci > cj
+			}
+			return asString(mi["id"]) < asString(mj["id"])
+		})
+	}
+
+	// When a remote GPU is ready, return live outputs (enriched with Drive linkage and CU metadata)
 	// plus any Drive-only archived outputs not currently on the remote VM.
 	if rtState == "ready" {
-		if len(saved) == 0 && !driveConnected {
-			if liveOutputs == nil {
-				return []any{}, statusMap
-			}
-			return liveOutputs, statusMap
-		}
 		result := make([]any, 0, len(liveOutputs)+len(saved))
 		seen := make(map[string]bool, len(liveOutputs))
 		for _, rawItem := range liveOutputs {
@@ -803,7 +1040,8 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 			}
 			m["storage"] = "runtime"
 			m["drive_previewable"] = true
-			if rec := savedByID[id]; rec != nil {
+			rec := savedByID[id]
+			if rec != nil {
 				m["drive_synced"] = rec.DriveSynced || driveConnected
 				m["drive_exported"] = rec.DriveExported
 				if rec.DrivePath != "" {
@@ -824,12 +1062,12 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 			} else if driveConnected {
 				m["drive_synced"] = true
 			}
+			applyOutputCU(m, rec, true)
 			result = append(result, m)
 		}
 		// Append Drive-persisted items not already present on the active remote VM.
 		// When Drive is already connected on this GPU, avoid resurrecting workspace-only
 		// items deleted elsewhere; still surface archived ColabOne_Drive/outputs exports.
-		var driveOnly []*ColabOneDriveOutputRecord
 		for _, rec := range saved {
 			if seen[rec.ID] {
 				continue
@@ -837,17 +1075,11 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 			if driveConnected && !rec.DriveExported {
 				continue
 			}
-			driveOnly = append(driveOnly, rec)
+			m := rec.toOutputMap("drive", canDirectRead)
+			applyOutputCU(m, rec, false)
+			result = append(result, m)
 		}
-		sort.SliceStable(driveOnly, func(i, j int) bool {
-			if driveOnly[i].CreatedAt != driveOnly[j].CreatedAt {
-				return driveOnly[i].CreatedAt > driveOnly[j].CreatedAt
-			}
-			return driveOnly[i].ID < driveOnly[j].ID
-		})
-		for _, rec := range driveOnly {
-			result = append(result, rec.toOutputMap("drive", canDirectRead))
-		}
+		sortOutputMaps(result)
 		return result, statusMap
 	}
 
@@ -863,7 +1095,9 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 	})
 	result := make([]any, 0, len(saved))
 	for _, rec := range saved {
-		result = append(result, rec.toOutputMap("drive", canDirectRead))
+		m := rec.toOutputMap("drive", canDirectRead)
+		applyOutputCU(m, rec, false)
+		result = append(result, m)
 	}
 	return result, statusMap
 }
@@ -895,6 +1129,7 @@ type driveAPIFile struct {
 	Name           string `json:"name"`
 	MimeType       string `json:"mimeType"`
 	Size           string `json:"size"`
+	CreatedTime    string `json:"createdTime"`
 	ModifiedTime   string `json:"modifiedTime"`
 	SHA256Checksum string `json:"sha256Checksum"`
 	WebViewLink    string `json:"webViewLink"`
@@ -908,18 +1143,25 @@ func (f driveAPIFile) sizeBytes() int64 {
 	return n
 }
 
-func (f driveAPIFile) modifiedUnix() float64 {
-	raw := strings.TrimSpace(f.ModifiedTime)
-	if raw == "" {
+func parseDriveRFC3339Unix(raw string) float64 {
+	s := strings.TrimSpace(raw)
+	if s == "" {
 		return 0
 	}
-	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
 		return float64(t.UnixNano()) / 1e9
 	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return float64(t.Unix())
 	}
 	return 0
+}
+
+func (f driveAPIFile) createdOrModifiedUnix() float64 {
+	if ts := parseDriveRFC3339Unix(f.CreatedTime); ts > 0 {
+		return ts
+	}
+	return parseDriveRFC3339Unix(f.ModifiedTime)
 }
 
 func escapeDriveQueryLiteral(val string) string {
@@ -1006,7 +1248,7 @@ func (c *ColabOneController) driveListChildFiles(
 	pageToken := ""
 	for page := 0; page < 5; page++ {
 		u := c.driveAPIBase() + "/files?q=" + url.QueryEscape(q) +
-			"&fields=nextPageToken,files(id,name,mimeType,size,modifiedTime,sha256Checksum,webViewLink)&pageSize=200&spaces=drive"
+			"&fields=nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,sha256Checksum,webViewLink)&pageSize=200&spaces=drive"
 		if pageToken != "" {
 			u += "&pageToken=" + url.QueryEscape(pageToken)
 		}
@@ -1100,6 +1342,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 
 	discovered := make(map[string]*ColabOneDriveOutputRecord)
 	now := nowUnixFloat()
+	bctx := c.currentOutputBillingContext(nil)
 
 	// Snapshot existing records so we can reuse parsed workspace metadata JSON without re-downloading.
 	c.mu.Lock()
@@ -1168,6 +1411,10 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 							SHA256:       sanitizeDriveSHA256(prev.SHA256),
 							CreatedAt:    prev.CreatedAt,
 							Elapsed:      prev.Elapsed,
+							CUConsumed:   prev.CUConsumed,
+							CURate:       prev.CURate,
+							GPUName:      prev.GPUName,
+							CUEstimated:  prev.CUEstimated,
 							PromptID:     prev.PromptID,
 							DriveSynced:  true,
 						}
@@ -1190,7 +1437,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 							Extension:    ext,
 							Mime:         km[1],
 							Size:         assetSize,
-							CreatedAt:    asset.modifiedUnix(),
+							CreatedAt:    asset.createdOrModifiedUnix(),
 						}
 					}
 					rec.Size = assetSize
@@ -1198,7 +1445,29 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 						rec.SHA256 = sha
 					}
 					if rec.CreatedAt <= 0 {
-						rec.CreatedAt = asset.modifiedUnix()
+						rec.CreatedAt = asset.createdOrModifiedUnix()
+					}
+					if prev := existingSnap[id]; prev != nil {
+						if rec.CUConsumed <= 0 && prev.CUConsumed > 0 {
+							rec.CUConsumed = prev.CUConsumed
+							rec.CUEstimated = prev.CUEstimated
+						}
+						if rec.CURate <= 0 && prev.CURate > 0 {
+							rec.CURate = prev.CURate
+						}
+						if rec.GPUName == "" && prev.GPUName != "" {
+							rec.GPUName = prev.GPUName
+						}
+					}
+					if rec.CUConsumed <= 0 && rec.Elapsed > 0 && rec.CreatedAt > 0 {
+						if cu, rate, gn, est, ok := c.resolveOutputCU(bctx, rec.CreatedAt, rec.Elapsed, false); ok {
+							rec.CUConsumed = cu
+							rec.CURate = rate
+							if gn != "" {
+								rec.GPUName = gn
+							}
+							rec.CUEstimated = est
+						}
 					}
 					rec.DriveSynced = true
 					rec.DriveWorkspaceFileID = sanitizeDriveFileID(asset.ID)
@@ -1241,6 +1510,28 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					}
 				}
 			}
+			// Also index existing exported records that may not have a workspace copy
+			// so re-syncing outputs/ preserves their original output ID, CU, elapsed,
+			// workflow name, and creation time without creating duplicate cards.
+			prevByExportFileID := make(map[string]*ColabOneDriveOutputRecord, len(existingSnap))
+			prevExportedBySHA := make(map[string]*ColabOneDriveOutputRecord, len(existingSnap))
+			prevExportedByNameSize := make(map[string]*ColabOneDriveOutputRecord, len(existingSnap))
+			for _, prev := range existingSnap {
+				if prev == nil {
+					continue
+				}
+				if pfid := sanitizeDriveFileID(prev.DriveFileID); pfid != "" {
+					prevByExportFileID[pfid] = prev
+				}
+				if prev.DriveExported {
+					if psha := sanitizeDriveSHA256(prev.SHA256); psha != "" {
+						prevExportedBySHA[psha] = prev
+					}
+					if sanitizeDriveFileID(prev.DriveFileID) == "" && prev.Filename != "" && prev.Size > 0 {
+						prevExportedByNameSize[strings.ToLower(prev.Filename)+"|"+strconv.FormatInt(prev.Size, 10)] = prev
+					}
+				}
+			}
 			for _, f := range outFiles {
 				name := strings.TrimSpace(f.Name)
 				if name == "" || strings.HasPrefix(name, ".") {
@@ -1260,6 +1551,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					continue
 				}
 				sha := sanitizeDriveSHA256(f.SHA256Checksum)
+				nameSizeKey := strings.ToLower(name) + "|" + strconv.FormatInt(sz, 10)
 				var matched *ColabOneDriveOutputRecord
 				if m := byPrevExportID[fid]; m != nil {
 					matched = m
@@ -1268,7 +1560,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					matched = bySHA[sha]
 				}
 				if matched == nil {
-					matched = byNameSize[strings.ToLower(name)+"|"+strconv.FormatInt(sz, 10)]
+					matched = byNameSize[nameSizeKey]
 				}
 				if matched != nil {
 					matched.DriveExported = true
@@ -1282,8 +1574,25 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					continue
 				}
 				synthID := syntheticDriveOutputID(fid)
+				prev := existingSnap[synthID]
+				if prev == nil {
+					prev = prevByExportFileID[fid]
+				}
+				if prev == nil && sha != "" {
+					prev = prevExportedBySHA[sha]
+				}
+				if prev == nil {
+					prev = prevExportedByNameSize[nameSizeKey]
+				}
+				if prev != nil && discovered[prev.ID] != nil {
+					prev = nil
+				}
+				recID := synthID
+				if prev != nil && reHex32ID.MatchString(prev.ID) {
+					recID = prev.ID
+				}
 				rec := &ColabOneDriveOutputRecord{
-					ID:               synthID,
+					ID:               recID,
 					WorkflowID:       "",
 					WorkflowName:     "Google 云盘作品",
 					Kind:             km[0],
@@ -1292,7 +1601,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					Mime:             km[1],
 					Size:             sz,
 					SHA256:           sha,
-					CreatedAt:        f.modifiedUnix(),
+					CreatedAt:        f.createdOrModifiedUnix(),
 					Elapsed:          0,
 					DriveSynced:      true,
 					DriveExported:    true,
@@ -1303,18 +1612,44 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					DriveMode:        "drive_api",
 					SyncedAt:         now,
 				}
-				if prev := existingSnap[synthID]; prev != nil {
+				if prev != nil {
 					if prev.WorkflowName != "" && prev.WorkflowName != "Google 云盘作品" {
 						rec.WorkflowName = prev.WorkflowName
 					}
 					if prev.WorkflowID != "" {
 						rec.WorkflowID = prev.WorkflowID
 					}
+					if prev.CreatedAt > 0 {
+						rec.CreatedAt = prev.CreatedAt
+					}
 					if prev.Elapsed > 0 {
 						rec.Elapsed = prev.Elapsed
 					}
+					if prev.CUConsumed > 0 {
+						rec.CUConsumed = prev.CUConsumed
+						rec.CUEstimated = prev.CUEstimated
+					}
+					if prev.CURate > 0 {
+						rec.CURate = prev.CURate
+					}
+					if prev.GPUName != "" {
+						rec.GPUName = prev.GPUName
+					}
+					if rec.SHA256 == "" && prev.SHA256 != "" {
+						rec.SHA256 = sanitizeDriveSHA256(prev.SHA256)
+					}
 				}
-				discovered[synthID] = rec
+				if rec.CUConsumed <= 0 && rec.Elapsed > 0 && rec.CreatedAt > 0 {
+					if cu, rate, gn, est, ok := c.resolveOutputCU(bctx, rec.CreatedAt, rec.Elapsed, false); ok {
+						rec.CUConsumed = cu
+						rec.CURate = rate
+						if gn != "" {
+							rec.GPUName = gn
+						}
+						rec.CUEstimated = est
+					}
+				}
+				discovered[recID] = rec
 			}
 		}
 	}
@@ -1370,6 +1705,7 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	c.mu.Lock()
 	acctKey := c.currentDriveAccountKeyLocked()
 	var rec *ColabOneDriveOutputRecord
+	lastSynced := c.driveOutputsLastSynced
 	if acctKey != "" && c.driveOutputs != nil {
 		if bucket := c.driveOutputs[acctKey]; bucket != nil {
 			rec = bucket[cleanID].clone()
@@ -1381,6 +1717,22 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	}
 	canDirectRead, quotaProject := c.driveDirectReadReady()
 	fileID := rec.preferredDriveFileID()
+	needOnDemandSync := canDirectRead &&
+		fileID == "" &&
+		rec.DriveMode != "colab_drivefs" &&
+		(lastSynced <= 0 || nowUnixFloat()-lastSynced >= colabOneMediaOnDemandSyncCooldownSec)
+	if needOnDemandSync {
+		if _, syncErr := c.SyncDriveOutputs(ctx); syncErr == nil {
+			c.mu.Lock()
+			if curAcct := c.currentDriveAccountKeyLocked(); curAcct != "" && c.driveOutputs != nil {
+				if bucket := c.driveOutputs[curAcct]; bucket != nil && bucket[cleanID] != nil {
+					rec = bucket[cleanID].clone()
+				}
+			}
+			c.mu.Unlock()
+			fileID = rec.preferredDriveFileID()
+		}
+	}
 	if !canDirectRead || fileID == "" {
 		return nil, errors.New("该作品已保存至 Google 云盘，请点击「在 Google 云盘查看」或开启无感云盘 API 后直接预览")
 	}

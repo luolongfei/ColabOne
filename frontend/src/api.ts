@@ -33,6 +33,7 @@ import {
   colabOneWebLogout,
   colabOneWebOpenDeferredTab,
   colabOneWebOpenExternalURL,
+  colabOneWebOutputPreviewURL,
   colabOneWebSessionExpired,
   colabOneWebSnapshotRaw,
   createColabOneDefaultWebConsoleState,
@@ -143,6 +144,19 @@ export async function colabOneExportWorkflowOutput(id: string): Promise<string> 
     return colabOneWebDownloadOutput(id);
   }
   return ColabOneDesktop.exportWorkflowOutput(id);
+}
+
+export async function colabOneOutputPreviewURL(
+  id: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  if (!isColabOneDesktopRuntime()) {
+    return colabOneWebOutputPreviewURL(id, signal);
+  }
+  return ColabOneDesktop.outputPreviewURL(id);
 }
 
 export async function colabOneOpenComfyCanvas(

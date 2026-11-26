@@ -269,6 +269,10 @@ export interface WorkflowOutput {
   sha256?: string;
   created_at: number;
   elapsed: number;
+  cu_consumed?: number;
+  cu_rate?: number;
+  gpu_name?: string;
+  cu_estimated?: boolean;
   prompt_id?: string;
   storage?: "runtime" | "drive";
   drive_synced?: boolean;

@@ -1584,3 +1584,150 @@ func (s *ColabOneCUUsageStore) Query(req ColabOneCUUsageQuery) map[string]any {
 	}
 	return out
 }
+
+// EstimateWindowCU estimates the Compute Units (CU) consumed by a single GPU runtime
+// over [startTS, endTS] using persisted 30-minute UTC rate/consumption buckets (with
+// active/last run fallback when the window is very recent).
+func (s *ColabOneCUUsageStore) EstimateWindowCU(
+	email string,
+	startTS, endTS float64,
+) (cu float64, avgRate float64, estimated bool, ok bool) {
+	if s == nil {
+		return 0, 0, false, false
+	}
+	cleanStart, okStart := colabOneCleanFloat(startTS)
+	cleanEnd, okEnd := colabOneCleanFloat(endTS)
+	if !okStart || !okEnd || cleanStart <= 0 || cleanEnd <= cleanStart {
+		return 0, 0, false, false
+	}
+	elapsed := cleanEnd - cleanStart
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	accountKey := colabOneCUAccountKey(email)
+	if accountKey == "" {
+		accountKey = s.activeAccountKey
+	}
+	if accountKey == "" {
+		accountKey = colabOneCUDefaultAccountKey
+	}
+	acct := s.accounts[accountKey]
+	if acct == nil {
+		return 0, 0, false, false
+	}
+
+	firstBucket := colabOneCUBucketStart(cleanStart)
+	lastBucket := colabOneCUBucketStart(cleanEnd)
+
+	weightedRateSum := 0.0
+	coveredSec := 0.0
+	anyEstimated := false
+
+	for bTS := firstBucket; bTS <= lastBucket; bTS += colabOneCUBucketSeconds {
+		b := acct.Buckets[bTS]
+		if b == nil {
+			continue
+		}
+		bStart := float64(bTS)
+		bEnd := float64(bTS + colabOneCUBucketSeconds)
+		ovStart := math.Max(cleanStart, bStart)
+		ovEnd := math.Min(cleanEnd, bEnd)
+		ov := ovEnd - ovStart
+		if ov <= colabOneCUEpsilon {
+			continue
+		}
+
+		bucketRate := 0.0
+		bucketEst := b.Estimated
+		switch {
+		case b.RateSec > colabOneCUEpsilon && b.RateSum > colabOneCUEpsilon:
+			bucketRate = b.RateSum / b.RateSec
+		case b.ActiveSec > colabOneCUEpsilon && b.Consumed > colabOneCUEpsilon:
+			bucketRate = b.Consumed * 3600.0 / b.ActiveSec
+		case b.RateMax > colabOneCUEpsilon:
+			bucketRate = b.RateMax
+			bucketEst = true
+		}
+		if bucketRate <= colabOneCUEpsilon {
+			continue
+		}
+		if b.MaxInstances > 1 {
+			bucketRate /= float64(b.MaxInstances)
+			bucketEst = true
+		}
+		weightedRateSum += bucketRate * ov
+		coveredSec += ov
+		if bucketEst {
+			anyEstimated = true
+		}
+	}
+
+	if coveredSec > colabOneCUEpsilon {
+		rate := weightedRateSum / coveredSec
+		roundedCU := colabOneRoundCU(rate * elapsed / 3600.0)
+		roundedRate := colabOneRoundCU(rate)
+		if coveredSec < elapsed*0.8 {
+			anyEstimated = true
+		}
+		if roundedCU > 0 {
+			return roundedCU, roundedRate, anyEstimated, true
+		}
+	}
+
+	// Fallback to the tracked continuous run when the window just completed before
+	// the next 30-second balance poll flushed bucket rate telemetry.
+	if run := acct.CurrentRun; run != nil && run.StartedAt > 0 {
+		runEnd := run.EndedAt
+		if run.Active || runEnd <= 0 {
+			runEnd = math.Max(run.LastSampleAt, cleanEnd)
+		}
+		overlaps := cleanEnd >= run.StartedAt-60.0 && cleanStart <= runEnd+60.0
+		if overlaps {
+			runRate := 0.0
+			switch {
+			case run.LastRate > colabOneCUEpsilon:
+				runRate = run.LastRate
+			case run.PeakRate > colabOneCUEpsilon:
+				runRate = run.PeakRate
+			case run.Consumed > colabOneCUEpsilon && runEnd > run.StartedAt:
+				runRate = run.Consumed * 3600.0 / (runEnd - run.StartedAt)
+			}
+			if runRate > colabOneCUEpsilon {
+				if run.MaxInstances > 1 {
+					runRate /= float64(run.MaxInstances)
+				}
+				roundedCU := colabOneRoundCU(runRate * elapsed / 3600.0)
+				roundedRate := colabOneRoundCU(runRate)
+				if roundedCU > 0 {
+					return roundedCU, roundedRate, true, true
+				}
+			}
+		}
+	}
+
+	return 0, 0, false, false
+}
+
+// ActiveRunStartedAt returns the Unix start timestamp of the currently active
+// billing run for email, or 0 if no active run is tracked.
+func (s *ColabOneCUUsageStore) ActiveRunStartedAt(email string) float64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	accountKey := colabOneCUAccountKey(email)
+	if accountKey == "" {
+		accountKey = s.activeAccountKey
+	}
+	if accountKey == "" {
+		accountKey = colabOneCUDefaultAccountKey
+	}
+	acct := s.accounts[accountKey]
+	if acct == nil || acct.CurrentRun == nil || !acct.CurrentRun.Active || acct.CurrentRun.StartedAt <= 0 {
+		return 0
+	}
+	return acct.CurrentRun.StartedAt
+}

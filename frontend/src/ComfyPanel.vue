@@ -46,6 +46,7 @@ import {
   PhArrowsClockwise,
   PhBroom,
   PhBrowsers,
+  PhCalendarBlank,
   PhCaretDown,
   PhCaretRight,
   PhCheck,
@@ -55,6 +56,7 @@ import {
   PhCloudArrowDown,
   PhCloudArrowUp,
   PhCloudCheck,
+  PhCoins,
   PhDownloadSimple,
   PhEye,
   PhEyeSlash,
@@ -83,6 +85,7 @@ import {
   colabOneExportWorkflowOutput,
   colabOneOpenComfyCanvas,
   colabOneOpenURL,
+  colabOneOutputPreviewURL,
   colabOneRuntimeCapabilities,
   colabOneWriteClipboard,
 } from "./api";
@@ -114,6 +117,10 @@ import {
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
   extractPublicHost,
+  formatOutputCU,
+  formatOutputCUExact,
+  formatOutputCreatedAt,
+  formatOutputCreatedAtISO,
   formatOutputSize,
   hasNonCommercialNotice,
   isColabOneBuiltinDigitalHumanWorkflow,
@@ -358,13 +365,17 @@ const effectiveSnapshotAt = computed(
   () => props.snapshotAt ?? fallbackSnapshotAt.value,
 );
 
-const comfyTaskElapsedText = computed(() => {
-  const secs = resolveColabOneTaskElapsedSeconds(
+const comfyTaskElapsedSeconds = computed(() =>
+  resolveColabOneTaskElapsedSeconds(
     comfyTask.value,
     props.state.runtime,
     effectiveClockNow.value,
     effectiveSnapshotAt.value,
-  );
+  ),
+);
+
+const comfyTaskElapsedText = computed(() => {
+  const secs = comfyTaskElapsedSeconds.value;
   return secs === null
     ? ""
     : formatColabOneDuration(secs, {
@@ -373,11 +384,91 @@ const comfyTaskElapsedText = computed(() => {
       });
 });
 
+const comfyTaskLiveCuText = computed(() => {
+  const secs = comfyTaskElapsedSeconds.value;
+  if (secs === null || secs <= 0) return "";
+  const rate = props.state.account?.rate;
+  if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+    return "";
+  }
+  const assignments =
+    typeof props.state.account?.assignments === "number" &&
+    Number.isFinite(props.state.account.assignments) &&
+    props.state.account.assignments > 1
+      ? props.state.account.assignments
+      : 1;
+  const cu = ((rate / assignments) * secs) / 3600;
+  const formatted = formatOutputCU(cu);
+  if (!formatted) return "";
+  return cu < 0.01 ? formatted : t("comfy.outputCuLive", { cu: formatted });
+});
+
+function formatOutputCUBadge(item: WorkflowOutput): string {
+  const formatted = formatOutputCU(item.cu_consumed);
+  if (!formatted) return "";
+  if (
+    typeof item.cu_consumed === "number" &&
+    item.cu_consumed > 0 &&
+    item.cu_consumed < 0.01
+  ) {
+    return formatted;
+  }
+  return item.cu_estimated
+    ? t("comfy.outputCuEstimated", { cu: formatted })
+    : formatted;
+}
+
 function formatOutputElapsed(elapsed: number): string {
   return formatColabOneDuration(elapsed, {
     precision: "auto",
     locale: colabOneLocaleCode.value,
   });
+}
+
+function formatOutputCreatedAtTooltip(
+  epochSeconds: number | null | undefined,
+): string {
+  const compact = formatOutputCreatedAt(epochSeconds);
+  if (!compact) return "";
+  try {
+    const raw = Number(epochSeconds);
+    const ms = raw > 1e12 ? raw : raw * 1000;
+    const localized = new Intl.DateTimeFormat(colabOneLocaleCode.value, {
+      dateStyle: "medium",
+      timeStyle: "medium",
+    }).format(new Date(ms));
+    return t("comfy.outputCreatedAtTooltip", { time: localized });
+  } catch {
+    return t("comfy.outputCreatedAtTooltip", { time: compact });
+  }
+}
+
+function formatOutputCUTooltip(item: WorkflowOutput): string {
+  const cuText = formatOutputCUExact(item.cu_consumed);
+  if (!cuText) return "";
+  const parts: string[] = [];
+  if (item.gpu_name && item.gpu_name.trim()) {
+    parts.push(item.gpu_name.trim());
+  }
+  if (
+    typeof item.cu_rate === "number" &&
+    Number.isFinite(item.cu_rate) &&
+    item.cu_rate > 0
+  ) {
+    parts.push(t("billing.rateValue", { rate: item.cu_rate.toFixed(2) }));
+  }
+  if (Number.isFinite(item.elapsed) && item.elapsed > 0) {
+    parts.push(
+      t("task.elapsedTotal", { duration: formatOutputElapsed(item.elapsed) }),
+    );
+  }
+  if (parts.length > 0) {
+    const detail = parts.join(" · ");
+    return item.cu_estimated
+      ? t("comfy.outputCuTooltipEstimatedDetail", { cu: cuText, detail })
+      : t("comfy.outputCuTooltipDetail", { cu: cuText, detail });
+  }
+  return t("comfy.outputCuTooltipSimple", { cu: cuText });
 }
 
 function formatComfyByteSize(bytes: number): string {
@@ -5277,6 +5368,8 @@ interface OutputPreviewError {
 }
 const outputs = computed(() => props.state.comfy_outputs || []);
 const blobUrls = ref<Record<string, string>>({});
+const streamUrls = ref<Record<string, string>>({});
+const bufferingStreams = ref<Record<string, boolean>>({});
 const fetchingOutputs = ref<Record<string, boolean>>({});
 const failedOutputs = ref<Record<string, OutputPreviewError>>({});
 const exportingOutputs = ref<Record<string, boolean>>({});
@@ -5443,7 +5536,21 @@ const autoReleaseSwitchTooltip = computed(() => {
   return t("comfy.autoReleaseReadyTooltip");
 });
 
+function getOutputPreviewSrc(item: WorkflowOutput): string {
+  return streamUrls.value[item.id] || blobUrls.value[item.id] || "";
+}
+
+function canStreamOutputMedia(item: WorkflowOutput): boolean {
+  return (
+    (item.kind === "video" || item.kind === "audio") &&
+    canLoadOutputAsset(item)
+  );
+}
+
 function isOutputTooLargeForPreview(item: WorkflowOutput): boolean {
+  if (canStreamOutputMedia(item)) {
+    return false;
+  }
   return Number.isFinite(item.size) && item.size > MAX_INLINE_PREVIEW_BYTES;
 }
 
@@ -5520,14 +5627,39 @@ function releaseHeavyOutputBlobs() {
       delete blobUrls.value[id];
     }
   }
+  for (const id of Object.keys(streamUrls.value)) {
+    if (heavyIds.has(id)) {
+      delete streamUrls.value[id];
+      delete bufferingStreams.value[id];
+    }
+  }
+  for (const id of Object.keys(bufferingStreams.value)) {
+    if (heavyIds.has(id)) {
+      delete bufferingStreams.value[id];
+    }
+  }
   revokeBlobUrlsDeferred(urlsToRevoke);
 }
 
+function onOutputMediaReady(item: WorkflowOutput) {
+  if (bufferingStreams.value[item.id]) {
+    delete bufferingStreams.value[item.id];
+  }
+}
+
 function onOutputMediaError(item: WorkflowOutput) {
-  if (disposed || !outputsDrawerOpen.value || !blobUrls.value[item.id]) return;
-  const url = blobUrls.value[item.id];
-  delete blobUrls.value[item.id];
-  revokeBlobUrlsDeferred([url]);
+  if (disposed || !outputsDrawerOpen.value || !getOutputPreviewSrc(item)) return;
+  const blobUrl = blobUrls.value[item.id];
+  if (blobUrl) {
+    delete blobUrls.value[item.id];
+    revokeBlobUrlsDeferred([blobUrl]);
+  }
+  if (streamUrls.value[item.id]) {
+    delete streamUrls.value[item.id];
+  }
+  if (bufferingStreams.value[item.id]) {
+    delete bufferingStreams.value[item.id];
+  }
   failedOutputs.value[item.id] = { code: "media" };
 }
 
@@ -5538,7 +5670,7 @@ function triggerRecentImagePreviews(list: WorkflowOutput[]) {
       item.kind === "image" &&
       canLoadOutputAsset(item) &&
       !isOutputTooLargeForPreview(item) &&
-      !blobUrls.value[item.id] &&
+      !getOutputPreviewSrc(item) &&
       !failedOutputs.value[item.id] &&
       !Object.values(fetchingOutputs.value).some(Boolean)
     ) {
@@ -5551,7 +5683,7 @@ function triggerRecentImagePreviews(list: WorkflowOutput[]) {
 async function loadOutputPreview(item: WorkflowOutput) {
   if (
     isOutputTooLargeForPreview(item) ||
-    blobUrls.value[item.id] ||
+    getOutputPreviewSrc(item) ||
     fetchingOutputs.value[item.id] ||
     !canLoadOutputAsset(item) ||
     !outputsDrawerOpen.value
@@ -5566,14 +5698,40 @@ async function loadOutputPreview(item: WorkflowOutput) {
   fetchingOutputs.value[item.id] = true;
   delete failedOutputs.value[item.id];
   try {
+    if (canStreamOutputMedia(item)) {
+      const streamUrl = await colabOneOutputPreviewURL(item.id, controller.signal);
+      const latestStreamItem = outputs.value.find((o) => o.id === item.id);
+      if (
+        disposed ||
+        controller.signal.aborted ||
+        outputFetchControllers.get(item.id) !== controller ||
+        !outputsDrawerOpen.value ||
+        (!driveBacked && props.state.runtime.id !== targetRuntimeId) ||
+        !latestStreamItem ||
+        !canLoadOutputAsset(latestStreamItem)
+      ) {
+        return;
+      }
+      if (typeof streamUrl === "string" && streamUrl.trim()) {
+        streamUrls.value[item.id] = streamUrl.trim();
+        bufferingStreams.value[item.id] = true;
+        return;
+      }
+      if (Number.isFinite(item.size) && item.size > MAX_INLINE_PREVIEW_BYTES) {
+        failedOutputs.value[item.id] = { code: "media" };
+        return;
+      }
+    }
     const url = await outputBlobURL(item.id, controller.signal);
+    const latestBlobItem = outputs.value.find((o) => o.id === item.id);
     if (
       disposed ||
       controller.signal.aborted ||
       outputFetchControllers.get(item.id) !== controller ||
       !outputsDrawerOpen.value ||
       (!driveBacked && props.state.runtime.id !== targetRuntimeId) ||
-      !outputs.value.some((o) => o.id === item.id)
+      !latestBlobItem ||
+      !canLoadOutputAsset(latestBlobItem)
     ) {
       URL.revokeObjectURL(url);
     } else {
@@ -5731,11 +5889,25 @@ watch(
   [outputs, gpuReady, outputsDrawerOpen],
   ([list, _ready, drawerOpen]) => {
     const activeIds = new Set(list.map((item) => item.id));
+    const activeStreamableIds = new Set(
+      list.filter((item) => canLoadOutputAsset(item)).map((item) => item.id),
+    );
     const staleUrls: string[] = [];
     for (const [id, url] of Object.entries(blobUrls.value)) {
       if (!activeIds.has(id)) {
         staleUrls.push(url);
         delete blobUrls.value[id];
+      }
+    }
+    for (const id of Object.keys(streamUrls.value)) {
+      if (!activeStreamableIds.has(id)) {
+        delete streamUrls.value[id];
+        delete bufferingStreams.value[id];
+      }
+    }
+    for (const id of Object.keys(bufferingStreams.value)) {
+      if (!activeStreamableIds.has(id)) {
+        delete bufferingStreams.value[id];
       }
     }
     revokeBlobUrlsDeferred(staleUrls);
@@ -6204,6 +6376,8 @@ async function deleteOutput(target: WorkflowOutput) {
       delete blobUrls.value[target.id];
       revokeBlobUrlsDeferred([url]);
     }
+    delete streamUrls.value[target.id];
+    delete bufferingStreams.value[target.id];
     delete failedOutputs.value[target.id];
     if (exportedDriveOutputs.value[target.id]) {
       const nextExported = { ...exportedDriveOutputs.value };
@@ -6590,6 +6764,8 @@ onUnmounted(() => {
   pauseOutputsDrawerMedia();
   abortAllOutputFetches();
   Object.values(blobUrls.value).forEach((url) => URL.revokeObjectURL(url));
+  streamUrls.value = {};
+  bufferingStreams.value = {};
   revokeAllVoicePreviewUrls();
   revokeAllLocalPreviews();
   emit("drawer-state", { open: false, width: 0, rootSelector: "" });
@@ -8894,8 +9070,16 @@ onUnmounted(() => {
                     t("task.elapsedLive", { duration: comfyTaskElapsedText })
                   }}</span>
                 </ATag>
+                <ATag
+                  v-if="comfyTaskLiveCuText"
+                  class="co-comfy-meta-tag co-comfy-cu-tag"
+                  data-testid="comfy-gen-cu"
+                >
+                  <PhCoins :size="12" weight="duotone" aria-hidden="true" />
+                  <span class="co-comfy-mono">{{ comfyTaskLiveCuText }}</span>
+                </ATag>
                 <ColabOneSkeleton
-                  v-else
+                  v-if="!comfyTaskElapsedText"
                   :width="58"
                   :height="18"
                   variant="tag"
@@ -8903,6 +9087,7 @@ onUnmounted(() => {
                   :delay="100"
                 />
                 <ColabOneSkeleton
+                  v-if="!comfyTaskLiveCuText"
                   :width="48"
                   :height="18"
                   variant="tag"
@@ -8920,55 +9105,42 @@ onUnmounted(() => {
           >
             <div class="co-comfy-output-frame">
               <img
-                v-if="item.kind === 'image' && blobUrls[item.id]"
-                :src="blobUrls[item.id]"
+                v-if="item.kind === 'image' && getOutputPreviewSrc(item)"
+                :src="getOutputPreviewSrc(item)"
                 :alt="item.filename"
                 class="co-sk-reveal"
                 @error="onOutputMediaError(item)"
               />
               <video
-                v-else-if="item.kind === 'video' && blobUrls[item.id]"
-                :src="blobUrls[item.id]"
+                v-else-if="item.kind === 'video' && getOutputPreviewSrc(item)"
+                :src="getOutputPreviewSrc(item)"
                 controls
+                autoplay
                 playsinline
-                preload="metadata"
+                preload="auto"
                 class="co-sk-reveal"
+                @loadedmetadata="onOutputMediaReady(item)"
+                @loadeddata="onOutputMediaReady(item)"
+                @canplay="onOutputMediaReady(item)"
+                @playing="onOutputMediaReady(item)"
                 @error="onOutputMediaError(item)"
               />
               <div
-                v-else-if="item.kind === 'audio' && blobUrls[item.id]"
+                v-else-if="item.kind === 'audio' && getOutputPreviewSrc(item)"
                 class="co-comfy-audio-box co-sk-reveal"
               >
                 <PhWaveform :size="28" class="co-comfy-audio-icon" />
                 <audio
-                  :src="blobUrls[item.id]"
+                  :src="getOutputPreviewSrc(item)"
                   controls
-                  preload="metadata"
+                  autoplay
+                  preload="auto"
+                  @loadedmetadata="onOutputMediaReady(item)"
+                  @loadeddata="onOutputMediaReady(item)"
+                  @canplay="onOutputMediaReady(item)"
+                  @playing="onOutputMediaReady(item)"
                   @error="onOutputMediaError(item)"
                 />
-              </div>
-              <div
-                v-else-if="isOutputTooLargeForPreview(item)"
-                class="co-comfy-preview-large-notice"
-              >
-                <component
-                  :is="
-                    item.kind === 'video'
-                      ? PhVideoCamera
-                      : item.kind === 'audio'
-                        ? PhWaveform
-                        : PhImage
-                  "
-                  :size="26"
-                  class="co-comfy-preview-large-icon"
-                />
-                <p>
-                  {{
-                    t("comfy.videoPreviewTooLarge", {
-                      size: formatComfyByteSize(item.size),
-                    })
-                  }}
-                </p>
               </div>
               <div
                 v-else-if="fetchingOutputs[item.id]"
@@ -9028,6 +9200,29 @@ onUnmounted(() => {
                   {{ t("comfy.openOutputInDrive") }}
                 </AButton>
               </div>
+              <div
+                v-else-if="isOutputTooLargeForPreview(item)"
+                class="co-comfy-preview-large-notice"
+              >
+                <component
+                  :is="
+                    item.kind === 'video'
+                      ? PhVideoCamera
+                      : item.kind === 'audio'
+                        ? PhWaveform
+                        : PhImage
+                  "
+                  :size="26"
+                  class="co-comfy-preview-large-icon"
+                />
+                <p>
+                  {{
+                    t("comfy.videoPreviewTooLarge", {
+                      size: formatComfyByteSize(item.size),
+                    })
+                  }}
+                </p>
+              </div>
               <button
                 v-else
                 type="button"
@@ -9050,13 +9245,38 @@ onUnmounted(() => {
                     failedOutputs[item.id]
                       ? t("comfy.retryPreview")
                       : item.kind === "video"
-                        ? t("comfy.loadVideoPreview")
+                        ? isOutputDriveBacked(item) ||
+                          isOutputExportedToDrive(item) ||
+                          item.drive_synced
+                          ? t("comfy.previewDriveVideo")
+                          : t("comfy.loadVideoPreview")
                         : item.kind === "audio"
-                          ? t("comfy.loadAudioPreview")
+                          ? isOutputDriveBacked(item) ||
+                            isOutputExportedToDrive(item) ||
+                            item.drive_synced
+                            ? t("comfy.previewDriveAudio")
+                            : t("comfy.loadAudioPreview")
                           : t("comfy.loadImagePreview")
                   }}
                 </span>
               </button>
+              <div
+                v-if="
+                  bufferingStreams[item.id] &&
+                  (item.kind === 'video' || item.kind === 'audio') &&
+                  getOutputPreviewSrc(item)
+                "
+                class="co-comfy-preview-pill co-comfy-stream-buffering-pill"
+                data-testid="comfy-output-stream-buffering"
+                role="status"
+                aria-live="polite"
+              >
+                <component
+                  :is="item.kind === 'video' ? PhVideoCamera : PhWaveform"
+                  :size="14"
+                />
+                <span>{{ t("comfy.loadingOutput") }}</span>
+              </div>
             </div>
 
             <div class="co-comfy-output-body">
@@ -9085,6 +9305,24 @@ onUnmounted(() => {
                 </small>
               </ColabOneTooltip>
 
+              <ColabOneTooltip
+                v-if="formatOutputCreatedAt(item.created_at)"
+                :title="formatOutputCreatedAtTooltip(item.created_at)"
+              >
+                <div
+                  class="co-comfy-output-time"
+                  data-testid="comfy-output-created-at"
+                >
+                  <PhCalendarBlank :size="12" aria-hidden="true" />
+                  <time
+                    class="co-comfy-mono"
+                    :datetime="formatOutputCreatedAtISO(item.created_at)"
+                  >
+                    {{ formatOutputCreatedAt(item.created_at) }}
+                  </time>
+                </div>
+              </ColabOneTooltip>
+
               <div class="co-comfy-output-meta-tags">
                 <ATag class="co-comfy-meta-tag">
                   {{ formatOutputSize(item.size) }}
@@ -9101,6 +9339,20 @@ onUnmounted(() => {
                     })
                   }}</span>
                 </ATag>
+                <ColabOneTooltip
+                  v-if="formatOutputCUBadge(item)"
+                  :title="formatOutputCUTooltip(item)"
+                >
+                  <ATag
+                    class="co-comfy-meta-tag co-comfy-cu-tag"
+                    data-testid="comfy-output-cu"
+                  >
+                    <PhCoins :size="12" weight="duotone" aria-hidden="true" />
+                    <span class="co-comfy-mono">{{
+                      formatOutputCUBadge(item)
+                    }}</span>
+                  </ATag>
+                </ColabOneTooltip>
                 <ColabOneTooltip
                   v-if="isOutputExportedToDrive(item) || item.drive_synced"
                   :title="
@@ -10949,6 +11201,7 @@ onUnmounted(() => {
 }
 
 .co-comfy-output-frame {
+  position: relative;
   min-height: 164px;
   background: var(--co-subtle);
   border-bottom: 1px solid var(--co-border-secondary);
@@ -11063,6 +11316,12 @@ onUnmounted(() => {
   font-weight: 500;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
   pointer-events: none;
+}
+
+.co-comfy-stream-buffering-pill {
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .co-comfy-gen-sparkle {
@@ -11214,6 +11473,23 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.co-comfy-output-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--co-secondary-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.co-comfy-output-time svg {
+  flex-shrink: 0;
+  color: var(--co-muted);
+}
+
 .co-comfy-output-meta-tags {
   display: flex;
   align-items: center;
@@ -11224,6 +11500,16 @@ onUnmounted(() => {
 
 .co-comfy-output-meta-tags :deep(.ant-tag) {
   margin-inline-end: 0;
+}
+
+.co-comfy-cu-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--co-warning-text);
+  background: var(--co-warning-bg);
+  border-color: var(--co-warning-border);
+  font-variant-numeric: tabular-nums;
 }
 
 .co-comfy-output-error {

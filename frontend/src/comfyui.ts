@@ -558,6 +558,67 @@ export function formatOutputSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function normalizeOutputTimestampMs(epochSeconds: number | null | undefined): number | null {
+  if (
+    typeof epochSeconds !== "number" ||
+    !Number.isFinite(epochSeconds) ||
+    epochSeconds <= 0
+  ) {
+    return null;
+  }
+  const ms = epochSeconds > 1e12 ? epochSeconds : epochSeconds * 1000;
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+export function formatOutputCreatedAt(
+  epochSeconds: number | null | undefined,
+): string {
+  const ms = normalizeOutputTimestampMs(epochSeconds);
+  if (ms === null) {
+    return "";
+  }
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) {
+    return "";
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+export function formatOutputCreatedAtISO(
+  epochSeconds: number | null | undefined,
+): string {
+  const ms = normalizeOutputTimestampMs(epochSeconds);
+  if (ms === null) {
+    return "";
+  }
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+}
+
+export function formatOutputCU(cu: number | null | undefined): string {
+  if (typeof cu !== "number" || !Number.isFinite(cu) || cu <= 0) {
+    return "";
+  }
+  if (cu < 0.01) {
+    return "< 0.01 CU";
+  }
+  if (cu < 100) {
+    return `${cu.toFixed(2)} CU`;
+  }
+  return `${cu.toFixed(1)} CU`;
+}
+
+export function formatOutputCUExact(cu: number | null | undefined): string {
+  if (typeof cu !== "number" || !Number.isFinite(cu) || cu <= 0) {
+    return "";
+  }
+  if (cu < 0.01) {
+    return `${cu.toFixed(4)} CU`;
+  }
+  return formatOutputCU(cu);
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException("Aborted", "AbortError");

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 
 	"github.com/egoist/mygo"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
@@ -39,6 +40,13 @@ func (d *ColabOneDesktop) initWebConsoleWithFS(
 				return "", errors.New(colabOneT("err.bridgeNotInitialized"))
 			}
 			return d.bridge.call(ctx, method, payload)
+		},
+		ServeOutputMedia: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string) {
+			if d.bridge == nil {
+				http.Error(rw, colabOneT("err.bridgeNotInitialized"), http.StatusServiceUnavailable)
+				return
+			}
+			d.bridge.serveOutputMedia(ctx, rw, r, id)
 		},
 		FrontendFS: frontendFS,
 		AppVersion: colabOneAppVersion(),

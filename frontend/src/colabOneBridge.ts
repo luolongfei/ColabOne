@@ -333,6 +333,12 @@ export const ColabOneDesktop = {
   openComfyCanvas: bind<[string], void>("ColabOneDesktop.OpenComfyCanvas", (target: string) => [target]),
   openURL: bind<[string], void>("ColabOneDesktop.OpenURL", (value: string) => [value]),
   /**
+   * OutputPreviewURL validates that the workflow output can be streamed (from
+   * Google Drive or the active remote GPU) and returns a loopback HTTP Range
+   * streaming URL so video and audio outputs preview without full-file download.
+   */
+  outputPreviewURL: bind<[string], string>("ColabOneDesktop.OutputPreviewURL", (id: string) => [id]),
+  /**
    * PickMigrationFile opens the native Open dialog, validates the outer .colabone
    * archive header without exposing any file path or contents to the WebView, and
    * caches the raw archive under a short-lived FileToken for decryption.

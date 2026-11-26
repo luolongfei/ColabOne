@@ -14,6 +14,8 @@ import (
 	"github.com/luolongfei/ColabOne/console/internal/webconsole"
 	"log"
 	"mime"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"runtime"
@@ -83,6 +85,12 @@ type ColabOneDesktop struct {
 
 	webConsoleMu sync.RWMutex
 	webConsole   *webconsole.ColabOneWebConsole
+
+	mediaMu      sync.Mutex
+	mediaSrv     *http.Server
+	mediaLn      net.Listener
+	mediaSecret  string
+	mediaBaseURL string
 }
 
 func (d *ColabOneDesktop) invalidateSplash() {
@@ -619,6 +627,7 @@ func main() {
 		d.cancelStartup()
 		d.clearMigrationSessions()
 		d.closeWebConsole()
+		d.closeOutputMediaServer()
 		d.closeUpdater()
 		d.destroyTray()
 		d.flushAppearance()

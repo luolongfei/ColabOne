@@ -516,6 +516,35 @@ export async function colabOneWebDownloadOutput(id: string): Promise<string> {
   return filename;
 }
 
+export async function colabOneWebOutputPreviewURL(
+  id: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const cleanId = String(id || "").trim().toLowerCase();
+  if (!COLABONE_OUTPUT_ID_RE.test(cleanId)) {
+    throw new Error("Invalid output artifact ID");
+  }
+
+  const mediaUrl = `/api/outputs/${cleanId}/media`;
+  const res = await fetch(mediaUrl, {
+    method: "HEAD",
+    credentials: "same-origin",
+    headers: {
+      [COLABONE_WEB_CLIENT_HEADER]: COLABONE_WEB_CLIENT_VALUE,
+    },
+    ...(signal ? { signal } : {}),
+  });
+
+  if (res.status === 401) {
+    notifyColabOneWebAuthRequired();
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    throw new Error(await extractWebResponseError(res));
+  }
+  return mediaUrl;
+}
+
 function extractRawAuthority(raw: string): string {
   const withoutScheme = raw.replace(/^https:\/\//i, "");
   const cutIdx = withoutScheme.search(/[/?#]/);

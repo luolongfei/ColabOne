@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestWorkflowAutoReleaseCommandGuardsAndToggle(t *testing.T) {
@@ -578,6 +579,442 @@ func TestDriveOutputsSanitizationRange200FallbackAndErrorHandling(t *testing.T) 
 	loggedOutStatus := asMap(h.ctrl.Snapshot()["drive_outputs_status"])
 	if asString(loggedOutStatus["error"]) != "" || asFloatZero(loggedOutStatus["last_synced_at"]) != 0 {
 		t.Fatalf("expected zeroed drive_outputs_status after logout, got %#v", loggedOutStatus)
+	}
+}
+
+func TestDriveOutputsCUAttributionCreatedTimeAndSortOrder(t *testing.T) {
+	liveID := "11111111111111111111111111111111"
+	archivedID := "22222222222222222222222222222222"
+	nowAligned := (time.Now().Unix()/1800)*1800 - 3600
+	base := float64(nowAligned)
+
+	mockDrive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/files" {
+			q := r.URL.Query().Get("q")
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(q, "name = 'ColabOne_Drive'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-root","name":"ColabOne_Drive"}]}`))
+			case strings.Contains(q, "name = 'outputs'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-out","name":"outputs"}]}`))
+			case strings.Contains(q, "'dir-out' in parents"):
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"files": []map[string]any{
+						{
+							"id":           "file-created-time",
+							"name":         "archived_clip.mp4",
+							"size":         "8192000",
+							"createdTime":  "2026-11-24T08:00:00Z",
+							"modifiedTime": "2026-11-25T10:00:00Z",
+							"webViewLink":  "https://drive.google.com/file/d/file-created-time/view",
+						},
+					},
+				})
+			default:
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			}
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockDrive.Close()
+
+	h := newTestHarness(t, false)
+	h.ctrl.driveAPIBaseURL = mockDrive.URL
+	h.ctrl.driveHTTPClient = mockDrive.Client()
+	h.auth.driveScope = true
+	h.auth.requiresQuota = false
+	_ = h.vault.Set("colab", map[string]any{"token": "tok-cu", "refresh_token": "rt-cu"})
+	_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-cu", "email": "cu@example.com"})
+
+	// Record historical CU rate at 12.0 CU/hr covering [base, base+1800)
+	h.ctrl.cuUsage.RecordSample("cu@example.com", base+60, 100.0, true, 12.0, 1)
+	h.ctrl.cuUsage.RecordSample("cu@example.com", base+660, 98.0, true, 12.0, 1)
+
+	// 1) SyncDriveOutputs prefers createdTime over modifiedTime!
+	if _, err := h.ctrl.Command(context.Background(), "comfyui.outputs.drive.sync", nil); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	syncedOut := asMapSlice(h.ctrl.Snapshot()["comfy_outputs"])
+	if len(syncedOut) != 1 {
+		t.Fatalf("expected 1 synced output, got %#v", syncedOut)
+	}
+	// 2026-11-24T08:00:00Z = 1795507200 (different from 2026-11-25T10:00:00Z = 1795600800)
+	gotCreated := asFloatZero(syncedOut[0]["created_at"])
+	if gotCreated < 1795507199 || gotCreated > 1795507201 {
+		t.Fatalf("expected createdTime unix ~1795507200, got %.1f", gotCreated)
+	}
+
+	// 2) Live output without Drive connected STILL receives CU attribution and newest-first sort!
+	h.ctrl.mu.Lock()
+	h.ctrl.driveOutputs["sub:sub-cu"] = map[string]*ColabOneDriveOutputRecord{
+		archivedID: {
+			ID:            archivedID,
+			WorkflowName:  "归档视频",
+			Kind:          "video",
+			Filename:      "older_archived.mp4",
+			Extension:     "mp4",
+			Mime:          "video/mp4",
+			Size:          10_000_000,
+			CreatedAt:     base + 900, // newer than liveID below to verify merged sorting!
+			Elapsed:       300,
+			DriveSynced:   true,
+			DriveExported: true,
+			DriveFileID:   "file-arch",
+		},
+	}
+	h.ctrl.mu.Unlock()
+
+	h.ctrl.Update(map[string]any{
+		"account": map[string]any{
+			"logged_in":   true,
+			"email":       "cu@example.com",
+			"rate":        12.0,
+			"assignments": 1,
+		},
+		"runtime": map[string]any{
+			"state": "ready",
+			"id":    "ep-cu",
+			"gpu":   map[string]any{"name": "NVIDIA A100-SXM4-40GB"},
+			"drive": map[string]any{"connected": false, "mode": "disabled"},
+		},
+		"comfy_outputs": []any{
+			map[string]any{
+				"id":            liveID,
+				"workflow_name": "口播数字人",
+				"kind":          "video",
+				"filename":      "live_clip.mp4",
+				"extension":     "mp4",
+				"mime":          "video/mp4",
+				"size":          64_000_000,
+				"created_at":    base + 600,
+				"elapsed":       600.0, // 10 min @ 12 CU/hr = 2.00 CU
+			},
+		},
+	})
+
+	snap := h.ctrl.Snapshot()
+	outputs := asMapSlice(snap["comfy_outputs"])
+	if len(outputs) != 2 {
+		t.Fatalf("expected 2 merged outputs, got %#v", outputs)
+	}
+	// Strictly sorted newest-first by created_at: archivedID (base+900) before liveID (base+600)!
+	if asString(outputs[0]["id"]) != archivedID || asString(outputs[1]["id"]) != liveID {
+		t.Fatalf("expected newest-first order [%s, %s], got [%s, %s]", archivedID, liveID, asString(outputs[0]["id"]), asString(outputs[1]["id"]))
+	}
+	// Archived item backfilled CU from cuUsage bucket: 300s @ 12 CU/hr = 1.00 CU
+	if gotCU := asFloatZero(outputs[0]["cu_consumed"]); gotCU < 0.99 || gotCU > 1.01 {
+		t.Fatalf("expected archived output cu_consumed ~1.00, got %.4f (%#v)", gotCU, outputs[0])
+	}
+	// Live item got CU (2.00 CU), rate (12.0), and GPU name!
+	if gotCU := asFloatZero(outputs[1]["cu_consumed"]); gotCU < 1.99 || gotCU > 2.01 {
+		t.Fatalf("expected live output cu_consumed ~2.00, got %.4f (%#v)", gotCU, outputs[1])
+	}
+	if asString(outputs[1]["gpu_name"]) != "NVIDIA A100-SXM4-40GB" {
+		t.Fatalf("expected gpu_name on live output, got %q", asString(outputs[1]["gpu_name"]))
+	}
+}
+
+func TestResolveOutputCUWorkspaceRestoredOldOutputDoesNotInheritCurrentSession(t *testing.T) {
+	nowAligned := (time.Now().Unix()/1800)*1800 - 1800
+	now := float64(nowAligned) + 900.0
+	oldNoHistoryID := "33333333333333333333333333333333"
+	oldWithHistoryID := "44444444444444444444444444444444"
+	currentSessionID := "55555555555555555555555555555555"
+
+	h := newTestHarness(t, false)
+	_ = h.vault.Set("colab", map[string]any{"token": "tok-sess", "refresh_token": "rt-sess"})
+	_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-sess", "email": "sess@example.com"})
+
+	// Historical T4 session 4 hours ago at 2.0 CU/hr
+	histBase := float64(nowAligned - 4*3600)
+	h.ctrl.cuUsage.RecordSample("sess@example.com", histBase+60, 200.0, true, 2.0, 1)
+	h.ctrl.cuUsage.RecordSample("sess@example.com", histBase+660, 199.67, true, 2.0, 1)
+	// Stop T4 session so a new H100 run starts later
+	h.ctrl.cuUsage.RecordSample("sess@example.com", histBase+720, 199.64, true, 0.0, 0)
+
+	// New active H100 session started at now - 600 at 15.0 CU/hr
+	h.ctrl.cuUsage.RecordSample("sess@example.com", now-600, 199.64, true, 15.0, 1)
+
+	h.ctrl.Update(map[string]any{
+		"account": map[string]any{
+			"logged_in":   true,
+			"email":       "sess@example.com",
+			"rate":        15.0,
+			"assignments": 1,
+		},
+		"runtime": map[string]any{
+			"state": "ready",
+			"id":    "ep-h100",
+			"gpu":   map[string]any{"name": "NVIDIA H100 80GB"},
+			"drive": map[string]any{"connected": true, "mode": "mount"},
+		},
+		"comfy_outputs": []any{
+			map[string]any{
+				"id":         oldNoHistoryID,
+				"kind":       "video",
+				"filename":   "yesterday.mp4",
+				"extension":  "mp4",
+				"mime":       "video/mp4",
+				"size":       1024,
+				"created_at": now - 86400, // 24 hours ago, outside active run & no bucket
+				"elapsed":    600.0,
+			},
+			map[string]any{
+				"id":         oldWithHistoryID,
+				"kind":       "video",
+				"filename":   "earlier_t4.mp4",
+				"extension":  "mp4",
+				"mime":       "video/mp4",
+				"size":       1024,
+				"created_at": histBase + 660, // during 2.0 CU/hr T4 bucket
+				"elapsed":    600.0,
+			},
+			map[string]any{
+				"id":         currentSessionID,
+				"kind":       "video",
+				"filename":   "current_h100.mp4",
+				"extension":  "mp4",
+				"mime":       "video/mp4",
+				"size":       1024,
+				"created_at": now - 60, // inside current H100 run
+				"elapsed":    300.0,    // 5 min @ 15.0 CU/hr = 1.25 CU
+			},
+		},
+	})
+
+	byID := map[string]map[string]any{}
+	for _, m := range asMapSlice(h.ctrl.Snapshot()["comfy_outputs"]) {
+		byID[asString(m["id"])] = m
+	}
+
+	// 1) Yesterday's restored output MUST NOT inherit today's H100 GPU or 15.0 CU/hr rate!
+	if got := asFloatZero(byID[oldNoHistoryID]["cu_consumed"]); got != 0 {
+		t.Fatalf("old output without bucket must not inherit live rate, got cu_consumed=%.4f (%#v)", got, byID[oldNoHistoryID])
+	}
+	if gn := asString(byID[oldNoHistoryID]["gpu_name"]); gn != "" {
+		t.Fatalf("old output without bucket must not inherit today's GPU name, got %q", gn)
+	}
+
+	// 2) Earlier T4 output backfills historical 2.0 CU/hr (~0.3333 CU) WITHOUT today's H100 GPU name!
+	if got := asFloatZero(byID[oldWithHistoryID]["cu_consumed"]); got < 0.32 || got > 0.35 {
+		t.Fatalf("old output with T4 bucket expected ~0.3333 CU, got %.4f (%#v)", got, byID[oldWithHistoryID])
+	}
+	if gn := asString(byID[oldWithHistoryID]["gpu_name"]); gn != "" {
+		t.Fatalf("old output restored from earlier session must not stamp today's H100 GPU name, got %q", gn)
+	}
+
+	// 3) Current session output gets exact H100 GPU name and 1.25 CU!
+	if got := asFloatZero(byID[currentSessionID]["cu_consumed"]); got < 1.24 || got > 1.26 {
+		t.Fatalf("current session output expected ~1.25 CU, got %.4f (%#v)", got, byID[currentSessionID])
+	}
+	if gn := asString(byID[currentSessionID]["gpu_name"]); gn != "NVIDIA H100 80GB" {
+		t.Fatalf("current session output expected NVIDIA H100 80GB, got %q", gn)
+	}
+
+	// 4) Rapid GPU switch: runtime.started_at is authoritative even when an earlier output
+	//    is only 10 minutes old (inside a recent cuUsage run) and must not inherit the new GPU name.
+	rapidOldID := "56565656565656565656565656565656"
+	h.ctrl.Update(map[string]any{
+		"runtime": map[string]any{
+			"state":      "ready",
+			"id":         "ep-h100-new",
+			"started_at": now - 120,
+			"gpu":        map[string]any{"name": "NVIDIA H100 80GB"},
+			"drive":      map[string]any{"connected": true, "mode": "mount"},
+		},
+		"comfy_outputs": []any{
+			map[string]any{
+				"id":         rapidOldID,
+				"kind":       "video",
+				"filename":   "prev_vm.mp4",
+				"extension":  "mp4",
+				"mime":       "video/mp4",
+				"size":       1024,
+				"created_at": now - 540, // 7 minutes before new VM booted
+				"elapsed":    180.0,
+			},
+		},
+	})
+	rapidSnap := asMapSlice(h.ctrl.Snapshot()["comfy_outputs"])
+	if len(rapidSnap) != 1 || asString(rapidSnap[0]["gpu_name"]) != "" {
+		t.Fatalf("output created before runtime.started_at must not inherit new GPU name, got %#v", rapidSnap)
+	}
+}
+
+func TestSyncDriveOutputsPreservesExportedRecordIDMetadataAndMergeConsistency(t *testing.T) {
+	realID := "66666666666666666666666666666666"
+	var (
+		mu        sync.Mutex
+		syncCalls int
+	)
+
+	mockDrive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/files" {
+			q := r.URL.Query().Get("q")
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(q, "name = 'ColabOne_Drive'"):
+				mu.Lock()
+				syncCalls++
+				mu.Unlock()
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-root","name":"ColabOne_Drive"}]}`))
+			case strings.Contains(q, "name = 'outputs'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-out","name":"outputs"}]}`))
+			case strings.Contains(q, "'dir-out' in parents"):
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"files": []map[string]any{
+						{
+							"id":           "file-exported-only-1",
+							"name":         "avatar_export.mp4",
+							"size":         "12345678",
+							"createdTime":  "2026-11-26T00:05:00Z",
+							"modifiedTime": "2026-11-26T00:05:00Z",
+							"webViewLink":  "https://drive.google.com/file/d/file-exported-only-1/view",
+						},
+					},
+				})
+			default:
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			}
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockDrive.Close()
+
+	h := newTestHarness(t, false)
+	h.ctrl.driveAPIBaseURL = mockDrive.URL
+	h.ctrl.driveHTTPClient = mockDrive.Client()
+	h.auth.driveScope = true
+	h.auth.requiresQuota = false
+	_ = h.vault.Set("colab", map[string]any{"token": "tok-exp", "refresh_token": "rt-exp"})
+	_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-exp", "email": "exp@example.com"})
+
+	// 1) mergeDriveOutputRecord updates CURate when upgrading from estimated -> exact and never overwrites GPUName.
+	dst := &ColabOneDriveOutputRecord{
+		ID:          realID,
+		CUConsumed:  1.50,
+		CURate:      9.0,
+		CUEstimated: true,
+		GPUName:     "NVIDIA T4",
+	}
+	src := &ColabOneDriveOutputRecord{
+		ID:          realID,
+		CUConsumed:  2.00,
+		CURate:      12.0,
+		CUEstimated: false,
+		GPUName:     "NVIDIA H100 80GB",
+	}
+	if !mergeDriveOutputRecord(dst, src) {
+		t.Fatal("expected mergeDriveOutputRecord to report changed")
+	}
+	if dst.CUConsumed != 2.00 || dst.CURate != 12.0 || dst.CUEstimated {
+		t.Fatalf("expected upgraded exact CU=2.00 and rate=12.0, got %+v", dst)
+	}
+	if dst.GPUName != "NVIDIA T4" {
+		t.Fatalf("expected existing GPUName preserved, got %q", dst.GPUName)
+	}
+
+	// 2) Exported-only file (no workspace/comfyui-outputs copy) keeps its realID, CU, workflow name,
+	//    elapsed, and original CreatedAt across SyncDriveOutputs without creating duplicate cards!
+	origCreated := float64(time.Now().Unix() - 120)
+	h.ctrl.Update(map[string]any{
+		"account": map[string]any{
+			"logged_in":   true,
+			"email":       "exp@example.com",
+			"rate":        12.0,
+			"assignments": 1,
+		},
+		"runtime": map[string]any{
+			"state": "ready",
+			"id":    "ep-exp",
+			"gpu":   map[string]any{"name": "NVIDIA A100-SXM4-40GB"},
+			"drive": map[string]any{"connected": false, "mode": "disabled"},
+		},
+		"comfy_outputs": []any{
+			map[string]any{
+				"id":            realID,
+				"workflow_id":   "digital-human-longcat",
+				"workflow_name": "口播数字人",
+				"kind":          "video",
+				"filename":      "avatar_export.mp4",
+				"extension":     "mp4",
+				"mime":          "video/mp4",
+				"size":          12345678,
+				"created_at":    origCreated,
+				"elapsed":       300.0,
+			},
+		},
+	})
+	// Simulate export_drive completing before drive_file_id was known (e.g. mount mode)
+	h.ctrl.recordExportedDriveOutput(realID, map[string]any{
+		"filename":      "avatar_export.mp4",
+		"remote_folder": "ColabOne_Drive/outputs",
+		"drive_path":    "My Drive/ColabOne_Drive/outputs/avatar_export.mp4",
+		"size":          12345678,
+	})
+
+	if _, err := h.ctrl.Command(context.Background(), "comfyui.outputs.drive.sync", nil); err != nil {
+		t.Fatalf("SyncDriveOutputs failed: %v", err)
+	}
+
+	// While GPU is still ready, there must be EXACTLY 1 output card (no duplicate synthetic card!),
+	// enriched with drive_file_id and original CU/workflow metadata.
+	liveOutputs := asMapSlice(h.ctrl.Snapshot()["comfy_outputs"])
+	if len(liveOutputs) != 1 {
+		t.Fatalf("expected 1 deduplicated output card while GPU ready, got %d: %#v", len(liveOutputs), liveOutputs)
+	}
+	if asString(liveOutputs[0]["id"]) != realID ||
+		asString(liveOutputs[0]["drive_file_id"]) != "file-exported-only-1" ||
+		asString(liveOutputs[0]["workflow_name"]) != "口播数字人" ||
+		asFloatZero(liveOutputs[0]["cu_consumed"]) < 0.99 {
+		t.Fatalf("expected realID + drive_file_id + preserved metadata, got %#v", liveOutputs[0])
+	}
+
+	// After GPU stops, the single Drive card still has original workflow_name, created_at, CU, GPU, and drive_file_id!
+	h.ctrl.Update(map[string]any{
+		"runtime":       map[string]any{"state": "stopped"},
+		"comfy_outputs": []any{},
+	})
+	offlineOutputs := asMapSlice(h.ctrl.Snapshot()["comfy_outputs"])
+	if len(offlineOutputs) != 1 {
+		t.Fatalf("expected 1 offline Drive output card, got %d: %#v", len(offlineOutputs), offlineOutputs)
+	}
+	if asString(offlineOutputs[0]["id"]) != realID ||
+		asString(offlineOutputs[0]["workflow_name"]) != "口播数字人" ||
+		asString(offlineOutputs[0]["gpu_name"]) != "NVIDIA A100-SXM4-40GB" ||
+		asFloatZero(offlineOutputs[0]["cu_consumed"]) < 0.99 ||
+		asFloatZero(offlineOutputs[0]["created_at"]) != origCreated {
+		t.Fatalf("offline Drive card lost metadata after SyncDriveOutputs: %#v", offlineOutputs[0])
+	}
+
+	// 3) readDriveOutputAssetChunk skips on-demand sync for colab_drivefs records and obeys cooldown.
+	dfsID := "77777777777777777777777777777777"
+	h.ctrl.mu.Lock()
+	h.ctrl.driveOutputs["sub:sub-exp"][dfsID] = &ColabOneDriveOutputRecord{
+		ID:          dfsID,
+		Kind:        "image",
+		Filename:    "dfs.png",
+		Extension:   "png",
+		Mime:        "image/png",
+		Size:        1024,
+		DriveSynced: true,
+		DriveMode:   "colab_drivefs",
+	}
+	h.ctrl.driveOutputsLastSynced = 0
+	h.ctrl.mu.Unlock()
+	mu.Lock()
+	beforeSyncs := syncCalls
+	mu.Unlock()
+	if _, err := h.ctrl.readDriveOutputAssetChunk(context.Background(), dfsID, 0); err == nil {
+		t.Fatal("expected error for colab_drivefs record without file ID")
+	}
+	mu.Lock()
+	afterSyncs := syncCalls
+	mu.Unlock()
+	if afterSyncs != beforeSyncs {
+		t.Fatalf("expected colab_drivefs readDriveOutputAssetChunk not to trigger SyncDriveOutputs, calls %d -> %d", beforeSyncs, afterSyncs)
 	}
 }
 

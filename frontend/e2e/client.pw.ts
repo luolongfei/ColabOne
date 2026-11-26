@@ -9879,3 +9879,172 @@ test("workflow post-sync auto-release switch enforces Drive onboarding and outpu
   );
   await expect(secondCard.getByRole("button", { name: "导出到本地" })).toBeDisabled();
 });
+
+test("outputs drawer streams large Drive videos without downloading and displays creation time and CU per card", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await mock(page, false);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.colab = true;
+    s.setup.drive = false;
+    s.setup.drive_authorized = true;
+    s.setup.drive_headless = true;
+    s.account.logged_in = true;
+    s.account.email = "creator@example.com";
+    s.drive_outputs_status = {
+      syncing: false,
+      can_direct_read: true,
+      count: 2,
+      error: "",
+    };
+    s.comfy_outputs = [
+      {
+        id: "cccccccccccccccccccccccccccccccc",
+        workflow_id: "digital-human-longcat",
+        workflow_name: "口播数字人",
+        kind: "video",
+        filename: "large_hd_avatar.mp4",
+        extension: "mp4",
+        mime: "video/mp4",
+        size: 128_000_000, // 128 MB (> 48 MB legacy Blob cap!)
+        created_at: 1_764_093_608,
+        elapsed: 600,
+        cu_consumed: 2.08,
+        cu_rate: 12.48,
+        gpu_name: "NVIDIA A100-SXM4-40GB",
+        storage: "drive",
+        drive_synced: true,
+        drive_exported: true,
+        drive_path: "My Drive/ColabOne_Drive/outputs/large_hd_avatar.mp4",
+        drive_file_id: "file-large-hd-1",
+        drive_web_view_link: "https://drive.google.com/file/d/file-large-hd-1/view",
+        drive_previewable: true,
+      },
+      {
+        id: "dddddddddddddddddddddddddddddddd",
+        workflow_id: "flux-demo",
+        workflow_name: "Flux 文生图",
+        kind: "video",
+        filename: "short_clip.mp4",
+        extension: "mp4",
+        mime: "video/mp4",
+        size: 8_500_000,
+        created_at: 1_764_090_000,
+        elapsed: 45,
+        cu_consumed: 0.12,
+        cu_rate: 9.6,
+        cu_estimated: true,
+        storage: "drive",
+        drive_synced: true,
+        drive_exported: true,
+        drive_path: "My Drive/ColabOne_Drive/outputs/short_clip.mp4",
+        drive_file_id: "file-short-2",
+        drive_previewable: true,
+      },
+      {
+        id: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        workflow_id: "flux-demo",
+        workflow_name: "Flux 快速生图",
+        kind: "image",
+        filename: "tiny_cost.png",
+        extension: "png",
+        mime: "image/png",
+        size: 120_000,
+        created_at: 1_764_086_400,
+        elapsed: 5,
+        cu_consumed: 0.003,
+        cu_rate: 1.96,
+        cu_estimated: true,
+        storage: "drive",
+        drive_synced: true,
+        drive_exported: true,
+        drive_path: "My Drive/ColabOne_Drive/outputs/tiny_cost.png",
+        drive_file_id: "file-tiny-3",
+        drive_previewable: false,
+      },
+    ];
+
+    const origCall = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, ...args: any[]) => {
+      if (method === "ColabOneDesktop.OutputPreviewURL") {
+        const id = String(args[0] ?? "");
+        ((window as any).__previewUrlCalls ||= []).push(id);
+        return `http://127.0.0.1:49999/media/test-secret/outputs/${id}`;
+      }
+      if (method === "ColabOneDesktop.Command" && args[0]?.action === "comfyui.outputs.drive.sync") {
+        return JSON.stringify({
+          synced: true,
+          can_direct_read: true,
+          count: s.comfy_outputs.length,
+        });
+      }
+      if (method === "ColabOneDesktop.Command" && args[0]?.action === "comfyui.output.asset") {
+        ((window as any).__legacyAssetCalls ||= []).push(args[0]);
+      }
+      return origCall(method, ...args);
+    };
+  });
+
+  await navItem(page, "ComfyUI").click();
+  await page.locator(".co-comfy-outputs-trigger").click();
+  const outputsDrawer = page.locator(".co-comfy-outputs-drawer-root .ant-drawer-content");
+  await expect(outputsDrawer).toBeVisible();
+
+  const firstCard = outputsDrawer.locator(".co-comfy-output-item").nth(0);
+  const secondCard = outputsDrawer.locator(".co-comfy-output-item").nth(1);
+  const thirdCard = outputsDrawer.locator(".co-comfy-output-item").nth(2);
+
+  // 1. All cards show creation time (YYYY-MM-DD HH:mm:ss) and clean CU copy (no "约 < 0.01 CU")!
+  await expect(firstCard.getByTestId("comfy-output-created-at")).toHaveText(
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+  );
+  await expect(secondCard.getByTestId("comfy-output-created-at")).toHaveText(
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+  );
+  await expect(firstCard.getByTestId("comfy-output-cu")).toContainText("2.08 CU");
+  await expect(secondCard.getByTestId("comfy-output-cu")).toContainText("约 0.12 CU");
+  await expect(thirdCard.getByTestId("comfy-output-cu")).toHaveText("< 0.01 CU");
+
+  // 2. 128 MB Drive video is NOT blocked by 48 MB notice — offers direct Drive streaming preview!
+  await expect(firstCard.locator(".co-comfy-preview-large-notice")).toHaveCount(0);
+  const previewBtn = firstCard.locator(".co-comfy-preview-trigger");
+  await expect(previewBtn).toBeEnabled();
+  await expect(previewBtn).toContainText("云盘在线预览");
+
+  // 3. Clicking preview streams via OutputPreviewURL (NO full-file comfyui.output.asset download)!
+  let sawMediaRequest = false;
+  let sawRangeHeader = "";
+  let releaseMediaRoute: (() => void) | null = null;
+  const mediaRouteDone = new Promise<void>((resolve) => {
+    releaseMediaRoute = resolve;
+  });
+  await page.route(
+    "http://127.0.0.1:49999/media/test-secret/outputs/*",
+    async (route) => {
+      sawMediaRequest = true;
+      sawRangeHeader = route.request().headers()["range"] || "";
+      await mediaRouteDone;
+      await route.abort();
+    },
+  );
+  await previewBtn.click();
+  const videoEl = firstCard.locator("video");
+  await expect(videoEl).toBeVisible();
+  await expect(firstCard.getByTestId("comfy-output-stream-buffering")).toBeVisible();
+  await expect(videoEl).toHaveAttribute(
+    "src",
+    "http://127.0.0.1:49999/media/test-secret/outputs/cccccccccccccccccccccccccccccccc",
+  );
+  await expect.poll(() => sawMediaRequest).toBe(true);
+  expect(sawRangeHeader).toMatch(/^bytes=0-/);
+  releaseMediaRoute?.();
+  await expect(firstCard.getByTestId("comfy-output-stream-buffering")).toHaveCount(0);
+  const [previewCalls, legacyAssetCalls] = await page.evaluate(() => [
+    (window as any).__previewUrlCalls || [],
+    (window as any).__legacyAssetCalls || [],
+  ]);
+  expect(previewCalls).toEqual(["cccccccccccccccccccccccccccccccc"]);
+  expect(legacyAssetCalls).toHaveLength(0);
+});

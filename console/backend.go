@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"sync"
 	"time"
 
@@ -35,11 +36,13 @@ func newColabOneBridgeClosedError() error {
 // legacy Python subprocess pipe with zero-IPC direct Go calls.
 type colabOneBridge struct {
 	mu            sync.Mutex
-	ctrl          *controller.ColabOneController
-	vault         *vault.ColabOneVault
-	factory       func() *controller.ColabOneController
-	closeCtrl     func(*controller.ColabOneController)
-	onFocusWindow func()
+	ctrl           *controller.ColabOneController
+	vault          *vault.ColabOneVault
+	factory        func() *controller.ColabOneController
+	closeCtrl      func(*controller.ColabOneController)
+	resolveMediaFn func(context.Context, string) (*controller.ColabOneOutputMediaMeta, error)
+	serveMediaFn   func(context.Context, http.ResponseWriter, *http.Request, string)
+	onFocusWindow  func()
 	starting      bool
 	startDone     chan struct{}
 	closedCh      chan struct{}
@@ -266,6 +269,59 @@ func (b *colabOneBridge) logActivity(message, source, level string) {
 		return
 	}
 	ctrl.LogActivity(message, source, level)
+}
+
+func (b *colabOneBridge) resolveOutputMedia(
+	ctx context.Context,
+	id string,
+) (*controller.ColabOneOutputMediaMeta, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	b.mu.Lock()
+	fn := b.resolveMediaFn
+	b.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, id)
+	}
+	ctrl, err := b.ensureController(ctx)
+	if err != nil {
+		return nil, err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	meta, err := ctrl.ResolveOutputMediaMeta(callCtx, id)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return nil, errors.New(colabOneT("err.bridgeTimeout"))
+		}
+		return nil, errors.New(truncateColabOneRunes(activity.SafeMessage(err.Error()), 500))
+	}
+	return meta, nil
+}
+
+func (b *colabOneBridge) serveOutputMedia(
+	ctx context.Context,
+	rw http.ResponseWriter,
+	r *http.Request,
+	id string,
+) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	b.mu.Lock()
+	fn := b.serveMediaFn
+	b.mu.Unlock()
+	if fn != nil {
+		fn(ctx, rw, r, id)
+		return
+	}
+	ctrl, err := b.ensureController(ctx)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	ctrl.ServeOutputMediaHTTP(ctx, rw, r, id)
 }
 
 func (b *colabOneBridge) close() {

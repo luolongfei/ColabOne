@@ -687,3 +687,33 @@ func TestColabOneCUUsageStoreBeginRunIgnoresPreRunOfflineDropAndColdStartBridges
 		t.Fatalf("expected 0.03 CU unsettled bridge on cold install first sample, got %.4f", u)
 	}
 }
+
+func TestColabOneCUUsageStoreEstimateWindowCU(t *testing.T) {
+	dir := t.TempDir()
+	base := 1763856000.0 // aligned on 30-min boundary
+	store := NewColabOneCUUsageStore(dir, func() float64 { return base + 4000 })
+
+	// Bucket 1 [base, base+1800): single GPU running at 12.0 CU/hr
+	store.RecordSample("creator@example.com", base+60, 100.0, true, 12.0, 1)
+	store.RecordSample("creator@example.com", base+660, 98.0, true, 12.0, 1)
+	store.RecordSample("creator@example.com", base+1260, 96.0, true, 12.0, 1)
+
+	// 10-minute workflow inside bucket 1 -> 12.0 * 600 / 3600 = 2.00 CU
+	cu, rate, est, ok := store.EstimateWindowCU("creator@example.com", base+100, base+700)
+	if !ok || !almostEqualCU(cu, 2.0, 1e-3) || !almostEqualCU(rate, 12.0, 1e-3) || est {
+		t.Fatalf("single-instance bucket estimate got (cu=%.4f, rate=%.4f, est=%v, ok=%v)", cu, rate, est, ok)
+	}
+
+	// Bucket 2 [base+1800, base+3600): 2 concurrent instances at total 24.0 CU/hr -> single-instance 12.0 CU/hr (estimated)
+	store.RecordSample("creator@example.com", base+1800, 94.2, true, 24.0, 2)
+	store.RecordSample("creator@example.com", base+2400, 90.2, true, 24.0, 2)
+	cu2, rate2, est2, ok2 := store.EstimateWindowCU("creator@example.com", base+1900, base+2200)
+	if !ok2 || !almostEqualCU(cu2, 1.0, 1e-3) || !almostEqualCU(rate2, 12.0, 1e-3) || !est2 {
+		t.Fatalf("multi-instance bucket estimate got (cu=%.4f, rate=%.4f, est=%v, ok=%v)", cu2, rate2, est2, ok2)
+	}
+
+	// Outside any recorded bucket or run -> ok=false
+	if _, _, _, found := store.EstimateWindowCU("creator@example.com", base-7200, base-6600); found {
+		t.Fatal("expected ok=false for window far outside recorded telemetry")
+	}
+}

@@ -18,6 +18,7 @@ import {
   colabOneWebOpenCanvasURL,
   colabOneWebOpenDeferredTab,
   colabOneWebOpenExternalURL,
+  colabOneWebOutputPreviewURL,
   colabOneWebSessionExpired,
   colabOneWebSnapshotRaw,
   createColabOneCapabilities,
@@ -608,5 +609,56 @@ describe("colabOneWebConsole URL validators and Cloudflared helpers", () => {
     expect(
       colabOneNormalizePublicOriginInput("  https://console.example.com/// "),
     ).toBe("https://console.example.com");
+  });
+
+  it("preflights authenticated web media preview URLs via HEAD and handles errors", async () => {
+    const validId = "0123456789abcdef0123456789abcdef";
+    await expect(colabOneWebOutputPreviewURL("bad-id")).rejects.toThrow(
+      "Invalid output artifact ID",
+    );
+
+    const fetchSpy = vi.fn().mockResolvedValueOnce(
+      makeResponse("", {
+        status: 200,
+        headers: {
+          "Content-Type": "video/mp4",
+          "Accept-Ranges": "bytes",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const abortController = new AbortController();
+    const url = await colabOneWebOutputPreviewURL(validId, abortController.signal);
+    expect(url).toBe(`/api/outputs/${validId}/media`);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `/api/outputs/${validId}/media`,
+      expect.objectContaining({
+        method: "HEAD",
+        credentials: "same-origin",
+        signal: abortController.signal,
+        headers: expect.objectContaining({
+          [COLABONE_WEB_CLIENT_HEADER]: COLABONE_WEB_CLIENT_VALUE,
+        }),
+      }),
+    );
+
+    fetchSpy.mockResolvedValueOnce(
+      makeResponse("", {
+        status: 403,
+        headers: {
+          "X-ColabOne-Error": encodeURIComponent("请开启无感云盘 API"),
+        },
+      }),
+    );
+    await expect(colabOneWebOutputPreviewURL(validId)).rejects.toThrow(
+      "请开启无感云盘 API",
+    );
+
+    fetchSpy.mockResolvedValueOnce(makeResponse("", { status: 401 }));
+    await expect(colabOneWebOutputPreviewURL(validId)).rejects.toThrow(
+      "Unauthorized",
+    );
+    expect(colabOneWebSessionExpired.value).toBe(true);
   });
 });

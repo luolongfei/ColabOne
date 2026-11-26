@@ -174,15 +174,16 @@ type ColabOneWebCapabilities struct {
 
 // ColabOneWebConsoleOptions configures a ColabOneWebConsole instance.
 type ColabOneWebConsoleOptions struct {
-	ConfigDir     string
-	Vault         VaultStore
-	CallBridge    BridgeCaller
-	FrontendFS    FrontendFSFunc
-	AppVersion    string
-	GetLocale     LocaleFunc
-	OnLog         LogFunc
-	OnStateChange func(ColabOneWebConsoleState)
-	Now           func() time.Time
+	ConfigDir        string
+	Vault            VaultStore
+	CallBridge       BridgeCaller
+	ServeOutputMedia func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string)
+	FrontendFS       FrontendFSFunc
+	AppVersion       string
+	GetLocale        LocaleFunc
+	OnLog            LogFunc
+	OnStateChange    func(ColabOneWebConsoleState)
+	Now              func() time.Time
 }
 
 type colabOneWebSession struct {
@@ -1461,6 +1462,19 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 		w.handleOutputDownload(rw, r, id)
 		return
 
+	case strings.HasPrefix(reqPath, "/api/outputs/") && strings.HasSuffix(reqPath, "/media"):
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeMethodNotAllowed(rw, "GET, HEAD")
+			return
+		}
+		if !w.authenticateRequest(rw, r) {
+			writeHeadAwareJSONError(rw, r, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(reqPath, "/api/outputs/"), "/media")
+		w.handleOutputMedia(rw, r, id)
+		return
+
 	case reqPath == "/api" || strings.HasPrefix(reqPath, "/api/"):
 		if !w.authenticateRequest(rw, r) {
 			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
@@ -2172,6 +2186,18 @@ func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *htt
 		rw.WriteHeader(http.StatusOK)
 		_, _ = rw.Write(buf.Bytes())
 	}
+}
+
+func (w *ColabOneWebConsole) handleOutputMedia(rw http.ResponseWriter, r *http.Request, id string) {
+	if !outputIDRe.MatchString(id) {
+		writeHeadAwareJSONError(rw, r, http.StatusBadRequest, "输出文件 ID 无效")
+		return
+	}
+	if w.opts.ServeOutputMedia == nil {
+		writeHeadAwareJSONError(rw, r, http.StatusServiceUnavailable, "控制器桥接未初始化")
+		return
+	}
+	w.opts.ServeOutputMedia(r.Context(), rw, r, id)
 }
 
 func writeOutputDownloadHeaders(rw http.ResponseWriter, mimeType, filename string, size int64) {

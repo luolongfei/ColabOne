@@ -12,6 +12,10 @@ import {
   clampColabOneNumericFieldValue,
   defaultFieldValues,
   extractPublicHost,
+  formatOutputCU,
+  formatOutputCUExact,
+  formatOutputCreatedAt,
+  formatOutputCreatedAtISO,
   formatOutputSize,
   groupWorkflowFields,
   hasNonCommercialNotice,
@@ -511,6 +515,38 @@ describe("formatOutputSize", () => {
     expect(formatOutputSize(1048575)).toBe("1.00 MB");
     expect(formatOutputSize(1024 * 1024)).toBe("1.00 MB");
     expect(formatOutputSize(2.5 * 1024 * 1024)).toBe("2.50 MB");
+  });
+});
+
+describe("formatOutputCreatedAt and formatOutputCU", () => {
+  it("formats Unix epoch timestamps into sortable YYYY-MM-DD HH:mm:ss strings", () => {
+    expect(formatOutputCreatedAt(0)).toBe("");
+    expect(formatOutputCreatedAt(-100)).toBe("");
+    expect(formatOutputCreatedAt(Number.NaN)).toBe("");
+    expect(formatOutputCreatedAt(undefined)).toBe("");
+
+    const sampleSec = 1_764_093_608;
+    const formatted = formatOutputCreatedAt(sampleSec);
+    expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(formatOutputCreatedAt(sampleSec * 1000)).toBe(formatted);
+    expect(formatOutputCreatedAtISO(sampleSec)).toBe(
+      new Date(sampleSec * 1000).toISOString(),
+    );
+    expect(formatOutputCreatedAtISO(0)).toBe("");
+  });
+
+  it("formats per-output CU consumption cleanly across sub-cent, normal, and large values", () => {
+    expect(formatOutputCU(0)).toBe("");
+    expect(formatOutputCU(-1)).toBe("");
+    expect(formatOutputCU(Number.NaN)).toBe("");
+    expect(formatOutputCU(undefined)).toBe("");
+    expect(formatOutputCU(0.0023)).toBe("< 0.01 CU");
+    expect(formatOutputCUExact(0.0023)).toBe("0.0023 CU");
+    expect(formatOutputCU(0.01)).toBe("0.01 CU");
+    expect(formatOutputCU(1.856)).toBe("1.86 CU");
+    expect(formatOutputCU(99.99)).toBe("99.99 CU");
+    expect(formatOutputCU(125.44)).toBe("125.4 CU");
+    expect(formatOutputCUExact(1.856)).toBe("1.86 CU");
   });
 });
 

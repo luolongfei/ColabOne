@@ -1448,6 +1448,74 @@ func TestOutputDownloadChunkingAndIntegrity(t *testing.T) {
 	}
 }
 
+func TestOutputMediaStreamingEndpointAuthAndRange(t *testing.T) {
+	validID := "0123456789abcdef0123456789abcdef"
+	payload := []byte("WEBCONSOLE-VIDEO-STREAM-PAYLOAD-0123456789")
+
+	var gotRange string
+	var gotMethod string
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir:  t.TempDir(),
+		Vault:      newMemoryVault(),
+		FrontendFS: sampleFrontendFS,
+		ServeOutputMedia: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string) {
+			gotRange = r.Header.Get("Range")
+			gotMethod = r.Method
+			rw.Header().Set("Content-Type", "video/mp4")
+			rw.Header().Set("Accept-Ranges", "bytes")
+			if r.Method == http.MethodHead {
+				rw.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+				rw.WriteHeader(http.StatusOK)
+				return
+			}
+			rw.Header().Set("Content-Range", fmt.Sprintf("bytes 0-15/%d", len(payload)))
+			rw.Header().Set("Content-Length", "16")
+			rw.WriteHeader(http.StatusPartialContent)
+			_, _ = rw.Write(payload[:16])
+		},
+	})
+	defer wc.Close()
+
+	// Unauthenticated GET/HEAD must be rejected with 401.
+	unauthReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3232/api/outputs/"+validID+"/media", nil)
+	unauthRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated media expected 401, got %d", unauthRec.Code)
+	}
+
+	passcode, _ := wc.Passcode()
+	cookie := loginForCookie(t, wc.Handler(), "127.0.0.1:3232", passcode, nil)
+
+	// Invalid ID -> 400
+	badReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3232/api/outputs/bad-id/media", nil)
+	badReq.AddCookie(cookie)
+	badRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid media id expected 400, got %d", badRec.Code)
+	}
+
+	// Authenticated HEAD
+	headReq := httptest.NewRequest(http.MethodHead, "http://127.0.0.1:3232/api/outputs/"+validID+"/media", nil)
+	headReq.AddCookie(cookie)
+	headRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(headRec, headReq)
+	if headRec.Code != http.StatusOK || gotMethod != http.MethodHead || headRec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("HEAD media failed: code=%d method=%q headers=%#v", headRec.Code, gotMethod, headRec.Header())
+	}
+
+	// Authenticated Range GET -> 206 Partial Content
+	getReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3232/api/outputs/"+validID+"/media", nil)
+	getReq.Header.Set("Range", "bytes=0-15")
+	getReq.AddCookie(cookie)
+	getRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusPartialContent || gotRange != "bytes=0-15" || getRec.Body.String() != string(payload[:16]) {
+		t.Fatalf("GET Range media failed: code=%d range=%q body=%q", getRec.Code, gotRange, getRec.Body.String())
+	}
+}
+
 func TestFrontendStaticServingSPADotfilesAndAuthRedirect(t *testing.T) {
 	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
 		ConfigDir:  t.TempDir(),

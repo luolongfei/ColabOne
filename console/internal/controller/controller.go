@@ -134,6 +134,7 @@ type ColabOneController struct {
 	driveAPIBaseURL        string
 	driveHTTPClient        *http.Client
 	driveHTTPClientOwned   bool
+	driveStreamHTTPClient  *http.Client
 
 	rootCtx    context.Context
 	cancelRoot context.CancelFunc
@@ -339,6 +340,13 @@ func (c *ColabOneController) Close() {
 		c.wg.Wait()
 		if c.driveHTTPClientOwned && c.driveHTTPClient != nil {
 			c.driveHTTPClient.CloseIdleConnections()
+		}
+		c.mu.Lock()
+		streamClient := c.driveStreamHTTPClient
+		c.driveStreamHTTPClient = nil
+		c.mu.Unlock()
+		if streamClient != nil {
+			streamClient.CloseIdleConnections()
 		}
 		if c.cuUsage != nil {
 			_ = c.cuUsage.Flush()

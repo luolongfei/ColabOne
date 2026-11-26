@@ -1240,6 +1240,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			}
 			resMap := asMap(res)
 			c.recordExportedDriveOutput(identity, resMap)
+			if sanitizeDriveFileID(asString(resMap["drive_file_id"])) == "" {
+				c.triggerBackgroundDriveOutputsSync()
+			}
 			remoteFolder := asString(resMap["remote_folder"])
 			if remoteFolder == "" {
 				remoteFolder = "ColabOne_Drive/outputs"
