@@ -1102,7 +1102,9 @@ export const jaJPMessages: ColabOneMessages = {
     "現在 VRAM に LLM が読み込まれています。ComfyUI 起動時に自動アンロードします（ファイルは保持）。",
   "comfy.modeAria": "ComfyUI モード",
   "comfy.tabStudio": "ワークフロー工房",
+  "comfy.tabLive": "ライブスタジオ",
   "comfy.tabCanvas": "ネイティブキャンバス",
+  "comfy.liveActiveAria": "ライブスタジオ稼働中",
   "comfy.canvasActiveAria": "キャンバス公開中",
   "comfy.studioWorkflowCount": "{count} 件のワークフロー",
   "comfy.studioWorkflowCountOne": "{count} 件のワークフロー",
@@ -1966,11 +1968,16 @@ export const jaJPMessages: ColabOneMessages = {
   "webConsole.lanAddressesLabel": "LAN アクセスアドレス",
   "webConsole.publicAddressLabel": "公開ドメイン URL",
   "webConsole.copyAddressBtn": "URL をコピー",
-  "webConsole.copyTicketBtn": "ワンタイムログインリンクをコピー",
+  "webConsole.copyTicketBtn": "クイックログインリンクをコピー",
+  "webConsole.ticketSingleUseLabel": "1 回限り有効",
   "webConsole.copyTicketPublicHint":
-    "60 秒間有効な公開ワンタイムログインリンクを生成します",
+    "60 秒間何度でも使える公開クイックログインリンクを生成します（チャット共有時の自動プレビューに対応）",
   "webConsole.copyTicketLocalHint":
-    "公開ドメイン未設定時はローカル用ワンタイムログインリンクを生成します",
+    "公開ドメイン未設定時は 60 秒間何度でも使えるローカル用クイックログインリンクを生成します",
+  "webConsole.copyTicketPublicSingleUseHint":
+    "60 秒間有効な公開ワンタイムログインリンクを生成します（1 回使用すると失効）",
+  "webConsole.copyTicketLocalSingleUseHint":
+    "公開ドメイン未設定時は 60 秒間有効なローカル用ワンタイムログインリンクを生成します",
   "webConsole.revokeSessionsBtn": "すべての Web セッションを無効化",
   "webConsole.bindLabel": "待受範囲",
   "webConsole.bindLoopback": "ローカルのみ (127.0.0.1)",
@@ -2011,6 +2018,8 @@ export const jaJPMessages: ColabOneMessages = {
     "アクセスパスコードを再生成し、以前の Web セッションをすべて無効化しました",
   "webConsole.toastPasscodeCopied": "Web アクセスパスコードをコピーしました",
   "webConsole.toastTicketCopied":
+    "クイックログインリンクをコピーしました（{seconds} 秒間何度でも利用可能）",
+  "webConsole.toastTicketCopiedSingleUse":
     "ワンタイムログインリンクをコピーしました（{seconds} 秒間有効・1 回使用すると自動失効）",
   "webConsole.toastSessionsRevoked":
     "すべてのオンライン Web セッションを無効化しました",

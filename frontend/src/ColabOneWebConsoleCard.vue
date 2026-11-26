@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import {
   Alert as AAlert,
   Button as AButton,
+  Checkbox as ACheckbox,
   Collapse as ACollapse,
   CollapsePanel as ACollapsePanel,
   Input as AInput,
@@ -44,6 +45,7 @@ import {
   type ColabOneWebConsoleState,
   type ColabOneWebConsoleUpdateRequest,
 } from "./colabOneWebConsole";
+import { COLABONE_STORAGE_KEYS } from "./storage";
 import { t, tb } from "./i18n";
 
 defineOptions({
@@ -65,12 +67,25 @@ const emit = defineEmits<{
   saveConfig: [req: ColabOneWebConsoleUpdateRequest];
   setPasscode: [passcode: string];
   copyPasscode: [];
-  createTicket: [];
+  createTicket: [singleUse: boolean];
   revokeSessions: [];
   copyText: [text: string, labelKey: string];
   openUrl: [url: string];
   error: [err: unknown];
 }>();
+
+function readSavedTicketSingleUse(): boolean {
+  try {
+    return (
+      typeof window !== "undefined" &&
+      window.localStorage?.getItem(
+        COLABONE_STORAGE_KEYS.webConsoleTicketSingleUse,
+      ) === "1"
+    );
+  } catch {
+    return false;
+  }
+}
 
 const expanded = ref(Boolean(props.state.enabled || props.state.last_error));
 const guideActiveKey = ref<string[]>([]);
@@ -78,6 +93,20 @@ const passcodeDraft = ref("");
 const passcodeInputRef = ref<{ hide?: () => void } | null>(null);
 const originHostRef = ref<HTMLElement | null>(null);
 const originPeeking = ref(false);
+const ticketSingleUse = ref<boolean>(readSavedTicketSingleUse());
+
+watch(ticketSingleUse, (singleUse) => {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage?.setItem(
+        COLABONE_STORAGE_KEYS.webConsoleTicketSingleUse,
+        singleUse ? "1" : "0",
+      );
+    }
+  } catch {
+    // Ignore storage quota / privacy mode errors.
+  }
+});
 
 const draftBindMode = ref<ColabOneWebConsoleBindMode>(
   props.state.bind_mode === "lan" ? "lan" : "loopback",
@@ -489,13 +518,21 @@ function copyQuickCommand() {
               :loading="props.ticketBusy"
               :disabled="props.saving"
               data-testid="settings-web-console-ticket-btn"
-              @click="emit('createTicket')"
+              @click="emit('createTicket', ticketSingleUse)"
             >
               <template #icon>
                 <PhLinkSimple :size="14" />
               </template>
               {{ t("webConsole.copyTicketBtn") }}
             </AButton>
+            <ACheckbox
+              v-model:checked="ticketSingleUse"
+              :disabled="props.saving || props.ticketBusy"
+              class="co-webconsole-single-use-check"
+              data-testid="settings-web-console-ticket-single-use"
+            >
+              {{ t("webConsole.ticketSingleUseLabel") }}
+            </ACheckbox>
             <AButton
               v-if="props.state.active_sessions > 0"
               size="small"
@@ -516,9 +553,13 @@ function copyQuickCommand() {
             data-testid="settings-web-console-ticket-hint"
           >
             {{
-              props.state.public_origin
-                ? t("webConsole.copyTicketPublicHint")
-                : t("webConsole.copyTicketLocalHint")
+              ticketSingleUse
+                ? props.state.public_origin
+                  ? t("webConsole.copyTicketPublicSingleUseHint")
+                  : t("webConsole.copyTicketLocalSingleUseHint")
+                : props.state.public_origin
+                  ? t("webConsole.copyTicketPublicHint")
+                  : t("webConsole.copyTicketLocalHint")
             }}
           </span>
         </div>
@@ -950,7 +991,13 @@ function copyQuickCommand() {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
+}
+
+.co-webconsole-single-use-check {
+  font-size: 12.5px;
+  color: var(--co-secondary-text);
+  user-select: none;
 }
 
 .co-webconsole-section {

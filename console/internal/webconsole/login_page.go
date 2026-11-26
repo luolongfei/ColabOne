@@ -80,7 +80,7 @@ var colabOneWebLoginCopyByLocale = map[string]colabOneWebLoginCopy{
 		sessionError:         "无法创建登录会话，请重试",
 		networkError:         "无法连接到 ColabOne 宿主机，请检查网络后重试",
 		genericError:         "验证未通过，请重试",
-		ticketExpiredError:   "一次性登录链接已失效或已使用，请重新生成或输入访问口令",
+		ticketExpiredError:   "快捷登录链接已失效或已使用，请重新生成或输入访问口令",
 		footer:               "ColabOne · 远端 GPU 工作空间",
 	},
 	"en-US": {
@@ -103,7 +103,7 @@ var colabOneWebLoginCopyByLocale = map[string]colabOneWebLoginCopy{
 		sessionError:         "Unable to create a session; please try again",
 		networkError:         "Unable to reach the ColabOne host. Check your connection and try again.",
 		genericError:         "Verification failed. Please try again.",
-		ticketExpiredError:   "One-time sign-in link has expired or was already used; generate a new link or enter your access passcode",
+		ticketExpiredError:   "Sign-in link has expired or was already used; generate a new link or enter your access passcode",
 		footer:               "ColabOne · Remote GPU Workspace",
 	},
 	"zh-TW": {
@@ -126,7 +126,7 @@ var colabOneWebLoginCopyByLocale = map[string]colabOneWebLoginCopy{
 		sessionError:         "無法建立登入工作階段，請重試",
 		networkError:         "無法連線至 ColabOne 宿主機，請檢查網路後重試",
 		genericError:         "驗證未通過，請重試",
-		ticketExpiredError:   "一次性登入連結已失效或已使用，請重新產生或輸入存取通行碼",
+		ticketExpiredError:   "快速登入連結已失效或已使用，請重新產生或輸入存取通行碼",
 		footer:               "ColabOne · 遠端 GPU 工作區",
 	},
 	"zh-HK": {
@@ -149,7 +149,7 @@ var colabOneWebLoginCopyByLocale = map[string]colabOneWebLoginCopy{
 		sessionError:         "無法建立登入工作階段，請重試",
 		networkError:         "無法連接至 ColabOne 宿主機，請檢查網絡後再試",
 		genericError:         "驗證失敗，請再試",
-		ticketExpiredError:   "一次性登入連結已失效或已使用，請重新產生或輸入存取通行碼",
+		ticketExpiredError:   "快速登入連結已失效或已使用，請重新產生或輸入存取通行碼",
 		footer:               "ColabOne · 遠端 GPU 工作區",
 	},
 	"ja-JP": {
@@ -172,7 +172,7 @@ var colabOneWebLoginCopyByLocale = map[string]colabOneWebLoginCopy{
 		sessionError:         "セッションを作成できませんでした。もう一度お試しください",
 		networkError:         "ColabOne ホストに接続できません。ネットワークを確認してください。",
 		genericError:         "認証に失敗しました。もう一度お試しください。",
-		ticketExpiredError:   "ワンタイムログインリンクは失効しているか使用済みです。再生成するかアクセスパスコードを入力してください",
+		ticketExpiredError:   "ワンタイムまたはクイックログインリンクは失効しているか使用済みです。再生成するかアクセスパスコードを入力してください",
 		footer:               "ColabOne · リモート GPU ワークスペース",
 	},
 	"ko-KR": {
@@ -195,7 +195,7 @@ var colabOneWebLoginCopyByLocale = map[string]colabOneWebLoginCopy{
 		sessionError:         "세션을 생성하지 못했습니다. 다시 시도해 주세요",
 		networkError:         "ColabOne 호스트에 연결할 수 없습니다. 네트워크를 확인한 후 다시 시도하세요.",
 		genericError:         "인증에 실패했습니다. 다시 시도해 주세요.",
-		ticketExpiredError:   "일회용 로그인 링크가 만료되었거나 이미 사용되었습니다. 새로 생성하거나 접속 암호를 입력해 주세요",
+		ticketExpiredError:   "빠른 로그인 링크가 만료되었거나 이미 사용되었습니다. 새로 생성하거나 접속 암호를 입력해 주세요",
 		footer:               "ColabOne · 원격 GPU 워크스페이스",
 	},
 }

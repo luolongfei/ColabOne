@@ -1075,7 +1075,9 @@ export const zhHKMessages: ColabOneMessages = {
     "目前顯存已載入語言模型，啟動 ComfyUI 會自動卸載該模型以釋放顯存，已下載的檔案會保留。",
   "comfy.modeAria": "ComfyUI 模式",
   "comfy.tabStudio": "工作流工坊",
+  "comfy.tabLive": "實時演播",
   "comfy.tabCanvas": "原生畫布",
+  "comfy.liveActiveAria": "實時演播運行中",
   "comfy.canvasActiveAria": "畫布已開啟",
   "comfy.studioWorkflowCount": "{count} 個工作流",
   "comfy.studioWorkflowCountOne": "{count} 個工作流",
@@ -1915,9 +1917,16 @@ export const zhHKMessages: ColabOneMessages = {
   "webConsole.lanAddressesLabel": "局域網存取網址",
   "webConsole.publicAddressLabel": "公網域名網址",
   "webConsole.copyAddressBtn": "複製網址",
-  "webConsole.copyTicketBtn": "複製一次性登入連結",
-  "webConsole.copyTicketPublicHint": "將產生 60 秒有效的公網一次性登入連結",
-  "webConsole.copyTicketLocalHint": "未填寫公網域名時將產生本地一次性登入連結",
+  "webConsole.copyTicketBtn": "複製快捷登入連結",
+  "webConsole.ticketSingleUseLabel": "僅限存取一次",
+  "webConsole.copyTicketPublicHint":
+    "將產生 60 秒內可多次使用的公網快捷登入連結（兼容通訊軟件轉發預先擷取）",
+  "webConsole.copyTicketLocalHint":
+    "未填寫公網域名時將產生 60 秒內可多次使用的本地快捷登入連結",
+  "webConsole.copyTicketPublicSingleUseHint":
+    "將產生 60 秒有效的公網一次性登入連結（使用一次後立即失效）",
+  "webConsole.copyTicketLocalSingleUseHint":
+    "未填寫公網域名時將產生 60 秒有效的本地一次性登入連結（使用一次後立即失效）",
   "webConsole.revokeSessionsBtn": "撤銷全部網頁工作階段",
   "webConsole.bindLabel": "監聽範圍",
   "webConsole.bindLoopback": "僅本地 (127.0.0.1)",
@@ -1956,6 +1965,8 @@ export const zhHKMessages: ColabOneMessages = {
     "已重新產生存取通行碼，舊網頁工作階段已全部撤銷",
   "webConsole.toastPasscodeCopied": "已複製網頁存取通行碼",
   "webConsole.toastTicketCopied":
+    "已複製快捷登入連結（{seconds} 秒內可多次存取）",
+  "webConsole.toastTicketCopiedSingleUse":
     "已複製一次性登入連結（{seconds} 秒內有效，使用一次後自動失效）",
   "webConsole.toastSessionsRevoked": "已撤銷全部在線網頁工作階段",
   "webConsole.toastAddressCopied": "已複製存取網址",

@@ -3891,18 +3891,21 @@ async function handleWebConsoleCopyPasscode() {
   }
 }
 
-async function handleWebConsoleCreateTicket() {
+async function handleWebConsoleCreateTicket(singleUse = false) {
   if (webConsoleTicketBusy.value) return;
   webConsoleTicketBusy.value = true;
   try {
-    const ticket = await colabOneCreateWebConsoleLoginTicket();
+    const ticket = await colabOneCreateWebConsoleLoginTicket(singleUse);
     const targetUrl = ticket.url || ticket.local_url;
     if (!targetUrl) {
       throw new Error(t("common.copyFailed"));
     }
+    const toastKey = ticket.single_use
+      ? "webConsole.toastTicketCopiedSingleUse"
+      : "webConsole.toastTicketCopied";
     await copyWithToast(
       targetUrl,
-      t("webConsole.toastTicketCopied", {
+      t(toastKey, {
         seconds: ticket.ttl_seconds || 60,
       }),
       "web-console-ticket",

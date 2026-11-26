@@ -79,9 +79,9 @@ func TestColabOneDesktopWebConsoleEndToEnd(t *testing.T) {
 		t.Fatalf("expected valid passcode, got len=%d err=%v", len(passcode), err)
 	}
 
-	// Create a one-time login ticket and redeem it against the live HTTP listener.
-	ticket, err := d.CreateWebConsoleLoginTicket()
-	if err != nil || !strings.Contains(ticket.URL, "/_colabone_web/redeem?ticket=") {
+	// Create a short-lived reusable login ticket and redeem it against the live HTTP listener.
+	ticket, err := d.CreateWebConsoleLoginTicket(false)
+	if err != nil || !strings.Contains(ticket.URL, "/_colabone_web/redeem?ticket=") || ticket.SingleUse {
 		t.Fatalf("unexpected login ticket: %+v err=%v", ticket, err)
 	}
 

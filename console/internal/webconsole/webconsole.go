@@ -140,13 +140,14 @@ type ColabOneWebConsoleUpdateRequest struct {
 	PublicOrigin *string `json:"public_origin,omitempty"`
 }
 
-// ColabOneWebConsoleTicket describes a short-lived, single-use browser unlock URL.
+// ColabOneWebConsoleTicket describes a short-lived browser unlock URL.
 type ColabOneWebConsoleTicket struct {
 	URL            string `json:"url"`
 	LocalURL       string `json:"local_url"`
 	ExpiresAt      int64  `json:"expires_at"`
 	TTLSeconds     int    `json:"ttl_seconds"`
 	UsesPublicHost bool   `json:"uses_public_host"`
+	SingleUse      bool   `json:"single_use"`
 }
 
 // ColabOneWebCapabilities advertises which desktop/web features are available in web mode.
@@ -187,6 +188,7 @@ type colabOneWebSession struct {
 type colabOneWebTicket struct {
 	createdAt time.Time
 	expiresAt time.Time
+	singleUse bool
 }
 
 type colabOneWebMediaChunk struct {
@@ -874,8 +876,12 @@ func (w *ColabOneWebConsole) setPasscodeOpLocked(raw string) (ColabOneWebConsole
 	return w.State(), true, nil
 }
 
-// CreateLoginTicket creates a single-use, short-lived browser unlock ticket URL.
-func (w *ColabOneWebConsole) CreateLoginTicket() (ColabOneWebConsoleTicket, error) {
+// CreateLoginTicket creates a short-lived browser unlock ticket URL.
+// When singleUse is false (default), the link can be redeemed repeatedly within
+// LoginTicketTTL so messaging link-preview crawlers or multi-device taps do not
+// prematurely invalidate it. When singleUse is true, the first non-crawler
+// redemption consumes the ticket immediately.
+func (w *ColabOneWebConsole) CreateLoginTicket(singleUse bool) (ColabOneWebConsoleTicket, error) {
 	rawToken, err := generateHexToken(32)
 	if err != nil {
 		return ColabOneWebConsoleTicket{}, err
@@ -896,6 +902,7 @@ func (w *ColabOneWebConsole) CreateLoginTicket() (ColabOneWebConsoleTicket, erro
 	w.tickets[digest] = colabOneWebTicket{
 		createdAt: now,
 		expiresAt: expiresAt,
+		singleUse: singleUse,
 	}
 	port := w.cfg.Port
 	publicOrigin := w.cfg.PublicOrigin
@@ -915,6 +922,7 @@ func (w *ColabOneWebConsole) CreateLoginTicket() (ColabOneWebConsoleTicket, erro
 		ExpiresAt:      expiresAt.Unix(),
 		TTLSeconds:     int(LoginTicketTTL.Seconds()),
 		UsesPublicHost: usesPublic,
+		SingleUse:      singleUse,
 	}, nil
 }
 
@@ -1741,9 +1749,62 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 	writeJSON(rw, http.StatusOK, map[string]bool{"ok": true})
 }
 
+var linkPreviewBotTokens = []string{
+	"telegrambot",
+	"whatsapp",
+	"slackbot",
+	"discordbot",
+	"twitterbot",
+	"facebookexternalhit",
+	"facebot",
+	"linkedinbot",
+	"skypeuripreview",
+	"bingpreview",
+	"embedly",
+	"quora link preview",
+	"vkshare",
+	"line-poker",
+	"kakaotalk-scrap",
+	"feishu",
+	"larkurlpreview",
+}
+
+func isLinkPreviewRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, hdr := range []string{"Sec-Purpose", "Purpose", "X-Purpose"} {
+		val := strings.ToLower(strings.TrimSpace(r.Header.Get(hdr)))
+		if strings.Contains(val, "prefetch") || strings.Contains(val, "preview") {
+			return true
+		}
+	}
+	ua := strings.ToLower(strings.TrimSpace(r.Header.Get("User-Agent")))
+	if ua == "" {
+		return false
+	}
+	for _, token := range linkPreviewBotTokens {
+		if strings.Contains(ua, token) {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Request) {
 	rw.Header().Set("Cache-Control", "no-store")
 	rw.Header().Set("Referrer-Policy", "no-referrer")
+
+	// Messaging apps (Telegram, Slack, Discord, WhatsApp, etc.) and browser
+	// link-prefetchers routinely pre-fetch shared URLs. Return a minimal
+	// noindex stub without minting a session or consuming a single-use ticket.
+	if isLinkPreviewRequest(r) {
+		rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+		rw.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		rw.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(rw, `<!doctype html><html><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow"><title>ColabOne</title></head><body>ColabOne Remote Web Console</body></html>`)
+		return
+	}
 
 	rawTicket := strings.TrimSpace(r.URL.Query().Get("ticket"))
 	if rawTicket == "" {
@@ -1756,13 +1817,21 @@ func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Reques
 	w.mu.Lock()
 	w.pruneExpiredTicketsLocked(now)
 	ticket, exists := w.tickets[digest]
-	if exists {
+	valid := exists && now.Before(ticket.expiresAt)
+	if valid && ticket.singleUse {
 		delete(w.tickets, digest)
 	}
 	w.mu.Unlock()
 
-	if !exists || !now.Before(ticket.expiresAt) {
+	if !valid {
 		w.handleLoginPage(rw, r, http.StatusUnauthorized, "ticket_expired")
+		return
+	}
+
+	// If this browser already holds a valid session cookie, redirect directly
+	// without minting a duplicate session entry.
+	if w.authenticateRequest(r) {
+		http.Redirect(rw, r, "/", http.StatusFound)
 		return
 	}
 

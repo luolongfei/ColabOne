@@ -478,7 +478,7 @@ func TestPasscodeGenerationValidationAndSessionRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookie := loginForCookie(t, wc.Handler(), fmt.Sprintf("127.0.0.1:%d", port), "12345678", nil)
-	ticket, err := wc.CreateLoginTicket()
+	ticket, err := wc.CreateLoginTicket(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -773,43 +773,97 @@ func TestLoginPageRateLimitingCookiesTicketsAndLogout(t *testing.T) {
 		t.Fatalf("authenticated GET /_colabone_web/login expected 302 to /, got %d loc=%q", authedLoginRec.Code, authedLoginRec.Header().Get("Location"))
 	}
 
-	// 3. One-time login tickets: valid, single-use, and expired
-	ticket, err := wc.CreateLoginTicket()
+	// 3. Login tickets: reusable within 60s (default), optional single-use, preview-bot immunity, and expiration
+	reusableTicket, err := wc.CreateLoginTicket(false)
 	if err != nil {
-		t.Fatalf("CreateLoginTicket failed: %v", err)
+		t.Fatalf("CreateLoginTicket(false) failed: %v", err)
 	}
-	if !ticket.UsesPublicHost || !strings.HasPrefix(ticket.URL, "https://console.example.com/_colabone_web/redeem?ticket=") {
-		t.Fatalf("unexpected ticket URL: %+v", ticket)
+	if reusableTicket.SingleUse || !reusableTicket.UsesPublicHost || !strings.HasPrefix(reusableTicket.URL, "https://console.example.com/_colabone_web/redeem?ticket=") {
+		t.Fatalf("unexpected reusable ticket URL: %+v", reusableTicket)
 	}
-	if ticket.TTLSeconds != int(LoginTicketTTL.Seconds()) {
-		t.Fatalf("unexpected TTLSeconds: %d", ticket.TTLSeconds)
+	if reusableTicket.TTLSeconds != int(LoginTicketTTL.Seconds()) {
+		t.Fatalf("unexpected TTLSeconds: %d", reusableTicket.TTLSeconds)
 	}
 
-	u, _ := url.Parse(ticket.URL)
+	ru, _ := url.Parse(reusableTicket.URL)
+	reusableReq1 := httptest.NewRequest(http.MethodGet, ru.RequestURI(), nil)
+	reusableReq1.Host = ru.Host
+	reusableReq1.Header.Set("X-Forwarded-Proto", "https")
+	reusableRec1 := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(reusableRec1, reusableReq1)
+	if reusableRec1.Code != http.StatusFound || reusableRec1.Header().Get("Location") != "/" {
+		t.Fatalf("reusable redeem #1 expected 302 to /, got %d location=%q", reusableRec1.Code, reusableRec1.Header().Get("Location"))
+	}
+	if reusableRec1.Header().Get("Cache-Control") != "no-store" || len(reusableRec1.Result().Cookies()) == 0 {
+		t.Fatalf("reusable redeem #1 missing no-store or session cookie")
+	}
+	// A second unauthenticated device/browser can redeem the same reusable link within 60s
+	reusableRec2 := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(reusableRec2, reusableReq1)
+	if reusableRec2.Code != http.StatusFound || len(reusableRec2.Result().Cookies()) == 0 {
+		t.Fatalf("reusable redeem #2 expected 302 with session cookie, got %d", reusableRec2.Code)
+	}
+	// An already-authenticated browser tapping the link again redirects cleanly without minting a duplicate session
+	sessionsBefore := wc.State().ActiveSessions
+	authedRedeemReq := httptest.NewRequest(http.MethodGet, ru.RequestURI(), nil)
+	authedRedeemReq.Host = ru.Host
+	authedRedeemReq.AddCookie(reusableRec1.Result().Cookies()[0])
+	authedRedeemRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(authedRedeemRec, authedRedeemReq)
+	if authedRedeemRec.Code != http.StatusFound || wc.State().ActiveSessions != sessionsBefore {
+		t.Fatalf("already-authenticated redeem should redirect without adding session: code=%d before=%d after=%d", authedRedeemRec.Code, sessionsBefore, wc.State().ActiveSessions)
+	}
+
+	// Single-use ticket: preview crawlers (TelegramBot / prefetch) must NOT consume it or mint sessions
+	singleTicket, err := wc.CreateLoginTicket(true)
+	if err != nil {
+		t.Fatalf("CreateLoginTicket(true) failed: %v", err)
+	}
+	if !singleTicket.SingleUse {
+		t.Fatalf("expected SingleUse=true")
+	}
+	u, _ := url.Parse(singleTicket.URL)
+	sessionsBeforeBot := wc.State().ActiveSessions
+	botReq := httptest.NewRequest(http.MethodGet, u.RequestURI(), nil)
+	botReq.Host = u.Host
+	botReq.Header.Set("User-Agent", "TelegramBot (like TwitterBot)")
+	botRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(botRec, botReq)
+	if botRec.Code != http.StatusOK || len(botRec.Result().Cookies()) != 0 || wc.State().ActiveSessions != sessionsBeforeBot {
+		t.Fatalf("TelegramBot preview should return 200 without cookie/session: code=%d cookies=%d", botRec.Code, len(botRec.Result().Cookies()))
+	}
+
+	prefetchReq := httptest.NewRequest(http.MethodGet, u.RequestURI(), nil)
+	prefetchReq.Host = u.Host
+	prefetchReq.Header.Set("Sec-Purpose", "prefetch")
+	prefetchRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(prefetchRec, prefetchReq)
+	if prefetchRec.Code != http.StatusOK || len(prefetchRec.Result().Cookies()) != 0 {
+		t.Fatalf("prefetch request should not consume single-use ticket: code=%d", prefetchRec.Code)
+	}
+
+	// First real browser redemption succeeds after bots/prefetch
 	redeemReq := httptest.NewRequest(http.MethodGet, u.RequestURI(), nil)
 	redeemReq.Host = u.Host
 	redeemReq.Header.Set("X-Forwarded-Proto", "https")
 	redeemRec := httptest.NewRecorder()
 	wc.Handler().ServeHTTP(redeemRec, redeemReq)
 	if redeemRec.Code != http.StatusFound || redeemRec.Header().Get("Location") != "/" {
-		t.Fatalf("redeem expected 302 to /, got %d location=%q", redeemRec.Code, redeemRec.Header().Get("Location"))
-	}
-	if redeemRec.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("redeem missing Cache-Control: no-store")
+		t.Fatalf("single-use redeem expected 302 to /, got %d location=%q", redeemRec.Code, redeemRec.Header().Get("Location"))
 	}
 	if len(redeemRec.Result().Cookies()) == 0 {
-		t.Fatalf("redeem expected session cookie")
+		t.Fatalf("single-use redeem expected session cookie")
 	}
 
-	// Reusing the exact same ticket must fail with 401 + expired notice
+	// Reusing the exact same single-use ticket must fail with 401 + expired notice
 	reuseRec := httptest.NewRecorder()
 	wc.Handler().ServeHTTP(reuseRec, redeemReq)
 	if reuseRec.Code != http.StatusUnauthorized || !strings.Contains(reuseRec.Body.String(), "expired") {
-		t.Fatalf("reused ticket expected 401 with expired notice, got %d", reuseRec.Code)
+		t.Fatalf("reused single-use ticket expected 401 with expired notice, got %d", reuseRec.Code)
 	}
 
-	// Ticket expires after 60s
-	ticket2, err := wc.CreateLoginTicket()
+	// Reusable ticket also expires cleanly after 60s
+	ticket2, err := wc.CreateLoginTicket(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -820,7 +874,7 @@ func TestLoginPageRateLimitingCookiesTicketsAndLogout(t *testing.T) {
 	expRec := httptest.NewRecorder()
 	wc.Handler().ServeHTTP(expRec, expReq)
 	if expRec.Code != http.StatusUnauthorized {
-		t.Fatalf("expired ticket expected 401, got %d", expRec.Code)
+		t.Fatalf("expired reusable ticket expected 401, got %d", expRec.Code)
 	}
 
 	// 4. Logout clears session and expires cookie (with CSRF check)
@@ -1303,7 +1357,7 @@ func TestLiveHTTPServerEndToEnd(t *testing.T) {
 		t.Fatalf("enable live server failed: %v", err)
 	}
 
-	ticket, err := wc.CreateLoginTicket()
+	ticket, err := wc.CreateLoginTicket(false)
 	if err != nil {
 		t.Fatalf("CreateLoginTicket failed: %v", err)
 	}
@@ -1380,7 +1434,7 @@ func TestSamePortBindModeSwapAndBoundsAndConcurrency(t *testing.T) {
 	defer wc.Close()
 
 	// CreateLoginTicket requires running server
-	if _, err := wc.CreateLoginTicket(); err == nil {
+	if _, err := wc.CreateLoginTicket(false); err == nil {
 		t.Fatalf("expected CreateLoginTicket to fail when server is stopped")
 	}
 
@@ -1395,7 +1449,7 @@ func TestSamePortBindModeSwapAndBoundsAndConcurrency(t *testing.T) {
 	}
 
 	// Ticket without PublicOrigin uses LocalURL
-	tk, err := wc.CreateLoginTicket()
+	tk, err := wc.CreateLoginTicket(false)
 	if err != nil || tk.UsesPublicHost || tk.URL != tk.LocalURL {
 		t.Fatalf("expected local ticket URL, got %+v err=%v", tk, err)
 	}
@@ -1438,7 +1492,7 @@ func TestSamePortBindModeSwapAndBoundsAndConcurrency(t *testing.T) {
 	var firstTicket ColabOneWebConsoleTicket
 	for i := 0; i < maxPendingTickets+4; i++ {
 		clk.Advance(time.Millisecond)
-		cur, err := wc.CreateLoginTicket()
+		cur, err := wc.CreateLoginTicket(false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1461,7 +1515,7 @@ func TestSamePortBindModeSwapAndBoundsAndConcurrency(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 10; i++ {
 				_ = wc.State()
-				_, _ = wc.CreateLoginTicket()
+				_, _ = wc.CreateLoginTicket(false)
 				rec := httptest.NewRecorder()
 				wc.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/_colabone_web/login", nil))
 			}

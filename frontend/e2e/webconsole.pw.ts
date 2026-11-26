@@ -204,14 +204,21 @@ test("desktop Settings Remote Web Console card toggles on default port 3232, gen
               active_sessions: 0,
             };
             return { ...webState };
-          case "ColabOneDesktop.CreateWebConsoleLoginTicket":
+          case "ColabOneDesktop.CreateWebConsoleLoginTicket": {
+            const singleUse = Boolean(args[0]);
             return {
-              url: "http://127.0.0.1:3232/_colabone_web/redeem?ticket=abc123",
-              local_url: "http://127.0.0.1:3232/_colabone_web/redeem?ticket=abc123",
+              url: singleUse
+                ? "http://127.0.0.1:3232/_colabone_web/redeem?ticket=once999"
+                : "http://127.0.0.1:3232/_colabone_web/redeem?ticket=abc123",
+              local_url: singleUse
+                ? "http://127.0.0.1:3232/_colabone_web/redeem?ticket=once999"
+                : "http://127.0.0.1:3232/_colabone_web/redeem?ticket=abc123",
               expires_at: Math.floor(Date.now() / 1000) + 60,
               ttl_seconds: 60,
               uses_public_host: false,
+              single_use: singleUse,
             };
+          }
           case "ColabOneDesktop.RevokeWebConsoleSessions":
             webState = { ...webState, active_sessions: 0 };
             return { ...webState };
@@ -251,13 +258,28 @@ test("desktop Settings Remote Web Console card toggles on default port 3232, gen
     ticketHintBox!.y - (ticketBtnBox!.y + ticketBtnBox!.height),
   ).toBeGreaterThanOrEqual(8);
 
-  // Copy one-time login link
+  // Copy default 60s reusable login link (singleUse = false)
+  await expect(page.getByTestId("settings-web-console-ticket-hint")).toContainText(
+    "60 秒内可多次使用",
+  );
   await page.getByTestId("settings-web-console-ticket-btn").click();
   await expect
     .poll(() =>
       page.evaluate(() => (window as any).__webConsoleCopied.slice()),
     )
     .toContain("http://127.0.0.1:3232/_colabone_web/redeem?ticket=abc123");
+
+  // Optional single-use toggle switches to single-use mode (singleUse = true)
+  await page.getByTestId("settings-web-console-ticket-single-use").click();
+  await expect(page.getByTestId("settings-web-console-ticket-hint")).toContainText(
+    "一次性登录链接",
+  );
+  await page.getByTestId("settings-web-console-ticket-btn").click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).__webConsoleCopied.slice()),
+    )
+    .toContain("http://127.0.0.1:3232/_colabone_web/redeem?ticket=once999");
 
   // Revoke sessions
   await page.getByTestId("settings-web-console-revoke-btn").click();

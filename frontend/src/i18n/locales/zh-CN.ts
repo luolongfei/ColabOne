@@ -1076,7 +1076,9 @@ export const zhCNMessages = {
     "当前显存已装载语言模型，启动 ComfyUI 将自动卸载该模型以释放显存，已下载的文件保留。",
   "comfy.modeAria": "ComfyUI 模式",
   "comfy.tabStudio": "工作流工坊",
+  "comfy.tabLive": "实时演播",
   "comfy.tabCanvas": "原生画布",
+  "comfy.liveActiveAria": "实时演播运行中",
   "comfy.canvasActiveAria": "画布已开启",
   "comfy.studioWorkflowCount": "{count} 个工作流",
   "comfy.studioWorkflowCountOne": "{count} 个工作流",
@@ -1916,9 +1918,16 @@ export const zhCNMessages = {
   "webConsole.lanAddressesLabel": "局域网访问地址",
   "webConsole.publicAddressLabel": "公网域名地址",
   "webConsole.copyAddressBtn": "复制地址",
-  "webConsole.copyTicketBtn": "复制一次性登录链接",
-  "webConsole.copyTicketPublicHint": "将生成 60 秒有效的公网一次性登录链接",
-  "webConsole.copyTicketLocalHint": "未填公网域名时将生成本机一次性登录链接",
+  "webConsole.copyTicketBtn": "复制快捷登录链接",
+  "webConsole.ticketSingleUseLabel": "仅限访问一次",
+  "webConsole.copyTicketPublicHint":
+    "将生成 60 秒内可多次使用的公网快捷登录链接（适配聊天软件转发预抓取）",
+  "webConsole.copyTicketLocalHint":
+    "未填公网域名时将生成 60 秒内可多次使用的本机快捷登录链接",
+  "webConsole.copyTicketPublicSingleUseHint":
+    "将生成 60 秒有效的公网一次性登录链接（访问一次后立即失效）",
+  "webConsole.copyTicketLocalSingleUseHint":
+    "未填公网域名时将生成 60 秒有效的本机一次性登录链接（访问一次后立即失效）",
   "webConsole.revokeSessionsBtn": "注销全部网页会话",
   "webConsole.bindLabel": "监听范围",
   "webConsole.bindLoopback": "仅本机 (127.0.0.1)",
@@ -1955,7 +1964,8 @@ export const zhCNMessages = {
   "webConsole.toastPasscodeSaved": "已更新访问口令，旧网页会话已全部注销",
   "webConsole.toastPasscodeRotated": "已重新生成访问口令，旧网页会话已全部注销",
   "webConsole.toastPasscodeCopied": "已复制网页访问口令",
-  "webConsole.toastTicketCopied":
+  "webConsole.toastTicketCopied": "已复制快捷登录链接（{seconds} 秒内可多次访问）",
+  "webConsole.toastTicketCopiedSingleUse":
     "已复制一次性登录链接（{seconds} 秒内有效，使用一次后自动失效）",
   "webConsole.toastSessionsRevoked": "已注销全部在线网页会话",
   "webConsole.toastAddressCopied": "已复制访问地址",

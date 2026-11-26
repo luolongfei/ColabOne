@@ -502,11 +502,13 @@ export async function colabOneSetWebConsolePasscode(
   return normalizeColabOneWebConsoleState(res);
 }
 
-export async function colabOneCreateWebConsoleLoginTicket(): Promise<ColabOneWebConsoleTicket> {
+export async function colabOneCreateWebConsoleLoginTicket(
+  singleUse = false,
+): Promise<ColabOneWebConsoleTicket> {
   if (!isColabOneDesktopRuntime()) {
     throw new Error(DESKTOP_ONLY_WEB_ERROR);
   }
-  return ColabOneDesktop.createWebConsoleLoginTicket();
+  return ColabOneDesktop.createWebConsoleLoginTicket(Boolean(singleUse));
 }
 
 export async function colabOneRevokeWebConsoleSessions(): Promise<ColabOneWebConsoleState> {

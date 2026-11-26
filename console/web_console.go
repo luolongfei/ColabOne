@@ -181,13 +181,15 @@ func (d *ColabOneDesktop) SetWebConsolePasscode(passcode string) (webconsole.Col
 	return wc.SetPasscode(passcode)
 }
 
-// CreateWebConsoleLoginTicket issues a short-lived single-use browser unlock link.
-func (d *ColabOneDesktop) CreateWebConsoleLoginTicket() (webconsole.ColabOneWebConsoleTicket, error) {
+// CreateWebConsoleLoginTicket issues a short-lived browser unlock link.
+// When singleUse is false, the link can be redeemed repeatedly within its TTL;
+// when singleUse is true, the first redemption invalidates it immediately.
+func (d *ColabOneDesktop) CreateWebConsoleLoginTicket(singleUse bool) (webconsole.ColabOneWebConsoleTicket, error) {
 	wc := d.webConsoleService()
 	if wc == nil {
 		return webconsole.ColabOneWebConsoleTicket{}, errors.New(colabOneT("err.webConsoleUnavailable"))
 	}
-	return wc.CreateLoginTicket()
+	return wc.CreateLoginTicket(singleUse)
 }
 
 // RevokeWebConsoleSessions signs out all currently authenticated web browsers.

@@ -241,13 +241,14 @@ export interface ColabOneWebConsoleState {
   last_error?: string;
 }
 
-/** ColabOneWebConsoleTicket describes a short-lived, single-use browser unlock URL. */
+/** ColabOneWebConsoleTicket describes a short-lived browser unlock URL. */
 export interface ColabOneWebConsoleTicket {
   url: string;
   local_url: string;
   expires_at: number;
   ttl_seconds: number;
   uses_public_host: boolean;
+  single_use: boolean;
 }
 
 /** ColabOneWebConsoleUpdateRequest carries partial configuration updates for hot-apply. */
@@ -278,8 +279,12 @@ export const ColabOneDesktop = {
   /** CheckForUpdate queries GitHub Releases for a newer version of ColabOne. */
   checkForUpdate: bind<[boolean], ColabOneUpdateState>("ColabOneDesktop.CheckForUpdate", (manual: boolean) => [manual]),
   command: bind<[ColabOneCommandRequest], string>("ColabOneDesktop.Command", (request: ColabOneCommandRequest) => [request]),
-  /** CreateWebConsoleLoginTicket issues a short-lived single-use browser unlock link. */
-  createWebConsoleLoginTicket: bind<[], ColabOneWebConsoleTicket>("ColabOneDesktop.CreateWebConsoleLoginTicket", () => []),
+  /**
+   * CreateWebConsoleLoginTicket issues a short-lived browser unlock link.
+   * When singleUse is false, the link can be redeemed repeatedly within its TTL;
+   * when singleUse is true, the first redemption invalidates it immediately.
+   */
+  createWebConsoleLoginTicket: bind<[boolean], ColabOneWebConsoleTicket>("ColabOneDesktop.CreateWebConsoleLoginTicket", (singleUse: boolean) => [singleUse]),
   /**
    * DecryptMigrationPreview decrypts the pending .colabone archive identified by
    * fileToken inside Go, caches the validated payload under a short-lived PreviewID,

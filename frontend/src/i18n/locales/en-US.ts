@@ -1112,7 +1112,9 @@ export const enUSMessages: ColabOneMessages = {
     "An LLM is loaded in VRAM. Starting ComfyUI will unload it automatically; downloaded files are kept.",
   "comfy.modeAria": "ComfyUI mode",
   "comfy.tabStudio": "Workflow Studio",
+  "comfy.tabLive": "Live Studio",
   "comfy.tabCanvas": "Native Canvas",
+  "comfy.liveActiveAria": "Live Studio running",
   "comfy.canvasActiveAria": "Canvas active",
   "comfy.studioWorkflowCount": "{count} workflows",
   "comfy.studioWorkflowCountOne": "{count} workflow",
@@ -1982,11 +1984,16 @@ export const enUSMessages: ColabOneMessages = {
   "webConsole.lanAddressesLabel": "LAN Access Addresses",
   "webConsole.publicAddressLabel": "Public Domain URL",
   "webConsole.copyAddressBtn": "Copy URL",
-  "webConsole.copyTicketBtn": "Copy One-Time Sign-In Link",
+  "webConsole.copyTicketBtn": "Copy Quick Sign-In Link",
+  "webConsole.ticketSingleUseLabel": "Single-use only",
   "webConsole.copyTicketPublicHint":
-    "Generates a public one-time sign-in link valid for 60 seconds",
+    "Generates a public sign-in link reusable for 60 seconds (friendly to messaging link previews)",
   "webConsole.copyTicketLocalHint":
-    "Generates a local one-time sign-in link when no public domain is set",
+    "Generates a local sign-in link reusable for 60 seconds when no public domain is set",
+  "webConsole.copyTicketPublicSingleUseHint":
+    "Generates a public one-time sign-in link valid for 60 seconds (expires after first use)",
+  "webConsole.copyTicketLocalSingleUseHint":
+    "Generates a local one-time sign-in link valid for 60 seconds when no public domain is set",
   "webConsole.revokeSessionsBtn": "Revoke All Web Sessions",
   "webConsole.bindLabel": "Listen Scope",
   "webConsole.bindLoopback": "Localhost only (127.0.0.1)",
@@ -2028,6 +2035,8 @@ export const enUSMessages: ColabOneMessages = {
     "Access passcode regenerated; all previous web sessions were revoked",
   "webConsole.toastPasscodeCopied": "Web access passcode copied",
   "webConsole.toastTicketCopied":
+    "Quick sign-in link copied (reusable within {seconds}s)",
+  "webConsole.toastTicketCopiedSingleUse":
     "One-time sign-in link copied (valid for {seconds}s, expires after a single use)",
   "webConsole.toastSessionsRevoked": "All active web sessions have been revoked",
   "webConsole.toastAddressCopied": "Access URL copied",

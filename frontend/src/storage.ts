@@ -8,4 +8,5 @@ export const COLABONE_STORAGE_KEYS = {
   privacyMaskSession: "colabone.privacy.session",
   comfyDrafts: "colabone.comfy.drafts",
   comfyDigitalHumanEngine: "colabone.comfy.digital_human.engine",
+  webConsoleTicketSingleUse: "colabone.web_console.ticket_single_use",
 } as const;

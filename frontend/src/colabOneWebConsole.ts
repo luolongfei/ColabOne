@@ -37,6 +37,7 @@ export interface ColabOneWebConsoleTicket {
   expires_at: number;
   ttl_seconds: number;
   uses_public_host: boolean;
+  single_use: boolean;
 }
 
 export interface ColabOneWebCapabilities {

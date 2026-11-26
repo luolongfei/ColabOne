@@ -1100,7 +1100,9 @@ export const koKRMessages: ColabOneMessages = {
     "현재 VRAM에 언어 모델이 로드되어 있습니다. ComfyUI 시작 시 자동으로 언로드됩니다(파일 유지).",
   "comfy.modeAria": "ComfyUI 모드",
   "comfy.tabStudio": "워크플로 스튜디오",
+  "comfy.tabLive": "라이브 스튜디오",
   "comfy.tabCanvas": "네이티브 캔버스",
+  "comfy.liveActiveAria": "라이브 스튜디오 실행 중",
   "comfy.canvasActiveAria": "캔버스 실행 중",
   "comfy.studioWorkflowCount": "워크플로 {count}개",
   "comfy.studioWorkflowCountOne": "워크플로 {count}개",
@@ -1963,11 +1965,16 @@ export const koKRMessages: ColabOneMessages = {
   "webConsole.lanAddressesLabel": "LAN 접속 주소",
   "webConsole.publicAddressLabel": "공개 도메인 주소",
   "webConsole.copyAddressBtn": "주소 복사",
-  "webConsole.copyTicketBtn": "일회용 로그인 링크 복사",
+  "webConsole.copyTicketBtn": "빠른 로그인 링크 복사",
+  "webConsole.ticketSingleUseLabel": "1회만 사용",
   "webConsole.copyTicketPublicHint":
-    "60초 동안 유효한 공개 일회용 로그인 링크를 생성합니다",
+    "60초 동안 여러 번 열 수 있는 공개 빠른 로그인 링크를 생성합니다 (메신저 링크 미리보기 호환)",
   "webConsole.copyTicketLocalHint":
-    "공개 도메인이 비어 있으면 로컬 일회용 로그인 링크를 생성합니다",
+    "공개 도메인이 비어 있으면 60초 동안 여러 번 열 수 있는 로컬 빠른 로그인 링크를 생성합니다",
+  "webConsole.copyTicketPublicSingleUseHint":
+    "60초 동안 유효한 공개 일회용 로그인 링크를 생성합니다 (1회 사용 후 즉시 만료)",
+  "webConsole.copyTicketLocalSingleUseHint":
+    "공개 도메인이 비어 있으면 60초 동안 유효한 로컬 일회용 로그인 링크를 생성합니다",
   "webConsole.revokeSessionsBtn": "모든 웹 세션 로그아웃",
   "webConsole.bindLabel": "수신 범위",
   "webConsole.bindLoopback": "로컬 전용 (127.0.0.1)",
@@ -2008,6 +2015,8 @@ export const koKRMessages: ColabOneMessages = {
     "접속 암호가 새로 생성되어 기존 웹 세션이 모두 로그아웃되었습니다",
   "webConsole.toastPasscodeCopied": "웹 접속 암호가 복사되었습니다",
   "webConsole.toastTicketCopied":
+    "빠른 로그인 링크가 복사되었습니다 ({seconds}초 동안 여러 번 접속 가능)",
+  "webConsole.toastTicketCopiedSingleUse":
     "일회용 로그인 링크가 복사되었습니다 ({seconds}초 유효, 1회 사용 후 자동 만료)",
   "webConsole.toastSessionsRevoked": "모든 활성 웹 세션이 로그아웃되었습니다",
   "webConsole.toastAddressCopied": "접속 주소가 복사되었습니다",
