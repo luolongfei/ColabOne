@@ -9589,8 +9589,10 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
   await expect(barRun).toContainText(/4\.5[56] CU/);
 
   // 4b. Narrow viewport collapses inline top-bar run pill cleanly while preserving tooltip rows
+  await page.mouse.move(16, 16);
   await page.setViewportSize({ width: 1024, height: 800 });
   await expect(barRun).toBeHidden();
+  await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
   await page.locator(".co-billing-strip").hover();
   await expect(page.locator(".ant-tooltip:visible")).toContainText("本次消耗");
   await expect(page.locator(".ant-tooltip:visible")).toContainText(/4\.5[56] CU/);
