@@ -2074,6 +2074,22 @@ onUnmounted(() => {
   padding-top: 4px;
 }
 
+@media (max-width: 680px) {
+  .co-modal-footer {
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  .co-modal-footer > :first-child {
+    flex-shrink: 0;
+  }
+
+  .co-modal-footer > :last-child {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
 @media (max-width: 640px) {
   .co-active-bar {
     flex-direction: column;

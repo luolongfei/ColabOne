@@ -9,6 +9,7 @@ export const zhCNMessages = {
   "common.hideSecret": "隐藏密钥",
   "common.cancel": "取消",
   "common.close": "关闭",
+  "common.moreActions": "更多操作",
   "common.done": "完成",
   "common.notificationsAria": "通知提示",
   "common.confirm": "确认",

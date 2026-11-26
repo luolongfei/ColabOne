@@ -10091,7 +10091,17 @@ onUnmounted(() => {
   }
 
   .co-modal-footer {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  .co-modal-footer > :first-child {
+    flex-shrink: 0;
+  }
+
+  .co-modal-footer > :last-child {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 

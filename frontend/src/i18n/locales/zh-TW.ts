@@ -11,6 +11,7 @@ export const zhTWMessages: ColabOneMessages = {
   "common.hideSecret": "隱藏金鑰",
   "common.cancel": "取消",
   "common.close": "關閉",
+  "common.moreActions": "更多操作",
   "common.done": "完成",
   "common.notificationsAria": "通知提示",
   "common.confirm": "確認",

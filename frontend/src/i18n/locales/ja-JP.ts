@@ -11,6 +11,7 @@ export const jaJPMessages: ColabOneMessages = {
   "common.hideSecret": "キーを隠す",
   "common.cancel": "キャンセル",
   "common.close": "閉じる",
+  "common.moreActions": "その他の操作",
   "common.done": "完了",
   "common.notificationsAria": "通知",
   "common.confirm": "確定",

@@ -689,3 +689,448 @@ test("mobile web mode (440x956 and 375x812) renders bottom tab bar, keeps header
     )
     .toEqual({ drawerWidth: 552, aligned: true });
 });
+
+test("mobile drawer and modal footers stay single-row across 375px and 440px while desktop preserves inline layout", async ({
+  page,
+}) => {
+  const sampleWorkflow = {
+    id: "builtin_digital_human",
+    name: "口播数字人",
+    description: "内置口播数字人工作流",
+    source: "builtin",
+    fields: [
+      {
+        key: "prompt",
+        label: "口播文案",
+        type: "textarea",
+        default: "你好，欢迎体验 ColabOne。",
+        required: true,
+      },
+    ],
+  };
+
+  let snapshot = {
+    ...makeBaseSnapshot(true),
+    workflows: [sampleWorkflow],
+    runtime: {
+      ...makeBaseSnapshot(true).runtime,
+      comfyui: {
+        ...makeBaseSnapshot(true).runtime.comfyui,
+        auto_release: { enabled: false, state: "idle" },
+      },
+      tasks: [] as Array<Record<string, unknown>>,
+    },
+  };
+  let etagCounter = 1;
+
+  await page.route("**/api/web/capabilities", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runtime: "web",
+        version: "0.1.22",
+        can_open_native_canvas_window: false,
+        can_standalone_log_window: false,
+        can_manage_web_console: false,
+        can_manage_close_behavior: false,
+        can_manage_shortcuts: false,
+        can_self_update: false,
+        can_migrate: false,
+        can_reveal_host_secrets: false,
+        can_loopback_oauth: false,
+        can_download_output: true,
+      }),
+    });
+  });
+
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { ETag: `"footer-test-${etagCounter}"` },
+      body: JSON.stringify(snapshot),
+    });
+  });
+
+  await page.route("**/api/command", async (route) => {
+    const req = route.request().postDataJSON() as {
+      action?: string;
+      payload?: Record<string, unknown>;
+    };
+    if (req?.action === "comfyui.auto_release") {
+      const enabled = Boolean(req?.payload?.enabled);
+      snapshot = {
+        ...snapshot,
+        runtime: {
+          ...snapshot.runtime,
+          comfyui: {
+            ...snapshot.runtime.comfyui,
+            auto_release: { enabled, state: enabled ? "armed" : "idle" },
+          },
+        },
+      };
+      etagCounter += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(snapshot.runtime.comfyui.auto_release),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+
+  await page.route("**/api/telemetry**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ samples: [] }),
+    });
+  });
+
+  async function assertSingleRowButtons(containerSelector: string) {
+    let lastMetrics: {
+      containerLeft: number;
+      containerRight: number;
+      vw: number;
+      count: number;
+      rects: Array<{
+        text: string;
+        top: number;
+        bottom: number;
+        left: number;
+        right: number;
+        height: number;
+      }>;
+    } | null = null;
+
+    await expect
+      .poll(async () => {
+        lastMetrics = await page.evaluate((sel) => {
+          const container = document.querySelector(sel);
+          if (!container) return null;
+          const cRect = container.getBoundingClientRect();
+          const buttons = Array.from(container.querySelectorAll("button")).filter(
+            (el) => {
+              const style = window.getComputedStyle(el);
+              const r = el.getBoundingClientRect();
+              return (
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                r.width > 0 &&
+                r.height > 0
+              );
+            },
+          );
+          const rects = buttons.map((el) => {
+            const r = el.getBoundingClientRect();
+            return {
+              text: (el.textContent || el.getAttribute("aria-label") || "").trim(),
+              top: r.top,
+              bottom: r.bottom,
+              left: r.left,
+              right: r.right,
+              height: r.height,
+            };
+          });
+          return {
+            containerLeft: cRect.left,
+            containerRight: cRect.right,
+            vw: window.innerWidth,
+            count: rects.length,
+            rects,
+          };
+        }, containerSelector);
+        if (!lastMetrics || lastMetrics.count < 2) return false;
+        return (
+          lastMetrics.containerLeft >= -1 &&
+          lastMetrics.containerRight <= lastMetrics.vw + 1
+        );
+      })
+      .toBe(true);
+
+    const metrics = lastMetrics!;
+    expect(metrics.count).toBeGreaterThanOrEqual(2);
+    const firstTop = metrics.rects[0].top;
+    const maxBottom = Math.max(...metrics.rects.map((r) => r.bottom));
+    const minTop = Math.min(...metrics.rects.map((r) => r.top));
+    for (const r of metrics.rects) {
+      expect(Math.abs(r.top - firstTop)).toBeLessThanOrEqual(2.5);
+      expect(r.left).toBeGreaterThanOrEqual(metrics.containerLeft - 1.5);
+      expect(r.right).toBeLessThanOrEqual(metrics.containerRight + 1.5);
+      expect(r.right).toBeLessThanOrEqual(metrics.vw + 1);
+    }
+    expect(maxBottom - minTop).toBeLessThanOrEqual(44);
+    return metrics;
+  }
+
+  for (const vp of [
+    { width: 440, height: 956 },
+    { width: 375, height: 812 },
+  ]) {
+    snapshot = {
+      ...makeBaseSnapshot(true),
+      workflows: [sampleWorkflow],
+      runtime: {
+        ...makeBaseSnapshot(true).runtime,
+        comfyui: {
+          ...makeBaseSnapshot(true).runtime.comfyui,
+          auto_release: { enabled: false, state: "idle" },
+        },
+        tasks: [],
+      },
+    };
+    etagCounter += 1;
+
+    await page.setViewportSize(vp);
+    await page.goto("/");
+
+    const bottomNav = page.getByTestId("mobile-bottom-nav");
+    await expect(bottomNav).toBeVisible();
+    await bottomNav.getByRole("button", { name: "ComfyUI" }).click();
+
+    // 1. Workflow Param Drawer (idle): bottom Close & desktop pill hidden, compact icon trigger + full-width Run stay single-row
+    await page.locator(".co-comfy-wf-card-trigger").first().click();
+    const paramFooter = page.locator(
+      ".co-comfy-param-drawer-root .co-comfy-param-drawer-footer",
+    );
+    await expect(paramFooter).toBeVisible();
+    await expect(paramFooter.locator(".co-comfy-drawer-close-btn")).toBeHidden();
+    await expect(paramFooter.getByTestId("comfy-drawer-auto-release")).toBeHidden();
+    const arTrigger = paramFooter.getByTestId(
+      "comfy-drawer-auto-release-mobile-trigger",
+    );
+    await expect(arTrigger).toBeVisible();
+
+    const idleMetrics = await assertSingleRowButtons(
+      ".co-comfy-param-drawer-root .co-comfy-param-drawer-footer",
+    );
+    expect(idleMetrics.count).toBe(2);
+
+    // Tap icon button: opens popover sheet and arms auto-release with status indicator dot
+    await arTrigger.click();
+    const arSheet = page.getByTestId("comfy-drawer-auto-release-mobile-sheet");
+    await expect(arSheet).toBeVisible();
+    const mobileSwitch = arSheet.getByTestId(
+      "comfy-drawer-auto-release-mobile-switch",
+    );
+    await expect(mobileSwitch).toHaveAttribute("aria-checked", "false");
+    await mobileSwitch.click();
+    await expect(mobileSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(arTrigger).toHaveClass(/is-armed/);
+    await expect(arTrigger.locator(".co-comfy-mobile-ar-dot")).toBeVisible();
+    // Pressing Escape dismisses ONLY the mobile popover without closing the drawer
+    await page.keyboard.press("Escape");
+    await expect(arSheet).toBeHidden();
+    await expect(paramFooter).toBeVisible();
+
+    // 2. Workflow Param Drawer with active task (Cancel Task visible): 3 controls remain single-row without wrapping
+    snapshot = {
+      ...snapshot,
+      runtime: {
+        ...snapshot.runtime,
+        tasks: [
+          {
+            id: "task-comfy-1",
+            kind: "comfyui_run",
+            state: "running",
+            progress: 0.45,
+            message: "正在生成视频…",
+          },
+        ],
+      },
+    };
+    etagCounter += 1;
+    await expect(paramFooter.locator(".co-comfy-drawer-cancel-btn")).toBeVisible();
+    const activeTaskMetrics = await assertSingleRowButtons(
+      ".co-comfy-param-drawer-root .co-comfy-param-drawer-footer",
+    );
+    expect(activeTaskMetrics.count).toBe(3);
+
+    // Close drawer via header X
+    await page.locator(".co-comfy-param-drawer-root .ant-drawer-close").click();
+    await expect(paramFooter).toBeHidden();
+
+    // 3. Import Workflow Modal footer: single-row on mobile
+    await page.getByRole("button", { name: "导入 API 工作流 (JSON)" }).click();
+    const importFooter = page.locator(".co-comfy-import-modal-footer");
+    await expect(importFooter).toBeVisible();
+    await assertSingleRowButtons(".co-comfy-import-modal-footer");
+    await importFooter.getByRole("button", { name: /^取\s*消$/ }).click();
+    await expect(importFooter).toBeHidden();
+
+    // 4. Drive Export Modal in 3-button waitingBrowserAuth state: collapses secondary actions into single More button
+    snapshot = {
+      ...snapshot,
+      setup: { ...snapshot.setup, drive: false },
+      runtime: {
+        ...snapshot.runtime,
+        drive: { connected: false, mode: "disabled", remote_folder: "ColabOne_Drive", pending: 0, error: "" },
+        tasks: [],
+      },
+      auth_url: "https://accounts.google.com/o/oauth2/auth?mock=1",
+      operation: {
+        kind: "drive_connect",
+        stage: "waiting_auth",
+        title: "等待 Google 云盘授权",
+        cancellable: true,
+        cancelling: false,
+      },
+    };
+    etagCounter += 1;
+    await page.locator(".co-comfy-outputs-trigger").click();
+    const drivePill = page.getByTestId("comfy-outputs-drive-pill");
+    await expect(drivePill).toHaveClass(/is-warning/);
+    await drivePill.click();
+    const driveFooter = page.locator(".co-drive-modal-footer");
+    await expect(driveFooter).toBeVisible();
+    const moreBtn = driveFooter.getByTestId("drive-modal-mobile-more-trigger");
+    await expect(moreBtn).toBeVisible();
+    const driveMetrics = await assertSingleRowButtons(".co-drive-modal-footer");
+    expect(driveMetrics.count).toBe(2);
+    await moreBtn.click();
+    await expect(page.getByRole("button", { name: "重新打开授权页" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "取消挂载" })).toBeVisible();
+    // Pressing Escape dismisses ONLY the Drive modal More popover without closing the modal
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "重新打开授权页" })).toBeHidden();
+    await expect(driveFooter).toBeVisible();
+    await page.locator(".co-drive-export-modal-wrap .ant-modal-close").click();
+    await expect(driveFooter).toBeHidden();
+    await page.locator(".co-comfy-outputs-drawer-root .ant-drawer-close").click();
+
+    // 5. LogDrawer footer: single-row without wrapping metadata text
+    await page.locator(".co-logs-trigger").click();
+    const logFooter = page.locator(".co-log-drawer-footer");
+    await expect(logFooter).toBeVisible();
+    const logFooterMetrics = await page.evaluate(() => {
+      const footer = document.querySelector(".co-log-drawer-footer");
+      const meta = footer?.querySelector(".co-log-drawer-footer-meta");
+      const btn = footer?.querySelector("button");
+      if (!footer || !meta || !btn) return null;
+      const fr = footer.getBoundingClientRect();
+      const mr = meta.getBoundingClientRect();
+      const br = btn.getBoundingClientRect();
+      return {
+        metaHeight: mr.height,
+        sameRow: Math.abs(mr.top + mr.height / 2 - (br.top + br.height / 2)) <= 4,
+        noOverflow: br.right <= fr.right + 1 && mr.right <= br.left + 1,
+      };
+    });
+    expect(logFooterMetrics).not.toBeNull();
+    expect(logFooterMetrics!.metaHeight).toBeLessThanOrEqual(24);
+    expect(logFooterMetrics!.sameRow).toBe(true);
+    expect(logFooterMetrics!.noOverflow).toBe(true);
+    await page.getByTestId("log-drawer-mobile-close").click();
+  }
+
+  // 6. Desktop (1280x800): keeps bottom Close button + inline Auto-Release pill and hides mobile icon button
+  snapshot = {
+    ...makeBaseSnapshot(true),
+    workflows: [sampleWorkflow],
+    runtime: {
+      ...makeBaseSnapshot(true).runtime,
+      comfyui: {
+        ...makeBaseSnapshot(true).runtime.comfyui,
+        auto_release: { enabled: false, state: "idle" },
+      },
+      tasks: [],
+    },
+  };
+  etagCounter += 1;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await page.locator(".co-nav-center").getByRole("button", { name: "ComfyUI" }).click();
+  await page.locator(".co-comfy-wf-card-trigger").first().click();
+  const desktopFooter = page.locator(
+    ".co-comfy-param-drawer-root .co-comfy-param-drawer-footer",
+  );
+  await expect(desktopFooter).toBeVisible();
+  await expect(desktopFooter.locator(".co-comfy-drawer-close-btn")).toBeVisible();
+  await expect(desktopFooter.getByTestId("comfy-drawer-auto-release")).toBeVisible();
+  await expect(
+    desktopFooter.getByTestId("comfy-drawer-auto-release-mobile-trigger"),
+  ).toBeHidden();
+
+  // 7. Regression guards: dark-mode armed styling, resize-closes-modal-popover, and 360px en-US non-truncating Cancel
+  snapshot = {
+    ...makeBaseSnapshot(true),
+    workflows: [sampleWorkflow],
+    settings: { ...makeBaseSnapshot(true).settings, locale: "en-US" },
+    setup: { ...makeBaseSnapshot(true).setup, drive: false, drive_headless: false },
+    runtime: {
+      ...makeBaseSnapshot(true).runtime,
+      drive: { connected: false, mode: "disabled", remote_folder: "ColabOne_Drive", pending: 0, error: "" },
+      comfyui: {
+        ...makeBaseSnapshot(true).runtime.comfyui,
+        auto_release: { enabled: true, state: "armed" },
+      },
+      tasks: [],
+    },
+  };
+  etagCounter += 1;
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.evaluate(() => {
+    window.localStorage.setItem("colabone.locale", "en-US");
+  });
+  await page.goto("/");
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "dark";
+  });
+  await page.getByTestId("mobile-bottom-nav").getByRole("button", { name: "ComfyUI" }).click();
+  await page.locator(".co-comfy-wf-card-trigger").first().click();
+
+  const darkArmedStyle = await page.evaluate(() => {
+    const btn = document.querySelector(
+      '[data-testid="comfy-drawer-auto-release-mobile-trigger"]',
+    );
+    if (!btn) return null;
+    const cs = window.getComputedStyle(btn);
+    return { borderColor: cs.borderColor, backgroundColor: cs.backgroundColor };
+  });
+  expect(darkArmedStyle).not.toBeNull();
+  // Must NOT fall back to default dark neutral #1d1f27 (rgb(29, 31, 39))
+  expect(darkArmedStyle!.backgroundColor).not.toBe("rgb(29, 31, 39)");
+
+  // Open Drive onboarding modal from armed switch click on 360px en-US: Cancel must stay untruncated & single-row
+  await page.locator(".co-comfy-param-drawer-root .ant-drawer-close").click();
+  await page.locator(".co-comfy-outputs-trigger").click();
+  await page.getByTestId("comfy-outputs-drive-pill").click();
+  const enDriveFooter = page.locator(".co-drive-modal-footer");
+  await expect(enDriveFooter).toBeVisible();
+  await assertSingleRowButtons(".co-drive-modal-footer");
+  const cancelTruncated = await page.evaluate(() => {
+    const cancelSpan = document.querySelector(
+      ".co-drive-modal-footer > button:first-child > span:last-child",
+    );
+    if (!cancelSpan) return true;
+    return cancelSpan.scrollWidth > cancelSpan.clientWidth + 1;
+  });
+  expect(cancelTruncated).toBe(false);
+
+  // Open 3-button More popover on mobile then widen viewport to desktop: popover must auto-close (no orphan)
+  snapshot = {
+    ...snapshot,
+    auth_url: "https://accounts.google.com/o/oauth2/auth?mock=2",
+    operation: {
+      kind: "drive_connect",
+      stage: "waiting_auth",
+      title: "Waiting for Drive authorization",
+      cancellable: true,
+      cancelling: false,
+    },
+  };
+  etagCounter += 1;
+  const moreBtn360 = enDriveFooter.getByTestId("drive-modal-mobile-more-trigger");
+  await expect(moreBtn360).toBeVisible();
+  await moreBtn360.click();
+  const reopenBtn = page.getByRole("button", { name: "Reopen Consent Page" });
+  await expect(reopenBtn).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 780 });
+  await expect(page.locator(".co-drive-mobile-more-popover")).toBeHidden();
+});

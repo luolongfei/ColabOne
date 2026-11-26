@@ -11,6 +11,7 @@ export const koKRMessages: ColabOneMessages = {
   "common.hideSecret": "키 숨기기",
   "common.cancel": "취소",
   "common.close": "닫기",
+  "common.moreActions": "더 많은 작업",
   "common.done": "완료",
   "common.notificationsAria": "알림",
   "common.confirm": "확인",

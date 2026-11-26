@@ -5,7 +5,6 @@ import {
   Button as AButton,
   Checkbox as ACheckbox,
   Modal as AModal,
-  Space as ASpace,
 } from "ant-design-vue";
 import { PhPower, PhSignOut, PhTray } from "@phosphor-icons/vue";
 import { t } from "./i18n";
@@ -312,33 +311,31 @@ function handleConfirm() {
       </div>
 
       <div class="co-close-footer">
-        <ASpace :size="8">
+        <AButton
+          :disabled="props.submitting"
+          data-testid="close-cancel-btn"
+          @click="handleCancel"
+        >
+          {{ t("common.cancel") }}
+        </AButton>
+        <span ref="confirmBtnWrapRef" class="co-close-confirm-wrap">
           <AButton
-            :disabled="props.submitting"
-            data-testid="close-cancel-btn"
-            @click="handleCancel"
+            type="primary"
+            :loading="props.submitting"
+            data-testid="close-confirm-btn"
+            @click="handleConfirm"
           >
-            {{ t("common.cancel") }}
+            <template v-if="!props.submitting" #icon>
+              <PhTray
+                v-if="selectedAction === 'background'"
+                :size="15"
+                weight="bold"
+              />
+              <PhSignOut v-else :size="15" weight="bold" />
+            </template>
+            {{ confirmLabel }}
           </AButton>
-          <span ref="confirmBtnWrapRef" class="co-close-confirm-wrap">
-            <AButton
-              type="primary"
-              :loading="props.submitting"
-              data-testid="close-confirm-btn"
-              @click="handleConfirm"
-            >
-              <template v-if="!props.submitting" #icon>
-                <PhTray
-                  v-if="selectedAction === 'background'"
-                  :size="15"
-                  weight="bold"
-                />
-                <PhSignOut v-else :size="15" weight="bold" />
-              </template>
-              {{ confirmLabel }}
-            </AButton>
-          </span>
-        </ASpace>
+        </span>
       </div>
     </div>
   </AModal>
@@ -580,10 +577,31 @@ function handleConfirm() {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   padding-top: 2px;
 }
 
 .co-close-confirm-wrap {
   display: inline-flex;
+}
+
+@media (max-width: 680px) {
+  .co-close-footer {
+    flex-wrap: nowrap;
+  }
+
+  .co-close-footer > :first-child {
+    flex-shrink: 0;
+  }
+
+  .co-close-confirm-wrap {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .co-close-confirm-wrap > .ant-btn {
+    width: 100%;
+    min-width: 0;
+  }
 }
 </style>

@@ -51,12 +51,13 @@ export function getColabOneDriveConnectStage(
 </script>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   Alert as AAlert,
   Button as AButton,
   Checkbox as ACheckbox,
   Modal as AModal,
+  Popover as APopover,
   Space as ASpace,
   Spin as ASpin,
   Tag as ATag,
@@ -67,6 +68,7 @@ import {
   PhCloud,
   PhCloudArrowUp,
   PhCloudCheck,
+  PhDotsThree,
   PhFolderOpen,
   PhGearSix,
   PhImage,
@@ -286,6 +288,59 @@ const driveFreeSpaceText = computed(() =>
   formatFreeSpace(props.state.runtime.drive?.free_bytes),
 );
 
+const mobileMoreOpen = ref(false);
+let mobileFooterMql: MediaQueryList | null = null;
+
+function onMobileFooterMediaChange(event: MediaQueryListEvent) {
+  if (!event.matches) {
+    mobileMoreOpen.value = false;
+  }
+}
+
+function onMobileMoreKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && mobileMoreOpen.value) {
+    event.stopImmediatePropagation();
+    mobileMoreOpen.value = false;
+  }
+}
+
+onMounted(() => {
+  if (typeof window === "undefined") return;
+  if (typeof window.matchMedia === "function") {
+    mobileFooterMql = window.matchMedia("(max-width: 680px)");
+    mobileFooterMql.addEventListener("change", onMobileFooterMediaChange);
+  }
+  window.addEventListener("keydown", onMobileMoreKeydown, true);
+});
+
+onUnmounted(() => {
+  if (mobileFooterMql) {
+    mobileFooterMql.removeEventListener("change", onMobileFooterMediaChange);
+    mobileFooterMql = null;
+  }
+  if (typeof window !== "undefined") {
+    window.removeEventListener("keydown", onMobileMoreKeydown, true);
+  }
+});
+
+watch(
+  [
+    () => props.open,
+    () => Boolean(props.state.auth_url),
+    waitingBrowserAuth,
+    mountingDriveAfterAuth,
+    canCancelDriveMount,
+  ],
+  () => {
+    mobileMoreOpen.value = false;
+  },
+);
+
+function runMobileMoreAction(action: () => void) {
+  mobileMoreOpen.value = false;
+  action();
+}
+
 function requestClose() {
   if (!canClose.value) return;
   emit("update:open", false);
@@ -303,7 +358,7 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
     :centered="true"
     :closable="canClose"
     :mask-closable="canClose"
-    :keyboard="canClose"
+    :keyboard="canClose && !mobileMoreOpen"
     :z-index="1050"
     wrap-class-name="co-drive-export-modal-wrap"
     @cancel="requestClose"
@@ -690,11 +745,52 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
         </template>
 
         <template v-else-if="waitingBrowserAuth">
-          <AButton @click="emit('cancel-auth')">
+          <APopover
+            v-if="state.auth_url"
+            v-model:open="mobileMoreOpen"
+            trigger="click"
+            placement="topLeft"
+            :z-index="1080"
+            overlay-class-name="co-drive-mobile-more-popover"
+          >
+            <template #content>
+              <div class="co-drive-mobile-more-menu">
+                <AButton
+                  block
+                  class="co-drive-mobile-more-item"
+                  @click="runMobileMoreAction(() => emit('open-url', state.auth_url))"
+                >
+                  <template #icon><PhArrowSquareOut :size="14" /></template>
+                  {{ t("device.driveReopenAuth") }}
+                </AButton>
+                <AButton
+                  block
+                  danger
+                  class="co-drive-mobile-more-item"
+                  @click="runMobileMoreAction(() => emit('cancel-auth'))"
+                >
+                  {{ t("device.driveCancelMount") }}
+                </AButton>
+              </div>
+            </template>
+            <AButton
+              class="co-drive-footer-mobile-more-btn"
+              :aria-label="t('common.moreActions')"
+              :aria-expanded="mobileMoreOpen"
+              data-testid="drive-modal-mobile-more-trigger"
+            >
+              <PhDotsThree :size="18" weight="bold" aria-hidden="true" />
+            </AButton>
+          </APopover>
+          <AButton
+            :class="{ 'co-drive-footer-desktop-extra': Boolean(state.auth_url) }"
+            @click="emit('cancel-auth')"
+          >
             {{ t("device.driveCancelMount") }}
           </AButton>
           <AButton
             v-if="state.auth_url"
+            class="co-drive-footer-desktop-extra"
             @click="emit('open-url', state.auth_url)"
           >
             <template #icon><PhArrowSquareOut :size="14" /></template>
@@ -719,10 +815,53 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
         </template>
 
         <template v-else-if="mountingDriveAfterAuth">
-          <AButton v-if="canCancelDriveMount" @click="emit('cancel-auth')">
+          <APopover
+            v-if="canCancelDriveMount"
+            v-model:open="mobileMoreOpen"
+            trigger="click"
+            placement="topLeft"
+            :z-index="1080"
+            overlay-class-name="co-drive-mobile-more-popover"
+          >
+            <template #content>
+              <div class="co-drive-mobile-more-menu">
+                <AButton
+                  block
+                  class="co-drive-mobile-more-item"
+                  @click="runMobileMoreAction(requestClose)"
+                >
+                  {{ t("comfy.driveModalBackgroundBtn") }}
+                </AButton>
+                <AButton
+                  block
+                  danger
+                  class="co-drive-mobile-more-item"
+                  @click="runMobileMoreAction(() => emit('cancel-auth'))"
+                >
+                  {{ t("device.driveCancelMount") }}
+                </AButton>
+              </div>
+            </template>
+            <AButton
+              class="co-drive-footer-mobile-more-btn"
+              :aria-label="t('common.moreActions')"
+              :aria-expanded="mobileMoreOpen"
+              data-testid="drive-modal-mobile-more-trigger"
+            >
+              <PhDotsThree :size="18" weight="bold" aria-hidden="true" />
+            </AButton>
+          </APopover>
+          <AButton
+            v-if="canCancelDriveMount"
+            class="co-drive-footer-desktop-extra"
+            @click="emit('cancel-auth')"
+          >
             {{ t("device.driveCancelMount") }}
           </AButton>
-          <AButton @click="requestClose">
+          <AButton
+            :class="{ 'co-drive-footer-desktop-extra': canCancelDriveMount }"
+            @click="requestClose"
+          >
             {{ t("comfy.driveModalBackgroundBtn") }}
           </AButton>
           <AButton type="primary" loading>
@@ -1151,5 +1290,60 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.co-drive-footer-mobile-more-btn {
+  display: none;
+}
+
+.co-drive-mobile-more-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 172px;
+}
+
+.co-drive-mobile-more-item {
+  justify-content: flex-start;
+}
+
+:global(.co-drive-mobile-more-popover .ant-popover-inner) {
+  padding: 8px;
+  border-radius: 12px;
+}
+
+@media (max-width: 680px) {
+  .co-drive-modal-footer {
+    width: 100%;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .co-drive-footer-desktop-extra {
+    display: none !important;
+  }
+
+  .co-drive-footer-mobile-more-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    flex: 0 0 34px;
+    padding: 0 !important;
+  }
+
+  .co-drive-modal-footer > .ant-btn:not(.co-drive-footer-mobile-more-btn):not(:last-child) {
+    flex: 0 1 auto;
+    max-width: 48%;
+    min-width: 0;
+    padding-inline: 11px !important;
+  }
+
+  .co-drive-modal-footer > .ant-btn:last-child {
+    flex: 1 1 0;
+    max-width: none;
+    min-width: 0;
+    padding-inline: 12px !important;
+  }
 }
 </style>

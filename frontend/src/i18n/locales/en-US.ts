@@ -11,6 +11,7 @@ export const enUSMessages: ColabOneMessages = {
   "common.hideSecret": "Hide secret",
   "common.cancel": "Cancel",
   "common.close": "Close",
+  "common.moreActions": "More Actions",
   "common.done": "Done",
   "common.notificationsAria": "Notifications",
   "common.confirm": "Confirm",

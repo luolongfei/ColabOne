@@ -402,9 +402,10 @@ onUnmounted(() => {
 
     <!-- Pinned Footer Bar -->
     <footer class="co-log-drawer-footer">
-      <span class="co-muted">{{ t("logs.footerLimit") }}</span>
+      <span class="co-muted co-log-drawer-footer-meta">{{ t("logs.footerLimit") }}</span>
       <AButton
         size="small"
+        class="co-log-drawer-follow-btn"
         :type="logFollow ? 'primary' : 'default'"
         :ghost="logFollow"
         @click="followLogs"
@@ -637,9 +638,22 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 8px;
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.co-log-drawer-footer-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.co-log-drawer-follow-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .co-log-drawer.is-standalone .co-log-drawer-footer {

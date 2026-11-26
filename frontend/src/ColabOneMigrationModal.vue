@@ -1370,4 +1370,20 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   justify-content: flex-end;
   gap: 8px;
 }
+
+@media (max-width: 680px) {
+  .co-mig-footer {
+    width: 100%;
+    flex-wrap: nowrap;
+  }
+
+  .co-mig-footer > :first-child {
+    flex-shrink: 0;
+  }
+
+  .co-mig-footer > :last-child {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
 </style>
