@@ -911,8 +911,17 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				if len(remainingSessions) == 0 {
 					if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
 						var pendingLogs []pendingActivityLog
+						wasWorkflowAutoReleasing := false
 						c.mu.Lock()
 						if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
+							if prevRT := asMap(c.data["runtime"]); prevRT != nil {
+								if prevComfy := asMap(prevRT["comfyui"]); prevComfy != nil {
+									if prevAR := asMap(prevComfy["auto_release"]); prevAR != nil {
+										st := asString(prevAR["state"])
+										wasWorkflowAutoReleasing = st == "releasing" || st == "released"
+									}
+								}
+							}
 							c.lastHeartbeat = 0
 							clear(c.instanceStates)
 							clear(c.upgradeAttempted)
@@ -927,6 +936,10 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 						}
 						c.mu.Unlock()
 						c.flushActivityLogs(pendingLogs)
+						if wasWorkflowAutoReleasing {
+							c.log("远端实例已完成作品同步至 Google 云盘并自动释放", "云盘", "info")
+						}
+						c.triggerBackgroundDriveOutputsSync()
 					}
 					aborted = true
 				} else {

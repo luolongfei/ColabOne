@@ -13308,6 +13308,146 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+  {
+    re: /^正在导出作品到 Google 云盘 \((\d+)\/(\d+)\) · (.+)$/,
+    format: (m, loc) => {
+      const [, idx, total, fname] = m;
+      switch (loc) {
+        case "en-US":
+          return `Exporting outputs to Google Drive (${idx}/${total}) · ${fname}`;
+        case "zh-TW":
+          return `正在匯出作品至 Google 雲端硬碟 (${idx}/${total}) · ${fname}`;
+        case "zh-HK":
+          return `正在匯出作品至 Google 雲端硬碟 (${idx}/${total}) · ${fname}`;
+        case "ja-JP":
+          return `Google ドライブへ作品を保存中 (${idx}/${total}) · ${fname}`;
+        case "ko-KR":
+          return `Google 드라이브로 결과물 내보내는 중 (${idx}/${total}) · ${fname}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^作品导出到 Google 云盘失败（(.+)），已保留当前实例$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to export output to Google Drive (${detail}); the instance was kept running`;
+        case "zh-TW":
+          return `作品匯出至 Google 雲端硬碟失敗（${detail}），已保留目前執行個體`;
+        case "zh-HK":
+          return `作品匯出至 Google 雲端硬碟失敗（${detail}），已保留目前實例`;
+        case "ja-JP":
+          return `Google ドライブへの出力保存に失敗しました（${detail}）。インスタンスを保持しました`;
+        case "ko-KR":
+          return `Google 드라이브로 결과물 내보내기 실패(${detail}). 인스턴스를 유지했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^工作区同步到 Google 云盘失败（(.+)），已保留当前实例$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Workspace sync to Google Drive failed (${detail}); the instance was kept running`;
+        case "zh-TW":
+          return `工作區同步至 Google 雲端硬碟失敗（${detail}），已保留目前執行個體`;
+        case "zh-HK":
+          return `工作區同步至 Google 雲端硬碟失敗（${detail}），已保留目前實例`;
+        case "ja-JP":
+          return `Google ドライブへのワークスペース同期に失敗しました（${detail}）。インスタンスを保持しました`;
+        case "ko-KR":
+          return `Google 드라이브 작업 공간 동기화 실패(${detail}). 인스턴스를 유지했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^读取 Google 云盘目录失败（HTTP (\d+)）$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Failed to inspect Google Drive folder (HTTP ${code})`;
+        case "zh-TW":
+          return `讀取 Google 雲端硬碟目錄失敗（HTTP ${code}）`;
+        case "zh-HK":
+          return `讀取 Google 雲端硬碟目錄失敗（HTTP ${code}）`;
+        case "ja-JP":
+          return `Google ドライブフォルダの読み取りに失敗しました（HTTP ${code}）`;
+        case "ko-KR":
+          return `Google 드라이브 폴더를 읽지 못했습니다 (HTTP ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^读取 Google 云盘作品列表失败（HTTP (\d+)）$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Failed to list Google Drive outputs (HTTP ${code})`;
+        case "zh-TW":
+          return `讀取 Google 雲端硬碟作品清單失敗（HTTP ${code}）`;
+        case "zh-HK":
+          return `讀取 Google 雲端硬碟作品列表失敗（HTTP ${code}）`;
+        case "ja-JP":
+          return `Google ドライブ作品一覧の取得に失敗しました（HTTP ${code}）`;
+        case "ko-KR":
+          return `Google 드라이브 결과물 목록을 불러오지 못했습니다 (HTTP ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^从 Google 云盘读取作品失败（HTTP (\d+)）$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Failed to read output from Google Drive (HTTP ${code})`;
+        case "zh-TW":
+          return `從 Google 雲端硬碟讀取作品失敗（HTTP ${code}）`;
+        case "zh-HK":
+          return `從 Google 雲端硬碟讀取作品失敗（HTTP ${code}）`;
+        case "ja-JP":
+          return `Google ドライブから作品を読み取れませんでした（HTTP ${code}）`;
+        case "ko-KR":
+          return `Google 드라이브에서 결과물을 읽지 못했습니다 (HTTP ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^删除 Google 云盘作品失败（HTTP (\d+)）$/,
+    format: (m, loc) => {
+      const code = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Failed to delete output in Google Drive (HTTP ${code})`;
+        case "zh-TW":
+          return `刪除 Google 雲端硬碟作品失敗（HTTP ${code}）`;
+        case "zh-HK":
+          return `刪除 Google 雲端硬碟作品失敗（HTTP ${code}）`;
+        case "ja-JP":
+          return `Google ドライブ上の作品削除に失敗しました（HTTP ${code}）`;
+        case "ko-KR":
+          return `Google 드라이브의 결과물을 삭제하지 못했습니다 (HTTP ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
 ];
 
 function applyRedactionTokens(text: string, locale: ColabOneLocale): string {

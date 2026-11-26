@@ -279,6 +279,19 @@ class ColabOneRuntime:
         self.quiescing = False
         self.auto_releasing = False
         self.release_prepared = False
+        self._workflow_auto_release: dict[str, object] = {
+            "enabled": False,
+            "state": "idle",
+            "task_id": "",
+            "error": "",
+            "message": "",
+            "exported": [],
+            "updated_at": 0.0,
+        }
+        self._pending_workflow_auto_release = False
+        self._workflow_auto_release_grace_seconds = 3.0
+        self._unassign_lock = threading.Lock()
+        self._unassigned = False
         self.http = http or requests.Session()
         self.http.trust_env = False
         self.drive = drive or ColabOneDrive(root, catalog, http=self.http)
@@ -454,7 +467,8 @@ class ColabOneRuntime:
             deadline = self.deadline
             dirty_count = len(self._dirty_seq)
             tasks = list(self.tasks.values())
-        comfy_status = self.comfy.status()
+        comfy_status = dict(self.comfy.status())
+        comfy_status["auto_release"] = self.workflow_auto_release_status()
         comfy_running = bool(comfy_status.get("running"))
         idle = self.idle_status(_use_cached_queue=True)
         cached = self.telemetry.latest(max_age=2.5) if telemetry_alive else None
@@ -476,6 +490,7 @@ class ColabOneRuntime:
                 "comfyui_drive_export",
                 "comfyui_tts_preview",
                 "comfyui_longcat_native",
+                "comfyui_workflow_auto_release",
             ],
             "comfyui": comfy_status,
             "active_engine": "llama"
@@ -701,6 +716,20 @@ class ColabOneRuntime:
                     if transfer_snap is not None:
                         done_payload["download"] = transfer_snap
                     t.emit("done", done_payload)
+                should_trigger_auto_release = False
+                if final_state == "completed" and kind == "comfyui_run":
+                    with self.lock:
+                        should_trigger_auto_release = bool(
+                            self._pending_workflow_auto_release
+                            and self._workflow_auto_release.get("enabled")
+                            and self._workflow_auto_release.get("task_id") in ("", t.id)
+                        )
+                if should_trigger_auto_release:
+                    threading.Thread(
+                        target=self._execute_pending_workflow_auto_release,
+                        args=(t.id,),
+                        daemon=True,
+                    ).start()
 
         threading.Thread(target=run, daemon=True).start()
         return t.snapshot()
@@ -1868,6 +1897,373 @@ class ColabOneRuntime:
                 self.last_active = time.time()
             return result if result is not None else {"ok": True}
 
+    def workflow_auto_release_status(self) -> dict:
+        with self.lock:
+            return copy.deepcopy(self._workflow_auto_release)
+
+    def set_comfyui_auto_release(self, enabled: bool) -> dict:
+        if not isinstance(enabled, bool):
+            raise ValueError("自动释放开关参数不合法")
+        with self.lock:
+            if enabled:
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneConflictError("实例正在准备释放")
+                if not self.drive.available():
+                    raise ValueError(
+                        "当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载"
+                    )
+                running_tid = ""
+                for existing in self.tasks.values():
+                    with existing.lock:
+                        if (
+                            existing.state == "running"
+                            and existing.kind == "comfyui_run"
+                        ):
+                            running_tid = existing.id
+                            break
+                cur_state = str(self._workflow_auto_release.get("state") or "idle")
+                if cur_state not in ("syncing", "releasing", "released"):
+                    self._workflow_auto_release["state"] = "armed"
+                    self._workflow_auto_release["error"] = ""
+                    self._workflow_auto_release["message"] = ""
+                    self._workflow_auto_release["exported"] = []
+                self._workflow_auto_release["enabled"] = True
+                if running_tid:
+                    self._workflow_auto_release["task_id"] = running_tid
+                elif cur_state not in ("syncing", "releasing", "released"):
+                    self._workflow_auto_release["task_id"] = ""
+                self._workflow_auto_release["updated_at"] = time.time()
+            else:
+                cur_state = str(self._workflow_auto_release.get("state") or "idle")
+                if self.quiescing or self.auto_releasing or cur_state == "released":
+                    raise ColabOneConflictError("实例正在释放，无法取消自动收尾")
+                self._workflow_auto_release["enabled"] = False
+                self._pending_workflow_auto_release = False
+                if cur_state == "releasing":
+                    self._workflow_auto_release["state"] = "idle"
+                    self._workflow_auto_release["task_id"] = ""
+                    self._workflow_auto_release["error"] = ""
+                    self._workflow_auto_release["message"] = (
+                        "输出作品已同步至 Google 云盘，已按设置取消自动释放"
+                    )
+                elif cur_state != "syncing":
+                    self._workflow_auto_release["state"] = "idle"
+                    self._workflow_auto_release["task_id"] = ""
+                    self._workflow_auto_release["error"] = ""
+                    self._workflow_auto_release["message"] = ""
+                self._workflow_auto_release["updated_at"] = time.time()
+            return copy.deepcopy(self._workflow_auto_release)
+
+    def _abort_workflow_auto_release(
+        self,
+        task,
+        *,
+        state: str,
+        error: str = "",
+        message: str = "",
+        note_level: str = "warning",
+    ) -> None:
+        with self.lock:
+            self._pending_workflow_auto_release = False
+            self._workflow_auto_release["enabled"] = False
+            self._workflow_auto_release["state"] = state
+            self._workflow_auto_release["error"] = error
+            self._workflow_auto_release["message"] = message
+            self._workflow_auto_release["updated_at"] = time.time()
+        note_text = error or message
+        if note_text and task is not None:
+            task.note(note_text, note_level)
+
+    def _finalize_comfyui_workflow_auto_release(self, task) -> None:
+        with self.lock:
+            if not self._workflow_auto_release.get("enabled"):
+                return
+            bound_tid = str(self._workflow_auto_release.get("task_id") or "")
+            if bound_tid and bound_tid != task.id:
+                return
+            self._workflow_auto_release["task_id"] = task.id
+            self._workflow_auto_release["state"] = "syncing"
+            self._workflow_auto_release["error"] = ""
+            self._workflow_auto_release["exported"] = []
+            self._workflow_auto_release["message"] = (
+                "工作流已完成，正在同步并导出作品到 Google 云盘…"
+            )
+            self._workflow_auto_release["updated_at"] = time.time()
+
+        with task.lock:
+            outputs = [dict(o) for o in task.outputs if isinstance(o, dict) and o.get("id")]
+
+        if not outputs:
+            self._abort_workflow_auto_release(
+                task,
+                state="failed",
+                error="本次工作流未产生可同步的输出作品，已保留当前实例",
+                note_level="warning",
+            )
+            return
+
+        task.update(
+            progress=0.98,
+            message="工作流已完成，正在同步并导出作品到 Google 云盘…",
+            monotonic_progress=True,
+        )
+        task.note("工作流已完成，开始将输出作品同步并导出到 Google 云盘")
+        try:
+            self.touch(hold_seconds=300)
+        except Exception:
+            pass
+
+        if not self.drive.available():
+            self._abort_workflow_auto_release(
+                task,
+                state="failed",
+                error="Google 云盘连接已断开，未能同步输出作品，已保留当前实例",
+                note_level="error",
+            )
+            return
+
+        exported_records: list[dict] = []
+        total_outputs = len(outputs)
+        for idx, item in enumerate(outputs, 1):
+            if task.cancel.is_set():
+                self._abort_workflow_auto_release(
+                    task,
+                    state="skipped",
+                    message="已取消自动同步释放，已保留当前实例",
+                    note_level="warning",
+                )
+                return
+            with self.lock:
+                still_enabled = bool(self._workflow_auto_release.get("enabled"))
+            if not still_enabled:
+                with self.lock:
+                    self._pending_workflow_auto_release = False
+                    self._workflow_auto_release["state"] = "idle"
+                    self._workflow_auto_release["error"] = ""
+                    self._workflow_auto_release["exported"] = exported_records
+                    self._workflow_auto_release["message"] = (
+                        "已按设置取消自动释放，当前实例已保留"
+                    )
+                    self._workflow_auto_release["updated_at"] = time.time()
+                task.note("已按设置取消自动释放，当前实例已保留")
+                return
+            oid = str(item.get("id") or "")
+            fname = str(item.get("filename") or oid)
+            task.update(
+                message=f"正在导出作品到 Google 云盘 ({idx}/{total_outputs}) · {fname}"
+            )
+            with self.lock:
+                self._workflow_auto_release["message"] = (
+                    f"正在导出作品到 Google 云盘 ({idx}/{total_outputs}) · {fname}"
+                )
+                self._workflow_auto_release["updated_at"] = time.time()
+            try:
+                res = self.export_comfy_output_to_drive(oid)
+            except Exception as exc:
+                self._abort_workflow_auto_release(
+                    task,
+                    state="failed",
+                    error=f"作品导出到 Google 云盘失败（{exc}），已保留当前实例",
+                    note_level="error",
+                )
+                return
+            exported_records.append(res)
+
+        if task.cancel.is_set():
+            self._abort_workflow_auto_release(
+                task,
+                state="skipped",
+                message="已取消自动同步释放，已保留当前实例",
+                note_level="warning",
+            )
+            return
+        with self.lock:
+            if not self._workflow_auto_release.get("enabled"):
+                self._pending_workflow_auto_release = False
+                self._workflow_auto_release["state"] = "idle"
+                self._workflow_auto_release["error"] = ""
+                self._workflow_auto_release["exported"] = exported_records
+                self._workflow_auto_release["message"] = (
+                    "已按设置取消自动释放，当前实例已保留"
+                )
+                self._workflow_auto_release["updated_at"] = time.time()
+                task.note("已按设置取消自动释放，当前实例已保留")
+                return
+
+        task.update(message="正在同步工作区记录到 Google 云盘…")
+        with self.lock:
+            self._workflow_auto_release["message"] = "正在同步工作区记录到 Google 云盘…"
+            self._workflow_auto_release["updated_at"] = time.time()
+
+        try:
+            with self.sync_lock:
+                if not self.drive.available():
+                    self._abort_workflow_auto_release(
+                        task,
+                        state="failed",
+                        error="Google 云盘连接已断开，工作区同步未完成，已保留当前实例",
+                        note_level="error",
+                    )
+                    return
+                if not self.drive_restored:
+                    if not self._restore_from_drive():
+                        self._abort_workflow_auto_release(
+                            task,
+                            state="failed",
+                            error="Google 云盘历史数据恢复未完成，已取消自动释放并保留当前实例",
+                            note_level="error",
+                        )
+                        return
+                if not self._sync_to_drive():
+                    self._abort_workflow_auto_release(
+                        task,
+                        state="failed",
+                        error="工作区同步到 Google 云盘失败，已保留当前实例",
+                        note_level="error",
+                    )
+                    return
+        except Exception as exc:
+            self._abort_workflow_auto_release(
+                task,
+                state="failed",
+                error=f"工作区同步到 Google 云盘失败（{exc}），已保留当前实例",
+                note_level="error",
+            )
+            return
+
+        output_dirty_keys = {f"comfy_output:{o['id']}" for o in outputs}
+        with self.lock:
+            still_dirty = output_dirty_keys.intersection(self._dirty_seq.keys())
+            if still_dirty:
+                self._pending_workflow_auto_release = False
+                self._workflow_auto_release["enabled"] = False
+                self._workflow_auto_release["state"] = "failed"
+                self._workflow_auto_release["error"] = (
+                    "仍有输出作品尚未完成云盘同步，已保留当前实例"
+                )
+                self._workflow_auto_release["message"] = ""
+                self._workflow_auto_release["exported"] = exported_records
+                self._workflow_auto_release["updated_at"] = time.time()
+                task.note("仍有输出作品尚未完成云盘同步，已保留当前实例", "error")
+                return
+            if task.cancel.is_set():
+                self._pending_workflow_auto_release = False
+                self._workflow_auto_release["enabled"] = False
+                self._workflow_auto_release["state"] = "skipped"
+                self._workflow_auto_release["error"] = ""
+                self._workflow_auto_release["exported"] = exported_records
+                self._workflow_auto_release["message"] = (
+                    "已取消自动同步释放，已保留当前实例"
+                )
+                self._workflow_auto_release["updated_at"] = time.time()
+                task.note("已取消自动同步释放，已保留当前实例", "warning")
+                return
+            if not self._workflow_auto_release.get("enabled"):
+                self._pending_workflow_auto_release = False
+                self._workflow_auto_release["state"] = "idle"
+                self._workflow_auto_release["error"] = ""
+                self._workflow_auto_release["exported"] = exported_records
+                self._workflow_auto_release["message"] = (
+                    "输出作品已同步至 Google 云盘，已按设置取消自动释放"
+                )
+                self._workflow_auto_release["updated_at"] = time.time()
+                task.note("输出作品已同步至 Google 云盘，已按设置取消自动释放")
+                return
+            self._workflow_auto_release["state"] = "releasing"
+            self._workflow_auto_release["error"] = ""
+            self._workflow_auto_release["exported"] = exported_records
+            self._workflow_auto_release["message"] = (
+                "输出作品已同步至 Google 云盘，正在安全释放实例…"
+            )
+            self._workflow_auto_release["updated_at"] = time.time()
+            self._pending_workflow_auto_release = True
+
+        task.update(
+            progress=0.99,
+            message="输出作品已同步至 Google 云盘，即将自动释放实例…",
+            monotonic_progress=True,
+        )
+        task.note("全部输出作品已同步并导出至 Google 云盘，即将自动安全释放 GPU 实例")
+
+    def _trigger_remote_unassign(self) -> bool:
+        with self._unassign_lock:
+            if self._unassigned:
+                return True
+            addr = os.environ.get("TBE_RUNTIME_ADDR", "")
+            if not addr:
+                return False
+            for attempt in range(3):
+                try:
+                    self.http.post(
+                        f"http://{addr}/unassign", data=b"", timeout=10
+                    ).raise_for_status()
+                    self._unassigned = True
+                    return True
+                except requests.RequestException:
+                    if attempt < 2 and not self.stopping.is_set():
+                        time.sleep(1.0)
+            return False
+
+    def _execute_pending_workflow_auto_release(self, task_id: str) -> None:
+        grace = max(0.0, float(self._workflow_auto_release_grace_seconds))
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            if self.stopping.is_set():
+                return
+            with self.lock:
+                if (
+                    not self._pending_workflow_auto_release
+                    or not self._workflow_auto_release.get("enabled")
+                ):
+                    return
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+        with self.lock:
+            if (
+                self.stopping.is_set()
+                or not self._pending_workflow_auto_release
+                or not self._workflow_auto_release.get("enabled")
+                or self._workflow_auto_release.get("task_id") not in ("", task_id)
+            ):
+                return
+            if self.busy():
+                self._pending_workflow_auto_release = False
+                self._workflow_auto_release["enabled"] = False
+                self._workflow_auto_release["state"] = "skipped"
+                self._workflow_auto_release["message"] = (
+                    "检测到新任务正在运行，已取消自动释放实例"
+                )
+                self._workflow_auto_release["updated_at"] = time.time()
+                return
+            self._pending_workflow_auto_release = False
+            self.auto_releasing = True
+            self.quiescing = True
+
+        if not self.release_prepared:
+            try:
+                self.prepare_release(auto=True)
+            except Exception:
+                try:
+                    with self.sync_lock:
+                        self.drive.unmount()
+                except Exception:
+                    pass
+        has_remote_addr = bool(os.environ.get("TBE_RUNTIME_ADDR", ""))
+        unassigned = self._trigger_remote_unassign()
+        with self.lock:
+            self._workflow_auto_release["enabled"] = False
+            if has_remote_addr and not unassigned:
+                self._workflow_auto_release["state"] = "releasing"
+                self._workflow_auto_release["message"] = (
+                    "输出作品已同步至 Google 云盘，正在重试释放实例…"
+                )
+            else:
+                self._workflow_auto_release["state"] = "released"
+                self._workflow_auto_release["message"] = (
+                    "输出作品已同步至 Google 云盘，实例已完成自动释放"
+                )
+            self._workflow_auto_release["updated_at"] = time.time()
+
     def run_comfyui_workflow(self, request_data: dict | WorkflowRunRequest):
         raw_token_secret = (
             request_data.get("hf_token", "")
@@ -1887,6 +2283,7 @@ class ColabOneRuntime:
             if scrubbed != raw_msg:
                 raise ValueError(scrubbed) from None
             raise
+        want_auto_release = bool(getattr(req, "auto_release_after_sync", False))
         with self._comfy_lifecycle_lock:
             if callable(
                 getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
@@ -1903,14 +2300,84 @@ class ColabOneRuntime:
                         for w in self.comfy.store.list_workflows()
                     ):
                         raise KeyError("工作流不存在")
+                with self.lock:
+                    prev_auto_release = copy.deepcopy(self._workflow_auto_release)
+                    prev_pending_auto_release = self._pending_workflow_auto_release
+                    arm_requested = want_auto_release or bool(
+                        self._workflow_auto_release.get("enabled")
+                    )
+                    if arm_requested:
+                        if not self.drive.available():
+                            self._pending_workflow_auto_release = False
+                            self._workflow_auto_release["enabled"] = False
+                            self._workflow_auto_release["state"] = "idle"
+                            self._workflow_auto_release["task_id"] = ""
+                            self._workflow_auto_release["error"] = ""
+                            self._workflow_auto_release["message"] = ""
+                            raise ValueError(
+                                "当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载"
+                            )
+                        self._pending_workflow_auto_release = False
+                        self._workflow_auto_release["enabled"] = True
+                        self._workflow_auto_release["state"] = "armed"
+                        self._workflow_auto_release["task_id"] = ""
+                        self._workflow_auto_release["error"] = ""
+                        self._workflow_auto_release["message"] = ""
+                        self._workflow_auto_release["exported"] = []
+                        self._workflow_auto_release["updated_at"] = time.time()
+                    elif str(self._workflow_auto_release.get("state") or "") in (
+                        "failed",
+                        "skipped",
+                    ):
+                        self._pending_workflow_auto_release = False
+                        self._workflow_auto_release["state"] = "idle"
+                        self._workflow_auto_release["task_id"] = ""
+                        self._workflow_auto_release["error"] = ""
+                        self._workflow_auto_release["message"] = ""
+                        self._workflow_auto_release["exported"] = []
+                        self._workflow_auto_release["updated_at"] = time.time()
                 token_secret = getattr(req, "hf_token", "") or ""
 
                 def _execute(task):
+                    with self.lock:
+                        if (
+                            self._workflow_auto_release.get("enabled")
+                            and self._workflow_auto_release.get("task_id") in ("", task.id)
+                        ):
+                            self._workflow_auto_release["task_id"] = task.id
                     try:
-                        return self.comfy.run_workflow(task, req)
+                        result = self.comfy.run_workflow(task, req)
                     except ColabOneCancelledError:
+                        with self.lock:
+                            if (
+                                self._workflow_auto_release.get("enabled")
+                                and self._workflow_auto_release.get("task_id")
+                                in ("", task.id)
+                            ):
+                                self._pending_workflow_auto_release = False
+                                self._workflow_auto_release["enabled"] = False
+                                self._workflow_auto_release["state"] = "skipped"
+                                self._workflow_auto_release["error"] = ""
+                                self._workflow_auto_release["message"] = (
+                                    "工作流已取消，已保留当前实例"
+                                )
+                                self._workflow_auto_release["updated_at"] = time.time()
                         raise
                     except Exception as exc:
+                        with self.lock:
+                            if (
+                                self._workflow_auto_release.get("enabled")
+                                and self._workflow_auto_release.get("task_id")
+                                in ("", task.id)
+                            ):
+                                self._pending_workflow_auto_release = False
+                                self._workflow_auto_release["enabled"] = False
+                                self._workflow_auto_release["state"] = "skipped"
+                                self._workflow_auto_release["error"] = ""
+                                self._workflow_auto_release["message"] = (
+                                    "工作流未成功完成，已保留当前实例"
+                                )
+                                self._workflow_auto_release["updated_at"] = time.time()
                         raw_msg = str(exc) or type(exc).__name__
                         scrubbed = _scrub_secret_text(
                             raw_msg, raw_token_secret, token_secret
@@ -1918,12 +2385,28 @@ class ColabOneRuntime:
                         if scrubbed != raw_msg:
                             raise RuntimeError(scrubbed) from None
                         raise
+                    task.check()
+                    self._finalize_comfyui_workflow_auto_release(task)
+                    return result
 
-                return self.submit(
-                    "comfyui_run",
-                    req.workflow_id,
-                    _execute,
-                )
+                try:
+                    snap = self.submit(
+                        "comfyui_run",
+                        req.workflow_id,
+                        _execute,
+                    )
+                except Exception:
+                    with self.lock:
+                        self._workflow_auto_release = prev_auto_release
+                        self._pending_workflow_auto_release = prev_pending_auto_release
+                    raise
+                with self.lock:
+                    if (
+                        self._workflow_auto_release.get("enabled")
+                        and not self._workflow_auto_release.get("task_id")
+                    ):
+                        self._workflow_auto_release["task_id"] = snap["id"]
+                return snap
 
     def preview_comfyui_tts(
         self, request_data: dict | ComfyTtsPreviewRequest
@@ -2421,14 +2904,15 @@ class ColabOneRuntime:
                             except Exception:
                                 pass
                     self.quiescing = True
-                    addr = os.environ.get("TBE_RUNTIME_ADDR", "")
-                    if addr:
-                        try:
-                            self.http.post(
-                                f"http://{addr}/unassign", data=b"", timeout=10
-                            ).raise_for_status()
-                            return
-                        except requests.RequestException:
-                            pass
+                    if self._trigger_remote_unassign():
+                        with self.lock:
+                            if self._workflow_auto_release.get("state") == "releasing":
+                                self._workflow_auto_release["enabled"] = False
+                                self._workflow_auto_release["state"] = "released"
+                                self._workflow_auto_release["message"] = (
+                                    "输出作品已同步至 Google 云盘，实例已完成自动释放"
+                                )
+                                self._workflow_auto_release["updated_at"] = time.time()
+                        return
 
         threading.Thread(target=loop, daemon=True).start()

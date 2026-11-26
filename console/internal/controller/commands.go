@@ -703,6 +703,25 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if err != nil {
 			return nil, err
 		}
+		if asBool(req["auto_release_after_sync"]) {
+			if len(c.vaultSessions()) == 0 {
+				return nil, errors.New("请先启动远端 GPU 实例")
+			}
+			c.mu.Lock()
+			rt := deepCopyMap(asMap(c.data["runtime"]))
+			c.mu.Unlock()
+			if asString(rt["state"]) != "ready" {
+				return nil, errors.New("请先启动远端 GPU 实例")
+			}
+			if !asBool(asMap(rt["drive"])["connected"]) {
+				return nil, errors.New("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载")
+			}
+			if caps := asAnySlice(rt["capabilities"]); len(caps) > 0 && !c.hasRemoteCapability("comfyui_workflow_auto_release") {
+				return nil, errors.New(colabOneWorkflowAutoRelUpgrHint)
+			}
+		} else {
+			delete(req, "auto_release_after_sync")
+		}
 		wfID := asString(req["workflow_id"])
 		if c.builtinTemplateVideoBackend(wfID) == "longcat_avatar_native" && c.readyRemoteLacksCapability("comfyui_longcat_native") {
 			return nil, errors.New(colabOneLongCatNativeUpgradeHint)
@@ -721,6 +740,78 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		c.log("远端已受理 ComfyUI 工作流任务", "ComfyUI", "info")
 		return res, nil
+
+	case "comfyui.auto_release":
+		enabled, ok := isStrictBool(payload["enabled"])
+		if !ok {
+			return nil, errors.New("自动释放开关参数不合法")
+		}
+		if len(c.vaultSessions()) == 0 {
+			return nil, errors.New("请先启动远端 GPU 实例")
+		}
+		c.mu.Lock()
+		rt := deepCopyMap(asMap(c.data["runtime"]))
+		c.mu.Unlock()
+		if asString(rt["state"]) != "ready" {
+			return nil, errors.New("请先启动远端 GPU 实例")
+		}
+		if enabled && !asBool(asMap(rt["drive"])["connected"]) {
+			return nil, errors.New("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载")
+		}
+		if caps := asAnySlice(rt["capabilities"]); len(caps) > 0 && !c.hasRemoteCapability("comfyui_workflow_auto_release") {
+			return nil, errors.New(colabOneWorkflowAutoRelUpgrHint)
+		}
+		res, err := c.remote(ctx, "POST", "comfyui/auto-release", map[string]any{"enabled": enabled}, "", 30*time.Second)
+		if err != nil {
+			if isMissingRemoteRoute404(err) {
+				return nil, errors.New(colabOneWorkflowAutoRelUpgrHint)
+			}
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "Google 云盘连接已断开") ||
+				strings.Contains(errMsg, "未检测到云盘凭据") ||
+				strings.Contains(errMsg, "尚未连接 Google 云盘") {
+				c.mu.Lock()
+				nextRT := deepCopyMap(asMap(c.data["runtime"]))
+				c.mu.Unlock()
+				if nextRT != nil {
+					driveMap := deepCopyMap(asMap(nextRT["drive"]))
+					if driveMap == nil {
+						driveMap = map[string]any{}
+					}
+					driveMap["connected"] = false
+					driveMap["mode"] = "disabled"
+					nextRT["drive"] = driveMap
+					c.Update(map[string]any{"runtime": nextRT})
+				}
+			}
+			return nil, err
+		}
+		if arMap := asMap(res); arMap != nil {
+			c.mu.Lock()
+			if nextRT := deepCopyMap(asMap(c.data["runtime"])); nextRT != nil {
+				comfyMap := deepCopyMap(asMap(nextRT["comfyui"]))
+				if comfyMap == nil {
+					comfyMap = map[string]any{}
+				}
+				comfyMap["auto_release"] = deepCopyMap(arMap)
+				nextRT["comfyui"] = comfyMap
+				pendingLogs := c.updateLocked(map[string]any{"runtime": nextRT})
+				c.mu.Unlock()
+				c.flushActivityLogs(pendingLogs)
+			} else {
+				c.mu.Unlock()
+			}
+		}
+		if enabled {
+			c.log("已开启工作流完成后自动同步云盘并释放实例", "云盘", "info")
+		} else {
+			c.log("已关闭工作流完成后自动同步释放", "云盘", "info")
+		}
+		_ = c.RefreshRemote(ctx, "")
+		return res, nil
+
+	case "comfyui.outputs.drive.sync":
+		return c.SyncDriveOutputs(ctx)
 
 	case "comfyui.tts.preview":
 		if c.remoteExplicitlyLacksCapability("comfyui_tts_preview") {
@@ -1148,6 +1239,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				return nil, err
 			}
 			resMap := asMap(res)
+			c.recordExportedDriveOutput(identity, resMap)
 			remoteFolder := asString(resMap["remote_folder"])
 			if remoteFolder == "" {
 				remoteFolder = "ColabOne_Drive/outputs"
@@ -1160,16 +1252,32 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			}
 			return res, nil
 		}
+		c.mu.Lock()
+		gpuReady := asString(asMap(c.data["runtime"])["state"]) == "ready"
+		c.mu.Unlock()
 		if action == "comfyui.output.delete" {
-			c.log("正在删除远端 ComfyUI 作品文件", "ComfyUI", "info")
-			res, err := c.remote(ctx, "DELETE", "comfyui/outputs/"+identity, nil, "", 0)
+			if gpuReady && (c.hasLiveRemoteOutput(identity) || !c.hasDriveOutputRecord(identity)) {
+				c.log("正在删除远端 ComfyUI 作品文件", "ComfyUI", "info")
+				res, err := c.remote(ctx, "DELETE", "comfyui/outputs/"+identity, nil, "", 0)
+				if err != nil {
+					if isNotFoundError(err) && c.hasDriveOutputRecord(identity) {
+						return c.deleteDriveOutputOffline(ctx, identity)
+					}
+					return nil, err
+				}
+				c.removeDriveOutputRecord(identity)
+				if err := c.RefreshRemote(ctx, ""); err != nil {
+					return nil, err
+				}
+				c.log("已删除远端 ComfyUI 作品文件", "ComfyUI", "info")
+				return res, nil
+			}
+			c.log("正在删除 Google 云盘作品记录", "云盘", "info")
+			res, err := c.deleteDriveOutputOffline(ctx, identity)
 			if err != nil {
 				return nil, err
 			}
-			if err := c.RefreshRemote(ctx, ""); err != nil {
-				return nil, err
-			}
-			c.log("已删除远端 ComfyUI 作品文件", "ComfyUI", "info")
+			c.log("已删除 Google 云盘作品记录", "云盘", "info")
 			return res, nil
 		}
 		offset := 0
@@ -1186,7 +1294,14 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if offset < 0 || offset > colabOneMaxOutputAssetOffset {
 			return nil, errors.New("读取范围不合法")
 		}
-		return c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=%d", identity, offset), nil, "", 0)
+		if gpuReady && (c.hasLiveRemoteOutput(identity) || !c.hasDriveOutputRecord(identity)) {
+			res, err := c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=%d", identity, offset), nil, "", 0)
+			if err != nil && isNotFoundError(err) && c.hasDriveOutputRecord(identity) {
+				return c.readDriveOutputAssetChunk(ctx, identity, offset)
+			}
+			return res, err
+		}
+		return c.readDriveOutputAssetChunk(ctx, identity, offset)
 
 	case "runtime.upgrade":
 		forceUpgrade := asBool(payload["force"])
@@ -1465,6 +1580,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			c.mu.Lock()
 			c.lastAuth = 0
 			c.remoteWorkflowVersions = make(map[string]float64)
+			c.resetDriveOutputsSyncStateLocked()
 			c.mu.Unlock()
 			if c.cuUsage != nil {
 				c.cuUsage.ResetActiveAccount()
@@ -1478,6 +1594,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				"auth_url":      "",
 			})
 			c.log("Google 登录已保存到本机，后续自动续期", "登录", "info")
+			c.triggerBackgroundDriveOutputsSync()
 			return nil
 		}, nil, nil)
 
@@ -1495,6 +1612,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			}
 			c.mu.Lock()
 			c.lastAuth = 0
+			c.resetDriveOutputsSyncStateLocked()
 			c.mu.Unlock()
 			if c.cuUsage != nil {
 				c.cuUsage.ResetActiveAccount()
@@ -1510,6 +1628,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			c.mu.Lock()
 			c.lastAuth = 0
 			c.remoteWorkflowVersions = make(map[string]float64)
+			c.resetDriveOutputsSyncStateLocked()
 			c.mu.Unlock()
 			if c.cuUsage != nil {
 				c.cuUsage.ResetActiveAccount()
@@ -1523,6 +1642,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				"auth_url":      "",
 			})
 			c.log("Google 登录已保存到本机，后续自动续期", "登录", "info")
+			c.triggerBackgroundDriveOutputsSync()
 			return nil
 		}, nil, nil)
 

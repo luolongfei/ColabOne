@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -640,6 +641,8 @@ type ColabOneControllerConfig struct {
 	CanvasWaitInterval time.Duration
 	UpgradePollDelay   time.Duration
 	StartRetryDelay    time.Duration
+	DriveAPIBaseURL    string
+	DriveHTTPClient    *http.Client
 }
 
 // ---------------------------------------------------------------------------

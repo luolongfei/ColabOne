@@ -88,6 +88,7 @@ const props = withDefaults(
   defineProps<{
     open: boolean;
     state: ColabOneSnapshot;
+    purpose?: "config" | "export" | "auto_release";
     targetOutput?: WorkflowOutput | null;
     exporting?: boolean;
     exportResult?: ColabOneDriveExportResult | null;
@@ -96,9 +97,11 @@ const props = withDefaults(
     confirmingAuth?: boolean;
     checkingHeadless?: boolean;
     savingAutoDrive?: boolean;
+    armingAutoRelease?: boolean;
     needsRemoteUpgrade?: boolean;
   }>(),
   {
+    purpose: "config",
     targetOutput: null,
     exporting: false,
     exportResult: null,
@@ -107,8 +110,13 @@ const props = withDefaults(
     confirmingAuth: false,
     checkingHeadless: false,
     savingAutoDrive: false,
+    armingAutoRelease: false,
     needsRemoteUpgrade: false,
   },
+);
+
+const isAutoReleasePurpose = computed(
+  () => props.purpose === "auto_release" && !props.targetOutput,
 );
 
 const emit = defineEmits<{
@@ -118,6 +126,7 @@ const emit = defineEmits<{
   "cancel-auth": [];
   "setup-headless": [];
   "export-now": [];
+  "arm-auto-release": [];
   upgrade: [];
   "open-settings": [];
   "toggle-auto-drive": [boolean];
@@ -245,9 +254,15 @@ const mountingCardDesc = computed(() => {
     return t("comfy.driveModalMountingRcloneDesc");
   }
   if (driveAuthInteractiveConfirmed.value) {
+    if (isAutoReleasePurpose.value) {
+      return t("comfy.driveModalMountingAutoReleaseDesc");
+    }
     return props.targetOutput
       ? t("comfy.driveModalMountingExportDesc")
       : t("comfy.driveModalMountingDesc");
+  }
+  if (isAutoReleasePurpose.value) {
+    return t("comfy.driveModalMountingDirectAutoReleaseDesc");
   }
   return props.targetOutput
     ? t("comfy.driveModalMountingDirectExportDesc")
@@ -307,7 +322,9 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
           {{
             targetOutput
               ? t("comfy.driveModalTitleExport")
-              : t("comfy.driveModalTitleConfig")
+              : isAutoReleasePurpose
+                ? t("comfy.driveModalTitleAutoRelease")
+                : t("comfy.driveModalTitleConfig")
           }}
         </span>
         <ATag :color="statusBadge.color" class="co-drive-modal-status-tag">
@@ -413,7 +430,9 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
             {{
               targetOutput
                 ? t("comfy.driveModalAuthStep3Export")
-                : t("comfy.driveModalAuthStep3Connect")
+                : isAutoReleasePurpose
+                  ? t("comfy.driveModalAuthStep3AutoRelease")
+                  : t("comfy.driveModalAuthStep3Connect")
             }}
           </li>
         </ol>
@@ -503,12 +522,19 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
                     ? t("device.driveFreeSegment", { size: driveFreeSpaceText })
                     : "",
                 })
-              : t("comfy.driveModalConnectedOnlyDesc", {
-                  folder: state.runtime.drive?.remote_folder || "ColabOne_Drive",
-                  free: driveFreeSpaceText
-                    ? t("device.driveFreeSegment", { size: driveFreeSpaceText })
-                    : "",
-                })
+              : isAutoReleasePurpose
+                ? t("comfy.driveModalConnectedAutoReleaseDesc", {
+                    folder: state.runtime.drive?.remote_folder || "ColabOne_Drive",
+                    free: driveFreeSpaceText
+                      ? t("device.driveFreeSegment", { size: driveFreeSpaceText })
+                      : "",
+                  })
+                : t("comfy.driveModalConnectedOnlyDesc", {
+                    folder: state.runtime.drive?.remote_folder || "ColabOne_Drive",
+                    free: driveFreeSpaceText
+                      ? t("device.driveFreeSegment", { size: driveFreeSpaceText })
+                      : "",
+                  })
           }}
         </p>
         <AAlert
@@ -545,21 +571,33 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
         <template v-else>
           <div class="co-drive-setup-card">
             <div class="co-drive-setup-copy">
-              <strong>{{ t("comfy.driveModalSetupHeadline") }}</strong>
+              <strong>{{
+                isAutoReleasePurpose
+                  ? t("comfy.driveModalSetupAutoReleaseHeadline")
+                  : t("comfy.driveModalSetupHeadline")
+              }}</strong>
               <p>
                 {{
-                  state.setup.drive_headless
-                    ? targetOutput
-                      ? t("comfy.driveModalSetupHeadlessExportDesc")
-                      : t("comfy.driveModalSetupHeadlessOnlyDesc")
-                    : targetOutput
-                      ? t("comfy.driveModalSetupAuthExportDesc")
-                      : t("comfy.driveModalSetupAuthOnlyDesc")
+                  isAutoReleasePurpose
+                    ? state.setup.drive_headless
+                      ? t("comfy.driveModalSetupHeadlessAutoReleaseDesc")
+                      : t("comfy.driveModalSetupAuthAutoReleaseDesc")
+                    : state.setup.drive_headless
+                      ? targetOutput
+                        ? t("comfy.driveModalSetupHeadlessExportDesc")
+                        : t("comfy.driveModalSetupHeadlessOnlyDesc")
+                      : targetOutput
+                        ? t("comfy.driveModalSetupAuthExportDesc")
+                        : t("comfy.driveModalSetupAuthOnlyDesc")
                 }}
               </p>
             </div>
             <ul class="co-drive-benefits">
-              <li>{{ t("comfy.driveModalBenefitSpeed") }}</li>
+              <li>{{
+                isAutoReleasePurpose
+                  ? t("comfy.driveModalBenefitAutoRelease")
+                  : t("comfy.driveModalBenefitSpeed")
+              }}</li>
               <li>{{ t("comfy.driveModalBenefitPersist") }}</li>
               <li v-if="!targetOutput">
                 {{ t("comfy.driveModalBenefitPath") }}
@@ -731,6 +769,19 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
                 : t("comfy.driveExportNowBtn")
             }}
           </AButton>
+          <AButton
+            v-else-if="isAutoReleasePurpose"
+            type="primary"
+            :loading="armingAutoRelease"
+            @click="emit('arm-auto-release')"
+          >
+            <template #icon><PhCloudCheck :size="15" /></template>
+            {{
+              exportError
+                ? t("comfy.driveRetryAutoReleaseBtn")
+                : t("comfy.driveAutoReleaseEnableNowBtn")
+            }}
+          </AButton>
           <AButton v-else type="primary" @click="requestClose">
             {{ t("common.done") }}
           </AButton>
@@ -763,13 +814,17 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
           >
             <template #icon><PhCloud :size="15" /></template>
             {{
-              state.setup.drive_headless
-                ? targetOutput
-                  ? t("comfy.driveModalConnectAndExportBtn")
-                  : t("comfy.driveModalConnectBtn")
-                : targetOutput
-                  ? t("comfy.driveModalAuthAndExportBtn")
-                  : t("comfy.driveModalAuthBtn")
+              isAutoReleasePurpose
+                ? state.setup.drive_headless
+                  ? t("comfy.driveModalConnectAndAutoReleaseBtn")
+                  : t("comfy.driveModalAuthAndAutoReleaseBtn")
+                : state.setup.drive_headless
+                  ? targetOutput
+                    ? t("comfy.driveModalConnectAndExportBtn")
+                    : t("comfy.driveModalConnectBtn")
+                  : targetOutput
+                    ? t("comfy.driveModalAuthAndExportBtn")
+                    : t("comfy.driveModalAuthBtn")
             }}
           </AButton>
         </template>

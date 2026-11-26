@@ -699,6 +699,7 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		c.remoteWorkflowVersions = make(map[string]float64)
 		c.releasePlan = nil
 		c.data["error"] = ""
+		c.resetDriveOutputsSyncStateLocked()
 		c.mu.Unlock()
 
 		c.resetMonitorToAuto(true, true)
@@ -714,6 +715,9 @@ func (c *ColabOneController) ApplyMigrationPayload(
 			"auth_url":      "",
 		})
 		c.observerWake.Set()
+		if hasLogin {
+			c.triggerBackgroundDriveOutputsSync()
+		}
 
 		if hasLogin && c.provider != nil {
 			importedCreds := deepCopyMap(prepAccount.colab)
@@ -739,6 +743,9 @@ func (c *ColabOneController) ApplyMigrationPayload(
 				c.mu.Lock()
 				c.lastAuth = nowUnixFloat()
 				c.mu.Unlock()
+				if asBool(account["logged_in"]) {
+					c.triggerBackgroundDriveOutputsSync()
+				}
 				c.observerWake.Set()
 			})
 		}

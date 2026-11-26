@@ -2168,15 +2168,16 @@ func (r *ColabOneWorkflowImportRequest) Validate() error {
 
 // ColabOneWorkflowRunRequest represents a request to execute a stored ComfyUI workflow.
 type ColabOneWorkflowRunRequest struct {
-	WorkflowID string            `json:"workflow_id"`
-	Overrides  map[string]any    `json:"overrides"`
-	Inputs     map[string]string `json:"inputs"`
-	HFToken    string            `json:"hf_token,omitempty"`
+	WorkflowID           string            `json:"workflow_id"`
+	Overrides            map[string]any    `json:"overrides"`
+	Inputs               map[string]string `json:"inputs"`
+	HFToken              string            `json:"hf_token,omitempty"`
+	AutoReleaseAfterSync bool              `json:"auto_release_after_sync,omitempty"`
 }
 
 // String redacts HFToken so logging a ColabOneWorkflowRunRequest never leaks credentials.
 func (r ColabOneWorkflowRunRequest) String() string {
-	return fmt.Sprintf("ColabOneWorkflowRunRequest{WorkflowID:%q, Overrides:%v, Inputs:%v, HFToken:[redacted]}", r.WorkflowID, r.Overrides, r.Inputs)
+	return fmt.Sprintf("ColabOneWorkflowRunRequest{WorkflowID:%q, Overrides:%v, Inputs:%v, AutoReleaseAfterSync:%t, HFToken:[redacted]}", r.WorkflowID, r.Overrides, r.Inputs, r.AutoReleaseAfterSync)
 }
 
 // GoString redacts HFToken when formatted with %#v.

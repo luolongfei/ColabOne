@@ -1,0 +1,1578 @@
+package controller
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+var (
+	reDriveSHA256Hex = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	reDriveFileID    = regexp.MustCompile(`^[A-Za-z0-9._-]{4,256}$`)
+)
+
+func sanitizeDriveSHA256(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if reDriveSHA256Hex.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
+func sanitizeDriveFileID(raw string) string {
+	s := strings.TrimSpace(raw)
+	if reDriveFileID.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
+func sanitizeDriveWebViewLink(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || len(s) > 2048 {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" {
+		return ""
+	}
+	if !strings.EqualFold(u.Hostname(), "drive.google.com") {
+		return ""
+	}
+	return s
+}
+
+func parseContentRangeTotal(hdr string) int64 {
+	s := strings.TrimSpace(hdr)
+	slash := strings.LastIndex(s, "/")
+	if slash < 0 || slash+1 >= len(s) {
+		return 0
+	}
+	rawTotal := strings.TrimSpace(s[slash+1:])
+	if rawTotal == "" || rawTotal == "*" {
+		return 0
+	}
+	n, err := strconv.ParseInt(rawTotal, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func (c *ColabOneController) resetDriveOutputsSyncStateLocked() {
+	c.driveOutputsLastSynced = 0
+	c.driveOutputsSyncError = ""
+}
+
+const (
+	colabOneDriveOutputsFileName     = "drive_outputs.json"
+	colabOneDriveOutputsSchemaVer    = 1
+	colabOneDriveAPIDefaultBaseURL   = "https://www.googleapis.com/drive/v3"
+	colabOneDriveFolderName          = "ColabOne_Drive"
+	colabOneDriveOutputsSubdir       = "outputs"
+	colabOneDriveWorkspaceSubdir     = "workspace"
+	colabOneDriveComfyOutputsSubdir  = "comfyui-outputs"
+	colabOneDriveAssetChunkBytes     = 512 * 1024
+	colabOneDriveMaxMetaBytes        = 64 * 1024
+	colabOneDriveMaxListBodyBytes    = 4 << 20
+	colabOneDriveOutputsMaxPerAcct   = 400
+	colabOneWorkflowAutoRelUpgrHint  = "当前远端服务版本暂不支持工作流完成后自动同步释放，请先点击顶部「立即热更新」升级远端服务后再试"
+)
+
+var allowedDriveOutputKindMIME = map[string][2]string{
+	"png":  {"image", "image/png"},
+	"jpg":  {"image", "image/jpeg"},
+	"jpeg": {"image", "image/jpeg"},
+	"webp": {"image", "image/webp"},
+	"gif":  {"image", "image/gif"},
+	"mp4":  {"video", "video/mp4"},
+	"webm": {"video", "video/webm"},
+	"wav":  {"audio", "audio/wav"},
+	"mp3":  {"audio", "audio/mpeg"},
+	"flac": {"audio", "audio/flac"},
+}
+
+// ColabOneDriveOutputRecord stores metadata for a workflow output persisted in Google Drive,
+// allowing the Outputs Drawer to list, inspect, preview, and download outputs even after
+// the remote GPU instance has been released.
+type ColabOneDriveOutputRecord struct {
+	ID                   string  `json:"id"`
+	WorkflowID           string  `json:"workflow_id"`
+	WorkflowName         string  `json:"workflow_name"`
+	Kind                 string  `json:"kind"`
+	Filename             string  `json:"filename"`
+	Extension            string  `json:"extension"`
+	Mime                 string  `json:"mime"`
+	Size                 int64   `json:"size"`
+	SHA256               string  `json:"sha256,omitempty"`
+	CreatedAt            float64 `json:"created_at"`
+	Elapsed              float64 `json:"elapsed"`
+	PromptID             string  `json:"prompt_id,omitempty"`
+	DriveSynced          bool    `json:"drive_synced"`
+	DriveExported        bool    `json:"drive_exported,omitempty"`
+	DrivePath            string  `json:"drive_path,omitempty"`
+	DriveFolder          string  `json:"drive_folder,omitempty"`
+	DriveFileID          string  `json:"drive_file_id,omitempty"`
+	DriveWorkspaceFileID string  `json:"drive_workspace_file_id,omitempty"`
+	DriveWorkspaceMetaID string  `json:"drive_workspace_meta_id,omitempty"`
+	DriveWebViewLink     string  `json:"drive_web_view_link,omitempty"`
+	DriveMode            string  `json:"drive_mode,omitempty"`
+	SyncedAt             float64 `json:"synced_at,omitempty"`
+}
+
+func (r *ColabOneDriveOutputRecord) clone() *ColabOneDriveOutputRecord {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	return &cp
+}
+
+func (r *ColabOneDriveOutputRecord) preferredDriveFileID() string {
+	if r == nil {
+		return ""
+	}
+	if id := sanitizeDriveFileID(r.DriveFileID); id != "" {
+		return id
+	}
+	return sanitizeDriveFileID(r.DriveWorkspaceFileID)
+}
+
+func (r *ColabOneDriveOutputRecord) resolvedWebViewLink() string {
+	if r == nil {
+		return ""
+	}
+	if link := sanitizeDriveWebViewLink(r.DriveWebViewLink); link != "" {
+		return link
+	}
+	if id := r.preferredDriveFileID(); id != "" {
+		return "https://drive.google.com/file/d/" + url.PathEscape(id) + "/view"
+	}
+	return ""
+}
+
+func (r *ColabOneDriveOutputRecord) toOutputMap(storage string, canDirectRead bool) map[string]any {
+	if r == nil {
+		return nil
+	}
+	fileID := r.preferredDriveFileID()
+	previewable := storage == "runtime" || (canDirectRead && fileID != "")
+	out := map[string]any{
+		"id":                r.ID,
+		"workflow_id":       r.WorkflowID,
+		"workflow_name":     r.WorkflowName,
+		"kind":              r.Kind,
+		"filename":          r.Filename,
+		"extension":         r.Extension,
+		"mime":              r.Mime,
+		"size":              r.Size,
+		"created_at":        r.CreatedAt,
+		"elapsed":           r.Elapsed,
+		"storage":           storage,
+		"drive_synced":      r.DriveSynced,
+		"drive_exported":    r.DriveExported,
+		"drive_previewable": previewable,
+	}
+	if r.SHA256 != "" {
+		out["sha256"] = r.SHA256
+	}
+	if r.PromptID != "" {
+		out["prompt_id"] = r.PromptID
+	}
+	if r.DrivePath != "" {
+		out["drive_path"] = r.DrivePath
+	}
+	if r.DriveFolder != "" {
+		out["drive_folder"] = r.DriveFolder
+	}
+	if fileID != "" {
+		out["drive_file_id"] = fileID
+	}
+	if link := r.resolvedWebViewLink(); link != "" {
+		out["drive_web_view_link"] = link
+	}
+	if r.DriveMode != "" {
+		out["drive_mode"] = r.DriveMode
+	}
+	return out
+}
+
+type colabOneDriveOutputsDisk struct {
+	Version  int                                             `json:"version"`
+	Accounts map[string]map[string]*ColabOneDriveOutputRecord `json:"accounts"`
+}
+
+type authAccessTokenProvider interface {
+	AccessToken(ctx context.Context, scope string) (string, error)
+}
+
+func (c *ColabOneController) driveOutputsPath() string {
+	return filepath.Join(c.directory, colabOneDriveOutputsFileName)
+}
+
+func (c *ColabOneController) loadDriveOutputs() {
+	c.mu.Lock()
+	c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
+	c.mu.Unlock()
+
+	raw, err := os.ReadFile(c.driveOutputsPath())
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+		return
+	}
+	var disk colabOneDriveOutputsDisk
+	if err := json.Unmarshal(raw, &disk); err != nil || disk.Accounts == nil {
+		return
+	}
+	loaded := make(map[string]map[string]*ColabOneDriveOutputRecord, len(disk.Accounts))
+	for acctKey, items := range disk.Accounts {
+		cleanAcct := strings.TrimSpace(acctKey)
+		if cleanAcct == "" || len(items) == 0 {
+			continue
+		}
+		bucket := make(map[string]*ColabOneDriveOutputRecord, len(items))
+		for id, rec := range items {
+			if rec == nil {
+				continue
+			}
+			cleanID := strings.ToLower(strings.TrimSpace(rec.ID))
+			if cleanID == "" {
+				cleanID = strings.ToLower(strings.TrimSpace(id))
+			}
+			if !reHex32ID.MatchString(cleanID) {
+				continue
+			}
+			ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(rec.Extension), "."))
+			km, ok := allowedDriveOutputKindMIME[ext]
+			if !ok {
+				continue
+			}
+			cp := rec.clone()
+			cp.ID = cleanID
+			cp.Extension = ext
+			if cp.Kind == "" {
+				cp.Kind = km[0]
+			}
+			if cp.Mime == "" {
+				cp.Mime = km[1]
+			}
+			cp.SHA256 = sanitizeDriveSHA256(cp.SHA256)
+			cp.DriveFileID = sanitizeDriveFileID(cp.DriveFileID)
+			cp.DriveWorkspaceFileID = sanitizeDriveFileID(cp.DriveWorkspaceFileID)
+			cp.DriveWorkspaceMetaID = sanitizeDriveFileID(cp.DriveWorkspaceMetaID)
+			cp.DriveWebViewLink = sanitizeDriveWebViewLink(cp.DriveWebViewLink)
+			cp.DriveSynced = true
+			bucket[cleanID] = cp
+		}
+		if len(bucket) > 0 {
+			loaded[cleanAcct] = bucket
+		}
+	}
+	c.mu.Lock()
+	c.driveOutputs = loaded
+	c.mu.Unlock()
+}
+
+func (c *ColabOneController) saveDriveOutputs() error {
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
+
+	c.mu.Lock()
+	disk := colabOneDriveOutputsDisk{
+		Version:  colabOneDriveOutputsSchemaVer,
+		Accounts: make(map[string]map[string]*ColabOneDriveOutputRecord, len(c.driveOutputs)),
+	}
+	for acctKey, bucket := range c.driveOutputs {
+		if len(bucket) == 0 {
+			continue
+		}
+		outBucket := make(map[string]*ColabOneDriveOutputRecord, len(bucket))
+		for id, rec := range bucket {
+			if rec != nil {
+				outBucket[id] = rec.clone()
+			}
+		}
+		if len(outBucket) > 0 {
+			disk.Accounts[acctKey] = outBucket
+		}
+	}
+	c.mu.Unlock()
+
+	return AtomicJSON(c.driveOutputsPath(), disk)
+}
+
+func (c *ColabOneController) currentDriveAccountKeyLocked() string {
+	if c.vault == nil {
+		return ""
+	}
+	colabVal, ok := c.vault.Get("colab")
+	if !ok || !asBool(colabVal) {
+		return ""
+	}
+	if profVal, ok := c.vault.Get("google_profile"); ok {
+		if prof := asMap(profVal); prof != nil {
+			if sub := strings.TrimSpace(asString(prof["sub"])); sub != "" {
+				return "sub:" + sub
+			}
+			if email := strings.ToLower(strings.TrimSpace(asString(prof["email"]))); email != "" {
+				return "email:" + email
+			}
+		}
+	}
+	if acct := asMap(c.data["account"]); acct != nil {
+		if sub := strings.TrimSpace(asString(acct["sub"])); sub != "" {
+			return "sub:" + sub
+		}
+		if email := strings.ToLower(strings.TrimSpace(asString(acct["email"]))); email != "" {
+			return "email:" + email
+		}
+	}
+	return ""
+}
+
+func (c *ColabOneController) currentDriveAccountKey() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.currentDriveAccountKeyLocked()
+}
+
+func (c *ColabOneController) driveDirectReadReady() (bool, string) {
+	if c.auth == nil || c.vault == nil || !c.auth.HasDriveScope() {
+		return false, ""
+	}
+	if !c.auth.RequiresDriveQuotaProject() {
+		return true, ""
+	}
+	projVal, _ := c.vault.Get("cloud_project")
+	proj := strings.TrimSpace(asString(projVal))
+	if proj == "" {
+		return false, ""
+	}
+	return true, proj
+}
+
+func (c *ColabOneController) driveAccessToken(ctx context.Context) (string, error) {
+	if c.auth == nil {
+		return "", errors.New("请先完成 Google 登录")
+	}
+	if prov, ok := c.auth.(authAccessTokenProvider); ok {
+		tok, err := prov.AccessToken(ctx, "colab")
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(tok) == "" {
+			return "", errors.New("请先完成 Google 登录")
+		}
+		return tok, nil
+	}
+	raw, err := c.auth.Credentials(ctx, "colab")
+	if err != nil {
+		return "", err
+	}
+	if raw == nil {
+		return "", errors.New("请先完成 Google 登录")
+	}
+	if m := asMap(raw); m != nil {
+		if tok := strings.TrimSpace(asString(m["token"])); tok != "" {
+			return tok, nil
+		}
+		if tok := strings.TrimSpace(asString(m["access_token"])); tok != "" {
+			return tok, nil
+		}
+	}
+	if encoded, err := json.Marshal(raw); err == nil {
+		var parsed struct {
+			Token       string `json:"token"`
+			AccessToken string `json:"access_token"`
+		}
+		if json.Unmarshal(encoded, &parsed) == nil {
+			if tok := strings.TrimSpace(parsed.Token); tok != "" {
+				return tok, nil
+			}
+			if tok := strings.TrimSpace(parsed.AccessToken); tok != "" {
+				return tok, nil
+			}
+		}
+	}
+	return "", errors.New("请先完成 Google 登录")
+}
+
+func driveOutputRecordFromMap(raw map[string]any) *ColabOneDriveOutputRecord {
+	if raw == nil {
+		return nil
+	}
+	id := strings.ToLower(strings.TrimSpace(asString(raw["id"])))
+	if !reHex32ID.MatchString(id) {
+		return nil
+	}
+	ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(asString(raw["extension"])), "."))
+	if ext == "" {
+		ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(asString(raw["filename"])), "."))
+	}
+	km, ok := allowedDriveOutputKindMIME[ext]
+	if !ok {
+		return nil
+	}
+	kind := strings.TrimSpace(asString(raw["kind"]))
+	if kind == "" {
+		kind = km[0]
+	}
+	mime := strings.TrimSpace(asString(raw["mime"]))
+	if mime == "" {
+		mime = km[1]
+	}
+	size, _ := asInt64(raw["size"])
+	createdAt, _ := asFloat(raw["created_at"])
+	elapsed, _ := asFloat(raw["elapsed"])
+	fname := strings.TrimSpace(asString(raw["filename"]))
+	if fname == "" {
+		fname = id + "." + ext
+	}
+	return &ColabOneDriveOutputRecord{
+		ID:           id,
+		WorkflowID:   strings.TrimSpace(asString(raw["workflow_id"])),
+		WorkflowName: strings.TrimSpace(asString(raw["workflow_name"])),
+		Kind:         kind,
+		Filename:     fname,
+		Extension:    ext,
+		Mime:         mime,
+		Size:         size,
+		SHA256:       sanitizeDriveSHA256(asString(raw["sha256"])),
+		CreatedAt:    createdAt,
+		Elapsed:      elapsed,
+		PromptID:     strings.TrimSpace(asString(raw["prompt_id"])),
+		DriveSynced:  true,
+	}
+}
+
+func mergeDriveOutputRecord(dst, src *ColabOneDriveOutputRecord) bool {
+	if dst == nil || src == nil {
+		return false
+	}
+	changed := false
+	setStr := func(target *string, val string) {
+		if val != "" && *target != val {
+			*target = val
+			changed = true
+		}
+	}
+	setStr(&dst.WorkflowID, src.WorkflowID)
+	if src.WorkflowName != "" && (src.WorkflowName != "Google 云盘作品" || dst.WorkflowName == "") {
+		setStr(&dst.WorkflowName, src.WorkflowName)
+	}
+	setStr(&dst.Kind, src.Kind)
+	setStr(&dst.Filename, src.Filename)
+	setStr(&dst.Extension, src.Extension)
+	setStr(&dst.Mime, src.Mime)
+	if src.Size > 0 && dst.Size != src.Size {
+		dst.Size = src.Size
+		changed = true
+	}
+	setStr(&dst.SHA256, sanitizeDriveSHA256(src.SHA256))
+	if src.CreatedAt > 0 && dst.CreatedAt == 0 {
+		dst.CreatedAt = src.CreatedAt
+		changed = true
+	}
+	if src.Elapsed > 0 && dst.Elapsed == 0 {
+		dst.Elapsed = src.Elapsed
+		changed = true
+	}
+	setStr(&dst.PromptID, src.PromptID)
+	if src.DriveSynced && !dst.DriveSynced {
+		dst.DriveSynced = true
+		changed = true
+	}
+	if src.DriveExported && !dst.DriveExported {
+		dst.DriveExported = true
+		changed = true
+	}
+	if src.DriveExported {
+		setStr(&dst.DrivePath, src.DrivePath)
+		setStr(&dst.DriveFolder, src.DriveFolder)
+	} else if dst.DrivePath == "" {
+		setStr(&dst.DrivePath, src.DrivePath)
+		setStr(&dst.DriveFolder, src.DriveFolder)
+	}
+	setStr(&dst.DriveFileID, sanitizeDriveFileID(src.DriveFileID))
+	setStr(&dst.DriveWorkspaceFileID, sanitizeDriveFileID(src.DriveWorkspaceFileID))
+	setStr(&dst.DriveWorkspaceMetaID, sanitizeDriveFileID(src.DriveWorkspaceMetaID))
+	setStr(&dst.DriveWebViewLink, sanitizeDriveWebViewLink(src.DriveWebViewLink))
+	setStr(&dst.DriveMode, src.DriveMode)
+	if src.SyncedAt > dst.SyncedAt {
+		dst.SyncedAt = src.SyncedAt
+	}
+	return changed
+}
+
+func pruneDriveOutputsBucketLocked(bucket map[string]*ColabOneDriveOutputRecord) {
+	if len(bucket) <= colabOneDriveOutputsMaxPerAcct {
+		return
+	}
+	items := make([]*ColabOneDriveOutputRecord, 0, len(bucket))
+	for _, rec := range bucket {
+		if rec != nil {
+			items = append(items, rec)
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].CreatedAt != items[j].CreatedAt {
+			return items[i].CreatedAt > items[j].CreatedAt
+		}
+		return items[i].ID < items[j].ID
+	})
+	for _, drop := range items[colabOneDriveOutputsMaxPerAcct:] {
+		delete(bucket, drop.ID)
+	}
+}
+
+func (c *ColabOneController) recordSyncedRemoteOutputs(rt map[string]any, rawOutputs []any) {
+	driveMap := asMap(rt["drive"])
+	if driveMap == nil || !asBool(driveMap["connected"]) {
+		return
+	}
+	remoteFolder := strings.TrimSpace(asString(driveMap["remote_folder"]))
+	if remoteFolder == "" {
+		remoteFolder = colabOneDriveFolderName
+	}
+	driveMode := strings.TrimSpace(asString(driveMap["mode"]))
+	exportedByID := make(map[string]map[string]any)
+	if comfy := asMap(rt["comfyui"]); comfy != nil {
+		if ar := asMap(comfy["auto_release"]); ar != nil {
+			for _, rawExp := range asAnySlice(ar["exported"]) {
+				exp := asMap(rawExp)
+				if exp == nil {
+					continue
+				}
+				eid := strings.ToLower(strings.TrimSpace(asString(exp["id"])))
+				if reHex32ID.MatchString(eid) {
+					exportedByID[eid] = exp
+				}
+			}
+		}
+	}
+
+	now := nowUnixFloat()
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	if acctKey == "" {
+		c.mu.Unlock()
+		return
+	}
+	if c.driveOutputs == nil {
+		c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
+	}
+	bucket := c.driveOutputs[acctKey]
+	if bucket == nil {
+		bucket = make(map[string]*ColabOneDriveOutputRecord)
+		c.driveOutputs[acctKey] = bucket
+	}
+	changed := false
+	for _, rawItem := range rawOutputs {
+		rec := driveOutputRecordFromMap(asMap(rawItem))
+		if rec == nil {
+			continue
+		}
+		rec.DriveSynced = true
+		rec.DriveMode = driveMode
+		rec.DriveFolder = remoteFolder + "/" + colabOneDriveWorkspaceSubdir + "/" + colabOneDriveComfyOutputsSubdir
+		rec.DrivePath = "My Drive/" + rec.DriveFolder + "/" + rec.ID + "." + rec.Extension
+		rec.SyncedAt = now
+		if exp := exportedByID[rec.ID]; exp != nil {
+			rec.DriveExported = true
+			if rf := strings.TrimSpace(asString(exp["remote_folder"])); rf != "" {
+				rec.DriveFolder = rf
+			} else {
+				rec.DriveFolder = remoteFolder + "/" + colabOneDriveOutputsSubdir
+			}
+			if dp := strings.TrimSpace(asString(exp["drive_path"])); dp != "" {
+				rec.DrivePath = dp
+			} else if fn := strings.TrimSpace(asString(exp["filename"])); fn != "" {
+				rec.DrivePath = "My Drive/" + rec.DriveFolder + "/" + fn
+			}
+			if fid := sanitizeDriveFileID(asString(exp["drive_file_id"])); fid != "" {
+				rec.DriveFileID = fid
+			}
+			if link := sanitizeDriveWebViewLink(asString(exp["drive_web_view_link"])); link != "" {
+				rec.DriveWebViewLink = link
+			}
+		}
+		if existing, exists := bucket[rec.ID]; exists && existing != nil {
+			if mergeDriveOutputRecord(existing, rec) {
+				changed = true
+			}
+		} else {
+			bucket[rec.ID] = rec
+			changed = true
+		}
+	}
+	if changed {
+		pruneDriveOutputsBucketLocked(bucket)
+	}
+	c.mu.Unlock()
+
+	if changed {
+		_ = c.saveDriveOutputs()
+	}
+}
+
+func (c *ColabOneController) recordExportedDriveOutput(identity string, exportRes map[string]any) {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) || exportRes == nil {
+		return
+	}
+	now := nowUnixFloat()
+
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	if acctKey == "" {
+		c.mu.Unlock()
+		return
+	}
+	var liveRec *ColabOneDriveOutputRecord
+	for _, rawItem := range asAnySlice(c.data["comfy_outputs"]) {
+		m := asMap(rawItem)
+		if strings.EqualFold(asString(m["id"]), cleanID) {
+			liveRec = driveOutputRecordFromMap(m)
+			break
+		}
+	}
+	if c.driveOutputs == nil {
+		c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
+	}
+	bucket := c.driveOutputs[acctKey]
+	if bucket == nil {
+		bucket = make(map[string]*ColabOneDriveOutputRecord)
+		c.driveOutputs[acctKey] = bucket
+	}
+	target := bucket[cleanID]
+	if target == nil && liveRec != nil {
+		target = liveRec
+		bucket[cleanID] = target
+	} else if target != nil && liveRec != nil {
+		mergeDriveOutputRecord(target, liveRec)
+	}
+	if target == nil {
+		fname := strings.TrimSpace(asString(exportRes["filename"]))
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fname), "."))
+		km, ok := allowedDriveOutputKindMIME[ext]
+		if !ok {
+			c.mu.Unlock()
+			return
+		}
+		sz, _ := asInt64(exportRes["size"])
+		target = &ColabOneDriveOutputRecord{
+			ID:           cleanID,
+			WorkflowName: "Google 云盘作品",
+			Kind:         km[0],
+			Filename:     fname,
+			Extension:    ext,
+			Mime:         km[1],
+			Size:         sz,
+			CreatedAt:    now,
+			DriveSynced:  true,
+		}
+		bucket[cleanID] = target
+	}
+	target.DriveSynced = true
+	target.DriveExported = true
+	if rf := strings.TrimSpace(asString(exportRes["remote_folder"])); rf != "" {
+		target.DriveFolder = rf
+	} else if target.DriveFolder == "" {
+		target.DriveFolder = colabOneDriveFolderName + "/" + colabOneDriveOutputsSubdir
+	}
+	if dp := strings.TrimSpace(asString(exportRes["drive_path"])); dp != "" {
+		target.DrivePath = dp
+	} else if fn := strings.TrimSpace(asString(exportRes["filename"])); fn != "" {
+		target.DrivePath = "My Drive/" + target.DriveFolder + "/" + fn
+	}
+	if fid := sanitizeDriveFileID(asString(exportRes["drive_file_id"])); fid != "" {
+		target.DriveFileID = fid
+	}
+	if link := sanitizeDriveWebViewLink(asString(exportRes["drive_web_view_link"])); link != "" {
+		target.DriveWebViewLink = link
+	}
+	if mode := strings.TrimSpace(asString(exportRes["mode"])); mode != "" {
+		target.DriveMode = mode
+	}
+	target.SyncedAt = now
+	pruneDriveOutputsBucketLocked(bucket)
+	c.mu.Unlock()
+
+	_ = c.saveDriveOutputs()
+}
+
+func (c *ColabOneController) removeDriveOutputRecord(identity string) {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return
+	}
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	removed := false
+	if acctKey != "" && c.driveOutputs != nil {
+		if bucket := c.driveOutputs[acctKey]; bucket != nil {
+			if _, exists := bucket[cleanID]; exists {
+				delete(bucket, cleanID)
+				removed = true
+			}
+		}
+	}
+	c.mu.Unlock()
+	if removed {
+		_ = c.saveDriveOutputs()
+	}
+}
+
+func (c *ColabOneController) mergeComfyOutputsForSnapshot(
+	rt map[string]any,
+	liveOutputs []any,
+	canDirectRead bool,
+) ([]any, map[string]any) {
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	var saved []*ColabOneDriveOutputRecord
+	if acctKey != "" && c.driveOutputs != nil {
+		if bucket := c.driveOutputs[acctKey]; len(bucket) > 0 {
+			saved = make([]*ColabOneDriveOutputRecord, 0, len(bucket))
+			for _, rec := range bucket {
+				if rec != nil {
+					saved = append(saved, rec.clone())
+				}
+			}
+		}
+	}
+	syncing := false
+	lastSyncedAt := 0.0
+	lastErr := ""
+	if acctKey != "" {
+		syncing = c.driveOutputsSyncing
+		lastSyncedAt = c.driveOutputsLastSynced
+		lastErr = c.driveOutputsSyncError
+	}
+	c.mu.Unlock()
+
+	savedByID := make(map[string]*ColabOneDriveOutputRecord, len(saved))
+	for _, rec := range saved {
+		savedByID[rec.ID] = rec
+	}
+
+	statusMap := map[string]any{
+		"syncing":         syncing,
+		"last_synced_at":  lastSyncedAt,
+		"can_direct_read": canDirectRead,
+		"count":           len(saved),
+		"error":           lastErr,
+	}
+
+	rtState := asString(rt["state"])
+	driveConnected := asBool(asMap(rt["drive"])["connected"])
+
+	// When a remote GPU is ready, return live outputs (enriched with Drive linkage metadata)
+	// plus any Drive-only archived outputs not currently on the remote VM.
+	if rtState == "ready" {
+		if len(saved) == 0 && !driveConnected {
+			if liveOutputs == nil {
+				return []any{}, statusMap
+			}
+			return liveOutputs, statusMap
+		}
+		result := make([]any, 0, len(liveOutputs)+len(saved))
+		seen := make(map[string]bool, len(liveOutputs))
+		for _, rawItem := range liveOutputs {
+			m := deepCopyMap(asMap(rawItem))
+			if m == nil {
+				continue
+			}
+			id := strings.ToLower(strings.TrimSpace(asString(m["id"])))
+			if id != "" {
+				seen[id] = true
+			}
+			m["storage"] = "runtime"
+			m["drive_previewable"] = true
+			if rec := savedByID[id]; rec != nil {
+				m["drive_synced"] = rec.DriveSynced || driveConnected
+				m["drive_exported"] = rec.DriveExported
+				if rec.DrivePath != "" {
+					m["drive_path"] = rec.DrivePath
+				}
+				if rec.DriveFolder != "" {
+					m["drive_folder"] = rec.DriveFolder
+				}
+				if fid := rec.preferredDriveFileID(); fid != "" {
+					m["drive_file_id"] = fid
+				}
+				if link := rec.resolvedWebViewLink(); link != "" {
+					m["drive_web_view_link"] = link
+				}
+				if rec.DriveMode != "" {
+					m["drive_mode"] = rec.DriveMode
+				}
+			} else if driveConnected {
+				m["drive_synced"] = true
+			}
+			result = append(result, m)
+		}
+		// Append Drive-persisted items not already present on the active remote VM.
+		// When Drive is already connected on this GPU, avoid resurrecting workspace-only
+		// items deleted elsewhere; still surface archived ColabOne_Drive/outputs exports.
+		var driveOnly []*ColabOneDriveOutputRecord
+		for _, rec := range saved {
+			if seen[rec.ID] {
+				continue
+			}
+			if driveConnected && !rec.DriveExported {
+				continue
+			}
+			driveOnly = append(driveOnly, rec)
+		}
+		sort.SliceStable(driveOnly, func(i, j int) bool {
+			if driveOnly[i].CreatedAt != driveOnly[j].CreatedAt {
+				return driveOnly[i].CreatedAt > driveOnly[j].CreatedAt
+			}
+			return driveOnly[i].ID < driveOnly[j].ID
+		})
+		for _, rec := range driveOnly {
+			result = append(result, rec.toOutputMap("drive", canDirectRead))
+		}
+		return result, statusMap
+	}
+
+	// GPU is stopped/releasing/starting: serve persisted Google Drive outputs for the signed-in account.
+	if len(saved) == 0 {
+		return []any{}, statusMap
+	}
+	sort.SliceStable(saved, func(i, j int) bool {
+		if saved[i].CreatedAt != saved[j].CreatedAt {
+			return saved[i].CreatedAt > saved[j].CreatedAt
+		}
+		return saved[i].ID < saved[j].ID
+	})
+	result := make([]any, 0, len(saved))
+	for _, rec := range saved {
+		result = append(result, rec.toOutputMap("drive", canDirectRead))
+	}
+	return result, statusMap
+}
+
+// ---------------------------------------------------------------------------
+// Direct Google Drive REST API v3 client (works offline from GPU)
+// ---------------------------------------------------------------------------
+
+func (c *ColabOneController) driveAPIBase() string {
+	base := strings.TrimRight(strings.TrimSpace(c.driveAPIBaseURL), "/")
+	if base != "" {
+		return base
+	}
+	return colabOneDriveAPIDefaultBaseURL
+}
+
+func (c *ColabOneController) driveClient() *http.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.driveHTTPClient == nil {
+		c.driveHTTPClient = &http.Client{Timeout: 30 * time.Second}
+		c.driveHTTPClientOwned = true
+	}
+	return c.driveHTTPClient
+}
+
+type driveAPIFile struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	MimeType       string `json:"mimeType"`
+	Size           string `json:"size"`
+	ModifiedTime   string `json:"modifiedTime"`
+	SHA256Checksum string `json:"sha256Checksum"`
+	WebViewLink    string `json:"webViewLink"`
+}
+
+func (f driveAPIFile) sizeBytes() int64 {
+	n, _ := strconv.ParseInt(strings.TrimSpace(f.Size), 10, 64)
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func (f driveAPIFile) modifiedUnix() float64 {
+	raw := strings.TrimSpace(f.ModifiedTime)
+	if raw == "" {
+		return 0
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return float64(t.UnixNano()) / 1e9
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return float64(t.Unix())
+	}
+	return 0
+}
+
+func escapeDriveQueryLiteral(val string) string {
+	val = strings.ReplaceAll(val, `\`, `\\`)
+	return strings.ReplaceAll(val, `'`, `\'`)
+}
+
+func (c *ColabOneController) doDriveAPIRequest(
+	ctx context.Context,
+	method string,
+	reqURL string,
+	token string,
+	quotaProject string,
+	body io.Reader,
+	headers map[string]string,
+	maxBytes int64,
+) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if quotaProject != "" {
+		req.Header.Set("X-Goog-User-Project", quotaProject)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.driveClient().Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, data, nil
+}
+
+func (c *ColabOneController) driveFindChildFolder(
+	ctx context.Context,
+	token string,
+	quotaProject string,
+	parentID string,
+	name string,
+) (string, error) {
+	q := fmt.Sprintf(
+		"name = '%s' and mimeType = 'application/vnd.google-apps.folder' and '%s' in parents and trashed = false",
+		escapeDriveQueryLiteral(name),
+		escapeDriveQueryLiteral(parentID),
+	)
+	u := c.driveAPIBase() + "/files?q=" + url.QueryEscape(q) + "&fields=files(id,name)&pageSize=5&spaces=drive"
+	status, body, err := c.doDriveAPIRequest(ctx, http.MethodGet, u, token, quotaProject, nil, nil, colabOneDriveMaxListBodyBytes)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", &ColabOneHTTPError{StatusCode: status, Message: fmt.Sprintf("读取 Google 云盘目录失败（HTTP %d）", status)}
+	}
+	var parsed struct {
+		Files []driveAPIFile `json:"files"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", err
+	}
+	if len(parsed.Files) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(parsed.Files[0].ID), nil
+}
+
+func (c *ColabOneController) driveListChildFiles(
+	ctx context.Context,
+	token string,
+	quotaProject string,
+	parentID string,
+) ([]driveAPIFile, error) {
+	q := fmt.Sprintf(
+		"'%s' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+		escapeDriveQueryLiteral(parentID),
+	)
+	var all []driveAPIFile
+	pageToken := ""
+	for page := 0; page < 5; page++ {
+		u := c.driveAPIBase() + "/files?q=" + url.QueryEscape(q) +
+			"&fields=nextPageToken,files(id,name,mimeType,size,modifiedTime,sha256Checksum,webViewLink)&pageSize=200&spaces=drive"
+		if pageToken != "" {
+			u += "&pageToken=" + url.QueryEscape(pageToken)
+		}
+		status, body, err := c.doDriveAPIRequest(ctx, http.MethodGet, u, token, quotaProject, nil, nil, colabOneDriveMaxListBodyBytes)
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, &ColabOneHTTPError{StatusCode: status, Message: fmt.Sprintf("读取 Google 云盘作品列表失败（HTTP %d）", status)}
+		}
+		var parsed struct {
+			NextPageToken string         `json:"nextPageToken"`
+			Files         []driveAPIFile `json:"files"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, err
+		}
+		all = append(all, parsed.Files...)
+		if strings.TrimSpace(parsed.NextPageToken) == "" {
+			break
+		}
+		pageToken = strings.TrimSpace(parsed.NextPageToken)
+	}
+	return all, nil
+}
+
+func syntheticDriveOutputID(fileID string) string {
+	sum := sha256.Sum256([]byte("colabone-drive-output:" + strings.TrimSpace(fileID)))
+	return hex.EncodeToString(sum[:16])
+}
+
+// SyncDriveOutputs queries Google Drive API v3 for ColabOne_Drive outputs so users can browse,
+// preview, and download results in the Outputs Drawer without running a GPU instance.
+func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]any, error) {
+	c.driveOutputsSyncMu.Lock()
+	defer c.driveOutputsSyncMu.Unlock()
+
+	acctKey := c.currentDriveAccountKey()
+	if acctKey == "" {
+		return map[string]any{
+			"synced":          false,
+			"can_direct_read": false,
+			"count":           0,
+		}, nil
+	}
+	canDirectRead, quotaProject := c.driveDirectReadReady()
+	if !canDirectRead {
+		c.mu.Lock()
+		count := len(c.driveOutputs[acctKey])
+		c.driveOutputsSyncError = ""
+		c.mu.Unlock()
+		return map[string]any{
+			"synced":          false,
+			"can_direct_read": false,
+			"reason":          "drivefs_only",
+			"count":           count,
+		}, nil
+	}
+
+	c.mu.Lock()
+	c.driveOutputsSyncing = true
+	c.driveOutputsSyncError = ""
+	c.mu.Unlock()
+
+	finishErr := func(err error) (map[string]any, error) {
+		msg := SafeMessage(err.Error())
+		c.mu.Lock()
+		c.driveOutputsSyncing = false
+		if c.currentDriveAccountKeyLocked() == acctKey {
+			c.driveOutputsSyncError = msg
+		}
+		count := len(c.driveOutputs[acctKey])
+		c.mu.Unlock()
+		return map[string]any{
+			"synced":          false,
+			"can_direct_read": true,
+			"count":           count,
+			"error":           msg,
+		}, err
+	}
+
+	token, err := c.driveAccessToken(ctx)
+	if err != nil {
+		return finishErr(err)
+	}
+
+	rootFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, "root", colabOneDriveFolderName)
+	if err != nil {
+		return finishErr(err)
+	}
+
+	discovered := make(map[string]*ColabOneDriveOutputRecord)
+	now := nowUnixFloat()
+
+	// Snapshot existing records so we can reuse parsed workspace metadata JSON without re-downloading.
+	c.mu.Lock()
+	existingSnap := make(map[string]*ColabOneDriveOutputRecord)
+	if bucket := c.driveOutputs[acctKey]; bucket != nil {
+		for id, rec := range bucket {
+			existingSnap[id] = rec.clone()
+		}
+	}
+	c.mu.Unlock()
+
+	if rootFolderID != "" {
+		// 1) Inspect workspace/comfyui-outputs
+		wsFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, rootFolderID, colabOneDriveWorkspaceSubdir)
+		if err != nil {
+			return finishErr(err)
+		}
+		if wsFolderID != "" {
+			coFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, wsFolderID, colabOneDriveComfyOutputsSubdir)
+			if err != nil {
+				return finishErr(err)
+			}
+			if coFolderID != "" {
+				wsFiles, err := c.driveListChildFiles(ctx, token, quotaProject, coFolderID)
+				if err != nil {
+					return finishErr(err)
+				}
+				metaByID := make(map[string]driveAPIFile)
+				assetByID := make(map[string]driveAPIFile)
+				for _, f := range wsFiles {
+					name := strings.TrimSpace(f.Name)
+					if name == "" || strings.HasPrefix(name, ".") {
+						continue
+					}
+					ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+					stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+					if !reHex32ID.MatchString(stem) {
+						continue
+					}
+					if ext == "json" {
+						metaByID[stem] = f
+					} else if _, ok := allowedDriveOutputKindMIME[ext]; ok {
+						assetByID[stem] = f
+					}
+				}
+				for id, asset := range assetByID {
+					assetSize := asset.sizeBytes()
+					if assetSize <= 0 {
+						continue
+					}
+					ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(asset.Name), "."))
+					km := allowedDriveOutputKindMIME[ext]
+					metaFile, hasMeta := metaByID[id]
+					var rec *ColabOneDriveOutputRecord
+					if prev := existingSnap[id]; prev != nil && hasMeta && prev.DriveWorkspaceMetaID == metaFile.ID && prev.Filename != "" {
+						// Reuse immutable workflow metadata without carrying stale Drive export fields.
+						rec = &ColabOneDriveOutputRecord{
+							ID:           id,
+							WorkflowID:   prev.WorkflowID,
+							WorkflowName: prev.WorkflowName,
+							Kind:         prev.Kind,
+							Filename:     prev.Filename,
+							Extension:    prev.Extension,
+							Mime:         prev.Mime,
+							Size:         prev.Size,
+							SHA256:       sanitizeDriveSHA256(prev.SHA256),
+							CreatedAt:    prev.CreatedAt,
+							Elapsed:      prev.Elapsed,
+							PromptID:     prev.PromptID,
+							DriveSynced:  true,
+						}
+					} else if hasMeta {
+						metaURL := c.driveAPIBase() + "/files/" + url.PathEscape(metaFile.ID) + "?alt=media"
+						st, metaBytes, merr := c.doDriveAPIRequest(ctx, http.MethodGet, metaURL, token, quotaProject, nil, nil, colabOneDriveMaxMetaBytes)
+						if merr == nil && st == http.StatusOK {
+							var parsed map[string]any
+							if decodeJSONWithNumbers(metaBytes, &parsed) == nil {
+								rec = driveOutputRecordFromMap(parsed)
+							}
+						}
+					}
+					if rec == nil {
+						rec = &ColabOneDriveOutputRecord{
+							ID:           id,
+							WorkflowName: "Google 云盘作品",
+							Kind:         km[0],
+							Filename:     asset.Name,
+							Extension:    ext,
+							Mime:         km[1],
+							Size:         assetSize,
+							CreatedAt:    asset.modifiedUnix(),
+						}
+					}
+					rec.Size = assetSize
+					if sha := sanitizeDriveSHA256(asset.SHA256Checksum); sha != "" && rec.SHA256 == "" {
+						rec.SHA256 = sha
+					}
+					if rec.CreatedAt <= 0 {
+						rec.CreatedAt = asset.modifiedUnix()
+					}
+					rec.DriveSynced = true
+					rec.DriveWorkspaceFileID = sanitizeDriveFileID(asset.ID)
+					if hasMeta {
+						rec.DriveWorkspaceMetaID = sanitizeDriveFileID(metaFile.ID)
+					}
+					rec.DriveFolder = colabOneDriveFolderName + "/" + colabOneDriveWorkspaceSubdir + "/" + colabOneDriveComfyOutputsSubdir
+					rec.DrivePath = "My Drive/" + rec.DriveFolder + "/" + asset.Name
+					if link := sanitizeDriveWebViewLink(asset.WebViewLink); link != "" {
+						rec.DriveWebViewLink = link
+					}
+					rec.DriveMode = "drive_api"
+					rec.SyncedAt = now
+					discovered[id] = rec
+				}
+			}
+		}
+
+		// 2) Inspect outputs/ readable exports
+		outFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, rootFolderID, colabOneDriveOutputsSubdir)
+		if err != nil {
+			return finishErr(err)
+		}
+		if outFolderID != "" {
+			outFiles, err := c.driveListChildFiles(ctx, token, quotaProject, outFolderID)
+			if err != nil {
+				return finishErr(err)
+			}
+			bySHA := make(map[string]*ColabOneDriveOutputRecord, len(discovered))
+			byNameSize := make(map[string]*ColabOneDriveOutputRecord, len(discovered))
+			byPrevExportID := make(map[string]*ColabOneDriveOutputRecord, len(discovered))
+			for id, rec := range discovered {
+				if rec.SHA256 != "" {
+					bySHA[rec.SHA256] = rec
+				}
+				byNameSize[strings.ToLower(rec.Filename)+"|"+strconv.FormatInt(rec.Size, 10)] = rec
+				if prev := existingSnap[id]; prev != nil {
+					if pfid := sanitizeDriveFileID(prev.DriveFileID); pfid != "" {
+						byPrevExportID[pfid] = rec
+					}
+				}
+			}
+			for _, f := range outFiles {
+				name := strings.TrimSpace(f.Name)
+				if name == "" || strings.HasPrefix(name, ".") {
+					continue
+				}
+				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+				km, ok := allowedDriveOutputKindMIME[ext]
+				if !ok {
+					continue
+				}
+				sz := f.sizeBytes()
+				if sz <= 0 {
+					continue
+				}
+				fid := sanitizeDriveFileID(f.ID)
+				if fid == "" {
+					continue
+				}
+				sha := sanitizeDriveSHA256(f.SHA256Checksum)
+				var matched *ColabOneDriveOutputRecord
+				if m := byPrevExportID[fid]; m != nil {
+					matched = m
+				}
+				if matched == nil && sha != "" {
+					matched = bySHA[sha]
+				}
+				if matched == nil {
+					matched = byNameSize[strings.ToLower(name)+"|"+strconv.FormatInt(sz, 10)]
+				}
+				if matched != nil {
+					matched.DriveExported = true
+					matched.DriveFileID = fid
+					matched.DriveFolder = colabOneDriveFolderName + "/" + colabOneDriveOutputsSubdir
+					matched.DrivePath = "My Drive/" + matched.DriveFolder + "/" + name
+					if link := sanitizeDriveWebViewLink(f.WebViewLink); link != "" {
+						matched.DriveWebViewLink = link
+					}
+					matched.SyncedAt = now
+					continue
+				}
+				synthID := syntheticDriveOutputID(fid)
+				rec := &ColabOneDriveOutputRecord{
+					ID:               synthID,
+					WorkflowID:       "",
+					WorkflowName:     "Google 云盘作品",
+					Kind:             km[0],
+					Filename:         name,
+					Extension:        ext,
+					Mime:             km[1],
+					Size:             sz,
+					SHA256:           sha,
+					CreatedAt:        f.modifiedUnix(),
+					Elapsed:          0,
+					DriveSynced:      true,
+					DriveExported:    true,
+					DriveFolder:      colabOneDriveFolderName + "/" + colabOneDriveOutputsSubdir,
+					DrivePath:        "My Drive/" + colabOneDriveFolderName + "/" + colabOneDriveOutputsSubdir + "/" + name,
+					DriveFileID:      fid,
+					DriveWebViewLink: sanitizeDriveWebViewLink(f.WebViewLink),
+					DriveMode:        "drive_api",
+					SyncedAt:         now,
+				}
+				if prev := existingSnap[synthID]; prev != nil {
+					if prev.WorkflowName != "" && prev.WorkflowName != "Google 云盘作品" {
+						rec.WorkflowName = prev.WorkflowName
+					}
+					if prev.WorkflowID != "" {
+						rec.WorkflowID = prev.WorkflowID
+					}
+					if prev.Elapsed > 0 {
+						rec.Elapsed = prev.Elapsed
+					}
+				}
+				discovered[synthID] = rec
+			}
+		}
+	}
+
+	c.mu.Lock()
+	if c.currentDriveAccountKeyLocked() != acctKey {
+		c.driveOutputsSyncing = false
+		c.mu.Unlock()
+		return map[string]any{"synced": false, "can_direct_read": true, "count": 0}, nil
+	}
+	if c.driveOutputs == nil {
+		c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
+	}
+	nextBucket := make(map[string]*ColabOneDriveOutputRecord, len(discovered))
+	for id, rec := range discovered {
+		nextBucket[id] = rec
+	}
+	// Preserve any colab_drivefs records that drive.file scope cannot list.
+	if prevBucket := c.driveOutputs[acctKey]; prevBucket != nil {
+		for id, prev := range prevBucket {
+			if prev == nil {
+				continue
+			}
+			if _, exists := nextBucket[id]; exists {
+				continue
+			}
+			if prev.DriveMode == "colab_drivefs" {
+				nextBucket[id] = prev.clone()
+			}
+		}
+	}
+	pruneDriveOutputsBucketLocked(nextBucket)
+	c.driveOutputs[acctKey] = nextBucket
+	c.driveOutputsSyncing = false
+	c.driveOutputsLastSynced = now
+	c.driveOutputsSyncError = ""
+	count := len(nextBucket)
+	c.mu.Unlock()
+
+	_ = c.saveDriveOutputs()
+	return map[string]any{
+		"synced":          true,
+		"can_direct_read": true,
+		"count":           count,
+	}, nil
+}
+
+func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, identity string, offset int) (map[string]any, error) {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return nil, errors.New("产物编号不合法")
+	}
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	var rec *ColabOneDriveOutputRecord
+	if acctKey != "" && c.driveOutputs != nil {
+		if bucket := c.driveOutputs[acctKey]; bucket != nil {
+			rec = bucket[cleanID].clone()
+		}
+	}
+	c.mu.Unlock()
+	if rec == nil {
+		return nil, ErrNotFound
+	}
+	canDirectRead, quotaProject := c.driveDirectReadReady()
+	fileID := rec.preferredDriveFileID()
+	if !canDirectRead || fileID == "" {
+		return nil, errors.New("该作品已保存至 Google 云盘，请点击「在 Google 云盘查看」或开启无感云盘 API 后直接预览")
+	}
+	size := rec.Size
+	if offset < 0 || (size > 0 && int64(offset) >= size) || (size == 0 && offset > 0) {
+		return nil, errors.New("作品读取范围不合法")
+	}
+	token, err := c.driveAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	end := int64(offset) + colabOneDriveAssetChunkBytes - 1
+	if size > 0 && end >= size {
+		end = size - 1
+	}
+	reqURL := c.driveAPIBase() + "/files/" + url.PathEscape(fileID) + "?alt=media"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if quotaProject != "" {
+		req.Header.Set("X-Goog-User-Project", quotaProject)
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
+
+	resp, err := c.driveClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		return nil, errors.New("作品读取范围不合法")
+	}
+	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+		return nil, &ColabOneHTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("从 Google 云盘读取作品失败（HTTP %d）", resp.StatusCode)}
+	}
+
+	var chunk []byte
+	if resp.StatusCode == http.StatusPartialContent {
+		if total := parseContentRangeTotal(resp.Header.Get("Content-Range")); total > 0 && size <= 0 {
+			size = total
+		}
+		chunk, err = io.ReadAll(io.LimitReader(resp.Body, colabOneDriveAssetChunkBytes))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Server ignored Range and returned 200 OK: skip offset bytes before reading chunk.
+		if resp.ContentLength > 0 && size <= 0 {
+			size = resp.ContentLength
+		}
+		if offset > 0 {
+			if _, skipErr := io.CopyN(io.Discard, resp.Body, int64(offset)); skipErr != nil {
+				if errors.Is(skipErr, io.EOF) || errors.Is(skipErr, io.ErrUnexpectedEOF) {
+					return nil, errors.New("作品读取范围不合法")
+				}
+				return nil, skipErr
+			}
+		}
+		chunk, err = io.ReadAll(io.LimitReader(resp.Body, colabOneDriveAssetChunkBytes))
+		if err != nil {
+			return nil, err
+		}
+	}
+	if size <= 0 {
+		size = int64(offset) + int64(len(chunk))
+	}
+	out := map[string]any{
+		"data":      base64.StdEncoding.EncodeToString(chunk),
+		"offset":    offset,
+		"size":      size,
+		"mime":      rec.Mime,
+		"extension": rec.Extension,
+		"filename":  rec.Filename,
+		"source":    "drive",
+	}
+	if sha := sanitizeDriveSHA256(rec.SHA256); sha != "" {
+		out["sha256"] = sha
+	}
+	return out, nil
+}
+
+func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, identity string) (map[string]any, error) {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return nil, errors.New("产物编号不合法")
+	}
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	var rec *ColabOneDriveOutputRecord
+	if acctKey != "" && c.driveOutputs != nil {
+		if bucket := c.driveOutputs[acctKey]; bucket != nil {
+			rec = bucket[cleanID].clone()
+		}
+	}
+	c.mu.Unlock()
+	if rec == nil {
+		return nil, ErrNotFound
+	}
+	canDirectRead, quotaProject := c.driveDirectReadReady()
+	if canDirectRead {
+		ids := make([]string, 0, 3)
+		seen := make(map[string]bool)
+		for _, fid := range []string{rec.DriveFileID, rec.DriveWorkspaceFileID, rec.DriveWorkspaceMetaID} {
+			fid = sanitizeDriveFileID(fid)
+			if fid != "" && !seen[fid] {
+				seen[fid] = true
+				ids = append(ids, fid)
+			}
+		}
+		if len(ids) > 0 {
+			token, err := c.driveAccessToken(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, fid := range ids {
+				u := c.driveAPIBase() + "/files/" + url.PathEscape(fid)
+				status, _, reqErr := c.doDriveAPIRequest(
+					ctx,
+					http.MethodPatch,
+					u,
+					token,
+					quotaProject,
+					strings.NewReader(`{"trashed":true}`),
+					map[string]string{"Content-Type": "application/json"},
+					64*1024,
+				)
+				if reqErr != nil {
+					return nil, reqErr
+				}
+				if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusNotFound {
+					return nil, &ColabOneHTTPError{
+						StatusCode: status,
+						Message:    fmt.Sprintf("删除 Google 云盘作品失败（HTTP %d）", status),
+					}
+				}
+			}
+		}
+	}
+	c.removeDriveOutputRecord(cleanID)
+	return map[string]any{"ok": true}, nil
+}
+
+func (c *ColabOneController) hasLiveRemoteOutput(identity string) bool {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, rawItem := range asAnySlice(c.data["comfy_outputs"]) {
+		if strings.EqualFold(asString(asMap(rawItem)["id"]), cleanID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ColabOneController) hasDriveOutputRecord(identity string) bool {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	if acctKey == "" || c.driveOutputs == nil {
+		return false
+	}
+	bucket := c.driveOutputs[acctKey]
+	return bucket != nil && bucket[cleanID] != nil
+}
+
+func (c *ColabOneController) triggerBackgroundDriveOutputsSync() {
+	if c.isShuttingDown(c.rootCtx) {
+		return
+	}
+	if !c.background && c.driveAPIBaseURL == "" {
+		return
+	}
+	canDirectRead, _ := c.driveDirectReadReady()
+	if !canDirectRead || c.currentDriveAccountKey() == "" {
+		return
+	}
+	c.spawn(func() {
+		ctx, cancel := context.WithTimeout(c.rootCtx, 25*time.Second)
+		defer cancel()
+		_, _ = c.SyncDriveOutputs(ctx)
+	})
+}

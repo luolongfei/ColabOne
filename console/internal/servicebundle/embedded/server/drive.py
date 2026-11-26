@@ -23,6 +23,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote as _url_quote
 
 import requests
 
@@ -35,6 +36,7 @@ _QUOTA_PROJECT_LINE_RE = re.compile(
     r"^\s*#\s*colabone_quota_project\s*=\s*([a-z][a-z0-9-]{4,28}[a-z0-9])\s*$"
 )
 _EXPORT_EXT_RE = re.compile(r"^[a-z0-9]{1,10}$")
+_DRIVE_FILE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{4,256}$")
 _FORBIDDEN_EXPORT_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]+')
 _WINDOWS_RESERVED_STEMS = frozenset(
     {
@@ -1037,7 +1039,12 @@ class ColabOneDrive:
                     break
                 if _entry_matches_src(inspect_payload):
                     self.error = ""
-                    return {
+                    raw_id = inspect_payload.get("ID")
+                    cand_id = str(raw_id).strip() if isinstance(raw_id, str) else ""
+                    drive_file_id = (
+                        cand_id if _DRIVE_FILE_ID_RE.fullmatch(cand_id) else ""
+                    )
+                    payload_out = {
                         "ok": True,
                         "already_exists": True,
                         "filename": cand,
@@ -1046,6 +1053,12 @@ class ColabOneDrive:
                         "size": actual_size,
                         "mode": self.mode,
                     }
+                    if drive_file_id:
+                        payload_out["drive_file_id"] = drive_file_id
+                        payload_out["drive_web_view_link"] = (
+                            f"https://drive.google.com/file/d/{_url_quote(drive_file_id, safe='')}/view"
+                        )
+                    return payload_out
 
             if final_name is None:
                 base_stem = stem[:160].rstrip(". ") or "colabone-output"
@@ -1076,9 +1089,23 @@ class ColabOneDrive:
             if res.returncode != 0:
                 raise RuntimeError(format_rclone_error(res.stderr or ""))
 
+            drive_file_id = ""
+            try:
+                post_status, post_payload = self._inspect_rclone_remote_file(
+                    binary, f"{remote_dir}/{final_name}"
+                )
+                if post_status == "exists" and isinstance(post_payload, dict):
+                    raw_id = post_payload.get("ID")
+                    if isinstance(raw_id, str):
+                        cand_id = raw_id.strip()
+                        if _DRIVE_FILE_ID_RE.fullmatch(cand_id):
+                            drive_file_id = cand_id
+            except Exception:
+                drive_file_id = ""
+
             self.error = ""
             self._space_cache["ts"] = 0.0
-            return {
+            payload_out = {
                 "ok": True,
                 "already_exists": False,
                 "filename": final_name,
@@ -1087,6 +1114,12 @@ class ColabOneDrive:
                 "size": actual_size,
                 "mode": self.mode,
             }
+            if drive_file_id:
+                payload_out["drive_file_id"] = drive_file_id
+                payload_out["drive_web_view_link"] = (
+                    f"https://drive.google.com/file/d/{_url_quote(drive_file_id, safe='')}/view"
+                )
+            return payload_out
 
     def unmount(self):
         with self.lock:

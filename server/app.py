@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from common.comfyui import (
+    ColabOneWorkflowAutoReleaseRequest,
     ComfyCanvasConfig,
     ComfyTtsPreviewPrefetchRequest,
     ComfyTtsPreviewRequest,
@@ -362,6 +363,10 @@ def create_colabone_app(runtime, token, background=False):
     @app.post("/api/v1/comfyui/run", dependencies=auth)
     def comfyui_run(body: WorkflowRunRequest):
         return runtime.run_comfyui_workflow(body.model_dump())
+
+    @app.post("/api/v1/comfyui/auto-release", dependencies=auth)
+    def comfyui_auto_release(body: ColabOneWorkflowAutoReleaseRequest):
+        return runtime.set_comfyui_auto_release(body.enabled)
 
     @app.get("/api/v1/comfyui/outputs/{output_id}/asset", dependencies=auth)
     def comfyui_output_asset(

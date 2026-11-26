@@ -1030,6 +1030,7 @@ class WorkflowRunRequest(BaseModel):
     overrides: dict[str, str | int | float | bool] = Field(default_factory=dict)
     inputs: dict[str, str] = Field(default_factory=dict)
     hf_token: str = Field(default="", max_length=512, repr=False)
+    auto_release_after_sync: StrictBool = False
 
     @field_validator("hf_token")
     @classmethod
@@ -1061,6 +1062,13 @@ class WorkflowRunRequest(BaseModel):
             if not isinstance(asset_id, str) or not _ASSET_ID_RE.fullmatch(asset_id):
                 raise ValueError(f"非法素材 ID: {asset_id!r}")
         return value
+
+
+class ColabOneWorkflowAutoReleaseRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", allow_inf_nan=False, hide_input_in_errors=True
+    )
+    enabled: StrictBool
 
 
 class ComfyTtsPreviewRequest(BaseModel):

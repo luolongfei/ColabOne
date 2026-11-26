@@ -89,6 +89,7 @@ def test_status_and_snapshot_report_protocol_7_and_comfyui_capabilities(
             "comfyui_drive_export",
             "comfyui_tts_preview",
             "comfyui_longcat_native",
+            "comfyui_workflow_auto_release",
         ]
         assert "comfyui" in st
         assert st["active_engine"] is None

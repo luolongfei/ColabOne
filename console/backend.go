@@ -53,7 +53,8 @@ func colabOneMethodTimeout(method string) time.Duration {
 		"shortcuts.status", "shortcuts.create", "shortcuts.remove", "desktop.shortcuts",
 		"comfyui.draft.get", "comfyui.draft.save", "comfyui.draft.clear", "comfyui.draft.media.delete",
 		"comfyui.tts.preview.cache.lookup", "comfyui.tts.preview.cache.read",
-		"comfyui.tts.preview.prefetch", "comfyui.tts.preview.prefetch.cancel":
+		"comfyui.tts.preview.prefetch", "comfyui.tts.preview.prefetch.cancel",
+		"comfyui.auto_release":
 		return 30 * time.Second
 	case "runtime.start":
 		// Capped exponential-backoff Colab allocation attempts + remote boot.

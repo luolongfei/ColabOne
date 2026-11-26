@@ -3008,5 +3008,38 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
         translateColabOneBackendText("IndexTTS-2.5 推理失败：CUDA OOM", loc),
       ).toContain("IndexTTS-2.5");
     }
+
+    // Spot-check workflow post-sync auto-release & offline Drive output messages across all 6 locales
+    const autoReleaseSamples = [
+      "已开启工作流完成后自动同步云盘并释放实例",
+      "远端实例已完成作品同步至 Google 云盘并自动释放",
+      "已取消自动同步释放，已保留当前实例",
+      "已按设置取消自动释放，当前实例已保留",
+      "输出作品已同步至 Google 云盘，正在重试释放实例…",
+      "正在导出作品到 Google 云盘 (1/2) · demo.mp4",
+      "作品导出到 Google 云盘失败（网络超时），已保留当前实例",
+      "工作区同步到 Google 云盘失败（连接中断），已保留当前实例",
+      "读取 Google 云盘目录失败（HTTP 403）",
+      "读取 Google 云盘作品列表失败（HTTP 500）",
+      "从 Google 云盘读取作品失败（HTTP 503）",
+      "删除 Google 云盘作品失败（HTTP 500）",
+    ];
+    for (const loc of ALL_LOCALES) {
+      for (const sample of autoReleaseSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(out.length, `${loc}: ${sample}`).toBeGreaterThan(4);
+        if (loc !== "zh-CN") {
+          expect(out, `${loc}: ${sample}`).not.toBe(sample);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          // Allow inner untranslated sample substrings only for custom error details
+          if (!sample.includes("网络超时") && !sample.includes("连接中断")) {
+            expect(CJK_OR_FULLWIDTH_RE.test(out), `${loc} leak: ${out}`).toBe(
+              false,
+            );
+          }
+        }
+      }
+    }
   });
 });

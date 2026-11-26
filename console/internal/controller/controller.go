@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -123,6 +124,16 @@ type ColabOneController struct {
 	ttsPreviewIndex       *colabOneLocalTtsPreviewIndex
 	pendingTtsPreviewReqs map[string]map[string]any
 	pendingTtsPrefetchCtx map[string]map[string]any
+
+	background             bool
+	driveOutputs           map[string]map[string]*ColabOneDriveOutputRecord
+	driveOutputsSyncMu     sync.Mutex
+	driveOutputsSyncing    bool
+	driveOutputsLastSynced float64
+	driveOutputsSyncError  string
+	driveAPIBaseURL        string
+	driveHTTPClient        *http.Client
+	driveHTTPClientOwned   bool
 
 	rootCtx    context.Context
 	cancelRoot context.CancelFunc
@@ -249,14 +260,23 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		observerWake:           NewColabOneEvent(),
 		monitorMode:            "auto",
 		externalObservations:   make(map[string]map[string]any),
+		background:             cfg.Background,
+		driveOutputs:           make(map[string]map[string]*ColabOneDriveOutputRecord),
+		driveAPIBaseURL:        strings.TrimSpace(cfg.DriveAPIBaseURL),
+		driveHTTPClient:        cfg.DriveHTTPClient,
+		driveHTTPClientOwned:   cfg.DriveHTTPClient == nil,
 		rootCtx:                rootCtx,
 		cancelRoot:             cancelRoot,
+	}
+	if c.driveHTTPClient == nil {
+		c.driveHTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 
 	c.loadSettings()
 	c.loadLibrary()
 	c.loadWorkflows()
 	c.loadWorkflowDrafts()
+	c.loadDriveOutputs()
 	c.cuUsage = NewColabOneCUUsageStore(configDir, nil)
 
 	c.data = map[string]any{
@@ -280,6 +300,7 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 	if cfg.Background {
 		c.spawn(c.runMonitorLoop)
 		c.spawn(c.runExternalMonitorLoop)
+		c.triggerBackgroundDriveOutputsSync()
 	}
 	return c
 }
@@ -316,6 +337,9 @@ func (c *ColabOneController) Close() {
 		c.cancelRoot()
 		c.closeExternalObserver("", true)
 		c.wg.Wait()
+		if c.driveHTTPClientOwned && c.driveHTTPClient != nil {
+			c.driveHTTPClient.CloseIdleConnections()
+		}
 		if c.cuUsage != nil {
 			_ = c.cuUsage.Flush()
 		}
@@ -992,6 +1016,10 @@ func (c *ColabOneController) Snapshot() map[string]any {
 	}
 	cloudProject, _ := c.vault.Get("cloud_project")
 	driveHeadless := driveAuthorized && (!needsQuota || asBool(cloudProject))
+
+	mergedOutputs, driveOutputsStatus := c.mergeComfyOutputsForSnapshot(rt, asAnySlice(value["comfy_outputs"]), driveHeadless)
+	value["comfy_outputs"] = mergedOutputs
+	value["drive_outputs_status"] = driveOutputsStatus
 
 	var shortcuts map[string]bool
 	if c.shortcuts != nil {
@@ -2112,6 +2140,9 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 	}
 	c.mu.Unlock()
 	c.flushActivityLogs(pendingLogs)
+	if curStillOwned && asString(rt["state"]) == "ready" {
+		c.recordSyncedRemoteOutputs(rt, comfyOutputs)
+	}
 	return state, nil
 }
 
@@ -2445,12 +2476,14 @@ func (c *ColabOneController) SetupHeadlessDrive(ctx context.Context) (map[string
 	}
 	if reason == "not_required" {
 		c.log("当前 Google 凭据已支持云盘永久免弹窗自动挂载", "云盘", "info")
+		c.triggerBackgroundDriveOutputsSync()
 		return map[string]any{"ok": true, "headless": true, "project_id": "", "reason": reason}, nil
 	}
 	if projectID != "" {
 		if reason != "created_colabone_project" {
 			c.log(fmt.Sprintf("已确认免弹窗云盘配额项目 (%s)，后续所有实例免弹窗自动挂载", projectID), "云盘", "info")
 		}
+		c.triggerBackgroundDriveOutputsSync()
 		return map[string]any{
 			"ok":         true,
 			"headless":   true,
@@ -3040,6 +3073,7 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 		})
 		c.mu.Unlock()
 		c.flushActivityLogs(pendingLogs)
+		c.triggerBackgroundDriveOutputsSync()
 	}
 
 	if c.provider != nil {
@@ -3213,6 +3247,7 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 				})
 				c.mu.Unlock()
 				c.flushActivityLogs(pendingLogs)
+				c.triggerBackgroundDriveOutputsSync()
 			} else {
 				c.activateCached(nextActive)
 			}

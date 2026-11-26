@@ -341,6 +341,17 @@ func (c *wireControllerAuthAdapter) Credentials(ctx context.Context, scope strin
 	return c.a.Credentials(ctx, scope)
 }
 
+func (c *wireControllerAuthAdapter) AccessToken(ctx context.Context, scope string) (string, error) {
+	creds, err := c.a.Credentials(ctx, scope)
+	if err != nil {
+		return "", err
+	}
+	if creds == nil || creds.Token == "" {
+		return "", errors.New("请先完成 Google 登录")
+	}
+	return creds.Token, nil
+}
+
 func (c *wireControllerAuthAdapter) Profile(ctx context.Context) (map[string]any, error) {
 	p, err := c.a.Profile(ctx)
 	if err != nil {

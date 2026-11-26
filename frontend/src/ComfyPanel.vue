@@ -13,6 +13,7 @@ import {
   Popconfirm as APopconfirm,
   Progress as AProgress,
   Space as ASpace,
+  Switch as ASwitch,
   TabPane as ATabPane,
   Tabs as ATabs,
   Tag as ATag,
@@ -65,6 +66,7 @@ import {
   PhLink,
   PhPlay,
   PhPlus,
+  PhPower,
   PhShieldCheck,
   PhSlidersHorizontal,
   PhSparkle,
@@ -5246,6 +5248,9 @@ async function runWorkflow() {
       workflow_id: wf.id,
       overrides,
       inputs,
+      ...(workflowAutoReleaseEnabled.value
+        ? { auto_release_after_sync: true }
+        : {}),
     });
     if (disposed || props.state.runtime.id !== targetRuntimeId) {
       return;
@@ -5282,8 +5287,10 @@ const outputFetchControllers = new Map<string, AbortController>();
 
 // Google Drive setup & cloud-to-cloud export modal state
 const driveModalOpen = ref(false);
+const driveModalPurpose = ref<"config" | "export" | "auto_release">("config");
 const driveModalTarget = ref<WorkflowOutput | null>(null);
 const driveModalAutoExport = ref(false);
+const driveModalAutoArmRelease = ref(false);
 const driveModalResult = ref<ColabOneDriveExportResult | null>(null);
 const driveModalError = ref("");
 const connectingDriveInModal = ref(false);
@@ -5294,6 +5301,9 @@ const checkingHeadlessInModal = ref(false);
 const sawHeadlessOpInModal = ref(false);
 const headlessBaselineError = ref("");
 const savingAutoDriveInModal = ref(false);
+const workflowAutoReleaseBusy = ref(false);
+const dismissedAutoReleaseErrorAt = ref<number | null>(null);
+const syncingDriveOutputs = ref(false);
 let driveConnectReconcileTimer: ReturnType<typeof setTimeout> | null = null;
 let headlessReconcileTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -5314,6 +5324,67 @@ function clearHeadlessTimer() {
 function clearDriveModalTimers() {
   clearDriveConnectTimer();
   clearHeadlessTimer();
+}
+
+const workflowAutoRelease = computed(
+  () => props.state.runtime.comfyui?.auto_release || null,
+);
+const workflowAutoReleaseEnabled = computed(() =>
+  Boolean(gpuReady.value && workflowAutoRelease.value?.enabled),
+);
+const workflowAutoReleaseState = computed(() =>
+  gpuReady.value ? String(workflowAutoRelease.value?.state || "idle") : "idle",
+);
+const workflowAutoReleaseLocked = computed(
+  () =>
+    workflowAutoReleaseState.value === "releasing" ||
+    workflowAutoReleaseState.value === "released",
+);
+const workflowAutoReleaseDriveDisconnected = computed(
+  () => workflowAutoReleaseEnabled.value && !props.state.setup.drive,
+);
+const needsUpgradeForWorkflowAutoRelease = computed(() => {
+  const caps = props.state.runtime.capabilities;
+  return Boolean(
+    gpuReady.value &&
+      props.state.runtime.upgrade_available &&
+      Array.isArray(caps) &&
+      caps.length > 0 &&
+      !caps.includes("comfyui_workflow_auto_release"),
+  );
+});
+const driveOutputsCanDirectRead = computed(() =>
+  Boolean(
+    props.state.drive_outputs_status?.can_direct_read ??
+      props.state.setup.drive_headless,
+  ),
+);
+const isDriveOutputsSyncing = computed(
+  () =>
+    syncingDriveOutputs.value ||
+    Boolean(props.state.drive_outputs_status?.syncing),
+);
+
+function isOutputDriveBacked(item: WorkflowOutput): boolean {
+  return item.storage === "drive";
+}
+
+function canLoadOutputAsset(item: WorkflowOutput): boolean {
+  return Boolean(
+    (gpuReady.value && !isOutputDriveBacked(item)) || item.drive_previewable,
+  );
+}
+
+function isOutputExportedToDrive(item: WorkflowOutput): boolean {
+  return Boolean(item.drive_exported || exportedDriveOutputs.value[item.id]);
+}
+
+function getOutputDrivePath(item: WorkflowOutput): string {
+  return exportedDriveOutputs.value[item.id]?.drivePath || item.drive_path || "";
+}
+
+function getOutputDriveOpenUrl(item: WorkflowOutput): string {
+  return item.drive_web_view_link || GOOGLE_DRIVE_HOME_URL;
 }
 
 const driveWaitingBrowserAuth = computed(
@@ -5341,12 +5412,35 @@ const needsUpgradeForDriveExport = computed(() => {
       !caps.includes("comfyui_drive_export"),
   );
 });
+const driveModalNeedsUpgrade = computed(() =>
+  driveModalPurpose.value === "auto_release"
+    ? needsUpgradeForWorkflowAutoRelease.value
+    : needsUpgradeForDriveExport.value,
+);
 const driveModalExporting = computed(() =>
   Boolean(
     driveModalTarget.value &&
       exportingDriveOutputs.value[driveModalTarget.value.id],
   ),
 );
+
+const autoReleaseSwitchTooltip = computed(() => {
+  if (!gpuReady.value) {
+    return gpuStarting.value
+      ? t("api.gpuStartingTooltip")
+      : t("comfy.autoReleaseNeedGpuTooltip");
+  }
+  if (workflowAutoReleaseLocked.value) {
+    return t("comfy.autoReleaseReleasingTooltip");
+  }
+  if (!props.state.setup.drive) {
+    return t("comfy.autoReleaseNeedDriveTooltip");
+  }
+  if (workflowAutoReleaseEnabled.value) {
+    return t("comfy.autoReleaseArmedTooltip");
+  }
+  return t("comfy.autoReleaseReadyTooltip");
+});
 
 function isOutputTooLargeForPreview(item: WorkflowOutput): boolean {
   return Number.isFinite(item.size) && item.size > MAX_INLINE_PREVIEW_BYTES;
@@ -5437,10 +5531,11 @@ function onOutputMediaError(item: WorkflowOutput) {
 }
 
 function triggerRecentImagePreviews(list: WorkflowOutput[]) {
-  if (!gpuReady.value || !outputsDrawerOpen.value || disposed) return;
+  if (!outputsDrawerOpen.value || disposed) return;
   for (const item of list.slice(0, 6)) {
     if (
       item.kind === "image" &&
+      canLoadOutputAsset(item) &&
       !isOutputTooLargeForPreview(item) &&
       !blobUrls.value[item.id] &&
       !failedOutputs.value[item.id] &&
@@ -5457,11 +5552,12 @@ async function loadOutputPreview(item: WorkflowOutput) {
     isOutputTooLargeForPreview(item) ||
     blobUrls.value[item.id] ||
     fetchingOutputs.value[item.id] ||
-    !gpuReady.value ||
+    !canLoadOutputAsset(item) ||
     !outputsDrawerOpen.value
   ) {
     return;
   }
+  const driveBacked = isOutputDriveBacked(item);
   const targetRuntimeId = props.state.runtime.id;
   abortOutputFetch(item.id);
   const controller = new AbortController();
@@ -5475,7 +5571,7 @@ async function loadOutputPreview(item: WorkflowOutput) {
       controller.signal.aborted ||
       outputFetchControllers.get(item.id) !== controller ||
       !outputsDrawerOpen.value ||
-      props.state.runtime.id !== targetRuntimeId ||
+      (!driveBacked && props.state.runtime.id !== targetRuntimeId) ||
       !outputs.value.some((o) => o.id === item.id)
     ) {
       URL.revokeObjectURL(url);
@@ -5490,7 +5586,11 @@ async function loadOutputPreview(item: WorkflowOutput) {
     const aborted =
       controller.signal.aborted ||
       (e instanceof DOMException && e.name === "AbortError");
-    if (!aborted && !disposed && props.state.runtime.id === targetRuntimeId) {
+    if (
+      !aborted &&
+      !disposed &&
+      (driveBacked || props.state.runtime.id === targetRuntimeId)
+    ) {
       failedOutputs.value[item.id] = { code: "fetch", detail: String(e) };
     }
   } finally {
@@ -5498,23 +5598,137 @@ async function loadOutputPreview(item: WorkflowOutput) {
       outputFetchControllers.delete(item.id);
       delete fetchingOutputs.value[item.id];
     }
-    if (!disposed && outputsDrawerOpen.value && gpuReady.value) {
+    if (!disposed && outputsDrawerOpen.value) {
       triggerRecentImagePreviews(outputs.value);
     }
   }
 }
+
+async function syncDriveOutputsFromCloud(opts: { silent?: boolean } = {}) {
+  if (syncingDriveOutputs.value || !props.state.setup.colab) return;
+  syncingDriveOutputs.value = true;
+  try {
+    const res = await colabOneCommand("comfyui.outputs.drive.sync", {});
+    emit("sync");
+    if (!opts.silent && res?.synced) {
+      setNoticeKey("comfy.noticeDriveOutputsSynced", {
+        count: typeof res?.count === "number" ? res.count : outputs.value.length,
+      });
+    }
+  } catch (e) {
+    if (!opts.silent && !disposed) {
+      reportError(e);
+    }
+  } finally {
+    syncingDriveOutputs.value = false;
+  }
+}
+
+async function setWorkflowAutoRelease(
+  next: boolean,
+  opts: { fromModal?: boolean } = {},
+) {
+  if (workflowAutoReleaseBusy.value || workflowAutoReleaseLocked.value) return;
+  if (!gpuReady.value) return;
+  if (next && !props.state.setup.drive) {
+    openDriveSetupModal(null, false, "auto_release", true);
+    return;
+  }
+  if (next && needsUpgradeForWorkflowAutoRelease.value) {
+    openDriveSetupModal(null, false, "auto_release", false);
+    return;
+  }
+  workflowAutoReleaseBusy.value = true;
+  if (opts.fromModal) {
+    driveModalError.value = "";
+  }
+  try {
+    await colabOneCommand("comfyui.auto_release", { enabled: next });
+    if (disposed) return;
+    emit("sync");
+    if (opts.fromModal && next) {
+      driveModalOpen.value = false;
+      emit("notify", t("comfy.autoReleaseArmedAfterDriveToast"), "success");
+    } else {
+      setNoticeKey(
+        next
+          ? "comfy.noticeAutoReleaseEnabled"
+          : "comfy.noticeAutoReleaseDisabled",
+      );
+    }
+  } catch (e) {
+    if (!disposed) {
+      emit("sync");
+      if (opts.fromModal && driveModalOpen.value) {
+        driveModalError.value = String(e);
+      } else {
+        reportError(e);
+      }
+    }
+  } finally {
+    workflowAutoReleaseBusy.value = false;
+  }
+}
+
+function onWorkflowAutoReleaseToggle(checked: boolean | string | number) {
+  void setWorkflowAutoRelease(Boolean(checked));
+}
+
+const workflowAutoReleaseErrorVisible = computed(() => {
+  if (
+    !gpuReady.value ||
+    workflowAutoReleaseState.value !== "failed" ||
+    !workflowAutoRelease.value?.error
+  ) {
+    return false;
+  }
+  const ts = Number(workflowAutoRelease.value?.updated_at || 0);
+  if (
+    dismissedAutoReleaseErrorAt.value !== null &&
+    dismissedAutoReleaseErrorAt.value === ts
+  ) {
+    return false;
+  }
+  return true;
+});
+
+function dismissAutoReleaseErrorAlert() {
+  dismissedAutoReleaseErrorAt.value = Number(
+    workflowAutoRelease.value?.updated_at || 0,
+  );
+}
+
+watch(gpuReady, (nextReady, prevReady) => {
+  if (nextReady !== prevReady) {
+    failedOutputs.value = {};
+    if (
+      !nextReady &&
+      outputsDrawerOpen.value &&
+      props.state.setup.colab &&
+      driveOutputsCanDirectRead.value
+    ) {
+      void syncDriveOutputsFromCloud({ silent: true });
+    }
+  }
+});
 
 watch(outputsDrawerOpen, (open) => {
   if (!open) {
     pauseOutputsDrawerMedia();
     abortAllOutputFetches();
     releaseHeavyOutputBlobs();
+  } else if (
+    !gpuReady.value &&
+    props.state.setup.colab &&
+    driveOutputsCanDirectRead.value
+  ) {
+    void syncDriveOutputsFromCloud({ silent: true });
   }
 });
 
 watch(
   [outputs, gpuReady, outputsDrawerOpen],
-  ([list, ready, drawerOpen]) => {
+  ([list, _ready, drawerOpen]) => {
     const activeIds = new Set(list.map((item) => item.id));
     const staleUrls: string[] = [];
     for (const [id, url] of Object.entries(blobUrls.value)) {
@@ -5549,8 +5763,8 @@ watch(
         abortOutputFetch(id);
       }
     }
-    if (!ready || !drawerOpen) return;
-    // Automatically load previews for recent image outputs without saturating the bridge.
+    if (!drawerOpen) return;
+    // Automatically load previews for recent image outputs (runtime or direct Drive API).
     triggerRecentImagePreviews(list);
   },
   { immediate: true },
@@ -5561,9 +5775,12 @@ watch(
   (nextId, prevId) => {
     if (prevId && nextId !== prevId) {
       exportedDriveOutputs.value = {};
+      dismissedAutoReleaseErrorAt.value = null;
       if (driveModalOpen.value) {
+        driveModalPurpose.value = "config";
         driveModalTarget.value = null;
         driveModalAutoExport.value = false;
+        driveModalAutoArmRelease.value = false;
         driveModalResult.value = null;
         driveModalError.value = "";
       }
@@ -5593,6 +5810,7 @@ watch(
     String(props.state.error || "").trim(),
     Boolean(props.state.setup.drive_headless),
     needsUpgradeForDriveExport.value,
+    needsUpgradeForWorkflowAutoRelease.value,
   ] as const,
   ([
     open,
@@ -5603,6 +5821,7 @@ watch(
     stateErr,
     driveHeadless,
     needsUpgrade,
+    needsAutoReleaseUpgrade,
   ]) => {
     if (connectingDriveInModal.value) {
       if (driveOpActive) {
@@ -5617,6 +5836,7 @@ watch(
         connectingDriveInModal.value = false;
         sawDriveConnectOpInModal.value = false;
         driveModalAutoExport.value = false;
+        driveModalAutoArmRelease.value = false;
         if (stateErr) {
           driveModalError.value = stateErr;
         }
@@ -5628,6 +5848,7 @@ watch(
         clearDriveConnectTimer();
         connectingDriveInModal.value = false;
         driveModalAutoExport.value = false;
+        driveModalAutoArmRelease.value = false;
         driveModalError.value = stateErr;
       }
     }
@@ -5646,6 +5867,13 @@ watch(
       }
     }
     if (!open || !connected || opActive) return;
+    if (driveModalAutoArmRelease.value) {
+      driveModalAutoArmRelease.value = false;
+      if (!needsAutoReleaseUpgrade) {
+        void setWorkflowAutoRelease(true, { fromModal: true });
+      }
+      return;
+    }
     if (driveModalAutoExport.value && driveModalTarget.value) {
       const target = driveModalTarget.value;
       if (!outputs.value.some((o) => o.id === target.id)) {
@@ -5676,7 +5904,9 @@ watch(
 watch(driveModalOpen, (open) => {
   if (!open) {
     clearDriveModalTimers();
+    driveModalPurpose.value = "config";
     driveModalAutoExport.value = false;
+    driveModalAutoArmRelease.value = false;
     driveModalResult.value = null;
     driveModalError.value = "";
     connectingDriveInModal.value = false;
@@ -5689,9 +5919,13 @@ watch(driveModalOpen, (open) => {
 function openDriveSetupModal(
   target: WorkflowOutput | null = null,
   autoExport = false,
+  purpose: "config" | "export" | "auto_release" = target ? "export" : "config",
+  autoArmRelease = false,
 ) {
+  driveModalPurpose.value = purpose;
   driveModalTarget.value = target;
   driveModalAutoExport.value = autoExport;
+  driveModalAutoArmRelease.value = autoArmRelease;
   driveModalResult.value = null;
   driveModalError.value = "";
   driveModalOpen.value = true;
@@ -5801,6 +6035,8 @@ async function connectDriveFromModal() {
   driveModalError.value = "";
   if (driveModalTarget.value) {
     driveModalAutoExport.value = true;
+  } else if (driveModalPurpose.value === "auto_release") {
+    driveModalAutoArmRelease.value = true;
   }
   try {
     await colabOneCommand("drive.connect", {});
@@ -5816,6 +6052,7 @@ async function connectDriveFromModal() {
         connectingDriveInModal.value = false;
         if (!props.state.setup.drive) {
           driveModalAutoExport.value = false;
+          driveModalAutoArmRelease.value = false;
           const stateErr = String(props.state.error || "").trim();
           if (stateErr && stateErr !== driveConnectBaselineError.value) {
             driveModalError.value = stateErr;
@@ -5828,6 +6065,7 @@ async function connectDriveFromModal() {
     connectingDriveInModal.value = false;
     sawDriveConnectOpInModal.value = false;
     driveModalAutoExport.value = false;
+    driveModalAutoArmRelease.value = false;
     driveModalError.value = String(e);
   }
 }
@@ -5851,6 +6089,7 @@ async function cancelDriveAuthFromModal() {
   connectingDriveInModal.value = false;
   sawDriveConnectOpInModal.value = false;
   driveModalAutoExport.value = false;
+  driveModalAutoArmRelease.value = false;
   driveModalError.value = "";
   try {
     await colabOneCommand("drive.cancel", {});
@@ -5908,6 +6147,10 @@ function exportTargetFromModal() {
   void runDriveExport(driveModalTarget.value, { fromModal: true });
 }
 
+function armAutoReleaseFromModal() {
+  void setWorkflowAutoRelease(true, { fromModal: true });
+}
+
 function triggerUpgradeFromDriveModal() {
   driveModalOpen.value = false;
   emit("upgrade");
@@ -5920,7 +6163,13 @@ function openSettingsFromDriveModal() {
 }
 
 async function exportOutput(item: WorkflowOutput) {
-  if (exportingOutputs.value[item.id] || deletingOutputs.value[item.id]) return;
+  if (
+    !canLoadOutputAsset(item) ||
+    exportingOutputs.value[item.id] ||
+    deletingOutputs.value[item.id]
+  ) {
+    return;
+  }
   exportingOutputs.value = { ...exportingOutputs.value, [item.id]: true };
   try {
     const path = await colabOneExportWorkflowOutput(item.id);
@@ -5938,6 +6187,7 @@ async function exportOutput(item: WorkflowOutput) {
 
 async function deleteOutput(target: WorkflowOutput) {
   if (
+    (!gpuReady.value && !isOutputDriveBacked(target)) ||
     deletingOutputs.value[target.id] ||
     exportingOutputs.value[target.id] ||
     exportingDriveOutputs.value[target.id]
@@ -6609,7 +6859,129 @@ onUnmounted(() => {
             {{ t("comfy.cancelTask") }}
           </AButton>
         </div>
+
+        <!-- Running Workflow Auto-Release After Cloud Sync Toggle Strip -->
+        <div
+          v-if="comfyRunTask"
+          class="co-comfy-autorelease-strip"
+          :class="{
+            'is-armed': workflowAutoReleaseEnabled,
+            'is-warning': workflowAutoReleaseDriveDisconnected,
+          }"
+          data-testid="comfy-task-auto-release-strip"
+        >
+          <div class="co-comfy-autorelease-strip-left">
+            <PhPower
+              :size="15"
+              weight="duotone"
+              class="co-comfy-autorelease-icon"
+              aria-hidden="true"
+            />
+            <span class="co-comfy-autorelease-label">
+              {{ t("comfy.autoReleaseSwitchLabel") }}
+            </span>
+            <ATag
+              v-if="workflowAutoReleaseState === 'syncing'"
+              color="processing"
+              class="co-comfy-meta-tag"
+            >
+              {{ t("comfy.autoReleaseTagSyncing") }}
+            </ATag>
+            <ATag
+              v-else-if="workflowAutoReleaseState === 'releasing'"
+              color="success"
+              class="co-comfy-meta-tag"
+            >
+              {{ t("comfy.autoReleaseTagReleasing") }}
+            </ATag>
+            <ATag
+              v-else-if="workflowAutoReleaseDriveDisconnected"
+              color="warning"
+              class="co-comfy-meta-tag"
+            >
+              {{ t("comfy.autoReleaseTagDriveLost") }}
+            </ATag>
+            <ATag
+              v-else-if="workflowAutoReleaseEnabled"
+              color="success"
+              class="co-comfy-meta-tag"
+            >
+              {{ t("comfy.autoReleaseTagArmed") }}
+            </ATag>
+            <span v-else class="co-comfy-autorelease-hint">
+              {{
+                state.setup.drive
+                  ? t("comfy.autoReleaseStripHintReady")
+                  : t("comfy.autoReleaseStripHintNeedDrive")
+              }}
+            </span>
+          </div>
+          <div class="co-comfy-autorelease-strip-right">
+            <AButton
+              v-if="workflowAutoReleaseDriveDisconnected"
+              type="link"
+              size="small"
+              class="co-inline-link"
+              @click="openDriveSetupModal(null, false, 'auto_release', true)"
+            >
+              {{ t("comfy.autoReleaseReconnectDrive") }}
+            </AButton>
+            <ColabOneTooltip :title="autoReleaseSwitchTooltip">
+              <span class="co-comfy-autorelease-switch-wrap">
+                <ASwitch
+                  size="small"
+                  :checked="workflowAutoReleaseEnabled"
+                  :loading="workflowAutoReleaseBusy"
+                  :disabled="!gpuReady || workflowAutoReleaseLocked"
+                  data-testid="comfy-task-auto-release-switch"
+                  @change="onWorkflowAutoReleaseToggle"
+                />
+              </span>
+            </ColabOneTooltip>
+          </div>
+        </div>
       </div>
+
+      <!-- Post-workflow auto-release status alert (releasing / sync failure kept alive) -->
+      <AAlert
+        v-if="workflowAutoReleaseErrorVisible"
+        type="warning"
+        show-icon
+        closable
+        class="co-comfy-card-alert"
+        data-testid="comfy-auto-release-error-alert"
+        @close="dismissAutoReleaseErrorAlert"
+      >
+        <template #message>
+          {{ t("comfy.autoReleaseFailedKeptTitle") }}
+        </template>
+        <template #description>
+          <ColabOnePrivacyText
+            :text="tb(workflowAutoRelease?.error || '')"
+            :context="privacyContext"
+          />
+        </template>
+      </AAlert>
+      <AAlert
+        v-else-if="
+          gpuReady &&
+          !comfyTask &&
+          (workflowAutoReleaseState === 'releasing' ||
+            workflowAutoReleaseState === 'syncing')
+        "
+        type="info"
+        show-icon
+        class="co-comfy-card-alert"
+        data-testid="comfy-auto-release-progress-alert"
+      >
+        <template #message>
+          {{
+            workflowAutoRelease?.message
+              ? tb(workflowAutoRelease.message)
+              : t("comfy.autoReleaseReleasingFallback")
+          }}
+        </template>
+      </AAlert>
     </ACard>
 
     <!-- Dual-layer Workspace Tabs -->
@@ -8000,6 +8372,34 @@ onUnmounted(() => {
                 {{ draftStatusLabel }}
               </span>
             </Transition>
+            <ColabOneTooltip :title="autoReleaseSwitchTooltip">
+              <div
+                class="co-comfy-drawer-autorelease-pill"
+                :class="{
+                  'is-armed': workflowAutoReleaseEnabled,
+                  'is-disabled': !gpuReady || workflowAutoReleaseLocked,
+                }"
+                data-testid="comfy-drawer-auto-release"
+              >
+                <PhPower
+                  :size="14"
+                  weight="duotone"
+                  class="co-comfy-autorelease-icon"
+                  aria-hidden="true"
+                />
+                <span class="co-comfy-drawer-autorelease-text">
+                  {{ t("comfy.autoReleaseSwitchShort") }}
+                </span>
+                <ASwitch
+                  size="small"
+                  :checked="workflowAutoReleaseEnabled"
+                  :loading="workflowAutoReleaseBusy"
+                  :disabled="!gpuReady || workflowAutoReleaseLocked"
+                  data-testid="comfy-drawer-auto-release-switch"
+                  @change="onWorkflowAutoReleaseToggle"
+                />
+              </div>
+            </ColabOneTooltip>
             <ColabOneTooltip :title="runButtonDisabledTooltip">
               <AButton
                 type="primary"
@@ -8081,69 +8481,99 @@ onUnmounted(() => {
       </template>
 
       <template #extra>
-        <AButton
-          v-if="driveWaitingBrowserAuth"
-          size="small"
-          class="co-comfy-outputs-drive-pill is-warning"
-          data-testid="comfy-outputs-drive-pill"
-          @click="openDriveSetupModal(null, false)"
-        >
-          <template #icon><PhCloud :size="14" weight="duotone" /></template>
-          {{ t("comfy.outputsDriveWaitingPill") }}
-        </AButton>
-        <AButton
-          v-else-if="driveMountingInProgress"
-          size="small"
-          loading
-          class="co-comfy-outputs-drive-pill is-active"
-          data-testid="comfy-outputs-drive-pill"
-          @click="openDriveSetupModal(null, false)"
-        >
-          {{
-            state.operation?.cancelling
-              ? t("comfy.driveModalCancellingBtn")
-              : t("comfy.driveModalMountingBtn")
-          }}
-        </AButton>
-        <ColabOneTooltip
-          v-else-if="state.setup.drive"
-          :title="
-            t('comfy.outputsDriveConnectedTooltip', {
-              folder: state.runtime.drive?.remote_folder || 'ColabOne_Drive',
-            })
-          "
-        >
-          <AButton
-            size="small"
-            class="co-comfy-outputs-drive-pill is-connected"
-            data-testid="comfy-outputs-drive-pill"
-            @click="openDriveSetupModal(null, false)"
+        <ASpace :size="6">
+          <ColabOneTooltip
+            v-if="!gpuReady && state.setup.colab && driveOutputsCanDirectRead"
+            :title="t('comfy.outputsDriveRefreshTooltip')"
           >
-            <template #icon><PhCloudCheck :size="14" weight="duotone" /></template>
-            {{ t("comfy.outputsDriveConnectedPill") }}
-          </AButton>
-        </ColabOneTooltip>
-        <ColabOneTooltip
-          v-else
-          :title="
-            !gpuReady
-              ? gpuStarting
-                ? t('api.gpuStartingTooltip')
-                : t('api.startGpuFirstTooltip')
-              : t('comfy.outputsDriveSetupTooltip')
-          "
-        >
+            <AButton
+              size="small"
+              :loading="isDriveOutputsSyncing"
+              data-testid="comfy-outputs-drive-refresh"
+              @click="syncDriveOutputsFromCloud()"
+            >
+              <template #icon><PhArrowsClockwise :size="14" /></template>
+              {{ t("comfy.outputsDriveRefreshBtn") }}
+            </AButton>
+          </ColabOneTooltip>
           <AButton
+            v-if="driveWaitingBrowserAuth"
             size="small"
-            class="co-comfy-outputs-drive-pill"
-            :disabled="!gpuReady"
+            class="co-comfy-outputs-drive-pill is-warning"
             data-testid="comfy-outputs-drive-pill"
             @click="openDriveSetupModal(null, false)"
           >
             <template #icon><PhCloud :size="14" weight="duotone" /></template>
-            {{ t("comfy.outputsDriveSetupPill") }}
+            {{ t("comfy.outputsDriveWaitingPill") }}
           </AButton>
-        </ColabOneTooltip>
+          <AButton
+            v-else-if="driveMountingInProgress"
+            size="small"
+            loading
+            class="co-comfy-outputs-drive-pill is-active"
+            data-testid="comfy-outputs-drive-pill"
+            @click="openDriveSetupModal(null, false)"
+          >
+            {{
+              state.operation?.cancelling
+                ? t("comfy.driveModalCancellingBtn")
+                : t("comfy.driveModalMountingBtn")
+            }}
+          </AButton>
+          <ColabOneTooltip
+            v-else-if="state.setup.drive"
+            :title="
+              t('comfy.outputsDriveConnectedTooltip', {
+                folder: state.runtime.drive?.remote_folder || 'ColabOne_Drive',
+              })
+            "
+          >
+            <AButton
+              size="small"
+              class="co-comfy-outputs-drive-pill is-connected"
+              data-testid="comfy-outputs-drive-pill"
+              @click="openDriveSetupModal(null, false)"
+            >
+              <template #icon><PhCloudCheck :size="14" weight="duotone" /></template>
+              {{ t("comfy.outputsDriveConnectedPill") }}
+            </AButton>
+          </ColabOneTooltip>
+          <ColabOneTooltip
+            v-else-if="!gpuReady && state.setup.colab && (driveOutputsCanDirectRead || outputs.length > 0)"
+            :title="t('comfy.outputsDriveOfflineLinkedTooltip')"
+          >
+            <AButton
+              size="small"
+              class="co-comfy-outputs-drive-pill is-connected"
+              data-testid="comfy-outputs-drive-pill"
+              @click="openExternalURL(GOOGLE_DRIVE_HOME_URL)"
+            >
+              <template #icon><PhCloudCheck :size="14" weight="duotone" /></template>
+              {{ t("comfy.outputsDriveOfflineLinkedPill") }}
+            </AButton>
+          </ColabOneTooltip>
+          <ColabOneTooltip
+            v-else
+            :title="
+              !gpuReady
+                ? gpuStarting
+                  ? t('api.gpuStartingTooltip')
+                  : t('api.startGpuFirstTooltip')
+                : t('comfy.outputsDriveSetupTooltip')
+            "
+          >
+            <AButton
+              size="small"
+              class="co-comfy-outputs-drive-pill"
+              :disabled="!gpuReady"
+              data-testid="comfy-outputs-drive-pill"
+              @click="openDriveSetupModal(null, false)"
+            >
+              <template #icon><PhCloud :size="14" weight="duotone" /></template>
+              {{ t("comfy.outputsDriveSetupPill") }}
+            </AButton>
+          </ColabOneTooltip>
+        </ASpace>
       </template>
 
       <div
@@ -8155,14 +8585,23 @@ onUnmounted(() => {
         <div
           class="co-comfy-outputs-storage-bar"
           :class="{
-            'is-connected': state.setup.drive,
+            'is-connected':
+              state.setup.drive ||
+              (!gpuReady &&
+                state.setup.colab &&
+                (driveOutputsCanDirectRead || outputs.length > 0)),
             'is-waiting': driveWaitingBrowserAuth,
-            'is-active': driveMountingInProgress,
+            'is-active': driveMountingInProgress || isDriveOutputsSyncing,
           }"
           data-testid="comfy-outputs-storage-bar"
         >
           <PhCloudCheck
-            v-if="state.setup.drive"
+            v-if="
+              state.setup.drive ||
+              (!gpuReady &&
+                state.setup.colab &&
+                (driveOutputsCanDirectRead || outputs.length > 0))
+            "
             :size="16"
             weight="duotone"
             class="co-comfy-outputs-storage-icon"
@@ -8189,11 +8628,22 @@ onUnmounted(() => {
                         : t("comfy.driveModalMountingDirectTitle")
                   : state.setup.drive
                     ? t("comfy.drivePersistHint")
-                    : t("comfy.localExportHint")
+                    : !gpuReady && state.setup.colab
+                      ? driveOutputsCanDirectRead
+                        ? t("comfy.driveOfflineDirectHint")
+                        : outputs.length > 0
+                          ? t("comfy.driveOfflineRecordHint")
+                          : t("comfy.localExportHint")
+                      : t("comfy.localExportHint")
             }}
           </span>
           <AButton
-            v-if="state.setup.drive"
+            v-if="
+              state.setup.drive ||
+              (!gpuReady &&
+                state.setup.colab &&
+                (driveOutputsCanDirectRead || outputs.length > 0))
+            "
             type="link"
             size="small"
             class="co-inline-link co-comfy-outputs-storage-action"
@@ -8218,6 +8668,38 @@ onUnmounted(() => {
             }}
           </AButton>
         </div>
+
+        <AAlert
+          v-if="
+            !gpuReady &&
+            state.setup.colab &&
+            state.drive_outputs_status?.error &&
+            !isDriveOutputsSyncing
+          "
+          type="warning"
+          show-icon
+          class="co-comfy-card-alert"
+          data-testid="comfy-outputs-drive-sync-error"
+        >
+          <template #message>
+            {{ t("comfy.outputsDriveSyncErrorTitle") }}
+          </template>
+          <template #description>
+            <ColabOnePrivacyText
+              :text="tb(state.drive_outputs_status.error)"
+              :context="privacyContext"
+            />
+          </template>
+          <template #action>
+            <AButton
+              size="small"
+              type="link"
+              @click="syncDriveOutputsFromCloud()"
+            >
+              {{ t("comfy.outputsDriveSyncRetryBtn") }}
+            </AButton>
+          </template>
+        </AAlert>
 
         <div
           v-if="props.loading && !outputs.length"
@@ -8499,11 +8981,42 @@ onUnmounted(() => {
                   <span>{{ t("comfy.loadingOutput") }}</span>
                 </div>
               </div>
+              <div
+                v-else-if="!canLoadOutputAsset(item)"
+                class="co-comfy-drive-offline-frame"
+                data-testid="comfy-output-drive-offline-frame"
+              >
+                <PhCloudCheck
+                  :size="28"
+                  weight="duotone"
+                  class="co-comfy-drive-offline-icon"
+                />
+                <span class="co-comfy-drive-offline-title">
+                  {{ t("comfy.outputStoredInDriveLabel") }}
+                </span>
+                <ColabOneTooltip
+                  v-if="getOutputDrivePath(item)"
+                  :title="formatColabOneDrivePath(getOutputDrivePath(item))"
+                >
+                  <code class="co-comfy-drive-offline-path">
+                    {{ formatColabOneDrivePath(getOutputDrivePath(item)) }}
+                  </code>
+                </ColabOneTooltip>
+                <AButton
+                  size="small"
+                  type="primary"
+                  ghost
+                  @click="openExternalURL(getOutputDriveOpenUrl(item))"
+                >
+                  <template #icon><PhArrowSquareOut :size="14" /></template>
+                  {{ t("comfy.openOutputInDrive") }}
+                </AButton>
+              </div>
               <button
                 v-else
                 type="button"
                 class="co-comfy-preview-trigger"
-                :disabled="!gpuReady"
+                :disabled="!canLoadOutputAsset(item)"
                 @click="loadOutputPreview(item)"
               >
                 <component
@@ -8561,7 +9074,7 @@ onUnmounted(() => {
                   {{ formatOutputSize(item.size) }}
                 </ATag>
                 <ATag
-                  v-if="Number.isFinite(item.elapsed)"
+                  v-if="Number.isFinite(item.elapsed) && item.elapsed > 0"
                   class="co-comfy-meta-tag co-comfy-elapsed-tag"
                   data-testid="comfy-output-elapsed"
                 >
@@ -8572,6 +9085,27 @@ onUnmounted(() => {
                     })
                   }}</span>
                 </ATag>
+                <ColabOneTooltip
+                  v-if="isOutputExportedToDrive(item) || item.drive_synced"
+                  :title="
+                    getOutputDrivePath(item)
+                      ? formatColabOneDrivePath(getOutputDrivePath(item))
+                      : t('comfy.outputDriveSyncedTooltip')
+                  "
+                >
+                  <ATag
+                    :color="isOutputExportedToDrive(item) ? 'success' : 'blue'"
+                    class="co-comfy-meta-tag co-comfy-drive-linked-tag"
+                    data-testid="comfy-output-drive-tag"
+                  >
+                    <PhCloudCheck :size="12" aria-hidden="true" />
+                    <span>{{
+                      isOutputExportedToDrive(item)
+                        ? t("comfy.outputTagSavedInDrive")
+                        : t("comfy.outputTagSyncedInDrive")
+                    }}</span>
+                  </ATag>
+                </ColabOneTooltip>
               </div>
 
               <AAlert
@@ -8583,40 +9117,69 @@ onUnmounted(() => {
 
               <div class="co-comfy-output-actions">
                 <div class="co-comfy-output-export-group">
-                  <AButton
-                    size="small"
-                    :loading="!!exportingOutputs[item.id]"
-                    :disabled="!gpuReady || !!deletingOutputs[item.id]"
-                    @click="exportOutput(item)"
-                  >
-                    <template #icon>
-                      <PhDownloadSimple :size="14" />
-                    </template>
-                    {{ t("comfy.exportLocal") }}
-                  </AButton>
-
                   <ColabOneTooltip
                     :title="
-                      !gpuReady
-                        ? gpuStarting
-                          ? t('api.gpuStartingTooltip')
-                          : t('api.startGpuFirstTooltip')
-                        : exportedDriveOutputs[item.id]
-                          ? t('comfy.exportDriveDoneTooltip', {
-                              path: formatColabOneDrivePath(
-                                exportedDriveOutputs[item.id].drivePath,
-                              ),
-                            })
-                          : state.setup.drive
-                            ? t('comfy.exportDriveReadyTooltip')
-                            : t('comfy.exportDriveSetupTooltip')
+                      !canLoadOutputAsset(item)
+                        ? t('comfy.exportLocalNeedDriveApiTooltip')
+                        : ''
+                    "
+                  >
+                    <AButton
+                      size="small"
+                      :loading="!!exportingOutputs[item.id]"
+                      :disabled="
+                        !canLoadOutputAsset(item) || !!deletingOutputs[item.id]
+                      "
+                      @click="exportOutput(item)"
+                    >
+                      <template #icon>
+                        <PhDownloadSimple :size="14" />
+                      </template>
+                      {{ t("comfy.exportLocal") }}
+                    </AButton>
+                  </ColabOneTooltip>
+
+                  <ColabOneTooltip
+                    v-if="!gpuReady || isOutputDriveBacked(item)"
+                    :title="
+                      getOutputDrivePath(item)
+                        ? formatColabOneDrivePath(getOutputDrivePath(item))
+                        : t('comfy.openOutputInDriveTooltip')
+                    "
+                  >
+                    <AButton
+                      size="small"
+                      class="co-comfy-export-drive-btn is-exported"
+                      data-testid="comfy-output-open-drive"
+                      @click="openExternalURL(getOutputDriveOpenUrl(item))"
+                    >
+                      <template #icon>
+                        <PhArrowSquareOut :size="14" />
+                      </template>
+                      {{ t("comfy.openOutputInDrive") }}
+                    </AButton>
+                  </ColabOneTooltip>
+
+                  <ColabOneTooltip
+                    v-else
+                    :title="
+                      isOutputExportedToDrive(item)
+                        ? t('comfy.exportDriveDoneTooltip', {
+                            path: formatColabOneDrivePath(
+                              getOutputDrivePath(item) ||
+                                `My Drive/ColabOne_Drive/outputs/${item.filename}`,
+                            ),
+                          })
+                        : state.setup.drive
+                          ? t('comfy.exportDriveReadyTooltip')
+                          : t('comfy.exportDriveSetupTooltip')
                     "
                   >
                     <AButton
                       size="small"
                       class="co-comfy-export-drive-btn"
                       :class="{
-                        'is-exported': !!exportedDriveOutputs[item.id],
+                        'is-exported': isOutputExportedToDrive(item),
                       }"
                       :loading="!!exportingDriveOutputs[item.id]"
                       :disabled="!gpuReady || !!deletingOutputs[item.id]"
@@ -8625,13 +9188,13 @@ onUnmounted(() => {
                     >
                       <template #icon>
                         <PhCloudCheck
-                          v-if="exportedDriveOutputs[item.id]"
+                          v-if="isOutputExportedToDrive(item)"
                           :size="14"
                         />
                         <PhCloudArrowUp v-else :size="14" />
                       </template>
                       {{
-                        exportedDriveOutputs[item.id]
+                        isOutputExportedToDrive(item)
                           ? t("comfy.exportedToDrive")
                           : t("comfy.exportDrive")
                       }}
@@ -8642,12 +9205,16 @@ onUnmounted(() => {
                 <APopconfirm
                   :title="t('comfy.deleteOutputTitle')"
                   :description="
-                    t('comfy.deleteOutputDesc', { name: item.filename })
+                    isOutputDriveBacked(item) || !gpuReady
+                      ? t('comfy.deleteDriveOutputDesc', {
+                          name: item.filename,
+                        })
+                      : t('comfy.deleteOutputDesc', { name: item.filename })
                   "
                   :ok-text="t('common.confirmDelete')"
                   :cancel-text="t('common.cancel')"
                   :disabled="
-                    !gpuReady ||
+                    (!gpuReady && !isOutputDriveBacked(item)) ||
                     !!exportingOutputs[item.id] ||
                     !!exportingDriveOutputs[item.id] ||
                     !!deletingOutputs[item.id]
@@ -8676,7 +9243,7 @@ onUnmounted(() => {
                         class="co-comfy-output-delete-btn"
                         :loading="!!deletingOutputs[item.id]"
                         :disabled="
-                          !gpuReady ||
+                          (!gpuReady && !isOutputDriveBacked(item)) ||
                           !!exportingOutputs[item.id] ||
                           !!exportingDriveOutputs[item.id]
                         "
@@ -8700,6 +9267,7 @@ onUnmounted(() => {
     <ColabOneDriveExportModal
       v-model:open="driveModalOpen"
       :state="state"
+      :purpose="driveModalPurpose"
       :target-output="driveModalTarget"
       :exporting="driveModalExporting"
       :export-result="driveModalResult"
@@ -8708,12 +9276,14 @@ onUnmounted(() => {
       :confirming-auth="confirmingDriveAuthInModal"
       :checking-headless="checkingHeadlessInModal"
       :saving-auto-drive="savingAutoDriveInModal"
-      :needs-remote-upgrade="needsUpgradeForDriveExport"
+      :arming-auto-release="workflowAutoReleaseBusy"
+      :needs-remote-upgrade="driveModalNeedsUpgrade"
       @connect="connectDriveFromModal"
       @confirm-auth="confirmDriveAuthFromModal"
       @cancel-auth="cancelDriveAuthFromModal"
       @setup-headless="setupHeadlessDriveFromModal"
       @export-now="exportTargetFromModal"
+      @arm-auto-release="armAutoReleaseFromModal"
       @upgrade="triggerUpgradeFromDriveModal"
       @open-settings="openSettingsFromDriveModal"
       @toggle-auto-drive="toggleAutoDriveFromModal"
@@ -10046,6 +10616,149 @@ onUnmounted(() => {
   gap: 10px;
   margin-left: auto;
   min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.co-comfy-autorelease-strip {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: var(--co-surface);
+  border: 1px solid var(--co-border-secondary);
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.co-comfy-autorelease-strip.is-armed {
+  border-color: color-mix(in srgb, var(--co-success) 42%, var(--co-border-secondary));
+  background: color-mix(in srgb, var(--co-success) 6%, var(--co-surface));
+}
+
+.co-comfy-autorelease-strip.is-warning {
+  border-color: color-mix(in srgb, var(--co-warning) 55%, var(--co-border-secondary));
+  background: color-mix(in srgb, var(--co-warning) 8%, var(--co-surface));
+}
+
+.co-comfy-autorelease-strip-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.co-comfy-autorelease-strip-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.co-comfy-autorelease-icon {
+  color: var(--co-accent);
+  flex-shrink: 0;
+}
+
+.co-comfy-autorelease-strip.is-armed .co-comfy-autorelease-icon,
+.co-comfy-drawer-autorelease-pill.is-armed .co-comfy-autorelease-icon {
+  color: var(--co-success);
+}
+
+.co-comfy-autorelease-label {
+  font-weight: 500;
+  color: var(--co-text);
+}
+
+.co-comfy-autorelease-hint {
+  font-size: 12px;
+  color: var(--co-muted);
+}
+
+.co-comfy-autorelease-switch-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+.co-comfy-drawer-autorelease-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-subtle);
+  font-size: 12.5px;
+  color: var(--co-text);
+  user-select: none;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.co-comfy-drawer-autorelease-pill.is-armed {
+  border-color: color-mix(in srgb, var(--co-success) 45%, var(--co-border-secondary));
+  background: color-mix(in srgb, var(--co-success) 8%, var(--co-subtle));
+}
+
+.co-comfy-drawer-autorelease-pill.is-disabled {
+  opacity: 0.65;
+}
+
+.co-comfy-drawer-autorelease-text {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.co-comfy-drive-offline-frame {
+  width: 100%;
+  min-height: 164px;
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  background: color-mix(in srgb, var(--co-accent) 4%, var(--co-subtle));
+}
+
+.co-comfy-drive-offline-icon {
+  color: var(--co-success);
+  flex-shrink: 0;
+}
+
+.co-comfy-drive-offline-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--co-text);
+}
+
+.co-comfy-drive-offline-path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--co-surface);
+  border: 1px solid var(--co-border-secondary);
+  color: var(--co-secondary-text);
+}
+
+.co-comfy-drive-linked-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .co-comfy-draft-status {

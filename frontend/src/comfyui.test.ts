@@ -780,6 +780,34 @@ describe("outputBlobURL", () => {
 
     expect(createSpy).not.toHaveBeenCalled();
   });
+
+  it("loads Drive-backed chunks cleanly when sha256 is omitted", async () => {
+    const createSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:drive-no-sha");
+    mockCommand
+      .mockResolvedValueOnce({
+        data: btoa("hello "),
+        offset: 0,
+        size: 11,
+        mime: "image/png",
+        source: "drive",
+      })
+      .mockResolvedValueOnce({
+        data: btoa("world"),
+        offset: 6,
+        size: 11,
+        mime: "image/png",
+        source: "drive",
+      });
+
+    const url = await outputBlobURL("drive_no_sha");
+    expect(url).toBe("blob:drive-no-sha");
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const blob = createSpy.mock.calls[0]?.[0] as Blob;
+    expect(blob.type).toBe("image/png");
+    expect(blob.size).toBe(11);
+  });
 });
 
 describe("extractPublicHost", () => {

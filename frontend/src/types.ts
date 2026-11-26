@@ -270,6 +270,49 @@ export interface WorkflowOutput {
   created_at: number;
   elapsed: number;
   prompt_id?: string;
+  storage?: "runtime" | "drive";
+  drive_synced?: boolean;
+  drive_exported?: boolean;
+  drive_path?: string;
+  drive_folder?: string;
+  drive_file_id?: string;
+  drive_web_view_link?: string;
+  drive_previewable?: boolean;
+  drive_mode?: string;
+}
+export interface ColabOneDriveOutputsStatus {
+  syncing: boolean;
+  last_synced_at?: number;
+  can_direct_read: boolean;
+  count: number;
+  error?: string;
+}
+export interface ColabOneWorkflowAutoReleaseExported {
+  id: string;
+  filename: string;
+  remote_folder?: string;
+  drive_path?: string;
+  drive_file_id?: string;
+  drive_web_view_link?: string;
+  already_exists?: boolean;
+  size?: number;
+}
+export interface ColabOneWorkflowAutoReleaseStatus {
+  enabled: boolean;
+  state:
+    | "idle"
+    | "armed"
+    | "syncing"
+    | "releasing"
+    | "released"
+    | "failed"
+    | "skipped"
+    | string;
+  task_id?: string;
+  error?: string;
+  message?: string;
+  exported?: ColabOneWorkflowAutoReleaseExported[];
+  updated_at?: number;
 }
 export interface ComfyCanvasStatus {
   state: string;
@@ -289,6 +332,7 @@ export interface ComfyStatus {
   active_pack?: string;
   cached_tts_engines?: string[];
   tts_preview_prefetch?: ColabOneTtsPreviewPrefetchStatus | null;
+  auto_release?: ColabOneWorkflowAutoReleaseStatus | null;
   queue_running: number;
   queue_pending: number;
   error: string;
@@ -575,6 +619,7 @@ export interface ColabOneSnapshot {
   workflows: WorkflowTemplate[];
   tts_engines?: ComfyTtsEngineSpec[];
   comfy_outputs: WorkflowOutput[];
+  drive_outputs_status?: ColabOneDriveOutputsStatus;
   account: {
     logged_in: boolean;
     balance?: number;

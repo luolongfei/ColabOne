@@ -9586,3 +9586,228 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
   await page.mouse.move(16, 16);
   await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
 });
+
+test("workflow post-sync auto-release switch enforces Drive onboarding and outputs drawer shows Drive outputs after GPU release", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await mock(page, true);
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.setup.drive = false;
+    s.setup.drive_authorized = true;
+    s.setup.drive_headless = false;
+    s.account.email = "sleep@example.com";
+    s.runtime.capabilities = [
+      "public_api",
+      "comfyui",
+      "comfyui_hf_token",
+      "comfyui_drive_export",
+      "comfyui_workflow_auto_release",
+    ];
+    s.runtime.comfyui = {
+      installed: true,
+      running: true,
+      state: "ready",
+      tag: "v0.46.0",
+      queue_running: 0,
+      queue_pending: 0,
+      error: "",
+      auto_release: {
+        enabled: false,
+        state: "idle",
+      },
+    };
+    s.workflows = [
+      {
+        id: "flux-demo",
+        name: "Flux 高清文生图",
+        description: "用于自动同步释放回归测试",
+        source: "builtin",
+        min_vram_mib: 8192,
+        node_count: 5,
+        fields: [
+          {
+            key: "3.text",
+            label: "提示词",
+            node_id: "3",
+            input_name: "text",
+            field_type: "textarea",
+            default: "night sky",
+          },
+        ],
+      },
+    ];
+    const origCall = (window as any).mygo.call;
+    (window as any).mygo.call = async (method: string, ...args: any[]) => {
+      if (method === "ColabOneDesktop.Command") {
+        const req = args[0];
+        if (req?.action === "comfyui.auto_release") {
+          ((window as any).__calls ||= []).push(req);
+          const enabled = Boolean(req?.payload?.enabled);
+          s.runtime.comfyui.auto_release = {
+            enabled,
+            state: enabled ? "armed" : "idle",
+          };
+          return JSON.stringify(s.runtime.comfyui.auto_release);
+        }
+        if (req?.action === "comfyui.outputs.drive.sync") {
+          ((window as any).__calls ||= []).push(req);
+          return JSON.stringify({
+            synced: true,
+            can_direct_read: true,
+            count: s.comfy_outputs.length,
+          });
+        }
+      }
+      return origCall(method, ...args);
+    };
+  });
+
+  await navItem(page, "ComfyUI").click();
+
+  // 1. Open a workflow parameter drawer when Drive is NOT mounted.
+  await page.locator(".co-comfy-wf-card-trigger").first().click();
+  const paramDrawer = page.locator(".co-comfy-param-drawer-root .ant-drawer-content");
+  await expect(paramDrawer).toBeVisible();
+
+  const drawerSwitch = paramDrawer.getByTestId("comfy-drawer-auto-release-switch");
+  await expect(drawerSwitch).toBeVisible();
+  await expect(drawerSwitch).toHaveAttribute("aria-checked", "false");
+
+  // 2. Clicking the switch without Drive mounted must NOT arm it — must open Drive onboarding modal!
+  await drawerSwitch.click();
+  await expect(drawerSwitch).toHaveAttribute("aria-checked", "false");
+  const driveModal = page.locator(".co-drive-export-modal-wrap .ant-modal-content");
+  await expect(driveModal).toBeVisible();
+  await expect(driveModal).toContainText("连接 Google 云盘以开启自动释放");
+  await expect(
+    driveModal.getByRole("button", { name: "授权挂载并开启自动释放" }),
+  ).toBeVisible();
+
+  // 3. Simulate completing Drive mount from modal -> auto-arms the switch!
+  await driveModal.getByRole("button", { name: "授权挂载并开启自动释放" }).click();
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.operation = null;
+    s.auth_url = "";
+    s.setup.drive = true;
+    s.runtime.drive = {
+      connected: true,
+      mode: "mount",
+      remote_folder: "ColabOne_Drive",
+    };
+  });
+
+  await expect(driveModal).toBeHidden();
+  await expect(drawerSwitch).toHaveAttribute("aria-checked", "true");
+  const callsAfterArm = await page.evaluate(() => (window as any).__calls || []);
+  expect(
+    callsAfterArm.some(
+      (c: any) => c.action === "comfyui.auto_release" && c.payload?.enabled === true,
+    ),
+  ).toBe(true);
+
+  // Close parameter drawer, simulate a running workflow task, verify running progress banner switch mirrors state & toggles off.
+  await paramDrawer.locator(".ant-drawer-close").click();
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime.tasks = [
+      {
+        id: "task-night-1",
+        kind: "comfyui_run",
+        model_id: "flux-demo",
+        state: "running",
+        progress: 0.42,
+        message: "正在推理工作流…",
+        error: "",
+      },
+    ];
+  });
+  const taskStrip = page.getByTestId("comfy-task-auto-release-strip");
+  await expect(taskStrip).toBeVisible();
+  await expect(taskStrip).toContainText("已开启 · 同步后自动释放");
+  const taskSwitch = page.getByTestId("comfy-task-auto-release-switch");
+  await expect(taskSwitch).toHaveAttribute("aria-checked", "true");
+  await taskSwitch.click();
+  await expect(taskSwitch).toHaveAttribute("aria-checked", "false");
+
+  // 4. Simulate GPU released (stopped) with persisted Google Drive-linked outputs (one Drive API previewable, one DriveFS-only).
+  await page.evaluate(() => {
+    const s = (window as any).__state;
+    s.runtime = { state: "stopped" };
+    s.setup.drive = false;
+    s.setup.drive_headless = true;
+    s.drive_outputs_status = {
+      syncing: false,
+      can_direct_read: true,
+      count: 2,
+      error: "",
+    };
+    s.comfy_outputs = [
+      {
+        id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        workflow_id: "digital-human-longcat",
+        workflow_name: "口播数字人",
+        kind: "video",
+        filename: "overnight_avatar.mp4",
+        extension: "mp4",
+        mime: "video/mp4",
+        size: 12_345_678,
+        created_at: 1_760_000_200,
+        elapsed: 600,
+        storage: "drive",
+        drive_synced: true,
+        drive_exported: true,
+        drive_path: "My Drive/ColabOne_Drive/outputs/overnight_avatar.mp4",
+        drive_file_id: "file-overnight-1",
+        drive_web_view_link: "https://drive.google.com/file/d/file-overnight-1/view",
+        drive_previewable: true,
+      },
+      {
+        id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        workflow_id: "flux-demo",
+        workflow_name: "Flux 高清文生图",
+        kind: "image",
+        filename: "drivefs_only.png",
+        extension: "png",
+        mime: "image/png",
+        size: 512_000,
+        created_at: 1_760_000_100,
+        elapsed: 15,
+        storage: "drive",
+        drive_synced: true,
+        drive_exported: true,
+        drive_path: "My Drive/ColabOne_Drive/outputs/drivefs_only.png",
+        drive_previewable: false,
+      },
+    ];
+  });
+
+  // Outputs trigger button displays count even while GPU is stopped!
+  await expect(page.locator(".co-comfy-outputs-trigger")).toContainText("2");
+  await page.locator(".co-comfy-outputs-trigger").click();
+  const outputsDrawer = page.locator(".co-comfy-outputs-drawer-root .ant-drawer-content");
+  await expect(outputsDrawer).toBeVisible();
+  await expect(outputsDrawer.getByTestId("comfy-outputs-drive-refresh")).toBeVisible();
+  await expect(outputsDrawer.getByTestId("comfy-outputs-drive-pill")).toContainText("已关联 Google 云盘");
+  await expect(outputsDrawer.getByTestId("comfy-outputs-storage-bar")).toContainText(
+    "GPU 实例已释放",
+  );
+
+  // First card (Drive API previewable): preview button & Export Local enabled without GPU, plus "在云盘查看".
+  const firstCard = outputsDrawer.locator(".co-comfy-output-item").nth(0);
+  await expect(firstCard).toContainText("overnight_avatar.mp4");
+  await expect(firstCard.getByTestId("comfy-output-drive-tag")).toContainText("已存至云盘");
+  await expect(firstCard.locator(".co-comfy-preview-trigger")).toBeEnabled();
+  await expect(firstCard.getByRole("button", { name: "导出到本地" })).toBeEnabled();
+  await expect(firstCard.getByTestId("comfy-output-open-drive")).toContainText("在云盘查看");
+
+  // Second card (DriveFS-only record): displays offline Drive frame instead of disabled preview trigger.
+  const secondCard = outputsDrawer.locator(".co-comfy-output-item").nth(1);
+  await expect(secondCard.getByTestId("comfy-output-drive-offline-frame")).toBeVisible();
+  await expect(secondCard.getByTestId("comfy-output-drive-offline-frame")).toContainText(
+    "已保存至 Google 云盘",
+  );
+  await expect(secondCard.getByRole("button", { name: "导出到本地" })).toBeDisabled();
+});

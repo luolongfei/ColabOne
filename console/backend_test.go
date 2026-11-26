@@ -123,6 +123,9 @@ func TestExternalURLsAreRestricted(t *testing.T) {
 	if got := colabOneMethodTimeout("comfyui.output.export_drive"); got != 300*time.Second {
 		t.Fatalf("expected 300s timeout for comfyui.output.export_drive, got %v", got)
 	}
+	if got := colabOneMethodTimeout("comfyui.auto_release"); got != 30*time.Second {
+		t.Fatalf("expected 30s timeout for comfyui.auto_release, got %v", got)
+	}
 }
 
 func TestValidateCanvasURL(t *testing.T) {

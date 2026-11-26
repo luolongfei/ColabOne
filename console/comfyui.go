@@ -123,6 +123,7 @@ type colabOneMediaChunk struct {
 	SHA256    string `json:"sha256"`
 	Extension string `json:"extension"`
 	Filename  string `json:"filename"`
+	Source    string `json:"source"`
 }
 
 // ExportWorkflowOutput accepts only a remote artifact ID. The save destination
@@ -144,7 +145,8 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 	}
 	ext := strings.ToLower(chunk.Extension)
 	digest := strings.ToLower(strings.TrimSpace(chunk.SHA256))
-	if chunk.Size <= 0 || chunk.Size > maxWorkflowOutputSize || !allowedOutputExtensions[ext] || !workflowOutputSHA256Pattern.MatchString(digest) {
+	allowEmptyDigest := chunk.Source == "drive" && digest == ""
+	if chunk.Size <= 0 || chunk.Size > maxWorkflowOutputSize || !allowedOutputExtensions[ext] || (!allowEmptyDigest && !workflowOutputSHA256Pattern.MatchString(digest)) {
 		return "", errors.New(colabOneT("err.invalidOutputMetadata"))
 	}
 	size := chunk.Size
@@ -205,7 +207,7 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 		}
 		chunk = nextChunk
 	}
-	if hex.EncodeToString(hash.Sum(nil)) != digest {
+	if digest != "" && hex.EncodeToString(hash.Sum(nil)) != digest {
 		return "", errors.New(colabOneT("err.outputHashMismatch"))
 	}
 	if err = out.Sync(); err != nil {
