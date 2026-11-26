@@ -1127,6 +1127,32 @@ func TestAuxiliaryGGUFAndModalityHelpers(t *testing.T) {
 	if got := classifyModality("", nil, "org/Qwen3-32B-GGUF"); got != "text" {
 		t.Errorf("classifyModality text repo = %q", got)
 	}
+	// Verify zero drift with hub.ClassifyModality across modern video/image patterns.
+	syncCases := []struct {
+		pipeline string
+		tags     []string
+		repo     string
+		want     string
+	}{
+		{"image-text-to-video", nil, "org/custom-repo", "video"},
+		{"", []string{"image-text-to-video"}, "org/custom-repo", "video"},
+		{"", nil, "org/MiniMax-H3-GGUF", "video"},
+		{"", nil, "org/MiniMax-H3-Image-GGUF", "image"},
+		{"", nil, "org/LTXV-13B-GGUF", "video"},
+		{"", nil, "org/Wan-Animate-14B-GGUF", "video"},
+		{"", nil, "org/SeedVR2-7B-GGUF", "video"},
+		{"", nil, "org/SCAIL-Video-GGUF", "video"},
+		{"", nil, "org/LiveAvatar-GGUF", "video"},
+		{"", nil, "org/Viggle-GGUF", "video"},
+		{"", nil, "org/LongCat-Video-GGUF", "video"},
+		{"", nil, "org/MOSS-Image-GGUF", "image"},
+		{"", nil, "org/FLUX.3-dev-GGUF", "image"},
+	}
+	for _, tc := range syncCases {
+		if got := classifyModality(tc.pipeline, tc.tags, tc.repo); got != tc.want {
+			t.Errorf("classifyModality(%q, %v, %q) = %q, want %q", tc.pipeline, tc.tags, tc.repo, got, tc.want)
+		}
+	}
 }
 
 func TestConcurrencySafety(t *testing.T) {

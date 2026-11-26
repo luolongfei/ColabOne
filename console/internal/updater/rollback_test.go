@@ -206,14 +206,15 @@ func TestRollbackInstallerVerifiesEd25519SignatureAndSwapsFiles(t *testing.T) {
 	}
 
 	installer := &ColabOneRollbackInstaller{
-		Repo:       "test/repo",
-		Target:     "windows-amd64",
-		PublicKey:  base64.StdEncoding.EncodeToString(pub),
-		GitHubBase: srv.URL,
-		Client:     srv.Client(),
-		TargetDir:  installDir,
-		StartExe:   filepath.Join(installDir, "ColabOne.exe"),
-		PlatformOS: "linux",
+		Repo:              "test/repo",
+		Target:            "windows-amd64",
+		PublicKey:         base64.StdEncoding.EncodeToString(pub),
+		GitHubBase:        srv.URL,
+		Client:            srv.Client(),
+		TargetDir:         installDir,
+		StartExe:          filepath.Join(installDir, "ColabOne.exe"),
+		PlatformOS:        "linux",
+		allowLoopbackHTTP: true,
 	}
 
 	handle, err := installer.PrepareRollback(context.Background(), "0.1.12")
@@ -302,14 +303,15 @@ func TestRollbackInstallerRejectsTamperedSignatureAndPathTraversal(t *testing.T)
 	}
 
 	installer := &ColabOneRollbackInstaller{
-		Repo:       "test/repo",
-		Target:     "windows-amd64",
-		PublicKey:  base64.StdEncoding.EncodeToString(pub),
-		GitHubBase: srv.URL,
-		Client:     srv.Client(),
-		TargetDir:  installDir,
-		StartExe:   filepath.Join(installDir, "ColabOne.exe"),
-		PlatformOS: "linux",
+		Repo:              "test/repo",
+		Target:            "windows-amd64",
+		PublicKey:         base64.StdEncoding.EncodeToString(pub),
+		GitHubBase:        srv.URL,
+		Client:            srv.Client(),
+		TargetDir:         installDir,
+		StartExe:          filepath.Join(installDir, "ColabOne.exe"),
+		PlatformOS:        "linux",
+		allowLoopbackHTTP: true,
 	}
 
 	// 1. Bad signature must fail with ErrCodeSignature.
@@ -576,16 +578,17 @@ func TestRollbackStrictSemVerBackslashSymlinkEscapeRetryStallAndChannelReset(t *
 	installDir := filepath.Join(t.TempDir(), "ColabOne")
 	_ = os.MkdirAll(installDir, 0o755)
 	installer := &ColabOneRollbackInstaller{
-		Repo:         "test/repo",
-		Target:       "windows-amd64",
-		PublicKey:    base64.StdEncoding.EncodeToString(pub),
-		GitHubBase:   srv.URL,
-		Client:       srv.Client(),
-		TargetDir:    installDir,
-		StartExe:     filepath.Join(installDir, "ColabOne.exe"),
-		PlatformOS:   "linux",
-		StallTimeout: 80 * time.Millisecond,
-		RetryDelays:  []time.Duration{5 * time.Millisecond},
+		Repo:              "test/repo",
+		Target:            "windows-amd64",
+		PublicKey:         base64.StdEncoding.EncodeToString(pub),
+		GitHubBase:        srv.URL,
+		Client:            srv.Client(),
+		TargetDir:         installDir,
+		StartExe:          filepath.Join(installDir, "ColabOne.exe"),
+		PlatformOS:        "linux",
+		StallTimeout:      80 * time.Millisecond,
+		RetryDelays:       []time.Duration{5 * time.Millisecond},
+		allowLoopbackHTTP: true,
 	}
 
 	hRetry, err := installer.PrepareRollback(context.Background(), "0.1.11")
@@ -648,4 +651,317 @@ func TestRollbackStrictSemVerBackslashSymlinkEscapeRetryStallAndChannelReset(t *
 	if restored.Status != StatusUpToDate || restored.IsRollback || restored.AvailableVersion != "" || restored.ErrorCode != "" {
 		t.Fatalf("expected cancel after error state to restore clean up_to_date, got: %+v", restored)
 	}
+}
+
+func buildCustomTarGz(t *testing.T, entries []struct {
+	hdr  tar.Header
+	body string
+}) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, entry := range entries {
+		h := entry.hdr
+		if h.Typeflag == tar.TypeReg {
+			h.Size = int64(len(entry.body))
+			if h.Mode == 0 {
+				h.Mode = 0o644
+			}
+		}
+		if err := tw.WriteHeader(&h); err != nil {
+			t.Fatalf("write header %q: %v", h.Name, err)
+		}
+		if h.Typeflag == tar.TypeReg && len(entry.body) > 0 {
+			if _, err := tw.Write([]byte(entry.body)); err != nil {
+				t.Fatalf("write body %q: %v", h.Name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestExtractArchiveRejectsSymlinkChainEscapeAndSymlinkOverwrite(t *testing.T) {
+	// 1. Intermediate symlink in parent directory path used to escape extraction root.
+	intermediateChain := buildCustomTarGz(t, []struct {
+		hdr  tar.Header
+		body string
+	}{
+		{hdr: tar.Header{Name: "a/b", Typeflag: tar.TypeDir, Mode: 0o755}},
+		{hdr: tar.Header{Name: "a/b/up1", Typeflag: tar.TypeSymlink, Linkname: "../.."}},
+		{hdr: tar.Header{Name: "a/b/up1/up2", Typeflag: tar.TypeSymlink, Linkname: ".."}},
+	})
+	if err := extractColabOneSignedArchive(bytes.NewReader(intermediateChain), t.TempDir()); err == nil {
+		t.Fatal("expected intermediate symlink-chain escape to be rejected")
+	}
+
+	// 2. Two-hop relative symlink chain escaping root (b/link2 -> ../a/link1/.. where a/link1 -> ..).
+	twoHopChain := buildCustomTarGz(t, []struct {
+		hdr  tar.Header
+		body string
+	}{
+		{hdr: tar.Header{Name: "a", Typeflag: tar.TypeDir, Mode: 0o755}},
+		{hdr: tar.Header{Name: "a/link1", Typeflag: tar.TypeSymlink, Linkname: ".."}},
+		{hdr: tar.Header{Name: "b", Typeflag: tar.TypeDir, Mode: 0o755}},
+		{hdr: tar.Header{Name: "b/link2", Typeflag: tar.TypeSymlink, Linkname: "../a/link1/.."}},
+	})
+	if err := extractColabOneSignedArchive(bytes.NewReader(twoHopChain), t.TempDir()); err == nil {
+		t.Fatal("expected two-hop symlink-chain escape to be rejected")
+	}
+
+	// 3. Regular file writing through a pre-existing symlink at the exact target path.
+	symlinkOverwrite := buildCustomTarGz(t, []struct {
+		hdr  tar.Header
+		body string
+	}{
+		{hdr: tar.Header{Name: "victim.txt", Typeflag: tar.TypeReg, Mode: 0o644}, body: "original"},
+		{hdr: tar.Header{Name: "alias.txt", Typeflag: tar.TypeSymlink, Linkname: "victim.txt"}},
+		{hdr: tar.Header{Name: "alias.txt", Typeflag: tar.TypeReg, Mode: 0o644}, body: "overwritten"},
+	})
+	outDir := t.TempDir()
+	if err := extractColabOneSignedArchive(bytes.NewReader(symlinkOverwrite), outDir); err == nil {
+		t.Fatal("expected regular file overwriting pre-existing symlink to be rejected")
+	}
+	gotVictim, _ := os.ReadFile(filepath.Join(outDir, "victim.txt"))
+	if string(gotVictim) != "original" {
+		t.Fatalf("victim.txt was modified through symlink: %q", string(gotVictim))
+	}
+
+	// 4. Legitimate internal macOS .app framework symlinks succeed cleanly.
+	validFramework := buildCustomTarGz(t, []struct {
+		hdr  tar.Header
+		body string
+	}{
+		{hdr: tar.Header{Name: "ColabOne.app/Contents/Frameworks/Foo.framework/Versions/A/Foo", Typeflag: tar.TypeReg, Mode: 0o755}, body: "dylib"},
+		{hdr: tar.Header{Name: "ColabOne.app/Contents/Frameworks/Foo.framework/Versions/Current", Typeflag: tar.TypeSymlink, Linkname: "A"}},
+		{hdr: tar.Header{Name: "ColabOne.app/Contents/Frameworks/Foo.framework/Foo", Typeflag: tar.TypeSymlink, Linkname: "Versions/Current/Foo"}},
+	})
+	validDir := t.TempDir()
+	if err := extractColabOneSignedArchive(bytes.NewReader(validFramework), validDir); err != nil {
+		t.Fatalf("expected valid internal framework symlinks to succeed, got: %v", err)
+	}
+}
+
+func TestValidateUpdateURLAndCheckRedirectHardening(t *testing.T) {
+	allowed := []string{
+		"https://github.com/luolongfei/ColabOne/releases/download/v0.1.7/update-windows-amd64.json",
+		"https://api.github.com/repos/luolongfei/ColabOne/releases",
+		"https://objects.githubusercontent.com/github-production-release-asset-2e65be/archive.tar.gz",
+		"https://release-assets.githubusercontent.com/github-production-release-asset/archive.tar.gz",
+		"https://github-releases.githubusercontent.com/12345/archive.tar.gz",
+	}
+	for _, raw := range allowed {
+		if err := validateColabOneUpdateURL(raw); err != nil {
+			t.Fatalf("expected allowed production update URL %q, got error: %v", raw, err)
+		}
+	}
+
+	rejected := []string{
+		"http://127.0.0.1:8080/update.json",
+		"http://localhost:8080/update.json",
+		"http://[::1]:8080/update.json",
+		"http://github.com/luolongfei/ColabOne/releases/download/v0.1.7/a.tar.gz",
+		"https://evil.example.com/archive.tar.gz",
+		"https://raw.githubusercontent.com/luolongfei/ColabOne/main/a.tar.gz",
+		"https://github.com:8443/luolongfei/ColabOne/releases/download/v0.1.7/a.tar.gz",
+		"https://user:pass@github.com/luolongfei/ColabOne/releases/download/v0.1.7/a.tar.gz",
+	}
+	for _, raw := range rejected {
+		if err := validateColabOneUpdateURL(raw); err == nil {
+			t.Fatalf("expected production update URL %q to be rejected", raw)
+		}
+	}
+
+	// CheckRedirect validates every redirect hop and strips sensitive headers cross-host.
+	reqCross, _ := http.NewRequest(http.MethodGet, "https://objects.githubusercontent.com/asset.tar.gz", nil)
+	reqCross.Header.Set("Authorization", "Bearer secret")
+	reqCross.Header.Set("Cookie", "sid=secret")
+	reqOrigin, _ := http.NewRequest(http.MethodGet, "https://github.com/luolongfei/ColabOne/releases/download/v0.1.7/asset.tar.gz", nil)
+	if err := ColabOneUpdateCheckRedirect(reqCross, []*http.Request{reqOrigin}); err != nil {
+		t.Fatalf("expected valid GitHub asset redirect allowed, got: %v", err)
+	}
+	if reqCross.Header.Get("Authorization") != "" || reqCross.Header.Get("Cookie") != "" {
+		t.Fatalf("expected cross-host redirect to strip Authorization/Cookie headers")
+	}
+
+	reqEvil, _ := http.NewRequest(http.MethodGet, "https://evil.example.com/payload.tar.gz", nil)
+	if err := ColabOneUpdateCheckRedirect(reqEvil, []*http.Request{reqOrigin}); err == nil {
+		t.Fatal("expected redirect to evil.example.com to be rejected")
+	}
+	reqDowngrade, _ := http.NewRequest(http.MethodGet, "http://objects.githubusercontent.com/asset.tar.gz", nil)
+	if err := ColabOneUpdateCheckRedirect(reqDowngrade, []*http.Request{reqOrigin}); err == nil {
+		t.Fatal("expected HTTP downgrade redirect to be rejected")
+	}
+
+	// End-to-end feed checker blocks redirect to disallowed external host.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://evil.example.com/manifest.json", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	checker := &ColabOneReadOnlyFeedChecker{
+		Repo:       COLABONE_GITHUB_REPO,
+		Target:     "windows-amd64",
+		GitHubBase: srv.URL,
+		APIBase:    srv.URL,
+		Client:     srv.Client(),
+	}
+	if _, err := checker.Check(context.Background(), false); err == nil || !strings.Contains(err.Error(), "disallowed update host") {
+		t.Fatalf("expected feed checker to block redirect to evil.example.com, got: %v", err)
+	}
+
+	// Production rollback installer without test option rejects http://127.0.0.1 manifest URL.
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodInstaller := &ColabOneRollbackInstaller{
+		Repo:       "test/repo",
+		Target:     "windows-amd64",
+		PublicKey:  base64.StdEncoding.EncodeToString(pub),
+		GitHubBase: srv.URL,
+		Client:     srv.Client(),
+	}
+	if _, err := prodInstaller.PrepareRollback(context.Background(), "0.1.12"); err == nil {
+		t.Fatal("expected production rollback installer to reject loopback http URL without test option")
+	}
+}
+
+func TestRollbackClearsStalePendingAndCloseSuppressesInstallCallbacks(t *testing.T) {
+	// 1. After a failed rollback, StartInstall must NOT silently install a stale forward update.
+	forwardInstallCalled := false
+	rbBackend := &fakeRollbackBackend{
+		current: "0.1.13",
+		canSelf: true,
+		prepareFn: func(_ context.Context, _ string) (ColabOneUpdateInstallable, error) {
+			return nil, os.ErrPermission
+		},
+	}
+	// Set u.pending via Check using a custom backend that returns a forward update and fails rollback.
+	customBackend := &stalePendingTestBackend{
+		fakeRollbackBackend: rbBackend,
+		forwardInstall: &fakeInstallable{
+			version: "0.1.14",
+			install: func(context.Context, func(int64, int64)) error {
+				forwardInstallCalled = true
+				return nil
+			},
+		},
+	}
+
+	errCh := make(chan ColabOneUpdateState, 16)
+	u := NewColabOneUpdater(ColabOneUpdaterConfig{
+		Backend:   customBackend,
+		ConfigDir: t.TempDir(),
+		OnStateChange: func(st ColabOneUpdateState) {
+			if st.Status == StatusError {
+				select {
+				case errCh <- st:
+				default:
+				}
+			}
+		},
+	})
+	defer u.Close()
+
+	st, err := u.Check(context.Background(), true)
+	if err != nil || st.Status != StatusAvailable || st.AvailableVersion != "0.1.14" {
+		t.Fatalf("initial forward Check failed: st=%+v err=%v", st, err)
+	}
+	if _, err := u.StartRollback("0.1.12"); err != nil {
+		t.Fatalf("StartRollback failed to start: %v", err)
+	}
+	select {
+	case errSt := <-errCh:
+		if !errSt.IsRollback || errSt.AvailableVersion != "0.1.12" {
+			t.Fatalf("unexpected rollback error state: %+v", errSt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rollback failure")
+	}
+
+	if _, err := u.StartInstall(); err == nil {
+		t.Fatal("expected StartInstall to reject while in rollback error state")
+	}
+	if forwardInstallCalled {
+		t.Fatal("stale forward pending update was unexpectedly installed after rollback failure")
+	}
+
+	// Verify u.pending was cleared on rollback failure and version mismatch is also rejected.
+	u.mu.Lock()
+	hasPending := u.pending != nil
+	u.state.Status = StatusAvailable
+	u.state.IsRollback = false
+	u.state.AvailableVersion = "0.1.15"
+	u.pending = &fakeInstallable{version: "0.1.14"}
+	u.mu.Unlock()
+	if hasPending {
+		t.Fatal("expected u.pending to be cleared on rollback failure")
+	}
+	if _, err := u.StartInstall(); err == nil {
+		t.Fatal("expected StartInstall to reject mismatched pending version vs AvailableVersion")
+	}
+
+	// 2. Close() during an active install must suppress OnStateChange and OnLog callbacks.
+	started := make(chan struct{})
+	var cbMu sync.Mutex
+	closing := false
+	callbacksAfterClose := 0
+	logsAfterClose := 0
+
+	u2 := NewColabOneUpdater(ColabOneUpdaterConfig{
+		Backend: &stalePendingTestBackend{
+			fakeRollbackBackend: &fakeRollbackBackend{current: "0.1.13", canSelf: true},
+			forwardInstall:      &blockingInstallable{version: "0.1.14", started: started},
+		},
+		ConfigDir: t.TempDir(),
+		OnStateChange: func(ColabOneUpdateState) {
+			cbMu.Lock()
+			if closing {
+				callbacksAfterClose++
+			}
+			cbMu.Unlock()
+		},
+		OnLog: func(string, string, string) {
+			cbMu.Lock()
+			if closing {
+				logsAfterClose++
+			}
+			cbMu.Unlock()
+		},
+	})
+	if _, err := u2.Check(context.Background(), true); err != nil {
+		t.Fatalf("u2.Check: %v", err)
+	}
+	if _, err := u2.StartInstall(); err != nil {
+		t.Fatalf("u2.StartInstall: %v", err)
+	}
+	<-started
+
+	cbMu.Lock()
+	closing = true
+	cbMu.Unlock()
+	u2.Close()
+
+	cbMu.Lock()
+	gotCB, gotLogs := callbacksAfterClose, logsAfterClose
+	cbMu.Unlock()
+	if gotCB != 0 || gotLogs != 0 {
+		t.Fatalf("expected 0 callbacks/logs after Close() during in-flight install, got state=%d logs=%d", gotCB, gotLogs)
+	}
+}
+
+type stalePendingTestBackend struct {
+	*fakeRollbackBackend
+	forwardInstall ColabOneUpdateInstallable
+}
+
+func (b *stalePendingTestBackend) CheckSelfUpdate(context.Context) (ColabOneUpdateInstallable, error) {
+	return b.forwardInstall, nil
 }

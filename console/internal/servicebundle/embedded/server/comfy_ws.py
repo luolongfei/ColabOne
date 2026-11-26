@@ -643,7 +643,9 @@ def _parse_handshake_response(head_bytes: bytes, expected_accept: str) -> bool:
     accept_values = headers.get("sec-websocket-accept", [])
     if len(accept_values) != 1:
         return False
-    return secrets.compare_digest(accept_values[0], expected_accept)
+    return secrets.compare_digest(
+        accept_values[0].encode("latin-1"), expected_accept.encode("latin-1")
+    )
 
 
 class ColabOneComfyWsMonitor:
@@ -788,10 +790,10 @@ class ColabOneComfyWsMonitor:
                     action = self._record_event_locked(event, raw_msg_pid)
                     if action is not None:
                         actions_to_fire.append(action)
-        for action in actions_to_fire:
-            if self._stop_event.is_set():
-                break
-            self._fire_action(action)
+            for action in actions_to_fire:
+                if self._stop_event.is_set():
+                    break
+                self._fire_action(action)
 
     def set_node_titles(self, node_titles: dict[str, str] | None) -> None:
         with self._lock:
@@ -1053,6 +1055,14 @@ class ColabOneComfyWsMonitor:
                     continue
 
                 if opcode in (WS_OP_TEXT, WS_OP_BINARY):
+                    if frag_opcode is not None:
+                        # RFC 6455 section 5.4: a new data frame cannot interleave
+                        # with an unfinished fragmented message; fail connection.
+                        frag_opcode = None
+                        frag_chunks.clear()
+                        frag_size = 0
+                        frag_count = 0
+                        return False
                     if fin:
                         frag_opcode = None
                         frag_chunks.clear()
@@ -1179,5 +1189,5 @@ class ColabOneComfyWsMonitor:
                     return
                 action = self._record_event_locked(event, raw_msg_pid)
 
-        if action is not None and not self._stop_event.is_set():
-            self._fire_action(action)
+            if action is not None and not self._stop_event.is_set():
+                self._fire_action(action)

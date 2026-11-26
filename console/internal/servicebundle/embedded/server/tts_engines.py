@@ -2372,6 +2372,7 @@ def _is_standard_mono_pcm16_wav(path: Path) -> bool:
                 and wf.getnchannels() == 1
                 and wf.getsampwidth() == 2
                 and wf.getframerate() > 0
+                and wf.getnframes() > 0
             )
     except (wave.Error, EOFError, OSError):
         return False
@@ -5010,13 +5011,35 @@ class ColabOneWarmTtsWorker:
         self._reader_thread: threading.Thread | None = None
         self._closed = False
         self._lock = threading.Lock()
+        self._stdin_lock = threading.RLock()
         self.last_used = time.monotonic()
 
     def is_alive(self) -> bool:
-        proc = self.proc
-        return (not self._closed) and proc is not None and proc.poll() is None
+        with self._lock:
+            closed = self._closed
+            proc = self.proc
+        return (not closed) and proc is not None and proc.poll() is None
 
-    def start(self, *, timeout: float = 45.0) -> None:
+    def start(
+        self,
+        *,
+        timeout: float = 45.0,
+        cancel_event: threading.Event | None = None,
+        task: Any = None,
+    ) -> None:
+        cancel_cls = _cancelled_error_cls()
+
+        def _check_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise cancel_cls("操作已取消")
+            if self.stopping is not None and self.stopping.is_set():
+                raise cancel_cls("操作已取消")
+            check_fn = getattr(task, "check", None)
+            if callable(check_fn):
+                check_fn()
+
+        _check_cancelled()
+
         self.work_dir.mkdir(parents=True, exist_ok=True)
         script_path = self.work_dir / f"warm_worker_{self.engine_id}.py"
         if script_path.is_symlink():
@@ -5033,77 +5056,131 @@ class ColabOneWarmTtsWorker:
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
-        self.proc = subprocess.Popen(
-            [self.worker_python, str(script_path), "--daemon"],
-            **popen_kwargs,
-        )
 
-        def _reader() -> None:
-            proc = self.proc
-            if proc is None or proc.stdout is None:
-                self._line_queue.put(None)
-                return
-            try:
-                for raw_line in _iter_tts_pipe_lines(proc.stdout):
-                    text = (
-                        raw_line.decode("utf-8", errors="replace")
-                        if isinstance(raw_line, (bytes, bytearray))
-                        else str(raw_line)
-                    ).rstrip("\r\n")
-                    self._line_queue.put(text)
-            except Exception:
-                pass
-            finally:
-                self._line_queue.put(None)
+        prev_cancel_hook = None
+        hook_installed = False
+        _cancel_start = None
+        if task is not None and hasattr(task, "lock") and hasattr(task, "cancel_hook"):
+            with task.lock:
+                prev_cancel_hook = task.cancel_hook
 
-        self._reader_thread = threading.Thread(
-            target=_reader,
-            name=f"colabone-tts-warm-{self.engine_id}",
-            daemon=True,
-        )
-        self._reader_thread.start()
+                def _cancel_start_fn() -> None:
+                    self.close()
+                    if callable(prev_cancel_hook):
+                        try:
+                            prev_cancel_hook()
+                        except Exception:
+                            pass
 
-        startup_lines: collections.deque[str] = collections.deque(maxlen=25)
-        deadline = time.monotonic() + max(5.0, float(timeout))
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.close()
-                raise _ColabOneWarmWorkerTransportError(
-                    f"远端常驻 TTS 进程启动超时（{self.engine_id}）"
-                )
-            try:
-                line = self._line_queue.get(timeout=min(0.25, remaining))
-            except queue.Empty:
-                if not self.is_alive():
+                _cancel_start = _cancel_start_fn
+                task.cancel_hook = _cancel_start
+                hook_installed = True
+
+        try:
+            _check_cancelled()
+            proc = subprocess.Popen(
+                [self.worker_python, str(script_path), "--daemon"],
+                **popen_kwargs,
+            )
+            with self._lock:
+                if self._closed:
+                    _terminate_process_group(proc, timeout=3.0)
+                    raise cancel_cls("操作已取消")
+                self.proc = proc
+
+            def _reader() -> None:
+                if proc.stdout is None:
+                    self._line_queue.put(None)
+                    return
+                try:
+                    for raw_line in _iter_tts_pipe_lines(proc.stdout):
+                        text = (
+                            raw_line.decode("utf-8", errors="replace")
+                            if isinstance(raw_line, (bytes, bytearray))
+                            else str(raw_line)
+                        ).rstrip("\r\n")
+                        self._line_queue.put(text)
+                except Exception:
+                    pass
+                finally:
+                    self._line_queue.put(None)
+
+            self._reader_thread = threading.Thread(
+                target=_reader,
+                name=f"colabone-tts-warm-{self.engine_id}",
+                daemon=True,
+            )
+            self._reader_thread.start()
+
+            startup_lines: collections.deque[str] = collections.deque(maxlen=25)
+            deadline = time.monotonic() + max(5.0, float(timeout))
+            while True:
+                try:
+                    _check_cancelled()
+                except BaseException:
+                    self.close()
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.close()
+                    raise _ColabOneWarmWorkerTransportError(
+                        f"远端常驻 TTS 进程启动超时（{self.engine_id}）"
+                    )
+                try:
+                    line = self._line_queue.get(timeout=min(0.15, remaining))
+                except queue.Empty:
+                    try:
+                        _check_cancelled()
+                    except BaseException:
+                        self.close()
+                        raise
+                    if not self.is_alive():
+                        self.close()
+                        tail = _summarize_subprocess_error_tail(
+                            list(startup_lines), max_chars=420
+                        )
+                        detail = f"：{tail}" if tail else ""
+                        raise _ColabOneWarmWorkerTransportError(
+                            f"远端常驻 TTS 进程提前退出（{self.engine_id}）{detail}"
+                        )
+                    continue
+                if line is None:
+                    try:
+                        _check_cancelled()
+                    except BaseException:
+                        self.close()
+                        raise
                     self.close()
                     tail = _summarize_subprocess_error_tail(
                         list(startup_lines), max_chars=420
                     )
                     detail = f"：{tail}" if tail else ""
                     raise _ColabOneWarmWorkerTransportError(
-                        f"远端常驻 TTS 进程提前退出（{self.engine_id}）{detail}"
+                        f"远端常驻 TTS 进程在就绪前退出（{self.engine_id}）{detail}"
                     )
-                continue
-            if line is None:
-                self.close()
-                tail = _summarize_subprocess_error_tail(
-                    list(startup_lines), max_chars=420
-                )
-                detail = f"：{tail}" if tail else ""
-                raise _ColabOneWarmWorkerTransportError(
-                    f"远端常驻 TTS 进程在就绪前退出（{self.engine_id}）{detail}"
-                )
-            if line.startswith(_COLABONE_DAEMON_RESP_PREFIX):
-                try:
-                    msg = json.loads(line[len(_COLABONE_DAEMON_RESP_PREFIX) :])
-                except ValueError:
-                    continue
-                if isinstance(msg, dict) and msg.get("event") == "ready":
-                    self.last_used = time.monotonic()
-                    return
-            elif line:
-                startup_lines.append(_scrub_secret(line, self.secret_to_scrub))
+                if line.startswith(_COLABONE_DAEMON_RESP_PREFIX):
+                    try:
+                        msg = json.loads(line[len(_COLABONE_DAEMON_RESP_PREFIX) :])
+                    except ValueError:
+                        continue
+                    if isinstance(msg, dict) and msg.get("event") == "ready":
+                        try:
+                            _check_cancelled()
+                        except BaseException:
+                            self.close()
+                            raise
+                        self.last_used = time.monotonic()
+                        return
+                elif line:
+                    startup_lines.append(_scrub_secret(line, self.secret_to_scrub))
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            if hook_installed and task is not None:
+                with task.lock:
+                    if getattr(task, "cancel_hook", None) is _cancel_start:
+                        task.cancel_hook = prev_cancel_hook
 
     def call(
         self,
@@ -5115,7 +5192,10 @@ class ColabOneWarmTtsWorker:
         log_path: Path | None = None,
         secret_to_scrub: str = "",
     ) -> dict[str, Any]:
-        if not self.is_alive() or self.proc is None or self.proc.stdin is None:
+        with self._lock:
+            closed = self._closed
+            proc = self.proc
+        if closed or proc is None or proc.poll() is not None or proc.stdin is None:
             raise _ColabOneWarmWorkerTransportError(
                 f"远端常驻 TTS 进程未运行（{self.engine_id}）"
             )
@@ -5137,36 +5217,53 @@ class ColabOneWarmTtsWorker:
                 log_stream = None
 
         cancel_cls = _cancelled_error_cls()
+
+        def _check_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise cancel_cls("操作已取消")
+            if self.stopping is not None and self.stopping.is_set():
+                raise cancel_cls("操作已取消")
+            check_fn = getattr(task, "check", None)
+            if callable(check_fn):
+                check_fn()
+
         prev_cancel_hook = None
         hook_installed = False
+        _cancel_warm = None
         if task is not None and hasattr(task, "lock") and hasattr(task, "cancel_hook"):
-            def _cancel_warm() -> None:
-                self.close()
-
             with task.lock:
                 prev_cancel_hook = task.cancel_hook
+
+                def _cancel_warm_fn() -> None:
+                    self.close()
+                    if callable(prev_cancel_hook):
+                        try:
+                            prev_cancel_hook()
+                        except Exception:
+                            pass
+
+                _cancel_warm = _cancel_warm_fn
                 task.cancel_hook = _cancel_warm
                 hook_installed = True
 
         try:
-            self.proc.stdin.write(encoded)
-            self.proc.stdin.flush()
+            _check_cancelled()
+            with self._stdin_lock:
+                with self._lock:
+                    if self._closed or self.proc is not proc:
+                        raise BrokenPipeError("warm worker closed")
+                if proc.stdin is None or proc.stdin.closed:
+                    raise BrokenPipeError("warm worker stdin closed")
+                proc.stdin.write(encoded)
+                proc.stdin.flush()
 
             deadline = time.monotonic() + max(5.0, float(timeout))
             while True:
-                if cancel_event is not None and cancel_event.is_set():
+                try:
+                    _check_cancelled()
+                except BaseException:
                     self.close()
-                    raise cancel_cls("操作已取消")
-                if self.stopping is not None and self.stopping.is_set():
-                    self.close()
-                    raise cancel_cls("操作已取消")
-                check_fn = getattr(task, "check", None)
-                if callable(check_fn):
-                    try:
-                        check_fn()
-                    except BaseException:
-                        self.close()
-                        raise
+                    raise
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -5176,6 +5273,11 @@ class ColabOneWarmTtsWorker:
                 try:
                     line = self._line_queue.get(timeout=min(0.15, remaining))
                 except queue.Empty:
+                    try:
+                        _check_cancelled()
+                    except BaseException:
+                        self.close()
+                        raise
                     if not self.is_alive():
                         self.close()
                         tail = _summarize_subprocess_error_tail(
@@ -5188,6 +5290,11 @@ class ColabOneWarmTtsWorker:
                     continue
 
                 if line is None:
+                    try:
+                        _check_cancelled()
+                    except BaseException:
+                        self.close()
+                        raise
                     self.close()
                     tail = _summarize_subprocess_error_tail(
                         list(recent_lines), max_chars=420
@@ -5205,7 +5312,7 @@ class ColabOneWarmTtsWorker:
                         continue
                     if not isinstance(resp, dict):
                         continue
-                    if resp.get("id") and resp.get("id") != req_id:
+                    if resp.get("id") != req_id:
                         continue
                     self.last_used = time.monotonic()
                     if not resp.get("ok"):
@@ -5223,8 +5330,9 @@ class ColabOneWarmTtsWorker:
                         log_stream.flush()
                     except OSError:
                         pass
-        except (BrokenPipeError, OSError):
+        except (BrokenPipeError, OSError, ValueError):
             self.close()
+            _check_cancelled()
             raise _ColabOneWarmWorkerTransportError(
                 f"远端 TTS 常驻进程通道已断开（{self.engine_id}）"
             ) from None
@@ -5247,19 +5355,21 @@ class ColabOneWarmTtsWorker:
             proc = self.proc
             self.proc = None
         if proc is not None:
-            try:
-                if proc.stdin is not None and not proc.stdin.closed and proc.poll() is None:
-                    try:
-                        proc.stdin.write(b'{"op":"shutdown"}\n')
-                        proc.stdin.flush()
-                    except OSError:
-                        pass
-                    try:
-                        proc.stdin.close()
-                    except OSError:
-                        pass
-            except OSError:
-                pass
+            with self._stdin_lock:
+                try:
+                    if proc.stdin is not None and not proc.stdin.closed and proc.poll() is None:
+                        try:
+                            proc.stdin.write(b'{"op":"shutdown"}\n')
+                            proc.stdin.flush()
+                        except (OSError, ValueError):
+                            pass
+                    if proc.stdin is not None and not proc.stdin.closed:
+                        try:
+                            proc.stdin.close()
+                        except (OSError, ValueError):
+                            pass
+                except (OSError, ValueError):
+                    pass
             try:
                 proc.wait(timeout=1.5)
             except subprocess.TimeoutExpired:
@@ -5306,6 +5416,7 @@ class ColabOneRemoteTtsRunner:
         self._warm_lock = threading.RLock()
         self._warm_exec_lock = threading.RLock()
         self._warm_worker: ColabOneWarmTtsWorker | None = None
+        self._warm_release_gen: int = 0
         self._warm_idle_timer: threading.Timer | None = None
         self._warm_idle_seconds = _COLABONE_WARM_WORKER_IDLE_SECONDS
         self._foreground_waiting = threading.Event()
@@ -5314,6 +5425,7 @@ class ColabOneRemoteTtsRunner:
         self._prefetch_job: dict[str, Any] | None = None
         self._prefetch_cancel: threading.Event | None = None
         self._prefetch_thread: threading.Thread | None = None
+        self._prior_prefetch_threads: list[threading.Thread] = []
 
         normalized: dict[str, dict[str, Any]] = {}
         for eid, spec in (engines_by_id or {}).items():
@@ -6452,6 +6564,7 @@ class ColabOneRemoteTtsRunner:
                             raise
 
                     if not used_warm_anchor:
+                        self.release_warm_worker(reason="before_oneshot_anchor")
                         worker_path = tmp_work / "worker_voxcpm2.py"
                         config_path = tmp_work / "config_voxcpm2.json"
                         if worker_path.is_symlink() or config_path.is_symlink():
@@ -6993,6 +7106,7 @@ class ColabOneRemoteTtsRunner:
     def release_warm_worker(self, reason: str = "") -> None:
         """Immediately shut down any resident warm TTS worker to return 100% of GPU VRAM."""
         with self._warm_lock:
+            self._warm_release_gen += 1
             self._cancel_warm_idle_timer_locked()
             worker = self._warm_worker
             self._warm_worker = None
@@ -7002,11 +7116,21 @@ class ColabOneRemoteTtsRunner:
             except Exception:
                 pass
 
+    def _collect_prefetch_threads_locked(self) -> list[threading.Thread]:
+        self._prior_prefetch_threads = [
+            t for t in self._prior_prefetch_threads if t.is_alive()
+        ]
+        threads = list(self._prior_prefetch_threads)
+        cur = self._prefetch_thread
+        if cur is not None and cur.is_alive() and cur not in threads:
+            threads.append(cur)
+        return threads
+
     def cancel_preview_prefetch(
         self, *, wait: bool = False, timeout: float = 2.0
     ) -> dict[str, Any]:
         """Cancel any active background voice preview prefetch job."""
-        thread_to_join: threading.Thread | None = None
+        threads_to_join: list[threading.Thread] = []
         with self._prefetch_lock:
             ev = self._prefetch_cancel
             if ev is not None:
@@ -7015,24 +7139,44 @@ class ColabOneRemoteTtsRunner:
             if job is not None and job.get("state") == "running":
                 job["state"] = "cancelled"
                 job["finished_at"] = time.time()
-            thread_to_join = self._prefetch_thread
-        if wait and thread_to_join is not None and thread_to_join.is_alive():
-            if thread_to_join is not threading.current_thread():
-                thread_to_join.join(timeout=max(0.1, float(timeout)))
+            threads_to_join = self._collect_prefetch_threads_locked()
+        if wait and threads_to_join:
+            deadline = time.monotonic() + max(0.1, float(timeout))
+            for t in threads_to_join:
+                if t is threading.current_thread() or not t.is_alive():
+                    continue
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                t.join(timeout=rem)
+            with self._prefetch_lock:
+                self._prior_prefetch_threads = [
+                    t for t in self._prior_prefetch_threads if t.is_alive()
+                ]
         return self.prefetch_status()
 
     def cancel_prefetch_and_release_warm_worker(self, reason: str = "") -> None:
         """Cancel background preview prefetch and free any resident warm TTS worker VRAM."""
         self.cancel_preview_prefetch(wait=False)
+        # Immediately release any currently published worker and bump _warm_release_gen
+        # so an active prefetch call unblocks promptly and cannot publish a stale worker.
         self.release_warm_worker(reason=reason)
         with self._prefetch_lock:
-            thread_to_join = self._prefetch_thread
-        if (
-            thread_to_join is not None
-            and thread_to_join.is_alive()
-            and thread_to_join is not threading.current_thread()
-        ):
-            thread_to_join.join(timeout=2.0)
+            threads_to_join = self._collect_prefetch_threads_locked()
+        deadline = time.monotonic() + 2.0
+        for t in threads_to_join:
+            if t is threading.current_thread() or not t.is_alive():
+                continue
+            rem = deadline - time.monotonic()
+            if rem <= 0:
+                break
+            t.join(timeout=rem)
+        with self._prefetch_lock:
+            self._prior_prefetch_threads = [
+                t for t in self._prior_prefetch_threads if t.is_alive()
+            ]
+        # Final release AFTER joining prefetch thread(s) to guarantee zero resident VRAM.
+        self.release_warm_worker(reason=reason)
 
     def prefetch_status(self) -> dict[str, Any]:
         """Return a lightweight JSON-safe snapshot of the latest background prefetch job."""
@@ -7073,12 +7217,36 @@ class ColabOneRemoteTtsRunner:
             }
 
     def _ensure_warm_worker_locked(
-        self, task: Any, engine: dict[str, Any], *, hf_token: str = ""
+        self,
+        task: Any,
+        engine: dict[str, Any],
+        *,
+        hf_token: str = "",
+        cancel_event: threading.Event | None = None,
     ) -> ColabOneWarmTtsWorker:
         """Return a live warm daemon worker for `engine` (caller must hold `_warm_exec_lock`)."""
         engine_id = str(engine["id"])
         engine_name = str(engine.get("name") or engine_id)
         want_token = bool(str(hf_token or "").strip())
+
+        eff_cancel = cancel_event
+        if eff_cancel is None:
+            task_cancel = getattr(task, "cancel", None)
+            if isinstance(task_cancel, threading.Event):
+                eff_cancel = task_cancel
+        stopping = getattr(self.runtime, "stopping", None)
+        cancel_cls = _cancelled_error_cls()
+
+        def _check_not_cancelled() -> None:
+            if eff_cancel is not None and eff_cancel.is_set():
+                raise cancel_cls("操作已取消")
+            if isinstance(stopping, threading.Event) and stopping.is_set():
+                raise cancel_cls("操作已取消")
+            check_fn = getattr(task, "check", None)
+            if callable(check_fn):
+                check_fn()
+
+        _check_not_cancelled()
 
         with self._warm_lock:
             existing = self._warm_worker
@@ -7094,6 +7262,10 @@ class ColabOneRemoteTtsRunner:
 
         # Evict any previous warm worker before spawning a new one so VRAM is never doubled.
         self.release_warm_worker(reason=f"switch_to_{engine_id}")
+        with self._warm_lock:
+            start_gen = self._warm_release_gen
+
+        _check_not_cancelled()
 
         env_dir = self.ensure_engine_env(task, engine, hf_token="")
         worker_python = str(
@@ -7117,11 +7289,38 @@ class ColabOneRemoteTtsRunner:
             env=worker_env,
             has_hf_token=want_token,
             secret_to_scrub=hf_token,
-            stopping=getattr(self.runtime, "stopping", None),
+            stopping=stopping,
         )
-        worker.start()
+        try:
+            worker.start(cancel_event=eff_cancel, task=task)
+        except BaseException:
+            worker.close()
+            raise
+
+        stale_or_cancelled = False
+        cancel_exc: BaseException | None = None
         with self._warm_lock:
-            self._warm_worker = worker
+            if self._warm_release_gen != start_gen:
+                stale_or_cancelled = True
+            elif (eff_cancel is not None and eff_cancel.is_set()) or (
+                isinstance(stopping, threading.Event) and stopping.is_set()
+            ):
+                stale_or_cancelled = True
+            else:
+                check_fn = getattr(task, "check", None)
+                if callable(check_fn):
+                    try:
+                        check_fn()
+                    except BaseException as exc:
+                        stale_or_cancelled = True
+                        cancel_exc = exc
+            if not stale_or_cancelled:
+                self._warm_worker = worker
+        if stale_or_cancelled:
+            worker.close()
+            if cancel_exc is not None:
+                raise cancel_exc
+            raise cancel_cls("操作已取消")
         self._schedule_warm_idle_timer()
         return worker
 
@@ -7315,6 +7514,7 @@ class ColabOneRemoteTtsRunner:
         job_id = uuid.uuid4().hex[:16]
         cancel_ev = threading.Event()
 
+        threads_to_join: list[threading.Thread] = []
         with self._prefetch_lock:
             prev_ev = self._prefetch_cancel
             if prev_ev is not None:
@@ -7323,6 +7523,41 @@ class ColabOneRemoteTtsRunner:
             if prev_job is not None and prev_job.get("state") == "running":
                 prev_job["state"] = "cancelled"
                 prev_job["finished_at"] = time.time()
+            self._prior_prefetch_threads = [
+                t for t in self._prior_prefetch_threads if t.is_alive()
+            ]
+            if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+                if self._prefetch_thread not in self._prior_prefetch_threads:
+                    self._prior_prefetch_threads.append(self._prefetch_thread)
+                self._prefetch_thread = None
+            threads_to_join = list(self._prior_prefetch_threads)
+
+        if threads_to_join:
+            deadline = time.monotonic() + 2.0
+            for t in threads_to_join:
+                if t is threading.current_thread() or not t.is_alive():
+                    continue
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                t.join(timeout=rem)
+
+        with self._prefetch_lock:
+            self._prior_prefetch_threads = [
+                t for t in self._prior_prefetch_threads if t.is_alive()
+            ]
+            if self._prefetch_cancel is not None and self._prefetch_cancel is not prev_ev:
+                self._prefetch_cancel.set()
+            if (
+                self._prefetch_job is not None
+                and self._prefetch_job.get("state") == "running"
+            ):
+                self._prefetch_job["state"] = "cancelled"
+                self._prefetch_job["finished_at"] = time.time()
+            if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+                if self._prefetch_thread not in self._prior_prefetch_threads:
+                    self._prior_prefetch_threads.append(self._prefetch_thread)
+                self._prefetch_thread = None
 
             job: dict[str, Any] = {
                 "job_id": job_id,
@@ -7679,9 +7914,9 @@ class ColabOneRemoteTtsRunner:
 
             with self._warm_exec_lock:
                 if self._prefetch_should_stop(cancel_ev):
-                    return
+                    return ""
                 worker = self._ensure_warm_worker_locked(
-                    bg_task, engine, hf_token=hf_token
+                    bg_task, engine, hf_token=hf_token, cancel_event=cancel_ev
                 )
                 resp = worker.call(
                     {"op": "synthesize_batch", "items": configs},
@@ -7962,6 +8197,8 @@ class ColabOneRemoteTtsRunner:
                 raise ValueError("音色参考音频不能是符号链接")
             if not resolved_ref_audio.is_file():
                 raise ValueError(f"音色参考音频文件不存在：{resolved_ref_audio}")
+            if resolved_ref_audio.stat().st_size <= 0:
+                raise ValueError(f"音色参考音频文件为空：{resolved_ref_audio}")
 
         resolved_emo_audio: Path | None = None
         if emotion_ref_path is not None and str(emotion_ref_path).strip():
@@ -7970,6 +8207,8 @@ class ColabOneRemoteTtsRunner:
                 raise ValueError("情绪参考音频不能是符号链接")
             if not resolved_emo_audio.is_file():
                 raise ValueError(f"情绪参考音频文件不存在：{resolved_emo_audio}")
+            if resolved_emo_audio.stat().st_size <= 0:
+                raise ValueError(f"情绪参考音频文件为空：{resolved_emo_audio}")
 
         raw_preset = str(voice_preset or "").strip()
         resolved_preset: dict[str, Any] | None = None
@@ -8323,6 +8562,7 @@ class ColabOneRemoteTtsRunner:
                     raise
 
             if not used_warm:
+                self.release_warm_worker(reason="before_oneshot_synth")
                 worker_path = work_root / f"worker_{engine['id']}.py"
                 config_path = work_root / f"config_{engine['id']}.json"
                 if worker_path.is_symlink():

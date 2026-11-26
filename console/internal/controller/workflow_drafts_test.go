@@ -1019,3 +1019,94 @@ func TestWorkflowDraftConcurrentAccessAndLockOrdering(t *testing.T) {
 		t.Fatalf("concurrent draft operation failed: %v", err)
 	}
 }
+
+func TestWorkflowDraftsCountAndByteQuotaLRUEviction(t *testing.T) {
+	ctx := context.Background()
+	cfgDir := t.TempDir()
+	ctrl := newDraftTestController(t, cfgDir, realComfyTestAdapter{})
+	ctrl.workflowDraftsMaxCount = 3
+	ctrl.workflowDraftsMaxTotalBytes = 10 * 1024 * 1024
+
+	mediaDir := filepath.Join(cfgDir, "comfyui-drafts", "media")
+	b64Small := base64.StdEncoding.EncodeToString([]byte("small-img-bytes"))
+
+	// Save 3 drafts with distinct media and explicit ascending UpdatedAt timestamps.
+	mediaPaths := make(map[string]string)
+	for idx, wfID := range []string{"wf-lru-1", "wf-lru-2", "wf-lru-3"} {
+		res, err := ctrl.Command(ctx, "comfyui.draft.media.save", map[string]any{
+			"workflow_id": wfID,
+			"field_key":   "10.image",
+			"filename":    wfID + ".png",
+			"kind":        "image",
+			"data":        b64Small,
+		})
+		if err != nil {
+			t.Fatalf("media.save %s failed: %v", wfID, err)
+		}
+		meta := res.(map[string]any)["media"].(ColabOneWorkflowDraftMedia)
+		mediaPaths[wfID] = filepath.Join(mediaDir, meta.ID+".png")
+		ctrl.mu.Lock()
+		ctrl.workflowDrafts[wfID].UpdatedAt = float64(1000 + idx*100)
+		ctrl.mu.Unlock()
+	}
+
+	// Touch wf-lru-1 so wf-lru-2 becomes the least recently used draft!
+	if _, err := ctrl.Command(ctx, "comfyui.draft.save", map[string]any{
+		"workflow_id": "wf-lru-1",
+		"fields":      map[string]any{"1.text": "refreshed"},
+	}); err != nil {
+		t.Fatalf("touch wf-lru-1 failed: %v", err)
+	}
+
+	// Saving 4th draft exceeds maxCount=3 -> must evict wf-lru-2 and delete its backing media file.
+	if _, err := ctrl.Command(ctx, "comfyui.draft.save", map[string]any{
+		"workflow_id": "wf-lru-4",
+		"fields":      map[string]any{"1.text": "fourth"},
+	}); err != nil {
+		t.Fatalf("save wf-lru-4 failed: %v", err)
+	}
+
+	ctrl.mu.Lock()
+	if len(ctrl.workflowDrafts) != 3 {
+		t.Fatalf("expected 3 drafts after count quota eviction, got %d", len(ctrl.workflowDrafts))
+	}
+	if ctrl.workflowDrafts["wf-lru-2"] != nil {
+		t.Fatal("expected oldest draft wf-lru-2 to be evicted")
+	}
+	if ctrl.workflowDrafts["wf-lru-1"] == nil || ctrl.workflowDrafts["wf-lru-3"] == nil || ctrl.workflowDrafts["wf-lru-4"] == nil {
+		t.Fatalf("unexpected remaining drafts: %#v", ctrl.workflowDrafts)
+	}
+	ctrl.mu.Unlock()
+
+	if _, err := os.Stat(mediaPaths["wf-lru-2"]); !os.IsNotExist(err) {
+		t.Fatalf("expected evicted draft media file removed, stat err=%v", err)
+	}
+
+	// Byte-quota eviction: cap total bytes to 2500 and save a 2000-byte media draft.
+	ctrl.workflowDraftsMaxCount = 64
+	ctrl.workflowDraftsMaxTotalBytes = 2500
+	bigPayload := base64.StdEncoding.EncodeToString(make([]byte, 2000))
+	if _, err := ctrl.Command(ctx, "comfyui.draft.media.save", map[string]any{
+		"workflow_id": "wf-big",
+		"field_key":   "10.image",
+		"filename":    "big.png",
+		"kind":        "image",
+		"data":        bigPayload,
+	}); err != nil {
+		t.Fatalf("save wf-big failed: %v", err)
+	}
+
+	ctrl.mu.Lock()
+	var totalBytes int64
+	for _, d := range ctrl.workflowDrafts {
+		totalBytes += estimateWorkflowDraftBytes(d)
+	}
+	hasBig := ctrl.workflowDrafts["wf-big"] != nil
+	ctrl.mu.Unlock()
+	if !hasBig {
+		t.Fatal("newly saved wf-big must not be evicted by byte quota")
+	}
+	if totalBytes > 2500 {
+		t.Fatalf("expected totalBytes <= 2500 after byte-quota eviction, got %d", totalBytes)
+	}
+}

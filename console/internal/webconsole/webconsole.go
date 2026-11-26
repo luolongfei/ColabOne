@@ -75,24 +75,27 @@ const (
 )
 
 const (
-	webConsoleLogSource       = "网页控制台"
-	maxActiveSessions         = 64
-	maxPendingTickets         = 32
-	maxRateLimitIPs           = 1024
-	loginRateLimitMaxFailures = 5
-	loginRateLimitWindow      = 5 * time.Minute
-	maxLoginBodyBytes         = 4 << 10
-	maxCommandBodyBytes       = 64 << 20
-	maxOutputSizeBytes        = 512 << 20
-	maxOutputBufferBytes      = 32 << 20
-	maxOutputChunkBytes       = 512 << 10
-	gzipMinBytes              = 1024
-	serverShutdownTimeout     = 2 * time.Second
-	passcodeMinRunes          = 8
-	passcodeMaxRunes          = 128
-	maxPublicOriginRunes      = 300
-	sessionRenewalInterval    = 24 * time.Hour
-	persistedSessionsVersion  = 1
+	webConsoleLogSource             = "网页控制台"
+	maxActiveSessions               = 64
+	maxPendingTickets               = 32
+	maxRateLimitIPs                 = 1024
+	loginRateLimitMaxFailures       = 5
+	loginRateLimitGlobalMaxFailures = 25
+	loginRateLimitWindow            = 5 * time.Minute
+	maxLoginBodyBytes               = 4 << 10
+	maxCommandBodyBytes             = 64 << 20
+	maxMediaUploadCommandBodyBytes  = 240 << 20
+	commandActionPeekBytes          = 4 << 10
+	maxOutputSizeBytes              = 512 << 20
+	maxOutputBufferBytes            = 32 << 20
+	maxOutputChunkBytes             = 512 << 10
+	gzipMinBytes                    = 1024
+	serverShutdownTimeout           = 2 * time.Second
+	passcodeMinRunes                = 8
+	passcodeMaxRunes                = 128
+	maxPublicOriginRunes            = 300
+	sessionRenewalInterval          = 24 * time.Hour
+	persistedSessionsVersion        = 1
 )
 
 // VaultStore abstracts encrypted credential persistence for the web console passcode.
@@ -242,14 +245,17 @@ type ColabOneWebConsole struct {
 	passcodeReady bool
 	lastError     string
 
-	sessions      map[[32]byte]colabOneWebSession
-	tickets       map[[32]byte]colabOneWebTicket
-	loginFailures map[string][]time.Time
+	sessions            map[[32]byte]colabOneWebSession
+	tickets             map[[32]byte]colabOneWebTicket
+	loginFailures       map[string][]time.Time
+	globalLoginFailures []time.Time
 
 	handler http.Handler
 
-	// listInterfaceIPs is injectable for deterministic tests.
-	listInterfaceIPs func() []netip.Addr
+	// Test-injectable hooks/limits.
+	listInterfaceIPs               func() []netip.Addr
+	maxCommandBodyBytes            int64
+	maxMediaUploadCommandBodyBytes int64
 }
 
 var (
@@ -268,14 +274,19 @@ var (
 
 	blockedWebCommands = map[string]string{
 		"desktop.shortcuts":           "该桌面专属操作仅支持在宿主机客户端执行",
-		"shortcuts.status":            "该桌面专属操作仅支持在宿主机客户端执行",
-		"shortcuts.create":            "该桌面专属操作仅支持在宿主机客户端执行",
-		"shortcuts.remove":            "该桌面专属操作仅支持在宿主机客户端执行",
 		"api.tunnel_token":            "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"comfyui.canvas.tunnel_token": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"settings.hf_token":           "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"settings.assign_proxy":       "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"settings.assign_proxy.test":  "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"auth.colab.auto":             "网页控制台不支持本机回环自动登录，请使用手动授权登录",
+	}
+
+	mediaUploadWebCommands = map[string]bool{
+		"comfyui.input.upload":             true,
+		"comfyui.draft.media.save":         true,
+		"comfyui.live.avatars.clip.upload": true,
+		"comfyui.live.driving.upload":      true,
 	}
 
 	allowedOutputMIME = map[string]string{
@@ -455,6 +466,12 @@ func (w *ColabOneWebConsole) emitStateChange(state ColabOneWebConsoleState) {
 	if w.opts.OnStateChange == nil {
 		return
 	}
+	w.mu.RLock()
+	closed := w.closed
+	w.mu.RUnlock()
+	if closed {
+		return
+	}
 	w.opts.OnStateChange(state)
 }
 
@@ -516,11 +533,12 @@ func (w *ColabOneWebConsole) startIfEnabledLocked() (ColabOneWebConsoleState, bo
 	defer w.opMu.Unlock()
 
 	w.mu.RLock()
+	closed := w.closed
 	cfg := w.cfg
 	running := w.running
 	w.mu.RUnlock()
 
-	if !cfg.Enabled || running {
+	if closed || !cfg.Enabled || running {
 		return w.State(), false, nil
 	}
 
@@ -573,12 +591,16 @@ func (w *ColabOneWebConsole) updateOpLocked(req ColabOneWebConsoleUpdateRequest)
 	defer w.opMu.Unlock()
 
 	w.mu.RLock()
+	closed := w.closed
 	oldCfg := w.cfg
 	wasRunning := w.running
 	oldSrv := w.srv
 	oldListeners := w.listeners
 	oldDone := w.srvDone
 	w.mu.RUnlock()
+	if closed {
+		return w.State(), false, errors.New("网页控制台服务已关闭")
+	}
 
 	nextCfg := oldCfg
 	if req.Enabled != nil {
@@ -873,6 +895,13 @@ func (w *ColabOneWebConsole) setPasscodeOpLocked(raw string) (ColabOneWebConsole
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 
+	w.mu.RLock()
+	closed := w.closed
+	w.mu.RUnlock()
+	if closed {
+		return w.State(), false, errors.New("网页控制台服务已关闭")
+	}
+
 	var nextPasscode string
 	var regenerated bool
 	if strings.TrimSpace(raw) == "" {
@@ -924,6 +953,10 @@ func (w *ColabOneWebConsole) CreateLoginTicket(singleUse bool) (ColabOneWebConso
 	digest := sha256.Sum256([]byte(rawToken))
 
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return ColabOneWebConsoleTicket{}, errors.New("网页控制台服务已关闭")
+	}
 	if !w.running {
 		w.mu.Unlock()
 		return ColabOneWebConsoleTicket{}, errors.New("请先开启网页控制台后再生成登录链接")
@@ -965,6 +998,10 @@ func (w *ColabOneWebConsole) CreateLoginTicket(singleUse bool) (ColabOneWebConso
 // including persisted sessions in the credential vault.
 func (w *ColabOneWebConsole) RevokeSessions() ColabOneWebConsoleState {
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return w.State()
+	}
 	clear(w.sessions)
 	clear(w.tickets)
 	w.mu.Unlock()
@@ -981,7 +1018,11 @@ func (w *ColabOneWebConsole) RevokeSessions() ColabOneWebConsoleState {
 // browsers remain authenticated across desktop app restarts.
 func (w *ColabOneWebConsole) Close() {
 	w.opMu.Lock()
+	// Hold persistMu while marking closed so any straggling handler cannot
+	// overwrite VaultSessionsKey or emit UI callbacks while Close() waits on shutdown.
+	w.persistMu.Lock()
 	w.mu.Lock()
+	w.closed = true
 	srv := w.srv
 	listeners := w.listeners
 	done := w.srvDone
@@ -991,12 +1032,12 @@ func (w *ColabOneWebConsole) Close() {
 	w.running = false
 	w.listenAddr = ""
 	w.mu.Unlock()
+	w.persistMu.Unlock()
+
 	shutdownHTTPServer(srv, listeners, done)
-	// Hold persistMu while marking closed and clearing w.sessions so any
-	// straggling handler cannot overwrite VaultSessionsKey with an empty set.
+
 	w.persistMu.Lock()
 	w.mu.Lock()
-	w.closed = true
 	clear(w.sessions)
 	clear(w.tickets)
 	w.mu.Unlock()
@@ -1015,7 +1056,15 @@ func (w *ColabOneWebConsole) newHTTPServer() *http.Server {
 
 func (w *ColabOneWebConsole) serveInBackground(srv *http.Server, listeners []net.Listener, done chan struct{}) {
 	go func() {
-		defer close(done)
+		doneClosed := false
+		closeDone := func() {
+			if !doneClosed {
+				doneClosed = true
+				close(done)
+			}
+		}
+		defer closeDone()
+
 		var wg sync.WaitGroup
 		errCh := make(chan error, len(listeners))
 		for idx, ln := range listeners {
@@ -1048,19 +1097,24 @@ func (w *ColabOneWebConsole) serveInBackground(srv *http.Server, listeners []net
 			return
 		}
 		w.mu.Lock()
-		if w.srv == srv {
+		shouldNotify := !w.closed && w.srv == srv
+		if shouldNotify {
 			w.running = false
 			w.listenAddr = ""
 			w.srv = nil
 			w.listeners = nil
 			w.srvDone = nil
 			w.lastError = primaryErr.Error()
-			w.mu.Unlock()
-			w.logActivity(fmt.Sprintf("网页控制台服务异常退出：%s", primaryErr.Error()), "error")
-			w.emitStateChange(w.State())
-			return
 		}
 		w.mu.Unlock()
+
+		// Always signal server goroutine completion before invoking UI/log callbacks
+		// so Close() on the main UI thread can never deadlock waiting on <-done.
+		closeDone()
+		if shouldNotify {
+			w.logActivity(fmt.Sprintf("网页控制台服务异常退出：%s", primaryErr.Error()), "error")
+			w.emitStateChange(w.State())
+		}
 	}()
 }
 
@@ -1442,7 +1496,7 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
 			return
 		}
-		if !validateSameOriginRequest(r, true) {
+		if !w.validateSameOriginRequest(r, true) {
 			writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
 			return
 		}
@@ -1604,23 +1658,49 @@ func parseRequestHost(rawHost string) (string, string, bool) {
 	return host, port, true
 }
 
+func (w *ColabOneWebConsole) hasPublicOrigin() bool {
+	w.mu.RLock()
+	has := w.cfg.PublicOrigin != ""
+	w.mu.RUnlock()
+	return has
+}
+
+func remoteAddrIP(r *http.Request) (netip.Addr, bool) {
+	if r == nil {
+		return netip.Addr{}, false
+	}
+	remoteHost := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(remoteHost); err == nil {
+		remoteHost = h
+	}
+	remoteHost = strings.Trim(remoteHost, "[]")
+	addr, err := netip.ParseAddr(remoteHost)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+func isLoopbackRemoteAddr(r *http.Request) bool {
+	addr, ok := remoteAddrIP(r)
+	return ok && addr.IsLoopback()
+}
+
 func (w *ColabOneWebConsole) isHostAllowed(host string) bool {
 	w.mu.RLock()
 	publicOrigin := w.cfg.PublicOrigin
 	bindMode := w.cfg.BindMode
 	w.mu.RUnlock()
 
-	if publicOrigin == "" {
-		return true
-	}
-
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 		return true
 	}
 
-	if u, err := url.Parse(publicOrigin); err == nil {
-		if strings.EqualFold(host, u.Hostname()) {
-			return true
+	if publicOrigin != "" {
+		if u, err := url.Parse(publicOrigin); err == nil {
+			if strings.EqualFold(host, u.Hostname()) {
+				return true
+			}
 		}
 	}
 
@@ -1644,9 +1724,15 @@ func (w *ColabOneWebConsole) isHostAllowed(host string) bool {
 	return false
 }
 
-func isHTTPSRequest(r *http.Request) bool {
+func (w *ColabOneWebConsole) isHTTPSRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
 	if r.TLS != nil {
 		return true
+	}
+	if !isLoopbackRemoteAddr(r) {
+		return false
 	}
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 		first := strings.TrimSpace(strings.Split(proto, ",")[0])
@@ -1654,8 +1740,10 @@ func isHTTPSRequest(r *http.Request) bool {
 			return true
 		}
 	}
-	if cfVisitor := strings.ToLower(r.Header.Get("CF-Visitor")); strings.Contains(cfVisitor, `"scheme":"https"`) {
-		return true
+	if w.hasPublicOrigin() {
+		if cfVisitor := strings.ToLower(r.Header.Get("CF-Visitor")); strings.Contains(cfVisitor, `"scheme":"https"`) {
+			return true
+		}
 	}
 	return false
 }
@@ -1674,7 +1762,7 @@ func normalizePortForScheme(scheme, port string) string {
 	return port
 }
 
-func validateSameOriginRequest(r *http.Request, requireClientHeader bool) bool {
+func (w *ColabOneWebConsole) validateSameOriginRequest(r *http.Request, requireClientHeader bool) bool {
 	if requireClientHeader && r.Header.Get(ClientHeaderName) != ClientHeaderValue {
 		return false
 	}
@@ -1699,7 +1787,7 @@ func validateSameOriginRequest(r *http.Request, requireClientHeader bool) bool {
 			return false
 		}
 		reqScheme := "http"
-		if isHTTPSRequest(r) {
+		if w.isHTTPSRequest(r) {
 			reqScheme = "https"
 		}
 		originScheme := strings.ToLower(u.Scheme)
@@ -1745,7 +1833,7 @@ func (w *ColabOneWebConsole) handleLoginPage(rw http.ResponseWriter, r *http.Req
 
 func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.Request) {
 	_, copySet := resolveWebLoginCopy(w.resolveLocale(r))
-	if !validateSameOriginRequest(r, true) {
+	if !w.validateSameOriginRequest(r, true) {
 		writeJSONError(rw, http.StatusForbidden, copySet.forbiddenError)
 		return
 	}
@@ -1765,15 +1853,19 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 		return
 	}
 
-	ip := clientIPForRateLimit(r)
+	submittedPasscode := strings.TrimSpace(body.Passcode)
+	ip := w.clientIPForRateLimit(r)
 	now := w.now()
 
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		writeJSONError(rw, http.StatusServiceUnavailable, copySet.sessionError)
+		return
+	}
 	retryAfter := w.checkRateLimitLocked(ip, now)
-	expected := w.passcode
-	w.mu.Unlock()
-
 	if retryAfter > 0 {
+		w.mu.Unlock()
 		rw.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeJSON(rw, http.StatusTooManyRequests, map[string]any{
 			"error":       copySet.rateLimitError,
@@ -1781,16 +1873,15 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 		})
 		return
 	}
-
-	submittedPasscode := strings.TrimSpace(body.Passcode)
+	expected := w.passcode
 	matched := expected != "" && subtle.ConstantTimeCompare([]byte(submittedPasscode), []byte(expected)) == 1
 	if !matched {
-		w.mu.Lock()
 		w.recordLoginFailureLocked(ip, now)
 		w.mu.Unlock()
 		writeJSONError(rw, http.StatusUnauthorized, copySet.invalidPasscodeError)
 		return
 	}
+	w.mu.Unlock()
 
 	token, err := generateBase64Token(32)
 	if err != nil {
@@ -1799,12 +1890,17 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 	}
 
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		writeJSONError(rw, http.StatusServiceUnavailable, copySet.sessionError)
+		return
+	}
 	delete(w.loginFailures, ip)
 	w.storeSessionLocked(token, now)
 	w.mu.Unlock()
 	w.persistSessions()
 
-	setSessionCookie(rw, r, token, now)
+	w.setSessionCookie(rw, r, token, now)
 	w.emitStateChange(w.State())
 	writeJSON(rw, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -1907,13 +2003,13 @@ func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Reques
 	w.mu.Unlock()
 	w.persistSessions()
 
-	setSessionCookie(rw, r, token, now)
+	w.setSessionCookie(rw, r, token, now)
 	w.emitStateChange(w.State())
 	http.Redirect(rw, r, "/", http.StatusFound)
 }
 
 func (w *ColabOneWebConsole) handleLogout(rw http.ResponseWriter, r *http.Request) {
-	if !validateSameOriginRequest(r, true) {
+	if !w.validateSameOriginRequest(r, true) {
 		writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
 		return
 	}
@@ -1929,7 +2025,7 @@ func (w *ColabOneWebConsole) handleLogout(rw http.ResponseWriter, r *http.Reques
 		w.mu.Unlock()
 	}
 
-	clearSessionCookie(rw, r)
+	w.clearSessionCookie(rw, r)
 	if removed {
 		w.persistSessions()
 		w.emitStateChange(w.State())
@@ -2000,13 +2096,143 @@ func (w *ColabOneWebConsole) handleSnapshot(rw http.ResponseWriter, r *http.Requ
 	_, _ = rw.Write(rawBytes)
 }
 
+type countingReadCloser struct {
+	r io.Reader
+	c io.Closer
+	n int64
+}
+
+func (cr *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n += int64(n)
+	return n, err
+}
+
+func (cr *countingReadCloser) Close() error {
+	if cr.c != nil {
+		return cr.c.Close()
+	}
+	return nil
+}
+
+func skipJSONValue(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if _, ok := tok.(json.Delim); !ok {
+		return nil
+	}
+	depth := 1
+	for depth > 0 {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if d, ok := t.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+		}
+	}
+	return nil
+}
+
+// peekCommandAction inspects the leading JSON bytes for a top-level "action"
+// string so media-upload commands can opt into the larger body cap without
+// allowing arbitrary commands past maxCommandBodyBytes.
+func peekCommandAction(prefix []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(prefix))
+	tok, err := dec.Token()
+	if err != nil {
+		return ""
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '{' {
+		return ""
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return ""
+		}
+		if strings.EqualFold(key, "action") {
+			valTok, err := dec.Token()
+			if err != nil {
+				return ""
+			}
+			if action, ok := valTok.(string); ok {
+				return strings.TrimSpace(action)
+			}
+			return ""
+		}
+		if err := skipJSONValue(dec); err != nil {
+			return ""
+		}
+	}
+	return ""
+}
+
+func (w *ColabOneWebConsole) commandBodyLimits() (normalLimit, mediaLimit int64) {
+	normalLimit = w.maxCommandBodyBytes
+	if normalLimit <= 0 {
+		normalLimit = maxCommandBodyBytes
+	}
+	mediaLimit = w.maxMediaUploadCommandBodyBytes
+	if mediaLimit <= 0 {
+		mediaLimit = maxMediaUploadCommandBodyBytes
+	}
+	if mediaLimit < normalLimit {
+		mediaLimit = normalLimit
+	}
+	return normalLimit, mediaLimit
+}
+
 func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Request) {
 	if w.opts.CallBridge == nil {
 		writeJSONError(rw, http.StatusServiceUnavailable, "控制器桥接未初始化")
 		return
 	}
 
-	r.Body = http.MaxBytesReader(rw, r.Body, maxCommandBodyBytes)
+	normalLimit, mediaLimit := w.commandBodyLimits()
+	if r.ContentLength > mediaLimit {
+		writeJSONError(rw, http.StatusRequestEntityTooLarge, "请求体超出限制")
+		return
+	}
+
+	peekSize := int64(commandActionPeekBytes)
+	if normalLimit+1 < peekSize {
+		peekSize = normalLimit + 1
+	}
+	prefixBuf := make([]byte, peekSize)
+	prefixN, prefixErr := io.ReadFull(r.Body, prefixBuf)
+	if prefixErr != nil && !errors.Is(prefixErr, io.EOF) && !errors.Is(prefixErr, io.ErrUnexpectedEOF) {
+		writeJSONError(rw, http.StatusBadRequest, "命令请求格式无效")
+		return
+	}
+	prefix := prefixBuf[:prefixN]
+
+	bodyLimit := normalLimit
+	if mediaUploadWebCommands[peekCommandAction(prefix)] {
+		bodyLimit = mediaLimit
+	}
+	if r.ContentLength > bodyLimit {
+		writeJSONError(rw, http.StatusRequestEntityTooLarge, "请求体超出限制")
+		return
+	}
+
+	cr := &countingReadCloser{
+		r: io.MultiReader(bytes.NewReader(prefix), r.Body),
+		c: r.Body,
+	}
+	r.Body = http.MaxBytesReader(rw, cr, bodyLimit)
 	var req struct {
 		Action  string         `json:"action"`
 		Payload map[string]any `json:"payload"`
@@ -2022,6 +2248,10 @@ func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Reque
 	}
 
 	action := strings.TrimSpace(req.Action)
+	if cr.n > normalLimit && !mediaUploadWebCommands[action] {
+		writeJSONError(rw, http.StatusRequestEntityTooLarge, "请求体超出限制")
+		return
+	}
 	if action == "" {
 		writeJSONError(rw, http.StatusBadRequest, "缺少命令名称")
 		return
@@ -2490,7 +2720,7 @@ func (w *ColabOneWebConsole) authenticateRequest(rw http.ResponseWriter, r *http
 
 	if needsRefresh {
 		if rw != nil {
-			setSessionCookie(rw, r, c.Value, now)
+			w.setSessionCookie(rw, r, c.Value, now)
 		}
 		w.persistSessions()
 	}
@@ -2559,15 +2789,13 @@ func evictOldestTicketLocked(tickets map[[32]byte]colabOneWebTicket) {
 	}
 }
 
-func clientIPForRateLimit(r *http.Request) string {
-	remoteHost := strings.TrimSpace(r.RemoteAddr)
-	if h, _, err := net.SplitHostPort(remoteHost); err == nil {
-		remoteHost = h
-	}
-	remoteHost = strings.Trim(remoteHost, "[]")
-	if addr, err := netip.ParseAddr(remoteHost); err == nil {
-		addr = addr.Unmap()
-		if addr.IsLoopback() {
+func (w *ColabOneWebConsole) clientIPForRateLimit(r *http.Request) string {
+	return clientIPForRateLimitWithTrust(r, w.hasPublicOrigin())
+}
+
+func clientIPForRateLimitWithTrust(r *http.Request, trustCF bool) string {
+	if addr, ok := remoteAddrIP(r); ok {
+		if addr.IsLoopback() && trustCF {
 			if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
 				if parsedCF, cfErr := netip.ParseAddr(cfIP); cfErr == nil && parsedCF.Zone() == "" {
 					return parsedCF.Unmap().String()
@@ -2576,6 +2804,11 @@ func clientIPForRateLimit(r *http.Request) string {
 		}
 		return addr.String()
 	}
+	remoteHost := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(remoteHost); err == nil {
+		remoteHost = h
+	}
+	remoteHost = strings.Trim(remoteHost, "[]")
 	if remoteHost == "" {
 		return "unknown"
 	}
@@ -2584,25 +2817,42 @@ func clientIPForRateLimit(r *http.Request) string {
 
 func (w *ColabOneWebConsole) checkRateLimitLocked(ip string, now time.Time) int {
 	cutoff := now.Add(-loginRateLimitWindow)
+	maxSecs := 0
+
+	w.globalLoginFailures = pruneTimestamps(w.globalLoginFailures, cutoff)
+	if len(w.globalLoginFailures) >= loginRateLimitGlobalMaxFailures {
+		wait := w.globalLoginFailures[0].Add(loginRateLimitWindow).Sub(now)
+		secs := int(math.Ceil(wait.Seconds()))
+		if secs < 1 {
+			secs = 1
+		}
+		if secs > maxSecs {
+			maxSecs = secs
+		}
+	}
+
 	times := pruneTimestamps(w.loginFailures[ip], cutoff)
 	if len(times) == 0 {
 		delete(w.loginFailures, ip)
-		return 0
+	} else {
+		w.loginFailures[ip] = times
+		if len(times) >= loginRateLimitMaxFailures {
+			wait := times[0].Add(loginRateLimitWindow).Sub(now)
+			secs := int(math.Ceil(wait.Seconds()))
+			if secs < 1 {
+				secs = 1
+			}
+			if secs > maxSecs {
+				maxSecs = secs
+			}
+		}
 	}
-	w.loginFailures[ip] = times
-	if len(times) < loginRateLimitMaxFailures {
-		return 0
-	}
-	wait := times[0].Add(loginRateLimitWindow).Sub(now)
-	secs := int(math.Ceil(wait.Seconds()))
-	if secs < 1 {
-		secs = 1
-	}
-	return secs
+	return maxSecs
 }
 
 func (w *ColabOneWebConsole) recordLoginFailureLocked(ip string, now time.Time) {
 	cutoff := now.Add(-loginRateLimitWindow)
+	w.globalLoginFailures = append(pruneTimestamps(w.globalLoginFailures, cutoff), now)
 	times := pruneTimestamps(w.loginFailures[ip], cutoff)
 	times = append(times, now)
 	if len(w.loginFailures) >= maxRateLimitIPs {
@@ -2648,7 +2898,7 @@ func pruneTimestamps(times []time.Time, cutoff time.Time) []time.Time {
 	return dst
 }
 
-func setSessionCookie(rw http.ResponseWriter, r *http.Request, token string, now time.Time) {
+func (w *ColabOneWebConsole) setSessionCookie(rw http.ResponseWriter, r *http.Request, token string, now time.Time) {
 	http.SetCookie(rw, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    token,
@@ -2657,11 +2907,11 @@ func setSessionCookie(rw http.ResponseWriter, r *http.Request, token string, now
 		MaxAge:   int(SessionTTL.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   isHTTPSRequest(r),
+		Secure:   w.isHTTPSRequest(r),
 	})
 }
 
-func clearSessionCookie(rw http.ResponseWriter, r *http.Request) {
+func (w *ColabOneWebConsole) clearSessionCookie(rw http.ResponseWriter, r *http.Request) {
 	http.SetCookie(rw, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    "",
@@ -2670,7 +2920,7 @@ func clearSessionCookie(rw http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   isHTTPSRequest(r),
+		Secure:   w.isHTTPSRequest(r),
 	})
 }
 

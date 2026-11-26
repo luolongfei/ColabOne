@@ -475,7 +475,7 @@ function parseContentDispositionFilename(header: string | null): string {
 }
 
 export async function colabOneWebDownloadOutput(id: string): Promise<string> {
-  const cleanId = String(id || "").trim();
+  const cleanId = String(id || "").trim().toLowerCase();
   if (!COLABONE_OUTPUT_ID_RE.test(cleanId)) {
     throw new Error("Invalid output artifact ID");
   }

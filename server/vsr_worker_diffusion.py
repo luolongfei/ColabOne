@@ -244,6 +244,44 @@ class _ColabOneWorkerTerminated(BaseException):
         super().__init__(f"Diffusion VSR worker terminated by signal {self.signum}")
 
 
+def _pg_has_members(pgid: int) -> bool:
+    """Return True if any process still exists in POSIX process group ``pgid``."""
+    if os.name != "posix" or not hasattr(os, "killpg"):
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _detect_isolated_pgid(proc: subprocess.Popen[Any]) -> int | None:
+    """Return ``proc.pid`` when ``proc`` leads its own POSIX process group distinct from ours."""
+    if os.name != "posix" or not hasattr(os, "killpg") or not hasattr(os, "getpgrp"):
+        return None
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    try:
+        own_pgrp = os.getpgrp()
+    except OSError:
+        return None
+    if pid == own_pgrp:
+        return None
+    if hasattr(os, "getpgid"):
+        try:
+            if os.getpgid(pid) == pid:
+                return pid
+            return None
+        except OSError:
+            return None
+    return None
+
+
 class ColabOneProcessGuard:
     """Tracks child subprocesses and temporary directories inside ``work_dir``."""
 
@@ -252,6 +290,7 @@ class ColabOneProcessGuard:
             _validate_safe_path(base_dir, "work_dir") if base_dir is not None else None
         )
         self._children: list[subprocess.Popen[Any]] = []
+        self._isolated_pgids: dict[int, int] = {}
         self._temp_dirs: list[Path] = []
         self.terminated_signal: int | None = None
         self._tearing_down: bool = False
@@ -260,14 +299,38 @@ class ColabOneProcessGuard:
     def base_dir(self) -> Path | None:
         return self._base_dir
 
-    def register_child(self, proc: subprocess.Popen[Any]) -> None:
+    def register_child(
+        self, proc: subprocess.Popen[Any], *, isolated_pg: bool = False
+    ) -> None:
         self._children.append(proc)
+        pgid: int | None = None
+        if isolated_pg and os.name == "posix" and hasattr(os, "killpg"):
+            pid = getattr(proc, "pid", None)
+            own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+            if (
+                isinstance(pid, int)
+                and not isinstance(pid, bool)
+                and pid > 0
+                and pid != own_pgrp
+            ):
+                pgid = pid
+        if pgid is None:
+            pgid = _detect_isolated_pgid(proc)
+        if pgid is not None:
+            self._isolated_pgids[id(proc)] = pgid
 
     def unregister_child(self, proc: subprocess.Popen[Any]) -> None:
         try:
             self._children.remove(proc)
         except ValueError:
             pass
+        self._isolated_pgids.pop(id(proc), None)
+
+    def _resolve_child_pgid(self, proc: subprocess.Popen[Any]) -> int | None:
+        pgid = self._isolated_pgids.get(id(proc))
+        if pgid is not None:
+            return pgid
+        return _detect_isolated_pgid(proc)
 
     def create_temp_dir(self, prefix: str = "colabone_vsr_") -> Path:
         if self._base_dir is not None:
@@ -283,12 +346,22 @@ class ColabOneProcessGuard:
         proc: subprocess.Popen[Any],
         grace_seconds: float = 1.5,
     ) -> None:
-        if proc.poll() is not None:
+        pgid = self._resolve_child_pgid(proc)
+        leader_alive = proc.poll() is None
+        if not leader_alive and (pgid is None or not _pg_has_members(pgid)):
             return
-        try:
-            proc.terminate()
-        except OSError:
-            pass
+        used_pg = False
+        if pgid is not None:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+                used_pg = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if leader_alive and not used_pg:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
         deadline = time.monotonic() + max(0.1, float(grace_seconds))
         while proc.poll() is None:
             remaining = deadline - time.monotonic()
@@ -296,11 +369,29 @@ class ColabOneProcessGuard:
                 break
             try:
                 proc.wait(timeout=min(0.25, remaining))
-                return
+                break
             except subprocess.TimeoutExpired:
                 continue
             except OSError:
                 break
+        if used_pg and pgid is not None:
+            while True:
+                proc.poll()
+                if not _pg_has_members(pgid) or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            proc.poll()
+            if _pg_has_members(pgid):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                kill_deadline = time.monotonic() + 2.0
+                while time.monotonic() < kill_deadline:
+                    proc.poll()
+                    if not _pg_has_members(pgid):
+                        break
+                    time.sleep(0.05)
         if proc.poll() is None:
             try:
                 proc.kill()
@@ -312,22 +403,55 @@ class ColabOneProcessGuard:
                 pass
 
     def terminate_children(self, grace_seconds: float = 1.5) -> None:
+        child_entries: list[tuple[subprocess.Popen[Any], int | None, bool]] = []
         for proc in list(self._children):
-            if proc.poll() is not None:
+            pgid = self._resolve_child_pgid(proc)
+            leader_alive = proc.poll() is None
+            if not leader_alive and (pgid is None or not _pg_has_members(pgid)):
                 continue
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            used_pg = False
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                    used_pg = True
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            if leader_alive and not used_pg:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+            child_entries.append((proc, pgid, used_pg))
 
         deadline = time.monotonic() + max(0.1, float(grace_seconds))
-        for proc in list(self._children):
-            if proc.poll() is not None:
-                continue
-            remaining = max(0.05, deadline - time.monotonic())
-            try:
-                proc.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
+        for proc, pgid, used_pg in child_entries:
+            if proc.poll() is None:
+                remaining = max(0.05, deadline - time.monotonic())
+                try:
+                    proc.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    pass
+                except OSError:
+                    pass
+            if used_pg and pgid is not None:
+                while True:
+                    proc.poll()
+                    if not _pg_has_members(pgid) or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                proc.poll()
+                if _pg_has_members(pgid):
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    kill_deadline = time.monotonic() + 2.0
+                    while time.monotonic() < kill_deadline:
+                        proc.poll()
+                        if not _pg_has_members(pgid):
+                            break
+                        time.sleep(0.05)
+            if proc.poll() is None:
                 try:
                     proc.kill()
                 except OSError:
@@ -337,6 +461,7 @@ class ColabOneProcessGuard:
                 except Exception:
                     pass
         self._children.clear()
+        self._isolated_pgids.clear()
 
     def cleanup_temp_dirs(self) -> None:
         for temp_dir in reversed(self._temp_dirs):
@@ -2084,7 +2209,7 @@ def _run_monitored_subprocess(
     env_extra: dict[str, str] | None = None,
     stall_timeout_seconds: float = 900.0,
 ) -> list[str]:
-    """Run a child process in the worker's process group and stream progress."""
+    """Run a child process in an isolated POSIX process group and stream progress."""
     env = _sanitized_subprocess_env(
         {
             "PYTHONUNBUFFERED": "1",
@@ -2101,15 +2226,17 @@ def _run_monitored_subprocess(
             **(env_extra or {}),
         }
     )
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        cwd=str(cwd) if cwd is not None else None,
-        env=env,
-    )
-    guard.register_child(proc)
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "cwd": str(cwd) if cwd is not None else None,
+        "env": env,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    guard.register_child(proc, isolated_pg=(os.name == "posix"))
     tail_lines: deque[str] = deque(maxlen=80)
     last_emit_ts = 0.0
     last_ratio = -1.0
@@ -2204,8 +2331,7 @@ def _run_monitored_subprocess(
                 proc.stdout.close()
             except Exception:
                 pass
-        if proc.poll() is None:
-            guard.terminate_child(proc, grace_seconds=1.5)
+        guard.terminate_child(proc, grace_seconds=1.5)
         guard.unregister_child(proc)
 
 

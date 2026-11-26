@@ -1,3 +1,20 @@
+<script lang="ts">
+let lastGlobalPointerDownAt = 0;
+let globalPointerTrackerBound = false;
+
+function ensureGlobalPointerTracker() {
+  if (globalPointerTrackerBound || typeof window === "undefined") return;
+  globalPointerTrackerBound = true;
+  window.addEventListener(
+    "pointerdown",
+    () => {
+      lastGlobalPointerDownAt = performance.now();
+    },
+    { capture: true, passive: true },
+  );
+}
+</script>
+
 <script setup lang="ts">
 import {
   computed,
@@ -14,21 +31,6 @@ defineOptions({
   name: "ColabOneTooltip",
   inheritAttrs: false,
 });
-
-let lastGlobalPointerDownAt = 0;
-let globalPointerTrackerBound = false;
-
-function ensureGlobalPointerTracker() {
-  if (globalPointerTrackerBound || typeof window === "undefined") return;
-  globalPointerTrackerBound = true;
-  window.addEventListener(
-    "pointerdown",
-    () => {
-      lastGlobalPointerDownAt = performance.now();
-    },
-    { capture: true, passive: true },
-  );
-}
 
 ensureGlobalPointerTracker();
 

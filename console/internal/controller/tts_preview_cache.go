@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +36,11 @@ type colabOneLocalTtsPreviewEntry struct {
 	Size            int     `json:"size"`
 	SHA256          string  `json:"sha256"`
 	UpdatedAt       float64 `json:"updated_at"`
+}
+
+type colabOnePendingTtsEntry struct {
+	seq  uint64
+	data map[string]any
 }
 
 type colabOneLocalTtsPreviewIndex struct {
@@ -175,6 +181,68 @@ func computeLocalTtsPreviewRequestKey(engine map[string]any, req map[string]any)
 	return hex.EncodeToString(sum[:])[:32], true
 }
 
+func removeRegularNonSymlinkFile(path string) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+func (c *ColabOneController) sweepUnindexedTtsPreviewFilesLocked(idx *colabOneLocalTtsPreviewIndex) {
+	dir := c.ttsPreviewCacheDir()
+	if isSymlinkPath(dir) {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, de := range entries {
+		name := de.Name()
+		if strings.HasPrefix(name, ".save-") || !strings.HasSuffix(strings.ToLower(name), ".wav") {
+			continue
+		}
+		stem := name[:len(name)-4]
+		if idx != nil && idx.ByPreviewID != nil {
+			if entry, ok := idx.ByPreviewID[stem]; ok && entry != nil {
+				continue
+			}
+		}
+		removeRegularNonSymlinkFile(filepath.Join(dir, name))
+	}
+}
+
+func evictOldestPendingTtsEntries(m map[string]colabOnePendingTtsEntry, maxEntries, targetEntries int) {
+	if len(m) < maxEntries {
+		return
+	}
+	type kv struct {
+		key string
+		seq uint64
+	}
+	items := make([]kv, 0, len(m))
+	for k, v := range m {
+		items = append(items, kv{key: k, seq: v.seq})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].seq != items[j].seq {
+			return items[i].seq < items[j].seq
+		}
+		return items[i].key < items[j].key
+	})
+	toDrop := len(m) - targetEntries
+	if toDrop < 1 {
+		toDrop = 1
+	}
+	for i := 0; i < toDrop && i < len(items); i++ {
+		delete(m, items[i].key)
+	}
+}
+
 func (c *ColabOneController) loadLocalTtsPreviewIndexLocked() *colabOneLocalTtsPreviewIndex {
 	if c.ttsPreviewIndex != nil {
 		return c.ttsPreviewIndex
@@ -194,6 +262,8 @@ func (c *ColabOneController) loadLocalTtsPreviewIndexLocked() *colabOneLocalTtsP
 	var parsed colabOneLocalTtsPreviewIndex
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		c.ttsPreviewIndex = idx
+		c.sweepUnindexedTtsPreviewFilesLocked(idx)
+		c.saveLocalTtsPreviewIndexLocked(idx)
 		return idx
 	}
 	if parsed.ByPreviewID == nil {
@@ -233,17 +303,16 @@ func (c *ColabOneController) rememberPendingTtsPreviewReq(previewID string, req 
 	c.ttsPreviewCacheMu.Lock()
 	defer c.ttsPreviewCacheMu.Unlock()
 	if c.pendingTtsPreviewReqs == nil {
-		c.pendingTtsPreviewReqs = make(map[string]map[string]any)
+		c.pendingTtsPreviewReqs = make(map[string]colabOnePendingTtsEntry)
 	}
-	if len(c.pendingTtsPreviewReqs) >= 64 {
-		for k := range c.pendingTtsPreviewReqs {
-			delete(c.pendingTtsPreviewReqs, k)
-			if len(c.pendingTtsPreviewReqs) < 48 {
-				break
-			}
-		}
+	if _, exists := c.pendingTtsPreviewReqs[pid]; !exists {
+		evictOldestPendingTtsEntries(c.pendingTtsPreviewReqs, 64, 63)
 	}
-	c.pendingTtsPreviewReqs[pid] = sanitized
+	c.pendingTtsSeq++
+	c.pendingTtsPreviewReqs[pid] = colabOnePendingTtsEntry{
+		seq:  c.pendingTtsSeq,
+		data: sanitized,
+	}
 }
 
 func (c *ColabOneController) consumePendingTtsPreviewReq(previewID string) map[string]any {
@@ -256,9 +325,12 @@ func (c *ColabOneController) consumePendingTtsPreviewReq(previewID string) map[s
 	if c.pendingTtsPreviewReqs == nil {
 		return nil
 	}
-	req := c.pendingTtsPreviewReqs[pid]
+	entry, ok := c.pendingTtsPreviewReqs[pid]
+	if !ok {
+		return nil
+	}
 	delete(c.pendingTtsPreviewReqs, pid)
-	return req
+	return entry.data
 }
 
 func (c *ColabOneController) rememberPendingTtsPrefetchContext(engineID string, items []map[string]any) {
@@ -269,15 +341,7 @@ func (c *ColabOneController) rememberPendingTtsPrefetchContext(engineID string, 
 	c.ttsPreviewCacheMu.Lock()
 	defer c.ttsPreviewCacheMu.Unlock()
 	if c.pendingTtsPrefetchCtx == nil {
-		c.pendingTtsPrefetchCtx = make(map[string]map[string]any)
-	}
-	if len(c.pendingTtsPrefetchCtx) >= 128 {
-		for k := range c.pendingTtsPrefetchCtx {
-			delete(c.pendingTtsPrefetchCtx, k)
-			if len(c.pendingTtsPrefetchCtx) < 96 {
-				break
-			}
-		}
+		c.pendingTtsPrefetchCtx = make(map[string]colabOnePendingTtsEntry)
 	}
 	for _, it := range items {
 		vp := strings.TrimSpace(asString(it["voice_preset"]))
@@ -285,12 +349,19 @@ func (c *ColabOneController) rememberPendingTtsPrefetchContext(engineID string, 
 			continue
 		}
 		key := eid + "::" + vp
-		c.pendingTtsPrefetchCtx[key] = map[string]any{
-			"engine_id":      eid,
-			"voice_preset":   vp,
-			"preview_text":   strings.TrimSpace(asString(it["preview_text"])),
-			"voice_prompt":   strings.TrimSpace(asString(it["voice_prompt"])),
-			"emotion_prompt": strings.TrimSpace(asString(it["emotion_prompt"])),
+		if _, exists := c.pendingTtsPrefetchCtx[key]; !exists {
+			evictOldestPendingTtsEntries(c.pendingTtsPrefetchCtx, 128, 127)
+		}
+		c.pendingTtsSeq++
+		c.pendingTtsPrefetchCtx[key] = colabOnePendingTtsEntry{
+			seq: c.pendingTtsSeq,
+			data: map[string]any{
+				"engine_id":      eid,
+				"voice_preset":   vp,
+				"preview_text":   strings.TrimSpace(asString(it["preview_text"])),
+				"voice_prompt":   strings.TrimSpace(asString(it["voice_prompt"])),
+				"emotion_prompt": strings.TrimSpace(asString(it["emotion_prompt"])),
+			},
 		}
 	}
 }
@@ -302,8 +373,8 @@ func (c *ColabOneController) lookupPendingTtsPrefetchContext(engineID, voicePres
 	if c.pendingTtsPrefetchCtx == nil {
 		return nil
 	}
-	if ctxMap, ok := c.pendingTtsPrefetchCtx[key]; ok {
-		return deepCopyMap(ctxMap)
+	if entry, ok := c.pendingTtsPrefetchCtx[key]; ok {
+		return deepCopyMap(entry.data)
 	}
 	return nil
 }
@@ -326,6 +397,9 @@ func (c *ColabOneController) readLocalTtsPreviewEntryLocked(
 	}
 	raw, err := os.ReadFile(wavPath)
 	if err != nil || len(raw) == 0 || len(raw) > colabOneMaxTtsPreviewBytes {
+		if err == nil {
+			removeRegularNonSymlinkFile(wavPath)
+		}
 		delete(idx.ByPreviewID, previewID)
 		if entry.RequestKey != "" && idx.ByRequestKey[entry.RequestKey] == previewID {
 			delete(idx.ByRequestKey, entry.RequestKey)
@@ -334,6 +408,7 @@ func (c *ColabOneController) readLocalTtsPreviewEntryLocked(
 		return nil, false
 	}
 	if entry.Size > 0 && len(raw) != entry.Size {
+		removeRegularNonSymlinkFile(wavPath)
 		delete(idx.ByPreviewID, previewID)
 		if entry.RequestKey != "" && idx.ByRequestKey[entry.RequestKey] == previewID {
 			delete(idx.ByRequestKey, entry.RequestKey)
@@ -344,6 +419,7 @@ func (c *ColabOneController) readLocalTtsPreviewEntryLocked(
 	sum := sha256.Sum256(raw)
 	actualSHA := hex.EncodeToString(sum[:])
 	if entry.SHA256 != "" && !strings.EqualFold(actualSHA, entry.SHA256) {
+		removeRegularNonSymlinkFile(wavPath)
 		delete(idx.ByPreviewID, previewID)
 		if entry.RequestKey != "" && idx.ByRequestKey[entry.RequestKey] == previewID {
 			delete(idx.ByRequestKey, entry.RequestKey)
@@ -537,15 +613,8 @@ func (c *ColabOneController) saveLocalTtsPreview(
 	shaHex := hex.EncodeToString(sum[:])
 	sampleRate, _ := asInt(meta["sample_rate"])
 	durSec := 0.0
-	if rawDur, ok := meta["duration_seconds"]; ok {
-		switch v := rawDur.(type) {
-		case float64:
-			durSec = v
-		case int:
-			durSec = float64(v)
-		case int64:
-			durSec = float64(v)
-		}
+	if parsedDur, ok := asFloat(meta["duration_seconds"]); ok && !math.IsNaN(parsedDur) && !math.IsInf(parsedDur, 0) && parsedDur >= 0 {
+		durSec = parsedDur
 	}
 	mime := strings.TrimSpace(asString(meta["mime"]))
 	if mime == "" {
@@ -606,6 +675,7 @@ func (c *ColabOneController) pruneLocalTtsPreviewCacheLocked(
 		entries = append(entries, e)
 	}
 	if len(entries) <= colabOneLocalTtsPreviewMaxEntries && totalBytes <= colabOneLocalTtsPreviewMaxBytes {
+		c.sweepUnindexedTtsPreviewFilesLocked(idx)
 		return
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -620,7 +690,7 @@ func (c *ColabOneController) pruneLocalTtsPreviewCacheLocked(
 		if e.PreviewID == keepID {
 			continue
 		}
-		_ = os.Remove(filepath.Join(dir, e.PreviewID+".wav"))
+		removeRegularNonSymlinkFile(filepath.Join(dir, e.PreviewID+".wav"))
 		delete(idx.ByPreviewID, e.PreviewID)
 		if e.RequestKey != "" && idx.ByRequestKey[e.RequestKey] == e.PreviewID {
 			delete(idx.ByRequestKey, e.RequestKey)
@@ -628,4 +698,5 @@ func (c *ColabOneController) pruneLocalTtsPreviewCacheLocked(
 		totalBytes -= e.Size
 		remaining--
 	}
+	c.sweepUnindexedTtsPreviewFilesLocked(idx)
 }

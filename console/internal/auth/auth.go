@@ -91,6 +91,7 @@ var (
 	ErrProfileFetchFailed        = errors.New("读取 Google 账号信息失败，请检查网络连接后重试")
 	ErrAuthCancelled             = errors.New("Google 授权已取消，请重新登录")
 	ErrLoginTimeout              = errors.New("等待登录超时。可点击「改用手动授权登录」，粘贴浏览器返回内容自动完成。")
+	ErrUntrustedTokenURI         = errors.New("Google 授权令牌地址不受信任，请在设置中重新登录")
 )
 
 // OAuthCallbackText holds localized success and error copy shown on the
@@ -902,10 +903,51 @@ func (a *ColabOneAuth) Credentials(ctx context.Context, name string) (*ColabOneC
 	return creds.Clone(), nil
 }
 
+func validateGoogleTokenURI(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if raw != strings.TrimSpace(raw) || strings.ContainsAny(raw, "?#@\r\n") {
+		return "", ErrUntrustedTokenURI
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil ||
+		parsed.User != nil ||
+		parsed.RawQuery != "" ||
+		parsed.ForceQuery ||
+		parsed.Fragment != "" ||
+		parsed.Opaque != "" {
+		return "", ErrUntrustedTokenURI
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") || parsed.Port() != "" {
+		return "", ErrUntrustedTokenURI
+	}
+	canonical := "https://" + strings.ToLower(parsed.Hostname()) + parsed.EscapedPath()
+	switch canonical {
+	case COLABONE_OAUTH_TOKEN_URI, "https://accounts.google.com/o/oauth2/token":
+		if parsed.Path != "/token" && parsed.Path != "/o/oauth2/token" {
+			return "", ErrUntrustedTokenURI
+		}
+		return canonical, nil
+	default:
+		return "", ErrUntrustedTokenURI
+	}
+}
+
 func (a *ColabOneAuth) refreshCredentialsLocked(ctx context.Context, creds *ColabOneCredentials) error {
 	tokenURI := creds.TokenURI
-	if a.tokenURIOverride || tokenURI == "" {
+	if a.tokenURIOverride {
 		tokenURI = a.tokenURI
+	} else {
+		validated, err := validateGoogleTokenURI(tokenURI)
+		if err != nil {
+			return err
+		}
+		if validated == "" {
+			tokenURI = a.tokenURI
+		} else {
+			tokenURI = validated
+		}
 	}
 	clientID := creds.ClientID
 	if clientID == "" {
@@ -1575,6 +1617,9 @@ func (a *ColabOneAuth) BuildRcloneConf(ctx context.Context, quotaProject *string
 	if driveScope == "" || creds.Token == "" || creds.RefreshToken == "" {
 		return "", nil
 	}
+	if strings.ContainsAny(creds.ClientID, "\r\n\x00") || strings.ContainsAny(creds.ClientSecret, "\r\n\x00") {
+		return "", errors.New("invalid OAuth client credentials for rclone config")
+	}
 
 	type rcloneToken struct {
 		AccessToken  string `json:"access_token"`
@@ -1734,6 +1779,10 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 		_ = ln.Close()
 		return errors.New("unexpected loopback listener address")
 	}
+	var ln6 net.Listener
+	if l6, err6 := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", tcpAddr.Port)); err6 == nil {
+		ln6 = l6
+	}
 	redirectURI := fmt.Sprintf("http://localhost:%d/", tcpAddr.Port)
 
 	a.loopbackActive.Store(true)
@@ -1745,6 +1794,9 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 	if err != nil {
 		a.mu.Unlock()
 		_ = ln.Close()
+		if ln6 != nil {
+			_ = ln6.Close()
+		}
 		return err
 	}
 	a.flow = localFlow
@@ -1753,6 +1805,14 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 	doneCh := a.loginEvt.WaitCh()
 	localFlow.doneCh = doneCh
 	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		if a.flow == localFlow {
+			a.flow = nil
+		}
+		a.mu.Unlock()
+	}()
 
 	loginCtx, cancelLogin := context.WithCancel(ctx)
 	defer cancelLogin()
@@ -1859,12 +1919,23 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	serveErrCh := make(chan error, 1)
-	go func() {
-		err := srv.Serve(ln)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+	var serveWG sync.WaitGroup
+	serveErrCh := make(chan error, 2)
+	serveListener := func(l net.Listener, primary bool) {
+		defer serveWG.Done()
+		err := srv.Serve(l)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && primary {
 			serveErrCh <- err
 		}
+	}
+	serveWG.Add(1)
+	go serveListener(ln, true)
+	if ln6 != nil {
+		serveWG.Add(1)
+		go serveListener(ln6, false)
+	}
+	go func() {
+		serveWG.Wait()
 		close(serveErrCh)
 	}()
 

@@ -367,13 +367,13 @@ describe("colabOneWebConsole HTTP transport helpers", () => {
     expect(assign).toHaveBeenCalledWith("/_colabone_web/login");
   });
 
-  it("validates artifact IDs, preflights via HEAD, and triggers direct browser streaming download", async () => {
+  it("validates artifact IDs, normalizes case, preflights via HEAD, and triggers direct browser streaming download", async () => {
     const validId = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
 
     await expect(colabOneWebDownloadOutput("not-valid")).rejects.toThrow();
     await expect(colabOneWebDownloadOutput("../etc/passwd")).rejects.toThrow();
     await expect(
-      colabOneWebDownloadOutput(validId.toUpperCase()),
+      colabOneWebDownloadOutput("g1b2c3d4e5f60718293a4b5c6d7e8f90"),
     ).rejects.toThrow();
 
     const click = vi.fn();
@@ -422,11 +422,22 @@ describe("colabOneWebConsole HTTP transport helpers", () => {
       expect(click).toHaveBeenCalledTimes(1);
       expect(remove).toHaveBeenCalledTimes(1);
 
+      // Normalizes uppercase/padded artifact IDs identically to colabOneWebOutputPreviewURL
+      headFetch.mockClear();
+      const upperName = await colabOneWebDownloadOutput(`  ${validId.toUpperCase()}  `);
+      expect(headFetch).toHaveBeenCalledWith(`/api/outputs/${validId}/download`, {
+        method: "HEAD",
+        credentials: "same-origin",
+        headers: { [COLABONE_WEB_CLIENT_HEADER]: COLABONE_WEB_CLIENT_VALUE },
+      });
+      expect(upperName).toBe("render final.mp4");
+      expect(createdAnchor.href).toBe(`/api/outputs/${validId}/download`);
+
       // Falls back to ColabOne-<prefix> when Content-Disposition is omitted
       globalThis.fetch = vi.fn(async () =>
         makeResponse("", { status: 200 }),
       ) as unknown as typeof fetch;
-      const fallbackName = await colabOneWebDownloadOutput(validId);
+      const fallbackName = await colabOneWebDownloadOutput(validId.toUpperCase());
       expect(fallbackName).toBe(`ColabOne-${validId.slice(0, 8)}`);
 
       // Decodes percent-encoded X-ColabOne-Error from HEAD error responses

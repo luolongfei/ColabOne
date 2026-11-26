@@ -3314,6 +3314,9 @@ func (p *ColabOneProvider) RPC(
 	if p.closed.Load() {
 		return nil, ErrProviderClosed
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	session, err := p.Session(ctx, false, endpoint, false)
 	if err != nil {
 		return nil, err
@@ -3349,7 +3352,6 @@ func (p *ColabOneProvider) RPC(
 		uploadSec = 300
 	}
 	uploadTimeout := time.Duration(uploadSec) * time.Second
-	preRefreshMargin := max(60*time.Second, uploadTimeout+30*time.Second)
 
 	var bodyBytes []byte
 	if body != nil {
@@ -3382,13 +3384,25 @@ func (p *ColabOneProvider) RPC(
 		}
 
 		// Phase 1 (unlocked): pre-refresh proxy token when expiring within
-		// max(60s, uploadTimeout+30s) and upload ephemeral JSON body BEFORE
+		// max(60s, attemptUploadTimeout+30s) and upload ephemeral JSON body BEFORE
 		// acquiring slot.mu.
+		attemptUploadTimeout := uploadTimeout
+		if dl, ok := ctx.Deadline(); ok {
+			rem := time.Until(dl)
+			if rem <= 0 {
+				return nil, context.DeadlineExceeded
+			}
+			if rem < attemptUploadTimeout {
+				attemptUploadTimeout = rem
+			}
+		}
+		attemptPreRefreshMargin := max(60*time.Second, attemptUploadTimeout+30*time.Second)
+
 		session, err = p.session(ctx, false, targetEP, false, nil)
 		if err != nil {
 			return nil, err
 		}
-		if session != nil && (session.TokenExpiresAt == nil || !session.TokenExpiresAt.After(p.now().Add(preRefreshMargin))) {
+		if session != nil && (session.TokenExpiresAt == nil || !session.TokenExpiresAt.After(p.now().Add(attemptPreRefreshMargin))) {
 			// Refresh before uploading or executing. Retrying a failed POST
 			// could duplicate a model download, generation or release.
 			session, err = p.session(ctx, true, session.Endpoint, true, nil)
@@ -3409,9 +3423,18 @@ func (p *ColabOneProvider) RPC(
 		requestPath := ""
 		remoteRel := ""
 		if body != nil {
+			if dl, ok := ctx.Deadline(); ok {
+				rem := time.Until(dl)
+				if rem <= 0 {
+					return nil, context.DeadlineExceeded
+				}
+				if rem < attemptUploadTimeout {
+					attemptUploadTimeout = rem
+				}
+			}
 			remoteName := "colabone-rpc-" + newUUIDHex() + ".json"
 			remoteRel = "content/" + remoteName
-			session, err = p.uploadBytes(ctx, session, remoteRel, bodyBytes, uploadTimeout)
+			session, err = p.uploadBytes(ctx, session, remoteRel, bodyBytes, attemptUploadTimeout)
 			if err != nil {
 				return nil, err
 			}
@@ -3504,9 +3527,44 @@ func (p *ColabOneProvider) RPC(
 			}
 		}
 
-		code := buildRPCCode(requestPath, path, method, httpTimeoutSec)
+		attemptExecTimeout := execTimeout
+		attemptHTTPTimeoutSec := httpTimeoutSec
+		if err := ctx.Err(); err != nil {
+			slot.mu.Unlock()
+			cleanupRemote(session)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
+			return nil, err
+		}
+		if dl, ok := ctx.Deadline(); ok {
+			rem := time.Until(dl)
+			if rem <= 0 {
+				slot.mu.Unlock()
+				cleanupRemote(session)
+				if p.closed.Load() {
+					return nil, ErrProviderClosed
+				}
+				return nil, context.DeadlineExceeded
+			}
+			if rem < attemptExecTimeout {
+				attemptExecTimeout = rem
+				remSec := int(rem / time.Second)
+				if remSec > 2 {
+					remSec--
+				}
+				if remSec < 1 {
+					remSec = 1
+				}
+				if remSec < attemptHTTPTimeoutSec {
+					attemptHTTPTimeoutSec = remSec
+				}
+			}
+		}
+
+		code := buildRPCCode(requestPath, path, method, attemptHTTPTimeoutSec)
 		outputs, execErr := p.executeLocked(ctx, slot, session, code, ExecuteOptions{
-			Timeout:    execTimeout,
+			Timeout:    attemptExecTimeout,
 			AllowStdin: false,
 		})
 		if execErr != nil {
@@ -3583,12 +3641,21 @@ func (p *ColabOneProvider) RPC(
 			}
 		}
 
+		delSess := session
 		if idempotent && attempt == 0 && !slot.evicted && !slot.clearing.Load() {
 			p.closeKernelSlotLocked(slot)
 			slot.mu.Unlock()
+			cleanupRemote(delSess)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
 			continue
 		}
 		slot.mu.Unlock()
+		cleanupRemote(delSess)
+		if p.closed.Load() {
+			return nil, ErrProviderClosed
+		}
 		return nil, errors.New("Colab 控制连接没有返回结果，请检查网络后重试")
 	}
 

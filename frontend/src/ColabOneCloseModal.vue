@@ -540,7 +540,7 @@ function handleConfirm() {
   color: var(--co-accent-strong);
 }
 
-:global(:root[data-theme="dark"])
+:root[data-theme="dark"]
   .co-close-option.is-selected
   .co-close-default-pill {
   border-color: rgba(96, 165, 250, 0.42);

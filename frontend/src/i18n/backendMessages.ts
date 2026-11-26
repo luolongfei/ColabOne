@@ -132,6 +132,182 @@ const TASK_STATE_LABELS: Record<string, ColabOneLocaleTable> = {
 };
 
 const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
+  "Live Studio 根目录": {
+    "zh-CN": "Live Studio 根目录",
+    "en-US": "Live Studio root directory",
+    "zh-TW": "Live Studio 根目錄",
+    "zh-HK": "Live Studio 根目錄",
+    "ja-JP": "Live Studio ルートディレクトリ",
+    "ko-KR": "Live Studio 루트 디렉터리",
+  },
+  主播动作包目录: {
+    "zh-CN": "主播动作包目录",
+    "en-US": "Avatar action pack directory",
+    "zh-TW": "主播動作套件目錄",
+    "zh-HK": "主播動作套件目錄",
+    "ja-JP": "アバターアクションパックディレクトリ",
+    "ko-KR": "아바타 동작 팩 디렉터리",
+  },
+  驱动动作目录: {
+    "zh-CN": "驱动动作目录",
+    "en-US": "Driving motion directory",
+    "zh-TW": "驅動動作目錄",
+    "zh-HK": "驅動動作目錄",
+    "ja-JP": "駆動モーションディレクトリ",
+    "ko-KR": "구동 모션 디렉터리",
+  },
+  主播包目录: {
+    "zh-CN": "主播包目录",
+    "en-US": "Avatar pack directory",
+    "zh-TW": "主播套件目錄",
+    "zh-HK": "主播套件目錄",
+    "ja-JP": "アバターパックディレクトリ",
+    "ko-KR": "아바타 팩 디렉터리",
+  },
+  主播清单文件: {
+    "zh-CN": "主播清单文件",
+    "en-US": "Avatar manifest file",
+    "zh-TW": "主播清單檔案",
+    "zh-HK": "主播清單檔案",
+    "ja-JP": "アバターマニフェストファイル",
+    "ko-KR": "아바타 매니페스트 파일",
+  },
+  主播素材校验文件: {
+    "zh-CN": "主播素材校验文件",
+    "en-US": "Avatar asset checksum file",
+    "zh-TW": "主播素材驗證檔案",
+    "zh-HK": "主播素材驗證檔案",
+    "ja-JP": "アバター素材検証ファイル",
+    "ko-KR": "아바타 에셋 검증 파일",
+  },
+  人像输入文件: {
+    "zh-CN": "人像输入文件",
+    "en-US": "Portrait input file",
+    "zh-TW": "人像輸入檔案",
+    "zh-HK": "人像輸入檔案",
+    "ja-JP": "ポートレート入力ファイル",
+    "ko-KR": "인물 입력 파일",
+  },
+  主播人像文件: {
+    "zh-CN": "主播人像文件",
+    "en-US": "Avatar portrait file",
+    "zh-TW": "主播人像檔案",
+    "zh-HK": "主播人像檔案",
+    "ja-JP": "アバターポートレートファイル",
+    "ko-KR": "아바타 인물 파일",
+  },
+  动作片段目录: {
+    "zh-CN": "动作片段目录",
+    "en-US": "Action clips directory",
+    "zh-TW": "動作片段目錄",
+    "zh-HK": "動作片段目錄",
+    "ja-JP": "アクションクリップディレクトリ",
+    "ko-KR": "동작 클립 디렉터리",
+  },
+  背景音乐目录: {
+    "zh-CN": "背景音乐目录",
+    "en-US": "Background music directory",
+    "zh-TW": "背景音樂目錄",
+    "zh-HK": "背景音樂目錄",
+    "ja-JP": "BGM ディレクトリ",
+    "ko-KR": "배경 음악 디렉터리",
+  },
+  人像文件: {
+    "zh-CN": "人像文件",
+    "en-US": "Portrait file",
+    "zh-TW": "人像檔案",
+    "zh-HK": "人像檔案",
+    "ja-JP": "ポートレートファイル",
+    "ko-KR": "인물 파일",
+  },
+  主播包回收目录: {
+    "zh-CN": "主播包回收目录",
+    "en-US": "Avatar pack trash directory",
+    "zh-TW": "主播套件回收目錄",
+    "zh-HK": "主播套件回收目錄",
+    "ja-JP": "アバターパックゴミ箱ディレクトリ",
+    "ko-KR": "아바타 팩 휴지통 디렉터리",
+  },
+  主播包回收目标: {
+    "zh-CN": "主播包回收目标",
+    "en-US": "Avatar pack trash target",
+    "zh-TW": "主播套件回收目標",
+    "zh-HK": "主播套件回收目標",
+    "ja-JP": "アバターパックゴミ箱移動先",
+    "ko-KR": "아바타 팩 휴지통 대상",
+  },
+  动作视频文件: {
+    "zh-CN": "动作视频文件",
+    "en-US": "Action video file",
+    "zh-TW": "動作影片檔案",
+    "zh-HK": "動作影片檔案",
+    "ja-JP": "アクション動画ファイル",
+    "ko-KR": "동작 영상 파일",
+  },
+  背景音乐文件: {
+    "zh-CN": "背景音乐文件",
+    "en-US": "Background music file",
+    "zh-TW": "背景音樂檔案",
+    "zh-HK": "背景音樂檔案",
+    "ja-JP": "BGM ファイル",
+    "ko-KR": "배경 음악 파일",
+  },
+  驱动动作元数据: {
+    "zh-CN": "驱动动作元数据",
+    "en-US": "Driving motion metadata",
+    "zh-TW": "驅動動作中繼資料",
+    "zh-HK": "驅動動作元資料",
+    "ja-JP": "駆動モーションメタデータ",
+    "ko-KR": "구동 모션 메타데이터",
+  },
+  驱动视频文件: {
+    "zh-CN": "驱动视频文件",
+    "en-US": "Driving video file",
+    "zh-TW": "驅動影片檔案",
+    "zh-HK": "驅動影片檔案",
+    "ja-JP": "駆動動画ファイル",
+    "ko-KR": "구동 영상 파일",
+  },
+  驱动背景音乐文件: {
+    "zh-CN": "驱动背景音乐文件",
+    "en-US": "Driving background music file",
+    "zh-TW": "驅動背景音樂檔案",
+    "zh-HK": "驅動背景音樂檔案",
+    "ja-JP": "駆動 BGM ファイル",
+    "ko-KR": "구동 배경 음악 파일",
+  },
+  驱动动作回收目录: {
+    "zh-CN": "驱动动作回收目录",
+    "en-US": "Driving motion trash directory",
+    "zh-TW": "驅動動作回收目錄",
+    "zh-HK": "驅動動作回收目錄",
+    "ja-JP": "駆動モーションゴミ箱ディレクトリ",
+    "ko-KR": "구동 모션 휴지통 디렉터리",
+  },
+  驱动动作回收目标: {
+    "zh-CN": "驱动动作回收目标",
+    "en-US": "Driving motion trash target",
+    "zh-TW": "驅動動作回收目標",
+    "zh-HK": "驅動動作回收目標",
+    "ja-JP": "駆動モーションゴミ箱移動先",
+    "ko-KR": "구동 모션 휴지통 대상",
+  },
+  生成动作片段: {
+    "zh-CN": "生成动作片段",
+    "en-US": "Generated action clip",
+    "zh-TW": "產生動作片段",
+    "zh-HK": "生成動作片段",
+    "ja-JP": "生成アクションクリップ",
+    "ko-KR": "생성된 동작 클립",
+  },
+  目标目录: {
+    "zh-CN": "目标目录",
+    "en-US": "Target directory",
+    "zh-TW": "目標目錄",
+    "zh-HK": "目標目錄",
+    "ja-JP": "対象ディレクトリ",
+    "ko-KR": "대상 디렉터리",
+  },
   工作流目录: {
     "zh-CN": "工作流目录",
     "en-US": "Workflow directory",
@@ -4276,6 +4452,27 @@ const PATTERN_RULES: PatternRule[] = [
           return `${seg} が返したセグメント動画パスにシンボリックリンクは使用できません`;
         case "ko-KR":
           return `${seg}에서 반환된 세그먼트 영상 경로는 심볼릭 링크일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s+根目录不能是符号链接$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!, loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} root directory cannot be a symbolic link`;
+        case "zh-TW":
+          return `${label}${zhSep}根目錄不可為符號連結`;
+        case "zh-HK":
+          return `${label}${zhSep}根目錄不能是符號連結`;
+        case "ja-JP":
+          return `${label} のルートディレクトリにシンボリックリンクは使用できません`;
+        case "ko-KR":
+          return `${label} 루트 디렉터리는 심볼릭 링크일 수 없습니다`;
         default:
           return m[0];
       }
@@ -13690,7 +13887,2315 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+
+  // === Live Studio dynamic activity logs, errors & validation rules ===
+  {
+    re: /^请求启动实时演播（视觉：(.+?) · 语音：(.+?) · 对话：(.+?) · 模式：(.+?)）$/,
+    format: (m, loc) => {
+      const [, vis, tts, llm, mode] = m;
+      switch (loc) {
+        case "en-US":
+          return `Requesting Live Studio start (Visual: ${vis} · Voice: ${tts} · Chat: ${llm} · Mode: ${mode})`;
+        case "zh-TW":
+          return `請求啟動即時演播（視覺：${vis} · 語音：${tts} · 對話：${llm} · 模式：${mode}）`;
+        case "zh-HK":
+          return `請求啟動實時演播（視覺：${vis} · 語音：${tts} · 對話：${llm} · 模式：${mode}）`;
+        case "ja-JP":
+          return `ライブスタジオの起動をリクエストしています（映像: ${vis} ・ 音声: ${tts} ・ 対話: ${llm} ・ モード: ${mode}）`;
+        case "ko-KR":
+          return `라이브 스튜디오 시작 요청 중(비주얼: ${vis} · 음성: ${tts} · 대화: ${llm} · 모드: ${mode})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^远端已受理实时演播启动请求，但刷新状态失败（将自动重试）[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote service accepted Live Studio launch, but status refresh failed (will retry automatically): ${detail}`;
+        case "zh-TW":
+          return `遠端已受理即時演播啟動請求，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "zh-HK":
+          return `遠端已受理實時演播啟動請求，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "ja-JP":
+          return `リモートサービスがライブスタジオの起動リクエストを受理しましたが、状態更新に失敗しました（自動再試行します）: ${detail}`;
+        case "ko-KR":
+          return `원격 서비스가 라이브 스튜디오 시작 요청을 수락했지만 상태 새로고침에 실패했습니다(자동 재시도 예정): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已停止远端实时演播服务，但刷新状态失败（将自动重试）[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Stopped remote Live Studio service, but status refresh failed (will retry automatically): ${detail}`;
+        case "zh-TW":
+          return `已停止遠端即時演播服務，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "zh-HK":
+          return `已停止遠端實時演播服務，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "ja-JP":
+          return `リモートライブスタジオサービスを停止しましたが、状態更新に失敗しました（自動再試行します）: ${detail}`;
+        case "ko-KR":
+          return `원격 라이브 스튜디오 서비스를 중지했지만 상태 새로고침에 실패했습니다(자동 재시도 예정): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已保存实时演播外部 LLM 配置（模型：(.+?) · 密钥：(.+?)）$/,
+    format: (m, loc) => {
+      const model = m[1]!;
+      const rawKey = m[2]!;
+      const key =
+        rawKey === "未设置"
+          ? translateLiveStudioLabel("未设置", loc)
+          : rawKey;
+      switch (loc) {
+        case "en-US":
+          return `Saved Live Studio external LLM configuration (Model: ${model} · Key: ${key})`;
+        case "zh-TW":
+          return `已儲存即時演播外部 LLM 設定（模型：${model} · 金鑰：${key}）`;
+        case "zh-HK":
+          return `已儲存實時演播外部 LLM 配置（模型：${model} · 密鑰：${key}）`;
+        case "ja-JP":
+          return `ライブスタジオの外部 LLM 設定を保存しました（モデル: ${model} ・ キー: ${key}）`;
+        case "ko-KR":
+          return `라이브 스튜디오 외부 LLM 설정을 저장했습니다(모델: ${model} · 키: ${key})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^实时演播外部 LLM 连通性测试未通过（模型：(.+?)）$/,
+    format: (m, loc) => {
+      const model = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Live Studio external LLM connectivity test failed (Model: ${model})`;
+        case "zh-TW":
+          return `即時演播外部 LLM 連線測試未通過（模型：${model}）`;
+        case "zh-HK":
+          return `實時演播外部 LLM 連通性測試未通過（模型：${model}）`;
+        case "ja-JP":
+          return `ライブスタジオ外部 LLM の接続テストに失敗しました（モデル: ${model}）`;
+        case "ko-KR":
+          return `라이브 스튜디오 외부 LLM 연결 테스트에 실패했습니다(모델: ${model})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^实时演播外部 LLM 连通性测试通过（模型：(.+?)）$/,
+    format: (m, loc) => {
+      const model = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Live Studio external LLM connectivity test passed (Model: ${model})`;
+        case "zh-TW":
+          return `即時演播外部 LLM 連線測試通過（模型：${model}）`;
+        case "zh-HK":
+          return `實時演播外部 LLM 連通性測試通過（模型：${model}）`;
+        case "ja-JP":
+          return `ライブスタジオ外部 LLM の接続テストに成功しました（モデル: ${model}）`;
+        case "ko-KR":
+          return `라이브 스튜디오 외부 LLM 연결 테스트를 통과했습니다(모델: ${model})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(正在保存实时演播形象|实时演播形象已保存|正在删除实时演播形象|已删除实时演播形象|正在上传实时演播形象素材|实时演播形象素材上传完成|请求构建实时演播形象动作库|远端已受理形象动作库构建任务|正在上传实时演播驱动视频素材|实时演播驱动视频素材上传完成|正在删除实时演播驱动视频素材|已删除实时演播驱动视频素材)[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const actionMap: Record<string, ColabOneLocaleTable> = {
+        正在保存实时演播形象: {
+          "zh-CN": "正在保存实时演播形象",
+          "en-US": "Saving Live Studio avatar",
+          "zh-TW": "正在儲存即時演播形象",
+          "zh-HK": "正在儲存實時演播形象",
+          "ja-JP": "ライブスタジオのアバターを保存しています",
+          "ko-KR": "라이브 스튜디오 아바타를 저장하는 중",
+        },
+        实时演播形象已保存: {
+          "zh-CN": "实时演播形象已保存",
+          "en-US": "Live Studio avatar saved",
+          "zh-TW": "即時演播形象已儲存",
+          "zh-HK": "實時演播形象已儲存",
+          "ja-JP": "ライブスタジオのアバターを保存しました",
+          "ko-KR": "라이브 스튜디오 아바타를 저장했습니다",
+        },
+        正在删除实时演播形象: {
+          "zh-CN": "正在删除实时演播形象",
+          "en-US": "Deleting Live Studio avatar",
+          "zh-TW": "正在刪除即時演播形象",
+          "zh-HK": "正在刪除實時演播形象",
+          "ja-JP": "ライブスタジオのアバターを削除しています",
+          "ko-KR": "라이브 스튜디오 아바타를 삭제하는 중",
+        },
+        已删除实时演播形象: {
+          "zh-CN": "已删除实时演播形象",
+          "en-US": "Deleted Live Studio avatar",
+          "zh-TW": "已刪除即時演播形象",
+          "zh-HK": "已刪除實時演播形象",
+          "ja-JP": "ライブスタジオのアバターを削除しました",
+          "ko-KR": "라이브 스튜디오 아바타를 삭제했습니다",
+        },
+        正在上传实时演播形象素材: {
+          "zh-CN": "正在上传实时演播形象素材",
+          "en-US": "Uploading Live Studio avatar asset",
+          "zh-TW": "正在上傳即時演播形象素材",
+          "zh-HK": "正在上傳實時演播形象素材",
+          "ja-JP": "ライブスタジオのアバター素材をアップロードしています",
+          "ko-KR": "라이브 스튜디오 아바타 에셋을 업로드하는 중",
+        },
+        实时演播形象素材上传完成: {
+          "zh-CN": "实时演播形象素材上传完成",
+          "en-US": "Live Studio avatar asset uploaded",
+          "zh-TW": "即時演播形象素材上傳完成",
+          "zh-HK": "實時演播形象素材上傳完成",
+          "ja-JP": "ライブスタジオのアバター素材のアップロードが完了しました",
+          "ko-KR": "라이브 스튜디오 아바타 에셋 업로드 완료",
+        },
+        请求构建实时演播形象动作库: {
+          "zh-CN": "请求构建实时演播形象动作库",
+          "en-US": "Requesting Live Studio avatar action pack build",
+          "zh-TW": "請求建置即時演播形象動作庫",
+          "zh-HK": "請求構建實時演播形象動作庫",
+          "ja-JP": "ライブスタジオのアバターアクションパック構築をリクエストしています",
+          "ko-KR": "라이브 스튜디오 아바타 동작 팩 빌드 요청 중",
+        },
+        远端已受理形象动作库构建任务: {
+          "zh-CN": "远端已受理形象动作库构建任务",
+          "en-US": "Remote service accepted avatar action pack build task",
+          "zh-TW": "遠端已受理形象動作庫建置任務",
+          "zh-HK": "遠端已受理形象動作庫構建任務",
+          "ja-JP": "リモートサービスがアバターアクションパック構築タスクを受理しました",
+          "ko-KR": "원격 서비스가 아바타 동작 팩 빌드 작업을 수락했습니다",
+        },
+        正在上传实时演播驱动视频素材: {
+          "zh-CN": "正在上传实时演播驱动视频素材",
+          "en-US": "Uploading Live Studio driving video asset",
+          "zh-TW": "正在上傳即時演播驅動影片素材",
+          "zh-HK": "正在上傳實時演播驅動影片素材",
+          "ja-JP": "ライブスタジオの駆動動画素材をアップロードしています",
+          "ko-KR": "라이브 스튜디오 구동 영상 에셋을 업로드하는 중",
+        },
+        实时演播驱动视频素材上传完成: {
+          "zh-CN": "实时演播驱动视频素材上传完成",
+          "en-US": "Live Studio driving video asset uploaded",
+          "zh-TW": "即時演播驅動影片素材上傳完成",
+          "zh-HK": "實時演播驅動影片素材上傳完成",
+          "ja-JP": "ライブスタジオの駆動動画素材のアップロードが完了しました",
+          "ko-KR": "라이브 스튜디오 구동 영상 에셋 업로드 완료",
+        },
+        正在删除实时演播驱动视频素材: {
+          "zh-CN": "正在删除实时演播驱动视频素材",
+          "en-US": "Deleting Live Studio driving video asset",
+          "zh-TW": "正在刪除即時演播驅動影片素材",
+          "zh-HK": "正在刪除實時演播驅動影片素材",
+          "ja-JP": "ライブスタジオの駆動動画素材を削除しています",
+          "ko-KR": "라이브 스튜디오 구동 영상 에셋을 삭제하는 중",
+        },
+        已删除实时演播驱动视频素材: {
+          "zh-CN": "已删除实时演播驱动视频素材",
+          "en-US": "Deleted Live Studio driving video asset",
+          "zh-TW": "已刪除即時演播驅動影片素材",
+          "zh-HK": "已刪除實時演播驅動影片素材",
+          "ja-JP": "ライブスタジオの駆動動画素材を削除しました",
+          "ko-KR": "라이브 스튜디오 구동 영상 에셋을 삭제했습니다",
+        },
+      };
+      const prefix = actionMap[m[1]!]?.[loc] ?? m[1]!;
+      const target = m[2]!;
+      if (loc === "zh-TW" || loc === "zh-HK") {
+        return `${prefix}：${target}`;
+      }
+      return `${prefix}: ${target}`;
+    },
+  },
+  {
+    re: /^(实时演播形象已保存|已删除实时演播形象|实时演播形象素材上传完成|远端已受理形象动作库构建任务|实时演播驱动视频素材上传完成|已删除实时演播驱动视频素材)，但刷新状态失败（将自动重试）[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const prefixMap: Record<string, ColabOneLocaleTable> = {
+        实时演播形象已保存: {
+          "zh-CN": "实时演播形象已保存",
+          "en-US": "Live Studio avatar saved",
+          "zh-TW": "即時演播形象已儲存",
+          "zh-HK": "實時演播形象已儲存",
+          "ja-JP": "ライブスタジオのアバターを保存しました",
+          "ko-KR": "라이브 스튜디오 아바타를 저장했습니다",
+        },
+        已删除实时演播形象: {
+          "zh-CN": "已删除实时演播形象",
+          "en-US": "Deleted Live Studio avatar",
+          "zh-TW": "已刪除即時演播形象",
+          "zh-HK": "已刪除實時演播形象",
+          "ja-JP": "ライブスタジオのアバターを削除しました",
+          "ko-KR": "라이브 스튜디오 아바타를 삭제했습니다",
+        },
+        实时演播形象素材上传完成: {
+          "zh-CN": "实时演播形象素材上传完成",
+          "en-US": "Live Studio avatar asset uploaded",
+          "zh-TW": "即時演播形象素材上傳完成",
+          "zh-HK": "實時演播形象素材上傳完成",
+          "ja-JP": "ライブスタジオのアバター素材のアップロードが完了しました",
+          "ko-KR": "라이브 스튜디오 아바타 에셋을 업로드했습니다",
+        },
+        远端已受理形象动作库构建任务: {
+          "zh-CN": "远端已受理形象动作库构建任务",
+          "en-US": "Remote service accepted avatar action pack build task",
+          "zh-TW": "遠端已受理形象動作庫建置任務",
+          "zh-HK": "遠端已受理形象動作庫構建任務",
+          "ja-JP": "リモートサービスがアバターアクションパック構築タスクを受理しました",
+          "ko-KR": "원격 서비스가 아바타 동작 팩 빌드 작업을 수락했습니다",
+        },
+        实时演播驱动视频素材上传完成: {
+          "zh-CN": "实时演播驱动视频素材上传完成",
+          "en-US": "Live Studio driving video asset uploaded",
+          "zh-TW": "即時演播驅動影片素材上傳完成",
+          "zh-HK": "實時演播驅動影片素材上傳完成",
+          "ja-JP": "ライブスタジオの駆動動画素材のアップロードが完了しました",
+          "ko-KR": "라이브 스튜디오 구동 영상 에셋을 업로드했습니다",
+        },
+        已删除实时演播驱动视频素材: {
+          "zh-CN": "已删除实时演播驱动视频素材",
+          "en-US": "Deleted Live Studio driving video asset",
+          "zh-TW": "已刪除即時演播驅動影片素材",
+          "zh-HK": "已刪除實時演播驅動影片素材",
+          "ja-JP": "ライブスタジオの駆動動画素材を削除しました",
+          "ko-KR": "라이브 스튜디오 구동 영상 에셋을 삭제했습니다",
+        },
+      };
+      const prefix = prefixMap[m[1]!]?.[loc] ?? m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${prefix}, but status refresh failed (will retry automatically): ${detail}`;
+        case "zh-TW":
+          return `${prefix}，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "zh-HK":
+          return `${prefix}，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "ja-JP":
+          return `${prefix}が、状態更新に失敗しました（自動再試行します）: ${detail}`;
+        case "ko-KR":
+          return `${prefix}. 단, 상태 새로고침에 실패했습니다(자동 재시도 예정): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Live Studio 本地服务 \(127\.0\.0\.1:(\d+)\) 启动(失败|超时)$/,
+    format: (m, loc) => {
+      const port = m[1]!;
+      const isTimeout = m[2] === "超时";
+      switch (loc) {
+        case "en-US":
+          return isTimeout
+            ? `Live Studio local server (127.0.0.1:${port}) startup timed out`
+            : `Live Studio local server (127.0.0.1:${port}) failed to start`;
+        case "zh-TW":
+          return isTimeout
+            ? `Live Studio 本機服務 (127.0.0.1:${port}) 啟動逾時`
+            : `Live Studio 本機服務 (127.0.0.1:${port}) 啟動失敗`;
+        case "zh-HK":
+          return isTimeout
+            ? `Live Studio 本地服務 (127.0.0.1:${port}) 啟動逾時`
+            : `Live Studio 本地服務 (127.0.0.1:${port}) 啟動失敗`;
+        case "ja-JP":
+          return isTimeout
+            ? `Live Studio ローカルサーバー (127.0.0.1:${port}) の起動がタイムアウトしました`
+            : `Live Studio ローカルサーバー (127.0.0.1:${port}) の起動に失敗しました`;
+        case "ko-KR":
+          return isTimeout
+            ? `Live Studio 로컬 서버(127.0.0.1:${port}) 시작 시간이 초과되었습니다`
+            : `Live Studio 로컬 서버(127.0.0.1:${port}) 시작에 실패했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^切换引擎显存预检未通过（需 (\d+) MiB，可用 (\d+) MiB）(?:。建议：(.+))?$/,
+    format: (m, loc) => {
+      const req = m[1]!;
+      const avail = m[2]!;
+      const rec = m[3] ? translateLiveStudioRecommendations(m[3], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return rec
+            ? `Engine switch VRAM preflight failed (requires ${req} MiB, available ${avail} MiB). Suggestion: ${rec}`
+            : `Engine switch VRAM preflight failed (requires ${req} MiB, available ${avail} MiB)`;
+        case "zh-TW":
+          return rec
+            ? `切換引擎 VRAM 預檢未通過（需 ${req} MiB，可用 ${avail} MiB）。建議：${rec}`
+            : `切換引擎 VRAM 預檢未通過（需 ${req} MiB，可用 ${avail} MiB）`;
+        case "zh-HK":
+          return rec
+            ? `切換引擎顯存預檢未通過（需 ${req} MiB，可用 ${avail} MiB）。建議：${rec}`
+            : `切換引擎顯存預檢未通過（需 ${req} MiB，可用 ${avail} MiB）`;
+        case "ja-JP":
+          return rec
+            ? `エンジン切替の VRAM 事前チェックに失敗しました（必要 ${req} MiB、利用可能 ${avail} MiB）。推奨対応: ${rec}`
+            : `エンジン切替の VRAM 事前チェックに失敗しました（必要 ${req} MiB、利用可能 ${avail} MiB）`;
+        case "ko-KR":
+          return rec
+            ? `엔진 전환 VRAM 사전 점검에 실패했습니다(필요 ${req} MiB, 사용 가능 ${avail} MiB). 권장 조치: ${rec}`
+            : `엔진 전환 VRAM 사전 점검에 실패했습니다(필요 ${req} MiB, 사용 가능 ${avail} MiB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^显存预检未通过（需 (\d+) MiB，可用 (\d+) MiB）(?:。建议：(.+))?$/,
+    format: (m, loc) => {
+      const req = m[1]!;
+      const avail = m[2]!;
+      const rec = m[3] ? translateLiveStudioRecommendations(m[3], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return rec
+            ? `VRAM preflight check failed (requires ${req} MiB, available ${avail} MiB). Suggestion: ${rec}`
+            : `VRAM preflight check failed (requires ${req} MiB, available ${avail} MiB)`;
+        case "zh-TW":
+          return rec
+            ? `VRAM 預檢未通過（需 ${req} MiB，可用 ${avail} MiB）。建議：${rec}`
+            : `VRAM 預檢未通過（需 ${req} MiB，可用 ${avail} MiB）`;
+        case "zh-HK":
+          return rec
+            ? `顯存預檢未通過（需 ${req} MiB，可用 ${avail} MiB）。建議：${rec}`
+            : `顯存預檢未通過（需 ${req} MiB，可用 ${avail} MiB）`;
+        case "ja-JP":
+          return rec
+            ? `VRAM 事前チェックに失敗しました（必要 ${req} MiB、利用可能 ${avail} MiB）。推奨対応: ${rec}`
+            : `VRAM 事前チェックに失敗しました（必要 ${req} MiB、利用可能 ${avail} MiB）`;
+        case "ko-KR":
+          return rec
+            ? `VRAM 사전 점검에 실패했습니다(필요 ${req} MiB, 사용 가능 ${avail} MiB). 권장 조치: ${rec}`
+            : `VRAM 사전 점검에 실패했습니다(필요 ${req} MiB, 사용 가능 ${avail} MiB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前远端已加载本地 LLM（约 (\d+) MiB），显存不足以与目标直播配置同驻（可用 (\d+) MiB）(?:。建议：(.+))?$/,
+    format: (m, loc) => {
+      const used = m[1]!;
+      const avail = m[2]!;
+      const rec = m[3] ? translateLiveStudioRecommendations(m[3], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return rec
+            ? `A local LLM is currently loaded remotely (~${used} MiB); insufficient VRAM to co-reside with the target Live Studio configuration (${avail} MiB available). Suggestion: ${rec}`
+            : `A local LLM is currently loaded remotely (~${used} MiB); insufficient VRAM to co-reside with the target Live Studio configuration (${avail} MiB available)`;
+        case "zh-TW":
+          return rec
+            ? `目前遠端已載入本機 LLM（約 ${used} MiB），VRAM 不足以與目標直播設定共存（可用 ${avail} MiB）。建議：${rec}`
+            : `目前遠端已載入本機 LLM（約 ${used} MiB），VRAM 不足以與目標直播設定共存（可用 ${avail} MiB）`;
+        case "zh-HK":
+          return rec
+            ? `目前遠端已載入本地 LLM（約 ${used} MiB），顯存不足以與目標直播配置同駐（可用 ${avail} MiB）。建議：${rec}`
+            : `目前遠端已載入本地 LLM（約 ${used} MiB），顯存不足以與目標直播配置同駐（可用 ${avail} MiB）`;
+        case "ja-JP":
+          return rec
+            ? `リモートにローカル LLM（約 ${used} MiB）が読み込み済みのため、対象のライブ設定と同時常駐できる VRAM が不足しています（利用可能 ${avail} MiB）。推奨対応: ${rec}`
+            : `リモートにローカル LLM（約 ${used} MiB）が読み込み済みのため、対象のライブ設定と同時常駐できる VRAM が不足しています（利用可能 ${avail} MiB）`;
+        case "ko-KR":
+          return rec
+            ? `원격에 로컬 LLM(약 ${used} MiB)이 로드되어 있어 목표 라이브 구성과 동시 상주할 VRAM이 부족합니다(사용 가능 ${avail} MiB). 권장 조치: ${rec}`
+            : `원격에 로컬 LLM(약 ${used} MiB)이 로드되어 있어 목표 라이브 구성과 동시 상주할 VRAM이 부족합니다(사용 가능 ${avail} MiB)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^当前远端已加载本地 LLM（约 (\d+) MiB）；使用外部 API 模式时建议先卸载本地模型以释放显存。$/,
+    format: (m, loc) => {
+      const used = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `A local LLM is currently loaded remotely (~${used} MiB); unload it first to free VRAM when using external API mode.`;
+        case "zh-TW":
+          return `目前遠端已載入本機 LLM（約 ${used} MiB）；使用外部 API 模式時建議先卸載本機模型以釋放 VRAM。`;
+        case "zh-HK":
+          return `目前遠端已載入本地 LLM（約 ${used} MiB）；使用外部 API 模式時建議先卸載本地模型以釋放顯存。`;
+        case "ja-JP":
+          return `リモートにローカル LLM（約 ${used} MiB）が読み込み済みです。外部 API モードでは先にローカルモデルをアンロードして VRAM を解放することを推奨します。`;
+        case "ko-KR":
+          return `원격에 로컬 LLM(약 ${used} MiB)이 로드되어 있습니다. 외부 API 모드 사용 시 먼저 로컬 모델을 언로드하여 VRAM을 확보하는 것을 권장합니다.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^实时直播所需显存约 (\d+) MiB，超过当前 GPU 可用显存 (\d+) MiB（缺口 (\d+) MiB）。$/,
+    format: (m, loc) => {
+      const req = m[1]!;
+      const avail = m[2]!;
+      const deficit = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Live streaming requires ~${req} MiB VRAM, exceeding available GPU VRAM of ${avail} MiB (short by ${deficit} MiB).`;
+        case "zh-TW":
+          return `即時直播所需 VRAM 約 ${req} MiB，超過目前 GPU 可用 VRAM ${avail} MiB（缺口 ${deficit} MiB）。`;
+        case "zh-HK":
+          return `實時直播所需顯存約 ${req} MiB，超過目前 GPU 可用顯存 ${avail} MiB（缺口 ${deficit} MiB）。`;
+        case "ja-JP":
+          return `ライブ配信に必要な VRAM は約 ${req} MiB で、現在の GPU 空き VRAM ${avail} MiB を超過しています（不足 ${deficit} MiB）。`;
+        case "ko-KR":
+          return `실시간 방송에 약 ${req} MiB VRAM이 필요하며 현재 사용 가능한 GPU VRAM ${avail} MiB를 초과합니다(${deficit} MiB 부족).`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^磁盘空间不足（剩余 (\d+) MiB，至少需要 (\d+) MiB）$/,
+    format: (m, loc) => {
+      const free = m[1]!;
+      const need = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Insufficient disk space (${free} MiB free, at least ${need} MiB required)`;
+        case "zh-TW":
+          return `磁碟空間不足（剩餘 ${free} MiB，至少需要 ${need} MiB）`;
+        case "zh-HK":
+          return `磁碟空間不足（剩餘 ${free} MiB，至少需要 ${need} MiB）`;
+        case "ja-JP":
+          return `ディスク容量が不足しています（空き ${free} MiB、最低 ${need} MiB 必要）`;
+        case "ko-KR":
+          return `디스크 공간이 부족합니다(남은 공간 ${free} MiB, 최소 ${need} MiB 필요)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^外部 LLM (接口|对话探针)返回重定向 \((?:HTTP )?(\d+)\)，出于安全策略已拒绝跟随跳转$/,
+    format: (m, loc) => {
+      const isProbe = m[1] === "对话探针";
+      const code = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return isProbe
+            ? `External LLM chat probe returned a redirect (HTTP ${code}); following redirects is blocked by security policy`
+            : `External LLM endpoint returned a redirect (HTTP ${code}); following redirects is blocked by security policy`;
+        case "zh-TW":
+          return isProbe
+            ? `外部 LLM 對話探測傳回重新導向 (HTTP ${code})，基於安全原則已拒絕跟隨跳轉`
+            : `外部 LLM 介面傳回重新導向 (HTTP ${code})，基於安全原則已拒絕跟隨跳轉`;
+        case "zh-HK":
+          return isProbe
+            ? `外部 LLM 對話探測返回重定向 (HTTP ${code})，出於安全策略已拒絕跟隨跳轉`
+            : `外部 LLM 介面返回重定向 (HTTP ${code})，出於安全策略已拒絕跟隨跳轉`;
+        case "ja-JP":
+          return isProbe
+            ? `外部 LLM チャットプローブがリダイレクト (HTTP ${code}) を返しました。セキュリティポリシーによりリダイレクトの追跡を拒否しました`
+            : `外部 LLM エンドポイントがリダイレクト (HTTP ${code}) を返しました。セキュリティポリシーによりリダイレクトの追跡を拒否しました`;
+        case "ko-KR":
+          return isProbe
+            ? `외부 LLM 대화 프로브가 리디렉션(HTTP ${code})을 반환했으며 보안 정책에 따라 이동을 차단했습니다`
+            : `외부 LLM 엔드포인트가 리디렉션(HTTP ${code})을 반환했으며 보안 정책에 따라 이동을 차단했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^接口返回状态码 (\d+)[：:]?\s*(.*)$/,
+    format: (m, loc) => {
+      const code = m[1]!;
+      const detail = m[2] ? translateInner(m[2], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return detail
+            ? `Endpoint returned status code ${code}: ${detail}`
+            : `Endpoint returned status code ${code}`;
+        case "zh-TW":
+          return detail
+            ? `介面傳回狀態碼 ${code}：${detail}`
+            : `介面傳回狀態碼 ${code}`;
+        case "zh-HK":
+          return detail
+            ? `介面返回狀態碼 ${code}：${detail}`
+            : `介面返回狀態碼 ${code}`;
+        case "ja-JP":
+          return detail
+            ? `エンドポイントがステータスコード ${code} を返しました: ${detail}`
+            : `エンドポイントがステータスコード ${code} を返しました`;
+        case "ko-KR":
+          return detail
+            ? `엔드포인트가 상태 코드 ${code}을(를) 반환했습니다: ${detail}`
+            : `엔드포인트가 상태 코드 ${code}을(를) 반환했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^对话探针失败 \((\d+)\)[：:]?\s*(.*)$/,
+    format: (m, loc) => {
+      const code = m[1]!;
+      const detail = m[2] ? translateInner(m[2], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return detail
+            ? `Chat probe failed (HTTP ${code}): ${detail}`
+            : `Chat probe failed (HTTP ${code})`;
+        case "zh-TW":
+          return detail
+            ? `對話探測失敗 (${code})：${detail}`
+            : `對話探測失敗 (${code})`;
+        case "zh-HK":
+          return detail
+            ? `對話探測失敗 (${code})：${detail}`
+            : `對話探測失敗 (${code})`;
+        case "ja-JP":
+          return detail
+            ? `チャットプローブに失敗しました (${code}): ${detail}`
+            : `チャットプローブに失敗しました (${code})`;
+        case "ko-KR":
+          return detail
+            ? `대화 프로브 실패 (${code}): ${detail}`
+            : `대화 프로브 실패 (${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^LLM 流式请求失败 \(HTTP (\d+)\)[：:]?\s*(.*)$/,
+    format: (m, loc) => {
+      const code = m[1]!;
+      const detail = m[2] ? translateInner(m[2], loc) : "";
+      switch (loc) {
+        case "en-US":
+          return detail
+            ? `LLM streaming request failed (HTTP ${code}): ${detail}`
+            : `LLM streaming request failed (HTTP ${code})`;
+        case "zh-TW":
+          return detail
+            ? `LLM 串流請求失敗 (HTTP ${code})：${detail}`
+            : `LLM 串流請求失敗 (HTTP ${code})`;
+        case "zh-HK":
+          return detail
+            ? `LLM 串流請求失敗 (HTTP ${code})：${detail}`
+            : `LLM 串流請求失敗 (HTTP ${code})`;
+        case "ja-JP":
+          return detail
+            ? `LLM ストリーミングリクエストに失敗しました (HTTP ${code}): ${detail}`
+            : `LLM ストリーミングリクエストに失敗しました (HTTP ${code})`;
+        case "ko-KR":
+          return detail
+            ? `LLM 스트리밍 요청 실패 (HTTP ${code}): ${detail}`
+            : `LLM 스트리밍 요청 실패 (HTTP ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^LLM 流式连接异常[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `LLM streaming connection error: ${detail}`;
+        case "zh-TW":
+          return `LLM 串流連線異常：${detail}`;
+        case "zh-HK":
+          return `LLM 串流連線異常：${detail}`;
+        case "ja-JP":
+          return `LLM ストリーミング接続エラー: ${detail}`;
+        case "ko-KR":
+          return `LLM 스트리밍 연결 오류: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在生成动作片段 \((\d+)\/(\d+)\)[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const [, idx, total, name] = m;
+      switch (loc) {
+        case "en-US":
+          return `Generating action clip (${idx}/${total}): ${name}`;
+        case "zh-TW":
+          return `正在產生動作片段 (${idx}/${total})：${name}`;
+        case "zh-HK":
+          return `正在生成動作片段 (${idx}/${total})：${name}`;
+        case "ja-JP":
+          return `アクションクリップを生成中 (${idx}/${total}): ${name}`;
+        case "ko-KR":
+          return `동작 클립 생성 중 (${idx}/${total}): ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^开始生成动作 (.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Starting action generation: ${id}`;
+        case "zh-TW":
+          return `開始產生動作 ${id}`;
+        case "zh-HK":
+          return `開始生成動作 ${id}`;
+        case "ja-JP":
+          return `アクション生成を開始: ${id}`;
+        case "ko-KR":
+          return `동작 생성 시작: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^生成的动作文件不存在或为符号链接[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Generated action file does not exist or is a symbolic link: ${id}`;
+        case "zh-TW":
+          return `產生的動作檔案不存在或為符號連結：${id}`;
+        case "zh-HK":
+          return `生成的動作檔案不存在或為符號連結：${id}`;
+        case "ja-JP":
+          return `生成されたアクションファイルが存在しないかシンボリックリンクです: ${id}`;
+        case "ko-KR":
+          return `생성된 동작 파일이 없거나 심볼릭 링크입니다: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^动作构建器返回结果缺少 bytes 或 path[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Action builder result is missing bytes or path: ${id}`;
+        case "zh-TW":
+          return `動作建置器傳回結果缺少 bytes 或 path：${id}`;
+        case "zh-HK":
+          return `動作構建器返回結果缺少 bytes 或 path：${id}`;
+        case "ja-JP":
+          return `アクションビルダーの結果に bytes または path がありません: ${id}`;
+        case "ko-KR":
+          return `동작 빌더 결과에 bytes 또는 path가 없습니다: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^动作构建器返回了不支持的结果类型[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const kind = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Action builder returned an unsupported result type: ${kind}`;
+        case "zh-TW":
+          return `動作建置器傳回了不支援的結果類型：${kind}`;
+        case "zh-HK":
+          return `動作構建器返回了不支援的結果類型：${kind}`;
+        case "ja-JP":
+          return `アクションビルダーが未対応の結果型を返しました: ${kind}`;
+        case "ko-KR":
+          return `동작 빌더가 지원하지 않는 결과 형식을 반환했습니다: ${kind}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^主播动作包构建完成（共 (\d+) 个动作）$/,
+    format: (m, loc) => {
+      const count = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Avatar action pack build complete (${count} actions)`;
+        case "zh-TW":
+          return `主播動作套件建置完成（共 ${count} 個動作）`;
+        case "zh-HK":
+          return `主播動作套件構建完成（共 ${count} 個動作）`;
+        case "ja-JP":
+          return `アバターアクションパックの構築が完了しました（全 ${count} アクション）`;
+        case "ko-KR":
+          return `아바타 동작 팩 빌드가 완료되었습니다(총 ${count}개 동작)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^主播动作包 (.+?) 构建完成$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Avatar action pack ${id} build complete`;
+        case "zh-TW":
+          return `主播動作套件 ${id} 建置完成`;
+        case "zh-HK":
+          return `主播動作套件 ${id} 構建完成`;
+        case "ja-JP":
+          return `アバターアクションパック ${id} の構築が完了しました`;
+        case "ko-KR":
+          return `아바타 동작 팩 ${id} 빌드가 완료되었습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(外部 LLM|RTMP 推流)\s*域名解析失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const isRtmp = m[1] === "RTMP 推流";
+      const host = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return isRtmp
+            ? `Failed to resolve RTMP stream hostname: ${host}`
+            : `Failed to resolve external LLM hostname: ${host}`;
+        case "zh-TW":
+          return isRtmp
+            ? `RTMP 串流推播網域解析失敗：${host}`
+            : `外部 LLM 網域解析失敗：${host}`;
+        case "zh-HK":
+          return isRtmp
+            ? `RTMP 推流網域解析失敗：${host}`
+            : `外部 LLM 網域解析失敗：${host}`;
+        case "ja-JP":
+          return isRtmp
+            ? `RTMP 配信ホスト名の解決に失敗しました: ${host}`
+            : `外部 LLM ホスト名の解決に失敗しました: ${host}`;
+        case "ko-KR":
+          return isRtmp
+            ? `RTMP 스트림 도메인 확인에 실패했습니다: ${host}`
+            : `외부 LLM 도메인 확인에 실패했습니다: ${host}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(外部 LLM|RTMP 推流)\s*域名未解析到有效公网 IP[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const isRtmp = m[1] === "RTMP 推流";
+      const host = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return isRtmp
+            ? `RTMP stream hostname did not resolve to a valid public IP: ${host}`
+            : `External LLM hostname did not resolve to a valid public IP: ${host}`;
+        case "zh-TW":
+          return isRtmp
+            ? `RTMP 串流推播網域未解析到有效公用 IP：${host}`
+            : `外部 LLM 網域未解析到有效公用 IP：${host}`;
+        case "zh-HK":
+          return isRtmp
+            ? `RTMP 推流網域未解析到有效公網 IP：${host}`
+            : `外部 LLM 網域未解析到有效公網 IP：${host}`;
+        case "ja-JP":
+          return isRtmp
+            ? `RTMP 配信ホスト名が有効なパブリック IP に解決されませんでした: ${host}`
+            : `外部 LLM ホスト名が有効なパブリック IP に解決されませんでした: ${host}`;
+        case "ko-KR":
+          return isRtmp
+            ? `RTMP 스트림 도메인이 유효한 공인 IP로 확인되지 않았습니다: ${host}`
+            : `외부 LLM 도메인이 유효한 공인 IP로 확인되지 않았습니다: ${host}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(外部 LLM 接口|推流地址)(主机名不合法|缺少有效主机名|禁止访问回环、内网或元数据域名|禁止访问非公网、私有、回环、CGNAT 或元数据 IP 地址|禁止使用非标准 IP 地址字面量)$/,
+    format: (m, loc) => {
+      const subj = translateLiveStudioLabel(m[1]!, loc);
+      const reason = m[2]!;
+      switch (reason) {
+        case "主机名不合法":
+          switch (loc) {
+            case "en-US":
+              return `${subj} hostname is invalid`;
+            case "zh-TW":
+              return `${subj}主機名稱無效`;
+            case "zh-HK":
+              return `${subj}主機名無效`;
+            case "ja-JP":
+              return `${subj}のホスト名が不正です`;
+            case "ko-KR":
+              return `${subj} 호스트 이름이 올바르지 않습니다`;
+            default:
+              return m[0];
+          }
+        case "缺少有效主机名":
+          switch (loc) {
+            case "en-US":
+              return `${subj} is missing a valid hostname`;
+            case "zh-TW":
+              return `${subj}缺少有效主機名稱`;
+            case "zh-HK":
+              return `${subj}缺少有效主機名`;
+            case "ja-JP":
+              return `${subj}に有効なホスト名がありません`;
+            case "ko-KR":
+              return `${subj}에 유효한 호스트 이름이 없습니다`;
+            default:
+              return m[0];
+          }
+        case "禁止访问回环、内网或元数据域名":
+          switch (loc) {
+            case "en-US":
+              return `${subj} cannot target loopback, internal, or metadata domains`;
+            case "zh-TW":
+              return `${subj}禁止存取迴路、內部網路或中繼資料網域`;
+            case "zh-HK":
+              return `${subj}禁止存取迴環、內網或元資料網域`;
+            case "ja-JP":
+              return `${subj}ではループバック・内部ネットワーク・メタデータドメインへのアクセスは禁止されています`;
+            case "ko-KR":
+              return `${subj}은(는) 루프백, 내부망 또는 메타데이터 도메인에 접근할 수 없습니다`;
+            default:
+              return m[0];
+          }
+        case "禁止访问非公网、私有、回环、CGNAT 或元数据 IP 地址":
+          switch (loc) {
+            case "en-US":
+              return `${subj} cannot target non-public, private, loopback, CGNAT, or metadata IP addresses`;
+            case "zh-TW":
+              return `${subj}禁止存取非公用、私有、迴路、CGNAT 或中繼資料 IP 位址`;
+            case "zh-HK":
+              return `${subj}禁止存取非公網、私有、迴環、CGNAT 或元資料 IP 位址`;
+            case "ja-JP":
+              return `${subj}では非公開・プライベート・ループバック・CGNAT・メタデータ IP アドレスへのアクセスは禁止されています`;
+            case "ko-KR":
+              return `${subj}은(는) 비공인, 사설, 루프백, CGNAT 또는 메타데이터 IP 주소에 접근할 수 없습니다`;
+            default:
+              return m[0];
+          }
+        default:
+          switch (loc) {
+            case "en-US":
+              return `${subj} does not allow non-standard IP address literals`;
+            case "zh-TW":
+              return `${subj}禁止使用非標準 IP 位址字面值`;
+            case "zh-HK":
+              return `${subj}禁止使用非標準 IP 位址字面值`;
+            case "ja-JP":
+              return `${subj}では非標準形式の IP アドレス表記は使用できません`;
+            case "ko-KR":
+              return `${subj}에서는 비표준 IP 주소 표기를 사용할 수 없습니다`;
+            default:
+              return m[0];
+          }
+      }
+    },
+  },
+  {
+    re: /^画布分辨率宽高必须在 (\d+) 到 (\d+) 之间$/,
+    format: (m, loc) => {
+      const [, lo, hi] = m;
+      switch (loc) {
+        case "en-US":
+          return `Canvas resolution width and height must be between ${lo} and ${hi}`;
+        case "zh-TW":
+          return `畫布解析度寬高必須介於 ${lo} 到 ${hi} 之間`;
+        case "zh-HK":
+          return `畫布解像度寬高必須介於 ${lo} 到 ${hi} 之間`;
+        case "ja-JP":
+          return `キャンバス解像度の幅と高さは ${lo}〜${hi} の範囲で指定してください`;
+        case "ko-KR":
+          return `캔버스 해상도의 너비와 높이는 ${lo}에서 ${hi} 사이여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^二进制帧长度不足（至少 (\d+) 字节，实际 (\d+) 字节）$/,
+    format: (m, loc) => {
+      const [, minLen, actualLen] = m;
+      switch (loc) {
+        case "en-US":
+          return `Binary frame is too short (expected at least ${minLen} bytes, got ${actualLen} bytes)`;
+        case "zh-TW":
+          return `二進位影格長度不足（至少 ${minLen} 位元組，實際 ${actualLen} 位元組）`;
+        case "zh-HK":
+          return `二進位幀長度不足（至少 ${minLen} 位元組，實際 ${actualLen} 位元組）`;
+        case "ja-JP":
+          return `バイナリフレーム長が不足しています（最小 ${minLen} バイト、実際 ${actualLen} バイト）`;
+        case "ko-KR":
+          return `바이너리 프레임 길이가 부족합니다(최소 ${minLen}바이트, 실제 ${actualLen}바이트)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^未知的二进制帧类型[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const val = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Unknown binary frame type: ${val}`;
+        case "zh-TW":
+          return `未知的二進位影格類型：${val}`;
+        case "zh-HK":
+          return `未知的二進位幀類型：${val}`;
+        case "ja-JP":
+          return `不明なバイナリフレームタイプ: ${val}`;
+        case "ko-KR":
+          return `알 수 없는 바이너리 프레임 형식: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法的(二进制帧类型|epoch 值|pts_ms 值|模型版本标识|导播状态)[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const val = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label}: ${val}`;
+        case "zh-TW":
+          return `無效的${label}：${val}`;
+        case "zh-HK":
+          return `無效的${label}：${val}`;
+        case "ja-JP":
+          return `不正な${label}: ${val}`;
+        case "ko-KR":
+          return `올바르지 않은 ${label}: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^不支持的(视觉驱动引擎|语音合成引擎|对话模型模式|演播模式|麦克风模式|画布分辨率|动作类型|视觉引擎|流式 TTS 引擎|文件格式|LLM 模式|ffmpeg 编码器)[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const rawVal = m[2]!;
+      const val =
+        rawVal === "未知" ? translateLiveStudioLabel("未知", loc) : rawVal;
+      switch (loc) {
+        case "en-US":
+          return `Unsupported ${label}: ${val}`;
+        case "zh-TW":
+          return `不支援的${label}：${val}`;
+        case "zh-HK":
+          return `不支援的${label}：${val}`;
+        case "ja-JP":
+          return `サポートされていない${label}: ${val}`;
+        case "ko-KR":
+          return `지원하지 않는 ${label}: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^驱动动作不存在[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Driving motion does not exist: ${id}`;
+        case "zh-TW":
+          return `驅動動作不存在：${id}`;
+        case "zh-HK":
+          return `驅動動作不存在：${id}`;
+        case "ja-JP":
+          return `駆動モーションが存在しません: ${id}`;
+        case "ko-KR":
+          return `구동 모션이 존재하지 않습니다: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^目录字段 (.+?) 包含重复 ID$/,
+    format: (m, loc) => {
+      const field = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Catalog field ${field} contains duplicate IDs`;
+        case "zh-TW":
+          return `目錄欄位 ${field} 包含重複 ID`;
+        case "zh-HK":
+          return `目錄欄位 ${field} 包含重複 ID`;
+        case "ja-JP":
+          return `カタログフィールド ${field} に重複した ID が含まれています`;
+        case "ko-KR":
+          return `카탈로그 필드 ${field}에 중복된 ID가 포함되어 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(动作列表|商品列表)包含重复 ID[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const id = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${label} contains duplicate ID: ${id}`;
+        case "zh-TW":
+          return `${label}包含重複 ID：${id}`;
+        case "zh-HK":
+          return `${label}包含重複 ID：${id}`;
+        case "ja-JP":
+          return `${label}に重複した ID が含まれています: ${id}`;
+        case "ko-KR":
+          return `${label}에 중복된 ID가 포함되어 있습니다: ${id}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^trigger_keywords 数量超过上限 \((\d+)\)$/,
+    format: (m, loc) => {
+      const max = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `trigger_keywords exceeds the maximum count (${max})`;
+        case "zh-TW":
+          return `trigger_keywords 數量超過上限 (${max})`;
+        case "zh-HK":
+          return `trigger_keywords 數量超過上限 (${max})`;
+        case "ja-JP":
+          return `trigger_keywords の件数が上限 (${max}) を超えています`;
+        case "ko-KR":
+          return `trigger_keywords 개수가 최대 한도(${max})를 초과했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^字段 (.+?) 数量超过上限 \((\d+)\)$/,
+    format: (m, loc) => {
+      const [, field, max] = m;
+      switch (loc) {
+        case "en-US":
+          return `Field ${field} exceeds the maximum count (${max})`;
+        case "zh-TW":
+          return `欄位 ${field} 數量超過上限 (${max})`;
+        case "zh-HK":
+          return `欄位 ${field} 數量超過上限 (${max})`;
+        case "ja-JP":
+          return `フィールド ${field} の件数が上限 (${max}) を超えています`;
+        case "ko-KR":
+          return `${field} 필드의 개수가 최대 한도(${max})를 초과했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^字段 (.+?) (包含空元素|元素必须为对象|必须为对象数组|包含非字符串项|必须为字符串数组|包含非法标识)$/,
+    format: (m, loc) => {
+      const field = m[1]!;
+      const kind = m[2]!;
+      switch (kind) {
+        case "包含空元素":
+          switch (loc) {
+            case "en-US":
+              return `Field ${field} contains empty elements`;
+            case "zh-TW":
+              return `欄位 ${field} 包含空元素`;
+            case "zh-HK":
+              return `欄位 ${field} 包含空元素`;
+            case "ja-JP":
+              return `フィールド ${field} に空の要素が含まれています`;
+            case "ko-KR":
+              return `${field} 필드에 빈 요소가 포함되어 있습니다`;
+            default:
+              return m[0];
+          }
+        case "元素必须为对象":
+          switch (loc) {
+            case "en-US":
+              return `Elements of field ${field} must be objects`;
+            case "zh-TW":
+              return `欄位 ${field} 元素必須為物件`;
+            case "zh-HK":
+              return `欄位 ${field} 元素必須為物件`;
+            case "ja-JP":
+              return `フィールド ${field} の要素はオブジェクトである必要があります`;
+            case "ko-KR":
+              return `${field} 필드의 요소는 객체여야 합니다`;
+            default:
+              return m[0];
+          }
+        case "必须为对象数组":
+          switch (loc) {
+            case "en-US":
+              return `Field ${field} must be an array of objects`;
+            case "zh-TW":
+              return `欄位 ${field} 必須為物件陣列`;
+            case "zh-HK":
+              return `欄位 ${field} 必須為物件陣列`;
+            case "ja-JP":
+              return `フィールド ${field} はオブジェクト配列である必要があります`;
+            case "ko-KR":
+              return `${field} 필드는 객체 배열이어야 합니다`;
+            default:
+              return m[0];
+          }
+        case "包含非字符串项":
+          switch (loc) {
+            case "en-US":
+              return `Field ${field} contains non-string items`;
+            case "zh-TW":
+              return `欄位 ${field} 包含非字串項目`;
+            case "zh-HK":
+              return `欄位 ${field} 包含非字串項目`;
+            case "ja-JP":
+              return `フィールド ${field} に文字列以外の項目が含まれています`;
+            case "ko-KR":
+              return `${field} 필드에 문자열이 아닌 항목이 포함되어 있습니다`;
+            default:
+              return m[0];
+          }
+        case "必须为字符串数组":
+          switch (loc) {
+            case "en-US":
+              return `Field ${field} must be an array of strings`;
+            case "zh-TW":
+              return `欄位 ${field} 必須為字串陣列`;
+            case "zh-HK":
+              return `欄位 ${field} 必須為字串陣列`;
+            case "ja-JP":
+              return `フィールド ${field} は文字列配列である必要があります`;
+            case "ko-KR":
+              return `${field} 필드는 문자열 배열이어야 합니다`;
+            default:
+              return m[0];
+          }
+        default:
+          switch (loc) {
+            case "en-US":
+              return `Field ${field} contains invalid identifiers`;
+            case "zh-TW":
+              return `欄位 ${field} 包含無效識別碼`;
+            case "zh-HK":
+              return `欄位 ${field} 包含無效識別碼`;
+            case "ja-JP":
+              return `フィールド ${field} に不正な識別子が含まれています`;
+            case "ko-KR":
+              return `${field} 필드에 잘못된 식별자가 포함되어 있습니다`;
+            default:
+              return m[0];
+          }
+      }
+    },
+  },
+  {
+    re: /^(.+?) 路径中不允许符号链接$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!, loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} path cannot contain symbolic links`;
+        case "zh-TW":
+          return `${label}${zhSep}路徑中不允許符號連結`;
+        case "zh-HK":
+          return `${label}${zhSep}路徑中不允許符號連結`;
+        case "ja-JP":
+          return `${label} のパスにシンボリックリンクは使用できません`;
+        case "ko-KR":
+          return `${label} 경로에는 심볼릭 링크를 사용할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 路径越界$/,
+    format: (m, loc) => {
+      const label = translateSymlinkDirLabel(m[1]!, loc);
+      const zhSep = /[A-Za-z0-9]$/.test(label) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${label} path escapes the allowed directory`;
+        case "zh-TW":
+          return `${label}${zhSep}路徑超出允許範圍`;
+        case "zh-HK":
+          return `${label}${zhSep}路徑越界`;
+        case "ja-JP":
+          return `${label} のパスが許可された範囲外です`;
+        case "ko-KR":
+          return `${label} 경로가 허용 범위를 벗어났습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 文件名不能为空$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} filename cannot be empty`;
+        case "zh-TW":
+          return `${label}檔案名稱不可為空`;
+        case "zh-HK":
+          return `${label}檔案名稱不能為空`;
+        case "ja-JP":
+          return `${label}のファイル名を空にすることはできません`;
+        case "ko-KR":
+          return `${label} 파일 이름은 비워 둘 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 文件名不合法$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label} filename`;
+        case "zh-TW":
+          return `${label}檔案名稱無效`;
+        case "zh-HK":
+          return `${label}檔案名稱無效`;
+        case "ja-JP":
+          return `${label}のファイル名が不正です`;
+        case "ko-KR":
+          return `${label} 파일 이름이 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 仅支持格式[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const formats = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${label} only supports formats: ${formats}`;
+        case "zh-TW":
+          return `${label}僅支援格式：${formats}`;
+        case "zh-HK":
+          return `${label}僅支援格式：${formats}`;
+        case "ja-JP":
+          return `${label}は次の形式のみ対応しています: ${formats}`;
+        case "ko-KR":
+          return `${label}은(는) 다음 형식만 지원합니다: ${formats}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) Base64 数据头不合法$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} has an invalid Base64 data header`;
+        case "zh-TW":
+          return `${label} Base64 資料標頭無效`;
+        case "zh-HK":
+          return `${label} Base64 資料標頭無效`;
+        case "ja-JP":
+          return `${label} の Base64 データヘッダーが不正です`;
+        case "ko-KR":
+          return `${label} Base64 데이터 헤더가 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) Base64 编码无效$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} has invalid Base64 encoding`;
+        case "zh-TW":
+          return `${label} Base64 編碼無效`;
+        case "zh-HK":
+          return `${label} Base64 編碼無效`;
+        case "ja-JP":
+          return `${label} の Base64 エンコードが無効です`;
+        case "ko-KR":
+          return `${label} Base64 인코딩이 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 数据为空$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} data is empty`;
+        case "zh-TW":
+          return `${label}資料為空`;
+        case "zh-HK":
+          return `${label}資料為空`;
+        case "ja-JP":
+          return `${label}のデータが空です`;
+        case "ko-KR":
+          return `${label} 데이터가 비어 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 超过大小上限$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} exceeds the maximum size limit`;
+        case "zh-TW":
+          return `${label}超過大小上限`;
+        case "zh-HK":
+          return `${label}超過大小上限`;
+        case "ja-JP":
+          return `${label}が最大サイズ上限を超えています`;
+        case "ko-KR":
+          return `${label}이(가) 최대 크기 제한을 초과했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*超过大小限制（最大 (\d+) MB）$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const maxMb = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${label} exceeds the size limit (maximum ${maxMb} MB)`;
+        case "zh-TW":
+          return `${label}超過大小限制（最大 ${maxMb} MB）`;
+        case "zh-HK":
+          return `${label}超過大小限制（最大 ${maxMb} MB）`;
+        case "ja-JP":
+          return `${label}がサイズ上限を超えています（最大 ${maxMb} MB）`;
+        case "ko-KR":
+          return `${label}이(가) 크기 제한(최대 ${maxMb} MB)을 초과했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)内容为空$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} content is empty`;
+        case "zh-TW":
+          return `${label}內容為空`;
+        case "zh-HK":
+          return `${label}內容為空`;
+        case "ja-JP":
+          return `${label}の内容が空です`;
+        case "ko-KR":
+          return `${label} 내용이 비어 있습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)编码格式无效$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} has an invalid encoding format`;
+        case "zh-TW":
+          return `${label}編碼格式無效`;
+        case "zh-HK":
+          return `${label}編碼格式無效`;
+        case "ja-JP":
+          return `${label}のエンコード形式が無効です`;
+        case "ko-KR":
+          return `${label} 인코딩 형식이 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)包含不支持的字段[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const fields = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${label} contains unsupported fields: ${fields}`;
+        case "zh-TW":
+          return `${label}包含不支援的欄位：${fields}`;
+        case "zh-HK":
+          return `${label}包含不支援的欄位：${fields}`;
+        case "ja-JP":
+          return `${label}に未対応のフィールドが含まれています: ${fields}`;
+        case "ko-KR":
+          return `${label}에 지원하지 않는 필드가 포함되어 있습니다: ${fields}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 长度不能超过 (\d+)(?: 个字符)?$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const max = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `${label} length cannot exceed ${max} characters`;
+        case "zh-TW":
+          return `${label}長度不可超過 ${max} 個字元`;
+        case "zh-HK":
+          return `${label}長度不能超過 ${max} 個字元`;
+        case "ja-JP":
+          return `${label}の長さは ${max} 文字以内で指定してください`;
+        case "ko-KR":
+          return `${label} 길이는 ${max}자를 초과할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 包含非法(空白或控制字符|控制字符|空字符|路径段)$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const kind = m[2]!;
+      switch (kind) {
+        case "空白或控制字符":
+          switch (loc) {
+            case "en-US":
+              return `${label} contains illegal whitespace or control characters`;
+            case "zh-TW":
+              return `${label}包含無效空白或控制字元`;
+            case "zh-HK":
+              return `${label}包含無效空白或控制字元`;
+            case "ja-JP":
+              return `${label}に不正な空白または制御文字が含まれています`;
+            case "ko-KR":
+              return `${label}에 잘못된 공백 또는 제어 문자가 포함되어 있습니다`;
+            default:
+              return m[0];
+          }
+        case "控制字符":
+          switch (loc) {
+            case "en-US":
+              return `${label} contains illegal control characters`;
+            case "zh-TW":
+              return `${label}包含無效控制字元`;
+            case "zh-HK":
+              return `${label}包含無效控制字元`;
+            case "ja-JP":
+              return `${label}に不正な制御文字が含まれています`;
+            case "ko-KR":
+              return `${label}에 잘못된 제어 문자가 포함되어 있습니다`;
+            default:
+              return m[0];
+          }
+        case "空字符":
+          switch (loc) {
+            case "en-US":
+              return `${label} contains illegal null characters`;
+            case "zh-TW":
+              return `${label}包含無效空字元`;
+            case "zh-HK":
+              return `${label}包含無效空字元`;
+            case "ja-JP":
+              return `${label}に不正なヌル文字が含まれています`;
+            case "ko-KR":
+              return `${label}에 잘못된 널 문자가 포함되어 있습니다`;
+            default:
+              return m[0];
+          }
+        default:
+          switch (loc) {
+            case "en-US":
+              return `${label} contains illegal path segments`;
+            case "zh-TW":
+              return `${label}包含無效路徑區段`;
+            case "zh-HK":
+              return `${label}包含無效路徑段`;
+            case "ja-JP":
+              return `${label}に不正なパスセグメントが含まれています`;
+            case "ko-KR":
+              return `${label}에 잘못된 경로 세그먼트가 포함되어 있습니다`;
+            default:
+              return m[0];
+          }
+      }
+    },
+  },
+  {
+    re: /^请填写(.+)$/,
+    when: (text) => Boolean(LIVE_STUDIO_LABELS[text.slice(3).trim()]),
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Please enter ${label}`;
+        case "zh-TW":
+          return `請填寫${label}`;
+        case "zh-HK":
+          return `請填寫${label}`;
+        case "ja-JP":
+          return `${label}を入力してください`;
+        case "ko-KR":
+          return `${label}을(를) 입력하세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 格式不合法$/,
+    when: (text) =>
+      Boolean(LIVE_STUDIO_LABELS[text.slice(0, -6).trim()]),
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label} format`;
+        case "zh-TW":
+          return `${label}格式無效`;
+        case "zh-HK":
+          return `${label}格式無效`;
+        case "ja-JP":
+          return `${label}の形式が不正です`;
+        case "ko-KR":
+          return `${label} 형식이 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 不合法[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      const val = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label}: ${val}`;
+        case "zh-TW":
+          return `${label}無效：${val}`;
+        case "zh-HK":
+          return `${label}無效：${val}`;
+        case "ja-JP":
+          return `${label}が不正です: ${val}`;
+        case "ko-KR":
+          return `${label}이(가) 올바르지 않습니다: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s*不合法$/,
+    when: (text) =>
+      Boolean(LIVE_STUDIO_LABELS[text.replace(/\s*不合法$/, "").trim()]),
+    format: (m, loc) => {
+      const label = translateLiveStudioLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Invalid ${label}`;
+        case "zh-TW":
+          return `${label}無效`;
+        case "zh-HK":
+          return `${label}無效`;
+        case "ja-JP":
+          return `${label}が不正です`;
+        case "ko-KR":
+          return `${label}이(가) 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
 ];
+
+const LIVE_STUDIO_LABELS: Record<string, ColabOneLocaleTable> = {
+  "外部 LLM 配置": {
+    "zh-CN": "外部 LLM 配置",
+    "en-US": "External LLM configuration",
+    "zh-TW": "外部 LLM 設定",
+    "zh-HK": "外部 LLM 配置",
+    "ja-JP": "外部 LLM 設定",
+    "ko-KR": "외부 LLM 설정",
+  },
+  实时演播配置: {
+    "zh-CN": "实时演播配置",
+    "en-US": "Live Studio configuration",
+    "zh-TW": "即時演播設定",
+    "zh-HK": "實時演播配置",
+    "ja-JP": "ライブスタジオ設定",
+    "ko-KR": "라이브 스튜디오 설정",
+  },
+  形象配置: {
+    "zh-CN": "形象配置",
+    "en-US": "Avatar configuration",
+    "zh-TW": "形象設定",
+    "zh-HK": "形象配置",
+    "ja-JP": "アバター設定",
+    "ko-KR": "아바타 설정",
+  },
+  动作配置: {
+    "zh-CN": "动作配置",
+    "en-US": "Action configuration",
+    "zh-TW": "動作設定",
+    "zh-HK": "動作配置",
+    "ja-JP": "アクション設定",
+    "ko-KR": "동작 설정",
+  },
+  商品配置: {
+    "zh-CN": "商品配置",
+    "en-US": "Product configuration",
+    "zh-TW": "商品設定",
+    "zh-HK": "商品配置",
+    "ja-JP": "商品設定",
+    "ko-KR": "상품 설정",
+  },
+  动作素材上传请求: {
+    "zh-CN": "动作素材上传请求",
+    "en-US": "Action asset upload request",
+    "zh-TW": "動作素材上傳請求",
+    "zh-HK": "動作素材上傳請求",
+    "ja-JP": "アクション素材アップロードリクエスト",
+    "ko-KR": "동작 에셋 업로드 요청",
+  },
+  驱动视频上传请求: {
+    "zh-CN": "驱动视频上传请求",
+    "en-US": "Driving video upload request",
+    "zh-TW": "驅動影片上傳請求",
+    "zh-HK": "驅動影片上傳請求",
+    "ja-JP": "駆動動画アップロードリクエスト",
+    "ko-KR": "구동 영상 업로드 요청",
+  },
+  形象动作库构建参数: {
+    "zh-CN": "形象动作库构建参数",
+    "en-US": "Avatar action pack build parameters",
+    "zh-TW": "形象動作庫建置參數",
+    "zh-HK": "形象動作庫構建參數",
+    "ja-JP": "アバターアクションパック構築パラメータ",
+    "ko-KR": "아바타 동작 팩 빌드 매개변수",
+  },
+  视觉驱动引擎: {
+    "zh-CN": "视觉驱动引擎",
+    "en-US": "visual driving engine",
+    "zh-TW": "視覺驅動引擎",
+    "zh-HK": "視覺驅動引擎",
+    "ja-JP": "映像駆動エンジン",
+    "ko-KR": "비주얼 구동 엔진",
+  },
+  视觉引擎: {
+    "zh-CN": "视觉引擎",
+    "en-US": "visual engine",
+    "zh-TW": "視覺引擎",
+    "zh-HK": "視覺引擎",
+    "ja-JP": "映像エンジン",
+    "ko-KR": "비주얼 엔진",
+  },
+  "视觉引擎 ID": {
+    "zh-CN": "视觉引擎 ID",
+    "en-US": "visual engine ID",
+    "zh-TW": "視覺引擎 ID",
+    "zh-HK": "視覺引擎 ID",
+    "ja-JP": "映像エンジン ID",
+    "ko-KR": "비주얼 엔진 ID",
+  },
+  语音合成引擎: {
+    "zh-CN": "语音合成引擎",
+    "en-US": "TTS engine",
+    "zh-TW": "語音合成引擎",
+    "zh-HK": "語音合成引擎",
+    "ja-JP": "音声合成エンジン",
+    "ko-KR": "음성 합성 엔진",
+  },
+  "流式 TTS 引擎": {
+    "zh-CN": "流式 TTS 引擎",
+    "en-US": "streaming TTS engine",
+    "zh-TW": "串流 TTS 引擎",
+    "zh-HK": "串流 TTS 引擎",
+    "ja-JP": "ストリーミング TTS エンジン",
+    "ko-KR": "스트리밍 TTS 엔진",
+  },
+  "流式 TTS 引擎 ID": {
+    "zh-CN": "流式 TTS 引擎 ID",
+    "en-US": "streaming TTS engine ID",
+    "zh-TW": "串流 TTS 引擎 ID",
+    "zh-HK": "串流 TTS 引擎 ID",
+    "ja-JP": "ストリーミング TTS エンジン ID",
+    "ko-KR": "스트리밍 TTS 엔진 ID",
+  },
+  "ASR/VAD 引擎 ID": {
+    "zh-CN": "ASR/VAD 引擎 ID",
+    "en-US": "ASR/VAD engine ID",
+    "zh-TW": "ASR/VAD 引擎 ID",
+    "zh-HK": "ASR/VAD 引擎 ID",
+    "ja-JP": "ASR/VAD エンジン ID",
+    "ko-KR": "ASR/VAD 엔진 ID",
+  },
+  音色预设: {
+    "zh-CN": "音色预设",
+    "en-US": "voice preset",
+    "zh-TW": "音色預設",
+    "zh-HK": "聲線預設",
+    "ja-JP": "ボイスプリセット",
+    "ko-KR": "음색 프리셋",
+  },
+  默认音色预设: {
+    "zh-CN": "默认音色预设",
+    "en-US": "default voice preset",
+    "zh-TW": "預設音色",
+    "zh-HK": "預設聲線",
+    "ja-JP": "デフォルトボイスプリセット",
+    "ko-KR": "기본 음색 프리셋",
+  },
+  对话模型模式: {
+    "zh-CN": "对话模型模式",
+    "en-US": "chat LLM mode",
+    "zh-TW": "對話模型模式",
+    "zh-HK": "對話模型模式",
+    "ja-JP": "対話モデルモード",
+    "ko-KR": "대화 모델 모드",
+  },
+  "LLM 模式": {
+    "zh-CN": "LLM 模式",
+    "en-US": "LLM mode",
+    "zh-TW": "LLM 模式",
+    "zh-HK": "LLM 模式",
+    "ja-JP": "LLM モード",
+    "ko-KR": "LLM 모드",
+  },
+  "ffmpeg 编码器": {
+    "zh-CN": "ffmpeg 编码器",
+    "en-US": "ffmpeg encoder",
+    "zh-TW": "ffmpeg 編碼器",
+    "zh-HK": "ffmpeg 編碼器",
+    "ja-JP": "ffmpeg エンコーダ",
+    "ko-KR": "ffmpeg 인코더",
+  },
+  "本地对话模型 ID": {
+    "zh-CN": "本地对话模型 ID",
+    "en-US": "local chat model ID",
+    "zh-TW": "本機對話模型 ID",
+    "zh-HK": "本地對話模型 ID",
+    "ja-JP": "ローカル対話モデル ID",
+    "ko-KR": "로컬 대화 모델 ID",
+  },
+  演播模式: {
+    "zh-CN": "演播模式",
+    "en-US": "director mode",
+    "zh-TW": "演播模式",
+    "zh-HK": "演播模式",
+    "ja-JP": "スタジオモード",
+    "ko-KR": "스튜디오 모드",
+  },
+  麦克风模式: {
+    "zh-CN": "麦克风模式",
+    "en-US": "microphone mode",
+    "zh-TW": "麥克風模式",
+    "zh-HK": "咪高峰模式",
+    "ja-JP": "マイクモード",
+    "ko-KR": "마이크 모드",
+  },
+  画布分辨率: {
+    "zh-CN": "画布分辨率",
+    "en-US": "canvas resolution",
+    "zh-TW": "畫布解析度",
+    "zh-HK": "畫布解像度",
+    "ja-JP": "キャンバス解像度",
+    "ko-KR": "캔버스 해상도",
+  },
+  "形象 ID": {
+    "zh-CN": "形象 ID",
+    "en-US": "avatar ID",
+    "zh-TW": "形象 ID",
+    "zh-HK": "形象 ID",
+    "ja-JP": "アバター ID",
+    "ko-KR": "아바타 ID",
+  },
+  "主播包 ID": {
+    "zh-CN": "主播包 ID",
+    "en-US": "avatar pack ID",
+    "zh-TW": "主播套件 ID",
+    "zh-HK": "主播套件 ID",
+    "ja-JP": "アバターパック ID",
+    "ko-KR": "아바타 팩 ID",
+  },
+  形象名称: {
+    "zh-CN": "形象名称",
+    "en-US": "avatar name",
+    "zh-TW": "形象名稱",
+    "zh-HK": "形象名稱",
+    "ja-JP": "アバター名",
+    "ko-KR": "아바타 이름",
+  },
+  人设提示词: {
+    "zh-CN": "人设提示词",
+    "en-US": "persona prompt",
+    "zh-TW": "人設提示詞",
+    "zh-HK": "人設提示詞",
+    "ja-JP": "ペルソナプロンプト",
+    "ko-KR": "페르소나 프롬프트",
+  },
+  "立绘素材 ID": {
+    "zh-CN": "立绘素材 ID",
+    "en-US": "portrait asset ID",
+    "zh-TW": "立繪素材 ID",
+    "zh-HK": "立繪素材 ID",
+    "ja-JP": "ポートレート素材 ID",
+    "ko-KR": "인물 에셋 ID",
+  },
+  立绘文件数据: {
+    "zh-CN": "立绘文件数据",
+    "en-US": "portrait file data",
+    "zh-TW": "立繪檔案資料",
+    "zh-HK": "立繪檔案資料",
+    "ja-JP": "ポートレートファイルデータ",
+    "ko-KR": "인물 파일 데이터",
+  },
+  立绘图片: {
+    "zh-CN": "立绘图片",
+    "en-US": "portrait image",
+    "zh-TW": "立繪圖片",
+    "zh-HK": "立繪圖片",
+    "ja-JP": "ポートレート画像",
+    "ko-KR": "인물 이미지",
+  },
+  立绘文件名: {
+    "zh-CN": "立绘文件名",
+    "en-US": "portrait filename",
+    "zh-TW": "立繪檔案名稱",
+    "zh-HK": "立繪檔案名稱",
+    "ja-JP": "ポートレートファイル名",
+    "ko-KR": "인물 파일 이름",
+  },
+  人像图片: {
+    "zh-CN": "人像图片",
+    "en-US": "Portrait image",
+    "zh-TW": "人像圖片",
+    "zh-HK": "人像圖片",
+    "ja-JP": "ポートレート画像",
+    "ko-KR": "인물 이미지",
+  },
+  人像路径: {
+    "zh-CN": "人像路径",
+    "en-US": "portrait path",
+    "zh-TW": "人像路徑",
+    "zh-HK": "人像路徑",
+    "ja-JP": "ポートレートパス",
+    "ko-KR": "인물 경로",
+  },
+  "动作 ID": {
+    "zh-CN": "动作 ID",
+    "en-US": "action ID",
+    "zh-TW": "動作 ID",
+    "zh-HK": "動作 ID",
+    "ja-JP": "アクション ID",
+    "ko-KR": "동작 ID",
+  },
+  "默认动作 ID": {
+    "zh-CN": "默认动作 ID",
+    "en-US": "default action ID",
+    "zh-TW": "預設動作 ID",
+    "zh-HK": "預設動作 ID",
+    "ja-JP": "デフォルトアクション ID",
+    "ko-KR": "기본 동작 ID",
+  },
+  动作名称: {
+    "zh-CN": "动作名称",
+    "en-US": "action name",
+    "zh-TW": "動作名稱",
+    "zh-HK": "動作名稱",
+    "ja-JP": "アクション名",
+    "ko-KR": "동작 이름",
+  },
+  动作类型: {
+    "zh-CN": "动作类型",
+    "en-US": "action type",
+    "zh-TW": "動作類型",
+    "zh-HK": "動作類型",
+    "ja-JP": "アクションタイプ",
+    "ko-KR": "동작 유형",
+  },
+  动作片段路径: {
+    "zh-CN": "动作片段路径",
+    "en-US": "action clip path",
+    "zh-TW": "動作片段路徑",
+    "zh-HK": "動作片段路徑",
+    "ja-JP": "アクションクリップパス",
+    "ko-KR": "동작 클립 경로",
+  },
+  动作视频: {
+    "zh-CN": "动作视频",
+    "en-US": "Action video",
+    "zh-TW": "動作影片",
+    "zh-HK": "動作影片",
+    "ja-JP": "アクション動画",
+    "ko-KR": "동작 영상",
+  },
+  背景音乐路径: {
+    "zh-CN": "背景音乐路径",
+    "en-US": "background music path",
+    "zh-TW": "背景音樂路徑",
+    "zh-HK": "背景音樂路徑",
+    "ja-JP": "BGM パス",
+    "ko-KR": "배경 음악 경로",
+  },
+  背景音乐: {
+    "zh-CN": "背景音乐",
+    "en-US": "Background music",
+    "zh-TW": "背景音樂",
+    "zh-HK": "背景音樂",
+    "ja-JP": "BGM",
+    "ko-KR": "배경 음악",
+  },
+  背景音乐文件名: {
+    "zh-CN": "背景音乐文件名",
+    "en-US": "background music filename",
+    "zh-TW": "背景音樂檔案名稱",
+    "zh-HK": "背景音樂檔案名稱",
+    "ja-JP": "BGM ファイル名",
+    "ko-KR": "배경 음악 파일 이름",
+  },
+  背景音乐数据: {
+    "zh-CN": "背景音乐数据",
+    "en-US": "background music data",
+    "zh-TW": "背景音樂資料",
+    "zh-HK": "背景音樂資料",
+    "ja-JP": "BGM データ",
+    "ko-KR": "배경 음악 데이터",
+  },
+  背景音乐文件: {
+    "zh-CN": "背景音乐文件",
+    "en-US": "background music file",
+    "zh-TW": "背景音樂檔案",
+    "zh-HK": "背景音樂檔案",
+    "ja-JP": "BGM ファイル",
+    "ko-KR": "배경 음악 파일",
+  },
+  驱动视频: {
+    "zh-CN": "驱动视频",
+    "en-US": "Driving video",
+    "zh-TW": "驅動影片",
+    "zh-HK": "驅動影片",
+    "ja-JP": "駆動動画",
+    "ko-KR": "구동 영상",
+  },
+  驱动背景音乐: {
+    "zh-CN": "驱动背景音乐",
+    "en-US": "Driving background music",
+    "zh-TW": "驅動背景音樂",
+    "zh-HK": "驅動背景音樂",
+    "ja-JP": "駆動 BGM",
+    "ko-KR": "구동 배경 음악",
+  },
+  驱动动作名称: {
+    "zh-CN": "驱动动作名称",
+    "en-US": "driving motion name",
+    "zh-TW": "驅動動作名稱",
+    "zh-HK": "驅動動作名稱",
+    "ja-JP": "駆動モーション名",
+    "ko-KR": "구동 모션 이름",
+  },
+  "驱动动作 ID": {
+    "zh-CN": "驱动动作 ID",
+    "en-US": "driving motion ID",
+    "zh-TW": "驅動動作 ID",
+    "zh-HK": "驅動動作 ID",
+    "ja-JP": "駆動モーション ID",
+    "ko-KR": "구동 모션 ID",
+  },
+  "商品 ID": {
+    "zh-CN": "商品 ID",
+    "en-US": "product ID",
+    "zh-TW": "商品 ID",
+    "zh-HK": "商品 ID",
+    "ja-JP": "商品 ID",
+    "ko-KR": "상품 ID",
+  },
+  商品名称: {
+    "zh-CN": "商品名称",
+    "en-US": "product name",
+    "zh-TW": "商品名稱",
+    "zh-HK": "商品名稱",
+    "ja-JP": "商品名",
+    "ko-KR": "상품 이름",
+  },
+  商品价格: {
+    "zh-CN": "商品价格",
+    "en-US": "product price",
+    "zh-TW": "商品價格",
+    "zh-HK": "商品價格",
+    "ja-JP": "商品価格",
+    "ko-KR": "상품 가격",
+  },
+  商品标签: {
+    "zh-CN": "商品标签",
+    "en-US": "product tag",
+    "zh-TW": "商品標籤",
+    "zh-HK": "商品標籤",
+    "ja-JP": "商品タグ",
+    "ko-KR": "상품 태그",
+  },
+  商品卖点: {
+    "zh-CN": "商品卖点",
+    "en-US": "product highlights",
+    "zh-TW": "商品賣點",
+    "zh-HK": "商品賣點",
+    "ja-JP": "商品の特徴",
+    "ko-KR": "상품 특징",
+  },
+  话术提示: {
+    "zh-CN": "话术提示",
+    "en-US": "script hint",
+    "zh-TW": "話術提示",
+    "zh-HK": "話術提示",
+    "ja-JP": "トークヒント",
+    "ko-KR": "멘트 힌트",
+  },
+  "商品图片 ID": {
+    "zh-CN": "商品图片 ID",
+    "en-US": "product image ID",
+    "zh-TW": "商品圖片 ID",
+    "zh-HK": "商品圖片 ID",
+    "ja-JP": "商品画像 ID",
+    "ko-KR": "상품 이미지 ID",
+  },
+  触发关键词: {
+    "zh-CN": "触发关键词",
+    "en-US": "trigger keyword",
+    "zh-TW": "觸發關鍵字",
+    "zh-HK": "觸發關鍵詞",
+    "ja-JP": "トリガーキーワード",
+    "ko-KR": "트리거 키워드",
+  },
+  素材文件名: {
+    "zh-CN": "素材文件名",
+    "en-US": "asset filename",
+    "zh-TW": "素材檔案名稱",
+    "zh-HK": "素材檔案名稱",
+    "ja-JP": "素材ファイル名",
+    "ko-KR": "에셋 파일 이름",
+  },
+  素材数据: {
+    "zh-CN": "素材数据",
+    "en-US": "asset data",
+    "zh-TW": "素材資料",
+    "zh-HK": "素材資料",
+    "ja-JP": "素材データ",
+    "ko-KR": "에셋 데이터",
+  },
+  素材文件: {
+    "zh-CN": "素材文件",
+    "en-US": "asset file",
+    "zh-TW": "素材檔案",
+    "zh-HK": "素材檔案",
+    "ja-JP": "素材ファイル",
+    "ko-KR": "에셋 파일",
+  },
+  "外部 LLM 地址": {
+    "zh-CN": "外部 LLM 地址",
+    "en-US": "external LLM URL",
+    "zh-TW": "外部 LLM 位址",
+    "zh-HK": "外部 LLM 位址",
+    "ja-JP": "外部 LLM URL",
+    "ko-KR": "외부 LLM URL",
+  },
+  "外部 LLM 接口": {
+    "zh-CN": "外部 LLM 接口",
+    "en-US": "External LLM endpoint",
+    "zh-TW": "外部 LLM 介面",
+    "zh-HK": "外部 LLM 介面",
+    "ja-JP": "外部 LLM エンドポイント",
+    "ko-KR": "외부 LLM 엔드포인트",
+  },
+  "外部 LLM 模型名称": {
+    "zh-CN": "外部 LLM 模型名称",
+    "en-US": "external LLM model name",
+    "zh-TW": "外部 LLM 模型名稱",
+    "zh-HK": "外部 LLM 模型名稱",
+    "ja-JP": "外部 LLM モデル名",
+    "ko-KR": "외부 LLM 모델 이름",
+  },
+  "RTMP 推流地址": {
+    "zh-CN": "RTMP 推流地址",
+    "en-US": "RTMP stream URL",
+    "zh-TW": "RTMP 串流推播位址",
+    "zh-HK": "RTMP 推流位址",
+    "ja-JP": "RTMP 配信 URL",
+    "ko-KR": "RTMP 스트림 URL",
+  },
+  推流地址: {
+    "zh-CN": "推流地址",
+    "en-US": "Stream URL",
+    "zh-TW": "串流推播位址",
+    "zh-HK": "推流位址",
+    "ja-JP": "配信 URL",
+    "ko-KR": "스트림 URL",
+  },
+  文件格式: {
+    "zh-CN": "文件格式",
+    "en-US": "file format",
+    "zh-TW": "檔案格式",
+    "zh-HK": "檔案格式",
+    "ja-JP": "ファイル形式",
+    "ko-KR": "파일 형식",
+  },
+  动作列表: {
+    "zh-CN": "动作列表",
+    "en-US": "Action list",
+    "zh-TW": "動作清單",
+    "zh-HK": "動作清單",
+    "ja-JP": "アクション一覧",
+    "ko-KR": "동작 목록",
+  },
+  商品列表: {
+    "zh-CN": "商品列表",
+    "en-US": "Product list",
+    "zh-TW": "商品清單",
+    "zh-HK": "商品清單",
+    "ja-JP": "商品一覧",
+    "ko-KR": "상품 목록",
+  },
+  二进制帧类型: {
+    "zh-CN": "二进制帧类型",
+    "en-US": "binary frame type",
+    "zh-TW": "二進位影格類型",
+    "zh-HK": "二進位幀類型",
+    "ja-JP": "バイナリフレームタイプ",
+    "ko-KR": "바이너리 프레임 형식",
+  },
+  "epoch 值": {
+    "zh-CN": "epoch 值",
+    "en-US": "epoch value",
+    "zh-TW": "epoch 值",
+    "zh-HK": "epoch 值",
+    "ja-JP": "epoch 値",
+    "ko-KR": "epoch 값",
+  },
+  "pts_ms 值": {
+    "zh-CN": "pts_ms 值",
+    "en-US": "pts_ms value",
+    "zh-TW": "pts_ms 值",
+    "zh-HK": "pts_ms 值",
+    "ja-JP": "pts_ms 値",
+    "ko-KR": "pts_ms 값",
+  },
+  模型版本标识: {
+    "zh-CN": "模型版本标识",
+    "en-US": "model revision identifier",
+    "zh-TW": "模型版本識別碼",
+    "zh-HK": "模型版本識別碼",
+    "ja-JP": "モデルリビジョン識別子",
+    "ko-KR": "모델 리비전 식별자",
+  },
+  导播状态: {
+    "zh-CN": "导播状态",
+    "en-US": "director state",
+    "zh-TW": "導播狀態",
+    "zh-HK": "導播狀態",
+    "ja-JP": "ディレクター状態",
+    "ko-KR": "디렉터 상태",
+  },
+  路径: {
+    "zh-CN": "路径",
+    "en-US": "path",
+    "zh-TW": "路徑",
+    "zh-HK": "路徑",
+    "ja-JP": "パス",
+    "ko-KR": "경로",
+  },
+  未设置: {
+    "zh-CN": "未设置",
+    "en-US": "not set",
+    "zh-TW": "未設定",
+    "zh-HK": "未設定",
+    "ja-JP": "未設定",
+    "ko-KR": "미설정",
+  },
+  未知: {
+    "zh-CN": "未知",
+    "en-US": "unknown",
+    "zh-TW": "未知",
+    "zh-HK": "未知",
+    "ja-JP": "不明",
+    "ko-KR": "알 수 없음",
+  },
+};
+
+function translateLiveStudioLabel(raw: string, loc: ColabOneLocale): string {
+  const key = raw.trim();
+  const hit = LIVE_STUDIO_LABELS[key] ?? SYMLINK_DIR_LABELS[key];
+  return hit ? hit[loc] : key;
+}
+
+function translateLiveStudioRecommendations(
+  raw: string,
+  loc: ColabOneLocale,
+): string {
+  const parts = raw
+    .split("；")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => translateInner(part, loc));
+  if (parts.length === 0) return raw;
+  if (loc === "en-US" || loc === "ko-KR") {
+    return parts.join(" ");
+  }
+  if (loc === "ja-JP") {
+    return parts.join("");
+  }
+  return parts.join("；");
+}
 
 function applyRedactionTokens(text: string, locale: ColabOneLocale): string {
   if (locale === "zh-CN" || !text.includes("[")) return text;

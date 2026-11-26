@@ -2629,6 +2629,418 @@ def test_warm_tts_inference_error_fails_fast_and_prefetch_aborts_on_fatal_error(
         assert "_release_warm_state(state)" in script_src
 
 
+def test_warm_tts_oneshot_vram_exclusion_cancel_gen_call_and_wav_guards(
+    tmp_path, monkeypatch
+):
+    """Verify warm/cold VRAM exclusion, start() cancel polling, _warm_release_gen,
+    prefetch thread join order, strict req_id + cancel-hook chaining, and empty WAV guards."""
+    import base64
+    import os
+    import textwrap
+    import threading
+    import time
+    import wave
+
+    from server.comfyui import ColabOneComfyManager
+    from server.runtime import ColabOneCancelledError
+    from server.tts_engines import (
+        ColabOneRemoteTtsRunner,
+        ColabOneWarmTtsWorker,
+        _WORKER_COMMON_HEADER,
+        _is_standard_mono_pcm16_wav,
+    )
+
+    rt = _make_mock_runtime(tmp_path)
+    engines = sample_eight_tts_engines_by_id()
+    runner = ColabOneRemoteTtsRunner(rt, engines)
+
+    # 1. _is_standard_mono_pcm16_wav rejects 0-frame WAV; validate_tts_synthesis_inputs rejects 0-byte ref/emo.
+    empty_frames_wav = tmp_path / "zero_frames.wav"
+    with wave.open(str(empty_frames_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"")
+    assert empty_frames_wav.stat().st_size == 44
+    assert _is_standard_mono_pcm16_wav(empty_frames_wav) is False
+
+    valid_wav = tmp_path / "valid_frames.wav"
+    with wave.open(str(valid_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x01\x00" * 160)
+    assert _is_standard_mono_pcm16_wav(valid_wav) is True
+
+    zero_byte = tmp_path / "zero.wav"
+    zero_byte.write_bytes(b"")
+    with pytest.raises(ValueError, match="为空"):
+        runner.validate_tts_synthesis_inputs(
+            "voxcpm2", script_text="测试", ref_audio_path=zero_byte
+        )
+    with pytest.raises(ValueError, match="为空"):
+        runner.validate_tts_synthesis_inputs(
+            "indextts2",
+            script_text="测试",
+            ref_audio_path=valid_wav,
+            emotion_ref_path=zero_byte,
+        )
+
+    # 2. synthesize() with prefer_warm=False releases warm worker BEFORE spawning cold subprocess.
+    env_dir = runner.engines_dir / "fish_drama3"
+    venv_py = env_dir / ".venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True, exist_ok=True)
+    venv_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "ensure_engine_env", lambda task, eng, hf_token="": env_dir)
+    monkeypatch.setattr(runner, "check_vram", lambda *a, **kw: None)
+    monkeypatch.setattr(runner, "check_disk", lambda *a, **kw: None)
+
+    events: list[str] = []
+    orig_release = runner.release_warm_worker
+
+    def _track_release(reason: str = "") -> None:
+        events.append(f"release:{reason}")
+        orig_release(reason=reason)
+
+    monkeypatch.setattr(runner, "release_warm_worker", _track_release)
+
+    def _track_oneshot(args, *a, **kw):
+        events.append("oneshot")
+        cfg_path = Path(args[args.index("--config") + 1])
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        for seg in cfg["segments"]:
+            out_p = Path(seg["output_wav"])
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(out_p), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(b"\x01\x00" * 1600)
+
+    monkeypatch.setattr(runner, "_invoke_command", _track_oneshot)
+    runner.synthesize(
+        None,
+        engine_id="fish_drama3",
+        script_text="冷启动互斥测试。",
+        ref_audio_path=valid_wav,
+        ref_text="参考文本",
+        work_dir=tmp_path / "work_oneshot_excl",
+        prefer_warm=False,
+    )
+    assert events.index("release:before_oneshot_synth") < events.index("oneshot")
+
+    # 3. ColabOneWarmTtsWorker.start() polls cancel_event and closes subprocess immediately.
+    slow_script = textwrap.dedent(
+        """\
+        import sys, time
+        time.sleep(30)
+        """
+    )
+    cancel_ev = threading.Event()
+    slow_worker = ColabOneWarmTtsWorker(
+        engine_id="qwen3_tts",
+        worker_python=sys.executable,
+        worker_script=slow_script,
+        work_dir=tmp_path / "warm_cancel_start",
+        env=dict(os.environ),
+    )
+    timer = threading.Timer(0.15, cancel_ev.set)
+    timer.start()
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(ColabOneCancelledError):
+            slow_worker.start(timeout=15.0, cancel_event=cancel_ev)
+    finally:
+        timer.cancel()
+        slow_worker.close()
+    assert (time.monotonic() - t0) < 3.0
+    assert slow_worker.is_alive() is False
+
+    # 4. _warm_release_gen prevents publishing a worker whose startup raced with release_warm_worker().
+    gen_runner = ColabOneRemoteTtsRunner(rt, engines)
+    monkeypatch.setattr(gen_runner, "ensure_engine_env", lambda task, eng, hf_token="": env_dir)
+    monkeypatch.setattr(gen_runner, "_require_venv_python", lambda *a, **kw: Path(sys.executable))
+    monkeypatch.setattr(gen_runner, "build_worker_script", lambda eid: "print('unused')")
+
+    started_closed = {"closed": False}
+
+    def _fake_start_with_concurrent_release(self, *, timeout=45.0, cancel_event=None, task=None):
+        gen_runner.release_warm_worker("concurrent_stop")
+
+    def _fake_close(self):
+        started_closed["closed"] = True
+
+    monkeypatch.setattr(ColabOneWarmTtsWorker, "start", _fake_start_with_concurrent_release)
+    monkeypatch.setattr(ColabOneWarmTtsWorker, "close", _fake_close)
+    with pytest.raises(ColabOneCancelledError):
+        gen_runner._ensure_warm_worker_locked(None, engines["qwen3_tts"])
+    assert gen_runner._warm_worker is None
+    assert started_closed["closed"] is True
+    monkeypatch.undo()
+
+    # 5. cancel_prefetch_and_release_warm_worker joins prefetch thread BEFORE final release_warm_worker.
+    pf_runner = ColabOneRemoteTtsRunner(rt, engines)
+    pf_entered = threading.Event()
+    pf_order: list[str] = []
+
+    def _slow_pf_thread():
+        pf_entered.set()
+        time.sleep(0.15)
+        pf_order.append("prefetch_exited")
+
+    pf_thread = threading.Thread(target=_slow_pf_thread, daemon=True)
+    pf_runner._prefetch_thread = pf_thread
+    pf_runner._prefetch_cancel = threading.Event()
+    pf_thread.start()
+    assert pf_entered.wait(timeout=2.0)
+
+    orig_pf_release = pf_runner.release_warm_worker
+
+    def _spy_pf_release(reason: str = "") -> None:
+        pf_order.append(f"release:{reason}")
+        orig_pf_release(reason=reason)
+
+    monkeypatch.setattr(pf_runner, "release_warm_worker", _spy_pf_release)
+    pf_runner.cancel_prefetch_and_release_warm_worker("stop_now")
+    assert pf_order[-1] == "release:stop_now"
+    assert "prefetch_exited" in pf_order
+    assert pf_order.index("prefetch_exited") < len(pf_order) - 1
+
+    # 6. ColabOneWarmTtsWorker.call() enforces strict req_id matching and chains prev_cancel_hook.
+    stray_body = textwrap.dedent(
+        """\
+        def _handle_one(cfg: dict) -> None:
+            _emit_daemon_resp({"ok": True, "stray": True})
+
+        def main() -> None:
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--daemon", action="store_true")
+            args = parser.parse_args()
+            if args.daemon:
+                _run_daemon_loop(_handle_one)
+
+        if __name__ == "__main__":
+            main()
+        """
+    )
+    strict_worker = ColabOneWarmTtsWorker(
+        engine_id="qwen3_tts",
+        worker_python=sys.executable,
+        worker_script=_WORKER_COMMON_HEADER + stray_body,
+        work_dir=tmp_path / "warm_strict_id",
+        env=dict(os.environ),
+    )
+    prev_hook_called = {"called": False}
+
+    class _TaskWithHook:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.cancel = threading.Event()
+            self.cancel_hook = lambda: prev_hook_called.__setitem__("called", True)
+
+        def check(self):
+            if self.cancel.is_set():
+                raise ColabOneCancelledError("cancelled")
+
+    try:
+        strict_worker.start(timeout=15.0)
+        task_hook = _TaskWithHook()
+        resp = strict_worker.call(
+            {"op": "synthesize", "config": {}},
+            task=task_hook,
+            timeout=15.0,
+        )
+        assert resp.get("ok") is True
+        assert resp.get("stray") is None
+        assert resp.get("op") == "synthesize"
+        assert resp.get("id")
+
+        # Verify prev_cancel_hook is chained and ValueError/BrokenPipeError checks cancel first.
+        task_hook2 = _TaskWithHook()
+        fired_once = {"done": False}
+
+        def _trigger_cancel_on_write(data):
+            if not fired_once["done"]:
+                fired_once["done"] = True
+                with task_hook2.lock:
+                    hook = task_hook2.cancel_hook
+                task_hook2.cancel.set()
+                if callable(hook):
+                    hook()
+            raise ValueError("write to closed file")
+
+        monkeypatch.setattr(strict_worker.proc.stdin, "write", _trigger_cancel_on_write)
+        with pytest.raises(ColabOneCancelledError):
+            strict_worker.call({"op": "ping"}, task=task_hook2, timeout=15.0)
+        assert prev_hook_called["called"] is True
+    finally:
+        strict_worker.close()
+
+    # 7. server/comfyui.py run_tts_preview forwards ref_audio_path and voice_preset to check_disk().
+    rt.catalog = ROOT / "catalog"
+    rt.loaded = None
+    mgr = ColabOneComfyManager(rt)
+    saved_audio = mgr.store.save_input(
+        "ref.wav", base64.b64encode(valid_wav.read_bytes()).decode("ascii")
+    )
+    seen_disk_kwargs: list[dict[str, Any]] = []
+    monkeypatch.setattr(mgr.tts, "check_vram", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        mgr.tts,
+        "check_disk",
+        lambda eng, **kw: seen_disk_kwargs.append(dict(kw)),
+    )
+    monkeypatch.setattr(
+        mgr.tts,
+        "synthesize_preview",
+        lambda *a, **kw: {
+            "cached": True,
+            "preview_id": kw["preview_id"],
+            "engine_id": kw["engine_id"],
+            "voice_preset": kw["voice_preset"],
+            "text": kw["preview_text"],
+            "sample_rate": 24000,
+            "duration_seconds": 0.5,
+            "mime": "audio/wav",
+            "size": 100,
+            "sha256": "0" * 64,
+        },
+    )
+    mgr.run_tts_preview(
+        ColabOneTask("comfyui_tts_preview", "voxcpm2"),
+        {
+            "engine_id": "voxcpm2",
+            "voice_preset": "custom",
+            "preview_text": "你好世界",
+            "ref_audio_input_id": saved_audio["id"],
+        },
+    )
+    assert len(seen_disk_kwargs) == 1
+    assert seen_disk_kwargs[0]["voice_preset"] == "custom"
+    assert seen_disk_kwargs[0]["ref_audio_path"] is not None
+
+
+def test_ming_worker_per_request_work_dir_stale_removal_and_frame_validation(
+    tmp_path, monkeypatch
+):
+    """Ming worker isolates anchor per-request (no cwd leakage), deletes stale wavs,
+    and rejects 44-byte zero-frame WAV files."""
+    import sys
+    import types
+    import wave
+
+    rt = _make_mock_runtime(tmp_path)
+    runner = ColabOneRemoteTtsRunner(rt, sample_eight_tts_engines_by_id())
+    ming_ns: dict[str, Any] = {}
+    exec(
+        compile(runner.build_worker_script("ming_3_tts"), "worker_ming_iso.py", "exec"),
+        ming_ns,
+    )
+
+    def _write_good_wav(path: Path, samples: bytes = b"\x01\x00" * 320) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(44100)
+            wf.writeframes(samples)
+
+    seen_calls: list[dict[str, Any]] = []
+
+    class _FakeMingTTS:
+        sample_rate = 44100
+
+        def __init__(self, mode: str = "good") -> None:
+            self.mode = mode
+
+        def generate(self, **kwargs):
+            seen_calls.append(dict(kwargs))
+            out_p = Path(kwargs["output_path"])
+            if self.mode == "zero_frame":
+                _write_good_wav(out_p, samples=b"")
+                return None
+            if self.mode == "noop":
+                return None
+            _write_good_wav(out_p)
+            return None
+
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+        manual_seed=lambda _s: None,
+    )
+    fake_hf = types.SimpleNamespace(snapshot_download=lambda **kw: str(tmp_path))
+    fake_ming_mod = types.SimpleNamespace(MingTinyTTS=object())
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hf)
+    monkeypatch.setitem(sys.modules, "ming_tiny", fake_ming_mod)
+
+    shared_cwd = tmp_path / "shared_daemon_cwd"
+    shared_cwd.mkdir()
+    req1_dir = tmp_path / "req1"
+    req2_dir = tmp_path / "req2"
+    req1_dir.mkdir()
+    req2_dir.mkdir()
+
+    # Pre-seed stale anchor in shared_cwd AND stale empty files in req1_dir.
+    _write_good_wav(shared_cwd / "ming_speaker_anchor.wav")
+    stale_anchor_req1 = req1_dir / "ming_speaker_anchor.wav"
+    _write_good_wav(stale_anchor_req1)
+    stale_seg_req1 = req1_dir / "seg_0000.wav"
+    _write_good_wav(stale_seg_req1)
+
+    state = {
+        "key": ("inclusionAI/Ming-3.0-tts-tiny", "rev", str(tmp_path), "cpu"),
+        "tts": _FakeMingTTS("good"),
+    }
+    base_cfg = {
+        "repo": "inclusionAI/Ming-3.0-tts-tiny",
+        "revision": "rev",
+        "cache_dir": str(tmp_path),
+        "emotion_prompt": "高兴",
+        "voice_prompt": "知性女声",
+        "sample_rate": 44100,
+    }
+
+    # Request 1 & 2 with empty work_dir must each write anchor in their own segment parent dir.
+    ming_ns["_run_ming_request"](
+        base_cfg | {"segments": [{"text": "第一句", "output_wav": str(stale_seg_req1)}]},
+        state,
+        shared_cwd,
+    )
+    ming_ns["_run_ming_request"](
+        base_cfg
+        | {"segments": [{"text": "第二句", "output_wav": str(req2_dir / "seg_0000.wav")}]},
+        state,
+        shared_cwd,
+    )
+    anchor_paths = [c["output_path"] for c in seen_calls if c.get("task") == "voice_design"]
+    assert anchor_paths == [
+        str(req1_dir / "ming_speaker_anchor.wav"),
+        str(req2_dir / "ming_speaker_anchor.wav"),
+    ]
+    assert not any(str(shared_cwd) in p for p in anchor_paths)
+
+    # Stale anchor / output MUST be unlinked before generate() so a noop generate fails instead of reusing stale wav.
+    state["tts"] = _FakeMingTTS("noop")
+    with pytest.raises(RuntimeError, match="未生成参考锚点音频"):
+        ming_ns["_run_ming_request"](
+            base_cfg | {"segments": [{"text": "失败检测", "output_wav": str(stale_seg_req1)}]},
+            state,
+            shared_cwd,
+        )
+    assert not stale_anchor_req1.exists()
+
+    # 44-byte zero-frame WAV written by generate() MUST be rejected as invalid.
+    state["tts"] = _FakeMingTTS("zero_frame")
+    with pytest.raises(RuntimeError, match="未生成参考锚点音频"):
+        ming_ns["_run_ming_request"](
+            base_cfg | {"segments": [{"text": "零帧检测", "output_wav": str(stale_seg_req1)}]},
+            state,
+            shared_cwd,
+        )
+
+
+
 
 
 

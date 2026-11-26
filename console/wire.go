@@ -63,11 +63,160 @@ func colabOneRootDir() string {
 	return cwd
 }
 
-// runColabOneSelfTest validates the embedded remote service bundle, catalog
-// manifests (`presets.json` and `comfyui.json`), and core pure-Go packages
+// runColabOneSelfTest validates the embedded remote service bundle, all catalog
+// manifests (`presets.json`, `comfyui.json`, `live_studio.json`,
+// `cloudflared.json`, `rclone.json`, `engine.json`), and core pure-Go packages
 // completely offline without touching the network or OS credential store.
 func runColabOneSelfTest() error {
-	bundle := servicebundle.NewEmbeddedBundle()
+	return validateColabOneServiceBundle(servicebundle.NewEmbeddedBundle())
+}
+
+func isValidColabOneSHA256Hex(raw string) bool {
+	s := strings.TrimSpace(raw)
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateColabOneArchSHA256Catalog(name string, raw []byte) error {
+	var doc struct {
+		Tag    string            `json:"tag"`
+		SHA256 map[string]string `json:"sha256"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("parse %s: %w", name, err)
+	}
+	if strings.TrimSpace(doc.Tag) == "" {
+		return fmt.Errorf("validate %s: missing tag", name)
+	}
+	for _, arch := range []string{"amd64", "arm64"} {
+		if !isValidColabOneSHA256Hex(doc.SHA256[arch]) {
+			return fmt.Errorf("validate %s: invalid sha256 for %s", name, arch)
+		}
+	}
+	for arch, digest := range doc.SHA256 {
+		if strings.TrimSpace(arch) == "" || !isValidColabOneSHA256Hex(digest) {
+			return fmt.Errorf("validate %s: invalid sha256 entry %q", name, arch)
+		}
+	}
+	return nil
+}
+
+func validateColabOneEngineCatalog(raw []byte) error {
+	var doc struct {
+		Tag    string `json:"tag"`
+		Assets []struct {
+			URL    string `json:"url"`
+			SHA256 string `json:"sha256"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("parse engine.json: %w", err)
+	}
+	if strings.TrimSpace(doc.Tag) == "" {
+		return errors.New("validate engine.json: missing tag")
+	}
+	if len(doc.Assets) == 0 {
+		return errors.New("validate engine.json: assets is empty")
+	}
+	for i, asset := range doc.Assets {
+		if !strings.HasPrefix(strings.TrimSpace(asset.URL), "https://") {
+			return fmt.Errorf("validate engine.json: asset[%d] url must use https", i)
+		}
+		if !isValidColabOneSHA256Hex(asset.SHA256) {
+			return fmt.Errorf("validate engine.json: asset[%d] invalid sha256", i)
+		}
+	}
+	return nil
+}
+
+func validateColabOneLiveStudioCatalog(raw []byte) error {
+	var doc struct {
+		Port                  int    `json:"port"`
+		WSPath                string `json:"ws_path"`
+		DefaultFPS            int    `json:"default_fps"`
+		AudioInputSampleRate  int    `json:"audio_input_sample_rate"`
+		AudioOutputSampleRate int    `json:"audio_output_sample_rate"`
+		ASRVAD                []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Role string `json:"role"`
+		} `json:"asr_vad"`
+		StreamingTTS []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Repo string `json:"repo"`
+		} `json:"streaming_tts"`
+		VisualEngines []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Mode string `json:"mode"`
+			Repo string `json:"repo"`
+		} `json:"visual_engines"`
+		DefaultActions []struct {
+			ID    string `json:"id"`
+			Label string `json:"label"`
+			Kind  string `json:"kind"`
+		} `json:"default_actions"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("parse live_studio.json: %w", err)
+	}
+	if doc.Port <= 0 || doc.Port > 65535 {
+		return fmt.Errorf("validate live_studio.json: invalid port %d", doc.Port)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(doc.WSPath), "/") {
+		return fmt.Errorf("validate live_studio.json: invalid ws_path %q", doc.WSPath)
+	}
+	if doc.DefaultFPS <= 0 || doc.AudioInputSampleRate <= 0 || doc.AudioOutputSampleRate <= 0 {
+		return errors.New("validate live_studio.json: invalid fps or audio sample rates")
+	}
+	if len(doc.ASRVAD) == 0 || len(doc.StreamingTTS) == 0 || len(doc.VisualEngines) == 0 || len(doc.DefaultActions) == 0 {
+		return errors.New("validate live_studio.json: required catalog sections must not be empty")
+	}
+	seenASR := make(map[string]bool, len(doc.ASRVAD))
+	for i, item := range doc.ASRVAD {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Role) == "" || seenASR[id] {
+			return fmt.Errorf("validate live_studio.json: invalid asr_vad[%d] (%q)", i, item.ID)
+		}
+		seenASR[id] = true
+	}
+	seenTTS := make(map[string]bool, len(doc.StreamingTTS))
+	for i, item := range doc.StreamingTTS {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Repo) == "" || seenTTS[id] {
+			return fmt.Errorf("validate live_studio.json: invalid streaming_tts[%d] (%q)", i, item.ID)
+		}
+		seenTTS[id] = true
+	}
+	seenVisual := make(map[string]bool, len(doc.VisualEngines))
+	for i, item := range doc.VisualEngines {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Mode) == "" || strings.TrimSpace(item.Repo) == "" || seenVisual[id] {
+			return fmt.Errorf("validate live_studio.json: invalid visual_engines[%d] (%q)", i, item.ID)
+		}
+		seenVisual[id] = true
+	}
+	seenAction := make(map[string]bool, len(doc.DefaultActions))
+	for i, item := range doc.DefaultActions {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || strings.TrimSpace(item.Label) == "" || strings.TrimSpace(item.Kind) == "" || seenAction[id] {
+			return fmt.Errorf("validate live_studio.json: invalid default_actions[%d] (%q)", i, item.ID)
+		}
+		seenAction[id] = true
+	}
+	return nil
+}
+
+func validateColabOneServiceBundle(bundle *servicebundle.ColabOneServiceBundle) error {
 	rev := bundle.ServiceRevision()
 	if len(rev) != 16 {
 		return fmt.Errorf("embedded service bundle revision invalid: %q", rev)
@@ -102,6 +251,34 @@ func runColabOneSelfTest() error {
 	}
 	if err := catalog.Validate(); err != nil {
 		return fmt.Errorf("validate comfyui.json: %w", err)
+	}
+	liveRaw, err := bundle.ReadCatalogFile("live_studio.json")
+	if err != nil {
+		return fmt.Errorf("read embedded live_studio.json: %w", err)
+	}
+	if err := validateColabOneLiveStudioCatalog(liveRaw); err != nil {
+		return err
+	}
+	cloudflaredRaw, err := bundle.ReadCatalogFile("cloudflared.json")
+	if err != nil {
+		return fmt.Errorf("read embedded cloudflared.json: %w", err)
+	}
+	if err := validateColabOneArchSHA256Catalog("cloudflared.json", cloudflaredRaw); err != nil {
+		return err
+	}
+	rcloneRaw, err := bundle.ReadCatalogFile("rclone.json")
+	if err != nil {
+		return fmt.Errorf("read embedded rclone.json: %w", err)
+	}
+	if err := validateColabOneArchSHA256Catalog("rclone.json", rcloneRaw); err != nil {
+		return err
+	}
+	engineRaw, err := bundle.ReadCatalogFile("engine.json")
+	if err != nil {
+		return fmt.Errorf("read embedded engine.json: %w", err)
+	}
+	if err := validateColabOneEngineCatalog(engineRaw); err != nil {
+		return err
 	}
 	return nil
 }

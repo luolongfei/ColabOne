@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luolongfei/ColabOne/console/internal/controller"
 )
@@ -126,5 +127,98 @@ func TestOutputPreviewURLLoopbackServerSecurityAndRangeStreaming(t *testing.T) {
 	}
 	if !bytes.Equal(body, videoBytes[10:26]) {
 		t.Fatalf("body=%q, want %q", string(body), string(videoBytes[10:26]))
+	}
+}
+
+func TestOutputMediaServerPostCloseRejectionAndForcedCloseOnActiveStream(t *testing.T) {
+	videoID := "abcdef0123456789abcdef0123456789"
+	streamStarted := make(chan struct{})
+	streamDone := make(chan struct{})
+
+	d := &ColabOneDesktop{
+		bridge: &colabOneBridge{
+			resolveMediaFn: func(ctx context.Context, id string) (*controller.ColabOneOutputMediaMeta, error) {
+				return &controller.ColabOneOutputMediaMeta{
+					ID:        id,
+					Size:      1024,
+					Mime:      "video/mp4",
+					Extension: "mp4",
+				}, nil
+			},
+			serveMediaFn: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string) {
+				defer close(streamDone)
+				rw.Header().Set("Content-Type", "video/mp4")
+				rw.WriteHeader(http.StatusPartialContent)
+				_, _ = rw.Write([]byte("partial"))
+				if fl, ok := rw.(http.Flusher); ok {
+					fl.Flush()
+				}
+				close(streamStarted)
+				<-ctx.Done()
+			},
+		},
+	}
+
+	previewURL, err := d.OutputPreviewURL(context.Background(), videoID)
+	if err != nil {
+		t.Fatalf("OutputPreviewURL failed: %v", err)
+	}
+
+	// Open an active Range stream that stalls until the server closes it.
+	client := &http.Client{Transport: &http.Transport{}}
+	reqDone := make(chan error, 1)
+	go func() {
+		resp, reqErr := client.Get(previewURL)
+		if reqErr != nil {
+			reqDone <- reqErr
+			return
+		}
+		_, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		reqDone <- readErr
+	}()
+
+	select {
+	case <-streamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for active media stream to start")
+	}
+
+	// Close with a short shutdown timeout: Shutdown hits DeadlineExceeded and must
+	// call srv.Close() to tear down the active Range stream promptly.
+	start := time.Now()
+	d.closeOutputMediaServerWithTimeout(30 * time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 1*time.Second {
+		t.Fatalf("closeOutputMediaServerWithTimeout took too long: %v", elapsed)
+	}
+
+	select {
+	case <-streamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active media stream handler did not exit after forced server close")
+	}
+	select {
+	case <-reqDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active media stream client did not unblock after forced server close")
+	}
+
+	// Calling OutputPreviewURL / ensureOutputMediaServer after close must fail closed
+	// without spawning a new listener.
+	if _, err := d.OutputPreviewURL(context.Background(), videoID); !errors.Is(err, ErrBridgeClosed) {
+		t.Fatalf("OutputPreviewURL after close = %v, want ErrBridgeClosed", err)
+	}
+	d.mediaMu.Lock()
+	srvAfter := d.mediaSrv
+	d.mediaMu.Unlock()
+	if srvAfter != nil {
+		t.Fatal("expected mediaSrv to remain nil after close")
+	}
+
+	// Also reject starting when appQuitting is already set.
+	d2 := &ColabOneDesktop{}
+	d2.appQuitting.Store(true)
+	if _, err := d2.ensureOutputMediaServer(); !errors.Is(err, ErrBridgeClosed) {
+		t.Fatalf("ensureOutputMediaServer while quitting = %v, want ErrBridgeClosed", err)
 	}
 }

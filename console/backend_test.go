@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"math"
 	"mime"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,6 +26,7 @@ import (
 	"github.com/luolongfei/ColabOne/console/internal/controller"
 	"github.com/luolongfei/ColabOne/console/internal/provider"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
+	"github.com/luolongfei/ColabOne/console/internal/webconsole"
 )
 
 func TestPureGoSelfTestPassesOffline(t *testing.T) {
@@ -1321,5 +1325,57 @@ func TestColabOneBridgeSingleFlightDeduplicatesAndRespectsCancel(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("factory invoked %d times, want 1", got)
+	}
+}
+
+func TestColabOneBridgeTimeoutErrorMapsToWebConsole504(t *testing.T) {
+	prevLocale := colabOneGetLocale()
+	t.Cleanup(func() { colabOneSetLocaleState(prevLocale) })
+	colabOneSetLocaleState(colabOneLocaleZhCN)
+
+	errTimeout := newColabOneBridgeTimeoutError()
+	if !errors.Is(errTimeout, context.DeadlineExceeded) {
+		t.Fatalf("expected colabOneBridgeTimeoutError to match context.DeadlineExceeded")
+	}
+	if errTimeout.Error() != colabOneT("err.bridgeTimeout") {
+		t.Fatalf("timeout error message = %q, want %q", errTimeout.Error(), colabOneT("err.bridgeTimeout"))
+	}
+
+	wc := webconsole.NewColabOneWebConsole(webconsole.ColabOneWebConsoleOptions{
+		ConfigDir: t.TempDir(),
+		Vault:     &wireVaultAdapter{v: vault.NewMemoryVault()},
+		CallBridge: func(ctx context.Context, method string, payload map[string]any) (string, error) {
+			return "", newColabOneBridgeTimeoutError()
+		},
+	})
+	defer wc.Close()
+
+	passcode, err := wc.Passcode()
+	if err != nil {
+		t.Fatalf("Passcode failed: %v", err)
+	}
+	loginBody, _ := json.Marshal(map[string]string{"passcode": passcode})
+	loginReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3232/_colabone_web/login", bytes.NewReader(loginBody))
+	loginReq.RemoteAddr = "127.0.0.1:54321"
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set(webconsole.ClientHeaderName, webconsole.ClientHeaderValue)
+	loginRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK || len(loginRec.Result().Cookies()) == 0 {
+		t.Fatalf("login failed: code=%d body=%s", loginRec.Code, loginRec.Body.String())
+	}
+	cookie := loginRec.Result().Cookies()[0]
+
+	cmdReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3232/api/command", strings.NewReader(`{"action":"models.list"}`))
+	cmdReq.RemoteAddr = "127.0.0.1:54321"
+	cmdReq.AddCookie(cookie)
+	cmdReq.Header.Set(webconsole.ClientHeaderName, webconsole.ClientHeaderValue)
+	cmdRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(cmdRec, cmdReq)
+	if cmdRec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504 Gateway Timeout for colabOneBridgeTimeoutError, got %d body=%s", cmdRec.Code, cmdRec.Body.String())
+	}
+	if !strings.Contains(cmdRec.Body.String(), colabOneT("err.bridgeTimeout")) {
+		t.Fatalf("expected localized bridge timeout message in 504 body, got %s", cmdRec.Body.String())
 	}
 }

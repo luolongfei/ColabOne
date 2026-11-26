@@ -30,6 +30,7 @@ import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import ComfyWorkflowField from "./ComfyWorkflowField.vue";
+import LiveStudioPanel from "./LiveStudioPanel.vue";
 import {
   buildColabOnePrivacyContext,
   colabOnePrivacyActive,
@@ -44,6 +45,7 @@ import {
   PhAppWindow,
   PhArrowSquareOut,
   PhArrowsClockwise,
+  PhBroadcast,
   PhBroom,
   PhBrowsers,
   PhCalendarBlank,
@@ -182,7 +184,7 @@ const emit = defineEmits<{
   "drawer-state": [{ open: boolean; width: number; rootSelector: string }];
 }>();
 
-const activeTab = ref<"studio" | "canvas">("studio");
+const activeTab = ref<"studio" | "live" | "canvas">("studio");
 const deleteConfirmWorkflowId = ref("");
 const tabsWrapRef = ref<HTMLElement | null>(null);
 const busy = ref(false);
@@ -1562,6 +1564,7 @@ const voicePreviewPrefetchStarting = ref(false);
 const voicePreviewPrefetchLocalCancelled = ref(false);
 const voicePreviewText = ref("");
 const voicePreviewTextCustomEdited = ref(false);
+const voicePreviewLookingUp = ref(false);
 const voicePreviewFetchingAsset = ref(false);
 const activeVoicePreviewTaskId = ref("");
 const activeVoicePreviewId = ref("");
@@ -1582,7 +1585,7 @@ let voicePreviewLookupGen = 0;
 let pendingAutoPlayVoicePresetId = "";
 const activePrefetchJobId = ref("");
 const activePrefetchJobScopeKey = ref("");
-const prefetchPulledPreviewIds = new Set<string>();
+const prefetchPendingPreviewIds = new Set<string>();
 const prefetchPullQueue: Array<{
   presetId: string;
   previewId: string;
@@ -1730,6 +1733,7 @@ const hasBlockingNonPreviewTask = computed(() =>
 );
 const voicePreviewBusy = computed(
   () =>
+    voicePreviewLookingUp.value ||
     voicePreviewSubmitting.value ||
     voicePreviewFetchingAsset.value ||
     Boolean(activeVoicePreviewTaskId.value) ||
@@ -1739,6 +1743,7 @@ const engineActionBlocked = computed(
   () =>
     busy.value ||
     submittingRun.value ||
+    voicePreviewLookingUp.value ||
     voicePreviewSubmitting.value ||
     Boolean(activeVoicePreviewTaskId.value) ||
     voicePreviewFetchingAsset.value ||
@@ -1839,6 +1844,7 @@ function clearActiveVoicePreviewDisplay() {
 
 function resetVoicePreviewTaskTracking() {
   ++voicePreviewReqGen;
+  voicePreviewLookingUp.value = false;
   voicePreviewSubmitting.value = false;
   voicePreviewFetchingAsset.value = false;
   activeVoicePreviewTaskId.value = "";
@@ -1886,6 +1892,8 @@ function revokeAllVoicePreviewUrls(defer = false) {
     if (entry.url) urls.push(entry.url);
   }
   voicePreviewCache.clear();
+  prefetchPullQueue.length = 0;
+  prefetchPendingPreviewIds.clear();
   voicePreviewAudioUrl.value = "";
   voicePreviewMeta.value = null;
   loadedVoicePreviewSignature.value = "";
@@ -2117,16 +2125,18 @@ async function drainPrefetchPullQueue() {
     while (prefetchPullQueue.length > 0 && !disposed) {
       const next = prefetchPullQueue.shift();
       if (!next) continue;
-      if (next.scopeKey !== currentVoicePrefetchScopeKey.value) {
-        continue;
-      }
-      if (voicePreviewCache.has(next.previewId)) {
-        continue;
-      }
-      if (!gpuReady.value) {
-        break;
-      }
       try {
+        if (next.scopeKey !== currentVoicePrefetchScopeKey.value) {
+          continue;
+        }
+        if (voicePreviewCache.has(next.previewId)) {
+          continue;
+        }
+        if (!gpuReady.value) {
+          prefetchPullQueue.length = 0;
+          prefetchPendingPreviewIds.clear();
+          break;
+        }
         const asset = (await colabOneCommand("comfyui.tts.preview.asset", {
           preview_id: next.previewId,
         })) as Partial<ColabOneTtsPreviewResult> | null;
@@ -2166,6 +2176,8 @@ async function drainPrefetchPullQueue() {
         evictVoicePreviewCache(url);
       } catch {
         // Non-fatal; asset can still be fetched on demand when clicked.
+      } finally {
+        prefetchPendingPreviewIds.delete(next.previewId);
       }
     }
   } finally {
@@ -2181,7 +2193,7 @@ function enqueuePrefetchAssetPull(
   if (
     !previewId ||
     voicePreviewCache.has(previewId) ||
-    prefetchPulledPreviewIds.has(previewId)
+    prefetchPendingPreviewIds.has(previewId)
   ) {
     return;
   }
@@ -2192,7 +2204,7 @@ function enqueuePrefetchAssetPull(
   const voiceField = wf.fields.find((f) => f.key === "pipeline.voice_preset");
   const voiceLabel =
     preset?.name || voiceField?.option_labels?.[presetId] || presetId;
-  prefetchPulledPreviewIds.add(previewId);
+  prefetchPendingPreviewIds.add(previewId);
   prefetchPullQueue.push({
     presetId,
     previewId,
@@ -2210,6 +2222,7 @@ function cancelVoicePreviewPrefetch() {
   activePrefetchJobId.value = "";
   activePrefetchJobScopeKey.value = "";
   prefetchPullQueue.length = 0;
+  prefetchPendingPreviewIds.clear();
   if (!gpuReady.value) return;
   void colabOneCommand("comfyui.tts.preview.prefetch.cancel", {}).catch(
     () => {},
@@ -2294,14 +2307,14 @@ async function kickoffSiblingVoicePrefetch(activePresetId: string) {
 
 async function tryPlayLocalOrCachedVoicePreview(
   presetId: string,
-  opts: { autoPlay: boolean; triggerPrefetch: boolean },
-): Promise<boolean> {
+  opts: { autoPlay: boolean; triggerPrefetch: boolean; reqGen?: number },
+): Promise<"played" | "miss" | "handled_or_superseded"> {
   if (hasUploadedVoicePreviewRefAudio.value || !presetId || presetId === "custom") {
-    return false;
+    return "miss";
   }
   const wf = selectedWorkflow.value;
   const engine = selectedTtsEngine.value;
-  if (!wf || !engine) return false;
+  if (!wf || !engine) return "miss";
   const scopeKey = currentVoicePrefetchScopeKey.value;
   const knownPreviewId = readyVoicePresetMap.value[presetId] || "";
   const engineName = engine.name || engine.id;
@@ -2347,12 +2360,12 @@ async function tryPlayLocalOrCachedVoicePreview(
       if (opts.triggerPrefetch) {
         void kickoffSiblingVoicePrefetch(presetId);
       }
-      return true;
+      return "played";
     }
   }
 
   // L2: local desktop persistent disk cache (~1-2 ms, works offline!).
-  const reqGen = ++voicePreviewReqGen;
+  const reqGen = opts.reqGen ?? ++voicePreviewReqGen;
   try {
     const localRes = (await colabOneCommand("comfyui.tts.preview.cache.read", {
       preview_id: knownPreviewId,
@@ -2367,7 +2380,7 @@ async function tryPlayLocalOrCachedVoicePreview(
       reqGen !== voicePreviewReqGen ||
       currentVoicePrefetchScopeKey.value !== scopeKey
     ) {
-      return false;
+      return "handled_or_superseded";
     }
     if (
       localRes?.cached &&
@@ -2402,10 +2415,24 @@ async function tryPlayLocalOrCachedVoicePreview(
         if (opts.triggerPrefetch) {
           void kickoffSiblingVoicePrefetch(presetId);
         }
-        return true;
+        return "played";
+      }
+      if (
+        disposed ||
+        reqGen !== voicePreviewReqGen ||
+        currentVoicePrefetchScopeKey.value !== scopeKey
+      ) {
+        return "handled_or_superseded";
       }
     }
   } catch {
+    if (
+      disposed ||
+      reqGen !== voicePreviewReqGen ||
+      currentVoicePrefetchScopeKey.value !== scopeKey
+    ) {
+      return "handled_or_superseded";
+    }
     // Fall through to remote fetch if local disk read failed.
   }
 
@@ -2417,7 +2444,7 @@ async function tryPlayLocalOrCachedVoicePreview(
     activeVoicePreviewId.value = knownPreviewId;
     activeVoicePreviewContextKey.value = contextKey;
     activeVoicePreviewRuntimeId.value = props.state.runtime.id;
-    await fetchVoicePreviewAsset(
+    const fetched = await fetchVoicePreviewAsset(
       knownPreviewId,
       reqGen,
       props.state.runtime.id,
@@ -2426,13 +2453,22 @@ async function tryPlayLocalOrCachedVoicePreview(
       presetId,
       scopeKey,
     );
-    return Boolean(voicePreviewAudioUrl.value);
+    return fetched ? "played" : "handled_or_superseded";
   }
 
-  return false;
+  if (
+    disposed ||
+    reqGen !== voicePreviewReqGen ||
+    currentVoicePrefetchScopeKey.value !== scopeKey
+  ) {
+    return "handled_or_superseded";
+  }
+
+  return "miss";
 }
 
 function markVoicePreviewReadyAndPlay() {
+  voicePreviewLookingUp.value = false;
   voicePreviewSubmitting.value = false;
   voicePreviewFetchingAsset.value = false;
   activeVoicePreviewTaskId.value = "";
@@ -2456,7 +2492,7 @@ async function fetchVoicePreviewAsset(
   wasCached: boolean,
   presetId?: string,
   scopeKey?: string,
-) {
+): Promise<boolean> {
   const effectivePresetId = presetId || selectedVoicePresetId.value;
   const effectiveScopeKey = scopeKey || currentVoicePrefetchScopeKey.value;
   const existing = voicePreviewCache.get(previewId);
@@ -2477,7 +2513,7 @@ async function fetchVoicePreviewAsset(
     );
     markVoicePreviewReadyAndPlay();
     void kickoffSiblingVoicePrefetch(effectivePresetId);
-    return;
+    return true;
   }
 
   voicePreviewFetchingAsset.value = true;
@@ -2490,7 +2526,7 @@ async function fetchVoicePreviewAsset(
       reqGen !== voicePreviewReqGen ||
       props.state.runtime.id !== targetRuntimeId
     ) {
-      return;
+      return false;
     }
     if (!asset || typeof asset.data !== "string" || !asset.data.trim()) {
       throw new Error(t("comfy.errInvalidOutputTransfer"));
@@ -2519,12 +2555,15 @@ async function fetchVoicePreviewAsset(
       );
       markVoicePreviewReadyAndPlay();
       void kickoffSiblingVoicePrefetch(effectivePresetId);
+      return true;
     }
+    return false;
   } catch (e) {
     if (!disposed && reqGen === voicePreviewReqGen) {
       voicePreviewError.value = formatDraftErrorDetail(e) || String(e);
       voicePreviewStatus.value = "";
     }
+    return false;
   } finally {
     if (reqGen === voicePreviewReqGen) {
       voicePreviewFetchingAsset.value = false;
@@ -2771,11 +2810,26 @@ async function triggerVoicePreview() {
     selectedVoicePresetId.value &&
     selectedVoicePresetId.value !== "custom"
   ) {
-    const localHit = await tryPlayLocalOrCachedVoicePreview(
-      selectedVoicePresetId.value,
-      { autoPlay: true, triggerPrefetch: true },
-    );
-    if (localHit) {
+    const lookupGen = ++voicePreviewReqGen;
+    voicePreviewLookingUp.value = true;
+    let localOutcome: "played" | "miss" | "handled_or_superseded" = "miss";
+    try {
+      localOutcome = await tryPlayLocalOrCachedVoicePreview(
+        selectedVoicePresetId.value,
+        { autoPlay: true, triggerPrefetch: true, reqGen: lookupGen },
+      );
+    } finally {
+      if (lookupGen === voicePreviewReqGen) {
+        voicePreviewLookingUp.value = false;
+      }
+    }
+    if (
+      localOutcome !== "miss" ||
+      disposed ||
+      lookupGen !== voicePreviewReqGen ||
+      selectedWorkflow.value?.id !== wf.id ||
+      selectedTtsEngine.value?.id !== engine.id
+    ) {
       return;
     }
   }
@@ -3536,6 +3590,7 @@ function onFieldValueUpdate(
   ) {
     if (
       activeVoicePreviewTaskId.value ||
+      voicePreviewLookingUp.value ||
       voicePreviewSubmitting.value ||
       voicePreviewFetchingAsset.value
     ) {
@@ -4111,6 +4166,7 @@ function switchDigitalHumanEngine(targetWorkflowId: string) {
 
   if (
     activeVoicePreviewTaskId.value ||
+    voicePreviewLookingUp.value ||
     voicePreviewSubmitting.value ||
     voicePreviewFetchingAsset.value
   ) {
@@ -6484,8 +6540,18 @@ watch(
 );
 
 function onTabChange(key: string | number) {
-  activeTab.value = key === "canvas" ? "canvas" : "studio";
+  if (key === "canvas") {
+    activeTab.value = "canvas";
+  } else if (key === "live") {
+    activeTab.value = "live";
+  } else {
+    activeTab.value = "studio";
+  }
 }
+
+const liveStudioRunning = computed(
+  () => gpuReady.value && Boolean(props.state.runtime.live_studio?.running),
+);
 
 const canvasState = computed(() => canvas.value?.state || "stopped");
 const canvasEnabled = computed(
@@ -7528,7 +7594,34 @@ onUnmounted(() => {
           </section>
         </ATabPane>
 
-        <!-- TAB 2: Native Canvas -->
+        <!-- TAB 2: Live Studio -->
+        <ATabPane key="live">
+          <template #tab>
+            <span class="co-comfy-tab-label">
+              <PhBroadcast :size="16" />
+              <span>{{ t("comfy.tabLive") }}</span>
+              <ABadge
+                v-if="liveStudioRunning"
+                status="success"
+                :aria-label="t('comfy.liveActiveAria')"
+              />
+            </span>
+          </template>
+
+          <LiveStudioPanel
+            :state="state"
+            :loading="loading"
+            :active="activeTab === 'live'"
+            @notify="(msg, kind) => emit('notify', msg, kind)"
+            @error="(msg) => emit('error', msg)"
+            @clearError="emit('clearError')"
+            @sync="emit('sync')"
+            @upgrade="emit('upgrade')"
+            @open-canvas-tab="activeTab = 'canvas'"
+          />
+        </ATabPane>
+
+        <!-- TAB 3: Native Canvas -->
         <ATabPane key="canvas">
           <template #tab>
             <span class="co-comfy-tab-label">

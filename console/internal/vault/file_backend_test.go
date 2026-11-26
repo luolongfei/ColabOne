@@ -2,6 +2,12 @@ package vault
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +33,10 @@ func TestColabOneFileVaultEncryptsAtomicallyPersistsAndReloads(t *testing.T) {
 	}
 	if _, err := os.Stat(vaultPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("vault.enc should not exist before first write, stat err=%v", err)
+	}
+	keyPath := filepath.Join(dir, ColabOneVaultKeyFilename)
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("vault.key should not exist before first write, stat err=%v", err)
 	}
 
 	// Write small and large (>10KB) secrets; verify unchunked single-file persistence.
@@ -71,8 +81,26 @@ func TestColabOneFileVaultEncryptsAtomicallyPersistsAndReloads(t *testing.T) {
 	if err := json.Unmarshal(diskBytes1, &env1); err != nil {
 		t.Fatalf("vault.enc envelope invalid JSON: %v", err)
 	}
-	if env1.Format != ColabOneVaultFileFormat || env1.Version != 1 || env1.Algorithm != "aes-256-gcm" {
+	wantKeyWrap := colabOneVaultKeyWrapFileKEK
+	if runtime.GOOS == "windows" {
+		wantKeyWrap = colabOneVaultKeyWrapDPAPI
+	}
+	if env1.Format != ColabOneVaultFileFormat || env1.Version != colabOneVaultFileVersionV2 || env1.Algorithm != "aes-256-gcm" || env1.KeyWrap != wantKeyWrap {
 		t.Fatalf("unexpected envelope metadata: %+v", env1)
+	}
+	if runtime.GOOS != "windows" {
+		kInfo, err := os.Stat(keyPath)
+		if err != nil {
+			t.Fatalf("expected vault.key on disk: %v", err)
+		}
+		if kInfo.Mode().Perm() != 0o600 {
+			t.Fatalf("vault.key mode = %o, want 0600", kInfo.Mode().Perm())
+		}
+		if kInfo.Size() != colabOneVaultKEKLen {
+			t.Fatalf("vault.key size = %d, want %d", kInfo.Size(), colabOneVaultKEKLen)
+		}
+	} else if env1.WrappedKey == "" {
+		t.Fatal("expected non-empty wrapped_key on Windows DPAPI v2 envelope")
 	}
 
 	// Re-writing the exact same value must use a fresh salt + nonce and produce distinct ciphertext.
@@ -361,4 +389,196 @@ func TestColabOneFileVaultRefusesSymlinkDirectoryAndNilReceiver(t *testing.T) {
 	if matches, _ := filepath.Glob(corruptPath + ".corrupt.*"); len(matches) != 1 {
 		t.Fatalf("expected 1 quarantined file after Delete, got %v", matches)
 	}
+}
+
+func writeLegacyV1VaultFile(t *testing.T, vaultPath, service string, entries map[string][]byte) {
+	t.Helper()
+	payload := colabOneVaultFilePayload{
+		Version: colabOneVaultFileVersionV1,
+		Entries: entries,
+	}
+	plain, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal v1 payload: %v", err)
+	}
+	salt := make([]byte, colabOneVaultSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, colabOneVaultNonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	aad := []byte("colabone-vault:v1:" + service)
+	derivedKey, err := hkdf.Key(sha256.New, colabOneLocalVaultDomainKey[:], salt, string(aad), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(derivedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext := gcm.Seal(nil, nonce, plain, aad)
+	env := colabOneVaultFileEnvelope{
+		Format:     ColabOneVaultFileFormat,
+		Version:    colabOneVaultFileVersionV1,
+		Algorithm:  colabOneVaultFileAlgAES256GCM,
+		Salt:       base64.StdEncoding.EncodeToString(salt),
+		Nonce:      base64.StdEncoding.EncodeToString(nonce),
+		Ciphertext: base64.StdEncoding.EncodeToString(ciphertext),
+	}
+	raw, err := json.MarshalIndent(env, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vaultPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestColabOneFileVaultV1BackwardCompatibilityAndUpgradeToV2(t *testing.T) {
+	dir := t.TempDir()
+	vaultPath := filepath.Join(dir, ColabOneVaultFilename)
+	keyPath := filepath.Join(dir, ColabOneVaultKeyFilename)
+
+	writeLegacyV1VaultFile(t, vaultPath, ColabOneVaultService, map[string][]byte{
+		"colab": []byte(`{"token":"ya29.legacy-v1-token","refresh_token":"1//legacy-v1-refresh"}`),
+		"hf":    []byte(`"hf_legacy_v1_token_12345"`),
+	})
+
+	// Reading legacy v1 works cleanly with zero vault.key present.
+	v := NewFileVault(dir)
+	if got := v.GetMap("colab"); got == nil || got["token"] != "ya29.legacy-v1-token" {
+		t.Fatalf("v1 GetMap(colab) = %#v", got)
+	}
+	if got := v.GetString("hf", ""); got != "hf_legacy_v1_token_12345" {
+		t.Fatalf("v1 GetString(hf) = %q", got)
+	}
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read-only load of v1 must not create vault.key, stat err=%v", err)
+		}
+	}
+
+	// Next write transparently upgrades on-disk vault.enc from v1 to v2.
+	if err := v.Set("api_key", "co_upgraded_secret_value"); err != nil {
+		t.Fatalf("Set during v1 upgrade failed: %v", err)
+	}
+	raw, err := os.ReadFile(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env colabOneVaultFileEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Version != colabOneVaultFileVersionV2 {
+		t.Fatalf("expected upgraded envelope version 2, got %d", env.Version)
+	}
+	if runtime.GOOS != "windows" && env.KeyWrap != colabOneVaultKeyWrapFileKEK {
+		t.Fatalf("expected key_wrap=%q, got %q", colabOneVaultKeyWrapFileKEK, env.KeyWrap)
+	}
+	if runtime.GOOS == "windows" && (env.KeyWrap != colabOneVaultKeyWrapDPAPI || env.WrappedKey == "") {
+		t.Fatalf("expected Windows DPAPI v2 envelope, got %+v", env)
+	}
+
+	// Cold reload reads all preserved v1 entries plus new entry from v2.
+	cold := NewFileVault(dir)
+	if got := cold.GetMap("colab"); got == nil || got["token"] != "ya29.legacy-v1-token" {
+		t.Fatalf("cold v2 GetMap(colab) = %#v", got)
+	}
+	if got := cold.GetString("hf", ""); got != "hf_legacy_v1_token_12345" {
+		t.Fatalf("cold v2 GetString(hf) = %q", got)
+	}
+	if got := cold.GetString("api_key", ""); got != "co_upgraded_secret_value" {
+		t.Fatalf("cold v2 GetString(api_key) = %q", got)
+	}
+}
+
+func TestColabOneFileVaultV2TamperKeyValidationAndQuarantineError(t *testing.T) {
+	// 1. Tampering key_wrap or deleting/corrupting vault.key triggers ErrCorruptVault and recovers on Set.
+	dir := t.TempDir()
+	vaultPath := filepath.Join(dir, ColabOneVaultFilename)
+	keyPath := filepath.Join(dir, ColabOneVaultKeyFilename)
+
+	v := NewFileVault(dir)
+	if err := v.Set("hf", "hf_v2_secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper key_wrap field in v2 envelope.
+	raw, err := os.ReadFile(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env colabOneVaultFileEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	env.KeyWrap = "unknown_wrap"
+	tampered, _ := json.MarshalIndent(env, "", "  ")
+	if err := os.WriteFile(vaultPath, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, getErr := NewFileVault(dir).GetRaw("hf"); ok || !errors.Is(getErr, ErrCorruptVault) {
+		t.Fatalf("expected ErrCorruptVault on tampered key_wrap, got ok=%v err=%v", ok, getErr)
+	}
+
+	if runtime.GOOS != "windows" {
+		// Corrupting vault.key length fails cold read with ErrCorruptVault, and Set recovers cleanly.
+		dir2 := t.TempDir()
+		v2 := NewFileVault(dir2)
+		if err := v2.Set("hf", "hf_v2_secret_2"); err != nil {
+			t.Fatal(err)
+		}
+		kp2 := filepath.Join(dir2, ColabOneVaultKeyFilename)
+		if err := os.WriteFile(kp2, []byte("short"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cold2 := NewFileVault(dir2)
+		if _, ok, getErr := cold2.GetRaw("hf"); ok || !errors.Is(getErr, ErrCorruptVault) {
+			t.Fatalf("expected ErrCorruptVault on truncated vault.key, got ok=%v err=%v", ok, getErr)
+		}
+		if err := cold2.Set("hf", "hf_recovered_v2"); err != nil {
+			t.Fatalf("Set recovery after corrupt vault.key failed: %v", err)
+		}
+		if got := NewFileVault(dir2).GetString("hf", ""); got != "hf_recovered_v2" {
+			t.Fatalf("recovered value = %q, want hf_recovered_v2", got)
+		}
+
+		// Symlink at vault.key must be refused.
+		dir3 := t.TempDir()
+		outside := filepath.Join(t.TempDir(), "outside.key")
+		if err := os.WriteFile(outside, bytes.Repeat([]byte{0x42}, colabOneVaultKEKLen), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir3, ColabOneVaultKeyFilename)); err == nil {
+			if err := NewFileVault(dir3).Set("hf", "x"); err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("expected symlink refusal for vault.key, got %v", err)
+			}
+		}
+
+		// Set() must return quarantineCorruptFileLocked() error when quarantine rename fails.
+		if os.Geteuid() != 0 {
+			roDir := filepath.Join(t.TempDir(), "readonly")
+			if err := os.MkdirAll(roDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(roDir, ColabOneVaultFilename), []byte("{corrupt"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(roDir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Chmod(roDir, 0o700)
+			if err := NewFileVault(roDir).Set("hf", "new-val"); err == nil {
+				t.Fatal("expected Set() to return quarantine error on read-only directory")
+			}
+		}
+	}
+	_ = keyPath
 }

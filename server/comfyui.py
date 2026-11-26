@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import errno
 import hashlib
 import importlib.util
 import inspect
@@ -15,6 +16,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -327,6 +329,13 @@ class ColabOneComfyWorkflowStore:
             if target.is_symlink():
                 raise ValueError("工作流文件不能是符号链接")
             atomic_json(target, item)
+            trash_dir = self.workflows_dir / ".trash"
+            trash_tombstone = trash_dir / target.name
+            if not trash_dir.is_symlink() and not trash_tombstone.is_symlink():
+                try:
+                    trash_tombstone.unlink(missing_ok=True)
+                except OSError:
+                    pass
             self.custom_workflows[item["id"]] = item
         if self.on_workflow_change:
             self.on_workflow_change(item["id"])
@@ -739,14 +748,20 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
 
     # Even after the leader process exits, wait for surviving process-group
     # members to terminate cleanly after SIGTERM, then SIGKILL stragglers.
+    # Poll inside the loop to reap a zombie leader immediately before SIGKILL.
     if used_pg:
-        while _pg_has_members(pid) and time.monotonic() < deadline:
+        while True:
+            proc.poll()
+            if not _pg_has_members(pid) or time.monotonic() >= deadline:
+                break
             time.sleep(0.05)
+        proc.poll()
         if _pg_has_members(pid):
             try:
                 os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+            proc.poll()
     elif proc.poll() is None:
         try:
             proc.kill()
@@ -760,15 +775,78 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
             pass
 
 
+def _open_secure_log_write(log_path: Path):
+    """Open a regular (non-symlink) log file for writing using O_NOFOLLOW."""
+    log = Path(log_path)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    if log.is_symlink():
+        raise ValueError("日志文件不能是符号链接")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_TRUNC
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(log, flags, 0o600)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError("日志文件不能是符号链接") from None
+        raise
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("日志路径必须是普通文件")
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "wb")
+
+
+def _read_log_tail(log_path: Path, max_bytes: int = 4096) -> str:
+    """Read at most `max_bytes` from EOF of a regular (non-symlink) log file."""
+    log = Path(log_path)
+    if log.is_symlink():
+        return ""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(log, flags)
+    except OSError:
+        return ""
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return ""
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            truncated = size > max_bytes
+            fh.seek(max(0, size - max_bytes), os.SEEK_SET)
+            raw = fh.read(max_bytes)
+    except OSError:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return ""
+    if truncated and raw:
+        idx = 0
+        n = len(raw)
+        while idx < n and (raw[idx] & 0xC0) == 0x80:
+            idx += 1
+        if idx:
+            raw = raw[idx:]
+    return raw.decode("utf-8", errors="replace")
+
+
 def _run_command(
     args, task, log: Path, timeout: int = 1200, cwd=None, stopping=None
 ) -> None:
     """Cancelable process group; subprocesses cannot outlive their task."""
     log = Path(log)
-    log.parent.mkdir(parents=True, exist_ok=True)
-    if log.is_symlink():
-        raise ValueError("日志文件不能是符号链接")
-    with log.open("wb") as out:
+    with _open_secure_log_write(log) as out:
         proc = subprocess.Popen(
             args,
             cwd=cwd,
@@ -812,9 +890,7 @@ def _run_command(
                 raise RuntimeError("远端 ComfyUI 准备超时，请查看运行日志")
             if time.monotonic() - noted > 5:
                 noted = time.monotonic()
-                tail = log.read_text(encoding="utf-8", errors="replace")[
-                    -1000:
-                ].splitlines()
+                tail = _read_log_tail(log, max_bytes=4096)[-1000:].splitlines()
                 if tail:
                     task.note(tail[-1][:250])
             time.sleep(0.25)
@@ -822,7 +898,7 @@ def _run_command(
             task.check()
             raise RuntimeError(
                 "远端 ComfyUI 准备失败："
-                + log.read_text(encoding="utf-8", errors="replace")[-600:]
+                + _read_log_tail(log, max_bytes=4096)[-600:]
             )
     finally:
         try:
@@ -1367,7 +1443,7 @@ class ColabOneComfyManager:
                 ("TF_CPP_MIN_LOG_LEVEL", "3"),
             ):
                 comfy_env.setdefault(env_k, env_v)
-            with log.open("wb") as out:
+            with _open_secure_log_write(log) as out:
                 proc = subprocess.Popen(
                     args,
                     cwd=cwd,
@@ -1404,9 +1480,7 @@ class ColabOneComfyManager:
 
                     raise ColabOneCancelledError("实例正在停止，已取消启动 ComfyUI")
                 if proc.poll() is not None:
-                    tail = ""
-                    if log.is_file():
-                        tail = log.read_text(encoding="utf-8", errors="replace")[-800:]
+                    tail = _read_log_tail(log, max_bytes=4096)[-800:]
                     raise RuntimeError(
                         "ComfyUI 启动失败：" + (tail or f"退出码 {proc.returncode}")
                     )
@@ -2705,7 +2779,21 @@ class ColabOneComfyManager:
         engine_spec = self.tts.get_engine(resolved["engine_id"])
         allow_unavailable = self.tts.synth_fn is not None
         self.tts.check_vram(engine_spec, allow_unavailable=allow_unavailable)
-        self.tts.check_disk(engine_spec, allow_unavailable=allow_unavailable)
+        disk_kwargs: dict[str, Any] = {"allow_unavailable": allow_unavailable}
+        try:
+            disk_sig = inspect.signature(self.tts.check_disk)
+            has_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in disk_sig.parameters.values()
+            )
+            if has_var_kw or "ref_audio_path" in disk_sig.parameters:
+                disk_kwargs["ref_audio_path"] = resolved["ref_audio_path"]
+            if has_var_kw or "voice_preset" in disk_sig.parameters:
+                disk_kwargs["voice_preset"] = resolved["voice_preset"]
+        except (TypeError, ValueError):
+            disk_kwargs["ref_audio_path"] = resolved["ref_audio_path"]
+            disk_kwargs["voice_preset"] = resolved["voice_preset"]
+        self.tts.check_disk(engine_spec, **disk_kwargs)
 
         if callable(check_fn):
             check_fn()

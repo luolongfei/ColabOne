@@ -26,13 +26,22 @@ from common.comfyui import (
     validate_colabone_hf_token,
 )
 from common.files import atomic_json
+from common.live_studio import (
+    ColabOneLiveAvatarSaveRequest,
+    ColabOneLiveBuildPackRequest,
+    ColabOneLiveClipUploadRequest,
+    ColabOneLiveDrivingUploadRequest,
+    ColabOneLiveExternalLLMTestRequest,
+    ColabOneLiveSessionConfig,
+    ColabOneLiveStartRequest,
+)
 from common.models import ModelSpec
 from common.public_api import ColabOnePublicConfig
 from server.runtime import ColabOneRuntime, ColabOneConflictError, _scrub_secret_text
 
 
 class ColabOneDownloadRequest(BaseModel):
-    model_config = ConfigDict(hide_input_in_errors=True)
+    model_config = ConfigDict(hide_input_in_errors=True, allow_inf_nan=False)
     hf_token: str = Field(default="", max_length=512, repr=False)
     threads: Literal[16, 32] = 16
     load: bool = False
@@ -46,6 +55,7 @@ class ColabOneDownloadRequest(BaseModel):
 
 
 class ColabOneConfigureRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     idle_minutes: int = Field(default=30, ge=1, le=240)
     idle_countdown_seconds: int = Field(default=60, ge=10, le=300)
     deadline: float = Field(default=0, ge=0)
@@ -56,6 +66,7 @@ class ColabOneActivityRequest(BaseModel):
 
 
 class ColabOneLoadOptions(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     context_length: int | None = Field(default=None, ge=512, le=262144)
     temperature: float | None = Field(default=None, ge=0, le=2)
 
@@ -112,7 +123,18 @@ def create_colabone_app(runtime, token, background=False):
             await asyncio.to_thread(runtime.public_api.shutdown)
         finally:
             try:
-                def _stop_comfy() -> None:
+                def _stop_live_and_comfy() -> None:
+                    live = getattr(runtime, "live", None)
+                    if live is not None:
+                        live_lock = getattr(runtime, "_live_lifecycle_lock", None)
+                        try:
+                            if live_lock is not None:
+                                with live_lock:
+                                    live.stop()
+                            else:
+                                live.stop()
+                        except Exception:
+                            pass
                     comfy_lock = getattr(runtime, "_comfy_lifecycle_lock", None)
                     if comfy_lock is not None:
                         with comfy_lock:
@@ -120,15 +142,19 @@ def create_colabone_app(runtime, token, background=False):
                     else:
                         runtime.comfy.stop_server()
 
-                await asyncio.to_thread(_stop_comfy)
+                await asyncio.to_thread(_stop_live_and_comfy)
             finally:
                 def _flush_drive_and_stop_engine() -> None:
                     try:
                         with runtime.sync_lock:
+                            has_pending = bool(runtime._dirty_seq) or (
+                                callable(getattr(runtime, "_has_pending_drive_tombstones", None))
+                                and runtime._has_pending_drive_tombstones()
+                            )
                             if (
                                 runtime.drive.available()
                                 and runtime.drive_restored
-                                and runtime._dirty_seq
+                                and has_pending
                             ):
                                 try:
                                     runtime._sync_to_drive()
@@ -140,7 +166,12 @@ def create_colabone_app(runtime, token, background=False):
                             if runtime.drive.mode != "colab_drivefs":
                                 runtime.drive.unmount()
                     finally:
-                        runtime._stop_engine()
+                        try:
+                            runtime._stop_engine()
+                        finally:
+                            close_http = getattr(runtime, "close_http_sessions", None)
+                            if callable(close_http):
+                                close_http()
 
                 await asyncio.to_thread(_flush_drive_and_stop_engine)
 
@@ -153,9 +184,10 @@ def create_colabone_app(runtime, token, background=False):
     )
 
     config_file_lock = threading.Lock()
+    expected_auth = ("Bearer " + token).encode("utf-8")
 
     def authorize(authorization: str = Header(default="")):
-        if not hmac.compare_digest(authorization, "Bearer " + token):
+        if not hmac.compare_digest(authorization.encode("utf-8"), expected_auth):
             raise HTTPException(401, "Unauthorized")
 
     @app.exception_handler(ColabOneConflictError)
@@ -198,6 +230,9 @@ def create_colabone_app(runtime, token, background=False):
             "workflows": runtime.comfy.store.list_workflows(),
             "comfy_outputs": runtime.comfy.store.list_outputs(),
             "tts_engines": runtime.comfy.list_tts_engines(),
+            "live_avatars": runtime.live.list_avatars(),
+            "live_driving_motions": runtime.live.list_driving_motions(),
+            "live_catalog": runtime.live.catalog_summary(),
         }
 
     @app.post("/api/v1/public-api/start", dependencies=auth)
@@ -301,7 +336,9 @@ def create_colabone_app(runtime, token, background=False):
     @app.post("/api/v1/comfyui/canvas/start", dependencies=auth)
     def comfyui_canvas_start(body: ComfyCanvasConfig):
         runtime.touch()
-        return runtime.comfy.start_canvas(body.model_dump())
+        if runtime.comfy.is_running():
+            return runtime.comfy.start_canvas(body.model_dump())
+        return runtime.comfy.canvas.start(body.model_dump())
 
     @app.post("/api/v1/comfyui/canvas/stop", dependencies=auth)
     def comfyui_canvas_stop():
@@ -353,6 +390,7 @@ def create_colabone_app(runtime, token, background=False):
     def comfyui_delete_workflow(workflow_id: str):
         runtime.touch()
         runtime.comfy.store.delete_workflow(workflow_id)
+        runtime._mark_dirty("workflow:" + workflow_id)
         return {"ok": True}
 
     @app.post("/api/v1/comfyui/inputs", dependencies=auth)
@@ -385,6 +423,69 @@ def create_colabone_app(runtime, token, background=False):
     def comfyui_delete_output(output_id: str):
         runtime.touch()
         runtime.comfy.store.delete_output(output_id)
+        runtime._mark_dirty("comfy_output:" + output_id)
+        return {"ok": True}
+
+    @app.get("/api/v1/live/status", dependencies=auth)
+    def live_status():
+        return runtime.live.status()
+
+    @app.get("/api/v1/live/catalog", dependencies=auth)
+    def live_catalog():
+        return runtime.live.catalog_summary()
+
+    @app.post("/api/v1/live/vram-check", dependencies=auth)
+    def live_vram_check(body: ColabOneLiveSessionConfig):
+        return runtime.live_check_vram(body.model_dump())
+
+    @app.post("/api/v1/live/start", dependencies=auth)
+    def live_start(body: ColabOneLiveStartRequest):
+        return runtime.start_live_studio(body.model_dump())
+
+    @app.post("/api/v1/live/stop", dependencies=auth)
+    def live_stop():
+        return runtime.stop_live_studio()
+
+    @app.post("/api/v1/live/session-token", dependencies=auth)
+    def live_session_token():
+        return runtime.live_session_token()
+
+    @app.post("/api/v1/live/llm-test", dependencies=auth)
+    def live_llm_test(body: ColabOneLiveExternalLLMTestRequest):
+        return runtime.live_test_external_llm(body.model_dump())
+
+    @app.get("/api/v1/live/avatars", dependencies=auth)
+    def live_avatars():
+        return runtime.live.list_avatars()
+
+    @app.post("/api/v1/live/avatars", dependencies=auth)
+    def live_save_avatar(body: ColabOneLiveAvatarSaveRequest):
+        return runtime.save_live_avatar(body.model_dump())
+
+    @app.post("/api/v1/live/avatars/build-pack", dependencies=auth)
+    def live_build_avatar_pack(body: ColabOneLiveBuildPackRequest):
+        return runtime.build_live_avatar_pack(body.model_dump())
+
+    @app.delete("/api/v1/live/avatars/{avatar_id}", dependencies=auth)
+    def live_delete_avatar(avatar_id: str):
+        runtime.delete_live_avatar(avatar_id)
+        return {"ok": True}
+
+    @app.post("/api/v1/live/avatars/{avatar_id}/clips", dependencies=auth)
+    def live_upload_avatar_clip(avatar_id: str, body: ColabOneLiveClipUploadRequest):
+        return runtime.upload_live_avatar_clip(avatar_id, body.model_dump())
+
+    @app.get("/api/v1/live/driving-motions", dependencies=auth)
+    def live_driving_motions():
+        return runtime.live.list_driving_motions()
+
+    @app.post("/api/v1/live/driving-motions", dependencies=auth)
+    def live_upload_driving_motion(body: ColabOneLiveDrivingUploadRequest):
+        return runtime.upload_live_driving_motion(body.model_dump())
+
+    @app.delete("/api/v1/live/driving-motions/{motion_id}", dependencies=auth)
+    def live_delete_driving_motion(motion_id: str):
+        runtime.delete_live_driving_motion(motion_id)
         return {"ok": True}
 
     @app.get("/api/v1/tasks/{task_id}/poll", dependencies=auth)

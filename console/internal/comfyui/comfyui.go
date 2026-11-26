@@ -2701,6 +2701,11 @@ func (c *ColabOneComfyCatalog) Validate() error {
 // extension in AllowedInputExtensions, valid non-empty base64 (optionally wrapped
 // in a data: URI), and exact 16 MiB image / 64 MiB audio byte caps.
 func ValidateComfyInputUpload(filename, dataB64 string) error {
+	for _, ch := range filename {
+		if ch < 0x20 || ch == 0x7f || unicode.IsControl(ch) {
+			return errors.New("输入文件名不合法")
+		}
+	}
 	name := strings.TrimSpace(filename)
 	if name == "" ||
 		utf8.RuneCountInString(name) > 255 ||

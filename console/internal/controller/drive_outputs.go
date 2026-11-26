@@ -80,6 +80,82 @@ func (c *ColabOneController) resetDriveOutputsSyncStateLocked() {
 	c.driveOutputsSyncError = ""
 }
 
+func (c *ColabOneController) driveOutputsSyncSemaphore() chan struct{} {
+	c.mu.Lock()
+	if c.driveOutputsSyncSem == nil {
+		c.driveOutputsSyncSem = make(chan struct{}, 1)
+	}
+	sem := c.driveOutputsSyncSem
+	c.mu.Unlock()
+	return sem
+}
+
+func (c *ColabOneController) clearDriveOutputsSyncTrackingLocked(acctKey string) {
+	if acctKey == "" || c.driveOutputsSyncAccountKey == acctKey {
+		c.driveOutputsSyncing = false
+		c.driveOutputsSyncAccountKey = ""
+	}
+	if acctKey == "" {
+		clear(c.driveOutputsSyncDeleted)
+		clear(c.driveOutputsSyncDeletedFileIDs)
+		clear(c.driveOutputsSyncAdded)
+		return
+	}
+	delete(c.driveOutputsSyncDeleted, acctKey)
+	delete(c.driveOutputsSyncDeletedFileIDs, acctKey)
+	delete(c.driveOutputsSyncAdded, acctKey)
+}
+
+func (c *ColabOneController) noteDriveOutputAddedLocked(acctKey, id string) {
+	if !c.driveOutputsSyncing || c.driveOutputsSyncAccountKey != acctKey || acctKey == "" || id == "" {
+		return
+	}
+	if c.driveOutputsSyncAdded == nil {
+		c.driveOutputsSyncAdded = make(map[string]map[string]bool)
+	}
+	if c.driveOutputsSyncAdded[acctKey] == nil {
+		c.driveOutputsSyncAdded[acctKey] = make(map[string]bool)
+	}
+	c.driveOutputsSyncAdded[acctKey][id] = true
+	if del := c.driveOutputsSyncDeleted[acctKey]; del != nil {
+		delete(del, id)
+	}
+}
+
+func (c *ColabOneController) noteDriveOutputDeletedLocked(acctKey, id string, oldRec *ColabOneDriveOutputRecord) {
+	if !c.driveOutputsSyncing || c.driveOutputsSyncAccountKey != acctKey || acctKey == "" || id == "" {
+		return
+	}
+	if c.driveOutputsSyncDeleted == nil {
+		c.driveOutputsSyncDeleted = make(map[string]map[string]bool)
+	}
+	if c.driveOutputsSyncDeleted[acctKey] == nil {
+		c.driveOutputsSyncDeleted[acctKey] = make(map[string]bool)
+	}
+	c.driveOutputsSyncDeleted[acctKey][id] = true
+	if added := c.driveOutputsSyncAdded[acctKey]; added != nil {
+		delete(added, id)
+	}
+	if oldRec != nil {
+		for _, fid := range []string{sanitizeDriveFileID(oldRec.DriveFileID), sanitizeDriveFileID(oldRec.DriveWorkspaceFileID)} {
+			if fid == "" {
+				continue
+			}
+			if c.driveOutputsSyncDeletedFileIDs == nil {
+				c.driveOutputsSyncDeletedFileIDs = make(map[string]map[string]bool)
+			}
+			if c.driveOutputsSyncDeletedFileIDs[acctKey] == nil {
+				c.driveOutputsSyncDeletedFileIDs[acctKey] = make(map[string]bool)
+			}
+			c.driveOutputsSyncDeletedFileIDs[acctKey][fid] = true
+		}
+	}
+}
+
+func refuseDriveRedirects(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 const (
 	colabOneDriveOutputsFileName     = "drive_outputs.json"
 	colabOneDriveOutputsSchemaVer    = 1
@@ -243,16 +319,36 @@ func (c *ColabOneController) driveOutputsPath() string {
 }
 
 func (c *ColabOneController) loadDriveOutputs() {
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
+
 	c.mu.Lock()
 	c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
 	c.mu.Unlock()
 
-	raw, err := os.ReadFile(c.driveOutputsPath())
+	path := c.driveOutputsPath()
+	info, statErr := os.Lstat(path)
+	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
 		return
 	}
 	var disk colabOneDriveOutputsDisk
 	if err := json.Unmarshal(raw, &disk); err != nil || disk.Accounts == nil {
+		corruptPath := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+		if _, existsErr := os.Lstat(corruptPath); existsErr == nil {
+			corruptPath = fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano())
+		}
+		if cInfo, cErr := os.Lstat(corruptPath); cErr != nil || (cInfo.Mode()&os.ModeSymlink == 0 && !cInfo.IsDir()) {
+			if colabOneRenameReplace(path, corruptPath) != nil && len(raw) > 0 {
+				_ = os.WriteFile(corruptPath, raw, 0o600)
+			}
+		}
+		if c.activity != nil {
+			c.log("读取本地 Google 云盘作品索引失败，已备份损坏文件为 .corrupt 副本", "云盘", "warning")
+		}
 		return
 	}
 	loaded := make(map[string]map[string]*ColabOneDriveOutputRecord, len(disk.Accounts))
@@ -281,12 +377,8 @@ func (c *ColabOneController) loadDriveOutputs() {
 			cp := rec.clone()
 			cp.ID = cleanID
 			cp.Extension = ext
-			if cp.Kind == "" {
-				cp.Kind = km[0]
-			}
-			if cp.Mime == "" {
-				cp.Mime = km[1]
-			}
+			cp.Kind = km[0]
+			cp.Mime = km[1]
 			cp.SHA256 = sanitizeDriveSHA256(cp.SHA256)
 			cp.DriveFileID = sanitizeDriveFileID(cp.DriveFileID)
 			cp.DriveWorkspaceFileID = sanitizeDriveFileID(cp.DriveWorkspaceFileID)
@@ -444,14 +536,8 @@ func driveOutputRecordFromMap(raw map[string]any) *ColabOneDriveOutputRecord {
 	if !ok {
 		return nil
 	}
-	kind := strings.TrimSpace(asString(raw["kind"]))
-	if kind == "" {
-		kind = km[0]
-	}
-	mime := strings.TrimSpace(asString(raw["mime"]))
-	if mime == "" {
-		mime = km[1]
-	}
+	kind := km[0]
+	mime := km[1]
 	size, _ := asInt64(raw["size"])
 	createdAt, _ := asFloat(raw["created_at"])
 	elapsed, _ := asFloat(raw["elapsed"])
@@ -505,10 +591,20 @@ func mergeDriveOutputRecord(dst, src *ColabOneDriveOutputRecord) bool {
 	if src.WorkflowName != "" && (src.WorkflowName != "Google 云盘作品" || dst.WorkflowName == "") {
 		setStr(&dst.WorkflowName, src.WorkflowName)
 	}
-	setStr(&dst.Kind, src.Kind)
 	setStr(&dst.Filename, src.Filename)
-	setStr(&dst.Extension, src.Extension)
-	setStr(&dst.Mime, src.Mime)
+	if srcExt := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(src.Extension), ".")); srcExt != "" {
+		if km, ok := allowedDriveOutputKindMIME[srcExt]; ok {
+			setStr(&dst.Extension, srcExt)
+			setStr(&dst.Kind, km[0])
+			setStr(&dst.Mime, km[1])
+		}
+	}
+	if dstExt := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(dst.Extension), ".")); dstExt != "" {
+		if km, ok := allowedDriveOutputKindMIME[dstExt]; ok {
+			setStr(&dst.Kind, km[0])
+			setStr(&dst.Mime, km[1])
+		}
+	}
 	if src.Size > 0 && dst.Size != src.Size {
 		dst.Size = src.Size
 		changed = true
@@ -795,6 +891,7 @@ func (c *ColabOneController) recordSyncedRemoteOutputs(rt map[string]any, rawOut
 			bucket[rec.ID] = rec
 			changed = true
 		}
+		c.noteDriveOutputAddedLocked(acctKey, rec.ID)
 	}
 	if changed {
 		pruneDriveOutputsBucketLocked(bucket)
@@ -902,6 +999,7 @@ func (c *ColabOneController) recordExportedDriveOutput(identity string, exportRe
 		target.DriveMode = mode
 	}
 	target.SyncedAt = now
+	c.noteDriveOutputAddedLocked(acctKey, cleanID)
 	pruneDriveOutputsBucketLocked(bucket)
 	c.mu.Unlock()
 
@@ -916,14 +1014,17 @@ func (c *ColabOneController) removeDriveOutputRecord(identity string) {
 	c.mu.Lock()
 	acctKey := c.currentDriveAccountKeyLocked()
 	removed := false
+	var oldRec *ColabOneDriveOutputRecord
 	if acctKey != "" && c.driveOutputs != nil {
 		if bucket := c.driveOutputs[acctKey]; bucket != nil {
-			if _, exists := bucket[cleanID]; exists {
+			if rec, exists := bucket[cleanID]; exists {
+				oldRec = rec
 				delete(bucket, cleanID)
 				removed = true
 			}
 		}
 	}
+	c.noteDriveOutputDeletedLocked(acctKey, cleanID, oldRec)
 	c.mu.Unlock()
 	if removed {
 		_ = c.saveDriveOutputs()
@@ -952,7 +1053,7 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 	lastSyncedAt := 0.0
 	lastErr := ""
 	if acctKey != "" {
-		syncing = c.driveOutputsSyncing
+		syncing = c.driveOutputsSyncing && c.driveOutputsSyncAccountKey == acctKey
 		lastSyncedAt = c.driveOutputsLastSynced
 		lastErr = c.driveOutputsSyncError
 	}
@@ -1118,7 +1219,10 @@ func (c *ColabOneController) driveClient() *http.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.driveHTTPClient == nil {
-		c.driveHTTPClient = &http.Client{Timeout: 30 * time.Second}
+		c.driveHTTPClient = &http.Client{
+			Timeout:       30 * time.Second,
+			CheckRedirect: refuseDriveRedirects,
+		}
 		c.driveHTTPClientOwned = true
 	}
 	return c.driveHTTPClient
@@ -1283,8 +1387,22 @@ func syntheticDriveOutputID(fileID string) string {
 // SyncDriveOutputs queries Google Drive API v3 for ColabOne_Drive outputs so users can browse,
 // preview, and download results in the Outputs Drawer without running a GPU instance.
 func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]any, error) {
-	c.driveOutputsSyncMu.Lock()
-	defer c.driveOutputsSyncMu.Unlock()
+	if ctx == nil {
+		ctx = c.rootCtx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sem := c.driveOutputsSyncSemaphore()
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-sem }()
 
 	acctKey := c.currentDriveAccountKey()
 	if acctKey == "" {
@@ -1310,13 +1428,26 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 
 	c.mu.Lock()
 	c.driveOutputsSyncing = true
+	c.driveOutputsSyncAccountKey = acctKey
 	c.driveOutputsSyncError = ""
+	if c.driveOutputsSyncDeleted == nil {
+		c.driveOutputsSyncDeleted = make(map[string]map[string]bool)
+	}
+	if c.driveOutputsSyncDeletedFileIDs == nil {
+		c.driveOutputsSyncDeletedFileIDs = make(map[string]map[string]bool)
+	}
+	if c.driveOutputsSyncAdded == nil {
+		c.driveOutputsSyncAdded = make(map[string]map[string]bool)
+	}
+	c.driveOutputsSyncDeleted[acctKey] = make(map[string]bool)
+	c.driveOutputsSyncDeletedFileIDs[acctKey] = make(map[string]bool)
+	c.driveOutputsSyncAdded[acctKey] = make(map[string]bool)
 	c.mu.Unlock()
 
 	finishErr := func(err error) (map[string]any, error) {
 		msg := SafeMessage(err.Error())
 		c.mu.Lock()
-		c.driveOutputsSyncing = false
+		c.clearDriveOutputsSyncTrackingLocked(acctKey)
 		if c.currentDriveAccountKeyLocked() == acctKey {
 			c.driveOutputsSyncError = msg
 		}
@@ -1403,10 +1534,10 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 							ID:           id,
 							WorkflowID:   prev.WorkflowID,
 							WorkflowName: prev.WorkflowName,
-							Kind:         prev.Kind,
+							Kind:         km[0],
 							Filename:     prev.Filename,
-							Extension:    prev.Extension,
-							Mime:         prev.Mime,
+							Extension:    ext,
+							Mime:         km[1],
 							Size:         prev.Size,
 							SHA256:       sanitizeDriveSHA256(prev.SHA256),
 							CreatedAt:    prev.CreatedAt,
@@ -1656,21 +1787,43 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 
 	c.mu.Lock()
 	if c.currentDriveAccountKeyLocked() != acctKey {
-		c.driveOutputsSyncing = false
+		c.clearDriveOutputsSyncTrackingLocked(acctKey)
 		c.mu.Unlock()
 		return map[string]any{"synced": false, "can_direct_read": true, "count": 0}, nil
 	}
 	if c.driveOutputs == nil {
 		c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
 	}
+	deletedIDs := c.driveOutputsSyncDeleted[acctKey]
+	deletedFileIDs := c.driveOutputsSyncDeletedFileIDs[acctKey]
+	addedIDs := c.driveOutputsSyncAdded[acctKey]
+
 	nextBucket := make(map[string]*ColabOneDriveOutputRecord, len(discovered))
 	for id, rec := range discovered {
+		if rec == nil || deletedIDs[id] {
+			continue
+		}
+		if fid := sanitizeDriveFileID(rec.DriveFileID); fid != "" && deletedFileIDs[fid] {
+			continue
+		}
+		if wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID); wfid != "" && deletedFileIDs[wfid] {
+			continue
+		}
 		nextBucket[id] = rec
 	}
-	// Preserve any colab_drivefs records that drive.file scope cannot list.
+	// Merge concurrent additions/updates made while sync was in flight and preserve
+	// colab_drivefs records that drive.file scope cannot list (unless deleted).
 	if prevBucket := c.driveOutputs[acctKey]; prevBucket != nil {
 		for id, prev := range prevBucket {
-			if prev == nil {
+			if prev == nil || deletedIDs[id] {
+				continue
+			}
+			if addedIDs[id] {
+				if existing, exists := nextBucket[id]; exists && existing != nil {
+					mergeDriveOutputRecord(existing, prev.clone())
+				} else {
+					nextBucket[id] = prev.clone()
+				}
 				continue
 			}
 			if _, exists := nextBucket[id]; exists {
@@ -1683,7 +1836,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 	}
 	pruneDriveOutputsBucketLocked(nextBucket)
 	c.driveOutputs[acctKey] = nextBucket
-	c.driveOutputsSyncing = false
+	c.clearDriveOutputsSyncTrackingLocked(acctKey)
 	c.driveOutputsLastSynced = now
 	c.driveOutputsSyncError = ""
 	count := len(nextBucket)
@@ -1805,11 +1958,15 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	if size <= 0 {
 		size = int64(offset) + int64(len(chunk))
 	}
+	canonicalMIME := rec.Mime
+	if km, ok := allowedDriveOutputKindMIME[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(rec.Extension), "."))]; ok {
+		canonicalMIME = km[1]
+	}
 	out := map[string]any{
 		"data":      base64.StdEncoding.EncodeToString(chunk),
 		"offset":    offset,
 		"size":      size,
-		"mime":      rec.Mime,
+		"mime":      canonicalMIME,
 		"extension": rec.Extension,
 		"filename":  rec.Filename,
 		"source":    "drive",

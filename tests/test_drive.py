@@ -748,3 +748,517 @@ def test_remote_api_export_comfy_output_to_drive_endpoint(tmp_path, spec, monkey
             == 200
         )
         assert saved_file.is_file()
+
+
+def test_drive_live_driving_motions_cache_exclusions_trash_and_safe_stage_merge(
+    tmp_path, spec, monkeypatch
+):
+    from server.drive import _LIVE_AVATAR_ID_RE
+
+    # 1. Verify rclone filter rules include live-driving-motions and exclude rebuildable caches BEFORE includes.
+    args = list(ColabOneDrive._WORKSPACE_FILTER_ARGS)
+    assert "+ /live-avatars/**" in args
+    assert "+ /live-driving-motions/**" in args
+    assert "- **/.musetalk_cache/**" in args
+    assert "- **/.trt_cache/**" in args
+    assert args.index("- **/.musetalk_cache/**") < args.index("+ /live-avatars/**")
+    assert args.index("- **/.trt_cache/**") < args.index("+ /live-avatars/**")
+    assert args.index("+ /live-driving-motions/**") < args.index("- **")
+
+    # 2. Verify aligned ID regex rejects leading hyphens/underscores and >64 chars.
+    assert _LIVE_AVATAR_ID_RE.fullmatch("av_ok-1") is not None
+    assert _LIVE_AVATAR_ID_RE.fullmatch("-leading-dash") is None
+    assert _LIVE_AVATAR_ID_RE.fullmatch("_leading_under") is None
+    assert _LIVE_AVATAR_ID_RE.fullmatch("a" * 65) is None
+
+    # 3. Verify DriveFS syncs live-driving-motions, skips .musetalk_cache/.trt_cache, and safely trashes motions.
+    mydrive = tmp_path / "drive" / "MyDrive"
+    mydrive.mkdir(parents=True)
+    data_root = tmp_path / "vm"
+    data_root.mkdir()
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "presets.json").write_text(json.dumps([spec.model_dump()]))
+    (catalog / "engine.json").write_text('{"tag":"test","assets":[]}')
+    (catalog / "comfyui.json").write_text(
+        json.dumps(
+            {
+                "repo": "https://github.com/Comfy-Org/ComfyUI.git",
+                "tag": "test",
+                "commit": "a" * 40,
+                "port": 8188,
+                "proxy_port": 8189,
+                "templates": [],
+            }
+        )
+    )
+
+    drive = ColabOneDrive(data_root, catalog, mount_root=mydrive)
+    monkeypatch.setattr(drive, "is_colab_drivefs_mounted", lambda: True)
+    drive.connect()
+
+    motion_dir = data_root / "live-driving-motions" / "dance_01"
+    motion_dir.mkdir(parents=True)
+    (motion_dir / "clip.mp4").write_bytes(b"mp4-driving-bytes")
+    (motion_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "id": "dance_01",
+                "label": "测试舞蹈",
+                "clip_path": "clip.mp4",
+                "bgm_path": "",
+                "updated_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    av_cache = data_root / "live-avatars" / "av1" / ".musetalk_cache"
+    av_cache.mkdir(parents=True)
+    (av_cache / "huge.bin").write_bytes(b"cache-skip")
+    (data_root / "live-avatars" / "av1" / "portrait.png").write_bytes(b"png")
+
+    assert drive.push_workspace() is True
+    ws = mydrive / COLABONE_DRIVE_FOLDER / "workspace"
+    assert (ws / "live-driving-motions" / "dance_01" / "clip.mp4").read_bytes() == b"mp4-driving-bytes"
+    assert not (ws / "live-avatars" / "av1" / ".musetalk_cache").exists()
+
+    pull_dir = tmp_path / "pull"
+    assert drive.pull_workspace(pull_dir) is True
+    assert (pull_dir / "live-driving-motions" / "dance_01" / "clip.mp4").read_bytes() == b"mp4-driving-bytes"
+
+    drive.trash_live_driving_motion("dance_01")
+    assert not (ws / "live-driving-motions" / "dance_01").exists()
+    assert (ws / "live-driving-motions" / ".trash" / "dance_01" / "clip.mp4").is_file()
+
+    for bad_id in ("", "-bad", "_bad", "..", "../escape", "a/b", "a.b", "x" * 65):
+        with pytest.raises(ValueError):
+            drive.trash_live_driving_motion(bad_id)
+        with pytest.raises(ValueError):
+            drive.trash_live_avatar(bad_id)
+
+    link_out = tmp_path / "outside_motion"
+    link_out.mkdir()
+    (ws / "live-driving-motions" / "sym_motion").symlink_to(link_out)
+    with pytest.raises(ValueError):
+        drive.trash_live_driving_motion("sym_motion")
+
+    # 4. Verify runtime._merge_live_avatars_stage & _merge_live_driving_motions_stage:
+    #    - skips locally trashed avatars/motions
+    #    - validates manifest.json against ColabOneLiveAvatarManifest (rejects corrupt / mismatched / leading-hyphen)
+    #    - merges assets_meta.json per-entry by updated_at
+    rt = ColabOneRuntime(tmp_path / "vm_merge", catalog)
+    local_av = rt.root / "live-avatars" / "av_merge"
+    local_av.mkdir(parents=True)
+    (local_av / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "av_merge",
+                "name": "旧名称",
+                "portrait_path": "portrait.png",
+                "actions": [],
+                "products": [],
+                "created_at": 10.0,
+                "updated_at": 50.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (local_av / "assets_meta.json").write_text(
+        json.dumps(
+            {
+                "clips/local_new.mp4": {"sha256": "localnew", "size": 10, "updated_at": 300.0},
+                "portrait.png": {"sha256": "oldsha", "size": 5, "updated_at": 50.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (rt.root / "live-avatars" / ".trash" / "av_deleted").mkdir(parents=True)
+
+    stage = tmp_path / "stage_avatars"
+    # Valid avatar with newer manifest and mixed assets_meta timestamps
+    st_ok = stage / "av_merge"
+    st_ok.mkdir(parents=True)
+    (st_ok / "portrait.png").write_bytes(b"new-portrait")
+    (st_ok / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "av_merge",
+                "name": "新名称",
+                "portrait_path": "portrait.png",
+                "actions": [],
+                "products": [],
+                "created_at": 10.0,
+                "updated_at": 200.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (st_ok / "assets_meta.json").write_text(
+        json.dumps(
+            {
+                "clips/local_new.mp4": {"sha256": "stale", "size": 10, "updated_at": 100.0},
+                "portrait.png": {"sha256": "newsha", "size": 12, "updated_at": 200.0},
+                "clips/remote_only.mp4": {"sha256": "remsha", "size": 20, "updated_at": 150.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Locally trashed avatar must NOT be resurrected
+    st_del = stage / "av_deleted"
+    st_del.mkdir(parents=True)
+    (st_del / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "av_deleted",
+                "name": "已删主播",
+                "actions": [],
+                "products": [],
+                "updated_at": 999.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Invalid manifest (mismatched id / schema violation) and leading-hyphen dir must be skipped
+    st_bad = stage / "av_invalid"
+    st_bad.mkdir(parents=True)
+    (st_bad / "manifest.json").write_text(
+        json.dumps({"id": "wrong_id", "name": "坏包", "extra_bad": 1}),
+        encoding="utf-8",
+    )
+    st_dash = stage / "-bad-leading"
+    st_dash.mkdir(parents=True)
+    (st_dash / "manifest.json").write_text(
+        json.dumps({"id": "-bad-leading", "name": "非法名"}),
+        encoding="utf-8",
+    )
+
+    rt._merge_live_avatars_stage(stage)
+
+    merged_manifest = json.loads((local_av / "manifest.json").read_text(encoding="utf-8"))
+    assert merged_manifest["name"] == "新名称"
+    merged_meta = json.loads((local_av / "assets_meta.json").read_text(encoding="utf-8"))
+    assert merged_meta["clips/local_new.mp4"]["sha256"] == "localnew"
+    assert merged_meta["portrait.png"]["sha256"] == "newsha"
+    assert merged_meta["clips/remote_only.mp4"]["sha256"] == "remsha"
+    assert not (rt.root / "live-avatars" / "av_deleted").exists()
+    assert not (rt.root / "live-avatars" / "av_invalid").exists()
+    assert not (rt.root / "live-avatars" / "-bad-leading").exists()
+
+    # Driving motions stage merge
+    (rt.root / "live-driving-motions" / ".trash" / "dm_trashed").mkdir(parents=True)
+    m_stage = tmp_path / "stage_motions"
+    for mid, valid_clip in (("dm_good", True), ("dm_trashed", True), ("dm_missing_clip", False)):
+        d = m_stage / mid
+        d.mkdir(parents=True)
+        if valid_clip:
+            (d / "clip.mp4").write_bytes(b"clip-data")
+        (d / "meta.json").write_text(
+            json.dumps(
+                {
+                    "id": mid,
+                    "label": f"动作 {mid}",
+                    "clip_path": "clip.mp4",
+                    "bgm_path": "",
+                    "updated_at": 100.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    rt._merge_live_driving_motions_stage(m_stage)
+    assert (rt.root / "live-driving-motions" / "dm_good" / "clip.mp4").read_bytes() == b"clip-data"
+    assert not (rt.root / "live-driving-motions" / "dm_trashed").exists()
+    assert not (rt.root / "live-driving-motions" / "dm_missing_clip").exists()
+
+
+def test_drive_thread_local_http_session_cookie_policy_and_close(tmp_path):
+    import requests
+
+    root = tmp_path / "data"
+    root.mkdir()
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    drive = ColabOneDrive(root, catalog, http=requests.Session())
+
+    seen = []
+
+    def worker():
+        s1 = drive._http_session()
+        s2 = drive._http_session()
+        assert s1 is s2
+        assert isinstance(s1, requests.Session)
+        assert s1.trust_env is False
+        assert tuple(s1.cookies.get_policy().allowed_domains()) == ()
+        seen.append(s1)
+
+    import threading
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    assert len(seen) == 2
+    assert seen[0] is not seen[1]
+
+    closed = []
+    for s in seen:
+        orig_close = s.close
+        s.close = lambda orig=orig_close, sess=s: (closed.append(sess), orig())
+    drive.close_http_sessions()
+    assert len(closed) == 2
+
+    mock_http = Mock()
+    drive_mock = ColabOneDrive(root, catalog, http=mock_http)
+    assert drive_mock._http_session() is mock_http
+
+
+def test_drive_nonblocking_transfers_and_single_flight_space_cache(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    root = tmp_path / "data"
+    root.mkdir()
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (root / ".rclone.conf").write_text(
+        f"[{COLABONE_DRIVE_REMOTE}]\ntype = drive\n", encoding="utf-8"
+    )
+    drive = ColabOneDrive(root, catalog, mount_root=root / "mnt")
+    drive.mode = "rclone_sync"
+
+    fake_bin = tmp_path / "rclone"
+    fake_bin.write_text("", encoding="utf-8")
+    monkeypatch.setattr("server.drive.ensure_rclone_binary", lambda *a, **k: fake_bin)
+    monkeypatch.setattr(drive, "_existing_rclone_binary", lambda: fake_bin)
+
+    copy_entered = threading.Event()
+    copy_release = threading.Event()
+    about_started = threading.Event()
+    about_release = threading.Event()
+    about_calls = 0
+    about_lock = threading.Lock()
+
+    def fake_run(cmd, **kwargs):
+        nonlocal about_calls
+        if "copy" in cmd:
+            copy_entered.set()
+            assert copy_release.wait(timeout=5)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "about" in cmd:
+            with about_lock:
+                about_calls += 1
+            about_started.set()
+            assert about_release.wait(timeout=5)
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"total": 1000, "free": 600}),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("server.drive.subprocess.run", fake_run)
+
+    # 1. push_workspace does not hold drive.lock across blocking rclone copy.
+    push_res = []
+    t_push = threading.Thread(target=lambda: push_res.append(drive.push_workspace()))
+    t_push.start()
+    assert copy_entered.wait(timeout=3)
+    assert drive.lock.acquire(blocking=False)
+    drive.lock.release()
+    assert drive.available() is True
+    copy_release.set()
+    t_push.join(timeout=3)
+    assert push_res == [True]
+
+    # 2. Concurrent status() calls trigger only one rclone about subprocess (single-flight).
+    results = []
+    t_a = threading.Thread(target=lambda: results.append(drive.status()))
+    t_a.start()
+    assert about_started.wait(timeout=3)
+
+    t_b = threading.Thread(target=lambda: results.append(drive.status()))
+    t_b.start()
+    t_b.join(timeout=2)
+    assert not t_b.is_alive()
+    about_release.set()
+    t_a.join(timeout=3)
+
+    assert about_calls == 1
+    assert len(results) == 2
+    # Subsequent call within 30s hits cache without another subprocess.
+    st = drive.status()
+    assert st["total_bytes"] == 1000 and st["free_bytes"] == 600
+    assert about_calls == 1
+
+
+def test_copy_file_if_newer_fsyncs_write_fd_preserves_mtime_and_symlink_safe(
+    tmp_path, monkeypatch
+):
+    from server import drive as drive_mod
+
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"new-payload-data")
+    target_mtime = 1700000123
+    os.utime(src, (target_mtime, target_mtime))
+
+    fsync_fds = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        fsync_fds.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(drive_mod.os, "fsync", spy_fsync)
+
+    dst = tmp_path / "dst.bin"
+    drive_mod._copy_file_if_newer(src, dst)
+    assert dst.read_bytes() == b"new-payload-data"
+    assert int(dst.stat().st_mtime) == target_mtime
+    assert len(fsync_fds) >= 1
+
+    # Symlink introduced before rename fallback must NOT be overwritten.
+    secret = tmp_path / "secret.txt"
+    secret.write_text("untouched", encoding="utf-8")
+    dst2 = tmp_path / "dst2.bin"
+
+    orig_replace = Path.replace
+
+    def swap_to_symlink_and_fail(self_path, other):
+        if self_path.name.startswith(".co-sync-"):
+            if other.exists():
+                other.unlink()
+            other.symlink_to(secret)
+            raise OSError("rename blocked")
+        return orig_replace(self_path, other)
+
+    monkeypatch.setattr(Path, "replace", swap_to_symlink_and_fail)
+    drive_mod._copy_file_if_newer(src, dst2)
+    assert secret.read_text(encoding="utf-8") == "untouched"
+
+
+def test_drive_tombstones_prevent_resurrection_and_replay_offline_deletions(
+    tmp_path, spec, monkeypatch
+):
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "presets.json").write_text(json.dumps([spec.model_dump()]))
+    (catalog / "engine.json").write_text('{"tag":"test","assets":[]}')
+    (catalog / "comfyui.json").write_text(
+        json.dumps(
+            {
+                "repo": "https://github.com/Comfy-Org/ComfyUI.git",
+                "tag": "test",
+                "commit": "a" * 40,
+                "port": 8188,
+                "proxy_port": 8189,
+                "templates": [],
+            }
+        )
+    )
+
+    mydrive = tmp_path / "drive" / "MyDrive"
+    mydrive.mkdir(parents=True)
+    vm1_root = tmp_path / "vm1"
+    drive1 = ColabOneDrive(vm1_root, catalog, mount_root=mydrive)
+    mounted = {"v": True}
+    monkeypatch.setattr(drive1, "is_colab_drivefs_mounted", lambda: mounted["v"])
+
+    rt1 = ColabOneRuntime(vm1_root, catalog, drive=drive1)
+    rt1.connect_drive()
+    wf = rt1.comfy.store.save_workflow(
+        {
+            "id": "wf-offline-del",
+            "name": "待删除工作流",
+            "description": "tombstone test",
+            "workflow": {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "hi"}}},
+        }
+    )
+    out_rec = rt1.comfy.store.save_output(
+        raw=_sample_png_bytes(),
+        workflow_id=wf["id"],
+        workflow_name=wf["name"],
+        filename="img.png",
+        elapsed=0.5,
+        prompt_id="p1",
+    )
+    oid = out_rec["id"]
+    # Seed avatar & driving motion and push everything to Drive.
+    av_dir = vm1_root / "live-avatars" / "av_del_1"
+    av_dir.mkdir(parents=True)
+    (av_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "av_del_1",
+                "name": "待删主播",
+                "actions": [],
+                "products": [],
+                "updated_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    dm_dir = vm1_root / "live-driving-motions" / "dm_del_1"
+    dm_dir.mkdir(parents=True)
+    (dm_dir / "clip.mp4").write_bytes(b"mp4-bytes")
+    (dm_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "id": "dm_del_1",
+                "label": "待删动作",
+                "clip_path": "clip.mp4",
+                "bgm_path": "",
+                "updated_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    rt1._mark_dirty("live-avatars")
+    rt1._mark_dirty("live-driving-motions")
+    assert rt1.sync_drive()["ok"] is True
+
+    ws = mydrive / COLABONE_DRIVE_FOLDER / "workspace"
+    assert (ws / "workflows" / "wf-offline-del.json").is_file()
+    assert (ws / "comfyui-outputs" / f"{oid}.json").is_file()
+    assert (ws / "live-avatars" / "av_del_1").is_dir()
+    assert (ws / "live-driving-motions" / "dm_del_1").is_dir()
+
+    # Drive goes offline; delete all four items locally.
+    mounted["v"] = False
+    rt1.drive.mode = "disabled"
+    rt1.comfy.store.delete_workflow("wf-offline-del")
+    rt1.comfy.store.delete_output(oid)
+    rt1.delete_live_avatar("av_del_1")
+    rt1.delete_live_driving_motion("dm_del_1")
+
+    # Drive reconnects: _restore_from_drive must NOT resurrect any deleted item,
+    # and _sync_to_drive must replay local tombstones onto Drive.
+    mounted["v"] = True
+    rt1.drive_restored = False
+    rt1.connect_drive()
+
+    assert not (vm1_root / "workflows" / "wf-offline-del.json").exists()
+    assert not (vm1_root / "comfyui-outputs" / f"{oid}.json").exists()
+    assert not (vm1_root / "live-avatars" / "av_del_1").exists()
+    assert not (vm1_root / "live-driving-motions" / "dm_del_1").exists()
+
+    assert not (ws / "workflows" / "wf-offline-del.json").exists()
+    assert (ws / "workflows" / ".trash" / "wf-offline-del.json").is_file()
+    assert not (ws / "comfyui-outputs" / f"{oid}.json").exists()
+    assert (ws / "comfyui-outputs" / ".trash" / f"{oid}.json").is_file()
+    assert not (ws / "live-avatars" / "av_del_1").exists()
+    assert (ws / "live-avatars" / ".trash" / "av_del_1").is_dir()
+    assert not (ws / "live-driving-motions" / "dm_del_1").exists()
+    assert (ws / "live-driving-motions" / ".trash" / "dm_del_1").is_dir()
+
+    # Fresh VM2 connecting to Drive sees none of the deleted items resurrected.
+    vm2_root = tmp_path / "vm2"
+    drive2 = ColabOneDrive(vm2_root, catalog, mount_root=mydrive)
+    monkeypatch.setattr(drive2, "is_colab_drivefs_mounted", lambda: True)
+    rt2 = ColabOneRuntime(vm2_root, catalog, drive=drive2)
+    rt2.connect_drive()
+    assert not (vm2_root / "workflows" / "wf-offline-del.json").exists()
+    assert rt2.comfy.store.list_outputs() == []
+    assert not (vm2_root / "live-avatars" / "av_del_1").exists()
+    assert not (vm2_root / "live-driving-motions" / "dm_del_1").exists()

@@ -3778,3 +3778,23 @@ func TestRound2ComfySchemaHardeningParity(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateComfyInputUploadRejectsControlChars(t *testing.T) {
+	validData := base64.StdEncoding.EncodeToString([]byte("png-data"))
+	if err := ValidateComfyInputUpload("photo.png", validData); err != nil {
+		t.Fatalf("expected valid filename to pass, got %v", err)
+	}
+	for _, badName := range []string{
+		"photo.png\n",
+		"photo.png\r\n",
+		"\tphoto.png",
+		"pho\x00to.png",
+		"pho\x1bto.png",
+		"pho\x7fto.png",
+		"pho\u0085to.png",
+	} {
+		if err := ValidateComfyInputUpload(badName, validData); err == nil {
+			t.Fatalf("expected control-char filename %q to be rejected", badName)
+		}
+	}
+}

@@ -668,3 +668,45 @@ func TestWireControllerProviderAdapterClearOrphanedRemotes(t *testing.T) {
 		t.Fatalf("ClearOrphanedRemotes must preserve live sessions and remotes: sessions=%#v remotes=%#v", adapter.SessionsMap(), adapter.RemotesMap())
 	}
 }
+
+func TestSelfTestValidatesAllEmbeddedCatalogsAndRejectsInvalid(t *testing.T) {
+	if err := runColabOneSelfTest(); err != nil {
+		t.Fatalf("runColabOneSelfTest failed: %v", err)
+	}
+
+	// Reject malformed live_studio.json
+	for _, bad := range []string{
+		`{bad`,
+		`{"port":0,"ws_path":"/ws","default_fps":25,"audio_input_sample_rate":16000,"audio_output_sample_rate":24000}`,
+		`{"port":8190,"ws_path":"no-slash","default_fps":25,"audio_input_sample_rate":16000,"audio_output_sample_rate":24000}`,
+		`{"port":8190,"ws_path":"/ws","default_fps":25,"audio_input_sample_rate":16000,"audio_output_sample_rate":24000,"asr_vad":[],"streaming_tts":[],"visual_engines":[],"default_actions":[]}`,
+	} {
+		if err := validateColabOneLiveStudioCatalog([]byte(bad)); err == nil {
+			t.Fatalf("expected validateColabOneLiveStudioCatalog to reject %s", bad)
+		}
+	}
+
+	// Reject malformed cloudflared.json / rclone.json
+	for _, bad := range []string{
+		`{bad`,
+		`{"tag":"","sha256":{"amd64":"` + strings.Repeat("a", 64) + `","arm64":"` + strings.Repeat("b", 64) + `"}}`,
+		`{"tag":"v1","sha256":{"amd64":"not-hex","arm64":"` + strings.Repeat("b", 64) + `"}}`,
+		`{"tag":"v1","sha256":{"amd64":"` + strings.Repeat("a", 64) + `"}}`,
+	} {
+		if err := validateColabOneArchSHA256Catalog("cloudflared.json", []byte(bad)); err == nil {
+			t.Fatalf("expected validateColabOneArchSHA256Catalog to reject %s", bad)
+		}
+	}
+
+	// Reject malformed engine.json
+	for _, bad := range []string{
+		`{bad`,
+		`{"tag":"b1","assets":[]}`,
+		`{"tag":"b1","assets":[{"url":"http://insecure.example/a.tar.gz","sha256":"` + strings.Repeat("a", 64) + `"}]}`,
+		`{"tag":"b1","assets":[{"url":"https://github.com/a/b.tar.gz","sha256":"short"}]}`,
+	} {
+		if err := validateColabOneEngineCatalog([]byte(bad)); err == nil {
+			t.Fatalf("expected validateColabOneEngineCatalog to reject %s", bad)
+		}
+	}
+}

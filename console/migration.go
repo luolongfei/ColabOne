@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/luolongfei/ColabOne/console/internal/activity"
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
 )
 
@@ -241,19 +243,12 @@ func (d *ColabOneDesktop) openMigrationOpenDialog(ctx context.Context) (string, 
 	return paths[0], nil
 }
 
-func writeColabOneMigrationFileAtomic(targetPath string, data []byte) error {
-	if fi, err := os.Lstat(targetPath); err == nil {
-		if fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			return errors.New("refusing to overwrite directory or symlink")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+func writeColabOneFileAtomic(targetPath, tmpPattern string, data []byte, perm fs.FileMode) error {
 	dir := filepath.Dir(targetPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".colabone-migration-*.tmp")
+	tmp, err := os.CreateTemp(dir, tmpPattern)
 	if err != nil {
 		return err
 	}
@@ -268,7 +263,9 @@ func writeColabOneMigrationFileAtomic(targetPath string, data []byte) error {
 			_ = os.Remove(tmpName)
 		}
 	}()
-	_ = tmp.Chmod(0o600)
+	if err := tmp.Chmod(perm); err != nil && runtime.GOOS != "windows" {
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		return err
 	}
@@ -280,28 +277,22 @@ func writeColabOneMigrationFileAtomic(targetPath string, data []byte) error {
 		return err
 	}
 	closed = true
-	var renameErr error
-	for range 6 {
-		renameErr = os.Rename(tmpName, targetPath)
-		if renameErr == nil {
-			renamed = true
-			return nil
-		}
-		time.Sleep(15 * time.Millisecond)
+	if err := fsutil.RenameReplace(tmpName, targetPath); err != nil {
+		return err
 	}
-	// Re-check Lstat before direct overwrite fallback so a symlink or directory
-	// created concurrently can never be overwritten.
-	if fi, err := os.Lstat(targetPath); err == nil {
-		if fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			return renameErr
-		}
-	}
-	if err := os.WriteFile(targetPath, data, 0o600); err != nil {
-		return renameErr
-	}
-	_ = os.Remove(tmpName)
 	renamed = true
 	return nil
+}
+
+func writeColabOneMigrationFileAtomic(targetPath string, data []byte) error {
+	if fi, err := os.Lstat(targetPath); err == nil {
+		if fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+			return errors.New("refusing to overwrite directory or symlink")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return writeColabOneFileAtomic(targetPath, ".colabone-migration-*.tmp", data, 0o600)
 }
 
 // GetMigrationExportSummary returns live redacted summaries for all 6 migration

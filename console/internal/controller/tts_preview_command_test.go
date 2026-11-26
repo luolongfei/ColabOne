@@ -7,6 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1090,5 +1094,167 @@ func TestComfyUITtsPreviewLocalDiskCachePrefetchAndFastPoll(t *testing.T) {
 	})
 	if wait := ctrl2.effectiveMonitorWait(); wait > 800*time.Millisecond {
 		t.Fatalf("expected accelerated prefetch monitor wait <= 800ms, got %v", wait)
+	}
+}
+
+func TestTtsPreviewCacheHardeningJSONNumberCorruptDeleteSweepAndFIFO(t *testing.T) {
+	cfgDir := t.TempDir()
+	vault := NewColabOneMemoryVault()
+	prov := newMockProvider(vault)
+	ctrl := NewColabOneController(ColabOneControllerConfig{
+		Root:           cfgDir,
+		ConfigDir:      cfgDir,
+		Background:     false,
+		Vault:          vault,
+		Auth:           newMockAuth(),
+		Provider:       prov,
+		Models:         &mockModels{},
+		Hub:            &mockHub{},
+		Comfy:          realComfyTestAdapter{},
+		PublicAPI:      mockPublicAPI{},
+		AssignProxy:    &mockAssignProxy{},
+		Shortcuts:      &mockShortcuts{},
+		ServiceBundler: defaultMockBundler(),
+		Location:       mockLocation{},
+	})
+	defer ctrl.Close()
+
+	// 1. saveLocalTtsPreview parses json.Number duration_seconds and rejects negative/NaN.
+	wavBytes := []byte("RIFF\x24\x00\x00\x00WAVEfmt test-wav-body")
+	pid1 := "1111aaaa2222bbbb3333cccc4444dddd"
+	ctrl.saveLocalTtsPreview(
+		map[string]any{"engine_id": "qwen3_tts", "voice_preset": "shen_zhiyi"},
+		map[string]any{
+			"preview_id":       pid1,
+			"engine_id":        "qwen3_tts",
+			"voice_preset":     "shen_zhiyi",
+			"duration_seconds": json.Number("2.75"),
+			"sample_rate":      json.Number("24000"),
+		},
+		wavBytes,
+	)
+	res1, err := ctrl.readLocalTtsPreview(map[string]any{"preview_id": pid1})
+	if err != nil {
+		t.Fatalf("readLocalTtsPreview after json.Number save failed: %v", err)
+	}
+	if d, _ := asFloat(asMap(res1)["duration_seconds"]); d != 2.75 {
+		t.Fatalf("expected duration_seconds 2.75 from json.Number, got %#v", asMap(res1)["duration_seconds"])
+	}
+
+	pidNeg := "2222aaaa3333bbbb4444cccc5555dddd"
+	ctrl.saveLocalTtsPreview(
+		map[string]any{"engine_id": "qwen3_tts", "voice_preset": "gu_qinglan"},
+		map[string]any{
+			"preview_id":       pidNeg,
+			"engine_id":        "qwen3_tts",
+			"voice_preset":     "gu_qinglan",
+			"duration_seconds": json.Number("-3.5"),
+		},
+		wavBytes,
+	)
+	resNeg, err := ctrl.readLocalTtsPreview(map[string]any{"preview_id": pidNeg})
+	if err != nil {
+		t.Fatalf("readLocalTtsPreview failed: %v", err)
+	}
+	if d, _ := asFloat(asMap(resNeg)["duration_seconds"]); d != 0 {
+		t.Fatalf("expected negative duration_seconds clamped to 0, got %#v", d)
+	}
+
+	// 2. Corrupt regular .wav file is deleted on read; symlink .wav is NOT deleted.
+	corruptPath := filepath.Join(ctrl.ttsPreviewCacheDir(), pid1+".wav")
+	if err := os.WriteFile(corruptPath, []byte("corrupted-mismatch-bytes-longer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resCorrupt, err := ctrl.readLocalTtsPreview(map[string]any{"preview_id": pid1}); err != nil || asBool(asMap(resCorrupt)["cached"]) {
+		t.Fatalf("expected corrupt wav read to return cached=false, got res=%#v err=%v", resCorrupt, err)
+	}
+	if _, statErr := os.Stat(corruptPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected corrupt regular wav deleted on read, statErr=%v", statErr)
+	}
+
+	if runtime.GOOS != "windows" {
+		targetFile := filepath.Join(t.TempDir(), "outside.wav")
+		if err := os.WriteFile(targetFile, []byte("outside-secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		symWav := filepath.Join(ctrl.ttsPreviewCacheDir(), pidNeg+".wav")
+		_ = os.Remove(symWav)
+		if err := os.Symlink(targetFile, symWav); err != nil {
+			t.Fatal(err)
+		}
+		if resSym, err := ctrl.readLocalTtsPreview(map[string]any{"preview_id": pidNeg}); err != nil || asBool(asMap(resSym)["cached"]) {
+			t.Fatalf("expected symlink wav read to return cached=false, got res=%#v err=%v", resSym, err)
+		}
+		if _, statErr := os.Lstat(symWav); statErr != nil {
+			t.Fatalf("symlink wav should not be unlinked directly as corrupt regular file: %v", statErr)
+		}
+		if _, statErr := os.Stat(targetFile); statErr != nil {
+			t.Fatalf("symlink target must remain intact: %v", statErr)
+		}
+		_ = os.Remove(symWav)
+	}
+
+	// 3. Unindexed .wav sweep during pruning and on corrupt index load.
+	orphanWav := filepath.Join(ctrl.ttsPreviewCacheDir(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.wav")
+	if err := os.WriteFile(orphanWav, []byte("orphan-wav"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pidKeep := "3333aaaa4444bbbb5555cccc6666dddd"
+	ctrl.saveLocalTtsPreview(
+		map[string]any{"engine_id": "qwen3_tts", "voice_preset": "shen_zhiyi"},
+		map[string]any{"preview_id": pidKeep, "engine_id": "qwen3_tts", "voice_preset": "shen_zhiyi"},
+		wavBytes,
+	)
+	if _, statErr := os.Stat(orphanWav); !os.IsNotExist(statErr) {
+		t.Fatalf("expected unindexed orphan wav swept during prune, statErr=%v", statErr)
+	}
+
+	// Corrupt index.json causes sweep of all unindexed wav files on reload.
+	if err := os.WriteFile(ctrl.ttsPreviewCacheIndexPath(), []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctrl.ttsPreviewCacheMu.Lock()
+	ctrl.ttsPreviewIndex = nil
+	ctrl.loadLocalTtsPreviewIndexLocked()
+	ctrl.ttsPreviewCacheMu.Unlock()
+	if _, statErr := os.Stat(filepath.Join(ctrl.ttsPreviewCacheDir(), pidKeep+".wav")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected unindexed wav swept on corrupt index.json load, statErr=%v", statErr)
+	}
+
+	// 4. Deterministic FIFO eviction in rememberPendingTtsPreviewReq (cap 64) and rememberPendingTtsPrefetchContext (cap 128).
+	for i := 0; i < 70; i++ {
+		pid := fmt.Sprintf("%032x", i+1)
+		ctrl.rememberPendingTtsPreviewReq(pid, map[string]any{"engine_id": "qwen3_tts", "voice_preset": fmt.Sprintf("v_%d", i)})
+	}
+	for i := 0; i < 6; i++ {
+		pid := fmt.Sprintf("%032x", i+1)
+		if got := ctrl.consumePendingTtsPreviewReq(pid); got != nil {
+			t.Fatalf("expected oldest pending preview #%d to be FIFO-evicted, got %#v", i, got)
+		}
+	}
+	for i := 6; i < 70; i++ {
+		pid := fmt.Sprintf("%032x", i+1)
+		if got := ctrl.consumePendingTtsPreviewReq(pid); got == nil {
+			t.Fatalf("expected newer pending preview #%d to be retained", i)
+		}
+	}
+
+	prefetchItems := make([]map[string]any, 0, 135)
+	for i := 0; i < 135; i++ {
+		prefetchItems = append(prefetchItems, map[string]any{
+			"voice_preset": fmt.Sprintf("preset_%03d", i),
+			"preview_text": "hello",
+		})
+	}
+	ctrl.rememberPendingTtsPrefetchContext("qwen3_tts", prefetchItems)
+	for i := 0; i < 7; i++ {
+		if got := ctrl.lookupPendingTtsPrefetchContext("qwen3_tts", fmt.Sprintf("preset_%03d", i)); got != nil {
+			t.Fatalf("expected oldest prefetch context #%d to be FIFO-evicted, got %#v", i, got)
+		}
+	}
+	for i := 7; i < 135; i++ {
+		if got := ctrl.lookupPendingTtsPrefetchContext("qwen3_tts", fmt.Sprintf("preset_%03d", i)); got == nil {
+			t.Fatalf("expected newer prefetch context #%d to be retained", i)
+		}
 	}
 }

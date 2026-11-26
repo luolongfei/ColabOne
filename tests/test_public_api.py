@@ -2842,3 +2842,310 @@ def test_stage3a_preserves_system_and_literal_markers_and_cold_failure_avoids_bo
         assert r2.status_code == 200, r2.text
         assert sum_calls > prev_calls
         assert any("PostgreSQL" in (m.get("content") or "") for m in seen_main[-1])
+
+
+def test_openai_compat_tool_choice_empty_tool_calls_and_item_reference_validation():
+    from server.openai_compat import normalize_chat_request, normalize_responses_request
+
+    # 1. tool_choice with non-dict function or blank name must raise ValueError (not AttributeError).
+    base_tool = {
+        "type": "function",
+        "function": {"name": "read_file", "parameters": {"type": "object"}},
+    }
+    for bad_choice in (
+        {"type": "function", "function": "read_file"},
+        {"type": "function", "function": 123},
+        {"type": "function", "function": {"name": "   "}},
+    ):
+        with pytest.raises(ValueError, match="tool_choice"):
+            normalize_chat_request(
+                {
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [base_tool],
+                    "tool_choice": bad_choice,
+                }
+            )
+
+    # 2. Empty tool_calls: [] is normalized as a standard assistant message with string content.
+    _, _, payload = normalize_chat_request(
+        {
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": None, "tool_calls": []},
+                {"role": "user", "content": "next"},
+            ],
+        }
+    )
+    assert payload["messages"][1] == {"role": "assistant", "content": ""}
+    assert "tool_calls" not in payload["messages"][1]
+
+    # 3. item_reference requires non-empty string id and must not match items without id.
+    store = {
+        "resp_1": {
+            "items": [
+                {"type": "message", "role": "user", "content": "secret without id"},
+                {"id": "msg_ok", "type": "message", "role": "user", "content": "referenced"},
+            ]
+        }
+    }
+    for bad_ref in (
+        {"type": "item_reference"},
+        {"type": "item_reference", "id": None},
+        {"type": "item_reference", "id": "   "},
+        {"type": "item_reference", "id": 123},
+    ):
+        with pytest.raises(ValueError, match="item_reference"):
+            normalize_responses_request(
+                {"model": "test-model", "input": [bad_ref]},
+                response_store=store,
+            )
+    ok_spec = normalize_responses_request(
+        {"model": "test-model", "input": [{"type": "item_reference", "id": "msg_ok"}]},
+        response_store=store,
+    )
+    assert ok_spec["chat_payload"]["messages"][0]["content"] == "referenced"
+
+
+def test_public_api_inline_compaction_single_turn_no_duplicate_and_non_dict_sse_chunk(
+    gateway,
+):
+    seen_main: list[list[dict]] = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        is_compact = any(
+            "Compact the following conversation history" in (m.get("content") or "")
+            for m in body.get("messages") or []
+        )
+        if is_compact:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": "Compact summary."}}],
+                    "usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+                },
+            )
+        seen_main.append(body["messages"])
+        if body.get("stream"):
+            # Include non-dict JSON chunks (null, []) before a valid delta chunk.
+            sse = (
+                "data: null\n\n"
+                "data: []\n\n"
+                'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            )
+            return httpx.Response(200, text=sse)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "Done"}}],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 5, "total_tokens": 45},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        # 1. Inline compaction on a single user turn must NOT duplicate that user message.
+        single_prompt = "Unique single user prompt " + ("word " * 80)
+        res = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [{"type": "message", "role": "user", "content": single_prompt}],
+                "context_management": [{"type": "compaction", "compact_threshold": 10}],
+                "stream": False,
+            },
+            headers=AUTH,
+        )
+        assert res.status_code == 200, res.text
+        user_msgs = [
+            m["content"]
+            for m in seen_main[0]
+            if m.get("role") == "user" and "Unique single user prompt" in (m.get("content") or "")
+        ]
+        assert len(user_msgs) == 1
+
+        # 2. Streaming /v1/responses safely skips non-dict JSON chunks.
+        stream_res = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": "hello", "stream": True},
+            headers=AUTH,
+        )
+        assert stream_res.status_code == 200
+        events = parse_sse_events(stream_res.text)
+        assert any(name == "response.completed" for name, _ in events)
+
+
+def test_public_api_keepalive_payload_release_stop_cleanup_and_stopping_guard(
+    gateway, monkeypatch
+):
+    from server import public_api as public_api_mod
+
+    monkeypatch.setattr(public_api_mod, "SSE_KEEPALIVE_INTERVAL_SECONDS", 0.05)
+
+    def slow_upstream(request):
+        body = json.loads(request.content)
+        time.sleep(0.18)
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "choices": [{"message": {"role": "assistant", "content": "Hi"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            },
+        )
+
+    gateway.runtime.chat_transport = httpx.MockTransport(slow_upstream)
+    with TestClient(create_colabone_public_app(gateway)) as client:
+        r_chat_stream = client.post(
+            "/v1/chat/completions", json=chat(stream=True), headers=AUTH
+        )
+        assert r_chat_stream.status_code == 200
+        assert ": keepalive\n\n" in r_chat_stream.text
+
+        r_resp_stream = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": "hi", "stream": True},
+            headers=AUTH,
+        )
+        assert r_resp_stream.status_code == 200
+        assert ": keepalive\n\n" in r_resp_stream.text
+
+        r_chat_sync = client.post(
+            "/v1/chat/completions", json=chat(stream=False), headers=AUTH
+        )
+        assert r_chat_sync.status_code == 200
+        assert r_chat_sync.json()["choices"][0]["message"]["content"] == "Hi"
+
+    # Payloads released once HTTP handlers finish.
+    assert len(gateway.jobs) == 3
+    for slot in gateway.jobs.values():
+        assert slot["result"] is None
+        assert slot["queue"] is None
+        assert slot.get("fail_event") is None
+
+    # stop() clears key/caches and prunes finished jobs even if tunnel.stop() raises.
+    gateway.compaction_cache["k1"] = "cached"
+    monkeypatch.setattr(
+        gateway.tunnel, "stop", lambda: (_ for _ in ()).throw(RuntimeError("tunnel stuck"))
+    )
+    with pytest.raises(RuntimeError, match="tunnel stuck"):
+        gateway.stop()
+    assert gateway.key == ""
+    assert gateway.enabled is False
+    assert gateway.responses == {}
+    assert gateway.compaction_cache == {}
+    assert gateway.jobs == {}
+    assert gateway.completed == 3
+
+    # start() rejects when runtime.stopping is set.
+    gateway.runtime.stopping.set()
+    with pytest.raises(ValueError, match="释放"):
+        gateway.start(
+            {
+                "domain": "https://api.example.com",
+                "api_key": KEY,
+                "tunnel_token": TOKEN,
+            }
+        )
+
+
+def test_tunnel_probe_validates_dict_deadline_cancel_and_token_nofollow(
+    gateway, monkeypatch
+):
+    from server import tunnel as tunnel_mod
+
+    monkeypatch.setattr(tunnel_mod, "public_addresses", lambda _origin: None)
+
+    class _FakeResp:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def iter_content(self, _n):
+            yield self._body
+
+    class _FakeSession:
+        def __init__(self, handler):
+            self._handler = handler
+            self.trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **kwargs):
+            return self._handler(url, kwargs)
+
+    # Non-dict JSON from /health returns False instead of AttributeError.
+    monkeypatch.setattr(
+        tunnel_mod.requests,
+        "Session",
+        lambda: _FakeSession(lambda _u, _kw: _FakeResp(200, b'["not-a-dict"]')),
+    )
+    assert gateway.tunnel.probe("https://api.example.com") is False
+
+    # Non-dict JSON from authenticated /v1/models returns False.
+    def _models_list_handler(url, kw):
+        if url.endswith("/health"):
+            return _FakeResp(
+                200, json.dumps({"instance": gateway.instance}).encode("utf-8")
+            )
+        if kw.get("headers"):
+            return _FakeResp(200, b'"not-a-dict"')
+        return _FakeResp(401, b"{}")
+
+    monkeypatch.setattr(
+        tunnel_mod.requests,
+        "Session",
+        lambda: _FakeSession(_models_list_handler),
+    )
+    assert gateway.tunnel.probe("https://api.example.com") is False
+
+    # Cancellation during probe stops early and returns False.
+    def _cancel_mid_probe(url, kw):
+        gateway.tunnel.cancel.set()
+        return _FakeResp(
+            200, json.dumps({"instance": gateway.instance}).encode("utf-8")
+        )
+
+    gateway.tunnel.cancel.clear()
+    monkeypatch.setattr(
+        tunnel_mod.requests,
+        "Session",
+        lambda: _FakeSession(_cancel_mid_probe),
+    )
+    assert gateway.tunnel.probe("https://api.example.com") is False
+    gateway.tunnel.cancel.clear()
+
+    # Pre-existing symlink at .cloudflared-token is rejected via O_NOFOLLOW.
+    decoy = gateway.runtime.root / "decoy.txt"
+    decoy.write_text("do-not-overwrite", encoding="utf-8")
+    token_link = gateway.runtime.root / ".cloudflared-token"
+    token_link.symlink_to(decoy)
+    monkeypatch.setattr(
+        tunnel_mod, "ensure_binary", lambda *_a, **_kw: gateway.runtime.root / "cf"
+    )
+    cfg = ColabOnePublicConfig(
+        domain="https://api.example.com",
+        api_key=KEY,
+        tunnel_token=TOKEN,
+    )
+    gateway.tunnel.run(cfg)
+    assert decoy.read_text(encoding="utf-8") == "do-not-overwrite"
+    assert gateway.phase == "failed"

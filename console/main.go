@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/luolongfei/ColabOne/console/internal/live"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
@@ -91,6 +92,7 @@ type ColabOneDesktop struct {
 	mediaLn      net.Listener
 	mediaSecret  string
 	mediaBaseURL string
+	mediaClosed  bool
 }
 
 func (d *ColabOneDesktop) invalidateSplash() {
@@ -393,6 +395,84 @@ func colabOneWindowBackground() string {
 	return "light-dark(#fafbfc, #0b0c0e)"
 }
 
+func colabOneIsTrustedMicOrigin(origin string) bool {
+	return colabOneIsTrustedMicOriginForEnv(origin, mygo.IsDev(), os.Getenv("MYGO_DEV_URL"))
+}
+
+func colabOneIsTrustedMicOriginForEnv(origin string, isDev bool, devURL string) bool {
+	trimmed := strings.TrimSpace(origin)
+	if trimmed == "" {
+		return false
+	}
+	for _, ch := range trimmed {
+		if ch <= 0x20 || ch == 0x7f {
+			return false
+		}
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.User != nil || u.Opaque != "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	switch scheme {
+	case "mygo":
+		return host == "localhost" && u.Port() == ""
+	case "colabone", "app":
+		return (host == "" || host == "localhost") && u.Port() == ""
+	case "wails":
+		return (host == "" || host == "localhost" || host == "wails.localhost") && u.Port() == ""
+	case "http", "https":
+		originNorm, err := live.ColabOneNormalizedURLOrigin(trimmed)
+		if err != nil {
+			return false
+		}
+		if scheme == "http" && host == "mygo.localhost" && u.Port() == "" {
+			return true
+		}
+		if !isDev {
+			return false
+		}
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return true
+		}
+		if strings.TrimSpace(devURL) != "" {
+			if devNorm, devErr := live.ColabOneNormalizedURLOrigin(devURL); devErr == nil && originNorm == devNorm {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func colabOneHandlePagePermission(req mygo.PermissionRequest) bool {
+	if len(req.Permissions) == 0 || !colabOneIsTrustedMicOrigin(req.Origin) {
+		return false
+	}
+	for _, perm := range req.Permissions {
+		if perm != mygo.PermissionMicrophone {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *ColabOneDesktop) handleWillQuit() {
+	d.appQuitting.Store(true)
+	d.destroyTray()
+	d.cancelStartup()
+	d.clearMigrationSessions()
+	d.closeWebConsole()
+	d.closeOutputMediaServer()
+	d.closeUpdater()
+	d.flushAppearance()
+	if d.bridge != nil {
+		d.bridge.close()
+	}
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--self-test" {
 		if err := runColabOneSelfTest(); err != nil {
@@ -466,6 +546,10 @@ func main() {
 			Hidden:          hidden,
 			StateKey:        "main",
 			BackgroundColor: colabOneWindowBackground(),
+			Page: mygo.PageOptions{
+				Autoplay:             mygo.AutoplayAllow,
+				BackgroundThrottling: mygo.ThrottlingOff,
+			},
 		})
 		applyWindowIcon(win)
 		trackColabOneWindowState(winStore, "main", win, defaultMainWidth, defaultMainHeight, mainMinWidth, mainMinHeight)
@@ -476,6 +560,7 @@ func main() {
 			d.handleMainWindowClose(current, e)
 		})
 		if page := win.Page(); page != nil {
+			page.SetPermissionHandler(colabOneHandlePagePermission)
 			page.OnDidNavigate(func(string) {
 				if d.mainWindow() == current {
 					d.closePromptReady.Store(false)
@@ -624,14 +709,7 @@ func main() {
 		d.appQuitting.Store(false)
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
-		d.cancelStartup()
-		d.clearMigrationSessions()
-		d.closeWebConsole()
-		d.closeOutputMediaServer()
-		d.closeUpdater()
-		d.destroyTray()
-		d.flushAppearance()
-		d.bridge.close()
+		d.handleWillQuit()
 	})
 	if err := mygo.App.Run(); err != nil && !strings.Contains(err.Error(), "generate") {
 		log.Fatal(err)

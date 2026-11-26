@@ -880,6 +880,7 @@ def test_comfy_run_route_uploads_inputs_saves_output_and_snapshot_hides_canvas_t
             "comfyui_tts_preview",
             "comfyui_longcat_native",
             "comfyui_workflow_auto_release",
+            "comfyui_live_studio",
         ]
         assert snap["runtime"]["comfyui"]["running"] is True
         assert any(w["id"] == "wf-e2e" for w in snap["workflows"])
@@ -1040,3 +1041,687 @@ def test_format_colabone_duration_zh_and_task_elapsed_fields(runtime):
     frozen_elapsed = done_snap["elapsed_seconds"]
     time.sleep(0.05)
     assert t.snapshot()["elapsed_seconds"] == frozen_elapsed
+
+
+def test_canvas_proxy_enforces_live_ws_cap_without_exhausting_comfy_canvas(monkeypatch):
+    import socket
+    from server import comfy_proxy
+
+    monkeypatch.setattr(comfy_proxy, "MAX_LIVE_WS_CONNECTIONS", 2)
+
+    hold_release = threading.Event()
+
+    class _HoldingUpstream:
+        def __init__(self, tag: str):
+            self.tag = tag
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.sock.bind(("127.0.0.1", 0))
+            self.port = self.sock.getsockname()[1]
+            self.sock.listen(16)
+            self.sock.settimeout(0.2)
+            self.stop_event = threading.Event()
+            self.thread = threading.Thread(target=self._serve, daemon=True)
+            self.thread.start()
+
+        def _serve(self):
+            while not self.stop_event.is_set():
+                try:
+                    conn, _ = self.sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+        def _handle(self, conn: socket.socket):
+            with conn:
+                conn.settimeout(3.0)
+                buf = bytearray()
+                while b"\r\n\r\n" not in buf:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        return
+                    buf.extend(chunk)
+                head = bytes(buf).decode("latin-1")
+                if "upgrade: websocket" in head.lower():
+                    conn.sendall(
+                        b"HTTP/1.1 101 Switching Protocols\r\n"
+                        b"Upgrade: websocket\r\n"
+                        b"Connection: Upgrade\r\n\r\n"
+                    )
+                    hold_release.wait(timeout=5.0)
+                    return
+                body = f'{{"ok":true,"tag":"{self.tag}"}}'.encode("utf-8")
+                conn.sendall(
+                    (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body)}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode("latin-1")
+                    + body
+                )
+
+        def close(self):
+            self.stop_event.set()
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.thread.join(timeout=3.0)
+
+    comfy_up = _HoldingUpstream("comfy")
+    live_up = _HoldingUpstream("live")
+    touches: list[int] = []
+    proxy = ColabOneCanvasProxyServer(
+        upstream_host="127.0.0.1",
+        upstream_port=comfy_up.port,
+        listen_host="127.0.0.1",
+        listen_port=0,
+        instance="inst-cap",
+        canvas_token="tok-cap",
+        session_cookie="sess-cap",
+        on_activity=lambda: touches.append(1),
+        live_upstream_port=live_up.port,
+    )
+    proxy.start()
+    open_ws: list[socket.socket] = []
+    try:
+        ws_req = (
+            "GET /_colabone_live/ws HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: keep-alive, Upgrade\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        ).encode("latin-1")
+
+        # Open MAX_LIVE_WS_CONNECTIONS (=2) live WS connections and verify none call on_activity.
+        for _ in range(2):
+            s = socket.create_connection(("127.0.0.1", proxy.port), timeout=3.0)
+            s.sendall(ws_req)
+            resp = bytearray()
+            while b"\r\n\r\n" not in resp:
+                resp.extend(s.recv(4096))
+            assert resp.startswith(b"HTTP/1.1 101")
+            open_ws.append(s)
+        assert touches == []
+
+        # 3rd live WS connection hits the separate live WS cap with 503 JSON.
+        st_503, _, body_503 = _raw_http_exchange(proxy.port, ws_req)
+        assert st_503 == 503
+        assert "Live Studio" in json.loads(body_503)["error"]
+        assert touches == []
+
+        # Meanwhile authorized ComfyUI Canvas traffic still succeeds cleanly.
+        st_comfy, _, body_comfy = _raw_http_exchange(
+            proxy.port,
+            b"GET /system_stats HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer tok-cap\r\n\r\n",
+        )
+        assert st_comfy == 200
+        assert json.loads(body_comfy)["tag"] == "comfy"
+        assert len(touches) == 1
+    finally:
+        hold_release.set()
+        for s in open_ws:
+            try:
+                s.close()
+            except OSError:
+                pass
+        proxy.stop()
+        comfy_up.close()
+        live_up.close()
+
+
+def test_canvas_proxy_hardening_bidirectional_ws_gating_chunked_hop_origin_and_token(
+    tmp_path, monkeypatch
+):
+    import os
+    import stat
+    from types import SimpleNamespace
+    from server import comfy_proxy
+    from server.comfy_proxy import ColabOneComfyCanvasGateway
+
+    # 1. Upstream server supporting:
+    #    - /ws_stream: sends 101 then streams chunks every 0.10s for 0.45s (tests bidirectional WS idle)
+    #    - /ws_reject_chunked: sends 403 Transfer-Encoding: chunked + Connection: keep-alive (never closes)
+    #    - /ws_pipelined: sends 101 then echoes any client bytes received
+    #    - /slow_stream: sends 200 streaming 4 chunks spaced 0.12s apart (tests no outer wall-clock cap)
+    #    - /echo_headers: returns received request headers + adds hop-by-hop headers in response
+    class _HardeningUpstream:
+        def __init__(self):
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.sock.bind(("127.0.0.1", 0))
+            self.port = self.sock.getsockname()[1]
+            self.sock.listen(32)
+            self.sock.settimeout(0.2)
+            self.stop_event = threading.Event()
+            self.records: list[dict] = []
+            self.lock = threading.Lock()
+            self.thread = threading.Thread(target=self._serve, daemon=True)
+            self.thread.start()
+
+        def _serve(self):
+            while not self.stop_event.is_set():
+                try:
+                    conn, _ = self.sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+        def _handle(self, conn: socket.socket):
+            with conn:
+                conn.settimeout(5.0)
+                buf = bytearray()
+                while b"\r\n\r\n" not in buf:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        return
+                    buf.extend(chunk)
+                sep = buf.index(b"\r\n\r\n")
+                head = bytes(buf[:sep]).decode("latin-1")
+                leftover = bytes(buf[sep + 4 :])
+                lines = head.split("\r\n")
+                req_line = lines[0]
+                target = req_line.split(" ")[1]
+                hdrs: dict[str, str] = {}
+                for line in lines[1:]:
+                    k, _, v = line.partition(":")
+                    hdrs[k.strip().lower()] = v.strip()
+
+                if target == "/ws_reject_chunked":
+                    # Wait briefly to verify proxy did NOT forward pipelined client bytes before 101.
+                    conn.settimeout(0.15)
+                    extra = b""
+                    try:
+                        extra = conn.recv(4096)
+                    except socket.timeout:
+                        pass
+                    with self.lock:
+                        self.records.append(
+                            {"target": target, "headers": hdrs, "early_bytes": leftover + extra}
+                        )
+                    conn.sendall(
+                        b"HTTP/1.1 403 Forbidden\r\n"
+                        b"Transfer-Encoding: chunked\r\n"
+                        b"Connection: keep-alive, X-Resp-Hop\r\n"
+                        b"X-Resp-Hop: secret-hop\r\n"
+                        b"Upgrade: websocket\r\n"
+                        b"Proxy-Authenticate: Basic\r\n"
+                        b"\r\n"
+                        b"6\r\ndenied\r\n"
+                        b"0\r\n\r\n"
+                    )
+                    # Deliberately keep connection open until proxy closes it after 0\r\n\r\n!
+                    conn.settimeout(2.0)
+                    try:
+                        while conn.recv(1024):
+                            pass
+                    except OSError:
+                        pass
+                    return
+
+                with self.lock:
+                    self.records.append({"target": target, "headers": hdrs, "leftover": leftover})
+
+                if target == "/ws_stream":
+                    conn.sendall(
+                        b"HTTP/1.1 101 Switching Protocols\r\n"
+                        b"Upgrade: websocket\r\n"
+                        b"Connection: Upgrade\r\n\r\n"
+                    )
+                    for idx in range(5):
+                        time.sleep(0.10)
+                        conn.sendall(f"tick-{idx}|".encode("ascii"))
+                    # Now go completely silent so shared WS_IDLE_TIMEOUT triggers cleanly.
+                    conn.settimeout(3.0)
+                    try:
+                        while conn.recv(1024):
+                            pass
+                    except OSError:
+                        pass
+                    return
+
+                if target == "/ws_pipelined":
+                    conn.sendall(
+                        b"HTTP/1.1 101 Switching Protocols\r\n"
+                        b"Upgrade: websocket\r\n"
+                        b"Connection: Upgrade\r\n\r\n"
+                    )
+                    data = leftover or conn.recv(4096)
+                    if data:
+                        conn.sendall(b"got:" + data)
+                    return
+
+                if target == "/slow_stream":
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: text/plain\r\n"
+                        b"Transfer-Encoding: chunked\r\n"
+                        b"Connection: close\r\n\r\n"
+                    )
+                    for i in range(4):
+                        time.sleep(0.12)
+                        part = f"p{i}".encode("ascii")
+                        conn.sendall(f"{len(part):x}\r\n".encode("ascii") + part + b"\r\n")
+                    conn.sendall(b"0\r\n\r\n")
+                    return
+
+                body = json.dumps({"headers": hdrs}).encode("utf-8")
+                conn.sendall(
+                    (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body)}\r\n"
+                        "Connection: close, X-Drop-Me\r\n"
+                        "X-Drop-Me: nope\r\n"
+                        "Proxy-Authenticate: Basic\r\n"
+                        "TE: trailers\r\n"
+                        "Trailers: X-Foo\r\n"
+                        "Upgrade: h2c\r\n\r\n"
+                    ).encode("latin-1")
+                    + body
+                )
+
+        def close(self):
+            self.stop_event.set()
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.thread.join(timeout=3.0)
+
+    up = _HardeningUpstream()
+    proxy = ColabOneCanvasProxyServer(
+        upstream_host="127.0.0.1",
+        upstream_port=up.port,
+        live_upstream_port=up.port,
+        listen_host="127.0.0.1",
+        listen_port=0,
+        instance="inst-hard",
+        canvas_token="tok-hard",
+        session_cookie="sess-hard",
+        expected_origin="https://comfy.example.com",
+    )
+    proxy.start()
+    try:
+        # A. Hop-by-hop headers stripped on both request and response.
+        st, resp_hdrs, resp_body = _raw_http_exchange(
+            proxy.port,
+            (
+                "GET /echo_headers HTTP/1.1\r\n"
+                "Host: comfy.example.com\r\n"
+                "Authorization: Bearer tok-hard\r\n"
+                "Connection: keep-alive, X-Client-Hop\r\n"
+                "X-Client-Hop: drop-me\r\n"
+                "Proxy-Authorization: Basic abc\r\n"
+                "TE: trailers\r\n"
+                "Trailers: X-Bar\r\n"
+                "Upgrade: h2c\r\n\r\n"
+            ).encode("latin-1"),
+        )
+        assert st == 200
+        seen_req_hdrs = json.loads(resp_body)["headers"]
+        for stripped in ("x-client-hop", "proxy-authorization", "te", "trailers", "upgrade"):
+            assert stripped not in seen_req_hdrs
+        for stripped in ("x-drop-me", "proxy-authenticate", "te", "trailers", "upgrade"):
+            assert stripped not in resp_hdrs
+
+        # B. Strict RFC 6455 upgrade validation: bogus upgrade headers are NOT forwarded as WS upgrades.
+        for bad_upgrade_req in (
+            (
+                "GET /echo_headers HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Authorization: Bearer tok-hard\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: not-16-bytes==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ),
+            (
+                "GET /echo_headers HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Authorization: Bearer tok-hard\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n\r\n"
+            ),
+            (
+                "GET /echo_headers HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Authorization: Bearer tok-hard\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+                "Content-Length: 0\r\n\r\n"
+            ),
+        ):
+            st_b, _, body_b = _raw_http_exchange(proxy.port, bad_upgrade_req.encode("latin-1"))
+            assert st_b == 200
+            assert "upgrade" not in json.loads(body_b)["headers"]
+
+        # C. Upgrade gating on non-101 chunked keep-alive response:
+        #    leftover is NOT forwarded, Connection is normalized to Upgrade (no keep-alive),
+        #    and proxy terminates cleanly at 0\r\n\r\n without hanging!
+        t_start = time.monotonic()
+        with socket.create_connection(("127.0.0.1", proxy.port), timeout=3.0) as s:
+            s.settimeout(3.0)
+            s.sendall(
+                (
+                    "GET /ws_reject_chunked HTTP/1.1\r\n"
+                    "Host: comfy.example.com\r\n"
+                    "Origin: https://comfy.example.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: keep-alive, Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Version: 13\r\n"
+                    "Authorization: Bearer tok-hard\r\n\r\n"
+                    "SMUGGLED-PIPELINE-BYTES"
+                ).encode("latin-1")
+            )
+            chunks = []
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                chunks.append(data)
+        assert (time.monotonic() - t_start) < 2.0
+        raw_rej = b"".join(chunks).decode("latin-1")
+        assert raw_rej.startswith("HTTP/1.1 403")
+        assert "denied" in raw_rej
+        assert "x-resp-hop" not in raw_rej.lower()
+        assert "proxy-authenticate" not in raw_rej.lower()
+        rej_rec = next(r for r in up.records if r["target"] == "/ws_reject_chunked")
+        assert rej_rec["early_bytes"] == b""
+        assert rej_rec["headers"]["connection"].lower() == "upgrade"
+
+        # D. Valid 101 releases pipelined leftover bytes after confirmation.
+        with socket.create_connection(("127.0.0.1", proxy.port), timeout=3.0) as ws:
+            ws.sendall(
+                (
+                    "GET /ws_pipelined HTTP/1.1\r\n"
+                    "Host: comfy.example.com\r\n"
+                    "Origin: https://comfy.example.com\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: keep-alive, Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Version: 13\r\n"
+                    "Authorization: Bearer tok-hard\r\n\r\n"
+                    "hello-pipelined"
+                ).encode("latin-1")
+            )
+            buf = bytearray()
+            while b"got:hello-pipelined" not in buf:
+                chunk = ws.recv(4096)
+                assert chunk
+                buf.extend(chunk)
+            assert buf.startswith(b"HTTP/1.1 101")
+
+        # E. Strict Origin validation on WS upgrades and POST mutating requests.
+        for bad_origin_req in (
+            (
+                "POST /echo_headers HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Origin: https://evil.example\r\nAuthorization: Bearer tok-hard\r\n"
+                "Content-Length: 0\r\n\r\n"
+            ),
+            (
+                "POST /echo_headers HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Origin: http://comfy.example.com\r\nAuthorization: Bearer tok-hard\r\n"
+                "Content-Length: 0\r\n\r\n"
+            ),
+            (
+                "POST /echo_headers HTTP/1.1\r\nHost: evil.example\r\n"
+                "Origin: https://evil.example\r\nAuthorization: Bearer tok-hard\r\n"
+                "Content-Length: 0\r\n\r\n"
+            ),
+            (
+                "GET /ws_pipelined HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Origin: null\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+                "Authorization: Bearer tok-hard\r\n\r\n"
+            ),
+            (
+                "GET /_colabone_live/ws HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Origin: mygo://evil.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ),
+            (
+                "GET /_colabone_live/ws HTTP/1.1\r\nHost: comfy.example.com\r\n"
+                "Origin: https://evil.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ),
+        ):
+            st_o, _, _ = _raw_http_exchange(proxy.port, bad_origin_req.encode("latin-1"))
+            assert st_o == 403
+
+        # Allowed origins: loopback on loopback Host, and trusted desktop app origins on /_colabone_live/ws.
+        st_lo, _, _ = _raw_http_exchange(
+            proxy.port,
+            (
+                "POST /echo_headers HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                "Origin: http://localhost:5173\r\nAuthorization: Bearer tok-hard\r\n"
+                "Content-Length: 0\r\n\r\n"
+            ).encode("latin-1"),
+        )
+        assert st_lo == 200
+
+        for app_origin in (
+            "mygo://localhost",
+            "http://mygo.localhost",
+            "colabone://",
+            "app://localhost",
+            "wails://wails.localhost",
+        ):
+            with socket.create_connection(("127.0.0.1", proxy.port), timeout=3.0) as ws:
+                ws.sendall(
+                    (
+                        "GET /_colabone_live/ws HTTP/1.1\r\n"
+                        "Host: comfy.example.com\r\n"
+                        f"Origin: {app_origin}\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n"
+                    ).encode("latin-1")
+                )
+                first = ws.recv(4096)
+                # /_colabone_live/ws passed Origin check and reached upstream (not 403).
+                assert not first.startswith(b"HTTP/1.1 403")
+
+        # F. Bidirectional WS idle timeout & non-upgrade streaming without outer wall-clock cap.
+        with monkeypatch.context() as mp:
+            mp.setattr(comfy_proxy, "WS_IDLE_TIMEOUT", 0.25)
+            mp.setattr(comfy_proxy, "BODY_IDLE_TIMEOUT", 0.25)
+
+            # Active server-only WS stream lasts ~0.50s (> 0.25s) while client sends nothing;
+            # all 5 ticks must arrive before shared idle timeout closes the socket.
+            with socket.create_connection(("127.0.0.1", proxy.port), timeout=3.0) as ws:
+                ws.settimeout(3.0)
+                ws.sendall(
+                    (
+                        "GET /ws_stream HTTP/1.1\r\n"
+                        "Host: comfy.example.com\r\n"
+                        "Origin: https://comfy.example.com\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                        "Sec-WebSocket-Version: 13\r\n"
+                        "Authorization: Bearer tok-hard\r\n\r\n"
+                    ).encode("latin-1")
+                )
+                collected = bytearray()
+                while True:
+                    chunk = ws.recv(4096)
+                    if not chunk:
+                        break
+                    collected.extend(chunk)
+                text_ws = collected.decode("latin-1")
+                for idx in range(5):
+                    assert f"tick-{idx}|" in text_ws
+
+            # Non-upgrade HTTP stream lasts ~0.48s (> BODY_IDLE_TIMEOUT 0.25s total, 0.12s per chunk).
+            st_stream, _, body_stream = _raw_http_exchange(
+                proxy.port,
+                (
+                    "GET /slow_stream HTTP/1.1\r\n"
+                    "Host: comfy.example.com\r\n"
+                    "Authorization: Bearer tok-hard\r\n\r\n"
+                ).encode("latin-1"),
+            )
+            assert st_stream == 200
+            for i in range(4):
+                assert f"p{i}".encode("ascii") in body_stream
+    finally:
+        proxy.stop()
+        up.close()
+
+    # G. start() calls stop() when ready.wait times out.
+    stop_called = {"called": False}
+    timeout_proxy = ColabOneCanvasProxyServer(listen_port=0)
+    orig_stop = timeout_proxy.stop
+
+    def _spy_stop():
+        stop_called["called"] = True
+        orig_stop()
+
+    async def _never_ready_serve(self, loop, ready, cancel_start, start_error):
+        while not cancel_start.is_set():
+            await asyncio.sleep(0.01)
+
+    import asyncio
+
+    monkeypatch.setattr(timeout_proxy, "stop", _spy_stop)
+    monkeypatch.setattr(
+        ColabOneCanvasProxyServer, "_serve", _never_ready_serve
+    )
+    orig_event_cls = comfy_proxy.threading.Event
+
+    class _FastTimeoutEvent(orig_event_cls):
+        def wait(self, timeout=None):
+            return super().wait(timeout=0.05 if timeout == 10.0 else timeout)
+
+    monkeypatch.setattr(comfy_proxy.threading, "Event", _FastTimeoutEvent)
+    with pytest.raises(RuntimeError, match="超时"):
+        timeout_proxy.start()
+    assert stop_called["called"] is True
+    monkeypatch.undo()
+
+    # H. .comfy-cloudflared-token rejects symlinks (O_NOFOLLOW) and enforces 0o600 via fchmod.
+    if os.name == "posix":
+        gw_root = tmp_path / "gw_root"
+        gw_root.mkdir()
+        gw = ColabOneComfyCanvasGateway(
+            SimpleNamespace(root=gw_root, catalog=None, touch=lambda *a: None)
+        )
+        token_file = gw_root / ".comfy-cloudflared-token"
+        victim = tmp_path / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        token_file.symlink_to(victim)
+
+        monkeypatch.setattr(comfy_proxy, "_call_ensure_binary", lambda *a: Path("/bin/true"))
+        gw._run_tunnel(
+            SimpleNamespace(domain="https://comfy.example.com", tunnel_token="secret-tok"),
+            proxy_port=8189,
+        )
+        assert victim.read_text(encoding="utf-8") == "keep"
+        assert gw.phase == "failed"
+
+        # Pre-existing world-readable token file gets chmodded to 0o600 via os.fchmod.
+        token_file.unlink(missing_ok=True)
+        token_file.write_text("old", encoding="utf-8")
+        os.chmod(token_file, 0o644)
+        gw2 = ColabOneComfyCanvasGateway(
+            SimpleNamespace(root=gw_root, catalog=None, touch=lambda *a: None)
+        )
+        seen_modes: list[int] = []
+
+        def _fake_popen(*a, **kw):
+            seen_modes.append(stat.S_IMODE(token_file.stat().st_mode))
+            gw2._tunnel_cancel.set()
+            p = Mock()
+            p.stdout = None
+            p.stderr = None
+            p.poll.return_value = 0
+            return p
+
+        monkeypatch.setattr(comfy_proxy.subprocess, "Popen", _fake_popen)
+        gw2._run_tunnel(
+            SimpleNamespace(domain="https://comfy.example.com", tunnel_token="fresh-tok"),
+            proxy_port=8189,
+        )
+        assert seen_modes == [0o600]
+
+
+def test_comfyui_pg_reap_trash_tombstone_cleanup_and_log_tail_symlink_safety(
+    tmp_path, monkeypatch
+):
+    import os
+    from server import comfyui as comfy_mod
+    from server.comfyui import (
+        ColabOneComfyWorkflowStore,
+        _open_secure_log_write,
+        _read_log_tail,
+        _terminate_process_group,
+    )
+
+    # 1. _terminate_process_group calls proc.poll() inside the _pg_has_members loop before SIGKILL.
+    poll_calls = {"count": 0}
+    killpg_signals: list[int] = []
+
+    class _ZombieLeaderProc:
+        pid = 999991
+
+        def poll(self):
+            poll_calls["count"] += 1
+            return 0 if poll_calls["count"] >= 2 else None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    def _fake_killpg(pgid, sig):
+        killpg_signals.append(sig)
+
+    monkeypatch.setattr(comfy_mod.os, "killpg", _fake_killpg, raising=False)
+    monkeypatch.setattr(comfy_mod.os, "getpgrp", lambda: 1, raising=False)
+    monkeypatch.setattr(
+        comfy_mod,
+        "_pg_has_members",
+        lambda pgid: poll_calls["count"] < 2,
+    )
+    _terminate_process_group(_ZombieLeaderProc(), timeout=0.5)
+    assert poll_calls["count"] >= 2
+    assert comfy_mod.signal.SIGKILL not in killpg_signals
+    monkeypatch.undo()
+
+    # 2. save_workflow clears matching .trash tombstone on re-create.
+    store = ColabOneComfyWorkflowStore(tmp_path)
+    store.save_workflow(
+        {"id": "wf-recreate-1", "name": "First", "workflow": sample_api_workflow()}
+    )
+    store.delete_workflow("wf-recreate-1")
+    tombstone = tmp_path / "workflows" / ".trash" / "wf-recreate-1.json"
+    assert tombstone.is_file()
+    store.save_workflow(
+        {"id": "wf-recreate-1", "name": "Recreated", "workflow": sample_api_workflow()}
+    )
+    assert not tombstone.exists()
+    assert store.get_workflow("wf-recreate-1")["name"] == "Recreated"
+
+    # 3. comfyui.log rejects symlinks on open-for-write and reads bounded EOF tail cleanly.
+    big_log = tmp_path / "comfyui.log"
+    big_log.write_bytes(b"A" * 20000 + b"TAIL-MARKER-END\n")
+    tail = _read_log_tail(big_log, max_bytes=4096)
+    assert len(tail.encode("utf-8")) <= 4096
+    assert tail.endswith("TAIL-MARKER-END\n")
+    assert len(tail) < 5000
+
+    if os.name == "posix":
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET", encoding="utf-8")
+        sym_log = tmp_path / "sym_comfyui.log"
+        sym_log.symlink_to(secret)
+        assert _read_log_tail(sym_log, max_bytes=4096) == ""
+        with pytest.raises(ValueError, match="符号链接"):
+            _open_secure_log_write(sym_log)
+        assert secret.read_text(encoding="utf-8") == "TOP-SECRET"
+

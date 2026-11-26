@@ -1,0 +1,280 @@
+{
+  "port": 8190,
+  "ws_path": "/_colabone_live/ws",
+  "default_fps": 25,
+  "audio_input_sample_rate": 16000,
+  "audio_output_sample_rate": 24000,
+  "encoding_note": "支持 NVENC 的 GPU（如 L4 / G4 / T4）优先使用 h264_nvenc 零延迟硬件编码；A100 等无硬件 NVENC 编码单元的算力卡会自动通过单帧空编码探测回退至 libx264 极速软编码（或纯 Python JPEG 兜底）。",
+  "asr_vad": [
+    {
+      "id": "silero_vad",
+      "name": "Silero VAD",
+      "role": "vad",
+      "description": "轻量级 CPU 实时语音活动检测（VAD），支持 160ms 快速打断起音判定与 380ms 静音断句。",
+      "repo": "snakers4/silero-vad",
+      "revision": "master",
+      "source_repo": "https://github.com/snakers4/silero-vad.git",
+      "device": "cpu",
+      "license": "MIT",
+      "commercial_ok": true,
+      "license_notice": "",
+      "min_vram_mib": 0,
+      "min_disk_mib": 32,
+      "sample_rate": 16000,
+      "pip_packages": [
+        "silero-vad",
+        "onnxruntime",
+        "numpy"
+      ]
+    },
+    {
+      "id": "sensevoice_small",
+      "name": "SenseVoice-Small",
+      "role": "asr",
+      "description": "阿里通义多语种超低延迟流式语音识别与情绪标签模型，适合直播间实时语音对话。",
+      "repo": "FunAudioLLM/SenseVoiceSmall",
+      "revision": "main",
+      "source_repo": "https://github.com/FunAudioLLM/SenseVoice.git",
+      "device": "cuda",
+      "license": "MIT (code) / FunAudioLLM Model License (weights)",
+      "commercial_ok": true,
+      "license_notice": "SenseVoice 推理代码遵循 MIT 协议，模型权重遵循 FunAudioLLM Model License（允许免费商用，需保留协议与出处声明并遵守使用规范）。",
+      "min_vram_mib": 1024,
+      "min_disk_mib": 1536,
+      "sample_rate": 16000,
+      "pip_packages": [
+        "funasr",
+        "modelscope",
+        "torchaudio",
+        "onnxruntime-gpu"
+      ]
+    }
+  ],
+  "streaming_tts": [
+    {
+      "id": "qwen3_tts",
+      "name": "Qwen3-TTS 1.7B 流式语音",
+      "description": "阿里通义开源 1.7B 实时流式语音合成引擎，首包延迟约 90ms，支持预设音色与零样本克隆，Apache-2.0 可商用。",
+      "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+      "aux_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+      "aux_revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+      "custom_voice_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+      "custom_voice_revision": "0c0e3051f131929182e2c023b9537f8b1c68adfe",
+      "source_repo": "https://github.com/QwenLM/Qwen3-TTS.git",
+      "source_commit": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+      "license": "Apache-2.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "min_vram_mib": 8192,
+      "min_disk_mib": 15360,
+      "sample_rate": 24000,
+      "native_sample_rate": 24000,
+      "ttfa_ms": 90,
+      "pip_packages": [
+        "qwen-tts",
+        "soundfile",
+        "huggingface-hub"
+      ]
+    },
+    {
+      "id": "voxcpm2",
+      "name": "VoxCPM2 流式语音",
+      "description": "面壁智能开源高保真流式语音合成引擎，首包延迟约 170ms，原生 48kHz 实时重采样输出 24kHz PCM，Apache-2.0 可商用。",
+      "repo": "openbmb/VoxCPM2",
+      "revision": "7936080b41163874f38610f46f438e2c0757f9fd",
+      "aux_repo": "",
+      "aux_revision": "",
+      "custom_voice_repo": "",
+      "custom_voice_revision": "",
+      "source_repo": "https://github.com/OpenBMB/VoxCPM.git",
+      "source_commit": "300e4260b509066151d623dc9c0aa922cf82232b",
+      "license": "Apache-2.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "min_vram_mib": 8192,
+      "min_disk_mib": 6144,
+      "sample_rate": 24000,
+      "native_sample_rate": 48000,
+      "ttfa_ms": 170,
+      "pip_packages": [
+        "voxcpm",
+        "soundfile",
+        "huggingface-hub"
+      ]
+    }
+  ],
+  "visual_engines": [
+    {
+      "id": "flashhead_lite",
+      "name": "SoulX-FlashHead-1.3B Lite",
+      "description": "单图秒开流式数字人视觉引擎，无需预先录动作库，上传人像即可实时驱动头部姿态、眼神与口型。",
+      "mode": "single_photo",
+      "repo": "Soul-AILab/SoulX-FlashHead-1_3B",
+      "revision": "main",
+      "source_repo": "https://github.com/Soul-AILab/SoulX-FlashHead.git",
+      "license": "Apache-2.0",
+      "commercial_ok": true,
+      "license_notice": "",
+      "experimental": false,
+      "min_vram_mib": 6656,
+      "min_disk_mib": 10240,
+      "default_fps": 25,
+      "default_resolution": "720x1280",
+      "pip_packages": [
+        "diffusers",
+        "transformers",
+        "accelerate",
+        "safetensors",
+        "einops",
+        "opencv-python-headless",
+        "librosa",
+        "huggingface-hub"
+      ]
+    },
+    {
+      "id": "musetalk_bank",
+      "name": "MuseTalk 1.5",
+      "description": "1080p 动作库实时口型同步引擎，结合主播动作库与平滑淡入淡出混合，提供稳定可控的带货与才艺直播画面（无 NVENC 的 A100 自动使用 libx264 软编码）。",
+      "mode": "action_bank",
+      "repo": "TMElyralab/MuseTalk",
+      "revision": "main",
+      "source_repo": "https://github.com/TMElyralab/MuseTalk.git",
+      "license": "MIT",
+      "commercial_ok": true,
+      "license_notice": "",
+      "experimental": false,
+      "min_vram_mib": 7680,
+      "min_disk_mib": 12288,
+      "default_fps": 25,
+      "default_resolution": "1080x1920",
+      "pip_packages": [
+        "diffusers",
+        "transformers",
+        "accelerate",
+        "einops",
+        "omegaconf",
+        "opencv-python-headless",
+        "librosa",
+        "ffmpeg-python",
+        "huggingface-hub"
+      ]
+    },
+    {
+      "id": "personalive_dance",
+      "name": "PersonaLive",
+      "description": "单图驱动视频实时姿态与才艺跳舞引擎（实验性功能），支持参考动作视频实时驱动全身律动。",
+      "mode": "driving_video",
+      "repo": "huaichang/PersonaLive",
+      "revision": "main",
+      "source_repo": "https://github.com/GVCLab/PersonaLive.git",
+      "license": "Non-Commercial Research License",
+      "commercial_ok": false,
+      "license_notice": "PersonaLive 遵循非商业研究许可协议（Non-Commercial Research License），仅限研究、评测与个人演示，请勿用于商业直播变现。",
+      "experimental": true,
+      "min_vram_mib": 12288,
+      "min_disk_mib": 16384,
+      "default_fps": 25,
+      "default_resolution": "720x1280",
+      "pip_packages": [
+        "diffusers",
+        "transformers",
+        "accelerate",
+        "einops",
+        "omegaconf",
+        "opencv-python-headless",
+        "onnxruntime-gpu",
+        "huggingface-hub"
+      ]
+    }
+  ],
+  "default_actions": [
+    {
+      "id": "idle_loop",
+      "label": "自然待机",
+      "kind": "loop",
+      "description": "自然呼吸、眨眼与轻微点头微笑的循环待机画面。",
+      "default_duration_seconds": 6.0,
+      "trigger_keywords": [
+        "待机",
+        "休息",
+        "idle"
+      ],
+      "prompt_hint": "natural breathing, gentle smile, subtle eye blink, relaxed studio posture"
+    },
+    {
+      "id": "talk_explain",
+      "label": "讲解口播",
+      "kind": "loop",
+      "description": "专业自然的手势辅助讲解状态，适合问答与知识科普。",
+      "default_duration_seconds": 8.0,
+      "trigger_keywords": [
+        "讲解",
+        "介绍",
+        "科普",
+        "说明"
+      ],
+      "prompt_hint": "confident studio host speaking naturally with expressive hand gestures"
+    },
+    {
+      "id": "talk_product",
+      "label": "展示商品",
+      "kind": "loop",
+      "description": "面向镜头侧身展示商品并引导观众查看商品卡的循环动作。",
+      "default_duration_seconds": 8.0,
+      "trigger_keywords": [
+        "商品",
+        "产品",
+        "展示",
+        "推荐",
+        "带货"
+      ],
+      "prompt_hint": "enthusiastic live-commerce host presenting featured product toward camera"
+    },
+    {
+      "id": "action_wave",
+      "label": "挥手打招呼",
+      "kind": "oneshot",
+      "description": "热情抬手挥手致意，适合开场欢迎新观众或下播道别。",
+      "default_duration_seconds": 3.5,
+      "trigger_keywords": [
+        "挥手",
+        "你好",
+        "欢迎",
+        "打招呼",
+        "再见"
+      ],
+      "prompt_hint": "friendly warm smile waving hand cheerfully toward camera"
+    },
+    {
+      "id": "action_heart",
+      "label": "双手比心",
+      "kind": "oneshot",
+      "description": "双手比心致谢互动，适合感谢关注、点赞与礼物支持。",
+      "default_duration_seconds": 3.5,
+      "trigger_keywords": [
+        "比心",
+        "感谢",
+        "谢谢",
+        "关注",
+        "点赞"
+      ],
+      "prompt_hint": "smiling warmly forming a heart gesture with both hands"
+    },
+    {
+      "id": "dance_01",
+      "label": "才艺热舞 01",
+      "kind": "dance",
+      "description": "配合背景音乐的轻快节拍才艺舞蹈展示。",
+      "default_duration_seconds": 12.0,
+      "trigger_keywords": [
+        "跳舞",
+        "热舞",
+        "才艺",
+        "表演",
+        "dance"
+      ],
+      "prompt_hint": "energetic rhythmic pop dance routine in studio lighting"
+    }
+  ]
+}

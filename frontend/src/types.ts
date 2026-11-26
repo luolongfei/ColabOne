@@ -435,10 +435,176 @@ export interface SystemResources {
   };
   history?: ResourceHistoryPoint[];
 }
+export type ColabOneLiveVisualEngine = "flashhead_lite" | "musetalk_bank";
+export type ColabOneLiveTtsEngine = "qwen3_tts" | "voxcpm2";
+export type ColabOneLiveLlmMode = "local_gguf" | "external_api";
+export type ColabOneLiveDirectorMode = "dialogue" | "director";
+export type ColabOneLiveMicMode = "vad" | "ptt";
+export type ColabOneLiveDirectorState =
+  | "IDLE"
+  | "LISTENING"
+  | "THINKING"
+  | "SPEAKING"
+  | "PERFORMING";
+
+export interface ColabOneLiveVramBudget {
+  asr_vad_mib?: number;
+  tts_mib?: number;
+  visual_mib?: number;
+  personalive_mib?: number;
+  nvenc_buffer_mib?: number;
+  local_llm_mib?: number;
+  safety_margin_mib?: number;
+  total_required_mib?: number;
+  co_located_required_mib?: number;
+  hot_swap_peak_mib?: number;
+  available_mib?: number;
+  ok?: boolean;
+  can_co_locate_llm?: boolean;
+  can_co_locate_personalive?: boolean;
+  personalive_mode?: "disabled" | "co_located" | "hot_swap" | "unsupported" | string;
+  warnings?: string[];
+  recommendations?: string[];
+  // Compatibility aliases
+  total_mib?: number;
+  used_mib?: number;
+  estimated_mib?: number;
+  fits?: boolean;
+}
+
+export interface ColabOneLiveActionSpec {
+  id: string;
+  label: string;
+  name?: string;
+  kind: "loop" | "oneshot" | "dance" | "personalive_drive" | string;
+  clip_path?: string;
+  bgm_path?: string;
+  duration_seconds?: number;
+  trigger_keywords?: string[];
+  ready?: boolean;
+  description?: string;
+}
+
+export interface ColabOneLiveDrivingMotionSpec {
+  id: string;
+  label: string;
+  clip_path?: string;
+  sha256?: string;
+  size?: number;
+  bgm_path?: string;
+  bgm_sha256?: string;
+  duration_seconds?: number;
+  trigger_keywords?: string[];
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface ColabOneLiveProductItem {
+  id: string;
+  name: string;
+  price: string;
+  highlights: string | string[];
+  script_hint?: string;
+  image_input_id?: string;
+  tag?: string;
+  updated_at?: number;
+}
+
+export interface ColabOneLiveAvatarManifest {
+  id: string;
+  name: string;
+  persona_prompt?: string;
+  portrait_path?: string;
+  portrait_preview_data?: string;
+  default_tts_engine?: ColabOneLiveTtsEngine;
+  default_voice_preset?: string;
+  actions: ColabOneLiveActionSpec[];
+  products: ColabOneLiveProductItem[];
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface ColabOneLiveExternalLLMState {
+  configured?: boolean;
+  mode?: ColabOneLiveLlmMode;
+  base_url: string;
+  model: string;
+  has_api_key: boolean;
+  masked_api_key?: string;
+  last_tested_at?: number;
+  last_test_ok?: boolean;
+  last_test_error?: string;
+}
+
+export interface ColabOneLiveTelemetry {
+  fps: number;
+  ttft_ms: number | null;
+  ttfa_ms: number | null;
+  e2e_ms: number | null;
+  rtt_ms?: number | null;
+  vram_used_mib?: number | null;
+  vram_total_mib?: number | null;
+  video_codec?: "h264" | "jpeg" | "fmp4" | string;
+  audio_sample_rate?: number;
+  epoch?: number;
+  dropped_frames?: number;
+  uptime_seconds?: number;
+  updated_at?: number;
+}
+
+export interface ColabOneLiveStudioStatus {
+  running: boolean;
+  state: "stopped" | "starting" | "ready" | "error" | "stopping" | string;
+  port?: number;
+  ws_path?: string;
+  ws_url?: string;
+  director_state?: ColabOneLiveDirectorState;
+  turn_epoch?: number;
+  active_config?: {
+    visual_engine?: ColabOneLiveVisualEngine;
+    personalive_enabled?: boolean;
+    tts_engine?: ColabOneLiveTtsEngine;
+    voice_preset?: string;
+    llm_mode?: ColabOneLiveLlmMode;
+    local_llm_model_id?: string;
+    director_mode?: ColabOneLiveDirectorMode;
+    mic_mode?: ColabOneLiveMicMode;
+    avatar_id?: string;
+    target_fps?: number;
+    resolution?: string;
+  } | null;
+  visual_engine?: ColabOneLiveVisualEngine;
+  tts_engine?: ColabOneLiveTtsEngine;
+  llm_mode?: ColabOneLiveLlmMode;
+  director_mode?: ColabOneLiveDirectorMode;
+  mic_mode?: ColabOneLiveMicMode;
+  personalive_enabled?: boolean;
+  avatar_id?: string;
+  active_action_id?: string;
+  active_card_id?: string;
+  codec?: "h264" | "jpeg" | "fmp4" | string;
+  started_at?: number | null;
+  avatar_count?: number;
+  driving_motion_count?: number;
+  vram_budget?: ColabOneLiveVramBudget | null;
+  telemetry?: ColabOneLiveTelemetry | null;
+  error?: string;
+}
+
+export interface ColabOneLiveSessionTokenResult {
+  token: string;
+  ws_url: string;
+  ws_path?: string;
+  expires_at?: number;
+  canvas_ready?: boolean;
+  codec?: "h264" | "jpeg" | "fmp4" | string;
+}
+
 export interface RuntimeStatus {
   public_api?: PublicAPIStatus;
   comfyui?: ComfyStatus;
-  active_engine?: "llama" | "comfyui" | null;
+  live_studio?: ColabOneLiveStudioStatus;
+  active_engine?: "llama" | "comfyui" | "live_studio" | "llama+live_studio" | null;
   drive?: DriveStatus;
   location?: InstanceLocation | null;
   id?: string;
@@ -624,6 +790,10 @@ export interface ColabOneSnapshot {
   tts_engines?: ComfyTtsEngineSpec[];
   comfy_outputs: WorkflowOutput[];
   drive_outputs_status?: ColabOneDriveOutputsStatus;
+  live_avatars?: ColabOneLiveAvatarManifest[];
+  live_driving_motions?: ColabOneLiveDrivingMotionSpec[];
+  live_catalog?: Record<string, unknown>;
+  live_external_llm?: ColabOneLiveExternalLLMState;
   account: {
     logged_in: boolean;
     balance?: number;
@@ -827,7 +997,9 @@ export function evaluateColabOneRuntimeUpgrade(
     runtime.tasks?.some((item) => item.state === "running"),
   );
   const hasLoadedModel = Boolean(
-    runtime.loaded_model || runtime.active_engine === "llama",
+    runtime.loaded_model ||
+      runtime.active_engine === "llama" ||
+      runtime.active_engine === "llama+live_studio",
   );
   const hasPublicApi = Boolean(
     runtime.public_api?.enabled ||
@@ -844,10 +1016,20 @@ export function evaluateColabOneRuntimeUpgrade(
         runtime.comfyui?.canvas?.state || "",
       ),
   );
+  const hasActiveLiveStudio = Boolean(
+    runtime.active_engine === "live_studio" ||
+      runtime.active_engine === "llama+live_studio" ||
+      runtime.live_studio?.running ||
+      ["starting", "ready", "stopping"].includes(
+        runtime.live_studio?.state || "",
+      ),
+  );
   const hasOtherEngine = Boolean(
     runtime.active_engine &&
       runtime.active_engine !== "llama" &&
-      runtime.active_engine !== "comfyui",
+      runtime.active_engine !== "comfyui" &&
+      runtime.active_engine !== "live_studio" &&
+      runtime.active_engine !== "llama+live_studio",
   );
 
   const loadedModelName =
@@ -873,7 +1055,8 @@ export function evaluateColabOneRuntimeUpgrade(
   }
   if (hasActiveComfy) {
     activeItems.push(t("status.upgradeActiveComfy"));
-  } else if (hasOtherEngine) {
+  }
+  if (hasActiveLiveStudio || hasOtherEngine) {
     activeItems.push(t("status.upgradeActiveEngine"));
   }
 

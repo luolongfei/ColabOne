@@ -26,11 +26,19 @@ const (
 	// user's ColabOne configuration directory across all platforms.
 	ColabOneVaultFilename = "vault.enc"
 
+	// ColabOneVaultKeyFilename is the 0600 per-installation key-encryption-key
+	// sibling file used by non-Windows v2 envelopes (zero OS keychain prompts).
+	ColabOneVaultKeyFilename = "vault.key"
+
 	// ColabOneVaultFileFormat identifies ColabOne local encrypted vault files.
 	ColabOneVaultFileFormat = "colabone-vault"
 
-	colabOneVaultFileVersion          = 1
+	colabOneVaultFileVersionV1        = 1
+	colabOneVaultFileVersionV2        = 2
 	colabOneVaultFileAlgAES256GCM     = "aes-256-gcm"
+	colabOneVaultKeyWrapDPAPI         = "dpapi"
+	colabOneVaultKeyWrapFileKEK       = "file_kek"
+	colabOneVaultKEKLen               = 32
 	colabOneVaultSaltLen              = 32
 	colabOneVaultNonceLen             = 12
 	colabOneVaultMaxFileBytes         = 16 * 1024 * 1024
@@ -41,9 +49,9 @@ const (
 // or fails authenticated decryption.
 var ErrCorruptVault = errors.New("colabone vault: encrypted vault file is corrupted")
 
-// colabOneLocalVaultDomainKey is the static application domain key combined
-// with a fresh 32-byte random per-write salt via HKDF-SHA256 to authenticate
-// and encrypt local vault.enc payloads without invoking OS keychain dialogs.
+// colabOneLocalVaultDomainKey is the legacy v1 static application domain key
+// retained solely for transparent backward-compatible decryption of existing v1
+// vault.enc files before upgrading them to v2 on the next write.
 var colabOneLocalVaultDomainKey = [32]byte{
 	0x43, 0x6f, 0x6c, 0x61, 0x62, 0x4f, 0x6e, 0x65,
 	0x2d, 0x4c, 0x6f, 0x63, 0x61, 0x6c, 0x56, 0x61,
@@ -55,6 +63,8 @@ type colabOneVaultFileEnvelope struct {
 	Format     string `json:"format"`
 	Version    int    `json:"version"`
 	Algorithm  string `json:"algorithm"`
+	KeyWrap    string `json:"key_wrap,omitempty"`
+	WrappedKey string `json:"wrapped_key,omitempty"`
 	Salt       string `json:"salt"`
 	Nonce      string `json:"nonce"`
 	Ciphertext string `json:"ciphertext"`
@@ -107,8 +117,12 @@ func (b *ColabOneFileSecretBackend) serviceName() string {
 	return b.service
 }
 
-func (b *ColabOneFileSecretBackend) aad() []byte {
+func (b *ColabOneFileSecretBackend) aadV1() []byte {
 	return []byte("colabone-vault:v1:" + b.serviceName())
+}
+
+func (b *ColabOneFileSecretBackend) aadV2(keyWrap string) []byte {
+	return []byte("colabone-vault:v2:" + keyWrap + ":" + b.serviceName())
 }
 
 // Get reads key from the encrypted local vault file.
@@ -165,7 +179,9 @@ func (b *ColabOneFileSecretBackend) Set(key string, value []byte) error {
 				return err
 			}
 			recoveringCorrupt = true
-			_ = b.quarantineCorruptFileLocked()
+			if qErr := b.quarantineCorruptFileLocked(); qErr != nil {
+				return qErr
+			}
 			b.entries = make(map[string][]byte)
 		}
 	}
@@ -276,7 +292,7 @@ func (b *ColabOneFileSecretBackend) loadLocked() error {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return fmt.Errorf("%w: invalid envelope JSON: %v", ErrCorruptVault, err)
 	}
-	if env.Format != ColabOneVaultFileFormat || env.Version != colabOneVaultFileVersion || env.Algorithm != colabOneVaultFileAlgAES256GCM {
+	if env.Format != ColabOneVaultFileFormat || env.Algorithm != colabOneVaultFileAlgAES256GCM {
 		return fmt.Errorf("%w: unsupported format=%q version=%d alg=%q", ErrCorruptVault, env.Format, env.Version, env.Algorithm)
 	}
 
@@ -293,9 +309,28 @@ func (b *ColabOneFileSecretBackend) loadLocked() error {
 		return fmt.Errorf("%w: invalid ciphertext", ErrCorruptVault)
 	}
 
-	derivedKey, err := hkdf.Key(sha256.New, colabOneLocalVaultDomainKey[:], salt, string(b.aad()), 32)
-	if err != nil {
-		return err
+	var aad []byte
+	var derivedKey []byte
+	switch env.Version {
+	case colabOneVaultFileVersionV1:
+		aad = b.aadV1()
+		derivedKey, err = hkdf.Key(sha256.New, colabOneLocalVaultDomainKey[:], salt, string(aad), 32)
+		if err != nil {
+			return err
+		}
+	case colabOneVaultFileVersionV2:
+		kek, unwrapErr := b.unwrapV2KeyLocked(env.KeyWrap, env.WrappedKey)
+		if unwrapErr != nil {
+			return unwrapErr
+		}
+		defer clear(kek)
+		aad = b.aadV2(env.KeyWrap)
+		derivedKey, err = hkdf.Key(sha256.New, kek, salt, string(aad), 32)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("%w: unsupported format=%q version=%d alg=%q", ErrCorruptVault, env.Format, env.Version, env.Algorithm)
 	}
 	defer clear(derivedKey)
 
@@ -307,7 +342,7 @@ func (b *ColabOneFileSecretBackend) loadLocked() error {
 	if err != nil {
 		return err
 	}
-	plain, err := gcm.Open(nil, nonce, ciphertext, b.aad())
+	plain, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return fmt.Errorf("%w: authentication failed", ErrCorruptVault)
 	}
@@ -317,7 +352,7 @@ func (b *ColabOneFileSecretBackend) loadLocked() error {
 	if err := json.Unmarshal(plain, &payload); err != nil {
 		return fmt.Errorf("%w: invalid payload JSON: %v", ErrCorruptVault, err)
 	}
-	if payload.Version != colabOneVaultFileVersion {
+	if payload.Version != colabOneVaultFileVersionV1 && payload.Version != colabOneVaultFileVersionV2 {
 		return fmt.Errorf("%w: unsupported payload version %d", ErrCorruptVault, payload.Version)
 	}
 
@@ -336,8 +371,19 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 	if err := b.checkRegularTargetLocked(); err != nil {
 		return err
 	}
+	dir := filepath.Dir(b.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	kek, keyWrap, wrappedKey, err := b.prepareV2SaveKeyLocked()
+	if err != nil {
+		return err
+	}
+	defer clear(kek)
+
 	payload := colabOneVaultFilePayload{
-		Version: colabOneVaultFileVersion,
+		Version: colabOneVaultFileVersionV2,
 		Entries: b.entries,
 	}
 	plain, err := json.Marshal(payload)
@@ -355,7 +401,8 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 		return err
 	}
 
-	derivedKey, err := hkdf.Key(sha256.New, colabOneLocalVaultDomainKey[:], salt, string(b.aad()), 32)
+	aad := b.aadV2(keyWrap)
+	derivedKey, err := hkdf.Key(sha256.New, kek, salt, string(aad), 32)
 	if err != nil {
 		return err
 	}
@@ -369,12 +416,14 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	ciphertext := gcm.Seal(nil, nonce, plain, b.aad())
+	ciphertext := gcm.Seal(nil, nonce, plain, aad)
 
 	env := colabOneVaultFileEnvelope{
 		Format:     ColabOneVaultFileFormat,
-		Version:    colabOneVaultFileVersion,
+		Version:    colabOneVaultFileVersionV2,
 		Algorithm:  colabOneVaultFileAlgAES256GCM,
+		KeyWrap:    keyWrap,
+		WrappedKey: wrappedKey,
 		Salt:       base64.StdEncoding.EncodeToString(salt),
 		Nonce:      base64.StdEncoding.EncodeToString(nonce),
 		Ciphertext: base64.StdEncoding.EncodeToString(ciphertext),
@@ -385,10 +434,6 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 	}
 	encoded = append(encoded, '\n')
 
-	dir := filepath.Dir(b.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	tmp, err := os.CreateTemp(dir, ".vault-*.tmp")
 	if err != nil {
 		return err
@@ -405,10 +450,8 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 		}
 	}()
 
-	if runtime.GOOS != "windows" {
-		if err := tmp.Chmod(0o600); err != nil {
-			return err
-		}
+	if err := colabOneSecureVaultTempFile(tmp, tmpName); err != nil {
+		return err
 	}
 	if _, err := tmp.Write(encoded); err != nil {
 		return err
@@ -426,6 +469,9 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 		return err
 	}
 	renamed = true
+	if err := colabOneSecureVaultFinalPath(b.path); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -434,7 +480,7 @@ func (b *ColabOneFileSecretBackend) quarantineCorruptFileLocked() error {
 	if err := colabOneVaultRenameReplace(b.path, backup); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return nil
+	return b.quarantineCorruptKeyLocked()
 }
 
 func colabOneVaultRenameReplace(src, dst string) error {

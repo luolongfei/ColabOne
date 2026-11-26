@@ -655,6 +655,62 @@ func TestSafeMessageSecurityBypassRegressions(t *testing.T) {
 	}
 }
 
+func TestSafeMessageRedactsRTMPURLsAndBareSkKeys(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "rtmp_stream_key_redacted",
+			in:        "FFmpeg push failed for rtmp://host/live/secret_key: connection reset",
+			want:      "FFmpeg push failed for [链接已隐藏]: connection reset",
+			forbidden: []string{"host", "secret_key"},
+		},
+		{
+			name:      "rtmps_credentials_path_and_query_redacted",
+			in:        "push rtmps://user:streamPass@ingest.example.com:1935/live2/my_secret_stream?token=tok123 failed",
+			want:      "push [链接已隐藏] failed",
+			forbidden: []string{"streamPass", "ingest.example.com", "my_secret_stream", "tok123"},
+		},
+		{
+			name:      "uppercase_rtmp_ipv6_redacted",
+			in:        "RTMP://[2001:db8::1]:1935/live/secret_ipv6_key.",
+			want:      "[链接已隐藏].",
+			forbidden: []string{"2001:db8::1", "secret_ipv6_key"},
+		},
+		{
+			name:      "bare_sk_openai_style_tokens_redacted",
+			in:        "external LLM error for sk-proj-secret123456 and (sk-ant-api03_abcdef123456).",
+			want:      "external LLM error for [凭据已隐藏] and ([凭据已隐藏]).",
+			forbidden: []string{"sk-proj-secret123456", "sk-ant-api03_abcdef123456"},
+		},
+		{
+			name: "short_sk_and_midword_not_overredacted",
+			in:   "label disk-123456789012 short sk-123456789 ok",
+			want: "label disk-123456789012 short sk-123456789 ok",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SafeMessage(tc.in)
+			if got != tc.want {
+				t.Errorf("SafeMessage(%q):\n got: %q\nwant: %q", tc.in, got, tc.want)
+			}
+			for _, secret := range tc.forbidden {
+				if strings.Contains(got, secret) {
+					t.Errorf("SafeMessage(%q) leaked %q in %q", tc.in, secret, got)
+				}
+			}
+			if again := SafeMessage(got); again != got {
+				t.Errorf("SafeMessage not idempotent: first=%q second=%q", got, again)
+			}
+		})
+	}
+}
+
 func TestSafeMessageTruncationUTF8SafeAndAfterRedaction(t *testing.T) {
 	// 1. ASCII truncation to 600 runes.
 	asciiIn := strings.Repeat("a", 650)
@@ -1982,4 +2038,100 @@ func TestBracketMatcherMatchesUncachedOracle(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSafeMessageCoWebTokensNewSecretKeysJSONObjectsAndUserinfoDelims(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "co_web_token_redacted_at_20_chars_and_above",
+			in:        "cookie co_web_1234567890abcdefghij and co_web_1234567890abcdefghijklmnop_qrs",
+			want:      "cookie [凭据已隐藏] and [凭据已隐藏]",
+			forbidden: []string{"co_web_1234567890abcdefghij", "abcdefghijklmnop_qrs"},
+		},
+		{
+			name: "co_web_token_below_min_length_untouched",
+			in:   "short co_web_1234567890abcdefghi ok",
+			want: "short co_web_1234567890abcdefghi ok",
+		},
+		{
+			name:      "new_secret_key_suffixes_json_and_assignments",
+			in:        `{"stream_key":"live-sk-1","secret":"top-s2","api-key":"ak-3","client-secret":"cs-4","secret_key":"sk-5","secret-key":"sk-6"} stream_key=v1 secret=v2 api-key=v3 client-secret=v4 secret_key=v5 secret-key=v6`,
+			want:      `{"stream_key":"[已隐藏]","secret":"[已隐藏]","api-key":"[已隐藏]","client-secret":"[已隐藏]","secret_key":"[已隐藏]","secret-key":"[已隐藏]"} stream_key=[已隐藏] secret=[已隐藏] api-key=[已隐藏] client-secret=[已隐藏] secret_key=[已隐藏] secret-key=[已隐藏]`,
+			forbidden: []string{"live-sk-1", "top-s2", "ak-3", "cs-4", "sk-5", "sk-6", "=v1", "=v2", "=v3", "=v4", "=v5", "=v6"},
+		},
+		{
+			name:      "json_object_bound_to_secret_key_redacts_scalar_strings",
+			in:        `{"token":{"access":"acc-123","refresh":"ref-456","expires_in":3600,"empty":"","nested":{"k":"deep-789"},"items":["arr-1",""]},"ok":true}`,
+			want:      `{"token":{"access":"[已隐藏]","refresh":"[已隐藏]","expires_in":3600,"empty":"","nested":{"k":"[已隐藏]"},"items":["[已隐藏]",""]},"ok":true}`,
+			forbidden: []string{"acc-123", "ref-456", "deep-789", "arr-1"},
+		},
+		{
+			name:      "escaped_json_object_bound_to_secret_key",
+			in:        fmt.Sprintf("%q", `{"secret":{"a":"val1","b":"val2"}}`),
+			want:      `"{\"secret\":{\"a\":\"[已隐藏]\",\"b\":\"[已隐藏]\"}}"`,
+			forbidden: []string{"val1", "val2"},
+		},
+		{
+			name: "empty_json_object_bound_to_secret_key_preserved",
+			in:   `{"token":{},"ok":true}`,
+			want: `{"token":{},"ok":true}`,
+		},
+		{
+			name:      "truncated_unclosed_json_object_bound_to_secret_key",
+			in:        `{"token":{"a":"secret1","b":"secret2`,
+			want:      `{"token":{"a":"[已隐藏]","b":"[已隐藏]`,
+			forbidden: []string{"secret1", "secret2"},
+		},
+		{
+			name:      "url_userinfo_with_unescaped_close_paren_and_bracket",
+			in:        `socks5://alice:p)ss@10.0.0.2:1080 socks5h://bob:p]ss@10.0.0.3:1080/x https://carol:p[a]b)c@[2001:db8::1]:8443/api?k=1`,
+			want:      `[链接已隐藏] [链接已隐藏] [链接已隐藏]`,
+			forbidden: []string{"p)ss", "p]ss", "10.0.0.2", "10.0.0.3", "2001:db8::1"},
+		},
+		{
+			name:      "bracketed_and_parenthesized_urls_with_userinfo_delimiters_preserve_outer_wrappers",
+			in:        `see (socks5://alice:p)ss@10.0.0.2:1080). and [socks5://bob:p]ss@10.0.0.3:1080]; and [https://[2001:db8::1]]; and (https://example.com/a).`,
+			want:      `see ([链接已隐藏]). and [[链接已隐藏]]; and [[链接已隐藏]]; and ([链接已隐藏]).`,
+			forbidden: []string{"p)ss", "p]ss", "10.0.0.2", "10.0.0.3", "2001:db8::1", "example.com"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SafeMessage(tc.in)
+			if got != tc.want {
+				t.Errorf("SafeMessage(%q):\n got: %q\nwant: %q", tc.in, got, tc.want)
+			}
+			for _, secret := range tc.forbidden {
+				if strings.Contains(got, secret) {
+					t.Errorf("SafeMessage(%q) leaked %q in %q", tc.in, secret, got)
+				}
+			}
+			if again := SafeMessage(got); again != got {
+				t.Errorf("SafeMessage is not idempotent for %q:\n first: %q\nsecond: %q", tc.in, got, again)
+			}
+		})
+	}
+
+	t.Run("adversarial_repeated_unclosed_secret_braces_remain_linear", func(t *testing.T) {
+		input := strings.Repeat(`token:{"a":`, 20000)
+		start := time.Now()
+		got := SafeMessage(input)
+		elapsed := time.Since(start)
+		if utf8.RuneCountInString(got) > maxMessageRunes {
+			t.Fatalf("output exceeded maxMessageRunes: %d", utf8.RuneCountInString(got))
+		}
+		limit := 300 * time.Millisecond
+		if testing.CoverMode() != "" {
+			limit = 2 * time.Second
+		}
+		if elapsed > limit {
+			t.Fatalf("repeated unclosed secret braces took %v (> %v), expected O(N)", elapsed, limit)
+		}
+	})
 }

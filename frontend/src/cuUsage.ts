@@ -600,14 +600,14 @@ export function aggregateColabOneCuSeries(
       typeof response?.checked_at === "number" &&
       Number.isFinite(response.checked_at) &&
       response.checked_at >= slot.startSec;
-    const canApplyLiveRate =
+    const canApplyLiveSnapshot =
       Boolean(response?.logged_in) &&
       (typeof response?.checked_at !== "number" ||
         !Number.isFinite(response.checked_at) ||
         response.checked_at <= 0 ||
         liveCheckedFresh);
 
-    if (slot.isCurrent && liveRate !== null && canApplyLiveRate) {
+    if (slot.isCurrent && liveRate !== null && canApplyLiveSnapshot) {
       if (liveRate > rateMax) {
         rateMax = liveRate;
       }
@@ -624,12 +624,12 @@ export function aggregateColabOneCuSeries(
       if (balanceStart === null) {
         balanceStart = runningBalance ?? balanceEnd;
       }
-      if (slot.isCurrent && liveBalance !== null && response?.logged_in && liveCheckedFresh) {
+      if (slot.isCurrent && liveBalance !== null && canApplyLiveSnapshot) {
         balanceEnd = liveBalance;
       }
       runningBalance = balanceEnd;
       hasAnyBalance = true;
-    } else if (slot.isCurrent && liveBalance !== null && response?.logged_in) {
+    } else if (slot.isCurrent && liveBalance !== null && canApplyLiveSnapshot) {
       balanceStart = runningBalance ?? liveBalance;
       balanceEnd = liveBalance;
       observedBalance = true;
@@ -650,7 +650,7 @@ export function aggregateColabOneCuSeries(
 
     const hasData =
       acc.samples > 0 || consumed > EPSILON || topup > EPSILON || observedBalance;
-    if (acc.samples > 0 || (slot.isCurrent && liveBalance !== null && response?.logged_in)) {
+    if (acc.samples > 0 || (slot.isCurrent && liveBalance !== null && canApplyLiveSnapshot)) {
       hasAnySample = true;
     }
     if (consumed > EPSILON) {

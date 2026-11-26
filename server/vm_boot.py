@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -124,21 +125,37 @@ def colabone_boot():
                     "pip",
                     "install",
                     "--quiet",
+                    "--require-hashes",
                     "-r",
                     "/content/colabone/server/requirements.txt",
                 ],
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
         while pip_proc.poll() is None:
             now = time.monotonic()
             if now - pip_started > 180:
-                pip_proc.terminate()
+                try:
+                    os.killpg(pip_proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    pip_proc.terminate()
                 try:
                     pip_proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    pip_proc.kill()
+                    try:
+                        os.killpg(pip_proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        pip_proc.kill()
+                    try:
+                        pip_proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        pass
                 raise RuntimeError("远端服务依赖安装超时（超过 180 秒）")
             if now - pip_last_note >= 10:
                 pip_last_note = now
@@ -224,13 +241,14 @@ def colabone_boot():
                     )
                     break
             except Exception:
-                now = time.monotonic()
-                if now - health_last_note >= 6:
-                    health_last_note = now
-                    emit_log(
-                        f"正在等待远端管理服务就绪（已耗时 {int(now - health_started)} 秒）"
-                    )
-                time.sleep(0.5)
+                pass
+            now = time.monotonic()
+            if now - health_last_note >= 6:
+                health_last_note = now
+                emit_log(
+                    f"正在等待远端管理服务就绪（已耗时 {int(now - health_started)} 秒）"
+                )
+            time.sleep(0.5)
         else:
             if proc.poll() is None:
                 proc.terminate()

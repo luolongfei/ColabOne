@@ -128,6 +128,7 @@ const preferredFilename = ref("");
 const filesLoading = ref(false);
 const fileError = ref("");
 const installing = ref(false);
+const installingRepo = ref("");
 const togglingRepo = ref("");
 const contextLength = ref<number>(8192);
 const temperature = ref<number>(0.7);
@@ -320,6 +321,18 @@ let fileGeneration = 0;
 let timer: ReturnType<typeof setTimeout>;
 const details = new Map<string, Detail>();
 const pendingDetails = new Map<string, Promise<Detail>>();
+
+function repoHomeURL(repo: string): string {
+  const encodedPath = String(repo || "")
+    .trim()
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return encodedPath
+    ? `https://huggingface.co/${encodedPath}`
+    : "https://huggingface.co/";
+}
 
 async function openExternalURL(url: string) {
   try {
@@ -674,13 +687,18 @@ async function toggleCommonRepo(repo: Repo) {
 }
 
 async function install(mode: "save" | "download" | "load" = "load") {
-  if (!filename.value || installing.value || chosenComfyOnly.value) return;
+  const targetRepo = chosen.value;
+  if (!targetRepo || !filename.value || installing.value || chosenComfyOnly.value) {
+    return;
+  }
   if (mode !== "save" && (!props.ready || props.disabled)) return;
+  const gen = fileGeneration;
   installing.value = true;
+  installingRepo.value = targetRepo;
   fileError.value = "";
   try {
     const payload: Record<string, unknown> = {
-      repo: chosen.value,
+      repo: targetRepo,
       filename: filename.value,
       revision: revision.value,
       download: mode !== "save",
@@ -692,11 +710,16 @@ async function install(mode: "save" | "download" | "load" = "load") {
     }
     if (customName.value.trim()) payload.name = customName.value.trim();
     await colabOneCommand("hub.install", payload);
-    emit("installed", mode);
+    if (gen === fileGeneration && chosen.value === targetRepo) {
+      emit("installed", mode);
+    }
   } catch (e) {
-    fileError.value = String(e);
+    if (gen === fileGeneration && chosen.value === targetRepo) {
+      fileError.value = String(e);
+    }
   } finally {
     installing.value = false;
+    installingRepo.value = "";
   }
 }
 
@@ -856,7 +879,7 @@ onUnmounted(() => {
           type="link"
           size="small"
           class="co-inline-link"
-          @click="openExternalURL('https://huggingface.co/' + chosen)"
+          @click="openExternalURL(repoHomeURL(chosen))"
         >
           {{ t("models.hubViewRepo") }}
           <PhArrowSquareOut :size="12" />
@@ -873,8 +896,8 @@ onUnmounted(() => {
         :target-gpu="targetGpu"
         :runtime="effectiveRuntime"
         :ready="ready"
-        :disabled="disabled"
-        :installing="installing"
+        :disabled="disabled || (installing && installingRepo !== chosen)"
+        :installing="installing && installingRepo === chosen"
         :selected-filename="filename"
         :preferred-filename="preferredFilename"
         :context-length="contextLength"
@@ -1192,8 +1215,8 @@ onUnmounted(() => {
             :target-gpu="targetGpu"
             :runtime="effectiveRuntime"
             :ready="ready"
-            :disabled="disabled"
-            :installing="installing"
+            :disabled="disabled || (installing && installingRepo !== repo.repo)"
+            :installing="installing && installingRepo === repo.repo"
             :selected-filename="filename"
             :preferred-filename="preferredFilename"
             :context-length="contextLength"

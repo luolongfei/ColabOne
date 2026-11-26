@@ -82,7 +82,17 @@ _PIP_PKG_RE = re.compile(
     r"^(?!.*--)(?!.*\s-)[A-Za-z0-9][A-Za-z0-9._\-\[\],<>=!~ ]{0,199}$",
     re.ASCII,
 )
-_COMFY_MODEL_EXTENSIONS = (".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin")
+COMFY_MODEL_EXTENSIONS: tuple[str, ...] = (
+    ".safetensors",
+    ".gguf",
+    ".ckpt",
+    ".pt",
+    ".pth",
+    ".bin",
+    ".onnx",
+    ".sft",
+)
+_COMFY_MODEL_EXTENSIONS = COMFY_MODEL_EXTENSIONS
 
 
 def _validate_safe_node_name(value: str) -> str:
@@ -242,12 +252,13 @@ class ComfyModelRef(BaseModel):
             or p.is_absolute()
             or ".." in p.parts
             or "." in p.parts
+            or any(part.startswith(".") for part in p.parts)
             or ":" in value
             or "\\" in value
             or "\x00" in value
             or value.endswith("/")
             or len(value) > 512
-            or p.suffix.lower() not in _COMFY_MODEL_EXTENSIONS
+            or p.suffix.lower() not in COMFY_MODEL_EXTENSIONS
             or len(p.name) <= len(p.suffix)
         ):
             raise ValueError("模型文件路径不合法")

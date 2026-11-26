@@ -1773,7 +1773,7 @@ onUnmounted(() => {
   color: var(--co-accent-strong);
 }
 
-:global(:root[data-theme="dark"])
+:root[data-theme="dark"]
   .co-model-tabs-bar
   :deep(.ant-tabs-tab-active .co-tab-count) {
   background: rgba(59, 130, 246, 0.24);

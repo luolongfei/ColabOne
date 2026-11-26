@@ -126,45 +126,63 @@ class ColabOneTunnel:
         self.thread = threading.Thread(target=self.run, args=(config,), daemon=True)
         self.thread.start()
 
-    def probe(self, origin):
-        if self.cancel.is_set():
+    def probe(self, origin, *, timeout_seconds: float = 15.0):
+        deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+        if self.cancel.is_set() or time.monotonic() >= deadline:
             return False
         public_addresses(origin)
+        if self.cancel.is_set() or time.monotonic() >= deadline:
+            return False
         # Never follow redirects or send the API key before verifying the runtime identity.
         with requests.Session() as http:
             http.trust_env = False
 
             def read(path, headers=None):
+                remaining = deadline - time.monotonic()
+                if self.cancel.is_set() or remaining <= 0:
+                    return 0, b""
                 with http.get(
                     origin + path,
                     headers=headers,
                     stream=True,
-                    timeout=(3, 5),
+                    timeout=(min(3.0, remaining), min(5.0, remaining)),
                     allow_redirects=False,
                 ) as response:
                     data = bytearray()
                     for chunk in response.iter_content(2048):
+                        if self.cancel.is_set() or time.monotonic() >= deadline:
+                            return 0, b""
                         data.extend(chunk)
                         if len(data) > 4096:
                             raise ValueError("公网探测响应过大")
                     return response.status_code, data
 
             status, body = read("/health")
+            if status != 200 or self.cancel.is_set() or time.monotonic() >= deadline:
+                return False
+            parsed_health = json.loads(body)
             if (
-                status != 200
-                or self.cancel.is_set()
-                or json.loads(body).get("instance") != self.gateway.instance
+                not isinstance(parsed_health, dict)
+                or parsed_health.get("instance") != self.gateway.instance
             ):
                 return False
             status, _ = read("/v1/models")
-            if status != 401 or self.cancel.is_set():
+            if status != 401 or self.cancel.is_set() or time.monotonic() >= deadline:
                 return False
             with self.gateway.lock:
                 api_key = self.gateway.key
+            if not api_key or self.cancel.is_set() or time.monotonic() >= deadline:
+                return False
             status, body = read(
                 "/v1/models", {"Authorization": "Bearer " + api_key}
             )
-            return status == 200 and json.loads(body).get("object") == "list"
+            if status != 200 or self.cancel.is_set() or time.monotonic() >= deadline:
+                return False
+            parsed_models = json.loads(body)
+            return (
+                isinstance(parsed_models, dict)
+                and parsed_models.get("object") == "list"
+            )
 
     def run(self, config):
         g = self.gateway
@@ -191,9 +209,18 @@ class ColabOneTunnel:
                     return
                 self.token_path = g.runtime.root / ".cloudflared-token"
                 fd = os.open(
-                    self.token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+                    self.token_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
                 )
-                with os.fdopen(fd, "w", encoding="utf-8") as out:
+                try:
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(fd, 0o600)
+                    out_file = os.fdopen(fd, "w", encoding="utf-8")
+                except BaseException:
+                    os.close(fd)
+                    raise
+                with out_file as out:
                     out.write(config.tunnel_token)
                 args += ["run", "--token-file", str(self.token_path)]
                 self.process = subprocess.Popen(

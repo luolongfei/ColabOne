@@ -1411,7 +1411,7 @@ describe("createColabOneWorkflowDraftClient", () => {
     expect(storage.getItem(COLABONE_STORAGE_KEYS.comfyDrafts)).toBeNull();
   });
 
-  it("propagates real backend errors while writing a localStorage safety net on text save", async () => {
+  it("propagates real backend errors without mutating localStorage on text save", async () => {
     const storage = createMemoryStorage();
     const failingInvoke = vi.fn(async () => {
       throw new Error("permission denied");
@@ -1427,13 +1427,8 @@ describe("createColabOneWorkflowDraftClient", () => {
       }),
     ).rejects.toThrow("permission denied");
 
-    // Safety-net localStorage mirror was still updated
-    const stored = JSON.parse(
-      storage.getItem(COLABONE_STORAGE_KEYS.comfyDrafts) || "{}",
-    );
-    expect(stored["wf-err"]?.fields).toEqual({
-      "pipeline.script_text": "important draft",
-    });
+    // Non-fallback backend rejection must NOT mutate localStorage
+    expect(storage.getItem(COLABONE_STORAGE_KEYS.comfyDrafts)).toBeNull();
 
     // Media and load errors also propagate cleanly
     await expect(
@@ -1929,5 +1924,30 @@ describe("createColabOneDraftStatusController", () => {
     controller.dispose();
     vi.advanceTimersByTime(5000);
     expect(history).toEqual(["restored", "idle", "saving", "idle", "saved"]);
+  });
+
+  it("throws non-fallback save errors without overwriting existing localStorage draft", async () => {
+    const storage = createMemoryStorage();
+    const wfId = "wf_reject_test";
+    const existingRaw = JSON.stringify({
+      [wfId]: {
+        workflow_id: wfId,
+        fields: { prompt: "original-safe" },
+        updated_at: 100,
+      },
+    });
+    storage.setItem(COLABONE_STORAGE_KEYS.comfyDrafts, existingRaw);
+
+    const client = createColabOneWorkflowDraftClient(
+      vi.fn(async () => {
+        throw new Error("字段值无效：超出允许范围");
+      }),
+      storage,
+    );
+
+    await expect(
+      client.saveColabOneWorkflowDraft(wfId, { prompt: "bad-value" }),
+    ).rejects.toThrow("字段值无效");
+    expect(storage.getItem(COLABONE_STORAGE_KEYS.comfyDrafts)).toBe(existingRaw);
   });
 });

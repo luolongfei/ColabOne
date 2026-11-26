@@ -256,8 +256,22 @@ type ColabOneRollbackInstaller struct {
 	RetryDelays  []time.Duration // Optional override for transient retry backoff delays.
 	OnMacOSQuit  func()          // Called after writing the relaunch marker on macOS.
 
+	// allowLoopbackHTTP is strictly for offline httptest.Server unit tests.
+	allowLoopbackHTTP bool
+
 	stageMu     sync.Mutex
 	stagedMacOS *colabOneStagedMacOSBundle
+}
+
+func (r *ColabOneRollbackInstaller) checkRedirectFunc() func(*http.Request, []*http.Request) error {
+	allowLoopback := r.allowLoopbackHTTP
+	return func(req *http.Request, via []*http.Request) error {
+		return colabOneCheckRedirectWithOptions(req, via, allowLoopback)
+	}
+}
+
+func (r *ColabOneRollbackInstaller) validateURL(rawURL string) error {
+	return validateColabOneUpdateURLWithOptions(rawURL, r.allowLoopbackHTTP)
 }
 
 func (r *ColabOneRollbackInstaller) resolvedConfig() (repo, target, ghBase, goos string, client *http.Client) {
@@ -279,7 +293,14 @@ func (r *ColabOneRollbackInstaller) resolvedConfig() (repo, target, ghBase, goos
 	}
 	client = r.Client
 	if client == nil {
-		client = &http.Client{Timeout: 0}
+		client = &http.Client{
+			Timeout:       0,
+			CheckRedirect: r.checkRedirectFunc(),
+		}
+	} else if client.CheckRedirect == nil {
+		copied := *client
+		copied.CheckRedirect = r.checkRedirectFunc()
+		client = &copied
 	}
 	return repo, target, ghBase, goos, client
 }
@@ -329,7 +350,7 @@ func (r *ColabOneRollbackInstaller) PrepareRollback(ctx context.Context, targetV
 	if manifest.Size <= 0 || manifest.Size > colabOneMaxArchiveBytes {
 		return nil, fmt.Errorf("invalid rollback archive size %d", manifest.Size)
 	}
-	if err := validateColabOneUpdateURL(manifest.URL); err != nil {
+	if err := r.validateURL(manifest.URL); err != nil {
 		return nil, err
 	}
 
@@ -500,7 +521,7 @@ func (r *ColabOneRollbackInstaller) downloadAndVerify(
 }
 
 func (r *ColabOneRollbackInstaller) httpGet(ctx context.Context, client *http.Client, rawURL string) (io.ReadCloser, error) {
-	if err := validateColabOneUpdateURL(rawURL); err != nil {
+	if err := r.validateURL(rawURL); err != nil {
 		return nil, err
 	}
 	stallTimeout := r.StallTimeout
@@ -698,18 +719,69 @@ func verifyColabOneUpdateSignature(pub ed25519.PublicKey, digest []byte, signatu
 	return nil
 }
 
+const (
+	colabOneMaxUpdateRedirects = 10
+	colabOneMaxSymlinkHops     = 40
+)
+
+var colabOneAllowedUpdateHosts = map[string]bool{
+	"github.com":                           true,
+	"api.github.com":                       true,
+	"objects.githubusercontent.com":        true,
+	"release-assets.githubusercontent.com": true,
+	"github-releases.githubusercontent.com": true,
+}
+
 func validateColabOneUpdateURL(rawURL string) error {
+	return validateColabOneUpdateURLWithOptions(rawURL, false)
+}
+
+func validateColabOneUpdateURLWithOptions(rawURL string, allowLoopbackHTTP bool) error {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return err
 	}
-	if u.Scheme == "https" {
+	if u.Opaque != "" || u.User != nil {
+		return fmt.Errorf("refusing to download %s: invalid update URL", rawURL)
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if allowLoopbackHTTP && (u.Scheme == "http" || u.Scheme == "https") && isColabOneLoopbackHost(host) {
 		return nil
 	}
-	if u.Scheme == "http" && isColabOneLoopbackHost(u.Hostname()) {
-		return nil
+	if u.Scheme != "https" {
+		return fmt.Errorf("refusing to download %s: updates need HTTPS", rawURL)
 	}
-	return fmt.Errorf("refusing to download %s: updates need HTTPS", rawURL)
+	if p := u.Port(); p != "" && p != "443" {
+		return fmt.Errorf("refusing to download %s: disallowed update port", rawURL)
+	}
+	if !colabOneAllowedUpdateHosts[host] {
+		return fmt.Errorf("refusing to download %s: disallowed update host %q", rawURL, host)
+	}
+	return nil
+}
+
+// ColabOneUpdateCheckRedirect enforces HTTPS and the GitHub release host
+// allowlist on every redirect hop, stripping credentials on cross-host hops.
+func ColabOneUpdateCheckRedirect(req *http.Request, via []*http.Request) error {
+	return colabOneCheckRedirectWithOptions(req, via, false)
+}
+
+func colabOneCheckRedirectWithOptions(req *http.Request, via []*http.Request, allowLoopbackHTTP bool) error {
+	if len(via) >= colabOneMaxUpdateRedirects {
+		return errors.New("stopped after too many update redirects")
+	}
+	if req == nil || req.URL == nil {
+		return errors.New("invalid redirect target")
+	}
+	if err := validateColabOneUpdateURLWithOptions(req.URL.String(), allowLoopbackHTTP); err != nil {
+		return err
+	}
+	if len(via) > 0 && via[0] != nil && via[0].URL != nil &&
+		!strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
+		req.Header.Del("Authorization")
+		req.Header.Del("Cookie")
+	}
+	return nil
 }
 
 func isColabOneLoopbackHost(host string) bool {
@@ -739,6 +811,11 @@ func extractColabOneSignedArchive(r io.Reader, dir string) error {
 	if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
 		absDir = resolved
 	}
+	root, err := os.OpenRoot(absDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -748,10 +825,11 @@ func extractColabOneSignedArchive(r io.Reader, dir string) error {
 
 	tr := tar.NewReader(gz)
 	var totalWritten int64
+	var symlinks []string
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return nil
+			break
 		}
 		if err != nil {
 			return err
@@ -770,17 +848,32 @@ func extractColabOneSignedArchive(r io.Reader, dir string) error {
 		mode := fs.FileMode(hdr.Mode).Perm()
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := ensureParentWithinDir(absDir, target); err != nil {
+			if err := ensureRootParentDirs(root, name); err != nil {
 				return fmt.Errorf("invalid path in update archive: %q", hdr.Name)
 			}
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
+			if info, statErr := root.Lstat(name); statErr == nil {
+				if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+					return fmt.Errorf("invalid path in update archive: %q", hdr.Name)
+				}
+			} else if errors.Is(statErr, fs.ErrNotExist) {
+				if err := root.Mkdir(name, 0o755); err != nil {
+					return err
+				}
+			} else {
+				return statErr
 			}
 		case tar.TypeReg:
-			if err := ensureParentWithinDir(absDir, target); err != nil {
+			if err := ensureRootParentDirs(root, name); err != nil {
 				return fmt.Errorf("invalid path in update archive: %q", hdr.Name)
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode|0o200)
+			if info, statErr := root.Lstat(name); statErr == nil {
+				if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+					return fmt.Errorf("invalid path in update archive: %q", hdr.Name)
+				}
+			} else if !errors.Is(statErr, fs.ErrNotExist) {
+				return statErr
+			}
+			f, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode|0o200)
 			if err != nil {
 				return err
 			}
@@ -804,23 +897,137 @@ func extractColabOneSignedArchive(r io.Reader, dir string) error {
 				return copyErr
 			}
 		case tar.TypeSymlink:
-			if strings.Contains(hdr.Linkname, "\\") {
+			if hdr.Linkname == "" || strings.Contains(hdr.Linkname, "\\") {
 				return fmt.Errorf("update archive link %q points outside the app", hdr.Name)
 			}
 			resolved := path.Join(path.Dir(name), hdr.Linkname)
 			if path.IsAbs(hdr.Linkname) || !fs.ValidPath(resolved) {
 				return fmt.Errorf("update archive link %q points outside the app", hdr.Name)
 			}
-			if err := ensureParentWithinDir(absDir, target); err != nil {
+			if err := ensureRootParentDirs(root, name); err != nil {
 				return fmt.Errorf("update archive link %q points outside the app", hdr.Name)
 			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
+			if _, statErr := root.Lstat(name); statErr == nil {
+				return fmt.Errorf("update archive link %q collides with existing entry", hdr.Name)
+			} else if !errors.Is(statErr, fs.ErrNotExist) {
+				return statErr
+			}
+			if err := root.Symlink(hdr.Linkname, name); err != nil {
 				return err
 			}
+			symlinks = append(symlinks, name)
 		default:
 			return fmt.Errorf("unsupported entry in update archive: %q", hdr.Name)
 		}
 	}
+
+	// Verify every extracted symlink chain stays strictly inside the extraction root.
+	for _, sym := range symlinks {
+		if err := verifyRootSymlinkChain(root, sym); err != nil {
+			return fmt.Errorf("update archive link %q points outside the app: %w", sym, err)
+		}
+	}
+	return nil
+}
+
+func ensureRootParentDirs(root *os.Root, relPath string) error {
+	parent := path.Dir(relPath)
+	if parent == "." || parent == "" {
+		return nil
+	}
+	parts := strings.Split(parent, "/")
+	cur := ""
+	for _, part := range parts {
+		if cur == "" {
+			cur = part
+		} else {
+			cur += "/" + part
+		}
+		info, err := root.Lstat(cur)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("parent component %q is not a real directory", cur)
+			}
+			continue
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if err := root.Mkdir(cur, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func verifyRootSymlinkChain(root *os.Root, symPath string) error {
+	linkTarget, err := root.Readlink(symPath)
+	if err != nil {
+		return err
+	}
+	if linkTarget == "" || strings.Contains(linkTarget, "\\") || path.IsAbs(linkTarget) {
+		return errors.New("invalid symlink target")
+	}
+
+	var stack []string
+	if dir := path.Dir(symPath); dir != "." && dir != "" {
+		stack = strings.Split(dir, "/")
+	}
+	queue := splitRelativePathParts(linkTarget)
+	hops := 1
+	for len(queue) > 0 {
+		seg := queue[0]
+		queue = queue[1:]
+		switch seg {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) == 0 {
+				return errors.New("symlink chain escapes extraction root")
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			stack = append(stack, seg)
+			candidate := strings.Join(stack, "/")
+			info, statErr := root.Lstat(candidate)
+			if statErr != nil {
+				if errors.Is(statErr, fs.ErrNotExist) {
+					continue
+				}
+				return statErr
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				hops++
+				if hops > colabOneMaxSymlinkHops {
+					return errors.New("symlink chain exceeds maximum depth")
+				}
+				nextTarget, readErr := root.Readlink(candidate)
+				if readErr != nil {
+					return readErr
+				}
+				if nextTarget == "" || strings.Contains(nextTarget, "\\") || path.IsAbs(nextTarget) {
+					return errors.New("invalid nested symlink target")
+				}
+				// Resolve nextTarget relative to the directory containing candidate.
+				stack = stack[:len(stack)-1]
+				nextParts := splitRelativePathParts(nextTarget)
+				queue = append(nextParts, queue...)
+			}
+		}
+	}
+	return nil
+}
+
+func splitRelativePathParts(p string) []string {
+	raw := strings.Split(p, "/")
+	out := make([]string, 0, len(raw))
+	for _, seg := range raw {
+		if seg == "" || seg == "." {
+			continue
+		}
+		out = append(out, seg)
+	}
+	return out
 }
 
 func isPathWithinDir(baseDir, candidate string) bool {
@@ -832,21 +1039,6 @@ func isPathWithinDir(baseDir, candidate string) bool {
 		return true
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
-}
-
-func ensureParentWithinDir(baseDir, target string) error {
-	parent := filepath.Dir(target)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return err
-	}
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return err
-	}
-	if !isPathWithinDir(baseDir, resolvedParent) {
-		return errors.New("parent resolves outside extraction root")
-	}
-	return nil
 }
 
 func swapColabOneInstallDir(dir, target, startExe string) error {

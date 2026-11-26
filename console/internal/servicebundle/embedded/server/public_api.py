@@ -41,6 +41,7 @@ from server.openai_compat import (
     estimate_messages_tokens,
     estimate_tokens,
     extract_anchor_user_item,
+    extract_anchor_user_item_with_index,
     group_chat_messages,
     hash_message_group,
     normalize_chat_request,
@@ -59,7 +60,29 @@ MAX_STORED_RESPONSES = 64
 MAX_REQUEST_HISTORY = 50
 MAX_COMPACTION_CACHE = 64
 MAX_COMPACTION_CACHE_BYTES = 2 * 1024 * 1024
+SSE_KEEPALIVE_INTERVAL_SECONDS = 15.0
 _MIN_TOKEN_SCALE = 0.78
+
+
+def _task_state_and_error(task) -> tuple[str, str]:
+    t_lock = getattr(task, "lock", None)
+    if t_lock is not None:
+        with t_lock:
+            return str(getattr(task, "state", "")), str(getattr(task, "error", "") or "")
+    return str(getattr(task, "state", "")), str(getattr(task, "error", "") or "")
+
+
+def _task_state(task) -> str:
+    return _task_state_and_error(task)[0]
+
+
+def _set_task_cancel_hook(task, hook) -> None:
+    t_lock = getattr(task, "lock", None)
+    if t_lock is not None:
+        with t_lock:
+            task.cancel_hook = hook
+    else:
+        task.cancel_hook = hook
 _MAX_TOKEN_SCALE = 2.5
 _ENDPOINT_BY_KIND = {
     "chat": "/v1/chat/completions",
@@ -604,11 +627,11 @@ class ColabOnePublicGateway:
                 "streaming": True,
                 "checked_at": self.checked_at,
                 "requests": self.total,
-                "active": sum(j["task"].state == "running" for j in jobs),
+                "active": sum(_task_state(j["task"]) == "running" for j in jobs),
                 "completed": self.completed
-                + sum(j["task"].state == "completed" for j in jobs),
+                + sum(_task_state(j["task"]) == "completed" for j in jobs),
                 "failed": self.failed
-                + sum(j["task"].state in ("failed", "cancelled") for j in jobs),
+                + sum(_task_state(j["task"]) in ("failed", "cancelled") for j in jobs),
                 "last_request": self.last_request,
                 "last_tokens_per_second": last_tps,
                 "avg_tokens_per_second": avg_tps,
@@ -672,36 +695,63 @@ class ColabOnePublicGateway:
             scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
             raise ValueError(scrubbed) from None
         with self.control_lock:
-            if self.enabled or (self.tunnel.thread and self.tunnel.thread.is_alive()):
+            with self.lock:
+                already_enabled = self.enabled
+            if already_enabled or (self.tunnel.thread and self.tunnel.thread.is_alive()):
                 raise ValueError("请先关闭当前 API 服务，再更换配置")
             with self.runtime.lock:
-                if self.runtime.quiescing:
+                if self.runtime.quiescing or self.runtime.stopping.is_set():
                     raise ValueError("实例正在释放")
                 self.runtime.touch(180)
             self.serve()
-            self.key, self.mode = config.api_key, "named"
-            self.enabled, self.phase, self.url, self.error = True, "starting", "", ""
+            with self.lock:
+                self.key, self.mode = config.api_key, "named"
+                self.enabled, self.phase, self.url, self.error = True, "starting", "", ""
             self.note("正在开启远端 API · 固定域名")
             self.tunnel.start(config)
         return self.snapshot()
 
     def cancel_jobs(self):
         with self.lock:
-            for job in self.jobs.values():
-                if job["task"].state == "running":
-                    job["task"].request_cancel()
+            running = [
+                job["task"]
+                for job in self.jobs.values()
+                if _task_state(job["task"]) == "running"
+            ]
+        for task in running:
+            task.request_cancel()
 
     def stop(self):
         with self.control_lock:
-            self.enabled, self.url, self.phase = False, "", "stopping"
-            self.cancel_jobs()
-            self.tunnel.stop()
             with self.lock:
-                self.responses.clear()
-                self.compaction_cache.clear()
-                self._token_scale_by_model.clear()
-                self._output_reserve_boost_by_model.clear()
-            self.phase, self.error, self.key = "stopped", "", ""
+                self.enabled, self.url, self.phase = False, "", "stopping"
+            try:
+                self.cancel_jobs()
+                self.tunnel.stop()
+            finally:
+                with self.lock:
+                    finished_ids = [
+                        jid
+                        for jid, slot in list(self.jobs.items())
+                        if _task_state(slot["task"]) != "running"
+                    ]
+                    for jid in finished_ids:
+                        slot = self.jobs.pop(jid)
+                        t_state = _task_state(slot["task"])
+                        self.completed += int(t_state == "completed")
+                        self.failed += int(t_state in ("failed", "cancelled"))
+                        slot["result"] = None
+                        slot["queue"] = None
+                        slot["fail_event"] = None
+                    self.responses.clear()
+                    self.compaction_cache.clear()
+                    self._token_scale_by_model.clear()
+                    self._output_reserve_boost_by_model.clear()
+                    self.key = ""
+                    self.enabled = False
+                    self.url = ""
+            with self.lock:
+                self.phase, self.error = "stopped", ""
             self.note("对外 API 已关闭，远端模型仍保留在显存中")
         return self.snapshot()
 
@@ -717,7 +767,9 @@ class ColabOnePublicGateway:
     def require_model(self, identity):
         from server.runtime import ColabOneConflictError
 
-        if not self.enabled or self.runtime.quiescing:
+        with self.lock:
+            enabled = self.enabled
+        if not enabled or self.runtime.quiescing or self.runtime.stopping.is_set():
             raise ColabOneConflictError("API 服务已关闭或实例正在释放")
         loaded_id = self.runtime.loaded
         model = self.runtime.models.get(loaded_id) if loaded_id else None
@@ -1020,14 +1072,15 @@ class ColabOnePublicGateway:
         with self.lock:
             while len(self.jobs) >= 100:
                 old = next(
-                    (k for k, v in self.jobs.items() if v["task"].state != "running"),
+                    (k for k, v in self.jobs.items() if _task_state(v["task"]) != "running"),
                     None,
                 )
                 if old is None:
                     raise RuntimeError("API 任务已满")
                 task = self.jobs.pop(old)["task"]
-                self.completed += task.state == "completed"
-                self.failed += task.state in ("failed", "cancelled")
+                t_state = _task_state(task)
+                self.completed += t_state == "completed"
+                self.failed += t_state in ("failed", "cancelled")
                 self.runtime.tasks.pop(old, None)
             slot["task"] = self.runtime.tasks[result["id"]]
             self.jobs[result["id"]] = slot
@@ -1065,8 +1118,12 @@ class ColabOnePublicGateway:
 
     async def _enqueue(self, slot: dict[str, Any], task, chunk: bytes) -> None:
         while True:
+            q = slot.get("queue")
+            if q is None:
+                task.check()
+                return
             try:
-                slot["queue"].put_nowait(chunk)
+                q.put_nowait(chunk)
                 return
             except queue.Full:
                 task.check()
@@ -1952,7 +2009,9 @@ class ColabOnePublicGateway:
                 from server.runtime import ColabOneCancelledError
 
                 loop, current = asyncio.get_running_loop(), asyncio.current_task()
-                task.cancel_hook = lambda: loop.call_soon_threadsafe(current.cancel)
+                _set_task_cancel_hook(
+                    task, lambda: loop.call_soon_threadsafe(current.cancel)
+                )
                 cur_est_prompt = est_prompt_tokens
                 cal_key = ""
                 try:
@@ -2430,7 +2489,7 @@ class ColabOnePublicGateway:
                     )
                     raise
                 finally:
-                    task.cancel_hook = None
+                    _set_task_cancel_hook(task, None)
 
             asyncio.run(consume())
 
@@ -2463,7 +2522,9 @@ class ColabOnePublicGateway:
                 from server.runtime import ColabOneCancelledError
 
                 loop, current = asyncio.get_running_loop(), asyncio.current_task()
-                task.cancel_hook = lambda: loop.call_soon_threadsafe(current.cancel)
+                _set_task_cancel_hook(
+                    task, lambda: loop.call_soon_threadsafe(current.cancel)
+                )
                 translator: ColabOneResponsesStreamTranslator | None = None
                 est_in: int | None = None
                 cal_key = ""
@@ -2512,7 +2573,9 @@ class ColabOnePublicGateway:
                                 }
                                 prefix_output.append(comp_item)
                                 compacted_items: list[dict[str, Any]] = []
-                                anchor = extract_anchor_user_item(spec["input_items"])
+                                anchor, anchor_idx = extract_anchor_user_item_with_index(
+                                    spec["input_items"]
+                                )
                                 if anchor is not None:
                                     compacted_items.append(anchor)
                                 compacted_items.append(comp_item)
@@ -2523,7 +2586,7 @@ class ColabOnePublicGateway:
                                     and last_item.get("type") in (None, "message")
                                     and (
                                         anchor is None
-                                        or last_item is not anchor
+                                        or anchor_idx != len(spec["input_items"]) - 1
                                     )
                                 ):
                                     compacted_items.append(last_item)
@@ -2735,8 +2798,8 @@ class ColabOnePublicGateway:
                                                 self._record_stream_delta(
                                                     slot, chunk, time.perf_counter()
                                                 )
-                                            for ev in translator.feed_chunk(chunk):
-                                                await self._enqueue(slot, task, ev)
+                                                for ev in translator.feed_chunk(chunk):
+                                                    await self._enqueue(slot, task, ev)
                                         if not finished:
                                             raise RuntimeError("推理连接提前中断")
                                     break
@@ -3078,7 +3141,7 @@ class ColabOnePublicGateway:
                     )
                     raise
                 finally:
-                    task.cancel_hook = None
+                    _set_task_cancel_hook(task, None)
 
             asyncio.run(consume())
 
@@ -3110,7 +3173,9 @@ class ColabOnePublicGateway:
                 from server.runtime import ColabOneCancelledError
 
                 loop, current = asyncio.get_running_loop(), asyncio.current_task()
-                task.cancel_hook = lambda: loop.call_soon_threadsafe(current.cancel)
+                _set_task_cancel_hook(
+                    task, lambda: loop.call_soon_threadsafe(current.cancel)
+                )
                 try:
                     task.check()
                     async with asyncio.timeout(300):
@@ -3161,7 +3226,7 @@ class ColabOnePublicGateway:
                     )
                     raise
                 finally:
-                    task.cancel_hook = None
+                    _set_task_cancel_hook(task, None)
 
             asyncio.run(consume())
 
@@ -3229,10 +3294,13 @@ def create_colabone_public_app(g):
     )
 
     async def authorize(authorization: str = Header(default="")):
-        if not g.enabled or not g.key:
+        with g.lock:
+            enabled = g.enabled
+            api_key = g.key
+        if not enabled or not api_key:
             raise HTTPException(503, "API 服务未开启")
         if not hmac.compare_digest(
-            authorization.encode(), ("Bearer " + g.key).encode()
+            authorization.encode("utf-8"), ("Bearer " + api_key).encode("utf-8")
         ):
             raise HTTPException(401, "无效的 API Key")
 
@@ -3342,12 +3410,19 @@ def create_colabone_public_app(g):
             return card
         raise KeyError(model_id)
 
+    def _release_slot_payloads(slot: dict[str, Any]) -> None:
+        with g.lock:
+            slot["result"] = None
+            slot["queue"] = None
+            slot["fail_event"] = None
+
     async def wait(identity, request, timeout_seconds: int = 305):
-        slot = g.jobs[identity]
+        with g.lock:
+            slot = g.jobs[identity]
         task = slot["task"]
         try:
             async with asyncio.timeout(timeout_seconds):
-                while task.state == "running":
+                while _task_state(task) == "running":
                     if await request.is_disconnected():
                         raise asyncio.CancelledError()
                     await asyncio.sleep(0.05)
@@ -3357,11 +3432,12 @@ def create_colabone_public_app(g):
                 504,
                 "等待超时或调用已断开；若为生成接口，可减小输出长度上限或开启流式调用（stream=true）",
             ) from None
-        if task.state != "completed":
+        state, err_text = _task_state_and_error(task)
+        if state != "completed":
             err_info = slot.get("error_info")
             if isinstance(err_info, dict) and err_info.get("code"):
                 raise ColabOneAPIError(err_info)
-            raise HTTPException(502, task.error or "任务已取消")
+            raise HTTPException(502, err_text or "任务已取消")
 
     @app.post("/v1/chat/completions", dependencies=auth)
     async def chat(request: Request):
@@ -3370,24 +3446,41 @@ def create_colabone_public_app(g):
             request.headers.get("x-colabone-auto-compact")
         )
         identity = g.chat(raw, auto_compact=auto_compact)
-        slot = g.jobs[identity]
+        with g.lock:
+            slot = g.jobs[identity]
         is_stream = bool(isinstance(raw, dict) and raw.get("stream"))
         if not is_stream:
-            await wait(identity, request)
-            return slot["result"]
+            try:
+                await wait(identity, request)
+                return slot["result"]
+            finally:
+                _release_slot_payloads(slot)
 
         async def stream():
             task = slot["task"]
+            q = slot["queue"]
+            last_emit = time.monotonic()
             try:
-                while task.state == "running" or not slot["queue"].empty():
+                while _task_state(task) == "running" or (q is not None and not q.empty()):
                     try:
-                        yield slot["queue"].get_nowait()
+                        chunk = q.get_nowait()
+                        last_emit = time.monotonic()
+                        yield chunk
                     except queue.Empty:
-                        await asyncio.sleep(0.05)
-                if task.state != "completed":
+                        now_mono = time.monotonic()
+                        if (
+                            _task_state(task) == "running"
+                            and (now_mono - last_emit) >= SSE_KEEPALIVE_INTERVAL_SECONDS
+                        ):
+                            last_emit = now_mono
+                            yield b": keepalive\n\n"
+                        else:
+                            await asyncio.sleep(0.05)
+                state, err_text = _task_state_and_error(task)
+                if state != "completed":
                     err_info = slot.get("error_info")
                     err_payload: dict[str, Any] = {
-                        "message": task.error or "API 请求已取消"
+                        "message": err_text or "API 请求已取消"
                     }
                     if isinstance(err_info, dict):
                         if err_info.get("type"):
@@ -3402,8 +3495,9 @@ def create_colabone_public_app(g):
                         + "\n\n"
                     ).encode("utf-8")
             finally:
-                if task.state == "running":
+                if _task_state(task) == "running":
                     task.request_cancel()
+                _release_slot_payloads(slot)
 
         return StreamingResponse(
             stream(),
@@ -3415,9 +3509,13 @@ def create_colabone_public_app(g):
     async def compact_responses(request: Request):
         raw = await read_json(request)
         identity = g.compact(raw)
-        slot = g.jobs[identity]
-        await wait(identity, request)
-        return slot["result"]
+        with g.lock:
+            slot = g.jobs[identity]
+        try:
+            await wait(identity, request)
+            return slot["result"]
+        finally:
+            _release_slot_payloads(slot)
 
     @app.post("/v1/responses", dependencies=auth)
     async def responses(request: Request):
@@ -3426,27 +3524,44 @@ def create_colabone_public_app(g):
             request.headers.get("x-colabone-auto-compact")
         )
         identity, is_stream = g.respond(raw, auto_compact=auto_compact)
-        slot = g.jobs[identity]
+        with g.lock:
+            slot = g.jobs[identity]
         if not is_stream:
-            await wait(identity, request)
-            return slot["result"]
+            try:
+                await wait(identity, request)
+                return slot["result"]
+            finally:
+                _release_slot_payloads(slot)
 
         async def stream():
             task = slot["task"]
+            q = slot["queue"]
+            last_emit = time.monotonic()
             try:
-                while task.state == "running" or not slot["queue"].empty():
+                while _task_state(task) == "running" or (q is not None and not q.empty()):
                     try:
-                        yield slot["queue"].get_nowait()
+                        chunk = q.get_nowait()
+                        last_emit = time.monotonic()
+                        yield chunk
                     except queue.Empty:
-                        await asyncio.sleep(0.05)
-                if task.state != "completed":
+                        now_mono = time.monotonic()
+                        if (
+                            _task_state(task) == "running"
+                            and (now_mono - last_emit) >= SSE_KEEPALIVE_INTERVAL_SECONDS
+                        ):
+                            last_emit = now_mono
+                            yield b": keepalive\n\n"
+                        else:
+                            await asyncio.sleep(0.05)
+                state, err_text = _task_state_and_error(task)
+                if state != "completed":
                     if slot.get("fail_event"):
                         yield slot["fail_event"]
                     else:
                         err_info = slot.get("error_info") or {}
                         err_code = str(err_info.get("code") or "server_error")
                         err_msg = str(
-                            err_info.get("message") or task.error or "API 请求已取消"
+                            err_info.get("message") or err_text or "API 请求已取消"
                         )
                         yield (
                             "event: response.failed\n"
@@ -3467,8 +3582,9 @@ def create_colabone_public_app(g):
                             + "\n\n"
                         ).encode("utf-8")
             finally:
-                if task.state == "running":
+                if _task_state(task) == "running":
                     task.request_cancel()
+                _release_slot_payloads(slot)
 
         return StreamingResponse(
             stream(),

@@ -202,29 +202,14 @@ func (s *colabOneAppearanceStore) Save(value string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(struct {
 		Appearance string `json:"appearance"`
 	}{Appearance: norm}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	var renameErr error
-	for range 4 {
-		renameErr = os.Rename(tmp, path)
-		if renameErr == nil {
-			return nil
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	_ = os.Remove(tmp)
-	return os.WriteFile(path, data, 0o644)
+	data = append(data, '\n')
+	return writeColabOneFileAtomic(path, ".appearance-*.tmp", data, 0o644)
 }
 
 type colabOneSplashStrings struct {

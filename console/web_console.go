@@ -91,17 +91,20 @@ func (d *ColabOneDesktop) closeWebConsole() {
 }
 
 func (d *ColabOneDesktop) notifyWebConsoleState(state webconsole.ColabOneWebConsoleState) {
-	if !mygo.App.IsReady() {
+	if d.appQuitting.Load() || !mygo.App.IsReady() {
 		return
 	}
 	_ = ColabOneWebConsoleEvent.Broadcast(state)
 	d.trayMu.Lock()
 	hasTray := d.tray != nil
 	d.trayMu.Unlock()
-	if !hasTray {
+	if !hasTray || d.appQuitting.Load() {
 		return
 	}
 	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() {
+			return
+		}
 		d.trayMu.Lock()
 		curTray := d.tray
 		d.trayMu.Unlock()

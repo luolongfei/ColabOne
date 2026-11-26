@@ -893,6 +893,8 @@ func (u *ColabOneUpdater) StartRollback(version string) (ColabOneUpdateState, er
 	}
 
 	prevState := cloneColabOneUpdateState(u.state)
+	prevPending := u.pending
+	u.pending = nil
 	installCtx, cancel := context.WithCancel(u.rootCtx)
 	doneCh := make(chan struct{})
 	u.installGen++
@@ -931,39 +933,52 @@ func (u *ColabOneUpdater) StartRollback(version string) (ColabOneUpdateState, er
 		defer close(doneCh)
 		pending, prepErr := rbBackend.PrepareRollback(installCtx, norm)
 		if prepErr != nil {
-			u.finishInstallError(installCtx, cancel, norm, true, prevState, prepErr)
+			u.finishInstallError(installCtx, cancel, norm, true, prevState, prevPending, prepErr)
 			return
 		}
-		u.runInstall(installCtx, cancel, pending, norm, true, prevState)
+		u.runInstall(installCtx, cancel, pending, norm, true, prevState, prevPending)
 	}()
 
 	return startSnap, nil
 }
 
 // StartInstall asynchronously downloads, verifies (Ed25519), and applies the
-// currently available update. It transitions state through downloading ->
-// installing -> ready_to_restart (or error / available on cancel).
+// currently available update. It transitions state through downloading,
+// installing, and ready_to_restart (or error / available on cancel).
 func (u *ColabOneUpdater) StartInstall() (ColabOneUpdateState, error) {
 	u.mu.Lock()
 	if u.closed {
-		st := u.state
+		st := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 		return st, errors.New("更新服务已关闭")
 	}
 	if u.installInFlight {
-		st := u.state
+		st := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 		return st, nil
 	}
 	if u.state.Status == StatusReadyToRestart {
-		st := u.state
+		st := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 		return st, nil
 	}
+	if u.state.IsRollback {
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		return st, errors.New("当前为版本回退状态，请重新选择回退版本")
+	}
 	if !u.state.CanSelfUpdate || u.pending == nil || u.state.AvailableVersion == "" {
-		st := u.state
+		st := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 		return st, errors.New("当前无可自动安装的更新版本")
+	}
+	pendingVer := NormalizeVersion(u.pending.Version())
+	targetVersion := NormalizeVersion(u.state.AvailableVersion)
+	if pendingVer == "" || CompareVersions(pendingVer, targetVersion) != 0 {
+		u.pending = nil
+		st := cloneColabOneUpdateState(u.state)
+		u.mu.Unlock()
+		return st, errors.New("待安装更新版本与当前状态不匹配，请重新检查更新")
 	}
 
 	prevState := cloneColabOneUpdateState(u.state)
@@ -975,7 +990,6 @@ func (u *ColabOneUpdater) StartInstall() (ColabOneUpdateState, error) {
 	u.installInFlight = true
 	checkCancel := u.checkCancel
 	pending := u.pending
-	targetVersion := u.state.AvailableVersion
 	u.state.Status = StatusDownloading
 	u.state.IsRollback = false
 	u.state.DownloadedBytes = 0
@@ -998,7 +1012,7 @@ func (u *ColabOneUpdater) StartInstall() (ColabOneUpdateState, error) {
 	go func() {
 		defer u.wg.Done()
 		defer close(doneCh)
-		u.runInstall(installCtx, cancel, pending, targetVersion, false, prevState)
+		u.runInstall(installCtx, cancel, pending, targetVersion, false, prevState, nil)
 	}()
 
 	return startSnap, nil
@@ -1010,6 +1024,7 @@ func (u *ColabOneUpdater) finishInstallError(
 	targetVersion string,
 	isRollback bool,
 	prevState ColabOneUpdateState,
+	prevPending ColabOneUpdateInstallable,
 	err error,
 ) {
 	defer cancel()
@@ -1018,6 +1033,7 @@ func (u *ColabOneUpdater) finishInstallError(
 	u.installInFlight = false
 	u.installCancel = nil
 	u.installDone = nil
+	closedNow := u.closed
 
 	if errors.Is(err, context.Canceled) || installCtx.Err() != nil {
 		if isRollback {
@@ -1040,7 +1056,13 @@ func (u *ColabOneUpdater) finishInstallError(
 				u.state.NotesRaw = prevState.NotesRaw
 				u.state.NotesZh = prevState.NotesZh
 				u.state.NotesEn = prevState.NotesEn
+				if prevPending != nil && CompareVersions(NormalizeVersion(prevPending.Version()), NormalizeVersion(prevState.AvailableVersion)) == 0 {
+					u.pending = prevPending
+				} else {
+					u.pending = nil
+				}
 			} else {
+				u.pending = nil
 				u.state.AvailableVersion = ""
 				u.state.IsPrerelease = false
 				u.state.ReleaseDate = ""
@@ -1061,15 +1083,20 @@ func (u *ColabOneUpdater) finishInstallError(
 		u.state.ErrorMessage = ""
 		snap := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
-		u.emit(snap)
-		if isRollback {
-			u.log("已取消下载 ColabOne v"+targetVersion+" 回退包", "更新", "info")
-		} else {
-			u.log("已取消下载 ColabOne v"+targetVersion+" 更新", "更新", "info")
+		if !closedNow {
+			u.emit(snap)
+			if isRollback {
+				u.log("已取消下载 ColabOne v"+targetVersion+" 回退包", "更新", "info")
+			} else {
+				u.log("已取消下载 ColabOne v"+targetVersion+" 更新", "更新", "info")
+			}
 		}
 		return
 	}
 
+	if isRollback {
+		u.pending = nil
+	}
 	code, detail := ClassifyUpdateError(err)
 	u.state.Status = StatusError
 	u.state.IsRollback = isRollback
@@ -1078,11 +1105,13 @@ func (u *ColabOneUpdater) finishInstallError(
 	u.state.ErrorMessage = detail
 	snap := cloneColabOneUpdateState(u.state)
 	u.mu.Unlock()
-	u.emit(snap)
-	if isRollback {
-		u.log(formatUpdateErrorLog("回退 ColabOne 至 v"+targetVersion+" 失败", code, detail), "更新", "error")
-	} else {
-		u.log(formatUpdateErrorLog("安装 ColabOne v"+targetVersion+" 更新失败", code, detail), "更新", "error")
+	if !closedNow {
+		u.emit(snap)
+		if isRollback {
+			u.log(formatUpdateErrorLog("回退 ColabOne 至 v"+targetVersion+" 失败", code, detail), "更新", "error")
+		} else {
+			u.log(formatUpdateErrorLog("安装 ColabOne v"+targetVersion+" 更新失败", code, detail), "更新", "error")
+		}
 	}
 }
 
@@ -1093,6 +1122,7 @@ func (u *ColabOneUpdater) runInstall(
 	targetVersion string,
 	isRollback bool,
 	prevState ColabOneUpdateState,
+	prevPending ColabOneUpdateInstallable,
 ) {
 	defer cancel()
 
@@ -1112,7 +1142,7 @@ func (u *ColabOneUpdater) runInstall(
 
 		now := u.nowFn()
 		wasInstalling := switchedPhase
-		// Detect delta -> full-archive fallback reset cleanly.
+		// Detect delta to full-archive fallback reset cleanly.
 		if downloaded < lastBytes || (total > 0 && lastTotal > 0 && total != lastTotal) {
 			windowStart = now
 			windowBytes = downloaded
@@ -1157,7 +1187,7 @@ func (u *ColabOneUpdater) runInstall(
 		lastEmitAt = now
 
 		u.mu.Lock()
-		if !u.installInFlight {
+		if !u.installInFlight || u.closed {
 			u.mu.Unlock()
 			return
 		}
@@ -1166,7 +1196,7 @@ func (u *ColabOneUpdater) runInstall(
 		u.state.TotalBytes = total
 		u.state.ProgressPercent = pct
 		u.state.SpeedBytesPerSec = speed
-		snap := u.state
+		snap := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 
 		u.emit(snap)
@@ -1174,7 +1204,7 @@ func (u *ColabOneUpdater) runInstall(
 
 	err := pending.Install(installCtx, onProgress)
 	if err != nil {
-		u.finishInstallError(installCtx, cancel, targetVersion, isRollback, prevState, err)
+		u.finishInstallError(installCtx, cancel, targetVersion, isRollback, prevState, prevPending, err)
 		return
 	}
 
@@ -1182,6 +1212,11 @@ func (u *ColabOneUpdater) runInstall(
 	u.installInFlight = false
 	u.installCancel = nil
 	u.installDone = nil
+	u.pending = nil
+	if u.closed {
+		u.mu.Unlock()
+		return
+	}
 	u.state.Status = StatusReadyToRestart
 	u.state.IsRollback = isRollback
 	if u.state.TotalBytes > 0 {
@@ -1380,15 +1415,29 @@ func (u *ColabOneUpdater) Relaunch() error {
 }
 
 func (u *ColabOneUpdater) emit(st ColabOneUpdateState) {
-	if u.onStateChange != nil {
-		u.onStateChange(cloneColabOneUpdateState(st))
+	if u.onStateChange == nil {
+		return
 	}
+	u.mu.Lock()
+	closed := u.closed
+	u.mu.Unlock()
+	if closed {
+		return
+	}
+	u.onStateChange(cloneColabOneUpdateState(st))
 }
 
 func (u *ColabOneUpdater) log(message, source, level string) {
-	if u.onLog != nil {
-		u.onLog(message, source, level)
+	if u.onLog == nil {
+		return
 	}
+	u.mu.Lock()
+	closed := u.closed
+	u.mu.Unlock()
+	if closed {
+		return
+	}
+	u.onLog(message, source, level)
 }
 
 func (u *ColabOneUpdater) prefsPath() string {

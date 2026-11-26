@@ -175,3 +175,12 @@ def test_wrong_ranges_cannot_be_committed(source, tmp_path):
     with pytest.raises(RuntimeError, match="下载失败"):
         run(source, part, attempts=1)
     assert not json.loads(metadata_path(part).read_text())["completed"]
+
+
+def test_cached_bytes_returns_zero_for_oversized_partial_without_meta(tmp_path):
+    part = tmp_path / "oversized.gguf.part"
+    part.write_bytes(b"x" * 2048)
+    digest = hashlib.sha256(b"a" * 1024).hexdigest()
+    assert cached_bytes(part, 1024, digest, 512) == 0
+    part.write_bytes(b"x" * 512)
+    assert cached_bytes(part, 1024, digest, 512) == 512

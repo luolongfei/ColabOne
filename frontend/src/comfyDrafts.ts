@@ -747,14 +747,13 @@ export function createColabOneWorkflowDraftClient(
         writeLocalDraft(resolveStorage(), wfId, draft.fields, draft.updated_at);
         return draft;
       } catch (err) {
-        const fallbackDraft = writeLocalDraft(
-          resolveStorage(),
-          wfId,
-          safeFields,
-          now,
-        );
         if (canFallback(err)) {
-          return fallbackDraft;
+          return writeLocalDraft(
+            resolveStorage(),
+            wfId,
+            safeFields,
+            now,
+          );
         }
         throw err;
       }

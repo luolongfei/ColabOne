@@ -66,20 +66,22 @@ func (a ColabOneMigrationAccountData) GoString() string { return a.String() }
 
 // ColabOneMigrationCredentialsData holds third-party tokens and public tunnel settings.
 type ColabOneMigrationCredentialsData struct {
-	HFToken       string         `json:"hf_token,omitempty"`
-	AssignProxy   string         `json:"assign_proxy,omitempty"`
-	PublicAPI     map[string]any `json:"public_api,omitempty"`
-	ComfyUICanvas map[string]any `json:"comfyui_canvas,omitempty"`
+	HFToken         string         `json:"hf_token,omitempty"`
+	AssignProxy     string         `json:"assign_proxy,omitempty"`
+	PublicAPI       map[string]any `json:"public_api,omitempty"`
+	ComfyUICanvas   map[string]any `json:"comfyui_canvas,omitempty"`
+	LiveExternalLLM map[string]any `json:"live_external_llm,omitempty"`
 }
 
 // String redacts third-party secrets so formatting never leaks tokens or proxy credentials.
 func (c ColabOneMigrationCredentialsData) String() string {
 	return fmt.Sprintf(
-		"ColabOneMigrationCredentialsData{HasHF:%t, HasAssignProxy:%t, HasPublicAPI:%t, HasComfyCanvas:%t}",
+		"ColabOneMigrationCredentialsData{HasHF:%t, HasAssignProxy:%t, HasPublicAPI:%t, HasComfyCanvas:%t, HasLiveExternalLLM:%t}",
 		strings.TrimSpace(c.HFToken) != "",
 		strings.TrimSpace(c.AssignProxy) != "",
 		len(c.PublicAPI) > 0,
 		len(c.ComfyUICanvas) > 0,
+		len(c.LiveExternalLLM) > 0,
 	)
 }
 
@@ -220,13 +222,14 @@ type ColabOneMigrationAccountSummary struct {
 
 // ColabOneMigrationCredentialsSummary summarizes configured secrets without raw keys/tokens.
 type ColabOneMigrationCredentialsSummary struct {
-	HasHFToken        bool   `json:"has_hf_token"`
-	HasAssignProxy    bool   `json:"has_assign_proxy"`
-	HasPublicAPI      bool   `json:"has_public_api"`
-	PublicAPIDomain   string `json:"public_api_domain"`
-	HasComfyCanvas    bool   `json:"has_comfy_canvas"`
-	ComfyCanvasDomain string `json:"comfy_canvas_domain"`
-	ConfiguredCount   int    `json:"configured_count"`
+	HasHFToken         bool   `json:"has_hf_token"`
+	HasAssignProxy     bool   `json:"has_assign_proxy"`
+	HasPublicAPI       bool   `json:"has_public_api"`
+	PublicAPIDomain    string `json:"public_api_domain"`
+	HasComfyCanvas     bool   `json:"has_comfy_canvas"`
+	ComfyCanvasDomain  string `json:"comfy_canvas_domain"`
+	HasLiveExternalLLM bool   `json:"has_live_external_llm"`
+	ConfiguredCount    int    `json:"configured_count"`
 }
 
 // ColabOneMigrationSettingsSummary summarizes key software and desktop preferences.
@@ -377,6 +380,15 @@ func summarizeCredentials(c *ColabOneMigrationCredentialsData) *ColabOneMigratio
 		if domain != "" || hasToken {
 			s.HasComfyCanvas = true
 			s.ComfyCanvasDomain = domain
+			s.ConfiguredCount++
+		}
+	}
+	if c.LiveExternalLLM != nil {
+		baseURL := strings.TrimSpace(asString(c.LiveExternalLLM["base_url"]))
+		model := strings.TrimSpace(asString(c.LiveExternalLLM["model"]))
+		hasKey := strings.TrimSpace(asString(c.LiveExternalLLM["api_key"])) != ""
+		if baseURL != "" || model != "" || hasKey {
+			s.HasLiveExternalLLM = true
 			s.ConfiguredCount++
 		}
 	}

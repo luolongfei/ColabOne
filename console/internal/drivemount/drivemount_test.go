@@ -80,8 +80,9 @@ func TestColabOneDriveMountConstantsAndDefaults(t *testing.T) {
 	if m.accountEmail != "alice@example.com" {
 		t.Fatalf("expected trimmed email, got %q", m.accountEmail)
 	}
-	if got := m.endpointURL(true); !strings.HasPrefix(got, "https://colab.research.google.com/tun/m/credentials-propagation/ep-1?") {
-		t.Fatalf("unexpected default endpoint URL: %q", got)
+	gotURL, err := m.endpointURL(true)
+	if err != nil || !strings.HasPrefix(gotURL, "https://colab.research.google.com/tun/m/credentials-propagation/ep-1?") {
+		t.Fatalf("unexpected default endpoint URL: got=%q err=%v", gotURL, err)
 	}
 
 	clamped := NewColabOneDriveMount(ColabOneDriveMountOptions{
@@ -1758,4 +1759,47 @@ func TestPropagateOnAuthConfirmedInteractiveAndFastPath(t *testing.T) {
 			t.Fatalf("expected 0 OnAuthConfirmed calls after cancel, got %d", confirmed.Load())
 		}
 	})
+}
+
+func TestEndpointPathEscapingAndEmptyRejection(t *testing.T) {
+	// 1. Endpoint containing path traversal / query / whitespace is trimmed and PathEscaped.
+	m := NewColabOneDriveMount(ColabOneDriveMountOptions{
+		Endpoint: "  ../ep?evil=1#frag  ",
+	})
+	gotURL, err := m.endpointURL(true)
+	if err != nil {
+		t.Fatalf("endpointURL returned unexpected error: %v", err)
+	}
+	wantPrefix := "https://colab.research.google.com/tun/m/credentials-propagation/..%2Fep%3Fevil=1%23frag?"
+	if !strings.HasPrefix(gotURL, wantPrefix) {
+		t.Fatalf("endpointURL = %q, want prefix %q", gotURL, wantPrefix)
+	}
+
+	// 2. Empty or whitespace-only endpoint is rejected cleanly without issuing HTTP calls.
+	var calls atomic.Int32
+	client := &funcAuthorizedClient{
+		domain: "https://colab.research.google.com",
+		do: func(ctx context.Context, req *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return makeResponse(http.StatusOK, `{"token":"tok"}`), nil
+		},
+	}
+	for _, ep := range []string{"", "   \t\n  "} {
+		mEmpty := NewColabOneDriveMount(ColabOneDriveMountOptions{
+			Client:   client,
+			Endpoint: ep,
+		})
+		if _, err := mEmpty.endpointURL(true); err == nil {
+			t.Fatalf("endpointURL(%q) expected error, got nil", ep)
+		}
+		if _, _, err := mEmpty.DryrunCheck(context.Background()); err == nil {
+			t.Fatalf("DryrunCheck(%q) expected error, got nil", ep)
+		}
+		if ok, err := mEmpty.Propagate(context.Background()); ok || err == nil {
+			t.Fatalf("Propagate(%q) expected failure, got ok=%v err=%v", ep, ok, err)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected 0 HTTP calls for empty endpoints, got %d", calls.Load())
+	}
 }

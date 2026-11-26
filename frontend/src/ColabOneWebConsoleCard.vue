@@ -31,6 +31,7 @@ import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   colabOnePrivacyActive,
+  colabOnePrivacyPeekResetTick,
   colabOneSynthesizeDomainInput,
   segmentColabOneDomainInput,
 } from "./colabOnePrivacy";
@@ -58,6 +59,7 @@ const props = defineProps<{
   loading: boolean;
   saving: boolean;
   passcodeBusy: boolean;
+  passcodeResetSeq?: number;
   ticketBusy: boolean;
   revoking: boolean;
   loadSavedPasscode: () => Promise<string>;
@@ -156,10 +158,9 @@ function onPublicOriginUpdate(value: string) {
   draftPublicOrigin.value = value;
 }
 
-watch(colabOnePrivacyActive, (active) => {
-  if (!active) {
-    originPeeking.value = false;
-  }
+watch(colabOnePrivacyPeekResetTick, clearOriginPeek);
+watch(isOriginMasked, (masked) => {
+  if (!masked) clearOriginPeek();
 });
 
 watch(
@@ -188,9 +189,9 @@ watch(
 );
 
 watch(
-  () => props.state.passcode_preview,
+  () => props.passcodeResetSeq,
   (next, prev) => {
-    if (next !== prev) {
+    if (next !== undefined && next !== prev) {
       passcodeDraft.value = "";
       passcodeInputRef.value?.hide?.();
     }

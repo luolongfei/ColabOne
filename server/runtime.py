@@ -18,6 +18,7 @@ import time
 import uuid
 import copy
 from functools import wraps
+from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
 from urllib.parse import quote
 
@@ -32,6 +33,10 @@ from common.comfyui import (
     validate_colabone_hf_token,
 )
 from common.files import atomic_json, colabone_service_revision
+from common.live_studio import (
+    ColabOneLiveAvatarManifest,
+    validate_colabone_live_relative_path,
+)
 from common.location import infer_location_from_endpoint, probe_vm_location
 from common.models import (
     ModelSpec,
@@ -47,18 +52,55 @@ from server.download import (
     metadata_path,
     ColabOneRangeUnsupportedError,
     CHUNK,
+    _abort_response,
 )
 
 
 _UNSET = object()
 
+_SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset(
+    {
+        "COLABONE_REMOTE_CONFIG",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_API_TOKEN",
+        "OPENAI_API_KEY",
+        "TUNNEL_TOKEN",
+    }
+)
+
+
+def _sanitized_subprocess_env() -> dict[str, str]:
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _SENSITIVE_SUBPROCESS_ENV_KEYS and not k.startswith("TUNNEL_")
+    }
+
+
+def _create_http_session() -> requests.Session:
+    session = requests.Session()
+    session.trust_env = False
+    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+    return session
+
 _BEARER_SECRET_RE = re.compile(r"(?i)\bBearer\s+[^\s'\"`,;}\]]+")
 _HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9_-]{4,}\b")
 _COLABONE_API_KEY_RE = re.compile(r"\bco_[A-Za-z0-9_-]{20,}")
+_OPENAI_API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9._-]{10,}")
 _JWT_TOKEN_RE = re.compile(r"eyJ[A-Za-z0-9_+/=-]{20,}(?:\.[A-Za-z0-9_+/=-]+)*")
 _GOOGLE_ACCESS_TOKEN_RE = re.compile(r"\bya29\.[A-Za-z0-9._-]+")
 _GOOGLE_REFRESH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])1//[A-Za-z0-9._-]+")
 _GOOGLE_CLIENT_SECRET_RE = re.compile(r"\bGOCSPX-[A-Za-z0-9._-]+")
+_RTMP_USERINFO_RE = re.compile(r"(?i)\b(rtmps?://)([^/\s@'\"`]+)@")
+_RTMP_STREAM_KEY_RE = re.compile(
+    r"(?i)\b(rtmps?://[^/\s'\"`]+/[^/\s'\"`]+/)([^\s'\"`,;}\]]+)"
+)
+_RTMP_QUERY_SECRET_RE = re.compile(
+    r"(?i)\b(rtmps?://[^/\s'\"`]+/[^?\s'\"`]+\?)([^\s'\"`,;}\]]+)"
+)
+_LIVE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", re.ASCII)
 _HF_NON_SECRET_IDENTIFIERS = frozenset(
     {
         "hf_token",
@@ -107,10 +149,14 @@ def _scrub_secret_text(text: str, *secrets: str) -> str:
     result = _BEARER_SECRET_RE.sub("Bearer ***", result)
     result = _HF_TOKEN_RE.sub(_scrub_hf_match, result)
     result = _COLABONE_API_KEY_RE.sub("***", result)
+    result = _OPENAI_API_KEY_RE.sub("***", result)
     result = _JWT_TOKEN_RE.sub("***", result)
     result = _GOOGLE_ACCESS_TOKEN_RE.sub("***", result)
     result = _GOOGLE_REFRESH_TOKEN_RE.sub("***", result)
     result = _GOOGLE_CLIENT_SECRET_RE.sub("***", result)
+    result = _RTMP_USERINFO_RE.sub(r"\1***@", result)
+    result = _RTMP_STREAM_KEY_RE.sub(r"\1***", result)
+    result = _RTMP_QUERY_SECRET_RE.sub(r"\1***", result)
     return result
 
 
@@ -274,6 +320,7 @@ class ColabOneRuntime:
         self.lock = _TrackedRLock()
         self._engine_lifecycle_lock = threading.RLock()
         self._comfy_lifecycle_lock = threading.Lock()
+        self._live_lifecycle_lock = threading.RLock()
         self.sync_lock = threading.Lock()
         self.release_lock = threading.Lock()
         self.quiescing = False
@@ -292,11 +339,18 @@ class ColabOneRuntime:
         self._workflow_auto_release_grace_seconds = 3.0
         self._unassign_lock = threading.Lock()
         self._unassigned = False
-        self.http = http or requests.Session()
+        self.http = http or _create_http_session()
         self.http.trust_env = False
+        if isinstance(self.http, requests.Session):
+            self.http.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+        self._http_local = threading.local()
+        self._http_sessions_lock = threading.Lock()
+        self._http_sessions: list[requests.Session] = []
         self.drive = drive or ColabOneDrive(root, catalog, http=self.http)
         self._dirty_seq: dict[str, int] = {}
         self._seq_counter = 0
+        self._reconciled_tombstones: set[tuple[str, str, int]] = set()
+        self._local_api_id_overrides: set[str] = set()
         self.drive_restored = False
         self.service_revision = colabone_service_revision(
             Path(__file__).resolve().parents[1]
@@ -335,9 +389,11 @@ class ColabOneRuntime:
         self.stopping = threading.Event()
         from server.public_api import ColabOnePublicGateway
         from server.comfyui import ColabOneComfyManager
+        from server.live_studio import ColabOneLiveStudioManager
 
         self.public_api = ColabOnePublicGateway(self)
         self.comfy = ColabOneComfyManager(self)
+        self.live = ColabOneLiveStudioManager(self.root, self.catalog, runtime=self)
         if (root / "models.json").exists():
             try:
                 raw_models = json.loads(
@@ -359,8 +415,43 @@ class ColabOneRuntime:
                         model = model.model_copy(
                             update={"api_id": self._preset_api_ids[model.id]}
                         )
+                    elif model.api_id and model.api_id != self._preset_api_ids.get(
+                        model.id, ""
+                    ):
+                        self._local_api_id_overrides.add(model.id)
                     self.models[model.id] = model
                 self._mark_dirty("models")
+
+    def _http_session(self):
+        """Return a thread-local requests.Session for real HTTP usage, preserving test mocks."""
+        if not isinstance(self.http, requests.Session):
+            return self.http
+        session = getattr(self._http_local, "session", None)
+        if session is None:
+            session = _create_http_session()
+            self._http_local.session = session
+            with self._http_sessions_lock:
+                self._http_sessions.append(session)
+        return session
+
+    def close_http_sessions(self) -> None:
+        with self._http_sessions_lock:
+            sessions = list(self._http_sessions)
+            self._http_sessions.clear()
+        self._http_local = threading.local()
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:
+                pass
+        if isinstance(self.http, requests.Session):
+            try:
+                self.http.close()
+            except Exception:
+                pass
+        close_drive = getattr(self.drive, "close_http_sessions", None)
+        if callable(close_drive):
+            close_drive()
 
     def _mark_dirty(self, key: str):
         with self.lock:
@@ -401,6 +492,18 @@ class ColabOneRuntime:
                 pass
         return False
 
+    def _live_has_active_clients(self) -> bool:
+        live = getattr(self, "live", None)
+        if live is None:
+            return False
+        try:
+            count_fn = getattr(live, "active_client_count", None)
+            if callable(count_fn):
+                return int(count_fn() or 0) > 0
+            return bool(live.is_running())
+        except Exception:
+            return False
+
     @synchronized
     def touch(self, hold_seconds=0):
         if self.quiescing:
@@ -413,7 +516,11 @@ class ColabOneRuntime:
 
     def idle_status(self, now=None, *, _use_cached_queue: bool = False):
         now = time.time() if now is None else now
-        active = self.busy(_use_cached_queue=_use_cached_queue) or now < self.activity_until
+        active = (
+            self.busy(_use_cached_queue=_use_cached_queue)
+            or self._live_has_active_clients()
+            or now < self.activity_until
+        )
         elapsed = (
             0 if active else max(0, now - max(self.last_active, self.activity_until))
         )
@@ -470,6 +577,18 @@ class ColabOneRuntime:
         comfy_status = dict(self.comfy.status())
         comfy_status["auto_release"] = self.workflow_auto_release_status()
         comfy_running = bool(comfy_status.get("running"))
+        live_status = dict(self.live.status())
+        live_running = bool(live_status.get("running"))
+        if loaded and live_running:
+            active_engine = "llama+live_studio"
+        elif live_running:
+            active_engine = "live_studio"
+        elif loaded:
+            active_engine = "llama"
+        elif comfy_running:
+            active_engine = "comfyui"
+        else:
+            active_engine = None
         idle = self.idle_status(_use_cached_queue=True)
         cached = self.telemetry.latest(max_age=2.5) if telemetry_alive else None
         if cached is not None:
@@ -491,11 +610,11 @@ class ColabOneRuntime:
                 "comfyui_tts_preview",
                 "comfyui_longcat_native",
                 "comfyui_workflow_auto_release",
+                "comfyui_live_studio",
             ],
             "comfyui": comfy_status,
-            "active_engine": "llama"
-            if loaded
-            else ("comfyui" if comfy_running else None),
+            "live_studio": live_status,
+            "active_engine": active_engine,
             "idle": idle,
             "id": self.runtime_id,
             "state": "releasing" if quiescing else "ready",
@@ -513,7 +632,7 @@ class ColabOneRuntime:
         }
 
     def detect_location(self) -> dict | None:
-        detected = probe_vm_location(self.http)
+        detected = probe_vm_location(self._http_session())
         if not detected:
             return self.location
         with self.lock:
@@ -600,6 +719,8 @@ class ColabOneRuntime:
                     raise ColabOneConflictError("同名模型配置不同，请使用新模型 ID")
             if not m.api_id and existing and existing.api_id:
                 m = m.model_copy(update={"api_id": existing.api_id})
+            elif m.api_id and m.api_id != self._preset_api_ids.get(m.id, ""):
+                self._local_api_id_overrides.add(m.id)
             self.models[m.id] = m
             atomic_json(
                 self.root / "models.json",
@@ -621,6 +742,7 @@ class ColabOneRuntime:
             )
             updated = existing.model_copy(update={"api_id": target_api_id})
             self.models[model_id] = updated
+            self._local_api_id_overrides.add(model_id)
             atomic_json(
                 self.root / "models.json",
                 [x.model_dump() for x in self.models.values()],
@@ -680,15 +802,15 @@ class ColabOneRuntime:
                         transfer.phase = final_state
                     transfer_snap = transfer.snapshot()
                 with t.lock:
-                    t.state = final_state
+                    if final_error:
+                        t.error = final_error
+                    if final_progress is not None:
+                        t.progress = final_progress
                     t.finished_at = time.time()
                     t.elapsed_seconds = round(
                         max(0.0, time.monotonic() - t._started_monotonic), 3
                     )
-                    if final_progress is not None:
-                        t.progress = final_progress
-                    if final_error:
-                        t.error = final_error
+                    t.state = final_state
                     if transfer is not None:
                         t.note(
                             {
@@ -894,6 +1016,7 @@ class ColabOneRuntime:
         if offset == file.size:
             return
         max_attempts = 3
+        max_requests = max(16, min(256, (file.size // (1024 * 1024)) + 16))
         active_lock = threading.Lock()
         active_response = [None]
 
@@ -901,6 +1024,7 @@ class ColabOneRuntime:
             with active_lock:
                 resp = active_response[0]
             if resp is not None:
+                _abort_response(resp)
                 try:
                     resp.close()
                 except Exception:
@@ -915,7 +1039,13 @@ class ColabOneRuntime:
             prev_cancel_hook = getattr(task, "cancel_hook", None)
             task.cancel_hook = _cancel_active_response
         try:
-            for attempt in range(max_attempts):
+            error_attempts = 0
+            short_attempts = 0
+            total_requests = 0
+            while offset < file.size:
+                if total_requests >= max_requests:
+                    raise RuntimeError("单连接分段续传次数超限，已保留已完成部分以便续传")
+                total_requests += 1
                 task.check()
                 if partial.is_symlink():
                     raise ValueError("下载临时文件不能是符号链接")
@@ -923,9 +1053,11 @@ class ColabOneRuntime:
                 req_headers["Accept-Encoding"] = "identity"
                 if offset:
                     req_headers["Range"] = f"bytes={offset}-"
+                before_offset = offset
+                response_status = 0
                 stats.active = 1
                 try:
-                    with self.http.get(
+                    with self._http_session().get(
                         url, headers=req_headers, stream=True, timeout=(10, 30)
                     ) as response:
                         with active_lock:
@@ -933,17 +1065,21 @@ class ColabOneRuntime:
                         if task.cancel.is_set():
                             _cancel_active_response()
                             task.check()
-                        if response.status_code == 416 and offset > 0:
+                        response_status = response.status_code
+                        if response_status == 416 and offset > 0:
+                            error_attempts += 1
                             stats.resumed = max(0, stats.resumed - offset)
                             partial.unlink(missing_ok=True)
                             offset = 0
                             stats.downloaded = done
+                            if error_attempts >= max_attempts:
+                                raise RuntimeError("单连接下载失败（HTTP 416）")
                             continue
                         response.raise_for_status()
-                        if offset and response.status_code != 206:
+                        if offset and response_status != 206:
                             stats.resumed = max(0, stats.resumed - offset)
                             offset = 0
-                        if response.status_code == 206:
+                        if response_status == 206:
                             cr = response.headers.get("Content-Range", "").strip()
                             if not cr.startswith(f"bytes {offset}-") or (
                                 "/" in cr and not cr.endswith(f"/{file.size}")
@@ -952,33 +1088,66 @@ class ColabOneRuntime:
                         if partial.is_symlink():
                             raise ValueError("下载临时文件不能是符号链接")
                         with partial.open("ab" if offset else "wb") as stream:
-                            for block in response.iter_content(1024**2):
-                                task.check()
-                                if not block:
-                                    continue
-                                if offset + len(block) > file.size:
-                                    raise RuntimeError("远端文件大于清单声明的大小")
-                                stream.write(block)
-                                offset += len(block)
-                                stats.wire(len(block))
-                                stats.downloaded = done + offset
-                                task.update(progress=(done + offset) / stats.total)
-                                now = time.monotonic()
-                                if now - stats.last_report >= 5:
-                                    stats.last_report = now
-                                    view = stats.snapshot()
-                                    task.note(
-                                        f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
-                                    )
-                    return
+                            try:
+                                for block in response.iter_content(1024**2):
+                                    task.check()
+                                    if not block:
+                                        continue
+                                    if offset + len(block) > file.size:
+                                        raise RuntimeError("远端文件大于清单声明的大小")
+                                    stream.write(block)
+                                    offset += len(block)
+                                    stats.wire(len(block))
+                                    stats.downloaded = done + offset
+                                    task.update(progress=(done + offset) / stats.total)
+                                    now = time.monotonic()
+                                    if now - stats.last_report >= 5:
+                                        stats.last_report = now
+                                        view = stats.snapshot()
+                                        task.note(
+                                            f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
+                                        )
+                            finally:
+                                stream.flush()
+                                try:
+                                    os.fsync(stream.fileno())
+                                except OSError:
+                                    pass
+                    if offset >= file.size:
+                        return
+                    if offset > before_offset:
+                        error_attempts = 0
+                        if response_status == 206:
+                            # Valid 206 sub-range continuation; immediately request next range.
+                            continue
+                        short_attempts += 1
+                        if short_attempts >= max_attempts:
+                            raise RuntimeError("单连接下载提前中断，已保留已完成部分以便续传")
+                        task.note(
+                            f"单连接传输提前结束，正在从 {offset}/{file.size} 字节续传（重试 {short_attempts}/{max_attempts - 1}）",
+                            "warning",
+                        )
+                        if task.cancel.wait(min(1.0, 0.25 * short_attempts)):
+                            task.check()
+                        continue
+                    error_attempts += 1
+                    if error_attempts >= max_attempts:
+                        raise RuntimeError("单连接下载未完成，已保留已完成部分以便续传")
+                    task.note(
+                        f"单连接下载未取得进展，重试 {error_attempts}/{max_attempts - 1}",
+                        "warning",
+                    )
+                    if task.cancel.wait(min(2.0, 0.5 * error_attempts)):
+                        task.check()
                 except requests.HTTPError as exc:
                     task.check()
                     status_code = getattr(
                         getattr(exc, "response", None), "status_code", None
                     )
+                    error_attempts += 1
                     if (
                         status_code not in (429, 500, 502, 503, 504)
-                        or attempt + 1 >= max_attempts
+                        or error_attempts >= max_attempts
                     ):
                         if status_code in (401, 403):
                             raise RuntimeError(
@@ -988,13 +1157,14 @@ class ColabOneRuntime:
                             f"单连接下载失败（HTTP {status_code or type(exc).__name__}）"
                         ) from None
                     task.note(
-                        f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（HTTP {status_code}）",
+                        f"单连接下载重试 {error_attempts}/{max_attempts - 1}（HTTP {status_code}）",
                         "warning",
                     )
-                    if task.cancel.wait(2**attempt):
+                    if task.cancel.wait(2 ** (error_attempts - 1)):
                         task.check()
                 except requests.RequestException as exc:
                     task.check()
+                    error_attempts += 1
                     if (
                         isinstance(
                             exc,
@@ -1003,16 +1173,16 @@ class ColabOneRuntime:
                                 requests.exceptions.InvalidURL,
                             ),
                         )
-                        or attempt + 1 >= max_attempts
+                        or error_attempts >= max_attempts
                     ):
                         raise RuntimeError(
                             f"单连接下载失败（{type(exc).__name__}）"
                         ) from None
                     task.note(
-                        f"单连接下载重试 {attempt + 1}/{max_attempts - 1}（{type(exc).__name__}）",
+                        f"单连接下载重试 {error_attempts}/{max_attempts - 1}（{type(exc).__name__}）",
                         "warning",
                     )
-                    if task.cancel.wait(2**attempt):
+                    if task.cancel.wait(2 ** (error_attempts - 1)):
                         task.check()
                 except Exception:
                     if task.cancel.is_set():
@@ -1051,30 +1221,97 @@ class ColabOneRuntime:
             return binaries[0]
         root.mkdir(parents=True, exist_ok=True)
         task.note("首次加载，准备远端 CUDA 推理引擎 " + config["tag"])
-        for i, asset in enumerate(config["assets"]):
-            task.note(f"下载引擎组件 {i + 1}/{len(config['assets'])}")
-            task.update(message="安装远端 CUDA 推理引擎")
-            target = root / f"asset-{i}.tar.gz"
-            try:
-                with self.http.get(asset["url"], stream=True, timeout=(15, 60)) as r:
-                    r.raise_for_status()
-                    with target.open("wb") as out:
-                        for chunk in r.iter_content(1024**2):
+        active_lock = threading.Lock()
+        active_response = [None]
+
+        def _cancel_active_response():
+            with active_lock:
+                resp = active_response[0]
+            if resp is not None:
+                _abort_response(resp)
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+        task_lock = getattr(task, "lock", None)
+        if task_lock is not None:
+            with task_lock:
+                prev_cancel_hook = getattr(task, "cancel_hook", None)
+                task.cancel_hook = _cancel_active_response
+        else:
+            prev_cancel_hook = getattr(task, "cancel_hook", None)
+            task.cancel_hook = _cancel_active_response
+        try:
+            for i, asset in enumerate(config["assets"]):
+                task.check()
+                task.note(f"下载引擎组件 {i + 1}/{len(config['assets'])}")
+                task.update(message="安装远端 CUDA 推理引擎")
+                target = root / f"asset-{i}.tar.gz"
+                try:
+                    with self._http_session().get(
+                        asset["url"], stream=True, timeout=(15, 60)
+                    ) as r:
+                        with active_lock:
+                            active_response[0] = r
+                        if task.cancel.is_set():
+                            _cancel_active_response()
                             task.check()
-                            out.write(chunk)
-                if not asset["sha256"] or self.sha256(target, task) != asset["sha256"]:
-                    raise RuntimeError("推理引擎 SHA-256 校验失败")
-                task.note(f"引擎组件 {i + 1} 校验通过，正在解压")
-                with tarfile.open(target) as archive:
-                    archive.extractall(root, filter="data")
-            finally:
-                target.unlink(missing_ok=True)
+                        r.raise_for_status()
+                        with target.open("wb") as out:
+                            for chunk in r.iter_content(1024**2):
+                                task.check()
+                                if not chunk:
+                                    continue
+                                out.write(chunk)
+                            out.flush()
+                            try:
+                                os.fsync(out.fileno())
+                            except OSError:
+                                pass
+                    if not asset["sha256"] or self.sha256(target, task) != asset["sha256"]:
+                        raise RuntimeError("推理引擎 SHA-256 校验失败")
+                    task.note(f"引擎组件 {i + 1} 校验通过，正在解压")
+                    with tarfile.open(target) as archive:
+                        archive.extractall(root, filter="data")
+                except Exception:
+                    if task.cancel.is_set():
+                        task.check()
+                    raise
+                finally:
+                    with active_lock:
+                        active_response[0] = None
+                    target.unlink(missing_ok=True)
+        finally:
+            if task_lock is not None:
+                with task_lock:
+                    if getattr(task, "cancel_hook", None) is _cancel_active_response:
+                        task.cancel_hook = prev_cancel_hook
+            elif getattr(task, "cancel_hook", None) is _cancel_active_response:
+                task.cancel_hook = prev_cancel_hook
         binaries = list(root.rglob("llama-server"))
         if not binaries:
             raise RuntimeError("推理引擎包中没有 llama-server")
         (root / ".complete").touch()
         task.note("远端 CUDA 推理引擎安装完成")
         return binaries[0]
+
+    @staticmethod
+    def _model_vram_mib(model: ModelSpec | None) -> int:
+        if model is None:
+            return 0
+        min_vram = int(getattr(model, "min_vram_mib", 0) or 0)
+        if min_vram > 0:
+            return min_vram
+        files = getattr(model, "files", None) or []
+        total_bytes = sum(int(getattr(f, "size", 0) or 0) for f in files)
+        return max(0, total_bytes // (1024 * 1024))
+
+    def _loaded_model_vram_mib(self) -> int:
+        with self.lock:
+            loaded_id = self.loaded
+            model = self.models.get(loaded_id) if loaded_id else None
+        return self._model_vram_mib(model)
 
     def load(self, model_id, options=None):
         self._refresh_comfy_queue_if_needed()
@@ -1086,7 +1323,29 @@ class ColabOneRuntime:
                 m = ModelSpec.model_validate(m.model_dump() | options)
             if not self.installed(m):
                 raise ColabOneConflictError("请先下载模型到当前远端实例")
-            return self.submit("load", model_id, lambda t: self._load(t, m))
+            model_vram_mib = self._model_vram_mib(m)
+
+        # Preflight Live Studio co-location outside self.lock to avoid disk I/O or nvidia-smi under lock.
+        if self.live.is_running():
+            live_st = self.live.status()
+            current_live_cfg = live_st.get("active_config") or {}
+            gpu = self.gpu_info()
+            vram = self.live.check_vram(
+                current_live_cfg,
+                gpu,
+                loaded_model_vram_mib=model_vram_mib,
+            )
+            can_colocate = bool(vram.get("ok") and vram.get("can_co_locate_llm"))
+            if isinstance(live_st, dict) and "active_clients" in live_st:
+                has_clients = int(live_st.get("active_clients") or 0) > 0
+            else:
+                has_clients = self._live_has_active_clients()
+            if not can_colocate and has_clients:
+                raise ColabOneConflictError(
+                    "实时直播正在推流，当前显存不足以同时装载该模型，请先停止直播或选择更小模型"
+                )
+
+        return self.submit("load", model_id, lambda t: self._load(t, m))
 
     @staticmethod
     def _is_benign_engine_log_line(line: str) -> bool:
@@ -1511,9 +1770,39 @@ class ColabOneRuntime:
             getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
         ):
             self.comfy.tts.cancel_prefetch_and_release_warm_worker("llm_load")
-        if self.comfy.is_running():
-            task.note("正在停止 ComfyUI 服务以释放显存")
-        self.comfy.stop_server()
+        keep_live_studio = False
+        with self._live_lifecycle_lock:
+            if self.live.is_running():
+                live_st = self.live.status()
+                current_live_cfg = live_st.get("active_config") or {}
+                vram = self.live.check_vram(
+                    current_live_cfg,
+                    self.gpu_info(),
+                    loaded_model_vram_mib=self._model_vram_mib(m),
+                )
+                if bool(vram.get("ok") and vram.get("can_co_locate_llm")):
+                    keep_live_studio = True
+                    task.note("当前显存充足，保留实时直播服务并协同装载对话模型")
+                else:
+                    if isinstance(live_st, dict) and "active_clients" in live_st:
+                        has_clients = int(live_st.get("active_clients") or 0) > 0
+                    else:
+                        has_clients = self._live_has_active_clients()
+                    if has_clients:
+                        raise ColabOneConflictError(
+                            "实时直播正在推流，当前显存不足以同时装载该模型，请先停止直播或选择更小模型"
+                        )
+                    task.note("当前显存不足以与实时直播共存，正在停止实时直播服务以释放显存")
+                    self.live.stop()
+        if keep_live_studio:
+            if self.comfy.is_running() or self.comfy.proc is not None:
+                task.note("正在停止 ComfyUI 服务以释放显存")
+                self._stop_comfy_process_only()
+        else:
+            with self._comfy_lifecycle_lock:
+                if self.comfy.is_running():
+                    task.note("正在停止 ComfyUI 服务以释放显存")
+                self.comfy.stop_server()
         if self.loaded or self.proc:
             prev_id = self.loaded
             if prev_id == m.id:
@@ -1538,7 +1827,7 @@ class ColabOneRuntime:
         task.check()
         file = next(f for f in m.files if f.role == "model")
         model_path = self.models_dir / m.id / file.path
-        env = dict(os.environ)
+        env = _sanitized_subprocess_env()
         engine_base = self.root / "engine"
         try:
             rel = engine.resolve().relative_to(engine_base.resolve())
@@ -1606,7 +1895,7 @@ class ColabOneRuntime:
                         break
                     try:
                         if (
-                            self.http.get(
+                            self._http_session().get(
                                 "http://127.0.0.1:8081/health", timeout=2
                             ).status_code
                             == 200
@@ -1705,8 +1994,7 @@ class ColabOneRuntime:
             session = None
             try:
                 if use_dedicated_session:
-                    session = requests.Session()
-                    session.trust_env = False
+                    session = _create_http_session()
                     resp = session.post(
                         "http://127.0.0.1:8081/v1/chat/completions",
                         json={
@@ -1834,17 +2122,39 @@ class ColabOneRuntime:
         with self.lock:
             self.last_active = time.time()
 
+    def _stop_live_for_exclusive_gpu(self, reason: str, *, task=None) -> None:
+        _ = reason
+        with self._live_lifecycle_lock:
+            if self._live_has_active_clients():
+                raise ColabOneConflictError(
+                    "实时演播正在推流，请先停止实时演播后再执行此操作"
+                )
+            if self.live.is_running():
+                if task is not None and callable(getattr(task, "note", None)):
+                    task.note("正在停止实时演播服务以释放显存")
+                self.live.stop()
+
     def start_comfyui(self):
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+            if self.busy():
+                raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+        self._stop_live_for_exclusive_gpu("comfyui_start")
         with self._comfy_lifecycle_lock:
             if callable(
                 getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
             ):
                 self.comfy.tts.cancel_prefetch_and_release_warm_worker("comfyui_run")
             self._refresh_comfy_queue_if_needed()
+
+            def _start_comfy(task):
+                self._stop_live_for_exclusive_gpu("comfyui_start", task=task)
+                return self.comfy.start_server(task)
+
             with self.lock:
-                return self.submit(
-                    "comfyui_start", "", lambda t: self.comfy.start_server(t)
-                )
+                return self.submit("comfyui_start", "", _start_comfy)
 
     def stop_comfyui(self):
         def _is_task_running(task) -> bool:
@@ -1855,12 +2165,23 @@ class ColabOneRuntime:
             return task.state == "running"
 
         with self._comfy_lifecycle_lock:
+            if self.live.is_running():
+                self._stop_comfy_process_locked()
+                with self.lock:
+                    self.last_active = time.time()
+                return
             with self.lock:
                 comfy_tasks = [
                     t
                     for t in self.tasks.values()
                     if _is_task_running(t)
-                    and t.kind in ("comfyui_start", "comfyui_run", "comfyui_tts_preview")
+                    and t.kind
+                    in (
+                        "comfyui_start",
+                        "comfyui_run",
+                        "comfyui_tts_preview",
+                        "live_build_pack",
+                    )
                 ]
             for t in comfy_tasks:
                 try:
@@ -1874,7 +2195,10 @@ class ColabOneRuntime:
                     break
                 time.sleep(0.05)
             if comfy_tasks and self.comfy.is_running():
-                self.comfy.stop_server()
+                if self.live.is_running():
+                    self._stop_comfy_process_locked()
+                else:
+                    self.comfy.stop_server()
             if any(_is_task_running(t) for t in comfy_tasks):
                 raise ColabOneConflictError("ComfyUI 任务仍在停止，请稍后重试")
             with self.lock:
@@ -2194,7 +2518,7 @@ class ColabOneRuntime:
                 return False
             for attempt in range(3):
                 try:
-                    self.http.post(
+                    self._http_session().post(
                         f"http://{addr}/unassign", data=b"", timeout=10
                     ).raise_for_status()
                     self._unassigned = True
@@ -2232,6 +2556,15 @@ class ColabOneRuntime:
                 self._workflow_auto_release["state"] = "skipped"
                 self._workflow_auto_release["message"] = (
                     "检测到新任务正在运行，已取消自动释放实例"
+                )
+                self._workflow_auto_release["updated_at"] = time.time()
+                return
+            if self._live_has_active_clients() or self.live.is_running():
+                self._pending_workflow_auto_release = False
+                self._workflow_auto_release["enabled"] = False
+                self._workflow_auto_release["state"] = "skipped"
+                self._workflow_auto_release["message"] = (
+                    "检测到实时演播正在运行，已取消自动释放实例"
                 )
                 self._workflow_auto_release["updated_at"] = time.time()
                 return
@@ -2284,6 +2617,22 @@ class ColabOneRuntime:
                 raise ValueError(scrubbed) from None
             raise
         want_auto_release = bool(getattr(req, "auto_release_after_sync", False))
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+            if self.busy():
+                raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+            if hasattr(self.comfy.store, "get_workflow"):
+                if self.comfy.store.get_workflow(req.workflow_id) is None:
+                    raise KeyError("工作流不存在")
+            else:
+                if not any(
+                    w.get("id") == req.workflow_id
+                    for w in self.comfy.store.list_workflows()
+                ):
+                    raise KeyError("工作流不存在")
+        self._stop_live_for_exclusive_gpu("comfyui_run")
         with self._comfy_lifecycle_lock:
             if callable(
                 getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
@@ -2291,6 +2640,10 @@ class ColabOneRuntime:
                 self.comfy.tts.cancel_prefetch_and_release_warm_worker("comfyui_run")
             self._refresh_comfy_queue_if_needed()
             with self.lock:
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneConflictError("实例正在准备释放")
+                if self.busy():
+                    raise ColabOneConflictError("请等待当前任务完成，或先停止它")
                 if hasattr(self.comfy.store, "get_workflow"):
                     if self.comfy.store.get_workflow(req.workflow_id) is None:
                         raise KeyError("工作流不存在")
@@ -2300,42 +2653,35 @@ class ColabOneRuntime:
                         for w in self.comfy.store.list_workflows()
                     ):
                         raise KeyError("工作流不存在")
-                with self.lock:
-                    prev_auto_release = copy.deepcopy(self._workflow_auto_release)
-                    prev_pending_auto_release = self._pending_workflow_auto_release
-                    arm_requested = want_auto_release or bool(
-                        self._workflow_auto_release.get("enabled")
-                    )
-                    if arm_requested:
-                        if not self.drive.available():
-                            self._pending_workflow_auto_release = False
-                            self._workflow_auto_release["enabled"] = False
-                            self._workflow_auto_release["state"] = "idle"
-                            self._workflow_auto_release["task_id"] = ""
-                            self._workflow_auto_release["error"] = ""
-                            self._workflow_auto_release["message"] = ""
-                            raise ValueError(
-                                "当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载"
-                            )
-                        self._pending_workflow_auto_release = False
-                        self._workflow_auto_release["enabled"] = True
-                        self._workflow_auto_release["state"] = "armed"
-                        self._workflow_auto_release["task_id"] = ""
-                        self._workflow_auto_release["error"] = ""
-                        self._workflow_auto_release["message"] = ""
-                        self._workflow_auto_release["exported"] = []
-                        self._workflow_auto_release["updated_at"] = time.time()
-                    elif str(self._workflow_auto_release.get("state") or "") in (
-                        "failed",
-                        "skipped",
-                    ):
-                        self._pending_workflow_auto_release = False
-                        self._workflow_auto_release["state"] = "idle"
-                        self._workflow_auto_release["task_id"] = ""
-                        self._workflow_auto_release["error"] = ""
-                        self._workflow_auto_release["message"] = ""
-                        self._workflow_auto_release["exported"] = []
-                        self._workflow_auto_release["updated_at"] = time.time()
+                prev_auto_release = copy.deepcopy(self._workflow_auto_release)
+                prev_pending_auto_release = self._pending_workflow_auto_release
+                arm_requested = want_auto_release or bool(
+                    self._workflow_auto_release.get("enabled")
+                )
+                if arm_requested:
+                    if not self.drive.available():
+                        raise ValueError(
+                            "当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载"
+                        )
+                    self._pending_workflow_auto_release = False
+                    self._workflow_auto_release["enabled"] = True
+                    self._workflow_auto_release["state"] = "armed"
+                    self._workflow_auto_release["task_id"] = ""
+                    self._workflow_auto_release["error"] = ""
+                    self._workflow_auto_release["message"] = ""
+                    self._workflow_auto_release["exported"] = []
+                    self._workflow_auto_release["updated_at"] = time.time()
+                elif str(self._workflow_auto_release.get("state") or "") in (
+                    "failed",
+                    "skipped",
+                ):
+                    self._pending_workflow_auto_release = False
+                    self._workflow_auto_release["state"] = "idle"
+                    self._workflow_auto_release["task_id"] = ""
+                    self._workflow_auto_release["error"] = ""
+                    self._workflow_auto_release["message"] = ""
+                    self._workflow_auto_release["exported"] = []
+                    self._workflow_auto_release["updated_at"] = time.time()
                 token_secret = getattr(req, "hf_token", "") or ""
 
                 def _execute(task):
@@ -2346,6 +2692,7 @@ class ColabOneRuntime:
                         ):
                             self._workflow_auto_release["task_id"] = task.id
                     try:
+                        self._stop_live_for_exclusive_gpu("comfyui_run", task=task)
                         result = self.comfy.run_workflow(task, req)
                     except ColabOneCancelledError:
                         with self.lock:
@@ -2475,6 +2822,14 @@ class ColabOneRuntime:
         if cached is not None:
             return _finalize_cache_hit(cached)
 
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+            if self.busy():
+                raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+        self._stop_live_for_exclusive_gpu("comfyui_tts_preview")
+
         with self._comfy_lifecycle_lock:
             self._refresh_comfy_queue_if_needed()
             cached = _lookup_cached_preview(resolved["preview_id"])
@@ -2488,6 +2843,9 @@ class ColabOneRuntime:
 
                 def _execute(task):
                     try:
+                        self._stop_live_for_exclusive_gpu(
+                            "comfyui_tts_preview", task=task
+                        )
                         return self.comfy.run_tts_preview(task, req)
                     except ColabOneCancelledError:
                         raise
@@ -2541,19 +2899,586 @@ class ColabOneRuntime:
                     "failed": 0,
                     "ready_items": [],
                 }
+        self._stop_live_for_exclusive_gpu("comfyui_tts_preview_prefetch")
         return self.comfy.prefetch_tts_previews(request_data)
 
     def cancel_comfyui_tts_preview_prefetch(self) -> dict:
         return self.comfy.cancel_tts_preview_prefetch()
 
+    def _stop_comfy_process_locked(self) -> None:
+        """Stop offline ComfyUI (:8188) while keeping the canvas proxy/tunnel alive.
+
+        Caller must hold self._comfy_lifecycle_lock.
+        """
+        from server.comfyui import _terminate_process_group
+
+        def _is_task_running(task) -> bool:
+            t_lock = getattr(task, "lock", None)
+            if t_lock is not None:
+                with t_lock:
+                    return task.state == "running"
+            return task.state == "running"
+
+        def _kill_proc() -> None:
+            with self.comfy.lock:
+                proc = self.comfy.proc
+            try:
+                if proc is not None:
+                    _terminate_process_group(proc, timeout=5.0)
+            finally:
+                with self.comfy.lock:
+                    self.comfy.proc = None
+                    self.comfy.state = "stopped"
+                    self.comfy.error = ""
+                    self.comfy._queue_cache = (0, 0)
+                    self.comfy._queue_checked_at = -10.0
+                    self.comfy._loaded_pack_signature = ""
+                    self.comfy._native_active_pack_id = ""
+
+        with self.lock:
+            comfy_tasks = [
+                t
+                for t in self.tasks.values()
+                if _is_task_running(t)
+                and t.kind
+                in (
+                    "comfyui_start",
+                    "comfyui_run",
+                    "comfyui_tts_preview",
+                    "live_build_pack",
+                )
+            ]
+        for t in comfy_tasks:
+            try:
+                t.request_cancel()
+            except Exception:
+                pass
+        if callable(
+            getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+        ):
+            self.comfy.tts.cancel_prefetch_and_release_warm_worker("live_studio_start")
+        _kill_proc()
+        deadline = time.monotonic() + 10
+        while any(_is_task_running(t) for t in comfy_tasks):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        if comfy_tasks and (self.comfy.is_running() or self.comfy.proc is not None):
+            _kill_proc()
+        if any(_is_task_running(t) for t in comfy_tasks):
+            raise ColabOneConflictError("ComfyUI 任务仍在停止，请稍后重试")
+
+    def _stop_comfy_process_only(self) -> None:
+        """Stop offline ComfyUI (:8188) while keeping the canvas proxy/tunnel alive."""
+        with self._comfy_lifecycle_lock:
+            self._stop_comfy_process_locked()
+
+    @staticmethod
+    def _extract_live_secrets(payload: dict) -> list[str]:
+        nested = payload.get("config") or payload.get("session") or {}
+        sources = [
+            payload,
+            nested if isinstance(nested, dict) else {},
+            payload.get("external_llm") if isinstance(payload.get("external_llm"), dict) else {},
+            nested.get("external_llm")
+            if isinstance(nested, dict) and isinstance(nested.get("external_llm"), dict)
+            else {},
+            payload.get("canvas_config") if isinstance(payload.get("canvas_config"), dict) else {},
+        ]
+        secrets_out: list[str] = []
+        for src in sources:
+            for key in (
+                "api_key",
+                "external_llm_api_key",
+                "hf_token",
+                "tunnel_token",
+                "rtmp_url",
+            ):
+                val = src.get(key)
+                if isinstance(val, str) and val.strip():
+                    secrets_out.append(val)
+        return secrets_out
+
+    @staticmethod
+    def _format_live_vram_error(vram: dict) -> str:
+        if not isinstance(vram, dict):
+            return "当前 GPU 显存不足以启动实时演播"
+        req_mib = int(vram.get("total_required_mib") or 0)
+        avail_mib = int(vram.get("available_mib") or 0)
+        warnings = [
+            str(w).strip() for w in (vram.get("warnings") or []) if str(w).strip()
+        ]
+        recs = [
+            str(r).strip()
+            for r in (vram.get("recommendations") or [])
+            if str(r).strip()
+        ]
+        explicit = str(vram.get("reason") or vram.get("message") or "").strip()
+        parts: list[str] = []
+        if explicit:
+            parts.append(explicit)
+        elif req_mib > 0 or avail_mib > 0:
+            parts.append(f"显存预检未通过（需 {req_mib} MiB，可用 {avail_mib} MiB）")
+        else:
+            parts.append("当前 GPU 显存不足以启动实时演播")
+        if warnings:
+            parts.append("；".join(warnings))
+        if recs:
+            parts.append("建议：" + "；".join(recs))
+        return "。".join(p.rstrip("。；;") for p in parts if p)
+
+    def live_check_vram(self, config: dict) -> dict:
+        payload = (
+            config.model_dump()
+            if hasattr(config, "model_dump")
+            else dict(config or {})
+        )
+        loaded_vram = self._loaded_model_vram_mib()
+        return self.live.check_vram(
+            payload, self.gpu_info(), loaded_model_vram_mib=loaded_vram
+        )
+
+    def start_live_studio(self, config: dict) -> dict:
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+            if self.busy():
+                raise ColabOneConflictError("请先等待当前任务完成或停止后再启动实时演播")
+        payload = (
+            config.model_dump()
+            if hasattr(config, "model_dump")
+            else dict(config or {})
+        )
+        cfg_view = (
+            payload.get("config")
+            if isinstance(payload.get("config"), dict)
+            else (
+                payload.get("session")
+                if isinstance(payload.get("session"), dict)
+                else payload
+            )
+        )
+        raw_secrets = self._extract_live_secrets(payload)
+        llm_mode = str(cfg_view.get("llm_mode") or "local_gguf").strip().lower()
+        canvas_config = payload.get("canvas_config")
+        try:
+            # 1. Fail-fast VRAM preflight BEFORE stopping any running workload.
+            gpu = self.gpu_info()
+            loaded_vram_mib = self._loaded_model_vram_mib()
+            need_unload_llm = False
+            if llm_mode == "local_gguf":
+                vram = self.live.check_vram(
+                    payload, gpu, loaded_model_vram_mib=loaded_vram_mib
+                )
+                if not vram.get("ok"):
+                    raise ValueError(self._format_live_vram_error(vram))
+            else:
+                vram_solo = self.live.check_vram(
+                    payload, gpu, loaded_model_vram_mib=0
+                )
+                if not vram_solo.get("ok"):
+                    raise ValueError(self._format_live_vram_error(vram_solo))
+                if self.loaded or self.proc:
+                    vram_with_llm = self.live.check_vram(
+                        payload, gpu, loaded_model_vram_mib=loaded_vram_mib
+                    )
+                    if not (
+                        vram_with_llm.get("ok")
+                        and vram_with_llm.get("can_co_locate_llm")
+                    ):
+                        need_unload_llm = True
+
+            # 2. Stop offline ComfyUI (process + tasks + warm TTS) BEFORE acquiring
+            #    _live_lifecycle_lock so _live_lifecycle_lock and _comfy_lifecycle_lock
+            #    are never held simultaneously.
+            with self.lock:
+                has_comfy_task = any(
+                    t.state == "running"
+                    and t.kind
+                    in (
+                        "comfyui_start",
+                        "comfyui_run",
+                        "comfyui_tts_preview",
+                        "live_build_pack",
+                    )
+                    for t in self.tasks.values()
+                )
+            if (
+                self.comfy.is_running()
+                or self.comfy.proc is not None
+                or has_comfy_task
+            ):
+                self._stop_comfy_process_only()
+            elif callable(
+                getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+            ):
+                self.comfy.tts.cancel_prefetch_and_release_warm_worker(
+                    "live_studio_start"
+                )
+
+            # 3. Acquire _live_lifecycle_lock to re-evaluate VRAM/LLM state and start Live Studio.
+            with self._live_lifecycle_lock:
+                with self.lock:
+                    if self.quiescing or self.stopping.is_set():
+                        raise ColabOneConflictError("实例正在准备释放")
+                    if self.busy():
+                        raise ColabOneConflictError(
+                            "请先等待当前任务完成或停止后再启动实时演播"
+                        )
+                    llm_active = bool(self.loaded or self.proc)
+                gpu_now = self.gpu_info()
+                loaded_vram_mib = self._loaded_model_vram_mib()
+                need_unload_llm = False
+                if llm_mode == "local_gguf":
+                    vram_now = self.live.check_vram(
+                        payload, gpu_now, loaded_model_vram_mib=loaded_vram_mib
+                    )
+                    if not vram_now.get("ok"):
+                        raise ValueError(self._format_live_vram_error(vram_now))
+                else:
+                    vram_solo_now = self.live.check_vram(
+                        payload, gpu_now, loaded_model_vram_mib=0
+                    )
+                    if not vram_solo_now.get("ok"):
+                        raise ValueError(self._format_live_vram_error(vram_solo_now))
+                    if llm_active:
+                        vram_with_llm_now = self.live.check_vram(
+                            payload, gpu_now, loaded_model_vram_mib=loaded_vram_mib
+                        )
+                        if not (
+                            vram_with_llm_now.get("ok")
+                            and vram_with_llm_now.get("can_co_locate_llm")
+                        ):
+                            need_unload_llm = True
+                if need_unload_llm:
+                    self._stop_engine()
+                    loaded_vram_mib = 0
+                    gpu_now = self.gpu_info()
+
+                started_canvas_here = False
+                if (
+                    isinstance(canvas_config, dict)
+                    and canvas_config
+                    and not self.comfy.canvas.enabled
+                ):
+                    self.comfy.canvas.start(canvas_config)
+                    started_canvas_here = True
+
+                try:
+                    result = self.live.start(
+                        payload,
+                        gpu_info=gpu_now,
+                        loaded_model_vram_mib=loaded_vram_mib,
+                        on_activity=self.touch,
+                    )
+                except Exception:
+                    if started_canvas_here:
+                        try:
+                            self.comfy.canvas.stop()
+                        except Exception:
+                            pass
+                    raise
+            self.touch()
+            return result
+        except ColabOneConflictError:
+            raise
+        except ValueError as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
+        except KeyError:
+            raise
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            if scrubbed != raw_msg:
+                raise RuntimeError(scrubbed) from None
+            raise
+
+    def stop_live_studio(self) -> dict:
+        with self._live_lifecycle_lock:
+            result = self.live.stop()
+        with self.lock:
+            self.last_active = time.time()
+        return result
+
+    def live_session_token(self) -> dict:
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+        self.touch()
+        canvas_base_url = self.comfy.canvas.public_origin()
+        return self.live.issue_session_token(canvas_base_url=canvas_base_url)
+
+    def live_test_external_llm(self, config: dict) -> dict:
+        self.touch()
+        payload = (
+            config.model_dump()
+            if hasattr(config, "model_dump")
+            else dict(config or {})
+        )
+        raw_secrets = self._extract_live_secrets(payload)
+        try:
+            return self.live.test_external_llm(payload)
+        except ValueError as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            if scrubbed != raw_msg:
+                raise RuntimeError(scrubbed) from None
+            raise
+
+    def save_live_avatar(self, payload: dict) -> dict:
+        self.touch()
+        data = (
+            payload.model_dump()
+            if hasattr(payload, "model_dump")
+            else dict(payload or {})
+        )
+        saved = self.live.save_avatar(data)
+        self._mark_dirty("live-avatars")
+        return saved
+
+    def _forget_reconciled_tombstone(self, kind: str, item_id: str) -> None:
+        with self.lock:
+            self._reconciled_tombstones = {
+                entry
+                for entry in self._reconciled_tombstones
+                if not (entry[0] == kind and entry[1] == item_id)
+            }
+
+    def delete_live_avatar(self, avatar_id: str) -> None:
+        self.touch()
+        self.live.delete_avatar(avatar_id)
+        self._forget_reconciled_tombstone("live_avatar", avatar_id)
+        self.drive.trash_live_avatar(avatar_id)
+        self._mark_dirty("live-avatars")
+
+    def upload_live_avatar_clip(self, avatar_id: str, payload: dict) -> dict:
+        self.touch()
+        data = (
+            payload.model_dump()
+            if hasattr(payload, "model_dump")
+            else dict(payload or {})
+        )
+        result = self.live.upload_avatar_clip(avatar_id, data)
+        self._mark_dirty("live-avatars")
+        return result
+
+    def upload_live_driving_motion(self, payload: dict) -> dict:
+        self.touch()
+        data = (
+            payload.model_dump()
+            if hasattr(payload, "model_dump")
+            else dict(payload or {})
+        )
+        result = self.live.upload_driving_motion(data)
+        self._mark_dirty("live-driving-motions")
+        return result
+
+    def delete_live_driving_motion(self, motion_id: str) -> None:
+        self.touch()
+        self.live.delete_driving_motion(motion_id)
+        self._forget_reconciled_tombstone("live_driving_motion", motion_id)
+        self.drive.trash_live_driving_motion(motion_id)
+        self._mark_dirty("live-driving-motions")
+
+    def build_live_avatar_pack(self, payload: dict) -> dict:
+        data = (
+            payload.model_dump()
+            if hasattr(payload, "model_dump")
+            else dict(payload or {})
+        )
+        raw_secrets = self._extract_live_secrets(data)
+        avatar_id = str(data.get("avatar_id") or "")
+
+        self._refresh_comfy_queue_if_needed()
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+            if self.busy():
+                raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+        self._stop_live_for_exclusive_gpu("live_build_pack")
+
+        def _execute(task):
+            def _comfy_clip_runner(
+                *,
+                action_id: str,
+                action_meta: dict | None = None,
+                avatar_dir: Path | None = None,
+                portrait_path: Path | None = None,
+                target_clip_path: Path | None = None,
+                resolution: str = "",
+                fps: int | None = None,
+                task=task,
+                hf_token: str = "",
+                request=None,
+                **_extra,
+            ):
+                active_task = task
+                if active_task is not None and callable(
+                    getattr(active_task, "check", None)
+                ):
+                    active_task.check()
+                eff_resolution = (
+                    str(resolution or getattr(request, "resolution", "") or "720x1280")
+                )
+                eff_fps = int(
+                    fps if fps is not None else (getattr(request, "fps", None) or 25)
+                )
+                eff_hf_token = str(
+                    hf_token or getattr(request, "hf_token", "") or ""
+                )
+                if portrait_path is not None:
+                    p_path = Path(portrait_path)
+                    if p_path.is_symlink() or not p_path.is_file():
+                        raise ValueError("离线构建主播动作包需要先上传有效的人像图片")
+                else:
+                    raise ValueError("离线构建主播动作包需要先上传有效的人像图片")
+
+                direct_gen = getattr(self.comfy, "generate_live_action_clip", None)
+                if callable(direct_gen):
+                    return direct_gen(
+                        action_id=action_id,
+                        action_meta=action_meta or {},
+                        avatar_dir=avatar_dir,
+                        portrait_path=p_path,
+                        target_clip_path=target_clip_path,
+                        resolution=eff_resolution,
+                        fps=eff_fps,
+                        task=active_task,
+                        hf_token=eff_hf_token,
+                    )
+
+                wf_id = ""
+                for candidate_wf_id in ("live-avatar-motion", "live_avatar_motion"):
+                    try:
+                        if self.comfy.store.get_workflow(candidate_wf_id) is not None:
+                            wf_id = candidate_wf_id
+                            break
+                    except KeyError:
+                        continue
+                if not wf_id:
+                    raise RuntimeError(
+                        "尚未配置离线动作生成工作流（live-avatar-motion），无法通过 ComfyUI 自动生成动作片段；"
+                        "请先在 ComfyUI 导入动作生成工作流，或直接上传录制好的 MP4 动作片段"
+                    )
+
+                import base64
+
+                portrait_b64 = base64.b64encode(p_path.read_bytes()).decode("ascii")
+                saved_in = self.comfy.store.save_input(p_path.name, portrait_b64)
+                meta_dict = action_meta or {}
+                run_req = WorkflowRunRequest(
+                    workflow_id=wf_id,
+                    overrides={
+                        "action_id": action_id,
+                        "prompt": str(
+                            meta_dict.get("prompt_hint")
+                            or meta_dict.get("label")
+                            or action_id
+                        ),
+                        "resolution": eff_resolution,
+                        "fps": eff_fps,
+                    },
+                    inputs={"portrait": saved_in["id"]},
+                    hf_token=eff_hf_token,
+                )
+                wf_outputs = self.comfy.run_workflow(active_task, run_req)
+                out_list = (
+                    wf_outputs
+                    if isinstance(wf_outputs, list)
+                    else (
+                        wf_outputs.get("outputs", [])
+                        if isinstance(wf_outputs, dict)
+                        else []
+                    )
+                )
+                for rec in out_list:
+                    if not isinstance(rec, dict) or not rec.get("id"):
+                        continue
+                    ext = str(rec.get("extension") or "").lstrip(".").lower()
+                    if ext not in ("mp4", "webm", "mov", "mkv"):
+                        continue
+                    out_path = self.comfy.store.outputs_dir / f"{rec['id']}.{ext}"
+                    if out_path.is_file() and not out_path.is_symlink():
+                        if target_clip_path is not None:
+                            t_path = Path(target_clip_path)
+                            if t_path.is_symlink():
+                                raise ValueError("动作片段输出路径不能是符号链接")
+                            t_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(out_path, t_path)
+                            return {
+                                "path": t_path,
+                                "duration_seconds": float(
+                                    meta_dict.get("default_duration_seconds") or 4.0
+                                ),
+                            }
+                        return {
+                            "path": out_path,
+                            "duration_seconds": float(
+                                meta_dict.get("default_duration_seconds") or 4.0
+                            ),
+                        }
+                raise RuntimeError(
+                    f"离线动作生成工作流 {wf_id} 未产出可用的视频动作片段（{action_id}）"
+                )
+
+            try:
+                self._stop_live_for_exclusive_gpu("live_build_pack", task=task)
+                task.check()
+                result = self.live.build_avatar_pack(
+                    task, data, comfy_runner=_comfy_clip_runner
+                )
+                self._mark_dirty("live-avatars")
+                return result
+            except ColabOneCancelledError:
+                raise
+            except ValueError as exc:
+                raw_msg = str(exc) or type(exc).__name__
+                scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+                if scrubbed != raw_msg:
+                    raise ValueError(scrubbed) from None
+                raise
+            except Exception as exc:
+                raw_msg = str(exc) or type(exc).__name__
+                scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+                if scrubbed != raw_msg:
+                    raise RuntimeError(scrubbed) from None
+                raise
+
+        return self.submit("live_build_pack", avatar_id, _execute)
+
     def delete(self, model_id):
         self._refresh_comfy_queue_if_needed()
+        trash_dir: Path | None = None
         with self.lock:
             if self.busy() or self.loaded == model_id:
                 raise ColabOneConflictError("请先停止任务并卸载此模型")
             # model_id comes from the validated catalog; callers cannot choose a path.
             m = self.models[model_id]
-            shutil.rmtree(self.models_dir / m.id, ignore_errors=True)
+            target = self.models_dir / m.id
+            if target.is_symlink():
+                target.unlink(missing_ok=True)
+            elif target.exists():
+                candidate = (
+                    self.models_dir / f".deleting-{m.id}-{uuid.uuid4().hex[:8]}"
+                )
+                try:
+                    os.replace(target, candidate)
+                    trash_dir = candidate
+                except FileNotFoundError:
+                    trash_dir = None
+        if trash_dir is not None:
+            shutil.rmtree(trash_dir, ignore_errors=True)
 
     def connect_drive(self) -> dict:
         with self.sync_lock:
@@ -2563,12 +3488,12 @@ class ColabOneRuntime:
                 and self.drive_restored
                 and (not is_drivefs or self.drive.mode == "colab_drivefs")
             ):
-                if self._dirty_seq:
+                if self._dirty_seq or self._has_pending_drive_tombstones():
                     self._sync_to_drive()
                 return self.drive.status(len(self._dirty_seq))
             self.drive.connect()
             restored = self._restore_from_drive()
-            if restored and self._dirty_seq:
+            if restored and (self._dirty_seq or self._has_pending_drive_tombstones()):
                 self._sync_to_drive()
             return self.drive.status(len(self._dirty_seq))
 
@@ -2648,7 +3573,8 @@ class ColabOneRuntime:
                         self.models[m.id] = m
                         local_changed = True
                     elif (
-                        m.api_id
+                        m.id not in self._local_api_id_overrides
+                        and m.api_id
                         and m.files == self.models[m.id].files
                         and getattr(m, "kind", "chat")
                         == getattr(self.models[m.id], "kind", "chat")
@@ -2667,6 +3593,7 @@ class ColabOneRuntime:
                 workflows_stage = stage_dir / "workflows"
                 if workflows_stage.is_dir():
                     dst_workflows = self.root / "workflows"
+                    local_wf_trash = dst_workflows / ".trash"
                     if not dst_workflows.is_symlink():
                         dst_workflows.mkdir(parents=True, exist_ok=True)
                         for wf_path in workflows_stage.glob("*.json"):
@@ -2688,6 +3615,13 @@ class ColabOneRuntime:
                                 dst_wf = dst_workflows / wf_path.name
                                 if dst_wf.is_symlink():
                                     continue
+                                if (
+                                    not dst_wf.exists()
+                                    and local_wf_trash.is_dir()
+                                    and not local_wf_trash.is_symlink()
+                                    and (local_wf_trash / wf_path.name).exists()
+                                ):
+                                    continue
                                 if dst_wf.is_file():
                                     local_data = json.loads(
                                         dst_wf.read_text(encoding="utf-8")
@@ -2702,6 +3636,7 @@ class ColabOneRuntime:
                 outputs_stage = stage_dir / "comfyui-outputs"
                 if outputs_stage.is_dir():
                     dst_outputs = self.root / "comfyui-outputs"
+                    local_out_trash = dst_outputs / ".trash"
                     if not dst_outputs.is_symlink():
                         dst_outputs.mkdir(parents=True, exist_ok=True)
                         for meta_path in outputs_stage.glob("*.json"):
@@ -2721,6 +3656,15 @@ class ColabOneRuntime:
                                     or asset_src.stat().st_size != rec["size"]
                                 ):
                                     continue
+                                if (
+                                    local_out_trash.is_dir()
+                                    and not local_out_trash.is_symlink()
+                                    and (
+                                        (local_out_trash / meta_path.name).exists()
+                                        or (local_out_trash / asset_src.name).exists()
+                                    )
+                                ):
+                                    continue
                                 dst_asset = dst_outputs / asset_src.name
                                 dst_meta = dst_outputs / meta_path.name
                                 if not dst_asset.exists() and not dst_asset.is_symlink():
@@ -2736,19 +3680,430 @@ class ColabOneRuntime:
                             except (OSError, ValueError, KeyError):
                                 continue
                 self.comfy.store.reload_from_disk()
+            self._merge_live_avatars_stage(stage_dir / "live-avatars")
+            self._merge_live_driving_motions_stage(stage_dir / "live-driving-motions")
             self.drive_restored = True
             return True
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
+
+    def _merge_live_avatars_stage(self, avatars_stage: Path) -> None:
+        if not avatars_stage.is_dir() or avatars_stage.is_symlink():
+            return
+        dst_root = self.root / "live-avatars"
+        if dst_root.is_symlink():
+            return
+        dst_root.mkdir(parents=True, exist_ok=True)
+        local_trash = dst_root / ".trash"
+
+        def _is_skip(name: str) -> bool:
+            return name.startswith(".") or ".part" in name or ".tmp" in name
+
+        def _copy_if_newer_file(src_file: Path, dst_file: Path) -> None:
+            if src_file.is_symlink() or not src_file.is_file() or dst_file.is_symlink():
+                return
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            if dst_file.is_file():
+                try:
+                    if dst_file.stat().st_mtime >= src_file.stat().st_mtime:
+                        return
+                except OSError:
+                    pass
+            tmp = dst_file.parent / f".co-restore-{uuid.uuid4().hex[:8]}.tmp"
+            try:
+                shutil.copy2(src_file, tmp)
+                os.replace(tmp, dst_file)
+            except OSError:
+                tmp.unlink(missing_ok=True)
+
+        def _merge_asset_files(
+            src_dir: Path, dst_dir: Path, depth: int = 5, *, is_avatar_root: bool = False
+        ) -> None:
+            if depth < 0 or src_dir.is_symlink() or dst_dir.is_symlink():
+                return
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for child in src_dir.iterdir():
+                if _is_skip(child.name) or child.is_symlink():
+                    continue
+                if is_avatar_root and child.name in ("manifest.json", "assets_meta.json"):
+                    continue
+                target = dst_dir / child.name
+                if child.is_dir():
+                    if depth > 0:
+                        _merge_asset_files(child, target, depth - 1)
+                elif child.is_file():
+                    _copy_if_newer_file(child, target)
+
+        with self._live_lifecycle_lock:
+            for item in avatars_stage.iterdir():
+                if _is_skip(item.name) or item.is_symlink() or not item.is_dir():
+                    continue
+                if not _LIVE_ID_RE.fullmatch(item.name):
+                    continue
+                if local_trash.is_dir() and (local_trash / item.name).exists():
+                    continue
+
+                # Validate staged manifest.json before touching local avatar files.
+                staged_manifest_path = item / "manifest.json"
+                if (
+                    staged_manifest_path.is_symlink()
+                    or not staged_manifest_path.is_file()
+                ):
+                    continue
+                try:
+                    raw_manifest = json.loads(
+                        staged_manifest_path.read_text(encoding="utf-8")
+                    )
+                    validated_manifest = ColabOneLiveAvatarManifest.model_validate(
+                        raw_manifest
+                    ).model_dump()
+                except (OSError, ValueError, TypeError):
+                    continue
+                if validated_manifest.get("id") != item.name:
+                    continue
+
+                with self.live.lock:
+                    if local_trash.is_dir() and (local_trash / item.name).exists():
+                        continue
+                    dst_dir = dst_root / item.name
+                    if dst_dir.is_symlink():
+                        continue
+                    dst_dir.mkdir(parents=True, exist_ok=True)
+
+                    # 1. Copy binary/media assets first so manifest never references missing files.
+                    _merge_asset_files(item, dst_dir, is_avatar_root=True)
+
+                    # 2. Merge assets_meta.json per-entry by entry updated_at.
+                    staged_meta_path = item / "assets_meta.json"
+                    dst_meta_path = dst_dir / "assets_meta.json"
+                    if (
+                        staged_meta_path.is_file()
+                        and not staged_meta_path.is_symlink()
+                        and not dst_meta_path.is_symlink()
+                    ):
+                        try:
+                            remote_meta = json.loads(
+                                staged_meta_path.read_text(encoding="utf-8")
+                            )
+                        except (OSError, ValueError):
+                            remote_meta = None
+                        if isinstance(remote_meta, dict):
+                            local_meta: dict = {}
+                            if dst_meta_path.is_file():
+                                try:
+                                    parsed_local = json.loads(
+                                        dst_meta_path.read_text(encoding="utf-8")
+                                    )
+                                    if isinstance(parsed_local, dict):
+                                        local_meta = dict(parsed_local)
+                                except (OSError, ValueError):
+                                    local_meta = {}
+                            merged_meta = dict(local_meta)
+                            meta_changed = not dst_meta_path.is_file()
+                            for rel_key, remote_entry in remote_meta.items():
+                                if not isinstance(rel_key, str) or not isinstance(
+                                    remote_entry, dict
+                                ):
+                                    continue
+                                try:
+                                    safe_rel = validate_colabone_live_relative_path(
+                                        rel_key, "素材路径"
+                                    )
+                                except ValueError:
+                                    continue
+                                if not safe_rel:
+                                    continue
+                                existing_entry = merged_meta.get(safe_rel)
+                                if not isinstance(existing_entry, dict):
+                                    merged_meta[safe_rel] = remote_entry
+                                    meta_changed = True
+                                else:
+                                    try:
+                                        local_ts = float(
+                                            existing_entry.get("updated_at") or 0.0
+                                        )
+                                    except (ValueError, TypeError):
+                                        local_ts = 0.0
+                                    try:
+                                        remote_ts = float(
+                                            remote_entry.get("updated_at") or 0.0
+                                        )
+                                    except (ValueError, TypeError):
+                                        remote_ts = 0.0
+                                    if remote_ts > local_ts:
+                                        merged_meta[safe_rel] = remote_entry
+                                        meta_changed = True
+                            if meta_changed:
+                                try:
+                                    atomic_json(dst_meta_path, merged_meta)
+                                except OSError:
+                                    pass
+
+                    # 3. Atomically write validated manifest.json if missing or newer.
+                    dst_manifest_path = dst_dir / "manifest.json"
+                    if not dst_manifest_path.is_symlink():
+                        should_write_manifest = True
+                        if dst_manifest_path.is_file():
+                            try:
+                                local_manifest = json.loads(
+                                    dst_manifest_path.read_text(encoding="utf-8")
+                                )
+                                if isinstance(local_manifest, dict) and float(
+                                    local_manifest.get("updated_at") or 0.0
+                                ) >= float(validated_manifest.get("updated_at") or 0.0):
+                                    should_write_manifest = False
+                            except (OSError, ValueError, TypeError):
+                                should_write_manifest = True
+                        if should_write_manifest:
+                            try:
+                                atomic_json(dst_manifest_path, validated_manifest)
+                            except OSError:
+                                pass
+
+            reload_fn = getattr(self.live, "reload_from_disk", None) or getattr(
+                self.live, "reload_avatars", None
+            )
+            if callable(reload_fn):
+                try:
+                    reload_fn()
+                except Exception:
+                    pass
+
+    def _merge_live_driving_motions_stage(self, motions_stage: Path) -> None:
+        if not motions_stage.is_dir() or motions_stage.is_symlink():
+            return
+        dst_root = self.root / "live-driving-motions"
+        if dst_root.is_symlink():
+            return
+        dst_root.mkdir(parents=True, exist_ok=True)
+        local_trash = dst_root / ".trash"
+
+        def _is_skip(name: str) -> bool:
+            return name.startswith(".") or ".part" in name or ".tmp" in name
+
+        def _copy_if_newer_file(src_file: Path, dst_file: Path) -> None:
+            if src_file.is_symlink() or not src_file.is_file() or dst_file.is_symlink():
+                return
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            if dst_file.is_file():
+                try:
+                    if dst_file.stat().st_mtime >= src_file.stat().st_mtime:
+                        return
+                except OSError:
+                    pass
+            tmp = dst_file.parent / f".co-restore-{uuid.uuid4().hex[:8]}.tmp"
+            try:
+                shutil.copy2(src_file, tmp)
+                os.replace(tmp, dst_file)
+            except OSError:
+                tmp.unlink(missing_ok=True)
+
+        with self._live_lifecycle_lock:
+            for item in motions_stage.iterdir():
+                if _is_skip(item.name) or item.is_symlink() or not item.is_dir():
+                    continue
+                if not _LIVE_ID_RE.fullmatch(item.name):
+                    continue
+                if local_trash.is_dir() and (local_trash / item.name).exists():
+                    continue
+
+                staged_meta_path = item / "meta.json"
+                if staged_meta_path.is_symlink() or not staged_meta_path.is_file():
+                    continue
+                try:
+                    raw_meta = json.loads(staged_meta_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(raw_meta, dict) or raw_meta.get("id") != item.name:
+                    continue
+                label = str(raw_meta.get("label") or "").strip()
+                if not label:
+                    continue
+                try:
+                    clip_rel = validate_colabone_live_relative_path(
+                        str(raw_meta.get("clip_path") or ""), "驱动视频路径"
+                    )
+                    bgm_rel = validate_colabone_live_relative_path(
+                        str(raw_meta.get("bgm_path") or ""), "驱动背景音乐路径"
+                    )
+                except ValueError:
+                    continue
+                if not clip_rel:
+                    continue
+                staged_clip = item / clip_rel
+                if staged_clip.is_symlink() or not staged_clip.is_file():
+                    continue
+                raw_meta["clip_path"] = clip_rel
+                raw_meta["bgm_path"] = bgm_rel
+
+                with self.live.lock:
+                    if local_trash.is_dir() and (local_trash / item.name).exists():
+                        continue
+                    dst_dir = dst_root / item.name
+                    if dst_dir.is_symlink():
+                        continue
+                    dst_dir.mkdir(parents=True, exist_ok=True)
+                    for child in item.iterdir():
+                        if _is_skip(child.name) or child.is_symlink():
+                            continue
+                        if child.name == "meta.json":
+                            continue
+                        if child.is_file():
+                            _copy_if_newer_file(child, dst_dir / child.name)
+                    dst_meta_path = dst_dir / "meta.json"
+                    if not dst_meta_path.is_symlink():
+                        should_write_meta = True
+                        if dst_meta_path.is_file():
+                            try:
+                                local_meta = json.loads(
+                                    dst_meta_path.read_text(encoding="utf-8")
+                                )
+                                if isinstance(local_meta, dict) and float(
+                                    local_meta.get("updated_at") or 0.0
+                                ) >= float(raw_meta.get("updated_at") or 0.0):
+                                    should_write_meta = False
+                            except (OSError, ValueError, TypeError):
+                                should_write_meta = True
+                        if should_write_meta:
+                            try:
+                                atomic_json(dst_meta_path, raw_meta)
+                            except OSError:
+                                pass
+
+    def _collect_pending_drive_tombstones(self) -> list[tuple[str, str, str, int]]:
+        """Collect unreconciled local .trash/ tombstones as (kind, item_id, extra, mtime_ns)."""
+        with self.lock:
+            reconciled = set(self._reconciled_tombstones)
+        pending: list[tuple[str, str, str, int]] = []
+
+        wf_dir = self.root / "workflows"
+        wf_trash = wf_dir / ".trash"
+        if wf_trash.is_dir() and not wf_trash.is_symlink():
+            for p in wf_trash.glob("*.json"):
+                try:
+                    if p.is_symlink() or not p.is_file():
+                        continue
+                    wid = p.stem
+                    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", wid):
+                        continue
+                    if (wf_dir / p.name).exists():
+                        continue
+                    mtime_ns = p.stat().st_mtime_ns
+                    if ("workflow", wid, mtime_ns) not in reconciled:
+                        pending.append(("workflow", wid, "", mtime_ns))
+                except OSError:
+                    continue
+
+        out_dir = self.root / "comfyui-outputs"
+        out_trash = out_dir / ".trash"
+        if out_trash.is_dir() and not out_trash.is_symlink():
+            grouped_exts: dict[str, tuple[str, int]] = {}
+            for p in out_trash.iterdir():
+                try:
+                    if p.is_symlink() or not p.is_file():
+                        continue
+                    name = p.name
+                    if "." not in name:
+                        continue
+                    oid, ext = name.rsplit(".", 1)
+                    ext = ext.lower()
+                    if not re.fullmatch(r"[a-f0-9]{32}", oid) or not re.fullmatch(
+                        r"[a-z0-9]{1,10}", ext
+                    ):
+                        continue
+                    if (out_dir / f"{oid}.json").exists():
+                        continue
+                    mtime_ns = p.stat().st_mtime_ns
+                    prev = grouped_exts.get(oid)
+                    if prev is None:
+                        grouped_exts[oid] = (ext, mtime_ns)
+                    elif prev[0] == "json" and ext != "json":
+                        grouped_exts[oid] = (ext, max(prev[1], mtime_ns))
+                    else:
+                        grouped_exts[oid] = (prev[0], max(prev[1], mtime_ns))
+                except OSError:
+                    continue
+            for oid, (ext, mtime_ns) in grouped_exts.items():
+                if ext == "json":
+                    try:
+                        meta_raw = json.loads(
+                            (out_trash / f"{oid}.json").read_text(encoding="utf-8")
+                        )
+                        if isinstance(meta_raw, dict):
+                            cand_ext = str(meta_raw.get("extension") or "").lstrip(".").lower()
+                            if re.fullmatch(r"[a-z0-9]{1,10}", cand_ext):
+                                ext = cand_ext
+                    except (OSError, ValueError):
+                        pass
+                if ("comfy_output", oid, mtime_ns) not in reconciled:
+                    pending.append(("comfy_output", oid, ext, mtime_ns))
+
+        for kind, folder in (
+            ("live_avatar", "live-avatars"),
+            ("live_driving_motion", "live-driving-motions"),
+        ):
+            base_dir = self.root / folder
+            trash_dir = base_dir / ".trash"
+            if trash_dir.is_dir() and not trash_dir.is_symlink():
+                for p in trash_dir.iterdir():
+                    try:
+                        if p.is_symlink() or p.name.startswith("."):
+                            continue
+                        item_id = p.name
+                        if not _LIVE_ID_RE.fullmatch(item_id):
+                            continue
+                        if (base_dir / item_id).exists():
+                            continue
+                        mtime_ns = p.stat().st_mtime_ns
+                        if (kind, item_id, mtime_ns) not in reconciled:
+                            pending.append((kind, item_id, "", mtime_ns))
+                    except OSError:
+                        continue
+
+        return pending
+
+    def _has_pending_drive_tombstones(self) -> bool:
+        return bool(self._collect_pending_drive_tombstones())
+
+    def _reconcile_drive_tombstones(self) -> bool:
+        pending = self._collect_pending_drive_tombstones()
+        if not pending:
+            return True
+        all_ok = True
+        for kind, item_id, extra, mtime_ns in pending:
+            try:
+                if kind == "workflow":
+                    res = self.drive.remove_remote_workflow(item_id)
+                elif kind == "comfy_output":
+                    res = self.drive.remove_remote_comfy_output(item_id, extra)
+                elif kind == "live_avatar":
+                    res = self.drive.trash_live_avatar(item_id)
+                elif kind == "live_driving_motion":
+                    res = self.drive.trash_live_driving_motion(item_id)
+                else:
+                    res = True
+            except Exception:
+                res = False
+            if res is False:
+                all_ok = False
+            else:
+                with self.lock:
+                    self._reconciled_tombstones.add((kind, item_id, mtime_ns))
+        return all_ok
 
     def _sync_to_drive(self) -> bool:
         if not self.drive.available():
             return False
         with self.lock:
             snapshot = dict(self._dirty_seq)
-        if not snapshot:
+        tombstones = self._collect_pending_drive_tombstones()
+        if not snapshot and not tombstones:
             return True
-        if not self.drive.push_workspace():
+        if snapshot:
+            if not self.drive.push_workspace():
+                return False
+        tombstones_ok = self._reconcile_drive_tombstones()
+        if not tombstones_ok:
             return False
         with self.lock:
             for k, seq in snapshot.items():
@@ -2764,6 +4119,10 @@ class ColabOneRuntime:
                 self.quiescing = True
                 tasks = list(self.tasks.values())
 
+            def _stop_live_serialized():
+                with self._live_lifecycle_lock:
+                    self.live.stop()
+
             def _stop_comfy_serialized():
                 with self._comfy_lifecycle_lock:
                     self.comfy.stop_server()
@@ -2771,6 +4130,7 @@ class ColabOneRuntime:
             if auto:
                 for step in (
                     self.public_api.stop,
+                    _stop_live_serialized,
                     lambda: [
                         task.request_cancel()
                         for task in tasks
@@ -2787,7 +4147,7 @@ class ColabOneRuntime:
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.1)
-                for step in (_stop_comfy_serialized, self._stop_engine):
+                for step in (_stop_live_serialized, _stop_comfy_serialized, self._stop_engine):
                     try:
                         step()
                     except Exception:
@@ -2797,7 +4157,9 @@ class ColabOneRuntime:
                         if self.drive.available():
                             if not self.drive_restored:
                                 self._restore_from_drive()
-                            if self.drive_restored and self._dirty_seq:
+                            if self.drive_restored and (
+                                self._dirty_seq or self._has_pending_drive_tombstones()
+                            ):
                                 self._sync_to_drive()
                     except Exception:
                         pass
@@ -2811,6 +4173,7 @@ class ColabOneRuntime:
                 return {"ok": True}
             try:
                 self.public_api.stop()
+                _stop_live_serialized()
                 for task in tasks:
                     if task.state == "running":
                         task.request_cancel()
@@ -2820,6 +4183,7 @@ class ColabOneRuntime:
                     if time.monotonic() >= deadline:
                         raise RuntimeError("任务仍在停止，请稍后重试释放")
                     time.sleep(0.1)
+                _stop_live_serialized()
                 _stop_comfy_serialized()
                 self._stop_engine()
                 with self.sync_lock:
@@ -2828,7 +4192,9 @@ class ColabOneRuntime:
                             raise RuntimeError(
                                 "云盘历史数据恢复未完成，为避免覆盖请重试或勾选强制释放"
                             )
-                        if self._dirty_seq and not self._sync_to_drive():
+                        if (
+                            self._dirty_seq or self._has_pending_drive_tombstones()
+                        ) and not self._sync_to_drive():
                             raise RuntimeError(
                                 "云盘同步尚未完成，请重试或勾选强制释放"
                             )
@@ -2883,7 +4249,11 @@ class ColabOneRuntime:
                     except Exception:
                         pass
                 try:
-                    if not self.quiescing and self.drive.available() and self._dirty_seq:
+                    if (
+                        not self.quiescing
+                        and self.drive.available()
+                        and (self._dirty_seq or self._has_pending_drive_tombstones())
+                    ):
                         with self.sync_lock:
                             if not self.drive_restored:
                                 self._restore_from_drive()
@@ -2891,7 +4261,7 @@ class ColabOneRuntime:
                                 self._sync_to_drive()
                 except Exception:
                     pass
-                if self.busy():
+                if self.busy() or self._live_has_active_clients():
                     self.last_active = time.time()
                 if self.claim_auto_release():
                     if not self.release_prepared:

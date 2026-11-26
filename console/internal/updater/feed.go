@@ -35,6 +35,16 @@ type ColabOneReadOnlyFeedChecker struct {
 	APIBase        string        // Defaults to "https://api.github.com"
 	Client         *http.Client
 	CurrentVersion func() string // Optional: avoids GitHub API metadata lookup when latest tag <= current version.
+
+	// allowLoopbackHTTP is strictly for offline httptest.Server unit tests.
+	allowLoopbackHTTP bool
+}
+
+func (c *ColabOneReadOnlyFeedChecker) checkRedirectFunc() func(*http.Request, []*http.Request) error {
+	allowLoopback := c.allowLoopbackHTTP
+	return func(req *http.Request, via []*http.Request) error {
+		return colabOneCheckRedirectWithOptions(req, via, allowLoopback)
+	}
 }
 
 func (c *ColabOneReadOnlyFeedChecker) resolvedConfig() (repo, target, ghBase, apiBase string, client *http.Client) {
@@ -56,7 +66,14 @@ func (c *ColabOneReadOnlyFeedChecker) resolvedConfig() (repo, target, ghBase, ap
 	}
 	client = c.Client
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = &http.Client{
+			Timeout:       20 * time.Second,
+			CheckRedirect: c.checkRedirectFunc(),
+		}
+	} else if client.CheckRedirect == nil {
+		copied := *client
+		copied.CheckRedirect = c.checkRedirectFunc()
+		client = &copied
 	}
 	return repo, target, ghBase, apiBase, client
 }

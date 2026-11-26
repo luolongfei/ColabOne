@@ -4,7 +4,10 @@ package shortcuts
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -77,12 +80,27 @@ func utf16PtrToString(p *uint16) string {
 	return syscall.UTF16ToString(units)
 }
 
+func winPowerShellExecutable() string {
+	root := strings.TrimSpace(os.Getenv("SystemRoot"))
+	if root == "" {
+		root = strings.TrimSpace(os.Getenv("WINDIR"))
+	}
+	if root != "" {
+		return filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	}
+	const fallback = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+	if isFile(fallback) {
+		return fallback
+	}
+	return "powershell.exe"
+}
+
 func winQueryDesktopViaShell() string {
 	ctx, cancel := context.WithTimeout(context.Background(), winDesktopQuerySec)
 	defer cancel()
 	cmd := exec.CommandContext(
 		ctx,
-		"powershell.exe",
+		winPowerShellExecutable(),
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",

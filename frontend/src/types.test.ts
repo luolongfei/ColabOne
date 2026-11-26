@@ -310,6 +310,96 @@ describe("remote service upgrade banner classification", () => {
       "optional::gpu-g4-2::rev-old-1",
     );
   });
+
+  it("evaluates Live Studio running/transitional states independently of ComfyUI canvas and supports llama+live_studio", () => {
+    const state = createColabOneSnapshot();
+    state.runtime.state = "ready";
+    state.runtime.id = "gpu-live-1";
+    state.runtime.protocol = 7;
+    state.runtime.service_revision = "rev-old-live";
+    state.runtime.upgrade_available = true;
+
+    // 1) Co-active ComfyUI canvas + running Live Studio must list BOTH in activeItems
+    state.runtime.active_engine = "live_studio";
+    state.runtime.comfyui = {
+      installed: true,
+      running: false,
+      state: "stopped",
+      queue_running: 0,
+      queue_pending: 0,
+      error: "",
+      canvas: {
+        state: "ready",
+        enabled: true,
+        mode: "named",
+        url: "https://canvas.example.com",
+        error: "",
+        checked_at: 0,
+      },
+    };
+    state.runtime.live_studio = {
+      running: true,
+      state: "ready",
+    };
+    const comfyAndLive = evaluateColabOneRuntimeUpgrade(state);
+    expect(comfyAndLive.needsConfirm).toBe(true);
+    expect(comfyAndLive.activeItems).toContain(
+      "ComfyUI 工作流引擎与画布隧道（更新后将自动重新启动）",
+    );
+    expect(comfyAndLive.activeItems).toContain(
+      "当前运行中的远端推理引擎（更新后将自动恢复）",
+    );
+
+    // 2) Live Studio starting or stopping without active_engine still requires confirmation
+    state.runtime.active_engine = null;
+    state.runtime.comfyui = undefined;
+    state.runtime.live_studio = {
+      running: false,
+      state: "starting",
+    };
+    const startingLive = evaluateColabOneRuntimeUpgrade(state);
+    expect(startingLive.needsConfirm).toBe(true);
+    expect(startingLive.activeItems).toContain(
+      "当前运行中的远端推理引擎（更新后将自动恢复）",
+    );
+
+    state.runtime.live_studio = {
+      running: false,
+      state: "stopping",
+    };
+    const stoppingLive = evaluateColabOneRuntimeUpgrade(state);
+    expect(stoppingLive.needsConfirm).toBe(true);
+    expect(stoppingLive.activeItems).toContain(
+      "当前运行中的远端推理引擎（更新后将自动恢复）",
+    );
+
+    // 3) Co-located llama+live_studio lists both model and active engine
+    state.runtime.active_engine = "llama+live_studio";
+    state.runtime.loaded_model = "qwen-live";
+    state.runtime.live_studio = {
+      running: true,
+      state: "ready",
+    };
+    const colocated = evaluateColabOneRuntimeUpgrade(state);
+    expect(colocated.needsConfirm).toBe(true);
+    expect(colocated.activeItems).toContain(
+      "已装载模型：qwen-live（更新后将按原规格自动重新装载）",
+    );
+    expect(colocated.activeItems).toContain(
+      "当前运行中的远端推理引擎（更新后将自动恢复）",
+    );
+
+    // 4) Stopped Live Studio does not trigger confirmation
+    state.runtime.active_engine = null;
+    state.runtime.loaded_model = "";
+    state.runtime.live_studio = {
+      running: false,
+      state: "stopped",
+    };
+    const stoppedLive = evaluateColabOneRuntimeUpgrade(state);
+    expect(stoppedLive.needsConfirm).toBe(false);
+    expect(stoppedLive.activeItems).toEqual([]);
+  });
 });
 
 describe("public API model ID and quantization helpers", () => {

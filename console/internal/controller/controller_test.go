@@ -8801,3 +8801,446 @@ func TestComfyUIOutputExportDriveCommand(t *testing.T) {
 		}
 	})
 }
+
+func TestAccountSwitchDiscardsStaleAccountRefreshAndResetsAllState(t *testing.T) {
+	seedDirtyState := func(h *testHarness) {
+		h.ctrl.rememberPendingTtsPreviewReq("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", map[string]any{"engine_id": "qwen3_tts"})
+		h.ctrl.rememberPendingTtsPrefetchContext("qwen3_tts", []map[string]any{{"voice_preset": "shen_zhiyi"}})
+		h.ctrl.mu.Lock()
+		h.ctrl.data["account"] = map[string]any{"logged_in": true, "email": "old@example.com", "balance": 88.5}
+		h.ctrl.data["error"] = "stale error"
+		h.ctrl.data["runtime"] = map[string]any{"state": "disconnected", "id": "ep-old"}
+		h.ctrl.data["comfy_outputs"] = []any{map[string]any{"id": "11111111111111111111111111111111"}}
+		h.ctrl.data["live_avatars"] = []map[string]any{{"id": "old_avatar"}}
+		h.ctrl.data["live_driving_motions"] = []map[string]any{{"id": "old_motion"}}
+		h.ctrl.data["live_catalog"] = map[string]any{"visual_engines": []any{"flashhead_lite"}}
+		h.ctrl.releasePlan = &releasePlanState{ID: "plan-1", AccountSub: "old-sub"}
+		h.ctrl.instanceStates["ep-old"] = &instanceCache{Runtime: map[string]any{"state": "ready", "id": "ep-old"}}
+		h.ctrl.upgradeAttempted["ep-old"] = true
+		h.ctrl.taskActivity["t-1"] = taskActivitySig{Kind: "download", State: "running"}
+		h.ctrl.taskLogCursor["t-1"] = 42
+		h.ctrl.lastAuth = 99999
+		h.ctrl.lastConfig = 99999
+		h.ctrl.lastHeartbeat = 99999
+		h.ctrl.pendingTouch = true
+		h.ctrl.lastTouch = 99999
+		h.ctrl.remoteWorkflowVersions["wf-old"] = 12345
+		h.ctrl.mu.Unlock()
+	}
+
+	assertCleanState := func(t *testing.T, h *testHarness, label string) {
+		t.Helper()
+		h.ctrl.mu.Lock()
+		defer h.ctrl.mu.Unlock()
+		if asString(asMap(h.ctrl.data["account"])["email"]) == "old@example.com" {
+			t.Fatalf("%s: stale account email not reset: %#v", label, h.ctrl.data["account"])
+		}
+		if asString(h.ctrl.data["error"]) != "" {
+			t.Fatalf("%s: error not cleared: %q", label, asString(h.ctrl.data["error"]))
+		}
+		if asString(asMap(h.ctrl.data["runtime"])["state"]) != "stopped" {
+			t.Fatalf("%s: non-stopped runtime not reset to stopped: %#v", label, h.ctrl.data["runtime"])
+		}
+		if h.ctrl.releasePlan != nil || len(h.ctrl.instanceStates) != 0 || len(h.ctrl.upgradeAttempted) != 0 ||
+			len(h.ctrl.taskActivity) != 0 || len(h.ctrl.taskLogCursor) != 0 ||
+			h.ctrl.lastConfig != 0 || h.ctrl.lastHeartbeat != 0 || h.ctrl.pendingTouch || h.ctrl.lastTouch != 0 ||
+			len(h.ctrl.remoteWorkflowVersions) != 0 {
+			t.Fatalf("%s: internal state fields not fully reset", label)
+		}
+		if len(asAnySlice(h.ctrl.data["comfy_outputs"])) != 0 ||
+			len(asMapSlice(h.ctrl.data["live_avatars"])) != 0 ||
+			len(asMapSlice(h.ctrl.data["live_driving_motions"])) != 0 ||
+			len(asMap(h.ctrl.data["live_catalog"])) != 0 {
+			t.Fatalf("%s: outputs/live_* not cleared", label)
+		}
+		h.ctrl.ttsPreviewCacheMu.Lock()
+		pReqs := len(h.ctrl.pendingTtsPreviewReqs)
+		pCtx := len(h.ctrl.pendingTtsPrefetchCtx)
+		h.ctrl.ttsPreviewCacheMu.Unlock()
+		if pReqs != 0 || pCtx != 0 {
+			t.Fatalf("%s: pending TTS preview maps not cleared: reqs=%d ctx=%d", label, pReqs, pCtx)
+		}
+	}
+
+	// 1. Verify auth.colab.auto and BOTH branches of auth.colab.finish reset all state.
+	for _, tc := range []struct {
+		name           string
+		action         string
+		loopbackActive bool
+	}{
+		{"auth_colab_auto", "auth.colab.auto", false},
+		{"auth_colab_finish_loopback", "auth.colab.finish", true},
+		{"auth_colab_finish_manual", "auth.colab.finish", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHarness(t, false)
+			_ = h.vault.Set("colab", map[string]any{"token": "tok-new", "refresh_token": "rt-new"})
+			_ = h.vault.Set("google_profile", map[string]any{"email": "new@example.com", "sub": "sub-new"})
+			h.auth.loopbackActive = tc.loopbackActive
+			seedDirtyState(h)
+
+			if _, err := h.ctrl.Command(context.Background(), tc.action, map[string]any{"code": "auth-code-123"}); err != nil {
+				t.Fatalf("%s command failed: %v", tc.name, err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for h.ctrl.IsBusy() && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			assertCleanState(t, h, tc.name)
+		})
+	}
+
+	// 2. Stale provider.Account in MonitorOnce and account.refresh is discarded if account switches mid-flight.
+	for _, mode := range []string{"monitor_once", "account_refresh"} {
+		t.Run("stale_discard_"+mode, func(t *testing.T) {
+			h := newTestHarness(t, false)
+			_ = h.vault.Set("colab", map[string]any{"token": "tok-old", "refresh_token": "rt-old"})
+			_ = h.vault.Set("google_profile", map[string]any{"email": "old@example.com"})
+
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			h.provider.accountFn = func(ctx context.Context) (map[string]any, error) {
+				close(entered)
+				<-release
+				return map[string]any{"logged_in": true, "email": "old@example.com", "balance": 55.0}, nil
+			}
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if mode == "monitor_once" {
+					h.ctrl.MonitorOnce(context.Background())
+				} else {
+					_, _ = h.ctrl.Command(context.Background(), "account.refresh", nil)
+				}
+			}()
+
+			<-entered
+			// Switch account while provider.Account is in flight!
+			_ = h.vault.Set("colab", map[string]any{"token": "tok-new", "refresh_token": "rt-new"})
+			_ = h.vault.Set("google_profile", map[string]any{"email": "new@example.com"})
+			h.ctrl.resetAccountStateForSwitch(map[string]any{"logged_in": true, "email": "new@example.com"}, false)
+
+			close(release)
+			<-done
+
+			acct := asMap(h.ctrl.Snapshot()["account"])
+			if asString(acct["email"]) != "new@example.com" {
+				t.Fatalf("%s overwrote switched account with stale response: %#v", mode, acct)
+			}
+		})
+	}
+}
+
+func TestHotUpgradeStopsLiveStudioBeforeComfyUIAndUnloadAndBlocksAutoUpgrade(t *testing.T) {
+	h := newTestHarness(t, false)
+
+	// 1. canAutoUpgradeRuntime blocks auto-upgrade whenever live_studio is running or starting/stopping/ready.
+	idleRT := map[string]any{
+		"state":            "ready",
+		"id":               "ep-1",
+		"protocol":         7,
+		"service_revision": "old-rev",
+		"live_studio":      map[string]any{"running": false, "state": "stopped"},
+	}
+	if !h.ctrl.canAutoUpgradeRuntime(idleRT, "ep-1") {
+		t.Fatal("expected idle outdated runtime to allow auto-upgrade")
+	}
+	for _, busyLive := range []map[string]any{
+		{"running": true, "state": "ready"},
+		{"running": false, "state": "starting"},
+		{"running": false, "state": "stopping"},
+		{"running": false, "state": "ready"},
+	} {
+		rt := deepCopyMap(idleRT)
+		rt["live_studio"] = busyLive
+		if h.ctrl.canAutoUpgradeRuntime(rt, "ep-1") {
+			t.Fatalf("expected canAutoUpgradeRuntime=false for live_studio=%#v", busyLive)
+		}
+	}
+
+	// 2. prepareRemoteForUpgrade calls POST live/stop strictly BEFORE POST comfyui/stop and POST unload.
+	var callOrder []string
+	liveStopped := false
+	comfyStopped := false
+	h.provider.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if method == "POST" {
+			callOrder = append(callOrder, path)
+			switch path {
+			case "live/stop":
+				liveStopped = true
+			case "comfyui/stop":
+				comfyStopped = true
+			}
+			return map[string]any{"ok": true}, nil
+		}
+		if method == "GET" && path == "status" {
+			ls := map[string]any{"running": !liveStopped, "state": "ready"}
+			if liveStopped {
+				ls["state"] = "stopped"
+			}
+			comfy := map[string]any{"running": !comfyStopped, "state": "running"}
+			if comfyStopped {
+				comfy["state"] = "stopped"
+			}
+			return map[string]any{
+				"state":         "ready",
+				"loaded_model":  "qwen3-8b",
+				"active_engine": "live_studio",
+				"live_studio":   ls,
+				"comfyui":       comfy,
+			}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+
+	if _, err := h.ctrl.prepareRemoteForUpgrade(context.Background(), "ep-1"); err != nil {
+		t.Fatalf("prepareRemoteForUpgrade failed: %v", err)
+	}
+	wantOrder := []string{"live/stop", "comfyui/stop", "unload"}
+	if len(callOrder) != len(wantOrder) {
+		t.Fatalf("prepareRemoteForUpgrade POST order = %v, want %v", callOrder, wantOrder)
+	}
+	for i := range wantOrder {
+		if callOrder[i] != wantOrder[i] {
+			t.Fatalf("prepareRemoteForUpgrade POST order = %v, want %v", callOrder, wantOrder)
+		}
+	}
+}
+
+func seedTestSession(v VaultStore, ep, gpu string, active bool) {
+	sessions := map[string]any{}
+	if raw, ok := v.Get("runtime_sessions"); ok {
+		if m := asMap(raw); m != nil {
+			sessions = deepCopyMap(m)
+		}
+	}
+	sessions[ep] = map[string]any{"endpoint": ep, "gpu": gpu}
+	_ = v.Set("runtime_sessions", sessions)
+	if active {
+		_ = v.Set("active_endpoint", ep)
+	}
+}
+
+func TestReleaseFailureRecoveryAndMonitorResetsStuckReleasing(t *testing.T) {
+	// Case 1: provider.Release fails while session still exists -> runtime restored to "disconnected" with endpoint id.
+	h1 := newTestHarness(t, false)
+	seedTestSession(h1.vault, "ep-still", "L4", true)
+	h1.ctrl.Update(map[string]any{"runtime": map[string]any{"state": "ready", "id": "ep-still"}})
+	h1.provider.releaseFn = func(ctx context.Context, endpoint string, onLog LogFunc) (map[string]any, error) {
+		return nil, errors.New("network timeout")
+	}
+	if err := h1.ctrl.Release(context.Background(), true, ""); err == nil {
+		t.Fatal("expected Release error")
+	}
+	rt1 := asMap(h1.ctrl.Snapshot()["runtime"])
+	if asString(rt1["state"]) != "disconnected" || asString(rt1["id"]) != "ep-still" {
+		t.Fatalf("expected disconnected with ep-still after Release error, got %#v", rt1)
+	}
+
+	// Case 2: provider.Release fails after session was cleared -> runtime restored to "stopped".
+	h2 := newTestHarness(t, false)
+	seedTestSession(h2.vault, "ep-gone", "L4", true)
+	h2.ctrl.Update(map[string]any{"runtime": map[string]any{"state": "ready", "id": "ep-gone"}})
+	h2.provider.releaseFn = func(ctx context.Context, endpoint string, onLog LogFunc) (map[string]any, error) {
+		_ = h2.vault.Delete("runtime_sessions")
+		_ = h2.vault.Delete("runtime_session_ids")
+		_ = h2.vault.Delete("runtime_session:ep-gone")
+		_ = h2.vault.Delete("runtime_session")
+		return nil, errors.New("partial release failure")
+	}
+	if err := h2.ctrl.Release(context.Background(), true, ""); err == nil {
+		t.Fatal("expected Release error")
+	}
+	rt2 := asMap(h2.ctrl.Snapshot()["runtime"])
+	if asString(rt2["state"]) != "stopped" {
+		t.Fatalf("expected stopped when no sessions remain after Release error, got %#v", rt2)
+	}
+
+	// Case 3: MonitorOnce resets stuck "releasing" state to "stopped" when !opBusy and len(sessions)==0.
+	h3 := newTestHarness(t, false)
+	h3.ctrl.Update(map[string]any{"runtime": map[string]any{"state": "releasing", "id": "ep-stuck"}})
+	h3.ctrl.MonitorOnce(context.Background())
+	rt3 := asMap(h3.ctrl.Snapshot()["runtime"])
+	if asString(rt3["state"]) != "stopped" {
+		t.Fatalf("expected MonitorOnce to reset stuck releasing to stopped, got %#v", rt3)
+	}
+}
+
+func TestCloseFlushesCUUsageBeforeWaitAndStartRollbackTightensShutdownDeadline(t *testing.T) {
+	// 1. Close() flushes cu_usage.json immediately after cancelRoot() BEFORE wg.Wait() completes.
+	h := newTestHarness(t, false)
+	base := float64((time.Now().Unix()/1800)*1800 - 1800)
+	h.ctrl.cuUsage.RecordSample("flush@example.com", base+60, 100.0, true, 6.0, 1)
+	h.ctrl.cuUsage.RecordSample("flush@example.com", base+360, 99.5, true, 6.0, 1)
+
+	cuPath := filepath.Join(h.configDir, colabOneCUUsageFilename)
+	_ = os.Remove(cuPath)
+	// Record an incremental sample within the save throttle window so s.dirty==true and cuPath is absent.
+	h.ctrl.cuUsage.mu.Lock()
+	h.ctrl.cuUsage.lastSavedAt = nowUnixFloat()
+	h.ctrl.cuUsage.mu.Unlock()
+	h.ctrl.cuUsage.RecordSample("flush@example.com", base+390, 99.5, true, 6.0, 1)
+	if _, err := os.Stat(cuPath); !os.IsNotExist(err) {
+		t.Fatalf("expected cu_usage.json absent before Close(), stat err=%v", err)
+	}
+
+	workerRunning := make(chan struct{})
+	releaseWorker := make(chan struct{})
+	h.ctrl.spawn(func() {
+		close(workerRunning)
+		<-releaseWorker
+	})
+	<-workerRunning
+
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		h.ctrl.Close()
+	}()
+
+	// Even while worker holds wg.Wait(), cu_usage.json must already be flushed on disk!
+	deadline := time.Now().Add(2 * time.Second)
+	flushed := false
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(cuPath); err == nil {
+			flushed = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(releaseWorker)
+	<-closeDone
+	if !flushed {
+		t.Fatal("expected Close() to flush cuUsage immediately after cancelRoot() before wg.Wait() finished")
+	}
+
+	// 2. Start() rollback tightens provider.Release context deadline once c.stop is closed.
+	hStart := newTestHarness(t, false)
+	hStart.ctrl.shutdownRollbackTimeout = 100 * time.Millisecond
+	hStart.provider.startFn = func(ctx context.Context, gpu string, notify func(string), opts ColabOneStartOptions) (map[string]any, error) {
+		seedTestSession(hStart.vault, "ep-orphan", gpu, true)
+		return nil, errors.New("boot failed")
+	}
+	releaseStarted := make(chan struct{})
+	var releaseWait time.Duration
+	hStart.provider.releaseFn = func(ctx context.Context, endpoint string, onLog LogFunc) (map[string]any, error) {
+		close(releaseStarted)
+		t0 := time.Now()
+		<-ctx.Done()
+		releaseWait = time.Since(t0)
+		return nil, ctx.Err()
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- hStart.ctrl.Start(context.Background(), false, "T4")
+	}()
+	<-releaseStarted
+	hStart.ctrl.stop.Set()
+	<-startDone
+	if releaseWait > 2*time.Second {
+		t.Fatalf("expected Start() rollback release to cancel promptly after stop signal, waited %v", releaseWait)
+	}
+}
+
+func TestRemoveLocalModelPrunesInstanceStatesVaultConfigMuAndUploadControlChars(t *testing.T) {
+	h := newTestHarness(t, false)
+	seedTestSession(h.vault, "ep-a", "L4", true)
+	seedTestSession(h.vault, "ep-b", "T4", false)
+
+	customID := "hf-prune-me"
+	h.ctrl.mu.Lock()
+	h.ctrl.customModels[customID] = map[string]any{"id": customID, "name": "Prune Me"}
+	h.ctrl.commonIDs[customID] = true
+	h.ctrl.data["runtime"] = map[string]any{"state": "ready", "id": "ep-a"}
+	h.ctrl.data["models"] = []map[string]any{
+		{"id": customID, "name": "Prune Me", "downloaded": false, "loaded": false},
+		{"id": "qwen3-8b", "name": "Qwen3", "downloaded": false, "loaded": false},
+	}
+	h.ctrl.instanceStates["ep-a"] = &instanceCache{
+		Runtime: map[string]any{"state": "ready", "id": "ep-a"},
+		Models: []map[string]any{
+			{"id": customID, "name": "Prune Me"},
+			{"id": "qwen3-8b", "name": "Qwen3"},
+		},
+	}
+	h.ctrl.instanceStates["ep-b"] = &instanceCache{
+		Runtime: map[string]any{"state": "ready", "id": "ep-b"},
+		Models: []map[string]any{
+			{"id": customID, "name": "Prune Me"},
+			{"id": "qwen3-8b", "name": "Qwen3"},
+		},
+	}
+	h.ctrl.mu.Unlock()
+
+	if _, err := h.ctrl.RemoveLocalModel(customID); err != nil {
+		t.Fatalf("RemoveLocalModel failed: %v", err)
+	}
+	h.ctrl.mu.Lock()
+	for ep, st := range h.ctrl.instanceStates {
+		for _, m := range st.Models {
+			if asString(m["id"]) == customID {
+				h.ctrl.mu.Unlock()
+				t.Fatalf("instanceStates[%q].Models still contains removed model %q", ep, customID)
+			}
+		}
+	}
+	h.ctrl.mu.Unlock()
+
+	// Concurrent vault RMW across public_api, comfyui_canvas, live_external_llm, and Snapshot.
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errCh := make(chan error, 64)
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				if _, err := h.ctrl.Command(ctx, "api.key", nil); err != nil {
+					errCh <- err
+					return
+				}
+				if _, err := h.ctrl.Command(ctx, "api.save", map[string]any{
+					"domain":       fmt.Sprintf("api%d.example.com", idx),
+					"tunnel_token": "eyJhIjoiYWNjdCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0=",
+				}); err != nil {
+					errCh <- err
+					return
+				}
+				if _, err := h.ctrl.Command(ctx, "comfyui.canvas.save", map[string]any{
+					"domain":       fmt.Sprintf("canvas%d.example.com", idx),
+					"tunnel_token": "eyJhIjoiYWNjdCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0=",
+				}); err != nil {
+					errCh <- err
+					return
+				}
+				if _, err := h.ctrl.Command(ctx, "comfyui.live.llm.save", map[string]any{
+					"base_url": "https://api.example.com/v1",
+					"model":    fmt.Sprintf("model-%d", idx),
+					"api_key":  "sk-concurrent-llm-key-1234",
+				}); err != nil {
+					errCh <- err
+					return
+				}
+				_ = h.ctrl.Snapshot()
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent vaultConfigMu operation failed: %v", err)
+	}
+
+	// comfyui.input.upload must pass raw filename before trimming so trailing control chars are rejected.
+	hUpload := newTestHarness(t, false)
+	hUpload.ctrl.comfy = realComfyTestAdapter{}
+	validB64 := base64.StdEncoding.EncodeToString([]byte("img-bytes"))
+	if _, err := hUpload.ctrl.Command(ctx, "comfyui.input.upload", map[string]any{
+		"filename": "photo.png\n",
+		"data":     validB64,
+	}); err == nil {
+		t.Fatal("expected comfyui.input.upload to reject trailing newline control character")
+	}
+}

@@ -76,13 +76,15 @@ func newMyGoUpdateBackend() *mygoUpdateBackend {
 	tr := netproxy.Transport().Clone()
 	tr.ResponseHeaderTimeout = 20 * time.Second
 	metaClient := &http.Client{
-		Transport: tr,
-		Timeout:   30 * time.Second,
+		Transport:     tr,
+		Timeout:       30 * time.Second,
+		CheckRedirect: updater.ColabOneUpdateCheckRedirect,
 	}
 	downloadTr := netproxy.Transport().Clone()
 	downloadTr.ResponseHeaderTimeout = 30 * time.Second
 	downloadClient := &http.Client{
-		Transport: downloadTr,
+		Transport:     downloadTr,
+		CheckRedirect: updater.ColabOneUpdateCheckRedirect,
 	}
 	b := &mygoUpdateBackend{
 		repo:        repo,
@@ -197,6 +199,9 @@ func (d *ColabOneDesktop) initUpdater(cfgDir string, backend updater.ColabOneUpd
 		ConfigDir: cfgDir,
 		Repo:      updater.COLABONE_GITHUB_REPO,
 		OnStateChange: func(st updater.ColabOneUpdateState) {
+			if d.appQuitting.Load() {
+				return
+			}
 			if mygo.App.IsReady() {
 				ColabOneUpdateEvent.Broadcast(st)
 			}
@@ -272,6 +277,9 @@ func (d *ColabOneDesktop) handleTrayUpdateClick() {
 }
 
 func (d *ColabOneDesktop) refreshTrayMenu() {
+	if d.appQuitting.Load() {
+		return
+	}
 	d.trayMu.Lock()
 	tray := d.tray
 	d.trayMu.Unlock()
@@ -279,6 +287,9 @@ func (d *ColabOneDesktop) refreshTrayMenu() {
 		return
 	}
 	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() {
+			return
+		}
 		d.trayMu.Lock()
 		curTray := d.tray
 		d.trayMu.Unlock()

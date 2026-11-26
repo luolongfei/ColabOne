@@ -11,7 +11,13 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/luolongfei/ColabOne/console/internal/live"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
+)
+
+const (
+	colabOneMigrationGoogleTokenURI       = "https://oauth2.googleapis.com/token"
+	colabOneMigrationGoogleLegacyTokenURI = "https://accounts.google.com/o/oauth2/token"
 )
 
 var (
@@ -145,6 +151,8 @@ func (c *ColabOneController) exportMigrationCredentials() *migration.ColabOneMig
 	if c.vault == nil {
 		return out
 	}
+	c.vaultConfigMu.Lock()
+	defer c.vaultConfigMu.Unlock()
 	if v, ok := c.vault.Get("hf"); ok {
 		out.HFToken = strings.TrimSpace(asString(v))
 	}
@@ -159,6 +167,11 @@ func (c *ColabOneController) exportMigrationCredentials() *migration.ColabOneMig
 	if v, ok := c.vault.Get("comfyui_canvas"); ok {
 		if m := asMap(v); len(m) > 0 {
 			out.ComfyUICanvas = deepCopyMap(m)
+		}
+	}
+	if v, ok := c.vault.Get(colabOneVaultLiveExternalLLMKey); ok {
+		if m := asMap(v); len(m) > 0 {
+			out.LiveExternalLLM = deepCopyMap(m)
 		}
 	}
 	return out
@@ -290,10 +303,11 @@ type preparedMigrationAccount struct {
 }
 
 type preparedMigrationCredentials struct {
-	hfToken     string
-	assignProxy string
-	publicAPI   map[string]any
-	comfyCanvas map[string]any
+	hfToken         string
+	assignProxy     string
+	publicAPI       map[string]any
+	comfyCanvas     map[string]any
+	liveExternalLLM map[string]any
 }
 
 type preparedMigrationLibraryWorkflows struct {
@@ -343,7 +357,11 @@ func (c *ColabOneController) ApplyMigrationPayload(
 	if !c.opBusy.CompareAndSwap(false, true) {
 		return nil, errors.New("请等待当前操作完成后再导入迁移文件")
 	}
-	defer c.opBusy.Store(false)
+	c.opGen.Add(1)
+	defer func() {
+		c.opGen.Add(1)
+		c.opBusy.Store(false)
+	}()
 
 	if applySet[migration.ModuleAccount] && len(c.vaultSessions()) > 0 {
 		return nil, errors.New("切换账号前请先释放当前实例")
@@ -380,7 +398,10 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		if prepCreds != nil {
 			hasProxyAfter = prepCreds.assignProxy != ""
 		} else if c.vault != nil {
-			if raw, ok := c.vault.Get("assign_proxy"); ok && strings.TrimSpace(asString(raw)) != "" {
+			c.vaultConfigMu.Lock()
+			raw, ok := c.vault.Get("assign_proxy")
+			c.vaultConfigMu.Unlock()
+			if ok && strings.TrimSpace(asString(raw)) != "" {
 				hasProxyAfter = true
 			}
 		}
@@ -413,13 +434,23 @@ func (c *ColabOneController) ApplyMigrationPayload(
 
 	// ---- Phase 2: Snapshot rollback state & apply vault + disk mutations ----
 
+	c.vaultConfigMu.Lock()
+	vaultConfigLocked := true
+	unlockVaultConfig := func() {
+		if vaultConfigLocked {
+			vaultConfigLocked = false
+			c.vaultConfigMu.Unlock()
+		}
+	}
+	defer unlockVaultConfig()
+
 	// 2a. Capture vault backup & write vault keys.
-	vaultKeysToTouch := make([]string, 0, 7)
+	vaultKeysToTouch := make([]string, 0, 8)
 	if prepAccount != nil {
 		vaultKeysToTouch = append(vaultKeysToTouch, "colab", "google_profile", "cloud_project")
 	}
 	if prepCreds != nil {
-		vaultKeysToTouch = append(vaultKeysToTouch, "hf", "assign_proxy", "public_api", "comfyui_canvas")
+		vaultKeysToTouch = append(vaultKeysToTouch, "hf", "assign_proxy", "public_api", "comfyui_canvas", colabOneVaultLiveExternalLLMKey)
 	}
 	vaultBackups := make(map[string]vaultBackupEntry, len(vaultKeysToTouch))
 	if c.vault != nil {
@@ -484,6 +515,10 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		if err := applyVaultKey("comfyui_canvas", prepCreds.comfyCanvas, len(prepCreds.comfyCanvas) > 0); err != nil {
 			rollbackVault()
 			return nil, fmt.Errorf("写入 ComfyUI 画布配置失败：%w", err)
+		}
+		if err := applyVaultKey(colabOneVaultLiveExternalLLMKey, prepCreds.liveExternalLLM, len(prepCreds.liveExternalLLM) > 0); err != nil {
+			rollbackVault()
+			return nil, fmt.Errorf("写入实时演播外部 LLM 配置失败：%w", err)
 		}
 	}
 
@@ -610,6 +645,7 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		c.mu.Lock()
 		prevDrafts = cloneWorkflowDraftMap(c.workflowDrafts)
 		c.workflowDrafts = cloneWorkflowDraftMap(prepDrafts)
+		c.pruneWorkflowDraftsLocked("")
 		nextDraftsSnap := cloneWorkflowDraftMap(c.workflowDrafts)
 		c.mu.Unlock()
 
@@ -646,11 +682,17 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		c.persistMu.Unlock()
 	}
 
+	unlockVaultConfig()
+
 	// ---- Phase 3: Hot-apply in-memory state & trigger background sync ----
 
 	result := &ColabOneControllerMigrationResult{
 		AppliedModules: applyList,
 		Warnings:       warnings,
+	}
+
+	if prepCreds != nil {
+		c.Update(map[string]any{"live_external_llm": c.liveExternalLLMSummary()})
 	}
 
 	if prepSettings != nil {
@@ -688,38 +730,16 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		result.AccountLoggedIn = hasLogin
 		result.AccountEmail = email
 
-		if resetter, ok := c.auth.(AuthStateResetter); ok {
-			resetter.ResetAccountState()
-		}
-		if c.cuUsage != nil {
-			c.cuUsage.ResetActiveAccount()
-		}
-		c.mu.Lock()
-		c.lastAuth = 0
-		c.remoteWorkflowVersions = make(map[string]float64)
-		c.releasePlan = nil
-		c.data["error"] = ""
-		c.resetDriveOutputsSyncStateLocked()
-		c.mu.Unlock()
-
-		c.resetMonitorToAuto(true, true)
-		c.Update(map[string]any{
-			"account": map[string]any{
-				"logged_in": hasLogin,
-				"email":     email,
-			},
-			"models":        c.Presets(),
-			"workflows":     c.mergeWorkflows(nil),
-			"tts_engines":   c.builtinTtsEngines(),
-			"comfy_outputs": []any{},
-			"auth_url":      "",
-		})
-		c.observerWake.Set()
+		c.resetAccountStateForSwitch(map[string]any{
+			"logged_in": hasLogin,
+			"email":     email,
+		}, true)
 		if hasLogin {
 			c.triggerBackgroundDriveOutputsSync()
 		}
 
 		if hasLogin && c.provider != nil {
+			acctGen := c.accountGen.Load()
 			importedCreds := deepCopyMap(prepAccount.colab)
 			c.spawn(func() {
 				refreshCtx, cancel := context.WithTimeout(c.rootCtx, 25*time.Second)
@@ -730,19 +750,9 @@ func (c *ColabOneController) ApplyMigrationPayload(
 				}
 				// Guard against stale async completion if user logged out, re-logged in,
 				// or imported a different account while provider.Account was in flight.
-				if c.vault != nil {
-					currentRaw, ok := c.vault.Get("colab")
-					if !ok || !sameColabCredentialIdentity(importedCreds, asMap(currentRaw)) {
-						return
-					}
+				if !c.applyAccountRefreshIfCurrent(acctGen, importedCreds, account, nowUnixFloat()) {
+					return
 				}
-				if account == nil {
-					account = map[string]any{"logged_in": false}
-				}
-				c.Update(map[string]any{"account": account})
-				c.mu.Lock()
-				c.lastAuth = nowUnixFloat()
-				c.mu.Unlock()
 				if asBool(account["logged_in"]) {
 					c.triggerBackgroundDriveOutputsSync()
 				}
@@ -842,6 +852,15 @@ func sameColabCredentialIdentity(a, b map[string]any) bool {
 	return tokA != "" && tokA == tokB
 }
 
+func hasMigrationControlChars(s string) bool {
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == '\x00' || r < 0x20 || r == 0x7f || unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateMigrationAccount(src *migration.ColabOneMigrationAccountData) (*preparedMigrationAccount, error) {
 	prep := &preparedMigrationAccount{}
 	if src == nil {
@@ -860,6 +879,14 @@ func validateMigrationAccount(src *migration.ColabOneMigrationAccountData) (*pre
 				if !ok {
 					return nil, errors.New("迁移文件中的 Google 凭据字段格式无效")
 				}
+				if hasMigrationControlChars(s) {
+					return nil, errors.New("迁移文件中的 Google 凭据包含非法控制字符")
+				}
+				if k == "token_uri" && s != "" &&
+					s != colabOneMigrationGoogleTokenURI &&
+					s != colabOneMigrationGoogleLegacyTokenURI {
+					return nil, errors.New("迁移文件中的 Google OAuth token_uri 不受信任")
+				}
 				if s != "" {
 					clean[k] = s
 				}
@@ -874,6 +901,9 @@ func validateMigrationAccount(src *migration.ColabOneMigrationAccountData) (*pre
 					if !ok {
 						return nil, errors.New("迁移文件中的 Google 授权范围格式无效")
 					}
+					if hasMigrationControlChars(s) {
+						return nil, errors.New("迁移文件中的 Google 授权范围包含非法控制字符")
+					}
 					if trimmed := strings.TrimSpace(s); trimmed != "" {
 						list = append(list, trimmed)
 					}
@@ -884,6 +914,9 @@ func validateMigrationAccount(src *migration.ColabOneMigrationAccountData) (*pre
 			case []string:
 				list := make([]string, 0, len(sc))
 				for _, item := range sc {
+					if hasMigrationControlChars(item) {
+						return nil, errors.New("迁移文件中的 Google 授权范围包含非法控制字符")
+					}
 					if trimmed := strings.TrimSpace(item); trimmed != "" {
 						list = append(list, trimmed)
 					}
@@ -892,6 +925,9 @@ func validateMigrationAccount(src *migration.ColabOneMigrationAccountData) (*pre
 					clean["scopes"] = list
 				}
 			case string:
+				if hasMigrationControlChars(sc) {
+					return nil, errors.New("迁移文件中的 Google 授权范围包含非法控制字符")
+				}
 				if fields := strings.Fields(sc); len(fields) > 0 {
 					clean["scopes"] = fields
 				}
@@ -913,19 +949,32 @@ func validateMigrationAccount(src *migration.ColabOneMigrationAccountData) (*pre
 	if len(prep.colab) > 0 {
 		if len(src.GoogleProfile) > 0 {
 			prof := make(map[string]string, 2)
-			if email := strings.TrimSpace(src.GoogleProfile["email"]); email != "" {
-				prof["email"] = email
+			if rawEmail, exists := src.GoogleProfile["email"]; exists {
+				if hasMigrationControlChars(rawEmail) {
+					return nil, errors.New("迁移文件中的 Google 账号邮箱包含非法控制字符")
+				}
+				if email := strings.TrimSpace(rawEmail); email != "" {
+					prof["email"] = email
+				}
 			}
-			if sub := strings.TrimSpace(src.GoogleProfile["sub"]); sub != "" {
-				prof["sub"] = sub
+			if rawSub, exists := src.GoogleProfile["sub"]; exists {
+				if hasMigrationControlChars(rawSub) {
+					return nil, errors.New("迁移文件中的 Google 账号标识包含非法控制字符")
+				}
+				if sub := strings.TrimSpace(rawSub); sub != "" {
+					prof["sub"] = sub
+				}
 			}
 			if len(prof) > 0 {
 				prep.profile = prof
 			}
 		}
 
-		if proj := strings.TrimSpace(src.CloudProject); proj != "" {
-			if reMigrationCloudProjectID.MatchString(proj) {
+		if src.CloudProject != "" {
+			if hasMigrationControlChars(src.CloudProject) {
+				return nil, errors.New("迁移文件中的 Google 云盘项目配置包含非法控制字符")
+			}
+			if proj := strings.TrimSpace(src.CloudProject); proj != "" && reMigrationCloudProjectID.MatchString(proj) {
 				prep.cloudProject = proj
 			}
 		}
@@ -1036,6 +1085,33 @@ func (c *ColabOneController) validateMigrationCredentials(src *migration.ColabOn
 					"domain":       domain,
 					"tunnel_token": tunnelTok,
 				}
+			}
+		}
+	}
+	if len(src.LiveExternalLLM) > 0 {
+		hasAnyNonEmpty := false
+		for k, v := range src.LiveExternalLLM {
+			if k != "base_url" && k != "model" && k != "api_key" {
+				hasAnyNonEmpty = true
+				break
+			}
+			if v != nil {
+				s, ok := v.(string)
+				if !ok || strings.TrimSpace(s) != "" {
+					hasAnyNonEmpty = true
+					break
+				}
+			}
+		}
+		if hasAnyNonEmpty {
+			validated, err := live.ValidateColabOneLiveExternalLLMConfig(src.LiveExternalLLM, false)
+			if err != nil {
+				return nil, fmt.Errorf("迁移文件中的实时演播外部 LLM 配置无效：%w", err)
+			}
+			prep.liveExternalLLM = map[string]any{
+				"base_url": asString(validated["base_url"]),
+				"model":    asString(validated["model"]),
+				"api_key":  asString(validated["api_key"]),
 			}
 		}
 	}

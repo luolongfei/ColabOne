@@ -18,6 +18,11 @@
     "../README.md",
     "../third_party"
   ],
+  "macos": {
+    "infoPlist": {
+      "NSMicrophoneUsageDescription": "ColabOne needs microphone access for real-time voice interaction in Live Studio."
+    }
+  },
   "updates": {
     "publicKey": "q6yp/j91zJb5QM5UeWLTSWX8gOGcO0fiW4FG/UehKRM=",
     "github": "luolongfei/ColabOne"

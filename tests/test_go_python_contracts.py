@@ -15,6 +15,8 @@ All tests run 100% offline and verify:
 
 from __future__ import annotations
 
+import ast
+import base64
 import hashlib
 import io
 import json
@@ -36,6 +38,15 @@ from common.files import (
     COLABONE_SERVICE_BUNDLE_FOLDERS,
     COLABONE_SERVICE_BUNDLE_SUFFIXES,
     colabone_service_revision,
+)
+from common.live_studio import (
+    ColabOneLiveAvatarSaveRequest,
+    ColabOneLiveBuildPackRequest,
+    ColabOneLiveClipUploadRequest,
+    ColabOneLiveDrivingUploadRequest,
+    ColabOneLiveExternalLLMTestRequest,
+    ColabOneLiveSessionConfig,
+    ColabOneLiveStartRequest,
 )
 from common.models import (
     COLABONE_AUTO_API_MODEL_ID,
@@ -230,6 +241,7 @@ def test_server_app_boots_offline_with_protocol_7_and_auth_contract(tmp_path, mo
             "comfyui_tts_preview",
             "comfyui_longcat_native",
             "comfyui_workflow_auto_release",
+            "comfyui_live_studio",
         ]
         assert status["state"] == "ready"
         assert status["idle_minutes"] == 30
@@ -695,3 +707,435 @@ def test_live_acceptance_targets_loopback_api_v1_routes(tmp_path, monkeypatch):
         scope = {"type": "http", "path": route_path, "method": method}
         matched = any(route.matches(scope)[0] == Match.FULL for route in app.router.routes)
         assert matched, f"live_acceptance route {method} {route_path} not registered on server/app.py"
+
+
+def test_live_studio_go_python_payload_and_route_contracts(tmp_path, monkeypatch):
+    """Validate canonical Go Live Studio payloads against Pydantic models and FastAPI routes offline."""
+    sample_b64 = base64.b64encode(b"mock-live-studio-media").decode("ascii")
+    valid_tunnel_token = base64.b64encode(
+        b'{"a":"acct123","t":"tun456","s":"secret789"}'
+    ).decode("ascii")
+
+    # 1. Canonical payloads matching Go's strict validators (console/internal/live/live.go).
+    vram_payload = {
+        "visual_engine": "flashhead_lite",
+        "personalive_enabled": True,
+        "tts_engine": "qwen3_tts",
+        "voice_preset": "shen_zhiyi",
+        "llm_mode": "local_gguf",
+        "local_llm_model_id": "qwen3-8b",
+        "director_mode": "dialogue",
+        "mic_mode": "vad",
+        "avatar_id": "anchor_1",
+        "target_fps": 25,
+        "resolution": "720x1280",
+        "enable_rtmp": False,
+        "rtmp_url": "",
+    }
+    start_payload = {
+        **vram_payload,
+        "llm_mode": "external_api",
+        "enable_rtmp": True,
+        "rtmp_url": "rtmps://a.rtmp.youtube.com/live2/stream-key",
+        "external_llm": {
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-4o-mini",
+            "api_key": "sk-contract-test-1234567890",
+            "temperature": 0.6,
+            "max_tokens": 512,
+        },
+        "hf_token": "hf_contract_test_token_123456",
+        "portrait_input_id": "0123456789abcdef0123456789abcdef",
+        "canvas_config": {
+            "mode": "named",
+            "domain": "https://comfy.example.com",
+            "tunnel_token": valid_tunnel_token,
+        },
+    }
+    llm_test_payload = {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+        "api_key": "sk-contract-test-1234567890",
+        "timeout_seconds": 15.0,
+    }
+    avatar_save_with_tag_payload = {
+        "id": "anchor_1",
+        "name": "数字主播小晴",
+        "persona_prompt": "热情开朗的直播间主播",
+        "portrait_input_id": "0123456789abcdef0123456789abcdef",
+        "portrait_b64": sample_b64,
+        "portrait_filename": "cover.png",
+        "default_tts_engine": "qwen3_tts",
+        "default_voice_preset": "shen_zhiyi",
+        "actions": [
+            {
+                "id": "idle_loop",
+                "label": "待机循环",
+                "kind": "loop",
+                "clip_path": "clips/idle.mp4",
+                "bgm_path": "",
+                "duration_seconds": 4.0,
+                "trigger_keywords": ["待机"],
+            }
+        ],
+        "products": [
+            {
+                "id": "prod_1",
+                "name": "轻薄防晒霜",
+                "price": "¥99",
+                "tag": "爆款推荐",
+                "highlights": "清爽不油腻",
+                "script_hint": "夏日必囤",
+                "image_input_id": "0123456789abcdef0123456789abcdef",
+            }
+        ],
+    }
+    avatar_save_empty_products_payload = {
+        "id": "anchor_1",
+        "name": "数字主播小晴",
+        "actions": [],
+        "products": [],
+    }
+    clip_upload_payload = {
+        "action_id": "dance_01",
+        "label": "热舞片段",
+        "kind": "dance",
+        "filename": "dance.mp4",
+        "data": sample_b64,
+        "bgm_filename": "track.m4a",
+        "bgm_data": sample_b64,
+        "duration_seconds": 12.5,
+        "trigger_keywords": ["跳舞", "才艺"],
+    }
+    build_pack_payload = {
+        "avatar_id": "anchor_1",
+        "name": "数字主播小晴",
+        "portrait_input_id": "0123456789abcdef0123456789abcdef",
+        "portrait_b64": sample_b64,
+        "portrait_filename": "cover.png",
+        "actions": ["idle_loop", "talk_explain"],
+        "dance_ids": ["dance_01"],
+        "resolution": "720x1280",
+        "fps": 25,
+        "hf_token": "hf_contract_test_token_123456",
+        "overwrite": True,
+    }
+    driving_upload_payload = {
+        "id": "drive_01",
+        "label": "点头驱动",
+        "filename": "nod.mkv",
+        "data": sample_b64,
+        "bgm_filename": "bgm.ogg",
+        "bgm_data": sample_b64,
+        "duration_seconds": 8.0,
+        "trigger_keywords": ["点头"],
+    }
+
+    # 2. Validate every canonical payload against common/live_studio.py strict Pydantic models.
+    ColabOneLiveSessionConfig.model_validate(vram_payload)
+    ColabOneLiveStartRequest.model_validate(start_payload)
+    ColabOneLiveExternalLLMTestRequest.model_validate(llm_test_payload)
+    parsed_avatar = ColabOneLiveAvatarSaveRequest.model_validate(avatar_save_with_tag_payload)
+    assert parsed_avatar.products is not None and parsed_avatar.products[0].tag == "爆款推荐"
+    parsed_empty = ColabOneLiveAvatarSaveRequest.model_validate(avatar_save_empty_products_payload)
+    assert parsed_empty.products == []
+    assert parsed_empty.actions == []
+    ColabOneLiveClipUploadRequest.model_validate(clip_upload_payload)
+    ColabOneLiveBuildPackRequest.model_validate(build_pack_payload)
+    ColabOneLiveDrivingUploadRequest.model_validate(driving_upload_payload)
+
+    # Confirm extra="forbid" rejects drift / legacy aliases that Go must never forward.
+    with pytest.raises(pydantic.ValidationError):
+        ColabOneLiveSessionConfig.model_validate({**vram_payload, "hf_token": "hf_bad"})
+    with pytest.raises(pydantic.ValidationError):
+        ColabOneLiveStartRequest.model_validate({**start_payload, "fps": 25})
+    with pytest.raises(pydantic.ValidationError):
+        ColabOneLiveAvatarSaveRequest.model_validate(
+            {**avatar_save_with_tag_payload, "avatar_id": "anchor_1"}
+        )
+    with pytest.raises(pydantic.ValidationError):
+        ColabOneLiveClipUploadRequest.model_validate(
+            {**clip_upload_payload, "avatar_id": "anchor_1"}
+        )
+    with pytest.raises(pydantic.ValidationError):
+        ColabOneLiveBuildPackRequest.model_validate(
+            {**build_pack_payload, "clip_ids": ["idle_loop"]}
+        )
+    with pytest.raises(pydantic.ValidationError):
+        ColabOneLiveDrivingUploadRequest.model_validate(
+            {**driving_upload_payload, "action_id": "drive_01"}
+        )
+
+    # 3. Verify every Live Studio route exists on server/app.py and accepts the canonical payloads (HTTP 200, never 422).
+    runtime = ColabOneRuntime(tmp_path / "remote", ROOT / "catalog")
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": "NVIDIA L4", "total_mib": 24576, "used_mib": 512, "utilization": 0},
+    )
+    monkeypatch.setattr(runtime, "live_check_vram", lambda cfg: {"ok": True, "config": cfg})
+    monkeypatch.setattr(runtime, "start_live_studio", lambda cfg: {"ok": True, "state": "starting"})
+    monkeypatch.setattr(runtime, "stop_live_studio", lambda: {"ok": True, "state": "stopped"})
+    monkeypatch.setattr(
+        runtime,
+        "live_session_token",
+        lambda: {"token": "ephemeral", "ws_url": "wss://comfy.example.com/_colabone_live/ws"},
+    )
+    monkeypatch.setattr(runtime, "live_test_external_llm", lambda cfg: {"ok": True, "latency_ms": 42})
+    monkeypatch.setattr(runtime, "save_live_avatar", lambda cfg: {"id": cfg.get("id") or "anchor_1"})
+    monkeypatch.setattr(runtime, "delete_live_avatar", lambda avatar_id: None)
+    monkeypatch.setattr(
+        runtime,
+        "upload_live_avatar_clip",
+        lambda avatar_id, cfg: {"ok": True, "avatar_id": avatar_id, "action_id": cfg["action_id"]},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "build_live_avatar_pack",
+        lambda cfg: {"ok": True, "avatar_id": cfg["avatar_id"]},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "upload_live_driving_motion",
+        lambda cfg: {"ok": True, "id": cfg.get("id") or "drive_01"},
+    )
+    monkeypatch.setattr(runtime, "delete_live_driving_motion", lambda motion_id: None)
+
+    token = "colabone-live-contract-token-0123456789abcdef"
+    headers = {"Authorization": f"Bearer {token}"}
+    app = create_colabone_app(runtime, token, background=False)
+
+    expected_live_routes = (
+        ("GET", "/api/v1/live/status"),
+        ("GET", "/api/v1/live/catalog"),
+        ("POST", "/api/v1/live/vram-check"),
+        ("POST", "/api/v1/live/start"),
+        ("POST", "/api/v1/live/stop"),
+        ("POST", "/api/v1/live/session-token"),
+        ("POST", "/api/v1/live/llm-test"),
+        ("GET", "/api/v1/live/avatars"),
+        ("POST", "/api/v1/live/avatars"),
+        ("DELETE", "/api/v1/live/avatars/anchor_1"),
+        ("POST", "/api/v1/live/avatars/anchor_1/clips"),
+        ("POST", "/api/v1/live/avatars/build-pack"),
+        ("GET", "/api/v1/live/driving-motions"),
+        ("POST", "/api/v1/live/driving-motions"),
+        ("DELETE", "/api/v1/live/driving-motions/drive_01"),
+    )
+    for method, route_path in expected_live_routes:
+        scope = {"type": "http", "path": route_path, "method": method}
+        matched = any(route.matches(scope)[0] == Match.FULL for route in app.router.routes)
+        assert matched, f"Live Studio route {method} {route_path} not registered on server/app.py"
+
+    with TestClient(app) as client:
+        snap = client.get("/api/v1/snapshot", headers=headers)
+        assert snap.status_code == 200
+        snap_body = snap.json()
+        assert isinstance(snap_body["live_avatars"], list)
+        assert isinstance(snap_body["live_driving_motions"], list)
+        assert isinstance(snap_body["live_catalog"], dict)
+
+        for path, body in (
+            ("/api/v1/live/vram-check", vram_payload),
+            ("/api/v1/live/start", start_payload),
+            ("/api/v1/live/llm-test", llm_test_payload),
+            ("/api/v1/live/avatars", avatar_save_with_tag_payload),
+            ("/api/v1/live/avatars", avatar_save_empty_products_payload),
+            ("/api/v1/live/avatars/anchor_1/clips", clip_upload_payload),
+            ("/api/v1/live/avatars/build-pack", build_pack_payload),
+            ("/api/v1/live/driving-motions", driving_upload_payload),
+        ):
+            resp = client.post(path, json=body, headers=headers)
+            assert resp.status_code == 200, (
+                f"Canonical Go payload rejected by {path}: {resp.status_code} {resp.text}"
+            )
+
+        assert client.get("/api/v1/live/driving-motions", headers=headers).status_code == 200
+        assert client.delete("/api/v1/live/driving-motions/drive_01", headers=headers).status_code == 200
+
+
+def _extract_go_switch_case_strings(source: str, func_prefix: str) -> set[str]:
+    start = source.index(func_prefix)
+    brace_start = source.index("{", start)
+    depth = 0
+    end = brace_start
+    for idx in range(brace_start, len(source)):
+        ch = source[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
+    body = source[brace_start : end + 1]
+    cmds: set[str] = set()
+    for match in re.finditer(r"^\s*case\s+([^:]+):", body, re.MULTILINE):
+        for lit in re.findall(r'"([a-z0-9._-]+)"', match.group(1)):
+            cmds.add(lit)
+    return cmds
+
+
+def _extract_go_map_keys(source: str, var_prefix: str) -> set[str]:
+    start = source.index(var_prefix)
+    brace_start = source.index("{", start)
+    brace_end = source.index("}", brace_start)
+    body = source[brace_start : brace_end + 1]
+    return set(re.findall(r'^\s*"([a-z0-9._-]+)"\s*:', body, re.MULTILINE))
+
+
+def test_go_controller_command_parity_across_timeout_webconsole_and_frontend():
+    commands_go = (ROOT / "console" / "internal" / "controller" / "commands.go").read_text(
+        encoding="utf-8"
+    )
+    backend_go = (ROOT / "console" / "backend.go").read_text(encoding="utf-8")
+    webconsole_go = (
+        ROOT / "console" / "internal" / "webconsole" / "webconsole.go"
+    ).read_text(encoding="utf-8")
+
+    controller_cmds = _extract_go_switch_case_strings(
+        commands_go, "func (c *ColabOneController) dispatchCommand("
+    )
+    timeout_cmds = _extract_go_switch_case_strings(
+        backend_go, "func colabOneMethodTimeout("
+    )
+    blocked_web_cmds = _extract_go_map_keys(
+        webconsole_go, "blockedWebCommands = map[string]string{"
+    )
+
+    frontend_cmds: set[str] = set()
+    frontend_src = ROOT / "frontend" / "src"
+    for path in frontend_src.rglob("*"):
+        if path.suffix not in (".ts", ".vue") or path.name.endswith(".test.ts"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(
+            r"""colabOneCommand(?:<[^>]*>)?\(\s*['"]([a-z0-9._-]+)['"]""",
+            text,
+        ):
+            frontend_cmds.add(match.group(1))
+
+    assert controller_cmds, "Expected controller commands in commands.go"
+    assert timeout_cmds, "Expected timeout entries in colabOneMethodTimeout"
+    assert blocked_web_cmds, "Expected entries in blockedWebCommands"
+    assert frontend_cmds, "Expected static colabOneCommand calls in frontend/src"
+
+    assert sorted(timeout_cmds - controller_cmds) == [], (
+        f"colabOneMethodTimeout references unknown commands: {sorted(timeout_cmds - controller_cmds)}"
+    )
+    assert sorted(blocked_web_cmds - controller_cmds) == [], (
+        f"blockedWebCommands references unknown commands: {sorted(blocked_web_cmds - controller_cmds)}"
+    )
+    assert sorted(frontend_cmds - controller_cmds) == [], (
+        f"frontend/src calls unknown commands: {sorted(frontend_cmds - controller_cmds)}"
+    )
+
+    assert "settings.assign_proxy.test" in blocked_web_cmds, (
+        "settings.assign_proxy.test must be blocked in WebConsole"
+    )
+
+    phantom_shortcuts = {"shortcuts.status", "shortcuts.create", "shortcuts.remove"}
+    assert phantom_shortcuts.isdisjoint(timeout_cmds), (
+        f"Phantom shortcut commands still present in colabOneMethodTimeout: {phantom_shortcuts & timeout_cmds}"
+    )
+    assert phantom_shortcuts.isdisjoint(blocked_web_cmds), (
+        f"Phantom shortcut commands still present in blockedWebCommands: {phantom_shortcuts & blocked_web_cmds}"
+    )
+    assert phantom_shortcuts.isdisjoint(controller_cmds), (
+        f"Phantom shortcut commands still present in commands.go: {phantom_shortcuts & controller_cmds}"
+    )
+
+
+def test_vm_boot_and_vm_update_require_hashes_for_pip_install():
+    for rel_path in ("server/vm_boot.py", "server/vm_update.py"):
+        source = (ROOT / rel_path).read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=rel_path)
+        pip_install_lists: list[list[str]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.List, ast.Tuple)):
+                str_items = [
+                    elt.value
+                    for elt in node.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+                if "pip" in str_items and "install" in str_items and "-r" in str_items:
+                    pip_install_lists.append(str_items)
+
+        assert pip_install_lists, (
+            f"Expected pip install -r invocation in {rel_path}"
+        )
+        for cmd_items in pip_install_lists:
+            assert "--require-hashes" in cmd_items, (
+                f"{rel_path} pip install invocation must pass --require-hashes: {cmd_items}"
+            )
+
+
+def test_service_bundle_directories_remain_flat():
+    for folder in COLABONE_SERVICE_BUNDLE_FOLDERS:
+        folder_dir = ROOT / folder
+        assert folder_dir.is_dir(), f"Missing bundle directory: {folder}"
+        nested_dirs = sorted(
+            p.relative_to(ROOT).as_posix()
+            for p in folder_dir.rglob("*")
+            if p.is_dir() and "__pycache__" not in p.parts
+        )
+        assert nested_dirs == [], (
+            f"{folder}/ must remain flat so tools/sync_service_bundle.py never misses nested files; "
+            f"found subdirectories: {nested_dirs}"
+        )
+        nested_bundle_files = sorted(
+            p.relative_to(ROOT).as_posix()
+            for p in folder_dir.rglob("*")
+            if p.is_file()
+            and "__pycache__" not in p.parts
+            and p.suffix in COLABONE_SERVICE_BUNDLE_SUFFIXES
+            and p.parent != folder_dir
+        )
+        assert nested_bundle_files == [], (
+            f"Found un-synced nested bundle files under {folder}/: {nested_bundle_files}"
+        )
+
+
+def test_webconsole_command_body_size_limits_and_upload_allowlist():
+    webconsole_go = (
+        ROOT / "console" / "internal" / "webconsole" / "webconsole.go"
+    ).read_text(encoding="utf-8")
+
+    def _parse_go_mib_const(name: str) -> int:
+        shift_match = re.search(rf"\b{name}\s*=\s*(\d+)\s*<<\s*20\b", webconsole_go)
+        if shift_match:
+            return int(shift_match.group(1)) * (1 << 20)
+        mul_match = re.search(
+            rf"\b{name}\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024\b", webconsole_go
+        )
+        if mul_match:
+            return int(mul_match.group(1)) * 1024 * 1024
+        lit_match = re.search(rf"\b{name}\s*=\s*(\d+)\b", webconsole_go)
+        assert lit_match, f"Could not find {name} constant in webconsole.go"
+        return int(lit_match.group(1))
+
+    normal_cap = _parse_go_mib_const("maxCommandBodyBytes")
+    media_cap = _parse_go_mib_const("maxMediaUploadCommandBodyBytes")
+
+    assert normal_cap == 64 * 1024 * 1024, (
+        f"Normal WebConsole commands must remain capped at 64 MiB, got {normal_cap}"
+    )
+    assert media_cap >= 228 * 1024 * 1024, (
+        f"Media upload WebConsole commands must support >= 228 MiB payloads, got {media_cap}"
+    )
+
+    allowed_uploads = _extract_go_map_keys(
+        webconsole_go, "mediaUploadWebCommands = map[string]bool{"
+    )
+    expected_uploads = {
+        "comfyui.input.upload",
+        "comfyui.draft.media.save",
+        "comfyui.live.avatars.clip.upload",
+        "comfyui.live.driving.upload",
+    }
+    assert allowed_uploads == expected_uploads, (
+        f"mediaUploadWebCommands mismatch: expected {sorted(expected_uploads)}, got {sorted(allowed_uploads)}"
+    )
+    assert "if cr.n > normalLimit && !mediaUploadWebCommands[action]" in webconsole_go, (
+        "handleCommand must enforce normalLimit for non-media-upload commands"
+    )

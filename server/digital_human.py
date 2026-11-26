@@ -4474,19 +4474,27 @@ class ColabOneDigitalHumanRunner:
                 preflight_kwargs: dict[str, Any] = {}
                 try:
                     preflight_sig = inspect.signature(preflight_fn)
-                    allow_param = preflight_sig.parameters.get("allow_unavailable")
-                    if (
-                        allow_param is not None
-                        and allow_param.kind
-                        in (
+                    has_var_kw = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in preflight_sig.parameters.values()
+                    )
+
+                    def _accepts_preflight_kw(param_name: str) -> bool:
+                        if has_var_kw:
+                            return True
+                        param = preflight_sig.parameters.get(param_name)
+                        return param is not None and param.kind in (
                             inspect.Parameter.POSITIONAL_OR_KEYWORD,
                             inspect.Parameter.KEYWORD_ONLY,
                         )
-                    ) or any(
-                        p.kind == inspect.Parameter.VAR_KEYWORD
-                        for p in preflight_sig.parameters.values()
-                    ):
+
+                    if _accepts_preflight_kw("allow_unavailable"):
                         preflight_kwargs["allow_unavailable"] = tts_allow_unavailable
+                    if preflight_attr == "check_disk":
+                        if _accepts_preflight_kw("ref_audio_path"):
+                            preflight_kwargs["ref_audio_path"] = ref_audio_path
+                        if _accepts_preflight_kw("voice_preset"):
+                            preflight_kwargs["voice_preset"] = voice_preset
                 except (TypeError, ValueError):
                     pass
                 preflight_fn(engine_spec, **preflight_kwargs)
@@ -4667,9 +4675,11 @@ class ColabOneDigitalHumanRunner:
                     pass
                 if callable(getattr(self.tts_runner, "cancel_preview_prefetch", None)):
                     self.tts_runner.cancel_preview_prefetch(wait=True, timeout=2.0)
-                tts_result = self.tts_runner.synthesize(task, **synth_kwargs)
-                if callable(getattr(self.tts_runner, "release_warm_worker", None)):
-                    self.tts_runner.release_warm_worker("digital_human_video_phase")
+                try:
+                    tts_result = self.tts_runner.synthesize(task, **synth_kwargs)
+                finally:
+                    if callable(getattr(self.tts_runner, "release_warm_worker", None)):
+                        self.tts_runner.release_warm_worker("digital_human_video_phase")
                 master_audio_path = Path(tts_result["audio_path"])
                 raw_manifest = tts_result.get("manifest")
                 manifest = raw_manifest if isinstance(raw_manifest, dict) else None

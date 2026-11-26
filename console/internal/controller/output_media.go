@@ -151,8 +151,9 @@ func (c *ColabOneController) driveStreamClient() *http.Client {
 		transport = http.DefaultTransport
 	}
 	c.driveStreamHTTPClient = &http.Client{
-		Transport: transport,
-		Timeout:   0,
+		Transport:     transport,
+		Timeout:       0,
+		CheckRedirect: refuseDriveRedirects,
 	}
 	return c.driveStreamHTTPClient
 }
@@ -268,14 +269,10 @@ func (c *ColabOneController) ResolveOutputMediaMeta(
 				}
 			}
 			if size > 0 {
-				mimeType := strings.TrimSpace(driveRec.Mime)
-				if mimeType == "" {
-					mimeType = km[1]
-				}
 				return &ColabOneOutputMediaMeta{
 					ID:           cleanID,
 					Size:         size,
-					Mime:         mimeType,
+					Mime:         km[1],
 					Extension:    ext,
 					Filename:     fmt.Sprintf("ColabOne-%s.%s", cleanID[:8], ext),
 					Source:       "drive",
@@ -297,14 +294,10 @@ func (c *ColabOneController) ResolveOutputMediaMeta(
 		if liveRec.Size <= 0 {
 			return nil, errors.New("作品大小不合法")
 		}
-		mimeType := strings.TrimSpace(liveRec.Mime)
-		if mimeType == "" {
-			mimeType = km[1]
-		}
 		return &ColabOneOutputMediaMeta{
 			ID:         cleanID,
 			Size:       liveRec.Size,
-			Mime:       mimeType,
+			Mime:       km[1],
 			Extension:  ext,
 			Filename:   fmt.Sprintf("ColabOne-%s.%s", cleanID[:8], ext),
 			Source:     "runtime",
@@ -324,14 +317,10 @@ func (c *ColabOneController) ResolveOutputMediaMeta(
 			}
 			km, ok := allowedDriveOutputKindMIME[ext]
 			if ok && sz > 0 {
-				mimeType := strings.TrimSpace(asString(m["mime"]))
-				if mimeType == "" {
-					mimeType = km[1]
-				}
 				return &ColabOneOutputMediaMeta{
 					ID:         cleanID,
 					Size:       sz,
-					Mime:       mimeType,
+					Mime:       km[1],
 					Extension:  ext,
 					Filename:   fmt.Sprintf("ColabOne-%s.%s", cleanID[:8], ext),
 					Source:     "runtime",

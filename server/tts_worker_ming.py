@@ -360,6 +360,26 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
             return True
 
 
+    def _is_valid_ming_wav(path: Path) -> bool:
+        import wave as _wave
+
+        try:
+            if not path.is_file() or path.stat().st_size <= 44:
+                return False
+            with _wave.open(str(path), "rb") as wf:
+                return wf.getnframes() > 0
+        except (_wave.Error, EOFError, OSError):
+            return False
+
+
+    def _remove_stale_ming_file(path: Path) -> None:
+        try:
+            if path.is_symlink() or path.exists():
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
     def _lock_ming_seg0_anchor(
         output,
         out_wav: str,
@@ -392,8 +412,9 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
                 frag_text = str(frag_text_raw).strip() if frag_text_raw else ""
                 work_dir.mkdir(parents=True, exist_ok=True)
                 seg0_anchor_wav = work_dir / "ming_seg0_anchor.wav"
+                _remove_stale_ming_file(seg0_anchor_wav)
                 _write_pcm16_wav(str(seg0_anchor_wav), frag_waveform, frag_sr)
-                if seg0_anchor_wav.is_file() and seg0_anchor_wav.stat().st_size > 44:
+                if _is_valid_ming_wav(seg0_anchor_wav):
                     return str(seg0_anchor_wav), (frag_text or seg_text)
         return out_wav, seg_text
 
@@ -559,7 +580,16 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
         active_ref_text = ref_text
         total = len(segments)
         cfg_work_dir = (cfg.get("work_dir") or "").strip()
-        work_dir = Path(cfg_work_dir) if cfg_work_dir else fallback_work_dir
+        if cfg_work_dir:
+            work_dir = Path(cfg_work_dir)
+        elif (
+            segments
+            and isinstance(segments[0], dict)
+            and str(segments[0].get("output_wav") or "").strip()
+        ):
+            work_dir = Path(str(segments[0]["output_wav"])).parent
+        else:
+            work_dir = fallback_work_dir
 
         if _needs_ming_reference_anchor(
             segments, active_ref_audio, voice_prompt, emotion_prompt
@@ -568,6 +598,7 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
             anchor_style = (voice_prompt or "").strip() or _MING_DEFAULT_VOICE_STYLE
             work_dir.mkdir(parents=True, exist_ok=True)
             anchor_wav = work_dir / "ming_speaker_anchor.wav"
+            _remove_stale_ming_file(anchor_wav)
             anchor_kwargs = _build_ming_generate_kwargs(
                 gen_params=gen_params,
                 gen_has_var_kw=gen_has_var_kw,
@@ -579,7 +610,7 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
                 valid_seed=valid_seed,
             )
             anchor_output = _run_ming_generate(tts, anchor_kwargs)
-            if not anchor_wav.is_file() or anchor_wav.stat().st_size <= 0:
+            if not _is_valid_ming_wav(anchor_wav):
                 anchor_waveform, anchor_sr = _extract_ming_waveform(
                     anchor_output, model_sr
                 )
@@ -587,7 +618,7 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
                     _write_pcm16_wav(
                         str(anchor_wav), anchor_waveform, int(anchor_sr or model_sr)
                     )
-            if not anchor_wav.is_file() or anchor_wav.stat().st_size <= 0:
+            if not _is_valid_ming_wav(anchor_wav):
                 raise RuntimeError(
                     f"Ming-3.0-TTS 未生成参考锚点音频：{anchor_wav}"
                 )
@@ -601,6 +632,9 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
         for idx, seg in enumerate(segments):
             seg_text = str(seg["text"])
             out_wav = str(seg["output_wav"])
+            out_path = Path(out_wav)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            _remove_stale_ming_file(out_path)
 
             task, task_controls, ref_kwargs = _select_ming_task(
                 seg_text=seg_text,
@@ -622,12 +656,11 @@ MING_3_TTS_WORKER_BODY: str = textwrap.dedent(
             )
 
             output = _run_ming_generate(tts, gen_kwargs)
-            out_path = Path(out_wav)
-            if not out_path.is_file() or out_path.stat().st_size <= 0:
+            if not _is_valid_ming_wav(out_path):
                 waveform, out_sr = _extract_ming_waveform(output, model_sr)
                 if waveform is not None:
                     _write_pcm16_wav(out_wav, waveform, int(out_sr or model_sr))
-            if not out_path.is_file() or out_path.stat().st_size <= 0:
+            if not _is_valid_ming_wav(out_path):
                 raise RuntimeError(f"Ming-3.0-TTS 未生成第 {idx + 1} 段音频：{out_wav}")
 
             if idx == 0 and not active_ref_audio and total > 1:

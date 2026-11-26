@@ -6328,6 +6328,454 @@ def test_infinitetalk_acceleration_shared_wheels_nvenc_and_native_passthrough(
     _FFMPEG_NVENC_CACHE.clear()
 
 
+def test_audit_fixes_model_extensions_packs_ws_digital_human_and_seedvr2_pg(
+    tmp_path, monkeypatch
+):
+    """Regression suite covering canonical model extensions, read-only pending_pip,
+    corrupted-git reclone retry, WS monitor dispatch serialization & RFC 6455 5.4,
+    digital_human check_disk forwarding & finally warm release, and SeedVR2 process groups."""
+    import os
+    import subprocess
+    import sys
+    import wave
+    from types import SimpleNamespace
+
+    from pydantic import ValidationError
+    from common.comfyui import COMFY_MODEL_EXTENSIONS, ComfyModelRef
+    from server import comfy_packs
+    from server.comfy_packs import ColabOneComfyPackManager
+    from server.comfy_ws import (
+        ColabOneComfyWsMonitor,
+        WS_OP_TEXT,
+        _parse_handshake_response,
+    )
+    from server.digital_human import ColabOneDigitalHumanRunner
+    from server.vsr_worker_diffusion import (
+        ColabOneProcessGuard,
+        _run_monitored_subprocess,
+    )
+
+    # 1. Canonical model extension allowlist shared and hidden dot segments rejected.
+    assert comfy_packs._COMFY_MODEL_EXTENSIONS == COMFY_MODEL_EXTENSIONS
+    assert ".onnx" in COMFY_MODEL_EXTENSIONS
+    assert ".sft" in COMFY_MODEL_EXTENSIONS
+    ok_onnx = ComfyModelRef(
+        repo="org/model",
+        revision="a" * 40,
+        path="sub/detector.onnx",
+        target_dir="checkpoints",
+        size=1024,
+        sha256="b" * 64,
+    )
+    assert ok_onnx.path == "sub/detector.onnx"
+    ok_sft = ComfyModelRef(
+        repo="org/model",
+        revision="a" * 40,
+        path="weights.sft",
+        target_dir="checkpoints",
+        size=1024,
+        sha256="b" * 64,
+    )
+    assert ok_sft.path == "weights.sft"
+    for bad_path in (".hidden/model.safetensors", "dir/.secret.onnx", ".safetensors"):
+        with pytest.raises(ValidationError):
+            ComfyModelRef(
+                repo="org/model",
+                revision="a" * 40,
+                path=bad_path,
+                target_dir="checkpoints",
+                size=1024,
+                sha256="b" * 64,
+            )
+
+    # 2. ensure_pack() computes pending_pip read-only; clear_pending_pip_restart() clears it.
+    rt = _make_mock_runtime(tmp_path / "packs_ro")
+    mgr = ColabOneComfyPackManager(
+        rt,
+        rt.root / "comfyui",
+        rt.root / "comfyui-models",
+        run_cmd_fn=lambda *a, **k: "",
+    )
+    wf_pip = _make_pack_template(
+        "wf-pip-ro",
+        min_vram_mib=0,
+        pip_packages=["einops"],
+    )
+    assert mgr.ensure_pack(ColabOneTask("comfyui_run", "p1"), wf_pip) is True
+    assert mgr.needs_pip_restart() is True
+    # Second call BEFORE clear_pending_pip_restart must STILL report restart needed!
+    assert mgr.ensure_pack(ColabOneTask("comfyui_run", "p2"), wf_pip) is True
+    assert mgr.needs_pip_restart() is True
+    mgr.clear_pending_pip_restart()
+    assert mgr.needs_pip_restart() is False
+    assert mgr.ensure_pack(ColabOneTask("comfyui_run", "p3"), wf_pip) is False
+
+    # 3. _prepare_pack_checkout retries corrupted git via delete+reclone and rejects symlink node_dir.
+    git_cmds: list[list[str]] = []
+    fail_once = {"done": False}
+
+    def _corrupt_then_ok_git(args, task, log, **kw):
+        git_cmds.append(list(args))
+        if "fetch" in args and not fail_once["done"]:
+            fail_once["done"] = True
+            raise RuntimeError("fatal: bad object HEAD")
+
+    mgr_git = ColabOneComfyPackManager(
+        rt,
+        rt.root / "comfyui",
+        rt.root / "comfyui-models",
+        run_cmd_fn=_corrupt_then_ok_git,
+    )
+    wf_node = _make_pack_template(
+        "wf-corrupt-git",
+        min_vram_mib=0,
+        nodes=[
+            {
+                "name": "CorruptNode",
+                "repo": "https://github.com/example/CorruptNode.git",
+                "commit": "4" * 40,
+                "install_requirements": False,
+            }
+        ],
+    )
+    sig = comfy_packs.compute_pack_content_signature(wf_node)
+    corrupt_node_dir = mgr_git.packs_root / f"pack-{sig[:16]}" / "CorruptNode"
+    (corrupt_node_dir / ".git").mkdir(parents=True, exist_ok=True)
+    (corrupt_node_dir / "stale.txt").write_text("corrupt", encoding="utf-8")
+
+    task_git = ColabOneTask("comfyui_run", "corrupt-retry")
+    mgr_git.ensure_pack(task_git, wf_node)
+    assert any(cmd[:2] == ["git", "init"] for cmd in git_cmds)
+    assert not (corrupt_node_dir / "stale.txt").exists()
+
+    if os.name == "posix":
+        wf_sym = _make_pack_template(
+            "wf-sym-git",
+            min_vram_mib=0,
+            nodes=[
+                {
+                    "name": "SymNode",
+                    "repo": "https://github.com/example/SymNode.git",
+                    "commit": "5" * 40,
+                    "install_requirements": False,
+                }
+            ],
+        )
+        sym_sig = comfy_packs.compute_pack_content_signature(wf_sym)
+        sym_pack_dir = mgr_git.packs_root / f"pack-{sym_sig[:16]}"
+        sym_pack_dir.mkdir(parents=True, exist_ok=True)
+        outside = tmp_path / "outside_target"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("safe", encoding="utf-8")
+        (sym_pack_dir / "SymNode").symlink_to(outside)
+        with pytest.raises(ValueError, match="符号链接"):
+            mgr_git.ensure_pack(ColabOneTask("comfyui_run", "sym-node"), wf_sym)
+        assert (outside / "keep.txt").read_text(encoding="utf-8") == "safe"
+
+    # 4. server/comfy_ws.py: latin-1 compare_digest, RFC 6455 5.4 interleaved data frame,
+    #    and serialized replay under _dispatch_lock.
+    bad_non_ascii_head = (
+        b"HTTP/1.1 101 Switching Protocols\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Sec-WebSocket-Accept: \xe9\xe9\xe9\xe9\r\n"
+    )
+    assert _parse_handshake_response(bad_non_ascii_head, "expected==") is False
+
+    # RFC 6455 5.4: unfinished fragmented frame followed by new TEXT frame fails connection.
+    srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv_sock.bind(("127.0.0.1", 0))
+    srv_port = srv_sock.getsockname()[1]
+    srv_sock.listen(2)
+    srv_sock.settimeout(3.0)
+
+    def _serve_bad_frag():
+        try:
+            conn, _ = srv_sock.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(2.0)
+            buf = bytearray()
+            while b"\r\n\r\n" not in buf:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                buf.extend(chunk)
+            head = bytes(buf[: buf.index(b"\r\n\r\n")]).decode("latin-1")
+            ws_key = ""
+            for line in head.split("\r\n")[1:]:
+                k, _, v = line.partition(":")
+                if k.strip().lower() == "sec-websocket-key":
+                    ws_key = v.strip()
+            accept = base64.b64encode(
+                hashlib.sha1((ws_key + _WS_GUID).encode("ascii")).digest()
+            ).decode("ascii")
+            # First frame: FIN=0, TEXT ("part1"); second frame: FIN=1, TEXT (illegal interleave!)
+            frag1 = bytes([0x01, 5]) + b"part1"
+            illegal_text = _make_server_ws_frame(
+                json.dumps(
+                    {"type": "execution_start", "data": {"prompt_id": "p-frag"}}
+                ).encode("utf-8"),
+                opcode=0x1,
+            )
+            conn.sendall(
+                (
+                    "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                ).encode("latin-1")
+                + frag1
+                + illegal_text
+            )
+            time.sleep(0.2)
+
+    t_srv = threading.Thread(target=_serve_bad_frag, daemon=True)
+    t_srv.start()
+    frag_events: list[dict] = []
+    frag_mon = ColabOneComfyWsMonitor(
+        "127.0.0.1",
+        srv_port,
+        "frag-test",
+        prompt_id="p-frag",
+        on_progress=lambda ev: frag_events.append(ev),
+    )
+    try:
+        assert frag_mon.start() is True
+        if frag_mon._thread is not None:
+            frag_mon._thread.join(timeout=2.0)
+        assert frag_mon.connected is False
+        assert frag_events == []
+    finally:
+        frag_mon.stop()
+        srv_sock.close()
+        t_srv.join(timeout=2.0)
+
+    # Serialized replay under _dispatch_lock: live message on thread B cannot overtake replayed thread A.
+    ordered_steps: list[int] = []
+    replay_in_progress = threading.Event()
+    release_replay = threading.Event()
+
+    def _on_ordered_progress(ev: dict) -> None:
+        step = ev.get("step")
+        if step == 1:
+            replay_in_progress.set()
+            release_replay.wait(timeout=2.0)
+        if step is not None:
+            ordered_steps.append(int(step))
+
+    order_mon = ColabOneComfyWsMonitor(
+        "127.0.0.1",
+        8188,
+        "order-test",
+        prompt_id="",
+        on_progress=_on_ordered_progress,
+    )
+    order_mon._handle_message(
+        WS_OP_TEXT,
+        json.dumps(
+            {"type": "progress", "data": {"prompt_id": "p-ord", "value": 1, "max": 5}}
+        ).encode("utf-8"),
+    )
+    order_mon._handle_message(
+        WS_OP_TEXT,
+        json.dumps(
+            {"type": "progress", "data": {"prompt_id": "p-ord", "value": 2, "max": 5}}
+        ).encode("utf-8"),
+    )
+    t_bind = threading.Thread(target=order_mon.set_prompt_id, args=("p-ord",), daemon=True)
+    t_bind.start()
+    assert replay_in_progress.wait(timeout=2.0)
+    t_live = threading.Thread(
+        target=order_mon._handle_message,
+        args=(
+            WS_OP_TEXT,
+            json.dumps(
+                {"type": "progress", "data": {"prompt_id": "p-ord", "value": 3, "max": 5}}
+            ).encode("utf-8"),
+        ),
+        daemon=True,
+    )
+    t_live.start()
+    time.sleep(0.05)
+    release_replay.set()
+    t_bind.join(timeout=2.0)
+    t_live.join(timeout=2.0)
+    assert ordered_steps == [1, 2, 3]
+
+    # 5. Digital human forwards ref_audio_path/voice_preset to check_disk() and releases warm worker in finally:.
+    ref_wav = tmp_path / "dh_ref.wav"
+    with wave.open(str(ref_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x01\x00" * 400)
+    anchor_png = tmp_path / "dh_anchor.png"
+    anchor_png.write_bytes(make_png_bytes())
+
+    seen_dh_disk: list[dict[str, Any]] = []
+    seen_dh_release: list[str] = []
+
+    class _FakeDhTts:
+        synth_fn = None
+
+        def get_engine(self, eid: str):
+            return {"id": eid, "name": eid, "voice_presets": []}
+
+        def validate_tts_synthesis_inputs(self, *a, **kw):
+            return {"engine": {"id": "voxcpm2"}}
+
+        def check_vram(self, eng, *, allow_unavailable: bool = False):
+            return None
+
+        def check_disk(
+            self,
+            eng,
+            *,
+            allow_unavailable: bool = False,
+            ref_audio_path=None,
+            voice_preset: str = "",
+        ):
+            seen_dh_disk.append(
+                {
+                    "allow_unavailable": allow_unavailable,
+                    "ref_audio_path": ref_audio_path,
+                    "voice_preset": voice_preset,
+                }
+            )
+
+        def synthesize(self, *a, **kw):
+            raise RuntimeError("simulated synth boom")
+
+        def release_warm_worker(self, reason: str = ""):
+            seen_dh_release.append(reason)
+
+    dh_rt = SimpleNamespace(
+        root=tmp_path / "dh_rt",
+        loaded=None,
+        stopping=threading.Event(),
+        gpu_info=lambda: {"name": "Blackwell", "total_mib": 98304},
+    )
+    dh_rt.root.mkdir(parents=True, exist_ok=True)
+    dh_mgr = SimpleNamespace(
+        runtime=dh_rt,
+        packs=None,
+        is_running=lambda: False,
+        free_memory=lambda **kw: None,
+    )
+    dh_wf = {
+        "id": "digital-human-test",
+        "name": "DH Test",
+        "workflow": {
+            "1": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+            "2": {"class_type": "LoadAudio", "inputs": {"audio": "b.wav"}},
+        },
+        "pipeline": {
+            "kind": "digital_human",
+            "video_backend": "infinitetalk",
+            "default_tts_engine": "voxcpm2",
+            "supported_tts_engines": ["voxcpm2"],
+            "image_node_key": "1.image",
+            "audio_node_key": "2.audio",
+        },
+    }
+    dh_runner = ColabOneDigitalHumanRunner(
+        dh_mgr, _FakeDhTts(), run_cmd_fn=lambda *a, **kw: None
+    )
+    with pytest.raises(RuntimeError, match="simulated synth boom"):
+        dh_runner.run(
+            ColabOneTask("comfyui_run", "dh-finally"),
+            dh_wf,
+            WorkflowRunRequest(
+                workflow_id="digital-human-test",
+                overrides={
+                    "pipeline.audio_source": "tts",
+                    "pipeline.tts_engine": "voxcpm2",
+                    "pipeline.script_text": "你好，数字人测试。",
+                    "pipeline.voice_preset": "shen_zhiyi",
+                },
+                inputs={"1.image": "a" * 32, "pipeline.voice_ref_audio": "b" * 32},
+            ),
+            [
+                ("1.image", "anchor.png", anchor_png),
+                ("pipeline.voice_ref_audio", "ref.wav", ref_wav),
+            ],
+        )
+    assert len(seen_dh_disk) == 1
+    assert seen_dh_disk[0]["ref_audio_path"] == ref_wav
+    assert seen_dh_disk[0]["voice_preset"] == "shen_zhiyi"
+    assert seen_dh_release == ["digital_human_video_phase"]
+
+    # 6. SeedVR2 _run_monitored_subprocess uses start_new_session=True on POSIX and
+    #    ColabOneProcessGuard terminates the entire child process group (including grandchild).
+    if os.name == "posix":
+        grandchild_pid_file = tmp_path / "grandchild.pid"
+        child_pgid_file = tmp_path / "child.pgid"
+        spawner = tmp_path / "spawn_grandchild.py"
+        spawner.write_text(
+            f"""import os, subprocess, sys, time
+from pathlib import Path
+Path({str(child_pgid_file)!r}).write_text(str(os.getpgrp()), encoding="utf-8")
+gc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+Path({str(grandchild_pid_file)!r}).write_text(str(gc.pid), encoding="utf-8")
+print("spawned", flush=True)
+time.sleep(60)
+""",
+            encoding="utf-8",
+        )
+        guard = ColabOneProcessGuard(base_dir=tmp_path / "pg_guard")
+        proc = subprocess.Popen(
+            [sys.executable, str(spawner)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        guard.register_child(proc, isolated_pg=True)
+        try:
+            deadline = time.monotonic() + 5.0
+            while not grandchild_pid_file.is_file() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert grandchild_pid_file.is_file()
+            child_pgid = int(child_pgid_file.read_text(encoding="utf-8").strip())
+            gc_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
+            assert child_pgid == proc.pid
+            assert child_pgid != os.getpgrp()
+            os.kill(gc_pid, 0)
+
+            guard.terminate_children(grace_seconds=0.3)
+            with pytest.raises(ProcessLookupError):
+                os.kill(proc.pid, 0)
+            with pytest.raises(ProcessLookupError):
+                os.kill(gc_pid, 0)
+        finally:
+            guard.cleanup_all(grace_seconds=0.3)
+
+        # Also verify _run_monitored_subprocess passes start_new_session=True.
+        pg_check_file = tmp_path / "monitored.pgid"
+        guard2 = ColabOneProcessGuard(base_dir=tmp_path / "pg_guard2")
+        _run_monitored_subprocess(
+            [
+                sys.executable,
+                "-c",
+                f"import os; from pathlib import Path; Path({str(pg_check_file)!r}).write_text(f'{{os.getpid()}}:{{os.getpgrp()}}')",
+            ],
+            cwd=tmp_path,
+            guard=guard2,
+            engine="seedvr2_7b_sharp",
+            stage="upscale",
+            progress_start=0.0,
+            progress_end=1.0,
+            progress_message="test",
+        )
+        pid_s, pgid_s = pg_check_file.read_text(encoding="utf-8").strip().split(":")
+        assert int(pid_s) == int(pgid_s)
+        assert int(pgid_s) != os.getpgrp()
+
+
+
 
 
 

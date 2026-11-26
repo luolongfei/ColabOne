@@ -554,13 +554,47 @@ func TestHostHeaderValidation(t *testing.T) {
 		}
 	}
 
-	// When PublicOrigin is empty, any valid hostname is permitted (e.g. cloudflared)
-	req := httptest.NewRequest(http.MethodGet, "http://random-tunnel.trycloudflare.com/_colabone_web/login", nil)
-	req.Host = "random-tunnel.trycloudflare.com"
-	rec := httptest.NewRecorder()
-	wc.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected valid host allowed when PublicOrigin empty, got %d", rec.Code)
+	// When PublicOrigin is empty in loopback mode: ONLY loopback hosts are permitted (DNS rebinding protection).
+	for _, h := range []string{"127.0.0.1:3232", "localhost:3232", "[::1]:3232"} {
+		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/_colabone_web/login", nil)
+		r.Host = h
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected loopback host %q allowed when PublicOrigin empty, got %d", h, w.Code)
+		}
+	}
+	for _, blocked := range []string{"random-tunnel.trycloudflare.com", "evil.example.com", "192.168.50.10:3232"} {
+		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/_colabone_web/login", nil)
+		r.Host = blocked
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected non-loopback host %q blocked (403) in loopback mode when PublicOrigin empty, got %d", blocked, w.Code)
+		}
+	}
+
+	// When PublicOrigin is empty in LAN mode: loopback + active local interface IPs allowed; arbitrary hostnames blocked.
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{BindMode: strPtr(BindModeLAN)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, allowed := range []string{"127.0.0.1:3232", "localhost:3232", "[::1]:3232", "192.168.50.10:3232"} {
+		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/_colabone_web/login", nil)
+		r.Host = allowed
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected host %q allowed in LAN mode with empty PublicOrigin, got %d", allowed, w.Code)
+		}
+	}
+	for _, blocked := range []string{"random-tunnel.trycloudflare.com", "evil.example.com", "192.168.50.99:3232"} {
+		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/_colabone_web/login", nil)
+		r.Host = blocked
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected host %q blocked (403) in LAN mode with empty PublicOrigin, got %d", blocked, w.Code)
+		}
 	}
 
 	// When PublicOrigin is configured in loopback mode:
@@ -1221,9 +1255,15 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 	}
 
 	// CSRF checks on /api/command
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{
+		PublicOrigin: strPtr("https://console.example.com"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	cmdPost := func(host, body string, headers map[string]string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "http://"+host+"/api/command", strings.NewReader(body))
 		r.Host = host
+		r.RemoteAddr = "127.0.0.1:54321"
 		r.AddCookie(cookie)
 		for k, v := range headers {
 			r.Header.Set(k, v)
@@ -1276,13 +1316,11 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 
 	blockedCases := map[string]string{
 		"desktop.shortcuts":           "该桌面专属操作仅支持在宿主机客户端执行",
-		"shortcuts.status":            "该桌面专属操作仅支持在宿主机客户端执行",
-		"shortcuts.create":            "该桌面专属操作仅支持在宿主机客户端执行",
-		"shortcuts.remove":            "该桌面专属操作仅支持在宿主机客户端执行",
 		"api.tunnel_token":            "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"comfyui.canvas.tunnel_token": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"settings.hf_token":           "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"settings.assign_proxy":       "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"settings.assign_proxy.test":  "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"auth.colab.auto":             "网页控制台不支持本机回环自动登录，请使用手动授权登录",
 	}
 	for action, wantMsg := range blockedCases {
@@ -1766,8 +1804,10 @@ func TestSamePortBindModeSwapAndBoundsAndConcurrency(t *testing.T) {
 		}
 	}
 	uOld, _ := url.Parse(firstTicket.LocalURL)
+	reqOldTk := httptest.NewRequest(http.MethodGet, uOld.RequestURI(), nil)
+	reqOldTk.Host = uOld.Host
 	recOldTk := httptest.NewRecorder()
-	wc.Handler().ServeHTTP(recOldTk, httptest.NewRequest(http.MethodGet, uOld.RequestURI(), nil))
+	wc.Handler().ServeHTTP(recOldTk, reqOldTk)
 	if recOldTk.Code != http.StatusUnauthorized {
 		t.Fatalf("expected evicted oldest ticket to return 401, got %d", recOldTk.Code)
 	}
@@ -1787,4 +1827,287 @@ func TestSamePortBindModeSwapAndBoundsAndConcurrency(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestProxyHeaderSpoofingGlobalRateLimitAndAtomicity(t *testing.T) {
+	clk := newFakeClock(time.Date(2026, 11, 25, 16, 0, 0, 0, time.UTC))
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir: t.TempDir(),
+		Vault:     newMemoryVault(),
+		Now:       clk.Now,
+	})
+	defer wc.Close()
+	wc.listInterfaceIPs = func() []netip.Addr {
+		return []netip.Addr{netip.MustParseAddr("192.168.50.10")}
+	}
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{BindMode: strPtr(BindModeLAN)}); err != nil {
+		t.Fatal(err)
+	}
+	passcode, err := wc.Passcode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Non-loopback RemoteAddr must ignore X-Forwarded-Proto and CF-Visitor (Secure stays false).
+	nonLoopbackLogin := func(hdrs map[string]string) *http.Cookie {
+		b, _ := json.Marshal(map[string]string{"passcode": passcode})
+		r := httptest.NewRequest(http.MethodPost, "http://192.168.50.10:3232/_colabone_web/login", bytes.NewReader(b))
+		r.Host = "192.168.50.10:3232"
+		r.RemoteAddr = "192.168.50.99:4444"
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set(ClientHeaderName, ClientHeaderValue)
+		for k, v := range hdrs {
+			r.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK || len(w.Result().Cookies()) == 0 {
+			t.Fatalf("expected 200 login, got %d body=%s", w.Code, w.Body.String())
+		}
+		return w.Result().Cookies()[0]
+	}
+	if c := nonLoopbackLogin(map[string]string{"X-Forwarded-Proto": "https"}); c.Secure {
+		t.Fatal("non-loopback RemoteAddr must ignore spoofed X-Forwarded-Proto")
+	}
+	if c := nonLoopbackLogin(map[string]string{"CF-Visitor": `{"scheme":"https"}`}); c.Secure {
+		t.Fatal("non-loopback RemoteAddr must ignore spoofed CF-Visitor")
+	}
+
+	// 2. Loopback RemoteAddr with PublicOrigin == "" must ignore CF-Visitor and CF-Connecting-IP.
+	cNoPub := loginForCookie(t, wc.Handler(), "127.0.0.1:3232", passcode, map[string]string{
+		"CF-Visitor": `{"scheme":"https"}`,
+	})
+	if cNoPub.Secure {
+		t.Fatal("CF-Visitor must be ignored when PublicOrigin is empty")
+	}
+	for i := 0; i < loginRateLimitMaxFailures; i++ {
+		b, _ := json.Marshal(map[string]string{"passcode": "wrong"})
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3232/_colabone_web/login", bytes.NewReader(b))
+		r.RemoteAddr = "127.0.0.1:54321"
+		r.Header.Set(ClientHeaderName, ClientHeaderValue)
+		r.Header.Set("CF-Connecting-IP", fmt.Sprintf("203.0.113.%d", i+1))
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d expected 401, got %d", i+1, w.Code)
+		}
+	}
+	// Rotating CF-Connecting-IP without PublicOrigin must STILL be throttled on 127.0.0.1.
+	{
+		b, _ := json.Marshal(map[string]string{"passcode": passcode})
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3232/_colabone_web/login", bytes.NewReader(b))
+		r.RemoteAddr = "127.0.0.1:54321"
+		r.Header.Set(ClientHeaderName, ClientHeaderValue)
+		r.Header.Set("CF-Connecting-IP", "203.0.113.200")
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 when CF-Connecting-IP rotated without PublicOrigin, got %d", w.Code)
+		}
+	}
+
+	// 3. Global sliding failure cap (25 failures / 5m across distinct IPs) blocks attempt 26.
+	clk.Advance(loginRateLimitWindow + time.Second)
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{
+		PublicOrigin: strPtr("https://console.example.com"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < loginRateLimitGlobalMaxFailures; i++ {
+		b, _ := json.Marshal(map[string]string{"passcode": "wrong"})
+		r := httptest.NewRequest(http.MethodPost, "http://console.example.com/_colabone_web/login", bytes.NewReader(b))
+		r.Host = "console.example.com"
+		r.RemoteAddr = "127.0.0.1:54321"
+		r.Header.Set(ClientHeaderName, ClientHeaderValue)
+		r.Header.Set("CF-Connecting-IP", fmt.Sprintf("198.51.100.%d", i+1))
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("global failure %d expected 401, got %d", i+1, w.Code)
+		}
+	}
+	{
+		b, _ := json.Marshal(map[string]string{"passcode": passcode})
+		r := httptest.NewRequest(http.MethodPost, "http://console.example.com/_colabone_web/login", bytes.NewReader(b))
+		r.Host = "console.example.com"
+		r.RemoteAddr = "127.0.0.1:54321"
+		r.Header.Set(ClientHeaderName, ClientHeaderValue)
+		r.Header.Set("CF-Connecting-IP", "198.51.100.250")
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 after %d global failures across rotating IPs, got %d", loginRateLimitGlobalMaxFailures, w.Code)
+		}
+	}
+
+	// 4. Concurrent login burst from the same IP is atomic: at most loginRateLimitMaxFailures get 401.
+	clk.Advance(loginRateLimitWindow + time.Second)
+	const burst = 16
+	codes := make(chan int, burst)
+	var wg sync.WaitGroup
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b, _ := json.Marshal(map[string]string{"passcode": "wrong-concurrent"})
+			r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3232/_colabone_web/login", bytes.NewReader(b))
+			r.RemoteAddr = "127.0.0.1:54321"
+			r.Header.Set(ClientHeaderName, ClientHeaderValue)
+			r.Header.Set("CF-Connecting-IP", "203.0.113.77")
+			w := httptest.NewRecorder()
+			wc.Handler().ServeHTTP(w, r)
+			codes <- w.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	unauthCount, limitCount := 0, 0
+	for code := range codes {
+		switch code {
+		case http.StatusUnauthorized:
+			unauthCount++
+		case http.StatusTooManyRequests:
+			limitCount++
+		default:
+			t.Fatalf("unexpected concurrent login status %d", code)
+		}
+	}
+	if unauthCount != loginRateLimitMaxFailures || limitCount != burst-loginRateLimitMaxFailures {
+		t.Fatalf("atomic rate limit broken: 401=%d 429=%d (want %d and %d)", unauthCount, limitCount, loginRateLimitMaxFailures, burst-loginRateLimitMaxFailures)
+	}
+}
+
+func TestCommandBodyLimitsAndMediaUploadExemption(t *testing.T) {
+	if maxCommandBodyBytes != 64<<20 {
+		t.Fatalf("maxCommandBodyBytes = %d, want 64 MiB", maxCommandBodyBytes)
+	}
+	if maxMediaUploadCommandBodyBytes != 240<<20 {
+		t.Fatalf("maxMediaUploadCommandBodyBytes = %d, want 240 MiB", maxMediaUploadCommandBodyBytes)
+	}
+
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir: t.TempDir(),
+		Vault:     newMemoryVault(),
+		CallBridge: func(ctx context.Context, method string, payload map[string]any) (string, error) {
+			return fmt.Sprintf(`{"action":%q}`, method), nil
+		},
+	})
+	defer wc.Close()
+
+	// Use compact limits for fast, deterministic boundary checks while preserving exact production logic.
+	wc.maxCommandBodyBytes = 8 << 10            // 8 KiB normal limit
+	wc.maxMediaUploadCommandBodyBytes = 32 << 10 // 32 KiB media upload limit
+
+	passcode, err := wc.Passcode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := loginForCookie(t, wc.Handler(), "127.0.0.1:3232", passcode, nil)
+
+	postCmd := func(rawBody string, chunked bool) *httptest.ResponseRecorder {
+		var body io.Reader = strings.NewReader(rawBody)
+		if chunked {
+			body = io.NopCloser(strings.NewReader(rawBody))
+		}
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3232/api/command", body)
+		if chunked {
+			r.ContentLength = -1
+		}
+		r.RemoteAddr = "127.0.0.1:54321"
+		r.AddCookie(cookie)
+		r.Header.Set(ClientHeaderName, ClientHeaderValue)
+		w := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	// Normal command exceeding normal limit -> 413 (both Content-Length and chunked).
+	normalTooLarge := `{"action":"models.list","payload":{"blob":"` + strings.Repeat("a", 12<<10) + `"}}`
+	if w := postCmd(normalTooLarge, false); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("normal command > limit (Content-Length) expected 413, got %d", w.Code)
+	}
+	if w := postCmd(normalTooLarge, true); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("normal command > limit (chunked) expected 413, got %d", w.Code)
+	}
+
+	// All 4 allowed media upload commands are permitted between normalLimit and mediaLimit.
+	for _, action := range []string{
+		"comfyui.input.upload",
+		"comfyui.draft.media.save",
+		"comfyui.live.avatars.clip.upload",
+		"comfyui.live.driving.upload",
+	} {
+		mediaOK := fmt.Sprintf(`{"action":%q,"payload":{"data":%q}}`, action, strings.Repeat("b", 20<<10))
+		if w := postCmd(mediaOK, false); w.Code != http.StatusOK {
+			t.Fatalf("media upload %q expected 200, got %d body=%s", action, w.Code, w.Body.String())
+		}
+		if w := postCmd(mediaOK, true); w.Code != http.StatusOK {
+			t.Fatalf("chunked media upload %q expected 200, got %d body=%s", action, w.Code, w.Body.String())
+		}
+	}
+
+	// Media upload exceeding mediaLimit -> 413.
+	mediaTooLarge := `{"action":"comfyui.input.upload","payload":{"data":"` + strings.Repeat("c", 36<<10) + `"}}`
+	if w := postCmd(mediaTooLarge, true); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("media upload > mediaLimit expected 413, got %d", w.Code)
+	}
+
+	// Duplicate-action JSON bypass attempt: leading media action followed by non-media action -> 413!
+	dupBypass := `{"action":"comfyui.input.upload","payload":{"blob":"` + strings.Repeat("d", 16<<10) + `"},"action":"models.list"}`
+	if w := postCmd(dupBypass, true); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("duplicate-action body limit bypass expected 413, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestWebConsolePostCloseOperationsAndCallbackSuppression(t *testing.T) {
+	var closedFlag bool
+	var callbackMu sync.Mutex
+	callbacksAfterClose := 0
+
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir: t.TempDir(),
+		Vault:     newMemoryVault(),
+		OnStateChange: func(ColabOneWebConsoleState) {
+			callbackMu.Lock()
+			if closedFlag {
+				callbacksAfterClose++
+			}
+			callbackMu.Unlock()
+		},
+	})
+
+	port := reserveFreePort(t)
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{
+		Enabled: boolPtr(true),
+		Port:    intPtr(port),
+	}); err != nil {
+		t.Fatalf("Update enable failed: %v", err)
+	}
+
+	callbackMu.Lock()
+	closedFlag = true
+	callbackMu.Unlock()
+	wc.Close()
+
+	if err := wc.StartIfEnabled(); err != nil {
+		t.Fatalf("StartIfEnabled after Close expected nil no-op, got %v", err)
+	}
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{Enabled: boolPtr(true)}); err == nil {
+		t.Fatal("expected Update after Close to return error")
+	}
+	if _, err := wc.SetPasscode("new-passcode-123"); err == nil {
+		t.Fatal("expected SetPasscode after Close to return error")
+	}
+	if _, err := wc.CreateLoginTicket(false); err == nil {
+		t.Fatal("expected CreateLoginTicket after Close to return error")
+	}
+	_ = wc.RevokeSessions()
+	wc.emitStateChange(wc.State())
+
+	callbackMu.Lock()
+	gotAfter := callbacksAfterClose
+	callbackMu.Unlock()
+	if gotAfter != 0 {
+		t.Fatalf("expected 0 OnStateChange callbacks after Close(), got %d", gotAfter)
+	}
 }

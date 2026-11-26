@@ -21,6 +21,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/luolongfei/ColabOne/console/internal/hub"
 )
 
 const (
@@ -78,8 +80,6 @@ var (
 	auxIMatrixTail = regexp.MustCompile(`[._-]imatrix(?:[._-]?(?:micro\d*|v\d+))?\.gguf$`)
 	auxVocabHead   = regexp.MustCompile(`^(?:vocab|tokenizer|adapter)(?:[._-]|\.gguf$)`)
 	auxLoraTail    = regexp.MustCompile(`[._-]lora\.gguf$`)
-	videoRepoRe    = regexp.MustCompile(`(?i)(?:^|[-_/.])(?:wan2(?:\.[12])?|wan[-_]?2|ltx[-_]?video|ltx[-_]?2|hunyuan[-_]?video|cogvideox?|mochi[-_]?1|skyreels|framepack|animatediff|t2v|i2v|v2v)(?:$|[-_/.])`)
-	imageRepoRe    = regexp.MustCompile(`(?i)(?:^|[-_/.])(?:flux(?:\.?[12])?|sdxl|sd3(?:\.?5)?|stable[-_]?diffusion|z[-_]?image|qwen[-_]?image|hidream|lumina[-_]?image|kolors|pixart|auraflow|chroma|kontext|omnigen)(?:$|[-_/.])`)
 )
 
 var (
@@ -134,24 +134,6 @@ var (
 	chatSuffixTokens = map[string]struct{}{
 		"instruct": {},
 		"it":       {},
-	}
-	videoPipelines = map[string]struct{}{
-		"text-to-video":  {},
-		"image-to-video": {},
-		"video-to-video": {},
-		"any-to-video":   {},
-	}
-	imagePipelines = map[string]struct{}{
-		"text-to-image":                  {},
-		"image-to-image":                 {},
-		"unconditional-image-generation": {},
-		"inpainting":                     {},
-	}
-	textPipelines = map[string]struct{}{
-		"text-generation":      {},
-		"conversational":       {},
-		"image-text-to-text":   {},
-		"text2text-generation": {},
 	}
 	allowedModelFileKeys = map[string]struct{}{
 		"repo":     {},
@@ -1117,37 +1099,7 @@ func isAuxiliaryGGUF(p string) bool {
 }
 
 func classifyModality(pipelineTag string, tags []string, repo string) string {
-	pipeline := strings.ToLower(strings.TrimSpace(pipelineTag))
-	if _, ok := videoPipelines[pipeline]; ok {
-		return "video"
-	}
-	if _, ok := imagePipelines[pipeline]; ok {
-		return "image"
-	}
-	if _, ok := textPipelines[pipeline]; ok {
-		return "text"
-	}
-	hasImageTag := false
-	for _, t := range tags {
-		norm := strings.ToLower(strings.TrimSpace(t))
-		if _, ok := videoPipelines[norm]; ok {
-			return "video"
-		}
-		if _, ok := imagePipelines[norm]; ok {
-			hasImageTag = true
-		}
-	}
-	if hasImageTag {
-		return "image"
-	}
-	repoName := strings.TrimSpace(repo)
-	if videoRepoRe.MatchString(repoName) {
-		return "video"
-	}
-	if imageRepoRe.MatchString(repoName) {
-		return "image"
-	}
-	return "text"
+	return hub.ClassifyModality(pipelineTag, tags, repo)
 }
 
 // ---------------------------------------------------------------------------

@@ -305,6 +305,26 @@ function diskTagColor(opt: ColabOneVersionOption): string {
 function savedTag(filename: string): string {
   return props.savedTagForFile ? props.savedTagForFile(filename) : "";
 }
+
+function buildRepoHomeURL(repo: string): string {
+  const encodedPath = String(repo || "")
+    .trim()
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return encodedPath
+    ? `https://huggingface.co/${encodedPath}`
+    : "https://huggingface.co/";
+}
+
+async function openRepoHome() {
+  try {
+    await colabOneOpenURL(buildRepoHomeURL(props.repo));
+  } catch (err) {
+    console.warn("[ColabOne] Failed to open repository URL:", err);
+  }
+}
 </script>
 
 <template>
@@ -401,7 +421,7 @@ function savedTag(filename: string): string {
           type="link"
           size="small"
           class="co-inline-link"
-          @click="colabOneOpenURL('https://huggingface.co/' + repo)"
+          @click="openRepoHome"
         >
           {{ t("models.pickerRepoHome") }}
           <PhArrowSquareOut :size="12" />
@@ -570,7 +590,7 @@ function savedTag(filename: string): string {
           size="small"
           class="co-inline-link"
           :aria-label="t('models.pickerRepoHomeAria', { repo })"
-          @click="colabOneOpenURL('https://huggingface.co/' + repo)"
+          @click="openRepoHome"
         >
           {{ t("models.pickerRepoHomeShort") }}
           <PhArrowSquareOut :size="12" />

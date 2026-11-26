@@ -454,6 +454,7 @@ const loadingRollbackVersions = ref(false);
 const rollbackVersionsLoaded = ref(false);
 const rollbackVersionsError = ref("");
 const startingRollback = ref(false);
+let rollbackLoadSeq = 0;
 let unsubUpdateState: (() => void) | null = null;
 let unsubUpdateOpen: (() => void) | null = null;
 let updateProgressPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -3003,6 +3004,8 @@ function applyUpdateState(
   const normalized = normalizeColabOneUpdateState(raw);
   updateState.value = normalized;
   if (normalized.include_prerelease !== prevIncludePre) {
+    rollbackLoadSeq += 1;
+    loadingRollbackVersions.value = false;
     rollbackVersions.value = normalized.rollback_versions;
     rollbackVersionsLoaded.value = normalized.rollback_versions.length > 0;
     rollbackVersionsError.value = "";
@@ -3237,21 +3240,25 @@ async function handleStartUpdateInstall() {
 }
 
 async function handleLoadRollbackVersions(forceRefresh = false) {
-  if (loadingRollbackVersions.value) return;
-  if (!forceRefresh && rollbackVersionsLoaded.value) return;
+  if (!forceRefresh && (loadingRollbackVersions.value || rollbackVersionsLoaded.value)) {
+    return;
+  }
+  const seq = ++rollbackLoadSeq;
   loadingRollbackVersions.value = true;
   rollbackVersionsError.value = "";
   try {
     const list = await colabOneListRollbackVersions(forceRefresh);
-    if (stopped) return;
+    if (stopped || seq !== rollbackLoadSeq) return;
     rollbackVersions.value = normalizeColabOneRollbackVersions(list);
     rollbackVersionsLoaded.value = true;
   } catch (e) {
-    if (stopped) return;
+    if (stopped || seq !== rollbackLoadSeq) return;
     rollbackVersionsError.value =
       normalizeErrorKey(e) || t("update.rollbackLoadError");
   } finally {
-    loadingRollbackVersions.value = false;
+    if (!stopped && seq === rollbackLoadSeq) {
+      loadingRollbackVersions.value = false;
+    }
   }
 }
 
@@ -3327,6 +3334,8 @@ async function handleToggleUpdatePref(
   try {
     const next = await colabOneSetUpdatePreferences(nextAuto, nextPre);
     if (field === "include_prerelease") {
+      rollbackLoadSeq += 1;
+      loadingRollbackVersions.value = false;
       rollbackVersionsLoaded.value = false;
       rollbackVersions.value = [];
       rollbackVersionsError.value = "";
@@ -3781,6 +3790,7 @@ const isWebMode = computed(() => capabilities.value.runtime === "web");
 const webConsoleLoaded = ref(false);
 const webConsoleSaving = ref(false);
 const webConsolePasscodeBusy = ref(false);
+const webConsolePasscodeResetSeq = ref(0);
 const webConsoleTicketBusy = ref(false);
 const webConsoleRevoking = ref(false);
 let unsubWebConsole: (() => void) | null = null;
@@ -3864,6 +3874,7 @@ async function handleWebConsoleSetPasscode(passcode: string) {
   try {
     const next = await colabOneSetWebConsolePasscode(passcode);
     applyWebConsoleState(next);
+    webConsolePasscodeResetSeq.value += 1;
     notify(
       rotating
         ? t("webConsole.toastPasscodeRotated")
@@ -4081,6 +4092,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   stopped = true;
+  rollbackLoadSeq += 1;
   snapshotPoller.stop();
   unsubUpdateState?.();
   unsubUpdateState = null;
@@ -6600,6 +6612,7 @@ onUnmounted(() => {
                       :loading="!webConsoleLoaded"
                       :saving="webConsoleSaving"
                       :passcode-busy="webConsolePasscodeBusy"
+                      :passcode-reset-seq="webConsolePasscodeResetSeq"
                       :ticket-busy="webConsoleTicketBusy"
                       :revoking="webConsoleRevoking"
                       :load-saved-passcode="loadSavedWebConsolePasscode"
@@ -7699,7 +7712,7 @@ onUnmounted(() => {
   color: var(--co-accent-strong);
 }
 
-:global(:root[data-theme="dark"]) .co-brand-version.is-update-downloading {
+:root[data-theme="dark"] .co-brand-version.is-update-downloading {
   border-color: rgba(96, 165, 250, 0.42);
 }
 
@@ -7780,7 +7793,7 @@ onUnmounted(() => {
   background: var(--co-track);
 }
 
-:global(:root[data-theme="dark"]) .co-nav-pill-track {
+:root[data-theme="dark"] .co-nav-pill-track {
   border: 1px solid var(--co-border-secondary);
 }
 
@@ -7873,8 +7886,8 @@ onUnmounted(() => {
     transform 0.12s ease;
 }
 
-:global(:root[data-theme="dark"]) .co-nav-circle-btn,
-:global(:root[data-theme="dark"]) .co-logs-trigger {
+:root[data-theme="dark"] .co-nav-circle-btn,
+:root[data-theme="dark"] .co-logs-trigger {
   border: 1px solid var(--co-border-secondary);
 }
 
@@ -7904,12 +7917,12 @@ onUnmounted(() => {
   box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.54);
 }
 
-:global(:root[data-theme="dark"]) .co-nav-privacy-btn.is-active {
+:root[data-theme="dark"] .co-nav-privacy-btn.is-active {
   border-color: rgba(96, 165, 250, 0.42);
   box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.24);
 }
 
-:global(:root[data-theme="dark"]) .co-nav-privacy-btn.is-active:hover:not(:disabled) {
+:root[data-theme="dark"] .co-nav-privacy-btn.is-active:hover:not(:disabled) {
   border-color: rgba(96, 165, 250, 0.64);
 }
 
@@ -8205,7 +8218,7 @@ onUnmounted(() => {
   animation: co-settings-floating-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-:global(:root[data-theme="dark"]) .co-settings-floating-bar {
+:root[data-theme="dark"] .co-settings-floating-bar {
   border-color: rgba(255, 255, 255, 0.11);
 }
 
@@ -8338,7 +8351,6 @@ onUnmounted(() => {
 }
 
 @container co-navbar (max-width: 820px) {
-  .co-brand-version:not(.is-open),
   .co-web-mode-badge {
     display: none;
   }
@@ -8398,6 +8410,12 @@ onUnmounted(() => {
     height: 36px;
     padding: 0 9px 0 10px;
     gap: 4px;
+  }
+}
+
+@container co-navbar (max-width: 700px) {
+  .co-brand-version:not(.is-open) {
+    display: none;
   }
 }
 
@@ -8879,7 +8897,7 @@ onUnmounted(() => {
   color: #7c3aed;
 }
 
-:global(:root[data-theme="dark"]) .co-sr-icon.is-violet {
+:root[data-theme="dark"] .co-sr-icon.is-violet {
   background: rgba(139, 92, 246, 0.18);
   color: #a78bfa;
 }
@@ -9132,7 +9150,7 @@ onUnmounted(() => {
   color: #7c3aed;
 }
 
-:global(:root[data-theme="dark"]) .co-head-icon-badge.is-violet {
+:root[data-theme="dark"] .co-head-icon-badge.is-violet {
   background: rgba(139, 92, 246, 0.18);
   color: #a78bfa;
 }

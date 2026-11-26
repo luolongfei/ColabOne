@@ -759,6 +759,12 @@ func (c *ColabOneController) canAutoUpgradeRuntime(rt map[string]any, expectedEP
 		canvasState == "starting" || canvasState == "ready" || canvasState == "reconnecting" {
 		return false
 	}
+	liveStudio := asMap(rt["live_studio"])
+	liveState := asString(liveStudio["state"])
+	if asBool(liveStudio["running"]) ||
+		liveState == "starting" || liveState == "ready" || liveState == "stopping" {
+		return false
+	}
 	for _, t := range asMapSlice(rt["tasks"]) {
 		if asString(t["state"]) == "running" {
 			return false
@@ -780,28 +786,33 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 	c.mu.Unlock()
 
 	if now-lastAuth > 30 {
+		acctGen, acctCreds := c.snapshotAccountGuard()
 		acct, err := c.provider.Account(ctx)
 		if err != nil {
 			if c.isShuttingDown(ctx) {
 				return
 			}
-			hadConnError = true
-			// Back off 15s instead of hammering every 2s and starving heartbeats.
-			c.mu.Lock()
-			c.lastAuth = now - 15
-			c.mu.Unlock()
-			c.Update(map[string]any{
-				"error": "连接检查失败：" + errTypeName(err) + "。客户端会自动重试，请检查网络连接。",
-			})
+			if c.accountGuardMatches(acctGen, acctCreds) {
+				hadConnError = true
+				// Back off 15s instead of hammering every 2s and starving heartbeats.
+				c.mu.Lock()
+				if c.accountGen.Load() == acctGen {
+					c.lastAuth = now - 15
+				}
+				c.mu.Unlock()
+				if c.accountGen.Load() == acctGen {
+					c.Update(map[string]any{
+						"error": "连接检查失败：" + errTypeName(err) + "。客户端会自动重试，请检查网络连接。",
+					})
+				}
+			}
 		} else {
 			if c.isShuttingDown(ctx) {
 				return
 			}
-			c.Update(map[string]any{"account": acct})
-			c.mu.Lock()
-			c.lastAuth = now
-			c.mu.Unlock()
-			c.observerWake.Set()
+			if c.applyAccountRefreshIfCurrent(acctGen, acctCreds, acct, now) {
+				c.observerWake.Set()
+			}
 		}
 	}
 
@@ -848,14 +859,17 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				}
 				if len(sessions) == 0 {
 					rtState := asString(asMap(c.data["runtime"])["state"])
-					if rtState == "ready" || rtState == "disconnected" {
+					if rtState == "ready" || rtState == "disconnected" || rtState == "releasing" {
 						c.remoteWorkflowVersions = make(map[string]float64)
 						pendingLogs = c.updateLocked(map[string]any{
-							"runtime":       map[string]any{"state": "stopped"},
-							"models":        c.Presets(),
-							"workflows":     c.mergeWorkflowsLocked(nil),
-							"tts_engines":   c.builtinTtsEngines(),
-							"comfy_outputs": []any{},
+							"runtime":              map[string]any{"state": "stopped"},
+							"models":               c.Presets(),
+							"workflows":            c.mergeWorkflowsLocked(nil),
+							"tts_engines":          c.builtinTtsEngines(),
+							"comfy_outputs":        []any{},
+							"live_avatars":         []map[string]any{},
+							"live_driving_motions": []map[string]any{},
+							"live_catalog":         map[string]any{},
 						})
 					}
 				}

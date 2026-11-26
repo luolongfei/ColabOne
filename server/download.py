@@ -10,6 +10,7 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from http.cookiejar import DefaultCookiePolicy
 import json
 import math
 import os
@@ -208,7 +209,12 @@ def cached_bytes(partial, size, digest, chunk=CHUNK):
     if partial.is_symlink() or meta.is_symlink():
         return 0
     if not meta.exists():
-        return min(partial.stat().st_size, size) if partial.exists() else 0
+        if not partial.exists():
+            return 0
+        length = partial.stat().st_size
+        if length > size:
+            return 0
+        return length
     _, finished = resume_state(partial, size, digest, chunk)
     return sum(min(chunk, size - i * chunk) for i in finished)
 
@@ -317,6 +323,7 @@ def parallel_file(
             if not hasattr(local, "session"):
                 local.session = requests.Session()
                 local.session.trust_env = False
+                local.session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
                 with lock:
                     sessions.append(local.session)
             fetch = local.session.get

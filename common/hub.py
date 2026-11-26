@@ -278,6 +278,13 @@ def _decode_compound_cursor(cursor: str, allowed: tuple[str, ...]) -> dict[str, 
     return result
 
 
+def _is_valid_hub_repo(repo: object) -> bool:
+    if not isinstance(repo, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        return False
+    owner, name = repo.split("/", 1)
+    return owner not in (".", "..") and name not in (".", "..")
+
+
 def _fetch_models_page(
     effective_query: str,
     sort: str,
@@ -308,8 +315,10 @@ def _fetch_models_page(
         raise RuntimeError("模型社区返回了无效结果")
     models = []
     for item in items:
-        repo = item.get("id", "")
-        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        if not isinstance(item, dict):
+            continue
+        repo = item.get("id")
+        if not _is_valid_hub_repo(repo):
             continue
         pipeline = str(item.get("pipeline_tag", "") or "")
         tags = item.get("tags") if isinstance(item.get("tags"), list) else []
@@ -500,7 +509,7 @@ def search_models(
 
 
 def model_files(repo, token="", session=None):
-    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+    if not _is_valid_hub_repo(repo):
         raise ValueError("模型仓库不合法")
     resp = request("/" + repo + "/revision/main", {"blobs": "true"}, token, session)
     try:

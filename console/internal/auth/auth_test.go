@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -3760,6 +3761,209 @@ func TestTokenExpiryDurationClampingPreventsOverflow(t *testing.T) {
 			if !errors.Is(err, ErrAuthExpired) {
 				t.Fatalf("body %s: Credentials() err = %v, want ErrAuthExpired", badBody, err)
 			}
+		}
+	})
+}
+
+func TestRefreshRejectsUntrustedTokenURIWithoutOverride(t *testing.T) {
+	now := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+
+	var hits atomic.Int32
+	evilSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"stolen","expires_in":3600}`))
+	}))
+	defer evilSrv.Close()
+
+	untrustedURIs := []string{
+		evilSrv.URL,
+		evilSrv.URL + "/token",
+		"http://oauth2.googleapis.com/token",
+		"https://oauth2.googleapis.com/token?extra=1",
+		"https://oauth2.googleapis.com/token?",
+		"https://oauth2.googleapis.com/token#frag",
+		"https://oauth2.googleapis.com/token#",
+		"https://user:pass@oauth2.googleapis.com/token",
+		"https://oauth2.googleapis.com:8443/token",
+		"https://oauth2.googleapis.com.evil.example/token",
+		"https://accounts.google.com/o/oauth2/token/",
+		" https://oauth2.googleapis.com/token ",
+	}
+
+	for _, badURI := range untrustedURIs {
+		t.Run(badURI, func(t *testing.T) {
+			v := newMemoryVault()
+			_ = v.Set("colab", &ColabOneCredentials{
+				Token:        "expired",
+				RefreshToken: "1//super-secret-refresh-token",
+				TokenURI:     badURI,
+				Expiry:       now.Add(-time.Hour).Format(time.RFC3339),
+			})
+			a := NewColabOneAuth(v, WithNowFn(func() time.Time { return now }), WithHTTPClient(evilSrv.Client()))
+			if _, err := a.Credentials(context.Background(), "colab"); !errors.Is(err, ErrUntrustedTokenURI) {
+				t.Fatalf("TokenURI=%q: err=%v, want ErrUntrustedTokenURI", badURI, err)
+			}
+		})
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("untrusted token server was contacted %d times, want 0", hits.Load())
+	}
+
+	// Verify exact allowlist accepts empty and both official Google OAuth token URIs.
+	for _, allowed := range []string{
+		"",
+		"https://oauth2.googleapis.com/token",
+		"https://accounts.google.com/o/oauth2/token",
+	} {
+		got, err := validateGoogleTokenURI(allowed)
+		if err != nil {
+			t.Fatalf("validateGoogleTokenURI(%q) unexpected error: %v", allowed, err)
+		}
+		if got != allowed {
+			t.Fatalf("validateGoogleTokenURI(%q) = %q, want %q", allowed, got, allowed)
+		}
+	}
+}
+
+func TestBuildRcloneConfRejectsINIInjectionInClientCredentials(t *testing.T) {
+	cases := []struct {
+		name         string
+		clientID     string
+		clientSecret string
+	}{
+		{"newline in client_id", "cid\n[evil]\ntype = local", "secret"},
+		{"carriage return in client_id", "cid\revil = 1", "secret"},
+		{"nul in client_id", "cid\x00evil", "secret"},
+		{"newline in client_secret", "cid", "sec\n[evil]\ntype = local"},
+		{"carriage return in client_secret", "cid", "sec\revil = 1"},
+		{"nul in client_secret", "cid", "sec\x00evil"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newMemoryVault()
+			_ = v.Set("colab", &ColabOneCredentials{
+				Token:        "access-tok",
+				RefreshToken: "refresh-tok",
+				ClientID:     tc.clientID,
+				ClientSecret: tc.clientSecret,
+				Expiry:       "2099-01-01T00:00:00Z",
+				Scopes:       []string{"https://www.googleapis.com/auth/drive.file"},
+			})
+			a := NewColabOneAuth(v)
+			conf, err := a.BuildRcloneConf(context.Background(), nil)
+			if err == nil || conf != "" {
+				t.Fatalf("expected error and empty conf for %s, got conf=%q err=%v", tc.name, conf, err)
+			}
+		})
+	}
+}
+
+func TestColabLoginClearsFlowOnFailureAndBindsIPv6LoopbackBestEffort(t *testing.T) {
+	t.Run("timeout clears pending flow", func(t *testing.T) {
+		a := NewColabOneAuth(newMemoryVault(), WithLoopbackTimeout(40*time.Millisecond))
+		err := a.ColabLogin(context.Background(), func(_ string) {})
+		if !errors.Is(err, ErrLoginTimeout) {
+			t.Fatalf("err = %v, want ErrLoginTimeout", err)
+		}
+		if a.HasPendingFlow() {
+			t.Fatal("HasPendingFlow() must be false after ColabLogin timeout")
+		}
+	})
+
+	t.Run("context cancel clears pending flow", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		a := NewColabOneAuth(newMemoryVault())
+		err := a.ColabLogin(ctx, func(_ string) { cancel() })
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+		if a.HasPendingFlow() {
+			t.Fatal("HasPendingFlow() must be false after ColabLogin cancel")
+		}
+	})
+
+	t.Run("access_denied clears pending flow", func(t *testing.T) {
+		a := NewColabOneAuth(newMemoryVault())
+		err := a.ColabLogin(context.Background(), func(authURL string) {
+			go func() {
+				u, _ := url.Parse(authURL)
+				redirectURI := u.Query().Get("redirect_uri")
+				state := u.Query().Get("state")
+				resp, rerr := http.Get(redirectURI + "?state=" + url.QueryEscape(state) + "&error=access_denied")
+				if rerr == nil {
+					_, _ = io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+				}
+			}()
+		})
+		if !errors.Is(err, ErrAuthCancelled) {
+			t.Fatalf("err = %v, want ErrAuthCancelled", err)
+		}
+		if a.HasPendingFlow() {
+			t.Fatal("HasPendingFlow() must be false after ErrAuthCancelled")
+		}
+	})
+
+	t.Run("IPv6 companion listener serves callback when IPv6 loopback is available", func(t *testing.T) {
+		// Skip only if the test host has no IPv6 loopback support.
+		probe, err := net.Listen("tcp6", "[::1]:0")
+		if err != nil {
+			t.Skipf("IPv6 loopback unavailable in this environment: %v", err)
+		}
+		_ = probe.Close()
+
+		tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"v6-tok","refresh_token":"v6-ref","expires_in":3600}`))
+		}))
+		defer tokenSrv.Close()
+
+		userInfoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"email":"v6@example.com","sub":"sub-v6"}`))
+		}))
+		defer userInfoSrv.Close()
+
+		a := NewColabOneAuth(
+			newMemoryVault(),
+			WithTokenURI(tokenSrv.URL),
+			WithUserInfoURL(userInfoSrv.URL),
+			WithHTTPClient(tokenSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		var gotStatus atomic.Int32
+		reqDone := make(chan struct{})
+		err = a.ColabLogin(context.Background(), func(authURL string) {
+			go func() {
+				defer close(reqDone)
+				u, _ := url.Parse(authURL)
+				redirectURI := u.Query().Get("redirect_uri")
+				ru, _ := url.Parse(redirectURI)
+				v6URL := fmt.Sprintf("http://[::1]:%s/?state=%s&code=%s",
+					ru.Port(),
+					url.QueryEscape(u.Query().Get("state")),
+					url.QueryEscape(testAuthCode),
+				)
+				resp, rerr := http.Get(v6URL)
+				if rerr == nil {
+					gotStatus.Store(int32(resp.StatusCode))
+					_, _ = io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+				}
+			}()
+		})
+		if err != nil {
+			t.Fatalf("ColabLogin via IPv6 loopback failed: %v", err)
+		}
+		<-reqDone
+		if gotStatus.Load() != http.StatusOK {
+			t.Fatalf("IPv6 callback status = %d, want 200", gotStatus.Load())
+		}
+		if a.HasPendingFlow() {
+			t.Fatal("HasPendingFlow() must be false after IPv6 login completion")
 		}
 	})
 }

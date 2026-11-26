@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1021,4 +1023,192 @@ func TestSyncDriveOutputsPreservesExportedRecordIDMetadataAndMergeConsistency(t 
 func asFloatZero(v any) float64 {
 	f, _ := asFloat(v)
 	return f
+}
+
+func TestDriveOutputsCanonicalMIMECorruptBackupRedirectRefusalAndSyncRaces(t *testing.T) {
+	// 1. driveOutputRecordFromMap ignores untrusted kind/mime and derives canonically from ext.
+	rec := driveOutputRecordFromMap(map[string]any{
+		"id":        "aaaa1111bbbb2222cccc3333dddd4444",
+		"filename":  "render.png",
+		"extension": "png",
+		"kind":      "executable",
+		"mime":      "text/html",
+		"size":      1024,
+	})
+	if rec == nil || rec.Kind != "image" || rec.Mime != "image/png" {
+		t.Fatalf("expected canonical image/image/png, got %+v", rec)
+	}
+
+	// 2. loadDriveOutputs forces canonical kind/mime and backs up corrupt JSON to .corrupt-<ts>.
+	h := newTestHarness(t, false)
+	validID := "bbbb1111cccc2222dddd3333eeee4444"
+	spoofedDisk := map[string]any{
+		"version": 1,
+		"accounts": map[string]any{
+			"sub:sub-load": map[string]any{
+				validID: map[string]any{
+					"id":        validID,
+					"filename":  "clip.mp4",
+					"extension": "mp4",
+					"kind":      "html",
+					"mime":      "text/html",
+					"size":      2048,
+				},
+			},
+		},
+	}
+	rawValid, _ := json.Marshal(spoofedDisk)
+	if err := os.WriteFile(h.ctrl.driveOutputsPath(), rawValid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.ctrl.loadDriveOutputs()
+	h.ctrl.mu.Lock()
+	loadedRec := h.ctrl.driveOutputs["sub:sub-load"][validID]
+	h.ctrl.mu.Unlock()
+	if loadedRec == nil || loadedRec.Kind != "video" || loadedRec.Mime != "video/mp4" {
+		t.Fatalf("loadDriveOutputs did not canonicalize kind/mime: %+v", loadedRec)
+	}
+
+	if err := os.WriteFile(h.ctrl.driveOutputsPath(), []byte("{corrupt-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.ctrl.loadDriveOutputs()
+	matches, err := filepath.Glob(h.ctrl.driveOutputsPath() + ".corrupt-*")
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("expected corrupt drive_outputs.json backup .corrupt-<ts>, matches=%v err=%v", matches, err)
+	}
+
+	// 3. driveHTTPClient refuses HTTP 302 redirects without following them.
+	redirectFollowed := false
+	redirTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectFollowed = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirTarget.Close()
+	redirDrive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirTarget.URL+"/leak", http.StatusFound)
+	}))
+	defer redirDrive.Close()
+
+	hRedir := newTestHarness(t, false)
+	hRedir.ctrl.driveAPIBaseURL = redirDrive.URL
+	hRedir.auth.driveScope = true
+	hRedir.auth.requiresQuota = false
+	_ = hRedir.vault.Set("colab", map[string]any{"token": "tok-redir", "refresh_token": "rt-redir"})
+	_ = hRedir.vault.Set("google_profile", map[string]any{"sub": "sub-redir", "email": "redir@example.com"})
+	if _, err := hRedir.ctrl.SyncDriveOutputs(context.Background()); err == nil {
+		t.Fatal("expected SyncDriveOutputs to fail on 302 redirect")
+	}
+	if redirectFollowed {
+		t.Fatal("driveHTTPClient followed a 302 redirect")
+	}
+
+	// 4. SyncDriveOutputs concurrent delete (no resurrection), concurrent add (merged),
+	//    account-scoped syncing status, and semaphore ctx.Done() cancellation.
+	deletedID := "11111111222222223333333344444444"
+	keptID := "22222222333333334444444455555555"
+	addedID := "33333333444444445555555566666666"
+
+	inListCh := make(chan struct{})
+	releaseListCh := make(chan struct{})
+	var closeOnce sync.Once
+	raceDrive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(q, "name = 'ColabOne_Drive'"):
+			_, _ = w.Write([]byte(`{"files":[{"id":"dir-root","name":"ColabOne_Drive"}]}`))
+		case strings.Contains(q, "name = 'workspace'"):
+			_, _ = w.Write([]byte(`{"files":[{"id":"dir-ws","name":"workspace"}]}`))
+		case strings.Contains(q, "name = 'comfyui-outputs'"):
+			_, _ = w.Write([]byte(`{"files":[{"id":"dir-co","name":"comfyui-outputs"}]}`))
+		case strings.Contains(q, "'dir-co' in parents"):
+			closeOnce.Do(func() { close(inListCh) })
+			<-releaseListCh
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"files": []map[string]any{
+					{"id": "fid-del", "name": deletedID + ".png", "size": "100"},
+					{"id": "fid-keep", "name": keptID + ".png", "size": "200"},
+				},
+			})
+		default:
+			_, _ = w.Write([]byte(`{"files":[]}`))
+		}
+	}))
+	defer raceDrive.Close()
+
+	hRace := newTestHarness(t, false)
+	hRace.ctrl.driveAPIBaseURL = raceDrive.URL
+	hRace.auth.driveScope = true
+	hRace.auth.requiresQuota = false
+	_ = hRace.vault.Set("colab", map[string]any{"token": "tok-a", "refresh_token": "rt-a"})
+	_ = hRace.vault.Set("google_profile", map[string]any{"sub": "sub-acct-a", "email": "a@example.com"})
+	hRace.ctrl.mu.Lock()
+	hRace.ctrl.driveOutputs["sub:sub-acct-a"] = map[string]*ColabOneDriveOutputRecord{
+		deletedID: {
+			ID:                   deletedID,
+			Kind:                 "image",
+			Filename:             deletedID + ".png",
+			Extension:            "png",
+			Mime:                 "image/png",
+			Size:                 100,
+			DriveSynced:          true,
+			DriveWorkspaceFileID: "fid-del",
+		},
+	}
+	hRace.ctrl.mu.Unlock()
+
+	syncDone := make(chan error, 1)
+	go func() {
+		_, err := hRace.ctrl.SyncDriveOutputs(context.Background())
+		syncDone <- err
+	}()
+
+	<-inListCh
+
+	// While sync is in flight for sub:sub-acct-a:
+	// (a) Snapshot syncing is true for acct-a.
+	_, statusA := hRace.ctrl.mergeComfyOutputsForSnapshot(map[string]any{"state": "stopped"}, nil, true)
+	if !asBool(statusA["syncing"]) {
+		t.Fatalf("expected syncing=true for active syncing account A, got %#v", statusA)
+	}
+	// (b) Another SyncDriveOutputs waiting on the semaphore must respect ctx.Done().
+	ctxCancel, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if _, err := hRace.ctrl.SyncDriveOutputs(ctxCancel); err == nil {
+		t.Fatal("expected blocked SyncDriveOutputs to fail when ctx cancels")
+	}
+	// (c) Account-scoped syncing status: temporarily inspect as another account -> false.
+	_ = hRace.vault.Set("google_profile", map[string]any{"sub": "sub-acct-b", "email": "b@example.com"})
+	_, statusB := hRace.ctrl.mergeComfyOutputsForSnapshot(map[string]any{"state": "stopped"}, nil, true)
+	if asBool(statusB["syncing"]) {
+		t.Fatalf("expected syncing=false for different account B while A is syncing, got %#v", statusB)
+	}
+	_ = hRace.vault.Set("google_profile", map[string]any{"sub": "sub-acct-a", "email": "a@example.com"})
+
+	// (d) Concurrent delete of deletedID and concurrent addition of addedID while sync is in flight.
+	hRace.ctrl.removeDriveOutputRecord(deletedID)
+	hRace.ctrl.recordExportedDriveOutput(addedID, map[string]any{
+		"filename":      "fresh_export.png",
+		"size":          333,
+		"drive_file_id": "fid-added",
+	})
+
+	close(releaseListCh)
+	if err := <-syncDone; err != nil {
+		t.Fatalf("SyncDriveOutputs failed: %v", err)
+	}
+
+	hRace.ctrl.mu.Lock()
+	finalBucket := hRace.ctrl.driveOutputs["sub:sub-acct-a"]
+	hRace.ctrl.mu.Unlock()
+	if _, resurrected := finalBucket[deletedID]; resurrected {
+		t.Fatalf("deleted output %s was resurrected by in-flight SyncDriveOutputs", deletedID)
+	}
+	if finalBucket[keptID] == nil {
+		t.Fatalf("expected discovered output %s to remain present", keptID)
+	}
+	if finalBucket[addedID] == nil || finalBucket[addedID].DriveFileID != "fid-added" {
+		t.Fatalf("expected concurrently added output %s to be merged into final bucket, got %+v", addedID, finalBucket[addedID])
+	}
 }

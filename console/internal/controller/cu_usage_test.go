@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func almostEqualCU(a, b, tol float64) bool {
@@ -715,5 +716,70 @@ func TestColabOneCUUsageStoreEstimateWindowCU(t *testing.T) {
 	// Outside any recorded bucket or run -> ok=false
 	if _, _, _, found := store.EstimateWindowCU("creator@example.com", base-7200, base-6600); found {
 		t.Fatal("expected ok=false for window far outside recorded telemetry")
+	}
+}
+
+func TestEstimateWindowCURejectsExtremeTimestampsAndLoadsIANATimezone(t *testing.T) {
+	dir := t.TempDir()
+	base := 1763856000.0
+	store := NewColabOneCUUsageStore(dir, func() float64 { return base + 3600 })
+	store.RecordSample("tz@example.com", base+60, 100.0, true, 10.0, 1)
+	store.RecordSample("tz@example.com", base+660, 98.33, true, 10.0, 1)
+
+	// Extreme / malformed timestamps must return immediately without loop freeze or int64 wraparound.
+	badWindows := [][2]float64{
+		{0, 1e18},
+		{base, 1e18},
+		{base, math.MaxFloat64},
+		{-1e18, base},
+		{base - 40*86400, base},      // > 30 day elapsed cap
+		{base + 600, base + 600},     // zero elapsed
+		{base + 600, base + 300},     // inverted
+		{math.NaN(), base + 600},     // NaN
+		{base, math.Inf(1)},          // +Inf
+		{math.Inf(-1), base + 600},   // -Inf
+		{4102444800.0, 4102445400.0}, // beyond year 2100 cap
+	}
+	startWall := time.Now()
+	for _, w := range badWindows {
+		if _, _, _, ok := store.EstimateWindowCU("tz@example.com", w[0], w[1]); ok {
+			t.Fatalf("expected malformed window (%v, %v) to return ok=false", w[0], w[1])
+		}
+	}
+	if time.Since(startWall) > 2*time.Second {
+		t.Fatalf("EstimateWindowCU took too long on malformed windows: %v", time.Since(startWall))
+	}
+
+	// Verify embedded time/tzdata supports IANA timezones reliably across platforms (including Windows).
+	for _, tz := range []string{"Asia/Shanghai", "America/New_York", "Europe/London"} {
+		if _, err := time.LoadLocation(tz); err != nil {
+			t.Fatalf("time.LoadLocation(%q) failed: %v", tz, err)
+		}
+	}
+	// 2025-11-22 20:00:00 UTC (1763841600): 2025-11-23 in Asia/Shanghai (+8), 2025-11-22 in America/New_York (-5).
+	tzStore := NewColabOneCUUsageStore(t.TempDir(), func() float64 { return 1763845200.0 })
+	tzStore.RecordSample("tzdate@example.com", 1763841660.0, 100.0, true, 6.0, 1)
+	tzStore.RecordSample("tzdate@example.com", 1763842260.0, 99.0, true, 6.0, 1)
+	resSH := tzStore.Query(ColabOneCUUsageQuery{
+		AccountEmail: "tzdate@example.com",
+		LoggedIn:     true,
+		Start:        1763841600,
+		End:          1763845200,
+		Timezone:     "Asia/Shanghai",
+	})
+	resNY := tzStore.Query(ColabOneCUUsageQuery{
+		AccountEmail: "tzdate@example.com",
+		LoggedIn:     true,
+		Start:        1763841600,
+		End:          1763845200,
+		Timezone:     "America/New_York",
+	})
+	datesSH, _ := resSH["active_dates"].([]string)
+	datesNY, _ := resNY["active_dates"].([]string)
+	if len(datesSH) != 1 || datesSH[0] != "2025-11-23" {
+		t.Fatalf("expected Asia/Shanghai active_dates=[2025-11-23], got %#v", resSH["active_dates"])
+	}
+	if len(datesNY) != 1 || datesNY[0] != "2025-11-22" {
+		t.Fatalf("expected America/New_York active_dates=[2025-11-22], got %#v", resNY["active_dates"])
 	}
 }

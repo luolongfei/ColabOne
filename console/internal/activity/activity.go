@@ -43,17 +43,19 @@ const (
 
 var (
 	urlPattern = regexp.MustCompile(
-		`(?i)(?:https?|wss?|socks5h?|socks4a?)://` +
-			`(?:(?:[^` + unicodeSpace + `<>"'\)\]/\?#\[]+@)?` +
-			`\[[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[0-9A-Za-z._~%-]+)?\]` +
+		`(?i)(?:https?|wss?|rtmps?|socks5h?|socks4a?)://` +
+			`(?:[^` + unicodeSpace + `<>"'/\?#]+@` +
+			`(?:\[[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[0-9A-Za-z._~%-]+)?\]` +
+			`|[^` + unicodeSpace + `<>"'\)\]/\?#@:;,.][^` + unicodeSpace + `<>"'\)\]/\?#]*)` +
 			`[^` + unicodeSpace + `<>"'\)\]]*` +
+			`|\[[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[0-9A-Za-z._~%-]+)?\][^` + unicodeSpace + `<>"'\)\]]*` +
 			`|[^` + unicodeSpace + `<>"'\)\]]+)`,
 	)
 	basicTokenInQuotedPattern = regexp.MustCompile(
 		`(?i)\bBasic[` + unicodeSpace + `]+[^` + unicodeSpace + `,;]+`,
 	)
 	credentialPattern = regexp.MustCompile(
-		`(?:ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_[\w-]{40,}|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,})`,
+		`(?:ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_web_[\w-]{20,}|co_[\w-]{40,}|\bsk-[A-Za-z0-9._-]{10,}\b|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,})`,
 	)
 
 	diskLineReplacer = strings.NewReplacer("\r", " ", "\n", " ")
@@ -76,6 +78,7 @@ func redactCredentials(text string) string {
 		!strings.Contains(text, "1//") &&
 		!strings.Contains(text, "hf_") &&
 		!strings.Contains(text, "co_") &&
+		!strings.Contains(text, "sk-") &&
 		!strings.Contains(text, "eyJ") &&
 		!strings.Contains(text, "4/") {
 		return text
@@ -880,6 +883,7 @@ type bracketContext struct {
 	lastOuterMatcher *bracketMatcher
 	lastEscSpan      quotedSpan
 	lastEscMatcher   *bracketMatcher
+	braceClose       map[int]int
 }
 
 func (c *bracketContext) init() {
@@ -891,10 +895,9 @@ func (c *bracketContext) init() {
 	c.escapedSpans = buildQuotedSpans(c.text, true)
 }
 
-func (c *bracketContext) matchClose(openIdx int) (closeIdx int, limit int) {
+func (c *bracketContext) enclosingRange(openIdx int) (start, end int, usedEsc bool) {
 	c.init()
-	start, end := 0, len(c.text)
-	usedEsc := false
+	start, end = 0, len(c.text)
 	if sp, ok := findEnclosingSpan(c.outerSpans, openIdx); ok {
 		start, end = sp.contentStart, sp.contentEnd
 	}
@@ -910,6 +913,11 @@ func (c *bracketContext) matchClose(openIdx int) (closeIdx int, limit int) {
 			usedEsc = true
 		}
 	}
+	return start, end, usedEsc
+}
+
+func (c *bracketContext) matchClose(openIdx int) (closeIdx int, limit int) {
+	start, end, usedEsc := c.enclosingRange(openIdx)
 	if start == 0 && end == len(c.text) {
 		if c.rootMatcher == nil {
 			c.rootMatcher = &bracketMatcher{text: c.text}
@@ -944,6 +952,82 @@ func (c *bracketContext) matchClose(openIdx int) (closeIdx int, limit int) {
 		return -1, end
 	}
 	return start + rel, end
+}
+
+// matchBraceClose finds the matching '}' for a JSON/dict object '{' at openIdx
+// within its enclosing quoted span in amortized O(N) time.
+func (c *bracketContext) matchBraceClose(openIdx int) (closeIdx int, limit int) {
+	_, end, _ := c.enclosingRange(openIdx)
+	if openIdx < 0 || openIdx >= end || c.text[openIdx] != '{' {
+		return -1, end
+	}
+	if c.braceClose != nil {
+		if res, ok := c.braceClose[openIdx]; ok {
+			return res, end
+		}
+	} else {
+		c.braceClose = make(map[int]int)
+	}
+
+	scoped := c.text[:end]
+	first := skipUnicodeSpace(scoped, openIdx+1)
+	if first >= end {
+		c.braceClose[openIdx] = -1
+		return -1, end
+	}
+	if scoped[first] == '}' {
+		c.braceClose[openIdx] = first
+		return first, end
+	}
+	if !isQuotedStart(scoped, first) {
+		c.braceClose[openIdx] = -1
+		return -1, end
+	}
+
+	stack := []int{openIdx}
+	failAll := func() (int, int) {
+		for _, idx := range stack {
+			c.braceClose[idx] = -1
+		}
+		return -1, end
+	}
+
+	i := openIdx + 1
+	for i < end {
+		if isQuotedStart(scoped, i) {
+			_, _, closeDelim, nextPos, ok := scanQuotedString(scoped, i)
+			if ok {
+				if closeDelim == "" {
+					return failAll()
+				}
+				i = nextPos
+				continue
+			}
+		}
+		switch scoped[i] {
+		case '{':
+			if cached, ok := c.braceClose[i]; ok {
+				if cached >= 0 {
+					i = cached + 1
+					continue
+				}
+				return failAll()
+			}
+			stack = append(stack, i)
+			i++
+		case '}':
+			top := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			c.braceClose[top] = i
+			if len(stack) == 0 {
+				return i, end
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return failAll()
 }
 
 // scanAuthTokenTail scans the value portion of an unquoted Bearer or Basic
@@ -1085,7 +1169,20 @@ func findAuthKeyPrefix(s string, from int) (int, bool) {
 	return 0, false
 }
 
-var secretKeySuffixes = [...]string{"token", "password", "passwd", "client_secret", "api_key", "code"}
+var secretKeySuffixes = [...]string{
+	"token",
+	"password",
+	"passwd",
+	"client_secret",
+	"client-secret",
+	"secret_key",
+	"secret-key",
+	"stream_key",
+	"api_key",
+	"api-key",
+	"secret",
+	"code",
+}
 
 func hasSecretKeySuffix(s string, floor, end int) bool {
 	avail := end - floor
@@ -1533,6 +1630,33 @@ func redactKeyValueSecrets(text string) string {
 				b.WriteString(redacted)
 				cursor = nextPos
 			}
+		} else if valStart < len(text) && text[valStart] == '{' {
+			closeIdx, limit := bctx.matchBraceClose(valStart)
+			if closeIdx >= 0 {
+				if redacted, ok := redactSecretJSONObject(text[valStart : closeIdx+1]); ok {
+					b.WriteString(text[cursor:valStart])
+					b.WriteString(redacted)
+					cursor = closeIdx + 1
+				} else if end := scanUnquotedSecretTail(text[:limit], valStart); end > valStart {
+					b.WriteString(text[cursor:valStart])
+					b.WriteString(redactedValue)
+					cursor = end
+				} else {
+					b.WriteString(text[cursor:valStart])
+					cursor = valStart
+				}
+			} else if redacted, nextPos, ok := redactUnclosedSecretJSONObject(text[:limit], valStart); ok {
+				b.WriteString(text[cursor:valStart])
+				b.WriteString(redacted)
+				cursor = nextPos
+			} else if end := scanUnquotedSecretTail(text[:limit], valStart); end > valStart {
+				b.WriteString(text[cursor:valStart])
+				b.WriteString(redactedValue)
+				cursor = end
+			} else {
+				b.WriteString(text[cursor:valStart])
+				cursor = valStart
+			}
 		} else if isQuotedStart(text, valStart) {
 			openDelim, content, closeDelim, nextPos, ok := scanQuotedString(text, valStart)
 			if ok {
@@ -1566,6 +1690,316 @@ func redactKeyValueSecrets(text string) string {
 		}
 	}
 	return b.String()
+}
+
+type jsonRedactState uint8
+
+const (
+	jsonStateObjKey jsonRedactState = iota
+	jsonStateObjColon
+	jsonStateObjValue
+	jsonStateObjComma
+	jsonStateArrValue
+	jsonStateArrComma
+)
+
+// redactSecretJSONObject redacts all non-empty quoted string values inside a
+// balanced JSON/Python-dict object bound to a secret key while preserving
+// object keys, empty strings, bare JSON scalars, and structure.
+func redactSecretJSONObject(s string) (string, bool) {
+	if len(s) < 2 || s[0] != '{' || s[len(s)-1] != '}' {
+		return "", false
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	b.WriteByte('{')
+	pos := 1
+	stack := []jsonRedactState{jsonStateObjKey}
+
+	for len(stack) > 0 && pos < len(s) {
+		wsEnd := skipUnicodeSpace(s, pos)
+		if wsEnd > pos {
+			b.WriteString(s[pos:wsEnd])
+			pos = wsEnd
+		}
+		if pos >= len(s) {
+			break
+		}
+		topIdx := len(stack) - 1
+		switch stack[topIdx] {
+		case jsonStateObjKey:
+			if s[pos] == '}' {
+				b.WriteByte('}')
+				pos++
+				stack = stack[:topIdx]
+				continue
+			}
+			openDelim, content, closeDelim, nextPos, ok := scanQuotedString(s, pos)
+			if !ok || closeDelim == "" {
+				return "", false
+			}
+			b.WriteString(openDelim)
+			b.WriteString(content)
+			b.WriteString(closeDelim)
+			pos = nextPos
+			stack[topIdx] = jsonStateObjColon
+
+		case jsonStateObjColon:
+			if s[pos] != ':' {
+				return "", false
+			}
+			b.WriteByte(':')
+			pos++
+			stack[topIdx] = jsonStateObjValue
+
+		case jsonStateObjValue:
+			if s[pos] == '{' {
+				b.WriteByte('{')
+				pos++
+				stack[topIdx] = jsonStateObjComma
+				stack = append(stack, jsonStateObjKey)
+			} else if s[pos] == '[' {
+				b.WriteByte('[')
+				pos++
+				stack[topIdx] = jsonStateObjComma
+				stack = append(stack, jsonStateArrValue)
+			} else if openDelim, content, closeDelim, nextPos, ok := scanQuotedString(s, pos); ok && closeDelim != "" {
+				b.WriteString(openDelim)
+				if content != "" {
+					b.WriteString(redactedValue)
+				}
+				b.WriteString(closeDelim)
+				pos = nextPos
+				stack[topIdx] = jsonStateObjComma
+			} else if end, ok := scanJSONBareScalar(s, pos); ok {
+				b.WriteString(s[pos:end])
+				pos = end
+				stack[topIdx] = jsonStateObjComma
+			} else if end := scanUnquotedSecretTail(s, pos); end > pos {
+				b.WriteString(redactedValue)
+				pos = end
+				stack[topIdx] = jsonStateObjComma
+			} else {
+				return "", false
+			}
+
+		case jsonStateObjComma:
+			if s[pos] == ',' {
+				b.WriteByte(',')
+				pos++
+				stack[topIdx] = jsonStateObjKey
+			} else if s[pos] == '}' {
+				b.WriteByte('}')
+				pos++
+				stack = stack[:topIdx]
+			} else {
+				return "", false
+			}
+
+		case jsonStateArrValue:
+			if s[pos] == ']' {
+				b.WriteByte(']')
+				pos++
+				stack = stack[:topIdx]
+			} else if s[pos] == '{' {
+				b.WriteByte('{')
+				pos++
+				stack[topIdx] = jsonStateArrComma
+				stack = append(stack, jsonStateObjKey)
+			} else if s[pos] == '[' {
+				b.WriteByte('[')
+				pos++
+				stack[topIdx] = jsonStateArrComma
+				stack = append(stack, jsonStateArrValue)
+			} else if openDelim, content, closeDelim, nextPos, ok := scanQuotedString(s, pos); ok && closeDelim != "" {
+				b.WriteString(openDelim)
+				if content != "" {
+					b.WriteString(redactedValue)
+				}
+				b.WriteString(closeDelim)
+				pos = nextPos
+				stack[topIdx] = jsonStateArrComma
+			} else if end, ok := scanJSONBareScalar(s, pos); ok {
+				b.WriteString(s[pos:end])
+				pos = end
+				stack[topIdx] = jsonStateArrComma
+			} else if end := scanUnquotedSecretTail(s, pos); end > pos {
+				b.WriteString(redactedValue)
+				pos = end
+				stack[topIdx] = jsonStateArrComma
+			} else {
+				return "", false
+			}
+
+		case jsonStateArrComma:
+			if s[pos] == ',' {
+				b.WriteByte(',')
+				pos++
+				stack[topIdx] = jsonStateArrValue
+			} else if s[pos] == ']' {
+				b.WriteByte(']')
+				pos++
+				stack = stack[:topIdx]
+			} else {
+				return "", false
+			}
+		}
+	}
+	if len(stack) == 0 && pos == len(s) {
+		return b.String(), true
+	}
+	return "", false
+}
+
+// redactUnclosedSecretJSONObject redacts scalar string values inside a truncated
+// JSON/dict object bound to a secret key without crossing its enclosing span.
+func redactUnclosedSecretJSONObject(text string, openIdx int) (string, int, bool) {
+	if openIdx >= len(text) || text[openIdx] != '{' {
+		return "", openIdx, false
+	}
+	var b strings.Builder
+	b.WriteByte('{')
+	pos := openIdx + 1
+	stack := []jsonRedactState{jsonStateObjKey}
+	seenColon := false
+
+	for len(stack) > 0 && pos < len(text) {
+		wsEnd := skipUnicodeSpace(text, pos)
+		if wsEnd > pos {
+			b.WriteString(text[pos:wsEnd])
+			pos = wsEnd
+		}
+		if pos >= len(text) {
+			break
+		}
+		topIdx := len(stack) - 1
+		switch stack[topIdx] {
+		case jsonStateObjKey:
+			if text[pos] == '}' {
+				b.WriteByte('}')
+				pos++
+				stack = stack[:topIdx]
+				continue
+			}
+			openDelim, content, closeDelim, nextPos, ok := scanQuotedString(text, pos)
+			if !ok {
+				goto done
+			}
+			b.WriteString(openDelim)
+			b.WriteString(content)
+			b.WriteString(closeDelim)
+			pos = nextPos
+			if closeDelim == "" {
+				goto done
+			}
+			stack[topIdx] = jsonStateObjColon
+
+		case jsonStateObjColon:
+			if text[pos] != ':' {
+				goto done
+			}
+			b.WriteByte(':')
+			pos++
+			seenColon = true
+			stack[topIdx] = jsonStateObjValue
+
+		case jsonStateObjValue:
+			if text[pos] == '{' {
+				b.WriteByte('{')
+				pos++
+				stack[topIdx] = jsonStateObjComma
+				stack = append(stack, jsonStateObjKey)
+			} else if text[pos] == '[' {
+				b.WriteByte('[')
+				pos++
+				stack[topIdx] = jsonStateObjComma
+				stack = append(stack, jsonStateArrValue)
+			} else if openDelim, content, closeDelim, nextPos, ok := scanQuotedString(text, pos); ok {
+				b.WriteString(openDelim)
+				if content != "" {
+					b.WriteString(redactedValue)
+				}
+				b.WriteString(closeDelim)
+				pos = nextPos
+				if closeDelim == "" {
+					goto done
+				}
+				stack[topIdx] = jsonStateObjComma
+			} else if end, ok := scanJSONBareScalar(text, pos); ok {
+				b.WriteString(text[pos:end])
+				pos = end
+				stack[topIdx] = jsonStateObjComma
+			} else {
+				goto done
+			}
+
+		case jsonStateObjComma:
+			if text[pos] == ',' {
+				b.WriteByte(',')
+				pos++
+				stack[topIdx] = jsonStateObjKey
+			} else if text[pos] == '}' {
+				b.WriteByte('}')
+				pos++
+				stack = stack[:topIdx]
+			} else {
+				goto done
+			}
+
+		case jsonStateArrValue:
+			if text[pos] == ']' {
+				b.WriteByte(']')
+				pos++
+				stack = stack[:topIdx]
+			} else if text[pos] == '{' {
+				b.WriteByte('{')
+				pos++
+				stack[topIdx] = jsonStateArrComma
+				stack = append(stack, jsonStateObjKey)
+			} else if text[pos] == '[' {
+				b.WriteByte('[')
+				pos++
+				stack[topIdx] = jsonStateArrComma
+				stack = append(stack, jsonStateArrValue)
+			} else if openDelim, content, closeDelim, nextPos, ok := scanQuotedString(text, pos); ok {
+				b.WriteString(openDelim)
+				if content != "" {
+					b.WriteString(redactedValue)
+				}
+				b.WriteString(closeDelim)
+				pos = nextPos
+				if closeDelim == "" {
+					goto done
+				}
+				stack[topIdx] = jsonStateArrComma
+			} else if end, ok := scanJSONBareScalar(text, pos); ok {
+				b.WriteString(text[pos:end])
+				pos = end
+				stack[topIdx] = jsonStateArrComma
+			} else {
+				goto done
+			}
+
+		case jsonStateArrComma:
+			if text[pos] == ',' {
+				b.WriteByte(',')
+				pos++
+				stack[topIdx] = jsonStateArrValue
+			} else if text[pos] == ']' {
+				b.WriteByte(']')
+				pos++
+				stack = stack[:topIdx]
+			} else {
+				goto done
+			}
+		}
+	}
+
+done:
+	if !seenColon {
+		return "", openIdx, false
+	}
+	return b.String(), pos, true
 }
 
 func scanUnquotedBracketToken(body string, pos int) int {
@@ -1737,7 +2171,7 @@ func redactUnclosedSecretBracket(text string, openIdx int) (string, int) {
 	return b.String(), pos
 }
 
-// redactURLs replaces URLs matching (?i)(?:https?|wss?|socks5h?|socks4a?)://...
+// redactURLs replaces URLs matching (?i)(?:https?|wss?|rtmps?|socks5h?|socks4a?)://...
 // (including bracketed IPv6 hosts with optional userinfo) while preserving
 // outer brackets and trailing punctuation from [:;,.]* before whitespace,
 // quotes, brackets, or EOF, matching Python's non-greedy lookahead behavior

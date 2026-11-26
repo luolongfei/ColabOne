@@ -1563,7 +1563,7 @@ function onMediaDrop(event: DragEvent) {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--co-primary, #1677ff);
+  background: var(--co-accent);
   flex-shrink: 0;
   animation: co-voice-prefetch-pulse 1.4s ease-in-out infinite;
 }

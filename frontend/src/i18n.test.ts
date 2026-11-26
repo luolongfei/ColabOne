@@ -3116,5 +3116,122 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
         }
       }
     }
+
+    // Live Studio exact & dynamic backend errors, VRAM preflight warnings, and activity logs across all 6 locales
+    expect(COLABONE_MESSAGES["ko-KR"]["live.stateSpeaking"]).toBe("발화 중");
+
+    const liveStudioSamples = [
+      "当前远端服务版本暂不支持实时演播功能，请先点击顶部「立即热更新」升级远端服务后再试",
+      "ComfyUI 画布配置格式不合法",
+      "检测到 ComfyUI 画布隧道尚未就绪，已附带已保存画布配置请求远端同步拉起",
+      "提示：尚未配置 ComfyUI 固定域名画布隧道，实时演播需先在画布设置中配置并开启固定域名隧道方可建立音视频流连接",
+      "远端已受理实时演播启动请求",
+      "正在停止远端实时演播服务",
+      "远端实时演播服务已停止",
+      "本地保险库未配置",
+      "clear_key 必须为布尔值",
+      "外部 LLM API Key 格式不合法",
+      "已清除实时演播外部 LLM 配置与密钥",
+      "外部 LLM 测试超时参数必须在 1 到 60 秒之间",
+      "驱动动作 ID 不合法",
+      "请求启动实时演播（视觉：flashhead_lite · 语音：qwen3_tts · 对话：external_api · 模式：dialogue）",
+      "远端已受理实时演播启动请求，但刷新状态失败（将自动重试）：timeout",
+      "已停止远端实时演播服务，但刷新状态失败（将自动重试）：timeout",
+      "已保存实时演播外部 LLM 配置（模型：gpt-4o-mini · 密钥：未设置）",
+      "实时演播外部 LLM 连通性测试未通过（模型：gpt-4o-mini）",
+      "实时演播外部 LLM 连通性测试通过（模型：gpt-4o-mini）",
+      "正在保存实时演播形象：anchor_1",
+      "实时演播形象已保存：anchor_1",
+      "实时演播形象已保存，但刷新状态失败（将自动重试）：timeout",
+      "正在删除实时演播形象：anchor_1",
+      "已删除实时演播形象：anchor_1",
+      "正在上传实时演播形象素材：anchor_1 / dance_01",
+      "实时演播形象素材上传完成：anchor_1 / dance_01",
+      "请求构建实时演播形象动作库：anchor_1",
+      "远端已受理形象动作库构建任务：anchor_1",
+      "正在上传实时演播驱动视频素材：drive_01",
+      "实时演播驱动视频素材上传完成：drive_01",
+      "正在删除实时演播驱动视频素材：drive_01",
+      "已删除实时演播驱动视频素材：drive_01",
+      "外部 LLM 地址仅支持 HTTPS，或本机回环地址 http://127.0.0.1 / http://localhost / http://[::1]",
+      "外部 LLM 接口禁止访问回环、内网或元数据域名",
+      "RTMP 推流地址禁止指向私有网段、链路本地、CGNAT 或非公网 IP 地址",
+      "启用 RTMP 推流时必须提供有效的 rtmp:// 或 rtmps:// 地址",
+      "形象 ID 不合法（需以字母或数字开头，仅支持 1-64 位字母、数字、下划线和连字符）",
+      "人像仅支持 PNG、JPEG 或 WebP 格式",
+      "人像图片像素过高（上限 1600 万像素）",
+      "人像输入文件不存在或已失效，请重新上传",
+      "实时直播会话尚未启动",
+      "请先开启 PersonaLive 实时姿态驱动开关",
+      "PersonaLive 驱动引擎初始化失败",
+      "Live Studio 服务端仅允许绑定 127.0.0.1 回环地址",
+      "Live Studio 本地服务 (127.0.0.1:8190) 启动超时",
+      "Live Studio 根目录 根目录不能是符号链接",
+      "主播包目录 路径中不允许符号链接",
+      "动作视频文件 路径越界",
+      "动作视频 仅支持格式: mp4, webm, mov, mkv",
+      "驱动视频 仅支持格式: mp4, webm, mov, mkv",
+      "动作视频 Base64 数据头不合法",
+      "动作视频 Base64 编码无效",
+      "动作视频 超过大小上限",
+      "立绘图片超过大小限制（最大 16 MB）",
+      "立绘图片内容为空",
+      "立绘图片编码格式无效",
+      "形象配置包含不支持的字段：foo, bar",
+      "商品名称 长度不能超过 120 个字符",
+      "请填写外部 LLM 模型名称",
+      "不支持的视觉驱动引擎：unknown_vis",
+      "不支持的文件格式：未知",
+      "动作列表包含重复 ID：dance_01",
+      "字段 actions 数量超过上限 (32)",
+      "字段 actions 必须为对象数组",
+      "trigger_keywords 数量超过上限 (16)",
+      "画布分辨率宽高必须在 256 到 2560 之间",
+      "分辨率宽高必须为偶数",
+      "二进制帧长度不足（至少 13 字节，实际 4 字节）",
+      "未知的二进制帧类型: 0x99",
+      "非法的导播状态: 'BROKEN'",
+      "外部 LLM 域名解析失败: api.invalid",
+      "RTMP 推流域名未解析到有效公网 IP: live.invalid",
+      "显存预检未通过（需 28000 MiB，可用 15000 MiB）。建议：在模型管理页卸载本地 GGUF 模型以腾出完整直播显存。；可尝试将视觉引擎切换为更轻量的 SoulX-FlashHead-1.3B Lite（约 6.5 GB 显存）。",
+      "切换引擎显存预检未通过（需 26000 MiB，可用 16000 MiB）。建议：请关闭 PersonaLive 跳舞扩展，或升级至 A100 80GB / G4 96GB。",
+      "当前远端已加载本地 LLM（约 12000 MiB），显存不足以与目标直播配置同驻（可用 16000 MiB）。建议：请将对话大模型切换为外部 OpenAI 兼容 API（external_api）以省下本地 GGUF 显存占用。",
+      "当前 GPU 显存不足以同时常驻主视觉引擎与 PersonaLive，已切换为按需热切换模式（hot-swap），触发跳舞才艺时会有短暂停顿。",
+      "实时直播所需显存约 18500 MiB，超过当前 GPU 可用显存 15000 MiB（缺口 3500 MiB）。",
+      "磁盘空间不足（剩余 4096 MiB，至少需要 12288 MiB）",
+      "外部 LLM 接口返回重定向 (HTTP 302)，出于安全策略已拒绝跟随跳转",
+      "LLM 流式请求失败 (HTTP 502): bad gateway",
+      "LLM 流式连接异常: connection reset",
+      "正在生成动作片段 (2/6): Wave",
+      "主播动作包构建完成（共 6 个动作）",
+      "驱动动作不存在: dance_missing",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      const liveSrc = tsrc("LiveStudio");
+      expect(liveSrc.length).toBeGreaterThan(2);
+      if (loc === "en-US" || loc === "ko-KR") {
+        expect(CJK_OR_FULLWIDTH_RE.test(liveSrc), `${loc} source leak: ${liveSrc}`).toBe(
+          false,
+        );
+      }
+      for (const sample of liveStudioSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(out.length, `${loc}: ${sample}`).toBeGreaterThan(4);
+        if (loc !== "zh-CN") {
+          expect(out, `${loc}: ${sample}`).not.toBe(sample);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(CJK_OR_FULLWIDTH_RE.test(out), `${loc} leak: ${out}`).toBe(
+            false,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `zh-HK Cantonese leak: ${out}`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+    }
   });
 });

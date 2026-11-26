@@ -463,4 +463,89 @@ describe("ColabOne CU series aggregation and chart layout", () => {
     expect(fresh.points[10].rateMax).toBeCloseTo(9.9, 4);
     expect(fresh.points[10].balanceEnd).toBeCloseTo(50.0, 4);
   });
+
+  it("does not plot stale current_balance as a freshly observed point on an empty current slot", () => {
+    const nowMs = new Date(2026, 10, 23, 10, 25, 0, 0).getTime();
+    const todayWin = resolveColabOneCuUsageWindow({
+      mode: "day",
+      selectedDateKey: "2026-11-23",
+      nowMs,
+    });
+    const prevSlot = todayWin.slots[9]!;
+    const currentSlot = todayWin.slots[10]!;
+    expect(currentSlot.isCurrent).toBe(true);
+
+    // 1) Empty current slot with prior running balance and stale checked_at carries forward as unobserved
+    const staleWithPriorResp: ColabOneCuUsageResponse = {
+      logged_in: true,
+      bucket_seconds: 1800,
+      retention_days: 365,
+      start: todayWin.queryStartSec,
+      end: todayWin.queryEndSec,
+      initial_balance: 100.0,
+      current_balance: 82.5,
+      current_rate: 4.5,
+      checked_at: currentSlot.startSec - 180,
+      available_dates: ["2026-11-23"],
+      active_dates: ["2026-11-23"],
+      buckets: [
+        {
+          ts: prevSlot.startSec,
+          duration: 1800,
+          consumed: 1.0,
+          topup: 0,
+          balance_start: 100.0,
+          balance_end: 99.0,
+          has_balance: true,
+          rate_avg: 2.0,
+          rate_max: 2.0,
+          active_seconds: 1800,
+          max_instances: 1,
+          samples: 10,
+          estimated: false,
+        },
+      ],
+    };
+    const staleWithPrior = aggregateColabOneCuSeries(
+      todayWin,
+      staleWithPriorResp,
+      nowMs,
+    );
+    expect(staleWithPrior.points[10].observedBalance).toBe(false);
+    expect(staleWithPrior.points[10].balanceEnd).toBeCloseTo(99.0, 4);
+    expect(staleWithPrior.points[10].rateAvg).toBe(0);
+    expect(staleWithPrior.points[10].rateMax).toBe(0);
+
+    // 2) Empty current slot with no buckets and stale checked_at must stay empty (not marked observed/sampled)
+    const staleEmptyResp: ColabOneCuUsageResponse = {
+      logged_in: true,
+      bucket_seconds: 1800,
+      retention_days: 365,
+      start: todayWin.queryStartSec,
+      end: todayWin.queryEndSec,
+      current_balance: 82.5,
+      current_rate: 4.5,
+      checked_at: currentSlot.startSec - 180,
+      available_dates: [],
+      active_dates: [],
+      buckets: [],
+    };
+    const staleEmpty = aggregateColabOneCuSeries(todayWin, staleEmptyResp, nowMs);
+    expect(staleEmpty.points[10].observedBalance).toBe(false);
+    expect(staleEmpty.points[10].balanceEnd).toBeNull();
+    expect(staleEmpty.points[10].hasData).toBe(false);
+    expect(staleEmpty.summary.hasAnySample).toBe(false);
+    expect(staleEmpty.summary.hasAnyBalance).toBe(false);
+
+    // 3) Control: fresh checked_at on empty current slot marks current_balance as observed
+    const freshEmpty = aggregateColabOneCuSeries(
+      todayWin,
+      { ...staleEmptyResp, checked_at: currentSlot.startSec + 60 },
+      nowMs,
+    );
+    expect(freshEmpty.points[10].observedBalance).toBe(true);
+    expect(freshEmpty.points[10].balanceEnd).toBeCloseTo(82.5, 4);
+    expect(freshEmpty.summary.hasAnySample).toBe(true);
+    expect(freshEmpty.summary.hasAnyBalance).toBe(true);
+  });
 });

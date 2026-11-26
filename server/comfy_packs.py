@@ -39,6 +39,7 @@ from urllib.parse import quote
 
 import requests
 
+from common.comfyui import COMFY_MODEL_EXTENSIONS
 from common.files import atomic_json
 from server.download import (
     ColabOneRangeUnsupportedError,
@@ -64,16 +65,7 @@ COMFY_MODEL_SUBDIRS: tuple[str, ...] = (
     "audio_encoders",
 )
 _COMFY_MODEL_SUBDIR_SET = frozenset(COMFY_MODEL_SUBDIRS)
-_COMFY_MODEL_EXTENSIONS: tuple[str, ...] = (
-    ".safetensors",
-    ".ckpt",
-    ".pt",
-    ".pth",
-    ".bin",
-    ".onnx",
-    ".gguf",
-    ".sft",
-)
+_COMFY_MODEL_EXTENSIONS: tuple[str, ...] = COMFY_MODEL_EXTENSIONS
 
 TORCH_SKIP_PACKAGES = frozenset({"torch", "torchvision", "torchaudio", "xformers"})
 ALLOWED_NODE_PATCH_KINDS = frozenset({"wav2vec2_hidden_states_hook"})
@@ -3003,34 +2995,75 @@ class ColabOneComfyPackManager:
             commit = node["commit"]
             node_dir = pack_dir / node_name
             git_dir = node_dir / ".git"
-            if git_dir.exists() and not git_dir.is_dir():
-                shutil.rmtree(node_dir, ignore_errors=True)
-            _ensure_dir(node_dir, f"自定义节点目录 {node_name}")
+            if node_dir.is_symlink():
+                raise ValueError(f"自定义节点目录 {node_name} 不能是符号链接")
+            if git_dir.is_symlink():
+                raise ValueError(f"自定义节点 Git 目录 {node_name}/.git 不能是符号链接")
 
-            _set_task_attr(task, message=f"准备自定义节点 · {node_name}")
-            task.note(f"正在拉取节点包 {node_name}（{commit[:10]}）")
+            def _is_cancel_exc(exc: BaseException) -> bool:
+                cancel_ev = getattr(task, "cancel", None)
+                return any(
+                    cls.__name__ == "ColabOneCancelledError"
+                    for cls in type(exc).__mro__
+                ) or (cancel_ev is not None and cancel_ev.is_set())
 
-            if git_dir.is_dir():
-                for lock_file in git_dir.rglob("*.lock"):
+            def _checkout_node_once(*, fresh: bool) -> None:
+                if node_dir.is_symlink():
+                    raise ValueError(f"自定义节点目录 {node_name} 不能是符号链接")
+                if git_dir.is_symlink():
+                    raise ValueError(f"自定义节点 Git 目录 {node_name}/.git 不能是符号链接")
+                if fresh and node_dir.exists():
+                    if node_dir.is_dir():
+                        shutil.rmtree(node_dir, ignore_errors=True)
+                    else:
+                        node_dir.unlink(missing_ok=True)
+                if git_dir.exists() and not git_dir.is_dir():
+                    if node_dir.is_symlink():
+                        raise ValueError(f"自定义节点目录 {node_name} 不能是符号链接")
+                    shutil.rmtree(node_dir, ignore_errors=True)
+                _ensure_dir(node_dir, f"自定义节点目录 {node_name}")
+
+                if git_dir.is_dir():
+                    for lock_file in git_dir.rglob("*.lock"):
+                        try:
+                            if not lock_file.is_symlink():
+                                lock_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     try:
-                        lock_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                try:
+                        self._invoke_run_cmd(
+                            [
+                                "git",
+                                "-C",
+                                str(node_dir),
+                                "remote",
+                                "set-url",
+                                "origin",
+                                repo_url,
+                            ],
+                            task,
+                            pack_log,
+                        )
+                    except RuntimeError as exc:
+                        if _is_cancel_exc(exc):
+                            raise
+                        self._invoke_run_cmd(
+                            [
+                                "git",
+                                "-C",
+                                str(node_dir),
+                                "remote",
+                                "add",
+                                "origin",
+                                repo_url,
+                            ],
+                            task,
+                            pack_log,
+                        )
+                else:
                     self._invoke_run_cmd(
-                        [
-                            "git",
-                            "-C",
-                            str(node_dir),
-                            "remote",
-                            "set-url",
-                            "origin",
-                            repo_url,
-                        ],
-                        task,
-                        pack_log,
+                        ["git", "init", str(node_dir)], task, pack_log
                     )
-                except RuntimeError:
                     self._invoke_run_cmd(
                         [
                             "git",
@@ -3044,62 +3077,77 @@ class ColabOneComfyPackManager:
                         task,
                         pack_log,
                     )
-            else:
+
                 self._invoke_run_cmd(
-                    ["git", "init", str(node_dir)], task, pack_log
+                    [
+                        "git",
+                        "-C",
+                        str(node_dir),
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        commit,
+                    ],
+                    task,
+                    pack_log,
                 )
                 self._invoke_run_cmd(
                     [
                         "git",
                         "-C",
                         str(node_dir),
-                        "remote",
-                        "add",
-                        "origin",
-                        repo_url,
+                        "checkout",
+                        "--force",
+                        "--detach",
+                        commit,
+                    ],
+                    task,
+                    pack_log,
+                )
+                self._invoke_run_cmd(
+                    [
+                        "git",
+                        "-C",
+                        str(node_dir),
+                        "clean",
+                        "-fdx",
                     ],
                     task,
                     pack_log,
                 )
 
-            self._invoke_run_cmd(
-                [
-                    "git",
-                    "-C",
-                    str(node_dir),
-                    "fetch",
-                    "--depth",
-                    "1",
-                    "origin",
-                    commit,
-                ],
-                task,
-                pack_log,
-            )
-            self._invoke_run_cmd(
-                [
-                    "git",
-                    "-C",
-                    str(node_dir),
-                    "checkout",
-                    "--force",
-                    "--detach",
-                    commit,
-                ],
-                task,
-                pack_log,
-            )
-            self._invoke_run_cmd(
-                [
-                    "git",
-                    "-C",
-                    str(node_dir),
-                    "clean",
-                    "-fdx",
-                ],
-                task,
-                pack_log,
-            )
+            _set_task_attr(task, message=f"准备自定义节点 · {node_name}")
+            task.note(f"正在拉取节点包 {node_name}（{commit[:10]}）")
+
+            had_existing_node = False
+            try:
+                had_existing_node = node_dir.exists() and (
+                    not node_dir.is_dir() or any(node_dir.iterdir())
+                )
+            except OSError:
+                had_existing_node = node_dir.exists()
+
+            try:
+                _checkout_node_once(fresh=False)
+            except Exception as exc:
+                if (
+                    isinstance(exc, ValueError)
+                    or _is_cancel_exc(exc)
+                    or not had_existing_node
+                ):
+                    raise
+                task.check()
+                if node_dir.is_symlink():
+                    raise ValueError(f"自定义节点目录 {node_name} 不能是符号链接")
+                warn_msg = (
+                    f"自定义节点 {node_name} 现有 Git 仓库异常，正在清空并重新拉取：{str(exc)[:240]}"
+                )
+                try:
+                    task.note(warn_msg, level="warning")
+                except TypeError:
+                    task.note(warn_msg)
+                _checkout_node_once(fresh=True)
 
             if node["install_requirements"]:
                 req_file = node_dir / "requirements.txt"
@@ -3853,9 +3901,7 @@ class ColabOneComfyPackManager:
         )
         current_gen = _current_sageattn_install_generation()
         with self.lock:
-            pending_pip = self._pending_pip_restart or (
+            pending_pip = bool(self._pending_pip_restart) or (
                 current_gen > self._seen_sageattn_generation
             )
-            self._pending_pip_restart = False
-            self._seen_sageattn_generation = current_gen
         return bool(activation_changed or pip_installed or pending_pip)

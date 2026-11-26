@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -26,6 +27,8 @@ const (
 	colabOneWorkflowDraftsFileName      = "drafts.json"
 	colabOneWorkflowDraftsMediaDirName  = "media"
 
+	colabOneMaxWorkflowDrafts                   = 64
+	colabOneMaxWorkflowDraftsTotalBytes         = 512 * 1024 * 1024 // 512 MiB
 	colabOneMaxWorkflowDraftFields              = 128
 	colabOneMaxWorkflowDraftFieldStringRunes    = comfyui.MaxOverrideStringRunes
 	colabOneMaxWorkflowDraftFieldStringMaxBytes = colabOneMaxWorkflowDraftFieldStringRunes * utf8.UTFMax // 800000
@@ -132,6 +135,87 @@ func cloneWorkflowDraftMap(src map[string]*ColabOneWorkflowDraft) map[string]*Co
 		}
 	}
 	return out
+}
+
+func estimateWorkflowDraftBytes(d *ColabOneWorkflowDraft) int64 {
+	if d == nil {
+		return 0
+	}
+	total := int64(len(d.WorkflowID)) + 64
+	for k, v := range d.Fields {
+		total += int64(len(k)) + 8
+		if s, ok := v.(string); ok {
+			total += int64(len(s))
+		} else {
+			total += 16
+		}
+	}
+	for k, meta := range d.Media {
+		total += int64(len(k)) + int64(len(meta.Filename)) + 128
+		if meta.Size > 0 {
+			total += meta.Size
+		}
+	}
+	return total
+}
+
+func (c *ColabOneController) workflowDraftsQuotaLimits() (int, int64) {
+	maxCount := c.workflowDraftsMaxCount
+	if maxCount <= 0 {
+		maxCount = colabOneMaxWorkflowDrafts
+	}
+	maxBytes := c.workflowDraftsMaxTotalBytes
+	if maxBytes <= 0 {
+		maxBytes = colabOneMaxWorkflowDraftsTotalBytes
+	}
+	return maxCount, maxBytes
+}
+
+// pruneWorkflowDraftsLocked enforces workflow draft count and total byte quotas
+// via LRU eviction (oldest UpdatedAt first), never evicting keepWFID.
+// Caller must hold c.mu.
+func (c *ColabOneController) pruneWorkflowDraftsLocked(keepWFID string) (map[string]*ColabOneWorkflowDraft, []ColabOneWorkflowDraftMedia) {
+	if len(c.workflowDrafts) == 0 {
+		return nil, nil
+	}
+	maxCount, maxBytes := c.workflowDraftsQuotaLimits()
+	var totalBytes int64
+	for _, draft := range c.workflowDrafts {
+		totalBytes += estimateWorkflowDraftBytes(draft)
+	}
+	if len(c.workflowDrafts) <= maxCount && totalBytes <= maxBytes {
+		return nil, nil
+	}
+	candidates := make([]*ColabOneWorkflowDraft, 0, len(c.workflowDrafts))
+	for wfID, draft := range c.workflowDrafts {
+		if wfID == keepWFID || draft == nil {
+			continue
+		}
+		candidates = append(candidates, draft)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].UpdatedAt != candidates[j].UpdatedAt {
+			return candidates[i].UpdatedAt < candidates[j].UpdatedAt
+		}
+		return candidates[i].WorkflowID < candidates[j].WorkflowID
+	})
+	var evictedDrafts map[string]*ColabOneWorkflowDraft
+	var evictedMedia []ColabOneWorkflowDraftMedia
+	for _, cand := range candidates {
+		if len(c.workflowDrafts) <= maxCount && totalBytes <= maxBytes {
+			break
+		}
+		if evictedDrafts == nil {
+			evictedDrafts = make(map[string]*ColabOneWorkflowDraft)
+		}
+		evictedDrafts[cand.WorkflowID] = cloneWorkflowDraft(cand)
+		for _, meta := range cand.Media {
+			evictedMedia = append(evictedMedia, meta)
+		}
+		totalBytes -= estimateWorkflowDraftBytes(cand)
+		delete(c.workflowDrafts, cand.WorkflowID)
+	}
+	return evictedDrafts, evictedMedia
 }
 
 func validateWorkflowDraftID(raw any) (string, error) {
@@ -833,6 +917,9 @@ func (c *ColabOneController) loadWorkflowDrafts() {
 
 	c.mu.Lock()
 	c.workflowDrafts = loaded
+	if evictedDrafts, _ := c.pruneWorkflowDraftsLocked(""); len(evictedDrafts) > 0 {
+		reconciled = true
+	}
 	var diskSnapshot map[string]*ColabOneWorkflowDraft
 	if draftsFileExists && reconciled {
 		diskSnapshot = cloneWorkflowDraftMap(c.workflowDrafts)
@@ -989,6 +1076,7 @@ func (c *ColabOneController) saveWorkflowDraft(payload map[string]any) (any, err
 		UpdatedAt:  now,
 	}
 	c.workflowDrafts[wfID] = nextDraft
+	evictedDrafts, evictedMedia := c.pruneWorkflowDraftsLocked(wfID)
 	diskSnapshot := cloneWorkflowDraftMap(c.workflowDrafts)
 	returnCopy := cloneWorkflowDraft(nextDraft)
 	c.mu.Unlock()
@@ -1000,8 +1088,15 @@ func (c *ColabOneController) saveWorkflowDraft(payload map[string]any) (any, err
 		} else {
 			delete(c.workflowDrafts, wfID)
 		}
+		for evID, evDraft := range evictedDrafts {
+			c.workflowDrafts[evID] = evDraft
+		}
 		c.mu.Unlock()
 		return nil, err
+	}
+
+	for _, meta := range evictedMedia {
+		c.removeDraftMediaIfUnreferencedLocked(meta)
 	}
 
 	return map[string]any{"ok": true, "draft": returnCopy}, nil
@@ -1101,6 +1196,7 @@ func (c *ColabOneController) saveWorkflowDraftMedia(payload map[string]any) (any
 	nextDraft.Fields[fieldKey] = cleanFilename
 	nextDraft.UpdatedAt = now
 	c.workflowDrafts[wfID] = nextDraft
+	evictedDrafts, evictedMedia := c.pruneWorkflowDraftsLocked(wfID)
 
 	diskSnapshot := cloneWorkflowDraftMap(c.workflowDrafts)
 	returnCopy := cloneWorkflowDraft(nextDraft)
@@ -1113,6 +1209,9 @@ func (c *ColabOneController) saveWorkflowDraftMedia(payload map[string]any) (any
 		} else {
 			delete(c.workflowDrafts, wfID)
 		}
+		for evID, evDraft := range evictedDrafts {
+			c.workflowDrafts[evID] = evDraft
+		}
 		c.mu.Unlock()
 		_ = os.Remove(mediaPath)
 		return nil, err
@@ -1120,6 +1219,9 @@ func (c *ColabOneController) saveWorkflowDraftMedia(payload map[string]any) (any
 
 	if hadPrevMedia && prevMedia.ID != meta.ID {
 		c.removeDraftMediaIfUnreferencedLocked(prevMedia)
+	}
+	for _, evMeta := range evictedMedia {
+		c.removeDraftMediaIfUnreferencedLocked(evMeta)
 	}
 
 	return map[string]any{

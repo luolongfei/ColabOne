@@ -13,19 +13,22 @@ import (
 	"strings"
 	"sync"
 	"time"
+	_ "time/tzdata"
 )
 
 const (
-	colabOneCUUsageSchemaVersion    = 1
-	colabOneCUBucketSeconds         = 1800 // 30-minute UTC buckets align cleanly with all timezones including :30 offsets
-	colabOneCURetentionDays         = 365
-	colabOneCUMaxBucketsPerAccount  = 20000
-	colabOneCUOnlineGapMaxSec         = 900.0   // 15 minutes
-	colabOneCUOfflineProrateMaxSec    = 86400.0 // 24 hours
-	colabOneCUFlushMinIntervalSec     = 60.0
-	colabOneCUEpsilon                 = 1e-6
-	colabOneCUMaxQueryRangeSeconds    = 366 * 86400
-	colabOneCUUsageFilename           = "cu_usage.json"
+	colabOneCUUsageSchemaVersion     = 1
+	colabOneCUBucketSeconds          = 1800 // 30-minute UTC buckets align cleanly with all timezones including :30 offsets
+	colabOneCURetentionDays          = 365
+	colabOneCUMaxBucketsPerAccount   = 20000
+	colabOneCUOnlineGapMaxSec        = 900.0   // 15 minutes
+	colabOneCUOfflineProrateMaxSec   = 86400.0 // 24 hours
+	colabOneCUFlushMinIntervalSec    = 60.0
+	colabOneCUEpsilon                = 1e-6
+	colabOneCUMaxQueryRangeSeconds   = 366 * 86400
+	colabOneCUMaxValidUnixSec        = 4102444800.0 // 2100-01-01T00:00:00Z
+	colabOneCUMaxEstimateElapsedSec  = 30 * 86400.0 // 30 days max single-output window
+	colabOneCUUsageFilename          = "cu_usage.json"
 	colabOneCUDefaultAccountKey       = "default"
 	colabOneCUMigrateDefaultMaxGapS   = 600.0
 	colabOneCURunUnsettledCapSec      = 180.0 // cap unsettled projection at 3 minutes when Google balance hasn't ticked yet
@@ -1597,10 +1600,13 @@ func (s *ColabOneCUUsageStore) EstimateWindowCU(
 	}
 	cleanStart, okStart := colabOneCleanFloat(startTS)
 	cleanEnd, okEnd := colabOneCleanFloat(endTS)
-	if !okStart || !okEnd || cleanStart <= 0 || cleanEnd <= cleanStart {
+	if !okStart || !okEnd || cleanStart <= 0 || cleanEnd <= cleanStart || cleanEnd > colabOneCUMaxValidUnixSec {
 		return 0, 0, false, false
 	}
 	elapsed := cleanEnd - cleanStart
+	if math.IsNaN(elapsed) || math.IsInf(elapsed, 0) || elapsed <= 0 || elapsed > colabOneCUMaxEstimateElapsedSec {
+		return 0, 0, false, false
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1617,20 +1623,33 @@ func (s *ColabOneCUUsageStore) EstimateWindowCU(
 		return 0, 0, false, false
 	}
 
-	firstBucket := colabOneCUBucketStart(cleanStart)
-	lastBucket := colabOneCUBucketStart(cleanEnd)
-
 	weightedRateSum := 0.0
 	coveredSec := 0.0
 	anyEstimated := false
 
-	for bTS := firstBucket; bTS <= lastBucket; bTS += colabOneCUBucketSeconds {
+	matchingKeys := make([]int64, 0, 4)
+	for bTS, b := range acct.Buckets {
+		if b == nil || bTS <= 0 {
+			continue
+		}
+		bStart := float64(bTS)
+		bEnd := bStart + float64(colabOneCUBucketSeconds)
+		if bEnd <= cleanStart || bStart >= cleanEnd {
+			continue
+		}
+		matchingKeys = append(matchingKeys, bTS)
+	}
+	sort.Slice(matchingKeys, func(i, j int) bool {
+		return matchingKeys[i] < matchingKeys[j]
+	})
+
+	for _, bTS := range matchingKeys {
 		b := acct.Buckets[bTS]
 		if b == nil {
 			continue
 		}
 		bStart := float64(bTS)
-		bEnd := float64(bTS + colabOneCUBucketSeconds)
+		bEnd := bStart + float64(colabOneCUBucketSeconds)
 		ovStart := math.Max(cleanStart, bStart)
 		ovEnd := math.Min(cleanEnd, bEnd)
 		ov := ovEnd - ovStart

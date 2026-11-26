@@ -2574,3 +2574,26 @@ func TestStartPostDialContextCancelAndDeadlineReturnContextErrNotAborted(t *test
 		}
 	})
 }
+
+func TestDeserializeBinaryWSMessageOverflowAndBoundsGuards(t *testing.T) {
+	// Malicious nbufs values that would overflow 32-bit signed `4*(nbufs+1)` arithmetic.
+	for _, nbufs := range []uint32{0, 0x3fffffff, 0x40000000, 0x7fffffff, 0x80000000, 0xffffffff} {
+		frame := make([]byte, 16)
+		binary.BigEndian.PutUint32(frame[0:4], nbufs)
+		binary.BigEndian.PutUint32(frame[4:8], 8)
+		if _, err := deserializeWSMessage(websocket.MessageBinary, frame); err == nil {
+			t.Fatalf("expected error for invalid nbufs=0x%x, got nil", nbufs)
+		}
+	}
+
+	// Valid nbufs=1 with huge offset (> len(data), including high-bit set) must fail cleanly.
+	for _, badOff := range []uint32{0x80000000, 0xffffffff, 999} {
+		frame := make([]byte, 12)
+		binary.BigEndian.PutUint32(frame[0:4], 1)
+		binary.BigEndian.PutUint32(frame[4:8], badOff)
+		copy(frame[8:], "{}")
+		if _, err := deserializeWSMessage(websocket.MessageBinary, frame); err == nil {
+			t.Fatalf("expected error for invalid offset=0x%x, got nil", badOff)
+		}
+	}
+}

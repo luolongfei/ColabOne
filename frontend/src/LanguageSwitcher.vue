@@ -193,7 +193,7 @@ onBeforeUnmount(() => {
     transform 0.12s ease;
 }
 
-:global(:root[data-theme="dark"]) .co-locale-trigger {
+:root[data-theme="dark"] .co-locale-trigger {
   border-color: var(--co-border-secondary);
 }
 
@@ -253,7 +253,7 @@ onBeforeUnmount(() => {
   }
 }
 
-:global(:root[data-theme="dark"]) .co-locale-flag {
+:root[data-theme="dark"] .co-locale-flag {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 

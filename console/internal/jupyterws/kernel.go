@@ -1386,14 +1386,22 @@ func deserializeWSMessage(msgType websocket.MessageType, data []byte) (*ColabOne
 		if len(data) < 8 {
 			return nil, errors.New("binary jupyter message too short")
 		}
-		nbufs := int(binary.BigEndian.Uint32(data[0:4]))
-		if nbufs < 1 || len(data) < 4*(nbufs+1) {
+		nbufs64 := uint64(binary.BigEndian.Uint32(data[0:4]))
+		if nbufs64 < 1 || uint64(len(data)) < 4*(nbufs64+1) {
 			return nil, errors.New("invalid jupyter binary buffer count")
 		}
+		nbufs := int(nbufs64)
 		offsets := make([]int, nbufs)
 		for i := 0; i < nbufs; i++ {
 			start := 4 * (i + 1)
-			offsets[i] = int(binary.BigEndian.Uint32(data[start : start+4]))
+			off64 := uint64(binary.BigEndian.Uint32(data[start : start+4]))
+			if off64 > uint64(len(data)) {
+				if i <= 1 {
+					return nil, errors.New("invalid jupyter binary JSON offsets")
+				}
+				return nil, errors.New("invalid jupyter binary chunk offsets")
+			}
+			offsets[i] = int(off64)
 		}
 		jsonStart := offsets[0]
 		jsonStop := len(data)

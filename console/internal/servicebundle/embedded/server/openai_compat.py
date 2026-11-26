@@ -386,12 +386,18 @@ def normalize_chat_request(raw: Any) -> tuple[str, bool, dict[str, Any]]:
         mapped_role = "system" if role == "developer" else role
         if mapped_role == "assistant" and item.get("tool_calls") is not None:
             tool_calls = _normalize_tool_calls(item["tool_calls"])
-            content = flatten_content(item.get("content"), allow_none=True)
-            msg: dict[str, Any] = {
-                "role": "assistant",
-                "content": content,
-                "tool_calls": tool_calls,
-            }
+            if tool_calls:
+                content = flatten_content(item.get("content"), allow_none=True)
+                msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
+            else:
+                content = flatten_content(item.get("content"), allow_none=False)
+                msg = {"role": "assistant", "content": content}
+                if isinstance(item.get("name"), str) and item["name"].strip():
+                    msg["name"] = item["name"].strip()
         elif mapped_role == "tool":
             tool_call_id = item.get("tool_call_id")
             if not isinstance(tool_call_id, str) or not tool_call_id.strip():
@@ -477,7 +483,9 @@ def normalize_chat_request(raw: Any) -> tuple[str, bool, dict[str, Any]]:
                 elif (
                     isinstance(tc, dict)
                     and tc.get("type") == "function"
-                    and isinstance((tc.get("function") or {}).get("name"), str)
+                    and isinstance(tc.get("function"), dict)
+                    and isinstance(tc["function"].get("name"), str)
+                    and bool(tc["function"]["name"].strip())
                 ):
                     payload["tool_choice"] = tc
                 else:
@@ -669,17 +677,21 @@ def _normalize_input_items(raw_input: Any, response_store: dict[str, dict[str, A
                 }
             )
         elif isinstance(entry, dict):
-            if entry.get("type") == "item_reference" and response_store:
+            if entry.get("type") == "item_reference":
                 ref_id = entry.get("id")
-                found = False
-                for saved in response_store.values():
-                    for candidate in saved.get("items") or []:
-                        if candidate.get("id") == ref_id:
-                            items.append(candidate)
-                            found = True
+                if not isinstance(ref_id, str) or not ref_id.strip():
+                    raise ValueError("item_reference 缺少有效的 id")
+                ref_id = ref_id.strip()
+                if response_store:
+                    found = False
+                    for saved in response_store.values():
+                        for candidate in saved.get("items") or []:
+                            if isinstance(candidate, dict) and candidate.get("id") == ref_id:
+                                items.append(candidate)
+                                found = True
+                                break
+                        if found:
                             break
-                    if found:
-                        break
             else:
                 items.append(entry)
         else:
@@ -1017,9 +1029,11 @@ def render_items_for_compaction(items: list[dict[str, Any]], max_item_chars: int
     return blocks
 
 
-def extract_anchor_user_item(items: list[dict[str, Any]], max_chars: int = 1200) -> dict[str, Any] | None:
-    """Extract a concise preserved user message item matching OpenAI /responses/compact output."""
-    for item in items:
+def extract_anchor_user_item_with_index(
+    items: list[dict[str, Any]], max_chars: int = 1200
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Extract a concise preserved user message item and its source index."""
+    for idx, item in enumerate(items):
         item_type = item.get("type")
         if (item_type == "message" or (item_type is None and "role" in item)) and item.get(
             "role"
@@ -1029,14 +1043,23 @@ def extract_anchor_user_item(items: list[dict[str, Any]], max_chars: int = 1200)
                 continue
             if len(text) > max_chars:
                 text = text[: max_chars - 3].rstrip() + "..."
-            return {
-                "id": f"msg_{secrets.token_hex(12)}",
-                "type": "message",
-                "status": "completed",
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}],
-            }
-    return None
+            return (
+                {
+                    "id": f"msg_{secrets.token_hex(12)}",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+                idx,
+            )
+    return None, None
+
+
+def extract_anchor_user_item(items: list[dict[str, Any]], max_chars: int = 1200) -> dict[str, Any] | None:
+    """Extract a concise preserved user message item matching OpenAI /responses/compact output."""
+    anchor, _ = extract_anchor_user_item_with_index(items, max_chars=max_chars)
+    return anchor
 
 
 def chunk_grouped_transcript_blocks_by_tokens(

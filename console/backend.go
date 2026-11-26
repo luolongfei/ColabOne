@@ -32,6 +32,19 @@ func newColabOneBridgeClosedError() error {
 	return colabOneBridgeClosedError{msg: colabOneT("err.bridgeExited")}
 }
 
+type colabOneBridgeTimeoutError struct {
+	msg string
+}
+
+func (e colabOneBridgeTimeoutError) Error() string { return e.msg }
+func (e colabOneBridgeTimeoutError) Is(target error) bool {
+	return target == context.DeadlineExceeded
+}
+
+func newColabOneBridgeTimeoutError() error {
+	return colabOneBridgeTimeoutError{msg: colabOneT("err.bridgeTimeout")}
+}
+
 // colabOneBridge hosts the in-process pure-Go ColabOneController, replacing the
 // legacy Python subprocess pipe with zero-IPC direct Go calls.
 type colabOneBridge struct {
@@ -55,21 +68,37 @@ func colabOneMethodTimeout(method string) time.Duration {
 		"runtime.start.cancel", "settings.save",
 		"api.key", "api.tunnel_token", "comfyui.canvas.tunnel_token", "settings.hf_token",
 		"settings.assign_proxy", "settings.assign_proxy.test",
-		"shortcuts.status", "shortcuts.create", "shortcuts.remove", "desktop.shortcuts",
+		"desktop.shortcuts",
 		"comfyui.draft.get", "comfyui.draft.save", "comfyui.draft.clear", "comfyui.draft.media.delete",
 		"comfyui.tts.preview.cache.lookup", "comfyui.tts.preview.cache.read",
 		"comfyui.tts.preview.prefetch", "comfyui.tts.preview.prefetch.cancel",
-		"comfyui.auto_release":
+		"comfyui.auto_release",
+		"comfyui.live.status", "comfyui.live.vram_check", "comfyui.live.session_token",
+		"comfyui.live.llm.get", "comfyui.live.llm.save", "comfyui.live.llm.clear",
+		"comfyui.live.avatars.list", "comfyui.live.driving.list":
 		return 30 * time.Second
+	case "comfyui.live.avatars.delete", "comfyui.live.driving.delete":
+		// 30s DELETE RPC + RefreshRemote headroom.
+		return 45 * time.Second
 	case "runtime.start":
 		// Capped exponential-backoff Colab allocation attempts + remote boot.
 		return 900 * time.Second
 	case "runtime.release", "runtime.release.all", "runtime.upgrade",
-		"drive.connect", "auth.colab.auto", "comfyui.input.upload", "comfyui.output.asset",
+		"drive.connect", "auth.colab.auto", "comfyui.output.asset",
 		"comfyui.output.export_drive", "comfyui.draft.media.save", "comfyui.draft.media.read":
 		return 300 * time.Second
-	case "comfyui.tts.preview", "comfyui.tts.preview.asset":
-		// 120s preview RPC + RefreshRemote headroom, or multi-chunk WAV asset assembly.
+	case "comfyui.input.upload", "comfyui.live.avatars.clip.upload", "comfyui.live.driving.upload":
+		// 300s upload RPC + RefreshRemote headroom.
+		return 330 * time.Second
+	case "comfyui.outputs.drive.sync":
+		// Drive index sync RPC + RefreshRemote headroom.
+		return 240 * time.Second
+	case "comfyui.live.start":
+		// Live Studio startup RPC + RefreshRemote headroom.
+		return 180 * time.Second
+	case "comfyui.tts.preview", "comfyui.tts.preview.asset",
+		"comfyui.live.avatars.build_pack", "comfyui.live.llm.test":
+		// 120s RPC + RefreshRemote headroom, or multi-chunk WAV asset assembly.
 		return 150 * time.Second
 	default:
 		return 120 * time.Second
@@ -248,8 +277,11 @@ func (b *colabOneBridge) call(ctx context.Context, method string, payload map[st
 	} else {
 		result, err = ctrl.Command(callCtx, method, payload)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) && callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-				return "", errors.New(colabOneT("err.bridgeTimeout"))
+			if errors.Is(err, context.DeadlineExceeded) {
+				if callCtx.Err() == context.DeadlineExceeded || ctx.Err() == context.DeadlineExceeded {
+					return "", newColabOneBridgeTimeoutError()
+				}
+				return "", colabOneBridgeTimeoutError{msg: truncateColabOneRunes(activity.SafeMessage(err.Error()), 500)}
 			}
 			return "", errors.New(truncateColabOneRunes(activity.SafeMessage(err.Error()), 500))
 		}
@@ -292,8 +324,11 @@ func (b *colabOneBridge) resolveOutputMedia(
 	defer cancel()
 	meta, err := ctrl.ResolveOutputMediaMeta(callCtx, id)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) && callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			return nil, errors.New(colabOneT("err.bridgeTimeout"))
+		if errors.Is(err, context.DeadlineExceeded) {
+			if callCtx.Err() == context.DeadlineExceeded || ctx.Err() == context.DeadlineExceeded {
+				return nil, newColabOneBridgeTimeoutError()
+			}
+			return nil, colabOneBridgeTimeoutError{msg: truncateColabOneRunes(activity.SafeMessage(err.Error()), 500)}
 		}
 		return nil, errors.New(truncateColabOneRunes(activity.SafeMessage(err.Error()), 500))
 	}

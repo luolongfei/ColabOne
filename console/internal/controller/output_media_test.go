@@ -577,3 +577,150 @@ func TestOutputMediaStreamClientPoolingLiveBypassCooldownAndValidation(t *testin
 		t.Fatalf("expected 502 for mismatched upstream Content-Range start, got %d body=%s", recWrongStart.Code, recWrongStart.Body.String())
 	}
 }
+
+func TestResolveOutputMediaMetaCanonicalMIMEAndStreamRedirectRefusal(t *testing.T) {
+	liveID := "11112222333344445555666677778888"
+	driveID := "88887777666655554444333322221111"
+	postSyncID := "99998888777766665555444433332222"
+
+	redirectTargetHit := false
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetHit = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("should-never-be-followed"))
+	}))
+	defer redirectTarget.Close()
+
+	mockDrive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/files" {
+			q := r.URL.Query().Get("q")
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(q, "name = 'ColabOne_Drive'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-root","name":"ColabOne_Drive"}]}`))
+			case strings.Contains(q, "name = 'workspace'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-ws","name":"workspace"}]}`))
+			case strings.Contains(q, "name = 'comfyui-outputs'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-co","name":"comfyui-outputs"}]}`))
+			case strings.Contains(q, "'dir-co' in parents"):
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"files": []map[string]any{
+						{"id": "file-postsync", "name": postSyncID + ".png", "size": "128"},
+						{"id": "meta-postsync", "name": postSyncID + ".json", "size": "64"},
+					},
+				})
+			default:
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			}
+			return
+		}
+		if r.URL.Path == "/files/meta-postsync" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":        postSyncID,
+				"filename":  "spoofed.png",
+				"extension": "png",
+				"kind":      "script",
+				"mime":      "text/html",
+				"size":      128,
+			})
+			return
+		}
+		if r.URL.Path == "/files/file-redirect" {
+			http.Redirect(w, r, redirectTarget.URL+"/steal", http.StatusFound)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockDrive.Close()
+
+	h := newTestHarness(t, false)
+	h.ctrl.driveAPIBaseURL = mockDrive.URL
+	h.auth.driveScope = true
+	h.auth.requiresQuota = false
+	_ = h.vault.Set("colab", map[string]any{"token": "tok-mime", "refresh_token": "rt-mime"})
+	_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-mime", "email": "mime@example.com"})
+
+	// Branch 1: Live runtime output with spoofed MIME must return canonical image/png.
+	h.ctrl.Update(map[string]any{
+		"runtime": map[string]any{"state": "ready", "id": "ep-mime"},
+		"comfy_outputs": []any{
+			map[string]any{
+				"id":        liveID,
+				"filename":  "evil.png",
+				"extension": "png",
+				"kind":      "html",
+				"mime":      "text/html",
+				"size":      256,
+			},
+		},
+	})
+	meta1, err := h.ctrl.ResolveOutputMediaMeta(context.Background(), liveID)
+	if err != nil {
+		t.Fatalf("ResolveOutputMediaMeta live branch failed: %v", err)
+	}
+	if meta1.Mime != "image/png" {
+		t.Fatalf("live branch expected canonical image/png, got %q", meta1.Mime)
+	}
+
+	// Branch 2: Offline driveOutputs record with spoofed MIME must return canonical video/mp4.
+	h.ctrl.Update(map[string]any{
+		"runtime":       map[string]any{"state": "stopped"},
+		"comfy_outputs": []any{},
+	})
+	h.ctrl.mu.Lock()
+	h.ctrl.driveOutputs["sub:sub-mime"] = map[string]*ColabOneDriveOutputRecord{
+		driveID: {
+			ID:          driveID,
+			Kind:        "html",
+			Filename:    "clip.mp4",
+			Extension:   "mp4",
+			Mime:        "text/html",
+			Size:        512,
+			DriveSynced: true,
+			DriveMode:   "drive_api",
+			DriveFileID: "file-redirect",
+		},
+		postSyncID: {
+			ID:          postSyncID,
+			Kind:        "html",
+			Filename:    "pending.png",
+			Extension:   "png",
+			Mime:        "application/javascript",
+			Size:        128,
+			DriveSynced: true,
+			DriveMode:   "drive_api",
+			DriveFileID: "", // triggers Branch 3 on-demand SyncDriveOutputs
+		},
+	}
+	h.ctrl.mu.Unlock()
+
+	meta2, err := h.ctrl.ResolveOutputMediaMeta(context.Background(), driveID)
+	if err != nil {
+		t.Fatalf("ResolveOutputMediaMeta drive branch failed: %v", err)
+	}
+	if meta2.Mime != "video/mp4" {
+		t.Fatalf("drive branch expected canonical video/mp4, got %q", meta2.Mime)
+	}
+
+	// Branch 3: Post-sync driveOutputs branch must also return canonical image/png.
+	meta3, err := h.ctrl.ResolveOutputMediaMeta(context.Background(), postSyncID)
+	if err != nil {
+		t.Fatalf("ResolveOutputMediaMeta post-sync branch failed: %v", err)
+	}
+	if meta3.Mime != "image/png" {
+		t.Fatalf("post-sync branch expected canonical image/png, got %q", meta3.Mime)
+	}
+
+	// Stream client must refuse HTTP 302 redirect and never contact redirectTarget.
+	req := httptest.NewRequest(http.MethodGet, "/media/outputs/"+driveID, nil)
+	req.Header.Set("Range", "bytes=0-15")
+	rec := httptest.NewRecorder()
+	h.ctrl.ServeOutputMediaHTTP(context.Background(), rec, req, driveID)
+	if redirectTargetHit {
+		t.Fatal("driveStreamHTTPClient followed a 302 redirect")
+	}
+	if rec.Code == http.StatusOK || rec.Code == http.StatusPartialContent {
+		t.Fatalf("expected error status on 302 redirect from Drive stream, got %d", rec.Code)
+	}
+}

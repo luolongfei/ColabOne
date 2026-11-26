@@ -200,6 +200,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			return nil, errors.New("Provider 未配置")
 		}
 		c.log("正在刷新 Google 账号余额与运行实例状态", "计费", "info")
+		acctGen, acctCreds := c.snapshotAccountGuard()
 		account, err := c.provider.Account(ctx)
 		if err != nil {
 			return nil, err
@@ -207,10 +208,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if account == nil {
 			account = map[string]any{"logged_in": false}
 		}
-		c.Update(map[string]any{"account": account})
-		c.mu.Lock()
-		c.lastAuth = nowUnixFloat()
-		c.mu.Unlock()
+		if !c.applyAccountRefreshIfCurrent(acctGen, acctCreds, account, nowUnixFloat()) {
+			return map[string]any{"ok": true, "stale": true, "assignments": 0}, nil
+		}
 		c.observerWake.Set()
 		assignments, _ := asInt(account["assignments"])
 		if asBool(account["logged_in"]) {
@@ -244,28 +244,35 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return c.RetryMonitor(), nil
 
 	case "api.key":
+		c.vaultConfigMu.Lock()
 		api := map[string]any{}
 		if v, ok := c.vault.Get("public_api"); ok {
 			if m := asMap(v); m != nil {
-				api = m
+				api = deepCopyMap(m)
 			}
 		}
 		if asString(api["api_key"]) == "" {
 			api["api_key"] = generateAPIKey()
 			if err := c.vault.Set("public_api", api); err != nil {
+				c.vaultConfigMu.Unlock()
 				return nil, err
 			}
 		}
-		return map[string]any{"key": asString(api["api_key"])}, nil
+		key := asString(api["api_key"])
+		c.vaultConfigMu.Unlock()
+		return map[string]any{"key": key}, nil
 
 	case "api.tunnel_token":
+		c.vaultConfigMu.Lock()
 		api := map[string]any{}
 		if v, ok := c.vault.Get("public_api"); ok {
 			if m := asMap(v); m != nil {
 				api = m
 			}
 		}
-		return map[string]any{"token": asString(api["tunnel_token"])}, nil
+		tok := asString(api["tunnel_token"])
+		c.vaultConfigMu.Unlock()
+		return map[string]any{"token": tok}, nil
 
 	case "api.rotate":
 		// Revoke the running gateway first. Never report a local-only rotation as successful.
@@ -278,30 +285,34 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				return nil, err
 			}
 		}
+		c.vaultConfigMu.Lock()
 		api := map[string]any{}
 		if v, ok := c.vault.Get("public_api"); ok {
 			if m := asMap(v); m != nil {
-				api = m
+				api = deepCopyMap(m)
 			}
 		}
 		api["api_key"] = generateAPIKey()
 		if err := c.vault.Set("public_api", api); err != nil {
+			c.vaultConfigMu.Unlock()
 			return nil, err
 		}
+		c.vaultConfigMu.Unlock()
 		c.log("API Key 已更换；重新开启服务后使用新密钥", "API", "info")
 		return map[string]any{"ok": true}, nil
 
 	case "api.start", "api.save":
-		saved := map[string]any{}
-		if v, ok := c.vault.Get("public_api"); ok {
-			if m := asMap(v); m != nil {
-				saved = m
-			}
-		}
 		if rawMode, exists := payload["mode"]; exists && rawMode != nil {
 			modeStr := asString(rawMode)
 			if modeStr != "" && modeStr != "named" {
 				return nil, errors.New("已不再支持临时域名，请配置固定域名和 Cloudflare Tunnel Token")
+			}
+		}
+		c.vaultConfigMu.Lock()
+		saved := map[string]any{}
+		if v, ok := c.vault.Get("public_api"); ok {
+			if m := asMap(v); m != nil {
+				saved = deepCopyMap(m)
 			}
 		}
 		domain := asString(saved["domain"])
@@ -323,6 +334,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			"api_key":      apiKey,
 		})
 		if err != nil {
+			c.vaultConfigMu.Unlock()
 			return nil, errors.New("API 配置无效：请填写公网 HTTPS 固定域名，并粘贴有效的 Cloudflare Tunnel 安装命令或 Token")
 		}
 		stored := deepCopyMap(saved)
@@ -331,8 +343,10 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		stored["domain"] = asString(config["domain"])
 		stored["tunnel_token"] = asString(config["tunnel_token"])
 		if err := c.vault.Set("public_api", stored); err != nil {
+			c.vaultConfigMu.Unlock()
 			return nil, err
 		}
+		c.vaultConfigMu.Unlock()
 		if action == "api.save" {
 			c.log("已保存对外 API 固定域名与隧道配置", "API", "info")
 			return map[string]any{"ok": true}, nil
@@ -398,16 +412,17 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return res, nil
 
 	case "comfyui.canvas.save", "comfyui.canvas.start":
-		saved := map[string]any{}
-		if v, ok := c.vault.Get("comfyui_canvas"); ok {
-			if m := asMap(v); m != nil {
-				saved = m
-			}
-		}
 		if rawMode, exists := payload["mode"]; exists && rawMode != nil {
 			modeStr := asString(rawMode)
 			if modeStr != "" && modeStr != "named" {
 				return nil, errors.New("已不再支持临时域名，请配置固定域名和 Cloudflare Tunnel Token")
+			}
+		}
+		c.vaultConfigMu.Lock()
+		saved := map[string]any{}
+		if v, ok := c.vault.Get("comfyui_canvas"); ok {
+			if m := asMap(v); m != nil {
+				saved = deepCopyMap(m)
 			}
 		}
 		domain := asString(saved["domain"])
@@ -424,6 +439,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			"tunnel_token": tunnelTok,
 		})
 		if err != nil {
+			c.vaultConfigMu.Unlock()
 			return nil, errors.New("ComfyUI 画布配置无效：请填写公网 HTTPS 固定域名，并粘贴有效的 Cloudflare Tunnel 安装命令或 Token")
 		}
 		stored := deepCopyMap(saved)
@@ -431,8 +447,10 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		stored["domain"] = asString(config["domain"])
 		stored["tunnel_token"] = asString(config["tunnel_token"])
 		if err := c.vault.Set("comfyui_canvas", stored); err != nil {
+			c.vaultConfigMu.Unlock()
 			return nil, err
 		}
+		c.vaultConfigMu.Unlock()
 		if action == "comfyui.canvas.save" {
 			c.log("已保存 ComfyUI 原生画布固定域名与隧道配置", "ComfyUI", "info")
 			return map[string]any{"ok": true}, nil
@@ -464,13 +482,16 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return c.remote(ctx, "GET", "comfyui/canvas/url", nil, "", 0)
 
 	case "comfyui.canvas.tunnel_token":
+		c.vaultConfigMu.Lock()
 		canvas := map[string]any{}
 		if v, ok := c.vault.Get("comfyui_canvas"); ok {
 			if m := asMap(v); m != nil {
 				canvas = m
 			}
 		}
-		return map[string]any{"token": asString(canvas["tunnel_token"])}, nil
+		tok := asString(canvas["tunnel_token"])
+		c.vaultConfigMu.Unlock()
+		return map[string]any{"token": tok}, nil
 
 	case "comfyui.workflow.import":
 		if c.comfy == nil {
@@ -634,13 +655,14 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return map[string]any{"ok": true}, nil
 
 	case "comfyui.input.upload":
-		fname := strings.TrimSpace(asString(payload["filename"]))
+		rawFname := asString(payload["filename"])
 		rawData := asString(payload["data"])
 		if uploadValidator, ok := c.comfy.(ComfyInputUploadValidator); ok {
-			if err := uploadValidator.ValidateInputUpload(fname, rawData); err != nil {
+			if err := uploadValidator.ValidateInputUpload(rawFname, rawData); err != nil {
 				return nil, err
 			}
 		}
+		fname := strings.TrimSpace(rawFname)
 		display := fname
 		if display == "" {
 			display = "文件"
@@ -1306,6 +1328,57 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		return c.readDriveOutputAssetChunk(ctx, identity, offset)
 
+	case "comfyui.live.status":
+		return c.handleLiveStatus(ctx)
+
+	case "comfyui.live.vram_check":
+		return c.handleLiveVRAMCheck(ctx, payload)
+
+	case "comfyui.live.start":
+		return c.handleLiveStart(ctx, payload)
+
+	case "comfyui.live.stop":
+		return c.handleLiveStop(ctx)
+
+	case "comfyui.live.session_token":
+		return c.handleLiveSessionToken(ctx)
+
+	case "comfyui.live.llm.get":
+		return c.handleLiveLLMGet()
+
+	case "comfyui.live.llm.save":
+		return c.handleLiveLLMSave(payload)
+
+	case "comfyui.live.llm.clear":
+		return c.handleLiveLLMClear()
+
+	case "comfyui.live.llm.test":
+		return c.handleLiveLLMTest(ctx, payload)
+
+	case "comfyui.live.avatars.list":
+		return c.handleLiveAvatarsList(ctx)
+
+	case "comfyui.live.avatars.save":
+		return c.handleLiveAvatarsSave(ctx, payload)
+
+	case "comfyui.live.avatars.delete":
+		return c.handleLiveAvatarsDelete(ctx, payload)
+
+	case "comfyui.live.avatars.clip.upload":
+		return c.handleLiveAvatarClipUpload(ctx, payload)
+
+	case "comfyui.live.avatars.build_pack":
+		return c.handleLiveAvatarBuildPack(ctx, payload)
+
+	case "comfyui.live.driving.list":
+		return c.handleLiveDrivingList(ctx)
+
+	case "comfyui.live.driving.upload":
+		return c.handleLiveDrivingUpload(ctx, payload)
+
+	case "comfyui.live.driving.delete":
+		return c.handleLiveDrivingDelete(ctx, payload)
+
 	case "runtime.upgrade":
 		forceUpgrade := asBool(payload["force"])
 		restoreAfter := asBoolDefault(payload, "restore", true)
@@ -1580,22 +1653,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			if err != nil {
 				return err
 			}
-			c.mu.Lock()
-			c.lastAuth = 0
-			c.remoteWorkflowVersions = make(map[string]float64)
-			c.resetDriveOutputsSyncStateLocked()
-			c.mu.Unlock()
-			if c.cuUsage != nil {
-				c.cuUsage.ResetActiveAccount()
-			}
-			c.resetMonitorToAuto(true, true)
-			c.Update(map[string]any{
-				"models":        c.Presets(),
-				"workflows":     c.mergeWorkflows(nil),
-				"tts_engines":   c.builtinTtsEngines(),
-				"comfy_outputs": []any{},
-				"auth_url":      "",
-			})
+			c.resetAccountStateForSwitch(nil, false)
 			c.log("Google 登录已保存到本机，后续自动续期", "登录", "info")
 			c.triggerBackgroundDriveOutputsSync()
 			return nil
@@ -1613,14 +1671,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			if err := c.auth.ColabFinish(ctx, code); err != nil {
 				return nil, err
 			}
-			c.mu.Lock()
-			c.lastAuth = 0
-			c.resetDriveOutputsSyncStateLocked()
-			c.mu.Unlock()
-			if c.cuUsage != nil {
-				c.cuUsage.ResetActiveAccount()
-			}
-			c.resetMonitorToAuto(true, true)
+			c.resetAccountStateForSwitch(nil, false)
+			c.triggerBackgroundDriveOutputsSync()
 			return map[string]any{"ok": true}, nil
 		}
 		return c.asyncOperation("完成 Google 登录", func() error {
@@ -1628,22 +1680,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			if err := c.auth.ColabFinish(c.rootCtx, code); err != nil {
 				return err
 			}
-			c.mu.Lock()
-			c.lastAuth = 0
-			c.remoteWorkflowVersions = make(map[string]float64)
-			c.resetDriveOutputsSyncStateLocked()
-			c.mu.Unlock()
-			if c.cuUsage != nil {
-				c.cuUsage.ResetActiveAccount()
-			}
-			c.resetMonitorToAuto(true, true)
-			c.Update(map[string]any{
-				"models":        c.Presets(),
-				"workflows":     c.mergeWorkflows(nil),
-				"tts_engines":   c.builtinTtsEngines(),
-				"comfy_outputs": []any{},
-				"auth_url":      "",
-			})
+			c.resetAccountStateForSwitch(nil, false)
 			c.log("Google 登录已保存到本机，后续自动续期", "登录", "info")
 			c.triggerBackgroundDriveOutputsSync()
 			return nil

@@ -77,6 +77,7 @@ export interface ColabOneMigrationCredentialsSummary {
   public_api_domain: string;
   has_comfy_canvas: boolean;
   comfy_canvas_domain: string;
+  has_live_external_llm: boolean;
   configured_count: number;
 }
 

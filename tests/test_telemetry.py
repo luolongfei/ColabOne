@@ -274,3 +274,74 @@ def test_resource_sampler_latest_cache_expiry_and_isolation(tmp_path):
     assert fresh is not None
     assert fresh["gpu"]["name"] == "Tesla T4"
     assert sampler.latest(max_age=2.5, now=1003.0) is None
+
+
+def test_telemetry_monotonic_clock_immune_to_wall_clock_jumps_and_thread_safe(
+    tmp_path, monkeypatch
+):
+    import threading
+    from server import telemetry as telemetry_mod
+
+    clock = {"wall": 1_700_000_000.0, "mono": 100.0}
+    monkeypatch.setattr(telemetry_mod.time, "time", lambda: clock["wall"])
+    monkeypatch.setattr(telemetry_mod.time, "monotonic", lambda: clock["mono"])
+
+    sampler = ColabOneResourceSampler(history_limit=10, min_sample_interval=2.0)
+    diskstats = tmp_path / "diskstats"
+    diskstats.write_text(
+        "   8       0 sda 100 0 1000 50 80 0 500 40 0 30 90\n",
+        encoding="utf-8",
+    )
+    gpu = {"name": "Tesla T4", "total_mib": 15360, "used_mib": 1024}
+
+    d1 = sampler.disk_info(tmp_path, diskstats_path=diskstats)
+    assert d1["read_bps"] == 0.0
+
+    # Simulate a huge backwards NTP wall-clock jump while monotonic clock advances 2.5s.
+    clock["wall"] -= 3600.0
+    clock["mono"] += 2.5
+    diskstats.write_text(
+        "   8       0 sda 120 0 1500 60 95 0 750 50 0 35 110\n",
+        encoding="utf-8",
+    )
+    d2 = sampler.disk_info(tmp_path, diskstats_path=diskstats)
+    assert d2["read_bps"] == pytest.approx(500 * 512 / 2.5)
+    assert d2["write_bps"] == pytest.approx(250 * 512 / 2.5)
+
+    # Verify sample() history interval gating and latest() cache expiry use monotonic clock
+    # while preserving wall-clock display timestamp "t".
+    s1 = sampler.sample(tmp_path, gpu_override=gpu)
+    assert len(s1["history"]) == 1
+    assert s1["history"][0]["t"] == pytest.approx(clock["wall"])
+
+    clock["wall"] -= 7200.0
+    clock["mono"] += 2.4
+    assert sampler.latest(max_age=2.5) is not None
+    clock["mono"] += 0.2
+    assert sampler.latest(max_age=2.5) is None
+
+    s2 = sampler.sample(tmp_path, gpu_override=gpu)
+    assert len(s2["history"]) == 2
+    assert s2["history"][-1]["t"] == pytest.approx(clock["wall"])
+
+    # Concurrent cpu_info and disk_info calls stay serialized and non-negative.
+    stat_file = tmp_path / "stat"
+    stat_file.write_text("cpu  1000 0 500 8500 0 0 0 0 0 0\n", encoding="utf-8")
+    errors = []
+
+    def worker():
+        try:
+            for _ in range(10):
+                c = sampler.cpu_info(stat_file)
+                d = sampler.disk_info(tmp_path, diskstats_path=diskstats)
+                assert 0.0 <= c["percent"] <= 100.0
+                assert d["read_bps"] >= 0.0 and d["write_bps"] >= 0.0
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    assert errors == []

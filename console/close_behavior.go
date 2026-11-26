@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/egoist/mygo"
 )
@@ -169,10 +168,6 @@ func (s *colabOneCloseBehaviorStore) Save(value string) error {
 		}
 		return errors.New("close behavior store path is empty")
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(struct {
 		Behavior string `json:"behavior"`
 	}{Behavior: norm}, "", "  ")
@@ -180,44 +175,7 @@ func (s *colabOneCloseBehaviorStore) Save(value string) error {
 		return err
 	}
 	data = append(data, '\n')
-	tmpFile, err := os.CreateTemp(dir, ".close-behavior-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmpFile.Name()
-	closed := false
-	renamed := false
-	defer func() {
-		if !closed {
-			_ = tmpFile.Close()
-		}
-		if !renamed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmpFile.Write(data); err != nil {
-		return err
-	}
-	if err := tmpFile.Sync(); err != nil {
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		closed = true
-		return err
-	}
-	closed = true
-	var renameErr error
-	for range 4 {
-		renameErr = os.Rename(tmpPath, path)
-		if renameErr == nil {
-			renamed = true
-			return nil
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	_ = os.Remove(tmpPath)
-	renamed = true
-	return os.WriteFile(path, data, 0o644)
+	return writeColabOneFileAtomic(path, ".close-behavior-*.tmp", data, 0o644)
 }
 
 func (d *ColabOneDesktop) initCloseBehavior(pathFn func() (string, error)) {

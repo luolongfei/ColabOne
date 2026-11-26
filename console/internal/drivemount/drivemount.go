@@ -103,7 +103,7 @@ func NewColabOneDriveMount(opts ColabOneDriveMountOptions) *ColabOneDriveMount {
 
 	return &ColabOneDriveMount{
 		client:          opts.Client,
-		endpoint:        opts.Endpoint,
+		endpoint:        strings.TrimSpace(opts.Endpoint),
 		onAuthURL:       opts.OnAuthURL,
 		onAuthConfirmed: opts.OnAuthConfirmed,
 		onLog:           opts.OnLog,
@@ -254,7 +254,11 @@ func (m *ColabOneDriveMount) emitAuthConfirmed(ctx context.Context, interactive 
 	m.onAuthConfirmed(interactive)
 }
 
-func (m *ColabOneDriveMount) endpointURL(dryrun bool) string {
+func (m *ColabOneDriveMount) endpointURL(dryrun bool) (string, error) {
+	endpoint := strings.TrimSpace(m.endpoint)
+	if endpoint == "" {
+		return "", errors.New("Colab 实例端点不能为空")
+	}
 	domain := ""
 	if m.client != nil {
 		domain = strings.TrimSpace(m.client.ColabDomain())
@@ -262,7 +266,7 @@ func (m *ColabOneDriveMount) endpointURL(dryrun bool) string {
 	if domain == "" {
 		domain = defaultColabDomain
 	}
-	base := strings.TrimRight(domain, "/") + "/tun/m/credentials-propagation/" + m.endpoint
+	base := strings.TrimRight(domain, "/") + "/tun/m/credentials-propagation/" + url.PathEscape(endpoint)
 	q := url.Values{}
 	q.Set("authuser", "0")
 	q.Set("authtype", "dfs_ephemeral")
@@ -274,7 +278,7 @@ func (m *ColabOneDriveMount) endpointURL(dryrun bool) string {
 	}
 	q.Set("propagate", "true")
 	q.Set("record", "false")
-	return base + "?" + q.Encode()
+	return base + "?" + q.Encode(), nil
 }
 
 func (m *ColabOneDriveMount) notConfirmedHint() string {
@@ -481,10 +485,14 @@ func (m *ColabOneDriveMount) doGET(ctx context.Context, dryrun bool) (int, []byt
 	if m.client == nil {
 		return 0, nil, &transportError{err: errors.New("authorized HTTP client is nil")}
 	}
+	targetURL, err := m.endpointURL(dryrun)
+	if err != nil {
+		return 0, nil, err
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, colabRequestTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.endpointURL(dryrun), nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return 0, nil, wrapClientError(ctx, err)
 	}
@@ -513,6 +521,10 @@ func (m *ColabOneDriveMount) doPOST(ctx context.Context, token string, dryrun bo
 	if m.client == nil {
 		return 0, nil, &transportError{err: errors.New("authorized HTTP client is nil")}
 	}
+	targetURL, err := m.endpointURL(dryrun)
+	if err != nil {
+		return 0, nil, err
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, colabRequestTimeout)
 	defer cancel()
 
@@ -525,7 +537,7 @@ func (m *ColabOneDriveMount) doPOST(ctx context.Context, token string, dryrun bo
 		return 0, nil, &transportError{err: err}
 	}
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, m.endpointURL(dryrun), &payload)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, targetURL, &payload)
 	if err != nil {
 		return 0, nil, wrapClientError(ctx, err)
 	}

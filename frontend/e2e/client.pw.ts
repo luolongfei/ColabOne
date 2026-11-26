@@ -2666,10 +2666,13 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
     page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
   ).toBeVisible();
   const tablist = page.getByRole("tablist", { name: "ComfyUI 模式" });
-  await expect(tablist.getByRole("tab")).toHaveCount(2);
+  await expect(tablist.getByRole("tab")).toHaveCount(3);
   await expect(
     tablist.getByRole("tab", { name: /^工作流工坊/ }),
   ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    tablist.getByRole("tab", { name: /^实时演播/ }),
+  ).toBeVisible();
 
   // Outputs gallery is tucked inside a drawer by default; toolbar exposes the Outputs trigger button.
   await expect(page.locator(".co-comfy-outputs-drawer-root")).toHaveCount(0);
@@ -4701,7 +4704,7 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
       },
     );
   });
-  expect(comfyTabAlign.length).toBe(2);
+  expect(comfyTabAlign.length).toBe(3);
   for (const item of comfyTabAlign) {
     expect(item.labelDelta).toBeLessThanOrEqual(1);
     expect(item.iconDelta).toBeLessThanOrEqual(1);

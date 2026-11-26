@@ -19,7 +19,7 @@ def colabone_update():
 
     emit_log("远端更新脚本已启动，正在校验当前服务状态")
     cfg_path = Path("/content/colabone-boot.json")
-    cfg = json.loads(cfg_path.read_text())
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     req = urllib.request.Request(
         "http://127.0.0.1:7860/api/v1/status",
@@ -28,7 +28,7 @@ def colabone_update():
     with opener.open(req, timeout=10) as response:
         status = json.load(response)
     if (
-        any(t["state"] == "running" for t in status.get("tasks", []))
+        any(t.get("state") == "running" for t in status.get("tasks", []))
         or status.get("loaded_model")
         or status.get("active_engine")
     ):
@@ -100,8 +100,21 @@ def colabone_update():
             timeout=120,
         )
         emit_log("新版服务依赖已就绪，正在平滑停止旧管理服务")
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     if cfg.get("deadline", 0) > 0 and cfg["deadline"] - time.time() < 60:
         raise RuntimeError("远端自动释放保护即将释放实例，未替换运行中的服务")
+    req = urllib.request.Request(
+        "http://127.0.0.1:7860/api/v1/status",
+        headers={"Authorization": "Bearer " + cfg["token"]},
+    )
+    with opener.open(req, timeout=10) as response:
+        status = json.load(response)
+    if (
+        any(t.get("state") == "running" for t in status.get("tasks", []))
+        or status.get("loaded_model")
+        or status.get("active_engine")
+    ):
+        raise RuntimeError("请等待任务结束并卸载模型或停止 ComfyUI 后再更新远端服务")
     backup = Path("/content/colabone-previous")
     shutil.rmtree(backup, ignore_errors=True)
     pid = processes[0]
@@ -135,7 +148,19 @@ def colabone_update():
     )
 
     def launch():
-        with open("/content/colabone-server.log", "a") as log:
+        log_fd = os.open(
+            "/content/colabone-server.log",
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(log_fd, 0o600)
+            log_file = os.fdopen(log_fd, "a", encoding="utf-8")
+        except BaseException:
+            os.close(log_fd)
+            raise
+        with log_file as log:
             return subprocess.Popen(
                 [sys.executable, "-m", "server.app"],
                 cwd="/content/colabone",

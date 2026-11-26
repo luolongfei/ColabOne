@@ -6413,3 +6413,143 @@ func TestRPCPhase2FailurePathsCleanUpEphemeralFile(t *testing.T) {
 		}
 	})
 }
+
+func TestRPCMissingMarkerCleansUpUploadedFileAndClampsContextDeadline(t *testing.T) {
+	t.Run("IdempotentMissingMarkerCleansUpOnRetryAndFinalError", func(t *testing.T) {
+		vault := newMemoryVault()
+		exp := time.Now().Add(time.Hour)
+		contents := &fakeContents{}
+		var execCalls atomic.Int32
+
+		p := NewColabOneProvider(ColabOneProviderConfig{
+			Vault:    vault,
+			Contents: contents,
+			KernelFactory: func(opts KernelOptions) KernelClient {
+				fk := newFakeKernel(opts)
+				fk.executeFn = func(ctx context.Context, code string, eo ExecuteOptions) ([]KernelOutput, error) {
+					execCalls.Add(1)
+					return []KernelOutput{{Text: "unexpected stdout without marker\n"}}, nil
+				}
+				return fk
+			},
+		})
+		_ = p.SaveSession(&ColabOneSessionState{
+			Endpoint:       "ep-missing-marker",
+			Token:          "tok-valid",
+			URL:            "https://missing-marker.invalid",
+			TokenExpiresAt: &exp,
+		}, true)
+
+		// Idempotent POST configure retries once and must clean up BOTH uploaded request files.
+		_, err := p.RPC(context.Background(), "POST", "configure", map[string]any{"idle_minutes": 30}, "ep-missing-marker", 30*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "Colab 控制连接没有返回结果") {
+			t.Fatalf("expected missing marker error, got %v", err)
+		}
+		if execCalls.Load() != 2 {
+			t.Fatalf("expected 2 attempts for idempotent missing marker, got %d", execCalls.Load())
+		}
+		contents.mu.Lock()
+		uploads := append([]uploadRecord(nil), contents.uploads...)
+		deletes := append([]string(nil), contents.deletes...)
+		contents.mu.Unlock()
+		if len(uploads) != 2 || len(deletes) != 2 {
+			t.Fatalf("expected 2 uploads and 2 deletes, got uploads=%d deletes=%d (%v)", len(uploads), len(deletes), deletes)
+		}
+		if uploads[0].remotePath != deletes[0] || uploads[1].remotePath != deletes[1] {
+			t.Fatalf("deleted paths %v do not match uploaded paths [%s, %s]", deletes, uploads[0].remotePath, uploads[1].remotePath)
+		}
+	})
+
+	t.Run("NonIdempotentMissingMarkerCleansUpUploadedFile", func(t *testing.T) {
+		vault := newMemoryVault()
+		exp := time.Now().Add(time.Hour)
+		contents := &fakeContents{}
+
+		p := NewColabOneProvider(ColabOneProviderConfig{
+			Vault:    vault,
+			Contents: contents,
+			KernelFactory: func(opts KernelOptions) KernelClient {
+				fk := newFakeKernel(opts)
+				fk.executeFn = func(ctx context.Context, code string, eo ExecuteOptions) ([]KernelOutput, error) {
+					return []KernelOutput{{Text: "no marker\n"}}, nil
+				}
+				return fk
+			},
+		})
+		_ = p.SaveSession(&ColabOneSessionState{
+			Endpoint:       "ep-missing-nonidemp",
+			Token:          "tok-valid",
+			URL:            "https://missing-nonidemp.invalid",
+			TokenExpiresAt: &exp,
+		}, true)
+
+		_, err := p.RPC(context.Background(), "POST", "models/m1/load", map[string]any{"id": "m1"}, "ep-missing-nonidemp", 30*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "Colab 控制连接没有返回结果") {
+			t.Fatalf("expected missing marker error, got %v", err)
+		}
+		contents.mu.Lock()
+		uploads := append([]uploadRecord(nil), contents.uploads...)
+		deletes := append([]string(nil), contents.deletes...)
+		contents.mu.Unlock()
+		if len(uploads) != 1 || len(deletes) != 1 || uploads[0].remotePath != deletes[0] {
+			t.Fatalf("expected uploaded file cleaned up on missing marker: uploads=%#v deletes=%#v", uploads, deletes)
+		}
+	})
+
+	t.Run("ClampsPhase1UploadAndPhase2ExecTimeoutsToContextDeadline", func(t *testing.T) {
+		vault := newMemoryVault()
+		exp := time.Now().Add(time.Hour)
+		var seenUploadTimeout time.Duration
+		var seenExecTimeout time.Duration
+		var seenCode string
+
+		contents := &fakeContents{
+			uploadFn: func(ctx context.Context, baseURL, proxyToken, remotePath string, data []byte, timeout time.Duration) error {
+				seenUploadTimeout = timeout
+				time.Sleep(150 * time.Millisecond)
+				return nil
+			},
+		}
+		p := NewColabOneProvider(ColabOneProviderConfig{
+			Vault:    vault,
+			Contents: contents,
+			KernelFactory: func(opts KernelOptions) KernelClient {
+				fk := newFakeKernel(opts)
+				fk.executeFn = func(ctx context.Context, code string, eo ExecuteOptions) ([]KernelOutput, error) {
+					seenExecTimeout = eo.Timeout
+					seenCode = code
+					return []KernelOutput{{Text: `COLABONE_RPC={"ok":true,"value":{"clamped":true}}` + "\n"}}, nil
+				}
+				return fk
+			},
+		})
+		_ = p.SaveSession(&ColabOneSessionState{
+			Endpoint:       "ep-clamp",
+			Token:          "tok-valid",
+			URL:            "https://clamp.invalid",
+			TokenExpiresAt: &exp,
+		}, true)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		val, err := p.RPC(ctx, "POST", "models/m1/load", map[string]any{"id": "m1"}, "ep-clamp", 120*time.Second)
+		if err != nil {
+			t.Fatalf("RPC failed: %v", err)
+		}
+		if val.(map[string]any)["clamped"] != true {
+			t.Fatalf("unexpected result: %#v", val)
+		}
+		if seenUploadTimeout <= 0 || seenUploadTimeout > 4*time.Second {
+			t.Fatalf("Phase 1 upload timeout was not clamped to ctx deadline: got %v", seenUploadTimeout)
+		}
+		if seenExecTimeout <= 0 || seenExecTimeout > 4*time.Second {
+			t.Fatalf("Phase 2 exec timeout was not clamped to ctx deadline: got %v", seenExecTimeout)
+		}
+		if seenExecTimeout >= seenUploadTimeout {
+			t.Fatalf("expected Phase 2 remaining budget (%v) < Phase 1 budget (%v)", seenExecTimeout, seenUploadTimeout)
+		}
+		if strings.Contains(seenCode, "timeout=110") {
+			t.Fatalf("remote Python HTTP timeout was not clamped against ctx deadline: %s", seenCode)
+		}
+	})
+}

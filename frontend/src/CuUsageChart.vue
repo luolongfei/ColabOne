@@ -1541,7 +1541,7 @@ onBeforeUnmount(() => {
     border-color 0.28s ease;
 }
 
-:global(:root[data-theme="dark"]) .co-cu-usage-card {
+:root[data-theme="dark"] .co-cu-usage-card {
   --co-cu-bar: #60a5fa;
   --co-cu-bar-active: #3b82f6;
   --co-cu-trend: #fbbf24;

@@ -376,3 +376,53 @@ func TestSchemaVersionZeroAndBOMWithLeadingWhitespace(t *testing.T) {
 		t.Fatalf("ValidatePayload(schema=future) got %v, want ErrUnsupportedVersion", err)
 	}
 }
+
+func TestLiveExternalLLMMigrationSummaryRoundTripAndRedaction(t *testing.T) {
+	p := samplePayload()
+	secretKey := "sk-live-ext-llm-super-secret-9999"
+	p.Credentials.LiveExternalLLM = map[string]any{
+		"base_url": "https://llm.example.com/v1",
+		"model":    "gpt-4o-mini",
+		"api_key":  secretKey,
+	}
+
+	formatted := fmt.Sprintf("%s %#v", p.Credentials, p.Credentials)
+	if strings.Contains(formatted, secretKey) || strings.Contains(formatted, "llm.example.com") {
+		t.Fatalf("Credentials String/GoString leaked live_external_llm secret: %s", formatted)
+	}
+	if !strings.Contains(formatted, "HasLiveExternalLLM:true") {
+		t.Fatalf("expected HasLiveExternalLLM:true in formatted credentials, got %s", formatted)
+	}
+
+	raw, err := SealPayloadWithParams(p, "pass123456", testFastKDF())
+	if err != nil {
+		t.Fatalf("SealPayloadWithParams failed: %v", err)
+	}
+	if strings.Contains(string(raw), secretKey) {
+		t.Fatal("sealed envelope leaked live_external_llm api_key")
+	}
+
+	opened, err := OpenPayload(raw, "pass123456")
+	if err != nil {
+		t.Fatalf("OpenPayload failed: %v", err)
+	}
+	if opened.Credentials == nil || opened.Credentials.LiveExternalLLM["api_key"] != secretKey {
+		t.Fatalf("LiveExternalLLM did not round-trip: %#v", opened.Credentials)
+	}
+
+	summaries := BuildModuleSummaries(opened)
+	var credSum *ColabOneMigrationCredentialsSummary
+	for _, s := range summaries {
+		if s.ID == ModuleCredentials {
+			credSum = s.Credentials
+			break
+		}
+	}
+	if credSum == nil || !credSum.HasLiveExternalLLM || credSum.ConfiguredCount != 5 {
+		t.Fatalf("unexpected credentials summary with live_external_llm: %+v", credSum)
+	}
+	sumJSON, _ := json.Marshal(summaries)
+	if bytes.Contains(sumJSON, []byte(secretKey)) {
+		t.Fatal("summary JSON leaked live_external_llm api_key")
+	}
+}

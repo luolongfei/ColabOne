@@ -169,3 +169,13 @@ func TestColabOneDesktopEmbeddedKeyAndRollbackRPCs(t *testing.T) {
 		t.Fatalf("en rollback tray label = %q", label)
 	}
 }
+
+func TestMyGoUpdateBackendClientsAttachStrictCheckRedirect(t *testing.T) {
+	b := newMyGoUpdateBackend()
+	if b.readOnly == nil || b.readOnly.Client == nil || b.readOnly.Client.CheckRedirect == nil {
+		t.Fatal("expected metaClient in readOnly feed checker to attach strict CheckRedirect")
+	}
+	if b.rollback == nil || b.rollback.Client == nil || b.rollback.Client.CheckRedirect == nil {
+		t.Fatal("expected downloadClient in rollback installer to attach strict CheckRedirect")
+	}
+}

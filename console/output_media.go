@@ -18,6 +18,9 @@ func (d *ColabOneDesktop) ensureOutputMediaServer() (string, error) {
 	d.mediaMu.Lock()
 	defer d.mediaMu.Unlock()
 
+	if d.mediaClosed || d.appQuitting.Load() {
+		return "", newColabOneBridgeClosedError()
+	}
 	if d.mediaBaseURL != "" && d.mediaSrv != nil {
 		return d.mediaBaseURL, nil
 	}
@@ -88,7 +91,12 @@ func (d *ColabOneDesktop) ensureOutputMediaServer() (string, error) {
 }
 
 func (d *ColabOneDesktop) closeOutputMediaServer() {
+	d.closeOutputMediaServerWithTimeout(colabOneOutputMediaCloseTimeout)
+}
+
+func (d *ColabOneDesktop) closeOutputMediaServerWithTimeout(timeout time.Duration) {
 	d.mediaMu.Lock()
+	d.mediaClosed = true
 	srv := d.mediaSrv
 	ln := d.mediaLn
 	d.mediaSrv = nil
@@ -98,9 +106,11 @@ func (d *ColabOneDesktop) closeOutputMediaServer() {
 	d.mediaMu.Unlock()
 
 	if srv != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), colabOneOutputMediaCloseTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		_ = srv.Shutdown(ctx)
+		if err := srv.Shutdown(ctx); err != nil {
+			_ = srv.Close()
+		}
 	}
 	if ln != nil {
 		_ = ln.Close()

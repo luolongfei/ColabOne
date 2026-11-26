@@ -31,6 +31,9 @@ type instanceCache struct {
 	Workflows              []map[string]any
 	TtsEngines             []map[string]any
 	ComfyOutputs           []any
+	LiveAvatars            []map[string]any
+	LiveDrivingMotions     []map[string]any
+	LiveCatalog            map[string]any
 	RemoteWorkflowVersions map[string]float64
 	LastHeartbeat          float64
 	LastConfig             float64
@@ -69,7 +72,8 @@ type ColabOneController struct {
 	upgradePollDelay   time.Duration
 	startRetryDelay    time.Duration
 
-	// Lock ordering: persistMu -> mu -> monitorMu (never invert).
+	// Lock ordering: vaultConfigMu -> persistMu -> mu -> monitorMu (never invert).
+	vaultConfigMu           sync.Mutex
 	persistMu               sync.Mutex
 	mu                      sync.Mutex
 	settings                map[string]any
@@ -101,6 +105,7 @@ type ColabOneController struct {
 
 	opBusy           atomic.Bool
 	opGen            atomic.Uint64
+	accountGen       atomic.Uint64
 	touchBusy        atomic.Bool
 	observerPollBusy atomic.Bool
 
@@ -122,19 +127,30 @@ type ColabOneController struct {
 
 	ttsPreviewCacheMu     sync.Mutex
 	ttsPreviewIndex       *colabOneLocalTtsPreviewIndex
-	pendingTtsPreviewReqs map[string]map[string]any
-	pendingTtsPrefetchCtx map[string]map[string]any
+	pendingTtsPreviewReqs map[string]colabOnePendingTtsEntry
+	pendingTtsPrefetchCtx map[string]colabOnePendingTtsEntry
+	pendingTtsSeq         uint64
 
-	background             bool
-	driveOutputs           map[string]map[string]*ColabOneDriveOutputRecord
-	driveOutputsSyncMu     sync.Mutex
-	driveOutputsSyncing    bool
-	driveOutputsLastSynced float64
-	driveOutputsSyncError  string
-	driveAPIBaseURL        string
-	driveHTTPClient        *http.Client
-	driveHTTPClientOwned   bool
-	driveStreamHTTPClient  *http.Client
+	background                     bool
+	driveOutputs                   map[string]map[string]*ColabOneDriveOutputRecord
+	driveOutputsSyncSem            chan struct{}
+	driveOutputsSyncing            bool
+	driveOutputsSyncAccountKey     string
+	driveOutputsSyncDeleted        map[string]map[string]bool
+	driveOutputsSyncDeletedFileIDs map[string]map[string]bool
+	driveOutputsSyncAdded          map[string]map[string]bool
+	driveOutputsLastSynced         float64
+	driveOutputsSyncError          string
+	driveAPIBaseURL                string
+	driveHTTPClient                *http.Client
+	driveHTTPClientOwned           bool
+	driveStreamHTTPClient          *http.Client
+
+	// Optional overrides for unit tests; zero values use production defaults.
+	workflowDraftsMaxCount         int
+	workflowDraftsMaxTotalBytes    int64
+	livePostMutationRefreshTimeout time.Duration
+	shutdownRollbackTimeout        time.Duration
 
 	rootCtx    context.Context
 	cancelRoot context.CancelFunc
@@ -261,16 +277,23 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		observerWake:           NewColabOneEvent(),
 		monitorMode:            "auto",
 		externalObservations:   make(map[string]map[string]any),
-		background:             cfg.Background,
-		driveOutputs:           make(map[string]map[string]*ColabOneDriveOutputRecord),
-		driveAPIBaseURL:        strings.TrimSpace(cfg.DriveAPIBaseURL),
-		driveHTTPClient:        cfg.DriveHTTPClient,
-		driveHTTPClientOwned:   cfg.DriveHTTPClient == nil,
-		rootCtx:                rootCtx,
-		cancelRoot:             cancelRoot,
+		background:                     cfg.Background,
+		driveOutputs:                   make(map[string]map[string]*ColabOneDriveOutputRecord),
+		driveOutputsSyncSem:            make(chan struct{}, 1),
+		driveOutputsSyncDeleted:        make(map[string]map[string]bool),
+		driveOutputsSyncDeletedFileIDs: make(map[string]map[string]bool),
+		driveOutputsSyncAdded:          make(map[string]map[string]bool),
+		driveAPIBaseURL:                strings.TrimSpace(cfg.DriveAPIBaseURL),
+		driveHTTPClient:                cfg.DriveHTTPClient,
+		driveHTTPClientOwned:           cfg.DriveHTTPClient == nil,
+		rootCtx:                        rootCtx,
+		cancelRoot:                     cancelRoot,
 	}
 	if c.driveHTTPClient == nil {
-		c.driveHTTPClient = &http.Client{Timeout: 30 * time.Second}
+		c.driveHTTPClient = &http.Client{
+			Timeout:       30 * time.Second,
+			CheckRedirect: refuseDriveRedirects,
+		}
 	}
 
 	c.loadSettings()
@@ -281,16 +304,20 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 	c.cuUsage = NewColabOneCUUsageStore(configDir, nil)
 
 	c.data = map[string]any{
-		"runtime":         map[string]any{"state": "stopped"},
-		"account":         map[string]any{"logged_in": false},
-		"models":          c.Presets(),
-		"workflows":       c.mergeWorkflows(nil),
-		"tts_engines":     c.builtinTtsEngines(),
-		"comfy_outputs":   []any{},
-		"operation":       nil,
-		"error":           "",
-		"auth_url":        "",
-		"drive_auth_hint": "",
+		"runtime":           map[string]any{"state": "stopped"},
+		"account":           map[string]any{"logged_in": false},
+		"models":            c.Presets(),
+		"workflows":         c.mergeWorkflows(nil),
+		"tts_engines":       c.builtinTtsEngines(),
+		"comfy_outputs":        []any{},
+		"live_avatars":         []map[string]any{},
+		"live_driving_motions": []map[string]any{},
+		"live_catalog":         map[string]any{},
+		"live_external_llm":    c.liveExternalLLMSummary(),
+		"operation":         nil,
+		"error":             "",
+		"auth_url":          "",
+		"drive_auth_hint":   "",
 	}
 
 	c.log("客户端已启动", "客户端", "info")
@@ -336,6 +363,9 @@ func (c *ColabOneController) Close() {
 		c.driveProbe.Set()
 		c.observerWake.Set()
 		c.cancelRoot()
+		if c.cuUsage != nil {
+			_ = c.cuUsage.Flush()
+		}
 		c.closeExternalObserver("", true)
 		c.wg.Wait()
 		if c.driveHTTPClientOwned && c.driveHTTPClient != nil {
@@ -553,6 +583,9 @@ func (c *ColabOneController) ensureInstanceStateLocked(endpoint string) *instanc
 			Workflows:              []map[string]any{},
 			TtsEngines:             []map[string]any{},
 			ComfyOutputs:           []any{},
+			LiveAvatars:            []map[string]any{},
+			LiveDrivingMotions:     []map[string]any{},
+			LiveCatalog:            map[string]any{},
 			RemoteWorkflowVersions: make(map[string]float64),
 		}
 		c.instanceStates[endpoint] = state
@@ -593,6 +626,13 @@ func (c *ColabOneController) saveActiveToCacheWithSessionsLocked(sessions map[st
 	if entry.ComfyOutputs == nil {
 		entry.ComfyOutputs = []any{}
 	}
+	entry.LiveAvatars = deepCopyMapSlice(asMapSlice(c.data["live_avatars"]))
+	entry.LiveDrivingMotions = deepCopyMapSlice(asMapSlice(c.data["live_driving_motions"]))
+	if cat := deepCopyMap(asMap(c.data["live_catalog"])); cat != nil {
+		entry.LiveCatalog = cat
+	} else {
+		entry.LiveCatalog = map[string]any{}
+	}
 	verCopy := make(map[string]float64, len(c.remoteWorkflowVersions))
 	for k, v := range c.remoteWorkflowVersions {
 		verCopy[k] = v
@@ -628,6 +668,13 @@ func (c *ColabOneController) activateCachedWithSessionsLocked(endpoint string, s
 				outputs = []any{}
 			}
 			c.data["comfy_outputs"] = outputs
+			c.data["live_avatars"] = deepCopyMapSlice(entry.LiveAvatars)
+			c.data["live_driving_motions"] = deepCopyMapSlice(entry.LiveDrivingMotions)
+			if cat := deepCopyMap(entry.LiveCatalog); cat != nil {
+				c.data["live_catalog"] = cat
+			} else {
+				c.data["live_catalog"] = map[string]any{}
+			}
 			verCopy := make(map[string]float64, len(entry.RemoteWorkflowVersions))
 			for k, v := range entry.RemoteWorkflowVersions {
 				verCopy[k] = v
@@ -641,6 +688,9 @@ func (c *ColabOneController) activateCachedWithSessionsLocked(endpoint string, s
 	c.data["workflows"] = c.mergeWorkflowsLocked(nil)
 	c.data["tts_engines"] = c.builtinTtsEngines()
 	c.data["comfy_outputs"] = []any{}
+	c.data["live_avatars"] = []map[string]any{}
+	c.data["live_driving_motions"] = []map[string]any{}
+	c.data["live_catalog"] = map[string]any{}
 	c.remoteWorkflowVersions = make(map[string]float64)
 }
 
@@ -908,6 +958,19 @@ func (c *ColabOneController) Snapshot() map[string]any {
 		outputs = []any{}
 	}
 	value["comfy_outputs"] = outputs
+	if asString(rt["state"]) != "stopped" {
+		value["live_avatars"] = deepCopyMapSlice(asMapSlice(value["live_avatars"]))
+		value["live_driving_motions"] = deepCopyMapSlice(asMapSlice(value["live_driving_motions"]))
+		if cat := deepCopyMap(asMap(value["live_catalog"])); cat != nil {
+			value["live_catalog"] = cat
+		} else {
+			value["live_catalog"] = map[string]any{}
+		}
+	} else {
+		value["live_avatars"] = []map[string]any{}
+		value["live_driving_motions"] = []map[string]any{}
+		value["live_catalog"] = map[string]any{}
+	}
 	value["common_repos"] = commonRepos
 
 	account := asMap(value["account"])
@@ -980,6 +1043,7 @@ func (c *ColabOneController) Snapshot() map[string]any {
 		"has_auth":   hasAuth,
 	}
 
+	c.vaultConfigMu.Lock()
 	apiMap := map[string]any{}
 	if v, ok := c.vault.Get("public_api"); ok {
 		if m := asMap(v); m != nil {
@@ -1004,6 +1068,8 @@ func (c *ColabOneController) Snapshot() map[string]any {
 		"domain":    asString(canvasMap["domain"]),
 		"has_token": asBool(canvasMap["tunnel_token"]),
 	}
+	value["live_external_llm"] = c.liveExternalLLMSummaryLocked()
+	c.vaultConfigMu.Unlock()
 
 	logs := c.activity.Snapshot()
 	if logs == nil {
@@ -1062,7 +1128,7 @@ func (c *ColabOneController) Update(values map[string]any) {
 	var activeEP string
 	needSessions := false
 	for k := range values {
-		if k == "runtime" || k == "models" || k == "workflows" || k == "tts_engines" || k == "comfy_outputs" {
+		if k == "runtime" || k == "models" || k == "workflows" || k == "tts_engines" || k == "comfy_outputs" || k == "live_avatars" || k == "live_driving_motions" || k == "live_catalog" {
 			needSessions = true
 			break
 		}
@@ -1101,6 +1167,158 @@ func (c *ColabOneController) Update(values map[string]any) {
 			}
 		}
 	}
+}
+
+func (c *ColabOneController) recordAccountCUUsage(acctMap map[string]any) {
+	if c.cuUsage == nil || acctMap == nil {
+		return
+	}
+	if asBool(acctMap["logged_in"]) && asTrimmedString(acctMap["email"]) == "" && c.vault != nil {
+		if profVal, ok := c.vault.Get("google_profile"); ok {
+			if profEmail := asTrimmedString(asMap(profVal)["email"]); profEmail != "" {
+				acctCopy := deepCopyMap(acctMap)
+				acctCopy["email"] = profEmail
+				acctMap = acctCopy
+			}
+		}
+	}
+	c.cuUsage.RecordAccount(acctMap)
+}
+
+func (c *ColabOneController) snapshotAccountGuard() (uint64, map[string]any) {
+	gen := c.accountGen.Load()
+	var creds map[string]any
+	if c.vault != nil {
+		if raw, ok := c.vault.Get("colab"); ok {
+			if m := asMap(raw); len(m) > 0 {
+				creds = deepCopyMap(m)
+			}
+		}
+	}
+	return gen, creds
+}
+
+func (c *ColabOneController) accountGuardMatches(gen uint64, beforeCreds map[string]any) bool {
+	if c.accountGen.Load() != gen {
+		return false
+	}
+	var curCreds map[string]any
+	if c.vault != nil {
+		if raw, ok := c.vault.Get("colab"); ok {
+			if m := asMap(raw); len(m) > 0 {
+				curCreds = m
+			}
+		}
+	}
+	if len(beforeCreds) == 0 && len(curCreds) == 0 {
+		return true
+	}
+	return sameColabCredentialIdentity(beforeCreds, curCreds)
+}
+
+func (c *ColabOneController) applyAccountRefreshIfCurrent(
+	gen uint64,
+	beforeCreds map[string]any,
+	acct map[string]any,
+	lastAuth float64,
+) bool {
+	if !c.accountGuardMatches(gen, beforeCreds) {
+		return false
+	}
+	if acct == nil {
+		acct = map[string]any{"logged_in": false}
+	}
+	sessions := c.vaultSessions()
+	activeEP := c.activeEndpointFrom(sessions)
+	c.mu.Lock()
+	if c.accountGen.Load() != gen {
+		c.mu.Unlock()
+		return false
+	}
+	pendingLogs := c.updateWithSessionsLocked(map[string]any{"account": acct}, sessions, activeEP)
+	if lastAuth > 0 {
+		c.lastAuth = lastAuth
+	}
+	c.mu.Unlock()
+	c.flushActivityLogs(pendingLogs)
+	if c.accountGen.Load() == gen {
+		c.recordAccountCUUsage(acct)
+	}
+	return true
+}
+
+// resetAccountStateForSwitch clears all account-scoped and runtime-scoped cached
+// state atomically when logging into a different account or importing account
+// credentials via migration.
+func (c *ColabOneController) resetAccountStateForSwitch(accountPatch map[string]any, resetAuthState bool) {
+	if resetAuthState {
+		if resetter, ok := c.auth.(AuthStateResetter); ok {
+			resetter.ResetAccountState()
+		}
+	}
+	if c.cuUsage != nil {
+		c.cuUsage.ResetActiveAccount()
+	}
+	if accountPatch == nil {
+		hasLogin := false
+		email := ""
+		if c.vault != nil {
+			if v, ok := c.vault.Get("colab"); ok && asBool(v) {
+				hasLogin = true
+			}
+			if profVal, ok := c.vault.Get("google_profile"); ok {
+				email = asTrimmedString(asMap(profVal)["email"])
+			}
+		}
+		accountPatch = map[string]any{
+			"logged_in": hasLogin,
+			"email":     email,
+		}
+	}
+
+	c.ttsPreviewCacheMu.Lock()
+	c.pendingTtsPreviewReqs = nil
+	c.pendingTtsPrefetchCtx = nil
+	c.ttsPreviewCacheMu.Unlock()
+
+	var pendingLogs []pendingActivityLog
+	c.mu.Lock()
+	c.accountGen.Add(1)
+	c.lastAuth = 0
+	c.lastConfig = 0
+	c.lastHeartbeat = 0
+	c.pendingTouch = false
+	c.lastTouch = 0
+	c.releasePlan = nil
+	clear(c.instanceStates)
+	clear(c.upgradeAttempted)
+	clear(c.taskActivity)
+	clear(c.taskLogCursor)
+	c.remoteWorkflowVersions = make(map[string]float64)
+	c.resetDriveOutputsSyncStateLocked()
+
+	patch := map[string]any{
+		"account":              deepCopyMap(accountPatch),
+		"error":                "",
+		"auth_url":             "",
+		"models":               c.Presets(),
+		"workflows":            c.mergeWorkflowsLocked(nil),
+		"tts_engines":          c.builtinTtsEngines(),
+		"comfy_outputs":        []any{},
+		"live_avatars":         []map[string]any{},
+		"live_driving_motions": []map[string]any{},
+		"live_catalog":         map[string]any{},
+	}
+	if rtState := asString(asMap(c.data["runtime"])["state"]); rtState != "stopped" {
+		patch["runtime"] = map[string]any{"state": "stopped"}
+	}
+	// Pass empty sessions so saveActiveToCacheWithSessionsLocked does not repopulate instanceStates.
+	pendingLogs = c.updateWithSessionsLocked(patch, map[string]map[string]any{}, "")
+	c.mu.Unlock()
+
+	c.flushActivityLogs(pendingLogs)
+	c.resetMonitorToAuto(true, true)
+	c.observerWake.Set()
 }
 
 type pendingActivityLog struct {
@@ -1211,8 +1429,12 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 			"comfy_run":           "ComfyUI 工作流",
 			"comfyui":             "ComfyUI 任务",
 			"comfyui_start":       "ComfyUI 启动",
-			"comfyui_run":         "ComfyUI 工作流",
-			"comfyui_tts_preview": "音色试听",
+			"comfyui_run":            "ComfyUI 工作流",
+			"comfyui_tts_preview":    "音色试听",
+			"live_start":             "实时演播启动",
+			"live_build_pack":        "形象动作库构建",
+			"comfyui_live_start":     "实时演播启动",
+			"comfyui_live_build_pack": "形象动作库构建",
 		}
 		taskStatusLabels := map[string]string{
 			"running":   "进行中",
@@ -1325,12 +1547,21 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 		if _, hasTTS := values["tts_engines"]; !hasTTS {
 			c.data["tts_engines"] = c.builtinTtsEngines()
 		}
+		if _, hasLiveAvatars := values["live_avatars"]; !hasLiveAvatars {
+			c.data["live_avatars"] = []map[string]any{}
+		}
+		if _, hasLiveDriving := values["live_driving_motions"]; !hasLiveDriving {
+			c.data["live_driving_motions"] = []map[string]any{}
+		}
+		if _, hasLiveCatalog := values["live_catalog"]; !hasLiveCatalog {
+			c.data["live_catalog"] = map[string]any{}
+		}
 	}
 
 	cacheDirty := false
 	for k, v := range values {
 		c.data[k] = deepCopyAny(v)
-		if k == "runtime" || k == "models" || k == "workflows" || k == "tts_engines" || k == "comfy_outputs" {
+		if k == "runtime" || k == "models" || k == "workflows" || k == "tts_engines" || k == "comfy_outputs" || k == "live_avatars" || k == "live_driving_motions" || k == "live_catalog" {
 			cacheDirty = true
 		}
 	}
@@ -1751,6 +1982,26 @@ func (c *ColabOneController) prepareRemoteForUpgrade(ctx context.Context, endpoi
 		}
 	}
 
+	liveStudio := asMap(status["live_studio"])
+	liveState := asString(liveStudio["state"])
+	activeEngine := asString(status["active_engine"])
+	if asBool(liveStudio["running"]) ||
+		liveState == "starting" || liveState == "ready" || liveState == "stopping" ||
+		strings.Contains(activeEngine, "live_studio") || activeEngine == "live" {
+		c.log("更新前正在停止实时演播服务", "GPU", "info")
+		if _, err := c.remote(ctx, "POST", "live/stop", nil, endpoint, 0); err != nil {
+			return nil, err
+		}
+		rawStatus, err = c.remote(ctx, "GET", "status", nil, endpoint, 0)
+		if err != nil {
+			return nil, err
+		}
+		status = asMap(rawStatus)
+		if status == nil {
+			status = map[string]any{}
+		}
+	}
+
 	comfy = asMap(status["comfyui"])
 	comfyCanvas = asMap(comfy["canvas"])
 	comfyState = asString(comfy["state"])
@@ -1899,12 +2150,14 @@ func (c *ColabOneController) restoreRemoteAfterUpgrade(ctx context.Context, plan
 	}
 
 	if wantPublicAPI {
+		c.vaultConfigMu.Lock()
 		saved := map[string]any{}
 		if v, ok := c.vault.Get("public_api"); ok {
 			if m := asMap(v); m != nil {
-				saved = m
+				saved = deepCopyMap(m)
 			}
 		}
+		c.vaultConfigMu.Unlock()
 		apiConfig, err := c.validatePublicAPIConfig(map[string]any{
 			"mode":         "named",
 			"domain":       asString(saved["domain"]),
@@ -1939,12 +2192,14 @@ func (c *ColabOneController) restoreRemoteAfterUpgrade(ctx context.Context, plan
 		}
 
 		if comfyStarted && wantComfyCanvas {
+			c.vaultConfigMu.Lock()
 			savedCanvas := map[string]any{}
 			if v, ok := c.vault.Get("comfyui_canvas"); ok {
 				if m := asMap(v); m != nil {
-					savedCanvas = m
+					savedCanvas = deepCopyMap(m)
 				}
 			}
+			c.vaultConfigMu.Unlock()
 			canvasPayload, err := c.validateComfyCanvasConfig(map[string]any{
 				"mode":         "named",
 				"domain":       asString(savedCanvas["domain"]),
@@ -2076,6 +2331,18 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 	if comfyOutputs == nil {
 		comfyOutputs = []any{}
 	}
+	liveAvatars := asMapSlice(state["live_avatars"])
+	if liveAvatars == nil {
+		liveAvatars = []map[string]any{}
+	}
+	liveDrivingMotions := asMapSlice(state["live_driving_motions"])
+	if liveDrivingMotions == nil {
+		liveDrivingMotions = []map[string]any{}
+	}
+	liveCatalog := deepCopyMap(asMap(state["live_catalog"]))
+	if liveCatalog == nil {
+		liveCatalog = map[string]any{}
+	}
 	remoteVersions := make(map[string]float64, len(rawWorkflows))
 	for _, w := range rawWorkflows {
 		if id := asString(w["id"]); id != "" {
@@ -2128,6 +2395,9 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 		entry.Workflows = deepCopyMapSlice(mergedWorkflows)
 		entry.TtsEngines = deepCopyMapSlice(mergedTtsEngines)
 		entry.ComfyOutputs = deepCopySlice(comfyOutputs)
+		entry.LiveAvatars = deepCopyMapSlice(liveAvatars)
+		entry.LiveDrivingMotions = deepCopyMapSlice(liveDrivingMotions)
+		entry.LiveCatalog = deepCopyMap(liveCatalog)
 		verCopy := make(map[string]float64, len(remoteVersions))
 		for k, v := range remoteVersions {
 			verCopy[k] = v
@@ -2139,11 +2409,14 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 		(effective == "" || activeEP == "" || effective == activeEP) {
 		c.remoteWorkflowVersions = remoteVersions
 		pendingLogs = c.updateWithSessionsLocked(map[string]any{
-			"runtime":       rt,
-			"models":        models,
-			"workflows":     mergedWorkflows,
-			"tts_engines":   mergedTtsEngines,
-			"comfy_outputs": comfyOutputs,
+			"runtime":              rt,
+			"models":               models,
+			"workflows":            mergedWorkflows,
+			"tts_engines":          mergedTtsEngines,
+			"comfy_outputs":        comfyOutputs,
+			"live_avatars":         liveAvatars,
+			"live_driving_motions": liveDrivingMotions,
+			"live_catalog":         liveCatalog,
 		}, curSessions, activeEP)
 	}
 	c.mu.Unlock()
@@ -2728,10 +3001,54 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			}
 		}
 		sort.Strings(orphanEPs)
+		shutdownBudget := c.shutdownRollbackTimeout
+		if shutdownBudget <= 0 {
+			shutdownBudget = 6 * time.Second
+		}
+		var shutdownDeadline time.Time
+		if c.stop.IsSet() {
+			shutdownDeadline = time.Now().Add(shutdownBudget)
+		}
 		for _, ep := range orphanEPs {
 			c.log("正在清理残留实例："+ep, "GPU", "warning")
 			if c.provider != nil {
-				relCtx, relCancel := context.WithTimeout(context.Background(), 90*time.Second)
+				var relCtx context.Context
+				var relCancel context.CancelFunc
+				var watchDone chan struct{}
+				if c.stop.IsSet() {
+					if shutdownDeadline.IsZero() {
+						shutdownDeadline = time.Now().Add(shutdownBudget)
+					}
+					rem := time.Until(shutdownDeadline)
+					if rem <= 0 {
+						break
+					}
+					relCtx, relCancel = context.WithTimeout(context.Background(), rem)
+				} else {
+					relCtx, relCancel = context.WithTimeout(context.Background(), 90*time.Second)
+					done := make(chan struct{})
+					watchDone = make(chan struct{})
+					go func(cancel context.CancelFunc) {
+						defer close(watchDone)
+						select {
+						case <-done:
+							return
+						case <-c.stop.Chan():
+							timer := time.NewTimer(shutdownBudget)
+							defer timer.Stop()
+							select {
+							case <-done:
+							case <-timer.C:
+								cancel()
+							}
+						}
+					}(relCancel)
+					_, _ = c.provider.Release(relCtx, ep, c.logFunc())
+					close(done)
+					<-watchDone
+					relCancel()
+					continue
+				}
 				_, _ = c.provider.Release(relCtx, ep, c.logFunc())
 				relCancel()
 			}
@@ -2772,7 +3089,10 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 					"models":        c.Presets(),
 					"workflows":     c.mergeWorkflowsLocked(nil),
 					"tts_engines":   c.builtinTtsEngines(),
-					"comfy_outputs": []any{},
+					"comfy_outputs":        []any{},
+					"live_avatars":         []map[string]any{},
+					"live_driving_motions": []map[string]any{},
+					"live_catalog":         map[string]any{},
 				})
 				c.mu.Unlock()
 				c.flushActivityLogs(pendingLogs)
@@ -2814,6 +3134,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		c.data["workflows"] = c.mergeWorkflowsLocked(nil)
 		c.data["tts_engines"] = c.builtinTtsEngines()
 		c.data["comfy_outputs"] = []any{}
+		c.data["live_avatars"] = []map[string]any{}
+		c.data["live_driving_motions"] = []map[string]any{}
+		c.data["live_catalog"] = map[string]any{}
 		c.remoteWorkflowVersions = make(map[string]float64)
 		c.mu.Unlock()
 	}
@@ -3002,12 +3325,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 	}
 
 	c.log("正在刷新账号计费与活跃实例列表", "计费", "info")
+	acctGen, acctCreds := c.snapshotAccountGuard()
 	if acct, err := c.provider.Account(ctx); err == nil && acct != nil {
-		c.Update(map[string]any{"account": acct})
-		c.mu.Lock()
-		c.lastAuth = nowUnixFloat()
-		c.mu.Unlock()
-		if asBool(acct["logged_in"]) {
+		if c.applyAccountRefreshIfCurrent(acctGen, acctCreds, acct, nowUnixFloat()) && asBool(acct["logged_in"]) {
 			balance, _ := asFloat(acct["balance"])
 			rate, _ := asFloat(acct["rate"])
 			assignments, _ := asInt(acct["assignments"])
@@ -3044,7 +3364,11 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 		c.log("已选择强制释放，跳过远端收尾检查", "GPU", "warning")
 	}
 
+	var prevRT map[string]any
 	if !useExplicit {
+		c.mu.Lock()
+		prevRT = deepCopyMap(asMap(c.data["runtime"]))
+		c.mu.Unlock()
 		c.Update(map[string]any{"runtime": map[string]any{"state": "releasing"}})
 	}
 
@@ -3054,6 +3378,35 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 			relEP = target
 		}
 		if _, err := c.provider.Release(ctx, relEP, c.logFunc()); err != nil {
+			if !useExplicit {
+				remainingSessions := c.vaultSessions()
+				if len(remainingSessions) == 0 {
+					c.mu.Lock()
+					c.remoteWorkflowVersions = make(map[string]float64)
+					pendingLogs := c.updateWithSessionsLocked(map[string]any{
+						"runtime":              map[string]any{"state": "stopped"},
+						"models":               c.Presets(),
+						"workflows":            c.mergeWorkflowsLocked(nil),
+						"tts_engines":          c.builtinTtsEngines(),
+						"comfy_outputs":        []any{},
+						"live_avatars":         []map[string]any{},
+						"live_driving_motions": []map[string]any{},
+						"live_catalog":         map[string]any{},
+					}, remainingSessions, "")
+					c.mu.Unlock()
+					c.flushActivityLogs(pendingLogs)
+				} else {
+					fallbackEP := c.activeEndpointFrom(remainingSessions)
+					if fallbackEP == "" {
+						fallbackEP = asString(prevRT["id"])
+					}
+					nextRT := map[string]any{"state": "disconnected"}
+					if fallbackEP != "" {
+						nextRT["id"] = fallbackEP
+					}
+					c.Update(map[string]any{"runtime": nextRT})
+				}
+			}
 			return err
 		}
 	}
@@ -3077,7 +3430,10 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 			"models":        c.Presets(),
 			"workflows":     c.mergeWorkflowsLocked(nil),
 			"tts_engines":   c.builtinTtsEngines(),
-			"comfy_outputs": []any{},
+			"comfy_outputs":        []any{},
+			"live_avatars":         []map[string]any{},
+			"live_driving_motions": []map[string]any{},
+			"live_catalog":         map[string]any{},
 		})
 		c.mu.Unlock()
 		c.flushActivityLogs(pendingLogs)
@@ -3086,20 +3442,19 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 
 	if c.provider != nil {
 		c.log("正在刷新账号计费与实例清单", "计费", "info")
+		acctGen, acctCreds := c.snapshotAccountGuard()
 		if acct, err := c.provider.Account(ctx); err == nil && acct != nil {
 			if _, hasLoggedIn := acct["logged_in"]; hasLoggedIn {
-				c.Update(map[string]any{"account": acct})
-				c.mu.Lock()
-				c.lastAuth = nowUnixFloat()
-				c.mu.Unlock()
-				c.observerWake.Set()
-				assignments, _ := asInt(acct["assignments"])
-				rate, _ := asFloat(acct["rate"])
-				c.log(
-					fmt.Sprintf("已刷新账号状态 · 活跃实例 %d 台 · 费率 %.2f CU/小时", assignments, rate),
-					"计费",
-					"info",
-				)
+				if c.applyAccountRefreshIfCurrent(acctGen, acctCreds, acct, nowUnixFloat()) {
+					c.observerWake.Set()
+					assignments, _ := asInt(acct["assignments"])
+					rate, _ := asFloat(acct["rate"])
+					c.log(
+						fmt.Sprintf("已刷新账号状态 · 活跃实例 %d 台 · 费率 %.2f CU/小时", assignments, rate),
+						"计费",
+						"info",
+					)
+				}
 			}
 		}
 	}
@@ -3251,7 +3606,10 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 					"models":        c.Presets(),
 					"workflows":     c.mergeWorkflowsLocked(nil),
 					"tts_engines":   c.builtinTtsEngines(),
-					"comfy_outputs": []any{},
+					"comfy_outputs":        []any{},
+					"live_avatars":         []map[string]any{},
+					"live_driving_motions": []map[string]any{},
+					"live_catalog":         map[string]any{},
 				})
 				c.mu.Unlock()
 				c.flushActivityLogs(pendingLogs)
@@ -3261,8 +3619,9 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 			}
 
 			if c.provider != nil {
+				acctGen, acctCreds := c.snapshotAccountGuard()
 				if acct, err := c.provider.Account(ctx); err == nil && acct != nil {
-					c.Update(map[string]any{"account": acct})
+					c.applyAccountRefreshIfCurrent(acctGen, acctCreds, acct, 0)
 				}
 			}
 			c.observerWake.Set()
@@ -3803,6 +4162,8 @@ func (c *ColabOneController) RemoveLocalModel(modelID string) (map[string]any, e
 	if err != nil {
 		return nil, err
 	}
+	sessions := c.vaultSessions()
+	activeEP := c.activeEndpointFrom(sessions)
 	c.mu.Lock()
 	models := asMapSlice(c.data["models"])
 	for _, m := range models {
@@ -3824,6 +4185,19 @@ func (c *ColabOneController) RemoveLocalModel(modelID string) (map[string]any, e
 		}
 	}
 	c.data["models"] = filtered
+	for _, st := range c.instanceStates {
+		if st == nil || len(st.Models) == 0 {
+			continue
+		}
+		kept := make([]map[string]any, 0, len(st.Models))
+		for _, m := range st.Models {
+			if asString(m["id"]) != mid {
+				kept = append(kept, m)
+			}
+		}
+		st.Models = kept
+	}
+	c.saveActiveToCacheWithSessionsLocked(sessions, activeEP)
 	c.mu.Unlock()
 
 	if err := c.saveLibrary(); err != nil {
@@ -3937,24 +4311,6 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 		}
 	}
 
-	existingProxy := ""
-	if v, ok := c.vault.Get("assign_proxy"); ok {
-		if s, ok := v.(string); ok {
-			existingProxy = s
-		}
-	}
-	var existingProxySpec *ColabOneAssignProxySpec
-	if strings.TrimSpace(existingProxy) != "" && c.assignProxy != nil {
-		if parsed, err := c.assignProxy.ParseAssignProxy(existingProxy); err == nil {
-			existingProxySpec = parsed
-		}
-	}
-	if enabled, ok := isStrictBool(public["assign_proxy_enabled"]); ok && enabled {
-		if newProxySpec == nil && existingProxySpec == nil {
-			return nil, errors.New("请先填写并保存分配代理地址")
-		}
-	}
-
 	hfToken := ""
 	if rawHF, exists := payload["hf_token"]; exists && rawHF != nil {
 		rawStr, ok := rawHF.(string)
@@ -3967,19 +4323,45 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 		}
 		hfToken = cleaned
 	}
-	if hfToken != "" {
-		if err := c.vault.Set("hf", hfToken); err != nil {
-			return nil, err
+
+	existingProxy := ""
+	if err := func() error {
+		c.vaultConfigMu.Lock()
+		defer c.vaultConfigMu.Unlock()
+
+		if v, ok := c.vault.Get("assign_proxy"); ok {
+			if s, ok := v.(string); ok {
+				existingProxy = s
+			}
 		}
-	}
-	if clearAssignProxy {
-		if err := c.vault.Delete("assign_proxy"); err != nil {
-			return nil, err
+		var existingProxySpec *ColabOneAssignProxySpec
+		if strings.TrimSpace(existingProxy) != "" && c.assignProxy != nil {
+			if parsed, err := c.assignProxy.ParseAssignProxy(existingProxy); err == nil {
+				existingProxySpec = parsed
+			}
 		}
-	} else if newProxySpec != nil {
-		if err := c.vault.Set("assign_proxy", newProxySpec.NormalizedURL); err != nil {
-			return nil, err
+		if enabled, ok := isStrictBool(public["assign_proxy_enabled"]); ok && enabled {
+			if newProxySpec == nil && existingProxySpec == nil {
+				return errors.New("请先填写并保存分配代理地址")
+			}
 		}
+		if hfToken != "" {
+			if err := c.vault.Set("hf", hfToken); err != nil {
+				return err
+			}
+		}
+		if clearAssignProxy {
+			if err := c.vault.Delete("assign_proxy"); err != nil {
+				return err
+			}
+		} else if newProxySpec != nil {
+			if err := c.vault.Set("assign_proxy", newProxySpec.NormalizedURL); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		return nil, err
 	}
 
 	c.persistMu.Lock()

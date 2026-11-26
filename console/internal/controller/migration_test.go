@@ -606,3 +606,166 @@ func TestControllerMigrationWritesWorkflowsJSONAsTopLevelArray(t *testing.T) {
 		t.Fatalf("unexpected workflows.json contents: %#v", arr)
 	}
 }
+
+func TestControllerMigrationLiveExternalLLMRoundTripRollbackAndAccountSecurity(t *testing.T) {
+	// 1. LiveExternalLLM export, import, snapshot refresh, and opGen bump.
+	srcDir := t.TempDir()
+	srcVault := NewColabOneMemoryVault()
+	_ = srcVault.Set(colabOneVaultLiveExternalLLMKey, map[string]any{
+		"base_url": "https://api.example.com/v1",
+		"model":    "gpt-4o-mini",
+		"api_key":  "sk-migrate-live-llm-1234567890",
+	})
+	srcCtrl := NewColabOneController(ColabOneControllerConfig{
+		ConfigDir: srcDir,
+		Vault:     srcVault,
+	})
+	defer srcCtrl.Close()
+
+	exported, err := srcCtrl.ExportMigrationPayload([]string{migration.ModuleCredentials}, "v0.3.0", "linux", nil)
+	if err != nil {
+		t.Fatalf("ExportMigrationPayload failed: %v", err)
+	}
+	if exported.Credentials == nil || asString(exported.Credentials.LiveExternalLLM["model"]) != "gpt-4o-mini" {
+		t.Fatalf("expected LiveExternalLLM exported, got %#v", exported.Credentials)
+	}
+
+	dstDir := t.TempDir()
+	dstVault := NewColabOneMemoryVault()
+	dstCtrl := NewColabOneController(ColabOneControllerConfig{
+		ConfigDir: dstDir,
+		Vault:     dstVault,
+	})
+	defer dstCtrl.Close()
+
+	beforeGen := dstCtrl.opGen.Load()
+	if _, err := dstCtrl.ApplyMigrationPayload(context.Background(), exported, []string{migration.ModuleCredentials}); err != nil {
+		t.Fatalf("ApplyMigrationPayload credentials failed: %v", err)
+	}
+	if afterGen := dstCtrl.opGen.Load(); afterGen < beforeGen+2 {
+		t.Fatalf("expected opGen incremented on acquire and release (+2), got %d -> %d", beforeGen, afterGen)
+	}
+	snapLLM := asMap(dstCtrl.Snapshot()["live_external_llm"])
+	if !asBool(snapLLM["configured"]) || asString(snapLLM["model"]) != "gpt-4o-mini" || !asBool(snapLLM["has_api_key"]) {
+		t.Fatalf("expected snapshot live_external_llm updated after migration, got %#v", snapLLM)
+	}
+
+	// Rollback of live_external_llm when a downstream file write fails (settings.json blocked by dir).
+	rbDir := t.TempDir()
+	rbVault := NewColabOneMemoryVault()
+	_ = rbVault.Set(colabOneVaultLiveExternalLLMKey, map[string]any{
+		"base_url": "https://old.example.com/v1",
+		"model":    "old-model",
+		"api_key":  "sk-old-key-1234567890",
+	})
+	rbCtrl := NewColabOneController(ColabOneControllerConfig{
+		ConfigDir: rbDir,
+		Vault:     rbVault,
+	})
+	defer rbCtrl.Close()
+	if err := os.MkdirAll(filepath.Join(rbDir, "settings.json", "blocker"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rbPayload := &migration.ColabOneMigrationPayload{
+		SchemaVersion:   migration.COLABONE_MIGRATION_SCHEMA_VERSION,
+		IncludedModules: []string{migration.ModuleCredentials, migration.ModuleSettings},
+		Credentials: &migration.ColabOneMigrationCredentialsData{
+			LiveExternalLLM: map[string]any{
+				"base_url": "https://new.example.com/v1",
+				"model":    "new-model",
+				"api_key":  "sk-new-key-1234567890",
+			},
+		},
+		Settings: &migration.ColabOneMigrationSettingsData{
+			Controller: map[string]any{"gpu": "L4"},
+		},
+	}
+	if _, err := rbCtrl.ApplyMigrationPayload(context.Background(), rbPayload, []string{migration.ModuleCredentials, migration.ModuleSettings}); err == nil {
+		t.Fatal("expected settings write failure to trigger rollback")
+	}
+	rawRolled, ok := rbVault.Get(colabOneVaultLiveExternalLLMKey)
+	if !ok || asString(asMap(rawRolled)["model"]) != "old-model" {
+		t.Fatalf("expected live_external_llm rolled back to old-model, got %#v (ok=%v)", rawRolled, ok)
+	}
+
+	// Invalid LiveExternalLLM SSRF URL rejected in Phase 1 before touching vault.
+	badLLMPayload := &migration.ColabOneMigrationPayload{
+		SchemaVersion:   migration.COLABONE_MIGRATION_SCHEMA_VERSION,
+		IncludedModules: []string{migration.ModuleCredentials},
+		Credentials: &migration.ColabOneMigrationCredentialsData{
+			LiveExternalLLM: map[string]any{
+				"base_url": "https://169.254.169.254/v1",
+				"model":    "evil",
+				"api_key":  "sk-evil-1234567890",
+			},
+		},
+	}
+	if _, err := dstCtrl.ApplyMigrationPayload(context.Background(), badLLMPayload, []string{migration.ModuleCredentials}); err == nil {
+		t.Fatal("expected SSRF LiveExternalLLM base_url to be rejected")
+	}
+
+	// 2. validateMigrationAccount SSRF token_uri allowlist.
+	for _, goodURI := range []string{
+		"",
+		"https://oauth2.googleapis.com/token",
+		"https://accounts.google.com/o/oauth2/token",
+	} {
+		if _, err := validateMigrationAccount(&migration.ColabOneMigrationAccountData{
+			Colab: map[string]any{
+				"refresh_token": "1//valid-refresh",
+				"token_uri":     goodURI,
+			},
+		}); err != nil {
+			t.Fatalf("expected trusted token_uri %q to pass, got %v", goodURI, err)
+		}
+	}
+	for _, badURI := range []string{
+		"http://oauth2.googleapis.com/token",
+		"https://evil.example.com/token",
+		"https://user:pass@oauth2.googleapis.com/token",
+		"https://oauth2.googleapis.com/token?redirect=https://evil.example",
+		"https://oauth2.googleapis.com/token#frag",
+		"https://oauth2.googleapis.com:443/token",
+		"https://oauth2.googleapis.com/token/",
+		" https://oauth2.googleapis.com/token",
+	} {
+		if _, err := validateMigrationAccount(&migration.ColabOneMigrationAccountData{
+			Colab: map[string]any{
+				"refresh_token": "1//valid-refresh",
+				"token_uri":     badURI,
+			},
+		}); err == nil {
+			t.Fatalf("expected untrusted token_uri %q to be rejected", badURI)
+		}
+	}
+
+	// 3. INI injection / control characters rejected across ALL OAuth fields, scopes, profile, and cloud_project.
+	for _, field := range []string{
+		"token", "refresh_token", "id_token", "client_id", "client_secret",
+		"quota_project_id", "rapt_token", "universe_domain", "account", "expiry",
+	} {
+		for _, badVal := range []string{"val\n[evil]", "val\r\nfoo=bar", "val\x00null"} {
+			colabMap := map[string]any{"refresh_token": "1//base", field: badVal}
+			if _, err := validateMigrationAccount(&migration.ColabOneMigrationAccountData{Colab: colabMap}); err == nil {
+				t.Fatalf("expected control char in field %q (%q) to be rejected", field, badVal)
+			}
+		}
+	}
+	if _, err := validateMigrationAccount(&migration.ColabOneMigrationAccountData{
+		Colab: map[string]any{"refresh_token": "1//ok", "scopes": []string{"openid", "drive\n[evil]"}},
+	}); err == nil {
+		t.Fatal("expected control char in scopes slice to be rejected")
+	}
+	if _, err := validateMigrationAccount(&migration.ColabOneMigrationAccountData{
+		Colab:         map[string]any{"refresh_token": "1//ok"},
+		GoogleProfile: map[string]string{"email": "user@example.com\r\nX: 1"},
+	}); err == nil {
+		t.Fatal("expected control char in GoogleProfile.email to be rejected")
+	}
+	if _, err := validateMigrationAccount(&migration.ColabOneMigrationAccountData{
+		Colab:        map[string]any{"refresh_token": "1//ok"},
+		CloudProject: "colabone-proj1\n",
+	}); err == nil {
+		t.Fatal("expected control char in CloudProject to be rejected")
+	}
+}
