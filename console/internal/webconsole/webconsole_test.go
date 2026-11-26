@@ -24,6 +24,8 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/brandicon"
 )
 
 type memoryVault struct {
@@ -2109,5 +2111,99 @@ func TestWebConsolePostCloseOperationsAndCallbackSuppression(t *testing.T) {
 	callbackMu.Unlock()
 	if gotAfter != 0 {
 		t.Fatalf("expected 0 OnStateChange callbacks after Close(), got %d", gotAfter)
+	}
+}
+
+func TestWebConsoleBrandLogoAndFaviconRoutes(t *testing.T) {
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir:  t.TempDir(),
+		Vault:      newMemoryVault(),
+		FrontendFS: sampleFrontendFS,
+	})
+	defer wc.Close()
+
+	// 1. Login page embeds the real ColabOne software logo for both favicon and brand logo.
+	loginReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3232/_colabone_web/login", nil)
+	loginRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login page expected 200, got %d", loginRec.Code)
+	}
+	body := loginRec.Body.String()
+	wantURI := brandicon.DataURI()
+	if !strings.Contains(body, `<link rel="icon" type="image/svg+xml" href="`+wantURI+`">`) {
+		t.Fatalf("login page favicon link does not embed ColabOne brandicon data URI")
+	}
+	if !strings.Contains(body, `<img class="co-brand-logo" src="`+wantURI+`" alt="ColabOne" width="32" height="32">`) {
+		t.Fatalf("login page brand logo img does not embed ColabOne brandicon data URI")
+	}
+	if !strings.Contains(body, `<link rel="alternate icon" type="image/x-icon" href="/favicon.ico">`) {
+		t.Fatalf("login page missing /favicon.ico alternate icon link")
+	}
+	if !strings.Contains(body, `<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">`) {
+		t.Fatalf("login page missing /apple-touch-icon.png link")
+	}
+	if strings.Contains(body, brandicon.FallbackDataURI()) {
+		t.Fatalf("login page must not render the placeholder fallback icon")
+	}
+	if csp := loginRec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "img-src 'self' data:;") {
+		t.Fatalf("login page CSP missing img-src 'self' data:; got %q", csp)
+	}
+
+	// Verify decoded data URI matches the trimmed ColabOne portrait SVG.
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(wantURI, "data:image/svg+xml;base64,"))
+	if err != nil {
+		t.Fatalf("decode brandicon data URI: %v", err)
+	}
+	if !strings.Contains(string(decoded), "<title>ColabOne</title>") || !strings.Contains(string(decoded), `viewBox="120 120 1014 1014"`) {
+		t.Fatalf("decoded login page icon does not look like trimmed ColabOne icon.svg")
+	}
+
+	// 2. Public favicon/icon routes work for GET and HEAD before login and match embedded assets.
+	assetCases := []struct {
+		path        string
+		contentType string
+		wantBytes   []byte
+	}{
+		{"/favicon.ico", "image/x-icon", brandicon.FaviconICOBytes()},
+		{"/apple-touch-icon.png", "image/png", brandicon.AppleTouchIconPNGBytes()},
+		{"/apple-touch-icon-precomposed.png", "image/png", brandicon.AppleTouchIconPNGBytes()},
+		{"/_colabone_web/icon.svg", "image/svg+xml", brandicon.SVGBytes()},
+	}
+	for _, tc := range assetCases {
+		getReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3232"+tc.path, nil)
+		getRec := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("GET %s expected 200, got %d", tc.path, getRec.Code)
+		}
+		if gotCT := getRec.Header().Get("Content-Type"); gotCT != tc.contentType {
+			t.Fatalf("GET %s Content-Type = %q, want %q", tc.path, gotCT, tc.contentType)
+		}
+		if !bytes.Equal(getRec.Body.Bytes(), tc.wantBytes) {
+			t.Fatalf("GET %s bytes do not match embedded brandicon asset", tc.path)
+		}
+
+		headReq := httptest.NewRequest(http.MethodHead, "http://127.0.0.1:3232"+tc.path, nil)
+		headRec := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(headRec, headReq)
+		if headRec.Code != http.StatusOK || headRec.Body.Len() != 0 {
+			t.Fatalf("HEAD %s expected 200 empty body, got %d len=%d", tc.path, headRec.Code, headRec.Body.Len())
+		}
+
+		postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:3232"+tc.path, nil)
+		postRec := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(postRec, postReq)
+		if postRec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s expected 405, got %d", tc.path, postRec.Code)
+		}
+
+		badHostReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3232"+tc.path, nil)
+		badHostReq.Host = "evil.example.com"
+		badHostRec := httptest.NewRecorder()
+		wc.Handler().ServeHTTP(badHostRec, badHostReq)
+		if badHostRec.Code != http.StatusForbidden {
+			t.Fatalf("disallowed Host on %s expected 403, got %d", tc.path, badHostRec.Code)
+		}
 	}
 }

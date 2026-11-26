@@ -1139,3 +1139,40 @@ def test_webconsole_command_body_size_limits_and_upload_allowlist():
     assert "if cr.n > normalLimit && !mediaUploadWebCommands[action]" in webconsole_go, (
         "handleCommand must enforce normalLimit for non-media-upload commands"
     )
+
+
+def test_web_and_go_brand_icons_stay_in_sync_with_master_software_logo():
+    master_svg = (ROOT / "console" / "resources" / "icon.svg").read_bytes()
+    brandicon_dir = ROOT / "console" / "internal" / "brandicon"
+
+    assert (brandicon_dir / "icon.svg").read_bytes() == master_svg, (
+        "console/internal/brandicon/icon.svg drifted from console/resources/icon.svg; "
+        "run `npm --prefix frontend run icons`"
+    )
+
+    expected_trimmed = master_svg.replace(
+        b'viewBox="0 0 1254 1254"',
+        b'viewBox="120 120 1014 1014"',
+        1,
+    )
+    assert expected_trimmed != master_svg
+    assert (brandicon_dir / "favicon.svg").read_bytes() == expected_trimmed, (
+        "console/internal/brandicon/favicon.svg drifted from trimmed console/resources/icon.svg; "
+        "run `npm --prefix frontend run icons`"
+    )
+
+    assert not (ROOT / "console" / "internal" / "oauthpage" / "icon.svg").exists(), (
+        "oauthpage must share console/internal/brandicon instead of duplicating icon.svg"
+    )
+
+    login_page_go = (
+        ROOT / "console" / "internal" / "webconsole" / "login_page.go"
+    ).read_text(encoding="utf-8")
+    assert "console/internal/brandicon" in login_page_go
+    assert "brandicon.DataURI()" in login_page_go
+    assert 'viewBox="0 0 64 64"' not in login_page_go
+
+    index_html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "../console/internal/brandicon/favicon.svg" in index_html
+    assert "../console/internal/brandicon/favicon.ico" in index_html
+    assert "../console/internal/brandicon/apple-touch-icon.png" in index_html

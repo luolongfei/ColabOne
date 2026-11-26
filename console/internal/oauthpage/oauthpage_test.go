@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/luolongfei/ColabOne/console/internal/brandicon"
 )
 
 func TestRenderColabOneOAuthPageAllLocalesSuccessAndError(t *testing.T) {
@@ -231,7 +233,7 @@ func TestColabOneIconDataURIAndFallback(t *testing.T) {
 		t.Errorf("brand logo img missing embedded icon data URI")
 	}
 
-	fallbackExpected := prefix + base64.StdEncoding.EncodeToString([]byte(colabOneFallbackIconSVG))
+	fallbackExpected := brandicon.FallbackDataURI()
 	invalidInputs := [][]byte{
 		nil,
 		{},

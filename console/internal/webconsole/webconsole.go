@@ -36,6 +36,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/luolongfei/ColabOne/console/internal/brandicon"
 	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 )
 
@@ -1426,6 +1427,18 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 
 	reqPath := r.URL.Path
 	switch {
+	case reqPath == "/favicon.ico":
+		serveBrandIconAsset(rw, r, "image/x-icon", brandicon.FaviconICOBytes())
+		return
+
+	case reqPath == "/apple-touch-icon.png" || reqPath == "/apple-touch-icon-precomposed.png":
+		serveBrandIconAsset(rw, r, "image/png", brandicon.AppleTouchIconPNGBytes())
+		return
+
+	case reqPath == "/_colabone_web/icon.svg":
+		serveBrandIconAsset(rw, r, "image/svg+xml", brandicon.SVGBytes())
+		return
+
 	case reqPath == "/_colabone_web/login":
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
@@ -1810,6 +1823,20 @@ func (w *ColabOneWebConsole) resolveLocale(r *http.Request) string {
 	return localeFromAcceptLanguage(r.Header.Get("Accept-Language"))
 }
 
+func serveBrandIconAsset(rw http.ResponseWriter, r *http.Request, contentType string, data []byte) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeMethodNotAllowed(rw, "GET, HEAD")
+		return
+	}
+	rw.Header().Set("Content-Type", contentType)
+	rw.Header().Set("Cache-Control", "public, max-age=86400")
+	rw.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	rw.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = rw.Write(data)
+	}
+}
+
 func (w *ColabOneWebConsole) handleLoginPage(rw http.ResponseWriter, r *http.Request, status int, errCode string) {
 	nonce, err := generateBase64Token(16)
 	if err != nil {
@@ -1819,7 +1846,7 @@ func (w *ColabOneWebConsole) handleLoginPage(rw http.ResponseWriter, r *http.Req
 	htmlDoc := renderColabOneWebLoginPage(locale, errCode, nonce)
 
 	csp := fmt.Sprintf(
-		"default-src 'none'; style-src 'nonce-%s'; script-src 'nonce-%s'; img-src data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+		"default-src 'none'; style-src 'nonce-%s'; script-src 'nonce-%s'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 		nonce, nonce,
 	)
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")

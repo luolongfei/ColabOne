@@ -3,25 +3,13 @@
 package oauthpage
 
 import (
-	"bytes"
-	_ "embed"
-	"encoding/base64"
 	"html"
 	"strings"
-	"sync"
-	"unicode/utf8"
+
+	"github.com/luolongfei/ColabOne/console/internal/brandicon"
 )
 
 const colabOneDefaultLocale = "zh-CN"
-
-const colabOneFallbackIconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
-	`<rect width="64" height="64" rx="16" fill="#111827"/>` +
-	`<circle cx="32" cy="32" r="14" fill="none" stroke="#ffffff" stroke-width="5"/>` +
-	`<circle cx="32" cy="32" r="4.5" fill="#3b82f6"/>` +
-	`</svg>`
-
-//go:embed icon.svg
-var embeddedIconSVG []byte
 
 type colabOneOAuthCopy struct {
 	pageTitleOK    string
@@ -264,6 +252,7 @@ body.is-error { --co-ambient: var(--co-error-glow); }
   border-radius: 8px;
   object-fit: cover;
   display: block;
+  background: #ffffff;
   border: 1px solid var(--co-border);
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
@@ -474,24 +463,12 @@ const colabOneOAuthScriptAndClose = `</footer>
 </body>
 </html>`
 
-var (
-	colabOneIconDataURIOnce  sync.Once
-	colabOneIconDataURIValue string
-)
-
 func colabOneIconDataURI() string {
-	colabOneIconDataURIOnce.Do(func() {
-		colabOneIconDataURIValue = colabOneIconDataURIFromBytes(embeddedIconSVG)
-	})
-	return colabOneIconDataURIValue
+	return brandicon.DataURI()
 }
 
 func colabOneIconDataURIFromBytes(raw []byte) string {
-	svgBytes := []byte(colabOneFallbackIconSVG)
-	if len(raw) > 0 && utf8.Valid(raw) && bytes.Contains(raw, []byte("<svg")) {
-		svgBytes = raw
-	}
-	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(svgBytes)
+	return brandicon.DataURIFromSVGBytes(raw)
 }
 
 // RenderColabOneOAuthPage renders a clean, modern, light/dark-adaptive OAuth

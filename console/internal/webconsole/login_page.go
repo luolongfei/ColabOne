@@ -1,18 +1,13 @@
 package webconsole
 
 import (
-	"encoding/base64"
 	"html"
 	"strings"
+
+	"github.com/luolongfei/ColabOne/console/internal/brandicon"
 )
 
 const colabOneWebDefaultLocale = "zh-CN"
-
-const colabOneWebBrandSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
-	`<rect width="64" height="64" rx="16" fill="#111827"/>` +
-	`<circle cx="32" cy="32" r="14" fill="none" stroke="#ffffff" stroke-width="5"/>` +
-	`<circle cx="32" cy="32" r="4.5" fill="#3b82f6"/>` +
-	`</svg>`
 
 const (
 	colabOneWebLockSVG = `<svg class="co-lock-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">` +
@@ -33,7 +28,9 @@ const (
 		`</svg>`
 )
 
-var colabOneWebIconDataURI = "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(colabOneWebBrandSVG))
+func colabOneWebIconDataURI() string {
+	return brandicon.DataURI()
+}
 
 type colabOneWebLoginCopy struct {
 	pageTitle            string
@@ -345,11 +342,14 @@ body::before {
   user-select: none;
 }
 .co-brand-logo {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
+  object-fit: cover;
   display: block;
+  background: #ffffff;
   border: 1px solid var(--co-border);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
 .co-brand-name {
   font-size: 16px;
@@ -631,23 +631,24 @@ func renderColabOneWebLoginPage(locale, errCode, nonce string) string {
 		alertClass = "co-alert"
 	}
 
+	iconURI := colabOneWebIconDataURI()
 	escNonce := html.EscapeString(nonce)
 	var b strings.Builder
-	b.Grow(len(colabOneWebLoginCSS) + len(colabOneWebLoginJS) + 2048)
+	b.Grow(len(colabOneWebLoginCSS) + len(colabOneWebLoginJS) + 2*len(iconURI) + 2048)
 
 	b.WriteString("<!doctype html>\n<html lang=\"")
 	b.WriteString(html.EscapeString(lang))
 	b.WriteString("\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"color-scheme\" content=\"light dark\">\n<title>")
 	b.WriteString(html.EscapeString(copySet.pageTitle))
 	b.WriteString("</title>\n<link rel=\"icon\" type=\"image/svg+xml\" href=\"")
-	b.WriteString(colabOneWebIconDataURI)
-	b.WriteString("\">\n<style nonce=\"")
+	b.WriteString(iconURI)
+	b.WriteString("\">\n<link rel=\"alternate icon\" type=\"image/x-icon\" href=\"/favicon.ico\">\n<link rel=\"apple-touch-icon\" sizes=\"180x180\" href=\"/apple-touch-icon.png\">\n<style nonce=\"")
 	b.WriteString(escNonce)
 	b.WriteString("\">")
 	b.WriteString(colabOneWebLoginCSS)
 	b.WriteString("</style>\n</head>\n<body>\n  <main class=\"co-shell\">\n    <section class=\"co-card\">\n      <div class=\"co-brand\">\n        <img class=\"co-brand-logo\" src=\"")
-	b.WriteString(colabOneWebIconDataURI)
-	b.WriteString("\" alt=\"ColabOne\" width=\"28\" height=\"28\">\n        <span class=\"co-brand-name\">ColabOne</span>\n      </div>\n      <div class=\"co-pill\">")
+	b.WriteString(iconURI)
+	b.WriteString("\" alt=\"ColabOne\" width=\"32\" height=\"32\">\n        <span class=\"co-brand-name\">ColabOne</span>\n      </div>\n      <div class=\"co-pill\">")
 	b.WriteString(html.EscapeString(copySet.badge))
 	b.WriteString("</div>\n      <div class=\"co-lock-badge\">")
 	b.WriteString(colabOneWebLockSVG)
