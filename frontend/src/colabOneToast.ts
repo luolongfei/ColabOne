@@ -44,6 +44,7 @@ const PERSISTENT_ERROR_PATTERNS: readonly RegExp[] = [
 export const COLABONE_MODEL_DRAWER_MIN_WIDTH = 380;
 export const COLABONE_MODEL_DRAWER_MAX_WIDTH = 720;
 export const COLABONE_MODEL_DRAWER_GUTTER = 48;
+export const COLABONE_MOBILE_FULL_DRAWER_BREAKPOINT = 560;
 export const COLABONE_DRAWER_TOAST_TOP_FALLBACK_PX = 68;
 
 export interface ColabOneToastHorizontalBounds {
@@ -65,6 +66,9 @@ export function computeColabOneModelDrawerWidth(viewportWidth: number): number {
     Number.isFinite(viewportWidth) && viewportWidth > 0
       ? Math.round(viewportWidth)
       : 1280;
+  if (safeViewport <= COLABONE_MOBILE_FULL_DRAWER_BREAKPOINT) {
+    return safeViewport;
+  }
   return Math.min(
     safeViewport,
     Math.min(

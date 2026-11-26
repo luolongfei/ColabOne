@@ -232,6 +232,27 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
 }
 
+@media (max-width: 680px) {
+  .co-locale-trigger {
+    height: 34px;
+    padding: 0 8px 0 9px;
+    gap: 4px;
+  }
+
+  .co-locale-flag {
+    width: 16px;
+    height: 12px;
+  }
+}
+
+@media (max-width: 420px) {
+  .co-locale-trigger {
+    height: 32px;
+    padding: 0 7px 0 8px;
+    gap: 3px;
+  }
+}
+
 :global(:root[data-theme="dark"]) .co-locale-flag {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
 }

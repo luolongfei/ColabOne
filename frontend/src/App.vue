@@ -2874,10 +2874,16 @@ const activeOverlayDrawer = computed(() => {
   };
 });
 
+const isMobileLogOverlayOpen = computed(
+  () => !logWindowStandalone.value && logsOpen.value && viewportWidth.value <= 768,
+);
+
 const activeToastTopOffsetPx = computed(() =>
   activeOverlayDrawer.value.open
     ? drawerToastTopOffsetPx.value
-    : toastTopOffsetPx.value,
+    : isMobileLogOverlayOpen.value
+      ? 60
+      : toastTopOffsetPx.value,
 );
 
 const toastHorizontalBounds = computed(() =>
@@ -2885,7 +2891,8 @@ const toastHorizontalBounds = computed(() =>
     viewportWidth: viewportWidth.value,
     modelDrawerOpen: activeOverlayDrawer.value.open,
     modelDrawerWidthPx: activeOverlayDrawer.value.width,
-    inlineLogDrawerOpen: !logWindowStandalone.value && logsOpen.value,
+    inlineLogDrawerOpen:
+      !logWindowStandalone.value && logsOpen.value && !isMobileLogOverlayOpen.value,
     inlineLogDrawerWidthPx: logDrawerWidth.value,
   }),
 );
@@ -7114,6 +7121,38 @@ onUnmounted(() => {
             </div>
           </ACard>
         </div>
+        <!-- Mobile Fixed Bottom Tab Bar (visible only on narrow mobile viewports <= 680px) -->
+        <nav
+          class="co-mobile-bottom-nav"
+          data-testid="mobile-bottom-nav"
+          :aria-label="t('nav.mainAria')"
+        >
+          <button
+            v-for="item in nav"
+            :key="item.id"
+            type="button"
+            class="co-mobile-tab-item"
+            :class="{ 'is-active': page === item.id }"
+            :aria-current="page === item.id ? 'page' : undefined"
+            :aria-label="item.label"
+            @click="selectPage(item.id)"
+          >
+            <span class="co-mobile-tab-icon-wrap" aria-hidden="true">
+              <component
+                :is="item.icon"
+                :size="20"
+                :weight="page === item.id ? 'fill' : 'regular'"
+                class="co-mobile-tab-icon"
+              />
+              <span
+                v-if="isNavLive(item.id)"
+                class="co-mobile-tab-live-dot"
+                :style="{ backgroundColor: navDotColor(item.id) }"
+              ></span>
+            </span>
+            <span class="co-mobile-tab-label">{{ item.label }}</span>
+          </button>
+        </nav>
       </ALayout>
 
       <!-- Inline Fallback Logs Column (only in non-desktop web previews when standalone OS window is unavailable) -->
@@ -7121,6 +7160,7 @@ onUnmounted(() => {
         v-if="!logWindowStandalone"
         :open="logsOpen"
         :width="logDrawerWidth"
+        :mobile-overlay="viewportWidth <= 768"
         :loading="!snapshotLoaded"
         :logs="state.logs || []"
         :current-activity="currentActivity"
@@ -7129,6 +7169,7 @@ onUnmounted(() => {
         :active-elapsed="activeTaskElapsedLabel"
         :privacy-context="privacyContext"
         @update:width="onLogDrawerWidthChange"
+        @close="setLogsOpen(false)"
         @copy="copy"
         @clear="act('logs.clear')"
       />
@@ -7477,8 +7518,10 @@ onUnmounted(() => {
 <style scoped>
 /* Root Shell — horizontal row so LogDrawer expands strictly to the right */
 .co-shell {
-  height: 100vh;
+  height: 100%;
+  height: 100dvh;
   width: 100vw;
+  max-width: 100%;
   overflow: hidden;
   display: flex;
   flex-direction: row !important;
@@ -7490,7 +7533,8 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  height: 100vh;
+  height: 100%;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -8294,6 +8338,11 @@ onUnmounted(() => {
 }
 
 @container co-navbar (max-width: 820px) {
+  .co-brand-version:not(.is-open),
+  .co-web-mode-badge {
+    display: none;
+  }
+
   .co-nav-pill-item {
     width: 38px;
     padding: 0;
@@ -8314,15 +8363,68 @@ onUnmounted(() => {
   }
 }
 
-@container co-navbar (max-width: 680px) {
-  .co-brand-version:not(.is-open) {
-    display: none;
+@container co-navbar (max-width: 760px) {
+  .co-navbar-inner {
+    padding-inline: 16px;
+    gap: 10px;
+  }
+
+  .co-brand {
+    font-size: 19px;
+    gap: 8px;
+  }
+
+  .co-brand-icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .co-nav-pill-item {
+    width: 36px;
+    height: 36px;
+  }
+
+  .co-nav-right {
+    gap: 6px;
+  }
+
+  .co-nav-circle-btn,
+  .co-logs-trigger {
+    width: 36px;
+    height: 36px;
+  }
+
+  .co-nav-right :deep(.co-locale-trigger) {
+    height: 36px;
+    padding: 0 9px 0 10px;
+    gap: 4px;
   }
 }
 
-@container co-navbar (max-width: 600px) {
+@container co-navbar (max-width: 680px) {
+  .co-navbar-inner {
+    gap: 8px;
+    padding-inline: 14px;
+  }
+
   .co-brand-text {
     display: none;
+  }
+
+  .co-nav-right {
+    gap: 5px;
+  }
+
+  .co-nav-circle-btn,
+  .co-logs-trigger {
+    width: 34px;
+    height: 34px;
+  }
+
+  .co-nav-right :deep(.co-locale-trigger) {
+    height: 34px;
+    padding: 0 8px 0 9px;
+    gap: 4px;
   }
 }
 
@@ -9615,24 +9717,421 @@ onUnmounted(() => {
 @container co-navbar (max-width: 520px) {
   .co-navbar-inner {
     gap: 6px;
-    padding-inline: 10px;
+    padding-inline: 12px;
+  }
+
+  .co-nav-right {
+    gap: 5px;
+  }
+}
+
+/* Mobile Bottom Tab Bar — hidden on desktop (> 680px), native-feel bar on phones */
+.co-mobile-bottom-nav {
+  display: none;
+}
+
+@media (max-width: 680px) {
+  .co-navbar {
+    padding-top: var(--co-safe-top, 0px);
+    border-bottom: 1px solid var(--co-border-secondary);
+  }
+
+  .co-navbar-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 54px;
+    gap: 8px;
+    padding: 0 12px;
+  }
+
+  .co-nav-left {
+    flex: 0 1 auto;
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .co-brand {
+    gap: 7px;
+    padding: 2px 2px 2px 0;
+    font-size: 17px;
+    flex-shrink: 0;
+  }
+
+  .co-brand-icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  /* Keep ColabOne brand text crisp and visible on mobile now that nav moves to bottom bar */
+  .co-brand-text {
+    display: inline-block;
+  }
+
+  .co-brand-version:not(.is-open) {
+    display: none;
+  }
+
+  .co-web-mode-badge {
+    display: inline-flex;
+    font-size: 10.5px;
+    padding: 0 6px;
+    min-height: 19px;
+    line-height: 17px;
+  }
+
+  /* Primary navigation moves cleanly to the mobile bottom tab bar */
+  .co-nav-center {
+    display: none;
+  }
+
+  .co-nav-right {
+    flex: 0 0 auto;
+    gap: 5px;
+  }
+
+  .co-nav-circle-btn,
+  .co-logs-trigger {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .co-logs-trigger-label {
+    display: none;
+  }
+
+  .co-mobile-bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
+    flex-shrink: 0;
+    width: 100%;
+    padding: 6px 6px calc(6px + var(--co-safe-bottom, 0px));
+    box-sizing: border-box;
+    background: color-mix(in srgb, var(--co-surface) 94%, transparent);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-top: 1px solid var(--co-border-secondary);
+    z-index: 25;
+  }
+
+  .co-mobile-tab-item {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--co-muted);
+    font-family: inherit;
+    min-height: 46px;
+    padding: 3px 2px;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    cursor: pointer;
+    min-width: 0;
+    transition:
+      color 0.14s ease,
+      transform 0.12s ease;
+  }
+
+  .co-mobile-tab-item:active {
+    transform: scale(0.95);
+  }
+
+  .co-mobile-tab-item:focus-visible {
+    outline: 2px solid var(--co-focus);
+    outline-offset: -2px;
+  }
+
+  .co-mobile-tab-item.is-active {
+    color: var(--co-accent-strong);
+  }
+
+  .co-mobile-tab-icon-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 26px;
+    border-radius: 9999px;
+    transition: background-color 0.16s ease;
+  }
+
+  .co-mobile-tab-item.is-active .co-mobile-tab-icon-wrap {
+    background: var(--co-selected);
+    color: var(--co-accent-strong);
+  }
+
+  .co-mobile-tab-live-dot {
+    position: absolute;
+    top: 3px;
+    right: 9px;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    box-shadow: 0 0 0 2px var(--co-surface);
+  }
+
+  .co-mobile-tab-label {
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.15;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .co-mobile-tab-item.is-active .co-mobile-tab-label {
+    font-weight: 650;
+  }
+
+  /* Status Bar: clean left-aligned 2-row stack on mobile with zero right-edge clipping */
+  .co-status-bar-inner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    padding: 6px var(--co-container-pad) 6px;
+    min-height: 0;
+    height: auto;
+  }
+
+  .co-topbar-left {
+    flex: none;
+    width: 100%;
+    flex-wrap: wrap;
+    overflow: visible;
+    gap: 5px 6px;
+  }
+
+  .co-gpu-name {
+    max-width: 100%;
+    font-size: 12.5px;
+  }
+
+  .co-model-chip {
+    max-width: 100%;
+    height: 22px;
+    font-size: 12px;
+  }
+
+  .co-model-chip-text {
+    max-width: min(160px, 44vw);
+  }
+
+  .co-instance-select {
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .co-topbar-right {
+    margin-left: 0;
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* Banners & Page Shell mobile padding */
+  .co-banners-inner {
+    padding: 4px var(--co-container-pad) 4px;
+  }
+
+  .co-page-shell {
+    padding: 12px var(--co-container-pad) 24px;
+  }
+
+  .co-page-inner {
+    gap: 12px;
+  }
+
+  .co-settings-page {
+    padding-bottom: 84px;
+  }
+
+  .co-settings-inner {
+    gap: 14px;
+  }
+
+  .co-settings-stack {
+    gap: 16px;
+  }
+
+  .co-settings-row {
+    padding: 14px;
+  }
+
+  .co-settings-floating-wrap {
+    padding: 12px var(--co-container-pad) 10px;
+  }
+
+  .co-settings-floating-bar {
+    padding: 9px 12px;
+    gap: 10px;
+    border-radius: 12px;
+  }
+
+  /* Device card controls: full-width selects and balanced stacking */
+  .co-device-title-main,
+  .co-callout-copy,
+  .co-about-copy {
+    min-width: 0;
+    flex: 1 1 200px;
+  }
+
+  .co-device-head {
+    align-items: flex-start;
+    gap: 10px 12px;
+  }
+
+  .co-device-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+  }
+
+  .co-device-title-main h2 {
+    font-size: 16.5px;
+  }
+
+  .co-device-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .co-device-fields {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 10px;
+  }
+
+  .co-control-field {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .co-select-gpu,
+  .co-select-idle {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100%;
+  }
+
+  .co-device-actions {
+    width: 100%;
+  }
+
+  .co-drive-strip {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .co-drive-text {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .co-instance-row {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .co-instance-main {
+    flex: 1 1 220px;
+  }
+
+  .co-instance-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .co-hf-row,
+  .co-assign-proxy-input-row {
+    flex-wrap: wrap;
+  }
+
+  .co-hf-row > :first-child,
+  .co-assign-proxy-input-row > :first-child {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+
+  .co-task-dock {
+    padding: 8px var(--co-container-pad);
+  }
+
+  .co-task-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .co-modal-footer {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 680px) and (max-height: 500px) {
+  .co-navbar-inner {
+    height: 44px;
+  }
+
+  .co-mobile-bottom-nav {
+    padding: 3px 6px calc(3px + var(--co-safe-bottom, 0px));
+  }
+
+  .co-mobile-tab-item {
+    min-height: 38px;
+    padding: 2px;
+    gap: 1px;
+  }
+
+  .co-mobile-tab-icon-wrap {
+    height: 22px;
+  }
+}
+
+@media (max-width: 500px) {
+  .co-web-mode-badge {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .co-navbar-inner {
+    padding: 0 10px;
+    gap: 6px;
+  }
+
+  .co-brand {
+    font-size: 16px;
+    gap: 6px;
+  }
+
+  .co-brand-icon {
+    width: 26px;
+    height: 26px;
   }
 
   .co-nav-right {
     gap: 4px;
   }
 
-  .co-web-mode-badge {
-    display: none;
+  .co-nav-circle-btn,
+  .co-logs-trigger {
+    width: 32px;
+    height: 32px;
   }
-}
 
-@media (max-width: 520px) {
-  .co-status-bar-inner {
-    flex-wrap: wrap;
-    row-gap: 6px;
-    padding-block: 6px;
-    height: auto;
+  .co-nav-right :deep(.co-locale-trigger) {
+    height: 32px;
+    padding: 0 7px 0 8px;
   }
 }
 

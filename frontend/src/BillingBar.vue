@@ -735,6 +735,57 @@ const billingAriaLabel = computed(() => {
   }
 }
 
+@media (max-width: 680px) {
+  .co-billing-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    flex-shrink: 1;
+  }
+
+  .co-billing-bar .co-idle-timer {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 11.5px;
+  }
+
+  .co-billing-bar .co-billing-strip {
+    height: auto;
+    min-height: 26px;
+    max-width: 100%;
+    padding: 3px 8px;
+    border-radius: 10px;
+    white-space: normal;
+    flex: 1 1 auto;
+    flex-shrink: 1;
+  }
+
+  .co-billing-strip-inner {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    column-gap: 6px;
+    width: 100%;
+  }
+
+  .co-billing-bar .co-billing-pill,
+  .co-endurance-tag {
+    height: 20px;
+    padding: 0 7px;
+    font-size: 11.5px;
+  }
+
+  .co-billing-rate,
+  .co-billing-balance {
+    font-size: 11.5px;
+  }
+
+  .co-strip-divider {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .co-billing-pulse,
   .co-clock-pulse {

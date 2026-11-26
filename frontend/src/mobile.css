@@ -1,0 +1,248 @@
+/* ColabOne Mobile Responsive Architecture (<= 768px / <= 680px)
+ * Preserves desktop layouts (> 768px) byte-for-byte while delivering a native-feel
+ * mobile web experience: safe-area insets, full-bleed mobile sheets/modals,
+ * scrollable capsule tabs, touch-safe inputs, and zero horizontal overflow. */
+
+:root {
+  --co-safe-top: env(safe-area-inset-top, 0px);
+  --co-safe-right: env(safe-area-inset-right, 0px);
+  --co-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --co-safe-left: env(safe-area-inset-left, 0px);
+}
+
+@media (max-width: 768px) {
+  /* Guard floating popups/menus/popovers inside mobile viewport bounds */
+  body .ant-popover,
+  body .ant-popconfirm,
+  body .ant-dropdown,
+  body .ant-select-dropdown {
+    max-width: calc(100vw - 16px) !important;
+  }
+
+  body .ant-popover-inner {
+    max-width: calc(100vw - 24px);
+  }
+}
+
+@media (max-width: 680px) {
+  :root {
+    --co-container-pad: 12px;
+  }
+
+  /* Compact vertical rhythm & clean edge padding across all pages */
+  .co-page {
+    padding: 12px 12px 24px;
+  }
+
+  .co-page-header {
+    gap: 10px 12px;
+  }
+
+  .co-page-title {
+    font-size: 20px;
+    line-height: 1.25;
+  }
+
+  .co-page-subtitle {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* Tighter card edge gutters maximize readable width on 360px-440px phones */
+  .ant-card {
+    border-radius: 14px;
+  }
+
+  .ant-card:not(.ant-card-small) > .ant-card-head {
+    min-height: 46px;
+    padding: 0 14px;
+  }
+
+  .ant-card:not(.ant-card-small) > .ant-card-body {
+    padding: 14px;
+  }
+
+  .ant-card-small > .ant-card-head {
+    padding: 0 14px;
+  }
+
+  .ant-card-small > .ant-card-body {
+    padding: 12px 14px;
+  }
+
+  /* Full-bleed mobile sheets & viewport-clamped modals (applies globally to all drawers/modals) */
+  .ant-modal-wrap .ant-modal {
+    max-width: calc(100vw - 20px) !important;
+    margin-inline: auto !important;
+  }
+
+  .ant-modal-content {
+    border-radius: 16px !important;
+  }
+
+  .ant-modal-header {
+    padding: 14px 16px 10px !important;
+  }
+
+  .ant-modal-body {
+    padding: 12px 16px 16px !important;
+  }
+
+  .ant-drawer .ant-drawer-content-wrapper {
+    max-width: 100vw !important;
+  }
+
+  .ant-drawer .ant-drawer-header {
+    padding: 12px 14px !important;
+  }
+
+  .ant-drawer .ant-drawer-body {
+    padding: 12px 14px calc(20px + var(--co-safe-bottom)) !important;
+  }
+
+  /* Capsule tabs: horizontally scrollable track with compact pills so multi-tab
+   * workspaces (e.g. ComfyUI Studio / Live / Canvas) never clip off-screen on 375px phones */
+  .ant-tabs-top > .ant-tabs-nav {
+    max-width: 100%;
+  }
+
+  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap {
+    overflow-x: auto !important;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    max-width: 100%;
+  }
+
+  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::before,
+  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::after {
+    display: none !important;
+  }
+
+  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-operations {
+    display: none !important;
+  }
+
+  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-list {
+    gap: 2px;
+    padding: 3px;
+    max-width: none;
+    transform: none !important;
+  }
+
+  .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab {
+    min-height: 32px;
+    padding: 5px 11px !important;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  /* Segmented controls never overflow narrow containers */
+  .ant-segmented {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .ant-segmented::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Alerts wrap actions gracefully instead of squeezing message text on phones */
+  .ant-alert {
+    padding: 10px 12px;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .ant-alert .ant-alert-content {
+    min-width: 180px;
+  }
+
+  .ant-alert .ant-alert-action {
+    margin-inline-start: 0 !important;
+  }
+
+  /* Code blocks always scroll horizontally inside their own card */
+  .co-code-block {
+    padding: 12px;
+    font-size: 12px;
+    max-width: 100%;
+  }
+
+  /* ComfyUI & Live Studio non-invasive mobile layout refinements */
+  .co-comfy-page {
+    padding: 12px var(--co-container-pad) 24px !important;
+    gap: 12px !important;
+  }
+
+  .co-comfy-engine-head {
+    gap: 10px !important;
+  }
+
+  .co-comfy-engine-meta {
+    flex: 1 1 200px !important;
+  }
+
+  .co-comfy-studio-toolbar {
+    gap: 10px !important;
+  }
+
+  .co-comfy-studio-toolbar-actions {
+    width: 100%;
+  }
+
+  .co-comfy-task-banner {
+    padding: 10px 12px !important;
+    gap: 10px !important;
+  }
+
+  .co-comfy-task-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .co-comfy-canvas-banner-row,
+  .co-comfy-wf-card-foot,
+  .co-comfy-output-head {
+    flex-wrap: wrap !important;
+  }
+
+  /* Prevent fixed-size skeletons from overflowing 360px-375px mobile cards */
+  .co-skeleton {
+    max-width: 100%;
+  }
+}
+
+/* Full-bleed right sheets strictly below 560px to stay byte-for-byte aligned with
+ * COLABONE_MOBILE_FULL_DRAWER_BREAKPOINT in colabOneToast.ts (toast centering). */
+@media (max-width: 560px) {
+  .ant-drawer-right .ant-drawer-content-wrapper {
+    width: 100vw !important;
+  }
+}
+
+/* Prevent iOS Safari automatic page zoom when focusing inputs on touch devices */
+@media (pointer: coarse) and (max-width: 768px) {
+  .ant-input,
+  .ant-input-affix-wrapper > input.ant-input,
+  .ant-input-number-input,
+  textarea.ant-input,
+  .ant-select-selection-search-input {
+    font-size: 16px !important;
+  }
+
+  .ant-input-sm,
+  .ant-input-affix-wrapper-sm {
+    min-height: 32px;
+  }
+
+  .co-privacy-input-veil {
+    font-size: 16px;
+  }
+}

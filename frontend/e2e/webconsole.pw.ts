@@ -394,3 +394,286 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
   await expect(page.locator(".co-banners .ant-alert-error")).toHaveCount(0);
   expect(commandActions).not.toContain("auth.colab.auto");
 });
+
+test("mobile web mode (440x956 and 375x812) renders bottom tab bar, keeps header/status unclipped, prevents API hero squish, and opens full-width drawers", async ({
+  page,
+}) => {
+  const readySnapshot = {
+    ...makeBaseSnapshot(true),
+    account: {
+      logged_in: true,
+      email: "mobile@example.com",
+      balance: 1918.27,
+      rate: 4.82,
+      assignments: 1,
+      checked_at: Date.now() / 1000,
+    },
+    runtime: {
+      ...makeBaseSnapshot(true).runtime,
+      idle: {
+        phase: "counting",
+        remaining_seconds: 1420,
+        timeout_seconds: 1800,
+        countdown_seconds: 60,
+        server_time: Math.floor(Date.now() / 1000),
+      },
+    },
+  };
+  const startingSnapshot = {
+    ...makeBaseSnapshot(false),
+    settings: {
+      ...makeBaseSnapshot(false).settings,
+      gpu: "G4",
+    },
+    account: {
+      logged_in: true,
+      email: "mobile@example.com",
+      balance: 1918.27,
+      rate: 0,
+      assignments: 0,
+      checked_at: Date.now() / 1000,
+    },
+    runtime: {
+      ...makeBaseSnapshot(false).runtime,
+      state: "starting",
+    },
+    operation: {
+      kind: "runtime_start",
+      title: "正在分配 G4...",
+      gpu: "G4",
+      waiting_retry: true,
+      retry_kind: "capacity",
+      attempt: 6,
+      next_attempt: 7,
+      total_attempts: 20,
+      retry_at: Math.floor(Date.now() / 1000) + 23,
+      cancellable: true,
+      cancelling: false,
+    },
+  };
+
+  let activeSnapshot: Record<string, unknown> = startingSnapshot;
+
+  await page.route("**/api/web/capabilities", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runtime: "web",
+        version: "0.1.21",
+        can_open_native_canvas_window: false,
+        can_standalone_log_window: false,
+        can_manage_web_console: false,
+        can_manage_close_behavior: false,
+        can_manage_shortcuts: false,
+        can_self_update: false,
+        can_migrate: false,
+        can_reveal_host_secrets: false,
+        can_loopback_oauth: false,
+        can_download_output: true,
+      }),
+    });
+  });
+
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { ETag: `"mobile-${activeSnapshot === startingSnapshot ? "s" : "r"}"` },
+      body: JSON.stringify(activeSnapshot),
+    });
+  });
+
+  await page.route("**/api/command", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+
+  await page.route("**/api/telemetry**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ samples: [] }),
+    });
+  });
+
+  for (const vp of [
+    { width: 440, height: 956 },
+    { width: 375, height: 812 },
+  ]) {
+    activeSnapshot = startingSnapshot;
+    await page.setViewportSize(vp);
+    await page.goto("/");
+
+    // Desktop center nav track hides; mobile bottom tab bar is visible with all 4 tabs
+    await expect(page.locator(".co-nav-center")).toBeHidden();
+    const bottomNav = page.getByTestId("mobile-bottom-nav");
+    await expect(bottomNav).toBeVisible();
+    await expect(bottomNav.getByRole("button")).toHaveCount(4);
+
+    // Brand remains crisp & does not collide with right utility controls
+    const navGeometry = await page.evaluate(() => {
+      const brand = document.querySelector(".co-brand")?.getBoundingClientRect();
+      const right = document.querySelector(".co-nav-right")?.getBoundingClientRect();
+      return brand && right
+        ? {
+            brandLeft: brand.left,
+            brandRight: brand.right,
+            brandWidth: brand.width,
+            rightLeft: right.left,
+            rightRight: right.right,
+            vw: window.innerWidth,
+          }
+        : null;
+    });
+    expect(navGeometry).not.toBeNull();
+    expect(navGeometry!.brandWidth).toBeGreaterThanOrEqual(80);
+    expect(navGeometry!.brandRight).toBeLessThanOrEqual(navGeometry!.rightLeft);
+    expect(navGeometry!.rightRight).toBeLessThanOrEqual(navGeometry!.vw + 1);
+
+    // Switch to Public API in starting state (2 action buttons) and verify hero & model card stack cleanly without text squish
+    await bottomNav.getByRole("button", { name: "对外 API" }).click();
+    await expect(page.getByRole("heading", { name: "对外 API", exact: true })).toBeVisible();
+
+    const apiLayout = await page.evaluate(() => {
+      const headerMain = document
+        .querySelector(".co-api-header-main")
+        ?.getBoundingClientRect();
+      const headerAction = document
+        .querySelector(".co-api-header-action")
+        ?.getBoundingClientRect();
+      const modelMain = document
+        .querySelector(".co-api-model-main")
+        ?.getBoundingClientRect();
+      const modelActions = document
+        .querySelector(".co-api-model-actions")
+        ?.getBoundingClientRect();
+      return headerMain && headerAction && modelMain && modelActions
+        ? {
+            headerMainW: headerMain.width,
+            headerStacked: headerAction.top >= headerMain.bottom - 2,
+            modelMainW: modelMain.width,
+            modelStacked: modelActions.top >= modelMain.bottom - 2,
+          }
+        : null;
+    });
+    expect(apiLayout).not.toBeNull();
+    expect(apiLayout!.headerMainW).toBeGreaterThanOrEqual(vp.width - 40);
+    expect(apiLayout!.headerStacked).toBe(true);
+    expect(apiLayout!.modelMainW).toBeGreaterThanOrEqual(vp.width - 70);
+    expect(apiLayout!.modelStacked).toBe(true);
+
+    // Switch to ready state with active billing & test all 4 tabs for zero overflow + unclipped billing bar
+    activeSnapshot = readySnapshot;
+    await page.reload();
+    await expect(bottomNav).toBeVisible();
+
+    const billingClip = await page.evaluate(() => {
+      const strip = document.querySelector(".co-billing-strip")?.getBoundingClientRect();
+      return strip ? { right: strip.right, vw: window.innerWidth } : null;
+    });
+    expect(billingClip).not.toBeNull();
+    expect(billingClip!.right).toBeLessThanOrEqual(billingClip!.vw + 1);
+
+    for (const tabLabel of ["远端设备", "对外 API", "ComfyUI", "设置"]) {
+      await bottomNav.getByRole("button", { name: tabLabel }).click();
+      await page.waitForTimeout(150);
+      const overflow = await page.evaluate(() => {
+        const content = document.querySelector(".co-content");
+        return {
+          doc: document.documentElement.scrollWidth - window.innerWidth,
+          content: content ? content.scrollWidth - content.clientWidth : 0,
+        };
+      });
+      expect(overflow.doc).toBeLessThanOrEqual(0);
+      expect(overflow.content).toBeLessThanOrEqual(0);
+    }
+
+    // Open inline LogDrawer on mobile: full-screen overlay with explicit close button
+    await page.locator(".co-logs-trigger").click();
+    const logPanel = page.getByRole("complementary", { name: "运行日志" });
+    await expect(logPanel).toBeVisible();
+    const logBox = await logPanel.boundingBox();
+    expect(logBox).not.toBeNull();
+    expect(logBox!.width).toBeGreaterThanOrEqual(vp.width - 2);
+    await page.getByTestId("log-drawer-mobile-close").click();
+    await expect(logPanel).toBeHidden();
+
+    // Open ModelDrawer from API page: full-width sheet on phones
+    await bottomNav.getByRole("button", { name: "对外 API" }).click();
+    await page
+      .locator(".co-api-model-slot")
+      .getByRole("button", { name: /选择模型|切换模型/ })
+      .click();
+    const drawerWrapper = page.locator(
+      ".co-model-drawer-root .ant-drawer-content-wrapper",
+    );
+    await expect(drawerWrapper).toBeVisible();
+    const drawerBox = await drawerWrapper.boundingBox();
+    expect(drawerBox).not.toBeNull();
+    expect(drawerBox!.width).toBeGreaterThanOrEqual(vp.width - 2);
+    await page.locator(".co-model-drawer-root .ant-drawer-close").click();
+    await expect(drawerWrapper).toBeHidden();
+  }
+
+  // Tablet boundary (681px): desktop navbar stays uncrushed and uncollided
+  activeSnapshot = readySnapshot;
+  await page.setViewportSize({ width: 681, height: 800 });
+  await page.reload();
+  await expect(page.locator(".co-nav-center")).toBeVisible();
+  const tabletNav = await page.evaluate(() => {
+    const left = document.querySelector(".co-nav-left")?.getBoundingClientRect();
+    const center = document.querySelector(".co-nav-center")?.getBoundingClientRect();
+    const right = document.querySelector(".co-nav-right")?.getBoundingClientRect();
+    const brandText = document.querySelector(".co-brand-text");
+    return left && center && right && brandText
+      ? {
+          leftRight: left.right,
+          centerLeft: center.left,
+          centerRight: center.right,
+          rightLeft: right.left,
+          rightRight: right.right,
+          brandTruncated: brandText.scrollWidth > brandText.clientWidth + 1,
+          vw: window.innerWidth,
+        }
+      : null;
+  });
+  expect(tabletNav).not.toBeNull();
+  expect(tabletNav!.brandTruncated).toBe(false);
+  expect(tabletNav!.leftRight).toBeLessThanOrEqual(tabletNav!.centerLeft + 1);
+  expect(tabletNav!.centerRight).toBeLessThanOrEqual(tabletNav!.rightLeft + 1);
+  expect(tabletNav!.rightRight).toBeLessThanOrEqual(tabletNav!.vw + 1);
+
+  // Small tablet (600px): ModelDrawer width and toast horizontal bounds stay aligned
+  await page.setViewportSize({ width: 600, height: 800 });
+  await page.reload();
+  await page.getByTestId("mobile-bottom-nav").getByRole("button", { name: "对外 API" }).click();
+  await page
+    .locator(".co-api-model-slot")
+    .getByRole("button", { name: /选择模型|切换模型/ })
+    .click();
+  const drawer600 = page.locator(
+    ".co-model-drawer-root .ant-drawer-content-wrapper",
+  );
+  await expect(drawer600).toBeVisible();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const wrap = document
+          .querySelector(".co-model-drawer-root .ant-drawer-content-wrapper")
+          ?.getBoundingClientRect();
+        const toast = document
+          .querySelector(".co-toast-host")
+          ?.getBoundingClientRect();
+        if (!wrap || !toast) return null;
+        return {
+          drawerWidth: Math.round(wrap.width),
+          aligned: Math.abs(wrap.left - toast.left) <= 1,
+        };
+      }),
+    )
+    .toEqual({ drawerWidth: 552, aligned: true });
+});

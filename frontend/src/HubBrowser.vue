@@ -1624,6 +1624,29 @@ onUnmounted(() => {
 }
 
 @media (max-width: 560px) {
+  .co-hub-search-bar {
+    flex-wrap: wrap;
+  }
+
+  .co-hub-search-input {
+    flex: 1 1 100%;
+  }
+
+  .co-hub-sort-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .co-filter-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+
+  .co-hub-repo {
+    padding: 12px;
+  }
+
   .co-hub-repo-main {
     flex-wrap: wrap;
   }

@@ -1717,7 +1717,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 280px;
 }
 
 .co-api-header-title {
@@ -1795,7 +1795,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 260px;
 }
 
 .co-api-model-head {
@@ -2403,7 +2403,55 @@ onUnmounted(() => {
 
 @media (max-width: 680px) {
   .co-api-page {
-    padding: 16px 16px 28px;
+    padding: 12px var(--co-container-pad) 24px;
+    gap: 12px;
+  }
+
+  .co-api-page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .co-api-header-main {
+    flex: none;
+    width: 100%;
+  }
+
+  .co-api-header-title h1 {
+    font-size: 20px;
+  }
+
+  .co-api-header-sub {
+    font-size: 13px;
+    min-height: 0;
+  }
+
+  .co-api-header-action {
+    width: 100%;
+  }
+
+  .co-api-model-slot :deep(.ant-card-body) {
+    padding: 12px 14px;
+  }
+
+  .co-api-model-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .co-api-model-main {
+    flex: none;
+    width: 100%;
+  }
+
+  .co-api-model-actions {
+    width: 100%;
+  }
+
+  .co-api-grid {
+    gap: 12px;
   }
 
   .co-api-stats-grid {
@@ -2414,6 +2462,46 @@ onUnmounted(() => {
   .co-stat-tile:nth-child(odd) {
     padding-left: 0;
     border-left: none;
+  }
+
+  .co-api-copy-row {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+
+  .co-api-copy-row code {
+    min-width: 0;
+    flex: 1 1 100%;
+    font-size: 12.5px;
+  }
+
+  .co-api-code-sk {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+
+  .co-cred-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .co-api-copy-row > :last-child:not(code):not(.co-api-code-sk) {
+    margin-left: auto;
+  }
+
+  .co-api-speed-summary-left,
+  .co-api-speed-summary-right {
+    white-space: normal;
+    flex-wrap: wrap;
+  }
+
+  .co-api-request-top {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .co-api-request-right {
+    margin-left: auto;
   }
 }
 </style>

@@ -1697,7 +1697,7 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 200px;
 }
 
 .co-active-bar-name {
@@ -2072,6 +2072,32 @@ onUnmounted(() => {
   justify-content: flex-end;
   gap: 8px;
   padding-top: 4px;
+}
+
+@media (max-width: 640px) {
+  .co-active-bar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .co-active-bar-info {
+    flex: none;
+    width: 100%;
+  }
+
+  .co-gpu-adapter-controls {
+    width: 100%;
+  }
+
+  .co-gpu-target-select {
+    flex: 1 1 160px;
+    min-width: 0;
+  }
+
+  .co-model-row {
+    padding: 12px;
+  }
 }
 
 @media (max-width: 560px) {

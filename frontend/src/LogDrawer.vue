@@ -9,7 +9,14 @@ import {
   Spin as ASpin,
   Tag as ATag,
 } from "ant-design-vue";
-import { PhClock, PhCopy, PhSpeedometer, PhTrash } from "@phosphor-icons/vue";
+import {
+  PhClock,
+  PhCopy,
+  PhSpeedometer,
+  PhTerminalWindow,
+  PhTrash,
+  PhX,
+} from "@phosphor-icons/vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import type { ColabOnePrivacyContext } from "./colabOnePrivacy";
@@ -24,6 +31,7 @@ const props = defineProps<{
   open: boolean;
   width?: number;
   standalone?: boolean;
+  mobileOverlay?: boolean;
   loading?: boolean;
   logs: ActivityEntry[];
   currentActivity: string;
@@ -47,6 +55,7 @@ const LOG_SKELETON_ROWS = [
 
 const emit = defineEmits<{
   "update:width": [number];
+  close: [];
   copy: [string];
   clear: [];
 }>();
@@ -171,15 +180,21 @@ onUnmounted(() => {
     v-if="open"
     id="activity-panel"
     class="co-log-drawer co-activity-panel"
-    :class="{ 'is-resizing': resizing, 'is-standalone': !!standalone }"
+    :class="{
+      'is-resizing': resizing,
+      'is-standalone': !!standalone,
+      'is-mobile-overlay': !standalone && !!mobileOverlay,
+    }"
     role="complementary"
     :aria-label="t('logs.panelAria')"
     :style="
-      standalone ? undefined : { '--co-log-drawer-width': `${width || DEFAULT_WIDTH}px` }
+      standalone || mobileOverlay
+        ? undefined
+        : { '--co-log-drawer-width': `${width || DEFAULT_WIDTH}px` }
     "
   >
     <div
-      v-if="!standalone"
+      v-if="!standalone && !mobileOverlay"
       class="co-log-resizer"
       role="separator"
       aria-orientation="vertical"
@@ -188,6 +203,26 @@ onUnmounted(() => {
       @pointerdown="startResize"
       @dblclick="resetWidth"
     ></div>
+
+    <div
+      v-if="!standalone && mobileOverlay"
+      class="co-log-mobile-bar"
+    >
+      <div class="co-log-mobile-title">
+        <PhTerminalWindow :size="16" aria-hidden="true" />
+        <span>{{ t("nav.logs") }}</span>
+      </div>
+      <AButton
+        size="small"
+        type="text"
+        class="co-log-mobile-close"
+        data-testid="log-drawer-mobile-close"
+        :aria-label="t('common.close')"
+        @click="emit('close')"
+      >
+        <template #icon><PhX :size="16" /></template>
+      </AButton>
+    </div>
 
     <!-- Main Log Panel Content (no redundant in-page window header row) -->
     <div class="co-log-drawer-body">
@@ -609,5 +644,75 @@ onUnmounted(() => {
 
 .co-log-drawer.is-standalone .co-log-drawer-footer {
   padding: 0 18px;
+}
+
+.co-log-mobile-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 50px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+  flex-shrink: 0;
+}
+
+.co-log-mobile-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--co-text);
+}
+
+.co-log-mobile-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 9999px;
+  color: var(--co-secondary-text);
+}
+
+.co-log-drawer.is-mobile-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  min-width: 0;
+  max-width: 100vw;
+  height: 100%;
+  height: 100dvh;
+  border-left: none;
+  z-index: 990;
+  padding-top: var(--co-safe-top, 0px);
+  background: var(--co-canvas);
+}
+
+.co-log-drawer.is-mobile-overlay .co-log-drawer-body {
+  padding: 12px;
+}
+
+.co-log-drawer.is-mobile-overlay .co-log-drawer-footer {
+  height: auto;
+  min-height: 48px;
+  padding: 8px 14px calc(8px + var(--co-safe-bottom, 0px));
+}
+
+@media (max-width: 768px) {
+  .co-log-drawer:not(.is-standalone) {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    min-width: 0;
+    max-width: 100vw;
+    height: 100%;
+    height: 100dvh;
+    border-left: none;
+    z-index: 990;
+  }
+
+  .co-log-resizer {
+    display: none;
+  }
 }
 </style>

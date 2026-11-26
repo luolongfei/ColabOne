@@ -2388,8 +2388,27 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
+  .co-cu-usage-card :deep(.ant-card-head) {
+    padding: 0 14px;
+  }
+
   .co-cu-usage-card :deep(.ant-card-body) {
-    padding: 14px 16px;
+    padding: 14px;
+  }
+
+  .co-cu-head-right {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+
+  .co-cu-toolbar {
+    gap: 8px;
+  }
+
+  .co-cu-toolbar-left,
+  .co-cu-toolbar-right {
+    width: 100%;
+    max-width: 100%;
   }
 
   .co-cu-kpi-strip {

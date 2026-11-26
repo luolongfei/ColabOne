@@ -253,13 +253,14 @@ describe("ColabOne toast manager lifecycle", () => {
 });
 
 describe("ColabOne toast horizontal bounds & drawer centering", () => {
-  it("computes ModelDrawer width consistently across wide, medium, and tiny viewports", () => {
+  it("computes ModelDrawer width consistently across wide, medium, and mobile phone viewports", () => {
     expect(computeColabOneModelDrawerWidth(1280)).toBe(720);
     expect(computeColabOneModelDrawerWidth(1000)).toBe(720);
     expect(computeColabOneModelDrawerWidth(768)).toBe(720);
     expect(computeColabOneModelDrawerWidth(600)).toBe(552);
-    expect(computeColabOneModelDrawerWidth(428)).toBe(380);
-    expect(computeColabOneModelDrawerWidth(400)).toBe(380);
+    expect(computeColabOneModelDrawerWidth(440)).toBe(440);
+    expect(computeColabOneModelDrawerWidth(428)).toBe(428);
+    expect(computeColabOneModelDrawerWidth(390)).toBe(390);
     expect(computeColabOneModelDrawerWidth(340)).toBe(340);
   });
 

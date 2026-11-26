@@ -298,7 +298,7 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 28px 20px;
+  padding: max(24px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
   background-color: var(--co-canvas);
   color: var(--co-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
@@ -637,7 +637,7 @@ func renderColabOneWebLoginPage(locale, errCode, nonce string) string {
 
 	b.WriteString("<!doctype html>\n<html lang=\"")
 	b.WriteString(html.EscapeString(lang))
-	b.WriteString("\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"color-scheme\" content=\"light dark\">\n<title>")
+	b.WriteString("\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"color-scheme\" content=\"light dark\">\n<title>")
 	b.WriteString(html.EscapeString(copySet.pageTitle))
 	b.WriteString("</title>\n<link rel=\"icon\" type=\"image/svg+xml\" href=\"")
 	b.WriteString(colabOneWebIconDataURI)

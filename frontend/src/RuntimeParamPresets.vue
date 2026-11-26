@@ -271,6 +271,12 @@ function setTemp(raw: unknown) {
   gap: 8px;
 }
 
+@media (max-width: 420px) {
+  .co-preset-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .co-preset-card {
   appearance: none;
   text-align: left;

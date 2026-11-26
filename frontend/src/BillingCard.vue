@@ -1150,6 +1150,7 @@ function onIdleMinutesChange(event: Event) {
 }
 
 .co-bc-stat-unit {
+  font-family: var(--co-font-sans);
   font-size: 13px;
   font-weight: 500;
   color: var(--co-muted);
@@ -1471,8 +1472,12 @@ function onIdleMinutesChange(event: Event) {
 }
 
 @media (max-width: 640px) {
+  .co-billing-card :deep(.ant-card-head) {
+    padding: 0 14px;
+  }
+
   .co-billing-card :deep(.ant-card-body) {
-    padding: 14px 16px;
+    padding: 14px;
   }
 
   .co-bc-sync-caption,

@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import "ant-design-vue/dist/reset.css";
 import "./style.css";
+import "./mobile.css";
 import { installColabOneWindowFocusGuard } from "./colabOneFocusGuard";
 
 const windowFocusGuard = installColabOneWindowFocusGuard();

@@ -3158,13 +3158,33 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 }
 
 @media (max-width: 640px) {
+  .co-monitor :deep(.ant-card-head) {
+    padding: 10px 14px;
+  }
+
   .co-monitor :deep(.ant-card-head-wrapper) {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
   }
 
   .co-monitor :deep(.ant-card-extra) {
     margin-inline-start: 0;
+    width: 100%;
+  }
+
+  .co-rm-header-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .co-rm-instance-select {
+    flex: 1 1 170px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .co-rm-grid {
+    padding: 10px 12px 12px;
   }
 }
 </style>
