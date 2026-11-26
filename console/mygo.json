@@ -5,7 +5,6 @@
   "version": "0.1.20",
   "description": "Remote GPU workspace",
   "icon": "resources/icon.png",
-  "frontendDist": "../frontend/dist",
   "bindings": "../frontend/src/colabOneBridge.ts",
   "buildCommand": "npm --prefix ../frontend run build",
   "resourcesExclude": [

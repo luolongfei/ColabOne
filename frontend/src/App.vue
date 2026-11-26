@@ -29,6 +29,7 @@ import {
   Layout as ALayout,
   LayoutContent as ALayoutContent,
   Modal as AModal,
+  Popconfirm as APopconfirm,
   Progress as AProgress,
   Segmented as ASegmented,
   Select as ASelect,
@@ -50,10 +51,13 @@ import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneToastHost from "./ColabOneToastHost.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import ColabOneUpdateModal from "./ColabOneUpdateModal.vue";
+import ColabOneWebConsoleCard from "./ColabOneWebConsoleCard.vue";
 import {
   buildColabOnePrivacyContext,
   colabOnePrivacyActive,
   colabOnePrivacyDefault,
+  extractColabOneHostFromInput,
+  isColabOnePublicHost,
   setColabOnePrivacyDefault,
   toggleColabOnePrivacyActive,
 } from "./colabOnePrivacy";
@@ -126,6 +130,7 @@ import { resolveColabOneMonitorFallback } from "./telemetry";
 import {
   COLABONE_HIDDEN_POLL_MS,
   COLABONE_VISIBLE_POLL_MS,
+  COLABONE_WEB_VISIBLE_POLL_MS,
   createColabOneVisibilityPoller,
 } from "./colabOnePoller";
 import {
@@ -142,12 +147,16 @@ import {
   resolveColabOneTaskElapsedSeconds,
 } from "./colabOneDuration";
 import {
+  COLABONE_WEB_AUTH_REQUIRED_EVENT,
   colabOneCancelUpdateInstall,
   colabOneCheckForUpdate,
   colabOneCommand,
+  colabOneCreateWebConsoleLoginTicket,
   colabOneGetCloseBehavior,
   colabOneGetLogDrawerState,
   colabOneGetUpdateState,
+  colabOneGetWebConsolePasscode,
+  colabOneGetWebConsoleState,
   colabOneListRollbackVersions,
   colabOneOnCloseBehavior,
   colabOneOnCloseRequest,
@@ -158,21 +167,33 @@ import {
   colabOneExportMigrationFile,
   colabOneGetMigrationExportSummary,
   colabOneOnUpdateState,
+  colabOneOnWebConsoleState,
   colabOneOpenURL,
   colabOnePickMigrationFile,
   colabOneReadClipboard,
   colabOneRelaunchForUpdate,
   colabOneResolveCloseRequest,
+  colabOneRevokeWebConsoleSessions,
+  colabOneRuntimeCapabilities,
   colabOneSetCloseBehavior,
   colabOneSetLogDrawer,
   colabOneSetUpdatePreferences,
+  colabOneSetWebConsolePasscode,
   colabOneSkipUpdateVersion,
   colabOneSnapshotRaw,
   colabOneStartUpdateInstall,
   colabOneStartUpdateRollback,
+  colabOneUpdateWebConsole,
+  colabOneWebLogout,
+  colabOneWebOpenDeferredTab,
+  colabOneWebSessionExpired,
   colabOneWriteClipboard,
+  createColabOneDefaultWebConsoleState,
+  fetchColabOneWebCapabilities,
+  isColabOneDesktopRuntime,
   normalizeColabOneCloseAction,
   normalizeColabOneCloseBehavior,
+  validateColabOneWebExternalURL,
   type ColabOneCloseAction,
   type ColabOneCloseBehaviorState,
   type ColabOneMigrationExportSummary,
@@ -180,6 +201,8 @@ import {
   type ColabOneMigrationPreview,
   type ColabOneRollbackVersion,
   type ColabOneUpdateState,
+  type ColabOneWebConsoleState,
+  type ColabOneWebConsoleUpdateRequest,
 } from "./api";
 import {
   applyColabOneMigrationUIPrefs,
@@ -491,6 +514,12 @@ function formatError(
 }
 
 const persistentBannerError = computed(() => {
+  if (
+    colabOneRuntimeCapabilities.value.runtime === "web" &&
+    colabOneWebSessionExpired.value
+  ) {
+    return "";
+  }
   if (ipcDisconnected.value && ipcError.value) {
     return formatError(ipcError.value, "ipc");
   }
@@ -947,7 +976,18 @@ function toggleAppearance(event?: MouseEvent) {
   setColabOneAppearance(next, event);
 }
 
-const privacyContext = computed(() => buildColabOnePrivacyContext(state.value));
+const webConsoleState = ref<ColabOneWebConsoleState>(
+  createColabOneDefaultWebConsoleState(),
+);
+
+const privacyContext = computed(() => {
+  const ctx = buildColabOnePrivacyContext(state.value);
+  const webHost = extractColabOneHostFromInput(webConsoleState.value.public_origin);
+  if (webHost && !isColabOnePublicHost(webHost) && !(ctx.hosts || []).includes(webHost)) {
+    return { ...ctx, hosts: [...(ctx.hosts || []), webHost] };
+  }
+  return ctx;
+});
 
 function togglePrivacyMask() {
   toggleColabOnePrivacyActive();
@@ -1681,6 +1721,7 @@ async function syncSnapshot() {
     clockNow.value = Date.now();
   }
   lastSnapshotRaw = mutatedLocally || pendingSettings.size > 0 ? null : raw;
+  colabOneWebSessionExpired.value = false;
   state.value = value;
   snapshotLoaded.value = true;
   syncFormFromSettings(value.settings);
@@ -1698,12 +1739,20 @@ async function syncSnapshotQuietly(): Promise<boolean> {
 }
 
 const snapshotPoller = createColabOneVisibilityPoller({
-  visibleMs: COLABONE_VISIBLE_POLL_MS,
+  visibleMs: isColabOneDesktopRuntime()
+    ? COLABONE_VISIBLE_POLL_MS
+    : COLABONE_WEB_VISIBLE_POLL_MS,
   hiddenMs: COLABONE_HIDDEN_POLL_MS,
   tick: async () => {
     try {
       await syncSnapshot();
     } catch (e) {
+      if (isWebMode.value && colabOneWebSessionExpired.value) {
+        ipcFailures = 0;
+        ipcDisconnected.value = false;
+        ipcError.value = "";
+        return;
+      }
       ipcFailures += 1;
       if (ipcFailures >= 2) {
         ipcDisconnected.value = true;
@@ -2303,9 +2352,41 @@ function onAuthPasteToggle(keys: unknown) {
 }
 
 async function beginLogin() {
+  if (!capabilities.value.can_loopback_oauth) {
+    if (page.value !== "settings") {
+      selectPage("settings");
+    }
+    await manualLogin();
+    return;
+  }
   await act("auth.colab.auto");
 }
 async function manualLogin() {
+  if (!isColabOneDesktopRuntime()) {
+    let result: { url?: string } | null = null;
+    try {
+      await colabOneWebOpenDeferredTab(async () => {
+        result = await act("auth.colab.begin");
+        if (!result) {
+          return "";
+        }
+        showAuthPaste.value = true;
+        return typeof result.url === "string" ? result.url : "";
+      }, (rawUrl) => {
+        if (!rawUrl || rawUrl === openedAuth) {
+          throw new Error("__colabone_skip_open__");
+        }
+        const safeUrl = validateColabOneWebExternalURL(rawUrl);
+        openedAuth = rawUrl;
+        return safeUrl;
+      });
+    } catch (e) {
+      if (!(e instanceof Error && e.message === "__colabone_skip_open__")) {
+        showError(e);
+      }
+    }
+    return;
+  }
   const result = await act("auth.colab.begin");
   if (result) {
     showAuthPaste.value = true;
@@ -2336,6 +2417,9 @@ watch(
   async (url) => {
     if (!url) {
       openedAuth = "";
+      return;
+    }
+    if (!capabilities.value.can_loopback_oauth) {
       return;
     }
     if (url !== openedAuth) {
@@ -2861,6 +2945,7 @@ function updateToastLayout() {
 watch(
   [
     persistentBannerError,
+    colabOneWebSessionExpired,
     () => state.value.operation,
     showUpgradeBanner,
     logsOpen,
@@ -3684,43 +3769,274 @@ async function handleMigrationApply(payload: {
   }
 }
 
+const capabilities = colabOneRuntimeCapabilities;
+const isWebMode = computed(() => capabilities.value.runtime === "web");
+const webConsoleLoaded = ref(false);
+const webConsoleSaving = ref(false);
+const webConsolePasscodeBusy = ref(false);
+const webConsoleTicketBusy = ref(false);
+const webConsoleRevoking = ref(false);
+let unsubWebConsole: (() => void) | null = null;
+
+function applyWebConsoleState(next: ColabOneWebConsoleState) {
+  webConsoleState.value = next;
+  webConsoleLoaded.value = true;
+}
+
+async function copyWithToast(text: string, message: string, group?: string) {
+  try {
+    await colabOneWriteClipboard(text);
+    await navigator.clipboard?.writeText(text).catch(() => {});
+    notify(message, "success", group);
+  } catch {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(message, "success", group);
+    } catch {
+      showError(t("common.copyFailed"));
+    }
+  }
+}
+
+async function loadSavedWebConsolePasscode(): Promise<string> {
+  return colabOneGetWebConsolePasscode();
+}
+
+async function handleWebConsoleToggle(req: ColabOneWebConsoleUpdateRequest) {
+  if (webConsoleSaving.value) return;
+  webConsoleSaving.value = true;
+  try {
+    const next = await colabOneUpdateWebConsole(req);
+    applyWebConsoleState(next);
+    if (next.enabled && next.running) {
+      notify(
+        t("webConsole.toastEnabled", {
+          addr: next.public_origin || next.local_url || next.listen_addr,
+        }),
+        "success",
+        "web-console-toggle",
+      );
+    } else if (!next.enabled) {
+      notify(t("webConsole.toastDisabled"), "info", "web-console-toggle");
+    }
+  } catch (e) {
+    showError(e);
+    void colabOneGetWebConsoleState()
+      .then((st) => {
+        if (!stopped) applyWebConsoleState(st);
+      })
+      .catch(() => {});
+  } finally {
+    webConsoleSaving.value = false;
+  }
+}
+
+async function handleWebConsoleSaveConfig(req: ColabOneWebConsoleUpdateRequest) {
+  if (webConsoleSaving.value) return;
+  webConsoleSaving.value = true;
+  try {
+    const next = await colabOneUpdateWebConsole(req);
+    applyWebConsoleState(next);
+    notify(t("webConsole.toastConfigSaved"), "success", "web-console-config");
+  } catch (e) {
+    showError(e);
+    void colabOneGetWebConsoleState()
+      .then((st) => {
+        if (!stopped) applyWebConsoleState(st);
+      })
+      .catch(() => {});
+  } finally {
+    webConsoleSaving.value = false;
+  }
+}
+
+async function handleWebConsoleSetPasscode(passcode: string) {
+  if (webConsolePasscodeBusy.value) return;
+  const rotating = !passcode.trim();
+  webConsolePasscodeBusy.value = true;
+  try {
+    const next = await colabOneSetWebConsolePasscode(passcode);
+    applyWebConsoleState(next);
+    notify(
+      rotating
+        ? t("webConsole.toastPasscodeRotated")
+        : t("webConsole.toastPasscodeSaved"),
+      "success",
+      "web-console-passcode",
+    );
+  } catch (e) {
+    showError(e);
+  } finally {
+    webConsolePasscodeBusy.value = false;
+  }
+}
+
+async function handleWebConsoleCopyPasscode() {
+  if (webConsolePasscodeBusy.value) return;
+  webConsolePasscodeBusy.value = true;
+  try {
+    const pass = await colabOneGetWebConsolePasscode();
+    if (!pass) {
+      throw new Error(t("common.copyFailed"));
+    }
+    await copyWithToast(
+      pass,
+      t("webConsole.toastPasscodeCopied"),
+      "web-console-copy-passcode",
+    );
+  } catch (e) {
+    showError(e);
+  } finally {
+    webConsolePasscodeBusy.value = false;
+  }
+}
+
+async function handleWebConsoleCreateTicket() {
+  if (webConsoleTicketBusy.value) return;
+  webConsoleTicketBusy.value = true;
+  try {
+    const ticket = await colabOneCreateWebConsoleLoginTicket();
+    const targetUrl = ticket.url || ticket.local_url;
+    if (!targetUrl) {
+      throw new Error(t("common.copyFailed"));
+    }
+    await copyWithToast(
+      targetUrl,
+      t("webConsole.toastTicketCopied", {
+        seconds: ticket.ttl_seconds || 60,
+      }),
+      "web-console-ticket",
+    );
+  } catch (e) {
+    showError(e);
+  } finally {
+    webConsoleTicketBusy.value = false;
+  }
+}
+
+async function handleWebConsoleRevokeSessions() {
+  if (webConsoleRevoking.value) return;
+  webConsoleRevoking.value = true;
+  try {
+    const next = await colabOneRevokeWebConsoleSessions();
+    applyWebConsoleState(next);
+    notify(
+      t("webConsole.toastSessionsRevoked"),
+      "info",
+      "web-console-revoke",
+    );
+  } catch (e) {
+    showError(e);
+  } finally {
+    webConsoleRevoking.value = false;
+  }
+}
+
+async function handleWebConsoleCopyText(text: string, labelKey: string) {
+  if (!text) return;
+  const label =
+    labelKey === "webConsole.toastAddressCopied" ||
+    labelKey === "webConsole.toastQuickCmdCopied"
+      ? t(labelKey)
+      : t("common.copied");
+  await copyWithToast(text, label, "web-console-copy");
+}
+
+function handleWebAuthRequired() {
+  if (stopped) return;
+  colabOneWebSessionExpired.value = true;
+  ipcFailures = 0;
+  ipcDisconnected.value = false;
+  ipcError.value = "";
+}
+
+function handleWebRelogin() {
+  if (typeof window !== "undefined") {
+    window.location.assign("/_colabone_web/login");
+  }
+}
+
+async function handleWebReconnect() {
+  try {
+    await fetchColabOneWebCapabilities();
+    await syncSnapshot();
+    colabOneWebSessionExpired.value = false;
+    ipcFailures = 0;
+    ipcDisconnected.value = false;
+    ipcError.value = "";
+  } catch (e) {
+    if (colabOneWebSessionExpired.value) {
+      notify(t("webConsole.webSessionExpiredTitle"), "warning", "web-auth");
+      return;
+    }
+    showError(e);
+  }
+}
+
+async function handleWebSignOut() {
+  try {
+    await colabOneWebLogout();
+  } catch (e) {
+    showError(e);
+  }
+}
+
 onMounted(() => {
   snapshotPoller.start();
-  void syncLogWindowState();
-  unsubCloseRequest = colabOneOnCloseRequest((req) => {
-    if (stopped || closeModalSubmitting.value) return;
-    closeBehaviorState.value = {
-      ...closeBehaviorState.value,
-      default_choice: normalizeColabOneCloseAction(req.default_choice),
-      can_background: req.can_background,
-    };
-    if (!closeModalOpen.value) {
-      closeModalSuppressLeave.value = false;
-      closeModalDefaultChoice.value = normalizeColabOneCloseAction(
-        req.default_choice,
-      );
-      closeModalOpen.value = true;
-    }
-  });
-  unsubCloseBehavior = colabOneOnCloseBehavior((st) => {
-    if (!stopped) applyCloseBehaviorState(st);
-  });
-  void colabOneGetCloseBehavior()
-    .then((st) => {
+  if (isColabOneDesktopRuntime()) {
+    void syncLogWindowState();
+    unsubCloseRequest = colabOneOnCloseRequest((req) => {
+      if (stopped || closeModalSubmitting.value) return;
+      closeBehaviorState.value = {
+        ...closeBehaviorState.value,
+        default_choice: normalizeColabOneCloseAction(req.default_choice),
+        can_background: req.can_background,
+      };
+      if (!closeModalOpen.value) {
+        closeModalSuppressLeave.value = false;
+        closeModalDefaultChoice.value = normalizeColabOneCloseAction(
+          req.default_choice,
+        );
+        closeModalOpen.value = true;
+      }
+    });
+    unsubCloseBehavior = colabOneOnCloseBehavior((st) => {
       if (!stopped) applyCloseBehaviorState(st);
-    })
-    .catch(() => {});
-  unsubUpdateState = colabOneOnUpdateState((st) => {
-    if (!stopped) applyUpdateState(st, true);
-  });
-  unsubUpdateOpen = colabOneOnUpdateOpen(() => {
-    if (!stopped) updateModalOpen.value = true;
-  });
-  void colabOneGetUpdateState()
-    .then((st) => {
-      if (!stopped && lastUpdatePushAt === 0) applyUpdateState(st);
-    })
-    .catch(() => {});
+    });
+    void colabOneGetCloseBehavior()
+      .then((st) => {
+        if (!stopped) applyCloseBehaviorState(st);
+      })
+      .catch(() => {});
+    unsubUpdateState = colabOneOnUpdateState((st) => {
+      if (!stopped) applyUpdateState(st, true);
+    });
+    unsubUpdateOpen = colabOneOnUpdateOpen(() => {
+      if (!stopped) updateModalOpen.value = true;
+    });
+    void colabOneGetUpdateState()
+      .then((st) => {
+        if (!stopped && lastUpdatePushAt === 0) applyUpdateState(st);
+      })
+      .catch(() => {});
+    unsubWebConsole = colabOneOnWebConsoleState((st) => {
+      if (!stopped) applyWebConsoleState(st);
+    });
+    void colabOneGetWebConsoleState()
+      .then((st) => {
+        if (!stopped) applyWebConsoleState(st);
+      })
+      .catch(() => {
+        if (!stopped) webConsoleLoaded.value = true;
+      });
+  } else {
+    webConsoleLoaded.value = true;
+    window.addEventListener(
+      COLABONE_WEB_AUTH_REQUIRED_EVENT,
+      handleWebAuthRequired,
+    );
+    void fetchColabOneWebCapabilities().catch(() => {});
+  }
   updateToastLayout();
   const contentEl = resolveContentElement();
   if (contentEl) {
@@ -3764,6 +4080,12 @@ onUnmounted(() => {
   unsubCloseRequest = null;
   unsubCloseBehavior?.();
   unsubCloseBehavior = null;
+  unsubWebConsole?.();
+  unsubWebConsole = null;
+  window.removeEventListener(
+    COLABONE_WEB_AUTH_REQUIRED_EVENT,
+    handleWebAuthRequired,
+  );
   stopUpdateProgressPoll();
   cancelPanelPrefetch?.();
   cancelPanelPrefetch = null;
@@ -3829,6 +4151,7 @@ onUnmounted(() => {
                 <span class="co-brand-text">ColabOne</span>
               </button>
               <ColabOneUpdateModal
+                v-if="capabilities.can_self_update"
                 :open="updateModalOpen"
                 :update-state="updateState"
                 :checking="isCheckingUpdate"
@@ -3896,6 +4219,20 @@ onUnmounted(() => {
                   </ColabOneTooltip>
                 </span>
               </ColabOneUpdateModal>
+              <span v-else class="co-brand-web-meta">
+                <span class="co-brand-version is-static" data-testid="nav-version-btn">
+                  <span class="co-brand-version-text">{{ appVersionLabel }}</span>
+                </span>
+                <ATag
+                  v-if="isWebMode"
+                  color="blue"
+                  :bordered="false"
+                  class="co-web-mode-badge"
+                  data-testid="nav-web-mode-badge"
+                >
+                  {{ t("webConsole.webBadge") }}
+                </ATag>
+              </span>
             </div>
 
             <div class="co-nav-center">
@@ -4031,6 +4368,29 @@ onUnmounted(() => {
                   <span class="co-logs-trigger-label">{{ t("nav.logs") }}</span>
                 </button>
               </ColabOneTooltip>
+
+              <APopconfirm
+                v-if="isWebMode"
+                :title="t('webConsole.webSignOutConfirm')"
+                :ok-text="t('webConsole.webSignOutBtn')"
+                :cancel-text="t('common.cancel')"
+                placement="bottomRight"
+                @confirm="handleWebSignOut"
+              >
+                <ColabOneTooltip
+                  :title="t('webConsole.webSignOutBtn')"
+                  placement="bottom"
+                >
+                  <button
+                    type="button"
+                    class="co-nav-circle-btn co-web-signout-btn"
+                    data-testid="nav-web-signout-btn"
+                    :aria-label="t('webConsole.webSignOutBtn')"
+                  >
+                    <PhSignOut :size="17" />
+                  </button>
+                </ColabOneTooltip>
+              </APopconfirm>
             </div>
           </div>
         </header>
@@ -4148,10 +4508,36 @@ onUnmounted(() => {
 
         <!-- Global Persistent System & Operation Banners -->
         <div
-          v-if="showUpgradeBanner || persistentBannerError || state.operation"
+          v-if="
+            (isWebMode && colabOneWebSessionExpired) ||
+            showUpgradeBanner ||
+            persistentBannerError ||
+            state.operation
+          "
           class="co-banners"
         >
           <div class="co-banners-inner">
+            <AAlert
+              v-if="isWebMode && colabOneWebSessionExpired"
+              type="warning"
+              show-icon
+              :message="t('webConsole.webSessionExpiredTitle')"
+              :description="t('webConsole.webSessionExpiredDesc')"
+              class="co-web-expired-banner"
+              data-testid="web-session-expired-banner"
+            >
+              <template #action>
+                <ASpace :size="8" wrap>
+                  <AButton size="small" @click="handleWebReconnect">
+                    {{ t("webConsole.webReconnectBtn") }}
+                  </AButton>
+                  <AButton type="primary" size="small" @click="handleWebRelogin">
+                    {{ t("webConsole.webReloginBtn") }}
+                  </AButton>
+                </ASpace>
+              </template>
+            </AAlert>
+
             <AAlert
               v-if="showUpgradeBanner"
               :key="upgradeBanner.dismissKey"
@@ -4295,6 +4681,7 @@ onUnmounted(() => {
                       {{ t("device.signInGoogle") }}
                     </AButton>
                     <AButton
+                      v-if="capabilities.can_migrate"
                       :loading="migrationPickingFile"
                       :disabled="busy || !!state.operation"
                       data-testid="home-migration-import-btn"
@@ -5303,6 +5690,16 @@ onUnmounted(() => {
 
               <!-- Settings Native Single-Column Compact Grouped Rows -->
               <div class="co-settings-stack">
+                <AAlert
+                  v-if="isWebMode"
+                  type="info"
+                  show-icon
+                  :message="t('webConsole.webDesktopOnlyHint')"
+                  :description="t('webConsole.webSecretsBlockedHint')"
+                  class="co-web-settings-notice"
+                  data-testid="settings-web-mode-notice"
+                />
+
                 <!-- Section 1: Accounts & Credentials -->
                 <section
                   class="co-settings-group-block"
@@ -5362,6 +5759,9 @@ onUnmounted(() => {
                             </span>
                           </p>
 
+                          <p v-if="!capabilities.can_loopback_oauth" class="co-sr-desc">
+                            {{ t("webConsole.webOAuthManualHint") }}
+                          </p>
                           <p v-if="state.setup.colab" class="co-saved-login co-sr-saved-note">
                             <PhCheck :size="13" />
                             <span>{{
@@ -5683,7 +6083,11 @@ onUnmounted(() => {
                               :aria-label="t('settings.hfCardTitle')"
                               :placeholder="t('settings.hfEmptyPlaceholder')"
                               :saved-placeholder="t('settings.hfSavedPlaceholder')"
-                              :load-saved="loadSavedHfToken"
+                              :load-saved="
+                                capabilities.can_reveal_host_secrets
+                                  ? loadSavedHfToken
+                                  : undefined
+                              "
                               :extract-secret="colabOneExtractHfToken"
                               @extracted="onHfTokenExtracted"
                               @error="showError($event)"
@@ -6009,7 +6413,11 @@ onUnmounted(() => {
                             :aria-label="t('settings.assignProxyTitle')"
                             :placeholder="t('settings.assignProxyPlaceholder')"
                             :saved-placeholder="assignProxySavedPlaceholder"
-                            :load-saved="loadSavedAssignProxy"
+                            :load-saved="
+                              capabilities.can_reveal_host_secrets
+                                ? loadSavedAssignProxy
+                                : undefined
+                            "
                             @error="showError($event)"
                           />
                           <AButton
@@ -6167,8 +6575,40 @@ onUnmounted(() => {
                   </div>
                 </section>
 
+                <!-- Section 3.5: Remote Web Console (Desktop Host Only) -->
+                <section
+                  v-if="capabilities.can_manage_web_console"
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-web-console"
+                >
+                  <h2 id="settings-sec-web-console" class="co-settings-section-label">
+                    {{ t("webConsole.sectionTitle") }}
+                  </h2>
+                  <div class="co-settings-list">
+                    <ColabOneWebConsoleCard
+                      :state="webConsoleState"
+                      :loading="!webConsoleLoaded"
+                      :saving="webConsoleSaving"
+                      :passcode-busy="webConsolePasscodeBusy"
+                      :ticket-busy="webConsoleTicketBusy"
+                      :revoking="webConsoleRevoking"
+                      :load-saved-passcode="loadSavedWebConsolePasscode"
+                      @toggle="handleWebConsoleToggle"
+                      @save-config="handleWebConsoleSaveConfig"
+                      @set-passcode="handleWebConsoleSetPasscode"
+                      @copy-passcode="handleWebConsoleCopyPasscode"
+                      @create-ticket="handleWebConsoleCreateTicket"
+                      @revoke-sessions="handleWebConsoleRevokeSessions"
+                      @copy-text="handleWebConsoleCopyText"
+                      @open-url="openExternalURL"
+                      @error="showError"
+                    />
+                  </div>
+                </section>
+
                 <!-- Section 4: Data & One-Click Migration -->
                 <section
+                  v-if="capabilities.can_migrate"
                   class="co-settings-group-block"
                   aria-labelledby="settings-sec-migration"
                 >
@@ -6241,6 +6681,7 @@ onUnmounted(() => {
                   <div class="co-settings-list">
                     <!-- Row 4.1: Main Window Close Behavior -->
                     <div
+                      v-if="capabilities.can_manage_close_behavior"
                       class="co-settings-row"
                       data-testid="settings-close-behavior-row"
                       aria-labelledby="close-behavior-heading"
@@ -6290,6 +6731,7 @@ onUnmounted(() => {
 
                     <!-- Row 4.2: Desktop & Start Menu Shortcuts -->
                     <div
+                      v-if="capabilities.can_manage_shortcuts"
                       class="co-settings-row"
                       aria-labelledby="shortcuts-heading"
                     >
@@ -6368,6 +6810,7 @@ onUnmounted(() => {
 
                     <!-- Row 4.2: Software Updates -->
                     <div
+                      v-if="capabilities.can_self_update"
                       class="co-settings-row"
                       data-testid="settings-update-row"
                       aria-labelledby="updates-heading"
@@ -9143,6 +9586,51 @@ onUnmounted(() => {
   font-size: 13px;
   color: var(--co-secondary-text);
   word-break: break-word;
+}
+
+.co-brand-web-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-brand-version.is-static {
+  cursor: default;
+}
+
+.co-web-mode-badge {
+  margin: 0;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 999px;
+}
+
+.co-web-settings-notice {
+  border-radius: var(--co-radius-md);
+}
+
+@container co-navbar (max-width: 520px) {
+  .co-navbar-inner {
+    gap: 6px;
+    padding-inline: 10px;
+  }
+
+  .co-nav-right {
+    gap: 4px;
+  }
+
+  .co-web-mode-badge {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .co-status-bar-inner {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding-block: 6px;
+    height: auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

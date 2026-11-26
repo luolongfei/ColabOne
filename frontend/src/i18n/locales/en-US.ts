@@ -1967,6 +1967,88 @@ export const enUSMessages: ColabOneMessages = {
   "migration.importSuccessWithAccountToast":
     "Migration imported ({email}); settings applied and syncing account status",
 
+  // Remote Web Console
+  "webConsole.sectionTitle": "Remote Web Console",
+  "webConsole.title": "Web Console Service",
+  "webConsole.desc":
+    "Starts a local web server on the host machine so you can control this client remotely from a phone or any browser, optionally via a local cloudflared tunnel.",
+  "webConsole.statusRunning": "Running",
+  "webConsole.statusStopped": "Stopped",
+  "webConsole.statusError": "Start Error",
+  "webConsole.sessionsTag": "{count} active sessions",
+  "webConsole.configureBtn": "Configure",
+  "webConsole.enableSwitchAria": "Enable or disable Web Console service",
+  "webConsole.localAddressLabel": "Local Listen Address",
+  "webConsole.lanAddressesLabel": "LAN Access Addresses",
+  "webConsole.publicAddressLabel": "Public Domain URL",
+  "webConsole.copyAddressBtn": "Copy URL",
+  "webConsole.copyTicketBtn": "Copy One-Time Sign-In Link",
+  "webConsole.copyTicketPublicHint":
+    "Generates a public one-time sign-in link valid for 60 seconds",
+  "webConsole.copyTicketLocalHint":
+    "Generates a local one-time sign-in link when no public domain is set",
+  "webConsole.revokeSessionsBtn": "Revoke All Web Sessions",
+  "webConsole.bindLabel": "Listen Scope",
+  "webConsole.bindLoopback": "Localhost only (127.0.0.1)",
+  "webConsole.bindLan": "LAN (0.0.0.0)",
+  "webConsole.bindHint":
+    "Use 'Localhost only' when forwarding through local cloudflared; switch to 'LAN' for direct access from devices on the same Wi-Fi.",
+  "webConsole.portLabel": "Listen Port",
+  "webConsole.portAria": "Web Console listen port",
+  "webConsole.publicOriginLabel": "Custom Public Domain (Optional)",
+  "webConsole.publicOriginPlaceholder": "https://colab.example.com",
+  "webConsole.publicOriginHint":
+    "Set your cloudflared public HTTPS domain to strictly validate the request Host header and build one-time sign-in links.",
+  "webConsole.saveConfigBtn": "Save Config",
+  "webConsole.passcodeLabel": "Access Passcode",
+  "webConsole.passcodeHint":
+    "Encrypted in the local credential store and required to unlock the web UI. Set a custom 8-128 character passcode or regenerate one in a click.",
+  "webConsole.passcodePlaceholder": "Enter a new custom passcode (8-128 chars)",
+  "webConsole.passcodeSavedPlaceholder":
+    "Strong random passcode generated automatically",
+  "webConsole.savePasscodeBtn": "Save Passcode",
+  "webConsole.copyPasscodeBtn": "Copy Passcode",
+  "webConsole.rotatePasscodeBtn": "Regenerate",
+  "webConsole.cloudflaredGuideTitle": "Local cloudflared Tunnel Setup Guide",
+  "webConsole.cloudflaredGuideStep1":
+    "1. Under Public Hostname in your Cloudflare Zero Trust tunnel, forward your custom domain to the local service {target}.",
+  "webConsole.cloudflaredGuideStep2":
+    "2. Set 'When Closing Window' below to 'Background' (minimize to system tray) so the web console stays available even when you close the window.",
+  "webConsole.cloudflaredGuideQuickCmdLabel": "Quick Tunnel Test Command",
+  "webConsole.cloudflaredGuideTip":
+    "Security tip: Add a Cloudflare Zero Trust Access policy on this hostname for two-layer protection alongside your local access passcode.",
+  "webConsole.openCloudflareDash": "Open Cloudflare Zero Trust",
+  "webConsole.toastEnabled": "Web Console started ({addr})",
+  "webConsole.toastDisabled":
+    "Web Console stopped; all web sessions have been invalidated",
+  "webConsole.toastConfigSaved": "Web Console configuration saved",
+  "webConsole.toastPasscodeSaved":
+    "Access passcode updated; all previous web sessions were revoked",
+  "webConsole.toastPasscodeRotated":
+    "Access passcode regenerated; all previous web sessions were revoked",
+  "webConsole.toastPasscodeCopied": "Web access passcode copied",
+  "webConsole.toastTicketCopied":
+    "One-time sign-in link copied (valid for {seconds}s, expires after a single use)",
+  "webConsole.toastSessionsRevoked": "All active web sessions have been revoked",
+  "webConsole.toastAddressCopied": "Access URL copied",
+  "webConsole.toastQuickCmdCopied": "cloudflared test command copied",
+  "webConsole.webBadge": "Web Mode",
+  "webConsole.webSignOutBtn": "Sign Out",
+  "webConsole.webSignOutConfirm":
+    "You will need to enter the access passcode again to unlock after signing out. Continue?",
+  "webConsole.webDesktopOnlyHint":
+    "You are in Remote Web Console mode. Desktop-only settings and migration backups are only available in the host desktop client.",
+  "webConsole.webSecretsBlockedHint":
+    "To protect host credentials, Web Mode blocks reading saved plaintext keys or proxy passwords.",
+  "webConsole.webSessionExpiredTitle": "Web session expired or connection lost",
+  "webConsole.webSessionExpiredDesc":
+    "The host may have stopped the Web Console, reset the access passcode, or your current sign-in session may have expired.",
+  "webConsole.webReconnectBtn": "Retry Connection",
+  "webConsole.webReloginBtn": "Unlock Again",
+  "webConsole.webOAuthManualHint":
+    "Use manual authorization in Remote Web Mode: open the Google authorization page and paste the returned content below to finish signing in.",
+  "webConsole.webOpenCanvasBrowserOnly": "Open Canvas in New Tab",
+
   // Location
   "location.tooltipWithZone": "Instance location: {full} ({zone})",
   "location.tooltipNoZone": "Instance location: {full}",

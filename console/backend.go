@@ -10,6 +10,7 @@ import (
 
 	"github.com/luolongfei/ColabOne/console/internal/activity"
 	"github.com/luolongfei/ColabOne/console/internal/controller"
+	"github.com/luolongfei/ColabOne/console/internal/vault"
 )
 
 const colabOneBridgeCloseTimeout = 2500 * time.Millisecond
@@ -35,6 +36,7 @@ func newColabOneBridgeClosedError() error {
 type colabOneBridge struct {
 	mu            sync.Mutex
 	ctrl          *controller.ColabOneController
+	vault         *vault.ColabOneVault
 	factory       func() *controller.ColabOneController
 	closeCtrl     func(*controller.ColabOneController)
 	onFocusWindow func()
@@ -131,6 +133,7 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 		done := make(chan struct{})
 		b.startDone = done
 		factory := b.factory
+		sharedVault := b.vault
 		onFocusWindow := b.onFocusWindow
 		b.mu.Unlock()
 
@@ -151,7 +154,7 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 			if factory != nil {
 				ctrl = factory()
 			} else {
-				ctrl = newColabOneWiredController("", "", nil, true)
+				ctrl = newColabOneWiredController("", "", sharedVault, true)
 			}
 			if ctrl != nil && onFocusWindow != nil {
 				ctrl.SetFocusWindowHandler(onFocusWindow)

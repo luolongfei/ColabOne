@@ -1,0 +1,2441 @@
+// Package webconsole implements ColabOne's pure-Go remote web console HTTP
+// server, session/ticket authentication, CSRF protection, output download
+// proxy, and static frontend serving.
+package webconsole
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"math"
+	"mime"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
+)
+
+const (
+	// DefaultPort is the default TCP listen port for the remote web console.
+	DefaultPort = 3232
+	// MinPort is the minimum allowed non-privileged TCP port.
+	MinPort = 1024
+	// MaxPort is the maximum allowed TCP port.
+	MaxPort = 65535
+
+	// BindModeLoopback binds the web console strictly to 127.0.0.1.
+	BindModeLoopback = "loopback"
+	// BindModeLAN binds the web console to 0.0.0.0 for LAN access.
+	BindModeLAN = "lan"
+
+	// SessionCookieName is the HttpOnly session cookie issued to web console clients.
+	SessionCookieName = "colabone_web_session"
+	// VaultPasscodeKey is the vault entry key storing the web console passcode.
+	VaultPasscodeKey = "web_console_passcode"
+	// ConfigFilename is the JSON configuration file persisted in ConfigDir.
+	ConfigFilename = "web-console.json"
+
+	// LoginTicketTTL is the lifetime of a single-use login ticket.
+	LoginTicketTTL = 60 * time.Second
+	// SessionTTL is the lifetime of an authenticated web console session.
+	SessionTTL = 7 * 24 * time.Hour
+
+	// ClientHeaderName is the custom anti-CSRF header required on mutating web API calls.
+	ClientHeaderName = "X-ColabOne-Client"
+	// ClientHeaderValue is the expected value of ClientHeaderName.
+	ClientHeaderValue = "web"
+)
+
+const (
+	webConsoleLogSource       = "网页控制台"
+	maxActiveSessions         = 64
+	maxPendingTickets         = 32
+	maxRateLimitIPs           = 1024
+	loginRateLimitMaxFailures = 5
+	loginRateLimitWindow      = 5 * time.Minute
+	maxLoginBodyBytes         = 4 << 10
+	maxCommandBodyBytes       = 64 << 20
+	maxOutputSizeBytes        = 512 << 20
+	maxOutputBufferBytes      = 32 << 20
+	maxOutputChunkBytes       = 512 << 10
+	gzipMinBytes              = 1024
+	serverShutdownTimeout     = 2 * time.Second
+	passcodeMinRunes          = 8
+	passcodeMaxRunes          = 128
+	maxPublicOriginRunes      = 300
+)
+
+// VaultStore abstracts encrypted credential persistence for the web console passcode.
+type VaultStore interface {
+	GetJSON(name string, dest any) (bool, error)
+	Set(name string, value any) error
+	Delete(name string) error
+}
+
+// BridgeCaller dispatches a ColabOne controller method call and returns its raw JSON result.
+type BridgeCaller func(ctx context.Context, method string, payload map[string]any) (string, error)
+
+// LogFunc records a sanitized activity entry.
+type LogFunc func(message, source, level string)
+
+// LocaleFunc returns the desktop host's active UI locale (e.g. "zh-CN", "en-US").
+type LocaleFunc func() string
+
+// FrontendFSFunc returns the embedded or disk filesystem serving the compiled frontend.
+type FrontendFSFunc func() fs.FS
+
+// ColabOneWebConsoleConfig is the persisted JSON configuration for the web console.
+type ColabOneWebConsoleConfig struct {
+	Enabled      bool   `json:"enabled"`
+	BindMode     string `json:"bind_mode"`
+	Port         int    `json:"port"`
+	PublicOrigin string `json:"public_origin"`
+}
+
+// ColabOneWebConsoleState is the live, secret-redacted status snapshot exposed to the desktop UI.
+type ColabOneWebConsoleState struct {
+	Enabled         bool     `json:"enabled"`
+	Running         bool     `json:"running"`
+	BindMode        string   `json:"bind_mode"`
+	ListenAddr      string   `json:"listen_addr"`
+	Port            int      `json:"port"`
+	LocalURL        string   `json:"local_url"`
+	LanURLs         []string `json:"lan_urls,omitempty"`
+	PublicOrigin    string   `json:"public_origin"`
+	HasPasscode     bool     `json:"has_passcode"`
+	PasscodePreview string   `json:"passcode_preview"`
+	ActiveSessions  int      `json:"active_sessions"`
+	LastError       string   `json:"last_error,omitempty"`
+}
+
+// ColabOneWebConsoleUpdateRequest carries partial configuration updates for hot-apply.
+type ColabOneWebConsoleUpdateRequest struct {
+	Enabled      *bool   `json:"enabled,omitempty"`
+	BindMode     *string `json:"bind_mode,omitempty"`
+	Port         *int    `json:"port,omitempty"`
+	PublicOrigin *string `json:"public_origin,omitempty"`
+}
+
+// ColabOneWebConsoleTicket describes a short-lived, single-use browser unlock URL.
+type ColabOneWebConsoleTicket struct {
+	URL            string `json:"url"`
+	LocalURL       string `json:"local_url"`
+	ExpiresAt      int64  `json:"expires_at"`
+	TTLSeconds     int    `json:"ttl_seconds"`
+	UsesPublicHost bool   `json:"uses_public_host"`
+}
+
+// ColabOneWebCapabilities advertises which desktop/web features are available in web mode.
+type ColabOneWebCapabilities struct {
+	Runtime                   string `json:"runtime"`
+	Version                   string `json:"version"`
+	CanOpenNativeCanvasWindow bool   `json:"can_open_native_canvas_window"`
+	CanStandaloneLogWindow    bool   `json:"can_standalone_log_window"`
+	CanManageWebConsole       bool   `json:"can_manage_web_console"`
+	CanManageCloseBehavior    bool   `json:"can_manage_close_behavior"`
+	CanManageShortcuts        bool   `json:"can_manage_shortcuts"`
+	CanSelfUpdate             bool   `json:"can_self_update"`
+	CanMigrate                bool   `json:"can_migrate"`
+	CanRevealHostSecrets      bool   `json:"can_reveal_host_secrets"`
+	CanLoopbackOAuth          bool   `json:"can_loopback_oauth"`
+	CanDownloadOutput         bool   `json:"can_download_output"`
+}
+
+// ColabOneWebConsoleOptions configures a ColabOneWebConsole instance.
+type ColabOneWebConsoleOptions struct {
+	ConfigDir     string
+	Vault         VaultStore
+	CallBridge    BridgeCaller
+	FrontendFS    FrontendFSFunc
+	AppVersion    string
+	GetLocale     LocaleFunc
+	OnLog         LogFunc
+	OnStateChange func(ColabOneWebConsoleState)
+	Now           func() time.Time
+}
+
+type colabOneWebSession struct {
+	createdAt time.Time
+	lastSeen  time.Time
+	expiresAt time.Time
+}
+
+type colabOneWebTicket struct {
+	createdAt time.Time
+	expiresAt time.Time
+}
+
+type colabOneWebMediaChunk struct {
+	Data      string `json:"data"`
+	Size      int64  `json:"size"`
+	Offset    int64  `json:"offset"`
+	SHA256    string `json:"sha256"`
+	Extension string `json:"extension"`
+	Filename  string `json:"filename"`
+	Source    string `json:"source"`
+}
+
+// ColabOneWebConsole manages the remote HTTP web console lifecycle, sessions,
+// authentication, command filtering, and static asset serving.
+type ColabOneWebConsole struct {
+	opts ColabOneWebConsoleOptions
+
+	opMu sync.Mutex // serializes StartIfEnabled, Update, Passcode, SetPasscode, Close
+	mu   sync.RWMutex
+
+	cfg           ColabOneWebConsoleConfig
+	running       bool
+	listenAddr    string
+	srv           *http.Server
+	listeners     []net.Listener
+	srvDone       chan struct{}
+	passcode      string
+	passcodeReady bool
+	lastError     string
+
+	sessions      map[[32]byte]colabOneWebSession
+	tickets       map[[32]byte]colabOneWebTicket
+	loginFailures map[string][]time.Time
+
+	handler http.Handler
+
+	// listInterfaceIPs is injectable for deterministic tests.
+	listInterfaceIPs func() []netip.Addr
+}
+
+var (
+	publicFQDNRe = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$`)
+	dnsHostRe    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$`)
+	outputIDRe   = regexp.MustCompile(`^[a-f0-9]{32}$`)
+	sha256HexRe  = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+	blockedPublicSuffixes = []string{
+		".localhost",
+		".local",
+		".internal",
+		".invalid",
+		".home.arpa",
+	}
+
+	blockedWebCommands = map[string]string{
+		"desktop.shortcuts":           "该桌面专属操作仅支持在宿主机客户端执行",
+		"shortcuts.status":            "该桌面专属操作仅支持在宿主机客户端执行",
+		"shortcuts.create":            "该桌面专属操作仅支持在宿主机客户端执行",
+		"shortcuts.remove":            "该桌面专属操作仅支持在宿主机客户端执行",
+		"api.tunnel_token":            "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"comfyui.canvas.tunnel_token": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"settings.hf_token":           "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"settings.assign_proxy":       "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"auth.colab.auto":             "网页控制台不支持本机回环自动登录，请使用手动授权登录",
+	}
+
+	allowedOutputMIME = map[string]string{
+		"png":  "image/png",
+		"jpg":  "image/jpeg",
+		"jpeg": "image/jpeg",
+		"webp": "image/webp",
+		"gif":  "image/gif",
+		"mp4":  "video/mp4",
+		"webm": "video/webm",
+		"wav":  "audio/wav",
+		"mp3":  "audio/mpeg",
+		"flac": "audio/flac",
+	}
+
+	staticMIMEByExt = map[string]string{
+		".html":  "text/html; charset=utf-8",
+		".htm":   "text/html; charset=utf-8",
+		".js":    "application/javascript; charset=utf-8",
+		".mjs":   "application/javascript; charset=utf-8",
+		".css":   "text/css; charset=utf-8",
+		".json":  "application/json; charset=utf-8",
+		".svg":   "image/svg+xml",
+		".png":   "image/png",
+		".jpg":   "image/jpeg",
+		".jpeg":  "image/jpeg",
+		".webp":  "image/webp",
+		".gif":   "image/gif",
+		".ico":   "image/x-icon",
+		".woff2": "font/woff2",
+		".woff":  "font/woff",
+		".ttf":   "font/ttf",
+		".otf":   "font/otf",
+		".wasm":  "application/wasm",
+		".txt":   "text/plain; charset=utf-8",
+		".map":   "application/json; charset=utf-8",
+	}
+)
+
+// NewColabOneWebConsole constructs a ColabOneWebConsole, loading persisted
+// configuration from <ConfigDir>/web-console.json without starting the HTTP server.
+// Call StartIfEnabled() when the host is ready to accept connections.
+func NewColabOneWebConsole(opts ColabOneWebConsoleOptions) *ColabOneWebConsole {
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	w := &ColabOneWebConsole{
+		opts:             opts,
+		cfg:              defaultWebConsoleConfig(),
+		sessions:         make(map[[32]byte]colabOneWebSession),
+		tickets:          make(map[[32]byte]colabOneWebTicket),
+		loginFailures:    make(map[string][]time.Time),
+		listInterfaceIPs: defaultListInterfaceIPs,
+	}
+	w.handler = http.HandlerFunc(w.serveHTTP)
+	w.loadConfig()
+	if opts.Vault != nil {
+		var stored string
+		if found, err := opts.Vault.GetJSON(VaultPasscodeKey, &stored); err == nil && found && strings.TrimSpace(stored) != "" {
+			w.passcode = stored
+			w.passcodeReady = true
+		}
+	}
+	return w
+}
+
+func defaultWebConsoleConfig() ColabOneWebConsoleConfig {
+	return ColabOneWebConsoleConfig{
+		Enabled:      false,
+		BindMode:     BindModeLoopback,
+		Port:         DefaultPort,
+		PublicOrigin: "",
+	}
+}
+
+func (w *ColabOneWebConsole) now() time.Time {
+	if w.opts.Now != nil {
+		return w.opts.Now()
+	}
+	return time.Now()
+}
+
+func (w *ColabOneWebConsole) configPath() string {
+	dir := strings.TrimSpace(w.opts.ConfigDir)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, ConfigFilename)
+}
+
+func (w *ColabOneWebConsole) loadConfig() {
+	cfgPath := w.configPath()
+	if cfgPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return
+	}
+	var loaded ColabOneWebConsoleConfig
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		return
+	}
+	cfg := defaultWebConsoleConfig()
+	cfg.Enabled = loaded.Enabled
+	if normMode, ok := normalizeBindMode(loaded.BindMode); ok {
+		cfg.BindMode = normMode
+	}
+	if loaded.Port >= MinPort && loaded.Port <= MaxPort {
+		cfg.Port = loaded.Port
+	}
+	if normOrigin, err := normalizePublicOrigin(loaded.PublicOrigin); err == nil {
+		cfg.PublicOrigin = normOrigin
+	}
+	w.cfg = cfg
+}
+
+func (w *ColabOneWebConsole) saveConfig(cfg ColabOneWebConsoleConfig) error {
+	cfgPath := w.configPath()
+	if cfgPath == "" {
+		return nil
+	}
+	dir := filepath.Dir(cfgPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("保存网页控制台配置失败：%w", err)
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("保存网页控制台配置失败：%w", err)
+	}
+	data = append(data, '\n')
+
+	tmpFile, err := os.CreateTemp(dir, ".web-console-*.tmp")
+	if err != nil {
+		return fmt.Errorf("保存网页控制台配置失败：%w", err)
+	}
+	tmpPath := tmpFile.Name()
+	closed := false
+	renamed := false
+	defer func() {
+		if !closed {
+			_ = tmpFile.Close()
+		}
+		if !renamed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("保存网页控制台配置失败：%w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("保存网页控制台配置失败：%w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("保存网页控制台配置失败：%w", err)
+	}
+	closed = true
+	if err := fsutil.RenameReplace(tmpPath, cfgPath); err != nil {
+		return fmt.Errorf("保存网页控制台配置失败：%w", err)
+	}
+	renamed = true
+	return nil
+}
+
+func (w *ColabOneWebConsole) logActivity(message, level string) {
+	if w.opts.OnLog == nil {
+		return
+	}
+	w.opts.OnLog(message, webConsoleLogSource, level)
+}
+
+func (w *ColabOneWebConsole) emitStateChange(state ColabOneWebConsoleState) {
+	if w.opts.OnStateChange == nil {
+		return
+	}
+	w.opts.OnStateChange(state)
+}
+
+// Handler returns the HTTP handler serving the web console routes.
+func (w *ColabOneWebConsole) Handler() http.Handler {
+	return w.handler
+}
+
+// State returns the live, redacted status snapshot of the web console.
+func (w *ColabOneWebConsole) State() ColabOneWebConsoleState {
+	w.mu.RLock()
+	cfg := w.cfg
+	running := w.running
+	listenAddr := w.listenAddr
+	passcode := w.passcode
+	lastErr := w.lastError
+	now := w.now()
+	activeSessions := 0
+	for _, s := range w.sessions {
+		if now.Before(s.expiresAt) {
+			activeSessions++
+		}
+	}
+	w.mu.RUnlock()
+
+	var lanURLs []string
+	if cfg.BindMode == BindModeLAN {
+		lanURLs = w.lanURLs(cfg.Port)
+	}
+
+	return ColabOneWebConsoleState{
+		Enabled:         cfg.Enabled,
+		Running:         running,
+		BindMode:        cfg.BindMode,
+		ListenAddr:      listenAddr,
+		Port:            cfg.Port,
+		LocalURL:        fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
+		LanURLs:         lanURLs,
+		PublicOrigin:    cfg.PublicOrigin,
+		HasPasscode:     passcode != "",
+		PasscodePreview: maskPasscode(passcode),
+		ActiveSessions:  activeSessions,
+		LastError:       lastErr,
+	}
+}
+
+// StartIfEnabled starts the HTTP server when the persisted configuration has Enabled=true.
+// Startup bind failures are recorded in LastError rather than crashing the host process.
+func (w *ColabOneWebConsole) StartIfEnabled() error {
+	state, changed, err := w.startIfEnabledLocked()
+	if changed {
+		w.emitStateChange(state)
+	}
+	return err
+}
+
+func (w *ColabOneWebConsole) startIfEnabledLocked() (ColabOneWebConsoleState, bool, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	w.mu.RLock()
+	cfg := w.cfg
+	running := w.running
+	w.mu.RUnlock()
+
+	if !cfg.Enabled || running {
+		return w.State(), false, nil
+	}
+
+	if _, _, err := w.ensurePasscodeOpLocked(); err != nil {
+		w.mu.Lock()
+		w.lastError = err.Error()
+		w.mu.Unlock()
+		w.logActivity(fmt.Sprintf("网页控制台启动失败：%s", err.Error()), "error")
+		return w.State(), true, err
+	}
+
+	listeners, addr, err := listenTCP(cfg.BindMode, cfg.Port)
+	if err != nil {
+		w.mu.Lock()
+		w.lastError = err.Error()
+		w.running = false
+		w.listenAddr = ""
+		w.mu.Unlock()
+		w.logActivity(fmt.Sprintf("网页控制台启动失败：%s", err.Error()), "error")
+		return w.State(), true, err
+	}
+
+	srv := w.newHTTPServer()
+	done := make(chan struct{})
+	w.mu.Lock()
+	w.srv = srv
+	w.listeners = listeners
+	w.srvDone = done
+	w.running = true
+	w.listenAddr = addr
+	w.lastError = ""
+	w.mu.Unlock()
+	w.serveInBackground(srv, listeners, done)
+
+	w.logActivity(fmt.Sprintf("网页控制台已启动，监听 %s", addr), "info")
+	return w.State(), true, nil
+}
+
+// Update validates, persists, and hot-applies web console configuration changes.
+func (w *ColabOneWebConsole) Update(req ColabOneWebConsoleUpdateRequest) (ColabOneWebConsoleState, error) {
+	state, changed, err := w.updateOpLocked(req)
+	if changed {
+		w.emitStateChange(state)
+	}
+	return state, err
+}
+
+func (w *ColabOneWebConsole) updateOpLocked(req ColabOneWebConsoleUpdateRequest) (ColabOneWebConsoleState, bool, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	w.mu.RLock()
+	oldCfg := w.cfg
+	wasRunning := w.running
+	oldSrv := w.srv
+	oldListeners := w.listeners
+	oldDone := w.srvDone
+	w.mu.RUnlock()
+
+	nextCfg := oldCfg
+	if req.Enabled != nil {
+		nextCfg.Enabled = *req.Enabled
+	}
+	if req.BindMode != nil {
+		normMode, ok := normalizeBindMode(*req.BindMode)
+		if !ok {
+			return w.State(), false, errors.New("不支持的监听范围设置")
+		}
+		nextCfg.BindMode = normMode
+	}
+	if req.Port != nil {
+		if *req.Port < MinPort || *req.Port > MaxPort {
+			return w.State(), false, fmt.Errorf("网页控制台端口必须在 %d 至 %d 之间", MinPort, MaxPort)
+		}
+		nextCfg.Port = *req.Port
+	}
+	if req.PublicOrigin != nil {
+		normOrigin, err := normalizePublicOrigin(*req.PublicOrigin)
+		if err != nil {
+			return w.State(), false, err
+		}
+		nextCfg.PublicOrigin = normOrigin
+	}
+
+	// Case 1: Turning enabled off (or staying disabled).
+	if !nextCfg.Enabled {
+		if err := w.saveConfig(nextCfg); err != nil {
+			return w.State(), false, err
+		}
+		if wasRunning {
+			shutdownHTTPServer(oldSrv, oldListeners, oldDone)
+		}
+		w.mu.Lock()
+		w.cfg = nextCfg
+		w.running = false
+		w.listenAddr = ""
+		w.srv = nil
+		w.listeners = nil
+		w.srvDone = nil
+		w.lastError = ""
+		if wasRunning {
+			clear(w.sessions)
+			clear(w.tickets)
+		}
+		w.mu.Unlock()
+		if wasRunning {
+			w.logActivity("已关闭网页控制台服务", "info")
+		}
+		return w.State(), true, nil
+	}
+
+	// nextCfg.Enabled == true: ensure a passcode exists before serving traffic.
+	if _, _, err := w.ensurePasscodeOpLocked(); err != nil {
+		return w.State(), false, err
+	}
+
+	// Case 2: Turning on from stopped state.
+	if !wasRunning {
+		listeners, addr, err := listenTCP(nextCfg.BindMode, nextCfg.Port)
+		if err != nil {
+			w.mu.Lock()
+			w.lastError = err.Error()
+			w.mu.Unlock()
+			w.logActivity(fmt.Sprintf("网页控制台启动失败：%s", err.Error()), "error")
+			return w.State(), true, err
+		}
+		if err := w.saveConfig(nextCfg); err != nil {
+			closeListeners(listeners)
+			return w.State(), false, err
+		}
+		srv := w.newHTTPServer()
+		done := make(chan struct{})
+		w.mu.Lock()
+		w.cfg = nextCfg
+		w.srv = srv
+		w.listeners = listeners
+		w.srvDone = done
+		w.running = true
+		w.listenAddr = addr
+		w.lastError = ""
+		w.mu.Unlock()
+		w.serveInBackground(srv, listeners, done)
+		w.logActivity(fmt.Sprintf("网页控制台已启动，监听 %s", addr), "info")
+		return w.State(), true, nil
+	}
+
+	// Case 3: Already running and only PublicOrigin (or nothing) changed.
+	if nextCfg.BindMode == oldCfg.BindMode && nextCfg.Port == oldCfg.Port {
+		if err := w.saveConfig(nextCfg); err != nil {
+			return w.State(), false, err
+		}
+		w.mu.Lock()
+		w.cfg = nextCfg
+		w.lastError = ""
+		w.mu.Unlock()
+		if nextCfg.PublicOrigin != oldCfg.PublicOrigin {
+			w.logActivity("已更新网页控制台公网域名配置", "info")
+		}
+		return w.State(), true, nil
+	}
+
+	// Case 4: Already running and port changed — bind the new port first so the
+	// old listener stays alive if the new port is unavailable.
+	if nextCfg.Port != oldCfg.Port {
+		newListeners, newAddr, err := listenTCP(nextCfg.BindMode, nextCfg.Port)
+		if err != nil {
+			// Keep the existing healthy listener running without poisoning LastError.
+			w.logActivity(fmt.Sprintf("切换网页控制台端口失败：%s", err.Error()), "error")
+			return w.State(), false, err
+		}
+		if err := w.saveConfig(nextCfg); err != nil {
+			closeListeners(newListeners)
+			return w.State(), false, err
+		}
+		newSrv := w.newHTTPServer()
+		newDone := make(chan struct{})
+		w.mu.Lock()
+		w.cfg = nextCfg
+		w.srv = newSrv
+		w.listeners = newListeners
+		w.srvDone = newDone
+		w.running = true
+		w.listenAddr = newAddr
+		w.lastError = ""
+		w.mu.Unlock()
+		w.serveInBackground(newSrv, newListeners, newDone)
+		shutdownHTTPServer(oldSrv, oldListeners, oldDone)
+		w.logActivity(fmt.Sprintf("网页控制台已切换监听至 %s", newAddr), "info")
+		return w.State(), true, nil
+	}
+
+	// Case 5: Already running and only BindMode changed on the same port — stop
+	// old listener first, bind new listener, and restore old listener on failure.
+	shutdownHTTPServer(oldSrv, oldListeners, oldDone)
+	newListeners, newAddr, err := listenTCP(nextCfg.BindMode, nextCfg.Port)
+	if err != nil {
+		restoredListeners, restoredAddr, restoreErr := listenTCP(oldCfg.BindMode, oldCfg.Port)
+		if restoreErr == nil {
+			restoredSrv := w.newHTTPServer()
+			restoredDone := make(chan struct{})
+			w.mu.Lock()
+			w.cfg = oldCfg
+			w.srv = restoredSrv
+			w.listeners = restoredListeners
+			w.srvDone = restoredDone
+			w.running = true
+			w.listenAddr = restoredAddr
+			w.lastError = ""
+			w.mu.Unlock()
+			w.serveInBackground(restoredSrv, restoredListeners, restoredDone)
+			w.logActivity(fmt.Sprintf("切换网页控制台监听模式失败：%s", err.Error()), "error")
+			return w.State(), false, err
+		}
+		w.mu.Lock()
+		w.cfg = oldCfg
+		w.srv = nil
+		w.listeners = nil
+		w.srvDone = nil
+		w.running = false
+		w.listenAddr = ""
+		w.lastError = err.Error()
+		w.mu.Unlock()
+		w.logActivity(fmt.Sprintf("切换网页控制台监听模式失败：%s", err.Error()), "error")
+		return w.State(), true, err
+	}
+
+	if err := w.saveConfig(nextCfg); err != nil {
+		closeListeners(newListeners)
+		restoredListeners, restoredAddr, restoreErr := listenTCP(oldCfg.BindMode, oldCfg.Port)
+		if restoreErr == nil {
+			restoredSrv := w.newHTTPServer()
+			restoredDone := make(chan struct{})
+			w.mu.Lock()
+			w.cfg = oldCfg
+			w.srv = restoredSrv
+			w.listeners = restoredListeners
+			w.srvDone = restoredDone
+			w.running = true
+			w.listenAddr = restoredAddr
+			w.lastError = ""
+			w.mu.Unlock()
+			w.serveInBackground(restoredSrv, restoredListeners, restoredDone)
+			return w.State(), false, err
+		}
+		w.mu.Lock()
+		w.cfg = oldCfg
+		w.srv = nil
+		w.listeners = nil
+		w.srvDone = nil
+		w.running = false
+		w.listenAddr = ""
+		w.lastError = restoreErr.Error()
+		w.mu.Unlock()
+		return w.State(), true, err
+	}
+
+	newSrv := w.newHTTPServer()
+	newDone := make(chan struct{})
+	w.mu.Lock()
+	w.cfg = nextCfg
+	w.srv = newSrv
+	w.listeners = newListeners
+	w.srvDone = newDone
+	w.running = true
+	w.listenAddr = newAddr
+	w.lastError = ""
+	w.mu.Unlock()
+	w.serveInBackground(newSrv, newListeners, newDone)
+	w.logActivity(fmt.Sprintf("网页控制台已切换监听至 %s", newAddr), "info")
+	return w.State(), true, nil
+}
+
+// Passcode returns the raw host access passcode from the vault, generating and
+// persisting a fresh high-entropy passcode if none exists yet.
+func (w *ColabOneWebConsole) Passcode() (string, error) {
+	w.opMu.Lock()
+	passcode, generated, err := w.ensurePasscodeOpLocked()
+	var state ColabOneWebConsoleState
+	if generated && err == nil {
+		state = w.State()
+	}
+	w.opMu.Unlock()
+
+	if generated && err == nil {
+		w.emitStateChange(state)
+	}
+	return passcode, err
+}
+
+func (w *ColabOneWebConsole) ensurePasscodeOpLocked() (string, bool, error) {
+	w.mu.RLock()
+	cached := w.passcode
+	ready := w.passcodeReady
+	w.mu.RUnlock()
+
+	if ready && cached != "" {
+		return cached, false, nil
+	}
+
+	if w.opts.Vault != nil {
+		var stored string
+		found, err := w.opts.Vault.GetJSON(VaultPasscodeKey, &stored)
+		if err != nil {
+			return "", false, fmt.Errorf("读取网页控制台访问口令失败：%w", err)
+		}
+		if found && strings.TrimSpace(stored) != "" {
+			w.mu.Lock()
+			w.passcode = stored
+			w.passcodeReady = true
+			w.mu.Unlock()
+			return stored, false, nil
+		}
+	}
+
+	generated, err := generatePasscode()
+	if err != nil {
+		return "", false, err
+	}
+	if w.opts.Vault != nil {
+		if err := w.opts.Vault.Set(VaultPasscodeKey, generated); err != nil {
+			return "", false, fmt.Errorf("保存网页控制台访问口令失败：%w", err)
+		}
+	}
+	w.mu.Lock()
+	w.passcode = generated
+	w.passcodeReady = true
+	w.mu.Unlock()
+	return generated, true, nil
+}
+
+// SetPasscode updates the host access passcode (or generates a fresh random one
+// when trimmed raw is empty), revoking all active sessions and pending tickets.
+func (w *ColabOneWebConsole) SetPasscode(raw string) (ColabOneWebConsoleState, error) {
+	state, changed, err := w.setPasscodeOpLocked(raw)
+	if changed {
+		w.emitStateChange(state)
+	}
+	return state, err
+}
+
+func (w *ColabOneWebConsole) setPasscodeOpLocked(raw string) (ColabOneWebConsoleState, bool, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	var nextPasscode string
+	var regenerated bool
+	if strings.TrimSpace(raw) == "" {
+		gen, err := generatePasscode()
+		if err != nil {
+			return w.State(), false, err
+		}
+		nextPasscode = gen
+		regenerated = true
+	} else {
+		if err := validateCustomPasscode(raw); err != nil {
+			return w.State(), false, err
+		}
+		nextPasscode = raw
+	}
+
+	if w.opts.Vault != nil {
+		if err := w.opts.Vault.Set(VaultPasscodeKey, nextPasscode); err != nil {
+			return w.State(), false, fmt.Errorf("保存网页控制台访问口令失败：%w", err)
+		}
+	}
+
+	w.mu.Lock()
+	w.passcode = nextPasscode
+	w.passcodeReady = true
+	clear(w.sessions)
+	clear(w.tickets)
+	w.mu.Unlock()
+
+	if regenerated {
+		w.logActivity("已重置网页控制台随机访问口令并注销全部远程会话", "info")
+	} else {
+		w.logActivity("已更新网页控制台访问口令并注销旧会话", "info")
+	}
+	return w.State(), true, nil
+}
+
+// CreateLoginTicket creates a single-use, short-lived browser unlock ticket URL.
+func (w *ColabOneWebConsole) CreateLoginTicket() (ColabOneWebConsoleTicket, error) {
+	rawToken, err := generateHexToken(32)
+	if err != nil {
+		return ColabOneWebConsoleTicket{}, err
+	}
+	digest := sha256.Sum256([]byte(rawToken))
+
+	w.mu.Lock()
+	if !w.running {
+		w.mu.Unlock()
+		return ColabOneWebConsoleTicket{}, errors.New("请先开启网页控制台后再生成登录链接")
+	}
+	now := w.now()
+	w.pruneExpiredTicketsLocked(now)
+	for len(w.tickets) >= maxPendingTickets {
+		evictOldestTicketLocked(w.tickets)
+	}
+	expiresAt := now.Add(LoginTicketTTL)
+	w.tickets[digest] = colabOneWebTicket{
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
+	port := w.cfg.Port
+	publicOrigin := w.cfg.PublicOrigin
+	w.mu.Unlock()
+
+	localURL := fmt.Sprintf("http://127.0.0.1:%d/_colabone_web/redeem?ticket=%s", port, rawToken)
+	ticketURL := localURL
+	usesPublic := false
+	if publicOrigin != "" {
+		ticketURL = fmt.Sprintf("%s/_colabone_web/redeem?ticket=%s", publicOrigin, rawToken)
+		usesPublic = true
+	}
+
+	return ColabOneWebConsoleTicket{
+		URL:            ticketURL,
+		LocalURL:       localURL,
+		ExpiresAt:      expiresAt.Unix(),
+		TTLSeconds:     int(LoginTicketTTL.Seconds()),
+		UsesPublicHost: usesPublic,
+	}, nil
+}
+
+// RevokeSessions clears all active browser sessions and pending login tickets.
+func (w *ColabOneWebConsole) RevokeSessions() ColabOneWebConsoleState {
+	w.mu.Lock()
+	clear(w.sessions)
+	clear(w.tickets)
+	w.mu.Unlock()
+
+	w.logActivity("已注销全部网页控制台在线会话", "info")
+	state := w.State()
+	w.emitStateChange(state)
+	return state
+}
+
+// Close gracefully stops the HTTP server and clears in-memory sessions and tickets
+// without modifying persisted configuration.
+func (w *ColabOneWebConsole) Close() {
+	w.opMu.Lock()
+	w.mu.Lock()
+	srv := w.srv
+	listeners := w.listeners
+	done := w.srvDone
+	w.srv = nil
+	w.listeners = nil
+	w.srvDone = nil
+	w.running = false
+	w.listenAddr = ""
+	clear(w.sessions)
+	clear(w.tickets)
+	w.mu.Unlock()
+	shutdownHTTPServer(srv, listeners, done)
+	w.opMu.Unlock()
+}
+
+func (w *ColabOneWebConsole) newHTTPServer() *http.Server {
+	return &http.Server{
+		Handler:           w.handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
+func (w *ColabOneWebConsole) serveInBackground(srv *http.Server, listeners []net.Listener, done chan struct{}) {
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		errCh := make(chan error, len(listeners))
+		for idx, ln := range listeners {
+			if ln == nil {
+				continue
+			}
+			isPrimary := idx == 0
+			wg.Add(1)
+			go func(l net.Listener, primary bool) {
+				defer wg.Done()
+				err := srv.Serve(l)
+				if err == nil || errors.Is(err, http.ErrServerClosed) {
+					return
+				}
+				if primary {
+					errCh <- err
+				}
+			}(ln, isPrimary)
+		}
+		wg.Wait()
+		close(errCh)
+		var primaryErr error
+		for err := range errCh {
+			if err != nil {
+				primaryErr = err
+				break
+			}
+		}
+		if primaryErr == nil {
+			return
+		}
+		w.mu.Lock()
+		if w.srv == srv {
+			w.running = false
+			w.listenAddr = ""
+			w.srv = nil
+			w.listeners = nil
+			w.srvDone = nil
+			w.lastError = primaryErr.Error()
+			w.mu.Unlock()
+			w.logActivity(fmt.Sprintf("网页控制台服务异常退出：%s", primaryErr.Error()), "error")
+			w.emitStateChange(w.State())
+			return
+		}
+		w.mu.Unlock()
+	}()
+}
+
+func closeListeners(listeners []net.Listener) {
+	for _, ln := range listeners {
+		if ln != nil {
+			_ = ln.Close()
+		}
+	}
+}
+
+func shutdownHTTPServer(srv *http.Server, listeners []net.Listener, done <-chan struct{}) {
+	if srv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			_ = srv.Close()
+		}
+	}
+	closeListeners(listeners)
+	if done != nil {
+		<-done
+	}
+}
+
+func listenTCP(bindMode string, port int) ([]net.Listener, string, error) {
+	portStr := strconv.Itoa(port)
+	if bindMode == BindModeLAN {
+		displayAddr := net.JoinHostPort("0.0.0.0", portStr)
+		// Prefer dual-stack wildcard bind (serves both IPv4 and IPv6 on modern OSes).
+		ln, err := net.Listen("tcp", ":"+portStr)
+		if err != nil {
+			if isAddrInUseErr(err) {
+				return nil, "", errors.New("端口已被占用，请更换其他端口")
+			}
+			// Fallback to IPv4-only on hosts without IPv6 support.
+			ln4, err4 := net.Listen("tcp4", displayAddr)
+			if err4 != nil {
+				if isAddrInUseErr(err4) {
+					return nil, "", errors.New("端口已被占用，请更换其他端口")
+				}
+				return nil, "", fmt.Errorf("监听 %s 失败：%w", displayAddr, err4)
+			}
+			return []net.Listener{ln4}, displayAddr, nil
+		}
+		return []net.Listener{ln}, displayAddr, nil
+	}
+
+	displayAddr := net.JoinHostPort("127.0.0.1", portStr)
+	ln4, err := net.Listen("tcp4", displayAddr)
+	if err != nil {
+		if isAddrInUseErr(err) {
+			return nil, "", errors.New("端口已被占用，请更换其他端口")
+		}
+		return nil, "", fmt.Errorf("监听 %s 失败：%w", displayAddr, err)
+	}
+	listeners := []net.Listener{ln4}
+	// Best-effort secondary IPv6 loopback listener so http://localhost:<port>
+	// and cloudflared targets resolving localhost to [::1] work seamlessly.
+	if ln6, err6 := net.Listen("tcp6", net.JoinHostPort("::1", portStr)); err6 == nil {
+		listeners = append(listeners, ln6)
+	}
+	return listeners, displayAddr, nil
+}
+
+func isAddrInUseErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "only one usage of each socket address")
+}
+
+func normalizeBindMode(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case BindModeLoopback:
+		return BindModeLoopback, true
+	case BindModeLAN:
+		return BindModeLAN, true
+	default:
+		return "", false
+	}
+}
+
+const (
+	errInvalidPublicOriginMsg = "公网域名格式无效，请填写公网 HTTPS 固定域名（例如 https://colab.example.com）"
+	errInvalidPasscodeMsg     = "访问口令长度需在 8 至 128 个字符之间，且不能包含控制字符"
+)
+
+func normalizePublicOrigin(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(trimmed) > maxPublicOriginRunes {
+		return "", errors.New(errInvalidPublicOriginMsg)
+	}
+	if strings.ContainsAny(trimmed, "%?# \t\r\n") {
+		return "", errors.New(errInvalidPublicOriginMsg)
+	}
+
+	candidate := trimmed
+	if idx := strings.Index(candidate, "://"); idx >= 0 {
+		scheme := strings.ToLower(candidate[:idx])
+		if scheme != "https" {
+			return "", errors.New(errInvalidPublicOriginMsg)
+		}
+		candidate = "https://" + candidate[idx+3:]
+	} else {
+		candidate = "https://" + candidate
+	}
+
+	// Permit a single trailing slash from browser copy/paste while rejecting any real path.
+	if strings.HasSuffix(candidate, "/") && !strings.HasSuffix(candidate, "//") {
+		candidate = strings.TrimSuffix(candidate, "/")
+	}
+
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return "", errors.New(errInvalidPublicOriginMsg)
+	}
+	if parsed.Scheme != "https" ||
+		parsed.Opaque != "" ||
+		parsed.User != nil ||
+		parsed.Port() != "" ||
+		strings.Contains(parsed.Host, ":") ||
+		parsed.Path != "" ||
+		parsed.RawPath != "" ||
+		parsed.RawQuery != "" ||
+		parsed.ForceQuery ||
+		parsed.Fragment != "" ||
+		parsed.RawFragment != "" {
+		return "", errors.New(errInvalidPublicOriginMsg)
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" || strings.ToLower(parsed.Host) != host || len(host) > 253 {
+		return "", errors.New(errInvalidPublicOriginMsg)
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return "", errors.New(errInvalidPublicOriginMsg)
+	}
+	if host == "localhost" || hasBlockedPublicSuffix(host) || !publicFQDNRe.MatchString(host) {
+		return "", errors.New(errInvalidPublicOriginMsg)
+	}
+	return "https://" + host, nil
+}
+
+func hasBlockedPublicSuffix(host string) bool {
+	for _, suffix := range blockedPublicSuffixes {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateCustomPasscode(raw string) error {
+	if !utf8.ValidString(raw) {
+		return errors.New(errInvalidPasscodeMsg)
+	}
+	if strings.TrimSpace(raw) != raw {
+		return errors.New("访问口令首尾不能包含空白字符")
+	}
+	count := utf8.RuneCountInString(raw)
+	if count < passcodeMinRunes || count > passcodeMaxRunes {
+		return errors.New(errInvalidPasscodeMsg)
+	}
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return errors.New(errInvalidPasscodeMsg)
+		}
+	}
+	return nil
+}
+
+func generatePasscode() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("生成随机访问口令失败：%w", err)
+	}
+	return "co_web_" + base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func generateHexToken(numBytes int) (string, error) {
+	buf := make([]byte, numBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("生成随机令牌失败：%w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func generateBase64Token(numBytes int) (string, error) {
+	buf := make([]byte, numBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("生成随机令牌失败：%w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func maskPasscode(passcode string) string {
+	if passcode == "" {
+		return ""
+	}
+	runes := []rune(passcode)
+	if len(runes) >= 10 {
+		return string(runes[:4]) + "••••" + string(runes[len(runes)-4:])
+	}
+	return "••••••••"
+}
+
+func defaultListInterfaceIPs() []netip.Addr {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var addrs []netip.Addr
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		ifAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range ifAddrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil {
+				continue
+			}
+			addr, ok := netip.AddrFromSlice(ip)
+			if !ok {
+				continue
+			}
+			addr = addr.Unmap()
+			if addr.IsLoopback() || addr.IsUnspecified() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
+				continue
+			}
+			addrs = append(addrs, addr)
+		}
+	}
+	return addrs
+}
+
+func (w *ColabOneWebConsole) lanURLs(port int) []string {
+	listFn := w.listInterfaceIPs
+	if listFn == nil {
+		listFn = defaultListInterfaceIPs
+	}
+	raw := listFn()
+	if len(raw) == 0 {
+		return nil
+	}
+	seen := make(map[netip.Addr]struct{}, len(raw))
+	var v4 []netip.Addr
+	for _, addr := range raw {
+		addr = addr.Unmap()
+		if !addr.Is4() || addr.IsLoopback() || addr.IsUnspecified() || addr.IsLinkLocalUnicast() || addr.IsMulticast() {
+			continue
+		}
+		if _, dup := seen[addr]; dup {
+			continue
+		}
+		seen[addr] = struct{}{}
+		v4 = append(v4, addr)
+	}
+	if len(v4) == 0 {
+		return nil
+	}
+	sort.Slice(v4, func(i, j int) bool {
+		pi := v4[i].IsPrivate()
+		pj := v4[j].IsPrivate()
+		if pi != pj {
+			return pi
+		}
+		return v4[i].String() < v4[j].String()
+	})
+	urls := make([]string, 0, len(v4))
+	for _, addr := range v4 {
+		urls = append(urls, fmt.Sprintf("http://%s:%d", addr.String(), port))
+	}
+	return urls
+}
+
+// --- HTTP handling ---
+
+func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) {
+	setBaseSecurityHeaders(rw)
+
+	host, _, ok := parseRequestHost(r.Host)
+	if !ok {
+		http.Error(rw, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	if !w.isHostAllowed(host) {
+		http.Error(rw, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	reqPath := r.URL.Path
+	switch {
+	case reqPath == "/_colabone_web/login":
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+			errCode := r.URL.Query().Get("err")
+			if errCode == "" && w.authenticateRequest(r) {
+				rw.Header().Set("Cache-Control", "no-store")
+				http.Redirect(rw, r, "/", http.StatusFound)
+				return
+			}
+			w.handleLoginPage(rw, r, http.StatusOK, errCode)
+		case http.MethodPost:
+			w.handleLoginSubmit(rw, r)
+		default:
+			writeMethodNotAllowed(rw, "GET, HEAD, POST")
+		}
+		return
+
+	case reqPath == "/_colabone_web/redeem":
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(rw, "GET")
+			return
+		}
+		w.handleRedeem(rw, r)
+		return
+
+	case reqPath == "/_colabone_web/logout":
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(rw, "POST")
+			return
+		}
+		w.handleLogout(rw, r)
+		return
+
+	case strings.HasPrefix(reqPath, "/_colabone_web/"):
+		http.NotFound(rw, r)
+		return
+
+	case reqPath == "/api/web/capabilities":
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(rw, "GET")
+			return
+		}
+		if !w.authenticateRequest(r) {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		w.handleCapabilities(rw)
+		return
+
+	case reqPath == "/api/snapshot":
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(rw, "GET")
+			return
+		}
+		if !w.authenticateRequest(r) {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		w.handleSnapshot(rw, r)
+		return
+
+	case reqPath == "/api/command":
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(rw, "POST")
+			return
+		}
+		if !w.authenticateRequest(r) {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if !validateSameOriginRequest(r, true) {
+			writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
+			return
+		}
+		w.handleCommand(rw, r)
+		return
+
+	case strings.HasPrefix(reqPath, "/api/outputs/") && strings.HasSuffix(reqPath, "/download"):
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeMethodNotAllowed(rw, "GET, HEAD")
+			return
+		}
+		if !w.authenticateRequest(r) {
+			writeHeadAwareJSONError(rw, r, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(reqPath, "/api/outputs/"), "/download")
+		w.handleOutputDownload(rw, r, id)
+		return
+
+	case reqPath == "/api" || strings.HasPrefix(reqPath, "/api/"):
+		if !w.authenticateRequest(r) {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		writeJSONError(rw, http.StatusNotFound, "接口不存在")
+		return
+	}
+
+	// All remaining paths serve the authenticated frontend SPA.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeMethodNotAllowed(rw, "GET, HEAD")
+		return
+	}
+	if !w.authenticateRequest(r) {
+		if shouldRedirectToLogin(r) {
+			rw.Header().Set("Cache-Control", "no-store")
+			http.Redirect(rw, r, "/_colabone_web/login", http.StatusFound)
+			return
+		}
+		writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+		return
+	}
+	w.handleFrontendStatic(rw, r)
+}
+
+func setBaseSecurityHeaders(rw http.ResponseWriter) {
+	h := rw.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+}
+
+func writeMethodNotAllowed(rw http.ResponseWriter, allow string) {
+	rw.Header().Set("Allow", allow)
+	http.Error(rw, "Method Not Allowed", http.StatusMethodNotAllowed)
+}
+
+func writeJSON(rw http.ResponseWriter, status int, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.WriteHeader(status)
+	_, _ = rw.Write(data)
+}
+
+func writeJSONError(rw http.ResponseWriter, status int, message string) {
+	writeJSON(rw, status, map[string]string{"error": message})
+}
+
+func writeHeadAwareJSONError(rw http.ResponseWriter, r *http.Request, status int, message string) {
+	if r != nil && r.Method == http.MethodHead {
+		rw.Header().Set("Cache-Control", "no-store")
+		if message != "" {
+			rw.Header().Set("X-ColabOne-Error", url.PathEscape(message))
+		}
+		rw.WriteHeader(status)
+		return
+	}
+	writeJSONError(rw, status, message)
+}
+
+func parseRequestHost(rawHost string) (string, string, bool) {
+	if rawHost == "" || strings.TrimSpace(rawHost) != rawHost {
+		return "", "", false
+	}
+	for i := 0; i < len(rawHost); i++ {
+		c := rawHost[i]
+		if c <= 0x20 || c >= 0x7f {
+			return "", "", false
+		}
+	}
+	if strings.ContainsAny(rawHost, `/\@?#%`) {
+		return "", "", false
+	}
+
+	var host, port string
+	if strings.HasPrefix(rawHost, "[") {
+		if strings.HasSuffix(rawHost, "]") {
+			host = rawHost[1 : len(rawHost)-1]
+		} else {
+			var err error
+			host, port, err = net.SplitHostPort(rawHost)
+			if err != nil {
+				return "", "", false
+			}
+		}
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.Is6() || addr.Zone() != "" {
+			return "", "", false
+		}
+		host = addr.String()
+	} else if strings.Contains(rawHost, ":") {
+		var err error
+		host, port, err = net.SplitHostPort(rawHost)
+		if err != nil {
+			return "", "", false
+		}
+	} else {
+		host = rawHost
+	}
+
+	if port != "" {
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 || strconv.Itoa(p) != port {
+			return "", "", false
+		}
+	}
+
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" || len(host) > 253 {
+		return "", "", false
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if addr.Zone() != "" {
+			return "", "", false
+		}
+		return addr.Unmap().String(), port, true
+	}
+	if !dnsHostRe.MatchString(host) {
+		return "", "", false
+	}
+	return host, port, true
+}
+
+func (w *ColabOneWebConsole) isHostAllowed(host string) bool {
+	w.mu.RLock()
+	publicOrigin := w.cfg.PublicOrigin
+	bindMode := w.cfg.BindMode
+	w.mu.RUnlock()
+
+	if publicOrigin == "" {
+		return true
+	}
+
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+
+	if u, err := url.Parse(publicOrigin); err == nil {
+		if strings.EqualFold(host, u.Hostname()) {
+			return true
+		}
+	}
+
+	if bindMode == BindModeLAN {
+		if addr, err := netip.ParseAddr(host); err == nil {
+			unmapped := addr.Unmap()
+			if !unmapped.IsLoopback() {
+				listFn := w.listInterfaceIPs
+				if listFn == nil {
+					listFn = defaultListInterfaceIPs
+				}
+				for _, ifaceAddr := range listFn() {
+					if ifaceAddr.Unmap() == unmapped {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func isHTTPSRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		first := strings.TrimSpace(strings.Split(proto, ",")[0])
+		if strings.EqualFold(first, "https") {
+			return true
+		}
+	}
+	if cfVisitor := strings.ToLower(r.Header.Get("CF-Visitor")); strings.Contains(cfVisitor, `"scheme":"https"`) {
+		return true
+	}
+	return false
+}
+
+func normalizePortForScheme(scheme, port string) string {
+	switch strings.ToLower(scheme) {
+	case "https":
+		if port == "443" {
+			return ""
+		}
+	case "http":
+		if port == "80" {
+			return ""
+		}
+	}
+	return port
+}
+
+func validateSameOriginRequest(r *http.Request, requireClientHeader bool) bool {
+	if requireClientHeader && r.Header.Get(ClientHeaderName) != ClientHeaderValue {
+		return false
+	}
+
+	if sfs := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); sfs != "" {
+		if !strings.EqualFold(sfs, "same-origin") && !strings.EqualFold(sfs, "none") {
+			return false
+		}
+	}
+
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			return false
+		}
+		originHost, originPort, ok := parseRequestHost(u.Host)
+		if !ok {
+			return false
+		}
+		reqHost, reqPort, ok := parseRequestHost(r.Host)
+		if !ok {
+			return false
+		}
+		reqScheme := "http"
+		if isHTTPSRequest(r) {
+			reqScheme = "https"
+		}
+		originScheme := strings.ToLower(u.Scheme)
+		originPort = normalizePortForScheme(originScheme, originPort)
+		reqPort = normalizePortForScheme(reqScheme, reqPort)
+		if originScheme != reqScheme || originHost != reqHost || originPort != reqPort {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (w *ColabOneWebConsole) resolveLocale(r *http.Request) string {
+	if w.opts.GetLocale != nil {
+		if loc := strings.TrimSpace(w.opts.GetLocale()); loc != "" {
+			return loc
+		}
+	}
+	return localeFromAcceptLanguage(r.Header.Get("Accept-Language"))
+}
+
+func (w *ColabOneWebConsole) handleLoginPage(rw http.ResponseWriter, r *http.Request, status int, errCode string) {
+	nonce, err := generateBase64Token(16)
+	if err != nil {
+		nonce = "colabone"
+	}
+	locale := w.resolveLocale(r)
+	htmlDoc := renderColabOneWebLoginPage(locale, errCode, nonce)
+
+	csp := fmt.Sprintf(
+		"default-src 'none'; style-src 'nonce-%s'; script-src 'nonce-%s'; img-src data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+		nonce, nonce,
+	)
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Content-Security-Policy", csp)
+	rw.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = io.WriteString(rw, htmlDoc)
+	}
+}
+
+func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.Request) {
+	_, copySet := resolveWebLoginCopy(w.resolveLocale(r))
+	if !validateSameOriginRequest(r, true) {
+		writeJSONError(rw, http.StatusForbidden, copySet.forbiddenError)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(rw, r.Body, maxLoginBodyBytes)
+	var body struct {
+		Passcode string `json:"passcode"`
+	}
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSONError(rw, http.StatusRequestEntityTooLarge, copySet.bodyTooLargeError)
+			return
+		}
+		writeJSONError(rw, http.StatusBadRequest, copySet.badRequestError)
+		return
+	}
+
+	ip := clientIPForRateLimit(r)
+	now := w.now()
+
+	w.mu.Lock()
+	retryAfter := w.checkRateLimitLocked(ip, now)
+	expected := w.passcode
+	w.mu.Unlock()
+
+	if retryAfter > 0 {
+		rw.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeJSON(rw, http.StatusTooManyRequests, map[string]any{
+			"error":       copySet.rateLimitError,
+			"retry_after": retryAfter,
+		})
+		return
+	}
+
+	matched := expected != "" && subtle.ConstantTimeCompare([]byte(body.Passcode), []byte(expected)) == 1
+	if !matched {
+		w.mu.Lock()
+		w.recordLoginFailureLocked(ip, now)
+		w.mu.Unlock()
+		writeJSONError(rw, http.StatusUnauthorized, copySet.invalidPasscodeError)
+		return
+	}
+
+	token, err := generateBase64Token(32)
+	if err != nil {
+		writeJSONError(rw, http.StatusInternalServerError, copySet.sessionError)
+		return
+	}
+
+	w.mu.Lock()
+	delete(w.loginFailures, ip)
+	w.storeSessionLocked(token, now)
+	w.mu.Unlock()
+
+	setSessionCookie(rw, r, token, now)
+	w.emitStateChange(w.State())
+	writeJSON(rw, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Referrer-Policy", "no-referrer")
+
+	rawTicket := strings.TrimSpace(r.URL.Query().Get("ticket"))
+	if rawTicket == "" {
+		w.handleLoginPage(rw, r, http.StatusUnauthorized, "ticket_expired")
+		return
+	}
+	digest := sha256.Sum256([]byte(rawTicket))
+	now := w.now()
+
+	w.mu.Lock()
+	w.pruneExpiredTicketsLocked(now)
+	ticket, exists := w.tickets[digest]
+	if exists {
+		delete(w.tickets, digest)
+	}
+	w.mu.Unlock()
+
+	if !exists || !now.Before(ticket.expiresAt) {
+		w.handleLoginPage(rw, r, http.StatusUnauthorized, "ticket_expired")
+		return
+	}
+
+	token, err := generateBase64Token(32)
+	if err != nil {
+		_, copySet := resolveWebLoginCopy(w.resolveLocale(r))
+		writeJSONError(rw, http.StatusInternalServerError, copySet.sessionError)
+		return
+	}
+
+	w.mu.Lock()
+	w.storeSessionLocked(token, now)
+	w.mu.Unlock()
+
+	setSessionCookie(rw, r, token, now)
+	w.emitStateChange(w.State())
+	http.Redirect(rw, r, "/", http.StatusFound)
+}
+
+func (w *ColabOneWebConsole) handleLogout(rw http.ResponseWriter, r *http.Request) {
+	if !validateSameOriginRequest(r, true) {
+		writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
+		return
+	}
+
+	removed := false
+	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
+		digest := sha256.Sum256([]byte(c.Value))
+		w.mu.Lock()
+		if _, ok := w.sessions[digest]; ok {
+			delete(w.sessions, digest)
+			removed = true
+		}
+		w.mu.Unlock()
+	}
+
+	clearSessionCookie(rw, r)
+	if removed {
+		w.emitStateChange(w.State())
+	}
+	writeJSON(rw, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (w *ColabOneWebConsole) handleCapabilities(rw http.ResponseWriter) {
+	writeJSON(rw, http.StatusOK, ColabOneWebCapabilities{
+		Runtime:                   "web",
+		Version:                   w.opts.AppVersion,
+		CanOpenNativeCanvasWindow: false,
+		CanStandaloneLogWindow:    false,
+		CanManageWebConsole:       false,
+		CanManageCloseBehavior:    false,
+		CanManageShortcuts:        false,
+		CanSelfUpdate:             false,
+		CanMigrate:                false,
+		CanRevealHostSecrets:      false,
+		CanLoopbackOAuth:          false,
+		CanDownloadOutput:         true,
+	})
+}
+
+func (w *ColabOneWebConsole) handleSnapshot(rw http.ResponseWriter, r *http.Request) {
+	if w.opts.CallBridge == nil {
+		writeJSONError(rw, http.StatusServiceUnavailable, "控制器桥接未初始化")
+		return
+	}
+	raw, err := w.opts.CallBridge(r.Context(), "snapshot", nil)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeJSONError(rw, http.StatusGatewayTimeout, err.Error())
+			return
+		}
+		writeJSONError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	rawBytes := []byte(raw)
+	sum := sha256.Sum256(rawBytes)
+	etag := fmt.Sprintf(`"sha256-%x"`, sum)
+
+	rw.Header().Set("ETag", etag)
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Vary", "Accept-Encoding")
+
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		rw.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if len(rawBytes) > gzipMinBytes && acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		var compressed bytes.Buffer
+		gz := gzip.NewWriter(&compressed)
+		if _, wErr := gz.Write(rawBytes); wErr == nil && gz.Close() == nil {
+			rw.Header().Set("Content-Encoding", "gzip")
+			rw.Header().Set("Content-Length", strconv.Itoa(compressed.Len()))
+			rw.WriteHeader(http.StatusOK)
+			_, _ = rw.Write(compressed.Bytes())
+			return
+		}
+	}
+
+	rw.Header().Set("Content-Length", strconv.Itoa(len(rawBytes)))
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write(rawBytes)
+}
+
+func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Request) {
+	if w.opts.CallBridge == nil {
+		writeJSONError(rw, http.StatusServiceUnavailable, "控制器桥接未初始化")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(rw, r.Body, maxCommandBodyBytes)
+	var req struct {
+		Action  string         `json:"action"`
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSONError(rw, http.StatusRequestEntityTooLarge, "请求体超出限制")
+			return
+		}
+		writeJSONError(rw, http.StatusBadRequest, "命令请求格式无效")
+		return
+	}
+
+	action := strings.TrimSpace(req.Action)
+	if action == "" {
+		writeJSONError(rw, http.StatusBadRequest, "缺少命令名称")
+		return
+	}
+
+	if reason, blocked := blockedWebCommands[action]; blocked {
+		writeJSONError(rw, http.StatusForbidden, reason)
+		return
+	}
+
+	res, err := w.opts.CallBridge(r.Context(), action, req.Payload)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeJSONError(rw, http.StatusGatewayTimeout, err.Error())
+			return
+		}
+		writeJSONError(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.WriteHeader(http.StatusOK)
+	if strings.TrimSpace(res) == "" {
+		_, _ = io.WriteString(rw, "{}")
+		return
+	}
+	_, _ = io.WriteString(rw, res)
+}
+
+func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *http.Request, id string) {
+	if !outputIDRe.MatchString(id) {
+		writeHeadAwareJSONError(rw, r, http.StatusBadRequest, "输出文件 ID 无效")
+		return
+	}
+	if w.opts.CallBridge == nil {
+		writeHeadAwareJSONError(rw, r, http.StatusServiceUnavailable, "控制器桥接未初始化")
+		return
+	}
+
+	raw, err := w.opts.CallBridge(r.Context(), "comfyui.output.asset", map[string]any{"id": id, "offset": int64(0)})
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeHeadAwareJSONError(rw, r, http.StatusGatewayTimeout, err.Error())
+			return
+		}
+		writeHeadAwareJSONError(rw, r, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	var chunk colabOneWebMediaChunk
+	if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
+		writeHeadAwareJSONError(rw, r, http.StatusBadGateway, "输出文件元数据无效")
+		return
+	}
+
+	ext := strings.ToLower(strings.TrimSpace(chunk.Extension))
+	mimeType, extOK := allowedOutputMIME[ext]
+	digest := strings.ToLower(strings.TrimSpace(chunk.SHA256))
+	allowEmptyDigest := chunk.Source == "drive" && digest == ""
+	if chunk.Size <= 0 || chunk.Size > maxOutputSizeBytes || !extOK || (!allowEmptyDigest && !sha256HexRe.MatchString(digest)) {
+		writeHeadAwareJSONError(rw, r, http.StatusBadGateway, "输出文件元数据未通过安全校验")
+		return
+	}
+
+	totalSize := chunk.Size
+	filename := fmt.Sprintf("ColabOne-%s.%s", id[:8], ext)
+	if r.Method == http.MethodHead {
+		writeOutputDownloadHeaders(rw, mimeType, filename, totalSize)
+		rw.WriteHeader(http.StatusOK)
+		return
+	}
+	bufferInMemory := totalSize <= maxOutputBufferBytes
+
+	var buf bytes.Buffer
+	if bufferInMemory {
+		buf.Grow(int(totalSize))
+	}
+
+	hasher := sha256.New()
+	var offset int64
+	headersWritten := false
+	flusher, _ := rw.(http.Flusher)
+
+	for {
+		if chunk.Offset != offset || chunk.Size != totalSize || strings.ToLower(strings.TrimSpace(chunk.SHA256)) != digest {
+			if !headersWritten {
+				writeJSONError(rw, http.StatusBadGateway, "输出文件传输元数据发生变化")
+			} else {
+				w.logActivity("输出文件流式下载元数据不一致，已中止传输", "warn")
+			}
+			return
+		}
+
+		data, decErr := base64.StdEncoding.DecodeString(chunk.Data)
+		if decErr != nil || len(data) == 0 || len(data) > maxOutputChunkBytes || offset+int64(len(data)) > totalSize {
+			if !headersWritten {
+				writeJSONError(rw, http.StatusBadGateway, "输出文件分片数据不完整")
+			} else {
+				w.logActivity("输出文件流式下载分片校验失败，已中止传输", "warn")
+			}
+			return
+		}
+
+		hasher.Write(data)
+		nextOffset := offset + int64(len(data))
+
+		if bufferInMemory {
+			_, _ = buf.Write(data)
+		} else {
+			if !headersWritten {
+				writeOutputDownloadHeaders(rw, mimeType, filename, totalSize)
+				rw.WriteHeader(http.StatusOK)
+				headersWritten = true
+			}
+			// Verify SHA-256 before writing the final chunk so a mismatch results
+			// in an incomplete body rather than silently completing Content-Length.
+			if nextOffset == totalSize && digest != "" && hex.EncodeToString(hasher.Sum(nil)) != digest {
+				w.logActivity("输出文件流式下载 SHA-256 校验失败，已中止传输", "warn")
+				return
+			}
+			if _, wErr := rw.Write(data); wErr != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+
+		offset = nextOffset
+		if offset == totalSize {
+			break
+		}
+
+		nextRaw, callErr := w.opts.CallBridge(r.Context(), "comfyui.output.asset", map[string]any{"id": id, "offset": offset})
+		if callErr != nil {
+			if !headersWritten {
+				if errors.Is(callErr, context.DeadlineExceeded) {
+					writeJSONError(rw, http.StatusGatewayTimeout, callErr.Error())
+				} else {
+					writeJSONError(rw, http.StatusBadGateway, callErr.Error())
+				}
+			}
+			return
+		}
+		var nextChunk colabOneWebMediaChunk
+		if err := json.Unmarshal([]byte(nextRaw), &nextChunk); err != nil {
+			if !headersWritten {
+				writeJSONError(rw, http.StatusBadGateway, "输出文件后续分片格式无效")
+			}
+			return
+		}
+		chunk = nextChunk
+	}
+
+	if bufferInMemory {
+		if digest != "" && hex.EncodeToString(hasher.Sum(nil)) != digest {
+			writeJSONError(rw, http.StatusBadGateway, "输出文件完整性校验失败")
+			return
+		}
+		writeOutputDownloadHeaders(rw, mimeType, filename, totalSize)
+		rw.WriteHeader(http.StatusOK)
+		_, _ = rw.Write(buf.Bytes())
+	}
+}
+
+func writeOutputDownloadHeaders(rw http.ResponseWriter, mimeType, filename string, size int64) {
+	h := rw.Header()
+	h.Set("Content-Type", mimeType)
+	h.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	h.Set("Content-Length", strconv.FormatInt(size, 10))
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "no-store")
+}
+
+func (w *ColabOneWebConsole) handleFrontendStatic(rw http.ResponseWriter, r *http.Request) {
+	if hasUnsafeStaticPath(r.URL.Path, r.URL.RawPath) {
+		http.NotFound(rw, r)
+		return
+	}
+
+	var fsys fs.FS
+	if w.opts.FrontendFS != nil {
+		fsys = w.opts.FrontendFS()
+	}
+	if fsys == nil {
+		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		rw.Header().Set("Cache-Control", "no-store")
+		rw.WriteHeader(http.StatusServiceUnavailable)
+		if r.Method != http.MethodHead {
+			_, _ = io.WriteString(rw, "前端静态资源尚未就绪，请稍后再试。")
+		}
+		return
+	}
+
+	cleanPath := path.Clean("/" + r.URL.Path)
+	rel := strings.TrimPrefix(cleanPath, "/")
+	if rel == "" {
+		rel = "index.html"
+	}
+
+	f, info, found := openStaticFile(fsys, rel)
+	isIndexFallback := false
+	if !found {
+		if path.Ext(cleanPath) != "" {
+			http.NotFound(rw, r)
+			return
+		}
+		f, info, found = openStaticFile(fsys, "index.html")
+		if !found {
+			http.NotFound(rw, r)
+			return
+		}
+		rel = "index.html"
+		isIndexFallback = true
+	}
+	defer f.Close()
+
+	if ct := detectStaticMIME(rel); ct != "" {
+		rw.Header().Set("Content-Type", ct)
+	}
+	if !isIndexFallback && strings.HasPrefix(cleanPath, "/assets/") {
+		rw.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		rw.Header().Set("Cache-Control", "no-cache")
+	}
+
+	if rs, ok := f.(io.ReadSeeker); ok {
+		http.ServeContent(rw, r, info.Name(), info.ModTime(), rs)
+		return
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	rw.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = rw.Write(data)
+	}
+}
+
+func openStaticFile(fsys fs.FS, rel string) (fs.File, fs.FileInfo, bool) {
+	if rel == "" || strings.HasPrefix(rel, "/") || strings.Contains(rel, "..") {
+		return nil, nil, false
+	}
+	f, err := fsys.Open(rel)
+	if err != nil {
+		return nil, nil, false
+	}
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		_ = f.Close()
+		return nil, nil, false
+	}
+	return f, info, true
+}
+
+func hasUnsafeStaticPath(urlPath, rawPath string) bool {
+	check := func(p string) bool {
+		if strings.ContainsRune(p, 0) || strings.Contains(p, `\`) {
+			return true
+		}
+		for _, seg := range strings.Split(p, "/") {
+			if seg == "" {
+				continue
+			}
+			if seg == "." || seg == ".." || strings.HasPrefix(seg, ".") {
+				return true
+			}
+		}
+		return false
+	}
+	if check(urlPath) {
+		return true
+	}
+	if rawPath != "" {
+		if check(rawPath) {
+			return true
+		}
+		if decoded, err := url.PathUnescape(rawPath); err == nil && check(decoded) {
+			return true
+		}
+	}
+	return false
+}
+
+func detectStaticMIME(rel string) string {
+	ext := strings.ToLower(path.Ext(rel))
+	if ct, ok := staticMIMEByExt[ext]; ok {
+		return ct
+	}
+	return mime.TypeByExtension(ext)
+}
+
+func shouldRedirectToLogin(r *http.Request) bool {
+	if r.URL.Path == "/" || path.Ext(r.URL.Path) == "" {
+		return true
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return strings.Contains(accept, "text/html")
+}
+
+// --- Session, ticket, and rate-limiter helpers ---
+
+func (w *ColabOneWebConsole) authenticateRequest(r *http.Request) bool {
+	c, err := r.Cookie(SessionCookieName)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	digest := sha256.Sum256([]byte(c.Value))
+	now := w.now()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	s, ok := w.sessions[digest]
+	if !ok {
+		return false
+	}
+	if !now.Before(s.expiresAt) {
+		delete(w.sessions, digest)
+		return false
+	}
+	s.lastSeen = now
+	w.sessions[digest] = s
+	return true
+}
+
+func (w *ColabOneWebConsole) storeSessionLocked(rawToken string, now time.Time) {
+	w.pruneExpiredSessionsLocked(now)
+	for len(w.sessions) >= maxActiveSessions {
+		evictOldestSessionLocked(w.sessions)
+	}
+	digest := sha256.Sum256([]byte(rawToken))
+	w.sessions[digest] = colabOneWebSession{
+		createdAt: now,
+		lastSeen:  now,
+		expiresAt: now.Add(SessionTTL),
+	}
+}
+
+func (w *ColabOneWebConsole) pruneExpiredSessionsLocked(now time.Time) {
+	for k, s := range w.sessions {
+		if !now.Before(s.expiresAt) {
+			delete(w.sessions, k)
+		}
+	}
+}
+
+func evictOldestSessionLocked(sessions map[[32]byte]colabOneWebSession) {
+	var oldestKey [32]byte
+	var oldest colabOneWebSession
+	first := true
+	for k, s := range sessions {
+		if first || s.lastSeen.Before(oldest.lastSeen) || (s.lastSeen.Equal(oldest.lastSeen) && s.createdAt.Before(oldest.createdAt)) {
+			oldestKey = k
+			oldest = s
+			first = false
+		}
+	}
+	if !first {
+		delete(sessions, oldestKey)
+	}
+}
+
+func (w *ColabOneWebConsole) pruneExpiredTicketsLocked(now time.Time) {
+	for k, t := range w.tickets {
+		if !now.Before(t.expiresAt) {
+			delete(w.tickets, k)
+		}
+	}
+}
+
+func evictOldestTicketLocked(tickets map[[32]byte]colabOneWebTicket) {
+	var oldestKey [32]byte
+	var oldest colabOneWebTicket
+	first := true
+	for k, t := range tickets {
+		if first || t.createdAt.Before(oldest.createdAt) {
+			oldestKey = k
+			oldest = t
+			first = false
+		}
+	}
+	if !first {
+		delete(tickets, oldestKey)
+	}
+}
+
+func clientIPForRateLimit(r *http.Request) string {
+	remoteHost := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(remoteHost); err == nil {
+		remoteHost = h
+	}
+	remoteHost = strings.Trim(remoteHost, "[]")
+	if addr, err := netip.ParseAddr(remoteHost); err == nil {
+		addr = addr.Unmap()
+		if addr.IsLoopback() {
+			if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
+				if parsedCF, cfErr := netip.ParseAddr(cfIP); cfErr == nil && parsedCF.Zone() == "" {
+					return parsedCF.Unmap().String()
+				}
+			}
+		}
+		return addr.String()
+	}
+	if remoteHost == "" {
+		return "unknown"
+	}
+	return remoteHost
+}
+
+func (w *ColabOneWebConsole) checkRateLimitLocked(ip string, now time.Time) int {
+	cutoff := now.Add(-loginRateLimitWindow)
+	times := pruneTimestamps(w.loginFailures[ip], cutoff)
+	if len(times) == 0 {
+		delete(w.loginFailures, ip)
+		return 0
+	}
+	w.loginFailures[ip] = times
+	if len(times) < loginRateLimitMaxFailures {
+		return 0
+	}
+	wait := times[0].Add(loginRateLimitWindow).Sub(now)
+	secs := int(math.Ceil(wait.Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
+}
+
+func (w *ColabOneWebConsole) recordLoginFailureLocked(ip string, now time.Time) {
+	cutoff := now.Add(-loginRateLimitWindow)
+	times := pruneTimestamps(w.loginFailures[ip], cutoff)
+	times = append(times, now)
+	if len(w.loginFailures) >= maxRateLimitIPs {
+		for k, v := range w.loginFailures {
+			pruned := pruneTimestamps(v, cutoff)
+			if len(pruned) == 0 {
+				delete(w.loginFailures, k)
+			} else {
+				w.loginFailures[k] = pruned
+			}
+		}
+		// If still full, evict an arbitrary stale-oldest entry so map stays bounded.
+		if len(w.loginFailures) >= maxRateLimitIPs {
+			var oldestIP string
+			var oldestTime time.Time
+			first := true
+			for k, v := range w.loginFailures {
+				last := v[len(v)-1]
+				if first || last.Before(oldestTime) {
+					oldestIP = k
+					oldestTime = last
+					first = false
+				}
+			}
+			if !first {
+				delete(w.loginFailures, oldestIP)
+			}
+		}
+	}
+	w.loginFailures[ip] = times
+}
+
+func pruneTimestamps(times []time.Time, cutoff time.Time) []time.Time {
+	if len(times) == 0 {
+		return nil
+	}
+	dst := times[:0]
+	for _, ts := range times {
+		if ts.After(cutoff) {
+			dst = append(dst, ts)
+		}
+	}
+	return dst
+}
+
+func setSessionCookie(rw http.ResponseWriter, r *http.Request, token string, now time.Time) {
+	http.SetCookie(rw, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  now.Add(SessionTTL),
+		MaxAge:   int(SessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   isHTTPSRequest(r),
+	})
+}
+
+func clearSessionCookie(rw http.ResponseWriter, r *http.Request) {
+	http.SetCookie(rw, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   isHTTPSRequest(r),
+	})
+}
+
+func etagMatches(ifNoneMatch, etag string) bool {
+	if strings.TrimSpace(ifNoneMatch) == "" {
+		return false
+	}
+	for _, part := range strings.Split(ifNoneMatch, ",") {
+		cand := strings.TrimSpace(part)
+		if cand == "*" {
+			return true
+		}
+		cand = strings.TrimPrefix(cand, "W/")
+		if cand == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func acceptsGzip(acceptEncoding string) bool {
+	if acceptEncoding == "" {
+		return false
+	}
+	for _, item := range strings.Split(acceptEncoding, ",") {
+		parts := strings.Split(strings.TrimSpace(item), ";")
+		enc := strings.ToLower(strings.TrimSpace(parts[0]))
+		if enc != "gzip" {
+			continue
+		}
+		rejected := false
+		for _, param := range parts[1:] {
+			kv := strings.SplitN(strings.TrimSpace(param), "=", 2)
+			if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), "q") {
+				if q, err := strconv.ParseFloat(strings.TrimSpace(kv[1]), 64); err == nil && q <= 0 {
+					rejected = true
+				}
+			}
+		}
+		if !rejected {
+			return true
+		}
+	}
+	return false
+}

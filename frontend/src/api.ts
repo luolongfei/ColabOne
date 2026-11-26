@@ -21,8 +21,44 @@ import {
   type ColabOneMigrationUIPrefs,
   type ColabOneRollbackVersion,
   type ColabOneUpdateState,
+  type ColabOneWebConsoleState,
+  type ColabOneWebConsoleTicket,
+  type ColabOneWebConsoleUpdateRequest,
 } from "./colabOneBridge";
+import {
+  COLABONE_WEB_AUTH_REQUIRED_EVENT,
+  colabOneRuntimeCapabilities,
+  colabOneWebCommandRaw,
+  colabOneWebDownloadOutput,
+  colabOneWebLogout,
+  colabOneWebOpenDeferredTab,
+  colabOneWebOpenExternalURL,
+  colabOneWebSessionExpired,
+  colabOneWebSnapshotRaw,
+  createColabOneDefaultWebConsoleState,
+  fetchColabOneWebCapabilities,
+  isColabOneDesktopRuntime,
+  isColabOneWebRuntime,
+  normalizeColabOneWebConsoleState,
+  validateColabOneWebCanvasURL,
+  validateColabOneWebExternalURL,
+  type ColabOneWebCapabilities,
+} from "./colabOneWebConsole";
 import type { ColabOneSnapshot } from "./types";
+
+export {
+  COLABONE_WEB_AUTH_REQUIRED_EVENT,
+  colabOneRuntimeCapabilities,
+  colabOneWebLogout,
+  colabOneWebOpenDeferredTab,
+  colabOneWebSessionExpired,
+  createColabOneDefaultWebConsoleState,
+  fetchColabOneWebCapabilities,
+  isColabOneDesktopRuntime,
+  isColabOneWebRuntime,
+  normalizeColabOneWebConsoleState,
+  validateColabOneWebExternalURL,
+};
 
 export type {
   ColabOneCloseBehaviorState,
@@ -44,12 +80,19 @@ export type {
   ColabOneMigrationUIPrefs,
   ColabOneRollbackVersion,
   ColabOneUpdateState,
+  ColabOneWebCapabilities,
+  ColabOneWebConsoleState,
+  ColabOneWebConsoleTicket,
+  ColabOneWebConsoleUpdateRequest,
 };
 
 export type ColabOneCloseBehavior = "ask" | "quit" | "background";
 export type ColabOneCloseAction = "quit" | "background";
 
 export async function colabOneSnapshotRaw(): Promise<string> {
+  if (!isColabOneDesktopRuntime()) {
+    return colabOneWebSnapshotRaw();
+  }
   return ColabOneDesktop.snapshot();
 }
 
@@ -61,19 +104,66 @@ export async function colabOneCommand<T = any>(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<T> {
+  if (!isColabOneDesktopRuntime()) {
+    return JSON.parse(await colabOneWebCommandRaw(action, payload)) as T;
+  }
   return JSON.parse(await ColabOneDesktop.command({ action, payload })) as T;
 }
 
-export const colabOneOpenURL = (url: string) => ColabOneDesktop.openURL(url);
-export const colabOneReadClipboard = () => ColabOneDesktop.readClipboard();
-export const colabOneWriteClipboard = (value: string) =>
-  ColabOneDesktop.writeClipboard(value);
-export const colabOneExportWorkflowOutput = (id: string) =>
-  ColabOneDesktop.exportWorkflowOutput(id);
-export const colabOneOpenComfyCanvas = (target: "window" | "browser") =>
-  ColabOneDesktop.openComfyCanvas(target);
-export const colabOneSetLocale = (value: string) =>
-  ColabOneDesktop.setLocale(value);
+export async function colabOneOpenURL(url: string): Promise<void> {
+  if (!isColabOneDesktopRuntime()) {
+    colabOneWebOpenExternalURL(url);
+    return;
+  }
+  return ColabOneDesktop.openURL(url);
+}
+
+export async function colabOneReadClipboard(): Promise<string> {
+  if (!isColabOneDesktopRuntime()) {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+      return navigator.clipboard.readText();
+    }
+    throw new Error("Clipboard read unavailable in this browser");
+  }
+  return ColabOneDesktop.readClipboard();
+}
+
+export async function colabOneWriteClipboard(value: string): Promise<void> {
+  if (!isColabOneDesktopRuntime()) {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      return navigator.clipboard.writeText(value);
+    }
+    throw new Error("Clipboard write unavailable in this browser");
+  }
+  return ColabOneDesktop.writeClipboard(value);
+}
+
+export async function colabOneExportWorkflowOutput(id: string): Promise<string> {
+  if (!isColabOneDesktopRuntime()) {
+    return colabOneWebDownloadOutput(id);
+  }
+  return ColabOneDesktop.exportWorkflowOutput(id);
+}
+
+export async function colabOneOpenComfyCanvas(
+  target: "window" | "browser",
+): Promise<void> {
+  if (!isColabOneDesktopRuntime()) {
+    await colabOneWebOpenDeferredTab(async () => {
+      const res = await colabOneCommand<{ url?: string }>("comfyui.canvas.url");
+      return typeof res?.url === "string" ? res.url : "";
+    }, validateColabOneWebCanvasURL);
+    return;
+  }
+  return ColabOneDesktop.openComfyCanvas(target);
+}
+
+export async function colabOneSetLocale(value: string): Promise<void> {
+  if (!isColabOneDesktopRuntime()) {
+    return;
+  }
+  return ColabOneDesktop.setLocale(value);
+}
 
 export const colabOneGetMigrationExportSummary = (
   uiPrefs: ColabOneMigrationUIPrefs | null,
@@ -99,6 +189,9 @@ export const colabOneCancelMigrationSession = (sessionID = "") =>
   ColabOneDesktop.cancelMigrationSession(sessionID);
 
 export async function colabOneGetLogDrawerState(): Promise<ColabOneLogDrawerState> {
+  if (!isColabOneDesktopRuntime()) {
+    return { open: false, standalone: false, expanded: false, delta: 0 };
+  }
   try {
     const res = await ColabOneDesktop.getLogDrawerState();
     if (res && typeof res.open === "boolean") {
@@ -119,6 +212,9 @@ export async function colabOneSetLogDrawer(
   open: boolean,
   width: number,
 ): Promise<ColabOneLogDrawerState> {
+  if (!isColabOneDesktopRuntime()) {
+    return { open, standalone: false, expanded: false, delta: 0 };
+  }
   try {
     const res = await ColabOneDesktop.setLogDrawer(open, Math.round(width));
     if (res && typeof res.open === "boolean") {
@@ -164,6 +260,9 @@ function fallbackColabOneUpdateState(): ColabOneUpdateState {
 }
 
 export async function colabOneGetUpdateState(): Promise<ColabOneUpdateState> {
+  if (!isColabOneDesktopRuntime()) {
+    return fallbackColabOneUpdateState();
+  }
   try {
     const res = await ColabOneDesktop.getUpdateState();
     if (res && typeof res.status === "string") {
@@ -275,6 +374,9 @@ function fallbackColabOneCloseBehaviorState(): ColabOneCloseBehaviorState {
 }
 
 export async function colabOneGetCloseBehavior(): Promise<ColabOneCloseBehaviorState> {
+  if (!isColabOneDesktopRuntime()) {
+    return fallbackColabOneCloseBehaviorState();
+  }
   try {
     const res = await ColabOneDesktop.getCloseBehavior();
     if (res && typeof res.behavior === "string") {
@@ -351,6 +453,79 @@ export function colabOneOnCloseBehavior(
         can_background:
           typeof st?.can_background === "boolean" ? st.can_background : true,
       }),
+    );
+    return typeof unsubscribe === "function" ? unsubscribe : () => {};
+  } catch {
+    return () => {};
+  }
+}
+
+export async function colabOneGetWebConsoleState(): Promise<ColabOneWebConsoleState> {
+  if (!isColabOneDesktopRuntime()) {
+    return createColabOneDefaultWebConsoleState();
+  }
+  try {
+    const res = await ColabOneDesktop.getWebConsoleState();
+    return normalizeColabOneWebConsoleState(res);
+  } catch {
+    // Non-desktop or offline mock runtime.
+  }
+  return createColabOneDefaultWebConsoleState();
+}
+
+const DESKTOP_ONLY_WEB_ERROR = "该桌面专属操作仅支持在宿主机客户端执行";
+
+export async function colabOneUpdateWebConsole(
+  req: ColabOneWebConsoleUpdateRequest,
+): Promise<ColabOneWebConsoleState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  const res = await ColabOneDesktop.updateWebConsole(req);
+  return normalizeColabOneWebConsoleState(res);
+}
+
+export async function colabOneGetWebConsolePasscode(): Promise<string> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.getWebConsolePasscode();
+}
+
+export async function colabOneSetWebConsolePasscode(
+  passcode: string,
+): Promise<ColabOneWebConsoleState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  const res = await ColabOneDesktop.setWebConsolePasscode(passcode);
+  return normalizeColabOneWebConsoleState(res);
+}
+
+export async function colabOneCreateWebConsoleLoginTicket(): Promise<ColabOneWebConsoleTicket> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.createWebConsoleLoginTicket();
+}
+
+export async function colabOneRevokeWebConsoleSessions(): Promise<ColabOneWebConsoleState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  const res = await ColabOneDesktop.revokeWebConsoleSessions();
+  return normalizeColabOneWebConsoleState(res);
+}
+
+export function colabOneOnWebConsoleState(
+  listener: (state: ColabOneWebConsoleState) => void,
+): () => void {
+  if (!hasMyGoEventBridge()) {
+    return () => {};
+  }
+  try {
+    const unsubscribe = events.colaboneWebConsole.on((st) =>
+      listener(normalizeColabOneWebConsoleState(st)),
     );
     return typeof unsubscribe === "function" ? unsubscribe : () => {};
   } catch {

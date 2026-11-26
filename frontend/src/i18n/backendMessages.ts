@@ -13448,6 +13448,248 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+  // === Remote Web Console dynamic logs & errors ===
+  {
+    re: /^网页控制台已启动，监听 (.+)$/,
+    format: (m, loc) => {
+      const addr = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Web Console started on ${addr}`;
+        case "zh-TW":
+          return `網頁主控台已啟動，監聽 ${addr}`;
+        case "zh-HK":
+          return `網頁控制台已啟動，監聽 ${addr}`;
+        case "ja-JP":
+          return `Web コンソールを起動しました（待受: ${addr}）`;
+        case "ko-KR":
+          return `웹 콘솔이 시작되었습니다 (수신: ${addr})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^网页控制台已切换监听至 (.+)$/,
+    format: (m, loc) => {
+      const addr = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Web Console switched listener to ${addr}`;
+        case "zh-TW":
+          return `網頁主控台已切換監聽至 ${addr}`;
+        case "zh-HK":
+          return `網頁控制台已切換監聽至 ${addr}`;
+        case "ja-JP":
+          return `Web コンソールの待受先を ${addr} に切り替えました`;
+        case "ko-KR":
+          return `웹 콘솔 수신 주소를 ${addr}(으)로 전환했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^监听 ([^ ]+) 失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const addr = m[1];
+      const detail = translateInner(m[2], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to listen on ${addr}: ${detail}`;
+        case "zh-TW":
+          return `監聽 ${addr} 失敗：${detail}`;
+        case "zh-HK":
+          return `監聽 ${addr} 失敗：${detail}`;
+        case "ja-JP":
+          return `${addr} の待受に失敗しました：${detail}`;
+        case "ko-KR":
+          return `${addr} 수신 시작 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^网页控制台启动失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to start Web Console: ${detail}`;
+        case "zh-TW":
+          return `網頁主控台啟動失敗：${detail}`;
+        case "zh-HK":
+          return `網頁控制台啟動失敗：${detail}`;
+        case "ja-JP":
+          return `Web コンソールの起動に失敗しました：${detail}`;
+        case "ko-KR":
+          return `웹 콘솔 시작 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^切换网页控制台端口失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to change Web Console port: ${detail}`;
+        case "zh-TW":
+          return `切換網頁主控台連接埠失敗：${detail}`;
+        case "zh-HK":
+          return `切換網頁控制台連接埠失敗：${detail}`;
+        case "ja-JP":
+          return `Web コンソールのポート変更に失敗しました：${detail}`;
+        case "ko-KR":
+          return `웹 콘솔 포트 변경 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^切换网页控制台监听模式失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to change Web Console listen scope: ${detail}`;
+        case "zh-TW":
+          return `切換網頁主控台監聽範圍失敗：${detail}`;
+        case "zh-HK":
+          return `切換網頁控制台監聽範圍失敗：${detail}`;
+        case "ja-JP":
+          return `Web コンソールの待受範囲変更に失敗しました：${detail}`;
+        case "ko-KR":
+          return `웹 콘솔 수신 범위 변경 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^网页控制台服务异常退出[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Web Console server exited unexpectedly: ${detail}`;
+        case "zh-TW":
+          return `網頁主控台服務異常結束：${detail}`;
+        case "zh-HK":
+          return `網頁控制台服務異常退出：${detail}`;
+        case "ja-JP":
+          return `Web コンソールサーバーが予期せず終了しました：${detail}`;
+        case "ko-KR":
+          return `웹 콘솔 서버가 예기치 않게 종료되었습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^读取网页控制台访问口令失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to read Web Console access passcode: ${detail}`;
+        case "zh-TW":
+          return `讀取網頁主控台存取通行碼失敗：${detail}`;
+        case "zh-HK":
+          return `讀取網頁控制台存取通行碼失敗：${detail}`;
+        case "ja-JP":
+          return `Web コンソールのアクセスパスコード読み取りに失敗しました：${detail}`;
+        case "ko-KR":
+          return `웹 콘솔 접속 암호를 읽지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^保存网页控制台访问口令失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to save Web Console access passcode: ${detail}`;
+        case "zh-TW":
+          return `儲存網頁主控台存取通行碼失敗：${detail}`;
+        case "zh-HK":
+          return `儲存網頁控制台存取通行碼失敗：${detail}`;
+        case "ja-JP":
+          return `Web コンソールのアクセスパスコード保存に失敗しました：${detail}`;
+        case "ko-KR":
+          return `웹 콘솔 접속 암호를 저장하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^保存网页控制台配置失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to save Web Console configuration: ${detail}`;
+        case "zh-TW":
+          return `儲存網頁主控台設定失敗：${detail}`;
+        case "zh-HK":
+          return `儲存網頁控制台設定失敗：${detail}`;
+        case "ja-JP":
+          return `Web コンソール設定の保存に失敗しました：${detail}`;
+        case "ko-KR":
+          return `웹 콘솔 설정을 저장하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^生成随机访问口令失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate random access passcode: ${detail}`;
+        case "zh-TW":
+          return `產生隨機存取通行碼失敗：${detail}`;
+        case "zh-HK":
+          return `產生隨機存取通行碼失敗：${detail}`;
+        case "ja-JP":
+          return `ランダムアクセスパスコードの生成に失敗しました：${detail}`;
+        case "ko-KR":
+          return `무작위 접속 암호를 생성하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^生成随机令牌失败[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1], loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate random token: ${detail}`;
+        case "zh-TW":
+          return `產生隨機權杖失敗：${detail}`;
+        case "zh-HK":
+          return `產生隨機令牌失敗：${detail}`;
+        case "ja-JP":
+          return `ランダムトークンの生成に失敗しました：${detail}`;
+        case "ko-KR":
+          return `무작위 토큰을 생성하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
 ];
 
 function applyRedactionTokens(text: string, locale: ColabOneLocale): string {

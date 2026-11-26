@@ -1900,6 +1900,82 @@ export const zhTWMessages: ColabOneMessages = {
   "migration.importSuccessWithAccountToast":
     "遷移匯入完成（{email}），設定已立即生效並正在同步帳號狀態",
 
+  // Remote Web Console
+  "webConsole.sectionTitle": "遠端網頁主控台",
+  "webConsole.title": "網頁主控台服務",
+  "webConsole.desc":
+    "開啟後將在宿主機啟動本機網頁服務，可搭配本機 cloudflared 隧道在手機或任意裝置透過瀏覽器遠端操作目前用戶端。",
+  "webConsole.statusRunning": "執行中",
+  "webConsole.statusStopped": "已關閉",
+  "webConsole.statusError": "啟動異常",
+  "webConsole.sessionsTag": "{count} 個線上工作階段",
+  "webConsole.configureBtn": "設定",
+  "webConsole.enableSwitchAria": "開啟或關閉網頁主控台服務",
+  "webConsole.localAddressLabel": "本機監聽網址",
+  "webConsole.lanAddressesLabel": "區域網路存取網址",
+  "webConsole.publicAddressLabel": "公網網域網址",
+  "webConsole.copyAddressBtn": "複製網址",
+  "webConsole.copyTicketBtn": "複製一次性登入連結",
+  "webConsole.copyTicketPublicHint": "將產生 60 秒有效的公網一次性登入連結",
+  "webConsole.copyTicketLocalHint": "未填寫公網網域時將產生本機一次性登入連結",
+  "webConsole.revokeSessionsBtn": "撤銷全部網頁工作階段",
+  "webConsole.bindLabel": "監聽範圍",
+  "webConsole.bindLoopback": "僅本機 (127.0.0.1)",
+  "webConsole.bindLan": "區域網路 (0.0.0.0)",
+  "webConsole.bindHint":
+    "搭配本機 cloudflared 轉發時建議使用「僅本機」；需要同 Wi-Fi 裝置直接連線時可切換為「區域網路」。",
+  "webConsole.portLabel": "監聽連接埠",
+  "webConsole.portAria": "網頁主控台監聽連接埠",
+  "webConsole.publicOriginLabel": "固定公網網域（選填）",
+  "webConsole.publicOriginPlaceholder": "https://colab.example.com",
+  "webConsole.publicOriginHint":
+    "填寫您的 cloudflared 公網 HTTPS 網域後，將嚴格驗證存取 Host 並用於產生一次性登入連結。",
+  "webConsole.saveConfigBtn": "儲存設定",
+  "webConsole.passcodeLabel": "存取通行碼",
+  "webConsole.passcodeHint":
+    "加密儲存於本機憑證庫中，網頁端解鎖時必填；支援自訂 8 至 128 字元通行碼或一鍵重新產生。",
+  "webConsole.passcodePlaceholder": "輸入新的自訂通行碼（8-128 字元）",
+  "webConsole.passcodeSavedPlaceholder": "已自動產生高強度隨機通行碼",
+  "webConsole.savePasscodeBtn": "儲存通行碼",
+  "webConsole.copyPasscodeBtn": "複製通行碼",
+  "webConsole.rotatePasscodeBtn": "重新產生",
+  "webConsole.cloudflaredGuideTitle": "本機 cloudflared 中轉設定說明",
+  "webConsole.cloudflaredGuideStep1":
+    "1. 在 Cloudflare Zero Trust 隧道的 Public Hostname 中，將您的固定網域轉發至本機服務 {target}。",
+  "webConsole.cloudflaredGuideStep2":
+    "2. 建議將下方「關閉視窗行為」設為「最小化至系統匣背景執行」，確保電腦闔蓋或關閉視窗時網頁版持續可用。",
+  "webConsole.cloudflaredGuideQuickCmdLabel": "臨時隧道測試指令",
+  "webConsole.cloudflaredGuideTip":
+    "安全提示：建議在 Cloudflare Zero Trust 中為該網域加上 Access 存取原則，與本機存取通行碼形成雙重保護。",
+  "webConsole.openCloudflareDash": "開啟 Cloudflare Zero Trust",
+  "webConsole.toastEnabled": "網頁主控台已啟動（{addr}）",
+  "webConsole.toastDisabled": "網頁主控台已關閉，所有網頁工作階段已失效",
+  "webConsole.toastConfigSaved": "網頁主控台設定已儲存",
+  "webConsole.toastPasscodeSaved": "已更新存取通行碼，舊網頁工作階段已全部撤銷",
+  "webConsole.toastPasscodeRotated":
+    "已重新產生存取通行碼，舊網頁工作階段已全部撤銷",
+  "webConsole.toastPasscodeCopied": "已複製網頁存取通行碼",
+  "webConsole.toastTicketCopied":
+    "已複製一次性登入連結（{seconds} 秒內有效，使用一次後自動失效）",
+  "webConsole.toastSessionsRevoked": "已撤銷全部線上網頁工作階段",
+  "webConsole.toastAddressCopied": "已複製存取網址",
+  "webConsole.toastQuickCmdCopied": "已複製 cloudflared 測試指令",
+  "webConsole.webBadge": "網頁模式",
+  "webConsole.webSignOutBtn": "登出",
+  "webConsole.webSignOutConfirm": "登出後需要重新輸入存取通行碼解鎖，是否繼續？",
+  "webConsole.webDesktopOnlyHint":
+    "目前為遠端網頁主控台模式，桌面專屬設定與遷移備份僅支援於宿主機用戶端操作。",
+  "webConsole.webSecretsBlockedHint":
+    "為保護宿主機憑證安全，網頁模式禁止讀取已儲存的明文金鑰或代理密碼。",
+  "webConsole.webSessionExpiredTitle": "網頁工作階段已失效或連線已中斷",
+  "webConsole.webSessionExpiredDesc":
+    "宿主機可能已關閉網頁主控台、重設存取通行碼，或目前登入工作階段已過期。",
+  "webConsole.webReconnectBtn": "重試連線",
+  "webConsole.webReloginBtn": "重新解鎖登入",
+  "webConsole.webOAuthManualHint":
+    "遠端網頁模式下請使用手動授權登入：開啟 Google 授權頁後，將回傳內容貼上至下方即可完成登入。",
+  "webConsole.webOpenCanvasBrowserOnly": "在新分頁開啟畫布",
+
   // Location
   "location.tooltipWithZone": "執行個體位置：{full} ({zone})",
   "location.tooltipNoZone": "執行個體位置：{full}",

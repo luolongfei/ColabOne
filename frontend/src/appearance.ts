@@ -1,5 +1,6 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { ColabOneDesktop } from "./colabOneBridge";
+import { isColabOneDesktopRuntime } from "./colabOneWebConsole";
 import { t } from "./i18n";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import {
@@ -39,6 +40,9 @@ function currentViewport() {
 }
 
 async function queryNativeSystemDark(): Promise<boolean | null> {
+  if (!isColabOneDesktopRuntime()) {
+    return null;
+  }
   try {
     const raw = await ColabOneDesktop.systemAppearance();
     if (raw === "dark") return true;
@@ -95,7 +99,7 @@ function persistAppearance(value: ColabOneAppearance, fromStorage?: boolean) {
 }
 
 function syncNativeAppearance(value: ColabOneAppearance, fromStorage?: boolean) {
-  if (fromStorage) return;
+  if (fromStorage || !isColabOneDesktopRuntime()) return;
   nativeUpdate = nativeUpdate
     .then(() => ColabOneDesktop.setAppearance(value))
     .catch(() => {

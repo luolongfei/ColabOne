@@ -3041,5 +3041,80 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
         }
       }
     }
+
+    // Remote Web Console exact & dynamic backend errors and activity logs across all 6 locales
+    const webConsoleSamples = [
+      "该桌面专属操作仅支持在宿主机客户端执行",
+      "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+      "网页控制台不支持本机回环自动登录，请使用手动授权登录",
+      "端口已被占用，请更换其他端口",
+      "网页控制台端口必须在 1024 至 65535 之间",
+      "不支持的监听范围设置",
+      "公网域名格式无效，请填写公网 HTTPS 固定域名（例如 https://colab.example.com）",
+      "访问口令长度需在 8 至 128 个字符之间，且不能包含控制字符",
+      "访问口令首尾不能包含空白字符",
+      "请先开启网页控制台后再生成登录链接",
+      "跨源请求已被拒绝",
+      "未登录或会话已过期",
+      "控制器桥接未初始化",
+      "请求体超出限制",
+      "命令请求格式无效",
+      "缺少命令名称",
+      "接口不存在",
+      "输出文件 ID 无效",
+      "输出文件元数据无效",
+      "输出文件元数据未通过安全校验",
+      "输出文件传输元数据发生变化",
+      "输出文件分片数据不完整",
+      "输出文件后续分片格式无效",
+      "输出文件完整性校验失败",
+      "输出文件流式下载元数据不一致，已中止传输",
+      "输出文件流式下载分片校验失败，已中止传输",
+      "输出文件流式下载 SHA-256 校验失败，已中止传输",
+      "已关闭网页控制台服务",
+      "已更新网页控制台公网域名配置",
+      "已重置网页控制台随机访问口令并注销全部远程会话",
+      "已更新网页控制台访问口令并注销旧会话",
+      "已注销全部网页控制台在线会话",
+      "网页控制台已启动，监听 127.0.0.1:3232",
+      "网页控制台已切换监听至 0.0.0.0:4545",
+      "网页控制台启动失败：端口已被占用，请更换其他端口",
+      "切换网页控制台端口失败：端口已被占用，请更换其他端口",
+      "切换网页控制台监听模式失败：端口已被占用，请更换其他端口",
+      "网页控制台服务异常退出：accept tcp: closed",
+      "监听 127.0.0.1:3232 失败：permission denied",
+      "读取网页控制台访问口令失败：vault locked",
+      "保存网页控制台访问口令失败：disk full",
+      "保存网页控制台配置失败：permission denied",
+      "生成随机访问口令失败：entropy error",
+      "生成随机令牌失败：entropy error",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      const srcLabel = tsrc("网页控制台");
+      expect(srcLabel.length).toBeGreaterThan(2);
+      if (loc === "en-US" || loc === "ko-KR") {
+        expect(CJK_OR_FULLWIDTH_RE.test(srcLabel), `${loc} source leak: ${srcLabel}`).toBe(
+          false,
+        );
+      }
+      for (const sample of webConsoleSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(out.length, `${loc}: ${sample}`).toBeGreaterThan(4);
+        if (loc !== "zh-CN") {
+          expect(out, `${loc}: ${sample}`).not.toBe(sample);
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(CJK_OR_FULLWIDTH_RE.test(out), `${loc} leak: ${out}`).toBe(
+            false,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `zh-HK Cantonese leak: ${out}`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+    }
   });
 });

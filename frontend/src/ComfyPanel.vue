@@ -83,6 +83,7 @@ import {
   colabOneExportWorkflowOutput,
   colabOneOpenComfyCanvas,
   colabOneOpenURL,
+  colabOneRuntimeCapabilities,
   colabOneWriteClipboard,
 } from "./api";
 import { formatIdlePolicyLabel } from "./billing";
@@ -7504,7 +7505,11 @@ onUnmounted(() => {
                       :disabled="canvasEnabled || busy"
                       :placeholder="t('comfy.canvasTokenEmptyPlaceholder')"
                       :saved-placeholder="t('api.tunnelTokenSavedPlaceholder')"
-                      :load-saved="loadSavedCanvasToken"
+                      :load-saved="
+                        colabOneRuntimeCapabilities.can_reveal_host_secrets
+                          ? loadSavedCanvasToken
+                          : undefined
+                      "
                       :extract-secret="colabOneExtractTunnelToken"
                       @extracted="onCanvasTokenExtracted"
                       @error="reportError($event)"
@@ -7677,6 +7682,7 @@ onUnmounted(() => {
                 <!-- Launch Controls -->
                 <div v-if="canvasReady" class="co-comfy-canvas-launch-actions co-sk-reveal">
                   <AButton
+                    v-if="colabOneRuntimeCapabilities.can_open_native_canvas_window"
                     type="primary"
                     block
                     @click="launchCanvas('window')"
@@ -7684,9 +7690,19 @@ onUnmounted(() => {
                     <template #icon><PhAppWindow :size="15" /></template>
                     {{ t("comfy.openInWindow") }}
                   </AButton>
+                  <AButton
+                    v-else
+                    type="primary"
+                    block
+                    @click="launchCanvas('browser')"
+                  >
+                    <template #icon><PhBrowsers :size="15" /></template>
+                    {{ t("webConsole.webOpenCanvasBrowserOnly") }}
+                  </AButton>
 
                   <div class="co-comfy-canvas-secondary-row">
                     <AButton
+                      v-if="colabOneRuntimeCapabilities.can_open_native_canvas_window"
                       block
                       @click="launchCanvas('browser')"
                     >

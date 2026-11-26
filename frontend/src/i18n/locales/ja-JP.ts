@@ -1951,6 +1951,89 @@ export const jaJPMessages: ColabOneMessages = {
   "migration.importSuccessWithAccountToast":
     "移行データをインポートしました（{email}）。設定を反映しアカウント状態を同期中です",
 
+  // Remote Web Console
+  "webConsole.sectionTitle": "リモート Web コンソール",
+  "webConsole.title": "Web コンソールサービス",
+  "webConsole.desc":
+    "有効にするとホスト PC 上でローカル Web サーバーを起動し、ローカルの cloudflared トンネルと組み合わせてスマートフォンや任意のブラウザからこのクライアントを遠隔操作できます。",
+  "webConsole.statusRunning": "実行中",
+  "webConsole.statusStopped": "停止中",
+  "webConsole.statusError": "起動エラー",
+  "webConsole.sessionsTag": "オンラインセッション {count} 件",
+  "webConsole.configureBtn": "設定",
+  "webConsole.enableSwitchAria": "Web コンソールサービスの有効化・無効化",
+  "webConsole.localAddressLabel": "ローカル待受アドレス",
+  "webConsole.lanAddressesLabel": "LAN アクセスアドレス",
+  "webConsole.publicAddressLabel": "公開ドメイン URL",
+  "webConsole.copyAddressBtn": "URL をコピー",
+  "webConsole.copyTicketBtn": "ワンタイムログインリンクをコピー",
+  "webConsole.copyTicketPublicHint":
+    "60 秒間有効な公開ワンタイムログインリンクを生成します",
+  "webConsole.copyTicketLocalHint":
+    "公開ドメイン未設定時はローカル用ワンタイムログインリンクを生成します",
+  "webConsole.revokeSessionsBtn": "すべての Web セッションを無効化",
+  "webConsole.bindLabel": "待受範囲",
+  "webConsole.bindLoopback": "ローカルのみ (127.0.0.1)",
+  "webConsole.bindLan": "LAN (0.0.0.0)",
+  "webConsole.bindHint":
+    "ローカルの cloudflared 経由で転送する場合は「ローカルのみ」を推奨します。同じ Wi-Fi 内の端末から直接アクセスする場合は「LAN」に切り替えてください。",
+  "webConsole.portLabel": "待受ポート",
+  "webConsole.portAria": "Web コンソール待受ポート",
+  "webConsole.publicOriginLabel": "固定公開ドメイン（任意）",
+  "webConsole.publicOriginPlaceholder": "https://colab.example.com",
+  "webConsole.publicOriginHint":
+    "cloudflared の公開 HTTPS ドメインを設定すると、アクセス時の Host を厳密に検証し、ワンタイムログインリンクの生成にも使用します。",
+  "webConsole.saveConfigBtn": "設定を保存",
+  "webConsole.passcodeLabel": "アクセスパスコード",
+  "webConsole.passcodeHint":
+    "ローカルの認証情報ストアに暗号化保存され、Web 側のロック解除に必須です。8〜128 文字の任意のパスコード設定やワンクリック再生成に対応します。",
+  "webConsole.passcodePlaceholder": "新しいパスコードを入力（8〜128 文字）",
+  "webConsole.passcodeSavedPlaceholder": "強力なランダムパスコードを自動生成済み",
+  "webConsole.savePasscodeBtn": "パスコードを保存",
+  "webConsole.copyPasscodeBtn": "パスコードをコピー",
+  "webConsole.rotatePasscodeBtn": "再生成",
+  "webConsole.cloudflaredGuideTitle": "ローカル cloudflared 転送の設定手順",
+  "webConsole.cloudflaredGuideStep1":
+    "1. Cloudflare Zero Trust トンネルの Public Hostname で、固定ドメインをローカルサービス {target} に転送するよう設定します。",
+  "webConsole.cloudflaredGuideStep2":
+    "2. 下の「ウィンドウを閉じる時の動作」を「システムトレイに最小化してバックグラウンドで実行」に設定しておくと、ウィンドウを閉じても Web 版を引き続き利用できます。",
+  "webConsole.cloudflaredGuideQuickCmdLabel": "一時トンネルテストコマンド",
+  "webConsole.cloudflaredGuideTip":
+    "セキュリティのヒント：Cloudflare Zero Trust でこのドメインに Access ポリシーを追加すると、ローカルのアクセスパスコードと合わせて二重保護できます。",
+  "webConsole.openCloudflareDash": "Cloudflare Zero Trust を開く",
+  "webConsole.toastEnabled": "Web コンソールを起動しました（{addr}）",
+  "webConsole.toastDisabled":
+    "Web コンソールを停止しました。すべての Web セッションが無効になりました",
+  "webConsole.toastConfigSaved": "Web コンソール設定を保存しました",
+  "webConsole.toastPasscodeSaved":
+    "アクセスパスコードを更新し、以前の Web セッションをすべて無効化しました",
+  "webConsole.toastPasscodeRotated":
+    "アクセスパスコードを再生成し、以前の Web セッションをすべて無効化しました",
+  "webConsole.toastPasscodeCopied": "Web アクセスパスコードをコピーしました",
+  "webConsole.toastTicketCopied":
+    "ワンタイムログインリンクをコピーしました（{seconds} 秒間有効・1 回使用すると自動失効）",
+  "webConsole.toastSessionsRevoked":
+    "すべてのオンライン Web セッションを無効化しました",
+  "webConsole.toastAddressCopied": "アクセス URL をコピーしました",
+  "webConsole.toastQuickCmdCopied": "cloudflared テストコマンドをコピーしました",
+  "webConsole.webBadge": "Web モード",
+  "webConsole.webSignOutBtn": "ログアウト",
+  "webConsole.webSignOutConfirm":
+    "ログアウトすると再度アクセスパスコードの入力が必要になります。続行しますか？",
+  "webConsole.webDesktopOnlyHint":
+    "現在はリモート Web コンソールモードです。デスクトップ専用設定や移行バックアップはホスト側クライアントでのみ操作できます。",
+  "webConsole.webSecretsBlockedHint":
+    "ホストの認証情報を保護するため、Web モードでは保存済みの平文キーやプロキシパスワードの読み取りを禁止しています。",
+  "webConsole.webSessionExpiredTitle":
+    "Web セッションが失効したか接続が切断されました",
+  "webConsole.webSessionExpiredDesc":
+    "ホスト側で Web コンソールが停止されたか、パスコードが変更されたか、現在のログインセッションの有効期限が切れた可能性があります。",
+  "webConsole.webReconnectBtn": "再接続",
+  "webConsole.webReloginBtn": "再ロック解除",
+  "webConsole.webOAuthManualHint":
+    "リモート Web モードでは手動認可ログインをご利用ください。Google 認可ページを開き、返却された内容を下に貼り付けるとログインを完了できます。",
+  "webConsole.webOpenCanvasBrowserOnly": "新しいタブでキャンバスを開く",
+
   // Location
   "location.tooltipWithZone": "インスタンス所在地: {full} ({zone})",
   "location.tooltipNoZone": "インスタンス所在地: {full}",

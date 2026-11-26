@@ -1901,6 +1901,81 @@ export const zhCNMessages = {
   "migration.importSuccessWithAccountToast":
     "迁移导入完成（{email}），配置已立即生效并正在同步账号状态",
 
+  // Remote Web Console
+  "webConsole.sectionTitle": "远程网页控制台",
+  "webConsole.title": "网页控制台服务",
+  "webConsole.desc":
+    "开启后在宿主机启动本地网页服务，可搭配本机 cloudflared 隧道在手机或任意设备通过浏览器远程操作当前客户端。",
+  "webConsole.statusRunning": "运行中",
+  "webConsole.statusStopped": "已关闭",
+  "webConsole.statusError": "启动异常",
+  "webConsole.sessionsTag": "{count} 个在线会话",
+  "webConsole.configureBtn": "配置",
+  "webConsole.enableSwitchAria": "开启或关闭网页控制台服务",
+  "webConsole.localAddressLabel": "本机监听地址",
+  "webConsole.lanAddressesLabel": "局域网访问地址",
+  "webConsole.publicAddressLabel": "公网域名地址",
+  "webConsole.copyAddressBtn": "复制地址",
+  "webConsole.copyTicketBtn": "复制一次性登录链接",
+  "webConsole.copyTicketPublicHint": "将生成 60 秒有效的公网一次性登录链接",
+  "webConsole.copyTicketLocalHint": "未填公网域名时将生成本机一次性登录链接",
+  "webConsole.revokeSessionsBtn": "注销全部网页会话",
+  "webConsole.bindLabel": "监听范围",
+  "webConsole.bindLoopback": "仅本机 (127.0.0.1)",
+  "webConsole.bindLan": "局域网 (0.0.0.0)",
+  "webConsole.bindHint":
+    "配合本机 cloudflared 转发时推荐使用「仅本机」；需要同 Wi-Fi 设备直连时可切换为「局域网」。",
+  "webConsole.portLabel": "监听端口",
+  "webConsole.portAria": "网页控制台监听端口",
+  "webConsole.publicOriginLabel": "固定公网域名（可选）",
+  "webConsole.publicOriginPlaceholder": "https://colab.example.com",
+  "webConsole.publicOriginHint":
+    "填写你的 cloudflared 公网 HTTPS 域名后，将严格校验访问 Host 并用于生成一次性登录链接。",
+  "webConsole.saveConfigBtn": "保存配置",
+  "webConsole.passcodeLabel": "访问口令",
+  "webConsole.passcodeHint":
+    "加密保存在本机凭据库中，网页端解锁时必填；支持自定义 8 至 128 位口令或一键重新生成。",
+  "webConsole.passcodePlaceholder": "输入新的自定义口令（8-128 位）",
+  "webConsole.passcodeSavedPlaceholder": "已自动生成高强度随机口令",
+  "webConsole.savePasscodeBtn": "保存口令",
+  "webConsole.copyPasscodeBtn": "复制口令",
+  "webConsole.rotatePasscodeBtn": "重新生成",
+  "webConsole.cloudflaredGuideTitle": "本机 cloudflared 中转配置说明",
+  "webConsole.cloudflaredGuideStep1":
+    "1. 在 Cloudflare Zero Trust 隧道的 Public Hostname 中，将你的固定域名转发至本机服务 {target}。",
+  "webConsole.cloudflaredGuideStep2":
+    "2. 建议将下方「关闭窗口行为」设为「最小化到系统托盘后台运行」，确保电脑合盖或关窗时网页版持续可用。",
+  "webConsole.cloudflaredGuideQuickCmdLabel": "临时隧道测试命令",
+  "webConsole.cloudflaredGuideTip":
+    "安全提示：建议在 Cloudflare Zero Trust 中为该域名叠加 Access 访问策略，与本机访问口令形成双重保护。",
+  "webConsole.openCloudflareDash": "打开 Cloudflare Zero Trust",
+  "webConsole.toastEnabled": "网页控制台已启动（{addr}）",
+  "webConsole.toastDisabled": "网页控制台已关闭，所有网页会话已失效",
+  "webConsole.toastConfigSaved": "网页控制台配置已保存",
+  "webConsole.toastPasscodeSaved": "已更新访问口令，旧网页会话已全部注销",
+  "webConsole.toastPasscodeRotated": "已重新生成访问口令，旧网页会话已全部注销",
+  "webConsole.toastPasscodeCopied": "已复制网页访问口令",
+  "webConsole.toastTicketCopied":
+    "已复制一次性登录链接（{seconds} 秒内有效，使用一次后自动失效）",
+  "webConsole.toastSessionsRevoked": "已注销全部在线网页会话",
+  "webConsole.toastAddressCopied": "已复制访问地址",
+  "webConsole.toastQuickCmdCopied": "已复制 cloudflared 测试命令",
+  "webConsole.webBadge": "网页模式",
+  "webConsole.webSignOutBtn": "退出登录",
+  "webConsole.webSignOutConfirm": "退出后需要重新输入访问口令解锁，是否继续？",
+  "webConsole.webDesktopOnlyHint":
+    "当前为远程网页控制台模式，桌面专属设置与迁移备份仅支持在宿主机客户端操作。",
+  "webConsole.webSecretsBlockedHint":
+    "为保护宿主机凭据安全，网页模式禁止读取已保存的明文密钥或代理密码。",
+  "webConsole.webSessionExpiredTitle": "网页会话已失效或连接已断开",
+  "webConsole.webSessionExpiredDesc":
+    "宿主机可能已关闭网页控制台、重置访问口令，或当前登录会话已过期。",
+  "webConsole.webReconnectBtn": "重试连接",
+  "webConsole.webReloginBtn": "重新解锁登录",
+  "webConsole.webOAuthManualHint":
+    "远程网页模式下请使用手动授权登录：打开 Google 授权页后，将返回内容粘贴到下方即可完成登录。",
+  "webConsole.webOpenCanvasBrowserOnly": "在新标签页打开画布",
+
   // Location
   "location.tooltipWithZone": "实例位置：{full} ({zone})",
   "location.tooltipNoZone": "实例位置：{full}",

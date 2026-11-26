@@ -1948,6 +1948,88 @@ export const koKRMessages: ColabOneMessages = {
   "migration.importSuccessWithAccountToast":
     "마이그레이션 가져오기 완료 ({email}). 설정이 즉시 적용되었으며 계정 상태를 동기화 중입니다",
 
+  // Remote Web Console
+  "webConsole.sectionTitle": "원격 웹 콘솔",
+  "webConsole.title": "웹 콘솔 서비스",
+  "webConsole.desc":
+    "활성화하면 호스트 PC에서 로컬 웹 서버를 시작하며, 로컬 cloudflared 터널과 함께 스마트폰이나 모든 기기의 브라우저에서 현재 클라이언트를 원격 조작할 수 있습니다.",
+  "webConsole.statusRunning": "실행 중",
+  "webConsole.statusStopped": "중지됨",
+  "webConsole.statusError": "시작 오류",
+  "webConsole.sessionsTag": "활성 세션 {count}개",
+  "webConsole.configureBtn": "설정",
+  "webConsole.enableSwitchAria": "웹 콘솔 서비스 켜기 또는 끄기",
+  "webConsole.localAddressLabel": "로컬 수신 주소",
+  "webConsole.lanAddressesLabel": "LAN 접속 주소",
+  "webConsole.publicAddressLabel": "공개 도메인 주소",
+  "webConsole.copyAddressBtn": "주소 복사",
+  "webConsole.copyTicketBtn": "일회용 로그인 링크 복사",
+  "webConsole.copyTicketPublicHint":
+    "60초 동안 유효한 공개 일회용 로그인 링크를 생성합니다",
+  "webConsole.copyTicketLocalHint":
+    "공개 도메인이 비어 있으면 로컬 일회용 로그인 링크를 생성합니다",
+  "webConsole.revokeSessionsBtn": "모든 웹 세션 로그아웃",
+  "webConsole.bindLabel": "수신 범위",
+  "webConsole.bindLoopback": "로컬 전용 (127.0.0.1)",
+  "webConsole.bindLan": "LAN (0.0.0.0)",
+  "webConsole.bindHint":
+    "로컬 cloudflared 포워딩을 사용할 때는 '로컬 전용'을 권장합니다. 같은 Wi-Fi 기기에서 직접 접속하려면 'LAN'으로 전환하세요.",
+  "webConsole.portLabel": "수신 포트",
+  "webConsole.portAria": "웹 콘솔 수신 포트",
+  "webConsole.publicOriginLabel": "고정 공개 도메인 (선택)",
+  "webConsole.publicOriginPlaceholder": "https://colab.example.com",
+  "webConsole.publicOriginHint":
+    "cloudflared 공개 HTTPS 도메인을 입력하면 접속 Host를 엄격하게 검증하고 일회용 로그인 링크 생성에 사용합니다.",
+  "webConsole.saveConfigBtn": "설정 저장",
+  "webConsole.passcodeLabel": "접속 암호",
+  "webConsole.passcodeHint":
+    "로컬 자격 증명 저장소에 암호화되어 저장되며 웹 잠금 해제 시 필수입니다. 8~128자 사용자 지정 암호를 입력하거나 한 번에 새로 생성할 수 있습니다.",
+  "webConsole.passcodePlaceholder": "새 사용자 지정 암호 입력 (8~128자)",
+  "webConsole.passcodeSavedPlaceholder": "강력한 무작위 암호가 자동 생성됨",
+  "webConsole.savePasscodeBtn": "암호 저장",
+  "webConsole.copyPasscodeBtn": "암호 복사",
+  "webConsole.rotatePasscodeBtn": "새로 생성",
+  "webConsole.cloudflaredGuideTitle": "로컬 cloudflared 중계 설정 안내",
+  "webConsole.cloudflaredGuideStep1":
+    "1. Cloudflare Zero Trust 터널의 Public Hostname에서 고정 도메인을 로컬 서비스 {target}(으)로 전달하도록 설정합니다.",
+  "webConsole.cloudflaredGuideStep2":
+    "2. 아래 '창 닫기 동작'을 '시스템 트레이로 최소화하여 백그라운드 실행'으로 설정해 두면 창을 닫거나 덮개를 닫아도 웹 콘솔을 계속 사용할 수 있습니다.",
+  "webConsole.cloudflaredGuideQuickCmdLabel": "임시 터널 테스트 명령어",
+  "webConsole.cloudflaredGuideTip":
+    "보안 팁: Cloudflare Zero Trust에서 해당 도메인에 Access 접근 정책을 추가하면 로컬 접속 암호와 함께 이중으로 보호할 수 있습니다.",
+  "webConsole.openCloudflareDash": "Cloudflare Zero Trust 열기",
+  "webConsole.toastEnabled": "웹 콘솔이 시작되었습니다 ({addr})",
+  "webConsole.toastDisabled":
+    "웹 콘솔이 중지되어 모든 웹 세션이 만료되었습니다",
+  "webConsole.toastConfigSaved": "웹 콘솔 설정이 저장되었습니다",
+  "webConsole.toastPasscodeSaved":
+    "접속 암호가 업데이트되어 기존 웹 세션이 모두 로그아웃되었습니다",
+  "webConsole.toastPasscodeRotated":
+    "접속 암호가 새로 생성되어 기존 웹 세션이 모두 로그아웃되었습니다",
+  "webConsole.toastPasscodeCopied": "웹 접속 암호가 복사되었습니다",
+  "webConsole.toastTicketCopied":
+    "일회용 로그인 링크가 복사되었습니다 ({seconds}초 유효, 1회 사용 후 자동 만료)",
+  "webConsole.toastSessionsRevoked": "모든 활성 웹 세션이 로그아웃되었습니다",
+  "webConsole.toastAddressCopied": "접속 주소가 복사되었습니다",
+  "webConsole.toastQuickCmdCopied": "cloudflared 테스트 명령어가 복사되었습니다",
+  "webConsole.webBadge": "웹 모드",
+  "webConsole.webSignOutBtn": "로그아웃",
+  "webConsole.webSignOutConfirm":
+    "로그아웃하면 접속 암호를 다시 입력해 잠금을 해제해야 합니다. 계속하시겠습니까?",
+  "webConsole.webDesktopOnlyHint":
+    "현재 원격 웹 콘솔 모드입니다. 데스크톱 전용 설정 및 마이그레이션 백업은 호스트 클라이언트에서만 조작할 수 있습니다.",
+  "webConsole.webSecretsBlockedHint":
+    "호스트 자격 증명을 보호하기 위해 웹 모드에서는 저장된 평문 키나 프록시 비밀번호 읽기가 차단됩니다.",
+  "webConsole.webSessionExpiredTitle":
+    "웹 세션이 만료되었거나 연결이 끊어졌습니다",
+  "webConsole.webSessionExpiredDesc":
+    "호스트에서 웹 콘솔을 중지했거나 접속 암호를 재설정했거나 현재 로그인 세션이 만료되었을 수 있습니다.",
+  "webConsole.webReconnectBtn": "다시 연결",
+  "webConsole.webReloginBtn": "다시 잠금 해제",
+  "webConsole.webOAuthManualHint":
+    "원격 웹 모드에서는 수동 인증 로그인을 사용해 주세요. Google 인증 페이지를 연 뒤 반환된 내용을 아래에 붙여 넣으면 로그인이 완료됩니다.",
+  "webConsole.webOpenCanvasBrowserOnly": "새 탭에서 캔버스 열기",
+
   // Location
   "location.tooltipWithZone": "인스턴스 위치: {full} ({zone})",
   "location.tooltipNoZone": "인스턴스 위치: {full}",

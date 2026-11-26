@@ -49,7 +49,12 @@ import {
   PhX,
 } from "@phosphor-icons/vue";
 import ModelDrawer from "./ModelDrawer.vue";
-import { colabOneCommand, colabOneOpenURL, colabOneWriteClipboard } from "./api";
+import {
+  colabOneCommand,
+  colabOneOpenURL,
+  colabOneRuntimeCapabilities,
+  colabOneWriteClipboard,
+} from "./api";
 import {
   formatDurationMs,
   formatRequestClock,
@@ -949,7 +954,11 @@ onUnmounted(() => {
                 :disabled="enabled || busy"
                 :placeholder="t('api.tunnelTokenEmptyPlaceholder')"
                 :saved-placeholder="t('api.tunnelTokenSavedPlaceholder')"
-                :load-saved="loadSavedTunnelToken"
+                :load-saved="
+                  colabOneRuntimeCapabilities.can_reveal_host_secrets
+                    ? loadSavedTunnelToken
+                    : undefined
+                "
                 :extract-secret="colabOneExtractTunnelToken"
                 @extracted="onTunnelTokenExtracted"
                 @error="emit('error', $event)"

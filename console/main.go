@@ -10,6 +10,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
+	"github.com/luolongfei/ColabOne/console/internal/vault"
+	"github.com/luolongfei/ColabOne/console/internal/webconsole"
 	"log"
 	"mime"
 	"net/url"
@@ -78,6 +80,9 @@ type ColabOneDesktop struct {
 	migrationSaveDialogFn func(context.Context, string) (string, error)
 	migrationOpenDialogFn func(context.Context) (string, error)
 	migrationKDFParams    *migration.ColabOneMigrationKDFParams
+
+	webConsoleMu sync.RWMutex
+	webConsole   *webconsole.ColabOneWebConsole
 }
 
 func (d *ColabOneDesktop) invalidateSplash() {
@@ -212,18 +217,25 @@ func (d *ColabOneDesktop) focusMainWindow() {
 }
 
 func (d *ColabOneDesktop) buildTrayMenu() *mygo.Menu {
-	return mygo.NewMenu([]*mygo.MenuItem{
+	items := []*mygo.MenuItem{
 		{Label: colabOneT("tray.open"), Click: func(*mygo.MenuItem, *mygo.Window) {
 			if d.showMain != nil {
 				d.showMain()
 			}
 		}},
-		{Label: d.trayUpdateLabel(), Click: func(*mygo.MenuItem, *mygo.Window) {
+	}
+	if webItems := d.trayWebConsoleItems(); len(webItems) > 0 {
+		items = append(items, webItems...)
+		items = append(items, mygo.Separator())
+	}
+	items = append(items,
+		&mygo.MenuItem{Label: d.trayUpdateLabel(), Click: func(*mygo.MenuItem, *mygo.Window) {
 			d.handleTrayUpdateClick()
 		}},
 		mygo.Separator(),
-		{Label: colabOneT("tray.quit"), Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
-	})
+		&mygo.MenuItem{Label: colabOneT("tray.quit"), Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
+	)
+	return mygo.NewMenu(items)
 }
 
 func (d *ColabOneDesktop) Snapshot(ctx context.Context) (string, error) {
@@ -391,11 +403,15 @@ func main() {
 		appearanceSave:  make(chan string, 1),
 		appearanceDone:  make(chan struct{}),
 	}
+	configDir := colabOneConfigDir()
+	sharedVault := vault.NewFileVaultWithLegacyMigration(configDir)
 	d.bridge = &colabOneBridge{
+		vault:         sharedVault,
 		onFocusWindow: d.focusMainWindow,
 	}
 	d.initCloseBehavior(nil)
-	d.initUpdater(colabOneConfigDir(), nil)
+	d.initUpdater(configDir, nil)
+	d.initWebConsole(configDir, sharedVault)
 	go func() {
 		defer close(d.appearanceDone)
 		for value := range d.appearanceSave {
@@ -588,6 +604,9 @@ func main() {
 		}
 		startWithSplash()
 		d.startUpdaterBackground()
+		go func() {
+			_ = d.startWebConsoleIfEnabled()
+		}()
 	})
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
 		d.appQuitting.Store(true)
@@ -599,6 +618,7 @@ func main() {
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		d.cancelStartup()
 		d.clearMigrationSessions()
+		d.closeWebConsole()
 		d.closeUpdater()
 		d.destroyTray()
 		d.flushAppearance()

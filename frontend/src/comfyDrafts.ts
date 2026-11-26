@@ -1,4 +1,5 @@
 import { colabOneCommand } from "./api";
+import { colabOneWebBackendReady } from "./colabOneWebConsole";
 import {
   COLABONE_VOICE_PRESET_ID_RE,
   clampColabOneNumericFieldValue,
@@ -124,8 +125,9 @@ function sanitizePrimitiveRecord(
 
 function isMyGoBridgePresent(): boolean {
   return (
-    typeof globalThis === "object" &&
-    (globalThis as { mygo?: unknown }).mygo !== undefined
+    (typeof globalThis === "object" &&
+      (globalThis as { mygo?: unknown }).mygo !== undefined) ||
+    colabOneWebBackendReady.value
   );
 }
 

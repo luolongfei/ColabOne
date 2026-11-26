@@ -11,6 +11,7 @@ import {
 import {
   COLABONE_HIDDEN_POLL_MS,
   COLABONE_LOG_WINDOW_VISIBLE_POLL_MS,
+  COLABONE_WEB_VISIBLE_POLL_MS,
   createColabOneVisibilityPoller,
 } from "./colabOnePoller";
 import {
@@ -26,10 +27,12 @@ import {
 } from "./i18n";
 import LogDrawer from "./LogDrawer.vue";
 import {
+  COLABONE_WEB_AUTH_REQUIRED_EVENT,
   colabOneCommand,
   colabOneSetLogDrawer,
   colabOneSnapshotRaw,
   colabOneWriteClipboard,
+  isColabOneDesktopRuntime,
 } from "./api";
 import { friendlyErrorMessage } from "./billing";
 import {
@@ -155,10 +158,19 @@ async function syncSnapshot() {
 }
 
 const snapshotPoller = createColabOneVisibilityPoller({
-  visibleMs: COLABONE_LOG_WINDOW_VISIBLE_POLL_MS,
+  visibleMs: isColabOneDesktopRuntime()
+    ? COLABONE_LOG_WINDOW_VISIBLE_POLL_MS
+    : COLABONE_WEB_VISIBLE_POLL_MS,
   hiddenMs: COLABONE_HIDDEN_POLL_MS,
   tick: syncSnapshot,
 });
+
+function handleWebAuthRequired() {
+  if (stopped) return;
+  if (typeof window !== "undefined") {
+    window.location.assign("/_colabone_web/login");
+  }
+}
 
 async function copy(text: string) {
   try {
@@ -220,6 +232,12 @@ onMounted(() => {
     }
   }, 1000);
   window.addEventListener("keydown", handleKeydown);
+  if (!isColabOneDesktopRuntime()) {
+    window.addEventListener(
+      COLABONE_WEB_AUTH_REQUIRED_EVENT,
+      handleWebAuthRequired,
+    );
+  }
 });
 
 onUnmounted(() => {
@@ -231,6 +249,10 @@ onUnmounted(() => {
   snapshotPoller.stop();
   toastManager.clear();
   window.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener(
+    COLABONE_WEB_AUTH_REQUIRED_EVENT,
+    handleWebAuthRequired,
+  );
 });
 </script>
 

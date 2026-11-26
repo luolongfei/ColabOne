@@ -225,6 +225,39 @@ export interface ColabOneUpdateState {
   rollback_versions: ColabOneRollbackVersion[];
 }
 
+/** ColabOneWebConsoleState is the live, secret-redacted status snapshot exposed to the desktop UI. */
+export interface ColabOneWebConsoleState {
+  enabled: boolean;
+  running: boolean;
+  bind_mode: string;
+  listen_addr: string;
+  port: number;
+  local_url: string;
+  lan_urls?: string[];
+  public_origin: string;
+  has_passcode: boolean;
+  passcode_preview: string;
+  active_sessions: number;
+  last_error?: string;
+}
+
+/** ColabOneWebConsoleTicket describes a short-lived, single-use browser unlock URL. */
+export interface ColabOneWebConsoleTicket {
+  url: string;
+  local_url: string;
+  expires_at: number;
+  ttl_seconds: number;
+  uses_public_host: boolean;
+}
+
+/** ColabOneWebConsoleUpdateRequest carries partial configuration updates for hot-apply. */
+export interface ColabOneWebConsoleUpdateRequest {
+  enabled?: boolean;
+  bind_mode?: string;
+  port?: number;
+  public_origin?: string;
+}
+
 // ---- Services ----
 
 export const ColabOneDesktop = {
@@ -245,6 +278,8 @@ export const ColabOneDesktop = {
   /** CheckForUpdate queries GitHub Releases for a newer version of ColabOne. */
   checkForUpdate: bind<[boolean], ColabOneUpdateState>("ColabOneDesktop.CheckForUpdate", (manual: boolean) => [manual]),
   command: bind<[ColabOneCommandRequest], string>("ColabOneDesktop.Command", (request: ColabOneCommandRequest) => [request]),
+  /** CreateWebConsoleLoginTicket issues a short-lived single-use browser unlock link. */
+  createWebConsoleLoginTicket: bind<[], ColabOneWebConsoleTicket>("ColabOneDesktop.CreateWebConsoleLoginTicket", () => []),
   /**
    * DecryptMigrationPreview decrypts the pending .colabone archive identified by
    * fileToken inside Go, caches the validated payload under a short-lived PreviewID,
@@ -276,6 +311,13 @@ export const ColabOneDesktop = {
   getMigrationExportSummary: bind<[ColabOneMigrationUIPrefs | null], ColabOneMigrationExportSummary>("ColabOneDesktop.GetMigrationExportSummary", (uiPrefs: ColabOneMigrationUIPrefs | null) => [uiPrefs]),
   /** GetUpdateState returns the current desktop self-update status, progress, and preferences. */
   getUpdateState: bind<[], ColabOneUpdateState>("ColabOneDesktop.GetUpdateState", () => []),
+  /**
+   * GetWebConsolePasscode returns the saved web console passcode for on-demand
+   * reveal or copying in the desktop Settings UI.
+   */
+  getWebConsolePasscode: bind<[], string>("ColabOneDesktop.GetWebConsolePasscode", () => []),
+  /** GetWebConsoleState returns the live, redacted status of the remote web console server. */
+  getWebConsoleState: bind<[], ColabOneWebConsoleState>("ColabOneDesktop.GetWebConsoleState", () => []),
   /** ListRollbackVersions queries recent older GitHub Releases available for version rollback. */
   listRollbackVersions: bind<[boolean], ColabOneRollbackVersion[]>("ColabOneDesktop.ListRollbackVersions", (forceRefresh: boolean) => [forceRefresh]),
   /**
@@ -299,6 +341,8 @@ export const ColabOneDesktop = {
    * ("quit" or "background") and optionally persists it as the future default.
    */
   resolveCloseRequest: bind<[string, boolean], void>("ColabOneDesktop.ResolveCloseRequest", (action: string, remember: boolean) => [action, remember]),
+  /** RevokeWebConsoleSessions signs out all currently authenticated web browsers. */
+  revokeWebConsoleSessions: bind<[], ColabOneWebConsoleState>("ColabOneDesktop.RevokeWebConsoleSessions", () => []),
   setAppearance: bind<[string], void>("ColabOneDesktop.SetAppearance", (value: string) => [value]),
   /**
    * SetCloseBehavior updates and persists the main-window close policy ("ask",
@@ -318,6 +362,11 @@ export const ColabOneDesktop = {
   setLogDrawer: bind<[boolean, number], ColabOneLogDrawerState>("ColabOneDesktop.SetLogDrawer", (open: boolean, width: number) => [open, width]),
   /** SetUpdatePreferences updates and persists automatic check and prerelease channel preferences. */
   setUpdatePreferences: bind<[boolean, boolean], ColabOneUpdateState>("ColabOneDesktop.SetUpdatePreferences", (autoCheck: boolean, includePrerelease: boolean) => [autoCheck, includePrerelease]),
+  /**
+   * SetWebConsolePasscode updates or regenerates (when empty) the web console
+   * access passcode and invalidates all active browser sessions.
+   */
+  setWebConsolePasscode: bind<[string], ColabOneWebConsoleState>("ColabOneDesktop.SetWebConsolePasscode", (passcode: string) => [passcode]),
   /** SkipUpdateVersion suppresses automatic background notifications for version. */
   skipUpdateVersion: bind<[string], ColabOneUpdateState>("ColabOneDesktop.SkipUpdateVersion", (version: string) => [version]),
   snapshot: bind<[], string>("ColabOneDesktop.Snapshot", () => []),
@@ -326,6 +375,11 @@ export const ColabOneDesktop = {
   /** StartUpdateRollback downloads, verifies (Ed25519), and installs an older release for rollback. */
   startUpdateRollback: bind<[string], ColabOneUpdateState>("ColabOneDesktop.StartUpdateRollback", (version: string) => [version]),
   systemAppearance: bind<[], string>("ColabOneDesktop.SystemAppearance", () => []),
+  /**
+   * UpdateWebConsole updates persisted web console settings and hot-applies start,
+   * stop, bind-mode, port, or public-origin changes without restarting ColabOne.
+   */
+  updateWebConsole: bind<[ColabOneWebConsoleUpdateRequest], ColabOneWebConsoleState>("ColabOneDesktop.UpdateWebConsole", (req: ColabOneWebConsoleUpdateRequest) => [req]),
   writeClipboard: bind<[string], void>("ColabOneDesktop.WriteClipboard", (value: string) => [value]),
 } as const;
 
@@ -353,4 +407,9 @@ export const events = {
    * when triggered from the native system tray menu).
    */
   colaboneUpdateOpen: event<boolean>("colabone-update-open"),
+  /**
+   * ColabOneWebConsoleEvent pushes live remote web console status and active
+   * session count updates from Go to open desktop windows.
+   */
+  colaboneWebConsole: event<ColabOneWebConsoleState>("colabone-web-console"),
 } as const;
