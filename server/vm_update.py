@@ -148,8 +148,11 @@ def colabone_update():
     )
 
     def launch():
+        log_path = Path("/content/colabone-server.log")
+        if log_path.is_symlink():
+            raise OSError("refusing symlink log file")
         log_fd = os.open(
-            "/content/colabone-server.log",
+            str(log_path),
             os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )

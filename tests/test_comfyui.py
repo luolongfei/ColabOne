@@ -1690,7 +1690,10 @@ def test_comfyui_pg_reap_trash_tombstone_cleanup_and_log_tail_symlink_safety(
     )
     _terminate_process_group(_ZombieLeaderProc(), timeout=0.5)
     assert poll_calls["count"] >= 2
-    assert comfy_mod.signal.SIGKILL not in killpg_signals
+    sigkill = getattr(comfy_mod.signal, "SIGKILL", None)
+    if sigkill is not None:
+        assert sigkill not in killpg_signals
+    assert len(killpg_signals) <= 1
     monkeypatch.undo()
 
     # 2. save_workflow clears matching .trash tombstone on re-create.

@@ -818,6 +818,8 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
         if self._hf_token:
             env["HF_TOKEN"] = self._hf_token
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         return env
 
     def _voice_instruct(self, voice_preset: str) -> str:
@@ -892,6 +894,8 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 env=env,
             )
             out_q, t_out, t_err, stderr_lines = self._start_stream_readers(proc)

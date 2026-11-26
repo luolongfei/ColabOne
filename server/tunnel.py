@@ -208,6 +208,8 @@ class ColabOneTunnel:
                 if self.cancel.is_set():
                     return
                 self.token_path = g.runtime.root / ".cloudflared-token"
+                if self.token_path.is_symlink():
+                    raise OSError("refusing symlink for cloudflared token file")
                 fd = os.open(
                     self.token_path,
                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),

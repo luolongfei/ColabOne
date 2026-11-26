@@ -99,6 +99,8 @@ def _hash_file(path: Path, algorithm: str = "sha256") -> str:
 
 
 def _stream_write_file(src: Path, target: Path) -> None:
+    if target.is_symlink():
+        raise OSError("refusing symlink target")
     fd = os.open(
         target,
         os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
