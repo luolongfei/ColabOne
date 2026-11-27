@@ -203,6 +203,8 @@ class SkillPackageTests(unittest.TestCase):
             "--added-zh",
             "--added-en",
             "--with-e2e",
+            "不在本地执行",
+            "远端发布检查",
             "dispatch --workflow ci.yml",
             "preflight-status",
             "--require-green",

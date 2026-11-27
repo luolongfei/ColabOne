@@ -29,28 +29,16 @@
 
 `prepare_release.py` 会先在同目录写出临时文件并 `fsync`，替换前备份原文件；任意一步失败时按逆序自动回滚已替换文件。若极端情况下回滚本身失败，报错信息会列出受影响文件及保留的备份副本路径：先解除文件占用或权限问题，用备份还原并运行 `python3 tools/release_version.py --check` 确认一致后，再重新执行发布准备。
 
-## 打标签前预检与离线验证命令
+## 发版前快速核对（测试与 E2E 交由远端执行）
 
-WSL2/Linux 环境下请始终设置 `PATH`、`LD_LIBRARY_PATH` 并重定向 `< /dev/null`：
+发版流程**不在本地执行** `tools/install.py --check` 或本地 Playwright UI 回归测试；本地仅做秒级版本清单与 diff 校验，完整双平台检查、Playwright 回归、安装包构建与 `--self-test` 统一在推送标签后由远端 `.github/workflows/release.yml` 完成。WSL2/Linux 环境下请始终设置 `PATH`、`LD_LIBRARY_PATH` 并重定向 `< /dev/null`：
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/sysroot/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
 
-# 1. 打标签前：先对 main 上的功能/修复代码跑本地离线检查 + Playwright UI 回归
-python3 tools/install.py --root "$(mktemp -d)" --check --with-e2e < /dev/null
-git push origin main < /dev/null
-
-# 2. 打标签前：触发并等待 Windows + macOS 双平台 ci.yml 预检全绿
-PREFLIGHT_SHA=$(git rev-parse HEAD)
-python3 .agents/skills/colabone-release/scripts/github_actions.py dispatch \
-  --workflow ci.yml --ref main --sha "$PREFLIGHT_SHA" < /dev/null
-python3 .agents/skills/colabone-release/scripts/github_actions.py preflight-status \
-  --branch main --sha "$PREFLIGHT_SHA" --require-green < /dev/null
-
-# 3. 预检全绿并运行 prepare_release.py 后：核对版本清单与 diff
+# 1. 准备发版并核对三处版本清单与 diff（无业务代码改动）
 python3 tools/release_version.py --tag "v$VERSION" < /dev/null
-python3 tools/install.py --root "$(mktemp -d)" --check < /dev/null
 git diff -- console/mygo.json frontend/package.json frontend/package-lock.json
 ```
 
@@ -85,4 +73,4 @@ git push origin "v$VERSION"
   - `update-darwin-arm64.json`
   - `SHA256SUMS.txt`（以及如有前序签名版本时的 `.delta` 增量补丁）
 - 推送标签本身不代表发布完成；只有工作流全部成功且 Release 附件验收通过后，才报告发布完成
-- 若发布构建或线上检测失败，**绝不递增版本号跳过失败版本**：在 `main` 上持续修复问题（保持版本清单仍为目标版本 `X.Y.Z`）并通过双平台 `ci.yml` 预检后，删除已生成的失败、草稿或不完整旧 Release（如有）及远端/本地旧标签 `vX.Y.Z`，重新创建附注标签 `vX.Y.Z` 并推送，直至同一版本号完整可用、不留空版本
+- 若发布构建或线上检测失败，**绝不递增版本号跳过失败版本**：在 `main` 上持续修复问题并推送（保持版本清单仍为目标版本 `X.Y.Z`，不在本地重复跑全量测试），删除已生成的失败、草稿或不完整旧 Release（如有）及远端/本地旧标签 `vX.Y.Z`，重新创建附注标签 `vX.Y.Z` 并推送触发远端 `release.yml` 重新验证发布，直至同一版本号完整可用、不留空版本

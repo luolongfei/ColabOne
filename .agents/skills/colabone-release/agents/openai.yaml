@@ -1,4 +1,4 @@
 interface:
   display_name: "ColabOne Release"
-  short_description: "Preflight on Windows/macOS CI, prepare, tag, publish, and verify ColabOne releases with automatic patch (+1) versioning and bilingual (ZH/EN) release notes."
-  default_prompt: "Use $colabone-release to prepare or resume a ColabOne release: run local offline checks with Playwright regression tests, push main and pass the dual-platform ci.yml preflight gate before tagging, then bump the patch version (+1 by default), generate bilingual (Chinese on top, English below) release notes, tag and push, follow GitHub Actions, and verify the GitHub Release assets."
+  short_description: "Prepare, tag, publish, and verify ColabOne releases remotely via GitHub Actions (Windows/macOS) with automatic patch (+1) versioning and bilingual (ZH/EN) release notes."
+  default_prompt: "Use $colabone-release to prepare or resume a ColabOne release: skip local test/Playwright checks, validate version manifests, bump the patch version (+1 by default), generate bilingual (Chinese on top, English below) release notes, commit, tag, and push to run full Windows/macOS checks and publishing remotely in release.yml, follow GitHub Actions (fixing and re-tagging the same version on any remote failure), and verify the GitHub Release assets."
