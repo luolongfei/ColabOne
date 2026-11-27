@@ -57,7 +57,9 @@ def _make_16bit_gray_png(width: int = 96, height: int = 96, value: int = 32768) 
 # ---------------------------------------------------------------------------
 
 
-def test_runtime_and_drive_http_sessions_bounded_by_thread_lifetime(tmp_path):
+def test_runtime_and_drive_http_sessions_bounded_by_thread_lifetime(
+    tmp_path, monkeypatch
+):
     from server.drive import ColabOneDrive, ensure_rclone_binary
 
     rt = _make_runtime(tmp_path / "rt")
@@ -107,6 +109,10 @@ def test_runtime_and_drive_http_sessions_bounded_by_thread_lifetime(tmp_path):
 
     # Drive lazy http_factory: does NOT create a session when rclone already exists.
     import hashlib
+
+    monkeypatch.setattr("server.drive.shutil.which", lambda _: None)
+    monkeypatch.setattr("server.drive.platform.system", lambda: "Linux")
+    monkeypatch.setattr("server.drive.platform.machine", lambda: "x86_64")
 
     fake_catalog = tmp_path / "fake_cat"
     fake_catalog.mkdir()
@@ -793,7 +799,10 @@ def test_comfyui_store_atomicity_and_pg_has_members_permission_error(tmp_path, m
     assert meta_p.is_file()
 
     monkeypatch.setattr(
-        os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError())
+        os,
+        "killpg",
+        lambda pgid, sig: (_ for _ in ()).throw(PermissionError()),
+        raising=False,
     )
     assert comfyui._pg_has_members(12345) is True
 

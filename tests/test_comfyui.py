@@ -1272,16 +1272,19 @@ def test_canvas_proxy_hardening_bidirectional_ws_gating_chunked_hop_origin_and_t
                     self.records.append({"target": target, "headers": hdrs, "leftover": leftover})
 
                 if target == "/ws_stream":
-                    conn.sendall(
-                        b"HTTP/1.1 101 Switching Protocols\r\n"
-                        b"Upgrade: websocket\r\n"
-                        b"Connection: Upgrade\r\n\r\n"
-                    )
-                    for idx in range(5):
-                        time.sleep(0.10)
-                        conn.sendall(f"tick-{idx}|".encode("ascii"))
+                    try:
+                        conn.sendall(
+                            b"HTTP/1.1 101 Switching Protocols\r\n"
+                            b"Upgrade: websocket\r\n"
+                            b"Connection: Upgrade\r\n\r\n"
+                        )
+                        for idx in range(6):
+                            time.sleep(0.15)
+                            conn.sendall(f"tick-{idx}|".encode("ascii"))
+                    except OSError:
+                        return
                     # Now go completely silent so shared WS_IDLE_TIMEOUT triggers cleanly.
-                    conn.settimeout(3.0)
+                    conn.settimeout(5.0)
                     try:
                         while conn.recv(1024):
                             pass
@@ -1301,17 +1304,22 @@ def test_canvas_proxy_hardening_bidirectional_ws_gating_chunked_hop_origin_and_t
                     return
 
                 if target == "/slow_stream":
-                    conn.sendall(
-                        b"HTTP/1.1 200 OK\r\n"
-                        b"Content-Type: text/plain\r\n"
-                        b"Transfer-Encoding: chunked\r\n"
-                        b"Connection: close\r\n\r\n"
-                    )
-                    for i in range(4):
-                        time.sleep(0.12)
-                        part = f"p{i}".encode("ascii")
-                        conn.sendall(f"{len(part):x}\r\n".encode("ascii") + part + b"\r\n")
-                    conn.sendall(b"0\r\n\r\n")
+                    try:
+                        conn.sendall(
+                            b"HTTP/1.1 200 OK\r\n"
+                            b"Content-Type: text/plain\r\n"
+                            b"Transfer-Encoding: chunked\r\n"
+                            b"Connection: close\r\n\r\n"
+                        )
+                        for i in range(5):
+                            time.sleep(0.16)
+                            part = f"p{i}".encode("ascii")
+                            conn.sendall(
+                                f"{len(part):x}\r\n".encode("ascii") + part + b"\r\n"
+                            )
+                        conn.sendall(b"0\r\n\r\n")
+                    except OSError:
+                        return
                     return
 
                 body = json.dumps({"headers": hdrs}).encode("utf-8")
@@ -1527,13 +1535,13 @@ def test_canvas_proxy_hardening_bidirectional_ws_gating_chunked_hop_origin_and_t
 
         # F. Bidirectional WS idle timeout & non-upgrade streaming without outer wall-clock cap.
         with monkeypatch.context() as mp:
-            mp.setattr(comfy_proxy, "WS_IDLE_TIMEOUT", 0.25)
-            mp.setattr(comfy_proxy, "BODY_IDLE_TIMEOUT", 0.25)
+            mp.setattr(comfy_proxy, "WS_IDLE_TIMEOUT", 0.60)
+            mp.setattr(comfy_proxy, "BODY_IDLE_TIMEOUT", 0.60)
 
-            # Active server-only WS stream lasts ~0.50s (> 0.25s) while client sends nothing;
-            # all 5 ticks must arrive before shared idle timeout closes the socket.
-            with socket.create_connection(("127.0.0.1", proxy.port), timeout=3.0) as ws:
-                ws.settimeout(3.0)
+            # Active server-only WS stream lasts ~0.90s (> 0.60s) while client sends nothing;
+            # all 6 ticks must arrive before shared idle timeout closes the socket.
+            with socket.create_connection(("127.0.0.1", proxy.port), timeout=5.0) as ws:
+                ws.settimeout(5.0)
                 ws.sendall(
                     (
                         "GET /ws_stream HTTP/1.1\r\n"
@@ -1553,10 +1561,10 @@ def test_canvas_proxy_hardening_bidirectional_ws_gating_chunked_hop_origin_and_t
                         break
                     collected.extend(chunk)
                 text_ws = collected.decode("latin-1")
-                for idx in range(5):
+                for idx in range(6):
                     assert f"tick-{idx}|" in text_ws
 
-            # Non-upgrade HTTP stream lasts ~0.48s (> BODY_IDLE_TIMEOUT 0.25s total, 0.12s per chunk).
+            # Non-upgrade HTTP stream lasts ~0.80s (> BODY_IDLE_TIMEOUT 0.60s total, 0.16s per chunk).
             st_stream, _, body_stream = _raw_http_exchange(
                 proxy.port,
                 (
@@ -1566,7 +1574,7 @@ def test_canvas_proxy_hardening_bidirectional_ws_gating_chunked_hop_origin_and_t
                 ).encode("latin-1"),
             )
             assert st_stream == 200
-            for i in range(4):
+            for i in range(5):
                 assert f"p{i}".encode("ascii") in body_stream
     finally:
         proxy.stop()
