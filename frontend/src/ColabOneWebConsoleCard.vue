@@ -6,7 +6,6 @@ import {
   Checkbox as ACheckbox,
   Collapse as ACollapse,
   CollapsePanel as ACollapsePanel,
-  Input as AInput,
   InputNumber as AInputNumber,
   Segmented as ASegmented,
   Switch as ASwitch,
@@ -17,24 +16,18 @@ import {
   PhArrowsClockwise,
   PhCopy,
   PhDesktop,
-  PhEye,
-  PhEyeSlash,
   PhGlobe,
   PhKey,
   PhLinkSimple,
   PhSignOut,
   PhWifiHigh,
 } from "@phosphor-icons/vue";
+import ColabOnePrivacyInput from "./ColabOnePrivacyInput.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
-import {
-  colabOnePrivacyActive,
-  colabOnePrivacyPeekResetTick,
-  colabOneSynthesizeDomainInput,
-  segmentColabOneDomainInput,
-} from "./colabOnePrivacy";
+import { colabOnePrivacyActive } from "./colabOnePrivacy";
 import {
   COLABONE_WEB_CONSOLE_DEFAULT_PORT,
   COLABONE_WEB_CONSOLE_MAX_PORT,
@@ -94,8 +87,6 @@ const expanded = ref(Boolean(props.state.enabled || props.state.last_error));
 const guideActiveKey = ref<string[]>([]);
 const passcodeDraft = ref("");
 const passcodeInputRef = ref<{ hide?: () => void } | null>(null);
-const originHostRef = ref<HTMLElement | null>(null);
-const originPeeking = ref(false);
 const ticketSingleUse = ref<boolean>(readSavedTicketSingleUse());
 
 watch(ticketSingleUse, (singleUse) => {
@@ -121,47 +112,9 @@ const draftPort = ref<number | null>(
 );
 const draftPublicOrigin = ref<string>(props.state.public_origin || "");
 
-const isOriginMasked = computed<boolean>(
-  () => colabOnePrivacyActive.value && Boolean(draftPublicOrigin.value.trim()),
-);
-const displayedPublicOrigin = computed<string>(() =>
-  isOriginMasked.value && !originPeeking.value
-    ? colabOneSynthesizeDomainInput(draftPublicOrigin.value)
-    : draftPublicOrigin.value,
-);
-const originMaskSegments = computed(() =>
-  isOriginMasked.value
-    ? segmentColabOneDomainInput(draftPublicOrigin.value)
-    : [],
-);
-
-function onOriginPeekEnter() {
-  if (isOriginMasked.value) {
-    originPeeking.value = true;
-  }
-}
-
-function clearOriginPeek() {
-  originPeeking.value = false;
-  if (
-    typeof document !== "undefined" &&
-    originHostRef.value &&
-    document.activeElement instanceof HTMLElement &&
-    originHostRef.value.contains(document.activeElement)
-  ) {
-    document.activeElement.blur();
-  }
-}
-
 function onPublicOriginUpdate(value: string) {
-  if (colabOnePrivacyActive.value) return;
   draftPublicOrigin.value = value;
 }
-
-watch(colabOnePrivacyPeekResetTick, clearOriginPeek);
-watch(isOriginMasked, (masked) => {
-  if (!masked) clearOriginPeek();
-});
 
 watch(
   () => [props.state.enabled, Boolean(props.state.last_error)] as const,
@@ -635,64 +588,14 @@ function copyQuickCommand() {
             >
               {{ t("webConsole.publicOriginLabel") }}
             </label>
-            <div
-              ref="originHostRef"
-              class="co-privacy-input-host"
-              @mouseenter="onOriginPeekEnter"
-              @mouseleave="clearOriginPeek"
-            >
-              <AInput
-                id="settings-web-console-public-origin"
-                :value="displayedPublicOrigin"
-                :disabled="props.saving"
-                :readonly="colabOnePrivacyActive"
-                :placeholder="t('webConsole.publicOriginPlaceholder')"
-                autocomplete="off"
-                spellcheck="false"
-                :allow-clear="!colabOnePrivacyActive"
-                :class="{
-                  'co-privacy-masked-input': isOriginMasked,
-                  'co-privacy-readonly-input': colabOnePrivacyActive,
-                  'is-peeking': isOriginMasked && originPeeking,
-                }"
-                :data-privacy-masked="isOriginMasked ? 'true' : undefined"
-                :data-privacy-peeking="
-                  isOriginMasked && originPeeking ? 'true' : undefined
-                "
-                @update:value="onPublicOriginUpdate"
-                @press-enter="onSaveConfig"
-              >
-                <template v-if="colabOnePrivacyActive" #suffix>
-                  <ColabOneTooltip :title="t('privacy.inputReadonlyTooltip')">
-                    <span class="co-privacy-input-badge" aria-hidden="true">
-                      <PhEye
-                        v-if="isOriginMasked && originPeeking"
-                        :size="15"
-                      />
-                      <PhEyeSlash v-else :size="15" />
-                    </span>
-                  </ColabOneTooltip>
-                </template>
-              </AInput>
-              <div
-                v-if="isOriginMasked"
-                class="co-privacy-input-veil"
-                :class="{
-                  'is-peeking': originPeeking,
-                  'is-disabled': props.saving,
-                }"
-                aria-hidden="true"
-              >
-                <template v-for="(seg, idx) in originMaskSegments" :key="idx">
-                  <span v-if="seg.masked" class="co-privacy-mask">
-                    <span class="co-privacy-mask-glyphs">{{ seg.text }}</span>
-                  </span>
-                  <span v-else class="co-privacy-input-veil-plain">{{
-                    seg.text
-                  }}</span>
-                </template>
-              </div>
-            </div>
+            <ColabOnePrivacyInput
+              id="settings-web-console-public-origin"
+              :value="draftPublicOrigin"
+              :disabled="props.saving"
+              :placeholder="t('webConsole.publicOriginPlaceholder')"
+              @update:value="onPublicOriginUpdate"
+              @press-enter="onSaveConfig"
+            />
             <p class="co-webconsole-hint">
               {{ t("webConsole.publicOriginHint") }}
             </p>

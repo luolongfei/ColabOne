@@ -15,6 +15,7 @@ import {
   Tag as ATag,
 } from "ant-design-vue";
 import ColabOneCodeBlock from "./ColabOneCodeBlock.vue";
+import ColabOnePrivacyInput from "./ColabOnePrivacyInput.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
@@ -22,11 +23,8 @@ import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   buildColabOnePrivacyContext,
   colabOnePrivacyActive,
-  colabOnePrivacyPeekResetTick,
-  colabOneSynthesizeDomainInput,
   extractColabOneHostFromInput,
   isColabOnePublicHost,
-  segmentColabOneDomainInput,
 } from "./colabOnePrivacy";
 import { colabOneExtractTunnelToken } from "./colabOneSecretToken";
 import type { ColabOneToastKind } from "./colabOneToast";
@@ -117,45 +115,7 @@ const privacyContext = computed(() => {
   }
   return ctx;
 });
-const isDomainMasked = computed(
-  () => colabOnePrivacyActive.value && Boolean(domain.value.trim()),
-);
-const domainPeeking = ref(false);
-const domainHostRef = ref<HTMLElement | null>(null);
-const displayedDomain = computed(() =>
-  isDomainMasked.value && !domainPeeking.value
-    ? colabOneSynthesizeDomainInput(domain.value)
-    : domain.value,
-);
-const domainMaskSegments = computed(() =>
-  isDomainMasked.value ? segmentColabOneDomainInput(domain.value) : [],
-);
-
-function onDomainPeekEnter() {
-  if (isDomainMasked.value) {
-    domainPeeking.value = true;
-  }
-}
-
-function clearDomainPeek() {
-  domainPeeking.value = false;
-  if (
-    typeof document !== "undefined" &&
-    domainHostRef.value &&
-    document.activeElement instanceof HTMLElement &&
-    domainHostRef.value.contains(document.activeElement)
-  ) {
-    document.activeElement.blur();
-  }
-}
-
-watch(colabOnePrivacyPeekResetTick, clearDomainPeek);
-watch(isDomainMasked, (masked) => {
-  if (!masked) clearDomainPeek();
-});
-
 function onDomainUpdate(next: string) {
-  if (colabOnePrivacyActive.value) return;
   domain.value = next;
   settingsDirty.value = true;
 }
@@ -576,7 +536,6 @@ async function reveal() {
 watch(
   colabOnePrivacyActive,
   (masked) => {
-    clearDomainPeek();
     if (masked) {
       keySeq += 1;
       key.value = "";
@@ -890,60 +849,13 @@ onUnmounted(() => {
           <div class="co-api-form-grid">
             <div class="co-field-group">
               <label class="co-field-label" for="api-domain">{{ t("api.domainLabel") }}</label>
-              <div
-                ref="domainHostRef"
-                class="co-privacy-input-host"
-                @mouseenter="onDomainPeekEnter"
-                @mouseleave="clearDomainPeek"
-              >
-                <AInput
-                  id="api-domain"
-                  :value="displayedDomain"
-                  :disabled="enabled || busy"
-                  :readonly="colabOnePrivacyActive"
-                  placeholder="api.example.com"
-                  autocomplete="off"
-                  spellcheck="false"
-                  :allow-clear="!colabOnePrivacyActive"
-                  :class="{
-                    'co-privacy-masked-input': isDomainMasked,
-                    'co-privacy-readonly-input': colabOnePrivacyActive,
-                    'is-peeking': isDomainMasked && domainPeeking,
-                  }"
-                  :data-privacy-masked="isDomainMasked ? 'true' : undefined"
-                  :data-privacy-peeking="
-                    isDomainMasked && domainPeeking ? 'true' : undefined
-                  "
-                  @update:value="onDomainUpdate"
-                >
-                  <template v-if="colabOnePrivacyActive" #suffix>
-                    <ColabOneTooltip :title="t('privacy.inputReadonlyTooltip')">
-                      <span class="co-privacy-input-badge" aria-hidden="true">
-                        <PhEye v-if="isDomainMasked && domainPeeking" :size="15" />
-                        <PhEyeSlash v-else :size="15" />
-                      </span>
-                    </ColabOneTooltip>
-                  </template>
-                </AInput>
-                <div
-                  v-if="isDomainMasked"
-                  class="co-privacy-input-veil"
-                  :class="{
-                    'is-peeking': domainPeeking,
-                    'is-disabled': enabled || busy,
-                  }"
-                  aria-hidden="true"
-                >
-                  <template v-for="(seg, idx) in domainMaskSegments" :key="idx">
-                    <span v-if="seg.masked" class="co-privacy-mask">
-                      <span class="co-privacy-mask-glyphs">{{ seg.text }}</span>
-                    </span>
-                    <span v-else class="co-privacy-input-veil-plain">{{
-                      seg.text
-                    }}</span>
-                  </template>
-                </div>
-              </div>
+              <ColabOnePrivacyInput
+                id="api-domain"
+                :value="domain"
+                :disabled="enabled || busy"
+                placeholder="api.example.com"
+                @update:value="onDomainUpdate"
+              />
             </div>
 
             <div class="co-field-group">

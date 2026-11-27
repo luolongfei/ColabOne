@@ -69,7 +69,7 @@ export const enUSMessages: ColabOneMessages = {
   "nav.privacyDisableAria": "Disable privacy mask",
   "privacy.maskedFieldAria": "Redacted by privacy mask",
   "privacy.secretLockedTooltip": "Privacy mask is on — turn it off to reveal plaintext",
-  "privacy.inputReadonlyTooltip": "Privacy mask is on — turn it off to edit domain",
+  "privacy.inputMaskedTooltip": "Privacy mask is on — hover or click to view and edit",
   "nav.logsOpenTooltip": "Close Logs (Ctrl+J)",
   "nav.logsClosedTooltip": "Open Logs (Ctrl+J)",
   "nav.logsCollapseAria": "Collapse Logs",

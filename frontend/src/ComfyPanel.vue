@@ -26,6 +26,7 @@ import ColabOneDriveExportModal, {
   isColabOneDriveConnectOperation,
   type ColabOneDriveExportResult,
 } from "./ColabOneDriveExportModal.vue";
+import ColabOnePrivacyInput from "./ColabOnePrivacyInput.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
@@ -34,12 +35,8 @@ import ComfyWorkflowField from "./ComfyWorkflowField.vue";
 import LiveStudioPanel from "./LiveStudioPanel.vue";
 import {
   buildColabOnePrivacyContext,
-  colabOnePrivacyActive,
-  colabOnePrivacyPeekResetTick,
-  colabOneSynthesizeDomainInput,
   extractColabOneHostFromInput,
   isColabOnePublicHost,
-  segmentColabOneDomainInput,
 } from "./colabOnePrivacy";
 import { colabOneExtractTunnelToken } from "./colabOneSecretToken";
 import {
@@ -61,8 +58,6 @@ import {
   PhCloudCheck,
   PhCoins,
   PhDownloadSimple,
-  PhEye,
-  PhEyeSlash,
   PhFileCode,
   PhGraph,
   PhHardDrives,
@@ -6501,47 +6496,7 @@ const privacyContext = computed(() => {
   }
   return ctx;
 });
-const isCanvasDomainMasked = computed(
-  () => colabOnePrivacyActive.value && Boolean(canvasDomain.value.trim()),
-);
-const canvasDomainPeeking = ref(false);
-const canvasDomainHostRef = ref<HTMLElement | null>(null);
-const displayedCanvasDomain = computed(() =>
-  isCanvasDomainMasked.value && !canvasDomainPeeking.value
-    ? colabOneSynthesizeDomainInput(canvasDomain.value)
-    : canvasDomain.value,
-);
-const canvasDomainMaskSegments = computed(() =>
-  isCanvasDomainMasked.value
-    ? segmentColabOneDomainInput(canvasDomain.value)
-    : [],
-);
-
-function onCanvasDomainPeekEnter() {
-  if (isCanvasDomainMasked.value) {
-    canvasDomainPeeking.value = true;
-  }
-}
-
-function clearCanvasDomainPeek() {
-  canvasDomainPeeking.value = false;
-  if (
-    typeof document !== "undefined" &&
-    canvasDomainHostRef.value &&
-    document.activeElement instanceof HTMLElement &&
-    canvasDomainHostRef.value.contains(document.activeElement)
-  ) {
-    document.activeElement.blur();
-  }
-}
-
-watch([colabOnePrivacyActive, colabOnePrivacyPeekResetTick], clearCanvasDomainPeek);
-watch(isCanvasDomainMasked, (masked) => {
-  if (!masked) clearCanvasDomainPeek();
-});
-
 function onCanvasDomainUpdate(next: string) {
-  if (colabOnePrivacyActive.value) return;
   canvasDomain.value = next;
   canvasSettingsEdited.value = true;
 }
@@ -7716,80 +7671,13 @@ onUnmounted(() => {
                     >
                       <span>{{ t("comfy.canvasDomainLabel") }}</span>
                     </label>
-                    <div
-                      ref="canvasDomainHostRef"
-                      class="co-privacy-input-host"
-                      @mouseenter="onCanvasDomainPeekEnter"
-                      @mouseleave="clearCanvasDomainPeek"
-                    >
-                      <AInput
-                        id="comfy-canvas-domain"
-                        :value="displayedCanvasDomain"
-                        :disabled="canvasEnabled || busy"
-                        :readonly="colabOnePrivacyActive"
-                        placeholder="comfy.example.com"
-                        autocomplete="off"
-                        spellcheck="false"
-                        :allow-clear="!colabOnePrivacyActive"
-                        :class="{
-                          'co-privacy-masked-input': isCanvasDomainMasked,
-                          'co-privacy-readonly-input': colabOnePrivacyActive,
-                          'is-peeking':
-                            isCanvasDomainMasked && canvasDomainPeeking,
-                        }"
-                        :data-privacy-masked="
-                          isCanvasDomainMasked ? 'true' : undefined
-                        "
-                        :data-privacy-peeking="
-                          isCanvasDomainMasked && canvasDomainPeeking
-                            ? 'true'
-                            : undefined
-                        "
-                        @update:value="onCanvasDomainUpdate"
-                      >
-                        <template v-if="colabOnePrivacyActive" #suffix>
-                          <ColabOneTooltip
-                            :title="t('privacy.inputReadonlyTooltip')"
-                          >
-                            <span
-                              class="co-privacy-input-badge"
-                              aria-hidden="true"
-                            >
-                              <PhEye
-                                v-if="
-                                  isCanvasDomainMasked && canvasDomainPeeking
-                                "
-                                :size="15"
-                              />
-                              <PhEyeSlash v-else :size="15" />
-                            </span>
-                          </ColabOneTooltip>
-                        </template>
-                      </AInput>
-                      <div
-                        v-if="isCanvasDomainMasked"
-                        class="co-privacy-input-veil"
-                        :class="{
-                          'is-peeking': canvasDomainPeeking,
-                          'is-disabled': canvasEnabled || busy,
-                        }"
-                        aria-hidden="true"
-                      >
-                        <template
-                          v-for="(seg, idx) in canvasDomainMaskSegments"
-                          :key="idx"
-                        >
-                          <span v-if="seg.masked" class="co-privacy-mask">
-                            <span class="co-privacy-mask-glyphs">{{
-                              seg.text
-                            }}</span>
-                          </span>
-                          <span v-else class="co-privacy-input-veil-plain">{{
-                            seg.text
-                          }}</span>
-                        </template>
-                      </div>
-                    </div>
+                    <ColabOnePrivacyInput
+                      id="comfy-canvas-domain"
+                      :value="canvasDomain"
+                      :disabled="canvasEnabled || busy"
+                      placeholder="comfy.example.com"
+                      @update:value="onCanvasDomainUpdate"
+                    />
                   </div>
 
                   <div class="co-comfy-field-control">

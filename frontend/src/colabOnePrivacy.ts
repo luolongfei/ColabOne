@@ -282,6 +282,33 @@ export function colabOneSynthesizeDomainInput(raw: string): string {
     .join("");
 }
 
+export interface ColabOneTextSelectionRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Applies pasted text directly onto the real value of a privacy-masked input
+ * when a paste event arrives while the synthetic placeholder is rendered (for
+ * example, via an OS clipboard picker right as the window regains focus).
+ * Ensures synthetic mask glyphs can never leak into the saved value.
+ */
+export function colabOneApplyPrivacyInputPaste(
+  currentValue: string,
+  pastedText: string,
+  selection: ColabOneTextSelectionRange | null = null,
+): { value: string; caret: number } {
+  const real = String(currentValue ?? "");
+  const pasted = String(pastedText ?? "");
+  if (!selection) {
+    return { value: pasted, caret: pasted.length };
+  }
+  const start = clamp(Math.trunc(selection.start), 0, real.length);
+  const end = clamp(Math.trunc(selection.end), start, real.length);
+  const value = real.slice(0, start) + pasted + real.slice(end);
+  return { value, caret: start + pasted.length };
+}
+
 /**
  * Splits a URL (e.g. `https://colabone.acme.dev/v1`) into unmasked scheme/path
  * segments and a masked host segment. Leaves generic placeholder hosts intact.

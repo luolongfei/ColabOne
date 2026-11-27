@@ -68,7 +68,7 @@ export const jaJPMessages: ColabOneMessages = {
   "nav.privacyDisableAria": "プライバシーマスクを解除",
   "privacy.maskedFieldAria": "プライバシー保護のためマスク済み",
   "privacy.secretLockedTooltip": "プライバシーマスク有効中は平文を表示できません",
-  "privacy.inputReadonlyTooltip": "プライバシーマスク有効中はドメインを編集できません",
+  "privacy.inputMaskedTooltip": "プライバシーマスク有効中 — ホバーまたはクリックで確認・編集できます",
   "nav.logsOpenTooltip": "実行ログを閉じる (Ctrl+J)",
   "nav.logsClosedTooltip": "実行ログを開く (Ctrl+J)",
   "nav.logsCollapseAria": "実行ログを閉じる",

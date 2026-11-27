@@ -66,7 +66,7 @@ export const zhCNMessages = {
   "nav.privacyDisableAria": "关闭隐私打码",
   "privacy.maskedFieldAria": "已隐私打码",
   "privacy.secretLockedTooltip": "隐私打码已开启，关闭后可查看明文",
-  "privacy.inputReadonlyTooltip": "隐私打码已开启，关闭后可编辑域名",
+  "privacy.inputMaskedTooltip": "隐私打码已开启，悬停或点击即可查看和编辑",
   "nav.logsOpenTooltip": "关闭运行日志 (Ctrl+J)",
   "nav.logsClosedTooltip": "打开运行日志 (Ctrl+J)",
   "nav.logsCollapseAria": "收起运行日志",

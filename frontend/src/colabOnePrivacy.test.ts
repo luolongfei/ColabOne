@@ -3,6 +3,7 @@ import { highlightColabOneCode } from "./colabOneHighlight";
 import {
   applyColabOnePrivacyToCodeLines,
   buildColabOnePrivacyContext,
+  colabOneApplyPrivacyInputPaste,
   colabOneMaskPlainText,
   colabOnePrivacyActive,
   colabOnePrivacyContextKey,
@@ -380,5 +381,46 @@ describe("ColabOne privacy startup default vs session toggle separation", () => 
     });
     expect(keyA).toBe(keyB);
     expect(keyA).not.toBe(keyC);
+  });
+});
+
+describe("ColabOne privacy input paste helper", () => {
+  it("replaces or splices pasted text onto the real value without leaking synthetic glyphs", () => {
+    expect(
+      colabOneApplyPrivacyInputPaste("comfy.old.dev", "comfy.new.dev", null),
+    ).toEqual({
+      value: "comfy.new.dev",
+      caret: "comfy.new.dev".length,
+    });
+
+    expect(
+      colabOneApplyPrivacyInputPaste("https://old.dev", "new", {
+        start: 8,
+        end: 11,
+      }),
+    ).toEqual({
+      value: "https://new.dev",
+      caret: 11,
+    });
+
+    expect(
+      colabOneApplyPrivacyInputPaste("https://acme.dev", "sub.", {
+        start: 8,
+        end: 8,
+      }),
+    ).toEqual({
+      value: "https://sub.acme.dev",
+      caret: 12,
+    });
+
+    expect(
+      colabOneApplyPrivacyInputPaste("abc", "xyz", {
+        start: -5,
+        end: 99,
+      }),
+    ).toEqual({
+      value: "xyz",
+      caret: 3,
+    });
   });
 });

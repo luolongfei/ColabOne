@@ -68,7 +68,7 @@ export const koKRMessages: ColabOneMessages = {
   "nav.privacyDisableAria": "개인정보 가리기 끄기",
   "privacy.maskedFieldAria": "개인정보 보호를 위해 가려짐",
   "privacy.secretLockedTooltip": "개인정보 가리기가 켜져 있어 평문을 표시할 수 없습니다",
-  "privacy.inputReadonlyTooltip": "개인정보 가리기가 켜져 있어 도메인을 편집할 수 없습니다",
+  "privacy.inputMaskedTooltip": "개인정보 가리기 활성 — 마우스를 올리거나 클릭하여 확인·편집",
   "nav.logsOpenTooltip": "실행 로그 닫기 (Ctrl+J)",
   "nav.logsClosedTooltip": "실행 로그 열기 (Ctrl+J)",
   "nav.logsCollapseAria": "실행 로그 접기",

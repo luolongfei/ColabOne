@@ -1353,13 +1353,12 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
   width: 100%;
 }
 
-.co-privacy-readonly-input.ant-input-affix-wrapper {
-  background: var(--co-subtle);
-  cursor: default;
-}
-
 .co-privacy-masked-input.ant-input-affix-wrapper {
   overflow: hidden;
+}
+
+.co-privacy-masked-input:not(.is-peeking).ant-input-affix-wrapper .ant-input-clear-icon {
+  display: none;
 }
 
 .co-privacy-masked-input:not(.is-peeking).ant-input-affix-wrapper input.ant-input,
@@ -1367,15 +1366,23 @@ input.co-privacy-masked-input:not(.is-peeking).ant-input {
   color: transparent !important;
   -webkit-text-fill-color: transparent !important;
   caret-color: transparent !important;
-  user-select: none;
-  -webkit-user-select: none;
-  cursor: default;
+}
+
+.co-privacy-masked-input:not(.is-peeking):not(.ant-input-affix-wrapper-disabled).ant-input-affix-wrapper input.ant-input,
+input.co-privacy-masked-input:not(.is-peeking):not([disabled]).ant-input {
+  cursor: text;
 }
 
 .co-privacy-masked-input.is-peeking.ant-input-affix-wrapper input.ant-input,
 input.co-privacy-masked-input.is-peeking.ant-input {
   user-select: text;
   -webkit-user-select: text;
+}
+
+.co-privacy-input-spacer {
+  display: inline-block;
+  width: 0;
+  height: 0;
 }
 
 .co-privacy-input-veil {

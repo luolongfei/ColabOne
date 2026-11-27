@@ -8483,16 +8483,16 @@ test("privacy mask blurs personal info across Devices, API, ComfyUI, Settings, a
   await expect(billingMask).not.toHaveAttribute("data-privacy-peeking", "true");
   await expect(billingSub).not.toContainText("alex.chen");
 
-  // 2. Public API page: domain input is masked & readonly, Base URL & code block blur ONLY the personal domain,
+  // 2. Public API page: domain input is masked (never readonly), Base URL & code block blur ONLY the personal domain,
   //    hovering each mosaic peeks the original value, and Copy Base URL / Copy Code always copy real values.
   await navItem(page, "对外 API").click();
   const domainInput = page.locator("#api-domain");
-  await expect(domainInput).toHaveAttribute("readonly", "");
+  await expect(domainInput).not.toHaveAttribute("readonly", "");
   const maskedDomainVal = await domainInput.inputValue();
   expect(maskedDomainVal.startsWith("https://")).toBe(true);
   expect(maskedDomainVal).not.toContain("colabone.acme.dev");
 
-  // Hovering the API domain input host reveals the real domain even while the input is disabled/readonly.
+  // Hovering the API domain input host reveals the real domain even while the input is disabled.
   await domainInput.locator("..").hover();
   await expect(domainInput).toHaveValue("https://colabone.acme.dev");
   await page.mouse.move(10, 10);
@@ -8564,11 +8564,11 @@ test("privacy mask blurs personal info across Devices, API, ComfyUI, Settings, a
   await expect(privacyBtn).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".co-api-access")).not.toContainText("sk-test-privacy-key-999");
 
-  // 3. ComfyUI Canvas tab: canvas domain input and public host are masked.
+  // 3. ComfyUI Canvas tab: canvas domain input and public host are masked (never readonly).
   await navItem(page, "ComfyUI").click();
   await page.getByRole("tab", { name: /原生画布/ }).click();
   const canvasDomainInput = page.locator("#comfy-canvas-domain");
-  await expect(canvasDomainInput).toHaveAttribute("readonly", "");
+  await expect(canvasDomainInput).not.toHaveAttribute("readonly", "");
   expect(await canvasDomainInput.inputValue()).not.toContain("comfy.acme.dev");
   const canvasHostEl = page.getByTestId("comfy-canvas-public-host");
   const canvasHostMask = canvasHostEl.locator('[data-privacy-masked="true"]');
@@ -8643,6 +8643,168 @@ test("privacy mask blurs personal info across Devices, API, ComfyUI, Settings, a
   expect(
     await page.evaluate(() => window.localStorage.getItem("colabone.privacy.default")),
   ).toBe("1");
+});
+
+test("privacy mask allows unrestricted pasting and editing across all domain and secret inputs", async ({
+  page,
+}) => {
+  await mock(page, true);
+
+  // Enable privacy mask while services are stopped so all configuration inputs are editable.
+  const privacyBtn = page.getByTestId("nav-privacy-toggle");
+  await privacyBtn.click();
+  await expect(privacyBtn).toHaveAttribute("aria-pressed", "true");
+
+  // Helper that simulates real browser clipboard paste into the active/focused input
+  // (using execCommand/insertText fallback if clipboard permissions are restricted).
+  const pasteViaShortcut = async (
+    locator: ReturnType<typeof page.locator>,
+    text: string,
+    options?: { skipFocus?: boolean },
+  ) => {
+    if (!options?.skipFocus) {
+      await locator.click();
+    }
+    await locator.evaluate((el, value) => {
+      const input = el as HTMLInputElement;
+      const dt = new DataTransfer();
+      dt.setData("text/plain", value);
+      const ev = new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      });
+      const notPrevented = input.dispatchEvent(ev);
+      if (notPrevented) {
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        input.setRangeText(value, start, end, "end");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }, text);
+  };
+
+  // 1. ComfyUI Native Canvas domain & tunnel token: empty -> paste -> mask on blur -> replace via paste -> save.
+  await navItem(page, "ComfyUI").click();
+  await page.getByRole("tab", { name: /原生画布/ }).click();
+
+  const canvasDomainInput = page.locator("#comfy-canvas-domain");
+  await expect(canvasDomainInput).toBeVisible();
+  await expect(canvasDomainInput).toBeEnabled();
+  await expect(canvasDomainInput).not.toHaveAttribute("readonly", "");
+
+  await pasteViaShortcut(canvasDomainInput, "comfy.pasted.acme.dev");
+  await expect(canvasDomainInput).toHaveValue("comfy.pasted.acme.dev");
+
+  // Moving pointer away while still focused must NOT blur or block further editing/pasting.
+  await page.mouse.move(10, 10);
+  await expect(canvasDomainInput).toBeFocused();
+  await expect(canvasDomainInput).toHaveValue("comfy.pasted.acme.dev");
+
+  // Blurring while pointer is away immediately re-masks with zero real characters in DOM.
+  await canvasDomainInput.blur();
+  expect(await canvasDomainInput.inputValue()).not.toContain("comfy.pasted.acme.dev");
+
+  // Defensive paste directly on a masked, unhovered input must replace real value without mixing synthetic glyphs.
+  await pasteViaShortcut(canvasDomainInput, "comfy2.pasted.acme.dev", {
+    skipFocus: true,
+  });
+  await expect(canvasDomainInput).toHaveValue("comfy2.pasted.acme.dev");
+  await expect(canvasDomainInput).toBeFocused();
+
+  // Win+V / OS clipboard picker flow: select subdomain -> window blur masks DOM without dropping activeElement ->
+  // window focus restores real value & selection -> paste splices cleanly without synthetic glyphs.
+  await canvasDomainInput.evaluate((el) => {
+    const input = el as HTMLInputElement;
+    input.setSelectionRange(0, 6);
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  expect(await canvasDomainInput.inputValue()).not.toContain("comfy2.pasted.acme.dev");
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(canvasDomainInput).toHaveValue("comfy2.pasted.acme.dev");
+  await pasteViaShortcut(canvasDomainInput, "studio", { skipFocus: true });
+  await expect(canvasDomainInput).toHaveValue("studio.pasted.acme.dev");
+
+  // Same-tick window.focus followed immediately by blur must NEVER leave real text behind in DOM.
+  await canvasDomainInput.evaluate((el) => {
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+    (el as HTMLInputElement).blur();
+  });
+  expect(await canvasDomainInput.inputValue()).not.toContain("studio.pasted.acme.dev");
+
+  // Keyboard focus (without mouse hover) must synchronously swap synthetic DOM text for real value before paste.
+  await page.mouse.move(10, 10);
+  await canvasDomainInput.evaluate((el) => {
+    const input = el as HTMLInputElement;
+    input.focus();
+    input.setSelectionRange(0, input.value.length);
+  });
+  await expect(canvasDomainInput).toHaveValue("studio.pasted.acme.dev");
+  await pasteViaShortcut(canvasDomainInput, "comfy2.pasted.acme.dev", {
+    skipFocus: true,
+  });
+  await expect(canvasDomainInput).toHaveValue("comfy2.pasted.acme.dev");
+
+  // Tunnel token input must also allow pasting install commands while privacy mask is ON.
+  const canvasToken =
+    "eyJhIjoiYWJjZGVmMDEyMzQ1Njc4OSIsInQiOiJ0dW5uZWwtcHJpdmFjeS10ZXN0IiwicyI6InNlY3JldC1wcml2YWN5In0=";
+  const canvasTokenInput = page.locator("#comfy-canvas-token");
+  await pasteViaShortcut(
+    canvasTokenInput,
+    `cloudflared.exe service install ${canvasToken}`,
+  );
+  await expect(canvasTokenInput).toHaveValue(canvasToken);
+
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect
+    .poll(async () => {
+      const calls = await page.evaluate(() => (window as any).__calls);
+      return calls.find((c: any) => c.action === "comfyui.canvas.save")?.payload;
+    })
+    .toMatchObject({
+      domain: "comfy2.pasted.acme.dev",
+      tunnel_token: canvasToken,
+    });
+
+  // 2. Public API domain input: paste while privacy mask is ON, verify save & re-masking on blur.
+  await navItem(page, "对外 API").click();
+  const apiDomainInput = page.locator("#api-domain");
+  await expect(apiDomainInput).toBeVisible();
+  await expect(apiDomainInput).toBeEnabled();
+  await expect(apiDomainInput).not.toHaveAttribute("readonly", "");
+
+  await pasteViaShortcut(apiDomainInput, "api.pasted.acme.dev");
+  await expect(apiDomainInput).toHaveValue("api.pasted.acme.dev");
+  await page.mouse.move(10, 10);
+  await apiDomainInput.blur();
+  expect(await apiDomainInput.inputValue()).not.toContain("api.pasted.acme.dev");
+
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect
+    .poll(async () => {
+      const calls = await page.evaluate(() => (window as any).__calls);
+      return calls.find((c: any) => c.action === "api.save")?.payload;
+    })
+    .toMatchObject({
+      domain: "api.pasted.acme.dev",
+    });
+
+  // 3. Settings -> Remote Web Console public origin input: paste while privacy mask is ON & re-mask on blur.
+  await navItem(page, "设置").click();
+  const webConsoleExpand = page.getByTestId("settings-web-console-expand-btn");
+  await webConsoleExpand.scrollIntoViewIfNeeded();
+  await webConsoleExpand.click();
+  const originInput = page.locator("#settings-web-console-public-origin");
+  await expect(originInput).toBeVisible();
+  await expect(originInput).toBeEnabled();
+  await expect(originInput).not.toHaveAttribute("readonly", "");
+
+  await pasteViaShortcut(originInput, "https://console.pasted.acme.dev");
+  await expect(originInput).toHaveValue("https://console.pasted.acme.dev");
+  await page.mouse.move(10, 10);
+  await originInput.blur();
+  expect(await originInput.inputValue()).not.toContain("console.pasted.acme.dev");
 });
 
 test("settings page customizes GPU allocation max attempts with 20 default and 1-100 clamping", async ({

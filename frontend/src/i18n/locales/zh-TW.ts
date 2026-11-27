@@ -68,7 +68,7 @@ export const zhTWMessages: ColabOneMessages = {
   "nav.privacyDisableAria": "關閉隱私打碼",
   "privacy.maskedFieldAria": "已隱私打碼",
   "privacy.secretLockedTooltip": "隱私打碼已開啟，關閉後可檢視明文",
-  "privacy.inputReadonlyTooltip": "隱私打碼已開啟，關閉後可編輯網域",
+  "privacy.inputMaskedTooltip": "隱私打碼已開啟，懸停或點擊即可檢視與編輯",
   "nav.logsOpenTooltip": "關閉執行日誌 (Ctrl+J)",
   "nav.logsClosedTooltip": "開啟執行日誌 (Ctrl+J)",
   "nav.logsCollapseAria": "收合執行日誌",
