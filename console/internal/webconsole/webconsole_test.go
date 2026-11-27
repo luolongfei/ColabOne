@@ -21,10 +21,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/luolongfei/ColabOne/console/internal/brandicon"
 )
 
@@ -2281,5 +2283,198 @@ func TestLoginAndRedeemAtomicAgainstConcurrentRevocationAndStop(t *testing.T) {
 	}
 	if wc.State().ActiveSessions != 0 {
 		t.Fatalf("expected 0 active sessions after revoke + failed login, got %d", wc.State().ActiveSessions)
+	}
+}
+
+func TestLiveStudioWSProxyHardening(t *testing.T) {
+	// Mock upstream Live Studio WS server.
+	var dropRawNext atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != colabOneLiveWSUpstreamPath {
+			http.NotFound(rw, r)
+			return
+		}
+		conn, err := websocket.Accept(rw, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		if dropRawNext.Swap(false) {
+			// Abruptly close TCP connection without sending a WS close frame.
+			_ = conn.CloseNow()
+			return
+		}
+		defer conn.CloseNow()
+		for {
+			mt, data, readErr := conn.Read(r.Context())
+			if readErr != nil {
+				return
+			}
+			if writeErr := conn.Write(r.Context(), mt, data); writeErr != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	snapPayload, _ := json.Marshal(map[string]any{
+		"runtime": map[string]any{
+			"comfyui": map[string]any{
+				"canvas": map[string]any{
+					"url": upstream.URL,
+				},
+			},
+		},
+	})
+
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir: t.TempDir(),
+		Vault:     newMemoryVault(),
+		CallBridge: func(ctx context.Context, method string, params map[string]any) (string, error) {
+			if method == "snapshot" {
+				return string(snapPayload), nil
+			}
+			return `{}`, nil
+		},
+	})
+	wc.liveWSAllowLocal = true
+	wc.liveWSHTTPClient = upstream.Client()
+	defer wc.Close()
+
+	port := reserveFreePort(t)
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{
+		Enabled: boolPtr(true),
+		Port:    intPtr(port),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pass, err := wc.Passcode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxySrv := httptest.NewServer(wc.Handler())
+	defer proxySrv.Close()
+	proxyURL, err := url.Parse(proxySrv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Authenticate via POST /_colabone_web/login to obtain a real session cookie.
+	loginBody, _ := json.Marshal(map[string]string{"passcode": pass})
+	loginReq, _ := http.NewRequest(http.MethodPost, proxySrv.URL+"/_colabone_web/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", proxySrv.URL)
+	loginReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	loginResp, err := proxySrv.Client().Do(loginReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login failed with status %d", loginResp.StatusCode)
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Cookies() {
+		if c.Name == SessionCookieName {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("missing session cookie after login")
+	}
+
+	// 1. Missing Origin -> 403.
+	noOriginReq, _ := http.NewRequest(http.MethodGet, proxySrv.URL+colabOneLiveWSProxyPath, nil)
+	noOriginReq.AddCookie(sessionCookie)
+	noOriginResp, err := proxySrv.Client().Do(noOriginReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noOriginResp.Body.Close()
+	if noOriginResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing Origin expected 403, got %d", noOriginResp.StatusCode)
+	}
+
+	// 2. Valid Origin but missing WebSocket upgrade headers -> 400 (before dialing upstream).
+	badUpgradeReq, _ := http.NewRequest(http.MethodGet, proxySrv.URL+colabOneLiveWSProxyPath, nil)
+	badUpgradeReq.AddCookie(sessionCookie)
+	badUpgradeReq.Header.Set("Origin", proxySrv.URL)
+	badUpgradeResp, err := proxySrv.Client().Do(badUpgradeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badUpgradeResp.Body.Close()
+	if badUpgradeResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-WS upgrade expected 400, got %d", badUpgradeResp.StatusCode)
+	}
+
+	wsURL := "ws://" + proxyURL.Host + colabOneLiveWSProxyPath
+	dialHeaders := http.Header{
+		"Origin": {proxySrv.URL},
+		"Cookie": {sessionCookie.Name + "=" + sessionCookie.Value},
+	}
+
+	// 3. Upstream abnormal drop without close frame forwards 1014 (StatusBadGateway) instead of 1000.
+	dropRawNext.Store(true)
+	ctxDrop, cancelDrop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDrop()
+	dropConn, _, err := websocket.Dial(ctxDrop, wsURL, &websocket.DialOptions{
+		HTTPClient: proxySrv.Client(),
+		HTTPHeader: dialHeaders,
+	})
+	if err != nil {
+		t.Fatalf("dial for upstream-drop test failed: %v", err)
+	}
+	_, _, readErr := dropConn.Read(ctxDrop)
+	_ = dropConn.CloseNow()
+	if gotCode := websocket.CloseStatus(readErr); gotCode != websocket.StatusBadGateway {
+		t.Fatalf("upstream abrupt drop close status = %v, want %v (1014), err=%v", gotCode, websocket.StatusBadGateway, readErr)
+	}
+
+	// 4. Concurrency cap rejects (colabOneLiveWSMaxConcurrent + 1)-th connection with 429 + Retry-After,
+	// and RevokeSessions tears down all active proxied WebSockets immediately with 4401.
+	ctxPool, cancelPool := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelPool()
+	conns := make([]*websocket.Conn, 0, colabOneLiveWSMaxConcurrent)
+	for i := 0; i < colabOneLiveWSMaxConcurrent; i++ {
+		c, _, dialErr := websocket.Dial(ctxPool, wsURL, &websocket.DialOptions{
+			HTTPClient: proxySrv.Client(),
+			HTTPHeader: dialHeaders,
+		})
+		if dialErr != nil {
+			t.Fatalf("dial %d failed: %v", i, dialErr)
+		}
+		conns = append(conns, c)
+	}
+	defer func() {
+		for _, c := range conns {
+			_ = c.CloseNow()
+		}
+	}()
+
+	_, overflowResp, overflowErr := websocket.Dial(ctxPool, wsURL, &websocket.DialOptions{
+		HTTPClient: proxySrv.Client(),
+		HTTPHeader: dialHeaders,
+	})
+	if overflowErr == nil || overflowResp == nil || overflowResp.StatusCode != http.StatusTooManyRequests {
+		status := 0
+		if overflowResp != nil {
+			status = overflowResp.StatusCode
+		}
+		t.Fatalf("expected 429 on concurrency overflow, got status=%d err=%v", status, overflowErr)
+	}
+	if strings.TrimSpace(overflowResp.Header.Get("Retry-After")) == "" {
+		t.Fatalf("expected Retry-After header on 429 overflow")
+	}
+
+	// RevokeSessions must immediately terminate active live WS proxy connections with 4401.
+	wc.RevokeSessions()
+	for i, c := range conns {
+		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _, rErr := c.Read(readCtx)
+		cancelRead()
+		if gotCode := websocket.CloseStatus(rErr); gotCode != websocket.StatusCode(4401) {
+			t.Fatalf("conn %d after RevokeSessions close status = %v, want 4401 (err=%v)", i, gotCode, rErr)
+		}
 	}
 }

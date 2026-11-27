@@ -7,9 +7,11 @@ import argparse
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 if __package__:
@@ -60,12 +62,22 @@ def _host_goos() -> str:
 
 
 def _host_goarch() -> str:
-    machine = platform.machine().lower()
+    machine = (platform.machine() or "").strip().lower()
+    if sys.platform == "win32" and machine in ("", "x86", "i386", "i686"):
+        wow_arch = (
+            os.environ.get("PROCESSOR_ARCHITEW6432")
+            or os.environ.get("PROCESSOR_ARCHITECTURE")
+            or ""
+        ).strip().lower()
+        if wow_arch:
+            machine = wow_arch
     if machine in ("arm64", "aarch64"):
         return "arm64"
     if machine in ("amd64", "x86_64", "x64"):
         return "amd64"
-    return "arm64" if sys.platform == "darwin" else "amd64"
+    if not machine:
+        return "arm64" if sys.platform == "darwin" else "amd64"
+    raise RuntimeError(f"Unsupported host CPU architecture: {machine!r}")
 
 
 def _verify_mygo_bindings_up_to_date() -> None:
@@ -81,7 +93,9 @@ def _verify_mygo_bindings_up_to_date() -> None:
             raise RuntimeError(
                 f"`go tool mygo generate -o {out_file}` did not produce output file"
             )
-        if out_file.read_bytes() != committed.read_bytes():
+        gen_norm = out_file.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        com_norm = committed.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        if gen_norm != com_norm:
             raise RuntimeError(
                 "frontend/src/colabOneBridge.ts is out of date; run `cd console && go tool mygo generate`"
             )
@@ -92,6 +106,83 @@ def run(args, cwd=ROOT, timeout=300, **kwargs):
     kwargs.setdefault("env", _clean_env())
     kwargs.setdefault("timeout", timeout)
     subprocess.run(args, cwd=cwd, check=True, **kwargs)
+
+
+def _rename_with_retry(src: Path, dst: Path) -> None:
+    """Rename a path with bounded Windows transient-lock retries."""
+    max_attempts = 5 if os.name == "nt" else 1
+    for attempt in range(max_attempts):
+        try:
+            src.rename(dst)
+            return
+        except OSError as exc:
+            if (
+                attempt + 1 >= max_attempts
+                or os.name != "nt"
+                or getattr(exc, "winerror", None) not in (5, 32, 33)
+            ):
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """Atomically replace a file with bounded Windows transient-lock retries."""
+    max_attempts = 5 if os.name == "nt" else 1
+    for attempt in range(max_attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            if (
+                attempt + 1 >= max_attempts
+                or os.name != "nt"
+                or getattr(exc, "winerror", None) not in (5, 32, 33)
+            ):
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _rmtree_best_effort(path: Path, *, ignore_errors: bool = False) -> None:
+    root_resolved = path.resolve() if path.exists() else path
+
+    def _clear_readonly(func, target_path, _exc):
+        try:
+            parent_dir = os.path.dirname(target_path)
+            if parent_dir and not os.path.islink(parent_dir):
+                try:
+                    if Path(parent_dir).resolve().is_relative_to(root_resolved):
+                        parent_mode = os.stat(parent_dir).st_mode
+                        os.chmod(
+                            parent_dir,
+                            stat.S_IMODE(parent_mode)
+                            | stat.S_IWRITE
+                            | stat.S_IREAD
+                            | stat.S_IEXEC,
+                        )
+                except (OSError, ValueError):
+                    pass
+            if not os.path.islink(target_path):
+                mode = stat.S_IWRITE | stat.S_IREAD
+                if os.path.isdir(target_path):
+                    mode |= stat.S_IEXEC
+                try:
+                    cur_mode = stat.S_IMODE(os.lstat(target_path).st_mode)
+                    os.chmod(target_path, cur_mode | mode)
+                except OSError:
+                    os.chmod(target_path, mode)
+            func(target_path)
+        except OSError:
+            if not ignore_errors:
+                raise
+
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_clear_readonly)
+        else:
+            shutil.rmtree(path, onerror=_clear_readonly)
+    except OSError:
+        if not ignore_errors:
+            raise
 
 
 def replace_tree(source, target, **kwargs):
@@ -108,33 +199,82 @@ def replace_tree(source, target, **kwargs):
     try:
         shutil.copytree(source, staged, symlinks=True, **kwargs)
         if target.exists() or target.is_symlink():
-            target.rename(previous)
+            _rename_with_retry(target, previous)
         try:
-            staged.rename(target)
+            _rename_with_retry(staged, target)
             installed = True
         except BaseException:
             if previous.exists() or previous.is_symlink():
-                previous.rename(target)
+                try:
+                    _rename_with_retry(previous, target)
+                except OSError:
+                    pass
             raise
     finally:
         # If rollback itself fails, retain the previous tree for recovery.
         if installed or not (previous.exists() or previous.is_symlink()):
-            shutil.rmtree(tmp)
+            _rmtree_best_effort(tmp, ignore_errors=True)
 
 
 def replace_file(source: Path, target: Path) -> None:
     """Atomically stage and replace a single file in target.parent."""
+    src_path = Path(source)
+    if src_path.is_symlink() or not src_path.is_file():
+        raise ValueError(f"Refusing to install non-regular source file: {source}")
+    if target.is_symlink():
+        raise ValueError(f"Refusing to overwrite symlink target: {target}")
+    if target.is_dir():
+        raise ValueError(f"Refusing to overwrite directory target: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
     )
-    os.close(fd)
     tmp_path = Path(tmp_name)
     try:
-        shutil.copy2(source, tmp_path)
-        os.replace(tmp_path, target)
+        try:
+            dst_fh = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with dst_fh:
+            with src_path.open("rb") as src_fh:
+                shutil.copyfileobj(src_fh, dst_fh)
+            dst_fh.flush()
+            try:
+                os.fsync(dst_fh.fileno())
+            except OSError:
+                pass
+        shutil.copystat(src_path, tmp_path)
+        if os.name == "nt":
+            try:
+                os.chmod(
+                    tmp_path,
+                    stat.S_IMODE(tmp_path.stat().st_mode) | stat.S_IWRITE,
+                )
+            except OSError:
+                pass
+            if target.exists() and not target.is_symlink():
+                try:
+                    os.chmod(
+                        target,
+                        stat.S_IMODE(target.stat().st_mode) | stat.S_IWRITE,
+                    )
+                except OSError:
+                    pass
+        _replace_with_retry(tmp_path, target)
     except BaseException:
-        tmp_path.unlink(missing_ok=True)
+        try:
+            if tmp_path.exists() and not tmp_path.is_symlink():
+                try:
+                    os.chmod(
+                        tmp_path,
+                        stat.S_IMODE(tmp_path.stat().st_mode) | stat.S_IWRITE,
+                    )
+                except OSError:
+                    pass
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 
@@ -142,22 +282,24 @@ def _find_built_app(platform_dir: Path, goos: str | None = None) -> Path:
     target_os = goos or _host_goos()
     if target_os == "darwin":
         preferred = platform_dir / "ColabOne.app"
-        if bundle.app_binary_exists(preferred):
+        if not preferred.is_symlink() and bundle.app_binary_exists(preferred):
             return preferred
-        candidates = sorted(platform_dir.glob("*.app"))
+        candidates = [
+            p for p in sorted(platform_dir.glob("*.app")) if not p.is_symlink()
+        ]
     elif target_os == "windows":
         preferred = platform_dir / "ColabOne.exe"
-        if bundle.app_binary_exists(preferred):
+        if not preferred.is_symlink() and bundle.app_binary_exists(preferred):
             return preferred
         candidates = [
             p
             for p in sorted(platform_dir.glob("*.exe"))
-            if "-setup-" not in p.name.lower()
+            if not p.is_symlink() and "-setup-" not in p.name.lower()
         ]
     else:
         for name in ("colabone", "ColabOne"):
             preferred = platform_dir / name
-            if bundle.app_binary_exists(preferred):
+            if not preferred.is_symlink() and bundle.app_binary_exists(preferred):
                 return preferred
         ignored_suffixes = (
             ".deb",
@@ -176,7 +318,10 @@ def _find_built_app(platform_dir: Path, goos: str | None = None) -> Path:
         candidates = [
             p
             for p in entries
-            if p.is_file()
+            if not p.is_symlink()
+            and p.is_file()
+            and os.access(p, os.X_OK)
+            and not p.name.startswith(".")
             and p.name != "PKGBUILD"
             and "-setup-" not in p.name.lower()
             and not p.name.lower().endswith(ignored_suffixes)
@@ -190,7 +335,7 @@ def _remove_legacy_stage_dirs(target: Path) -> None:
     for name in bundle.LEGACY_STAGE_DIRS:
         stale = target / name
         if stale.is_dir() and not stale.is_symlink():
-            shutil.rmtree(stale)
+            _rmtree_best_effort(stale)
         elif stale.exists() or stale.is_symlink():
             stale.unlink()
 
@@ -256,15 +401,18 @@ def install(root, check_only=False, build_installer=False, with_e2e=False):
     else:
         replace_file(app, installed_app)
     mygo_files = platform_dir / ".mygo-files"
-    if goos != "darwin" and mygo_files.is_file():
-        shutil.copy2(mygo_files, target / ".mygo-files")
+    installed_mygo_files = target / ".mygo-files"
+    if goos != "darwin" and mygo_files.is_file() and not mygo_files.is_symlink():
+        replace_file(mygo_files, installed_mygo_files)
+    elif installed_mygo_files.is_file() and not installed_mygo_files.is_symlink():
+        installed_mygo_files.unlink(missing_ok=True)
     replace_tree(
         ROOT / "third_party",
         target / "third_party",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "test_*", "*.in"),
     )
     for name in ("README.md", "LICENSE", "NOTICE"):
-        shutil.copy2(ROOT / name, target / name)
+        replace_file(ROOT / name, target / name)
     run(
         [str(bundle.app_executable(installed_app)), "--self-test"],
         cwd=target,

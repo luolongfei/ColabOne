@@ -4354,8 +4354,21 @@ def test_opt_ensure_sageattention_wheels_cache_reuse_drive_build_and_graceful_de
     def _write_dummy_whl(dest_dir: Path, filename: str) -> Path:
         dest_dir.mkdir(parents=True, exist_ok=True)
         whl_path = dest_dir / filename
+        dist_parts = filename.split("-")
+        dist_info = (
+            f"{dist_parts[0]}-{dist_parts[1]}.dist-info"
+            if len(dist_parts) >= 2
+            else "sageattention-2.2.0.dist-info"
+        )
         with zipfile.ZipFile(whl_path, "w") as zf:
-            zf.writestr("METADATA", "Metadata-Version: 2.1\nName: sageattention\nVersion: 2.2.0\n")
+            zf.writestr(
+                f"{dist_info}/METADATA",
+                "Metadata-Version: 2.1\nName: sageattention\nVersion: 2.2.0\n",
+            )
+            zf.writestr(
+                f"{dist_info}/WHEEL",
+                "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: false\nTag: cp312-cp312-linux_x86_64\n",
+            )
         return whl_path
 
     # 1. Graceful no-op on Turing (cc_major < 8) and when nvcc is missing.

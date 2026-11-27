@@ -5,6 +5,7 @@ import {
   Badge as ABadge,
   Button as AButton,
   Card as ACard,
+  Checkbox as ACheckbox,
   Divider as ADivider,
   Drawer as ADrawer,
   Empty as AEmpty,
@@ -29,6 +30,10 @@ import ColabOneDriveExportModal, {
 import ColabOneFashionPhotoGroup, {
   type ColabOneFashionPhotoItem,
 } from "./ColabOneFashionPhotoGroup.vue";
+import ColabOneOutputGalleryModal, {
+  type ColabOneGalleryModalItem,
+} from "./ColabOneOutputGalleryModal.vue";
+import ColabOneOutputShareModal from "./ColabOneOutputShareModal.vue";
 import ColabOnePrivacyInput from "./ColabOnePrivacyInput.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
@@ -61,15 +66,19 @@ import {
   PhCloudCheck,
   PhCoins,
   PhDownloadSimple,
+  PhFileArchive,
   PhFileCode,
   PhGraph,
   PhHardDrives,
   PhImage,
+  PhImages,
   PhInfo,
   PhLink,
+  PhMagnifyingGlassPlus,
   PhPlay,
   PhPlus,
   PhPower,
+  PhSelectionAll,
   PhShareNetwork,
   PhShieldCheck,
   PhSlidersHorizontal,
@@ -87,13 +96,28 @@ import {
 import {
   colabOneCommand,
   colabOneExportWorkflowOutput,
+  colabOneExportWorkflowOutputsZip,
   colabOneOpenComfyCanvas,
+  colabOneOpenOutputShare,
   colabOneOpenURL,
   colabOneOutputPreviewURL,
   colabOneRuntimeCapabilities,
   colabOneWriteClipboard,
+  createColabOneDefaultOutputShareListState,
+  createColabOneDefaultWebConsoleState,
+  isColabOneDesktopRuntime,
+  type ColabOneOutputShareCreateRequest,
+  type ColabOneOutputShareListState,
+  type ColabOneOutputShareSummary,
+  type ColabOneWebConsoleState,
 } from "./api";
 import { formatIdlePolicyLabel } from "./billing";
+import {
+  computeColabOneGroupCU,
+  groupColabOneOutputs,
+  isColabOneInspectOutput,
+  type ColabOneOutputGroup,
+} from "./colabOneOutputGallery";
 import { colabOneWorkflowShareId } from "./colabOneWorkflowShare";
 import {
   formatColabOneDuration,
@@ -192,6 +216,15 @@ const props = defineProps<{
   shareDriveExportReady?: boolean;
   canShareWorkflows?: boolean;
   activeShareCount?: number;
+  webConsoleState?: ColabOneWebConsoleState;
+  outputSharesState?: ColabOneOutputShareListState;
+  canEnableWebConsole?: boolean;
+  enablingWebConsole?: boolean;
+  outputShareCreating?: boolean;
+  outputShareRevokingId?: string;
+  outputShareDeletingId?: string;
+  outputShareLastCreated?: ColabOneOutputShareSummary | null;
+  copyText?: (text: string, successToast?: string) => Promise<boolean>;
 }>();
 const emit = defineEmits<{
   device: [];
@@ -199,6 +232,12 @@ const emit = defineEmits<{
   upgrade: [];
   sync: [];
   openShareModal: [];
+  refreshOutputShares: [];
+  createOutputShare: [req: ColabOneOutputShareCreateRequest];
+  revokeOutputShare: [id: string];
+  deleteOutputShare: [id: string];
+  clearOutputShareCreated: [];
+  enableWebConsole: [];
   notify: [string, ColabOneToastKind?];
   clearError: [];
   error: [string];
@@ -237,6 +276,19 @@ async function openExternalURL(url: string) {
   if (isShareMode.value) return;
   try {
     await colabOneOpenURL(url);
+  } catch (e) {
+    reportError(e);
+  }
+}
+
+async function openOutputSharePreview(url: string, shareId = "") {
+  if (isShareMode.value) return;
+  try {
+    await colabOneOpenOutputShare(
+      shareId,
+      url,
+      resolvedWebConsoleState.value,
+    );
   } catch (e) {
     reportError(e);
   }
@@ -2159,6 +2211,7 @@ const voicePreviewPlayToken = ref(0);
 let voicePreviewReqGen = 0;
 let voicePreviewEphemeralSeq = 0;
 let voicePreviewLookupGen = 0;
+let voicePrefetchGen = 0;
 let pendingAutoPlayVoicePresetId = "";
 const activePrefetchJobId = ref("");
 const activePrefetchJobScopeKey = ref("");
@@ -2556,6 +2609,7 @@ async function applyVoicePreviewAudio(
     engineName: info.engineName || existing?.meta.engineName,
     voiceLabel: info.voiceLabel || existing?.meta.voiceLabel,
   };
+  let prevReplacedUrl = "";
   if (existing && previewId) {
     voicePreviewCache.delete(previewId);
     voicePreviewCache.set(previewId, { url: existing.url, meta: nextMeta });
@@ -2575,6 +2629,10 @@ async function applyVoicePreviewAudio(
       return false;
     }
     const cacheKey = previewId || `ephemeral:${++voicePreviewEphemeralSeq}`;
+    const prevCached = voicePreviewCache.get(cacheKey);
+    if (prevCached && prevCached.url && prevCached.url !== url) {
+      prevReplacedUrl = prevCached.url;
+    }
     voicePreviewCache.delete(cacheKey);
     voicePreviewCache.set(cacheKey, { url, meta: nextMeta });
     evictVoicePreviewCache(url);
@@ -2583,6 +2641,9 @@ async function applyVoicePreviewAudio(
   voicePreviewAudioUrl.value = url;
   voicePreviewMeta.value = nextMeta;
   loadedVoicePreviewSignature.value = contextKey;
+  if (prevReplacedUrl) {
+    revokeBlobUrlsDeferred([prevReplacedUrl]);
+  }
   return true;
 }
 
@@ -2707,8 +2768,12 @@ async function drainPrefetchPullQueue() {
     while (prefetchPullQueue.length > 0 && !disposed) {
       const next = prefetchPullQueue.shift();
       if (!next) continue;
+      const pullGen = voicePrefetchGen;
       try {
-        if (next.scopeKey !== currentVoicePrefetchScopeKey.value) {
+        if (
+          voicePreviewPrefetchLocalCancelled.value ||
+          next.scopeKey !== currentVoicePrefetchScopeKey.value
+        ) {
           continue;
         }
         if (voicePreviewCache.has(next.previewId)) {
@@ -2724,6 +2789,8 @@ async function drainPrefetchPullQueue() {
         })) as Partial<ColabOneTtsPreviewResult> | null;
         if (
           disposed ||
+          pullGen !== voicePrefetchGen ||
+          voicePreviewPrefetchLocalCancelled.value ||
           next.scopeKey !== currentVoicePrefetchScopeKey.value ||
           !asset ||
           typeof asset.data !== "string" ||
@@ -2739,11 +2806,16 @@ async function drainPrefetchPullQueue() {
           asset.mime || "audio/wav",
           asset.sha256,
         );
-        if (disposed || next.scopeKey !== currentVoicePrefetchScopeKey.value) {
+        if (
+          disposed ||
+          pullGen !== voicePrefetchGen ||
+          voicePreviewPrefetchLocalCancelled.value ||
+          next.scopeKey !== currentVoicePrefetchScopeKey.value ||
+          voicePreviewCache.has(next.previewId)
+        ) {
           URL.revokeObjectURL(url);
           continue;
         }
-        voicePreviewCache.delete(next.previewId);
         voicePreviewCache.set(next.previewId, {
           url,
           meta: {
@@ -2799,6 +2871,7 @@ function enqueuePrefetchAssetPull(
 }
 
 function cancelVoicePreviewPrefetch() {
+  ++voicePrefetchGen;
   voicePreviewPrefetchLocalCancelled.value = true;
   voicePreviewPrefetchStarting.value = false;
   activePrefetchJobId.value = "";
@@ -2850,6 +2923,7 @@ async function kickoffSiblingVoicePrefetch(activePresetId: string) {
     emotion_prompt: emotionPrompt,
   }));
 
+  const pfGen = ++voicePrefetchGen;
   voicePreviewPrefetchLocalCancelled.value = false;
   voicePreviewPrefetchStarting.value = true;
   activePrefetchJobScopeKey.value = scopeKey;
@@ -2863,7 +2937,14 @@ async function kickoffSiblingVoicePrefetch(activePresetId: string) {
       job_id?: string;
       ready_items?: Array<{ voice_preset?: string; preview_id?: string }>;
     } | null;
-    if (disposed || currentVoicePrefetchScopeKey.value !== scopeKey) return;
+    if (
+      disposed ||
+      pfGen !== voicePrefetchGen ||
+      voicePreviewPrefetchLocalCancelled.value ||
+      currentVoicePrefetchScopeKey.value !== scopeKey
+    ) {
+      return;
+    }
     const returnedJobId =
       typeof res?.job_id === "string" ? res.job_id.trim() : "";
     if (returnedJobId) {
@@ -2884,7 +2965,9 @@ async function kickoffSiblingVoicePrefetch(activePresetId: string) {
   } catch {
     // Background prefetch failures never disrupt foreground playback.
   } finally {
-    voicePreviewPrefetchStarting.value = false;
+    if (pfGen === voicePrefetchGen) {
+      voicePreviewPrefetchStarting.value = false;
+    }
   }
 }
 
@@ -5289,6 +5372,7 @@ watch(
     }
     abortAllOutputFetches();
     failedOutputs.value = {};
+    streamFallbackToBlob.value = {};
     exportedDriveOutputs.value = {};
     const staleUrls = Object.values(blobUrls.value);
     blobUrls.value = {};
@@ -6260,22 +6344,869 @@ interface OutputPreviewError {
   detail?: string;
 }
 const outputs = computed(() => props.state.comfy_outputs || []);
+const groupedOutputs = computed<ColabOneOutputGroup[]>(() =>
+  groupColabOneOutputs(outputs.value),
+);
+const resolvedWebConsoleState = computed<ColabOneWebConsoleState>(
+  () => props.webConsoleState || createColabOneDefaultWebConsoleState(),
+);
+const resolvedOutputSharesState = computed<ColabOneOutputShareListState>(
+  () => props.outputSharesState || createColabOneDefaultOutputShareListState(),
+);
+const activeOutputShareCount = computed(
+  () => resolvedOutputSharesState.value.active_count || 0,
+);
 const blobUrls = ref<Record<string, string>>({});
 const streamUrls = ref<Record<string, string>>({});
+const streamFallbackToBlob = ref<Record<string, boolean>>({});
 const bufferingStreams = ref<Record<string, boolean>>({});
+const inlineAutoplayIds = ref<Record<string, boolean>>({});
 const fetchingOutputs = ref<Record<string, boolean>>({});
 const failedOutputs = ref<Record<string, OutputPreviewError>>({});
 const exportingOutputs = ref<Record<string, boolean>>({});
+const exportingAlbumZips = ref<Record<string, boolean>>({});
 const exportingDriveOutputs = ref<Record<string, boolean>>({});
+const exportingAlbumDrives = ref<Record<string, boolean>>({});
 const exportedDriveOutputs = ref<Record<string, ColabOneDriveExportResult>>({});
 const deletingOutputs = ref<Record<string, boolean>>({});
+const deletingAlbums = ref<Record<string, boolean>>({});
 const deleteConfirmOutputId = ref("");
 const outputFetchControllers = new Map<string, AbortController>();
+const pendingPrefetchQueue: string[] = [];
+const pendingPrefetchSet = new Set<string>();
+
+// Output album lightbox, multi-select, and artifact share modal state
+const MAX_CONCURRENT_IMAGE_FETCHES = 4;
+const galleryModalOpen = ref(false);
+const galleryModalGroupId = ref("");
+const galleryModalTaskId = ref("");
+const galleryModalAnchorItemId = ref("");
+const galleryModalInitialItemId = ref("");
+const galleryModalInitialMode = ref<"stage" | "grid">("stage");
+
+const visibleOutputGroupIds = ref<Set<string>>(new Set());
+const outputCardElements = new Map<string, HTMLElement>();
+let outputCardObserver: IntersectionObserver | null = null;
+let outputCardObserverRoot: Element | null = null;
+
+function disconnectOutputCardObserver() {
+  if (outputCardObserver) {
+    outputCardObserver.disconnect();
+    outputCardObserver = null;
+  }
+  outputCardObserverRoot = null;
+  visibleOutputGroupIds.value = new Set();
+}
+
+function ensureOutputCardObserver(hintEl?: HTMLElement) {
+  if (
+    typeof IntersectionObserver !== "function" ||
+    !outputsDrawerOpen.value
+  ) {
+    return;
+  }
+  const drawerRoot =
+    hintEl?.closest(".ant-drawer-body") ??
+    (typeof document !== "undefined"
+      ? document.querySelector(".co-comfy-outputs-drawer-root .ant-drawer-body")
+      : null);
+  if (!drawerRoot) {
+    return;
+  }
+  if (outputCardObserver && outputCardObserverRoot === drawerRoot) {
+    return;
+  }
+  if (outputCardObserver) {
+    outputCardObserver.disconnect();
+    outputCardObserver = null;
+    outputCardObserverRoot = null;
+  }
+  outputCardObserverRoot = drawerRoot;
+  outputCardObserver = new IntersectionObserver(
+    (entries) => {
+      if (disposed || !outputsDrawerOpen.value) return;
+      const next = new Set(visibleOutputGroupIds.value);
+      let becameVisible = false;
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const gid = el.dataset.outputGroupId || "";
+        if (!gid) continue;
+        if (entry.isIntersecting) {
+          if (!next.has(gid)) {
+            next.add(gid);
+            becameVisible = true;
+          }
+        } else {
+          next.delete(gid);
+        }
+      }
+      visibleOutputGroupIds.value = next;
+      if (becameVisible) {
+        triggerRecentImagePreviews(outputs.value);
+      }
+    },
+    { root: drawerRoot, rootMargin: "240px 0px" },
+  );
+  for (const el of outputCardElements.values()) {
+    outputCardObserver.observe(el);
+  }
+}
+
+function registerOutputCardEl(groupId: string, el: unknown) {
+  const prev = outputCardElements.get(groupId);
+  if (el instanceof HTMLElement) {
+    const elDrawerRoot = el.closest(".ant-drawer-body");
+    if (
+      prev === el &&
+      outputCardObserver &&
+      (!elDrawerRoot || elDrawerRoot === outputCardObserverRoot)
+    ) {
+      return;
+    }
+    if (prev && prev !== el) {
+      outputCardObserver?.unobserve(prev);
+    }
+    outputCardElements.set(groupId, el);
+    if (outputsDrawerOpen.value) {
+      ensureOutputCardObserver(el);
+      outputCardObserver?.observe(el);
+    }
+    return;
+  }
+  if (prev) {
+    outputCardObserver?.unobserve(prev);
+    outputCardElements.delete(groupId);
+  }
+  if (visibleOutputGroupIds.value.has(groupId)) {
+    const next = new Set(visibleOutputGroupIds.value);
+    next.delete(groupId);
+    visibleOutputGroupIds.value = next;
+  }
+}
+
+const outputMultiSelectMode = ref(false);
+const selectedOutputGroupIds = ref<string[]>([]);
+
+const outputShareModalOpen = ref(false);
+const outputShareModalInitialTab = ref<"create" | "manage">("create");
+const outputShareModalInitialGroupIds = ref<string[]>([]);
+
+const activeGalleryGroup = computed<ColabOneOutputGroup | null>(() => {
+  if (!galleryModalOpen.value) return null;
+  if (galleryModalGroupId.value) {
+    const exact = groupedOutputs.value.find(
+      (g) => g.id === galleryModalGroupId.value,
+    );
+    if (exact) return exact;
+  }
+  if (galleryModalTaskId.value) {
+    const byTask = groupedOutputs.value.find(
+      (g) => g.taskId && g.taskId === galleryModalTaskId.value,
+    );
+    if (byTask) return byTask;
+  }
+  if (galleryModalAnchorItemId.value) {
+    const byItem = groupedOutputs.value.find((g) =>
+      g.items.some((i) => i.id === galleryModalAnchorItemId.value),
+    );
+    if (byItem) return byItem;
+  }
+  return null;
+});
+
+const activeGalleryItems = computed<ColabOneGalleryModalItem[]>(() =>
+  (activeGalleryGroup.value?.items || []).map((item) => ({
+    id: item.id,
+    filename: item.filename,
+    kind: item.kind,
+    size: item.size,
+    created_at: item.created_at,
+    workflow_name: item.workflow_name,
+    is_inspect: isColabOneInspectOutput(item),
+    available: canLoadOutputAsset(item),
+    elapsed: item.elapsed,
+  })),
+);
+
+const activeGalleryTitle = computed(() => {
+  const g = activeGalleryGroup.value;
+  if (!g) return "";
+  return g.workflowName ? tb(g.workflowName) : g.title || t("comfy.defaultWorkflowName");
+});
+
+const selectedOutputGroupIdSet = computed(
+  () => new Set(selectedOutputGroupIds.value),
+);
+
+const multiSelectSummaryCounts = computed(() => {
+  const selected = groupedOutputs.value.filter((g) =>
+    selectedOutputGroupIdSet.value.has(g.id),
+  );
+  const items = selected.reduce((sum, g) => sum + g.items.length, 0);
+  return { groups: selected.length, items };
+});
+
+function formatGroupCUBadge(group: ColabOneOutputGroup): string {
+  const summary = computeColabOneGroupCU(group.items);
+  if (!summary.hasAny) return "";
+  const formatted = formatOutputCU(summary.total);
+  if (!formatted) return "";
+  if (summary.total > 0 && summary.total < 0.01) return formatted;
+  return summary.anyEstimated
+    ? t("comfy.outputCuEstimated", { cu: formatted })
+    : formatted;
+}
+
+function formatGroupCUTooltip(group: ColabOneOutputGroup): string {
+  const summary = computeColabOneGroupCU(group.items);
+  if (!summary.sample) return "";
+  return formatOutputCUTooltip({
+    ...summary.sample,
+    cu_consumed: summary.total,
+    cu_estimated: summary.anyEstimated,
+    elapsed: group.totalElapsed,
+  });
+}
+
+function isGroupFullyExportedToDrive(group: ColabOneOutputGroup): boolean {
+  return group.items.length > 0 && group.items.every((item) => isOutputExportedToDrive(item));
+}
+
+function isGroupAnyDriveBacked(group: ColabOneOutputGroup): boolean {
+  return group.items.some((item) => isOutputDriveBacked(item));
+}
+
+function isGroupAllDriveBacked(group: ColabOneOutputGroup): boolean {
+  return (
+    group.items.length > 0 &&
+    group.items.every((item) => isOutputDriveBacked(item))
+  );
+}
+
+function getGroupDriveOpenUrl(group: ColabOneOutputGroup): string {
+  const withLink = group.items.find((item) => item.drive_web_view_link);
+  return withLink?.drive_web_view_link || GOOGLE_DRIVE_HOME_URL;
+}
+
+function getGroupDrivePath(group: ColabOneOutputGroup): string {
+  for (const item of group.items) {
+    const p = getOutputDrivePath(item);
+    if (p) return p;
+  }
+  return "";
+}
+
+function isGroupShared(group: ColabOneOutputGroup): boolean {
+  return group.items.some((item) => Boolean(item.share_id));
+}
+
+function getGroupShareTooltip(group: ColabOneOutputGroup): string {
+  const sharedItem = group.items.find((item) => Boolean(item.share_id));
+  if (!sharedItem) return "";
+  return sharedItem.share_label
+    ? t("comfy.outputTagSharedTooltip", { label: sharedItem.share_label })
+    : t("comfy.outputTagSharedTooltipAnonymous");
+}
+
+function canLoadAnyInGroup(group: ColabOneOutputGroup): boolean {
+  return group.items.some((item) => canLoadOutputAsset(item));
+}
+
+function getDeletableGroupItems(group: ColabOneOutputGroup): WorkflowOutput[] {
+  return group.items.filter(
+    (item) => gpuReady.value || (!isShareMode.value && isOutputDriveBacked(item)),
+  );
+}
+
+function canDeleteGroup(group: ColabOneOutputGroup): boolean {
+  return getDeletableGroupItems(group).length > 0;
+}
+
+function isItemParentGroupBusy(itemId: string): boolean {
+  const keys = new Set<string>();
+  const group = groupedOutputs.value.find((g) =>
+    g.items.some((it) => it.id === itemId),
+  );
+  if (group) {
+    keys.add(group.id);
+    if (group.taskId) {
+      keys.add(`album:${group.taskId}`);
+    }
+  }
+  const rawItem = outputs.value.find((o) => o.id === itemId);
+  if (rawItem?.task_id) {
+    keys.add(`album:${rawItem.task_id}`);
+  }
+  for (const key of keys) {
+    if (
+      exportingAlbumDrives.value[key] ||
+      exportingAlbumZips.value[key] ||
+      deletingAlbums.value[key]
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isAnyGroupItemBusy(group: ColabOneOutputGroup): boolean {
+  return group.items.some(
+    (it) =>
+      Boolean(deletingOutputs.value[it.id]) ||
+      Boolean(exportingOutputs.value[it.id]) ||
+      Boolean(exportingDriveOutputs.value[it.id]),
+  );
+}
+
+function clearInlineAutoplay(id?: string) {
+  if (id) {
+    if (inlineAutoplayIds.value[id]) {
+      const next = { ...inlineAutoplayIds.value };
+      delete next[id];
+      inlineAutoplayIds.value = next;
+    }
+    return;
+  }
+  if (Object.keys(inlineAutoplayIds.value).length > 0) {
+    inlineAutoplayIds.value = {};
+  }
+}
+
+function requestInlinePreview(item: WorkflowOutput) {
+  if (
+    !galleryModalOpen.value &&
+    (item.kind === "video" || item.kind === "audio")
+  ) {
+    inlineAutoplayIds.value = {
+      ...inlineAutoplayIds.value,
+      [item.id]: true,
+    };
+  }
+  void loadOutputPreview(item);
+}
+
+function openOutputGallery(
+  group: ColabOneOutputGroup,
+  initialItemId = "",
+  initialMode: "stage" | "grid" = "stage",
+) {
+  if (!group.items.length) return;
+  clearInlineAutoplay();
+  pauseOutputsDrawerMedia();
+  const targetId = initialItemId || group.items[0]!.id;
+  galleryModalGroupId.value = group.id;
+  galleryModalTaskId.value = group.taskId || "";
+  galleryModalAnchorItemId.value = targetId;
+  galleryModalInitialItemId.value = targetId;
+  galleryModalInitialMode.value = initialMode;
+  galleryModalOpen.value = true;
+  // Load active stage item immediately and queue neighbors within 4-way cap
+  const targetIdx = Math.max(
+    0,
+    group.items.findIndex((i) => i.id === targetId),
+  );
+  const activeCandidate = group.items[targetIdx];
+  if (
+    initialMode === "stage" &&
+    activeCandidate &&
+    canLoadOutputAsset(activeCandidate) &&
+    !getOutputPreviewSrc(activeCandidate)
+  ) {
+    void loadOutputPreview(activeCandidate);
+  }
+  const neighborCandidates = [
+    ...(initialMode === "grid" ? [activeCandidate] : []),
+    group.items[targetIdx + 1],
+    group.items[targetIdx - 1],
+    group.items[targetIdx + 2],
+  ].filter((it): it is WorkflowOutput => Boolean(it));
+  for (const cand of neighborCandidates) {
+    enqueueOutputPreviewPrefetch(cand);
+  }
+}
+
+function closeOutputGallery() {
+  const closingItems = activeGalleryGroup.value?.items;
+  if (closingItems && closingItems.length) {
+    for (const item of closingItems) {
+      removePendingPrefetchId(item.id);
+    }
+  }
+  galleryModalOpen.value = false;
+  galleryModalGroupId.value = "";
+  galleryModalTaskId.value = "";
+  galleryModalAnchorItemId.value = "";
+  galleryModalInitialItemId.value = "";
+}
+
+function handleGalleryActiveChange(itemId: string) {
+  galleryModalAnchorItemId.value = itemId;
+}
+
+function handleGalleryRequestLoad(
+  modalItem: ColabOneGalleryModalItem,
+  priority?: "active" | "prefetch",
+) {
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  if (!real) return;
+  if (
+    priority === "active" ||
+    modalItem.id === galleryModalAnchorItemId.value
+  ) {
+    removePendingPrefetchId(real.id);
+    void loadOutputPreview(real);
+  } else {
+    enqueueOutputPreviewPrefetch(real);
+  }
+}
+
+function handleGalleryRetryLoad(modalItem: ColabOneGalleryModalItem) {
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  if (!real) return;
+  delete failedOutputs.value[real.id];
+  void loadOutputPreview(real);
+}
+
+function handleGalleryMediaError(modalItem: ColabOneGalleryModalItem) {
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  if (real) {
+    onOutputMediaError(real);
+  }
+}
+
+function handleGalleryDownloadItem(modalItem: ColabOneGalleryModalItem) {
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  if (real) {
+    void exportOutput(real);
+  }
+}
+
+function handleGalleryDeleteItem(modalItem: ColabOneGalleryModalItem) {
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  if (real) {
+    void deleteOutput(real);
+  }
+}
+
+function resolveGalleryModalMediaSrc(modalItem: ColabOneGalleryModalItem): string {
+  return streamUrls.value[modalItem.id] || blobUrls.value[modalItem.id] || "";
+}
+
+function isGalleryModalItemLoading(modalItem: ColabOneGalleryModalItem): boolean {
+  return Boolean(fetchingOutputs.value[modalItem.id]);
+}
+
+function isGalleryModalItemAvailable(modalItem: ColabOneGalleryModalItem): boolean {
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  return real ? canLoadOutputAsset(real) : Boolean(modalItem.available);
+}
+
+function getGalleryModalItemError(modalItem: ColabOneGalleryModalItem): string {
+  if (failedOutputs.value[modalItem.id]) {
+    return (
+      formatOutputPreviewError(failedOutputs.value[modalItem.id]) ||
+      t("outputGallery.loadFailedRetry")
+    );
+  }
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  if (real && isOutputTooLargeForPreview(real)) {
+    return t(
+      isShareMode.value
+        ? "comfy.sharePreviewTooLarge"
+        : "comfy.videoPreviewTooLarge",
+      { size: formatComfyByteSize(real.size) },
+    );
+  }
+  return "";
+}
+
+function canDeleteGalleryModalItem(modalItem: ColabOneGalleryModalItem): boolean {
+  const real = outputs.value.find((o) => o.id === modalItem.id);
+  if (
+    !real ||
+    isItemParentGroupBusy(real.id) ||
+    exportingOutputs.value[real.id] ||
+    exportingDriveOutputs.value[real.id] ||
+    deletingOutputs.value[real.id]
+  ) {
+    return false;
+  }
+  return Boolean(
+    gpuReady.value || (!isShareMode.value && isOutputDriveBacked(real)),
+  );
+}
+
+function toggleOutputMultiSelect() {
+  if (isShareMode.value) return;
+  outputMultiSelectMode.value = !outputMultiSelectMode.value;
+  if (!outputMultiSelectMode.value) {
+    selectedOutputGroupIds.value = [];
+  }
+}
+
+function toggleOutputGroupSelection(groupId: string) {
+  if (selectedOutputGroupIdSet.value.has(groupId)) {
+    selectedOutputGroupIds.value = selectedOutputGroupIds.value.filter(
+      (id) => id !== groupId,
+    );
+  } else {
+    selectedOutputGroupIds.value = [...selectedOutputGroupIds.value, groupId];
+  }
+}
+
+function selectAllOutputGroups() {
+  selectedOutputGroupIds.value = groupedOutputs.value.map((g) => g.id);
+}
+
+function clearOutputGroupSelection() {
+  selectedOutputGroupIds.value = [];
+}
+
+function openOutputShareForGroups(groupIds: string[]) {
+  if (isShareMode.value) return;
+  emit("clearOutputShareCreated");
+  emit("refreshOutputShares");
+  outputShareModalInitialTab.value = "create";
+  outputShareModalInitialGroupIds.value = [...groupIds];
+  outputShareModalOpen.value = true;
+}
+
+function openOutputShareManage() {
+  if (isShareMode.value) return;
+  emit("clearOutputShareCreated");
+  emit("refreshOutputShares");
+  outputShareModalInitialTab.value = "manage";
+  outputShareModalInitialGroupIds.value = [];
+  outputShareModalOpen.value = true;
+}
+
+function openMultiSelectShare() {
+  if (!selectedOutputGroupIds.value.length) return;
+  const ids = [...selectedOutputGroupIds.value];
+  outputMultiSelectMode.value = false;
+  selectedOutputGroupIds.value = [];
+  openOutputShareForGroups(ids);
+}
+
+function closeOutputShareModal() {
+  outputShareModalOpen.value = false;
+  emit("clearOutputShareCreated");
+}
+
+function handleShareModalCopyFallback(
+  text: string,
+  successToast?: string,
+): Promise<boolean> {
+  if (props.copyText) {
+    return props.copyText(text, successToast);
+  }
+  return (async () => {
+    try {
+      await colabOneWriteClipboard(text);
+      if (isColabOneDesktopRuntime()) {
+        await navigator.clipboard?.writeText(text).catch(() => {});
+      }
+      emit("notify", successToast || t("outputShare.noticeCopiedLink"), "success");
+      return true;
+    } catch {
+      emit("error", t("common.copyFailed"));
+      return false;
+    }
+  })();
+}
+
+async function exportAlbumZip(group: ColabOneOutputGroup | null) {
+  if (
+    !group ||
+    exportingAlbumZips.value[group.id] ||
+    deletingAlbums.value[group.id] ||
+    isAnyGroupItemBusy(group)
+  ) {
+    return;
+  }
+  const loadableIds = group.items
+    .filter((item) => canLoadOutputAsset(item))
+    .map((item) => item.id);
+  if (!loadableIds.length) return;
+  exportingAlbumZips.value = { ...exportingAlbumZips.value, [group.id]: true };
+  try {
+    const label = group.workflowName
+      ? tb(group.workflowName)
+      : group.title || "colabone-album";
+    const saved = await colabOneExportWorkflowOutputsZip(loadableIds, label);
+    if (saved) {
+      setNoticeKey("outputGallery.noticeAlbumExported");
+    }
+  } catch (e) {
+    reportError(e);
+  } finally {
+    const next = { ...exportingAlbumZips.value };
+    delete next[group.id];
+    exportingAlbumZips.value = next;
+  }
+}
+
+async function saveAlbumToHostDrive(group: ColabOneOutputGroup) {
+  if (
+    !isShareMode.value ||
+    !props.shareDriveExportReady ||
+    !gpuReady.value ||
+    exportingAlbumDrives.value[group.id] ||
+    deletingAlbums.value[group.id] ||
+    isAnyGroupItemBusy(group)
+  ) {
+    return;
+  }
+  const pending = group.items.filter((item) => !isOutputExportedToDrive(item));
+  if (!pending.length) return;
+  exportingAlbumDrives.value = { ...exportingAlbumDrives.value, [group.id]: true };
+  const targetRuntimeId = props.state.runtime.id;
+  let savedAny = false;
+  try {
+    for (const item of pending) {
+      if (disposed || props.state.runtime.id !== targetRuntimeId) return;
+      const res = await colabOneCommand("comfyui.output.export_drive", {
+        id: item.id,
+      });
+      if (disposed || props.state.runtime.id !== targetRuntimeId) return;
+      const alreadyExists = Boolean(res?.already_exists);
+      const filename =
+        typeof res?.filename === "string" && res.filename.trim()
+          ? res.filename.trim()
+          : item.filename;
+      exportedDriveOutputs.value = {
+        ...exportedDriveOutputs.value,
+        [item.id]: {
+          id: item.id,
+          filename,
+          remoteFolder: "",
+          drivePath: "",
+          alreadyExists,
+          size: typeof res?.size === "number" ? res.size : item.size,
+        },
+      };
+      savedAny = true;
+    }
+    if (savedAny) {
+      setNoticeKey("comfy.noticeSavedToHostDrive");
+    }
+  } catch (e) {
+    if (!disposed) {
+      reportError(e);
+    }
+  } finally {
+    if (!disposed && savedAny) {
+      emit("sync");
+    }
+    const next = { ...exportingAlbumDrives.value };
+    delete next[group.id];
+    exportingAlbumDrives.value = next;
+  }
+}
+
+function isDriveModalMatchingGroup(group: ColabOneOutputGroup): boolean {
+  const targetId = driveModalTargetGroupId.value;
+  if (!targetId) return false;
+  if (targetId === group.id) return true;
+  if (group.taskId && targetId === `album:${group.taskId}`) return true;
+  return group.items.some((it) => targetId === `item:${it.id}`);
+}
+
+async function exportAlbumToDrive(
+  group: ColabOneOutputGroup,
+  opts: { fromModal?: boolean } = {},
+) {
+  if (isShareMode.value) {
+    await saveAlbumToHostDrive(group);
+    return;
+  }
+  if (
+    !gpuReady.value ||
+    exportingAlbumDrives.value[group.id] ||
+    deletingAlbums.value[group.id] ||
+    isAnyGroupItemBusy(group)
+  ) {
+    return;
+  }
+  const pending = group.items.filter((item) => !isOutputExportedToDrive(item));
+  if (!pending.length) {
+    if (
+      opts.fromModal &&
+      driveModalOpen.value &&
+      isDriveModalMatchingGroup(group)
+    ) {
+      const refItem = group.items[0];
+      if (refItem) {
+        const existing = exportedDriveOutputs.value[refItem.id];
+        const remoteFolder =
+          existing?.remoteFolder ||
+          `${props.state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+        const filename = existing?.filename || refItem.filename;
+        const drivePath =
+          existing?.drivePath ||
+          getGroupDrivePath(group) ||
+          `My Drive/${remoteFolder}/${filename}`;
+        driveModalResult.value = {
+          id: refItem.id,
+          filename,
+          remoteFolder,
+          drivePath,
+          alreadyExists: true,
+          size: existing?.size ?? group.totalSize,
+        };
+      }
+    }
+    return;
+  }
+  if (!props.state.setup.drive || needsUpgradeForDriveExport.value) {
+    openDriveSetupModal(
+      pending[0]!,
+      !props.state.setup.drive,
+      "export",
+      false,
+      group.id,
+    );
+    return;
+  }
+  exportingAlbumDrives.value = { ...exportingAlbumDrives.value, [group.id]: true };
+  if (opts.fromModal) {
+    driveModalError.value = "";
+  }
+  const targetRuntimeId = props.state.runtime.id;
+  let lastResult: ColabOneDriveExportResult | null = null;
+  let anyNewlyExported = false;
+  try {
+    for (const item of pending) {
+      if (disposed || props.state.runtime.id !== targetRuntimeId) return;
+      const res = await colabOneCommand("comfyui.output.export_drive", {
+        id: item.id,
+      });
+      if (disposed || props.state.runtime.id !== targetRuntimeId) return;
+      const remoteFolder =
+        typeof res?.remote_folder === "string" && res.remote_folder.trim()
+          ? res.remote_folder.trim()
+          : `${props.state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+      const filename =
+        typeof res?.filename === "string" && res.filename.trim()
+          ? res.filename.trim()
+          : item.filename;
+      const drivePath =
+        typeof res?.drive_path === "string" && res.drive_path.trim()
+          ? res.drive_path.trim()
+          : `My Drive/${remoteFolder}/${filename}`;
+      const itemAlreadyExists = Boolean(res?.already_exists);
+      if (!itemAlreadyExists) {
+        anyNewlyExported = true;
+      }
+      lastResult = {
+        id: item.id,
+        filename,
+        remoteFolder,
+        drivePath,
+        alreadyExists: itemAlreadyExists,
+        size: typeof res?.size === "number" ? res.size : item.size,
+      };
+      exportedDriveOutputs.value = {
+        ...exportedDriveOutputs.value,
+        [item.id]: lastResult,
+      };
+    }
+    if (
+      opts.fromModal &&
+      driveModalOpen.value &&
+      isDriveModalMatchingGroup(group) &&
+      lastResult
+    ) {
+      driveModalResult.value = {
+        ...lastResult,
+        alreadyExists: !anyNewlyExported,
+      };
+    }
+    emit("sync");
+    setNoticeKey("outputGallery.noticeAlbumDriveExported");
+  } catch (e) {
+    if (!disposed) {
+      emit("sync");
+      if (
+        opts.fromModal &&
+        driveModalOpen.value &&
+        isDriveModalMatchingGroup(group)
+      ) {
+        driveModalError.value = String(e);
+      } else {
+        reportError(e);
+      }
+    }
+  } finally {
+    const next = { ...exportingAlbumDrives.value };
+    delete next[group.id];
+    exportingAlbumDrives.value = next;
+  }
+}
+
+async function deleteOutputGroup(group: ColabOneOutputGroup) {
+  if (
+    !canDeleteGroup(group) ||
+    deletingAlbums.value[group.id] ||
+    exportingAlbumZips.value[group.id] ||
+    exportingAlbumDrives.value[group.id] ||
+    isAnyGroupItemBusy(group)
+  ) {
+    return;
+  }
+  deletingAlbums.value = { ...deletingAlbums.value, [group.id]: true };
+  const eligible = getDeletableGroupItems(group);
+  let deletedCount = 0;
+  try {
+    for (const target of eligible) {
+      if (disposed) break;
+      abortOutputFetch(target.id);
+      await colabOneCommand("comfyui.output.delete", { id: target.id });
+      const url = blobUrls.value[target.id];
+      if (url) {
+        delete blobUrls.value[target.id];
+        revokeBlobUrlsDeferred([url]);
+      }
+      delete streamUrls.value[target.id];
+      delete streamFallbackToBlob.value[target.id];
+      delete bufferingStreams.value[target.id];
+      delete failedOutputs.value[target.id];
+      if (exportedDriveOutputs.value[target.id]) {
+        const nextExported = { ...exportedDriveOutputs.value };
+        delete nextExported[target.id];
+        exportedDriveOutputs.value = nextExported;
+      }
+      deletedCount += 1;
+    }
+    if (!disposed && deletedCount > 0) {
+      if (deletedCount === group.items.length) {
+        if (galleryModalGroupId.value === group.id) {
+          closeOutputGallery();
+        }
+        setNoticeKey("outputGallery.noticeAlbumDeleted");
+      } else {
+        setNoticeKey("comfy.noticeDeletedOutput");
+      }
+    }
+  } catch (e) {
+    if (!disposed) {
+      reportError(e);
+    }
+  } finally {
+    if (!disposed && deletedCount > 0) {
+      emit("sync");
+    }
+    const next = { ...deletingAlbums.value };
+    delete next[group.id];
+    deletingAlbums.value = next;
+  }
+}
 
 // Google Drive setup & cloud-to-cloud export modal state
 const driveModalOpen = ref(false);
 const driveModalPurpose = ref<"config" | "export" | "auto_release">("config");
 const driveModalTarget = ref<WorkflowOutput | null>(null);
+const driveModalTargetGroupId = ref("");
 const driveModalAutoExport = ref(false);
 const driveModalAutoArmRelease = ref(false);
 const driveModalResult = ref<ColabOneDriveExportResult | null>(null);
@@ -6407,12 +7338,32 @@ const driveModalNeedsUpgrade = computed(() =>
     ? needsUpgradeForWorkflowAutoRelease.value
     : needsUpgradeForDriveExport.value,
 );
-const driveModalExporting = computed(() =>
-  Boolean(
+const driveModalExporting = computed(() => {
+  if (driveModalTargetGroupId.value) {
+    if (exportingAlbumDrives.value[driveModalTargetGroupId.value]) {
+      return true;
+    }
+    const liveGroup = groupedOutputs.value.find(
+      (g) => g.id === driveModalTargetGroupId.value,
+    );
+    if (
+      liveGroup?.taskId &&
+      exportingAlbumDrives.value[`album:${liveGroup.taskId}`]
+    ) {
+      return true;
+    }
+    if (
+      driveModalTarget.value?.task_id &&
+      exportingAlbumDrives.value[`album:${driveModalTarget.value.task_id}`]
+    ) {
+      return true;
+    }
+  }
+  return Boolean(
     driveModalTarget.value &&
       exportingDriveOutputs.value[driveModalTarget.value.id],
-  ),
-);
+  );
+});
 
 const autoReleaseSwitchTooltip = computed(() => {
   if (!gpuReady.value) {
@@ -6459,7 +7410,7 @@ function getOutputPreviewSrc(item: WorkflowOutput): string {
 
 function canStreamOutputMedia(item: WorkflowOutput): boolean {
   return (
-    (item.kind === "video" || item.kind === "audio") &&
+    (item.kind === "image" || item.kind === "video" || item.kind === "audio") &&
     canLoadOutputAsset(item)
   );
 }
@@ -6500,7 +7451,77 @@ function abortOutputFetch(id: string) {
   delete fetchingOutputs.value[id];
 }
 
+function clearPendingPrefetchQueue() {
+  pendingPrefetchQueue.length = 0;
+  pendingPrefetchSet.clear();
+}
+
+function removePendingPrefetchId(id: string) {
+  if (!pendingPrefetchSet.has(id)) return;
+  pendingPrefetchSet.delete(id);
+  const idx = pendingPrefetchQueue.indexOf(id);
+  if (idx >= 0) {
+    pendingPrefetchQueue.splice(idx, 1);
+  }
+}
+
+function countInFlightOutputFetches(): number {
+  let count = 0;
+  for (const active of Object.values(fetchingOutputs.value)) {
+    if (active) count += 1;
+  }
+  return count;
+}
+
+function enqueueOutputPreviewPrefetch(item: WorkflowOutput | undefined | null) {
+  if (
+    !item ||
+    disposed ||
+    !outputsDrawerOpen.value ||
+    isOutputTooLargeForPreview(item) ||
+    getOutputPreviewSrc(item) ||
+    fetchingOutputs.value[item.id] ||
+    failedOutputs.value[item.id] ||
+    !canLoadOutputAsset(item)
+  ) {
+    return;
+  }
+  if (countInFlightOutputFetches() < MAX_CONCURRENT_IMAGE_FETCHES) {
+    removePendingPrefetchId(item.id);
+    void loadOutputPreview(item);
+    return;
+  }
+  if (!pendingPrefetchSet.has(item.id)) {
+    pendingPrefetchSet.add(item.id);
+    pendingPrefetchQueue.push(item.id);
+  }
+}
+
+function drainOutputPreviewPrefetchQueue() {
+  if (disposed || !outputsDrawerOpen.value) return;
+  while (
+    pendingPrefetchQueue.length > 0 &&
+    countInFlightOutputFetches() < MAX_CONCURRENT_IMAGE_FETCHES
+  ) {
+    const id = pendingPrefetchQueue.shift()!;
+    pendingPrefetchSet.delete(id);
+    const real = outputs.value.find((o) => o.id === id);
+    if (
+      !real ||
+      isOutputTooLargeForPreview(real) ||
+      getOutputPreviewSrc(real) ||
+      fetchingOutputs.value[real.id] ||
+      failedOutputs.value[real.id] ||
+      !canLoadOutputAsset(real)
+    ) {
+      continue;
+    }
+    void loadOutputPreview(real);
+  }
+}
+
 function abortAllOutputFetches() {
+  clearPendingPrefetchQueue();
   for (const ctrl of outputFetchControllers.values()) {
     ctrl.abort();
   }
@@ -6567,8 +7588,21 @@ function onOutputMediaReady(item: WorkflowOutput) {
   }
 }
 
+function onOutputMediaPlaying(item: WorkflowOutput) {
+  onOutputMediaReady(item);
+  clearInlineAutoplay(item.id);
+}
+
 function onOutputMediaError(item: WorkflowOutput) {
   if (disposed || !outputsDrawerOpen.value || !getOutputPreviewSrc(item)) return;
+  clearInlineAutoplay(item.id);
+  const hadStreamUrl = Boolean(streamUrls.value[item.id]);
+  const canFallbackToBlob =
+    hadStreamUrl &&
+    !streamFallbackToBlob.value[item.id] &&
+    item.kind === "image" &&
+    (!Number.isFinite(item.size) || item.size <= MAX_INLINE_PREVIEW_BYTES) &&
+    canLoadOutputAsset(item);
   const blobUrl = blobUrls.value[item.id];
   if (blobUrl) {
     delete blobUrls.value[item.id];
@@ -6580,22 +7614,80 @@ function onOutputMediaError(item: WorkflowOutput) {
   if (bufferingStreams.value[item.id]) {
     delete bufferingStreams.value[item.id];
   }
+  if (canFallbackToBlob) {
+    streamFallbackToBlob.value[item.id] = true;
+    if (item.id === galleryModalAnchorItemId.value) {
+      void loadOutputPreview(item);
+    } else {
+      enqueueOutputPreviewPrefetch(item);
+    }
+    return;
+  }
   failedOutputs.value[item.id] = { code: "media" };
 }
 
-function triggerRecentImagePreviews(list: WorkflowOutput[]) {
+function triggerRecentImagePreviews(_list?: WorkflowOutput[]) {
   if (!outputsDrawerOpen.value || disposed) return;
-  for (const item of list.slice(0, 6)) {
+  let inFlight = 0;
+  for (const active of Object.values(fetchingOutputs.value)) {
+    if (active) inFlight += 1;
+  }
+  if (inFlight >= MAX_CONCURRENT_IMAGE_FETCHES) return;
+
+  const prioritized: WorkflowOutput[] = [];
+  const seen = new Set<string>();
+  const enqueue = (item: WorkflowOutput | undefined) => {
+    if (!item || seen.has(item.id)) return;
+    seen.add(item.id);
+    prioritized.push(item);
+  };
+
+  // 1. Active lightbox item + adjacent neighbors for instant photo flipping
+  if (galleryModalOpen.value && activeGalleryGroup.value) {
+    const items = activeGalleryGroup.value.items;
+    const anchorIdx = Math.max(
+      0,
+      items.findIndex((it) => it.id === galleryModalAnchorItemId.value),
+    );
+    enqueue(items[anchorIdx]);
+    if (items.length > 1) {
+      enqueue(items[(anchorIdx + 1) % items.length]);
+      enqueue(items[(anchorIdx - 1 + items.length) % items.length]);
+    }
+    if (items.length > 2) {
+      enqueue(items[(anchorIdx + 2) % items.length]);
+    }
+  }
+
+  // 2. Currently visible album covers / single images (via IntersectionObserver)
+  if (visibleOutputGroupIds.value.size > 0) {
+    for (const group of groupedOutputs.value) {
+      if (!visibleOutputGroupIds.value.has(group.id)) continue;
+      for (const cover of group.coverItems) {
+        enqueue(cover);
+      }
+    }
+  }
+
+  // 3. Top 6 groups fallback so initial drawer open populates crisply
+  for (const group of groupedOutputs.value.slice(0, 6)) {
+    for (const cover of group.coverItems) {
+      enqueue(cover);
+    }
+  }
+
+  for (const item of prioritized) {
+    if (inFlight >= MAX_CONCURRENT_IMAGE_FETCHES) break;
     if (
       item.kind === "image" &&
       canLoadOutputAsset(item) &&
       !isOutputTooLargeForPreview(item) &&
       !getOutputPreviewSrc(item) &&
-      !failedOutputs.value[item.id] &&
-      !Object.values(fetchingOutputs.value).some(Boolean)
+      !fetchingOutputs.value[item.id] &&
+      !failedOutputs.value[item.id]
     ) {
+      inFlight += 1;
       void loadOutputPreview(item);
-      break;
     }
   }
 }
@@ -6616,10 +7708,23 @@ async function loadOutputPreview(item: WorkflowOutput) {
   const controller = new AbortController();
   outputFetchControllers.set(item.id, controller);
   fetchingOutputs.value[item.id] = true;
+  removePendingPrefetchId(item.id);
   delete failedOutputs.value[item.id];
   try {
-    if (canStreamOutputMedia(item)) {
-      const streamUrl = await colabOneOutputPreviewURL(item.id, controller.signal);
+    if (canStreamOutputMedia(item) && !streamFallbackToBlob.value[item.id]) {
+      let streamUrl = "";
+      let streamErr: unknown = null;
+      try {
+        streamUrl = await colabOneOutputPreviewURL(item.id, controller.signal);
+      } catch (err) {
+        const aborted =
+          controller.signal.aborted ||
+          (err instanceof DOMException && err.name === "AbortError");
+        if (aborted) {
+          throw err;
+        }
+        streamErr = err;
+      }
       const latestStreamItem = outputs.value.find((o) => o.id === item.id);
       if (
         disposed ||
@@ -6634,10 +7739,17 @@ async function loadOutputPreview(item: WorkflowOutput) {
       }
       if (typeof streamUrl === "string" && streamUrl.trim()) {
         streamUrls.value[item.id] = streamUrl.trim();
-        bufferingStreams.value[item.id] = true;
+        if (item.kind === "video" || item.kind === "audio") {
+          bufferingStreams.value[item.id] = true;
+        }
         return;
       }
-      if (Number.isFinite(item.size) && item.size > MAX_INLINE_PREVIEW_BYTES) {
+      const canInlineFallback =
+        !Number.isFinite(item.size) || item.size <= MAX_INLINE_PREVIEW_BYTES;
+      if (streamErr && (item.kind !== "image" || !canInlineFallback)) {
+        throw streamErr;
+      }
+      if (!canInlineFallback) {
         failedOutputs.value[item.id] = { code: "media" };
         return;
       }
@@ -6679,6 +7791,7 @@ async function loadOutputPreview(item: WorkflowOutput) {
     }
     if (!disposed && outputsDrawerOpen.value) {
       triggerRecentImagePreviews(outputs.value);
+      drainOutputPreviewPrefetchQueue();
     }
   }
 }
@@ -6795,15 +7908,52 @@ watch(gpuReady, (nextReady, prevReady) => {
 
 watch(outputsDrawerOpen, (open) => {
   if (!open) {
+    disconnectOutputCardObserver();
+    clearInlineAutoplay();
     pauseOutputsDrawerMedia();
     abortAllOutputFetches();
     releaseHeavyOutputBlobs();
-  } else if (
-    !gpuReady.value &&
-    props.state.setup.colab &&
-    driveOutputsCanDirectRead.value
-  ) {
-    void syncDriveOutputsFromCloud({ silent: true });
+    streamFallbackToBlob.value = {};
+    outputMultiSelectMode.value = false;
+    selectedOutputGroupIds.value = [];
+    closeOutputGallery();
+    if (outputShareModalOpen.value) {
+      closeOutputShareModal();
+    }
+  } else {
+    void nextTick(() => {
+      if (!disposed && outputsDrawerOpen.value) {
+        ensureOutputCardObserver();
+      }
+    });
+    if (
+      !gpuReady.value &&
+      props.state.setup.colab &&
+      driveOutputsCanDirectRead.value
+    ) {
+      void syncDriveOutputsFromCloud({ silent: true });
+    }
+  }
+});
+
+watch(groupedOutputs, (groups) => {
+  const validGroupIds = new Set(groups.map((g) => g.id));
+  if (selectedOutputGroupIds.value.length) {
+    const filtered = selectedOutputGroupIds.value.filter((id) =>
+      validGroupIds.has(id),
+    );
+    if (filtered.length !== selectedOutputGroupIds.value.length) {
+      selectedOutputGroupIds.value = filtered;
+    }
+  }
+  if (galleryModalOpen.value) {
+    const resolved = activeGalleryGroup.value;
+    if (!resolved) {
+      closeOutputGallery();
+    } else if (resolved.id !== galleryModalGroupId.value) {
+      galleryModalGroupId.value = resolved.id;
+      galleryModalTaskId.value = resolved.taskId || galleryModalTaskId.value;
+    }
   }
 });
 
@@ -6838,6 +7988,16 @@ watch(
         delete failedOutputs.value[id];
       }
     }
+    for (const id of Object.keys(streamFallbackToBlob.value)) {
+      if (!activeIds.has(id)) {
+        delete streamFallbackToBlob.value[id];
+      }
+    }
+    for (const id of Array.from(pendingPrefetchSet)) {
+      if (!activeIds.has(id)) {
+        removePendingPrefetchId(id);
+      }
+    }
     for (const id of Object.keys(exportedDriveOutputs.value)) {
       if (!activeIds.has(id)) {
         const next = { ...exportedDriveOutputs.value };
@@ -6845,7 +8005,51 @@ watch(
         exportedDriveOutputs.value = next;
       }
     }
-    if (
+    if (driveModalTargetGroupId.value) {
+      let liveGroup = groupedOutputs.value.find(
+        (g) => g.id === driveModalTargetGroupId.value,
+      );
+      if (!liveGroup) {
+        let demotedGroup: ColabOneOutputGroup | undefined;
+        if (driveModalTarget.value && activeIds.has(driveModalTarget.value.id)) {
+          demotedGroup = groupedOutputs.value.find((g) =>
+            g.items.some((it) => it.id === driveModalTarget.value!.id),
+          );
+        }
+        if (
+          !demotedGroup &&
+          driveModalTargetGroupId.value.startsWith("album:")
+        ) {
+          const targetTaskId = driveModalTargetGroupId.value.slice(
+            "album:".length,
+          );
+          if (targetTaskId) {
+            demotedGroup = groupedOutputs.value.find(
+              (g) => g.taskId === targetTaskId,
+            );
+          }
+        }
+        if (demotedGroup) {
+          liveGroup = demotedGroup;
+          driveModalTargetGroupId.value = demotedGroup.id;
+        }
+      }
+      if (!liveGroup) {
+        if (!driveModalResult.value) {
+          driveModalTargetGroupId.value = "";
+          driveModalTarget.value = null;
+          driveModalAutoExport.value = false;
+        }
+      } else if (
+        !driveModalTarget.value ||
+        !activeIds.has(driveModalTarget.value.id)
+      ) {
+        driveModalTarget.value =
+          liveGroup.items.find((it) => !isOutputExportedToDrive(it)) ||
+          liveGroup.items[0] ||
+          null;
+      }
+    } else if (
       driveModalTarget.value &&
       !activeIds.has(driveModalTarget.value.id) &&
       !driveModalResult.value
@@ -6870,7 +8074,9 @@ watch(
   (nextId, prevId) => {
     if (prevId && nextId !== prevId) {
       exportedDriveOutputs.value = {};
+      streamFallbackToBlob.value = {};
       dismissedAutoReleaseErrorAt.value = null;
+      driveModalTargetGroupId.value = "";
       if (driveModalOpen.value) {
         driveModalPurpose.value = "config";
         driveModalTarget.value = null;
@@ -6970,6 +8176,23 @@ watch(
       return;
     }
     if (driveModalAutoExport.value && driveModalTarget.value) {
+      const targetGroup = driveModalTargetGroupId.value
+        ? groupedOutputs.value.find((g) => g.id === driveModalTargetGroupId.value)
+        : null;
+      if (targetGroup) {
+        if (needsUpgrade) {
+          driveModalAutoExport.value = false;
+          return;
+        }
+        if (
+          !exportingAlbumDrives.value[targetGroup.id] &&
+          !driveModalResult.value
+        ) {
+          driveModalAutoExport.value = false;
+          void exportAlbumToDrive(targetGroup, { fromModal: true });
+        }
+        return;
+      }
       const target = driveModalTarget.value;
       if (!outputs.value.some((o) => o.id === target.id)) {
         driveModalAutoExport.value = false;
@@ -7000,6 +8223,7 @@ watch(driveModalOpen, (open) => {
   if (!open) {
     clearDriveModalTimers();
     driveModalPurpose.value = "config";
+    driveModalTargetGroupId.value = "";
     driveModalAutoExport.value = false;
     driveModalAutoArmRelease.value = false;
     driveModalResult.value = null;
@@ -7016,8 +8240,10 @@ function openDriveSetupModal(
   autoExport = false,
   purpose: "config" | "export" | "auto_release" = target ? "export" : "config",
   autoArmRelease = false,
+  targetGroupId = "",
 ) {
   if (isShareMode.value) return;
+  driveModalTargetGroupId.value = targetGroupId;
   driveModalPurpose.value = purpose;
   driveModalTarget.value = target;
   driveModalAutoExport.value = autoExport;
@@ -7035,7 +8261,8 @@ async function runDriveExport(
   if (
     !gpuReady.value ||
     exportingDriveOutputs.value[item.id] ||
-    deletingOutputs.value[item.id]
+    deletingOutputs.value[item.id] ||
+    isItemParentGroupBusy(item.id)
   ) {
     return;
   }
@@ -7115,7 +8342,8 @@ async function saveOutputToHostDrive(item: WorkflowOutput) {
     !gpuReady.value ||
     isOutputExportedToDrive(item) ||
     exportingDriveOutputs.value[item.id] ||
-    deletingOutputs.value[item.id]
+    deletingOutputs.value[item.id] ||
+    isItemParentGroupBusy(item.id)
   ) {
     return;
   }
@@ -7173,7 +8401,8 @@ async function exportOutputToDrive(item: WorkflowOutput) {
   if (
     !gpuReady.value ||
     exportingDriveOutputs.value[item.id] ||
-    deletingOutputs.value[item.id]
+    deletingOutputs.value[item.id] ||
+    isItemParentGroupBusy(item.id)
   ) {
     return;
   }
@@ -7307,6 +8536,15 @@ async function toggleAutoDriveFromModal(next: boolean) {
 
 function exportTargetFromModal() {
   if (isShareMode.value) return;
+  if (driveModalTargetGroupId.value) {
+    const group = groupedOutputs.value.find(
+      (g) => g.id === driveModalTargetGroupId.value,
+    );
+    if (group) {
+      void exportAlbumToDrive(group, { fromModal: true });
+      return;
+    }
+  }
   if (!driveModalTarget.value) return;
   void runDriveExport(driveModalTarget.value, { fromModal: true });
 }
@@ -7333,7 +8571,8 @@ async function exportOutput(item: WorkflowOutput) {
   if (
     !canLoadOutputAsset(item) ||
     exportingOutputs.value[item.id] ||
-    deletingOutputs.value[item.id]
+    deletingOutputs.value[item.id] ||
+    isItemParentGroupBusy(item.id)
   ) {
     return;
   }
@@ -7357,7 +8596,8 @@ async function deleteOutput(target: WorkflowOutput) {
     (!gpuReady.value && (isShareMode.value || !isOutputDriveBacked(target))) ||
     deletingOutputs.value[target.id] ||
     exportingOutputs.value[target.id] ||
-    exportingDriveOutputs.value[target.id]
+    exportingDriveOutputs.value[target.id] ||
+    isItemParentGroupBusy(target.id)
   ) {
     return;
   }
@@ -7371,6 +8611,7 @@ async function deleteOutput(target: WorkflowOutput) {
       revokeBlobUrlsDeferred([url]);
     }
     delete streamUrls.value[target.id];
+    delete streamFallbackToBlob.value[target.id];
     delete bufferingStreams.value[target.id];
     delete failedOutputs.value[target.id];
     if (exportedDriveOutputs.value[target.id]) {
@@ -7405,13 +8646,22 @@ function outputKindColor(kind: WorkflowOutput["kind"]) {
 const canvasDomain = ref(props.state.comfy_canvas_settings?.domain || "");
 const privacyContext = computed(() => {
   const ctx = buildColabOnePrivacyContext(props.state);
-  const draftHost = extractColabOneHostFromInput(canvasDomain.value);
-  if (
-    draftHost &&
-    !isColabOnePublicHost(draftHost) &&
-    !ctx.hosts?.includes(draftHost)
-  ) {
-    return { ...ctx, hosts: [...(ctx.hosts || []), draftHost] };
+  const extraHosts = [...(ctx.hosts || [])];
+  for (const rawCandidate of [
+    canvasDomain.value,
+    resolvedWebConsoleState.value.public_origin,
+  ]) {
+    const candidateHost = extractColabOneHostFromInput(rawCandidate);
+    if (
+      candidateHost &&
+      !isColabOnePublicHost(candidateHost) &&
+      !extraHosts.includes(candidateHost)
+    ) {
+      extraHosts.push(candidateHost);
+    }
+  }
+  if (extraHosts.length !== (ctx.hosts || []).length) {
+    return { ...ctx, hosts: extraHosts };
   }
   return ctx;
 });
@@ -7570,6 +8820,7 @@ async function copyCanvasAuthUrl() {
   if (isShareMode.value) return;
   try {
     const res = await colabOneCommand("comfyui.canvas.url");
+    if (disposed) return;
     const url =
       typeof res === "string"
         ? res
@@ -7577,12 +8828,11 @@ async function copyCanvasAuthUrl() {
     if (!url) {
       throw new Error(t("comfy.errNoAuthUrl"));
     }
-    try {
-      await colabOneWriteClipboard(url);
+    await colabOneWriteClipboard(url);
+    if (isColabOneDesktopRuntime()) {
       await navigator.clipboard?.writeText(url).catch(() => {});
-    } catch {
-      await navigator.clipboard.writeText(url);
     }
+    if (disposed) return;
     copiedCanvasUrl.value = true;
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
@@ -7590,7 +8840,9 @@ async function copyCanvasAuthUrl() {
     }, 2000);
     setNoticeKey("comfy.noticeCopiedAuthLink");
   } catch (e) {
-    reportError(e);
+    if (!disposed) {
+      reportError(e);
+    }
   }
 }
 
@@ -7628,14 +8880,132 @@ function hasVisibleAntOverlay(): boolean {
   return false;
 }
 
+function hasVisibleAntModal(): boolean {
+  if (typeof document === "undefined") return false;
+  const modals = document.querySelectorAll<HTMLElement>(".ant-modal-wrap");
+  for (const el of modals) {
+    if (/\bant-[\w-]+-leave(?:-active|-to)?\b/.test(el.className)) {
+      continue;
+    }
+    const style = window.getComputedStyle(el);
+    if (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.pointerEvents !== "none" &&
+      el.getBoundingClientRect().height > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+watch(
+  [
+    activeTab,
+    busy,
+    importOpen,
+    driveModalOpen,
+    galleryModalOpen,
+    outputShareModalOpen,
+    workflows,
+  ],
+  () => {
+    const id = deleteConfirmWorkflowId.value;
+    if (!id) return;
+    if (
+      activeTab.value !== "studio" ||
+      busy.value ||
+      importOpen.value ||
+      driveModalOpen.value ||
+      galleryModalOpen.value ||
+      outputShareModalOpen.value ||
+      !workflows.value.some((w) => w.id === id)
+    ) {
+      deleteConfirmWorkflowId.value = "";
+    }
+  },
+);
+
+watch(
+  [
+    outputsDrawerOpen,
+    outputMultiSelectMode,
+    importOpen,
+    driveModalOpen,
+    galleryModalOpen,
+    outputShareModalOpen,
+    groupedOutputs,
+    gpuReady,
+    exportingOutputs,
+    exportingDriveOutputs,
+    deletingOutputs,
+    exportingAlbumZips,
+    exportingAlbumDrives,
+    deletingAlbums,
+  ],
+  () => {
+    const id = deleteConfirmOutputId.value;
+    if (!id) return;
+    if (
+      !outputsDrawerOpen.value ||
+      outputMultiSelectMode.value ||
+      importOpen.value ||
+      driveModalOpen.value ||
+      galleryModalOpen.value ||
+      outputShareModalOpen.value
+    ) {
+      deleteConfirmOutputId.value = "";
+      return;
+    }
+    const albumGroup = groupedOutputs.value.find(
+      (g) => g.isAlbum && g.id === id,
+    );
+    if (albumGroup) {
+      if (
+        !canDeleteGroup(albumGroup) ||
+        exportingAlbumZips.value[albumGroup.id] ||
+        exportingAlbumDrives.value[albumGroup.id] ||
+        deletingAlbums.value[albumGroup.id] ||
+        isAnyGroupItemBusy(albumGroup)
+      ) {
+        deleteConfirmOutputId.value = "";
+      }
+      return;
+    }
+    const singleGroup = groupedOutputs.value.find(
+      (g) => !g.isAlbum && g.items.some((it) => it.id === id),
+    );
+    const singleItem = singleGroup?.items.find((it) => it.id === id);
+    if (
+      !singleItem ||
+      (!gpuReady.value &&
+        (isShareMode.value || !isOutputDriveBacked(singleItem))) ||
+      exportingOutputs.value[singleItem.id] ||
+      exportingDriveOutputs.value[singleItem.id] ||
+      deletingOutputs.value[singleItem.id] ||
+      isItemParentGroupBusy(singleItem.id)
+    ) {
+      deleteConfirmOutputId.value = "";
+    }
+  },
+);
+
 function handlePanelKeydown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
   if (
     importOpen.value ||
     driveModalOpen.value ||
-    deleteConfirmWorkflowId.value ||
-    deleteConfirmOutputId.value
+    galleryModalOpen.value ||
+    outputShareModalOpen.value ||
+    hasVisibleAntModal()
   ) {
+    return;
+  }
+  if (deleteConfirmWorkflowId.value || deleteConfirmOutputId.value) {
+    e.stopImmediatePropagation();
+    deleteConfirmWorkflowId.value = "";
+    deleteConfirmOutputId.value = "";
     return;
   }
   if (mobileAutoReleasePopoverOpen.value) {
@@ -7739,11 +9109,15 @@ onUnmounted(() => {
   clearTimeout(copyTimer);
   clearDriveModalTimers();
   disposed = true;
+  disconnectOutputCardObserver();
+  outputCardElements.clear();
+  clearInlineAutoplay();
   pauseParamDrawerMedia();
   pauseOutputsDrawerMedia();
   abortAllOutputFetches();
   Object.values(blobUrls.value).forEach((url) => URL.revokeObjectURL(url));
   streamUrls.value = {};
+  streamFallbackToBlob.value = {};
   bufferingStreams.value = {};
   revokeAllVoicePreviewUrls();
   revokeAllLocalPreviews();
@@ -7753,7 +9127,7 @@ onUnmounted(() => {
 defineExpose({
   openOutputsDrawer,
   closeOutputsDrawer,
-  outputsCount: computed(() => outputs.value.length),
+  outputsCount: computed(() => groupedOutputs.value.length),
   hasActiveRun: computed(() =>
     Boolean(comfyRunTask.value || submittingRun.value),
   ),
@@ -8560,10 +9934,10 @@ defineExpose({
                     class="co-comfy-outputs-pulse"
                   />
                   <span
-                    v-if="outputs.length > 0"
+                    v-if="groupedOutputs.length > 0"
                     class="co-comfy-outputs-count co-comfy-mono"
                   >
-                    {{ outputs.length }}
+                    {{ groupedOutputs.length }}
                   </span>
                 </AButton>
                 <AButton
@@ -8830,6 +10204,7 @@ defineExpose({
                   class="co-comfy-wf-actions"
                 >
                   <APopconfirm
+                    :open="deleteConfirmWorkflowId === entry.primary.id"
                     :title="
                       t('comfy.deleteWorkflowTitle', {
                         name: tb(entry.primary.name),
@@ -8852,7 +10227,10 @@ defineExpose({
                         }
                       }
                     "
-                    @confirm="deleteWorkflow(entry.primary)"
+                    @confirm="
+                      deleteConfirmWorkflowId = '';
+                      deleteWorkflow(entry.primary);
+                    "
                   >
                     <span class="co-popconfirm-anchor">
                       <ColabOneTooltip
@@ -10108,13 +11486,43 @@ defineExpose({
             inline
           />
           <ATag v-else class="co-comfy-count-tag co-sk-reveal">
-            {{ t("comfy.outputCount", { count: outputs.length }) }}
+            {{ t("comfy.outputCount", { count: groupedOutputs.length }) }}
           </ATag>
         </div>
       </template>
 
       <template #extra>
-        <ASpace v-if="!isShareMode" :size="6">
+        <ASpace v-if="!isShareMode" :size="6" wrap>
+          <AButton
+            v-if="groupedOutputs.length > 0"
+            size="small"
+            :type="outputMultiSelectMode ? 'primary' : 'default'"
+            :ghost="outputMultiSelectMode"
+            data-testid="comfy-outputs-multi-select-toggle"
+            @click="toggleOutputMultiSelect"
+          >
+            <template #icon><PhSelectionAll :size="14" /></template>
+            {{
+              outputMultiSelectMode
+                ? t("outputGallery.multiSelectCancel")
+                : t("outputGallery.multiSelectBtn")
+            }}
+          </AButton>
+          <AButton
+            size="small"
+            class="co-comfy-outputs-shares-btn"
+            data-testid="comfy-outputs-shares-manage"
+            @click="openOutputShareManage"
+          >
+            <template #icon><PhShareNetwork :size="14" /></template>
+            <span>{{ t("outputGallery.sharesManageBtn") }}</span>
+            <span
+              v-if="activeOutputShareCount > 0"
+              class="co-comfy-share-count-pill"
+            >
+              {{ activeOutputShareCount }}
+            </span>
+          </AButton>
           <ColabOneTooltip
             v-if="!gpuReady && state.setup.colab && driveOutputsCanDirectRead"
             :title="t('comfy.outputsDriveRefreshTooltip')"
@@ -10336,6 +11744,44 @@ defineExpose({
           </template>
         </AAlert>
 
+        <!-- Multi-Select Combined Sharing Bar -->
+        <div
+          v-if="!isShareMode && outputMultiSelectMode && groupedOutputs.length > 0"
+          class="co-comfy-multiselect-bar"
+          data-testid="comfy-outputs-multiselect-bar"
+        >
+          <span class="co-comfy-multiselect-summary">
+            {{
+              t("outputGallery.multiSelectSummary", {
+                groups: multiSelectSummaryCounts.groups,
+                items: multiSelectSummaryCounts.items,
+              })
+            }}
+          </span>
+          <ASpace :size="6" wrap>
+            <AButton size="small" @click="selectAllOutputGroups">
+              {{ t("outputGallery.multiSelectAll") }}
+            </AButton>
+            <AButton
+              size="small"
+              :disabled="!selectedOutputGroupIds.length"
+              @click="clearOutputGroupSelection"
+            >
+              {{ t("outputGallery.multiSelectClear") }}
+            </AButton>
+            <AButton
+              size="small"
+              type="primary"
+              :disabled="!selectedOutputGroupIds.length"
+              data-testid="comfy-outputs-multiselect-share-btn"
+              @click="openMultiSelectShare"
+            >
+              <template #icon><PhShareNetwork :size="14" /></template>
+              {{ t("outputGallery.multiSelectCreateBtn") }}
+            </AButton>
+          </ASpace>
+        </div>
+
         <div
           v-if="props.loading && !outputs.length"
           class="co-comfy-output-grid"
@@ -10541,64 +11987,717 @@ defineExpose({
             </div>
           </article>
 
-          <article
-            v-for="item in outputs"
-            :key="item.id"
-            class="co-comfy-output-item"
-          >
-            <div class="co-comfy-output-frame">
-              <img
-                v-if="item.kind === 'image' && getOutputPreviewSrc(item)"
-                :src="getOutputPreviewSrc(item)"
-                :alt="item.filename"
-                class="co-sk-reveal"
-                @error="onOutputMediaError(item)"
-              />
-              <video
-                v-else-if="item.kind === 'video' && getOutputPreviewSrc(item)"
-                :src="getOutputPreviewSrc(item)"
-                controls
-                autoplay
-                playsinline
-                preload="auto"
-                class="co-sk-reveal"
-                @loadedmetadata="onOutputMediaReady(item)"
-                @loadeddata="onOutputMediaReady(item)"
-                @canplay="onOutputMediaReady(item)"
-                @playing="onOutputMediaReady(item)"
-                @error="onOutputMediaError(item)"
-              />
+          <template v-for="group in groupedOutputs" :key="group.id">
+            <!-- Grouped Multi-Output Album Card -->
+            <article
+              v-if="group.isAlbum"
+              :ref="(el) => registerOutputCardEl(group.id, el)"
+              :data-output-group-id="group.id"
+              class="co-comfy-output-item co-comfy-album-item"
+              :class="{
+                'is-selectable': outputMultiSelectMode,
+                'is-selected': selectedOutputGroupIdSet.has(group.id),
+              }"
+              data-testid="comfy-output-album-card"
+            >
               <div
-                v-else-if="item.kind === 'audio' && getOutputPreviewSrc(item)"
-                class="co-comfy-audio-box co-sk-reveal"
+                class="co-comfy-output-frame co-comfy-album-frame"
+                :role="outputMultiSelectMode ? 'checkbox' : 'button'"
+                :aria-checked="
+                  outputMultiSelectMode
+                    ? selectedOutputGroupIdSet.has(group.id)
+                    : undefined
+                "
+                tabindex="0"
+                :aria-label="
+                  outputMultiSelectMode
+                    ? group.workflowName
+                      ? tb(group.workflowName)
+                      : group.title || t('comfy.defaultWorkflowName')
+                    : t('outputGallery.openAlbum')
+                "
+                @click="
+                  outputMultiSelectMode
+                    ? toggleOutputGroupSelection(group.id)
+                    : openOutputGallery(group)
+                "
+                @keydown.enter.prevent="
+                  outputMultiSelectMode
+                    ? toggleOutputGroupSelection(group.id)
+                    : openOutputGallery(group)
+                "
+                @keydown.space.prevent="
+                  outputMultiSelectMode
+                    ? toggleOutputGroupSelection(group.id)
+                    : openOutputGallery(group)
+                "
               >
-                <PhWaveform :size="28" class="co-comfy-audio-icon" />
-                <audio
+                <div
+                  v-if="!isShareMode && outputMultiSelectMode"
+                  class="co-comfy-select-overlay"
+                  aria-hidden="true"
+                >
+                  <ACheckbox
+                    :checked="selectedOutputGroupIdSet.has(group.id)"
+                    :tabindex="-1"
+                  />
+                </div>
+
+                <div
+                  class="co-comfy-album-collage"
+                  :class="`is-count-${Math.min(4, Math.max(1, group.coverItems.length))}`"
+                >
+                  <div
+                    v-for="(coverItem, tileIdx) in group.coverItems"
+                    :key="coverItem.id"
+                    class="co-comfy-album-tile"
+                  >
+                    <img
+                      v-if="
+                        coverItem.kind === 'image' &&
+                        getOutputPreviewSrc(coverItem)
+                      "
+                      :src="getOutputPreviewSrc(coverItem)"
+                      :alt="coverItem.filename"
+                      class="co-sk-reveal"
+                      @load="onOutputMediaReady(coverItem)"
+                      @error="onOutputMediaError(coverItem)"
+                    />
+                    <div
+                      v-else-if="coverItem.kind === 'video'"
+                      class="co-comfy-album-tile-media-fallback"
+                    >
+                      <PhVideoCamera :size="22" weight="duotone" />
+                    </div>
+                    <div
+                      v-else-if="coverItem.kind === 'audio'"
+                      class="co-comfy-album-tile-media-fallback"
+                    >
+                      <PhWaveform :size="22" weight="duotone" />
+                    </div>
+                    <ColabOneSkeleton
+                      v-else-if="fetchingOutputs[coverItem.id]"
+                      width="100%"
+                      height="100%"
+                      :radius="0"
+                      variant="rect"
+                      tone="subtle"
+                    />
+                    <div
+                      v-else
+                      class="co-comfy-album-tile-media-fallback"
+                    >
+                      <PhWifiSlash
+                        v-if="!canLoadOutputAsset(coverItem) && isShareMode"
+                        :size="20"
+                        weight="duotone"
+                      />
+                      <PhCloudCheck
+                        v-else-if="!canLoadOutputAsset(coverItem) && !isShareMode"
+                        :size="20"
+                        weight="duotone"
+                      />
+                      <PhImage v-else :size="20" weight="duotone" />
+                    </div>
+
+                    <div
+                      v-if="
+                        group.coverItems.length > 1 &&
+                        tileIdx === group.coverItems.length - 1 &&
+                        group.extraCount > 0
+                      "
+                      class="co-comfy-album-more-overlay"
+                    >
+                      +{{ group.extraCount }}
+                    </div>
+                  </div>
+                </div>
+
+                <div class="co-comfy-album-count-pill">
+                  <PhImages :size="13" weight="duotone" aria-hidden="true" />
+                  <span>
+                    {{
+                      group.hasVideo || group.hasAudio
+                        ? t("outputGallery.albumMixedTag", {
+                            count: group.items.length,
+                          })
+                        : t("outputGallery.albumTag", {
+                            count: group.items.length,
+                          })
+                    }}
+                  </span>
+                </div>
+
+                <div
+                  v-if="!outputMultiSelectMode"
+                  class="co-comfy-album-hover-pill"
+                >
+                  <PhMagnifyingGlassPlus :size="13" aria-hidden="true" />
+                  <span>{{ t("outputGallery.openAlbum") }}</span>
+                </div>
+              </div>
+
+              <div class="co-comfy-output-body">
+                <div class="co-comfy-output-title-row">
+                  <ColabOneTooltip
+                    :title="
+                      group.workflowName
+                        ? tb(group.workflowName)
+                        : t('comfy.defaultWorkflowName')
+                    "
+                  >
+                    <strong>{{
+                      group.workflowName
+                        ? tb(group.workflowName)
+                        : t("comfy.defaultWorkflowName")
+                    }}</strong>
+                  </ColabOneTooltip>
+                </div>
+
+                <ColabOneTooltip
+                  v-if="formatOutputCreatedAt(group.createdAt)"
+                  :title="formatOutputCreatedAtTooltip(group.createdAt)"
+                >
+                  <div
+                    class="co-comfy-output-time"
+                    data-testid="comfy-output-created-at"
+                  >
+                    <PhCalendarBlank :size="12" aria-hidden="true" />
+                    <time
+                      class="co-comfy-mono"
+                      :datetime="formatOutputCreatedAtISO(group.createdAt)"
+                    >
+                      {{ formatOutputCreatedAt(group.createdAt) }}
+                    </time>
+                  </div>
+                </ColabOneTooltip>
+
+                <div class="co-comfy-output-meta-tags">
+                  <ATag class="co-comfy-meta-tag">
+                    {{ formatOutputSize(group.totalSize) }}
+                  </ATag>
+                  <ATag
+                    v-if="
+                      Number.isFinite(group.totalElapsed) &&
+                      group.totalElapsed > 0
+                    "
+                    class="co-comfy-meta-tag co-comfy-elapsed-tag"
+                    data-testid="comfy-output-elapsed"
+                  >
+                    <PhClock :size="12" aria-hidden="true" />
+                    <span>{{
+                      t("task.elapsedTotal", {
+                        duration: formatOutputElapsed(group.totalElapsed),
+                      })
+                    }}</span>
+                  </ATag>
+                  <ATag
+                    v-if="group.inspectCount > 0"
+                    color="gold"
+                    class="co-comfy-meta-tag"
+                  >
+                    {{
+                      t("outputGallery.inspectIncludedHint", {
+                        count: group.inspectCount,
+                      })
+                    }}
+                  </ATag>
+                  <ColabOneTooltip
+                    v-if="!isShareMode && formatGroupCUBadge(group)"
+                    :title="formatGroupCUTooltip(group)"
+                  >
+                    <ATag
+                      class="co-comfy-meta-tag co-comfy-cu-tag"
+                      data-testid="comfy-output-cu"
+                    >
+                      <PhCoins :size="12" weight="duotone" aria-hidden="true" />
+                      <span class="co-comfy-mono">{{
+                        formatGroupCUBadge(group)
+                      }}</span>
+                    </ATag>
+                  </ColabOneTooltip>
+                  <ColabOneTooltip
+                    v-if="!isShareMode && isGroupShared(group)"
+                    :title="getGroupShareTooltip(group)"
+                  >
+                    <ATag
+                      color="purple"
+                      class="co-comfy-meta-tag co-comfy-shared-tag"
+                      data-testid="comfy-output-shared-tag"
+                    >
+                      <PhShareNetwork :size="12" aria-hidden="true" />
+                      <span>{{ t("comfy.outputTagShared") }}</span>
+                    </ATag>
+                  </ColabOneTooltip>
+                  <ColabOneTooltip
+                    v-if="
+                      !isShareMode &&
+                      (isGroupFullyExportedToDrive(group) ||
+                        group.anyDriveSynced)
+                    "
+                    :title="
+                      getGroupDrivePath(group)
+                        ? formatColabOneDrivePath(getGroupDrivePath(group))
+                        : t('comfy.outputDriveSyncedTooltip')
+                    "
+                  >
+                    <ATag
+                      :color="
+                        isGroupFullyExportedToDrive(group) ? 'success' : 'blue'
+                      "
+                      class="co-comfy-meta-tag co-comfy-drive-linked-tag"
+                      data-testid="comfy-output-drive-tag"
+                    >
+                      <PhCloudCheck :size="12" aria-hidden="true" />
+                      <span>{{
+                        isGroupFullyExportedToDrive(group)
+                          ? t("comfy.outputTagSavedInDrive")
+                          : t("comfy.outputTagSyncedInDrive")
+                      }}</span>
+                    </ATag>
+                  </ColabOneTooltip>
+                </div>
+
+                <div class="co-comfy-output-actions">
+                  <div class="co-comfy-action-primary">
+                    <ColabOneTooltip :title="t('outputGallery.openAlbum')">
+                      <AButton
+                        size="small"
+                        type="primary"
+                        ghost
+                        class="co-comfy-primary-action-btn"
+                        data-testid="comfy-album-open-btn"
+                        :aria-label="t('outputGallery.openAlbum')"
+                        @click="openOutputGallery(group)"
+                      >
+                        <template #icon><PhImages :size="14" /></template>
+                        <span class="co-comfy-action-label">{{
+                          t("outputGallery.openAlbumShort")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+                    <ColabOneTooltip
+                      v-if="!isShareMode"
+                      :title="t('outputGallery.shareBtn')"
+                    >
+                      <AButton
+                        size="small"
+                        class="co-comfy-primary-action-btn"
+                        data-testid="comfy-output-share-btn"
+                        :aria-label="t('outputGallery.shareBtn')"
+                        @click="openOutputShareForGroups([group.id])"
+                      >
+                        <template #icon><PhShareNetwork :size="14" /></template>
+                        <span class="co-comfy-action-label">{{
+                          t("outputGallery.shareBtn")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+                  </div>
+
+                  <div class="co-comfy-action-utils">
+                    <ColabOneTooltip
+                      v-if="!isShareMode"
+                      :title="t('outputGallery.exportAlbumZip')"
+                    >
+                      <AButton
+                        size="small"
+                        class="co-comfy-icon-action-btn"
+                        :loading="!!exportingAlbumZips[group.id]"
+                        :disabled="
+                          !canLoadAnyInGroup(group) ||
+                          !!deletingAlbums[group.id] ||
+                          isAnyGroupItemBusy(group)
+                        "
+                        data-testid="comfy-album-export-zip-btn"
+                        @click="exportAlbumZip(group)"
+                      >
+                        <template #icon><PhFileArchive :size="14" /></template>
+                        <span class="co-sr-only">{{
+                          t("outputGallery.exportAlbumZip")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+
+                    <template v-if="isShareMode">
+                      <ColabOneTooltip
+                        v-if="isGroupFullyExportedToDrive(group)"
+                        :title="t('comfy.savedToHostDriveBtn')"
+                      >
+                        <span
+                          role="img"
+                          class="co-comfy-icon-badge is-saved"
+                          data-testid="comfy-share-output-saved-host-drive"
+                          :aria-label="t('comfy.savedToHostDriveBtn')"
+                        >
+                          <PhCloudCheck :size="14" aria-hidden="true" />
+                          <span class="co-sr-only">{{
+                            t("comfy.savedToHostDriveBtn")
+                          }}</span>
+                        </span>
+                      </ColabOneTooltip>
+                      <ColabOneTooltip
+                        v-else-if="props.shareDriveExportReady"
+                        :title="t('comfy.saveToHostDriveBtn')"
+                      >
+                        <AButton
+                          size="small"
+                          class="co-comfy-icon-action-btn co-comfy-export-drive-btn"
+                          :loading="!!exportingAlbumDrives[group.id]"
+                          :disabled="
+                            !gpuReady ||
+                            !!deletingAlbums[group.id] ||
+                            isAnyGroupItemBusy(group)
+                          "
+                          data-testid="comfy-share-output-save-host-drive"
+                          @click="saveAlbumToHostDrive(group)"
+                        >
+                          <template #icon>
+                            <PhCloudArrowUp :size="14" />
+                          </template>
+                          <span class="co-sr-only">{{
+                            t("comfy.saveToHostDriveBtn")
+                          }}</span>
+                        </AButton>
+                      </ColabOneTooltip>
+                    </template>
+
+                    <ColabOneTooltip
+                      v-else-if="!gpuReady || isGroupAllDriveBacked(group)"
+                      :title="
+                        getGroupDrivePath(group)
+                          ? formatColabOneDrivePath(getGroupDrivePath(group))
+                          : t('comfy.openOutputInDriveTooltip')
+                      "
+                    >
+                      <AButton
+                        size="small"
+                        class="co-comfy-icon-action-btn co-comfy-export-drive-btn is-exported"
+                        data-testid="comfy-output-open-drive"
+                        @click="openExternalURL(getGroupDriveOpenUrl(group))"
+                      >
+                        <template #icon>
+                          <PhArrowSquareOut :size="14" />
+                        </template>
+                        <span class="co-sr-only">{{
+                          t("comfy.openOutputInDrive")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+
+                    <ColabOneTooltip
+                      v-else
+                      :title="
+                        isGroupFullyExportedToDrive(group)
+                          ? t('comfy.exportedToDrive')
+                          : state.setup.drive
+                            ? t('outputGallery.exportAlbumDrive')
+                            : t('comfy.exportDriveSetupTooltip')
+                      "
+                    >
+                      <AButton
+                        size="small"
+                        class="co-comfy-icon-action-btn co-comfy-export-drive-btn"
+                        :class="{
+                          'is-exported': isGroupFullyExportedToDrive(group),
+                        }"
+                        :loading="!!exportingAlbumDrives[group.id]"
+                        :disabled="
+                          !gpuReady ||
+                          isGroupFullyExportedToDrive(group) ||
+                          !!deletingAlbums[group.id] ||
+                          isAnyGroupItemBusy(group)
+                        "
+                        data-testid="comfy-output-export-drive"
+                        @click="exportAlbumToDrive(group)"
+                      >
+                        <template #icon>
+                          <PhCloudCheck
+                            v-if="isGroupFullyExportedToDrive(group)"
+                            :size="14"
+                          />
+                          <PhCloudArrowUp v-else :size="14" />
+                        </template>
+                        <span class="co-sr-only">{{
+                          isGroupFullyExportedToDrive(group)
+                            ? t("comfy.exportedToDrive")
+                            : t("outputGallery.exportAlbumDrive")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+
+                    <APopconfirm
+                      :open="deleteConfirmOutputId === group.id"
+                      :title="t('outputGallery.deleteAlbum')"
+                      :description="
+                        !isShareMode &&
+                        (isGroupAnyDriveBacked(group) || !gpuReady)
+                          ? t('outputGallery.deleteAlbumDriveConfirm', {
+                              count: getDeletableGroupItems(group).length,
+                            })
+                          : t('outputGallery.deleteAlbumConfirm', {
+                              count: getDeletableGroupItems(group).length,
+                            })
+                      "
+                      :ok-text="t('common.confirmDelete')"
+                      :cancel-text="t('common.cancel')"
+                      :disabled="
+                        !canDeleteGroup(group) ||
+                        !!exportingAlbumZips[group.id] ||
+                        !!exportingAlbumDrives[group.id] ||
+                        !!deletingAlbums[group.id] ||
+                        isAnyGroupItemBusy(group)
+                      "
+                      :ok-button-props="{ danger: true }"
+                      placement="topRight"
+                      @open-change="
+                        (open) => {
+                          if (open) {
+                            deleteConfirmOutputId = group.id;
+                          } else if (deleteConfirmOutputId === group.id) {
+                            deleteConfirmOutputId = '';
+                          }
+                        }
+                      "
+                      @confirm="
+                        deleteConfirmOutputId = '';
+                        deleteOutputGroup(group);
+                      "
+                    >
+                      <span class="co-popconfirm-anchor">
+                        <ColabOneTooltip
+                          :title="t('outputGallery.deleteAlbum')"
+                          :disabled="deleteConfirmOutputId === group.id"
+                        >
+                          <AButton
+                            size="small"
+                            danger
+                            class="co-comfy-icon-action-btn co-comfy-output-delete-btn"
+                            :loading="!!deletingAlbums[group.id]"
+                            :disabled="
+                              !canDeleteGroup(group) ||
+                              !!exportingAlbumZips[group.id] ||
+                              !!exportingAlbumDrives[group.id] ||
+                              isAnyGroupItemBusy(group)
+                            "
+                            :aria-label="t('outputGallery.deleteAlbum')"
+                          >
+                            <template #icon><PhTrash :size="14" /></template>
+                          </AButton>
+                        </ColabOneTooltip>
+                      </span>
+                    </APopconfirm>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <!-- Single-Item Output Card -->
+            <article
+              v-for="item in group.isAlbum ? [] : group.items"
+              :key="item.id"
+              :ref="(el) => registerOutputCardEl(group.id, el)"
+              :data-output-group-id="group.id"
+              class="co-comfy-output-item"
+              :class="{
+                'is-selectable': outputMultiSelectMode,
+                'is-selected': selectedOutputGroupIdSet.has(group.id),
+              }"
+            >
+              <div
+                class="co-comfy-output-frame"
+                :class="{
+                  'is-zoomable':
+                    item.kind === 'image' && Boolean(getOutputPreviewSrc(item)),
+                }"
+                :role="
+                  outputMultiSelectMode
+                    ? 'checkbox'
+                    : item.kind === 'image' && Boolean(getOutputPreviewSrc(item))
+                      ? 'button'
+                      : undefined
+                "
+                :aria-checked="
+                  outputMultiSelectMode
+                    ? selectedOutputGroupIdSet.has(group.id)
+                    : undefined
+                "
+                :tabindex="
+                  outputMultiSelectMode ||
+                  (item.kind === 'image' && Boolean(getOutputPreviewSrc(item)))
+                    ? 0
+                    : undefined
+                "
+                :aria-label="
+                  outputMultiSelectMode
+                    ? item.workflow_name
+                      ? tb(item.workflow_name)
+                      : item.filename
+                    : item.kind === 'image' &&
+                        Boolean(getOutputPreviewSrc(item))
+                      ? t('outputGallery.viewFullImage')
+                      : undefined
+                "
+                @click="
+                  outputMultiSelectMode
+                    ? toggleOutputGroupSelection(group.id)
+                    : item.kind === 'image' && getOutputPreviewSrc(item)
+                      ? openOutputGallery(group, item.id, 'stage')
+                      : undefined
+                "
+                @keydown.enter.prevent="
+                  outputMultiSelectMode
+                    ? toggleOutputGroupSelection(group.id)
+                    : item.kind === 'image' && getOutputPreviewSrc(item)
+                      ? openOutputGallery(group, item.id, 'stage')
+                      : undefined
+                "
+                @keydown.space.prevent="
+                  outputMultiSelectMode
+                    ? toggleOutputGroupSelection(group.id)
+                    : item.kind === 'image' && getOutputPreviewSrc(item)
+                      ? openOutputGallery(group, item.id, 'stage')
+                      : undefined
+                "
+              >
+                <div
+                  v-if="!isShareMode && outputMultiSelectMode"
+                  class="co-comfy-select-overlay"
+                  aria-hidden="true"
+                >
+                  <ACheckbox
+                    :checked="selectedOutputGroupIdSet.has(group.id)"
+                    :tabindex="-1"
+                  />
+                </div>
+
+                <template
+                  v-if="item.kind === 'image' && getOutputPreviewSrc(item)"
+                >
+                  <img
+                    :src="getOutputPreviewSrc(item)"
+                    :alt="item.filename"
+                    class="co-sk-reveal"
+                    @load="onOutputMediaReady(item)"
+                    @error="onOutputMediaError(item)"
+                  />
+                  <div
+                    v-if="!outputMultiSelectMode"
+                    class="co-comfy-album-hover-pill"
+                  >
+                    <PhMagnifyingGlassPlus :size="13" aria-hidden="true" />
+                    <span>{{ t("outputGallery.viewFullImage") }}</span>
+                  </div>
+                </template>
+                <video
+                  v-else-if="item.kind === 'video' && getOutputPreviewSrc(item)"
                   :src="getOutputPreviewSrc(item)"
                   controls
-                  autoplay
+                  :autoplay="Boolean(inlineAutoplayIds[item.id])"
+                  playsinline
                   preload="auto"
+                  class="co-sk-reveal"
                   @loadedmetadata="onOutputMediaReady(item)"
                   @loadeddata="onOutputMediaReady(item)"
                   @canplay="onOutputMediaReady(item)"
-                  @playing="onOutputMediaReady(item)"
+                  @playing="onOutputMediaPlaying(item)"
+                  @ended="clearInlineAutoplay(item.id)"
                   @error="onOutputMediaError(item)"
                 />
-              </div>
-              <div
-                v-else-if="fetchingOutputs[item.id]"
-                class="co-comfy-preview-loading co-comfy-preview-skeleton"
-                role="status"
-                aria-busy="true"
-              >
-                <ColabOneSkeleton
-                  width="100%"
-                  height="100%"
-                  :radius="0"
-                  variant="rect"
-                  tone="subtle"
-                />
-                <div class="co-comfy-preview-pill">
+                <div
+                  v-else-if="item.kind === 'audio' && getOutputPreviewSrc(item)"
+                  class="co-comfy-audio-box co-sk-reveal"
+                >
+                  <PhWaveform :size="28" class="co-comfy-audio-icon" />
+                  <audio
+                    :src="getOutputPreviewSrc(item)"
+                    controls
+                    :autoplay="Boolean(inlineAutoplayIds[item.id])"
+                    preload="auto"
+                    @loadedmetadata="onOutputMediaReady(item)"
+                    @loadeddata="onOutputMediaReady(item)"
+                    @canplay="onOutputMediaReady(item)"
+                    @playing="onOutputMediaPlaying(item)"
+                    @ended="clearInlineAutoplay(item.id)"
+                    @error="onOutputMediaError(item)"
+                  />
+                </div>
+                <div
+                  v-else-if="fetchingOutputs[item.id]"
+                  class="co-comfy-preview-loading co-comfy-preview-skeleton"
+                  role="status"
+                  aria-busy="true"
+                >
+                  <ColabOneSkeleton
+                    width="100%"
+                    height="100%"
+                    :radius="0"
+                    variant="rect"
+                    tone="subtle"
+                  />
+                  <div class="co-comfy-preview-pill">
+                    <component
+                      :is="
+                        item.kind === 'video'
+                          ? PhVideoCamera
+                          : item.kind === 'audio'
+                            ? PhWaveform
+                            : PhImage
+                      "
+                      :size="15"
+                    />
+                    <span>{{ t("comfy.loadingOutput") }}</span>
+                  </div>
+                </div>
+                <div
+                  v-else-if="!canLoadOutputAsset(item) && isShareMode"
+                  class="co-comfy-share-offline-frame"
+                  data-testid="comfy-share-output-offline-frame"
+                >
+                  <PhWifiSlash :size="26" weight="duotone" />
+                  <span>{{ t("workflowShare.guestOfflineBannerTitle") }}</span>
+                </div>
+                <div
+                  v-else-if="!canLoadOutputAsset(item)"
+                  class="co-comfy-drive-offline-frame"
+                  data-testid="comfy-output-drive-offline-frame"
+                >
+                  <PhCloudCheck
+                    :size="28"
+                    weight="duotone"
+                    class="co-comfy-drive-offline-icon"
+                  />
+                  <span class="co-comfy-drive-offline-title">
+                    {{ t("comfy.outputStoredInDriveLabel") }}
+                  </span>
+                  <ColabOneTooltip
+                    v-if="getOutputDrivePath(item)"
+                    :title="formatColabOneDrivePath(getOutputDrivePath(item))"
+                  >
+                    <code class="co-comfy-drive-offline-path">
+                      {{ formatColabOneDrivePath(getOutputDrivePath(item)) }}
+                    </code>
+                  </ColabOneTooltip>
+                  <AButton
+                    size="small"
+                    type="primary"
+                    ghost
+                    :tabindex="outputMultiSelectMode ? -1 : undefined"
+                    :aria-hidden="outputMultiSelectMode ? 'true' : undefined"
+                    @click.stop="
+                      outputMultiSelectMode
+                        ? toggleOutputGroupSelection(group.id)
+                        : openExternalURL(getOutputDriveOpenUrl(item))
+                    "
+                  >
+                    <template #icon><PhArrowSquareOut :size="14" /></template>
+                    {{ t("comfy.openOutputInDrive") }}
+                  </AButton>
+                </div>
+                <div
+                  v-else-if="isOutputTooLargeForPreview(item)"
+                  class="co-comfy-preview-large-notice"
+                >
                   <component
                     :is="
                       item.kind === 'video'
@@ -10607,437 +12706,505 @@ defineExpose({
                           ? PhWaveform
                           : PhImage
                     "
-                    :size="15"
+                    :size="26"
+                    class="co-comfy-preview-large-icon"
                   />
-                  <span>{{ t("comfy.loadingOutput") }}</span>
+                  <p>
+                    {{
+                      t(
+                        isShareMode
+                          ? "comfy.sharePreviewTooLarge"
+                          : "comfy.videoPreviewTooLarge",
+                        {
+                          size: formatComfyByteSize(item.size),
+                        },
+                      )
+                    }}
+                  </p>
                 </div>
-              </div>
-              <div
-                v-else-if="!canLoadOutputAsset(item) && isShareMode"
-                class="co-comfy-share-offline-frame"
-                data-testid="comfy-share-output-offline-frame"
-              >
-                <PhWifiSlash :size="26" weight="duotone" />
-                <span>{{ t("workflowShare.guestOfflineBannerTitle") }}</span>
-              </div>
-              <div
-                v-else-if="!canLoadOutputAsset(item)"
-                class="co-comfy-drive-offline-frame"
-                data-testid="comfy-output-drive-offline-frame"
-              >
-                <PhCloudCheck
-                  :size="28"
-                  weight="duotone"
-                  class="co-comfy-drive-offline-icon"
-                />
-                <span class="co-comfy-drive-offline-title">
-                  {{ t("comfy.outputStoredInDriveLabel") }}
-                </span>
-                <ColabOneTooltip
-                  v-if="getOutputDrivePath(item)"
-                  :title="formatColabOneDrivePath(getOutputDrivePath(item))"
-                >
-                  <code class="co-comfy-drive-offline-path">
-                    {{ formatColabOneDrivePath(getOutputDrivePath(item)) }}
-                  </code>
-                </ColabOneTooltip>
-                <AButton
-                  size="small"
-                  type="primary"
-                  ghost
-                  @click="openExternalURL(getOutputDriveOpenUrl(item))"
-                >
-                  <template #icon><PhArrowSquareOut :size="14" /></template>
-                  {{ t("comfy.openOutputInDrive") }}
-                </AButton>
-              </div>
-              <div
-                v-else-if="isOutputTooLargeForPreview(item)"
-                class="co-comfy-preview-large-notice"
-              >
-                <component
-                  :is="
-                    item.kind === 'video'
-                      ? PhVideoCamera
-                      : item.kind === 'audio'
-                        ? PhWaveform
-                        : PhImage
+                <button
+                  v-else
+                  type="button"
+                  class="co-comfy-preview-trigger"
+                  :disabled="!outputMultiSelectMode && !canLoadOutputAsset(item)"
+                  :tabindex="outputMultiSelectMode ? -1 : undefined"
+                  :aria-hidden="outputMultiSelectMode ? 'true' : undefined"
+                  @click.stop="
+                    outputMultiSelectMode
+                      ? toggleOutputGroupSelection(group.id)
+                      : requestInlinePreview(item)
                   "
-                  :size="26"
-                  class="co-comfy-preview-large-icon"
-                />
-                <p>
-                  {{
-                    t(
-                      isShareMode
-                        ? "comfy.sharePreviewTooLarge"
-                        : "comfy.videoPreviewTooLarge",
-                      {
-                        size: formatComfyByteSize(item.size),
-                      },
-                    )
-                  }}
-                </p>
-              </div>
-              <button
-                v-else
-                type="button"
-                class="co-comfy-preview-trigger"
-                :disabled="!canLoadOutputAsset(item)"
-                @click="loadOutputPreview(item)"
-              >
-                <component
-                  :is="
-                    item.kind === 'video'
-                      ? PhVideoCamera
-                      : item.kind === 'audio'
-                        ? PhWaveform
-                        : PhImage
-                  "
-                  :size="28"
-                />
-                <span>
-                  {{
-                    failedOutputs[item.id]
-                      ? t("comfy.retryPreview")
-                      : item.kind === "video"
-                        ? !isShareMode &&
-                          (isOutputDriveBacked(item) ||
-                            isOutputExportedToDrive(item) ||
-                            item.drive_synced)
-                          ? t("comfy.previewDriveVideo")
-                          : t("comfy.loadVideoPreview")
-                        : item.kind === "audio"
+                >
+                  <component
+                    :is="
+                      item.kind === 'video'
+                        ? PhVideoCamera
+                        : item.kind === 'audio'
+                          ? PhWaveform
+                          : PhImage
+                    "
+                    :size="28"
+                  />
+                  <span>
+                    {{
+                      failedOutputs[item.id]
+                        ? t("comfy.retryPreview")
+                        : item.kind === "video"
                           ? !isShareMode &&
                             (isOutputDriveBacked(item) ||
                               isOutputExportedToDrive(item) ||
                               item.drive_synced)
-                            ? t("comfy.previewDriveAudio")
-                            : t("comfy.loadAudioPreview")
-                          : t("comfy.loadImagePreview")
-                  }}
-                </span>
-              </button>
-              <div
-                v-if="
-                  bufferingStreams[item.id] &&
-                  (item.kind === 'video' || item.kind === 'audio') &&
-                  getOutputPreviewSrc(item)
-                "
-                class="co-comfy-preview-pill co-comfy-stream-buffering-pill"
-                data-testid="comfy-output-stream-buffering"
-                role="status"
-                aria-live="polite"
-              >
-                <component
-                  :is="item.kind === 'video' ? PhVideoCamera : PhWaveform"
-                  :size="14"
-                />
-                <span>{{ t("comfy.loadingOutput") }}</span>
-              </div>
-            </div>
-
-            <div class="co-comfy-output-body">
-              <div class="co-comfy-output-title-row">
-                <ColabOneTooltip
-                  :title="
-                    item.workflow_name
-                      ? tb(item.workflow_name)
-                      : t('comfy.defaultWorkflowName')
-                  "
-                >
-                  <strong>{{
-                    item.workflow_name
-                      ? tb(item.workflow_name)
-                      : t("comfy.defaultWorkflowName")
-                  }}</strong>
-                </ColabOneTooltip>
-                <ATag :color="outputKindColor(item.kind)">
-                  {{ outputKindLabel(item.kind) }}
-                </ATag>
-              </div>
-
-              <ColabOneTooltip :title="item.filename">
-                <small class="co-comfy-mono co-comfy-output-filename">
-                  {{ item.filename }}
-                </small>
-              </ColabOneTooltip>
-
-              <ColabOneTooltip
-                v-if="formatOutputCreatedAt(item.created_at)"
-                :title="formatOutputCreatedAtTooltip(item.created_at)"
-              >
+                            ? t("comfy.previewDriveVideo")
+                            : t("comfy.loadVideoPreview")
+                          : item.kind === "audio"
+                            ? !isShareMode &&
+                              (isOutputDriveBacked(item) ||
+                                isOutputExportedToDrive(item) ||
+                                item.drive_synced)
+                              ? t("comfy.previewDriveAudio")
+                              : t("comfy.loadAudioPreview")
+                            : t("comfy.loadImagePreview")
+                    }}
+                  </span>
+                </button>
                 <div
-                  class="co-comfy-output-time"
-                  data-testid="comfy-output-created-at"
-                >
-                  <PhCalendarBlank :size="12" aria-hidden="true" />
-                  <time
-                    class="co-comfy-mono"
-                    :datetime="formatOutputCreatedAtISO(item.created_at)"
-                  >
-                    {{ formatOutputCreatedAt(item.created_at) }}
-                  </time>
-                </div>
-              </ColabOneTooltip>
-
-              <div class="co-comfy-output-meta-tags">
-                <ATag class="co-comfy-meta-tag">
-                  {{ formatOutputSize(item.size) }}
-                </ATag>
-                <ATag
-                  v-if="Number.isFinite(item.elapsed) && item.elapsed > 0"
-                  class="co-comfy-meta-tag co-comfy-elapsed-tag"
-                  data-testid="comfy-output-elapsed"
-                >
-                  <PhClock :size="12" aria-hidden="true" />
-                  <span>{{
-                    t("task.elapsedTotal", {
-                      duration: formatOutputElapsed(item.elapsed),
-                    })
-                  }}</span>
-                </ATag>
-                <ColabOneTooltip
-                  v-if="!isShareMode && formatOutputCUBadge(item)"
-                  :title="formatOutputCUTooltip(item)"
-                >
-                  <ATag
-                    class="co-comfy-meta-tag co-comfy-cu-tag"
-                    data-testid="comfy-output-cu"
-                  >
-                    <PhCoins :size="12" weight="duotone" aria-hidden="true" />
-                    <span class="co-comfy-mono">{{
-                      formatOutputCUBadge(item)
-                    }}</span>
-                  </ATag>
-                </ColabOneTooltip>
-                <ColabOneTooltip
-                  v-if="!isShareMode && item.share_id"
-                  :title="
-                    item.share_label
-                      ? t('comfy.outputTagSharedTooltip', {
-                          label: item.share_label,
-                        })
-                      : t('comfy.outputTagSharedTooltipAnonymous')
-                  "
-                >
-                  <ATag
-                    color="purple"
-                    class="co-comfy-meta-tag co-comfy-shared-tag"
-                    data-testid="comfy-output-shared-tag"
-                  >
-                    <PhShareNetwork :size="12" aria-hidden="true" />
-                    <span>{{ t("comfy.outputTagShared") }}</span>
-                  </ATag>
-                </ColabOneTooltip>
-                <ColabOneTooltip
                   v-if="
-                    !isShareMode &&
-                    (isOutputExportedToDrive(item) || item.drive_synced)
+                    bufferingStreams[item.id] &&
+                    (item.kind === 'video' || item.kind === 'audio') &&
+                    getOutputPreviewSrc(item)
                   "
-                  :title="
-                    getOutputDrivePath(item)
-                      ? formatColabOneDrivePath(getOutputDrivePath(item))
-                      : t('comfy.outputDriveSyncedTooltip')
-                  "
+                  class="co-comfy-preview-pill co-comfy-stream-buffering-pill"
+                  data-testid="comfy-output-stream-buffering"
+                  role="status"
+                  aria-live="polite"
                 >
-                  <ATag
-                    :color="isOutputExportedToDrive(item) ? 'success' : 'blue'"
-                    class="co-comfy-meta-tag co-comfy-drive-linked-tag"
-                    data-testid="comfy-output-drive-tag"
-                  >
-                    <PhCloudCheck :size="12" aria-hidden="true" />
-                    <span>{{
-                      isOutputExportedToDrive(item)
-                        ? t("comfy.outputTagSavedInDrive")
-                        : t("comfy.outputTagSyncedInDrive")
-                    }}</span>
-                  </ATag>
-                </ColabOneTooltip>
+                  <component
+                    :is="item.kind === 'video' ? PhVideoCamera : PhWaveform"
+                    :size="14"
+                  />
+                  <span>{{ t("comfy.loadingOutput") }}</span>
+                </div>
               </div>
 
-              <AAlert
-                v-if="failedOutputs[item.id]"
-                type="error"
-                class="co-comfy-output-error"
-                :message="formatOutputPreviewError(failedOutputs[item.id])"
-              />
-
-              <div class="co-comfy-output-actions">
-                <div class="co-comfy-output-export-group">
+              <div class="co-comfy-output-body">
+                <div class="co-comfy-output-title-row">
                   <ColabOneTooltip
                     :title="
-                      !canLoadOutputAsset(item)
-                        ? isShareMode
-                          ? t('workflowShare.guestOfflineBannerTitle')
-                          : t('comfy.exportLocalNeedDriveApiTooltip')
-                        : ''
+                      item.workflow_name
+                        ? tb(item.workflow_name)
+                        : t('comfy.defaultWorkflowName')
                     "
                   >
-                    <AButton
-                      size="small"
-                      :loading="!!exportingOutputs[item.id]"
-                      :disabled="
-                        !canLoadOutputAsset(item) || !!deletingOutputs[item.id]
-                      "
-                      @click="exportOutput(item)"
-                    >
-                      <template #icon>
-                        <PhDownloadSimple :size="14" />
-                      </template>
-                      {{ t("comfy.exportLocal") }}
-                    </AButton>
+                    <strong>{{
+                      item.workflow_name
+                        ? tb(item.workflow_name)
+                        : t("comfy.defaultWorkflowName")
+                    }}</strong>
                   </ColabOneTooltip>
+                  <ATag :color="outputKindColor(item.kind)">
+                    {{ outputKindLabel(item.kind) }}
+                  </ATag>
+                </div>
 
-                  <template v-if="isShareMode">
-                    <span
-                      v-if="isOutputExportedToDrive(item)"
-                      class="co-comfy-share-saved-badge"
-                      data-testid="comfy-share-output-saved-host-drive"
-                    >
-                      <PhCloudCheck :size="14" aria-hidden="true" />
-                      <span>{{ t("comfy.savedToHostDriveBtn") }}</span>
-                    </span>
-                    <AButton
-                      v-else-if="props.shareDriveExportReady"
-                      size="small"
-                      class="co-comfy-export-drive-btn"
-                      :loading="!!exportingDriveOutputs[item.id]"
-                      :disabled="!gpuReady || !!deletingOutputs[item.id]"
-                      data-testid="comfy-share-output-save-host-drive"
-                      @click="saveOutputToHostDrive(item)"
-                    >
-                      <template #icon>
-                        <PhCloudArrowUp :size="14" />
-                      </template>
-                      {{ t("comfy.saveToHostDriveBtn") }}
-                    </AButton>
-                  </template>
+                <ColabOneTooltip :title="item.filename">
+                  <small class="co-comfy-mono co-comfy-output-filename">
+                    {{ item.filename }}
+                  </small>
+                </ColabOneTooltip>
 
+                <ColabOneTooltip
+                  v-if="formatOutputCreatedAt(item.created_at)"
+                  :title="formatOutputCreatedAtTooltip(item.created_at)"
+                >
+                  <div
+                    class="co-comfy-output-time"
+                    data-testid="comfy-output-created-at"
+                  >
+                    <PhCalendarBlank :size="12" aria-hidden="true" />
+                    <time
+                      class="co-comfy-mono"
+                      :datetime="formatOutputCreatedAtISO(item.created_at)"
+                    >
+                      {{ formatOutputCreatedAt(item.created_at) }}
+                    </time>
+                  </div>
+                </ColabOneTooltip>
+
+                <div class="co-comfy-output-meta-tags">
+                  <ATag class="co-comfy-meta-tag">
+                    {{ formatOutputSize(item.size) }}
+                  </ATag>
+                  <ATag
+                    v-if="Number.isFinite(item.elapsed) && item.elapsed > 0"
+                    class="co-comfy-meta-tag co-comfy-elapsed-tag"
+                    data-testid="comfy-output-elapsed"
+                  >
+                    <PhClock :size="12" aria-hidden="true" />
+                    <span>{{
+                      t("task.elapsedTotal", {
+                        duration: formatOutputElapsed(item.elapsed),
+                      })
+                    }}</span>
+                  </ATag>
                   <ColabOneTooltip
-                    v-else-if="!gpuReady || isOutputDriveBacked(item)"
+                    v-if="!isShareMode && formatOutputCUBadge(item)"
+                    :title="formatOutputCUTooltip(item)"
+                  >
+                    <ATag
+                      class="co-comfy-meta-tag co-comfy-cu-tag"
+                      data-testid="comfy-output-cu"
+                    >
+                      <PhCoins :size="12" weight="duotone" aria-hidden="true" />
+                      <span class="co-comfy-mono">{{
+                        formatOutputCUBadge(item)
+                      }}</span>
+                    </ATag>
+                  </ColabOneTooltip>
+                  <ColabOneTooltip
+                    v-if="!isShareMode && item.share_id"
+                    :title="
+                      item.share_label
+                        ? t('comfy.outputTagSharedTooltip', {
+                            label: item.share_label,
+                          })
+                        : t('comfy.outputTagSharedTooltipAnonymous')
+                    "
+                  >
+                    <ATag
+                      color="purple"
+                      class="co-comfy-meta-tag co-comfy-shared-tag"
+                      data-testid="comfy-output-shared-tag"
+                    >
+                      <PhShareNetwork :size="12" aria-hidden="true" />
+                      <span>{{ t("comfy.outputTagShared") }}</span>
+                    </ATag>
+                  </ColabOneTooltip>
+                  <ColabOneTooltip
+                    v-if="
+                      !isShareMode &&
+                      (isOutputExportedToDrive(item) || item.drive_synced)
+                    "
                     :title="
                       getOutputDrivePath(item)
                         ? formatColabOneDrivePath(getOutputDrivePath(item))
-                        : t('comfy.openOutputInDriveTooltip')
+                        : t('comfy.outputDriveSyncedTooltip')
                     "
                   >
-                    <AButton
-                      size="small"
-                      class="co-comfy-export-drive-btn is-exported"
-                      data-testid="comfy-output-open-drive"
-                      @click="openExternalURL(getOutputDriveOpenUrl(item))"
+                    <ATag
+                      :color="isOutputExportedToDrive(item) ? 'success' : 'blue'"
+                      class="co-comfy-meta-tag co-comfy-drive-linked-tag"
+                      data-testid="comfy-output-drive-tag"
                     >
-                      <template #icon>
-                        <PhArrowSquareOut :size="14" />
-                      </template>
-                      {{ t("comfy.openOutputInDrive") }}
-                    </AButton>
-                  </ColabOneTooltip>
-
-                  <ColabOneTooltip
-                    v-else
-                    :title="
-                      isOutputExportedToDrive(item)
-                        ? t('comfy.exportDriveDoneTooltip', {
-                            path: formatColabOneDrivePath(
-                              getOutputDrivePath(item) ||
-                                `My Drive/ColabOne_Drive/outputs/${item.filename}`,
-                            ),
-                          })
-                        : state.setup.drive
-                          ? t('comfy.exportDriveReadyTooltip')
-                          : t('comfy.exportDriveSetupTooltip')
-                    "
-                  >
-                    <AButton
-                      size="small"
-                      class="co-comfy-export-drive-btn"
-                      :class="{
-                        'is-exported': isOutputExportedToDrive(item),
-                      }"
-                      :loading="!!exportingDriveOutputs[item.id]"
-                      :disabled="!gpuReady || !!deletingOutputs[item.id]"
-                      data-testid="comfy-output-export-drive"
-                      @click="exportOutputToDrive(item)"
-                    >
-                      <template #icon>
-                        <PhCloudCheck
-                          v-if="isOutputExportedToDrive(item)"
-                          :size="14"
-                        />
-                        <PhCloudArrowUp v-else :size="14" />
-                      </template>
-                      {{
+                      <PhCloudCheck :size="12" aria-hidden="true" />
+                      <span>{{
                         isOutputExportedToDrive(item)
-                          ? t("comfy.exportedToDrive")
-                          : t("comfy.exportDrive")
-                      }}
-                    </AButton>
+                          ? t("comfy.outputTagSavedInDrive")
+                          : t("comfy.outputTagSyncedInDrive")
+                      }}</span>
+                    </ATag>
                   </ColabOneTooltip>
                 </div>
 
-                <APopconfirm
-                  :title="t('comfy.deleteOutputTitle')"
-                  :description="
-                    !isShareMode && (isOutputDriveBacked(item) || !gpuReady)
-                      ? t('comfy.deleteDriveOutputDesc', {
-                          name: item.filename,
-                        })
-                      : t('comfy.deleteOutputDesc', { name: item.filename })
-                  "
-                  :ok-text="t('common.confirmDelete')"
-                  :cancel-text="t('common.cancel')"
-                  :disabled="
-                    (!gpuReady && (isShareMode || !isOutputDriveBacked(item))) ||
-                    !!exportingOutputs[item.id] ||
-                    !!exportingDriveOutputs[item.id] ||
-                    !!deletingOutputs[item.id]
-                  "
-                  :ok-button-props="{ danger: true }"
-                  placement="topRight"
-                  @open-change="
-                    (open) => {
-                      if (open) {
-                        deleteConfirmOutputId = item.id;
-                      } else if (deleteConfirmOutputId === item.id) {
-                        deleteConfirmOutputId = '';
-                      }
-                    }
-                  "
-                  @confirm="deleteOutput(item)"
-                >
-                  <span class="co-popconfirm-anchor">
+                <AAlert
+                  v-if="failedOutputs[item.id]"
+                  type="error"
+                  class="co-comfy-output-error"
+                  :message="formatOutputPreviewError(failedOutputs[item.id])"
+                />
+
+                <div class="co-comfy-output-actions">
+                  <div class="co-comfy-action-primary">
                     <ColabOneTooltip
-                      :title="t('comfy.deleteOutputAria')"
-                      :disabled="deleteConfirmOutputId === item.id"
+                      :title="
+                        !canLoadOutputAsset(item)
+                          ? isShareMode
+                            ? t('workflowShare.guestOfflineBannerTitle')
+                            : t('comfy.exportLocalNeedDriveApiTooltip')
+                          : t('comfy.exportLocal')
+                      "
                     >
                       <AButton
                         size="small"
-                        danger
-                        class="co-comfy-output-delete-btn"
-                        :loading="!!deletingOutputs[item.id]"
+                        class="co-comfy-primary-action-btn"
+                        :loading="!!exportingOutputs[item.id]"
                         :disabled="
-                          (!gpuReady &&
-                            (isShareMode || !isOutputDriveBacked(item))) ||
-                          !!exportingOutputs[item.id] ||
-                          !!exportingDriveOutputs[item.id]
+                          !canLoadOutputAsset(item) ||
+                          !!deletingOutputs[item.id] ||
+                          isItemParentGroupBusy(item.id)
                         "
-                        :aria-label="t('comfy.deleteOutputAria')"
+                        :aria-label="t('comfy.exportLocal')"
+                        @click="exportOutput(item)"
                       >
                         <template #icon>
-                          <PhTrash :size="14" />
+                          <PhDownloadSimple :size="14" />
                         </template>
+                        <span class="co-comfy-action-label">{{
+                          t("comfy.exportLocal")
+                        }}</span>
                       </AButton>
                     </ColabOneTooltip>
-                  </span>
-                </APopconfirm>
+                    <ColabOneTooltip
+                      v-if="!isShareMode"
+                      :title="t('outputGallery.shareBtn')"
+                    >
+                      <AButton
+                        size="small"
+                        class="co-comfy-primary-action-btn"
+                        data-testid="comfy-output-share-btn"
+                        :aria-label="t('outputGallery.shareBtn')"
+                        @click="openOutputShareForGroups([group.id])"
+                      >
+                        <template #icon><PhShareNetwork :size="14" /></template>
+                        <span class="co-comfy-action-label">{{
+                          t("outputGallery.shareBtn")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+                  </div>
+
+                  <div class="co-comfy-action-utils">
+                    <template v-if="isShareMode">
+                      <ColabOneTooltip
+                        v-if="isOutputExportedToDrive(item)"
+                        :title="t('comfy.savedToHostDriveBtn')"
+                      >
+                        <span
+                          role="img"
+                          class="co-comfy-icon-badge is-saved"
+                          data-testid="comfy-share-output-saved-host-drive"
+                          :aria-label="t('comfy.savedToHostDriveBtn')"
+                        >
+                          <PhCloudCheck :size="14" aria-hidden="true" />
+                          <span class="co-sr-only">{{
+                            t("comfy.savedToHostDriveBtn")
+                          }}</span>
+                        </span>
+                      </ColabOneTooltip>
+                      <ColabOneTooltip
+                        v-else-if="props.shareDriveExportReady"
+                        :title="t('comfy.saveToHostDriveBtn')"
+                      >
+                        <AButton
+                          size="small"
+                          class="co-comfy-icon-action-btn co-comfy-export-drive-btn"
+                          :loading="!!exportingDriveOutputs[item.id]"
+                          :disabled="
+                            !gpuReady ||
+                            !!deletingOutputs[item.id] ||
+                            isItemParentGroupBusy(item.id)
+                          "
+                          data-testid="comfy-share-output-save-host-drive"
+                          @click="saveOutputToHostDrive(item)"
+                        >
+                          <template #icon>
+                            <PhCloudArrowUp :size="14" />
+                          </template>
+                          <span class="co-sr-only">{{
+                            t("comfy.saveToHostDriveBtn")
+                          }}</span>
+                        </AButton>
+                      </ColabOneTooltip>
+                    </template>
+
+                    <ColabOneTooltip
+                      v-else-if="!gpuReady || isOutputDriveBacked(item)"
+                      :title="
+                        getOutputDrivePath(item)
+                          ? formatColabOneDrivePath(getOutputDrivePath(item))
+                          : t('comfy.openOutputInDriveTooltip')
+                      "
+                    >
+                      <AButton
+                        size="small"
+                        class="co-comfy-icon-action-btn co-comfy-export-drive-btn is-exported"
+                        data-testid="comfy-output-open-drive"
+                        @click="openExternalURL(getOutputDriveOpenUrl(item))"
+                      >
+                        <template #icon>
+                          <PhArrowSquareOut :size="14" />
+                        </template>
+                        <span class="co-sr-only">{{
+                          t("comfy.openOutputInDrive")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+
+                    <ColabOneTooltip
+                      v-else
+                      :title="
+                        isOutputExportedToDrive(item)
+                          ? t('comfy.exportDriveDoneTooltip', {
+                              path: formatColabOneDrivePath(
+                                getOutputDrivePath(item) ||
+                                  `My Drive/ColabOne_Drive/outputs/${item.filename}`,
+                              ),
+                            })
+                          : state.setup.drive
+                            ? t('comfy.exportDriveReadyTooltip')
+                            : t('comfy.exportDriveSetupTooltip')
+                      "
+                    >
+                      <AButton
+                        size="small"
+                        class="co-comfy-icon-action-btn co-comfy-export-drive-btn"
+                        :class="{
+                          'is-exported': isOutputExportedToDrive(item),
+                        }"
+                        :loading="!!exportingDriveOutputs[item.id]"
+                        :disabled="
+                          !gpuReady ||
+                          !!deletingOutputs[item.id] ||
+                          isItemParentGroupBusy(item.id)
+                        "
+                        data-testid="comfy-output-export-drive"
+                        @click="exportOutputToDrive(item)"
+                      >
+                        <template #icon>
+                          <PhCloudCheck
+                            v-if="isOutputExportedToDrive(item)"
+                            :size="14"
+                          />
+                          <PhCloudArrowUp v-else :size="14" />
+                        </template>
+                        <span class="co-sr-only">{{
+                          isOutputExportedToDrive(item)
+                            ? t("comfy.exportedToDrive")
+                            : t("comfy.exportDrive")
+                        }}</span>
+                      </AButton>
+                    </ColabOneTooltip>
+
+                    <APopconfirm
+                      :open="deleteConfirmOutputId === item.id"
+                      :title="t('comfy.deleteOutputTitle')"
+                      :description="
+                        !isShareMode &&
+                        (isOutputDriveBacked(item) || !gpuReady)
+                          ? t('comfy.deleteDriveOutputDesc', {
+                              name: item.filename,
+                            })
+                          : t('comfy.deleteOutputDesc', { name: item.filename })
+                      "
+                      :ok-text="t('common.confirmDelete')"
+                      :cancel-text="t('common.cancel')"
+                      :disabled="
+                        (!gpuReady &&
+                          (isShareMode || !isOutputDriveBacked(item))) ||
+                        !!exportingOutputs[item.id] ||
+                        !!exportingDriveOutputs[item.id] ||
+                        !!deletingOutputs[item.id] ||
+                        isItemParentGroupBusy(item.id)
+                      "
+                      :ok-button-props="{ danger: true }"
+                      placement="topRight"
+                      @open-change="
+                        (open) => {
+                          if (open) {
+                            deleteConfirmOutputId = item.id;
+                          } else if (deleteConfirmOutputId === item.id) {
+                            deleteConfirmOutputId = '';
+                          }
+                        }
+                      "
+                      @confirm="
+                        deleteConfirmOutputId = '';
+                        deleteOutput(item);
+                      "
+                    >
+                      <span class="co-popconfirm-anchor">
+                        <ColabOneTooltip
+                          :title="t('comfy.deleteOutputAria')"
+                          :disabled="deleteConfirmOutputId === item.id"
+                        >
+                          <AButton
+                            size="small"
+                            danger
+                            class="co-comfy-icon-action-btn co-comfy-output-delete-btn"
+                            :loading="!!deletingOutputs[item.id]"
+                            :disabled="
+                              (!gpuReady &&
+                                (isShareMode || !isOutputDriveBacked(item))) ||
+                              !!exportingOutputs[item.id] ||
+                              !!exportingDriveOutputs[item.id] ||
+                              isItemParentGroupBusy(item.id)
+                            "
+                            :aria-label="t('comfy.deleteOutputAria')"
+                          >
+                            <template #icon>
+                              <PhTrash :size="14" />
+                            </template>
+                          </AButton>
+                        </ColabOneTooltip>
+                      </span>
+                    </APopconfirm>
+                  </div>
+                </div>
               </div>
-            </div>
-          </article>
+            </article>
+          </template>
         </div>
       </div>
     </ADrawer>
+
+    <!-- Full-Window Album & Zoomable Lightbox Modal -->
+    <ColabOneOutputGalleryModal
+      :open="galleryModalOpen"
+      :title="activeGalleryTitle"
+      :items="activeGalleryItems"
+      :initial-item-id="galleryModalInitialItemId"
+      :initial-mode="galleryModalInitialMode"
+      :resolve-media-src="resolveGalleryModalMediaSrc"
+      :is-item-loading="isGalleryModalItemLoading"
+      :is-item-available="isGalleryModalItemAvailable"
+      :get-item-error="getGalleryModalItemError"
+      :allow-download="true"
+      :allow-zip-download="
+        !isShareMode &&
+        Boolean(activeGalleryGroup && canLoadAnyInGroup(activeGalleryGroup))
+      "
+      :allow-delete="true"
+      :can-delete-item="canDeleteGalleryModalItem"
+      :is-item-downloading="(it) => Boolean(exportingOutputs[it.id])"
+      :downloading-zip="
+        Boolean(activeGalleryGroup && exportingAlbumZips[activeGalleryGroup.id])
+      "
+      :is-item-deleting="(it) => Boolean(deletingOutputs[it.id])"
+      @close="closeOutputGallery"
+      @active-change="handleGalleryActiveChange"
+      @request-load="handleGalleryRequestLoad"
+      @retry-load="handleGalleryRetryLoad"
+      @media-error="handleGalleryMediaError"
+      @download-item="handleGalleryDownloadItem"
+      @download-zip="exportAlbumZip(activeGalleryGroup)"
+      @delete-item="handleGalleryDeleteItem"
+    />
+
+    <!-- Output Artifact & Album Sharing Modal (Host Mode) -->
+    <ColabOneOutputShareModal
+      v-if="!isShareMode"
+      :open="outputShareModalOpen"
+      :initial-tab="outputShareModalInitialTab"
+      :all-groups="groupedOutputs"
+      :initial-group-ids="outputShareModalInitialGroupIds"
+      :shares-state="resolvedOutputSharesState"
+      :web-console-state="resolvedWebConsoleState"
+      :privacy-context="privacyContext"
+      :resolve-media-src="getOutputPreviewSrc"
+      :can-enable-web-console="Boolean(props.canEnableWebConsole)"
+      :enabling-web-console="Boolean(props.enablingWebConsole)"
+      :creating="Boolean(props.outputShareCreating)"
+      :revoking-id="props.outputShareRevokingId || ''"
+      :deleting-id="props.outputShareDeletingId || ''"
+      :last-created-share="props.outputShareLastCreated ?? null"
+      :copy-text="handleShareModalCopyFallback"
+      @close="closeOutputShareModal"
+      @enable-web-console="emit('enableWebConsole')"
+      @create="(req) => emit('createOutputShare', req)"
+      @revoke="(id) => emit('revokeOutputShare', id)"
+      @delete="(id) => emit('deleteOutputShare', id)"
+      @open-url="(url, shareId) => openOutputSharePreview(url, shareId)"
+      @request-load="(item) => enqueueOutputPreviewPrefetch(item)"
+    />
 
     <!-- Google Drive Configuration & Export Modal -->
     <ColabOneDriveExportModal
@@ -11899,14 +14066,25 @@ defineExpose({
   gap: 12px;
 }
 
+:global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-header) {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+:global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-header-title) {
+  flex: 1 0 180px;
+  min-width: 160px;
+}
+
 :global(.co-comfy-param-drawer-root .ant-drawer-title),
 :global(.co-comfy-outputs-drawer-root .ant-drawer-title) {
   min-width: 0;
   overflow: hidden;
 }
 
-:global(.co-comfy-outputs-drawer-root .ant-drawer-extra) {
-  flex-shrink: 0;
+:global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-extra) {
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 :global(.co-comfy-param-drawer-root .ant-drawer-footer) {
@@ -12862,12 +15040,90 @@ defineExpose({
   max-width: 100%;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
+  container-name: output-card;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .co-comfy-output-item:hover {
   border-color: var(--co-accent);
   box-shadow: var(--co-card-shadow-hover);
+}
+
+.co-comfy-output-item.is-selectable .co-comfy-output-frame {
+  cursor: pointer;
+}
+
+.co-comfy-output-item.is-selectable .co-comfy-output-frame video,
+.co-comfy-output-item.is-selectable .co-comfy-output-frame audio {
+  pointer-events: none;
+}
+
+.co-comfy-output-item.is-selected {
+  border-color: var(--co-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--co-accent) 24%, transparent);
+}
+
+.co-comfy-outputs-shares-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.co-comfy-share-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background: var(--co-accent);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.co-comfy-multiselect-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--co-accent) 36%, var(--co-border));
+  background: color-mix(in srgb, var(--co-accent) 7%, var(--co-surface));
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.co-comfy-multiselect-summary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--co-text);
+}
+
+.co-comfy-select-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--co-surface) 90%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  pointer-events: none;
 }
 
 .co-comfy-output-frame {
@@ -12881,8 +15137,153 @@ defineExpose({
   overflow: hidden;
 }
 
-.co-comfy-output-frame img,
-.co-comfy-output-frame video {
+.co-comfy-output-frame.is-zoomable,
+.co-comfy-album-frame {
+  cursor: pointer;
+}
+
+.co-comfy-album-frame {
+  height: 220px;
+  padding: 0;
+  display: block;
+}
+
+.co-comfy-album-collage {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  gap: 2px;
+  background: var(--co-border-secondary);
+}
+
+.co-comfy-album-collage.is-count-1 {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
+.co-comfy-album-collage.is-count-2 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+
+.co-comfy-album-collage.is-count-3 {
+  grid-template-columns: 1.35fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.co-comfy-album-collage.is-count-3 .co-comfy-album-tile:first-child {
+  grid-row: 1 / span 2;
+}
+
+.co-comfy-album-collage.is-count-4 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.co-comfy-album-tile {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--co-subtle);
+}
+
+.co-comfy-album-tile img {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: cover;
+  object-position: center top;
+  display: block;
+  transition: transform 0.24s ease;
+}
+
+.co-comfy-album-frame:hover .co-comfy-album-tile img {
+  transform: scale(1.03);
+}
+
+.co-comfy-album-tile-media-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--co-muted);
+  background: var(--co-subtle);
+}
+
+.co-comfy-album-more-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.54);
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.co-comfy-album-count-pill {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+.co-comfy-album-hover-pill {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.76);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 500;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  pointer-events: none;
+}
+
+.co-comfy-album-frame:hover .co-comfy-album-hover-pill,
+.co-comfy-album-frame:focus-visible .co-comfy-album-hover-pill,
+.co-comfy-output-frame.is-zoomable:hover .co-comfy-album-hover-pill,
+.co-comfy-output-frame.is-zoomable:focus-visible .co-comfy-album-hover-pill {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.co-comfy-album-frame:focus-visible,
+.co-comfy-output-frame.is-zoomable:focus-visible {
+  outline: 2px solid var(--co-accent);
+  outline-offset: -2px;
+}
+
+.co-comfy-output-frame:not(.co-comfy-album-frame) > img,
+.co-comfy-output-frame:not(.co-comfy-album-frame) > video {
   width: 100%;
   max-height: 240px;
   object-fit: contain;
@@ -13189,17 +15590,82 @@ defineExpose({
 
 .co-comfy-output-actions {
   margin-top: auto;
-  padding-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--co-border-secondary);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.co-comfy-action-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.co-comfy-action-utils {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.co-comfy-primary-action-btn {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding-inline: 8px !important;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.co-comfy-icon-action-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.co-comfy-icon-action-btn :deep(.ant-btn-icon) {
+  margin-inline-end: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.co-comfy-icon-badge {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.co-comfy-icon-badge.is-saved {
+  color: var(--co-success-text);
+  background: var(--co-success-bg);
+  border: 1px solid var(--co-success-border);
 }
 
 .co-comfy-output-export-group {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
   flex: 1;
@@ -13215,7 +15681,7 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 24px;
+  height: 28px;
   padding: 0 9px;
   border-radius: 6px;
   font-size: 12px;
@@ -13242,10 +15708,43 @@ defineExpose({
 .co-comfy-output-delete-btn {
   flex-shrink: 0;
   width: 28px;
+  height: 28px;
   padding-inline: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+@container output-card (max-width: 308px) {
+  .co-comfy-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .co-comfy-primary-action-btn {
+    width: 28px;
+    min-width: 28px;
+    padding-inline: 0 !important;
+    gap: 0;
+  }
+
+  .co-comfy-primary-action-btn :deep(.ant-btn-icon) {
+    margin-inline-end: 0 !important;
+  }
+}
+
+@container output-card (max-width: 192px) {
+  .co-comfy-output-actions {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
 }
 
 /* Tab 2: Native Canvas */
@@ -13509,6 +16008,26 @@ defineExpose({
 }
 
 @media (max-width: 680px) {
+  :global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-header) {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  :global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-header-title) {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  :global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-extra) {
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 100%;
+  }
+
+  :global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-extra .ant-space) {
+    justify-content: flex-start;
+  }
+
   .co-comfy-param-drawer-footer {
     flex-wrap: nowrap;
     gap: 8px;

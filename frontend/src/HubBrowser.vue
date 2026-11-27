@@ -316,6 +316,7 @@ const hiddenByVramCount = computed(() =>
   Math.max(0, repos.value.length - visibleRepos.value.length),
 );
 
+let isUnmounted = false;
 let searchGeneration = 0;
 let previewGeneration = 0;
 let fileGeneration = 0;
@@ -339,7 +340,7 @@ async function openExternalURL(url: string) {
   try {
     await colabOneOpenURL(url);
   } catch (e) {
-    error.value = String(e);
+    if (!isUnmounted) error.value = String(e);
   }
 }
 
@@ -506,11 +507,19 @@ let initialSearchDone = false;
 
 watch(
   [query, sort, modality, family],
-  ([nextQuery], prev) => {
+  ([nextQuery, nextSort, nextModality, nextFamily], prev) => {
+    const otherChanged = Boolean(
+      prev &&
+        (nextSort !== prev[1] ||
+          nextModality !== prev[2] ||
+          nextFamily !== prev[3]),
+    );
     if (suppressQueryWatch) {
       suppressQueryWatch = false;
-      initialSearchDone = true;
-      return;
+      if (!otherChanged) {
+        initialSearchDone = true;
+        return;
+      }
     }
     const trimmed = String(nextQuery || "").trim();
     const urlMatch = trimmed.match(HF_URL_PATTERN);
@@ -614,7 +623,7 @@ async function choose(repo: string, forceOpen = false, preferredFile = "") {
   filesLoading.value = true;
   try {
     const result = await detail(repo);
-    if (id !== fileGeneration) return;
+    if (isUnmounted || id !== fileGeneration) return;
     revision.value = result.revision;
     files.value = result.files || [];
     chosenModality.value = result.modality || row?.modality || "text";
@@ -629,11 +638,12 @@ async function choose(repo: string, forceOpen = false, preferredFile = "") {
       filename.value = preferredFile;
     }
   } catch (e) {
-    if (id === fileGeneration) fileError.value = String(e);
+    if (!isUnmounted && id === fileGeneration) fileError.value = String(e);
   } finally {
-    if (id === fileGeneration) {
+    if (!isUnmounted && id === fileGeneration) {
       filesLoading.value = false;
       await nextTick();
+      if (isUnmounted || id !== fileGeneration) return;
       const target = Array.isArray(selection.value)
         ? selection.value.find(Boolean)
         : selection.value;
@@ -652,8 +662,10 @@ async function toggleCommonRepo(repo: Repo) {
       for (const m of summary.savedModels) {
         if (m.common) {
           await colabOneCommand("model.common", { id: m.id, common: false });
+          if (isUnmounted) return;
         }
       }
+      if (isUnmounted) return;
       emit(
         "commonRepoUpdated",
         t("models.toastRemovedFromMine", { name: repo.repo }),
@@ -667,13 +679,16 @@ async function toggleCommonRepo(repo: Repo) {
       likes: repo.likes,
       toggle: true,
     });
+    if (isUnmounted) return;
     if (inCommonRepos && !res?.common && summary.common) {
       for (const m of summary.savedModels) {
         if (m.common) {
           await colabOneCommand("model.common", { id: m.id, common: false });
+          if (isUnmounted) return;
         }
       }
     }
+    if (isUnmounted) return;
     emit(
       "commonRepoUpdated",
       res?.common
@@ -681,9 +696,9 @@ async function toggleCommonRepo(repo: Repo) {
         : t("models.toastRemovedFromMine", { name: repo.repo }),
     );
   } catch (e) {
-    error.value = String(e);
+    if (!isUnmounted) error.value = String(e);
   } finally {
-    togglingRepo.value = "";
+    if (!isUnmounted) togglingRepo.value = "";
   }
 }
 
@@ -725,8 +740,6 @@ async function install(mode: "save" | "download" | "load" = "load") {
     }
   }
 }
-
-let isUnmounted = false;
 
 function fitBadgeColor(fit: ColabOneRepoFitSummary): string {
   if (fit.status === "compatible") return "success";

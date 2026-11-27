@@ -197,13 +197,25 @@ func isNotFoundError(err error) bool {
 	if errors.Is(err, ErrNotFound) {
 		return true
 	}
-	if httpStatusCode(err) == 404 {
-		return true
+	if status := httpStatusCode(err); status > 0 {
+		return status == http.StatusNotFound
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var urlErr *url.Error
+	var netErr net.Error
+	if errors.As(err, &urlErr) || errors.As(err, &netErr) {
+		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "404") ||
+	low := strings.ToLower(msg)
+	return strings.Contains(low, "http 404") ||
+		strings.Contains(low, "status 404") ||
+		strings.Contains(low, "status=404") ||
+		strings.Contains(low, "code 404") ||
 		strings.Contains(msg, "不存在") ||
-		strings.Contains(strings.ToLower(msg), "not found")
+		strings.Contains(low, "not found")
 }
 
 func isExportedTypeName(name string) bool {

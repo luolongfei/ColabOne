@@ -67,6 +67,8 @@ def test_all_mutations_require_token(runtime):
             ("live/start", {}),
             ("live/stop", {}),
             ("live/session-token", {}),
+            ("live/companion-ticket", {}),
+            ("live/companion-disconnect", {}),
             ("live/llm-test", {}),
             ("live/avatars", {}),
             ("live/avatars/av-1/clips", {}),
@@ -1496,11 +1498,17 @@ def test_live_runtime_pass2_fps_forwarding_canvas_rollback_and_build_pack_cancel
     )
     monkeypatch.setattr(
         runtime.live,
+        "ensure_session_dependencies",
+        lambda *_a, **_kw: {"tts_engine": "qwen3_tts"},
+    )
+    monkeypatch.setattr(
+        runtime.live,
         "start",
         lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom-on-start")),
     )
 
-    with pytest.raises(RuntimeError, match="boom-on-start"):
+    fail_task = wait_task(
+        runtime,
         runtime.start_live_studio(
             {
                 "visual_engine": "flashhead_lite",
@@ -1516,7 +1524,11 @@ def test_live_runtime_pass2_fps_forwarding_canvas_rollback_and_build_pack_cancel
                     "tunnel_token": "eyJhIjoiMSIsInQiOiIyIiwicyI6IjMifQ==",
                 },
             }
-        )
+        ),
+    )
+    assert fail_task.kind == "live_start"
+    assert fail_task.state == "failed"
+    assert "boom-on-start" in fail_task.error
     assert canvas_events == ["start", "stop"]
     assert runtime.comfy.canvas.enabled is False
 
@@ -1852,24 +1864,84 @@ def test_runtime_task_ordering_sanitized_env_locks_delete_toctou_and_api_id_over
     seen_start_vram = []
     monkeypatch.setattr(
         runtime.live,
+        "ensure_session_dependencies",
+        lambda *_a, **_kw: {"tts_engine": "qwen3_tts"},
+    )
+    monkeypatch.setattr(
+        runtime.live,
         "start",
         lambda payload, **kw: (seen_start_vram.append(kw["loaded_model_vram_mib"]), {"running": True})[1],
     )
-    res_live = runtime.start_live_studio(
+    live_task = wait_task(
+        runtime,
+        runtime.start_live_studio(
+            {
+                "visual_engine": "flashhead_lite",
+                "tts_engine": "qwen3_tts",
+                "llm_mode": "external_api",
+                "external_llm": {
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "sk-recompute-123456",
+                    "model": "gpt-4o-mini",
+                },
+            }
+        ),
+    )
+    assert live_task.kind == "live_start"
+    assert live_task.state == "completed", live_task.error
+    assert stop_engine_calls == [1]
+    assert seen_start_vram == [0]
+
+    # 7. Async live_start cancellation via stop_live_studio and prepare_release never deadlocks.
+    started_prov = threading.Event()
+    unblock_prov = threading.Event()
+
+    def slow_provision(task, _payload):
+        started_prov.set()
+        while not unblock_prov.is_set():
+            task.check()
+            time.sleep(0.02)
+        return {"tts_engine": "qwen3_tts"}
+
+    monkeypatch.setattr(runtime.live, "ensure_session_dependencies", slow_provision)
+    snap_task = runtime.start_live_studio(
         {
             "visual_engine": "flashhead_lite",
             "tts_engine": "qwen3_tts",
             "llm_mode": "external_api",
             "external_llm": {
                 "base_url": "https://api.example.com/v1",
-                "api_key": "sk-recompute-123456",
+                "api_key": "sk-cancel-test-123456",
                 "model": "gpt-4o-mini",
             },
         }
     )
-    assert res_live["running"] is True
-    assert stop_engine_calls == [1]
-    assert seen_start_vram == [0]
+    assert snap_task["kind"] == "live_start"
+    assert started_prov.wait(timeout=3.0)
+    runtime.stop_live_studio()
+    cancelled_task = wait_task(runtime, snap_task)
+    assert cancelled_task.state == "cancelled"
+    assert runtime.live.status()["state"] == "stopped"
+    assert runtime.live.status()["error"] == ""
+
+    started_prov.clear()
+    snap_task2 = runtime.start_live_studio(
+        {
+            "visual_engine": "flashhead_lite",
+            "tts_engine": "qwen3_tts",
+            "llm_mode": "external_api",
+            "external_llm": {
+                "base_url": "https://api.example.com/v1",
+                "api_key": "sk-release-test-123456",
+                "model": "gpt-4o-mini",
+            },
+        }
+    )
+    assert started_prov.wait(timeout=3.0)
+    rel_res = runtime.prepare_release(auto=True)
+    assert rel_res["ok"] is True
+    cancelled_task2 = wait_task(runtime, snap_task2)
+    assert cancelled_task2.state == "cancelled"
 
 
 def test_vm_boot_vm_update_and_hub_hardening():

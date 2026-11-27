@@ -4707,3 +4707,10 @@ func TestResetAccountStateRejectsLateFlowCallbacksWithoutOverwritingFreshCredent
 		t.Fatalf("fresh profile overwritten: ok=%v prof=%+v", ok, prof)
 	}
 }
+
+func TestGCPSecretPatternRedactsGOCSPX(t *testing.T) {
+	secret := "GOCSPX-AbCdEf123456_xyz"
+	if !gcpSecretRE.MatchString("client_secret=" + secret) {
+		t.Fatalf("expected gcpSecretRE to match %q", secret)
+	}
+}

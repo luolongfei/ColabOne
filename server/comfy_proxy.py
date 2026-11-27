@@ -6,6 +6,7 @@ import asyncio
 import base64
 import errno
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -14,8 +15,9 @@ import subprocess
 import threading
 import time
 from collections import deque
+from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
 import requests
@@ -34,6 +36,9 @@ BODY_IDLE_TIMEOUT = 600.0
 WS_IDLE_TIMEOUT = 1800.0
 MAX_CONNECTIONS = 128
 MAX_LIVE_WS_CONNECTIONS = 16
+MAX_LIVE_COMPANION_HTTP = 16
+MAX_LIVE_REDEEM_BODY_BYTES = 4096
+COMPANION_BODY_IDLE_TIMEOUT = 10.0
 CHUNK_SIZE = 64 * 1024
 ACTIVITY_THROTTLE_SECONDS = 3.0
 
@@ -418,6 +423,7 @@ class ColabOneCanvasProxyServer:
 
         self.active_connections = 0
         self._live_ws_connections = 0
+        self._live_companion_http = 0
         self._last_touch: float | None = None
         self._lifecycle_lock = threading.RLock()
         self._thread: threading.Thread | None = None
@@ -562,6 +568,7 @@ class ColabOneCanvasProxyServer:
             self._start_cancel = None
             self.active_connections = 0
             self._live_ws_connections = 0
+            self._live_companion_http = 0
 
     async def _handle_client_wrapper(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -754,6 +761,7 @@ class ColabOneCanvasProxyServer:
         header_map: dict[str, str],
         *,
         is_live_ws: bool = False,
+        require_origin: bool = False,
     ) -> bool:
         """Validate Origin header on WebSocket upgrades and non-GET mutating requests."""
         origin_headers = [
@@ -762,7 +770,7 @@ class ColabOneCanvasProxyServer:
             if name.lower() == "origin"
         ]
         if not origin_headers:
-            return True
+            return not require_origin
         if len(origin_headers) > 1:
             return False
         raw_origin = origin_headers[0]
@@ -916,12 +924,26 @@ class ColabOneCanvasProxyServer:
             COLABONE_LIVE_PREFIX
         )
         is_live_ws_upgrade = is_upgrade and raw_path == "/_colabone_live/ws"
+        is_live_companion_page = (
+            (not is_upgrade)
+            and method in ("GET", "HEAD")
+            and raw_path == "/_colabone_live/remote"
+        )
+        is_live_companion_redeem = (
+            (not is_upgrade)
+            and method == "POST"
+            and raw_path == "/_colabone_live/remote/redeem"
+        )
+        is_live_public_companion_route = (
+            is_live_ws_upgrade or is_live_companion_page or is_live_companion_redeem
+        )
 
-        # All other routes require valid session cookie OR Bearer canvas_token, except
-        # /_colabone_live/ws WebSocket upgrades which enforce their own mandatory
-        # constant-time first-frame ephemeral token handshake inside Live Studio.
+        # All other routes require valid session cookie OR Bearer canvas_token, except:
+        # - /_colabone_live/ws WebSocket upgrades (enforces mandatory first-frame ephemeral token)
+        # - /_colabone_live/remote (static mobile companion UI shell; zero secret data)
+        # - /_colabone_live/remote/redeem (same-origin one-time pairing ticket exchange)
         authorized, matched_bearer = self._check_auth(raw_headers)
-        if not authorized and not is_live_ws_upgrade:
+        if not authorized and not is_live_public_companion_route:
             accept = header_map.get("accept", "").lower()
             if "text/html" in accept:
                 lang = _resolve_accept_language(header_map.get("accept-language", ""))
@@ -949,17 +971,54 @@ class ColabOneCanvasProxyServer:
             return
 
         # Enforce strict Origin validation on WebSocket upgrades and non-GET mutating requests.
+        require_origin = bool(is_live_companion_redeem and self.expected_origin)
         if (
-            is_upgrade or method.upper() not in ("GET", "HEAD", "OPTIONS")
+            is_upgrade or method not in ("GET", "HEAD", "OPTIONS")
         ) and not self._is_origin_allowed(
-            raw_headers, header_map, is_live_ws=is_live_ws_upgrade
+            raw_headers,
+            header_map,
+            is_live_ws=is_live_ws_upgrade,
+            require_origin=require_origin,
         ):
             await self._send_json(
                 writer, 403, "Forbidden", {"error": "Forbidden origin"}
             )
             return
 
+        if is_live_companion_redeem:
+            # Reject chunked/oversized unauthenticated redeem requests upfront to prevent OOM DoS.
+            if any(name.lower() == "transfer-encoding" for name, _ in raw_headers):
+                await self._send_json(
+                    writer, 413, "Payload Too Large", {"error": "Payload too large"}
+                )
+                return
+            cl_headers = [v.strip() for k, v in raw_headers if k.lower() == "content-length"]
+            if len(cl_headers) > 1:
+                await self._send_json(
+                    writer, 400, "Bad Request", {"error": "Malformed Content-Length"}
+                )
+                return
+            if len(cl_headers) == 1:
+                try:
+                    cl_val = int(cl_headers[0])
+                except ValueError:
+                    await self._send_json(
+                        writer, 400, "Bad Request", {"error": "Malformed Content-Length"}
+                    )
+                    return
+                if cl_val < 0 or cl_val > MAX_LIVE_REDEEM_BODY_BYTES:
+                    await self._send_json(
+                        writer, 413, "Payload Too Large", {"error": "Payload too large"}
+                    )
+                    return
+            if len(leftover) > MAX_LIVE_REDEEM_BODY_BYTES:
+                await self._send_json(
+                    writer, 413, "Payload Too Large", {"error": "Payload too large"}
+                )
+                return
+
         live_ws_counted = False
+        live_companion_http_counted = False
         if is_live_ws_upgrade:
             if self._live_ws_connections >= MAX_LIVE_WS_CONNECTIONS:
                 await self._send_json(
@@ -971,11 +1030,56 @@ class ColabOneCanvasProxyServer:
                 return
             self._live_ws_connections += 1
             live_ws_counted = True
+        elif is_live_companion_page or is_live_companion_redeem:
+            if self._live_companion_http >= MAX_LIVE_COMPANION_HTTP:
+                await self._send_json(
+                    writer,
+                    503,
+                    "Service Unavailable",
+                    {"error": "Too many active companion HTTP requests"},
+                )
+                return
+            self._live_companion_http += 1
+            live_companion_http_counted = True
 
-        # Live Studio WS upgrades defer activity updates to live_server.py after
-        # first-frame token verification, preventing unauthenticated idle resets.
-        touch_activity = not is_live_ws_upgrade
+        # Live Studio WS & unauthenticated companion shell/redeem defer activity updates
+        # to live_server.py after token/ticket verification, preventing idle resets.
+        touch_activity = not is_live_public_companion_route
         target_port = self.live_upstream_port if is_live_route else self.upstream_port
+
+        forwarded_client_ip = ""
+        forwarded_proto = ""
+        if is_live_companion_redeem:
+            raw_cf = ""
+            for h_name, h_val in raw_headers:
+                if h_name.lower() == "cf-connecting-ip" and h_val.strip():
+                    raw_cf = h_val.strip()
+            candidate_ip = ""
+            if raw_cf and self.expected_origin:
+                parts = [p.strip() for p in raw_cf.split(",") if p.strip()]
+                if parts:
+                    candidate_ip = parts[-1]
+            if candidate_ip:
+                try:
+                    forwarded_client_ip = str(ipaddress.ip_address(candidate_ip.strip("[]")))
+                except ValueError:
+                    forwarded_client_ip = ""
+            if not forwarded_client_ip:
+                peer = writer.get_extra_info("peername")
+                if isinstance(peer, tuple) and peer:
+                    try:
+                        forwarded_client_ip = str(ipaddress.ip_address(str(peer[0]).strip("[]")))
+                    except ValueError:
+                        forwarded_client_ip = str(peer[0])[:64]
+        if is_live_companion_page:
+            parsed_host = _parse_host_header(header_map.get("host", ""))
+            xfp = header_map.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+            is_https = (
+                xfp == "https"
+                or (self.expected_origin or "").lower().startswith("https://")
+                or (parsed_host is not None and not _is_loopback_host(parsed_host[0]))
+            )
+            forwarded_proto = "https" if is_https else "http"
 
         try:
             if touch_activity:
@@ -1011,6 +1115,8 @@ class ColabOneCanvasProxyServer:
                     is_upgrade=is_upgrade,
                     strip_auth=matched_bearer,
                     upstream_port=target_port,
+                    forwarded_client_ip=forwarded_client_ip,
+                    forwarded_proto=forwarded_proto,
                 )
                 upstream_writer.write(upstream_head)
                 if leftover and not is_upgrade:
@@ -1033,6 +1139,16 @@ class ColabOneCanvasProxyServer:
                         initial_client_bytes=leftover if is_upgrade else b"",
                         upgrade_event=upgrade_event,
                         upgrade_state=upgrade_state,
+                        max_body_bytes=(
+                            max(0, MAX_LIVE_REDEEM_BODY_BYTES - len(leftover))
+                            if is_live_companion_redeem
+                            else None
+                        ),
+                        body_idle_timeout=(
+                            COMPANION_BODY_IDLE_TIMEOUT
+                            if (is_live_companion_page or is_live_companion_redeem)
+                            else BODY_IDLE_TIMEOUT
+                        ),
                     )
                 )
                 u2c_task = asyncio.create_task(
@@ -1088,6 +1204,8 @@ class ColabOneCanvasProxyServer:
         finally:
             if live_ws_counted:
                 self._live_ws_connections = max(0, self._live_ws_connections - 1)
+            if live_companion_http_counted:
+                self._live_companion_http = max(0, self._live_companion_http - 1)
 
     def _build_upstream_head(
         self,
@@ -1099,6 +1217,8 @@ class ColabOneCanvasProxyServer:
         is_upgrade: bool,
         strip_auth: bool,
         upstream_port: int | None = None,
+        forwarded_client_ip: str = "",
+        forwarded_proto: str = "",
     ) -> bytes:
         out_headers: list[tuple[str, str]] = []
         host_written = False
@@ -1117,6 +1237,10 @@ class ColabOneCanvasProxyServer:
 
         for name, value in raw_headers:
             lname = name.lower()
+            if lname == "x-colabone-client-ip":
+                continue
+            if forwarded_proto and lname == "x-forwarded-proto":
+                continue
             if lname == "host":
                 out_headers.append(("Host", upstream_host_val))
                 host_written = True
@@ -1133,6 +1257,10 @@ class ColabOneCanvasProxyServer:
 
         if not host_written:
             out_headers.insert(0, ("Host", upstream_host_val))
+        if forwarded_client_ip:
+            out_headers.append(("X-ColabOne-Client-IP", forwarded_client_ip))
+        if forwarded_proto:
+            out_headers.append(("X-Forwarded-Proto", forwarded_proto))
         if is_upgrade:
             out_headers.append(("Connection", "Upgrade"))
         else:
@@ -1153,6 +1281,8 @@ class ColabOneCanvasProxyServer:
         initial_client_bytes: bytes = b"",
         upgrade_event: asyncio.Event | None = None,
         upgrade_state: dict[str, bool] | None = None,
+        max_body_bytes: int | None = None,
+        body_idle_timeout: float = BODY_IDLE_TIMEOUT,
     ) -> None:
         if is_upgrade and upgrade_event is not None:
             await upgrade_event.wait()
@@ -1170,6 +1300,7 @@ class ColabOneCanvasProxyServer:
                     return
 
         shared_io = last_io if last_io is not None else [time.monotonic()]
+        sent_bytes = 0
         while True:
             if is_upgrade:
                 chunk = await _read_with_shared_idle(
@@ -1179,9 +1310,26 @@ class ColabOneCanvasProxyServer:
                     return
             else:
                 try:
-                    chunk = await asyncio.wait_for(
-                        client_reader.read(CHUNK_SIZE), timeout=BODY_IDLE_TIMEOUT
-                    )
+                    read_limit = CHUNK_SIZE
+                    if max_body_bytes is not None:
+                        remaining = max_body_bytes - sent_bytes
+                        if remaining <= 0:
+                            # Drain check: if client still tries to send past ceiling, abort pipe.
+                            extra = await asyncio.wait_for(
+                                client_reader.read(1), timeout=min(1.0, body_idle_timeout)
+                            )
+                            if extra:
+                                raise ValueError("Request body exceeded maximum allowed size")
+                            chunk = b""
+                        else:
+                            chunk = await asyncio.wait_for(
+                                client_reader.read(min(CHUNK_SIZE, remaining + 1)),
+                                timeout=body_idle_timeout,
+                            )
+                    else:
+                        chunk = await asyncio.wait_for(
+                            client_reader.read(read_limit), timeout=body_idle_timeout
+                        )
                 except TimeoutError:
                     return
             if not chunk:
@@ -1191,6 +1339,10 @@ class ColabOneCanvasProxyServer:
                     except OSError:
                         pass
                 return
+            if max_body_bytes is not None:
+                sent_bytes += len(chunk)
+                if sent_bytes > max_body_bytes:
+                    raise ValueError("Request body exceeded maximum allowed size")
             if touch_activity:
                 self._touch()
             try:
@@ -1680,54 +1832,102 @@ class ColabOneComfyCanvasGateway:
     def probe(self, origin: str) -> bool:
         if self._tunnel_cancel.is_set():
             return False
-        _call_public_addresses(origin)
-        # Never follow redirects or transmit canvas_token before verifying runtime identity.
-        with requests.Session() as http:
-            http.trust_env = False
+        pinned_ips = _call_public_addresses(origin) or []
+        if self._tunnel_cancel.is_set():
+            return False
+        parsed_origin = urlsplit(origin)
+        origin_host = (parsed_origin.hostname or "").strip().lower().rstrip(".")
+        candidates: list[str | None] = (
+            list(pinned_ips) if (pinned_ips and origin_host) else [None]
+        )
+        pinned_adapter_cls = getattr(_tunnel, "_ColabOneTunnelPinnedIPAdapter", None)
+        last_network_exc: Exception | None = None
 
-            def read(
-                path: str, extra_headers: dict[str, str] | None = None
-            ) -> tuple[int, bytes, dict]:
-                req_kwargs: dict = {
-                    "stream": True,
-                    "timeout": (3, 5),
-                    "allow_redirects": False,
-                }
-                if extra_headers:
-                    req_kwargs["headers"] = extra_headers
-                with http.get(origin + path, **req_kwargs) as response:
-                    data = bytearray()
-                    for chunk in response.iter_content(2048):
-                        data.extend(chunk)
-                        if len(data) > 4096:
-                            raise ValueError("画布公网探测响应过大")
-                    headers = getattr(response, "headers", None) or {}
-                    return response.status_code, bytes(data), headers
-
-            status, body, _ = read("/_colabone_health")
-            if status != 200 or self._tunnel_cancel.is_set():
+        for idx, pinned_ip in enumerate(candidates):
+            if self._tunnel_cancel.is_set():
                 return False
+            # Never follow redirects, store cookies, or transmit canvas_token before verifying runtime identity.
             try:
-                payload = json.loads(body)
-            except ValueError:
-                return False
-            if not isinstance(payload, dict) or payload.get("instance") != self.instance:
-                return False
+                with requests.Session() as http:
+                    http.trust_env = False
+                    if hasattr(http, "cookies") and callable(
+                        getattr(http.cookies, "set_policy", None)
+                    ):
+                        http.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+                    if (
+                        pinned_ip
+                        and origin_host
+                        and pinned_adapter_cls is not None
+                        and callable(getattr(http, "mount", None))
+                    ):
+                        http.mount(
+                            "https://",
+                            pinned_adapter_cls(
+                                expected_host=origin_host,
+                                pinned_ip=pinned_ip,
+                                use_tls=True,
+                            ),
+                        )
+                        http.mount(
+                            "http://",
+                            pinned_adapter_cls(
+                                expected_host=origin_host,
+                                pinned_ip=pinned_ip,
+                                use_tls=False,
+                            ),
+                        )
 
-            status, _, _ = read("/")
-            if status != 401 or self._tunnel_cancel.is_set():
-                return False
+                    def read(
+                        path: str, extra_headers: dict[str, str] | None = None
+                    ) -> tuple[int, bytes, dict]:
+                        req_kwargs: dict = {
+                            "stream": True,
+                            "timeout": (3, 5),
+                            "allow_redirects": False,
+                        }
+                        if extra_headers:
+                            req_kwargs["headers"] = extra_headers
+                        with http.get(origin + path, **req_kwargs) as response:
+                            data = bytearray()
+                            for chunk in response.iter_content(2048):
+                                data.extend(chunk)
+                                if len(data) > 4096:
+                                    raise ValueError("画布公网探测响应过大")
+                            headers = getattr(response, "headers", None) or {}
+                            return response.status_code, bytes(data), headers
 
-            status, _, headers = read(
-                f"/_colabone_auth?token={self.canvas_token}",
-                extra_headers={COLABONE_INTERNAL_PROBE_HEADER: self.instance},
-            )
-            set_cookie = ""
-            for k, v in headers.items():
-                if k.lower() == "set-cookie":
-                    set_cookie = str(v)
-                    break
-            return status == 302 and f"{COLABONE_COMFY_COOKIE}=" in set_cookie
+                    status, body, _ = read("/_colabone_health")
+                    if status != 200 or self._tunnel_cancel.is_set():
+                        return False
+                    try:
+                        payload = json.loads(body)
+                    except ValueError:
+                        return False
+                    if not isinstance(payload, dict) or payload.get("instance") != self.instance:
+                        return False
+
+                    status, _, _ = read("/")
+                    if status != 401 or self._tunnel_cancel.is_set():
+                        return False
+
+                    status, _, headers = read(
+                        f"/_colabone_auth?token={self.canvas_token}",
+                        extra_headers={COLABONE_INTERNAL_PROBE_HEADER: self.instance},
+                    )
+                    set_cookie = ""
+                    for k, v in headers.items():
+                        if k.lower() == "set-cookie":
+                            set_cookie = str(v)
+                            break
+                    return status == 302 and f"{COLABONE_COMFY_COOKIE}=" in set_cookie
+            except requests.RequestException as exc:
+                last_network_exc = exc
+                if idx + 1 < len(candidates):
+                    continue
+                raise
+        if last_network_exc is not None:
+            raise last_network_exc
+        return False
 
     def _run_tunnel(self, config, proxy_port: int) -> None:
         origin = config.domain
@@ -1781,19 +1981,20 @@ class ColabOneComfyCanvasGateway:
                 with os.fdopen(fd, "w", encoding="utf-8") as out:
                     out.write(config.tunnel_token)
                 args += ["run", "--token-file", str(self._token_path)]
-                self._tunnel_proc = subprocess.Popen(
-                    args,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    env={
-                        k: v
-                        for k, v in os.environ.items()
-                        if not k.startswith("TUNNEL_")
-                    },
-                )
+                from common.files import colabone_sanitized_subprocess_env
+
+                popen_kwargs: dict[str, Any] = {
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.STDOUT,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "env": colabone_sanitized_subprocess_env(),
+                }
+                if os.name == "posix":
+                    popen_kwargs["start_new_session"] = True
+                self._tunnel_proc = subprocess.Popen(args, **popen_kwargs)
                 process = self._tunnel_proc
             self.note("Cloudflare 画布连接器已启动，正在验证固定域名连通性与会话鉴权")
 
@@ -1880,6 +2081,12 @@ class ColabOneComfyCanvasGateway:
                         try:
                             proc.wait(timeout=3)
                         except subprocess.TimeoutExpired:
+                            pass
+                for stream in (getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
                             pass
                 self._tunnel_proc = None
             if self._token_path is not None:

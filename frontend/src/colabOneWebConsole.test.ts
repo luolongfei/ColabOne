@@ -545,6 +545,10 @@ describe("colabOneWebConsole URL validators and Cloudflared helpers", () => {
       "https://127.0.0.1/_colabone_auth?token=abc",
       "https://[::1]/_colabone_auth?token=abc",
       "https://[::ffff:127.0.0.1]/_colabone_auth?token=abc",
+      "https://[::ffff:0.1.2.3]/_colabone_auth?token=abc",
+      "https://[::ffff:0.255.255.255]/_colabone_auth?token=abc",
+      "https://[::ffff:0000:0001]/_colabone_auth?token=abc",
+      "https://[::ffff:00ff:ffff]/_colabone_auth?token=abc",
       "https://[::1%25lo0]/_colabone_auth?token=abc",
       "https://user@comfy.example.com/_colabone_auth?token=abc",
     ];
@@ -671,5 +675,35 @@ describe("colabOneWebConsole URL validators and Cloudflared helpers", () => {
       "Unauthorized",
     );
     expect(colabOneWebSessionExpired.value).toBe(true);
+    expect(colabOneWebBackendReady.value).toBe(false);
+
+    // Non-snapshot endpoints must NOT silently clear session expiry while the snapshot poller is stopped
+    fetchSpy.mockResolvedValueOnce(makeResponse('{"ok":true}', { status: 200 }));
+    await colabOneWebCommandRaw("ping", {});
+    expect(colabOneWebSessionExpired.value).toBe(true);
+    expect(colabOneWebBackendReady.value).toBe(false);
+
+    fetchSpy.mockResolvedValueOnce(makeResponse("", { status: 200 }));
+    await colabOneWebOutputPreviewURL(validId);
+    expect(colabOneWebSessionExpired.value).toBe(true);
+    expect(colabOneWebBackendReady.value).toBe(false);
+
+    // Capabilities / snapshot recovery restores both session-expired and backend-ready consistently
+    fetchSpy.mockResolvedValueOnce(
+      makeResponse(
+        JSON.stringify({
+          runtime: "web",
+          version: "0.1.20",
+          local_url: "http://127.0.0.1:3232",
+          lan_urls: ["http://192.168.1.25:3232", " http://192.168.1.25:3232 "],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const recoveredCaps = await fetchColabOneWebCapabilities();
+    expect(recoveredCaps.local_url).toBe("http://127.0.0.1:3232");
+    expect(recoveredCaps.lan_urls).toEqual(["http://192.168.1.25:3232"]);
+    expect(colabOneWebSessionExpired.value).toBe(false);
+    expect(colabOneWebBackendReady.value).toBe(true);
   });
 });

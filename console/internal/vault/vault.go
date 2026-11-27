@@ -257,10 +257,17 @@ func (v *ColabOneVault) GetRaw(name string) ([]byte, bool, error) {
 		// Python keyring backend (UTF-16LE blobs under key@ColabOne or ColabOne).
 		if v.legacyReader != nil {
 			legacyBytes, found, legacyErr := v.legacyReader(v.service, name)
-			if legacyErr == nil && found && len(legacyBytes) > 0 {
+			if legacyErr != nil {
+				// Transient WinCred API error: do not poison negative cache.
+				return nil, false, legacyErr
+			}
+			if found && len(legacyBytes) > 0 {
 				meta, migErr := v.writeBackendLocked(name, legacyBytes, colabOneChunkManifest{})
 				if migErr == nil {
 					v.chunkMeta[name] = meta
+					if v.legacyDeleter != nil {
+						_ = v.legacyDeleter(v.service, name)
+					}
 				}
 				v.cache[name] = cloneBytes(legacyBytes)
 				return cloneBytes(legacyBytes), true, nil
@@ -684,14 +691,20 @@ func colabOneResolveLegacyWinCredential(
 	if service == "" || key == "" || readTarget == nil {
 		return nil, false, nil
 	}
+	var firstErr error
 	mygoTarget := service + "/" + key
-	if blob, _, ok, err := readTarget(mygoTarget); err == nil && ok && len(blob) > 0 {
+	if blob, _, ok, err := readTarget(mygoTarget); err != nil {
+		firstErr = err
+	} else if ok && len(blob) > 0 {
 		if manifest, isChunked := parseChunkManifest(blob); isChunked {
 			buf := make([]byte, 0, manifest.Chunks*colabOneVaultChunkSize)
 			complete := true
 			for i := 0; i < manifest.Chunks; i++ {
 				part, _, partOK, partErr := readTarget(service + "/" + colabOneChunkKey(key, manifest.Gen, i))
-				if partErr != nil || !partOK {
+				if partErr != nil {
+					return nil, false, partErr
+				}
+				if !partOK {
 					complete = false
 					break
 				}
@@ -704,15 +717,26 @@ func colabOneResolveLegacyWinCredential(
 			return cloneBytes(blob), true, nil
 		}
 	}
-	if blob, userName, ok, err := readTarget(service); err == nil && ok && userName == key && len(blob) > 0 {
+	if blob, userName, ok, err := readTarget(service); err != nil {
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else if ok && userName == key && len(blob) > 0 {
 		if utf8Bytes, decErr := decodeLegacyWinBlob(blob); decErr == nil && len(utf8Bytes) > 0 {
 			return utf8Bytes, true, nil
 		}
 	}
-	if blob, _, ok, err := readTarget(key + "@" + service); err == nil && ok && len(blob) > 0 {
+	if blob, _, ok, err := readTarget(key + "@" + service); err != nil {
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else if ok && len(blob) > 0 {
 		if utf8Bytes, decErr := decodeLegacyWinBlob(blob); decErr == nil && len(utf8Bytes) > 0 {
 			return utf8Bytes, true, nil
 		}
+	}
+	if firstErr != nil {
+		return nil, false, firstErr
 	}
 	return nil, false, nil
 }

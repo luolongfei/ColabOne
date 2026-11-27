@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import array
 import hashlib
+import io
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
@@ -28,26 +30,17 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageOps
 
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    colabone_sanitized_subprocess_env,
+)
 from common.live_studio import COLABONE_LIVE_CLIP_EXTENSIONS, validate_colabone_live_id
 
-_SENSITIVE_VISUAL_ENV_KEYS = frozenset(
-    {
-        "COLABONE_REMOTE_CONFIG",
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HF_API_TOKEN",
-        "OPENAI_API_KEY",
-    }
-)
+_SENSITIVE_VISUAL_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
 
 
 def _sanitized_visual_subprocess_env() -> dict[str, str]:
-    return {
-        k: v
-        for k, v in os.environ.items()
-        if k not in _SENSITIVE_VISUAL_ENV_KEYS and not k.startswith("TUNNEL_")
-    }
+    return colabone_sanitized_subprocess_env()
 
 
 def _fit_rgb_image(img: Image.Image, width: int, height: int) -> bytes:
@@ -76,7 +69,22 @@ def _decode_video_frames_rgb(
     Returns an empty list cleanly if the clip cannot be decoded or neither backend
     is available (e.g. placeholder bytes in offline unit tests).
     """
+    raw_str = os.fspath(video_path)
+    if any(ch in raw_str for ch in ("\r", "\n", "\x00")):
+        return []
     if video_path.is_symlink() or not video_path.is_file():
+        return []
+    try:
+        resolved_path = video_path.resolve(strict=True)
+    except OSError:
+        return []
+    resolved_str = os.fspath(resolved_path)
+    if (
+        resolved_path.is_symlink()
+        or not resolved_path.is_file()
+        or any(ch in resolved_str for ch in ("\r", "\n", "\x00"))
+        or resolved_str.startswith("-")
+    ):
         return []
     frame_size = int(width) * int(height) * 3
     if frame_size <= 0 or max_frames <= 0:
@@ -91,7 +99,7 @@ def _decode_video_frames_rgb(
     if cv2 is not None:
         cap = None
         try:
-            cap = cv2.VideoCapture(str(video_path))
+            cap = cv2.VideoCapture(resolved_str)
             if cap is not None and cap.isOpened():
                 decoded: list[bytes] = []
                 while len(decoded) < max_frames:
@@ -127,9 +135,9 @@ def _decode_video_frames_rgb(
         "-loglevel",
         "error",
         "-protocol_whitelist",
-        "file,pipe,fd",
+        "file,pipe",
         "-i",
-        str(video_path),
+        resolved_str,
         "-vf",
         vf,
         "-frames:v",
@@ -199,11 +207,19 @@ def compute_pcm16_rms(pcm_bytes: bytes) -> float:
     return max(0.0, min(1.0, rms))
 
 
+def _finite_float(val: Any, default: float) -> float:
+    try:
+        out = float(val)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
 def blend_rgb_frames(
     frame_a: bytes, frame_b: bytes, width: int, height: int, alpha: float
 ) -> bytes:
     """Linearly crossfade two equal-sized RGB byte buffers using Pillow."""
-    clamped = max(0.0, min(1.0, float(alpha)))
+    clamped = max(0.0, min(1.0, _finite_float(alpha, 0.0)))
     expected = width * height * 3
     if len(frame_a) != expected or len(frame_b) != expected:
         raise ValueError("混合帧字节长度与分辨率不匹配")
@@ -214,6 +230,296 @@ def blend_rgb_frames(
     img_a = Image.frombytes("RGB", (width, height), frame_a)
     img_b = Image.frombytes("RGB", (width, height), frame_b)
     return Image.blend(img_a, img_b, clamped).tobytes()
+
+
+class ColabOneLiveCameraPoseTracker:
+    """Real-time lightweight operator motion/pose extractor from mobile camera JPEGs.
+
+    Tracks horizontal sway (dx), vertical nod (dy), subtle head/shoulder roll tilt,
+    lean zoom scale, and motion energy with EMA smoothing and neutral auto-decay.
+    Works 100% offline with Pillow (and automatically accelerates via NumPy if present).
+    """
+
+    def __init__(self, *, sample_size: int = 48, smooth_alpha: float = 0.35) -> None:
+        self._lock = threading.RLock()
+        self._update_lock = threading.Lock()
+        self._size = max(16, int(sample_size))
+        self._alpha = max(0.05, min(0.95, _finite_float(smooth_alpha, 0.35)))
+        self._prev_gray: bytes | None = None
+        self._base_cx: float | None = None
+        self._base_cy: float | None = None
+        self._base_tilt: float | None = None
+        self._gen = 0
+        self._dx = 0.0
+        self._dy = 0.0
+        self._roll_deg = 0.0
+        self._scale = 1.0
+        self._energy = 0.0
+        self._updated_at = 0.0
+        # Precompute center-salience weights and coordinate tables once.
+        n = self._size
+        self._center_weights = [
+            max(
+                0.15,
+                1.0
+                - ((((x + 0.5) / n - 0.5) ** 2) + (((y + 0.5) / n - 0.5) ** 2)) * 1.4,
+            )
+            for y in range(n)
+            for x in range(n)
+        ]
+        try:
+            import numpy as _np
+
+            yy, xx = _np.mgrid[0:n, 0:n]
+            nx = (xx + 0.5) / float(n) - 0.5
+            ny = (yy + 0.5) / float(n) - 0.5
+            self._np = _np
+            self._np_cw = _np.maximum(0.15, 1.0 - (nx * nx + ny * ny) * 1.4).astype(_np.float32)
+            self._np_xx = xx.astype(_np.float32)
+            self._np_yy = yy.astype(_np.float32)
+        except Exception:
+            self._np = None
+            self._np_cw = None
+            self._np_xx = None
+            self._np_yy = None
+
+    def reset(self) -> None:
+        with self._lock:
+            self._gen += 1
+            self._prev_gray = None
+            self._base_cx = None
+            self._base_cy = None
+            self._base_tilt = None
+            self._dx = 0.0
+            self._dy = 0.0
+            self._roll_deg = 0.0
+            self._scale = 1.0
+            self._energy = 0.0
+            self._updated_at = 0.0
+
+    def update_from_image(self, img: Image.Image) -> dict[str, float]:
+        with self._update_lock:
+            return self._update_from_image_serialized(img)
+
+    def _update_from_image_serialized(self, img: Image.Image) -> dict[str, float]:
+        resampling = (
+            Image.Resampling.BILINEAR
+            if hasattr(Image, "Resampling")
+            else getattr(Image, "BILINEAR", 2)
+        )
+        small = img.convert("L").resize((self._size, self._size), resampling)
+        gray = small.tobytes()
+        n = self._size
+        half = n // 2
+
+        with self._lock:
+            gen_before = self._gen
+            prev = self._prev_gray
+
+        if self._np is not None and self._np_cw is not None:
+            np = self._np
+            arr = np.frombuffer(gray, dtype=np.uint8).reshape((n, n)).astype(np.float32)
+            w = (arr / 255.0 + 0.08) * self._np_cw
+            total_w = float(w.sum())
+            cx = float((w * self._np_xx).sum() / total_w) / n if total_w > 0 else 0.5
+            cy = float((w * self._np_yy).sum() / total_w) / n if total_w > 0 else 0.5
+            upper_w = float(w[:half, :].sum())
+            lower_w = float(w[half:, :].sum())
+            upper_cx = float((w[:half, :] * self._np_xx[:half, :]).sum() / upper_w) if upper_w > 0 else n * 0.5
+            lower_cx = float((w[half:, :] * self._np_xx[half:, :]).sum() / lower_w) if lower_w > 0 else n * 0.5
+            tilt = (upper_cx - lower_cx) / n
+            diff_sum = 0.0
+            if prev is not None:
+                prev_arr = np.frombuffer(prev, dtype=np.uint8).reshape((n, n)).astype(np.float32)
+                diff = np.abs(arr - prev_arr)
+                diff_sum = float(diff.sum())
+                mask = diff >= 14.0
+                diff_w = float(diff[mask].sum())
+                if diff_w > n * 18.0:
+                    mcx = float((diff[mask] * self._np_xx[mask]).sum() / diff_w) / n
+                    mcy = float((diff[mask] * self._np_yy[mask]).sum() / diff_w) / n
+                    cx = 0.6 * cx + 0.4 * mcx
+                    cy = 0.6 * cy + 0.4 * mcy
+        else:
+            total_w = 0.0
+            sum_x = 0.0
+            sum_y = 0.0
+            upper_w = 0.0
+            upper_x = 0.0
+            lower_w = 0.0
+            lower_x = 0.0
+            diff_sum = 0.0
+            diff_w = 0.0
+            diff_x = 0.0
+            diff_y = 0.0
+            cweights = self._center_weights
+            for y in range(n):
+                row_off = y * n
+                is_upper = y < half
+                for x in range(n):
+                    idx = row_off + x
+                    val = gray[idx]
+                    w = (val / 255.0 + 0.08) * cweights[idx]
+                    total_w += w
+                    sum_x += x * w
+                    sum_y += y * w
+                    if is_upper:
+                        upper_w += w
+                        upper_x += x * w
+                    else:
+                        lower_w += w
+                        lower_x += x * w
+                    if prev is not None:
+                        d = abs(val - prev[idx])
+                        diff_sum += d
+                        if d >= 14:
+                            diff_w += d
+                            diff_x += x * d
+                            diff_y += y * d
+            cx = (sum_x / total_w) / n if total_w > 0 else 0.5
+            cy = (sum_y / total_w) / n if total_w > 0 else 0.5
+            tilt = (
+                ((upper_x / upper_w) - (lower_x / lower_w)) / n
+                if (upper_w > 0 and lower_w > 0)
+                else 0.0
+            )
+            if diff_w > n * 18.0:
+                mcx = (diff_x / diff_w) / n
+                mcy = (diff_y / diff_w) / n
+                cx = 0.6 * cx + 0.4 * mcx
+                cy = 0.6 * cy + 0.4 * mcy
+
+        raw_energy = min(1.0, (diff_sum / max(1.0, float(n * n) * 28.0)))
+        now = time.monotonic()
+
+        with self._lock:
+            if self._gen != gen_before:
+                # reset() occurred while decoding off-lock; discard stale frame.
+                return self.current_pose(now=now)
+            self._prev_gray = gray
+            if self._base_cx is None or self._base_cy is None or self._base_tilt is None:
+                self._base_cx = cx
+                self._base_cy = cy
+                self._base_tilt = tilt
+            else:
+                # Slow neutral baseline drift prevents long-term lighting/offset creep
+                self._base_cx = self._base_cx * 0.985 + cx * 0.015
+                self._base_cy = self._base_cy * 0.985 + cy * 0.015
+                self._base_tilt = self._base_tilt * 0.985 + tilt * 0.015
+
+            raw_dx = max(-1.0, min(1.0, (cx - self._base_cx) * 6.5))
+            raw_dy = max(-1.0, min(1.0, (cy - self._base_cy) * 6.5))
+            tilt_delta = tilt - self._base_tilt
+            raw_roll = max(-9.0, min(9.0, tilt_delta * 42.0 + raw_dx * 3.5))
+            raw_scale = max(0.96, min(1.06, 1.0 + raw_energy * 0.045 - raw_dy * 0.02))
+
+            a = self._alpha
+            self._dx = self._dx * (1.0 - a) + raw_dx * a
+            self._dy = self._dy * (1.0 - a) + raw_dy * a
+            self._roll_deg = self._roll_deg * (1.0 - a) + raw_roll * a
+            self._scale = self._scale * (1.0 - a) + raw_scale * a
+            self._energy = self._energy * 0.55 + raw_energy * 0.45
+            self._updated_at = now
+            return {
+                "dx": round(self._dx, 4),
+                "dy": round(self._dy, 4),
+                "roll_deg": round(self._roll_deg, 3),
+                "scale": round(self._scale, 4),
+                "energy": round(self._energy, 4),
+                "updated_at": now,
+            }
+
+    def current_pose(self, now: float | None = None) -> dict[str, float]:
+        ts = time.monotonic() if now is None else _finite_float(now, time.monotonic())
+        with self._lock:
+            if self._updated_at <= 0.0:
+                return {
+                    "dx": 0.0,
+                    "dy": 0.0,
+                    "roll_deg": 0.0,
+                    "scale": 1.0,
+                    "energy": 0.0,
+                    "updated_at": 0.0,
+                    "decayed": 1.0,
+                }
+            age = max(0.0, ts - self._updated_at)
+            decay = 1.0 if age <= 1.2 else max(0.0, 1.0 - (age - 1.2) / 1.5)
+            return {
+                "dx": round(self._dx * decay, 4),
+                "dy": round(self._dy * decay, 4),
+                "roll_deg": round(self._roll_deg * decay, 3),
+                "scale": round(1.0 + (self._scale - 1.0) * decay, 4),
+                "energy": round(self._energy * decay, 4),
+                "updated_at": self._updated_at,
+                "decayed": 1.0,
+            }
+
+
+def apply_live_camera_motion(
+    rgb_bytes: bytes, width: int, height: int, pose: dict[str, float]
+) -> bytes:
+    """Apply smooth edge-safe affine head/body motion transfer onto an RGB frame."""
+    updated_at = _finite_float(pose.get("updated_at", 0.0) or 0.0, 0.0)
+    already_decayed = bool(pose.get("decayed"))
+    decay = 1.0
+    if updated_at > 0.0 and not already_decayed:
+        age = max(0.0, time.monotonic() - updated_at)
+        decay = 1.0 if age <= 1.2 else max(0.0, 1.0 - (age - 1.2) / 1.5)
+    dx = max(-1.0, min(1.0, _finite_float(pose.get("dx", 0.0) or 0.0, 0.0))) * decay
+    dy = max(-1.0, min(1.0, _finite_float(pose.get("dy", 0.0) or 0.0, 0.0))) * decay
+    roll_deg = max(-10.0, min(10.0, _finite_float(pose.get("roll_deg", 0.0) or 0.0, 0.0))) * decay
+    raw_scale = max(0.95, min(1.08, _finite_float(pose.get("scale", 1.0) or 1.0, 1.0)))
+    scale = 1.0 + (raw_scale - 1.0) * decay
+    if (
+        abs(dx) < 0.005
+        and abs(dy) < 0.005
+        and abs(roll_deg) < 0.05
+        and abs(scale - 1.0) < 0.003
+    ):
+        return rgb_bytes
+
+    expected = width * height * 3
+    if len(rgb_bytes) != expected or width <= 0 or height <= 0:
+        return rgb_bytes
+
+    rad = math.radians(roll_deg)
+    abs_cos = abs(math.cos(rad))
+    abs_sin = abs(math.sin(rad))
+    cx = width * 0.5
+    cy = height * 0.5
+    shift_x = dx * width * 0.032
+    shift_y = dy * height * 0.028
+
+    # Exact aspect-aware cross-coupled border-free overscan: guarantees every output
+    # corner maps strictly inside [0, width] x [0, height] even with combined shift + roll.
+    min_sx = (abs_cos * (cx + abs(shift_x)) + abs_sin * (cy + abs(shift_y))) / cx
+    min_sy = (abs_sin * (cx + abs(shift_x)) + abs_cos * (cy + abs(shift_y))) / cy
+    eff_scale = max(1.0, scale, min_sx, min_sy)
+
+    inv_s = 1.0 / eff_scale
+    cos_r = math.cos(rad) * inv_s
+    sin_r = math.sin(rad) * inv_s
+
+    a = cos_r
+    b = sin_r
+    c = cx - a * (cx + shift_x) - b * (cy + shift_y)
+    d = -sin_r
+    e = cos_r
+    f = cy - d * (cx + shift_x) - e * (cy + shift_y)
+
+    resampling = (
+        Image.Resampling.BILINEAR
+        if hasattr(Image, "Resampling")
+        else getattr(Image, "BILINEAR", 2)
+    )
+    img = Image.frombytes("RGB", (width, height), rgb_bytes)
+    warped = img.transform(
+        (width, height),
+        Image.Transform.AFFINE if hasattr(Image, "Transform") else Image.AFFINE,
+        (a, b, c, d, e, f),
+        resample=resampling,
+    )
+    return warped.tobytes()
 
 
 def _deterministic_action_color(action_id: str) -> tuple[int, int, int]:
@@ -351,11 +657,12 @@ class ColabOneVisualEngineBase(ABC):
         self._disposed = False
         self._lock = threading.RLock()
 
-        # Crossfade state
+        # Crossfade & live camera motion state
         self._last_rgb: bytes | None = None
         self._crossfade_from_rgb: bytes | None = None
         self._crossfade_step = 0
         self._crossfade_total = 0
+        self._live_motion_pose: dict[str, float] | None = None
 
     @property
     def is_loaded(self) -> bool:
@@ -393,6 +700,7 @@ class ColabOneVisualEngineBase(ABC):
         """Switch active visual action with optional smooth crossfade transition."""
         aid = validate_colabone_live_id(action_id, "动作 ID")
         with self._lock:
+            self._ensure_not_disposed()
             if crossfade_frames <= 0:
                 self._crossfade_from_rgb = None
                 self._crossfade_step = 0
@@ -441,6 +749,14 @@ class ColabOneVisualEngineBase(ABC):
     ) -> bytes:
         """Produce a raw RGB frame of length width * height * 3."""
 
+    def set_live_motion_pose(self, pose: dict[str, float] | None) -> None:
+        """Set or clear live camera-driven motion pose vector (dx, dy, roll_deg, scale)."""
+        with self._lock:
+            if self._disposed:
+                self._live_motion_pose = None
+                return
+            self._live_motion_pose = dict(pose) if isinstance(pose, dict) else None
+
     def render_frame(
         self,
         audio_pcm_24k: bytes = b"",
@@ -458,10 +774,18 @@ class ColabOneVisualEngineBase(ABC):
             rgb, is_crossfading = self._apply_crossfade(raw_rgb)
             self._frame_index += 1
             self._after_frame_rendered(rgb)
+            out_rgb = rgb
+            if (
+                self._live_motion_pose is not None
+                and not (self.engine_id == "personalive_dance" and state == "PERFORMING")
+            ):
+                out_rgb = apply_live_camera_motion(
+                    rgb, self.width, self.height, self._live_motion_pose
+                )
             return ColabOneVisualFrame(
                 width=self.width,
                 height=self.height,
-                rgb_bytes=rgb,
+                rgb_bytes=out_rgb,
                 pts_ms=int(pts_ms),
                 epoch=int(epoch),
                 action_id=frame_action_id,
@@ -510,6 +834,7 @@ class ColabOneSyntheticVisualEngine(ColabOneVisualEngineBase):
         with self._lock:
             self._disposed = True
             self._loaded = False
+            self._live_motion_pose = None
             self._last_rgb = None
             self._crossfade_from_rgb = None
             self._crossfade_step = 0
@@ -576,6 +901,7 @@ class ColabOneFlashHeadVisualEngine(ColabOneVisualEngineBase):
         with self._lock:
             self._disposed = True
             self._loaded = False
+            self._live_motion_pose = None
             self._portrait_rgb = None
             self._audio_window.clear()
             self._last_rgb = None
@@ -678,6 +1004,7 @@ class ColabOneMuseTalkVisualEngine(ColabOneVisualEngineBase):
                     f"动作 {action_id} 第 {idx} 帧字节大小不匹配（期望 {expected}，实际 {len(frame)}）"
                 )
         with self._lock:
+            self._ensure_not_disposed()
             self.ring_buffer.register_clip(action_id, frames, loop=loop, clip_path=clip_path)
 
     def _try_load_clip_into_ring(
@@ -784,6 +1111,7 @@ class ColabOneMuseTalkVisualEngine(ColabOneVisualEngineBase):
         with self._lock:
             self._disposed = True
             self._loaded = False
+            self._live_motion_pose = None
             self._last_rgb = None
             self._crossfade_from_rgb = None
             self._crossfade_step = 0
@@ -873,6 +1201,8 @@ class ColabOnePersonaLiveVisualEngine(ColabOneVisualEngineBase):
         duration_seconds: float = 0.0,
     ) -> dict[str, Any]:
         """Validate and attach a driving motion clip for pose-driven dance playback."""
+        with self._lock:
+            self._ensure_not_disposed()
         path = Path(clip_path)
         if path.is_symlink():
             raise ValueError("驱动动作视频不能是符号链接")
@@ -884,10 +1214,11 @@ class ColabOnePersonaLiveVisualEngine(ColabOneVisualEngineBase):
         size = resolved.stat().st_size
         decoded_frames = _decode_video_frames_rgb(resolved, self.width, self.height)
         with self._lock:
+            self._ensure_not_disposed()
             self._driving_clip_path = resolved
             self._driving_frames = decoded_frames
             self._driving_cursor = 0
-            self._driving_duration_seconds = max(0.0, float(duration_seconds or 0.0))
+            self._driving_duration_seconds = max(0.0, _finite_float(duration_seconds or 0.0, 0.0))
             self._driving_completed = False
         return {
             "path": str(resolved),
@@ -903,6 +1234,7 @@ class ColabOnePersonaLiveVisualEngine(ColabOneVisualEngineBase):
             if len(frame) != expected:
                 raise ValueError(f"驱动帧 {idx} 尺寸不匹配")
         with self._lock:
+            self._ensure_not_disposed()
             self._driving_frames = list(frames)
             self._driving_cursor = 0
             self._driving_completed = False
@@ -922,6 +1254,7 @@ class ColabOnePersonaLiveVisualEngine(ColabOneVisualEngineBase):
 
     def _release_runtime_resources_locked(self) -> None:
         self._loaded = False
+        self._live_motion_pose = None
         self._last_rgb = None
         self._crossfade_from_rgb = None
         self._crossfade_step = 0
@@ -938,6 +1271,29 @@ class ColabOnePersonaLiveVisualEngine(ColabOneVisualEngineBase):
                 if trt_dir.is_symlink():
                     raise ValueError("TensorRT 缓存目录不能是符号链接")
                 trt_dir.mkdir(parents=True, exist_ok=True)
+            clip_to_decode = (
+                self._driving_clip_path
+                if (self._driving_clip_path is not None and not self._driving_frames)
+                else None
+            )
+            w, h = self.width, self.height
+
+        decoded_frames: list[bytes] = []
+        if clip_to_decode is not None:
+            if not clip_to_decode.is_symlink() and clip_to_decode.is_file():
+                decoded_frames = _decode_video_frames_rgb(clip_to_decode, w, h)
+
+        with self._lock:
+            self._ensure_not_disposed()
+            if (
+                clip_to_decode is not None
+                and self._driving_clip_path == clip_to_decode
+                and not self._driving_frames
+                and decoded_frames
+            ):
+                self._driving_frames = decoded_frames
+                self._driving_cursor = 0
+                self._driving_completed = False
             self._loaded = True
             self._hot_swapped_out = False
 

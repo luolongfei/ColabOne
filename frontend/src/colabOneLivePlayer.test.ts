@@ -1173,6 +1173,38 @@ describe("ColabOneLiveVideoRenderer WebCodecs & JPEG fallback", () => {
     ]);
     expect(onError).not.toHaveBeenCalled();
 
+    // 5. Encoder-name telemetry ("h264_nvenc" / "libx264") must NOT tear down active fmp4 MSE,
+    // and resetEpoch({ preserveMseStream: true }) preserves MSE without calling remove(0, Infinity).
+    const sb2 = createdMediaSources[1].sourceBuffers[0];
+    sb2.bufferedRanges = [[0, 4]];
+    const removesBefore = sb2.removed.length;
+    renderer.setCodec("h264_nvenc");
+    renderer.setCodec("libx264");
+    expect(createdMediaSources.length).toBe(2);
+    renderer.resetEpoch({ preserveMseStream: true });
+    expect(sb2.removed.length).toBe(removesBefore);
+
+    // 6. Split ftyp + moov init chunks are merged before appending to MSE.
+    const splitFtyp = makeBox("ftyp", 0x11);
+    const splitMoov = makeBox("moov", 0x22);
+    const renderer2 = new ColabOneLiveVideoRenderer({
+      canvas,
+      videoElement: videoEl,
+      codec: "fmp4",
+      h264CodecString: "avc1.640028",
+      onError,
+    });
+    renderer2.pushFmp4Chunk(splitFtyp);
+    renderer2.pushFmp4Chunk(splitMoov);
+    createdMediaSources[2].emitSourceOpen();
+    const sb3 = createdMediaSources[2].sourceBuffers[0];
+    expect(sb3.appended.length).toBe(1);
+    expect(Array.from(sb3.appended[0])).toEqual([
+      ...Array.from(splitFtyp),
+      ...Array.from(splitMoov),
+    ]);
+
+    renderer2.destroy();
     renderer.destroy();
   });
 });

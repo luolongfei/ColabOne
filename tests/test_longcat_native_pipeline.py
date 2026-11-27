@@ -5553,14 +5553,32 @@ def test_r2_avatar_manager_unconditional_pgrp_cleanup_and_2s_pipe_drain_deadline
     )
     elapsed = time.monotonic() - t0
     assert elapsed < 10.0, f"Expected ~2s pipe-drain deadline, took {elapsed:.1f}s"
+    def _is_pid_running(target_pid: int) -> bool:
+        try:
+            os.kill(target_pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        stat_path = Path(f"/proc/{target_pid}/stat")
+        if stat_path.is_file():
+            try:
+                raw = stat_path.read_text(encoding="utf-8", errors="replace")
+                rparen = raw.rfind(")")
+                if rparen >= 0:
+                    fields = raw[rparen + 2 :].split()
+                    if fields and fields[0] in ("Z", "X", "x"):
+                        return False
+            except OSError:
+                return False
+        return True
+
     orphan_pid = int(orphan_pid_file.read_text(encoding="utf-8").strip())
     # Give OS a tiny moment if needed; process group cleanup must have terminated orphan_pid.
     deadline = time.monotonic() + 2.0
     alive = True
     while time.monotonic() < deadline:
-        try:
-            os.kill(orphan_pid, 0)
-        except ProcessLookupError:
+        if not _is_pid_running(orphan_pid):
             alive = False
             break
         time.sleep(0.05)
@@ -5593,9 +5611,7 @@ def test_r2_avatar_manager_unconditional_pgrp_cleanup_and_2s_pipe_drain_deadline
     deadline = time.monotonic() + 2.0
     alive = True
     while time.monotonic() < deadline:
-        try:
-            os.kill(silent_pid, 0)
-        except ProcessLookupError:
+        if not _is_pid_running(silent_pid):
             alive = False
             break
         time.sleep(0.05)

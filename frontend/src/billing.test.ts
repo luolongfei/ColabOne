@@ -264,6 +264,72 @@ describe("describeColabOneBilling", () => {
     expect(syncing.active).toBe(false);
     expect(syncing.statusText).toBe("实例运行 · 费率同步中");
   });
+
+  it("guards negative, NaN, and Infinity billing inputs cleanly without producing NaN displays", () => {
+    const malformed = describeColabOneBilling(
+      {
+        logged_in: true,
+        rate: -2.5,
+        balance: Number.NaN,
+        assignments: Number.POSITIVE_INFINITY,
+        checked_at: Number.NaN,
+      },
+      undefined,
+      Number.NaN,
+    );
+    expect(malformed.rate).toBe(0);
+    expect(malformed.active).toBe(false);
+    expect(malformed.balance).toBeUndefined();
+    expect(malformed.instanceCount).toBe(0);
+    expect(malformed.stale).toBe(true);
+    expect(malformed.rateText).toBe("-- CU/小时");
+    expect(malformed.balanceText).toBe("未读取");
+    expect(malformed.endurance.level).toBe("unknown");
+
+    // Negative rate is treated as invalid reading rather than fabricating a negative rate display
+    const negRateWithReading = describeColabOneBilling(
+      {
+        logged_in: true,
+        rate: -2.5,
+        balance: 50,
+        assignments: 0,
+        checked_at: 1000,
+      },
+      undefined,
+      1_010_000,
+    );
+    expect(negRateWithReading.rate).toBe(0);
+    expect(negRateWithReading.active).toBe(false);
+    expect(negRateWithReading.rateText).toBe("-- CU/小时");
+
+    const badRun = describeColabOneRunConsumption(
+      {
+        logged_in: true,
+        rate: -1.5,
+        balance: Number.POSITIVE_INFINITY,
+        assignments: Number.NaN,
+        checked_at: Number.NaN,
+        current_run: {
+          active: true,
+          started_at: Number.NaN,
+          consumed: Number.NaN,
+          unsettled: Number.POSITIVE_INFINITY,
+          last_sample_at: Number.NaN,
+          last_rate: -3,
+          peak_rate: Number.NaN,
+          max_instances: Number.NaN,
+          samples: Number.NaN,
+        },
+      },
+      { setupColab: true, nowMs: Number.NaN },
+    );
+    expect(Number.isFinite(badRun.consumed)).toBe(true);
+    expect(badRun.consumedText).not.toContain("NaN");
+    expect(badRun.maxInstances).toBe(0);
+
+    expect(formatIdlePolicyLabel(Number.NaN)).toBe("30 分钟");
+    expect(formatIdlePolicyLabel(Number.POSITIVE_INFINITY)).toBe("30 分钟");
+  });
 });
 
 describe("formatIdlePolicyLabel & formatCountdownClock", () => {
@@ -647,5 +713,39 @@ describe("COLABONE_BILLING_TICKER_INTERVAL_MS, formatColabOneCompactRunDuration 
     expect(formatColabOneRunClock(0, now)).toBe("");
     expect(formatColabOneRunClock(-10, now)).toBe("");
     expect(formatColabOneRunClock(Number.NaN, now)).toBe("");
+  });
+
+  it("guards overflowed endurance division and clamps near-zero negative balance formatting", () => {
+    const overflowed = formatRemainingBalanceTime(Number.MAX_VALUE, 1e-308);
+    expect(overflowed.level).toBe("unknown");
+    expect(overflowed.hours).toBeNull();
+
+    const baseAccount = createColabOneSnapshot().account;
+    const nearZeroNeg = describeColabOneBilling({
+      ...baseAccount,
+      logged_in: true,
+      balance: -0.001,
+      rate: 0,
+      checked_at: Math.floor(Date.now() / 1000),
+    });
+    expect(nearZeroNeg.balanceText).toBe("0.00 CU");
+
+    const negZero = describeColabOneBilling({
+      ...baseAccount,
+      logged_in: true,
+      balance: -0,
+      rate: 0,
+      checked_at: Math.floor(Date.now() / 1000),
+    });
+    expect(negZero.balanceText).toBe("0.00 CU");
+
+    const realNeg = describeColabOneBilling({
+      ...baseAccount,
+      logged_in: true,
+      balance: -1.25,
+      rate: 0,
+      checked_at: Math.floor(Date.now() / 1000),
+    });
+    expect(realNeg.balanceText).toBe("-1.25 CU");
   });
 });

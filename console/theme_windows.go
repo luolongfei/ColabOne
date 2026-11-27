@@ -3,8 +3,9 @@
 package main
 
 import (
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -15,7 +16,7 @@ const (
 )
 
 var (
-	themeAdvapi32       = syscall.NewLazyDLL("advapi32.dll")
+	themeAdvapi32       = windows.NewLazySystemDLL("advapi32.dll")
 	procRegOpenKeyExW   = themeAdvapi32.NewProc("RegOpenKeyExW")
 	procRegQueryValueEx = themeAdvapi32.NewProc("RegQueryValueExW")
 	procRegCloseKey     = themeAdvapi32.NewProc("RegCloseKey")
@@ -28,11 +29,11 @@ func colabOneDetectSystemAppearance() string {
 	if procRegOpenKeyExW.Find() != nil || procRegQueryValueEx.Find() != nil || procRegCloseKey.Find() != nil {
 		return ""
 	}
-	subKey, err := syscall.UTF16PtrFromString(themePersonalizePath)
+	subKey, err := windows.UTF16PtrFromString(themePersonalizePath)
 	if err != nil {
 		return ""
 	}
-	valueName, err := syscall.UTF16PtrFromString(themeAppsUseLightKey)
+	valueName, err := windows.UTF16PtrFromString(themeAppsUseLightKey)
 	if err != nil {
 		return ""
 	}

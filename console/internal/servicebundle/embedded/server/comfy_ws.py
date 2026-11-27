@@ -761,6 +761,8 @@ class ColabOneComfyWsMonitor:
         actions_to_fire: list[tuple[str, Any]] = []
         with self._dispatch_lock:
             with self._lock:
+                local_stop = self._stop_event
+                my_gen = self._conn_gen
                 prev_pid = self._prompt_id
                 self._prompt_id = new_pid
                 if new_pid != prev_pid:
@@ -771,7 +773,7 @@ class ColabOneComfyWsMonitor:
                     self._error_message = ""
                     self._had_error = False
                     self._error_prompt_id = ""
-                if not new_pid or self._stop_event.is_set():
+                if not new_pid or not self._is_conn_active(my_gen, local_stop):
                     self._clear_pending_locked()
                     return
                 buffered = list(self._pending_buffer)
@@ -793,7 +795,7 @@ class ColabOneComfyWsMonitor:
                     if action is not None:
                         actions_to_fire.append(action)
             for action in actions_to_fire:
-                if self._stop_event.is_set():
+                if not self._is_conn_active(my_gen, local_stop):
                     break
                 self._fire_action(action)
 
@@ -822,7 +824,8 @@ class ColabOneComfyWsMonitor:
             self._connecting = True
             self._conn_gen += 1
             my_gen = self._conn_gen
-            self._stop_event.clear()
+            my_stop = threading.Event()
+            self._stop_event = my_stop
             self._last_event = None
             self._done_fired = False
             self._error_message = ""
@@ -893,18 +896,18 @@ class ColabOneComfyWsMonitor:
             sock.setblocking(False)
             thread = threading.Thread(
                 target=self._reader_loop,
-                args=(sock, leftover, my_gen),
+                args=(sock, leftover, my_gen, my_stop),
                 name=f"colabone-comfy-ws-{self.client_id[:16] or 'anon'}",
                 daemon=True,
             )
             with self._lock:
-                if self._stop_event.is_set() or self._conn_gen != my_gen:
+                if my_stop.is_set() or self._conn_gen != my_gen:
                     raise RuntimeError("WebSocket monitor stopped during startup")
                 self._sock = sock
                 self._thread = thread
                 self._connected = True
                 self._connecting = False
-            thread.start()
+                thread.start()
             return True
         except Exception:
             if sock is not None:
@@ -922,25 +925,33 @@ class ColabOneComfyWsMonitor:
 
     def stop(self) -> None:
         """Stop the background reader thread and close the WebSocket cleanly."""
-        self._stop_event.set()
-        try:
-            close_payload = struct.pack("!H", 1000)
-            self._send_frame(
-                encode_ws_client_frame(close_payload, opcode=WS_OP_CLOSE),
-                timeout=0.2,
-            )
-        except Exception:
-            pass
-
         with self._lock:
+            stop_ev = self._stop_event
+            stop_ev.set()
+            sock = self._sock
             self._conn_gen += 1
             self._connecting = False
             self._connected = False
             thread = self._thread
-        if thread is not None and thread is not threading.current_thread():
+        if sock is not None:
+            try:
+                close_payload = struct.pack("!H", 1000)
+                self._send_frame(
+                    encode_ws_client_frame(close_payload, opcode=WS_OP_CLOSE),
+                    timeout=0.2,
+                    sock=sock,
+                )
+            except Exception:
+                pass
+        if (
+            thread is not None
+            and thread is not threading.current_thread()
+            and thread.ident is not None
+        ):
             thread.join(timeout=1.5)
 
-        self._close_socket()
+        if sock is not None:
+            self._close_socket(sock)
         with self._lock:
             if self._thread is thread:
                 self._thread = None
@@ -965,10 +976,17 @@ class ColabOneComfyWsMonitor:
             except OSError:
                 pass
 
-    def _send_frame(self, frame: bytes, timeout: float = 0.5) -> bool:
+    def _send_frame(
+        self,
+        frame: bytes,
+        timeout: float = 0.5,
+        *,
+        sock: socket.socket | None = None,
+    ) -> bool:
         with self._send_lock:
-            with self._lock:
-                sock = self._sock
+            if sock is None:
+                with self._lock:
+                    sock = self._sock
             if sock is None:
                 return False
             view = memoryview(frame)
@@ -995,12 +1013,26 @@ class ColabOneComfyWsMonitor:
                     return False
             return True
 
+    def _is_conn_active(
+        self,
+        conn_gen: int | None,
+        stop_event: threading.Event,
+    ) -> bool:
+        if stop_event.is_set():
+            return False
+        if conn_gen is None:
+            return True
+        with self._lock:
+            return self._conn_gen == conn_gen
+
     def _reader_loop(
         self,
         sock: socket.socket,
         initial_buf: bytearray,
         conn_gen: int | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
+        local_stop = stop_event if stop_event is not None else self._stop_event
         buf = bytearray(initial_buf)
         frag_opcode: int | None = None
         frag_chunks: list[bytes] = []
@@ -1009,7 +1041,7 @@ class ColabOneComfyWsMonitor:
 
         def drain_frames() -> bool:
             nonlocal frag_opcode, frag_size, frag_count
-            while not self._stop_event.is_set():
+            while self._is_conn_active(conn_gen, local_stop):
                 try:
                     decoded = _decode_ws_frame_ex(
                         buf,
@@ -1025,6 +1057,7 @@ class ColabOneComfyWsMonitor:
                     self._send_frame(
                         encode_ws_client_frame(payload[:125], opcode=WS_OP_PONG),
                         timeout=0.5,
+                        sock=sock,
                     )
                     continue
                 if opcode == WS_OP_PONG:
@@ -1034,6 +1067,7 @@ class ColabOneComfyWsMonitor:
                     self._send_frame(
                         encode_ws_client_frame(echo_payload, opcode=WS_OP_CLOSE),
                         timeout=0.2,
+                        sock=sock,
                     )
                     return False
 
@@ -1068,7 +1102,12 @@ class ColabOneComfyWsMonitor:
                         frag_chunks.clear()
                         frag_size = 0
                         frag_count = 0
-                        self._handle_message(completed_opcode, full_payload)
+                        self._handle_message(
+                            completed_opcode,
+                            full_payload,
+                            conn_gen=conn_gen,
+                            stop_event=local_stop,
+                        )
                     continue
 
                 if opcode in (WS_OP_TEXT, WS_OP_BINARY):
@@ -1085,7 +1124,12 @@ class ColabOneComfyWsMonitor:
                         frag_chunks.clear()
                         frag_size = 0
                         frag_count = 0
-                        self._handle_message(opcode, payload)
+                        self._handle_message(
+                            opcode,
+                            payload,
+                            conn_gen=conn_gen,
+                            stop_event=local_stop,
+                        )
                     else:
                         frag_opcode = opcode
                         frag_chunks.clear()
@@ -1102,7 +1146,7 @@ class ColabOneComfyWsMonitor:
             if buf and not drain_frames():
                 return
 
-            while not self._stop_event.is_set():
+            while self._is_conn_active(conn_gen, local_stop):
                 try:
                     ready = sel.select(timeout=0.05)
                 except (OSError, ValueError):
@@ -1178,19 +1222,29 @@ class ColabOneComfyWsMonitor:
         elif kind == "done":
             _invoke_callback(self._on_done, payload)
 
-    def _handle_message(self, opcode: int, payload: bytes) -> None:
+    def _handle_message(
+        self,
+        opcode: int,
+        payload: bytes,
+        *,
+        conn_gen: int | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> None:
         if opcode == WS_OP_BINARY:
             # ComfyUI binary preview frames are ignored cleanly.
             return
         if opcode != WS_OP_TEXT:
             return
 
+        local_stop = stop_event if stop_event is not None else self._stop_event
         text = payload.decode("utf-8", errors="replace")
         action: tuple[str, Any] | None = None
         with self._dispatch_lock:
-            if self._stop_event.is_set():
+            if not self._is_conn_active(conn_gen, local_stop):
                 return
             with self._lock:
+                if not self._is_conn_active(conn_gen, local_stop):
+                    return
                 prompt_id = self._prompt_id
                 if not prompt_id:
                     self._append_pending_locked(text)
@@ -1205,9 +1259,9 @@ class ColabOneComfyWsMonitor:
                 return
 
             with self._lock:
-                if self._stop_event.is_set():
+                if not self._is_conn_active(conn_gen, local_stop):
                     return
                 action = self._record_event_locked(event, raw_msg_pid)
 
-            if action is not None and not self._stop_event.is_set():
+            if action is not None and self._is_conn_active(conn_gen, local_stop):
                 self._fire_action(action)

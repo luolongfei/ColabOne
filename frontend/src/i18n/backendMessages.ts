@@ -1060,6 +1060,126 @@ const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "ダウンロードメタデータファイル",
     "ko-KR": "다운로드 메타데이터 파일",
   },
+  推理引擎日志文件: {
+    "zh-CN": "推理引擎日志文件",
+    "en-US": "Inference engine log file",
+    "zh-TW": "推論引擎日誌檔案",
+    "zh-HK": "推理引擎日誌檔案",
+    "ja-JP": "推論エンジンのログファイル",
+    "ko-KR": "추론 엔진 로그 파일",
+  },
+  动作片段输出路径: {
+    "zh-CN": "动作片段输出路径",
+    "en-US": "Action clip output path",
+    "zh-TW": "動作片段輸出路徑",
+    "zh-HK": "動作片段輸出路徑",
+    "ja-JP": "アクションクリップ出力パス",
+    "ko-KR": "동작 클립 출력 경로",
+  },
+  凭据文件: {
+    "zh-CN": "凭据文件",
+    "en-US": "Credentials file",
+    "zh-TW": "憑證檔案",
+    "zh-HK": "憑證檔案",
+    "ja-JP": "認証情報ファイル",
+    "ko-KR": "자격 증명 파일",
+  },
+  凭据暂存文件: {
+    "zh-CN": "凭据暂存文件",
+    "en-US": "Temporary credentials file",
+    "zh-TW": "憑證暫存檔案",
+    "zh-HK": "憑證暫存檔案",
+    "ja-JP": "一時認証情報ファイル",
+    "ko-KR": "임시 자격 증명 파일",
+  },
+  凭据目录: {
+    "zh-CN": "凭据目录",
+    "en-US": "Credentials directory",
+    "zh-TW": "憑證目錄",
+    "zh-HK": "憑證目錄",
+    "ja-JP": "認証情報ディレクトリ",
+    "ko-KR": "자격 증명 디렉터리",
+  },
+  凭据目标文件: {
+    "zh-CN": "凭据目标文件",
+    "en-US": "Target credentials file",
+    "zh-TW": "憑證目標檔案",
+    "zh-HK": "憑證目標檔案",
+    "ja-JP": "対象認証情報ファイル",
+    "ko-KR": "대상 자격 증명 파일",
+  },
+  "rclone 用户配置路径": {
+    "zh-CN": "rclone 用户配置路径",
+    "en-US": "rclone user configuration path",
+    "zh-TW": "rclone 使用者設定路徑",
+    "zh-HK": "rclone 用戶配置路徑",
+    "ja-JP": "rclone ユーザー設定パス",
+    "ko-KR": "rclone 사용자 설정 경로",
+  },
+  云盘工作区目录: {
+    "zh-CN": "云盘工作区目录",
+    "en-US": "Drive workspace directory",
+    "zh-TW": "雲端硬碟工作區目錄",
+    "zh-HK": "雲端硬碟工作區目錄",
+    "ja-JP": "ドライブのワークスペースディレクトリ",
+    "ko-KR": "드라이브 작업 공간 디렉터리",
+  },
+  云盘导出目录: {
+    "zh-CN": "云盘导出目录",
+    "en-US": "Drive export directory",
+    "zh-TW": "雲端硬碟匯出目錄",
+    "zh-HK": "雲端硬碟匯出目錄",
+    "ja-JP": "ドライブのエクスポートディレクトリ",
+    "ko-KR": "드라이브 내보내기 디렉터리",
+  },
+  "Live Studio 引擎虚拟环境目录": {
+    "zh-CN": "Live Studio 引擎虚拟环境目录",
+    "en-US": "Live Studio engine virtual environment directory",
+    "zh-TW": "Live Studio 引擎虛擬環境目錄",
+    "zh-HK": "Live Studio 引擎虛擬環境目錄",
+    "ja-JP": "Live Studio エンジン仮想環境ディレクトリ",
+    "ko-KR": "Live Studio 엔진 가상 환경 디렉터리",
+  },
+  画布隧道凭据文件: {
+    "zh-CN": "画布隧道凭据文件",
+    "en-US": "Canvas tunnel credentials file",
+    "zh-TW": "畫布通道憑證檔案",
+    "zh-HK": "畫布隧道憑證檔案",
+    "ja-JP": "キャンバストンネル認証情報ファイル",
+    "ko-KR": "캔버스 터널 자격 증명 파일",
+  },
+  "Live Studio 引擎环境目录": {
+    "zh-CN": "Live Studio 引擎环境目录",
+    "en-US": "Live Studio engine environment directory",
+    "zh-TW": "Live Studio 引擎環境目錄",
+    "zh-HK": "Live Studio 引擎環境目錄",
+    "ja-JP": "Live Studio エンジン環境ディレクトリ",
+    "ko-KR": "Live Studio 엔진 환경 디렉터리",
+  },
+  隧道组件目录: {
+    "zh-CN": "隧道组件目录",
+    "en-US": "Tunnel component directory",
+    "zh-TW": "通道元件目錄",
+    "zh-HK": "隧道組件目錄",
+    "ja-JP": "トンネルコンポーネントディレクトリ",
+    "ko-KR": "터널 구성 요소 디렉터리",
+  },
+  隧道组件文件: {
+    "zh-CN": "隧道组件文件",
+    "en-US": "Tunnel component file",
+    "zh-TW": "通道元件檔案",
+    "zh-HK": "隧道組件檔案",
+    "ja-JP": "トンネルコンポーネントファイル",
+    "ko-KR": "터널 구성 요소 파일",
+  },
+  隧道临时文件: {
+    "zh-CN": "隧道临时文件",
+    "en-US": "Temporary tunnel file",
+    "zh-TW": "通道暫存檔案",
+    "zh-HK": "隧道臨時檔案",
+    "ja-JP": "トンネル一時ファイル",
+    "ko-KR": "터널 임시 파일",
+  },
 };
 
 const COMFY_FIELD_SUFFIX_LABELS: Record<string, ColabOneLocaleTable> = {
@@ -1295,8 +1415,100 @@ function translateSymlinkDirLabel(raw: string, loc: ColabOneLocale): string {
         return s;
     }
   }
+  const driveDynamic = s.match(/^云盘(.+?)(目录|路径)$/);
+  if (driveDynamic) {
+    const rawInner = driveDynamic[1]!.trim();
+    const isPath = driveDynamic[2] === "路径";
+    const driveSubdirLabels: Record<string, ColabOneLocaleTable> = {
+      数字人形象: {
+        "zh-CN": "数字人形象",
+        "en-US": "digital human avatar",
+        "zh-TW": "數位人形象",
+        "zh-HK": "數碼人形象",
+        "ja-JP": "デジタルヒューマンアバター",
+        "ko-KR": "디지털 휴먼 아바타",
+      },
+      驱动动作: {
+        "zh-CN": "驱动动作",
+        "en-US": "driving motion",
+        "zh-TW": "驅動動作",
+        "zh-HK": "驅動動作",
+        "ja-JP": "駆動モーション",
+        "ko-KR": "구동 모션",
+      },
+      主播包: {
+        "zh-CN": "主播包",
+        "en-US": "avatar pack",
+        "zh-TW": "主播套件",
+        "zh-HK": "主播套件",
+        "ja-JP": "アバターパック",
+        "ko-KR": "아바타 팩",
+      },
+      缓存: {
+        "zh-CN": "缓存",
+        "en-US": "cache",
+        "zh-TW": "快取",
+        "zh-HK": "快取",
+        "ja-JP": "キャッシュ",
+        "ko-KR": "캐시",
+      },
+      日志: {
+        "zh-CN": "日志",
+        "en-US": "log",
+        "zh-TW": "日誌",
+        "zh-HK": "日誌",
+        "ja-JP": "ログ",
+        "ko-KR": "로그",
+      },
+      模型: {
+        "zh-CN": "模型",
+        "en-US": "model",
+        "zh-TW": "模型",
+        "zh-HK": "模型",
+        "ja-JP": "モデル",
+        "ko-KR": "모델",
+      },
+      素材: {
+        "zh-CN": "素材",
+        "en-US": "asset",
+        "zh-TW": "素材",
+        "zh-HK": "素材",
+        "ja-JP": "素材",
+        "ko-KR": "에셋",
+      },
+      配置: {
+        "zh-CN": "配置",
+        "en-US": "configuration",
+        "zh-TW": "設定",
+        "zh-HK": "配置",
+        "ja-JP": "設定",
+        "ko-KR": "설정",
+      },
+    };
+    const innerLabel =
+      driveSubdirLabels[rawInner]?.[loc] ??
+      SYMLINK_DIR_LABELS[rawInner]?.[loc] ??
+      LIVE_STUDIO_LABELS[rawInner]?.[loc] ??
+      translateInner(rawInner, loc);
+    const zhStartSep = /^[A-Za-z0-9]/.test(innerLabel) ? " " : "";
+    const zhEndSep = /[A-Za-z0-9]$/.test(innerLabel) ? " " : "";
+    switch (loc) {
+      case "en-US":
+        return `Drive ${innerLabel} ${isPath ? "path" : "directory"}`;
+      case "zh-TW":
+        return `雲端硬碟${zhStartSep}${innerLabel}${zhEndSep}${isPath ? "路徑" : "目錄"}`;
+      case "zh-HK":
+        return `雲端硬碟${zhStartSep}${innerLabel}${zhEndSep}${isPath ? "路徑" : "目錄"}`;
+      case "ja-JP":
+        return `ドライブの${innerLabel}${isPath ? "パス" : "ディレクトリ"}`;
+      case "ko-KR":
+        return `드라이브 ${innerLabel} ${isPath ? "경로" : "디렉터리"}`;
+      default:
+        return s;
+    }
+  }
   const dynamicSuffix = s.match(
-    /^(.+?)\s*(源码目录|源码就绪标记|Git 元数据目录|虚拟环境目录|环境就绪标记|权重目录|权重标记|日志文件|输出清单|输出视频)$/,
+    /^(.+?)\s*(源码目录|源码就绪标记|Git 元数据目录|虚拟环境目录|环境就绪标记|权重目录|权重标记|日志文件|输出清单|输出视频|缓存目录|模型目录)$/,
   );
   if (dynamicSuffix) {
     const prefix = translateInner(dynamicSuffix[1]!.trim(), loc);
@@ -1381,6 +1593,22 @@ function translateSymlinkDirLabel(raw: string, loc: ColabOneLocale): string {
         "zh-HK": "輸出影片",
         "ja-JP": "出力動画",
         "ko-KR": "출력 영상",
+      },
+      缓存目录: {
+        "zh-CN": "缓存目录",
+        "en-US": "cache directory",
+        "zh-TW": "快取目錄",
+        "zh-HK": "快取目錄",
+        "ja-JP": "キャッシュディレクトリ",
+        "ko-KR": "캐시 디렉터리",
+      },
+      模型目录: {
+        "zh-CN": "模型目录",
+        "en-US": "model directory",
+        "zh-TW": "模型目錄",
+        "zh-HK": "模型目錄",
+        "ja-JP": "モデルディレクトリ",
+        "ko-KR": "모델 디렉터리",
       },
     };
     const suffix = suffixTable[suffixKey]?.[loc] ?? suffixKey;
@@ -2997,87 +3225,6 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^Bria RMBG 3\.0 未返回遮罩，已回退使用原图继续生成「(.+?)」$/,
-    format: (m, loc) => {
-      const label = translateInner(m[1]!, loc);
-      switch (loc) {
-        case "en-US":
-          return `Bria RMBG 3.0 returned no matte; fell back to the original image for "${label}"`;
-        case "zh-TW":
-          return `Bria RMBG 3.0 未傳回遮罩，已回退使用原圖繼續產生「${label}」`;
-        case "zh-HK":
-          return `Bria RMBG 3.0 未返回遮罩，已回退使用原圖繼續生成「${label}」`;
-        case "ja-JP":
-          return `Bria RMBG 3.0 からマスクが返されなかったため、元画像で「${label}」の生成を続行します`;
-        case "ko-KR":
-          return `Bria RMBG 3.0이 마스크를 반환하지 않아 원본 이미지로 "${label}" 생성을 계속합니다`;
-        default:
-          return m[0];
-      }
-    },
-  },
-  {
-    re: /^Bria RMBG 3\.0 返回的遮罩图像异常（(.+?)），已回退使用原图继续生成「(.+?)」$/,
-    format: (m, loc) => {
-      const reason = translateInner(m[1]!, loc);
-      const label = translateInner(m[2]!, loc);
-      switch (loc) {
-        case "en-US":
-          return `Bria RMBG 3.0 returned an invalid matte (${reason}); fell back to the original image for "${label}"`;
-        case "zh-TW":
-          return `Bria RMBG 3.0 傳回的遮罩影像異常（${reason}），已回退使用原圖繼續產生「${label}」`;
-        case "zh-HK":
-          return `Bria RMBG 3.0 返回的遮罩圖像異常（${reason}），已回退使用原圖繼續生成「${label}」`;
-        case "ja-JP":
-          return `Bria RMBG 3.0 から返されたマスク画像が不正なため（${reason}）、元画像で「${label}」の生成を続行します`;
-        case "ko-KR":
-          return `Bria RMBG 3.0이 반환한 마스크 이미지가 올바르지 않아 (${reason}) 원본 이미지로 "${label}" 생성을 계속합니다`;
-        default:
-          return m[0];
-      }
-    },
-  },
-  {
-    re: /^释放 ComfyUI 显存请求返回异常状态（HTTP (\d+)）$/,
-    format: (m, loc) => {
-      const code = m[1]!;
-      switch (loc) {
-        case "en-US":
-          return `ComfyUI VRAM free request returned unexpected status (HTTP ${code})`;
-        case "zh-TW":
-          return `釋放 ComfyUI 顯示記憶體要求傳回異常狀態（HTTP ${code}）`;
-        case "zh-HK":
-          return `釋放 ComfyUI 顯存請求返回異常狀態（HTTP ${code}）`;
-        case "ja-JP":
-          return `ComfyUI VRAM 解放リクエストが異常ステータスを返しました（HTTP ${code}）`;
-        case "ko-KR":
-          return `ComfyUI VRAM 해제 요청이 비정상 상태를 반환했습니다 (HTTP ${code})`;
-        default:
-          return m[0];
-      }
-    },
-  },
-  {
-    re: /^释放 ComfyUI 显存失败：(.+)$/s,
-    format: (m, loc) => {
-      const detail = translateInner(m[1]!, loc);
-      switch (loc) {
-        case "en-US":
-          return `Failed to free ComfyUI VRAM: ${detail}`;
-        case "zh-TW":
-          return `釋放 ComfyUI 顯示記憶體失敗：${detail}`;
-        case "zh-HK":
-          return `釋放 ComfyUI 顯存失敗：${detail}`;
-        case "ja-JP":
-          return `ComfyUI の VRAM 解放に失敗しました: ${detail}`;
-        case "ko-KR":
-          return `ComfyUI VRAM 해제 실패: ${detail}`;
-        default:
-          return m[0];
-      }
-    },
-  },
-  {
     re: /^服装细节特写「(.+?)」已自动跳过抠图，完整保留微距纹理$/,
     format: (m, loc) => {
       const filename = m[1]!;
@@ -3135,28 +3282,6 @@ const PATTERN_RULES: PatternRule[] = [
           return `AI モデル着せ替えスタジオ完了: 高精細マルチポーズ画像 ${count} 枚と切り抜き確認画像 ${cutoutCount} 枚を保存しました（所要 ${dur}）`;
         case "ko-KR":
           return `AI 모델 가상 피팅 스튜디오 완료: 고해상도 멀티 포즈 결과물 ${count}장과 누끼 검수 이미지 ${cutoutCount}장 저장됨 (소요 ${dur})`;
-        default:
-          return m[0];
-      }
-    },
-  },
-  {
-    re: /^AI 模特换装棚拍完成：已保存 (\d+) 张高清多姿态成片与 (\d+) 张抠衣质检图（耗时 (.+?)）$/,
-    format: (m, loc) => {
-      const lookbook = m[1]!;
-      const cutout = m[2]!;
-      const dur = translateZhDuration(m[3]!, loc);
-      switch (loc) {
-        case "en-US":
-          return `AI Fashion Studio Try-On complete: saved ${lookbook} high-res multi-pose outputs and ${cutout} garment cutout QA images (took ${dur})`;
-        case "zh-TW":
-          return `AI 模特兒換裝棚拍完成：已儲存 ${lookbook} 張高畫質多姿態成片與 ${cutout} 張去背質檢圖（耗時 ${dur}）`;
-        case "zh-HK":
-          return `AI 模特兒換裝棚拍完成：已儲存 ${lookbook} 張高清多姿態成片與 ${cutout} 張退地質檢圖（耗時 ${dur}）`;
-        case "ja-JP":
-          return `AI モデル着せ替えスタジオ完了: 高精細マルチポーズ画像 ${lookbook} 枚と衣装切り抜き確認画像 ${cutout} 枚を保存しました（所要 ${dur}）`;
-        case "ko-KR":
-          return `AI 모델 가상 피팅 스튜디오 완료: 고해상도 멀티 포즈 결과물 ${lookbook}장과 의상 누끼 검수 이미지 ${cutout}장 저장됨 (소요 ${dur})`;
         default:
           return m[0];
       }
@@ -16762,29 +16887,78 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(分享备注|页面标题)(包含无效字符|不能包含控制字符|长度不能超过 (\d+) 个字符)$/,
+    re: /^(分享备注|页面标题|分享标题|相册标题|分组标题|工作流编号|工作流名称|任务编号)(包含无效字符|不能包含控制字符|长度不能超过 (\d+) 个字符)$/,
     format: (m, loc) => {
       const rawField = m[1]!;
       const rule = m[2]!;
       const limit = m[3];
-      const fieldLabel =
-        rawField === "分享备注"
-          ? {
-              "zh-CN": "分享备注",
-              "en-US": "Share note",
-              "zh-TW": "分享備註",
-              "zh-HK": "分享備註",
-              "ja-JP": "共有メモ",
-              "ko-KR": "공유 메모",
-            }[loc]
-          : {
-              "zh-CN": "页面标题",
-              "en-US": "Page title",
-              "zh-TW": "頁面標題",
-              "zh-HK": "頁面標題",
-              "ja-JP": "ページタイトル",
-              "ko-KR": "페이지 제목",
-            }[loc];
+      const fieldTable: Record<string, ColabOneLocaleTable> = {
+        分享备注: {
+          "zh-CN": "分享备注",
+          "en-US": "Share note",
+          "zh-TW": "分享備註",
+          "zh-HK": "分享備註",
+          "ja-JP": "共有メモ",
+          "ko-KR": "공유 메모",
+        },
+        分享标题: {
+          "zh-CN": "分享标题",
+          "en-US": "Share title",
+          "zh-TW": "分享標題",
+          "zh-HK": "分享標題",
+          "ja-JP": "共有タイトル",
+          "ko-KR": "공유 제목",
+        },
+        页面标题: {
+          "zh-CN": "页面标题",
+          "en-US": "Page title",
+          "zh-TW": "頁面標題",
+          "zh-HK": "頁面標題",
+          "ja-JP": "ページタイトル",
+          "ko-KR": "페이지 제목",
+        },
+        相册标题: {
+          "zh-CN": "相册标题",
+          "en-US": "Album title",
+          "zh-TW": "相簿標題",
+          "zh-HK": "相簿標題",
+          "ja-JP": "アルバムタイトル",
+          "ko-KR": "앨범 제목",
+        },
+        分组标题: {
+          "zh-CN": "分组标题",
+          "en-US": "Group title",
+          "zh-TW": "分組標題",
+          "zh-HK": "分組標題",
+          "ja-JP": "グループタイトル",
+          "ko-KR": "그룹 제목",
+        },
+        工作流编号: {
+          "zh-CN": "工作流编号",
+          "en-US": "Workflow ID",
+          "zh-TW": "工作流程編號",
+          "zh-HK": "工作流編號",
+          "ja-JP": "ワークフロー ID",
+          "ko-KR": "워크플로 ID",
+        },
+        工作流名称: {
+          "zh-CN": "工作流名称",
+          "en-US": "Workflow name",
+          "zh-TW": "工作流程名稱",
+          "zh-HK": "工作流名稱",
+          "ja-JP": "ワークフロー名",
+          "ko-KR": "워크플로 이름",
+        },
+        任务编号: {
+          "zh-CN": "任务编号",
+          "en-US": "Task ID",
+          "zh-TW": "任務編號",
+          "zh-HK": "任務編號",
+          "ja-JP": "タスク ID",
+          "ko-KR": "작업 ID",
+        },
+      };
+      const fieldLabel = fieldTable[rawField]?.[loc] ?? rawField;
       if (rule === "包含无效字符") {
         switch (loc) {
           case "en-US":
@@ -16967,6 +17141,352 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+  // === Output Artifact Gallery Sharing (console/internal/webconsole/output_share.go) ===
+  {
+    re: /^(读取|生成|保存)成果物分享签名密钥失败：(.+)$/s,
+    format: (m, loc) => {
+      const verb = m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US": {
+          const action =
+            verb === "读取" ? "read" : verb === "生成" ? "generate" : "save";
+          return `Failed to ${action} output share signing key: ${detail}`;
+        }
+        case "zh-TW": {
+          const action =
+            verb === "读取" ? "讀取" : verb === "生成" ? "產生" : "儲存";
+          return `${action}成果物分享簽章金鑰失敗：${detail}`;
+        }
+        case "zh-HK": {
+          const action =
+            verb === "读取" ? "讀取" : verb === "生成" ? "產生" : "儲存";
+          return `${action}成果物分享簽章金鑰失敗：${detail}`;
+        }
+        case "ja-JP": {
+          const action =
+            verb === "读取" ? "読み込み" : verb === "生成" ? "生成" : "保存";
+          return `成果物共有の署名キーの${action}に失敗しました: ${detail}`;
+        }
+        case "ko-KR": {
+          const action =
+            verb === "读取"
+              ? "읽지 못했습니다"
+              : verb === "生成"
+                ? "생성하지 못했습니다"
+                : "저장하지 못했습니다";
+          return `결과물 공유 서명 키를 ${action}: ${detail}`;
+        }
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^保存成果物分享配置失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to save output share configuration: ${detail}`;
+        case "zh-TW":
+          return `儲存成果物分享設定失敗：${detail}`;
+        case "zh-HK":
+          return `儲存成果物分享配置失敗：${detail}`;
+        case "ja-JP":
+          return `成果物共有設定の保存に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `결과물 공유 설정을 저장하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(读取|清理|保存|回滚)成果物分享(持久化会话|密码缓存|访问密码)失败：(.+)$/s,
+    format: (m, loc) => {
+      const verb = m[1]!;
+      const rawTarget = m[2]!;
+      const detail = translateInner(m[3]!, loc);
+      const isSessions = rawTarget === "持久化会话";
+      const isPassword = rawTarget === "访问密码";
+      switch (loc) {
+        case "en-US": {
+          const action =
+            verb === "读取"
+              ? "read"
+              : verb === "清理"
+                ? "clean up"
+                : verb === "回滚"
+                  ? "roll back"
+                  : "save";
+          const target = isSessions
+            ? "persisted output share sessions"
+            : isPassword
+              ? "output share access password"
+              : "output share password cache";
+          return `Failed to ${action} ${target}: ${detail}`;
+        }
+        case "zh-TW": {
+          const action =
+            verb === "读取"
+              ? "讀取"
+              : verb === "清理"
+                ? "清理"
+                : verb === "回滚"
+                  ? "回復"
+                  : "儲存";
+          const target = isSessions
+            ? "持久化工作階段"
+            : isPassword
+              ? "存取密碼"
+              : "密碼快取";
+          return `${action}成果物分享${target}失敗：${detail}`;
+        }
+        case "zh-HK": {
+          const action =
+            verb === "读取"
+              ? "讀取"
+              : verb === "清理"
+                ? "清理"
+                : verb === "回滚"
+                  ? "回滾"
+                  : "儲存";
+          const target = isSessions
+            ? "持久化工作階段"
+            : isPassword
+              ? "存取密碼"
+              : "密碼快取";
+          return `${action}成果物分享${target}失敗：${detail}`;
+        }
+        case "ja-JP": {
+          const action =
+            verb === "读取"
+              ? "読み込み"
+              : verb === "清理"
+                ? "クリーンアップ"
+                : verb === "回滚"
+                  ? "ロールバック"
+                  : "保存";
+          const target = isSessions
+            ? "永続セッション"
+            : isPassword
+              ? "アクセスパスワード"
+              : "パスワードキャッシュ";
+          return `成果物共有の${target}の${action}に失敗しました: ${detail}`;
+        }
+        case "ko-KR": {
+          const action =
+            verb === "读取"
+              ? "읽지 못했습니다"
+              : verb === "清理"
+                ? "정리하지 못했습니다"
+                : verb === "回滚"
+                  ? "롤백하지 못했습니다"
+                  : "저장하지 못했습니다";
+          const target = isSessions
+            ? "영구 세션을"
+            : isPassword
+              ? "접근 비밀번호를"
+              : "비밀번호 캐시를";
+          return `결과물 공유 ${target} ${action}: ${detail}`;
+        }
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^清理已(撤销|删除)分享 (.+?) 的密码记录失败：(.+)$/s,
+    format: (m, loc) => {
+      const isRevoked = m[1] === "撤销";
+      const shareId = m[2]!;
+      const detail = translateInner(m[3]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to clean up access password record for ${isRevoked ? "revoked" : "deleted"} share ${shareId}: ${detail}`;
+        case "zh-TW":
+          return `清理已${isRevoked ? "撤銷" : "刪除"}分享 ${shareId} 的密碼紀錄失敗：${detail}`;
+        case "zh-HK":
+          return `清理已${isRevoked ? "撤銷" : "刪除"}分享 ${shareId} 的密碼紀錄失敗：${detail}`;
+        case "ja-JP":
+          return `${isRevoked ? "取り消し済み" : "削除済み"}共有 ${shareId} のパスワード記録のクリーンアップに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `${isRevoked ? "철회된" : "삭제된"} 공유 ${shareId}의 접근 비밀번호 기록을 정리하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^生成成果物分享编号失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate output share ID: ${detail}`;
+        case "zh-TW":
+          return `產生成果物分享編號失敗：${detail}`;
+        case "zh-HK":
+          return `產生成果物分享編號失敗：${detail}`;
+        case "ja-JP":
+          return `成果物共有 ID の生成に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `결과물 공유 ID를 생성하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^生成访问密码(盐值|摘要)失败：(.+)$/s,
+    format: (m, loc) => {
+      const kind = m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      const isSalt = kind === "盐值";
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate access password ${isSalt ? "salt" : "digest"}: ${detail}`;
+        case "zh-TW":
+          return `產生存取密碼${isSalt ? "鹽值" : "摘要"}失敗：${detail}`;
+        case "zh-HK":
+          return `產生存取密碼${isSalt ? "鹽值" : "摘要"}失敗：${detail}`;
+        case "ja-JP":
+          return `アクセスパスワードの${isSalt ? "ソルト" : "ハッシュ"}生成に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `접근 비밀번호 ${isSalt ? "솔트" : "다이제스트"} 생성 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已创建成果物分享链接（(\d+) 项作品，有效期 (24h|7d|30d|forever)）$/,
+    format: (m, loc) => {
+      const count = m[1]!;
+      const ttlKey = m[2] as "24h" | "7d" | "30d" | "forever";
+      const ttlLabel = {
+        "24h": {
+          "zh-CN": "24h",
+          "en-US": "24 hours",
+          "zh-TW": "24 小時",
+          "zh-HK": "24 小時",
+          "ja-JP": "24 時間",
+          "ko-KR": "24시간",
+        },
+        "7d": {
+          "zh-CN": "7d",
+          "en-US": "7 days",
+          "zh-TW": "7 天",
+          "zh-HK": "7 天",
+          "ja-JP": "7 日間",
+          "ko-KR": "7일",
+        },
+        "30d": {
+          "zh-CN": "30d",
+          "en-US": "30 days",
+          "zh-TW": "30 天",
+          "zh-HK": "30 天",
+          "ja-JP": "30 日間",
+          "ko-KR": "30일",
+        },
+        forever: {
+          "zh-CN": "forever",
+          "en-US": "never expires",
+          "zh-TW": "長期有效",
+          "zh-HK": "長期有效",
+          "ja-JP": "無期限",
+          "ko-KR": "무기한",
+        },
+      }[ttlKey][loc];
+      switch (loc) {
+        case "en-US":
+          return `Created output share link (${count} ${count === "1" ? "output" : "outputs"}, validity: ${ttlLabel})`;
+        case "zh-TW":
+          return `已建立成果物分享連結（${count} 項作品，有效期：${ttlLabel}）`;
+        case "zh-HK":
+          return `已建立成果物分享連結（${count} 項作品，有效期：${ttlLabel}）`;
+        case "ja-JP":
+          return `成果物共有リンクを作成しました（作品 ${count} 件・有効期限: ${ttlLabel}）`;
+        case "ko-KR":
+          return `결과물 공유 링크를 생성했습니다 (결과물 ${count}개, 유효 기간: ${ttlLabel})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已撤销成果物分享链接 ([0-9A-Za-z_-]+) 并注销关联访客会话$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Revoked output share link ${id} and signed out linked guest sessions`;
+        case "zh-TW":
+          return `已撤銷成果物分享連結 ${id} 並登出關聯訪客工作階段`;
+        case "zh-HK":
+          return `已撤銷成果物分享連結 ${id} 並登出關聯訪客工作階段`;
+        case "ja-JP":
+          return `成果物共有リンク ${id} を取り消し、関連するゲストセッションをサインアウトしました`;
+        case "ko-KR":
+          return `결과물 공유 링크 ${id}을(를) 철회하고 연결된 방문자 세션을 로그아웃했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^单次打包(下载|导出)的?作品数量不能超过 (\d+) 项$/,
+    format: (m, loc) => {
+      const mode = m[1]!;
+      const limit = m[2]!;
+      const isExport = mode === "导出";
+      switch (loc) {
+        case "en-US":
+          return isExport
+            ? `A single ZIP export cannot exceed ${limit} outputs`
+            : `A single ZIP download cannot exceed ${limit} outputs`;
+        case "zh-TW":
+          return isExport
+            ? `單次打包匯出作品數量不可超過 ${limit} 項`
+            : `單次打包下載作品數量不可超過 ${limit} 項`;
+        case "zh-HK":
+          return isExport
+            ? `單次打包匯出作品數量不能超過 ${limit} 項`
+            : `單次打包下載作品數量不能超過 ${limit} 項`;
+        case "ja-JP":
+          return isExport
+            ? `1 回の一括エクスポートに含められる作品は最大 ${limit} 件です`
+            : `1 回の一括ダウンロードに含められる作品は最大 ${limit} 件です`;
+        case "ko-KR":
+          return isExport
+            ? `한 번에 일괄 내보내기할 수 있는 결과물은 최대 ${limit}개입니다`
+            : `한 번에 일괄 다운로드할 수 있는 결과물은 최대 ${limit}개입니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已删除成果物分享记录 ([0-9A-Za-z_-]+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Deleted output share record ${id}`;
+        case "zh-TW":
+          return `已刪除成果物分享紀錄 ${id}`;
+        case "zh-HK":
+          return `已刪除成果物分享紀錄 ${id}`;
+        case "ja-JP":
+          return `成果物共有履歴 ${id} を削除しました`;
+        case "ko-KR":
+          return `결과물 공유 기록 ${id}을(를) 삭제했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
   {
     re: /^RTMP 推流编码失败[:：]\s*(.+)$/s,
     format: (m, loc) => {
@@ -17049,7 +17569,695 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+  {
+    re: /^正在检查并准备流式语音运行环境：(.+?)\.\.\.$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Checking and preparing streaming TTS runtime: ${name}...`;
+        case "zh-TW":
+          return `正在檢查並準備串流語音執行環境：${name}...`;
+        case "zh-HK":
+          return `正在檢查並準備串流語音運行環境：${name}...`;
+        case "ja-JP":
+          return `ストリーミング音声ランタイムを確認・準備中：${name}...`;
+        case "ko-KR":
+          return `스트리밍 음성 런타임 확인 및 준비 중: ${name}...`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装流式语音引擎运行环境：(.+?)\.\.\.$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Installing streaming TTS engine runtime: ${name}...`;
+        case "zh-TW":
+          return `正在安裝串流語音引擎執行環境：${name}...`;
+        case "zh-HK":
+          return `正在安裝串流語音引擎運行環境：${name}...`;
+        case "ja-JP":
+          return `ストリーミング音声エンジン環境をインストール中：${name}...`;
+        case "ko-KR":
+          return `스트리밍 음성 엔진 런타임 설치 중: ${name}...`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在下载模型权重：(.+?)（(.+?)）\.\.\.$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const repo = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Downloading model weights: ${label} (${repo})...`;
+        case "zh-TW":
+          return `正在下載模型權重：${label}（${repo}）...`;
+        case "zh-HK":
+          return `正在下載模型權重：${label}（${repo}）...`;
+        case "ja-JP":
+          return `モデルウェイトをダウンロード中：${label}（${repo}）...`;
+        case "ko-KR":
+          return `모델 가중치 다운로드 중: ${label} (${repo})...`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在预热流式语音模型到显存：(.+?)\.\.\.$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Pre-warming streaming TTS model into VRAM: ${name}...`;
+        case "zh-TW":
+          return `正在預熱串流語音模型至 VRAM：${name}...`;
+        case "zh-HK":
+          return `正在預熱串流語音模型至顯存：${name}...`;
+        case "ja-JP":
+          return `ストリーミング音声モデルを VRAM にウォームアップ中：${name}...`;
+        case "ko-KR":
+          return `스트리밍 음성 모델을 VRAM에 예열 중: ${name}...`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^流式 TTS 引擎 (.+?) 缺少模型仓库配置，无法自动下载$/,
+    format: (m, loc) => {
+      const eid = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Streaming TTS engine ${eid} is missing model repository configuration and cannot be downloaded automatically`;
+        case "zh-TW":
+          return `串流 TTS 引擎 ${eid} 缺少模型儲存庫設定，無法自動下載`;
+        case "zh-HK":
+          return `串流 TTS 引擎 ${eid} 缺少模型倉庫配置，無法自動下載`;
+        case "ja-JP":
+          return `ストリーミング TTS エンジン ${eid} にモデルリポジトリ設定がないため、自動ダウンロードできません`;
+        case "ko-KR":
+          return `스트리밍 TTS 엔진 ${eid}에 모델 저장소 설정이 없어 자동으로 다운로드할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在创建流式语音隔离虚拟环境：(.+?)\.\.\.$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Creating isolated streaming TTS virtual environment: ${name}...`;
+        case "zh-TW":
+          return `正在建立串流語音隔離虛擬環境：${name}...`;
+        case "zh-HK":
+          return `正在建立串流語音隔離虛擬環境：${name}...`;
+        case "ja-JP":
+          return `ストリーミング音声用の隔離仮想環境を作成中：${name}...`;
+        case "ko-KR":
+          return `스트리밍 음성 격리 가상 환경 생성 중: ${name}...`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在创建隔离虚拟环境：(.+?)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Creating isolated virtual environment: ${name}`;
+        case "zh-TW":
+          return `正在建立隔離虛擬環境：${name}`;
+        case "zh-HK":
+          return `正在建立隔離虛擬環境：${name}`;
+        case "ja-JP":
+          return `隔離仮想環境を作成中: ${name}`;
+        case "ko-KR":
+          return `격리 가상 환경 생성 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^流式 TTS 引擎 (.+?) 虚拟环境创建不完整$/,
+    format: (m, loc) => {
+      const eid = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Streaming TTS engine ${eid} virtual environment creation is incomplete`;
+        case "zh-TW":
+          return `串流 TTS 引擎 ${eid} 虛擬環境建立不完整`;
+        case "zh-HK":
+          return `串流 TTS 引擎 ${eid} 虛擬環境建立不完整`;
+        case "ja-JP":
+          return `ストリーミング TTS エンジン ${eid} の仮想環境の作成が不完全です`;
+        case "ko-KR":
+          return `스트리밍 TTS 엔진 ${eid} 가상 환경 생성이 불완전합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装流式语音引擎依赖：(.+?)（共 (\d+) 个包）\.\.\.$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const count = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Installing streaming TTS engine dependencies: ${name} (${count} ${count === "1" ? "package" : "packages"})...`;
+        case "zh-TW":
+          return `正在安裝串流語音引擎相依套件：${name}（共 ${count} 個套件）...`;
+        case "zh-HK":
+          return `正在安裝串流語音引擎依賴：${name}（共 ${count} 個套件）...`;
+        case "ja-JP":
+          return `ストリーミング音声エンジンの依存パッケージをインストール中：${name}（計 ${count} 個）...`;
+        case "ko-KR":
+          return `스트리밍 음성 엔진 종속성 설치 중: ${name} (총 ${count}개 패키지)...`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^下载 (.+?) 模型权重超时（>(\d+)s）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const sec = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Downloading ${label} model weights timed out (>${sec}s)`;
+        case "zh-TW":
+          return `下載 ${label} 模型權重逾時（>${sec}s）`;
+        case "zh-HK":
+          return `下載 ${label} 模型權重逾時（>${sec}s）`;
+        case "ja-JP":
+          return `${label} モデルウェイトのダウンロードがタイムアウトしました（>${sec}秒）`;
+        case "ko-KR":
+          return `${label} 모델 가중치 다운로드 시간이 초과되었습니다 (>${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)超时（>(\d+)s）$/,
+    format: (m, loc) => {
+      const stage = translateLiveProvisionStage(m[1]!.trim(), loc);
+      const sec = m[2]!;
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} timed out (>${sec}s)`;
+        case "zh-TW":
+          return `${stage}${zhSep}逾時（>${sec}s）`;
+        case "zh-HK":
+          return `${stage}${zhSep}逾時（>${sec}s）`;
+        case "ja-JP":
+          return `${stage}がタイムアウトしました（>${sec}秒）`;
+        case "ko-KR":
+          return `${stage} 시간이 초과되었습니다 (>${sec}초)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^非法的 FFmpeg 音频输入路径[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const rawPath = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Invalid FFmpeg audio input path: ${rawPath}`;
+        case "zh-TW":
+          return `無效的 FFmpeg 音訊輸入路徑：${rawPath}`;
+        case "zh-HK":
+          return `無效的 FFmpeg 音訊輸入路徑：${rawPath}`;
+        case "ja-JP":
+          return `不正な FFmpeg 音声入力パス: ${rawPath}`;
+        case "ko-KR":
+          return `유효하지 않은 FFmpeg 오디오 입력 경로: ${rawPath}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已断开远端输入设备，但刷新状态失败（将自动重试）[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Disconnected remote input device, but failed to refresh status (will retry automatically): ${detail}`;
+        case "zh-TW":
+          return `已中斷遠端輸入裝置，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "zh-HK":
+          return `已中斷遠端輸入裝置，但重新整理狀態失敗（將自動重試）：${detail}`;
+        case "ja-JP":
+          return `リモート入力機器を切断しましたが、状態の更新に失敗しました（自動再試行します）: ${detail}`;
+        case "ko-KR":
+          return `원격 입력 기기 연결을 해제했지만 상태를 새로고침하지 못했습니다 (자동 재시도 예정): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^摄像头视频帧过大（单帧上限 (\d+) 字节）$/,
+    format: (m, loc) => {
+      const maxBytes = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Camera video frame is too large (max ${maxBytes} bytes per frame)`;
+        case "zh-TW":
+          return `攝影機影片影格過大（單影格上限 ${maxBytes} 位元組）`;
+        case "zh-HK":
+          return `鏡頭影片幀過大（單幀上限 ${maxBytes} 位元組）`;
+        case "ja-JP":
+          return `カメラ映像フレームが大きすぎます（1 フレーム上限 ${maxBytes} バイト）`;
+        case "ko-KR":
+          return `카메라 비디오 프레임이 너무 큽니다 (프레임당 최대 ${maxBytes}바이트)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^音频帧过大（单帧上限 (\d+) 字节）$/,
+    format: (m, loc) => {
+      const maxBytes = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Audio frame is too large (max ${maxBytes} bytes per frame)`;
+        case "zh-TW":
+          return `音訊影格過大（單影格上限 ${maxBytes} 位元組）`;
+        case "zh-HK":
+          return `音訊幀過大（單幀上限 ${maxBytes} 位元組）`;
+        case "ja-JP":
+          return `音声フレームが大きすぎます（1 フレーム上限 ${maxBytes} バイト）`;
+        case "ko-KR":
+          return `오디오 프레임이 너무 큽니다 (프레임당 최대 ${maxBytes}바이트)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^离线动作生成工作流 (.+?) 未产出可用的视频动作片段（(.+?)）$/,
+    format: (m, loc) => {
+      const wfId = m[1]!;
+      const actionId = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Offline motion generation workflow ${wfId} did not produce a usable video motion clip (${actionId})`;
+        case "zh-TW":
+          return `離線動作產生工作流程 ${wfId} 未產出可用的影片動作片段（${actionId}）`;
+        case "zh-HK":
+          return `離線動作生成工作流 ${wfId} 未產出可用的影片動作片段（${actionId}）`;
+        case "ja-JP":
+          return `オフライン動作生成ワークフロー ${wfId} から利用可能な動画モーションクリップが生成されませんでした（${actionId}）`;
+        case "ko-KR":
+          return `오프라인 동작 생성 워크플로 ${wfId}에서 사용할 수 있는 영상 동작 클립을 생성하지 못했습니다 (${actionId})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)失败（退出码 (-?\d+)）(.*)$/s,
+    format: (m, loc) => {
+      const stage = translateLiveProvisionStage(m[1]!.trim(), loc);
+      const code = m[2]!;
+      const rawTail = (m[3] ?? "").trim();
+      const tailDetail = rawTail.replace(/^[：:]\s*/, "").trim();
+      const detail = tailDetail ? translateInner(tailDetail, loc) : "";
+      const zhSep = /[A-Za-z0-9]$/.test(stage) ? " " : "";
+      switch (loc) {
+        case "en-US":
+          return `${stage} failed (exit code ${code})${detail ? `: ${detail}` : ""}`;
+        case "zh-TW":
+          return `${stage}${zhSep}失敗（結束代碼 ${code}）${detail ? `：${detail}` : ""}`;
+        case "zh-HK":
+          return `${stage}${zhSep}失敗（退出碼 ${code}）${detail ? `：${detail}` : ""}`;
+        case "ja-JP":
+          return `${stage}に失敗しました（終了コード ${code}）${detail ? `: ${detail}` : ""}`;
+        case "ko-KR":
+          return `${stage}에 실패했습니다 (종료 코드 ${code})${detail ? `: ${detail}` : ""}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^下载 (.+?) 模型权重（(.+?)）失败[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const repo = m[2]!;
+      const detail = translateInner(m[3]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to download ${label} model weights (${repo}): ${detail}`;
+        case "zh-TW":
+          return `下載 ${label} 模型權重（${repo}）失敗：${detail}`;
+        case "zh-HK":
+          return `下載 ${label} 模型權重（${repo}）失敗：${detail}`;
+        case "ja-JP":
+          return `${label} モデルウェイト（${repo}）のダウンロードに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `${label} 모델 가중치 (${repo}) 다운로드에 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^流式 TTS 引擎 (.+?) 的独立运行环境安装完成后未找到 Python 可执行文件$/,
+    format: (m, loc) => {
+      const eid = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Python executable was not found after installing the isolated runtime for streaming TTS engine ${eid}`;
+        case "zh-TW":
+          return `串流 TTS 引擎 ${eid} 的獨立執行環境安裝完成後未找到 Python 執行檔`;
+        case "zh-HK":
+          return `串流 TTS 引擎 ${eid} 的獨立運行環境安裝完成後未找到 Python 可執行檔`;
+        case "ja-JP":
+          return `ストリーミング TTS エンジン ${eid} の独立ランタイムのインストール完了後、Python 実行ファイルが見つかりませんでした`;
+        case "ko-KR":
+          return `스트리밍 TTS 엔진 ${eid}의 독립 런타임 설치 완료 후 Python 실행 파일을 찾을 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^流式 TTS 引擎 (.+?) 的独立运行环境安装后不可用$/,
+    format: (m, loc) => {
+      const eid = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `The isolated runtime for streaming TTS engine ${eid} is unavailable after installation`;
+        case "zh-TW":
+          return `串流 TTS 引擎 ${eid} 的獨立執行環境安裝後無法使用`;
+        case "zh-HK":
+          return `串流 TTS 引擎 ${eid} 的獨立運行環境安裝後不可用`;
+        case "ja-JP":
+          return `ストリーミング TTS エンジン ${eid} の独立ランタイムはインストール後に利用できません`;
+        case "ko-KR":
+          return `스트리밍 TTS 엔진 ${eid}의 독립 런타임이 설치 후 사용할 수 없는 상태입니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^流式 TTS 引擎 (.+?) 的模型权重下载完成后未通过完整性校验$/,
+    format: (m, loc) => {
+      const eid = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Downloaded model weights for streaming TTS engine ${eid} failed integrity verification`;
+        case "zh-TW":
+          return `串流 TTS 引擎 ${eid} 的模型權重下載完成後未通過完整性驗證`;
+        case "zh-HK":
+          return `串流 TTS 引擎 ${eid} 的模型權重下載完成後未通過完整性校驗`;
+        case "ja-JP":
+          return `ストリーミング TTS エンジン ${eid} のモデルウェイトはダウンロード後の整合性チェックに合格しませんでした`;
+        case "ko-KR":
+          return `스트리밍 TTS 엔진 ${eid}의 모델 가중치가 다운로드 완료 후 무결성 검증을 통과하지 못했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已就绪的流式 TTS 运行环境[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing ready streaming TTS runtime: ${name}`;
+        case "zh-TW":
+          return `重複使用已就緒的串流 TTS 執行環境：${name}`;
+        case "zh-HK":
+          return `重用已就緒的串流 TTS 運行環境：${name}`;
+        case "ja-JP":
+          return `準備済みのストリーミング TTS ランタイムを再利用中: ${name}`;
+        case "ko-KR":
+          return `준비된 스트리밍 TTS 런타임 재사용: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自动安装缺失的流式语音引擎环境[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Automatically installing missing streaming TTS engine environment: ${name}`;
+        case "zh-TW":
+          return `自動安裝缺失的串流語音引擎環境：${name}`;
+        case "zh-HK":
+          return `自動安裝缺失的串流語音引擎環境：${name}`;
+        case "ja-JP":
+          return `不足しているストリーミング音声エンジン環境を自動インストール中: ${name}`;
+        case "ko-KR":
+          return `누락된 스트리밍 음성 엔진 환경 자동 설치 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在安装 (.+?) 依赖包[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      const pkgs = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Installing ${name} dependency packages: ${pkgs}`;
+        case "zh-TW":
+          return `正在安裝 ${name} 相依套件：${pkgs}`;
+        case "zh-HK":
+          return `正在安裝 ${name} 依賴套件：${pkgs}`;
+        case "ja-JP":
+          return `${name} の依存パッケージをインストール中: ${pkgs}`;
+        case "ko-KR":
+          return `${name} 종속성 패키지 설치 중: ${pkgs}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^流式语音运行环境安装完成[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Streaming TTS runtime installation completed: ${name}`;
+        case "zh-TW":
+          return `串流語音執行環境安裝完成：${name}`;
+        case "zh-HK":
+          return `串流語音運行環境安裝完成：${name}`;
+        case "ja-JP":
+          return `ストリーミング音声ランタイムのインストールが完了しました: ${name}`;
+        case "ko-KR":
+          return `스트리밍 음성 런타임 설치가 완료되었습니다: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^模型权重下载完成[：:]\s*(.+?)（(.+?)）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const repo = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Model weights download completed: ${label} (${repo})`;
+        case "zh-TW":
+          return `模型權重下載完成：${label}（${repo}）`;
+        case "zh-HK":
+          return `模型權重下載完成：${label}（${repo}）`;
+        case "ja-JP":
+          return `モデルウェイトのダウンロードが完了しました: ${label}（${repo}）`;
+        case "ko-KR":
+          return `모델 가중치 다운로드 완료: ${label} (${repo})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?) 加速下载失败，自动关闭 hf_transfer 并回退标准下载重试一次$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Accelerated download for ${label} failed; disabling hf_transfer and retrying once with standard download`;
+        case "zh-TW":
+          return `${label} 加速下載失敗，已自動關閉 hf_transfer 並回退標準下載重試一次`;
+        case "zh-HK":
+          return `${label} 加速下載失敗，已自動關閉 hf_transfer 並回退標準下載重試一次`;
+        case "ja-JP":
+          return `${label} の高速ダウンロードに失敗しました。hf_transfer を自動的に無効にして通常ダウンロードで 1 回再試行します`;
+        case "ko-KR":
+          return `${label} 가속 다운로드에 실패하여 hf_transfer를 자동으로 끄고 표준 다운로드로 한 번 다시 시도합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^复用已缓存的流式语音模型权重[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Reusing cached streaming TTS model weights: ${name}`;
+        case "zh-TW":
+          return `重複使用已快取的串流語音模型權重：${name}`;
+        case "zh-HK":
+          return `重用已快取的串流語音模型權重：${name}`;
+        case "ja-JP":
+          return `キャッシュ済みのストリーミング音声モデルウェイトを再利用中: ${name}`;
+        case "ko-KR":
+          return `캐시된 스트리밍 음성 모델 가중치 재사용: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^SenseVoice 语音识别权重下载失败（已跳过，不影响开播）[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `SenseVoice speech recognition weights download failed (skipped; live broadcast unaffected): ${detail}`;
+        case "zh-TW":
+          return `SenseVoice 語音辨識權重下載失敗（已略過，不影響開播）：${detail}`;
+        case "zh-HK":
+          return `SenseVoice 語音識別權重下載失敗（已跳過，不影響開播）：${detail}`;
+        case "ja-JP":
+          return `SenseVoice 音声認識ウェイトのダウンロードに失敗しました（スキップ済み・配信開始には影響しません）: ${detail}`;
+        case "ko-KR":
+          return `SenseVoice 음성 인식 가중치 다운로드에 실패했습니다 (건너뜀, 방송 시작에는 영향 없음): ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在预热流式语音模型[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const name = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Pre-warming streaming TTS model: ${name}`;
+        case "zh-TW":
+          return `正在預熱串流語音模型：${name}`;
+        case "zh-HK":
+          return `正在預熱串流語音模型：${name}`;
+        case "ja-JP":
+          return `ストリーミング音声モデルをウォームアップ中: ${name}`;
+        case "ko-KR":
+          return `스트리밍 음성 모델 예열 중: ${name}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(.+?)\s+语音识别$/,
+    format: (m, loc) => {
+      const name = m[1]!.trim();
+      switch (loc) {
+        case "en-US":
+          return `${name} speech recognition`;
+        case "zh-TW":
+          return `${name} 語音辨識`;
+        case "zh-HK":
+          return `${name} 語音識別`;
+        case "ja-JP":
+          return `${name} 音声認識`;
+        case "ko-KR":
+          return `${name} 음성 인식`;
+        default:
+          return m[0];
+      }
+    },
+  },
 ];
+
+function translateLiveProvisionStage(
+  stage: string,
+  loc: ColabOneLocale,
+): string {
+  if (stage === "依赖安装") {
+    return {
+      "zh-CN": stage,
+      "en-US": "Dependency installation",
+      "zh-TW": "相依套件安裝",
+      "zh-HK": "依賴安裝",
+      "ja-JP": "依存パッケージのインストール",
+      "ko-KR": "종속성 설치",
+    }[loc];
+  }
+  const venvMatch = stage.match(/^(.+?)\s+虚拟环境创建$/);
+  if (venvMatch) {
+    const engine = translateInner(venvMatch[1]!, loc);
+    return {
+      "zh-CN": stage,
+      "en-US": `${engine} virtual environment creation`,
+      "zh-TW": `${engine} 虛擬環境建立`,
+      "zh-HK": `${engine} 虛擬環境建立`,
+      "ja-JP": `${engine} 仮想環境の作成`,
+      "ko-KR": `${engine} 가상 환경 생성`,
+    }[loc];
+  }
+  const pipMatch = stage.match(/^(.+?)\s+pip 检查$/);
+  if (pipMatch) {
+    const engine = translateInner(pipMatch[1]!, loc);
+    return {
+      "zh-CN": stage,
+      "en-US": `${engine} pip check`,
+      "zh-TW": `${engine} pip 檢查`,
+      "zh-HK": `${engine} pip 檢查`,
+      "ja-JP": `${engine} pip の確認`,
+      "ko-KR": `${engine} pip 확인`,
+    }[loc];
+  }
+  const depMatch = stage.match(/^(.+?)\s+依赖安装$/);
+  if (depMatch) {
+    const engine = translateInner(depMatch[1]!, loc);
+    return {
+      "zh-CN": stage,
+      "en-US": `${engine} dependency installation`,
+      "zh-TW": `${engine} 相依套件安裝`,
+      "zh-HK": `${engine} 依賴安裝`,
+      "ja-JP": `${engine} 依存パッケージのインストール`,
+      "ko-KR": `${engine} 종속성 설치`,
+    }[loc];
+  }
+  return translateInner(stage, loc);
+}
 
 const LIVE_STUDIO_LABELS: Record<string, ColabOneLocaleTable> = {
   "外部 LLM 配置": {
@@ -17139,6 +18347,14 @@ const LIVE_STUDIO_LABELS: Record<string, ColabOneLocaleTable> = {
     "zh-HK": "視覺引擎 ID",
     "ja-JP": "映像エンジン ID",
     "ko-KR": "비주얼 엔진 ID",
+  },
+  "引擎 ID": {
+    "zh-CN": "引擎 ID",
+    "en-US": "engine ID",
+    "zh-TW": "引擎 ID",
+    "zh-HK": "引擎 ID",
+    "ja-JP": "エンジン ID",
+    "ko-KR": "엔진 ID",
   },
   语音合成引擎: {
     "zh-CN": "语音合成引擎",

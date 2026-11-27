@@ -152,8 +152,20 @@ func (c *ColabOneReadOnlyFeedChecker) ListRollbackReleases(
 			releaseDate = strings.TrimSpace(r.CreatedAt)
 		}
 		releaseURL := ReleaseTagURL(repo, ver)
-		if u := strings.TrimSpace(r.HTMLURL); strings.HasPrefix(u, "https://") {
-			releaseURL = u
+		if u := strings.TrimSpace(r.HTMLURL); u != "" {
+			if parsedURL, parseErr := url.Parse(u); parseErr == nil &&
+				parsedURL != nil &&
+				strings.EqualFold(parsedURL.Scheme, "https") &&
+				parsedURL.User == nil &&
+				parsedURL.Opaque == "" &&
+				parsedURL.Port() == "" &&
+				parsedURL.RawQuery == "" &&
+				strings.EqualFold(parsedURL.Hostname(), "github.com") &&
+				!strings.Contains(parsedURL.Path, "\\") &&
+				path.Clean(parsedURL.Path) == parsedURL.Path &&
+				strings.HasPrefix(parsedURL.Path, "/"+repo+"/releases/") {
+				releaseURL = u
+			}
 		}
 		tag := strings.TrimSpace(r.TagName)
 		if tag == "" {
@@ -459,6 +471,9 @@ func (r *ColabOneRollbackInstaller) installSignedArchive(
 	if err := r.downloadAndVerify(ctx, client, m.URL, m.Size, m.Signature, pub, archivePath, progress); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	unpacked := filepath.Join(work, "app")
 	f, err := os.Open(archivePath)
@@ -470,6 +485,9 @@ func (r *ColabOneRollbackInstaller) installSignedArchive(
 	if extractErr != nil {
 		return extractErr
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if goos == "darwin" {
 		if err := r.stageMacOSBundle(work, unpacked, target); err != nil {
@@ -478,7 +496,7 @@ func (r *ColabOneRollbackInstaller) installSignedArchive(
 		staged = true
 		return nil
 	}
-	return swapColabOneInstallDir(unpacked, target, startExe)
+	return swapColabOneInstallDirForOS(unpacked, target, startExe, goos == "windows")
 }
 
 func (r *ColabOneRollbackInstaller) downloadAndVerify(
@@ -674,7 +692,7 @@ func (r *ColabOneRollbackInstaller) stageMacOSBundle(work, unpacked, target stri
 	if err != nil {
 		return err
 	}
-	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".app") {
+	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".app") || !entries[0].IsDir() || entries[0].Type()&os.ModeSymlink != 0 {
 		return errors.New("rollback archive holds no .app bundle")
 	}
 	pid := r.AppPID
@@ -689,13 +707,20 @@ func (r *ColabOneRollbackInstaller) stageMacOSBundle(work, unpacked, target stri
 	const script = `pid=$1 target=$2 new=$3 work=$4
 trap '' HUP
 while kill -0 "$pid" 2>/dev/null; do sleep 0.05; done
-if mv "$target" "$work/old"; then
-	mv "$new" "$target" || mv "$work/old" "$target"
+safe_cleanup=1
+if mv -- "$target" "$work/old"; then
+	if ! mv -- "$new" "$target"; then
+		if ! mv -- "$work/old" "$target"; then
+			safe_cleanup=0
+		fi
+	fi
 fi
 relaunch=
 if [ -e "$work/relaunch" ]; then relaunch=1; fi
-rm -rf "$work"
-if [ -n "$relaunch" ]; then exec /usr/bin/open "$target"; fi
+if [ "$safe_cleanup" = "1" ]; then
+	rm -rf -- "$work"
+fi
+if [ -n "$relaunch" ] && [ -e "$target" ]; then exec /usr/bin/open -- "$target"; fi
 `
 	staged.helper = exec.Command("/bin/sh", "-c", script, "colabone-rollback", strconv.Itoa(pid), staged.target, staged.bundle, staged.work)
 	if err := staged.helper.Start(); err != nil {
@@ -1075,7 +1100,25 @@ func isPathWithinDir(baseDir, candidate string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
+func colabOneInstallEntryKey(name string, caseInsensitive bool) string {
+	if caseInsensitive {
+		return strings.ToLower(name)
+	}
+	return name
+}
+
+func colabOneInstallNamesEqual(a, b string, caseInsensitive bool) bool {
+	if caseInsensitive {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func swapColabOneInstallDir(dir, target, startExe string) error {
+	return swapColabOneInstallDirForOS(dir, target, startExe, runtime.GOOS == "windows")
+}
+
+func swapColabOneInstallDirForOS(dir, target, startExe string, isWindows bool) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -1083,9 +1126,9 @@ func swapColabOneInstallDir(dir, target, startExe string) error {
 	var names []string
 	ours := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		if e.Name() != colabOneMyGoFileList {
+		if !colabOneInstallNamesEqual(e.Name(), colabOneMyGoFileList, isWindows) {
 			names = append(names, e.Name())
-			ours[e.Name()] = true
+			ours[colabOneInstallEntryKey(e.Name(), isWindows)] = true
 		}
 	}
 	if len(names) == 0 {
@@ -1115,11 +1158,17 @@ func swapColabOneInstallDir(dir, target, startExe string) error {
 		return nil
 	}
 
-	running := colabOneRunningEntry(target, startExe)
+	running := colabOneRunningEntryForOS(target, startExe, isWindows)
 	var left []string
-	for _, name := range readColabOneMyGoFileList(target) {
+	for _, name := range readColabOneMyGoFileListForOS(target, isWindows) {
 		dst := filepath.Join(target, name)
-		if ours[name] || name == running {
+		if ours[colabOneInstallEntryKey(name, isWindows)] {
+			continue
+		}
+		if running != "" && colabOneInstallNamesEqual(name, running, isWindows) {
+			if _, err := os.Lstat(dst); err == nil {
+				left = append(left, name)
+			}
 			continue
 		}
 		if _, err := os.Lstat(dst); err != nil {
@@ -1130,7 +1179,7 @@ func swapColabOneInstallDir(dir, target, startExe string) error {
 		}
 	}
 
-	if err := writeColabOneMyGoFileList(dir, append(names, left...)); err != nil {
+	if err := writeColabOneMyGoFileListForOS(dir, append(names, left...), isWindows); err != nil {
 		undo()
 		return err
 	}
@@ -1156,23 +1205,37 @@ func swapColabOneInstallDir(dir, target, startExe string) error {
 }
 
 func colabOneRunningEntry(target, startExe string) string {
+	return colabOneRunningEntryForOS(target, startExe, runtime.GOOS == "windows")
+}
+
+func colabOneRunningEntryForOS(target, startExe string, isWindows bool) string {
 	if strings.TrimSpace(startExe) == "" {
 		return ""
 	}
 	exe, dir := startExe, target
+	if absExe, err := filepath.Abs(exe); err == nil {
+		exe = absExe
+	}
+	if absDir, err := filepath.Abs(dir); err == nil {
+		dir = absDir
+	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
-	if filepath.Dir(exe) != filepath.Clean(dir) {
+	if !colabOneInstallNamesEqual(filepath.Clean(filepath.Dir(exe)), filepath.Clean(dir), isWindows) {
 		return ""
 	}
 	return filepath.Base(exe)
 }
 
 func readColabOneMyGoFileList(target string) []string {
+	return readColabOneMyGoFileListForOS(target, runtime.GOOS == "windows")
+}
+
+func readColabOneMyGoFileListForOS(target string, isWindows bool) []string {
 	raw, err := os.ReadFile(filepath.Join(target, colabOneMyGoFileList))
 	if err != nil {
 		return nil
@@ -1180,7 +1243,7 @@ func readColabOneMyGoFileList(target string) []string {
 	var names []string
 	for _, line := range strings.Split(string(raw), "\n") {
 		n := strings.TrimRight(line, "\r\n")
-		if isColabOneFileListName(n) {
+		if isColabOneFileListNameForOS(n, isWindows) {
 			names = append(names, n)
 		}
 	}
@@ -1188,11 +1251,22 @@ func readColabOneMyGoFileList(target string) []string {
 }
 
 func writeColabOneMyGoFileList(dir string, entries []string) error {
+	return writeColabOneMyGoFileListForOS(dir, entries, runtime.GOOS == "windows")
+}
+
+func writeColabOneMyGoFileListForOS(dir string, entries []string, isWindows bool) error {
 	names := make([]string, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		if isColabOneFileListName(e) {
-			names = append(names, e)
+		if !isColabOneFileListNameForOS(e, isWindows) {
+			continue
 		}
+		key := colabOneInstallEntryKey(e, isWindows)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		names = append(names, e)
 	}
 	slices.Sort(names)
 	names = slices.Compact(names)
@@ -1220,7 +1294,12 @@ func writeColabOneMyGoFileList(dir string, entries []string) error {
 }
 
 func isColabOneFileListName(name string) bool {
-	return name != "" && name != "." && name != ".." && name != colabOneMyGoFileList &&
+	return isColabOneFileListNameForOS(name, runtime.GOOS == "windows")
+}
+
+func isColabOneFileListNameForOS(name string, isWindows bool) bool {
+	return name != "" && name != "." && name != ".." &&
+		!colabOneInstallNamesEqual(name, colabOneMyGoFileList, isWindows) &&
 		!strings.ContainsAny(name, "/\\\x00\r\n")
 }
 

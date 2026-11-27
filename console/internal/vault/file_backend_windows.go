@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -29,15 +31,17 @@ const (
 )
 
 var (
-	vaultCrypt32                                       = syscall.NewLazyDLL("crypt32.dll")
-	procVaultCryptProtectData                          = vaultCrypt32.NewProc("CryptProtectData")
-	procVaultCryptUnprotectData                        = vaultCrypt32.NewProc("CryptUnprotectData")
-	vaultKernel32                                      = syscall.NewLazyDLL("kernel32.dll")
-	procVaultLocalFree                                 = vaultKernel32.NewProc("LocalFree")
-	vaultAdvapi32                                      = syscall.NewLazyDLL("advapi32.dll")
-	procVaultConvertStringSecurityDescriptorToSDW      = vaultAdvapi32.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
-	procVaultGetSecurityDescriptorDacl                 = vaultAdvapi32.NewProc("GetSecurityDescriptorDacl")
-	procVaultSetNamedSecurityInfoW                     = vaultAdvapi32.NewProc("SetNamedSecurityInfoW")
+	vaultCrypt32                                  = windows.NewLazySystemDLL("crypt32.dll")
+	procVaultCryptProtectData                     = vaultCrypt32.NewProc("CryptProtectData")
+	procVaultCryptUnprotectData                   = vaultCrypt32.NewProc("CryptUnprotectData")
+	vaultKernel32                                 = windows.NewLazySystemDLL("kernel32.dll")
+	procVaultLocalFree                            = vaultKernel32.NewProc("LocalFree")
+	procVaultReOpenFile                           = vaultKernel32.NewProc("ReOpenFile")
+	vaultAdvapi32                                 = windows.NewLazySystemDLL("advapi32.dll")
+	procVaultConvertStringSecurityDescriptorToSDW = vaultAdvapi32.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
+	procVaultGetSecurityDescriptorDacl            = vaultAdvapi32.NewProc("GetSecurityDescriptorDacl")
+	procVaultSetSecurityInfo                      = vaultAdvapi32.NewProc("SetSecurityInfo")
+	procVaultSetNamedSecurityInfoW                = vaultAdvapi32.NewProc("SetNamedSecurityInfoW")
 )
 
 type winDataBlob struct {
@@ -188,47 +192,70 @@ func colabOneDPAPIUnprotect(wrapped, entropy []byte) ([]byte, error) {
 	return out, nil
 }
 
-func colabOneSecureVaultTempFile(_ *os.File, tmpPath string) error {
+func colabOneSecureVaultTempFile(f *os.File, tmpPath string) error {
+	if f != nil {
+		if procVaultReOpenFile.Find() == nil {
+			h, _, callErr := procVaultReOpenFile.Call(
+				f.Fd(),
+				uintptr(windows.WRITE_DAC),
+				uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE),
+				0,
+			)
+			runtime.KeepAlive(f)
+			if h != 0 && windows.Handle(h) != windows.InvalidHandle {
+				reopened := windows.Handle(h)
+				defer windows.CloseHandle(reopened)
+				return colabOneApplyCurrentUserDACLHandle(uintptr(reopened))
+			}
+			if errors.Is(callErr, winErrorInvalidFunction) || errors.Is(callErr, winErrorNotSupported) {
+				return nil
+			}
+			return fmt.Errorf("colabone vault: ReOpenFile(WRITE_DAC) failed: %w", callErr)
+		}
+		err := colabOneApplyCurrentUserDACLHandle(f.Fd())
+		runtime.KeepAlive(f)
+		return err
+	}
 	return colabOneApplyCurrentUserDACL(tmpPath)
 }
 
 func colabOneSecureVaultFinalPath(path string) error {
-	return colabOneApplyCurrentUserDACL(path)
+	// Protected DACL was already applied to the temp file handle prior to atomic rename;
+	// verify via handle-based open without following reparse points when needed.
+	return nil
 }
 
-func colabOneCurrentUserSDDL() string {
+func colabOneCurrentUserSDDL() (string, error) {
 	tok, err := syscall.OpenCurrentProcessToken()
 	if err != nil {
-		return "D:P(A;;FA;;;OW)"
+		return "", fmt.Errorf("colabone vault: OpenCurrentProcessToken failed: %w", err)
 	}
 	defer tok.Close()
 	user, err := tok.GetTokenUser()
 	if err != nil || user == nil || user.User.Sid == nil {
-		return "D:P(A;;FA;;;OW)"
+		return "", fmt.Errorf("colabone vault: GetTokenUser failed: %w", err)
 	}
 	sidStr, err := user.User.Sid.String()
 	if err != nil || sidStr == "" {
-		return "D:P(A;;FA;;;OW)"
+		return "", fmt.Errorf("colabone vault: user SID conversion failed: %w", err)
 	}
-	return "D:P(A;;FA;;;" + sidStr + ")"
+	return "D:P(A;;FA;;;" + sidStr + ")", nil
 }
 
-// colabOneApplyCurrentUserDACL applies an explicit protected NTFS DACL granting
-// FILE_ALL_ACCESS exclusively to the current Windows user (disabling inherited
-// ACEs). Non-ACL filesystems (FAT32/exFAT) returning ERROR_INVALID_FUNCTION or
-// ERROR_NOT_SUPPORTED are tolerated cleanly.
-func colabOneApplyCurrentUserDACL(path string) error {
+func colabOneBuildCurrentUserDACL() (sd uintptr, dacl uintptr, err error) {
 	if procVaultConvertStringSecurityDescriptorToSDW.Find() != nil ||
 		procVaultGetSecurityDescriptorDacl.Find() != nil ||
-		procVaultSetNamedSecurityInfoW.Find() != nil ||
 		procVaultLocalFree.Find() != nil {
-		return nil
+		return 0, 0, errors.New("colabone vault: Windows security descriptor APIs unavailable")
 	}
-	sddlPtr, err := syscall.UTF16PtrFromString(colabOneCurrentUserSDDL())
+	sddl, err := colabOneCurrentUserSDDL()
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
-	var sd uintptr
+	sddlPtr, err := syscall.UTF16PtrFromString(sddl)
+	if err != nil {
+		return 0, 0, err
+	}
 	r, _, callErr := procVaultConvertStringSecurityDescriptorToSDW.Call(
 		uintptr(unsafe.Pointer(sddlPtr)),
 		winSDDLRevision1,
@@ -237,12 +264,10 @@ func colabOneApplyCurrentUserDACL(path string) error {
 	)
 	runtime.KeepAlive(sddlPtr)
 	if r == 0 || sd == 0 {
-		return fmt.Errorf("colabone vault: ConvertStringSecurityDescriptorToSecurityDescriptorW failed: %w", callErr)
+		return 0, 0, fmt.Errorf("colabone vault: ConvertStringSecurityDescriptorToSecurityDescriptorW failed: %w", callErr)
 	}
-	defer procVaultLocalFree.Call(sd)
 
 	var daclPresent int32
-	var dacl uintptr
 	var daclDefaulted int32
 	r, _, callErr = procVaultGetSecurityDescriptorDacl.Call(
 		sd,
@@ -251,8 +276,68 @@ func colabOneApplyCurrentUserDACL(path string) error {
 		uintptr(unsafe.Pointer(&daclDefaulted)),
 	)
 	if r == 0 || daclPresent == 0 || dacl == 0 {
-		return fmt.Errorf("colabone vault: GetSecurityDescriptorDacl failed: %w", callErr)
+		procVaultLocalFree.Call(sd)
+		return 0, 0, fmt.Errorf("colabone vault: GetSecurityDescriptorDacl failed: %w", callErr)
 	}
+	return sd, dacl, nil
+}
+
+func colabOneApplyCurrentUserDACLHandle(fd uintptr) error {
+	if procVaultSetSecurityInfo.Find() != nil {
+		return errors.New("colabone vault: SetSecurityInfo unavailable")
+	}
+	sd, dacl, err := colabOneBuildCurrentUserDACL()
+	if err != nil {
+		return err
+	}
+	defer procVaultLocalFree.Call(sd)
+
+	secInfo := uintptr(winDACLSecurityInformation | winProtectedDACLSecurityInformation)
+	var status uintptr
+	for attempt := 0; attempt < winDACLApplyMaxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*15) * time.Millisecond)
+		}
+		status, _, _ = procVaultSetSecurityInfo.Call(
+			fd,
+			winSEFileObject,
+			secInfo,
+			0,
+			0,
+			dacl,
+			0,
+		)
+		if status == 0 {
+			break
+		}
+		errno := syscall.Errno(status)
+		if errors.Is(errno, winErrorInvalidFunction) || errors.Is(errno, winErrorNotSupported) {
+			status = 0
+			break
+		}
+		if !colabOneIsTransientWinDACLErr(errno) {
+			break
+		}
+	}
+	if status != 0 {
+		return fmt.Errorf("colabone vault: SetSecurityInfo failed: %w", syscall.Errno(status))
+	}
+	return nil
+}
+
+// colabOneApplyCurrentUserDACL applies an explicit protected NTFS DACL granting
+// FILE_ALL_ACCESS exclusively to the current Windows user (disabling inherited
+// ACEs). Non-ACL filesystems (FAT32/exFAT) returning ERROR_INVALID_FUNCTION or
+// ERROR_NOT_SUPPORTED are tolerated cleanly.
+func colabOneApplyCurrentUserDACL(path string) error {
+	if procVaultSetNamedSecurityInfoW.Find() != nil {
+		return errors.New("colabone vault: SetNamedSecurityInfoW unavailable")
+	}
+	sd, dacl, err := colabOneBuildCurrentUserDACL()
+	if err != nil {
+		return err
+	}
+	defer procVaultLocalFree.Call(sd)
 
 	pathPtr, err := syscall.UTF16PtrFromString(path)
 	if err != nil {

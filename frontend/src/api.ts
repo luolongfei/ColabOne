@@ -33,6 +33,7 @@ import {
   colabOneWebLogout,
   colabOneWebOpenDeferredTab,
   colabOneWebOpenExternalURL,
+  colabOneWebOpenOutputShareURL,
   colabOneWebOutputPreviewURL,
   colabOneWebSessionExpired,
   colabOneWebSnapshotRaw,
@@ -43,8 +44,37 @@ import {
   normalizeColabOneWebConsoleState,
   validateColabOneWebCanvasURL,
   validateColabOneWebExternalURL,
+  validateColabOneWebOutputShareURL,
   type ColabOneWebCapabilities,
 } from "./colabOneWebConsole";
+import {
+  COLABONE_OUTPUT_SHARE_AUTH_REQUIRED_EVENT,
+  COLABONE_OUTPUT_SHARE_CLIENT_HEADER,
+  COLABONE_OUTPUT_SHARE_CLIENT_HEADER_VALUE,
+  COLABONE_OUTPUT_SHARE_ROUTE_PATH,
+  colabOneOutputShareMode,
+  colabOneOutputShareSessionExpired,
+  colabOneWebCreateOutputShare,
+  colabOneWebDeleteOutputShare,
+  colabOneWebDownloadOutputsZipURL,
+  colabOneWebGetOutputSharesState,
+  colabOneWebRevokeOutputShare,
+  createColabOneDefaultOutputShareListState,
+  isColabOneOutputShareActive,
+  isColabOneOutputSharePath,
+  normalizeColabOneOutputShareListState,
+  normalizeColabOneOutputShareSummary,
+  triggerColabOneBrowserDownload,
+  type ColabOneOutputShareCreateRequest,
+  type ColabOneOutputShareGroupInput,
+  type ColabOneOutputShareListState,
+  type ColabOneOutputShareManifest,
+  type ColabOneOutputShareManifestGroup,
+  type ColabOneOutputShareManifestItem,
+  type ColabOneOutputShareStatus,
+  type ColabOneOutputShareSummary,
+  type ColabOneOutputShareTTLMode,
+} from "./colabOneOutputShare";
 import {
   COLABONE_SHARE_AUTH_REQUIRED_EVENT,
   COLABONE_SHARE_CLIENT_HEADER,
@@ -74,10 +104,16 @@ import {
 import type { ColabOneSnapshot } from "./types";
 
 export {
+  COLABONE_OUTPUT_SHARE_AUTH_REQUIRED_EVENT,
+  COLABONE_OUTPUT_SHARE_CLIENT_HEADER,
+  COLABONE_OUTPUT_SHARE_CLIENT_HEADER_VALUE,
+  COLABONE_OUTPUT_SHARE_ROUTE_PATH,
   COLABONE_SHARE_AUTH_REQUIRED_EVENT,
   COLABONE_SHARE_CLIENT_HEADER,
   COLABONE_SHARE_CLIENT_VALUE,
   COLABONE_WEB_AUTH_REQUIRED_EVENT,
+  colabOneOutputShareMode,
+  colabOneOutputShareSessionExpired,
   colabOneRuntimeCapabilities,
   colabOneWebLogout,
   colabOneWebOpenDeferredTab,
@@ -86,19 +122,25 @@ export {
   colabOneWorkflowShareId,
   colabOneWorkflowShareMode,
   colabOneWorkflowShareSessionExpired,
+  createColabOneDefaultOutputShareListState,
   createColabOneDefaultWebConsoleState,
   createColabOneDefaultWorkflowShareListState,
   fetchColabOneWebCapabilities,
   fetchColabOneWorkflowShareCapabilities,
   isColabOneDesktopRuntime,
+  isColabOneOutputShareActive,
+  isColabOneOutputSharePath,
   isColabOneWebRuntime,
   isColabOneWorkflowShareActive,
   isColabOneWorkflowSharePath,
+  normalizeColabOneOutputShareListState,
+  normalizeColabOneOutputShareSummary,
   normalizeColabOneWebConsoleState,
   normalizeColabOneWorkflowShareListState,
   normalizeColabOneWorkflowShareSummary,
   resetColabOneWorkflowShareSnapshotCache,
   validateColabOneWebExternalURL,
+  validateColabOneWebOutputShareURL,
 };
 
 export type {
@@ -119,6 +161,15 @@ export type {
   ColabOneMigrationPreview,
   ColabOneMigrationSettingsSummary,
   ColabOneMigrationUIPrefs,
+  ColabOneOutputShareCreateRequest,
+  ColabOneOutputShareGroupInput,
+  ColabOneOutputShareListState,
+  ColabOneOutputShareManifest,
+  ColabOneOutputShareManifestGroup,
+  ColabOneOutputShareManifestItem,
+  ColabOneOutputShareStatus,
+  ColabOneOutputShareSummary,
+  ColabOneOutputShareTTLMode,
   ColabOneRollbackVersion,
   ColabOneUpdateState,
   ColabOneWebCapabilities,
@@ -173,6 +224,23 @@ export async function colabOneOpenURL(url: string): Promise<void> {
   return ColabOneDesktop.openURL(url);
 }
 
+export async function colabOneOpenOutputShare(
+  shareId: string,
+  url: string,
+  webConsoleState?: Partial<
+    Pick<ColabOneWebConsoleState, "public_origin" | "local_url" | "lan_urls">
+  >,
+): Promise<void> {
+  const cleanId = String(shareId || "").trim();
+  if (isColabOneDesktopRuntime()) {
+    if (!cleanId) {
+      throw new Error("Missing output share ID");
+    }
+    return ColabOneDesktop.openOutputShare(cleanId);
+  }
+  colabOneWebOpenOutputShareURL(url, webConsoleState);
+}
+
 export async function colabOneReadClipboard(): Promise<string> {
   if (!isColabOneDesktopRuntime()) {
     if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
@@ -185,8 +253,59 @@ export async function colabOneReadClipboard(): Promise<string> {
 
 export async function colabOneWriteClipboard(value: string): Promise<void> {
   if (!isColabOneDesktopRuntime()) {
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      return navigator.clipboard.writeText(value);
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === "function"
+    ) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch {
+        // Fall through to execCommand fallback (e.g. non-HTTPS LAN web context).
+      }
+    }
+    if (
+      typeof document !== "undefined" &&
+      document.body &&
+      typeof document.execCommand === "function"
+    ) {
+      const previousActive =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.setAttribute("readonly", "");
+      ta.setAttribute("aria-hidden", "true");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.width = "1px";
+      ta.style.height = "1px";
+      ta.style.padding = "0";
+      ta.style.border = "0";
+      ta.style.opacity = "0";
+      ta.style.fontSize = "16px";
+      ta.style.pointerEvents = "none";
+      document.body.appendChild(ta);
+      try {
+        ta.focus({ preventScroll: true });
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        if (document.execCommand("copy")) {
+          return;
+        }
+      } catch {
+        // Fall through to normalized clipboard unavailable error below.
+      } finally {
+        if (ta.parentNode) {
+          ta.parentNode.removeChild(ta);
+        }
+        if (previousActive && previousActive.isConnected) {
+          previousActive.focus({ preventScroll: true });
+        }
+      }
     }
     throw new Error("Clipboard write unavailable in this browser");
   }
@@ -715,6 +834,115 @@ export function colabOneOnWorkflowSharesState(
   try {
     const unsubscribe = events.colaboneWorkflowShares.on((st) =>
       listener(normalizeColabOneWorkflowShareListState(st)),
+    );
+    return typeof unsubscribe === "function" ? unsubscribe : () => {};
+  } catch {
+    return () => {};
+  }
+}
+
+export async function colabOneExportWorkflowOutputsZip(
+  outputIDs: string[],
+  suggestedName = "",
+): Promise<string> {
+  const cleanIDs = outputIDs
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  if (!cleanIDs.length) {
+    throw new Error("请至少选择一项有效作品");
+  }
+  if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive()) {
+      throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    }
+    const url = colabOneWebDownloadOutputsZipURL(cleanIDs, suggestedName);
+    await triggerColabOneBrowserDownload(url, {
+      fallbackFilename: suggestedName
+        ? `${suggestedName.replace(/\.zip$/i, "")}.zip`
+        : "colabone-gallery.zip",
+    });
+    return suggestedName || "colabone-gallery.zip";
+  }
+  return ColabOneDesktop.exportWorkflowOutputsZip(cleanIDs, suggestedName);
+}
+
+export async function colabOneGetOutputSharesState(): Promise<ColabOneOutputShareListState> {
+  if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      return createColabOneDefaultOutputShareListState();
+    }
+    return colabOneWebGetOutputSharesState();
+  }
+  const res = await ColabOneDesktop.getOutputSharesState();
+  return normalizeColabOneOutputShareListState(res);
+}
+
+export async function colabOneCreateOutputShare(
+  req: ColabOneOutputShareCreateRequest,
+): Promise<ColabOneOutputShareSummary> {
+  if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    }
+    return colabOneWebCreateOutputShare(req);
+  }
+  const res = await ColabOneDesktop.createOutputShare({
+    title: req.title || "",
+    note: req.note || "",
+    ttl_mode: req.ttl_mode || "7d",
+    allow_download: Boolean(req.allow_download),
+    password: req.password,
+    groups: (req.groups || []).map((g) => ({
+      id: g.id || "",
+      title: g.title || "",
+      workflow_id: g.workflow_id,
+      workflow_name: g.workflow_name,
+      task_id: g.task_id,
+      output_ids: g.output_ids || [],
+    })),
+  });
+  const normalized = normalizeColabOneOutputShareSummary(res);
+  if (!normalized) {
+    throw new Error("创建成果物分享返回数据无效");
+  }
+  return normalized;
+}
+
+export async function colabOneRevokeOutputShare(
+  shareID: string,
+): Promise<ColabOneOutputShareListState> {
+  if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    }
+    return colabOneWebRevokeOutputShare(shareID);
+  }
+  const res = await ColabOneDesktop.revokeOutputShare(shareID);
+  return normalizeColabOneOutputShareListState(res);
+}
+
+export async function colabOneDeleteOutputShare(
+  shareID: string,
+): Promise<ColabOneOutputShareListState> {
+  if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    }
+    return colabOneWebDeleteOutputShare(shareID);
+  }
+  const res = await ColabOneDesktop.deleteOutputShare(shareID);
+  return normalizeColabOneOutputShareListState(res);
+}
+
+export function colabOneOnOutputSharesState(
+  listener: (state: ColabOneOutputShareListState) => void,
+): () => void {
+  if (!hasMyGoEventBridge()) {
+    return () => {};
+  }
+  try {
+    const unsubscribe = events.colaboneOutputShares.on((st) =>
+      listener(normalizeColabOneOutputShareListState(st)),
     );
     return typeof unsubscribe === "function" ? unsubscribe : () => {};
   } catch {

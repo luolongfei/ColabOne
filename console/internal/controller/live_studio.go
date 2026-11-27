@@ -5,18 +5,25 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/luolongfei/ColabOne/console/internal/live"
 )
 
 const (
-	colabOneLiveStudioUpgradeHint          = "当前远端服务版本暂不支持实时演播功能，请先点击顶部「立即热更新」升级远端服务后再试"
-	colabOneVaultLiveExternalLLMKey        = "live_external_llm"
-	colabOneLiveStudioCapability           = "comfyui_live_studio"
+	colabOneLiveStudioUpgradeHint         = "当前远端服务版本暂不支持实时演播功能，请先点击顶部「立即热更新」升级远端服务后再试"
+	colabOneLiveCompanionPath             = "/_colabone_live/remote"
+	colabOneLiveCompanionTicketInvalidMsg = "远端返回的手机接入票据格式异常，请稍后重试或升级远端服务"
+	colabOneVaultLiveExternalLLMKey       = "live_external_llm"
+	colabOneLiveStudioCapability          = "comfyui_live_studio"
 	colabOneLivePostMutationRefreshTimeout = 15 * time.Second
 )
+
+var reLiveCompanionTicketCode = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
 func (c *ColabOneController) refreshRemoteBounded(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {
@@ -331,6 +338,182 @@ func (c *ColabOneController) handleLiveSessionToken(ctx context.Context) (any, e
 	return res, nil
 }
 
+func (c *ColabOneController) activeConfiguredCanvasOrigin() string {
+	normalizeOrigin := func(raw string) string {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return ""
+		}
+		if !strings.Contains(trimmed, "://") {
+			trimmed = "https://" + trimmed
+		}
+		orig, err := live.ColabOneNormalizedURLOrigin(trimmed)
+		if err != nil {
+			return ""
+		}
+		return orig
+	}
+
+	c.mu.Lock()
+	rt := asMap(c.data["runtime"])
+	comfy := asMap(rt["comfyui"])
+	canvas := asMap(comfy["canvas"])
+	runtimeCanvasURL := asString(canvas["url"])
+	c.mu.Unlock()
+	if orig := normalizeOrigin(runtimeCanvasURL); orig != "" {
+		return orig
+	}
+
+	if c.vault != nil {
+		c.vaultConfigMu.Lock()
+		rawCanvas, ok := c.vault.Get("comfyui_canvas")
+		c.vaultConfigMu.Unlock()
+		if ok {
+			if cm := asMap(rawCanvas); cm != nil {
+				if orig := normalizeOrigin(asString(cm["domain"])); orig != "" {
+					return orig
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func hasControlOrSpaceRune(s string) bool {
+	for _, ch := range s {
+		if ch == '\r' || ch == '\n' || ch == 0 || ch < 0x20 || ch == 0x7f || unicode.IsControl(ch) || unicode.IsSpace(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ColabOneController) validateAndNormalizeLiveCompanionTicket(res any) (map[string]any, error) {
+	m := asMap(res)
+	if m == nil {
+		return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+	}
+	out := deepCopyMap(m)
+
+	rawCode, ok := m["code"].(string)
+	if !ok || !reLiveCompanionTicketCode.MatchString(rawCode) {
+		return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+	}
+
+	if rawPath, exists := m["companion_path"]; exists && rawPath != nil {
+		p, ok := rawPath.(string)
+		if !ok || (p != "" && p != colabOneLiveCompanionPath) {
+			return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+		}
+	}
+	out["companion_path"] = colabOneLiveCompanionPath
+
+	expectedOrigin := c.activeConfiguredCanvasOrigin()
+	normPublicOrigin := ""
+
+	if rawOrigin, exists := m["public_origin"]; exists && rawOrigin != nil {
+		s, ok := rawOrigin.(string)
+		if !ok {
+			return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+		}
+		if s != "" {
+			if hasControlOrSpaceRune(s) {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			orig, err := live.ValidateColabOnePublicHTTPSOrigin(s)
+			if err != nil {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			if expectedOrigin != "" && orig != expectedOrigin {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			normPublicOrigin = orig
+			out["public_origin"] = normPublicOrigin
+		} else {
+			out["public_origin"] = ""
+		}
+	}
+
+	if rawURL, exists := m["companion_url"]; exists && rawURL != nil {
+		s, ok := rawURL.(string)
+		if !ok {
+			return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+		}
+		if s != "" {
+			if hasControlOrSpaceRune(s) {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			u, err := url.Parse(s)
+			if err != nil || u.Opaque != "" || u.User != nil {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			if !strings.EqualFold(u.Scheme, "https") ||
+				u.Host == "" ||
+				u.RawPath != "" ||
+				u.Path != colabOneLiveCompanionPath ||
+				u.RawQuery != "" ||
+				u.ForceQuery ||
+				u.RawFragment != "" ||
+				u.Fragment != "code="+rawCode {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			urlOrigin, err := live.ValidateColabOnePublicHTTPSOrigin("https://" + u.Host)
+			if err != nil {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			if expectedOrigin != "" && urlOrigin != expectedOrigin {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			if normPublicOrigin != "" && urlOrigin != normPublicOrigin {
+				return nil, errors.New(colabOneLiveCompanionTicketInvalidMsg)
+			}
+			out["companion_url"] = urlOrigin + colabOneLiveCompanionPath + "#code=" + rawCode
+		} else {
+			out["companion_url"] = ""
+		}
+	}
+
+	return out, nil
+}
+
+func (c *ColabOneController) handleLiveCompanionTicket(ctx context.Context) (any, error) {
+	if c.remoteExplicitlyLacksCapability(colabOneLiveStudioCapability) {
+		return nil, errors.New(colabOneLiveStudioUpgradeHint)
+	}
+	res, err := c.remote(ctx, "POST", "live/companion-ticket", nil, "", 30*time.Second)
+	if err != nil {
+		if isMissingRemoteRoute404(err) {
+			return nil, errors.New(colabOneLiveStudioUpgradeHint)
+		}
+		return nil, c.mapLiveStudioError(err)
+	}
+	normalized, valErr := c.validateAndNormalizeLiveCompanionTicket(res)
+	if valErr != nil {
+		return nil, valErr
+	}
+	c.log("已生成实时演播远端设备一次性扫码配对凭证", "LiveStudio", "info")
+	return normalized, nil
+}
+
+func (c *ColabOneController) handleLiveCompanionDisconnect(ctx context.Context) (any, error) {
+	if c.remoteExplicitlyLacksCapability(colabOneLiveStudioCapability) {
+		return nil, errors.New(colabOneLiveStudioUpgradeHint)
+	}
+	res, err := c.remote(ctx, "POST", "live/companion-disconnect", nil, "", 30*time.Second)
+	if err != nil {
+		if isMissingRemoteRoute404(err) {
+			return nil, errors.New(colabOneLiveStudioUpgradeHint)
+		}
+		return nil, c.mapLiveStudioError(err)
+	}
+	if err := c.refreshRemoteBounded(ctx, 0); err != nil {
+		c.log("已断开远端输入设备，但刷新状态失败（将自动重试）："+errTypeName(err), "LiveStudio", "warning")
+		return res, nil
+	}
+	c.log("已断开实时演播远端输入设备", "LiveStudio", "info")
+	return res, nil
+}
+
 func (c *ColabOneController) handleLiveLLMGet() (any, error) {
 	return c.liveExternalLLMSummary(), nil
 }
@@ -575,15 +758,53 @@ func (c *ColabOneController) handleLiveAvatarsSave(ctx context.Context, payload 
 	return res, nil
 }
 
+func hasASCIIControlChars(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func extractStrictLiveID(payload map[string]any, primaryKey, aliasKey, invalidMsg string) (string, error) {
+	var primaryVal, aliasVal string
+	if raw, exists := payload[primaryKey]; exists && raw != nil {
+		s, ok := raw.(string)
+		if !ok || hasASCIIControlChars(s) {
+			return "", errors.New(invalidMsg)
+		}
+		primaryVal = strings.TrimSpace(s)
+	}
+	if raw, exists := payload[aliasKey]; exists && raw != nil {
+		s, ok := raw.(string)
+		if !ok || hasASCIIControlChars(s) {
+			return "", errors.New(invalidMsg)
+		}
+		aliasVal = strings.TrimSpace(s)
+	}
+	if primaryVal != "" && aliasVal != "" && primaryVal != aliasVal {
+		return "", errors.New(invalidMsg)
+	}
+	chosen := primaryVal
+	if chosen == "" {
+		chosen = aliasVal
+	}
+	id, err := live.ValidateColabOneLiveAvatarID(chosen)
+	if err != nil {
+		if invalidMsg != "" {
+			return "", errors.New(invalidMsg)
+		}
+		return "", err
+	}
+	return id, nil
+}
+
 func (c *ColabOneController) handleLiveAvatarsDelete(ctx context.Context, payload map[string]any) (any, error) {
 	if c.remoteExplicitlyLacksCapability(colabOneLiveStudioCapability) {
 		return nil, errors.New(colabOneLiveStudioUpgradeHint)
 	}
-	rawID := asString(payload["avatar_id"])
-	if strings.TrimSpace(rawID) == "" {
-		rawID = asString(payload["id"])
-	}
-	avatarID, err := live.ValidateColabOneLiveAvatarID(rawID)
+	avatarID, err := extractStrictLiveID(payload, "avatar_id", "id", "形象 ID 不合法")
 	if err != nil {
 		return nil, err
 	}
@@ -604,11 +825,7 @@ func (c *ColabOneController) handleLiveAvatarClipUpload(ctx context.Context, pay
 	if c.remoteExplicitlyLacksCapability(colabOneLiveStudioCapability) {
 		return nil, errors.New(colabOneLiveStudioUpgradeHint)
 	}
-	rawID := asString(payload["avatar_id"])
-	if strings.TrimSpace(rawID) == "" {
-		rawID = asString(payload["id"])
-	}
-	avatarID, err := live.ValidateColabOneLiveAvatarID(rawID)
+	avatarID, err := extractStrictLiveID(payload, "avatar_id", "id", "形象 ID 不合法")
 	if err != nil {
 		return nil, err
 	}
@@ -708,13 +925,9 @@ func (c *ColabOneController) handleLiveDrivingDelete(ctx context.Context, payloa
 	if c.remoteExplicitlyLacksCapability(colabOneLiveStudioCapability) {
 		return nil, errors.New(colabOneLiveStudioUpgradeHint)
 	}
-	rawID := asString(payload["motion_id"])
-	if strings.TrimSpace(rawID) == "" {
-		rawID = asString(payload["id"])
-	}
-	motionID, err := live.ValidateColabOneLiveAvatarID(rawID)
+	motionID, err := extractStrictLiveID(payload, "motion_id", "id", "驱动动作 ID 不合法")
 	if err != nil {
-		return nil, errors.New("驱动动作 ID 不合法")
+		return nil, err
 	}
 	c.log("正在删除实时演播驱动视频素材："+motionID, "LiveStudio", "info")
 	res, err := c.remote(ctx, "DELETE", "live/driving-motions/"+motionID, nil, "", 30*time.Second)

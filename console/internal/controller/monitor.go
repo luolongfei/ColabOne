@@ -1231,24 +1231,31 @@ func (c *ColabOneController) effectiveMonitorWait() time.Duration {
 		wait = 2 * time.Second
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	rt := asMap(c.data["runtime"])
-	c.mu.Unlock()
 	if rt == nil {
 		return wait
 	}
 	for _, rawTask := range asAnySlice(rt["tasks"]) {
 		t := asMap(rawTask)
-		if t != nil && asString(t["state"]) == "running" && asString(t["kind"]) == "comfyui_tts_preview" {
+		if t == nil || asString(t["state"]) != "running" {
+			continue
+		}
+		kind := asString(t["kind"])
+		if kind == "comfyui_tts_preview" {
 			if fast := 350 * time.Millisecond; fast < wait {
-				return fast
+				wait = fast
 			}
-			return wait
+		} else if kind == "live_start" || kind == "live_build_pack" {
+			if fast := 700 * time.Millisecond; fast < wait {
+				wait = fast
+			}
 		}
 	}
 	if comfy := asMap(rt["comfyui"]); comfy != nil {
 		if pf := asMap(comfy["tts_preview_prefetch"]); pf != nil && asBool(pf["active"]) {
 			if fast := 700 * time.Millisecond; fast < wait {
-				return fast
+				wait = fast
 			}
 		}
 	}

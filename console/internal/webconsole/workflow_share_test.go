@@ -2266,32 +2266,31 @@ func TestWorkflowShareTaskTrackingFallbackLiveStudioAndAutoRelease(t *testing.T)
 
 	mu.Lock()
 	failPreRunSnap = true
+	seqBeforeFail := nextTaskSeq
 	mu.Unlock()
-	if rec := doShareCommand(t, wc.Handler(), host, cookieA, "comfyui.run", map[string]any{"workflow_id": "digital-human-longcat"}, nil); rec.Code != http.StatusOK {
-		t.Fatalf("comfyui.run with pre-run snap failure expected 200, got %d", rec.Code)
+	if rec := doShareCommand(t, wc.Handler(), host, cookieA, "comfyui.run", map[string]any{"workflow_id": "digital-human-longcat"}, nil); rec.Code == http.StatusOK {
+		t.Fatalf("comfyui.run with pre-run snap failure must fail closed (non-200), got %d: %s", rec.Code, rec.Body.String())
 	}
 	mu.Lock()
 	failPreRunSnap = false
+	seqAfterFail := nextTaskSeq
 	mu.Unlock()
-	task3ID := fmt.Sprintf("%032x", 3)
-	wc.mu.RLock()
-	if !wc.shareTasks[task3ID].FallbackClosed {
-		t.Fatalf("pre-run snapshot failure must set FallbackClosed=true on new task")
+	if seqAfterFail != seqBeforeFail {
+		t.Fatalf("pre-run snapshot failure must not invoke comfyui.run, nextTaskSeq changed %d to %d", seqBeforeFail, seqAfterFail)
 	}
-	wc.mu.RUnlock()
 
 	// 5. Cross-share fallback isolation + Drive/HostRuntimeID exclusion + strict bracketing preference + NotifyHostWorkflowRunStarting.
 	clock.Advance(10 * time.Second)
 	if rec := doShareCommand(t, wc.Handler(), host, cookieA, "comfyui.run", map[string]any{"workflow_id": "digital-human-longcat"}, nil); rec.Code != http.StatusOK {
-		t.Fatalf("shareA run 4 failed: %d", rec.Code)
+		t.Fatalf("shareA run 3 failed: %d", rec.Code)
 	}
-	task4ID := fmt.Sprintf("%032x", 4)
+	task4ID := fmt.Sprintf("%032x", nextTaskSeq)
 	t4Start := float64(clock.Now().Unix())
 	clock.Advance(10 * time.Second)
 	t4Fin := float64(clock.Now().Unix())
 	mu.Lock()
-	tasks[3]["state"] = "completed"
-	tasks[3]["finished_at"] = t4Fin
+	tasks[len(tasks)-1]["state"] = "completed"
+	tasks[len(tasks)-1]["finished_at"] = t4Fin
 	mu.Unlock()
 	// Reconcile so task4 is marked completed with RemoteFinishedAt = t4Fin.
 	wc.Handler().ServeHTTP(httptest.NewRecorder(), snapReq)

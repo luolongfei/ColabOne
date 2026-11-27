@@ -131,15 +131,29 @@ type ColabOneController struct {
 	pendingTtsPrefetchCtx map[string]colabOnePendingTtsEntry
 	pendingTtsSeq         uint64
 
-	background                     bool
-	driveOutputs                   map[string]map[string]*ColabOneDriveOutputRecord
-	driveOutputsSyncSem            chan struct{}
-	driveOutputsSyncing            bool
-	driveOutputsSyncAccountKey     string
-	driveOutputsSyncDeleted        map[string]map[string]bool
-	driveOutputsSyncDeletedFileIDs map[string]map[string]bool
-	driveOutputsSyncAdded          map[string]map[string]bool
+	outputCacheMu           sync.Mutex
+	outputCacheIndex        *colabOneOutputCacheIndex
+	outputCacheIndexDirty   bool
+	outputCacheLastFlushed  time.Time
+	outputCacheInflight     map[string]*colabOneOutputCacheFlight
+	outputCacheEvictGen     map[string]uint64
+	outputCacheResetGen     uint64
+	outputCacheMaxBytes     int64
+	outputCacheMaxEntries   int
+	outputCacheMaxFileBytes int64
+
+	background                              bool
+	driveOutputs                            map[string]map[string]*ColabOneDriveOutputRecord
+	driveOutputsSyncSem                     chan struct{}
+	driveOutputsSyncing                     bool
+	driveOutputsSyncAccountKey              string
+	driveOutputsSyncDeleted                 map[string]map[string]bool
+	driveOutputsSyncDeletedFileIDs          map[string]map[string]bool
+	driveOutputsSyncClearedWorkspaceIDs     map[string]map[string]bool
+	driveOutputsSyncClearedWorkspaceFileIDs map[string]map[string]bool
+	driveOutputsSyncAdded                   map[string]map[string]bool
 	driveOutputsLastSynced         float64
+	driveOutputsLastSyncAttempt    float64
 	driveOutputsSyncError          string
 	driveAPIBaseURL                string
 	driveHTTPClient                *http.Client
@@ -277,12 +291,14 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		observerWake:           NewColabOneEvent(),
 		monitorMode:            "auto",
 		externalObservations:   make(map[string]map[string]any),
-		background:                     cfg.Background,
-		driveOutputs:                   make(map[string]map[string]*ColabOneDriveOutputRecord),
-		driveOutputsSyncSem:            make(chan struct{}, 1),
-		driveOutputsSyncDeleted:        make(map[string]map[string]bool),
-		driveOutputsSyncDeletedFileIDs: make(map[string]map[string]bool),
-		driveOutputsSyncAdded:          make(map[string]map[string]bool),
+		background:                              cfg.Background,
+		driveOutputs:                            make(map[string]map[string]*ColabOneDriveOutputRecord),
+		driveOutputsSyncSem:                     make(chan struct{}, 1),
+		driveOutputsSyncDeleted:                 make(map[string]map[string]bool),
+		driveOutputsSyncDeletedFileIDs:          make(map[string]map[string]bool),
+		driveOutputsSyncClearedWorkspaceIDs:     make(map[string]map[string]bool),
+		driveOutputsSyncClearedWorkspaceFileIDs: make(map[string]map[string]bool),
+		driveOutputsSyncAdded:                   make(map[string]map[string]bool),
 		driveAPIBaseURL:                strings.TrimSpace(cfg.DriveAPIBaseURL),
 		driveHTTPClient:                cfg.DriveHTTPClient,
 		driveHTTPClientOwned:           cfg.DriveHTTPClient == nil,
@@ -368,19 +384,24 @@ func (c *ColabOneController) Close() {
 		}
 		c.closeExternalObserver("", true)
 		c.wg.Wait()
-		if c.driveHTTPClientOwned && c.driveHTTPClient != nil {
-			c.driveHTTPClient.CloseIdleConnections()
-		}
 		c.mu.Lock()
+		var ownedDriveClient *http.Client
+		if c.driveHTTPClientOwned && c.driveHTTPClient != nil {
+			ownedDriveClient = c.driveHTTPClient
+		}
 		streamClient := c.driveStreamHTTPClient
 		c.driveStreamHTTPClient = nil
 		c.mu.Unlock()
+		if ownedDriveClient != nil {
+			ownedDriveClient.CloseIdleConnections()
+		}
 		if streamClient != nil {
 			streamClient.CloseIdleConnections()
 		}
 		if c.cuUsage != nil {
 			_ = c.cuUsage.Flush()
 		}
+		c.flushOutputCache()
 		if closer, ok := c.provider.(ProviderCloser); ok {
 			closer.Close()
 		} else {
@@ -1281,6 +1302,8 @@ func (c *ColabOneController) resetAccountStateForSwitch(accountPatch map[string]
 	c.pendingTtsPrefetchCtx = nil
 	c.ttsPreviewCacheMu.Unlock()
 
+	c.resetOutputCacheForAccountSwitch()
+
 	var pendingLogs []pendingActivityLog
 	c.mu.Lock()
 	c.accountGen.Add(1)
@@ -1315,6 +1338,11 @@ func (c *ColabOneController) resetAccountStateForSwitch(accountPatch map[string]
 	// Pass empty sessions so saveActiveToCacheWithSessionsLocked does not repopulate instanceStates.
 	pendingLogs = c.updateWithSessionsLocked(patch, map[string]map[string]any{}, "")
 	c.mu.Unlock()
+
+	// Re-run output cache reset AFTER clearing Account A's runtime/outputs under c.mu
+	// so any flight started in the brief window before c.mu.Lock() is cancelled and cannot
+	// commit Account A's bytes into Account B's cache namespace.
+	c.resetOutputCacheForAccountSwitch()
 
 	c.flushActivityLogs(pendingLogs)
 	c.resetMonitorToAuto(true, true)

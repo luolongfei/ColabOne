@@ -11,7 +11,7 @@ import secrets
 import threading
 import time
 from collections import OrderedDict, deque
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -95,6 +95,10 @@ _CTX_EXCEEDED_RE = re.compile(
     r"(\d+)\s*tokens?[^\d]{0,80}?(?:context\s*(?:size|length|window)|limit|n_ctx)[^\d]{0,40}?(\d+)",
     re.IGNORECASE,
 )
+
+
+class _ColabOnePublicClientError(RuntimeError):
+    """Fixed, safe client-facing error raised intentionally by the public API gateway."""
 
 
 class ColabOneEngineError(RuntimeError):
@@ -555,6 +559,8 @@ class ColabOnePublicGateway:
     def __init__(self, runtime):
         self.runtime = runtime
         self.enabled, self.key = False, ""
+        self._retired_keys: list[str] = []
+        self._active_http_handlers: int = 0
         self.phase, self.mode, self.url, self.error = "stopped", "named", "", ""
         self.instance = secrets.token_hex(16)
         self.checked_at = 0
@@ -737,18 +743,34 @@ class ColabOnePublicGateway:
                         for jid, slot in list(self.jobs.items())
                         if _task_state(slot["task"]) != "running"
                     ]
+                    has_active_waiter = False
                     for jid in finished_ids:
                         slot = self.jobs.pop(jid)
                         t_state = _task_state(slot["task"])
                         self.completed += int(t_state == "completed")
                         self.failed += int(t_state in ("failed", "cancelled"))
-                        slot["result"] = None
-                        slot["queue"] = None
-                        slot["fail_event"] = None
+                        if int(slot.get("active_handlers", 0) or 0) <= 0:
+                            slot["result"] = None
+                            slot["queue"] = None
+                            slot["fail_event"] = None
+                        else:
+                            has_active_waiter = True
                     self.responses.clear()
                     self.compaction_cache.clear()
                     self._token_scale_by_model.clear()
                     self._output_reserve_boost_by_model.clear()
+                    if self.key:
+                        if (
+                            self.jobs
+                            or has_active_waiter
+                            or self._active_http_handlers > 0
+                        ):
+                            if self.key not in self._retired_keys:
+                                self._retired_keys.append(self.key)
+                                if len(self._retired_keys) > 16:
+                                    del self._retired_keys[:-16]
+                        else:
+                            self._retired_keys.clear()
                     self.key = ""
                     self.enabled = False
                     self.url = ""
@@ -798,6 +820,25 @@ class ColabOnePublicGateway:
                 ctx = getattr(model, "context_length", None) if model else None
             return int(ctx) if isinstance(ctx, int) and ctx >= 512 else 8192
 
+    def _prune_retired_keys_locked(
+        self, *, exclude_slot: dict[str, Any] | None = None
+    ) -> None:
+        if not self._retired_keys:
+            return
+        if self._active_http_handlers > 0:
+            return
+        if any(
+            s is not exclude_slot
+            and _task_state(s["task"]) == "running"
+            and (
+                not isinstance(s.get("metric"), dict)
+                or s["metric"].get("state") == "running"
+            )
+            for s in self.jobs.values()
+        ):
+            return
+        self._retired_keys.clear()
+
     def _scrub_error_text(self, text: Any, default: str) -> str:
         from server.runtime import _scrub_secret_text
 
@@ -805,9 +846,13 @@ class ColabOnePublicGateway:
         if not raw:
             return default
         with self.lock:
-            gw_key = self.key
-        extra = (gw_key,) if gw_key else ()
-        scrubbed = _scrub_secret_text(raw, *extra).strip()
+            secrets_to_scrub: list[str] = []
+            if self.key:
+                secrets_to_scrub.append(self.key)
+            for old_key in self._retired_keys:
+                if old_key and old_key not in secrets_to_scrub:
+                    secrets_to_scrub.append(old_key)
+        scrubbed = _scrub_secret_text(raw, *secrets_to_scrub).strip()
         return scrubbed or default
 
     def _store_response(
@@ -1080,23 +1125,44 @@ class ColabOnePublicGateway:
                     _format_request_finish_log(metric),
                     level="error" if state == "failed" else "info",
                 )
+            self._prune_retired_keys_locked(exclude_slot=slot)
 
-    def register(self, result, slot):
-        # Called under the runtime lock, making enable/model/task ownership atomic.
+    def _ensure_job_capacity_locked(self) -> None:
+        """Evict finished idle jobs so len(self.jobs) < 100 before spawning a runtime task."""
         with self.lock:
             while len(self.jobs) >= 100:
                 old = next(
-                    (k for k, v in self.jobs.items() if _task_state(v["task"]) != "running"),
+                    (
+                        k
+                        for k, v in self.jobs.items()
+                        if _task_state(v["task"]) != "running"
+                        and int(v.get("active_handlers", 0) or 0) <= 0
+                    ),
                     None,
                 )
                 if old is None:
-                    raise RuntimeError("API 任务已满")
+                    raise HTTPException(503, "API 任务队列已满，请稍后重试")
                 task = self.jobs.pop(old)["task"]
                 t_state = _task_state(task)
                 self.completed += t_state == "completed"
                 self.failed += t_state in ("failed", "cancelled")
                 self.runtime.tasks.pop(old, None)
+
+    def register(self, result, slot, *, acquire_handler: bool = False):
+        # Called under the runtime lock, making enable/model/task ownership atomic.
+        from server.runtime import ColabOneConflictError
+
+        self._ensure_job_capacity_locked()
+        with self.lock:
+            if not self.enabled or self.runtime.quiescing or self.runtime.stopping.is_set():
+                raise ColabOneConflictError("API 服务已关闭或实例正在释放")
             slot["task"] = self.runtime.tasks[result["id"]]
+            slot.setdefault("_released", False)
+            if acquire_handler:
+                slot["active_handlers"] = int(slot.get("active_handlers", 0) or 0) + 1
+                self._active_http_handlers += 1
+            else:
+                slot.setdefault("active_handlers", 0)
             self.jobs[result["id"]] = slot
             self.total += 1
             self.last_request = time.time()
@@ -1130,9 +1196,19 @@ class ColabOnePublicGateway:
                 )
         return result["id"]
 
+    def _store_slot_payload(self, slot: dict[str, Any], key: str, value: Any) -> None:
+        with self.lock:
+            if slot.get("_released"):
+                return
+            slot[key] = value
+
     async def _enqueue(self, slot: dict[str, Any], task, chunk: bytes) -> None:
         while True:
-            q = slot.get("queue")
+            with self.lock:
+                if slot.get("_released"):
+                    task.check()
+                    return
+                q = slot.get("queue")
             if q is None:
                 task.check()
                 return
@@ -1142,6 +1218,46 @@ class ColabOnePublicGateway:
             except queue.Full:
                 task.check()
                 await asyncio.sleep(0.02)
+
+    @staticmethod
+    async def _iter_sse_lines_bounded(
+        response: httpx.Response,
+        task,
+        *,
+        max_line_bytes: int = 2 * 1024 * 1024,
+        max_total_bytes: int = MAX_RESPONSE_BYTES,
+    ):
+        buf = bytearray()
+        total_bytes = 0
+        async for chunk in response.aiter_bytes():
+            task.check()
+            if not chunk:
+                continue
+            total_bytes += len(chunk)
+            if total_bytes > max_total_bytes:
+                raise _ColabOnePublicClientError("推理响应超过大小限制")
+            buf.extend(chunk)
+            while True:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    if len(buf) > max_line_bytes:
+                        raise _ColabOnePublicClientError("推理响应超过大小限制")
+                    break
+                if nl > max_line_bytes:
+                    raise _ColabOnePublicClientError("推理响应超过大小限制")
+                raw_line = bytes(buf[:nl])
+                del buf[: nl + 1]
+                if raw_line.endswith(b"\r"):
+                    raw_line = raw_line[:-1]
+                yield raw_line.decode("utf-8", errors="replace")
+        if buf:
+            task.check()
+            if len(buf) > max_line_bytes:
+                raise _ColabOnePublicClientError("推理响应超过大小限制")
+            raw_line = bytes(buf)
+            if raw_line.endswith(b"\r"):
+                raw_line = raw_line[:-1]
+            yield raw_line.decode("utf-8", errors="replace")
 
     @staticmethod
     async def _read_error_body(response: httpx.Response, limit: int = 65536) -> bytes:
@@ -1386,7 +1502,7 @@ class ColabOnePublicGateway:
                 task.check()
                 data.extend(chunk)
                 if len(data) > MAX_RESPONSE_BYTES:
-                    raise RuntimeError("推理响应超过大小限制")
+                    raise _ColabOnePublicClientError("推理响应超过大小限制")
             return json.loads(data)
 
     async def _run_compaction_blocks(
@@ -1987,7 +2103,7 @@ class ColabOnePublicGateway:
             "extra_usage": extra_usage,
         }
 
-    def chat(self, body, *, auto_compact: bool = True):
+    def chat(self, body, *, auto_compact: bool = True, _return_slot: bool = False):
         raw = body.model_dump(exclude_none=True) if hasattr(body, "model_dump") else body
         model, stream, payload = normalize_chat_request(raw)
         raw_reasoning_effort = (
@@ -2187,10 +2303,8 @@ class ColabOnePublicGateway:
                                             raise err
 
                                         finished = False
-                                        async for line in response.aiter_lines():
+                                        async for line in self._iter_sse_lines_bounded(response, task):
                                             task.check()
-                                            if len(line) > 2 * 1024 * 1024:
-                                                raise RuntimeError("推理响应超过大小限制")
                                             if not line.startswith("data:"):
                                                 continue
                                             raw_data = line[5:].strip()
@@ -2235,7 +2349,7 @@ class ColabOnePublicGateway:
                                                     slot, task, (out_line + "\n\n").encode("utf-8")
                                                 )
                                         if not finished:
-                                            raise RuntimeError("推理连接提前中断")
+                                            raise _ColabOnePublicClientError("推理连接提前中断")
                                     break
                                 real_in, allow_downward = _authoritative_prompt_tokens(
                                     acc.get("prompt_tokens"),
@@ -2437,7 +2551,7 @@ class ColabOnePublicGateway:
                                     and slot.get("public_model")
                                 ):
                                     result_json["model"] = slot["public_model"]
-                                slot["result"] = result_json
+                                self._store_slot_payload(slot, "result", result_json)
                                 self._finalize_request(
                                     slot,
                                     state="completed",
@@ -2492,6 +2606,17 @@ class ColabOnePublicGateway:
                         ),
                     )
                     raise
+                except _ColabOnePublicClientError as exc:
+                    msg = str(exc) or "推理失败"
+                    self._finalize_request(
+                        slot,
+                        state="failed",
+                        error=msg,
+                        fallback_prompt_tokens=int(
+                            math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
+                        ),
+                    )
+                    raise RuntimeError(msg) from None
                 except Exception as exc:
                     safe_err = self._scrub_error_text(str(exc), "推理失败")
                     self._finalize_request(
@@ -2502,22 +2627,30 @@ class ColabOnePublicGateway:
                             math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
                         ),
                     )
-                    raise RuntimeError(safe_err) from None
+                    raise RuntimeError("推理失败") from None
                 finally:
                     _set_task_cancel_hook(task, None)
 
             asyncio.run(consume())
 
-        with self.runtime.lock:
+        with self.runtime.lock, self.lock:
             internal_id, public_id = self.require_model(model)
+            self._ensure_job_capacity_locked()
             upstream_payload["model"] = internal_id
             slot["internal_model"] = internal_id
             slot["public_model"] = public_id
             metric["model"] = public_id
             result = self.runtime.submit("public_chat", internal_id, run)
-            return self.register(result, slot)
+            try:
+                identity = self.register(result, slot, acquire_handler=_return_slot)
+            except BaseException:
+                orphan = self.runtime.tasks.get(result["id"])
+                if orphan is not None and callable(getattr(orphan, "request_cancel", None)):
+                    orphan.request_cancel()
+                raise
+            return (identity, slot) if _return_slot else identity
 
-    def respond(self, raw_body: Any, *, auto_compact: bool = True):
+    def respond(self, raw_body: Any, *, auto_compact: bool = True, _return_slot: bool = False):
         spec = normalize_responses_request(raw_body, self._responses_snapshot())
         stream = spec["stream"]
         metric, acc = self._init_slot_metric("responses", spec["model"], stream)
@@ -2793,10 +2926,8 @@ class ColabOnePublicGateway:
                                             raise err
 
                                         finished = False
-                                        async for line in response.aiter_lines():
+                                        async for line in self._iter_sse_lines_bounded(response, task):
                                             task.check()
-                                            if len(line) > 2 * 1024 * 1024:
-                                                raise RuntimeError("推理响应超过大小限制")
                                             if not line.startswith("data:"):
                                                 continue
                                             raw_data = line[5:].strip()
@@ -2816,7 +2947,7 @@ class ColabOnePublicGateway:
                                                 for ev in translator.feed_chunk(chunk):
                                                     await self._enqueue(slot, task, ev)
                                         if not finished:
-                                            raise RuntimeError("推理连接提前中断")
+                                            raise _ColabOnePublicClientError("推理连接提前中断")
                                     break
                                 usage_in, raw_out = _extract_usage(
                                     {"usage": translator.raw_usage}
@@ -3046,7 +3177,7 @@ class ColabOnePublicGateway:
                                 )
                                 if spec["store"]:
                                     self._store_response(resp_obj, stored_input_items)
-                                slot["result"] = resp_obj
+                                self._store_slot_payload(slot, "result", resp_obj)
                                 metric_usage = (
                                     None
                                     if gateway_auto_compacted
@@ -3069,7 +3200,7 @@ class ColabOnePublicGateway:
                     if stream:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
-                        slot["fail_event"] = translator.fail("API 请求已取消")
+                        self._store_slot_payload(slot, "fail_event", translator.fail("API 请求已取消"))
                     cal_fallback = (
                         int(math.ceil(est_in * self._get_token_scale(cal_key)))
                         if isinstance(est_in, int)
@@ -3087,7 +3218,7 @@ class ColabOnePublicGateway:
                     if stream:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
-                        slot["fail_event"] = translator.fail(msg)
+                        self._store_slot_payload(slot, "fail_event", translator.fail(msg))
                     cal_fallback = (
                         int(math.ceil(est_in * self._get_token_scale(cal_key)))
                         if isinstance(est_in, int)
@@ -3105,7 +3236,7 @@ class ColabOnePublicGateway:
                     if stream:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
-                        slot["fail_event"] = translator.fail(msg)
+                        self._store_slot_payload(slot, "fail_event", translator.fail(msg))
                     cal_fallback = (
                         int(math.ceil(est_in * self._get_token_scale(cal_key)))
                         if isinstance(est_in, int)
@@ -3123,8 +3254,10 @@ class ColabOnePublicGateway:
                     if stream:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
-                        slot["fail_event"] = translator.fail(
-                            exc.message, code=exc.error_code
+                        self._store_slot_payload(
+                            slot,
+                            "fail_event",
+                            translator.fail(exc.message, code=exc.error_code),
                         )
                     cal_fallback = (
                         int(math.ceil(est_in * self._get_token_scale(cal_key)))
@@ -3138,12 +3271,30 @@ class ColabOnePublicGateway:
                         fallback_prompt_tokens=exc.prompt_tokens or cal_fallback,
                     )
                     raise
+                except _ColabOnePublicClientError as exc:
+                    msg = str(exc) or "推理失败"
+                    if stream:
+                        if translator is None:
+                            translator = ColabOneResponsesStreamTranslator(spec)
+                        self._store_slot_payload(slot, "fail_event", translator.fail(msg))
+                    cal_fallback = (
+                        int(math.ceil(est_in * self._get_token_scale(cal_key)))
+                        if isinstance(est_in, int)
+                        else None
+                    )
+                    self._finalize_request(
+                        slot,
+                        state="failed",
+                        error=msg,
+                        fallback_prompt_tokens=cal_fallback,
+                    )
+                    raise RuntimeError(msg) from None
                 except Exception as exc:
                     safe_err = self._scrub_error_text(str(exc), "推理失败")
                     if stream:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
-                        slot["fail_event"] = translator.fail("推理失败")
+                        self._store_slot_payload(slot, "fail_event", translator.fail("推理失败"))
                     cal_fallback = (
                         int(math.ceil(est_in * self._get_token_scale(cal_key)))
                         if isinstance(est_in, int)
@@ -3155,23 +3306,31 @@ class ColabOnePublicGateway:
                         error=safe_err,
                         fallback_prompt_tokens=cal_fallback,
                     )
-                    raise RuntimeError(safe_err) from None
+                    raise RuntimeError("推理失败") from None
                 finally:
                     _set_task_cancel_hook(task, None)
 
             asyncio.run(consume())
 
-        with self.runtime.lock:
+        with self.runtime.lock, self.lock:
             internal_id, public_id = self.require_model(spec["model"])
+            self._ensure_job_capacity_locked()
             spec["model"] = public_id
             spec["chat_payload"]["model"] = internal_id
             slot["internal_model"] = internal_id
             slot["public_model"] = public_id
             metric["model"] = public_id
             result = self.runtime.submit("public_responses", internal_id, run)
-            return self.register(result, slot), stream
+            try:
+                identity = self.register(result, slot, acquire_handler=_return_slot)
+            except BaseException:
+                orphan = self.runtime.tasks.get(result["id"])
+                if orphan is not None and callable(getattr(orphan, "request_cancel", None)):
+                    orphan.request_cancel()
+                raise
+            return (identity, stream, slot) if _return_slot else (identity, stream)
 
-    def compact(self, raw_body: Any):
+    def compact(self, raw_body: Any, *, _return_slot: bool = False):
         spec = normalize_compact_request(raw_body, self._responses_snapshot())
         metric, acc = self._init_slot_metric("compact", spec["model"], False)
         slot: dict[str, Any] = {
@@ -3207,8 +3366,12 @@ class ColabOnePublicGateway:
                                 spec["items"],
                                 spec["instructions"],
                             )
-                            slot["result"] = build_compaction_response(
-                                spec["items"], summary, usage
+                            self._store_slot_payload(
+                                slot,
+                                "result",
+                                build_compaction_response(
+                                    spec["items"], summary, usage
+                                ),
                             )
                             self._finalize_request(
                                 slot,
@@ -3236,27 +3399,63 @@ class ColabOnePublicGateway:
                         slot, state="failed", error=exc.message
                     )
                     raise
+                except ValueError as exc:
+                    msg = str(exc) or "请求参数不受支持"
+                    slot["error_info"] = {
+                        "message": "请求参数不受支持，请查看 ColabOne「对外 API」中的接口列表与限制",
+                        "type": "invalid_request_error",
+                        "code": "invalid_request_error",
+                        "status_code": 400,
+                    }
+                    self._finalize_request(
+                        slot, state="failed", error=msg
+                    )
+                    raise RuntimeError(msg) from None
+                except _ColabOnePublicClientError as exc:
+                    msg = str(exc) or "上下文压缩失败"
+                    self._finalize_request(
+                        slot, state="failed", error=msg
+                    )
+                    raise RuntimeError(msg) from None
                 except Exception as exc:
                     safe_err = self._scrub_error_text(str(exc), "上下文压缩失败")
                     self._finalize_request(
                         slot, state="failed", error=safe_err
                     )
-                    raise RuntimeError(safe_err) from None
+                    raise RuntimeError("推理失败") from None
                 finally:
                     _set_task_cancel_hook(task, None)
 
             asyncio.run(consume())
 
-        with self.runtime.lock:
+        with self.runtime.lock, self.lock:
             internal_id, public_id = self.require_model(spec["model"])
+            self._ensure_job_capacity_locked()
             slot["internal_model"] = internal_id
             slot["public_model"] = public_id
             metric["model"] = public_id
             result = self.runtime.submit("public_compact", internal_id, run)
-            return self.register(result, slot)
+            try:
+                identity = self.register(result, slot, acquire_handler=_return_slot)
+            except BaseException:
+                orphan = self.runtime.tasks.get(result["id"])
+                if orphan is not None and callable(getattr(orphan, "request_cancel", None)):
+                    orphan.request_cancel()
+                raise
+            return (identity, slot) if _return_slot else identity
+
+    def _acquire_slot_for_http(self, identity: str) -> dict[str, Any]:
+        with self.lock:
+            slot = self.jobs[identity]
+            slot["active_handlers"] = int(slot.get("active_handlers", 0) or 0) + 1
+            self._active_http_handlers += 1
+            return slot
 
 
 class ColabOneBodyLimit:
+    _ZERO_BODY_METHODS = frozenset({"GET", "DELETE", "HEAD", "OPTIONS"})
+    _BODY_READ_TIMEOUT_SECONDS = 30.0
+
     def __init__(self, app, *, gateway=None, max_bytes: int = MAX_BODY_BYTES):
         self.app = app
         self.gateway = gateway
@@ -3268,6 +3467,8 @@ class ColabOneBodyLimit:
 
         method = str(scope.get("method") or "GET").upper()
         path = str(scope.get("path") or "")
+        is_health_probe = path == "/health" and method in ("GET", "HEAD")
+        forbid_body = method in self._ZERO_BODY_METHODS or path == "/health"
         auth_values: list[str] = []
         cl_values: list[str] = []
         for raw_name, raw_val in scope.get("headers") or ():
@@ -3277,7 +3478,7 @@ class ColabOneBodyLimit:
             elif name == b"content-length":
                 cl_values.append(raw_val.decode("latin-1").strip())
 
-        if self.gateway is not None and path != "/health" and method != "OPTIONS":
+        if self.gateway is not None and not is_health_probe and method != "OPTIONS":
             with self.gateway.lock:
                 enabled = bool(self.gateway.enabled)
                 api_key = str(self.gateway.key or "")
@@ -3336,7 +3537,7 @@ class ColabOneBodyLimit:
                     status_code=400,
                 )(scope, receive, send)
             declared_len = next(iter(parsed_lengths))
-            if method in ("GET", "DELETE", "HEAD") and declared_len > 0:
+            if forbid_body and declared_len > 0:
                 return await JSONResponse(
                     {
                         "error": {
@@ -3358,35 +3559,50 @@ class ColabOneBodyLimit:
 
         chunks: list[bytes] = []
         total = 0
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            chunk = message.get("body", b"")
-            if chunk:
-                if method in ("GET", "DELETE", "HEAD"):
-                    return await JSONResponse(
-                        {
-                            "error": {
-                                "message": "该请求方法不允许携带请求体",
-                                "type": "invalid_request_error",
+        err_status: int | None = None
+        err_payload: dict[str, Any] | None = None
+        try:
+            async with asyncio.timeout(self._BODY_READ_TIMEOUT_SECONDS):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+                    chunk = message.get("body", b"")
+                    if chunk:
+                        if forbid_body:
+                            err_status = 400
+                            err_payload = {
+                                "error": {
+                                    "message": "该请求方法不允许携带请求体",
+                                    "type": "invalid_request_error",
+                                }
                             }
-                        },
-                        status_code=400,
-                    )(scope, receive, send)
-                total += len(chunk)
-                if total > self.max_bytes:
-                    return await JSONResponse(
-                        {
-                            "error": {
-                                "message": f"请求体最大 {self.max_bytes // (1024 * 1024)} MB"
+                            break
+                        total += len(chunk)
+                        if total > self.max_bytes:
+                            err_status = 413
+                            err_payload = {
+                                "error": {
+                                    "message": f"请求体最大 {self.max_bytes // (1024 * 1024)} MB"
+                                }
                             }
-                        },
-                        status_code=413,
-                    )(scope, receive, send)
-                chunks.append(chunk)
-            if not message.get("more_body"):
-                break
+                            break
+                        chunks.append(chunk)
+                    if not message.get("more_body"):
+                        break
+        except TimeoutError:
+            err_status = 408
+            err_payload = {
+                "error": {
+                    "message": "读取请求体超时",
+                    "type": "invalid_request_error",
+                }
+            }
+
+        if err_status is not None and err_payload is not None:
+            return await JSONResponse(err_payload, status_code=err_status)(
+                scope, receive, send
+            )
 
         if not chunks:
             payload = b""
@@ -3407,6 +3623,26 @@ class ColabOneBodyLimit:
             return await receive()
 
         return await self.app(scope, replay, send)
+
+
+class _ColabOneGuardedStreamingResponse(StreamingResponse):
+    """StreamingResponse that guarantees on_close runs even if client disconnects pre-body."""
+
+    def __init__(
+        self,
+        *args: Any,
+        on_close: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ):
+        super().__init__(*args, **kwargs)
+        self._on_close = on_close
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if self._on_close is not None:
+                self._on_close()
 
 
 def create_colabone_public_app(g):
@@ -3496,9 +3732,15 @@ def create_colabone_public_app(g):
             {"error": {"message": "结果不存在或已删除"}}, status_code=404
         )
 
+    def _reject_json_constant(token: str) -> Any:
+        raise ValueError(f"JSON 不允许非标准常量：{token}")
+
     async def read_json(request: Request) -> Any:
         try:
-            return await request.json()
+            raw_bytes = await request.body()
+            return json.loads(
+                raw_bytes.decode("utf-8"), parse_constant=_reject_json_constant
+            )
         except Exception:
             raise ValueError("请求体必须为合法 JSON") from None
 
@@ -3546,13 +3788,19 @@ def create_colabone_public_app(g):
 
     def _release_slot_payloads(slot: dict[str, Any]) -> None:
         with g.lock:
-            slot["result"] = None
-            slot["queue"] = None
-            slot["fail_event"] = None
+            cur_handlers = int(slot.get("active_handlers", 0) or 0)
+            if cur_handlers > 0:
+                slot["active_handlers"] = cur_handlers - 1
+            if g._active_http_handlers > 0:
+                g._active_http_handlers -= 1
+            if int(slot.get("active_handlers", 0) or 0) <= 0:
+                slot["_released"] = True
+                slot["result"] = None
+                slot["queue"] = None
+                slot["fail_event"] = None
+            g._prune_retired_keys_locked()
 
-    async def wait(identity, request, timeout_seconds: int = 305):
-        with g.lock:
-            slot = g.jobs[identity]
+    async def wait(slot: dict[str, Any], request, timeout_seconds: int = 305):
         task = slot["task"]
         try:
             async with asyncio.timeout(timeout_seconds):
@@ -3579,16 +3827,28 @@ def create_colabone_public_app(g):
         auto_compact = _parse_auto_compact_header(
             request.headers.get("x-colabone-auto-compact")
         )
-        identity = g.chat(raw, auto_compact=auto_compact)
-        with g.lock:
-            slot = g.jobs[identity]
+        _, slot = g.chat(raw, auto_compact=auto_compact, _return_slot=True)
         is_stream = bool(isinstance(raw, dict) and raw.get("stream"))
         if not is_stream:
             try:
-                await wait(identity, request)
+                await wait(slot, request)
                 return slot["result"]
             finally:
                 _release_slot_payloads(slot)
+
+        release_lock = threading.Lock()
+        released = False
+
+        def release_once() -> None:
+            nonlocal released
+            with release_lock:
+                if released:
+                    return
+                released = True
+            t = slot.get("task")
+            if t is not None and _task_state(t) == "running":
+                t.request_cancel()
+            _release_slot_payloads(slot)
 
         async def stream():
             task = slot["task"]
@@ -3629,24 +3889,25 @@ def create_colabone_public_app(g):
                         + "\n\n"
                     ).encode("utf-8")
             finally:
-                if _task_state(task) == "running":
-                    task.request_cancel()
-                _release_slot_payloads(slot)
+                release_once()
 
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        try:
+            return _ColabOneGuardedStreamingResponse(
+                stream(),
+                on_close=release_once,
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        except BaseException:
+            release_once()
+            raise
 
     @app.post("/v1/responses/compact", dependencies=auth)
     async def compact_responses(request: Request):
         raw = await read_json(request)
-        identity = g.compact(raw)
-        with g.lock:
-            slot = g.jobs[identity]
+        _, slot = g.compact(raw, _return_slot=True)
         try:
-            await wait(identity, request)
+            await wait(slot, request)
             return slot["result"]
         finally:
             _release_slot_payloads(slot)
@@ -3657,15 +3918,29 @@ def create_colabone_public_app(g):
         auto_compact = _parse_auto_compact_header(
             request.headers.get("x-colabone-auto-compact")
         )
-        identity, is_stream = g.respond(raw, auto_compact=auto_compact)
-        with g.lock:
-            slot = g.jobs[identity]
+        _, is_stream, slot = g.respond(
+            raw, auto_compact=auto_compact, _return_slot=True
+        )
         if not is_stream:
             try:
-                await wait(identity, request)
+                await wait(slot, request)
                 return slot["result"]
             finally:
                 _release_slot_payloads(slot)
+
+        release_lock = threading.Lock()
+        released = False
+
+        def release_once() -> None:
+            nonlocal released
+            with release_lock:
+                if released:
+                    return
+                released = True
+            t = slot.get("task")
+            if t is not None and _task_state(t) == "running":
+                t.request_cancel()
+            _release_slot_payloads(slot)
 
         async def stream():
             task = slot["task"]
@@ -3716,15 +3991,18 @@ def create_colabone_public_app(g):
                             + "\n\n"
                         ).encode("utf-8")
             finally:
-                if _task_state(task) == "running":
-                    task.request_cancel()
-                _release_slot_payloads(slot)
+                release_once()
 
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        try:
+            return _ColabOneGuardedStreamingResponse(
+                stream(),
+                on_close=release_once,
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        except BaseException:
+            release_once()
+            raise
 
     @app.get("/v1/responses/{response_id}", dependencies=auth)
     def get_response(response_id: str):

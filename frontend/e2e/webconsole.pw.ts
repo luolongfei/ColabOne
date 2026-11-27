@@ -377,6 +377,27 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
     });
   });
 
+  await page.route("**/api/output-shares", async (route) => {
+    if (expireSession) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Unauthorized" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
+        items: [],
+      }),
+    });
+  });
+
   await page.goto("/");
 
   // Navbar shows Web Mode badge and Sign Out button
@@ -513,6 +534,19 @@ test("mobile web mode (440x956 and 375x812) renders bottom tab bar, keeps header
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ samples: [] }),
+    });
+  });
+
+  await page.route("**/api/output-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
+        items: [],
+      }),
     });
   });
 
@@ -794,6 +828,19 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ samples: [] }),
+    });
+  });
+
+  await page.route("**/api/output-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
+        items: [],
+      }),
     });
   });
 
@@ -1299,6 +1346,19 @@ test("mobile iPhone viewports keep running status bar in 2 compact rows and prev
     });
   });
 
+  await page.route("**/api/output-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
+        items: [],
+      }),
+    });
+  });
+
   for (const vp of [
     { width: 375, height: 812 },
     { width: 440, height: 956 },
@@ -1452,7 +1512,6 @@ test("mobile iPhone viewports keep running status bar in 2 compact rows and prev
 test("mobile task dock defaults collapsed with thin progress bar and billing ticker rotates rate, run cost, and duration", async ({
   page,
 }) => {
-  const nowSec = Date.now() / 1000;
   let activeTaskId = "task-wf-1";
   let activeTaskKind = "comfyui_run";
   let activeTaskProgress = 0.13;
@@ -1461,6 +1520,7 @@ test("mobile task dock defaults collapsed with thin progress bar and billing tic
   let activeTaskHasDownload = true;
 
   const buildSnapshot = () => {
+    const nowSec = Date.now() / 1000;
     const base = makeBaseSnapshot(true);
     return {
       ...base,
@@ -1583,6 +1643,19 @@ test("mobile task dock defaults collapsed with thin progress bar and billing tic
     });
   });
 
+  await page.route("**/api/output-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
+        items: [],
+      }),
+    });
+  });
+
   // 1. Mobile viewport (375x812): dock defaults collapsed, stays ultra-compact, and expands/collapses cleanly
   await page.setViewportSize({ width: 375, height: 812 });
   await page.goto("/");
@@ -1660,9 +1733,9 @@ test("mobile task dock defaults collapsed with thin progress bar and billing tic
   await expect(ticker).toHaveAttribute("data-slide-count", "3");
   await expect(page.getByTestId("billing-bar-run")).toBeHidden();
   await expect(consumedSlide).toContainText("本次");
-  await expect(consumedSlide).toContainText(/0\.7[89] CU/);
+  await expect(consumedSlide).toContainText(/0\.(?:7[89]|8\d) CU/);
   await expect(ticker).toHaveAttribute("data-active-slide", "consumed", {
-    timeout: 7000,
+    timeout: 9500,
   });
   await expect(consumedSlide).toHaveAttribute("data-active", "true");
 

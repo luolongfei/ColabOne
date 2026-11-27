@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/egoist/mygo"
+	"github.com/luolongfei/ColabOne/console/internal/activity"
 	"github.com/luolongfei/ColabOne/console/internal/controller"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
 	"github.com/luolongfei/ColabOne/console/internal/webconsole"
@@ -20,6 +24,10 @@ var ColabOneWebConsoleEvent = mygo.NewEvent[webconsole.ColabOneWebConsoleState](
 // ColabOneWorkflowSharesEvent pushes live workflow share list and active guest
 // session count updates from Go to open desktop windows.
 var ColabOneWorkflowSharesEvent = mygo.NewEvent[webconsole.ColabOneWorkflowShareListState]("colabone-workflow-shares")
+
+// ColabOneOutputSharesEvent pushes live output gallery share list and active
+// guest session count updates from Go to open desktop windows.
+var ColabOneOutputSharesEvent = mygo.NewEvent[webconsole.ColabOneOutputShareListState]("colabone-output-shares")
 
 func (d *ColabOneDesktop) initWebConsole(configDir string, vaultStore *vault.ColabOneVault) {
 	d.initWebConsoleWithFS(configDir, vaultStore, colabOneFrontendFS)
@@ -46,6 +54,12 @@ func (d *ColabOneDesktop) initWebConsoleWithFS(
 			}
 			return d.bridge.call(ctx, method, payload)
 		},
+		FetchSnapshot: func(ctx context.Context) (string, error) {
+			if d.bridge == nil {
+				return "", errors.New(colabOneT("err.bridgeNotInitialized"))
+			}
+			return d.bridge.call(ctx, "snapshot", nil)
+		},
 		ServeOutputMedia: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string) {
 			if d.bridge == nil {
 				writeColabOneMediaError(rw, r, http.StatusServiceUnavailable, colabOneT("err.bridgeNotInitialized"))
@@ -62,6 +76,45 @@ func (d *ColabOneDesktop) initWebConsoleWithFS(
 				RuntimeOnly: true,
 			})
 		},
+		ServeOutputShareMedia: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string) {
+			if d.bridge == nil {
+				writeColabOneMediaError(rw, r, http.StatusServiceUnavailable, "作品暂离线或暂不可访问，请稍后再试")
+				return
+			}
+			d.bridge.serveOutputMediaWithOptions(ctx, rw, r, id, controller.ColabOneOutputMediaOptions{
+				SanitizeErrors: true,
+			})
+		},
+		StreamOutputMedia: func(ctx context.Context, id string, w io.Writer, sanitizeErrors bool) (webconsole.ColabOneOutputStreamMeta, error) {
+			if d.bridge == nil {
+				if sanitizeErrors {
+					return webconsole.ColabOneOutputStreamMeta{}, webconsole.ErrOutputMediaOffline
+				}
+				return webconsole.ColabOneOutputStreamMeta{}, errors.New(colabOneT("err.bridgeNotInitialized"))
+			}
+			meta, err := d.bridge.streamOutputMedia(ctx, id, w, controller.ColabOneOutputMediaOptions{
+				SanitizeErrors: sanitizeErrors,
+			})
+			if err != nil {
+				if errors.Is(err, controller.ErrNotFound) {
+					return webconsole.ColabOneOutputStreamMeta{}, webconsole.ErrOutputMediaNotFound
+				}
+				if errors.Is(err, controller.ErrOutputMediaOffline) {
+					return webconsole.ColabOneOutputStreamMeta{}, webconsole.ErrOutputMediaOffline
+				}
+				return webconsole.ColabOneOutputStreamMeta{}, err
+			}
+			if meta == nil {
+				return webconsole.ColabOneOutputStreamMeta{}, nil
+			}
+			return webconsole.ColabOneOutputStreamMeta{
+				ID:        meta.ID,
+				Filename:  meta.Filename,
+				Extension: meta.Extension,
+				Mime:      meta.Mime,
+				Size:      meta.Size,
+			}, nil
+		},
 		FrontendFS: frontendFS,
 		AppVersion: colabOneAppVersion(),
 		GetLocale:  colabOneGetLocale,
@@ -75,6 +128,9 @@ func (d *ColabOneDesktop) initWebConsoleWithFS(
 		},
 		OnWorkflowSharesChange: func(state webconsole.ColabOneWorkflowShareListState) {
 			d.notifyWorkflowSharesState(state)
+		},
+		OnOutputSharesChange: func(state webconsole.ColabOneOutputShareListState) {
+			d.notifyOutputSharesState(state)
 		},
 	})
 	d.webConsoleMu.Lock()
@@ -205,10 +261,17 @@ func (d *ColabOneDesktop) CreateWebConsoleLoginTicket(singleUse bool) (webconsol
 }
 
 func (d *ColabOneDesktop) notifyWorkflowSharesState(state webconsole.ColabOneWorkflowShareListState) {
-	if d.appQuitting.Load() || !mygo.App.IsReady() {
+	if d.appQuitting.Load() || !d.isAppReady() {
 		return
 	}
 	_ = ColabOneWorkflowSharesEvent.Broadcast(state)
+}
+
+func (d *ColabOneDesktop) notifyOutputSharesState(state webconsole.ColabOneOutputShareListState) {
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return
+	}
+	_ = ColabOneOutputSharesEvent.Broadcast(state)
 }
 
 // RevokeWebConsoleSessions signs out all currently authenticated web browsers.
@@ -262,4 +325,99 @@ func (d *ColabOneDesktop) DeleteWorkflowShare(
 		return d.GetWorkflowSharesState(), errors.New(colabOneT("err.webConsoleUnavailable"))
 	}
 	return wc.DeleteWorkflowShare(shareID)
+}
+
+// GetOutputSharesState returns all configured output gallery share links and live guest session counts.
+func (d *ColabOneDesktop) GetOutputSharesState() webconsole.ColabOneOutputShareListState {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return webconsole.ColabOneOutputShareListState{
+			Shares: []webconsole.ColabOneOutputShareSummary{},
+		}
+	}
+	return wc.OutputSharesState()
+}
+
+// CreateOutputShare generates a new HMAC-signed guest output gallery share link.
+func (d *ColabOneDesktop) CreateOutputShare(
+	req webconsole.ColabOneOutputShareCreateRequest,
+) (webconsole.ColabOneOutputShareSummary, error) {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return webconsole.ColabOneOutputShareSummary{}, errors.New(colabOneT("err.webConsoleUnavailable"))
+	}
+	return wc.CreateOutputShare(req)
+}
+
+// RevokeOutputShare revokes an output gallery share link and immediately signs out its active guests and clears its password.
+func (d *ColabOneDesktop) RevokeOutputShare(
+	shareID string,
+) (webconsole.ColabOneOutputShareListState, error) {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return d.GetOutputSharesState(), errors.New(colabOneT("err.webConsoleUnavailable"))
+	}
+	return wc.RevokeOutputShare(shareID)
+}
+
+// DeleteOutputShare permanently removes an output gallery share link record and invalidates its active guests and password.
+func (d *ColabOneDesktop) DeleteOutputShare(
+	shareID string,
+) (webconsole.ColabOneOutputShareListState, error) {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return d.GetOutputSharesState(), errors.New(colabOneT("err.webConsoleUnavailable"))
+	}
+	return wc.DeleteOutputShare(shareID)
+}
+
+func sanitizeColabOneOutputShareOpenError(err error, shareKey string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if shareKey != "" {
+		msg = strings.ReplaceAll(msg, shareKey, "[已隐藏]")
+		if escaped := url.QueryEscape(shareKey); escaped != "" && escaped != shareKey {
+			msg = strings.ReplaceAll(msg, escaped, "[已隐藏]")
+		}
+	}
+	safe := strings.TrimSpace(activity.SafeMessage(msg))
+	if safe == "" {
+		return errors.New(colabOneT("err.unsupportedURL"))
+	}
+	return errors.New(safe)
+}
+
+// OpenOutputShare validates shareID, resolves the active server-generated gallery
+// share URL from the local web console, verifies http/https without userinfo, and
+// opens it in the system browser.
+func (d *ColabOneDesktop) OpenOutputShare(ctx context.Context, shareID string) error {
+	cleanID := strings.TrimSpace(shareID)
+	if cleanID == "" {
+		return errors.New("分享编号无效")
+	}
+	wc := d.webConsoleService()
+	if wc == nil {
+		return errors.New(colabOneT("err.webConsoleUnavailable"))
+	}
+	shareURL, err := wc.GetOutputShareURL(cleanID)
+	if err != nil {
+		return err
+	}
+	u, err := url.Parse(shareURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" || u.User != nil || u.Host == "" {
+		return errors.New(colabOneT("err.unsupportedURL"))
+	}
+	shareKey := u.Query().Get("k")
+	var openErr error
+	if d.openExternalFn != nil {
+		openErr = d.openExternalFn(shareURL)
+	} else {
+		openErr = mygo.Shell.OpenExternal(shareURL)
+	}
+	if openErr != nil {
+		return sanitizeColabOneOutputShareOpenError(openErr, shareKey)
+	}
+	return nil
 }

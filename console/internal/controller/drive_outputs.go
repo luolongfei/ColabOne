@@ -13,7 +13,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -89,6 +88,7 @@ func parseContentRangeTotal(hdr string) int64 {
 
 func (c *ColabOneController) resetDriveOutputsSyncStateLocked() {
 	c.driveOutputsLastSynced = 0
+	c.driveOutputsLastSyncAttempt = 0
 	c.driveOutputsSyncError = ""
 }
 
@@ -110,11 +110,15 @@ func (c *ColabOneController) clearDriveOutputsSyncTrackingLocked(acctKey string)
 	if acctKey == "" {
 		clear(c.driveOutputsSyncDeleted)
 		clear(c.driveOutputsSyncDeletedFileIDs)
+		clear(c.driveOutputsSyncClearedWorkspaceIDs)
+		clear(c.driveOutputsSyncClearedWorkspaceFileIDs)
 		clear(c.driveOutputsSyncAdded)
 		return
 	}
 	delete(c.driveOutputsSyncDeleted, acctKey)
 	delete(c.driveOutputsSyncDeletedFileIDs, acctKey)
+	delete(c.driveOutputsSyncClearedWorkspaceIDs, acctKey)
+	delete(c.driveOutputsSyncClearedWorkspaceFileIDs, acctKey)
 	delete(c.driveOutputsSyncAdded, acctKey)
 }
 
@@ -170,7 +174,7 @@ func refuseDriveRedirects(_ *http.Request, _ []*http.Request) error {
 
 const (
 	colabOneDriveOutputsFileName     = "drive_outputs.json"
-	colabOneDriveOutputsSchemaVer    = 1
+	colabOneDriveOutputsSchemaVer    = 2
 	colabOneDriveAPIDefaultBaseURL   = "https://www.googleapis.com/drive/v3"
 	colabOneDriveFolderName          = "ColabOne_Drive"
 	colabOneDriveOutputsSubdir       = "outputs"
@@ -343,25 +347,13 @@ func (c *ColabOneController) loadDriveOutputs() {
 	c.mu.Unlock()
 
 	path := c.driveOutputsPath()
-	info, statErr := os.Lstat(path)
-	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+	raw, existed, err := readRegularFileBounded(path, colabOneMaxLocalConfigJSONBytes)
+	if err != nil || !existed || len(bytes.TrimSpace(raw)) == 0 {
 		return
 	}
 	var disk colabOneDriveOutputsDisk
 	if err := json.Unmarshal(raw, &disk); err != nil || disk.Accounts == nil {
-		corruptPath := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
-		if _, existsErr := os.Lstat(corruptPath); existsErr == nil {
-			corruptPath = fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano())
-		}
-		if cInfo, cErr := os.Lstat(corruptPath); cErr != nil || (cInfo.Mode()&os.ModeSymlink == 0 && !cInfo.IsDir()) {
-			if colabOneRenameReplace(path, corruptPath) != nil && len(raw) > 0 {
-				_ = os.WriteFile(corruptPath, raw, 0o600)
-			}
-		}
+		backupCorruptLocalFile(path, raw)
 		if c.activity != nil {
 			c.log("读取本地 Google 云盘作品索引失败，已备份损坏文件为 .corrupt 副本", "云盘", "warning")
 		}
@@ -403,6 +395,11 @@ func (c *ColabOneController) loadDriveOutputs() {
 			cp.DriveFileID = sanitizeDriveFileID(cp.DriveFileID)
 			cp.DriveWorkspaceFileID = sanitizeDriveFileID(cp.DriveWorkspaceFileID)
 			cp.DriveWorkspaceMetaID = sanitizeDriveFileID(cp.DriveWorkspaceMetaID)
+			if disk.Version < colabOneDriveOutputsSchemaVer && cp.TaskID == "" {
+				// Force one-time workspace metadata re-read on next sync so schema v1
+				// caches backfill TaskID from remote workspace JSON.
+				cp.DriveWorkspaceMetaID = ""
+			}
 			cp.DriveWebViewLink = sanitizeDriveWebViewLink(cp.DriveWebViewLink)
 			cp.DriveSynced = true
 			bucket[cleanID] = cp
@@ -1308,7 +1305,9 @@ func (c *ColabOneController) doDriveAPIRequest(
 	headers map[string]string,
 	maxBytes int64,
 ) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
+	reqCtx, cancelReq := c.withRootContext(ctx)
+	defer cancelReq()
+	req, err := http.NewRequestWithContext(reqCtx, method, reqURL, body)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1412,20 +1411,16 @@ func syntheticDriveOutputID(fileID string) string {
 // SyncDriveOutputs queries Google Drive API v3 for ColabOne_Drive outputs so users can browse,
 // preview, and download results in the Outputs Drawer without running a GPU instance.
 func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]any, error) {
-	if ctx == nil {
-		ctx = c.rootCtx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
+	syncCtx, cancelSync := c.withRootContext(ctx)
+	defer cancelSync()
+	if err := syncCtx.Err(); err != nil {
 		return nil, err
 	}
 	sem := c.driveOutputsSyncSemaphore()
 	select {
 	case sem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-syncCtx.Done():
+		return nil, syncCtx.Err()
 	}
 	defer func() { <-sem }()
 
@@ -1461,11 +1456,19 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 	if c.driveOutputsSyncDeletedFileIDs == nil {
 		c.driveOutputsSyncDeletedFileIDs = make(map[string]map[string]bool)
 	}
+	if c.driveOutputsSyncClearedWorkspaceIDs == nil {
+		c.driveOutputsSyncClearedWorkspaceIDs = make(map[string]map[string]bool)
+	}
+	if c.driveOutputsSyncClearedWorkspaceFileIDs == nil {
+		c.driveOutputsSyncClearedWorkspaceFileIDs = make(map[string]map[string]bool)
+	}
 	if c.driveOutputsSyncAdded == nil {
 		c.driveOutputsSyncAdded = make(map[string]map[string]bool)
 	}
 	c.driveOutputsSyncDeleted[acctKey] = make(map[string]bool)
 	c.driveOutputsSyncDeletedFileIDs[acctKey] = make(map[string]bool)
+	c.driveOutputsSyncClearedWorkspaceIDs[acctKey] = make(map[string]bool)
+	c.driveOutputsSyncClearedWorkspaceFileIDs[acctKey] = make(map[string]bool)
 	c.driveOutputsSyncAdded[acctKey] = make(map[string]bool)
 	c.mu.Unlock()
 
@@ -1486,12 +1489,12 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 		}, err
 	}
 
-	token, err := c.driveAccessToken(ctx)
+	token, err := c.driveAccessToken(syncCtx)
 	if err != nil {
 		return finishErr(err)
 	}
 
-	rootFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, "root", colabOneDriveFolderName)
+	rootFolderID, err := c.driveFindChildFolder(syncCtx, token, quotaProject, "root", colabOneDriveFolderName)
 	if err != nil {
 		return finishErr(err)
 	}
@@ -1512,17 +1515,17 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 
 	if rootFolderID != "" {
 		// 1) Inspect workspace/comfyui-outputs
-		wsFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, rootFolderID, colabOneDriveWorkspaceSubdir)
+		wsFolderID, err := c.driveFindChildFolder(syncCtx, token, quotaProject, rootFolderID, colabOneDriveWorkspaceSubdir)
 		if err != nil {
 			return finishErr(err)
 		}
 		if wsFolderID != "" {
-			coFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, wsFolderID, colabOneDriveComfyOutputsSubdir)
+			coFolderID, err := c.driveFindChildFolder(syncCtx, token, quotaProject, wsFolderID, colabOneDriveComfyOutputsSubdir)
 			if err != nil {
 				return finishErr(err)
 			}
 			if coFolderID != "" {
-				wsFiles, err := c.driveListChildFiles(ctx, token, quotaProject, coFolderID)
+				wsFiles, err := c.driveListChildFiles(syncCtx, token, quotaProject, coFolderID)
 				if err != nil {
 					return finishErr(err)
 				}
@@ -1545,6 +1548,9 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					}
 				}
 				for id, asset := range assetByID {
+					if err := syncCtx.Err(); err != nil {
+						return finishErr(err)
+					}
 					assetSize := asset.sizeBytes()
 					if assetSize <= 0 {
 						continue
@@ -1552,9 +1558,11 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(asset.Name), "."))
 					km := allowedDriveOutputKindMIME[ext]
 					metaFile, hasMeta := metaByID[id]
+					metaLoaded := false
 					var rec *ColabOneDriveOutputRecord
 					if prev := existingSnap[id]; prev != nil && hasMeta && prev.DriveWorkspaceMetaID == metaFile.ID && prev.Filename != "" {
 						// Reuse immutable workflow metadata without carrying stale Drive export fields.
+						metaLoaded = true
 						rec = &ColabOneDriveOutputRecord{
 							ID:           id,
 							WorkflowID:   prev.WorkflowID,
@@ -1577,11 +1585,18 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 						}
 					} else if hasMeta {
 						metaURL := c.driveAPIBase() + "/files/" + url.PathEscape(metaFile.ID) + "?alt=media"
-						st, metaBytes, merr := c.doDriveAPIRequest(ctx, http.MethodGet, metaURL, token, quotaProject, nil, nil, colabOneDriveMaxMetaBytes)
-						if merr == nil && st == http.StatusOK {
+						st, metaBytes, merr := c.doDriveAPIRequest(syncCtx, http.MethodGet, metaURL, token, quotaProject, nil, nil, colabOneDriveMaxMetaBytes)
+						if merr != nil {
+							if syncCtx.Err() != nil {
+								return finishErr(syncCtx.Err())
+							}
+						} else if st == http.StatusOK {
 							var parsed map[string]any
 							if decodeJSONWithNumbers(metaBytes, &parsed) == nil {
-								rec = driveOutputRecordFromMap(parsed)
+								if parsedRec := driveOutputRecordFromMap(parsed); parsedRec != nil {
+									rec = parsedRec
+									metaLoaded = true
+								}
 							}
 						}
 					}
@@ -1605,6 +1620,48 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 						rec.CreatedAt = asset.createdOrModifiedUnix()
 					}
 					if prev := existingSnap[id]; prev != nil {
+						if !metaLoaded {
+							if rec.WorkflowID == "" && prev.WorkflowID != "" {
+								rec.WorkflowID = prev.WorkflowID
+							}
+							if (rec.WorkflowName == "" || rec.WorkflowName == "Google 云盘作品") && prev.WorkflowName != "" && prev.WorkflowName != "Google 云盘作品" {
+								rec.WorkflowName = prev.WorkflowName
+							}
+							if (rec.Filename == "" || rec.Filename == asset.Name) && prev.Filename != "" {
+								rec.Filename = prev.Filename
+							}
+							if prev.CreatedAt > 0 {
+								rec.CreatedAt = prev.CreatedAt
+							}
+							if rec.Elapsed <= 0 && prev.Elapsed > 0 {
+								rec.Elapsed = prev.Elapsed
+							}
+						} else {
+							if rec.WorkflowID == "" && prev.WorkflowID != "" {
+								rec.WorkflowID = prev.WorkflowID
+							}
+							if (rec.WorkflowName == "" || rec.WorkflowName == "Google 云盘作品") && prev.WorkflowName != "" && prev.WorkflowName != "Google 云盘作品" {
+								rec.WorkflowName = prev.WorkflowName
+							}
+							if rec.Filename == "" && prev.Filename != "" {
+								rec.Filename = prev.Filename
+							}
+							if rec.Elapsed <= 0 && prev.Elapsed > 0 {
+								rec.Elapsed = prev.Elapsed
+							}
+							if rec.CreatedAt <= 0 && prev.CreatedAt > 0 {
+								rec.CreatedAt = prev.CreatedAt
+							}
+						}
+						if rec.SHA256 == "" && prev.SHA256 != "" {
+							rec.SHA256 = sanitizeDriveSHA256(prev.SHA256)
+						}
+						if rec.PromptID == "" && prev.PromptID != "" {
+							rec.PromptID = prev.PromptID
+						}
+						if rec.TaskID == "" && prev.TaskID != "" {
+							rec.TaskID = sanitizeDriveTaskID(prev.TaskID)
+						}
 						if rec.CUConsumed <= 0 && prev.CUConsumed > 0 {
 							rec.CUConsumed = prev.CUConsumed
 							rec.CUEstimated = prev.CUEstimated
@@ -1628,7 +1685,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					}
 					rec.DriveSynced = true
 					rec.DriveWorkspaceFileID = sanitizeDriveFileID(asset.ID)
-					if hasMeta {
+					if hasMeta && metaLoaded {
 						rec.DriveWorkspaceMetaID = sanitizeDriveFileID(metaFile.ID)
 					}
 					rec.DriveFolder = colabOneDriveFolderName + "/" + colabOneDriveWorkspaceSubdir + "/" + colabOneDriveComfyOutputsSubdir
@@ -1644,12 +1701,12 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 		}
 
 		// 2) Inspect outputs/ readable exports
-		outFolderID, err := c.driveFindChildFolder(ctx, token, quotaProject, rootFolderID, colabOneDriveOutputsSubdir)
+		outFolderID, err := c.driveFindChildFolder(syncCtx, token, quotaProject, rootFolderID, colabOneDriveOutputsSubdir)
 		if err != nil {
 			return finishErr(err)
 		}
 		if outFolderID != "" {
-			outFiles, err := c.driveListChildFiles(ctx, token, quotaProject, outFolderID)
+			outFiles, err := c.driveListChildFiles(syncCtx, token, quotaProject, outFolderID)
 			if err != nil {
 				return finishErr(err)
 			}
@@ -1727,6 +1784,14 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					if link := sanitizeDriveWebViewLink(f.WebViewLink); link != "" {
 						matched.DriveWebViewLink = link
 					}
+					if prev := existingSnap[matched.ID]; prev != nil {
+						if matched.TaskID == "" && prev.TaskID != "" {
+							matched.TaskID = sanitizeDriveTaskID(prev.TaskID)
+						}
+						if matched.PromptID == "" && prev.PromptID != "" {
+							matched.PromptID = prev.PromptID
+						}
+					}
 					matched.SyncedAt = now
 					continue
 				}
@@ -1795,6 +1860,9 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					if rec.SHA256 == "" && prev.SHA256 != "" {
 						rec.SHA256 = sanitizeDriveSHA256(prev.SHA256)
 					}
+					if prev.PromptID != "" {
+						rec.PromptID = prev.PromptID
+					}
 					if prev.TaskID != "" {
 						rec.TaskID = sanitizeDriveTaskID(prev.TaskID)
 					}
@@ -1825,6 +1893,8 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 	}
 	deletedIDs := c.driveOutputsSyncDeleted[acctKey]
 	deletedFileIDs := c.driveOutputsSyncDeletedFileIDs[acctKey]
+	clearedWSIDs := c.driveOutputsSyncClearedWorkspaceIDs[acctKey]
+	clearedWSFileIDs := c.driveOutputsSyncClearedWorkspaceFileIDs[acctKey]
 	addedIDs := c.driveOutputsSyncAdded[acctKey]
 
 	nextBucket := make(map[string]*ColabOneDriveOutputRecord, len(discovered))
@@ -1837,6 +1907,17 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 		}
 		if wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID); wfid != "" && deletedFileIDs[wfid] {
 			continue
+		}
+		wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID)
+		if clearedWSIDs[id] || (wfid != "" && clearedWSFileIDs[wfid]) {
+			rec.DriveWorkspaceFileID = ""
+			rec.DriveWorkspaceMetaID = ""
+			if !rec.DriveExported && sanitizeDriveFileID(rec.DriveFileID) == "" {
+				continue
+			}
+			if wfid != "" && strings.Contains(rec.DriveWebViewLink, wfid) {
+				rec.DriveWebViewLink = ""
+			}
 		}
 		nextBucket[id] = rec
 	}
@@ -1888,6 +1969,9 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	acctKey := c.currentDriveAccountKeyLocked()
 	var rec *ColabOneDriveOutputRecord
 	lastSynced := c.driveOutputsLastSynced
+	if c.driveOutputsLastSyncAttempt > lastSynced {
+		lastSynced = c.driveOutputsLastSyncAttempt
+	}
 	if acctKey != "" && c.driveOutputs != nil {
 		if bucket := c.driveOutputs[acctKey]; bucket != nil {
 			rec = bucket[cleanID].clone()
@@ -1904,7 +1988,19 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 		rec.DriveMode != "colab_drivefs" &&
 		(lastSynced <= 0 || nowUnixFloat()-lastSynced >= colabOneMediaOnDemandSyncCooldownSec)
 	if needOnDemandSync {
-		if _, syncErr := c.SyncDriveOutputs(ctx); syncErr == nil {
+		syncRes, syncErr := c.SyncDriveOutputs(ctx)
+		if syncErr != nil {
+			if (ctx == nil || ctx.Err() == nil) && !c.isShuttingDown(ctx) {
+				c.mu.Lock()
+				if acctKey != "" && c.currentDriveAccountKeyLocked() == acctKey {
+					c.driveOutputsLastSyncAttempt = nowUnixFloat()
+				}
+				c.mu.Unlock()
+			}
+			return nil, syncErr
+		}
+		if asBool(syncRes["synced"]) {
+			rec = nil
 			c.mu.Lock()
 			if curAcct := c.currentDriveAccountKeyLocked(); curAcct != "" && c.driveOutputs != nil {
 				if bucket := c.driveOutputs[curAcct]; bucket != nil && bucket[cleanID] != nil {
@@ -1912,6 +2008,9 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 				}
 			}
 			c.mu.Unlock()
+			if rec == nil {
+				return nil, ErrNotFound
+			}
 			fileID = rec.preferredDriveFileID()
 		}
 	}
@@ -1922,7 +2021,9 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	if offset < 0 || (size > 0 && int64(offset) >= size) || (size == 0 && offset > 0) {
 		return nil, errors.New("作品读取范围不合法")
 	}
-	token, err := c.driveAccessToken(ctx)
+	reqCtx, cancelReq := c.withRootContext(ctx)
+	defer cancelReq()
+	token, err := c.driveAccessToken(reqCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -1931,7 +2032,7 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 		end = size - 1
 	}
 	reqURL := c.driveAPIBase() + "/files/" + url.PathEscape(fileID) + "?alt=media"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1960,11 +2061,18 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	var chunk []byte
 	resolvedAuthoritativeSize := int64(0)
 	if resp.StatusCode == http.StatusPartialContent {
-		if total := parseContentRangeTotal(resp.Header.Get("Content-Range")); total > 0 {
-			resolvedAuthoritativeSize = total
-			if size <= 0 {
-				size = total
+		crHdr := resp.Header.Get("Content-Range")
+		if crStart, _, crTotal, parsed := parseContentRangeSpec(crHdr); parsed {
+			if crStart != int64(offset) {
+				return nil, errors.New("输出文件分片数据不完整")
 			}
+			if crTotal > 0 {
+				resolvedAuthoritativeSize = crTotal
+				size = crTotal
+			}
+		} else if total := parseContentRangeTotal(crHdr); total > 0 {
+			resolvedAuthoritativeSize = total
+			size = total
 		}
 		chunk, err = io.ReadAll(io.LimitReader(resp.Body, colabOneDriveAssetChunkBytes))
 		if err != nil {
@@ -1974,9 +2082,7 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 		// Server ignored Range and returned 200 OK: skip offset bytes before reading chunk.
 		if resp.ContentLength > 0 {
 			resolvedAuthoritativeSize = resp.ContentLength
-			if size <= 0 {
-				size = resp.ContentLength
-			}
+			size = resp.ContentLength
 		}
 		if offset > 0 {
 			if _, skipErr := io.CopyN(io.Discard, resp.Body, int64(offset)); skipErr != nil {
@@ -1995,20 +2101,7 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 		size = int64(offset) + int64(len(chunk))
 	}
 	if resolvedAuthoritativeSize > 0 && rec.Size <= 0 {
-		persistedSize := false
-		c.mu.Lock()
-		if curAcct := c.currentDriveAccountKeyLocked(); curAcct != "" && c.driveOutputs != nil {
-			if bucket := c.driveOutputs[curAcct]; bucket != nil {
-				if liveEntry := bucket[cleanID]; liveEntry != nil && liveEntry.Size <= 0 {
-					liveEntry.Size = resolvedAuthoritativeSize
-					persistedSize = true
-				}
-			}
-		}
-		c.mu.Unlock()
-		if persistedSize {
-			_ = c.saveDriveOutputs()
-		}
+		c.backfillDriveOutputSize(cleanID, resolvedAuthoritativeSize)
 	}
 	canonicalMIME := rec.Mime
 	if km, ok := allowedDriveOutputKindMIME[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(rec.Extension), "."))]; ok {
@@ -2054,15 +2147,39 @@ func (c *ColabOneController) clearDriveOutputWorkspaceLinks(identity string) {
 	changed := false
 	c.mu.Lock()
 	acctKey := c.currentDriveAccountKeyLocked()
+	var oldWSFileID string
 	if acctKey != "" && c.driveOutputs != nil {
 		if bucket := c.driveOutputs[acctKey]; bucket != nil {
 			if rec := bucket[cleanID]; rec != nil {
+				oldWSFileID = sanitizeDriveFileID(rec.DriveWorkspaceFileID)
 				if rec.DriveWorkspaceFileID != "" || rec.DriveWorkspaceMetaID != "" {
 					rec.DriveWorkspaceFileID = ""
 					rec.DriveWorkspaceMetaID = ""
 					changed = true
 				}
+				if oldWSFileID != "" && strings.Contains(rec.DriveWebViewLink, oldWSFileID) {
+					rec.DriveWebViewLink = ""
+					changed = true
+				}
 			}
+		}
+	}
+	if c.driveOutputsSyncing && c.driveOutputsSyncAccountKey == acctKey && acctKey != "" {
+		if c.driveOutputsSyncClearedWorkspaceIDs == nil {
+			c.driveOutputsSyncClearedWorkspaceIDs = make(map[string]map[string]bool)
+		}
+		if c.driveOutputsSyncClearedWorkspaceIDs[acctKey] == nil {
+			c.driveOutputsSyncClearedWorkspaceIDs[acctKey] = make(map[string]bool)
+		}
+		c.driveOutputsSyncClearedWorkspaceIDs[acctKey][cleanID] = true
+		if oldWSFileID != "" {
+			if c.driveOutputsSyncClearedWorkspaceFileIDs == nil {
+				c.driveOutputsSyncClearedWorkspaceFileIDs = make(map[string]map[string]bool)
+			}
+			if c.driveOutputsSyncClearedWorkspaceFileIDs[acctKey] == nil {
+				c.driveOutputsSyncClearedWorkspaceFileIDs[acctKey] = make(map[string]bool)
+			}
+			c.driveOutputsSyncClearedWorkspaceFileIDs[acctKey][oldWSFileID] = true
 		}
 	}
 	c.mu.Unlock()
@@ -2126,11 +2243,91 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 	if rec == nil {
 		return nil, ErrNotFound
 	}
-	if _, err := c.trashDriveFileIDs(ctx, rec.DriveFileID, rec.DriveWorkspaceFileID, rec.DriveWorkspaceMetaID); err != nil {
+	canDirectRead, _ := c.driveDirectReadReady()
+	if !canDirectRead {
+		return nil, errors.New("当前尚未开启 Google 云盘 API 直连权限，无法在离线状态下删除云盘中的作品文件，请开启无感云盘 API 或在 Google 云盘中手动删除")
+	}
+	hasValidDriveFileIDs := func(r *ColabOneDriveOutputRecord) bool {
+		return r != nil && (sanitizeDriveFileID(r.DriveFileID) != "" ||
+			sanitizeDriveFileID(r.DriveWorkspaceFileID) != "" ||
+			sanitizeDriveFileID(r.DriveWorkspaceMetaID) != "")
+	}
+	needsSiblingIDSync := func(r *ColabOneDriveOutputRecord) bool {
+		if r == nil {
+			return false
+		}
+		if !hasValidDriveFileIDs(r) {
+			return true
+		}
+		if r.DriveMode == "colab_drivefs" {
+			return false
+		}
+		if r.DriveExported && sanitizeDriveFileID(r.DriveFileID) == "" {
+			return true
+		}
+		if r.DriveSynced && sanitizeDriveFileID(r.DriveWorkspaceFileID) == "" {
+			return true
+		}
+		if sanitizeDriveFileID(r.DriveWorkspaceFileID) != "" && sanitizeDriveFileID(r.DriveWorkspaceMetaID) == "" {
+			return true
+		}
+		return false
+	}
+	hadAnyID := hasValidDriveFileIDs(rec)
+	if needsSiblingIDSync(rec) {
+		if !hadAnyID && rec.DriveMode == "colab_drivefs" {
+			return nil, errors.New("该云盘作品由 Colab 挂载模式写入，离线状态下无法通过云盘 API 删除，请在 Google 云盘中手动删除或启动实例后删除")
+		}
+		syncRes, syncErr := c.SyncDriveOutputs(ctx)
+		if syncErr != nil {
+			if !hadAnyID {
+				return nil, syncErr
+			}
+		} else if asBool(syncRes["synced"]) {
+			rec = c.driveOutputRecordCopy(cleanID)
+			if rec == nil {
+				c.evictLocalOutputCache(cleanID)
+				c.pruneOutputFromSnapshot(cleanID)
+				return map[string]any{"ok": true}, nil
+			}
+		} else if !hadAnyID {
+			return nil, errors.New("云盘作品索引同步未完成，暂无法确认远端文件位置，请稍后重试或在 Google 云盘中手动删除")
+		}
+		if !hasValidDriveFileIDs(rec) {
+			return nil, errors.New("云盘作品索引同步未完成，暂无法确认远端文件位置，请稍后重试或在 Google 云盘中手动删除")
+		}
+	}
+	trashed, err := c.trashDriveFileIDs(ctx, rec.DriveFileID, rec.DriveWorkspaceFileID, rec.DriveWorkspaceMetaID)
+	if err != nil {
 		return nil, err
 	}
+	if !trashed {
+		return nil, errors.New("当前尚未开启 Google 云盘 API 直连权限，无法在离线状态下删除云盘中的作品文件，请开启无感云盘 API 或在 Google 云盘中手动删除")
+	}
 	c.removeDriveOutputRecord(cleanID)
+	c.evictLocalOutputCache(cleanID)
+	c.pruneOutputFromSnapshot(cleanID)
 	return map[string]any{"ok": true}, nil
+}
+
+func (c *ColabOneController) backfillDriveOutputSize(cleanID string, authoritativeSize int64) {
+	if authoritativeSize <= 0 || !reHex32ID.MatchString(cleanID) {
+		return
+	}
+	persistedSize := false
+	c.mu.Lock()
+	if curAcct := c.currentDriveAccountKeyLocked(); curAcct != "" && c.driveOutputs != nil {
+		if bucket := c.driveOutputs[curAcct]; bucket != nil {
+			if liveEntry := bucket[cleanID]; liveEntry != nil && liveEntry.Size <= 0 {
+				liveEntry.Size = authoritativeSize
+				persistedSize = true
+			}
+		}
+	}
+	c.mu.Unlock()
+	if persistedSize {
+		_ = c.saveDriveOutputs()
+	}
 }
 
 func (c *ColabOneController) hasLiveRemoteOutput(identity string) bool {

@@ -5,6 +5,10 @@ import "./mobile.css";
 import { installColabOneWindowFocusGuard } from "./colabOneFocusGuard";
 import { isColabOneDesktopRuntime } from "./colabOneWebConsole";
 import {
+  colabOneOutputShareMode,
+  isColabOneOutputSharePath,
+} from "./colabOneOutputShare";
+import {
   colabOneWorkflowShareMode,
   isColabOneWorkflowSharePath,
 } from "./colabOneWorkflowShare";
@@ -37,17 +41,25 @@ window.addEventListener(
 );
 
 const view = new URLSearchParams(window.location.search).get("view");
+const isOutputShareRoute =
+  !isColabOneDesktopRuntime() &&
+  isColabOneOutputSharePath(window.location.pathname);
 const isWorkflowShareRoute =
   !isColabOneDesktopRuntime() &&
+  !isOutputShareRoute &&
   isColabOneWorkflowSharePath(window.location.pathname);
-if (isWorkflowShareRoute) {
+if (isOutputShareRoute) {
+  colabOneOutputShareMode.value = true;
+} else if (isWorkflowShareRoute) {
   colabOneWorkflowShareMode.value = true;
 }
-const loadRoot = isWorkflowShareRoute
-  ? () => import("./ColabOneWorkflowShareApp.vue")
-  : view === "logs"
-    ? () => import("./LogWindow.vue")
-    : () => import("./App.vue");
+const loadRoot = isOutputShareRoute
+  ? () => import("./ColabOneOutputShareApp.vue")
+  : isWorkflowShareRoute
+    ? () => import("./ColabOneWorkflowShareApp.vue")
+    : view === "logs"
+      ? () => import("./LogWindow.vue")
+      : () => import("./App.vue");
 
 function colabOneMountRecoveryNotice(err: unknown) {
   const host = document.getElementById("app");

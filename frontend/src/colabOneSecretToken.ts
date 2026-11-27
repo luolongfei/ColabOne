@@ -20,8 +20,35 @@ export interface ColabOneSecretPasteResolution {
 }
 
 const CLOUDFLARE_TUNNEL_TOKEN_RE = /eyJ[A-Za-z0-9_+/=-]{20,}/g;
-const HUGGINGFACE_TOKEN_RE =
-  /(?<![A-Za-z0-9_-])hf_[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])/g;
+
+/**
+ * Shared token pattern for Hugging Face access tokens (`hf_...`), excluding
+ * known non-secret HF library/env identifiers like `hf_transfer`, `hf_download`,
+ * `hf_hub_download`, `hf_cache_home`, `hf_endpoint`, and `hf_xet`.
+ */
+export const COLABONE_HF_TOKEN_PATTERN =
+  "hf_(?!(?:download|cache|hub|home|transfer|endpoint|xet|api_token|dl_cache|mirror|offline|repo|revision)(?:_|(?![A-Za-z0-9_-])))[A-Za-z0-9_-]{8,}";
+
+const HUGGINGFACE_TOKEN_RE = new RegExp(
+  `(?:(?<![A-Za-z0-9_-])|(?<=%[0-9A-Fa-f]{2}))(?:${COLABONE_HF_TOKEN_PATTERN})(?![A-Za-z0-9_-])`,
+  "g",
+);
+
+/**
+ * Shared token pattern for ColabOne workflow share keys (`co_wf_...`) and
+ * output gallery share keys (`co_gal_...`).
+ */
+export const COLABONE_SHARE_TOKEN_PATTERN =
+  "co_(?:wf|gal)_[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+|co_(?:wf|gal)_[A-Za-z0-9_-]{8,}";
+
+const COLABONE_SHARE_TOKEN_RE = new RegExp(
+  `(?:(?<![A-Za-z0-9_-])|(?<=%[0-9A-Fa-f]{2}))(?:${COLABONE_SHARE_TOKEN_PATTERN})(?![A-Za-z0-9_-])`,
+  "g",
+);
+
+const COLABONE_SHARE_TOKEN_EXACT_RE = new RegExp(
+  `^(?:${COLABONE_SHARE_TOKEN_PATTERN})$`,
+);
 
 function decodeBase64JsonObject(token: string): Record<string, unknown> | null {
   try {
@@ -109,6 +136,41 @@ export function colabOneExtractHfToken(
   if (!trimmed) return null;
 
   const matches = Array.from(new Set(trimmed.match(HUGGINGFACE_TOKEN_RE) ?? []));
+  if (matches.length !== 1) return null;
+
+  const candidate = matches[0];
+  return {
+    value: candidate,
+    changed: candidate !== raw,
+    extractedFromWrapper: candidate !== trimmed,
+  };
+}
+
+/**
+ * Returns true if the given standalone token matches a ColabOne workflow share
+ * key (`co_wf_...`) or output gallery share key (`co_gal_...`).
+ */
+export function isColabOneShareToken(candidate: string): boolean {
+  if (typeof candidate !== "string") return false;
+  const trimmed = candidate.trim();
+  if (!trimmed || trimmed !== candidate) return false;
+  return COLABONE_SHARE_TOKEN_EXACT_RE.test(trimmed);
+}
+
+/**
+ * Extracts a unique ColabOne share key (`co_wf_...` or `co_gal_...`) from a
+ * pasted share URL or message string.
+ */
+export function colabOneExtractShareToken(
+  raw: string,
+): ColabOneExtractedSecret | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const matches = Array.from(
+    new Set(trimmed.match(COLABONE_SHARE_TOKEN_RE) ?? []),
+  );
   if (matches.length !== 1) return null;
 
   const candidate = matches[0];

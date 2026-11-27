@@ -216,4 +216,46 @@ describe("ColabOne visibility-aware snapshot poller", () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(tick).toHaveBeenCalledTimes(3);
   });
+
+  it("survives a throwing onVisible hook and non-finite interval inputs", async () => {
+    let hidden = true;
+    let onVisibilityChange: (() => void) | null = null;
+    const tick = vi.fn(async () => {});
+    const onVisible = vi.fn(() => {
+      throw new Error("visibility hook boom");
+    });
+
+    const poller = createColabOneVisibilityPoller({
+      visibleMs: Number.NaN,
+      hiddenMs: Number.POSITIVE_INFINITY,
+      tick,
+      onVisible,
+      isHidden: () => hidden,
+      subscribeVisibility: (handler) => {
+        onVisibilityChange = handler;
+        return () => {
+          onVisibilityChange = null;
+        };
+      },
+    });
+
+    poller.start();
+    await Promise.resolve();
+    expect(tick).toHaveBeenCalledTimes(1);
+
+    // Restoring visibility must invoke onVisible safely and still trigger immediate tick
+    hidden = false;
+    expect(() => onVisibilityChange?.()).not.toThrow();
+    await Promise.resolve();
+    expect(onVisible).toHaveBeenCalledTimes(1);
+    expect(tick).toHaveBeenCalledTimes(2);
+
+    // Falls back to finite default visible interval (600ms) instead of NaN/0ms spin
+    await vi.advanceTimersByTimeAsync(599);
+    expect(tick).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(tick).toHaveBeenCalledTimes(3);
+
+    poller.stop();
+  });
 });

@@ -25,11 +25,14 @@ from common.comfyui import ComfyCanvasConfig, validate_colabone_hf_token
 COLABONE_LIVE_PORT = 8190
 COLABONE_LIVE_WS_PATH = "/_colabone_live/ws"
 COLABONE_LIVE_HEALTH_PATH = "/_colabone_live/health"
+COLABONE_LIVE_COMPANION_PATH = "/_colabone_live/remote"
+COLABONE_LIVE_COMPANION_REDEEM_PATH = "/_colabone_live/remote/redeem"
 
 COLABONE_LIVE_FRAME_MIC_PCM = 0x01
 COLABONE_LIVE_FRAME_VIDEO = 0x02
 COLABONE_LIVE_FRAME_AUDIO_PCM = 0x03
 COLABONE_LIVE_FRAME_FMP4 = 0x04
+COLABONE_LIVE_FRAME_CAMERA_JPEG = 0x05
 
 COLABONE_LIVE_VALID_FRAME_TYPES = frozenset(
     {
@@ -37,8 +40,19 @@ COLABONE_LIVE_VALID_FRAME_TYPES = frozenset(
         COLABONE_LIVE_FRAME_VIDEO,
         COLABONE_LIVE_FRAME_AUDIO_PCM,
         COLABONE_LIVE_FRAME_FMP4,
+        COLABONE_LIVE_FRAME_CAMERA_JPEG,
     }
 )
+
+COLABONE_LIVE_MAX_CAMERA_FRAME_BYTES = 512 * 1024
+COLABONE_LIVE_CAMERA_MODES: tuple[str, ...] = (
+    "off",
+    "vision",
+    "motion",
+    "vision_motion",
+)
+COLABONE_LIVE_WS_REVOKED_CLOSE_CODE = 4403
+COLABONE_LIVE_WS_REPLACED_CLOSE_CODE = 4409
 
 COLABONE_LIVE_HEADER_FORMAT = "!BIQ"
 COLABONE_LIVE_HEADER_SIZE = 13
@@ -686,7 +700,13 @@ class ColabOneLiveCatalog(BaseModel):
     @field_validator("ws_path")
     @classmethod
     def check_ws_path(cls, value: str) -> str:
-        if not value.startswith("/") or ".." in value or any(ch.isspace() for ch in value):
+        if (
+            not isinstance(value, str)
+            or not value.startswith("/")
+            or ".." in value
+            or "//" in value
+            or not re.fullmatch(r"/[A-Za-z0-9_./-]{1,119}", value, re.ASCII)
+        ):
             raise ValueError("ws_path 格式不合法")
         return value
 

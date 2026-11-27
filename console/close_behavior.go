@@ -230,7 +230,13 @@ func (d *ColabOneDesktop) hideMainWindow() {
 		d.hideMainFn()
 		return
 	}
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return
+	}
 	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() || !d.isAppReady() {
+			return
+		}
 		win := d.mainWindow()
 		if win != nil && !win.IsDestroyed() {
 			win.Hide()
@@ -331,7 +337,7 @@ func (d *ColabOneDesktop) SetCloseBehavior(value string) (ColabOneCloseBehaviorS
 	d.closeBehavior = norm
 	d.closeBehaviorMu.Unlock()
 	state := d.closeBehaviorState()
-	if mygo.App.IsReady() {
+	if !d.appQuitting.Load() && d.isAppReady() {
 		_ = ColabOneCloseBehaviorEvent.Broadcast(state)
 	}
 	return state, nil

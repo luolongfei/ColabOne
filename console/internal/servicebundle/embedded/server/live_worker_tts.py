@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -21,6 +22,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    colabone_sanitized_subprocess_env,
+)
 from common.live_studio import (
     COLABONE_LIVE_AUDIO_CHUNK_MS,
     COLABONE_LIVE_AUDIO_OUT_CHUNK_BYTES,
@@ -33,15 +38,7 @@ COLABONE_LIVE_TTS_CHUNK_MS = COLABONE_LIVE_AUDIO_CHUNK_MS
 COLABONE_LIVE_TTS_CHUNK_BYTES = COLABONE_LIVE_AUDIO_OUT_CHUNK_BYTES
 COLABONE_LIVE_SUPPORTED_TTS_ENGINES = frozenset({"qwen3_tts", "voxcpm2"})
 
-_SENSITIVE_ENV_KEYS = frozenset(
-    {
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HF_API_TOKEN",
-        "OPENAI_API_KEY",
-    }
-)
+_SENSITIVE_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
 
 
 def resample_pcm16_mono(
@@ -633,6 +630,7 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
         *,
         venv_python: Path | str | None = None,
         model_dir: Path | str | None = None,
+        hf_cache_dir: Path | str | None = None,
         hf_token: str = "",
         startup_timeout_s: float = 120.0,
         read_timeout_s: float = 60.0,
@@ -641,6 +639,7 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
         super().__init__(engine_id=engine_id)
         self.venv_python = Path(venv_python) if venv_python else None
         self.model_dir = Path(model_dir) if model_dir else None
+        self.hf_cache_dir = Path(hf_cache_dir) if hf_cache_dir else None
         self._hf_token = hf_token
         self.startup_timeout_s = max(0.2, float(startup_timeout_s))
         self.read_timeout_s = max(0.2, float(read_timeout_s))
@@ -648,6 +647,9 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
         self._mock = ColabOneMockStreamingTtsEngine(engine_id=engine_id) if fallback_mock else None
         self._proc: subprocess.Popen[str] | None = None
         self._starting_proc: subprocess.Popen[str] | None = None
+        self._starting_state: tuple[
+            subprocess.Popen[str], threading.Thread | None, threading.Thread | None
+        ] | None = None
         self._lock = threading.RLock()
         self._load_lock = threading.Lock()
         self._turn_lock = threading.Lock()
@@ -706,10 +708,25 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
 
     def _recent_stderr_summary(self, stderr_lines: deque[str] | None = None) -> str:
         buf = self._stderr_lines if stderr_lines is None else stderr_lines
-        lines = [line for line in list(buf)[-6:] if line]
+        lines = [line for line in list(buf)[-8:] if line]
         if not lines:
             return ""
-        return self._scrub_error(" | ".join(lines)[:300])
+        # Preserve the tail exception line (never front-truncate it away).
+        kept: list[str] = []
+        total = 0
+        for line in reversed(lines):
+            piece = line.strip()
+            if not piece:
+                continue
+            extra = len(piece) + (3 if kept else 0)
+            if kept and total + extra > 300:
+                break
+            kept.append(piece)
+            total += extra
+        summary = " | ".join(reversed(kept))
+        if len(summary) > 300:
+            summary = "..." + summary[-297:]
+        return self._scrub_error(summary)
 
     @staticmethod
     def _close_proc_pipes(proc: subprocess.Popen[str]) -> None:
@@ -720,6 +737,80 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                 except Exception:
                     pass
 
+    @staticmethod
+    def _pgid_alive(pgid: int) -> bool:
+        if os.name == "nt" or pgid <= 0 or not hasattr(os, "killpg"):
+            return False
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    @classmethod
+    def _terminate_process_group(cls, proc: subprocess.Popen[str], timeout: float = 2.0) -> None:
+        pid = getattr(proc, "pid", None)
+        can_killpg = (
+            os.name != "nt"
+            and isinstance(pid, int)
+            and pid > 0
+            and hasattr(os, "killpg")
+            and hasattr(signal, "SIGTERM")
+        )
+        used_pg = False
+        if can_killpg:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                used_pg = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if not used_pg and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        deadline = time.monotonic() + max(0.2, float(timeout))
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception:
+                pass
+        if used_pg:
+            while time.monotonic() < deadline:
+                proc.poll()
+                if not cls._pgid_alive(pid):
+                    break
+                time.sleep(0.05)
+            if cls._pgid_alive(pid):
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                kill_deadline = time.monotonic() + 1.0
+                while time.monotonic() < kill_deadline:
+                    proc.poll()
+                    if not cls._pgid_alive(pid):
+                        break
+                    time.sleep(0.05)
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                pass
+        else:
+            try:
+                proc.wait(timeout=0.5)
+            except Exception:
+                pass
+
     @classmethod
     def _cleanup_proc(
         cls,
@@ -728,33 +819,26 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
         graceful_shutdown: bool = False,
         stdout_thread: threading.Thread | None = None,
         stderr_thread: threading.Thread | None = None,
+        stdin_lock: threading.Lock | None = None,
     ) -> None:
         if graceful_shutdown:
-            try:
-                if proc.poll() is None and proc.stdin is not None:
-                    proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
-                    proc.stdin.flush()
-                    proc.wait(timeout=3.0)
-            except Exception:
-                pass
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2.0)
-            except Exception:
+            can_write = True
+            acquired = False
+            if stdin_lock is not None:
+                acquired = stdin_lock.acquire(blocking=False)
+                can_write = acquired
+            if can_write:
                 try:
-                    proc.kill()
+                    if proc.poll() is None and proc.stdin is not None:
+                        proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
+                        proc.stdin.flush()
+                        proc.wait(timeout=3.0)
                 except Exception:
                     pass
-                try:
-                    proc.wait(timeout=2.0)
-                except Exception:
-                    pass
-        else:
-            try:
-                proc.wait(timeout=0.5)
-            except Exception:
-                pass
+                finally:
+                    if acquired and stdin_lock is not None:
+                        stdin_lock.release()
+        cls._terminate_process_group(proc, timeout=2.0)
         cur_thread = threading.current_thread()
         for reader in (stdout_thread, stderr_thread):
             if reader is not None and reader is not cur_thread:
@@ -786,7 +870,7 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
             try:
                 if stream is not None:
                     for line in stream:
-                        cleaned = line.strip()
+                        cleaned = self._scrub_error(line.strip())
                         if cleaned:
                             stderr_lines.append(cleaned)
             except Exception:
@@ -811,12 +895,36 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
         return [py, "-u", "-c", COLABONE_LIVE_TTS_WORKER_SCRIPT]
 
     def build_worker_env(self) -> dict[str, str]:
-        env = {k: v for k, v in os.environ.items() if k not in _SENSITIVE_ENV_KEYS}
+        env = colabone_sanitized_subprocess_env(
+            strip_keys=(
+                "PYTHONPATH",
+                "PYTHONUSERBASE",
+                "PYTHONNOUSERSITE",
+                "PIP_CONFIG_FILE",
+                "PIP_EXTRA_INDEX_URL",
+                "PIP_INDEX_URL",
+                "PIP_FIND_LINKS",
+                "PIP_TRUSTED_HOST",
+            )
+        )
         env["COLABONE_LIVE_TTS_ENGINE"] = self.engine_id
         if self.model_dir is not None:
             env["COLABONE_LIVE_TTS_MODEL_DIR"] = str(self.model_dir)
+        if self.hf_cache_dir is not None:
+            env["HF_HUB_CACHE"] = str(self.hf_cache_dir)
+            env["HUGGINGFACE_HUB_CACHE"] = str(self.hf_cache_dir)
         if self._hf_token:
             env["HF_TOKEN"] = self._hf_token
+        env["USE_TORCH"] = "1"
+        env["USE_TF"] = "0"
+        env["USE_FLAX"] = "0"
+        env["USE_JAX"] = "0"
+        env["TRANSFORMERS_NO_TF"] = "1"
+        env["TRANSFORMERS_NO_FLAX"] = "1"
+        env["TRANSFORMERS_NO_JAX"] = "1"
+        env["DISABLE_TENSORFLOW"] = "1"
+        env["TF_CPP_MIN_LOG_LEVEL"] = "3"
+        env["HF_HUB_DISABLE_TELEMETRY"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -867,6 +975,7 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                 graceful_shutdown=graceful_shutdown,
                 stdout_thread=t_out,
                 stderr_thread=t_err,
+                stdin_lock=self._stdin_lock,
             )
 
     def load(self) -> None:
@@ -888,22 +997,25 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                 cmd = self.build_worker_command()
                 env = self.build_worker_env()
 
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-            )
+            popen_kwargs: dict[str, Any] = {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "env": env,
+            }
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
+            proc = subprocess.Popen(cmd, **popen_kwargs)
             out_q, t_out, t_err, stderr_lines = self._start_stream_readers(proc)
             with self._lock:
                 if self._disposed:
                     disposed_early = True
                 else:
                     self._starting_proc = proc
+                    self._starting_state = (proc, t_out, t_err)
                     disposed_early = False
             if disposed_early:
                 self._cleanup_proc(
@@ -911,6 +1023,7 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                     graceful_shutdown=False,
                     stdout_thread=t_out,
                     stderr_thread=t_err,
+                    stdin_lock=self._stdin_lock,
                 )
                 self._ensure_not_disposed()
 
@@ -974,6 +1087,8 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                 with self._lock:
                     if self._starting_proc is proc:
                         self._starting_proc = None
+                    if self._starting_state is not None and self._starting_state[0] is proc:
+                        self._starting_state = None
                     if self._disposed:
                         publish_ok = False
                     else:
@@ -996,17 +1111,21 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                         graceful_shutdown=True,
                         stdout_thread=t_out,
                         stderr_thread=t_err,
+                        stdin_lock=self._stdin_lock,
                     )
                     self._ensure_not_disposed()
             except Exception:
                 with self._lock:
                     if self._starting_proc is proc:
                         self._starting_proc = None
+                    if self._starting_state is not None and self._starting_state[0] is proc:
+                        self._starting_state = None
                 self._cleanup_proc(
                     proc,
                     graceful_shutdown=False,
                     stdout_thread=t_out,
                     stderr_thread=t_err,
+                    stdin_lock=self._stdin_lock,
                 )
                 raise
 
@@ -1048,11 +1167,13 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
             if self._mock is not None:
                 self._mock.unload()
             proc = self._proc
+            starting_state = self._starting_state
             starting_proc = self._starting_proc
             t_out = self._stdout_thread
             t_err = self._stderr_thread
             self._proc = None
             self._starting_proc = None
+            self._starting_state = None
             self._stdout_queue = None
             self._stdout_thread = None
             self._stderr_thread = None
@@ -1068,14 +1189,29 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                 abort_q.put_nowait(None)
             except Exception:
                 pass
-        if starting_proc is not None and starting_proc is not proc:
-            self._cleanup_proc(starting_proc, graceful_shutdown=False)
+        if starting_state is not None:
+            st_proc, st_out, st_err = starting_state
+            if st_proc is not proc:
+                self._cleanup_proc(
+                    st_proc,
+                    graceful_shutdown=False,
+                    stdout_thread=st_out,
+                    stderr_thread=st_err,
+                    stdin_lock=self._stdin_lock,
+                )
+        elif starting_proc is not None and starting_proc is not proc:
+            self._cleanup_proc(
+                starting_proc,
+                graceful_shutdown=False,
+                stdin_lock=self._stdin_lock,
+            )
         if proc is not None:
             self._cleanup_proc(
                 proc,
                 graceful_shutdown=True,
                 stdout_thread=t_out,
                 stderr_thread=t_err,
+                stdin_lock=self._stdin_lock,
             )
 
     def synthesize_stream(
@@ -1147,7 +1283,7 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                 with self._stdin_lock:
                     proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
                     proc.stdin.flush()
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 detail = self._recent_stderr_summary(stderr_lines)
                 suffix = f" ({detail})" if detail else ""
                 self._reset_proc(graceful_shutdown=False)

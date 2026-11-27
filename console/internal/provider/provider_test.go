@@ -6553,3 +6553,17 @@ func TestRPCMissingMarkerCleansUpUploadedFileAndClampsContextDeadline(t *testing
 		}
 	})
 }
+
+func TestProviderReadyWithNilContextDoesNotPanic(t *testing.T) {
+	vault := newMemoryVault()
+	p := NewColabOneProvider(ColabOneProviderConfig{Vault: vault})
+	cancelCh := make(chan struct{})
+	close(cancelCh)
+	// Ready with nil context must default to context.Background() and handle cancellation without panicking.
+	if err := p.Ready(nil, &ColabOneSessionState{URL: "https://example.invalid", Token: "tok"}, nil, cancelCh); err == nil {
+		t.Fatal("expected cancelled Ready(nil, ...) to return an error")
+	}
+	if err := p.Ready(context.Background(), nil, nil, nil); err == nil {
+		t.Fatal("expected Ready with nil session to return an error without panicking")
+	}
+}

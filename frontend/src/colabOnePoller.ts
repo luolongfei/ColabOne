@@ -46,8 +46,12 @@ function defaultSubscribeVisibility(handler: () => void): () => void {
 export function createColabOneVisibilityPoller(
   options: ColabOneVisibilityPollerOptions,
 ): ColabOneVisibilityPoller {
-  const visibleMs = Math.max(50, Math.round(options.visibleMs));
-  const hiddenMs = Math.max(visibleMs, Math.round(options.hiddenMs));
+  const visibleMs = Number.isFinite(options.visibleMs)
+    ? Math.max(50, Math.round(options.visibleMs))
+    : COLABONE_VISIBLE_POLL_MS;
+  const hiddenMs = Number.isFinite(options.hiddenMs)
+    ? Math.max(visibleMs, Math.round(options.hiddenMs))
+    : Math.max(visibleMs, COLABONE_HIDDEN_POLL_MS);
   const isHidden = options.isHidden ?? defaultIsHidden;
   const subscribeVisibility =
     options.subscribeVisibility ?? defaultSubscribeVisibility;
@@ -66,14 +70,17 @@ export function createColabOneVisibilityPoller(
   }
 
   function nextIntervalMs(): number {
-    return isHidden() ? hiddenMs : visibleMs;
+    const raw = isHidden() ? hiddenMs : visibleMs;
+    return Number.isFinite(raw) ? raw : COLABONE_VISIBLE_POLL_MS;
   }
 
   function scheduleNext() {
     if (!running || inFlight) return;
     clearPendingTimer();
+    const scheduledSid = sessionId;
     timer = setTimeout(() => {
       timer = undefined;
+      if (!running || scheduledSid !== sessionId) return;
       void runTick();
     }, nextIntervalMs());
   }
@@ -90,7 +97,9 @@ export function createColabOneVisibilityPoller(
     } finally {
       if (sid === sessionId) {
         inFlight = false;
-        scheduleNext();
+        if (running) {
+          scheduleNext();
+        }
       }
     }
   }
@@ -98,7 +107,11 @@ export function createColabOneVisibilityPoller(
   function handleVisibilityChange() {
     if (!running) return;
     if (!isHidden()) {
-      options.onVisible?.();
+      try {
+        options.onVisible?.();
+      } catch {
+        // Caller owns hook errors; keep the immediate visibility tick resilient.
+      }
       if (!inFlight) {
         void runTick();
       }

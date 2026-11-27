@@ -1,16 +1,20 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1000,5 +1004,569 @@ func TestColabOneDesktopSnapshotEnrichmentAndCommandHooks(t *testing.T) {
 		if s.ID == share.ID && s.OutputCount != 0 {
 			t.Fatalf("expected OutputCount 0 after desktop output delete, got %d", s.OutputCount)
 		}
+	}
+}
+
+func TestColabOneDesktopOutputSharesAndZipExportEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	fakeDist := fstest.MapFS{
+		"index.html":    {Data: []byte("<!doctype html><html><body>ColabOne Gallery OK</body></html>")},
+		"assets/app.js": {Data: []byte("console.log('colabone-gallery');")},
+	}
+
+	const (
+		out1 = "12121212121212121212121212121212"
+		out2 = "34343434343434343434343434343434"
+	)
+	data1 := []byte("DESKTOP-OUTPUT-ONE-PNG")
+	data2 := []byte("DESKTOP-OUTPUT-TWO-MP4")
+
+	var (
+		mu              sync.Mutex
+		observedOpts    []controller.ColabOneOutputMediaOptions
+		streamCalls     int
+	)
+
+	makeDesktop := func() (*ColabOneDesktop, *vault.ColabOneVault) {
+		v := vault.NewFileVault(dir)
+		d := &ColabOneDesktop{
+			bridge: &colabOneBridge{
+				vault: v,
+				factory: func() *controller.ColabOneController {
+					c := newColabOneWiredController("", dir, v, false)
+					c.Update(map[string]any{
+						"runtime": map[string]any{"state": "ready", "id": "rt-gal"},
+						"comfy_outputs": []any{
+							map[string]any{
+								"id":        out1,
+								"filename":  "look.png",
+								"extension": "png",
+								"kind":      "image",
+								"mime":      "image/png",
+								"size":      len(data1),
+								"storage":   "runtime",
+							},
+							map[string]any{
+								"id":        out2,
+								"filename":  "clip.mp4",
+								"extension": "mp4",
+								"kind":      "video",
+								"mime":      "video/mp4",
+								"size":      len(data2),
+								"storage":   "runtime",
+							},
+						},
+					})
+					return c
+				},
+				serveMediaWithOptsFn: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string, opts controller.ColabOneOutputMediaOptions) {
+					mu.Lock()
+					observedOpts = append(observedOpts, opts)
+					mu.Unlock()
+					rw.Header().Set("Content-Type", "image/png")
+					rw.Header().Set("Content-Disposition", `inline; filename="ColabOne-12121212.png"`)
+					rw.WriteHeader(http.StatusOK)
+					_, _ = rw.Write(data1)
+				},
+				streamMediaFn: func(ctx context.Context, id string, w io.Writer, opts controller.ColabOneOutputMediaOptions) (*controller.ColabOneOutputMediaMeta, error) {
+					mu.Lock()
+					streamCalls++
+					mu.Unlock()
+					switch id {
+					case out1:
+						_, err := w.Write(data1)
+						return &controller.ColabOneOutputMediaMeta{ID: id, Filename: "look.png", Extension: "png", Mime: "image/png", Size: int64(len(data1))}, err
+					case out2:
+						_, err := w.Write(data2)
+						return &controller.ColabOneOutputMediaMeta{ID: id, Filename: "clip.mp4", Extension: "mp4", Mime: "video/mp4", Size: int64(len(data2))}, err
+					default:
+						return nil, controller.ErrNotFound
+					}
+				},
+			},
+		}
+		d.initWebConsoleWithFS(dir, v, func() fs.FS { return fakeDist })
+		return d, v
+	}
+
+	d1, _ := makeDesktop()
+	enabled := true
+	var started webconsole.ColabOneWebConsoleState
+	var startErr error
+	for port := 43350; port < 43370; port++ {
+		p := port
+		started, startErr = d1.UpdateWebConsole(webconsole.ColabOneWebConsoleUpdateRequest{
+			Enabled: &enabled,
+			Port:    &p,
+		})
+		if startErr == nil {
+			break
+		}
+	}
+	if startErr != nil || !started.Running {
+		t.Fatalf("start d1 web console failed: running=%v err=%v", started.Running, startErr)
+	}
+
+	if initList := d1.GetOutputSharesState(); len(initList.Shares) != 0 {
+		t.Fatalf("expected 0 initial output shares, got %+v", initList)
+	}
+
+	created, err := d1.CreateOutputShare(webconsole.ColabOneOutputShareCreateRequest{
+		Title:         "客户交付相册",
+		Note:          "包含主图和成片",
+		TTLMode:       webconsole.OutputShareTTL7d,
+		AllowDownload: true,
+		Password:      "Pass2026",
+		Groups: []webconsole.ColabOneOutputShareGroupInput{
+			{ID: "g1", Title: "成片", OutputIDs: []string{out1, out2}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutputShare failed: %v", err)
+	}
+	if !created.HasPassword || created.Password != "Pass2026" || !strings.Contains(created.URL, "/gallery?k=co_gal_") {
+		t.Fatalf("unexpected created output share: %+v", created)
+	}
+
+	jar, _ := cookiejar.New(nil)
+	guestClient := &http.Client{Jar: jar}
+
+	// Open share URL -> receives password unlock SSR page (200).
+	unlockPageResp, err := guestClient.Get(created.URL)
+	if err != nil {
+		t.Fatalf("GET gallery URL: %v", err)
+	}
+	unlockHTMLBytes, _ := io.ReadAll(unlockPageResp.Body)
+	_ = unlockPageResp.Body.Close()
+	if unlockPageResp.StatusCode != http.StatusOK || !strings.Contains(string(unlockHTMLBytes), `data-gallery-unlock="password"`) {
+		t.Fatalf("expected password unlock page, got %d body=%s", unlockPageResp.StatusCode, string(unlockHTMLBytes))
+	}
+
+	// Extract challenge & submit password via JSON POST /gallery/unlock.
+	idx := strings.Index(string(unlockHTMLBytes), `name="challenge" value="`)
+	if idx < 0 {
+		t.Fatalf("missing challenge input in unlock HTML")
+	}
+	rest := string(unlockHTMLBytes)[idx+len(`name="challenge" value="`):]
+	challenge := rest[:strings.IndexByte(rest, '"')]
+
+	unlockReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, started.LocalURL+"/gallery/unlock",
+		strings.NewReader(`{"challenge":"`+challenge+`","password":"Pass2026"}`))
+	unlockReq.Header.Set("Content-Type", "application/json")
+	unlockReq.Header.Set("Accept", "application/json")
+	unlockResp, err := guestClient.Do(unlockReq)
+	if err != nil || unlockResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /gallery/unlock failed: err=%v resp=%v", err, unlockResp)
+	}
+	_ = unlockResp.Body.Close()
+
+	// Guest fetches manifest, media (verifying SanitizeErrors=true & RuntimeOnly=false!), and download.zip.
+	manReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, started.LocalURL+"/api/gallery/manifest", nil)
+	manReq.Header.Set(webconsole.ClientHeaderName, webconsole.OutputShareClientHeaderValue)
+	manResp, err := guestClient.Do(manReq)
+	if err != nil || manResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/gallery/manifest failed: err=%v resp=%v", err, manResp)
+	}
+	_ = manResp.Body.Close()
+
+	mediaResp, err := guestClient.Get(started.LocalURL + "/api/gallery/outputs/" + out1 + "/media")
+	if err != nil || mediaResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET gallery media failed: err=%v resp=%v", err, mediaResp)
+	}
+	_ = mediaResp.Body.Close()
+	mu.Lock()
+	if len(observedOpts) != 1 || observedOpts[0].RuntimeOnly || !observedOpts[0].SanitizeErrors {
+		t.Fatalf("expected gallery media opts RuntimeOnly=false SanitizeErrors=true, got %+v", observedOpts)
+	}
+	mu.Unlock()
+
+	zipResp, err := guestClient.Get(started.LocalURL + "/api/gallery/download.zip")
+	if err != nil || zipResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/gallery/download.zip failed: err=%v resp=%v", err, zipResp)
+	}
+	zipBytes, _ := io.ReadAll(zipResp.Body)
+	_ = zipResp.Body.Close()
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil || len(zr.File) != 2 {
+		t.Fatalf("expected 2 entries in gallery ZIP, got err=%v count=%d", err, len(zr.File))
+	}
+
+	// Test Desktop ExportWorkflowOutputsZip (valid export, cancel dialog, and validation).
+	exportPath := filepath.Join(dir, "exported-album.zip")
+	d1.outputZipSaveDialogFn = func(ctx context.Context, defaultPath string) (string, error) {
+		if !strings.HasSuffix(defaultPath, ".zip") {
+			t.Fatalf("expected .zip default path, got %q", defaultPath)
+		}
+		return exportPath, nil
+	}
+	saved, err := d1.ExportWorkflowOutputsZip(context.Background(), []string{out1, out2}, "秋季样片")
+	if err != nil || saved != exportPath {
+		t.Fatalf("ExportWorkflowOutputsZip failed: saved=%q err=%v", saved, err)
+	}
+	diskZipBytes, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("read exported zip: %v", err)
+	}
+	dzr, err := zip.NewReader(bytes.NewReader(diskZipBytes), int64(len(diskZipBytes)))
+	if err != nil || len(dzr.File) != 2 {
+		t.Fatalf("expected 2 entries in exported desktop ZIP, got err=%v count=%d", err, len(dzr.File))
+	}
+
+	// Cancel dialog returns "" without error.
+	d1.outputZipSaveDialogFn = func(ctx context.Context, defaultPath string) (string, error) {
+		return "", nil
+	}
+	if canceledPath, err := d1.ExportWorkflowOutputsZip(context.Background(), []string{out1}, "cancel"); err != nil || canceledPath != "" {
+		t.Fatalf("canceled ExportWorkflowOutputsZip expected empty path & nil err, got %q err=%v", canceledPath, err)
+	}
+	// Invalid ID rejected cleanly.
+	if _, err := d1.ExportWorkflowOutputsZip(context.Background(), []string{"bad-id"}, "x"); err == nil {
+		t.Fatal("expected error for invalid output ID in ExportWorkflowOutputsZip")
+	}
+
+	// Cold restart: output share, vaulted password, and guest cookie survive!
+	d1.closeWebConsole()
+	d1.bridge.close()
+
+	d2, _ := makeDesktop()
+	t.Cleanup(func() {
+		d2.closeWebConsole()
+		d2.bridge.close()
+	})
+	if err := d2.startWebConsoleIfEnabled(); err != nil {
+		t.Fatalf("startWebConsoleIfEnabled after restart: %v", err)
+	}
+	list2 := d2.GetOutputSharesState()
+	if len(list2.Shares) != 1 || list2.TotalActiveSessions != 1 || list2.Shares[0].Password != "Pass2026" {
+		t.Fatalf("expected persisted share, password & session after restart, got %+v", list2)
+	}
+
+	// Existing guest cookie still accesses manifest after restart!
+	manReq2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, started.LocalURL+"/api/gallery/manifest", nil)
+	manReq2.Header.Set(webconsole.ClientHeaderName, webconsole.OutputShareClientHeaderValue)
+	manResp2, err := guestClient.Do(manReq2)
+	if err != nil || manResp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET manifest after restart failed: err=%v resp=%v", err, manResp2)
+	}
+	_ = manResp2.Body.Close()
+
+	// Revoke & delete via desktop methods immediately kill session and clear vaulted password.
+	revoked, err := d2.RevokeOutputShare(created.ID)
+	if err != nil || revoked.TotalActiveSessions != 0 || revoked.Shares[0].Status != "revoked" || revoked.Shares[0].Password != "" {
+		t.Fatalf("RevokeOutputShare unexpected result: %+v err=%v", revoked, err)
+	}
+	manReq3, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, started.LocalURL+"/api/gallery/manifest", nil)
+	manReq3.Header.Set(webconsole.ClientHeaderName, webconsole.OutputShareClientHeaderValue)
+	manResp3, err := guestClient.Do(manReq3)
+	if err != nil || manResp3.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after RevokeOutputShare, got err=%v resp=%v", err, manResp3)
+	}
+	_ = manResp3.Body.Close()
+
+	deleted, err := d2.DeleteOutputShare(created.ID)
+	if err != nil || len(deleted.Shares) != 0 {
+		t.Fatalf("DeleteOutputShare unexpected result: %+v err=%v", deleted, err)
+	}
+	_ = url.QueryEscape // keep import used cleanly
+}
+
+type testErrorSentinelWriter struct {
+	err error
+}
+
+func (w testErrorSentinelWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestDesktopOpenOutputShareZipAndBridgeHardening(t *testing.T) {
+	dir := t.TempDir()
+	sharedVault := vault.NewMemoryVault()
+	outID := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+
+	fakeDist := fstest.MapFS{
+		"index.html": {Data: []byte("<!doctype html><html><body>OK</body></html>")},
+	}
+	var openedURL string
+	d := &ColabOneDesktop{
+		openExternalFn: func(u string) error {
+			openedURL = u
+			return nil
+		},
+		bridge: &colabOneBridge{
+			vault: sharedVault,
+			factory: func() *controller.ColabOneController {
+				return newColabOneWiredController("", dir, sharedVault, false)
+			},
+		},
+	}
+	t.Cleanup(func() {
+		d.closeWebConsole()
+		d.bridge.close()
+	})
+	d.initWebConsoleWithFS(dir, sharedVault, func() fs.FS { return fakeDist })
+
+	// 1) OpenOutputShare rejects when web console is not running.
+	share, err := d.CreateOutputShare(webconsole.ColabOneOutputShareCreateRequest{
+		Title:         "Desktop Open Test",
+		TTLMode:       webconsole.OutputShareTTL24h,
+		AllowDownload: true,
+		Groups:        []webconsole.ColabOneOutputShareGroupInput{{Title: "G", OutputIDs: []string{outID}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutputShare: %v", err)
+	}
+	if err := d.OpenOutputShare(context.Background(), share.ID); err == nil {
+		t.Fatal("expected OpenOutputShare to reject while web console is stopped")
+	}
+
+	// Start web console on a free port.
+	enabled := true
+	var startErr error
+	for port := 43320; port < 43340; port++ {
+		p := port
+		_, startErr = d.UpdateWebConsole(webconsole.ColabOneWebConsoleUpdateRequest{
+			Enabled: &enabled,
+			Port:    &p,
+		})
+		if startErr == nil {
+			break
+		}
+	}
+	if startErr != nil {
+		t.Fatalf("start web console: %v", startErr)
+	}
+
+	// Invalid ID rejected.
+	if err := d.OpenOutputShare(context.Background(), "bad-id"); err == nil {
+		t.Fatal("expected OpenOutputShare to reject invalid ID")
+	}
+
+	// Active share opens browser with exact URL.
+	if err := d.OpenOutputShare(context.Background(), share.ID); err != nil {
+		t.Fatalf("OpenOutputShare active failed: %v", err)
+	}
+	if !strings.Contains(openedURL, "/gallery?k=co_gal_") {
+		t.Fatalf("expected gallery URL opened, got %q", openedURL)
+	}
+
+	// Revoked share rejected.
+	if _, err := d.RevokeOutputShare(share.ID); err != nil {
+		t.Fatalf("RevokeOutputShare: %v", err)
+	}
+	if err := d.OpenOutputShare(context.Background(), share.ID); err == nil {
+		t.Fatal("expected OpenOutputShare to reject revoked share")
+	}
+
+	// 2) ExportWorkflowOutputsZip rejects Zip-Slip extension and aborts cleanly on context cancellation.
+	zipDest := filepath.Join(dir, "safe-desktop.zip")
+	d.outputZipSaveDialogFn = func(ctx context.Context, defaultPath string) (string, error) {
+		return zipDest, nil
+	}
+	d.bridge.streamMediaFn = func(ctx context.Context, id string, w io.Writer, opts controller.ColabOneOutputMediaOptions) (*controller.ColabOneOutputMediaMeta, error) {
+		if recv, ok := w.(interface{ SetColabOneOutputMeta(string, string, string, string, int64) }); ok {
+			recv.SetColabOneOutputMeta(id, "art", "../../evil", "image/png", 4)
+		}
+		_, wErr := w.Write([]byte("DATA"))
+		return &controller.ColabOneOutputMediaMeta{ID: id, Filename: "art", Extension: "../../evil"}, wErr
+	}
+	savedZip, err := d.ExportWorkflowOutputsZip(context.Background(), []string{outID}, "ZipSlipCheck")
+	if err != nil || savedZip != zipDest {
+		t.Fatalf("ExportWorkflowOutputsZip failed: saved=%q err=%v", savedZip, err)
+	}
+	rawZ, err := os.ReadFile(zipDest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rawZ), int64(len(rawZ)))
+	if err != nil || len(zr.File) != 1 {
+		t.Fatalf("unexpected desktop zip entries: err=%v count=%d", err, len(zr.File))
+	}
+	if strings.Contains(zr.File[0].Name, "..") || strings.Contains(zr.File[0].Name, "/") {
+		t.Fatalf("Zip-Slip extension leaked into desktop ZIP entry name: %q", zr.File[0].Name)
+	}
+
+	// Cancelled context mid-ZIP aborts without leaving a corrupt file at dest.
+	cancelDest := filepath.Join(dir, "canceled.zip")
+	d.outputZipSaveDialogFn = func(ctx context.Context, defaultPath string) (string, error) {
+		return cancelDest, nil
+	}
+	cctx, cancel := context.WithCancel(context.Background())
+	d.bridge.streamMediaFn = func(ctx context.Context, id string, w io.Writer, opts controller.ColabOneOutputMediaOptions) (*controller.ColabOneOutputMediaMeta, error) {
+		_, _ = w.Write([]byte("PART"))
+		cancel()
+		return &controller.ColabOneOutputMediaMeta{ID: id}, context.Canceled
+	}
+	if _, err := d.ExportWorkflowOutputsZip(cctx, []string{outID}, "CancelZip"); err == nil {
+		t.Fatal("expected ExportWorkflowOutputsZip to fail on cancelled context")
+	}
+	if _, err := os.Stat(cancelDest); !os.IsNotExist(err) {
+		t.Fatalf("canceled ExportWorkflowOutputsZip must not leave corrupt file at %s", cancelDest)
+	}
+
+	// 3) sanitizeColabOneDownloadName strips Unicode C1 control characters (U+0085..U+009F).
+	cleaned := sanitizeColabOneDownloadName("photo\u0085\u009fname.png")
+	if strings.ContainsAny(cleaned, "\u0085\u009f") || cleaned != "photoname.png" {
+		t.Fatalf("expected C1 control chars stripped, got %q", cleaned)
+	}
+
+	// 4) colabOneBridge.streamOutputMedia sanitizes secrets in errors while preserving ErrNotFound / writer sentinels.
+	d.bridge.streamMediaFn = nil
+	_, notFoundErr := d.bridge.streamOutputMedia(context.Background(), outID, io.Discard, controller.ColabOneOutputMediaOptions{})
+	if notFoundErr == nil || !errors.Is(notFoundErr, controller.ErrNotFound) {
+		t.Fatalf("expected controller.ErrNotFound preserved, got %v", notFoundErr)
+	}
+	_, sanitizedErr := d.bridge.streamOutputMedia(context.Background(), outID, io.Discard, controller.ColabOneOutputMediaOptions{SanitizeErrors: true})
+	if sanitizedErr == nil || !errors.Is(sanitizedErr, controller.ErrNotFound) || !strings.Contains(sanitizedErr.Error(), "作品不存在") {
+		t.Fatalf("expected sanitized ErrNotFound, got %v", sanitizedErr)
+	}
+	// Test colabOneBridgeTrackingWriter preserves custom writer error.
+	sentinel := io.ErrShortWrite
+	tw := &colabOneBridgeTrackingWriter{w: testErrorSentinelWriter{err: sentinel}}
+	if _, wErr := tw.Write([]byte("x")); wErr != sentinel || tw.writeErr != sentinel {
+		t.Fatalf("expected tracking writer to record sentinel, got err=%v tracked=%v", wErr, tw.writeErr)
+	}
+}
+
+func TestDesktopAuditHardeningOpenOutputShareAndZipWriter(t *testing.T) {
+	// 1) A2 H1: OpenOutputShare scrubs raw & URL-escaped share key from openExternalFn errors.
+	dir := t.TempDir()
+	sharedVault := vault.NewMemoryVault()
+	d := &ColabOneDesktop{
+		bridge: &colabOneBridge{
+			vault: sharedVault,
+			factory: func() *controller.ColabOneController {
+				return newColabOneWiredController("", dir, sharedVault, false)
+			},
+		},
+	}
+	d.initWebConsole(dir, sharedVault)
+	t.Cleanup(func() {
+		d.closeWebConsole()
+		d.bridge.close()
+	})
+	enabled := true
+	var startErr error
+	for port := 43310; port < 43330; port++ {
+		p := port
+		_, startErr = d.UpdateWebConsole(webconsole.ColabOneWebConsoleUpdateRequest{
+			Enabled: &enabled,
+			Port:    &p,
+		})
+		if startErr == nil {
+			break
+		}
+	}
+	if startErr != nil {
+		t.Fatalf("failed to start web console: %v", startErr)
+	}
+	share, err := d.CreateOutputShare(webconsole.ColabOneOutputShareCreateRequest{
+		Title:   "Secret Share",
+		TTLMode: webconsole.OutputShareTTL24h,
+		Groups: []webconsole.ColabOneOutputShareGroupInput{
+			{Title: "G", OutputIDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateOutputShare failed: %v", err)
+	}
+	parsedShareURL, err := url.Parse(share.URL)
+	if err != nil {
+		t.Fatalf("parse share url: %v", err)
+	}
+	shareKey := parsedShareURL.Query().Get("k")
+	called := false
+	d.openExternalFn = func(raw string) error {
+		called = true
+		return errors.New("shell open failed for " + raw + " key=" + shareKey + " escaped=" + url.QueryEscape(shareKey))
+	}
+	openErr := d.OpenOutputShare(context.Background(), share.ID)
+	if !called {
+		t.Fatal("expected OpenOutputShare to invoke openExternalFn")
+	}
+	if openErr == nil {
+		t.Fatal("expected OpenOutputShare error")
+	}
+	if !strings.Contains(openErr.Error(), "shell open failed") {
+		t.Fatalf("expected scrubbed openExternalFn error message, got %q", openErr.Error())
+	}
+	if strings.Contains(openErr.Error(), shareKey) || strings.Contains(openErr.Error(), url.QueryEscape(shareKey)) || strings.Contains(openErr.Error(), "co_gal_") {
+		t.Fatalf("OpenOutputShare error leaked share key: %q", openErr.Error())
+	}
+
+	// 2) A2 M4: Desktop ZIP entry writer MIME fallback, same-MIME jpg/jpeg equivalence, length headroom, and sticky limited writer.
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	used := make(map[string]bool)
+
+	// Same-MIME equivalence: photo.jpeg with extension "jpg" must NOT become photo.jpeg.jpg!
+	ew1 := &colabOneDesktopLazyZipEntryWriter{
+		zw: zw, usedNames: used, outputID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		filename: "photo.jpeg", extension: "jpg",
+	}
+	if name := ew1.allocateUniqueName(); name != "photo.jpeg" {
+		t.Fatalf("expected same-MIME equivalence to preserve photo.jpeg, got %q", name)
+	}
+
+	// MIME fallback when extension is empty.
+	ew2 := &colabOneDesktopLazyZipEntryWriter{
+		zw: zw, usedNames: used, outputID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		filename: "render_v1",
+	}
+	ew2.SetColabOneOutputMeta("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "render_v1", "exe", "image/webp", 10)
+	if name := ew2.allocateUniqueName(); name != "render_v1.webp" {
+		t.Fatalf("expected MIME fallback to append .webp (ignoring bad ext), got %q", name)
+	}
+
+	// Length headroom: very long name + dedup suffix must stay <= maxDownloadNameBytes.
+	longBase := strings.Repeat("a", 250)
+	ew3 := &colabOneDesktopLazyZipEntryWriter{
+		zw: zw, usedNames: used, outputID: "cccccccccccccccccccccccccccccccc",
+		filename: longBase, extension: "png",
+	}
+	n1 := ew3.allocateUniqueName()
+	n2 := ew3.allocateUniqueName()
+	if len(n1) > maxDownloadNameBytes || len(n2) > maxDownloadNameBytes || !strings.HasSuffix(n1, ".png") || !strings.HasSuffix(n2, ".png") {
+		t.Fatalf("expected bounded zip names with .png, got len(%q)=%d len(%q)=%d", n1, len(n1), n2, len(n2))
+	}
+
+	// M2: Secondary truncation must not expose a Windows reserved device name (e.g. CON   ...   x.png).
+	ewRes1 := &colabOneDesktopLazyZipEntryWriter{
+		zw: zw, usedNames: used, outputID: "dddddddddddddddddddddddddddddddd",
+		filename: "CON" + strings.Repeat(" ", 170) + "x.png", extension: "png",
+	}
+	rName1 := ewRes1.allocateUniqueName()
+	if isWindowsReservedDownloadName(rName1) || !strings.HasPrefix(rName1, reservedDownloadPrefix) || !strings.HasSuffix(rName1, ".png") || len(rName1) > maxDownloadNameBytes {
+		t.Fatalf("expected reserved-name prefix after secondary truncation with .png, got %q", rName1)
+	}
+	ewRes2 := &colabOneDesktopLazyZipEntryWriter{
+		zw: zw, usedNames: used, outputID: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		filename: "CON" + strings.Repeat(" ", 166) + "x", extension: "png",
+	}
+	rName2 := ewRes2.allocateUniqueName()
+	if isWindowsReservedDownloadName(rName2) || !strings.HasPrefix(rName2, reservedDownloadPrefix) || !strings.HasSuffix(rName2, ".png") || len(rName2) > maxDownloadNameBytes {
+		t.Fatalf("expected reserved-name prefix after ext-append truncation, got %q", rName2)
+	}
+
+	// L2: audio/wave MIME maps to wav extension.
+	if got := colabOneDesktopExtForMIME("audio/wave"); got != "wav" {
+		t.Fatalf("expected colabOneDesktopExtForMIME(audio/wave) == wav, got %q", got)
+	}
+	_ = zw.Close()
+
+	// Sticky colabOneDesktopLimitedWriter: once exceeded, even 1-byte write continues returning errColabOneDesktopZipLimit.
+	lw := &colabOneDesktopLimitedWriter{w: io.Discard, limit: 10}
+	if _, err := lw.Write(make([]byte, 12)); !errors.Is(err, errColabOneDesktopZipLimit) {
+		t.Fatalf("expected errColabOneDesktopZipLimit, got %v", err)
+	}
+	if _, err := lw.Write([]byte("x")); !errors.Is(err, errColabOneDesktopZipLimit) {
+		t.Fatalf("expected sticky errColabOneDesktopZipLimit after limit exceeded, got %v", err)
+	}
+
+	// 3) A2 L3: writeColabOneMediaError encodes literal '+' as '%2B'.
+	hReq := httptest.NewRequest(http.MethodHead, "/outputs/x", nil)
+	hRec := httptest.NewRecorder()
+	writeColabOneMediaError(hRec, hReq, http.StatusBadRequest, "a+b failed")
+	if hdr := hRec.Header().Get("X-ColabOne-Error"); strings.Contains(hdr, "+") || !strings.Contains(hdr, "%2B") {
+		t.Fatalf("expected '+' escaped as %%2B in writeColabOneMediaError, got %q", hdr)
 	}
 }

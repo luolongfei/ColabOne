@@ -11,6 +11,30 @@ export const COLABONE_LIVE_PLAYER_MAX_PLAYOUT_SEC = 2.5;
 export const COLABONE_LIVE_PLAYER_SUSPENDED_CAP = 5;
 
 /**
+ * Returns true when a getUserMedia error indicates the host machine has no
+ * physical or virtual microphone device attached (common on Windows servers).
+ */
+export function colabOneIsMissingAudioDeviceError(err: unknown): boolean {
+  if (!err) return false;
+  const name =
+    typeof err === "object" && err !== null && "name" in err
+      ? String((err as { name?: unknown }).name || "")
+      : "";
+  const msg =
+    typeof err === "object" && err !== null && "message" in err
+      ? String((err as { message?: unknown }).message || "")
+      : String(err);
+  const combined = `${name} ${msg}`.toLowerCase();
+  return (
+    combined.includes("notfounderror") ||
+    combined.includes("devicesnotfounderror") ||
+    combined.includes("requested device not found") ||
+    combined.includes("no audio input") ||
+    combined.includes("microphone capture is unavailable")
+  );
+}
+
+/**
  * Converts normalized Float32 PCM samples in [-1, 1] into signed 16-bit PCM.
  */
 export function colabOneFloat32ToInt16Pcm(input: Float32Array): Int16Array {
@@ -369,12 +393,15 @@ export class ColabOneLiveMicCapture {
       } catch {
         ctx = new AudioCtxCtor();
       }
-      if (ctx.state === "suspended") {
+      if (ctx.state === "suspended" || (ctx.state as string) === "interrupted") {
         await ctx.resume();
       }
-      if (isAborted() || isAudioContextClosed(ctx)) {
+      if (isAborted()) {
         cleanupLocal();
         return;
+      }
+      if (isAudioContextClosed(ctx)) {
+        throw new Error("AudioContext closed during microphone startup");
       }
 
       const source = ctx.createMediaStreamSource(stream);
@@ -394,13 +421,16 @@ export class ColabOneLiveMicCapture {
         silent,
         gen,
       );
-      if (isAborted() || this.audioCtx !== ctx || isAudioContextClosed(ctx)) {
+      if (isAborted() || this.audioCtx !== ctx) {
         if (this.mediaStream === stream || this.audioCtx === ctx) {
           this.stop();
         } else {
           cleanupLocal();
         }
         return;
+      }
+      if (isAudioContextClosed(ctx)) {
+        throw new Error("AudioContext closed during microphone startup");
       }
       if (!attachedWorklet) {
         this.attachScriptProcessorFallback(ctx, source, silent);
@@ -609,6 +639,11 @@ export class ColabOneLiveMicCapture {
     if (this.audioCtx) {
       const ctx = this.audioCtx;
       this.audioCtx = null;
+      try {
+        ctx.onstatechange = null;
+      } catch {
+        // Ignore teardown errors.
+      }
       void ctx.close().catch(() => {});
     }
     this.onLevel?.(0);
@@ -621,6 +656,7 @@ export interface ColabOneLiveAudioPlayerOptions {
   initialEpoch?: number;
   audioContextFactory?: (sampleRate: number) => AudioContext;
   onPlaybackStateChange?: (playing: boolean) => void;
+  onAudioStateChange?: (state: AudioContextState) => void;
 }
 
 interface ScheduledSourceEntry {
@@ -640,6 +676,7 @@ export class ColabOneLiveAudioPlayer {
   private readonly fadeOutMs: number;
   private readonly audioContextFactory?: (sampleRate: number) => AudioContext;
   private readonly onPlaybackStateChange?: (playing: boolean) => void;
+  private readonly onAudioStateChange?: (state: AudioContextState) => void;
 
   private audioCtx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -665,6 +702,7 @@ export class ColabOneLiveAudioPlayer {
     this.currentEpoch = options.initialEpoch ?? 0;
     this.audioContextFactory = options.audioContextFactory;
     this.onPlaybackStateChange = options.onPlaybackStateChange;
+    this.onAudioStateChange = options.onAudioStateChange;
   }
 
   getCurrentEpoch(): number {
@@ -715,14 +753,26 @@ export class ColabOneLiveAudioPlayer {
     this.audioCtx = ctx;
     this.masterGain = master;
     this.epochGain = epochNode;
+    try {
+      ctx.onstatechange = () => {
+        if (this.destroyed || this.audioCtx !== ctx) return;
+        this.onAudioStateChange?.(ctx.state);
+        if (ctx.state === "running") {
+          this.resumeAttemptedWhileSuspended = false;
+          this.flushSuspendedQueue();
+        }
+      };
+    } catch {
+      // Ignore read-only onstatechange in minimal mock AudioContexts.
+    }
     return ctx;
   }
 
   async resume(): Promise<void> {
     const ctx = this.ensureContext();
-    if (!ctx) return;
+    if (!ctx || ctx.state === "closed") return;
     this.resumeAttemptedWhileSuspended = false;
-    if (ctx.state === "suspended") {
+    if (ctx.state !== "running") {
       await ctx.resume();
     }
     if (!this.destroyed && ctx.state === "running") {
@@ -854,7 +904,7 @@ export class ColabOneLiveAudioPlayer {
         epoch: this.currentEpoch,
         pcm: new Int16Array(pcmInt16),
       });
-      if (ctx.state === "suspended" && !this.resumeAttemptedWhileSuspended) {
+      if (!this.resumeAttemptedWhileSuspended) {
         this.resumeAttemptedWhileSuspended = true;
         void ctx
           .resume()
@@ -904,10 +954,14 @@ export class ColabOneLiveAudioPlayer {
     const oldSources = Array.from(this.activeSources);
     this.activeSources.clear();
 
-    if (!ctx || !oldGain || !this.masterGain) {
+    if (!ctx || !oldGain || !this.masterGain || ctx.state === "closed") {
       if (oldSources.length > 0) {
         this.onPlaybackStateChange?.(false);
       }
+      return;
+    }
+
+    if (oldSources.length === 0) {
       return;
     }
 
@@ -1041,6 +1095,11 @@ export class ColabOneLiveAudioPlayer {
     if (this.audioCtx) {
       const ctx = this.audioCtx;
       this.audioCtx = null;
+      try {
+        ctx.onstatechange = null;
+      } catch {
+        // Ignore teardown errors.
+      }
       void ctx.close().catch(() => {});
     }
     this.onPlaybackStateChange?.(false);

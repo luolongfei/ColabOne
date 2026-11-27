@@ -11,13 +11,16 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
+import tempfile
 import threading
 import time
 import uuid
 import copy
 import weakref
+from contextlib import nullcontext
 from functools import wraps
 from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
@@ -31,9 +34,16 @@ from common.comfyui import (
     WorkflowOutputRecord,
     WorkflowRunRequest,
     WorkflowTemplate,
+    apply_workflow_overrides,
+    extract_workflow_fields,
     validate_colabone_hf_token,
 )
-from common.files import atomic_json, colabone_service_revision
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    atomic_json,
+    colabone_sanitized_subprocess_env,
+    colabone_service_revision,
+)
 from common.live_studio import (
     ColabOneLiveAvatarManifest,
     validate_colabone_live_relative_path,
@@ -59,25 +69,11 @@ from server.download import (
 
 _UNSET = object()
 
-_SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset(
-    {
-        "COLABONE_REMOTE_CONFIG",
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HF_API_TOKEN",
-        "OPENAI_API_KEY",
-        "TUNNEL_TOKEN",
-    }
-)
+_SENSITIVE_SUBPROCESS_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
 
 
 def _sanitized_subprocess_env() -> dict[str, str]:
-    return {
-        k: v
-        for k, v in os.environ.items()
-        if k not in _SENSITIVE_SUBPROCESS_ENV_KEYS and not k.startswith("TUNNEL_")
-    }
+    return colabone_sanitized_subprocess_env()
 
 
 def _create_http_session() -> requests.Session:
@@ -490,7 +486,11 @@ class ColabOneRuntime:
                 pass
 
     def busy(
-        self, *, _use_cached_queue: bool = False, _ignore_live_starting: bool = False
+        self,
+        *,
+        _use_cached_queue: bool = False,
+        _ignore_live_starting: bool = False,
+        _ignore_task_id: str | None = None,
     ):
         held_fn = getattr(self.lock, "held_by_current_thread", None)
         already_locked = bool(held_fn()) if callable(held_fn) else False
@@ -498,7 +498,10 @@ class ColabOneRuntime:
             if self._live_starting and not _ignore_live_starting:
                 return True
             tasks = list(self.tasks.values())
-        if any(t.state == "running" for t in tasks):
+        if any(
+            t.state == "running" and (_ignore_task_id is None or t.id != _ignore_task_id)
+            for t in tasks
+        ):
             return True
         if self.comfy.is_running():
             try:
@@ -866,17 +869,44 @@ class ColabOneRuntime:
                         done_payload["download"] = transfer_snap
                     t.emit("done", done_payload)
                 should_trigger_auto_release = False
-                if (
-                    final_state == "completed"
-                    and kind == "comfyui_run"
-                    and not getattr(t, "skip_auto_release", False)
-                ):
-                    with self.lock:
-                        should_trigger_auto_release = bool(
-                            self._pending_workflow_auto_release
-                            and self._workflow_auto_release.get("enabled")
-                            and self._workflow_auto_release.get("task_id") in ("", t.id)
-                        )
+                if kind == "comfyui_run" and not getattr(t, "skip_auto_release", False):
+                    if final_state == "completed":
+                        with self.lock:
+                            should_trigger_auto_release = bool(
+                                self._pending_workflow_auto_release
+                                and self._workflow_auto_release.get("enabled")
+                                and self._workflow_auto_release.get("task_id") in ("", t.id)
+                            )
+                    else:
+                        with self.lock:
+                            bound_tid = self._workflow_auto_release.get("task_id")
+                            if bound_tid == t.id or (
+                                bound_tid == ""
+                                and (
+                                    self._pending_workflow_auto_release
+                                    or self._workflow_auto_release.get("enabled")
+                                )
+                            ):
+                                cur_ar_state = str(
+                                    self._workflow_auto_release.get("state") or ""
+                                )
+                                if (
+                                    self._pending_workflow_auto_release
+                                    or self._workflow_auto_release.get("enabled")
+                                    or cur_ar_state in ("armed", "syncing", "releasing")
+                                ):
+                                    self._pending_workflow_auto_release = False
+                                    self._workflow_auto_release["enabled"] = False
+                                    self._workflow_auto_release["state"] = "skipped"
+                                    self._workflow_auto_release["error"] = ""
+                                    self._workflow_auto_release["message"] = (
+                                        "工作流已取消，已保留当前实例"
+                                        if final_state == "cancelled"
+                                        else "工作流未成功完成，已保留当前实例"
+                                    )
+                                    self._workflow_auto_release["updated_at"] = (
+                                        time.time()
+                                    )
                 if should_trigger_auto_release:
                     threading.Thread(
                         target=self._execute_pending_workflow_auto_release,
@@ -1917,7 +1947,31 @@ class ColabOneRuntime:
             task.check()
             task.note(f"启动 llama.cpp：{plan_label}")
             effective_ctx = self._plan_context_length(args, m.context_length)
-            with log.open("wb") as stream:
+            if log.is_symlink():
+                raise ValueError("推理引擎日志文件不能是符号链接")
+            log_flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_TRUNC
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                log_fd = os.open(log, log_flags, 0o600)
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise ValueError("推理引擎日志文件不能是符号链接") from None
+                raise
+            try:
+                st = os.fstat(log_fd)
+                if not stat.S_ISREG(st.st_mode):
+                    raise ValueError("推理引擎日志路径必须是普通文件")
+                if hasattr(os, "fchmod"):
+                    os.fchmod(log_fd, 0o600)
+                log_stream = os.fdopen(log_fd, "wb")
+            except BaseException:
+                os.close(log_fd)
+                raise
+            with log_stream as stream:
                 proc = self._start_engine(
                     task,
                     args,
@@ -1930,10 +1984,41 @@ class ColabOneRuntime:
             attempt_detail = ""
 
             def _read_engine_log() -> str:
+                max_bytes = 32768
+                log_fd = -1
                 try:
-                    return log.read_text(errors="replace")[-32768:]
+                    if log.is_symlink():
+                        return ""
+                    log_fd = os.open(
+                        str(log),
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    )
+                    st = os.fstat(log_fd)
+                    if not stat.S_ISREG(st.st_mode):
+                        return ""
+                    truncated = False
+                    if st.st_size > max_bytes:
+                        os.lseek(log_fd, -max_bytes, os.SEEK_END)
+                        truncated = True
+                    with os.fdopen(log_fd, "rb") as lf:
+                        log_fd = -1
+                        raw = lf.read(max_bytes)
+                    if truncated and raw:
+                        idx = 0
+                        n = len(raw)
+                        while idx < n and (raw[idx] & 0xC0) == 0x80:
+                            idx += 1
+                        if idx:
+                            raw = raw[idx:]
+                    return raw.decode("utf-8", errors="replace")
                 except OSError:
                     return ""
+                finally:
+                    if log_fd >= 0:
+                        try:
+                            os.close(log_fd)
+                        except OSError:
+                            pass
 
             try:
                 load_started = time.monotonic()
@@ -2773,13 +2858,24 @@ class ColabOneRuntime:
                     try:
                         self._stop_live_for_exclusive_gpu("comfyui_run", task=task)
                         result = self.comfy.run_workflow(task, req)
+                        task.check()
+                        if not skip_auto_release:
+                            self._finalize_comfyui_workflow_auto_release(task)
+                        task.check()
                     except ColabOneCancelledError:
                         if not skip_auto_release:
                             with self.lock:
                                 if (
-                                    self._workflow_auto_release.get("enabled")
-                                    and self._workflow_auto_release.get("task_id")
+                                    self._workflow_auto_release.get("task_id")
                                     in ("", task.id)
+                                    and (
+                                        self._pending_workflow_auto_release
+                                        or self._workflow_auto_release.get("enabled")
+                                        or str(
+                                            self._workflow_auto_release.get("state") or ""
+                                        )
+                                        in ("armed", "syncing", "releasing")
+                                    )
                                 ):
                                     self._pending_workflow_auto_release = False
                                     self._workflow_auto_release["enabled"] = False
@@ -2794,9 +2890,16 @@ class ColabOneRuntime:
                         if not skip_auto_release:
                             with self.lock:
                                 if (
-                                    self._workflow_auto_release.get("enabled")
-                                    and self._workflow_auto_release.get("task_id")
+                                    self._workflow_auto_release.get("task_id")
                                     in ("", task.id)
+                                    and (
+                                        self._pending_workflow_auto_release
+                                        or self._workflow_auto_release.get("enabled")
+                                        or str(
+                                            self._workflow_auto_release.get("state") or ""
+                                        )
+                                        in ("armed", "syncing", "releasing")
+                                    )
                                 ):
                                     self._pending_workflow_auto_release = False
                                     self._workflow_auto_release["enabled"] = False
@@ -2813,9 +2916,6 @@ class ColabOneRuntime:
                         if scrubbed != raw_msg:
                             raise RuntimeError(scrubbed) from None
                         raise
-                    task.check()
-                    if not skip_auto_release:
-                        self._finalize_comfyui_workflow_auto_release(task)
                     return result
 
                 try:
@@ -3133,51 +3233,78 @@ class ColabOneRuntime:
                 raise ColabOneConflictError("实例正在准备释放")
             if self.busy():
                 raise ColabOneConflictError("请先等待当前任务完成或停止后再启动实时演播")
-            self._live_starting = True
+
+        payload = (
+            config.model_dump()
+            if hasattr(config, "model_dump")
+            else dict(config or {})
+        )
+        cfg_view = (
+            payload.get("config")
+            if isinstance(payload.get("config"), dict)
+            else (
+                payload.get("session")
+                if isinstance(payload.get("session"), dict)
+                else payload
+            )
+        )
+        raw_secrets = self._extract_live_secrets(payload)
+        llm_mode = str(cfg_view.get("llm_mode") or "local_gguf").strip().lower()
+        tts_engine = str(cfg_view.get("tts_engine") or "qwen3_tts").strip() or "qwen3_tts"
+        canvas_config = payload.get("canvas_config")
+
+        # 1. Fail-fast VRAM & input preflight synchronously BEFORE submitting async task.
         try:
-            payload = (
-                config.model_dump()
-                if hasattr(config, "model_dump")
-                else dict(config or {})
-            )
-            cfg_view = (
-                payload.get("config")
-                if isinstance(payload.get("config"), dict)
-                else (
-                    payload.get("session")
-                    if isinstance(payload.get("session"), dict)
-                    else payload
+            gpu = self.gpu_info()
+            loaded_vram_mib = self._loaded_model_vram_mib()
+            if llm_mode == "local_gguf":
+                vram = self.live.check_vram(
+                    payload, gpu, loaded_model_vram_mib=loaded_vram_mib
                 )
-            )
-            raw_secrets = self._extract_live_secrets(payload)
-            llm_mode = str(cfg_view.get("llm_mode") or "local_gguf").strip().lower()
-            canvas_config = payload.get("canvas_config")
+                if not vram.get("ok"):
+                    raise ValueError(self._format_live_vram_error(vram))
+            else:
+                vram_solo = self.live.check_vram(
+                    payload, gpu, loaded_model_vram_mib=0
+                )
+                if not vram_solo.get("ok"):
+                    raise ValueError(self._format_live_vram_error(vram_solo))
+            portrait_input_id = str(cfg_view.get("portrait_input_id") or "").strip()
+            if (
+                portrait_input_id
+                and callable(getattr(self.live, "_resolve_portrait_input_path", None))
+                and self.live._resolve_portrait_input_path(portrait_input_id) is None
+            ):
+                raise ValueError("人像输入文件不存在或已失效，请重新上传")
+            avatar_id = str(cfg_view.get("avatar_id") or "").strip()
+            if avatar_id and callable(getattr(self.live, "get_avatar", None)):
+                self.live.get_avatar(avatar_id)
+        except ColabOneConflictError:
+            raise
+        except ValueError as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            if scrubbed != raw_msg:
+                raise ValueError(scrubbed) from None
+            raise
+        except KeyError:
+            raise
+        except Exception as exc:
+            raw_msg = str(exc) or type(exc).__name__
+            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+            if scrubbed != raw_msg:
+                raise RuntimeError(scrubbed) from None
+            raise
+
+        def _execute(task: ColabOneTask) -> None:
+            task.update(progress=0.02, message="正在检查并准备实时演播依赖环境...")
+            if callable(getattr(self.live, "mark_starting", None)):
+                self.live.mark_starting()
             try:
-                # 1. Fail-fast VRAM preflight BEFORE stopping any running workload.
-                gpu = self.gpu_info()
-                loaded_vram_mib = self._loaded_model_vram_mib()
-                need_unload_llm = False
-                if llm_mode == "local_gguf":
-                    vram = self.live.check_vram(
-                        payload, gpu, loaded_model_vram_mib=loaded_vram_mib
-                    )
-                    if not vram.get("ok"):
-                        raise ValueError(self._format_live_vram_error(vram))
-                else:
-                    vram_solo = self.live.check_vram(
-                        payload, gpu, loaded_model_vram_mib=0
-                    )
-                    if not vram_solo.get("ok"):
-                        raise ValueError(self._format_live_vram_error(vram_solo))
-                    if self.loaded or self.proc:
-                        vram_with_llm = self.live.check_vram(
-                            payload, gpu, loaded_model_vram_mib=loaded_vram_mib
-                        )
-                        if not (
-                            vram_with_llm.get("ok")
-                            and vram_with_llm.get("can_co_locate_llm")
-                        ):
-                            need_unload_llm = True
+                task.check()
+                with self.lock:
+                    if self.quiescing or self.stopping.is_set():
+                        raise ColabOneCancelledError("实例正在准备释放")
 
                 # 2. Stop offline ComfyUI (process + tasks + warm TTS) BEFORE acquiring
                 #    _live_lifecycle_lock so _live_lifecycle_lock and _comfy_lifecycle_lock
@@ -3199,6 +3326,11 @@ class ColabOneRuntime:
                     or self.comfy.proc is not None
                     or has_comfy_task
                 ):
+                    task.update(
+                        progress=0.04,
+                        message="正在停止离线 ComfyUI 以释放显存...",
+                        monotonic_progress=True,
+                    )
                     self._stop_comfy_process_only()
                 elif callable(
                     getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
@@ -3207,12 +3339,26 @@ class ColabOneRuntime:
                         "live_studio_start"
                     )
 
-                # 3. Acquire _live_lifecycle_lock to re-evaluate VRAM/LLM state and start Live Studio.
+                task.check()
+                with self.lock:
+                    if self.quiescing or self.stopping.is_set():
+                        raise ColabOneCancelledError("实例正在准备释放")
+
+                # 3. Auto-provision missing streaming TTS venv/weights and best-effort ASR
+                #    OUTSIDE _live_lifecycle_lock so cancellation and prepare_release never block.
+                ensure_fn = getattr(self.live, "ensure_session_dependencies", None)
+                if callable(ensure_fn):
+                    ensure_fn(task, payload)
+
+                task.check()
+
+                # 4. Acquire _live_lifecycle_lock to re-evaluate VRAM/LLM state and start Live Studio.
                 with self._live_lifecycle_lock:
+                    task.check()
                     with self.lock:
                         if self.quiescing or self.stopping.is_set():
-                            raise ColabOneConflictError("实例正在准备释放")
-                        if self.busy(_ignore_live_starting=True):
+                            raise ColabOneCancelledError("实例正在准备释放")
+                        if self.busy(_ignore_live_starting=True, _ignore_task_id=task.id):
                             raise ColabOneConflictError(
                                 "请先等待当前任务完成或停止后再启动实时演播"
                             )
@@ -3242,56 +3388,117 @@ class ColabOneRuntime:
                             ):
                                 need_unload_llm = True
                     if need_unload_llm:
+                        task.update(
+                            progress=0.89,
+                            message="正在卸载本地大语言模型以腾出直播显存...",
+                            monotonic_progress=True,
+                        )
                         self._stop_engine()
                         loaded_vram_mib = 0
                         gpu_now = self.gpu_info()
 
+                    task.check()
                     started_canvas_here = False
                     if (
                         isinstance(canvas_config, dict)
                         and canvas_config
                         and not self.comfy.canvas.enabled
                     ):
+                        task.update(
+                            progress=0.89,
+                            message="正在拉起 ComfyUI 固定隧道...",
+                            monotonic_progress=True,
+                        )
                         self.comfy.canvas.start(canvas_config)
                         started_canvas_here = True
 
+                    live_started_here = False
                     try:
-                        result = self.live.start(
-                            payload,
-                            gpu_info=gpu_now,
-                            loaded_model_vram_mib=loaded_vram_mib,
-                            on_activity=self.touch,
-                        )
-                    except Exception:
+                        start_kwargs: dict[str, object] = {
+                            "gpu_info": gpu_now,
+                            "loaded_model_vram_mib": loaded_vram_mib,
+                            "on_activity": self.touch,
+                        }
+                        try:
+                            sig = inspect.signature(self.live.start)
+                            has_varkw = any(
+                                p.kind == inspect.Parameter.VAR_KEYWORD
+                                for p in sig.parameters.values()
+                            )
+                            if has_varkw or "task" in sig.parameters:
+                                start_kwargs["task"] = task
+                            if has_varkw or "auto_provision" in sig.parameters:
+                                start_kwargs["auto_provision"] = False
+                            if has_varkw or "prewarm_tts" in sig.parameters:
+                                start_kwargs["prewarm_tts"] = True
+                        except (TypeError, ValueError):
+                            pass
+
+                        self.live.start(payload, **start_kwargs)
+                        live_started_here = True
+                        task.check()
+                        with self.lock:
+                            if self.quiescing or self.stopping.is_set():
+                                raise ColabOneCancelledError("实例正在准备释放")
+                    except BaseException:
+                        if live_started_here:
+                            try:
+                                self.live.stop()
+                            except Exception:
+                                pass
                         if started_canvas_here:
                             try:
                                 self.comfy.canvas.stop()
                             except Exception:
                                 pass
                         raise
-                self.touch()
-                return result
-            except ColabOneConflictError:
-                raise
-            except ValueError as exc:
-                raw_msg = str(exc) or type(exc).__name__
-                scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
-                if scrubbed != raw_msg:
-                    raise ValueError(scrubbed) from None
-                raise
-            except KeyError:
+                task.check()
+                try:
+                    self.touch()
+                except ColabOneConflictError:
+                    with self._live_lifecycle_lock:
+                        try:
+                            self.live.stop()
+                        except Exception:
+                            pass
+                    raise ColabOneCancelledError("实例正在准备释放") from None
+                task.check()
+                task.update(progress=1.0, message="实时演播服务已就绪", transfer=None)
+            except ColabOneCancelledError:
+                task.update(transfer=None)
+                with self._live_lifecycle_lock:
+                    if callable(getattr(self.live, "mark_stopped_clean", None)):
+                        self.live.mark_stopped_clean()
                 raise
             except Exception as exc:
+                task.update(transfer=None)
                 raw_msg = str(exc) or type(exc).__name__
                 scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
-                if scrubbed != raw_msg:
-                    raise RuntimeError(scrubbed) from None
-                raise
-        finally:
-            with self.lock:
-                self._live_starting = False
+                if callable(getattr(self.live, "mark_start_error", None)):
+                    self.live.mark_start_error(scrubbed)
+                if isinstance(exc, ValueError):
+                    raise ValueError(scrubbed) from None
+                if isinstance(exc, ColabOneConflictError):
+                    raise ColabOneConflictError(scrubbed) from None
+                raise RuntimeError(scrubbed) from None
+
+        return self.submit("live_start", tts_engine, _execute)
 
     def stop_live_studio(self) -> dict:
+        with self.lock:
+            starting_tasks = [
+                t
+                for t in self.tasks.values()
+                if t.state == "running" and t.kind == "live_start"
+            ]
+        for task in starting_tasks:
+            task.request_cancel()
+        if starting_tasks:
+            deadline = time.monotonic() + 10.0
+            while any(t.state == "running" for t in starting_tasks):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
         with self._live_lifecycle_lock:
             result = self.live.stop()
         with self.lock:
@@ -3305,6 +3512,18 @@ class ColabOneRuntime:
         self.touch()
         canvas_base_url = self.comfy.canvas.public_origin()
         return self.live.issue_session_token(canvas_base_url=canvas_base_url)
+
+    def live_companion_ticket(self) -> dict:
+        with self.lock:
+            if self.quiescing or self.stopping.is_set():
+                raise ColabOneConflictError("实例正在准备释放")
+        self.touch()
+        canvas_base_url = self.comfy.canvas.public_origin()
+        return self.live.issue_companion_ticket(canvas_base_url=canvas_base_url)
+
+    def live_companion_disconnect(self) -> dict:
+        self.touch()
+        return self.live.revoke_companion()
 
     def live_test_external_llm(self, config: dict) -> dict:
         self.touch()
@@ -3337,6 +3556,9 @@ class ColabOneRuntime:
             else dict(payload or {})
         )
         saved = self.live.save_avatar(data)
+        saved_id = str(saved.get("id") or "").strip() if isinstance(saved, dict) else ""
+        if saved_id:
+            self._forget_reconciled_tombstone("live_avatar", saved_id)
         self._mark_dirty("live-avatars")
         return saved
 
@@ -3348,11 +3570,112 @@ class ColabOneRuntime:
                 if not (entry[0] == kind and entry[1] == item_id)
             }
 
+    def _record_reconciled_tombstone_paths(
+        self, kind: str, item_id: str, paths: list[Path]
+    ) -> None:
+        max_mtime_ns: int | None = None
+        for p in paths:
+            try:
+                if p.is_symlink() or not p.exists():
+                    continue
+                mtime_ns = p.stat().st_mtime_ns
+                if max_mtime_ns is None or mtime_ns > max_mtime_ns:
+                    max_mtime_ns = mtime_ns
+            except OSError:
+                continue
+        if max_mtime_ns is not None:
+            with self.lock:
+                self._reconciled_tombstones.add((kind, item_id, max_mtime_ns))
+
+    def _on_workflow_saved(self, workflow_id: str) -> None:
+        self._forget_reconciled_tombstone("workflow", workflow_id)
+        self._mark_dirty("workflow:" + workflow_id)
+
+    def _on_workflow_deleted(self, workflow_id: str) -> None:
+        self._forget_reconciled_tombstone("workflow", workflow_id)
+        if not self.sync_lock.acquire(timeout=2.0):
+            return
+        try:
+            wf_dir = self.root / "workflows"
+            live_path = wf_dir / f"{workflow_id}.json"
+            trash_dir = wf_dir / ".trash"
+            trash_path = trash_dir / f"{workflow_id}.json"
+            if (
+                live_path.exists()
+                or trash_dir.is_symlink()
+                or not trash_dir.is_dir()
+                or trash_path.is_symlink()
+                or not trash_path.exists()
+            ):
+                return
+            ok = self.drive.remove_remote_workflow(workflow_id)
+            if ok:
+                self._record_reconciled_tombstone_paths(
+                    "workflow",
+                    workflow_id,
+                    [trash_path],
+                )
+        finally:
+            self.sync_lock.release()
+
+    def _on_comfy_output_deleted(self, identity: str, ext: str) -> None:
+        self._forget_reconciled_tombstone("comfy_output", identity)
+        if not self.sync_lock.acquire(timeout=2.0):
+            return
+        try:
+            out_dir = self.root / "comfyui-outputs"
+            out_trash = out_dir / ".trash"
+            trash_paths = [
+                out_trash / f"{identity}.{ext}",
+                out_trash / f"{identity}.json",
+            ]
+            if (
+                (out_dir / f"{identity}.json").exists()
+                or (out_dir / f"{identity}.{ext}").exists()
+                or out_trash.is_symlink()
+                or not out_trash.is_dir()
+                or not any(
+                    not p.is_symlink() and p.exists() for p in trash_paths
+                )
+            ):
+                return
+            ok = self.drive.remove_remote_comfy_output(identity, ext)
+            if ok:
+                self._record_reconciled_tombstone_paths(
+                    "comfy_output",
+                    identity,
+                    trash_paths,
+                )
+        finally:
+            self.sync_lock.release()
+
     def delete_live_avatar(self, avatar_id: str) -> None:
+        avatar_id = str(avatar_id).strip()
         self.touch()
         self.live.delete_avatar(avatar_id)
         self._forget_reconciled_tombstone("live_avatar", avatar_id)
-        self.drive.trash_live_avatar(avatar_id)
+        if self.sync_lock.acquire(timeout=2.0):
+            try:
+                base_dir = self.root / "live-avatars"
+                live_path = base_dir / avatar_id
+                trash_dir = base_dir / ".trash"
+                trash_path = trash_dir / avatar_id
+                if (
+                    not live_path.exists()
+                    and not trash_dir.is_symlink()
+                    and trash_dir.is_dir()
+                    and not trash_path.is_symlink()
+                    and trash_path.exists()
+                ):
+                    ok = self.drive.trash_live_avatar(avatar_id)
+                    if ok:
+                        self._record_reconciled_tombstone_paths(
+                            "live_avatar",
+                            avatar_id,
+                            [trash_path],
+                        )
+            finally:
+                self.sync_lock.release()
         self._mark_dirty("live-avatars")
 
     def upload_live_avatar_clip(self, avatar_id: str, payload: dict) -> dict:
@@ -3374,14 +3697,39 @@ class ColabOneRuntime:
             else dict(payload or {})
         )
         result = self.live.upload_driving_motion(data)
+        saved_id = str(result.get("id") or "").strip() if isinstance(result, dict) else ""
+        if saved_id:
+            self._forget_reconciled_tombstone("live_driving_motion", saved_id)
         self._mark_dirty("live-driving-motions")
         return result
 
     def delete_live_driving_motion(self, motion_id: str) -> None:
+        motion_id = str(motion_id).strip()
         self.touch()
         self.live.delete_driving_motion(motion_id)
         self._forget_reconciled_tombstone("live_driving_motion", motion_id)
-        self.drive.trash_live_driving_motion(motion_id)
+        if self.sync_lock.acquire(timeout=2.0):
+            try:
+                base_dir = self.root / "live-driving-motions"
+                live_path = base_dir / motion_id
+                trash_dir = base_dir / ".trash"
+                trash_path = trash_dir / motion_id
+                if (
+                    not live_path.exists()
+                    and not trash_dir.is_symlink()
+                    and trash_dir.is_dir()
+                    and not trash_path.is_symlink()
+                    and trash_path.exists()
+                ):
+                    ok = self.drive.trash_live_driving_motion(motion_id)
+                    if ok:
+                        self._record_reconciled_tombstone_paths(
+                            "live_driving_motion",
+                            motion_id,
+                            [trash_path],
+                        )
+            finally:
+                self.sync_lock.release()
         self._mark_dirty("live-driving-motions")
 
     def build_live_avatar_pack(self, payload: dict) -> dict:
@@ -3452,14 +3800,17 @@ class ColabOneRuntime:
                     )
 
                 wf_id = ""
+                wf = None
                 for candidate_wf_id in ("live-avatar-motion", "live_avatar_motion"):
                     try:
-                        if self.comfy.store.get_workflow(candidate_wf_id) is not None:
+                        cand_wf = self.comfy.store.get_workflow(candidate_wf_id)
+                        if cand_wf is not None:
                             wf_id = candidate_wf_id
+                            wf = cand_wf
                             break
                     except KeyError:
                         continue
-                if not wf_id:
+                if not wf_id or not isinstance(wf, dict):
                     raise RuntimeError(
                         "尚未配置离线动作生成工作流（live-avatar-motion），无法通过 ComfyUI 自动生成动作片段；"
                         "请先在 ComfyUI 导入动作生成工作流，或直接上传录制好的 MP4 动作片段"
@@ -3469,61 +3820,350 @@ class ColabOneRuntime:
 
                 portrait_b64 = base64.b64encode(p_path.read_bytes()).decode("ascii")
                 saved_in = self.comfy.store.save_input(p_path.name, portrait_b64)
-                meta_dict = action_meta or {}
-                run_req = WorkflowRunRequest(
-                    workflow_id=wf_id,
-                    overrides={
-                        "action_id": action_id,
-                        "prompt": str(
-                            meta_dict.get("prompt_hint")
-                            or meta_dict.get("label")
-                            or action_id
-                        ),
-                        "resolution": eff_resolution,
-                        "fps": eff_fps,
-                    },
-                    inputs={"portrait": saved_in["id"]},
-                    hf_token=eff_hf_token,
-                )
-                wf_outputs = self.comfy.run_workflow(active_task, run_req)
-                out_list = (
-                    wf_outputs
-                    if isinstance(wf_outputs, list)
-                    else (
-                        wf_outputs.get("outputs", [])
-                        if isinstance(wf_outputs, dict)
-                        else []
+                saved_in_id = str(saved_in.get("id") or "")
+                uploaded_io_in_name = ""
+                io_out_cleanup_items: list[tuple[str, str]] = []
+                pre_existing_io_out: dict[str, tuple[int, int]] = {}
+                prompt_started_ns = time.time_ns()
+                try:
+                    raw_fields = wf.get("fields") or []
+                    if not raw_fields and isinstance(wf.get("workflow"), dict):
+                        raw_fields = [
+                            f.model_dump()
+                            for f in extract_workflow_fields(wf["workflow"])
+                        ]
+                    norm_fields: list[dict] = [
+                        (f.model_dump() if hasattr(f, "model_dump") else dict(f))
+                        for f in raw_fields
+                        if isinstance(f, dict) or hasattr(f, "model_dump")
+                    ]
+
+                    portrait_key = ""
+                    prompt_key = ""
+                    width_key = ""
+                    height_key = ""
+                    resolution_key = ""
+                    fps_key = ""
+                    action_id_key = ""
+
+                    for fld in norm_fields:
+                        fkey = str(fld.get("key") or "").strip()
+                        ftype = str(fld.get("field_type") or "").strip().lower()
+                        fname_l = str(fld.get("input_name") or "").strip().lower()
+                        flabel_l = str(fld.get("label") or "").strip().lower()
+                        if "." not in fkey:
+                            continue
+                        if ftype == "image":
+                            if not portrait_key or "portrait" in fname_l:
+                                portrait_key = fkey
+                        elif ftype in ("textarea", "text"):
+                            is_neg = (
+                                "negative" in fname_l
+                                or "negative" in flabel_l
+                                or "反向" in flabel_l
+                                or "负向" in flabel_l
+                            )
+                            if fname_l in ("action_id", "action") and not action_id_key:
+                                action_id_key = fkey
+                            elif fname_l == "resolution" and not resolution_key:
+                                resolution_key = fkey
+                            elif not is_neg and not prompt_key:
+                                prompt_key = fkey
+                        elif ftype in ("integer", "number"):
+                            if fname_l == "width" and not width_key:
+                                width_key = fkey
+                            elif fname_l == "height" and not height_key:
+                                height_key = fkey
+                            elif fname_l in ("fps", "frame_rate") and not fps_key:
+                                fps_key = fkey
+                        elif ftype == "select":
+                            if fname_l == "resolution" and not resolution_key:
+                                resolution_key = fkey
+                            elif fname_l in ("action_id", "action") and not action_id_key:
+                                action_id_key = fkey
+
+                    meta_dict = action_meta or {}
+                    prompt_text = str(
+                        meta_dict.get("prompt_hint")
+                        or meta_dict.get("label")
+                        or action_id
                     )
-                )
-                for rec in out_list:
-                    if not isinstance(rec, dict) or not rec.get("id"):
-                        continue
-                    ext = str(rec.get("extension") or "").lstrip(".").lower()
-                    if ext not in ("mp4", "webm", "mov", "mkv"):
-                        continue
-                    out_path = self.comfy.store.outputs_dir / f"{rec['id']}.{ext}"
-                    if out_path.is_file() and not out_path.is_symlink():
-                        if target_clip_path is not None:
-                            t_path = Path(target_clip_path)
-                            if t_path.is_symlink():
-                                raise ValueError("动作片段输出路径不能是符号链接")
-                            t_path.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(out_path, t_path)
-                            return {
-                                "path": t_path,
-                                "duration_seconds": float(
-                                    meta_dict.get("default_duration_seconds") or 4.0
-                                ),
-                            }
-                        return {
-                            "path": out_path,
-                            "duration_seconds": float(
-                                meta_dict.get("default_duration_seconds") or 4.0
-                            ),
-                        }
-                raise RuntimeError(
-                    f"离线动作生成工作流 {wf_id} 未产出可用的视频动作片段（{action_id}）"
-                )
+                    overrides: dict[str, object] = {}
+                    if prompt_key:
+                        overrides[prompt_key] = prompt_text
+                    if action_id_key:
+                        overrides[action_id_key] = action_id
+                    if resolution_key:
+                        overrides[resolution_key] = eff_resolution
+                    if fps_key:
+                        overrides[fps_key] = eff_fps
+                    res_parts = eff_resolution.lower().split("x", 1)
+                    if (
+                        len(res_parts) == 2
+                        and res_parts[0].strip().isdigit()
+                        and res_parts[1].strip().isdigit()
+                    ):
+                        eff_w = int(res_parts[0].strip())
+                        eff_h = int(res_parts[1].strip())
+                        if width_key:
+                            overrides[width_key] = eff_w
+                        if height_key:
+                            overrides[height_key] = eff_h
+
+                    self.comfy.ensure_template_ready(
+                        active_task, wf, hf_token=eff_hf_token
+                    )
+                    if active_task is not None and callable(
+                        getattr(active_task, "check", None)
+                    ):
+                        active_task.check()
+
+                    media_map: dict[str, str] = {}
+                    if portrait_key and saved_in_id:
+                        in_fname, in_fpath = self.comfy.store.input_file(saved_in_id)
+                        uploaded_io_in_name = self.comfy._upload_input_file(
+                            in_fname, in_fpath
+                        )
+                        media_map[portrait_key] = uploaded_io_in_name
+
+                    prompt_payload = apply_workflow_overrides(
+                        wf["workflow"], overrides, media_map
+                    )
+                    from common.live_studio import COLABONE_LIVE_CLIP_EXTENSIONS
+
+                    io_out_dir_pre = getattr(self.comfy, "io_out_dir", None)
+                    if io_out_dir_pre is not None:
+                        try:
+                            io_out_root_pre = Path(io_out_dir_pre)
+                            if io_out_root_pre.is_dir() and not io_out_root_pre.is_symlink():
+                                for walk_root, walk_dirs, walk_files in os.walk(
+                                    io_out_root_pre, followlinks=False
+                                ):
+                                    walk_root_p = Path(walk_root)
+                                    walk_dirs[:] = [
+                                        d
+                                        for d in walk_dirs
+                                        if not (walk_root_p / d).is_symlink()
+                                    ]
+                                    for wname in walk_files:
+                                        wpath = walk_root_p / wname
+                                        try:
+                                            if wpath.is_symlink():
+                                                continue
+                                            wst = wpath.stat()
+                                            rel_key = wpath.relative_to(
+                                                io_out_root_pre
+                                            ).as_posix()
+                                            pre_existing_io_out[rel_key] = (
+                                                wst.st_mtime_ns,
+                                                wst.st_size,
+                                            )
+                                        except OSError:
+                                            continue
+                        except OSError:
+                            pass
+                    prompt_started_ns = time.time_ns()
+
+                    with tempfile.TemporaryDirectory(
+                        prefix="colabone-live-clip-"
+                    ) as tmp_out_dir:
+                        raw_outputs = self.comfy._execute_single_prompt(
+                            active_task,
+                            wf,
+                            prompt_payload,
+                            save_to_store=False,
+                            output_dir=Path(tmp_out_dir),
+                        )
+                        out_list = (
+                            raw_outputs
+                            if isinstance(raw_outputs, list)
+                            else (
+                                raw_outputs.get("outputs", [])
+                                if isinstance(raw_outputs, dict)
+                                else []
+                            )
+                        )
+                        for rec in out_list:
+                            if not isinstance(rec, dict):
+                                continue
+                            rec_fname = str(rec.get("filename") or "").strip()
+                            rec_type = str(rec.get("type") or "output").strip().lower()
+                            if rec_fname and rec_type == "output":
+                                io_out_cleanup_items.append(
+                                    (str(rec.get("subfolder") or ""), rec_fname)
+                                )
+                        duration_s = float(
+                            meta_dict.get("default_duration_seconds") or 4.0
+                        )
+                        for rec in out_list:
+                            if not isinstance(rec, dict):
+                                continue
+                            raw_path = rec.get("path")
+                            ext = ""
+                            for cand_ext in (
+                                Path(str(rec.get("filename") or "")).suffix,
+                                Path(str(raw_path or "")).suffix,
+                                str(rec.get("extension") or ""),
+                            ):
+                                norm_ext = cand_ext.lstrip(".").lower()
+                                if norm_ext in COLABONE_LIVE_CLIP_EXTENSIONS:
+                                    ext = norm_ext
+                                    break
+                            if not ext:
+                                continue
+                            if raw_path:
+                                out_path = Path(raw_path)
+                            elif rec.get("id"):
+                                out_path = (
+                                    self.comfy.store.outputs_dir
+                                    / f"{rec['id']}.{ext}"
+                                )
+                            else:
+                                continue
+                            if out_path.is_file() and not out_path.is_symlink():
+                                if target_clip_path is not None:
+                                    t_path = Path(target_clip_path)
+                                    if t_path.is_symlink():
+                                        raise ValueError("动作片段输出路径不能是符号链接")
+                                    t_path.parent.mkdir(parents=True, exist_ok=True)
+                                    shutil.copy2(out_path, t_path)
+                                    return {
+                                        "path": t_path,
+                                        "extension": ext,
+                                        "duration_seconds": duration_s,
+                                    }
+                                return {
+                                    "bytes": out_path.read_bytes(),
+                                    "extension": ext,
+                                    "duration_seconds": duration_s,
+                                }
+                    raise RuntimeError(
+                        f"离线动作生成工作流 {wf_id} 未产出可用的视频动作片段（{action_id}）"
+                    )
+                finally:
+                    if saved_in_id:
+                        store_lock = getattr(self.comfy.store, "lock", None)
+                        try:
+                            with (
+                                store_lock
+                                if store_lock is not None
+                                else nullcontext()
+                            ):
+                                entry = getattr(
+                                    self.comfy.store, "inputs_index", {}
+                                ).pop(saved_in_id, None)
+                                in_path = (
+                                    Path(entry["path"])
+                                    if isinstance(entry, dict) and entry.get("path")
+                                    else (
+                                        self.comfy.store.inputs_dir
+                                        / str(saved_in.get("filename") or "")
+                                    )
+                                )
+                                if (
+                                    in_path.name
+                                    and in_path.parent == self.comfy.store.inputs_dir
+                                    and not in_path.is_symlink()
+                                ):
+                                    in_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    io_in_dir = getattr(self.comfy, "io_in_dir", None)
+                    if uploaded_io_in_name and io_in_dir is not None:
+                        try:
+                            io_in_root = Path(io_in_dir)
+                            if io_in_root.is_dir() and not io_in_root.is_symlink():
+                                io_in_resolved = io_in_root.resolve()
+                                cand_in = io_in_root / uploaded_io_in_name
+                                if (
+                                    not cand_in.is_symlink()
+                                    and cand_in.is_file()
+                                    and io_in_resolved in cand_in.resolve().parents
+                                ):
+                                    cand_in.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    io_out_dir = getattr(self.comfy, "io_out_dir", None)
+                    if io_out_cleanup_items and io_out_dir is not None:
+                        try:
+                            io_out_root = Path(io_out_dir)
+                            io_out_valid = (
+                                io_out_root.is_dir() and not io_out_root.is_symlink()
+                            )
+                            io_out_resolved = (
+                                io_out_root.resolve() if io_out_valid else None
+                            )
+                        except OSError:
+                            io_out_valid = False
+                            io_out_resolved = None
+                        if io_out_valid and io_out_resolved is not None:
+                            seen_out_rels: set[str] = set()
+                            for raw_sub, raw_fname in io_out_cleanup_items:
+                                if (
+                                    not isinstance(raw_fname, str)
+                                    or not raw_fname
+                                    or raw_fname in (".", "..")
+                                    or "/" in raw_fname
+                                    or "\\" in raw_fname
+                                    or "\x00" in raw_fname
+                                ):
+                                    continue
+                                sub_parts: list[str] = []
+                                if raw_sub:
+                                    if (
+                                        not isinstance(raw_sub, str)
+                                        or "\\" in raw_sub
+                                        or "\x00" in raw_sub
+                                        or raw_sub.startswith("/")
+                                        or raw_sub.endswith("/")
+                                    ):
+                                        continue
+                                    sub_parts = raw_sub.split("/")
+                                    if any(
+                                        not seg or seg in (".", "..")
+                                        for seg in sub_parts
+                                    ):
+                                        continue
+                                rel_parts = (*sub_parts, raw_fname)
+                                rel_key = "/".join(rel_parts)
+                                if rel_key in seen_out_rels:
+                                    continue
+                                seen_out_rels.add(rel_key)
+                                cand_out = io_out_root.joinpath(*rel_parts)
+                                try:
+                                    if cand_out.is_symlink():
+                                        continue
+                                    cur_parent = cand_out.parent
+                                    has_symlink_parent = False
+                                    while (
+                                        cur_parent != io_out_root
+                                        and cur_parent != cur_parent.parent
+                                    ):
+                                        if cur_parent.is_symlink():
+                                            has_symlink_parent = True
+                                            break
+                                        cur_parent = cur_parent.parent
+                                    if has_symlink_parent:
+                                        continue
+                                    if not cand_out.is_file():
+                                        continue
+                                    if io_out_resolved not in cand_out.resolve().parents:
+                                        continue
+                                    cand_stat = cand_out.stat()
+                                    prev_meta = pre_existing_io_out.get(rel_key)
+                                    if prev_meta is not None:
+                                        if (
+                                            cand_stat.st_mtime_ns,
+                                            cand_stat.st_size,
+                                        ) == prev_meta:
+                                            continue
+                                        if cand_stat.st_mtime_ns < (
+                                            prompt_started_ns - 50_000_000
+                                        ):
+                                            continue
+                                    cand_out.unlink(missing_ok=True)
+                                except OSError:
+                                    continue
 
             try:
                 self._stop_live_for_exclusive_gpu("live_build_pack", task=task)
@@ -3651,8 +4291,7 @@ class ColabOneRuntime:
         return {"id": output_id, **result}
 
     def _restore_from_drive(self) -> bool:
-        stage_dir = self.root / ".drive-pull"
-        shutil.rmtree(stage_dir, ignore_errors=True)
+        stage_dir = Path(tempfile.mkdtemp(prefix=".drive-pull-", dir=self.root))
         try:
             if not self.drive.pull_workspace(stage_dir):
                 return False
@@ -3844,7 +4483,11 @@ class ColabOneRuntime:
                     continue
                 if not _LIVE_ID_RE.fullmatch(item.name):
                     continue
-                if local_trash.is_dir() and (local_trash / item.name).exists():
+                if (
+                    local_trash.is_dir()
+                    and not local_trash.is_symlink()
+                    and (local_trash / item.name).exists()
+                ):
                     continue
 
                 # Validate staged manifest.json before touching local avatar files.
@@ -3867,7 +4510,11 @@ class ColabOneRuntime:
                     continue
 
                 with self.live.lock:
-                    if local_trash.is_dir() and (local_trash / item.name).exists():
+                    if (
+                        local_trash.is_dir()
+                        and not local_trash.is_symlink()
+                        and (local_trash / item.name).exists()
+                    ):
                         continue
                     dst_dir = dst_root / item.name
                     if dst_dir.is_symlink():
@@ -4008,7 +4655,11 @@ class ColabOneRuntime:
                     continue
                 if not _LIVE_ID_RE.fullmatch(item.name):
                     continue
-                if local_trash.is_dir() and (local_trash / item.name).exists():
+                if (
+                    local_trash.is_dir()
+                    and not local_trash.is_symlink()
+                    and (local_trash / item.name).exists()
+                ):
                     continue
 
                 staged_meta_path = item / "meta.json"
@@ -4041,7 +4692,11 @@ class ColabOneRuntime:
                 raw_meta["bgm_path"] = bgm_rel
 
                 with self.live.lock:
-                    if local_trash.is_dir() and (local_trash / item.name).exists():
+                    if (
+                        local_trash.is_dir()
+                        and not local_trash.is_symlink()
+                        and (local_trash / item.name).exists()
+                    ):
                         continue
                     dst_dir = dst_root / item.name
                     if dst_dir.is_symlink():
@@ -4115,7 +4770,9 @@ class ColabOneRuntime:
                         r"[a-z0-9]{1,10}", ext
                     ):
                         continue
-                    if (out_dir / f"{oid}.json").exists():
+                    if (out_dir / f"{oid}.json").exists() or (
+                        ext != "json" and (out_dir / f"{oid}.{ext}").exists()
+                    ):
                         continue
                     mtime_ns = p.stat().st_mtime_ns
                     prev = grouped_exts.get(oid)
@@ -4139,6 +4796,10 @@ class ColabOneRuntime:
                                 ext = cand_ext
                     except (OSError, ValueError):
                         pass
+                if (out_dir / f"{oid}.json").exists() or (
+                    ext and ext != "json" and (out_dir / f"{oid}.{ext}").exists()
+                ):
+                    continue
                 if ("comfy_output", oid, mtime_ns) not in reconciled:
                     pending.append(("comfy_output", oid, ext, mtime_ns))
 
@@ -4175,20 +4836,107 @@ class ColabOneRuntime:
             return True
         all_ok = True
         for kind, item_id, extra, mtime_ns in pending:
+            recreated = False
             try:
                 if kind == "workflow":
+                    wf_dir = self.root / "workflows"
+                    wf_trash = wf_dir / ".trash"
+                    wf_tombstone = wf_trash / f"{item_id}.json"
+                    wf_live = wf_dir / f"{item_id}.json"
+                    if (
+                        wf_live.exists()
+                        or wf_trash.is_symlink()
+                        or wf_tombstone.is_symlink()
+                        or not wf_tombstone.exists()
+                    ):
+                        continue
                     res = self.drive.remove_remote_workflow(item_id)
+                    if wf_live.exists():
+                        recreated = True
                 elif kind == "comfy_output":
+                    out_dir = self.root / "comfyui-outputs"
+                    out_trash = out_dir / ".trash"
+                    has_live = (out_dir / f"{item_id}.json").exists() or (
+                        bool(extra)
+                        and extra != "json"
+                        and (out_dir / f"{item_id}.{extra}").exists()
+                    )
+                    has_tombstone = (
+                        not out_trash.is_symlink()
+                        and out_trash.is_dir()
+                        and (
+                            (
+                                (out_trash / f"{item_id}.json").exists()
+                                and not (out_trash / f"{item_id}.json").is_symlink()
+                            )
+                            or (
+                                bool(extra)
+                                and extra != "json"
+                                and (out_trash / f"{item_id}.{extra}").exists()
+                                and not (out_trash / f"{item_id}.{extra}").is_symlink()
+                            )
+                        )
+                    )
+                    if has_live or not has_tombstone:
+                        continue
                     res = self.drive.remove_remote_comfy_output(item_id, extra)
+                    if (out_dir / f"{item_id}.json").exists() or (
+                        bool(extra)
+                        and extra != "json"
+                        and (out_dir / f"{item_id}.{extra}").exists()
+                    ):
+                        recreated = True
                 elif kind == "live_avatar":
+                    av_dir = self.root / "live-avatars"
+                    av_trash = av_dir / ".trash"
+                    av_tombstone = av_trash / item_id
+                    av_live = av_dir / item_id
+                    if (
+                        av_live.exists()
+                        or av_trash.is_symlink()
+                        or av_tombstone.is_symlink()
+                        or not av_tombstone.exists()
+                    ):
+                        continue
                     res = self.drive.trash_live_avatar(item_id)
+                    if av_live.exists():
+                        recreated = True
                 elif kind == "live_driving_motion":
+                    mo_dir = self.root / "live-driving-motions"
+                    mo_trash = mo_dir / ".trash"
+                    mo_tombstone = mo_trash / item_id
+                    mo_live = mo_dir / item_id
+                    if (
+                        mo_live.exists()
+                        or mo_trash.is_symlink()
+                        or mo_tombstone.is_symlink()
+                        or not mo_tombstone.exists()
+                    ):
+                        continue
                     res = self.drive.trash_live_driving_motion(item_id)
+                    if mo_live.exists():
+                        recreated = True
                 else:
                     res = True
             except Exception:
                 res = False
-            if res is False:
+            if recreated:
+                dirty_key = (
+                    f"workflow:{item_id}"
+                    if kind == "workflow"
+                    else (
+                        f"comfy_output:{item_id}"
+                        if kind == "comfy_output"
+                        else (
+                            "live-avatars"
+                            if kind == "live_avatar"
+                            else "live-driving-motions"
+                        )
+                    )
+                )
+                self._mark_dirty(dirty_key)
+                all_ok = False
+            elif res is False:
                 all_ok = False
             else:
                 with self.lock:
@@ -4234,12 +4982,12 @@ class ColabOneRuntime:
             if auto:
                 for step in (
                     self.public_api.stop,
-                    _stop_live_serialized,
                     lambda: [
                         task.request_cancel()
                         for task in tasks
                         if task.state == "running"
                     ],
+                    _stop_live_serialized,
                     _stop_comfy_serialized,
                 ):
                     try:
@@ -4277,10 +5025,10 @@ class ColabOneRuntime:
                 return {"ok": True}
             try:
                 self.public_api.stop()
-                _stop_live_serialized()
                 for task in tasks:
                     if task.state == "running":
                         task.request_cancel()
+                _stop_live_serialized()
                 _stop_comfy_serialized()
                 deadline = time.monotonic() + 15
                 while any(t.state == "running" for t in tasks):

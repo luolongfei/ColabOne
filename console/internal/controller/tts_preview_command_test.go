@@ -1258,3 +1258,53 @@ func TestTtsPreviewCacheHardeningJSONNumberCorruptDeleteSweepAndFIFO(t *testing.
 		}
 	}
 }
+
+func TestTtsPreviewCacheEmptyDirAndSymlinkIndexGuard(t *testing.T) {
+	// 1) Empty or whitespace directory returns "" for cache paths and avoids creating relative directories.
+	h := newTestHarness(t, false)
+	h.ctrl.directory = "   "
+	if got := h.ctrl.ttsPreviewCacheDir(); got != "" {
+		t.Fatalf("expected empty ttsPreviewCacheDir when directory blank, got %q", got)
+	}
+	if got := h.ctrl.ttsPreviewCacheIndexPath(); got != "" {
+		t.Fatalf("expected empty ttsPreviewCacheIndexPath when directory blank, got %q", got)
+	}
+	h.ctrl.ttsPreviewCacheMu.Lock()
+	idx := h.ctrl.loadLocalTtsPreviewIndexLocked()
+	h.ctrl.ttsPreviewCacheMu.Unlock()
+	if idx == nil || len(idx.ByPreviewID) != 0 {
+		t.Fatalf("expected empty index for blank directory, got %+v", idx)
+	}
+	h.ctrl.saveLocalTtsPreview(
+		map[string]any{"engine_id": "qwen3_tts", "voice_preset": "gu_qinglan"},
+		map[string]any{"preview_id": "aaaa1111bbbb2222cccc3333dddd4444"},
+		[]byte("RIFF\x00\x00\x00\x00WAVE"),
+	)
+	if res, err := h.ctrl.readLocalTtsPreview(map[string]any{"preview_id": "aaaa1111bbbb2222cccc3333dddd4444"}); err != nil || asBool(asMap(res)["cached"]) {
+		t.Fatalf("expected cached=false with blank directory, got res=%#v err=%v", res, err)
+	}
+
+	// 2) Symlinked index.json must be rejected by loadLocalTtsPreviewIndexLocked.
+	if runtime.GOOS != "windows" {
+		h2 := newTestHarness(t, false)
+		cacheDir := h2.ctrl.ttsPreviewCacheDir()
+		if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		outsideIdx := filepath.Join(t.TempDir(), "outside-index.json")
+		fakeIdx := `{"version":1,"by_preview_id":{"aaaa1111bbbb2222cccc3333dddd4444":{"preview_id":"aaaa1111bbbb2222cccc3333dddd4444","size":12}}}`
+		if err := os.WriteFile(outsideIdx, []byte(fakeIdx), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outsideIdx, h2.ctrl.ttsPreviewCacheIndexPath()); err != nil {
+			t.Fatal(err)
+		}
+		h2.ctrl.ttsPreviewCacheMu.Lock()
+		h2.ctrl.ttsPreviewIndex = nil
+		loaded := h2.ctrl.loadLocalTtsPreviewIndexLocked()
+		h2.ctrl.ttsPreviewCacheMu.Unlock()
+		if len(loaded.ByPreviewID) != 0 {
+			t.Fatalf("expected symlinked tts preview index.json rejected, loaded %+v", loaded.ByPreviewID)
+		}
+	}
+}

@@ -94,12 +94,13 @@ _SAGEATTN_GEN_LOCK = threading.Lock()
 _SAGEATTN_FAILED_BUILDS: set[tuple[str, str]] = set()
 _SAGEATTN_INSTALL_GENERATION: int = 0
 _MAX_BUILD_LOG_BYTES = 16 * 1024 * 1024
-_STRIPPED_SUBPROCESS_ENV_KEYS = frozenset(
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    colabone_sanitized_subprocess_env,
+)
+
+_PIP_HARDENING_STRIP_ENV_KEYS = frozenset(
     {
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HF_API_TOKEN",
         "PIP_USER",
         "PIP_TARGET",
         "PIP_PREFIX",
@@ -109,6 +110,9 @@ _STRIPPED_SUBPROCESS_ENV_KEYS = frozenset(
         "PYTHONPATH",
         "PYTHONNOUSERSITE",
     }
+)
+_STRIPPED_SUBPROCESS_ENV_KEYS = (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS | _PIP_HARDENING_STRIP_ENV_KEYS
 )
 
 
@@ -804,16 +808,12 @@ def compute_pack_content_signature(workflow_template: dict) -> str:
 def _sanitized_subprocess_env(
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in _STRIPPED_SUBPROCESS_ENV_KEYS
-    }
-    if extra_env:
-        for k, v in extra_env.items():
-            if k not in _STRIPPED_SUBPROCESS_ENV_KEYS and v is not None:
-                env[str(k)] = str(v)
-    return env
+    return colabone_sanitized_subprocess_env(
+        extra_env,
+        strip_keys=_PIP_HARDENING_STRIP_ENV_KEYS,
+        strip_prefixes=("PIP_",),
+        allow_extra_sensitive=False,
+    )
 
 
 def _is_cancelled_exception(exc: BaseException) -> bool:
@@ -1069,35 +1069,43 @@ def _copy_wheel_atomic(src: Path, dst: Path) -> Path:
     if dst.is_symlink():
         raise ValueError(f"加速包目标文件不能是符号链接：{dst.name}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.parent / f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp"
+    src_fd = os.open(
+        src,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
     try:
-        with src.open("rb") as reader, tmp.open("wb") as writer:
-            shutil.copyfileobj(reader, writer, length=1024 * 1024)
-            writer.flush()
+        src_st = os.fstat(src_fd)
+        if not stat.S_ISREG(src_st.st_mode):
+            raise ValueError(f"加速包源文件不合法：{src.name}")
+        reader = os.fdopen(src_fd, "rb")
+    except BaseException:
+        os.close(src_fd)
+        raise
+    tmp = dst.parent / f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp"
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        with reader:
+            fd = os.open(tmp, flags, 0o600)
             try:
-                os.fsync(writer.fileno())
-            except OSError:
-                pass
-        os.replace(tmp, dst)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        if dst.is_symlink():
-            raise ValueError(f"加速包目标文件不能是符号链接：{dst.name}")
-        try:
-            with src.open("rb") as reader, dst.open("wb") as writer:
+                writer = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
+            with writer:
                 shutil.copyfileobj(reader, writer, length=1024 * 1024)
                 writer.flush()
                 try:
                     os.fsync(writer.fileno())
                 except OSError:
                     pass
-        except BaseException:
-            if not dst.is_symlink():
-                try:
-                    dst.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            raise
+        if dst.is_symlink():
+            raise ValueError(f"加速包目标文件不能是符号链接：{dst.name}")
+        os.replace(tmp, dst)
     finally:
         if tmp.exists() or tmp.is_symlink():
             tmp.unlink(missing_ok=True)
@@ -1427,22 +1435,15 @@ def _invoke_run_cmd_compat(
     run_cmd_fn: Callable[..., Any] | None = None,
 ) -> None:
     if run_cmd_fn is None:
-        if env is not None:
-            _run_command(
-                args,
-                task,
-                log,
-                timeout=timeout,
-                cwd=cwd,
-                stopping=stopping,
-                env=env,
-            )
-        else:
-            from server import comfyui as _comfyui_mod
-
-            _comfyui_mod._run_command(
-                args, task, log, timeout=timeout, cwd=cwd, stopping=stopping
-            )
+        _run_command(
+            args,
+            task,
+            log,
+            timeout=timeout,
+            cwd=cwd,
+            stopping=stopping,
+            env=env,
+        )
         return
 
     sanitized_env = _sanitized_subprocess_env(env) if env is not None else None
@@ -1509,22 +1510,31 @@ def _resolve_drive_wheel_cache_root(drive: Any) -> Path | None:
             ws_dir = Path(ws_val)
             folder_dir = ws_dir.parent
             mydrive_dir = folder_dir.parent
+            drivefs_root = mydrive_dir.parent
             if folder_dir.is_symlink() or ws_dir.is_symlink():
+                return None
+            if mydrive_dir.is_symlink():
+                if drivefs_root.is_symlink():
+                    return None
+                try:
+                    if not mydrive_dir.resolve().is_relative_to(drivefs_root.resolve()):
+                        return None
+                except (OSError, ValueError):
+                    return None
+            if not mydrive_dir.is_dir():
+                return None
+            mydrive_resolved = mydrive_dir.resolve()
+            if folder_dir.exists() and not folder_dir.resolve().is_relative_to(mydrive_resolved):
+                return None
+            if ws_dir.exists() and not ws_dir.resolve().is_relative_to(mydrive_resolved):
                 return None
             if not ws_dir.is_dir():
                 if ws_dir.exists():
                     return None
-                if not (
-                    folder_dir.is_dir()
-                    or (
-                        not folder_dir.exists()
-                        and not mydrive_dir.is_symlink()
-                        and mydrive_dir.is_dir()
-                    )
-                ):
+                if not (folder_dir.is_dir() or not folder_dir.exists()):
                     return None
                 ws_dir.mkdir(parents=True, exist_ok=True)
-            if ws_dir.is_symlink() or not ws_dir.is_dir():
+            if ws_dir.is_symlink() or not ws_dir.is_dir() or not ws_dir.resolve().is_relative_to(mydrive_resolved):
                 return None
             cache_root = ws_dir / "wheel-cache"
             if cache_root.is_symlink():
@@ -1604,7 +1614,7 @@ def _try_pull_wheel_from_drive(
             drive_cache_dir,
             dist_prefixes=dist_prefixes,
             min_major=min_major,
-            reject_symlinks=False,
+            reject_symlinks=True,
             allow_empty=allow_empty,
         )
         if drive_wheel is None:
@@ -1621,6 +1631,8 @@ def _try_pull_wheel_from_drive(
         _ensure_dir(local_cache_root, "加速包缓存根目录")
         _ensure_dir(local_cache_dir, "加速包缓存目录")
         return _copy_wheel_atomic(drive_wheel, local_cache_dir / wheel_name)
+    except ValueError:
+        raise
     except Exception as exc:
         if _is_cancelled_exception(exc):
             raise
@@ -1637,6 +1649,15 @@ def _try_mirror_wheel_to_drive(
     try:
         if wheel_path.is_symlink() or not wheel_path.is_file():
             return False
+        try:
+            with zipfile.ZipFile(wheel_path, "r") as zf:
+                infolist = zf.infolist()
+                if not infolist or not any(
+                    _is_wheel_metadata_entry(info) for info in infolist
+                ):
+                    return False
+        except (zipfile.BadZipFile, OSError):
+            return False
         drive_root = _resolve_drive_wheel_cache_root(drive)
         if drive_root is None:
             return False
@@ -1648,9 +1669,16 @@ def _try_mirror_wheel_to_drive(
             return False
         if not force and drive_dst.is_file():
             try:
-                if drive_dst.stat().st_size == wheel_path.stat().st_size:
-                    return True
-            except OSError:
+                src_size = wheel_path.stat().st_size
+                dst_size = drive_dst.stat().st_size
+                if src_size > 0 and dst_size == src_size:
+                    with zipfile.ZipFile(drive_dst, "r") as zf:
+                        infolist = zf.infolist()
+                        if infolist and any(
+                            _is_wheel_metadata_entry(info) for info in infolist
+                        ):
+                            return True
+            except (zipfile.BadZipFile, OSError):
                 pass
         _copy_wheel_atomic(wheel_path, drive_dst)
         return True
@@ -1713,7 +1741,8 @@ def _checkout_sageattention_source(
     if git_dir.is_dir():
         for lock_file in git_dir.rglob("*.lock"):
             try:
-                lock_file.unlink(missing_ok=True)
+                if not lock_file.is_symlink():
+                    lock_file.unlink(missing_ok=True)
             except OSError:
                 pass
         try:
@@ -2101,7 +2130,9 @@ def ensure_sageattention_wheels_shared(
         )
 
     global _SAGEATTN_INSTALL_GENERATION
-    with _SAGEATTN_WHEEL_LOCK:
+    while not _SAGEATTN_WHEEL_LOCK.acquire(timeout=0.25):
+        _check_task()
+    try:
         _check_task()
         # In live execution, always invalidate import caches and re-probe live
         # availability inside the lock so a concurrent build that just completed
@@ -2466,6 +2497,8 @@ def ensure_sageattention_wheels_shared(
         if installed_any:
             with _SAGEATTN_GEN_LOCK:
                 _SAGEATTN_INSTALL_GENERATION += 1
+    finally:
+        _SAGEATTN_WHEEL_LOCK.release()
 
     caps["installed_any"] = installed_any
     return caps

@@ -45,7 +45,11 @@ from common.comfyui import (
     apply_workflow_overrides,
     format_colabone_duration_zh,
 )
-from common.files import atomic_json
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    atomic_json,
+    colabone_sanitized_subprocess_env,
+)
 from server.comfy_proxy import ColabOneComfyCanvasGateway
 
 MAX_TOTAL_INPUT_BYTES = 512 * 1024 * 1024  # 512 MiB
@@ -69,18 +73,17 @@ COMFY_MODEL_SUBDIRS = (
 _WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 _ASSET_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _PROMPT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
-_SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset(
-    {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN"}
-)
+_SENSITIVE_SUBPROCESS_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
 _STRIPPED_SUBPROCESS_ENV_KEYS = _SENSITIVE_SUBPROCESS_ENV_KEYS
 
 
-def _sanitized_subprocess_env() -> dict[str, str]:
-    return {
-        k: v
-        for k, v in os.environ.items()
-        if k not in _SENSITIVE_SUBPROCESS_ENV_KEYS
-    }
+def _sanitized_subprocess_env(*, strip_pip: bool = False) -> dict[str, str]:
+    if strip_pip:
+        return colabone_sanitized_subprocess_env(
+            strip_keys=("PYTHONUSERBASE", "PYTHONPATH", "PYTHONNOUSERSITE"),
+            strip_prefixes=("PIP_",),
+        )
+    return colabone_sanitized_subprocess_env()
 
 
 def store_locked(fn):
@@ -743,20 +746,61 @@ def _set_task_message(task, message: str) -> None:
         task.message = message
 
 
+def _pg_has_non_zombie_member_linux(pgid: int) -> bool | None:
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return None
+    saw_any_stat = False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/stat", "r", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        saw_any_stat = True
+        rparen = raw.rfind(")")
+        if rparen < 0:
+            continue
+        fields = raw[rparen + 2 :].split()
+        if len(fields) < 3:
+            continue
+        state = fields[0]
+        try:
+            pgrp = int(fields[2])
+        except ValueError:
+            continue
+        if pgrp == pgid and state not in ("Z", "X", "x"):
+            return True
+    return False if saw_any_stat else None
+
+
 def _pg_has_members(pgid: int) -> bool:
-    """Return True if any process still exists in POSIX process group `pgid`."""
+    """Return True if any non-zombie process still exists in POSIX process group `pgid`."""
     try:
         os.killpg(pgid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except OSError:
         return False
+    linux_live = _pg_has_non_zombie_member_linux(pgid)
+    if linux_live is not None:
+        return linux_live
+    return True
 
 
 def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Terminate proc and lingering process-group orphans while guarding against recycled PIDs."""
+    if getattr(proc, "_colabone_pgrp_cleaned", False) is True:
+        return
+
     pid = getattr(proc, "pid", None)
     own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
     can_killpg = (
@@ -768,8 +812,31 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
     )
     leader_alive = proc.poll() is None
 
-    if not leader_alive and not can_killpg:
-        return
+    if not leader_alive:
+        if not can_killpg:
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
+        # Leader is already reaped; if `pid` itself now exists, the OS recycled it
+        # for an unrelated process, so never signal that process group.
+        pid_recycled = False
+        try:
+            os.kill(pid, 0)
+            pid_recycled = True
+        except PermissionError:
+            pid_recycled = True
+        except ProcessLookupError:
+            pid_recycled = False
+        except OSError:
+            pid_recycled = True
+        if pid_recycled or not _pg_has_members(pid):
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
 
     used_pg = False
     if can_killpg:
@@ -803,12 +870,29 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
             time.sleep(0.05)
         proc.poll()
         if _pg_has_members(pid):
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-            proc.poll()
-    elif proc.poll() is None:
+            pid_recycled = False
+            if proc.poll() is not None:
+                try:
+                    os.kill(pid, 0)
+                    pid_recycled = True
+                except PermissionError:
+                    pid_recycled = True
+                except ProcessLookupError:
+                    pid_recycled = False
+                except OSError:
+                    pid_recycled = True
+            if not pid_recycled:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                kill_deadline = time.monotonic() + 1.0
+                while time.monotonic() < kill_deadline:
+                    proc.poll()
+                    if not _pg_has_members(pid):
+                        break
+                    time.sleep(0.05)
+    if proc.poll() is None:
         try:
             proc.kill()
         except OSError:
@@ -818,6 +902,12 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
         try:
             proc.wait(timeout=max(0.5, float(timeout)))
         except subprocess.TimeoutExpired:
+            pass
+
+    if proc.poll() is not None and (not can_killpg or not _pg_has_members(pid)):
+        try:
+            setattr(proc, "_colabone_pgrp_cleaned", True)
+        except (AttributeError, TypeError):
             pass
 
 
@@ -889,7 +979,7 @@ def _read_log_tail(log_path: Path, max_bytes: int = 4096) -> str:
 
 
 def _run_command(
-    args, task, log: Path, timeout: int = 1200, cwd=None, stopping=None
+    args, task, log: Path, timeout: int = 1200, cwd=None, stopping=None, *, strip_pip: bool = False
 ) -> None:
     """Cancelable process group; subprocesses cannot outlive their task."""
     log = Path(log)
@@ -897,7 +987,7 @@ def _run_command(
         proc = subprocess.Popen(
             args,
             cwd=cwd,
-            env=_sanitized_subprocess_env(),
+            env=_sanitized_subprocess_env(strip_pip=strip_pip),
             stdout=out,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -1090,15 +1180,34 @@ class ColabOneComfyManager:
         self._native_active_pack_id: str = ""
         self._history_poll_interval: float = 0.5
 
+        def _on_wf_change(wid: str) -> None:
+            handler = getattr(runtime, "_on_workflow_saved", None)
+            if callable(handler):
+                handler(wid)
+            else:
+                runtime._mark_dirty("workflow:" + wid)
+
+        def _on_wf_delete(wid: str) -> None:
+            handler = getattr(runtime, "_on_workflow_deleted", None)
+            if callable(handler):
+                handler(wid)
+            else:
+                runtime.drive.remove_remote_workflow(wid)
+
+        def _on_out_delete(oid: str, ext: str) -> None:
+            handler = getattr(runtime, "_on_comfy_output_deleted", None)
+            if callable(handler):
+                handler(oid, ext)
+            else:
+                runtime.drive.remove_remote_comfy_output(oid, ext)
+
         self.store = ColabOneComfyWorkflowStore(
             runtime.root,
             builtin_templates=self.catalog.templates,
-            on_workflow_change=lambda wid: runtime._mark_dirty("workflow:" + wid),
-            on_workflow_delete=lambda wid: runtime.drive.remove_remote_workflow(wid),
+            on_workflow_change=_on_wf_change,
+            on_workflow_delete=_on_wf_delete,
             on_output_change=lambda oid: runtime._mark_dirty("comfy_output:" + oid),
-            on_output_delete=lambda oid, ext: runtime.drive.remove_remote_comfy_output(
-                oid, ext
-            ),
+            on_output_delete=_on_out_delete,
         )
         self.canvas = ColabOneComfyCanvasGateway(
             runtime, upstream_port=self.port, proxy_port=self.proxy_port
@@ -1191,8 +1300,10 @@ class ColabOneComfyManager:
             self._native_active_pack_id = clean_id
 
     def status(self) -> dict:
+        dead_proc = None
         with self.lock:
             if self.proc is not None and self.proc.poll() is not None:
+                dead_proc = self.proc
                 code = self.proc.returncode
                 self.proc = None
                 if self.state == "ready":
@@ -1208,6 +1319,8 @@ class ColabOneComfyManager:
             last_checked = self._queue_checked_at
             cached = self._queue_cache
             native_active_pack = self._native_active_pack_id
+        if dead_proc is not None:
+            _terminate_process_group(dead_proc, timeout=1.0)
 
         if running:
             now = time.monotonic()
@@ -1272,6 +1385,8 @@ class ColabOneComfyManager:
             raise RuntimeError("此远端缺少 Git，无法安装 ComfyUI")
         stopping = getattr(self.runtime, "stopping", None)
         git_dir = self.install_dir / ".git"
+        if git_dir.is_symlink():
+            raise ValueError("ComfyUI Git 目录不能是符号链接")
         if git_dir.exists() and not git_dir.is_dir():
             shutil.rmtree(self.install_dir, ignore_errors=True)
         self.install_dir.mkdir(parents=True, exist_ok=True)
@@ -1281,8 +1396,13 @@ class ColabOneComfyManager:
         task.note(install_msg)
         if git_dir.is_dir():
             # Clean stale git lockfiles left by a previously interrupted install.
+            git_dir_resolved = git_dir.resolve()
             for lock_file in git_dir.rglob("*.lock"):
                 try:
+                    if lock_file.is_symlink():
+                        continue
+                    if not lock_file.resolve().is_relative_to(git_dir_resolved):
+                        continue
                     lock_file.unlink(missing_ok=True)
                 except OSError:
                     pass
@@ -1396,6 +1516,7 @@ class ColabOneComfyManager:
                     task,
                     log,
                     stopping=stopping,
+                    strip_pip=True,
                 )
 
         if not (self.install_dir / "main.py").is_file():

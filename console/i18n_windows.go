@@ -5,12 +5,13 @@ package main
 import (
 	"os"
 	"strings"
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var (
-	i18nKernel32             = syscall.NewLazyDLL("kernel32.dll")
+	i18nKernel32             = windows.NewLazySystemDLL("kernel32.dll")
 	procGetUserDefaultLocale = i18nKernel32.NewProc("GetUserDefaultLocaleName")
 )
 
@@ -35,5 +36,5 @@ func colabOneDetectOSLocale() string {
 	if n <= 1 || int(n) > len(buf) {
 		return ""
 	}
-	return syscall.UTF16ToString(buf[:n])
+	return windows.UTF16ToString(buf[:n])
 }

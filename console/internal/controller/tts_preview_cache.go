@@ -59,19 +59,50 @@ func newEmptyLocalTtsPreviewIndex() *colabOneLocalTtsPreviewIndex {
 }
 
 func (c *ColabOneController) ttsPreviewCacheDir() string {
+	if strings.TrimSpace(c.directory) == "" {
+		return ""
+	}
 	return filepath.Join(c.directory, colabOneLocalTtsPreviewDirName)
 }
 
 func (c *ColabOneController) ttsPreviewCacheIndexPath() string {
-	return filepath.Join(c.ttsPreviewCacheDir(), colabOneLocalTtsPreviewIndexName)
+	dir := c.ttsPreviewCacheDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, colabOneLocalTtsPreviewIndexName)
 }
 
-func isSymlinkPath(path string) bool {
-	fi, err := os.Lstat(path)
-	if err != nil {
+// isSafeCacheDir reports whether dir is safe to use as a local cache directory.
+// Missing directories return true (safe to MkdirAll); existing entries must be
+// real directories with neither ModeSymlink nor ModeIrregular (catching Windows
+// NTFS junctions / reparse points on Go 1.23+).
+func isSafeCacheDir(dir string) bool {
+	trimmed := strings.TrimSpace(dir)
+	if trimmed == "" {
 		return false
 	}
-	return fi.Mode()&os.ModeSymlink != 0
+	cleaned := filepath.Clean(trimmed)
+	fi, err := os.Lstat(cleaned)
+	if err != nil {
+		return errors.Is(err, os.ErrNotExist)
+	}
+	mode := fi.Mode()
+	return mode&os.ModeSymlink == 0 && mode.IsDir() && mode&os.ModeIrregular == 0
+}
+
+// isSafeCacheFileTarget reports whether path is safe to create or replace as a
+// regular cache file. Missing paths return true; existing entries must be
+// regular files (rejecting symlinks, directories, junctions, FIFOs, and devices).
+func isSafeCacheFileTarget(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return errors.Is(err, os.ErrNotExist)
+	}
+	return fi.Mode()&os.ModeSymlink == 0 && fi.Mode().IsRegular()
 }
 
 func (c *ColabOneController) findTtsEngineSpec(engineID string) map[string]any {
@@ -195,7 +226,7 @@ func removeRegularNonSymlinkFile(path string) {
 
 func (c *ColabOneController) sweepUnindexedTtsPreviewFilesLocked(idx *colabOneLocalTtsPreviewIndex) {
 	dir := c.ttsPreviewCacheDir()
-	if isSymlinkPath(dir) {
+	if !isSafeCacheDir(dir) {
 		return
 	}
 	entries, err := os.ReadDir(dir)
@@ -251,12 +282,29 @@ func (c *ColabOneController) loadLocalTtsPreviewIndexLocked() *colabOneLocalTtsP
 	idx := newEmptyLocalTtsPreviewIndex()
 	dir := c.ttsPreviewCacheDir()
 	idxPath := c.ttsPreviewCacheIndexPath()
-	if isSymlinkPath(dir) || isSymlinkPath(idxPath) {
+	if dir == "" || idxPath == "" || !isSafeCacheDir(c.directory) || !isSafeCacheDir(dir) || !isSafeCacheFileTarget(idxPath) {
 		c.ttsPreviewIndex = idx
 		return idx
 	}
-	raw, err := os.ReadFile(idxPath)
+	lfi, lstatErr := os.Lstat(idxPath)
+	if lstatErr != nil || lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
+		c.ttsPreviewIndex = idx
+		return idx
+	}
+	f, err := os.Open(idxPath)
 	if err != nil {
+		c.ttsPreviewIndex = idx
+		return idx
+	}
+	ffi, fstatErr := f.Stat()
+	if fstatErr != nil || !ffi.Mode().IsRegular() || !os.SameFile(lfi, ffi) {
+		_ = f.Close()
+		c.ttsPreviewIndex = idx
+		return idx
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(f, 8<<20))
+	_ = f.Close()
+	if readErr != nil {
 		c.ttsPreviewIndex = idx
 		return idx
 	}
@@ -267,27 +315,43 @@ func (c *ColabOneController) loadLocalTtsPreviewIndexLocked() *colabOneLocalTtsP
 		c.saveLocalTtsPreviewIndexLocked(idx)
 		return idx
 	}
-	if parsed.ByPreviewID == nil {
-		parsed.ByPreviewID = make(map[string]*colabOneLocalTtsPreviewEntry)
+	sanitized := newEmptyLocalTtsPreviewIndex()
+	for k, e := range parsed.ByPreviewID {
+		cleanKey := strings.ToLower(strings.TrimSpace(k))
+		if e == nil || !reHex32ID.MatchString(cleanKey) {
+			continue
+		}
+		cleanPID := strings.ToLower(strings.TrimSpace(e.PreviewID))
+		if cleanPID != cleanKey || e.Size <= 0 || e.Size > colabOneMaxTtsPreviewBytes {
+			continue
+		}
+		cp := *e
+		cp.PreviewID = cleanKey
+		sanitized.ByPreviewID[cleanKey] = &cp
 	}
-	if parsed.ByRequestKey == nil {
-		parsed.ByRequestKey = make(map[string]string)
+	for rk, pid := range parsed.ByRequestKey {
+		cleanPID := strings.ToLower(strings.TrimSpace(pid))
+		if rk == "" || !reHex32ID.MatchString(cleanPID) {
+			continue
+		}
+		if _, exists := sanitized.ByPreviewID[cleanPID]; exists {
+			sanitized.ByRequestKey[rk] = cleanPID
+		}
 	}
-	parsed.Version = colabOneLocalTtsPreviewCacheVersion
-	c.ttsPreviewIndex = &parsed
+	c.ttsPreviewIndex = sanitized
 	return c.ttsPreviewIndex
 }
 
 func (c *ColabOneController) saveLocalTtsPreviewIndexLocked(idx *colabOneLocalTtsPreviewIndex) {
 	dir := c.ttsPreviewCacheDir()
-	if isSymlinkPath(dir) {
+	idxPath := c.ttsPreviewCacheIndexPath()
+	if dir == "" || idxPath == "" || !isSafeCacheDir(c.directory) || !isSafeCacheDir(dir) {
 		return
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	idxPath := c.ttsPreviewCacheIndexPath()
-	if isSymlinkPath(idxPath) {
+	if !isSafeCacheDir(dir) || !isSafeCacheFileTarget(idxPath) {
 		return
 	}
 	_ = AtomicJSON(idxPath, idx)
@@ -392,10 +456,10 @@ func (c *ColabOneController) readLocalTtsPreviewEntryLocked(
 		return nil, false
 	}
 	dir := c.ttsPreviewCacheDir()
-	wavPath := filepath.Join(dir, previewID+".wav")
-	if isSymlinkPath(dir) {
+	if dir == "" || !isSafeCacheDir(dir) {
 		return nil, false
 	}
+	wavPath := filepath.Join(dir, previewID+".wav")
 	evictEntry := func(removeFile bool) {
 		if removeFile {
 			removeRegularNonSymlinkFile(wavPath)
@@ -484,10 +548,10 @@ func (c *ColabOneController) hasValidLocalPreviewFileLocked(
 		return false
 	}
 	dir := c.ttsPreviewCacheDir()
-	wavPath := filepath.Join(dir, previewID+".wav")
-	if isSymlinkPath(dir) {
+	if dir == "" || !isSafeCacheDir(dir) {
 		return false
 	}
+	wavPath := filepath.Join(dir, previewID+".wav")
 	fi, err := os.Lstat(wavPath)
 	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
 		return false
@@ -652,14 +716,17 @@ func (c *ColabOneController) saveLocalTtsPreview(
 	defer c.ttsPreviewCacheMu.Unlock()
 
 	dir := c.ttsPreviewCacheDir()
-	if isSymlinkPath(dir) {
+	if !isSafeCacheDir(dir) {
 		return
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
+	if !isSafeCacheDir(dir) {
+		return
+	}
 	wavPath := filepath.Join(dir, previewID+".wav")
-	if isSymlinkPath(wavPath) {
+	if !isSafeCacheFileTarget(wavPath) {
 		return
 	}
 	if err := colabOneWriteFileAtomic(dir, wavPath, rawAudio, 0o600); err != nil {
@@ -717,7 +784,9 @@ func (c *ColabOneController) pruneLocalTtsPreviewCacheLocked(
 		if e.PreviewID == keepID {
 			continue
 		}
-		removeRegularNonSymlinkFile(filepath.Join(dir, e.PreviewID+".wav"))
+		if reHex32ID.MatchString(e.PreviewID) {
+			removeRegularNonSymlinkFile(filepath.Join(dir, e.PreviewID+".wav"))
+		}
 		delete(idx.ByPreviewID, e.PreviewID)
 		if e.RequestKey != "" && idx.ByRequestKey[e.RequestKey] == e.PreviewID {
 			delete(idx.ByRequestKey, e.RequestKey)

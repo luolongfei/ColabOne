@@ -582,7 +582,7 @@ func TestLegacyWindowsMigrationAndCleanup(t *testing.T) {
 		return colabOneRemoveLegacyWinCredential(service, key, readLegacyTarget, deleteLegacyTarget)
 	}
 
-	// 1. Primary legacy target key@ColabOne is read, decoded, and migrated into backend.
+	// 1. Primary legacy target key@ColabOne is read, decoded, migrated into backend, and cleaned from legacy store.
 	gotColab := v.GetMap("colab")
 	if gotColab == nil || gotColab["token"] != "legacy-tok" || gotColab["refresh_token"] != "legacy-ref" {
 		t.Fatalf("migrated colab = %#v", gotColab)
@@ -595,16 +595,30 @@ func TestLegacyWindowsMigrationAndCleanup(t *testing.T) {
 	if !bytes.Equal(migratedRaw, []byte(`{"token":"legacy-tok","refresh_token":"legacy-ref"}`)) {
 		t.Fatalf("migrated raw bytes = %q", string(migratedRaw))
 	}
-
-	// 2. Fallback legacy target "ColabOne" matches ONLY when UserName == key.
-	if got := v.GetString("cloud_project", ""); got != "legacy-project-id" {
-		t.Fatalf("fallback legacy cloud_project = %q, want legacy-project-id", got)
+	if _, exists := legacyStore["colab@ColabOne"]; exists {
+		t.Fatal("expected migrated legacy colab@ColabOne entry removed after successful backend write")
 	}
+
+	// 2. Deleting "other_key" must NOT match or delete bare "ColabOne" (UserName is "cloud_project").
 	if got := v.GetString("other_key", "missing"); got != "missing" {
 		t.Fatalf("other_key unexpectedly matched bare ColabOne entry: %q", got)
 	}
+	if err := v.Delete("other_key"); err != nil {
+		t.Fatalf("Delete(other_key) failed: %v", err)
+	}
+	if _, exists := legacyStore["ColabOne"]; !exists {
+		t.Fatal("Delete(other_key) wrongly removed bare ColabOne owned by cloud_project")
+	}
 
-	// 3. A cold vault WITHOUT legacyReader can now read both migrated keys straight from backend!
+	// 3. Fallback legacy target "ColabOne" matches ONLY when UserName == key, migrates, and cleans legacy store.
+	if got := v.GetString("cloud_project", ""); got != "legacy-project-id" {
+		t.Fatalf("fallback legacy cloud_project = %q, want legacy-project-id", got)
+	}
+	if _, exists := legacyStore["ColabOne"]; exists {
+		t.Fatal("expected migrated legacy bare ColabOne entry removed after successful backend write")
+	}
+
+	// 4. A cold vault WITHOUT legacyReader can now read both migrated keys straight from backend!
 	cold := NewColabOneVault(spy)
 	if cold.GetMap("colab")["token"] != "legacy-tok" {
 		t.Fatalf("cold vault failed to read migrated colab")
@@ -613,15 +627,14 @@ func TestLegacyWindowsMigrationAndCleanup(t *testing.T) {
 		t.Fatalf("cold vault failed to read migrated cloud_project")
 	}
 
-	// 4. Deleting "other_key" must NOT delete bare "ColabOne" (UserName is "cloud_project").
-	if err := v.Delete("other_key"); err != nil {
-		t.Fatalf("Delete(other_key) failed: %v", err)
+	// 5. Deleting "colab" and "cloud_project" (plus an unmigrated legacy entry) removes all entries so they never resurrect.
+	legacyStore["unmigrated@ColabOne"] = credEntry{
+		blob:     encodeUTF16LE(`"legacy-unmigrated"`),
+		userName: "unmigrated",
 	}
-	if _, exists := legacyStore["ColabOne"]; !exists {
-		t.Fatal("Delete(other_key) wrongly removed bare ColabOne owned by cloud_project")
+	if err := v.Delete("unmigrated"); err != nil {
+		t.Fatalf("Delete(unmigrated) failed: %v", err)
 	}
-
-	// 5. Deleting "colab" and "cloud_project" removes legacy entries so they never resurrect.
 	if err := v.Delete("colab"); err != nil {
 		t.Fatalf("Delete(colab) failed: %v", err)
 	}
@@ -1250,5 +1263,36 @@ func TestVaultEphemeralKeysEvictedOnDeleteWithoutResurrection(t *testing.T) {
 		if got := spy.getCount(persistentKey); got != before {
 			t.Fatalf("persistent key %q did not use negative cache after delete (%d -> %d)", persistentKey, before, got)
 		}
+	}
+}
+
+func TestVaultChunkReadErrorDoesNotPoisonNegativeCache(t *testing.T) {
+	spy := newSpyBackend()
+	writer := NewColabOneVault(spy)
+	largeVal := strings.Repeat("A", colabOneVaultChunkSize+1024)
+	if err := writer.Set("chunked_flaky", largeVal); err != nil {
+		t.Fatalf("Set large chunked value failed: %v", err)
+	}
+
+	cold := NewColabOneVault(spy)
+	var failChunkOnce atomic.Bool
+	failChunkOnce.Store(true)
+	spy.mu.Lock()
+	spy.failGet = func(key string) error {
+		if strings.HasPrefix(key, "chunked_flaky"+colabOneChunkKeySep) && failChunkOnce.CompareAndSwap(true, false) {
+			return errors.New("transient chunk read failure")
+		}
+		return nil
+	}
+	spy.mu.Unlock()
+
+	if _, ok, err := cold.GetRaw("chunked_flaky"); err == nil || ok {
+		t.Fatalf("expected transient chunk read error without negative hit, got ok=%v err=%v", ok, err)
+	}
+
+	// Next read must succeed and NOT return a poisoned negative cache entry.
+	var got string
+	if ok, err := cold.GetJSON("chunked_flaky", &got); err != nil || !ok || got != largeVal {
+		t.Fatalf("GetJSON after transient chunk error = (ok=%v, err=%v, len=%d), want (true, nil, %d)", ok, err, len(got), len(largeVal))
 	}
 }

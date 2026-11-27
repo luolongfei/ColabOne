@@ -145,6 +145,13 @@ describe("colabOneExtractHfToken", () => {
     expect(colabOneExtractHfToken(`${token} hf_AnotherToken123456`)).toBeNull();
     expect(colabOneExtractHfToken("my_hf_AbCdEfGhIjKlMnOp")).toBeNull();
     expect(colabOneExtractHfToken("hf_short")).toBeNull();
+    // Non-secret Hugging Face library/env identifiers must not be treated as tokens.
+    expect(colabOneExtractHfToken("hf_transfer")).toBeNull();
+    expect(colabOneExtractHfToken("hf_download")).toBeNull();
+    expect(colabOneExtractHfToken("hf_hub_download")).toBeNull();
+    expect(colabOneExtractHfToken("hf_cache_home")).toBeNull();
+    expect(colabOneExtractHfToken("hf_endpoint_url")).toBeNull();
+    expect(colabOneExtractHfToken("hf_xet_enabled")).toBeNull();
   });
 });
 

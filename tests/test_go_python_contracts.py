@@ -82,7 +82,7 @@ def _collect_bundle_files(base: Path) -> dict[str, bytes]:
 def _collect_all_embedded_files(base: Path) -> set[str]:
     result: set[str] = set()
     for path in base.rglob("*"):
-        if not path.is_file() or "__pycache__" in path.parts:
+        if not path.is_file():
             continue
         result.add(path.relative_to(base).as_posix())
     return result
@@ -956,33 +956,368 @@ def test_live_studio_go_python_payload_and_route_contracts(tmp_path, monkeypatch
         assert client.delete("/api/v1/live/driving-motions/drive_01", headers=headers).status_code == 200
 
 
-def _extract_go_switch_case_strings(source: str, func_prefix: str) -> set[str]:
-    start = source.index(func_prefix)
+def _extract_go_block(source: str, prefix: str) -> str:
+    """Extract a balanced Go `{ ... }` block starting after `prefix`, skipping comments/strings/runes."""
+    start = source.index(prefix)
     brace_start = source.index("{", start)
+    n = len(source)
+    i = brace_start
     depth = 0
-    end = brace_start
-    for idx in range(brace_start, len(source)):
-        ch = source[idx]
+    while i < n:
+        ch = source[i]
+        if ch == "/" and i + 1 < n and source[i + 1] == "/":
+            nl = source.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if ch == "/" and i + 1 < n and source[i + 1] == "*":
+            end_c = source.find("*/", i + 2)
+            i = n if end_c == -1 else end_c + 2
+            continue
+        if ch == '"':
+            i += 1
+            while i < n:
+                if source[i] == "\\":
+                    i += 2
+                    continue
+                if source[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "`":
+            end_raw = source.find("`", i + 1)
+            i = n if end_raw == -1 else end_raw + 1
+            continue
+        if ch == "'":
+            i += 1
+            while i < n:
+                if source[i] == "\\":
+                    i += 2
+                    continue
+                if source[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
         if ch == "{":
             depth += 1
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                end = idx
-                break
-    body = source[brace_start : end + 1]
+                return source[brace_start : i + 1]
+        i += 1
+    raise ValueError(f"Unclosed Go block for {prefix!r}")
+
+
+def _extract_go_switch_case_strings(source: str, func_prefix: str) -> set[str]:
+    """Extract string-literal case labels from the top-level switch inside a Go function.
+
+    Skips line/block comments, string literals, raw strings, and rune literals, and only
+    extracts `case` labels at switch depth 1 (ignoring nested switches or inner blocks).
+    """
+    body = _extract_go_block(source, func_prefix)
+    n = len(body)
+    i = 0
+    depth = 0
+    in_top_switch = False
+    switch_depth = 0
+    in_case_header = False
     cmds: set[str] = set()
-    for match in re.finditer(r"^\s*case\s+([^:]+):", body, re.MULTILINE):
-        for lit in re.findall(r'"([a-z0-9._-]+)"', match.group(1)):
-            cmds.add(lit)
+
+    def _is_ident_char(c: str) -> bool:
+        return c.isalnum() or c == "_"
+
+    while i < n:
+        ch = body[i]
+        if ch == "/" and i + 1 < n and body[i + 1] == "/":
+            nl = body.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if ch == "/" and i + 1 < n and body[i + 1] == "*":
+            end_c = body.find("*/", i + 2)
+            i = n if end_c == -1 else end_c + 2
+            continue
+        if ch == '"':
+            lit_start = i + 1
+            i += 1
+            while i < n:
+                if body[i] == "\\":
+                    i += 2
+                    continue
+                if body[i] == '"':
+                    lit = body[lit_start:i]
+                    if in_case_header and depth == switch_depth:
+                        if re.fullmatch(r"[a-z0-9._-]+", lit):
+                            cmds.add(lit)
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "`":
+            end_raw = body.find("`", i + 1)
+            if end_raw == -1:
+                break
+            lit = body[i + 1 : end_raw]
+            if in_case_header and depth == switch_depth:
+                if re.fullmatch(r"[a-z0-9._-]+", lit):
+                    cmds.add(lit)
+            i = end_raw + 1
+            continue
+        if ch == "'":
+            i += 1
+            while i < n:
+                if body[i] == "\\":
+                    i += 2
+                    continue
+                if body[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "{":
+            depth += 1
+            i += 1
+            continue
+        if ch == "}":
+            if in_top_switch and depth == switch_depth:
+                break
+            depth -= 1
+            i += 1
+            continue
+        if in_case_header and depth == switch_depth and ch == ":":
+            in_case_header = False
+            i += 1
+            continue
+        if ch.isalpha() or ch == "_":
+            j = i + 1
+            while j < n and _is_ident_char(body[j]):
+                j += 1
+            word = body[i:j]
+            if not in_top_switch and depth == 1 and word == "switch":
+                # Find the `{` opening this top-level switch statement.
+                k = j
+                while k < n:
+                    kc = body[k]
+                    if kc == "/" and k + 1 < n and body[k + 1] == "/":
+                        nl = body.find("\n", k + 2)
+                        k = n if nl == -1 else nl + 1
+                        continue
+                    if kc == "/" and k + 1 < n and body[k + 1] == "*":
+                        end_c = body.find("*/", k + 2)
+                        k = n if end_c == -1 else end_c + 2
+                        continue
+                    if kc == '"':
+                        k += 1
+                        while k < n:
+                            if body[k] == "\\":
+                                k += 2
+                                continue
+                            if body[k] == '"':
+                                k += 1
+                                break
+                            k += 1
+                        continue
+                    if kc == "`":
+                        end_raw = body.find("`", k + 1)
+                        k = n if end_raw == -1 else end_raw + 1
+                        continue
+                    if kc == "'":
+                        k += 1
+                        while k < n:
+                            if body[k] == "\\":
+                                k += 2
+                                continue
+                            if body[k] == "'":
+                                k += 1
+                                break
+                            k += 1
+                        continue
+                    if kc == "{":
+                        depth += 1
+                        in_top_switch = True
+                        switch_depth = depth
+                        i = k + 1
+                        break
+                    k += 1
+                else:
+                    i = j
+                continue
+            if in_top_switch and depth == switch_depth and word == "case":
+                in_case_header = True
+            i = j
+            continue
+        i += 1
+    return cmds
+
+
+def _extract_frontend_colabone_commands(text: str) -> set[str]:
+    """Extract command names passed to `colabOneCommand<...>("cmd")` handling comments, strings, templates & nested TS generics."""
+    if "<script" in text and "</script>" in text:
+        blocks = [
+            m.group(1)
+            for m in re.finditer(r"<script\b[^>]*>(.*?)</script>", text, re.DOTALL | re.IGNORECASE)
+        ]
+        if blocks:
+            text = "\n".join(blocks)
+
+    cmds: set[str] = set()
+    n = len(text)
+
+    def _is_ident_char(c: str) -> bool:
+        return c.isalnum() or c in ("_", "$")
+
+    def _skip_ws_and_comments(pos: int) -> int:
+        while pos < n:
+            ch = text[pos]
+            if ch.isspace():
+                pos += 1
+                continue
+            if ch == "/" and pos + 1 < n and text[pos + 1] == "/":
+                nl = text.find("\n", pos + 2)
+                pos = n if nl == -1 else nl + 1
+                continue
+            if ch == "/" and pos + 1 < n and text[pos + 1] == "*":
+                end_c = text.find("*/", pos + 2)
+                pos = n if end_c == -1 else end_c + 2
+                continue
+            break
+        return pos
+
+    brace_depth = 0
+    template_brace_stack: list[int] = []
+
+    def _scan_template_chunk(pos: int) -> int:
+        nonlocal brace_depth
+        while pos < n:
+            c = text[pos]
+            if c == "\\":
+                pos += 2
+                continue
+            if c == "`":
+                return pos + 1
+            if c == "$" and pos + 1 < n and text[pos + 1] == "{":
+                brace_depth += 1
+                template_brace_stack.append(brace_depth)
+                return pos + 2
+            pos += 1
+        return pos
+
+    pos = 0
+    while pos < n:
+        ch = text[pos]
+        if ch == "/" and pos + 1 < n and text[pos + 1] == "/":
+            nl = text.find("\n", pos + 2)
+            pos = n if nl == -1 else nl + 1
+            continue
+        if ch == "/" and pos + 1 < n and text[pos + 1] == "*":
+            end_c = text.find("*/", pos + 2)
+            pos = n if end_c == -1 else end_c + 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            pos += 1
+            while pos < n:
+                if text[pos] == "\\":
+                    pos += 2
+                    continue
+                if text[pos] == "\n":
+                    pos += 1
+                    break
+                if text[pos] == quote:
+                    pos += 1
+                    break
+                pos += 1
+            continue
+        if ch == "`":
+            pos = _scan_template_chunk(pos + 1)
+            continue
+        if ch == "{":
+            brace_depth += 1
+            pos += 1
+            continue
+        if ch == "}":
+            if template_brace_stack and brace_depth == template_brace_stack[-1]:
+                template_brace_stack.pop()
+                brace_depth -= 1
+                pos = _scan_template_chunk(pos + 1)
+                continue
+            if brace_depth > 0:
+                brace_depth -= 1
+            pos += 1
+            continue
+        if ch.isalpha() or ch in ("_", "$"):
+            end_ident = pos + 1
+            while end_ident < n and _is_ident_char(text[end_ident]):
+                end_ident += 1
+            ident = text[pos:end_ident]
+            if ident != "colabOneCommand":
+                pos = end_ident
+                continue
+            i = _skip_ws_and_comments(end_ident)
+            if i < n and text[i] == "<":
+                angle_depth = 1
+                i += 1
+                while i < n and angle_depth > 0:
+                    c2 = text[i]
+                    if c2 == "/" and i + 1 < n and text[i + 1] == "/":
+                        nl = text.find("\n", i + 2)
+                        i = n if nl == -1 else nl + 1
+                        continue
+                    if c2 == "/" and i + 1 < n and text[i + 1] == "*":
+                        end_c = text.find("*/", i + 2)
+                        i = n if end_c == -1 else end_c + 2
+                        continue
+                    if c2 in ("'", '"', "`"):
+                        quote = c2
+                        i += 1
+                        while i < n:
+                            if text[i] == "\\":
+                                i += 2
+                                continue
+                            if quote != "`" and text[i] == "\n":
+                                i += 1
+                                break
+                            if text[i] == quote:
+                                i += 1
+                                break
+                            i += 1
+                        continue
+                    if c2 == "=" and i + 1 < n and text[i + 1] == ">":
+                        i += 2
+                        continue
+                    if c2 == "<":
+                        angle_depth += 1
+                    elif c2 == ">":
+                        angle_depth -= 1
+                    i += 1
+                if angle_depth != 0:
+                    pos = end_ident
+                    continue
+                i = _skip_ws_and_comments(i)
+            if i >= n or text[i] != "(":
+                pos = end_ident
+                continue
+            i = _skip_ws_and_comments(i + 1)
+            if i >= n or text[i] not in ("'", '"'):
+                pos = end_ident
+                continue
+            quote = text[i]
+            lit_start = i + 1
+            lit_end = text.find(quote, lit_start)
+            if lit_end == -1:
+                pos = end_ident
+                continue
+            cmd = text[lit_start:lit_end]
+            if re.fullmatch(r"[a-z0-9._-]+", cmd):
+                cmds.add(cmd)
+            pos = lit_end + 1
+            continue
+        pos += 1
     return cmds
 
 
 def _extract_go_map_keys(source: str, var_prefix: str) -> set[str]:
-    start = source.index(var_prefix)
-    brace_start = source.index("{", start)
-    brace_end = source.index("}", brace_start)
-    body = source[brace_start : brace_end + 1]
+    body = _extract_go_block(source, var_prefix)
     return set(re.findall(r'^\s*"([a-z0-9._-]+)"\s*:', body, re.MULTILINE))
 
 
@@ -1017,11 +1352,13 @@ def test_go_controller_command_parity_across_timeout_webconsole_and_frontend():
         if path.suffix not in (".ts", ".vue") or path.name.endswith(".test.ts"):
             continue
         text = path.read_text(encoding="utf-8")
-        for match in re.finditer(
-            r"""colabOneCommand(?:<[^>]*>)?\(\s*['"]([a-z0-9._-]+)['"]""",
-            text,
-        ):
-            frontend_cmds.add(match.group(1))
+        frontend_cmds.update(_extract_frontend_colabone_commands(text))
+
+    # Confirm nested generic calls (e.g. colabOneCommand<Record<string, unknown>>("comfyui.live.start"))
+    # are captured by the balanced generic scanner.
+    assert "comfyui.live.start" in frontend_cmds, (
+        "Expected nested-generic colabOneCommand call 'comfyui.live.start' to be extracted"
+    )
 
     assert controller_cmds, "Expected controller commands in commands.go"
     assert timeout_cmds, "Expected timeout entries in colabOneMethodTimeout"
@@ -1212,6 +1549,14 @@ def test_web_and_go_brand_icons_stay_in_sync_with_master_software_logo():
     assert r'href=\"/favicon.ico\"' in workflow_share_page_go
     assert r'href=\"/apple-touch-icon.png\"' in workflow_share_page_go
 
+    output_share_page_go = (
+        ROOT / "console" / "internal" / "webconsole" / "output_share_page.go"
+    ).read_text(encoding="utf-8")
+    assert "colabOneWebIconDataURI()" in output_share_page_go
+    assert 'viewBox="0 0 64 64"' not in output_share_page_go
+    assert r'href=\"/favicon.ico\"' in output_share_page_go
+    assert r'href=\"/apple-touch-icon.png\"' in output_share_page_go
+
     index_html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     assert "../console/internal/brandicon/favicon.svg" in index_html
     assert "../console/internal/brandicon/favicon.ico" in index_html
@@ -1291,4 +1636,237 @@ def test_fashion_tryon_ts_constants_and_share_digital_human_ids_match_python_and
         f"workflow_share.go builtinDigitalHumanIDs ({sorted(go_dh_ids)}) diverged from "
         f"catalog/comfyui.json digital_human templates ({sorted(catalog_dh_ids)})"
     )
+
+
+def test_output_share_and_zip_download_go_frontend_contracts():
+    webconsole_go = (
+        ROOT / "console" / "internal" / "webconsole" / "webconsole.go"
+    ).read_text(encoding="utf-8")
+    output_share_go = (
+        ROOT / "console" / "internal" / "webconsole" / "output_share.go"
+    ).read_text(encoding="utf-8")
+    gallery_ts = (
+        ROOT / "frontend" / "src" / "colabOneOutputGallery.ts"
+    ).read_text(encoding="utf-8")
+
+    # 1. Both /api/outputs/zip and /api/gallery/download.zip must accept GET and HEAD.
+    for route in ('"/api/gallery/download.zip"', '"/api/outputs/zip"'):
+        case_marker = f"case reqPath == {route}:"
+        start = webconsole_go.index(case_marker)
+        next_case = webconsole_go.find("\n\tcase ", start + len(case_marker))
+        block = webconsole_go[start : next_case if next_case != -1 else len(webconsole_go)]
+        assert "http.MethodGet" in block and "http.MethodHead" in block, (
+            f"{route} must allow both GET and HEAD in webconsole.go"
+        )
+        assert 'writeMethodNotAllowed(rw, "GET, HEAD")' in block, (
+            f"{route} must advertise Allow: GET, HEAD in webconsole.go"
+        )
+
+    # 2. Guest ColabOneOutputShareManifest must not expose host-only `note`.
+    manifest_match = re.search(
+        r"type\s+ColabOneOutputShareManifest\s+struct\s*\{([^}]+)\}",
+        output_share_go,
+        re.DOTALL,
+    )
+    assert manifest_match is not None, "Missing ColabOneOutputShareManifest struct"
+    manifest_body = manifest_match.group(1)
+    assert 'json:"note' not in manifest_body, (
+        "ColabOneOutputShareManifest must not serialize host-only note to guests"
+    )
+
+    # 3. Inspect-filename classification parity between Go output_share.go and TS colabOneOutputGallery.ts.
+    go_fn_start = output_share_go.index("func isOutputShareInspectFilename(")
+    go_fn_end = output_share_go.index("\n}", go_fn_start)
+    go_fn_body = output_share_go[go_fn_start : go_fn_end + 2]
+
+    ts_re_match = re.search(
+        r"const\s+COLABONE_INSPECT_FILENAME_RE\s*=\s*/(.+?)/([a-z]*)\s*;",
+        gallery_ts,
+        re.DOTALL,
+    )
+    assert ts_re_match is not None, "Missing COLABONE_INSPECT_FILENAME_RE in colabOneOutputGallery.ts"
+    ts_pattern = ts_re_match.group(1)
+    ts_flags = re.IGNORECASE if "i" in ts_re_match.group(2) else 0
+    ts_compiled = re.compile(ts_pattern, ts_flags)
+
+    required_tokens = ("00_抠衣质检_", "抠衣质检", "00_inspect_", "rmbg_inspect_", "_inspect_")
+    for token in required_tokens:
+        assert token in go_fn_body, (
+            f"isOutputShareInspectFilename in output_share.go missing inspect token {token!r}"
+        )
+        assert token in ts_pattern, (
+            f"COLABONE_INSPECT_FILENAME_RE in colabOneOutputGallery.ts missing inspect token {token!r}"
+        )
+
+    def _go_is_inspect(filename: str) -> bool:
+        lower = filename.strip().lower()
+        if not lower:
+            return False
+        return (
+            lower.startswith("00_抠衣质检_")
+            or "抠衣质检" in lower
+            or lower.startswith("00_inspect_")
+            or "rmbg_inspect_" in lower
+            or "_inspect_" in lower
+        )
+
+    sample_cases = [
+        ("00_抠衣质检_01.png", True),
+        ("00_inspect_mask.png", True),
+        ("rmbg_inspect_01.png", True),
+        ("garment_inspect_preview.png", True),
+        ("01_正面站姿.png", False),
+        ("final_look_02.png", False),
+    ]
+    for sample_name, expected in sample_cases:
+        assert _go_is_inspect(sample_name) is expected, f"Go inspect mismatch on {sample_name}"
+        assert bool(ts_compiled.search(sample_name)) is expected, (
+            f"Frontend inspect regex mismatch on {sample_name}"
+        )
+
+
+def test_open_output_share_rpc_parity():
+    web_console_go = (ROOT / "console" / "web_console.go").read_text(encoding="utf-8")
+    output_share_go = (
+        ROOT / "console" / "internal" / "webconsole" / "output_share.go"
+    ).read_text(encoding="utf-8")
+    bridge_ts = (ROOT / "frontend" / "src" / "colabOneBridge.ts").read_text(encoding="utf-8")
+    api_ts = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+    # 1. Desktop Go RPC method validates shareID, resolves URL via GetOutputShareURL, and enforces http/https without userinfo.
+    open_fn = _extract_go_block(
+        web_console_go, "func (d *ColabOneDesktop) OpenOutputShare("
+    )
+    assert "wc.GetOutputShareURL(" in open_fn, (
+        "ColabOneDesktop.OpenOutputShare must resolve share URLs through wc.GetOutputShareURL"
+    )
+    assert 'u.Scheme != "http" && u.Scheme != "https"' in open_fn
+    assert "u.User != nil" in open_fn
+
+    # 2. webconsole/output_share.go implements GetOutputShareURL with shareID validation.
+    url_fn = _extract_go_block(
+        output_share_go, "func (w *ColabOneWebConsole) GetOutputShareURL("
+    )
+    assert "outputShareIDRe.MatchString(" in url_fn
+    assert "w.outputShares[" in url_fn
+
+    # 3. Generated MyGo bridge binds openOutputShare to ColabOneDesktop.OpenOutputShare.
+    assert '"ColabOneDesktop.OpenOutputShare"' in bridge_ts
+    assert re.search(
+        r'\bopenOutputShare\s*:\s*bind<[^>]*>\(\s*"ColabOneDesktop\.OpenOutputShare"',
+        bridge_ts,
+    ), "colabOneBridge.ts must bind openOutputShare to ColabOneDesktop.OpenOutputShare"
+
+    # 4. frontend/src/api.ts delegates desktop output-share opens to ColabOneDesktop.openOutputShare
+    #    and web opens to colabOneWebOpenOutputShareURL.
+    api_match = re.search(
+        r"export\s+async\s+function\s+colabOneOpenOutputShare\b[^{]*\{(.*?)\n\}",
+        api_ts,
+        re.DOTALL,
+    )
+    assert api_match is not None, "Missing colabOneOpenOutputShare in frontend/src/api.ts"
+    api_body = api_match.group(1)
+    assert "ColabOneDesktop.openOutputShare(" in api_body
+    assert "colabOneWebOpenOutputShareURL(" in api_body
+
+
+def test_comfyui_output_delete_evicts_local_output_cache_across_all_paths():
+    commands_go = (
+        ROOT / "console" / "internal" / "controller" / "commands.go"
+    ).read_text(encoding="utf-8")
+    drive_outputs_go = (
+        ROOT / "console" / "internal" / "controller" / "drive_outputs.go"
+    ).read_text(encoding="utf-8")
+
+    delete_block = _extract_go_block(
+        commands_go, 'if action == "comfyui.output.delete"'
+    )
+    runtime_only_block = _extract_go_block(delete_block, "if runtimeOnly")
+    assert "c.evictLocalOutputCache(" in runtime_only_block, (
+        "runtimeOnly comfyui.output.delete path must call c.evictLocalOutputCache"
+    )
+
+    remote_delete_block = _extract_go_block(
+        delete_block,
+        "if gpuReady && (c.hasLiveRemoteOutput(identity) || !c.hasDriveOutputRecord(identity))",
+    )
+    assert "c.evictLocalOutputCache(" in remote_delete_block, (
+        "remote comfyui.output.delete path must call c.evictLocalOutputCache"
+    )
+    assert "c.deleteDriveOutputOffline(" in remote_delete_block
+
+    # Offline fallback tail after remote_delete_block inside comfyui.output.delete.
+    tail_idx = delete_block.index(remote_delete_block) + len(remote_delete_block)
+    offline_tail = delete_block[tail_idx:]
+    assert "c.deleteDriveOutputOffline(" in offline_tail
+    assert "c.evictLocalOutputCache(" in offline_tail, (
+        "offline comfyui.output.delete tail must call c.evictLocalOutputCache"
+    )
+
+    offline_fn = _extract_go_block(
+        drive_outputs_go, "func (c *ColabOneController) deleteDriveOutputOffline("
+    )
+    assert "c.evictLocalOutputCache(" in offline_fn, (
+        "deleteDriveOutputOffline in drive_outputs.go must call c.evictLocalOutputCache"
+    )
+
+
+def test_web_capabilities_origin_bind_mode_lan_urls_parity():
+    webconsole_go = (
+        ROOT / "console" / "internal" / "webconsole" / "webconsole.go"
+    ).read_text(encoding="utf-8")
+    webconsole_ts = (
+        ROOT / "frontend" / "src" / "colabOneWebConsole.ts"
+    ).read_text(encoding="utf-8")
+
+    go_struct = _extract_go_block(webconsole_go, "type ColabOneWebCapabilities struct")
+    go_json_keys = {
+        m.group(1)
+        for m in re.finditer(r'`json:"([a-z0-9_]+)(?:,[^"]*)?"`', go_struct)
+    }
+
+    ts_iface_match = re.search(
+        r"export\s+interface\s+ColabOneWebCapabilities\s*\{([^}]+)\}",
+        webconsole_ts,
+        re.DOTALL,
+    )
+    assert ts_iface_match is not None, (
+        "Missing ColabOneWebCapabilities interface in frontend/src/colabOneWebConsole.ts"
+    )
+    ts_keys = {
+        m.group(1)
+        for m in re.finditer(r"^\s*([a-z0-9_]+)\??\s*:", ts_iface_match.group(1), re.MULTILINE)
+    }
+
+    required_fields = {"public_origin", "bind_mode", "lan_urls", "local_url"}
+    assert required_fields.issubset(go_json_keys), (
+        f"ColabOneWebCapabilities in webconsole.go missing fields: "
+        f"{sorted(required_fields - go_json_keys)}"
+    )
+    assert required_fields.issubset(ts_keys), (
+        f"ColabOneWebCapabilities in colabOneWebConsole.ts missing fields: "
+        f"{sorted(required_fields - ts_keys)}"
+    )
+    assert go_json_keys == ts_keys, (
+        f"ColabOneWebCapabilities JSON field drift between Go ({sorted(go_json_keys)}) "
+        f"and TS ({sorted(ts_keys)})"
+    )
+
+    go_handler = _extract_go_block(
+        webconsole_go, "func (w *ColabOneWebConsole) handleCapabilities("
+    )
+    for go_field in ("PublicOrigin:", "BindMode:", "LANURLs:", "LocalURL:"):
+        assert go_field in go_handler, (
+            f"handleCapabilities in webconsole.go must populate {go_field}"
+        )
+
+    ts_norm_start = webconsole_ts.index("function normalizeCapabilitiesPayload(")
+    ts_norm_end = webconsole_ts.index("\nexport ", ts_norm_start)
+    ts_norm_body = webconsole_ts[ts_norm_start:ts_norm_end]
+    for ts_field in ("public_origin", "bind_mode", "lan_urls", "local_url"):
+        assert ts_field in ts_norm_body, (
+            f"normalizeCapabilitiesPayload in colabOneWebConsole.ts must normalize {ts_field}"
+        )
+
+
 

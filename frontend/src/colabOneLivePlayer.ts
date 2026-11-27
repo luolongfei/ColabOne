@@ -1,4 +1,5 @@
 import type {
+  ColabOneLiveCompanionStatus,
   ColabOneLiveDirectorMode,
   ColabOneLiveDirectorState,
   ColabOneLiveMicMode,
@@ -13,6 +14,7 @@ export const COLABONE_LIVE_FRAME_MIC_PCM = 0x01;
 export const COLABONE_LIVE_FRAME_VIDEO = 0x02;
 export const COLABONE_LIVE_FRAME_AUDIO_PCM = 0x03;
 export const COLABONE_LIVE_FRAME_FMP4 = 0x04;
+export const COLABONE_LIVE_FRAME_CAMERA_JPEG = 0x05;
 export const COLABONE_LIVE_HEADER_SIZE = 13;
 
 export interface ColabOneLiveBinaryFrame {
@@ -99,7 +101,17 @@ export function colabOneValidateLiveWsUrl(rawUrl: string): string {
   if (parsed.protocol === "wss:") {
     // Allowed for all valid hosts.
   } else if (parsed.protocol === "ws:") {
-    if (!isLoopbackHost(parsed.hostname)) {
+    const isSameOriginProxy =
+      typeof window !== "undefined" &&
+      window.location?.protocol === "http:" &&
+      Boolean(window.location?.host) &&
+      parsed.host === window.location.host &&
+      parsed.pathname === "/api/live/ws" &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash;
+    if (!isLoopbackHost(parsed.hostname) && !isSameOriginProxy) {
       throw new Error(
         "Plain ws:// is only permitted for loopback hosts; use wss:// for remote tunnels",
       );
@@ -193,6 +205,11 @@ export interface ColabOneLiveSessionClientOptions {
     raw?: Record<string, unknown>,
   ) => void;
   onTelemetry?: (telemetry: Partial<ColabOneLiveTelemetry>) => void;
+  onCompanionStatus?: (
+    status: ColabOneLiveCompanionStatus,
+    isInitial?: boolean,
+  ) => void;
+  onSystemNotice?: (text: string, code?: string) => void;
   onVideoFrame?: (frame: ColabOneLiveBinaryFrame) => void;
   onAudioFrame?: (frame: ColabOneLiveBinaryFrame) => void;
   onFmp4Chunk?: (frame: ColabOneLiveBinaryFrame) => void;
@@ -213,6 +230,8 @@ function normalizeDirectorState(raw: unknown): ColabOneLiveDirectorState {
   return VALID_DIRECTOR_STATES.has(upper) ? upper : "IDLE";
 }
 
+let colabOneLiveClientUidSeq = 0;
+
 /**
  * Full-duplex WebSocket session client for ColabOne Live Studio.
  * Authenticates via first-frame JSON `{type:"auth", token}` (never URL query),
@@ -220,6 +239,7 @@ function normalizeDirectorState(raw: unknown): ColabOneLiveDirectorState {
  * heartbeats, and supports bounded exponential-backoff reconnection.
  */
 export class ColabOneLiveSessionClient {
+  private readonly clientUid = ++colabOneLiveClientUidSeq;
   private readonly options: ColabOneLiveSessionClientOptions;
   private readonly shouldReconnect: boolean;
   private readonly maxReconnectAttempts: number;
@@ -395,7 +415,18 @@ export class ColabOneLiveSessionClient {
       if (gen !== this.connectGen || this.ws !== socket) return;
       this.setConnectionState("authenticating");
       // Mandatory first-frame JSON auth: token is never placed in the URL.
-      socket.send(JSON.stringify({ type: "auth", token }));
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "auth", token }));
+        }
+      } catch (err) {
+        if (gen !== this.connectGen || this.ws !== socket) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        this.options.onError?.(msg, "ws_send_failed");
+        this.closeSocketOnly();
+        this.authenticated = false;
+        this.scheduleReconnect(msg);
+      }
     };
 
     socket.onmessage = (event: MessageEvent) => {
@@ -578,11 +609,25 @@ export class ColabOneLiveSessionClient {
       }
       this.setConnectionState("connected");
       this.startHeartbeat();
+      if (msg.companion && typeof msg.companion === "object") {
+        this.options.onCompanionStatus?.(
+          msg.companion as ColabOneLiveCompanionStatus,
+          true,
+        );
+      }
       this.options.onAuthOk?.(msg);
       if (msg.state || msg.director_state) {
         this.options.onState?.(
           normalizeDirectorState(msg.director_state ?? msg.state),
-          msg,
+          {
+            ...(msg.state !== undefined ? { state: msg.state } : {}),
+            ...(msg.director_state !== undefined
+              ? { director_state: msg.director_state }
+              : {}),
+            ...(typeof msg.action_id === "string"
+              ? { action_id: msg.action_id }
+              : {}),
+          },
         );
       }
       return;
@@ -598,6 +643,37 @@ export class ColabOneLiveSessionClient {
     }
 
     switch (type) {
+      case "companion_status": {
+        this.options.onCompanionStatus?.(
+          {
+            connected: Boolean(msg.connected),
+            device_label:
+              typeof msg.device_label === "string" ? msg.device_label : "",
+            mic_active: Boolean(msg.mic_active),
+            camera_mode:
+              typeof msg.camera_mode === "string" ? msg.camera_mode : "off",
+            camera_fps:
+              typeof msg.camera_fps === "number" ? msg.camera_fps : 0,
+            motion_energy:
+              typeof msg.motion_energy === "number" ? msg.motion_energy : 0,
+            vision_frame_ready: Boolean(msg.vision_frame_ready),
+            connected_at:
+              typeof msg.connected_at === "number" ? msg.connected_at : null,
+          },
+          false,
+        );
+        break;
+      }
+      case "system_notice": {
+        const text = String(msg.text || "").trim();
+        if (text) {
+          this.options.onSystemNotice?.(
+            text,
+            typeof msg.code === "string" ? msg.code : undefined,
+          );
+        }
+        break;
+      }
       case "barge_in": {
         const serverEpoch =
           typeof msg.epoch === "number" ? msg.epoch : this.currentEpoch + 1;
@@ -664,7 +740,7 @@ export class ColabOneLiveSessionClient {
         const id =
           typeof msg.id === "string" && msg.id
             ? msg.id
-            : `tr-${++this.transcriptSeq}`;
+            : `tr-${this.clientUid}-${++this.transcriptSeq}`;
         const isDelta = type === "transcript_delta";
         const isFinal = isDelta
           ? msg.is_final === true || msg.final === true
@@ -806,7 +882,12 @@ export class ColabOneLiveSessionClient {
   private handleBinaryMessage(buffer: ArrayBuffer): void {
     const frame = colabOneUnpackLiveFrame(buffer);
     if (!frame) return;
-    if (frame.epoch < this.currentEpoch) {
+    // Continuous H.264 fMP4 streams cannot drop in-flight moof/mdat fragments across
+    // barge-in epoch boundaries without breaking the MediaSource decode sequence.
+    if (
+      frame.frameType !== COLABONE_LIVE_FRAME_FMP4 &&
+      frame.epoch < this.currentEpoch
+    ) {
       this.droppedStaleFrames += 1;
       return;
     }
@@ -823,13 +904,30 @@ export class ColabOneLiveSessionClient {
   }
 
   private sendJson(payload: Record<string, unknown>): boolean {
-    if (!this.isConnected() || !this.ws) return false;
-    this.ws.send(JSON.stringify(payload));
-    return true;
+    if (
+      !this.isConnected() ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN
+    ) {
+      return false;
+    }
+    try {
+      this.ws.send(JSON.stringify(payload));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   sendMicPcm(pcm: Int16Array, ptsMs = Date.now()): boolean {
-    if (!this.isConnected() || !this.ws || pcm.length === 0) return false;
+    if (
+      !this.isConnected() ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      pcm.length === 0
+    ) {
+      return false;
+    }
     const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     const packet = colabOnePackLiveFrame(
       COLABONE_LIVE_FRAME_MIC_PCM,
@@ -837,8 +935,12 @@ export class ColabOneLiveSessionClient {
       ptsMs,
       bytes,
     );
-    this.ws.send(packet);
-    return true;
+    try {
+      this.ws.send(packet);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   sendTextInput(text: string, mode?: ColabOneLiveDirectorMode): boolean {
@@ -1014,6 +1116,96 @@ export function colabOneIsFmp4InitSegment(bytes: Uint8Array): boolean {
   return false;
 }
 
+function splitFmp4InitAndMedia(bytes: Uint8Array<ArrayBuffer>): {
+  initSegment: Uint8Array<ArrayBuffer> | null;
+  mediaTail: Uint8Array<ArrayBuffer> | null;
+  hasFtyp: boolean;
+  hasMoov: boolean;
+} {
+  const len = bytes.byteLength;
+  if (len < 8) {
+    return { initSegment: null, mediaTail: null, hasFtyp: false, hasMoov: false };
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, len);
+  let offset = 0;
+  let hasFtyp = false;
+  let hasMoov = false;
+  let initEnd = 0;
+  let sawMediaBox = false;
+  while (offset + 8 <= len) {
+    const size32 = view.getUint32(offset, false);
+    const boxType = String.fromCharCode(
+      bytes[offset + 4],
+      bytes[offset + 5],
+      bytes[offset + 6],
+      bytes[offset + 7],
+    );
+    let boxSize = size32;
+    if (size32 === 0) {
+      boxSize = len - offset;
+    } else if (size32 === 1) {
+      if (offset + 16 > len) break;
+      const hi = view.getUint32(offset + 8, false);
+      const lo = view.getUint32(offset + 12, false);
+      boxSize = hi * 4294967296 + lo;
+      if (!Number.isSafeInteger(boxSize) || boxSize < 16) break;
+    } else if (size32 < 8) {
+      break;
+    }
+    if (offset + boxSize > len) {
+      break;
+    }
+    if (boxType === "ftyp" || boxType === "moov") {
+      if (!sawMediaBox) {
+        if (boxType === "ftyp") hasFtyp = true;
+        if (boxType === "moov") hasMoov = true;
+        initEnd = offset + boxSize;
+      }
+    } else if (boxType === "moof" || boxType === "mdat") {
+      sawMediaBox = true;
+      break;
+    }
+    offset += boxSize;
+  }
+  if ((!hasFtyp && !hasMoov) || initEnd <= 0) {
+    return { initSegment: null, mediaTail: null, hasFtyp: false, hasMoov: false };
+  }
+  if (initEnd >= len) {
+    return { initSegment: bytes, mediaTail: null, hasFtyp, hasMoov };
+  }
+  const initCopy = new Uint8Array(new ArrayBuffer(initEnd));
+  initCopy.set(bytes.subarray(0, initEnd));
+  const tailLen = len - initEnd;
+  const tailCopy = new Uint8Array(new ArrayBuffer(tailLen));
+  tailCopy.set(bytes.subarray(initEnd));
+  return { initSegment: initCopy, mediaTail: tailCopy, hasFtyp, hasMoov };
+}
+
+function normalizeRendererCodec(
+  rawCodec: string,
+  currentCodec?: string,
+  hasActiveMse = false,
+): string {
+  const clean = String(rawCodec || "").trim().toLowerCase();
+  if (!clean) return currentCodec || "h264";
+  if (clean === "fmp4") return "fmp4";
+  if (clean === "jpeg" || clean === "mjpeg") return "jpeg";
+  if (
+    clean.startsWith("avc1.") ||
+    clean === "h264" ||
+    clean === "avc" ||
+    clean === "h264_nvenc" ||
+    clean === "libx264" ||
+    clean.startsWith("h264_")
+  ) {
+    if (currentCodec === "fmp4" || hasActiveMse) {
+      return "fmp4";
+    }
+    return "h264";
+  }
+  return clean;
+}
+
 function isQuotaExceededError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const maybe = err as { name?: unknown; code?: unknown };
@@ -1032,6 +1224,7 @@ export interface ColabOneLiveVideoRendererOptions {
   videoElement?: HTMLVideoElement | null;
   codec?: "h264" | "jpeg" | "fmp4" | string;
   h264CodecString?: string;
+  videoCodecMime?: string;
   onFrameRendered?: (info: {
     width: number;
     height: number;
@@ -1060,6 +1253,7 @@ export class ColabOneLiveVideoRenderer {
 
   private codec: string;
   private h264CodecString: string;
+  private videoCodecMime: string;
   private decoder: VideoDecoder | null = null;
   private waitingForKeyframe = true;
   private pendingSpsPpsChunks: Uint8Array[] = [];
@@ -1076,6 +1270,7 @@ export class ColabOneLiveVideoRenderer {
   private mediaSourceUrl: string | null = null;
   private sourceBuffer: SourceBuffer | null = null;
   private mseInitSegment: Uint8Array<ArrayBuffer> | null = null;
+  private mseInitHasMoov = false;
   private mseInitAppended = false;
   private mseQueue: Uint8Array<ArrayBuffer>[] = [];
   private msePendingResetRemove = false;
@@ -1100,13 +1295,11 @@ export class ColabOneLiveVideoRenderer {
     this.ctx = options.canvas.getContext("2d");
     this.videoElement = options.videoElement ?? null;
     const rawCodec = options.codec ?? "h264";
-    if (rawCodec.startsWith("avc1.")) {
-      this.codec = "h264";
-      this.h264CodecString = options.h264CodecString ?? rawCodec;
-    } else {
-      this.codec = rawCodec;
-      this.h264CodecString = options.h264CodecString ?? DEFAULT_H264_CODEC_STRING;
-    }
+    this.codec = normalizeRendererCodec(rawCodec);
+    this.h264CodecString =
+      options.h264CodecString ??
+      (rawCodec.startsWith("avc1.") ? rawCodec : DEFAULT_H264_CODEC_STRING);
+    this.videoCodecMime = String(options.videoCodecMime || "").trim();
     this.onFrameRendered = options.onFrameRendered;
     this.onError = options.onError;
   }
@@ -1133,21 +1326,42 @@ export class ColabOneLiveVideoRenderer {
     return this.frameTimestamps.length;
   }
 
-  setCodec(codec: string, h264CodecString?: string): void {
-    const normalizedCodec = codec.startsWith("avc1.") ? "h264" : codec;
+  setCodec(
+    codec: string,
+    h264CodecString?: string,
+    videoCodecMime?: string,
+  ): void {
+    const hasActiveMse = Boolean(this.mediaSource || this.sourceBuffer);
+    const normalizedCodec = normalizeRendererCodec(
+      codec,
+      this.codec,
+      hasActiveMse,
+    );
     const nextAvc =
       h264CodecString ||
       (codec.startsWith("avc1.") ? codec : this.h264CodecString);
-    if (this.codec === normalizedCodec && this.h264CodecString === nextAvc) {
+    const avcChanged = this.h264CodecString !== nextAvc;
+    const explicitMime =
+      typeof videoCodecMime === "string" && videoCodecMime.trim()
+        ? videoCodecMime.trim()
+        : "";
+    const nextMime = explicitMime || (avcChanged ? "" : this.videoCodecMime);
+    if (
+      this.codec === normalizedCodec &&
+      this.h264CodecString === nextAvc &&
+      this.videoCodecMime === nextMime
+    ) {
       return;
     }
-    const avcChanged = this.h264CodecString !== nextAvc;
+    const mseCodecChanged = avcChanged || this.videoCodecMime !== nextMime;
     const hadMse = Boolean(
       this.mediaSource || this.sourceBuffer || this.mseFailed,
     );
+    const prevCodec = this.codec;
     this.codec = normalizedCodec;
     this.h264CodecString = nextAvc;
-    if (avcChanged) {
+    this.videoCodecMime = nextMime;
+    if (mseCodecChanged) {
       this.teardownMsePipeline();
       this.mseFailed = false;
       this.resetEpoch();
@@ -1156,18 +1370,18 @@ export class ColabOneLiveVideoRenderer {
       }
       return;
     }
+    // Switching from initial default "h264" to "fmp4" upon first fMP4 chunk must not wipe MSE.
+    if (prevCodec === "h264" && normalizedCodec === "fmp4" && !hadMse) {
+      this.resetEpoch({ preserveMseStream: true });
+      return;
+    }
     this.resetEpoch();
   }
 
-  resetEpoch(): void {
+  resetEpoch(opts?: { preserveMseStream?: boolean }): void {
     this.waitingForKeyframe = true;
     this.pendingJpeg = null;
     this.pendingSpsPpsChunks = [];
-    this.mseQueue = [];
-    this.lastMseVideoTime = -1;
-    this.mseQuotaRetryCount = 0;
-    this.mseInitAppended = false;
-    this.mseSeekToLiveEdge = true;
     if (this.decoder && this.decoder.state === "configured") {
       try {
         this.decoder.reset();
@@ -1176,6 +1390,14 @@ export class ColabOneLiveVideoRenderer {
         this.closeDecoder();
       }
     }
+    if (opts?.preserveMseStream) {
+      return;
+    }
+    this.mseQueue = [];
+    this.lastMseVideoTime = -1;
+    this.mseQuotaRetryCount = 0;
+    this.mseInitAppended = false;
+    this.mseSeekToLiveEdge = true;
     if (this.sourceBuffer && this.mediaSource?.readyState === "open") {
       try {
         this.sourceBuffer.abort();
@@ -1499,7 +1721,8 @@ export class ColabOneLiveVideoRenderer {
       this.mseFailed = true;
       return;
     }
-    const mime = `video/mp4; codecs="${this.h264CodecString}"`;
+    const mime =
+      this.videoCodecMime || `video/mp4; codecs="${this.h264CodecString}"`;
     if (
       typeof MediaSource.isTypeSupported === "function" &&
       !MediaSource.isTypeSupported(mime)
@@ -1535,6 +1758,20 @@ export class ColabOneLiveVideoRenderer {
           if (this.msePendingResetRemove) {
             if (this.flushPendingResetRemove(sb)) return;
           }
+          try {
+            const buffered = sb.buffered;
+            if (
+              !this.mseSeekToLiveEdge &&
+              this.videoElement &&
+              buffered &&
+              buffered.length > 0 &&
+              this.videoElement.currentTime < buffered.start(0) - 0.05
+            ) {
+              this.mseSeekToLiveEdge = true;
+            }
+          } catch {
+            // Ignore buffered read errors.
+          }
           this.maybeSeekMseToLiveEdge(sb);
           if (this.maybeEvictMseBuffer()) return;
           this.drainMseQueue();
@@ -1562,6 +1799,7 @@ export class ColabOneLiveVideoRenderer {
       }
       try {
         sb.remove(0, Infinity);
+        this.mseSeekToLiveEdge = true;
         return true;
       } catch {
         if (buffered && buffered.length > 0) {
@@ -1569,6 +1807,7 @@ export class ColabOneLiveVideoRenderer {
           const end = buffered.end(buffered.length - 1);
           if (end > start) {
             sb.remove(start, end);
+            this.mseSeekToLiveEdge = true;
             return true;
           }
         }
@@ -1611,15 +1850,17 @@ export class ColabOneLiveVideoRenderer {
       const end = buffered.end(buffered.length - 1);
       if (!force && end - start <= MSE_EVICT_THRESHOLD_SEC) return false;
       const currentTime = this.videoElement?.currentTime ?? end;
-      let removeEnd = Math.min(
-        end - 2,
-        Math.max(start + 1, currentTime - 1),
-      );
+      let removeEnd = force
+        ? Math.min(end - 2, Math.max(start + 1, currentTime - 1))
+        : Math.min(end - 2, currentTime - 0.5);
       if (force && removeEnd <= start) {
         removeEnd = end;
       }
       if (removeEnd > start) {
         sb.remove(start, removeEnd);
+        if (force || removeEnd > currentTime - 0.05) {
+          this.mseSeekToLiveEdge = true;
+        }
         return true;
       }
     } catch {
@@ -1634,10 +1875,45 @@ export class ColabOneLiveVideoRenderer {
     const copy = new Uint8Array(new ArrayBuffer(chunk.byteLength));
     copy.set(chunk);
     if (colabOneIsFmp4InitSegment(copy)) {
-      this.mseInitSegment = copy;
-      this.mseInitAppended = false;
-      this.drainMseQueue();
-      return;
+      const { initSegment, mediaTail, hasFtyp, hasMoov } =
+        splitFmp4InitAndMedia(copy);
+      if (initSegment) {
+        if (hasFtyp) {
+          // New stream initialization: discard stale pre-init queued media fragments.
+          this.mseQueue = [];
+          this.mseInitSegment = initSegment;
+          this.mseInitHasMoov = hasMoov;
+          this.mseInitAppended = false;
+        } else if (hasMoov && this.mseInitSegment && !this.mseInitHasMoov) {
+          // Merge split [ftyp] + [moov] into a complete cached init segment.
+          const merged = new Uint8Array(
+            new ArrayBuffer(this.mseInitSegment.byteLength + initSegment.byteLength),
+          );
+          merged.set(this.mseInitSegment, 0);
+          merged.set(initSegment, this.mseInitSegment.byteLength);
+          this.mseInitSegment = merged;
+          this.mseInitHasMoov = true;
+          if (this.mseInitAppended) {
+            // ftyp was already appended; queue moov directly in front of media.
+            this.mseQueue = [initSegment];
+          } else {
+            this.mseQueue = [];
+          }
+        } else {
+          this.mseQueue = [];
+          this.mseInitSegment = initSegment;
+          this.mseInitHasMoov = hasMoov;
+          this.mseInitAppended = false;
+        }
+        if (mediaTail && mediaTail.byteLength > 0) {
+          while (this.mseQueue.length >= MAX_MSE_QUEUE_CHUNKS) {
+            this.mseQueue.shift();
+          }
+          this.mseQueue.push(mediaTail);
+        }
+        this.drainMseQueue();
+        return;
+      }
     }
     while (this.mseQueue.length >= MAX_MSE_QUEUE_CHUNKS) {
       this.mseQueue.shift();
@@ -1651,23 +1927,22 @@ export class ColabOneLiveVideoRenderer {
     failedChunk: Uint8Array<ArrayBuffer> | null,
   ): void {
     const sb = this.sourceBuffer;
-    if (isQuotaExceededError(err) && sb) {
-      if (failedChunk) {
-        this.mseQueue.unshift(failedChunk);
-      } else {
-        this.mseInitAppended = false;
-      }
+    if (isQuotaExceededError(err) && sb && this.mseQuotaRetryCount < 2) {
       this.mseQuotaRetryCount += 1;
-      if (this.mseQuotaRetryCount <= 2) {
-        const evicted =
-          this.mseQuotaRetryCount === 1
-            ? this.maybeEvictMseBuffer(true) || this.removeAllMseBuffered(sb)
-            : this.removeAllMseBuffered(sb);
-        if (evicted) {
-          return;
+      const evicted =
+        this.mseQuotaRetryCount === 1
+          ? this.maybeEvictMseBuffer(true) || this.removeAllMseBuffered(sb)
+          : this.removeAllMseBuffered(sb);
+      if (evicted) {
+        if (failedChunk) {
+          this.mseQueue.unshift(failedChunk);
+        } else {
+          this.mseInitAppended = false;
         }
+        return;
       }
     }
+    this.mseQuotaRetryCount = 0;
     if (!this.destroyed) {
       this.onError?.(err instanceof Error ? err : new Error(String(err)));
     }
@@ -1710,6 +1985,7 @@ export class ColabOneLiveVideoRenderer {
   private teardownMsePipeline(): void {
     this.mseQueue = [];
     this.mseInitSegment = null;
+    this.mseInitHasMoov = false;
     this.mseInitAppended = false;
     this.msePendingResetRemove = false;
     this.mseSeekToLiveEdge = false;

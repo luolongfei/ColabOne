@@ -136,7 +136,7 @@ var (
 	authCodeRE     = regexp.MustCompile(`4/[A-Za-z0-9_./+\-]{20,}`)
 	gcpProjectIDRE = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 	gcpURLRE       = regexp.MustCompile(`https?://\S+`)
-	gcpSecretRE    = regexp.MustCompile(`(?i)\b(?:bearer\s+\S+|ya29\.[A-Za-z0-9._\-]+|1//[A-Za-z0-9._\-]+)`)
+	gcpSecretRE    = regexp.MustCompile(`(?i)\b(?:bearer\s+\S+|ya29\.[A-Za-z0-9._\-]+|1//[A-Za-z0-9._\-]+|GOCSPX-[A-Za-z0-9_-]{12,})`)
 )
 
 // VaultStore abstracts encrypted credential storage (OS keyring or in-memory

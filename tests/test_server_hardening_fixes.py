@@ -367,7 +367,7 @@ def test_live_visual_and_server_ffmpeg_whitelist_and_sanitized_env(monkeypatch, 
     assert "-nostdin" in cmd[:i_idx]
     wl_idx = cmd.index("-protocol_whitelist")
     assert wl_idx < i_idx
-    assert cmd[wl_idx + 1] == "file,pipe,fd"
+    assert cmd[wl_idx + 1] == "file,pipe"
     assert "HF_TOKEN" not in captured["env"]
     assert "COLABONE_REMOTE_CONFIG" not in captured["env"]
 
@@ -383,8 +383,12 @@ def test_live_visual_and_server_ffmpeg_whitelist_and_sanitized_env(monkeypatch, 
         "libx264", 320, 240, rtmp_url="rtmp://live.example.com/live/stream"
     )
     assert "-nostdin" in cmd_rtmp
-    wl_r = cmd_rtmp.index("-protocol_whitelist")
-    assert cmd_rtmp[wl_r + 1] == "pipe,lavfi,rtmp,rtmps,tcp,tls,crypto"
+    wl_positions = [i for i, tok in enumerate(cmd_rtmp) if tok == "-protocol_whitelist"]
+    assert [cmd_rtmp[i + 1] for i in wl_positions] == [
+        "pipe",
+        "lavfi",
+        "rtmp,rtmps,tcp,tls,crypto",
+    ]
 
 
 def test_live_video_encoder_no_resurrection_and_no_rtmp_respawn_loop(monkeypatch):

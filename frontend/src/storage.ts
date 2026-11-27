@@ -2,6 +2,7 @@ export const COLABONE_STORAGE_KEYS = {
   appearance: "colabone.appearance",
   locale: "colabone.locale",
   workflowShareLocale: "colabone.share.locale",
+  outputShareLocale: "colabone.gallery.locale",
   logsWidth: "colabone.logs.width",
   monitorLayout: "colabone.monitor.layout",
   cuUsageMetric: "colabone.cu_usage.metric",

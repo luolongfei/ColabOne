@@ -121,8 +121,8 @@ export function formatRemainingBalanceTime(
   rate?: number,
 ): BalanceEndurance {
   if (
-    balance === undefined ||
-    rate === undefined ||
+    typeof balance !== "number" ||
+    typeof rate !== "number" ||
     !Number.isFinite(balance) ||
     !Number.isFinite(rate)
   ) {
@@ -159,6 +159,16 @@ export function formatRemainingBalanceTime(
   }
 
   const totalHours = balance / rate;
+  if (!Number.isFinite(totalHours)) {
+    return {
+      text: t("billing.enduranceReading"),
+      shortText: t("billing.enduranceReadingShort"),
+      hours: null,
+      daysPart: 0,
+      hoursPart: 0,
+      level: "unknown",
+    };
+  }
   const level: EnduranceLevel =
     totalHours < 2 ? "critical" : totalHours < 12 ? "low" : "healthy";
   const daysPart = Math.floor(totalHours / 24);
@@ -215,15 +225,31 @@ export function describeColabOneBilling(
   nowMs: number = Date.now(),
 ): ColabOneBillingOverview {
   const hasFiniteRate =
-    account.rate !== undefined && Number.isFinite(account.rate);
+    typeof account.rate === "number" &&
+    Number.isFinite(account.rate) &&
+    account.rate >= 0;
   const hasFiniteBalance =
-    account.balance !== undefined && Number.isFinite(account.balance);
+    typeof account.balance === "number" && Number.isFinite(account.balance);
 
   const loggedIn = !!account.logged_in;
   const rate = hasFiniteRate ? (account.rate as number) : 0;
   const active = rate > 0;
-  const instanceCount = account.assignments ?? (runtimeId ? 1 : 0);
-  const stale = !account.checked_at || nowMs / 1000 - account.checked_at > 60;
+  const instanceCount =
+    typeof account.assignments === "number" &&
+    Number.isFinite(account.assignments)
+      ? Math.max(0, Math.floor(account.assignments))
+      : runtimeId
+        ? 1
+        : 0;
+  const safeNowMs =
+    typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  const checkedAt =
+    typeof account.checked_at === "number" &&
+    Number.isFinite(account.checked_at) &&
+    account.checked_at > 0
+      ? account.checked_at
+      : 0;
+  const stale = !checkedAt || safeNowMs / 1000 - checkedAt > 60;
 
   let statusText: string;
   if (!loggedIn) {
@@ -239,18 +265,26 @@ export function describeColabOneBilling(
   }
 
   const rateText = hasFiniteRate
-    ? t("billing.rateValue", { rate: (account.rate as number).toFixed(2) })
+    ? t("billing.rateValue", { rate: rate.toFixed(2) })
     : t("billing.ratePlaceholder");
+  const displayBalance = hasFiniteBalance
+    ? Math.abs(account.balance as number) < 0.005
+      ? 0
+      : (account.balance as number)
+    : undefined;
   const balanceText = hasFiniteBalance
-    ? `${(account.balance as number).toFixed(2)} CU`
+    ? `${(displayBalance as number).toFixed(2)} CU`
     : t("billing.balanceUnread");
-  const endurance = formatRemainingBalanceTime(account.balance, account.rate);
+  const endurance = formatRemainingBalanceTime(
+    hasFiniteBalance ? account.balance : undefined,
+    hasFiniteRate ? rate : undefined,
+  );
 
   return {
     loggedIn,
     active,
     rate,
-    balance: account.balance,
+    balance: hasFiniteBalance ? account.balance : undefined,
     instanceCount,
     stale,
     statusText,
@@ -354,7 +388,10 @@ export function describeColabOneRunConsumption(
       : Date.now();
   const nowSec = nowMs / 1000;
   const liveAccountRate = finitePositive(account.rate) ?? 0;
-  const currentBalance = finiteNonNeg(account.balance);
+  const currentBalance =
+    typeof account.balance === "number" && Number.isFinite(account.balance)
+      ? account.balance
+      : undefined;
   const hasFiniteBalance = currentBalance !== undefined;
   const runtimeActive = Boolean(
     options?.runtimeState &&
@@ -362,7 +399,8 @@ export function describeColabOneRunConsumption(
       options.runtimeId,
   );
   const instanceCount =
-    account.assignments !== undefined
+    typeof account.assignments === "number" &&
+    Number.isFinite(account.assignments)
       ? Math.max(0, Math.floor(account.assignments))
       : runtimeActive
         ? 1
@@ -416,7 +454,7 @@ export function describeColabOneRunConsumption(
       const gapSec = Math.min(COLABONE_RUN_LIVE_INTERP_CAP_SEC, sinceAnchorSec);
       const rawProj = unsettled + (effectiveRate * gapSec) / 3600;
       liveProjection = hasFiniteBalance
-        ? Math.min(rawProj, currentBalance)
+        ? Math.min(rawProj, Math.max(0, currentBalance))
         : rawProj;
     }
 
@@ -432,7 +470,7 @@ export function describeColabOneRunConsumption(
       : finiteNonNeg(run.end_balance);
     const peakRate = Math.max(finiteNonNeg(run.peak_rate) ?? 0, effectiveRate);
     const maxInstances = Math.max(
-      Math.max(0, Math.floor(run.max_instances ?? 0)),
+      Math.floor(finiteNonNeg(run.max_instances) ?? 0),
       instanceCount,
     );
 
@@ -526,7 +564,7 @@ export function describeColabOneRunConsumption(
       endBalance: finiteNonNeg(run.end_balance),
       startedAt: run.started_at,
       endedAt,
-      maxInstances: Math.max(0, Math.floor(run.max_instances ?? 0)),
+      maxInstances: Math.floor(finiteNonNeg(run.max_instances) ?? 0),
       syncingRate: false,
       interpolating: false,
       balanceDepleted: false,
@@ -635,7 +673,7 @@ export function formatIdlePolicyLabel(minutes?: number): string {
   if (preset) {
     return preset.shortLabel;
   }
-  if (minutes !== undefined && Number.isFinite(minutes) && minutes > 60) {
+  if (typeof minutes === "number" && Number.isFinite(minutes) && minutes > 60) {
     if (minutes % 60 === 0) {
       return t("common.hours", { value: minutes / 60 });
     }
@@ -645,7 +683,7 @@ export function formatIdlePolicyLabel(minutes?: number): string {
     });
   }
   const safeMinutes =
-    minutes !== undefined && Number.isFinite(minutes) && minutes > 0
+    typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
       ? minutes
       : COLABONE_DEFAULT_IDLE_MINUTES;
   return t("common.minutes", { value: safeMinutes });

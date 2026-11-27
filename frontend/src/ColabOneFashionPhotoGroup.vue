@@ -93,8 +93,11 @@ watch(previewEntry, (entry) => {
 watch(
   () => props.active,
   (isActive) => {
-    if (!isActive && previewSlotKey.value !== null) {
-      previewSlotKey.value = null;
+    if (!isActive) {
+      isDragging.value = false;
+      if (previewSlotKey.value !== null) {
+        previewSlotKey.value = null;
+      }
     }
   },
 );
@@ -237,9 +240,12 @@ function onInputChange(ev: Event) {
 }
 
 function hasFileDragPayload(ev: DragEvent): boolean {
-  const types = ev.dataTransfer?.types;
-  if (!types) return false;
-  return Array.from(types).includes("Files");
+  const dt = ev.dataTransfer;
+  if (!dt) return false;
+  if (dt.types && dt.types.length > 0) {
+    return Array.from(dt.types).includes("Files");
+  }
+  return Boolean(dt.files && dt.files.length > 0);
 }
 
 function onDragOver(ev: DragEvent) {
@@ -267,8 +273,9 @@ function onDragLeave(ev: DragEvent) {
 }
 
 function onDrop(ev: DragEvent) {
-  ev.preventDefault();
   isDragging.value = false;
+  if (!hasFileDragPayload(ev)) return;
+  ev.preventDefault();
   if (props.disabled) return;
   const files = ev.dataTransfer?.files ? Array.from(ev.dataTransfer.files) : [];
   if (files.length > 0) {

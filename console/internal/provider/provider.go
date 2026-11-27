@@ -210,7 +210,16 @@ func NewColabOneProvider(cfg ColabOneProviderConfig) *ColabOneProvider {
 
 	var httpClient *http.Client
 	if cfg.HTTPClient == nil {
+		var transport http.RoundTripper
+		if def, ok := http.DefaultTransport.(*http.Transport); ok {
+			cloned := def.Clone()
+			cloned.ResponseHeaderTimeout = 30 * time.Second
+			transport = cloned
+		} else {
+			transport = http.DefaultTransport
+		}
 		httpClient = &http.Client{
+			Transport:     transport,
 			CheckRedirect: colabOneProviderNoRedirect,
 		}
 	} else if cfg.HTTPClient.CheckRedirect == nil {
@@ -1284,7 +1293,27 @@ func (p *ColabOneProvider) assignRuntime(
 	poolBusyHintEmitted := false
 	lastRetryKind := ""
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	assignCtx, cancelAssign := context.WithCancel(ctx)
+	defer cancelAssign()
+	if opts.CancelCh != nil || p.closedCh != nil {
+		go func() {
+			select {
+			case <-opts.CancelCh:
+				cancelAssign()
+			case <-p.closedCh:
+				cancelAssign()
+			case <-assignCtx.Done():
+			}
+		}()
+	}
+
 	for attempt := 0; attempt < totalAttempts; attempt++ {
+		if p.closed.Load() {
+			return nil, ErrProviderClosed
+		}
 		if isCancelled(ctx, opts.CancelCh) {
 			return nil, ErrAllocationCancelled
 		}
@@ -1318,7 +1347,7 @@ func (p *ColabOneProvider) assignRuntime(
 		var err error
 		if xsrfToken == "" {
 			var existing *Assignment
-			existing, xsrfToken, err = client.GetAssignment(ctx, nbh, "GPU", accel, shape)
+			existing, xsrfToken, err = client.GetAssignment(assignCtx, nbh, "GPU", accel, shape)
 			if err == nil && existing != nil {
 				if attempt > 0 {
 					emitLog(opts.OnLog, fmt.Sprintf("已通过状态核验确认 %s GPU 实例分配成功", accel), "GPU", "info")
@@ -1327,7 +1356,7 @@ func (p *ColabOneProvider) assignRuntime(
 			}
 		}
 		if err == nil {
-			assigned, err = client.PostAssignment(ctx, nbh, xsrfToken, "GPU", accel, shape)
+			assigned, err = client.PostAssignment(assignCtx, nbh, xsrfToken, "GPU", accel, shape)
 			if err == nil {
 				return assigned, nil
 			}
@@ -1337,28 +1366,25 @@ func (p *ColabOneProvider) assignRuntime(
 		if elapsed < 0 {
 			elapsed = 0
 		}
+		if p.closed.Load() {
+			return nil, ErrProviderClosed
+		}
+		if isCancelled(ctx, opts.CancelCh) {
+			return nil, ErrAllocationCancelled
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		status := httpStatusCode(err)
 		if status == 412 || errors.Is(err, ErrTooManyAssignments) {
 			return nil, &TooManyAssignmentsError{Err: err}
 		}
 		if usingAssignProxy && isAssignProxyFastFailError(err) {
-			if isCancelled(ctx, opts.CancelCh) {
-				return nil, ErrAllocationCancelled
-			}
 			return nil, err
-		}
-		if isCancelled(ctx, opts.CancelCh) && errors.Is(err, context.Canceled) {
-			return nil, ErrAllocationCancelled
-		}
-		if ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, ctx.Err()
 		}
 		isNetErr := status == 0 && isNetworkOrTransportError(err)
 		retryable := isNetErr || status == 502 || status == 503 || status == 504
 		if !retryable {
-			if isCancelled(ctx, opts.CancelCh) {
-				return nil, ErrAllocationCancelled
-			}
 			return nil, err
 		}
 
@@ -1367,22 +1393,30 @@ func (p *ColabOneProvider) assignRuntime(
 			// proxy timeout or a connection drop after the VM was already assigned,
 			// adopt it instead of orphaning it.
 			if hasPositiveDelay(delays) {
-				outcome := p.waitForRetry(ctx, 2*time.Second, opts.CancelCh)
+				outcome := p.waitForRetry(assignCtx, 2*time.Second, opts.CancelCh)
+				if p.closed.Load() {
+					return nil, ErrProviderClosed
+				}
 				if outcome == "cancel" {
 					return nil, ErrAllocationCancelled
 				}
 				if ctx != nil && ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
+			} else if p.closed.Load() {
+				return nil, ErrProviderClosed
 			} else if isCancelled(ctx, opts.CancelCh) {
 				return nil, ErrAllocationCancelled
 			} else if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			reconciled, _, recErr := client.GetAssignment(ctx, nbh, "GPU", accel, shape)
+			reconciled, _, recErr := client.GetAssignment(assignCtx, nbh, "GPU", accel, shape)
 			if recErr == nil && reconciled != nil {
 				emitLog(opts.OnLog, fmt.Sprintf("已通过状态核验确认 %s GPU 实例分配成功", accel), "GPU", "info")
 				return reconciled, nil
+			}
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
 			}
 			if isCancelled(ctx, opts.CancelCh) {
 				return nil, ErrAllocationCancelled
@@ -1459,7 +1493,10 @@ func (p *ColabOneProvider) assignRuntime(
 					"gpu":            accel,
 				})
 			}
-			outcome := p.waitForRetry(ctx, delay, opts.CancelCh)
+			outcome := p.waitForRetry(assignCtx, delay, opts.CancelCh)
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
 			if outcome == "cancel" {
 				return nil, ErrAllocationCancelled
 			}
@@ -2535,6 +2572,12 @@ func (p *ColabOneProvider) deleteRemoteFile(ctx context.Context, session *ColabO
 
 // Ready polls GET {session.URL}/api/kernels until HTTP 200 or deadline (90s default).
 func (p *ColabOneProvider) Ready(ctx context.Context, session *ColabOneSessionState, onLog LogFn, cancelCh <-chan struct{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if session == nil || strings.TrimSpace(session.URL) == "" {
+		return errors.New("远端会话状态无效")
+	}
 	started := p.now()
 	lastNote := started
 	deadline := started.Add(p.readyTimeout)
@@ -2542,10 +2585,12 @@ func (p *ColabOneProvider) Ready(ctx context.Context, session *ColabOneSessionSt
 
 	readyCtx, cancelReady := context.WithCancel(ctx)
 	defer cancelReady()
-	if cancelCh != nil {
+	if cancelCh != nil || p.closedCh != nil {
 		go func() {
 			select {
 			case <-cancelCh:
+				cancelReady()
+			case <-p.closedCh:
 				cancelReady()
 			case <-readyCtx.Done():
 			}
@@ -2553,6 +2598,9 @@ func (p *ColabOneProvider) Ready(ctx context.Context, session *ColabOneSessionSt
 	}
 
 	for p.now().Before(deadline) {
+		if p.closed.Load() {
+			return ErrProviderClosed
+		}
 		if isCancelled(ctx, cancelCh) {
 			return ErrStartCancelled
 		}
@@ -2587,6 +2635,9 @@ func (p *ColabOneProvider) Ready(ctx context.Context, session *ColabOneSessionSt
 			cancelReq()
 		}
 
+		if p.closed.Load() {
+			return ErrProviderClosed
+		}
 		if isCancelled(ctx, cancelCh) {
 			return ErrStartCancelled
 		}
@@ -2603,7 +2654,10 @@ func (p *ColabOneProvider) Ready(ctx context.Context, session *ColabOneSessionSt
 				"info",
 			)
 		}
-		outcome := p.waitForRetry(ctx, p.readyPollInterval, cancelCh)
+		outcome := p.waitForRetry(readyCtx, p.readyPollInterval, cancelCh)
+		if p.closed.Load() {
+			return ErrProviderClosed
+		}
 		if outcome == "cancel" {
 			return ErrStartCancelled
 		}
@@ -3581,7 +3635,7 @@ func (p *ColabOneProvider) RPC(
 				return nil, errors.New("请先启动远端 GPU")
 			}
 			status := httpStatusCode(execErr)
-			shouldRetry := idempotent && attempt == 0 && !slot.evicted && !slot.clearing.Load() && (isTransientWSError(execErr) || status == 401 || status == 403)
+			shouldRetry := idempotent && attempt == 0 && ctx.Err() == nil && !errors.Is(execErr, context.DeadlineExceeded) && !slot.evicted && !slot.clearing.Load() && (isTransientWSError(execErr) || status == 401 || status == 403)
 			delSess := session
 			if shouldRetry {
 				p.closeKernelSlotLocked(slot)
@@ -3642,12 +3696,15 @@ func (p *ColabOneProvider) RPC(
 		}
 
 		delSess := session
-		if idempotent && attempt == 0 && !slot.evicted && !slot.clearing.Load() {
+		if idempotent && attempt == 0 && !slot.evicted && !slot.clearing.Load() && ctx.Err() == nil && !p.closed.Load() {
 			p.closeKernelSlotLocked(slot)
 			slot.mu.Unlock()
 			cleanupRemote(delSess)
 			if p.closed.Load() {
 				return nil, ErrProviderClosed
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
 			continue
 		}
@@ -3655,6 +3712,9 @@ func (p *ColabOneProvider) RPC(
 		cleanupRemote(delSess)
 		if p.closed.Load() {
 			return nil, ErrProviderClosed
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		return nil, errors.New("Colab 控制连接没有返回结果，请检查网络后重试")
 	}
@@ -3734,6 +3794,9 @@ print('COLABONE_LOC=' + _co_j.dumps(_co_loc()))
 // Heartbeat sends the TFE keep-alive ping, performs a one-time VM geographic location probe
 // when location is still unknown, and executes a lightweight kernel heartbeat.
 func (p *ColabOneProvider) Heartbeat(ctx context.Context, endpoint string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if p.closed.Load() {
 		return ErrProviderClosed
 	}
@@ -3744,12 +3807,9 @@ func (p *ColabOneProvider) Heartbeat(ctx context.Context, endpoint string) error
 	if session == nil {
 		return nil
 	}
-	slot, err := p.lockKernelSlot(session.Endpoint)
-	if err != nil {
-		return err
-	}
-	defer slot.mu.Unlock()
 
+	// Run the external HTTP TFE KeepAlive BEFORE acquiring slot.mu so concurrent
+	// RPCs on this endpoint are never stalled behind 10s TFE network latency.
 	client, err := p.regularClient()
 	if err != nil {
 		return err
@@ -3765,21 +3825,30 @@ func (p *ColabOneProvider) Heartbeat(ctx context.Context, endpoint string) error
 		}
 	}
 
+	slot, err := p.lockKernelSlot(session.Endpoint)
+	if err != nil {
+		return err
+	}
+
 	rem := p.RemoteInfo(session.Endpoint)
 	p.stateMu.Lock()
 	alreadyProbed := p.locProbed[session.Endpoint]
 	p.stateMu.Unlock()
 
+	var discoveredLoc map[string]any
+	ranKernelCheck := false
 	if len(rem) > 0 && isEmptyLocation(rem["location"]) && !alreadyProbed {
 		loc := p.inferLocationFromEndpoint(session.Endpoint, session.URL)
 		if len(loc) == 0 {
-			outputs, err := p.executeLocked(ctx, slot, session, vmLocationProbeCode, ExecuteOptions{
+			outputs, execErr := p.executeLocked(ctx, slot, session, vmLocationProbeCode, ExecuteOptions{
 				Timeout:    30 * time.Second,
 				AllowStdin: false,
 			})
-			if err != nil {
-				return err
+			if execErr != nil {
+				slot.mu.Unlock()
+				return execErr
 			}
+			ranKernelCheck = true
 			stdoutCombined := combineStdout(outputs)
 			for _, line := range splitAllLines(stdoutCombined) {
 				if strings.HasPrefix(line, "COLABONE_LOC=") {
@@ -3803,17 +3872,34 @@ func (p *ColabOneProvider) Heartbeat(ctx context.Context, endpoint string) error
 		p.stateMu.Unlock()
 
 		if len(loc) > 0 && strVal(rem["endpoint"]) == session.Endpoint {
-			updated := cloneMap(rem)
-			updated["location"] = loc
-			_ = p.SaveRemote(updated, false)
+			discoveredLoc = loc
 		}
-	} else {
-		if _, err := p.executeLocked(ctx, slot, session, "pass", ExecuteOptions{
+	}
+	if !ranKernelCheck {
+		if _, execErr := p.executeLocked(ctx, slot, session, "pass", ExecuteOptions{
 			Timeout:    30 * time.Second,
 			AllowStdin: false,
-		}); err != nil {
-			return err
+		}); execErr != nil {
+			slot.mu.Unlock()
+			return execErr
 		}
+	}
+	slot.mu.Unlock()
+
+	if len(discoveredLoc) > 0 {
+		p.stateMu.Lock()
+		sOrder, sessions := p.sessionsOrderedLocked()
+		rOrder, remotes := p.remotesOrderedLocked()
+		if _, hasSess := sessions[session.Endpoint]; hasSess {
+			if curRem, ok := remotes[session.Endpoint]; ok && isEmptyLocation(curRem["location"]) {
+				updated := cloneMap(curRem)
+				updated["location"] = discoveredLoc
+				remotes[session.Endpoint] = updated
+				activeEP := p.activeEndpointLocked(sOrder, sessions)
+				_ = p.writeStateLocked(sOrder, sessions, rOrder, remotes, activeEP)
+			}
+		}
+		p.stateMu.Unlock()
 	}
 	return nil
 }
@@ -4355,7 +4441,10 @@ func isTransientWSError(err error) bool {
 	if strings.Contains(msg, "connection aborted") {
 		return false
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || isTimeoutError(err) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 	for _, needle := range transientWSNeedles {

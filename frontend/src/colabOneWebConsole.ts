@@ -43,6 +43,10 @@ export interface ColabOneWebConsoleTicket {
 export interface ColabOneWebCapabilities {
   runtime: "desktop" | "web";
   version: string;
+  public_origin?: string;
+  bind_mode?: string;
+  local_url?: string;
+  lan_urls?: string[];
   can_open_native_canvas_window: boolean;
   can_standalone_log_window: boolean;
   can_manage_web_console: boolean;
@@ -236,9 +240,29 @@ function normalizeCapabilitiesPayload(raw: unknown): ColabOneWebCapabilities {
   const base = createColabOneCapabilities(runtime);
   const boolOr = (key: keyof ColabOneWebCapabilities, fallback: boolean) =>
     typeof rec[key] === "boolean" ? (rec[key] as boolean) : fallback;
+  const publicOrigin =
+    typeof rec.public_origin === "string" ? rec.public_origin.trim() : "";
+  const bindMode =
+    typeof rec.bind_mode === "string" ? rec.bind_mode.trim() : "";
+  const localUrl =
+    typeof rec.local_url === "string" ? rec.local_url.trim() : "";
+  const lanUrls = Array.isArray(rec.lan_urls)
+    ? Array.from(
+        new Set(
+          rec.lan_urls
+            .filter((u): u is string => typeof u === "string")
+            .map((u) => u.trim())
+            .filter(Boolean),
+        ),
+      )
+    : [];
   return {
     runtime,
     version: typeof rec.version === "string" ? rec.version : base.version,
+    ...(publicOrigin ? { public_origin: publicOrigin } : {}),
+    ...(bindMode ? { bind_mode: bindMode } : {}),
+    ...(localUrl ? { local_url: localUrl } : {}),
+    ...(lanUrls.length ? { lan_urls: lanUrls } : {}),
     can_open_native_canvas_window: boolOr(
       "can_open_native_canvas_window",
       base.can_open_native_canvas_window,
@@ -273,7 +297,20 @@ function normalizeCapabilitiesPayload(raw: unknown): ColabOneWebCapabilities {
   };
 }
 
-function notifyColabOneWebAuthRequired(): void {
+export function getColabOneWebAuthEpoch(): number {
+  return webAuthEpoch;
+}
+
+export function markColabOneWebSessionAlive(reqEpoch: number): void {
+  // Never clear an expired session from non-snapshot endpoints while the
+  // snapshot poller is stopped; only snapshot/capabilities recovery restores
+  // both colabOneWebSessionExpired and colabOneWebBackendReady consistently.
+  if (reqEpoch === webAuthEpoch && !colabOneWebSessionExpired.value) {
+    colabOneWebSessionExpired.value = false;
+  }
+}
+
+export function notifyColabOneWebAuthRequired(): void {
   cachedWebSnapshotETag = "";
   cachedWebSnapshotRaw = "";
   webSnapshotAppliedSeq = webSnapshotReqSeq;
@@ -287,6 +324,16 @@ function notifyColabOneWebAuthRequired(): void {
         ? new CustomEvent(COLABONE_WEB_AUTH_REQUIRED_EVENT)
         : new Event(COLABONE_WEB_AUTH_REQUIRED_EVENT);
     window.dispatchEvent(evt);
+  }
+}
+
+export function decodeColabOneErrorHeader(encodedHeaderErr: string): string {
+  const trimmed = String(encodedHeaderErr || "").trim();
+  if (!trimmed) return "";
+  try {
+    return decodeURIComponent(trimmed).trim() || trimmed;
+  } catch {
+    return trimmed;
   }
 }
 
@@ -323,13 +370,9 @@ async function extractWebResponseError(
   }
   const encodedHeaderErr = (res.headers?.get("X-ColabOne-Error") || "").trim();
   if (encodedHeaderErr) {
-    try {
-      const decoded = decodeURIComponent(encodedHeaderErr).trim();
-      if (decoded) {
-        return decoded;
-      }
-    } catch {
-      return encodedHeaderErr;
+    const decoded = decodeColabOneErrorHeader(encodedHeaderErr);
+    if (decoded) {
+      return decoded;
     }
   }
   return `HTTP ${res.status}`;
@@ -452,10 +495,9 @@ export async function colabOneWebCommandRaw(
     throw new Error(await extractWebResponseError(res));
   }
 
-  if (reqAuthEpoch === webAuthEpoch) {
-    colabOneWebSessionExpired.value = false;
-  }
-  return res.text();
+  const text = await res.text();
+  markColabOneWebSessionAlive(reqAuthEpoch);
+  return text;
 }
 
 export async function colabOneWebLogout(): Promise<void> {
@@ -550,9 +592,7 @@ export async function colabOneWebDownloadOutput(id: string): Promise<string> {
     throw new Error(await extractWebResponseError(res));
   }
 
-  if (reqAuthEpoch === webAuthEpoch) {
-    colabOneWebSessionExpired.value = false;
-  }
+  markColabOneWebSessionAlive(reqAuthEpoch);
 
   const filename =
     parseContentDispositionFilename(res.headers.get("Content-Disposition")) ||
@@ -601,9 +641,7 @@ export async function colabOneWebOutputPreviewURL(
   if (!res.ok) {
     throw new Error(await extractWebResponseError(res, signal));
   }
-  if (reqAuthEpoch === webAuthEpoch) {
-    colabOneWebSessionExpired.value = false;
-  }
+  markColabOneWebSessionAlive(reqAuthEpoch);
   return mediaUrl;
 }
 
@@ -652,6 +690,140 @@ export function colabOneWebOpenExternalURL(raw: string): void {
   }
 }
 
+export type ColabOneWebOutputShareOriginConfig = Partial<
+  Pick<ColabOneWebConsoleState, "public_origin" | "local_url" | "lan_urls">
+>;
+
+function isExactLoopbackHostname(hostname: string): boolean {
+  const bare = hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
+  return bare === "127.0.0.1" || bare === "localhost" || bare === "::1";
+}
+
+export function validateColabOneWebOutputShareURL(
+  raw: string,
+  webConsoleState?: ColabOneWebOutputShareOriginConfig,
+): string {
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (!trimmed) {
+    throw new Error("Unsupported output share URL");
+  }
+  const baseOrigin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "";
+  let parsed: URL;
+  try {
+    parsed = baseOrigin ? new URL(trimmed, baseOrigin) : new URL(trimmed);
+  } catch {
+    throw new Error("Unsupported output share URL");
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" ||
+    parsed.password !== ""
+  ) {
+    throw new Error("Unsupported output share URL");
+  }
+  if (
+    parsed.pathname !== "/gallery" &&
+    !parsed.pathname.startsWith("/gallery/")
+  ) {
+    throw new Error("Unsupported output share URL");
+  }
+
+  const allowedOrigins = new Set<string>();
+  const addAllowedOrigin = (
+    candidate: string | undefined,
+    expandLoopbackAliases = false,
+  ) => {
+    const clean = typeof candidate === "string" ? candidate.trim() : "";
+    if (!clean) return;
+    try {
+      const u = new URL(clean);
+      if (u.protocol === "http:" || u.protocol === "https:") {
+        allowedOrigins.add(u.origin);
+        if (expandLoopbackAliases && isExactLoopbackHostname(u.hostname)) {
+          const portSuffix = u.port ? `:${u.port}` : "";
+          allowedOrigins.add(`${u.protocol}//127.0.0.1${portSuffix}`);
+          allowedOrigins.add(`${u.protocol}//localhost${portSuffix}`);
+          allowedOrigins.add(`${u.protocol}//[::1]${portSuffix}`);
+        }
+      }
+    } catch {
+      // Ignore malformed origin candidates.
+    }
+  };
+  addAllowedOrigin(baseOrigin, true);
+  addAllowedOrigin(webConsoleState?.public_origin, false);
+  addAllowedOrigin(webConsoleState?.local_url, false);
+  if (Array.isArray(webConsoleState?.lan_urls)) {
+    for (const lanUrl of webConsoleState.lan_urls) {
+      addAllowedOrigin(lanUrl, false);
+    }
+  }
+
+  if (!allowedOrigins.has(parsed.origin)) {
+    throw new Error("Unsupported output share URL");
+  }
+  return parsed.toString();
+}
+
+export function resolveColabOneWebOutputShareOpenURL(
+  raw: string,
+  webConsoleState?: ColabOneWebOutputShareOriginConfig,
+): string {
+  const safeUrl = validateColabOneWebOutputShareURL(raw, webConsoleState);
+  const parsed = new URL(safeUrl);
+  const baseOrigin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "";
+  let baseUrl: URL | null = null;
+  if (baseOrigin) {
+    try {
+      const candidate = new URL(baseOrigin);
+      if (candidate.protocol === "http:" || candidate.protocol === "https:") {
+        baseUrl = candidate;
+      }
+    } catch {
+      baseUrl = null;
+    }
+  }
+  let configuredPublicOrigin = "";
+  const rawPublicOrigin =
+    typeof webConsoleState?.public_origin === "string"
+      ? webConsoleState.public_origin.trim()
+      : "";
+  if (rawPublicOrigin) {
+    try {
+      configuredPublicOrigin = new URL(rawPublicOrigin).origin;
+    } catch {
+      configuredPublicOrigin = "";
+    }
+  }
+  const usesCustomPublicOrigin = Boolean(
+    configuredPublicOrigin && parsed.origin === configuredPublicOrigin,
+  );
+  if (baseUrl && !usesCustomPublicOrigin && parsed.origin !== baseUrl.origin) {
+    return `${baseUrl.origin}${parsed.pathname}${parsed.search}`;
+  }
+  return safeUrl;
+}
+
+export function colabOneWebOpenOutputShareURL(
+  raw: string,
+  webConsoleState?: ColabOneWebOutputShareOriginConfig,
+): void {
+  const targetUrl = resolveColabOneWebOutputShareOpenURL(raw, webConsoleState);
+  if (typeof window !== "undefined" && typeof window.open === "function") {
+    window.open(targetUrl, "_blank", "noopener,noreferrer");
+  }
+}
+
 function isLoopbackOrUnspecifiedHost(host: string): boolean {
   if (!host) return true;
   if (host === "localhost" || host.endsWith(".localhost")) {
@@ -675,7 +847,7 @@ function isLoopbackOrUnspecifiedHost(host: string): boolean {
       /^::ffff:127(?:\.\d{1,3}){3}$/i.test(host) ||
       /^::ffff:0(?:\.\d{1,3}){3}$/i.test(host) ||
       /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(host) ||
-      /^::ffff:0{1,2}[0-9a-f]{0,2}:[0-9a-f]{1,4}$/i.test(host)
+      /^::ffff:0{0,2}[0-9a-f]{1,2}:[0-9a-f]{1,4}$/i.test(host)
     ) {
       return true;
     }

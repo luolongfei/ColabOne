@@ -62,6 +62,7 @@ import {
   type ColabOneToastKind,
 } from "./colabOneToast";
 import { buildColabOneStudioWorkflowEntries } from "./comfyui";
+import { groupColabOneOutputs } from "./colabOneOutputGallery";
 import {
   colabOneAntdLocale,
   colabOneLocaleCode,
@@ -411,7 +412,7 @@ const shareDriveExportReady = computed(() =>
 );
 
 const outputsCount = computed(
-  () => snapshot.value.comfy_outputs?.length ?? 0,
+  () => groupColabOneOutputs(snapshot.value.comfy_outputs || []).length,
 );
 
 const studioWorkflowCount = computed(

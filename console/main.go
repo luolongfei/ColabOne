@@ -1,24 +1,30 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/luolongfei/ColabOne/console/internal/controller"
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 	"github.com/luolongfei/ColabOne/console/internal/live"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
 	"github.com/luolongfei/ColabOne/console/internal/webconsole"
+	"io"
 	"log"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -66,11 +72,14 @@ type ColabOneDesktop struct {
 	focusMainPending   bool
 	runOnMainFn        func(func())
 	isAppReadyFn       func() bool
-	splashMu           sync.Mutex
-	splashWin        *mygo.Window
-	splashState      *colabOneSplashViewState
-	splashFadeTimer  *time.Timer
-	startup          *colabOneStartupCoordinator
+	splashMu              sync.Mutex
+	splashWin             *mygo.Window
+	splashState           *colabOneSplashViewState
+	splashFadeTimer       *time.Timer
+	splashRevealDropped   bool
+	splashFadeDropped     bool
+	mainVisibleBeforeQuit bool
+	startup               *colabOneStartupCoordinator
 	updater          *updater.ColabOneUpdater
 	showMain         func()
 
@@ -92,6 +101,9 @@ type ColabOneDesktop struct {
 	migrationOpenDialogFn func(context.Context) (string, error)
 	migrationKDFParams    *migration.ColabOneMigrationKDFParams
 
+	outputZipSaveDialogFn func(context.Context, string) (string, error)
+	openExternalFn        func(string) error
+
 	webConsoleMu sync.RWMutex
 	webConsole   *webconsole.ColabOneWebConsole
 
@@ -104,6 +116,9 @@ type ColabOneDesktop struct {
 }
 
 func (d *ColabOneDesktop) invalidateSplash() {
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return
+	}
 	d.splashMu.Lock()
 	win := d.splashWin
 	d.splashMu.Unlock()
@@ -111,6 +126,9 @@ func (d *ColabOneDesktop) invalidateSplash() {
 		return
 	}
 	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() || !d.isAppReady() {
+			return
+		}
 		if !win.IsDestroyed() {
 			win.Invalidate()
 		}
@@ -127,9 +145,21 @@ func (d *ColabOneDesktop) notifyInitialSnapshotSettled() {
 }
 
 func (d *ColabOneDesktop) beginSplashFadeOutOnMain(focusMain func()) {
+	if d.appQuitting.Load() {
+		d.splashMu.Lock()
+		if d.splashWin != nil && !d.splashWin.IsDestroyed() {
+			d.splashFadeDropped = true
+		}
+		d.splashMu.Unlock()
+		return
+	}
+	if !d.isAppReady() {
+		return
+	}
 	d.splashMu.Lock()
 	splash := d.splashWin
 	state := d.splashState
+	d.splashFadeDropped = false
 	d.splashMu.Unlock()
 	if splash == nil || splash.IsDestroyed() {
 		return
@@ -140,13 +170,36 @@ func (d *ColabOneDesktop) beginSplashFadeOutOnMain(focusMain func()) {
 	splash.SetIgnoreMouseEvents(true)
 	splash.Invalidate()
 	timer := time.AfterFunc(colabOneSplashDestroyDelay, func() {
+		if d.appQuitting.Load() {
+			d.splashMu.Lock()
+			if d.splashWin == splash && !splash.IsDestroyed() {
+				d.splashFadeDropped = true
+			}
+			d.splashMu.Unlock()
+			return
+		}
+		if !d.isAppReady() {
+			return
+		}
 		mygo.RunOnMain(func() {
+			if d.appQuitting.Load() {
+				d.splashMu.Lock()
+				if d.splashWin == splash && !splash.IsDestroyed() {
+					d.splashFadeDropped = true
+				}
+				d.splashMu.Unlock()
+				return
+			}
+			if !d.isAppReady() {
+				return
+			}
 			d.splashMu.Lock()
 			cur := d.splashWin
 			if cur == splash {
 				d.splashWin = nil
 				d.splashState = nil
 				d.splashFadeTimer = nil
+				d.splashFadeDropped = false
 			}
 			d.splashMu.Unlock()
 			if !splash.IsDestroyed() {
@@ -158,6 +211,14 @@ func (d *ColabOneDesktop) beginSplashFadeOutOnMain(focusMain func()) {
 		})
 	})
 	d.splashMu.Lock()
+	if d.appQuitting.Load() {
+		if d.splashWin == splash && !splash.IsDestroyed() {
+			d.splashFadeDropped = true
+		}
+		d.splashMu.Unlock()
+		timer.Stop()
+		return
+	}
 	if d.splashFadeTimer != nil {
 		d.splashFadeTimer.Stop()
 	}
@@ -364,7 +425,7 @@ func (d *ColabOneDesktop) SetAppearance(value string) error {
 	if value != "system" && value != "light" && value != "dark" {
 		return errors.New(colabOneT("err.unsupportedAppearance"))
 	}
-	if mygo.App.IsReady() {
+	if !d.appQuitting.Load() && d.isAppReady() {
 		mygo.Theme.SetSource(mygo.ThemeSource(value))
 	}
 	if d.appearanceStore != nil {
@@ -426,7 +487,13 @@ func (d *ColabOneDesktop) SetLocale(value string) error {
 	if tray == nil && comfyWin == nil && logWin == nil {
 		return nil
 	}
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return nil
+	}
 	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() || !d.isAppReady() {
+			return
+		}
 		d.trayMu.Lock()
 		curTray := d.tray
 		d.trayMu.Unlock()
@@ -489,6 +556,382 @@ func (d *ColabOneDesktop) OpenURL(value string) error {
 		return err
 	}
 	return mygo.Shell.OpenExternal(value)
+}
+
+const (
+	colabOneDesktopZipMaxItems       = 256
+	colabOneDesktopZipMaxBytes int64 = 1 << 30 // 1 GiB
+)
+
+var errColabOneDesktopZipLimit = errors.New("打包导出总大小超出 1 GB 限制")
+
+type colabOneDesktopLimitedWriter struct {
+	w        io.Writer
+	limit    int64
+	written  int64
+	exceeded bool
+}
+
+func (l *colabOneDesktopLimitedWriter) Write(p []byte) (int, error) {
+	if l.exceeded {
+		return 0, errColabOneDesktopZipLimit
+	}
+	if l.limit > 0 && l.written+int64(len(p)) > l.limit {
+		l.exceeded = true
+		return 0, errColabOneDesktopZipLimit
+	}
+	n, err := l.w.Write(p)
+	l.written += int64(n)
+	return n, err
+}
+
+var colabOneDesktopOutputMIMEByExt = map[string]string{
+	"png":  "image/png",
+	"jpg":  "image/jpeg",
+	"jpeg": "image/jpeg",
+	"webp": "image/webp",
+	"gif":  "image/gif",
+	"mp4":  "video/mp4",
+	"webm": "video/webm",
+	"wav":  "audio/wav",
+	"mp3":  "audio/mpeg",
+	"flac": "audio/flac",
+}
+
+func colabOneDesktopExtForMIME(mimeType string) string {
+	mt := strings.ToLower(strings.TrimSpace(mimeType))
+	if semi := strings.IndexByte(mt, ';'); semi >= 0 {
+		mt = strings.TrimSpace(mt[:semi])
+	}
+	switch mt {
+	case "image/png":
+		return "png"
+	case "image/jpeg":
+		return "jpg"
+	case "image/webp":
+		return "webp"
+	case "image/gif":
+		return "gif"
+	case "video/mp4":
+		return "mp4"
+	case "video/webm":
+		return "webm"
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return "wav"
+	case "audio/mpeg":
+		return "mp3"
+	case "audio/flac", "audio/x-flac":
+		return "flac"
+	default:
+		return ""
+	}
+}
+
+type colabOneDesktopLazyZipEntryWriter struct {
+	zw              *zip.Writer
+	usedNames       map[string]bool
+	outputID        string
+	filename        string
+	extension       string
+	now             time.Time
+	headerAttempted bool
+	started         bool
+	ew              io.Writer
+}
+
+func (e *colabOneDesktopLazyZipEntryWriter) SetColabOneOutputMeta(id, filename, ext, mimeType string, size int64) {
+	if e.extension == "" {
+		cleanExt := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(ext)), ".")
+		if allowedOutputExtensions[cleanExt] {
+			e.extension = cleanExt
+		} else if inferred := colabOneDesktopExtForMIME(mimeType); inferred != "" {
+			e.extension = inferred
+		}
+	}
+	if e.filename == "" && filename != "" {
+		e.filename = filename
+	}
+}
+
+func (e *colabOneDesktopLazyZipEntryWriter) allocateUniqueName() string {
+	const dedupHeadroomBytes = 12 // reserve bytes for " (999)" suffix within maxDownloadNameBytes
+	fallback := "ColabOne-" + e.outputID[:8]
+	raw := strings.TrimSpace(e.filename)
+	safe := sanitizeColabOneDownloadName(raw)
+	if raw == "" || safe == "" || safe == "download" {
+		safe = fallback
+	}
+	cleanExt := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(e.extension)), ".")
+	if cleanExt != "" && allowedOutputExtensions[cleanExt] {
+		existingExt := strings.TrimPrefix(strings.ToLower(filepath.Ext(safe)), ".")
+		sameMIME := existingExt != "" && colabOneDesktopOutputMIMEByExt[existingExt] != "" &&
+			colabOneDesktopOutputMIMEByExt[existingExt] == colabOneDesktopOutputMIMEByExt[cleanExt]
+		if !strings.EqualFold(existingExt, cleanExt) && !sameMIME {
+			suffix := "." + cleanExt
+			maxStemBytes := maxDownloadNameBytes - dedupHeadroomBytes - len(suffix)
+			if len(safe) > maxStemBytes {
+				trunc := trimColabOneDownloadName(truncateColabOneUTF8Bytes(safe, maxStemBytes))
+				if trunc == "" || trunc == "." || trunc == ".." {
+					trunc = fallback
+				}
+				safe = trunc
+			}
+			safe += suffix
+		}
+	}
+	maxBaseBytes := maxDownloadNameBytes - dedupHeadroomBytes
+	if len(safe) > maxBaseBytes {
+		safe = truncateColabOneDownloadName(safe, maxBaseBytes)
+		if safe == "" || safe == "." || safe == ".." {
+			safe = fallback
+		}
+	}
+	if isWindowsReservedDownloadName(safe) {
+		budget := maxBaseBytes - len(reservedDownloadPrefix)
+		truncated := truncateColabOneDownloadName(safe, budget)
+		if truncated == "" || truncated == "." || truncated == ".." {
+			safe = fallback
+		} else {
+			safe = reservedDownloadPrefix + truncated
+		}
+	}
+	key := strings.ToLower(safe)
+	if !e.usedNames[key] {
+		e.usedNames[key] = true
+		return safe
+	}
+	ext := filepath.Ext(safe)
+	stem := strings.TrimSuffix(safe, ext)
+	for i := 2; ; i++ {
+		suffix := fmt.Sprintf(" (%d)%s", i, ext)
+		curStem := stem
+		if len(curStem)+len(suffix) > maxDownloadNameBytes {
+			curStem = trimColabOneDownloadName(truncateColabOneUTF8Bytes(curStem, maxDownloadNameBytes-len(suffix)))
+			if curStem == "" {
+				curStem = fallback
+			}
+		}
+		cand := curStem + suffix
+		ck := strings.ToLower(cand)
+		if !e.usedNames[ck] {
+			e.usedNames[ck] = true
+			return cand
+		}
+	}
+}
+
+func (e *colabOneDesktopLazyZipEntryWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if !e.started {
+		hdr := &zip.FileHeader{
+			Name:     e.allocateUniqueName(),
+			Method:   zip.Store,
+			Modified: e.now,
+		}
+		e.headerAttempted = true
+		w, err := e.zw.CreateHeader(hdr)
+		if err != nil {
+			return 0, err
+		}
+		e.ew = w
+		e.started = true
+	}
+	return e.ew.Write(p)
+}
+
+// ExportWorkflowOutputsZip validates a list of workflow output IDs (1..256), opens
+// the native save dialog for a .zip archive, streams each artifact directly into a
+// sibling temporary file with zip.Store (no full-file RAM buffering), and atomically
+// renames it into place. Returns "" without error if the user cancels the dialog.
+func (d *ColabOneDesktop) ExportWorkflowOutputsZip(
+	ctx context.Context,
+	outputIDs []string,
+	suggestedName string,
+) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(outputIDs) == 0 {
+		return "", errors.New("请至少选择一项有效作品")
+	}
+	seen := make(map[string]bool, len(outputIDs))
+	cleanIDs := make([]string, 0, len(outputIDs))
+	for _, rawID := range outputIDs {
+		cleanID := strings.ToLower(strings.TrimSpace(rawID))
+		if !workflowOutputIDPattern.MatchString(cleanID) {
+			return "", errors.New(colabOneT("err.invalidOutputID"))
+		}
+		if seen[cleanID] {
+			continue
+		}
+		seen[cleanID] = true
+		cleanIDs = append(cleanIDs, cleanID)
+		if len(cleanIDs) > colabOneDesktopZipMaxItems {
+			return "", errors.New("单次打包导出作品数量不能超过 256 项")
+		}
+	}
+	if len(cleanIDs) == 0 {
+		return "", errors.New("请至少选择一项有效作品")
+	}
+	if d.bridge == nil {
+		return "", errors.New(colabOneT("err.bridgeNotInitialized"))
+	}
+
+	rawSuggested := strings.TrimSpace(suggestedName)
+	rawSuggested = strings.TrimSuffix(rawSuggested, ".zip")
+	rawSuggested = strings.TrimSuffix(rawSuggested, ".ZIP")
+	safeBase := sanitizeColabOneDownloadName(rawSuggested)
+	if rawSuggested == "" || safeBase == "" || safeBase == "download" {
+		safeBase = "ColabOne-Outputs"
+	}
+	defaultName := safeBase
+	if !strings.HasSuffix(strings.ToLower(defaultName), ".zip") {
+		defaultName += ".zip"
+	}
+	defaultPath := defaultName
+	if dir, err := mygo.App.Path(mygo.PathDownloads); err == nil && dir != "" {
+		defaultPath = filepath.Join(dir, defaultName)
+	} else if home, err := mygo.App.Path(mygo.PathHome); err == nil && home != "" {
+		defaultPath = filepath.Join(home, defaultName)
+	}
+
+	var (
+		targetPath string
+		dialogErr  error
+	)
+	if d.outputZipSaveDialogFn != nil {
+		targetPath, dialogErr = d.outputZipSaveDialogFn(ctx, defaultPath)
+	} else {
+		targetPath, dialogErr = mygo.Dialog.Save(mygo.SaveDialogOptions{
+			Parent:      mygo.CallerWindow(ctx),
+			DefaultPath: defaultPath,
+			Filters: []mygo.FileFilter{
+				{Name: "ZIP (*.zip)", Extensions: []string{"zip"}},
+			},
+		})
+	}
+	if dialogErr != nil || targetPath == "" {
+		return "", dialogErr
+	}
+
+	// Best-effort snapshot lookup for friendly sanitized archive entry names.
+	type snapMeta struct {
+		filename  string
+		extension string
+	}
+	metaByID := make(map[string]snapMeta, len(cleanIDs))
+	if snapRaw, err := d.bridge.call(ctx, "snapshot", nil); err == nil && strings.TrimSpace(snapRaw) != "" {
+		var snap struct {
+			ComfyOutputs []struct {
+				ID        string `json:"id"`
+				Filename  string `json:"filename"`
+				Extension string `json:"extension"`
+			} `json:"comfy_outputs"`
+		}
+		if json.Unmarshal([]byte(snapRaw), &snap) == nil {
+			for _, o := range snap.ComfyOutputs {
+				oid := strings.ToLower(strings.TrimSpace(o.ID))
+				if seen[oid] {
+					ext := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(o.Extension)), ".")
+					if !allowedOutputExtensions[ext] {
+						ext = ""
+					}
+					metaByID[oid] = snapMeta{
+						filename:  strings.TrimSpace(o.Filename),
+						extension: ext,
+					}
+				}
+			}
+		}
+	}
+
+	out, err := os.CreateTemp(filepath.Dir(targetPath), ".colabone-export-zip-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := out.Name()
+	keepTmp := false
+	fileClosed := false
+	defer func() {
+		if !fileClosed {
+			_ = out.Close()
+		}
+		if !keepTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	limitedW := &colabOneDesktopLimitedWriter{
+		w:     out,
+		limit: colabOneDesktopZipMaxBytes,
+	}
+	zw := zip.NewWriter(limitedW)
+	usedNames := make(map[string]bool, len(cleanIDs))
+	now := time.Now()
+	writtenCount := 0
+	var lastErr error
+
+	for _, id := range cleanIDs {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		sm := metaByID[id]
+		entryW := &colabOneDesktopLazyZipEntryWriter{
+			zw:        zw,
+			usedNames: usedNames,
+			outputID:  id,
+			filename:  sm.filename,
+			extension: sm.extension,
+			now:       now,
+		}
+		_, streamErr := d.bridge.streamOutputMedia(ctx, id, entryW, controller.ColabOneOutputMediaOptions{})
+		if streamErr != nil {
+			if entryW.started || entryW.headerAttempted || limitedW.exceeded || errors.Is(streamErr, errColabOneDesktopZipLimit) || ctx.Err() != nil {
+				return "", streamErr
+			}
+			lastErr = streamErr
+			continue
+		}
+		if entryW.started {
+			writtenCount++
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if limitedW.exceeded {
+		return "", errColabOneDesktopZipLimit
+	}
+	if writtenCount == 0 {
+		if lastErr != nil {
+			return "", lastErr
+		}
+		return "", errors.New("作品不存在")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := zw.Close(); err != nil {
+		return "", err
+	}
+	if err := out.Sync(); err != nil {
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		fileClosed = true
+		return "", err
+	}
+	fileClosed = true
+	if renameErr := fsutil.RenameReplace(tmpPath, targetPath); renameErr != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("%s%w", colabOneT("err.outputSaveFailedPrefix"), renameErr)
+	}
+	keepTmp = true
+	return targetPath, nil
 }
 
 func colabOneWindowBackground() string {
@@ -690,6 +1133,9 @@ func main() {
 	}
 	var show func()
 	show = func() {
+		if d.appQuitting.Load() {
+			return
+		}
 		if !mygo.App.IsReady() {
 			mygo.App.WhenReady(show)
 			return
@@ -742,11 +1188,35 @@ func main() {
 		mainWin := ensureMainWindow(true)
 		startup := newColabOneStartupCoordinator(colabOneStartupConfig{
 			OnReveal: func() {
+				if d.appQuitting.Load() {
+					d.splashMu.Lock()
+					d.splashRevealDropped = true
+					d.splashMu.Unlock()
+					return
+				}
+				if !d.isAppReady() {
+					return
+				}
 				mygo.RunOnMain(func() {
+					if d.appQuitting.Load() {
+						d.splashMu.Lock()
+						d.splashRevealDropped = true
+						d.splashMu.Unlock()
+						return
+					}
+					if !d.isAppReady() {
+						return
+					}
+					d.splashMu.Lock()
+					d.splashRevealDropped = false
+					d.splashMu.Unlock()
 					if mainWin != nil && !mainWin.IsDestroyed() {
 						revealColabOneWindow(mainWin)
 					}
 					d.beginSplashFadeOutOnMain(func() {
+						if d.appQuitting.Load() || !d.isAppReady() {
+							return
+						}
 						if mainWin != nil && !mainWin.IsDestroyed() {
 							mainWin.Focus()
 						}
@@ -802,11 +1272,65 @@ func main() {
 		}()
 	})
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
+		wasVisible := false
+		if w := d.mainWindow(); w != nil && !w.IsDestroyed() && w.IsVisible() {
+			wasVisible = true
+		}
+		d.splashMu.Lock()
+		d.mainVisibleBeforeQuit = wasVisible
+		d.splashMu.Unlock()
 		d.appQuitting.Store(true)
-		d.cancelStartup()
 	})
 	mygo.App.OnQuitCanceled(func() {
 		d.appQuitting.Store(false)
+		// If quit was canceled while startup/splash was aborted or main window stayed hidden/closed, restore visibility.
+		d.splashMu.Lock()
+		startup := d.startup
+		revealDropped := d.splashRevealDropped
+		fadeDropped := d.splashFadeDropped
+		wasVisible := d.mainVisibleBeforeQuit
+		d.splashRevealDropped = false
+		d.splashFadeDropped = false
+		d.mainVisibleBeforeQuit = false
+		d.splashMu.Unlock()
+		if !d.isAppReady() {
+			return
+		}
+		if revealDropped || fadeDropped {
+			mygo.RunOnMain(func() {
+				if d.appQuitting.Load() || !d.isAppReady() {
+					return
+				}
+				if w := d.mainWindow(); w != nil && !w.IsDestroyed() {
+					revealColabOneWindow(w)
+				} else if d.showMain != nil {
+					d.showMain()
+				}
+				d.beginSplashFadeOutOnMain(func() {
+					if d.appQuitting.Load() || !d.isAppReady() {
+						return
+					}
+					if w := d.mainWindow(); w != nil && !w.IsDestroyed() {
+						w.Focus()
+					}
+				})
+			})
+			return
+		}
+		if wasVisible || startup == nil {
+			mygo.RunOnMain(func() {
+				if d.appQuitting.Load() || !d.isAppReady() {
+					return
+				}
+				if w := d.mainWindow(); w != nil && !w.IsDestroyed() {
+					if !w.IsVisible() {
+						revealColabOneWindow(w)
+					}
+				} else if wasVisible && d.showMain != nil {
+					d.showMain()
+				}
+			})
+		}
 	})
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		d.handleWillQuit()

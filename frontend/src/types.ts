@@ -286,6 +286,7 @@ export interface WorkflowOutput {
   share_id?: string;
   share_label?: string;
   task_id?: string;
+  is_inspect?: boolean;
 }
 export interface ColabOneDriveOutputsStatus {
   syncing: boolean;
@@ -591,7 +592,36 @@ export interface ColabOneLiveStudioStatus {
   driving_motion_count?: number;
   vram_budget?: ColabOneLiveVramBudget | null;
   telemetry?: ColabOneLiveTelemetry | null;
+  companion?: ColabOneLiveCompanionStatus | null;
   error?: string;
+}
+
+export type ColabOneLiveCameraMode =
+  | "off"
+  | "vision"
+  | "motion"
+  | "vision_motion";
+
+export interface ColabOneLiveCompanionStatus {
+  connected: boolean;
+  device_label?: string;
+  mic_active?: boolean;
+  camera_mode?: ColabOneLiveCameraMode | string;
+  camera_fps?: number;
+  motion_energy?: number;
+  vision_frame_ready?: boolean;
+  connected_at?: number | null;
+}
+
+export interface ColabOneLiveCompanionTicketResult {
+  code: string;
+  expires_at: number;
+  ttl_seconds?: number;
+  companion_path?: string;
+  companion_url: string;
+  public_origin?: string;
+  canvas_ready?: boolean;
+  companion?: ColabOneLiveCompanionStatus | null;
 }
 
 export interface ColabOneLiveSessionTokenResult {

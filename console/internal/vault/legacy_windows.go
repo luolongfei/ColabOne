@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -16,7 +18,7 @@ const (
 )
 
 var (
-	legacyAdvapi32      = syscall.NewLazyDLL("advapi32.dll")
+	legacyAdvapi32      = windows.NewLazySystemDLL("advapi32.dll")
 	procLegacyCredReadW = legacyAdvapi32.NewProc("CredReadW")
 	procLegacyCredDelW  = legacyAdvapi32.NewProc("CredDeleteW")
 	procLegacyCredFree  = legacyAdvapi32.NewProc("CredFree")
@@ -91,7 +93,9 @@ func readWinGenericCredential(target string) (blob []byte, userName string, ok b
 
 	userName = winUTF16PtrToString(cred.UserName)
 	if cred.CredentialBlobSize > 0 && cred.CredentialBlob != nil {
-		blob = append([]byte(nil), unsafe.Slice(cred.CredentialBlob, cred.CredentialBlobSize)...)
+		rawSlice := unsafe.Slice(cred.CredentialBlob, cred.CredentialBlobSize)
+		blob = append([]byte(nil), rawSlice...)
+		clear(rawSlice)
 	}
 	return blob, userName, true, nil
 }

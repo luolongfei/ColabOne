@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -34,8 +36,8 @@ var folderIDDesktop = winGUID{
 }
 
 var (
-	modShell32               = syscall.NewLazyDLL("shell32.dll")
-	modOle32                 = syscall.NewLazyDLL("ole32.dll")
+	modShell32               = windows.NewLazySystemDLL("shell32.dll")
+	modOle32                 = windows.NewLazySystemDLL("ole32.dll")
 	procSHGetKnownFolderPath = modShell32.NewProc("SHGetKnownFolderPath")
 	procCoTaskMemFree        = modOle32.NewProc("CoTaskMemFree")
 )
@@ -81,18 +83,26 @@ func utf16PtrToString(p *uint16) string {
 }
 
 func winPowerShellExecutable() string {
-	root := strings.TrimSpace(os.Getenv("SystemRoot"))
-	if root == "" {
-		root = strings.TrimSpace(os.Getenv("WINDIR"))
-	}
-	if root != "" {
-		return filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	if sysDir, err := windows.GetSystemDirectory(); err == nil && strings.TrimSpace(sysDir) != "" {
+		cand := filepath.Join(strings.TrimSpace(sysDir), "WindowsPowerShell", "v1.0", "powershell.exe")
+		if isFile(cand) {
+			return cand
+		}
 	}
 	const fallback = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 	if isFile(fallback) {
 		return fallback
 	}
-	return "powershell.exe"
+	for _, envKey := range []string{"SystemRoot", "WINDIR"} {
+		root := strings.TrimSpace(os.Getenv(envKey))
+		if root != "" && filepath.IsAbs(root) {
+			cand := filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+			if isFile(cand) {
+				return cand
+			}
+		}
+	}
+	return fallback
 }
 
 func winQueryDesktopViaShell() string {

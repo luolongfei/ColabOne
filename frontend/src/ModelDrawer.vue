@@ -38,7 +38,11 @@ import HubBrowser from "./HubBrowser.vue";
 import ModelVersionPicker from "./ModelVersionPicker.vue";
 import RuntimeParamPresets from "./RuntimeParamPresets.vue";
 import { colabOneCommand } from "./api";
-import { computeColabOneModelDrawerWidth } from "./colabOneToast";
+import { formatCountdownClock } from "./billing";
+import {
+  computeColabOneModelDrawerWidth,
+  type ColabOneToastKind,
+} from "./colabOneToast";
 import {
   describeModelRemoteStatus,
   filterCommonModels,
@@ -87,7 +91,7 @@ const emit = defineEmits<{
   device: [];
   comfyui: [];
   sync: [];
-  notify: [string];
+  notify: [string, ColabOneToastKind?];
   error: [string];
 }>();
 
@@ -289,16 +293,35 @@ const filteredMyRepos = computed<CommonRepo[]>(() => {
   );
 });
 
-const bytes = (n = 0) =>
-  n >= 1024 ** 3
+const bytes = (n = 0) => {
+  if (!Number.isFinite(n) || n < 0) return "0 MB";
+  return n >= 1024 ** 3
     ? (n / 1024 ** 3).toFixed(1) + " GB"
     : (n / 1024 ** 2).toFixed(0) + " MB";
+};
 
 const duration = (seconds: number | null) => {
-  if (seconds === null) return t("common.calculating");
-  const whole = Math.ceil(Math.max(0, seconds));
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+  if (seconds === null || !Number.isFinite(seconds)) {
+    return t("common.calculating");
+  }
+  return formatCountdownClock(Math.ceil(Math.max(0, seconds)));
 };
+
+function downloadPct(progress: number | undefined | null): number {
+  if (typeof progress !== "number" || !Number.isFinite(progress)) return 0;
+  return Math.max(0, Math.min(100, Math.round(progress * 100)));
+}
+
+function downloadSpeedMib(speedBps: number | undefined | null): string {
+  if (
+    typeof speedBps !== "number" ||
+    !Number.isFinite(speedBps) ||
+    speedBps < 0
+  ) {
+    return "0.0";
+  }
+  return (speedBps / 1024 ** 2).toFixed(1);
+}
 
 function customRepoNote(note?: string): string {
   const trimmed = (note || "").trim();
@@ -321,7 +344,7 @@ function conciseStatusBadge(model: ModelSpec): {
     return { label: t("models.badgeLoading"), color: "warning" };
   }
   if (status.state === "downloading") {
-    const pct = Math.round((status.progress || 0) * 100);
+    const pct = downloadPct(status.progress);
     return { label: t("models.badgeDownloadingPct", { pct }), color: "processing" };
   }
   if (status.state === "downloaded") {
@@ -1397,9 +1420,7 @@ onUnmounted(() => {
                     modelRunningTask(model)!.download?.phase === "verifying"
                       ? t("models.verifyingIntegrity")
                       : t("models.downloadingPct", {
-                          pct: Math.round(
-                            (modelRunningTask(model)!.progress || 0) * 100,
-                          ),
+                          pct: downloadPct(modelRunningTask(model)!.progress),
                         })
                   }}
                 </span>
@@ -1408,10 +1429,9 @@ onUnmounted(() => {
                   class="co-tabular co-muted"
                 >
                   {{
-                    (
-                      modelRunningTask(model)!.download!.speed_bps /
-                      1024 ** 2
-                    ).toFixed(1)
+                    downloadSpeedMib(
+                      modelRunningTask(model)!.download!.speed_bps,
+                    )
                   }}
                   MiB/s ·
                   {{
@@ -1421,7 +1441,10 @@ onUnmounted(() => {
                   {{ bytes(modelRunningTask(model)!.download!.total_bytes) }}
                   <template
                     v-if="
-                      modelRunningTask(model)!.download!.eta_seconds !== null
+                      modelRunningTask(model)!.download!.eta_seconds !== null &&
+                      Number.isFinite(
+                        modelRunningTask(model)!.download!.eta_seconds,
+                      )
                     "
                   >
                     {{
@@ -1435,9 +1458,7 @@ onUnmounted(() => {
                 </span>
               </div>
               <AProgress
-                :percent="
-                  Math.round((modelRunningTask(model)!.progress || 0) * 100)
-                "
+                :percent="downloadPct(modelRunningTask(model)!.progress)"
                 size="small"
                 status="active"
               />

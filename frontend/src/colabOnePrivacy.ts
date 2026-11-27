@@ -1,5 +1,9 @@
 import { ref } from "vue";
-import { isColabOneCloudflareTunnelToken } from "./colabOneSecretToken";
+import {
+  COLABONE_HF_TOKEN_PATTERN,
+  COLABONE_SHARE_TOKEN_PATTERN,
+  isColabOneCloudflareTunnelToken,
+} from "./colabOneSecretToken";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import type {
   ColabOneHighlightedLine,
@@ -16,11 +20,13 @@ export interface ColabOnePrivacySegment {
   text: string;
   masked: boolean;
   original?: string;
+  secret?: boolean;
 }
 
 export interface ColabOneMaskedHighlightedToken extends ColabOneHighlightedToken {
   masked?: boolean;
   original?: string;
+  secret?: boolean;
 }
 
 export type ColabOneMaskedHighlightedLine = ColabOneMaskedHighlightedToken[];
@@ -29,6 +35,7 @@ interface PrivacyMatchSpan {
   start: number;
   end: number;
   replacement: string;
+  secret?: boolean;
 }
 
 const DUMMY_ALNUM = "m8k2p9r4q6x3n7v5c1t0h8b4d2f6g9j3w5y7z1";
@@ -246,8 +253,9 @@ export function segmentColabOneDomainInput(
       text: colabOneSynthesizeHost(authority),
       masked: true,
       original: authority,
+      ...(authority.includes("@") ? { secret: true } : {}),
     });
-    if (tail) segments.push({ text: tail, masked: false });
+    if (tail) segments.push(...segmentColabOnePrivacyText(tail));
     return segments;
   }
   const slashIdx = text.search(/[/?#]/);
@@ -259,9 +267,10 @@ export function segmentColabOneDomainInput(
         text: colabOneSynthesizeHost(authority),
         masked: true,
         original: authority,
+        ...(authority.includes("@") ? { secret: true } : {}),
       },
     ];
-    if (tail) segments.push({ text: tail, masked: false });
+    if (tail) segments.push(...segmentColabOnePrivacyText(tail));
     return segments;
   }
   return [
@@ -269,6 +278,7 @@ export function segmentColabOneDomainInput(
       text: colabOneSynthesizeHost(text),
       masked: true,
       original: text,
+      ...(text.includes("@") ? { secret: true } : {}),
     },
   ];
 }
@@ -310,14 +320,22 @@ export function colabOneApplyPrivacyInputPaste(
   return { value, caret: start + pasted.length };
 }
 
-const COLABONE_SECRET_TOKEN_RE =
-  /\b(?:co_wf_[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+|hf_[A-Za-z0-9]{10,}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?|sk-[A-Za-z0-9_-]{16,}|(?:sk|co)_[A-Za-z0-9_-]{16,})\b/g;
+const COLABONE_SECRET_TOKEN_RE = new RegExp(
+  `(?:(?<![A-Za-z0-9_-])|(?<=%[0-9A-Fa-f]{2}))(?:${COLABONE_SHARE_TOKEN_PATTERN}|${COLABONE_HF_TOKEN_PATTERN}|ya29\\.[A-Za-z0-9._-]{12,}|1//[A-Za-z0-9_-]{12,}|GOCSPX-[A-Za-z0-9_-]{12,}|eyJ[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{10,}(?:\\.[A-Za-z0-9_-]+)?|sk-[A-Za-z0-9_-]{16,}|(?:sk|co)_[A-Za-z0-9_-]{16,})(?![A-Za-z0-9_-])`,
+  "g",
+);
 
 const COLABONE_CLOUDFLARE_TUNNEL_TOKEN_CANDIDATE_RE =
-  /(?<![A-Za-z0-9_+-])eyJ[A-Za-z0-9_+/=-]{20,}(?![A-Za-z0-9_+-])/g;
+  /(?:(?<![A-Za-z0-9_+-])|(?<=%[0-9A-Fa-f]{2}))eyJ[A-Za-z0-9_+/=-]{20,}(?![A-Za-z0-9_+-])/g;
 
 const COLABONE_SENSITIVE_QUERY_PARAM_RE =
-  /([?&](?:k|ticket|token)=)([^&#\s"'<>)\]}]+)/gi;
+  /([?&#](?:k|ticket|token|code)=)([^&#\s"'<>)\]}]+)/gi;
+
+const COLABONE_ENCODED_SENSITIVE_QUERY_PARAM_RE =
+  /(%(?:3F|26|23)(?:k|ticket|token|code)%3D)((?:(?!%(?:26|23))[^&#\s"'<>)\]}])+)/gi;
+
+const COLABONE_MAX_CF_TOKEN_CANDIDATE_LEN = 4096;
+const COLABONE_MAX_CF_TOKEN_SLASH_STEPS = 8;
 
 function appendCloudflareTunnelTokenMatches(
   text: string,
@@ -326,11 +344,17 @@ function appendCloudflareTunnelTokenMatches(
   for (const m of text.matchAll(COLABONE_CLOUDFLARE_TUNNEL_TOKEN_CANDIDATE_RE)) {
     if (m.index === undefined) continue;
     let candidate = m[0];
+    if (candidate.length > COLABONE_MAX_CF_TOKEN_CANDIDATE_LEN) {
+      if (!candidate.includes("/")) continue;
+      candidate = candidate.slice(0, COLABONE_MAX_CF_TOKEN_CANDIDATE_LEN);
+    }
     if (!isColabOneCloudflareTunnelToken(candidate)) {
       let matchedPrefix = "";
       if (candidate.includes("/")) {
         let cut = candidate.lastIndexOf("/");
-        while (cut >= 23) {
+        let steps = 0;
+        while (cut >= 23 && steps < COLABONE_MAX_CF_TOKEN_SLASH_STEPS) {
+          steps += 1;
           const prefix = candidate.slice(0, cut);
           if (isColabOneCloudflareTunnelToken(prefix)) {
             matchedPrefix = prefix;
@@ -346,6 +370,7 @@ function appendCloudflareTunnelTokenMatches(
       start: m.index,
       end: m.index + candidate.length,
       replacement: colabOneSynthesizeToken(candidate),
+      secret: true,
     });
   }
 }
@@ -367,24 +392,38 @@ function resolvePrivacyMatchSpans(
   return resolved;
 }
 
+function appendSensitiveQueryParamMatches(
+  text: string,
+  matches: PrivacyMatchSpan[],
+): void {
+  for (const re of [
+    COLABONE_SENSITIVE_QUERY_PARAM_RE,
+    COLABONE_ENCODED_SENSITIVE_QUERY_PARAM_RE,
+  ]) {
+    for (const m of text.matchAll(re)) {
+      if (m.index === undefined || !m[1] || !m[2]) continue;
+      const start = m.index + m[1].length;
+      matches.push({
+        start,
+        end: start + m[2].length,
+        replacement: colabOneSynthesizeToken(m[2]),
+        secret: true,
+      });
+    }
+  }
+}
+
 function findColabOneSensitiveUrlTailMatches(tail: string): PrivacyMatchSpan[] {
   if (!tail) return [];
   const matches: PrivacyMatchSpan[] = [];
-  for (const m of tail.matchAll(COLABONE_SENSITIVE_QUERY_PARAM_RE)) {
-    if (m.index === undefined || !m[1] || !m[2]) continue;
-    const start = m.index + m[1].length;
-    matches.push({
-      start,
-      end: start + m[2].length,
-      replacement: colabOneSynthesizeToken(m[2]),
-    });
-  }
+  appendSensitiveQueryParamMatches(tail, matches);
   for (const m of tail.matchAll(COLABONE_SECRET_TOKEN_RE)) {
     if (m.index === undefined) continue;
     matches.push({
       start: m.index,
       end: m.index + m[0].length,
       replacement: colabOneSynthesizeToken(m[0]),
+      secret: true,
     });
   }
   appendCloudflareTunnelTokenMatches(tail, matches);
@@ -407,6 +446,7 @@ function segmentColabOneUrlTail(tail: string): ColabOnePrivacySegment[] {
       text: span.replacement,
       masked: true,
       original: tail.slice(span.start, span.end),
+      ...(span.secret ? { secret: true } : {}),
     });
     cursor = span.end;
   }
@@ -430,6 +470,7 @@ function buildUrlSegmentsWithTail(
       text: colabOneSynthesizeHost(authority),
       masked: true,
       original: authority,
+      ...(authority.includes("@") ? { secret: true } : {}),
     });
     if (tailSegments.length) segments.push(...tailSegments);
     return segments;
@@ -542,7 +583,8 @@ function findColabOnePrivacyMatches(
   }
 
   // 2. Generic emails
-  const emailRe = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const emailRe =
+    /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
   for (const m of text.matchAll(emailRe)) {
     if (m.index === undefined) continue;
     const raw = m[0];
@@ -573,6 +615,7 @@ function findColabOnePrivacyMatches(
       start,
       end: start + authority.length,
       replacement: colabOneSynthesizeHost(authority),
+      ...(hasUserinfo ? { secret: true } : {}),
     });
   }
 
@@ -628,20 +671,14 @@ function findColabOnePrivacyMatches(
       start: m.index,
       end: m.index + m[0].length,
       replacement: colabOneSynthesizeToken(m[0]),
+      secret: true,
     });
   }
   appendCloudflareTunnelTokenMatches(text, matches);
 
-  // 8. Sensitive URL query parameters (share keys, one-time tickets, auth tokens)
-  for (const m of text.matchAll(COLABONE_SENSITIVE_QUERY_PARAM_RE)) {
-    if (m.index === undefined || !m[1] || !m[2]) continue;
-    const start = m.index + m[1].length;
-    matches.push({
-      start,
-      end: start + m[2].length,
-      replacement: colabOneSynthesizeToken(m[2]),
-    });
-  }
+  // 8. Sensitive URL query parameters (share keys, one-time tickets, auth tokens),
+  // including percent-encoded nested query parameters (e.g. next=%2Fgallery%3Fk%3D...)
+  appendSensitiveQueryParamMatches(text, matches);
 
   return resolvePrivacyMatchSpans(matches);
 }
@@ -666,6 +703,7 @@ export function segmentColabOnePrivacyText(
       text: span.replacement,
       masked: true,
       original: raw.slice(span.start, span.end),
+      ...(span.secret ? { secret: true } : {}),
     });
     cursor = span.end;
   }
@@ -754,6 +792,7 @@ export function applyColabOnePrivacyToCodeLines(
         fontStyle: styleOwner?.fontStyle,
         fontWeight: styleOwner?.fontWeight,
         masked: true,
+        ...(span.secret ? { secret: true } : {}),
       });
 
       cursor = span.end;

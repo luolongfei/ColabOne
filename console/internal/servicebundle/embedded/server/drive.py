@@ -12,11 +12,14 @@ Supports two complementary modes storing data in the identical Drive layout
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import platform
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import threading
 import time
@@ -29,28 +32,17 @@ from urllib.parse import quote as _url_quote
 
 import requests
 
-
-_SENSITIVE_RCLONE_ENV_KEYS = frozenset(
-    {
-        "COLABONE_REMOTE_CONFIG",
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HF_API_TOKEN",
-        "OPENAI_API_KEY",
-        "TUNNEL_TOKEN",
-    }
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    colabone_sanitized_subprocess_env,
 )
 
 
+_SENSITIVE_RCLONE_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
+
+
 def _sanitized_rclone_env() -> dict[str, str]:
-    return {
-        k: v
-        for k, v in os.environ.items()
-        if k not in _SENSITIVE_RCLONE_ENV_KEYS
-        and not k.startswith("TUNNEL_")
-        and not k.startswith("RCLONE_")
-    }
+    return colabone_sanitized_subprocess_env()
 
 
 def _create_http_session() -> requests.Session:
@@ -132,29 +124,47 @@ def _hash_file(path: Path, algorithm: str = "sha256") -> str:
 
 
 def _stream_write_file(src: Path, target: Path) -> None:
+    if src.is_symlink():
+        raise OSError("refusing symlink source")
     if target.is_symlink():
         raise OSError("refusing symlink target")
-    fd = os.open(
-        target,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-        0o666,
+    src_fd = os.open(
+        src,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
-        writer = os.fdopen(fd, "wb")
+        src_st = os.fstat(src_fd)
+        if not stat.S_ISREG(src_st.st_mode):
+            raise OSError("refusing non-regular source")
+        reader = os.fdopen(src_fd, "rb")
     except BaseException:
-        os.close(fd)
+        os.close(src_fd)
         raise
-    with src.open("rb") as reader, writer:
-        while True:
-            chunk = reader.read(_EXPORT_STREAM_CHUNK_BYTES)
-            if not chunk:
-                break
-            writer.write(chunk)
-        writer.flush()
-        try:
-            os.fsync(writer.fileno())
-        except OSError:
-            pass
+    try:
+        with reader:
+            fd = os.open(
+                target,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                0o666,
+            )
+            try:
+                writer = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
+            with writer:
+                while True:
+                    chunk = reader.read(_EXPORT_STREAM_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    writer.write(chunk)
+                writer.flush()
+                try:
+                    os.fsync(writer.fileno())
+                except OSError:
+                    pass
+    except BaseException:
+        raise
 
 
 def _copy_file_stream(src: Path, dst: Path) -> None:
@@ -182,13 +192,15 @@ def _copy_file_stream(src: Path, dst: Path) -> None:
             pass
         if dst.is_symlink():
             raise ValueError("云盘导出目标不能是符号链接") from None
+        dst_existed = dst.exists()
         try:
             _stream_write_file(src, dst)
         except OSError:
-            try:
-                dst.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if not dst_existed and not dst.is_symlink():
+                try:
+                    dst.unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise
 
 
@@ -263,45 +275,144 @@ _RCLONE_INSTALL_LOCK = threading.Lock()
 
 
 def _write_private_bytes(path: Path, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if path.is_symlink():
+        raise ValueError("凭据文件不能是符号链接")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    fd = os.open(path, flags, 0o600)
     try:
-        with os.fdopen(fd, "wb") as stream:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        stream = os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
+        path.unlink(missing_ok=True)
+        raise
+    try:
+        with stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
     except BaseException:
         path.unlink(missing_ok=True)
         raise
-    os.chmod(path, 0o600)
+    if not path.is_symlink():
+        os.chmod(path, 0o600)
 
 
 def stage_rclone_config(stage_path: Path, data_root: Path) -> Path | None:
     """Atomically install staged rclone config with 0600 permissions and remove stage."""
+    if stage_path.is_symlink():
+        raise ValueError("凭据暂存文件不能是符号链接")
     if not stage_path.exists():
         return None
+    if data_root.is_symlink():
+        raise ValueError("凭据目录不能是符号链接")
     target = data_root / ".rclone.conf"
+    if target.is_symlink():
+        raise ValueError("凭据目标文件不能是符号链接")
     data_root.mkdir(parents=True, exist_ok=True)
-    tmp = data_root / f".rclone.conf.{uuid.uuid4().hex[:8]}.tmp"
+    tmp = data_root / f".rclone.conf.{uuid.uuid4().hex}.tmp"
     user_tmp: Path | None = None
     try:
-        raw = stage_path.read_bytes()
+        stage_fd = os.open(
+            stage_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            stage_st = os.fstat(stage_fd)
+            if not stat.S_ISREG(stage_st.st_mode):
+                raise ValueError("凭据暂存文件必须是普通文件")
+            with os.fdopen(stage_fd, "rb") as stage_fh:
+                stage_fd = -1
+                raw = stage_fh.read()
+        finally:
+            if stage_fd >= 0:
+                os.close(stage_fd)
         _write_private_bytes(tmp, raw)
         tmp.replace(target)
         # Also mirror into ~/.config/rclone/rclone.conf inside the remote container
         # when running in Colab (/content), so standard rclone invocations work too.
         if str(stage_path).startswith("/content/"):
-            user_rc_dir = Path.home() / ".config" / "rclone"
-            user_rc_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-            user_tmp = user_rc_dir / f".rclone.conf.{uuid.uuid4().hex[:8]}.tmp"
+            user_cfg_root = Path.home() / ".config"
+            user_rc_dir = user_cfg_root / "rclone"
             user_dst = user_rc_dir / "rclone.conf"
+            if (
+                user_cfg_root.is_symlink()
+                or user_rc_dir.is_symlink()
+                or user_dst.is_symlink()
+            ):
+                raise ValueError("rclone 用户配置路径不能是符号链接")
+            user_rc_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+            user_tmp = user_rc_dir / f".rclone.conf.{uuid.uuid4().hex}.tmp"
             _write_private_bytes(user_tmp, raw)
             user_tmp.replace(user_dst)
     finally:
         tmp.unlink(missing_ok=True)
         if user_tmp is not None:
             user_tmp.unlink(missing_ok=True)
-        stage_path.unlink(missing_ok=True)
+        if not stage_path.is_symlink():
+            stage_path.unlink(missing_ok=True)
     return target
+
+
+def _is_valid_cached_rclone_binary(
+    binary: Path,
+    digest_sidecar: Path,
+    expected_sha: str = "",
+    *,
+    allow_chmod: bool = False,
+) -> bool:
+    if binary.is_symlink() or digest_sidecar.is_symlink():
+        return False
+    bin_fd = -1
+    try:
+        bin_fd = os.open(
+            str(binary),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        st = os.fstat(bin_fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
+            return False
+        with os.fdopen(bin_fd, "rb") as fh:
+            bin_fd = -1
+            actual = hashlib.file_digest(fh, "sha256").hexdigest().lower()
+            if digest_sidecar.exists():
+                sc_fd = os.open(
+                    str(digest_sidecar),
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    sc_st = os.fstat(sc_fd)
+                    if not stat.S_ISREG(sc_st.st_mode) or sc_st.st_size > 256:
+                        return False
+                    with os.fdopen(sc_fd, "rb") as sc_fh:
+                        sc_fd = -1
+                        expected_bin_sha = sc_fh.read(256).decode("ascii", errors="strict").strip().lower()
+                finally:
+                    if sc_fd >= 0:
+                        os.close(sc_fd)
+                if len(expected_bin_sha) != 64 or not hmac.compare_digest(actual, expected_bin_sha):
+                    return False
+            else:
+                clean_expected = str(expected_sha or "").strip().lower()
+                if len(clean_expected) != 64 or not hmac.compare_digest(actual, clean_expected):
+                    return False
+            if allow_chmod and (st.st_mode & 0o100) == 0:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fh.fileno(), 0o700)
+                else:
+                    binary.chmod(0o700)
+    except (OSError, UnicodeDecodeError):
+        return False
+    finally:
+        if bin_fd >= 0:
+            os.close(bin_fd)
+    return True
 
 
 def ensure_rclone_binary(
@@ -328,19 +439,45 @@ def ensure_rclone_binary(
         raise ValueError("rclone 目录不能是符号链接")
     bin_dir.mkdir(parents=True, exist_ok=True)
     binary = bin_dir / f"rclone-{tag}"
+    digest_sidecar = bin_dir / f".rclone-{tag}.sha256"
+
+    def _cached_rclone_valid() -> bool:
+        return _is_valid_cached_rclone_binary(
+            binary, digest_sidecar, expected, allow_chmod=True
+        )
+
+    def _open_exclusive_staging(path: Path):
+        fd = os.open(
+            str(path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            return os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+
     if binary.is_symlink():
         raise ValueError("rclone 二进制文件不能是符号链接")
-    if binary.is_file():
+    if digest_sidecar.is_symlink():
+        raise ValueError("rclone 校验文件不能是符号链接")
+    if _cached_rclone_valid():
         return binary
     with _RCLONE_INSTALL_LOCK:
         if binary.is_symlink():
             raise ValueError("rclone 二进制文件不能是符号链接")
-        if binary.is_file():
+        if digest_sidecar.is_symlink():
+            raise ValueError("rclone 校验文件不能是符号链接")
+        if _cached_rclone_valid():
             return binary
         archive_name = f"rclone-{tag}-linux-{arch}.zip"
-        token = uuid.uuid4().hex[:8]
+        token = uuid.uuid4().hex
         part = bin_dir / f"{archive_name}.{token}.part"
         tmp_bin = bin_dir / f".rclone-{tag}.{token}.tmp"
+        tmp_sha = bin_dir / f".rclone-{tag}.{token}.sha256"
         urls = (
             f"https://github.com/rclone/rclone/releases/download/{tag}/{archive_name}",
             f"https://downloads.rclone.org/{tag}/{archive_name}",
@@ -360,7 +497,7 @@ def ensure_rclone_binary(
                     with session.get(url, stream=True, timeout=(10, 30)) as resp:
                         resp.raise_for_status()
                         digest, size, started = hashlib.sha256(), 0, time.monotonic()
-                        with part.open("wb") as out:
+                        with _open_exclusive_staging(part) as out:
                             for chunk in resp.iter_content(1024 * 1024):
                                 if time.monotonic() - started > 180:
                                     raise RuntimeError("rclone 下载超时")
@@ -377,6 +514,7 @@ def ensure_rclone_binary(
                     part.unlink(missing_ok=True)
             if not downloaded:
                 raise RuntimeError("无法下载并通过校验 rclone 组件")
+            bin_hasher = hashlib.sha256()
             with zipfile.ZipFile(part, "r") as zf:
                 member = next(
                     (
@@ -388,14 +526,23 @@ def ensure_rclone_binary(
                 )
                 if not member:
                     raise RuntimeError("rclone 压缩包结构异常")
-                with zf.open(member, "r") as src, tmp_bin.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                with zf.open(member, "r") as src, _open_exclusive_staging(tmp_bin) as dst:
+                    while True:
+                        buf = src.read(256 * 1024)
+                        if not buf:
+                            break
+                        bin_hasher.update(buf)
+                        dst.write(buf)
             tmp_bin.chmod(0o700)
+            with _open_exclusive_staging(tmp_sha) as sfh:
+                sfh.write((bin_hasher.hexdigest() + "\n").encode("ascii"))
+            tmp_sha.replace(digest_sidecar)
             tmp_bin.replace(binary)
             return binary
         finally:
             part.unlink(missing_ok=True)
             tmp_bin.unlink(missing_ok=True)
+            tmp_sha.unlink(missing_ok=True)
             if own_session:
                 session.close()
 
@@ -448,6 +595,7 @@ def _copy_file_if_newer(src: Path, dst: Path) -> None:
             pass
         if dst.is_symlink():
             return
+        dst_existed = dst.exists()
         try:
             _stream_write_file(src, dst)
             try:
@@ -455,10 +603,11 @@ def _copy_file_if_newer(src: Path, dst: Path) -> None:
             except OSError:
                 pass
         except OSError:
-            try:
-                dst.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if not dst_existed and not dst.is_symlink():
+                try:
+                    dst.unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise
 
 
@@ -512,6 +661,7 @@ class ColabOneDrive:
         ] = weakref.WeakKeyDictionary()
         self.lock = threading.RLock()
         self._mount_lock = threading.Lock()
+        self._export_lock = threading.Lock()
         self.mode = "disabled"  # "disabled" | "colab_drivefs" | "mount" | "rclone_sync"
         self.error = ""
         self.mount_proc: subprocess.Popen | None = None
@@ -586,6 +736,32 @@ class ColabOneDrive:
     def _drivefs_workspace_dir(self) -> Path:
         return self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER / "workspace"
 
+    def _checked_drivefs_workspace_dir(self) -> Path:
+        drivefs_root = self.mount_root.parent
+        if drivefs_root.is_symlink():
+            raise OSError("Google 云盘根目录不能是符号链接")
+        mydrive = self._active_mydrive_dir()
+        if mydrive.is_symlink():
+            try:
+                if not mydrive.resolve().is_relative_to(drivefs_root.resolve()):
+                    raise OSError("Google 云盘根目录不能是符号链接")
+            except OSError:
+                raise
+            except ValueError:
+                raise OSError("Google 云盘根目录不能是符号链接") from None
+        folder_dir = mydrive / COLABONE_DRIVE_FOLDER
+        if folder_dir.is_symlink():
+            raise OSError("Google 云盘应用目录不能是符号链接")
+        ws = folder_dir / "workspace"
+        if ws.is_symlink():
+            raise OSError("Google 云盘工作区目录不能是符号链接")
+        mydrive_resolved = mydrive.resolve()
+        if folder_dir.exists() and not folder_dir.resolve().is_relative_to(mydrive_resolved):
+            raise OSError("Google 云盘应用目录路径越界")
+        if ws.exists() and not ws.resolve().is_relative_to(mydrive_resolved):
+            raise OSError("Google 云盘工作区路径越界")
+        return ws
+
     def _drivefs_outputs_dir(self) -> Path:
         return (
             self._active_mydrive_dir()
@@ -597,7 +773,7 @@ class ColabOneDrive:
         """Return True if official Google Colab DriveFS is mounted at mount_root.parent."""
         drivefs_root = self.mount_root.parent
         try:
-            if not drivefs_root.exists():
+            if drivefs_root.is_symlink() or not drivefs_root.exists():
                 return False
             fstype = self._proc_mount_fstype(drivefs_root)
             is_mount = fstype.startswith("fuse.drive") or (
@@ -619,7 +795,7 @@ class ColabOneDrive:
 
     def is_fuse_mounted(self) -> bool:
         try:
-            if not self.mount_root.exists():
+            if self.mount_root.is_symlink() or not self.mount_root.exists():
                 return False
             if os.path.ismount(self.mount_root):
                 return True
@@ -652,16 +828,74 @@ class ColabOneDrive:
         with self.lock:
             proc = self.mount_proc
             self.mount_proc = None
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
+        if proc is None:
+            return
+        pid = getattr(proc, "pid", None)
+        own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+        can_killpg = (
+            isinstance(pid, int)
+            and not isinstance(pid, bool)
+            and pid > 0
+            and hasattr(os, "killpg")
+            and pid != own_pgrp
+        )
+        leader_alive = proc.poll() is None
+        if not leader_alive and can_killpg:
+            try:
+                os.kill(pid, 0)
+                return
+            except ProcessLookupError:
+                pass
+            except OSError:
+                return
+        if can_killpg:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        elif leader_alive:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        if leader_alive:
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                if can_killpg:
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     pass
+            else:
+                if can_killpg:
+                    pid_recycled = False
+                    try:
+                        os.kill(pid, 0)
+                        pid_recycled = True
+                    except ProcessLookupError:
+                        pid_recycled = False
+                    except OSError:
+                        pid_recycled = True
+                    if not pid_recycled:
+                        try:
+                            os.killpg(pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+        elif can_killpg:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
     def _recover_stale_fuse(self):
         try:
@@ -679,6 +913,7 @@ class ColabOneDrive:
                             cmd,
                             check=False,
                             timeout=10,
+                            env=_sanitized_rclone_env(),
                             stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
@@ -694,8 +929,8 @@ class ColabOneDrive:
                 if self.is_colab_drivefs_mounted():
                     staged_path.unlink(missing_ok=True)
                     self._terminate_mount_proc()
-                    ws = self._drivefs_workspace_dir()
                     try:
+                        ws = self._checked_drivefs_workspace_dir()
                         ws.mkdir(parents=True, exist_ok=True)
                         os.listdir(ws)
                     except OSError as exc:
@@ -757,6 +992,12 @@ class ColabOneDrive:
                 )
                 mounted = False
                 if can_fuse:
+                    if self.mount_root.is_symlink():
+                        err = "Google 云盘挂载目录不能是符号链接"
+                        with self.lock:
+                            self.mode = "disabled"
+                            self.error = err
+                        raise RuntimeError(err)
                     self._terminate_mount_proc()
                     self.mount_root.mkdir(parents=True, exist_ok=True)
                     log_path = self.root / "rclone-mount.log"
@@ -826,8 +1067,8 @@ class ColabOneDrive:
         return self.status()
 
     def _pull_drivefs_workspace(self, target_dir: Path) -> bool:
-        ws = self._drivefs_workspace_dir()
         try:
+            ws = self._checked_drivefs_workspace_dir()
             ws.mkdir(parents=True, exist_ok=True)
             models_src = ws / "models.json"
             if models_src.is_file() and not models_src.is_symlink():
@@ -850,8 +1091,8 @@ class ColabOneDrive:
             return False
 
     def _push_drivefs_workspace(self) -> bool:
-        ws = self._drivefs_workspace_dir()
         try:
+            ws = self._checked_drivefs_workspace_dir()
             ws.mkdir(parents=True, exist_ok=True)
             models_src = self.root / "models.json"
             if models_src.is_file() and not models_src.is_symlink():
@@ -1008,7 +1249,11 @@ class ColabOneDrive:
             mode = self.mode
         try:
             if mode == "colab_drivefs":
-                ws = self._drivefs_workspace_dir() / "workflows"
+                folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+                ws_root = self._drivefs_workspace_dir()
+                if folder_dir.is_symlink() or ws_root.is_symlink():
+                    raise ValueError("云盘工作区目录不能是符号链接")
+                ws = ws_root / "workflows"
                 if ws.is_symlink():
                     raise ValueError("云盘工作流目录不能是符号链接")
                 if not ws.is_dir():
@@ -1028,7 +1273,10 @@ class ColabOneDrive:
                         dst = trash / src.name
                         if dst.is_symlink():
                             raise ValueError("云盘回收目标不能是符号链接")
-                        src.replace(dst)
+                        try:
+                            src.replace(dst)
+                        except FileNotFoundError:
+                            return True
                 return True
             binary = ensure_rclone_binary(
                 self.root, self.catalog, http_factory=self._http_session
@@ -1066,7 +1314,11 @@ class ColabOneDrive:
             mode = self.mode
         try:
             if mode == "colab_drivefs":
-                ws = self._drivefs_workspace_dir() / "comfyui-outputs"
+                folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+                ws_root = self._drivefs_workspace_dir()
+                if folder_dir.is_symlink() or ws_root.is_symlink():
+                    raise ValueError("云盘工作区目录不能是符号链接")
+                ws = ws_root / "comfyui-outputs"
                 if ws.is_symlink():
                     raise ValueError("云盘作品目录不能是符号链接")
                 if not ws.is_dir():
@@ -1090,7 +1342,10 @@ class ColabOneDrive:
                     dst = trash / src.name
                     if dst.is_symlink():
                         raise ValueError("云盘回收目标不能是符号链接")
-                    src.replace(dst)
+                    try:
+                        src.replace(dst)
+                    except FileNotFoundError:
+                        continue
                 return True
             binary = ensure_rclone_binary(
                 self.root, self.catalog, http_factory=self._http_session
@@ -1129,7 +1384,11 @@ class ColabOneDrive:
             mode = self.mode
         try:
             if mode == "colab_drivefs":
-                ws = self._drivefs_workspace_dir() / subdir
+                folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+                ws_root = self._drivefs_workspace_dir()
+                if folder_dir.is_symlink() or ws_root.is_symlink():
+                    raise ValueError("云盘工作区目录不能是符号链接")
+                ws = ws_root / subdir
                 if ws.is_symlink():
                     raise ValueError(f"云盘{label}目录不能是符号链接")
                 if not ws.is_dir():
@@ -1153,7 +1412,10 @@ class ColabOneDrive:
                             shutil.rmtree(dst)
                         else:
                             dst.unlink()
-                    src.replace(dst)
+                    try:
+                        src.replace(dst)
+                    except FileNotFoundError:
+                        return True
                 return True
             binary = ensure_rclone_binary(
                 self.root, self.catalog, http_factory=self._http_session
@@ -1239,6 +1501,26 @@ class ColabOneDrive:
         expected_size: int | None = None,
     ) -> dict:
         """Export a ComfyUI output directly from the remote VM to Google Drive outputs/."""
+        with self._export_lock:
+            return self._export_output_file_locked(
+                src_path,
+                filename=filename,
+                output_id=output_id,
+                extension=extension,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+            )
+
+    def _export_output_file_locked(
+        self,
+        src_path: Path,
+        *,
+        filename: str,
+        output_id: str,
+        extension: str,
+        expected_sha256: str = "",
+        expected_size: int | None = None,
+    ) -> dict:
         if not self.available():
             raise ValueError("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载")
         with self.lock:
@@ -1505,6 +1787,7 @@ class ColabOneDrive:
                                 cmd,
                                 check=False,
                                 timeout=10,
+                                env=_sanitized_rclone_env(),
                                 stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
@@ -1521,9 +1804,25 @@ class ColabOneDrive:
         try:
             manifest = json.loads((self.catalog / "rclone.json").read_text(encoding="utf-8"))
             tag = manifest.get("tag")
+            machine = platform.machine().lower()
+            arch = {
+                "x86_64": "amd64",
+                "amd64": "amd64",
+                "aarch64": "arm64",
+                "arm64": "arm64",
+            }.get(machine)
+            expected = ""
+            if arch and isinstance(manifest.get("sha256"), dict):
+                expected = str(manifest["sha256"].get(arch) or "")
             if tag:
-                candidate = self.root / "bin" / f"rclone-{tag}"
-                if candidate.is_file() and not candidate.is_symlink():
+                bin_dir = self.root / "bin"
+                if bin_dir.is_symlink():
+                    return None
+                candidate = bin_dir / f"rclone-{tag}"
+                digest_sidecar = bin_dir / f".rclone-{tag}.sha256"
+                if _is_valid_cached_rclone_binary(
+                    candidate, digest_sidecar, expected, allow_chmod=False
+                ):
                     return candidate
         except Exception:
             pass

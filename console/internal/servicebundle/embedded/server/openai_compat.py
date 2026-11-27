@@ -14,6 +14,7 @@ MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_INPUT_ITEMS = 2048
 MAX_COMPACTION_DECOMPRESSED_BYTES = 256 * 1024
+MAX_TOTAL_COMPACTION_DECOMPRESSED_BYTES = 1 * 1024 * 1024
 COLABONE_COMPACTION_PREFIX = "co_cmp_v1."
 
 _UNSUPPORTED_MEDIA_TYPES = frozenset(
@@ -207,28 +208,35 @@ def encode_compaction_content(summary: str) -> str:
     return COLABONE_COMPACTION_PREFIX + token
 
 
-def decode_compaction_content(blob: Any) -> str | None:
+def _decode_compaction_content_with_size(blob: Any) -> tuple[str | None, int]:
     if not isinstance(blob, str) or not blob.startswith(COLABONE_COMPACTION_PREFIX):
-        return None
+        return None, 0
     encoded = blob[len(COLABONE_COMPACTION_PREFIX) :]
     if not encoded or len(encoded) > MAX_COMPACTION_DECOMPRESSED_BYTES * 2:
-        return None
+        return None, 0
+    raw_len = 0
     try:
         padded = encoded + "=" * (-len(encoded) % 4)
         compressed = base64.urlsafe_b64decode(padded.encode("ascii"))
         decompressor = zlib.decompressobj()
         raw = decompressor.decompress(compressed, MAX_COMPACTION_DECOMPRESSED_BYTES + 1)
+        raw_len = len(raw)
         if (
-            len(raw) > MAX_COMPACTION_DECOMPRESSED_BYTES
+            raw_len > MAX_COMPACTION_DECOMPRESSED_BYTES
             or decompressor.unconsumed_tail
         ):
-            return None
+            return None, raw_len
         payload = json.loads(raw.decode("utf-8"))
         if isinstance(payload, dict) and isinstance(payload.get("summary"), str):
-            return payload["summary"].strip()
+            return payload["summary"].strip(), raw_len
     except Exception:
-        return None
-    return None
+        return None, raw_len
+    return None, raw_len
+
+
+def decode_compaction_content(blob: Any) -> str | None:
+    summary, _ = _decode_compaction_content_with_size(blob)
+    return summary
 
 
 def flatten_content(content: Any, *, allow_none: bool = False) -> str | None:
@@ -421,11 +429,17 @@ def normalize_chat_request(raw: Any) -> tuple[str, bool, dict[str, Any]]:
     if not isinstance(stream, bool):
         raise ValueError("stream 必须为布尔值")
 
+    normalized_messages = _normalize_role_sequence(messages)
+    if not normalized_messages:
+        raise ValueError("messages 必须为非空数组")
+
     payload: dict[str, Any] = {
         "model": model,
-        "messages": _normalize_role_sequence(messages),
+        "messages": normalized_messages,
         "stream": stream,
     }
+    if estimate_serialized_bytes(payload["messages"], MAX_BODY_BYTES) > MAX_BODY_BYTES:
+        raise ValueError("消息展开后的大小超出上限")
 
     if raw.get("temperature") is not None:
         payload["temperature"] = _validate_float(raw["temperature"], "temperature", 0, 2)
@@ -511,7 +525,17 @@ def _normalize_role_sequence(messages: list[dict[str, Any]]) -> list[dict[str, A
     """Ensure system prompts stay at index 0 so strict GGUF Jinja templates never reject mid-stream developer/system roles."""
     leading_systems: list[str] = []
     rest: list[dict[str, Any]] = []
+    pending_user_parts: list[str] | None = None
     seen_non_system = False
+
+    def _flush_pending_user() -> None:
+        nonlocal pending_user_parts
+        if pending_user_parts is not None and rest:
+            rest[-1] = {
+                **rest[-1],
+                "content": "\n\n".join(pending_user_parts).strip(),
+            }
+            pending_user_parts = None
 
     for msg in messages:
         role = msg.get("role")
@@ -525,17 +549,20 @@ def _normalize_role_sequence(messages: list[dict[str, Any]]) -> list[dict[str, A
                 # Mid-conversation developer/system context (common in Codex): attach cleanly as user context.
                 note = f"[Developer instructions]\n{text}"
                 if rest and rest[-1].get("role") == "user" and "tool_calls" not in rest[-1]:
-                    prev = rest[-1].get("content") or ""
-                    rest[-1] = {
-                        **rest[-1],
-                        "content": (prev + "\n\n" + note).strip() if prev else note,
-                    }
+                    if pending_user_parts is None:
+                        prev = rest[-1].get("content") or ""
+                        pending_user_parts = [prev, note] if prev else [note]
+                    else:
+                        pending_user_parts.append(note)
                 else:
+                    _flush_pending_user()
                     rest.append({"role": "user", "content": note})
         else:
+            _flush_pending_user()
             seen_non_system = True
             rest.append(msg)
 
+    _flush_pending_user()
     out: list[dict[str, Any]] = []
     if leading_systems:
         out.append({"role": "system", "content": "\n\n".join(leading_systems)})
@@ -785,8 +812,21 @@ def response_items_to_chat_messages(
 
     seen_call_ids: set[str] = set()
     trigger_compaction = False
+    has_user = False
+    total_compaction_bytes = 0
+    pending_assistant_parts: list[str] | None = None
+
+    def flush_pending_assistant() -> None:
+        nonlocal pending_assistant_parts
+        if pending_assistant_parts is not None and messages:
+            messages[-1] = {
+                **messages[-1],
+                "content": "\n\n".join(pending_assistant_parts).strip(),
+            }
+            pending_assistant_parts = None
 
     def append_tool_call(call_id: str, name: str, arguments: str) -> None:
+        flush_pending_assistant()
         seen_call_ids.add(call_id)
         tc = {
             "id": call_id,
@@ -807,10 +847,13 @@ def response_items_to_chat_messages(
     for item in items:
         item_type = item.get("type")
         if item_type == "message" or (item_type is None and "role" in item):
+            flush_pending_assistant()
             role = item.get("role", "user")
             if role not in ("system", "developer", "user", "assistant"):
                 raise ValueError("不支持的消息角色")
             mapped_role = "system" if role == "developer" else role
+            if mapped_role == "user":
+                has_user = True
             text = flatten_content(item.get("content", ""), allow_none=False) or ""
             messages.append({"role": mapped_role, "content": text})
         elif item_type == "function_call":
@@ -832,6 +875,7 @@ def response_items_to_chat_messages(
             args = json.dumps({"input": raw_in_str}, ensure_ascii=False)
             append_tool_call(call_id, name, args)
         elif item_type in ("function_call_output", "custom_tool_call_output"):
+            flush_pending_assistant()
             call_id = str(item.get("call_id") or "").strip()
             output_text = _flatten_tool_output(item.get("output", ""))
             if call_id and call_id in seen_call_ids:
@@ -844,6 +888,7 @@ def response_items_to_chat_messages(
                 )
             else:
                 # Standalone / cross-thread tool output without a paired call_id (Codex app-server edge case).
+                has_user = True
                 messages.append(
                     {
                         "role": "user",
@@ -851,26 +896,36 @@ def response_items_to_chat_messages(
                     }
                 )
         elif item_type in ("compaction", "compaction_summary"):
-            summary = decode_compaction_content(item.get("encrypted_content"))
+            summary, decomp_bytes = _decode_compaction_content_with_size(
+                item.get("encrypted_content")
+            )
+            total_compaction_bytes += decomp_bytes
+            if total_compaction_bytes > MAX_TOTAL_COMPACTION_DECOMPRESSED_BYTES:
+                raise ValueError("压缩历史内容总大小超出上限")
             if not summary and isinstance(item.get("summary"), str):
-                summary = item["summary"].strip()
+                raw_fallback = item["summary"]
+                total_compaction_bytes += len(raw_fallback.encode("utf-8"))
+                if total_compaction_bytes > MAX_TOTAL_COMPACTION_DECOMPRESSED_BYTES:
+                    raise ValueError("压缩历史内容总大小超出上限")
+                summary = raw_fallback.strip()
             if summary:
                 block = f"[Compacted conversation summary]\n{summary}"
-                has_user = any(m.get("role") == "user" for m in messages)
                 if (
                     messages
                     and messages[-1].get("role") == "assistant"
                     and not messages[-1].get("tool_calls")
                 ):
-                    prev = messages[-1].get("content") or ""
-                    messages[-1] = {
-                        **messages[-1],
-                        "content": (prev + "\n\n" + block).strip() if prev else block,
-                    }
+                    if pending_assistant_parts is None:
+                        prev = messages[-1].get("content") or ""
+                        pending_assistant_parts = [prev, block] if prev else [block]
+                    else:
+                        pending_assistant_parts.append(block)
                 elif has_user:
-                    # Preserves clean system -> user -> assistant -> user role alternation across all GGUF templates.
+                    flush_pending_assistant()
+                    # Preserves clean system / user / assistant / user role alternation across all GGUF templates.
                     messages.append({"role": "assistant", "content": block})
                 else:
+                    flush_pending_assistant()
                     messages.append({"role": "system", "content": block})
         elif item_type == "compaction_trigger":
             trigger_compaction = True
@@ -879,10 +934,13 @@ def response_items_to_chat_messages(
         elif item_type in ("input_text", "output_text", "text") and isinstance(
             item.get("text"), str
         ):
+            flush_pending_assistant()
+            has_user = True
             messages.append({"role": "user", "content": item["text"]})
         else:
             continue
 
+    flush_pending_assistant()
     normalized = _normalize_role_sequence(messages)
     if not normalized or all(m.get("role") == "system" for m in normalized):
         # Ensure llama-server always receives at least one user turn.
@@ -932,6 +990,8 @@ def normalize_responses_request(
     chat_messages, trigger_compaction = response_items_to_chat_messages(
         all_items, instructions
     )
+    if estimate_serialized_bytes(chat_messages, MAX_BODY_BYTES) > MAX_BODY_BYTES:
+        raise ValueError("展开后的消息大小超出上限")
     chat_tools, custom_names = _normalize_response_tools(raw.get("tools"))
     tool_choice = _normalize_response_tool_choice(raw.get("tool_choice"), chat_tools)
 
@@ -1062,6 +1122,9 @@ def normalize_compact_request(
         raise ValueError(f"input 项数量超出上限（最多 {MAX_INPUT_ITEMS} 项）")
     if estimate_serialized_bytes(all_items, MAX_BODY_BYTES) > MAX_BODY_BYTES:
         raise ValueError("input 展开后的大小超出上限")
+    # Synchronously validate compaction item expansion so oversized/malformed compaction
+    # payloads fail with HTTP 400 rather than surfacing asynchronously as 502.
+    render_items_for_compaction(all_items)
     return {
         "model": model,
         "instructions": instructions,
@@ -1072,6 +1135,7 @@ def normalize_compact_request(
 def render_items_for_compaction(items: list[dict[str, Any]], max_item_chars: int = 8000) -> list[str]:
     """Render ResponseItems into clean transcript blocks for summarization."""
     blocks: list[str] = []
+    total_compaction_bytes = 0
 
     def clip(text: str, limit: int = max_item_chars) -> str:
         text = text.strip()
@@ -1105,9 +1169,18 @@ def render_items_for_compaction(items: list[dict[str, Any]], max_item_chars: int
             out_text = _flatten_tool_output(item.get("output", ""))
             blocks.append(f"[TOOL_OUTPUT]\n{clip(out_text, 4000)}")
         elif item_type in ("compaction", "compaction_summary"):
-            prev = decode_compaction_content(item.get("encrypted_content"))
+            prev, decomp_bytes = _decode_compaction_content_with_size(
+                item.get("encrypted_content")
+            )
+            total_compaction_bytes += decomp_bytes
+            if total_compaction_bytes > MAX_TOTAL_COMPACTION_DECOMPRESSED_BYTES:
+                raise ValueError("压缩历史内容总大小超出上限")
             if not prev and isinstance(item.get("summary"), str):
-                prev = item["summary"].strip()
+                raw_fallback = item["summary"]
+                total_compaction_bytes += len(raw_fallback.encode("utf-8"))
+                if total_compaction_bytes > MAX_TOTAL_COMPACTION_DECOMPRESSED_BYTES:
+                    raise ValueError("压缩历史内容总大小超出上限")
+                prev = raw_fallback.strip()
             if prev:
                 blocks.append(f"[PRIOR_SUMMARY]\n{clip(prev, max_item_chars)}")
     return blocks

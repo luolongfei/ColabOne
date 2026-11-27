@@ -95,7 +95,13 @@ const showBilling = computed(
 
 const isIdleActive = computed(() => props.idle?.phase === "active");
 
-const countdownThreshold = computed(() => props.idle?.countdown_seconds || 60);
+const countdownThreshold = computed(() =>
+  typeof props.idle?.countdown_seconds === "number" &&
+  Number.isFinite(props.idle.countdown_seconds) &&
+  props.idle.countdown_seconds > 0
+    ? props.idle.countdown_seconds
+    : 60,
+);
 
 const isImminentRelease = computed(
   () =>
@@ -137,12 +143,19 @@ const idleAriaLabel = computed(() => {
   return t("billing.barIdleCountdownAria", { clock: countdownClock.value });
 });
 
+const hasFiniteRate = computed(
+  () =>
+    typeof props.account.rate === "number" &&
+    Number.isFinite(props.account.rate) &&
+    props.account.rate >= 0,
+);
+
 const isSyncing = computed(
   () =>
     !overview.value.active &&
     overview.value.loggedIn &&
     (overview.value.instanceCount > 0 ||
-      (overview.value.stale && props.account.rate === undefined)),
+      (overview.value.stale && !hasFiniteRate.value)),
 );
 
 const isStaleData = computed(
@@ -217,13 +230,31 @@ const idleButtonLabel = computed(() => {
 
 const billingAriaLabel = computed(() => {
   const o = overview.value;
-  return t("billing.barSummaryAria", {
-    status: o.statusText,
-    rate: o.rateText,
-    balance: o.balanceText,
-    endurance: enduranceLabel.value,
-    count: o.instanceCount,
-  });
+  const parts = [
+    t("billing.barSummaryAria", {
+      status: o.statusText,
+      rate: o.rateText,
+      balance: o.balanceText,
+      endurance: enduranceLabel.value,
+      count: o.instanceCount,
+    }),
+  ];
+  if (runOverview.value.active) {
+    parts.push(
+      `${t("billing.barRunConsumed")} ${runOverview.value.consumedText}`,
+    );
+  } else if (
+    runOverview.value.phase === "completed" &&
+    runOverview.value.hasRecord
+  ) {
+    parts.push(
+      `${t("billing.barLastRunConsumed")} ${runOverview.value.consumedText}`,
+    );
+  }
+  if (isStaleData.value) {
+    parts.push(t("billing.barStaleAria"));
+  }
+  return parts.join(", ");
 });
 
 const tickerSlides = computed<ColabOneBillingTickerSlide[]>(() =>
@@ -433,7 +464,8 @@ onUnmounted(() => {
             'is-stale': isStaleData,
           },
         ]"
-        role="status"
+        role="region"
+        tabindex="0"
         :aria-label="billingAriaLabel"
       >
         <span class="co-billing-strip-inner">
@@ -705,6 +737,11 @@ onUnmounted(() => {
   flex-shrink: 0;
   cursor: default;
   user-select: none;
+}
+
+.co-billing-bar .co-billing-strip:focus-visible {
+  outline: 2px solid var(--co-focus);
+  outline-offset: 2px;
 }
 
 .co-billing-bar .co-billing-strip.is-active {
@@ -1021,8 +1058,7 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1240px) {
-  .co-run-flame-icon,
-  .co-run-timer-icon {
+  .co-billing-run .co-run-flame-icon {
     display: none;
   }
 }
@@ -1121,7 +1157,9 @@ onUnmounted(() => {
     flex-shrink: 0;
   }
 
-  .co-billing-pill.active .co-billing-dot-badge {
+  .co-billing-pill.active .co-billing-dot-badge,
+  .co-run-flame-icon,
+  .co-run-timer-icon {
     display: none;
   }
 

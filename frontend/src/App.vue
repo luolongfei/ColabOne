@@ -55,6 +55,7 @@ import ColabOneWebConsoleCard from "./ColabOneWebConsoleCard.vue";
 import ColabOneWorkflowShareModal from "./ColabOneWorkflowShareModal.vue";
 import {
   buildColabOnePrivacyContext,
+  colabOneMaskPlainText,
   colabOnePrivacyActive,
   colabOnePrivacyDefault,
   extractColabOneHostFromInput,
@@ -155,11 +156,14 @@ import {
   colabOneCancelUpdateInstall,
   colabOneCheckForUpdate,
   colabOneCommand,
+  colabOneCreateOutputShare,
   colabOneCreateWebConsoleLoginTicket,
   colabOneCreateWorkflowShare,
+  colabOneDeleteOutputShare,
   colabOneDeleteWorkflowShare,
   colabOneGetCloseBehavior,
   colabOneGetLogDrawerState,
+  colabOneGetOutputSharesState,
   colabOneGetUpdateState,
   colabOneGetWebConsolePasscode,
   colabOneGetWebConsoleState,
@@ -167,6 +171,7 @@ import {
   colabOneListRollbackVersions,
   colabOneOnCloseBehavior,
   colabOneOnCloseRequest,
+  colabOneOnOutputSharesState,
   colabOneOnUpdateOpen,
   colabOneApplyMigrationPreview,
   colabOneCancelMigrationSession,
@@ -181,6 +186,7 @@ import {
   colabOneReadClipboard,
   colabOneRelaunchForUpdate,
   colabOneResolveCloseRequest,
+  colabOneRevokeOutputShare,
   colabOneRevokeWebConsoleSessions,
   colabOneRevokeWorkflowShare,
   colabOneRuntimeCapabilities,
@@ -197,12 +203,14 @@ import {
   colabOneWebOpenDeferredTab,
   colabOneWebSessionExpired,
   colabOneWriteClipboard,
+  createColabOneDefaultOutputShareListState,
   createColabOneDefaultWebConsoleState,
   createColabOneDefaultWorkflowShareListState,
   fetchColabOneWebCapabilities,
   isColabOneDesktopRuntime,
   normalizeColabOneCloseAction,
   normalizeColabOneCloseBehavior,
+  normalizeColabOneOutputShareListState,
   normalizeColabOneWorkflowShareListState,
   validateColabOneWebExternalURL,
   type ColabOneCloseAction,
@@ -210,6 +218,9 @@ import {
   type ColabOneMigrationExportSummary,
   type ColabOneMigrationPickResult,
   type ColabOneMigrationPreview,
+  type ColabOneOutputShareCreateRequest,
+  type ColabOneOutputShareListState,
+  type ColabOneOutputShareSummary,
   type ColabOneRollbackVersion,
   type ColabOneUpdateState,
   type ColabOneWebConsoleState,
@@ -1004,9 +1015,22 @@ const webConsoleState = ref<ColabOneWebConsoleState>(
 
 const privacyContext = computed(() => {
   const ctx = buildColabOnePrivacyContext(state.value);
-  const webHost = extractColabOneHostFromInput(webConsoleState.value.public_origin);
-  if (webHost && !isColabOnePublicHost(webHost) && !(ctx.hosts || []).includes(webHost)) {
-    return { ...ctx, hosts: [...(ctx.hosts || []), webHost] };
+  const extraHosts = [...(ctx.hosts || [])];
+  for (const rawOrigin of [
+    webConsoleState.value.public_origin,
+    capabilities.value.public_origin,
+  ]) {
+    const webHost = extractColabOneHostFromInput(rawOrigin);
+    if (
+      webHost &&
+      !isColabOnePublicHost(webHost) &&
+      !extraHosts.includes(webHost)
+    ) {
+      extraHosts.push(webHost);
+    }
+  }
+  if (extraHosts.length !== (ctx.hosts || []).length) {
+    return { ...ctx, hosts: extraHosts };
   }
   return ctx;
 });
@@ -1172,6 +1196,8 @@ const currentActivity = computed(() =>
           comfyui_start: t("task.comfyStart"),
           comfyui_run: t("task.comfyRun"),
           comfyui_tts_preview: t("comfy.voicePreviewTitle"),
+          live_start: t("task.liveStart"),
+          live_build_pack: t("task.liveBuildPack"),
         }[task.value.kind] || t("task.runningGeneric")
       : ready.value
         ? t("task.gpuReadyIdle")
@@ -1188,7 +1214,7 @@ const activeVramModel = computed(() =>
         (m) => m.loaded || m.id === state.value.runtime.loaded_model,
       ),
 );
-const hasActiveComfyTask = computed(
+const hasActiveComfyEngineTask = computed(
   () =>
     state.value.runtime.state !== "stopped" &&
     Boolean(
@@ -1202,9 +1228,27 @@ const hasActiveComfyTask = computed(
       ),
     ),
 );
-const comfyRuntimeBusy = computed(
+const liveStudioRuntimeBusy = computed(
   () =>
-    Boolean(state.value.runtime.comfyui?.running) || hasActiveComfyTask.value,
+    state.value.runtime.state !== "stopped" &&
+    (Boolean(state.value.runtime.live_studio?.running) ||
+      state.value.runtime.live_studio?.state === "starting" ||
+      Boolean(
+        state.value.runtime.tasks?.some(
+          (item) =>
+            item.state === "running" &&
+            (item.kind === "live_start" || item.kind === "live_build_pack"),
+        ),
+      )),
+);
+const comfyEngineRuntimeBusy = computed(
+  () =>
+    state.value.runtime.state !== "stopped" &&
+    (Boolean(state.value.runtime.comfyui?.running) ||
+      hasActiveComfyEngineTask.value),
+);
+const comfyRuntimeBusy = computed(
+  () => comfyEngineRuntimeBusy.value || liveStudioRuntimeBusy.value,
 );
 
 function isNavLive(id: string): boolean {
@@ -1322,6 +1366,8 @@ const taskKindLabel = (kind?: string) =>
       comfyui_start: t("task.kindComfyStart"),
       comfyui_run: t("task.kindComfyRun"),
       comfyui_tts_preview: t("comfy.voicePreviewTitle"),
+      live_start: t("task.kindLiveStart"),
+      live_build_pack: t("task.kindLiveBuildPack"),
     }[kind]) ||
   "";
 const taskBarTitle = (kind: string) =>
@@ -1334,6 +1380,8 @@ const taskBarTitle = (kind: string) =>
     comfyui_start: t("task.comfyStart"),
     comfyui_run: t("task.comfyRun"),
     comfyui_tts_preview: t("comfy.voicePreviewTitle"),
+    live_start: t("task.liveStart"),
+    live_build_pack: t("task.liveBuildPack"),
   })[kind] || t("task.executingGeneric");
 
 const GPU_SPECS = computed(
@@ -1469,7 +1517,9 @@ const dockTaskHasProgress = computed(() => {
     kind === "download" ||
     kind === "comfyui_start" ||
     kind === "comfyui_run" ||
-    kind === "comfyui_tts_preview"
+    kind === "comfyui_tts_preview" ||
+    kind === "live_start" ||
+    kind === "live_build_pack"
   );
 });
 const dockTaskPercent = computed(() => {
@@ -1479,9 +1529,13 @@ const dockTaskPercent = computed(() => {
   }
   return Math.max(0, Math.min(100, Math.round(raw * 100)));
 });
-const dockTaskMessageText = computed(() =>
-  dockTask.value?.message ? tb(dockTask.value.message).trim() : "",
-);
+const dockTaskMessageText = computed(() => {
+  const raw = dockTask.value?.message ? tb(dockTask.value.message).trim() : "";
+  if (!raw) return "";
+  return colabOnePrivacyActive.value
+    ? colabOneMaskPlainText(raw, privacyContext.value)
+    : raw;
+});
 const dockTaskMiniSecondary = computed(() => {
   const dl = dockTask.value?.download;
   if (dl) {
@@ -1570,25 +1624,30 @@ watch(isCompactTaskDockViewport, (isCompact) => {
   }
   dockTaskCollapsed.value = isCompact;
 });
-const idleRemaining = computed(() =>
-  Math.max(
-    0,
-    Math.ceil(
-      (idle.value?.remaining_seconds ?? 0) -
-        (clockNow.value - snapshotAt.value) / 1000,
-    ),
-  ),
-);
-const countdown = computed(
-  () =>
-    idle.value &&
-    idle.value.phase !== "active" &&
-    idleRemaining.value <= idle.value.countdown_seconds,
-);
+const idleRemaining = computed(() => {
+  const baseRemaining = idle.value?.remaining_seconds;
+  if (typeof baseRemaining !== "number" || !Number.isFinite(baseRemaining)) {
+    return 0;
+  }
+  const elapsedSec = Math.max(0, (clockNow.value - snapshotAt.value) / 1000);
+  return Math.max(0, Math.ceil(baseRemaining - elapsedSec));
+});
+const countdown = computed(() => {
+  if (!idle.value || idle.value.phase === "active") return false;
+  const rawThreshold = idle.value.countdown_seconds;
+  const threshold =
+    typeof rawThreshold === "number" &&
+    Number.isFinite(rawThreshold) &&
+    rawThreshold > 0
+      ? rawThreshold
+      : 60;
+  return idleRemaining.value <= threshold;
+});
 const duration = (seconds: number | null) => {
-  if (seconds === null) return t("common.calculating");
-  const whole = Math.ceil(Math.max(0, seconds));
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+  if (seconds === null || !Number.isFinite(seconds)) {
+    return t("common.calculating");
+  }
+  return formatCountdownClock(Math.ceil(Math.max(0, seconds)));
 };
 
 function interaction(event?: Event) {
@@ -1598,7 +1657,7 @@ function interaction(event?: Event) {
   colabOneCommand("runtime.activity").catch(() => {});
 }
 
-function hasVisibleAntModalOverlay(): boolean {
+function hasVisibleAntModalOverlay(minZIndex = -Infinity): boolean {
   if (typeof document === "undefined") return false;
   const modals = document.querySelectorAll<HTMLElement>(".ant-modal-wrap");
   for (const el of modals) {
@@ -1619,6 +1678,34 @@ function hasVisibleAntModalOverlay(): boolean {
       style.pointerEvents !== "none" &&
       el.getBoundingClientRect().height > 0
     ) {
+      if (minZIndex > -Infinity) {
+        const z = Number.parseInt(style.zIndex || "0", 10);
+        if (!Number.isFinite(z) || z < minZIndex) {
+          continue;
+        }
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasVisibleAntPopoverOverlay(): boolean {
+  if (typeof document === "undefined") return false;
+  const overlays = document.querySelectorAll<HTMLElement>(
+    ".ant-popover:not(.ant-popover-hidden), .ant-popconfirm:not(.ant-popover-hidden), .ant-dropdown:not(.ant-dropdown-hidden)",
+  );
+  for (const el of overlays) {
+    if (/\bant-[\w-]+-leave(?:-active|-to)?\b/.test(el.className)) {
+      continue;
+    }
+    const style = window.getComputedStyle(el);
+    if (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.pointerEvents !== "none" &&
+      el.getBoundingClientRect().height > 0
+    ) {
       return true;
     }
   }
@@ -1630,19 +1717,24 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     if (closeModalOpen.value) {
       return;
     }
-    if (
-      updateModalOpen.value &&
-      !hasVisibleAntModalOverlay() &&
-      !activeOverlayDrawer.value.open
-    ) {
+    if (updateModalOpen.value && !hasVisibleAntModalOverlay(1050)) {
       handleUpdatePopoverOpenChange(false);
       return;
     }
-    if (showRelease.value && !busy.value) {
+    if (
+      showRelease.value &&
+      !busy.value &&
+      !showUpgradeConfirm.value &&
+      !workflowShareModalOpen.value &&
+      !migrationModalOpen.value &&
+      !hasVisibleAntModalOverlay(1001) &&
+      !hasVisibleAntPopoverOverlay()
+    ) {
       showRelease.value = false;
     } else if (
       !activeOverlayDrawer.value.open &&
       !hasVisibleAntModalOverlay() &&
+      !hasVisibleAntPopoverOverlay() &&
       !logWindowStandalone.value &&
       logsOpen.value
     ) {
@@ -1769,10 +1861,12 @@ function syncFormFromSettings(next: typeof state.value.settings | undefined) {
   }
 }
 
-const bytes = (n = 0) =>
-  n >= 1024 ** 3
-    ? (n / 1024 ** 3).toFixed(1) + " GB"
-    : (n / 1024 ** 2).toFixed(0) + " MB";
+const bytes = (n = 0) => {
+  const safe = typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+  return safe >= 1024 ** 3
+    ? (safe / 1024 ** 3).toFixed(1) + " GB"
+    : (safe / 1024 ** 2).toFixed(0) + " MB";
+};
 
 function notify(
   text: string,
@@ -2765,6 +2859,7 @@ async function clearAssignProxy() {
 }
 
 async function testAssignProxy() {
+  if (!capabilities.value.can_reveal_host_secrets) return;
   if (assignProxyMutating.value || testingAssignProxy.value) return;
   const raw = form.value.assign_proxy.trim();
   if (!raw && !hasSavedAssignProxy.value) return;
@@ -2793,6 +2888,7 @@ function onHfTokenExtracted() {
 }
 
 async function save() {
+  const prevAttempts = form.value.assign_max_attempts;
   const normalizedAttempts = normalizeAssignMaxAttempts(
     assignMaxAttemptsDraft.value,
   );
@@ -2812,18 +2908,35 @@ async function save() {
   if (form.value.hf_token.trim()) {
     payload.hf_token = form.value.hf_token.trim();
   }
-  if (await act("settings.save", payload)) {
-    lastSyncedSettings = {
-      ...lastSyncedSettings,
-      gpu: form.value.gpu,
-      idle_minutes: form.value.idle_minutes,
-      auto_drive: form.value.auto_drive,
-      download_threads: form.value.download_threads,
-      assign_max_attempts: form.value.assign_max_attempts,
-    };
-    form.value.hf_token = "";
-    hfTokenInputRef.value?.hide();
-    notify(t("device.toastSettingsSaved"));
+  const pendingFields: SyncedSettingKey[] = [
+    "gpu",
+    "idle_minutes",
+    "auto_drive",
+    "download_threads",
+    "assign_max_attempts",
+  ];
+  beginPendingSetting(pendingFields);
+  let ok = false;
+  try {
+    ok = Boolean(await act("settings.save", payload));
+    if (ok) {
+      lastSyncedSettings = {
+        ...lastSyncedSettings,
+        gpu: form.value.gpu,
+        idle_minutes: form.value.idle_minutes,
+        auto_drive: form.value.auto_drive,
+        download_threads: form.value.download_threads,
+        assign_max_attempts: form.value.assign_max_attempts,
+      };
+      form.value.hf_token = "";
+      hfTokenInputRef.value?.hide();
+      notify(t("device.toastSettingsSaved"));
+    } else {
+      form.value.assign_max_attempts = prevAttempts;
+      assignMaxAttemptsDraft.value = prevAttempts;
+    }
+  } finally {
+    endPendingSetting(pendingFields, ok);
   }
 }
 
@@ -4009,6 +4122,204 @@ const workflowShareMutating = computed(
 let workflowSharesStateEpoch = 0;
 let unsubWorkflowShares: (() => void) | null = null;
 
+const outputSharesState = ref<ColabOneOutputShareListState>(
+  createColabOneDefaultOutputShareListState(),
+);
+const outputShareCreating = ref(false);
+const outputShareRevokingId = ref("");
+const outputShareDeletingId = ref("");
+const outputShareLastCreated = ref<ColabOneOutputShareSummary | null>(null);
+const outputShareMutating = computed(
+  () =>
+    outputShareCreating.value ||
+    Boolean(outputShareRevokingId.value) ||
+    Boolean(outputShareDeletingId.value),
+);
+let outputSharesStateEpoch = 0;
+let unsubOutputShares: (() => void) | null = null;
+
+function isLoopbackOriginUrl(rawOrigin: string): boolean {
+  try {
+    const parsed = new URL(rawOrigin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    const host = parsed.hostname
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "")
+      .replace(/\.+$/, "");
+    return (
+      !host ||
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      /^127(?:\.\d{1,3}){3}$/.test(host) ||
+      /^0(?:\.\d{1,3}){3}$/.test(host) ||
+      host === "::1" ||
+      host === "::" ||
+      /^(?:0+:){7}0*1$/.test(host) ||
+      /^(?:0+:){7}0+$/.test(host) ||
+      /^::ffff:127(?:\.\d{1,3}){3}$/i.test(host) ||
+      /^::ffff:0(?:\.\d{1,3}){3}$/i.test(host) ||
+      /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(host) ||
+      /^::ffff:0{0,2}[0-9a-f]{1,2}:[0-9a-f]{1,4}$/i.test(host)
+    );
+  } catch {
+    return false;
+  }
+}
+
+const effectiveWebConsoleState = computed<ColabOneWebConsoleState>(() => {
+  if (isColabOneDesktopRuntime()) {
+    return webConsoleState.value;
+  }
+  const base = createColabOneDefaultWebConsoleState();
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "";
+  const capPublicOrigin = (capabilities.value.public_origin || "").trim();
+  const capLocalUrl = (capabilities.value.local_url || "").trim();
+  const capLanUrls = Array.isArray(capabilities.value.lan_urls)
+    ? capabilities.value.lan_urls
+    : [];
+  const capBindMode =
+    capabilities.value.bind_mode === "lan" ? "lan" : base.bind_mode;
+  return {
+    ...base,
+    enabled: true,
+    running: true,
+    bind_mode: capBindMode,
+    public_origin: capPublicOrigin,
+    local_url:
+      capLocalUrl ||
+      (origin && isLoopbackOriginUrl(origin) ? origin : "") ||
+      base.local_url,
+    lan_urls: capLanUrls,
+  };
+});
+
+function applyOutputSharesState(
+  next: ColabOneOutputShareListState,
+  expectedEpoch?: number,
+): boolean {
+  if (
+    expectedEpoch !== undefined &&
+    expectedEpoch !== outputSharesStateEpoch
+  ) {
+    return false;
+  }
+  outputSharesStateEpoch += 1;
+  outputSharesState.value = next;
+  return true;
+}
+
+function refreshOutputSharesState() {
+  if (isWebMode.value && colabOneWebSessionExpired.value) {
+    return;
+  }
+  if (isColabOneDesktopRuntime()) {
+    const wcEpoch = webConsoleStateEpoch;
+    void colabOneGetWebConsoleState()
+      .then((st) => {
+        if (!stopped) applyWebConsoleState(st, wcEpoch);
+      })
+      .catch(() => {});
+  } else {
+    void fetchColabOneWebCapabilities().catch(() => {});
+  }
+  const osEpoch = outputSharesStateEpoch;
+  void colabOneGetOutputSharesState()
+    .then((st) => {
+      if (!stopped) applyOutputSharesState(st, osEpoch);
+    })
+    .catch(() => {});
+}
+
+async function handleOutputShareCreate(req: ColabOneOutputShareCreateRequest) {
+  if (outputShareMutating.value) return;
+  outputShareCreating.value = true;
+  const preCreateEpoch = outputSharesStateEpoch;
+  try {
+    const created = await colabOneCreateOutputShare(req);
+    if (stopped) return;
+    if (outputSharesStateEpoch === preCreateEpoch) {
+      const merged = normalizeColabOneOutputShareListState({
+        shares: [
+          created,
+          ...outputSharesState.value.shares.filter(
+            (item) => item.id !== created.id,
+          ),
+        ],
+      });
+      applyOutputSharesState(merged, preCreateEpoch);
+    }
+    outputShareLastCreated.value = created;
+    notify(t("outputShare.noticeCreated"), "success", "output-share-create");
+  } catch (e) {
+    if (!stopped && !(isWebMode.value && colabOneWebSessionExpired.value)) {
+      showError(e);
+    }
+  } finally {
+    if (!stopped) {
+      outputShareCreating.value = false;
+    }
+  }
+}
+
+async function handleOutputShareRevoke(shareID: string) {
+  if (outputShareMutating.value) return;
+  outputShareRevokingId.value = shareID;
+  try {
+    const next = await colabOneRevokeOutputShare(shareID);
+    if (stopped) return;
+    applyOutputSharesState(next);
+    if (outputShareLastCreated.value?.id === shareID) {
+      outputShareLastCreated.value = null;
+    }
+    notify(t("outputShare.noticeRevoked"), "info", "output-share-revoke");
+  } catch (e) {
+    if (!stopped && !(isWebMode.value && colabOneWebSessionExpired.value)) {
+      showError(e);
+    }
+  } finally {
+    if (!stopped) {
+      outputShareRevokingId.value = "";
+    }
+  }
+}
+
+async function handleOutputShareDelete(shareID: string) {
+  if (outputShareMutating.value) return;
+  outputShareDeletingId.value = shareID;
+  try {
+    const next = await colabOneDeleteOutputShare(shareID);
+    if (stopped) return;
+    applyOutputSharesState(next);
+    if (outputShareLastCreated.value?.id === shareID) {
+      outputShareLastCreated.value = null;
+    }
+    notify(t("outputShare.noticeDeleted"), "info", "output-share-delete");
+  } catch (e) {
+    if (!stopped && !(isWebMode.value && colabOneWebSessionExpired.value)) {
+      showError(e);
+    }
+  } finally {
+    if (!stopped) {
+      outputShareDeletingId.value = "";
+    }
+  }
+}
+
+async function handleOutputShareCopyText(
+  text: string,
+  successToast?: string,
+): Promise<boolean> {
+  if (!text) return false;
+  return copyWithToast(
+    text,
+    successToast || t("outputShare.noticeCopiedLink"),
+    "output-share-copy",
+  );
+}
+
 watch(
   () => capabilities.value.can_manage_web_console,
   (allowed) => {
@@ -4063,7 +4374,8 @@ async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest
   const preCreateEpoch = workflowSharesStateEpoch;
   try {
     const created = await colabOneCreateWorkflowShare(req);
-    if (!stopped && workflowSharesStateEpoch === preCreateEpoch) {
+    if (stopped) return;
+    if (workflowSharesStateEpoch === preCreateEpoch) {
       const merged = normalizeColabOneWorkflowShareListState({
         shares: [
           created,
@@ -4090,6 +4402,7 @@ async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest
         }
       }
     }
+    if (stopped) return;
     workflowShareLastCreatedCopied.value = copied;
     workflowShareLastCreated.value = created;
     if (targetUrl) {
@@ -4108,9 +4421,9 @@ async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest
       );
     }
   } catch (e) {
-    showError(e);
+    if (!stopped) showError(e);
   } finally {
-    workflowShareCreating.value = false;
+    if (!stopped) workflowShareCreating.value = false;
   }
 }
 
@@ -4119,6 +4432,7 @@ async function handleWorkflowShareRevoke(shareID: string) {
   workflowShareRevokingId.value = shareID;
   try {
     const next = await colabOneRevokeWorkflowShare(shareID);
+    if (stopped) return;
     applyWorkflowSharesState(next);
     if (workflowShareLastCreated.value?.id === shareID) {
       workflowShareLastCreated.value = null;
@@ -4126,9 +4440,9 @@ async function handleWorkflowShareRevoke(shareID: string) {
     }
     notify(t("workflowShare.toastRevoked"), "info", "workflow-share-revoke");
   } catch (e) {
-    showError(e);
+    if (!stopped) showError(e);
   } finally {
-    workflowShareRevokingId.value = "";
+    if (!stopped) workflowShareRevokingId.value = "";
   }
 }
 
@@ -4137,6 +4451,7 @@ async function handleWorkflowShareDelete(shareID: string) {
   workflowShareDeletingId.value = shareID;
   try {
     const next = await colabOneDeleteWorkflowShare(shareID);
+    if (stopped) return;
     applyWorkflowSharesState(next);
     if (workflowShareLastCreated.value?.id === shareID) {
       workflowShareLastCreated.value = null;
@@ -4144,9 +4459,9 @@ async function handleWorkflowShareDelete(shareID: string) {
     }
     notify(t("workflowShare.toastDeleted"), "info", "workflow-share-delete");
   } catch (e) {
-    showError(e);
+    if (!stopped) showError(e);
   } finally {
-    workflowShareDeletingId.value = "";
+    if (!stopped) workflowShareDeletingId.value = "";
   }
 }
 
@@ -4218,6 +4533,7 @@ async function handleWebConsoleToggle(req: ColabOneWebConsoleUpdateRequest) {
   webConsoleSaving.value = true;
   try {
     const next = await colabOneUpdateWebConsole(req);
+    if (stopped) return;
     applyWebConsoleState(next);
     if (next.enabled && next.running) {
       notify(
@@ -4231,6 +4547,7 @@ async function handleWebConsoleToggle(req: ColabOneWebConsoleUpdateRequest) {
       notify(t("webConsole.toastDisabled"), "info", "web-console-toggle");
     }
   } catch (e) {
+    if (stopped) return;
     showError(e);
     const wcEpoch = webConsoleStateEpoch;
     void colabOneGetWebConsoleState()
@@ -4239,7 +4556,7 @@ async function handleWebConsoleToggle(req: ColabOneWebConsoleUpdateRequest) {
       })
       .catch(() => {});
   } finally {
-    webConsoleSaving.value = false;
+    if (!stopped) webConsoleSaving.value = false;
   }
 }
 
@@ -4248,9 +4565,11 @@ async function handleWebConsoleSaveConfig(req: ColabOneWebConsoleUpdateRequest) 
   webConsoleSaving.value = true;
   try {
     const next = await colabOneUpdateWebConsole(req);
+    if (stopped) return;
     applyWebConsoleState(next);
     notify(t("webConsole.toastConfigSaved"), "success", "web-console-config");
   } catch (e) {
+    if (stopped) return;
     showError(e);
     const wcEpoch = webConsoleStateEpoch;
     void colabOneGetWebConsoleState()
@@ -4259,7 +4578,7 @@ async function handleWebConsoleSaveConfig(req: ColabOneWebConsoleUpdateRequest) 
       })
       .catch(() => {});
   } finally {
-    webConsoleSaving.value = false;
+    if (!stopped) webConsoleSaving.value = false;
   }
 }
 
@@ -4269,6 +4588,7 @@ async function handleWebConsoleSetPasscode(passcode: string) {
   webConsolePasscodeBusy.value = true;
   try {
     const next = await colabOneSetWebConsolePasscode(passcode);
+    if (stopped) return;
     applyWebConsoleState(next);
     webConsolePasscodeResetSeq.value += 1;
     notify(
@@ -4279,9 +4599,9 @@ async function handleWebConsoleSetPasscode(passcode: string) {
       "web-console-passcode",
     );
   } catch (e) {
-    showError(e);
+    if (!stopped) showError(e);
   } finally {
-    webConsolePasscodeBusy.value = false;
+    if (!stopped) webConsolePasscodeBusy.value = false;
   }
 }
 
@@ -4290,6 +4610,7 @@ async function handleWebConsoleCopyPasscode() {
   webConsolePasscodeBusy.value = true;
   try {
     const pass = await colabOneGetWebConsolePasscode();
+    if (stopped) return;
     if (!pass) {
       throw new Error(t("common.copyFailed"));
     }
@@ -4299,9 +4620,9 @@ async function handleWebConsoleCopyPasscode() {
       "web-console-copy-passcode",
     );
   } catch (e) {
-    showError(e);
+    if (!stopped) showError(e);
   } finally {
-    webConsolePasscodeBusy.value = false;
+    if (!stopped) webConsolePasscodeBusy.value = false;
   }
 }
 
@@ -4310,6 +4631,7 @@ async function handleWebConsoleCreateTicket(singleUse = false) {
   webConsoleTicketBusy.value = true;
   try {
     const ticket = await colabOneCreateWebConsoleLoginTicket(singleUse);
+    if (stopped) return;
     const targetUrl = ticket.url || ticket.local_url;
     if (!targetUrl) {
       throw new Error(t("common.copyFailed"));
@@ -4325,9 +4647,9 @@ async function handleWebConsoleCreateTicket(singleUse = false) {
       "web-console-ticket",
     );
   } catch (e) {
-    showError(e);
+    if (!stopped) showError(e);
   } finally {
-    webConsoleTicketBusy.value = false;
+    if (!stopped) webConsoleTicketBusy.value = false;
   }
 }
 
@@ -4336,6 +4658,7 @@ async function handleWebConsoleRevokeSessions() {
   webConsoleRevoking.value = true;
   try {
     const next = await colabOneRevokeWebConsoleSessions();
+    if (stopped) return;
     applyWebConsoleState(next);
     notify(
       t("webConsole.toastSessionsRevoked"),
@@ -4343,9 +4666,9 @@ async function handleWebConsoleRevokeSessions() {
       "web-console-revoke",
     );
   } catch (e) {
-    showError(e);
+    if (!stopped) showError(e);
   } finally {
-    webConsoleRevoking.value = false;
+    if (!stopped) webConsoleRevoking.value = false;
   }
 }
 
@@ -4374,22 +4697,57 @@ function handleWebRelogin() {
   }
 }
 
+const webReconnecting = ref(false);
+
 async function handleWebReconnect() {
+  if (webReconnecting.value || stopped) return;
+  webReconnecting.value = true;
   try {
     await fetchColabOneWebCapabilities();
+    if (stopped) return;
+    if (colabOneWebSessionExpired.value) {
+      notify(t("webConsole.webSessionExpiredTitle"), "warning", "web-auth");
+      return;
+    }
     await syncSnapshot();
+    if (stopped) return;
+    if (colabOneWebSessionExpired.value) {
+      notify(t("webConsole.webSessionExpiredTitle"), "warning", "web-auth");
+      return;
+    }
+    refreshOutputSharesState();
     ipcFailures = 0;
     ipcDisconnected.value = false;
     ipcError.value = "";
     snapshotPoller.start();
   } catch (e) {
+    if (stopped) return;
     if (colabOneWebSessionExpired.value) {
       notify(t("webConsole.webSessionExpiredTitle"), "warning", "web-auth");
       return;
     }
     showError(e);
+  } finally {
+    if (!stopped) {
+      webReconnecting.value = false;
+      if (!colabOneWebSessionExpired.value && !snapshotPoller.isRunning()) {
+        snapshotPoller.start();
+      }
+    }
   }
 }
+
+watch(colabOneWebSessionExpired, (expired, wasExpired) => {
+  if (
+    wasExpired &&
+    !expired &&
+    !stopped &&
+    !webReconnecting.value &&
+    !snapshotPoller.isRunning()
+  ) {
+    snapshotPoller.start();
+  }
+});
 
 async function handleWebSignOut() {
   try {
@@ -4462,6 +4820,15 @@ onMounted(() => {
       .catch(() => {
         if (!stopped) workflowSharesLoaded.value = true;
       });
+    unsubOutputShares = colabOneOnOutputSharesState((st) => {
+      if (!stopped) applyOutputSharesState(st);
+    });
+    const initialOsEpoch = outputSharesStateEpoch;
+    void colabOneGetOutputSharesState()
+      .then((st) => {
+        if (!stopped) applyOutputSharesState(st, initialOsEpoch);
+      })
+      .catch(() => {});
   } else {
     webConsoleLoaded.value = true;
     workflowSharesLoaded.value = true;
@@ -4470,6 +4837,12 @@ onMounted(() => {
       handleWebAuthRequired,
     );
     void fetchColabOneWebCapabilities().catch(() => {});
+    const initialWebOsEpoch = outputSharesStateEpoch;
+    void colabOneGetOutputSharesState()
+      .then((st) => {
+        if (!stopped) applyOutputSharesState(st, initialWebOsEpoch);
+      })
+      .catch(() => {});
   }
   updateToastLayout();
   const contentEl = resolveContentElement();
@@ -4519,6 +4892,8 @@ onUnmounted(() => {
   unsubWebConsole = null;
   unsubWorkflowShares?.();
   unsubWorkflowShares = null;
+  unsubOutputShares?.();
+  unsubOutputShares = null;
   window.removeEventListener(
     COLABONE_WEB_AUTH_REQUIRED_EVENT,
     handleWebAuthRequired,
@@ -4976,7 +5351,12 @@ onUnmounted(() => {
             >
               <template #action>
                 <ASpace :size="8" wrap>
-                  <AButton size="small" @click="handleWebReconnect">
+                  <AButton
+                    size="small"
+                    :loading="webReconnecting"
+                    :disabled="webReconnecting"
+                    @click="handleWebReconnect"
+                  >
                     {{ t("webConsole.webReconnectBtn") }}
                   </AButton>
                   <AButton type="primary" size="small" @click="handleWebRelogin">
@@ -5265,7 +5645,11 @@ onUnmounted(() => {
                         <code v-if="state.runtime.id" class="co-runtime-id">{{
                           state.runtime.id
                         }}</code>
-                        <span>{{ t("device.comfyRunning") }}</span>
+                        <span>{{
+                          liveStudioRuntimeBusy && !comfyEngineRuntimeBusy
+                            ? t("device.liveStudioRunning")
+                            : t("device.comfyRunning")
+                        }}</span>
                         <AButton
                           type="link"
                           size="small"
@@ -6093,6 +6477,15 @@ onUnmounted(() => {
               :snapshot-at="snapshotAt"
               :can-share-workflows="capabilities.can_manage_web_console"
               :active-share-count="workflowSharesState.active_count"
+              :web-console-state="effectiveWebConsoleState"
+              :output-shares-state="outputSharesState"
+              :can-enable-web-console="capabilities.can_manage_web_console"
+              :enabling-web-console="webConsoleSaving"
+              :output-share-creating="outputShareCreating"
+              :output-share-revoking-id="outputShareRevokingId"
+              :output-share-deleting-id="outputShareDeletingId"
+              :output-share-last-created="outputShareLastCreated"
+              :copy-text="handleOutputShareCopyText"
               @device="openDevice"
               @settings="selectPage('settings')"
               @upgrade="requestRuntimeUpgrade"
@@ -6102,6 +6495,12 @@ onUnmounted(() => {
               @error="showError"
               @drawer-state="onComfyDrawerState"
               @open-share-modal="openWorkflowShareModal"
+              @refresh-output-shares="refreshOutputSharesState"
+              @create-output-share="handleOutputShareCreate"
+              @revoke-output-share="handleOutputShareRevoke"
+              @delete-output-share="handleOutputShareDelete"
+              @clear-output-share-created="outputShareLastCreated = null"
+              @enable-web-console="handleWorkflowShareEnableWebConsole"
             />
           </main>
 
@@ -6889,6 +7288,7 @@ onUnmounted(() => {
 
                         <ASpace :size="8" wrap class="co-assign-proxy-actions">
                           <AButton
+                            v-if="capabilities.can_reveal_host_secrets"
                             size="small"
                             :loading="testingAssignProxy"
                             :disabled="
@@ -7606,7 +8006,13 @@ onUnmounted(() => {
                 </div>
                 <div v-if="dockTask.download" class="co-download-stats">
                   <b class="co-tabular">
-                    {{ (dockTask.download.speed_bps / 1024 ** 2).toFixed(1) }} MiB/s
+                    {{
+                      typeof dockTask.download.speed_bps === "number" &&
+                      Number.isFinite(dockTask.download.speed_bps) &&
+                      dockTask.download.speed_bps > 0
+                        ? `${(dockTask.download.speed_bps / 1024 ** 2).toFixed(1)} MiB/s`
+                        : "0.0 MiB/s"
+                    }}
                   </b>
                   <span class="co-tabular">
                     {{ bytes(dockTask.download.downloaded_bytes) }} /

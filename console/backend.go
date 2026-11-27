@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -58,6 +59,7 @@ type colabOneBridge struct {
 	resolveMediaFn       func(context.Context, string) (*controller.ColabOneOutputMediaMeta, error)
 	serveMediaFn         func(context.Context, http.ResponseWriter, *http.Request, string)
 	serveMediaWithOptsFn func(context.Context, http.ResponseWriter, *http.Request, string, controller.ColabOneOutputMediaOptions)
+	streamMediaFn        func(context.Context, string, io.Writer, controller.ColabOneOutputMediaOptions) (*controller.ColabOneOutputMediaMeta, error)
 	onFocusWindow        func()
 	starting      bool
 	startDone     chan struct{}
@@ -348,7 +350,7 @@ func writeColabOneMediaError(rw http.ResponseWriter, r *http.Request, status int
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
 	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("X-ColabOne-Error", url.QueryEscape(safe))
+	h.Set("X-ColabOne-Error", strings.ReplaceAll(url.PathEscape(safe), "+", "%2B"))
 	rw.WriteHeader(status)
 	if r == nil || r.Method != http.MethodHead {
 		_ = json.NewEncoder(rw).Encode(map[string]string{"error": safe})
@@ -382,20 +384,100 @@ func (b *colabOneBridge) serveOutputMediaWithOptions(
 		fnWithOpts(ctx, rw, r, id, opts)
 		return
 	}
-	if fn != nil && !opts.RuntimeOnly {
+	if fn != nil && !opts.RuntimeOnly && !opts.SanitizeErrors {
 		fn(ctx, rw, r, id)
 		return
 	}
 	ctrl, err := b.ensureController(ctx)
 	if err != nil {
 		msg := err.Error()
-		if opts.RuntimeOnly {
+		if opts.SanitizeErrors {
+			msg = "作品暂离线或暂不可访问，请稍后再试"
+		} else if opts.RuntimeOnly {
 			msg = "当前无法访问该作品文件，请稍后再试"
 		}
 		writeColabOneMediaError(rw, r, http.StatusServiceUnavailable, msg)
 		return
 	}
 	ctrl.ServeOutputMediaHTTPWithOptions(ctx, rw, r, id, opts)
+}
+
+type colabOneBridgeSanitizedError struct {
+	msg string
+	err error
+}
+
+func (e *colabOneBridgeSanitizedError) Error() string { return e.msg }
+func (e *colabOneBridgeSanitizedError) Unwrap() error { return e.err }
+
+type colabOneBridgeMetaReceiver interface {
+	SetColabOneOutputMeta(id, filename, ext, mime string, size int64)
+}
+
+type colabOneBridgeTrackingWriter struct {
+	w        io.Writer
+	writeErr error
+}
+
+func (t *colabOneBridgeTrackingWriter) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	if err != nil && t.writeErr == nil {
+		t.writeErr = err
+	}
+	return n, err
+}
+
+func (t *colabOneBridgeTrackingWriter) SetColabOneOutputMeta(id, filename, ext, mime string, size int64) {
+	if recv, ok := t.w.(colabOneBridgeMetaReceiver); ok {
+		recv.SetColabOneOutputMeta(id, filename, ext, mime, size)
+	}
+}
+
+func (b *colabOneBridge) streamOutputMedia(
+	ctx context.Context,
+	id string,
+	w io.Writer,
+	opts controller.ColabOneOutputMediaOptions,
+) (*controller.ColabOneOutputMediaMeta, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	b.mu.Lock()
+	fn := b.streamMediaFn
+	b.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, id, w, opts)
+	}
+	ctrl, err := b.ensureController(ctx)
+	if err != nil {
+		if opts.SanitizeErrors || opts.RuntimeOnly {
+			return nil, controller.ErrOutputMediaOffline
+		}
+		return nil, err
+	}
+	tw := &colabOneBridgeTrackingWriter{w: w}
+	meta, streamErr := ctrl.StreamOutputMediaToWriter(ctx, id, tw, opts)
+	if streamErr == nil {
+		return meta, nil
+	}
+	// Preserve caller writer errors (such as ZIP 1 GiB limit sentinels) untouched.
+	if tw.writeErr != nil && errors.Is(streamErr, tw.writeErr) {
+		return meta, streamErr
+	}
+	if errors.Is(streamErr, context.Canceled) {
+		return meta, streamErr
+	}
+	if errors.Is(streamErr, context.DeadlineExceeded) {
+		if ctx.Err() == context.DeadlineExceeded {
+			return meta, newColabOneBridgeTimeoutError()
+		}
+		return meta, colabOneBridgeTimeoutError{msg: truncateColabOneRunes(activity.SafeMessage(streamErr.Error()), 500)}
+	}
+	safe := truncateColabOneRunes(activity.SafeMessage(streamErr.Error()), 500)
+	if safe == "" {
+		safe = streamErr.Error()
+	}
+	return meta, &colabOneBridgeSanitizedError{msg: safe, err: streamErr}
 }
 
 func (b *colabOneBridge) close() {

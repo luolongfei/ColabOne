@@ -1369,6 +1369,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				if err != nil {
 					return nil, err
 				}
+				c.evictLocalOutputCache(identity)
+				c.pruneOutputFromSnapshot(identity)
 				if !c.hasExportedDriveOutput(identity) {
 					c.removeDriveOutputRecord(identity)
 				}
@@ -1387,6 +1389,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 					}
 					return nil, err
 				}
+				c.evictLocalOutputCache(identity)
+				c.pruneOutputFromSnapshot(identity)
 				keepExportedRecord := false
 				if rec := c.driveOutputRecordCopy(identity); rec != nil {
 					if exportFileID := sanitizeDriveFileID(rec.DriveFileID); exportFileID != "" {
@@ -1417,6 +1421,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			if err != nil {
 				return nil, err
 			}
+			c.evictLocalOutputCache(identity)
 			c.log("已删除 Google 云盘作品记录", "云盘", "info")
 			return res, nil
 		}
@@ -1434,18 +1439,60 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if offset < 0 || offset > colabOneMaxOutputAssetOffset {
 			return nil, errors.New("读取范围不合法")
 		}
+		cleanID := strings.ToLower(strings.TrimSpace(identity))
+		var liveRec *ColabOneDriveOutputRecord
+		var driveRec *ColabOneDriveOutputRecord
+		c.mu.Lock()
+		if gpuReady {
+			for _, rawItem := range asAnySlice(c.data["comfy_outputs"]) {
+				m := asMap(rawItem)
+				if runtimeOnly && strings.EqualFold(strings.TrimSpace(asString(m["storage"])), "drive") {
+					continue
+				}
+				if strings.EqualFold(asString(m["id"]), cleanID) {
+					liveRec = driveOutputRecordFromMap(m)
+					break
+				}
+			}
+		}
+		if !runtimeOnly {
+			if acctKey := c.currentDriveAccountKeyLocked(); acctKey != "" && c.driveOutputs != nil {
+				if bucket := c.driveOutputs[acctKey]; bucket != nil {
+					driveRec = bucket[cleanID].clone()
+				}
+			}
+		}
+		c.mu.Unlock()
 		if runtimeOnly {
 			if !gpuReady {
 				return nil, errors.New("当前算力服务暂未就绪，暂不可访问该作品文件")
 			}
+			if liveRec != nil {
+				if cached, ok := c.readLocalOutputCacheChunk(cleanID, offset, liveRec, "runtime"); ok {
+					return cached, nil
+				}
+			}
 			return c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=%d", identity, offset), nil, "", 0)
 		}
-		if gpuReady && (c.hasLiveRemoteOutput(identity) || !c.hasDriveOutputRecord(identity)) {
+		if gpuReady && (liveRec != nil || driveRec == nil) {
+			if liveRec != nil {
+				if cached, ok := c.readLocalOutputCacheChunk(cleanID, offset, liveRec, "runtime"); ok {
+					return cached, nil
+				}
+			}
 			res, err := c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=%d", identity, offset), nil, "", 0)
 			if err != nil && isNotFoundError(err) && c.hasDriveOutputRecord(identity) {
 				return c.readDriveOutputAssetChunk(ctx, identity, offset)
 			}
 			return res, err
+		}
+		if driveRec != nil {
+			canDirectRead, _ := c.driveDirectReadReady()
+			if canDirectRead && driveRec.preferredDriveFileID() != "" {
+				if cached, ok := c.readLocalOutputCacheChunk(cleanID, offset, driveRec, "drive"); ok {
+					return cached, nil
+				}
+			}
 		}
 		return c.readDriveOutputAssetChunk(ctx, identity, offset)
 
@@ -1463,6 +1510,12 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 
 	case "comfyui.live.session_token":
 		return c.handleLiveSessionToken(ctx)
+
+	case "comfyui.live.companion.ticket":
+		return c.handleLiveCompanionTicket(ctx)
+
+	case "comfyui.live.companion.disconnect":
+		return c.handleLiveCompanionDisconnect(ctx)
 
 	case "comfyui.live.llm.get":
 		return c.handleLiveLLMGet()

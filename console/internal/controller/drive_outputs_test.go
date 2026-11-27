@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1403,4 +1405,493 @@ func TestDriveOutputsTaskIDSizePersistNegativeClampAndOnlineDeleteTrash(t *testi
 	if h.ctrl.driveOutputRecordCopy(oid) != nil {
 		t.Fatalf("expected local Drive record removed after successful online delete + Drive trash")
 	}
+}
+
+func TestDriveOutputsSyncHardeningAndSchemaV2Backfill(t *testing.T) {
+	oid1 := "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	oid2 := "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+
+	var metaFail atomic.Bool
+	metaFail.Store(false)
+
+	mockDrive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/files" {
+			q := r.URL.Query().Get("q")
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(q, "name = 'ColabOne_Drive'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-root","name":"ColabOne_Drive"}]}`))
+			case strings.Contains(q, "name = 'workspace'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-ws","name":"workspace"}]}`))
+			case strings.Contains(q, "name = 'comfyui-outputs'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-co","name":"comfyui-outputs"}]}`))
+			case strings.Contains(q, "name = 'outputs'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"dir-out","name":"outputs"}]}`))
+			case strings.Contains(q, "'dir-co' in parents"):
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"files": []map[string]any{
+						{"id": "meta-1", "name": oid1 + ".json", "size": "120", "modifiedTime": "2026-11-26T00:00:00Z"},
+						{"id": "asset-1", "name": oid1 + ".png", "size": "50", "modifiedTime": "2026-11-26T00:00:00Z"},
+						{"id": "meta-2", "name": oid2 + ".json", "size": "120", "modifiedTime": "2026-11-26T00:00:00Z"},
+						{"id": "asset-2", "name": oid2 + ".png", "size": "60", "modifiedTime": "2026-11-26T00:00:00Z"},
+					},
+				})
+			case strings.Contains(q, "'dir-out' in parents"):
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			default:
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			}
+			return
+		}
+		if r.URL.Path == "/files/meta-1" && r.URL.Query().Get("alt") == "media" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":            oid1,
+				"workflow_id":   "wf-v2",
+				"workflow_name": "V2 工作流",
+				"task_id":       "task-backfilled-v2",
+				"filename":      "v2_art.png",
+				"extension":     "png",
+				"kind":          "image",
+				"mime":          "image/png",
+				"size":          50,
+			})
+			return
+		}
+		if r.URL.Path == "/files/meta-2" && r.URL.Query().Get("alt") == "media" {
+			if metaFail.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("meta error"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":            oid2,
+				"workflow_id":   "wf-2",
+				"workflow_name": "Recovered WF",
+				"task_id":       "task-2",
+				"filename":      "art2.png",
+				"extension":     "png",
+				"kind":          "image",
+				"mime":          "image/png",
+				"size":          60,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockDrive.Close()
+
+	// Seed a schema v1 drive_outputs.json where oid1 already has DriveWorkspaceMetaID="meta-1" but empty TaskID.
+	cfgDir := t.TempDir()
+	v1Payload := map[string]any{
+		"version": 1,
+		"accounts": map[string]any{
+			"sub:sub-v2": map[string]any{
+				oid1: map[string]any{
+					"id":                      oid1,
+					"filename":                "old_v1.png",
+					"extension":               "png",
+					"kind":                    "image",
+					"mime":                    "image/png",
+					"size":                    50,
+					"drive_synced":            true,
+					"drive_workspace_file_id": "asset-1",
+					"drive_workspace_meta_id": "meta-1",
+				},
+				oid2: map[string]any{
+					"id":            oid2,
+					"filename":      "preserved_name.png",
+					"workflow_id":   "wf-prev",
+					"workflow_name": "Preserved WF",
+					"task_id":       "task-prev",
+					"extension":     "png",
+					"kind":          "image",
+					"mime":          "image/png",
+					"size":          60,
+					"drive_synced":  true,
+				},
+			},
+		},
+	}
+	rawV1, _ := json.Marshal(v1Payload)
+	if err := os.WriteFile(filepath.Join(cfgDir, "drive_outputs.json"), rawV1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newTestHarnessWithDir(t, cfgDir, false)
+	h.ctrl.driveAPIBaseURL = mockDrive.URL
+	h.ctrl.driveHTTPClient = mockDrive.Client()
+	h.auth.driveScope = true
+	_ = h.vault.Set("colab", map[string]any{"token": "tok-v2"})
+	_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-v2"})
+
+	// Verify v1 migration cleared DriveWorkspaceMetaID on load when TaskID was empty.
+	before := h.ctrl.driveOutputRecordCopy(oid1)
+	if before == nil || before.DriveWorkspaceMetaID != "" {
+		t.Fatalf("expected schema v1 load to clear DriveWorkspaceMetaID for TaskID backfill, got %+v", before)
+	}
+
+	// 1) Sync with meta-2 failing: oid1 backfills TaskID from meta-1; oid2 preserves prev metadata AND does NOT stamp DriveWorkspaceMetaID="meta-2"!
+	metaFail.Store(true)
+	if _, err := h.ctrl.SyncDriveOutputs(context.Background()); err != nil {
+		t.Fatalf("SyncDriveOutputs failed: %v", err)
+	}
+	rec1 := h.ctrl.driveOutputRecordCopy(oid1)
+	if rec1 == nil || rec1.TaskID != "task-backfilled-v2" || rec1.DriveWorkspaceMetaID != "meta-1" {
+		t.Fatalf("expected oid1 TaskID backfilled & meta ID stamped, got %+v", rec1)
+	}
+	rec2 := h.ctrl.driveOutputRecordCopy(oid2)
+	if rec2 == nil || rec2.Filename != "preserved_name.png" || rec2.WorkflowName != "Preserved WF" || rec2.TaskID != "task-prev" {
+		t.Fatalf("expected oid2 to preserve previous metadata on meta fetch failure, got %+v", rec2)
+	}
+	if rec2.DriveWorkspaceMetaID != "" {
+		t.Fatalf("failed metadata fetch must NOT stamp DriveWorkspaceMetaID, got %q", rec2.DriveWorkspaceMetaID)
+	}
+
+	// 2) Next sync with meta-2 healthy succeeds and stamps DriveWorkspaceMetaID="meta-2".
+	metaFail.Store(false)
+	if _, err := h.ctrl.SyncDriveOutputs(context.Background()); err != nil {
+		t.Fatalf("second SyncDriveOutputs failed: %v", err)
+	}
+	rec2After := h.ctrl.driveOutputRecordCopy(oid2)
+	if rec2After == nil || rec2After.DriveWorkspaceMetaID != "meta-2" || rec2After.Filename != "art2.png" || rec2After.TaskID != "task-2" {
+		t.Fatalf("expected oid2 retried and updated on second sync, got %+v", rec2After)
+	}
+}
+
+func TestDriveOutputsAuditHardening(t *testing.T) {
+	// 1) A3 M2: Cancelled on-demand SyncDriveOutputs does NOT poison cooldown timestamp.
+	t.Run("CooldownNotStampedOnCancel", func(t *testing.T) {
+		oid := "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+		h := newTestHarness(t, false)
+		h.auth.driveScope = true
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-cd"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-cd"})
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-cd"] = map[string]*ColabOneDriveOutputRecord{
+			oid: {
+				ID: oid, Kind: "image", Filename: "cd.png", Extension: "png", Mime: "image/png",
+				Size: 100, DriveSynced: true, DriveMode: "drive_api",
+			},
+		}
+		h.ctrl.mu.Unlock()
+		cctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := h.ctrl.readDriveOutputAssetChunk(cctx, oid, 0); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		h.ctrl.mu.Lock()
+		attempt := h.ctrl.driveOutputsLastSyncAttempt
+		h.ctrl.mu.Unlock()
+		if attempt != 0 {
+			t.Fatalf("expected cooldown NOT stamped on cancelled ctx, got %v", attempt)
+		}
+	})
+
+	// 2) A3 M3: clearDriveOutputWorkspaceLinks while SyncDriveOutputs is in-flight prevents workspace resurrection while keeping DriveExported.
+	t.Run("ClearWorkspaceLinksDuringInflightSync", func(t *testing.T) {
+		oid := "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2"
+		syncMid := make(chan struct{}, 1)
+		syncGate := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query().Get("q")
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(q, "'ColabOne_Drive'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"root-dir","name":"ColabOne_Drive"}]}`))
+			case strings.Contains(q, "'workspace'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"ws-dir","name":"workspace"}]}`))
+			case strings.Contains(q, "'comfyui-outputs'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"co-dir","name":"comfyui-outputs"}]}`))
+			case strings.Contains(q, "'co-dir' in parents"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"ws-file-1","name":"` + oid + `.png","size":"50"}]}`))
+			case strings.Contains(q, "'outputs'"):
+				select {
+				case syncMid <- struct{}{}:
+				default:
+				}
+				<-syncGate
+				_, _ = w.Write([]byte(`{"files":[{"id":"out-dir","name":"outputs"}]}`))
+			case strings.Contains(q, "'out-dir' in parents"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"exp-file-1","name":"` + oid + `.png","size":"50"}]}`))
+			default:
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			}
+		}))
+		defer srv.Close()
+
+		h := newTestHarness(t, false)
+		h.ctrl.driveAPIBaseURL = srv.URL
+		h.ctrl.driveHTTPClient = srv.Client()
+		h.auth.driveScope = true
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-ws"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-ws"})
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-ws"] = map[string]*ColabOneDriveOutputRecord{
+			oid: {
+				ID: oid, Kind: "image", Filename: oid + ".png", Extension: "png", Mime: "image/png",
+				Size: 50, DriveSynced: true, DriveExported: true, DriveFileID: "exp-file-1",
+				DriveWorkspaceFileID: "ws-file-1", DriveWorkspaceMetaID: "ws-meta-1",
+			},
+		}
+		h.ctrl.mu.Unlock()
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := h.ctrl.SyncDriveOutputs(context.Background())
+			done <- err
+		}()
+		select {
+		case <-syncMid:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for mid-sync")
+		}
+		h.ctrl.clearDriveOutputWorkspaceLinks(oid)
+		close(syncGate)
+		if err := <-done; err != nil {
+			t.Fatalf("SyncDriveOutputs failed: %v", err)
+		}
+		rec := h.ctrl.driveOutputRecordCopy(oid)
+		if rec == nil || !rec.DriveExported || rec.DriveFileID != "exp-file-1" {
+			t.Fatalf("expected DriveExported & DriveFileID preserved, got %+v", rec)
+		}
+		if rec.DriveWorkspaceFileID != "" || rec.DriveWorkspaceMetaID != "" {
+			t.Fatalf("expected cleared workspace links NOT resurrected by in-flight sync, got %+v", rec)
+		}
+	})
+
+	// 3) A3 M4: deleteDriveOutputOffline resolves empty IDs via on-demand sync and errors honestly when !canDirectRead.
+	t.Run("DeleteDriveOutputOfflineResolveAndDirectReadGuard", func(t *testing.T) {
+		oid := "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+		var trashed []string
+		var mu sync.Mutex
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodPatch {
+				mu.Lock()
+				trashed = append(trashed, filepath.Base(r.URL.Path))
+				mu.Unlock()
+				_, _ = w.Write([]byte(`{"trashed":true}`))
+				return
+			}
+			q := r.URL.Query().Get("q")
+			switch {
+			case strings.Contains(q, "'ColabOne_Drive'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"root-dir","name":"ColabOne_Drive"}]}`))
+			case strings.Contains(q, "'workspace'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"ws-dir","name":"workspace"}]}`))
+			case strings.Contains(q, "'comfyui-outputs'"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"co-dir","name":"comfyui-outputs"}]}`))
+			case strings.Contains(q, "'co-dir' in parents"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"resolved-ws-fid","name":"` + oid + `.png","size":"40"}]}`))
+			default:
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			}
+		}))
+		defer srv.Close()
+
+		h := newTestHarness(t, false)
+		h.ctrl.driveAPIBaseURL = srv.URL
+		h.ctrl.driveHTTPClient = srv.Client()
+		h.auth.driveScope = true
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-del"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-del"})
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-del"] = map[string]*ColabOneDriveOutputRecord{
+			oid: {
+				ID: oid, Kind: "image", Filename: oid + ".png", Extension: "png", Mime: "image/png",
+				Size: 40, DriveSynced: true, DriveMode: "drive_api",
+			},
+		}
+		h.ctrl.mu.Unlock()
+
+		if _, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oid); err != nil {
+			t.Fatalf("deleteDriveOutputOffline with empty IDs failed: %v", err)
+		}
+		mu.Lock()
+		gotTrashed := append([]string(nil), trashed...)
+		mu.Unlock()
+		if len(gotTrashed) != 1 || gotTrashed[0] != "resolved-ws-fid" {
+			t.Fatalf("expected on-demand sync to resolve and trash resolved-ws-fid, got %v", gotTrashed)
+		}
+
+		// When !canDirectRead and Drive file IDs exist, offline delete returns error and preserves record.
+		oid2 := "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+		h.auth.requiresQuota = true
+		_ = h.vault.Delete("cloud_project")
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-del"][oid2] = &ColabOneDriveOutputRecord{
+			ID: oid2, Kind: "image", Filename: "keep.png", Extension: "png", Mime: "image/png",
+			Size: 40, DriveSynced: true, DriveFileID: "fid-locked",
+		}
+		h.ctrl.mu.Unlock()
+		if _, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oid2); err == nil {
+			t.Fatal("expected error when !canDirectRead prevents trashing remote Drive file")
+		}
+		if h.ctrl.driveOutputRecordCopy(oid2) == nil {
+			t.Fatal("expected local Drive record preserved when remote trash unavailable")
+		}
+	})
+
+	// 4) A3 M5: SyncDriveOutputs unblocks promptly on Close() via rootCtx.
+	t.Run("SyncDriveOutputsCancelsOnRootCtxClose", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		sem := h.ctrl.driveOutputsSyncSemaphore()
+		sem <- struct{}{}
+		defer func() { <-sem }()
+
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := h.ctrl.SyncDriveOutputs(context.Background())
+			errCh <- err
+		}()
+		time.Sleep(20 * time.Millisecond)
+		h.ctrl.Close()
+		select {
+		case err := <-errCh:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected context.Canceled on Close(), got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("SyncDriveOutputs hung waiting on semaphore after Close()")
+		}
+	})
+}
+
+func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) {
+	// 1) A3 H1: deleteDriveOutputOffline checks canDirectRead upfront (even with empty IDs), rejects colab_drivefs with empty IDs,
+	//    and refuses to drop local state when sync fails or still yields empty Drive file IDs.
+	t.Run("DeleteDriveOutputOfflineEmptyIDsGuards", func(t *testing.T) {
+		oidNoRead := "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+		oidDriveFS := "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"
+		oidUnsynced := "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"
+
+		var httpHits int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			httpHits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"files":[]}`))
+		}))
+		defer srv.Close()
+
+		h := newTestHarness(t, false)
+		h.ctrl.driveAPIBaseURL = srv.URL
+		h.ctrl.driveHTTPClient = srv.Client()
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-h1"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-h1"})
+
+		// Case A: !canDirectRead with empty file IDs must fail immediately without touching local state or hitting Drive API.
+		h.auth.driveScope = false
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-h1"] = map[string]*ColabOneDriveOutputRecord{
+			oidNoRead: {
+				ID: oidNoRead, Kind: "image", Filename: "no-read.png", Extension: "png", Mime: "image/png",
+				Size: 40, DriveSynced: true, DriveMode: "drive_api",
+			},
+		}
+		h.ctrl.mu.Unlock()
+		if _, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oidNoRead); err == nil || !strings.Contains(err.Error(), "直连权限") {
+			t.Fatalf("expected direct-read permission error for empty IDs when !canDirectRead, got %v", err)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidNoRead) == nil {
+			t.Fatal("expected local record preserved when !canDirectRead with empty IDs")
+		}
+		if httpHits != 0 {
+			t.Fatalf("expected zero Drive API calls when !canDirectRead, got %d", httpHits)
+		}
+
+		// Case B: canDirectRead == true, colab_drivefs with empty IDs must error honestly and preserve local record.
+		h.auth.driveScope = true
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-h1"][oidDriveFS] = &ColabOneDriveOutputRecord{
+			ID: oidDriveFS, Kind: "image", Filename: "drivefs.png", Extension: "png", Mime: "image/png",
+			Size: 40, DriveSynced: true, DriveMode: "colab_drivefs",
+		}
+		h.ctrl.mu.Unlock()
+		if _, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oidDriveFS); err == nil || !strings.Contains(err.Error(), "挂载模式") {
+			t.Fatalf("expected colab_drivefs offline delete error, got %v", err)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidDriveFS) == nil {
+			t.Fatal("expected colab_drivefs local record preserved")
+		}
+
+		// Case C: SyncDriveOutputs returns synced==false (no auth token) -> must fail and preserve local record.
+		h2 := newTestHarness(t, false)
+		h2.ctrl.driveAPIBaseURL = srv.URL
+		h2.ctrl.driveHTTPClient = srv.Client()
+		h2.auth.driveScope = true
+		_ = h2.vault.Set("colab", map[string]any{"token": "tok-h1-c"})
+		_ = h2.vault.Set("google_profile", map[string]any{"sub": "sub-h1-c"})
+		h2.ctrl.mu.Lock()
+		h2.ctrl.driveOutputs["sub:sub-h1-c"] = map[string]*ColabOneDriveOutputRecord{
+			oidUnsynced: {
+				ID: oidUnsynced, Kind: "image", Filename: "unsynced.png", Extension: "png", Mime: "image/png",
+				Size: 40, DriveSynced: true, DriveMode: "drive_api", DriveExported: true,
+			},
+		}
+		// Simulate an in-flight sync so SyncDriveOutputs preserves the empty-ID record via addedDuringSync?
+		// Better: if Drive API returns 200 with empty root list while record was marked addedDuringSync, rec stays non-nil with empty IDs!
+		h2.ctrl.mu.Unlock()
+		srvEmpty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Inject addedDuringSync mid-sync so SyncDriveOutputs finishes with synced=true yet preserves oidUnsynced with empty IDs.
+			h2.ctrl.mu.Lock()
+			h2.ctrl.noteDriveOutputAddedLocked("sub:sub-h1-c", oidUnsynced)
+			h2.ctrl.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"files":[]}`))
+		}))
+		defer srvEmpty.Close()
+		h2.ctrl.driveAPIBaseURL = srvEmpty.URL
+		h2.ctrl.driveHTTPClient = srvEmpty.Client()
+
+		if _, err := h2.ctrl.deleteDriveOutputOffline(context.Background(), oidUnsynced); err == nil || !strings.Contains(err.Error(), "暂无法确认远端文件位置") {
+			t.Fatalf("expected unresolved empty-ID error after sync, got %v", err)
+		}
+		if h2.ctrl.driveOutputRecordCopy(oidUnsynced) == nil {
+			t.Fatal("expected local record preserved when file IDs remain empty after sync")
+		}
+	})
+
+	// 2) A3 L4: clearDriveOutputWorkspaceLinks also clears DriveWebViewLink when it points to oldWSFileID.
+	t.Run("ClearWorkspaceLinksClearsWorkspaceWebViewLink", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-l4"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-l4"})
+		oidWS := "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
+		oidExp := "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-l4"] = map[string]*ColabOneDriveOutputRecord{
+			oidWS: {
+				ID:                   oidWS,
+				DriveSynced:          true,
+				DriveExported:        true,
+				DriveFileID:          "exp-fid-1",
+				DriveWorkspaceFileID: "ws-fid-1",
+				DriveWorkspaceMetaID: "ws-meta-1",
+				DriveWebViewLink:     "https://drive.google.com/file/d/ws-fid-1/view",
+			},
+			oidExp: {
+				ID:                   oidExp,
+				DriveSynced:          true,
+				DriveExported:        true,
+				DriveFileID:          "exp-fid-2",
+				DriveWorkspaceFileID: "ws-fid-2",
+				DriveWebViewLink:     "https://drive.google.com/file/d/exp-fid-2/view",
+			},
+		}
+		h.ctrl.mu.Unlock()
+
+		h.ctrl.clearDriveOutputWorkspaceLinks(oidWS)
+		recWS := h.ctrl.driveOutputRecordCopy(oidWS)
+		if recWS == nil || recWS.DriveWorkspaceFileID != "" || recWS.DriveWorkspaceMetaID != "" || recWS.DriveWebViewLink != "" {
+			t.Fatalf("expected workspace IDs and workspace DriveWebViewLink cleared, got %+v", recWS)
+		}
+
+		h.ctrl.clearDriveOutputWorkspaceLinks(oidExp)
+		recExp := h.ctrl.driveOutputRecordCopy(oidExp)
+		if recExp == nil || recExp.DriveWorkspaceFileID != "" || recExp.DriveWebViewLink != "https://drive.google.com/file/d/exp-fid-2/view" {
+			t.Fatalf("expected exported DriveWebViewLink preserved while workspace ID cleared, got %+v", recExp)
+		}
+	})
 }

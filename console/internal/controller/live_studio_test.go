@@ -354,6 +354,8 @@ func TestLiveStudioCapabilityGatingAndRoute404Mapping(t *testing.T) {
 		"comfyui.live.start",
 		"comfyui.live.stop",
 		"comfyui.live.session_token",
+		"comfyui.live.companion.ticket",
+		"comfyui.live.companion.disconnect",
 		"comfyui.live.llm.test",
 		"comfyui.live.avatars.list",
 		"comfyui.live.avatars.save",
@@ -384,6 +386,21 @@ func TestLiveStudioCapabilityGatingAndRoute404Mapping(t *testing.T) {
 	}
 	if _, err := ctrl.Command(ctx, "comfyui.live.status", nil); err == nil || err.Error() != colabOneLiveStudioUpgradeHint {
 		t.Fatalf("expected 404 route to map to upgrade hint, got %v", err)
+	}
+
+	// Even when comfyui_live_studio IS advertised, route-level 404 on newer companion endpoints still maps to upgrade hint.
+	ctrl.Update(map[string]any{
+		"runtime": map[string]any{
+			"state":        "ready",
+			"id":           "ep-live-1",
+			"protocol":     7,
+			"capabilities": []string{"public_api", "comfyui", "comfyui_live_studio"},
+		},
+	})
+	for _, action := range []string{"comfyui.live.companion.ticket", "comfyui.live.companion.disconnect"} {
+		if _, err := ctrl.Command(ctx, action, nil); err == nil || err.Error() != colabOneLiveStudioUpgradeHint {
+			t.Fatalf("action %q 404 with existing capability: got err %v, want %q", action, err, colabOneLiveStudioUpgradeHint)
+		}
 	}
 }
 
@@ -937,4 +954,314 @@ func TestLiveStudioPostMutationRefreshBoundedTimeout(t *testing.T) {
 			t.Fatalf("%s took %v, expected bounded refresh timeout (~80ms)", tc.action, elapsed)
 		}
 	}
+}
+
+func TestLiveStudioAsyncStartTaskAndFastMonitorPoll(t *testing.T) {
+	ctx := context.Background()
+	ctrl, prov, _ := newLiveStudioTestController(t, []string{"public_api", "comfyui", "comfyui_live_studio"})
+	ctrl.monitorInterval = 2 * time.Second
+
+	prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if method == "POST" && path == "live/start" {
+			return map[string]any{
+				"id":       "task-live-start-1",
+				"kind":     "live_start",
+				"model_id": "qwen3_tts",
+				"state":    "running",
+				"progress": 0.02,
+				"message":  "正在检查并准备实时演播依赖环境...",
+			}, nil
+		}
+		if method == "GET" && path == "snapshot" {
+			return map[string]any{
+				"runtime": map[string]any{
+					"state":        "ready",
+					"id":           "ep-live-1",
+					"protocol":     7,
+					"capabilities": []any{"public_api", "comfyui", "comfyui_live_studio"},
+					"live_studio":  map[string]any{"running": false, "state": "starting"},
+					"tasks": []any{
+						map[string]any{
+							"id":       "task-live-start-1",
+							"kind":     "live_start",
+							"model_id": "qwen3_tts",
+							"state":    "running",
+							"progress": 0.45,
+							"message":  "正在下载模型权重：Qwen3-TTS 1.7B 流式语音（Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign）...",
+						},
+					},
+				},
+			}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+
+	res, err := ctrl.Command(ctx, "comfyui.live.start", map[string]any{
+		"visual_engine": "flashhead_lite",
+		"tts_engine":    "qwen3_tts",
+		"llm_mode":      "local_gguf",
+	})
+	if err != nil {
+		t.Fatalf("comfyui.live.start async task failed: %v", err)
+	}
+	resMap := asMap(res)
+	if asString(resMap["kind"]) != "live_start" || asString(resMap["state"]) != "running" {
+		t.Fatalf("expected async live_start task snapshot, got %#v", res)
+	}
+	if wait := ctrl.effectiveMonitorWait(); wait != 700*time.Millisecond {
+		t.Fatalf("expected 700ms fast monitor poll while live_start running, got %v", wait)
+	}
+}
+
+func TestLiveStudioCompanionTicketAndDisconnectCommands(t *testing.T) {
+	ctx := context.Background()
+	ctrl, prov, _ := newLiveStudioTestController(t, []string{"public_api", "comfyui", "comfyui_live_studio"})
+
+	const validCode = "pair-code-xyz-0123456789"
+	var calls []string
+	prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		calls = append(calls, method+" "+path)
+		if method == "POST" && path == "live/companion-ticket" {
+			return map[string]any{
+				"code":          validCode,
+				"expires_at":    float64(time.Now().Add(10 * time.Minute).Unix()),
+				"companion_url": "https://studio.example.com/_colabone_live/remote#code=" + validCode,
+				"public_origin": "https://studio.example.com",
+				"canvas_ready":  true,
+			}, nil
+		}
+		if method == "POST" && path == "live/companion-disconnect" {
+			return map[string]any{"connected": false}, nil
+		}
+		if method == "GET" && path == "snapshot" {
+			return map[string]any{
+				"runtime": map[string]any{
+					"state":        "ready",
+					"id":           "ep-live-1",
+					"protocol":     7,
+					"capabilities": []any{"public_api", "comfyui", "comfyui_live_studio"},
+				},
+			}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+
+	ticketRes, err := ctrl.Command(ctx, "comfyui.live.companion.ticket", nil)
+	if err != nil {
+		t.Fatalf("comfyui.live.companion.ticket failed: %v", err)
+	}
+	tm := asMap(ticketRes)
+	if asString(tm["code"]) != validCode || !strings.Contains(asString(tm["companion_url"]), "/_colabone_live/remote#code="+validCode) {
+		t.Fatalf("unexpected companion ticket response: %#v", ticketRes)
+	}
+
+	discRes, err := ctrl.Command(ctx, "comfyui.live.companion.disconnect", nil)
+	if err != nil {
+		t.Fatalf("comfyui.live.companion.disconnect failed: %v", err)
+	}
+	if asBool(asMap(discRes)["connected"]) {
+		t.Fatalf("expected connected=false after disconnect, got %#v", discRes)
+	}
+	if len(calls) < 2 || calls[0] != "POST live/companion-ticket" || calls[1] != "POST live/companion-disconnect" {
+		t.Fatalf("unexpected RPC call sequence: %#v", calls)
+	}
+}
+
+func TestEffectiveMonitorWaitMinimumAcrossConcurrentTasks(t *testing.T) {
+	ctrl, _, _ := newLiveStudioTestController(t, []string{"comfyui", "comfyui_live_studio"})
+	ctrl.monitorInterval = 2 * time.Second
+	ctrl.Update(map[string]any{
+		"runtime": map[string]any{
+			"state": "ready",
+			"tasks": []any{
+				map[string]any{"id": "t-live", "kind": "live_start", "state": "running"},
+				map[string]any{"id": "t-tts", "kind": "comfyui_tts_preview", "state": "running"},
+			},
+		},
+	})
+	if wait := ctrl.effectiveMonitorWait(); wait != 350*time.Millisecond {
+		t.Fatalf("expected 350ms min wait when live_start precedes comfyui_tts_preview, got %v", wait)
+	}
+}
+
+func TestLiveStudioCompanionTicketValidation(t *testing.T) {
+	ctx := context.Background()
+	const goodCode = "AbCdEfGhIjKlMnOpQrStUvWx01234567"
+
+	// 1) Reject malformed, non-HTTPS, private/metadata, wrong-path/fragment, or origin-mismatched ticket responses.
+	badCases := []struct {
+		name        string
+		canvasURL   string
+		vaultDomain string
+		resp        any
+	}{
+		{
+			name: "non_map_response",
+			resp: "not-a-map",
+		},
+		{
+			name: "short_code",
+			resp: map[string]any{"code": "too-short-12345"},
+		},
+		{
+			name: "whitespace_in_code",
+			resp: map[string]any{"code": "AbCdEfGhIjKlMnOp QrStUvWx"},
+		},
+		{
+			name: "control_char_in_code",
+			resp: map[string]any{"code": "AbCdEfGhIjKlMnOp\nQrStUvWx"},
+		},
+		{
+			name: "bad_companion_path",
+			resp: map[string]any{"code": goodCode, "companion_path": "/evil/path"},
+		},
+		{
+			name: "http_companion_url",
+			resp: map[string]any{"code": goodCode, "companion_url": "http://studio.example.com/_colabone_live/remote#code=" + goodCode},
+		},
+		{
+			name: "http_public_origin",
+			resp: map[string]any{"code": goodCode, "public_origin": "http://studio.example.com"},
+		},
+		{
+			name: "userinfo_in_companion_url",
+			resp: map[string]any{"code": goodCode, "companion_url": "https://user:pass@studio.example.com/_colabone_live/remote#code=" + goodCode},
+		},
+		{
+			name: "loopback_ip",
+			resp: map[string]any{"code": goodCode, "companion_url": "https://127.0.0.1/_colabone_live/remote#code=" + goodCode},
+		},
+		{
+			name: "localhost_host",
+			resp: map[string]any{"code": goodCode, "public_origin": "https://localhost"},
+		},
+		{
+			name: "private_rfc1918_ip",
+			resp: map[string]any{"code": goodCode, "companion_url": "https://10.0.0.5/_colabone_live/remote#code=" + goodCode},
+		},
+		{
+			name: "link_local_metadata_ip",
+			resp: map[string]any{"code": goodCode, "companion_url": "https://169.254.169.254/_colabone_live/remote#code=" + goodCode},
+		},
+		{
+			name: "metadata_hostname",
+			resp: map[string]any{"code": goodCode, "public_origin": "https://metadata.google.internal"},
+		},
+		{
+			name: "wrong_companion_url_path",
+			resp: map[string]any{"code": goodCode, "companion_url": "https://studio.example.com/phish#code=" + goodCode},
+		},
+		{
+			name: "query_in_companion_url",
+			resp: map[string]any{"code": goodCode, "companion_url": "https://studio.example.com/_colabone_live/remote?x=1#code=" + goodCode},
+		},
+		{
+			name: "wrong_fragment_in_companion_url",
+			resp: map[string]any{"code": goodCode, "companion_url": "https://studio.example.com/_colabone_live/remote#code=other000000000000"},
+		},
+		{
+			name: "origin_disagreement_between_url_and_public_origin",
+			resp: map[string]any{
+				"code":          goodCode,
+				"public_origin": "https://studio.example.com",
+				"companion_url": "https://other.example.com/_colabone_live/remote#code=" + goodCode,
+			},
+		},
+		{
+			name:      "mismatch_active_runtime_canvas_url",
+			canvasURL: "https://expected.example.com",
+			resp: map[string]any{
+				"code":          goodCode,
+				"public_origin": "https://attacker.example.com",
+				"companion_url": "https://attacker.example.com/_colabone_live/remote#code=" + goodCode,
+			},
+		},
+		{
+			name:        "mismatch_vaulted_canvas_domain",
+			vaultDomain: "vaulted.example.com",
+			resp: map[string]any{
+				"code":          goodCode,
+				"companion_url": "https://attacker.example.com/_colabone_live/remote#code=" + goodCode,
+			},
+		},
+	}
+
+	for _, tc := range badCases {
+		t.Run("Reject_"+tc.name, func(t *testing.T) {
+			ctrl, prov, v := newLiveStudioTestController(t, []string{"public_api", "comfyui", "comfyui_live_studio"})
+			if tc.canvasURL != "" {
+				ctrl.Update(map[string]any{
+					"runtime": map[string]any{
+						"state":        "ready",
+						"id":           "ep-live-1",
+						"protocol":     7,
+						"capabilities": []string{"public_api", "comfyui", "comfyui_live_studio"},
+						"comfyui": map[string]any{
+							"canvas": map[string]any{"state": "ready", "url": tc.canvasURL},
+						},
+					},
+				})
+			}
+			if tc.vaultDomain != "" {
+				_ = v.Set("comfyui_canvas", map[string]any{"domain": tc.vaultDomain})
+			}
+			prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+				return tc.resp, nil
+			}
+			if _, err := ctrl.Command(ctx, "comfyui.live.companion.ticket", nil); err == nil || err.Error() != colabOneLiveCompanionTicketInvalidMsg {
+				t.Fatalf("case %s expected invalid ticket error %q, got %v", tc.name, colabOneLiveCompanionTicketInvalidMsg, err)
+			}
+		})
+	}
+
+	// 2) Valid ticket normalizes uppercase host & default :443 port and matches vaulted bare domain.
+	t.Run("NormalizeValidTicketWithVaultedCanvasDomain", func(t *testing.T) {
+		ctrl, prov, v := newLiveStudioTestController(t, []string{"public_api", "comfyui", "comfyui_live_studio"})
+		_ = v.Set("comfyui_canvas", map[string]any{"domain": "Studio.Example.COM"})
+		prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+			return map[string]any{
+				"code":           goodCode,
+				"companion_path": "",
+				"public_origin":  "HTTPS://STUDIO.EXAMPLE.COM:443/",
+				"companion_url":  "HTTPS://STUDIO.EXAMPLE.COM:443/_colabone_live/remote#code=" + goodCode,
+				"canvas_ready":   true,
+			}, nil
+		}
+		res, err := ctrl.Command(ctx, "comfyui.live.companion.ticket", nil)
+		if err != nil {
+			t.Fatalf("expected valid ticket accepted, got %v", err)
+		}
+		m := asMap(res)
+		if asString(m["companion_path"]) != colabOneLiveCompanionPath {
+			t.Fatalf("expected normalized companion_path, got %q", asString(m["companion_path"]))
+		}
+		if asString(m["public_origin"]) != "https://studio.example.com" {
+			t.Fatalf("expected normalized public_origin, got %q", asString(m["public_origin"]))
+		}
+		if asString(m["companion_url"]) != "https://studio.example.com/_colabone_live/remote#code="+goodCode {
+			t.Fatalf("expected normalized companion_url, got %q", asString(m["companion_url"]))
+		}
+	})
+
+	// 3) Valid ticket with empty companion_url/public_origin when canvas is not ready yet.
+	t.Run("AcceptValidTicketWhenCanvasNotReady", func(t *testing.T) {
+		ctrl, prov, _ := newLiveStudioTestController(t, []string{"public_api", "comfyui", "comfyui_live_studio"})
+		prov.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+			return map[string]any{
+				"code":           goodCode,
+				"companion_path": colabOneLiveCompanionPath,
+				"public_origin":  "",
+				"companion_url":  "",
+				"canvas_ready":   false,
+			}, nil
+		}
+		res, err := ctrl.Command(ctx, "comfyui.live.companion.ticket", nil)
+		if err != nil {
+			t.Fatalf("expected ticket with empty canvas URL accepted, got %v", err)
+		}
+		m := asMap(res)
+		if asString(m["code"]) != goodCode || asString(m["companion_url"]) != "" {
+			t.Fatalf("unexpected response: %#v", m)
+		}
+	})
 }

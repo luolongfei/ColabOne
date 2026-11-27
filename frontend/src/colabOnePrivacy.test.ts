@@ -186,6 +186,65 @@ describe("ColabOne privacy text and URL segmentation", () => {
     expect(maskedLog).toContain("http://127.0.0.1:3232/share?k=");
   });
 
+  it("always masks output gallery share keys (co_gal_) in URLs and plain text", () => {
+    const dottedToken = "co_gal_a1b2c3d4.nonce987654.tag654321";
+    const compactToken = "co_gal_9f8e7d6c5b4a3210";
+
+    // Private host + /gallery?k=co_gal_... masks both host and share token
+    const privateGalleryUrl = `https://host.example/gallery?k=${dottedToken}`;
+    const privateSegs = segmentColabOneUrlText(privateGalleryUrl);
+    const privateRendered = privateSegs.map((s) => s.text).join("");
+    expect(privateSegs.some((s) => s.masked && s.original === "host.example")).toBe(true);
+    expect(privateSegs.some((s) => s.masked && s.original === dottedToken)).toBe(true);
+    expect(privateRendered).toContain("https://");
+    expect(privateRendered).toContain("/gallery?k=");
+    expect(privateRendered).not.toContain("host.example");
+    expect(privateRendered).not.toContain(dottedToken);
+    expect(privateRendered).not.toContain("nonce987654");
+    expect(privateRendered).not.toContain("tag654321");
+
+    // Loopback / public placeholder host still masks co_gal_ token
+    const loopbackGalleryUrl = `http://127.0.0.1:3232/gallery?k=${compactToken}`;
+    const loopbackSegs = segmentColabOneUrlText(loopbackGalleryUrl);
+    const loopbackRendered = loopbackSegs.map((s) => s.text).join("");
+    expect(loopbackSegs.some((s) => s.masked && s.original === compactToken)).toBe(true);
+    expect(loopbackRendered).toContain("http://127.0.0.1:3232/gallery?k=");
+    expect(loopbackRendered).not.toContain(compactToken);
+
+    const examplePathUrl = `https://gallery.example.com/g/${dottedToken}`;
+    const examplePathRendered = segmentColabOneUrlText(examplePathUrl)
+      .map((s) => s.text)
+      .join("");
+    expect(examplePathRendered).toContain("https://gallery.example.com/g/");
+    expect(examplePathRendered).not.toContain(dottedToken);
+
+    // Plain-text logs mask both URL-embedded and standalone co_gal_ tokens
+    const logLine = `Shared ${privateGalleryUrl} with fallback ${compactToken} (${dottedToken})`;
+    const maskedLog = colabOneMaskPlainText(logLine);
+    expect(maskedLog).not.toContain("host.example");
+    expect(maskedLog).not.toContain(dottedToken);
+    expect(maskedLog).not.toContain(compactToken);
+    expect(maskedLog).toContain("/gallery?k=");
+
+    // Base64url share tokens ending in "-" and URL-encoded query parameters (%3Dco_gal_ / %3Dco_wf_)
+    const hyphenTrailGal = "co_gal_AbCdEf12-3456_78-";
+    const hyphenTrailWf = "co_wf_ZyXwVu98-7654_32-";
+    const encodedRedirect = `https://studio.example.com/login?next=%2Fgallery%3Fk%3D${hyphenTrailGal}&wf=%2Fshare%3Fk%3D${hyphenTrailWf}`;
+    const maskedEncoded = colabOneMaskPlainText(encodedRedirect);
+    expect(maskedEncoded).not.toContain("AbCdEf12");
+    expect(maskedEncoded).not.toContain("3456_78-");
+    expect(maskedEncoded).not.toContain("ZyXwVu98");
+    expect(maskedEncoded).not.toContain("7654_32-");
+
+    const standaloneHyphen = colabOneMaskPlainText(
+      `keys=${hyphenTrailGal},${hyphenTrailWf}`,
+    );
+    expect(standaloneHyphen).not.toContain("AbCdEf12");
+    expect(standaloneHyphen).not.toContain("3456_78-");
+    expect(standaloneHyphen).not.toContain("ZyXwVu98");
+    expect(standaloneHyphen).not.toContain("7654_32-");
+  });
+
   it("masks emails, custom domains, proxy URLs, IPs, GCP quota project IDs, and tokens while leaving CU balances and public docs untouched", () => {
     const snap = createColabOneSnapshot();
     snap.account.email = "alex.chen@gmail.com";
@@ -531,5 +590,125 @@ describe("ColabOne privacy input paste helper", () => {
       value: "xyz",
       caret: 3,
     });
+  });
+});
+
+describe("ColabOne privacy token, percent-encoded query, and domain tail masking", () => {
+  it("masks Google OAuth tokens, refresh tokens, client secrets, and short/hyphenated HF tokens", () => {
+    const oauthAccess = "ya29.a0AfH6SMC_alpha-12345.xyz";
+    const oauthRefresh = "1//0gRefreshToken_12345678";
+    const gcpSecret = "GOCSPX-MyClientSecret_9876";
+    const hfShort = "hf_ab-cd_1234";
+
+    const logLine = `access=${oauthAccess} refresh=${oauthRefresh} secret=${gcpSecret} hf=${hfShort}`;
+    const masked = colabOneMaskPlainText(logLine);
+    expect(masked).not.toContain(oauthAccess);
+    expect(masked).not.toContain(oauthRefresh);
+    expect(masked).not.toContain(gcpSecret);
+    expect(masked).not.toContain(hfShort);
+    expect(masked).toContain("access=");
+    expect(masked).toContain("refresh=");
+    expect(masked).toContain("secret=");
+    expect(masked).toContain("hf=");
+  });
+
+  it("masks Cloudflare tunnel tokens and nested query secrets after percent-encoded delimiters", () => {
+    const tunnelJson = JSON.stringify({ a: "acct123", t: "tun456", s: "sec789" });
+    const tunnelToken = btoa(tunnelJson);
+    const encodedRedirect = `https://console.acme.dev/login?next=%2Fgallery%3Fk%3Dmy_nested_key_42%26ticket%3Dtick_9988%26token%3D${tunnelToken}%26tab%3Dcomfy`;
+
+    const maskedText = colabOneMaskPlainText(encodedRedirect);
+    expect(maskedText).not.toContain("my_nested_key_42");
+    expect(maskedText).not.toContain("tick_9988");
+    expect(maskedText).not.toContain(tunnelToken);
+    expect(maskedText).toContain("%3Fk%3D");
+    expect(maskedText).toContain("%26ticket%3D");
+    expect(maskedText).toContain("%26tab%3Dcomfy");
+
+    const urlSegments = segmentColabOneUrlText(encodedRedirect);
+    const joinedUrl = urlSegments.map((s) => s.text).join("");
+    expect(joinedUrl).not.toContain("my_nested_key_42");
+    expect(joinedUrl).not.toContain("tick_9988");
+    expect(joinedUrl).not.toContain(tunnelToken);
+
+    // Percent-encoded prefix directly before a Cloudflare tunnel token outside query param names
+    const rawEncodedTunnel = `https://example.com/hook?payload=%3D${tunnelToken}&ok=1`;
+    expect(colabOneMaskPlainText(rawEncodedTunnel)).not.toContain(tunnelToken);
+  });
+
+  it("masks sensitive tokens and query params inside domain input tails while keeping clean paths intact", () => {
+    const clean = segmentColabOneDomainInput("https://colabone.acme.dev/v1");
+    expect(clean.map((s) => s.masked)).toEqual([false, true, false]);
+    expect(clean[2].text).toBe("/v1");
+
+    const leaky = colabOneSynthesizeDomainInput(
+      "https://colabone.acme.dev/gallery?k=co_gal_secret1234567890&token=ya29.a0AfH6SMC_secret999",
+    );
+    expect(leaky).not.toContain("colabone.acme.dev");
+    expect(leaky).not.toContain("co_gal_secret1234567890");
+    expect(leaky).not.toContain("ya29.a0AfH6SMC_secret999");
+
+    const bareLeaky = colabOneSynthesizeDomainInput(
+      "colabone.acme.dev/redirect?next=%2Fgallery%3Fk%3Dnested_secret_99",
+    );
+    expect(bareLeaky).not.toContain("colabone.acme.dev");
+    expect(bareLeaky).not.toContain("nested_secret_99");
+  });
+
+  it("masks companion #code=, ?code=, and percent-encoded %23code%3D secrets in URLs and plain text", () => {
+    const hashCodeUrl =
+      "https://live.example.com/_colabone_live/remote#code=CompSecretHash123456";
+    const hashRendered = segmentColabOneUrlText(hashCodeUrl)
+      .map((s) => s.text)
+      .join("");
+    expect(hashRendered).toContain(
+      "https://live.example.com/_colabone_live/remote#code=",
+    );
+    expect(hashRendered).not.toContain("CompSecretHash123456");
+
+    const queryCodeUrl =
+      "http://127.0.0.1:3232/_colabone_live/remote?code=CompSecretQuery98765&mode=mic";
+    const queryRendered = segmentColabOneUrlText(queryCodeUrl)
+      .map((s) => s.text)
+      .join("");
+    expect(queryRendered).toContain(
+      "http://127.0.0.1:3232/_colabone_live/remote?code=",
+    );
+    expect(queryRendered).toContain("&mode=mic");
+    expect(queryRendered).not.toContain("CompSecretQuery98765");
+
+    const encodedFragment =
+      "https://studio.example.com/login?next=%2F_colabone_live%2Fremote%23code%3DEncodedCompCode777%26tab%3Dlive";
+    const maskedEncoded = colabOneMaskPlainText(encodedFragment);
+    expect(maskedEncoded).toContain("%23code%3D");
+    expect(maskedEncoded).toContain("%26tab%3Dlive");
+    expect(maskedEncoded).not.toContain("EncodedCompCode777");
+
+    const plainLog = `Companion QR opened for ${hashCodeUrl} and ${queryCodeUrl}`;
+    const maskedPlain = colabOneMaskPlainText(plainLog);
+    expect(maskedPlain).not.toContain("CompSecretHash123456");
+    expect(maskedPlain).not.toContain("CompSecretQuery98765");
+  });
+
+  it("does not falsely mask Hugging Face library or env identifiers like hf_transfer or hf_hub_download", () => {
+    const log =
+      "加速下载失败，自动关闭 hf_transfer 并回退 hf_hub_download（cache: hf_cache_home, hf_download, hf_endpoint_url, hf_xet_enabled）";
+    expect(colabOneMaskPlainText(log)).toBe(log);
+
+    const withRealToken = `${log} token=hf_AbCdEfGhIjKlMnOpQr1234`;
+    const masked = colabOneMaskPlainText(withRealToken);
+    expect(masked).toContain("hf_transfer");
+    expect(masked).toContain("hf_hub_download");
+    expect(masked).not.toContain("hf_AbCdEfGhIjKlMnOpQr1234");
+  });
+
+  it("processes 100 KB pathological alphanumeric and slash-heavy strings in linear time without freezing", () => {
+    const longAlnum = "a".repeat(100_000);
+    const longSlashes = `eyJ${"a/".repeat(50_000)}`;
+    const t0 = performance.now();
+    expect(colabOneMaskPlainText(longAlnum)).toBe(longAlnum);
+    expect(colabOneMaskPlainText(longSlashes)).toBe(longSlashes);
+    const elapsedMs = performance.now() - t0;
+    expect(elapsedMs).toBeLessThan(500);
   });
 });

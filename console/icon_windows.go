@@ -3,14 +3,13 @@
 package main
 
 import (
-	"syscall"
-
 	"github.com/egoist/mygo"
+	"golang.org/x/sys/windows"
 )
 
 var (
-	iconKernel32            = syscall.NewLazyDLL("kernel32.dll")
-	iconUser32              = syscall.NewLazyDLL("user32.dll")
+	iconKernel32            = windows.NewLazySystemDLL("kernel32.dll")
+	iconUser32              = windows.NewLazySystemDLL("user32.dll")
 	procGetModuleHandleW    = iconKernel32.NewProc("GetModuleHandleW")
 	procGetDpiForWindow     = iconUser32.NewProc("GetDpiForWindow")
 	procGetSystemMetricsDpi = iconUser32.NewProc("GetSystemMetricsForDpi")

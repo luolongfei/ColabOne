@@ -10,6 +10,7 @@ import {
   colabOneCommand,
   colabOneSetLocale,
   isColabOneDesktopRuntime,
+  isColabOneOutputShareActive,
   isColabOneWorkflowShareActive,
 } from "../api";
 import { COLABONE_STORAGE_KEYS } from "../storage";
@@ -140,9 +141,13 @@ export function detectColabOneSystemLocale(
 }
 
 function resolveLocaleStorageKey(): string {
-  return isColabOneWorkflowShareActive()
-    ? COLABONE_STORAGE_KEYS.workflowShareLocale
-    : COLABONE_STORAGE_KEYS.locale;
+  if (isColabOneOutputShareActive()) {
+    return COLABONE_STORAGE_KEYS.outputShareLocale;
+  }
+  if (isColabOneWorkflowShareActive()) {
+    return COLABONE_STORAGE_KEYS.workflowShareLocale;
+  }
+  return COLABONE_STORAGE_KEYS.locale;
 }
 
 export function readStoredColabOneLocale(): ColabOneLocale | null {
@@ -196,7 +201,7 @@ export function syncColabOneLocaleToNative(
   persist: boolean,
 ) {
   if (typeof window === "undefined") return;
-  if (isColabOneWorkflowShareActive()) {
+  if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
     return;
   }
   try {
@@ -218,14 +223,16 @@ if (typeof window !== "undefined") {
     syncColabOneLocaleToNative(colabOneLocaleCode.value, false);
   }
 
-  window.addEventListener("storage", (event) => {
-    if (event.key !== resolveLocaleStorageKey()) return;
-    const synced = normalizeColabOneLocale(event.newValue);
-    if (!synced) return;
-    colabOneLocaleCode.value = synced;
-    colabOneLocaleIsManual.value = true;
-    applyDocumentLang(synced);
-  });
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("storage", (event) => {
+      if (event.key !== resolveLocaleStorageKey()) return;
+      const synced = normalizeColabOneLocale(event.newValue);
+      if (!synced) return;
+      colabOneLocaleCode.value = synced;
+      colabOneLocaleIsManual.value = true;
+      applyDocumentLang(synced);
+    });
+  }
 }
 
 /**
@@ -268,7 +275,7 @@ let nativeSyncedAfterSnapshot = false;
 export function hydrateColabOneLocaleFromSettings(
   savedLocale: string | null | undefined,
 ) {
-  if (isColabOneWorkflowShareActive()) return;
+  if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) return;
   const normalized = normalizeColabOneLocale(savedLocale);
   const hasManual = colabOneLocaleIsManual.value || Boolean(readStoredColabOneLocale());
   if (normalized && !hasManual) {

@@ -3586,3 +3586,687 @@ def test_personalive_hotswap_gpu_wiring_visual_encoder_and_crud_atomicity(tmp_pa
     finally:
         mgr.stop()
     mgr.delete_avatar("av_active")
+
+
+def test_live_studio_auto_provisioning_progress_and_worker_env(tmp_path: Path, monkeypatch):
+    import shutil
+    from server.live_worker_tts import ColabOneResidentTtsWorker
+    from server.runtime import ColabOneCancelledError, ColabOneTask
+
+    # 1. Worker env sets PyTorch-only guards, HF cache dir, and strips sensitive env keys
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-leak-should-not-pass")
+    worker = ColabOneResidentTtsWorker(
+        "qwen3_tts",
+        venv_python=tmp_path / "py",
+        model_dir=tmp_path / "model",
+        hf_cache_dir=tmp_path / "hf_cache",
+        hf_token="hf_live_secret_token_999",
+    )
+    wenv = worker.build_worker_env()
+    assert wenv["USE_TORCH"] == "1"
+    assert wenv["USE_TF"] == "0"
+    assert wenv["TRANSFORMERS_NO_TF"] == "1"
+    assert wenv["DISABLE_TENSORFLOW"] == "1"
+    assert wenv["HF_HUB_CACHE"] == str(tmp_path / "hf_cache")
+    assert wenv["HUGGINGFACE_HUB_CACHE"] == str(tmp_path / "hf_cache")
+    assert wenv["HF_TOKEN"] == "hf_live_secret_token_999"
+    assert "OPENAI_API_KEY" not in wenv
+
+    # 2. POSIX venv symlink bin/python is accepted; incomplete/Base-only HF snapshots rejected
+    mgr = ColabOneLiveStudioManager(tmp_path / "auto_live", CATALOG_DIR)
+    real_py_target = tmp_path / "base_python3"
+    real_py_target.write_text("#!/bin/sh\n", encoding="utf-8")
+    venv_bin = mgr.root / "tts-envs" / "qwen3_tts" / ".venv" / "bin"
+    venv_bin.mkdir(parents=True, exist_ok=True)
+    os.symlink(real_py_target, venv_bin / "python")
+    resolved_py = mgr._resolve_engine_venv_python("qwen3_tts")
+    assert resolved_py == venv_bin / "python"
+
+    # Base-only HF snapshot must NOT satisfy require_live_compatible=True for qwen3_tts
+    hf_cache = mgr._hf_cache_dir()
+    base_model_dir = hf_cache / "models--Qwen--Qwen3-TTS-12Hz-1.7B-Base"
+    (base_model_dir / "blobs").mkdir(parents=True, exist_ok=True)
+    (base_model_dir / "blobs" / "b1").write_bytes(b"weights")
+    base_snap = base_model_dir / "snapshots" / "fd4b254389122332181a7c3db7f27e918eec64e3"
+    base_snap.mkdir(parents=True, exist_ok=True)
+    os.symlink("../../blobs/b1", base_snap / "model.safetensors")
+    assert (
+        mgr._resolve_component_model_dir(
+            "streaming_tts", "qwen3_tts", require_live_compatible=True
+        )
+        is None
+    )
+
+    # Clean up the pre-created venv so full auto-provisioning runs from scratch
+    shutil.rmtree(mgr.root / "tts-envs")
+
+    # 3. Full auto-provisioning flow with live ColabOneTransfer progress + prewarm + reuse
+    events: list[str] = []
+    seen_transfers: list[dict[str, Any]] = []
+    prewarm_calls: list[str] = []
+
+    class _FakeTts:
+        def __init__(self, eid: str) -> None:
+            self.engine_id = eid
+            self.sample_rate = 24000
+            self._loaded = False
+
+        def load(self) -> None:
+            prewarm_calls.append(self.engine_id)
+            self._loaded = True
+
+        def unload(self) -> None:
+            self._loaded = False
+
+    class _NoopRunner:
+        def __init__(self, app, *, host, port):
+            self.app = app
+            self.host = host
+            self.port = port
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    def fake_env_installer(*, task, section, engine_id, entry, hf_token):
+        events.append(f"venv:{engine_id}")
+        vbin = mgr.root / "tts-envs" / engine_id / ".venv" / "bin"
+        vbin.mkdir(parents=True, exist_ok=True)
+        py_link = vbin / "python"
+        if not py_link.exists():
+            os.symlink(real_py_target, py_link)
+        return py_link
+
+    def fake_weight_downloader(
+        *, task, transfer, repo_id, revision, label, comp_id, cache_dir, local_dir, **_kw
+    ):
+        events.append(f"dl:{comp_id}:{repo_id}")
+        with transfer.lock:
+            transfer.total = 1000
+            transfer.downloaded = 500
+            transfer.phase = "downloading"
+            transfer.file = "model.safetensors"
+            transfer.index = 1
+            transfer.count = 2
+        transfer.wire(500)
+        if task is not None:
+            snap = task.snapshot()
+            if "download" in snap:
+                seen_transfers.append(snap["download"])
+        if cache_dir is not None:
+            mdir = cache_dir / ("models--" + repo_id.replace("/", "--"))
+            (mdir / "blobs").mkdir(parents=True, exist_ok=True)
+            (mdir / "blobs" / "w0").write_bytes(b"safetensor-bytes")
+            sdir = mdir / "snapshots" / (revision or "rev1")
+            sdir.mkdir(parents=True, exist_ok=True)
+            os.symlink("../../blobs/w0", sdir / "model.safetensors")
+            return sdir
+        assert local_dir is not None
+        local_dir.mkdir(parents=True, exist_ok=True)
+        (local_dir / "model.pt").write_bytes(b"asr-bytes")
+        return local_dir
+
+    mgr._env_installer_fn = fake_env_installer
+    mgr._weight_downloader_fn = fake_weight_downloader
+    monkeypatch.setattr(
+        "server.live_studio.create_colabone_streaming_tts_engine",
+        lambda eid, **_kw: _FakeTts(eid),
+    )
+
+    task1 = ColabOneTask("live_start", "qwen3_tts")
+    live_cfg = {
+        "visual_engine": "flashhead_lite",
+        "tts_engine": "qwen3_tts",
+        "llm_mode": "external_api",
+        "external_llm": {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "sk-autoprov-123456",
+            "model": "gpt-4o-mini",
+        },
+    }
+    status1 = mgr.start(
+        live_cfg,
+        gpu_info={"name": "NVIDIA A100", "total_mib": 81920},
+        server_factory=lambda app, host, port: _NoopRunner(app, host=host, port=port),
+        synthetic=False,
+        min_free_disk_mib=0,
+        task=task1,
+        auto_provision=True,
+        prewarm_tts=True,
+    )
+    assert status1["running"] is True
+    assert status1["state"] == "ready"
+    assert events == [
+        "venv:qwen3_tts",
+        "dl:qwen3_tts:Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        "dl:sensevoice_small:FunAudioLLM/SenseVoiceSmall",
+    ]
+    assert len(seen_transfers) == 2
+    assert seen_transfers[0]["downloaded_bytes"] == 500
+    assert seen_transfers[0]["filename"] == "model.safetensors"
+    assert prewarm_calls == ["qwen3_tts"]
+    assert (mgr.root / "cache" / "live-studio" / "sensevoice_small" / ".colabone_ready").is_file()
+    assert task1.transfer is None
+
+    # Hot-switch TTS engine to voxcpm2 auto-provisions missing voxcpm2 deps
+    sw = mgr._handle_ws_switch_engine({"tts_engine": "voxcpm2"})
+    assert sw["tts_engine"].engine_id == "voxcpm2"
+    assert "venv:voxcpm2" in events
+    assert "dl:voxcpm2:openbmb/VoxCPM2" in events
+    mgr.stop()
+
+    # Second start reuses cached venv, weights, and ASR with zero downloads
+    events.clear()
+    task2 = ColabOneTask("live_start", "qwen3_tts")
+    status2 = mgr.start(
+        live_cfg,
+        gpu_info={"name": "NVIDIA A100", "total_mib": 81920},
+        server_factory=lambda app, host, port: _NoopRunner(app, host=host, port=port),
+        synthetic=False,
+        min_free_disk_mib=0,
+        task=task2,
+        auto_provision=True,
+        prewarm_tts=True,
+    )
+    assert status2["running"] is True
+    assert events == []
+    mgr.stop()
+
+    # 4. Best-effort ASR failure logs warning and still starts cleanly
+    shutil.rmtree(mgr.root / "cache" / "live-studio" / "sensevoice_small")
+
+    def failing_asr_dl(*, comp_id, **_kw):
+        if comp_id == "sensevoice_small":
+            raise RuntimeError("asr mirror down")
+        raise AssertionError(f"unexpected download {comp_id}")
+
+    mgr._weight_downloader_fn = failing_asr_dl
+    task3 = ColabOneTask("live_start", "qwen3_tts")
+    status3 = mgr.start(
+        live_cfg,
+        gpu_info={"name": "NVIDIA A100", "total_mib": 81920},
+        server_factory=lambda app, host, port: _NoopRunner(app, host=host, port=port),
+        synthetic=False,
+        min_free_disk_mib=0,
+        task=task3,
+        auto_provision=True,
+        prewarm_tts=False,
+    )
+    assert status3["running"] is True
+    assert any(log["level"] == "warning" and "SenseVoice" in log["message"] for log in task3.logs)
+    mgr.stop()
+
+    # 5. Cancellation during weight download resets state to stopped without error
+    shutil.rmtree(mgr._hf_cache_dir())
+    task4 = ColabOneTask("live_start", "qwen3_tts")
+
+    def cancel_during_dl(*, task, **_kw):
+        task.request_cancel()
+        task.check()
+
+    mgr._weight_downloader_fn = cancel_during_dl
+    with pytest.raises(ColabOneCancelledError):
+        mgr.start(
+            live_cfg,
+            gpu_info={"name": "NVIDIA A100", "total_mib": 81920},
+            server_factory=lambda app, host, port: _NoopRunner(app, host=host, port=port),
+            synthetic=False,
+            min_free_disk_mib=0,
+            task=task4,
+            auto_provision=True,
+            prewarm_tts=False,
+        )
+    assert mgr.status()["state"] == "stopped"
+    assert mgr.status()["error"] == ""
+    assert task4.transfer is None
+
+
+def test_live_studio_companion_pairing_vision_motion_and_exclusivity(tmp_path: Path):
+    import io
+    from PIL import Image
+    from common.live_studio import (
+        COLABONE_LIVE_COMPANION_PATH,
+        COLABONE_LIVE_COMPANION_REDEEM_PATH,
+        COLABONE_LIVE_FRAME_CAMERA_JPEG,
+        pack_colabone_live_frame,
+    )
+    from server.live_worker_visual import (
+        ColabOneLiveCameraPoseTracker,
+        apply_live_camera_motion,
+    )
+
+    mgr = ColabOneLiveStudioManager(tmp_path / "companion_live", CATALOG_DIR)
+
+    # 1. Pairing ticket uses bound HTTPS domain with #code= fragment; refresh invalidates prior code
+    t1 = mgr.issue_companion_ticket("https://studio.example.com")
+    assert t1["canvas_ready"] is True
+    assert t1["companion_url"] == (
+        f"https://studio.example.com{COLABONE_LIVE_COMPANION_PATH}#code={t1['code']}"
+    )
+    t2 = mgr.issue_companion_ticket("https://studio.example.com")
+    assert t2["code"] != t1["code"]
+    assert mgr.redeem_companion_ticket(t1["code"], device_label="OldPhone") is None
+
+    # 2. Pose tracker & affine motion warping
+    tracker = ColabOneLiveCameraPoseTracker()
+    img1 = Image.new("RGB", (96, 96), (30, 30, 30))
+    for y in range(24, 72):
+        for x in range(20, 52):
+            img1.putpixel((x, y), (220, 200, 180))
+    img2 = Image.new("RGB", (96, 96), (30, 30, 30))
+    for y in range(28, 76):
+        for x in range(44, 76):
+            img2.putpixel((x, y), (220, 200, 180))
+    p1 = tracker.update_from_image(img1)
+    p2 = tracker.update_from_image(img2)
+    assert p2["dx"] > p1["dx"]
+    assert p2["energy"] > 0.0
+    warped = apply_live_camera_motion(img1.tobytes(), 96, 96, {"dx": 0.6, "dy": -0.3, "roll_deg": 4.0, "scale": 1.03})
+    assert len(warped) == 96 * 96 * 3
+    assert warped != img1.tobytes()
+
+    # 3. End-to-end Live Studio FastAPI app: HTML page, single-use redeem, exclusivity, vision + fallback
+    seen_llm_messages: list[list[dict[str, Any]]] = []
+    reject_images = {"flag": False}
+
+    async def fake_llm(messages, **_kw):
+        seen_llm_messages.append(messages)
+        last_user = messages[-1]["content"]
+        if reject_images["flag"] and isinstance(last_user, list):
+            raise RuntimeError("LLM 流式请求失败 (HTTP 400): image_url is not supported")
+        if isinstance(last_user, list):
+            yield "我看到镜头里展示了一款精致的新品！"
+        else:
+            yield "纯文本降级回复已生效。"
+
+    app = create_colabone_live_app(
+        verify_token=mgr.verify_session_token,
+        verify_token_info=mgr.verify_session_token_info,
+        redeem_companion_ticket=mgr.redeem_companion_ticket,
+        llm_stream_fn=fake_llm,
+        frame_pump_enabled=False,
+    )
+
+    jpeg_buf = io.BytesIO()
+    img2.save(jpeg_buf, format="JPEG", quality=80)
+    sample_jpeg = jpeg_buf.getvalue()
+
+    with TestClient(app) as client:
+        # Mobile HTML page is served with strict security headers
+        page_resp = client.get(COLABONE_LIVE_COMPANION_PATH)
+        assert page_resp.status_code == 200
+        assert "ColabOne" in page_resp.text
+        assert page_resp.headers.get("cache-control") == "no-store"
+        assert page_resp.headers.get("referrer-policy") == "no-referrer"
+        assert page_resp.headers.get("x-frame-options") == "DENY"
+
+        # Redeem ticket t2 once; replay must fail with 401
+        r_ok = client.post(
+            COLABONE_LIVE_COMPANION_REDEEM_PATH,
+            json={"code": t2["code"], "device_label": "iPhone · Safari"},
+        )
+        assert r_ok.status_code == 200
+        phone1_tok = r_ok.json()["token"]
+        assert phone1_tok
+        r_replay = client.post(
+            COLABONE_LIVE_COMPANION_REDEEM_PATH,
+            json={"code": t2["code"], "device_label": "ReplayPhone"},
+        )
+        assert r_replay.status_code == 401
+
+        # Connect Desktop + Phone 1
+        desk_tok = mgr.issue_session_token(role="desktop")["token"]
+        with client.websocket_connect(COLABONE_LIVE_WS_PATH) as ws_desk:
+            ws_desk.send_json({"type": "auth", "token": desk_tok})
+            desk_auth = ws_desk.receive_json()
+            assert desk_auth["type"] == "auth_ok"
+            assert desk_auth["companion"]["connected"] is False
+
+            with client.websocket_connect(COLABONE_LIVE_WS_PATH) as ws_p1:
+                ws_p1.send_json({"type": "auth", "token": phone1_tok})
+                p1_auth = ws_p1.receive_json()
+                assert p1_auth["type"] == "auth_ok"
+                assert p1_auth["client_role"] == "companion"
+                _ = ws_p1.receive_json()  # companion_status broadcast to self
+                st_msg = ws_desk.receive_json()
+                assert st_msg["type"] == "companion_status"
+                assert st_msg["connected"] is True
+                assert st_msg["device_label"] == "iPhone · Safari"
+
+                # Enable mic + dual vision/motion camera mode
+                ws_p1.send_json(
+                    {
+                        "type": "companion_state",
+                        "mic_active": True,
+                        "camera_mode": "vision_motion",
+                    }
+                )
+                p1_st2 = ws_p1.receive_json()
+                desk_st2 = ws_desk.receive_json()
+                assert p1_st2["type"] == "companion_status"
+                assert desk_st2["mic_active"] is True
+                assert desk_st2["camera_mode"] == "vision_motion"
+
+                # Stream camera JPEG binary frame (0x05)
+                ws_p1.send_bytes(
+                    pack_colabone_live_frame(
+                        COLABONE_LIVE_FRAME_CAMERA_JPEG, 0, 1000, sample_jpeg
+                    )
+                )
+                ws_p1.send_json({"type": "ping", "ts": 1})
+                assert ws_p1.receive_json()["type"] == "pong"
+                assert app.state.companion_info["vision_frame_ready"] is True
+                assert app.state.visual_engine._live_motion_pose is not None
+
+                def _recv_json_skip_binary(ws_conn):
+                    while True:
+                        raw = ws_conn.receive()
+                        if raw.get("type") == "websocket.close":
+                            return {"type": "__closed__", "code": raw.get("code")}
+                        if "text" in raw and raw["text"] is not None:
+                            return json.loads(raw["text"])
+
+                # Ask a question -> LLM receives multimodal content with image_url!
+                ws_p1.send_json({"type": "text_input", "text": "手里这个是什么？"})
+                while True:
+                    ev = _recv_json_skip_binary(ws_desk)
+                    if ev.get("type") == "turn_end":
+                        break
+                assert seen_llm_messages
+                user_content = seen_llm_messages[-1][-1]["content"]
+                assert isinstance(user_content, list)
+                assert user_content[0]["type"] == "text"
+                assert user_content[1]["type"] == "image_url"
+                assert user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+                # Text-only LLM rejects image_url with HTTP 400 -> auto fallback + system_notice
+                reject_images["flag"] = True
+                ws_p1.send_json({"type": "text_input", "text": "再介绍一下"})
+                saw_notice = False
+                while True:
+                    ev = _recv_json_skip_binary(ws_desk)
+                    if ev.get("type") == "system_notice" and ev.get("code") == "vision_unsupported_fallback":
+                        saw_notice = True
+                    if ev.get("type") == "turn_end":
+                        break
+                assert saw_notice is True
+                assert isinstance(seen_llm_messages[-1][-1]["content"], str)
+
+                # Phone 2 scans a fresh QR -> cleanly kicks Phone 1 (single-device exclusivity)
+                t3 = mgr.issue_companion_ticket("https://studio.example.com")
+                r_p2 = client.post(
+                    COLABONE_LIVE_COMPANION_REDEEM_PATH,
+                    json={"code": t3["code"], "device_label": "Android · Chrome"},
+                )
+                assert r_p2.status_code == 200
+                phone2_tok = r_p2.json()["token"]
+                with client.websocket_connect(COLABONE_LIVE_WS_PATH) as ws_p2:
+                    ws_p2.send_json({"type": "auth", "token": phone2_tok})
+                    p2_auth = _recv_json_skip_binary(ws_p2)
+                    assert p2_auth["type"] == "auth_ok"
+                    assert p2_auth["companion"]["device_label"] == "Android · Chrome"
+                    # Desktop kicks Phone 2 via kick_companion
+                    ws_desk.send_json({"type": "kick_companion"})
+                    got_kicked = False
+                    for _ in range(8):
+                        m = _recv_json_skip_binary(ws_p2)
+                        if m.get("type") == "companion_kicked":
+                            got_kicked = True
+                            break
+                        if m.get("type") == "__closed__":
+                            break
+                    assert got_kicked is True
+                    assert app.state.companion_info["connected"] is False
+                    assert app.state.visual_engine._live_motion_pose is None
+
+
+def test_live_studio_companion_security_rate_limit_camera_off_video_and_6_locales(
+    tmp_path: Path,
+):
+    import io
+    from PIL import Image
+    from common.live_studio import (
+        COLABONE_LIVE_COMPANION_PATH,
+        COLABONE_LIVE_COMPANION_REDEEM_PATH,
+        COLABONE_LIVE_FRAME_CAMERA_JPEG,
+        COLABONE_LIVE_FRAME_FMP4,
+        COLABONE_LIVE_FRAME_VIDEO,
+        ColabOneLiveCatalog,
+        pack_colabone_live_frame,
+        unpack_colabone_live_frame,
+    )
+    from server.live_companion_page import render_colabone_live_companion_html
+    from server.live_server import ColabOneLiveVideoEncoder
+    from server.live_worker_visual import ColabOneVisualFrame
+
+    # 1. check_ws_path rejects HTML/JS/whitespace/traversal characters
+    raw_cat = json.loads((CATALOG_DIR / "live_studio.json").read_text(encoding="utf-8"))
+    for bad_ws in ("/_live/<script>", "/_live/ws?x=1", "/_live/../ws", "/_live//ws", '/_live/"x'):
+        bad_cat = dict(raw_cat, ws_path=bad_ws)
+        with pytest.raises(Exception):
+            ColabOneLiveCatalog.model_validate(bad_cat)
+
+    # 2. render_colabone_live_companion_html escapes <, >, & safely and supports all 6 locales
+    escaped_html = render_colabone_live_companion_html(
+        ws_path="/_live/</script><img src=x>",
+        redeem_path="/_live/redeem&x=<y>",
+        locale="en-US",
+    )
+    assert "</script><img" not in escaped_html
+    assert "\\u003c/script\\u003e" in escaped_html
+    assert "\\u0026" in escaped_html
+
+    mgr = ColabOneLiveStudioManager(tmp_path / "comp_sec", CATALOG_DIR)
+    app = create_colabone_live_app(
+        verify_token=mgr.verify_session_token,
+        verify_token_info=mgr.verify_session_token_info,
+        redeem_companion_ticket=mgr.redeem_companion_ticket,
+        frame_pump_enabled=False,
+    )
+
+    with TestClient(app) as client:
+        # 3. 6-locale HTML rendering via ?lang= and Accept-Language + tightened CSP
+        for loc, expected_snippet in [
+            ("zh-CN", 'lang="zh-CN"'),
+            ("en-US", 'lang="en-US"'),
+            ("zh-TW", 'lang="zh-TW"'),
+            ("zh-HK", 'lang="zh-HK"'),
+            ("ja-JP", 'lang="ja-JP"'),
+            ("ko-KR", 'lang="ko-KR"'),
+        ]:
+            resp = client.get(
+                f"{COLABONE_LIVE_COMPANION_PATH}?lang={loc}",
+                headers={"X-Forwarded-Proto": "https"},
+            )
+            assert resp.status_code == 200
+            assert expected_snippet in resp.text
+            csp = resp.headers.get("content-security-policy", "")
+            assert "base-uri 'none'" in csp
+            assert "object-src 'none'" in csp
+            assert "form-action 'none'" in csp
+            assert "connect-src 'self' wss:;" in csp
+            assert "ws:" not in csp
+
+        resp_accept = client.get(
+            COLABONE_LIVE_COMPANION_PATH,
+            headers={"Accept-Language": "ja-JP,ja;q=0.9,en;q=0.5"},
+        )
+        assert resp_accept.status_code == 200
+        assert 'lang="ja-JP"' in resp_accept.text
+        assert "connect-src 'self' wss: ws:;" in resp_accept.headers.get("content-security-policy", "")
+
+        # 4. 4 KiB redeem body limit returns HTTP 413
+        big_body = json.dumps({"code": "a" * 5000}).encode("utf-8")
+        r_413 = client.post(
+            COLABONE_LIVE_COMPANION_REDEEM_PATH,
+            content=big_body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert r_413.status_code == 413
+
+        # 5. Per-IP redeem rate-limit isolation: 5 attacker IPs (75 failures) cannot DoS owner IP!
+        valid_ticket = mgr.issue_companion_ticket("https://studio.example.com")
+        for attacker_idx in range(5):
+            attacker_ip = f"198.51.100.{attacker_idx + 1}"
+            for _ in range(15):
+                r_bad = client.post(
+                    COLABONE_LIVE_COMPANION_REDEEM_PATH,
+                    json={"code": "wrong-code"},
+                    headers={"CF-Connecting-IP": attacker_ip},
+                )
+                assert r_bad.status_code == 401
+            r_limited = client.post(
+                COLABONE_LIVE_COMPANION_REDEEM_PATH,
+                json={"code": "wrong-code"},
+                headers={"CF-Connecting-IP": attacker_ip},
+            )
+            assert r_limited.status_code == 429
+
+        # Owner IP still redeems cleanly!
+        r_owner = client.post(
+            COLABONE_LIVE_COMPANION_REDEEM_PATH,
+            json={"code": valid_ticket["code"], "device_label": "Owner iPhone"},
+            headers={"CF-Connecting-IP": "203.0.113.42"},
+        )
+        assert r_owner.status_code == 200
+        comp_tok = r_owner.json()["token"]
+
+        # 6. Companion WS authorization denial, text_input > 4000 rejection, camera-off trailing frame drop,
+        #    and PTT disconnect leaving director in IDLE (not stuck in LISTENING).
+        desk_tok = mgr.issue_session_token(role="desktop")["token"]
+        img = Image.new("RGB", (64, 64), (100, 140, 180))
+        jpeg_buf = io.BytesIO()
+        img.save(jpeg_buf, format="JPEG", quality=75)
+        sample_jpeg = jpeg_buf.getvalue()
+
+        with client.websocket_connect(COLABONE_LIVE_WS_PATH) as ws_desk:
+            ws_desk.send_json({"type": "auth", "token": desk_tok})
+            assert ws_desk.receive_json()["type"] == "auth_ok"
+
+            with client.websocket_connect(COLABONE_LIVE_WS_PATH) as ws_comp:
+                ws_comp.send_json(
+                    {
+                        "type": "auth",
+                        "token": comp_tok,
+                        "video_format": "jpeg",
+                    }
+                )
+                assert ws_comp.receive_json()["type"] == "auth_ok"
+                _ = ws_comp.receive_json()  # companion_status
+                _ = ws_desk.receive_json()  # companion_status
+
+                for forbidden_payload in (
+                    {"type": "switch_engine", "tts_engine": "voxcpm2"},
+                    {"type": "trigger_action", "action_id": "wave"},
+                    {
+                        "type": "trigger_action",
+                        "kind": "personalive_drive",
+                        "driving_motion_id": "dance1",
+                    },
+                    {"type": "show_card", "product_id": "p1"},
+                    {"type": "set_card", "product_id": "p1"},
+                    {"type": "kick_companion"},
+                ):
+                    ws_comp.send_json(forbidden_payload)
+                    err = ws_comp.receive_json()
+                    assert err["type"] == "error"
+                    assert err["code"] == "forbidden", f"expected forbidden for {forbidden_payload}"
+
+                # Over-length text_input (> 4000 chars) rejected cleanly
+                ws_comp.send_json({"type": "text_input", "text": "x" * 4001})
+                err_len = ws_comp.receive_json()
+                assert err_len["type"] == "error"
+                assert err_len["code"] == "text_too_long"
+
+                # Camera-off trailing FRAME_CAMERA_JPEG must be dropped without flipping camera_mode
+                assert app.state.companion_info["camera_mode"] == "off"
+                ws_comp.send_bytes(
+                    pack_colabone_live_frame(
+                        COLABONE_LIVE_FRAME_CAMERA_JPEG, 0, 1234, sample_jpeg
+                    )
+                )
+                ws_comp.send_json({"type": "ping", "ts": 9})
+                assert ws_comp.receive_json()["type"] == "pong"
+                assert app.state.companion_info["camera_mode"] == "off"
+                assert app.state.companion_info["vision_frame_ready"] is False
+
+                # Start PTT then disconnect companion without ptt_end -> director transitions back to IDLE
+                ws_comp.send_json({"type": "set_mode", "mic_mode": "ptt"})
+                _ = ws_comp.receive_json()
+                _ = ws_desk.receive_json()
+                ws_comp.send_json({"type": "ptt_start"})
+                _ = ws_comp.receive_json()
+                listen_ev = ws_desk.receive_json()
+                assert listen_ev["state"] == "LISTENING"
+
+            # After ws_comp closes, desktop receives IDLE state (not stuck in LISTENING)
+            saw_idle = False
+            for _ in range(4):
+                ev = ws_desk.receive_json()
+                if ev.get("type") == "state" and ev.get("state") == "IDLE":
+                    saw_idle = True
+                    break
+            assert saw_idle is True
+            assert app.state.director.state == "IDLE"
+
+    # 7. Per-client video format negotiation (fMP4 init segment for late MSE joiner + scaled JPEG fallback for non-MSE)
+    fake_init = (
+        (16).to_bytes(4, "big") + b"ftyp" + b"isom\x00\x00\x00\x01"
+        + (16).to_bytes(4, "big") + b"moov" + b"\x00" * 8
+    )
+    fake_frag = (
+        (16).to_bytes(4, "big") + b"moof" + b"\x00" * 8
+        + (16).to_bytes(4, "big") + b"mdat" + b"\x00" * 8
+    )
+
+    class _FakeFmp4Encoder(ColabOneLiveVideoEncoder):
+        def __init__(self) -> None:
+            super().__init__(width=640, height=960, fps=25, mode="libx264", enable_ffmpeg=False)
+            self._fmp4_init_segment = fake_init
+
+        def encode_frame(self, frame: ColabOneVisualFrame) -> tuple[int, bytes]:
+            return COLABONE_LIVE_FRAME_FMP4, fake_frag
+
+    fmp4_enc = _FakeFmp4Encoder()
+    app_vid = create_colabone_live_app(
+        verify_token=mgr.verify_session_token,
+        verify_token_info=mgr.verify_session_token_info,
+        redeem_companion_ticket=mgr.redeem_companion_ticket,
+        encoder=fmp4_enc,
+        frame_pump_enabled=False,
+    )
+    with TestClient(app_vid) as client2:
+        t_desk = mgr.issue_session_token(role="desktop")["token"]
+        t_comp = mgr.issue_session_token(role="companion")["token"]
+        with client2.websocket_connect(COLABONE_LIVE_WS_PATH) as ws_d:
+            ws_d.send_json({"type": "auth", "token": t_desk, "video_format": "fmp4"})
+            assert ws_d.receive_json()["type"] == "auth_ok"
+            # Late-joining MSE client immediately receives cached ftyp+moov init segment!
+            init_bin = ws_d.receive_bytes()
+            ft_init, _, _, pl_init = unpack_colabone_live_frame(init_bin)
+            assert ft_init == COLABONE_LIVE_FRAME_FMP4
+            assert pl_init == fake_init
+
+            with client2.websocket_connect(COLABONE_LIVE_WS_PATH) as ws_c:
+                ws_c.send_json({"type": "auth", "token": t_comp, "video_format": "jpeg"})
+                assert ws_c.receive_json()["type"] == "auth_ok"
+                _ = ws_c.receive_json()  # companion_status
+                _ = ws_d.receive_json()  # companion_status
+
+                # Trigger an action from desktop -> desktop gets fMP4 fragment, companion gets downscaled JPEG (<= 480px)!
+                ws_d.send_json({"type": "trigger_action", "action_id": "wave"})
+                _ = ws_d.receive_json()  # action
+                _ = ws_c.receive_json()  # action
+                d_vid = ws_d.receive_bytes()
+                c_vid = ws_c.receive_bytes()
+                ft_d, _, _, pl_d = unpack_colabone_live_frame(d_vid)
+                ft_c, _, _, pl_c = unpack_colabone_live_frame(c_vid)
+                assert ft_d == COLABONE_LIVE_FRAME_FMP4
+                assert pl_d == fake_frag
+                assert ft_c == COLABONE_LIVE_FRAME_VIDEO
+                assert pl_c.startswith(b"\xff\xd8\xff")
+                with Image.open(io.BytesIO(pl_c)) as dec_img:
+                    assert max(dec_img.width, dec_img.height) <= 480
+

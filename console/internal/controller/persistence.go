@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -34,8 +35,14 @@ func AtomicJSON(path string, data any) error {
 		return errors.New("controller: target path is empty")
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if !isSafeCacheDir(dir) {
+		return errors.New("controller: target directory is unsafe")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
+	}
+	if !isSafeCacheDir(dir) || !isSafeCacheFileTarget(path) {
+		return errors.New("controller: target path is unsafe")
 	}
 	tmp, err := os.CreateTemp(dir, ".save-*.tmp")
 	if err != nil {
@@ -53,6 +60,7 @@ func AtomicJSON(path string, data any) error {
 		}
 	}()
 
+	_ = tmp.Chmod(0o600)
 	enc := json.NewEncoder(tmp)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
@@ -194,16 +202,53 @@ func (a *ColabOneActivityLog) appendDiskLocked(ts float64, level, source, messag
 		return
 	}
 	dir := filepath.Dir(a.logPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if dirInfo, err := os.Lstat(dir); err == nil {
+		if dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeIrregular != 0 {
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return
 	}
-	if info, err := os.Stat(a.logPath); err == nil && info.Size() >= a.maxBytes {
-		backup := a.logPath + ".1"
-		if err := colabOneRenameReplace(a.logPath, backup); err != nil {
-			if os.Remove(backup) == nil {
-				_ = colabOneRenameReplace(a.logPath, backup)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	if !isSafeCacheDir(dir) {
+		return
+	}
+	linfo, lerr := os.Lstat(a.logPath)
+	if lerr == nil {
+		if linfo.Mode()&os.ModeSymlink != 0 || !linfo.Mode().IsRegular() {
+			return
+		}
+		if linfo.Size() >= a.maxBytes {
+			backup := a.logPath + ".1"
+			if binfo, berr := os.Lstat(backup); berr == nil {
+				if binfo.Mode()&os.ModeSymlink != 0 || !binfo.Mode().IsRegular() {
+					return
+				}
+			} else if !errors.Is(berr, os.ErrNotExist) {
+				return
+			}
+			if err := colabOneRenameReplace(a.logPath, backup); err != nil {
+				if os.Remove(backup) == nil {
+					if err := colabOneRenameReplace(a.logPath, backup); err != nil {
+						return
+					}
+				} else {
+					return
+				}
+			}
+			linfo, lerr = os.Lstat(a.logPath)
+			if lerr == nil {
+				if linfo.Mode()&os.ModeSymlink != 0 || !linfo.Mode().IsRegular() {
+					return
+				}
+			} else if !errors.Is(lerr, os.ErrNotExist) {
+				return
 			}
 		}
+	} else if !errors.Is(lerr, os.ErrNotExist) {
+		return
 	}
 	sec := int64(ts)
 	nsec := int64((ts - float64(sec)) * 1e9)
@@ -212,17 +257,37 @@ func (a *ColabOneActivityLog) appendDiskLocked(ts float64, level, source, messag
 	lineSrc := colabOneDiskLineReplacer.Replace(source)
 	lineLvl := strings.ToUpper(colabOneDiskLineReplacer.Replace(level))
 	line := fmt.Sprintf("%s [%s] [%s] %s\n", stamp, lineLvl, lineSrc, lineMsg)
-	_, statErr := os.Stat(a.logPath)
-	created := os.IsNotExist(statErr)
-	f, err := os.OpenFile(a.logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+
+	openFlags := os.O_APPEND | os.O_WRONLY
+	if lerr != nil {
+		// File was absent on Lstat: use O_CREATE|O_EXCL so a concurrently planted
+		// dangling symlink cannot be followed to create an arbitrary file.
+		openFlags = os.O_CREATE | os.O_EXCL | os.O_WRONLY
+	}
+	f, err := os.OpenFile(a.logPath, openFlags, 0o600)
 	if err != nil {
 		return
 	}
+	finfo, fstatErr := f.Stat()
+	if fstatErr != nil || !finfo.Mode().IsRegular() {
+		_ = f.Close()
+		return
+	}
+	if lerr == nil {
+		if !os.SameFile(linfo, finfo) {
+			_ = f.Close()
+			return
+		}
+	} else {
+		postInfo, postErr := os.Lstat(a.logPath)
+		if postErr != nil || postInfo.Mode()&os.ModeSymlink != 0 || !postInfo.Mode().IsRegular() || !os.SameFile(postInfo, finfo) {
+			_ = f.Close()
+			return
+		}
+	}
+	_ = f.Chmod(0o600)
 	_, _ = f.WriteString(line)
 	_ = f.Close()
-	if created {
-		_ = os.Chmod(a.logPath, 0o600)
-	}
 }
 
 // Add records a redacted entry to memory and disk.
@@ -276,6 +341,68 @@ func (a *ColabOneActivityLog) Clear() {
 // Settings persistence & migration
 // ---------------------------------------------------------------------------
 
+const colabOneMaxLocalConfigJSONBytes int64 = 32 << 20
+
+// readRegularFileBounded safely opens a local non-symlink regular file without
+// following symlinks across TOCTOU (Lstat + Open + f.Stat + os.SameFile) and
+// reads at most maxBytes+1 bytes so corrupt/oversized files cannot OOM the process.
+func readRegularFileBounded(path string, maxBytes int64) ([]byte, bool, error) {
+	lfi, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
+		return nil, false, errors.New("invalid local file target")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	ffi, err := f.Stat()
+	if err != nil || !ffi.Mode().IsRegular() || !os.SameFile(lfi, ffi) {
+		return nil, false, errors.New("invalid local file target")
+	}
+	if maxBytes <= 0 {
+		maxBytes = colabOneMaxLocalConfigJSONBytes
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, true, err
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, true, errors.New("local file exceeds size limit")
+	}
+	return raw, true, nil
+}
+
+// backupCorruptLocalFile moves a corrupt local JSON file aside safely without
+// overwriting symlinks or existing files via O_EXCL fallback.
+func backupCorruptLocalFile(path string, raw []byte) {
+	corruptPath := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+	if _, existsErr := os.Lstat(corruptPath); existsErr == nil {
+		corruptPath = fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano())
+	}
+	if !isSafeCacheFileTarget(corruptPath) {
+		return
+	}
+	if colabOneRenameReplace(path, corruptPath) == nil {
+		return
+	}
+	if len(raw) == 0 {
+		return
+	}
+	f, err := os.OpenFile(corruptPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(raw)
+	_ = f.Close()
+}
+
 func (c *ColabOneController) loadSettings() {
 	c.settings = map[string]any{
 		"gpu":                    COLABONE_DEFAULT_GPU,
@@ -288,7 +415,7 @@ func (c *ColabOneController) loadSettings() {
 		"locale":                 "",
 	}
 	settingsPath := filepath.Join(c.directory, "settings.json")
-	if rawBytes, err := os.ReadFile(settingsPath); err == nil {
+	if rawBytes, existed, err := readRegularFileBounded(settingsPath, colabOneMaxLocalConfigJSONBytes); err == nil && existed {
 		var saved map[string]any
 		if decodeJSONWithNumbers(rawBytes, &saved) == nil && saved != nil {
 			allowed := []string{
@@ -482,16 +609,13 @@ func (c *ColabOneController) parseHFInput(repoOrURL, filename, revision string) 
 
 func (c *ColabOneController) loadLibrary() {
 	path := filepath.Join(c.directory, "library.json")
-	info, statErr := os.Stat(path)
-	existed := statErr == nil && !info.IsDir()
+	rawBytes, existed, readErr := readRegularFileBounded(path, colabOneMaxLocalConfigJSONBytes)
 
 	var raw map[string]any
-	if existed {
-		if b, err := os.ReadFile(path); err == nil {
-			var parsed map[string]any
-			if decodeJSONWithNumbers(b, &parsed) == nil && parsed != nil {
-				raw = parsed
-			}
+	if existed && readErr == nil {
+		var parsed map[string]any
+		if decodeJSONWithNumbers(rawBytes, &parsed) == nil && parsed != nil {
+			raw = parsed
 		}
 	}
 
@@ -656,8 +780,8 @@ func (c *ColabOneController) saveLibrary() error {
 
 func (c *ColabOneController) loadWorkflows() {
 	path := filepath.Join(c.directory, "workflows.json")
-	rawBytes, err := os.ReadFile(path)
-	if err != nil {
+	rawBytes, existed, err := readRegularFileBounded(path, colabOneMaxLocalConfigJSONBytes)
+	if err != nil || !existed {
 		return
 	}
 	var raw any

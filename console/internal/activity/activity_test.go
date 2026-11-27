@@ -2147,3 +2147,67 @@ func TestSafeMessageCoWebTokensNewSecretKeysJSONObjectsAndUserinfoDelims(t *test
 		}
 	})
 }
+
+func TestActivityRedactsGoogleClientSecretAndHardensDiskLogSymlink(t *testing.T) {
+	got := SafeMessage("oauth failed with GOCSPX-SuperSecretClient12345678 in body")
+	if strings.Contains(got, "SuperSecretClient") || !strings.Contains(got, "[凭据已隐藏]") {
+		t.Fatalf("expected GOCSPX- secret redacted, got %q", got)
+	}
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "private-logs")
+	logPath := filepath.Join(subDir, "activity.log")
+	al := NewColabOneActivityLog(10, logPath, 16*1024)
+	al.Add("hello", "TEST", "info")
+	al.Close()
+
+	dirInfo, err := os.Stat(subDir)
+	if err != nil {
+		t.Fatalf("stat log dir: %v", err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("expected log dir mode 0700, got %#o", perm)
+	}
+
+	// Symlink log file must NOT be written through.
+	target := filepath.Join(t.TempDir(), "victim.txt")
+	if err := os.WriteFile(target, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symLog := filepath.Join(dir, "sym.log")
+	if err := os.Symlink(target, symLog); err != nil {
+		t.Fatal(err)
+	}
+	al2 := NewColabOneActivityLog(10, symLog, 16*1024)
+	al2.Add("should not overwrite symlink target", "TEST", "info")
+	al2.Close()
+	gotTarget, err := os.ReadFile(target)
+	if err != nil || string(gotTarget) != "untouched" {
+		t.Fatalf("symlink log target was modified: %q err=%v", string(gotTarget), err)
+	}
+
+	// Dangling symlink log file must NOT create target file via O_CREATE.
+	danglingTarget := filepath.Join(t.TempDir(), "dangling-victim.log")
+	danglingLink := filepath.Join(dir, "dangling.log")
+	if err := os.Symlink(danglingTarget, danglingLink); err != nil {
+		t.Fatal(err)
+	}
+	al3 := NewColabOneActivityLog(10, danglingLink, 16*1024)
+	al3.Add("must not create target via dangling symlink", "TEST", "info")
+	al3.Close()
+	if _, err := os.Stat(danglingTarget); !os.IsNotExist(err) {
+		t.Fatalf("dangling symlink target should not exist, stat err=%v", err)
+	}
+}
+
+func TestSafeMessageRedactsShareTokens(t *testing.T) {
+	galTok := "co_gal_abcdefghijkl.0123456789abcdef.fedcba9876543210"
+	wfTok := "co_wf_abcdefghijkl.0123456789abcdef.fedcba9876543210"
+	got := SafeMessage("failed opening " + galTok + " and " + wfTok)
+	if strings.Contains(got, "co_gal_") || strings.Contains(got, "co_wf_") || strings.Contains(got, "abcdefghijkl") {
+		t.Fatalf("share tokens leaked in SafeMessage: %q", got)
+	}
+}

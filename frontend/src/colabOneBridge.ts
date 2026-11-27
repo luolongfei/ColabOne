@@ -189,6 +189,56 @@ export interface ColabOneMigrationUIPrefs {
   logs_width?: number;
 }
 
+/** ColabOneOutputShareCreateRequest configures a new guest output gallery share link. */
+export interface ColabOneOutputShareCreateRequest {
+  title: string;
+  note: string;
+  ttl_mode: string;
+  allow_download: boolean;
+  password?: string;
+  groups: ColabOneOutputShareGroupInput[];
+}
+
+/** ColabOneOutputShareGroupInput describes one logical album/task group in an output share request. */
+export interface ColabOneOutputShareGroupInput {
+  id: string;
+  title: string;
+  workflow_id?: string;
+  workflow_name?: string;
+  task_id?: string;
+  output_ids: string[];
+}
+
+/** ColabOneOutputShareListState aggregates all output gallery shares and active guest session metrics. */
+export interface ColabOneOutputShareListState {
+  shares: ColabOneOutputShareSummary[];
+  active_count: number;
+  total_active_sessions: number;
+}
+
+/** ColabOneOutputShareSummary describes an output share entry for the host UI. */
+export interface ColabOneOutputShareSummary {
+  id: string;
+  title: string;
+  note: string;
+  ttl_mode: string;
+  allow_download: boolean;
+  has_password: boolean;
+  password?: string;
+  status: string;
+  created_at: number;
+  expires_at: number;
+  revoked_at?: number;
+  active_sessions: number;
+  group_count: number;
+  item_count: number;
+  output_ids: string[];
+  url?: string;
+  local_url?: string;
+  uses_public_host: boolean;
+  can_copy_link: boolean;
+}
+
 /** ColabOneRollbackVersion describes a recent older release available for rollback. */
 export interface ColabOneRollbackVersion {
   version: string;
@@ -316,6 +366,8 @@ export const ColabOneDesktop = {
   /** CheckForUpdate queries GitHub Releases for a newer version of ColabOne. */
   checkForUpdate: bind<[boolean], ColabOneUpdateState>("ColabOneDesktop.CheckForUpdate", (manual: boolean) => [manual]),
   command: bind<[ColabOneCommandRequest], string>("ColabOneDesktop.Command", (request: ColabOneCommandRequest) => [request]),
+  /** CreateOutputShare generates a new HMAC-signed guest output gallery share link. */
+  createOutputShare: bind<[ColabOneOutputShareCreateRequest], ColabOneOutputShareSummary>("ColabOneDesktop.CreateOutputShare", (req: ColabOneOutputShareCreateRequest) => [req]),
   /**
    * CreateWebConsoleLoginTicket issues a short-lived browser unlock link.
    * When singleUse is false, the link can be redeemed repeatedly within its TTL;
@@ -330,6 +382,8 @@ export const ColabOneDesktop = {
    * and returns strictly redacted summaries to the WebView.
    */
   decryptMigrationPreview: bind<[string, string], ColabOneMigrationPreview>("ColabOneDesktop.DecryptMigrationPreview", (fileToken: string, password: string) => [fileToken, password]),
+  /** DeleteOutputShare permanently removes an output gallery share link record and invalidates its active guests and password. */
+  deleteOutputShare: bind<[string], ColabOneOutputShareListState>("ColabOneDesktop.DeleteOutputShare", (shareID: string) => [shareID]),
   /** DeleteWorkflowShare permanently removes a workflow share link record and invalidates its active guests. */
   deleteWorkflowShare: bind<[string], ColabOneWorkflowShareListState>("ColabOneDesktop.DeleteWorkflowShare", (shareID: string) => [shareID]),
   /**
@@ -344,6 +398,13 @@ export const ColabOneDesktop = {
    */
   exportWorkflowOutput: bind<[string], string>("ColabOneDesktop.ExportWorkflowOutput", (id: string) => [id]),
   /**
+   * ExportWorkflowOutputsZip validates a list of workflow output IDs (1..256), opens
+   * the native save dialog for a .zip archive, streams each artifact directly into a
+   * sibling temporary file with zip.Store (no full-file RAM buffering), and atomically
+   * renames it into place. Returns "" without error if the user cancels the dialog.
+   */
+  exportWorkflowOutputsZip: bind<[string[], string], string>("ColabOneDesktop.ExportWorkflowOutputsZip", (outputIDs: string[], suggestedName: string) => [outputIDs, suggestedName]),
+  /**
    * GetCloseBehavior returns the current main-window close policy and registers
    * the calling main window as ready to display the close confirmation modal.
    */
@@ -355,6 +416,8 @@ export const ColabOneDesktop = {
    * modules on this machine so the Export modal can preview what will be packaged.
    */
   getMigrationExportSummary: bind<[ColabOneMigrationUIPrefs | null], ColabOneMigrationExportSummary>("ColabOneDesktop.GetMigrationExportSummary", (uiPrefs: ColabOneMigrationUIPrefs | null) => [uiPrefs]),
+  /** GetOutputSharesState returns all configured output gallery share links and live guest session counts. */
+  getOutputSharesState: bind<[], ColabOneOutputShareListState>("ColabOneDesktop.GetOutputSharesState", () => []),
   /** GetUpdateState returns the current desktop self-update status, progress, and preferences. */
   getUpdateState: bind<[], ColabOneUpdateState>("ColabOneDesktop.GetUpdateState", () => []),
   /**
@@ -374,6 +437,12 @@ export const ColabOneDesktop = {
    * the in-process Go controller, never accepted from the frontend.
    */
   openComfyCanvas: bind<[string], void>("ColabOneDesktop.OpenComfyCanvas", (target: string) => [target]),
+  /**
+   * OpenOutputShare validates shareID, resolves the active server-generated gallery
+   * share URL from the local web console, verifies http/https without userinfo, and
+   * opens it in the system browser.
+   */
+  openOutputShare: bind<[string], void>("ColabOneDesktop.OpenOutputShare", (shareID: string) => [shareID]),
   openURL: bind<[string], void>("ColabOneDesktop.OpenURL", (value: string) => [value]),
   /**
    * OutputPreviewURL validates that the workflow output can be streamed (from
@@ -395,6 +464,8 @@ export const ColabOneDesktop = {
    * ("quit" or "background") and optionally persists it as the future default.
    */
   resolveCloseRequest: bind<[string, boolean], void>("ColabOneDesktop.ResolveCloseRequest", (action: string, remember: boolean) => [action, remember]),
+  /** RevokeOutputShare revokes an output gallery share link and immediately signs out its active guests and clears its password. */
+  revokeOutputShare: bind<[string], ColabOneOutputShareListState>("ColabOneDesktop.RevokeOutputShare", (shareID: string) => [shareID]),
   /** RevokeWebConsoleSessions signs out all currently authenticated web browsers. */
   revokeWebConsoleSessions: bind<[], ColabOneWebConsoleState>("ColabOneDesktop.RevokeWebConsoleSessions", () => []),
   /** RevokeWorkflowShare revokes a workflow share link and immediately signs out all of its active guests. */
@@ -473,4 +544,9 @@ export const events = {
    * session count updates from Go to open desktop windows.
    */
   colaboneWorkflowShares: event<ColabOneWorkflowShareListState>("colabone-workflow-shares"),
+  /**
+   * ColabOneOutputSharesEvent pushes live output gallery share list and active
+   * guest session count updates from Go to open desktop windows.
+   */
+  colaboneOutputShares: event<ColabOneOutputShareListState>("colabone-output-shares"),
 } as const;

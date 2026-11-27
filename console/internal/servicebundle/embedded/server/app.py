@@ -454,6 +454,14 @@ def create_colabone_app(runtime, token, background=False):
     def live_session_token():
         return runtime.live_session_token()
 
+    @app.post("/api/v1/live/companion-ticket", dependencies=auth)
+    def live_companion_ticket():
+        return runtime.live_companion_ticket()
+
+    @app.post("/api/v1/live/companion-disconnect", dependencies=auth)
+    def live_companion_disconnect():
+        return runtime.live_companion_disconnect()
+
     @app.post("/api/v1/live/llm-test", dependencies=auth)
     def live_llm_test(body: ColabOneLiveExternalLLMTestRequest):
         return runtime.live_test_external_llm(body.model_dump())

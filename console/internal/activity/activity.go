@@ -3,6 +3,7 @@
 package activity
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 )
 
 const (
@@ -55,7 +58,7 @@ var (
 		`(?i)\bBasic[` + unicodeSpace + `]+[^` + unicodeSpace + `,;]+`,
 	)
 	credentialPattern = regexp.MustCompile(
-		`(?:ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_web_[\w-]{20,}|co_[\w-]{40,}|\bsk-[A-Za-z0-9._-]{10,}\b|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,})`,
+		`(?:ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_web_[\w-]{20,}|co_(?:gal|wf)_[A-Za-z0-9._-]{16,}|co_[\w-]{40,}|\bsk-[A-Za-z0-9._-]{10,}\b|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,}|GOCSPX-[A-Za-z0-9_-]{12,})`,
 	)
 
 	diskLineReplacer = strings.NewReplacer("\r", " ", "\n", " ")
@@ -80,7 +83,8 @@ func redactCredentials(text string) string {
 		!strings.Contains(text, "co_") &&
 		!strings.Contains(text, "sk-") &&
 		!strings.Contains(text, "eyJ") &&
-		!strings.Contains(text, "4/") {
+		!strings.Contains(text, "4/") &&
+		!strings.Contains(text, "GOCSPX-") {
 		return text
 	}
 	return credentialPattern.ReplaceAllLiteralString(text, redactedCredential)
@@ -2405,18 +2409,49 @@ func (l *ColabOneActivityLog) appendDiskLocked(now time.Time, level, source, mes
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(l.logPath), 0o755); err != nil {
+	dir := filepath.Dir(l.logPath)
+	if dirInfo, err := os.Lstat(dir); err == nil {
+		if dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeIrregular != 0 {
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 
-	if info, err := os.Stat(l.logPath); err == nil && info.Size() >= l.maxBytes {
-		backup := l.logPath + ".1"
-		if err := os.Rename(l.logPath, backup); err != nil {
-			_ = os.Remove(backup)
-			if err := os.Rename(l.logPath, backup); err != nil {
+	linfo, lerr := os.Lstat(l.logPath)
+	if lerr == nil {
+		if linfo.Mode()&os.ModeSymlink != 0 || !linfo.Mode().IsRegular() {
+			return
+		}
+		if linfo.Size() >= l.maxBytes {
+			backup := l.logPath + ".1"
+			if binfo, berr := os.Lstat(backup); berr == nil {
+				if binfo.Mode()&os.ModeSymlink != 0 || !binfo.Mode().IsRegular() {
+					return
+				}
+			} else if !errors.Is(berr, os.ErrNotExist) {
+				return
+			}
+			if err := fsutil.RenameReplace(l.logPath, backup); err != nil {
+				_ = os.Remove(backup)
+				if err := fsutil.RenameReplace(l.logPath, backup); err != nil {
+					return
+				}
+			}
+			linfo, lerr = os.Lstat(l.logPath)
+			if lerr == nil {
+				if linfo.Mode()&os.ModeSymlink != 0 || !linfo.Mode().IsRegular() {
+					return
+				}
+			} else if !errors.Is(lerr, os.ErrNotExist) {
 				return
 			}
 		}
+	} else if !errors.Is(lerr, os.ErrNotExist) {
+		return
 	}
 
 	stamp := now.Local().Format("2006-01-02 15:04:05")
@@ -2425,19 +2460,34 @@ func (l *ColabOneActivityLog) appendDiskLocked(now time.Time, level, source, mes
 	lineLvl := strings.ToUpper(diskLineReplacer.Replace(level))
 	line := fmt.Sprintf("%s [%s] [%s] %s\n", stamp, lineLvl, lineSrc, lineMsg)
 
-	_, statErr := os.Stat(l.logPath)
-	created := os.IsNotExist(statErr)
-
-	f, err := os.OpenFile(l.logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	openFlags := os.O_APPEND | os.O_WRONLY
+	if lerr != nil {
+		// File was absent on Lstat: use O_CREATE|O_EXCL so a concurrently planted
+		// dangling symlink cannot be followed to create an arbitrary target file.
+		openFlags = os.O_CREATE | os.O_EXCL | os.O_WRONLY
+	}
+	f, err := os.OpenFile(l.logPath, openFlags, 0o600)
 	if err != nil {
 		return
 	}
-	_, writeErr := f.WriteString(line)
-	closeErr := f.Close()
-	if writeErr != nil || closeErr != nil {
+	finfo, fstatErr := f.Stat()
+	if fstatErr != nil || !finfo.Mode().IsRegular() {
+		_ = f.Close()
 		return
 	}
-	if created {
-		_ = os.Chmod(l.logPath, 0o600)
+	if lerr == nil {
+		if !os.SameFile(linfo, finfo) {
+			_ = f.Close()
+			return
+		}
+	} else {
+		postInfo, postErr := os.Lstat(l.logPath)
+		if postErr != nil || postInfo.Mode()&os.ModeSymlink != 0 || !postInfo.Mode().IsRegular() || !os.SameFile(postInfo, finfo) {
+			_ = f.Close()
+			return
+		}
 	}
+	_ = f.Chmod(0o600)
+	_, _ = f.WriteString(line)
+	_ = f.Close()
 }

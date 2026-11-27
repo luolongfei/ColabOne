@@ -40,6 +40,10 @@ from common.comfyui import (
     apply_workflow_overrides,
     format_colabone_duration_zh,
 )
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    colabone_sanitized_subprocess_env,
+)
 
 if TYPE_CHECKING:
     from server.tts_engines import ColabOneRemoteTtsRunner
@@ -82,9 +86,7 @@ LONGCAT_MAX_SEGMENT_SECONDS = 9.5
 # peak host RAM stays safely inside Colab's 51–83 GB budget without OOM.
 AI_UPSCALE_MAX_SEGMENT_SECONDS = 20.0
 _STALE_WORK_DIR_MAX_AGE_SECONDS = 24 * 3600
-_SENSITIVE_SUBPROCESS_ENV_KEYS = frozenset(
-    {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN"}
-)
+_SENSITIVE_SUBPROCESS_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
 _FFMPEG_CFR_CACHE_LOCK = threading.Lock()
 _FFMPEG_CFR_CACHE: dict[str, tuple[str, str]] = {}
 _FFMPEG_NVENC_CACHE_LOCK = threading.Lock()
@@ -286,12 +288,8 @@ def _validate_safe_path(path: Path | str, label: str = "路径") -> Path:
 
 
 def _sanitized_subprocess_env() -> dict[str, str]:
-    """Return a subprocess environment with Hugging Face tokens stripped."""
-    return {
-        k: v
-        for k, v in os.environ.items()
-        if k not in _SENSITIVE_SUBPROCESS_ENV_KEYS
-    }
+    """Return a subprocess environment with ColabOne secrets stripped."""
+    return colabone_sanitized_subprocess_env()
 
 
 def _safe_contained_file(base_dir_raw: Path, *rel_parts: str) -> Path | None:
@@ -1914,21 +1912,61 @@ def _response_ok(resp: Any) -> bool:
     return bool(getattr(resp, "ok", True))
 
 
+def _pg_has_non_zombie_member_linux(pgid: int) -> bool | None:
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return None
+    saw_any_stat = False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/stat", "r", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        saw_any_stat = True
+        rparen = raw.rfind(")")
+        if rparen < 0:
+            continue
+        fields = raw[rparen + 2 :].split()
+        if len(fields) < 3:
+            continue
+        state = fields[0]
+        try:
+            pgrp = int(fields[2])
+        except ValueError:
+            continue
+        if pgrp == pgid and state not in ("Z", "X", "x"):
+            return True
+    return False if saw_any_stat else None
+
+
 def _pg_has_members(pgid: int) -> bool:
-    """Return True if any process still exists in POSIX process group `pgid`."""
+    """Return True if any non-zombie process still exists in POSIX process group `pgid`."""
     try:
         os.killpg(pgid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except OSError:
         return False
+    linux_live = _pg_has_non_zombie_member_linux(pgid)
+    if linux_live is not None:
+        return linux_live
+    return True
 
 
 def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> None:
-    """Terminate proc and always kill any lingering process-group members, even if leader exited."""
+    """Terminate proc and lingering process-group orphans while guarding against recycled PIDs."""
+    if getattr(proc, "_colabone_pgrp_cleaned", False) is True:
+        return
+
     pid = getattr(proc, "pid", None)
     own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
     can_killpg = (
@@ -1940,8 +1978,31 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
     )
     leader_alive = proc.poll() is None
 
-    if not leader_alive and not can_killpg:
-        return
+    if not leader_alive:
+        if not can_killpg:
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
+        # The leader has already been reaped. If `pid` itself is live now, the OS
+        # recycled it for an unrelated process; never signal that process group.
+        pid_recycled = False
+        try:
+            os.kill(pid, 0)
+            pid_recycled = True
+        except PermissionError:
+            pid_recycled = True
+        except ProcessLookupError:
+            pid_recycled = False
+        except OSError:
+            pid_recycled = True
+        if pid_recycled or not _pg_has_members(pid):
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
 
     used_pg = False
     if can_killpg:
@@ -1975,6 +2036,12 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
                 os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+            kill_deadline = time.monotonic() + max(0.5, min(2.0, float(timeout)))
+            while time.monotonic() < kill_deadline:
+                proc.poll()
+                if not _pg_has_members(pid):
+                    break
+                time.sleep(0.05)
     elif proc.poll() is None:
         try:
             proc.kill()
@@ -1985,6 +2052,12 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
         try:
             proc.wait(timeout=max(0.5, float(timeout)))
         except subprocess.TimeoutExpired:
+            pass
+
+    if proc.poll() is not None and (not can_killpg or not _pg_has_members(pid)):
+        try:
+            setattr(proc, "_colabone_pgrp_cleaned", True)
+        except (AttributeError, TypeError):
             pass
 
 
@@ -4956,6 +5029,8 @@ class ColabOneDigitalHumanRunner:
                     except Exception:
                         pending_pip_restart = False
                 if installed_any or pending_pip_restart:
+                    stopped = False
+                    is_running_fn = None
                     try:
                         is_running_fn = getattr(
                             self.manager, "is_running", None
@@ -4972,6 +5047,7 @@ class ColabOneDigitalHumanRunner:
                                 "已安装 SageAttention 加速算子，正在重启远端 ComfyUI 引擎以加载新内核"
                             )
                             stop_fn()
+                            stopped = True
                             task.check()
                             start_fn(task)
                             clear_restart_fn = getattr(
@@ -4982,6 +5058,8 @@ class ColabOneDigitalHumanRunner:
                     except ColabOneCancelledError:
                         raise
                     except Exception as exc:
+                        if stopped or (callable(is_running_fn) and not is_running_fn()):
+                            raise
                         task.note(
                             f"重启远端 ComfyUI 以加载加速算子时出现非致命异常，将继续使用当前进程：{exc}",
                             level="warning",

@@ -300,18 +300,19 @@ async function act(action: string, payload = {}) {
   busy.value = true;
   try {
     await colabOneCommand(action, payload);
+    if (unmounted) return false;
     emit("sync");
     return true;
   } catch (e) {
-    emit("error", String(e));
+    if (!unmounted) emit("error", String(e));
     return false;
   } finally {
-    busy.value = false;
+    if (!unmounted) busy.value = false;
   }
 }
 
 async function unloadModel() {
-  if (await act("model.unload")) {
+  if ((await act("model.unload")) && !unmounted) {
     emit("notify", t("api.unloadedToast"), "success");
   }
 }
@@ -324,13 +325,16 @@ async function cancelRequest(taskId: string) {
   };
   try {
     await colabOneCommand("task.cancel", { id: taskId });
+    if (unmounted) return;
     emit("sync");
   } catch (e) {
-    emit("error", String(e));
+    if (!unmounted) emit("error", String(e));
   } finally {
-    const next = { ...cancellingRequestIds.value };
-    delete next[taskId];
-    cancellingRequestIds.value = next;
+    if (!unmounted) {
+      const next = { ...cancellingRequestIds.value };
+      delete next[taskId];
+      cancellingRequestIds.value = next;
+    }
   }
 }
 
@@ -353,6 +357,7 @@ watch(
     modelIdDraft.value = "";
     cancellingRequestIds.value = {};
     keySeq += 1;
+    revealingKey.value = false;
     key.value = "";
     clearTimeout(keyTimer.value);
     keyTimer.value = undefined;
@@ -366,11 +371,12 @@ async function start() {
     return;
   }
   if (
-    await act("api.start", {
+    (await act("api.start", {
       mode: "named",
       domain: domain.value.trim(),
       tunnel_token: tunnelToken.value.trim(),
-    })
+    })) &&
+    !unmounted
   ) {
     tunnelToken.value = "";
     tunnelInputRef.value?.hide();
@@ -387,11 +393,12 @@ async function start() {
 
 async function save() {
   if (
-    await act("api.save", {
+    (await act("api.save", {
       mode: "named",
       domain: domain.value.trim(),
       tunnel_token: tunnelToken.value.trim(),
-    })
+    })) &&
+    !unmounted
   ) {
     tunnelToken.value = "";
     tunnelInputRef.value?.hide();
@@ -447,6 +454,7 @@ async function saveModelId(reset = false) {
       id: model.value.id,
       api_id: nextApiId,
     });
+    if (unmounted) return;
     editingModelId.value = false;
     modelIdDraft.value = "";
     emit("sync");
@@ -456,9 +464,9 @@ async function saveModelId(reset = false) {
       "success",
     );
   } catch (e) {
-    emit("error", String(e));
+    if (!unmounted) emit("error", String(e));
   } finally {
-    savingModelId.value = false;
+    if (!unmounted) savingModelId.value = false;
   }
 }
 
@@ -467,25 +475,28 @@ async function copy(
   field: "" | "url" | "key" | "model" | "auto" | "code" = "",
 ) {
   const markCopied = () => {
+    if (unmounted) return;
     emit("notify", t("common.copied"), "success");
     if (field) {
       copiedField.value = field;
       clearTimeout(copyTimer.value);
       copyTimer.value = setTimeout(() => {
-        if (copiedField.value === field) copiedField.value = "";
+        if (!unmounted && copiedField.value === field) copiedField.value = "";
       }, 1800);
     }
   };
   try {
     await colabOneWriteClipboard(value);
+    if (unmounted) return;
     await navigator.clipboard?.writeText(value).catch(() => {});
     markCopied();
   } catch {
+    if (unmounted) return;
     try {
       await navigator.clipboard.writeText(value);
       markCopied();
     } catch {
-      emit("error", t("common.copyFailed"));
+      if (!unmounted) emit("error", t("common.copyFailed"));
     }
   }
 }
@@ -493,9 +504,10 @@ async function copy(
 async function copyKey() {
   try {
     const value = await colabOneCommand("api.key");
+    if (unmounted) return;
     await copy(value.key, "key");
   } catch (e) {
-    emit("error", String(e));
+    if (!unmounted) emit("error", String(e));
   }
 }
 
@@ -503,7 +515,7 @@ async function openExternalURL(url: string) {
   try {
     await colabOneOpenURL(url);
   } catch (e) {
-    emit("error", String(e));
+    if (!unmounted) emit("error", String(e));
   }
 }
 
@@ -529,7 +541,9 @@ async function reveal() {
   } catch (e) {
     if (!unmounted && seq === keySeq) emit("error", String(e));
   } finally {
-    revealingKey.value = false;
+    if (!unmounted && seq === keySeq) {
+      revealingKey.value = false;
+    }
   }
 }
 
@@ -538,6 +552,7 @@ watch(
   (masked) => {
     if (masked) {
       keySeq += 1;
+      revealingKey.value = false;
       key.value = "";
       clearTimeout(keyTimer.value);
       keyTimer.value = undefined;
@@ -548,10 +563,11 @@ watch(
 
 async function rotate() {
   keySeq += 1;
+  revealingKey.value = false;
   key.value = "";
   clearTimeout(keyTimer.value);
   keyTimer.value = undefined;
-  if (await act("api.rotate")) {
+  if ((await act("api.rotate")) && !unmounted) {
     emit("notify", t("api.rotatedKeyNotice"), "info");
   }
 }
@@ -784,11 +800,14 @@ onUnmounted(() => {
             </template>
             <template v-else-if="activeModelTask">
               <span>
-                {{
-                  activeModelTask.message
-                    ? tb(activeModelTask.message)
-                    : t("api.taskProgressFallback")
-                }}
+                <ColabOnePrivacyText
+                  :text="
+                    activeModelTask.message
+                      ? tb(activeModelTask.message)
+                      : t('api.taskProgressFallback')
+                  "
+                  :context="privacyContext"
+                />
               </span>
             </template>
             <template v-else-if="ready">
@@ -1605,7 +1624,7 @@ onUnmounted(() => {
       @device="emit('device')"
       @comfyui="emit('comfyui')"
       @sync="emit('sync')"
-      @notify="(msg) => emit('notify', msg)"
+      @notify="(msg, kind) => emit('notify', msg, kind)"
       @error="(msg) => emit('error', msg)"
     />
   </div>

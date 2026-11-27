@@ -217,16 +217,7 @@ function onToggleEnabled(checked: unknown) {
   const nextEnabled = Boolean(checked);
   if (nextEnabled && !props.state.enabled && configDirty.value) {
     if (!portValid.value) {
-      if (typeof draftPort.value === "number") {
-        emit("toggle", {
-          enabled: true,
-          bind_mode: draftBindMode.value,
-          port: Math.trunc(draftPort.value),
-          public_origin: normalizedDraftPublicOrigin.value,
-        });
-      } else {
-        emit("error", "网页控制台端口必须在 1024 至 65535 之间");
-      }
+      emit("error", t("webConsole.errPortRequired"));
       return;
     }
     emit("toggle", {
@@ -706,7 +697,7 @@ defineExpose({
         <div class="co-webconsole-btn-row">
           <AButton
             size="small"
-            :disabled="!props.state.has_passcode || props.passcodeBusy"
+            :disabled="!props.state.has_passcode || props.passcodeBusy || props.saving"
             data-testid="settings-web-console-copy-passcode-btn"
             @click="emit('copyPasscode')"
           >

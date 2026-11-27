@@ -182,7 +182,23 @@ func (d *ColabOneDesktop) ExportWorkflowOutput(ctx context.Context, id string) (
 	hash := sha256.New()
 	offset := int64(0)
 	for {
-		if chunk.Offset != offset || chunk.Size != size || strings.ToLower(strings.TrimSpace(chunk.SHA256)) != digest {
+		chunkDigest := strings.ToLower(strings.TrimSpace(chunk.SHA256))
+		isDriveChunk := chunk.Source == "drive"
+		digestMismatch := false
+		if digest == "" {
+			if chunkDigest != "" {
+				if isDriveChunk && workflowOutputSHA256Pattern.MatchString(chunkDigest) {
+					digest = chunkDigest
+				} else {
+					digestMismatch = true
+				}
+			}
+		} else if chunkDigest != digest {
+			if !(isDriveChunk && chunkDigest == "") {
+				digestMismatch = true
+			}
+		}
+		if chunk.Offset != offset || chunk.Size != size || digestMismatch {
 			return "", errors.New(colabOneT("err.outputTransferChanged"))
 		}
 		data, err := base64.StdEncoding.DecodeString(chunk.Data)
@@ -391,7 +407,7 @@ func sanitizeColabOneDownloadName(suggested string) string {
 	var b strings.Builder
 	b.Grow(len(base))
 	for _, r := range base {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			continue
 		}
 		switch r {
@@ -748,8 +764,15 @@ func (d *ColabOneDesktop) OpenComfyCanvas(ctx context.Context, target string) er
 		}
 		return nil
 	}
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return ErrBridgeClosed
+	}
 	var openErr error
 	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() || !d.isAppReady() {
+			openErr = ErrBridgeClosed
+			return
+		}
 		d.comfyMu.Lock()
 		existing := d.comfyWin
 		prevOrigin := d.comfyOrigin

@@ -30,6 +30,7 @@ const props = withDefaults(
     disabled?: boolean;
     placeholder?: string;
     savedPlaceholder?: string;
+    maxlength?: number;
     autocomplete?: string;
     ariaLabel?: string;
     loadSaved?: () => Promise<string>;
@@ -37,6 +38,7 @@ const props = withDefaults(
     copyable?: boolean;
     copyLabel?: string;
     copiedDurationMs?: number;
+    inputTestId?: string;
   }>(),
   {
     id: undefined,
@@ -44,6 +46,7 @@ const props = withDefaults(
     disabled: false,
     placeholder: "",
     savedPlaceholder: "",
+    maxlength: undefined,
     autocomplete: "off",
     ariaLabel: undefined,
     loadSaved: undefined,
@@ -51,6 +54,7 @@ const props = withDefaults(
     copyable: false,
     copyLabel: "",
     copiedDurationMs: 1800,
+    inputTestId: undefined,
   },
 );
 
@@ -59,6 +63,8 @@ const emit = defineEmits<{
   extracted: [string];
   copied: [];
   error: [string];
+  blur: [FocusEvent];
+  "press-enter": [KeyboardEvent];
 }>();
 
 const inputCompRef = ref<{
@@ -104,7 +110,10 @@ const toggleDisabled = computed(
   () =>
     privacyLocked.value ||
     loadingSaved.value ||
-    (props.disabled && !props.hasSaved && !props.value && !showingSaved.value),
+    (props.disabled &&
+      !(props.hasSaved && props.loadSaved) &&
+      !props.value &&
+      !showingSaved.value),
 );
 
 const toggleLabel = computed(() => {
@@ -148,61 +157,15 @@ function resetCopiedState() {
 }
 
 async function writeSecretToClipboard(text: string): Promise<boolean> {
-  if (isColabOneDesktopRuntime()) {
-    try {
-      await colabOneWriteClipboard(text);
-      await navigator.clipboard?.writeText(text).catch(() => {});
-      return true;
-    } catch {
-      // Fall through to browser clipboard APIs if desktop bridge is unavailable.
-    }
-  }
   try {
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
+    await colabOneWriteClipboard(text);
+    if (isColabOneDesktopRuntime()) {
+      await navigator.clipboard?.writeText(text).catch(() => {});
     }
+    return true;
   } catch {
-    // Fall through to legacy execCommand fallback for non-HTTPS LAN web contexts.
+    return false;
   }
-  if (
-    typeof document !== "undefined" &&
-    typeof document.execCommand === "function"
-  ) {
-    const previousActive =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "");
-    textarea.setAttribute("aria-hidden", "true");
-    textarea.style.position = "fixed";
-    textarea.style.top = "0";
-    textarea.style.left = "0";
-    textarea.style.width = "1px";
-    textarea.style.height = "1px";
-    textarea.style.padding = "0";
-    textarea.style.border = "0";
-    textarea.style.opacity = "0";
-    textarea.style.fontSize = "16px";
-    textarea.style.pointerEvents = "none";
-    document.body.appendChild(textarea);
-    try {
-      textarea.focus({ preventScroll: true });
-      textarea.select();
-      textarea.setSelectionRange(0, text.length);
-      return document.execCommand("copy");
-    } catch {
-      return false;
-    } finally {
-      document.body.removeChild(textarea);
-      if (previousActive && previousActive.isConnected) {
-        previousActive.focus({ preventScroll: true });
-      }
-    }
-  }
-  return false;
 }
 
 async function copySecret() {
@@ -278,7 +241,9 @@ async function toggleVisibility() {
     loadingSaved.value = true;
     try {
       const saved = await props.loadSaved();
-      if (unmounted || seq !== revealSeq || privacyLocked.value) return;
+      if (unmounted || seq !== revealSeq || privacyLocked.value || !props.hasSaved) {
+        return;
+      }
       if (props.value) {
         showingSaved.value = false;
         revealedSaved.value = "";
@@ -384,6 +349,11 @@ watch(
   (next, prev) => {
     if (prev && !next) {
       hide();
+    } else if (next && next !== prev && showingSaved.value) {
+      revealSeq += 1;
+      loadingSaved.value = false;
+      showingSaved.value = false;
+      revealedSaved.value = "";
     }
     if (next !== prev && (copied.value || copyingSaved.value)) {
       resetCopiedState();
@@ -404,7 +374,7 @@ watch(
   () => props.hasSaved,
   (hasSaved) => {
     if (!hasSaved) {
-      if (showingSaved.value) {
+      if (showingSaved.value || loadingSaved.value) {
         hide();
       }
       if (!props.value.trim() && (copied.value || copyingSaved.value)) {
@@ -436,7 +406,11 @@ onBeforeUnmount(() => {
   hide();
 });
 
-defineExpose({ hide });
+function focus() {
+  resolveNativeInput()?.focus();
+}
+
+defineExpose({ hide, focus });
 </script>
 
 <template>
@@ -448,9 +422,11 @@ defineExpose({ hide });
       :type="visible ? 'text' : 'password'"
       :disabled="props.disabled && !isLockedReveal"
       :readonly="isLockedReveal"
+      :maxlength="props.maxlength"
       :placeholder="effectivePlaceholder"
       :autocomplete="props.autocomplete"
       :aria-label="props.ariaLabel"
+      :data-testid="props.inputTestId"
       spellcheck="false"
       class="co-secret-input"
       :class="{
@@ -459,6 +435,8 @@ defineExpose({ hide });
       }"
       @update:value="onUpdateValue"
       @paste="onPaste"
+      @blur="(e) => emit('blur', e)"
+      @press-enter="(e) => emit('press-enter', e)"
     >
       <template #suffix>
         <ColabOneTooltip

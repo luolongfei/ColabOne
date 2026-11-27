@@ -6,6 +6,7 @@ import {
   colabOnePrivacyPeekResetTick,
   colabOneSynthesizeEmail,
   colabOneSynthesizeHost,
+  colabOneSynthesizeToken,
   isColabOnePublicHost,
   segmentColabOnePrivacyText,
   segmentColabOneUrlText,
@@ -21,19 +22,25 @@ defineOptions({
 const props = withDefaults(
   defineProps<{
     text: string;
-    kind?: "auto" | "email" | "host" | "url";
+    kind?: "auto" | "email" | "host" | "url" | "secret";
     context?: ColabOnePrivacyContext;
     active?: boolean;
+    allowPeek?: boolean;
   }>(),
   {
     kind: "auto",
     context: undefined,
     active: undefined,
+    allowPeek: undefined,
   },
 );
 
 const isMasked = computed(() =>
   props.active !== undefined ? props.active : colabOnePrivacyActive.value,
+);
+
+const canPeek = computed(
+  () => props.kind !== "secret" && props.allowPeek !== false,
 );
 
 const hoveredIdx = ref<number | null>(null);
@@ -44,7 +51,12 @@ function clearHover() {
   peekingMinWidthPx.value = 0;
 }
 
+function canPeekSegment(seg: ColabOnePrivacySegment | undefined): boolean {
+  return Boolean(canPeek.value && seg && !seg.secret);
+}
+
 function onMaskEnter(idx: number, event: MouseEvent) {
+  if (!canPeekSegment(segments.value[idx])) return;
   if (hoveredIdx.value === idx) return;
   const target = event.currentTarget as HTMLElement | null;
   const width = target?.getBoundingClientRect().width ?? 0;
@@ -63,6 +75,16 @@ const segments = computed<ColabOnePrivacySegment[]>(() => {
   if (!raw) return [];
   if (!isMasked.value) {
     return [{ text: raw, masked: false }];
+  }
+  if (props.kind === "secret") {
+    return [
+      {
+        text: colabOneSynthesizeToken(raw),
+        masked: true,
+        original: raw,
+        secret: true,
+      },
+    ];
   }
   if (props.kind === "email") {
     return [
@@ -94,7 +116,7 @@ const segments = computed<ColabOnePrivacySegment[]>(() => {
 const contextKey = computed(() => colabOnePrivacyContextKey(props.context));
 
 watch(
-  [isMasked, () => props.text, () => props.kind, contextKey, colabOnePrivacyPeekResetTick],
+  [isMasked, canPeek, () => props.text, () => props.kind, contextKey, colabOnePrivacyPeekResetTick],
   clearHover,
 );
 
@@ -106,12 +128,16 @@ const maskedAriaLabel = computed(() => t("privacy.maskedFieldAria"));
     <span
       v-if="seg.masked"
       class="co-privacy-mask"
-      :class="{ 'is-peeking': hoveredIdx === idx }"
+      :class="{ 'is-peeking': canPeekSegment(seg) && hoveredIdx === idx }"
       data-privacy-masked="true"
-      :data-privacy-peeking="hoveredIdx === idx ? 'true' : undefined"
-      :aria-label="hoveredIdx === idx ? undefined : maskedAriaLabel"
+      :data-privacy-peeking="
+        canPeekSegment(seg) && hoveredIdx === idx ? 'true' : undefined
+      "
+      :aria-label="
+        canPeekSegment(seg) && hoveredIdx === idx ? undefined : maskedAriaLabel
+      "
       :style="
-        hoveredIdx === idx && peekingMinWidthPx
+        canPeekSegment(seg) && hoveredIdx === idx && peekingMinWidthPx
           ? { minWidth: `${peekingMinWidthPx}px` }
           : undefined
       "
@@ -119,8 +145,14 @@ const maskedAriaLabel = computed(() => t("privacy.maskedFieldAria"));
       @mouseleave="onMaskLeave(idx)"
       ><span
         class="co-privacy-mask-glyphs"
-        :aria-hidden="hoveredIdx === idx ? undefined : 'true'"
-        >{{ hoveredIdx === idx ? (seg.original ?? seg.text) : seg.text }}</span
+        :aria-hidden="
+          canPeekSegment(seg) && hoveredIdx === idx ? undefined : 'true'
+        "
+        >{{
+          canPeekSegment(seg) && hoveredIdx === idx
+            ? (seg.original ?? seg.text)
+            : seg.text
+        }}</span
       ></span
     ><template v-else>{{ seg.text }}</template>
   </template>

@@ -16,27 +16,38 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import inspect
 import io
 import json
+import math
 import os
+import queue
 import re
 import secrets
 import shutil
+import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
 from PIL import Image, ImageOps
 
-from common.files import atomic_json
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    atomic_json,
+    colabone_sanitized_subprocess_env,
+)
 from common.live_studio import (
     COLABONE_LIVE_BGM_EXTENSIONS,
     COLABONE_LIVE_CLIP_EXTENSIONS,
+    COLABONE_LIVE_COMPANION_PATH,
     COLABONE_LIVE_IMAGE_EXTENSIONS,
     COLABONE_LIVE_MAX_BGM_BYTES,
     COLABONE_LIVE_MAX_CLIP_BYTES,
@@ -59,6 +70,7 @@ from common.live_studio import (
     validate_colabone_live_id,
     validate_colabone_live_rtmp_resolved_ips,
 )
+from server.download import ColabOneTransfer
 from server.live_server import (
     ColabOneLiveServerRunner,
     ColabOneLiveVideoEncoder,
@@ -79,6 +91,279 @@ _CACHE_WEIGHT_SUFFIXES = frozenset(
     {".safetensors", ".bin", ".pt", ".pth", ".onnx", ".ckpt", ".gguf", ".plan"}
 )
 _INCOMPLETE_CACHE_SUFFIXES = (".tmp", ".part", ".incomplete")
+_HF_DL_PROGRESS_PREFIX = "COLABONE_LIVE_DL:"
+_HF_TRANSFER_ACTIVE_MARKER = "COLABONE_HF_TRANSFER_ACTIVE=1"
+_LIVE_PROVISION_SENSITIVE_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
+_LIVE_SETUP_STRIP_ENV_KEYS = frozenset(
+    {
+        "PIP_USER",
+        "PIP_TARGET",
+        "PIP_PREFIX",
+        "PIP_CONSTRAINT",
+        "PIP_REQUIRE_VIRTUALENV",
+        "PYTHONUSERBASE",
+        "PYTHONPATH",
+        "PYTHONNOUSERSITE",
+    }
+)
+_HF_TRANSFER_INCOMPATIBLE_ENV_KEYS = frozenset(
+    {
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "requests_ca_bundle",
+        "ssl_cert_file",
+        "curl_ca_bundle",
+    }
+)
+_LIVE_TORCH_SKIP_PACKAGES = frozenset(
+    {
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "xformers",
+        "triton",
+        "flash-attn",
+        "sageattention",
+        "sageattn3",
+    }
+)
+_LIVE_FALLBACK_WEIGHT_BYTES = {
+    "qwen3_tts": 4 * 1024**3,
+    "voxcpm2": 4 * 1024**3,
+    "sensevoice_small": 900 * 1024**2,
+}
+
+# Executed inside an isolated remote venv to download Hugging Face repos with
+# structured progress JSON lines for ColabOneTransfer telemetry.
+_COLABONE_LIVE_HF_DOWNLOAD_SCRIPT = r"""
+import json
+import os
+import sys
+import threading
+import time
+
+PREFIX = "COLABONE_LIVE_DL:"
+_incompat = any(
+    k.lower() in (
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "requests_ca_bundle",
+        "ssl_cert_file",
+        "curl_ca_bundle",
+    )
+    and str(v or "").strip()
+    for k, v in os.environ.items()
+)
+try:
+    import hf_transfer  # noqa: F401
+    _has_hf_transfer = True
+except Exception:
+    _has_hf_transfer = False
+
+if not _has_hf_transfer:
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+elif _incompat:
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+else:
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+
+_raw_hft = str(os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") or "").strip().lower()
+if _has_hf_transfer and _raw_hft in ("1", "true", "yes", "on"):
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+else:
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
+try:
+    from huggingface_hub import HfApi, snapshot_download
+except ImportError:
+    sys.stderr.write("缺少 huggingface_hub，无法下载模型权重\n")
+    sys.exit(2)
+
+if _has_hf_transfer and os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") == "1":
+    sys.stderr.write("COLABONE_HF_TRANSFER_ACTIVE=1\n")
+    sys.stderr.flush()
+
+cfg = json.loads(sys.argv[1])
+repo_id = cfg["repo_id"]
+revision = cfg.get("revision") or None
+cache_dir = cfg.get("cache_dir") or None
+local_dir = cfg.get("local_dir") or None
+allow_patterns = cfg.get("allow_patterns") or None
+token = os.environ.get("HF_TOKEN") or None
+
+_emit_lock = threading.Lock()
+
+
+def _emit(payload):
+    with _emit_lock:
+        sys.stdout.write(PREFIX + json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+
+plan_total = 0
+plan_files = 0
+try:
+    info = HfApi().repo_info(
+        repo_id=repo_id,
+        revision=revision,
+        files_metadata=True,
+        token=token,
+    )
+    siblings = getattr(info, "siblings", None) or []
+    for sib in siblings:
+        sz = getattr(sib, "size", None)
+        if isinstance(sz, int) and sz > 0:
+            plan_total += sz
+            plan_files += 1
+        elif getattr(sib, "rfilename", None):
+            plan_files += 1
+except Exception:
+    pass
+
+_emit({"event": "plan", "total_bytes": plan_total, "file_count": plan_files})
+
+_state_lock = threading.Lock()
+_state = {
+    "bytes_done": 0,
+    "bytes_total": plan_total,
+    "files_done": 0,
+    "files_total": plan_files,
+    "filename": "",
+    "last_emit": 0.0,
+}
+
+
+def _emit_progress(force=False):
+    now = time.monotonic()
+    with _state_lock:
+        if not force and (now - _state["last_emit"]) < 0.25:
+            return
+        _state["last_emit"] = now
+        snap = {
+            "event": "progress",
+            "downloaded_bytes": int(_state["bytes_done"]),
+            "total_bytes": int(_state["bytes_total"]),
+            "file_index": int(_state["files_done"]),
+            "file_count": int(_state["files_total"]),
+            "filename": str(_state["filename"]),
+        }
+    _emit(snap)
+
+
+class _ColabOneProgressBar:
+    _lock = threading.RLock()
+
+    def __init__(self, *args, **kwargs):
+        iterable = kwargs.get("iterable")
+        if iterable is None and args:
+            iterable = args[0]
+        self._iterable = iterable
+        self.total = int(kwargs.get("total") or 0)
+        self.n = int(kwargs.get("initial") or 0)
+        self.desc = str(kwargs.get("desc") or "").strip()
+        self.unit = str(kwargs.get("unit") or "").strip()
+        self._is_file_counter = (
+            self.desc.lower().startswith("fetching")
+            or (self.unit and self.unit.lower() not in ("b", "ib", "byte", "bytes"))
+        )
+        with _state_lock:
+            if self._is_file_counter:
+                if self.total > _state["files_total"]:
+                    _state["files_total"] = self.total
+            else:
+                if self.desc:
+                    _state["filename"] = self.desc.split("/")[-1][:120]
+                if self.n > 0:
+                    _state["bytes_done"] += self.n
+                if plan_total <= 0 and self.total > 0:
+                    _state["bytes_total"] += self.total
+        _emit_progress(force=True)
+
+    @classmethod
+    def get_lock(cls):
+        return cls._lock
+
+    @classmethod
+    def set_lock(cls, lock):
+        cls._lock = lock
+
+    def __iter__(self):
+        if self._iterable is None:
+            return iter(())
+        for item in self._iterable:
+            yield item
+            self.update(1)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def update(self, n=1):
+        try:
+            delta = int(n or 0)
+        except (TypeError, ValueError):
+            delta = 0
+        if delta <= 0:
+            return
+        self.n += delta
+        with _state_lock:
+            if self._is_file_counter:
+                _state["files_done"] = max(_state["files_done"], self.n)
+                if self.total > _state["files_total"]:
+                    _state["files_total"] = self.total
+            else:
+                _state["bytes_done"] += delta
+                if self.desc:
+                    _state["filename"] = self.desc.split("/")[-1][:120]
+                if _state["bytes_done"] > _state["bytes_total"]:
+                    _state["bytes_total"] = _state["bytes_done"]
+        _emit_progress(force=False)
+
+    def set_description(self, desc=None, refresh=True):
+        if desc is not None:
+            self.desc = str(desc).strip()
+            if not self._is_file_counter and self.desc:
+                with _state_lock:
+                    _state["filename"] = self.desc.split("/")[-1][:120]
+
+    def set_postfix(self, *args, **kwargs):
+        pass
+
+    def refresh(self, *args, **kwargs):
+        pass
+
+    def close(self):
+        _emit_progress(force=True)
+
+
+dl_kwargs = {
+    "repo_id": repo_id,
+    "token": token,
+    "tqdm_class": _ColabOneProgressBar,
+}
+if revision:
+    dl_kwargs["revision"] = revision
+if cache_dir:
+    dl_kwargs["cache_dir"] = cache_dir
+if local_dir:
+    dl_kwargs["local_dir"] = local_dir
+if allow_patterns:
+    dl_kwargs["allow_patterns"] = allow_patterns
+
+try:
+    result_path = snapshot_download(**dl_kwargs)
+except TypeError:
+    dl_kwargs.pop("tqdm_class", None)
+    result_path = snapshot_download(**dl_kwargs)
+
+_emit_progress(force=True)
+_emit({"event": "done", "path": str(result_path)})
+"""
 
 
 class _ColabOnePinnedIPAdapter(HTTPAdapter):
@@ -238,19 +523,456 @@ def _safe_rmtree(directory: Path, root: Path) -> None:
     directory.rmdir()
 
 
-def _task_check(task: Any) -> None:
+def _is_cancelled_error(exc: BaseException) -> bool:
+    return getattr(type(exc), "__name__", "") == "ColabOneCancelledError"
+
+
+def _task_check(task: Any, stopping: threading.Event | None = None) -> None:
     if task is not None and callable(getattr(task, "check", None)):
         task.check()
+    if stopping is not None and stopping.is_set():
+        from server.runtime import ColabOneCancelledError
+
+        raise ColabOneCancelledError("实例正在停止，操作已取消")
 
 
-def _task_update(task: Any, progress: float, message: str) -> None:
-    if task is not None and callable(getattr(task, "update", None)):
-        task.update(progress=progress, message=message)
+def _task_update(
+    task: Any,
+    progress: float | None = None,
+    message: str | None = None,
+    *,
+    monotonic_progress: bool = False,
+) -> None:
+    if task is None or not callable(getattr(task, "update", None)):
+        return
+    kwargs: dict[str, Any] = {}
+    if progress is not None:
+        kwargs["progress"] = progress
+    if message is not None:
+        kwargs["message"] = message
+    if not kwargs:
+        return
+    try:
+        sig = inspect.signature(task.update)
+        if "monotonic_progress" in sig.parameters:
+            kwargs["monotonic_progress"] = monotonic_progress
+    except (TypeError, ValueError):
+        pass
+    task.update(**kwargs)
+
+
+def _task_set_transfer(task: Any, transfer: Any) -> None:
+    if task is None or not callable(getattr(task, "update", None)):
+        return
+    try:
+        sig = inspect.signature(task.update)
+        if "transfer" in sig.parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ):
+            task.update(transfer=transfer)
+            return
+    except (TypeError, ValueError):
+        pass
+    if hasattr(task, "transfer"):
+        task.transfer = transfer
 
 
 def _task_note(task: Any, message: str, level: str = "info") -> None:
     if task is not None and callable(getattr(task, "note", None)):
         task.note(message, level=level)
+
+
+def _sanitized_live_provision_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    base_extra: dict[str, str] = {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+    }
+    if extra:
+        base_extra.update(extra)
+    return colabone_sanitized_subprocess_env(
+        base_extra,
+        strip_keys=_LIVE_SETUP_STRIP_ENV_KEYS,
+        allow_extra_sensitive=False,
+    )
+
+
+def _has_hf_transfer_incompatible_env(env: dict[str, str]) -> bool:
+    for k, v in env.items():
+        if k.lower() in _HF_TRANSFER_INCOMPATIBLE_ENV_KEYS and str(v or "").strip():
+            return True
+    return False
+
+
+def _is_non_retryable_hf_download_error(text: str) -> bool:
+    lower = str(text or "").lower()
+    if any(
+        needle in lower
+        for needle in (
+            "401 client error",
+            "403 client error",
+            "404 client error",
+            "401 unauthorized",
+            "403 forbidden",
+            "404 not found",
+            "gated repo",
+            "gatedrepoerror",
+            "repositorynotfounderror",
+            "revisionnotfounderror",
+            "entrynotfounderror",
+            "invalid credentials",
+            "access to model",
+            "no space left on device",
+            "errno 28",
+            "enospc",
+        )
+    ):
+        return True
+    return False
+
+
+def _summarize_tail_lines(lines: Sequence[str], max_chars: int = 300) -> str:
+    """Join recent stderr/output lines from the tail backwards so final exception lines survive."""
+    kept: list[str] = []
+    total = 0
+    for raw in reversed(lines):
+        piece = str(raw or "").strip()
+        if not piece:
+            continue
+        extra = len(piece) + (3 if kept else 0)
+        if kept and total + extra > max_chars:
+            break
+        kept.append(piece)
+        total += extra
+    summary = " | ".join(reversed(kept))
+    if len(summary) > max_chars:
+        summary = "..." + summary[-(max_chars - 3):]
+    return summary
+
+
+def _pgid_has_non_zombie_member_linux(pgid: int) -> bool | None:
+    """Return True/False if /proc can verify live (non-Z/X) members in `pgid`, else None."""
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return None
+    saw_any_stat = False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/stat", "r", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        saw_any_stat = True
+        rparen = raw.rfind(")")
+        if rparen < 0:
+            continue
+        fields = raw[rparen + 2 :].split()
+        if len(fields) < 3:
+            continue
+        state = fields[0]
+        try:
+            pgrp = int(fields[2])
+        except ValueError:
+            continue
+        if pgrp == pgid and state not in ("Z", "X", "x"):
+            return True
+    return False if saw_any_stat else None
+
+
+def _pgid_alive(pgid: int) -> bool:
+    """Return True if any non-zombie process still exists in POSIX process group `pgid`."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    linux_live = _pgid_has_non_zombie_member_linux(pgid)
+    if linux_live is not None:
+        return linux_live
+    return True
+
+
+def _terminate_live_process_group(proc: subprocess.Popen[Any], timeout: float = 5.0) -> None:
+    """Terminate a spawned subprocess and its process-group orphans safely."""
+    if getattr(proc, "_colabone_pgrp_cleaned", False) is True:
+        return
+
+    pid = getattr(proc, "pid", None)
+    own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+    can_killpg = (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid > 0
+        and hasattr(os, "killpg")
+        and pid != own_pgrp
+    )
+    leader_alive = proc.poll() is None
+
+    if not leader_alive:
+        if not can_killpg:
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
+        # The leader has already been reaped. If `pid` itself is live now, the OS
+        # recycled it for an unrelated process; never signal that process group.
+        pid_recycled = False
+        try:
+            os.kill(pid, 0)
+            pid_recycled = True
+        except PermissionError:
+            pid_recycled = True
+        except ProcessLookupError:
+            pid_recycled = False
+        except OSError:
+            pid_recycled = True
+        if pid_recycled or not _pgid_alive(pid):
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
+
+    used_pg = False
+    if can_killpg:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            used_pg = True
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    if leader_alive and not used_pg:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    if leader_alive:
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+
+    if used_pg:
+        while True:
+            proc.poll()
+            if not _pgid_alive(pid) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        if _pgid_alive(pid):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            kill_deadline = time.monotonic() + max(0.5, min(2.0, float(timeout)))
+            while time.monotonic() < kill_deadline:
+                proc.poll()
+                if not _pgid_alive(pid):
+                    break
+                time.sleep(0.05)
+    elif proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=max(0.5, min(2.0, float(timeout))))
+        except subprocess.TimeoutExpired:
+            pass
+
+    if proc.poll() is not None and (not can_killpg or not _pgid_alive(pid)):
+        try:
+            setattr(proc, "_colabone_pgrp_cleaned", True)
+        except (AttributeError, TypeError):
+            pass
+
+
+def _measure_dir_bytes(path: Path) -> int:
+    """Sum regular file sizes under path without following symlinks."""
+    if path.is_symlink() or not path.is_dir():
+        return 0
+    total = 0
+    try:
+        for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
+            base = Path(dirpath)
+            for fname in filenames:
+                fp = base / fname
+                try:
+                    if not fp.is_symlink():
+                        total += fp.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return total
+    return total
+
+
+def _snapshot_dir_has_verified_weights(snap_dir: Path, model_dir_resolved: Path) -> bool:
+    """Verify an HF cache snapshot contains intact weight files without partial markers."""
+    if snap_dir.is_symlink() or not snap_dir.is_dir():
+        return False
+    index_files: list[tuple[Path, Path]] = []
+    has_weight_file = False
+    has_ready_marker = False
+    try:
+        for dirpath, _dirnames, filenames in os.walk(snap_dir, followlinks=False):
+            base = Path(dirpath)
+            for fname in filenames:
+                lower = fname.lower()
+                if any(lower.endswith(sfx) for sfx in _INCOMPLETE_CACHE_SUFFIXES):
+                    return False
+                fpath = base / fname
+                if fname == ".colabone_ready" and not fpath.is_symlink() and fpath.is_file():
+                    has_ready_marker = True
+                    continue
+                if lower.endswith(".index.json"):
+                    index_files.append((base, fpath))
+                    continue
+                if fpath.suffix.lower() not in _CACHE_WEIGHT_SUFFIXES:
+                    continue
+                # Validate EVERY weight file in the snapshot; reject broken/escaping/0-byte weights.
+                try:
+                    resolved = fpath.resolve(strict=True)
+                    resolved.relative_to(model_dir_resolved)
+                    if not resolved.is_file() or resolved.stat().st_size <= 0:
+                        return False
+                    has_weight_file = True
+                except (OSError, ValueError):
+                    return False
+    except OSError:
+        return False
+
+    if index_files:
+        for base, idx_path in index_files:
+            try:
+                idx_resolved = idx_path.resolve(strict=True)
+                idx_resolved.relative_to(model_dir_resolved)
+                if not idx_resolved.is_file() or idx_resolved.stat().st_size <= 0:
+                    return False
+                idx_data = json.loads(idx_resolved.read_text(encoding="utf-8"))
+                weight_map = idx_data.get("weight_map") if isinstance(idx_data, dict) else None
+                if not isinstance(weight_map, dict) or not weight_map:
+                    return False
+                shards = {str(v) for v in weight_map.values() if isinstance(v, str) and v}
+                if not shards:
+                    return False
+                for shard_rel in shards:
+                    if "\\" in shard_rel or shard_rel.startswith("/"):
+                        return False
+                    rel_parts = PurePosixPath(shard_rel).parts
+                    if not rel_parts or any(part in ("", ".", "..") for part in rel_parts):
+                        return False
+                    shard_path = base.joinpath(*rel_parts)
+                    shard_resolved = shard_path.resolve(strict=True)
+                    shard_resolved.relative_to(model_dir_resolved)
+                    if not shard_resolved.is_file() or shard_resolved.stat().st_size <= 0:
+                        return False
+                has_weight_file = True
+            except (OSError, ValueError, TypeError):
+                return False
+
+    return has_ready_marker or has_weight_file
+
+
+class _ColabOneTaskStageProxy:
+    """Forwards task cancellation/notes while scaling progress updates into a sub-range."""
+
+    def __init__(
+        self,
+        task: Any,
+        progress_range: tuple[float, float],
+        *,
+        stopping: threading.Event | None = None,
+    ) -> None:
+        self._task = task
+        self._lo = max(0.0, min(1.0, float(progress_range[0])))
+        self._hi = max(self._lo, min(1.0, float(progress_range[1])))
+        self._stopping = stopping
+        self.lock = getattr(task, "lock", None) or threading.RLock()
+        self.cancel = getattr(task, "cancel", threading.Event())
+        self._last_progress = self._lo
+        self._last_message = ""
+
+    @property
+    def progress(self) -> float:
+        return self._last_progress
+
+    @progress.setter
+    def progress(self, value: Any) -> None:
+        self.update(progress=value)
+
+    @property
+    def message(self) -> str:
+        return self._last_message
+
+    @message.setter
+    def message(self, value: Any) -> None:
+        self.update(message=value)
+
+    @property
+    def cancel_hook(self) -> Any:
+        return getattr(self._task, "cancel_hook", None)
+
+    @cancel_hook.setter
+    def cancel_hook(self, value: Any) -> None:
+        if self._task is not None and hasattr(self._task, "cancel_hook"):
+            self._task.cancel_hook = value
+
+    def check(self) -> None:
+        _task_check(self._task, self._stopping)
+
+    def note(self, message: str, level: str = "info") -> None:
+        _task_note(self._task, message, level=level)
+
+    def update(
+        self,
+        progress: Any = None,
+        message: Any = None,
+        **_kwargs: Any,
+    ) -> None:
+        mapped: float | None = None
+        msg_val = str(message) if isinstance(message, str) and message else None
+        with self.lock:
+            if isinstance(progress, (int, float)) and not isinstance(progress, bool):
+                raw_p = float(progress)
+                if math.isfinite(raw_p):
+                    frac = max(0.0, min(1.0, raw_p))
+                    cand = self._lo + (self._hi - self._lo) * frac
+                    mapped = max(self._last_progress, cand)
+                    self._last_progress = mapped
+            elif msg_val:
+                cand_msg: float | None = None
+                if "虚拟环境" in msg_val:
+                    cand_msg = self._lo + (self._hi - self._lo) * 0.20
+                elif "源码" in msg_val:
+                    cand_msg = self._lo + (self._hi - self._lo) * 0.40
+                elif "安装" in msg_val:
+                    cand_msg = self._lo + (self._hi - self._lo) * 0.55
+                if cand_msg is not None:
+                    mapped = max(self._last_progress, cand_msg)
+                    self._last_progress = mapped
+            if msg_val is not None:
+                self._last_message = msg_val
+        _task_update(
+            self._task,
+            progress=mapped,
+            message=msg_val,
+            monotonic_progress=True,
+        )
 
 
 class ColabOneLiveStudioManager:
@@ -271,6 +993,9 @@ class ColabOneLiveStudioManager:
         self._lifecycle_busy = False
         self._stopping = False
         self._generation = 0
+        self._active_switch_tasks: set[Any] = set()
+        self._env_locks_guard = threading.Lock()
+        self._env_locks: dict[str, threading.Lock] = {}
 
         _ensure_safe_dir(self.root, "Live Studio 根目录")
         self.avatars_dir = self.root / "live-avatars"
@@ -289,7 +1014,10 @@ class ColabOneLiveStudioManager:
         self.port = self.catalog.port
         self.ws_path = self.catalog.ws_path
 
-        self._tokens: dict[str, float] = {}
+        self._tokens: dict[str, dict[str, Any]] = {}
+        self._companion_tickets: dict[str, dict[str, Any]] = {}
+        self._companion_redeem_failures: list[float] = []
+        self._companion_redeem_failures_by_ip: dict[str, list[float]] = {}
         self._runner: Any = None
         self._app: Any = None
         self._running = False
@@ -302,8 +1030,32 @@ class ColabOneLiveStudioManager:
         self._last_gpu_info: dict[str, Any] | None = None
         self._last_loaded_vram_mib: int = 0
         self._last_synthetic: bool = False
+        self._last_auto_provision: bool = False
         self._last_portrait_input_id: str = ""
         self._last_hf_token: str = ""
+
+        # Optional test hooks for offline dependency auto-provisioning tests
+        self._env_installer_fn: Callable[..., Path | None] | None = None
+        self._weight_downloader_fn: Callable[..., Path | None] | None = None
+        self._auto_provision_asr: bool = True
+
+    def mark_starting(self) -> None:
+        with self.lock:
+            if not self._running:
+                self._state = "starting"
+                self._error = ""
+
+    def mark_stopped_clean(self) -> None:
+        with self.lock:
+            if not self._running:
+                self._state = "stopped"
+                self._error = ""
+
+    def mark_start_error(self, error: str) -> None:
+        with self.lock:
+            if not self._running:
+                self._state = "error"
+                self._error = str(error or "")
 
     # ------------------------------------------------------------------
     # Catalog summary
@@ -917,9 +1669,20 @@ class ColabOneLiveStudioManager:
                 return max(0, int(entry.get("min_disk_mib", 0) or 0))
         return 0
 
+    def _env_lock_for(self, engine_id: str) -> threading.Lock:
+        with self._env_locks_guard:
+            lock = self._env_locks.get(engine_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._env_locks[engine_id] = lock
+            return lock
+
     def _is_component_cached(self, comp_id: str) -> bool:
         cache_dir = self.root / "cache" / "live-studio" / comp_id
         if cache_dir.is_symlink() or not cache_dir.is_dir():
+            return False
+        downloading_marker = cache_dir / ".downloading"
+        if downloading_marker.is_symlink() or downloading_marker.exists():
             return False
         ready_marker = cache_dir / ".colabone_ready"
         has_ready_marker = ready_marker.is_file() and not ready_marker.is_symlink()
@@ -931,17 +1694,17 @@ class ColabOneLiveStudioManager:
                     lower = fname.lower()
                     if any(lower.endswith(sfx) for sfx in _INCOMPLETE_CACHE_SUFFIXES):
                         return False
-                    if has_ready_marker or has_verified_weight:
-                        continue
                     fp = base / fname
-                    if fp.is_symlink() or not fp.is_file():
+                    if fp.suffix.lower() not in _CACHE_WEIGHT_SUFFIXES:
                         continue
-                    if fp.suffix.lower() in _CACHE_WEIGHT_SUFFIXES:
-                        try:
-                            if fp.stat().st_size > 0:
-                                has_verified_weight = True
-                        except OSError:
-                            continue
+                    if fp.is_symlink() or not fp.is_file():
+                        return False
+                    try:
+                        if fp.stat().st_size <= 0:
+                            return False
+                        has_verified_weight = True
+                    except OSError:
+                        return False
         except OSError:
             return False
         return has_ready_marker or has_verified_weight
@@ -961,18 +1724,106 @@ class ColabOneLiveStudioManager:
             components.append(("visual_engines", "personalive_dance"))
         total = 0
         for section, comp_id in components:
-            if not self._is_component_cached(comp_id):
+            cached = self._is_component_cached(comp_id)
+            if not cached and section == "streaming_tts":
+                cached = (
+                    self._resolve_component_model_dir(
+                        section, comp_id, require_live_compatible=True
+                    )
+                    is not None
+                )
+            if not cached:
                 total += self._catalog_item_disk_mib(section, comp_id)
         return total + _MIN_FREE_DISK_HEADROOM_MIB
 
+    def _required_provision_disk_mib(
+        self,
+        cfg: ColabOneLiveSessionConfig,
+        *,
+        synthetic: bool = False,
+        include_best_effort_asr: bool = True,
+    ) -> int:
+        """Disk budget strictly for components that will actually be downloaded/installed."""
+        if synthetic:
+            return _MIN_FREE_DISK_HEADROOM_MIB
+        total = 0
+        if (
+            self._resolve_component_model_dir(
+                "streaming_tts", cfg.tts_engine, require_live_compatible=True
+            )
+            is None
+        ):
+            total += self._catalog_item_disk_mib("streaming_tts", cfg.tts_engine)
+        if (
+            include_best_effort_asr
+            and self._auto_provision_asr
+            and self._resolve_component_model_dir("asr_vad", "sensevoice_small") is None
+        ):
+            total += self._catalog_item_disk_mib("asr_vad", "sensevoice_small")
+        return total + _MIN_FREE_DISK_HEADROOM_MIB
+
     # ------------------------------------------------------------------
-    # Ephemeral WebSocket session tokens
+    # Ephemeral WebSocket session tokens & mobile companion pairing
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _parse_safe_canvas_origin(canvas_base_url: str) -> tuple[str, str] | None:
+        """Validate canvas_base_url and return (http_scheme, host_port) or None."""
+        raw = str(canvas_base_url or "").strip().rstrip("/")
+        if not raw or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            return None
+        parsed = urlparse(raw)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        host = (parsed.hostname or "").strip()
+        if not host:
+            return None
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        host_fmt = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        default_port = 443 if scheme == "https" else 80
+        netloc = (
+            f"{host_fmt}:{port}"
+            if port is not None and port != default_port
+            else host_fmt
+        )
+        return scheme, netloc
+
     def _prune_expired_tokens_locked(self, now: float) -> None:
-        expired = [tok for tok, exp in self._tokens.items() if exp <= now]
+        expired = [
+            tok
+            for tok, info in self._tokens.items()
+            if float(info.get("expires_at", 0.0) if isinstance(info, dict) else info) <= now
+        ]
         for tok in expired:
             self._tokens.pop(tok, None)
+
+    def _prune_expired_tickets_locked(self, now: float) -> None:
+        expired = [
+            code
+            for code, info in self._companion_tickets.items()
+            if float(info.get("expires_at", 0.0)) <= now
+        ]
+        for code in expired:
+            self._companion_tickets.pop(code, None)
+        cutoff = now - 60.0
+        self._companion_redeem_failures = [
+            ts for ts in self._companion_redeem_failures if ts > cutoff
+        ]
+        stale_ips: list[str] = []
+        for ip_key, stamps in self._companion_redeem_failures_by_ip.items():
+            kept = [ts for ts in stamps if ts > cutoff]
+            if kept:
+                self._companion_redeem_failures_by_ip[ip_key] = kept
+            else:
+                stale_ips.append(ip_key)
+        for ip_key in stale_ips:
+            self._companion_redeem_failures_by_ip.pop(ip_key, None)
 
     def issue_session_token(
         self,
@@ -980,27 +1831,32 @@ class ColabOneLiveStudioManager:
         *,
         ttl_seconds: float = _DEFAULT_TOKEN_TTL_S,
         allow_loopback_fallback: bool = False,
+        role: str = "desktop",
+        device_label: str = "",
     ) -> dict[str, Any]:
         now = time.time()
         ttl = max(5.0, min(300.0, float(ttl_seconds)))
         token = secrets.token_urlsafe(32)
         expires_at = now + ttl
+        clean_role = "companion" if str(role).strip().lower() == "companion" else "desktop"
+        clean_label = re.sub(r"[\r\n\t\x00-\x1f\x7f]+", " ", str(device_label or "")).strip()[:64]
 
         with self.lock:
             self._prune_expired_tokens_locked(now)
-            self._tokens[token] = expires_at
+            self._tokens[token] = {
+                "expires_at": expires_at,
+                "role": clean_role,
+                "device_label": clean_label,
+            }
 
-        base = (canvas_base_url or "").strip().rstrip("/")
+        origin_parts = self._parse_safe_canvas_origin(canvas_base_url)
         canvas_ready = False
         ws_url = ""
-        if base:
-            parsed = urlparse(base)
-            scheme = "wss" if parsed.scheme == "https" else "ws"
-            if parsed.netloc:
-                ws_url = f"{scheme}://{parsed.netloc}{self.ws_path}"
-                canvas_ready = True
-            elif allow_loopback_fallback:
-                ws_url = f"ws://127.0.0.1:{self.port}{self.ws_path}"
+        if origin_parts is not None:
+            http_scheme, safe_netloc = origin_parts
+            ws_scheme = "wss" if http_scheme == "https" else "ws"
+            ws_url = f"{ws_scheme}://{safe_netloc}{self.ws_path}"
+            canvas_ready = True
         elif allow_loopback_fallback:
             ws_url = f"ws://127.0.0.1:{self.port}{self.ws_path}"
 
@@ -1010,86 +1866,1269 @@ class ColabOneLiveStudioManager:
             "ws_path": self.ws_path,
             "ws_url": ws_url,
             "canvas_ready": canvas_ready,
+            "role": clean_role,
         }
 
-    def verify_session_token(self, token: str, *, consume: bool = True) -> bool:
+    def verify_session_token_info(
+        self, token: str, *, consume: bool = True
+    ) -> dict[str, Any] | None:
         if not isinstance(token, str) or not token:
-            return False
+            return None
+        token_bytes = token.encode("utf-8")
         now = time.time()
         with self.lock:
             self._prune_expired_tokens_locked(now)
             matched_key: str | None = None
-            for candidate, exp in list(self._tokens.items()):
-                if hmac.compare_digest(candidate, token) and exp > now:
+            matched_info: dict[str, Any] | None = None
+            for candidate, info in list(self._tokens.items()):
+                exp = float(info.get("expires_at", 0.0) if isinstance(info, dict) else info)
+                if hmac.compare_digest(candidate.encode("utf-8"), token_bytes) and exp > now:
                     matched_key = candidate
-            if matched_key is None:
-                return False
+                    matched_info = (
+                        dict(info)
+                        if isinstance(info, dict)
+                        else {"expires_at": exp, "role": "desktop", "device_label": ""}
+                    )
+            if matched_key is None or matched_info is None:
+                return None
             if consume:
                 self._tokens.pop(matched_key, None)
-            return True
+            return matched_info
+
+    def verify_session_token(self, token: str, *, consume: bool = True) -> bool:
+        return self.verify_session_token_info(token, consume=consume) is not None
+
+    def issue_companion_ticket(
+        self,
+        canvas_base_url: str = "",
+        *,
+        ttl_seconds: float = 600.0,
+        allow_loopback_fallback: bool = False,
+    ) -> dict[str, Any]:
+        """Issue a single-use pairing code & HTTPS QR URL for mobile companion input."""
+        now = time.time()
+        ttl = max(30.0, min(1800.0, float(ttl_seconds)))
+        code = secrets.token_urlsafe(24)
+        expires_at = now + ttl
+
+        with self.lock:
+            self._prune_expired_tickets_locked(now)
+            # Single active pairing ticket at a time so refreshing QR invalidates prior codes.
+            self._companion_tickets.clear()
+            self._companion_tickets[code] = {
+                "created_at": now,
+                "expires_at": expires_at,
+            }
+
+        origin_parts = self._parse_safe_canvas_origin(canvas_base_url)
+        canvas_ready = False
+        companion_url = ""
+        public_origin = ""
+        if origin_parts is not None:
+            http_scheme, safe_netloc = origin_parts
+            public_origin = f"{http_scheme}://{safe_netloc}"
+            companion_url = (
+                f"{public_origin}{COLABONE_LIVE_COMPANION_PATH}#code={code}"
+            )
+            canvas_ready = True
+        elif allow_loopback_fallback:
+            public_origin = f"http://127.0.0.1:{self.port}"
+            companion_url = (
+                f"{public_origin}{COLABONE_LIVE_COMPANION_PATH}#code={code}"
+            )
+
+        return {
+            "code": code,
+            "expires_at": expires_at,
+            "ttl_seconds": ttl,
+            "companion_path": COLABONE_LIVE_COMPANION_PATH,
+            "companion_url": companion_url,
+            "public_origin": public_origin,
+            "canvas_ready": canvas_ready,
+            "companion": self.companion_status(),
+        }
+
+    def redeem_companion_ticket(
+        self, code: str, *, device_label: str = "", client_ip: str = ""
+    ) -> dict[str, Any] | None:
+        """Atomically redeem a one-time pairing code for a scoped companion WS token."""
+        raw_code = str(code or "").strip() if isinstance(code, str) else ""
+        raw_code_bytes = raw_code.encode("utf-8")
+        ip_key = str(client_ip or "").strip()[:64] or "unknown"
+        safe_label = (
+            re.sub(r"[\r\n\t\x00-\x1f\x7f]+", " ", str(device_label or "")).strip()[:64]
+            if isinstance(device_label, str)
+            else ""
+        ) or "远端移动设备"
+        now = time.time()
+        with self.lock:
+            self._prune_expired_tickets_locked(now)
+            if self._stopping:
+                return None
+            ip_failures = self._companion_redeem_failures_by_ip.get(ip_key, [])
+            if len(ip_failures) >= 15:
+                raise RuntimeError("rate_limited")
+            matched_key: str | None = None
+            if raw_code:
+                for candidate, info in list(self._companion_tickets.items()):
+                    if (
+                        hmac.compare_digest(candidate.encode("utf-8"), raw_code_bytes)
+                        and float(info.get("expires_at", 0.0)) > now
+                    ):
+                        matched_key = candidate
+            if matched_key is None:
+                # Partition failures strictly per client IP with bounded LRU (512 IPs)
+                # so attacker traffic from other IPs cannot DoS the owner's pairing.
+                existing_stamps = self._companion_redeem_failures_by_ip.pop(ip_key, [])
+                if len(self._companion_redeem_failures_by_ip) >= 512:
+                    oldest_ip = next(iter(self._companion_redeem_failures_by_ip))
+                    self._companion_redeem_failures_by_ip.pop(oldest_ip, None)
+                existing_stamps.append(now)
+                self._companion_redeem_failures_by_ip[ip_key] = existing_stamps
+                return None
+            # Single-use: consume ticket AND mint companion WS token atomically under self.lock
+            # so revoke_companion() / stop() can never race between consumption and token insert.
+            self._companion_tickets.pop(matched_key, None)
+            tok = self.issue_session_token(
+                ttl_seconds=60.0,
+                role="companion",
+                device_label=safe_label,
+            )
+        return {
+            "token": tok["token"],
+            "expires_at": tok["expires_at"],
+            "ws_path": self.ws_path,
+            "role": "companion",
+            "device_label": safe_label,
+        }
+
+    def companion_status(self) -> dict[str, Any]:
+        with self.lock:
+            app = self._app
+        default = {
+            "connected": False,
+            "device_label": "",
+            "mic_active": False,
+            "camera_mode": "off",
+            "camera_fps": 0.0,
+            "motion_energy": 0.0,
+            "vision_frame_ready": False,
+            "connected_at": None,
+        }
+        if app is None:
+            return default
+        app_state = getattr(app, "state", None)
+        info = getattr(app_state, "companion_info", None)
+        info_lock = getattr(app_state, "companion_info_lock", None)
+        if isinstance(info, dict):
+            if info_lock is not None:
+                with info_lock:
+                    snap = dict(info)
+            else:
+                snap = dict(info)
+            return {
+                "connected": bool(snap.get("connected", False)),
+                "device_label": str(snap.get("device_label") or ""),
+                "mic_active": bool(snap.get("mic_active", False)),
+                "camera_mode": str(snap.get("camera_mode") or "off"),
+                "camera_fps": round(float(snap.get("camera_fps") or 0.0), 1),
+                "motion_energy": round(float(snap.get("motion_energy") or 0.0), 3),
+                "vision_frame_ready": bool(snap.get("vision_frame_ready", False)),
+                "connected_at": snap.get("connected_at"),
+            }
+        return default
+
+    def revoke_companion(self) -> dict[str, Any]:
+        """Invalidate all pending companion pairing codes/tokens and kick active companion."""
+        with self.lock:
+            self._companion_tickets.clear()
+            for tok, info in list(self._tokens.items()):
+                if isinstance(info, dict) and info.get("role") == "companion":
+                    self._tokens.pop(tok, None)
+            app = self._app
+        if app is not None:
+            app_state = getattr(app, "state", None)
+            kick_fn = getattr(app_state, "kick_companion_sync", None)
+            if callable(kick_fn):
+                try:
+                    kick_fn("revoked_by_desktop")
+                except Exception:
+                    pass
+        return self.companion_status()
 
     # ------------------------------------------------------------------
     # Server lifecycle (start / stop / status)
     # ------------------------------------------------------------------
 
+    def _stopping_event(self) -> threading.Event | None:
+        ev = getattr(self.runtime, "stopping", None) if self.runtime is not None else None
+        return ev if isinstance(ev, threading.Event) else None
+
+    def _catalog_entry(self, section: str, comp_id: str) -> dict[str, Any] | None:
+        for entry in self.catalog_dict.get(section, []):
+            if isinstance(entry, dict) and entry.get("id") == comp_id:
+                return entry
+        return None
+
+    def _hf_cache_dir(self) -> Path:
+        comfy = getattr(self.runtime, "comfy", None) if self.runtime is not None else None
+        tts_mgr = getattr(comfy, "tts", None) if comfy is not None else None
+        engines_dir = getattr(tts_mgr, "engines_dir", None) if tts_mgr is not None else None
+        if engines_dir is not None:
+            return Path(engines_dir) / "_hf_cache"
+        return self.root / "tts-envs" / "_hf_cache"
+
     def _resolve_engine_venv_python(self, engine_id: str) -> Path | None:
         eid = validate_colabone_live_id(engine_id, "引擎 ID")
-        candidate_roots: list[Path] = [
-            self.root / "live-envs" / eid / ".venv",
-            self.root / "tts-envs" / eid / ".venv",
-            self.root / "engines" / eid / ".venv",
-        ]
+        candidate_roots: list[Path] = []
         comfy = getattr(self.runtime, "comfy", None) if self.runtime is not None else None
         tts_mgr = getattr(comfy, "tts", None) if comfy is not None else None
         engines_dir = getattr(tts_mgr, "engines_dir", None) if tts_mgr is not None else None
         if engines_dir is not None:
             candidate_roots.append(Path(engines_dir) / eid / ".venv")
+        candidate_roots.extend(
+            [
+                self.root / "tts-envs" / eid / ".venv",
+                self.root / "live-envs" / eid / ".venv",
+                self.root / "engines" / eid / ".venv",
+            ]
+        )
 
+        seen: set[str] = set()
+        live_venv_dir = self.root / "live-envs" / eid / ".venv"
         for venv_dir in candidate_roots:
+            key = str(venv_dir)
+            if key in seen:
+                continue
+            seen.add(key)
             if venv_dir.is_symlink() or not venv_dir.is_dir():
                 continue
+            if venv_dir == live_venv_dir:
+                inst_marker = venv_dir.parent / ".installing"
+                ready_marker = venv_dir.parent / ".ready.json"
+                if inst_marker.is_symlink() or inst_marker.exists():
+                    continue
+                if ready_marker.is_symlink():
+                    continue
+                if ready_marker.is_file():
+                    try:
+                        parsed_ready = json.loads(ready_marker.read_text(encoding="utf-8"))
+                        if not isinstance(parsed_ready, dict) or parsed_ready.get("engine_id") != eid:
+                            continue
+                    except (OSError, ValueError):
+                        continue
             for rel in ("bin/python", "bin/python3", "Scripts/python.exe"):
                 cand = venv_dir / rel
-                if cand.is_symlink() or not cand.is_file():
+                # On POSIX/Colab, `python -m venv` creates bin/python as a symlink
+                # pointing at the base interpreter; verify parent dir is real and
+                # target resolves to an existing regular file.
+                if cand.parent.is_symlink() or not cand.parent.is_dir():
                     continue
-                return cand
+                try:
+                    if cand.is_file():
+                        return cand
+                except OSError:
+                    continue
         return None
 
-    def _resolve_component_model_dir(self, section: str, comp_id: str) -> Path | None:
+    def _resolve_component_model_dir(
+        self,
+        section: str,
+        comp_id: str,
+        *,
+        require_live_compatible: bool = False,
+    ) -> Path | None:
         cid = validate_colabone_live_id(comp_id, "组件 ID")
         if self._is_component_cached(cid):
             return self.root / "cache" / "live-studio" / cid
 
-        # Also check shared Hugging Face cache snapshots under tts-envs/_hf_cache
-        repo_candidates: list[str] = []
-        for entry in self.catalog_dict.get(section, []):
-            if isinstance(entry, dict) and entry.get("id") == cid:
-                for k in ("aux_repo", "custom_voice_repo", "repo"):
-                    r = str(entry.get(k) or "").strip()
-                    if r and r not in repo_candidates:
-                        repo_candidates.append(r)
+        # Also check shared Hugging Face cache snapshots under tts-envs/_hf_cache.
+        # For qwen3_tts in live mode, VoiceDesign/CustomVoice repos are required
+        # because built-in live presets rely on text instructions without ref_audio.
+        repo_candidates: list[tuple[str, str]] = []
+        entry = self._catalog_entry(section, cid)
+        if entry is not None:
+            if section == "streaming_tts" and cid == "qwen3_tts" and require_live_compatible:
+                key_pairs = (
+                    ("aux_repo", "aux_revision"),
+                    ("custom_voice_repo", "custom_voice_revision"),
+                )
+            else:
+                key_pairs = (
+                    ("aux_repo", "aux_revision"),
+                    ("custom_voice_repo", "custom_voice_revision"),
+                    ("repo", "revision"),
+                )
+            for rk, revk in key_pairs:
+                r = str(entry.get(rk) or "").strip()
+                rev = str(entry.get(revk) or "").strip()
+                if r and not any(prev[0] == r for prev in repo_candidates):
+                    repo_candidates.append((r, rev))
 
-        hf_roots: list[Path] = [self.root / "tts-envs" / "_hf_cache"]
+        hf_roots: list[Path] = []
         comfy = getattr(self.runtime, "comfy", None) if self.runtime is not None else None
         tts_mgr = getattr(comfy, "tts", None) if comfy is not None else None
         engines_dir = getattr(tts_mgr, "engines_dir", None) if tts_mgr is not None else None
         if engines_dir is not None:
             hf_roots.append(Path(engines_dir) / "_hf_cache")
+        default_hf = self.root / "tts-envs" / "_hf_cache"
+        if default_hf not in hf_roots:
+            hf_roots.append(default_hf)
 
         for hf_root in hf_roots:
             if hf_root.is_symlink() or not hf_root.is_dir():
                 continue
-            for repo in repo_candidates:
-                snaps = hf_root / ("models--" + repo.replace("/", "--")) / "snapshots"
+            for repo, rev in repo_candidates:
+                model_dir = hf_root / ("models--" + repo.replace("/", "--"))
+                if model_dir.is_symlink() or not model_dir.is_dir():
+                    continue
+                blobs_dir = model_dir / "blobs"
+                if blobs_dir.is_symlink():
+                    continue
+                if blobs_dir.is_dir():
+                    try:
+                        if any(
+                            b.name.endswith(".incomplete") for b in blobs_dir.iterdir()
+                        ):
+                            continue
+                    except OSError:
+                        continue
+                snaps = model_dir / "snapshots"
                 if snaps.is_symlink() or not snaps.is_dir():
                     continue
                 try:
-                    for snap in sorted(snaps.iterdir(), key=lambda p: p.name, reverse=True):
-                        if snap.is_dir() and not snap.is_symlink():
+                    model_dir_resolved = model_dir.resolve(strict=True)
+                except OSError:
+                    continue
+                if rev and "/" not in rev and "\\" not in rev and ".." not in rev:
+                    for cand_rev in (rev, rev.lower()) if rev != rev.lower() else (rev,):
+                        pinned = snaps / cand_rev
+                        if _snapshot_dir_has_verified_weights(pinned, model_dir_resolved):
+                            return pinned
+                    # If rev is a pinned 40-char hex commit SHA, never silently fall back to
+                    # an unrelated snapshot commit.
+                    if re.fullmatch(r"[0-9a-fA-F]{40}", rev):
+                        continue
+                    ref_file = model_dir / "refs" / rev
+                    if ref_file.is_file() and not ref_file.is_symlink():
+                        try:
+                            ref_sha = ref_file.read_text(encoding="utf-8").strip()
+                            if (
+                                ref_sha
+                                and "/" not in ref_sha
+                                and "\\" not in ref_sha
+                                and ".." not in ref_sha
+                            ):
+                                ref_snap = snaps / ref_sha
+                                if _snapshot_dir_has_verified_weights(
+                                    ref_snap, model_dir_resolved
+                                ):
+                                    return ref_snap
+                        except OSError:
+                            pass
+                try:
+                    for snap in sorted(
+                        snaps.iterdir(), key=lambda p: p.name, reverse=True
+                    ):
+                        if _snapshot_dir_has_verified_weights(snap, model_dir_resolved):
                             return snap
                 except OSError:
                     continue
         return None
+
+    def _select_tts_download_target(self, tts_engine: str) -> tuple[str, str, str]:
+        """Return (repo_id, revision, display_name) for a streaming TTS engine."""
+        eid = validate_colabone_live_id(tts_engine, "流式 TTS 引擎 ID")
+        entry = self._catalog_entry("streaming_tts", eid) or {}
+        name = str(entry.get("name") or eid)
+        if eid == "qwen3_tts":
+            for rk, revk in (
+                ("aux_repo", "aux_revision"),
+                ("custom_voice_repo", "custom_voice_revision"),
+                ("repo", "revision"),
+            ):
+                repo = str(entry.get(rk) or "").strip()
+                if repo:
+                    return repo, str(entry.get(revk) or "").strip(), name
+        repo = str(entry.get("repo") or "").strip()
+        rev = str(entry.get("revision") or "").strip()
+        if not repo:
+            raise RuntimeError(f"流式 TTS 引擎 {eid} 缺少模型仓库配置，无法自动下载")
+        return repo, rev, name
+
+    def _run_provision_command(
+        self,
+        cmd: Sequence[str],
+        task: Any,
+        *,
+        env: dict[str, str],
+        timeout: float = 1200.0,
+        secret_to_scrub: str = "",
+        stage_label: str = "",
+    ) -> None:
+        stopping = self._stopping_event()
+        _task_check(task, stopping)
+        proc = subprocess.Popen(
+            list(cmd),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            start_new_session=True,
+        )
+        out_q: queue.Queue[str | None] = queue.Queue()
+        tail_lines: list[str] = []
+
+        def _drain() -> None:
+            stream = proc.stdout
+            try:
+                if stream is not None:
+                    for line in stream:
+                        out_q.put(line)
+            except Exception:
+                pass
+            finally:
+                out_q.put(None)
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
+
+        term_lock = threading.Lock()
+
+        def _safe_term() -> None:
+            with term_lock:
+                _terminate_live_process_group(proc, timeout=3.0)
+
+        prev_hook = None
+        installed_hook = None
+        if task is not None and hasattr(task, "lock") and hasattr(task, "cancel_hook"):
+            with task.lock:
+                prev_hook = task.cancel_hook
+
+                def _chained_cancel() -> None:
+                    _safe_term()
+                    if callable(prev_hook):
+                        try:
+                            prev_hook()
+                        except Exception:
+                            pass
+
+                installed_hook = _chained_cancel
+                task.cancel_hook = installed_hook
+        deadline = time.monotonic() + max(10.0, float(timeout))
+        eof = False
+        exited_at: float | None = None
+        try:
+            while True:
+                _task_check(task, stopping)
+                now = time.monotonic()
+                if now > deadline:
+                    _safe_term()
+                    raise RuntimeError(f"{stage_label or '依赖安装'}超时（>{int(timeout)}s）")
+                if proc.poll() is not None:
+                    if exited_at is None:
+                        exited_at = now
+                    elif eof or (now - exited_at) >= 2.0:
+                        break
+                try:
+                    line = out_q.get(timeout=0.1)
+                except queue.Empty:
+                    if proc.poll() is not None and (
+                        eof or (exited_at is not None and (time.monotonic() - exited_at) >= 2.0)
+                    ):
+                        break
+                    continue
+                if line is None:
+                    eof = True
+                    if proc.poll() is not None:
+                        break
+                    continue
+                cleaned = scrub_colabone_live_secrets(line.strip(), secret_to_scrub)
+                if cleaned:
+                    tail_lines.append(cleaned)
+                    if len(tail_lines) > 24:
+                        tail_lines = tail_lines[-24:]
+            rc = proc.wait(timeout=10.0)
+            _safe_term()
+            _task_check(task, stopping)
+            if rc != 0:
+                detail = _summarize_tail_lines(tail_lines[-8:], max_chars=300)
+                suffix = f"：{detail}" if detail else ""
+                raise RuntimeError(
+                    scrub_colabone_live_secrets(
+                        f"{stage_label or '依赖安装'}失败（退出码 {rc}）{suffix}",
+                        secret_to_scrub,
+                    )
+                )
+        except BaseException:
+            _safe_term()
+            raise
+        finally:
+            if (
+                installed_hook is not None
+                and task is not None
+                and hasattr(task, "lock")
+                and hasattr(task, "cancel_hook")
+            ):
+                with task.lock:
+                    if task.cancel_hook is installed_hook:
+                        task.cancel_hook = prev_hook
+            reader.join(timeout=1.0)
+            if proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+
+    def _ensure_engine_venv(
+        self,
+        task: Any,
+        section: str,
+        engine_id: str,
+        *,
+        hf_token: str = "",
+        progress_range: tuple[float, float] = (0.08, 0.42),
+    ) -> Path:
+        eid = validate_colabone_live_id(engine_id, "引擎 ID")
+        entry = self._catalog_entry(section, eid) or {}
+        engine_name = str(entry.get("name") or eid)
+        stopping = self._stopping_event()
+        _task_check(task, stopping)
+
+        if self._env_installer_fn is not None:
+            existing = self._resolve_engine_venv_python(eid)
+            if existing is not None:
+                _task_note(task, f"复用已就绪的流式 TTS 运行环境：{engine_name}")
+                _task_update(task, progress=progress_range[1], monotonic_progress=True)
+                return existing
+            _task_update(
+                task,
+                progress=progress_range[0],
+                message=f"正在安装流式语音引擎运行环境：{engine_name}...",
+                monotonic_progress=True,
+            )
+            _task_note(task, f"自动安装缺失的流式语音引擎环境：{engine_name}")
+            installed = self._env_installer_fn(
+                task=task,
+                section=section,
+                engine_id=eid,
+                entry=entry,
+                hf_token=hf_token,
+            )
+            _task_check(task, stopping)
+            resolved = Path(installed) if installed is not None else self._resolve_engine_venv_python(eid)
+            if resolved is None:
+                raise RuntimeError(
+                    f"流式 TTS 引擎 {eid} 的独立运行环境安装完成后未找到 Python 可执行文件"
+                )
+            _task_update(task, progress=progress_range[1], monotonic_progress=True)
+            return resolved
+
+        # Prefer sharing ComfyUI TTS Manager's canonical engine spec & venv so
+        # `.ready.json` fingerprints match 100% and both panels reuse one venv.
+        comfy = getattr(self.runtime, "comfy", None) if self.runtime is not None else None
+        tts_mgr = getattr(comfy, "tts", None) if comfy is not None else None
+        if section == "streaming_tts" and tts_mgr is not None and callable(
+            getattr(tts_mgr, "ensure_engine_env", None)
+        ):
+            canonical_engines = getattr(tts_mgr, "engines_by_id", None)
+            canonical_spec = (
+                canonical_engines.get(eid)
+                if isinstance(canonical_engines, dict)
+                else None
+            )
+            if isinstance(canonical_spec, dict):
+                _task_update(
+                    task,
+                    progress=progress_range[0],
+                    message=f"正在检查并准备流式语音运行环境：{engine_name}...",
+                    monotonic_progress=True,
+                )
+                proxy = _ColabOneTaskStageProxy(
+                    task, progress_range, stopping=stopping
+                )
+                tts_mgr.ensure_engine_env(proxy, canonical_spec, hf_token=hf_token)
+                _task_check(task, stopping)
+                venv_py = self._resolve_engine_venv_python(eid)
+                if venv_py is not None:
+                    _task_update(task, progress=progress_range[1], monotonic_progress=True)
+                    return venv_py
+                raise RuntimeError(
+                    f"流式 TTS 引擎 {eid} 的独立运行环境安装后不可用"
+                )
+
+        # Standalone fallback (when runtime.comfy.tts is not attached)
+        env_dir = self.root / "live-envs" / eid
+        _ensure_safe_dir(env_dir, "Live Studio 引擎环境目录")
+        venv_dir = env_dir / ".venv"
+        if venv_dir.is_symlink():
+            raise ValueError("Live Studio 引擎虚拟环境目录不能是符号链接")
+        live_ready_marker = env_dir / ".ready.json"
+        live_installing_marker = env_dir / ".installing"
+        if live_ready_marker.is_symlink() or live_installing_marker.is_symlink():
+            raise ValueError("Live Studio 引擎状态标记不能是符号链接")
+        pkgs = [
+            str(p).strip()
+            for p in (entry.get("pip_packages") or [])
+            if str(p).strip()
+            and re.split(r"[<>=!~;\[\s]", str(p).strip(), maxsplit=1)[0]
+            .lower()
+            .replace("_", "-")
+            not in _LIVE_TORCH_SKIP_PACKAGES
+        ]
+        if (
+            venv_dir.is_dir()
+            and live_installing_marker.exists()
+            and not live_ready_marker.is_file()
+        ):
+            shutil.rmtree(venv_dir, ignore_errors=True)
+
+        existing = self._resolve_engine_venv_python(eid)
+        if existing is not None:
+            is_live_env_venv = str(existing).startswith(str(venv_dir))
+            live_ready_matches = True
+            if is_live_env_venv and live_ready_marker.is_file():
+                try:
+                    ready_data = json.loads(live_ready_marker.read_text(encoding="utf-8"))
+                    if (
+                        not isinstance(ready_data, dict)
+                        or ready_data.get("engine_id") != eid
+                        or list(ready_data.get("packages") or []) != pkgs
+                    ):
+                        live_ready_matches = False
+                except (OSError, ValueError):
+                    live_ready_matches = False
+            if (
+                not is_live_env_venv
+                or (live_ready_matches and (live_ready_marker.is_file() or not live_installing_marker.exists()))
+            ):
+                _task_note(task, f"复用已就绪的流式 TTS 运行环境：{engine_name}")
+                _task_update(task, progress=progress_range[1], monotonic_progress=True)
+                return existing
+
+        sub_env = _sanitized_live_provision_env()
+        _task_update(
+            task,
+            progress=progress_range[0],
+            message=f"正在创建流式语音隔离虚拟环境：{engine_name}...",
+            monotonic_progress=True,
+        )
+        _task_note(task, f"正在创建隔离虚拟环境：{engine_name}")
+        if venv_dir.exists():
+            shutil.rmtree(venv_dir, ignore_errors=True)
+        try:
+            live_ready_marker.unlink(missing_ok=True)
+            live_installing_marker.write_text(str(time.time()), encoding="utf-8")
+            self._run_provision_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "venv",
+                    "--without-pip",
+                    "--system-site-packages",
+                    str(venv_dir),
+                ],
+                task,
+                env=sub_env,
+                timeout=300.0,
+                secret_to_scrub=hf_token,
+                stage_label=f"{engine_name} 虚拟环境创建",
+            )
+            try:
+                from server.tts_engines import _ensure_parent_venv_pth
+
+                _ensure_parent_venv_pth(venv_dir)
+            except Exception:
+                pass
+            venv_py = None
+            for rel in ("bin/python", "bin/python3", "Scripts/python.exe"):
+                cand = venv_dir / rel
+                if not cand.parent.is_symlink() and cand.parent.is_dir() and cand.is_file():
+                    venv_py = cand
+                    break
+            if venv_py is None:
+                raise RuntimeError(f"流式 TTS 引擎 {eid} 虚拟环境创建不完整")
+            if pkgs:
+                mid_pct = progress_range[0] + (progress_range[1] - progress_range[0]) * 0.45
+                _task_update(
+                    task,
+                    progress=mid_pct,
+                    message=f"正在安装流式语音引擎依赖：{engine_name}（共 {len(pkgs)} 个包）...",
+                    monotonic_progress=True,
+                )
+                _task_note(task, f"正在安装 {engine_name} 依赖包：{', '.join(pkgs)}")
+                try:
+                    self._run_provision_command(
+                        [str(venv_py), "-m", "pip", "--version"],
+                        task,
+                        env=sub_env,
+                        timeout=60.0,
+                        secret_to_scrub=hf_token,
+                        stage_label=f"{engine_name} pip 检查",
+                    )
+                except RuntimeError as pip_exc:
+                    if _is_cancelled_error(pip_exc):
+                        raise
+                    self._run_provision_command(
+                        [str(venv_py), "-m", "ensurepip", "--upgrade"],
+                        task,
+                        env=sub_env,
+                        timeout=180.0,
+                        secret_to_scrub=hf_token,
+                        stage_label=f"{engine_name} ensurepip",
+                    )
+                constraint_args: list[str] = []
+                constraints_path = env_dir / ".torch-constraints.txt"
+                if not constraints_path.is_symlink():
+                    try:
+                        from server.tts_engines import _collect_torch_constraints
+
+                        pins = _collect_torch_constraints()
+                        if pins:
+                            constraints_path.write_text("\n".join(pins) + "\n", encoding="utf-8")
+                            constraint_args = ["-c", str(constraints_path)]
+                    except Exception:
+                        pass
+                self._run_provision_command(
+                    [
+                        str(venv_py),
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-input",
+                        "--disable-pip-version-check",
+                        *constraint_args,
+                        *pkgs,
+                    ],
+                    task,
+                    env=sub_env,
+                    timeout=1200.0,
+                    secret_to_scrub=hf_token,
+                    stage_label=f"{engine_name} 依赖安装",
+                )
+            atomic_json(
+                live_ready_marker,
+                {"engine_id": eid, "ready_at": time.time(), "packages": pkgs},
+            )
+            live_installing_marker.unlink(missing_ok=True)
+        except BaseException:
+            shutil.rmtree(venv_dir, ignore_errors=True)
+            raise
+
+        _task_update(task, progress=progress_range[1], monotonic_progress=True)
+        _task_note(task, f"流式语音运行环境安装完成：{engine_name}")
+        return venv_py
+
+    def _download_hf_repo_with_progress(
+        self,
+        task: Any,
+        *,
+        repo_id: str,
+        revision: str = "",
+        label: str,
+        comp_id: str,
+        cache_dir: Path | None = None,
+        local_dir: Path | None = None,
+        venv_python: Path | None = None,
+        hf_token: str = "",
+        progress_range: tuple[float, float] = (0.42, 0.80),
+        timeout: float = 3600.0,
+    ) -> Path:
+        stopping = self._stopping_event()
+        _task_check(task, stopping)
+        lo, hi = progress_range
+        token_clean = str(hf_token or "").strip()
+        rev_clean = str(revision or "").strip()
+
+        if cache_dir is not None:
+            _ensure_safe_dir(cache_dir, f"{label} 缓存目录")
+        if local_dir is not None:
+            _ensure_safe_dir(local_dir, f"{label} 模型目录")
+
+        msg = f"正在下载模型权重：{label}（{repo_id}）..."
+        _task_update(task, progress=lo, message=msg, monotonic_progress=True)
+        _task_note(task, msg)
+
+        if self._weight_downloader_fn is not None:
+            est_total = _LIVE_FALLBACK_WEIGHT_BYTES.get(comp_id, 2 * 1024**3)
+            transfer = ColabOneTransfer(est_total, threads=4, progress_range=progress_range)
+            _task_set_transfer(task, transfer)
+            try:
+                out = self._weight_downloader_fn(
+                    task=task,
+                    transfer=transfer,
+                    repo_id=repo_id,
+                    revision=rev_clean,
+                    label=label,
+                    comp_id=comp_id,
+                    cache_dir=cache_dir,
+                    local_dir=local_dir,
+                    venv_python=venv_python,
+                    hf_token=token_clean,
+                    progress_range=progress_range,
+                )
+                _task_check(task, stopping)
+                _task_update(task, progress=hi, monotonic_progress=True)
+                return Path(out) if out is not None else (local_dir or cache_dir or self.root)
+            finally:
+                _task_set_transfer(task, None)
+
+        dl_python = Path(venv_python) if venv_python is not None else Path(sys.executable)
+        payload_json = json.dumps(
+            {
+                "repo_id": repo_id,
+                "revision": rev_clean,
+                "cache_dir": str(cache_dir) if cache_dir is not None else "",
+                "local_dir": str(local_dir) if local_dir is not None else "",
+            },
+            ensure_ascii=False,
+        )
+
+        watch_dir = (
+            local_dir
+            if local_dir is not None
+            else (
+                cache_dir / ("models--" + repo_id.replace("/", "--")) / "blobs"
+                if cache_dir is not None
+                else None
+            )
+        )
+
+        def _run_download_attempt(*, force_disable_hf_transfer: bool) -> tuple[Path | None, bool, str]:
+            dl_env = _sanitized_live_provision_env()
+            if force_disable_hf_transfer:
+                dl_env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+            elif (
+                _has_hf_transfer_incompatible_env(dl_env)
+                and "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
+            ):
+                dl_env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+            if token_clean:
+                dl_env["HF_TOKEN"] = token_clean
+
+            est_total = _LIVE_FALLBACK_WEIGHT_BYTES.get(comp_id, 2 * 1024**3)
+            transfer = ColabOneTransfer(est_total, threads=4, progress_range=progress_range)
+            _task_set_transfer(task, transfer)
+
+            initial_disk_bytes = _measure_dir_bytes(watch_dir) if watch_dir is not None else 0
+            last_reported_bytes = 0
+            last_disk_poll = time.monotonic()
+            hf_transfer_active = False
+            result_path_str = ""
+            stderr_tail: list[str] = []
+
+            proc = subprocess.Popen(
+                [str(dl_python), "-u", "-c", _COLABONE_LIVE_HF_DOWNLOAD_SCRIPT, payload_json],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=dl_env,
+                start_new_session=True,
+            )
+            out_q: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+            def _drain_stream(stream: Any, tag: str) -> None:
+                try:
+                    if stream is not None:
+                        for raw in stream:
+                            out_q.put((tag, raw))
+                except Exception:
+                    pass
+                finally:
+                    out_q.put((tag, None))
+
+            t_out = threading.Thread(
+                target=_drain_stream, args=(proc.stdout, "out"), daemon=True
+            )
+            t_err = threading.Thread(
+                target=_drain_stream, args=(proc.stderr, "err"), daemon=True
+            )
+            t_out.start()
+            t_err.start()
+
+            term_lock = threading.Lock()
+
+            def _safe_dl_term() -> None:
+                with term_lock:
+                    _terminate_live_process_group(proc, timeout=3.0)
+
+            prev_hook = None
+            installed_hook = None
+            if task is not None and hasattr(task, "lock") and hasattr(task, "cancel_hook"):
+                with task.lock:
+                    prev_hook = task.cancel_hook
+
+                    def _chained_dl_cancel() -> None:
+                        _safe_dl_term()
+                        if callable(prev_hook):
+                            try:
+                                prev_hook()
+                            except Exception:
+                                pass
+
+                    installed_hook = _chained_dl_cancel
+                    task.cancel_hook = installed_hook
+
+            deadline = time.monotonic() + max(30.0, float(timeout))
+            out_eof = False
+            err_eof = False
+            exited_at: float | None = None
+            received_exact_plan = False
+
+            def _apply_progress_bytes(
+                downloaded: int,
+                total_bytes: int | None = None,
+                *,
+                filename: str | None = None,
+                file_index: int | None = None,
+                file_count: int | None = None,
+            ) -> None:
+                nonlocal last_reported_bytes
+                with transfer.lock:
+                    if total_bytes is not None and total_bytes > 0:
+                        if received_exact_plan:
+                            transfer.total = max(transfer.total, total_bytes)
+                        else:
+                            # Never lower transfer.total below est_total from a single small file
+                            # when HfApi().repo_info() failed to provide an exact repo plan.
+                            transfer.total = max(transfer.total, total_bytes)
+                    eff_total = max(1, int(transfer.total or 1))
+                    clamped_done = max(last_reported_bytes, min(int(downloaded), eff_total))
+                    delta = clamped_done - last_reported_bytes
+                    last_reported_bytes = clamped_done
+                    transfer.downloaded = clamped_done
+                    transfer.phase = "downloading"
+                    transfer.active = 1
+                    if filename:
+                        transfer.file = filename
+                    if file_index is not None and file_index >= 0:
+                        transfer.index = file_index
+                    if file_count is not None and file_count > 0:
+                        transfer.count = file_count
+                if delta > 0:
+                    transfer.wire(delta)
+                frac = min(1.0, last_reported_bytes / max(1, int(transfer.total or 1)))
+                _task_update(
+                    task,
+                    progress=lo + (hi - lo) * frac,
+                    monotonic_progress=True,
+                )
+
+            try:
+                while True:
+                    _task_check(task, stopping)
+                    now = time.monotonic()
+                    if now > deadline:
+                        _safe_dl_term()
+                        raise RuntimeError(f"下载 {label} 模型权重超时（>{int(timeout)}s）")
+                    if proc.poll() is not None:
+                        if exited_at is None:
+                            exited_at = now
+                        elif (out_eof and err_eof) or (now - exited_at) >= 2.0:
+                            break
+
+                    if watch_dir is not None and (now - last_disk_poll) >= 0.8:
+                        last_disk_poll = now
+                        disk_delta = max(0, _measure_dir_bytes(watch_dir) - initial_disk_bytes)
+                        if disk_delta > last_reported_bytes:
+                            _apply_progress_bytes(disk_delta)
+
+                    try:
+                        tag, raw_line = out_q.get(timeout=0.1)
+                    except queue.Empty:
+                        if proc.poll() is not None and (
+                            (out_eof and err_eof)
+                            or (exited_at is not None and (time.monotonic() - exited_at) >= 2.0)
+                        ):
+                            break
+                        continue
+
+                    if raw_line is None:
+                        if tag == "out":
+                            out_eof = True
+                        else:
+                            err_eof = True
+                        if proc.poll() is not None and out_eof and err_eof:
+                            break
+                        continue
+
+                    if tag == "err":
+                        cleaned_err = scrub_colabone_live_secrets(raw_line.strip(), token_clean)
+                        if cleaned_err == _HF_TRANSFER_ACTIVE_MARKER:
+                            hf_transfer_active = True
+                            continue
+                        if cleaned_err:
+                            stderr_tail.append(cleaned_err)
+                            if len(stderr_tail) > 24:
+                                stderr_tail = stderr_tail[-24:]
+                        continue
+
+                    line_str = raw_line.strip()
+                    if not line_str.startswith(_HF_DL_PROGRESS_PREFIX):
+                        continue
+                    try:
+                        evt = json.loads(line_str[len(_HF_DL_PROGRESS_PREFIX) :])
+                    except ValueError:
+                        continue
+                    if not isinstance(evt, dict):
+                        continue
+                    kind = evt.get("event")
+                    if kind == "plan":
+                        p_total = int(evt.get("total_bytes") or 0)
+                        p_files = int(evt.get("file_count") or 0)
+                        with transfer.lock:
+                            if p_total > 0:
+                                received_exact_plan = True
+                                transfer.total = max(last_reported_bytes, p_total)
+                            if p_files > 0:
+                                transfer.count = p_files
+                    elif kind == "progress":
+                        p_done = int(evt.get("downloaded_bytes") or 0)
+                        p_total = int(evt.get("total_bytes") or 0)
+                        p_idx = int(evt.get("file_index") or 0)
+                        p_cnt = int(evt.get("file_count") or 0)
+                        p_file = str(evt.get("filename") or "")
+                        _apply_progress_bytes(
+                            p_done,
+                            p_total if p_total > 0 else None,
+                            filename=p_file or None,
+                            file_index=p_idx,
+                            file_count=p_cnt if p_cnt > 0 else None,
+                        )
+                    elif kind == "done":
+                        result_path_str = str(evt.get("path") or "").strip()
+
+                rc = proc.wait(timeout=10.0)
+                _safe_dl_term()
+                _task_check(task, stopping)
+                err_full = "\n".join(stderr_tail)
+                err_summary = _summarize_tail_lines(stderr_tail[-8:], max_chars=320)
+                if rc != 0:
+                    return None, hf_transfer_active, err_summary or f"退出码 {rc}", err_full
+                with transfer.lock:
+                    transfer.downloaded = max(transfer.downloaded, transfer.total)
+                    transfer.phase = "done"
+                _task_update(task, progress=hi, monotonic_progress=True)
+                return (
+                    Path(result_path_str) if result_path_str else (local_dir or cache_dir),
+                    hf_transfer_active,
+                    "",
+                    "",
+                )
+            except BaseException:
+                _safe_dl_term()
+                raise
+            finally:
+                _task_set_transfer(task, None)
+                if (
+                    installed_hook is not None
+                    and task is not None
+                    and hasattr(task, "lock")
+                    and hasattr(task, "cancel_hook")
+                ):
+                    with task.lock:
+                        if task.cancel_hook is installed_hook:
+                            task.cancel_hook = prev_hook
+                t_out.join(timeout=1.0)
+                t_err.join(timeout=1.0)
+                for s in (proc.stdout, proc.stderr):
+                    if s is not None:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+
+        out_path, used_hft, err_text, err_full = _run_download_attempt(
+            force_disable_hf_transfer=False
+        )
+        if out_path is not None:
+            _task_note(task, f"模型权重下载完成：{label}（{repo_id}）")
+            return out_path
+
+        if used_hft and not _is_non_retryable_hf_download_error(err_full or err_text):
+            _task_check(task, stopping)
+            _task_note(
+                task,
+                f"{label} 加速下载失败，自动关闭 hf_transfer 并回退标准下载重试一次",
+                level="warning",
+            )
+            out_path, _used2, err_text2, _err_full2 = _run_download_attempt(
+                force_disable_hf_transfer=True
+            )
+            if out_path is not None:
+                _task_note(task, f"模型权重下载完成：{label}（{repo_id}）")
+                return out_path
+            err_text = err_text2 or err_text
+
+        raise RuntimeError(
+            scrub_colabone_live_secrets(
+                f"下载 {label} 模型权重（{repo_id}）失败：{err_text}",
+                token_clean,
+            )
+        )
+
+    def _ensure_tts_ready(
+        self,
+        task: Any,
+        tts_engine: str,
+        *,
+        hf_token: str = "",
+        venv_range: tuple[float, float] = (0.08, 0.42),
+        weight_range: tuple[float, float] = (0.42, 0.80),
+    ) -> tuple[Path, Path]:
+        eid = validate_colabone_live_id(tts_engine, "流式 TTS 引擎 ID")
+        with self._env_lock_for(eid):
+            repo_id, revision, engine_name = self._select_tts_download_target(eid)
+            venv_py = self._ensure_engine_venv(
+                task,
+                "streaming_tts",
+                eid,
+                hf_token=hf_token,
+                progress_range=venv_range,
+            )
+            model_dir = self._resolve_component_model_dir(
+                "streaming_tts", eid, require_live_compatible=True
+            )
+            if model_dir is not None:
+                _task_note(task, f"复用已缓存的流式语音模型权重：{engine_name}")
+                _task_update(task, progress=weight_range[1], monotonic_progress=True)
+                return venv_py, model_dir
+
+            self._download_hf_repo_with_progress(
+                task,
+                repo_id=repo_id,
+                revision=revision,
+                label=engine_name,
+                comp_id=eid,
+                cache_dir=self._hf_cache_dir(),
+                venv_python=venv_py,
+                hf_token=hf_token,
+                progress_range=weight_range,
+            )
+            resolved = self._resolve_component_model_dir(
+                "streaming_tts", eid, require_live_compatible=True
+            )
+            if resolved is not None:
+                return venv_py, resolved
+            raise RuntimeError(
+                f"流式 TTS 引擎 {eid} 的模型权重下载完成后未通过完整性校验"
+            )
+
+    def ensure_session_dependencies(
+        self,
+        task: Any,
+        config: dict[str, Any] | ColabOneLiveStartRequest,
+        *,
+        synthetic: bool = False,
+        min_free_disk_mib: int | None = None,
+    ) -> dict[str, Any]:
+        """Auto-install missing streaming TTS venv/weights and best-effort ASR weights."""
+        req = (
+            config
+            if isinstance(config, ColabOneLiveStartRequest)
+            else ColabOneLiveStartRequest.model_validate(config)
+        )
+        if synthetic:
+            return {"tts_engine": req.tts_engine, "synthetic": True}
+
+        stopping = self._stopping_event()
+        _task_check(task, stopping)
+        session_cfg = req.to_session_config()
+        required_disk_mib = (
+            max(0, int(min_free_disk_mib))
+            if min_free_disk_mib is not None
+            else self._required_provision_disk_mib(
+                session_cfg, synthetic=False, include_best_effort_asr=False
+            )
+        )
+        free_disk_mib = self._free_disk_mib()
+        if free_disk_mib < required_disk_mib:
+            raise ValueError(
+                f"磁盘空间不足（剩余 {free_disk_mib} MiB，至少需要 {required_disk_mib} MiB）"
+            )
+
+        venv_py, tts_model_dir = self._ensure_tts_ready(
+            task,
+            req.tts_engine,
+            hf_token=req.hf_token,
+            venv_range=(0.08, 0.42),
+            weight_range=(0.42, 0.80),
+        )
+
+        # Best-effort SenseVoice-Small ASR weights (non-fatal if unavailable or low disk)
+        asr_dir: Path | None = self._resolve_component_model_dir(
+            "asr_vad", "sensevoice_small"
+        )
+        if asr_dir is None and self._auto_provision_asr:
+            asr_entry = self._catalog_entry("asr_vad", "sensevoice_small") or {}
+            asr_repo = str(asr_entry.get("repo") or "").strip()
+            asr_rev = str(asr_entry.get("revision") or "").strip()
+            asr_name = str(asr_entry.get("name") or "SenseVoice-Small")
+            asr_need_mib = (
+                self._catalog_item_disk_mib("asr_vad", "sensevoice_small")
+                + _MIN_FREE_DISK_HEADROOM_MIB
+            )
+            if asr_repo and self._free_disk_mib() >= asr_need_mib:
+                target_asr_dir = self.root / "cache" / "live-studio" / "sensevoice_small"
+                with self._env_lock_for("sensevoice_small"):
+                    asr_dl_marker = target_asr_dir / ".downloading"
+                    try:
+                        _ensure_safe_dir(target_asr_dir, f"{asr_name} 模型目录")
+                        if asr_dl_marker.is_symlink():
+                            raise ValueError("SenseVoice 下载标记不能是符号链接")
+                        asr_dl_marker.write_text(str(time.time()), encoding="utf-8")
+                        self._download_hf_repo_with_progress(
+                            task,
+                            repo_id=asr_repo,
+                            revision=asr_rev,
+                            label=f"{asr_name} 语音识别",
+                            comp_id="sensevoice_small",
+                            local_dir=target_asr_dir,
+                            venv_python=venv_py,
+                            hf_token=req.hf_token,
+                            progress_range=(0.80, 0.88),
+                            timeout=1800.0,
+                        )
+                        atomic_json(
+                            target_asr_dir / ".colabone_ready",
+                            {
+                                "repo": asr_repo,
+                                "revision": asr_rev,
+                                "ready_at": time.time(),
+                            },
+                        )
+                        asr_dl_marker.unlink(missing_ok=True)
+                        asr_dir = target_asr_dir
+                    except Exception as asr_exc:
+                        if _is_cancelled_error(asr_exc):
+                            raise
+                        err_clean = scrub_colabone_live_secrets(
+                            str(asr_exc) or type(asr_exc).__name__, req.hf_token
+                        )
+                        _task_note(
+                            task,
+                            f"SenseVoice 语音识别权重下载失败（已跳过，不影响开播）：{err_clean}",
+                            level="warning",
+                        )
+            elif asr_repo:
+                _task_note(
+                    task,
+                    f"剩余磁盘空间不足以缓存 {asr_name} 语音识别权重（已跳过，不影响开播）",
+                    level="warning",
+                )
+        _task_update(task, progress=0.88, monotonic_progress=True)
+        return {
+            "tts_engine": req.tts_engine,
+            "tts_venv_python": str(venv_py),
+            "tts_model_dir": str(tts_model_dir),
+            "asr_model_dir": str(asr_dir) if asr_dir is not None else "",
+        }
 
     def _build_tts_engine(
         self,
@@ -1101,7 +3140,11 @@ class ColabOneLiveStudioManager:
         if synthetic:
             return create_colabone_streaming_tts_engine(tts_engine, mock=True)
         venv_py = self._resolve_engine_venv_python(tts_engine)
-        model_dir = self._resolve_component_model_dir("streaming_tts", tts_engine)
+        model_dir = self._resolve_component_model_dir(
+            "streaming_tts", tts_engine, require_live_compatible=True
+        )
+        if model_dir is None:
+            model_dir = self._resolve_component_model_dir("streaming_tts", tts_engine)
         if venv_py is None:
             raise RuntimeError(
                 f"流式 TTS 引擎 {tts_engine} 的独立运行环境尚未安装就绪，无法启动实时语音合成"
@@ -1115,6 +3158,7 @@ class ColabOneLiveStudioManager:
             mock=False,
             venv_python=venv_py,
             model_dir=model_dir,
+            hf_cache_dir=self._hf_cache_dir(),
             hf_token=hf_token,
             fallback_mock=False,
         )
@@ -1201,11 +3245,13 @@ class ColabOneLiveStudioManager:
         self._vram_budget = None
         self._error = ""
         self._tokens.clear()
+        self._companion_tickets.clear()
         self._last_hf_token = ""
         self._last_portrait_input_id = ""
         self._last_gpu_info = None
         self._last_loaded_vram_mib = 0
         self._last_synthetic = False
+        self._last_auto_provision = False
         return runner, app
 
     @staticmethod
@@ -1379,6 +3425,102 @@ class ColabOneLiveStudioManager:
 
             old_tts = getattr(app.state, "tts_engine", None)
             if candidate_cfg.tts_engine != cur_cfg.tts_engine:
+                with self.lock:
+                    allow_auto_prov = bool(self._last_auto_provision)
+                if not synthetic and allow_auto_prov:
+                    comfy_ref = getattr(self.runtime, "comfy", None) if self.runtime is not None else None
+                    tts_mgr_ref = getattr(comfy_ref, "tts", None) if comfy_ref is not None else None
+                    engines_dir_ref = getattr(tts_mgr_ref, "engines_dir", None) if tts_mgr_ref is not None else None
+                    venv_py_cand = self._resolve_engine_venv_python(candidate_cfg.tts_engine)
+                    need_venv = venv_py_cand is None
+                    if not need_venv:
+                        if engines_dir_ref is not None:
+                            tts_ready_file = Path(engines_dir_ref) / candidate_cfg.tts_engine / ".ready.json"
+                            if tts_ready_file.is_symlink() or not tts_ready_file.is_file():
+                                need_venv = True
+                        else:
+                            live_env_dir = self.root / "live-envs" / candidate_cfg.tts_engine
+                            try:
+                                in_live_env = venv_py_cand.resolve().is_relative_to(live_env_dir.resolve())
+                            except OSError:
+                                in_live_env = False
+                            if in_live_env:
+                                live_ready_file = live_env_dir / ".ready.json"
+                                if live_ready_file.is_symlink() or not live_ready_file.is_file():
+                                    need_venv = True
+                    need_weights = (
+                        self._resolve_component_model_dir(
+                            "streaming_tts",
+                            candidate_cfg.tts_engine,
+                            require_live_compatible=True,
+                        )
+                        is None
+                    )
+                    if need_venv or need_weights:
+                        required_disk_mib = (
+                            self._catalog_item_disk_mib(
+                                "streaming_tts", candidate_cfg.tts_engine
+                            )
+                            if need_weights
+                            else 0
+                        ) + _MIN_FREE_DISK_HEADROOM_MIB
+                        free_disk_mib = self._free_disk_mib()
+                        if free_disk_mib < required_disk_mib:
+                            raise ValueError(
+                                f"磁盘空间不足（剩余 {free_disk_mib} MiB，至少需要 {required_disk_mib} MiB）"
+                            )
+
+                        studio_ref = self
+
+                        class _ColabOneSwitchTaskAdapter:
+                            def __init__(self) -> None:
+                                self.lock = threading.RLock()
+                                self.cancel_hook: Callable[[], None] | None = None
+                                self.transfer: Any = None
+
+                            def check(self) -> None:
+                                with studio_ref.lock:
+                                    aborted = (
+                                        studio_ref._stopping
+                                        or not studio_ref._running
+                                        or studio_ref._generation != gen
+                                    )
+                                if aborted:
+                                    from server.runtime import ColabOneCancelledError
+
+                                    raise ColabOneCancelledError(
+                                        "实时直播会话正在停止，切换引擎已取消"
+                                    )
+
+                            def snapshot(self) -> dict[str, Any]:
+                                return {}
+
+                            def trigger_cancel(self) -> None:
+                                with self.lock:
+                                    hook = self.cancel_hook
+                                if callable(hook):
+                                    try:
+                                        hook()
+                                    except Exception:
+                                        pass
+
+                        switch_task = _ColabOneSwitchTaskAdapter()
+                        with self.lock:
+                            if self._stopping or not self._running or self._generation != gen:
+                                raise RuntimeError("实时直播会话正在停止，切换引擎已取消")
+                            self._active_switch_tasks.add(switch_task)
+                        try:
+                            self._ensure_tts_ready(
+                                switch_task,
+                                candidate_cfg.tts_engine,
+                                hf_token=hf_token,
+                            )
+                        finally:
+                            with self.lock:
+                                self._active_switch_tasks.discard(switch_task)
+                        with self.lock:
+                            if self._stopping or not self._running or self._generation != gen:
+                                raise RuntimeError("实时直播会话正在停止，切换引擎已取消")
                 new_tts = self._build_tts_engine(
                     candidate_cfg.tts_engine,
                     synthetic=synthetic,
@@ -1526,6 +3668,9 @@ class ColabOneLiveStudioManager:
         synthetic: bool = False,
         min_free_disk_mib: int | None = None,
         frame_pump_enabled: bool | None = None,
+        task: Any = None,
+        auto_provision: bool = False,
+        prewarm_tts: bool = False,
     ) -> dict[str, Any]:
         req = (
             config
@@ -1533,6 +3678,8 @@ class ColabOneLiveStudioManager:
             else ColabOneLiveStartRequest.model_validate(config)
         )
         session_cfg = req.to_session_config()
+        stopping = self._stopping_event()
+        _task_check(task, stopping)
         budget = self.check_vram(
             session_cfg,
             gpu_info=gpu_info,
@@ -1544,17 +3691,6 @@ class ColabOneLiveStudioManager:
             if rec:
                 msg = f"{msg}。建议：{rec}"
             raise ValueError(msg)
-
-        required_disk_mib = (
-            max(0, int(min_free_disk_mib))
-            if min_free_disk_mib is not None
-            else self._required_disk_mib(session_cfg, synthetic=synthetic)
-        )
-        free_disk_mib = self._free_disk_mib()
-        if free_disk_mib < required_disk_mib:
-            raise ValueError(
-                f"磁盘空间不足（剩余 {free_disk_mib} MiB，至少需要 {required_disk_mib} MiB）"
-            )
 
         if req.portrait_input_id and self._resolve_portrait_input_path(req.portrait_input_id) is None:
             raise ValueError("人像输入文件不存在或已失效，请重新上传")
@@ -1568,16 +3704,81 @@ class ColabOneLiveStudioManager:
             avatar_data, req.portrait_input_id
         )
 
+        # Auto-provision missing dependencies BEFORE acquiring _lifecycle_busy so stop()
+        # or cancellation can never deadlock waiting on long downloads.
+        with self.lock:
+            entry_gen = self._generation
+        started_marking = bool(auto_provision and not synthetic)
+        if started_marking:
+            self.mark_starting()
+        try:
+            if started_marking:
+                self.ensure_session_dependencies(
+                    task,
+                    req,
+                    synthetic=False,
+                    min_free_disk_mib=min_free_disk_mib,
+                )
+
+            required_disk_mib = (
+                max(0, int(min_free_disk_mib))
+                if min_free_disk_mib is not None
+                else (
+                    # Provisioning already ran (or prewarm-only after provisioning);
+                    # never fail startup because best-effort SenseVoice ASR was skipped.
+                    self._required_provision_disk_mib(
+                        session_cfg,
+                        synthetic=synthetic,
+                        include_best_effort_asr=False,
+                    )
+                    if (auto_provision or prewarm_tts)
+                    else self._required_disk_mib(session_cfg, synthetic=synthetic)
+                )
+            )
+            free_disk_mib = self._free_disk_mib()
+            if free_disk_mib < required_disk_mib:
+                raise ValueError(
+                    f"磁盘空间不足（剩余 {free_disk_mib} MiB，至少需要 {required_disk_mib} MiB）"
+                )
+
+            _task_check(task, stopping)
+            with self.lock:
+                if self._generation != entry_gen:
+                    raise _cancelled_error_cls()("操作已取消")
+        except Exception as prov_exc:
+            if started_marking:
+                if _is_cancelled_error(prov_exc):
+                    self.mark_stopped_clean()
+                    raise
+                secret_list = [req.hf_token, req.rtmp_url]
+                if req.external_llm is not None:
+                    secret_list.append(req.external_llm.api_key)
+                scrubbed = scrub_colabone_live_secrets(str(prov_exc), *secret_list)
+                self.mark_start_error(scrubbed)
+                if isinstance(prov_exc, ValueError):
+                    raise ValueError(scrubbed) from None
+                raise RuntimeError(scrubbed) from None
+            raise
+
         # Serialize concurrent start()/stop() via _lifecycle_cond WITHOUT holding
         # _lifecycle_lock across runner.stop() / runner.start().
         with self._lifecycle_cond:
             while self._lifecycle_busy:
                 self._lifecycle_cond.wait()
-            self._lifecycle_busy = True
             with self.lock:
+                if self._generation != entry_gen:
+                    raise _cancelled_error_cls()("操作已取消")
+                self._lifecycle_busy = True
                 self._stopping = True
                 self._generation += 1
+                active_switches_before_restart = list(self._active_switch_tasks)
                 prev_runner, prev_app = self._detach_session_locked()
+
+        for sw_task in active_switches_before_restart:
+            try:
+                sw_task.trigger_cancel()
+            except Exception:
+                pass
 
         try:
             if prev_runner is not None or prev_app is not None:
@@ -1595,10 +3796,60 @@ class ColabOneLiveStudioManager:
             encoder: Any = None
             runner: Any = None
             try:
+                _task_check(task, stopping)
                 tts = self._build_tts_engine(
                     req.tts_engine,
                     synthetic=synthetic,
                     hf_token=req.hf_token,
+                )
+                if prewarm_tts and not synthetic and callable(getattr(tts, "load", None)):
+                    tts_entry = self._catalog_entry("streaming_tts", req.tts_engine) or {}
+                    tts_name = str(tts_entry.get("name") or req.tts_engine)
+                    _task_update(
+                        task,
+                        progress=0.90,
+                        message=f"正在预热流式语音模型到显存：{tts_name}...",
+                        monotonic_progress=True,
+                    )
+                    _task_note(task, f"正在预热流式语音模型：{tts_name}")
+                    prev_hook = None
+                    installed_hook = None
+                    if task is not None and hasattr(task, "lock") and hasattr(task, "cancel_hook"):
+                        def _tts_cancel_hook() -> None:
+                            try:
+                                tts.unload()
+                            except Exception:
+                                pass
+                            if callable(prev_hook):
+                                try:
+                                    prev_hook()
+                                except Exception:
+                                    pass
+
+                        with task.lock:
+                            prev_hook = task.cancel_hook
+                            installed_hook = _tts_cancel_hook
+                            task.cancel_hook = installed_hook
+                    try:
+                        # Re-check cancellation AFTER installing cancel_hook so a cancel
+                        # between line 3411 and hook install cannot freeze for 120s.
+                        _task_check(task, stopping)
+                        tts.load()
+                    except Exception:
+                        _task_check(task, stopping)
+                        raise
+                    finally:
+                        if task is not None and hasattr(task, "lock") and hasattr(task, "cancel_hook"):
+                            with task.lock:
+                                if task.cancel_hook is installed_hook:
+                                    task.cancel_hook = prev_hook
+                    _task_check(task, stopping)
+
+                _task_update(
+                    task,
+                    progress=0.95,
+                    message="正在启动实时演播服务...",
+                    monotonic_progress=True,
                 )
                 visual = self._build_visual_engine(
                     req.visual_engine,
@@ -1636,6 +3887,8 @@ class ColabOneLiveStudioManager:
                 )
                 app = create_colabone_live_app(
                     verify_token=self.verify_session_token,
+                    verify_token_info=self.verify_session_token_info,
+                    redeem_companion_ticket=self.redeem_companion_ticket,
                     session_config=session_cfg,
                     avatar=avatar_data,
                     external_llm=req.external_llm,
@@ -1653,14 +3906,28 @@ class ColabOneLiveStudioManager:
                     ws_path=self.ws_path,
                 )
 
+                _task_check(task, stopping)
                 if server_factory is not None:
                     runner = server_factory(app, host="127.0.0.1", port=self.port)
                 else:
                     runner = ColabOneLiveServerRunner(app, host="127.0.0.1", port=self.port)
                 runner.start()
 
+                cancelled_during_start = False
+                try:
+                    _task_check(task, stopping)
+                except Exception as chk_exc:
+                    if _is_cancelled_error(chk_exc):
+                        cancelled_during_start = True
+                    else:
+                        raise
+
                 with self.lock:
-                    if self._stopping or self._generation != start_gen:
+                    if (
+                        cancelled_during_start
+                        or self._stopping
+                        or self._generation != start_gen
+                    ):
                         aborted = True
                     else:
                         self._app = app
@@ -1675,12 +3942,16 @@ class ColabOneLiveStudioManager:
                         self._last_gpu_info = dict(gpu_info) if isinstance(gpu_info, dict) else None
                         self._last_loaded_vram_mib = int(loaded_model_vram_mib or 0)
                         self._last_synthetic = bool(synthetic)
+                        self._last_auto_provision = bool(auto_provision or prewarm_tts)
                         self._last_portrait_input_id = req.portrait_input_id
                         self._last_hf_token = req.hf_token
                         aborted = False
                 if aborted:
                     self._teardown_detached_session(runner, app)
-                    raise RuntimeError("实时直播会话在启动过程中被停止")
+                    runner = None
+                    from server.runtime import ColabOneCancelledError
+
+                    raise ColabOneCancelledError("实时直播会话在启动过程中被停止")
             except Exception as exc:
                 if runner is not None:
                     try:
@@ -1698,6 +3969,20 @@ class ColabOneLiveStudioManager:
                         encoder.close()
                     except Exception:
                         pass
+                if _is_cancelled_error(exc):
+                    with self.lock:
+                        self._app = None
+                        self._runner = None
+                        self._running = False
+                        self._state = "stopped"
+                        self._started_at = None
+                        self._active_config = None
+                        self._active_session_cfg = None
+                        self._vram_budget = None
+                        self._last_hf_token = ""
+                        self._last_portrait_input_id = ""
+                        self._error = ""
+                    raise
                 secret_list = [req.hf_token, req.rtmp_url]
                 if req.external_llm is not None:
                     secret_list.append(req.external_llm.api_key)
@@ -1728,6 +4013,12 @@ class ColabOneLiveStudioManager:
         with self.lock:
             self._stopping = True
             self._generation += 1
+            active_switches = list(self._active_switch_tasks)
+        for sw_task in active_switches:
+            try:
+                sw_task.trigger_cancel()
+            except Exception:
+                pass
 
         with self._lifecycle_cond:
             while self._lifecycle_busy:
@@ -1809,6 +4100,7 @@ class ColabOneLiveStudioManager:
                 "started_at": self._started_at,
                 "avatar_count": len(self.list_avatars()),
                 "driving_motion_count": len(self.list_driving_motions()),
+                "companion": self.companion_status(),
                 "error": self._error,
             }
 
@@ -1900,8 +4192,8 @@ class ColabOneLiveStudioManager:
                 }
             if code not in (404, 405):
                 text = scrub_colabone_live_secrets(
-                    str(getattr(resp, "text", "") or "")[:240], req.api_key
-                )
+                    str(getattr(resp, "text", "") or "")[:4096], req.api_key
+                )[:240]
                 return {
                     "ok": False,
                     "status_code": code,
@@ -1945,8 +4237,8 @@ class ColabOneLiveStudioManager:
                     "error": f"外部 LLM 对话探针返回重定向 ({chat_code})，出于安全策略已拒绝跟随跳转",
                 }
             err_text = scrub_colabone_live_secrets(
-                str(getattr(chat_resp, "text", "") or "")[:240], req.api_key
-            )
+                str(getattr(chat_resp, "text", "") or "")[:4096], req.api_key
+            )[:240]
             return {
                 "ok": False,
                 "status_code": chat_code,
@@ -2094,11 +4386,17 @@ class ColabOneLiveStudioManager:
             elif isinstance(result, dict):
                 if "bytes" in result and isinstance(result["bytes"], (bytes, bytearray)):
                     raw_bytes = bytes(result["bytes"])
+                    cand_ext = str(result.get("extension") or "").strip().lower().lstrip(".")
+                    if cand_ext in COLABONE_LIVE_CLIP_EXTENSIONS:
+                        clip_ext = cand_ext
                 elif "path" in result:
                     src_path = Path(result["path"])
                     if src_path.is_symlink() or not src_path.is_file():
                         raise ValueError(f"生成的动作文件不存在或为符号链接: {action_id}")
-                    cand_ext = src_path.suffix.lower().lstrip(".")
+                    cand_ext = (
+                        src_path.suffix.lower().lstrip(".")
+                        or str(result.get("extension") or "").strip().lower().lstrip(".")
+                    )
                     if cand_ext in COLABONE_LIVE_CLIP_EXTENSIONS:
                         clip_ext = cand_ext
                     raw_bytes = src_path.read_bytes()

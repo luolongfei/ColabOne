@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,13 +29,68 @@ const (
 )
 
 var (
-	errUnsatisfiableMediaRange = errors.New("作品读取范围不合法")
-	errInvalidMediaRangeSyntax = errors.New("invalid byte range")
-	errInvalidOutputID         = errors.New("产物编号不合法")
-	errDriveDirectReadRequired = errors.New("该作品已保存至 Google 云盘，请点击「在 Google 云盘查看」或开启无感云盘 API 后直接预览")
-	errRuntimeMediaUnavailable = errors.New("当前算力服务暂未就绪，暂不可访问该作品文件")
-	errGuestMediaAccessFailed  = errors.New("当前无法访问该作品文件，请稍后再试")
+	// ErrOutputMediaOffline indicates an output cannot currently be streamed because
+	// it is offline or archived in Drive without direct read access.
+	ErrOutputMediaOffline = errors.New("该作品暂离线，请稍后再试")
+
+	errUnsatisfiableMediaRange   = errors.New("作品读取范围不合法")
+	errInvalidMediaRangeSyntax   = errors.New("invalid byte range")
+	errInvalidOutputID           = errors.New("产物编号不合法")
+	errDriveDirectReadRequired   = errors.New("该作品已保存至 Google 云盘，请点击「在 Google 云盘查看」或开启无感云盘 API 后直接预览")
+	errRuntimeMediaUnavailable   = errors.New("当前算力服务暂未就绪，暂不可访问该作品文件")
+	errGuestMediaAccessFailed    = errors.New("当前无法访问该作品文件，请稍后再试")
+	errSanitizedMediaUnavailable = errors.New("作品暂离线或暂不可访问，请稍后再试")
+	errSanitizedMediaNotFound    = errors.New("作品不存在")
 )
+
+type colabOneSanitizedMediaError struct {
+	msg    string
+	target error
+}
+
+func (e *colabOneSanitizedMediaError) Error() string {
+	return e.msg
+}
+
+func (e *colabOneSanitizedMediaError) Unwrap() error {
+	return e.target
+}
+
+type colabOneOutputMetaReceiver interface {
+	SetColabOneOutputMeta(id, filename, ext, mime string, size int64)
+}
+
+func sanitizeOutputMediaError(err error, opts ColabOneOutputMediaOptions) error {
+	if err == nil || (!opts.SanitizeErrors && !opts.RuntimeOnly) {
+		return err
+	}
+	switch {
+	case errors.Is(err, ErrNotFound) || isNotFoundError(err):
+		return &colabOneSanitizedMediaError{
+			msg:    errSanitizedMediaNotFound.Error(),
+			target: ErrNotFound,
+		}
+	case errors.Is(err, errInvalidOutputID),
+		errors.Is(err, errUnsatisfiableMediaRange),
+		errors.Is(err, errRuntimeMediaUnavailable):
+		return err
+	case errors.Is(err, errDriveDirectReadRequired):
+		return &colabOneSanitizedMediaError{
+			msg:    ErrOutputMediaOffline.Error(),
+			target: ErrOutputMediaOffline,
+		}
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	default:
+		if opts.SanitizeErrors {
+			return &colabOneSanitizedMediaError{
+				msg:    errSanitizedMediaUnavailable.Error(),
+				target: ErrOutputMediaOffline,
+			}
+		}
+		return errGuestMediaAccessFailed
+	}
+}
 
 type colabOneUnsatisfiableMediaRangeError struct {
 	totalSize int64
@@ -55,6 +109,10 @@ type ColabOneOutputMediaOptions struct {
 	// RuntimeOnly restricts media resolution and streaming strictly to the active
 	// remote GPU runtime, never inspecting host Google Drive records or APIs.
 	RuntimeOnly bool
+	// SanitizeErrors maps upstream Google Drive, API, or host errors to clean
+	// guest-safe messages while still allowing Drive-backed outputs to be served
+	// seamlessly when RuntimeOnly is false.
+	SanitizeErrors bool
 }
 
 // ColabOneOutputMediaMeta describes a resolved workflow output ready for HTTP
@@ -62,6 +120,7 @@ type ColabOneOutputMediaOptions struct {
 type ColabOneOutputMediaMeta struct {
 	ID           string
 	Size         int64
+	SHA256       string
 	Mime         string
 	Extension    string
 	Filename     string
@@ -149,6 +208,30 @@ func parseColabOneByteRange(hdr string, totalSize int64) (start, end int64, isRa
 	return s, e, true, nil
 }
 
+func (c *ColabOneController) withRootContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reqCtx, cancel := context.WithCancel(ctx)
+	if c.rootCtx != nil {
+		if c.rootCtx.Err() != nil {
+			cancel()
+			return reqCtx, cancel
+		}
+		stop := context.AfterFunc(c.rootCtx, cancel)
+		if c.rootCtx.Err() != nil {
+			stop()
+			cancel()
+			return reqCtx, cancel
+		}
+		return reqCtx, func() {
+			stop()
+			cancel()
+		}
+	}
+	return reqCtx, cancel
+}
+
 func (c *ColabOneController) driveStreamClient() *http.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -158,6 +241,15 @@ func (c *ColabOneController) driveStreamClient() *http.Client {
 	}
 	if c.driveStreamHTTPClient != nil {
 		return c.driveStreamHTTPClient
+	}
+	if c.stop.IsSet() {
+		// Controller is closing/closed: avoid allocating a new cloned transport pool
+		// that will never be cached or closed.
+		return &http.Client{
+			Transport:     http.DefaultTransport,
+			Timeout:       0,
+			CheckRedirect: refuseDriveRedirects,
+		}
 	}
 	// Cached pooled streaming client: reuses TLS keep-alive connections across
 	// consecutive HTTP Range requests while bounding only response-header wait
@@ -173,12 +265,13 @@ func (c *ColabOneController) driveStreamClient() *http.Client {
 	} else {
 		transport = http.DefaultTransport
 	}
-	c.driveStreamHTTPClient = &http.Client{
+	client := &http.Client{
 		Transport:     transport,
 		Timeout:       0,
 		CheckRedirect: refuseDriveRedirects,
 	}
-	return c.driveStreamHTTPClient
+	c.driveStreamHTTPClient = client
+	return client
 }
 
 func (c *ColabOneController) probeDriveFileSize(
@@ -232,6 +325,11 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 	if !reHex32ID.MatchString(cleanID) {
 		return nil, errInvalidOutputID
 	}
+	reqCtx, cancelReq := c.withRootContext(ctx)
+	defer cancelReq()
+	if err := reqCtx.Err(); err != nil {
+		return nil, err
+	}
 
 	c.mu.Lock()
 	gpuReady := asString(asMap(c.data["runtime"])["state"]) == "ready"
@@ -249,10 +347,14 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 		}
 	}
 	var driveRec *ColabOneDriveOutputRecord
+	var acctKey string
 	var lastSynced float64
 	if !opts.RuntimeOnly {
-		acctKey := c.currentDriveAccountKeyLocked()
+		acctKey = c.currentDriveAccountKeyLocked()
 		lastSynced = c.driveOutputsLastSynced
+		if c.driveOutputsLastSyncAttempt > lastSynced {
+			lastSynced = c.driveOutputsLastSyncAttempt
+		}
 		if acctKey != "" && c.driveOutputs != nil {
 			if bucket := c.driveOutputs[acctKey]; bucket != nil {
 				driveRec = bucket[cleanID].clone()
@@ -278,7 +380,20 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 				driveRec.DriveMode != "colab_drivefs" &&
 				(lastSynced <= 0 || nowUnixFloat()-lastSynced >= colabOneMediaOnDemandSyncCooldownSec)
 			if needOnDemandSync {
-				if _, syncErr := c.SyncDriveOutputs(ctx); syncErr == nil {
+				syncRes, syncErr := c.SyncDriveOutputs(reqCtx)
+				if syncErr != nil {
+					if reqCtx.Err() == nil && !c.isShuttingDown(reqCtx) {
+						c.mu.Lock()
+						if acctKey != "" && c.currentDriveAccountKeyLocked() == acctKey {
+							c.driveOutputsLastSyncAttempt = nowUnixFloat()
+						}
+						c.mu.Unlock()
+					}
+					if !gpuReady || liveRec == nil {
+						return nil, syncErr
+					}
+				} else if asBool(syncRes["synced"]) {
+					driveRec = nil
 					c.mu.Lock()
 					if curAcct := c.currentDriveAccountKeyLocked(); curAcct != "" && c.driveOutputs != nil {
 						if bucket := c.driveOutputs[curAcct]; bucket != nil && bucket[cleanID] != nil {
@@ -297,10 +412,22 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 				}
 				size := driveRec.Size
 				if size <= 0 {
-					token, tokErr := c.driveAccessToken(ctx)
+					token, tokErr := c.driveAccessToken(reqCtx)
 					if tokErr == nil {
-						if probed, probeErr := c.probeDriveFileSize(ctx, token, quotaProject, fileID); probeErr == nil && probed > 0 {
+						if probed, probeErr := c.probeDriveFileSize(reqCtx, token, quotaProject, fileID); probeErr == nil && probed > 0 {
 							size = probed
+							persistedSize := false
+							c.mu.Lock()
+							if curAcct := c.currentDriveAccountKeyLocked(); curAcct != "" && c.driveOutputs != nil {
+								if bucket := c.driveOutputs[curAcct]; bucket != nil && bucket[cleanID] != nil && bucket[cleanID].Size <= 0 {
+									bucket[cleanID].Size = probed
+									persistedSize = true
+								}
+							}
+							c.mu.Unlock()
+							if persistedSize {
+								_ = c.saveDriveOutputs()
+							}
 						} else if liveRec == nil || !gpuReady {
 							if probeErr != nil {
 								return nil, probeErr
@@ -315,6 +442,7 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 					return &ColabOneOutputMediaMeta{
 						ID:           cleanID,
 						Size:         size,
+						SHA256:       sanitizeDriveSHA256(driveRec.SHA256),
 						Mime:         km[1],
 						Extension:    ext,
 						Filename:     fmt.Sprintf("ColabOne-%s.%s", cleanID[:8], ext),
@@ -341,6 +469,7 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 		return &ColabOneOutputMediaMeta{
 			ID:         cleanID,
 			Size:       liveRec.Size,
+			SHA256:     sanitizeDriveSHA256(liveRec.SHA256),
 			Mime:       km[1],
 			Extension:  ext,
 			Filename:   fmt.Sprintf("ColabOne-%s.%s", cleanID[:8], ext),
@@ -351,7 +480,7 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 
 	// 3) Live runtime fallback when local snapshot hasn't refreshed yet.
 	if gpuReady {
-		res, err := c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=0", cleanID), nil, "", 0)
+		res, err := c.remote(reqCtx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=0", cleanID), nil, "", 0)
 		if err == nil {
 			m := asMap(res)
 			sz, _ := asInt64(m["size"])
@@ -376,6 +505,11 @@ func (c *ColabOneController) ResolveOutputMediaMetaWithOptions(
 				return nil, ErrNotFound
 			}
 			return nil, errGuestMediaAccessFailed
+		} else if driveRec == nil {
+			if errors.Is(err, ErrNotFound) || isNotFoundError(err) {
+				return nil, ErrNotFound
+			}
+			return nil, err
 		}
 	}
 
@@ -444,7 +578,7 @@ func writeOutputMediaError(rw http.ResponseWriter, r *http.Request, status int, 
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
 	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("X-ColabOne-Error", url.QueryEscape(safe))
+	h.Set("X-ColabOne-Error", strings.ReplaceAll(url.PathEscape(safe), "+", "%2B"))
 	rw.WriteHeader(status)
 	if r == nil || r.Method != http.MethodHead {
 		_ = json.NewEncoder(rw).Encode(map[string]string{"error": safe})
@@ -472,6 +606,9 @@ func (c *ColabOneController) ServeOutputMediaHTTPWithOptions(
 	identity string,
 	opts ColabOneOutputMediaOptions,
 ) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		rw.Header().Set("Allow", "GET, HEAD")
 		writeOutputMediaError(rw, r, http.StatusMethodNotAllowed, "不支持的请求方法")
@@ -480,19 +617,30 @@ func (c *ColabOneController) ServeOutputMediaHTTPWithOptions(
 
 	meta, err := c.ResolveOutputMediaMetaWithOptions(ctx, identity, opts)
 	if err != nil {
+		sanitize := opts.SanitizeErrors || opts.RuntimeOnly
 		status := http.StatusBadGateway
 		msg := err.Error()
 		switch {
-		case errors.Is(err, ErrNotFound):
+		case errors.Is(err, ErrNotFound) || isNotFoundError(err):
 			status = http.StatusNotFound
+			if sanitize {
+				msg = errSanitizedMediaNotFound.Error()
+			}
 		case errors.Is(err, errInvalidOutputID):
 			status = http.StatusBadRequest
 		case errors.Is(err, errDriveDirectReadRequired):
-			status = http.StatusForbidden
+			if sanitize {
+				status = http.StatusServiceUnavailable
+				msg = ErrOutputMediaOffline.Error()
+			} else {
+				status = http.StatusForbidden
+			}
 		case errors.Is(err, errRuntimeMediaUnavailable):
 			status = http.StatusServiceUnavailable
 		default:
-			if opts.RuntimeOnly {
+			if opts.SanitizeErrors {
+				msg = errSanitizedMediaUnavailable.Error()
+			} else if opts.RuntimeOnly {
 				msg = errGuestMediaAccessFailed.Error()
 			}
 		}
@@ -530,26 +678,85 @@ func (c *ColabOneController) ServeOutputMediaHTTPWithOptions(
 			writeOutputMediaError(rw, r, http.StatusRequestedRangeNotSatisfiable, streamErr.Error())
 			return
 		}
+		sanitize := opts.SanitizeErrors || opts.RuntimeOnly
 		status := http.StatusBadGateway
+		msg := streamErr.Error()
 		if errors.Is(streamErr, ErrNotFound) || isNotFoundError(streamErr) {
 			status = http.StatusNotFound
-		}
-		msg := streamErr.Error()
-		if opts.RuntimeOnly && status == http.StatusBadGateway {
+			if sanitize {
+				msg = errSanitizedMediaNotFound.Error()
+			}
+		} else if opts.SanitizeErrors {
+			msg = errSanitizedMediaUnavailable.Error()
+		} else if opts.RuntimeOnly {
 			msg = errGuestMediaAccessFailed.Error()
 		}
 		writeOutputMediaError(rw, r, status, msg)
 	}
 
+	rawRange := r.Header.Get("Range")
+	// Fast path: serve directly from verified local persistent LRU disk cache (<1ms).
+	if f, _, hit := c.openLocalOutputCacheFileChecked(meta.ID, meta.Size, meta.SHA256); hit {
+		defer f.Close()
+		c.serveOutputMediaFromFile(rw, r, meta, f, rawRange, start, end, isRange)
+		return
+	}
+
 	if meta.Source == "drive" && !opts.RuntimeOnly {
+		// On full-file cache miss (<= 64 MiB), populate local cache via single-flight and serve from SSD.
+		if !isRange && c.canCacheOutputSize(meta.Size) {
+			f, _, hit, cacheErr := c.ensureOutputCached(ctx, meta, "drive")
+			if hit {
+				defer f.Close()
+				c.serveOutputMediaFromFile(rw, r, meta, f, rawRange, start, end, isRange)
+				return
+			}
+			if cacheErr != nil {
+				if meta.HasRuntime && ctx.Err() == nil && !errors.Is(cacheErr, context.Canceled) {
+					rtMeta := *meta
+					rtMeta.Source = "runtime"
+					if rtF, _, rtHit, rtCacheErr := c.ensureOutputCached(ctx, &rtMeta, "runtime"); rtHit {
+						defer rtF.Close()
+						c.serveOutputMediaFromFile(rw, r, &rtMeta, rtF, rawRange, start, end, isRange)
+						return
+					} else if rtCacheErr != nil {
+						meta.Size = rtMeta.Size
+						writeStreamError(rtCacheErr)
+						return
+					}
+					wroteRT, rtErr := c.streamRuntimeOutputMedia(ctx, rw, &rtMeta, start, end, isRange)
+					if rtErr == nil || wroteRT {
+						return
+					}
+					meta.Size = rtMeta.Size
+					writeStreamError(rtErr)
+					return
+				}
+				writeStreamError(cacheErr)
+				return
+			}
+		}
+
 		wroteHeaders, streamErr := c.streamDriveOutputMedia(ctx, rw, meta, start, end, isRange)
 		if streamErr == nil {
 			return
 		}
-		if !wroteHeaders && meta.HasRuntime {
+		if !wroteHeaders && meta.HasRuntime && ctx.Err() == nil && !errors.Is(streamErr, context.Canceled) {
 			// Seamless fallback to active remote runtime if Drive file is unavailable.
 			rtMeta := *meta
 			rtMeta.Source = "runtime"
+			const smallSyncRangeCacheThreshold = 4 * 1024 * 1024
+			if c.canCacheOutputSize(rtMeta.Size) && (!isRange || rtMeta.Size <= smallSyncRangeCacheThreshold) {
+				if rtF, _, rtHit, rtCacheErr := c.ensureOutputCached(ctx, &rtMeta, "runtime"); rtHit {
+					defer rtF.Close()
+					c.serveOutputMediaFromFile(rw, r, &rtMeta, rtF, rawRange, start, end, isRange)
+					return
+				} else if rtCacheErr != nil {
+					meta.Size = rtMeta.Size
+					writeStreamError(rtCacheErr)
+					return
+				}
+			}
 			wroteRT, rtErr := c.streamRuntimeOutputMedia(ctx, rw, &rtMeta, start, end, isRange)
 			if rtErr == nil || wroteRT {
 				return
@@ -562,6 +769,23 @@ func (c *ColabOneController) ServeOutputMediaHTTPWithOptions(
 			writeStreamError(streamErr)
 		}
 		return
+	}
+
+	// Runtime output cache miss (<= 64 MiB): for full-file requests or small files (<= 4 MiB),
+	// coalesce via single-flight parallel chunk fetcher; for larger Range requests (e.g. video
+	// bytes=0-1 probes / progressive seeks), stream the requested range immediately without blocking headers.
+	const smallSyncRangeCacheThreshold = 4 * 1024 * 1024
+	if c.canCacheOutputSize(meta.Size) && (!isRange || meta.Size <= smallSyncRangeCacheThreshold) {
+		f, _, hit, cacheErr := c.ensureOutputCached(ctx, meta, "runtime")
+		if hit {
+			defer f.Close()
+			c.serveOutputMediaFromFile(rw, r, meta, f, rawRange, start, end, isRange)
+			return
+		}
+		if cacheErr != nil {
+			writeStreamError(cacheErr)
+			return
+		}
 	}
 
 	wroteHeaders, streamErr := c.streamRuntimeOutputMedia(ctx, rw, meta, start, end, isRange)
@@ -577,12 +801,14 @@ func (c *ColabOneController) streamDriveOutputMedia(
 	start, end int64,
 	isRange bool,
 ) (wroteHeaders bool, err error) {
-	token, err := c.driveAccessToken(ctx)
+	reqCtx, cancelReq := c.withRootContext(ctx)
+	defer cancelReq()
+	token, err := c.driveAccessToken(reqCtx)
 	if err != nil {
 		return false, err
 	}
 	reqURL := c.driveAPIBase() + "/files/" + url.PathEscape(meta.DriveFileID) + "?alt=media"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return false, err
 	}
@@ -594,6 +820,9 @@ func (c *ColabOneController) streamDriveOutputMedia(
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	}
 
+	if err := reqCtx.Err(); err != nil {
+		return false, err
+	}
 	resp, err := c.driveStreamClient().Do(req)
 	if err != nil {
 		return false, err
@@ -610,27 +839,35 @@ func (c *ColabOneController) streamDriveOutputMedia(
 		}
 		return false, errUnsatisfiableMediaRange
 	}
-	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+	if (!isRange && resp.StatusCode != http.StatusOK) ||
+		(isRange && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK) {
 		return false, &ColabOneHTTPError{
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("从 Google 云盘读取作品失败（HTTP %d）", resp.StatusCode),
 		}
 	}
+	if resp.ContentLength == 0 {
+		return false, errors.New("作品大小不合法")
+	}
 
 	wantLen := end - start + 1
 	respMeta := *meta
+	authoritativeTotal := int64(0)
 	var reader io.Reader = resp.Body
 	if isRange && resp.StatusCode == http.StatusOK {
-		if resp.ContentLength > 0 && resp.ContentLength < respMeta.Size {
+		if resp.ContentLength > 0 && resp.ContentLength != respMeta.Size {
 			respMeta.Size = resp.ContentLength
+			meta.Size = resp.ContentLength
+			authoritativeTotal = resp.ContentLength
 			if start >= respMeta.Size {
-				meta.Size = respMeta.Size
 				return false, &colabOneUnsatisfiableMediaRangeError{totalSize: respMeta.Size}
 			}
 			if end >= respMeta.Size {
 				end = respMeta.Size - 1
 				wantLen = end - start + 1
 			}
+		} else if resp.ContentLength > 0 {
+			authoritativeTotal = resp.ContentLength
 		}
 		// Upstream ignored Range and returned 200 OK: skip to start before copying.
 		if start > 0 {
@@ -651,8 +888,9 @@ func (c *ColabOneController) streamDriveOutputMedia(
 		if crStart, crEnd, crTotal, parsed := parseContentRangeSpec(crHdr); parsed {
 			if crTotal > 0 {
 				respMeta.Size = crTotal
+				meta.Size = crTotal
+				authoritativeTotal = crTotal
 				if start >= crTotal {
-					meta.Size = crTotal
 					return false, &colabOneUnsatisfiableMediaRangeError{totalSize: crTotal}
 				}
 				if end >= crTotal {
@@ -669,8 +907,9 @@ func (c *ColabOneController) streamDriveOutputMedia(
 			}
 		} else if total := parseContentRangeTotal(crHdr); total > 0 {
 			respMeta.Size = total
+			meta.Size = total
+			authoritativeTotal = total
 			if start >= total {
-				meta.Size = total
 				return false, &colabOneUnsatisfiableMediaRangeError{totalSize: total}
 			}
 			if end >= total {
@@ -693,10 +932,15 @@ func (c *ColabOneController) streamDriveOutputMedia(
 	} else {
 		if resp.ContentLength > 0 {
 			respMeta.Size = resp.ContentLength
+			meta.Size = resp.ContentLength
+			authoritativeTotal = resp.ContentLength
 			end = resp.ContentLength - 1
 		}
 		wantLen = respMeta.Size
 		reader = io.LimitReader(resp.Body, respMeta.Size)
+	}
+	if authoritativeTotal > 0 {
+		c.backfillDriveOutputSize(meta.ID, authoritativeTotal)
 	}
 
 	writeOutputMediaHeaders(rw, &respMeta, start, end, isRange)
@@ -742,46 +986,18 @@ func (c *ColabOneController) streamRuntimeOutputMedia(
 ) (wroteHeaders bool, err error) {
 	flusher, _ := rw.(http.Flusher)
 	respMeta := *meta
-	cur := start
-	for cur <= end {
-		if err := ctx.Err(); err != nil {
-			return wroteHeaders, err
-		}
-		res, err := c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=%d", respMeta.ID, cur), nil, "", 0)
-		if err != nil {
-			return wroteHeaders, err
-		}
-		m := asMap(res)
-		if rawOff, hasOff := m["offset"]; hasOff {
-			if offVal, ok := asInt64(rawOff); !ok || offVal != cur {
-				return wroteHeaders, errors.New("输出文件分片数据不完整")
-			}
-		}
+	fetchEnd := end
+	if !isRange {
+		fetchEnd = -1
+	}
+	actualSize, _, fetchErr := c.fetchRuntimeOutputChunks(ctx, respMeta.ID, start, fetchEnd, func(chunk []byte, total int64, _ map[string]any) error {
 		if !wroteHeaders {
-			if actualSize, ok := asInt64(m["size"]); ok && actualSize > 0 {
-				respMeta.Size = actualSize
-				if cur >= actualSize {
-					meta.Size = actualSize
-					return false, &colabOneUnsatisfiableMediaRangeError{totalSize: actualSize}
-				}
-				if !isRange || end >= actualSize {
-					end = actualSize - 1
+			if total > 0 {
+				respMeta.Size = total
+				if !isRange || end >= total {
+					end = total - 1
 				}
 			}
-		}
-		rawB64 := asString(m["data"])
-		if rawB64 == "" {
-			return wroteHeaders, errors.New("输出文件分片数据不完整")
-		}
-		chunk, decErr := base64.StdEncoding.DecodeString(rawB64)
-		if decErr != nil || len(chunk) == 0 || int64(len(chunk)) > colabOneMediaRuntimeChunkBytes {
-			return wroteHeaders, errors.New("输出文件分片数据不完整")
-		}
-		remaining := end - cur + 1
-		if int64(len(chunk)) > remaining {
-			chunk = chunk[:remaining]
-		}
-		if !wroteHeaders {
 			writeOutputMediaHeaders(rw, &respMeta, start, end, isRange)
 			if isRange {
 				rw.WriteHeader(http.StatusPartialContent)
@@ -791,12 +1007,320 @@ func (c *ColabOneController) streamRuntimeOutputMedia(
 			wroteHeaders = true
 		}
 		if _, wErr := rw.Write(chunk); wErr != nil {
-			return true, wErr
+			return wErr
 		}
 		if flusher != nil {
 			flusher.Flush()
 		}
-		cur += int64(len(chunk))
+		return nil
+	})
+	if fetchErr != nil {
+		if !wroteHeaders && actualSize > 0 {
+			meta.Size = actualSize
+		}
+		return wroteHeaders, fetchErr
 	}
 	return wroteHeaders, nil
+}
+
+type colabOneDestWriter struct {
+	w        io.Writer
+	writeErr error
+}
+
+func (d *colabOneDestWriter) Write(p []byte) (int, error) {
+	n, err := d.w.Write(p)
+	if err != nil && d.writeErr == nil {
+		d.writeErr = err
+	}
+	return n, err
+}
+
+func copyCacheFileToWriter(
+	ctx context.Context,
+	f io.Reader,
+	w io.Writer,
+	meta *ColabOneOutputMediaMeta,
+	expectedSize int64,
+) (destErr error, readErr error) {
+	metaRecv, _ := w.(colabOneOutputMetaReceiver)
+	dest := &colabOneDestWriter{w: w}
+	buf := make([]byte, 32*1024)
+	wroteAny := false
+	var written int64
+	for {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		n, rErr := f.Read(buf)
+		if n > 0 {
+			if !wroteAny {
+				if metaRecv != nil {
+					metaRecv.SetColabOneOutputMeta(meta.ID, meta.Filename, meta.Extension, meta.Mime, meta.Size)
+				}
+				wroteAny = true
+			}
+			if _, wErr := dest.Write(buf[:n]); wErr != nil {
+				return dest.writeErr, nil
+			}
+			written += int64(n)
+		}
+		if rErr != nil {
+			if errors.Is(rErr, io.EOF) {
+				if !wroteAny || (expectedSize > 0 && written != expectedSize) {
+					return nil, errors.New("输出文件分片数据不完整")
+				}
+				meta.Size = written
+				return nil, nil
+			}
+			return nil, rErr
+		}
+	}
+}
+
+// StreamOutputMediaToWriter resolves an output artifact and streams its full byte
+// content directly into w in bounded chunks without buffering entire files in memory.
+// When Drive-backed streaming fails before the first byte is written and the output
+// is also present on an active runtime, it seamlessly falls back to runtime streaming.
+func (c *ColabOneController) StreamOutputMediaToWriter(
+	ctx context.Context,
+	identity string,
+	w io.Writer,
+	opts ColabOneOutputMediaOptions,
+) (*ColabOneOutputMediaMeta, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if w == nil {
+		return nil, errors.New("输出目标无效")
+	}
+	meta, err := c.ResolveOutputMediaMetaWithOptions(ctx, identity, opts)
+	if err != nil {
+		return nil, sanitizeOutputMediaError(err, opts)
+	}
+
+	// Fast path: stream directly from verified local persistent LRU disk cache.
+	if f, entry, hit := c.openLocalOutputCacheFileChecked(meta.ID, meta.Size, meta.SHA256); hit {
+		defer f.Close()
+		if entry != nil && entry.Size > 0 {
+			meta.Size = entry.Size
+		}
+		if destErr, readErr := copyCacheFileToWriter(ctx, f, w, meta, meta.Size); destErr != nil {
+			return meta, destErr
+		} else if readErr != nil {
+			return meta, sanitizeOutputMediaError(readErr, opts)
+		}
+		return meta, nil
+	}
+
+	if meta.Source == "drive" && !opts.RuntimeOnly {
+		if c.canCacheOutputSize(meta.Size) {
+			f, entry, hit, cacheErr := c.ensureOutputCached(ctx, meta, "drive")
+			if hit {
+				defer f.Close()
+				if entry != nil && entry.Size > 0 {
+					meta.Size = entry.Size
+				}
+				if destErr, readErr := copyCacheFileToWriter(ctx, f, w, meta, meta.Size); destErr != nil {
+					return meta, destErr
+				} else if readErr != nil {
+					return meta, sanitizeOutputMediaError(readErr, opts)
+				}
+				return meta, nil
+			}
+			if cacheErr != nil {
+				if meta.HasRuntime && ctx.Err() == nil && !errors.Is(cacheErr, context.Canceled) {
+					rtMeta := *meta
+					rtMeta.Source = "runtime"
+					if rtF, rtEntry, rtHit, rtCacheErr := c.ensureOutputCached(ctx, &rtMeta, "runtime"); rtHit {
+						defer rtF.Close()
+						if rtEntry != nil && rtEntry.Size > 0 {
+							rtMeta.Size = rtEntry.Size
+						}
+						if destErr, readErr := copyCacheFileToWriter(ctx, rtF, w, &rtMeta, rtMeta.Size); destErr != nil {
+							return &rtMeta, destErr
+						} else if readErr != nil {
+							return &rtMeta, sanitizeOutputMediaError(readErr, opts)
+						}
+						return &rtMeta, nil
+					} else if rtCacheErr != nil {
+						return &rtMeta, sanitizeOutputMediaError(rtCacheErr, opts)
+					}
+					_, destErr, rtErr := c.streamRuntimeOutputToWriter(ctx, w, &rtMeta)
+					if destErr != nil {
+						return &rtMeta, destErr
+					}
+					if rtErr == nil {
+						return &rtMeta, nil
+					}
+					return &rtMeta, sanitizeOutputMediaError(rtErr, opts)
+				}
+				return meta, sanitizeOutputMediaError(cacheErr, opts)
+			}
+		}
+
+		wroteAny, destErr, streamErr := c.streamDriveOutputToWriter(ctx, w, meta)
+		if destErr != nil {
+			return meta, destErr
+		}
+		if streamErr == nil {
+			return meta, nil
+		}
+		if !wroteAny && meta.HasRuntime && ctx.Err() == nil && !errors.Is(streamErr, context.Canceled) {
+			rtMeta := *meta
+			rtMeta.Source = "runtime"
+			_, rtDestErr, rtErr := c.streamRuntimeOutputToWriter(ctx, w, &rtMeta)
+			if rtDestErr != nil {
+				return &rtMeta, rtDestErr
+			}
+			if rtErr == nil {
+				return &rtMeta, nil
+			}
+			return &rtMeta, sanitizeOutputMediaError(rtErr, opts)
+		}
+		return meta, sanitizeOutputMediaError(streamErr, opts)
+	}
+
+	if c.canCacheOutputSize(meta.Size) {
+		f, entry, hit, cacheErr := c.ensureOutputCached(ctx, meta, "runtime")
+		if hit {
+			defer f.Close()
+			if entry != nil && entry.Size > 0 {
+				meta.Size = entry.Size
+			}
+			if destErr, readErr := copyCacheFileToWriter(ctx, f, w, meta, meta.Size); destErr != nil {
+				return meta, destErr
+			} else if readErr != nil {
+				return meta, sanitizeOutputMediaError(readErr, opts)
+			}
+			return meta, nil
+		}
+		if cacheErr != nil {
+			return meta, sanitizeOutputMediaError(cacheErr, opts)
+		}
+	}
+
+	_, destErr, rtErr := c.streamRuntimeOutputToWriter(ctx, w, meta)
+	if destErr != nil {
+		return meta, destErr
+	}
+	if rtErr != nil {
+		return meta, sanitizeOutputMediaError(rtErr, opts)
+	}
+	return meta, nil
+}
+
+func (c *ColabOneController) streamDriveOutputToWriter(
+	ctx context.Context,
+	w io.Writer,
+	meta *ColabOneOutputMediaMeta,
+) (wroteAny bool, destErr error, upstreamErr error) {
+	reqCtx, cancelReq := c.withRootContext(ctx)
+	defer cancelReq()
+	token, err := c.driveAccessToken(reqCtx)
+	if err != nil {
+		return false, nil, err
+	}
+	reqURL := c.driveAPIBase() + "/files/" + url.PathEscape(meta.DriveFileID) + "?alt=media"
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return false, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if meta.QuotaProject != "" {
+		req.Header.Set("X-Goog-User-Project", meta.QuotaProject)
+	}
+
+	if err := reqCtx.Err(); err != nil {
+		return false, nil, err
+	}
+	resp, err := c.driveStreamClient().Do(req)
+	if err != nil {
+		return false, nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil, ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, nil, &ColabOneHTTPError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("从 Google 云盘读取作品失败（HTTP %d）", resp.StatusCode),
+		}
+	}
+	if resp.ContentLength > 0 {
+		meta.Size = resp.ContentLength
+	}
+
+	metaRecv, _ := w.(colabOneOutputMetaReceiver)
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		if err := reqCtx.Err(); err != nil {
+			return wroteAny, nil, err
+		}
+		n, rErr := resp.Body.Read(buf)
+		if n > 0 {
+			if !wroteAny {
+				if metaRecv != nil {
+					metaRecv.SetColabOneOutputMeta(meta.ID, meta.Filename, meta.Extension, meta.Mime, meta.Size)
+				}
+				wroteAny = true
+			}
+			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				return true, wErr, nil
+			}
+			written += int64(n)
+		}
+		if rErr != nil {
+			if errors.Is(rErr, io.EOF) {
+				if !wroteAny || (resp.ContentLength > 0 && written != resp.ContentLength) {
+					return wroteAny, nil, errors.New("输出文件分片数据不完整")
+				}
+				meta.Size = written
+				return true, nil, nil
+			}
+			return wroteAny, nil, rErr
+		}
+	}
+}
+
+func (c *ColabOneController) streamRuntimeOutputToWriter(
+	ctx context.Context,
+	w io.Writer,
+	meta *ColabOneOutputMediaMeta,
+) (wroteAny bool, destErr error, upstreamErr error) {
+	metaRecv, _ := w.(colabOneOutputMetaReceiver)
+	var written int64
+	actualSize, _, fetchErr := c.fetchRuntimeOutputChunks(ctx, meta.ID, 0, -1, func(chunk []byte, total int64, _ map[string]any) error {
+		if !wroteAny {
+			if total > 0 {
+				meta.Size = total
+			}
+			if metaRecv != nil {
+				metaRecv.SetColabOneOutputMeta(meta.ID, meta.Filename, meta.Extension, meta.Mime, meta.Size)
+			}
+			wroteAny = true
+		}
+		if _, wErr := w.Write(chunk); wErr != nil {
+			destErr = wErr
+			return wErr
+		}
+		written += int64(len(chunk))
+		return nil
+	})
+	if destErr != nil {
+		return wroteAny, destErr, nil
+	}
+	if fetchErr != nil {
+		return wroteAny, nil, fetchErr
+	}
+	if !wroteAny || (actualSize > 0 && written != actualSize) {
+		return wroteAny, nil, errors.New("输出文件分片数据不完整")
+	}
+	meta.Size = written
+	return wroteAny, nil, nil
 }

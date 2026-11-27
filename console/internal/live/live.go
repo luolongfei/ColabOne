@@ -340,6 +340,60 @@ func ColabOneNormalizedURLOrigin(raw string) (string, error) {
 	return scheme + "://" + formattedHost + portSuffix, nil
 }
 
+// ValidateColabOnePublicHTTPSOrigin strictly validates that raw is a public
+// HTTPS origin with no userinfo, path (other than optional "/"), query,
+// fragment, loopback/private/link-local/metadata IP, or internal hostname,
+// and returns its canonical normalized origin ("https://host[:port]").
+func ValidateColabOnePublicHTTPSOrigin(raw string) (string, error) {
+	normOrigin, err := ColabOneNormalizedURLOrigin(raw)
+	if err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Opaque != "" || u.User != nil {
+		return "", errors.New("URL 格式无效")
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return "", errors.New("仅允许公网 HTTPS 协议")
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
+		return "", errors.New("URL 不允许包含查询参数或锚点")
+	}
+	if u.RawPath != "" || (u.Path != "" && u.Path != "/") {
+		return "", errors.New("URL 不允许包含路径")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" ||
+		isExactLoopbackHost(host) ||
+		isBlockedInternalHostname(host) ||
+		strings.HasSuffix(host, ".home.arpa") ||
+		strings.HasSuffix(host, ".invalid") {
+		return "", errors.New("不允许使用本机或内网保留地址")
+	}
+	if addr, addrErr := netip.ParseAddr(host); addrErr == nil {
+		if isNonGlobalIP(addr) {
+			return "", errors.New("不允许使用非公网 IP 地址")
+		}
+		return normOrigin, nil
+	}
+	if !strings.Contains(host, ".") || isSuspiciousNumericIPv4Host(host) {
+		return "", errors.New("主机名必须为有效的公网域名")
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", errors.New("主机名必须为有效的公网域名")
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+				return "", errors.New("主机名必须为有效的公网域名")
+			}
+		}
+	}
+	return normOrigin, nil
+}
+
 // IsColabOneLoopbackURL reports whether rawURL uses http or https targeting an
 // exact loopback host (127.0.0.1, localhost, or ::1).
 func IsColabOneLoopbackURL(rawURL string) bool {

@@ -34,6 +34,7 @@ import {
   PhVideoCamera,
 } from "@phosphor-icons/vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
+import { colabOneWriteClipboard } from "./api";
 import {
   buildColabOneStudioWorkflowEntries,
   COLABONE_DIGITAL_HUMAN_GROUP_KEY,
@@ -101,10 +102,13 @@ const titleDraft = ref("");
 const ttlMode = ref<ColabOneWorkflowShareTTLMode>("24h");
 const validationError = ref("");
 const staleCreatedShareId = ref("");
+const seenCreatedInListId = ref("");
 const copiedKey = ref("");
+const openConfirmKey = ref("");
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 let copySeq = 0;
 let isUnmounted = false;
+let escapeBound = false;
 
 const studioEntries = computed<ColabOneStudioWorkflowEntry[]>(() =>
   buildColabOneStudioWorkflowEntries(props.workflows),
@@ -160,6 +164,17 @@ const isMutating = computed<boolean>(
 );
 
 const canClose = computed<boolean>(() => !isMutating.value);
+const hasInnerOverlayOpen = computed<boolean>(() =>
+  Boolean(openConfirmKey.value),
+);
+
+function setConfirmOpen(key: string, isOpen: boolean) {
+  if (isOpen) {
+    openConfirmKey.value = key;
+  } else if (openConfirmKey.value === key) {
+    openConfirmKey.value = "";
+  }
+}
 
 const canCreate = computed<boolean>(
   () =>
@@ -179,6 +194,9 @@ const visibleCreatedShare = computed<ColabOneWorkflowShareSummary | null>(
     if (live) {
       return live.can_copy_link && shareCopyUrl(live) ? live : null;
     }
+    if (seenCreatedInListId.value === created.id) {
+      return null;
+    }
     return shareCopyUrl(created) ? created : null;
   },
 );
@@ -192,11 +210,32 @@ function entryShareId(entry: ColabOneStudioWorkflowEntry): string {
 }
 
 function clearCopiedFeedback() {
+  copySeq += 1;
   if (copiedTimer !== null) {
     clearTimeout(copiedTimer);
     copiedTimer = null;
   }
   copiedKey.value = "";
+}
+
+function onModalKeydown(event: KeyboardEvent) {
+  if (!props.open || event.key !== "Escape") return;
+  if (openConfirmKey.value) {
+    event.preventDefault();
+    openConfirmKey.value = "";
+  }
+}
+
+function bindModalEscape() {
+  if (escapeBound || typeof window === "undefined") return;
+  escapeBound = true;
+  window.addEventListener("keydown", onModalKeydown, true);
+}
+
+function unbindModalEscape() {
+  if (!escapeBound || typeof window === "undefined") return;
+  escapeBound = false;
+  window.removeEventListener("keydown", onModalKeydown, true);
 }
 
 function ensureInitialSelection() {
@@ -219,13 +258,18 @@ watch(
   () => props.open,
   (isOpen, wasOpen) => {
     if (!isOpen) {
+      unbindModalEscape();
       if (wasOpen) {
         staleCreatedShareId.value = props.lastCreatedShare?.id || "";
       }
+      seenCreatedInListId.value = "";
+      openConfirmKey.value = "";
       clearCopiedFeedback();
       return;
     }
+    bindModalEscape();
     activeTab.value = "create";
+    openConfirmKey.value = "";
     labelDraft.value = "";
     titleDraft.value = "";
     ttlMode.value = "24h";
@@ -244,9 +288,42 @@ watch(studioEntries, () => {
 });
 
 watch(
+  [activeTab, sharesList, () => props.lastCreatedShare?.id ?? "", isMutating],
+  ([nextTab, list, createdId, mutating], prev) => {
+    if (!prev || nextTab !== prev[0] || mutating) {
+      openConfirmKey.value = "";
+    }
+    if (openConfirmKey.value) {
+      const sepIdx = openConfirmKey.value.indexOf(":");
+      const kind = sepIdx >= 0 ? openConfirmKey.value.slice(0, sepIdx) : "";
+      const targetId = sepIdx >= 0 ? openConfirmKey.value.slice(sepIdx + 1) : "";
+      const target = list.find((s) => s.id === targetId);
+      if (!target) {
+        openConfirmKey.value = "";
+      } else if (kind === "revoke" && target.status === "revoked") {
+        openConfirmKey.value = "";
+      } else if (
+        kind === "delete" &&
+        !(canDeleteShare(target) && target.active_sessions > 0)
+      ) {
+        openConfirmKey.value = "";
+      }
+    }
+    if (!createdId) {
+      seenCreatedInListId.value = "";
+    } else if (list.some((s) => s.id === createdId)) {
+      seenCreatedInListId.value = createdId;
+    } else if (seenCreatedInListId.value === createdId) {
+      staleCreatedShareId.value = createdId;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
   () => props.lastCreatedShare,
   (next) => {
-    if (!next) {
+    if (!next || next.id !== staleCreatedShareId.value) {
       staleCreatedShareId.value = "";
     }
   },
@@ -254,6 +331,7 @@ watch(
 
 onBeforeUnmount(() => {
   isUnmounted = true;
+  unbindModalEscape();
   clearCopiedFeedback();
 });
 
@@ -327,8 +405,13 @@ async function handleCopyLink(url: string, key: string) {
       copied = false;
     }
   } else {
+    try {
+      await colabOneWriteClipboard(cleanUrl);
+      copied = true;
+    } catch {
+      copied = false;
+    }
     emit("copyLink", cleanUrl);
-    copied = true;
   }
   if (!copied || isUnmounted || !props.open || seq !== copySeq) {
     return;
@@ -464,7 +547,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
     :centered="true"
     :closable="canClose"
     :mask-closable="canClose"
-    :keyboard="canClose"
+    :keyboard="canClose && !hasInnerOverlayOpen"
     :footer="null"
     :z-index="1050"
     wrap-class-name="co-workflow-share-modal-wrap"
@@ -606,19 +689,20 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
                     )
                   "
                 >
-                  <ACheckbox
-                    :checked="isWorkflowSelected(entryShareId(entry))"
-                    :disabled="isMutating"
-                    :aria-label="
-                      entry.isGroup
-                        ? t('comfy.digitalHumanUnifiedName')
-                        : tb(entry.primary.name)
-                    "
-                    @click.stop
-                    @update:checked="
-                      (val) => toggleWorkflow(entryShareId(entry), Boolean(val))
-                    "
-                  />
+                  <span class="co-ws-wf-checkbox-wrap" @click.stop>
+                    <ACheckbox
+                      :checked="isWorkflowSelected(entryShareId(entry))"
+                      :disabled="isMutating"
+                      :aria-label="
+                        entry.isGroup
+                          ? t('comfy.digitalHumanUnifiedName')
+                          : tb(entry.primary.name)
+                      "
+                      @update:checked="
+                        (val) => toggleWorkflow(entryShareId(entry), Boolean(val))
+                      "
+                    />
+                  </span>
                   <span
                     class="co-ws-wf-icon"
                     :class="{
@@ -943,6 +1027,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
 
                   <APopconfirm
                     v-if="share.status !== 'revoked'"
+                    :open="openConfirmKey === `revoke:${share.id}`"
                     :title="
                       t('workflowShare.revokeConfirmTitle', {
                         name: share.label || t('workflowShare.defaultRemark'),
@@ -958,6 +1043,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
                       revokingId === share.id ||
                       deletingId === share.id
                     "
+                    @open-change="(val) => setConfirmOpen(`revoke:${share.id}`, val)"
                     @confirm="emit('revoke', share.id)"
                   >
                     <AButton
@@ -974,6 +1060,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
 
                   <APopconfirm
                     v-if="canDeleteShare(share) && share.active_sessions > 0"
+                    :open="openConfirmKey === `delete:${share.id}`"
                     :title="
                       t('workflowShare.deleteConfirmActiveTitle', {
                         name: share.label || t('workflowShare.defaultRemark'),
@@ -993,6 +1080,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
                       revokingId === share.id ||
                       deletingId === share.id
                     "
+                    @open-change="(val) => setConfirmOpen(`delete:${share.id}`, val)"
                     @confirm="emit('delete', share.id)"
                   >
                     <AButton

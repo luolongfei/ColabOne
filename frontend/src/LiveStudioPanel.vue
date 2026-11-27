@@ -7,11 +7,13 @@ import {
   Input as AInput,
   Modal as AModal,
   Popconfirm as APopconfirm,
+  Progress as AProgress,
   Segmented as ASegmented,
   Select as ASelect,
   SelectOption as ASelectOption,
   Slider as ASlider,
   Space as ASpace,
+  Spin as ASpin,
   Switch as ASwitch,
   Tag as ATag,
   Textarea as ATextarea,
@@ -20,7 +22,13 @@ import {
   PhArrowsClockwise,
   PhBrain,
   PhBroadcast,
+  PhCamera,
   PhCheckCircle,
+  PhClock,
+  PhCloudArrowDown,
+  PhCopy,
+  PhDeviceMobile,
+  PhEyeSlash,
   PhFilmSlate,
   PhHandPalm,
   PhHeart,
@@ -36,6 +44,7 @@ import {
   PhPlay,
   PhPlug,
   PhPlus,
+  PhQrCode,
   PhShoppingBag,
   PhSparkle,
   PhSpeakerHigh,
@@ -54,7 +63,15 @@ import ColabOnePrivacyInput from "./ColabOnePrivacyInput.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
-import { colabOneCommand } from "./api";
+import {
+  colabOneCommand,
+  colabOneWriteClipboard,
+  isColabOneDesktopRuntime,
+} from "./api";
+import {
+  formatColabOneDuration,
+  resolveColabOneTaskElapsedSeconds,
+} from "./colabOneDuration";
 import {
   buildColabOnePrivacyContext,
   colabOnePrivacyActive,
@@ -63,7 +80,9 @@ import {
   COLABONE_LIVE_AUDIO_OUT_SAMPLE_RATE,
   ColabOneLiveAudioPlayer,
   ColabOneLiveMicCapture,
+  colabOneIsMissingAudioDeviceError,
 } from "./colabOneLiveAudio";
+import { colabOneRenderQrSvgDataUrl } from "./colabOneQr";
 import {
   ColabOneLiveSessionClient,
   ColabOneLiveVideoRenderer,
@@ -72,10 +91,12 @@ import {
   type ColabOneLiveTranscriptEvent,
 } from "./colabOneLivePlayer";
 import type { ColabOneToastKind } from "./colabOneToast";
-import { t, tb } from "./i18n";
+import { colabOneLocaleCode, t, tb } from "./i18n";
 import type {
   ColabOneLiveActionSpec,
   ColabOneLiveAvatarManifest,
+  ColabOneLiveCompanionStatus,
+  ColabOneLiveCompanionTicketResult,
   ColabOneLiveDirectorMode,
   ColabOneLiveDirectorState,
   ColabOneLiveDrivingMotionSpec,
@@ -87,6 +108,7 @@ import type {
   ColabOneLiveTtsEngine,
   ColabOneLiveVisualEngine,
   ColabOneSnapshot,
+  TaskStatus,
 } from "./types";
 
 const COLABONE_LIVE_LLM_MODE_STORAGE_KEY = "colabone.live.llmMode";
@@ -133,6 +155,161 @@ const liveRunning = computed(
 const liveStarting = computed(
   () => gpuReady.value && liveStatus.value?.state === "starting",
 );
+const activeLiveStartTask = computed<TaskStatus | undefined>(() => {
+  if (!gpuReady.value) return undefined;
+  return (props.state.runtime.tasks ?? []).find(
+    (task) => task.state === "running" && task.kind === "live_start",
+  );
+});
+const pendingLiveStartTaskId = ref("");
+const pendingConnectAfterStart = ref(false);
+const cancellingLiveStart = ref(false);
+let seenLiveStartTaskId = "";
+let handledLiveStartTerminalId = "";
+let pendingConnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPendingConnectGraceTimer() {
+  if (pendingConnectGraceTimer !== null) {
+    clearTimeout(pendingConnectGraceTimer);
+    pendingConnectGraceTimer = null;
+  }
+}
+
+const isLivePreparing = computed(
+  () =>
+    Boolean(activeLiveStartTask.value) ||
+    liveStarting.value ||
+    (pendingConnectAfterStart.value && !liveRunning.value),
+);
+
+const liveStartClockNow = ref(Date.now());
+const liveStartSnapshotAt = ref(Date.now());
+let liveStartClockTimer: ReturnType<typeof setInterval> | null = null;
+
+watch(
+  () => [
+    props.state.runtime.idle?.server_time,
+    activeLiveStartTask.value?.id,
+    activeLiveStartTask.value?.elapsed_seconds,
+  ],
+  () => {
+    liveStartSnapshotAt.value = Date.now();
+    liveStartClockNow.value = Date.now();
+  },
+);
+
+watch(
+  activeLiveStartTask,
+  (task) => {
+    if (task) {
+      if (!liveStartClockTimer) {
+        liveStartClockNow.value = Date.now();
+        liveStartClockTimer = setInterval(() => {
+          liveStartClockNow.value = Date.now();
+        }, 1000);
+      }
+    } else if (liveStartClockTimer) {
+      clearInterval(liveStartClockTimer);
+      liveStartClockTimer = null;
+    }
+  },
+  { immediate: true },
+);
+
+function formatLiveByteSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+
+function formatLiveDownloadSpeed(speedBps: number): string {
+  if (!Number.isFinite(speedBps) || speedBps <= 0) return "0 MB/s";
+  if (speedBps >= 1024 ** 3) return `${(speedBps / 1024 ** 3).toFixed(2)} GB/s`;
+  if (speedBps >= 1024 ** 2) return `${(speedBps / 1024 ** 2).toFixed(1)} MB/s`;
+  if (speedBps >= 1024) return `${(speedBps / 1024).toFixed(0)} KB/s`;
+  return `${Math.round(speedBps)} B/s`;
+}
+
+function formatLiveEta(seconds: number | null | undefined): string {
+  if (
+    seconds === null ||
+    seconds === undefined ||
+    !Number.isFinite(seconds) ||
+    seconds < 0
+  ) {
+    return "";
+  }
+  const whole = Math.ceil(seconds);
+  const mins = Math.floor(whole / 60);
+  const secs = whole % 60;
+  if (mins >= 60) {
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hrs}:${String(remMins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+const liveStartProgressPct = computed(() =>
+  Math.max(
+    0,
+    Math.min(100, Math.round((activeLiveStartTask.value?.progress ?? 0) * 100)),
+  ),
+);
+
+const liveStartElapsedText = computed(() => {
+  const secs = resolveColabOneTaskElapsedSeconds(
+    activeLiveStartTask.value,
+    props.state.runtime,
+    liveStartClockNow.value,
+    liveStartSnapshotAt.value,
+  );
+  return secs === null
+    ? ""
+    : formatColabOneDuration(secs, {
+        precision: "integer",
+        locale: colabOneLocaleCode.value,
+      });
+});
+
+const liveStartDownloadSummary = computed(() => {
+  const dl = activeLiveStartTask.value?.download;
+  if (
+    !dl ||
+    (!dl.total_bytes && !dl.downloaded_bytes && !dl.speed_bps && !dl.filename)
+  ) {
+    return null;
+  }
+  const primary = t("comfy.downloadProgressMeta", {
+    done: formatLiveByteSize(dl.downloaded_bytes || 0),
+    total: formatLiveByteSize(dl.total_bytes || 0),
+    speed:
+      dl.phase === "verifying"
+        ? t("device.downloadVerifying")
+        : formatLiveDownloadSpeed(dl.speed_bps || 0),
+  });
+  const etaStr = dl.phase !== "verifying" ? formatLiveEta(dl.eta_seconds) : "";
+  const etaText = etaStr ? t("device.downloadEta", { eta: etaStr }) : "";
+  const fileCounter =
+    dl.file_count && dl.file_count > 1 && dl.file_index
+      ? `${dl.file_index}/${dl.file_count}`
+      : "";
+  return {
+    primary,
+    etaText,
+    filename: dl.filename || "",
+    fileCounter,
+  };
+});
+
+const liveStartLatestLog = computed(() => {
+  const logs = activeLiveStartTask.value?.logs;
+  if (!logs || !logs.length) return "";
+  const last = logs[logs.length - 1];
+  return last?.message ? tb(last.message) : "";
+});
 const capabilities = computed(() => props.state.runtime.capabilities ?? []);
 const hasLiveCapability = computed(
   () =>
@@ -185,6 +362,106 @@ const audioPlaying = ref(false);
 const audioSuspended = ref(false);
 const hasVideoFrame = ref(false);
 
+// Mobile / remote companion QR pairing & live device state
+const companionModalOpen = ref(false);
+const companionTicketLoading = ref(false);
+const companionDisconnecting = ref(false);
+const companionTicket = ref<ColabOneLiveCompanionTicketResult | null>(null);
+const companionTicketExpiresAtMs = ref(0);
+const companionQrDataUrl = ref("");
+const companionClockNowMs = ref(Date.now());
+let companionClockTimer: ReturnType<typeof setInterval> | null = null;
+let companionTicketSeq = 0;
+const wsCompanionStatus = ref<ColabOneLiveCompanionStatus | null>(null);
+
+const companionStatus = computed<ColabOneLiveCompanionStatus>(() => {
+  if (!liveRunning.value) {
+    return {
+      connected: false,
+      device_label: "",
+      mic_active: false,
+      camera_mode: "off",
+      camera_fps: 0,
+      motion_energy: 0,
+      vision_frame_ready: false,
+      connected_at: null,
+    };
+  }
+  const src =
+    (isConnected.value ? wsCompanionStatus.value : null) ??
+    liveStatus.value?.companion;
+  return {
+    connected: Boolean(src?.connected),
+    device_label: String(src?.device_label || ""),
+    mic_active: Boolean(src?.mic_active),
+    camera_mode: String(src?.camera_mode || "off"),
+    camera_fps: Number(src?.camera_fps || 0),
+    motion_energy: Number(src?.motion_energy || 0),
+    vision_frame_ready: Boolean(src?.vision_frame_ready),
+    connected_at: src?.connected_at ?? null,
+  };
+});
+
+const companionTicketRemainingSeconds = computed(() => {
+  const localExpMs = companionTicketExpiresAtMs.value;
+  if (Number.isFinite(localExpMs) && localExpMs > 0) {
+    return Math.max(0, Math.floor((localExpMs - companionClockNowMs.value) / 1000));
+  }
+  const exp = companionTicket.value?.expires_at;
+  if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(exp - companionClockNowMs.value / 1000));
+});
+
+const companionTicketExpiryLabel = computed(() => {
+  const rem = companionTicketRemainingSeconds.value;
+  if (rem <= 0) return t("live.companionQrExpired");
+  const dur = formatColabOneDuration(rem, {
+    precision: "integer",
+    locale: colabOneLocaleCode.value,
+  });
+  return t("live.companionQrExpiry", { duration: dur });
+});
+
+function companionCameraModeLabel(mode?: string): string {
+  switch (String(mode || "off").toLowerCase()) {
+    case "vision":
+      return t("live.companionCamVision");
+    case "motion":
+      return t("live.companionCamMotion");
+    case "vision_motion":
+      return t("live.companionCamDual");
+    default:
+      return t("live.companionCamOff");
+  }
+}
+
+watch(companionModalOpen, (open) => {
+  if (open) {
+    companionClockNowMs.value = Date.now();
+    if (!companionClockTimer) {
+      companionClockTimer = setInterval(() => {
+        companionClockNowMs.value = Date.now();
+      }, 1000);
+    }
+  } else if (companionClockTimer) {
+    clearInterval(companionClockTimer);
+    companionClockTimer = null;
+  }
+});
+
+watch(liveRunning, (running) => {
+  if (!running) {
+    companionTicketSeq += 1;
+    companionTicketLoading.value = false;
+    wsCompanionStatus.value = null;
+    companionTicket.value = null;
+    companionTicketExpiresAtMs.value = 0;
+    companionQrDataUrl.value = "";
+  }
+});
+
 const liveTelemetry = ref<ColabOneLiveTelemetry>({
   fps: 0,
   ttft_ms: null,
@@ -213,6 +490,7 @@ let hydratedRunningStartedAt: number | null = null;
 let isUnmounted = false;
 let micOpGen = 0;
 let lastSessionEpoch = 0;
+let localTranscriptSeq = 0;
 
 interface ColabOneLiveEngineSnapshot {
   visualEngine: ColabOneLiveVisualEngine;
@@ -422,9 +700,9 @@ function liveResolutionForAspect(aspect: "9:16" | "16:9"): string {
   return aspect === "16:9" ? "1280x720" : "720x1280";
 }
 
-function syncIdleCanvasSize() {
+function syncIdleCanvasSize(force = false) {
   const canvas = stageCanvasRef.value;
-  if (!canvas || hasVideoFrame.value || liveRunning.value) return;
+  if (!canvas || (!force && (hasVideoFrame.value || liveRunning.value))) return;
   const targetW = stageAspect.value === "9:16" ? 540 : 960;
   const targetH = stageAspect.value === "9:16" ? 960 : 540;
   if (canvas.width !== targetW) canvas.width = targetW;
@@ -502,9 +780,7 @@ watch(
   (cfg) => {
     if (!cfg) return;
     if (!llmModeInitialized) {
-      if (cfg.mode === "local_gguf" || cfg.mode === "external_api") {
-        llmMode.value = cfg.mode;
-      } else if (cfg.configured) {
+      if (cfg.configured) {
         llmMode.value = "external_api";
       }
       llmModeInitialized = true;
@@ -513,13 +789,6 @@ watch(
     if (!llmDirty.value) {
       llmBaseUrl.value = cfg.base_url || "";
       llmModel.value = cfg.model || "";
-    }
-    if (cfg.last_test_ok === true) {
-      llmTestStatus.value = "ok";
-      llmTestError.value = "";
-    } else if (cfg.last_test_ok === false) {
-      llmTestStatus.value = "failed";
-      llmTestError.value = cfg.last_test_error || "";
     }
   },
   { immediate: true, deep: true },
@@ -825,18 +1094,194 @@ watch(
   { deep: true, immediate: true },
 );
 
+function finalizeOpenTranscripts() {
+  if (!transcripts.value.some((item) => !item.isFinal)) return;
+  transcripts.value = transcripts.value.map((item) =>
+    item.isFinal ? item : { ...item, isFinal: true },
+  );
+}
+
+function cleanupOrphanedAudioPlayer() {
+  if (!sessionClient && !liveRunning.value && audioPlayer) {
+    audioPlayer.destroy();
+    audioPlayer = null;
+    audioPlaying.value = false;
+    audioSuspended.value = false;
+  }
+}
+
+// Track async live_start task lifecycle: auto-connect when ready, handle cancel/failure cleanly
+function reconcileLiveStartState() {
+  const runningTask = activeLiveStartTask.value;
+  const allTasks = props.state.runtime.tasks;
+  const isNowRunning = liveRunning.value;
+  const isNowGpuReady = gpuReady.value;
+  const currentLiveState = liveStatus.value?.state;
+
+  if (!isNowGpuReady) {
+    clearPendingConnectGraceTimer();
+    pendingLiveStartTaskId.value = "";
+    pendingConnectAfterStart.value = false;
+    seenLiveStartTaskId = "";
+    cleanupOrphanedAudioPlayer();
+    return;
+  }
+  if (runningTask) {
+    clearPendingConnectGraceTimer();
+    if (runningTask.id) {
+      seenLiveStartTaskId = runningTask.id;
+      if (!pendingLiveStartTaskId.value) {
+        pendingLiveStartTaskId.value = runningTask.id;
+      }
+    }
+    return;
+  }
+
+  const trackedId = pendingLiveStartTaskId.value || seenLiveStartTaskId;
+  const finishedTask = trackedId
+    ? (allTasks ?? []).find(
+        (item) =>
+          item.kind === "live_start" &&
+          item.id === trackedId &&
+          item.state !== "running",
+      )
+    : undefined;
+
+  if (finishedTask && finishedTask.id !== handledLiveStartTerminalId) {
+    handledLiveStartTerminalId = finishedTask.id;
+    const initiatedLocally = pendingConnectAfterStart.value;
+    const shouldAutoConnect = initiatedLocally || Boolean(seenLiveStartTaskId);
+    pendingLiveStartTaskId.value = "";
+    seenLiveStartTaskId = "";
+
+    if (finishedTask.state === "completed") {
+      if (isNowRunning) {
+        clearPendingConnectGraceTimer();
+        pendingConnectAfterStart.value = false;
+        if (!isConnected.value && !sessionClient) {
+          notify(t("live.noticeStarted"), "info");
+          void connectLiveSession({ localInitiated: initiatedLocally });
+        }
+      } else if (shouldAutoConnect) {
+        pendingConnectAfterStart.value = true;
+        if (
+          currentLiveState !== "starting" &&
+          pendingConnectGraceTimer === null
+        ) {
+          pendingConnectGraceTimer = setTimeout(() => {
+            pendingConnectGraceTimer = null;
+            if (
+              !isUnmounted &&
+              !liveRunning.value &&
+              !activeLiveStartTask.value &&
+              liveStatus.value?.state !== "starting"
+            ) {
+              pendingConnectAfterStart.value = false;
+              pendingLiveStartTaskId.value = "";
+              cleanupOrphanedAudioPlayer();
+            }
+          }, 4000);
+        }
+      }
+      return;
+    }
+
+    clearPendingConnectGraceTimer();
+    pendingConnectAfterStart.value = false;
+    cleanupOrphanedAudioPlayer();
+    if (finishedTask.state === "cancelled") {
+      notify(t("live.noticeStartCancelled"), "info");
+    } else if (finishedTask.state === "failed") {
+      if (finishedTask.error) {
+        reportError(tb(finishedTask.error));
+      }
+    }
+    return;
+  }
+
+  if (isNowRunning) {
+    clearPendingConnectGraceTimer();
+    const shouldConnect = pendingConnectAfterStart.value;
+    pendingConnectAfterStart.value = false;
+    pendingLiveStartTaskId.value = "";
+    seenLiveStartTaskId = "";
+    if (shouldConnect && !isConnected.value && !sessionClient) {
+      notify(t("live.noticeStarted"), "info");
+      void connectLiveSession({ localInitiated: true });
+    }
+    return;
+  }
+
+  const awaitingSubmittedTask =
+    pendingConnectAfterStart.value && Boolean(pendingLiveStartTaskId.value);
+  if (currentLiveState === "error" && !awaitingSubmittedTask) {
+    clearPendingConnectGraceTimer();
+    pendingLiveStartTaskId.value = "";
+    pendingConnectAfterStart.value = false;
+    seenLiveStartTaskId = "";
+    cleanupOrphanedAudioPlayer();
+    return;
+  }
+
+  if (
+    pendingConnectAfterStart.value &&
+    !isNowRunning &&
+    !activeLiveStartTask.value &&
+    currentLiveState !== "starting" &&
+    pendingConnectGraceTimer === null
+  ) {
+    pendingConnectGraceTimer = setTimeout(() => {
+      pendingConnectGraceTimer = null;
+      if (
+        !isUnmounted &&
+        !liveRunning.value &&
+        !activeLiveStartTask.value &&
+        liveStatus.value?.state !== "starting"
+      ) {
+        pendingConnectAfterStart.value = false;
+        pendingLiveStartTaskId.value = "";
+        seenLiveStartTaskId = "";
+        cleanupOrphanedAudioPlayer();
+      }
+    }, 4000);
+  }
+}
+
+watch(
+  [
+    activeLiveStartTask,
+    () => props.state.runtime.tasks,
+    liveRunning,
+    gpuReady,
+    () => liveStatus.value?.state,
+    pendingLiveStartTaskId,
+    pendingConnectAfterStart,
+  ],
+  () => {
+    reconcileLiveStartState();
+  },
+  { immediate: true },
+);
+
 // Cleanly tear down media session ONLY when GPU disconnects or running transitions true to false
 watch(
   [gpuReady, liveRunning],
   ([nowGpuReady, nowRunning], [, prevRunning]) => {
-    if (!nowGpuReady && (sessionClient || micActive.value || micStarting.value)) {
+    const hasMediaResources = Boolean(
+      sessionClient ||
+        audioPlayer ||
+        videoRenderer ||
+        micActive.value ||
+        micStarting.value,
+    );
+    if (!nowGpuReady && hasMediaResources) {
       teardownMediaSession();
       return;
     }
     if (
       prevRunning &&
       !nowRunning &&
-      sessionClient &&
+      hasMediaResources &&
       !startingOrStopping.value
     ) {
       teardownMediaSession();
@@ -856,16 +1301,20 @@ watch(
 );
 
 // Audio/Video & WSS session lifecycle
+function isAudioStateResumable(state: AudioContextState | null | undefined): boolean {
+  return Boolean(state && state !== "running" && state !== "closed");
+}
+
 function syncAudioSuspendedState() {
   audioSuspended.value =
     Boolean(audioPlayer) &&
-    audioPlayer?.getAudioState() === "suspended" &&
+    isAudioStateResumable(audioPlayer?.getAudioState()) &&
     (isConnected.value || liveRunning.value);
 }
 
 function resumeSuspendedAudio() {
   if (!audioPlayer) return;
-  if (audioPlayer.getAudioState() === "suspended") {
+  if (isAudioStateResumable(audioPlayer.getAudioState())) {
     void audioPlayer
       .resume()
       .then(syncAudioSuspendedState)
@@ -878,6 +1327,7 @@ function resumeSuspendedAudio() {
 function ensureVideoRenderer(
   codec = "h264",
   h264CodecString?: string,
+  videoCodecMime?: string,
 ): ColabOneLiveVideoRenderer | null {
   const canvas = stageCanvasRef.value;
   if (!canvas) return null;
@@ -887,6 +1337,7 @@ function ensureVideoRenderer(
       videoElement: mseVideoRef.value,
       codec,
       h264CodecString,
+      videoCodecMime,
       onFrameRendered: ({ fps }) => {
         hasVideoFrame.value = true;
         liveTelemetry.value = { ...liveTelemetry.value, fps };
@@ -896,7 +1347,7 @@ function ensureVideoRenderer(
       },
     });
   } else {
-    videoRenderer.setCodec(codec, h264CodecString);
+    videoRenderer.setCodec(codec, h264CodecString, videoCodecMime);
   }
   return videoRenderer;
 }
@@ -907,6 +1358,9 @@ function ensureAudioPlayer(): ColabOneLiveAudioPlayer {
       sampleRate: COLABONE_LIVE_AUDIO_OUT_SAMPLE_RATE,
       onPlaybackStateChange: (playing) => {
         audioPlaying.value = playing;
+      },
+      onAudioStateChange: () => {
+        syncAudioSuspendedState();
       },
     });
     audioPlayer.setVolume(audioVolume.value / 100);
@@ -980,6 +1434,19 @@ async function fetchSessionToken(): Promise<ColabOneLiveSessionTokenResult> {
       res?.ws_path || liveStatus.value?.ws_path || "/_colabone_live/ws",
     );
   }
+  // In WebConsole browser mode, route Live Studio WebSocket through the same-origin
+  // host Go proxy (`/api/live/ws`) so cross-origin browsers never fail remote Origin
+  // verification on the Cloudflare tunnel.
+  if (
+    !isColabOneDesktopRuntime() &&
+    res?.canvas_ready !== false &&
+    wsUrl &&
+    typeof window !== "undefined" &&
+    window.location?.host
+  ) {
+    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    wsUrl = `${wsProto}//${window.location.host}/api/live/ws`;
+  }
   return {
     ...res,
     ws_url: wsUrl,
@@ -1010,6 +1477,9 @@ async function connectLiveSession(opts?: { localInitiated?: boolean }) {
         startingOrStopping.value),
     onConnectionState: (st, detail) => {
       connState.value = st;
+      if (st !== "connected") {
+        wsCompanionStatus.value = null;
+      }
       if (st === "reconnecting" && detail === "canvas_starting") {
         emit("sync");
       }
@@ -1036,11 +1506,19 @@ async function connectLiveSession(opts?: { localInitiated?: boolean }) {
           : sessionClient?.getNegotiatedCodec() || "h264";
       const h264Codec =
         typeof payload.h264_codec === "string" ? payload.h264_codec : undefined;
-      const activeRenderer = ensureVideoRenderer(codec, h264Codec);
+      const videoCodecMime =
+        typeof payload.video_codec_mime === "string"
+          ? payload.video_codec_mime
+          : undefined;
+      const activeRenderer = ensureVideoRenderer(
+        codec,
+        h264Codec,
+        videoCodecMime,
+      );
       if (epochDecreased && serverEpoch !== null) {
         audioPlayer?.resetEpoch(serverEpoch);
-        activeRenderer?.resetEpoch();
       }
+      activeRenderer?.resetEpoch();
       if (localInitiatedStart) {
         sessionClient?.sendSetMode(directorMode.value, micMode.value);
       } else {
@@ -1051,6 +1529,9 @@ async function connectLiveSession(opts?: { localInitiated?: boolean }) {
     },
     onState: (st, detail) => {
       directorState.value = st;
+      if (st === "IDLE") {
+        finalizeOpenTranscripts();
+      }
       if (typeof detail?.action_id === "string" && detail.action_id) {
         activeActionId.value = detail.action_id;
       }
@@ -1078,8 +1559,9 @@ async function connectLiveSession(opts?: { localInitiated?: boolean }) {
       if (epoch > lastSessionEpoch) {
         lastSessionEpoch = epoch;
       }
+      finalizeOpenTranscripts();
       ensureAudioPlayer().interrupt(epoch);
-      videoRenderer?.resetEpoch();
+      videoRenderer?.resetEpoch({ preserveMseStream: true });
     },
     onTranscript: (entry) => {
       const appendTranscriptChunk = (prev: string, next: string) => {
@@ -1153,6 +1635,45 @@ async function connectLiveSession(opts?: { localInitiated?: boolean }) {
       if (tel.video_codec) {
         ensureVideoRenderer(tel.video_codec);
       }
+    },
+    onCompanionStatus: (st, isInitial) => {
+      const wasConnected = Boolean(wsCompanionStatus.value?.connected);
+      const prevConnectedAt = wsCompanionStatus.value?.connected_at ?? null;
+      wsCompanionStatus.value = st;
+      const isNewConnection =
+        !isInitial &&
+        st.connected &&
+        (!wasConnected ||
+          (st.connected_at !== null && st.connected_at !== prevConnectedAt));
+      if (isNewConnection) {
+        // One-time pairing ticket has been redeemed; clear burned QR immediately.
+        companionTicket.value = null;
+        companionTicketExpiresAtMs.value = 0;
+        companionQrDataUrl.value = "";
+      }
+      if (!isInitial && !wasConnected && st.connected && !isUnmounted) {
+        notify(
+          t("live.companionNoticeConnected", {
+            name: st.device_label
+              ? tb(st.device_label)
+              : t("live.companionConnectedBtn"),
+          }),
+          "success",
+        );
+      }
+    },
+    onSystemNotice: (text) => {
+      transcripts.value = [
+        ...transcripts.value.slice(-23),
+        {
+          id: `sys-${++localTranscriptSeq}`,
+          role: "system",
+          text: tb(text),
+          isFinal: true,
+          epoch: sessionClient?.getCurrentEpoch() ?? 0,
+          ts: Date.now(),
+        },
+      ];
     },
     onPong: (_ts, rttMs) => {
       if (typeof rttMs === "number") {
@@ -1264,7 +1785,15 @@ function teardownMediaSession(opts?: {
   if (!opts?.preserveAudioPlayer) {
     audioSuspended.value = false;
   }
+  finalizeOpenTranscripts();
   hasVideoFrame.value = false;
+  const canvas = stageCanvasRef.value;
+  if (canvas) {
+    const ctx = canvas.getContext("2d");
+    ctx?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  syncIdleCanvasSize(true);
+  wsCompanionStatus.value = null;
   connState.value = "disconnected";
   directorState.value = "IDLE";
   liveTelemetry.value = {
@@ -1288,6 +1817,7 @@ async function startLiveStudio() {
     if (llmMode.value === "external_api" && llmDirty.value) {
       const saved = await persistExternalLlmSettings(false);
       if (isUnmounted || !saved) {
+        cleanupOrphanedAudioPlayer();
         return;
       }
     }
@@ -1311,14 +1841,34 @@ async function startLiveStudio() {
     if (llmMode.value === "local_gguf" && props.state.runtime.loaded_model) {
       startPayload.local_llm_model_id = props.state.runtime.loaded_model;
     }
-    await colabOneCommand("comfyui.live.start", startPayload);
+    const res = await colabOneCommand<Record<string, unknown>>(
+      "comfyui.live.start",
+      startPayload,
+    );
     if (isUnmounted) return;
+    const isAsyncTask =
+      res?.kind === "live_start" ||
+      res?.state === "running" ||
+      (typeof res?.id === "string" &&
+        res.id.length > 0 &&
+        res?.running !== true);
+    if (isAsyncTask) {
+      pendingLiveStartTaskId.value = String(res?.id || "");
+      pendingConnectAfterStart.value = true;
+      notify(t("live.noticePreparing"), "info");
+      emit("sync");
+      reconcileLiveStartState();
+      return;
+    }
     notify(t("live.noticeStarted"), "info");
     emit("sync");
     await connectLiveSession({ localInitiated: true });
     if (isUnmounted) return;
   } catch (err) {
     localInitiatedStart = false;
+    pendingLiveStartTaskId.value = "";
+    pendingConnectAfterStart.value = false;
+    cleanupOrphanedAudioPlayer();
     if (!isUnmounted) {
       reportError(err);
     }
@@ -1327,19 +1877,47 @@ async function startLiveStudio() {
   }
 }
 
+async function cancelLiveStart() {
+  const taskId = activeLiveStartTask.value?.id || pendingLiveStartTaskId.value;
+  if (!taskId || cancellingLiveStart.value) return;
+  cancellingLiveStart.value = true;
+  try {
+    await colabOneCommand("task.cancel", { id: taskId });
+    if (isUnmounted) return;
+    notify(t("live.noticeCancelRequested"), "info");
+    emit("sync");
+  } catch (err) {
+    if (!isUnmounted) {
+      reportError(err);
+    }
+  } finally {
+    if (!isUnmounted) {
+      cancellingLiveStart.value = false;
+    }
+  }
+}
+
 async function stopLiveStudio() {
   if (startingOrStopping.value) return;
+  clearPendingConnectGraceTimer();
+  pendingConnectAfterStart.value = false;
+  pendingLiveStartTaskId.value = "";
   startingOrStopping.value = true;
   emit("clearError");
   try {
     teardownMediaSession();
     await colabOneCommand("comfyui.live.stop");
+    if (isUnmounted) return;
     notify(t("live.noticeStopped"), "success");
     emit("sync");
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
   } finally {
-    startingOrStopping.value = false;
+    if (!isUnmounted) {
+      startingOrStopping.value = false;
+    }
   }
 }
 
@@ -1396,15 +1974,23 @@ function onAvatarSelect(val: unknown) {
   selectedAvatarId.value = next;
 }
 
+const avatarMutationBusy = computed(
+  () =>
+    uploadingAsset.value ||
+    buildPackSubmitting.value ||
+    productSaving.value,
+);
+
 async function deleteSelectedAvatar() {
   const av = activeAvatar.value;
-  if (!av || !canMutateRemote.value) return;
+  if (!av || !canMutateRemote.value || avatarMutationBusy.value) return;
   uploadingAsset.value = true;
   try {
     await colabOneCommand("comfyui.live.avatars.delete", {
       avatar_id: av.id,
       id: av.id,
     });
+    if (isUnmounted) return;
     const nextPreviews = { ...localPortraitPreviews.value };
     delete nextPreviews[av.id];
     localPortraitPreviews.value = nextPreviews;
@@ -1427,9 +2013,203 @@ async function deleteSelectedAvatar() {
     notify(t("live.noticeAvatarDeleted"), "success");
     emit("sync");
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
   } finally {
-    uploadingAsset.value = false;
+    if (!isUnmounted) {
+      uploadingAsset.value = false;
+    }
+  }
+}
+
+async function openCompanionModal() {
+  companionClockNowMs.value = Date.now();
+  companionModalOpen.value = true;
+  if (liveRunning.value && tunnelReady.value) {
+    if (
+      !companionTicket.value ||
+      companionTicketRemainingSeconds.value <= 15
+    ) {
+      await refreshCompanionTicket();
+    }
+  }
+}
+
+async function writeCompanionClipboardText(text: string): Promise<boolean> {
+  if (isColabOneDesktopRuntime()) {
+    try {
+      await colabOneWriteClipboard(text);
+      await navigator.clipboard?.writeText(text).catch(() => {});
+      return true;
+    } catch {
+      // Fall through to browser clipboard APIs if desktop bridge is unavailable.
+    }
+  }
+  try {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === "function"
+    ) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to legacy execCommand fallback for non-HTTPS LAN web contexts.
+  }
+  if (
+    typeof document !== "undefined" &&
+    typeof document.execCommand === "function"
+  ) {
+    const previousActive =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.setAttribute("aria-hidden", "true");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "0";
+    ta.style.width = "1px";
+    ta.style.height = "1px";
+    ta.style.padding = "0";
+    ta.style.border = "0";
+    ta.style.opacity = "0";
+    ta.style.fontSize = "16px";
+    ta.style.pointerEvents = "none";
+    document.body.appendChild(ta);
+    try {
+      ta.focus({ preventScroll: true });
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      return Boolean(document.execCommand("copy"));
+    } catch {
+      return false;
+    } finally {
+      document.body.removeChild(ta);
+      if (previousActive && previousActive.isConnected) {
+        previousActive.focus({ preventScroll: true });
+      }
+    }
+  }
+  return false;
+}
+
+async function refreshCompanionTicket() {
+  if (!canMutateRemote.value || !liveRunning.value || companionTicketLoading.value) {
+    return;
+  }
+  const seq = ++companionTicketSeq;
+  companionTicketLoading.value = true;
+  try {
+    const res = await colabOneCommand<ColabOneLiveCompanionTicketResult>(
+      "comfyui.live.companion.ticket",
+      {},
+    );
+    if (isUnmounted || !liveRunning.value || seq !== companionTicketSeq) {
+      return;
+    }
+    let url = String(res?.companion_url || "").trim();
+    if (!url && res?.code && canvasStatus.value?.url) {
+      const origin = String(canvasStatus.value.url).trim().replace(/\/+$/, "");
+      const cpath = res.companion_path || "/_colabone_live/remote";
+      url = `${origin}${cpath}#code=${res.code}`;
+    }
+    let qrDataUrl = "";
+    if (url) {
+      try {
+        qrDataUrl = colabOneRenderQrSvgDataUrl(url);
+      } catch (qrErr) {
+        qrDataUrl = "";
+        reportError(qrErr);
+      }
+    }
+    if (isUnmounted || !liveRunning.value || seq !== companionTicketSeq) {
+      return;
+    }
+    companionTicket.value = {
+      ...res,
+      companion_url: url,
+    };
+    const nowMs = Date.now();
+    companionClockNowMs.value = nowMs;
+    if (
+      typeof res?.ttl_seconds === "number" &&
+      Number.isFinite(res.ttl_seconds) &&
+      res.ttl_seconds > 0
+    ) {
+      companionTicketExpiresAtMs.value = nowMs + res.ttl_seconds * 1000;
+    } else if (
+      typeof res?.expires_at === "number" &&
+      Number.isFinite(res.expires_at) &&
+      res.expires_at > 0
+    ) {
+      companionTicketExpiresAtMs.value = res.expires_at * 1000;
+    } else {
+      companionTicketExpiresAtMs.value = 0;
+    }
+    companionQrDataUrl.value = qrDataUrl;
+    if (res?.companion) {
+      wsCompanionStatus.value = res.companion;
+    }
+  } catch (err) {
+    if (!isUnmounted && liveRunning.value && seq === companionTicketSeq) {
+      reportError(err);
+    }
+  } finally {
+    if (!isUnmounted && seq === companionTicketSeq) {
+      companionTicketLoading.value = false;
+    }
+  }
+}
+
+async function copyCompanionUrl() {
+  const url = companionTicket.value?.companion_url;
+  if (!url || isUnmounted) return;
+  const ok = await writeCompanionClipboardText(url);
+  if (isUnmounted) return;
+  if (ok) {
+    notify(t("live.companionNoticeCopied"), "success");
+  } else {
+    reportError(t("common.copyFailed"));
+  }
+}
+
+async function disconnectCompanion() {
+  if (!canMutateRemote.value || companionDisconnecting.value) return;
+  companionTicketSeq += 1;
+  companionTicketLoading.value = false;
+  companionDisconnecting.value = true;
+  try {
+    await colabOneCommand("comfyui.live.companion.disconnect", {});
+    if (isUnmounted) return;
+    companionTicketSeq += 1;
+    wsCompanionStatus.value = {
+      connected: false,
+      device_label: "",
+      mic_active: false,
+      camera_mode: "off",
+      camera_fps: 0,
+      motion_energy: 0,
+      vision_frame_ready: false,
+      connected_at: null,
+    };
+    companionTicket.value = null;
+    companionTicketExpiresAtMs.value = 0;
+    companionQrDataUrl.value = "";
+    notify(t("live.companionNoticeDisconnected"), "info");
+    emit("sync");
+  } catch (err) {
+    if (!isUnmounted) {
+      reportError(err);
+    }
+  } finally {
+    if (!isUnmounted) {
+      companionDisconnecting.value = false;
+    }
   }
 }
 
@@ -1454,13 +2234,23 @@ async function toggleMic() {
     onError: (err) => {
       if (gen !== micOpGen || isUnmounted) return;
       errorReported = true;
+      if (colabOneIsMissingAudioDeviceError(err)) {
+        notify(t("live.errNoLocalMic"), "info");
+        void openCompanionModal();
+        return;
+      }
       reportError(err.message);
     },
   });
   micCapture = capture;
   try {
     await capture.start();
-    if (gen !== micOpGen || isUnmounted || props.active === false) {
+    if (
+      gen !== micOpGen ||
+      isUnmounted ||
+      props.active === false ||
+      !capture.isRunning()
+    ) {
       capture.stop();
       if (micCapture === capture) {
         micCapture = null;
@@ -1474,7 +2264,12 @@ async function toggleMic() {
       micCapture = null;
     }
     if (!errorReported && gen === micOpGen && !isUnmounted) {
-      reportError(err);
+      if (colabOneIsMissingAudioDeviceError(err)) {
+        notify(t("live.errNoLocalMic"), "info");
+        void openCompanionModal();
+      } else {
+        reportError(err);
+      }
     }
   } finally {
     if (gen === micOpGen) {
@@ -1594,9 +2389,16 @@ function onGlobalKeyDown(event: KeyboardEvent) {
   if (props.active !== false && audioSuspended.value) {
     resumeSuspendedAudio();
   }
+  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
   if (event.code !== "Space" || event.repeat) return;
   if (props.active === false) return;
-  if (buildPackModalOpen.value || productModalOpen.value) return;
+  if (
+    buildPackModalOpen.value ||
+    productModalOpen.value ||
+    companionModalOpen.value
+  ) {
+    return;
+  }
   if (hasVisibleAntOverlay()) return;
   if (micMode.value !== "ptt" || !micActive.value) return;
   if (isInteractiveOrEditableTarget(event.target)) return;
@@ -1629,7 +2431,7 @@ function sendDirectiveText() {
     transcripts.value = [
       ...transcripts.value.slice(-23),
       {
-        id: `local-${Date.now()}`,
+        id: `local-${++localTranscriptSeq}`,
         role: directorMode.value === "director" ? "director" : "user",
         text: content,
         isFinal: true,
@@ -1694,19 +2496,24 @@ function triggerDrivingMotion(motion: ColabOneLiveDrivingMotionSpec) {
 }
 
 async function deleteDrivingMotion(motion: ColabOneLiveDrivingMotionSpec) {
-  if (!canMutateRemote.value) return;
+  if (!canMutateRemote.value || avatarMutationBusy.value) return;
   uploadingAsset.value = true;
   try {
     await colabOneCommand("comfyui.live.driving.delete", {
       id: motion.id,
       motion_id: motion.id,
     });
+    if (isUnmounted) return;
     notify(t("live.noticeDrivingDeleted"), "success");
     emit("sync");
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
   } finally {
-    uploadingAsset.value = false;
+    if (!isUnmounted) {
+      uploadingAsset.value = false;
+    }
   }
 }
 
@@ -1767,7 +2574,7 @@ async function onQuickPortraitSelected(event: Event) {
   const input = event.target as HTMLInputElement | null;
   const file = input?.files?.[0];
   if (input) input.value = "";
-  if (uploadingAsset.value) return;
+  if (avatarMutationBusy.value) return;
   if (!file || !canMutateRemote.value) return;
   if (!COLABONE_LIVE_PORTRAIT_EXT_RE.test(file.name)) {
     reportError(tb("人像仅支持 PNG、JPEG 或 WebP 格式"));
@@ -1787,7 +2594,7 @@ async function onQuickPortraitSelected(event: Event) {
     current?.id || makeUniqueAvatarId(t("live.avatarDefaultName"));
   const targetName = current?.name || t("live.avatarDefaultName");
   const targetPersona = current?.persona_prompt || "";
-  const targetTtsEngine = ttsEngine.value;
+  const targetTtsEngine = current?.default_tts_engine || ttsEngine.value;
   const targetVoicePreset = current?.default_voice_preset || "shen_zhiyi";
   const targetActions = current?.actions
     ? serializeAvatarActions(current.actions)
@@ -1837,7 +2644,7 @@ async function onClipFileSelected(
   const input = event.target as HTMLInputElement | null;
   const file = input?.files?.[0];
   if (input) input.value = "";
-  if (uploadingAsset.value) return;
+  if (avatarMutationBusy.value) return;
   if (!file || !canMutateRemote.value) return;
 
   const kindLabel =
@@ -1975,7 +2782,7 @@ async function onBuildPackPortraitPicked(event: Event) {
 }
 
 async function submitBuildPack() {
-  if (!canMutateRemote.value) return;
+  if (!canMutateRemote.value || avatarMutationBusy.value) return;
   const creatingNew = buildPackCreateNew.value || !activeAvatar.value;
   if (
     !buildPackPortraitBase64.value &&
@@ -2003,6 +2810,7 @@ async function submitBuildPack() {
       payload.portrait_filename = buildPackPortraitName.value || "portrait.png";
     }
     await colabOneCommand("comfyui.live.avatars.build_pack", payload);
+    if (isUnmounted) return;
     if (buildPackPortraitPreview.value) {
       localPortraitPreviews.value = {
         ...localPortraitPreviews.value,
@@ -2015,9 +2823,13 @@ async function submitBuildPack() {
     notify(t("live.noticePackBuilding"), "info");
     emit("sync");
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
   } finally {
-    buildPackSubmitting.value = false;
+    if (!isUnmounted) {
+      buildPackSubmitting.value = false;
+    }
   }
 }
 
@@ -2072,6 +2884,7 @@ async function persistAvatarProducts(nextProducts: ColabOneLiveProductItem[]) {
       actions: current?.actions ? serializeAvatarActions(current.actions) : [],
       products: serializeAvatarProducts(nextProducts),
     });
+    if (isUnmounted) return;
     selectedAvatarId.value = targetId;
     localDraftProducts.value = [];
   } else {
@@ -2080,6 +2893,7 @@ async function persistAvatarProducts(nextProducts: ColabOneLiveProductItem[]) {
 }
 
 async function submitProductModal() {
+  if (avatarMutationBusy.value) return;
   const name = productFormName.value.trim();
   if (!name) {
     reportError(t("live.errNeedProductName"));
@@ -2106,20 +2920,28 @@ async function submitProductModal() {
   productSaving.value = true;
   try {
     await persistAvatarProducts(nextProducts);
+    if (isUnmounted) return;
     productModalOpen.value = false;
     notify(t("live.noticeProductSaved"), "success");
     emit("sync");
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
   } finally {
-    productSaving.value = false;
+    if (!isUnmounted) {
+      productSaving.value = false;
+    }
   }
 }
 
 async function deleteProduct(item: ColabOneLiveProductItem) {
+  if (avatarMutationBusy.value) return;
   const nextProducts = displayProducts.value.filter((p) => p.id !== item.id);
+  productSaving.value = true;
   try {
     await persistAvatarProducts(nextProducts);
+    if (isUnmounted) return;
     if (activeCard.value?.id === item.id) {
       activeCard.value = null;
       sessionClient?.sendSetCard(null);
@@ -2127,7 +2949,13 @@ async function deleteProduct(item: ColabOneLiveProductItem) {
     notify(t("live.noticeProductDeleted"), "success");
     emit("sync");
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
+  } finally {
+    if (!isUnmounted) {
+      productSaving.value = false;
+    }
   }
 }
 
@@ -2177,6 +3005,7 @@ async function persistExternalLlmSettings(showToast = true): Promise<boolean> {
       payload.api_key = llmApiKey.value.trim();
     }
     await colabOneCommand("comfyui.live.llm.save", payload);
+    if (isUnmounted) return false;
     if (llmApiKey.value.trim()) {
       llmHasSavedKey.value = true;
       llmApiKey.value = "";
@@ -2188,10 +3017,14 @@ async function persistExternalLlmSettings(showToast = true): Promise<boolean> {
     emit("sync");
     return true;
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
     return false;
   } finally {
-    llmSaving.value = false;
+    if (!isUnmounted) {
+      llmSaving.value = false;
+    }
   }
 }
 
@@ -2209,6 +3042,7 @@ async function clearExternalLlmSettings() {
   llmClearing.value = true;
   try {
     await colabOneCommand("comfyui.live.llm.clear");
+    if (isUnmounted) return;
     llmBaseUrl.value = "";
     llmModel.value = "";
     llmApiKey.value = "";
@@ -2219,9 +3053,13 @@ async function clearExternalLlmSettings() {
     notify(t("live.noticeLlmCleared"), "success");
     emit("sync");
   } catch (err) {
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
   } finally {
-    llmClearing.value = false;
+    if (!isUnmounted) {
+      llmClearing.value = false;
+    }
   }
 }
 
@@ -2235,14 +3073,18 @@ async function testExternalLlm() {
   llmTestStatus.value = "idle";
   llmTestError.value = "";
   try {
+    const payload: Record<string, unknown> = {
+      base_url: llmBaseUrl.value.trim(),
+      model: llmModel.value.trim(),
+    };
+    if (llmApiKey.value.trim()) {
+      payload.api_key = llmApiKey.value.trim();
+    }
     const res = await colabOneCommand<{ ok?: boolean; error?: string }>(
       "comfyui.live.llm.test",
-      {
-        base_url: llmBaseUrl.value.trim(),
-        model: llmModel.value.trim(),
-        api_key: llmApiKey.value.trim() || undefined,
-      },
+      payload,
     );
+    if (isUnmounted) return;
     if (res?.ok === false) {
       llmTestStatus.value = "failed";
       llmTestError.value = res.error || "";
@@ -2252,11 +3094,15 @@ async function testExternalLlm() {
       notify(t("live.noticeLlmTestPassed"), "success");
     }
   } catch (err) {
-    llmTestStatus.value = "failed";
-    llmTestError.value = String(err);
-    reportError(err);
+    if (!isUnmounted) {
+      llmTestStatus.value = "failed";
+      llmTestError.value = String(err);
+      reportError(err);
+    }
   } finally {
-    llmTesting.value = false;
+    if (!isUnmounted) {
+      llmTesting.value = false;
+    }
   }
 }
 
@@ -2282,6 +3128,16 @@ onMounted(() => {
 onUnmounted(() => {
   isUnmounted = true;
   micOpGen += 1;
+  companionTicketSeq += 1;
+  clearPendingConnectGraceTimer();
+  if (liveStartClockTimer) {
+    clearInterval(liveStartClockTimer);
+    liveStartClockTimer = null;
+  }
+  if (companionClockTimer) {
+    clearInterval(companionClockTimer);
+    companionClockTimer = null;
+  }
   if (typeof window !== "undefined") {
     window.removeEventListener("keydown", onGlobalKeyDown);
     window.removeEventListener("keyup", onGlobalKeyUp);
@@ -2323,8 +3179,36 @@ onUnmounted(() => {
 
         <ASpace :size="8" wrap class="co-live-primary-actions">
           <AButton
+            v-if="liveRunning"
+            size="middle"
+            :type="companionStatus.connected ? 'default' : 'default'"
+            :class="{ 'co-live-companion-active-btn': companionStatus.connected }"
+            data-testid="live-companion-open-btn"
+            @click="openCompanionModal"
+          >
+            <template #icon>
+              <PhDeviceMobile v-if="companionStatus.connected" :size="16" weight="fill" />
+              <PhQrCode v-else :size="16" />
+            </template>
+            {{
+              companionStatus.connected
+                ? t("live.companionConnectedBtn")
+                : t("live.companionBtn")
+            }}
+          </AButton>
+          <AButton
             v-if="liveRunning && !isConnected"
             size="middle"
+            :loading="
+              connState === 'connecting' ||
+              connState === 'authenticating' ||
+              connState === 'reconnecting'
+            "
+            :disabled="
+              connState === 'connecting' ||
+              connState === 'authenticating' ||
+              connState === 'reconnecting'
+            "
             @click="connectLiveSession()"
           >
             <template #icon><PhArrowsClockwise :size="15" /></template>
@@ -2333,13 +3217,18 @@ onUnmounted(() => {
           <AButton
             v-if="!liveRunning"
             type="primary"
-            :loading="startingOrStopping || liveStarting"
-            :disabled="!gpuReady || !hasLiveCapability || !canStartLiveTunnel"
+            :loading="startingOrStopping || isLivePreparing"
+            :disabled="
+              !gpuReady ||
+              !hasLiveCapability ||
+              !canStartLiveTunnel ||
+              isLivePreparing
+            "
             data-testid="live-studio-start-btn"
             @click="startLiveStudio"
           >
             <template #icon><PhBroadcast :size="16" /></template>
-            {{ t("live.startBtn") }}
+            {{ isLivePreparing ? t("live.preparingBtn") : t("live.startBtn") }}
           </AButton>
           <AButton
             v-else
@@ -2362,6 +3251,7 @@ onUnmounted(() => {
             :value="visualEngine"
             size="small"
             class="co-live-engine-select"
+            :disabled="isLivePreparing"
             @change="onVisualEngineChange"
           >
             <ASelectOption value="flashhead_lite">
@@ -2379,6 +3269,7 @@ onUnmounted(() => {
             :value="ttsEngine"
             size="small"
             class="co-live-tts-select"
+            :disabled="isLivePreparing"
             @change="onTtsEngineChange"
           >
             <ASelectOption value="qwen3_tts">
@@ -2395,6 +3286,7 @@ onUnmounted(() => {
             <ASwitch
               size="small"
               :checked="personaliveEnabled"
+              :disabled="isLivePreparing"
               @change="onPersonaLiveChange"
             />
             <span class="co-live-personalive-text">
@@ -2468,8 +3360,112 @@ onUnmounted(() => {
       <template #description>{{ t("live.offlineHintDesc") }}</template>
     </AAlert>
 
+    <!-- Live Studio Auto-Provisioning & Download Progress Card -->
+    <div
+      v-if="isLivePreparing && !liveRunning"
+      class="co-live-start-progress-card"
+      data-testid="live-start-progress-card"
+    >
+      <div class="co-live-start-progress-head">
+        <div class="co-live-start-progress-title">
+          <ASpin size="small" />
+          <strong>{{ t("live.preparingCardTitle") }}</strong>
+          <span
+            v-if="liveStartElapsedText"
+            class="co-live-start-elapsed co-tabular"
+          >
+            <PhClock :size="13" aria-hidden="true" />
+            <span>{{
+              t("task.elapsedLive", { duration: liveStartElapsedText })
+            }}</span>
+          </span>
+        </div>
+        <div class="co-live-start-progress-actions">
+          <span class="co-live-start-pct co-tabular">
+            {{ liveStartProgressPct }}%
+          </span>
+          <AButton
+            v-if="activeLiveStartTask || pendingLiveStartTaskId"
+            size="small"
+            danger
+            ghost
+            :loading="cancellingLiveStart"
+            data-testid="live-start-cancel-btn"
+            @click="cancelLiveStart"
+          >
+            {{ t("live.cancelPrepareBtn") }}
+          </AButton>
+        </div>
+      </div>
+
+      <div class="co-live-start-progress-msg">
+        <ColabOnePrivacyText
+          :text="
+            activeLiveStartTask?.message
+              ? tb(activeLiveStartTask.message)
+              : t('live.preparingFallbackMsg')
+          "
+          :context="privacyContext"
+        />
+      </div>
+
+      <div
+        v-if="liveStartDownloadSummary"
+        class="co-live-start-download-meta co-tabular"
+      >
+        <PhCloudArrowDown :size="14" aria-hidden="true" />
+        <span>{{ liveStartDownloadSummary.primary }}</span>
+        <span v-if="liveStartDownloadSummary.etaText" class="co-live-start-dot">
+          ·
+        </span>
+        <span v-if="liveStartDownloadSummary.etaText">
+          {{ liveStartDownloadSummary.etaText }}
+        </span>
+        <span
+          v-if="liveStartDownloadSummary.fileCounter"
+          class="co-live-start-dot"
+        >
+          ·
+        </span>
+        <span v-if="liveStartDownloadSummary.fileCounter">
+          {{ liveStartDownloadSummary.fileCounter }}
+        </span>
+        <span
+          v-if="liveStartDownloadSummary.filename"
+          class="co-live-start-filename"
+          :title="liveStartDownloadSummary.filename"
+        >
+          {{ liveStartDownloadSummary.filename }}
+        </span>
+      </div>
+
+      <AProgress
+        :percent="liveStartProgressPct"
+        size="small"
+        status="active"
+        :show-info="false"
+        class="co-live-start-bar"
+      />
+
+      <div
+        v-if="
+          liveStartLatestLog &&
+          liveStartLatestLog !==
+            (activeLiveStartTask?.message
+              ? tb(activeLiveStartTask.message)
+              : '')
+        "
+        class="co-live-start-log-hint"
+      >
+        <ColabOnePrivacyText
+          :text="liveStartLatestLog"
+          :context="privacyContext"
+        />
+      </div>
+    </div>
+
     <AAlert
-      v-if="liveStatus?.error"
+      v-if="gpuReady && liveStatus?.error && !isLivePreparing && !liveRunning"
       type="error"
       show-icon
       class="co-live-prereq-alert"
@@ -2689,6 +3685,72 @@ onUnmounted(() => {
 
         <!-- Bottom Voice & Director Control Bar -->
         <div class="co-live-controls">
+          <div
+            v-if="companionStatus.connected"
+            class="co-live-companion-strip"
+            data-testid="live-companion-strip"
+          >
+            <div class="co-live-companion-strip-info">
+              <PhDeviceMobile :size="15" weight="fill" />
+              <strong>
+                {{
+                  t("live.companionStatusConnected", {
+                    name: companionStatus.device_label
+                      ? tb(companionStatus.device_label)
+                      : t("live.companionConnectedBtn"),
+                  })
+                }}
+              </strong>
+              <ATag
+                :color="companionStatus.mic_active ? 'success' : 'default'"
+                class="co-live-companion-pill"
+              >
+                {{
+                  companionStatus.mic_active
+                    ? t("live.companionMicOn")
+                    : t("live.companionMicOff")
+                }}
+              </ATag>
+              <ATag
+                :color="
+                  companionStatus.camera_mode &&
+                  companionStatus.camera_mode !== 'off'
+                    ? 'processing'
+                    : 'default'
+                "
+                class="co-live-companion-pill"
+              >
+                <PhCamera :size="12" />
+                <span>
+                  {{ companionCameraModeLabel(companionStatus.camera_mode) }}
+                  <template
+                    v-if="
+                      companionStatus.camera_mode !== 'off' &&
+                      (companionStatus.camera_fps || 0) > 0
+                    "
+                  >
+                    · {{ companionStatus.camera_fps?.toFixed(1) }} FPS
+                  </template>
+                </span>
+              </ATag>
+            </div>
+            <ASpace :size="6">
+              <AButton size="small" @click="openCompanionModal">
+                <template #icon><PhQrCode :size="13" /></template>
+                {{ t("live.companionRefreshQrBtn") }}
+              </AButton>
+              <AButton
+                size="small"
+                danger
+                ghost
+                :loading="companionDisconnecting"
+                @click="disconnectCompanion"
+              >
+                {{ t("live.companionDisconnectBtn") }}
+              </AButton>
+            </ASpace>
+          </div>
+
           <div class="co-live-controls-top">
             <div class="co-live-mic-group">
               <AButton
@@ -2703,6 +3765,23 @@ onUnmounted(() => {
                   <PhMicrophoneSlash v-else :size="16" />
                 </template>
                 {{ micActive ? t("live.micStop") : t("live.micStart") }}
+              </AButton>
+
+              <AButton
+                size="middle"
+                :class="{ 'co-live-companion-active-btn': companionStatus.connected }"
+                data-testid="live-companion-mic-bar-btn"
+                @click="openCompanionModal"
+              >
+                <template #icon>
+                  <PhDeviceMobile v-if="companionStatus.connected" :size="15" weight="fill" />
+                  <PhQrCode v-else :size="15" />
+                </template>
+                {{
+                  companionStatus.connected
+                    ? t("live.companionConnectedBtn")
+                    : t("live.companionBtn")
+                }}
               </AButton>
 
               <div
@@ -2726,12 +3805,18 @@ onUnmounted(() => {
                 v-if="micMode === 'ptt' && micActive"
                 size="small"
                 :type="pttPressed ? 'primary' : 'default'"
+                :aria-pressed="pttPressed"
                 @mousedown="setPttHolding(true)"
                 @mouseup="setPttHolding(false)"
                 @mouseleave="setPttHolding(false)"
                 @touchstart.prevent="setPttHolding(true)"
                 @touchend.prevent="setPttHolding(false)"
                 @touchcancel.prevent="setPttHolding(false)"
+                @keydown.space.prevent.stop="!$event.repeat && setPttHolding(true)"
+                @keyup.space.prevent.stop="setPttHolding(false)"
+                @keydown.enter.prevent.stop="!$event.repeat && setPttHolding(true)"
+                @keyup.enter.prevent.stop="setPttHolding(false)"
+                @blur="setPttHolding(false)"
               >
                 {{
                   pttPressed ? t("live.pttSpeakingBtn") : t("live.pttHoldBtn")
@@ -2843,7 +3928,7 @@ onUnmounted(() => {
             <APopconfirm
               v-if="activeAvatar"
               :title="t('live.avatarDeleteConfirm', { name: activeAvatar.name })"
-              :disabled="!canMutateRemote || uploadingAsset"
+              :disabled="!canMutateRemote || avatarMutationBusy"
               @confirm="deleteSelectedAvatar"
             >
               <ColabOneTooltip :title="t('live.avatarDeleteBtn')">
@@ -2851,7 +3936,7 @@ onUnmounted(() => {
                   size="small"
                   type="text"
                   danger
-                  :disabled="!canMutateRemote || uploadingAsset"
+                  :disabled="!canMutateRemote || avatarMutationBusy"
                   :aria-label="t('live.avatarDeleteBtn')"
                 >
                   <template #icon><PhTrash :size="15" /></template>
@@ -2864,7 +3949,7 @@ onUnmounted(() => {
             <AButton
               size="small"
               :loading="uploadingAsset"
-              :disabled="!canMutateRemote"
+              :disabled="!canMutateRemote || avatarMutationBusy"
               @click="portraitInputRef?.click()"
             >
               <template #icon><PhUploadSimple :size="14" /></template>
@@ -2874,7 +3959,7 @@ onUnmounted(() => {
               type="primary"
               ghost
               size="small"
-              :disabled="!canMutateRemote"
+              :disabled="!canMutateRemote || avatarMutationBusy"
               @click="openBuildPackModal"
             >
               <template #icon><PhMagicWand :size="14" /></template>
@@ -2887,7 +3972,7 @@ onUnmounted(() => {
                 <AButton
                   size="small"
                   :loading="uploadingAsset"
-                  :disabled="!canMutateRemote || !activeAvatar"
+                  :disabled="!canMutateRemote || !activeAvatar || avatarMutationBusy"
                   @click="clipInputRef?.click()"
                 >
                   <template #icon><PhFilmSlate :size="14" /></template>
@@ -2899,7 +3984,7 @@ onUnmounted(() => {
               v-if="personaliveEnabled"
               size="small"
               :loading="uploadingAsset"
-              :disabled="!canMutateRemote"
+              :disabled="!canMutateRemote || avatarMutationBusy"
               @click="drivingVideoInputRef?.click()"
             >
               <template #icon><PhMusicNotes :size="14" /></template>
@@ -3013,7 +4098,7 @@ onUnmounted(() => {
                       name: motion.label || motion.id,
                     })
                   "
-                  :disabled="!canMutateRemote || uploadingAsset"
+                  :disabled="!canMutateRemote || avatarMutationBusy"
                   @confirm="deleteDrivingMotion(motion)"
                 >
                   <ColabOneTooltip :title="t('live.drivingDeleteBtn')">
@@ -3021,7 +4106,7 @@ onUnmounted(() => {
                       size="small"
                       type="text"
                       danger
-                      :disabled="!canMutateRemote || uploadingAsset"
+                      :disabled="!canMutateRemote || avatarMutationBusy"
                       :aria-label="t('live.drivingDeleteBtn')"
                     >
                       <template #icon><PhTrash :size="14" /></template>
@@ -3040,7 +4125,11 @@ onUnmounted(() => {
               <PhShoppingBag :size="17" />
               <h3>{{ t("live.productsCardTitle") }}</h3>
             </div>
-            <AButton size="small" @click="openAddProductModal">
+            <AButton
+              size="small"
+              :disabled="avatarMutationBusy"
+              @click="openAddProductModal"
+            >
               <template #icon><PhPlus :size="14" /></template>
               {{ t("live.productAddBtn") }}
             </AButton>
@@ -3097,6 +4186,7 @@ onUnmounted(() => {
                   <AButton
                     size="small"
                     type="text"
+                    :disabled="avatarMutationBusy"
                     :aria-label="t('live.productEditBtn')"
                     @click="openEditProductModal(prod)"
                   >
@@ -3105,6 +4195,7 @@ onUnmounted(() => {
                 </ColabOneTooltip>
                 <APopconfirm
                   :title="t('live.productDeleteConfirm', { name: prod.name })"
+                  :disabled="avatarMutationBusy"
                   @confirm="deleteProduct(prod)"
                 >
                   <ColabOneTooltip :title="t('live.productDeleteBtn')">
@@ -3112,6 +4203,7 @@ onUnmounted(() => {
                       size="small"
                       type="text"
                       danger
+                      :disabled="avatarMutationBusy"
                       :aria-label="t('live.productDeleteBtn')"
                     >
                       <template #icon><PhTrash :size="14" /></template>
@@ -3181,7 +4273,6 @@ onUnmounted(() => {
               <span>{{ t("live.llmBaseUrlLabel") }}</span>
               <ColabOnePrivacyInput
                 :value="llmBaseUrl"
-                size="small"
                 :allow-clear="false"
                 :placeholder="t('live.llmBaseUrlPlaceholder')"
                 @update:value="
@@ -3391,6 +4482,171 @@ onUnmounted(() => {
         </label>
       </div>
     </AModal>
+
+    <!-- Mobile / Remote Companion QR Pairing Modal -->
+    <AModal
+      v-model:open="companionModalOpen"
+      :title="t('live.companionModalTitle')"
+      :footer="null"
+      :width="480"
+      :z-index="1050"
+      destroy-on-close
+    >
+      <div class="co-live-companion-modal" data-testid="live-companion-modal">
+        <p class="co-live-companion-subtitle">
+          {{ t("live.companionModalSubtitle") }}
+        </p>
+
+        <AAlert
+          v-if="!liveRunning"
+          type="info"
+          show-icon
+          :message="t('live.companionNeedStartHint')"
+        />
+        <AAlert
+          v-else-if="!tunnelReady"
+          type="warning"
+          show-icon
+          :message="t('live.companionNeedTunnelHint')"
+        >
+          <template #action>
+            <AButton size="small" type="primary" ghost @click="companionModalOpen = false; emit('open-canvas-tab')">
+              {{ t("live.goCanvasTunnelBtn") }}
+            </AButton>
+          </template>
+        </AAlert>
+
+        <template v-else>
+          <div class="co-live-companion-domain-row">
+            <span class="co-live-companion-domain-k">
+              {{ t("live.companionDomainLabel") }}
+            </span>
+            <code class="co-live-companion-domain-v">
+              <ColabOnePrivacyText
+                :text="
+                  companionTicket?.public_origin ||
+                  canvasStatus?.url ||
+                  ''
+                "
+                kind="url"
+                :context="privacyContext"
+              />
+            </code>
+          </div>
+
+          <div class="co-live-companion-qr-stage">
+            <ASpin v-if="companionTicketLoading" />
+            <div
+              v-else-if="colabOnePrivacyActive"
+              class="co-live-companion-qr-masked"
+              role="img"
+              :aria-label="t('privacy.maskedFieldAria')"
+              data-testid="live-companion-qr-masked"
+            >
+              <PhEyeSlash :size="28" weight="duotone" aria-hidden="true" />
+              <span class="co-live-companion-qr-masked-label">
+                {{ t("privacy.maskedFieldAria") }}
+              </span>
+              <span class="co-live-companion-qr-masked-hint">
+                {{ t("privacy.secretLockedTooltip") }}
+              </span>
+            </div>
+            <img
+              v-else-if="companionQrDataUrl && companionTicketRemainingSeconds > 0"
+              :src="companionQrDataUrl"
+              :alt="t('live.companionQrAlt')"
+              class="co-live-companion-qr-img"
+              data-testid="live-companion-qr-img"
+            />
+            <div class="co-live-companion-expiry co-tabular">
+              {{ companionTicketExpiryLabel }}
+            </div>
+            <ASpace :size="8" wrap>
+              <AButton
+                size="small"
+                :disabled="
+                  !companionTicket?.companion_url ||
+                  companionTicketRemainingSeconds <= 0
+                "
+                @click="copyCompanionUrl"
+              >
+                <template #icon><PhCopy :size="14" /></template>
+                {{ t("live.companionCopyUrlBtn") }}
+              </AButton>
+              <AButton
+                size="small"
+                type="primary"
+                ghost
+                :loading="companionTicketLoading"
+                @click="refreshCompanionTicket"
+              >
+                <template #icon><PhArrowsClockwise :size="14" /></template>
+                {{ t("live.companionRefreshQrBtn") }}
+              </AButton>
+            </ASpace>
+          </div>
+
+          <div class="co-live-companion-device-card">
+            <div class="co-live-companion-device-head">
+              <div class="co-live-companion-device-name">
+                <ABadge :status="companionStatus.connected ? 'success' : 'default'" />
+                <span>
+                  {{
+                    companionStatus.connected
+                      ? t("live.companionStatusConnected", {
+                          name: companionStatus.device_label
+                            ? tb(companionStatus.device_label)
+                            : t("live.companionConnectedBtn"),
+                        })
+                      : t("live.companionStatusIdle")
+                  }}
+                </span>
+              </div>
+              <AButton
+                v-if="companionStatus.connected"
+                size="small"
+                danger
+                :loading="companionDisconnecting"
+                @click="disconnectCompanion"
+              >
+                {{ t("live.companionDisconnectBtn") }}
+              </AButton>
+            </div>
+            <div v-if="companionStatus.connected" class="co-live-companion-device-tags">
+              <ATag :color="companionStatus.mic_active ? 'success' : 'default'">
+                {{
+                  companionStatus.mic_active
+                    ? t("live.companionMicOn")
+                    : t("live.companionMicOff")
+                }}
+              </ATag>
+              <ATag
+                :color="
+                  companionStatus.camera_mode &&
+                  companionStatus.camera_mode !== 'off'
+                    ? 'processing'
+                    : 'default'
+                "
+              >
+                {{ companionCameraModeLabel(companionStatus.camera_mode) }}
+                <template
+                  v-if="
+                    companionStatus.camera_mode !== 'off' &&
+                    (companionStatus.camera_fps || 0) > 0
+                  "
+                >
+                  · {{ companionStatus.camera_fps?.toFixed(1) }} FPS
+                </template>
+              </ATag>
+            </div>
+          </div>
+
+          <p class="co-live-companion-security-note">
+            {{ t("live.companionSecurityNote") }}
+          </p>
+        </template>
+      </div>
+    </AModal>
   </section>
 </template>
 
@@ -3496,6 +4752,262 @@ onUnmounted(() => {
 
 .co-live-prereq-alert {
   border-radius: var(--co-radius-md);
+}
+
+.co-live-start-progress-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--co-radius-lg);
+  border: 1px solid rgba(59, 130, 246, 0.32);
+  background: var(--co-surface);
+  box-shadow: var(--co-card-shadow);
+}
+
+.co-live-start-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.co-live-start-progress-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--co-text);
+  flex-wrap: wrap;
+}
+
+.co-live-start-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--co-secondary-text);
+}
+
+.co-live-start-progress-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.co-live-start-pct {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--co-accent);
+}
+
+.co-live-start-progress-msg {
+  font-size: 13px;
+  color: var(--co-text);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.co-live-start-download-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--co-secondary-text);
+}
+
+.co-live-start-dot {
+  opacity: 0.55;
+}
+
+.co-live-start-filename {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.co-live-start-bar {
+  margin: 0;
+}
+
+.co-live-start-log-hint {
+  font-size: 12px;
+  color: var(--co-secondary-text);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.co-live-companion-active-btn {
+  border-color: rgba(16, 185, 129, 0.55) !important;
+  color: #10b981 !important;
+}
+
+.co-live-companion-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-radius: var(--co-radius-md);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+  margin-bottom: 10px;
+}
+
+.co-live-companion-strip-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--co-text);
+}
+
+.co-live-companion-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-end: 0;
+}
+
+.co-live-companion-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.co-live-companion-subtitle {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--co-secondary-text);
+}
+
+.co-live-companion-domain-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--co-radius-md);
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface-subtle, rgba(127, 127, 127, 0.06));
+  font-size: 12.5px;
+}
+
+.co-live-companion-domain-k {
+  color: var(--co-secondary-text);
+  white-space: nowrap;
+}
+
+.co-live-companion-domain-v {
+  font-size: 12px;
+  color: var(--co-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.co-live-companion-qr-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--co-radius-lg);
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+}
+
+.co-live-companion-qr-img {
+  width: 216px;
+  height: 216px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+  image-rendering: pixelated;
+}
+
+.co-live-companion-qr-masked {
+  width: 216px;
+  height: 216px;
+  padding: 18px 16px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  border: 1px dashed var(--co-border);
+  background: var(--co-subtle);
+  color: var(--co-secondary-text);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  user-select: none;
+}
+
+.co-live-companion-qr-masked-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--co-text);
+}
+
+.co-live-companion-qr-masked-hint {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--co-muted);
+}
+
+.co-live-companion-expiry {
+  font-size: 12px;
+  color: var(--co-secondary-text);
+}
+
+.co-live-companion-device-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--co-radius-md);
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+}
+
+.co-live-companion-device-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.co-live-companion-device-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--co-text);
+}
+
+.co-live-companion-device-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.co-live-companion-security-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--co-secondary-text);
 }
 
 .co-live-alert-body {

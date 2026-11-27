@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 )
 
 const (
@@ -249,28 +251,29 @@ func (b *ColabOneFileSecretBackend) Delete(key string) error {
 	return nil
 }
 
-func (b *ColabOneFileSecretBackend) checkRegularTargetLocked() error {
+func (b *ColabOneFileSecretBackend) checkRegularTargetLocked() (os.FileInfo, error) {
 	info, err := os.Lstat(b.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("colabone vault: refusing symlink vault path %q", b.path)
+		return nil, fmt.Errorf("colabone vault: refusing symlink vault path %q", b.path)
 	}
 	if info.IsDir() {
-		return fmt.Errorf("colabone vault: vault path %q is a directory", b.path)
+		return nil, fmt.Errorf("colabone vault: vault path %q is a directory", b.path)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("colabone vault: vault path %q is not a regular file", b.path)
+		return nil, fmt.Errorf("colabone vault: vault path %q is not a regular file", b.path)
 	}
-	return nil
+	return info, nil
 }
 
 func (b *ColabOneFileSecretBackend) loadLocked() error {
-	if err := b.checkRegularTargetLocked(); err != nil {
+	linfo, err := b.checkRegularTargetLocked()
+	if err != nil {
 		return err
 	}
 	f, err := os.Open(b.path)
@@ -283,6 +286,26 @@ func (b *ColabOneFileSecretBackend) loadLocked() error {
 		return err
 	}
 	defer f.Close()
+
+	finfo, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !finfo.Mode().IsRegular() {
+		return fmt.Errorf("colabone vault: vault path %q is not a regular file", b.path)
+	}
+	if linfo == nil {
+		linfo, err = b.checkRegularTargetLocked()
+		if err != nil {
+			return err
+		}
+		if linfo == nil {
+			return fmt.Errorf("colabone vault: refusing symlink or concurrently replaced vault path %q", b.path)
+		}
+	}
+	if !os.SameFile(linfo, finfo) {
+		return fmt.Errorf("colabone vault: refusing symlink or concurrently replaced vault path %q", b.path)
+	}
 
 	raw, err := io.ReadAll(io.LimitReader(f, colabOneVaultMaxFileBytes+1))
 	if err != nil {
@@ -375,7 +398,7 @@ func (b *ColabOneFileSecretBackend) loadLocked() error {
 }
 
 func (b *ColabOneFileSecretBackend) saveLocked() error {
-	if err := b.checkRegularTargetLocked(); err != nil {
+	if _, err := b.checkRegularTargetLocked(); err != nil {
 		return err
 	}
 	dir := filepath.Dir(b.path)
@@ -440,6 +463,9 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 		return err
 	}
 	encoded = append(encoded, '\n')
+	if len(encoded) > colabOneVaultMaxFileBytes {
+		return fmt.Errorf("colabone vault: encoded vault size %d exceeds maximum %d bytes", len(encoded), colabOneVaultMaxFileBytes)
+	}
 
 	tmp, err := os.CreateTemp(dir, ".vault-*.tmp")
 	if err != nil {
@@ -493,21 +519,7 @@ func (b *ColabOneFileSecretBackend) quarantineCorruptFileLocked() error {
 }
 
 func colabOneVaultRenameReplace(src, dst string) error {
-	err := os.Rename(src, dst)
-	if err == nil || runtime.GOOS != "windows" {
-		return err
-	}
-	for attempt := 1; attempt < colabOneVaultWinRenameMaxAttempts; attempt++ {
-		if info, statErr := os.Stat(dst); statErr == nil && info.IsDir() {
-			return err
-		}
-		time.Sleep(time.Duration(attempt*15) * time.Millisecond)
-		err = os.Rename(src, dst)
-		if err == nil {
-			return nil
-		}
-	}
-	return err
+	return fsutil.RenameReplace(src, dst)
 }
 
 // colabOneDefaultVaultDir matches controller.DefaultConfigDir() so standalone

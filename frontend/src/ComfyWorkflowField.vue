@@ -439,7 +439,17 @@ function hasFileDragPayload(event: DragEvent): boolean {
 }
 
 function onMediaDragOver(event: DragEvent) {
-  if (props.uploading || props.disabled || !hasFileDragPayload(event)) {
+  const hasFiles = hasFileDragPayload(event);
+  if (hasFiles && (props.uploading || props.disabled)) {
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "none";
+    }
+    isDragging.value = false;
+    return;
+  }
+  if (props.uploading || props.disabled || !hasFiles) {
+    isDragging.value = false;
     return;
   }
   event.preventDefault();
@@ -460,6 +470,7 @@ function onMediaDragLeave(event: DragEvent) {
 
 function onMediaDrop(event: DragEvent) {
   isDragging.value = false;
+  if (!hasFileDragPayload(event)) return;
   if (props.uploading || props.disabled) return;
   const file = event.dataTransfer?.files?.[0];
   if (!file) return;

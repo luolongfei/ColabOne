@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import comfyCatalog from "../../catalog/comfyui.json";
+import { colabOneOutputShareMode } from "./colabOneOutputShare";
+import { colabOneWorkflowShareMode } from "./colabOneWorkflowShare";
 import {
   COLABONE_ANTD_LOCALES,
   COLABONE_LOCALE_LIST,
@@ -11,7 +13,9 @@ import {
   detectColabOneSystemLocale,
   hydrateColabOneLocaleFromSettings,
   normalizeColabOneLocale,
+  readStoredColabOneLocale,
   setColabOneLocale,
+  syncColabOneLocaleToNative,
   t,
   tb,
   translateColabOneBackendText,
@@ -668,7 +672,7 @@ describe("ColabOne reactive translations across helpers", () => {
     for (const [key, val] of Object.entries(COLABONE_MESSAGES["zh-TW"])) {
       expect(val, `zh-TW[${key}] Mainland 顯存 leak`).not.toContain("顯存");
     }
-    const spokenCantoneseRe = /[搵唔喺嘅啲咗冇]/;
+    const spokenCantoneseRe = /[搵唔喺嘅啲咗冇佢咁睇]/;
     for (const [key, val] of Object.entries(COLABONE_MESSAGES["zh-HK"])) {
       expect(val, `zh-HK[${key}] spoken Cantonese`).not.toMatch(spokenCantoneseRe);
     }
@@ -2057,7 +2061,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
   it("translates LongCat acceleration options, built-in female voice presets, and dynamic acceleration/voice logs across all 6 locales with zero leaks", () => {
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
-    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
 
     const staticCatalogAndValidationStrings = [
       // Updated digital-human-longcat description
@@ -2281,7 +2285,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     const HAN_RE = /[\u3400-\u9fff]/;
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
-    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
 
     // 1. comfy.voiceGroupNeutral across all 6 locales
     expect(COLABONE_MESSAGES["zh-CN"]["comfy.voiceGroupNeutral"]).toBe("内置中性 / 通用音色");
@@ -2358,7 +2362,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     const FULLWIDTH_PUNCT_RE = /[（）「」，。：；“”《》【】、～]/;
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|全棧/;
-    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
 
     const unifiedKeys = [
       "comfy.studioWorkflowCountOne",
@@ -2464,7 +2468,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     const FULLWIDTH_PUNCT_RE = /[（）「」，。：；“”《》【】、～]/;
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|全棧/;
-    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
     const LEAKED_ZH_CN_IN_JA_RE =
       /正在准备|正在执行|正在清理|仅限非商用|画质与渲染|超分引擎|口播数字人|显存|远端|请先/;
 
@@ -3259,7 +3263,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
   it("translates all fashion-tryon-h3 runtime progress, node titles, warnings, and errors across all 6 locales with zero leaks", () => {
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
-    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
 
     const fashionBackendSamples = [
       "自定义姿态模式下至少需要勾选 1 个姿势（或在高级设置中填写自定义姿势）",
@@ -3354,7 +3358,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
   it("translates all workflow-share backend errors, activity logs, and workflowShare locale keys across all 6 locales with zero CJK leaks or regional violations", () => {
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|跳過/;
-    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
 
     // 1. Validate all workflowShare.*, webConsole.workflowShare*, and guest-safe comfy.* locale keys
     const shareLocaleKeys = (
@@ -3551,7 +3555,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
   it("translates all fashion_tryon, ComfyUI schema validation, and share/webconsole notices across all 6 locales", () => {
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|跳過/;
-    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
     const newBackendSamples = [
       // Workflow share & web console extras
       "试听音频编号无效",
@@ -3699,6 +3703,803 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       } else {
         expect(invalidSnapOut).not.toBe("Invalid share snapshot payload");
       }
+    }
+  });
+
+  it("translates all outputGallery and outputShare UI keys and backend messages across all 6 locales with strict regional hygiene", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|默認|保存|缓存|緩存|跳過|跳过|文件/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
+
+    // 1. Validate all outputGallery.* and outputShare.* UI locale keys across all 6 locales
+    const galleryAndShareKeys = (
+      Object.keys(COLABONE_MESSAGES["zh-CN"]) as ColabOneMessageKey[]
+    ).filter(
+      (k) => k.startsWith("outputGallery.") || k.startsWith("outputShare."),
+    );
+    expect(galleryAndShareKeys.length).toBeGreaterThanOrEqual(118);
+
+    for (const loc of ALL_LOCALES) {
+      for (const key of galleryAndShareKeys) {
+        const val = COLABONE_MESSAGES[loc][key];
+        expect(val.trim().length, `empty ${loc}[${key}]`).toBeGreaterThan(0);
+        if (loc !== "ja-JP") {
+          expect(val, `katakana middot in ${loc}[${key}]`).not.toContain(
+            "\u30fb",
+          );
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(val),
+            `CJK/fullwidth leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+        }
+        if (loc === "ko-KR") {
+          expect(
+            val,
+            `non-standard 워크플로우 in ko-KR[${key}]: "${val}"`,
+          ).not.toContain("워크플로우");
+        }
+        if (loc === "zh-TW") {
+          expect(
+            val,
+            `forbidden zh-TW term in ${loc}[${key}]: "${val}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            val,
+            `spoken Cantonese or non-HK char in zh-HK[${key}]: "${val}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
+          expect(val, `non-HK 這裏 in zh-HK[${key}]`).not.toContain("這裏");
+        }
+      }
+      // Guest empty state copy remains vendor-neutral (never mentions Google)
+      expect(COLABONE_MESSAGES[loc]["outputShare.guestEmptyDesc"]).not.toMatch(
+        /google/i,
+      );
+    }
+
+    // Spot-check Taiwan vs Hong Kong distinctions in new gallery/share keys
+    expect(COLABONE_MESSAGES["zh-TW"]["outputShare.webConsoleOffTitle"]).toContain(
+      "網頁主控台",
+    );
+    expect(COLABONE_MESSAGES["zh-HK"]["outputShare.webConsoleOffTitle"]).toContain(
+      "網頁控制台",
+    );
+    expect(COLABONE_MESSAGES["zh-TW"]["outputGallery.inspectIncludedHint"]).toContain(
+      "去背質檢圖",
+    );
+    expect(COLABONE_MESSAGES["zh-HK"]["outputGallery.inspectIncludedHint"]).toContain(
+      "退地質檢圖",
+    );
+
+    // 2. Validate every static exact message + dynamic pattern rule for output sharing & ZIP streaming
+    const outputShareBackendSamples = [
+      // Exact messages (18)
+      "该分享链接未开启下载权限",
+      "访问密码错误，请重新输入",
+      "访问密码长度必须在 4 至 32 个字符之间",
+      "访问密码不能包含控制字符",
+      "请至少选择 1 项有效作品进行分享",
+      "单次分享的作品数量不能超过 256 项",
+      "单次分享的分组数量不能超过 64 组",
+      "成果物分享链接数量已达上限，请先删除旧记录",
+      "未找到对应的成果物分享链接",
+      "分享验证页面已过期，请重新打开分享链接",
+      "作品暂离线或暂不可访问，请稍后再试",
+      "该作品暂离线，请稍后再试",
+      "无权访问该作品",
+      "无可打包下载的可用作品",
+      "打包下载总大小超出上限",
+      "单次打包下载的作品数量不能超过 128 项",
+      "创建成果物分享返回数据无效",
+      "未登录或画廊分享会话已失效",
+      "作品不存在",
+      "输出目标无效",
+      "访问密码长度需在 4 至 32 个字符之间，且不能包含控制字符",
+      "请至少选择一项有效作品",
+      "分享分组数量不能超过 64 组",
+      "包含无效的作品编号",
+      "单次分享作品数量不能超过 256 项",
+      "未找到对应的作品分组",
+      "单次打包下载作品数量不能超过 128 项",
+      "单次打包导出作品数量不能超过 128 项",
+      "打包下载总大小超出 1 GB 限制",
+      "打包导出总大小超出 1 GB 限制",
+      "非法客户端请求",
+      "请求格式无效",
+      "序列化相册清单失败",
+      "成果物打包下载流式传输中断，已中止归档",
+      // Pattern rules
+      "读取成果物分享签名密钥失败：vault locked",
+      "生成成果物分享签名密钥失败：entropy error",
+      "保存成果物分享签名密钥失败：disk full",
+      "保存成果物分享配置失败：permission denied",
+      "生成成果物分享编号失败：entropy error",
+      "清理成果物分享持久化会话失败：io error",
+      "保存成果物分享持久化会话失败：disk full",
+      "清理成果物分享密码缓存失败：io error",
+      "保存成果物分享密码缓存失败：disk full",
+      "保存成果物分享访问密码失败：vault locked",
+      "清理成果物分享访问密码失败：vault locked",
+      "生成访问密码盐值失败：entropy error",
+      "生成访问密码摘要失败：scrypt failed",
+      "已创建成果物分享链接（1 项作品，有效期 24h）",
+      "已创建成果物分享链接（6 项作品，有效期 7d）",
+      "已创建成果物分享链接（12 项作品，有效期 30d）",
+      "已创建成果物分享链接（24 项作品，有效期 forever）",
+      "已撤销成果物分享链接 gallery_01 并注销关联访客会话",
+      "已删除成果物分享记录 gallery_01",
+      "分享标题包含无效字符",
+      "分享标题不能包含控制字符",
+      "分享标题长度不能超过 80 个字符",
+      "相册标题长度不能超过 100 个字符",
+      "分组标题不能包含控制字符",
+      "工作流编号包含无效字符",
+      "工作流名称长度不能超过 120 个字符",
+      "任务编号不能包含控制字符",
+      "分享备注包含无效字符",
+      "分享备注不能包含控制字符",
+      "分享备注长度不能超过 64 个字符",
+      "页面标题不能包含控制字符",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of outputShareBackendSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(
+          out.trim().length,
+          `empty translation for ${loc}: ${sample}`,
+        ).toBeGreaterThan(0);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc !== "ja-JP") {
+          expect(out, `katakana middot leak in ${loc}: ${out}`).not.toContain(
+            "\u30fb",
+          );
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ko-KR") {
+          expect(out, `non-standard 워크플로우 in ko-KR: "${out}"`).not.toContain(
+            "워크플로우",
+          );
+        }
+        if (loc === "ja-JP") {
+          expect(out, `ja-JP must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${out}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK: "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+    }
+
+    // Spot-check singular/plural & zh-TW 快取 in pattern outputs
+    expect(
+      translateColabOneBackendText(
+        "已创建成果物分享链接（1 项作品，有效期 24h）",
+        "en-US",
+      ),
+    ).toBe("Created output share link (1 output, validity: 24 hours)");
+    expect(
+      translateColabOneBackendText(
+        "已创建成果物分享链接（6 项作品，有效期 30d）",
+        "en-US",
+      ),
+    ).toBe("Created output share link (6 outputs, validity: 30 days)");
+    expect(
+      translateColabOneBackendText(
+        "保存成果物分享密码缓存失败：disk full",
+        "zh-TW",
+      ),
+    ).toBe("儲存成果物分享密碼快取失敗：disk full");
+  });
+
+  it("translates all newly added output_share.go, server/, symlink, and English-source errors across all 6 locales with zero zh-TW VRAM/Simplified leaks", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|默認|保存|缓存|緩存|跳過|跳过|文件/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
+
+    const zhSourceSamples = [
+      // output_share.go exact strings (9)
+      "当前打包下载任务过多，请稍后再试",
+      "网页控制台未启动，请先启动后再打开分享链接",
+      "该成果物分享链接已被撤销",
+      "该成果物分享链接已过期",
+      "无法生成分享链接地址",
+      "成果物打包下载因分享权限变更已中止",
+      "成果物打包下载超出 1 GB 限制，已中止归档",
+      "成果物打包下载连接已取消，已中止归档",
+      "成果物打包下载结束归档失败，已中止响应",
+      // output_share.go extended dynamic log patterns
+      "读取成果物分享访问密码失败：vault locked",
+      "回滚成果物分享访问密码失败：vault write failed",
+      "清理已撤销分享 gallery_01 的密码记录失败：io error",
+      "清理已删除分享 gallery_02 的密码记录失败：vault locked",
+      // server/ symlink labels (all 18 + dynamic 云盘...目录/路径 + tunnel credentials)
+      "推理引擎日志文件不能是符号链接",
+      "动作片段输出路径不能是符号链接",
+      "凭据文件不能是符号链接",
+      "凭据暂存文件不能是符号链接",
+      "凭据目录不能是符号链接",
+      "凭据目标文件不能是符号链接",
+      "rclone 用户配置路径不能是符号链接",
+      "rclone 目录不能是符号链接",
+      "rclone 二进制文件不能是符号链接",
+      "云盘工作区目录不能是符号链接",
+      "云盘工作流目录不能是符号链接",
+      "云盘工作流文件不能是符号链接",
+      "云盘作品目录不能是符号链接",
+      "云盘作品文件不能是符号链接",
+      "云盘回收目录不能是符号链接",
+      "云盘回收目标不能是符号链接",
+      "云盘导出目录不能是符号链接",
+      "Live Studio 引擎虚拟环境目录不能是符号链接",
+      "画布隧道凭据文件不能是符号链接",
+      "云盘数字人形象目录不能是符号链接",
+      "云盘数字人形象路径不能是符号链接",
+      "云盘驱动动作目录不能是符号链接",
+      "云盘驱动动作路径不能是符号链接",
+      // server/ exact strings (11)
+      "读取请求体超时",
+      "实例正在释放，未执行更新",
+      "推理引擎日志路径必须是普通文件",
+      "消息展开后的大小超出上限",
+      "压缩历史内容总大小超出上限",
+      "展开后的消息大小超出上限",
+      "实例正在停止，操作已取消",
+      "实时直播会话正在停止，切换引擎已取消",
+      "实时直播会话正在停止或尚未启动",
+      "实时直播会话正在停止",
+      "LLM 流式响应单行超过 1 MiB 限制",
+      // server/ pattern rules (8 + stage variants)
+      "流式 TTS 引擎 cosyvoice3 缺少模型仓库配置，无法自动下载",
+      "依赖安装超时（>600s）",
+      "CosyVoice3 虚拟环境创建超时（>300s）",
+      "CosyVoice3 pip 检查超时（>60s）",
+      "CosyVoice3 ensurepip超时（>300s）",
+      "CosyVoice3 依赖安装超时（>600s）",
+      "正在创建流式语音隔离虚拟环境：CosyVoice3...",
+      "正在创建隔离虚拟环境：CosyVoice3",
+      "流式 TTS 引擎 cosyvoice3 虚拟环境创建不完整",
+      "正在安装流式语音引擎依赖：CosyVoice3（共 12 个包）...",
+      "下载 CosyVoice3 模型权重超时（>900s）",
+      "非法的 FFmpeg 音频输入路径: '/tmp/bad.wav'",
+      // Fixed zh-TW VRAM strings
+      "正在停止离线 ComfyUI 以释放显存...",
+      "正在卸载本地大语言模型以腾出直播显存...",
+      "正在预热流式语音模型到显存：CosyVoice3...",
+    ];
+
+    const enSourceSamples = [
+      "Unsupported output share URL",
+      "Download URL is empty",
+      "Invalid output share response",
+      "Internal Server Error",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of zhSourceSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(out.trim().length, `empty ${loc}: ${sample}`).toBeGreaterThan(0);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        if (loc !== "ja-JP") {
+          expect(out, `katakana middot leak in ${loc}: ${out}`).not.toContain(
+            "\u30fb",
+          );
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}": "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "ko-KR") {
+          expect(out, `non-standard 워크플로우 in ko-KR: "${out}"`).not.toContain(
+            "워크플로우",
+          );
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${out}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK: "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+          expect(out, `zh-HK should avoid 圖集: "${out}"`).not.toContain("圖集");
+        }
+      }
+
+      for (const sample of enSourceSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(out.trim().length, `empty ${loc}: ${sample}`).toBeGreaterThan(0);
+        if (loc === "en-US") {
+          expect(out).toBe(sample);
+        } else {
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ko-KR for "${sample}": "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${out}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK: "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+    }
+
+    // Spot-check zh-TW VRAM fixes, regional copy polish, and ko-KR polite register
+    expect(
+      translateColabOneBackendText("正在停止离线 ComfyUI 以释放显存...", "zh-TW"),
+    ).toBe("正在停止離線 ComfyUI 以釋放 VRAM...");
+    expect(
+      translateColabOneBackendText(
+        "正在卸载本地大语言模型以腾出直播显存...",
+        "zh-TW",
+      ),
+    ).toBe("正在卸載本機大型語言模型以騰出直播 VRAM...");
+    expect(
+      translateColabOneBackendText(
+        "正在预热流式语音模型到显存：CosyVoice3...",
+        "zh-TW",
+      ),
+    ).toBe("正在預熱串流語音模型至 VRAM：CosyVoice3...");
+    expect(COLABONE_MESSAGES["ko-KR"]["outputGallery.loadFailedRetry"]).toBe(
+      "결과물을 불러오지 못했습니다. 클릭하여 다시 시도해 주세요.",
+    );
+    expect(COLABONE_MESSAGES["zh-HK"]["live.llmApiKeyLabel"]).toBe(
+      "API Key（加密儲存於本地保險庫）",
+    );
+    expect(COLABONE_MESSAGES["zh-HK"]["live.noticeProductSaved"]).toBe(
+      "商品資料已儲存",
+    );
+    expect(
+      translateColabOneBackendText(
+        "清理已撤销分享 gallery_01 的密码记录失败：io error",
+        "ko-KR",
+      ),
+    ).toContain("접근 비밀번호");
+    expect(
+      translateColabOneBackendText("网页控制台未启动，请先启动后再打开分享链接", "zh-TW"),
+    ).toContain("網頁主控台");
+    expect(
+      translateColabOneBackendText("网页控制台未启动，请先启动后再打开分享链接", "zh-HK"),
+    ).toContain("網頁控制台");
+  });
+
+  it("covers Auditor 7 Drive/Live Studio/symlink/provision rules, English-source tb() errors, and locale copy polish across all 6 locales", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|默認|保存|缓存|緩存|跳過|跳过|文件/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
+    const RIGHT_ARROW_RE = new RegExp(
+      "[\\u2192\\u219d\\u21a0\\u21a3\\u21a6\\u21aa\\u21ac\\u21b3\\u21c0\\u21c1\\u21c9\\u21d2\\u21db\\u21dd\\u21e2\\u21e5\\u21e8\\u21f6\\u21f8\\u21fb\\u21fe\\u2794\\u2799-\\u279e\\u27a0-\\u27a4\\u27f6\\u27f9\\u27fc\\u27fe\\u27ff\\u2b95]|" +
+        "&ra" +
+        "rr;|&#85" +
+        "94;|&#x21" +
+        "92;",
+      "i",
+    );
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+
+    const zhSamples = [
+      // Exact messages
+      "当前尚未开启 Google 云盘 API 直连权限，无法在离线状态下删除云盘中的作品文件，请开启无感云盘 API 或在 Google 云盘中手动删除",
+      "该云盘作品由 Colab 挂载模式写入，离线状态下无法通过云盘 API 删除，请在 Google 云盘中手动删除或启动实例后删除",
+      "云盘作品索引同步未完成，暂无法确认远端文件位置，请稍后重试或在 Google 云盘中手动删除",
+      "远端返回的手机接入票据格式异常，请稍后重试或升级远端服务",
+      "远端移动设备无权执行主机管理操作",
+      "当前大脑模型不支持图像理解，已自动切换纯文本回复；如需看图看货，请配置支持视觉的多模态模型（如 GPT-4o / Gemini / Qwen-VL）。",
+      "远端移动设备",
+      "当前实时演播会话未启用远端设备配对",
+      "配对请求格式无效",
+      "配对验证失败",
+      "二维码已失效或已被使用，请在电脑端刷新二维码后重新扫码",
+      "成果物分享下载流式传输中断，已中止响应",
+      "远端会话状态无效",
+      // Symlink labels & dynamic symlink suffixes
+      "Live Studio 引擎环境目录不能是符号链接",
+      "隧道组件目录不能是符号链接",
+      "隧道组件文件不能是符号链接",
+      "隧道临时文件不能是符号链接",
+      "SenseVoice-Small 语音识别 缓存目录不能是符号链接",
+      "SenseVoice-Small 语音识别 模型目录不能是符号链接",
+      // LIVE_STUDIO_LABELS ("引擎 ID")
+      "引擎 ID 格式不合法",
+      "引擎 ID 不合法",
+      "引擎 ID 不合法: '../bad'",
+      // Pattern rules & ASR label translation
+      "已断开远端输入设备，但刷新状态失败（将自动重试）：connection lost",
+      "摄像头视频帧过大（单帧上限 524288 字节）",
+      "离线动作生成工作流 live-avatar-motion 未产出可用的视频动作片段（wave）",
+      "依赖安装失败（退出码 1）",
+      "CosyVoice3 虚拟环境创建失败（退出码 1）：venv failed",
+      "CosyVoice3 依赖安装失败（退出码 1）：pip error",
+      "下载 SenseVoice-Small 语音识别 模型权重（FunAudioLLM/SenseVoiceSmall）失败：退出码 1",
+      "流式 TTS 引擎 cosyvoice3 的独立运行环境安装完成后未找到 Python 可执行文件",
+      "流式 TTS 引擎 cosyvoice3 的独立运行环境安装后不可用",
+      "流式 TTS 引擎 cosyvoice3 的模型权重下载完成后未通过完整性校验",
+      "复用已就绪的流式 TTS 运行环境：CosyVoice3",
+      "自动安装缺失的流式语音引擎环境：CosyVoice3",
+      "正在安装 CosyVoice3 依赖包：torchaudio, soundfile",
+      "流式语音运行环境安装完成：CosyVoice3",
+      "模型权重下载完成：SenseVoice-Small 语音识别（FunAudioLLM/SenseVoiceSmall）",
+      "SenseVoice-Small 语音识别 加速下载失败，自动关闭 hf_transfer 并回退标准下载重试一次",
+      "复用已缓存的流式语音模型权重：CosyVoice3",
+      "SenseVoice 语音识别权重下载失败（已跳过，不影响开播）：timeout",
+      "正在预热流式语音模型：CosyVoice3",
+      "正在下载模型权重：SenseVoice-Small 语音识别（FunAudioLLM/SenseVoiceSmall）...",
+      // Canonical rules retained after duplicate cleanup
+      "Bria RMBG 3.0 未返回遮罩，已回退使用原图继续生成「服装正面主图」",
+      "Bria RMBG 3.0 返回的遮罩图像异常（shape mismatch），已回退使用原图继续生成「服装正面主图」",
+      "释放 ComfyUI 显存请求返回异常状态（HTTP 500）",
+      "释放 ComfyUI 显存失败：connection refused",
+      "AI 模特换装棚拍完成：已保存 4 张高清多姿态成片与 2 张抠衣质检图（耗时 1 分 12 秒）",
+    ];
+
+    const enSamples = [
+      "Missing output share ID",
+      "Clipboard read unavailable in this browser",
+      "Clipboard write unavailable in this browser",
+      "Failed to read selected file",
+      "Microphone capture is unavailable in this environment",
+      "Web Audio API is unavailable in this environment",
+      "Neither AudioWorklet nor ScriptProcessor is available",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of zhSamples) {
+        const out = tb(sample);
+        expect(out.trim().length, `empty ${loc}: ${sample}`).toBeGreaterThan(0);
+        expect(RIGHT_ARROW_RE.test(out), `right arrow in ${loc}: ${out}`).toBe(
+          false,
+        );
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(leakRe.test(out), `${loc} leak in "${out}"`).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          // Existing canonical Bria RMBG / ComfyUI rules outside this delta use 顯示記憶體; guard all new strings strictly
+          if (!sample.startsWith("释放 ComfyUI 显存")) {
+            expect(out, `zh-TW forbidden term in "${out}"`).not.toMatch(
+              FORBIDDEN_ZH_TW_RE,
+            );
+          }
+        }
+        if (loc === "zh-HK") {
+          expect(out, `zh-HK Cantonese in "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+
+      for (const sample of enSamples) {
+        const out = tb(sample);
+        expect(out.trim().length, `empty ${loc}: ${sample}`).toBeGreaterThan(0);
+        expect(RIGHT_ARROW_RE.test(out), `right arrow in ${loc}: ${out}`).toBe(
+          false,
+        );
+        if (loc === "en-US") {
+          expect(out).toBe(sample);
+        } else {
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ko-KR") {
+          expect(leakRe.test(out), `ko-KR leak in "${out}"`).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(out, `zh-TW forbidden term in "${out}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `zh-HK Cantonese in "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+    }
+
+    // Spot-check SenseVoice-Small ASR inner translation & locale copy polish
+    expect(
+      translateColabOneBackendText(
+        "正在下载模型权重：SenseVoice-Small 语音识别（FunAudioLLM/SenseVoiceSmall）...",
+        "en-US",
+      ),
+    ).toBe(
+      "Downloading model weights: SenseVoice-Small speech recognition (FunAudioLLM/SenseVoiceSmall)...",
+    );
+    expect(
+      translateColabOneBackendText(
+        "SenseVoice-Small 语音识别 缓存目录不能是符号链接",
+        "en-US",
+      ),
+    ).toBe(
+      "SenseVoice-Small speech recognition cache directory cannot be a symbolic link",
+    );
+    expect(
+      translateColabOneBackendText(
+        "SenseVoice-Small 语音识别 缓存目录不能是符号链接",
+        "zh-TW",
+      ),
+    ).toBe("SenseVoice-Small 語音辨識快取目錄不可為符號連結");
+    expect(
+      translateColabOneBackendText(
+        "SenseVoice-Small 语音识别 缓存目录不能是符号链接",
+        "zh-HK",
+      ),
+    ).toBe("SenseVoice-Small 語音識別快取目錄不能是符號連結");
+    expect(COLABONE_MESSAGES["zh-HK"]["live.companionModalSubtitle"]).toContain(
+      "看圖辨貨",
+    );
+    expect(COLABONE_MESSAGES["zh-HK"]["live.errNoLocalMic"]).toContain(
+      "本地咪高峰裝置",
+    );
+    expect(COLABONE_MESSAGES["ja-JP"]["outputGallery.downloadCurrent"]).toBe(
+      "この作品を保存",
+    );
+    expect(COLABONE_MESSAGES["ja-JP"]["live.companionQrExpiry"]).toBe(
+      "ワンタイムコード・有効期限 {duration}",
+    );
+  });
+
+  it("translates all newly added audit-hardening backend exact and pattern messages across all 6 locales with zero right-arrow symbols", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|默認|保存|缓存|緩存|跳過|跳过|文件/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁睇]/;
+    const RIGHT_ARROW_RE = new RegExp(
+      "[\\u2192\\u219d\\u21a0\\u21a3\\u21a6\\u21aa\\u21ac\\u21b3\\u21c0\\u21c1\\u21c9\\u21d2\\u21db\\u21dd\\u21e2\\u21e5\\u21e8\\u21f6\\u21f8\\u21fb\\u21fe\\u2794\\u2799-\\u279e\\u27a0-\\u27a4\\u27f6\\u27f9\\u27fc\\u27fe\\u27ff\\u2b95]|" +
+        "&ra" +
+        "rr;|&#85" +
+        "94;|&#x21" +
+        "92;",
+      "i",
+    );
+
+    const auditHardeningSamples = [
+      "读取本地 Google 云盘作品索引失败，已备份损坏文件为 .corrupt 副本",
+      "无法确认宿主机当前运行状态，请稍后再试",
+      "连接远端实时演播 WebSocket 失败",
+      "配对请求体过大",
+      "摄像头帧不是有效的 JPEG 图像",
+      "摄像头帧像素超过安全上限",
+      "实时直播会话在启动过程中被停止",
+      "实时直播会话已停止",
+      "请求参数不受支持",
+      "API 任务队列已满，请稍后重试",
+      "仅桌面端支持该控制操作",
+      "仅桌面端支持触发动作表演",
+      "仅桌面端支持切换商品卡片",
+      "仅桌面端支持切换直播引擎",
+      "音频帧过大（单帧上限 262144 字节）",
+      "输出文件完整性校验失败",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of auditHardeningSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample)).toBe(out);
+        expect(out.trim().length, `empty ${loc}: ${sample}`).toBeGreaterThan(0);
+        expect(RIGHT_ARROW_RE.test(out), `right-arrow in ${loc}: ${out}`).toBe(false);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        if (loc !== "ja-JP") {
+          expect(out, `katakana middot leak in ${loc}: ${out}`).not.toContain("\u30fb");
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}": "${out}"`,
+          ).toBe(false);
+        }
+        if (loc === "ko-KR") {
+          expect(out).not.toContain("워크플로우");
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${out}"`).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK: "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+    }
+
+    // Verify zh-TW api.openDashboard uses 主控台 & zh-TW gallery session limit uses 相簿
+    expect(COLABONE_MESSAGES["zh-TW"]["api.openDashboard"]).toBe("開啟主控台");
+    expect(
+      translateColabOneBackendText("当前图集访问人数已达上限，请稍后再试", "zh-TW"),
+    ).toContain("相簿");
+
+    // Verify zero right-pointing arrows and zero non-standard ko-KR 워크플로우 across ALL locales and EXACT_MESSAGES
+    for (const loc of ALL_LOCALES) {
+      for (const [key, value] of Object.entries(COLABONE_MESSAGES[loc])) {
+        expect(
+          RIGHT_ARROW_RE.test(value),
+          `forbidden right-arrow in ${loc}["${key}"]: ${value}`,
+        ).toBe(false);
+      }
+    }
+    for (const [src, row] of Object.entries(EXACT_MESSAGES)) {
+      expect(
+        RIGHT_ARROW_RE.test(src),
+        `forbidden right-arrow in EXACT_MESSAGES key: ${src}`,
+      ).toBe(false);
+      for (const [loc, value] of Object.entries(row)) {
+        expect(
+          RIGHT_ARROW_RE.test(value),
+          `forbidden right-arrow in EXACT_MESSAGES["${src}"][${loc}]: ${value}`,
+        ).toBe(false);
+        if (loc === "ko-KR") {
+          expect(
+            value,
+            `non-standard 워크플로우 in EXACT_MESSAGES["${src}"]["ko-KR"]: ${value}`,
+          ).not.toContain("워크플로우");
+        }
+      }
+    }
+  });
+});
+
+describe("Guest output share locale isolation and cold-load bootstrap", () => {
+  const globalWithMyGo = globalThis as typeof globalThis & {
+    mygo?: { callWith?: (...args: unknown[]) => unknown };
+  };
+  const originalWindow = globalThis.window;
+  const originalMyGo = globalWithMyGo.mygo;
+  const originalFetch = globalThis.fetch;
+
+  function createMemoryStorage(initial: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(initial));
+    return {
+      getItem(key: string): string | null {
+        return store.has(key) ? store.get(key)! : null;
+      },
+      setItem(key: string, value: string): void {
+        store.set(key, String(value));
+      },
+      removeItem(key: string): void {
+        store.delete(key);
+      },
+      clear(): void {
+        store.clear();
+      },
+    };
+  }
+
+  afterEach(() => {
+    colabOneOutputShareMode.value = false;
+    colabOneWorkflowShareMode.value = false;
+    globalWithMyGo.mygo = originalMyGo;
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "window", {
+      value: originalWindow,
+      configurable: true,
+      writable: true,
+    });
+    setColabOneLocale("zh-CN", { persist: false, syncNative: false });
+    colabOneLocaleIsManual.value = false;
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("writes colabone.gallery.locale, preserves host colabone.locale, and skips native/web RPC in /gallery mode", () => {
+    delete globalWithMyGo.mygo;
+    const storage = createMemoryStorage({ "colabone.locale": "zh-CN" });
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        location: { pathname: "/gallery" },
+        localStorage: storage,
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    setColabOneLocale("ja-JP");
+    expect(colabOneLocaleCode.value).toBe("ja-JP");
+    expect(storage.getItem("colabone.gallery.locale")).toBe("ja-JP");
+    expect(storage.getItem("colabone.locale")).toBe("zh-CN");
+    expect(readStoredColabOneLocale()).toBe("ja-JP");
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    colabOneLocaleIsManual.value = false;
+    hydrateColabOneLocaleFromSettings("ko-KR");
+    expect(colabOneLocaleCode.value).toBe("ja-JP");
+    expect(storage.getItem("colabone.locale")).toBe("zh-CN");
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    syncColabOneLocaleToNative("en-US", true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reads colabone.gallery.locale on cold /gallery import even without window.addEventListener", async () => {
+    delete globalWithMyGo.mygo;
+    const storage = createMemoryStorage({
+      "colabone.locale": "en-US",
+      "colabone.gallery.locale": "ja-JP",
+    });
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        location: { pathname: "/gallery" },
+        localStorage: storage,
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    vi.resetModules();
+    const fresh = await import("./i18n/index");
+    expect(fresh.colabOneLocaleCode.value).toBe("ja-JP");
+    expect(fresh.colabOneLocaleIsManual.value).toBe(true);
+    expect(fresh.readStoredColabOneLocale()).toBe("ja-JP");
+    expect(storage.getItem("colabone.locale")).toBe("en-US");
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fresh.setColabOneLocale("zh-HK");
+    expect(fresh.colabOneLocaleCode.value).toBe("zh-HK");
+    expect(storage.getItem("colabone.gallery.locale")).toBe("zh-HK");
+    expect(storage.getItem("colabone.locale")).toBe("en-US");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps zh-TW album terminology free of 圖集 and translates device.liveStudioRunning across all 6 locales", () => {
+    for (const [key, val] of Object.entries(COLABONE_MESSAGES["zh-TW"])) {
+      expect(val.includes("圖集"), `zh-TW[${key}] should use 相簿 instead of 圖集: ${val}`).toBe(
+        false,
+      );
+    }
+    for (const locale of ["zh-CN", "en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR"] as const) {
+      setColabOneLocale(locale, { persist: false, syncNative: false });
+      expect(t("device.liveStudioRunning")).toBeTruthy();
+      expect(t("device.liveStudioRunning")).not.toBe("device.liveStudioRunning");
     }
   });
 });

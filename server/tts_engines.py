@@ -45,7 +45,11 @@ try:
 except ImportError:  # pragma: no cover - Python 3.10 fallback
     tomllib = None  # type: ignore[assignment]
 
-from common.files import atomic_json
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    atomic_json,
+    colabone_sanitized_subprocess_env,
+)
 from server.tts_worker_breeze import BREEZE_TTS2_WORKER_BODY
 from server.tts_worker_drama3 import FISH_DRAMA3_WORKER_BODY
 from server.tts_worker_ming import MING_3_TTS_WORKER_BODY
@@ -108,14 +112,7 @@ _BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _HF_TOKEN_RE = re.compile(
     r"\bhf_(?!(?:download|cache|hub|home|transfer|endpoint|xet)(?:_|\b))[A-Za-z0-9_-]{8,}\b"
 )
-_TTS_SENSITIVE_ENV_KEYS = frozenset(
-    {
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HF_API_TOKEN",
-    }
-)
+_TTS_SENSITIVE_ENV_KEYS = COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
 _TTS_SETUP_STRIP_ENV_KEYS = frozenset(
     {
         "PIP_USER",
@@ -2421,24 +2418,97 @@ def _scrub_secret(text: str, secret: str) -> str:
     return out
 
 
+def _pgid_has_non_zombie_member_linux(pgid: int) -> bool | None:
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return None
+    saw_any_stat = False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/stat", "r", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        saw_any_stat = True
+        rparen = raw.rfind(")")
+        if rparen < 0:
+            continue
+        fields = raw[rparen + 2 :].split()
+        if len(fields) < 3:
+            continue
+        state = fields[0]
+        try:
+            pgrp = int(fields[2])
+        except ValueError:
+            continue
+        if pgrp == pgid and state not in ("Z", "X", "x"):
+            return True
+    return False if saw_any_stat else None
+
+
 def _pgid_alive(pgid: int) -> bool:
     if not hasattr(os, "killpg"):
         return False
     try:
         os.killpg(pgid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except OSError:
         return False
+    linux_live = _pgid_has_non_zombie_member_linux(pgid)
+    if linux_live is not None:
+        return linux_live
+    return True
 
 
 def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> None:
-    """Terminate the entire process group (SIGTERM -> wait -> SIGKILL), even after leader exit."""
+    """Terminate the entire process group (SIGTERM -> wait -> SIGKILL), guarding against recycled PIDs."""
+    if getattr(proc, "_colabone_pgrp_cleaned", False) is True:
+        return
     pid = getattr(proc, "pid", None)
-    has_killpg = isinstance(pid, int) and pid > 0 and hasattr(os, "killpg")
+    own_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+    has_killpg = (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid > 0
+        and hasattr(os, "killpg")
+        and pid != own_pgrp
+    )
+    leader_alive = proc.poll() is None
+    if not leader_alive:
+        if not has_killpg:
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
+        # Leader is already reaped. If `pid` itself is live now, the OS recycled it
+        # for an unrelated process; never signal that process group.
+        pid_recycled = False
+        try:
+            os.kill(pid, 0)
+            pid_recycled = True
+        except PermissionError:
+            pid_recycled = True
+        except ProcessLookupError:
+            pid_recycled = False
+        except OSError:
+            pid_recycled = True
+        if pid_recycled or not _pgid_alive(pid):
+            try:
+                setattr(proc, "_colabone_pgrp_cleaned", True)
+            except (AttributeError, TypeError):
+                pass
+            return
+
     if has_killpg:
         try:
             os.killpg(pid, signal.SIGTERM)
@@ -2450,7 +2520,7 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
                     proc.terminate()
                 except OSError:
                     pass
-    elif proc.poll() is None:
+    elif leader_alive:
         try:
             proc.terminate()
         except OSError:
@@ -2494,6 +2564,12 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
         except subprocess.TimeoutExpired:
             pass
 
+    if proc.poll() is not None and (not has_killpg or not _pgid_alive(pid)):
+        try:
+            setattr(proc, "_colabone_pgrp_cleaned", True)
+        except (AttributeError, TypeError):
+            pass
+
 
 def _read_log_tail(log_path: Path, max_bytes: int = 4096) -> str:
     """Read only the tail of a worker log file by seeking near EOF without splitting UTF-8 codepoints."""
@@ -2530,11 +2606,11 @@ _PYTORCH_ONLY_WORKER_ENV: dict[str, str] = {
 
 
 def _sanitized_tts_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    blocked = _TTS_SENSITIVE_ENV_KEYS | _TTS_SETUP_STRIP_ENV_KEYS
-    env = {k: v for k, v in os.environ.items() if k not in blocked}
-    if extra:
-        env.update(extra)
-    return env
+    return colabone_sanitized_subprocess_env(
+        extra,
+        strip_keys=_TTS_SETUP_STRIP_ENV_KEYS,
+        allow_extra_sensitive=False,
+    )
 
 
 def _build_tts_worker_env(hf_cache_dir: str, hf_token: str = "") -> dict[str, str]:
@@ -5013,6 +5089,7 @@ class ColabOneWarmTtsWorker:
         self._line_queue: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
         self._closed = False
+        self._close_done = threading.Event()
         self._lock = threading.Lock()
         self._stdin_lock = threading.RLock()
         self.last_used = time.monotonic()
@@ -5085,11 +5162,6 @@ class ColabOneWarmTtsWorker:
                 [self.worker_python, str(script_path), "--daemon"],
                 **popen_kwargs,
             )
-            with self._lock:
-                if self._closed:
-                    _terminate_process_group(proc, timeout=3.0)
-                    raise cancel_cls("操作已取消")
-                self.proc = proc
 
             def _reader() -> None:
                 if proc.stdout is None:
@@ -5106,14 +5178,34 @@ class ColabOneWarmTtsWorker:
                 except Exception:
                     pass
                 finally:
+                    try:
+                        proc.stdout.close()
+                    except (OSError, ValueError):
+                        pass
                     self._line_queue.put(None)
 
-            self._reader_thread = threading.Thread(
-                target=_reader,
-                name=f"colabone-tts-warm-{self.engine_id}",
-                daemon=True,
-            )
-            self._reader_thread.start()
+            closed_early = False
+            with self._lock:
+                if self._closed:
+                    closed_early = True
+                else:
+                    self.proc = proc
+                    reader_thread = threading.Thread(
+                        target=_reader,
+                        name=f"colabone-tts-warm-{self.engine_id}",
+                        daemon=True,
+                    )
+                    self._reader_thread = reader_thread
+                    reader_thread.start()
+            if closed_early:
+                _terminate_process_group(proc, timeout=3.0)
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except (OSError, ValueError):
+                            pass
+                raise cancel_cls("操作已取消")
 
             startup_lines: collections.deque[str] = collections.deque(maxlen=25)
             deadline = time.monotonic() + max(5.0, float(timeout))
@@ -5353,35 +5445,65 @@ class ColabOneWarmTtsWorker:
     def close(self) -> None:
         with self._lock:
             if self._closed:
-                return
-            self._closed = True
-            proc = self.proc
-            self.proc = None
-        if proc is not None:
-            with self._stdin_lock:
-                try:
-                    if proc.stdin is not None and not proc.stdin.closed and proc.poll() is None:
+                already_closing = True
+            else:
+                already_closing = False
+                self._closed = True
+                proc = self.proc
+                self.proc = None
+                reader_thread = self._reader_thread
+        if already_closing:
+            self._close_done.wait(timeout=5.0)
+            return
+        try:
+            if proc is not None:
+                acquired = self._stdin_lock.acquire(blocking=False)
+                if acquired:
+                    try:
+                        if (
+                            proc.stdin is not None
+                            and not proc.stdin.closed
+                            and proc.poll() is None
+                        ):
+                            try:
+                                proc.stdin.write(b'{"op":"shutdown"}\n')
+                                proc.stdin.flush()
+                            except (OSError, ValueError):
+                                pass
+                        if proc.stdin is not None and not proc.stdin.closed:
+                            try:
+                                proc.stdin.close()
+                            except (OSError, ValueError):
+                                pass
+                    except (OSError, ValueError):
+                        pass
+                    finally:
+                        self._stdin_lock.release()
+                    try:
+                        proc.wait(timeout=1.5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    except Exception:
+                        pass
+                    _terminate_process_group(proc, timeout=3.0)
+                else:
+                    _terminate_process_group(proc, timeout=3.0)
+            if (
+                reader_thread is not None
+                and reader_thread is not threading.current_thread()
+                and reader_thread.is_alive()
+            ):
+                reader_thread.join(timeout=1.0)
+            if proc is not None:
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream is not None and not getattr(stream, "closed", False):
                         try:
-                            proc.stdin.write(b'{"op":"shutdown"}\n')
-                            proc.stdin.flush()
+                            stream.close()
                         except (OSError, ValueError):
                             pass
-                    if proc.stdin is not None and not proc.stdin.closed:
-                        try:
-                            proc.stdin.close()
-                        except (OSError, ValueError):
-                            pass
-                except (OSError, ValueError):
-                    pass
-            try:
-                proc.wait(timeout=1.5)
-            except subprocess.TimeoutExpired:
-                _terminate_process_group(proc, timeout=3.0)
-            except Exception:
-                _terminate_process_group(proc, timeout=3.0)
-        if self._reader_thread is not None and self._reader_thread.is_alive():
-            self._reader_thread.join(timeout=1.0)
-        shutil.rmtree(self.work_dir, ignore_errors=True)
+            shutil.rmtree(self.work_dir, ignore_errors=True)
+        finally:
+            self._close_done.set()
 
 
 def _file_sha256(path: Path) -> str:
@@ -5545,18 +5667,16 @@ class ColabOneRemoteTtsRunner:
                         if fname.lower().endswith(".index.json"):
                             index_files.append((root_p, fpath))
                             continue
-                        if (
-                            has_weight_file
-                            or fpath.suffix.lower() not in _TTS_MODEL_WEIGHT_EXTS
-                        ):
+                        if fpath.suffix.lower() not in _TTS_MODEL_WEIGHT_EXTS:
                             continue
                         try:
                             resolved = fpath.resolve(strict=True)
                             resolved.relative_to(model_dir_resolved)
-                            if resolved.is_file() and resolved.stat().st_size > 0:
-                                has_weight_file = True
+                            if not resolved.is_file() or resolved.stat().st_size <= 0:
+                                return False
+                            has_weight_file = True
                         except (OSError, ValueError):
-                            continue
+                            return False
             except OSError:
                 return False
 
@@ -7606,14 +7726,30 @@ class ColabOneRemoteTtsRunner:
         stopping = getattr(self.runtime, "stopping", None)
         if stopping is not None and stopping.is_set():
             return True
-        if getattr(self.runtime, "quiescing", False):
-            return True
+        rt_lock = getattr(self.runtime, "lock", None)
+        rt_cm = (
+            rt_lock
+            if hasattr(rt_lock, "__enter__") and hasattr(rt_lock, "__exit__")
+            else nullcontext()
+        )
+        with rt_cm:
+            if getattr(self.runtime, "quiescing", False):
+                return True
+            tasks = getattr(self.runtime, "tasks", None)
+            task_snapshot = list(tasks.values()) if isinstance(tasks, dict) else []
         # Yield cleanly if a heavy non-preview task (e.g. ComfyUI run or LLM load) started.
-        tasks = getattr(self.runtime, "tasks", None)
-        if isinstance(tasks, dict):
-            for t in list(tasks.values()):
-                if getattr(t, "state", "") == "running" and getattr(t, "kind", "") != "comfyui_tts_preview":
-                    return True
+        for t in task_snapshot:
+            t_lock = getattr(t, "lock", None)
+            t_cm = (
+                t_lock
+                if hasattr(t_lock, "__enter__") and hasattr(t_lock, "__exit__")
+                else nullcontext()
+            )
+            with t_cm:
+                t_state = getattr(t, "state", "")
+                t_kind = getattr(t, "kind", "")
+            if t_state == "running" and t_kind != "comfyui_tts_preview":
+                return True
         return False
 
     def _wait_if_foreground_waiting(self, cancel_ev: threading.Event) -> bool:

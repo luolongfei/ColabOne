@@ -95,7 +95,7 @@ var (
 	workflowShareVoicePresetRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 	guestHostUnixPathRe        = regexp.MustCompile(`(?:^|[\s"'(\[:=])/(?:content|home|Users|tmp|var|etc|root|opt|mnt|proc|sys|Volumes)/`)
 	guestHostWinPathRe         = regexp.MustCompile(`(?i)(?:^|[\s"'(\[:=])[a-z]:\\`)
-	guestSensitiveTokenRe      = regexp.MustCompile(`(?i)\b(?:hf_[a-z0-9]{8,}|ya29\.[a-z0-9._-]{8,}|co_wf_[a-z0-9._-]{8,}|co_web_[a-z0-9._-]{8,}|sk-[a-z0-9_-]{12,}|bearer\s+[a-z0-9._~+/-]{8,})`)
+	guestSensitiveTokenRe      = regexp.MustCompile(`(?i)\b(?:hf_[a-z0-9]{8,}|ya29\.[a-z0-9._-]{8,}|co_wf_[a-z0-9._-]{8,}|co_gal_[a-z0-9._-]{8,}|co_web_[a-z0-9._-]{8,}|sk-[a-z0-9_-]{12,}|bearer\s+[a-z0-9._~+/-]{8,})`)
 	builtinDigitalHumanIDs     = []string{"digital-human-infinitetalk", "digital-human-longcat"}
 	guestAllowedTtsPreviewFields = []string{
 		"preview_id",
@@ -326,7 +326,25 @@ func (w *ColabOneWebConsole) loadWorkflowShareHMACKey() {
 
 func (w *ColabOneWebConsole) ensureWorkflowShareHMACKeyOpLocked() ([]byte, error) {
 	w.mu.RLock()
+	if w.closed {
+		w.mu.RUnlock()
+		return nil, errWebConsoleClosed
+	}
 	existing := append([]byte(nil), w.shareHMACKey...)
+	w.mu.RUnlock()
+	if len(existing) == workflowShareHMACKeyBytes {
+		return existing, nil
+	}
+
+	w.sharePersistMu.Lock()
+	defer w.sharePersistMu.Unlock()
+
+	w.mu.RLock()
+	if w.closed {
+		w.mu.RUnlock()
+		return nil, errWebConsoleClosed
+	}
+	existing = append([]byte(nil), w.shareHMACKey...)
 	w.mu.RUnlock()
 	if len(existing) == workflowShareHMACKeyBytes {
 		return existing, nil
@@ -341,6 +359,10 @@ func (w *ColabOneWebConsole) ensureWorkflowShareHMACKeyOpLocked() ([]byte, error
 		if found && strings.TrimSpace(encoded) != "" {
 			if raw, decErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(encoded)); decErr == nil && len(raw) == workflowShareHMACKeyBytes {
 				w.mu.Lock()
+				if w.closed {
+					w.mu.Unlock()
+					return nil, errWebConsoleClosed
+				}
 				w.shareHMACKey = append([]byte(nil), raw...)
 				w.mu.Unlock()
 				return raw, nil
@@ -359,6 +381,10 @@ func (w *ColabOneWebConsole) ensureWorkflowShareHMACKeyOpLocked() ([]byte, error
 		}
 	}
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return nil, errWebConsoleClosed
+	}
 	w.shareHMACKey = append([]byte(nil), key...)
 	w.mu.Unlock()
 	return key, nil
@@ -387,9 +413,12 @@ func (w *ColabOneWebConsole) loadWorkflowShares() {
 		return
 	}
 	for _, rec := range loaded.Shares {
-		if !workflowShareIDRe.MatchString(rec.ID) || strings.TrimSpace(rec.NonceB64) == "" {
+		nonceB64 := strings.TrimSpace(rec.NonceB64)
+		nonceBytes, nonceErr := base64.RawURLEncoding.DecodeString(nonceB64)
+		if !workflowShareIDRe.MatchString(rec.ID) || nonceErr != nil || len(nonceBytes) != workflowShareNonceBytes || base64.RawURLEncoding.EncodeToString(nonceBytes) != nonceB64 {
 			continue
 		}
+		rec.NonceB64 = nonceB64
 		if normIDs, ok := validateWorkflowShareIDs(rec.WorkflowIDs); ok {
 			rec.WorkflowIDs = normIDs
 		} else {
@@ -418,15 +447,16 @@ func (w *ColabOneWebConsole) loadWorkflowShares() {
 }
 
 func (w *ColabOneWebConsole) persistWorkflowShares() error {
-	filePath := w.workflowSharesPath()
-	if filePath == "" {
-		return nil
-	}
 	w.sharePersistMu.Lock()
 	defer w.sharePersistMu.Unlock()
 
 	w.mu.RLock()
 	if w.closed {
+		w.mu.RUnlock()
+		return errWebConsoleClosed
+	}
+	filePath := w.workflowSharesPath()
+	if filePath == "" {
 		w.mu.RUnlock()
 		return nil
 	}
@@ -465,7 +495,7 @@ func (w *ColabOneWebConsole) persistWorkflowShares() error {
 	}
 
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("保存工作流分享配置失败：%w", err)
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
@@ -964,28 +994,28 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 		return ColabOneWorkflowShareSummary{}, errors.New("不支持的分享有效期设置")
 	}
 
-	w.opMu.Lock()
+	w.workflowShareOpMu.Lock()
 	w.mu.RLock()
 	closed := w.closed
 	existingCount := len(w.workflowShares)
 	w.mu.RUnlock()
 	if closed {
-		w.opMu.Unlock()
-		return ColabOneWorkflowShareSummary{}, errors.New("网页控制台服务已关闭")
+		w.workflowShareOpMu.Unlock()
+		return ColabOneWorkflowShareSummary{}, errWebConsoleClosed
 	}
 	if existingCount >= maxWorkflowShareRecords {
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		return ColabOneWorkflowShareSummary{}, errors.New("工作流分享链接数量已达上限，请先删除旧记录")
 	}
 
 	if _, err := w.ensureWorkflowShareHMACKeyOpLocked(); err != nil {
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		return ColabOneWorkflowShareSummary{}, err
 	}
 
 	nonceRaw := make([]byte, workflowShareNonceBytes)
 	if _, err := rand.Read(nonceRaw); err != nil {
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		return ColabOneWorkflowShareSummary{}, fmt.Errorf("生成分享链接随机凭证失败：%w", err)
 	}
 	nonceB64 := base64.RawURLEncoding.EncodeToString(nonceRaw)
@@ -994,7 +1024,7 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 	for attempts := 0; attempts < 8; attempts++ {
 		cand, genErr := generateWorkflowShareID()
 		if genErr != nil {
-			w.opMu.Unlock()
+			w.workflowShareOpMu.Unlock()
 			return ColabOneWorkflowShareSummary{}, genErr
 		}
 		w.mu.RLock()
@@ -1006,7 +1036,7 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 		}
 	}
 	if shareID == "" {
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		return ColabOneWorkflowShareSummary{}, errors.New("无法分配唯一分享编号，请重试")
 	}
 
@@ -1037,8 +1067,8 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		w.opMu.Unlock()
-		return ColabOneWorkflowShareSummary{}, errors.New("网页控制台服务已关闭")
+		w.workflowShareOpMu.Unlock()
+		return ColabOneWorkflowShareSummary{}, errWebConsoleClosed
 	}
 	w.workflowShares[shareID] = rec
 	summary := w.buildWorkflowShareSummaryLocked(rec, now, map[string]int{}, map[string]int{})
@@ -1048,10 +1078,10 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 		w.mu.Lock()
 		delete(w.workflowShares, shareID)
 		w.mu.Unlock()
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		return ColabOneWorkflowShareSummary{}, err
 	}
-	w.opMu.Unlock()
+	w.workflowShareOpMu.Unlock()
 
 	w.logActivity(fmt.Sprintf("已创建工作流分享链接（%d 个工作流，有效期 %s）", len(wfIDs), ttlMode), "info")
 	w.emitWorkflowSharesChange(w.WorkflowSharesState())
@@ -1065,17 +1095,17 @@ func (w *ColabOneWebConsole) RevokeWorkflowShare(shareID string) (ColabOneWorkfl
 		return w.WorkflowSharesState(), errors.New("分享编号无效")
 	}
 
-	w.opMu.Lock()
+	w.workflowShareOpMu.Lock()
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		w.opMu.Unlock()
-		return w.WorkflowSharesState(), errors.New("网页控制台服务已关闭")
+		w.workflowShareOpMu.Unlock()
+		return w.WorkflowSharesState(), errWebConsoleClosed
 	}
 	rec, exists := w.workflowShares[shareID]
 	if !exists {
 		w.mu.Unlock()
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		return w.WorkflowSharesState(), errors.New("未找到对应的工作流分享链接")
 	}
 	now := w.now()
@@ -1092,14 +1122,14 @@ func (w *ColabOneWebConsole) RevokeWorkflowShare(shareID string) (ColabOneWorkfl
 		w.persistWorkflowShareSessions()
 	}
 	if err := w.persistWorkflowShares(); err != nil {
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		state := w.WorkflowSharesState()
 		if changed || purgedSessions {
 			w.emitWorkflowSharesChange(state)
 		}
 		return state, err
 	}
-	w.opMu.Unlock()
+	w.workflowShareOpMu.Unlock()
 
 	w.logActivity(fmt.Sprintf("已撤销工作流分享链接 %s 并注销关联访客会话", shareID), "info")
 	state := w.WorkflowSharesState()
@@ -1114,17 +1144,17 @@ func (w *ColabOneWebConsole) DeleteWorkflowShare(shareID string) (ColabOneWorkfl
 		return w.WorkflowSharesState(), errors.New("分享编号无效")
 	}
 
-	w.opMu.Lock()
+	w.workflowShareOpMu.Lock()
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		w.opMu.Unlock()
-		return w.WorkflowSharesState(), errors.New("网页控制台服务已关闭")
+		w.workflowShareOpMu.Unlock()
+		return w.WorkflowSharesState(), errWebConsoleClosed
 	}
 	existingRec, exists := w.workflowShares[shareID]
 	if !exists {
 		w.mu.Unlock()
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		return w.WorkflowSharesState(), errors.New("未找到对应的工作流分享链接")
 	}
 	backupRec := existingRec
@@ -1160,12 +1190,12 @@ func (w *ColabOneWebConsole) DeleteWorkflowShare(shareID string) (ColabOneWorkfl
 			w.workflowShares[shareID] = backupRec
 		}
 		w.mu.Unlock()
-		w.opMu.Unlock()
+		w.workflowShareOpMu.Unlock()
 		state := w.WorkflowSharesState()
 		w.emitWorkflowSharesChange(state)
 		return state, err
 	}
-	w.opMu.Unlock()
+	w.workflowShareOpMu.Unlock()
 
 	w.logActivity(fmt.Sprintf("已删除工作流分享记录 %s", shareID), "info")
 	state := w.WorkflowSharesState()
@@ -1677,7 +1707,7 @@ func (w *ColabOneWebConsole) requireShareLiveOutput(ctx context.Context, shareID
 	snapRaw, err := w.opts.CallBridge(ctx, "snapshot", nil)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return http.StatusGatewayTimeout, err.Error()
+			return http.StatusGatewayTimeout, sanitizeGuestBridgeError(err.Error())
 		}
 		return http.StatusBadRequest, "当前算力服务暂未就绪，暂不可访问该作品文件"
 	}
@@ -2167,7 +2197,7 @@ func (w *ColabOneWebConsole) handleWorkflowShareErrorPage(rw http.ResponseWriter
 	if err != nil {
 		nonce = "colabone"
 	}
-	locale := w.resolveLocale(r)
+	locale := w.resolveGuestLocale(r)
 	htmlDoc := renderColabOneWorkflowShareErrorPage(locale, reason, nonce)
 
 	csp := fmt.Sprintf(
@@ -2193,7 +2223,7 @@ func (w *ColabOneWebConsole) handleWorkflowShareSwitchPage(
 	if err != nil {
 		nonce = "colabone"
 	}
-	locale := w.resolveLocale(r)
+	locale := w.resolveGuestLocale(r)
 	htmlDoc := renderColabOneWorkflowShareSwitchPage(locale, currentTitle, targetTitle, switchToken, nonce)
 
 	csp := fmt.Sprintf(
@@ -2267,22 +2297,25 @@ func (w *ColabOneWebConsole) handleWorkflowShareEntry(rw http.ResponseWriter, r 
 			var hmacKeyCopy []byte
 
 			w.mu.Lock()
-			if !w.closed {
-				retryAfter = w.checkShareRateLimitLocked(ip, now)
-				if retryAfter == 0 {
-					verifiedID, _, ok := w.verifyWorkflowShareKeyLocked(rawKey, now)
-					if ok && verifiedID != currentShareID {
-						curRec := w.workflowShares[currentShareID]
-						targetRec := w.workflowShares[verifiedID]
-						currentTitle = curRec.Title
-						targetTitle = targetRec.Title
-						targetShareID = verifiedID
-						targetNonceB64 = targetRec.NonceB64
-						hmacKeyCopy = append([]byte(nil), w.shareHMACKey...)
-						showConfirm = true
-					} else if !ok {
-						w.recordShareKeyFailureLocked(ip, now)
-					}
+			if w.closed || w.stopping {
+				w.mu.Unlock()
+				w.handleWorkflowShareErrorPage(rw, r, http.StatusServiceUnavailable, workflowShareErrInvalid)
+				return
+			}
+			retryAfter = w.checkShareRateLimitLocked(ip, now)
+			if retryAfter == 0 {
+				verifiedID, _, ok := w.verifyWorkflowShareKeyLocked(rawKey, now)
+				if ok && verifiedID != currentShareID {
+					curRec := w.workflowShares[currentShareID]
+					targetRec := w.workflowShares[verifiedID]
+					currentTitle = curRec.Title
+					targetTitle = targetRec.Title
+					targetShareID = verifiedID
+					targetNonceB64 = targetRec.NonceB64
+					hmacKeyCopy = append([]byte(nil), w.shareHMACKey...)
+					showConfirm = true
+				} else if !ok {
+					w.recordShareKeyFailureLocked(ip, now)
 				}
 			}
 			w.mu.Unlock()
@@ -2329,7 +2362,7 @@ func (w *ColabOneWebConsole) handleWorkflowShareEntry(rw http.ResponseWriter, r 
 	token, tokenErr := generateBase64Token(32)
 
 	w.mu.Lock()
-	if w.closed {
+	if w.closed || w.stopping {
 		w.mu.Unlock()
 		w.handleWorkflowShareErrorPage(rw, r, http.StatusServiceUnavailable, workflowShareErrInvalid)
 		return
@@ -2423,7 +2456,7 @@ func (w *ColabOneWebConsole) handleWorkflowShareSwitch(rw http.ResponseWriter, r
 		w.handleWorkflowShareErrorPage(rw, r, http.StatusBadRequest, workflowShareErrInvalid)
 		return
 	}
-	rawToken := strings.TrimSpace(r.FormValue("token"))
+	rawToken := strings.TrimSpace(r.PostFormValue("token"))
 	if rawToken == "" {
 		w.handleWorkflowShareErrorPage(rw, r, http.StatusBadRequest, workflowShareErrInvalid)
 		return
@@ -2433,7 +2466,7 @@ func (w *ColabOneWebConsole) handleWorkflowShareSwitch(rw http.ResponseWriter, r
 	now := w.now()
 
 	w.mu.Lock()
-	if w.closed {
+	if w.closed || w.stopping {
 		w.mu.Unlock()
 		w.handleWorkflowShareErrorPage(rw, r, http.StatusServiceUnavailable, workflowShareErrInvalid)
 		return
@@ -2540,10 +2573,10 @@ func (w *ColabOneWebConsole) handleShareSnapshot(rw http.ResponseWriter, r *http
 	raw, err := w.opts.CallBridge(r.Context(), "snapshot", nil)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			writeJSONError(rw, http.StatusGatewayTimeout, err.Error())
+			writeJSONError(rw, http.StatusGatewayTimeout, sanitizeGuestBridgeError(err.Error()))
 			return
 		}
-		writeJSONError(rw, http.StatusInternalServerError, err.Error())
+		writeJSONError(rw, http.StatusInternalServerError, sanitizeGuestBridgeError(err.Error()))
 		return
 	}
 
@@ -2646,6 +2679,12 @@ func (w *ColabOneWebConsole) handleShareSnapshot(rw http.ResponseWriter, r *http
 		comfyOut := map[string]any{}
 		for _, k := range guestAllowedComfyUIFields {
 			if v, ok := hostComfy[k]; ok {
+				if k == "error" {
+					if s, okStr := v.(string); okStr && strings.TrimSpace(s) != "" {
+						comfyOut[k] = sanitizeGuestBridgeError(s)
+						continue
+					}
+				}
 				comfyOut[k] = v
 			}
 		}
@@ -2749,7 +2788,11 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 		return
 	}
 
+	const maxWorkflowShareCommandBodyBytes int64 = 2 << 20
 	normalLimit, mediaLimit := w.commandBodyLimits()
+	if normalLimit > maxWorkflowShareCommandBodyBytes {
+		normalLimit = maxWorkflowShareCommandBodyBytes
+	}
 	if mediaLimit > maxWorkflowShareUploadBodyBytes {
 		mediaLimit = maxWorkflowShareUploadBodyBytes
 	}
@@ -2958,38 +3001,43 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 		}
 
 		// Inspect pre-run host state for exclusive workload / auto_release protection,
-		// workflow override schema validation, and pre-existing outputs.
+		// workflow override schema validation, and pre-existing outputs (fail closed).
 		preSnapOK := false
 		var hostRuntimeID string
 		var targetWF map[string]any
 		var preExistingIDs []string
-		if snapRaw, snapErr := w.opts.CallBridge(r.Context(), "snapshot", nil); snapErr == nil {
-			var snap map[string]any
-			if json.Unmarshal([]byte(snapRaw), &snap) == nil && snap != nil {
-				preSnapOK = true
-				rt := shareAsMap(snap["runtime"])
-				hostRuntimeID = strings.TrimSpace(shareAsString(rt["id"]))
-				if isHostBusyWithExclusiveWorkload(rt) {
-					writeJSONError(rw, http.StatusConflict, "云端算力当前正忙，暂不可执行该操作，请稍后再试")
-					return
-				}
-				autoRelease := shareAsMap(shareAsMap(rt["comfyui"])["auto_release"])
-				if shareAsBool(autoRelease["enabled"]) && !runtimeExplicitlySupportsCapability(rt, "comfyui_share_guard") {
-					writeJSONError(rw, http.StatusConflict, "宿主机已开启任务完成后自动释放算力，请稍后再试")
-					return
-				}
-				for _, rawWF := range shareAsSlice(snap["workflows"]) {
-					if wm := shareAsMap(rawWF); wm != nil && strings.TrimSpace(shareAsString(wm["id"])) == wfID {
-						targetWF = wm
-						break
-					}
-				}
-				for _, rawOut := range shareAsSlice(snap["comfy_outputs"]) {
-					if om := shareAsMap(rawOut); om != nil {
-						if oid := strings.TrimSpace(shareAsString(om["id"])); outputIDRe.MatchString(oid) {
-							preExistingIDs = append(preExistingIDs, oid)
-						}
-					}
+		snapRaw, snapErr := w.opts.CallBridge(r.Context(), "snapshot", nil)
+		if snapErr != nil {
+			writeBridgeErr(snapErr)
+			return
+		}
+		var snap map[string]any
+		if json.Unmarshal([]byte(snapRaw), &snap) != nil || snap == nil {
+			writeJSONError(rw, http.StatusServiceUnavailable, "无法确认宿主机当前运行状态，请稍后再试")
+			return
+		}
+		preSnapOK = true
+		rt := shareAsMap(snap["runtime"])
+		hostRuntimeID = strings.TrimSpace(shareAsString(rt["id"]))
+		if isHostBusyWithExclusiveWorkload(rt) {
+			writeJSONError(rw, http.StatusConflict, "云端算力当前正忙，暂不可执行该操作，请稍后再试")
+			return
+		}
+		autoRelease := shareAsMap(shareAsMap(rt["comfyui"])["auto_release"])
+		if shareAsBool(autoRelease["enabled"]) && !runtimeExplicitlySupportsCapability(rt, "comfyui_share_guard") {
+			writeJSONError(rw, http.StatusConflict, "宿主机已开启任务完成后自动释放算力，请稍后再试")
+			return
+		}
+		for _, rawWF := range shareAsSlice(snap["workflows"]) {
+			if wm := shareAsMap(rawWF); wm != nil && strings.TrimSpace(shareAsString(wm["id"])) == wfID {
+				targetWF = wm
+				break
+			}
+		}
+		for _, rawOut := range shareAsSlice(snap["comfy_outputs"]) {
+			if om := shareAsMap(rawOut); om != nil {
+				if oid := strings.TrimSpace(shareAsString(om["id"])); outputIDRe.MatchString(oid) {
+					preExistingIDs = append(preExistingIDs, oid)
 				}
 			}
 		}
@@ -3045,16 +3093,21 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			return
 		}
 		var hostRuntimeID string
-		if snapRaw, snapErr := w.opts.CallBridge(r.Context(), "snapshot", nil); snapErr == nil {
-			var snap map[string]any
-			if json.Unmarshal([]byte(snapRaw), &snap) == nil && snap != nil {
-				rt := shareAsMap(snap["runtime"])
-				hostRuntimeID = strings.TrimSpace(shareAsString(rt["id"]))
-				if isHostBusyWithExclusiveWorkload(rt) {
-					writeJSONError(rw, http.StatusConflict, "云端算力当前正忙，暂不可执行该操作，请稍后再试")
-					return
-				}
-			}
+		snapRaw, snapErr := w.opts.CallBridge(r.Context(), "snapshot", nil)
+		if snapErr != nil {
+			writeBridgeErr(snapErr)
+			return
+		}
+		var snap map[string]any
+		if json.Unmarshal([]byte(snapRaw), &snap) != nil || snap == nil {
+			writeJSONError(rw, http.StatusServiceUnavailable, "无法确认宿主机当前运行状态，请稍后再试")
+			return
+		}
+		rt := shareAsMap(snap["runtime"])
+		hostRuntimeID = strings.TrimSpace(shareAsString(rt["id"]))
+		if isHostBusyWithExclusiveWorkload(rt) {
+			writeJSONError(rw, http.StatusConflict, "云端算力当前正忙，暂不可执行该操作，请稍后再试")
+			return
 		}
 		cleanPayload := cloneShallowMap(payload)
 		delete(cleanPayload, "hf_token")
@@ -3284,6 +3337,11 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 }
 
 func (w *ColabOneWebConsole) handleShareOutputMedia(rw http.ResponseWriter, r *http.Request, shareID, id string) {
+	rw.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	if !isSameOriginDownloadRequest(r) {
+		writeHeadAwareJSONError(rw, r, http.StatusForbidden, "跨源请求已被拒绝")
+		return
+	}
 	if status, msg := w.requireShareLiveOutput(r.Context(), shareID, id); status != 0 {
 		writeHeadAwareJSONError(rw, r, status, msg)
 		return
@@ -3300,6 +3358,10 @@ func (w *ColabOneWebConsole) handleShareOutputMedia(rw http.ResponseWriter, r *h
 }
 
 func (w *ColabOneWebConsole) handleShareOutputDownload(rw http.ResponseWriter, r *http.Request, shareID, id string) {
+	if !isSameOriginDownloadRequest(r) {
+		writeHeadAwareJSONError(rw, r, http.StatusForbidden, "跨源请求已被拒绝")
+		return
+	}
 	if status, msg := w.requireShareLiveOutput(r.Context(), shareID, id); status != 0 {
 		writeHeadAwareJSONError(rw, r, status, msg)
 		return
@@ -3572,6 +3634,12 @@ func sanitizeGuestTaskMap(src map[string]any) map[string]any {
 	out := make(map[string]any, len(guestAllowedTaskFields))
 	for _, k := range guestAllowedTaskFields {
 		if v, ok := src[k]; ok {
+			if k == "error" {
+				if s, okStr := v.(string); okStr && strings.TrimSpace(s) != "" {
+					out[k] = sanitizeGuestBridgeError(s)
+					continue
+				}
+			}
 			out[k] = v
 		}
 	}

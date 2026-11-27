@@ -4,7 +4,6 @@ import {
   Alert as AAlert,
   Button as AButton,
   Checkbox as ACheckbox,
-  InputPassword as AInputPassword,
   Modal as AModal,
   Spin as ASpin,
   Tag as ATag,
@@ -24,6 +23,7 @@ import {
   PhUserCircle,
 } from "@phosphor-icons/vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
+import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import type {
   ColabOneMigrationExportSummary,
   ColabOneMigrationModuleSummary,
@@ -91,7 +91,16 @@ const exportConfirmTouched = ref(false);
 
 const importPassword = ref("");
 const importSelected = ref<ColabOneMigrationModuleId[]>([]);
-const importPasswordInputRef = ref<{ focus?: () => void } | null>(null);
+type SecretInputHandle = InstanceType<typeof ColabOneSecretInput>;
+const exportPasswordInputRef = ref<SecretInputHandle | null>(null);
+const exportConfirmInputRef = ref<SecretInputHandle | null>(null);
+const importPasswordInputRef = ref<SecretInputHandle | null>(null);
+
+function hideAllPasswordInputs() {
+  exportPasswordInputRef.value?.hide?.();
+  exportConfirmInputRef.value?.hide?.();
+  importPasswordInputRef.value?.hide?.();
+}
 
 const privacyContext = computed(() =>
   buildColabOnePrivacyContext(props.state),
@@ -147,12 +156,28 @@ const configOnlyModules: ColabOneMigrationModuleId[] = [
   "workflow_drafts",
 ];
 
-const hasRunningInstances = computed(
-  () =>
-    Boolean(props.importPreview?.has_running_instances) ||
-    props.state.runtime.state === "ready" ||
-    props.state.runtime.state === "starting",
-);
+const hasRunningInstances = computed(() => {
+  const rtState = props.state.runtime.state;
+  if (rtState === "ready" || rtState === "starting") {
+    return true;
+  }
+  const instances = props.state.account?.instances;
+  if (Array.isArray(instances)) {
+    return instances.some((inst) => inst?.managed);
+  }
+  const assignments = props.state.account?.assignments;
+  if (
+    typeof assignments === "number" &&
+    Number.isFinite(assignments) &&
+    assignments > 0
+  ) {
+    return true;
+  }
+  if (rtState === "stopped") {
+    return false;
+  }
+  return Boolean(props.importPreview?.has_running_instances);
+});
 
 const hasActiveOperation = computed(() => Boolean(props.state.operation));
 
@@ -223,6 +248,7 @@ const importModulesList = computed<ColabOneMigrationModuleSummary[]>(() => {
 watch(
   () => [props.open, props.mode] as const,
   ([isOpen, nextMode]) => {
+    hideAllPasswordInputs();
     if (!isOpen) {
       exportPassword.value = "";
       exportConfirm.value = "";
@@ -253,6 +279,7 @@ watch(
     if (!props.open || props.mode !== "import") return;
     if (step === "decrypt") {
       importPassword.value = "";
+      importPasswordInputRef.value?.hide?.();
       void nextTick(() => importPasswordInputRef.value?.focus?.());
     }
   },
@@ -496,6 +523,7 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
     :mask-closable="canClose"
     :keyboard="canClose"
     :z-index="1060"
+    destroy-on-close
     wrap-class-name="co-migration-modal-wrap"
     @cancel="requestClose"
   >
@@ -672,23 +700,25 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
           {{ t("migration.exportPasswordDesc", { min: COLABONE_MIGRATION_MIN_PASSWORD_LEN }) }}
         </p>
         <div class="co-mig-password-grid">
-          <AInputPassword
+          <ColabOneSecretInput
+            ref="exportPasswordInputRef"
             v-model:value="exportPassword"
             :disabled="exportSubmitting"
             autocomplete="new-password"
             :placeholder="t('migration.exportPasswordPlaceholder')"
             :aria-label="t('migration.exportPasswordPlaceholder')"
-            data-testid="migration-export-password"
+            input-test-id="migration-export-password"
             @blur="exportPasswordTouched = true"
             @press-enter="handleSubmitExport"
           />
-          <AInputPassword
+          <ColabOneSecretInput
+            ref="exportConfirmInputRef"
             v-model:value="exportConfirm"
             :disabled="exportSubmitting"
             autocomplete="new-password"
             :placeholder="t('migration.exportPasswordConfirmPlaceholder')"
             :aria-label="t('migration.exportPasswordConfirmPlaceholder')"
-            data-testid="migration-export-confirm"
+            input-test-id="migration-export-confirm"
             @blur="exportConfirmTouched = true"
             @press-enter="handleSubmitExport"
           />
@@ -748,14 +778,14 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
         <p class="co-mig-password-desc">
           {{ t("migration.importPasswordDesc") }}
         </p>
-        <AInputPassword
+        <ColabOneSecretInput
           ref="importPasswordInputRef"
           v-model:value="importPassword"
           :disabled="importDecrypting"
           autocomplete="current-password"
           :placeholder="t('migration.importPasswordPlaceholder')"
           :aria-label="t('migration.importPasswordPlaceholder')"
-          data-testid="migration-import-password"
+          input-test-id="migration-import-password"
           @press-enter="handleSubmitDecrypt"
         />
       </div>

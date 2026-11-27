@@ -36,7 +36,12 @@ from contextlib import nullcontext
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Sequence
 
-from common.files import atomic_json
+from common.files import (
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS,
+    COLABONE_SENSITIVE_SUBPROCESS_ENV_PREFIXES,
+    atomic_json,
+    colabone_sanitized_subprocess_env,
+)
 from server.tts_engines import (
     _call_with_compatible_kwargs,
     _collect_installed_torch_constraints,
@@ -464,10 +469,24 @@ def _strip_sensitive_config_keys(value: Any) -> Any:
 
 
 def _sanitized_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    blocked = _SENSITIVE_ENV_KEYS | _SETUP_STRIP_ENV_KEYS
-    env = {k: v for k, v in os.environ.items() if k not in blocked}
+    env = colabone_sanitized_subprocess_env(
+        strip_keys=_SENSITIVE_ENV_KEYS | _SETUP_STRIP_ENV_KEYS,
+    )
     if extra:
-        env.update(extra)
+        for k, v in extra.items():
+            if not isinstance(k, str) or not k:
+                continue
+            ku = k.upper()
+            if (
+                k in _SENSITIVE_ENV_KEYS
+                or ku in COLABONE_SENSITIVE_SUBPROCESS_ENV_KEYS
+                or any(ku.startswith(p) for p in COLABONE_SENSITIVE_SUBPROCESS_ENV_PREFIXES)
+            ):
+                # Allow explicit HF_TOKEN only if caller intentionally passes it;
+                # never allow control-plane secrets (COLABONE_REMOTE_CONFIG, TUNNEL_*, RCLONE_*, etc.).
+                if ku not in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HUB_DISABLE_TELEMETRY", "HF_ENDPOINT"):
+                    continue
+            env[k] = str(v)
     return env
 
 

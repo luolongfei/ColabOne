@@ -137,6 +137,9 @@ func (d *ColabOneDesktop) clearLogWindow(win *mygo.Window) {
 }
 
 func (d *ColabOneDesktop) notifyMainLogWindowState(open bool) {
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return
+	}
 	gen := d.logStateGen.Add(1)
 	win := d.mainWindow()
 	if win == nil || win.IsDestroyed() {
@@ -151,7 +154,10 @@ func (d *ColabOneDesktop) notifyMainLogWindowState(open bool) {
 		script = "window.dispatchEvent(new CustomEvent('colabone:log-window-state',{detail:{open:true}}))"
 	}
 	go func() {
-		if d.logStateGen.Load() != gen {
+		if d.appQuitting.Load() || !d.isAppReady() || d.logStateGen.Load() != gen {
+			return
+		}
+		if win.IsDestroyed() {
 			return
 		}
 		_, _ = page.Eval(script)
@@ -169,6 +175,9 @@ func (d *ColabOneDesktop) GetLogDrawerState() ColabOneLogDrawerState {
 // positioned adjacent to the main window. The log window can be closed,
 // resized, moved, and maximized independently of the main window.
 func (d *ColabOneDesktop) SetLogDrawer(ctx context.Context, open bool, width int) ColabOneLogDrawerState {
+	if d.appQuitting.Load() {
+		return ColabOneLogDrawerState{Open: false, Standalone: true}
+	}
 	mainWin := d.mainWindow()
 	if mainWin == nil && ctx != nil {
 		mainWin = mygo.CallerWindow(ctx)
@@ -176,8 +185,15 @@ func (d *ColabOneDesktop) SetLogDrawer(ctx context.Context, open bool, width int
 	if mainWin == nil && d.logWindow() == nil {
 		return ColabOneLogDrawerState{Open: open}
 	}
+	if !d.isAppReady() {
+		return ColabOneLogDrawerState{Open: false, Standalone: true}
+	}
 	var state ColabOneLogDrawerState
 	mygo.RunOnMain(func() {
+		if d.appQuitting.Load() || !d.isAppReady() {
+			state = ColabOneLogDrawerState{Open: false, Standalone: true}
+			return
+		}
 		state = d.applyLogWindowOnMain(mainWin, open, width)
 	})
 	return state

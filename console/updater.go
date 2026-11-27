@@ -202,7 +202,7 @@ func (d *ColabOneDesktop) initUpdater(cfgDir string, backend updater.ColabOneUpd
 			if d.appQuitting.Load() {
 				return
 			}
-			if mygo.App.IsReady() {
+			if !d.appQuitting.Load() && d.isAppReady() {
 				ColabOneUpdateEvent.Broadcast(st)
 			}
 			sig := fmt.Sprintf("%s|%s|%t", st.Status, st.AvailableVersion, st.IsRollback)
@@ -265,12 +265,12 @@ func (d *ColabOneDesktop) handleTrayUpdateClick() {
 	st := d.updater.State()
 	if st.Status == updater.StatusReadyToRestart || st.Status == updater.StatusAvailable ||
 		st.Status == updater.StatusDownloading || st.Status == updater.StatusInstalling {
-		if mygo.App.IsReady() {
+		if !d.appQuitting.Load() && d.isAppReady() {
 			ColabOneUpdateOpenEvent.Broadcast(true)
 		}
 		return
 	}
-	if mygo.App.IsReady() {
+	if !d.appQuitting.Load() && d.isAppReady() {
 		ColabOneUpdateOpenEvent.Broadcast(true)
 	}
 	d.updater.TriggerAsyncCheck(true)

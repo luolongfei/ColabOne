@@ -1039,3 +1039,104 @@ func TestColabOneStalledBodyPreservesEOFAndCloseRaceSafe(t *testing.T) {
 		}
 	})
 }
+
+func TestRollbackWindowsCaseInsensitiveSwapAndRunningEntry(t *testing.T) {
+	installDir := filepath.Join(t.TempDir(), "ColabOne")
+	stageDir := filepath.Join(t.TempDir(), "stage")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Seed existing files with mixed casing on disk.
+	if err := os.WriteFile(filepath.Join(installDir, "ColabOne.exe"), []byte("old-bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "stale.dat"), []byte("old-stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, colabOneMyGoFileList), []byte("ColabOne.exe\nstale.dat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stageDir, "colabone.exe"), []byte("new-bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Running entry check matches case-insensitively on Windows.
+	gotRunning := colabOneRunningEntryForOS(installDir, filepath.Join(installDir, "COLABONE.EXE"), true)
+	if !strings.EqualFold(gotRunning, "colabone.exe") {
+		t.Fatalf("expected case-insensitive running entry match, got %q", gotRunning)
+	}
+
+	// Swap with Windows case-insensitive semantics (stageDir -> installDir):
+	// ColabOne.exe in file list matches staged colabone.exe case-insensitively; stale.dat is removed.
+	if err := swapColabOneInstallDirForOS(stageDir, installDir, filepath.Join(installDir, "COLABONE.EXE"), true); err != nil {
+		t.Fatalf("swapColabOneInstallDirForOS failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "stale.dat")); !os.IsNotExist(err) {
+		t.Fatalf("expected stale tracked file removed, stat err=%v", err)
+	}
+	gotNew, err := os.ReadFile(filepath.Join(installDir, "colabone.exe"))
+	if err != nil || string(gotNew) != "new-bin" {
+		t.Fatalf("expected staged colabone.exe installed, got %q err=%v", string(gotNew), err)
+	}
+}
+
+func TestRollbackPreservesRenamedRunningExeAbsPathsAndWindowsFileList(t *testing.T) {
+	// 1) Renamed running executable must be preserved in .mygo-files (left) so future updates clean it up.
+	installDir := filepath.Join(t.TempDir(), "ColabOne")
+	stageDir := filepath.Join(t.TempDir(), "stage")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "ColabOne-new.exe"), []byte("running-exe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, colabOneMyGoFileList), []byte("ColabOne-new.exe\n.MYGO-FILES\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stageDir, "ColabOne-old.exe"), []byte("rolled-back-exe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := swapColabOneInstallDirForOS(stageDir, installDir, filepath.Join(installDir, "ColabOne-new.exe"), true); err != nil {
+		t.Fatalf("swapColabOneInstallDirForOS failed: %v", err)
+	}
+	fileList := readColabOneMyGoFileListForOS(installDir, true)
+	foundRunning := false
+	for _, n := range fileList {
+		if strings.EqualFold(n, ".mygo-files") {
+			t.Fatalf(".MYGO-FILES should be rejected on Windows, got %v", fileList)
+		}
+		if n == "ColabOne-new.exe" {
+			foundRunning = true
+		}
+	}
+	if !foundRunning {
+		t.Fatalf("expected renamed running exe preserved in .mygo-files, got %v", fileList)
+	}
+
+	// 2) isColabOneFileListNameForOS rejects .MYGO-FILES on Windows.
+	if isColabOneFileListNameForOS(".MYGO-FILES", true) {
+		t.Fatal("expected .MYGO-FILES rejected when isWindows=true")
+	}
+
+	// 3) Relative target and startExe normalize via filepath.Abs.
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Dir(installDir)
+	if err := os.Chdir(parent); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+	gotRel := colabOneRunningEntryForOS("ColabOne", filepath.Join("ColabOne", "ColabOne-new.exe"), true)
+	if gotRel != "ColabOne-new.exe" {
+		t.Fatalf("expected relative paths resolved via filepath.Abs, got %q", gotRel)
+	}
+}

@@ -2,6 +2,8 @@ package webconsole
 
 import (
 	"html"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/luolongfei/ColabOne/console/internal/brandicon"
@@ -197,31 +199,122 @@ var colabOneWebLoginCopyByLocale = map[string]colabOneWebLoginCopy{
 	},
 }
 
-func localeFromAcceptLanguage(header string) string {
+func hasLangTagPrefix(tag, prefix string) bool {
+	return tag == prefix || strings.HasPrefix(tag, prefix+"-")
+}
+
+func mapAcceptLanguageTag(tag string) (string, bool) {
+	switch {
+	case hasLangTagPrefix(tag, "zh-hk"),
+		hasLangTagPrefix(tag, "zh-mo"),
+		hasLangTagPrefix(tag, "zh-hant-hk"),
+		hasLangTagPrefix(tag, "zh-hant-mo"),
+		hasLangTagPrefix(tag, "yue"):
+		return "zh-HK", true
+	case hasLangTagPrefix(tag, "zh-tw"), hasLangTagPrefix(tag, "zh-hant"):
+		return "zh-TW", true
+	case hasLangTagPrefix(tag, "zh"):
+		return "zh-CN", true
+	case hasLangTagPrefix(tag, "en"):
+		return "en-US", true
+	case hasLangTagPrefix(tag, "ja"):
+		return "ja-JP", true
+	case hasLangTagPrefix(tag, "ko"):
+		return "ko-KR", true
+	default:
+		return "", false
+	}
+}
+
+func isValidRFCQValue(raw string) bool {
+	if len(raw) == 0 || len(raw) > 5 {
+		return false
+	}
+	switch raw[0] {
+	case '0':
+		if len(raw) == 1 {
+			return true
+		}
+		if raw[1] != '.' || len(raw) == 2 {
+			return false
+		}
+		for i := 2; i < len(raw); i++ {
+			if raw[i] < '0' || raw[i] > '9' {
+				return false
+			}
+		}
+		return true
+	case '1':
+		if len(raw) == 1 {
+			return true
+		}
+		if raw[1] != '.' || len(raw) == 2 {
+			return false
+		}
+		for i := 2; i < len(raw); i++ {
+			if raw[i] != '0' {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func localeFromAcceptLanguageWithQ(header string) (string, bool) {
 	lower := strings.ToLower(strings.TrimSpace(header))
 	if lower == "" {
-		return colabOneWebDefaultLocale
+		return "", false
 	}
+	bestLoc := ""
+	bestQ := -1.0
 	for _, token := range strings.Split(lower, ",") {
-		tag := strings.ReplaceAll(strings.TrimSpace(strings.Split(token, ";")[0]), "_", "-")
-		switch {
-		case strings.HasPrefix(tag, "zh-hk"),
-			strings.HasPrefix(tag, "zh-mo"),
-			strings.HasPrefix(tag, "zh-hant-hk"),
-			strings.HasPrefix(tag, "zh-hant-mo"),
-			strings.HasPrefix(tag, "yue"):
-			return "zh-HK"
-		case strings.HasPrefix(tag, "zh-tw"), strings.HasPrefix(tag, "zh-hant"):
-			return "zh-TW"
-		case strings.HasPrefix(tag, "zh"):
-			return "zh-CN"
-		case strings.HasPrefix(tag, "en"):
-			return "en-US"
-		case strings.HasPrefix(tag, "ja"):
-			return "ja-JP"
-		case strings.HasPrefix(tag, "ko"):
-			return "ko-KR"
+		parts := strings.Split(token, ";")
+		tag := strings.ReplaceAll(strings.TrimSpace(parts[0]), "_", "-")
+		if tag == "" || tag == "*" {
+			continue
 		}
+		q := 1.0
+		validQ := true
+		for _, param := range parts[1:] {
+			kv := strings.SplitN(strings.TrimSpace(param), "=", 2)
+			if len(kv) == 2 && strings.TrimSpace(kv[0]) == "q" {
+				rawQ := strings.TrimSpace(kv[1])
+				if !isValidRFCQValue(rawQ) {
+					validQ = false
+					break
+				}
+				parsed, err := strconv.ParseFloat(rawQ, 64)
+				if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 1 {
+					validQ = false
+					break
+				}
+				q = parsed
+				break
+			}
+		}
+		if !validQ || q <= 0 {
+			continue
+		}
+		loc, ok := mapAcceptLanguageTag(tag)
+		if !ok {
+			continue
+		}
+		if q > bestQ {
+			bestQ = q
+			bestLoc = loc
+		}
+	}
+	if bestLoc == "" {
+		return "", false
+	}
+	return bestLoc, true
+}
+
+func localeFromAcceptLanguage(header string) string {
+	if loc, ok := localeFromAcceptLanguageWithQ(header); ok {
+		return loc
 	}
 	return colabOneWebDefaultLocale
 }

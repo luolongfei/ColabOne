@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,8 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 )
 
 const (
@@ -31,13 +31,7 @@ const (
 	COLABONE_ROLLBACK_MAX_VERSIONS   = 3
 	COLABONE_ROLLBACK_CACHE_TTL      = 5 * time.Minute
 
-	colabOneCancelWaitTimeout   = 250 * time.Millisecond
-	colabOneWinRenameAttempts   = 12
-	colabOneWinRenameBaseDelay  = 5 * time.Millisecond
-	colabOneWinErrFileNotFound  = syscall.Errno(2)
-	colabOneWinErrAccessDenied  = syscall.Errno(5)
-	colabOneWinErrShareViol     = syscall.Errno(32)
-	colabOneWinErrLockViolation = syscall.Errno(33)
+	colabOneCancelWaitTimeout = 250 * time.Millisecond
 )
 
 // Lifecycle states exposed to the desktop UI.
@@ -1061,6 +1055,8 @@ func (u *ColabOneUpdater) finishInstallError(
 			}
 			u.state.Status = restoreStatus
 			u.state.IsRollback = false
+			u.state.CanSelfUpdate = prevState.CanSelfUpdate
+			u.state.DisabledReason = prevState.DisabledReason
 			if restoreStatus == StatusAvailable {
 				u.state.AvailableVersion = prevState.AvailableVersion
 				u.state.IsPrerelease = prevState.IsPrerelease
@@ -1503,7 +1499,7 @@ func (u *ColabOneUpdater) savePreferences() {
 	snapshot := u.prefs
 	u.mu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
 	raw, err := json.MarshalIndent(snapshot, "", "  ")
@@ -1539,42 +1535,8 @@ func (u *ColabOneUpdater) savePreferences() {
 	ok = true
 }
 
-func colabOneIsTransientWinRenameErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, fs.ErrPermission) {
-		return true
-	}
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
-		switch errno {
-		case colabOneWinErrFileNotFound,
-			colabOneWinErrAccessDenied,
-			colabOneWinErrShareViol,
-			colabOneWinErrLockViolation:
-			return true
-		}
-	}
-	return false
-}
-
 func colabOneRenameFile(src, dst string) error {
-	err := os.Rename(src, dst)
-	if err == nil || runtime.GOOS != "windows" {
-		return err
-	}
-	for attempt := 1; attempt < colabOneWinRenameAttempts; attempt++ {
-		if !colabOneIsTransientWinRenameErr(err) {
-			return err
-		}
-		time.Sleep(time.Duration(attempt) * colabOneWinRenameBaseDelay)
-		err = os.Rename(src, dst)
-		if err == nil {
-			return nil
-		}
-	}
-	return err
+	return fsutil.RenameReplace(src, dst)
 }
 
 // ---------------------------------------------------------------------------

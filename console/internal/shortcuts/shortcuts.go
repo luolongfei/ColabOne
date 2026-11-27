@@ -400,7 +400,12 @@ func ManageShortcuts(root, target string, remove bool, sandboxDir, platformName,
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return ColabOneShortcutStatus{}, &shortcutError{msg: "创建快捷方式失败，请检查系统权限后重试", err: err}
 			}
-			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			if isSymlink(p) {
+				if err := os.Remove(p); err != nil {
+					return ColabOneShortcutStatus{}, &shortcutError{msg: "创建快捷方式失败，请检查系统权限后重试", err: err}
+				}
+			}
+			if err := writeShortcutFileAtomic(p, []byte(content), 0o644); err != nil {
 				return ColabOneShortcutStatus{}, &shortcutError{msg: "创建快捷方式失败，请检查系统权限后重试", err: err}
 			}
 		}
@@ -491,16 +496,53 @@ func ManageShortcuts(root, target string, remove bool, sandboxDir, platformName,
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return ColabOneShortcutStatus{}, &shortcutError{msg: "创建快捷方式失败，请检查系统权限后重试", err: err}
 			}
-			if err := os.WriteFile(p, []byte(desktopEntry), 0o755); err != nil {
-				return ColabOneShortcutStatus{}, &shortcutError{msg: "创建快捷方式失败，请检查系统权限后重试", err: err}
+			if isSymlink(p) {
+				if err := os.Remove(p); err != nil {
+					return ColabOneShortcutStatus{}, &shortcutError{msg: "创建快捷方式失败，请检查系统权限后重试", err: err}
+				}
 			}
-			if err := os.Chmod(p, 0o755); err != nil {
+			if err := writeShortcutFileAtomic(p, []byte(desktopEntry), 0o755); err != nil {
 				return ColabOneShortcutStatus{}, &shortcutError{msg: "创建快捷方式失败，请检查系统权限后重试", err: err}
 			}
 		}
 	}
 
 	return ShortcutStatus(sandboxDir, plat), nil
+}
+
+func writeShortcutFileAtomic(target string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(target)
+	tmp, err := os.CreateTemp(dir, ".colabone-shortcut-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	closed := false
+	renamed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		if !renamed {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		closed = true
+		return err
+	}
+	closed = true
+	if err := os.Rename(tmpName, target); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }
 
 var desktopStringValueEscaper = strings.NewReplacer(`\`, `\\`, "\t", `\t`)
